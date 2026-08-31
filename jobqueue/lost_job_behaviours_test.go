@@ -53,6 +53,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/queue"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -841,6 +842,76 @@ func TestLostJobOnWeblessManagerCleansItsWorkSpace(t *testing.T) {
 			ran, err := os.ReadFile(l.ranIn)
 			So(err, ShouldBeNil)
 			So(strings.TrimSpace(string(ran)), ShouldEqual, l.lostCwd)
+		})
+	})
+}
+
+func TestKilledLostJobSparesItsSecondRun(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a lost job the user had already killed, whose retry is lost in its turn", t, func() {
+		config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(false)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		rg := "killed_lost_run"
+		job := &Job{
+			Cmd: restFormTrue, Cwd: t.TempDir(), RepGroup: rg, ReqGroup: rg,
+			Requirements: standardReqs, Retries: 3,
+		}
+
+		_, _, err = jq.Add([]*Job{job}, os.Environ(), true)
+		So(err, ShouldBeNil)
+
+		reserved, err := jq.Reserve(2 * time.Second)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+		So(jq.Started(reserved, os.Getpid()), ShouldBeNil)
+
+		key := reserved.Key()
+
+		item, err := server.q.Get(key)
+		So(err, ShouldBeNil)
+
+		live, ok := item.Data().(*Job)
+		So(ok, ShouldBeTrue)
+
+		// a `wr kill`ed run goes silent, is declared lost, and has its details
+		// pinned. This is the one lost-job path with no dead-check in it at all:
+		// it simply waits ttrReleaseWait and releases.
+		live.Lock()
+		live.killCalled = true
+		live.Lost = true
+		live.Unlock()
+
+		pin := live.pinBehaviours()
+
+		// but that wait is long enough for the job to be released, started
+		// again, and lost again. Same key, same *Job, and Lost is true once
+		// more, so what tells the two runs apart is what the manager minted for
+		// each start.
+		So(server.applyJobStart(live, &Job{Pid: os.Getpid(), Host: localhost}), ShouldBeTrue)
+
+		live.Lock()
+		live.Lost = true
+		live.Unlock()
+
+		Convey("the release lands on neither run", func() {
+			server.confirmOrReleaseLostJob(ctx, lostJobDetails{key: key, killCalled: true, pin: pin})
+
+			So(item.Stats().State, ShouldEqual, queue.ItemStateRun)
 		})
 	})
 }

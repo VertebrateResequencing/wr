@@ -3819,7 +3819,7 @@ func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
 	// we don't test recovered jobs are dead because they might have exited
 	// while the server wasn't running, and we want the existing client to tell
 	// us if it should be archived or buried
-	defer s.markJobLost(ctx, job, false, lostUpdate)
+	defer s.markJobLost(ctx, job, lostUpdate)
 
 	return queue.SubQueueRun
 }
@@ -3827,8 +3827,9 @@ func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
 // markJobLost records a running->lost transition for job (which must be locked;
 // it is unlocked here) and asynchronously confirms whether the job is dead,
 // killing or releasing it as appropriate. It runs as a deferred call from
-// ttrCallback while the queue mutex is still held.
-func (s *Server) markJobLost(ctx context.Context, job *Job, wasLost bool, lostUpdate *JobUpdate) {
+// ttrCallback while the queue mutex is still held, which has already
+// established that the job was not already lost.
+func (s *Server) markJobLost(ctx context.Context, job *Job, lostUpdate *JobUpdate) {
 	killCalled := job.killCalled
 	jobHost := job.Host
 	jobPID := job.Pid
@@ -3847,21 +3848,16 @@ func (s *Server) markJobLost(ctx context.Context, job *Job, wasLost bool, lostUp
 
 	// since our changed callback won't be called, record this running -> lost
 	// transition through the single chokepoint: the web-UI status-count delta
-	// always (statusCaster derives the "+all+" aggregate from the contribution),
-	// and the pre-built lost subscription update only if the job wasn't already
-	// lost. Both run after job.Unlock while queue.mutex is still held; neither
-	// statusCaster.Send nor the subscription locks are ever taken before the
-	// queue lock.
+	// (statusCaster derives the "+all+" aggregate from the contribution) and the
+	// pre-built lost subscription update. Both run after job.Unlock while
+	// queue.mutex is still held; neither statusCaster.Send nor the subscription
+	// locks are ever taken before the queue lock.
 	s.emitJobTransition(
 		[]countContribution{{from: JobStateRunning, to: JobStateLost, repGroup: repGroup, n: 1}},
-		func() {
-			if !wasLost {
-				s.enqueueSubscriptionUpdate(lostUpdate, false)
-			}
-		},
+		func() { s.enqueueSubscriptionUpdate(lostUpdate, false) },
 	)
 
-	go s.confirmOrReleaseLostJob(ctx, job, lostJobDetails{
+	go s.confirmOrReleaseLostJob(ctx, lostJobDetails{
 		key: jobKey, host: jobHost, pid: jobPID, killCalled: killCalled, pin: pin,
 		checkTimeout: serverLostJobCheckTimeout, checkRetryTime: serverLostJobCheckRetryTime,
 	})
@@ -3893,30 +3889,46 @@ type lostJobDetails struct {
 
 // confirmOrReleaseLostJob confirms whether a lost job is really dead and kills
 // it, or (if the user already called kill) releases it back to the run queue.
-func (s *Server) confirmOrReleaseLostJob(ctx context.Context, job *Job, d lostJobDetails) {
+//
+// It is given the lost RUN rather than the queue's *Job, because the *Job is
+// shared by every run of the job and everything below happens after a wait: what
+// either branch must act on is the run that was declared lost, and both ask the
+// queue for it by key and prove it is still that run.
+func (s *Server) confirmOrReleaseLostJob(ctx context.Context, d lostJobDetails) {
 	s.rrjMu.RLock()
 	recovered := s.recoveredRunningJobs[d.key]
 	s.rrjMu.RUnlock()
 
-	confirmedDead := !d.killCalled && !recovered
-	if confirmedDead {
-		confirmedDead = s.confirmJobDeadAndKill(ctx, d)
-	}
-
 	switch {
-	case confirmedDead:
-		clog.Info(ctx, "killed a job after confirming it was dead", "key", d.key)
+	case !d.killCalled && !recovered:
+		// what the kill decided is logged where it is decided. Saying "killed a
+		// job after confirming it was dead" here said it before the goroutine
+		// that may REFUSE the kill had run, and said it whether or not the kill
+		// happened.
+		s.confirmJobDeadAndKill(ctx, d)
 	case d.killCalled:
-		defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
+		s.releaseKilledLostRun(ctx, d)
+	}
+}
 
-		// wait for the item to go back to run queue
-		<-time.After(ttrReleaseWait)
+// releaseKilledLostRun releases a lost run the user had already called kill on,
+// so that the kill takes effect on a job wr has lost contact with. It triggers
+// no behaviours: the user asked for the job to stop, not for its work to be
+// swept.
+//
+// The release is the same release killLostRun makes and needs the same proof, so
+// it is made through the same guarded path. The wait below is long enough for
+// the job to be buried by a runner that got the kill, and for the *Job under
+// this key to be a run this confirmation was never about; releasing that one
+// would end a job that is running normally.
+func (s *Server) releaseKilledLostRun(ctx context.Context, d lostJobDetails) {
+	defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
 
-		// now release it
-		err := s.releaseJob(ctx, job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false, false)
-		if err != nil {
-			clog.Warn(ctx, "failed to release job after TTR", "err", err)
-		}
+	// wait for the item to go back to run queue
+	<-time.After(ttrReleaseWait)
+
+	if _, _, err := s.killRunningJob(ctx, d.key, &d.pin.run); err != nil {
+		clog.Warn(ctx, "failed to release job after TTR", "err", err)
 	}
 }
 
@@ -4609,22 +4621,23 @@ func (s *Server) mintRunToken() runToken {
 	return runToken(s.lastRunToken.Add(1))
 }
 
-// confirmJobDeadAndKill calls and returns the value of confirmJobDead(). If
-// true, kills the job and triggers behaviours in a goroutine. If false,
-// arranges to re-call this after the configured retry time. This is so that if
-// we can't currently confirm the job is dead due to an ssh issue, but later on
-// the job really does die because the server it was running on gets rebooted,
-// we eventually auto-kill the job.
-func (s *Server) confirmJobDeadAndKill(ctx context.Context, d lostJobDetails) bool {
+// confirmJobDeadAndKill calls confirmJobDead(). If it confirms, kills the job
+// and triggers behaviours in a goroutine. If not, arranges to re-call this after
+// the configured retry time. This is so that if we can't currently confirm the
+// job is dead due to an ssh issue, but later on the job really does die because
+// the server it was running on gets rebooted, we eventually auto-kill the job.
+//
+// It reports nothing, because a confirmation is not a kill: the goroutine below
+// still has to establish that the run it confirmed dead is the run at the queue,
+// and it is the only thing that knows whether the kill happened.
+func (s *Server) confirmJobDeadAndKill(ctx context.Context, d lostJobDetails) {
 	if !s.confirmJobDead(ctx, d.pid, d.host, d.checkTimeout) {
 		go s.confirmJobDeadAndKillAfterRetryTime(ctx, d.key, d.checkRetryTime)
 
-		return false
+		return
 	}
 
 	go s.killLostJobAndTriggerBehaviours(ctx, d)
-
-	return true
 }
 
 // killLostJobAndTriggerBehaviours releases the lost RUN whose behaviours d
@@ -4657,8 +4670,13 @@ func (s *Server) killLostJobAndTriggerBehaviours(ctx context.Context, d lostJobD
 	}
 
 	if !released {
+		clog.Info(ctx, "did not kill a job confirmed dead, because the job has moved on to another run",
+			"key", d.key)
+
 		return
 	}
+
+	clog.Info(ctx, "killed a job after confirming it was dead", "key", d.key)
 
 	//nolint:contextcheck // behaviours run detached from the cancellable job context
 	if errt := d.pin.trigger(false); errt != nil {
