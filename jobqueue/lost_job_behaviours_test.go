@@ -54,6 +54,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/gofrs/uuid/v5"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -396,6 +397,8 @@ func (l *lostRun) jobStateAndKillCalled() (JobState, bool) {
 // Touch does. It is a second workspace of the SAME key, since it is the same
 // job: that is what nothing about a path can tell apart.
 func (l *lostRun) makeRetryWorkspace() (actualCwd, tmpDir, output string) {
+	l.reserveRetry()
+
 	actualCwd, tmpDir, err := mkHashedDir(l.cwd, l.key)
 	So(err, ShouldBeNil)
 	So(actualCwd, ShouldNotEqual, l.lostCwd)
@@ -408,9 +411,10 @@ func (l *lostRun) makeRetryWorkspace() (actualCwd, tmpDir, output string) {
 }
 
 // startRetryInWindow starts the job again as a second run, the way a runner
-// does: it makes whatever that run works in, then its Started tells the manager
-// (applyJobStart takes the job off lost), and only a manager with a web port
-// goes on to learn the directory again from the run's touches.
+// does: it reserves the job (which is where the manager mints the run and clears
+// the last one off the shared *Job), makes whatever that run works in, then its
+// Started tells the manager, and only a manager with a web port goes on to learn
+// the directory again from the run's touches.
 //
 // A cwd_matters retry works in the shared Cwd, so what it has part way through
 // is a file beside the user's other ones rather than a directory of wr's.
@@ -420,6 +424,8 @@ func (l *lostRun) makeRetryWorkspace() (actualCwd, tmpDir, output string) {
 // dies inside that interval, which is the commonest way a node kills a job, is
 // one no touch was ever received for.
 func (l *lostRun) startRetryInWindow(touched bool) (actualCwd, tmpDir, output string) {
+	l.reserveRetry()
+
 	if l.opts.cwdMatters {
 		l.startRetry("", touched)
 
@@ -437,6 +443,17 @@ func (l *lostRun) startRetryInWindow(touched bool) (actualCwd, tmpDir, output st
 	return actualCwd, tmpDir, output
 }
 
+// reserveRetry is the manager's own reserve-time reset of the shared *Job: what
+// respondWithReservedJob does to it the moment a runner takes the job on again.
+//
+// A retry cannot exist without one, and it is where the run BEGINS: everything
+// the retry's runner does that another run's decision could destroy - making its
+// working directory, mounting, starting the Cmd - it does after this and before
+// its Started reaches the manager.
+func (l *lostRun) reserveRetry() {
+	l.server.resetJobForReservation(l.live, newTestClientID())
+}
+
 // startRetry is the retry's own Started, carrying the working directory it has
 // already made, plus the touch snapshot a manager with a web port gets from a
 // run that lived long enough to touch.
@@ -447,6 +464,43 @@ func (l *lostRun) startRetry(actualCwd string, touched bool) {
 	if actualCwd != "" && touched && !l.opts.webless {
 		applyLiveSnapshot(l.live, &JobEndState{Cwd: actualCwd})
 	}
+}
+
+// killAndRetakeTheJob is `wr kill` on a lost job, followed by a runner taking
+// the job on again - all of it through the real manager, with the item really
+// going out of the run sub-queue and really coming back into it.
+//
+// killJob is the documented way to deal with a job wr has lost contact with, and
+// its own doc says what it does: it RELEASES the lost job. That opens a window
+// that closes as soon as a runner reserves the retry, and it opens it while the
+// confirmation of the lost run is still to come back.
+//
+// pid is what the retry's Started reports. A live one is a retry that is getting
+// on with its work; an exited one is a retry that dies in its turn, so that the
+// manager has to declare THIS run lost on its own account.
+func (l *lostRun) killAndRetakeTheJob(ctx context.Context, pid int) (actualCwd, tmpDir, output string) {
+	killed, err := l.server.killJob(ctx, l.key)
+	So(err, ShouldBeNil)
+	So(killed, ShouldBeTrue)
+
+	reserved, err := l.client.Reserve(lostRunSettleTime)
+	So(err, ShouldBeNil)
+	So(reserved, ShouldNotBeNil)
+	So(reserved.Key(), ShouldEqual, l.key)
+
+	actualCwd, tmpDir, err = mkHashedDir(l.cwd, l.key)
+	So(err, ShouldBeNil)
+	So(actualCwd, ShouldNotEqual, l.lostCwd)
+
+	output = writeFileIn(actualCwd, retryOutputName)
+
+	reserved.Lock()
+	reserved.setActualCwd(actualCwd)
+	reserved.Unlock()
+
+	So(l.client.Started(reserved, pid), ShouldBeNil)
+
+	return actualCwd, tmpDir, output
 }
 
 // markRetryLost marks the live *Job lost, as a second TTR expiry does for a
@@ -846,6 +900,85 @@ func TestLostJobOnWeblessManagerCleansItsWorkSpace(t *testing.T) {
 	})
 }
 
+func TestKillingALostJobSparesTheRunThatReplacesIt(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a lost job the user kills while its death is still being confirmed", t, func() {
+		l := newLostRun(ctx, t, "kill_lost_job_retry")
+
+		defer l.stop(ctx)
+
+		// this is the un-gated release: `wr kill` marks the job and releases it,
+		// and a runner has the retry reserved and its Cmd EXECUTING long before
+		// the confirmation of the lost run comes back. Nothing about the shared
+		// *Job tells the two apart except what the manager minted for the
+		// reservation.
+		l.waitForDeadCheckWindow()
+
+		retryCwd, retryTmp, retryOutput := l.killAndRetakeTheJob(ctx, os.Getpid())
+
+		l.proceedManager()
+
+		Convey("the confirmation is not carried out on the retry", func() {
+			So(l.waitForKillDecision(), ShouldBeFalse)
+
+			// killCalled is the half that kills a live Cmd: it turns the retry's
+			// next touch into a self-kill.
+			state, killCalled := l.jobStateAndKillCalled()
+			So(state, ShouldEqual, JobStateRunning)
+			So(killCalled, ShouldBeFalse)
+
+			soPathsExist(retryOutput, retryCwd, retryTmp, filepath.Dir(retryCwd))
+
+			l.soNoBehaviourRuns()
+			soPathsExist(retryOutput, retryCwd, retryTmp)
+			soPathsGone(l.ranIn)
+		})
+	})
+}
+
+func TestKilledLostJobsReplacementIsStillWatched(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a killed lost job whose replacement run dies in its turn", t, func() {
+		l := newLostRun(ctx, t, "kill_lost_job_no_hang")
+
+		defer l.stop(ctx)
+
+		l.waitForDeadCheckWindow()
+
+		// the retry is started with a pid that has already exited, so it goes
+		// silent the way a run killed by its node does.
+		retryCwd, _, _ := l.killAndRetakeTheJob(ctx, exitedPid())
+
+		l.proceedManager()
+		So(l.waitForKillDecision(), ShouldBeFalse)
+		l.resumeManager()
+
+		Convey("the manager declares that run lost on its own account", func() {
+			// carrying the killed run's Lost flag into the retry parks the job
+			// for ever: ttrCallback refuses to re-mark an already-lost job, so
+			// nothing is ever confirmed, nothing killed, and the job is neither
+			// retried nor buried. Reaching a second dead-check at all is the
+			// evidence that the retry was watched as a run of its own.
+			l.waitForDeadCheckWindow()
+			So(l.waitForKillDecision(), ShouldBeTrue)
+
+			// and the run that really was abandoned is the one swept.
+			soGoneWithin(retryCwd)
+			soPathsExist(l.lostCwd)
+		})
+	})
+}
+
 // startedRun is a real manager with one real job in it, reserved and started
 // through the real client, with the default TTR so that nothing expires under a
 // test. It is the fixture for the checks about what a START does, rather than
@@ -929,6 +1062,22 @@ func (r *startedRun) markLost() {
 	r.live.Unlock()
 }
 
+// reserveAgain is the manager's own reserve-time reset of the shared *Job, which
+// is what a runner taking the job on again does to it - and where the run it is
+// taking on begins.
+func (r *startedRun) reserveAgain() {
+	r.server.resetJobForReservation(r.live, newTestClientID())
+}
+
+// newTestClientID is the id of a runner other than the one that had the job
+// before.
+func newTestClientID() uuid.UUID {
+	clientID, err := uuid.NewV4()
+	So(err, ShouldBeNil)
+
+	return clientID
+}
+
 func TestKilledLostJobSparesItsSecondRun(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -949,10 +1098,11 @@ func TestKilledLostJobSparesItsSecondRun(t *testing.T) {
 
 		pin := r.live.pinBehaviours()
 
-		// but that wait is long enough for the job to be released, started
-		// again, and lost again. Same key, same *Job, and Lost is true once
-		// more, so what tells the two runs apart is what the manager minted for
-		// each start.
+		// but that wait is long enough for the job to be released, reserved and
+		// started again, and lost again. Same key, same *Job, and Lost is true
+		// once more, so what tells the two runs apart is what the manager minted
+		// for the second reservation.
+		r.reserveAgain()
 		So(r.server.applyJobStart(r.live, &Job{Pid: os.Getpid(), Host: localhost}), ShouldBeTrue)
 		r.markLost()
 
@@ -964,36 +1114,44 @@ func TestKilledLostJobSparesItsSecondRun(t *testing.T) {
 	})
 }
 
-func TestStartedRunDoesNotInheritThePreviousRunsWorkingDir(t *testing.T) {
+func TestReservedRunDoesNotInheritThePreviousRunsWorkingDir(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
 
 	ctx := context.Background()
 
-	Convey("Given a job whose second run reports no working directory of its own", t, func() {
+	Convey("Given a job whose first run made and reported a working directory", t, func() {
 		cwd := t.TempDir()
 		ranIn := filepath.Join(cwd, "ran_in.txt")
-		r := newStartedRun(ctx, t, "start_clears_cwd", cwd, Behaviours{{When: OnFailure, Do: Run, Arg: "pwd > " + ranIn}})
+		r := newStartedRun(ctx, t, "reserve_clears_cwd", cwd, Behaviours{{When: OnFailure, Do: Run, Arg: "pwd > " + ranIn}})
 
 		So(r.liveActualCwd(), ShouldEqual, r.actualCwd)
 
-		// an older runner, or a cwd_matters job carrying the ActualCwd that wr
-		// v0.37.0|1 stored on one. Either way this run says nothing about where
-		// it is working, and where the run before it was working is not an
-		// answer: ActualCwd is what cleanup deletes and what a `run` behaviour
-		// executes in, and both are asking about the run happening NOW.
-		So(r.server.applyJobStart(r.live, &Job{Pid: os.Getpid(), Host: localhost}), ShouldBeTrue)
+		Convey("a fresh reservation stops it claiming that directory, before the new run reports anything", func() {
+			r.reserveAgain()
 
-		Convey("the job no longer claims the directory the run before it was working in", func() {
 			So(r.liveActualCwd(), ShouldBeBlank)
 
-			// so this run's behaviours are refused rather than carried out in a
-			// directory it has never been in, and the abandoned workspace of the
-			// run before it is left where it is.
-			So(r.live.pinBehaviours().trigger(false), ShouldNotBeNil)
+			// the retry's runner is now making its working directory, mounting
+			// remote filesystems and starting the Cmd, and its Started reaches
+			// the manager only after all of it. A TTR expiry anywhere in there
+			// pins THIS run, and ActualCwd is what the pinned cleanup deletes and
+			// what a pinned `run` executes in - so what it must not carry is an
+			// OLDER workspace of the same job.
+			r.markLost()
+
+			pin := r.live.pinBehaviours()
+			So(pin.workSpace.actualCwd, ShouldBeBlank)
+			So(pin.trigger(false), ShouldNotBeNil)
 			soPathsGone(ranIn)
 			soPathsExist(r.actualCwd)
+
+			// and a Started that reports no directory of its own - an older
+			// runner, or a cwd_matters job carrying the ActualCwd that wr
+			// v0.37.0|1 stored on one - does not put the old one back either.
+			So(r.server.applyJobStart(r.live, &Job{Pid: os.Getpid(), Host: localhost}), ShouldBeTrue)
+			So(r.liveActualCwd(), ShouldBeBlank)
 		})
 	})
 }
