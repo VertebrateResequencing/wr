@@ -431,8 +431,8 @@ func (bs Behaviours) trigger(success bool, ws jobWorkSpaceSnapshot) error {
 // Behaviours delete the Job's working directory and run the user's own command
 // inside it, and which directory that is comes from the (key, ActualCwd) pair
 // the Job carries. Deciding to trigger them and triggering them are not always
-// the same moment: the manager decides when it declares a job lost, then killJob
-// RELEASES that Job back to ready before the behaviours run, so a runner can
+// the same moment: the manager decides when it declares a job lost, then the
+// kill RELEASES that Job back to ready before the behaviours run, so a runner can
 // reserve the RETRY and its first Touch writes the retry's working directory
 // into that same Job (emitLiveTouchSnapshot -> applyLiveSnapshot). Reading the
 // Job afterwards read the retry's directory: measured, the `run` behaviour's pwd

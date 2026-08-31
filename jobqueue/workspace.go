@@ -317,9 +317,9 @@ type jobWorkSpace struct {
 //
 // It is asked of a SNAPSHOT rather than of the Job, so that the answer is about
 // the Job as it was when whoever is deleting decided to delete. The manager
-// triggers a lost job's behaviours on the queue's live Job, and killJob releases
-// that Job back to ready first: reading it again afterwards read the RETRY's
-// working directory. See pinnedBehaviours.
+// used to trigger a lost job's behaviours on the queue's live Job, and the kill
+// releases that Job back to ready first: reading it again afterwards read the
+// RETRY's working directory. See pinnedBehaviours.
 //
 // A nil result with a nil error means wr created nothing here that it may
 // delete: see paths() for the cases, plus a Job Cwd that has itself already
