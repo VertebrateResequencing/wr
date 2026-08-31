@@ -1474,9 +1474,9 @@ func (j *Job) statusStreams() (jobStatusStreams, error) {
 // names run 0, and every run this manager reserves afterwards names something
 // else.
 //
-// Job.Attempts was the obvious candidate, but it
-// is a COUNT rather than an identity: resetJobStatusFields sets it back to 0 so
-// that a web-UI rerun starts counting again, which makes it non-monotonic, and
+// Job.Attempts was the obvious candidate, but it is a COUNT rather than an
+// identity: resetJobStatusFields sets it back to 0 so that a web-UI rerun
+// starts counting again, which makes it non-monotonic, and
 // it is an exported field that goes over the wire and that a runner keeps its
 // own copy of (client.go's Started). An identity that another feature is free to
 // reset is not an identity.

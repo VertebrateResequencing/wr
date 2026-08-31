@@ -941,6 +941,11 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 	job.Attempts++
 	job.setActualCwd(crJob.ActualCwd)
 
+	// a reservation whose reserve-to-Started stretch outlasts the TTR is declared
+	// lost while its Cmd is starting, and pinned under the very token this run
+	// keeps - its reservation minted it and this does not change it. So taking the
+	// job off lost here is the whole of what stands between a confirmation of
+	// that loss and a Cmd that is running.
 	job.Lost = false
 	job.State = JobStateRunning
 
