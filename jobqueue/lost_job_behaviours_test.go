@@ -1169,6 +1169,24 @@ func (r *startedRun) liveActualCwd() string {
 	return r.live.ActualCwd
 }
 
+// liveHostID is the scheduler's name for the machine the manager currently
+// believes the job is running on.
+func (r *startedRun) liveHostID() string {
+	r.live.RLock()
+	defer r.live.RUnlock()
+
+	return r.live.HostID
+}
+
+// ranOnCloudServer gives the job the HostID a run on a cloud server gets at its
+// Started. The local scheduler names no host, so this is the only way to have
+// one to be stale about.
+func (r *startedRun) ranOnCloudServer(id string) {
+	r.live.Lock()
+	r.live.HostID = id
+	r.live.Unlock()
+}
+
 // markLost marks the manager's own *Job lost, as a TTR expiry does.
 func (r *startedRun) markLost() {
 	r.live.Lock()
@@ -1224,6 +1242,31 @@ func TestKilledLostJobSparesItsSecondRun(t *testing.T) {
 			r.server.confirmOrReleaseLostJob(ctx, lostJobDetails{key: r.key, killCalled: true, pin: pin})
 
 			So(r.item.Stats().State, ShouldEqual, queue.ItemStateRun)
+		})
+	})
+}
+
+func TestReservedRunDoesNotClaimThePreviousRunsHost(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a job whose first run was on a cloud server", t, func() {
+		r := newStartedRun(ctx, t, "reserve_clears_host", t.TempDir(), nil)
+
+		r.ranOnCloudServer("the-server-of-the-run-that-is-over")
+
+		Convey("a fresh reservation stops it naming that server", func() {
+			r.reserveAgain()
+
+			// killJobsOnBadServers kills every running or lost job whose HostID
+			// is a server the cloud scheduler has condemned, and it does so
+			// through the same un-gated release `wr kill` uses. A run that has
+			// yet to report where it is must not answer for where the run before
+			// it was.
+			So(r.liveHostID(), ShouldBeBlank)
 		})
 	})
 }

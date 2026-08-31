@@ -879,6 +879,14 @@ func (s *Server) resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, 
 	// for a job whose runs share a Cwd, an OLDER workspace of the same job.
 	sjob.ActualCwd = ""
 
+	// nor is it on the machine the previous run was on. HostID is the scheduler's
+	// name for that machine, filled in at Started from the host the runner
+	// reports, and killJobsOnBadServers kills every running or lost job whose
+	// HostID is a server the cloud scheduler has condemned - through the same
+	// un-gated release. Blanking it means a run whose Started has yet to arrive
+	// matches no server at all, which errs towards killing nothing.
+	sjob.HostID = ""
+
 	return sjob.schedulerGroup, sjob.Retries, sjob.UntilBuried
 }
 
