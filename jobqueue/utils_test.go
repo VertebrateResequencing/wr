@@ -80,12 +80,8 @@ func TestRmEmptyDirsIn(t *testing.T) {
 	}
 
 	// rmEmptyDirsIn is the upward walk Job.Unmount's tidy-up makes from a mount
-	// point, and every deletion it makes is bounded by the handle on the Job's
-	// Cwd that the caller has already proven its way to. It used to have a
-	// path-taking twin, rmEmptyDirs, that opened that handle itself; nothing in
-	// wr called it, these tests kept it looking usable, and it was the entry
-	// point the pre-round-7 upward walk went through. The tests are the walk's,
-	// not the twin's, so they now ask them of the live function.
+	// point, and every deletion it makes is bounded by the handle on the Job's Cwd
+	// that the caller has already proven its way to.
 	Convey("Given a base dir with a nested leaf dir inside it", t, func() {
 		outer := t.TempDir()
 		base := filepath.Join(outer, "base")
@@ -169,12 +165,11 @@ func TestRmEmptyDirsIn(t *testing.T) {
 		})
 
 		Convey("rmEmptyDirsIn leaves an empty dir inside baseDir alone when a symlink leads to it", func() {
-			// the outside-baseDir case below is caught by the containment
-			// guard; this one is inside baseDir, so containment says yes and
-			// only the refusal to follow a symlink stops it. The Job's own Cmd
-			// can create this link where wr expected the mount dir it made, and
-			// point it at a directory of the user's. That directory is empty, so
-			// deleting it would take its parent on the way up too.
+			// the outside-baseDir case below is caught by the containment guard;
+			// this one is inside baseDir, so containment says yes and only the
+			// refusal to follow a symlink stops it. The Job's own Cmd can create
+			// this link where wr expected the mount dir it made, and point it at an
+			// empty directory of the user's, whose parent the walk would take too.
 			userDir := filepath.Join(base, "userdata")
 			userEmpty := filepath.Join(userDir, "results")
 			err = os.MkdirAll(userEmpty, os.ModePerm)
@@ -195,10 +190,9 @@ func TestRmEmptyDirsIn(t *testing.T) {
 
 		Convey("rmEmptyDirsIn leaves an empty dir outside baseDir alone, even reached via a symlink", func() {
 			// an empty dir is the dangerous case: the upward walk only stops
-			// deleting when it hits a dir it cannot remove, so if the
-			// containment guard ever stopped working, this dir (and the
-			// symlink leading to it) would actually be deleted, rather than
-			// the walk merely failing on a non-empty dir outside baseDir.
+			// deleting when it hits a dir it cannot remove, so a broken containment
+			// guard deletes this dir and the symlink leading to it, rather than
+			// merely failing on a non-empty dir outside baseDir.
 			outsideEmpty := filepath.Join(outer, "empty")
 			err = os.Mkdir(outsideEmpty, os.ModePerm)
 			So(err, ShouldBeNil)

@@ -190,11 +190,10 @@ func TestJobModifierActualCwd(t *testing.T) {
 		return
 	}
 
-	// ActualCwd is the path mkHashedDir built below Cwd from the Job's Key(),
-	// and cleanup recognises it by rebuilding it from that key. So a
-	// modification that changes the key must not leave the old path behind: a
-	// stored path the current definition cannot build is one wr can prove
-	// nothing about, and "wr created nothing here" is the true account of it.
+	// ActualCwd is the path mkHashedDir built below Cwd from the Job's Key(), and
+	// cleanup recognises it by rebuilding it from that key, so a modification that
+	// changes the key must not leave the old path behind: a stored path the current
+	// definition cannot build is one wr can prove nothing about.
 	Convey("A modification that changes a Job's key clears its ActualCwd", t, func() {
 		const ran = testCwdPath + "/wr_cwd/a/b/c/uniq0/cwd"
 
@@ -249,7 +248,7 @@ func TestJobModifierActualCwd(t *testing.T) {
 
 		Convey("a container image change clears it even though the Cmd is untouched", func() {
 			// WithDocker, WithSingularity and ContainerMounts all reach Key()
-			// and none of them is a Cmd or a Cwd, which is how they were missed.
+			// without being a Cmd or a Cwd.
 			job := newJob()
 			job.WithSingularity = "ubuntu.sif"
 
@@ -699,18 +698,16 @@ func TestJob(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(status.CwdBase, ShouldEqual, liveStatusCwd)
 
-		// blank, the same as the cwd_matters Convey above reports for a Job with
-		// no ActualCwd at all: wr created no directory for a cwd_matters Job, so
-		// there is no leaf below Cwd to show, and carrying the v0.37.0|1 poison
-		// must not change what is displayed. Before createdCwd() this showed
-		// "/" here and blank there, for two Jobs that run in the same place.
+		// blank, the same as the cwd_matters Convey above reports for a Job with no
+		// ActualCwd at all: wr created no directory for a cwd_matters Job, so there
+		// is no leaf below Cwd to show, and carrying the v0.37.0|1 poison must not
+		// change what is displayed.
 		So(status.Cwd, ShouldBeBlank)
 
-		// The poisoning always wrote Cwd itself, so the assertion above cannot
-		// tell "ActualCwd is ignored on a CwdMatters Job" apart from "ActualCwd
-		// was used and happened to give the same answer". A poisoned value that
-		// DIFFERS from Cwd is what makes it discriminate: this fails if any of
-		// these paths consults ActualCwd on a CwdMatters Job again.
+		// the poisoning always wrote Cwd itself, so the assertion above cannot tell
+		// "ActualCwd is ignored on a CwdMatters Job" apart from "ActualCwd was used
+		// and happened to give the same answer". A poisoned value that DIFFERS from
+		// Cwd is what makes it discriminate.
 		job.ActualCwd = liveStatusCwd + "/poisoned"
 
 		status, err = job.ToStatus()
@@ -1111,14 +1108,14 @@ func TestMountConfigsKeyDoesNotMutate(t *testing.T) {
 		return
 	}
 
-	// Key() used to sort the caller's slice. Asking a Job for its key is a read
-	// at every call site in wr - workSpaceSnapshot asks under the Job's READ
-	// lock, and the REST and CLI handlers, the job transitions, ToEssense and
-	// the client ask under no lock at all - so the sort made every reader a
-	// writer of the Job's own MountConfigs. Concurrently that left jobs holding
-	// a slice with one config lost and another duplicated, permanently: a
-	// dropped writable S3 mount is never mounted, so the Cmd's results are
-	// written into a plain directory that cleanup then deletes.
+	// asking a Job for its key is a read at every call site in wr -
+	// workSpaceSnapshot asks under the Job's READ lock, and the REST and CLI
+	// handlers, the job transitions, ToEssense and the client ask under no lock at
+	// all - so a Key() that sorted the caller's slice would make every reader a
+	// writer of the Job's own MountConfigs, leaving jobs permanently holding a
+	// slice with one config lost and another duplicated: a dropped writable S3
+	// mount is never mounted, so the Cmd's results are written into a plain
+	// directory that cleanup then deletes.
 	Convey("Asking MountConfigs for their key leaves them as they were", t, func() {
 		mcs := twoMounts()
 
@@ -1171,9 +1168,9 @@ func TestMountConfigsKeyDoesNotMutate(t *testing.T) {
 	})
 
 	Convey("Modifying a batch's mounts gives each job its own MountConfigs", t, func() {
-		// one JobModifier is applied to every job of a `wr mod --mounts` batch,
-		// and it used to assign its OWN slice to each of them: distinct jobs,
-		// one backing array, as many mutexes as there were jobs.
+		// one JobModifier is applied to every job of a `wr mod --mounts` batch, so
+		// assigning its OWN slice to each of them would give distinct jobs one
+		// backing array, guarded by as many mutexes as there were jobs.
 		jm := &JobModifier{}
 		jm.SetMountConfigs(twoMounts())
 

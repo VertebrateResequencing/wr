@@ -822,10 +822,9 @@ func TestDBEndTimeIndexDurability(t *testing.T) {
 }
 
 // TestDBLoadDropsImpossibleCleanups covers reading back a job persisted by a wr
-// that stored a cleanup behaviour on a cwd_matters job, where it can only ever
-// be a no-op. v0.37.0 and v0.37.1 did exactly that, so real DBs out there hold
-// one; storeNewJobs is used here to write it because it is the same encoder
-// those versions used.
+// that stored a cleanup behaviour on a cwd_matters job, where it can only ever be
+// a no-op: v0.37.0 and v0.37.1 did that, so real DBs hold one. storeNewJobs
+// writes it here because it is the same encoder those versions used.
 func TestDBLoadDropsImpossibleCleanups(t *testing.T) {
 	ctx := context.Background()
 

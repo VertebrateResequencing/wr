@@ -290,24 +290,15 @@ func TestBehaviours(t *testing.T) {
 	})
 }
 
-// testWorkSpace returns the workspace path mkHashedDir would build for job
-// below its own Cwd, with digits standing in for the ones os.MkdirTemp appends
-// to the unique dir. It creates nothing: these are the fixtures for the cases
-// where what is on disk is NOT what wr built - a symlinked component, a missing
-// level, a directory of the user's in its place - which realWorkSpace cannot
-// produce.
+// testWorkSpace returns the workspace path mkHashedDir would build for job below
+// its own Cwd, with digits standing in for the ones os.MkdirTemp appends to the
+// unique dir. It creates nothing: these are the fixtures for the cases where what
+// is on disk is NOT what wr built - a symlinked component, a missing level, a
+// directory of the user's in its place - which realWorkSpace cannot produce.
 //
-// It has to be the path THIS job's key builds, because that is the whole of what
-// licenses cleanup to touch it: a path at merely the right depth, below a
-// component merely named the way wr names one, is refused outright and reaches
-// none of the guards these tests are about. Which means the JOB has to be
-// settled first - its Cmd and its MountConfigs both reach Key().
-//
-// The base is AppName's, so that a fixture can stand beside one realWorkSpace
-// really made. That the check is on the SUFFIX rather than the app name - which
-// is "wr" in the runner and "jobqueue" in the manager, both of which cleanup
-// runs in - is pinned by TestRelIsJobCreatedCwd and by the escape fixtures that
-// pass testWorkSpaceUnder a base of their own.
+// It has to be the path THIS job's key builds, because nothing else licenses
+// cleanup to touch it, so the JOB has to be settled first: its Cmd and its
+// MountConfigs both reach Key().
 func testWorkSpace(job *Job, digits string) string {
 	return testWorkSpaceUnder(filepath.Join(job.Cwd, AppName+createdCwdBaseSuffix), job, digits)
 }
@@ -334,11 +325,9 @@ func TestJobUnmountEmptyDirTidyUp(t *testing.T) {
 	Convey("Unmount's empty-dir tidy-up stays inside the workspace wr made", t, func() {
 		cwd := t.TempDir()
 
-		// MountConfig.Mount may be an absolute path to "any directory you're
-		// able to write to", so a Job can name an existing directory of the
-		// user's. The tidy-up removes empty dirs and then their empty parents,
-		// so letting it loose on every mount point deleted the user's dir and
-		// the one above it.
+		// MountConfig.Mount may be an absolute path to any directory the user can
+		// write to, including an existing one of their own, and the tidy-up
+		// removes empty dirs and then their empty parents.
 		userDir := filepath.Join(cwd, "userdata")
 		incoming := filepath.Join(userDir, "incoming")
 		So(os.MkdirAll(incoming, os.ModePerm), ShouldBeNil)
@@ -353,10 +342,9 @@ func TestJobUnmountEmptyDirTidyUp(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		Convey("and does nothing at all when ActualCwd is not one wr could have created", func() {
-			// the workspace used to be filepath.Dir of the reported ActualCwd,
-			// unchecked, so the v0.37.0|1 poisoning shape (ActualCwd == Cwd)
-			// made it the PARENT of Cwd - and then every mount inside Cwd looked
-			// like it was inside the workspace.
+			// the v0.37.0|1 poisoning shape: an ActualCwd equal to Cwd, whose
+			// unchecked parent would be the parent of Cwd, making every mount
+			// inside Cwd look like it was inside the workspace.
 			poisoned := &Job{Cwd: cwd, ActualCwd: cwd, MountConfigs: MountConfigs{{Mount: incoming}}}
 
 			_, err = poisoned.Unmount()
@@ -374,12 +362,10 @@ func TestCleanupWithRelativeCwd(t *testing.T) {
 	}
 
 	Convey("A Job whose Cwd is relative still has its live mount points protected", t, func() {
-		// Job.Cwd is stored exactly as the user typed it - cmd/add.go does not
-		// normalise it, and it cannot, because Cwd feeds Job.Key() and so job
-		// identity. A relative Cwd makes the ActualCwd built from it relative
-		// too, while an absolute MountConfig.Mount stays absolute; comparing one
-		// of each made filepath.Rel fail, the mount go unrecognised, and cleanup
-		// delete straight through it while it was still live.
+		// Job.Cwd is stored exactly as the user typed it, since it feeds
+		// Job.Key(), so a relative Cwd makes the ActualCwd built from it relative
+		// too while an absolute MountConfig.Mount stays absolute: comparing one of
+		// each makes filepath.Rel fail and the live mount go unrecognised.
 		base := t.TempDir()
 
 		oldWd, err := os.Getwd()
@@ -417,11 +403,8 @@ func TestCleanupWithRelativeCwd(t *testing.T) {
 
 		// refused outright, rather than cleaned relative to whichever process
 		// happens to be running: cleanup runs in the runner AND in the manager
-		// when it declares a job lost, and filepath.Abs resolves against the
-		// caller. A relative Cwd made every containment proof hold against the
-		// MANAGER's directory instead, deleting whatever sat at the same
-		// relative path beside it. A leaked workspace and a loud error is the
-		// right way round.
+		// when it declares a job lost, so a relative Cwd would make every
+		// containment proof hold against the MANAGER's directory instead.
 		So(err, ShouldNotBeNil)
 		So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
 	})
@@ -432,15 +415,15 @@ func TestCleanupGuardsWithNoOtherCoverage(t *testing.T) {
 		return
 	}
 
-	// each of these was found to be load-bearing but UNTESTED: mutating any one
-	// of them left the whole suite green while a user's directory was deleted.
-	// They are here so a later simplification cannot remove them silently.
+	// each of these guards is load-bearing: without it a user's own directory is
+	// deleted. They are pinned here so a later simplification cannot remove one
+	// silently.
 	Convey("Given the workspace wr really made, whose working dir has been swapped", t, func() {
 		// these two guards are about what wr finds where it PUT its own working
 		// directory, so the fixture has to be wr's own: a hand-made tree is
-		// refused by the identity check and neither guard is reached. A Job's
-		// own Cmd is what swaps the directory, and it can point the link at a
-		// tree of the user's.
+		// refused by the identity check and neither guard is reached. A Job's own
+		// Cmd is what swaps the directory, and it can point the link at a tree of
+		// the user's.
 		cwd := t.TempDir()
 		userDir := filepath.Join(cwd, "userdata")
 		empty := filepath.Join(userDir, "results")
@@ -458,8 +441,8 @@ func TestCleanupGuardsWithNoOtherCoverage(t *testing.T) {
 
 		Convey("Unmount's tidy-up will not walk it when the working dir is a symlink", func() {
 			// proving it is a real dir is what stops the tidy-up walking the
-			// user's tree and unlinking their empty dirs, and then the empty
-			// dirs above those, all the way up to Cwd.
+			// user's tree and unlinking their empty dirs, and then the empty dirs
+			// above those, all the way up to Cwd.
 			j := swappedFor("../../../../../userdata/results", func(actualCwd string) {
 				So(os.Symlink(userDir, actualCwd), ShouldBeNil)
 			})
@@ -497,12 +480,10 @@ func TestCleanupGuardsWithNoOtherCoverage(t *testing.T) {
 		})
 
 		Convey("a run behaviour refuses a working dir that has become a file", func() {
-			// the resolution has to say no to this itself. Nothing after it
-			// does: openVerifiedDirFile proves the thing it opened is the thing
-			// that was lstat'ed, and a regular file IS, so the handle would be
-			// a file, /proc would name that file, and the only thing left to
-			// object would be the child's chdir. The refusal is therefore
-			// asserted to be the resolution's own.
+			// the resolution has to say no to this itself, since nothing after it
+			// does: openVerifiedDirFile proves only that what it opened is what
+			// was lstat'ed, and a regular file is. So the refusal is asserted to
+			// be the resolution's own.
 			j := swappedFor("mnt", func(actualCwd string) {
 				So(os.WriteFile(actualCwd, []byte("not a dir\n"), 0o600), ShouldBeNil)
 			})
@@ -516,10 +497,9 @@ func TestCleanupGuardsWithNoOtherCoverage(t *testing.T) {
 	})
 
 	Convey("Given a user tree at exactly the depth wr creates its workspaces at", t, func() {
-		// the tree's top component is named the way wr names the base of its
-		// own, so that what refuses it is the part of the identity check each
-		// case is about rather than the base name. A directory of the user's
-		// that happens to end in _cwd is what the base check alone left open.
+		// the tree's top component is named the way wr names the base of its own,
+		// so that what refuses it is the part of the identity check each case is
+		// about rather than the base name.
 		cwd := t.TempDir()
 		userTree := filepath.Join(cwd, "user"+createdCwdBaseSuffix, "b", "c", "d", "e")
 		userDir := filepath.Join(userTree, "userdata")
@@ -555,9 +535,9 @@ func TestCleanupGuardsWithNoOtherCoverage(t *testing.T) {
 
 		Convey("cleanup will not sweep a real dir of the right name at the wrong depth", func() {
 			// every working directory wr creates sits at one depth, so a real
-			// directory of the user's called cwd one level short of it was
-			// never made by wr - and treating it as one would sweep its PARENT,
-			// which here is a directory of theirs holding their data.
+			// directory of the user's called cwd one level short of it was never
+			// made by wr, and treating it as one would sweep its PARENT: here, a
+			// directory of theirs holding their data.
 			shallow := filepath.Join(cwd, "user"+createdCwdBaseSuffix, "b", "c")
 			named := filepath.Join(shallow, createdCwdName)
 			So(os.MkdirAll(named, os.ModePerm), ShouldBeNil)
@@ -649,9 +629,9 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 
 		Convey("Cleanup deletes nothing of a user dir that merely contains a cwd dir", func() {
 			// the name check reads only the last component, so a user directory
-			// owning a subdirectory called "cwd" - which is what wr itself names
-			// things, and a common staging convention - passed it, and the whole
-			// of that directory was swept: not just empty dirs, every file in it.
+			// owning a subdirectory called "cwd" - what wr itself names things,
+			// and a common staging convention - would otherwise have the whole of
+			// that directory swept: not just empty dirs, every file in it.
 			analysis := filepath.Join(cwd, "analysis")
 			script := filepath.Join(analysis, "run.R")
 			deep := filepath.Join(analysis, "results", "final")
@@ -674,11 +654,10 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 		})
 
 		Convey("Cleanup deletes nothing when the reported cwd does not exist", func() {
-			// the name check alone reads only the last component, so appending
-			// "/cwd" to any directory of the user's inside Cwd satisfies it -
-			// and the named dir did not have to exist for its PARENT to be
-			// swept as a workspace. This is the same attack as the Convey below
-			// with one path element added, so the two belong together.
+			// a name check alone reads only the last component, so appending
+			// "/cwd" to any directory of the user's inside Cwd satisfies it, and
+			// the named dir need not exist for its PARENT to be swept as a
+			// workspace. Same shape as the Convey below, one element deeper.
 			scripts := filepath.Join(cwd, "scripts")
 			script := filepath.Join(scripts, "05_RunCisEQTL.R")
 			err = os.MkdirAll(scripts, os.ModePerm)
@@ -699,11 +678,9 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 
 		Convey("Cleanup deletes nothing when the reported cwd is not one wr created", func() {
 			// the runner reports ActualCwd, and this is what a buggy or tampered
-			// one can report: a real directory strictly inside the Job's own
-			// Cwd, but one the USER made rather than one wr made. Containment
-			// says yes to it, and its parent would then be swept as the
-			// disposable workspace - the exact shape of the incident this PR
-			// exists for, arriving through a different field than last time.
+			// one can report: a real directory strictly inside the Job's own Cwd,
+			// but one the USER made rather than one wr made. Containment says yes
+			// to it, and its parent would then be swept as the workspace.
 			userDir := filepath.Join(cwd, "userdata")
 			results := filepath.Join(userDir, "results")
 			err = os.MkdirAll(results, os.ModePerm)
@@ -784,11 +761,10 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 		Convey("Cleanup of a Job whose Cmd was modified deletes nothing, silently", func() {
 			// the working directory wr made is named for the Job's key, and the
 			// key covers the Cmd, the mounts and the container image. A `wr mod`
-			// that changes any of them leaves a path the current definition
-			// cannot build, so the modification clears it (JobModifier.applyTo)
-			// and cleanup then has nothing it may touch. The workspace is leaked
-			// rather than swept, which is the affordable half of making the
-			// identity check binding.
+			// that changes any of them leaves a path the current definition cannot
+			// build, so the modification clears it (JobModifier.applyTo) and
+			// cleanup then has nothing it may touch: the workspace is leaked
+			// rather than swept.
 			job := &Job{Cwd: cwd, Cmd: testWSCmd}
 			ranIn, workSpace, _ := realWorkSpace(job)
 
@@ -805,8 +781,8 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 
 		Convey("Cleanup of a Job whose Cmd was NOT modified still sweeps its workspace", func() {
 			// the other half: a modification that changes no key leaves the
-			// workspace recognisable, or the check would have silently disabled
-			// cleanup for every modified job, which is worse than the bug.
+			// workspace recognisable, or the check would silently disable cleanup
+			// for every modified job.
 			job := &Job{Cwd: cwd, Cmd: testWSCmd}
 			ranIn, workSpace, _ := realWorkSpace(job)
 
@@ -841,12 +817,11 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 
 		Convey("Cleanup deletes nothing when the workspace itself is a symlink inside Cwd", func() {
 			// the deletion helpers disagree about symlinks - os.RemoveAll unlinks
-			// a final one, os.ReadDir follows it - so proving every component is
-			// a REAL dir is a distinct property from staying inside Cwd, which a
-			// relative link like this one satisfies. Without it the sweep would
-			// empty the user's directory the link points at, and lstat'ing the
-			// working directory says nothing: the link is resolved on the way to
-			// it, so what gets checked is the target's own "cwd" entry.
+			// a final one, os.ReadDir follows it - so proving every component is a
+			// REAL dir is a distinct property from staying inside Cwd, which a
+			// relative link like this one satisfies. Lstat'ing the working
+			// directory says nothing here, because the link is resolved on the way
+			// to it and what gets checked is the target's own "cwd" entry.
 			userDir := filepath.Join(cwd, "userdata")
 			target := filepath.Join(userDir, "cwd")
 			notes := filepath.Join(target, "notes.txt")
@@ -879,12 +854,9 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 
 		Convey("Given a workspace that had already gone when cleanup checked it", func() {
 			// the sibling Convey below swaps a component that DID exist at proof
-			// time; this one covers the case where the proof found nothing at
-			// the leaf, which is a normal outcome - another Job's cleanup, or a
-			// re-run, can have removed the workspace already. The proof still
-			// says "ok, nothing to do", and the upward walk still runs to tidy
-			// empty parents, so the components above the missing leaf are just
-			// as exposed to being swapped as the sibling's are.
+			// time; this one covers the proof finding nothing at the leaf, which is
+			// a normal outcome. The upward walk still runs to tidy empty parents,
+			// so the components above the missing leaf are just as exposed.
 			wrCwd := filepath.Join(cwd, AppName+createdCwdBaseSuffix)
 			err = os.Mkdir(wrCwd, os.ModePerm)
 			So(err, ShouldBeNil)
@@ -915,12 +887,10 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 		})
 
 		Convey("Given a workspace whose path is swapped for a symlink after cleanup has checked it", func() {
-			// this is the race that the deletions are made through a handle on
-			// Cwd to survive. A proof is about a path string, and every syscall
-			// re-resolves that string, so a directory component checked to be
-			// real can be a symlink by the time a deletion walks through it.
-			// The hook puts the test in exactly that moment, which is otherwise
-			// not reachable reliably.
+			// this is the race that the deletions are made through a handle on Cwd
+			// to survive: a component checked to be real can be a symlink by the
+			// time a deletion walks through it. The hook puts the test in exactly
+			// that moment.
 			job := &Job{Cwd: cwd, Cmd: testWSCmd}
 			realWorkSpace(job)
 
@@ -1015,17 +985,15 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 		})
 
 		Convey("Given a mounting Job with a mount point in its workspace, outside its ActualCwd", func() {
-			// sharing one mount between the Jobs of a Cwd means giving a
-			// relative MountConfig.Mount that climbs out of the Job's own
-			// ActualCwd, which lands it in the workspace that cleanup sweeps.
-			// The mount is still live when cleanup runs (Job.Unmount comes
-			// after it in client.go), and os.RemoveAll has no mount awareness,
-			// so deleting it would recurse into the user's remote filesystem.
+			// sharing one mount between the Jobs of a Cwd means giving a relative
+			// MountConfig.Mount that climbs out of the Job's own ActualCwd, which
+			// lands it in the workspace that cleanup sweeps. The mount is still
+			// live then (Job.Unmount comes after cleanup in client.go), and
+			// os.RemoveAll has no mount awareness, so deleting it would recurse
+			// into the user's remote filesystem.
 			//
 			// Each case builds its OWN workspace, because MountConfigs reach
-			// Job.Key() and the workspace is named for the key: one fixture
-			// shared between jobs with different mounts is a workspace that
-			// belongs to none of them.
+			// Job.Key() and the workspace is named for the key.
 			type mountingJob struct {
 				job       *Job
 				actualCwd string
@@ -1094,16 +1062,15 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 
 			// there is no case here for an absolute MountConfig.Mount naming
 			// something inside the Job's OWN workspace, because there is no such
-			// Job: MountConfigs.Key() covers every Mount string, and the
-			// workspace is named for that key, so writing the path would mean
-			// naming a directory whose name depends on the string being written.
-			// It was only ever constructible against a hand-made fixture. What
-			// the guard actually handles - a mount point resolving to an
-			// absolute path at or inside the working directory - is reached by
-			// every relative Mount above, since workSpacePaths.mountPoints
-			// resolves them all before anything is classified, and by the
-			// absolute CacheDir case in TestCleanupKeepsMountCaches, which is
-			// constructible because CacheDir does NOT reach the key.
+			// Job: MountConfigs.Key() covers every Mount string and the workspace
+			// is named for that key, so writing the path would mean naming a
+			// directory whose name depends on the string being written. What the
+			// guard handles - a mount point resolving to an absolute path at or
+			// inside the working directory - is reached by every relative Mount
+			// above, since workSpacePaths.mountPoints resolves them all before
+			// anything is classified, and by the absolute CacheDir case in
+			// TestCleanupKeepsMountCaches, which CacheDir's absence from the key
+			// makes constructible.
 
 			Convey("Cleanup of a Job that mounts on its ActualCwd keeps that, but not the workspace extras", func() {
 				mj := mounting(MountConfig{})
@@ -1117,13 +1084,11 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			})
 
 			Convey("Cleanup of a Job that mounts on its workspace keeps the whole workspace", func() {
-				// MountConfig.Mount is resolved against the working directory,
-				// so ".." names the workspace itself: the disposable directory
-				// cleanup exists to sweep IS the live mount. The working
-				// directory, TMPDIR and everything beside them are then the
-				// user's remote objects, read through a mount Job.Unmount has
-				// not got to yet, and a writable mount's cache of them has not
-				// been uploaded. Sweeping any of it deletes the user's data.
+				// MountConfig.Mount is resolved against the working directory, so
+				// ".." names the workspace itself: the disposable directory
+				// cleanup exists to sweep IS the live mount, and everything inside
+				// it is then the user's remote objects, read through a mount
+				// Job.Unmount has not got to yet.
 				mj := mounting(MountConfig{Mount: ".."})
 
 				remote := writeFileIn(mj.workSpace, "remote.txt")
@@ -1136,14 +1101,11 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			})
 
 			Convey("Cleanup keeps the workspace for a mount above it spelled through a symlink", func() {
-				// the same directory "../.." names, reached by a different
-				// route: a symlink to the Job's Cwd, then the name every Job of
-				// that Cwd puts its workspaces under. Nothing at the workspace
-				// itself can be named this way - its path is built from
-				// MountConfigs.Key(), which covers the Mount string being
-				// written - but the levels above it can, because their names do
-				// not depend on the key. Same directory, so the same verdict:
-				// everything wr made for the job is inside a live mount.
+				// the same directory "../.." names, reached by a different route:
+				// a symlink to the Job's Cwd, then the name every Job of that Cwd
+				// puts its workspaces under. Only the levels above the workspace
+				// can be named this way, since their names do not depend on the
+				// key. Same directory, so the same verdict.
 				link := filepath.Join(parent, "cwd_link")
 				So(os.Symlink(cwd, link), ShouldBeNil)
 
@@ -1159,12 +1121,11 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			})
 
 			Convey("Cleanup keeps the workspace when the JOB's Cwd is the symlinked spelling", func() {
-				// the other half of the same disagreement, with the spellings
-				// the other way round: the mount is named by the real path, and
-				// the Job's Cwd - so its whole workspace - by a symlink to it.
-				// Job.Cwd is stored exactly as the user typed it, because it
-				// feeds Job.Key(), so this is the spelling wr is given rather
-				// than one it chose.
+				// the same two spellings the other way round: the mount is named
+				// by the real path, and the Job's Cwd - so its whole workspace -
+				// by a symlink to it. Job.Cwd is stored exactly as the user typed
+				// it, because it feeds Job.Key(), so this is the spelling wr is
+				// given rather than one it chose.
 				link := filepath.Join(parent, "job_cwd_link")
 				So(os.Symlink(cwd, link), ShouldBeNil)
 
@@ -1203,15 +1164,13 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 		Convey("Cleanup of a mounting Job still tidies empty parents when its workspace has gone", func() {
 			// cleanup runs more than once for the same Job: the runner does it
 			// (client.go), and for a lost job the server does it again
-			// (killLostJobAndTriggerBehaviours). In between, Job.Unmount's
-			// rmEmptyDirs deletes the workspace the first cleanup emptied, so
-			// the second cleanup finds nothing there. That must not stop it
-			// tidying the empty parents that Unmount's walk could not.
+			// (killLostJobAndTriggerBehaviours). In between, Job.Unmount deletes
+			// the workspace the first cleanup emptied, so the second finds nothing
+			// there - which must not stop it tidying the empty parents.
 			//
 			// The workspace is built by the real mkHashedDir, because tolerating
 			// its absence is exactly what the proof of origin licenses: a
-			// hand-made path of the right shape is refused now, which is what
-			// stops the same upward walk unlinking a user's own empty dirs.
+			// hand-made path of the right shape is refused.
 			job := &Job{Cwd: cwd, Cmd: "second cleanup", MountConfigs: MountConfigs{{Mount: testMountDir}}}
 			actualCwd, workSpace, _ := realWorkSpace(job)
 			hashDir := filepath.Dir(workSpace)
@@ -1276,10 +1235,10 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 		})
 
 		Convey("Given an ActualCwd that a Job's Cmd replaced with a symlink to elsewhere inside Cwd", func() {
-			// wr made ActualCwd itself, so a symlink there means the Job's own
-			// Cmd swapped it. Proving the symlink's target instead would make
-			// the workspace out to be the target's parent - unrelated user data
-			// - and delete that, while the real workspace survived.
+			// wr made ActualCwd itself, so a symlink there means the Job's own Cmd
+			// swapped it. Proving the symlink's target instead would make the
+			// workspace out to be the target's parent - unrelated user data - and
+			// delete that, while the real workspace survived.
 			userDir := filepath.Join(cwd, "userdata")
 			results := filepath.Join(userDir, "results")
 			err = os.MkdirAll(results, os.ModePerm)
@@ -1330,9 +1289,9 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 		})
 
 		Convey("Cleanup of a mounting Job with an ActualCwd ending in .. deletes nothing and errors", func() {
-			// an unclean ActualCwd, as a rogue client or a corrupt database
-			// could supply: its parent proves fine, but cleaning the raw string
-			// gives Cwd itself, which is what the incident destroyed.
+			// an unclean ActualCwd, as a rogue client or a corrupt database could
+			// supply: its parent proves fine, but cleaning the raw string gives
+			// Cwd itself.
 			workSpace := filepath.Join(cwd, "wr_cwd")
 			err = os.MkdirAll(filepath.Join(workSpace, "unique"), os.ModePerm)
 			So(err, ShouldBeNil)
@@ -1356,11 +1315,11 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 		})
 
 		Convey("Given a mounting Job whose ActualCwd holds a mount dir and an output file", func() {
-			// a relative MountConfig.Mount is whatever the user typed for `wr
-			// add --mounts`, so it can name somewhere outside the dir being
-			// cleared. Walking up from such a dir never reaches that dir, and
-			// used to walk past the filesystem root forever, hanging both the
-			// runner and the manager goroutine that cleans up a lost job.
+			// a relative MountConfig.Mount is whatever the user typed for `wr add
+			// --mounts`, so it can name somewhere outside the dir being cleared,
+			// and walking up from such a dir never reaches that dir: unless the
+			// walk terminates some other way it runs past the filesystem root
+			// forever, hanging the runner and the manager alike.
 			const cleanupTimeout = 5 * time.Second
 
 			// each case builds its own workspace, since the mounts it is about
@@ -1375,13 +1334,12 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 			}
 
 			Convey("Cleanup keeps the whole ActualCwd when a Mount of \".\" names it", func() {
-				// "." resolves to ActualCwd itself, exactly as "" does, so this
-				// is the same case as the mounts-on-its-ActualCwd Convey above
-				// and must be treated the same way: the mount is live when
-				// cleanup runs, so deleting ActualCwd's contents would delete
-				// through it. Reading MountConfig.Mount as a raw string instead
-				// of resolving it used to make "." and "" mean opposite things
-				// here.
+				// "." resolves to ActualCwd itself, exactly as "" does, so this is
+				// the same case as the mounts-on-its-ActualCwd Convey above: the
+				// mount is live when cleanup runs, so deleting ActualCwd's
+				// contents would delete through it. Reading MountConfig.Mount as a
+				// raw string rather than resolving it makes "." and "" mean
+				// opposite things here.
 				job, actualCwd, workSpace, mounted, output := mountingIn(
 					MountConfigs{{Mount: "."}, {Mount: testMountDir}})
 
@@ -1411,12 +1369,11 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 
 			Convey("Cleanup finishes and deletes nothing at all, given a Mount of ..", func() {
 				// ".." is not an escape at all: it resolves to the WORKSPACE, so
-				// the disposable directory this whole sweep is about is itself
-				// the live mount, and the job's own output inside it is the
-				// user's remote data. This used to be swept like any other
-				// workspace, because a mount point that is not below the
-				// workspace has no path within it and no entry leading to it for
-				// the keep set to record.
+				// the disposable directory this whole sweep is about is itself the
+				// live mount, and the job's own output inside it is the user's
+				// remote data. Only keptDirs.wholeWorkSpace can say so, since a
+				// mount point that is not below the workspace has no path within
+				// it and no entry leading to it for the keep set to record.
 				job, actualCwd, workSpace, mounted, output := mountingIn(
 					MountConfigs{{Mount: ".."}, {Mount: testMountDir}})
 
@@ -1474,13 +1431,12 @@ func TestBehaviourRunDir(t *testing.T) {
 		})
 
 		Convey("run refuses to fall back to Cwd for a Job whose Cmd never ran there", func() {
-			// a Job that is not CwdMatters ran in a working directory wr made
-			// for it, and a blank ActualCwd means only that THIS process never
-			// learned which one: the manager learns it from a Touch, and a
-			// manager with no web port never gets one (liveJTouchEnabled). The
-			// old fallback ran the user's command in their own Cwd on that
-			// basis, so `--on_exit '{"run":"rm -f *.tmp"}'` for a lost job
-			// deleted their files somewhere the Job had never been.
+			// a Job that is not CwdMatters ran in a working directory wr made for
+			// it, and a blank ActualCwd means only that THIS process never learned
+			// which one: the manager learns it from a Touch, and a manager with no
+			// web port never gets one (liveJTouchEnabled). Falling back to the
+			// user's own Cwd would run `--on_exit '{"run":"rm -f *.tmp"}'`
+			// somewhere the Job had never been.
 			job := &Job{Cwd: cwd, Cmd: testWSCmd}
 
 			err := run.Trigger(OnExit, job)
@@ -1491,12 +1447,10 @@ func TestBehaviourRunDir(t *testing.T) {
 		})
 
 		Convey("run executes in Cwd for a CwdMatters Job, whatever its ActualCwd says", func() {
-			// wr <= v0.37.1 persisted ActualCwd == Cwd on such a Job, and a
-			// runner can report anything; wr creates no directory for one, so
-			// the Cmd ran in the user's own Cwd and the behaviour must too. This
-			// is the sound HALF of the old behaviourRunDir fallback, and the
-			// only half: CwdMatters is what makes Cwd the directory the Cmd
-			// really ran in.
+			// wr <= v0.37.1 persisted ActualCwd == Cwd on such a Job, and a runner
+			// can report anything; wr creates no directory for one, so the Cmd ran
+			// in the user's own Cwd and the behaviour must too. CwdMatters is the
+			// one thing that makes Cwd the directory the Cmd really ran in.
 			job := &Job{Cwd: cwd, Cmd: testWSCmd, CwdMatters: true, ActualCwd: scripts}
 
 			So(run.Trigger(OnExit, job), ShouldBeNil)
@@ -1507,9 +1461,8 @@ func TestBehaviourRunDir(t *testing.T) {
 
 		Convey("run refuses an ActualCwd wr could not have created", func() {
 			// this arrives off the wire: JobEndState.Cwd -> applyLiveSnapshot ->
-			// TriggerBehaviours in the MANAGER. Cleanup refuses it loudly, and
-			// run used to accept the same value and execute the user's command
-			// in their own scripts directory.
+			// TriggerBehaviours in the MANAGER, where accepting it would execute
+			// the user's command in a directory of their own.
 			job := &Job{Cwd: cwd, Cmd: testWSCmd}
 			applyLiveSnapshot(job, &JobEndState{Cwd: scripts})
 
@@ -1546,10 +1499,9 @@ func TestBehaviourRunDir(t *testing.T) {
 
 		Convey("run executes in the directory that was proven, not in what the name means later", func() {
 			// exec.Cmd takes a NAME and the child resolves it once more when the
-			// command starts, so everything proved about the path was proved
-			// about a string that gets looked up again. The hook puts the test
-			// in exactly that moment; a racer doing this in a loop won it 11
-			// times in 200 before the directory was held open across it.
+			// command starts, so everything proved about the path is proved about
+			// a string that gets looked up again. The hook puts the test in
+			// exactly that moment, which holding the directory open closes.
 			job := &Job{Cwd: cwd, Cmd: testWSCmd}
 			actualCwd, _, _ := realWorkSpace(job)
 
@@ -1612,7 +1564,7 @@ func TestBehaviourRunDir(t *testing.T) {
 
 		Convey("run leaves no descriptor behind for the directory it held open", func() {
 			// the handle has to outlive the resolution, since the command being
-			// started is what uses it, so it is the behaviour that closes it. A
+			// started is what uses it, so it is the behaviour that closes it: a
 			// run behaviour that leaked one would exhaust a long-lived manager.
 			if runtime.GOOS != osLinux {
 				return
@@ -1633,14 +1585,14 @@ func TestBehaviourRunDir(t *testing.T) {
 		})
 
 		Convey("run refuses a working directory that is not there", func() {
-			// cleanup TOLERATES this absence, and has to: the Job's own Cmd may
-			// have deleted the directory, or a previous cleanup may have, and
-			// cleanup runs twice for a lost job. For `run` there is nothing to
-			// tolerate - a command cannot execute in a directory that is not
-			// there - and handing the name back anyway leaves exec.Cmd to
-			// resolve it a second time, when whatever creates it in the meantime
-			// chooses where the user's command runs. The two consumers share one
-			// resolution, so the difference has to be said rather than inherited.
+			// cleanup TOLERATES this absence, and has to: the Job's own Cmd or a
+			// previous cleanup may have deleted the directory, and cleanup runs
+			// twice for a lost job. For `run` there is nothing to tolerate - a
+			// command cannot execute in a directory that is not there - and handing
+			// the name back anyway leaves exec.Cmd to resolve it a second time,
+			// when whatever creates it in the meantime chooses where the user's
+			// command runs. The two consumers share one resolution, so the
+			// difference is stated rather than inherited.
 			job := &Job{Cwd: cwd, Cmd: testWSCmd}
 			actualCwd, _, _ := realWorkSpace(job)
 			So(os.RemoveAll(actualCwd), ShouldBeNil)
@@ -1651,10 +1603,10 @@ func TestBehaviourRunDir(t *testing.T) {
 			So(err, ShouldNotBeNil)
 			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
 
-			// and the refusal is the resolution's own, made because it proved
-			// the directory absent, rather than an open of it failing further
-			// down: a rule that only holds because the next syscall happens to
-			// fail is a rule nobody knows is there.
+			// and the refusal is the resolution's own, made because it proved the
+			// directory absent, rather than an open of it failing further down: a
+			// rule that only holds because the next syscall happens to fail is a
+			// rule nobody knows is there.
 			So(errors.Is(err, os.ErrNotExist), ShouldBeFalse)
 		})
 
@@ -1680,9 +1632,8 @@ func TestBehaviourRunDir(t *testing.T) {
 		// cleanup and behaviours run in TWO processes with different working
 		// directories: the runner, and the manager when it declares a job lost.
 		// exec.Cmd resolves a relative Dir against the process running it, so a
-		// relative path reported over the wire aims the user's command at
-		// whatever sits beside the MANAGER. This is the bug 448d0b1 fixed for
-		// cleanup, arriving at the same fields through a different consumer.
+		// relative path reported over the wire aims the user's command at whatever
+		// sits beside the MANAGER.
 		base := t.TempDir()
 		beside := filepath.Join(base, "beside")
 		So(os.MkdirAll(beside, os.ModePerm), ShouldBeNil)

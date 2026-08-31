@@ -42,16 +42,13 @@ import (
 // the cmd wrote some output files into it, then cleanup wipes the workspace and
 // tidies the empty parent dirs up to Cwd. Setup is excluded from the timer.
 //
-// The point of guarding this path is that its cost is dominated by path
-// metadata operations, and jobs typically run on a shared filesystem (Lustre)
-// where those are orders of magnitude dearer than the local disk this
-// benchmark uses, over batches of tens of thousands of jobs. So the number of
-// syscalls per cleanup matters far more than this ns/op figure suggests: the
-// containment guard that stops cleanup deleting anything outside the job's own
-// workspace must stay O(depth of the workspace below Cwd), and must not grow
-// with the depth of Cwd itself. A guard that re-resolves the whole path per
-// parent dir level made this 69% slower with 6.4x the allocations, which was
-// invisible locally and painful at scale.
+// The cost of this path is dominated by path metadata operations, and jobs
+// typically run on a shared filesystem (Lustre) where those are orders of
+// magnitude dearer than the local disk this benchmark uses, over batches of tens
+// of thousands of jobs. So the number of syscalls per cleanup matters far more
+// than this ns/op figure suggests: the containment guard that stops cleanup
+// deleting anything outside the job's own workspace must stay O(depth of the
+// workspace below Cwd), and must not grow with the depth of Cwd itself.
 func BenchmarkJobCleanup(b *testing.B) {
 	cwd := b.TempDir()
 	behaviour := &Behaviour{When: OnExit, Do: Cleanup}

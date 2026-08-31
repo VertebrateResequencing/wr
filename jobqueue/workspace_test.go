@@ -52,14 +52,11 @@ const (
 	testWSCmd        = "run"
 )
 
-// realWorkSpace gives job the working directory mkHashedDir really creates for
-// it below job.Cwd, and returns that dir, the workspace holding it, and the tmp
-// dir wr makes beside it.
-//
-// Fixtures built by hand, at paths and depths wr cannot produce, are a large
-// part of why holes in this code survived earlier rounds of testing, and the
-// path wr builds is now also what proves a workspace is wr's own - so a fixture
-// that is merely the right shape is no longer the same test.
+// realWorkSpace gives job the working directory mkHashedDir really creates for it
+// below job.Cwd, and returns that dir, the workspace holding it, and the tmp dir
+// wr makes beside it. The path wr builds is what proves a workspace is wr's own,
+// so a hand-made fixture of merely the right shape does not reach the same
+// guards.
 func realWorkSpace(job *Job) (actualCwd, workSpace, tmpDir string) {
 	actualCwd, tmpDir, err := mkHashedDir(job.Cwd, job.Key())
 	So(err, ShouldBeNil)
@@ -85,10 +82,9 @@ func TestRelIsJobCreatedCwd(t *testing.T) {
 	}
 
 	// relIsJobCreatedCwd is what proves a workspace really is the one wr built
-	// for this Job, rather than merely sitting at the right depth under the
-	// right name. It is pinned against mkHashedDir here so the two cannot drift
-	// apart: if they did, cleanup would quietly stop tolerating a working
-	// directory a Job's own Cmd deleted, rather than fail loudly.
+	// for this Job, rather than merely sitting at the right depth under the right
+	// name. It is pinned against mkHashedDir here so the two cannot drift apart:
+	// if they did, cleanup would quietly stop working rather than fail loudly.
 	Convey("relIsJobCreatedCwd recognises exactly what mkHashedDir creates", t, func() {
 		cwd := t.TempDir()
 		job := &Job{Cwd: cwd, Cmd: "echo created"}
@@ -111,10 +107,10 @@ func TestRelIsJobCreatedCwd(t *testing.T) {
 
 		Convey("nor the same path with anything appended or removed", func() {
 			// every component this reads is at a fixed index, so it answers only
-			// about paths of exactly the depth mkHashedDir builds at. A deeper
-			// path whose LEAF is still called cwd is the one that matters: the
-			// job's own Cmd can make it inside the dir wr made, and treating it
-			// as a working directory would sweep that dir as a workspace.
+			// about paths of exactly the depth mkHashedDir builds at. A deeper path
+			// whose LEAF is still called cwd is the one that matters: the job's own
+			// Cmd can make it inside the dir wr made, and treating it as a working
+			// directory would sweep that dir as a workspace.
 			names := strings.Split(rel, string(filepath.Separator))
 			deeper := slices.Concat(names[:len(names)-1], []string{"extra", createdCwdName})
 
@@ -124,10 +120,9 @@ func TestRelIsJobCreatedCwd(t *testing.T) {
 		})
 
 		Convey("nor one whose hashed dirs are not the ones the key builds", func() {
-			// k0-k2 are the first three characters of the key. They are the only
-			// components of the path the recogniser checks that also have to
-			// exist on disk, so they are the ones an attacker grinds a Cmd to
-			// match; leaving them unchecked would take even that cost away.
+			// k0-k2 are the first three characters of the key, and the only
+			// components of the path that both get checked and have to exist on
+			// disk, so they are the ones an attacker grinds a Cmd to match.
 			names := strings.Split(rel, string(filepath.Separator))
 			names[2] = "z"
 			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeFalse)
@@ -145,8 +140,8 @@ func TestRelIsJobCreatedCwd(t *testing.T) {
 
 			// ...and a suffix of anything else is a name something other than
 			// MkdirTemp chose. Whoever submits the Job picks the Cmd that Key()
-			// hashes, so they can put a directory of their own beside the job's
-			// at exactly this prefix; accepting it would hand its PARENT to the
+			// hashes, so they can put a directory of their own beside the job's at
+			// exactly this prefix, and accepting it would hand its PARENT to the
 			// sweep as this Job's workspace.
 			names[len(names)-2] = leaf + "-mydata"
 			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeFalse)
@@ -164,10 +159,10 @@ func TestRelIsJobCreatedCwd(t *testing.T) {
 		Convey("and requires the base component to be named the way wr names one", func() {
 			// AppName is a package var: cmd/runner.go sets it to "wr" while the
 			// manager leaves it "jobqueue", and cleanup runs in both, so the
-			// component must not be compared against what THIS process would
-			// build - that would refuse every runner-made workspace server-side.
-			// The SUFFIX is what is checked, and the hashed dirs below it are
-			// rebuilt from whatever the component actually is.
+			// component must not be compared against what THIS process would build
+			// - that would refuse every runner-made workspace server-side. The
+			// SUFFIX is checked instead, and the hashed dirs below it are rebuilt
+			// from whatever the component actually is.
 			names := strings.Split(rel, string(filepath.Separator))
 			names[0] = "someone_elses" + createdCwdBaseSuffix
 			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeTrue)
@@ -189,12 +184,11 @@ func TestOpenVerifiedDirFile(t *testing.T) {
 		return
 	}
 
-	// this is what makes the handle a `run` behaviour's command starts in worth
-	// having. The path was proven with an lstat, and the open resolves it again,
-	// so between the two a component of it - including the working directory
-	// itself - can be swapped for a symlink to somewhere else inside the Job's
-	// Cwd, which an os.Root follows. Only proving that what was opened is the
-	// same directory that was checked catches that.
+	// the path was proven with an lstat and the open resolves it again, so between
+	// the two a component of it - the working directory included - can be swapped
+	// for a symlink to somewhere else inside the Job's Cwd, which an os.Root
+	// follows. Only proving that what was opened is the directory that was checked
+	// catches that.
 	Convey("Given a directory that has been checked", t, func() {
 		base := t.TempDir()
 		root, err := os.OpenRoot(base)
@@ -245,11 +239,9 @@ func TestCleanupKeepsMountCaches(t *testing.T) {
 	}
 
 	// cmd/add.go promises that cleanup ignores "any mount cache directories, so
-	// that nothing on your remote file systems gets deleted". Cleanup runs
-	// BEFORE Job.Unmount (client.go), and a cached writable mount only uploads
-	// at Unmount, so deleting one of these destroys the job's own output. Where
-	// each cache lands is worked out by the same resolveCacheBase/resolveCacheDir
-	// that Job.Mount uses to put it there.
+	// that nothing on your remote file systems gets deleted". Cleanup runs BEFORE
+	// Job.Unmount (client.go), and a cached writable mount only uploads at
+	// Unmount, so deleting one of these destroys the job's own output.
 	Convey("Given a Job whose mount caches land in the dirs cleanup sweeps", t, func() {
 		cwd := t.TempDir()
 		cleanup := &Behaviour{When: OnExit, Do: Cleanup}
@@ -274,11 +266,9 @@ func TestCleanupKeepsMountCaches(t *testing.T) {
 
 		Convey("An explicit absolute MountTarget.CacheDir in the workspace survives", func() {
 			// the CacheDir is filled in after the workspace exists, since it has
-			// to name a path inside it. Only Mount, Target.Profile and
-			// Target.Path reach MountConfigs.Key(), so the workspace wr built
-			// stays the one this Job's key describes; anything that DID change
-			// the key would leave the Job with no workspace it may touch, which
-			// is what a `wr mod` leaves behind.
+			// to name a path inside it. Only Mount, Target.Profile and Target.Path
+			// reach MountConfigs.Key(), so the workspace wr built stays the one
+			// this Job's key describes.
 			job := &Job{Cwd: cwd, MountConfigs: MountConfigs{{
 				Mount:   testWSMount,
 				Targets: []MountTarget{{Path: testWSTargetPath, Cache: true}},
@@ -380,10 +370,9 @@ func TestCleanupKeepsMountCaches(t *testing.T) {
 			// the name rule is the one thing cleanup keeps by NAME rather than by
 			// path, because muxfys chooses the name of the cache dir it makes
 			// inside the CacheBase it was given. A Job with no mounts has no
-			// muxfys, so there is no such dir to protect - and asking the rule of
-			// one anyway meant its own Cmd creating ../.muxfyssquat kept the
-			// workspace alive, after which the upward walk hit ENOTEMPTY and gave
-			// up, leaking the whole <AppName>_cwd chain, one per job, for ever.
+			// muxfys and so no such dir to protect: applying the rule to one
+			// anyway lets its own Cmd keep the whole workspace alive by creating
+			// ../.muxfyssquat.
 			job := &Job{Cwd: cwd, Cmd: testWSCmd}
 			actualCwd, workSpace, tmpDir := realWorkSpace(job)
 
@@ -400,8 +389,7 @@ func TestCleanupKeepsMountCaches(t *testing.T) {
 		Convey("Nor does a mounting Job whose cache base is not the workspace", func() {
 			// muxfys names its own dir inside the CacheBase it was given, so a
 			// CacheBase elsewhere puts nothing of muxfys's naming in the
-			// workspace. Keeping one anyway is the same leak, with a mount
-			// attached.
+			// workspace, and keeping one anyway is the same leak.
 			job := &Job{Cwd: cwd, MountConfigs: MountConfigs{{
 				Mount:     testWSMount,
 				CacheBase: "cachebase",
@@ -443,8 +431,7 @@ func TestCleanupIsIdempotent(t *testing.T) {
 	// cleanup runs more than once for the same Job: the runner triggers it, and
 	// for a lost job the server triggers it again. It must therefore be able to
 	// finish the job the first run left, rather than refuse and leak the
-	// workspace - which is what requiring the working directory to exist did,
-	// until the path itself could prove the workspace was wr's own.
+	// workspace, which is what requiring the working directory to exist would do.
 	Convey("Given a workspace wr really created for a Job", t, func() {
 		cwd := t.TempDir()
 		precious := writeFileIn(cwd, "05_RunCisEQTL.R")
@@ -509,11 +496,10 @@ func TestCleanupWorkingDirSwappedAfterProof(t *testing.T) {
 	}
 
 	Convey("Cleanup refuses a working dir swapped for a symlink after it was proven", t, func() {
-		// a proof is about a path string, and every syscall re-resolves it, so
-		// the working directory proven to be real can be a symlink by the time
-		// the sweep reads it - and a read follows a symlinked final component,
-		// deleting the target's contents instead. The hook puts the test in that
-		// moment, which is otherwise not reachable reliably.
+		// a proof is about a path string, and every syscall re-resolves it, so the
+		// working directory proven to be real can be a symlink by the time the
+		// sweep reads it - and a read follows a symlinked final component, deleting
+		// the target's contents instead. The hook puts the test in that moment.
 		cwd := t.TempDir()
 		job := &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{Mount: testWSMount}}}
 		actualCwd, _, _ := realWorkSpace(job)
@@ -558,12 +544,12 @@ func TestCleanupWorkingDirSwappedAfterProof(t *testing.T) {
 		})
 
 		Convey("and when the proof tolerated the working dir already being absent", func() {
-			// absence is the one case with no identity to check the name
-			// against: there was nothing there to lstat, and the licence to
-			// delete is the path being provably this Job's own. So what KIND of
-			// thing has appeared at that name by the time the sweep looks is the
-			// only question left to ask, and asking it is what stops wr
-			// unlinking a symlink of the user's and reporting success.
+			// absence is the one case with no identity to check the name against:
+			// there was nothing there to lstat, and the licence to delete is the
+			// path being provably this Job's own. So what KIND of thing has
+			// appeared at that name by the time the sweep looks is the only
+			// question left, and asking it is what stops wr unlinking a symlink of
+			// the user's and reporting success.
 			absent := &Job{Cwd: cwd, Cmd: testWSCmd + " absent"}
 			absentCwd, _, _ := realWorkSpace(absent)
 			So(os.RemoveAll(absentCwd), ShouldBeNil)
@@ -584,14 +570,12 @@ func TestCleanupWorkingDirSwappedForADirAfterProof(t *testing.T) {
 	}
 
 	Convey("Cleanup refuses a working dir swapped for another dir after it was proven", t, func() {
-		// what kind of thing sits at a name is not which thing it is. A
-		// DIRECTORY renamed onto the working directory's name after the proof
-		// answers every question about kind identically, so only comparing it
-		// against the lstat the proof took tells the two apart - which is the
-		// comparison `run` makes by construction, through openVerifiedDirFile.
-		// While cleanup asked only about kind, a swap `run` refused to enter was
-		// one cleanup swept, and the whole point of resolving once is that the
-		// two consumers cannot disagree about which directory is the Job's.
+		// what kind of thing sits at a name is not which thing it is: a DIRECTORY
+		// renamed onto the working directory's name after the proof answers every
+		// question about kind identically, so only comparing it against the lstat
+		// the proof took tells the two apart. That is the comparison `run` makes
+		// through openVerifiedDirFile, and cleanup has to make the same one or the
+		// two consumers disagree about which directory is the Job's.
 		cwd := t.TempDir()
 
 		userTree := filepath.Join(cwd, "scripts")
@@ -630,10 +614,10 @@ func TestCleanupWorkingDirSwappedForADirAfterProof(t *testing.T) {
 		})
 
 		Convey("and when a live mount inside it would otherwise keep some of it", func() {
-			// the keep set takes the other branch of removeActualCwd, which
-			// opens the working directory and deletes all but the kept dirs
-			// through the handle. Verifying that open against a fresh look at
-			// the name proves only that the name did not change again.
+			// the keep set takes the other branch of removeActualCwd, which opens
+			// the working directory and deletes all but the kept dirs through the
+			// handle. Verifying that open against a fresh look at the name would
+			// prove only that the name did not change again.
 			job := &Job{Cwd: cwd, Cmd: testWSCmd + " mounted", MountConfigs: MountConfigs{{Mount: testWSMount}}}
 			actualCwd, _, _ := realWorkSpace(job)
 			So(os.MkdirAll(filepath.Join(actualCwd, testWSMount), os.ModePerm), ShouldBeNil)
@@ -655,9 +639,9 @@ func TestCleanupActualCwdRace(t *testing.T) {
 
 	Convey("Cleanup reads a Job's ActualCwd under the Job's lock", t, func() {
 		// applyLiveSnapshot writes ActualCwd under the Job's lock every touch
-		// interval, and the manager runs cleanup for a lost job at the same
-		// time, so an unlocked read here is a data race whose outcome decides
-		// which directory gets deleted. -race is what makes this test bite.
+		// interval, and the manager runs cleanup for a lost job at the same time,
+		// so an unlocked read here is a data race whose outcome decides which
+		// directory gets deleted. -race is what makes this test bite.
 		const (
 			concurrentRounds           = 50
 			concurrentWriterAndCleaner = 2
@@ -702,9 +686,9 @@ func TestCleanupEmptyParentWalk(t *testing.T) {
 	}
 
 	// the upward walk that tidies empty parent directories is bounded by the
-	// containment proof, but containment was all it had: when the reported
-	// workspace was absent, the proof of what wr created never ran, and the walk
-	// unlinked the user's own empty directories up to Cwd.
+	// containment proof, and containment alone is not enough: an absent workspace
+	// must still be proven to be one wr created, or the walk unlinks the user's
+	// own empty directories up to Cwd.
 	Convey("Given an empty output tree of the user's own, at the depth wr creates at", t, func() {
 		// the tree is named every way a workspace of wr's is named - a *_cwd
 		// base, a leaf called cwd, at the created depth - so that what refuses
@@ -891,10 +875,8 @@ func TestRunDirWithoutProcFD(t *testing.T) {
 
 	// where the platform will not name a process's own file descriptors, the
 	// working directory can only be given to exec.Cmd as a NAME, which the child
-	// resolves a second time when the command starts. That window was measured
-	// at 5 wins in 300 against 0 with the descriptor named, and it used to be
-	// taken silently: a deployment could sit on the losing side of it for its
-	// whole life with nothing in the log to say so.
+	// resolves a second time when the command starts. The warning is what stops a
+	// deployment sitting on the losing side of that window silently.
 	Convey("Given a host that does not name its own file descriptors", t, func() {
 		missing := filepath.Join(t.TempDir(), "no-proc-here", "fd") + string(filepath.Separator)
 		procFDPrefix = missing
@@ -1007,19 +989,17 @@ func TestJobKeyConcurrentWithCleanup(t *testing.T) {
 	}
 
 	Convey("Asking a Job for its key while cleanup asks too is not a write", t, func() {
-		// MountConfigs.Key() sorted the slice it was asked about, and Job.Key()
-		// is asked for by readers holding at most a READ lock: workSpaceSnapshot
-		// under the Job's RLock, and the REST and CLI handlers, jobtransition,
-		// ToEssense and the client under no lock at all. Two of them at once
-		// wrote the same backing array - which -race reports, and which left the
-		// Job holding a config list with one entry lost and another duplicated,
-		// after which a writable mount is never mounted at all and the Cmd's
-		// results are written into a plain directory that cleanup deletes.
+		// Job.Key() is asked for by readers holding at most a READ lock:
+		// workSpaceSnapshot under the Job's RLock, and the REST and CLI handlers,
+		// jobtransition, ToEssense and the client under no lock at all. If
+		// MountConfigs.Key() sorted the slice it was asked about, two of them at
+		// once would write the same backing array, leaving the Job holding a
+		// config list with one entry lost and another duplicated - after which a
+		// writable mount is never mounted and the Cmd's results are written into a
+		// plain directory that cleanup deletes.
 		//
-		// Each round gets its own Job, because the write only happens while the
-		// slice is still in the order it was configured in: one shared Job would
-		// be sorted by whichever reader got there first and the rest would find
-		// nothing left to do.
+		// Each round gets its own Job, because such a write only happens while the
+		// slice is still in the order it was configured in.
 		const (
 			concurrentRounds  = 20
 			concurrentReaders = 3
@@ -1034,10 +1014,9 @@ func TestJobKeyConcurrentWithCleanup(t *testing.T) {
 			cmd := fmt.Sprintf("%s %d", testWSCmd, round)
 
 			// the workspace is built for a Job of its own, so that the Job the
-			// readers share has never been asked for its key: that is the state
-			// a Job is in when the manager has just decoded it from the database
-			// or taken it off the wire, and it is the only state in which the
-			// sort had anything to write.
+			// readers share has never been asked for its key: the state a Job is in
+			// when the manager has just decoded it from the database or taken it
+			// off the wire.
 			built := &Job{Cwd: cwd, Cmd: cmd, MountConfigs: unorderedMounts()}
 			actualCwd, _, _ := realWorkSpace(built)
 
