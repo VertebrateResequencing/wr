@@ -907,6 +907,7 @@ func newStartedRun(ctx context.Context, t *testing.T, rg, cwd string, bs Behavio
 
 	live, ok := r.item.Data().(*Job)
 	So(ok, ShouldBeTrue)
+
 	r.live = live
 
 	return r
