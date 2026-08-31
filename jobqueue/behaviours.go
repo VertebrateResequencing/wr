@@ -70,12 +70,23 @@ var (
 	runProvenHook   func()
 )
 
-// lostJobKilledHook, when set, is called in the moment between killJob releasing
-// a lost job back to ready and its pinned behaviours running. That moment is
-// when a runner can reserve the RETRY and touch its new working directory onto
-// the same Job, which is the race the pin exists to survive and which a test
-// cannot get into reliably any other way. It is nil in production.
-var lostJobKilledHook func() //nolint:gochecknoglobals
+// lostJobDeadCheckedHook and lostJobKilledHook, when set, are called in the two
+// moments a lost job's behaviours have to survive, and are nil in production. A
+// test cannot get into either reliably any other way.
+//
+// lostJobDeadCheckedHook is called where the dead-check returns and before the
+// kill, which is the far end of the window between the manager pinning the lost
+// run and acting on it: a 15 second ssh round trip in which the job can recover,
+// be released, and be reserved and started again as a different run.
+// lostJobKilledHook is called with what the kill decided, in the moment before
+// the pinned behaviours run, which is when a runner can reserve the retry and
+// touch its new working directory onto the same Job.
+//
+//nolint:gochecknoglobals // test hooks into two moments that cannot be reached otherwise
+var (
+	lostJobDeadCheckedHook func()
+	lostJobKilledHook      func(released bool)
+)
 
 // BehaviourTrigger is supplied to a Behaviour to define under what circumstance
 // that Behaviour will trigger.
@@ -420,9 +431,9 @@ func (bs Behaviours) trigger(success bool, ws jobWorkSpaceSnapshot) error {
 // Behaviours delete the Job's working directory and run the user's own command
 // inside it, and which directory that is comes from the (key, ActualCwd) pair
 // the Job carries. Deciding to trigger them and triggering them are not always
-// the same moment: the manager decides when it declares a job lost, then
-// killJob RELEASES that Job back to ready before the behaviours run, so a runner
-// can reserve the RETRY and its first Touch writes the retry's working directory
+// the same moment: the manager decides when it declares a job lost, then killJob
+// RELEASES that Job back to ready before the behaviours run, so a runner can
+// reserve the RETRY and its first Touch writes the retry's working directory
 // into that same Job (emitLiveTouchSnapshot -> applyLiveSnapshot). Reading the
 // Job afterwards read the retry's directory: measured, the `run` behaviour's pwd
 // was the retry's, the retry's partial output, working directory and live TMPDIR
@@ -434,6 +445,15 @@ func (bs Behaviours) trigger(success bool, ws jobWorkSpaceSnapshot) error {
 // resolution that is wrong, it is being asked a question about a moment that has
 // passed. Every other caller triggers the behaviours of a Job it holds alone, so
 // for them the pin is taken at the call itself (Behaviours.Trigger).
+//
+// WHEN the pin is taken is as load-bearing as the pin. The manager's decision is
+// made in markJobLost, and everything after it - a 15 second ssh round trip in
+// confirmJobDead, or half an hour of retry timer - happens while the job is free
+// to move on. A pin taken after that trip is a pin of whatever run the job is on
+// by then, which is how the retry came to be pinned in the first place. The pin
+// is therefore taken with the decision and carried (lostJobDetails.pin), and
+// what the pin describes is checked to still be the run at the queue before
+// anything acts on it (isLostRunLocked).
 type pinnedBehaviours struct {
 	behaviours Behaviours
 	workSpace  jobWorkSpaceSnapshot
@@ -445,6 +465,14 @@ func (j *Job) pinBehaviours() pinnedBehaviours {
 	j.RLock()
 	defer j.RUnlock()
 
+	return j.pinBehavioursLocked()
+}
+
+// pinBehavioursLocked is pinBehaviours for a caller that already holds at least
+// the Job's read lock, so that the pin can be taken in the same breath as the
+// decision it belongs to - which for the manager is the moment it declares the
+// job lost, not the moment 15 seconds later when it gets round to the kill.
+func (j *Job) pinBehavioursLocked() pinnedBehaviours {
 	return pinnedBehaviours{behaviours: j.Behaviours, workSpace: j.workSpaceSnapshotLocked()}
 }
 

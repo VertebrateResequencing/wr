@@ -136,6 +136,25 @@ func (j *Job) workSpaceSnapshotLocked() jobWorkSpaceSnapshot {
 	}
 }
 
+// isLostRunLocked says whether this Job is still lost, and still the same RUN
+// that ws was taken from. The caller must hold at least the Job's read lock.
+//
+// A Job's Key() is the same for every run of it by construction, so it cannot
+// tell two runs apart and neither can any proof about a path. ActualCwd can: it
+// is the working directory wr made for one run, written onto the Job by that
+// run's first Touch, so a retry reserved in the meantime has changed it. Lost
+// covers the rest - a job that recovered on a touch, or was released and
+// re-reserved, is not the lost run whatever its directory says.
+//
+// It is the only thing standing between a decision made about one run and its
+// being carried out on another. A CwdMatters Job has no working directory of its
+// own, and its blank ActualCwd is equal to the pinned blank one, so for it Lost
+// is the whole check - which is right, because there is then nothing of wr's for
+// the behaviours to delete either.
+func (j *Job) isLostRunLocked(ws jobWorkSpaceSnapshot) bool {
+	return j.Lost && j.ActualCwd == ws.actualCwd
+}
+
 // workSpacePaths is the lexical half of the resolution: the Job's directories,
 // made absolute and cleaned, and checked for the shape wr gives the ones it
 // creates. It touches no filesystem, so a Job that cannot possibly have a

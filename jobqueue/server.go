@@ -887,13 +887,6 @@ func (cm *casterMember) drainQueue() bool {
 	}
 }
 
-type lostJobRetryCheck struct {
-	jobKey       string
-	jobHost      string
-	jobPID       int
-	checkTimeout time.Duration
-}
-
 type repGroupStatusOptions struct {
 	RepGroup             string
 	Match                RepGroupMatch
@@ -2323,31 +2316,32 @@ func jobUpdateFromLockedJob(job *Job, state JobState) *JobUpdate {
 	}
 }
 
-func (s *Server) lostJobRetryCheck(jobKey string) (lostJobRetryCheck, bool) {
+func (s *Server) lostJobRetryCheck(jobKey string) (lostJobDetails, bool) {
 	item, err := s.q.Get(jobKey)
 	if err != nil || item.Stats().State != queue.ItemStateRun {
-		return lostJobRetryCheck{}, false
+		return lostJobDetails{}, false
 	}
 
 	job, ok := item.Data().(*Job)
 	if !ok {
-		return lostJobRetryCheck{}, false
+		return lostJobDetails{}, false
 	}
 
 	job.RLock()
 	defer job.RUnlock()
 
 	if job.State != JobStateRunning || !job.Lost {
-		return lostJobRetryCheck{}, false
+		return lostJobDetails{}, false
 	}
 
 	timeout, _ := s.lostJobCheckDurations()
 
-	return lostJobRetryCheck{
-		jobKey:       job.Key(),
-		jobHost:      job.Host,
-		jobPID:       job.Pid,
+	return lostJobDetails{
+		key:          job.Key(),
+		host:         job.Host,
+		pid:          job.Pid,
 		checkTimeout: timeout,
+		pin:          job.pinBehavioursLocked(),
 	}, true
 }
 
@@ -3834,6 +3828,12 @@ func (s *Server) markJobLost(ctx context.Context, job *Job, wasLost bool, lostUp
 	jobHost := job.Host
 	jobPID := job.Pid
 	repGroup := job.RepGroup
+
+	// the behaviours of the run being declared lost are pinned HERE, in the same
+	// breath as the decision that it is lost, and carried all the way to the
+	// kill. See lostJobDetails.pin.
+	pin := job.pinBehavioursLocked()
+
 	serverLostJobCheckTimeout, serverLostJobCheckRetryTime := s.lostJobCheckDurations()
 	job.Unlock()
 
@@ -3854,7 +3854,7 @@ func (s *Server) markJobLost(ctx context.Context, job *Job, wasLost bool, lostUp
 	)
 
 	go s.confirmOrReleaseLostJob(ctx, job, lostJobDetails{
-		key: jobKey, host: jobHost, pid: jobPID, killCalled: killCalled,
+		key: jobKey, host: jobHost, pid: jobPID, killCalled: killCalled, pin: pin,
 		checkTimeout: serverLostJobCheckTimeout, checkRetryTime: serverLostJobCheckRetryTime,
 	})
 }
@@ -3868,6 +3868,19 @@ type lostJobDetails struct {
 	killCalled     bool
 	checkTimeout   time.Duration
 	checkRetryTime time.Duration
+
+	// pin is the lost RUN: its Behaviours and the state they must act on, taken
+	// at the moment the job was declared lost.
+	//
+	// It is carried rather than re-fetched because everything between here and
+	// the kill takes time the job does not stand still for. confirmJobDead is an
+	// ssh round trip bounded by ServerLostJobCheckTimeout - 15 seconds by
+	// default - and in it the job can recover (a touch clears Lost), or be
+	// released and re-reserved, so that the *Job under this key is a DIFFERENT
+	// run by the time the kill happens. Fetching the job afterwards fetched that
+	// other run and swept its live working directory. See pinnedBehaviours, and
+	// isLostRunLocked for the check that the pin is still the run at the queue.
+	pin pinnedBehaviours
 }
 
 // confirmOrReleaseLostJob confirms whether a lost job is really dead and kills
@@ -3879,7 +3892,7 @@ func (s *Server) confirmOrReleaseLostJob(ctx context.Context, job *Job, d lostJo
 
 	confirmedDead := !d.killCalled && !recovered
 	if confirmedDead {
-		confirmedDead = s.confirmJobDeadAndKill(ctx, d.key, d.host, d.pid, d.checkTimeout, d.checkRetryTime)
+		confirmedDead = s.confirmJobDeadAndKill(ctx, d)
 	}
 
 	switch {
@@ -4586,73 +4599,55 @@ func (s *Server) applyDependencyUpdates(ctx context.Context, updates []jobDepend
 // we can't currently confirm the job is dead due to an ssh issue, but later on
 // the job really does die because the server it was running on gets rebooted,
 // we eventually auto-kill the job.
-func (s *Server) confirmJobDeadAndKill(ctx context.Context, jobKey, jobHost string,
-	jobPID int, serverLostJobCheckTimeout, serverLostJobCheckRetryTime time.Duration) bool {
-	if !s.confirmJobDead(ctx, jobPID, jobHost, serverLostJobCheckTimeout) {
-		go s.confirmJobDeadAndKillAfterRetryTime(ctx, jobKey, serverLostJobCheckRetryTime)
+func (s *Server) confirmJobDeadAndKill(ctx context.Context, d lostJobDetails) bool {
+	if !s.confirmJobDead(ctx, d.pid, d.host, d.checkTimeout) {
+		go s.confirmJobDeadAndKillAfterRetryTime(ctx, d.key, d.checkRetryTime)
 
 		return false
 	}
 
-	go s.killLostJobAndTriggerBehaviours(ctx, jobKey)
+	go s.killLostJobAndTriggerBehaviours(ctx, d)
 
 	return true
 }
 
-// killLostJobAndTriggerBehaviours kills the lost job and, on success, runs its
-// behaviours, logging any problems.
+// killLostJobAndTriggerBehaviours releases the lost RUN whose behaviours d
+// carries and, only if it really released that run, triggers them, logging any
+// problems.
 //
-// The behaviours are PINNED before the kill, not fetched after it. killJob
-// releases a lost job back to ready, so between it returning and the behaviours
-// running a runner can reserve the RETRY, and the retry's first Touch writes its
-// new working directory onto the very Job this function was about. The
-// behaviours then swept the live retry's directory and ran the user's command in
-// it, and left the abandoned workspace behind. See pinnedBehaviours.
-func (s *Server) killLostJobAndTriggerBehaviours(ctx context.Context, jobKey string) {
-	pinned, ok := s.pinLostJobBehaviours(ctx, jobKey)
-	if !ok {
-		return
+// Both halves are about one run, and neither re-asks the queue what that run is.
+// The behaviours were pinned when the job was declared lost, so they act on the
+// state of the run that was lost even though a retry may since have written its
+// own working directory onto the same *Job. And killLostRun refuses a job that
+// is no longer that run, so the behaviours never fire against a job that was not
+// released and may still be RUNNING: killJob reports success without releasing
+// anything when the job is not lost, and acting on that swept the working
+// directory of a live job while its runner was still writing to it.
+//
+// A run that is refused leaks its workspace, which is the right way round: the
+// job has moved on and whatever it is doing now is doing it there.
+func (s *Server) killLostJobAndTriggerBehaviours(ctx context.Context, d lostJobDetails) {
+	if lostJobDeadCheckedHook != nil {
+		lostJobDeadCheckedHook()
 	}
 
-	if _, errk := s.killJob(ctx, jobKey); errk != nil {
+	released, errk := s.killLostRun(ctx, d.pin)
+	if errk != nil {
 		clog.Warn(ctx, "failed to kill a job after TTR", "err", errk)
-
-		return
 	}
 
 	if lostJobKilledHook != nil {
-		lostJobKilledHook()
+		lostJobKilledHook(released)
+	}
+
+	if !released {
+		return
 	}
 
 	//nolint:contextcheck // behaviours run detached from the cancellable job context
-	if errt := pinned.trigger(false); errt != nil {
+	if errt := d.pin.trigger(false); errt != nil {
 		clog.Warn(ctx, "failed to run behaviours for a killed lost job", "err", errt)
 	}
-}
-
-// pinLostJobBehaviours takes the behaviours of the job about to be killed, and
-// the state they must act on, as they are while the job is still the lost one.
-func (s *Server) pinLostJobBehaviours(ctx context.Context, jobKey string) (pinnedBehaviours, bool) {
-	q := s.queueIfPresent()
-	if q == nil {
-		clog.Warn(ctx, "failed to get a lost job", "err", queueClosedError("Get", jobKey))
-
-		return pinnedBehaviours{}, false
-	}
-
-	item, errg := q.Get(jobKey)
-	if errg != nil {
-		clog.Warn(ctx, "failed to get a lost job", "err", errg)
-
-		return pinnedBehaviours{}, false
-	}
-
-	job, ok := item.Data().(*Job)
-	if !ok {
-		return pinnedBehaviours{}, false
-	}
-
-	return job.pinBehaviours(), true
 }
 
 // confirmJobDead() checks if the actual PID isn't running on the job's host.
@@ -4675,13 +4670,18 @@ func (s *Server) confirmJobDeadAndKillAfterRetryTime(ctx context.Context, jobKey
 
 	select {
 	case <-timer.C:
-		retry, ok := s.lostJobRetryCheck(jobKey)
+		// the retry check re-establishes that the job is still lost AND pins the
+		// run it is lost in, in one lock. Its answer is about that moment only:
+		// the confirmJobDead call below reopens the same window the pin exists
+		// to survive, and it is killLostRun that has to be satisfied afterwards.
+		d, ok := s.lostJobRetryCheck(jobKey)
 		if !ok {
 			return
 		}
 
-		s.confirmJobDeadAndKill(ctx, retry.jobKey, retry.jobHost, retry.jobPID, retry.checkTimeout,
-			serverLostJobCheckRetryTime)
+		d.checkRetryTime = serverLostJobCheckRetryTime
+
+		s.confirmJobDeadAndKill(ctx, d)
 	case <-s.stopClientHandling:
 		return
 	}
@@ -4828,31 +4828,74 @@ func (s *Server) inputToQueuedJobs(ctx context.Context, inputJobs []*Job) []*Job
 //
 // If the job wasn't running, returned bool will be false and nothing will have
 // been done.
+//
+// The bool does NOT say the job was released: a job that is running normally is
+// only marked, and the release is the lost job's case alone. A caller that needs
+// to know the job really was released - because it is about to act on the
+// directory the job was using - must use killLostRun.
 func (s *Server) killJob(ctx context.Context, jobkey string) (bool, error) {
+	killCalled, _, err := s.killRunningJob(ctx, jobkey, nil)
+
+	return killCalled, err
+}
+
+// killLostRun is killJob for the one caller that is killing a particular RUN of
+// a job rather than the job: the manager, once it has confirmed the run it
+// declared lost is dead.
+//
+// It reports whether it released THAT run, and it releases nothing else. The
+// confirmation it acts on was made about one run, minutes ago in the retry case
+// and a 15 second ssh round trip away in the ordinary one, and in that time the
+// job can recover, be released, and be reserved and started again. Killing on
+// the strength of a proof about a run that has been replaced kills a job that is
+// alive; running the lost run's behaviours afterwards deletes the working
+// directory that live job is using.
+func (s *Server) killLostRun(ctx context.Context, pin pinnedBehaviours) (bool, error) {
+	_, released, err := s.killRunningJob(ctx, pin.workSpace.key, &pin.workSpace)
+
+	return released, err
+}
+
+// killRunningJob marks the keyed job killed and, if it is lost, releases it. It
+// reports whether it marked the job and whether it released it.
+//
+// onlyRun, when non-nil, names the run the caller is killing: the job is then
+// left entirely untouched - not even marked - unless it is still lost and still
+// that run. Marking matters as much as releasing, because killCalled turns the
+// job's next touch into a self-kill, so mistaking a recovered job for the lost
+// one would kill the run that had just come back.
+func (s *Server) killRunningJob(ctx context.Context, jobkey string,
+	onlyRun *jobWorkSpaceSnapshot) (bool, bool, error) {
 	q := s.queueIfPresent()
 	if q == nil {
-		return false, queueClosedError("Get", jobkey)
+		return false, false, queueClosedError("Get", jobkey)
 	}
 
 	item, err := q.Get(jobkey)
 	if err != nil || item.Stats().State != queue.ItemStateRun {
-		return false, err
+		return false, false, err
 	}
 
 	job := item.Data().(*Job) //nolint:errcheck,forcetypeassert // queue only ever stores *Job
 	job.Lock()
-	job.killCalled = true
 
-	if job.Lost {
+	if onlyRun != nil && !job.isLostRunLocked(*onlyRun) {
 		job.Unlock()
-		err = s.releaseJob(ctx, job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false, false)
 
-		return true, err
+		return false, false, nil
 	}
 
+	job.killCalled = true
+	lost := job.Lost
 	job.Unlock()
 
-	return true, err
+	if !lost {
+		return true, false, err
+	}
+
+	err = s.releaseJob(ctx, job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false, false)
+
+	return true, err == nil, err
 }
 
 // deleteJobs deletes the given jobs from the bury/delay/dependent/ready queue
