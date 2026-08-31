@@ -190,6 +190,7 @@ func (l *lostRun) behaviourRan(which string) {
 // decision to the test and then parks the manager until the test resumes it.
 func (l *lostRun) killedHook(released bool) {
 	l.killed <- released
+
 	<-l.resume
 }
 
@@ -275,7 +276,7 @@ func (l *lostRun) jobStateAndKillCalled() (JobState, bool) {
 // exitedPid returns the pid of a process that has run and been reaped, so that
 // the scheduler's `ps` really finds nothing.
 func exitedPid() int {
-	cmd := exec.Command("/bin/true")
+	cmd := exec.CommandContext(context.Background(), "/bin/true")
 	So(cmd.Run(), ShouldBeNil)
 
 	return cmd.Process.Pid
@@ -428,7 +429,7 @@ func TestLostJobBehavioursSpareARetryStartedInTheWindow(t *testing.T) {
 		// retry's Started takes the job off lost (applyJobStart) and its first
 		// Touch writes its own working directory onto this same *Job.
 		l.inTheDeadCheckWindow(func() {
-			l.server.applyJobStart(l.live, &Job{Pid: os.Getpid(), Host: "localhost"})
+			l.server.applyJobStart(l.live, &Job{Pid: os.Getpid(), Host: localhost})
 
 			retryCwd, retryTmp, retryOutput, retryErr = l.makeRetryWorkspace()
 		})
@@ -476,7 +477,7 @@ func TestLostJobBehavioursSpareASecondLostRun(t *testing.T) {
 		// run's and says nothing about this one - which has its own confirmation
 		// on the way.
 		l.inTheDeadCheckWindow(func() {
-			l.server.applyJobStart(l.live, &Job{Pid: os.Getpid(), Host: "localhost"})
+			l.server.applyJobStart(l.live, &Job{Pid: os.Getpid(), Host: localhost})
 
 			retryCwd, retryTmp, retryOutput, retryErr = l.makeRetryWorkspace()
 			if retryErr != nil {
