@@ -429,6 +429,42 @@ func TestLostJobBehavioursSpareASecondLostRun(t *testing.T) {
 	})
 }
 
+func TestLostJobRetryCheckPinsTheLostRun(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a lost job the manager could not confirm dead the first time", t, func() {
+		l := newLostRun(ctx, t, "lost_job_retry_check")
+
+		defer l.stop(ctx)
+
+		// the retry path re-asks whether the job is still lost after half an
+		// hour, and then reopens the very window the pin exists to survive by
+		// calling confirmJobDead again. Its answer is therefore only worth
+		// having if it pins the run it just checked.
+		var (
+			retry   lostJobDetails
+			checked bool
+		)
+
+		l.inTheDeadCheckWindow(func() {
+			retry, checked = l.server.lostJobRetryCheck(l.key)
+		})
+
+		Convey("its retry check pins the run it found lost", func() {
+			So(l.waitForKillDecision(), ShouldBeTrue)
+			So(checked, ShouldBeTrue)
+			So(retry.key, ShouldEqual, l.key)
+			So(retry.pin.workSpace.key, ShouldEqual, l.key)
+			So(retry.pin.workSpace.actualCwd, ShouldEqual, l.lostCwd)
+			So(retry.pin.behaviours, ShouldHaveLength, 2)
+		})
+	})
+}
+
 func TestPinBehavioursIsLocked(t *testing.T) {
 	if runnermode || servermode {
 		return
