@@ -49,20 +49,19 @@ var (
 	errBehaviourArgNotStrSl   = errors.New("arg is not a []string")
 )
 
-// cleanupProvenHook, when set, is called in the moment between the cleanup path
-// proving which directory it is entitled to delete and it deleting anything.
-// That moment is the race this code is built to survive, and a test cannot
-// otherwise get into it reliably. It is nil in production.
+// cleanupProvenHook, when set, is called between the cleanup path proving which
+// directory it is entitled to delete and it deleting anything, so that a test can
+// swap something in during that window. It is nil in production.
 var cleanupProvenHook func() //nolint:gochecknoglobals
 
-// runResolvedHook and runProvenHook, when set, are called in the two moments a
-// `run` Behaviour has to survive, and are nil in production. A test cannot get
-// into either reliably any other way.
+// runResolvedHook and runProvenHook, when set, are called in the two windows a
+// `run` Behaviour has to survive, so that a test can swap something in during
+// them; both are nil in production.
 //
 // runResolvedHook is called once the directory the command will run in has been
-// proven and before it is opened: the proof is about a path, and the open
-// resolves that path again. runProvenHook is called once it is open and before
-// the command starts, which is when exec.Cmd resolves the Dir name it was given.
+// proven and before it is opened, since the open resolves the proven path again.
+// runProvenHook is called once it is open and before the command starts, which is
+// when exec.Cmd resolves the Dir name it was given.
 //
 //nolint:gochecknoglobals // test hooks into two moments that cannot be reached otherwise
 var (
@@ -279,9 +278,8 @@ func (b *Behaviour) String() string {
 // so for now we always wipe everything.)
 //
 // Which dirs those are, and which of them the Job's live mounts and caches need
-// kept, is decided entirely by resolveWorkSpace - the one place any of it is
-// worked out - asked of a snapshot of the Job rather than of the Job. A nil
-// workspace means wr created nothing here it may delete.
+// kept, is decided entirely by resolveWorkSpace. A nil workspace means wr created
+// nothing here that it may delete.
 func (b *Behaviour) cleanup(snap jobWorkSpaceSnapshot, _ bool) error {
 	ws, err := snap.resolveWorkSpace()
 	if err != nil || ws == nil {
@@ -294,16 +292,14 @@ func (b *Behaviour) cleanup(snap jobWorkSpaceSnapshot, _ bool) error {
 
 // run runs the given command in the directory the Job's Cmd ran in.
 //
-// Which directory that is comes from Job.resolveRunDir - the same resolution
-// that decides what cleanup may delete, since it is the same question about the
-// same two fields. A Job whose directory cannot be shown to be its own runs
-// nothing at all: the command is the user's and can do anything they can, so
-// running it in the wrong place is exactly the harm this refuses.
+// Which directory that is comes from resolveRunDir - the same resolution that
+// decides what cleanup may delete, since it is the same question about the same
+// two fields. A Job whose directory cannot be shown to be its own runs nothing at
+// all: the command is the user's and can do anything they can.
 //
 // The directory comes back held open, and cmd.Dir names that handle where the
-// platform allows it to be named, so the command starts in the directory that
-// was proven rather than in whatever its path resolves to by then. See runDir
-// for what that closes and where it is still open.
+// platform allows it to be named, so the command starts in the directory that was
+// proven rather than in whatever its path resolves to by then; see runDir.
 func (b *Behaviour) run(snap jobWorkSpaceSnapshot) error {
 	bc, wasStr := b.Arg.(string)
 	if !wasStr {
@@ -359,8 +355,8 @@ type Behaviours []*Behaviour
 // against the Job as it is now.
 func (bs Behaviours) Trigger(success bool, j *Job) error {
 	// answered before the snapshot, not after, because most Jobs have no
-	// behaviours at all and this is on the path of every Job that runs: taking
-	// the snapshot means the Job's lock and the hash Key() makes of its Cmd and
+	// behaviours at all and this is on the path of every Job that runs: the
+	// snapshot costs the Job's lock and the hash Key() makes of its Cmd and
 	// mounts.
 	if len(bs) == 0 {
 		return nil
@@ -375,8 +371,7 @@ func (bs Behaviours) Trigger(success bool, j *Job) error {
 //
 // The whole set shares ONE snapshot, rather than each behaviour reading the Job
 // again: a `--on_failure cleanup --on_exit run` pair is one decision about one
-// directory, and re-reading between them is how the two came to act on
-// different ones.
+// directory, and re-reading between them lets the two act on different ones.
 func (bs Behaviours) trigger(success bool, ws jobWorkSpaceSnapshot) error {
 	if len(bs) == 0 {
 		return nil
@@ -424,10 +419,9 @@ func (bs Behaviours) RemovalRequested() bool {
 // removed, regardless of trigger, and nil if that leaves none.
 //
 // Those actions can only ever delete the wr-created working directory of a job
-// with CwdMatters false (see Behaviour.cleanup), so on a cwd_matters job they
-// are documented no-ops that must not be stored: keeping one would have wr
-// advertise a deletion that will never happen, and it was such a stored no-op
-// that deleted the wrong directory when ActualCwd got poisoned with Cwd.
+// with CwdMatters false (see Behaviour.cleanup), so on a cwd_matters job they are
+// no-ops that must not be stored: keeping one would have wr advertise a deletion
+// that will never happen.
 func (bs Behaviours) withoutCleanups() Behaviours {
 	kept := slices.DeleteFunc(slices.Clone(bs), func(b *Behaviour) bool {
 		return b.Do == Cleanup || b.Do == CleanupAll

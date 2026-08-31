@@ -914,10 +914,9 @@ func (db *db) dropStaleEndTimeIndex(tx *bolt.Tx, jobKey []byte, newNanos int64) 
 }
 
 // decodeJob decodes a Job we previously stored in one of our job buckets, and
-// applies the invariants a stored Job must satisfy before anything else sees
-// it. Every read of a stored Job goes through here, so that a db written by an
-// older wr - v0.37.0 and v0.37.1 persisted cwd_matters jobs carrying a cleanup
-// behaviour that could only ever be a no-op - cannot bring one back into a
+// applies the invariants a stored Job must satisfy before anything else sees it.
+// Every read of a stored Job goes through here, so that a db written by an older
+// wr cannot bring a cwd_matters job carrying a cleanup behaviour back into a
 // running server (see Job.dropImpossibleCleanups).
 func (db *db) decodeJob(encoded []byte) (*Job, error) {
 	job := &Job{}

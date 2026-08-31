@@ -165,17 +165,12 @@ func (mcs MountConfigs) String() string {
 // Target.Path are considered. The order of Targets (but not of MountConfig) is
 // considered as well.
 //
-// It does not modify the MountConfigs it is asked about. That is not a detail:
-// Key() is what Job.Key() is built from, and asking a Job for its key is a READ
-// everywhere in wr. workSpaceSnapshot asks under the Job's read lock, and the
-// REST handlers, the CLI handlers, the job transitions, ToEssense and the client
-// ask under no lock at all. Sorting the caller's slice made every one of those a
-// concurrent writer of one Job's MountConfigs: measured over a small probe, 29
-// data races, 2.9% of concurrent reads returning a key that was not the Job's,
-// and 1.6% of Jobs left permanently holding a slice with one config lost and
-// another duplicated. A lost writable S3 mount is never mounted, so the Cmd
-// writes its results into a plain directory of the working directory, nothing is
-// uploaded, and cleanup deletes it.
+// It must not modify the MountConfigs it is asked about. Key() is what Job.Key()
+// is built from, and asking a Job for its key is a READ everywhere in wr - some
+// callers under the Job's read lock, most under no lock at all - so sorting the
+// caller's slice in place would make every one of them a concurrent writer of one
+// Job's MountConfigs, and a Job that loses a writable mount that way has its
+// results written to a plain directory that cleanup then deletes.
 func (mcs MountConfigs) Key() string {
 	if len(mcs) == 0 {
 		return ""
@@ -199,15 +194,14 @@ func (mcs MountConfigs) Key() string {
 }
 
 // sortedByMount is the MountConfigs in Mount order, which is the order Key()
-// reads them in: the order they were configured in does not affect what files
-// are available where, so two Jobs that differ only in it are the same Job.
+// reads them in: the order they were configured in does not affect what files are
+// available where, so two Jobs that differ only in it are the same Job.
 //
 // The sort is made on a COPY, so that a Job asked for its key is not modified by
-// the asking; see Key. It is a STABLE sort, so that configs sharing a Mount
-// string keep the order they were given in: an unstable sort of a fresh copy
-// each time would let one Job's key differ between two calls, which is a worse
-// failure than the one the copy fixes - Key() decides job identity, and the
-// working directory a Job may delete is named for it.
+// the asking; see Key. It is STABLE, so that configs sharing a Mount string keep
+// the order they were given in and one Job's key cannot differ between two calls:
+// Key() decides job identity, and the working directory a Job may delete is named
+// for it.
 func (mcs MountConfigs) sortedByMount() MountConfigs {
 	if len(mcs) < 2 { //nolint:mnd // a slice of 0 or 1 is already in order
 		return mcs

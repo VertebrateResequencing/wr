@@ -150,16 +150,13 @@ func (j *Job) decrementLimitGroupsLocked(lim *limiter.Limiter) {
 // without ever being able to carry it out.
 //
 // Behaviour.cleanup only ever deletes the working directory wr itself created
-// below Cwd, so on a CwdMatters job, which runs in the user's own Cwd, a
-// cleanup is a documented no-op that must not be stored: it would have wr
-// advertise a deletion that will never happen, and it was such a stored no-op
-// that deleted the wrong directory when ActualCwd got poisoned with Cwd.
+// below Cwd, so on a CwdMatters job, which runs in the user's own Cwd, a cleanup
+// is a no-op that must not be stored: it would have wr advertise a deletion that
+// will never happen.
 //
-// The server calls this on every Job that enters its store, whether the Job
-// came from a client (prepareInputJobs) or from the database (db.decodeJob), so
-// that a Job built by hand and passed to Client.Add, and a Job persisted by a
-// wr that stored one, are both covered without a third input converter having
-// to remember to filter.
+// The server calls this on every Job that enters its store, whether the Job came
+// from a client (prepareInputJobs) or from the database (db.decodeJob), so that a
+// hand-built Job and a persisted one are both covered.
 func (j *Job) dropImpossibleCleanups() {
 	if !j.CwdMatters {
 		return
@@ -174,10 +171,9 @@ func (j *Job) dropImpossibleCleanups() {
 // neither can gain or lose a guard the other lacks.
 //
 // A blank cwd (the Job has no working directory of its own yet) gives "". A cwd
-// that is cwdBase gives "/", which is what a Job persisted by wr v0.37.0|1, with
-// its ActualCwd poisoned with Cwd, has. A cwd that is not below cwdBase at all -
-// a stale ActualCwd left over from a `wr mod --cwd` on a Job that predates wr
-// clearing it - is shown in full rather than as a leaf climbing out of cwdBase
+// that is cwdBase gives "/", which is what a Job persisted by wr v0.37.0|1 has.
+// A cwd that is not below cwdBase at all - a stale ActualCwd left over from a
+// `wr mod --cwd` - is shown in full rather than as a leaf climbing out of cwdBase
 // with "..".
 func cwdLeaf(cwdBase, cwd string) (string, error) {
 	if cwd == "" {
@@ -1054,11 +1050,9 @@ func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
 		return logs, fmt.Errorf("Unmount failure(s): %w", err)
 	}
 
-	// delete any empty dirs. Whether there are any of ours to delete, and which
-	// they are, is left entirely to the workspace resolution: a CwdMatters Job
-	// is excluded there, even if it has an ActualCwd, because wr created no
-	// directory for it - one persisted by wr v0.37.0|1 can have ActualCwd set to
-	// Cwd, and there is nothing there for us to tidy up.
+	// delete any empty dirs; which of them are ours is left entirely to the
+	// workspace resolution, which excludes a CwdMatters Job even if it has an
+	// ActualCwd, because wr created no directory for one.
 	err = j.rmEmptyMountDirs()
 
 	return logs, err
@@ -1096,9 +1090,8 @@ func (j *Job) unmountAll(doNotUpload bool) (string, *multierror.Error) {
 // point(s) and its Cwd. It returns the error from the last cleanup attempted
 // (matching the original Unmount behaviour).
 //
-// Which dirs it may walk is decided by Job.resolveWorkSpace, the same resolution
-// Behaviour.cleanup uses, so the two cannot disagree about what wr created -
-// which is what they did, in opposite directions, in three rounds of this bug.
+// Which dirs it may walk is decided by the same resolution Behaviour.cleanup
+// uses, so the two cannot disagree about what wr created.
 func (j *Job) rmEmptyMountDirs() error {
 	ws := j.resolvedWorkSpaceOrNone()
 	if ws == nil {
@@ -1432,10 +1425,9 @@ func (j *Job) statusStreams() (jobStatusStreams, error) {
 
 // setActualCwd records cwd as the unique working directory that wr created below
 // Cwd for this Job's Cmd. A blank cwd is ignored, and so is any cwd for a
-// CwdMatters Job: that Cmd runs in the user's own Cwd, so there is no wr-created
-// working directory, and a blank ActualCwd is exactly how the rest of wr (the
-// cleanup behaviours in particular) knows the working directory must never be
-// deleted. Must be called with the Job locked.
+// CwdMatters Job: that Cmd runs in the user's own Cwd, and a blank ActualCwd is
+// how the rest of wr knows there is no wr-created directory to delete. Must be
+// called with the Job locked.
 func (j *Job) setActualCwd(cwd string) {
 	if cwd == "" || j.CwdMatters {
 		return
@@ -1448,11 +1440,10 @@ func (j *Job) setActualCwd(cwd string) {
 // Cwd, or "" if wr created none.
 //
 // It is "" for a CwdMatters Job whatever ActualCwd says, because wr creates no
-// directory for one: the Cmd runs in the user's own Cwd. setActualCwd refuses to
-// write ActualCwd on such a Job, but one persisted by wr v0.37.0|1 can still be
-// read back carrying Cwd there, and every caller of this is deciding something
-// about a directory wr owns - what to display as the leaf below Cwd, where to
-// mount, what may be tidied up. Must be called with at least an RLock held.
+// directory for one. setActualCwd refuses to write ActualCwd on such a Job, but
+// one persisted by wr v0.37.0|1 can still be read back carrying Cwd there, and
+// every caller of this is deciding something about a directory wr owns. Must be
+// called with at least an RLock held.
 func (j *Job) createdCwd() string {
 	if j.CwdMatters {
 		return ""
@@ -1468,10 +1459,9 @@ func (j *Job) createdCwd() string {
 // Cwd, because its Cmd runs in a unique directory below Cwd, not in Cwd.
 //
 // CwdMatters is checked FIRST so that ActualCwd is ignored entirely on such a
-// Job, rather than only when it happens to be empty. setActualCwd refuses to
-// write it there, but a Job persisted by v0.37.x can still be read back with
-// the poisoned value, and this is what wr displays and offers to ssh to.
-// Must be called with at least an RLock held.
+// Job rather than only when it is empty, since a Job persisted by v0.37.x can be
+// read back carrying Cwd there and this is what wr displays and offers to ssh
+// to. Must be called with at least an RLock held.
 func (j *Job) workingDir() string {
 	if j.CwdMatters {
 		return j.Cwd
@@ -1952,20 +1942,17 @@ func (j *JobModifier) overrideKeyContainer(newJob *Job) {
 // any ActualCwd the modifications have invalidated.
 //
 // ActualCwd is the working directory mkHashedDir built below Cwd from the job's
-// Key(), and that is exactly what licenses cleanup to sweep its parent and a
-// `run` behaviour to execute in it: the path is recognised by rebuilding it from
-// the key. So the pair has to stay consistent, and Key() covers the Cmd, the
-// MountConfigs and the container image, every one of which is modifiable here.
-// A modification that changes the key leaves the stored path describing a job
-// definition that no longer exists, and "wr created nothing for this job" - a
-// blank ActualCwd, which cleanup already treats as nothing to do - is then the
+// Key(), and rebuilding that path from the key is exactly what licenses cleanup
+// to sweep its parent and a `run` behaviour to execute in it. So the pair has to
+// stay consistent, and Key() covers the Cmd, the MountConfigs and the container
+// image, every one of which is modifiable here: a modification that changes the
+// key leaves the stored path describing a job definition that no longer exists,
+// and a blank ActualCwd - which cleanup treats as nothing to do - is then the
 // true account of it.
 //
-// The test is the key itself rather than a clear in each Set* method, because
-// the question is not which fields were touched but whether what was stored is
-// still the path this job's definition builds. A modification that sets a field
-// to the value it already had changes no key and keeps its workspace; one that
-// changes a key-relevant field any of the six ways applyTo can leaks a workspace
+// The test is the key itself rather than a clear in each Set* method, because the
+// question is not which fields were touched but whether what was stored is still
+// the path this job's definition builds. Clearing too eagerly leaks a workspace
 // rather than pointing a deletion at something else. applyCmdCwd clears it for a
 // Cwd change separately, since moving Cwd invalidates the path without changing
 // the key.
@@ -1993,16 +1980,15 @@ func (j *JobModifier) applyCmdCwd(job *Job) {
 	// ActualCwd names a wr-created working directory below the Cwd the job last
 	// ran in, and is what lets the cleanup behaviours treat its parent as a
 	// disposable workspace. Setting a Cwd, or making the job run in Cwd itself,
-	// means it has no such directory any more, so a stale value must not survive
-	// either modification. (We can't skip the clear when the supplied Cwd equals
-	// the job's: cmd/mod.go passes the flag through unnormalised, so they could
-	// name the same dir without matching.)
+	// means it has no such directory any more. (The clear can't be skipped when
+	// the supplied Cwd equals the job's: cmd/mod.go passes the flag through
+	// unnormalised, so they could name the same dir without matching.)
 	//
-	// Neither clear is covered by applyTo's key check. A Cwd change on a job
-	// where Cwd is not part of the key changes no key, and a --cwd_matters on a
-	// job that already had it set changes none either - yet that job is exactly
-	// the one wr v0.37.0|1 persisted with ActualCwd poisoned to Cwd, and this is
-	// where a user clears it.
+	// Neither clear is covered by applyTo's key check: a Cwd change on a job
+	// where Cwd is not part of the key changes no key, and nor does a
+	// --cwd_matters on a job that already had it set - which is the job wr
+	// v0.37.0|1 persisted with ActualCwd poisoned to Cwd, and this is where a
+	// user clears it.
 	if j.Cwd != "" {
 		job.Cwd = j.Cwd
 		job.ActualCwd = ""
@@ -2105,12 +2091,11 @@ func (j *JobModifier) applyScheduling(job *Job) {
 //
 // The cleanup filter deliberately runs over the merged result rather than over
 // j.Behaviours: mod's semantics are "replace what this trigger does", so
-// filtering a cleanup out of j.Behaviours would leave the trigger unmentioned
-// and mergeBehaviours would keep the job's old behaviour for it, the opposite
-// of what was asked for. It also runs when no behaviours were modified at all,
-// so that `wr mod --cwd_matters` drops a cleanup the job already stored. applyTo
-// applies the Cwd modifications first, so job.CwdMatters is by now the value
-// this modification leaves the job with.
+// filtering a cleanup out of j.Behaviours would leave the trigger unmentioned and
+// mergeBehaviours would keep the job's old behaviour for it. It also runs when no
+// behaviours were modified at all, so that `wr mod --cwd_matters` drops a cleanup
+// the job already stored. applyTo applies the Cwd modifications first, so
+// job.CwdMatters is by now the value this modification leaves the job with.
 func (j *JobModifier) applyBehaviours(job *Job) {
 	if j.BehavioursSet {
 		job.Behaviours = mergeBehaviours(job.Behaviours, j.Behaviours)
@@ -2123,11 +2108,9 @@ func (j *JobModifier) applyBehaviours(job *Job) {
 func (j *JobModifier) applyContainer(job *Job) {
 	if j.MountConfigsSet {
 		// a COPY per job, because one JobModifier is applied to every job of a
-		// `wr mod --mounts` batch: assigning the modifier's own slice gave all
-		// of them one backing array, guarded by as many different mutexes as
-		// there were jobs. Job.Key() no longer writes through it (see
-		// MountConfigs.Key), but a slice shared between jobs that are otherwise
-		// independent is a standing invitation to the next writer.
+		// `wr mod --mounts` batch: assigning the modifier's own slice would give
+		// all of them one backing array, guarded by as many different mutexes as
+		// there were jobs.
 		job.MountConfigs = slices.Clone(j.MountConfigs)
 	}
 
