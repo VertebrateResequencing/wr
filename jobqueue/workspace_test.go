@@ -870,12 +870,12 @@ func TestRunDirWithoutProcFD(t *testing.T) {
 			So(buff.String(), ShouldBeEmpty)
 		})
 
-		Convey("nor for a Job it made none for, which runs in its own Cwd", func() {
+		Convey("nor for a CwdMatters Job, which runs in its own Cwd", func() {
 			// there is no handle to pin here and there never was one to lose:
 			// Cwd is the directory no proof was made about. Warning about it
-			// would cry wolf for every Job that has yet to report an ActualCwd,
-			// which is the ordinary case.
-			job := &Job{Cwd: cwd, Cmd: testWSCmd}
+			// would cry wolf for every CwdMatters Job, which is the only kind
+			// that runs there - see cwdRunDir.
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, CwdMatters: true}
 
 			So(runBehaviour().Trigger(OnExit, job), ShouldBeNil)
 
