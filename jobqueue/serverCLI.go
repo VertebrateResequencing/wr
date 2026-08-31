@@ -804,7 +804,7 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 	// clean up any past state to have a fresh job ready to run
 	sjob := item.Data().(*Job) //nolint:errcheck,forcetypeassert // queue only ever stores *Job
 
-	sgroup, retries, ub := resetJobForReservation(sjob, cr.ClientID)
+	sgroup, retries, ub := s.resetJobForReservation(sjob, cr.ClientID)
 
 	delay := s.setItemDelay(ctx, item.Key, retries, ub)
 
@@ -836,7 +836,15 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 // resetJobForReservation clears a job's past run state ready for a fresh run by
 // the reserving client, returning its scheduler group, retries and
 // until-buried count (read under the same lock).
-func resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, uint8, uint8) {
+//
+// This is where a RUN of a job begins, so it is where the manager mints the
+// run's identity (see runToken) and where every field that described the run
+// BEFORE it stops describing this one. A reservation is the first thing the
+// runner has that is about to make a working directory, mount filesystems and
+// start a Cmd, and it does all of that before its Started ever reaches the
+// manager: a decision pinned to the previous run and carried out in that window
+// lands on a Cmd that is already executing.
+func (s *Server) resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, uint8, uint8) {
 	sjob.Lock()
 	defer sjob.Unlock()
 
@@ -851,6 +859,25 @@ func resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, uint8, uint8
 	sjob.PeakDisk = 0
 	sjob.Exitcode = -1
 	sjob.killCalled = false
+
+	// the identity of the run that is beginning. Nothing pinned to any earlier
+	// run of this job answers to it, which is what stops a confirmation made
+	// about a run that is over being carried out on this one.
+	sjob.runID = s.mintRunToken()
+
+	// this run has not been lost. A lost run that is released - by `wr kill`, or
+	// by the cloud scheduler destroying its server - carries Lost all the way
+	// back into the run sub-queue on its next reservation, and Lost is what every
+	// lost-run decision is gated on. It also parks the job for ever: ttrCallback
+	// refuses to re-mark an already-lost job, so no fresh confirmation is ever
+	// started for the run that is really happening.
+	sjob.Lost = false
+
+	// and it has not made a working directory yet. ActualCwd is what cleanup
+	// deletes and what a `run` behaviour executes in, so carrying the previous
+	// run's here aims both at a directory this run has never been in - which is,
+	// for a job whose runs share a Cwd, an OLDER workspace of the same job.
+	sjob.ActualCwd = ""
 
 	return sjob.schedulerGroup, sjob.Retries, sjob.UntilBuried
 }
@@ -881,10 +908,11 @@ func (s *Server) handleStart(ctx context.Context, cr *clientRequest) (*serverRes
 // applyJobStart records the host/pid/start-time of a started job under lock,
 // returning false (changing nothing) if the request lacked a pid or host.
 //
-// This is the one place a run of a job begins, so it is where the manager mints
-// the run's identity (see runToken) and where it learns the working directory
-// the runner made for it, which the runner has already created by the time it
-// calls Started (Client.resolveWorkingDir runs before Client.Started).
+// It is where the manager first learns the working directory the runner made for
+// this run, which the runner has already created by the time it calls Started
+// (Client.resolveWorkingDir runs before Client.Started). It does NOT mint the
+// run's identity: the run began at Reserve, and resetJobForReservation both
+// minted it and cleared the fields this one is about to fill in.
 func (s *Server) applyJobStart(job, crJob *Job) bool {
 	job.Lock()
 	defer job.Unlock()
@@ -903,13 +931,6 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 	job.StartTime = time.Now()
 	job.EndTime = time.Time{}
 	job.Attempts++
-	job.runID = s.mintRunToken()
-
-	// the previous run's working directory is not this run's, and every reader
-	// of ActualCwd - cleanup, the `run` behaviour, the status page - is asking
-	// about the run that is happening now. A stale value pointed all three at a
-	// directory this run has never been in.
-	job.ActualCwd = ""
 	job.setActualCwd(crJob.ActualCwd)
 
 	job.Lost = false

@@ -508,7 +508,7 @@ type Job struct {
 	killCalled bool
 
 	// runID identifies the RUN this Job is currently on, and is minted by the
-	// manager at every start. It is server side only: see runToken.
+	// manager at every reservation. It is server side only: see runToken.
 	runID runToken
 
 	// incrementedLimitGroups notes that we have incremented limit groups for
@@ -1452,14 +1452,29 @@ func (j *Job) statusStreams() (jobStatusStreams, error) {
 // In each of those, comparing it compares nothing: "" == "" for two different
 // runs, and a stale value from the previous run for a third.
 //
-// So the token is minted by the MANAGER, in applyJobStart, which is the one
-// place a run begins and the one thing every run has whatever it reports. It is
-// unexported and never leaves the manager: it is only ever compared for equality
-// with a token this manager minted, so a Job recovered from the database after a
-// crash carries the zero token, which is the run this manager found in progress
-// and is distinct from every run it goes on to mint (mintRunToken counts from 1).
+// So the token is minted by the MANAGER, in resetJobForReservation, and it is
+// the one thing every run has whatever it reports. It is unexported and never
+// leaves the manager: it is only ever compared for equality with a token this
+// manager minted, so a Job recovered from the database after a crash carries the
+// zero token, which is the run this manager found in progress and is distinct
+// from every run it goes on to mint (mintRunToken counts from 1).
 //
-// Job.Attempts is minted in the same place and was the obvious candidate, but it
+// A run BEGINS AT RESERVE, which is why that is where it is minted. Everything
+// the runner does that another run's decision could destroy - making the working
+// directory, mounting remote filesystems, starting the Cmd - it does after the
+// reservation and before its Started ever reaches the manager, and the manager's
+// own reservation reset is what puts the job back in the run sub-queue where
+// every lost-run decision looks for it. Minting at Started left that whole
+// window carrying the PREVIOUS run's token: `wr kill` on a lost job releases it,
+// a runner reserves the retry, and the confirmation that comes back seconds
+// later matched the retry and killed a Cmd that was already executing.
+//
+// A run recovered from the database is the one case with no reservation of this
+// manager's behind it, and that is exactly the zero token: a pin taken of it
+// names run 0, and every run this manager reserves afterwards names something
+// else.
+//
+// Job.Attempts was the obvious candidate, but it
 // is a COUNT rather than an identity: resetJobStatusFields sets it back to 0 so
 // that a web-UI rerun starts counting again, which makes it non-monotonic, and
 // it is an exported field that goes over the wire and that a runner keeps its
@@ -1471,10 +1486,13 @@ type runToken uint64
 // given token was minted for. The caller must hold at least the Job's read lock.
 //
 // It is the only thing standing between a decision made about one run and its
-// being carried out on another, and both halves are needed: a job that recovered
-// on a touch, or was released and re-reserved, is not the lost run whatever its
-// token says, and a job that is lost again is a DIFFERENT loss with its own
-// confirmation on the way.
+// being carried out on another, and both halves are needed. A job that recovered
+// on a touch is not lost, whatever its token says. A job that was released and
+// re-reserved is neither: its reservation minted it a token of its own and took
+// it off lost in the same breath (resetJobForReservation), so both halves answer
+// no for it from the moment the retry exists - before its runner has made a
+// directory, mounted anything or started a Cmd, all of which happen before the
+// manager hears a word from it.
 func (j *Job) isLostRunLocked(run runToken) bool {
 	return j.Lost && j.runID == run
 }
