@@ -94,6 +94,13 @@ func (j *Job) workSpaceSnapshot() jobWorkSpaceSnapshot {
 	j.RLock()
 	defer j.RUnlock()
 
+	return j.workSpaceSnapshotLocked()
+}
+
+// workSpaceSnapshotLocked is workSpaceSnapshot for a caller that already holds
+// at least the Job's read lock, so that the snapshot can be taken in the same
+// breath as everything else that has to be pinned with it - see pinBehaviours.
+func (j *Job) workSpaceSnapshotLocked() jobWorkSpaceSnapshot {
 	return jobWorkSpaceSnapshot{
 		cwdMatters: j.CwdMatters,
 		cwd:        j.Cwd,
@@ -243,6 +250,10 @@ type jobWorkSpace struct {
 // this Job, holds the Cwd open, and resolves and classifies every mount point
 // and cache location in the same breath, so that no caller has to - or is able
 // to - work any of it out again.
+//
+// Asked of a SNAPSHOT, not the live Job: applyLiveSnapshot rewrites ActualCwd
+// under the Job's lock while cleanup walks. Lost jobs snapshot at the lost
+// decision, as the kill releases the Job and a later read gets the RETRY's cwd.
 //
 // A nil result with a nil error means wr created nothing here that it may
 // delete: see paths() for the cases, plus a Job Cwd that has itself already

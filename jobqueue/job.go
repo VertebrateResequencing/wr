@@ -503,6 +503,10 @@ type Job struct {
 	// killCalled is set for running jobs if Kill() is called on them.
 	killCalled bool
 
+	// runID identifies the RUN this Job is currently on, and is minted by the
+	// manager at every reservation. It is server side only: see runToken.
+	runID runToken
+
 	// incrementedLimitGroups notes that we have incremented limit groups for
 	// this job, so they should be decremented when the job finishes running.
 	incrementedLimitGroups []string
@@ -1448,6 +1452,69 @@ func (j *Job) statusStreams() (jobStatusStreams, error) {
 	streams.envOverrides, err = j.envCurrentOverrides()
 
 	return streams, err
+}
+
+// runToken identifies ONE run of a Job, in the manager that minted it.
+//
+// Nothing else can. A Job's Key() is the same for every run of it by
+// construction - that is what makes it a key - and every path proof is a proof
+// about a directory, so two runs of one job cannot be told apart by anything the
+// filesystem knows either. The state a run leaves on the shared *Job is no
+// better: it is REPORTED by the runner, when the runner gets round to it and if
+// it has anything to report, and a decision about one run that is carried out on
+// another kills a job that is alive.
+//
+// ActualCwd was tried as that identity and is not one. It is blank for the whole
+// of every run of a cwd_matters job (setActualCwd), blank for every run on a
+// manager with no web port (liveJTouchEnabled gates the touch snapshots that
+// carry it), and blank until a run's first Touch - which for a run that dies
+// inside ClientTouchInterval is for ever, and dying is what makes a run lost.
+// In each of those, comparing it compares nothing: "" == "" for two different
+// runs, and a stale value from the previous run for a third.
+//
+// So the token is minted by the MANAGER, in resetJobForReservation, and it is
+// the one thing every run has whatever it reports. It is unexported and never
+// leaves the manager: it is only ever compared for equality with a token this
+// manager minted, so a Job recovered from the database after a crash carries the
+// zero token, which is the run this manager found in progress and is distinct
+// from every run it goes on to mint (mintRunToken counts from 1).
+//
+// A run BEGINS AT RESERVE, which is why that is where it is minted. Everything
+// the runner does that another run's decision could destroy - making the working
+// directory, mounting remote filesystems, starting the Cmd - it does after the
+// reservation and before its Started ever reaches the manager, and the manager's
+// own reservation reset is what puts the job back in the run sub-queue where
+// every lost-run decision looks for it. Minting at Started left that whole
+// window carrying the PREVIOUS run's token: `wr kill` on a lost job releases it,
+// a runner reserves the retry, and the confirmation that comes back seconds
+// later matched the retry and killed a Cmd that was already executing.
+//
+// A run recovered from the database is the one case with no reservation of this
+// manager's behind it, and that is exactly the zero token: a pin taken of it
+// names run 0, and every run this manager reserves afterwards names something
+// else.
+//
+// Job.Attempts was the obvious candidate, but it is a COUNT rather than an
+// identity: resetJobStatusFields sets it back to 0 so that a web-UI rerun
+// starts counting again, which makes it non-monotonic, and
+// it is an exported field that goes over the wire and that a runner keeps its
+// own copy of (client.go's Started). An identity that another feature is free to
+// reset is not an identity.
+type runToken uint64
+
+// isLostRunLocked says whether this Job is still lost, and still the RUN the
+// given token was minted for. The caller must hold at least the Job's read lock.
+//
+// It is the only thing standing between a decision made about one run and its
+// being carried out on another, and both halves are needed. A job that recovered
+// on a touch is not lost, whatever its token says. A job that was released and
+// re-reserved is neither: its reservation minted it a token of its own and took
+// it off lost in the same breath (resetJobForReservation), so both halves answer
+// no for it from the moment the retry exists - before its runner has made a
+// directory, mounted anything or started a Cmd, all of which happen before the
+// manager hears a word from it.
+func (j *Job) isLostRunLocked(run runToken) bool {
+	return j.Lost && j.runID == run
 }
 
 // setActualCwd records cwd as the unique working directory that wr created below

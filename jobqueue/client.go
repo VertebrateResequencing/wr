@@ -2649,6 +2649,12 @@ func (c *Client) Started(job *Job, pid int) error {
 	requestJob.Host = job.Host
 	requestJob.HostIP = job.HostIP
 	requestJob.Pid = job.Pid
+
+	// the working directory this run is going to use, which resolveWorkingDir
+	// has already created. Reporting it HERE is what lets the manager clean up
+	// after a run that dies without ever touching, and after every run at all on
+	// a manager with no web port, which never asks for a live snapshot.
+	requestJob.ActualCwd = job.ActualCwd
 	job.Unlock()
 
 	_, err = c.request(&clientRequest{Method: requestMethodStart, Job: requestJob})
