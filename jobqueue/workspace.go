@@ -210,7 +210,9 @@ type jobWorkSpace struct {
 	// cwdRoot is an open handle on the Job's Cwd, and every deletion is made
 	// through it rather than through a re-resolved path string: a relative
 	// operation on a root cannot leave that root, so a component swapped for a
-	// symlink after the proof cannot redirect a deletion out of Cwd.
+	// symlink after the proof cannot redirect a deletion out of Cwd. It is the
+	// same handle proven holds as its root, not a second one on the same
+	// directory.
 	cwdRoot *os.Root
 
 	// proven is the workspace, proven to be a real directory strictly inside
@@ -505,7 +507,7 @@ func (p *workSpacePaths) proveActualCwd(cwdRoot *os.Root, absent absenceRule) (o
 		errNotBelowBaseDir, p.actualCwd, p.cwd)
 }
 
-// Close releases the handle on the Job's Cwd.
+// Close releases the handle on the Job's Cwd, and so also the root proven holds.
 func (ws *jobWorkSpace) Close() {
 	ws.cwdRoot.Close()
 }
