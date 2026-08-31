@@ -117,12 +117,15 @@ func TestBehaviours(t *testing.T) {
 			_, err = os.Stat(foo)
 			So(err, ShouldNotBeNil)
 
+			// job2 is not CwdMatters and has reported no ActualCwd, so its Cmd
+			// never ran in Cwd and the behaviour must not run there either; see
+			// jobWorkSpaceSnapshot.cwdRunDir.
 			err = b5.Trigger(OnSuccess, job2)
-			So(err, ShouldBeNil)
+			So(err, ShouldNotBeNil)
 
 			foo2 := filepath.Join(cwd, "foo")
 			_, err = os.Stat(foo2)
-			So(err, ShouldBeNil)
+			So(err, ShouldNotBeNil)
 
 			err = b1.Trigger(OnSuccess|OnFailure, job1)
 			So(err, ShouldBeNil)
@@ -1421,21 +1424,30 @@ func TestBehaviourRunDir(t *testing.T) {
 			So(ranIn(scripts), ShouldBeFalse)
 		})
 
-		Convey("run executes in Cwd when wr created no working directory", func() {
-			// a Job that has yet to report an ActualCwd has no unique directory
-			// of its own, and Cwd is the only directory we know of. That is the
-			// sound half of the old behaviourRunDir fallback, and it is kept.
+		Convey("run refuses to fall back to Cwd for a Job whose Cmd never ran there", func() {
+			// a Job that is not CwdMatters ran in a working directory wr made
+			// for it, and a blank ActualCwd means only that THIS process never
+			// learned which one: the manager learns it from a Touch, and a
+			// manager with no web port never gets one (liveJTouchEnabled). The
+			// old fallback ran the user's command in their own Cwd on that
+			// basis, so `--on_exit '{"run":"rm -f *.tmp"}'` for a lost job
+			// deleted their files somewhere the Job had never been.
 			job := &Job{Cwd: cwd, Cmd: testWSCmd}
 
-			So(run.Trigger(OnExit, job), ShouldBeNil)
+			err := run.Trigger(OnExit, job)
 
-			So(ranIn(cwd), ShouldBeTrue)
+			So(ranIn(cwd), ShouldBeFalse)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotACreatedCwd), ShouldBeTrue)
 		})
 
 		Convey("run executes in Cwd for a CwdMatters Job, whatever its ActualCwd says", func() {
 			// wr <= v0.37.1 persisted ActualCwd == Cwd on such a Job, and a
 			// runner can report anything; wr creates no directory for one, so
-			// the Cmd ran in the user's own Cwd and the behaviour must too.
+			// the Cmd ran in the user's own Cwd and the behaviour must too. This
+			// is the sound HALF of the old behaviourRunDir fallback, and the
+			// only half: CwdMatters is what makes Cwd the directory the Cmd
+			// really ran in.
 			job := &Job{Cwd: cwd, Cmd: testWSCmd, CwdMatters: true, ActualCwd: scripts}
 
 			So(run.Trigger(OnExit, job), ShouldBeNil)
@@ -1649,7 +1661,10 @@ func TestBehaviourRunDir(t *testing.T) {
 		})
 
 		Convey("run refuses a relative Cwd", func() {
-			job := &Job{Cwd: "beside", Cmd: testWSCmd}
+			// CwdMatters, because Cwd is only ever the directory a `run` runs in
+			// for such a Job: it is the one path onto absJobDir that a Job with
+			// no working directory of its own still reaches.
+			job := &Job{Cwd: "beside", Cmd: testWSCmd, CwdMatters: true}
 
 			err = run.Trigger(OnExit, job)
 

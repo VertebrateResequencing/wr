@@ -367,11 +367,9 @@ func (j *Job) resolvedWorkSpaceOrNone() *jobWorkSpace {
 // can. A refusal fails the behaviour loudly and runs nothing, which is the same
 // way round as cleanup leaking a workspace rather than deleting the wrong one.
 //
-// A Job wr created no working directory for still runs in its Cwd. That is the
-// sound half of the old behaviourRunDir: a CwdMatters Job's Cmd really did run
-// in the user's own Cwd, and a Job that has yet to report an ActualCwd has no
-// directory of its own for the behaviour to run in. Cwd is still required to be
-// absolute, for the reason absJobDir gives.
+// A CwdMatters Job runs in its Cwd. That is the sound half of the old
+// behaviourRunDir - and the only sound half; see cwdRunDir for what the other
+// half did.
 //
 // The one thing it asks differently is absenceRefused. Sharing a resolution is
 // what makes the two consumers agree; it is not a reason for one of them to
@@ -388,7 +386,7 @@ func (s jobWorkSpaceSnapshot) resolveRunDir() (*runDir, error) {
 	}
 
 	if paths == nil {
-		return unheldRunDir(absJobDir("cwd", s.cwd))
+		return s.cwdRunDir()
 	}
 
 	ws, err := paths.prove(absenceRefused)
@@ -406,6 +404,32 @@ func (s jobWorkSpaceSnapshot) resolveRunDir() (*runDir, error) {
 	}
 
 	return ws.openRunDir()
+}
+
+// cwdRunDir answers resolveRunDir for a Job wr created no working directory for,
+// which is the one case where a `run` Behaviour has no proven directory of the
+// Job's to run in.
+//
+// A CwdMatters Job's Cmd really did run in the user's own Cwd, so the behaviour
+// runs there too, and Cwd is still required to be absolute for the reason
+// absJobDir gives.
+//
+// Any other Job's Cmd did NOT. It ran in a working directory wr made for it, and
+// a blank ActualCwd means only that this process never learned which one: the
+// manager learns it from a Touch carrying a live snapshot, and a manager with no
+// web port never enables those (liveJTouchEnabled), so for a lost job it never
+// learns it at all. Running the user's command in their Cwd on that basis
+// executed it somewhere the Job had never been, with everything of theirs that
+// lives there: `--on_exit '{"run":"rm -f *.tmp"}'` deleted their files. Refusing
+// is the same way round as cleanup leaking a workspace rather than deleting the
+// wrong directory.
+func (s jobWorkSpaceSnapshot) cwdRunDir() (*runDir, error) {
+	if !s.cwdMatters {
+		return nil, fmt.Errorf("%w: %s reported no working directory to run in",
+			errNotACreatedCwd, s.key)
+	}
+
+	return unheldRunDir(absJobDir("cwd", s.cwd))
 }
 
 // runDir is the directory a `run` Behaviour's command is to be executed in, with
