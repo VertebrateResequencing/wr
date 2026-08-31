@@ -507,6 +507,10 @@ type Job struct {
 	// killCalled is set for running jobs if Kill() is called on them.
 	killCalled bool
 
+	// runID identifies the RUN this Job is currently on, and is minted by the
+	// manager at every start. It is server side only: see runToken.
+	runID runToken
+
 	// incrementedLimitGroups notes that we have incremented limit groups for
 	// this job, so they should be decremented when the job finishes running.
 	incrementedLimitGroups []string
@@ -1428,6 +1432,51 @@ func (j *Job) statusStreams() (jobStatusStreams, error) {
 	streams.envOverrides, err = j.envCurrentOverrides()
 
 	return streams, err
+}
+
+// runToken identifies ONE run of a Job, in the manager that minted it.
+//
+// Nothing else can. A Job's Key() is the same for every run of it by
+// construction - that is what makes it a key - and every path proof is a proof
+// about a directory, so two runs of one job cannot be told apart by anything the
+// filesystem knows either. The state a run leaves on the shared *Job is no
+// better: it is REPORTED by the runner, when the runner gets round to it and if
+// it has anything to report, and a decision about one run that is carried out on
+// another kills a job that is alive.
+//
+// ActualCwd was tried as that identity and is not one. It is blank for the whole
+// of every run of a cwd_matters job (setActualCwd), blank for every run on a
+// manager with no web port (liveJTouchEnabled gates the touch snapshots that
+// carry it), and blank until a run's first Touch - which for a run that dies
+// inside ClientTouchInterval is for ever, and dying is what makes a run lost.
+// In each of those, comparing it compares nothing: "" == "" for two different
+// runs, and a stale value from the previous run for a third.
+//
+// So the token is minted by the MANAGER, in applyJobStart, which is the one
+// place a run begins and the one thing every run has whatever it reports. It is
+// unexported and never leaves the manager: it is only ever compared for equality
+// with a token this manager minted, so a Job recovered from the database after a
+// crash carries the zero token, which is the run this manager found in progress
+// and is distinct from every run it goes on to mint (mintRunToken counts from 1).
+//
+// Job.Attempts is minted in the same place and was the obvious candidate, but it
+// is a COUNT rather than an identity: resetJobStatusFields sets it back to 0 so
+// that a web-UI rerun starts counting again, which makes it non-monotonic, and
+// it is an exported field that goes over the wire and that a runner keeps its
+// own copy of (client.go's Started). An identity that another feature is free to
+// reset is not an identity.
+type runToken uint64
+
+// isLostRunLocked says whether this Job is still lost, and still the RUN the
+// given token was minted for. The caller must hold at least the Job's read lock.
+//
+// It is the only thing standing between a decision made about one run and its
+// being carried out on another, and both halves are needed: a job that recovered
+// on a touch, or was released and re-reserved, is not the lost run whatever its
+// token says, and a job that is lost again is a DIFFERENT loss with its own
+// confirmation on the way.
+func (j *Job) isLostRunLocked(run runToken) bool {
+	return j.Lost && j.runID == run
 }
 
 // setActualCwd records cwd as the unique working directory that wr created below

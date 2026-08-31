@@ -457,6 +457,11 @@ func (bs Behaviours) trigger(success bool, ws jobWorkSpaceSnapshot) error {
 type pinnedBehaviours struct {
 	behaviours Behaviours
 	workSpace  jobWorkSpaceSnapshot
+
+	// run is the token the manager minted for the run this pin belongs to, and
+	// is what says the pin is still about the run at the queue when the time
+	// comes to act on it. See runToken and Job.isLostRunLocked.
+	run runToken
 }
 
 // pinBehaviours pins this Job's Behaviours and the state they must act on, as
@@ -473,7 +478,7 @@ func (j *Job) pinBehaviours() pinnedBehaviours {
 // decision it belongs to - which for the manager is the moment it declares the
 // job lost, not the moment 15 seconds later when it gets round to the kill.
 func (j *Job) pinBehavioursLocked() pinnedBehaviours {
-	return pinnedBehaviours{behaviours: j.Behaviours, workSpace: j.workSpaceSnapshotLocked()}
+	return pinnedBehaviours{behaviours: j.Behaviours, workSpace: j.workSpaceSnapshotLocked(), run: j.runID}
 }
 
 // trigger runs the pinned Behaviours against the pinned state, as

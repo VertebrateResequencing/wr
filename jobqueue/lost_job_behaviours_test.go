@@ -69,7 +69,28 @@ const (
 	// noBehaviourWindow is how long a test watches a resumed manager it expects
 	// to run no behaviour at all.
 	noBehaviourWindow = 2 * time.Second
+
+	// retryOutputName is what a cwd_matters retry calls the file it is part way
+	// through writing. It ends in .tmp because the lost run's `run` behaviour
+	// deletes *.tmp in the directory it is given, which is the ordinary shape of
+	// an --on_failure cleanup command and what makes the wrong directory fatal.
+	retryOutputName = "retry_output.tmp"
 )
+
+// lostRunOpts says which ordinary manager and job the fixture is to be. Each
+// combination is a case in which the reported ActualCwd is blank or stale for
+// the whole of a run, so that pinning it identifies no run at all.
+type lostRunOpts struct {
+	// cwdMatters makes the job a --cwd_matters one, which runs directly in the
+	// user's own Cwd and so never has a working directory of wr's - its
+	// ActualCwd is permanently blank (Job.setActualCwd).
+	cwdMatters bool
+
+	// webless makes the fixture behave as a manager with no web port does: it
+	// never enables the live touch snapshots (liveJTouchEnabled), so it learns
+	// nothing about a run after its Started.
+	webless bool
+}
 
 // lostRun is a real manager with one real job in it, reserved, started with a
 // pid that is really dead, and given the workspace a real mkHashedDir made for
@@ -86,6 +107,7 @@ const (
 type lostRun struct {
 	server *Server
 	client *Client
+	opts   lostRunOpts
 
 	// key and live are the job's key and the manager's own *Job for it, which is
 	// what every run of the job shares and what a retry writes itself onto.
@@ -139,13 +161,14 @@ type lostRun struct {
 }
 
 // newLostRun builds the fixture. The caller must defer stop().
-func newLostRun(ctx context.Context, t *testing.T, rg string) *lostRun {
+func newLostRun(ctx context.Context, t *testing.T, rg string, opts ...lostRunOpts) *lostRun {
 	t.Helper()
 
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(false)
 	serverConfig.Timings.ItemTTR = lostRunTTR
 
 	l := &lostRun{
+		opts:        firstLostRunOpts(opts),
 		cwd:         t.TempDir(),
 		deadChecked: make(chan struct{}), proceed: make(chan struct{}),
 		killed: make(chan bool), resume: make(chan struct{}),
@@ -167,6 +190,16 @@ func newLostRun(ctx context.Context, t *testing.T, rg string) *lostRun {
 	return l
 }
 
+// firstLostRunOpts is the fixture's options, defaulting to the ordinary manager
+// running an ordinary job.
+func firstLostRunOpts(opts []lostRunOpts) lostRunOpts {
+	if len(opts) == 0 {
+		return lostRunOpts{}
+	}
+
+	return opts[0]
+}
+
 // installHooks points the manager's four test seams at this fixture. It runs
 // before Serve, because that is what orders it against the goroutines that read
 // them; the hooks are left in place afterwards, since taking them down again
@@ -179,14 +212,19 @@ func (l *lostRun) installHooks() {
 	cleanupProvenHook = func() { l.behaviourRan("cleanup") }
 }
 
-// startLostRun adds the job, reserves it, starts it with a dead pid and gives it
-// the workspace of the run that is about to be lost.
+// startLostRun adds the job, reserves it, makes the workspace of the run that is
+// about to be lost, and starts it with a dead pid.
+//
+// It does those last two in the order a runner does them: Client.Execute
+// resolves the working directory (resolveWorkingDir) before it calls Started, so
+// the run's own Started is the FIRST thing that can tell the manager where the
+// run is working, and on a manager with no web port it is the only thing.
 func (l *lostRun) startLostRun(jq *Client, rg string, reqs *scheduler.Requirements) {
 	job := &Job{
-		Cmd: restFormTrue, Cwd: l.cwd, RepGroup: rg, ReqGroup: rg,
+		Cmd: restFormTrue, Cwd: l.cwd, CwdMatters: l.opts.cwdMatters, RepGroup: rg, ReqGroup: rg,
 		Requirements: reqs, Retries: 3,
 		Behaviours: Behaviours{
-			{When: OnFailure, Do: Run, Arg: "pwd > " + l.ranIn},
+			{When: OnFailure, Do: Run, Arg: "pwd > " + l.ranIn + "; rm -f *" + filepath.Ext(retryOutputName)},
 			{When: OnExit, Do: CleanupAll},
 		},
 	}
@@ -201,17 +239,39 @@ func (l *lostRun) startLostRun(jq *Client, rg string, reqs *scheduler.Requiremen
 	l.key = reserved.Key()
 	l.live = l.liveJob()
 
+	l.makeLostWorkSpace(reserved)
+
 	// started with a pid that has already exited, so the manager's dead-check
 	// really does confirm this run dead, through the real scheduler.
 	So(jq.Started(reserved, exitedPid()), ShouldBeNil)
 
-	// the lost run's workspace, made by the real mkHashedDir and reported to the
-	// manager the way a Touch reports it, with output in it.
+	if !l.opts.cwdMatters && !l.opts.webless {
+		applyLiveSnapshot(l.live, &JobEndState{Cwd: l.lostCwd})
+	}
+}
+
+// makeLostWorkSpace makes the lost run's workspace with the real mkHashedDir,
+// puts output in it, and records it on the runner's own Job exactly as
+// Client.resolveWorkingDir does - which is what its Started then reports.
+//
+// A cwd_matters job gets none of that: its Cmd runs in the user's own Cwd, so wr
+// creates no working directory for it and its ActualCwd stays blank for the
+// whole of every run.
+func (l *lostRun) makeLostWorkSpace(reserved *Job) {
+	if l.opts.cwdMatters {
+		return
+	}
+
+	var err error
+
 	l.lostCwd, l.lostTmp, err = mkHashedDir(l.cwd, l.key)
 	So(err, ShouldBeNil)
 
 	l.lostOut = writeFileIn(l.lostCwd, "abandoned.txt")
-	applyLiveSnapshot(l.live, &JobEndState{Cwd: l.lostCwd})
+
+	reserved.Lock()
+	reserved.setActualCwd(l.lostCwd)
+	reserved.Unlock()
 }
 
 // handOver parks the manager, telling the test it has reached one of its two
@@ -346,13 +406,54 @@ func (l *lostRun) makeRetryWorkspace() (actualCwd, tmpDir, output string) {
 	return actualCwd, tmpDir, output
 }
 
-// startRetryInWindow starts the job again as a second run, the way a runner's
-// Started does (applyJobStart takes the job off lost), and reports the retry's
-// own working directory onto the same *Job.
-func (l *lostRun) startRetryInWindow() (actualCwd, tmpDir, output string) {
-	So(l.server.applyJobStart(l.live, &Job{Pid: os.Getpid(), Host: localhost}), ShouldBeTrue)
+// startRetryInWindow starts the job again as a second run, the way a runner
+// does: it makes whatever that run works in, then its Started tells the manager
+// (applyJobStart takes the job off lost), and only a manager with a web port
+// goes on to learn the directory again from the run's touches.
+//
+// A cwd_matters retry works in the shared Cwd, so what it has part way through
+// is a file beside the user's other ones rather than a directory of wr's.
+//
+// touched says whether the retry got as far as its first live Touch. A run's
+// touches are ClientTouchInterval apart - 15 seconds by default - so a run that
+// dies inside that interval, which is the commonest way a node kills a job, is
+// one no touch was ever received for.
+func (l *lostRun) startRetryInWindow(touched bool) (actualCwd, tmpDir, output string) {
+	if l.opts.cwdMatters {
+		l.startRetry("", touched)
 
-	return l.makeRetryWorkspace()
+		return "", "", writeFileIn(l.cwd, retryOutputName)
+	}
+
+	actualCwd, tmpDir, err := mkHashedDir(l.cwd, l.key)
+	So(err, ShouldBeNil)
+	So(actualCwd, ShouldNotEqual, l.lostCwd)
+
+	output = writeFileIn(actualCwd, retryOutputName)
+
+	l.startRetry(actualCwd, touched)
+
+	return actualCwd, tmpDir, output
+}
+
+// startRetry is the retry's own Started, carrying the working directory it has
+// already made, plus the touch snapshot a manager with a web port gets from a
+// run that lived long enough to touch.
+func (l *lostRun) startRetry(actualCwd string, touched bool) {
+	So(l.server.applyJobStart(l.live, &Job{Pid: os.Getpid(), Host: localhost, ActualCwd: actualCwd}),
+		ShouldBeTrue)
+
+	if actualCwd != "" && touched && !l.opts.webless {
+		applyLiveSnapshot(l.live, &JobEndState{Cwd: actualCwd})
+	}
+}
+
+// markRetryLost marks the live *Job lost, as a second TTR expiry does for a
+// retry that goes silent in its turn.
+func (l *lostRun) markRetryLost() {
+	l.live.Lock()
+	l.live.Lost = true
+	l.live.Unlock()
 }
 
 // exitedPid returns the pid of a process that has run and been reaped, so that
@@ -472,7 +573,7 @@ func TestLostJobBehavioursSpareARetryStartedInTheWindow(t *testing.T) {
 		// the job is released and reserved again while the manager is off asking
 		// whether the old run is dead - a retryable failure, or a `wr kill`.
 		l.waitForDeadCheckWindow()
-		retryCwd, retryTmp, retryOutput := l.startRetryInWindow()
+		retryCwd, retryTmp, retryOutput := l.startRetryInWindow(true)
 		l.proceedManager()
 
 		Convey("the manager acts on neither run", func() {
@@ -511,12 +612,8 @@ func TestLostJobBehavioursSpareASecondLostRun(t *testing.T) {
 		// run's and says nothing about this one - which has its own confirmation
 		// on the way.
 		l.waitForDeadCheckWindow()
-		retryCwd, retryTmp, retryOutput := l.startRetryInWindow()
-
-		l.live.Lock()
-		l.live.Lost = true
-		l.live.Unlock()
-
+		retryCwd, retryTmp, retryOutput := l.startRetryInWindow(true)
+		l.markRetryLost()
 		l.proceedManager()
 
 		Convey("the manager sweeps neither run", func() {
@@ -606,5 +703,115 @@ func TestPinBehavioursIsLocked(t *testing.T) {
 		wg.Wait()
 
 		soPathsExist(cwd)
+	})
+}
+
+func TestLostCwdMattersJobSparesItsSecondRun(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a lost cwd_matters job whose retry is itself lost in the dead-check window", t, func() {
+		l := newLostRun(ctx, t, "lost_job_cwd_matters", lostRunOpts{cwdMatters: true})
+
+		defer l.stop(ctx)
+
+		// a cwd_matters job's ActualCwd is blank for the whole of every run, so
+		// pinning it pins nothing: the run that was lost and the run that is
+		// live report the same blank directory, and only something the manager
+		// mints per run can tell them apart.
+		l.waitForDeadCheckWindow()
+		_, _, retryOutput := l.startRetryInWindow(true)
+		l.markRetryLost()
+		l.proceedManager()
+
+		Convey("the manager neither releases the live run nor runs the lost run's command", func() {
+			So(l.waitForKillDecision(), ShouldBeFalse)
+
+			// the live retry is part way through writing this, in the Cwd the
+			// lost run's `run` command would have been executed in.
+			soPathsExist(retryOutput)
+			soPathsGone(l.ranIn)
+
+			state, killCalled := l.jobStateAndKillCalled()
+			So(state, ShouldEqual, JobStateRunning)
+			So(killCalled, ShouldBeFalse)
+
+			l.soNoBehaviourRuns()
+			soPathsExist(retryOutput)
+		})
+	})
+}
+
+func TestLostJobOnWeblessManagerSparesItsSecondRun(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a webless manager's lost job whose retry is itself lost in the window", t, func() {
+		l := newLostRun(ctx, t, "lost_job_webless", lostRunOpts{webless: true})
+
+		defer l.stop(ctx)
+
+		l.waitForDeadCheckWindow()
+		retryCwd, retryTmp, retryOutput := l.startRetryInWindow(true)
+		l.markRetryLost()
+		l.proceedManager()
+
+		Convey("the manager sweeps neither run", func() {
+			So(l.waitForKillDecision(), ShouldBeFalse)
+
+			soPathsExist(retryOutput, retryCwd, retryTmp, filepath.Dir(retryCwd))
+			soPathsExist(l.lostOut, l.lostCwd, l.lostTmp, filepath.Dir(l.lostCwd))
+			soPathsGone(l.ranIn)
+
+			state, killCalled := l.jobStateAndKillCalled()
+			So(state, ShouldEqual, JobStateRunning)
+			So(killCalled, ShouldBeFalse)
+
+			l.soNoBehaviourRuns()
+			soPathsExist(retryOutput, retryCwd, l.lostOut, l.lostCwd)
+		})
+	})
+}
+
+func TestLostJobSparesASecondRunThatNeverTouched(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a lost job whose retry is lost before its first touch", t, func() {
+		l := newLostRun(ctx, t, "lost_job_untouched_retry")
+
+		defer l.stop(ctx)
+
+		// the ordinary manager, and the ordinary way a node kills a job: the
+		// retry dies inside its first touch interval, so no touch of its own
+		// ever reaches the manager.
+		l.waitForDeadCheckWindow()
+		retryCwd, retryTmp, retryOutput := l.startRetryInWindow(false)
+		l.markRetryLost()
+		l.proceedManager()
+
+		Convey("the manager sweeps neither run", func() {
+			So(l.waitForKillDecision(), ShouldBeFalse)
+
+			soPathsExist(retryOutput, retryCwd, retryTmp, filepath.Dir(retryCwd))
+			soPathsExist(l.lostOut, l.lostCwd, l.lostTmp, filepath.Dir(l.lostCwd))
+			soPathsGone(l.ranIn)
+
+			state, killCalled := l.jobStateAndKillCalled()
+			So(state, ShouldEqual, JobStateRunning)
+			So(killCalled, ShouldBeFalse)
+
+			l.soNoBehaviourRuns()
+			soPathsExist(retryOutput, retryCwd, l.lostOut, l.lostCwd)
+		})
 	})
 }

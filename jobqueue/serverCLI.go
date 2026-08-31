@@ -880,6 +880,9 @@ func (s *Server) handleStart(ctx context.Context, cr *clientRequest) (*serverRes
 
 // applyJobStart records the host/pid/start-time of a started job under lock,
 // returning false (changing nothing) if the request lacked a pid or host.
+//
+// This is the one place a run of a job begins, so it is where the manager mints
+// the run's identity: see runToken.
 func (s *Server) applyJobStart(job, crJob *Job) bool {
 	job.Lock()
 	defer job.Unlock()
@@ -898,6 +901,7 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 	job.StartTime = time.Now()
 	job.EndTime = time.Time{}
 	job.Attempts++
+	job.runID = s.mintRunToken()
 	job.Lost = false
 	job.State = JobStateRunning
 

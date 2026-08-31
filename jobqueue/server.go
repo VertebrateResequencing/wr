@@ -972,6 +972,10 @@ type Server struct {
 	recoveredRunningJobs map[string]bool
 	nextSubscriptionID   uint64
 
+	// lastRunToken is the last runToken this manager minted. It is only ever
+	// touched atomically, by mintRunToken.
+	lastRunToken atomic.Uint64
+
 	// timings holds this server's resolved timing parameters. The fixed ones
 	// are set once in Serve() and then only read; the three below
 	// (itemTTR, which is read each time a job is queued, and the two
@@ -4597,6 +4601,14 @@ func (s *Server) applyDependencyUpdates(ctx context.Context, updates []jobDepend
 	return nil
 }
 
+// mintRunToken hands out the identity of one run of one job. Counting from 1
+// leaves the zero token to mean "the run this manager found already in progress
+// when it recovered", which is a run it never minted a token for and which no
+// minted token can be mistaken for.
+func (s *Server) mintRunToken() runToken {
+	return runToken(s.lastRunToken.Add(1))
+}
+
 // confirmJobDeadAndKill calls and returns the value of confirmJobDead(). If
 // true, kills the job and triggers behaviours in a goroutine. If false,
 // arranges to re-call this after the configured retry time. This is so that if
@@ -4855,7 +4867,7 @@ func (s *Server) killJob(ctx context.Context, jobkey string) (bool, error) {
 // alive; running the lost run's behaviours afterwards deletes the working
 // directory that live job is using.
 func (s *Server) killLostRun(ctx context.Context, pin pinnedBehaviours) (bool, error) {
-	_, released, err := s.killRunningJob(ctx, pin.workSpace.key, &pin.workSpace)
+	_, released, err := s.killRunningJob(ctx, pin.workSpace.key, &pin.run)
 
 	return released, err
 }
@@ -4869,7 +4881,7 @@ func (s *Server) killLostRun(ctx context.Context, pin pinnedBehaviours) (bool, e
 // job's next touch into a self-kill, so mistaking a recovered job for the lost
 // one would kill the run that had just come back.
 func (s *Server) killRunningJob(ctx context.Context, jobkey string,
-	onlyRun *jobWorkSpaceSnapshot) (bool, bool, error) {
+	onlyRun *runToken) (bool, bool, error) {
 	q := s.queueIfPresent()
 	if q == nil {
 		return false, false, queueClosedError("Get", jobkey)
