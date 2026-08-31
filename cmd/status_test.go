@@ -668,6 +668,51 @@ func TestStatusDetailsShowsRunningLiveHeartbeatFields(t *testing.T) {
 	})
 }
 
+func TestStatusDetailsIgnoresActualCwdOfCwdMattersJob(t *testing.T) {
+	Convey("wr status details shows a cwd_matters job's own Cwd, whatever its ActualCwd says", t, func() {
+		// a cwd_matters job's Cmd runs in the user's own Cwd and wr created no
+		// directory for it, so its ActualCwd names nothing wr can account for:
+		// one persisted by wr v0.37.0|1 carries Cwd there, and a stale one can
+		// outlive a `wr mod --cwd`. This is the directory wr tells the user their
+		// job is running in.
+		ctx := context.Background()
+		testConfig, serverConfig, addr, reqs, server, token := startStatusTestServer(ctx, t)
+
+		oldConfig, oldCAFile := config, caFile
+
+		config, caFile = testConfig, testConfig.ManagerCAFile
+		defer func() {
+			config, caFile = oldConfig, oldCAFile
+		}()
+
+		defer server.Stop(ctx, true)
+
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+
+		So(err, ShouldBeNil)
+		defer func() {
+			So(jq.Disconnect(), ShouldBeNil)
+		}()
+
+		const staleActualCwd = statusTestCwd + "/wr_cwd/a/b/c/uniq0/cwd"
+
+		repGroup := "status-cwd-matters-actual-cwd"
+		job := statusTestJob("bash -c 'sleep 60'", repGroup, reqs)
+		job.CwdMatters = true
+		job.ActualCwd = staleActualCwd
+		addStatusJobs(jq, job)
+
+		running, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(running.Key(), ShouldEqual, job.Key())
+		So(jq.Started(running, os.Getpid()), ShouldBeNil)
+
+		details := runStatusForTest(t, "--identifier", repGroup, "--output", "details")
+		So(details, ShouldContainSubstring, "Cwd: "+statusTestCwd+"\n")
+		So(details, ShouldNotContainSubstring, staleActualCwd)
+	})
+}
+
 func TestStatusShowsAndFiltersSuspendedJobs(t *testing.T) {
 	Convey("wr status shows and filters suspended jobs", t, func() {
 		ctx := context.Background()
