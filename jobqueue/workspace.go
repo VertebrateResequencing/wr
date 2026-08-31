@@ -69,8 +69,8 @@ var workSpaceResolveHook func() //nolint:gochecknoglobals // the only seam onto 
 
 // muxfysCachePrefix is what muxfys names the cache directories it chooses for
 // itself, inside whichever CacheBase it was given (see its remote.go). They hold
-// a writable mount's output until Unmount uploads it, and cleanup runs before
-// Unmount, so deleting one destroys the job's own results.
+// a writable mount's output until Unmount uploads it, so cleanup keeps them
+// unconditionally rather than judging whether Unmount has already run.
 const muxfysCachePrefix = ".muxfys"
 
 // jobWorkSpaceSnapshot is the copy of a Job's fields that the workspace
@@ -557,12 +557,13 @@ func (ws *jobWorkSpace) Close() {
 }
 
 // keptDirs is everything cleanup must leave alone inside a Job's workspace: its
-// mount points, which are still live when cleanup runs (Job.Unmount comes after
-// it in client.go) so that deleting through one would recurse into the user's
-// remote file system; and the cache directories muxfys writes a writable mount's
-// output to, which are not uploaded until that Unmount. Each is classified ONCE,
-// against the proven workspace and working directory, in the one place that
-// knows both.
+// mount points, where deleting through a still-live one would recurse into the
+// user's remote file system; and the cache directories muxfys writes a writable
+// mount's output to, which are not uploaded until Unmount. Both come from the
+// snapshot's MountConfigs rather than from what is mounted now, and are kept
+// unconditionally, so a caller may clean up on either side of Job.Unmount. Each
+// is classified ONCE, against the proven workspace and working directory, in the
+// one place that knows both.
 type keptDirs struct {
 	// wholeActualCwd is set when something that must survive IS the working
 	// directory, so that none of its contents may be touched.

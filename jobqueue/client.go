@@ -481,46 +481,6 @@ func reserveHostAndPid() (string, int) {
 	return host, os.Getpid()
 }
 
-// cleanupUnstartedWorkSpace removes the working directory Execute made for a run
-// whose command never started. Every failure between resolveWorkingDir and a
-// successful cmd.Start() returns without the job's behaviours ever running - it
-// is buried, released, or left reserved - so nothing else will ever remove that
-// directory, and the abandoned leaf also stops rmEmptyDirsIn reclaiming the
-// hashed levels wr made above it.
-//
-// The job's own behaviours are deliberately NOT run: OnFailure would execute the
-// user's `run` command on, say, a mount failure. Only what wr created goes.
-//
-// Unmounting comes FIRST, and a failed unmount deletes nothing at all: the
-// pre-start failure paths do not all unmount, a mount point of a Job with no
-// ActualCwd-relative Mount is the working directory itself, and deleting through
-// a live mount would delete the user's remote data. Leaving a workspace behind is
-// recoverable; that is not. Job.Unmount is safe to call whether or not something
-// already did, since unmountAll clears the Job's mounted filesystems.
-//
-// Nothing is deleted that the workspace resolution cannot prove wr built for this
-// Job's key, which is also what keeps a live mount's directory: cleanupWorkSpace
-// is the same proven path Behaviour.cleanup takes.
-//
-// Failures are reported rather than returned: Execute's myerr is a plain local
-// returned at the end of the function, so a deferred assignment to it after an
-// early return would be dropped, and a silent leak is one nobody can diagnose.
-func cleanupUnstartedWorkSpace(ctx context.Context, job *Job) {
-	snap := job.workSpaceSnapshot()
-
-	if _, err := job.Unmount(true); err != nil {
-		clog.Warn(ctx, "not removing the working directory of a run that never started, "+
-			"since unmounting it first failed", "dir", snap.actualCwd, "err", err)
-
-		return
-	}
-
-	if err := snap.cleanupWorkSpace(); err != nil {
-		clog.Warn(ctx, "could not remove the working directory of a run that never started",
-			"dir", snap.actualCwd, "err", err)
-	}
-}
-
 func currentProcessTreeCPUtime(pid int) time.Duration {
 	pid32, ok := processPID(pid)
 	if !ok {
@@ -1491,6 +1451,46 @@ func (c *Client) ensureCwdExists(job *Job) error {
 	}
 
 	return nil
+}
+
+// cleanupUnstartedWorkSpace removes the working directory Execute made for a run
+// whose command never started. Every failure between resolveWorkingDir and a
+// successful cmd.Start() returns without the job's behaviours ever running - it
+// is buried, released, or left reserved - so nothing else will ever remove that
+// directory, and the abandoned leaf also stops rmEmptyDirsIn reclaiming the
+// hashed levels wr made above it.
+//
+// The job's own behaviours are deliberately NOT run: OnFailure would execute the
+// user's `run` command on, say, a mount failure. Only what wr created goes.
+//
+// Unmounting comes FIRST, and a failed unmount deletes nothing at all: the
+// pre-start failure paths do not all unmount, a mount point of a Job with no
+// ActualCwd-relative Mount is the working directory itself, and deleting through
+// a live mount would delete the user's remote data. Leaving a workspace behind is
+// recoverable; that is not. Job.Unmount is safe to call whether or not something
+// already did, since unmountAll clears the Job's mounted filesystems.
+//
+// Nothing is deleted that the workspace resolution cannot prove wr built for this
+// Job's key, which is also what keeps a live mount's directory: cleanupWorkSpace
+// is the same proven path Behaviour.cleanup takes.
+//
+// Failures are reported rather than returned: Execute's myerr is a plain local
+// returned at the end of the function, so a deferred assignment to it after an
+// early return would be dropped, and a silent leak is one nobody can diagnose.
+func cleanupUnstartedWorkSpace(ctx context.Context, job *Job) {
+	snap := job.workSpaceSnapshot()
+
+	if _, err := job.Unmount(true); err != nil {
+		clog.Warn(ctx, "not removing the working directory of a run that never started, "+
+			"since unmounting it first failed", "dir", snap.actualCwd, "err", err)
+
+		return
+	}
+
+	if err := snap.cleanupWorkSpace(); err != nil {
+		clog.Warn(ctx, "could not remove the working directory of a run that never started",
+			"dir", snap.actualCwd, "err", err)
+	}
 }
 
 // Execute runs the given Job's Cmd and blocks until it exits. Then any Job
