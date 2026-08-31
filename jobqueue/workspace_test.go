@@ -728,6 +728,43 @@ func TestCleanupEmptyParentWalk(t *testing.T) {
 	})
 }
 
+func TestCleanupWorkSpaceReappearsAfterProof(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Cleanup tidies the empty parents of a workspace that came back after the proof", t, func() {
+		// the proof finding every parent but no workspace is the ordinary state of
+		// the second cleanup of a lost job, and what is left to do then is tidy
+		// the empty parent dirs wr created. There is no lstat from the proof to
+		// prove that a workspace which has since reappeared is the one wr made, so
+		// it is not opened at all - and it not being opened must not cost the
+		// parents their tidy-up.
+		cwd := t.TempDir()
+		job := &Job{Cwd: cwd, Cmd: testWSCmd}
+		_, workSpace, _ := realWorkSpace(job)
+
+		So(os.RemoveAll(workSpace), ShouldBeNil)
+
+		cleanupProvenHook = func() {
+			cleanupProvenHook = nil
+
+			So(os.MkdirAll(workSpace, os.ModePerm), ShouldBeNil)
+		}
+
+		Reset(func() { cleanupProvenHook = nil })
+
+		err := (&Behaviour{When: OnExit, Do: Cleanup}).Trigger(OnExit, job)
+
+		// the tidy-up first, so a refusal to go on shows up as the untidied tree
+		// it is rather than only as an error value.
+		soPathsGone(filepath.Join(cwd, AppName+createdCwdBaseSuffix))
+		soPathsExist(cwd)
+
+		So(err, ShouldBeNil)
+	})
+}
+
 // keyGrindMax bounds jobWithKeyPrefix's search, which is expected to take about
 // 16^len(prefix) tries.
 const keyGrindMax = 1 << 20
