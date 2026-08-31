@@ -134,8 +134,24 @@ func TestRelIsJobCreatedCwd(t *testing.T) {
 		})
 
 		Convey("nor one whose unique dir was not made by MkdirTemp", func() {
+			// what MkdirTemp adds to the prefix is a non-empty run of DIGITS,
+			// and both halves of that have to be required. The bare prefix is
+			// the dir wr would have made had it not needed a unique one...
 			names := strings.Split(rel, string(filepath.Separator))
-			names[len(names)-2] = job.Key()[mkHashedLevels-1:]
+			leaf := job.Key()[mkHashedLevels-1:]
+
+			names[len(names)-2] = leaf
+			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeFalse)
+
+			// ...and a suffix of anything else is a name something other than
+			// MkdirTemp chose. Whoever submits the Job picks the Cmd that Key()
+			// hashes, so they can put a directory of their own beside the job's
+			// at exactly this prefix; accepting it would hand its PARENT to the
+			// sweep as this Job's workspace.
+			names[len(names)-2] = leaf + "-mydata"
+			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeFalse)
+
+			names[len(names)-2] = leaf + "12x"
 			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeFalse)
 		})
 
