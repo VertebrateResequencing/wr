@@ -779,6 +779,77 @@ func TestLostJobRetryCheckPinsTheLostRun(t *testing.T) {
 	})
 }
 
+func TestLostJobRetryCheckFindsAReservedNotStartedRun(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a lost job the manager could not confirm dead the first time", t, func() {
+		l := newLostRun(ctx, t, "lost_job_retry_check_reserved")
+
+		defer l.stop(ctx)
+
+		l.waitForDeadCheckWindow()
+
+		Convey("its retry check picks up a reservation lost before its Started", func() {
+			// `wr kill` releases the lost run and a runner takes the job on
+			// again, and that reservation goes silent before its Started ever
+			// reaches the manager. It is the run with a confirmation owing: its
+			// host and pid are the reserving runner's, so the death the first
+			// confirmation could not reach the host to establish is exactly what
+			// the thirty-minute re-check is for.
+			l.killAndReserveTheJob(ctx)
+			l.markRetryLost()
+
+			retry, checked := l.server.lostJobRetryCheck(l.key)
+			l.proceedManager()
+
+			// the run the parked confirmation is about is over, so its kill is
+			// refused; the run at the queue is the reservation, and the manager
+			// reports it lost.
+			So(l.waitForKillDecision(), ShouldBeFalse)
+			So(l.reportedState(ctx), ShouldEqual, JobStateLost)
+
+			// and Job.State is written at Started and at each exit, never at
+			// Reserve, so for the whole of this reservation it still reads what
+			// the release of the run before left there. A check that asks it
+			// whether the run is over is asking about a run that is finished.
+			state, _ := l.jobStateAndKillCalled()
+			So(state, ShouldEqual, JobStateDelayed)
+
+			So(checked, ShouldBeTrue)
+			So(retry.key, ShouldEqual, l.key)
+			So(retry.pid, ShouldEqual, os.Getpid())
+
+			// pinned as the run it found lost, which is the reservation: it has
+			// made no working directory the manager knows of, so the behaviours
+			// it carries resolve to no workspace at all.
+			So(retry.pin.run, ShouldEqual, l.live.pinBehaviours().run)
+			So(retry.pin.workSpace.actualCwd, ShouldBeBlank)
+		})
+
+		Convey("but a lost run that has exited is refused", func() {
+			// markJobComplete deliberately leaves Lost set and the item in the
+			// run sub-queue, so that the removal counts lost->complete: a
+			// completed run is still a lost job in the run sub-queue for that
+			// stretch. Its run is over, and re-confirming a run that has
+			// reported its own exit could only kill the job it archived.
+			//
+			// The manager is left parked at its dead-check throughout, so
+			// nothing but the archive moves the job (l.stop releases it).
+			_, _, _, srerr := markJobComplete(l.live, &JobEndState{Exited: true, EndTime: time.Now()}, nil)
+
+			exited, checked := l.server.lostJobRetryCheck(l.key)
+
+			So(checked, ShouldBeFalse)
+			So(exited, ShouldResemble, lostJobDetails{})
+			So(srerr, ShouldBeBlank)
+		})
+	})
+}
+
 func TestPinBehavioursIsLocked(t *testing.T) {
 	if runnermode || servermode {
 		return

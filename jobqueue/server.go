@@ -2334,7 +2334,16 @@ func (s *Server) lostJobRetryCheck(jobKey string) (lostJobDetails, bool) {
 	job.RLock()
 	defer job.RUnlock()
 
-	if job.State != JobStateRunning || !job.Lost {
+	// job.Exited is the same "is this run over?" question ttrCallback asks, and
+	// the only one that answers for a run the manager has heard nothing from:
+	// Job.State is written at Started and at each exit, never at Reserve, so
+	// through a whole reservation it still reads the PREVIOUS run's value. Gating
+	// on State therefore never fired for a reserved-not-started run - the one
+	// case whose host and pid are the reserving runner's, so that a first
+	// confirmation that could not reach the host is worth retrying at all. It
+	// still refuses the stretch markJobComplete leaves open, where an archived
+	// run is in the run sub-queue with Lost set: that run reported its own exit.
+	if job.Exited || !job.Lost {
 		return lostJobDetails{}, false
 	}
 
