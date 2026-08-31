@@ -107,7 +107,7 @@ const (
 	bytesPerMB = 1024 * 1024
 
 	// mkHashedDirMaxTries is how many times we retry creating a hashed dir when
-	// it conflicts with a concurrent rmEmptyDirs.
+	// it conflicts with a concurrent rmEmptyDirsIn.
 	mkHashedDirMaxTries = 3
 )
 
@@ -752,8 +752,8 @@ func removeHoldFile(holdFile string, prior error) error {
 	return fmt.Errorf("%w (and removing the hold file failed: %w)", prior, errr)
 }
 
-// mkHeldDir creates dir (retrying a few times in case a concurrent rmEmptyDirs
-// conflicts with us) and drops a hold file in it so rmEmptyDirs will not
+// mkHeldDir creates dir (retrying a few times in case a concurrent rmEmptyDirsIn
+// conflicts with us) and drops a hold file in it so rmEmptyDirsIn will not
 // immediately remove it.
 func mkHeldDir(dir, holdFile string) error {
 	tries := 0
@@ -1158,7 +1158,7 @@ func openVerifiedDir(parent *os.Root, name string, info os.FileInfo) (*os.Root, 
 	return dirRoot, nil
 }
 
-// rmCheckedEmptyDirs does rmEmptyDirs's deletions for dirs that realDirBelow has
+// rmCheckedEmptyDirs makes rmEmptyDirsIn's upward walk for dirs realDirBelow has
 // already proven and normalised, so a caller that needed that proof for its own
 // deletions doesn't have to pay for it twice.
 func rmCheckedEmptyDirs(dirs provenDirs) error {
