@@ -120,13 +120,6 @@ func (j *Job) workSpaceSnapshot() jobWorkSpaceSnapshot {
 	j.RLock()
 	defer j.RUnlock()
 
-	return j.workSpaceSnapshotLocked()
-}
-
-// workSpaceSnapshotLocked is workSpaceSnapshot for a caller that already holds
-// at least the Job's read lock, so that the snapshot can be taken in the same
-// breath as everything else that has to be pinned with it - see pinBehaviours.
-func (j *Job) workSpaceSnapshotLocked() jobWorkSpaceSnapshot {
 	return jobWorkSpaceSnapshot{
 		cwdMatters: j.CwdMatters,
 		cwd:        j.Cwd,
@@ -297,10 +290,10 @@ type jobWorkSpace struct {
 // breath, so that no caller has to - or is able to - work any of it out again.
 //
 // It is asked of a SNAPSHOT rather than of the Job, so that the answer is about
-// the Job as it was when whoever is deleting decided to delete. The manager
-// used to trigger a lost job's behaviours on the queue's live Job, and the kill
-// releases that Job back to ready first: reading it again afterwards read the
-// RETRY's working directory. See pinnedBehaviours.
+// the Job as it was when whoever is deleting decided to delete, and so that
+// nothing downstream re-reads a field that another goroutine writes: ActualCwd
+// is written under the Job's lock by applyLiveSnapshot while cleanup walks the
+// filesystem in the same manager process. See jobWorkSpaceSnapshot.
 //
 // A nil result with a nil error means wr created nothing here that it may
 // delete: see paths() for the cases, plus a Job Cwd that has itself already
