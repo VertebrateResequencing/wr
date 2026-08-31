@@ -481,6 +481,46 @@ func reserveHostAndPid() (string, int) {
 	return host, os.Getpid()
 }
 
+// cleanupUnstartedWorkSpace removes the working directory Execute made for a run
+// whose command never started. Every failure between resolveWorkingDir and a
+// successful cmd.Start() returns without the job's behaviours ever running - it
+// is buried, released, or left reserved - so nothing else will ever remove that
+// directory, and the abandoned leaf also stops rmEmptyDirsIn reclaiming the
+// hashed levels wr made above it.
+//
+// The job's own behaviours are deliberately NOT run: OnFailure would execute the
+// user's `run` command on, say, a mount failure. Only what wr created goes.
+//
+// Unmounting comes FIRST, and a failed unmount deletes nothing at all: the
+// pre-start failure paths do not all unmount, a mount point of a Job with no
+// ActualCwd-relative Mount is the working directory itself, and deleting through
+// a live mount would delete the user's remote data. Leaving a workspace behind is
+// recoverable; that is not. Job.Unmount is safe to call whether or not something
+// already did, since unmountAll clears the Job's mounted filesystems.
+//
+// Nothing is deleted that the workspace resolution cannot prove wr built for this
+// Job's key, which is also what keeps a live mount's directory: cleanupWorkSpace
+// is the same proven path Behaviour.cleanup takes.
+//
+// Failures are reported rather than returned: Execute's myerr is a plain local
+// returned at the end of the function, so a deferred assignment to it after an
+// early return would be dropped, and a silent leak is one nobody can diagnose.
+func cleanupUnstartedWorkSpace(ctx context.Context, job *Job) {
+	snap := job.workSpaceSnapshot()
+
+	if _, err := job.Unmount(true); err != nil {
+		clog.Warn(ctx, "not removing the working directory of a run that never started, "+
+			"since unmounting it first failed", "dir", snap.actualCwd, "err", err)
+
+		return
+	}
+
+	if err := snap.cleanupWorkSpace(); err != nil {
+		clog.Warn(ctx, "could not remove the working directory of a run that never started",
+			"dir", snap.actualCwd, "err", err)
+	}
+}
+
 func currentProcessTreeCPUtime(pid int) time.Duration {
 	pid32, ok := processPID(pid)
 	if !ok {
@@ -1551,6 +1591,20 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		return err
 	}
 
+	// one seam covers every way this run can fail before its command starts: see
+	// cleanupUnstartedWorkSpace for why each of them would otherwise leak the
+	// directory we just made, and cmdStarted below for where the run takes it
+	// over.
+	cmdStarted := false
+
+	defer func() {
+		if cmdStarted || actualCwd == "" {
+			return
+		}
+
+		cleanupUnstartedWorkSpace(ctx, job)
+	}()
+
 	if tmpDir != "" {
 		dirsToCheckDiskSpace = append(dirsToCheckDiskSpace, tmpDir)
 	}
@@ -1755,6 +1809,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 		return fmt.Errorf("could not start command [%s]: %w%s", jc, err, extra)
 	}
+
+	// the run owns its workspace from here on: the c.Started failure path below
+	// and the normal exit path both trigger the job's behaviours.
+	cmdStarted = true
 
 	clog.Info(ctx, "started executing", "cmd", job.Cmd, "pid", cmd.Process.Pid)
 

@@ -86,6 +86,22 @@ type jobWorkSpaceSnapshot struct {
 	mounts     MountConfigs
 }
 
+// cleanupWorkSpace resolves the snapshot's workspace and clears it out, doing
+// nothing at all when wr created nothing there it may delete.
+//
+// It is the one deletion the snapshot licenses, shared by the cleanup Behaviour
+// and by the runner tidying up after a run whose command never started, so that
+// there is a single answer to what a Job's workspace cleanup does.
+func (s jobWorkSpaceSnapshot) cleanupWorkSpace() error {
+	ws, err := s.resolveWorkSpace()
+	if err != nil || ws == nil {
+		return err
+	}
+	defer ws.Close()
+
+	return ws.cleanup()
+}
+
 // workSpaceSnapshot copies, under the Job's read lock, everything the workspace
 // resolution reads from it; nothing downstream looks at the Job again. Copying
 // the MountConfigs slice header is enough, since it is only ever replaced

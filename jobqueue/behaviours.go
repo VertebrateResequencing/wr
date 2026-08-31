@@ -298,13 +298,7 @@ func (b *Behaviour) String() string {
 // kept, is decided entirely by resolveWorkSpace. A nil workspace means wr created
 // nothing here that it may delete.
 func (b *Behaviour) cleanup(snap jobWorkSpaceSnapshot, _ bool) error {
-	ws, err := snap.resolveWorkSpace()
-	if err != nil || ws == nil {
-		return err
-	}
-	defer ws.Close()
-
-	return ws.cleanup()
+	return snap.cleanupWorkSpace()
 }
 
 // run runs the given command in the directory the Job's Cmd ran in.

@@ -39,6 +39,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/muxfys/v5"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -110,6 +111,60 @@ func TestExecuteLiveStateSnapshots(t *testing.T) {
 		So(snapshot.PeakRAM, ShouldEqual, 124)
 		So(snapshot.PeakDisk, ShouldEqual, int64(457))
 		So(snapshot.CPUtime, ShouldEqual, 8*time.Second)
+	})
+}
+
+// TestUnstartedRunWorkSpaceCleanupOrder pins the order the unstarted-run cleanup
+// does its two jobs in, which is the one thing about it that cannot be got wrong
+// safely: a mount point of a job with no relative Mount IS its working directory,
+// so deleting before unmounting would delete the user's remote data.
+func TestUnstartedRunWorkSpaceCleanupOrder(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a directory a job's workspace can be made in", t, func() {
+		cwd := t.TempDir()
+
+		// the Job's mounted filesystems are what unmountAll clears, so how many
+		// are left when the deletion proves what it may delete says which of the
+		// two happened first. -1 means the deletion never got that far.
+		mountedWhenProven := -1
+
+		Reset(func() { cleanupProvenHook = nil })
+
+		Convey("The cleanup unmounts before it deletes anything", func() {
+			job := &Job{Cwd: cwd, Cmd: testWSCmd}
+			actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+			fs, err := muxfys.New(&muxfys.Config{Mount: filepath.Join(t.TempDir(), testWSMount)})
+			So(err, ShouldBeNil)
+
+			job.mountedFS = append(job.mountedFS, fs)
+			cleanupProvenHook = func() { mountedWhenProven = len(job.mountedFS) }
+
+			cleanupUnstartedWorkSpace(context.Background(), job)
+
+			So(mountedWhenProven, ShouldEqual, 0)
+			soPathsGone(actualCwd, tmpDir, workSpace, filepath.Join(cwd, AppName+createdCwdBaseSuffix))
+			soPathsExist(cwd)
+		})
+
+		Convey("The cleanup deletes nothing at all when the unmount fails", func() {
+			// a mount point that is not a real dir makes Unmount's own empty-dir
+			// tidy-up refuse, which is the cheapest failed unmount to force; what
+			// matters is that ANY of them stops the deletion.
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{Mount: testWSMount}}}
+			actualCwd, workSpace, tmpDir := realWorkSpace(job)
+			cleanupProvenHook = func() { mountedWhenProven = len(job.mountedFS) }
+
+			So(os.WriteFile(filepath.Join(actualCwd, testWSMount), []byte("x"), liveExecuteFileMode), ShouldBeNil)
+
+			cleanupUnstartedWorkSpace(context.Background(), job)
+
+			So(mountedWhenProven, ShouldEqual, -1)
+			soPathsExist(actualCwd, tmpDir, workSpace, cwd)
+		})
 	})
 }
 
@@ -1263,4 +1318,53 @@ func expectedPrefixSuffixOutput(data []byte) string {
 	So(err, ShouldBeNil)
 
 	return string(bytes.TrimSpace(saver.Bytes()))
+}
+
+// TestClientExecuteUnstartedRunWorkSpace covers the runs that fail between
+// resolveWorkingDir making a working directory and cmd.Start() succeeding. None
+// of them runs the job's behaviours - they bury or release, or return with the
+// job still reserved - so if Execute does not remove the directory it made,
+// nothing ever will, and the abandoned leaf also stops rmEmptyDirsIn ever
+// reclaiming the hashed levels above it.
+func TestClientExecuteUnstartedRunWorkSpace(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a job that gets a wr-created working directory", t, func() {
+		capture := &liveTouchCapture{}
+		client := newLiveExecuteCaptureClient(capture)
+		cwd := liveExecuteCwd(t)
+		precious := writeFileIn(cwd, "05_RunCisEQTL.R")
+		hashedBase := filepath.Join(cwd, AppName+createdCwdBaseSuffix)
+
+		Convey("A run whose command cannot start leaves no working directory behind", func() {
+			job := liveExecuteHashedCwdJob(client, cwd, "true")
+			noShell := filepath.Join(t.TempDir(), "no-such-shell")
+
+			err := client.Execute(context.Background(), job, noShell)
+
+			So(job.ActualCwd, ShouldNotBeBlank)
+			soPathsGone(job.ActualCwd, filepath.Dir(job.ActualCwd), hashedBase)
+			soPathsExist(precious, cwd)
+
+			So(err, ShouldNotBeNil)
+		})
+
+		Convey("A run whose mounts fail leaves no working directory behind either", func() {
+			// this is the path that buries the job without ever unmounting, and
+			// nothing here is left mounted: Job.Mount unmounts what it managed
+			// before the config that failed, and the cleanup unmounts again.
+			job := liveExecuteHashedCwdJob(client, cwd, "true")
+			job.MountConfigs = MountConfigs{{Mount: testWSMount}}
+
+			err := client.Execute(context.Background(), job, "/bin/sh")
+
+			So(job.ActualCwd, ShouldNotBeBlank)
+			soPathsGone(job.ActualCwd, filepath.Dir(job.ActualCwd), hashedBase)
+			soPathsExist(precious, cwd)
+
+			So(err, ShouldNotBeNil)
+		})
+	})
 }
