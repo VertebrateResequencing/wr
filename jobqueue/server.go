@@ -2336,12 +2336,14 @@ func (s *Server) lostJobRetryCheck(jobKey string) (lostJobDetails, bool) {
 
 	timeout, _ := s.lostJobCheckDurations()
 
+	pin := job.pinBehavioursLocked()
+
 	return lostJobDetails{
-		key:          job.Key(),
+		key:          pin.workSpace.key,
 		host:         job.Host,
 		pid:          job.Pid,
 		checkTimeout: timeout,
-		pin:          job.pinBehavioursLocked(),
+		pin:          pin,
 	}, true
 }
 
@@ -3824,15 +3826,17 @@ func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
 // ttrCallback while the queue mutex is still held.
 func (s *Server) markJobLost(ctx context.Context, job *Job, wasLost bool, lostUpdate *JobUpdate) {
 	killCalled := job.killCalled
-	jobKey := job.Key()
 	jobHost := job.Host
 	jobPID := job.Pid
 	repGroup := job.RepGroup
 
 	// the behaviours of the run being declared lost are pinned HERE, in the same
 	// breath as the decision that it is lost, and carried all the way to the
-	// kill. See lostJobDetails.pin.
+	// kill. See lostJobDetails.pin. Its snapshot already holds the job's key, so
+	// this runs Key()'s hash once rather than twice - and it runs while
+	// queue.mutex is still held, since ttrCallback defers this call.
 	pin := job.pinBehavioursLocked()
+	jobKey := pin.workSpace.key
 
 	serverLostJobCheckTimeout, serverLostJobCheckRetryTime := s.lostJobCheckDurations()
 	job.Unlock()
@@ -4893,9 +4897,14 @@ func (s *Server) killRunningJob(ctx context.Context, jobkey string,
 		return true, false, err
 	}
 
-	err = s.releaseJob(ctx, job, &JobEndState{Exitcode: -1, Exited: true}, FailReasonLost, false, false)
-
-	return true, err == nil, err
+	// released reports that this WAS the run to release, not that the queue
+	// change succeeded. A failed release leaves the job lost and in the run
+	// queue, and ttrCallback does not re-mark an already-lost job, so there is
+	// no second confirmation coming: withholding the behaviours there would
+	// leak the dead run's workspace permanently, for nothing. The run is dead,
+	// confirmed, and proven to be the pinned one; the error is logged.
+	return true, true, s.releaseJob(ctx, job, &JobEndState{Exitcode: -1, Exited: true},
+		FailReasonLost, false, false)
 }
 
 // deleteJobs deletes the given jobs from the bury/delay/dependent/ready queue

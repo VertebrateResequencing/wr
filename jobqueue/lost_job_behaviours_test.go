@@ -64,6 +64,10 @@ const lostRunTTR = 1 * time.Second
 // finish once it has been told the kill released the run.
 const lostRunSettleTime = 20 * time.Second
 
+// noBehaviourWindow is how long a test watches a resumed manager it expects to
+// run no behaviour at all.
+const noBehaviourWindow = 2 * time.Second
+
 // lostRun is a real manager with one real job in it, reserved, started with a
 // pid that is really dead, and given the workspace a real mkHashedDir made for
 // it - so that letting its TTR expire drives the whole lost-job sequence:
@@ -92,8 +96,27 @@ type lostRun struct {
 	lostOut string
 
 	// killed carries what the manager's kill decided: true only if it really
-	// released the run the behaviours were pinned for.
+	// released the run the behaviours were pinned for. resume is what lets the
+	// manager carry on afterwards.
+	//
+	// Both are unbuffered, so the manager is PARKED between its kill decision
+	// and its behaviours for as long as the test wants. A test that asserts
+	// nothing was deleted has to make that assertion at a moment when nothing
+	// could yet have deleted it, and "signal and race on" is not such a moment:
+	// it passes against a manager that goes on to sweep the directory a
+	// millisecond later.
 	killed chan bool
+	resume chan struct{}
+
+	// resumeOnce makes resuming the manager idempotent, so stop() can do it for
+	// a test that has already done it, or for one that failed before it could.
+	resumeOnce sync.Once
+
+	// behavioursRan carries the name of the first behaviour moment the manager
+	// reached, if it reached one. Parking the manager proves nothing happened
+	// BEFORE the test looked; this is what proves nothing happens after it is
+	// let go, which is a different claim and needs its own evidence.
+	behavioursRan chan string
 }
 
 // newLostRun builds the fixture. The caller must defer stop().
@@ -109,7 +132,11 @@ func newLostRun(ctx context.Context, t *testing.T, rg string) *lostRun {
 	jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 	So(err, ShouldBeNil)
 
-	l := &lostRun{server: server, client: jq, cwd: t.TempDir(), killed: make(chan bool, 1)}
+	l := &lostRun{
+		server: server, client: jq, cwd: t.TempDir(),
+		killed: make(chan bool), resume: make(chan struct{}),
+		behavioursRan: make(chan string, 2),
+	}
 	l.ranIn = filepath.Join(l.cwd, "ran_in.txt")
 
 	job := &Job{
@@ -143,19 +170,41 @@ func newLostRun(ctx context.Context, t *testing.T, rg string) *lostRun {
 	l.lostOut = writeFileIn(l.lostCwd, "abandoned.txt")
 	applyLiveSnapshot(l.live, &JobEndState{Cwd: l.lostCwd})
 
-	lostJobKilledHook = func(released bool) {
-		select {
-		case l.killed <- released:
-		default:
-		}
-	}
+	lostJobKilledHook = l.killedHook
+	runResolvedHook = func() { l.behaviourRan("run") }
+	cleanupProvenHook = func() { l.behaviourRan("cleanup") }
 
 	return l
+}
+
+// behaviourRan records that the manager reached one of the two moments a
+// behaviour cannot get past without acting.
+func (l *lostRun) behaviourRan(which string) {
+	select {
+	case l.behavioursRan <- which:
+	default:
+	}
+}
+
+// killedHook is what the manager calls with its kill decision: it hands the
+// decision to the test and then parks the manager until the test resumes it.
+func (l *lostRun) killedHook(released bool) {
+	l.killed <- released
+	<-l.resume
+}
+
+// resumeManager lets the manager past its kill decision.
+func (l *lostRun) resumeManager() {
+	l.resumeOnce.Do(func() { close(l.resume) })
 }
 
 func (l *lostRun) stop(ctx context.Context) {
 	lostJobDeadCheckedHook = nil
 	lostJobKilledHook = nil
+	runResolvedHook = nil
+	cleanupProvenHook = nil
+
+	l.resumeManager()
 
 	disconnect(l.client)
 	l.server.Stop(ctx, true)
@@ -184,7 +233,8 @@ func (l *lostRun) inTheDeadCheckWindow(f func()) {
 }
 
 // waitForKillDecision returns what the manager's kill decided, failing the test
-// if the TTR never drove it that far.
+// if the TTR never drove it that far. The manager stays parked at that decision
+// until resumeManager.
 func (l *lostRun) waitForKillDecision() bool {
 	select {
 	case released := <-l.killed:
@@ -193,6 +243,23 @@ func (l *lostRun) waitForKillDecision() bool {
 		So("the manager never reached its kill decision", ShouldBeBlank)
 
 		return false
+	}
+}
+
+// soNoBehaviourRuns lets the manager past its kill decision and asserts that it
+// runs no behaviour at all afterwards.
+//
+// The wait is bounded rather than signalled because what is being asserted is a
+// negative: a manager that was going to act does so as soon as it is let go, so
+// a window several orders of magnitude wider than that is evidence, while no
+// completion signal could tell "did not act" from "has not acted yet".
+func (l *lostRun) soNoBehaviourRuns() {
+	l.resumeManager()
+
+	select {
+	case which := <-l.behavioursRan:
+		So(which, ShouldBeBlank)
+	case <-time.After(noBehaviourWindow):
 	}
 }
 
@@ -275,10 +342,7 @@ func TestLostJobBehavioursActOnTheLostRun(t *testing.T) {
 		lostJobKilledHook = func(released bool) {
 			retryCwd, retryTmp, retryOutput, retryErr = l.makeRetryWorkspace()
 
-			select {
-			case l.killed <- released:
-			default:
-			}
+			l.killedHook(released)
 		}
 
 		Convey("the behaviours act on the run that was lost, not on the live retry", func() {
@@ -287,6 +351,7 @@ func TestLostJobBehavioursActOnTheLostRun(t *testing.T) {
 			So(retryCwd, ShouldNotBeBlank)
 			So(retryCwd, ShouldNotEqual, l.lostCwd)
 
+			l.resumeManager()
 			soGoneWithin(l.lostCwd)
 
 			// the retry is running in these; the survival is asserted before
@@ -334,6 +399,9 @@ func TestLostJobBehavioursSpareARecoveredJob(t *testing.T) {
 			state, killCalled := l.jobStateAndKillCalled()
 			So(state, ShouldEqual, JobStateRunning)
 			So(killCalled, ShouldBeFalse)
+
+			l.soNoBehaviourRuns()
+			soPathsExist(l.lostOut, l.lostCwd, l.lostTmp)
 		})
 	})
 }
@@ -377,6 +445,9 @@ func TestLostJobBehavioursSpareARetryStartedInTheWindow(t *testing.T) {
 			state, killCalled := l.jobStateAndKillCalled()
 			So(state, ShouldEqual, JobStateRunning)
 			So(killCalled, ShouldBeFalse)
+
+			l.soNoBehaviourRuns()
+			soPathsExist(retryOutput, retryCwd, retryTmp)
 		})
 	})
 }
@@ -425,6 +496,9 @@ func TestLostJobBehavioursSpareASecondLostRun(t *testing.T) {
 			soPathsExist(retryOutput, retryCwd, retryTmp, filepath.Dir(retryCwd))
 			soPathsExist(l.lostOut, l.lostCwd, l.lostTmp, filepath.Dir(l.lostCwd))
 			soPathsGone(l.ranIn)
+
+			l.soNoBehaviourRuns()
+			soPathsExist(retryOutput, retryCwd, l.lostOut, l.lostCwd)
 		})
 	})
 }
