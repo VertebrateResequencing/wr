@@ -1135,6 +1135,29 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 				So(err, ShouldBeNil)
 			})
 
+			Convey("Cleanup keeps the workspace for a mount above it spelled through a symlink", func() {
+				// the same directory "../.." names, reached by a different
+				// route: a symlink to the Job's Cwd, then the name every Job of
+				// that Cwd puts its workspaces under. Nothing at the workspace
+				// itself can be named this way - its path is built from
+				// MountConfigs.Key(), which covers the Mount string being
+				// written - but the levels above it can, because their names do
+				// not depend on the key. Same directory, so the same verdict:
+				// everything wr made for the job is inside a live mount.
+				link := filepath.Join(parent, "cwd_link")
+				So(os.Symlink(cwd, link), ShouldBeNil)
+
+				mj := mounting(MountConfig{Mount: filepath.Join(link, AppName+createdCwdBaseSuffix)})
+
+				remote := writeFileIn(mj.workSpace, "remote.txt")
+
+				err = cleanup.Trigger(OnExit, mj.job)
+
+				soPathsExist(remote, mj.output, mj.actualCwd, mj.tmpDir, mj.workSpace, cwd, precious)
+
+				So(err, ShouldBeNil)
+			})
+
 			Convey("Cleanup of a Job whose mount is ABOVE its workspace keeps the workspace too", func() {
 				// the same thing one level further out: everything wr made for
 				// the job is inside the mount, so there is nothing below it wr

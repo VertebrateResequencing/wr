@@ -730,7 +730,7 @@ func (p *workSpacePaths) keptDirs() keptDirs {
 			keep.mountPoints = append(keep.mountPoints, mount)
 		}
 
-		if _, ok := relBelowDir(mount, p.workSpace); ok {
+		if dirIsAtOrAbove(mount, p.workSpace) {
 			keep.wholeWorkSpace = true
 		}
 
@@ -776,6 +776,15 @@ func (p *workSpacePaths) mountPoints() []string {
 // directory nor as an entry of the workspace, so what covers the directory
 // muxfys puts there is the muxfysCachePrefix rule, and this is where wr learns
 // that rule has something to cover.
+//
+// A cache location ABOVE the workspace is recorded nowhere, and needs to be
+// nowhere. It is the blind spot 3484bdb closed for MountConfig.Mount, but the
+// two are not the same shape: cleanup only ever deletes inside the workspace,
+// so a cache above it is out of reach of both sweeps, and the only thing that
+// goes any higher is the upward walk of EMPTY parents, which stops at the first
+// directory that will not go - and a directory holding a cache is not empty.
+// There is no wholeWorkSpace equivalent for it because there is nothing for one
+// to prevent.
 func (k *keptDirs) protectCaches(p *workSpacePaths, mc MountConfig) {
 	base := filepath.Clean(resolveCacheBase(mc.CacheBase, p.actualCwd, p.workSpace))
 
@@ -1060,6 +1069,48 @@ func relBelowDir(dir, path string) (string, bool) {
 	}
 
 	return rel, rel == "." || relIsBelow(rel)
+}
+
+// dirIsAtOrAbove reports whether dir is other, or a directory above it, asking
+// the FILESYSTEM rather than the two strings when the strings disagree.
+//
+// It is the one containment question in this file whose answer is a plain yes or
+// no: everything else needs a usable path back from one to the other, and a
+// resolved path is not one - it is named in a different tree from the handles
+// the deletions are made through. This one licenses nothing but "delete nothing
+// at all", so it can afford to say yes on a spelling it cannot name.
+//
+// Two spellings of one directory giving opposite verdicts is what this file
+// exists to stop, and the lexical answer gives exactly that: a mount at
+// <symlink-to-Cwd>/<AppName>_cwd is the same directory ".." names two levels
+// down, and only one of the two spellings was recognised. The workspace itself
+// cannot be named that way - its path is built from MountConfigs.Key(), which
+// covers the Mount string being written - but the levels above it can, since
+// their names do not depend on the key.
+//
+// The lexical comparison is made first, so the filesystem is only asked about
+// the mounts that are not already recognised.
+func dirIsAtOrAbove(dir, other string) bool {
+	if _, ok := relBelowDir(dir, other); ok {
+		return true
+	}
+
+	_, ok := relBelowDir(resolvedDir(dir), resolvedDir(other))
+
+	return ok
+}
+
+// resolvedDir is dir with the symlinks in it resolved, falling back to dir
+// itself where they cannot be: a mount point wr is asked about need not exist
+// yet, and an unresolvable path is no worse an answer than the one the caller
+// already had.
+func resolvedDir(dir string) string {
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return dir
+	}
+
+	return resolved
 }
 
 // entryLeadingTo returns the name of the entry of dir that path is inside (path
