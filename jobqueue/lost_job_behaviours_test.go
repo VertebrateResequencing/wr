@@ -383,6 +383,15 @@ func (l *lostRun) soNoBehaviourRuns() {
 	}
 }
 
+// killCalledOnLiveJob says whether the manager has marked the job to kill itself
+// on its next touch.
+func (l *lostRun) killCalledOnLiveJob() bool {
+	l.live.RLock()
+	defer l.live.RUnlock()
+
+	return l.live.killCalled
+}
+
 // jobStateAndKillCalled reports the live job's state and whether the manager has
 // marked it to kill itself on its next touch.
 func (l *lostRun) jobStateAndKillCalled() (JobState, bool) {
@@ -466,38 +475,14 @@ func (l *lostRun) startRetry(actualCwd string, touched bool) {
 	}
 }
 
-// killAndRetakeTheJob is `wr kill` on a lost job, followed by a runner taking
-// the job on again - all of it through the real manager, with the item really
-// going out of the run sub-queue and really coming back into it.
+// killAndReserveTheJob is `wr kill` on a lost job, followed by a runner taking
+// the job on again - both through the real manager, so the item really does go
+// out of the run sub-queue and really does come back into it.
 //
 // killJob is the documented way to deal with a job wr has lost contact with, and
 // its own doc says what it does: it RELEASES the lost job. That opens a window
 // that closes as soon as a runner reserves the retry, and it opens it while the
 // confirmation of the lost run is still to come back.
-//
-// pid is what the retry's Started reports. A live one is a retry that is getting
-// on with its work; an exited one is a retry that dies in its turn, so that the
-// manager has to declare THIS run lost on its own account.
-func (l *lostRun) killAndRetakeTheJob(ctx context.Context, pid int) (actualCwd, tmpDir, output string) {
-	reserved := l.killAndReserveTheJob(ctx)
-
-	actualCwd, tmpDir, err := mkHashedDir(l.cwd, l.key)
-	So(err, ShouldBeNil)
-	So(actualCwd, ShouldNotEqual, l.lostCwd)
-
-	output = writeFileIn(actualCwd, retryOutputName)
-
-	reserved.Lock()
-	reserved.setActualCwd(actualCwd)
-	reserved.Unlock()
-
-	So(l.client.Started(reserved, pid), ShouldBeNil)
-
-	return actualCwd, tmpDir, output
-}
-
-// killAndReserveTheJob is the `wr kill` and the reservation of killAndRetakeTheJob
-// on their own, for a retry that never gets as far as its Started.
 func (l *lostRun) killAndReserveTheJob(ctx context.Context) *Job {
 	killed, err := l.server.killJob(ctx, l.key)
 	So(err, ShouldBeNil)
@@ -509,6 +494,31 @@ func (l *lostRun) killAndReserveTheJob(ctx context.Context) *Job {
 	So(reserved.Key(), ShouldEqual, l.key)
 
 	return reserved
+}
+
+// getOnWithTheRun is everything a runner does with a reservation before its
+// Started reaches the manager: Client.Execute resolves the working directory,
+// sets up mounts and calls cmd.Start(), and only then reports. So a Cmd is
+// already executing, in a directory the manager has not been told about, for the
+// whole of the window this models.
+func (l *lostRun) getOnWithTheRun(reserved *Job) (actualCwd, tmpDir, output string) {
+	actualCwd, tmpDir, err := mkHashedDir(l.cwd, l.key)
+	So(err, ShouldBeNil)
+	So(actualCwd, ShouldNotEqual, l.lostCwd)
+
+	output = writeFileIn(actualCwd, retryOutputName)
+
+	reserved.Lock()
+	reserved.setActualCwd(actualCwd)
+	reserved.Unlock()
+
+	return actualCwd, tmpDir, output
+}
+
+// reportItStarted is the run's own Started, which is the first thing the manager
+// hears about it.
+func (l *lostRun) reportItStarted(reserved *Job, pid int) {
+	So(l.client.Started(reserved, pid), ShouldBeNil)
 }
 
 // runnerDied replaces the host and pid the manager recorded for the reservation
@@ -524,9 +534,10 @@ func (l *lostRun) runnerDied() {
 	l.live.Unlock()
 }
 
-// reportedState is the state the manager reports for the job: a job holding a
-// reservation is reserved, and lost only while the manager has lost contact with
-// the run that holds it.
+// reportedState is the state the manager reports for the job, which is what `wr
+// status` shows: reserved while a runner holds it and has yet to report its
+// Started, running once it has, and lost only while the manager has lost contact
+// with the run that holds it.
 func (l *lostRun) reportedState(ctx context.Context) JobState {
 	item, err := l.server.q.Get(l.key)
 	So(err, ShouldBeNil)
@@ -966,30 +977,36 @@ func TestKillingALostJobSparesTheRunThatReplacesIt(t *testing.T) {
 		defer l.stop(ctx)
 
 		// this is the un-gated release: `wr kill` marks the job and releases it,
-		// and a runner has the retry reserved and its Cmd EXECUTING long before
-		// the confirmation of the lost run comes back. Nothing about the shared
-		// *Job tells the two apart except what the manager minted for the
-		// reservation.
+		// and a runner has the retry reserved, its working directory made and its
+		// Cmd EXECUTING before the confirmation of the lost run comes back - and
+		// before the manager has heard a single word from it. Once its Started
+		// has been reported the job is off lost, so this window, and only this
+		// window, is where a decision about the run before it can land.
 		l.waitForDeadCheckWindow()
 
-		retryCwd, retryTmp, retryOutput := l.killAndRetakeTheJob(ctx, os.Getpid())
+		reserved := l.killAndReserveTheJob(ctx)
+		retryCwd, retryTmp, retryOutput := l.getOnWithTheRun(reserved)
 
 		l.proceedManager()
 
 		Convey("the confirmation is not carried out on the retry", func() {
 			So(l.waitForKillDecision(), ShouldBeFalse)
 
-			// killCalled is the half that kills a live Cmd: it turns the retry's
-			// next touch into a self-kill.
-			state, killCalled := l.jobStateAndKillCalled()
-			So(state, ShouldEqual, JobStateRunning)
-			So(killCalled, ShouldBeFalse)
+			// killCalled is the half that ends a Cmd already running: it turns
+			// the retry's next touch into a self-kill.
+			So(l.reportedState(ctx), ShouldEqual, JobStateReserved)
+			So(l.killCalledOnLiveJob(), ShouldBeFalse)
 
 			soPathsExist(retryOutput, retryCwd, retryTmp, filepath.Dir(retryCwd))
 
 			l.soNoBehaviourRuns()
 			soPathsExist(retryOutput, retryCwd, retryTmp)
 			soPathsGone(l.ranIn)
+
+			// and the retry still holds the reservation, so it gets to report
+			// its Started - which a job released out from under it cannot.
+			l.reportItStarted(reserved, os.Getpid())
+			So(l.reportedState(ctx), ShouldEqual, JobStateRunning)
 		})
 	})
 }
@@ -1010,7 +1027,9 @@ func TestKilledLostJobsReplacementIsStillWatched(t *testing.T) {
 
 		// the retry is started with a pid that has already exited, so it goes
 		// silent the way a run killed by its node does.
-		retryCwd, _, _ := l.killAndRetakeTheJob(ctx, exitedPid())
+		reserved := l.killAndReserveTheJob(ctx)
+		retryCwd, _, _ := l.getOnWithTheRun(reserved)
+		l.reportItStarted(reserved, exitedPid())
 
 		l.proceedManager()
 		So(l.waitForKillDecision(), ShouldBeFalse)
@@ -1204,6 +1223,39 @@ func TestKilledLostJobSparesItsSecondRun(t *testing.T) {
 		Convey("the release lands on neither run", func() {
 			r.server.confirmOrReleaseLostJob(ctx, lostJobDetails{key: r.key, killCalled: true, pin: pin})
 
+			So(r.item.Stats().State, ShouldEqual, queue.ItemStateRun)
+		})
+	})
+}
+
+func TestASlowStartedRunIsNotStillLost(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a reservation declared lost before its Started arrived", t, func() {
+		r := newStartedRun(ctx, t, "slow_start_recovers", t.TempDir(), nil)
+
+		// a runner whose reserve-to-Started stretch outlasts the TTR - S3 mounts
+		// retry for seconds, and a saturated socket delays the report itself - is
+		// declared lost while its Cmd is starting, and pinned.
+		r.reserveAgain()
+		r.markLost()
+
+		pin := r.live.pinBehaviours()
+
+		Convey("its Started recovers it, so the confirmation of that loss is refused", func() {
+			So(r.server.applyJobStart(r.live, &Job{Pid: os.Getpid(), Host: localhost}), ShouldBeTrue)
+
+			// the run this pin names is the very run that has just reported in:
+			// its reservation minted the token and its Started did not change it.
+			// So taking the job off lost is the only thing left standing between
+			// a confirmation of that loss and a Cmd that is running.
+			released, err := r.server.killLostRun(ctx, pin)
+			So(err, ShouldBeNil)
+			So(released, ShouldBeFalse)
 			So(r.item.Stats().State, ShouldEqual, queue.ItemStateRun)
 		})
 	})
