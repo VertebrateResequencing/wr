@@ -930,16 +930,6 @@ type provenDirs struct {
 	infos []os.FileInfo
 }
 
-// leafInfo is what the proof found at the leaf, or nil if it had already gone.
-func (dirs provenDirs) leafInfo() os.FileInfo {
-	names := strings.Split(dirs.rel, string(filepath.Separator))
-	if len(dirs.infos) < len(names) {
-		return nil
-	}
-
-	return dirs.infos[len(names)-1]
-}
-
 // openChain descends from dirs.root to the proven dir, keeping a handle on every
 // directory on the way down; see dirChain.
 //
@@ -952,9 +942,13 @@ func (dirs provenDirs) openChain() (dirChain, error) {
 	chain := dirChain{
 		names: strings.Split(dirs.rel, string(filepath.Separator)),
 		leaf:  dirs.leaf,
-		info:  dirs.leafInfo(),
 	}
 	chain.roots = append(make([]*os.Root, 0, len(chain.names)), dirs.root)
+
+	// what the proof found at the leaf, left nil if it had already gone by then.
+	if len(dirs.infos) >= len(chain.names) {
+		chain.info = dirs.infos[len(chain.names)-1]
+	}
 
 	for i, name := range chain.names[:len(chain.names)-1] {
 		if i >= len(dirs.infos) {

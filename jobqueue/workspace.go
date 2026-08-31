@@ -706,11 +706,17 @@ func (ws *jobWorkSpace) cleanup() error {
 
 // empty opens the proven workspace as a root of its own, proves it is the dir
 // that was proven rather than one a symlink has since substituted, and deletes
-// its contents through it.
+// its contents through it, as aggressively as the Job's live mounts and caches
+// allow.
 //
 // A workspace that has already gone is not a failure: cleanup runs more than
 // once for a lost job and Job.Unmount deletes the emptied workspace in between,
 // so erroring here would skip the empty parent dirs cleanup goes on to tidy.
+//
+// A Job with no mounts gets no fast path around the keep set, tempting as one
+// looks: this is the only route to it, so the muxfysCachePrefix rule would not
+// run for such a Job. Its keep set is empty anyway, so it is swept just as
+// unconditionally.
 func (ws *jobWorkSpace) empty(chain dirChain) error {
 	wsRoot, err := chain.openLeaf()
 	if err != nil {
@@ -727,7 +733,13 @@ func (ws *jobWorkSpace) empty(chain dirChain) error {
 		return err
 	}
 
-	return ws.removeExcept(wsRoot, actualCwd)
+	if !ws.keep.wholeActualCwd && actualCwd != nil {
+		if err = removeActualCwd(wsRoot, ws.paths.actualCwdName, actualCwd, ws.keep.inActualCwd); err != nil {
+			return err
+		}
+	}
+
+	return ws.removeWorkSpaceEntries(wsRoot)
 }
 
 // actualCwdNow takes a fresh look at the working directory, as a single named
@@ -773,24 +785,6 @@ func (ws *jobWorkSpace) actualCwdNow(wsRoot *os.Root) (os.FileInfo, error) {
 	}
 
 	return ws.actualCwdInfo, nil
-}
-
-// removeExcept deletes the contents of the Job's workspace, keeping the dirs its
-// live mounts and caches need.
-//
-// A Job with no mounts gets no fast path around it, tempting as one looks: this
-// is the only route to the keep set, so the muxfysCachePrefix rule would not run
-// for such a Job. Its keep set is empty anyway, so it is swept just as
-// unconditionally.
-func (ws *jobWorkSpace) removeExcept(wsRoot *os.Root, actualCwd os.FileInfo) error {
-	if !ws.keep.wholeActualCwd && actualCwd != nil {
-		err := removeActualCwd(wsRoot, ws.paths.actualCwdName, actualCwd, ws.keep.inActualCwd)
-		if err != nil {
-			return err
-		}
-	}
-
-	return ws.removeWorkSpaceEntries(wsRoot)
 }
 
 // keptEntry says if an entry of the Job's workspace must survive cleanup: an
