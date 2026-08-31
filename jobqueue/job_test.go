@@ -273,6 +273,56 @@ func TestJobModifierActualCwd(t *testing.T) {
 	})
 }
 
+func TestJobSetActualCwd(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// a blank ActualCwd is how the rest of wr knows wr created no directory below
+	// Cwd for this Job, and a CwdMatters Job never has one: its Cmd runs in the
+	// user's own Cwd. So the setter is where a live snapshot arriving off the wire
+	// every touch interval is stopped from writing the v0.37.0|1 poison - Cwd
+	// itself, sitting in ActualCwd - back into a Job at runtime.
+	Convey("setActualCwd records no working directory for a CwdMatters Job", t, func() {
+		const reported = testCwdPath + "/wr_cwd/a/b/c/uniq0/cwd"
+
+		job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath, CwdMatters: true}
+
+		Convey("whatever it is told directly", func() {
+			job.setActualCwd(reported)
+			So(job.ActualCwd, ShouldBeBlank)
+
+			job.setActualCwd(job.Cwd)
+			So(job.ActualCwd, ShouldBeBlank)
+		})
+
+		Convey("and whatever a live snapshot reports", func() {
+			// this is the route a report really arrives by: JobEndState.Cwd off
+			// the wire, through applyLiveSnapshot, under the Job's lock, on every
+			// Touch of a running job.
+			applyLiveSnapshot(job, &JobEndState{Cwd: job.Cwd})
+			So(job.ActualCwd, ShouldBeBlank)
+
+			applyLiveSnapshot(job, &JobEndState{Cwd: reported})
+			So(job.ActualCwd, ShouldBeBlank)
+		})
+
+		Convey("while a Job wr did create one for records what is reported", func() {
+			// the refusal has to be about CwdMatters, not about the setter
+			// recording nothing at all.
+			created := &Job{Cmd: testTrueCmd, Cwd: testCwdPath}
+
+			applyLiveSnapshot(created, &JobEndState{Cwd: reported})
+			So(created.ActualCwd, ShouldEqual, reported)
+
+			Convey("and a report of nowhere leaves the directory it already had", func() {
+				applyLiveSnapshot(created, &JobEndState{})
+				So(created.ActualCwd, ShouldEqual, reported)
+			})
+		})
+	})
+}
+
 func TestJobMountBaseDirs(t *testing.T) {
 	if runnermode || servermode {
 		return
