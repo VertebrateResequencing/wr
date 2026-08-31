@@ -1423,6 +1423,15 @@ func removeAllExcept(dirRoot *os.Root, exceptions []string) error {
 // exceptionDirs turns removeAllExcept's exceptions into the set of dirs to keep
 // and the set of dirs that must be recursed into to reach them, both as paths
 // relative to the dir being emptied.
+//
+// What stops the upward walk running past the filesystem root is its own
+// relIsBelow(parent), which is false at once for the "." and ".."-shaped rels
+// removeAllExcept describes. The skip ahead of it is belt to that braces: it
+// keeps a path that protects nothing out of the sets, rather than being what
+// makes the walk terminate. Both are unreachable today - the only exceptions are
+// keptDirs.inActualCwd, which protectInActualCwd fills with filepath.Rel output
+// it has already found to be strictly below - so this is what an exception
+// arriving from anywhere else would meet, not something today's callers rely on.
 func exceptionDirs(exceptions []string) (keepDirs, checkDirs map[string]bool) {
 	keepDirs = make(map[string]bool, len(exceptions))
 	checkDirs = make(map[string]bool, len(exceptions))
