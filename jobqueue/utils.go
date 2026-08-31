@@ -889,7 +889,13 @@ func rmEmptyDirsIn(baseRoot *os.Root, leafDir string) error {
 		return fmt.Errorf("%w: %s vs %s", errNotBelowBaseDir, leafDir, baseRoot.Name())
 	}
 
-	return rmCheckedEmptyDirs(proven)
+	chain, err := proven.openChain()
+	if err != nil {
+		return err
+	}
+	defer chain.closeAll()
+
+	return chain.removeUpward()
 }
 
 // provenDirs is a directory proven fit for deletion, paired with the open root
@@ -1156,19 +1162,6 @@ func openVerifiedDir(parent *os.Root, name string, info os.FileInfo) (*os.Root, 
 	}
 
 	return dirRoot, nil
-}
-
-// rmCheckedEmptyDirs makes rmEmptyDirsIn's upward walk for dirs realDirBelow has
-// already proven and normalised, so a caller that needed that proof for its own
-// deletions doesn't have to pay for it twice.
-func rmCheckedEmptyDirs(dirs provenDirs) error {
-	chain, err := dirs.openChain()
-	if err != nil {
-		return err
-	}
-	defer chain.closeAll()
-
-	return chain.removeUpward()
 }
 
 // errIsDirNotEmpty says if err is a directory removal that failed because the

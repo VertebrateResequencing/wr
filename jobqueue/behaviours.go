@@ -351,8 +351,13 @@ func (b *Behaviour) copyToManager() error {
 type Behaviours []*Behaviour
 
 // Trigger calls Trigger on each constituent Behaviour, first all those for
-// OnSuccess if success = true or OnFailure otherwise, then those for OnExit,
-// against the Job as it is now.
+// OnSuccess if success = true or OnFailure otherwise, then those for OnExit.
+//
+// The whole set shares ONE snapshot of the Job, rather than each behaviour
+// reading the Job again: a `--on_failure cleanup --on_exit run` pair is one
+// decision about one directory, and re-reading between them lets the two act on
+// different ones. Nothing downstream reads the Job again while it walks the
+// filesystem deciding what it may delete.
 func (bs Behaviours) Trigger(success bool, j *Job) error {
 	// answered before the snapshot, not after, because most Jobs have no
 	// behaviours at all and this is on the path of every Job that runs: the
@@ -362,20 +367,7 @@ func (bs Behaviours) Trigger(success bool, j *Job) error {
 		return nil
 	}
 
-	return bs.trigger(success, j.workSpaceSnapshot())
-}
-
-// trigger is Trigger against a snapshot of the Job's state rather than against
-// the Job itself, so that nothing downstream reads the Job again while it walks
-// the filesystem deciding what it may delete.
-//
-// The whole set shares ONE snapshot, rather than each behaviour reading the Job
-// again: a `--on_failure cleanup --on_exit run` pair is one decision about one
-// directory, and re-reading between them lets the two act on different ones.
-func (bs Behaviours) trigger(success bool, ws jobWorkSpaceSnapshot) error {
-	if len(bs) == 0 {
-		return nil
-	}
+	ws := j.workSpaceSnapshot()
 
 	var status BehaviourTrigger
 	if success {

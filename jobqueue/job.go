@@ -1092,9 +1092,13 @@ func (j *Job) unmountAll(doNotUpload bool) (string, *multierror.Error) {
 //
 // Which dirs it may walk is decided by the same resolution Behaviour.cleanup
 // uses, so the two cannot disagree about what wr created.
+//
+// A refusal from that resolution is swallowed rather than reported, because an
+// error returned here fails the job itself, and a tidy-up that found nothing of
+// ours to tidy is not a failed unmount.
 func (j *Job) rmEmptyMountDirs() error {
-	ws := j.resolvedWorkSpaceOrNone()
-	if ws == nil {
+	ws, err := j.workSpaceSnapshot().resolveWorkSpace()
+	if err != nil || ws == nil {
 		return nil
 	}
 	defer ws.Close()

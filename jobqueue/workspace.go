@@ -128,7 +128,12 @@ func (s jobWorkSpaceSnapshot) paths() (*workSpacePaths, error) {
 		return nil, nil //nolint:nilnil // "wr created nothing here" is not a failure
 	}
 
-	cwd, actualCwd, err := absJobDirs(s.cwd, s.actualCwd)
+	cwd, err := absJobDir("cwd", s.cwd)
+	if err != nil {
+		return nil, err
+	}
+
+	actualCwd, err := absJobDir("actual cwd", s.actualCwd)
 	if err != nil {
 		return nil, err
 	}
@@ -165,21 +170,6 @@ func absJobDir(what, dir string) (string, error) {
 	}
 
 	return filepath.Clean(dir), nil
-}
-
-// absJobDirs does absJobDir for both of a Job's directories.
-func absJobDirs(cwd, actualCwd string) (string, string, error) {
-	absCwd, err := absJobDir("cwd", cwd)
-	if err != nil {
-		return "", "", err
-	}
-
-	absActualCwd, err := absJobDir("actual cwd", actualCwd)
-	if err != nil {
-		return "", "", err
-	}
-
-	return absCwd, absActualCwd, nil
 }
 
 // createdCwdRel returns actualCwd relative to cwd, having refused it unless it
@@ -258,20 +248,6 @@ func (s jobWorkSpaceSnapshot) resolveWorkSpace() (*jobWorkSpace, error) {
 	return paths.prove(absenceTolerated)
 }
 
-// resolvedWorkSpaceOrNone is resolveWorkSpace for a caller that has nowhere to
-// report a refusal to: it makes the same decision and says "none" instead of
-// why. Only Job.Unmount's tidy-up uses it, because an error returned there fails
-// the job itself, and a tidy-up that found nothing of ours to tidy is not a
-// failed unmount.
-func (j *Job) resolvedWorkSpaceOrNone() *jobWorkSpace {
-	ws, err := j.workSpaceSnapshot().resolveWorkSpace()
-	if err != nil {
-		return nil
-	}
-
-	return ws
-}
-
 // resolveRunDir is the ONE place a Job's Cwd and ActualCwd decide where a `run`
 // Behaviour's command executes. It asks the same resolution cleanup asks, of the
 // same snapshot, so the two cannot disagree about which directory is the Job's.
@@ -330,7 +306,14 @@ func (s jobWorkSpaceSnapshot) cwdRunDir() (*runDir, error) {
 			errNotACreatedCwd, s.key)
 	}
 
-	return unheldRunDir(absJobDir("cwd", s.cwd))
+	// nothing is held open: this is the Job's own Cwd, which no proof was made
+	// about in the first place.
+	dir, err := absJobDir("cwd", s.cwd)
+	if err != nil {
+		return nil, err
+	}
+
+	return &runDir{path: dir}, nil
 }
 
 // runDir is the directory a `run` Behaviour's command is to be executed in, with
@@ -355,17 +338,6 @@ type runDir struct {
 	// path is the directory's name, used when there is no handle and as the
 	// fallback where a handle cannot be named to exec.
 	path string
-}
-
-// unheldRunDir is a runDir for the Job's own Cwd, which wr has no proof about
-// and so nothing to pin. It takes absJobDir's pair directly so that its refusal
-// passes through.
-func unheldRunDir(dir string, err error) (*runDir, error) {
-	if err != nil {
-		return nil, err
-	}
-
-	return &runDir{path: dir}, nil
 }
 
 // openRunDir hands back the proven working directory, held open.
@@ -818,7 +790,7 @@ func (ws *jobWorkSpace) removeExcept(wsRoot *os.Root, actualCwd os.FileInfo) err
 		}
 	}
 
-	return removeWorkSpaceEntries(wsRoot, ws.keptEntry)
+	return ws.removeWorkSpaceEntries(wsRoot)
 }
 
 // keptEntry says if an entry of the Job's workspace must survive cleanup: an
@@ -836,19 +808,19 @@ func (ws *jobWorkSpace) keptEntry(name string) bool {
 	return ws.keep.muxfysNamesWorkSpaceEntry && strings.HasPrefix(name, muxfysCachePrefix)
 }
 
-// removeWorkSpaceEntries deletes every entry of the workspace that keep doesn't
-// claim. There is no way to ask it to claim nothing, because a caller that could
-// would be a second answer to what cleanup may delete. Each entry is named to
-// wsRoot by its own name alone, with no path above it left to resolve, so nothing
-// done here can be redirected elsewhere.
-func removeWorkSpaceEntries(wsRoot *os.Root, keep func(name string) bool) error {
+// removeWorkSpaceEntries deletes every entry of the workspace that keptEntry
+// doesn't claim. What survives is asked of the Job's own keep set and of nothing
+// else, so there is no second answer to what cleanup may delete. Each entry is
+// named to wsRoot by its own name alone, with no path above it left to resolve,
+// so nothing done here can be redirected elsewhere.
+func (ws *jobWorkSpace) removeWorkSpaceEntries(wsRoot *os.Root) error {
 	entries, err := readDirIn(wsRoot, ".")
 	if err != nil {
 		return err
 	}
 
 	for _, entry := range entries {
-		if keep(entry.Name()) {
+		if ws.keptEntry(entry.Name()) {
 			continue
 		}
 
