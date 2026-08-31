@@ -454,13 +454,11 @@ func (jvj *JobViaJSON) Convert(jd *JobDefaults) (*Job, error) {
 // buildJob assembles the final Job from the JobViaJSON, its defaults and the
 // already-resolved error-prone fields.
 func (jvj *JobViaJSON) buildJob(jd *JobDefaults, cmd string, fields convertedFields) *Job {
-	cwdMatters := jvj.CwdMatters || jd.CwdMatters
-
 	return &Job{
 		RepGroup:              firstNonEmpty(jvj.RepGrp, jd.RepGrp),
 		Cmd:                   cmd,
 		Cwd:                   firstNonEmpty(jvj.Cwd, jd.DefaultCwd()),
-		CwdMatters:            cwdMatters,
+		CwdMatters:            jvj.CwdMatters || jd.CwdMatters,
 		ChangeHome:            jvj.ChangeHome || jd.ChangeHome,
 		ReqGroup:              jvj.resolveReqGroup(jd, cmd),
 		Group:                 firstNonEmpty(jvj.Group, jd.Group),
@@ -474,7 +472,7 @@ func (jvj *JobViaJSON) buildJob(jd *JobDefaults, cmd string, fields convertedFie
 		DepGroups:             firstNonEmptySlice(jvj.DepGrps, jd.DepGroups),
 		Dependencies:          jvj.resolveDependencies(jd),
 		EnvOverride:           fields.envOverride,
-		Behaviours:            jvj.resolveBehaviours(jd, cwdMatters),
+		Behaviours:            jvj.resolveBehaviours(jd),
 		MountConfigs:          jvj.resolveMountConfigs(jd),
 		MonitorDocker:         firstNonEmpty(jvj.MonitorDocker, jd.MonitorDocker),
 		WithDocker:            firstNonEmpty(jvj.WithDocker, jd.WithDocker),
@@ -702,19 +700,13 @@ func (jvj *JobViaJSON) resolveEnvOverride(jd *JobDefaults) ([]byte, error) {
 }
 
 // resolveBehaviours resolves the job's Behaviours, preferring jvj's values over
-// the defaults for each behaviour type. When cwdMatters is true, the cleanup
-// behaviours are dropped, whether they came from the defaults (wr add's
-// --on_exit defaults to [{"cleanup":true}]) or from the job itself.
-func (jvj *JobViaJSON) resolveBehaviours(jd *JobDefaults, cwdMatters bool) Behaviours {
+// the defaults for each behaviour type.
+func (jvj *JobViaJSON) resolveBehaviours(jd *JobDefaults) Behaviours {
 	var behaviours Behaviours
 
 	behaviours = appendBehaviours(behaviours, jvj.OnFailure, OnFailure, jd.OnFailure)
 	behaviours = appendBehaviours(behaviours, jvj.OnSuccess, OnSuccess, jd.OnSuccess)
 	behaviours = appendBehaviours(behaviours, jvj.OnExit, OnExit, jd.OnExit)
-
-	if cwdMatters {
-		return behaviours.withoutCleanups()
-	}
 
 	return behaviours
 }

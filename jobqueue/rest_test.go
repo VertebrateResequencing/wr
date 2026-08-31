@@ -802,47 +802,15 @@ func TestJobViaJSONBehaviours(t *testing.T) {
 			So(job.Behaviours.String(), ShouldEqual, `{"on_exit":[{"cleanup":true}]}`)
 		})
 
-		Convey("a job that asks for cwd_matters itself gets no cleanup", func() {
+		Convey("a cwd_matters job keeps it here too, since Convert does not filter", func() {
+			// dropping a cleanup a cwd_matters job could never carry out is
+			// Job.dropImpossibleCleanups's job alone, and the server applies it
+			// to every job that enters its store; TestREST covers a POSTed
+			// cwd_matters job not advertising one.
 			job, err := (&JobViaJSON{Cmd: "echo per job", CwdMatters: true}).Convert(jd)
 			So(err, ShouldBeNil)
 			So(job.CwdMatters, ShouldBeTrue)
-			So(hasCleanupBehaviour(job.Behaviours), ShouldBeFalse)
-			So(job.Behaviours.String(), ShouldBeBlank)
-		})
-
-		Convey("a job that gets cwd_matters from the defaults gets no cleanup", func() {
-			jd.CwdMatters = true
-
-			job, err := (&JobViaJSON{Cmd: "echo defaulted"}).Convert(jd)
-			So(err, ShouldBeNil)
-			So(job.CwdMatters, ShouldBeTrue)
-			So(hasCleanupBehaviour(job.Behaviours), ShouldBeFalse)
-			So(job.Behaviours.String(), ShouldBeBlank)
-		})
-	})
-
-	Convey("Converting a cwd_matters JobViaJSON that asks for cleanup explicitly", t, func() {
-		jd := &JobDefaults{Cwd: "/some/cwd", CwdMatters: true}
-		jvj := &JobViaJSON{
-			Cmd: "echo explicit",
-			OnExit: BehavioursViaJSON{
-				BehaviourViaJSON{Run: "echo done"},
-				BehaviourViaJSON{Cleanup: true},
-			},
-			OnFailure: cleanupViaJSON,
-			OnSuccess: BehavioursViaJSON{
-				BehaviourViaJSON{CleanupAll: true},
-				BehaviourViaJSON{Remove: true},
-			},
-		}
-
-		Convey("the cleanups are dropped from every trigger and the rest survive", func() {
-			job, err := jvj.Convert(jd)
-			So(err, ShouldBeNil)
-			So(hasCleanupBehaviour(job.Behaviours), ShouldBeFalse)
-			So(job.Behaviours.RemovalRequested(), ShouldBeTrue)
-			So(job.Behaviours.String(), ShouldEqual,
-				`{"on_success":[{"remove":true}],"on_exit":[{"run":"echo done"}]}`)
+			So(hasCleanupBehaviour(job.Behaviours), ShouldBeTrue)
 		})
 	})
 }
