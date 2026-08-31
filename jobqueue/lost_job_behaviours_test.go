@@ -815,3 +815,32 @@ func TestLostJobSparesASecondRunThatNeverTouched(t *testing.T) {
 		})
 	})
 }
+
+func TestLostJobOnWeblessManagerCleansItsWorkSpace(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a webless manager's lost job that no touch was ever received for", t, func() {
+		l := newLostRun(ctx, t, "lost_job_webless_cleanup", lostRunOpts{webless: true})
+
+		defer l.stop(ctx)
+
+		l.waitForDeadCheckWindow()
+		l.proceedManager()
+
+		Convey("its workspace is still cleaned up and its command still runs in it", func() {
+			So(l.waitForKillDecision(), ShouldBeTrue)
+
+			l.resumeManager()
+			soGoneWithin(l.lostCwd)
+			soPathsGone(l.lostOut, l.lostCwd, l.lostTmp, filepath.Dir(l.lostCwd))
+
+			ran, err := os.ReadFile(l.ranIn)
+			So(err, ShouldBeNil)
+			So(strings.TrimSpace(string(ran)), ShouldEqual, l.lostCwd)
+		})
+	})
+}

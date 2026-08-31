@@ -882,7 +882,9 @@ func (s *Server) handleStart(ctx context.Context, cr *clientRequest) (*serverRes
 // returning false (changing nothing) if the request lacked a pid or host.
 //
 // This is the one place a run of a job begins, so it is where the manager mints
-// the run's identity: see runToken.
+// the run's identity (see runToken) and where it learns the working directory
+// the runner made for it, which the runner has already created by the time it
+// calls Started (Client.resolveWorkingDir runs before Client.Started).
 func (s *Server) applyJobStart(job, crJob *Job) bool {
 	job.Lock()
 	defer job.Unlock()
@@ -902,6 +904,14 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 	job.EndTime = time.Time{}
 	job.Attempts++
 	job.runID = s.mintRunToken()
+
+	// the previous run's working directory is not this run's, and every reader
+	// of ActualCwd - cleanup, the `run` behaviour, the status page - is asking
+	// about the run that is happening now. A stale value pointed all three at a
+	// directory this run has never been in.
+	job.ActualCwd = ""
+	job.setActualCwd(crJob.ActualCwd)
+
 	job.Lost = false
 	job.State = JobStateRunning
 
