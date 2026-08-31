@@ -846,6 +846,88 @@ func TestLostJobOnWeblessManagerCleansItsWorkSpace(t *testing.T) {
 	})
 }
 
+// startedRun is a real manager with one real job in it, reserved and started
+// through the real client, with the default TTR so that nothing expires under a
+// test. It is the fixture for the checks about what a START does, rather than
+// about a loss.
+type startedRun struct {
+	server *Server
+	item   *queue.Item
+	live   *Job
+
+	// key is the job's key and actualCwd the working directory its first run
+	// made and reported, the way Client.Execute does: resolveWorkingDir before
+	// Started.
+	key       string
+	actualCwd string
+}
+
+// newStartedRun builds the fixture. The manager and client are torn down with
+// the test.
+func newStartedRun(ctx context.Context, t *testing.T, rg, cwd string, bs Behaviours) *startedRun {
+	t.Helper()
+
+	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(false)
+
+	server, _, token, err := serve(ctx, serverConfig)
+	So(err, ShouldBeNil)
+
+	t.Cleanup(func() { server.Stop(ctx, true) })
+
+	jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+	So(err, ShouldBeNil)
+
+	t.Cleanup(func() { disconnect(jq) })
+
+	job := &Job{
+		Cmd: restFormTrue, Cwd: cwd, RepGroup: rg, ReqGroup: rg,
+		Requirements: standardReqs, Retries: 3, Behaviours: bs,
+	}
+
+	_, _, err = jq.Add([]*Job{job}, os.Environ(), true)
+	So(err, ShouldBeNil)
+
+	reserved, err := jq.Reserve(2 * time.Second)
+	So(err, ShouldBeNil)
+	So(reserved, ShouldNotBeNil)
+
+	r := &startedRun{server: server, key: reserved.Key()}
+
+	r.actualCwd, _, err = mkHashedDir(cwd, r.key)
+	So(err, ShouldBeNil)
+
+	reserved.Lock()
+	reserved.setActualCwd(r.actualCwd)
+	reserved.Unlock()
+
+	So(jq.Started(reserved, os.Getpid()), ShouldBeNil)
+
+	r.item, err = server.q.Get(r.key)
+	So(err, ShouldBeNil)
+
+	live, ok := r.item.Data().(*Job)
+	So(ok, ShouldBeTrue)
+	r.live = live
+
+	return r
+}
+
+// liveActualCwd is the working directory the manager currently believes the job
+// is running in.
+func (r *startedRun) liveActualCwd() string {
+	r.live.RLock()
+	defer r.live.RUnlock()
+
+	return r.live.ActualCwd
+}
+
+// markLost marks the manager's own *Job lost, as a TTR expiry does.
+func (r *startedRun) markLost() {
+	r.live.Lock()
+	r.live.Lost = true
+	r.live.Unlock()
+}
+
 func TestKilledLostJobSparesItsSecondRun(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -854,64 +936,81 @@ func TestKilledLostJobSparesItsSecondRun(t *testing.T) {
 	ctx := context.Background()
 
 	Convey("Given a lost job the user had already killed, whose retry is lost in its turn", t, func() {
-		config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(false)
-
-		server, _, token, err := serve(ctx, serverConfig)
-		So(err, ShouldBeNil)
-
-		defer server.Stop(ctx, true)
-
-		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
-		So(err, ShouldBeNil)
-
-		defer disconnect(jq)
-
-		rg := "killed_lost_run"
-		job := &Job{
-			Cmd: restFormTrue, Cwd: t.TempDir(), RepGroup: rg, ReqGroup: rg,
-			Requirements: standardReqs, Retries: 3,
-		}
-
-		_, _, err = jq.Add([]*Job{job}, os.Environ(), true)
-		So(err, ShouldBeNil)
-
-		reserved, err := jq.Reserve(2 * time.Second)
-		So(err, ShouldBeNil)
-		So(reserved, ShouldNotBeNil)
-		So(jq.Started(reserved, os.Getpid()), ShouldBeNil)
-
-		key := reserved.Key()
-
-		item, err := server.q.Get(key)
-		So(err, ShouldBeNil)
-
-		live, ok := item.Data().(*Job)
-		So(ok, ShouldBeTrue)
+		r := newStartedRun(ctx, t, "killed_lost_run", t.TempDir(), nil)
 
 		// a `wr kill`ed run goes silent, is declared lost, and has its details
 		// pinned. This is the one lost-job path with no dead-check in it at all:
 		// it simply waits ttrReleaseWait and releases.
-		live.Lock()
-		live.killCalled = true
-		live.Lost = true
-		live.Unlock()
+		r.live.Lock()
+		r.live.killCalled = true
+		r.live.Lost = true
+		r.live.Unlock()
 
-		pin := live.pinBehaviours()
+		pin := r.live.pinBehaviours()
 
 		// but that wait is long enough for the job to be released, started
 		// again, and lost again. Same key, same *Job, and Lost is true once
 		// more, so what tells the two runs apart is what the manager minted for
 		// each start.
-		So(server.applyJobStart(live, &Job{Pid: os.Getpid(), Host: localhost}), ShouldBeTrue)
-
-		live.Lock()
-		live.Lost = true
-		live.Unlock()
+		So(r.server.applyJobStart(r.live, &Job{Pid: os.Getpid(), Host: localhost}), ShouldBeTrue)
+		r.markLost()
 
 		Convey("the release lands on neither run", func() {
-			server.confirmOrReleaseLostJob(ctx, lostJobDetails{key: key, killCalled: true, pin: pin})
+			r.server.confirmOrReleaseLostJob(ctx, lostJobDetails{key: r.key, killCalled: true, pin: pin})
 
-			So(item.Stats().State, ShouldEqual, queue.ItemStateRun)
+			So(r.item.Stats().State, ShouldEqual, queue.ItemStateRun)
 		})
+	})
+}
+
+func TestStartedRunDoesNotInheritThePreviousRunsWorkingDir(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a job whose second run reports no working directory of its own", t, func() {
+		cwd := t.TempDir()
+		ranIn := filepath.Join(cwd, "ran_in.txt")
+		r := newStartedRun(ctx, t, "start_clears_cwd", cwd, Behaviours{{When: OnFailure, Do: Run, Arg: "pwd > " + ranIn}})
+
+		So(r.liveActualCwd(), ShouldEqual, r.actualCwd)
+
+		// an older runner, or a cwd_matters job carrying the ActualCwd that wr
+		// v0.37.0|1 stored on one. Either way this run says nothing about where
+		// it is working, and where the run before it was working is not an
+		// answer: ActualCwd is what cleanup deletes and what a `run` behaviour
+		// executes in, and both are asking about the run happening NOW.
+		So(r.server.applyJobStart(r.live, &Job{Pid: os.Getpid(), Host: localhost}), ShouldBeTrue)
+
+		Convey("the job no longer claims the directory the run before it was working in", func() {
+			So(r.liveActualCwd(), ShouldBeBlank)
+
+			// so this run's behaviours are refused rather than carried out in a
+			// directory it has never been in, and the abandoned workspace of the
+			// run before it is left where it is.
+			So(r.live.pinBehaviours().trigger(false), ShouldNotBeNil)
+			soPathsGone(ranIn)
+			soPathsExist(r.actualCwd)
+		})
+	})
+}
+
+func TestMintedRunTokenIsNeverTheRecoveredOne(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A run this manager never started is not the run any token it mints identifies", t, func() {
+		// a running job recovered from the database after a crash carries the
+		// zero token, because this manager minted nothing for it. Every token it
+		// does mint has to be distinct from that, or the first run it starts
+		// would answer to a pin taken of the recovered one.
+		server := &Server{}
+		recovered := &Job{Lost: true}
+
+		So(recovered.isLostRunLocked(server.mintRunToken()), ShouldBeFalse)
+		So(recovered.isLostRunLocked(0), ShouldBeTrue)
 	})
 }

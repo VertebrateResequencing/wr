@@ -1158,6 +1158,32 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 				So(err, ShouldBeNil)
 			})
 
+			Convey("Cleanup keeps the workspace when the JOB's Cwd is the symlinked spelling", func() {
+				// the other half of the same disagreement, with the spellings
+				// the other way round: the mount is named by the real path, and
+				// the Job's Cwd - so its whole workspace - by a symlink to it.
+				// Job.Cwd is stored exactly as the user typed it, because it
+				// feeds Job.Key(), so this is the spelling wr is given rather
+				// than one it chose.
+				link := filepath.Join(parent, "job_cwd_link")
+				So(os.Symlink(cwd, link), ShouldBeNil)
+
+				job := &Job{
+					Cwd: link, Cmd: testWSCmd,
+					MountConfigs: MountConfigs{{Mount: filepath.Join(cwd, AppName+createdCwdBaseSuffix)}},
+				}
+				actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+				output := writeFileIn(actualCwd, "out.txt")
+				remote := writeFileIn(workSpace, "remote.txt")
+
+				err = cleanup.Trigger(OnExit, job)
+
+				soPathsExist(remote, output, actualCwd, tmpDir, workSpace, cwd, precious)
+
+				So(err, ShouldBeNil)
+			})
+
 			Convey("Cleanup of a Job whose mount is ABOVE its workspace keeps the workspace too", func() {
 				// the same thing one level further out: everything wr made for
 				// the job is inside the mount, so there is nothing below it wr
