@@ -479,16 +479,9 @@ func (l *lostRun) startRetry(actualCwd string, touched bool) {
 // on with its work; an exited one is a retry that dies in its turn, so that the
 // manager has to declare THIS run lost on its own account.
 func (l *lostRun) killAndRetakeTheJob(ctx context.Context, pid int) (actualCwd, tmpDir, output string) {
-	killed, err := l.server.killJob(ctx, l.key)
-	So(err, ShouldBeNil)
-	So(killed, ShouldBeTrue)
+	reserved := l.killAndReserveTheJob(ctx)
 
-	reserved, err := l.client.Reserve(lostRunSettleTime)
-	So(err, ShouldBeNil)
-	So(reserved, ShouldNotBeNil)
-	So(reserved.Key(), ShouldEqual, l.key)
-
-	actualCwd, tmpDir, err = mkHashedDir(l.cwd, l.key)
+	actualCwd, tmpDir, err := mkHashedDir(l.cwd, l.key)
 	So(err, ShouldBeNil)
 	So(actualCwd, ShouldNotEqual, l.lostCwd)
 
@@ -501,6 +494,66 @@ func (l *lostRun) killAndRetakeTheJob(ctx context.Context, pid int) (actualCwd, 
 	So(l.client.Started(reserved, pid), ShouldBeNil)
 
 	return actualCwd, tmpDir, output
+}
+
+// killAndReserveTheJob is the `wr kill` and the reservation of killAndRetakeTheJob
+// on their own, for a retry that never gets as far as its Started.
+func (l *lostRun) killAndReserveTheJob(ctx context.Context) *Job {
+	killed, err := l.server.killJob(ctx, l.key)
+	So(err, ShouldBeNil)
+	So(killed, ShouldBeTrue)
+
+	reserved, err := l.client.Reserve(lostRunSettleTime)
+	So(err, ShouldBeNil)
+	So(reserved, ShouldNotBeNil)
+	So(reserved.Key(), ShouldEqual, l.key)
+
+	return reserved
+}
+
+// runnerDied replaces the host and pid the manager recorded for the reservation
+// (respondWithReservedJob records the reserving runner's own) with a process
+// that has already exited. That is what a runner killed by its node leaves
+// behind: a reservation held by nothing, and no Started ever coming.
+func (l *lostRun) runnerDied() {
+	pid := exitedPid()
+
+	l.live.Lock()
+	l.live.Host = localhost
+	l.live.Pid = pid
+	l.live.Unlock()
+}
+
+// reportedState is the state the manager reports for the job: a job holding a
+// reservation is reserved, and lost only while the manager has lost contact with
+// the run that holds it.
+func (l *lostRun) reportedState(ctx context.Context) JobState {
+	item, err := l.server.q.Get(l.key)
+	So(err, ShouldBeNil)
+
+	return l.server.itemToJob(ctx, item, false, false).State
+}
+
+// soLeavesRunQueueWithin waits up to lostRunSettleTime for the job to stop
+// holding a reservation, which is what a job that was killed, buried or released
+// for another try has done and a job parked lost for ever has not.
+func (l *lostRun) soLeavesRunQueueWithin() {
+	deadline := time.Now().Add(lostRunSettleTime)
+
+	for time.Now().Before(deadline) {
+		item, err := l.server.q.Get(l.key)
+		So(err, ShouldBeNil)
+
+		if item.Stats().State != queue.ItemStateRun {
+			return
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	item, err := l.server.q.Get(l.key)
+	So(err, ShouldBeNil)
+	So(item.Stats().State, ShouldNotEqual, queue.ItemStateRun)
 }
 
 // markRetryLost marks the live *Job lost, as a second TTR expiry does for a
@@ -975,6 +1028,48 @@ func TestKilledLostJobsReplacementIsStillWatched(t *testing.T) {
 			// and the run that really was abandoned is the one swept.
 			soGoneWithin(retryCwd)
 			soPathsExist(l.lostCwd)
+		})
+	})
+}
+
+func TestKilledLostJobsReservationIsARunOfItsOwn(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a lost job killed and then taken on by a runner that dies before Started", t, func() {
+		l := newLostRun(ctx, t, "kill_lost_job_reserved")
+
+		defer l.stop(ctx)
+
+		l.waitForDeadCheckWindow()
+
+		// the reservation IS the new run, and everything its runner does before
+		// its Started - the working directory, the mounts, the Cmd itself - it
+		// does inside this window. So the manager has to see a run of its own
+		// here, rather than the run it lost.
+		l.killAndReserveTheJob(ctx)
+		So(l.reportedState(ctx), ShouldEqual, JobStateReserved)
+
+		// and this runner is killed by its node before it ever calls Started, so
+		// silence is the only thing the manager will ever hear about the run.
+		l.runnerDied()
+
+		l.proceedManager()
+		So(l.waitForKillDecision(), ShouldBeFalse)
+		l.resumeManager()
+
+		Convey("the manager declares that run lost on its own account and ends it", func() {
+			// carrying the killed run's Lost flag into this one parks the job for
+			// ever: ttrCallback refuses to re-mark an already-lost job, so no
+			// confirmation is ever started for the run that is really happening,
+			// and it is neither retried nor buried.
+			l.waitForDeadCheckWindow()
+			So(l.waitForKillDecision(), ShouldBeTrue)
+
+			l.soLeavesRunQueueWithin()
 		})
 	})
 }
