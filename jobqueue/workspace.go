@@ -686,6 +686,19 @@ type keptDirs struct {
 	// dirs and then their empty parents.
 	mountPoints []string
 
+	// wholeWorkSpace is set when one of the Job's mount points is the workspace
+	// itself or a directory above it, which makes everything wr created for the
+	// Job the inside of a live mount. Nothing there may be deleted: the working
+	// directory, TMPDIR and any cache beside them are then the user's remote
+	// objects, read through a mount Unmount has not got to yet.
+	//
+	// It is a mount point that protect() can record nothing about, because both
+	// halves of protect describe something INSIDE the workspace: there is no
+	// path within the working directory to keep, and no entry of the workspace
+	// that leads to it, since it is not below the workspace at all. So the only
+	// thing that can say it must survive is the workspace-wide fact, said here.
+	wholeWorkSpace bool
+
 	// muxfysNamesWorkSpaceEntry is set when one of the Job's mounts has a
 	// CacheBase that resolves to the workspace itself, which is the default for
 	// a mounting Job. That is the one case where a directory cleanup must keep
@@ -710,6 +723,10 @@ func (p *workSpacePaths) keptDirs() keptDirs {
 	for _, mount := range p.mountPoints() {
 		if _, ok := relBelowDir(p.workSpace, mount); ok {
 			keep.mountPoints = append(keep.mountPoints, mount)
+		}
+
+		if _, ok := relBelowDir(mount, p.workSpace); ok {
+			keep.wholeWorkSpace = true
 		}
 
 		keep.protect(p, mount)
@@ -816,6 +833,13 @@ func (k *keptDirs) protectInActualCwd(actualCwd, dir string) {
 func (ws *jobWorkSpace) cleanup() error {
 	if cleanupProvenHook != nil {
 		cleanupProvenHook()
+	}
+
+	// a workspace that is itself inside one of the Job's live mounts has nothing
+	// of wr's in it to delete and nothing of wr's above it to tidy: the directory
+	// the walk would rmdir is the mount point. See keptDirs.wholeWorkSpace.
+	if ws.keep.wholeWorkSpace {
+		return nil
 	}
 
 	// the descent to the workspace is made once and its handles kept, so that

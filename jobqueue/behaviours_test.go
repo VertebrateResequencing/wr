@@ -1112,6 +1112,40 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 
 				So(err, ShouldBeNil)
 			})
+
+			Convey("Cleanup of a Job that mounts on its workspace keeps the whole workspace", func() {
+				// MountConfig.Mount is resolved against the working directory,
+				// so ".." names the workspace itself: the disposable directory
+				// cleanup exists to sweep IS the live mount. The working
+				// directory, TMPDIR and everything beside them are then the
+				// user's remote objects, read through a mount Job.Unmount has
+				// not got to yet, and a writable mount's cache of them has not
+				// been uploaded. Sweeping any of it deletes the user's data.
+				mj := mounting(MountConfig{Mount: ".."})
+
+				remote := writeFileIn(mj.workSpace, "remote.txt")
+
+				err = cleanup.Trigger(OnExit, mj.job)
+
+				soPathsExist(remote, mj.output, mj.actualCwd, mj.tmpDir, mj.workSpace, cwd, precious)
+
+				So(err, ShouldBeNil)
+			})
+
+			Convey("Cleanup of a Job whose mount is ABOVE its workspace keeps the workspace too", func() {
+				// the same thing one level further out: everything wr made for
+				// the job is inside the mount, so there is nothing below it wr
+				// may delete while it is live.
+				mj := mounting(MountConfig{Mount: "../.."})
+
+				remote := writeFileIn(mj.workSpace, "remote.txt")
+
+				err = cleanup.Trigger(OnExit, mj.job)
+
+				soPathsExist(remote, mj.output, mj.actualCwd, mj.tmpDir, mj.workSpace, cwd, precious)
+
+				So(err, ShouldBeNil)
+			})
 		})
 
 		Convey("Cleanup of a mounting Job still tidies empty parents when its workspace has gone", func() {
@@ -1307,23 +1341,40 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 				So(cleanupErr, ShouldBeNil)
 			})
 
-			for _, escape := range []string{"../evil", ".."} {
-				Convey("Cleanup finishes and still keeps the real mount dir, despite a Mount of "+escape, func() {
-					job, actualCwd, workSpace, mounted, output := mountingIn(
-						MountConfigs{{Mount: escape}, {Mount: testMountDir}})
+			Convey("Cleanup finishes and still keeps the real mount dir, despite a Mount of ../evil", func() {
+				job, actualCwd, workSpace, mounted, output := mountingIn(
+					MountConfigs{{Mount: "../evil"}, {Mount: testMountDir}})
 
-					returned, cleanupErr := triggerWithin(cleanup, job, cleanupTimeout)
+				returned, cleanupErr := triggerWithin(cleanup, job, cleanupTimeout)
 
-					// termination and the kept mount are asserted before the
-					// error, since a leaf stops at its first failed So and a
-					// hang is the failure that matters.
-					So(returned, ShouldBeTrue)
-					soPathsExist(mounted, actualCwd, workSpace, cwd, precious)
-					soPathsGone(output)
+				// termination and the kept mount are asserted before the error,
+				// since a leaf stops at its first failed So and a hang is the
+				// failure that matters.
+				So(returned, ShouldBeTrue)
+				soPathsExist(mounted, actualCwd, workSpace, cwd, precious)
+				soPathsGone(output)
 
-					So(cleanupErr, ShouldBeNil)
-				})
-			}
+				So(cleanupErr, ShouldBeNil)
+			})
+
+			Convey("Cleanup finishes and deletes nothing at all, given a Mount of ..", func() {
+				// ".." is not an escape at all: it resolves to the WORKSPACE, so
+				// the disposable directory this whole sweep is about is itself
+				// the live mount, and the job's own output inside it is the
+				// user's remote data. This used to be swept like any other
+				// workspace, because a mount point that is not below the
+				// workspace has no path within it and no entry leading to it for
+				// the keep set to record.
+				job, actualCwd, workSpace, mounted, output := mountingIn(
+					MountConfigs{{Mount: ".."}, {Mount: testMountDir}})
+
+				returned, cleanupErr := triggerWithin(cleanup, job, cleanupTimeout)
+
+				So(returned, ShouldBeTrue)
+				soPathsExist(mounted, output, actualCwd, workSpace, cwd, precious)
+
+				So(cleanupErr, ShouldBeNil)
+			})
 		})
 	})
 }
