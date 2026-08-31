@@ -69,28 +69,22 @@ const mkHashedLevels = 4
 
 // createdCwdBaseSuffix ends the name of the base directory mkHashedDir puts
 // every working directory it creates below, and so ends the first component
-// below Cwd of every ActualCwd wr has ever produced (it has done since 2018,
-// before which the same name was built one line further up).
+// below Cwd of every ActualCwd wr has ever produced.
 //
-// It is a SUFFIX rather than the whole name deliberately. The name is
+// It is a SUFFIX rather than the whole name deliberately: the name is
 // AppName+this, and AppName is a package var that cmd/runner.go sets to "wr"
-// while the manager leaves it "jobqueue" - so comparing the whole name against
-// what THIS process would build would refuse every runner-made workspace in the
-// manager, which is where the cleanup that caused the original incident runs.
-// The suffix is agnostic about which of the two made the directory, while still
-// being something wr chose rather than something a Job's Cwd happens to contain.
+// while the manager leaves it "jobqueue", so recognising the whole name would
+// refuse every runner-made workspace in the manager - which is where cleanup of
+// a lost job runs. The suffix is agnostic about which of the two made the
+// directory while still being something wr chose.
 const createdCwdBaseSuffix = "_cwd"
 
 // createdCwdDepth is how many path components below a Job's Cwd the working
 // directory wr creates for it sits: the <AppName>_cwd base, then the
 // mkHashedLevels-1 hashed dirs, then the MkdirTemp leaf, then cwd itself.
-//
-// It is derived from mkHashedLevels rather than written out, and
 // TestCreatedCwdDepthMatchesMkHashedDir pins it against what mkHashedDir
-// actually produces, so the two cannot drift apart silently - which matters,
-// because cleanup refuses to treat anything at another depth as a workspace,
-// and a wrong value here would quietly stop every cleanup instead of failing
-// loudly.
+// produces, because a wrong value here would quietly stop every cleanup rather
+// than fail loudly.
 const createdCwdDepth = mkHashedLevels + 2
 
 // tokenLength is the fixed size of our authentication token, and
@@ -837,9 +831,7 @@ func retryOrFail(tries *int, err error) (bool, error) {
 }
 
 // createdCwdName is what mkCwdAndTmp calls the working directory it makes, and
-// so the last component of every ActualCwd wr has ever created. Behaviour's
-// cleanup and its workspace sweep both key off it, so it is named once here
-// rather than spelled out at each of them.
+// so the last component of every ActualCwd wr has ever created.
 const createdCwdName = "cwd"
 
 // mkCwdAndTmp creates "cwd" and "tmp" dirs within dir, returning their paths.
@@ -860,20 +852,9 @@ var errNotBelowBaseDir = errors.New("dir is not below the base dir")
 
 // openBaseRoot opens baseDir as an os.Root: a handle on the directory itself,
 // through which every deletion below it is done with a path relative to the
-// handle.
-//
-// That is what closes the gap between proving a path may be deleted and
-// deleting it. A proof is about a path string, and a path string is re-resolved
-// by every syscall that uses it, so a directory component proven to be real can
-// be replaced with a symlink a moment later and the deletion follows it
-// wherever it leads. A relative operation on a root cannot leave that root: the
-// operating system refuses it at the moment of the deletion, and refuses
-// absolute symlinks outright, so a swap made after the proof can no longer
-// redirect a deletion out of baseDir.
-//
-// The handle also pins the directory: if baseDir is renamed while we work, the
-// deletions still happen inside the directory we opened, not inside whatever
-// took its place.
+// handle. That is what closes the gap between proving a path may be deleted and
+// deleting it, since a proof is about a path string that every syscall
+// re-resolves, while a relative operation on a root cannot leave that root.
 func openBaseRoot(baseDir string) (*os.Root, error) {
 	if baseDir == "" {
 		return nil, fmt.Errorf("%w: no base dir was given", errNotBelowBaseDir)
@@ -895,18 +876,13 @@ func openBaseRoot(baseDir string) (*os.Root, error) {
 // the components leading to it; otherwise nothing at all is deleted and
 // errNotBelowBaseDir is returned. There is no safe upward walk to do from
 // anywhere else: with leafDir being baseRoot's own dir the first parent
-// considered would already be above it, and the walk would then delete the empty
-// ancestors of the tree we were supposed to stay inside.
+// considered would already be above it, and the walk would delete the empty
+// ancestors of the tree it was supposed to stay inside.
 //
-// It takes the base dir as an open HANDLE rather than as a path, because every
-// caller has already had to prove its way inside that dir to know it may walk
-// there at all, and the handle carries that proof: the deletions happen inside
-// the dir that was proven, not inside whatever has taken its place since. A
-// path-taking twin, rmEmptyDirs, opened the handle for you and so let a caller
-// walk somewhere it had proven nothing about. It was the entry point the upward
-// walk that deleted a user's own empty output tree went through, and it outlived
-// its last production caller by three rounds, kept alive and looking usable by
-// its own tests.
+// It takes the base dir as an open HANDLE rather than as a path so that the
+// caller's proof of its way inside that dir travels with it. Do not add a
+// path-taking twin, which would let a caller walk somewhere it had proven
+// nothing about.
 func rmEmptyDirsIn(baseRoot *os.Root, leafDir string) error {
 	proven, ok := realDirBelow(baseRoot, leafDir)
 	if !ok {
@@ -919,16 +895,11 @@ func rmEmptyDirsIn(baseRoot *os.Root, leafDir string) error {
 // provenDirs is a directory proven fit for deletion, paired with the open root
 // that bounds every deletion made with it: rel is strictly inside root, and no
 // component of it is a symlink, so deleting rel and walking up from it can
-// neither leave root nor delete something a link merely points at.
-//
-// rel is always the path its caller asked about, never something a symlink
-// merely leads to: realDirBelow is the only way to make one.
+// neither leave root nor delete something a link merely points at. realDirBelow
+// is the only way to make one.
 //
 // The type exists so that the deletion helpers cannot be handed two arbitrary
-// path strings. The proof travels with the paths, in the type, rather than in a
-// comment saying where the paths must have come from - which is the kind of
-// instruction the next person copies past, and how the cleanup behaviour came
-// to delete the parent of a user's own working directory in the first place.
+// path strings: the proof travels with the paths, in the type.
 type provenDirs struct {
 	// root is the open handle every deletion goes through. It is owned by
 	// whoever opened it, not by this value: the chain openChain returns shares
@@ -938,22 +909,18 @@ type provenDirs struct {
 	// rel is the proven dir, relative to root: cleaned, and never "." or above.
 	rel string
 
-	// leaf is the absolute form of the proven dir. It is for error messages and
-	// for deriving other paths; deletions use root and rel, because only those
-	// cannot be re-resolved somewhere else between the proof and the deletion.
+	// leaf is the absolute form of the proven dir, for error messages and for
+	// deriving other paths. Deletions use root and rel, which cannot be
+	// re-resolved somewhere else between the proof and the deletion.
 	leaf string
 
 	// infos is what the proof lstat'ed at each component of rel, in order, so
-	// infos[i] belongs to the i'th component. It is short when the proof ran
-	// out of path that exists, and empty when even the first component was
-	// already gone.
+	// infos[i] belongs to the i'th component. It is short when the proof ran out
+	// of path that exists, and empty when even the first component was gone.
 	//
-	// There is one per component, not just one for the leaf, because the
-	// descent has to prove EVERY level it opens. A proof is about a path
-	// string, and the descent re-resolves that string a component at a time, so
-	// a directory checked here can be a symlink by the time the descent reaches
-	// it. Verifying only the leaf leaves the levels above it swappable, and the
-	// upward walk deletes through those.
+	// There is one per component, not just one for the leaf, because the descent
+	// re-resolves the path a component at a time and has to prove every level it
+	// opens; the upward walk deletes through those levels.
 	infos []os.FileInfo
 }
 
@@ -967,14 +934,12 @@ func (dirs provenDirs) leafInfo() os.FileInfo {
 	return dirs.infos[len(names)-1]
 }
 
-// openChain descends from dirs.root to the proven dir, keeping a handle on
-// every directory on the way down, so that the deletions made with it cost one
-// metadata lookup per level instead of re-walking the whole path for each of
-// them.
+// openChain descends from dirs.root to the proven dir, keeping a handle on every
+// directory on the way down; see dirChain.
 //
 // A component that has gone since the proof ends the descent, which is not a
-// failure in itself; the chain then knows it is incomplete. Any other failure
-// to open a component is returned, having closed whatever had been opened.
+// failure in itself; the chain then knows it is incomplete. Any other failure to
+// open a component is returned, having closed whatever had been opened.
 //
 // The caller must closeAll the returned chain.
 func (dirs provenDirs) openChain() (dirChain, error) {
@@ -1014,16 +979,12 @@ func (dirs provenDirs) openChain() (dirChain, error) {
 // the base the descent started from, and each handle after it was opened on the
 // name before it.
 //
-// It exists for the deletion walk. An os.Root resolves a relative path one
-// component at a time, so removing the leaf and then each of its parents by a
-// shrinking path relative to the base re-walks the whole path every time, which
-// is O(depth^2) metadata lookups - and on the shared filesystems jobs actually
-// run on, metadata lookups are what the cost of cleanup is made of. Keeping the
-// handles from the one descent makes it exactly one lookup per level.
-//
-// The handles also pin their directories, so every removal happens in the
-// directory the descent opened, whatever is done to the names above it in the
-// meantime.
+// It exists for the deletion walk. Removing the leaf and then each of its
+// parents by a shrinking path relative to the base would re-walk the whole path
+// every time, which is O(depth^2) metadata lookups on the shared filesystems
+// jobs run on; keeping the handles from the one descent makes it one lookup per
+// level. The handles also pin their directories, so every removal happens in the
+// directory the descent opened, whatever is done to the names above it.
 type dirChain struct {
 	// roots holds the base handle followed by the handles the descent opened.
 	// It is shorter than names when a component had already gone, and never
@@ -1060,15 +1021,13 @@ func (c dirChain) closeAll() {
 	}
 }
 
-// openLeaf opens the proven dir as a root of its own, so that everything
-// deleted inside it is named by a path relative to that handle rather than by a
-// string resolved afresh each time.
+// openLeaf opens the proven dir as a root of its own, so that everything deleted
+// inside it is named relative to that handle rather than by a string resolved
+// afresh each time.
 //
-// It also proves the handle refers to the directory the proof lstat'ed, so a
-// symlink swapped in for any component after the proof cannot redirect the
-// deletions to a different directory, even one inside base. An os.Root alone
-// does not give that: it refuses absolute symlinks and any escape from the
-// root, but follows a relative symlink that stays inside it.
+// It also proves the handle refers to the directory the proof lstat'ed, which an
+// os.Root alone does not give: a root refuses absolute symlinks and any escape
+// from itself, but follows a relative symlink that stays inside it.
 //
 // A dir that has gone since it was proven gives an os.IsNotExist error.
 func (c dirChain) openLeaf() (*os.Root, error) {
@@ -1092,9 +1051,7 @@ func (c dirChain) openLeaf() (*os.Root, error) {
 // than following it.
 //
 // A leaf that has already gone is not a failure: its parents are still ours to
-// tidy, which is the ordinary state on the second cleanup of a Job. A parent
-// that has gone means the walk would stop at that level anyway, so an
-// incomplete chain removes nothing.
+// tidy, which is the ordinary state on the second cleanup of a Job.
 func (c dirChain) removeUpward() error {
 	if !c.complete() {
 		return nil
@@ -1120,10 +1077,10 @@ func (c dirChain) removeUpward() error {
 // from the deepest up, stopping before the base and at the first dir that will
 // not go.
 //
-// The chain is what makes it safe to remove these without re-proving each
-// level: every one of them is an ancestor of a leaf already proven to be inside
-// the base, and each removal is made in the directory the descent opened, which
-// cannot be outside the base however the names resolve now.
+// The chain is what makes it safe to remove these without re-proving each level:
+// every one is an ancestor of a leaf already proven to be inside the base, and
+// each removal is made in the directory the descent opened, which cannot be
+// outside the base however the names resolve now.
 func (c dirChain) removeEmptyParents() {
 	parents := c.names[:len(c.names)-1]
 
@@ -1135,16 +1092,13 @@ func (c dirChain) removeEmptyParents() {
 }
 
 // proveSameDir proves that now describes the same directory as checked, the
-// lstat a proof took of it before its name was last resolved. It is the ONE
-// statement of what "still the directory the proof identified" means, and every
-// consumer of a proven working directory asks it: `run` through the opens below,
-// cleanup through jobWorkSpace.actualCwdNow. Two consumers of one resolution
-// deriving that identity separately is what let cleanup sweep a directory swap
-// that `run` refused to enter.
+// lstat a proof took of it before its name was last resolved. It is deliberately
+// the ONE statement of what "still the directory the proof identified" means, and
+// both consumers of a proven working directory ask it: `run` through the opens
+// below, cleanup through jobWorkSpace.actualCwdNow.
 //
 // checked must have been taken with an lstat of a DIRECTORY, or this proves
-// nothing: what identifies the thing looked at now is that it is the same file
-// as checked, so a nil or non-directory checked refuses everything rather than
+// nothing: a nil or non-directory checked refuses everything rather than
 // accepting anything.
 func proveSameDir(now, checked os.FileInfo, name string) error {
 	if !os.SameFile(now, checked) {
@@ -1158,9 +1112,7 @@ func proveSameDir(now, checked os.FileInfo, name string) error {
 // the directory, and proves that the directory it opened is the one info
 // describes - the same proof openVerifiedDir makes, for a caller that needs a
 // descriptor it can name to something else rather than a root to work within.
-//
-// info must satisfy proveSameDir's requirements of it, and the proof is
-// worth exactly what that says it is worth.
+// info must satisfy proveSameDir's requirements of it.
 //
 // The caller must Close the returned file.
 func openVerifiedDirFile(parent *os.Root, name string, info os.FileInfo) (*os.File, error) {
@@ -1220,12 +1172,12 @@ func rmCheckedEmptyDirs(dirs provenDirs) error {
 }
 
 // errIsDirNotEmpty says if err is a directory removal that failed because the
-// directory still has entries in it, which is not a problem: it just means
-// there is nothing of ours left to delete there.
+// directory still has entries in it, which is not a problem: it just means there
+// is nothing of ours left to delete there.
 //
 // Linux reports ENOTEMPTY for this; POSIX allows EEXIST instead, so both count.
-// The errnos are compared instead of the error message because os.Remove's
-// message is not part of any contract, and is not the same on every platform.
+// The errnos are compared rather than the error message, which is not part of
+// any contract.
 func errIsDirNotEmpty(err error) bool {
 	return errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST)
 }
@@ -1238,19 +1190,16 @@ func errIsDirNotEmpty(err error) bool {
 //
 // The check is lexical first, which costs no syscalls: dir is made absolute and
 // cleaned, and an escape via ".." or a dir equal to the base fails. Then every
-// component of dir below the base is lstat'ed to confirm it is a real
-// directory, which proves dir can only be reached by descending inside the
-// base, whatever the base itself resolves to.
+// component of dir below the base is lstat'ed to confirm it is a real directory,
+// which proves dir can only be reached by descending inside the base, whatever
+// the base itself resolves to.
 //
-// A symlinked component fails even when it stays inside the base, because our
+// A symlinked component fails even when it stays inside the base, because the
 // deletion helpers disagree about symlinks: os.RemoveAll unlinks a final one,
-// while os.ReadDir follows it and deletes the target's contents instead. That
-// is a distinct property from the containment the root handle enforces, which
-// permits a relative symlink leading somewhere else inside the base. There is
-// deliberately no resolve-the-symlink fallback: rmEmptyDirs used to have one,
-// and a Job whose Cmd replaced its mount dir with a link to a directory of the
-// user's, inside their own Cwd, had that directory deleted - containment says
-// yes to it, so only refusing to follow the link stops it.
+// while os.ReadDir follows it and deletes the target's contents instead. There is
+// deliberately no resolve-the-symlink fallback, because containment says yes to a
+// link leading somewhere else inside the base: only refusing to follow it stops a
+// Job's Cmd aiming cleanup at a directory of the user's.
 func realDirBelow(baseRoot *os.Root, dir string) (provenDirs, bool) {
 	if dir == "" {
 		return provenDirs{}, false
@@ -1276,14 +1225,13 @@ func realDirBelow(baseRoot *os.Root, dir string) (provenDirs, bool) {
 	return provenDirs{root: baseRoot, rel: rel, leaf: absDir, infos: infos}, true
 }
 
-// componentsAreRealDirs tells you if every path component of absDir below
-// absBase (which must be the base dir absDir is inside) is a real directory,
-// rather than a symlink or a file. A component that doesn't exist counts as
-// fine, since nothing can be deleted through it, and means there is nothing
-// deeper left to check.
+// componentsAreRealDirs tells you if every path component of absDir below absBase
+// (which must be the base dir absDir is inside) is a real directory, rather than
+// a symlink or a file. A component that doesn't exist counts as fine, since
+// nothing can be deleted through it, and means there is nothing deeper to check.
 //
-// It returns what it lstat'ed at absDir itself, or nil if absDir wasn't there,
-// so that a caller opening absDir can prove the directory it gets is this one.
+// It returns what it lstat'ed at each component, so that a caller opening them
+// can prove the directories it gets are these ones.
 func componentsAreRealDirs(absDir, absBase string) ([]os.FileInfo, bool) {
 	var infos []os.FileInfo
 
@@ -1317,37 +1265,22 @@ func componentsAreRealDirs(absDir, absBase string) ([]os.FileInfo, bool) {
 //
 // It is built by asking calculateHashedDir - the function that laid the path
 // down - what it would produce, so recogniser and builder cannot drift apart.
-// The whole shape it accepts is
-// <something>_cwd/k0/k1/k2/<k3..><digits>/cwd, where k0-k2 are the first three
-// characters of the key and k3.. is the rest of it.
+// The whole shape it accepts is <something>_cwd/k0/k1/k2/<k3..><digits>/cwd,
+// where k0-k2 are the first three characters of the key and k3.. is the rest.
 //
-// The base component is checked by SUFFIX and never by name. AppName is a
-// package var that cmd/runner.go sets to "wr" while the manager leaves it
-// "jobqueue", and cleanup runs in BOTH - it is the manager's cleanup of a lost
-// job that caused the original incident - so comparing the component against
-// what THIS process would build would refuse every runner-made workspace
-// server-side and silently disable all cleanup. The suffix is agnostic about
-// which of the two made the directory while still being something wr chose.
+// The base component is checked by SUFFIX and never by the name this process
+// would build, for the reason createdCwdBaseSuffix gives: AppName differs between
+// runner and manager, and cleanup runs in both.
 //
-// Everything else about the path is the key's. That is what stops one Job of a
-// Cwd destroying ANOTHER's: every Job of a Cwd works below the same *_cwd base,
-// so the base says only that a path is some wr workspace, and a sibling's
-// workspace has the created shape at the created depth because it IS one. A
-// poisoned ActualCwd naming a live job's working directory passed every check
-// there was, and cleanup swept that job's outputs, its TMPDIR and its working
-// directory while it was still running in them.
+// Everything else about the path is the key's, and that is what stops one Job of
+// a Cwd destroying ANOTHER's: every Job of a Cwd works below the same *_cwd base
+// at the same depth with the same leaf name, so nothing short of the key
+// distinguishes a sibling's live working directory from this Job's own.
 //
-// How much of the key has to be on DISK is less than the whole of it: k0-k2 are
-// three hex characters, and the component carrying the other 29 is the unique
-// dir os.MkdirTemp named. Whoever submits a Job chooses the Cmd that Key()
-// hashes, so those three characters can be ground out in about 4096 tries. What
-// they buy is bounded by the rest: the ground path still has to exist, below a
-// *_cwd base inside the Job's own Cwd, with a leaf called cwd under a directory
-// named for the REST of that same ground key. Nothing but wr and the user's own
-// jobs put a directory there.
-//
-// A change to how os.MkdirTemp names things would leak a workspace rather than
-// destroy one, since it can only turn a true answer false.
+// Only three characters of the key are cheap to grind out, but what they buy is
+// bounded by the rest: the ground path still has to exist, below a *_cwd base
+// inside the Job's own Cwd, with a leaf called cwd under the unique dir
+// os.MkdirTemp named for the REST of that same key.
 func relIsJobCreatedCwd(rel, key string) bool {
 	names := strings.Split(rel, string(filepath.Separator))
 
@@ -1407,13 +1340,10 @@ func readDirIn(dirRoot *os.Root, dir string) ([]os.DirEntry, error) {
 //
 // An exception that doesn't land strictly inside the directory is skipped rather
 // than treated as an error. A MountConfig.Mount is whatever the user typed for
-// `wr add --mounts`, so it can be ".", ".." or "../evil", and walking up from
-// such a dir never reaches the directory: it used to run past the filesystem
-// root forever, hanging cleanup on the runner and in the server goroutine that
-// cleans up a lost job. Skipping is safe because only descendants of the
-// directory are ever deleted here, so an exception outside it was protecting
-// nothing anyway, whereas erroring would abandon the job's workspace for no
-// gain.
+// `wr add --mounts`, so it can be ".", ".." or "../evil". Skipping is safe
+// because only descendants of the directory are ever deleted here, so an
+// exception outside it was protecting nothing, whereas erroring would abandon the
+// job's workspace for no gain.
 func removeAllExcept(dirRoot *os.Root, exceptions []string) error {
 	keepDirs, checkDirs := exceptionDirs(exceptions)
 
@@ -1426,12 +1356,8 @@ func removeAllExcept(dirRoot *os.Root, exceptions []string) error {
 //
 // What stops the upward walk running past the filesystem root is its own
 // relIsBelow(parent), which is false at once for the "." and ".."-shaped rels
-// removeAllExcept describes. The skip ahead of it is belt to that braces: it
-// keeps a path that protects nothing out of the sets, rather than being what
-// makes the walk terminate. Both are unreachable today - the only exceptions are
-// keptDirs.inActualCwd, which protectInActualCwd fills with filepath.Rel output
-// it has already found to be strictly below - so this is what an exception
-// arriving from anywhere else would meet, not something today's callers rely on.
+// removeAllExcept describes. The skip ahead of it keeps a path that protects
+// nothing out of the sets, rather than being what makes the walk terminate.
 func exceptionDirs(exceptions []string) (keepDirs, checkDirs map[string]bool) {
 	keepDirs = make(map[string]bool, len(exceptions))
 	checkDirs = make(map[string]bool, len(exceptions))
