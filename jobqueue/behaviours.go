@@ -70,16 +70,12 @@ var (
 )
 
 // lostJobDeadCheckedHook and lostJobKilledHook, when set, are called in the two
-// moments a lost job's behaviours have to survive, and are nil in production. A
-// test cannot get into either reliably any other way.
+// moments a lost job's behaviours have to survive; both are nil in production.
 //
-// lostJobDeadCheckedHook is called where the dead-check returns and before the
-// kill, which is the far end of the window between the manager pinning the lost
-// run and acting on it: a 15 second ssh round trip in which the job can recover,
-// be released, and be reserved and started again as a different run.
-// lostJobKilledHook is called with what the kill decided, in the moment before
-// the pinned behaviours run, which is when a runner can reserve the retry and
-// touch its new working directory onto the same Job.
+// lostJobDeadCheckedHook is called once the dead-check has returned and before
+// the kill, the far end of the window in which the job can recover, or be
+// released and reserved again as a different run. lostJobKilledHook is called
+// with what the kill decided, before the pinned behaviours run.
 //
 //nolint:gochecknoglobals // test hooks into two moments that cannot be reached otherwise
 var (
@@ -182,8 +178,8 @@ func (b *Behaviour) Trigger(status BehaviourTrigger, j *Job) error {
 	return b.trigger(status, j.workSpaceSnapshot())
 }
 
-// trigger is Trigger against a Job state that was pinned when the behaviours
-// were decided on, which is not always the same moment; see pinnedBehaviours.
+// trigger is Trigger against a pinned copy of the Job's state; see
+// pinnedBehaviours.
 func (b *Behaviour) trigger(status BehaviourTrigger, ws jobWorkSpaceSnapshot) error {
 	if b.When&status == 0 {
 		return nil
@@ -381,8 +377,8 @@ func (bs Behaviours) Trigger(success bool, j *Job) error {
 	return bs.trigger(success, j.workSpaceSnapshot())
 }
 
-// trigger is Trigger against a Job state that was pinned when the behaviours
-// were decided on, which is not always the same moment; see pinnedBehaviours.
+// trigger is Trigger against a pinned copy of the Job's state; see
+// pinnedBehaviours.
 func (bs Behaviours) trigger(success bool, ws jobWorkSpaceSnapshot) error {
 	var status BehaviourTrigger
 	if success {
@@ -411,43 +407,24 @@ func (bs Behaviours) trigger(success bool, ws jobWorkSpaceSnapshot) error {
 	return merr.ErrorOrNil()
 }
 
-// pinnedBehaviours is a Job's Behaviours together with the state they must act
-// on, both taken at ONE moment under the Job's lock and carried to them as a
-// value.
+// pinnedBehaviours is a Job's Behaviours together with the state they act on -
+// the key and ActualCwd naming the working directory they delete and run the
+// user's command in - copied at ONE moment under the Job's lock.
 //
-// Behaviours delete the Job's working directory and run the user's own command
-// inside it, and which directory that is comes from the (key, ActualCwd) pair
-// the Job carries. Deciding to trigger them and triggering them are not always
-// the same moment: the manager decides when it declares a job lost, then the
-// kill RELEASES that Job back to ready before the behaviours run, so a runner can
-// reserve the RETRY and its first Touch writes the retry's working directory
-// into that same Job (emitLiveTouchSnapshot -> applyLiveSnapshot). Reading the
-// Job afterwards read the retry's directory: measured, the `run` behaviour's pwd
-// was the retry's, the retry's partial output, working directory and live TMPDIR
-// were deleted while it ran, the workspace that was actually abandoned leaked,
-// and the error was nil - the retry is the same Job with the same key, so no
-// proof about the path can tell the two apart.
+// The manager pins when it declares a job lost, not when it triggers, because
+// the kill releases that Job back to ready first: a runner can then reserve the
+// RETRY, and its first Touch writes the retry's working directory onto the same
+// Job (emitLiveTouchSnapshot -> applyLiveSnapshot). Triggering off the Job at
+// that point deletes the live directory of the retry, and since the retry is the
+// same Job under the same key, no check on the path can tell the two apart.
 //
-// Pinning is what fixes that, and it is the only thing that can: it is not the
-// resolution that is wrong, it is being asked a question about a moment that has
-// passed. Every other caller triggers the behaviours of a Job it holds alone, so
-// for them the pin is taken at the call itself (Behaviours.Trigger).
-//
-// WHEN the pin is taken is as load-bearing as the pin. The manager's decision is
-// made in markJobLost, and everything after it - a 15 second ssh round trip in
-// confirmJobDead, or half an hour of retry timer - happens while the job is free
-// to move on. A pin taken after that trip is a pin of whatever run the job is on
-// by then, which is how the retry came to be pinned in the first place. The pin
-// is therefore taken with the decision and carried (lostJobDetails.pin), and
-// what the pin describes is checked to still be the run at the queue before
-// anything acts on it (isLostRunLocked).
+// Behaviours.Trigger pins at the call, for the callers that hold the Job alone.
 type pinnedBehaviours struct {
 	behaviours Behaviours
 	workSpace  jobWorkSpaceSnapshot
 
-	// run is the token the manager minted for the run this pin belongs to, and
-	// is what says the pin is still about the run at the queue when the time
-	// comes to act on it. See runToken and Job.isLostRunLocked.
+	// run says which run was pinned, so isLostRunLocked can check the queue is
+	// still on that run before anything acts on the pin. See runToken.
 	run runToken
 }
 
@@ -461,15 +438,12 @@ func (j *Job) pinBehaviours() pinnedBehaviours {
 }
 
 // pinBehavioursLocked is pinBehaviours for a caller that already holds at least
-// the Job's read lock, so that the pin can be taken in the same breath as the
-// decision it belongs to - which for the manager is the moment it declares the
-// job lost, not the moment 15 seconds later when it gets round to the kill.
+// the Job's read lock, so the pin can be taken with the decision it belongs to.
 func (j *Job) pinBehavioursLocked() pinnedBehaviours {
 	return pinnedBehaviours{behaviours: j.Behaviours, workSpace: j.workSpaceSnapshotLocked(), run: j.runID}
 }
 
-// trigger runs the pinned Behaviours against the pinned state, as
-// Behaviours.Trigger does against a Job's current state.
+// trigger runs the pinned Behaviours against the pinned state.
 func (p pinnedBehaviours) trigger(success bool) error {
 	return p.behaviours.trigger(success, p.workSpace)
 }

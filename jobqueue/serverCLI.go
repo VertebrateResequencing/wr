@@ -837,13 +837,10 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 // the reserving client, returning its scheduler group, retries and
 // until-buried count (read under the same lock).
 //
-// This is where a RUN of a job begins, so it is where the manager mints the
-// run's identity (see runToken) and where every field that described the run
-// BEFORE it stops describing this one. A reservation is the first thing the
-// runner has that is about to make a working directory, mount filesystems and
-// start a Cmd, and it does all of that before its Started ever reaches the
-// manager: a decision pinned to the previous run and carried out in that window
-// lands on a Cmd that is already executing.
+// A RUN of a job begins here, so this is where the manager mints the run's
+// identity (see runToken) and clears the fields that described the run before.
+// The runner makes its working directory, mounts filesystems and starts the Cmd
+// on the strength of the reservation alone, before its Started reaches us.
 func (s *Server) resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, uint8, uint8) {
 	sjob.Lock()
 	defer sjob.Unlock()
@@ -860,31 +857,22 @@ func (s *Server) resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, 
 	sjob.Exitcode = -1
 	sjob.killCalled = false
 
-	// the identity of the run that is beginning. Nothing pinned to any earlier
-	// run of this job answers to it, which is what stops a confirmation made
-	// about a run that is over being carried out on this one.
+	// the identity of the run beginning now. Nothing pinned to an earlier run of
+	// this job answers to it, so a confirmation of that run's loss cannot be
+	// carried out on this one.
 	sjob.runID = s.mintRunToken()
 
-	// this run has not been lost. A lost run that is released - by `wr kill`, or
-	// by the cloud scheduler destroying its server - carries Lost all the way
-	// back into the run sub-queue on its next reservation, and Lost is what every
-	// lost-run decision is gated on. It also parks the job for ever: ttrCallback
-	// refuses to re-mark an already-lost job, so no fresh confirmation is ever
-	// started for the run that is really happening.
+	// this run has not been lost. Lost gates every lost-run decision, and
+	// ttrCallback refuses to re-mark an already-lost job, so a Lost carried into
+	// a fresh reservation - by `wr kill` on a lost job, or by the cloud scheduler
+	// destroying its server - parks the job for ever.
 	sjob.Lost = false
 
-	// and it has not made a working directory yet. ActualCwd is what cleanup
-	// deletes and what a `run` behaviour executes in, so carrying the previous
-	// run's here aims both at a directory this run has never been in - which is,
-	// for a job whose runs share a Cwd, an OLDER workspace of the same job.
+	// nor has it made a working directory or landed on a machine yet. ActualCwd
+	// is what cleanup deletes and what a `run` behaviour executes in, and HostID
+	// is what killJobsOnBadServers matches condemned cloud servers against, so
+	// the previous run's values would aim both at the wrong run.
 	sjob.ActualCwd = ""
-
-	// nor is it on the machine the previous run was on. HostID is the scheduler's
-	// name for that machine, filled in at Started from the host the runner
-	// reports, and killJobsOnBadServers kills every running or lost job whose
-	// HostID is a server the cloud scheduler has condemned - through the same
-	// un-gated release. Blanking it means a run whose Started has yet to arrive
-	// matches no server at all, which errs towards killing nothing.
 	sjob.HostID = ""
 
 	return sjob.schedulerGroup, sjob.Retries, sjob.UntilBuried
@@ -917,10 +905,8 @@ func (s *Server) handleStart(ctx context.Context, cr *clientRequest) (*serverRes
 // returning false (changing nothing) if the request lacked a pid or host.
 //
 // It is where the manager first learns the working directory the runner made for
-// this run, which the runner has already created by the time it calls Started
-// (Client.resolveWorkingDir runs before Client.Started). It does NOT mint the
-// run's identity: the run began at Reserve, and resetJobForReservation both
-// minted it and cleared the fields this one is about to fill in.
+// this run, created before the runner calls Started. It does not mint the run's
+// identity: the run began at Reserve.
 func (s *Server) applyJobStart(job, crJob *Job) bool {
 	job.Lock()
 	defer job.Unlock()
@@ -942,10 +928,9 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 	job.setActualCwd(crJob.ActualCwd)
 
 	// a reservation whose reserve-to-Started stretch outlasts the TTR is declared
-	// lost while its Cmd is starting, and pinned under the very token this run
-	// keeps - its reservation minted it and this does not change it. So taking the
-	// job off lost here is the whole of what stands between a confirmation of
-	// that loss and a Cmd that is running.
+	// lost while its Cmd is starting, under this run's own token, so taking the
+	// job off lost here is all that stands between a confirmation of that loss
+	// and a Cmd that is running.
 	job.Lost = false
 	job.State = JobStateRunning
 

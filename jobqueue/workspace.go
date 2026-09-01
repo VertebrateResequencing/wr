@@ -87,11 +87,9 @@ type jobWorkSpaceSnapshot struct {
 }
 
 // cleanupWorkSpace resolves the snapshot's workspace and clears it out, doing
-// nothing at all when wr created nothing there it may delete.
-//
-// It is the one deletion the snapshot licenses, shared by the cleanup Behaviour
-// and by the runner tidying up after a run whose command never started, so that
-// there is a single answer to what a Job's workspace cleanup does.
+// nothing at all when wr created nothing there it may delete. It is the whole of
+// a Job's workspace cleanup, for the cleanup Behaviour and for the runner tidying
+// up after a run whose command never started.
 func (s jobWorkSpaceSnapshot) cleanupWorkSpace() error {
 	ws, err := s.resolveWorkSpace()
 	if err != nil || ws == nil {
@@ -114,8 +112,7 @@ func (j *Job) workSpaceSnapshot() jobWorkSpaceSnapshot {
 }
 
 // workSpaceSnapshotLocked is workSpaceSnapshot for a caller that already holds
-// at least the Job's read lock, so that the snapshot can be taken in the same
-// breath as everything else that has to be pinned with it - see pinBehaviours.
+// at least the Job's read lock; see pinBehavioursLocked.
 func (j *Job) workSpaceSnapshotLocked() jobWorkSpaceSnapshot {
 	return jobWorkSpaceSnapshot{
 		cwdMatters: j.CwdMatters,
@@ -268,8 +265,8 @@ type jobWorkSpace struct {
 // to - work any of it out again.
 //
 // Asked of a SNAPSHOT, not the live Job: applyLiveSnapshot rewrites ActualCwd
-// under the Job's lock while cleanup walks. Lost jobs snapshot at the lost
-// decision, as the kill releases the Job and a later read gets the RETRY's cwd.
+// under the Job's lock while cleanup walks; see pinnedBehaviours for when a lost
+// job's snapshot has to be taken.
 //
 // A nil result with a nil error means wr created nothing here that it may
 // delete: see paths() for the cases, plus a Job Cwd that has itself already
