@@ -838,9 +838,9 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 // until-buried count (read under the same lock).
 //
 // A RUN of a job begins here, so this is where the manager mints the run's
-// identity (see runToken) and clears the fields that described the run before.
-// The runner makes its working directory, mounts filesystems and starts the Cmd
-// on the strength of the reservation alone, before its Started reaches us.
+// identity (see runToken) and clears the fields that described the run before. The
+// runner makes its working directory, mounts filesystems and starts the Cmd on
+// the strength of the reservation alone, before its Started reaches us.
 func (s *Server) resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, uint8, uint8) {
 	sjob.Lock()
 	defer sjob.Unlock()
@@ -857,21 +857,18 @@ func (s *Server) resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, 
 	sjob.Exitcode = -1
 	sjob.killCalled = false
 
-	// the identity of the run beginning now. Nothing pinned to an earlier run of
-	// this job answers to it, so a confirmation of that run's loss cannot be
-	// carried out on this one.
+	// the identity of the run beginning now, which nothing pinned to an earlier
+	// run of this job answers to.
 	sjob.runID = s.mintRunToken()
 
 	// this run has not been lost. Lost gates every lost-run decision, and
-	// ttrCallback refuses to re-mark an already-lost job, so a Lost carried into
-	// a fresh reservation - by `wr kill` on a lost job, or by the cloud scheduler
-	// destroying its server - parks the job for ever.
+	// ttrCallback refuses to re-mark an already-lost job, so a Lost carried into a
+	// fresh reservation would park the job for ever.
 	sjob.Lost = false
 
-	// nor has it made a working directory or landed on a machine yet. ActualCwd
-	// is what cleanup deletes and what a `run` behaviour executes in, and HostID
-	// is what killJobsOnBadServers matches condemned cloud servers against, so
-	// the previous run's values would aim both at the wrong run.
+	// nor has it made a working directory or landed on a machine yet. ActualCwd is
+	// what cleanup deletes and what a `run` behaviour executes in, and HostID is
+	// what killJobsOnBadServers matches condemned cloud servers against.
 	sjob.ActualCwd = ""
 	sjob.HostID = ""
 
@@ -928,9 +925,8 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 	job.setActualCwd(crJob.ActualCwd)
 
 	// a reservation whose reserve-to-Started stretch outlasts the TTR is declared
-	// lost while its Cmd is starting, under this run's own token, so taking the
-	// job off lost here is all that stands between a confirmation of that loss
-	// and a Cmd that is running.
+	// lost while its Cmd starts, under this run's own token, so taking the job off
+	// lost here is all that stands between that confirmation and a live Cmd.
 	job.Lost = false
 	job.State = JobStateRunning
 

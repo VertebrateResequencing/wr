@@ -71,11 +71,9 @@ var (
 
 // lostJobDeadCheckedHook and lostJobKilledHook, when set, are called in the two
 // moments a lost job's behaviours have to survive; both are nil in production.
-//
-// lostJobDeadCheckedHook is called once the dead-check has returned and before
-// the kill, the far end of the window in which the job can recover, or be
-// released and reserved again as a different run. lostJobKilledHook is called
-// with what the kill decided, before the pinned behaviours run.
+// lostJobDeadCheckedHook is called after the dead-check and before the kill, the
+// window in which the job can recover or be reserved again as a different run;
+// lostJobKilledHook with what the kill decided, before the behaviours run.
 //
 //nolint:gochecknoglobals // test hooks into two moments that cannot be reached otherwise
 var (
@@ -178,8 +176,7 @@ func (b *Behaviour) Trigger(status BehaviourTrigger, j *Job) error {
 	return b.trigger(status, j.workSpaceSnapshot())
 }
 
-// trigger is Trigger against a pinned copy of the Job's state; see
-// pinnedBehaviours.
+// trigger is Trigger against a pinned copy of the Job's state; see pinnedBehaviours.
 func (b *Behaviour) trigger(status BehaviourTrigger, ws jobWorkSpaceSnapshot) error {
 	if b.When&status == 0 {
 		return nil
@@ -377,8 +374,7 @@ func (bs Behaviours) Trigger(success bool, j *Job) error {
 	return bs.trigger(success, j.workSpaceSnapshot())
 }
 
-// trigger is Trigger against a pinned copy of the Job's state; see
-// pinnedBehaviours.
+// trigger is Trigger against a pinned copy of the Job's state; see pinnedBehaviours.
 func (bs Behaviours) trigger(success bool, ws jobWorkSpaceSnapshot) error {
 	var status BehaviourTrigger
 	if success {
@@ -411,14 +407,12 @@ func (bs Behaviours) trigger(success bool, ws jobWorkSpaceSnapshot) error {
 // the key and ActualCwd naming the working directory they delete and run the
 // user's command in - copied at ONE moment under the Job's lock.
 //
-// The manager pins when it declares a job lost, not when it triggers, because
-// the kill releases that Job back to ready first: a runner can then reserve the
-// RETRY, and its first Touch writes the retry's working directory onto the same
-// Job (emitLiveTouchSnapshot -> applyLiveSnapshot). Triggering off the Job at
-// that point deletes the live directory of the retry, and since the retry is the
-// same Job under the same key, no check on the path can tell the two apart.
-//
-// Behaviours.Trigger pins at the call, for the callers that hold the Job alone.
+// The manager pins when it declares a job lost, not when it triggers, because the
+// kill releases that Job back to ready first: a runner can then reserve the RETRY,
+// whose first Touch writes its working directory onto the same Job. Triggering off
+// the Job then deletes the retry's live directory, and as the retry is the same Job
+// under the same key, no check on the path tells the two apart. Behaviours.Trigger
+// pins at the call, for the callers that hold the Job alone.
 type pinnedBehaviours struct {
 	behaviours Behaviours
 	workSpace  jobWorkSpaceSnapshot
@@ -428,8 +422,7 @@ type pinnedBehaviours struct {
 	run runToken
 }
 
-// pinBehaviours pins this Job's Behaviours and the state they must act on, as
-// they are now, for triggering later.
+// pinBehaviours pins this Job's Behaviours and the state they act on, as they are now.
 func (j *Job) pinBehaviours() pinnedBehaviours {
 	j.RLock()
 	defer j.RUnlock()

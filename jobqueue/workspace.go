@@ -88,8 +88,7 @@ type jobWorkSpaceSnapshot struct {
 
 // cleanupWorkSpace resolves the snapshot's workspace and clears it out, doing
 // nothing at all when wr created nothing there it may delete. It is the whole of
-// a Job's workspace cleanup, for the cleanup Behaviour and for the runner tidying
-// up after a run whose command never started.
+// a Job's workspace cleanup, for the cleanup Behaviour and for the runner.
 func (s jobWorkSpaceSnapshot) cleanupWorkSpace() error {
 	ws, err := s.resolveWorkSpace()
 	if err != nil || ws == nil {
@@ -265,8 +264,7 @@ type jobWorkSpace struct {
 // to - work any of it out again.
 //
 // Asked of a SNAPSHOT, not the live Job: applyLiveSnapshot rewrites ActualCwd
-// under the Job's lock while cleanup walks; see pinnedBehaviours for when a lost
-// job's snapshot has to be taken.
+// under the Job's lock while cleanup walks. See pinnedBehaviours.
 //
 // A nil result with a nil error means wr created nothing here that it may
 // delete: see paths() for the cases, plus a Job Cwd that has itself already
@@ -558,9 +556,8 @@ func (ws *jobWorkSpace) Close() {
 // user's remote file system; and the cache directories muxfys writes a writable
 // mount's output to, which are not uploaded until Unmount. Both come from the
 // snapshot's MountConfigs rather than from what is mounted now, and are kept
-// unconditionally, so a caller may clean up on either side of Job.Unmount. Each
-// is classified ONCE, against the proven workspace and working directory, in the
-// one place that knows both.
+// unconditionally, so a caller may clean up on either side of Job.Unmount. Each is
+// classified ONCE, against the proven workspace and working directory.
 type keptDirs struct {
 	// wholeActualCwd is set when something that must survive IS the working
 	// directory, so that none of its contents may be touched.

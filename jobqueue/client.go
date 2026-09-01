@@ -1455,19 +1455,17 @@ func (c *Client) ensureCwdExists(job *Job) error {
 
 // cleanupUnstartedWorkSpace removes the working directory Execute made for a run
 // whose command never started. Every failure between resolveWorkingDir and a
-// successful cmd.Start() returns without the job's behaviours running - the job
-// is buried, released, or left reserved - so nothing else would remove that
-// directory, and the abandoned leaf also stops rmEmptyDirsIn reclaiming the
-// hashed levels above it. The behaviours are deliberately not run: OnFailure
-// would execute the user's `run` command on, say, a mount failure. Only what
-// resolveWorkSpace can show wr built for this Job's key goes.
+// successful cmd.Start() returns without the job's behaviours running, so nothing
+// else would remove that directory, and the abandoned leaf also stops
+// rmEmptyDirsIn reclaiming the hashed levels above it. The behaviours are
+// deliberately not run: OnFailure would execute the user's `run` command on, say,
+// a mount failure.
 //
 // Unmounting comes FIRST, and a failed unmount deletes nothing at all: the
 // pre-start failure paths do not all unmount, a Job with no ActualCwd-relative
-// Mount has the working directory itself as a mount point, and deleting through
-// a live mount would delete the user's remote data. A leaked workspace is
-// recoverable; that is not. Job.Unmount is safe to call whether or not something
-// already did, since unmountAll clears the Job's mounted filesystems.
+// Mount has the working directory itself as a mount point, and deleting through a
+// live mount would delete the user's remote data. A leaked workspace is
+// recoverable; that is not. Job.Unmount is safe to call twice.
 //
 // Failures are logged rather than returned because Execute's myerr is a plain
 // local returned at the end of the function, so a deferred assignment to it
@@ -2701,9 +2699,9 @@ func (c *Client) Started(job *Job, pid int) error {
 	requestJob.HostIP = job.HostIP
 	requestJob.Pid = job.Pid
 
-	// the working directory resolveWorkingDir already created for this run.
-	// Reporting it HERE is what lets the manager clean up after a run that dies
-	// without ever touching, and after every run on a manager with no web port.
+	// the working directory resolveWorkingDir already created. Reporting it HERE
+	// lets the manager clean up after a run that dies without ever touching, and
+	// after every run on a manager with no web port.
 	requestJob.ActualCwd = job.ActualCwd
 	job.Unlock()
 
