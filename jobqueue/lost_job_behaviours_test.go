@@ -43,7 +43,9 @@ package jobqueue
 // directory of a job that was still RUNNING.
 
 import (
+	"cmp"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1450,4 +1452,308 @@ func TestMintedRunTokenIsNeverTheRecoveredOne(t *testing.T) {
 			So(recovered.isLostRunLocked(pin.run), ShouldBeFalse)
 		})
 	})
+}
+
+// lostCleanupDrivers is how many lost jobs TestLostJobCleanupsAreBounded drives
+// at once. It is a literal rather than a multiple of maxConcurrentLostCleanups
+// on purpose: raising the bound without raising this too would leave the test
+// unable to reach the bound, and it then says so rather than passing.
+const lostCleanupDrivers = 64
+
+// boundedCleanups is the gate every lost job's cleanup is held at, and the count
+// of how many are held there at once.
+//
+// The gate is what makes the count an invariant rather than a race: a held
+// cleanup is still holding its descriptors, and it finishes only when the test
+// sends it on its way, so the number inside at any moment is decided by the test
+// and by the bound, not by how fast the box happens to be.
+type boundedCleanups struct {
+	mu      sync.Mutex
+	inside  int
+	entered int
+	peak    int
+
+	// atLimit is closed by the cleanup that brings the number held up to
+	// maxConcurrentLostCleanups. Nothing has been released by then, so reaching
+	// it says the whole of what the bound allows really is in use.
+	atLimit chan struct{}
+
+	// release is unbuffered: each value the test sends lets exactly one held
+	// cleanup finish, so a slot comes free only because the test said so.
+	release     chan struct{}
+	releaseOnce sync.Once
+
+	// killed and done carry a value per lost job: one when its kill decision has
+	// been made, one when its whole handling is over.
+	killed chan struct{}
+	done   chan struct{}
+}
+
+func newBoundedCleanups(n int) *boundedCleanups {
+	return &boundedCleanups{
+		atLimit: make(chan struct{}), release: make(chan struct{}),
+		killed: make(chan struct{}, n), done: make(chan struct{}, n),
+	}
+}
+
+// hold is the cleanupProvenHook: it counts this cleanup in, and keeps it - and
+// the descriptors its deletion walk holds open - there until the test releases
+// it.
+func (b *boundedCleanups) hold() {
+	b.mu.Lock()
+	b.inside++
+	b.entered++
+	b.peak = max(b.peak, b.inside)
+	atLimit := b.entered == maxConcurrentLostCleanups
+	b.mu.Unlock()
+
+	if atLimit {
+		close(b.atLimit)
+	}
+
+	<-b.release
+
+	b.mu.Lock()
+	b.inside--
+	b.mu.Unlock()
+}
+
+// counts is how many cleanups are held right now, how many have ever been held,
+// and the most that were ever held at once.
+func (b *boundedCleanups) counts() (inside, entered, peak int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.inside, b.entered, b.peak
+}
+
+// reachedLimit reports whether maxConcurrentLostCleanups cleanups were held at
+// once.
+func (b *boundedCleanups) reachedLimit() bool {
+	select {
+	case <-b.atLimit:
+		return true
+	case <-time.After(lostRunSettleTime):
+		return false
+	}
+}
+
+// releaseEach lets n held cleanups finish, one at a time, and reports whether
+// every one of them took its turn.
+func (b *boundedCleanups) releaseEach(n int) bool {
+	for range n {
+		select {
+		case b.release <- struct{}{}:
+		case <-time.After(lostRunSettleTime):
+			return false
+		}
+	}
+
+	return true
+}
+
+// freeAll unblocks any cleanup still held, so that a failed assertion ends with
+// the test rather than parking its goroutines for good.
+func (b *boundedCleanups) freeAll() {
+	b.releaseOnce.Do(func() { close(b.release) })
+}
+
+// await takes n values from ch and reports whether they all arrived.
+func await(ch <-chan struct{}, n int) bool {
+	for range n {
+		select {
+		case <-ch:
+		case <-time.After(lostRunSettleTime):
+			return false
+		}
+	}
+
+	return true
+}
+
+func TestLostJobCleanupsAreBounded(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given more lost jobs confirmed dead than the manager may clean up at once", t, func() {
+		b := newBoundedCleanups(lostCleanupDrivers)
+
+		// the hooks are assigned BEFORE Serve, because starting the goroutines
+		// that read them is what orders the assignment against them.
+		lostJobDeadCheckedHook = nil
+		lostJobKilledHook = func(bool) { b.killed <- struct{}{} }
+		cleanupProvenHook = b.hold
+
+		Reset(func() {
+			b.freeAll()
+
+			lostJobKilledHook = nil
+			cleanupProvenHook = nil
+		})
+
+		server, pins, actualCwds := newLostRuns(ctx, t, "bounded_cleanups", lostCleanupDrivers)
+
+		Convey("no more than maxConcurrentLostCleanups of their cleanups run at once", func() {
+			for _, pin := range pins {
+				go func() {
+					server.killLostJobAndTriggerBehaviours(ctx, lostJobDetails{key: pin.workSpace.key, pin: pin})
+
+					b.done <- struct{}{}
+				}()
+			}
+
+			// every kill decision is made whatever the cleanups are doing: the
+			// bound is on the behaviours, because they are what holds the
+			// descriptors, and a job whose runner is confirmed dead has to be
+			// killed promptly however long the queue of deletions is.
+			So(await(b.killed, lostCleanupDrivers), ShouldBeTrue)
+
+			inside, _, _ := b.counts()
+			So(inside, ShouldBeLessThanOrEqualTo, maxConcurrentLostCleanups)
+
+			// and the bound is really reached, so this is not passing by cleaning
+			// up nothing.
+			So(b.reachedLimit(), ShouldBeTrue)
+
+			// the rest are waiting for a slot rather than having been dropped, so
+			// letting the held ones go one at a time gets through all of them.
+			So(b.releaseEach(lostCleanupDrivers), ShouldBeTrue)
+			So(await(b.done, lostCleanupDrivers), ShouldBeTrue)
+
+			_, entered, peak := b.counts()
+			So(peak, ShouldEqual, maxConcurrentLostCleanups)
+			So(entered, ShouldEqual, lostCleanupDrivers)
+			So(countGone(actualCwds), ShouldEqual, lostCleanupDrivers)
+		})
+	})
+}
+
+// newLostRuns is a real manager with n real jobs in it, each reserved, started,
+// and declared lost with the behaviours of that run pinned - the state
+// killLostJobAndTriggerBehaviours is called in. It returns the pins, and the
+// working directory each lost run made, which its cleanup must delete.
+func newLostRuns(ctx context.Context, t *testing.T, rg string, n int) (*Server, []pinnedBehaviours, []string) {
+	t.Helper()
+
+	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(false)
+
+	// long enough that no job in here expires while the test is holding its
+	// cleanups, whatever a previous test left ServerItemTTR set to.
+	serverConfig.Timings.ItemTTR = ServerItemTTR
+
+	server, _, token, err := serve(ctx, serverConfig)
+	So(err, ShouldBeNil)
+
+	t.Cleanup(func() { server.Stop(ctx, true) })
+
+	jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+	So(err, ShouldBeNil)
+
+	t.Cleanup(func() { disconnect(jq) })
+
+	cwd := t.TempDir()
+	jobs := make([]*Job, n)
+
+	for i := range n {
+		jobs[i] = &Job{
+			Cmd: fmt.Sprintf("%s %d", restFormTrue, i), Cwd: cwd, RepGroup: rg, ReqGroup: rg,
+			Requirements: standardReqs, Retries: 3,
+			Behaviours: Behaviours{{When: OnExit, Do: CleanupAll}},
+		}
+	}
+
+	_, _, err = jq.Add(jobs, os.Environ(), true)
+	So(err, ShouldBeNil)
+
+	pins, actualCwds, failures := loseEveryRun(server, jq, cwd, n)
+	So(failures, ShouldBeBlank)
+	So(len(pins), ShouldEqual, n)
+
+	return server, pins, actualCwds
+}
+
+// loseEveryRun reserves and starts n jobs and declares each of them lost,
+// returning a pin and a working directory per job, plus the first failure it met
+// (rather than an assertion per job, of which there would be hundreds).
+func loseEveryRun(server *Server, jq *Client, cwd string, n int) ([]pinnedBehaviours, []string, string) {
+	pins := make([]pinnedBehaviours, 0, n)
+	actualCwds := make([]string, 0, n)
+	failure := ""
+
+	for range n {
+		reserved, err := jq.Reserve(2 * time.Second)
+		if err != nil || reserved == nil {
+			failure = cmp.Or(failure, fmt.Sprintf("reserve failed: %v", err))
+
+			continue
+		}
+
+		pin, actualCwd, err := startAndLoseRun(server, jq, reserved, cwd)
+		if err != nil {
+			failure = cmp.Or(failure, err.Error())
+
+			continue
+		}
+
+		pins = append(pins, pin)
+		actualCwds = append(actualCwds, actualCwd)
+	}
+
+	return pins, actualCwds, failure
+}
+
+// startAndLoseRun gives the reserved job the working directory a real
+// mkHashedDir makes for it, starts it with a real pid, then declares the
+// manager's own Job lost and pins the behaviours of that run in the same lock,
+// as markJobLost does.
+func startAndLoseRun(server *Server, jq *Client, reserved *Job, cwd string) (pinnedBehaviours, string, error) {
+	actualCwd, _, err := mkHashedDir(cwd, reserved.Key())
+	if err != nil {
+		return pinnedBehaviours{}, "", err
+	}
+
+	if err = os.WriteFile(filepath.Join(actualCwd, "abandoned.txt"), []byte("abandoned\n"), 0o600); err != nil {
+		return pinnedBehaviours{}, "", err
+	}
+
+	reserved.Lock()
+	reserved.setActualCwd(actualCwd)
+	reserved.Unlock()
+
+	if err = jq.Started(reserved, os.Getpid()); err != nil {
+		return pinnedBehaviours{}, "", err
+	}
+
+	item, err := server.q.Get(reserved.Key())
+	if err != nil {
+		return pinnedBehaviours{}, "", err
+	}
+
+	live, ok := item.Data().(*Job)
+	if !ok {
+		return pinnedBehaviours{}, "", fmt.Errorf("%w: %s", errNotACreatedCwd, reserved.Key())
+	}
+
+	live.Lock()
+	live.Lost = true
+	pin := live.pinBehavioursLocked()
+	live.Unlock()
+
+	return pin, actualCwd, nil
+}
+
+// countGone is how many of the given paths are not there.
+func countGone(paths []string) int {
+	gone := 0
+
+	for _, path := range paths {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			gone++
+		}
+	}
+
+	return gone
 }

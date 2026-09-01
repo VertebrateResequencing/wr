@@ -160,6 +160,24 @@ const (
 	// drainPollInterval is how often Drain() polls the queue to see whether all
 	// runners have finished.
 	drainPollInterval = 1 * time.Second
+
+	// maxConcurrentLostCleanups is how many lost jobs may have their pinned
+	// behaviours running in the manager at once.
+	//
+	// The cleanup among those behaviours holds the whole path it deletes through
+	// OPEN, one descriptor per component below the Job's Cwd (createdCwdDepth of
+	// them) plus one on the workspace it empties: 6 for a Job with no mounts, 7
+	// for one whose working directory has to be opened separately to spare a
+	// cache. A farm-wide loss of contact declares many jobs lost in the same
+	// breath (the submission that prompted this bound had 19,632 jobs), and each
+	// one gets a goroutine of its own, so the descriptors are what runs out
+	// first: wr never raises its own RLIMIT_NOFILE, so the manager lives with
+	// whatever it inherited, commonly 1024. 32 cleanups is ~224 descriptors,
+	// about a fifth of that table, leaving the rest for client sockets, the
+	// database and the web server. The jobs beyond the bound wait rather than
+	// being skipped: a goroutine parked on the channel costs a couple of KB,
+	// which is the cheaper of the two resources.
+	maxConcurrentLostCleanups = 32
 )
 
 // ServerVersion gets set during build:
@@ -911,6 +929,9 @@ type Server struct {
 	done               chan error
 	stopSigHandling    chan bool
 	stopClientHandling chan bool
+	// lostCleanupTokens bounds how many lost jobs may have their pinned
+	// behaviours running at once; see maxConcurrentLostCleanups.
+	lostCleanupTokens  chan struct{}
 	clientHandlingDone chan struct{}
 	wg                 *waitgroup.WaitGroup
 	// bgWG tracks only the background startup goroutines (prior-state recovery
@@ -2877,6 +2898,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		pprofServer:               pprofServer,
 		stopSigHandling:           stopSigHandling,
 		stopClientHandling:        stopClientHandling,
+		lostCleanupTokens:         make(chan struct{}, maxConcurrentLostCleanups),
 		clientHandlingDone:        clientHandlingDone,
 		done:                      done,
 		wg:                        wg,
@@ -4680,6 +4702,30 @@ func (s *Server) killLostJobAndTriggerBehaviours(ctx context.Context, d lostJobD
 	}
 
 	clog.Info(ctx, "killed a job after confirming it was dead", "key", d.key)
+
+	s.triggerLostRunBehaviours(ctx, d)
+}
+
+// triggerLostRunBehaviours runs the pinned behaviours of a lost run that really
+// was killed, no more than maxConcurrentLostCleanups of them at a time.
+//
+// Only the behaviours are bounded, not the kill above: the cleanup among them is
+// what holds a descriptor per level of the tree it deletes, while a job whose
+// runner is confirmed dead has to be killed promptly however long the queue of
+// cleanups is.
+//
+// A shutting-down manager takes the wait back rather than joining it, so
+// stopClientHandling closing leaves the workspace behind, which is recoverable
+// (the next manager's cleanup of the same lost run deletes it), where a shutdown
+// blocked behind a full channel is not.
+func (s *Server) triggerLostRunBehaviours(ctx context.Context, d lostJobDetails) {
+	select {
+	case s.lostCleanupTokens <- struct{}{}:
+	case <-s.stopClientHandling:
+		return
+	}
+
+	defer func() { <-s.lostCleanupTokens }()
 
 	//nolint:contextcheck // behaviours run detached from the cancellable job context
 	if errt := d.pin.trigger(false); errt != nil {
