@@ -29,6 +29,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -56,6 +57,9 @@ const testOnFailureCmd = "echo failed"
 // testOnExitCmd is the Cmd of a pre-existing OnExit Run Behaviour in Job
 // modification tests.
 const testOnExitCmd = "echo old"
+
+// liveStatusCwd is the Cwd of the Job that liveStatusJob() returns.
+const liveStatusCwd = "/tmp/wr"
 
 func TestJobEnv(t *testing.T) {
 	if runnermode || servermode {
@@ -177,6 +181,234 @@ func TestJobModifierBehaviours(t *testing.T) {
 			jm.applyTo(job)
 
 			So(job.Behaviours.String(), ShouldEqual, `{"on_exit":[{"run":"echo old"}]}`)
+		})
+	})
+}
+
+func TestJobModifierActualCwd(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// ActualCwd is the path mkHashedDir built below Cwd from the Job's Key(), and
+	// cleanup recognises it by rebuilding it from that key, so a modification that
+	// changes the key must not leave the old path behind: a stored path the current
+	// definition cannot build is one wr can prove nothing about.
+	Convey("A modification that changes a Job's key clears its ActualCwd", t, func() {
+		const ran = testCwdPath + "/wr_cwd/a/b/c/uniq0/cwd"
+
+		newJob := func() *Job {
+			return &Job{Cmd: testTrueCmd, Cwd: testCwdPath, ActualCwd: ran}
+		}
+
+		for _, tc := range []struct {
+			name   string
+			modify func(*JobModifier)
+		}{
+			{"the Cmd", func(jm *JobModifier) { jm.SetCmd("echo something else") }},
+			{"the MountConfigs", func(jm *JobModifier) {
+				jm.SetMountConfigs(MountConfigs{{Mount: "mnt", Targets: []MountTarget{{Path: "s3/path"}}}})
+			}},
+			{"the container image", func(jm *JobModifier) { jm.SetWithDocker("ubuntu:latest") }},
+			{"the Cwd", func(jm *JobModifier) { jm.SetCwd("/elsewhere") }},
+			{"CwdMatters", func(jm *JobModifier) { jm.SetCwdMatters(true) }},
+		} {
+			Convey("modifying "+tc.name+" clears it", func() {
+				job := newJob()
+
+				jm := NewJobModifer()
+				tc.modify(jm)
+				jm.applyTo(job)
+
+				So(job.ActualCwd, ShouldBeBlank)
+			})
+		}
+
+		Convey("but a modification that leaves the key alone keeps it", func() {
+			// clearing it costs the user a leaked workspace, so it is only done
+			// where the stored path has actually stopped describing the Job.
+			job := newJob()
+
+			jm := NewJobModifer()
+			jm.SetPriority(7)
+			jm.applyTo(job)
+
+			So(job.ActualCwd, ShouldEqual, ran)
+		})
+
+		Convey("and so does one that sets a key field to the value it already had", func() {
+			job := newJob()
+
+			jm := NewJobModifer()
+			jm.SetCmd(testTrueCmd)
+			jm.applyTo(job)
+
+			So(job.ActualCwd, ShouldEqual, ran)
+		})
+
+		Convey("a container image change clears it even though the Cmd is untouched", func() {
+			// WithDocker, WithSingularity and ContainerMounts all reach Key()
+			// without being a Cmd or a Cwd.
+			job := newJob()
+			job.WithSingularity = "ubuntu.sif"
+
+			jm := NewJobModifer()
+			jm.SetContainerMounts("/data:/data")
+			jm.applyTo(job)
+
+			So(job.ActualCwd, ShouldBeBlank)
+		})
+
+		Convey("--cwd_matters on a Job that already had it clears the v0.37 poison", func() {
+			// such a Job's key does not change, but wr v0.37.0|1 persisted it
+			// with ActualCwd set to Cwd, and this is where a user clears that.
+			job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath, CwdMatters: true, ActualCwd: testCwdPath}
+
+			jm := NewJobModifer()
+			jm.SetCwdMatters(true)
+			jm.applyTo(job)
+
+			So(job.ActualCwd, ShouldBeBlank)
+		})
+	})
+}
+
+func TestJobSetActualCwd(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// a blank ActualCwd is how the rest of wr knows wr created no directory below
+	// Cwd for this Job, and a CwdMatters Job never has one: its Cmd runs in the
+	// user's own Cwd. So the setter is where a live snapshot arriving off the wire
+	// every touch interval is stopped from writing the v0.37.0|1 poison - Cwd
+	// itself, sitting in ActualCwd - back into a Job at runtime.
+	Convey("setActualCwd records no working directory for a CwdMatters Job", t, func() {
+		const reported = testCwdPath + "/wr_cwd/a/b/c/uniq0/cwd"
+
+		job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath, CwdMatters: true}
+
+		Convey("whatever it is told directly", func() {
+			job.setActualCwd(reported)
+			So(job.ActualCwd, ShouldBeBlank)
+
+			job.setActualCwd(job.Cwd)
+			So(job.ActualCwd, ShouldBeBlank)
+		})
+
+		Convey("and whatever a live snapshot reports", func() {
+			// this is the route a report really arrives by: JobEndState.Cwd off
+			// the wire, through applyLiveSnapshot, under the Job's lock, on every
+			// Touch of a running job.
+			applyLiveSnapshot(job, &JobEndState{Cwd: job.Cwd})
+			So(job.ActualCwd, ShouldBeBlank)
+
+			applyLiveSnapshot(job, &JobEndState{Cwd: reported})
+			So(job.ActualCwd, ShouldBeBlank)
+		})
+
+		Convey("while a Job wr did create one for records what is reported", func() {
+			// the refusal has to be about CwdMatters, not about the setter
+			// recording nothing at all.
+			created := &Job{Cmd: testTrueCmd, Cwd: testCwdPath}
+
+			applyLiveSnapshot(created, &JobEndState{Cwd: reported})
+			So(created.ActualCwd, ShouldEqual, reported)
+
+			Convey("and a report of nowhere leaves the directory it already had", func() {
+				applyLiveSnapshot(created, &JobEndState{})
+				So(created.ActualCwd, ShouldEqual, reported)
+			})
+		})
+	})
+}
+
+func TestJobMountBaseDirs(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	const cwd = "/some/cwd"
+
+	workSpace := cwd + "/wr_cwd/a/b/c/uniq"
+	ranIn := workSpace + "/cwd"
+
+	for _, tc := range []struct {
+		name          string
+		job           *Job
+		onCwd         []bool
+		wantCwd       string
+		wantMount     string
+		wantCacheBase string
+	}{
+		{
+			name:          "a job that ran in a wr-created working directory mounts there",
+			job:           &Job{Cwd: cwd, ActualCwd: ranIn},
+			wantCwd:       ranIn,
+			wantMount:     ranIn,
+			wantCacheBase: workSpace,
+		},
+		{
+			name:          "an ActualCwd takes precedence over onCwd",
+			job:           &Job{Cwd: cwd, ActualCwd: ranIn},
+			onCwd:         []bool{true},
+			wantCwd:       ranIn,
+			wantMount:     ranIn,
+			wantCacheBase: workSpace,
+		},
+		{
+			name:          "a cwd_matters job mounts in cwd's mnt subdirectory, cached in cwd",
+			job:           &Job{Cwd: cwd, CwdMatters: true},
+			wantCwd:       cwd,
+			wantMount:     cwd + "/mnt",
+			wantCacheBase: cwd,
+		},
+		{
+			name:          "a cwd_matters job with an ActualCwd poisoned by wr v0.37.0|1 caches in cwd too",
+			job:           &Job{Cwd: cwd, CwdMatters: true, ActualCwd: cwd},
+			wantCwd:       cwd,
+			wantMount:     cwd + "/mnt",
+			wantCacheBase: cwd,
+		},
+		{
+			name:          "a job that has not run yet mounts in cwd's mnt subdirectory too",
+			job:           &Job{Cwd: cwd},
+			wantCwd:       cwd,
+			wantMount:     cwd + "/mnt",
+			wantCacheBase: cwd,
+		},
+		{
+			name:          "onCwd without an ActualCwd mounts on cwd itself, cached in its parent",
+			job:           &Job{Cwd: cwd},
+			onCwd:         []bool{true},
+			wantCwd:       cwd,
+			wantMount:     cwd,
+			wantCacheBase: "/some",
+		},
+	} {
+		Convey("mountBaseDirs says "+tc.name, t, func() {
+			gotCwd, gotMount, gotCacheBase := tc.job.mountBaseDirs(tc.onCwd)
+			So(gotCwd, ShouldEqual, tc.wantCwd)
+			So(gotMount, ShouldEqual, tc.wantMount)
+			So(gotCacheBase, ShouldEqual, tc.wantCacheBase)
+		})
+	}
+}
+
+func TestJobUnmount(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a cwd_matters job with a mount and an ActualCwd poisoned by wr v0.37.0|1", t, func() {
+		cwd := t.TempDir()
+		job := &Job{Cwd: cwd, CwdMatters: true, ActualCwd: cwd, MountConfigs: MountConfigs{{}}}
+
+		Convey("Unmount() deletes nothing and doesn't complain about the user's own cwd", func() {
+			logs, err := job.Unmount()
+			So(err, ShouldBeNil)
+			So(logs, ShouldBeBlank)
+			soPathsExist(cwd, filepath.Dir(cwd))
 		})
 	})
 }
@@ -445,7 +677,7 @@ func TestJob(t *testing.T) {
 
 		status, err := job.ToStatus()
 		So(err, ShouldBeNil)
-		So(status.CwdBase, ShouldEqual, "/tmp/wr")
+		So(status.CwdBase, ShouldEqual, liveStatusCwd)
 		So(status.Cwd, ShouldEqual, "/job1")
 		So(status.PeakRAM, ShouldEqual, 321)
 		So(status.CPUtime, ShouldEqual, 4)
@@ -493,6 +725,59 @@ func TestJob(t *testing.T) {
 		So(status.SSHCommand, ShouldEqual, "")
 	})
 
+	Convey("ToStatus() of a cwd_matters job with no ActualCwd puts its Cwd in SSHCommand", t, func() {
+		job := liveStatusJob(JobStateRunning)
+		job.CwdMatters = true
+		job.ActualCwd = ""
+		job.HostIP = ""
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.CwdBase, ShouldEqual, liveStatusCwd)
+		So(status.Cwd, ShouldBeBlank)
+		So(status.SSHCommand, ShouldEqual,
+			"ssh -- worker1 'cd /tmp/wr && exec ${SHELL:-/bin/sh} -l'")
+	})
+
+	Convey("ToStatus() of a job with an ActualCwd poisoned by wr v0.37.0|1 shows Cwd as the working dir", t, func() {
+		job := liveStatusJob(JobStateRunning)
+		job.CwdMatters = true
+		job.ActualCwd = job.Cwd
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.CwdBase, ShouldEqual, liveStatusCwd)
+
+		// blank, the same as the cwd_matters Convey above reports for a Job with no
+		// ActualCwd at all: wr created no directory for a cwd_matters Job, so there
+		// is no leaf below Cwd to show, and carrying the v0.37.0|1 poison must not
+		// change what is displayed.
+		So(status.Cwd, ShouldBeBlank)
+
+		// the poisoning always wrote Cwd itself, so the assertion above cannot tell
+		// "ActualCwd is ignored on a CwdMatters Job" apart from "ActualCwd was used
+		// and happened to give the same answer". A poisoned value that DIFFERS from
+		// Cwd is what makes it discriminate.
+		job.ActualCwd = liveStatusCwd + "/poisoned"
+
+		status, err = job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.CwdBase, ShouldEqual, liveStatusCwd)
+		So(status.Cwd, ShouldBeBlank)
+		So(status.SSHCommand, ShouldEqual,
+			"ssh -- 10.0.0.8 'cd /tmp/wr && exec ${SHELL:-/bin/sh} -l'")
+	})
+
+	Convey("ToStatus() of a job with an ActualCwd outside its Cwd shows that dir in full", t, func() {
+		job := liveStatusJob(JobStateRunning)
+		job.Cwd = "/tmp/wr-modified"
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.CwdBase, ShouldEqual, "/tmp/wr-modified")
+		So(status.Cwd, ShouldEqual, liveStatusCwd+"/job1")
+	})
+
 	Convey("ToStatus() shell-quotes a running job's actual cwd in SSHCommand", t, func() {
 		job := liveStatusJob(JobStateRunning)
 		job.HostIP = ""
@@ -531,11 +816,142 @@ func TestJob(t *testing.T) {
 	})
 }
 
+func TestJobModifierCwdMatters(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Modifying a job to cwd_matters clears its ActualCwd", t, func() {
+		job := &Job{Cwd: liveStatusCwd, ActualCwd: liveStatusCwd + "/abc/cwd"}
+
+		jm := NewJobModifer()
+		jm.SetCwdMatters(true)
+		jm.applyTo(job)
+
+		// the job now runs in Cwd itself, and a blank ActualCwd is what stops
+		// the cleanup behaviours treating Cwd's parent as a wr workspace
+		So(job.CwdMatters, ShouldBeTrue)
+		So(job.ActualCwd, ShouldBeBlank)
+	})
+
+	Convey("A job modified to cwd_matters still displays its working dir and ssh command", t, func() {
+		job := liveStatusJob(JobStateRunning)
+		job.HostIP = ""
+
+		jm := NewJobModifer()
+		jm.SetCwdMatters(true)
+		jm.applyTo(job)
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.CwdMatters, ShouldBeTrue)
+		So(status.CwdBase, ShouldEqual, liveStatusCwd)
+		So(status.Cwd, ShouldBeBlank)
+		So(status.SSHCommand, ShouldEqual,
+			"ssh -- worker1 'cd /tmp/wr && exec ${SHELL:-/bin/sh} -l'")
+	})
+}
+
+func TestJobModifierCwd(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	newCwd := "/tmp/wr-modified"
+
+	Convey("Modifying a job's cwd clears the ActualCwd of its last run", t, func() {
+		job := liveStatusJob(JobStateRunning)
+
+		jm := NewJobModifer()
+		jm.SetCwd(newCwd)
+		jm.applyTo(job)
+
+		So(job.Cwd, ShouldEqual, newCwd)
+
+		// the old ActualCwd is not below the new Cwd, so it names a directory
+		// that has nothing to do with this job any more
+		So(job.ActualCwd, ShouldBeBlank)
+	})
+
+	Convey("A job with a modified cwd shows that cwd, with no working dir below it", t, func() {
+		job := liveStatusJob(JobStateRunning)
+
+		jm := NewJobModifer()
+		jm.SetCwd(newCwd)
+		jm.applyTo(job)
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.CwdBase, ShouldEqual, newCwd)
+		So(status.Cwd, ShouldBeBlank)
+		So(status.SSHCommand, ShouldBeBlank)
+	})
+}
+
+func TestJobModifierBehavioursCwdMatters(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Modifying a job's on_exit to a cleanup stores the cleanup", t, func() {
+		job := &Job{Cwd: liveStatusCwd}
+
+		jm := NewJobModifer()
+		jm.SetBehaviours(Behaviours{{When: OnExit, Do: Cleanup}})
+		jm.applyTo(job)
+
+		So(job.Behaviours.String(), ShouldEqual, `{"on_exit":[{"cleanup":true}]}`)
+	})
+
+	Convey("Modifying a cwd_matters job's on_exit to a cleanup stores nothing", t, func() {
+		job := &Job{
+			Cwd:        liveStatusCwd,
+			CwdMatters: true,
+			Behaviours: Behaviours{{When: OnExit, Do: Run, Arg: "echo old"}},
+		}
+
+		jm := NewJobModifer()
+		jm.SetBehaviours(Behaviours{{When: OnExit, Do: Cleanup}})
+		jm.applyTo(job)
+
+		// a cleanup can only delete a dir wr made, so wr never stores one on a
+		// cwd_matters job; the on_exit the user replaced must still be gone
+		So(job.Behaviours.String(), ShouldBeBlank)
+	})
+
+	Convey("Modifying a job to cwd_matters drops a cleanup it already stored", t, func() {
+		job := liveStatusJob(JobStateRunning)
+		job.Behaviours = Behaviours{
+			{When: OnExit, Do: Cleanup},
+			{When: OnFailure, Do: Run, Arg: "echo failed"},
+		}
+
+		jm := NewJobModifer()
+		jm.SetCwdMatters(true)
+		jm.applyTo(job)
+
+		status, err := job.ToStatus()
+		So(err, ShouldBeNil)
+		So(status.Behaviours, ShouldEqual, `{"on_failure":[{"run":"echo failed"}]}`)
+	})
+
+	Convey("Modifying a cwd_matters job to cwd not mattering stores the cleanup asked for", t, func() {
+		job := &Job{Cwd: liveStatusCwd, CwdMatters: true}
+
+		jm := NewJobModifer()
+		jm.SetCwdMatters(false)
+		jm.SetBehaviours(Behaviours{{When: OnExit, Do: Cleanup}})
+		jm.applyTo(job)
+
+		So(job.Behaviours.String(), ShouldEqual, `{"on_exit":[{"cleanup":true}]}`)
+	})
+}
+
 func liveStatusJob(state JobState) *Job {
 	return &Job{
 		Cmd:       "echo live status",
-		Cwd:       "/tmp/wr",
-		ActualCwd: "/tmp/wr/job1",
+		Cwd:       liveStatusCwd,
+		ActualCwd: liveStatusCwd + "/job1",
 		Requirements: &scheduler.Requirements{
 			RAM:   1,
 			Time:  time.Minute,
@@ -726,4 +1142,104 @@ func oldByteKey(b []byte) string {
 // Go map keys, so any divergence would corrupt job identity and DB lookups.
 func oldHexFormat(l, h uint64) string {
 	return fmt.Sprintf("%016x%016x", l, h)
+}
+
+// twoMounts returns two MountConfigs deliberately NOT in Mount order, which is
+// the order MountConfigs.Key() reads them in.
+func twoMounts() MountConfigs {
+	return MountConfigs{
+		{Mount: "zeta", Targets: []MountTarget{{Path: testMountPath + "/z"}}},
+		{Mount: "alpha", Targets: []MountTarget{{Path: testMountPath + "/a"}}},
+	}
+}
+
+func TestMountConfigsKeyDoesNotMutate(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// asking a Job for its key is a read at every call site in wr -
+	// workSpaceSnapshot asks under the Job's READ lock, and the REST and CLI
+	// handlers, the job transitions, ToEssense and the client ask under no lock at
+	// all - so a Key() that sorted the caller's slice would make every reader a
+	// writer of the Job's own MountConfigs, leaving jobs permanently holding a
+	// slice with one config lost and another duplicated: a dropped writable S3
+	// mount is never mounted, so the Cmd's results are written into a plain
+	// directory that cleanup then deletes.
+	Convey("Asking MountConfigs for their key leaves them as they were", t, func() {
+		mcs := twoMounts()
+
+		key := mcs.Key()
+
+		So(mcs[0].Mount, ShouldEqual, "zeta")
+		So(mcs[1].Mount, ShouldEqual, "alpha")
+
+		Convey("while still ignoring the order they were configured in", func() {
+			So(MountConfigs{mcs[1], mcs[0]}.Key(), ShouldEqual, key)
+		})
+
+		Convey("and answering the same way every time when two share a Mount", func() {
+			// sorting a fresh copy on every call is only safe if the sort is
+			// stable: an unstable one could order these differently each time,
+			// and a Job's key decides both its identity and the name of the
+			// working directory it is allowed to delete.
+			same := MountConfigs{
+				{Mount: testMountPath, Targets: []MountTarget{{Path: "one"}}},
+				{Mount: testMountPath, Targets: []MountTarget{{Path: "two"}}},
+			}
+
+			first := same.Key()
+			differed := 0
+
+			for range 20 {
+				if same.Key() != first {
+					differed++
+				}
+			}
+
+			So(differed, ShouldEqual, 0)
+		})
+	})
+
+	Convey("Asking a Job for its key leaves its MountConfigs as they were", t, func() {
+		job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath, MountConfigs: twoMounts()}
+
+		_ = job.Key()
+
+		So(job.MountConfigs, ShouldResemble, twoMounts())
+	})
+
+	Convey("Asking a JobEssence for its key leaves its MountConfigs as they were", t, func() {
+		je := &JobEssence{Cmd: testTrueCmd, MountConfigs: twoMounts()}
+
+		_ = je.Key()
+
+		So(je.MountConfigs, ShouldResemble, twoMounts())
+	})
+
+	Convey("Modifying a batch's mounts gives each job its own MountConfigs", t, func() {
+		// one JobModifier is applied to every job of a `wr mod --mounts` batch, so
+		// assigning its OWN slice to each of them would give distinct jobs one
+		// backing array, guarded by as many mutexes as there were jobs.
+		jm := &JobModifier{}
+		jm.SetMountConfigs(twoMounts())
+
+		jobs := []*Job{{Cmd: testTrueCmd, Cwd: testCwdPath}, {Cmd: testOnExitCmd, Cwd: testCwdPath}}
+		for _, job := range jobs {
+			jm.applyTo(job)
+		}
+
+		jobs[0].MountConfigs[0].Mount = "changed"
+
+		So(jobs[1].MountConfigs[0].Mount, ShouldEqual, "zeta")
+
+		Convey("including their Targets, which a shallow clone would still share", func() {
+			// slices.Clone copies each MountConfig's Targets slice HEADER, so a
+			// per-config clone alone leaves every job of the batch pointing at
+			// one Targets backing array: the copy has to go one level deeper.
+			jobs[0].MountConfigs[0].Targets[0].Path = testMountPath + "/changed"
+
+			So(jobs[1].MountConfigs[0].Targets[0].Path, ShouldEqual, testMountPath+"/z")
+		})
+	})
 }

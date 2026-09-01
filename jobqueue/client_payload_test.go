@@ -85,6 +85,16 @@ func TestExecuteLiveStateSnapshots(t *testing.T) {
 		So(second.CPUtime, ShouldEqual, 7*time.Second)
 	})
 
+	Convey("Live execute snapshots of a cwd_matters job carry no cwd", t, func() {
+		state := newExecuteLiveState("", &liveTailSaver{}, &liveTailSaver{})
+		state.updateResources(123, 456, 7*time.Second)
+
+		snapshot := state.snapshot()
+
+		So(snapshot.Cwd, ShouldBeBlank)
+		So(snapshot.PeakRAM, ShouldEqual, 123)
+	})
+
 	Convey("Live execute resource snapshots keep maximum observed values", t, func() {
 		state := newExecuteLiveState("/work/actual", &liveTailSaver{}, &liveTailSaver{})
 		state.updateResources(123, 456, 7*time.Second)
@@ -754,6 +764,111 @@ func TestServerRejectsAddWithNilBehaviour(t *testing.T) {
 	})
 }
 
+// TestServerAddDropsImpossibleCleanups covers the Go API add path, which
+// neither JobViaJSON.resolveBehaviours nor JobModifier.applyBehaviours is on: a
+// caller that builds a *Job itself must still not get a cleanup stored on a
+// cwd_matters job, where it could only ever be a no-op.
+func TestServerAddDropsImpossibleCleanups(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A hand-built job added with the Go API is stored without cleanups it could never do", t, func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		tmpDir := t.TempDir()
+		testDB, _, err := initDB(ctx, filepath.Join(tmpDir, "queue.db"),
+			filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false, false)
+
+		So(err, ShouldBeNil)
+
+		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+		ch := new(codec.BincHandle)
+		token := bytes.Repeat([]byte("x"), tokenLength)
+		sock := &captureSocket{ch: ch}
+		repGroup := "payload-impossible-cleanups"
+		server := &Server{
+			ch:    ch,
+			sock:  sock,
+			token: token,
+			db:    testDB,
+			q:     queue.New(ctx, repGroup),
+			rpl:   newRGToKeys(),
+			up:    true,
+		}
+		sock.server = server
+
+		id, err := uuid.NewV4()
+		So(err, ShouldBeNil)
+
+		client := &Client{ch: ch, clientid: id, sock: sock, token: token}
+
+		newJob := func(cmd string, cwdMatters bool, behaviours Behaviours) *Job {
+			return &Job{
+				Cmd:          cmd,
+				Cwd:          testCwd,
+				CwdMatters:   cwdMatters,
+				RepGroup:     repGroup,
+				ReqGroup:     repGroup,
+				Requirements: &scheduler.Requirements{RAM: 100, Time: time.Second, Cores: 1, Disk: 1},
+				Behaviours:   behaviours,
+			}
+		}
+
+		added, existed, err := client.Add([]*Job{
+			newJob("echo cwd matters cleanup", true, Behaviours{
+				&Behaviour{When: OnExit, Do: Cleanup},
+				&Behaviour{When: OnFailure, Do: Run, Arg: "echo add failed"},
+			}),
+			newJob("echo cwd matters cleanup all", true, Behaviours{
+				&Behaviour{When: OnExit, Do: CleanupAll},
+			}),
+			newJob("echo wr made the cwd", false, Behaviours{
+				&Behaviour{When: OnExit, Do: Cleanup},
+			}),
+		}, []string{"PAYLOAD_IMPOSSIBLE_CLEANUPS=1"}, false)
+
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 3)
+		So(existed, ShouldEqual, 0)
+
+		stored, err := client.GetByRepGroup(repGroup, false, 0, "", false, false)
+		So(err, ShouldBeNil)
+		So(stored, ShouldHaveLength, 3)
+
+		byCmd := make(map[string]*Job, len(stored))
+		for _, job := range stored {
+			byCmd[job.Cmd] = job
+		}
+
+		Convey("a cwd_matters job keeps its other behaviours but loses its cleanup", func() {
+			job := byCmd["echo cwd matters cleanup"]
+			So(job, ShouldNotBeNil)
+			So(job.Behaviours.String(), ShouldEqual, `{"on_failure":[{"run":"echo add failed"}]}`)
+			So(hasCleanupBehaviour(job.Behaviours), ShouldBeFalse)
+			So(job.CwdMatters, ShouldBeTrue)
+		})
+
+		Convey("a cwd_matters job loses a cleanup_all just the same", func() {
+			job := byCmd["echo cwd matters cleanup all"]
+			So(job, ShouldNotBeNil)
+			So(job.Behaviours.String(), ShouldBeBlank)
+			So(hasCleanupBehaviour(job.Behaviours), ShouldBeFalse)
+			So(job.CwdMatters, ShouldBeTrue)
+		})
+
+		Convey("a job that runs in a directory wr makes keeps its cleanup", func() {
+			job := byCmd["echo wr made the cwd"]
+			So(job, ShouldNotBeNil)
+			So(job.Behaviours.String(), ShouldEqual, `{"on_exit":[{"cleanup":true}]}`)
+			So(hasCleanupBehaviour(job.Behaviours), ShouldBeTrue)
+			So(job.CwdMatters, ShouldBeFalse)
+		})
+	})
+}
+
 func newLiveExecuteCaptureClient(capture *liveTouchCapture) *Client {
 	client, _ := newCaptureClient()
 	client.touchInterval = liveExecuteTouchInterval
@@ -941,7 +1056,7 @@ func TestClientExecuteLiveTouchPayloads(t *testing.T) {
 		return
 	}
 
-	Convey("Execute sends stdout tails once per touch from the actual cwd", t, func() {
+	Convey("Execute sends stdout tails once per touch", t, func() {
 		capture := &liveTouchCapture{}
 		client := newLiveExecuteCaptureClient(capture)
 		cwd := liveExecuteCwd(t)
@@ -949,14 +1064,39 @@ func TestClientExecuteLiveTouchPayloads(t *testing.T) {
 
 		So(client.Execute(context.Background(), job, "/bin/sh"), ShouldBeNil)
 
-		states := capture.matching(func(state *JobEndState) bool {
-			return len(state.Stdout) != 0
-		})
+		states := capture.matching(withLiveStdout)
 		So(len(states), ShouldBeGreaterThanOrEqualTo, 2)
 		So(decompressLiveTouch(states[0].Stdout), ShouldEqual, "alpha\n")
-		So(states[0].Cwd, ShouldEqual, cwd)
 		So(decompressLiveTouch(states[1].Stdout), ShouldEqual, "beta\n")
-		So(states[1].Cwd, ShouldEqual, cwd)
+	})
+
+	Convey("Execute of a cwd_matters job sends no cwd in its live snapshots", t, func() {
+		capture := &liveTouchCapture{}
+		client := newLiveExecuteCaptureClient(capture)
+		job := liveExecuteJob(client, liveExecuteCwd(t), "printf 'alpha\\n'; sleep 0.6")
+
+		So(client.Execute(context.Background(), job, "/bin/sh"), ShouldBeNil)
+		So(capture.matching(withLiveStdout), ShouldNotBeEmpty)
+
+		// a cwd_matters job runs in the user's own Cwd, so it has no actual cwd
+		// to report; a reported one becomes an ActualCwd whose parent the
+		// cleanup behaviours would delete
+		So(capture.matching(withLiveCwd), ShouldBeEmpty)
+		So(job.ActualCwd, ShouldBeBlank)
+	})
+
+	Convey("Execute of a job with a wr-created working dir sends it in live snapshots", t, func() {
+		capture := &liveTouchCapture{}
+		client := newLiveExecuteCaptureClient(capture)
+		cwd := liveExecuteCwd(t)
+		job := liveExecuteHashedCwdJob(client, cwd, "printf 'alpha\\n'; sleep 0.6")
+
+		So(client.Execute(context.Background(), job, "/bin/sh"), ShouldBeNil)
+
+		states := capture.matching(withLiveCwd)
+		So(len(states), ShouldBeGreaterThanOrEqualTo, 1)
+		So(states[0].Cwd, ShouldStartWith, cwd+string(filepath.Separator))
+		So(states[0].Cwd, ShouldEqual, job.ActualCwd)
 	})
 
 	Convey("Execute sends stderr tails once per touch", t, func() {
@@ -967,9 +1107,7 @@ func TestClientExecuteLiveTouchPayloads(t *testing.T) {
 
 		So(client.Execute(context.Background(), job, "/bin/sh"), ShouldBeNil)
 
-		states := capture.matching(func(state *JobEndState) bool {
-			return len(state.Stderr) != 0
-		})
+		states := capture.matching(withLiveStderr)
 		So(len(states), ShouldBeGreaterThanOrEqualTo, 2)
 		So(decompressLiveTouch(states[0].Stderr), ShouldEqual, "err-alpha\n")
 		So(decompressLiveTouch(states[1].Stderr), ShouldEqual, "err-beta\n")
@@ -1078,6 +1216,27 @@ func liveExecuteJob(client *Client, cwd string, cmd string) *Job {
 		},
 		ReservedBy: client.clientid,
 	}
+}
+
+func withLiveCwd(state *JobEndState) bool {
+	return state.Cwd != ""
+}
+
+func withLiveStdout(state *JobEndState) bool {
+	return len(state.Stdout) != 0
+}
+
+func withLiveStderr(state *JobEndState) bool {
+	return len(state.Stderr) != 0
+}
+
+// liveExecuteHashedCwdJob returns a job that is not CwdMatters, so that
+// Execute() creates a unique working directory below cwd for it.
+func liveExecuteHashedCwdJob(client *Client, cwd string, cmd string) *Job {
+	job := liveExecuteJob(client, cwd, cmd)
+	job.CwdMatters = false
+
+	return job
 }
 
 func liveMarkedStream(prefix, suffix string) []byte {

@@ -30,6 +30,7 @@ package jobqueue
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"sort"
 )
 
@@ -163,22 +164,21 @@ func (mcs MountConfigs) String() string {
 // what files are accessible from where: only Mount, Target.Profile and
 // Target.Path are considered. The order of Targets (but not of MountConfig) is
 // considered as well.
+//
+// It must not modify the MountConfigs it is asked about. Key() is what Job.Key()
+// is built from, and asking a Job for its key is a READ everywhere in wr - some
+// callers under the Job's read lock, most under no lock at all - so sorting the
+// caller's slice in place would make every one of them a concurrent writer of one
+// Job's MountConfigs, and a Job that loses a writable mount that way has its
+// results written to a plain directory that cleanup then deletes.
 func (mcs MountConfigs) Key() string {
 	if len(mcs) == 0 {
 		return ""
 	}
 
-	// sort mcs first, since the order doesn't affect what files are available
-	// where
-	if len(mcs) > 1 {
-		sort.Slice(mcs, func(i, j int) bool {
-			return mcs[i].Mount < mcs[j].Mount
-		})
-	}
-
 	var key bytes.Buffer
 
-	for _, mc := range mcs {
+	for _, mc := range mcs.sortedByMount() {
 		mount := mc.Mount
 		if mount == "" {
 			mount = "mnt"
@@ -191,6 +191,29 @@ func (mcs MountConfigs) Key() string {
 	}
 
 	return key.String()
+}
+
+// sortedByMount is the MountConfigs in Mount order, which is the order Key()
+// reads them in: the order they were configured in does not affect what files are
+// available where, so two Jobs that differ only in it are the same Job.
+//
+// The sort is made on a COPY, so that a Job asked for its key is not modified by
+// the asking; see Key. It is STABLE, so that configs sharing a Mount string keep
+// the order they were given in and one Job's key cannot differ between two calls:
+// Key() decides job identity, and the working directory a Job may delete is named
+// for it.
+func (mcs MountConfigs) sortedByMount() MountConfigs {
+	if len(mcs) < 2 { //nolint:mnd // a slice of 0 or 1 is already in order
+		return mcs
+	}
+
+	sorted := slices.Clone(mcs)
+
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return sorted[i].Mount < sorted[j].Mount
+	})
+
+	return sorted
 }
 
 // writeTargetsKey writes the Key contribution of this MountConfig's Targets to

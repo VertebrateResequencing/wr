@@ -821,6 +821,58 @@ func TestDBEndTimeIndexDurability(t *testing.T) {
 	})
 }
 
+// TestDBLoadDropsImpossibleCleanups covers reading back a job persisted by a wr
+// that stored a cleanup behaviour on a cwd_matters job, where it can only ever be
+// a no-op: v0.37.0 and v0.37.1 did that, so real DBs hold one. storeNewJobs
+// writes it here because it is the same encoder those versions used.
+func TestDBLoadDropsImpossibleCleanups(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a db file holding a cwd_matters job persisted with a cleanup behaviour", t, func() {
+		tmpdir := t.TempDir()
+		dbFile := filepath.Join(tmpdir, "queue.db")
+		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
+
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		poisoned := testDBJob("echo poisoned", "rg-poisoned")
+		poisoned.CwdMatters = true
+		poisoned.Behaviours = Behaviours{
+			{When: OnExit, Do: Cleanup},
+			{When: OnFailure, Do: Run, Arg: "echo load failed"},
+		}
+
+		normal := testDBJob("echo normal", "rg-normal")
+		normal.Behaviours = Behaviours{{When: OnExit, Do: Cleanup}}
+
+		_, _, _, err = testDB.storeNewJobs(ctx, []*Job{poisoned, normal}, false)
+		So(err, ShouldBeNil)
+		So(testDB.close(ctx), ShouldBeNil)
+
+		Convey("recovering it drops the cleanup, but leaves an ordinary job's cleanup alone", func() {
+			testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+			So(err, ShouldBeNil)
+
+			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+			jobs, errr := testDB.recoverIncompleteJobs()
+			So(errr, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 2)
+
+			byCmd := make(map[string]*Job, len(jobs))
+			for _, job := range jobs {
+				byCmd[job.Cmd] = job
+			}
+
+			So(byCmd["echo normal"], ShouldNotBeNil)
+			So(byCmd["echo normal"].Behaviours.String(), ShouldEqual, `{"on_exit":[{"cleanup":true}]}`)
+			So(byCmd["echo poisoned"], ShouldNotBeNil)
+			So(byCmd["echo poisoned"].Behaviours.String(), ShouldEqual, `{"on_failure":[{"run":"echo load failed"}]}`)
+		})
+	})
+}
+
 // TestDBMapFreelistOpen covers D1 acceptance test 1: a fresh db opened by
 // initDB and an existing db reopened by initDB both open without error, and the
 // map freelist option actually takes effect (the option only affects freelist

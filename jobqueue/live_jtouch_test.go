@@ -65,6 +65,14 @@ type liveJTouchFixture struct {
 }
 
 func newLiveJTouchFixture(ctx context.Context, webPort string) *liveJTouchFixture {
+	return newLiveJTouchFixtureWithCwdMatters(ctx, webPort, false)
+}
+
+func newLiveJTouchFixtureWithCwdMatters(
+	ctx context.Context,
+	webPort string,
+	cwdMatters bool,
+) *liveJTouchFixture {
 	ch := new(codec.BincHandle)
 	sock := &captureSocket{ch: ch}
 	clientID, err := uuid.NewV4()
@@ -74,6 +82,7 @@ func newLiveJTouchFixture(ctx context.Context, webPort string) *liveJTouchFixtur
 	job := &Job{
 		Cmd:          "echo live jtouch",
 		Cwd:          testCwd,
+		CwdMatters:   cwdMatters,
 		RepGroup:     liveJTouchQueue,
 		Requirements: &jqs.Requirements{RAM: 1, Time: time.Minute, Cores: 1},
 		ReservedBy:   clientID,
@@ -180,6 +189,39 @@ func TestManagerLiveJTouch(t *testing.T) {
 			liveJTouchStdout,
 			liveJTouchStderr,
 		)
+	})
+
+	Convey("A live jtouch of a cwd_matters job stores no ActualCwd", t, func() {
+		ctx := context.Background()
+		fixture := newLiveJTouchFixtureWithCwdMatters(ctx, liveJTouchWebPort, true)
+		before := fixture.remainingTTRAfterDelay()
+
+		resp, err := fixture.touch(ctx, fixture.token, &JobEndState{
+			Cwd:      testCwd,
+			PeakRAM:  321,
+			PeakDisk: 9,
+			CPUtime:  4 * time.Second,
+			Stdout:   compressStd([]byte(liveJTouchStdout)),
+			Stderr:   compressStd([]byte(liveJTouchStderr)),
+		})
+		So(err, ShouldBeNil)
+		So(resp.KillCalled, ShouldBeFalse)
+		assertLiveJTouchExtendedTTR(before, fixture.item.Stats().Remaining)
+
+		// a cwd_matters job runs in the user's own Cwd, so it has no ActualCwd;
+		// letting a client set one makes the cleanup behaviours treat Cwd's
+		// parent as a disposable wr workspace
+		assertLiveJTouchFields(fixture.job, "", 321, 9, 4*time.Second, liveJTouchStdout, liveJTouchStderr)
+
+		fixture.job.Lock()
+		fixture.job.Host = liveStatusHost
+		fixture.job.Unlock()
+
+		update, err := jobUpdateFromLiveJob(fixture.job)
+		So(err, ShouldBeNil)
+		So(update.CwdBase, ShouldEqual, testCwd)
+		So(update.Cwd, ShouldBeBlank)
+		So(update.SSHCommand, ShouldContainSubstring, "cd "+testCwd+" &&")
 	})
 
 	Convey("An authenticated resource-only live jtouch preserves existing output tails", t, func() {

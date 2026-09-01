@@ -120,6 +120,22 @@ var itemsStateToJobState = map[queue.ItemState]JobState{
 	queue.ItemStateRemoved:   JobStateComplete,
 }
 
+// resolveMountPoint says where a MountConfig.Mount ends up being mounted: the
+// default when it is unspecified, itself when it is absolute, and otherwise
+// relative to cwd (so it can climb out of cwd, eg. "../shared" for a mount
+// shared between the Jobs of a Cwd).
+func resolveMountPoint(mcMount, cwd, defaultMount string) string {
+	if mcMount == "" {
+		return defaultMount
+	}
+
+	if filepath.IsAbs(mcMount) {
+		return mcMount
+	}
+
+	return filepath.Join(cwd, mcMount)
+}
+
 func (j *Job) decrementLimitGroupsLocked(lim *limiter.Limiter) {
 	if len(j.incrementedLimitGroups) > 0 {
 		if lim != nil {
@@ -130,8 +146,62 @@ func (j *Job) decrementLimitGroupsLocked(lim *limiter.Limiter) {
 	}
 }
 
-func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host, hostIP, actualCwd string) string {
-	if state != JobStateRunning || actualCwd == "" {
+// dropImpossibleCleanups removes every cleanup Behaviour this Job would carry
+// without ever being able to carry it out.
+//
+// Behaviour.cleanup only ever deletes the working directory wr itself created
+// below Cwd, so on a CwdMatters job, which runs in the user's own Cwd, a cleanup
+// is a no-op that must not be stored: it would have wr advertise a deletion that
+// will never happen.
+//
+// The server calls this on every Job that enters its store, whether the Job came
+// from a client (prepareInputJobs) or from the database (db.decodeJob), so that a
+// hand-built Job and a persisted one are both covered.
+func (j *Job) dropImpossibleCleanups() {
+	if !j.CwdMatters {
+		return
+	}
+
+	j.Behaviours = j.Behaviours.withoutCleanups()
+}
+
+// cwdLeaf returns the part of cwd below cwdBase, prefixed with "/", for display
+// alongside cwdBase as a Job's working directory. It is the single projection
+// used for both a stored Job's JStatus and a live Job's JobUpdate, so that
+// neither can gain or lose a guard the other lacks.
+//
+// A blank cwd (the Job has no working directory of its own yet) gives "". A cwd
+// that is cwdBase gives "/", which is what a Job persisted by wr v0.37.0|1 has.
+// A cwd that is not below cwdBase at all - a stale ActualCwd left over from a
+// `wr mod --cwd` - is shown in full rather than as a leaf climbing out of cwdBase
+// with "..".
+func cwdLeaf(cwdBase, cwd string) (string, error) {
+	if cwd == "" {
+		return "", nil
+	}
+
+	if cwdBase == "" {
+		return cwd, nil
+	}
+
+	rel, err := filepath.Rel(cwdBase, cwd)
+	if err != nil {
+		return "", err
+	}
+
+	if rel == "." {
+		return "/", nil
+	}
+
+	if !relIsBelow(rel) {
+		return cwd, nil
+	}
+
+	return "/" + rel, nil
+}
+
+func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host, hostIP, workingDir string) string {
+	if state != JobStateRunning || workingDir == "" {
 		return ""
 	}
 
@@ -140,7 +210,7 @@ func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host,
 		return ""
 	}
 
-	remote := "cd " + quoteRemoteCwd(actualCwd) + " && exec ${SHELL:-/bin/sh} -l"
+	remote := "cd " + quoteRemoteCwd(workingDir) + " && exec ${SHELL:-/bin/sh} -l"
 
 	return "ssh -- " + shellquote.Join(target) + " " + singleQuoteShellArg(remote)
 }
@@ -778,8 +848,12 @@ func (j *Job) mountBaseDirs(onCwd []bool) (cwd, defaultMount, defaultCacheBase s
 	defaultMount = filepath.Join(j.Cwd, "mnt")
 	defaultCacheBase = cwd
 
-	if j.ActualCwd != "" {
-		cwd = j.ActualCwd
+	// a CwdMatters Job runs in the user's own Cwd, so it has no wr-created
+	// working directory to mount in or cache beside, whatever ActualCwd says: a
+	// Job persisted by wr v0.37.0|1 can have it set to Cwd, and then the cache
+	// base would become the parent of the user's own Cwd.
+	if created := j.createdCwd(); created != "" {
+		cwd = created
 		defaultMount = cwd
 		defaultCacheBase = filepath.Dir(cwd)
 	} else if len(onCwd) == 1 && onCwd[0] {
@@ -889,38 +963,43 @@ func (ms *mountState) buildRemoteConfigs(mc MountConfig, defaultCacheBase string
 	return rcs, nil
 }
 
-// resolveCacheDir resolves a target's CacheDir relative to defaultCacheBase,
-// recording it as a unique cache dir when it is relative.
-func (ms *mountState) resolveCacheDir(cacheDir, defaultCacheBase string) string {
+// resolveCacheDir resolves a target's CacheDir relative to defaultCacheBase. An
+// unset CacheDir (muxfys then chooses its own dir inside the CacheBase) or an
+// absolute one is returned as given.
+//
+// It is a function as well as a mountState method because cleanup must work out
+// the same locations to know what it must not delete, and a second derivation of
+// where a cache lands is a second chance to get it wrong.
+func resolveCacheDir(cacheDir, defaultCacheBase string) string {
 	if cacheDir == "" || filepath.IsAbs(cacheDir) {
 		// *** else, the cache is in a unique dir that I don't know about?
 		return cacheDir
 	}
 
-	cacheDir = filepath.Join(defaultCacheBase, cacheDir)
+	return filepath.Join(defaultCacheBase, cacheDir)
+}
 
-	// *** we should only set this if not writing, or if writing to a non-empty
-	// dir, which we don't know about at this point...
-	ms.cacheDirs = append(ms.cacheDirs, cacheDir)
+// resolveCacheDir resolves a target's CacheDir, recording it as a unique cache
+// dir when it is relative - which is exactly when resolving it changed it.
+func (ms *mountState) resolveCacheDir(cacheDir, defaultCacheBase string) string {
+	resolved := resolveCacheDir(cacheDir, defaultCacheBase)
+	if resolved != cacheDir {
+		// *** we should only set this if not writing, or if writing to a
+		// non-empty dir, which we don't know about at this point...
+		ms.cacheDirs = append(ms.cacheDirs, resolved)
+	}
 
-	return cacheDir
+	return resolved
 }
 
 // resolveMount resolves a MountConfig's mount point relative to cwd (or the
 // default), recording it as a unique mounted dir when appropriate.
 func (ms *mountState) resolveMount(mcMount, cwd, defaultMount string) string {
-	if mcMount == "" {
-		ms.mountedDirs = append(ms.mountedDirs, defaultMount)
+	mount := resolveMountPoint(mcMount, cwd, defaultMount)
 
-		return defaultMount
+	if !filepath.IsAbs(mcMount) {
+		ms.mountedDirs = append(ms.mountedDirs, mount)
 	}
-
-	if filepath.IsAbs(mcMount) {
-		return mcMount
-	}
-
-	mount := filepath.Join(cwd, mcMount)
-	ms.mountedDirs = append(ms.mountedDirs, mount)
 
 	return mount
 }
@@ -971,10 +1050,10 @@ func (j *Job) Unmount(stopUploads ...bool) (logs string, err error) {
 		return logs, fmt.Errorf("Unmount failure(s): %w", err)
 	}
 
-	// delete any empty dirs
-	if j.ActualCwd != "" {
-		err = j.rmEmptyMountDirs()
-	}
+	// delete any empty dirs; which of them are ours is left entirely to the
+	// workspace resolution, which excludes a CwdMatters Job even if it has an
+	// ActualCwd, because wr created no directory for one.
+	err = j.rmEmptyMountDirs()
 
 	return logs, err
 }
@@ -1010,19 +1089,44 @@ func (j *Job) unmountAll(doNotUpload bool) (string, *multierror.Error) {
 // rmEmptyMountDirs deletes any empty directories between the Job's mount
 // point(s) and its Cwd. It returns the error from the last cleanup attempted
 // (matching the original Unmount behaviour).
+//
+// Which dirs it may walk is decided by the same resolution Behaviour.cleanup
+// uses, so the two cannot disagree about what wr created.
+//
+// A refusal from that resolution is swallowed rather than reported, because an
+// error returned here fails the job itself, and a tidy-up that found nothing of
+// ours to tidy is not a failed unmount.
 func (j *Job) rmEmptyMountDirs() error {
-	var err error
-
-	for _, mc := range j.MountConfigs {
-		switch {
-		case mc.Mount == "":
-			err = rmEmptyDirs(j.ActualCwd, j.Cwd)
-		case !filepath.IsAbs(mc.Mount):
-			err = rmEmptyDirs(filepath.Join(j.ActualCwd, mc.Mount), j.Cwd)
-		}
+	// answered before the resolution, not after, because Unmount is on the exit
+	// path of every Job that runs and most have no mounts at all: the resolution
+	// costs the hash Key() makes of the Job and an lstat per component of the
+	// path below Cwd, only to find no mount point to walk up from.
+	if !j.hasMounts() {
+		return nil
 	}
 
-	return err
+	ws, err := j.workSpaceSnapshot().resolveWorkSpace()
+	if err != nil || ws == nil {
+		return nil
+	}
+	defer ws.Close()
+
+	return ws.rmEmptyMountDirs()
+}
+
+// hasMounts reports whether the Job has any MountConfigs, read under its read
+// lock as workSpaceSnapshot reads them: the field is only ever replaced
+// wholesale, so the slice header is all this has to see, and the lock is
+// released before anything walks the filesystem.
+//
+// A Job with none has no mount points either, whatever its directories are:
+// keptDirs.mountPoints is filled from workSpacePaths.mountPoints, which resolves
+// exactly one point per MountConfig.
+func (j *Job) hasMounts() bool {
+	j.RLock()
+	defer j.RUnlock()
+
+	return len(j.MountConfigs) > 0
 }
 
 // ToEssense converts a Job to its matching JobEssense, taking less space and
@@ -1072,9 +1176,7 @@ func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	j.CPUtime = jes.CPUtime
 
 	j.EndTime = jes.EndTime
-	if jes.Cwd != "" {
-		j.ActualCwd = jes.Cwd
-	}
+	j.setActualCwd(jes.Cwd)
 	j.Unlock()
 }
 
@@ -1229,19 +1331,19 @@ func (j *Job) ToStatus() (JStatus, error) {
 	j.RLock()
 	defer j.RUnlock()
 
-	cwdLeaf, err := j.cwdLeaf()
+	leaf, err := cwdLeaf(j.Cwd, j.createdCwd())
 	if err != nil {
 		return JStatus{}, err
 	}
 
-	return j.buildJStatus(streams, cwdLeaf), nil
+	return j.buildJStatus(streams, leaf), nil
 }
 
 // buildJStatus assembles a JStatus from the job and the already-gathered
-// streams and cwdLeaf. Must be called with at least an RLock held.
+// streams and cwd leaf. Must be called with at least an RLock held.
 //
 //nolint:funlen // a flat field-by-field mapping of the many-fielded Job struct
-func (j *Job) buildJStatus(streams jobStatusStreams, cwdLeaf string) JStatus {
+func (j *Job) buildJStatus(streams jobStatusStreams, leaf string) JStatus {
 	state := j.State
 	if state == JobStateRunning && j.Lost {
 		state = JobStateLost
@@ -1259,7 +1361,7 @@ func (j *Job) buildJStatus(streams jobStatusStreams, cwdLeaf string) JStatus {
 		Cmd:                 j.Cmd,
 		State:               state,
 		CwdBase:             j.Cwd,
-		Cwd:                 cwdLeaf,
+		Cwd:                 leaf,
 		HomeChanged:         j.ChangeHome,
 		Behaviours:          j.Behaviours.String(),
 		Mounts:              j.MountConfigs.String(),
@@ -1283,7 +1385,7 @@ func (j *Job) buildJStatus(streams jobStatusStreams, cwdLeaf string) JStatus {
 		Host:                j.Host,
 		HostID:              j.HostID,
 		HostIP:              j.HostIP,
-		SSHCommand:          sshCommandForRunningJob(state, j.Requirements, j.Host, j.HostIP, j.ActualCwd),
+		SSHCommand:          sshCommandForRunningJob(state, j.Requirements, j.Host, j.HostIP, j.workingDir()),
 		Walltime:            j.WallTime().Seconds(),
 		CPUtime:             j.CPUtime.Seconds(),
 		Attempts:            j.Attempts,
@@ -1348,19 +1450,51 @@ func (j *Job) statusStreams() (jobStatusStreams, error) {
 	return streams, err
 }
 
-// cwdLeaf returns the part of ActualCwd below Cwd (prefixed with "/"), or "" if
-// there is no ActualCwd. Must be called with at least an RLock held.
-func (j *Job) cwdLeaf() (string, error) {
-	if j.ActualCwd == "" {
-		return "", nil
+// setActualCwd records cwd as the unique working directory that wr created below
+// Cwd for this Job's Cmd. A blank cwd is ignored, and so is any cwd for a
+// CwdMatters Job: that Cmd runs in the user's own Cwd, and a blank ActualCwd is
+// how the rest of wr knows there is no wr-created directory to delete. Must be
+// called with the Job locked.
+func (j *Job) setActualCwd(cwd string) {
+	if cwd == "" || j.CwdMatters {
+		return
 	}
 
-	leaf, err := filepath.Rel(j.Cwd, j.ActualCwd)
-	if err != nil {
-		return "", err
+	j.ActualCwd = cwd
+}
+
+// createdCwd returns the unique working directory wr created for this Job below
+// Cwd, or "" if wr created none.
+//
+// It is "" for a CwdMatters Job whatever ActualCwd says, because wr creates no
+// directory for one. setActualCwd refuses to write ActualCwd on such a Job, but
+// one persisted by wr v0.37.0|1 can still be read back carrying Cwd there, and
+// every caller of this is deciding something about a directory wr owns. Must be
+// called with at least an RLock held.
+func (j *Job) createdCwd() string {
+	if j.CwdMatters {
+		return ""
 	}
 
-	return "/" + leaf, nil
+	return j.ActualCwd
+}
+
+// workingDir returns the directory this Job's Cmd runs in, or "" if that isn't
+// known yet: Cwd when CwdMatters, since then the Cmd runs in Cwd itself, and
+// otherwise ActualCwd, the unique working directory wr created below Cwd. A
+// non-CwdMatters Job that has yet to report an ActualCwd gets "" rather than
+// Cwd, because its Cmd runs in a unique directory below Cwd, not in Cwd.
+//
+// CwdMatters is checked FIRST so that ActualCwd is ignored entirely on such a
+// Job rather than only when it is empty, since a Job persisted by v0.37.x can be
+// read back carrying Cwd there and this is what wr displays and offers to ssh
+// to. Must be called with at least an RLock held.
+func (j *Job) workingDir() string {
+	if j.CwdMatters {
+		return j.Cwd
+	}
+
+	return j.createdCwd()
 }
 
 // unixNanoPtr returns a pointer to t's UnixNano value, or nil if t is the zero
@@ -1831,14 +1965,37 @@ func (j *JobModifier) overrideKeyContainer(newJob *Job) {
 	}
 }
 
-// applyTo applies all the set modifications to job in place.
+// applyTo applies all the set modifications to job in place, and then discards
+// any ActualCwd the modifications have invalidated.
+//
+// ActualCwd is the working directory mkHashedDir built below Cwd from the job's
+// Key(), and rebuilding that path from the key is exactly what licenses cleanup
+// to sweep its parent and a `run` behaviour to execute in it. So the pair has to
+// stay consistent, and Key() covers the Cmd, the MountConfigs and the container
+// image, every one of which is modifiable here: a modification that changes the
+// key leaves the stored path describing a job definition that no longer exists,
+// and a blank ActualCwd - which cleanup treats as nothing to do - is then the
+// true account of it.
+//
+// The test is the key itself rather than a clear in each Set* method, because the
+// question is not which fields were touched but whether what was stored is still
+// the path this job's definition builds. Clearing too eagerly leaks a workspace
+// rather than pointing a deletion at something else. applyCmdCwd clears it for a
+// Cwd change separately, since moving Cwd invalidates the path without changing
+// the key.
 func (j *JobModifier) applyTo(job *Job) {
+	keyBefore := job.Key()
+
 	j.applyCmdCwd(job)
 	j.applyGrouping(job)
 	j.applyRequirements(job)
 	j.applyScheduling(job)
 	j.applyBehaviours(job)
 	j.applyContainer(job)
+
+	if job.Key() != keyBefore {
+		job.ActualCwd = ""
+	}
 }
 
 // applyCmdCwd applies the Cmd/Cwd/CwdMatters/ChangeHome modifications to job.
@@ -1847,14 +2004,28 @@ func (j *JobModifier) applyCmdCwd(job *Job) {
 		job.Cmd = j.Cmd
 	}
 
+	// ActualCwd names a wr-created working directory below the Cwd the job last
+	// ran in, and is what lets the cleanup behaviours treat its parent as a
+	// disposable workspace. Setting a Cwd, or making the job run in Cwd itself,
+	// means it has no such directory any more. (The clear can't be skipped when
+	// the supplied Cwd equals the job's: cmd/mod.go passes the flag through
+	// unnormalised, so they could name the same dir without matching.)
+	//
+	// Neither clear is covered by applyTo's key check: a Cwd change on a job
+	// where Cwd is not part of the key changes no key, and nor does a
+	// --cwd_matters on a job that already had it set - which is the job wr
+	// v0.37.0|1 persisted with ActualCwd poisoned to Cwd, and this is where a
+	// user clears it.
 	if j.Cwd != "" {
 		job.Cwd = j.Cwd
+		job.ActualCwd = ""
 	}
 
 	if j.CwdMattersSet {
 		job.CwdMatters = j.CwdMatters
+
 		if j.CwdMatters {
-			job.ActualCwd = job.Cwd
+			job.ActualCwd = ""
 		}
 	}
 
@@ -1942,19 +2113,33 @@ func (j *JobModifier) applyScheduling(job *Job) {
 	}
 }
 
-// applyBehaviours merges any set Behaviours into job.
+// applyBehaviours merges any set Behaviours into job, then drops every cleanup
+// behaviour the job would be left holding if it now runs in the user's own Cwd.
+//
+// The cleanup filter deliberately runs over the merged result rather than over
+// j.Behaviours: mod's semantics are "replace what this trigger does", so
+// filtering a cleanup out of j.Behaviours would leave the trigger unmentioned and
+// mergeBehaviours would keep the job's old behaviour for it. It also runs when no
+// behaviours were modified at all, so that `wr mod --cwd_matters` drops a cleanup
+// the job already stored. applyTo applies the Cwd modifications first, so
+// job.CwdMatters is by now the value this modification leaves the job with.
 func (j *JobModifier) applyBehaviours(job *Job) {
-	if !j.BehavioursSet {
-		return
+	if j.BehavioursSet {
+		job.Behaviours = mergeBehaviours(job.Behaviours, j.Behaviours)
 	}
 
-	job.Behaviours = mergeBehaviours(job.Behaviours, j.Behaviours)
+	job.dropImpossibleCleanups()
 }
 
 // applyContainer applies the mount, bsub and container modifications to job.
 func (j *JobModifier) applyContainer(job *Job) {
 	if j.MountConfigsSet {
-		job.MountConfigs = j.MountConfigs
+		// a COPY per job, because one JobModifier is applied to every job of a
+		// `wr mod --mounts` batch: assigning the modifier's own slice would give
+		// all of them one backing array, guarded by as many different mutexes as
+		// there were jobs. The clone has to be DEEP for that to hold, since a
+		// per-config copy alone still shares every Targets backing array.
+		job.MountConfigs = cloneMountConfigs(j.MountConfigs)
 	}
 
 	if j.BsubModeSet {

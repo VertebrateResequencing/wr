@@ -34,7 +34,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -277,7 +276,7 @@ func liveJobUpdateDataFromJob(job *Job) (*liveJobUpdateData, error) {
 	job.RLock()
 	defer job.RUnlock()
 
-	cwdLeaf, err := liveJobCwdLeaf(job.Cwd, job.ActualCwd)
+	leaf, err := cwdLeaf(job.Cwd, job.createdCwd())
 	if err != nil {
 		return nil, err
 	}
@@ -296,8 +295,8 @@ func liveJobUpdateDataFromJob(job *Job) (*liveJobUpdateData, error) {
 			HostID:     job.HostID,
 			HostIP:     job.HostIP,
 			CwdBase:    job.Cwd,
-			Cwd:        cwdLeaf,
-			SSHCommand: sshCommandForRunningJob(job.State, job.Requirements, job.Host, job.HostIP, job.ActualCwd),
+			Cwd:        leaf,
+			SSHCommand: sshCommandForRunningJob(job.State, job.Requirements, job.Host, job.HostIP, job.workingDir()),
 		},
 		stdoutC: slices.Clone(job.StdOutC),
 		stderrC: slices.Clone(job.StdErrC),
@@ -356,10 +355,7 @@ func applyLiveSnapshot(job *Job, jes *JobEndState) {
 	job.Lock()
 	defer job.Unlock()
 
-	if jes.Cwd != "" {
-		job.ActualCwd = jes.Cwd
-	}
-
+	job.setActualCwd(jes.Cwd)
 	job.PeakRAM = jes.PeakRAM
 	job.PeakDisk = jes.PeakDisk
 	job.CPUtime = jes.CPUtime
@@ -371,31 +367,6 @@ func applyLiveSnapshot(job *Job, jes *JobEndState) {
 	if len(jes.Stderr) != 0 {
 		job.StdErrC = jes.Stderr
 	}
-}
-
-func liveJobCwdLeaf(cwdBase, cwd string) (string, error) {
-	if cwd == "" {
-		return "", nil
-	}
-
-	if cwdBase == "" {
-		return cwd, nil
-	}
-
-	rel, err := filepath.Rel(cwdBase, cwd)
-	if err != nil {
-		return "", err
-	}
-
-	if rel == "." {
-		return "/", nil
-	}
-
-	if strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
-		return cwd, nil
-	}
-
-	return "/" + rel, nil
 }
 
 func malformedAddJobMessage(jobs []*Job) string {
@@ -1116,10 +1087,7 @@ func (j *Job) applySuccessfulEndStateLocked(endState *JobEndState, lim *limiter.
 	j.PeakDisk = endState.PeakDisk
 	j.CPUtime = endState.CPUtime
 	j.EndTime = endState.EndTime
-
-	if endState.Cwd != "" {
-		j.ActualCwd = endState.Cwd
-	}
+	j.setActualCwd(endState.Cwd)
 }
 
 // archiveCompletedJob persists a completed job to the complete bucket and

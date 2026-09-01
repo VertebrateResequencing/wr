@@ -6604,6 +6604,14 @@ func TestJobqueueModify(t *testing.T) {
 			jm.SetCwd(tmp)
 			modify("a", 1)
 
+			// the job has not run in any wr-created dir below its new cwd yet,
+			// so the ActualCwd of its last run must not have survived
+			modified, err := jq.GetByRepGroup("a", false, 0, "", false, false)
+			So(err, ShouldBeNil)
+			So(len(modified), ShouldEqual, 1)
+			So(modified[0].Cwd, ShouldEqual, tmp)
+			So(modified[0].ActualCwd, ShouldBeBlank)
+
 			job = kick("a", rgroup, cmd, "")
 			stdout, err = job.StdOut()
 			So(err, ShouldBeNil)
@@ -6941,7 +6949,8 @@ func TestJobqueueModify(t *testing.T) {
 			modify("a", 1)
 
 			job = kick("a", rgroup, cmd, tmp)
-			So(job.ActualCwd, ShouldEqual, tmp)
+			// a cwd_matters job runs in Cwd itself, so it has no ActualCwd
+			So(job.ActualCwd, ShouldBeBlank)
 			So(job.Cwd, ShouldEqual, tmp)
 
 			jm = NewJobModifer()

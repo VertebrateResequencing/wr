@@ -34,9 +34,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/hashicorp/go-multierror"
@@ -44,9 +43,30 @@ import (
 
 // sentinel errors for behaviour handling.
 var (
+	errNotACreatedCwd         = errors.New("actual cwd is not a working directory wr created")
 	errBehaviourInvalidStatus = errors.New("invalid status")
 	errBehaviourArgNotStr     = errors.New("arg is not a string")
 	errBehaviourArgNotStrSl   = errors.New("arg is not a []string")
+)
+
+// cleanupProvenHook, when set, is called between the cleanup path proving which
+// directory it is entitled to delete and it deleting anything, so that a test can
+// swap something in during that window. It is nil in production.
+var cleanupProvenHook func() //nolint:gochecknoglobals
+
+// runResolvedHook and runProvenHook, when set, are called in the two windows a
+// `run` Behaviour has to survive, so that a test can swap something in during
+// them; both are nil in production.
+//
+// runResolvedHook is called once the directory the command will run in has been
+// proven and before it is opened, since the open resolves the proven path again.
+// runProvenHook is called once it is open and before the command starts, which is
+// when exec.Cmd resolves the Dir name it was given.
+//
+//nolint:gochecknoglobals // test hooks into two moments that cannot be reached otherwise
+var (
+	runResolvedHook func()
+	runProvenHook   func()
 )
 
 // BehaviourTrigger is supplied to a Behaviour to define under what circumstance
@@ -139,21 +159,28 @@ type Behaviour struct {
 }
 
 // Trigger will carry out our BehaviourAction if the supplied status matches our
-// BehaviourTrigger.
+// BehaviourTrigger, against the Job as it is now.
 func (b *Behaviour) Trigger(status BehaviourTrigger, j *Job) error {
+	return b.trigger(status, j.workSpaceSnapshot())
+}
+
+// trigger is Trigger against a snapshot of the Job's state taken once, rather
+// than against the Job itself; see Behaviours.trigger for why the snapshot is
+// shared by a whole set.
+func (b *Behaviour) trigger(status BehaviourTrigger, ws jobWorkSpaceSnapshot) error {
 	if b.When&status == 0 {
 		return nil
 	}
 
 	switch b.Do {
 	case CleanupAll:
-		return b.cleanup(j, true)
+		return b.cleanup(ws, true)
 	case Cleanup:
-		return b.cleanup(j, false)
+		return b.cleanup(ws, false)
 	case Run:
-		return b.run(j)
+		return b.run(ws)
 	case CopyToManager:
-		return b.copyToManager(j)
+		return b.copyToManager()
 	case Remove, Nothing:
 		return nil
 	}
@@ -249,102 +276,44 @@ func (b *Behaviour) String() string {
 // with all empty parent dirs up to Cwd. (The all arg would, when false, keep
 // files designated as outputs, but that designation is *** not yet implemented,
 // so for now we always wipe everything.)
-func (b *Behaviour) cleanup(j *Job, _ bool) error {
-	if j.ActualCwd == "" {
-		// must be a CwdMatters job, or somehow ActualCwd didn't get set; we do
-		// nothing in this case
-		return nil
-	}
-
-	// it's the parent of ActualCwd that is the unique dir that got created
-	// that should be deleted; it contains tmp, cwd and possibly mount cache
-	// dirs (that we don't want to delete).
-	workSpace := filepath.Dir(j.ActualCwd)
-
-	if err := cleanupWorkSpace(j, workSpace); err != nil {
+//
+// Which dirs those are, and which of them the Job's live mounts and caches need
+// kept, is decided entirely by resolveWorkSpace. A nil workspace means wr created
+// nothing here that it may delete.
+func (b *Behaviour) cleanup(snap jobWorkSpaceSnapshot, _ bool) error {
+	ws, err := snap.resolveWorkSpace()
+	if err != nil || ws == nil {
 		return err
 	}
+	defer ws.Close()
 
-	// delete any empty parent directories up to Cwd
-	return rmEmptyDirs(workSpace, j.Cwd)
+	return ws.cleanup()
 }
 
-// cleanupWorkSpace deletes the contents of the Job's workspace dir. If the Job
-// used mounts it takes care not to delete the cache dirs or mounted dirs;
-// otherwise it just deletes everything in one go.
-func cleanupWorkSpace(j *Job, workSpace string) error {
-	if len(j.MountConfigs) == 0 {
-		return removeAllManaged(workSpace)
-	}
-
-	keepDirs, keepActualCwd := mountDirsToKeep(j.MountConfigs)
-
-	if !keepActualCwd {
-		if err := removeActualCwd(j.ActualCwd, keepDirs); err != nil {
-			return err
-		}
-	}
-
-	return removeWorkSpaceExtras(workSpace)
-}
-
-// mountDirsToKeep works out, from a Job's MountConfigs, which relative dirs to
-// keep, and whether the ActualCwd itself must be kept.
-func mountDirsToKeep(mcs MountConfigs) (keepDirs []string, keepActualCwd bool) {
-	for _, mc := range mcs {
-		if mc.Mount == "" {
-			return nil, true
-		}
-
-		if !filepath.IsAbs(mc.Mount) {
-			keepDirs = append(keepDirs, mc.Mount)
-		}
-	}
-
-	return keepDirs, false
-}
-
-// removeWorkSpaceExtras deletes everything inside workSpace except for cwd and
-// the cache dirs, incase a job.Cmd did something like `touch ../foo`.
-func removeWorkSpaceExtras(workSpace string) error {
-	entries, err := os.ReadDir(workSpace)
-	if err != nil {
-		return err
-	}
-
-	for _, entry := range entries {
-		if entry.Name() == "cwd" || strings.HasPrefix(entry.Name(), ".muxfys") {
-			continue
-		}
-
-		if err = removeAllManaged(filepath.Join(workSpace, entry.Name())); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// removeActualCwd deletes the Job's ActualCwd, keeping the given relative dirs
-// if any were specified.
-func removeActualCwd(actualCwd string, keepDirs []string) error {
-	if len(keepDirs) > 0 {
-		return removeAllExcept(actualCwd, keepDirs)
-	}
-
-	return removeAllManaged(actualCwd)
-}
-
-// run simply runs the given command from Job's actual cwd.
-func (b *Behaviour) run(j *Job) error {
-	actualCwd := j.ActualCwd
-	if actualCwd == "" {
-		actualCwd = j.Cwd
-	}
-
+// run runs the given command in the directory the Job's Cmd ran in.
+//
+// Which directory that is comes from resolveRunDir - the same resolution that
+// decides what cleanup may delete, since it is the same question about the same
+// two fields. A Job whose directory cannot be shown to be its own runs nothing at
+// all: the command is the user's and can do anything they can.
+//
+// The directory comes back held open, and cmd.Dir names that handle where the
+// platform allows it to be named, so the command starts in the directory that was
+// proven rather than in whatever its path resolves to by then; see runDir.
+func (b *Behaviour) run(snap jobWorkSpaceSnapshot) error {
 	bc, wasStr := b.Arg.(string)
 	if !wasStr {
 		return fmt.Errorf("%w: arg %s is type %T", errBehaviourArgNotStr, b.Arg, b.Arg)
+	}
+
+	dir, err := snap.resolveRunDir()
+	if err != nil {
+		return fmt.Errorf("run behaviour refused: %w", err)
+	}
+	defer dir.Close()
+
+	if runProvenHook != nil {
+		runProvenHook()
 	}
 
 	if strings.Contains(bc, " | ") {
@@ -355,7 +324,7 @@ func (b *Behaviour) run(j *Job) error {
 	// they like, but that is the very nature of this app. This runs as them,
 	// so can do whatever they can do...
 	cmd := exec.CommandContext(context.Background(), "/bin/bash", "-c", bc)
-	cmd.Dir = actualCwd
+	cmd.Dir = dir.execDir()
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -367,7 +336,7 @@ func (b *Behaviour) run(j *Job) error {
 
 // copyToManager copies the files specified in the Arg slice to the configured
 // location on the manager's machine.
-func (b *Behaviour) copyToManager(*Job) error {
+func (b *Behaviour) copyToManager() error {
 	_, wasStrSlice := b.Arg.([]string)
 	if !wasStrSlice {
 		return fmt.Errorf("%w: arg %s is type %T", errBehaviourArgNotStrSl, b.Arg, b.Arg)
@@ -383,10 +352,22 @@ type Behaviours []*Behaviour
 
 // Trigger calls Trigger on each constituent Behaviour, first all those for
 // OnSuccess if success = true or OnFailure otherwise, then those for OnExit.
+//
+// The whole set shares ONE snapshot of the Job, rather than each behaviour
+// reading the Job again: a `--on_failure cleanup --on_exit run` pair is one
+// decision about one directory, and re-reading between them lets the two act on
+// different ones. Nothing downstream reads the Job again while it walks the
+// filesystem deciding what it may delete.
 func (bs Behaviours) Trigger(success bool, j *Job) error {
+	// answered before the snapshot, not after, because most Jobs have no
+	// behaviours at all and this is on the path of every Job that runs: the
+	// snapshot costs the Job's lock and the hash Key() makes of its Cmd and
+	// mounts.
 	if len(bs) == 0 {
 		return nil
 	}
+
+	ws := j.workSpaceSnapshot()
 
 	var status BehaviourTrigger
 	if success {
@@ -398,7 +379,7 @@ func (bs Behaviours) Trigger(success bool, j *Job) error {
 	var merr *multierror.Error
 
 	for _, b := range bs {
-		err := b.Trigger(status, j)
+		err := b.trigger(status, ws)
 		if err != nil {
 			merr = multierror.Append(merr, err)
 		}
@@ -406,7 +387,7 @@ func (bs Behaviours) Trigger(success bool, j *Job) error {
 
 	status = OnExit
 	for _, b := range bs {
-		err := b.Trigger(status, j)
+		err := b.trigger(status, ws)
 		if err != nil {
 			merr = multierror.Append(merr, err)
 		}
@@ -424,6 +405,25 @@ func (bs Behaviours) RemovalRequested() bool {
 	}
 
 	return false
+}
+
+// withoutCleanups returns bs with every Cleanup and CleanupAll Behaviour
+// removed, regardless of trigger, and nil if that leaves none.
+//
+// Those actions can only ever delete the wr-created working directory of a job
+// with CwdMatters false (see Behaviour.cleanup), so on a cwd_matters job they are
+// no-ops that must not be stored: keeping one would have wr advertise a deletion
+// that will never happen.
+func (bs Behaviours) withoutCleanups() Behaviours {
+	kept := slices.DeleteFunc(slices.Clone(bs), func(b *Behaviour) bool {
+		return b.Do == Cleanup || b.Do == CleanupAll
+	})
+
+	if len(kept) == 0 {
+		return nil
+	}
+
+	return kept
 }
 
 // String provides a nice string representation of Behaviours for user

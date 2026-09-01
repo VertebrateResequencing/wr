@@ -898,8 +898,8 @@ func (db *db) dropStaleEndTimeIndex(tx *bolt.Tx, jobKey []byte, newNanos int64) 
 		return true, nil
 	}
 
-	oldJob := &Job{}
-	if err := codec.NewDecoderBytes(oldEncoded, db.ch).Decode(oldJob); err != nil {
+	oldJob, err := db.decodeJob(oldEncoded)
+	if err != nil {
 		return false, err
 	}
 
@@ -911,6 +911,23 @@ func (db *db) dropStaleEndTimeIndex(tx *bolt.Tx, jobKey []byte, newNanos int64) 
 	oldTimeBytes := endTimeToBytes(oldNanos)
 
 	return true, tx.Bucket(bucketEndTimeToKey).Delete(endTimeIndexKey(oldTimeBytes, jobKey))
+}
+
+// decodeJob decodes a Job we previously stored in one of our job buckets, and
+// applies the invariants a stored Job must satisfy before anything else sees it.
+// Every read of a stored Job goes through here, so that a db written by an older
+// wr cannot bring a cwd_matters job carrying a cleanup behaviour back into a
+// running server (see Job.dropImpossibleCleanups).
+func (db *db) decodeJob(encoded []byte) (*Job, error) {
+	job := &Job{}
+
+	if err := codec.NewDecoderBytes(encoded, db.ch).Decode(job); err != nil {
+		return nil, err
+	}
+
+	job.dropImpossibleCleanups()
+
+	return job, nil
 }
 
 // deleteLimitGroup deletes a limit group's stored value if it had one.
@@ -1617,10 +1634,7 @@ func (db *db) recoverIncompleteJobs() ([]*Job, error) {
 
 		return b.ForEach(func(_, encoded []byte) error {
 			if encoded != nil {
-				dec := codec.NewDecoderBytes(encoded, db.ch)
-				job := &Job{}
-
-				errf := dec.Decode(job)
+				job, errf := db.decodeJob(encoded)
 				if errf != nil {
 					return errf
 				}
@@ -1645,10 +1659,7 @@ func (db *db) retrieveCompleteJobsByKeys(keys []string) ([]*Job, error) {
 		for _, key := range keys {
 			encoded := b.Get([]byte(key))
 			if encoded != nil {
-				dec := codec.NewDecoderBytes(encoded, db.ch)
-				job := &Job{}
-
-				err := dec.Decode(job)
+				job, err := db.decodeJob(encoded)
 				if err == nil {
 					jobs = append(jobs, job)
 				}
@@ -1742,14 +1753,7 @@ func (db *db) decodeArchivedJob(completeJobBucket, newJobBucket *bolt.Bucket, ke
 		return nil, nil //nolint:nilnil // absent/live job is a valid non-error nil result
 	}
 
-	dec := codec.NewDecoderBytes(encoded, db.ch)
-	job := &Job{}
-
-	if err := dec.Decode(job); err != nil {
-		return nil, err
-	}
-
-	return job, nil
+	return db.decodeJob(encoded)
 }
 
 // retrieveCompleteJobStatusByRepGroup gets a compact status summary for
@@ -1795,10 +1799,8 @@ func (db *db) addCompleteJobStatus(summary *RepGroupStatus, repgroup string, enc
 		return nil
 	}
 
-	dec := codec.NewDecoderBytes(encoded, db.ch)
-
-	job := &Job{}
-	if err := dec.Decode(job); err != nil {
+	job, err := db.decodeJob(encoded)
+	if err != nil {
 		return err
 	}
 
@@ -1916,10 +1918,8 @@ func (s *dependentJobsScan) processKey(key []byte, keyStr string, newJobBucket, 
 		return nil
 	}
 
-	dec := codec.NewDecoderBytes(encoded, s.db.ch)
-	job := &Job{}
-
-	if err := dec.Decode(job); err != nil {
+	job, err := s.db.decodeJob(encoded)
+	if err != nil {
 		return err
 	}
 

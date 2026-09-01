@@ -27,8 +27,11 @@ package jobqueue
 
 import (
 	"bytes"
+	"errors"
 	"math/rand"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,6 +60,155 @@ func TestOwnMemoryMB(t *testing.T) {
 			withChildren, errc := currentMemory(os.Getpid())
 			So(errc, ShouldBeNil)
 			So(mb, ShouldBeLessThanOrEqualTo, withChildren+1)
+		})
+	})
+}
+
+// rootOf opens dir the way every caller of rmEmptyDirsIn has already had to:
+// as a handle that bounds the walk, so that a component swapped after the proof
+// cannot redirect a deletion out of it.
+func rootOf(dir string) *os.Root {
+	root, err := openBaseRoot(dir)
+	So(err, ShouldBeNil)
+
+	return root
+}
+
+func TestRmEmptyDirsIn(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// rmEmptyDirsIn is the upward walk Job.Unmount's tidy-up makes from a mount
+	// point, and every deletion it makes is bounded by the handle on the Job's Cwd
+	// that the caller has already proven its way to.
+	Convey("Given a base dir with a nested leaf dir inside it", t, func() {
+		outer := t.TempDir()
+		base := filepath.Join(outer, "base")
+		aDir := filepath.Join(base, "wr_cwd", "a")
+		leaf := filepath.Join(aDir, "b", "unique")
+		err := os.MkdirAll(leaf, os.ModePerm)
+		So(err, ShouldBeNil)
+
+		Convey("rmEmptyDirsIn deletes the leaf and its empty parents, but not baseDir", func() {
+			So(rmEmptyDirsIn(rootOf(base), leaf), ShouldBeNil)
+
+			_, err = os.Stat(filepath.Join(base, "wr_cwd"))
+			So(err, ShouldNotBeNil)
+			soPathsExist(base, outer)
+		})
+
+		Convey("rmEmptyDirsIn stops at the first non-empty parent", func() {
+			err = os.WriteFile(filepath.Join(aDir, "output.txt"), []byte("kept\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			So(rmEmptyDirsIn(rootOf(base), leaf), ShouldBeNil)
+
+			_, err = os.Stat(filepath.Join(aDir, "b"))
+			So(err, ShouldNotBeNil)
+			soPathsExist(aDir, base, outer)
+		})
+
+		Convey("rmEmptyDirsIn keeps a non-empty leaf, without error", func() {
+			err = os.WriteFile(filepath.Join(leaf, "output.txt"), []byte("kept\n"), 0o600)
+			So(err, ShouldBeNil)
+
+			So(rmEmptyDirsIn(rootOf(base), leaf), ShouldBeNil)
+
+			soPathsExist(leaf, aDir, base, outer)
+
+			Convey("because the OS reports that as an errno we recognise, not as a message", func() {
+				err = os.Remove(leaf)
+				So(err, ShouldNotBeNil)
+				So(errIsDirNotEmpty(err), ShouldBeTrue)
+			})
+		})
+
+		Convey("rmEmptyDirsIn treats an unclean baseDir as the same dir, so still stops at it", func() {
+			So(rmEmptyDirsIn(rootOf(base+string(filepath.Separator)), leaf), ShouldBeNil)
+
+			_, err = os.Stat(filepath.Join(base, "wr_cwd"))
+			So(err, ShouldNotBeNil)
+			soPathsExist(base, outer)
+		})
+
+		Convey("rmEmptyDirsIn refuses a leafDir that is baseDir, so can't walk above it", func() {
+			err = rmEmptyDirsIn(rootOf(base), base)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+
+			soPathsExist(leaf, base, outer)
+		})
+
+		Convey("rmEmptyDirsIn refuses a leafDir that is not below baseDir", func() {
+			other := filepath.Join(outer, "other")
+			otherLeaf := filepath.Join(other, "leaf")
+			err = os.MkdirAll(otherLeaf, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			err = rmEmptyDirsIn(rootOf(base), otherLeaf)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+
+			soPathsExist(otherLeaf, other, base, outer)
+		})
+
+		Convey("rmEmptyDirsIn refuses a leafDir that only looks below baseDir before symlinks resolve", func() {
+			err = os.Symlink(outer, filepath.Join(base, "escape"))
+			So(err, ShouldBeNil)
+
+			err = rmEmptyDirsIn(rootOf(base), filepath.Join(base, "escape", "base"))
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+
+			soPathsExist(leaf, base, outer)
+		})
+
+		Convey("rmEmptyDirsIn leaves an empty dir inside baseDir alone when a symlink leads to it", func() {
+			// the outside-baseDir case below is caught by the containment guard;
+			// this one is inside baseDir, so containment says yes and only the
+			// refusal to follow a symlink stops it. The Job's own Cmd can create
+			// this link where wr expected the mount dir it made, and point it at an
+			// empty directory of the user's, whose parent the walk would take too.
+			userDir := filepath.Join(base, "userdata")
+			userEmpty := filepath.Join(userDir, "results")
+			err = os.MkdirAll(userEmpty, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			link := filepath.Join(base, "mnt")
+			err = os.Symlink(userEmpty, link)
+			So(err, ShouldBeNil)
+
+			err = rmEmptyDirsIn(rootOf(base), link)
+
+			// survival first, so a broken guard shows up as the deletion it is.
+			soPathsExist(userEmpty, userDir, link, base)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+		})
+
+		Convey("rmEmptyDirsIn leaves an empty dir outside baseDir alone, even reached via a symlink", func() {
+			// an empty dir is the dangerous case: the upward walk only stops
+			// deleting when it hits a dir it cannot remove, so a broken containment
+			// guard deletes this dir and the symlink leading to it, rather than
+			// merely failing on a non-empty dir outside baseDir.
+			outsideEmpty := filepath.Join(outer, "empty")
+			err = os.Mkdir(outsideEmpty, os.ModePerm)
+			So(err, ShouldBeNil)
+
+			escape := filepath.Join(base, "escape")
+			err = os.Symlink(outer, escape)
+			So(err, ShouldBeNil)
+
+			err = rmEmptyDirsIn(rootOf(base), filepath.Join(escape, "empty"))
+
+			// survival is asserted before the error, so that a broken guard
+			// shows up as the deletion it is, not as a missing error value.
+			soPathsExist(outsideEmpty, escape, leaf, base, outer)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
 		})
 	})
 }
@@ -204,4 +356,26 @@ func deterministicLiveBytes(size int) []byte {
 	}
 
 	return data
+}
+
+// TestCreatedCwdDepthMatchesMkHashedDir pins createdCwdDepth against what
+// mkHashedDir actually creates. Cleanup refuses to treat a directory at any
+// other depth as a workspace, so if the two ever drift apart every cleanup
+// would silently stop working rather than fail loudly.
+func TestCreatedCwdDepthMatchesMkHashedDir(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("The working dir mkHashedDir creates is createdCwdDepth below the base", t, func() {
+		base := t.TempDir()
+
+		actualCwd, _, err := mkHashedDir(base, "0123456789abcdef0123456789abcdef")
+		So(err, ShouldBeNil)
+
+		rel, err := filepath.Rel(base, actualCwd)
+		So(err, ShouldBeNil)
+		So(len(strings.Split(rel, string(filepath.Separator))), ShouldEqual, createdCwdDepth)
+		So(filepath.Base(actualCwd), ShouldEqual, createdCwdName)
+	})
 }

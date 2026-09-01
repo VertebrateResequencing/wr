@@ -49,6 +49,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
@@ -65,6 +66,26 @@ var AppName = "jobqueue" //nolint:gochecknoglobals // configurable package-wide 
 
 // mkHashedLevels is the number of directory levels we create in mkHashedDirs.
 const mkHashedLevels = 4
+
+// createdCwdBaseSuffix ends the name of the base directory mkHashedDir puts
+// every working directory it creates below, and so ends the first component
+// below Cwd of every ActualCwd wr has ever produced.
+//
+// It is a SUFFIX rather than the whole name deliberately: the name is
+// AppName+this, and AppName is a package var that cmd/runner.go sets to "wr"
+// while the manager leaves it "jobqueue", so recognising the whole name would
+// refuse every runner-made workspace in the manager - which is where cleanup of
+// a lost job runs. The suffix is agnostic about which of the two made the
+// directory while still being something wr chose.
+const createdCwdBaseSuffix = "_cwd"
+
+// createdCwdDepth is how many path components below a Job's Cwd the working
+// directory wr creates for it sits: the <AppName>_cwd base, then the
+// mkHashedLevels-1 hashed dirs, then the MkdirTemp leaf, then cwd itself.
+// TestCreatedCwdDepthMatchesMkHashedDir pins it against what mkHashedDir
+// produces, because a wrong value here would quietly stop every cleanup rather
+// than fail loudly.
+const createdCwdDepth = mkHashedLevels + 2
 
 // tokenLength is the fixed size of our authentication token, and
 // tokenRandBytes is the number of random bytes that base64-encode to it.
@@ -86,7 +107,7 @@ const (
 	bytesPerMB = 1024 * 1024
 
 	// mkHashedDirMaxTries is how many times we retry creating a hashed dir when
-	// it conflicts with a concurrent rmEmptyDirs.
+	// it conflicts with a concurrent rmEmptyDirsIn.
 	mkHashedDirMaxTries = 3
 )
 
@@ -688,7 +709,7 @@ func calculateHashedDir(baseDir, tohash string) (string, string) {
 // creates 2 folders called cwd and tmp, which it returns. Returns an error if
 // there were problems making the directories.
 func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
-	dir, leaf := calculateHashedDir(filepath.Join(baseDir, AppName+"_cwd"), tohash)
+	dir, leaf := calculateHashedDir(filepath.Join(baseDir, AppName+createdCwdBaseSuffix), tohash)
 
 	holdFile := filepath.Join(dir, ".hold")
 	defer func() {
@@ -731,8 +752,8 @@ func removeHoldFile(holdFile string, prior error) error {
 	return fmt.Errorf("%w (and removing the hold file failed: %w)", prior, errr)
 }
 
-// mkHeldDir creates dir (retrying a few times in case a concurrent rmEmptyDirs
-// conflicts with us) and drops a hold file in it so rmEmptyDirs will not
+// mkHeldDir creates dir (retrying a few times in case a concurrent rmEmptyDirsIn
+// conflicts with us) and drops a hold file in it so rmEmptyDirsIn will not
 // immediately remove it.
 func mkHeldDir(dir, holdFile string) error {
 	tries := 0
@@ -753,11 +774,6 @@ func mkHeldDir(dir, holdFile string) error {
 // itself created and manages (a Job's working/cache dirs, our own /proc
 // entries). The paths are trusted by design and cleaned before use, which also
 // satisfies gosec's path-traversal analysis without per-call suppressions.
-
-// removeAllManaged is os.RemoveAll for a jobqueue-managed path.
-func removeAllManaged(path string) error {
-	return os.RemoveAll(filepath.Clean(path))
-}
 
 // removeManaged is os.Remove for a jobqueue-managed path.
 func removeManaged(path string) error {
@@ -814,9 +830,13 @@ func retryOrFail(tries *int, err error) (bool, error) {
 	return false, err
 }
 
+// createdCwdName is what mkCwdAndTmp calls the working directory it makes, and
+// so the last component of every ActualCwd wr has ever created.
+const createdCwdName = "cwd"
+
 // mkCwdAndTmp creates "cwd" and "tmp" dirs within dir, returning their paths.
 func mkCwdAndTmp(dir string) (cwd, tmpDir string, err error) {
-	cwd = filepath.Join(dir, "cwd")
+	cwd = filepath.Join(dir, createdCwdName)
 	if err = mkdirManaged(cwd, os.ModePerm); err != nil {
 		return cwd, tmpDir, err
 	}
@@ -826,73 +846,536 @@ func mkCwdAndTmp(dir string) (cwd, tmpDir string, err error) {
 	return cwd, tmpDir, mkdirManaged(tmpDir, os.ModePerm)
 }
 
-// rmEmptyDirs deletes leafDir and it's parent directories if they are empty,
-// stopping if it reaches baseDir (leaving that undeleted). It's ok if leafDir
-// doesn't exist.
-func rmEmptyDirs(leafDir, baseDir string) error {
-	err := removeManaged(leafDir)
+// errNotBelowBaseDir is returned when we're asked to delete a directory that is
+// not inside the base directory that bounds the deletion.
+var errNotBelowBaseDir = errors.New("dir is not below the base dir")
+
+// openBaseRoot opens baseDir as an os.Root: a handle on the directory itself,
+// through which every deletion below it is done with a path relative to the
+// handle. That is what closes the gap between proving a path may be deleted and
+// deleting it, since a proof is about a path string that every syscall
+// re-resolves, while a relative operation on a root cannot leave that root.
+func openBaseRoot(baseDir string) (*os.Root, error) {
+	if baseDir == "" {
+		return nil, fmt.Errorf("%w: no base dir was given", errNotBelowBaseDir)
+	}
+
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return nil, err
+	}
+
+	return os.OpenRoot(absBase)
+}
+
+// rmEmptyDirsIn deletes leafDir and its parent directories if they are empty,
+// stopping before it reaches the dir baseRoot holds open (leaving that, and
+// everything above it, undeleted). It's ok if leafDir doesn't exist.
+//
+// leafDir must be a proper descendant of baseRoot's dir, with no symlink among
+// the components leading to it; otherwise nothing at all is deleted and
+// errNotBelowBaseDir is returned. There is no safe upward walk to do from
+// anywhere else: with leafDir being baseRoot's own dir the first parent
+// considered would already be above it, and the walk would delete the empty
+// ancestors of the tree it was supposed to stay inside.
+//
+// It takes the base dir as an open HANDLE rather than as a path so that the
+// caller's proof of its way inside that dir travels with it. Do not add a
+// path-taking twin, which would let a caller walk somewhere it had proven
+// nothing about.
+func rmEmptyDirsIn(baseRoot *os.Root, leafDir string) error {
+	proven, ok := realDirBelow(baseRoot, leafDir)
+	if !ok {
+		return fmt.Errorf("%w: %s vs %s", errNotBelowBaseDir, leafDir, baseRoot.Name())
+	}
+
+	chain, err := proven.openChain()
+	if err != nil {
+		return err
+	}
+	defer chain.closeAll()
+
+	return chain.removeUpward()
+}
+
+// provenDirs is a directory proven fit for deletion, paired with the open root
+// that bounds every deletion made with it: rel is strictly inside root, and no
+// component of it is a symlink, so deleting rel and walking up from it can
+// neither leave root nor delete something a link merely points at. realDirBelow
+// is the only way to make one.
+//
+// The type exists so that the deletion helpers cannot be handed two arbitrary
+// path strings: the proof travels with the paths, in the type.
+type provenDirs struct {
+	// root is the open handle every deletion goes through. It is owned by
+	// whoever opened it, not by this value: the chain openChain returns shares
+	// the same handle, and neither closes it.
+	root *os.Root
+
+	// rel is the proven dir, relative to root: cleaned, and never "." or above.
+	rel string
+
+	// leaf is the absolute form of the proven dir, for error messages and for
+	// deriving other paths. Deletions use root and rel, which cannot be
+	// re-resolved somewhere else between the proof and the deletion.
+	leaf string
+
+	// infos is what the proof lstat'ed at each component of rel, in order, so
+	// infos[i] belongs to the i'th component. It is short when the proof ran out
+	// of path that exists, and empty when even the first component was gone.
+	//
+	// There is one per component, not just one for the leaf, because the descent
+	// re-resolves the path a component at a time and has to prove every level it
+	// opens; the upward walk deletes through those levels.
+	infos []os.FileInfo
+}
+
+// openChain descends from dirs.root to the proven dir, keeping a handle on every
+// directory on the way down; see dirChain.
+//
+// A component that has gone since the proof ends the descent, which is not a
+// failure in itself; the chain then knows it is incomplete. Any other failure to
+// open a component is returned, having closed whatever had been opened.
+//
+// The caller must closeAll the returned chain.
+func (dirs provenDirs) openChain() (dirChain, error) {
+	chain := dirChain{
+		names: strings.Split(dirs.rel, string(filepath.Separator)),
+		leaf:  dirs.leaf,
+	}
+	chain.roots = append(make([]*os.Root, 0, len(chain.names)), dirs.root)
+
+	// what the proof found at the leaf, left nil if it had already gone by then.
+	if len(dirs.infos) >= len(chain.names) {
+		chain.info = dirs.infos[len(chain.names)-1]
+	}
+
+	for i, name := range chain.names[:len(chain.names)-1] {
+		if i >= len(dirs.infos) {
+			// the proof stopped here because nothing below existed, so there is
+			// nothing deeper to open and nothing deeper to delete.
+			return chain, nil
+		}
+
+		dirRoot, err := openVerifiedDir(chain.deepest(), name, dirs.infos[i])
+		if err != nil {
+			if os.IsNotExist(err) {
+				return chain, nil
+			}
+
+			chain.closeAll()
+
+			return dirChain{}, err
+		}
+
+		chain.roots = append(chain.roots, dirRoot)
+	}
+
+	return chain, nil
+}
+
+// dirChain is an open handle on the directory that each component of a proven
+// path lives in: roots[i] is the handle names[i] is an entry of, so roots[0] is
+// the base the descent started from, and each handle after it was opened on the
+// name before it.
+//
+// It exists for the deletion walk. Removing the leaf and then each of its
+// parents by a shrinking path relative to the base would re-walk the whole path
+// every time, which is O(depth^2) metadata lookups on the shared filesystems
+// jobs run on; keeping the handles from the one descent makes it one lookup per
+// level. The handles also pin their directories, so every removal happens in the
+// directory the descent opened, whatever is done to the names above it.
+type dirChain struct {
+	// roots holds the base handle followed by the handles the descent opened.
+	// It is shorter than names when a component had already gone, and never
+	// covers the leaf itself: that is opened by openLeaf, which proves its
+	// identity as well.
+	roots []*os.Root
+
+	// names is the proven dir's path relative to the base, split into its
+	// components, so the last of them is the leaf's own name.
+	names []string
+
+	// leaf is the absolute path of the proven dir, for error messages, and info
+	// is what the proof lstat'ed there, or nil if nothing was there then.
+	leaf string
+	info os.FileInfo
+}
+
+// deepest is the handle on the deepest directory the descent opened.
+func (c dirChain) deepest() *os.Root {
+	return c.roots[len(c.roots)-1]
+}
+
+// complete says if the descent reached the leaf's own parent, ie. every
+// directory above the leaf was still there.
+func (c dirChain) complete() bool {
+	return len(c.roots) == len(c.names)
+}
+
+// closeAll closes the handles the descent opened. roots[0] belongs to whoever
+// opened it, so it is left alone.
+func (c dirChain) closeAll() {
+	for i := len(c.roots) - 1; i > 0; i-- {
+		c.roots[i].Close()
+	}
+}
+
+// openLeaf opens the proven dir as a root of its own, so that everything deleted
+// inside it is named relative to that handle rather than by a string resolved
+// afresh each time.
+//
+// It also proves the handle refers to the directory the proof lstat'ed, which an
+// os.Root alone does not give: a root refuses absolute symlinks and any escape
+// from itself, but follows a relative symlink that stays inside it.
+//
+// A dir that has gone since it was proven gives an os.IsNotExist error.
+func (c dirChain) openLeaf() (*os.Root, error) {
+	if c.info == nil || !c.complete() {
+		return nil, &os.PathError{Op: "open", Path: c.leaf, Err: os.ErrNotExist}
+	}
+
+	last := len(c.names) - 1
+
+	return openVerifiedDir(c.roots[last], c.names[last], c.info)
+}
+
+// removeUpward removes the proven dir and then each of its parents in turn,
+// stopping before it reaches the base (leaving that, and everything above it,
+// undeleted) and stopping early at a dir it cannot remove - which is expected
+// when another Job is running from the same base, so that is not an error.
+//
+// Each removal names a single entry of the pinned handle on the directory that
+// entry lives in, so no part of the path is left to be resolved again, and like
+// os.Remove it only succeeds on an empty directory and unlinks a symlink rather
+// than following it.
+//
+// A leaf that has already gone is not a failure: its parents are still ours to
+// tidy, which is the ordinary state on the second cleanup of a Job.
+func (c dirChain) removeUpward() error {
+	if !c.complete() {
+		return nil
+	}
+
+	last := len(c.names) - 1
+
+	err := c.roots[last].Remove(c.names[last])
 	if err != nil && !os.IsNotExist(err) {
-		// *** not sure where the "directory not empty" string comes from;
-		// probably not cross platform!
-		if strings.Contains(err.Error(), "directory not empty") {
+		if errIsDirNotEmpty(err) {
 			return nil
 		}
 
 		return err
 	}
 
-	rmEmptyParentDirs(leafDir, baseDir)
+	c.removeEmptyParents()
 
 	return nil
 }
 
-// rmEmptyParentDirs removes the empty parent directories of leafDir, stopping
-// when it reaches baseDir or hits a dir it cannot remove (which is expected
-// when another Job is running from the same Cwd, so the error is ignored).
-func rmEmptyParentDirs(leafDir, baseDir string) {
-	current := leafDir
+// removeEmptyParents removes the empty parent directories of the chain's leaf,
+// from the deepest up, stopping before the base and at the first dir that will
+// not go.
+//
+// The chain is what makes it safe to remove these without re-proving each level:
+// every one is an ancestor of a leaf already proven to be inside the base, and
+// each removal is made in the directory the descent opened, which cannot be
+// outside the base however the names resolve now.
+func (c dirChain) removeEmptyParents() {
+	parents := c.names[:len(c.names)-1]
 
-	for parent := filepath.Dir(current); parent != baseDir; parent = filepath.Dir(current) {
-		if removeManaged(parent) != nil {
-			break
+	for i := len(parents) - 1; i >= 0; i-- {
+		if c.roots[i].Remove(parents[i]) != nil {
+			return
 		}
-
-		current = parent
 	}
 }
 
-// removeAllExcept deletes the contents of a given directory (absolute path),
-// except for the given folders (relative paths).
-func removeAllExcept(path string, exceptions []string) error {
-	keepDirs := make(map[string]bool)
-	checkDirs := make(map[string]bool)
+// proveSameDir reports whether now and checked are the same inode, ie. whether
+// the directory just opened is the one an earlier lstat identified. It is
+// deliberately the ONE place that comparison is made, and both consumers of a
+// Job's working directory make it: `run` through the opens below, cleanup
+// through jobWorkSpace.actualCwdNow.
+//
+// checked must have come from an lstat of a DIRECTORY, since nothing here
+// re-checks that. A nil or non-directory checked makes os.SameFile false, so it
+// refuses everything rather than accepting anything.
+func proveSameDir(now, checked os.FileInfo, name string) error {
+	if !os.SameFile(now, checked) {
+		return fmt.Errorf("%w: %s is no longer the dir that was checked", errNotBelowBaseDir, name)
+	}
 
-	path = filepath.Clean(path)
+	return nil
+}
+
+// openVerifiedDirFile opens name, a path relative to parent, as an open FILE on
+// the directory, and confirms it is the same inode info describes - the same
+// check openVerifiedDir makes, for a caller that needs a descriptor it can name
+// to something else rather than a root to work within. info must satisfy
+// proveSameDir's requirements of it.
+//
+// The caller must Close the returned file.
+func openVerifiedDirFile(parent *os.Root, name string, info os.FileInfo) (*os.File, error) {
+	f, err := parent.Open(name)
+	if err != nil {
+		return nil, err
+	}
+
+	opened, err := f.Stat()
+	if err == nil {
+		err = proveSameDir(opened, info, f.Name())
+	}
+
+	if err != nil {
+		f.Close()
+
+		return nil, err
+	}
+
+	return f, nil
+}
+
+// openVerifiedDir opens name, a path relative to parent, as a root of its own,
+// and confirms it is the same inode info describes. info must satisfy
+// proveSameDir's requirements of it, or nothing is checked.
+func openVerifiedDir(parent *os.Root, name string, info os.FileInfo) (*os.Root, error) {
+	dirRoot, err := parent.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+
+	opened, err := dirRoot.Stat(".")
+	if err == nil {
+		err = proveSameDir(opened, info, dirRoot.Name())
+	}
+
+	if err != nil {
+		dirRoot.Close()
+
+		return nil, err
+	}
+
+	return dirRoot, nil
+}
+
+// errIsDirNotEmpty says if err is a directory removal that failed because the
+// directory still has entries in it, which is not a problem: it just means there
+// is nothing of ours left to delete there.
+//
+// Linux reports ENOTEMPTY for this; POSIX allows EEXIST instead, so both count.
+// The errnos are compared rather than the error message, which is not part of
+// any contract.
+func errIsDirNotEmpty(err error) bool {
+	return errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST)
+}
+
+// realDirBelow proves that dir is a proper descendant of baseRoot's dir, ie.
+// strictly inside it, and that dir is the directory that would be deleted,
+// rather than something a symlink points at. It returns dir as a path relative
+// to baseRoot for the deletion to use. ok is false if that could not be proven,
+// in which case nothing may be deleted.
+//
+// The check is lexical first, which costs no syscalls: dir is made absolute and
+// cleaned, and an escape via ".." or a dir equal to the base fails. Then every
+// component of dir below the base is lstat'ed to confirm it is a real directory,
+// which proves dir can only be reached by descending inside the base, whatever
+// the base itself resolves to.
+//
+// A symlinked component fails even when it stays inside the base, because the
+// deletion helpers disagree about symlinks: os.RemoveAll unlinks a final one,
+// while os.ReadDir follows it and deletes the target's contents instead. There is
+// deliberately no resolve-the-symlink fallback, because containment says yes to a
+// link leading somewhere else inside the base: only refusing to follow it stops a
+// Job's Cmd aiming cleanup at a directory of the user's.
+func realDirBelow(baseRoot *os.Root, dir string) (provenDirs, bool) {
+	if dir == "" {
+		return provenDirs{}, false
+	}
+
+	absBase := baseRoot.Name()
+
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return provenDirs{}, false
+	}
+
+	rel, err := filepath.Rel(absBase, absDir)
+	if err != nil || !relIsBelow(rel) {
+		return provenDirs{}, false
+	}
+
+	infos, ok := componentsAreRealDirs(absDir, absBase)
+	if !ok {
+		return provenDirs{}, false
+	}
+
+	return provenDirs{root: baseRoot, rel: rel, leaf: absDir, infos: infos}, true
+}
+
+// componentsAreRealDirs tells you if every path component of absDir below absBase
+// (which must be the base dir absDir is inside) is a real directory, rather than
+// a symlink or a file. A component that doesn't exist counts as fine, since
+// nothing can be deleted through it, and means there is nothing deeper to check.
+//
+// It returns what it lstat'ed at each component, so that a caller opening them
+// can prove the directories it gets are these ones.
+func componentsAreRealDirs(absDir, absBase string) ([]os.FileInfo, bool) {
+	var infos []os.FileInfo
+
+	for i := len(absBase) + 1; i <= len(absDir); i++ {
+		if i < len(absDir) && absDir[i] != filepath.Separator {
+			continue
+		}
+
+		info, err := os.Lstat(absDir[:i])
+		if err != nil {
+			// the infos gathered so far are returned, not discarded: the
+			// descent still opens those components to walk up from, so it still
+			// needs to prove each of them is the directory checked here.
+			return infos, os.IsNotExist(err)
+		}
+
+		if !info.IsDir() {
+			return nil, false
+		}
+
+		infos = append(infos, info)
+	}
+
+	return infos, true
+}
+
+// relIsJobCreatedCwd tells you if rel, a path relative to a Job's Cwd, is the
+// working directory mkHashedDir built for a Job with the given key. It is the
+// ONLY thing that licenses deleting below a Job's Cwd, or executing a `run`
+// behaviour's command somewhere other than that Cwd.
+//
+// It is built by asking calculateHashedDir - the function that laid the path
+// down - what it would produce, so recogniser and builder cannot drift apart.
+// The whole shape it accepts is <something>_cwd/k0/k1/k2/<k3..><digits>/cwd,
+// where k0-k2 are the first three characters of the key and k3.. is the rest.
+//
+// The base component is checked by SUFFIX and never by the name this process
+// would build, for the reason createdCwdBaseSuffix gives: AppName differs between
+// runner and manager, and cleanup runs in both.
+//
+// Everything else about the path is the key's, and that is what stops one Job of
+// a Cwd destroying ANOTHER's: every Job of a Cwd works below the same *_cwd base
+// at the same depth with the same leaf name, so nothing short of the key
+// distinguishes a sibling's live working directory from this Job's own.
+//
+// Only three characters of the key are cheap to grind out, but what they buy is
+// bounded by the rest: the ground path still has to exist, below a *_cwd base
+// inside the Job's own Cwd, with a leaf called cwd under the unique dir
+// os.MkdirTemp named for the REST of that same key.
+func relIsJobCreatedCwd(rel, key string) bool {
+	names := strings.Split(rel, string(filepath.Separator))
+
+	// the depth is both a check and a precondition. A path ONE LEVEL TOO DEEP
+	// whose leaf is still called cwd - which a Job's own Cmd can make inside the
+	// directory wr gave it - satisfies every other condition here, and treating
+	// it as a working directory would sweep the directory wr gave the Job as a
+	// workspace. Every index below is also fixed, so a rel of any other length
+	// would read the wrong components or run off the end of the slice.
+	if len(names) != createdCwdDepth {
+		return false
+	}
+
+	if !strings.HasSuffix(names[0], createdCwdBaseSuffix) || names[len(names)-1] != createdCwdName {
+		return false
+	}
+
+	hashed, leaf := calculateHashedDir(names[0], key)
+	if hashed != filepath.Join(names[:createdCwdDepth-2]...) {
+		return false
+	}
+
+	return isMkTempName(names[createdCwdDepth-2], leaf)
+}
+
+// isMkTempName tells you if name is what os.MkdirTemp creates for the given
+// prefix: the prefix followed by a non-empty run of digits.
+func isMkTempName(name, prefix string) bool {
+	suffix, ok := strings.CutPrefix(name, prefix)
+	if !ok || suffix == "" {
+		return false
+	}
+
+	return strings.IndexFunc(suffix, func(r rune) bool { return r < '0' || r > '9' }) < 0
+}
+
+// relIsBelow tells you if a relative path produced by filepath.Rel describes
+// somewhere strictly inside the dir it is relative to.
+func relIsBelow(rel string) bool {
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// readDirIn reads the entries of dir, a path relative to dirRoot, through the
+// root handle, so the read cannot be redirected outside it.
+func readDirIn(dirRoot *os.Root, dir string) ([]os.DirEntry, error) {
+	f, err := dirRoot.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	return f.ReadDir(-1)
+}
+
+// removeAllExcept deletes the contents of dirRoot's own directory, except for
+// the given folders (paths relative to it).
+//
+// An exception that doesn't land strictly inside the directory is skipped rather
+// than treated as an error. A MountConfig.Mount is whatever the user typed for
+// `wr add --mounts`, so it can be ".", ".." or "../evil". Skipping is safe
+// because only descendants of the directory are ever deleted here, so an
+// exception outside it was protecting nothing, whereas erroring would abandon the
+// job's workspace for no gain.
+func removeAllExcept(dirRoot *os.Root, exceptions []string) error {
+	keepDirs, checkDirs := exceptionDirs(exceptions)
+
+	return removeWithExceptions(dirRoot, ".", keepDirs, checkDirs)
+}
+
+// exceptionDirs turns removeAllExcept's exceptions into the set of dirs to keep
+// and the set of dirs that must be recursed into to reach them, both as paths
+// relative to the dir being emptied.
+//
+// What stops the upward walk running past the filesystem root is its own
+// relIsBelow(parent), which is false at once for the "." and ".."-shaped rels
+// removeAllExcept describes. The skip ahead of it keeps a path that protects
+// nothing out of the sets, rather than being what makes the walk terminate.
+func exceptionDirs(exceptions []string) (keepDirs, checkDirs map[string]bool) {
+	keepDirs = make(map[string]bool, len(exceptions))
+	checkDirs = make(map[string]bool, len(exceptions))
+
 	for _, dir := range exceptions {
-		abs := filepath.Join(path, dir)
-		keepDirs[abs] = true
+		rel := filepath.Join(".", dir)
+		if !relIsBelow(rel) {
+			continue
+		}
 
-		parent := filepath.Dir(abs)
-		for parent != path {
+		keepDirs[rel] = true
+
+		for parent := filepath.Dir(rel); relIsBelow(parent); parent = filepath.Dir(parent) {
 			checkDirs[parent] = true
-			parent = filepath.Dir(parent)
 		}
 	}
 
-	return removeWithExceptions(path, keepDirs, checkDirs)
+	return keepDirs, checkDirs
 }
 
-// removeWithExceptions is the recursive part of removeAllExcept's
-// implementation that does the real work of deleting stuff.
-func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[string]bool) error {
-	entries, errr := os.ReadDir(path)
-	if errr != nil {
-		return errr
+// removeWithExceptions deletes the contents of dir, a path relative to dirRoot,
+// keeping the dirs named in keepDirs and recursing into those in checkDirs.
+func removeWithExceptions(dirRoot *os.Root, dir string, keepDirs, checkDirs map[string]bool) error {
+	entries, err := readDirIn(dirRoot, dir)
+	if err != nil {
+		return err
 	}
 
 	for _, entry := range entries {
-		if err := removeEntryWithExceptions(filepath.Join(path, entry.Name()), entry.IsDir(),
-			keepDirs, checkDirs); err != nil {
+		err = removeEntryWithExceptions(dirRoot, filepath.Join(dir, entry.Name()), entry.IsDir(), keepDirs, checkDirs)
+		if err != nil {
 			return err
 		}
 	}
@@ -903,16 +1386,16 @@ func removeWithExceptions(path string, keepDirs map[string]bool, checkDirs map[s
 // removeEntryWithExceptions handles a single entry for removeWithExceptions:
 // files are removed, kept dirs are left, dirs containing exceptions are
 // recursed into, and other dirs are removed entirely.
-func removeEntryWithExceptions(abs string, isDir bool, keepDirs, checkDirs map[string]bool) error {
+func removeEntryWithExceptions(dirRoot *os.Root, rel string, isDir bool, keepDirs, checkDirs map[string]bool) error {
 	switch {
 	case !isDir:
-		return removeManaged(abs)
-	case keepDirs[abs]:
+		return dirRoot.Remove(rel)
+	case keepDirs[rel]:
 		return nil
-	case checkDirs[abs]:
-		return removeWithExceptions(abs, keepDirs, checkDirs)
+	case checkDirs[rel]:
+		return removeWithExceptions(dirRoot, rel, keepDirs, checkDirs)
 	default:
-		return removeAllManaged(abs)
+		return dirRoot.RemoveAll(rel)
 	}
 }
 

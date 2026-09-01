@@ -229,6 +229,44 @@ func TestRESTJobModificationEndpoint(t *testing.T) {
 			So(len(oldStatuses), ShouldEqual, 0)
 		})
 
+		Convey("PATCH never leaves a cleanup behaviour on a cwd_matters job", func() {
+			key := addJob(&Job{
+				Cmd:          "echo rest cleanup",
+				Cwd:          testCwd,
+				ReqGroup:     "rest-cleanup",
+				Requirements: &jqs.Requirements{RAM: 10, Time: time.Minute, Cores: 1, Disk: 0, Other: make(map[string]string)},
+				RepGroup:     "rest-a1-cleanup",
+				Behaviours: Behaviours{
+					{When: OnExit, Do: Cleanup},
+					{When: OnFailure, Do: Run, Arg: "echo failed"},
+				},
+			})
+
+			stored := getJobStatuses(key, false)
+			So(len(stored), ShouldEqual, 1)
+			So(stored[0].Behaviours, ShouldEqual,
+				`{"on_failure":[{"run":"echo failed"}],"on_exit":[{"cleanup":true}]}`)
+
+			status, _, decoded := patchJob(restJobsEndpoint+key, `{"cwd_matters":true}`, bearer)
+			So(status, ShouldEqual, http.StatusOK)
+			So(len(decoded.Jobs), ShouldEqual, 1)
+			So(decoded.Jobs[0].CwdMatters, ShouldBeTrue)
+
+			// the job now runs in the user's own cwd, where a cleanup could
+			// only delete a dir wr never made, so it must not be advertised
+			So(decoded.Jobs[0].Behaviours, ShouldEqual, `{"on_failure":[{"run":"echo failed"}]}`)
+
+			newKey := decoded.Jobs[0].Key
+			stored = getJobStatuses(newKey, false)
+			So(len(stored), ShouldEqual, 1)
+			So(stored[0].Behaviours, ShouldEqual, `{"on_failure":[{"run":"echo failed"}]}`)
+
+			status, _, decoded = patchJob(restJobsEndpoint+newKey, `{"on_exit":[{"cleanup":true}]}`, bearer)
+			So(status, ShouldEqual, http.StatusOK)
+			So(len(decoded.Jobs), ShouldEqual, 1)
+			So(decoded.Jobs[0].Behaviours, ShouldEqual, `{"on_failure":[{"run":"echo failed"}]}`)
+		})
+
 		Convey("PATCH accepts the token query parameter without bearer auth", func() {
 			key := addJob(&Job{
 				Cmd:          "echo rest token auth",
@@ -744,6 +782,49 @@ func TestRESTJobModificationValidation(t *testing.T) {
 			So(getJobStatus(keyB, false).Cmd, ShouldEqual, "echo rest duplicate b")
 		})
 	})
+}
+
+func TestJobViaJSONBehaviours(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	cleanupViaJSON := BehavioursViaJSON{BehaviourViaJSON{Cleanup: true}}
+
+	Convey("Converting a JobViaJSON with wr add's default on_exit cleanup behaviour", t, func() {
+		jd := &JobDefaults{Cwd: "/some/cwd", OnExit: cleanupViaJSON.Behaviours(OnExit)}
+
+		Convey("a normal job gets the cleanup, for disk space tracking and workspace reuse", func() {
+			job, err := (&JobViaJSON{Cmd: "echo normal"}).Convert(jd)
+			So(err, ShouldBeNil)
+			So(job.CwdMatters, ShouldBeFalse)
+			So(hasCleanupBehaviour(job.Behaviours), ShouldBeTrue)
+			So(job.Behaviours.String(), ShouldEqual, `{"on_exit":[{"cleanup":true}]}`)
+		})
+
+		Convey("a cwd_matters job keeps it here too, since Convert does not filter", func() {
+			// dropping a cleanup a cwd_matters job could never carry out is
+			// Job.dropImpossibleCleanups's job alone, and the server applies it
+			// to every job that enters its store; TestREST covers a POSTed
+			// cwd_matters job not advertising one.
+			job, err := (&JobViaJSON{Cmd: "echo per job", CwdMatters: true}).Convert(jd)
+			So(err, ShouldBeNil)
+			So(job.CwdMatters, ShouldBeTrue)
+			So(hasCleanupBehaviour(job.Behaviours), ShouldBeTrue)
+		})
+	})
+}
+
+// hasCleanupBehaviour tells you if any of bs would delete a job's working
+// directory.
+func hasCleanupBehaviour(bs Behaviours) bool {
+	for _, b := range bs {
+		if b.Do == Cleanup || b.Do == CleanupAll {
+			return true
+		}
+	}
+
+	return false
 }
 
 func TestRESTWaitingDepGroups(t *testing.T) {
@@ -1685,6 +1766,41 @@ func TestREST(t *testing.T) {
 			So(job, ShouldNotBeNil)
 			So(job.Retries, ShouldEqual, 0)
 			So(job.NoRetriesOverWalltime, ShouldEqual, 5*time.Minute)
+		})
+
+		Convey("A POSTed cwd_matters job doesn't advertise cleanup behaviours it can never do", func() {
+			cmd := "echo cwd matters"
+			inputJobs := []*JobViaJSON{{Cmd: cmd}}
+			jsonValue, err := json.Marshal(inputJobs)
+			So(err, ShouldBeNil)
+
+			postURL := jobsEndPoint + "/?rep_grp=cwdMattersRepGrp&cwd=/tmp/foo&cwd_matters=true&on_exit=" +
+				url.QueryEscape(`[{"run":"echo after"},{"cleanup":true}]`) + "&on_failure=" +
+				url.QueryEscape(`[{"cleanup_all":true}]`)
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, postURL, bytes.NewBuffer(jsonValue))
+			So(err, ShouldBeNil)
+			req.Header.Add("Authorization", bearer)
+			req.Header.Add("Content-Type", "application/json")
+			response, err := client.Do(req)
+			So(err, ShouldBeNil)
+
+			defer response.Body.Close()
+
+			responseData, err := io.ReadAll(response.Body)
+			So(err, ShouldBeNil)
+
+			var jstati []JStatus
+
+			err = json.Unmarshal(responseData, &jstati)
+			So(err, ShouldBeNil)
+			So(len(jstati), ShouldEqual, 1)
+			So(jstati[0].CwdMatters, ShouldBeTrue)
+			So(jstati[0].Behaviours, ShouldEqual, `{"on_exit":[{"run":"echo after"}]}`)
+
+			job, err := jq.GetByEssence(&JobEssence{Cmd: cmd, Cwd: "/tmp/foo"}, false, false)
+			So(err, ShouldBeNil)
+			So(job, ShouldNotBeNil)
+			So(job.Behaviours.String(), ShouldEqual, `{"on_exit":[{"run":"echo after"}]}`)
 		})
 
 		Convey("Trying to POST a job with a non-existent cloud_script fails", func() {
