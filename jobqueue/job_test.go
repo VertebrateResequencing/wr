@@ -1232,5 +1232,14 @@ func TestMountConfigsKeyDoesNotMutate(t *testing.T) {
 		jobs[0].MountConfigs[0].Mount = "changed"
 
 		So(jobs[1].MountConfigs[0].Mount, ShouldEqual, "zeta")
+
+		Convey("including their Targets, which a shallow clone would still share", func() {
+			// slices.Clone copies each MountConfig's Targets slice HEADER, so a
+			// per-config clone alone leaves every job of the batch pointing at
+			// one Targets backing array: the copy has to go one level deeper.
+			jobs[0].MountConfigs[0].Targets[0].Path = testMountPath + "/changed"
+
+			So(jobs[1].MountConfigs[0].Targets[0].Path, ShouldEqual, testMountPath+"/z")
+		})
 	})
 }

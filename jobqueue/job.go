@@ -2137,8 +2137,9 @@ func (j *JobModifier) applyContainer(job *Job) {
 		// a COPY per job, because one JobModifier is applied to every job of a
 		// `wr mod --mounts` batch: assigning the modifier's own slice would give
 		// all of them one backing array, guarded by as many different mutexes as
-		// there were jobs.
-		job.MountConfigs = slices.Clone(j.MountConfigs)
+		// there were jobs. The clone has to be DEEP for that to hold, since a
+		// per-config copy alone still shares every Targets backing array.
+		job.MountConfigs = cloneMountConfigs(j.MountConfigs)
 	}
 
 	if j.BsubModeSet {
