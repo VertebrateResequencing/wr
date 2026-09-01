@@ -356,6 +356,54 @@ func TestJobUnmountEmptyDirTidyUp(t *testing.T) {
 	})
 }
 
+func TestJobUnmountTidyUpCostsNothingWithoutMounts(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// Client.Execute unmounts at the end of EVERY run, and the tidy-up walks up
+	// from the Job's mount points, so a Job with no mounts has nothing to tidy.
+	// Resolving its workspace to discover that costs the hash Key() makes of the
+	// Job and an lstat per component of the path below Cwd, on the exit path of
+	// the overwhelming majority of Jobs. The result is the same either way, so
+	// only the resolutions made show it.
+	Convey("Given a count of the workspace resolutions Unmount makes", t, func() {
+		resolutions := 0
+
+		workSpaceResolveHook = func() { resolutions++ }
+
+		Reset(func() { workSpaceResolveHook = nil })
+
+		cwd := t.TempDir()
+
+		Convey("Unmount resolves no workspace at all for a Job with no mounts", func() {
+			job := &Job{Cwd: cwd, Cmd: testWSCmd}
+			realWorkSpace(job)
+
+			_, err := job.Unmount()
+			So(err, ShouldBeNil)
+			So(resolutions, ShouldEqual, 0)
+		})
+
+		Convey("Unmount still resolves it, and tidies up, for a Job with a mount", func() {
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{Mount: testWSMount}}}
+			actualCwd, _, _ := realWorkSpace(job)
+			mount := filepath.Join(actualCwd, testWSMount)
+			So(os.MkdirAll(mount, os.ModePerm), ShouldBeNil)
+
+			_, err := job.Unmount()
+			So(err, ShouldBeNil)
+
+			// the count first, since this test is about the work done: the tidy-up
+			// below then shows the resolution it paid for was used.
+			So(resolutions, ShouldEqual, 1)
+
+			soPathsGone(mount)
+			soPathsExist(cwd)
+		})
+	})
+}
+
 func TestCleanupWithRelativeCwd(t *testing.T) {
 	if runnermode || servermode {
 		return

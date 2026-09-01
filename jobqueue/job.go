@@ -1097,6 +1097,14 @@ func (j *Job) unmountAll(doNotUpload bool) (string, *multierror.Error) {
 // error returned here fails the job itself, and a tidy-up that found nothing of
 // ours to tidy is not a failed unmount.
 func (j *Job) rmEmptyMountDirs() error {
+	// answered before the resolution, not after, because Unmount is on the exit
+	// path of every Job that runs and most have no mounts at all: the resolution
+	// costs the hash Key() makes of the Job and an lstat per component of the
+	// path below Cwd, only to find no mount point to walk up from.
+	if !j.hasMounts() {
+		return nil
+	}
+
 	ws, err := j.workSpaceSnapshot().resolveWorkSpace()
 	if err != nil || ws == nil {
 		return nil
@@ -1104,6 +1112,21 @@ func (j *Job) rmEmptyMountDirs() error {
 	defer ws.Close()
 
 	return ws.rmEmptyMountDirs()
+}
+
+// hasMounts reports whether the Job has any MountConfigs, read under its read
+// lock as workSpaceSnapshot reads them: the field is only ever replaced
+// wholesale, so the slice header is all this has to see, and the lock is
+// released before anything walks the filesystem.
+//
+// A Job with none has no mount points either, whatever its directories are:
+// keptDirs.mountPoints is filled from workSpacePaths.mountPoints, which resolves
+// exactly one point per MountConfig.
+func (j *Job) hasMounts() bool {
+	j.RLock()
+	defer j.RUnlock()
+
+	return len(j.MountConfigs) > 0
 }
 
 // ToEssense converts a Job to its matching JobEssense, taking less space and

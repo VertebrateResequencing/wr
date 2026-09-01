@@ -58,6 +58,13 @@ const procSelfFD = "/proc/self/fd/"
 // the fallback below is otherwise unreachable. Nothing in wr assigns to it.
 var procFDPrefix = procSelfFD //nolint:gochecknoglobals // the only seam onto the no-/proc path
 
+// workSpaceResolveHook, when set, is called at the start of every workspace
+// resolution, so that a test can count the resolutions a code path makes. The
+// resolution costs a hash of the Job's key and an lstat per path component
+// below its Cwd, and paths on which most Jobs need none of that cannot show
+// that in their result, only in the work they did. It is nil in production.
+var workSpaceResolveHook func() //nolint:gochecknoglobals // the only seam onto work that has no result
+
 // muxfysCachePrefix is what muxfys names the cache directories it chooses for
 // itself, inside whichever CacheBase it was given (see its remote.go). They hold
 // a writable mount's output until Unmount uploads it, and cleanup runs before
@@ -242,6 +249,10 @@ type jobWorkSpace struct {
 //
 // The caller must Close a non-nil result.
 func (s jobWorkSpaceSnapshot) resolveWorkSpace() (*jobWorkSpace, error) {
+	if workSpaceResolveHook != nil {
+		workSpaceResolveHook()
+	}
+
 	paths, err := s.paths()
 	if err != nil || paths == nil {
 		return nil, err
