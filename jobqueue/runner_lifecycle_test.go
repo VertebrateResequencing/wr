@@ -429,8 +429,14 @@ func TestJobqueueRunnerKillRequests(t *testing.T) {
 	registerExpectedRunnerWaitLog := silenceExpectedRunCmdWaitLogs(t)
 
 	Convey("Kill requests bury running runner jobs", t, func() {
+		// A TTR expiry buries the job with FailReasonLost, which would preempt the
+		// kill this test is about, so use a TTR that outlasts the test's own
+		// runnerStartWait-bounded polls and so cannot expire during the run.
 		withRunnerServer(
-			t, ctx, registerExpectedRunnerWaitLog, defaultRunnerServerOptions(),
+			t, ctx, registerExpectedRunnerWaitLog, runnerServerOptions{
+				itemTTR:     10 * runnerStartWait,
+				checkRunner: 10 * time.Second,
+			},
 			func(fixture runnerServerFixture) {
 				jq, err := Connect(
 					fixture.addr,
