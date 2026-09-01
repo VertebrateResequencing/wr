@@ -3907,23 +3907,16 @@ func (s *Server) confirmOrReleaseLostJob(ctx context.Context, d lostJobDetails) 
 	case !d.killCalled && !recovered:
 		s.confirmJobDeadAndKill(ctx, d)
 	case d.killCalled:
-		s.releaseKilledLostRun(ctx, d)
-	}
-}
+		defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
 
-// releaseKilledLostRun releases a lost run the user had already called kill on,
-// so that the kill takes effect on a job wr has lost contact with. It triggers no
-// behaviours: the user asked for the job to stop, not for its work to be swept.
-// The wait below is long enough for a different run to be under this key, so the
-// release is gated on the pinned one.
-func (s *Server) releaseKilledLostRun(ctx context.Context, d lostJobDetails) {
-	defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
+		// wait for the item to go back to run queue
+		<-time.After(ttrReleaseWait)
 
-	// wait for the item to go back to run queue
-	<-time.After(ttrReleaseWait)
-
-	if _, _, err := s.killRunningJob(ctx, d.key, &d.pin.run); err != nil {
-		clog.Warn(ctx, "failed to release job after TTR", "err", err)
+		// no behaviours: the user asked for the job to stop, not for its work to be
+		// swept. The wait is long enough for a different run to be under this key.
+		if _, _, err := s.killRunningJob(ctx, d.key, &d.pin.run); err != nil {
+			clog.Warn(ctx, "failed to release job after TTR", "err", err)
+		}
 	}
 }
 
