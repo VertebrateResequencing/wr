@@ -423,6 +423,152 @@ func TestCleanupKeepsMountCaches(t *testing.T) {
 	})
 }
 
+// jobKeptDirs is the keep set the real resolution classifies for job: everything
+// cleanup must leave alone inside the workspace wr made for it. It is asked of
+// the production resolution, so a test can pin the classification itself rather
+// than only what a sweep happened to leave behind.
+func jobKeptDirs(job *Job) keptDirs {
+	ws, err := job.workSpaceSnapshot().resolveWorkSpace()
+	So(err, ShouldBeNil)
+	So(ws, ShouldNotBeNil)
+
+	defer ws.Close()
+
+	return ws.keep
+}
+
+func TestCleanupKeepsSymlinkSpelledMounts(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// MountConfig.Mount is an absolute path of the user's, while the workspace it
+	// is compared against is spelled the way the Job's own Cwd is, so one
+	// directory can reach the classification under two names. Cleanup runs while
+	// the mount is still live (Job.Unmount comes after it in client.go), so a
+	// spelling the keep set does not recognise is a live mount read through and
+	// deleted, taking the user's remote objects with it.
+	Convey("Given a Job whose mount point is inside its workspace, spelled through a symlink", t, func() {
+		cwd := t.TempDir()
+		cleanup := &Behaviour{When: OnExit, Do: Cleanup}
+
+		// the Mount string is settled before the Job's key, and so before the
+		// name of the workspace: only the symlink's TARGET names the workspace.
+		link := filepath.Join(cwd, "mount_link")
+
+		Convey("a mount inside the working directory is classified as kept, and kept", func() {
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{Mount: link}}}
+			actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+			mount := filepath.Join(actualCwd, testWSMount)
+			remote := writeFileIn(mount, "remote.txt")
+			output := writeFileIn(actualCwd, "out.txt")
+
+			So(os.Symlink(mount, link), ShouldBeNil)
+
+			keep := jobKeptDirs(job)
+			So(keep.inActualCwd, ShouldResemble, []string{testWSMount})
+			So(keep.workSpaceEntries[createdCwdName], ShouldBeTrue)
+
+			err := cleanup.Trigger(OnExit, job)
+
+			soPathsExist(remote, mount, actualCwd, workSpace, cwd)
+			soPathsGone(output, tmpDir)
+
+			So(err, ShouldBeNil)
+		})
+
+		Convey("a mount beside the working directory is classified as kept, and kept", func() {
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{Mount: link}}}
+			actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+			mount := filepath.Join(workSpace, "shared")
+			remote := writeFileIn(mount, "remote.txt")
+			So(os.Symlink(mount, link), ShouldBeNil)
+
+			keep := jobKeptDirs(job)
+			So(keep.workSpaceEntries["shared"], ShouldBeTrue)
+
+			err := cleanup.Trigger(OnExit, job)
+
+			soPathsExist(remote, mount, workSpace, cwd)
+			soPathsGone(actualCwd, tmpDir)
+
+			So(err, ShouldBeNil)
+		})
+
+		Convey("a cache base that resolves to the workspace is recognised, so muxfys' own dir survives", func() {
+			// a writable mount's cache is not uploaded until Job.Unmount, which
+			// comes after cleanup, and muxfys names the dir it makes inside the
+			// CacheBase it was given - so the spelling of the CacheBase decides
+			// whether the job's own un-uploaded output survives its cleanup.
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{
+				Mount:     testWSMount,
+				CacheBase: link,
+				Targets:   []MountTarget{{Path: testWSTargetPath, Cache: true, Write: true}},
+			}}}
+			actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+			So(os.Symlink(workSpace, link), ShouldBeNil)
+
+			cached := writeFileIn(filepath.Join(workSpace, muxfysCachePrefix+"_cache456"), "unuploaded.txt")
+			output := writeFileIn(actualCwd, "out.txt")
+
+			So(jobKeptDirs(job).muxfysNamesWorkSpaceEntry, ShouldBeTrue)
+
+			err := cleanup.Trigger(OnExit, job)
+
+			soPathsExist(cached, workSpace, cwd)
+			soPathsGone(output, tmpDir)
+
+			So(err, ShouldBeNil)
+		})
+	})
+
+	// the same two spellings the other way round. Job.Cwd is stored exactly as
+	// the user typed it, because it feeds Job.Key(), so the symlinked spelling is
+	// the one wr is GIVEN rather than one it chose - and then it is the workspace
+	// side of the comparison that has to be resolved for the mount to be
+	// recognised at all.
+	Convey("Given a Job whose Cwd is a symlinked spelling and whose mount names the real path", t, func() {
+		base := t.TempDir()
+		realCwd := filepath.Join(base, "real")
+		So(os.MkdirAll(realCwd, os.ModePerm), ShouldBeNil)
+
+		cwd := filepath.Join(base, "cwd_link")
+		So(os.Symlink(realCwd, cwd), ShouldBeNil)
+
+		link := filepath.Join(base, "mount_link")
+		cleanup := &Behaviour{When: OnExit, Do: Cleanup}
+
+		Convey("the mount inside its working directory is classified as kept, and kept", func() {
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{Mount: link}}}
+			actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+			realActualCwd, err := filepath.EvalSymlinks(actualCwd)
+			So(err, ShouldBeNil)
+			So(realActualCwd, ShouldNotEqual, actualCwd)
+
+			mount := filepath.Join(realActualCwd, testWSMount)
+			remote := writeFileIn(mount, "remote.txt")
+			output := writeFileIn(actualCwd, "out.txt")
+
+			So(os.Symlink(mount, link), ShouldBeNil)
+
+			keep := jobKeptDirs(job)
+			So(keep.inActualCwd, ShouldResemble, []string{testWSMount})
+			So(keep.workSpaceEntries[createdCwdName], ShouldBeTrue)
+
+			err = cleanup.Trigger(OnExit, job)
+
+			soPathsExist(remote, mount, actualCwd, workSpace, cwd)
+			soPathsGone(output, tmpDir)
+
+			So(err, ShouldBeNil)
+		})
+	})
+}
+
 func TestCleanupIsIdempotent(t *testing.T) {
 	if runnermode || servermode {
 		return

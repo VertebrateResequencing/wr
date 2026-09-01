@@ -587,6 +587,13 @@ func (p *workSpacePaths) keptDirs() keptDirs {
 	keep := keptDirs{workSpaceEntries: make(map[string]bool, len(p.mounts))}
 
 	for _, mount := range p.mountPoints() {
+		// mountPoints keeps the LEXICAL answer, and is the one classification
+		// here that must: it licenses an upward walk of empty dirs rather than
+		// protecting anything, and rmEmptyDirsIn requires a path that is inside
+		// the open Cwd with no symlink among its components. A mount recognised
+		// only once its symlinks are resolved is not such a path, so a spelling
+		// the walk cannot use leaves an emptied dir behind rather than deleting
+		// through one.
 		if _, ok := relBelowDir(p.workSpace, mount); ok {
 			keep.mountPoints = append(keep.mountPoints, mount)
 		}
@@ -644,7 +651,7 @@ func (k *keptDirs) protectCaches(p *workSpacePaths, mc MountConfig) {
 
 	k.protect(p, base)
 
-	if rel, ok := relBelowDir(p.workSpace, base); ok && rel == "." {
+	if rel, ok := relBelowDirResolved(p.workSpace, base); ok && rel == "." {
 		k.muxfysNamesWorkSpaceEntry = true
 	}
 
@@ -678,7 +685,7 @@ func (k *keptDirs) protect(p *workSpacePaths, dir string) {
 // "." there is no way to delete the job's own output without deleting a cache
 // that has yet to be uploaded, so wr deletes neither.
 func (k *keptDirs) protectInActualCwd(actualCwd, dir string) {
-	rel, ok := relBelowDir(actualCwd, dir)
+	rel, ok := relBelowDirResolved(actualCwd, dir)
 	if !ok {
 		return
 	}
@@ -911,24 +918,37 @@ func relBelowDir(dir, path string) (string, bool) {
 	return rel, rel == "." || relIsBelow(rel)
 }
 
-// dirIsAtOrAbove reports whether dir is other, or a directory above it, asking
-// the FILESYSTEM rather than the two strings when the strings disagree: a mount
-// at <symlink-to-Cwd>/<AppName>_cwd is the same directory ".." names two levels
-// down, and a lexical comparison recognises only one of those two spellings.
+// relBelowDirResolved is relBelowDir, asking the FILESYSTEM rather than the two
+// strings when the strings disagree: a mount at <symlink-to-Cwd>/<AppName>_cwd is
+// the same directory ".." names two levels down, and a lexical comparison
+// recognises only one of those two spellings.
 //
-// It is the one containment question in this file that can afford a resolved
-// answer, because it licenses nothing but "delete nothing at all": everything
-// else needs a usable path back from one dir to the other, and a resolved path is
-// named in a different tree from the handles the deletions are made through.
+// It is what the keep set classifies a mount point or cache location with, so
+// that every consumer of that set agrees about which directories are the Job's
+// live mounts, whichever spelling its MountConfig gave them.
 //
-// The lexical comparison is made first, so the filesystem is only asked about
-// mounts that are not already recognised.
-func dirIsAtOrAbove(dir, other string) bool {
-	if _, ok := relBelowDir(dir, other); ok {
-		return true
+// The rel it returns is safe to name to a handle on the UNRESOLVED dir even when
+// it came from the resolved comparison: resolving a path does not change WHICH
+// DIRECTORY it names, so the components of the rel are entries of dir itself, and
+// EvalSymlinks leaves none of them a symlink. An absolute resolved path is not
+// safe that way - it is named in a different tree from the handles the deletions
+// are made through - which is why nothing here keeps one.
+//
+// The lexical comparison is made first, so the filesystem is only asked about a
+// mount or cache that was not already recognised, and never for a Job that
+// configured none.
+func relBelowDirResolved(dir, path string) (string, bool) {
+	if rel, ok := relBelowDir(dir, path); ok {
+		return rel, true
 	}
 
-	_, ok := relBelowDir(resolvedDir(dir), resolvedDir(other))
+	return relBelowDir(resolvedDir(dir), resolvedDir(path))
+}
+
+// dirIsAtOrAbove reports whether dir is other, or a directory above it, in either
+// spelling; see relBelowDirResolved.
+func dirIsAtOrAbove(dir, other string) bool {
+	_, ok := relBelowDirResolved(dir, other)
 
 	return ok
 }
@@ -949,8 +969,13 @@ func resolvedDir(dir string) string {
 // itself, if it is a direct child). ok is false if path is not strictly inside
 // dir - dir itself, which relBelowDir reports as ".", included - or if either
 // path could not be made absolute.
+//
+// The containment is the resolved one, because this is what protects a mount
+// point from the workspace sweep and the sweep works entry by entry: an entry
+// leading to a live mount has the same NAME whichever way the mount point was
+// spelled, since both spellings name the one directory.
 func entryLeadingTo(dir, path string) (string, bool) {
-	rel, ok := relBelowDir(dir, path)
+	rel, ok := relBelowDirResolved(dir, path)
 	if !ok || rel == "." {
 		return "", false
 	}
