@@ -35,6 +35,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 // BenchmarkJobCleanup measures the per-job cost of the default on_exit cleanup
@@ -67,12 +69,20 @@ func BenchmarkJobCleanup(b *testing.B) {
 // benchCleanupJob creates the hashed working dir that wr would have made for a
 // job, fills it with output files, and returns the Job that cleanup will be
 // triggered on.
-func benchCleanupJob(b *testing.B, cwd string, i int) *Job {
-	b.Helper()
+func benchCleanupJob(tb testing.TB, cwd string, i int) *Job {
+	tb.Helper()
 
-	actualCwd, tmpDir, err := mkHashedDir(cwd, fmt.Sprintf("bench.cleanup.%d", i))
+	// the Job is built FIRST because mkHashedDir must hash the Job's own
+	// Key(): cleanup rebuilds the path it will accept from that key (see
+	// relIsJobCreatedCwd) and refuses every other, so a fixture that hashes
+	// anything else measures the refusal instead of the cleanup. Key() is built
+	// from Cmd, Cwd (when CwdMatters), the mounts and the container image, so
+	// every field feeding it has to be set before the key is taken.
+	job := &Job{Cwd: cwd, Cmd: fmt.Sprintf("echo bench.cleanup.%d", i)}
+
+	actualCwd, tmpDir, err := mkHashedDir(cwd, job.Key())
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 
 	files := []string{
@@ -84,9 +94,41 @@ func benchCleanupJob(b *testing.B, cwd string, i int) *Job {
 
 	for _, file := range files {
 		if err = os.WriteFile(file, []byte("x\n"), 0o600); err != nil {
-			b.Fatal(err)
+			tb.Fatal(err)
 		}
 	}
 
-	return &Job{Cwd: cwd, ActualCwd: actualCwd}
+	job.ActualCwd = actualCwd
+
+	return job
+}
+
+// TestBenchCleanupJobIsCleanable pins that BenchmarkJobCleanup's own fixture
+// yields a Job whose cleanup actually SUCCEEDS, so the benchmark measures the
+// cleanup path it exists to measure rather than an early refusal.
+//
+// mkHashedDir lays the workspace down from a string, and relIsJobCreatedCwd
+// (via createdCwdRel) rebuilds the expected path from the Job's OWN Key(). If
+// the fixture hashes anything other than that key, cleanup refuses the path
+// with errNotACreatedCwd having deleted nothing, and the benchmark's own
+// b.Fatal then turns that into a bare `--- FAIL: BenchmarkJobCleanup` with no
+// measurement at all. A benchmark cannot be its own guard, though: `make test`
+// never runs one, so that b.Fatal fires only for whoever runs `make bench`.
+func TestBenchCleanupJobIsCleanable(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("BenchmarkJobCleanup's fixture yields a job that cleanup can clean", t, func() {
+		cwd := t.TempDir()
+		job := benchCleanupJob(t, cwd, 0)
+
+		err := (&Behaviour{When: OnExit, Do: Cleanup}).Trigger(OnExit, job)
+		So(err, ShouldBeNil)
+
+		Convey("and the working directory it made is gone afterwards", func() {
+			_, err = os.Stat(job.ActualCwd)
+			So(os.IsNotExist(err), ShouldBeTrue)
+		})
+	})
 }
