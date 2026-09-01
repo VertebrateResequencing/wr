@@ -5,6 +5,60 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [0.37.2] - 2026-09-01
+### Added
+- New `wr manager compact` command, which rewrites wr's database into a
+  compacted copy to reclaim the free space it accumulates over its lifetime. The
+  manager must be stopped, and it refuses to run if one is up.
+- `wr conf` now documents the ssh check the manager makes when an LSF job loses
+  contact, including how to safely restrict `privatekeypath`'s key to just that
+  check with a forced command.
+
+### Changed
+- The manager now answers clients as soon as it starts, recovering its prior
+  state in the background instead of before serving, so a restart with millions
+  of completed commands is no longer stuck for minutes. Commands for a job that
+  hasn't been recovered yet get a retryable error, and runners keep retrying.
+- Manager startup and `wr add` no longer scan your completed job history, which
+  could stall both for minutes.
+- The manager now logs when it confirms a lost job is really dead, and when it
+  fails to load your private key for that check.
+
+### Fixed
+- The default `cleanup_all` on_exit behaviour could recursively delete the
+  parent of your working directory for `--cwd_matters` commands, losing your own
+  files (a regression in v0.37.0). Cleanup and `run` behaviours now go through
+  one place that proves the directory is one wr itself created for that command
+  before anything is deleted or run there, and `--cwd_matters` commands no
+  longer store cleanup behaviours they could never carry out (so they no longer
+  appear in their status). Jobs already stored by v0.37.x are sanitised on read.
+- Cleanup no longer deletes through a live mount into your remote storage when
+  the mount point or cache is reached via a symlink.
+- Commands are no longer falsely reported as having lost contact with the
+  manager when it is busy at LSF scale.
+- At LSF scale, wr no longer launches more runners than your limit groups allow
+  when sibling groups share a group's budget, nor over-counts them.
+- Complete commands no longer rerun when another command is added to a
+  dependency group they depended on.
+- A running command no longer loses its scheduler group when the manager
+  recovers from a crash.
+- The manager no longer crashes on submissions containing nil jobs, dependencies
+  or behaviours, on jobs with no scheduler requirements, or on invalid nested
+  job modifiers; the go client `Scheduler` now rejects or defaults these itself.
+- `wr mod --on_exit` (and `--on_success`, `--on_failure`) kept only the last
+  behaviour you gave per trigger and silently dropped the rest; the CLI and REST
+  API also disagreed on what an empty array meant. Both now follow the same
+  rule.
+- `wr` could falsely report that it had no free ports, because the port checker
+  held a quarter of the ephemeral range open to find a few free ones.
+- Client waits that could each overrun their own timeout are now bounded:
+  reconnecting to a stopping manager, `Ping`, and unsubscribing after a rejected
+  replacement. A subscription arriving during shutdown could also be stranded
+  for the rest of the manager's life.
+- `wr status -o details` no longer reports the wrong working directory for a
+  `--cwd_matters` command.
+
+
 ## [0.37.1] - 2026-07-09
 ### Fixed
 - v0.37.0 needed to update existing databases, but this could timeout. Now
