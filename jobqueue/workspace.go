@@ -28,15 +28,17 @@ package jobqueue
 // This file contains jobWorkSpace: the single point at which a Job's Cwd and
 // ActualCwd become an account of what wr created and may therefore delete.
 //
-// The rule it enforces is: resolve and prove ONCE, then pass the proven value.
-// Nothing that can delete below a Job's Cwd, and nothing that runs a command
-// there on the strength of a reported ActualCwd, reads j.Cwd or j.ActualCwd
-// again.
+// Both consumers - the cleanup that deletes below a Job's Cwd, and the `run`
+// behaviour that executes a command there - resolve and check those two fields
+// here, once, then work through the handles they get back. Neither reads j.Cwd
+// or j.ActualCwd again. Each syscall made through a handle is checked against
+// the inode lstat'ed on the way down, so a symlink put in place afterwards
+// cannot redirect a deletion or a command.
 //
-// Agreement between those two consumers is not enough on its own: the shape of
-// the path wr builds is a shape every OTHER JOB of the same Cwd has too, so what
-// identifies THIS Job's workspace is the path mkHashedDir builds from its own
-// key - which is what relIsJobCreatedCwd requires.
+// It is not enough that the two agree on a directory: every OTHER JOB of the
+// same Cwd has a workspace path of the same shape, so what identifies THIS
+// Job's is the path mkHashedDir builds from its own key - which is what
+// relIsJobCreatedCwd requires.
 
 import (
 	"context"
@@ -204,31 +206,31 @@ func createdCwdRel(cwd, actualCwd, key string) (string, error) {
 	return rel, nil
 }
 
-// jobWorkSpace is the proven account of the disposable directory wr created for
+// jobWorkSpace is the checked account of the disposable directory wr created for
 // a Job, and the only thing in wr that may license a deletion below the Job's
 // Cwd. Behaviour.cleanup and Job.Unmount's empty-dir tidy-up both work from one,
 // so they cannot disagree about which directories are wr's to delete.
 //
 // The caller must Close it.
 type jobWorkSpace struct {
-	// paths is the lexical resolution every field below was proven against.
+	// paths is the lexical resolution the fields below were checked against.
 	paths *workSpacePaths
 
 	// cwdRoot is an open handle on the Job's Cwd, and every deletion is made
 	// through it rather than through a re-resolved path string: a relative
-	// operation on a root cannot leave that root, so a component swapped for a
-	// symlink after the proof cannot redirect a deletion out of Cwd. It is the
-	// same handle proven holds as its root, not a second one on the same
-	// directory.
+	// operation on an os.Root cannot leave that root, so a component replaced by
+	// a symlink after the check cannot redirect a deletion out of Cwd. It is the
+	// handle the proven field holds, not a second one on the same directory.
 	cwdRoot *os.Root
 
-	// proven is the workspace, proven to be a real directory strictly inside
-	// cwdRoot with no symlink among the components leading to it.
+	// proven is the workspace: a real directory strictly inside cwdRoot, with no
+	// symlink among the components leading to it.
 	proven provenDirs
 
-	// actualCwdInfo is what the proof lstat'ed at the working directory, or nil
-	// where its absence was tolerated. Anything that opens the working directory
-	// afterwards proves against this that it opened the same one.
+	// actualCwdInfo is the lstat taken of the working directory during the
+	// descent, or nil where its absence was tolerated. Anything that opens the
+	// working directory afterwards compares against this to confirm it got the
+	// same inode.
 	actualCwdInfo os.FileInfo
 
 	// keep is everything the Job's live mounts and caches need to survive,
@@ -237,9 +239,10 @@ type jobWorkSpace struct {
 }
 
 // resolveWorkSpace is the ONE place a Job's Cwd and ActualCwd are turned into a
-// licence to delete. It resolves them, proves what it can about them, and
-// resolves and classifies every mount point and cache location in the same
-// breath, so that no caller has to - or is able to - work any of it out again.
+// licence to delete. It resolves them, checks they name a directory wr built for
+// this Job, holds the Cwd open, and resolves and classifies every mount point
+// and cache location in the same breath, so that no caller has to - or is able
+// to - work any of it out again.
 //
 // A nil result with a nil error means wr created nothing here that it may
 // delete: see paths() for the cases, plus a Job Cwd that has itself already
@@ -319,8 +322,8 @@ func (s jobWorkSpaceSnapshot) cwdRunDir() (*runDir, error) {
 			errNotACreatedCwd, s.key)
 	}
 
-	// nothing is held open: this is the Job's own Cwd, which no proof was made
-	// about in the first place.
+	// nothing is held open: this is the user's own Cwd, which wr did not create
+	// and so never checked.
 	dir, err := absJobDir("cwd", s.cwd)
 	if err != nil {
 		return nil, err
@@ -337,15 +340,14 @@ func (s jobWorkSpaceSnapshot) cwdRunDir() (*runDir, error) {
 // also fires in the MANAGER, for a job declared lost whose Cmd may still be
 // alive on a node sharing the filesystem.
 //
-// So the handle is opened at the moment of proof and the command is started
-// relative to it: on Linux /proc/self/fd/N, which the child resolves after
-// fork() while it still has our file descriptors, naming the proven directory by
-// identity so that no swap of any name above it can redirect the chdir. Where
-// that is not available the name is used and the window is still open; see
-// execDir.
+// So the handle is opened while the directory is being checked, and the command
+// is started relative to it: on Linux /proc/self/fd/N, which the child resolves
+// after fork() while it still has our descriptor table, so it names the
+// directory by descriptor rather than by a path a racer can move. Where that is
+// not available the name is used and the window is still open; see execDir.
 type runDir struct {
-	// held is the open directory, or nil when there is none: the Job's own Cwd,
-	// which no proof was made about in the first place.
+	// held is the open directory, or nil when there is none: a CwdMatters Job's
+	// own Cwd, which wr did not create and so never checked.
 	held *os.File
 
 	// path is the directory's name, used when there is no handle and as the
@@ -353,11 +355,11 @@ type runDir struct {
 	path string
 }
 
-// openRunDir hands back the proven working directory, held open.
+// openRunDir hands back the Job's working directory, held open.
 //
 // It is opened through the handle on the Job's Cwd, so the lookup cannot leave
-// it, and the directory it gets is proven to be the one the resolution lstat'ed:
-// an os.Root follows a relative symlink that stays inside its root, so opening by
+// it, and the inode it gets is compared with the one the resolution lstat'ed: an
+// os.Root follows a relative symlink that stays inside its root, so opening by
 // name alone could still be redirected within Cwd.
 func (ws *jobWorkSpace) openRunDir() (*runDir, error) {
 	held, err := openVerifiedDirFile(ws.cwdRoot, ws.paths.rel, ws.actualCwdInfo)
@@ -383,7 +385,8 @@ func (ws *jobWorkSpace) openRunDir() (*runDir, error) {
 // for peak RAM tracking); it warns every time, because the exposure is per
 // command.
 //
-// Nothing held is the Job's own Cwd, which no proof was made about.
+// A runDir holding nothing is a CwdMatters Job's own Cwd, which wr did not
+// create and so never checked.
 func (r *runDir) execDir() string {
 	if r.held == nil {
 		return r.path
@@ -402,10 +405,13 @@ func (r *runDir) execDir() string {
 	return r.path
 }
 
-// fdName is the held directory named as our own file descriptor, and whether
-// that name really is the directory we are holding. The question is asked of the
-// handle rather than of the platform, so a system that does not answer for its
-// own descriptors says no here.
+// fdName builds /proc/self/fd/N for the directory handle being held, and reports
+// whether that path really does resolve to the directory the handle refers to.
+//
+// The caller gives the path to a child process as cmd.Dir, so the child resolves
+// it again after fork(). Where /proc is not mounted, or does not name a process's
+// own descriptors, the path is not that directory, so the answer is no and the
+// caller falls back to the plain path.
 func (r *runDir) fdName() (string, bool) {
 	fdPath := procFDPrefix + strconv.Itoa(int(r.held.Fd()))
 
@@ -717,19 +723,17 @@ func (ws *jobWorkSpace) cleanup() error {
 	return chain.removeUpward()
 }
 
-// empty opens the proven workspace as a root of its own, proves it is the dir
-// that was proven rather than one a symlink has since substituted, and deletes
-// its contents through it, as aggressively as the Job's live mounts and caches
-// allow.
+// empty opens the workspace as a directory handle of its own, confirms that
+// handle is the same inode the descent lstat'ed - so a symlink put in its place
+// since then cannot redirect the deletion - and deletes the workspace's contents
+// through it, keeping the Job's live mount points and caches.
 //
 // A workspace that has already gone is not a failure: cleanup runs more than
 // once for a lost job and Job.Unmount deletes the emptied workspace in between,
 // so erroring here would skip the empty parent dirs cleanup goes on to tidy.
 //
-// A Job with no mounts gets no fast path around the keep set, tempting as one
-// looks: this is the only route to it, so the muxfysCachePrefix rule would not
-// run for such a Job. Its keep set is empty anyway, so it is swept just as
-// unconditionally.
+// A Job with no mounts gets no fast path around the keep set: that set is
+// already empty for such a Job, so the sweep below deletes everything anyway.
 func (ws *jobWorkSpace) empty(chain dirChain) error {
 	wsRoot, err := chain.openLeaf()
 	if err != nil {
@@ -755,24 +759,24 @@ func (ws *jobWorkSpace) empty(chain dirChain) error {
 	return ws.removeWorkSpaceEntries(wsRoot)
 }
 
-// actualCwdNow takes a fresh look at the working directory, as a single named
-// entry of the already proven workspace handle, so that the directory the
-// deletion opens is proven to be the one it looked at. It is not a second
-// decision about whether the workspace may be swept - proveActualCwd made that
-// one - but the same rule applied at the moment of use, because a proof is about
-// a path string and every syscall re-resolves it. A directory that has gone
-// since the proof is nothing to delete; one that has become a symlink or a file
-// was swapped by the Job's own Cmd, and reading it would delete the target's
-// contents instead.
+// actualCwdNow lstats the working directory again, as a single named entry of the
+// workspace handle, and returns the info the deletion is to be made against.
 //
-// Kind is not identity: a DIRECTORY renamed onto the name after the proof is
-// still a real dir. So identity comes from ws.actualCwdInfo, through the same
-// proveSameDir that `run`'s openVerifiedDirFile uses, and the info handed on is
-// that PROVEN one rather than this fresh look.
+// This is not a second decision about whether the workspace may be swept -
+// proveActualCwd made that one - but the same check at the moment of use, since
+// every syscall re-resolves the name. Gone since then means there is nothing to
+// delete; turned into a symlink or a file means the Job's own Cmd replaced it,
+// and reading it would delete the target's contents instead.
+//
+// Being a real dir is not enough, because another directory can be renamed onto
+// the name. So identity comes from comparing inodes with ws.actualCwdInfo,
+// through the same proveSameDir that `run`'s openVerifiedDirFile uses, and it is
+// that earlier info that is handed on rather than this fresh lstat.
 //
 // A nil ws.actualCwdInfo is the absence proveActualCwd tolerated, so there is no
-// identity to compare; what licenses the deletion then is the path itself, which
-// createdCwdRel has proven is the one mkHashedDir built for THIS Job.
+// inode to compare; what licenses the deletion then is the path, which
+// createdCwdRel has already matched against the one mkHashedDir built for THIS
+// Job.
 func (ws *jobWorkSpace) actualCwdNow(wsRoot *os.Root) (os.FileInfo, error) {
 	info, err := wsRoot.Lstat(ws.paths.actualCwdName)
 	if err != nil {

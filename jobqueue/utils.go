@@ -1091,15 +1091,15 @@ func (c dirChain) removeEmptyParents() {
 	}
 }
 
-// proveSameDir proves that now describes the same directory as checked, the
-// lstat a proof took of it before its name was last resolved. It is deliberately
-// the ONE statement of what "still the directory the proof identified" means, and
-// both consumers of a proven working directory ask it: `run` through the opens
-// below, cleanup through jobWorkSpace.actualCwdNow.
+// proveSameDir reports whether now and checked are the same inode, ie. whether
+// the directory just opened is the one an earlier lstat identified. It is
+// deliberately the ONE place that comparison is made, and both consumers of a
+// Job's working directory make it: `run` through the opens below, cleanup
+// through jobWorkSpace.actualCwdNow.
 //
-// checked must have been taken with an lstat of a DIRECTORY, or this proves
-// nothing: a nil or non-directory checked refuses everything rather than
-// accepting anything.
+// checked must have come from an lstat of a DIRECTORY, since nothing here
+// re-checks that. A nil or non-directory checked makes os.SameFile false, so it
+// refuses everything rather than accepting anything.
 func proveSameDir(now, checked os.FileInfo, name string) error {
 	if !os.SameFile(now, checked) {
 		return fmt.Errorf("%w: %s is no longer the dir that was checked", errNotBelowBaseDir, name)
@@ -1109,10 +1109,10 @@ func proveSameDir(now, checked os.FileInfo, name string) error {
 }
 
 // openVerifiedDirFile opens name, a path relative to parent, as an open FILE on
-// the directory, and proves that the directory it opened is the one info
-// describes - the same proof openVerifiedDir makes, for a caller that needs a
-// descriptor it can name to something else rather than a root to work within.
-// info must satisfy proveSameDir's requirements of it.
+// the directory, and confirms it is the same inode info describes - the same
+// check openVerifiedDir makes, for a caller that needs a descriptor it can name
+// to something else rather than a root to work within. info must satisfy
+// proveSameDir's requirements of it.
 //
 // The caller must Close the returned file.
 func openVerifiedDirFile(parent *os.Root, name string, info os.FileInfo) (*os.File, error) {
@@ -1136,8 +1136,8 @@ func openVerifiedDirFile(parent *os.Root, name string, info os.FileInfo) (*os.Fi
 }
 
 // openVerifiedDir opens name, a path relative to parent, as a root of its own,
-// and proves that the directory it opened is the one info describes. info must
-// satisfy proveSameDir's requirements of it, or it proves nothing.
+// and confirms it is the same inode info describes. info must satisfy
+// proveSameDir's requirements of it, or nothing is checked.
 func openVerifiedDir(parent *os.Root, name string, info os.FileInfo) (*os.Root, error) {
 	dirRoot, err := parent.OpenRoot(name)
 	if err != nil {
