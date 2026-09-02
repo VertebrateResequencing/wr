@@ -436,9 +436,9 @@ func probeSymlink(target, link string) {
 
 func probeMountRows() []probeMountRow {
 	const (
-		output  = createdCwdName + "/own_output.txt"
-		scratch = createdTmpName + "/scratch.txt"
-		mount   = testWSMount
+		output   = createdCwdName + "/own_output.txt"
+		scratch  = createdTmpName + "/scratch.txt"
+		mountDir = testWSMount
 	)
 
 	return []probeMountRow{
@@ -462,18 +462,18 @@ func probeMountRows() []probeMountRow {
 		{
 			name: "a muxfys CacheBase inside the job's TMPDIR",
 			mc: MountConfig{
-				Mount: mount, CacheBase: "../" + createdTmpName, Targets: probeCachedTargets(),
+				Mount: mountDir, CacheBase: "../" + createdTmpName, Targets: probeCachedTargets(),
 			},
-			live: []string{createdCwdName + "/" + mount, createdTmpName + "/" + probeMuxfysDir},
+			live: []string{createdCwdName + "/" + mountDir, createdTmpName + "/" + probeMuxfysDir},
 			kept: []string{".", createdCwdName, createdTmpName, scratch},
 			gone: []string{output},
 		},
 		{
 			name: "an explicit CacheDir inside the job's TMPDIR",
-			mc: MountConfig{Mount: mount, Targets: []MountTarget{{
+			mc: MountConfig{Mount: mountDir, Targets: []MountTarget{{
 				Path: testWSTargetPath, CacheDir: createdTmpName + "/c", Write: true,
 			}}},
-			live: []string{createdCwdName + "/" + mount, createdTmpName + "/c"},
+			live: []string{createdCwdName + "/" + mountDir, createdTmpName + "/c"},
 			kept: []string{".", createdCwdName, createdTmpName, scratch},
 			gone: []string{output},
 		},
@@ -508,13 +508,13 @@ func probeMountRows() []probeMountRow {
 		// physically in - the one a sweep would recurse into.
 		{
 			name: "a muxfys CacheBase spelled through a symlink inside the working dir",
-			mc:   MountConfig{Mount: mount, CacheBase: probeCacheLink, Targets: probeCachedTargets()},
+			mc:   MountConfig{Mount: mountDir, CacheBase: probeCacheLink, Targets: probeCachedTargets()},
 			setUp: func(actualCwd, _ string) {
 				So(os.MkdirAll(filepath.Join(actualCwd, probeRealCache), os.ModePerm), ShouldBeNil)
 				probeSymlink(probeRealCache, filepath.Join(actualCwd, probeCacheLink))
 			},
 			live: []string{
-				createdCwdName + "/" + probeRealCache + "/" + probeMuxfysDir, createdCwdName + "/" + mount,
+				createdCwdName + "/" + probeRealCache + "/" + probeMuxfysDir, createdCwdName + "/" + mountDir,
 			},
 			kept: []string{".", createdCwdName, createdCwdName + "/" + probeRealCache},
 			// the symlink itself is not a dir, so the sweep unlinks it: what had
@@ -523,14 +523,14 @@ func probeMountRows() []probeMountRow {
 		},
 		{
 			name: "an explicit CacheDir spelled through a symlink inside the workspace",
-			mc: MountConfig{Mount: mount, Targets: []MountTarget{{
+			mc: MountConfig{Mount: mountDir, Targets: []MountTarget{{
 				Path: testWSTargetPath, CacheDir: probeCacheLink, Write: true,
 			}}},
 			setUp: func(_, workSpace string) {
 				So(os.MkdirAll(filepath.Join(workSpace, probeRealCache), os.ModePerm), ShouldBeNil)
 				probeSymlink(probeRealCache, filepath.Join(workSpace, probeCacheLink))
 			},
-			live: []string{probeRealCache + "/" + testWSTargetPath, createdCwdName + "/" + mount},
+			live: []string{probeRealCache + "/" + testWSTargetPath, createdCwdName + "/" + mountDir},
 			kept: []string{".", createdCwdName, probeRealCache, probeCacheLink},
 			gone: []string{output, createdTmpName, scratch},
 		},
