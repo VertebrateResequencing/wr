@@ -45,6 +45,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -697,7 +698,7 @@ func (k *keptDirs) protectCaches(p *workSpacePaths, mc MountConfig) {
 
 	k.protect(p, base)
 
-	if rel, ok := relBelowDirResolved(p.workSpace, base); ok && rel == "." {
+	if slices.Contains(relsBelowDirResolved(p.workSpace, base), ".") {
 		k.muxfysNamesWorkSpaceEntry = true
 	}
 
@@ -718,7 +719,7 @@ func (k *keptDirs) protectCaches(p *workSpacePaths, mc MountConfig) {
 func (k *keptDirs) protect(p *workSpacePaths, dir string) {
 	k.protectInActualCwd(p.actualCwd, dir)
 
-	if name, ok := entryLeadingTo(p.workSpace, dir); ok {
+	for _, name := range entriesLeadingTo(p.workSpace, dir) {
 		k.workSpaceEntries[name] = true
 	}
 }
@@ -731,18 +732,15 @@ func (k *keptDirs) protect(p *workSpacePaths, dir string) {
 // "." there is no way to delete the job's own output without deleting a cache
 // that has yet to be uploaded, so wr deletes neither.
 func (k *keptDirs) protectInActualCwd(actualCwd, dir string) {
-	rel, ok := relBelowDirResolved(actualCwd, dir)
-	if !ok {
-		return
+	for _, rel := range relsBelowDirResolved(actualCwd, dir) {
+		if rel == "." {
+			k.wholeActualCwd = true
+
+			continue
+		}
+
+		k.inActualCwd = append(k.inActualCwd, rel)
 	}
-
-	if rel == "." {
-		k.wholeActualCwd = true
-
-		return
-	}
-
-	k.inActualCwd = append(k.inActualCwd, rel)
 }
 
 // cleanup wipes out the Job's working directory and the workspace holding it, as
@@ -995,39 +993,51 @@ func relBelowDir(dir, path string) (string, bool) {
 	return rel, rel == "." || relIsBelow(rel)
 }
 
-// relBelowDirResolved is relBelowDir, asking the FILESYSTEM rather than the two
-// strings when the strings disagree: a mount at <symlink-to-Cwd>/<AppName>_cwd is
-// the same directory ".." names two levels down, and a lexical comparison
-// recognises only one of those two spellings.
+// relsBelowDirResolved is relBelowDir asking BOTH the two strings and the
+// FILESYSTEM: a mount at <symlink-to-Cwd>/<AppName>_cwd is the same directory
+// ".." names two levels down, and a lexical comparison recognises only one of
+// those two spellings.
+//
+// Every spelling that puts path at or inside dir is returned, not the first one
+// that does, because a symlink INSIDE dir makes the two agree LEXICALLY while
+// naming different entries of dir: a mount at <dir>/link/x, where link is a
+// symlink to <dir>/real, is lexically inside dir under a name that is the
+// symlink's rather than that of the directory the mount is physically in. A keep
+// set given only the lexical answer would protect the link and delete the mount.
 //
 // It is what the keep set classifies a mount point or cache location with, so
 // that every consumer of that set agrees about which directories are the Job's
-// live mounts, whichever spelling its MountConfig gave them.
+// live mounts, whichever spelling its MountConfig gave them. Each answer only
+// ever adds to what is kept, so a spelling that names something wr did not make
+// costs a workspace left behind rather than a deletion.
 //
-// The rel it returns is safe to name to a handle on the UNRESOLVED dir even when
-// it came from the resolved comparison: resolving a path does not change WHICH
-// DIRECTORY it names, so the components of the rel are entries of dir itself, and
-// EvalSymlinks leaves none of them a symlink. An absolute resolved path is not
-// safe that way - it is named in a different tree from the handles the deletions
-// are made through - which is why nothing here keeps one.
+// Each rel is safe to name to a handle on the UNRESOLVED dir, the resolved one
+// included: resolving a path does not change WHICH DIRECTORY it names, so the
+// components of the rel are entries of dir itself, and EvalSymlinks leaves none
+// of them a symlink. An absolute resolved path is not safe that way - it is
+// named in a different tree from the handles the deletions are made through -
+// which is why nothing here keeps one.
 //
-// The lexical comparison is made first, so the filesystem is only asked about a
-// mount or cache that was not already recognised, and never for a Job that
-// configured none.
-func relBelowDirResolved(dir, path string) (string, bool) {
+// The filesystem is asked about a mount point or cache location and nothing
+// else, so a Job that configured none pays no EvalSymlinks at all.
+func relsBelowDirResolved(dir, path string) []string {
+	var rels []string
+
 	if rel, ok := relBelowDir(dir, path); ok {
-		return rel, true
+		rels = append(rels, rel)
 	}
 
-	return relBelowDir(resolvedDir(dir), resolvedDir(path))
+	if rel, ok := relBelowDir(resolvedDir(dir), resolvedDir(path)); ok && !slices.Contains(rels, rel) {
+		rels = append(rels, rel)
+	}
+
+	return rels
 }
 
-// dirIsAtOrAbove reports whether dir is other, or a directory above it, in either
-// spelling; see relBelowDirResolved.
+// dirIsAtOrAbove reports whether dir is other, or a directory above it, in any
+// spelling; see relsBelowDirResolved.
 func dirIsAtOrAbove(dir, other string) bool {
-	_, ok := relBelowDirResolved(dir, other)
-
-	return ok
+	return len(relsBelowDirResolved(dir, other)) > 0
 }
 
 // resolvedDir is dir with the symlinks in it resolved, falling back to dir
@@ -1042,22 +1052,27 @@ func resolvedDir(dir string) string {
 	return resolved
 }
 
-// entryLeadingTo returns the name of the entry of dir that path is inside (path
-// itself, if it is a direct child). ok is false if path is not strictly inside
-// dir - dir itself, which relBelowDir reports as ".", included - or if either
-// path could not be made absolute.
+// entriesLeadingTo returns the name of the entry of dir that path is inside
+// (path itself, if it is a direct child), in each spelling that puts path
+// strictly inside dir. Nothing is returned for a path that is dir itself, which
+// relBelowDir reports as ".", or is not inside it at all.
 //
-// The containment is the resolved one, because this is what protects a mount
-// point from the workspace sweep and the sweep works entry by entry: an entry
-// leading to a live mount has the same NAME whichever way the mount point was
-// spelled, since both spellings name the one directory.
-func entryLeadingTo(dir, path string) (string, bool) {
-	rel, ok := relBelowDirResolved(dir, path)
-	if !ok || rel == "." {
-		return "", false
+// There is a name per spelling because this is what protects a mount point from
+// the workspace sweep and the sweep works entry by entry: a symlink inside dir
+// leading to another entry of dir gives the one mount point two names, and only
+// the resolved one names the directory the mount is physically in - the one a
+// RemoveAll would recurse into, through the live mount.
+func entriesLeadingTo(dir, path string) []string {
+	var names []string
+
+	for _, rel := range relsBelowDirResolved(dir, path) {
+		if rel == "." {
+			continue
+		}
+
+		name, _, _ := strings.Cut(rel, string(filepath.Separator))
+		names = append(names, name)
 	}
 
-	name, _, _ := strings.Cut(rel, string(filepath.Separator))
-
-	return name, true
+	return names
 }
