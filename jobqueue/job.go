@@ -503,6 +503,10 @@ type Job struct {
 	// killCalled is set for running jobs if Kill() is called on them.
 	killCalled bool
 
+	// runID identifies the RUN this Job is currently on, and is minted by the
+	// manager at every reservation. It is server side only: see runToken.
+	runID runToken
+
 	// incrementedLimitGroups notes that we have incremented limit groups for
 	// this job, so they should be decremented when the job finishes running.
 	incrementedLimitGroups []string
@@ -1448,6 +1452,34 @@ func (j *Job) statusStreams() (jobStatusStreams, error) {
 	streams.envOverrides, err = j.envCurrentOverrides()
 
 	return streams, err
+}
+
+// runToken identifies ONE run of a Job. The manager mints it at every
+// reservation (resetJobForReservation) and never lets it out: it is only ever
+// compared for equality with a token this manager minted. Counting from 1 keeps
+// the zero token for a run recovered from the database, which it never reserved.
+//
+// The manager mints it rather than reading a field the runner reports, because
+// nothing reported tells two runs of a job apart: Key() and every path below Cwd
+// are the same for every run by construction, ActualCwd is blank until a run's
+// first Touch (and always, for a cwd_matters run or a manager with no web port),
+// and Attempts is a count that resetJobStatusFields puts back to 0.
+//
+// A run BEGINS AT RESERVE, so that is where the token is minted: making the
+// working directory, mounting remote filesystems and starting the Cmd all happen
+// after the reservation and before the runner's Started reaches the manager, so
+// minting at Started left that window carrying the previous run's token, and a
+// confirmation of an earlier loss killed a Cmd that was already executing.
+type runToken uint64
+
+// isLostRunLocked says whether this Job is still lost, and still the RUN the
+// given token was minted for. The caller must hold at least the Job's read lock.
+//
+// Both halves are needed: a job that recovered on a touch is not lost, and a job
+// that was released and reserved again is neither lost nor that run, so a decision
+// pinned to the earlier run is refused from the moment the retry exists.
+func (j *Job) isLostRunLocked(run runToken) bool {
+	return j.Lost && j.runID == run
 }
 
 // setActualCwd records cwd as the unique working directory that wr created below

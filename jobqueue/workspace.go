@@ -69,8 +69,8 @@ var workSpaceResolveHook func() //nolint:gochecknoglobals // the only seam onto 
 
 // muxfysCachePrefix is what muxfys names the cache directories it chooses for
 // itself, inside whichever CacheBase it was given (see its remote.go). They hold
-// a writable mount's output until Unmount uploads it, and cleanup runs before
-// Unmount, so deleting one destroys the job's own results.
+// a writable mount's output until Unmount uploads it, so cleanup keeps them
+// unconditionally rather than judging whether Unmount has already run.
 const muxfysCachePrefix = ".muxfys"
 
 // jobWorkSpaceSnapshot is the copy of a Job's fields that the workspace
@@ -86,6 +86,19 @@ type jobWorkSpaceSnapshot struct {
 	mounts     MountConfigs
 }
 
+// cleanupWorkSpace resolves the snapshot's workspace and clears it out, doing
+// nothing at all when wr created nothing there it may delete. It is the whole of
+// a Job's workspace cleanup, for the cleanup Behaviour and for the runner.
+func (s jobWorkSpaceSnapshot) cleanupWorkSpace() error {
+	ws, err := s.resolveWorkSpace()
+	if err != nil || ws == nil {
+		return err
+	}
+	defer ws.Close()
+
+	return ws.cleanup()
+}
+
 // workSpaceSnapshot copies, under the Job's read lock, everything the workspace
 // resolution reads from it; nothing downstream looks at the Job again. Copying
 // the MountConfigs slice header is enough, since it is only ever replaced
@@ -94,6 +107,12 @@ func (j *Job) workSpaceSnapshot() jobWorkSpaceSnapshot {
 	j.RLock()
 	defer j.RUnlock()
 
+	return j.workSpaceSnapshotLocked()
+}
+
+// workSpaceSnapshotLocked is workSpaceSnapshot for a caller that already holds
+// at least the Job's read lock; see pinBehavioursLocked.
+func (j *Job) workSpaceSnapshotLocked() jobWorkSpaceSnapshot {
 	return jobWorkSpaceSnapshot{
 		cwdMatters: j.CwdMatters,
 		cwd:        j.Cwd,
@@ -243,6 +262,9 @@ type jobWorkSpace struct {
 // this Job, holds the Cwd open, and resolves and classifies every mount point
 // and cache location in the same breath, so that no caller has to - or is able
 // to - work any of it out again.
+//
+// Asked of a SNAPSHOT, not the live Job: applyLiveSnapshot rewrites ActualCwd
+// under the Job's lock while cleanup walks. See pinnedBehaviours.
 //
 // A nil result with a nil error means wr created nothing here that it may
 // delete: see paths() for the cases, plus a Job Cwd that has itself already
@@ -530,12 +552,12 @@ func (ws *jobWorkSpace) Close() {
 }
 
 // keptDirs is everything cleanup must leave alone inside a Job's workspace: its
-// mount points, which are still live when cleanup runs (Job.Unmount comes after
-// it in client.go) so that deleting through one would recurse into the user's
-// remote file system; and the cache directories muxfys writes a writable mount's
-// output to, which are not uploaded until that Unmount. Each is classified ONCE,
-// against the proven workspace and working directory, in the one place that
-// knows both.
+// mount points, where deleting through a still-live one would recurse into the
+// user's remote file system; and the cache directories muxfys writes a writable
+// mount's output to, which are not uploaded until Unmount. Both come from the
+// snapshot's MountConfigs rather than from what is mounted now, and are kept
+// unconditionally, so a caller may clean up on either side of Job.Unmount. Each is
+// classified ONCE, against the proven workspace and working directory.
 type keptDirs struct {
 	// wholeActualCwd is set when something that must survive IS the working
 	// directory, so that none of its contents may be touched.

@@ -69,6 +69,18 @@ var (
 	runProvenHook   func()
 )
 
+// lostJobDeadCheckedHook and lostJobKilledHook, when set, are called in the two
+// moments a lost job's behaviours have to survive; both are nil in production.
+// lostJobDeadCheckedHook is called after the dead-check and before the kill, the
+// window in which the job can recover or be reserved again as a different run;
+// lostJobKilledHook with what the kill decided, before the behaviours run.
+//
+//nolint:gochecknoglobals // test hooks into two moments that cannot be reached otherwise
+var (
+	lostJobDeadCheckedHook func()
+	lostJobKilledHook      func(released bool)
+)
+
 // BehaviourTrigger is supplied to a Behaviour to define under what circumstance
 // that Behaviour will trigger.
 type BehaviourTrigger uint8
@@ -164,9 +176,7 @@ func (b *Behaviour) Trigger(status BehaviourTrigger, j *Job) error {
 	return b.trigger(status, j.workSpaceSnapshot())
 }
 
-// trigger is Trigger against a snapshot of the Job's state taken once, rather
-// than against the Job itself; see Behaviours.trigger for why the snapshot is
-// shared by a whole set.
+// trigger is Trigger against a pinned copy of the Job's state; see pinnedBehaviours.
 func (b *Behaviour) trigger(status BehaviourTrigger, ws jobWorkSpaceSnapshot) error {
 	if b.When&status == 0 {
 		return nil
@@ -281,13 +291,7 @@ func (b *Behaviour) String() string {
 // kept, is decided entirely by resolveWorkSpace. A nil workspace means wr created
 // nothing here that it may delete.
 func (b *Behaviour) cleanup(snap jobWorkSpaceSnapshot, _ bool) error {
-	ws, err := snap.resolveWorkSpace()
-	if err != nil || ws == nil {
-		return err
-	}
-	defer ws.Close()
-
-	return ws.cleanup()
+	return snap.cleanupWorkSpace()
 }
 
 // run runs the given command in the directory the Job's Cmd ran in.
@@ -367,8 +371,11 @@ func (bs Behaviours) Trigger(success bool, j *Job) error {
 		return nil
 	}
 
-	ws := j.workSpaceSnapshot()
+	return bs.trigger(success, j.workSpaceSnapshot())
+}
 
+// trigger is Trigger against a pinned copy of the Job's state; see pinnedBehaviours.
+func (bs Behaviours) trigger(success bool, ws jobWorkSpaceSnapshot) error {
 	var status BehaviourTrigger
 	if success {
 		status = OnSuccess
@@ -394,6 +401,44 @@ func (bs Behaviours) Trigger(success bool, j *Job) error {
 	}
 
 	return merr.ErrorOrNil()
+}
+
+// pinnedBehaviours is a Job's Behaviours together with the state they act on -
+// the key and ActualCwd naming the working directory they delete and run the
+// user's command in - copied at ONE moment under the Job's lock.
+//
+// The manager pins when it declares a job lost, not when it triggers, because the
+// kill releases that Job back to ready first: a runner can then reserve the RETRY,
+// whose first Touch writes its working directory onto the same Job. Triggering off
+// the Job then deletes the retry's live directory, and as the retry is the same Job
+// under the same key, no check on the path tells the two apart. Behaviours.Trigger
+// pins at the call, for the callers that hold the Job alone.
+type pinnedBehaviours struct {
+	behaviours Behaviours
+	workSpace  jobWorkSpaceSnapshot
+
+	// run says which run was pinned, so isLostRunLocked can check the queue is
+	// still on that run before anything acts on the pin. See runToken.
+	run runToken
+}
+
+// pinBehaviours pins this Job's Behaviours and the state they act on, as they are now.
+func (j *Job) pinBehaviours() pinnedBehaviours {
+	j.RLock()
+	defer j.RUnlock()
+
+	return j.pinBehavioursLocked()
+}
+
+// pinBehavioursLocked is pinBehaviours for a caller that already holds at least
+// the Job's read lock, so the pin can be taken with the decision it belongs to.
+func (j *Job) pinBehavioursLocked() pinnedBehaviours {
+	return pinnedBehaviours{behaviours: j.Behaviours, workSpace: j.workSpaceSnapshotLocked(), run: j.runID}
+}
+
+// trigger runs the pinned Behaviours against the pinned state.
+func (p pinnedBehaviours) trigger(success bool) error {
+	return p.behaviours.trigger(success, p.workSpace)
 }
 
 // RemovalRequested tells you if one of the behaviours is Remove.

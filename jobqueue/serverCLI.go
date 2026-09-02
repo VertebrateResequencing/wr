@@ -804,7 +804,7 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 	// clean up any past state to have a fresh job ready to run
 	sjob := item.Data().(*Job) //nolint:errcheck,forcetypeassert // queue only ever stores *Job
 
-	sgroup, retries, ub := resetJobForReservation(sjob, cr.ClientID)
+	sgroup, retries, ub := s.resetJobForReservation(sjob, cr.ClientID)
 
 	delay := s.setItemDelay(ctx, item.Key, retries, ub)
 
@@ -836,7 +836,12 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 // resetJobForReservation clears a job's past run state ready for a fresh run by
 // the reserving client, returning its scheduler group, retries and
 // until-buried count (read under the same lock).
-func resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, uint8, uint8) {
+//
+// A RUN of a job begins here, so this is where the manager mints the run's
+// identity (see runToken) and clears the fields that described the run before. The
+// runner makes its working directory, mounts filesystems and starts the Cmd on
+// the strength of the reservation alone, before its Started reaches us.
+func (s *Server) resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, uint8, uint8) {
 	sjob.Lock()
 	defer sjob.Unlock()
 
@@ -851,6 +856,21 @@ func resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, uint8, uint8
 	sjob.PeakDisk = 0
 	sjob.Exitcode = -1
 	sjob.killCalled = false
+
+	// the identity of the run beginning now, which nothing pinned to an earlier
+	// run of this job answers to.
+	sjob.runID = s.mintRunToken()
+
+	// this run has not been lost. Lost gates every lost-run decision, and
+	// ttrCallback refuses to re-mark an already-lost job, so a Lost carried into a
+	// fresh reservation would park the job for ever.
+	sjob.Lost = false
+
+	// nor has it made a working directory or landed on a machine yet. ActualCwd is
+	// what cleanup deletes and what a `run` behaviour executes in, and HostID is
+	// what killJobsOnBadServers matches condemned cloud servers against.
+	sjob.ActualCwd = ""
+	sjob.HostID = ""
 
 	return sjob.schedulerGroup, sjob.Retries, sjob.UntilBuried
 }
@@ -880,6 +900,10 @@ func (s *Server) handleStart(ctx context.Context, cr *clientRequest) (*serverRes
 
 // applyJobStart records the host/pid/start-time of a started job under lock,
 // returning false (changing nothing) if the request lacked a pid or host.
+//
+// It is where the manager first learns the working directory the runner made for
+// this run, created before the runner calls Started. It does not mint the run's
+// identity: the run began at Reserve.
 func (s *Server) applyJobStart(job, crJob *Job) bool {
 	job.Lock()
 	defer job.Unlock()
@@ -898,6 +922,11 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 	job.StartTime = time.Now()
 	job.EndTime = time.Time{}
 	job.Attempts++
+	job.setActualCwd(crJob.ActualCwd)
+
+	// a reservation whose reserve-to-Started stretch outlasts the TTR is declared
+	// lost while its Cmd starts, under this run's own token, so taking the job off
+	// lost here is all that stands between that confirmation and a live Cmd.
 	job.Lost = false
 	job.State = JobStateRunning
 
