@@ -52,6 +52,10 @@ const (
 	testWSCmd        = "run"
 )
 
+// keyGrindMax bounds jobWithKeyPrefix's search, which is expected to take about
+// 16^len(prefix) tries.
+const keyGrindMax = 1 << 20
+
 // realWorkSpace gives job the working directory mkHashedDir really creates for it
 // below job.Cwd, and returns that dir, the workspace holding it, and the tmp dir
 // wr makes beside it. The path wr builds is what proves a workspace is wr's own,
@@ -525,6 +529,104 @@ func TestCleanupKeepsSymlinkSpelledMounts(t *testing.T) {
 		})
 	})
 
+	// the symlink can also be INSIDE the workspace, and then both spellings name
+	// something inside it: the classification agrees lexically and never asks the
+	// filesystem, so the name it records is the symlink's rather than that of the
+	// directory the mount is physically in - and the sweep deletes that directory,
+	// through the live mount, while leaving the link it kept dangling.
+	Convey("Given a Job whose mount point is spelled through a symlink inside its workspace", t, func() {
+		cwd := t.TempDir()
+		cleanup := &Behaviour{When: OnExit, Do: Cleanup}
+
+		Convey("the dir a mount beside the working directory is really in is kept", func() {
+			// a relative Mount is resolved against the working directory, so this
+			// names <workSpace>/link/x without needing the workspace's name.
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{Mount: "../link/x"}}}
+			actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+			realDir := filepath.Join(workSpace, "real")
+			mount := filepath.Join(realDir, "x")
+			remote := writeFileIn(mount, "remote.txt")
+
+			So(os.Symlink(realDir, filepath.Join(workSpace, "link")), ShouldBeNil)
+
+			keep := jobKeptDirs(job)
+			err := cleanup.Trigger(OnExit, job)
+
+			soPathsExist(remote, mount, realDir, workSpace, cwd)
+			soPathsGone(actualCwd, tmpDir)
+
+			So(keep.workSpaceEntries["real"], ShouldBeTrue)
+			So(err, ShouldBeNil)
+		})
+
+		Convey("the dir a mount inside the working directory is really in is kept", func() {
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{Mount: "link/x"}}}
+			actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+			realDir := filepath.Join(actualCwd, "real")
+			mount := filepath.Join(realDir, "x")
+			remote := writeFileIn(mount, "remote.txt")
+			output := writeFileIn(actualCwd, "out.txt")
+			So(os.Symlink(realDir, filepath.Join(actualCwd, "link")), ShouldBeNil)
+
+			keep := jobKeptDirs(job)
+			err := cleanup.Trigger(OnExit, job)
+
+			soPathsExist(remote, mount, realDir, actualCwd, workSpace, cwd)
+			soPathsGone(output, tmpDir)
+
+			So(keep.inActualCwd, ShouldContain, filepath.Join("real", "x"))
+			So(err, ShouldBeNil)
+		})
+
+		Convey("a cache base that resolves to the workspace is recognised, so muxfys' own dir survives", func() {
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{
+				Mount:     testWSMount,
+				CacheBase: "../wslink",
+				Targets:   []MountTarget{{Path: testWSTargetPath, Cache: true, Write: true}},
+			}}}
+			actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+			So(os.Symlink(workSpace, filepath.Join(workSpace, "wslink")), ShouldBeNil)
+
+			cached := writeFileIn(filepath.Join(workSpace, muxfysCachePrefix+"_cache456"), "unuploaded.txt")
+			output := writeFileIn(actualCwd, "out.txt")
+
+			keep := jobKeptDirs(job)
+			err := cleanup.Trigger(OnExit, job)
+
+			soPathsExist(cached, workSpace, cwd)
+			soPathsGone(output, tmpDir)
+
+			So(keep.muxfysNamesWorkSpaceEntry, ShouldBeTrue)
+			So(err, ShouldBeNil)
+		})
+
+		Convey("and so is the same dir when the symlink to it is outside the workspace", func() {
+			// the spelling the earlier fix established, pinned against the same
+			// fixture: here the two spellings disagree lexically, which is what
+			// makes the resolved comparison happen at all.
+			link := filepath.Join(cwd, "mount_link")
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{Mount: link}}}
+			actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+			realDir := filepath.Join(workSpace, "real")
+			mount := filepath.Join(realDir, "x")
+			remote := writeFileIn(mount, "remote.txt")
+			So(os.Symlink(mount, link), ShouldBeNil)
+
+			keep := jobKeptDirs(job)
+			err := cleanup.Trigger(OnExit, job)
+
+			soPathsExist(remote, mount, realDir, workSpace, cwd)
+			soPathsGone(actualCwd, tmpDir)
+
+			So(keep.workSpaceEntries["real"], ShouldBeTrue)
+			So(err, ShouldBeNil)
+		})
+	})
+
 	// the same two spellings the other way round. Job.Cwd is stored exactly as
 	// the user typed it, because it feeds Job.Key(), so the symlinked spelling is
 	// the one wr is GIVEN rather than one it chose - and then it is the workspace
@@ -910,10 +1012,6 @@ func TestCleanupWorkSpaceReappearsAfterProof(t *testing.T) {
 		So(err, ShouldBeNil)
 	})
 }
-
-// keyGrindMax bounds jobWithKeyPrefix's search, which is expected to take about
-// 16^len(prefix) tries.
-const keyGrindMax = 1 << 20
 
 // jobWithKeyPrefix returns a Job whose Key() starts with prefix, found the way
 // an attacker would: Key() hashes the Cmd (and the mounts and image), all of
