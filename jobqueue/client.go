@@ -1486,6 +1486,23 @@ func cleanupUnstartedWorkSpace(ctx context.Context, job *Job) {
 	}
 }
 
+// removeJobTmpDir reclaims the TMPDIR Execute gave a run, which every exit must
+// do: a Job with no cleanup Behaviour keeps its working directory, so nothing
+// else would remove the tmp dir beside it. The removal is made through the proven
+// workspace descent rather than by path string; see
+// jobWorkSpaceSnapshot.removeTmpDir.
+//
+// Failures are logged rather than returned for the reason
+// cleanupUnstartedWorkSpace logs its own: Execute's myerr is a plain local
+// already returned by the time this defer runs.
+func removeJobTmpDir(ctx context.Context, job *Job) {
+	snap := job.workSpaceSnapshot()
+
+	if err := snap.removeTmpDir(); err != nil {
+		clog.Warn(ctx, "could not remove the job's tmp dir", "dir", snap.actualCwd, "err", err)
+	}
+}
+
 // Execute runs the given Job's Cmd and blocks until it exits. Then any Job
 // Behaviours get triggered as appropriate for the exit status.
 //
@@ -1582,6 +1599,13 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	actualCwd, tmpDir, err := c.resolveWorkingDir(job, cmd)
 	if err != nil {
 		return err
+	}
+
+	// registered BEFORE the cleanup below, so that LIFO runs it AFTER: that
+	// cleanup unmounts first and deletes nothing at all when the unmount fails,
+	// and a Job's TMPDIR can be inside a live mount or hold a mount's cache.
+	if tmpDir != "" {
+		defer removeJobTmpDir(ctx, job)
 	}
 
 	// one seam covers every way this run can fail before its command starts; see
@@ -1752,9 +1776,6 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	if tmpDir != "" {
 		// (this works fine even if tmpDir has a space in one of the dir names)
 		env = envOverride(env, []string{"TMPDIR=" + tmpDir})
-		defer func() {
-			myerr = joinExecErr(myerr, os.RemoveAll(filepath.Clean(tmpDir)), "removing the tmpdir failed")
-		}()
 
 		if job.ChangeHome {
 			env = envOverride(env, []string{"HOME=" + actualCwd})
