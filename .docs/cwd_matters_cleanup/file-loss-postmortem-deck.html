@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>One Wrong Variable</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0e1017;
+    --panel: #161a24;
+    --panel-2: #1c2130;
+    --line: #2a3142;
+    --fg: #e8eaf0;
+    --muted: #8f98ad;
+    --red: #ff6b6b;
+    --red-dim: #7a2f34;
+    --green: #4ade80;
+    --amber: #fbbf24;
+    --blue: #7dd3fc;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  }
+  #app { display: grid; place-items: center; height: 100%; width: 100%; }
+
+  .stage {
+    width: min(100vw, 177.78vh);
+    height: min(56.25vw, 100vh);
+    container-type: size;
+    position: relative;
+    overflow: hidden;
+  }
+  .slide {
+    position: absolute; inset: 0;
+    padding: 5.5cqh 6cqh 8cqh;
+    display: none;
+    flex-direction: column;
+  }
+  .slide.on { display: flex; }
+
+  h1 { font-size: 8.2cqh; line-height: 1.05; margin: 0 0 2.5cqh; font-weight: 700; letter-spacing: -0.02em; }
+  h2 { font-size: 5.2cqh; line-height: 1.1; margin: 0 0 0.8cqh; font-weight: 650; letter-spacing: -0.015em; }
+  .kicker {
+    font-size: 2.2cqh; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600; margin: 0 0 2.2cqh;
+  }
+  .sub { font-size: 3.6cqh; color: var(--muted); line-height: 1.35; margin: 0; font-weight: 400; }
+  .body { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: center; gap: 2.6cqh; }
+  .body.top { justify-content: flex-start; padding-top: 1.5cqh; }
+
+  code, pre { font-family: var(--mono); }
+  pre {
+    margin: 0; background: var(--panel); border: 1px solid var(--line);
+    border-left: 0.5cqh solid var(--line);
+    border-radius: 0.9cqh; padding: 2cqh 2.4cqh;
+    font-size: 2.55cqh; line-height: 1.55; overflow: hidden; white-space: pre;
+  }
+  pre.bad { border-left-color: var(--red); }
+  pre.good { border-left-color: var(--green); }
+  pre.neutral { border-left-color: var(--blue); }
+  .c { color: var(--muted); }
+  .kw { color: #c792ea; }
+  .str { color: #a5d6a7; }
+  .bad-t { color: var(--red); font-weight: 700; }
+  .good-t { color: var(--green); font-weight: 700; }
+  .amber-t { color: var(--amber); font-weight: 700; }
+
+  figure { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 1.2cqh; flex: 1; min-height: 0; }
+  figure svg { flex: 1 1 auto; min-height: 0; width: 100%; height: auto; max-height: 100%; display: block; }
+  figcaption { font-size: 2.3cqh; color: var(--muted); text-align: center; }
+
+  ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 1.6cqh; }
+  li { font-size: 3.1cqh; line-height: 1.3; display: flex; gap: 1.4cqh; align-items: baseline; }
+  li .n {
+    flex: none; font-family: var(--mono); font-size: 2.4cqh; color: var(--muted);
+    min-width: 2.6cqh; font-weight: 700;
+  }
+  li .t { color: var(--muted); }
+  li .t b { color: var(--fg); font-weight: 650; }
+  li code { font-size: 0.92em; color: var(--blue); }
+
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 3cqh; align-items: start; }
+  .cols.wide-left { grid-template-columns: 1.15fr 0.85fr; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 1cqh; padding: 2cqh 2.2cqh;
+  }
+  .card h3 {
+    margin: 0 0 1.2cqh; font-size: 2.1cqh; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--muted); font-weight: 700;
+  }
+  .card p { margin: 0; font-size: 2.75cqh; line-height: 1.35; color: var(--fg); }
+  .card p + p { margin-top: 1cqh; }
+  .card.danger { border-color: var(--red-dim); }
+  .card.danger h3 { color: var(--red); }
+  .card.ok { border-color: #2c5a3c; }
+  .card.ok h3 { color: var(--green); }
+
+  .tree { font-family: var(--mono); font-size: 2.5cqh; line-height: 1.7; }
+  .tree .gone { color: var(--red); text-decoration: line-through; text-decoration-thickness: 0.22cqh; }
+  .tree .kept { color: var(--fg); }
+  .tree .hdr { color: var(--muted); }
+
+  blockquote {
+    margin: 0; padding: 0 0 0 2.2cqh; border-left: 0.4cqh solid var(--amber);
+    font-size: 3cqh; line-height: 1.4;
+  }
+  blockquote cite { display: block; margin-top: 1cqh; font-size: 2.2cqh; color: var(--muted); font-style: normal; font-family: var(--mono); }
+
+  .punch {
+    font-size: 3.6cqh; line-height: 1.3; font-weight: 650;
+    padding: 2cqh 2.4cqh; border-radius: 1cqh;
+    background: var(--panel-2); border: 1px solid var(--line);
+  }
+  .punch.red { border-color: var(--red-dim); }
+  .punch em { font-style: normal; color: var(--amber); }
+  .punch .r { color: var(--red); }
+
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.6cqh; }
+  .metric { background: var(--panel); border: 1px solid var(--line); border-radius: 1cqh; padding: 1.6cqh 1.8cqh; }
+  .metric .v { font-family: var(--mono); font-size: 4.2cqh; font-weight: 700; color: var(--green); line-height: 1; }
+  .metric .v.neu { color: var(--blue); }
+  .metric .l { margin-top: 0.9cqh; font-size: 2.05cqh; color: var(--muted); line-height: 1.25; }
+
+  footer {
+    position: absolute; left: 6cqh; right: 6cqh; bottom: 2.6cqh;
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 2cqh; color: var(--muted); font-family: var(--mono);
+  }
+  #bar { position: fixed; left: 0; top: 0; height: 3px; background: var(--amber); transition: width .18s ease; z-index: 5; }
+  #hint { position: fixed; right: 12px; bottom: 8px; font-size: 11px; color: #4b5468; font-family: var(--mono); z-index: 5; }
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<div id="app"><div class="stage" id="stage">
+
+  <!-- 1 ................................................................. -->
+  <section class="slide">
+    <div class="body">
+      <p class="kicker">Postmortem &middot; data loss</p>
+      <h1>One wrong variable<br>deleted a user's<br>scripts directory</h1>
+      <p class="sub">A <code>--cwd_matters</code> job must report that wr created no directory for it.<br>A new feature made every one of them report the user's own directory,<br>and cleanup deletes the <em style="font-style:normal;color:var(--fg)">parent</em> of whatever gets reported.</p>
+    </div>
+    <footer><span>wr v0.37.0 and v0.37.1</span><span>introduced #530 &middot; fixed #558</span></footer>
+  </section>
+
+  <!-- 2 ................................................................. -->
+  <section class="slide">
+    <p class="kicker">1 &middot; What happened</p>
+    <h2>19,632 jobs, and the user didn't <code>rm</code> any of it</h2>
+    <div class="body top">
+      <pre class="neutral">wr add -f wr_input_cmds_RunCisEQTL.txt -i RunCisEQTL_maineffects -r 0 \
+       <span class="amber-t">--cwd_matters</span> --queue normal --memory 8G -o 2   <span class="c"># 19,632 jobs</span></pre>
+      <div class="cols">
+        <div class="card danger">
+          <h3>scripts_ciseqtl/ after the delete</h3>
+          <div class="tree">
+<span class="gone">05_RunCisEQTL.R</span>&nbsp;&nbsp;<span class="hdr">&larr; every job ran this</span>
+<span class="gone">*.R  *.sh  *.README</span>
+<span class="gone">&hellip;.rds (1.2&nbsp;MB)</span>
+<span class="gone">wr_eqtl_chr1_&hellip;/</span>&nbsp;&nbsp;<span class="hdr">&larr; results</span>
+<span class="kept">wr_RunCisEQTL/</span>&nbsp;&nbsp;<span class="hdr">&larr; empty, fresh mtime</span>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Why it looked partial</h3>
+          <p>The job's own <code>Cwd</code> was recreated immediately after the delete, so the directory still existed, just empty.</p>
+          <p style="color:var(--muted)">The user's only <code>rm</code> that session was a stray file in a different directory.</p>
+        </div>
+      </div>
+    </div>
+    <footer><span>1 &middot; What happened</span><span>2 / 14</span></footer>
+  </section>
+
+  <!-- 3 ................................................................. -->
+  <section class="slide">
+    <p class="kicker">2 &middot; The mechanism</p>
+    <h2><code>Job.ActualCwd</code> is a permission, not a path</h2>
+    <div class="body">
+      <figure>
+        <svg viewBox="0 0 1000 300" role="img" aria-label="ActualCwd has two states: empty means wr created no directory so nothing may be deleted; non-empty means wr created that directory below Cwd so its parent is a disposable workspace">
+          <defs>
+            <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+          <g color="#4ade80">
+            <rect x="20" y="30" width="440" height="110" rx="10" fill="none" stroke="currentColor" stroke-width="2"/>
+            <text x="44" y="66" font-family="ui-monospace,monospace" font-size="20" font-weight="700" fill="currentColor">ActualCwd == ""</text>
+            <text x="44" y="96" font-size="17" fill="#e8eaf0">wr created no working directory</text>
+            <text x="44" y="122" font-size="17" font-weight="700" fill="currentColor">&rarr; delete nothing</text>
+            <text x="44" y="185" font-size="16" fill="#8f98ad">Every <tspan font-family="ui-monospace,monospace">--cwd_matters</tspan> job is in this state:</text>
+            <text x="44" y="210" font-size="16" fill="#8f98ad">the command runs in the user&rsquo;s own Cwd.</text>
+          </g>
+          <g color="#fbbf24">
+            <rect x="540" y="30" width="440" height="110" rx="10" fill="none" stroke="currentColor" stroke-width="2"/>
+            <text x="564" y="66" font-family="ui-monospace,monospace" font-size="20" font-weight="700" fill="currentColor">ActualCwd != ""</text>
+            <text x="564" y="96" font-size="17" fill="#e8eaf0">wr created this unique dir below Cwd</text>
+            <text x="564" y="122" font-size="17" font-weight="700" fill="#ff6b6b">&rarr; its PARENT is disposable</text>
+            <text x="564" y="185" font-size="16" fill="#8f98ad">The parent holds <tspan font-family="ui-monospace,monospace">cwd</tspan>, <tspan font-family="ui-monospace,monospace">tmp</tspan> and mount</text>
+            <text x="564" y="210" font-size="16" fill="#8f98ad">caches, so wr removes it whole.</text>
+          </g>
+          <g color="#8f98ad">
+            <line x1="470" y1="85" x2="530" y2="85" stroke="currentColor" stroke-width="2" marker-start="url(#a1)" marker-end="url(#a1)"/>
+          </g>
+          <line x1="20" y1="248" x2="980" y2="248" stroke="#2a3142" stroke-width="1"/>
+          <text x="20" y="276" font-size="16" fill="#8f98ad">Documented on <tspan font-family="ui-monospace,monospace" fill="#7dd3fc">JobEndState.Cwd</tspan>: &ldquo;the actual working directory used,</text>
+          <text x="20" y="296" font-size="16" fill="#8f98ad">which may be different to the Job&rsquo;s Cwd property; <tspan fill="#e8eaf0" font-weight="700">if not, supply empty string</tspan>.&rdquo;</text>
+        </svg>
+        <figcaption>That rule, empty <em>iff</em> <code>CwdMatters</code>, lived only in that prose, ~1,100 lines from the call site that broke it.</figcaption>
+      </figure>
+    </div>
+    <footer><span>2 &middot; The mechanism</span><span>3 / 14</span></footer>
+  </section>
+
+  <!-- 4 ................................................................. -->
+  <section class="slide">
+    <p class="kicker">2 &middot; The mechanism</p>
+    <h2>Who fills that field in, and what #530 added</h2>
+    <div class="body">
+      <figure>
+        <svg viewBox="0 0 1000 330" role="img" aria-label="The same JobEndState struct is built in two places: at job end from actualCwd, which is correct, and once per touch by the new snapshot method from cmd.Dir, which is wrong. Both go through the same server-side assignment into ActualCwd.">
+          <defs>
+            <marker id="a0" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+          <rect x="15" y="34" width="460" height="112" rx="10" fill="#161a24" stroke="#2c5a3c" stroke-width="2"/>
+          <text x="35" y="24" font-size="13" font-weight="700" letter-spacing="0.14em" fill="#4ade80">ALWAYS EXISTED &middot; ONCE, AT JOB END</text>
+          <text x="35" y="62" font-family="ui-monospace,monospace" font-size="15" fill="#e8eaf0">jes := &amp;JobEndState{ Cwd: <tspan fill="#4ade80" font-weight="700">actualCwd</tspan>, &hellip; }</text>
+          <text x="35" y="84" font-size="14" fill="#8f98ad">client.go:2216, handed to Bury / Release / Archive</text>
+          <text x="35" y="112" font-size="14" fill="#e8eaf0">so cleanup knows which dir wr made and can bin it</text>
+          <text x="35" y="134" font-size="14" fill="#4ade80">cwd_matters &rarr; actualCwd is <tspan font-family="ui-monospace,monospace">""</tspan> &rarr; nothing deleted</text>
+
+          <rect x="525" y="34" width="460" height="112" rx="10" fill="#161a24" stroke="#ff6b6b" stroke-width="2"/>
+          <text x="545" y="24" font-size="13" font-weight="700" letter-spacing="0.14em" fill="#ff6b6b">ADDED BY #530 &middot; EVERY TOUCH, ~30 s</text>
+          <text x="545" y="62" font-family="ui-monospace,monospace" font-size="15" fill="#e8eaf0">return &amp;JobEndState{ Cwd: <tspan fill="#ff6b6b" font-weight="700">state.cwd</tspan>, &hellip; }</text>
+          <text x="545" y="84" font-size="14" fill="#8f98ad">client.go:343, <tspan font-family="ui-monospace,monospace">executeLiveState.snapshot()</tspan></text>
+          <text x="545" y="112" font-size="14" fill="#e8eaf0">so status and the web UI can show a live job's</text>
+          <text x="545" y="134" font-size="14" fill="#e8eaf0">stdout tail, peak RAM, and its working dir</text>
+
+          <g color="#8f98ad">
+            <line x1="245" y1="150" x2="420" y2="196" stroke="currentColor" stroke-width="2" marker-end="url(#a0)"/>
+            <line x1="755" y1="150" x2="580" y2="196" stroke="currentColor" stroke-width="2.5" marker-end="url(#a0)" color="#ff6b6b"/>
+          </g>
+          <rect x="270" y="204" width="460" height="58" rx="10" fill="#1c2130" stroke="#fbbf24" stroke-width="2.5"/>
+          <text x="500" y="228" text-anchor="middle" font-size="13" font-weight="700" letter-spacing="0.14em" fill="#fbbf24">BOTH LAND IN THE SAME FIELD, SAME WAY</text>
+          <text x="500" y="252" text-anchor="middle" font-family="ui-monospace,monospace" font-size="15" fill="#e8eaf0">if jes.Cwd != "" { job.ActualCwd = jes.Cwd }</text>
+          <text x="500" y="300" text-anchor="middle" font-size="17" fill="#8f98ad">Same struct, same field, same assignment. The correct example sat</text>
+          <text x="500" y="322" text-anchor="middle" font-size="17" fill="#8f98ad">~1,900 lines further down the same file.</text>
+        </svg>
+        <figcaption>The feature itself was harmless: report a running job's directory so the UI can display it. The harm was reporting it through the field that grants permission to delete.</figcaption>
+      </figure>
+    </div>
+    <footer><span>2 &middot; The mechanism</span><span>4 / 14</span></footer>
+  </section>
+
+  <!-- 5 ................................................................. -->
+  <section class="slide">
+    <p class="kicker">3 &middot; The bug</p>
+    <h2><code>cmd.Dir</code> is where it runs. <code>actualCwd</code> is what wr may delete.</h2>
+    <div class="body">
+      <pre class="neutral"><span class="c">// client.go:1286: one call sets both, and for cwd_matters they differ</span>
+<span class="kw">func</span> (c *Client) resolveWorkingDir(job *Job, cmd *exec.Cmd) (<span class="good-t">actualCwd</span>, tmpDir <span class="kw">string</span>, err <span class="kw">error</span>) {
+    <span class="kw">if</span> job.CwdMatters {
+        <span class="bad-t">cmd.Dir</span> = job.Cwd      <span class="c">// run right there in the user's own dir</span>
+        <span class="kw">return</span> <span class="good-t">""</span>, <span class="str">""</span>, <span class="kw">nil</span>       <span class="c">// actualCwd: wr created nothing</span>
+    }</pre>
+      <pre class="bad"><span class="c">// client.go:1547: the #530 call site. Both variables are right here.</span>
+<span class="good-t">actualCwd</span>, tmpDir, err := c.resolveWorkingDir(job, cmd)
+&hellip;
+liveState := newExecuteLiveState(<span class="bad-t">cmd.Dir</span>, liveStdout, liveStderr)
+                                 <span class="bad-t">^^^^^^^</span> <span class="c">should be </span><span class="good-t">actualCwd</span></pre>
+      <div class="punch red">Picking <span class="r">cmd.Dir</span> is the honest answer to &ldquo;where is this job running?&rdquo;. It is the wrong answer to &ldquo;what did wr create here?&rdquo;, and that is the question the field asks.</div>
+    </div>
+    <footer><span>3 &middot; The bug</span><span>5 / 14</span></footer>
+  </section>
+
+  <!-- 6 ................................................................. -->
+  <section class="slide">
+    <p class="kicker">4 &middot; Three hops, three files</p>
+    <h2>How <code>cmd.Dir</code> reached <code>os.RemoveAll</code></h2>
+    <div class="body">
+      <figure>
+        <svg viewBox="0 0 980 640" role="img" aria-label="Flow: the runner sends cmd.Dir in each touch snapshot; the server copies it into ActualCwd; a lost job triggers behaviours server-side; cleanup removes the parent of ActualCwd, which is the user's scripts directory">
+          <defs>
+            <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+          <g font-size="15">
+            <!-- 1 -->
+            <rect x="30" y="14" width="520" height="88" rx="10" fill="#161a24" stroke="#2a3142" stroke-width="2"/>
+            <text x="52" y="42" font-size="14" font-weight="700" letter-spacing="0.14em" fill="#8f98ad">RUNNER</text>
+            <text x="52" y="68" font-family="ui-monospace,monospace" font-size="16" fill="#e8eaf0">newExecuteLiveState(<tspan fill="#ff6b6b" font-weight="700">cmd.Dir</tspan>, &hellip;)</text>
+            <text x="52" y="90" font-size="14" fill="#8f98ad">cmd.Dir = job.Cwd = &hellip;/scripts_ciseqtl/wr_RunCisEQTL</text>
+            <!-- 2 -->
+            <rect x="30" y="152" width="520" height="88" rx="10" fill="#161a24" stroke="#2a3142" stroke-width="2"/>
+            <text x="52" y="180" font-size="14" font-weight="700" letter-spacing="0.14em" fill="#8f98ad">THE WIRE &middot; the end-of-job struct, reused mid-run</text>
+            <text x="52" y="206" font-family="ui-monospace,monospace" font-size="16" fill="#e8eaf0">JobEndState{ Cwd: <tspan fill="#ff6b6b" font-weight="700">"&hellip;/wr_RunCisEQTL"</tspan> }</text>
+            <text x="52" y="228" font-size="14" fill="#8f98ad">no new type, no new plumbing, and no new safety check</text>
+            <!-- 3 -->
+            <rect x="30" y="290" width="520" height="88" rx="10" fill="#161a24" stroke="#2a3142" stroke-width="2"/>
+            <text x="52" y="318" font-size="14" font-weight="700" letter-spacing="0.14em" fill="#8f98ad">SERVER &middot; applyLiveSnapshot</text>
+            <text x="52" y="344" font-family="ui-monospace,monospace" font-size="16" fill="#e8eaf0">if jes.Cwd != "" { job.<tspan fill="#ff6b6b" font-weight="700">ActualCwd</tspan> = jes.Cwd }</text>
+            <text x="52" y="366" font-size="14" fill="#8f98ad">non-empty now means &ldquo;deletion permitted&rdquo;</text>
+            <!-- 4 -->
+            <rect x="30" y="428" width="520" height="88" rx="10" fill="#161a24" stroke="#2a3142" stroke-width="2"/>
+            <text x="52" y="456" font-size="14" font-weight="700" letter-spacing="0.14em" fill="#8f98ad">A LOST JOB</text>
+            <text x="52" y="482" font-family="ui-monospace,monospace" font-size="16" fill="#e8eaf0">killLostJobAndTriggerBehaviours &rarr; TriggerBehaviours</text>
+            <text x="52" y="504" font-size="14" fill="#8f98ad">runs against the server&rsquo;s own job object, now poisoned</text>
+            <!-- 5 -->
+            <rect x="30" y="566" width="520" height="60" rx="10" fill="#1c2130" stroke="#ff6b6b" stroke-width="2.5"/>
+            <text x="52" y="592" font-size="14" font-weight="700" letter-spacing="0.14em" fill="#ff6b6b">cleanup: the default on_exit behaviour</text>
+            <text x="52" y="616" font-family="ui-monospace,monospace" font-size="16" fill="#ff6b6b" font-weight="700">os.RemoveAll(filepath.Dir(j.ActualCwd))</text>
+          </g>
+          <g color="#8f98ad">
+            <line x1="290" y1="102" x2="290" y2="148" stroke="currentColor" stroke-width="2" marker-end="url(#a2)"/>
+            <text x="580" y="132" font-size="15" fill="#8f98ad">every touch, ~30&nbsp;s, every running job</text>
+            <line x1="290" y1="240" x2="290" y2="286" stroke="currentColor" stroke-width="2" marker-end="url(#a2)"/>
+            <text x="580" y="270" font-size="15" fill="#8f98ad">server copies it in verbatim</text>
+            <line x1="290" y1="378" x2="290" y2="424" stroke="currentColor" stroke-width="2" marker-end="url(#a2)"/>
+            <text x="580" y="408" font-size="15" fill="#8f98ad">1 lost job in 19,632 on LSF &asymp; certain</text>
+            <text x="580" y="430" font-size="15" fill="#8f98ad">and one is enough</text>
+            <line x1="290" y1="516" x2="290" y2="562" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" marker-end="url(#a2)" color="#ff6b6b"/>
+            <text x="580" y="540" font-size="15" fill="#ff6b6b" font-weight="700">server-side, on the first attempt</text>
+            <text x="580" y="562" font-size="15" fill="#8f98ad">Dir(Cwd) = the parent = scripts_ciseqtl/</text>
+          </g>
+        </svg>
+        <figcaption>Nothing at the call site in step 1 suggests a recursive deletion is downstream. Cleanup then returned <code>nil</code>.</figcaption>
+      </figure>
+    </div>
+    <footer><span>4 &middot; The path to deletion</span><span>6 / 14</span></footer>
+  </section>
+
+  <!-- 7 ................................................................. -->
+  <section class="slide">
+    <p class="kicker">5 &middot; The traps &middot; 1 of 3</p>
+    <h2>A <code>string</code> carrying a permission, with no owner</h2>
+    <div class="body">
+      <div class="cols">
+        <div class="card danger">
+          <h3>Trap 1 &middot; the sentinel</h3>
+          <p><code>""</code> did not mean <em>unknown</em>. It meant <b style="color:var(--red)">you may not delete anything</b>.</p>
+          <p style="color:var(--muted)">A <code>string</code> cannot express that, and nothing at the assignment site hinted at it.</p>
+        </div>
+        <div class="card danger">
+          <h3>Trap 2 &middot; no single writer</h3>
+          <p><b>Four</b> separate places turned a <code>JobEndState</code> into an <code>ActualCwd</code>, each with its own copy of the same line:</p>
+          <p><code style="color:var(--red)">if jes.Cwd != "" { j.ActualCwd = jes.Cwd }</code></p>
+        </div>
+      </div>
+      <div class="punch">Four writers means no owner, and no owner means nowhere for a check to live. Nothing in the code said <em>empty iff <code>CwdMatters</code></em>. That rule existed only as prose, ~1,100 lines from the line that broke it.</div>
+    </div>
+    <footer><span>5 &middot; The traps</span><span>7 / 14</span></footer>
+  </section>
+
+  <!-- 8 ................................................................. -->
+  <section class="slide">
+    <p class="kicker">5 &middot; The traps &middot; 2 of 3</p>
+    <h2>Deletion was <em style="font-style:normal;color:var(--red)">derived</em>, and armed everywhere</h2>
+    <div class="body">
+      <pre class="bad"><span class="c">// behaviours.go, v0.37.x</span>
+<span class="kw">if</span> j.ActualCwd == <span class="str">""</span> { <span class="kw">return</span> <span class="kw">nil</span> }
+workSpace := filepath.Dir(j.ActualCwd)   <span class="bad-t">// no check this is inside j.Cwd</span>
+cleanupWorkSpace(j, workSpace)           <span class="bad-t">// os.RemoveAll</span></pre>
+      <div class="cols">
+        <div class="card danger">
+          <h3>Trap 3 &middot; derived, not proven</h3>
+          <p>One wrong field value <b>relocated a recursive delete anywhere on the filesystem</b>.</p>
+        </div>
+        <div class="card danger">
+          <h3>Trap 4 &middot; the loaded gun</h3>
+          <p><code>--on_exit</code> defaults to <code>[{"cleanup":true}]</code>, stored on <b>every</b> job, including the ones where <code>cmd/add.go</code> promised:</p>
+          <p><span style="color:var(--amber)">&ldquo;no effect when cwd_matters is true&rdquo;</span></p>
+        </div>
+      </div>
+      <div class="punch red">The documentation was right about the intent and wrong about the code, and was believed for two releases.</div>
+    </div>
+    <footer><span>5 &middot; The traps</span><span>8 / 14</span></footer>
+  </section>
+
+  <!-- 9 ................................................................. -->
+  <section class="slide">
+    <p class="kicker">5 &middot; The traps &middot; 3 of 3</p>
+    <h2>The new test required the value that caused the delete</h2>
+    <div class="body">
+      <pre class="neutral"><span class="c">// the fixture the new test reused. Its name doesn't mention cwd_matters,</span>
+<span class="c">// so nothing prompted the author to check.</span>
+<span class="kw">func</span> liveExecuteJob(&hellip;) *Job {
+    <span class="kw">return</span> &amp;Job{ Cmd: cmd, Cwd: cwd, <span class="bad-t">CwdMatters: true</span>, &hellip; }</pre>
+      <pre class="bad"><span class="c">// the new test. cwd here is the fixture's Cwd, ie. the user's own directory.</span>
+Convey(<span class="str">"Execute sends stdout tails once per touch from the actual cwd"</span>, &hellip;
+    So(states[0].Cwd, ShouldEqual, <span class="bad-t">cwd</span>)   <span class="c">// demands a non-empty Cwd</span></pre>
+      <figure style="flex:none">
+        <svg viewBox="0 0 1000 74" role="img" aria-label="The fixture sets CwdMatters true, so the contract requires the snapshot to send an empty Cwd, but the test asserts it sends the job's Cwd, which is the value that grants deletion.">
+          <defs>
+            <marker id="a5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+          <rect x="2" y="8" width="290" height="58" rx="9" fill="#161a24" stroke="#2a3142" stroke-width="1.5"/>
+          <text x="20" y="32" font-size="14" fill="#8f98ad">Fixture says</text>
+          <text x="20" y="54" font-family="ui-monospace,monospace" font-size="16" fill="#e8eaf0">CwdMatters: true</text>
+          <rect x="352" y="8" width="290" height="58" rx="9" fill="#161a24" stroke="#2c5a3c" stroke-width="1.5"/>
+          <text x="370" y="32" font-size="14" fill="#8f98ad">so the snapshot must send</text>
+          <text x="370" y="54" font-family="ui-monospace,monospace" font-size="16" fill="#4ade80" font-weight="700">Cwd: ""</text>
+          <rect x="702" y="8" width="296" height="58" rx="9" fill="#1c2130" stroke="#ff6b6b" stroke-width="2"/>
+          <text x="720" y="32" font-size="14" fill="#8f98ad">but the test asserts</text>
+          <text x="720" y="54" font-family="ui-monospace,monospace" font-size="16" fill="#ff6b6b" font-weight="700">Cwd: job.Cwd</text>
+          <g color="#4b5468">
+            <line x1="300" y1="37" x2="344" y2="37" stroke="currentColor" stroke-width="2" marker-end="url(#a5)"/>
+            <line x1="650" y1="37" x2="694" y2="37" stroke="currentColor" stroke-width="2" marker-end="url(#a5)" color="#ff6b6b"/>
+          </g>
+        </svg>
+      </figure>
+      <div class="punch red">So writing it correctly, sending <code>""</code>, would have turned this test red and looked like a regression. <span class="r">The tests didn't miss the bug. They required it.</span></div>
+    </div>
+    <footer><span>5 &middot; The traps</span><span>9 / 14</span></footer>
+  </section>
+
+  <!-- 10 ................................................................ -->
+  <section class="slide">
+    <p class="kicker">6 &middot; Why the line got written</p>
+    <h2>Three facts you must hold at once to see it</h2>
+    <div class="body">
+      <figure>
+        <svg viewBox="0 0 1000 320" role="img" aria-label="Three separate files each document one third of the invariant; the decision point in the middle of the code sees none of them">
+          <defs>
+            <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+          <g font-size="15">
+            <rect x="15" y="12" width="300" height="94" rx="9" fill="#161a24" stroke="#2a3142" stroke-width="1.5"/>
+            <text x="33" y="40" font-family="ui-monospace,monospace" font-size="14" fill="#8f98ad">client.go:1286</text>
+            <text x="33" y="68" font-size="16" fill="#e8eaf0">cmd.Dir is job.Cwd</text>
+            <text x="33" y="90" font-size="16" fill="#e8eaf0">when CwdMatters</text>
+
+            <rect x="350" y="12" width="300" height="94" rx="9" fill="#161a24" stroke="#2a3142" stroke-width="1.5"/>
+            <text x="368" y="40" font-family="ui-monospace,monospace" font-size="14" fill="#8f98ad">client.go:2737 &middot; doc comment</text>
+            <text x="368" y="68" font-size="16" fill="#e8eaf0">JobEndState.Cwd must</text>
+            <text x="368" y="90" font-size="16" fill="#e8eaf0">be empty in that case</text>
+
+            <rect x="685" y="12" width="300" height="94" rx="9" fill="#161a24" stroke="#2a3142" stroke-width="1.5"/>
+            <text x="703" y="40" font-family="ui-monospace,monospace" font-size="14" fill="#8f98ad">serverCLI.go &rarr; behaviours.go</text>
+            <text x="703" y="68" font-size="16" fill="#e8eaf0">it lands in a field that</text>
+            <text x="703" y="90" font-size="16" fill="#ff6b6b" font-weight="700">authorises a recursive delete</text>
+          </g>
+          <g color="#4b5468">
+            <line x1="165" y1="110" x2="430" y2="186" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 5" marker-end="url(#a3)"/>
+            <line x1="500" y1="110" x2="500" y2="186" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 5" marker-end="url(#a3)"/>
+            <line x1="835" y1="110" x2="570" y2="186" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 5" marker-end="url(#a3)"/>
+          </g>
+          <rect x="230" y="194" width="540" height="66" rx="9" fill="#1c2130" stroke="#fbbf24" stroke-width="2.5"/>
+          <text x="500" y="222" text-anchor="middle" font-size="14" font-weight="700" letter-spacing="0.14em" fill="#fbbf24">THE DECISION POINT &middot; client.go:1547</text>
+          <text x="500" y="248" text-anchor="middle" font-family="ui-monospace,monospace" font-size="16" fill="#e8eaf0">newExecuteLiveState(<tspan fill="#ff6b6b" font-weight="700">cmd.Dir</tspan>, &hellip;)</text>
+          <text x="500" y="298" text-anchor="middle" font-size="17" fill="#8f98ad">Each fact is documented <tspan fill="#e8eaf0">somewhere</tspan>. None is visible <tspan fill="#e8eaf0">here</tspan>.</text>
+        </svg>
+        <figcaption>Every individual step looks right. That is how it passed CI, review, and two releases.</figcaption>
+      </figure>
+      <div class="cols">
+        <div class="card">
+          <h3>The framing picked the variable</h3>
+          <p>The feature was &ldquo;show the working directory of a running job&rdquo;. <code>cmd.Dir</code> <b>is</b> the working directory, the honest answer to the question as posed.</p>
+        </div>
+        <div class="card">
+          <h3>A matching field name hid a meaning</h3>
+          <p><code>JobEndState.Cwd</code> is not &ldquo;a cwd&rdquo;; it is <b>the wr-created cwd, or empty</b>. Reusing the struct that already travelled on every touch saved a type and a round of plumbing.</p>
+        </div>
+      </div>
+    </div>
+    <footer><span>6 &middot; How the change came to be written</span><span>10 / 14</span></footer>
+  </section>
+
+  <!-- 11 ................................................................ -->
+  <section class="slide">
+    <p class="kicker">7 &middot; The fix</p>
+    <h2>Deletion now has to prove itself first</h2>
+    <div class="body">
+      <figure>
+        <svg viewBox="0 0 1000 400" role="img" aria-label="Before, a plain string went straight to filepath.Dir and os.RemoveAll. After, one setter refuses the value for cwd_matters jobs, realDirBelow proves the path is inside Cwd, a provenDirs type is the only way to reach the deletion helpers, and removals go through pinned os.Root handles; cleanup behaviours are also dropped entirely for cwd_matters jobs.">
+          <defs>
+            <marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+          <text x="20" y="26" font-size="14" font-weight="700" letter-spacing="0.16em" fill="#ff6b6b">v0.37.x</text>
+          <text x="530" y="26" font-size="14" font-weight="700" letter-spacing="0.16em" fill="#4ade80">NOW</text>
+          <line x1="497" y1="10" x2="497" y2="390" stroke="#2a3142" stroke-width="1"/>
+
+          <g color="#7a2f34" font-size="15">
+            <rect x="20" y="60" width="430" height="56" rx="9" fill="#161a24" stroke="#2a3142" stroke-width="1.5"/>
+            <text x="40" y="94" font-family="ui-monospace,monospace" font-size="16" fill="#e8eaf0">ActualCwd string  <tspan fill="#8f98ad">// 4 writers</tspan></text>
+            <rect x="20" y="160" width="430" height="56" rx="9" fill="#161a24" stroke="#2a3142" stroke-width="1.5"/>
+            <text x="40" y="194" font-family="ui-monospace,monospace" font-size="16" fill="#e8eaf0">filepath.Dir(&hellip;)  <tspan fill="#8f98ad">// no check</tspan></text>
+            <rect x="20" y="260" width="430" height="56" rx="9" fill="#1c2130" stroke="#ff6b6b" stroke-width="2.5"/>
+            <text x="40" y="294" font-family="ui-monospace,monospace" font-size="16" font-weight="700" fill="#ff6b6b">os.RemoveAll(anywhere)</text>
+            <line x1="235" y1="116" x2="235" y2="156" stroke="#4b5468" stroke-width="2" marker-end="url(#a4)"/>
+            <line x1="235" y1="216" x2="235" y2="256" stroke="#4b5468" stroke-width="2" marker-end="url(#a4)"/>
+            <text x="235" y="352" text-anchor="middle" font-size="16" fill="#8f98ad">one wrong field &rarr; delete anything</text>
+          </g>
+
+          <g font-size="14">
+            <rect x="530" y="40" width="450" height="54" rx="9" fill="#161a24" stroke="#2c5a3c" stroke-width="1.5"/>
+            <text x="550" y="64" font-family="ui-monospace,monospace" font-size="15" fill="#e8eaf0">setActualCwd()</text>
+            <text x="550" y="84" font-size="14" fill="#4ade80">sole writer: refuses any value if CwdMatters</text>
+
+            <rect x="530" y="112" width="450" height="54" rx="9" fill="#161a24" stroke="#2c5a3c" stroke-width="1.5"/>
+            <text x="550" y="136" font-family="ui-monospace,monospace" font-size="15" fill="#e8eaf0">realDirBelow()</text>
+            <text x="550" y="156" font-size="14" fill="#4ade80">proves a real dir strictly inside Cwd</text>
+
+            <rect x="530" y="184" width="450" height="54" rx="9" fill="#161a24" stroke="#2c5a3c" stroke-width="1.5"/>
+            <text x="550" y="208" font-family="ui-monospace,monospace" font-size="15" fill="#e8eaf0">provenDirs</text>
+            <text x="550" y="228" font-size="14" fill="#4ade80">the only way in: no loose strings accepted</text>
+
+            <rect x="530" y="256" width="450" height="54" rx="9" fill="#161a24" stroke="#2c5a3c" stroke-width="1.5"/>
+            <text x="550" y="280" font-family="ui-monospace,monospace" font-size="15" fill="#e8eaf0">os.Root handles</text>
+            <text x="550" y="300" font-size="14" fill="#4ade80">pinned: a later path swap cannot redirect</text>
+
+            <line x1="755" y1="94" x2="755" y2="108" stroke="#4b5468" stroke-width="2" marker-end="url(#a4)"/>
+            <line x1="755" y1="166" x2="755" y2="180" stroke="#4b5468" stroke-width="2" marker-end="url(#a4)"/>
+            <line x1="755" y1="238" x2="755" y2="252" stroke="#4b5468" stroke-width="2" marker-end="url(#a4)"/>
+
+            <rect x="530" y="330" width="450" height="56" rx="9" fill="#1c2130" stroke="#4ade80" stroke-width="2.5"/>
+            <text x="550" y="352" font-size="13" font-weight="700" letter-spacing="0.12em" fill="#4ade80">AND THE GUN IS UNLOADED</text>
+            <text x="550" y="375" font-size="14" fill="#e8eaf0">cleanups dropped for cwd_matters: add, modify, <tspan font-weight="700">DB load</tspan></text>
+          </g>
+        </svg>
+        <figcaption>DB load matters: jobs already poisoned by v0.37.x are sanitised when an upgraded server reads them.</figcaption>
+      </figure>
+      <div class="punch"><em>&ldquo;The type exists so that the deletion helpers cannot be handed two arbitrary path strings: the proof travels with the paths, in the type.&rdquo;</em></div>
+    </div>
+    <footer><span>7 &middot; What the fix changes</span><span>11 / 14</span></footer>
+  </section>
+
+  <!-- 12 ............................................................... -->
+  <section class="slide">
+    <p class="kicker">7 &middot; The fix, in code</p>
+    <h2>Where the rule lives now</h2>
+    <div class="body">
+      <pre class="good"><span class="c">// job.go:1485: the sole JobEndState-derived writer; deleted 4 copies</span>
+<span class="kw">func</span> (j *Job) setActualCwd(cwd <span class="kw">string</span>) {
+    <span class="kw">if</span> cwd == <span class="str">""</span> || <span class="good-t">j.CwdMatters</span> { <span class="kw">return</span> }
+    j.ActualCwd = cwd
+}</pre>
+      <pre class="good"><span class="c">// utils.go:1190: lexical check first (0 syscalls), then lstat every component</span>
+<span class="kw">func</span> realDirBelow(baseRoot *os.Root, dir <span class="kw">string</span>) (<span class="good-t">provenDirs</span>, <span class="kw">bool</span>)
+<span class="c">// "&hellip; proves dir can only be reached by descending inside the base,</span>
+<span class="c">//  whatever the base itself resolves to."</span></pre>
+      <pre class="good"><span class="c">// job.go:160: called from prepareInputJobs, applyBehaviours and decodeJob</span>
+<span class="kw">func</span> (j *Job) dropImpossibleCleanups() {
+    <span class="kw">if</span> !j.CwdMatters { <span class="kw">return</span> }
+    j.Behaviours = j.Behaviours.withoutCleanups()
+}</pre>
+    </div>
+    <footer><span>7 &middot; What the fix changes</span><span>12 / 14</span></footer>
+  </section>
+
+  <!-- 13 ............................................................... -->
+  <section class="slide">
+    <p class="kicker">8 &middot; Confidence</p>
+    <h2>High, and every guard was checked by breaking it</h2>
+    <div class="body">
+      <div class="metrics">
+        <div class="metric"><div class="v">0</div><div class="l">escapes in a 44-case adversarial probe; 0 legitimate workspaces left uncleaned</div></div>
+        <div class="metric"><div class="v">39</div><div class="l">Conveys in <code>TestBehaviourCleanupSafety</code>, whose fixture rebuilds the incident directory</div></div>
+        <div class="metric"><div class="v">388</div><div class="l">tests passing, up from 353; <code>make race</code> green, <code>make lint</code> 0 issues</div></div>
+        <div class="metric"><div class="v neu">18&rarr;8</div><div class="l"><code>openat</code>s per cleanup, measured by <code>strace</code> rather than the clock</div></div>
+      </div>
+      <ul style="gap:1.2cqh">
+        <li style="font-size:2.9cqh"><span class="n">1</span><span class="t"><b>Every change started from a failing test.</b> The first piece of failing evidence was the incident itself: <code>stat &hellip;/05_RunCisEQTL.R: no such file or directory</code>.</span></li>
+        <li style="font-size:2.9cqh"><span class="n">2</span><span class="t"><b>Every guard was broken on purpose</b> to check a test caught it, then restored byte-exactly and md5-verified. Where breaking it changed nothing, the reason is written down rather than waved away.</span></li>
+        <li style="font-size:2.9cqh"><span class="n">3</span><span class="t"><b>The same mistake happened again during the fix, and got caught.</b> One round found three ways to delete outside the workspace: two already in the code, and <b style="color:var(--amber)">one introduced by the fix for the other two</b>:</span></li>
+      </ul>
+      <pre class="bad" style="font-size:2.3cqh"><span class="kw">func</span> resolvedDirBelow(&hellip;) string { <span class="kw">return</span> <span class="bad-t">resolved</span> }  <span class="c">// not the path asked about</span>
+<span class="c">// a symlink pointing inside Cwd then redirected the delete onto Cwd/userdata</span></pre>
+      <div class="punch">Same class of error as the original bug: a value that looks like the path you asked about and isn't. It was found because the probes go looking for exactly that, which is the reason to trust what they now say about the rest.</div>
+    </div>
+    <footer><span>8 &middot; How confident are we?</span><span>13 / 14</span></footer>
+  </section>
+
+  <!-- 14 ............................................................... -->
+  <section class="slide">
+    <p class="kicker">9 &middot; Residual risk &amp; what changes next time</p>
+    <h2>What is closed, and what is written down</h2>
+    <div class="body">
+      <div class="cols wide-left">
+        <div>
+          <ul style="gap:1.4cqh;font-size:2.6cqh">
+            <li style="font-size:2.65cqh"><span class="n">1</span><span class="t"><b>Types, not prose, for anything that authorises destruction.</b> <code>provenDirs</code> is the change that actually does the work. The doc comment it replaced was correct, and ignored for two releases.</span></li>
+            <li style="font-size:2.65cqh"><span class="n">2</span><span class="t"><b>&ldquo;No effect in case X&rdquo; in docs is a smell.</b> If a behaviour is inert in a configuration, don't store it. The gap between <em>inert</em> and <em>catastrophic</em> was one wrong field.</span></li>
+            <li style="font-size:2.65cqh"><span class="n">3</span><span class="t"><b>Test the combination, not the ingredients.</b> cwd_matters, lost jobs and cleanup were each well covered; nothing crossed them. And distrust any test whose name contradicts its fixture.</span></li>
+            <li style="font-size:2.65cqh"><span class="n">4</span><span class="t"><b>For AI-written changes:</b> a change touching a field consumed by a destructive path must <b>name the consumer</b> in its description. The author cannot see three hops downstream, and nor, in practice, can the reviewer.</span></li>
+            <li style="font-size:2.65cqh"><span class="n">5</span><span class="t"><b>Verify severity before recording it.</b> Several deferrals in this work were wrong on facts that took one command to check.</span></li>
+          </ul>
+        </div>
+        <div class="card ok">
+          <h3>What is left</h3>
+          <p>Everything <b>recursive or destructive is fully closed</b>.</p>
+          <p>The upward empty-dir walk is not inode-verified. Worst case: unlinking one empty directory or one symlink, bounded to inside the job's own <code>Cwd</code>.</p>
+        </div>
+      </div>
+    </div>
+    <footer><span>Fixed in #558 &middot; CHANGELOG v0.37.2</span><span>14 / 14</span></footer>
+  </section>
+
+</div></div>
+<div id="hint">&larr; &rarr; navigate &middot; F fullscreen</div>
+<script>
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var bar = document.getElementById('bar');
+  var i = 0;
+
+  // Shrink a slide's content if it would overrun the 16:9 stage, so nothing is
+  // ever clipped on a projector with an unexpected aspect ratio.
+  function fit(slide) {
+    var b = slide.querySelector('.body');
+    if (!b) { return; }
+
+    b.style.transform = 'none';
+
+    var kids = b.children;
+    var gap = parseFloat(getComputedStyle(b).rowGap) || 0;
+    var need = gap * Math.max(0, kids.length - 1);
+
+    for (var j = 0; j < kids.length; j++) { need += kids[j].getBoundingClientRect().height; }
+
+    var have = b.clientHeight;
+
+    if (need > have + 1 && need > 0) {
+      b.style.transformOrigin = 'center center';
+      b.style.transform = 'scale(' + (have / need).toFixed(4) + ')';
+    }
+  }
+
+  function show(n) {
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach(function (s, k) { s.classList.toggle('on', k === i); });
+    fit(slides[i]);
+    bar.style.width = ((i + 1) / slides.length * 100) + '%';
+    if (location.hash !== '#' + (i + 1)) history.replaceState(null, '', '#' + (i + 1));
+  }
+
+  window.addEventListener('resize', function () { fit(slides[i]); });
+  if (document.fonts && document.fonts.ready) { document.fonts.ready.then(function () { fit(slides[i]); }); }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ' || e.key === 'Enter') { show(i + 1); e.preventDefault(); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp' || e.key === 'Backspace') { show(i - 1); e.preventDefault(); }
+    else if (e.key === 'Home') { show(0); }
+    else if (e.key === 'End') { show(slides.length - 1); }
+    else if (e.key === 'f' || e.key === 'F') {
+      if (document.fullscreenElement) { document.exitFullscreen(); }
+      else if (document.documentElement.requestFullscreen) { document.documentElement.requestFullscreen(); }
+    }
+  });
+
+  document.addEventListener('click', function (e) {
+    show(e.clientX < window.innerWidth * 0.25 ? i - 1 : i + 1);
+  });
+
+  window.addEventListener('hashchange', function () {
+    var n = parseInt(location.hash.slice(1), 10);
+    if (n >= 1 && n <= slides.length) { show(n - 1); }
+  });
+
+  var start = parseInt(location.hash.slice(1), 10);
+  show(start >= 1 && start <= slides.length ? start - 1 : 0);
+})();
+</script>
+</body>
+</html>
