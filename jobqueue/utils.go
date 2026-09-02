@@ -756,10 +756,10 @@ func removeHoldFile(holdFile string, prior error) error {
 // conflicts with us) and drops a hold file in it so rmEmptyDirsIn will not
 // immediately remove it.
 func mkHeldDir(dir, holdFile string) error {
-	tries := 0
+	mkdirTries, holdTries := 0, 0
 
 	for {
-		retry, err := tryMkHeldDir(dir, holdFile, &tries)
+		retry, err := tryMkHeldDir(dir, holdFile, &mkdirTries, &holdTries)
 		if err != nil {
 			return err
 		}
@@ -803,16 +803,26 @@ func openFileManaged(path string, flag int, perm os.FileMode) (*os.File, error) 
 // tryMkHeldDir makes one attempt to create dir and its hold file. It returns
 // retry=true if mkHeldDir should loop again, or an error if we've run out of
 // retries. retry=false with a nil error means success.
-func tryMkHeldDir(dir, holdFile string, tries *int) (retry bool, err error) {
+//
+// The two steps get a retry budget each. mkdirTries is reset by a successful
+// MkdirAll, because making the directories is real progress and a later
+// conflict with rmEmptyDirsIn deserves a fresh budget; holdTries is never
+// reset, because nothing after it makes progress, so a hold file that cannot be
+// created (a full filesystem, an exceeded quota, a read-only remount, an
+// unwritable hashed level) runs the budget down and fails instead of looping
+// for ever. Resetting a single shared counter here would make every hold-file
+// failure permanently retryable, since the MkdirAll of every later attempt
+// succeeds once the hashed levels exist.
+func tryMkHeldDir(dir, holdFile string, mkdirTries, holdTries *int) (retry bool, err error) {
 	if err = mkdirAllManaged(dir, os.ModePerm); err != nil {
-		return retryOrFail(tries, err)
+		return retryOrFail(mkdirTries, err)
 	}
 
-	*tries = 0
+	*mkdirTries = 0
 
 	f, err := openFileManaged(holdFile, os.O_RDONLY|os.O_CREATE, holdFilePerm)
 	if err != nil {
-		return retryOrFail(tries, err)
+		return retryOrFail(holdTries, err)
 	}
 
 	return false, f.Close()
