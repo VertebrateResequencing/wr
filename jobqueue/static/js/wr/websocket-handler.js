@@ -380,7 +380,44 @@ function livePushValue(value, fallback) {
     return value;
 }
 
+/**
+ * Reports whether a push update claims a job is running while its own snapshot
+ * says that job has already exited.
+ *
+ * The server runs every state transition's callback in its own goroutine and
+ * delays only the running one, polling for the job's start time to be recorded,
+ * so a job that finishes within milliseconds of starting delivers its terminal
+ * update first and its running update second. Only State comes from the
+ * transition; every other field is a fresh snapshot of the job taken when the
+ * update was sent, so that late update contradicts itself. Applying it leaves
+ * the row running for ever with its walltime ticking up, because no push update
+ * follows a terminal state.
+ *
+ * A job is reserved before it can run again, and being reserved clears its
+ * exited flag, so a genuine re-run (wr retry, a dependency re-run, a lost job
+ * re-attempt) never looks like this. Running is also the only live state a job
+ * reaches by being reserved: a job kicked or released back onto the queue still
+ * reports the failed run's exited flag while it is ready or delayed, so those
+ * updates must not be judged this way.
+ *
+ * @param {object} update - The incoming push update
+ * @returns {boolean} True if the update describes a run that already ended
+ */
+function runningPushUpdateOfExitedJob(update) {
+    return update.State === 'running' && update.Exited === true;
+}
+
+/**
+ * Applies a push update to the job details currently displayed for that job.
+ * @param {object} existing - The job details currently displayed
+ * @param {object} update - The incoming push update
+ * @returns {object} The merged details, or existing itself if nothing applied
+ */
 function mergeJobDetailsPushUpdate(existing, update) {
+    if (runningPushUpdateOfExitedJob(update)) {
+        return existing;
+    }
+
     const merged = Object.assign({}, existing, update);
 
     if (update.State === 'running' || update.State === 'reserved') {
@@ -448,6 +485,11 @@ function handleJobDetailsMessage(viewModel, json) {
             for (const job of jobs) {
                 if (job.Key === json.Key) {
                     const merged = mergeJobDetailsPushUpdate(job, json);
+                    if (merged === job) {
+                        // the update was rejected, so the row keeps the walltime
+                        // it already has and needs no re-render
+                        return;
+                    }
 
                     // Set up LiveWalltime for the job
                     setupLiveWalltime(merged, merged['Walltime'], viewModel);

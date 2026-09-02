@@ -160,6 +160,58 @@ func TestCaster(t *testing.T) {
 	})
 }
 
+// TestLateRunningSubscriptionUpdatePayload pins the payload a status page
+// receives when a running transition update is delivered after the job it
+// describes has already finished. Only State comes from the transition; every
+// other field is a fresh snapshot of the job taken when the update is sent, so
+// the payload contradicts itself, claiming a running job that has exited. That
+// contradiction is what the status page keys on to recognise the update as stale
+// (see TestStatusPageStaleRunningPushUpdate).
+func TestLateRunningSubscriptionUpdatePayload(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+
+	Convey("A running subscription update sent after its job finished reports an exited job", t, func() {
+		server, _, token, errs := serve(ctx, serverConfig)
+		So(errs, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		inserts, _, err := jq.Add([]*Job{{
+			Cmd: webiEcho1, Cwd: testCwd, ReqGroup: webiRG1,
+			Requirements: standardReqs, RepGroup: webiRG1,
+		}}, envVars, true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+
+		job, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(jq.Execute(ctx, job, config.RunnerExecShell), ShouldBeNil)
+
+		status := server.statusFromSubscriptionUpdate(ctx, &JobUpdate{
+			Kind:     JobUpdateStateChange,
+			Key:      job.Key(),
+			RepGroup: webiRG1,
+			State:    JobStateRunning,
+			Started:  jobUnixNano(job.StartTime),
+			Ended:    jobUnixNano(job.EndTime),
+		})
+		So(status, ShouldNotBeNil)
+		So(status.State, ShouldEqual, JobStateRunning)
+		So(status.Exited, ShouldBeTrue)
+		So(status.Ended, ShouldNotBeNil)
+	})
+}
+
 type expectedJStateCount struct {
 	repGroup string
 	state    JobState
@@ -3277,50 +3329,7 @@ func TestStatusPageLivePushUpdateBehaviour(t *testing.T) {
 }
 
 func statusPageLivePushUpdateScript() string {
-	return `
-const fs = require('fs');
-const vm = require('vm');
-
-let source = fs.readFileSync('static/js/wr/websocket-handler.js', 'utf8');
-source = source
-    .replace(/^import .*;\n/gm, '')
-    .replace(/export function /g, 'function ');
-
-const context = {
-    console,
-    createRepGroupTracker() {
-        return {};
-    },
-    setupLiveWalltime(job, walltime) {
-        job.LiveWalltime = () => walltime;
-    }
-};
-context.globalThis = context;
-vm.createContext(context);
-vm.runInContext(source + '\nglobalThis.handleJobDetailsMessage = handleJobDetailsMessage;', context,
-    { filename: 'websocket-handler.js' });
-
-function observableArray(initial) {
-    const values = initial.slice();
-    function observable(next) {
-        if (arguments.length > 0) {
-            values.splice(0, values.length, ...next);
-            return values;
-        }
-
-        return values;
-    }
-    observable.push = value => values.push(value);
-    observable.splice = (...args) => values.splice(...args);
-    return observable;
-}
-
-function assert(condition, message) {
-    if (!condition) {
-        throw new Error(message);
-    }
-}
-
+	return statusPageHandlerHarnessPreamble() + `
 const sshCommand = "ssh -- ubuntu@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'";
 const existing = {
     Key: 'k',
@@ -3510,4 +3519,217 @@ func repoRootForWebUITest(t *testing.T) string {
 	So(err, ShouldBeNil)
 
 	return filepath.Dir(wd)
+}
+
+// TestStatusPageStaleRunningPushUpdate guards a job details row against the
+// running push update that arrives AFTER the job's terminal one. The server runs
+// every transition's change callback in its own goroutine (queue.changed) and
+// delays only the running one, polling for the job's start time
+// (enqueueChangeCallbackSubscriptions -> waitForJobStartTime), so a job that
+// finishes within a few milliseconds of starting delivers complete first and
+// running second. Only the payload's State comes from the transition; every
+// other field is a fresh snapshot of the finished job
+// (statusFromSubscriptionUpdate), and no push update follows a terminal state,
+// so applying that late State left the row running for ever with its walltime
+// ticking up.
+func TestStatusPageStaleRunningPushUpdate(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is required to exercise the status page JavaScript")
+	}
+
+	Convey("Status page details rows ignore a running push update from a run that already ended", t, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		//nolint:gosec // The Node script is a constant test harness.
+		cmd := exec.CommandContext(ctx, "node", "-e", statusPageStaleRunningPushUpdateScript())
+		output, err := cmd.CombinedOutput()
+		So(string(output), ShouldBeBlank)
+		So(err, ShouldBeNil)
+	})
+}
+
+func statusPageStaleRunningPushUpdateScript() string {
+	return statusPageHandlerHarnessPreamble() + `
+const started = 1750000000;
+const ended = started + 1;
+const rerunStarted = ended + 120;
+
+// The payload the status page receives for one transition: State comes from the
+// transition, every other field from the fresh snapshot taken when it was sent.
+function push(state, snapshot) {
+    return Object.assign({
+        Key: 'k',
+        RepGroup: 'rg1',
+        IsPushUpdate: true,
+        Cmd: 'true',
+        Attempts: 1,
+        Cores: 1,
+        ExpectedRAM: 100,
+        ExpectedTime: 60
+    }, snapshot, { State: state });
+}
+
+const finishedRun = {
+    Exited: true,
+    Exitcode: 0,
+    PeakRAM: 12,
+    CPUtime: 0.001,
+    Walltime: 0.004,
+    Started: started,
+    Ended: ended
+};
+const failedRun = Object.assign({}, finishedRun, { Exitcode: 1 });
+const freshAttempt = {
+    Exited: false,
+    Exitcode: 0,
+    PeakRAM: 0,
+    CPUtime: 0,
+    Walltime: 0,
+    Started: rerunStarted,
+    Ended: null
+};
+
+function viewModelShowing(state) {
+    const finished = state !== 'running';
+
+    return {
+        detailsRepgroup: 'rg1',
+        detailsOA: observableArray([{
+            Key: 'k',
+            RepGroup: 'rg1',
+            State: state,
+            Exited: finished,
+            Exitcode: 0,
+            Walltime: finished ? 0.004 : 0,
+            Started: started,
+            Ended: finished ? ended : null,
+            Cmd: 'true',
+            Attempts: 1,
+            LiveWalltimeIsTicking: !finished
+        }]),
+        isSearchMode: () => false,
+        repGroups: [{ id: 'rg1' }],
+        newJobsInfo: {}
+    };
+}
+
+function row(viewModel) {
+    return viewModel.detailsOA()[0];
+}
+
+// A job that finished within milliseconds of starting: its complete update
+// arrives first, then its own running update arrives carrying the same finished
+// snapshot.
+const fast = viewModelShowing('running');
+context.handleJobDetailsMessage(fast, push('complete', finishedRun));
+
+assert(row(fast).State === 'complete', 'the complete push update was not applied');
+assert(row(fast).LiveWalltimeIsTicking === false, 'a complete row must not tick its walltime');
+
+context.handleJobDetailsMessage(fast, push('running', finishedRun));
+
+assert(fast.detailsOA().length === 1, 'the late running push update must not add a row');
+assert(row(fast).State === 'complete',
+    'a running push update whose own snapshot says the job exited must not revive the row');
+assert(row(fast).Ended === ended, 'the completed row must keep its end time');
+assert(row(fast).LiveWalltimeIsTicking === false,
+    'a stale running push update must not restart the live walltime of a finished job');
+
+// The same late update against a job whose run ended buried instead of complete.
+const failed = viewModelShowing('running');
+context.handleJobDetailsMessage(failed, push('buried', failedRun));
+
+assert(row(failed).State === 'buried', 'the buried push update was not applied');
+
+context.handleJobDetailsMessage(failed, push('running', failedRun));
+
+assert(row(failed).State === 'buried',
+    'a running push update whose own snapshot says the job exited must not revive a buried row');
+
+// A failed job released for a retry reaches ready before its own late running
+// update arrives, and it is not running then either.
+const retried = viewModelShowing('running');
+context.handleJobDetailsMessage(retried, push('ready', failedRun));
+
+assert(row(retried).State === 'ready', 'the ready push update was not applied');
+
+context.handleJobDetailsMessage(retried, push('running', failedRun));
+
+assert(row(retried).State === 'ready',
+    'a running push update whose own snapshot says the job exited must not claim a queued job is running');
+
+// A genuine new attempt has its exited flag cleared when the job is reserved, so
+// its running update is applied and the row leaves the terminal state.
+const rerun = viewModelShowing('complete');
+context.handleJobDetailsMessage(rerun, push('running', freshAttempt));
+
+assert(row(rerun).State === 'running', 'a genuine re-run must be able to leave a terminal state');
+assert(row(rerun).Started === rerunStarted, 'a genuine re-run must show its own start time');
+assert(row(rerun).LiveWalltimeIsTicking === true, 'a genuine re-run must tick its live walltime');
+
+// A buried job kicked back onto the queue still carries the failed run's exited
+// flag until a runner reserves it, so its ready update must still be applied.
+const kicked = viewModelShowing('buried');
+context.handleJobDetailsMessage(kicked, push('ready', failedRun));
+
+assert(row(kicked).State === 'ready', 'a kicked buried job must be able to show as ready again');
+`
+}
+
+// statusPageHandlerHarnessPreamble loads the real websocket-handler.js into a
+// Node vm context that exposes handleJobDetailsMessage, plus the observableArray
+// and assert helpers the scripts driving it need. The stubbed setupLiveWalltime
+// records whether it started a live (running) walltime or a static one, so a
+// script can tell a revived row from a finished one.
+func statusPageHandlerHarnessPreamble() string {
+	return `
+const fs = require('fs');
+const vm = require('vm');
+
+let source = fs.readFileSync('static/js/wr/websocket-handler.js', 'utf8');
+source = source
+    .replace(/^import .*;\n/gm, '')
+    .replace(/export function /g, 'function ');
+
+const context = {
+    console,
+    createRepGroupTracker() {
+        return {};
+    },
+    setupLiveWalltime(job, walltime) {
+        job.LiveWalltime = () => walltime;
+        job.LiveWalltimeIsTicking = job.State === 'running';
+    }
+};
+context.globalThis = context;
+vm.createContext(context);
+vm.runInContext(source + '\nglobalThis.handleJobDetailsMessage = handleJobDetailsMessage;', context,
+    { filename: 'websocket-handler.js' });
+
+function observableArray(initial) {
+    const values = initial.slice();
+    function observable(next) {
+        if (arguments.length > 0) {
+            values.splice(0, values.length, ...next);
+            return values;
+        }
+
+        return values;
+    }
+    observable.push = value => values.push(value);
+    observable.splice = (...args) => values.splice(...args);
+    return observable;
+}
+
+function assert(condition, message) {
+    if (!condition) {
+        throw new Error(message);
+    }
+}
+`
 }
