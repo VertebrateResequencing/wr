@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/muxfys/v5"
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -164,6 +165,92 @@ func TestUnstartedRunWorkSpaceCleanupOrder(t *testing.T) {
 
 			So(mountedWhenProven, ShouldEqual, -1)
 			soPathsExist(actualCwd, tmpDir, workSpace, cwd)
+		})
+	})
+}
+
+// TestJobTmpDirRemoval covers how Execute reclaims the TMPDIR it gave a run. It
+// has to be removed on every exit, including for the great majority of Jobs that
+// have no cleanup Behaviour and so keep the workspace it sits in, and it must be
+// removed by descending into the workspace wr proved is its own: the path a Job
+// was given for TMPDIR is a string whose every component above tmp lies in the
+// tree the Job's own Cmd writes to for the whole run, so re-resolving it at
+// deletion time lets a component swapped for a symlink aim the deletion outside
+// the Job's Cwd entirely.
+func TestJobTmpDirRemoval(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a job wr made a workspace for", t, func() {
+		base := t.TempDir()
+		cwd := filepath.Join(base, "cwd")
+		So(os.MkdirAll(cwd, os.ModePerm), ShouldBeNil)
+
+		job := &Job{Cwd: cwd, Cmd: testWSCmd}
+		actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+		buff := clog.ToBufferAtLevel("warn")
+
+		Reset(clog.ToDefault)
+
+		Convey("its tmp dir is removed, and nothing else is", func() {
+			output := writeFileIn(actualCwd, "out.txt")
+
+			removeJobTmpDir(context.Background(), job)
+
+			soPathsGone(tmpDir)
+			soPathsExist(output, actualCwd, workSpace, cwd)
+			So(buff.String(), ShouldBeEmpty)
+		})
+
+		Convey("and the job's own Cmd cannot redirect that removal out of its Cwd", func() {
+			victim := filepath.Join(base, "precious")
+			victimTmp := filepath.Join(victim, createdTmpName)
+			victimFile := writeFileIn(victimTmp, "irreplaceable.txt")
+
+			// the Job's Cmd, run the way Execute runs it: in the working
+			// directory wr made, with TMPDIR naming the tmp dir beside it. It
+			// puts a symlink to the victim where its workspace was.
+			cmd := exec.CommandContext(context.Background(), "/bin/bash", "-c", `
+				set -e
+				cd "$TMPDIR/../.."
+				leaf=$(basename "$(dirname "$TMPDIR")")
+				mv "$leaf" "$leaf.moved"
+				ln -s "$VICTIM" "$leaf"
+			`)
+			cmd.Dir = actualCwd
+
+			cmd.Env = append(os.Environ(), "TMPDIR="+tmpDir, "VICTIM="+victim)
+
+			out, err := cmd.CombinedOutput()
+			So(string(out), ShouldBeEmpty)
+			So(err, ShouldBeNil)
+
+			removeJobTmpDir(context.Background(), job)
+
+			// what survived comes first: it is the whole point of the test, and
+			// the default FailureHalts would hide it behind the warning below.
+			soPathsExist(victimFile, victimTmp, victim)
+			So(buff.String(), ShouldContainSubstring, "could not remove the job's tmp dir")
+		})
+
+		Convey("and a tmp dir one of the job's mounts caches in is left alone", func() {
+			// deleting it could delete a writable mount's output before Unmount
+			// has uploaded it, so it is kept unconditionally, exactly as the
+			// cleanup Behaviour keeps it; see keptDirs. The MountConfigs go in
+			// before the workspace is made because they feed Job.Key(), and the
+			// key is what proves the workspace is this Job's.
+			cacher := &Job{
+				Cwd: cwd, Cmd: testWSCmd,
+				MountConfigs: MountConfigs{{Targets: []MountTarget{{CacheDir: createdTmpName}}}},
+			}
+			cacherCwd, cacherWorkSpace, cacherTmp := realWorkSpace(cacher)
+
+			removeJobTmpDir(context.Background(), cacher)
+
+			soPathsExist(cacherTmp, cacherCwd, cacherWorkSpace, cwd)
+			So(buff.String(), ShouldBeEmpty)
 		})
 	})
 }

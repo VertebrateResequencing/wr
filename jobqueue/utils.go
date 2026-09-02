@@ -834,6 +834,12 @@ func retryOrFail(tries *int, err error) (bool, error) {
 // so the last component of every ActualCwd wr has ever created.
 const createdCwdName = "cwd"
 
+// createdTmpName is what mkCwdAndTmp calls the dir it makes beside a Job's
+// working directory to be that Job's TMPDIR. It is a const because removing that
+// dir names it to an open handle on the workspace, rather than re-resolving the
+// path string the Job was given; see jobWorkSpaceSnapshot.removeTmpDir.
+const createdTmpName = "tmp"
+
 // mkCwdAndTmp creates "cwd" and "tmp" dirs within dir, returning their paths.
 func mkCwdAndTmp(dir string) (cwd, tmpDir string, err error) {
 	cwd = filepath.Join(dir, createdCwdName)
@@ -841,7 +847,7 @@ func mkCwdAndTmp(dir string) (cwd, tmpDir string, err error) {
 		return cwd, tmpDir, err
 	}
 
-	tmpDir = filepath.Join(dir, "tmp")
+	tmpDir = filepath.Join(dir, createdTmpName)
 
 	return cwd, tmpDir, mkdirManaged(tmpDir, os.ModePerm)
 }

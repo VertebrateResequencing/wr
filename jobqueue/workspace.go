@@ -99,6 +99,30 @@ func (s jobWorkSpaceSnapshot) cleanupWorkSpace() error {
 	return ws.cleanup()
 }
 
+// removeTmpDir resolves the snapshot's workspace and removes just the tmp dir wr
+// made in it to be the Job's TMPDIR, leaving the workspace and the working
+// directory alone: Execute must reclaim TMPDIR on every exit, including for a Job
+// with no cleanup Behaviour, whose workspace has to survive.
+//
+// It goes through the same resolution cleanupWorkSpace asks for, rather than an
+// os.RemoveAll of the TMPDIR path, because every component of that path above tmp
+// is inside the tree the Job's own Cmd may write to for the whole run: a string
+// is re-resolved by the kernel at deletion time, so a component replaced by a
+// symlink since redirects the deletion out of the Job's Cwd altogether.
+//
+// Doing nothing at all is the right answer to a workspace that has already gone -
+// the ordinary case when a cleanup Behaviour ran first - and to a tmp dir the
+// Job's live mounts and caches claim; see keptDirs.
+func (s jobWorkSpaceSnapshot) removeTmpDir() error {
+	ws, err := s.resolveWorkSpace()
+	if err != nil || ws == nil {
+		return err
+	}
+	defer ws.Close()
+
+	return ws.removeTmp()
+}
+
 // workSpaceSnapshot copies, under the Job's read lock, everything the workspace
 // resolution reads from it; nothing downstream looks at the Job again. Copying
 // the MountConfigs slice header is enough, since it is only ever replaced
@@ -870,6 +894,37 @@ func (ws *jobWorkSpace) removeWorkSpaceEntries(wsRoot *os.Root) error {
 	}
 
 	return nil
+}
+
+// removeTmp removes the workspace's tmp entry through a handle on the workspace
+// itself, opened by the same proven descent cleanup uses and confirmed by inode
+// against what that descent saw, so no component of the path above tmp is
+// resolved from a string. The entry is named to that handle by its own name
+// alone, so nothing here can be redirected elsewhere.
+//
+// A workspace that has gone since it was proven leaves nothing to remove.
+func (ws *jobWorkSpace) removeTmp() error {
+	if ws.keep.wholeWorkSpace || ws.keptEntry(createdTmpName) {
+		return nil
+	}
+
+	chain, err := ws.proven.openChain()
+	if err != nil {
+		return err
+	}
+	defer chain.closeAll()
+
+	wsRoot, err := chain.openLeaf()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+
+		return err
+	}
+	defer wsRoot.Close()
+
+	return wsRoot.RemoveAll(createdTmpName)
 }
 
 // removeActualCwd deletes the Job's working directory, keeping the given relative
