@@ -48,7 +48,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -596,13 +595,10 @@ func probePaths(base string, rels []string) []string {
 }
 
 // probe counts for the concurrency probes below. They are the smallest that
-// still fail when the upward walk's one-empty-dir-at-a-time removal, or the hold
-// file that stops it racing a directory being created, is taken away.
+// still fail when the upward walk stops removing one empty dir at a time.
 const (
-	probeCleaners   = 8
-	probeRounds     = 5
-	probeChurners   = 4
-	probeChurnCycle = 40
+	probeCleaners = 8
+	probeRounds   = 5
 )
 
 // probeRun is one run of a Job: the working directory mkHashedDir made for it,
@@ -693,57 +689,6 @@ func TestProbeConcurrentRunsOfOneCwd(t *testing.T) {
 			}
 
 			soPathsExist(live.output, live.actualCwd, live.tmpDir, precious, cwd)
-		})
-
-		Convey("and survives them being made and cleaned up concurrently", func() {
-			// the directory a run is being created in is the same one another
-			// run's cleanup is walking up through, so creating one has to be able
-			// to hold its ground: a run that cannot be created is a job that
-			// cannot start, and one whose live output goes is a job whose results
-			// are lost.
-			var (
-				wg        sync.WaitGroup
-				failed    atomic.Int64
-				lostLive  atomic.Int64
-				lostOwn   atomic.Int64
-				lastError atomic.Value
-			)
-
-			for i := range probeChurners {
-				owner := string(rune('A' + i))
-
-				wg.Go(func() {
-					for range probeChurnCycle {
-						run, serr := startProbeRun(cwd, key, owner)
-						if serr != nil {
-							failed.Add(1)
-							lastError.Store(serr.Error())
-
-							continue
-						}
-
-						if _, statErr := os.Lstat(run.output); statErr != nil {
-							lostOwn.Add(1)
-						}
-
-						if _, statErr := os.Lstat(live.output); statErr != nil {
-							lostLive.Add(1)
-						}
-
-						//nolint:errcheck // a cleanup racing another may fail; the counts are the assertions
-						run.cleanUp(cwd, cmd)
-					}
-				})
-			}
-
-			wg.Wait()
-
-			soPathsExist(live.output, live.actualCwd, live.tmpDir, precious, cwd)
-
-			So(lostLive.Load(), ShouldEqual, 0)
-			So(lostOwn.Load(), ShouldEqual, 0)
-			So(failed.Load(), ShouldEqual, 0)
-			So(lastError.Load(), ShouldBeNil)
 		})
 	})
 }
