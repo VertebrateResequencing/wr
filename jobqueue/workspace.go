@@ -612,6 +612,10 @@ type keptDirs struct {
 	//
 	// protect() can record nothing about such a mount point, since both halves of
 	// it describe something INSIDE the workspace.
+	//
+	// It is also set by a MountTarget.CacheDir that IS the workspace, where the
+	// workspace root holds a writable mount's un-uploaded output under names only
+	// the remote knows; see protectCaches.
 	wholeWorkSpace bool
 
 	// muxfysNamesWorkSpaceEntry is set when one of the Job's mounts has a
@@ -690,6 +694,18 @@ func (p *workSpacePaths) mountPoints() []string {
 // workspace, so the muxfysCachePrefix rule is what covers the directory muxfys
 // puts there, and this is where wr learns that rule has something to cover.
 //
+// A CacheDir that resolves to the workspace itself, in ANY spelling - "." or a
+// symlink inside the workspace that leads back to it - classifies as neither of
+// those things EITHER, and the muxfysCachePrefix rule cannot cover it: that rule
+// recognises the dir muxfys names inside a CacheBase, whereas a CacheDir IS the
+// cache, and what muxfys writes into it is named after the remote - an S3 target
+// caches at <CacheDir>/<host>/<bucket>/<path> (its s3.go LocalPath), so the
+// entries holding a writable mount's un-uploaded output are named by the bucket
+// and by the endpoint the Target's Profile resolves to at mount time. wr cannot
+// enumerate or prefix-match those in advance, so the only account it can give of
+// such a cache is to keep the whole workspace; a workspace left behind is
+// recoverable, output deleted before Unmount uploaded it is not.
+//
 // A cache location ABOVE the workspace needs recording nowhere: cleanup only
 // deletes inside the workspace, and the only thing that goes higher is the
 // upward walk of EMPTY parents, which a directory holding a cache stops.
@@ -703,9 +719,18 @@ func (k *keptDirs) protectCaches(p *workSpacePaths, mc MountConfig) {
 	}
 
 	for _, mt := range mc.Targets {
-		if cacheDir := resolveCacheDir(mt.CacheDir, p.workSpace); cacheDir != "" {
-			k.protect(p, filepath.Clean(cacheDir))
+		cacheDir := resolveCacheDir(mt.CacheDir, p.workSpace)
+		if cacheDir == "" {
+			continue
 		}
+
+		cacheDir = filepath.Clean(cacheDir)
+
+		if slices.Contains(relsBelowDirResolved(p.workSpace, cacheDir), ".") {
+			k.wholeWorkSpace = true
+		}
+
+		k.protect(p, cacheDir)
 	}
 }
 

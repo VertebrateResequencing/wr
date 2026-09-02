@@ -427,6 +427,116 @@ func TestCleanupKeepsMountCaches(t *testing.T) {
 	})
 }
 
+func TestCleanupKeepsCacheAtWorkSpace(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// a MountTarget.CacheDir is resolved against the workspace (job.go's
+	// resolveCacheDir), so "." - or any spelling that reaches it, lexically or
+	// through a symlink - puts muxfys's cache on the workspace root itself,
+	// beside the working directory and tmp. A writable cached mount only uploads
+	// at Unmount, so a cleanup that sweeps such a cache destroys the job's own
+	// output before it ever reaches S3: Client.Execute triggers the behaviours
+	// (client.go) before it unmounts, and the manager's lost-job cleanup sweeps
+	// while the runner may still be alive with the mount live.
+	Convey("Given a Job with a cleanup Behaviour whose mount cache lands on the workspace", t, func() {
+		cwd := t.TempDir()
+
+		cachingJob := func(cacheDir string) *Job {
+			return &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{
+				Mount: testWSMount,
+				Targets: []MountTarget{{
+					Path: testWSTargetPath, Cache: true, Write: true, CacheDir: cacheDir,
+				}},
+			}}, Behaviours: Behaviours{{When: OnSuccess, Do: Cleanup}}}
+		}
+
+		// muxfys caches an S3 target's data at <CacheDir>/<host>/<bucket>/<path>
+		// (its s3.go LocalPath), so the entries of a cache sitting on the
+		// workspace root are named after the remote and the endpoint the
+		// profile resolves to, not after anything wr can predict.
+		soCacheSurvivesCleanup := func(job *Job) {
+			_, workSpace, _ := realWorkSpace(job)
+
+			cached := writeFileIn(filepath.Join(workSpace, "s3.example.com", "mybucket"),
+				"unuploaded.txt")
+
+			err := job.TriggerBehaviours(true)
+
+			soPathsExist(cached, cwd)
+
+			So(err, ShouldBeNil)
+		}
+
+		Convey("A CacheDir of \".\" survives, since it is the workspace itself", func() {
+			soCacheSurvivesCleanup(cachingJob("."))
+		})
+
+		Convey("So does one spelled \"./\"", func() {
+			soCacheSurvivesCleanup(cachingJob("./"))
+		})
+
+		Convey("So does one spelled \"sub/..\"", func() {
+			soCacheSurvivesCleanup(cachingJob("sub/.."))
+		})
+
+		Convey("So does one that reaches the workspace through a symlink", func() {
+			// the classification has to ask the FILESYSTEM as well as the
+			// strings: "link" is lexically an ENTRY of the workspace, so a
+			// purely lexical answer keeps the symlink and sweeps the directory
+			// the cache is physically in - which is the workspace itself.
+			job := cachingJob("link")
+			_, workSpace, _ := realWorkSpace(job)
+
+			So(os.Symlink(workSpace, filepath.Join(workSpace, "link")), ShouldBeNil)
+
+			cached := writeFileIn(filepath.Join(workSpace, "link", "s3.example.com", "mybucket"),
+				"unuploaded.txt")
+			physical := filepath.Join(workSpace, "s3.example.com", "mybucket", "unuploaded.txt")
+
+			err := job.TriggerBehaviours(true)
+
+			soPathsExist(physical, cached, cwd)
+
+			So(err, ShouldBeNil)
+		})
+
+		Convey("A CacheDir below the workspace is kept while the rest is still swept", func() {
+			// the keep set may only widen, but not to the point of keeping
+			// everything: an ordinary cache dir is named, so cleanup knows
+			// exactly which entry to leave and deletes the others.
+			job := cachingJob("mycache")
+			actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+			cached := writeFileIn(filepath.Join(workSpace, "mycache"), "unuploaded.txt")
+			output := writeFileIn(actualCwd, "out.txt")
+
+			err := job.TriggerBehaviours(true)
+
+			soPathsExist(cached, cwd)
+			soPathsGone(output, tmpDir)
+
+			So(err, ShouldBeNil)
+		})
+
+		Convey("A Job that mounts nothing still has its whole workspace swept", func() {
+			job := &Job{Cwd: cwd, Cmd: testWSCmd,
+				Behaviours: Behaviours{{When: OnSuccess, Do: Cleanup}}}
+			actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+			output := writeFileIn(actualCwd, "out.txt")
+
+			err := job.TriggerBehaviours(true)
+
+			soPathsGone(output, actualCwd, tmpDir, workSpace)
+			soPathsExist(cwd)
+
+			So(err, ShouldBeNil)
+		})
+	})
+}
+
 // jobKeptDirs is the keep set the real resolution classifies for job: everything
 // cleanup must leave alone inside the workspace wr made for it. It is asked of
 // the production resolution, so a test can pin the classification itself rather
