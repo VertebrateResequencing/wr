@@ -1493,13 +1493,14 @@ func cleanupUnstartedWorkSpace(ctx context.Context, job *Job) {
 // jobWorkSpaceSnapshot.removeTmpDir.
 //
 // Failures are logged rather than returned for the reason
-// cleanupUnstartedWorkSpace logs its own: Execute's myerr is a plain local
-// already returned by the time this defer runs.
+// cleanupUnstartedWorkSpace logs its own: Execute's myerr is a plain local, so
+// assigning to it in this defer changes nothing.
 func removeJobTmpDir(ctx context.Context, job *Job) {
 	snap := job.workSpaceSnapshot()
 
 	if err := snap.removeTmpDir(); err != nil {
-		clog.Warn(ctx, "could not remove the job's tmp dir", "dir", snap.actualCwd, "err", err)
+		clog.Warn(ctx, "could not remove the job's tmp dir",
+			"dir", filepath.Join(filepath.Dir(snap.actualCwd), createdTmpName), "err", err)
 	}
 }
 
