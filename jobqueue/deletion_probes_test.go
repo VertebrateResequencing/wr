@@ -397,6 +397,64 @@ func soProbeRefused(err error, wantErr error) {
 	So(errors.Is(err, wantErr), ShouldBeTrue)
 }
 
+// probeCleanupActionRow is one of the two BehaviourActions that sweep a Job's
+// workspace. Behaviour.trigger has an arm of its own for each, and the doc on
+// CleanupAll reserves it the reach Cleanup gives up once output files can be
+// designated - so the two arms are one place a future divergence would land,
+// and the poisoned database records of the original file loss carried
+// cleanup_all.
+//
+// Each row asks the same two questions of one action, so an arm that stopped
+// going through the workspace licence shows up as the answer changing for one
+// action and not the other.
+type probeCleanupActionRow struct {
+	name string
+	do   BehaviourAction
+}
+
+func probeCleanupActionRows() []probeCleanupActionRow {
+	return []probeCleanupActionRow{
+		{name: "cleanup", do: Cleanup},
+		{name: "cleanup_all", do: CleanupAll},
+	}
+}
+
+func TestProbeCleanupActionsAgree(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given the workspace wr really made and the user's files all around it", t, func() {
+		for _, row := range probeCleanupActionRows() {
+			Convey("an on_exit "+row.name, func() {
+				job := &Job{Cmd: probeCmd, Behaviours: Behaviours{{When: OnExit, Do: row.do}}}
+				w := seedProbeWorld(t, job)
+
+				Convey("sweeps this run's own workspace and nothing else", func() {
+					err := job.Behaviours.Trigger(false, job)
+
+					soPathsExist(w.mine...)
+					soPathsExist(w.cwd, w.siblingFile, w.sibling)
+					soPathsGone(w.output, w.actualCwd, w.tmpDir)
+
+					So(err, ShouldBeNil)
+				})
+
+				Convey("refuses a dir of the user's at the workspace leaf's bare prefix", func() {
+					job.ActualCwd = w.decoy(probeBareLeaf)
+
+					err := job.Behaviours.Trigger(false, job)
+
+					soPathsExist(w.mine...)
+					soPathsExist(w.cwd, w.output, w.actualCwd, w.tmpDir)
+
+					soProbeRefused(err, errNotACreatedCwd)
+				})
+			})
+		}
+	})
+}
+
 // probeMountRow is one MountConfig shape, with the directories mounting it
 // really puts a live mount point or an un-uploaded cache in.
 //
@@ -696,6 +754,42 @@ func probeFuseRows() []probeFuseRow {
 			// to be recognised is the dir it led to, which is where the mount is.
 			gone: []string{output, createdCwdName + "/" + probeLinkName, createdTmpName, scratch},
 		},
+		{
+			// removeAllExcept's keep-before-check ordering. A dir that must
+			// survive AND is on the way to a deeper dir that must survive is both
+			// an exception and a dir to recurse into, and only keeping it whole is
+			// safe: recursing into a live mount to reach something deeper reads it
+			// through the mount and deletes every entry of the user's remote data
+			// that is not the deeper thing itself.
+			name: "a live mount inside the working directory with a cache dir configured inside it",
+			mc: MountConfig{Mount: testWSMount, Targets: []MountTarget{{
+				Path: testWSTargetPath, CacheDir: createdCwdName + "/" + testWSMount + "/c", Write: true,
+			}}},
+			mount: cwdMount,
+			own:   []string{output, scratch},
+			kept:  []string{".", createdCwdName, cwdMount},
+			gone:  []string{output, createdTmpName, scratch},
+		},
+		{
+			// keptDirs.wholeWorkSpace, honoured by BOTH sweeps. A CacheDir that IS
+			// the workspace makes the workspace root where the live mount's output
+			// waits for Unmount to upload it, under names only the remote knows, so
+			// nothing wr made there is wr's to delete: not the job's own results,
+			// and not the TMPDIR the runner reclaims on every exit.
+			//
+			// A mount point at the workspace cannot reach this rule the same way: a
+			// real mount needs an empty mount point, and mkCwdAndTmp has already
+			// filled the workspace by the time a run mounts.
+			name: "a live mount whose cache dir IS the workspace, so nothing there may go",
+			mc: MountConfig{Mount: testWSMount, Targets: []MountTarget{{
+				Path: testWSTargetPath, CacheDir: ".", Write: true,
+			}}},
+			mount: cwdMount,
+			own:   []string{output, scratch},
+			kept: []string{
+				".", createdCwdName, createdTmpName, cwdMount, output, scratch,
+			},
+		},
 	}
 }
 
@@ -740,6 +834,89 @@ func TestProbeLiveFuseMounts(t *testing.T) {
 				So(tmpErr, ShouldBeNil)
 			})
 		}
+
+		Convey("the manager's own route keeps the mount of the run it pinned", func() {
+			// the manager reaches the same deletion code as the runner, but
+			// through a PIN taken when it declared the job lost, and by the time
+			// that pin triggers the very same *Job can be a live retry, with the
+			// retry's own working directory written onto it by a Touch. So both
+			// halves of what the sweep may do are named by the pin: the workspace
+			// it deletes, and the live mount of the user's remote data inside that
+			// workspace which it must not delete through.
+			cwd := t.TempDir()
+			precious := writeFileIn(filepath.Join(cwd, "user_scripts"), probeMineName)
+
+			job := &Job{
+				Cwd: cwd, Cmd: probeCmd,
+				MountConfigs: MountConfigs{{Mount: testWSMount, Targets: probeCachedTargets()}},
+				Behaviours:   Behaviours{{When: OnExit, Do: CleanupAll}},
+			}
+			lostCwd, _, lostTmp := realWorkSpace(job)
+
+			remote := probeMountRemote(t, filepath.Join(lostCwd, testWSMount))
+
+			pin := job.pinBehaviours()
+
+			abandoned := writeFileIn(lostCwd, "abandoned.txt")
+
+			retry, err := startProbeRun(cwd, job.Key(), "retry")
+			So(err, ShouldBeNil)
+
+			job.Lock()
+			job.ActualCwd = retry.actualCwd
+			job.Unlock()
+
+			err = pin.trigger(false)
+
+			soPathsExist(remote)
+			soPathsExist(filepath.Join(lostCwd, testWSMount, probeRemoteName))
+			soPathsExist(retry.output, retry.actualCwd, retry.tmpDir)
+			soPathsExist(precious, cwd)
+			soPathsGone(abandoned, lostTmp)
+
+			So(err, ShouldBeNil)
+		})
+
+		Convey("a run handed a workspace name an earlier run finished with keeps its mount", func() {
+			// os.MkdirTemp's digits are not pinned to a run, so the name one
+			// manager's run finished with is free for another manager's run of the
+			// SAME key to be handed later, and a stale ActualCwd then names a live
+			// workspace byte for byte. Nothing about the path can tell the two
+			// apart - the residual the "another run of the same job" row records -
+			// but the two are one job by key, so they mount the same remote at the
+			// same place, and the stale run's own keep set still names it. The
+			// local workspace goes; the user's remote data does not.
+			cwd := t.TempDir()
+			precious := writeFileIn(filepath.Join(cwd, "user_scripts"), probeMineName)
+
+			job := &Job{
+				Cwd: cwd, Cmd: probeCmd,
+				MountConfigs: MountConfigs{{Mount: testWSMount, Targets: probeCachedTargets()}},
+			}
+			finished, workSpace, _ := realWorkSpace(job)
+
+			So(os.RemoveAll(workSpace), ShouldBeNil)
+			So(os.MkdirAll(workSpace, os.ModePerm), ShouldBeNil)
+
+			reusedCwd, reusedTmp, err := mkCwdAndTmp(workSpace)
+			So(err, ShouldBeNil)
+			So(reusedCwd, ShouldEqual, finished)
+
+			remote := probeMountRemote(t, filepath.Join(reusedCwd, testWSMount))
+			live := writeFileIn(reusedCwd, "live_output.txt")
+
+			snap := job.workSpaceSnapshot()
+			cleanErr := snap.cleanupWorkSpace()
+			tmpErr := snap.removeTmpDir()
+
+			soPathsExist(remote)
+			soPathsExist(filepath.Join(reusedCwd, testWSMount, probeRemoteName))
+			soPathsExist(precious, cwd, workSpace, reusedCwd)
+			soPathsGone(live, reusedTmp)
+
+			So(cleanErr, ShouldBeNil)
+			So(tmpErr, ShouldBeNil)
+		})
 	})
 }
 
