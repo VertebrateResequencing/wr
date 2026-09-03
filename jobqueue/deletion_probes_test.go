@@ -45,11 +45,13 @@ package jobqueue
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
+	gofuse "github.com/hanwen/go-fuse/v2/fs"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -73,10 +75,10 @@ const (
 	probeOtherLeaf = "user's own"
 	probeDigits    = "0123456789"
 
-	// probeCacheLink is the name of a symlink a mount config spells a cache
-	// location through, and probeRealCache the dir it leads to.
-	probeCacheLink = "clink"
-	probeRealCache = "realcache"
+	// probeLinkName is the name of a symlink a mount config spells a mount point
+	// or a cache location through, and probeRealDir the dir it leads to.
+	probeLinkName = "link"
+	probeRealDir  = "real"
 
 	// probeSiblingDigits turns a workspace name into the name os.MkdirTemp would
 	// have given ANOTHER run of the same Job.
@@ -508,30 +510,30 @@ func probeMountRows() []probeMountRow {
 		// physically in - the one a sweep would recurse into.
 		{
 			name: "a muxfys CacheBase spelled through a symlink inside the working dir",
-			mc:   MountConfig{Mount: mountDir, CacheBase: probeCacheLink, Targets: probeCachedTargets()},
+			mc:   MountConfig{Mount: mountDir, CacheBase: probeLinkName, Targets: probeCachedTargets()},
 			setUp: func(actualCwd, _ string) {
-				So(os.MkdirAll(filepath.Join(actualCwd, probeRealCache), os.ModePerm), ShouldBeNil)
-				probeSymlink(probeRealCache, filepath.Join(actualCwd, probeCacheLink))
+				So(os.MkdirAll(filepath.Join(actualCwd, probeRealDir), os.ModePerm), ShouldBeNil)
+				probeSymlink(probeRealDir, filepath.Join(actualCwd, probeLinkName))
 			},
 			live: []string{
-				createdCwdName + "/" + probeRealCache + "/" + probeMuxfysDir, createdCwdName + "/" + mountDir,
+				createdCwdName + "/" + probeRealDir + "/" + probeMuxfysDir, createdCwdName + "/" + mountDir,
 			},
-			kept: []string{".", createdCwdName, createdCwdName + "/" + probeRealCache},
+			kept: []string{".", createdCwdName, createdCwdName + "/" + probeRealDir},
 			// the symlink itself is not a dir, so the sweep unlinks it: what had
 			// to be recognised is the dir it led to, which is where the cache is.
-			gone: []string{output, createdCwdName + "/" + probeCacheLink, createdTmpName, scratch},
+			gone: []string{output, createdCwdName + "/" + probeLinkName, createdTmpName, scratch},
 		},
 		{
 			name: "an explicit CacheDir spelled through a symlink inside the workspace",
 			mc: MountConfig{Mount: mountDir, Targets: []MountTarget{{
-				Path: testWSTargetPath, CacheDir: probeCacheLink, Write: true,
+				Path: testWSTargetPath, CacheDir: probeLinkName, Write: true,
 			}}},
 			setUp: func(_, workSpace string) {
-				So(os.MkdirAll(filepath.Join(workSpace, probeRealCache), os.ModePerm), ShouldBeNil)
-				probeSymlink(probeRealCache, filepath.Join(workSpace, probeCacheLink))
+				So(os.MkdirAll(filepath.Join(workSpace, probeRealDir), os.ModePerm), ShouldBeNil)
+				probeSymlink(probeRealDir, filepath.Join(workSpace, probeLinkName))
 			},
-			live: []string{probeRealCache + "/" + testWSTargetPath, createdCwdName + "/" + mountDir},
-			kept: []string{".", createdCwdName, probeRealCache, probeCacheLink},
+			live: []string{probeRealDir + "/" + testWSTargetPath, createdCwdName + "/" + mountDir},
+			kept: []string{".", createdCwdName, probeRealDir, probeLinkName},
 			gone: []string{output, createdTmpName, scratch},
 		},
 	}
@@ -597,6 +599,208 @@ func probePaths(base string, rels []string) []string {
 	}
 
 	return paths
+}
+
+// probeFuseRow is one MountConfig shape whose mount point holds a REAL FUSE
+// mount of the user's remote data, rather than a plain directory standing in for
+// one.
+//
+// A plain directory cannot show what the keep set is FOR. Every deletion below
+// is made through an os.Root, which resolves each path beneath the directory it
+// holds - but RESOLVE_BENEATH does not imply RESOLVE_NO_XDEV, so an
+// os.Root.RemoveAll of an entry that happens to be a live mount crosses into it
+// and unlinks what is behind. For a muxfys mount that is the user's objects in
+// their object store, and for a writable one their job's own results before
+// Unmount ever uploaded them. Nothing about the workspace's shape stops it; the
+// keep set is the only thing that does.
+type probeFuseRow struct {
+	name string
+	mc   MountConfig
+
+	// setUp arranges whatever the shape needs on disk beyond the mount itself,
+	// as probeMountRow's does and for the same reason.
+	setUp func(actualCwd, workSpace string)
+
+	// mount is where the remote is really mounted, own are the files this run
+	// left OUTSIDE that mount, and kept and gone are the paths cleanup and the
+	// TMPDIR removal must between them have left and deleted. All of them are
+	// spelled relative to the WORKSPACE and written out literally, as
+	// probeMountRow spells its own.
+	//
+	// The own files are written after the mount is raised, and nothing wr made
+	// under a mount point is named at all, because a mount point has to be empty
+	// to mount over: in a real run the working directory and the TMPDIR are made
+	// empty and the mounts go up before the Job's Cmd writes anything, so what a
+	// run leaves inside one of its own mounts is remote data, not local.
+	mount string
+	own   []string
+	kept  []string
+	gone  []string
+}
+
+func probeFuseRows() []probeFuseRow {
+	const (
+		output   = createdCwdName + "/own_output.txt"
+		scratch  = createdTmpName + "/scratch.txt"
+		cwdMount = createdCwdName + "/" + testWSMount
+		realDir  = createdCwdName + "/" + probeRealDir
+	)
+
+	return []probeFuseRow{
+		// one row per rule of the keep set that can be the only thing between
+		// the sweep and a live mount, each over a directory wr itself made.
+		{
+			// keptDirs.inActualCwd, honoured by removeAllExcept.
+			name:  "a live mount inside the working directory",
+			mc:    MountConfig{Mount: testWSMount, Targets: probeCachedTargets()},
+			mount: cwdMount,
+			own:   []string{output, scratch},
+			kept:  []string{".", createdCwdName, cwdMount},
+			gone:  []string{output, createdTmpName, scratch},
+		},
+		{
+			// keptDirs.wholeActualCwd: the working directory IS the mount, so
+			// everything in it is the user's remote data and none of it may go.
+			name:  "a live mount that IS the working directory",
+			mc:    MountConfig{Mount: ".", Targets: probeCachedTargets()},
+			mount: createdCwdName,
+			own:   []string{scratch},
+			kept:  []string{".", createdCwdName},
+			gone:  []string{createdTmpName, scratch},
+		},
+		{
+			// keptDirs.workSpaceEntries, honoured by BOTH sweeps: the tmp dir is
+			// reclaimed on every exit, cleanup Behaviour or none, so a mount put
+			// there must survive a deletion the workspace sweep does not make.
+			name:  "a live mount that IS the job's TMPDIR",
+			mc:    MountConfig{Mount: "../" + createdTmpName, Targets: probeCachedTargets()},
+			mount: createdTmpName,
+			own:   []string{output},
+			kept:  []string{".", createdTmpName},
+			gone:  []string{createdCwdName, output},
+		},
+		{
+			// relsBelowDirResolved: only the RESOLVED spelling names the
+			// directory the mount is physically in, and a keep set given the
+			// lexical one alone would protect the symlink and delete the mount.
+			name: "a live mount spelled through a symlink inside the working directory",
+			mc:   MountConfig{Mount: probeLinkName + "/" + testWSMount, Targets: probeCachedTargets()},
+			setUp: func(actualCwd, _ string) {
+				So(os.MkdirAll(filepath.Join(actualCwd, probeRealDir), os.ModePerm), ShouldBeNil)
+				probeSymlink(probeRealDir, filepath.Join(actualCwd, probeLinkName))
+			},
+			mount: realDir + "/" + testWSMount,
+			own:   []string{output, scratch},
+			kept:  []string{".", createdCwdName, realDir, realDir + "/" + testWSMount},
+			// the symlink itself is not a dir, so the sweep unlinks it: what had
+			// to be recognised is the dir it led to, which is where the mount is.
+			gone: []string{output, createdCwdName + "/" + probeLinkName, createdTmpName, scratch},
+		},
+	}
+}
+
+func TestProbeLiveFuseMounts(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a Job whose mount point holds a live mount of the user's remote data", t, func() {
+		if !probeCanMountFuse() {
+			SkipConvey("this host will not let an unprivileged process raise a FUSE mount", func() {})
+
+			return
+		}
+
+		for _, row := range probeFuseRows() {
+			Convey(row.name, func() {
+				cwd := t.TempDir()
+				precious := writeFileIn(filepath.Join(cwd, "user_scripts"), probeMineName)
+
+				job := &Job{Cwd: cwd, Cmd: probeCmd, MountConfigs: MountConfigs{row.mc}}
+				actualCwd, workSpace, _ := realWorkSpace(job)
+
+				if row.setUp != nil {
+					row.setUp(actualCwd, workSpace)
+				}
+
+				remote := probeMountRemote(t, filepath.Join(workSpace, row.mount))
+				probeOwnFiles(workSpace, row.own)
+
+				snap := job.workSpaceSnapshot()
+				cleanErr := snap.cleanupWorkSpace()
+				tmpErr := snap.removeTmpDir()
+
+				soPathsExist(remote)
+				soPathsExist(filepath.Join(workSpace, row.mount, probeRemoteName))
+				soPathsExist(probePaths(workSpace, row.kept)...)
+				soPathsExist(precious, cwd)
+				soPathsGone(probePaths(workSpace, row.gone)...)
+
+				So(cleanErr, ShouldBeNil)
+				So(tmpErr, ShouldBeNil)
+			})
+		}
+	})
+}
+
+// probeOwnFiles writes the files a run left outside its own mounts, each spelled
+// relative to base, as probeFuseRow.own spells them.
+func probeOwnFiles(base string, rels []string) {
+	for _, rel := range rels {
+		path := filepath.Join(base, rel)
+		writeFileIn(filepath.Dir(path), filepath.Base(path))
+	}
+}
+
+// probeCanMountFuse reports whether this host lets an unprivileged process raise
+// a FUSE mount, which the rows above need and a host with no /dev/fuse or no
+// setuid fusermount cannot give them.
+func probeCanMountFuse() bool {
+	dev, err := os.OpenFile("/dev/fuse", os.O_RDWR, 0)
+	if err != nil {
+		return false
+	}
+
+	defer dev.Close()
+
+	for _, bin := range []string{"fusermount3", "fusermount"} {
+		if _, err = exec.LookPath(bin); err == nil {
+			return true
+		}
+	}
+
+	return false
+}
+
+// probeMountRemote plants a file of the user's remote data in a directory
+// OUTSIDE the Job's Cwd and really FUSE mounts that directory over mountPoint,
+// returning the planted file's path. The mount is taken down when the test ends.
+//
+// go-fuse's loopback filesystem is what makes the mount real, and it is the
+// cheapest one an unprivileged process can raise. What is behind it is an
+// ordinary directory, so what survived can be asserted about directly; muxfys
+// would need an object store to talk to, and the deletion under test does not
+// care which filesystem is mounted, only that a mount gets crossed.
+func probeMountRemote(t *testing.T, mountPoint string) string {
+	t.Helper()
+
+	backing := t.TempDir()
+	remote := writeFileIn(backing, probeRemoteName)
+
+	root, err := gofuse.NewLoopbackRoot(backing)
+	So(err, ShouldBeNil)
+	So(os.MkdirAll(mountPoint, os.ModePerm), ShouldBeNil)
+
+	server, err := gofuse.Mount(mountPoint, root, &gofuse.Options{})
+	So(err, ShouldBeNil)
+
+	t.Cleanup(func() {
+		if uerr := server.Unmount(); uerr != nil {
+			t.Logf("could not unmount the probe's remote at %s: %s", mountPoint, uerr)
+		}
+	})
+
+	return remote
 }
 
 // probe counts for the concurrency probes below. They are the smallest that
