@@ -137,6 +137,10 @@ const (
 	exitCodeCommandNotFound   = 127
 	exitCodeCommandInvalid    = 128
 	exitCodeAbnormal          = 255
+
+	// exitCodeUploadFailure is recorded for a job whose command exited zero but
+	// whose output could not be uploaded to its writable mount.
+	exitCodeUploadFailure = -2
 )
 
 const (
@@ -353,6 +357,21 @@ func (state *executeLiveState) snapshot() *JobEndState {
 		Stdout:   stdout,
 		Stderr:   stderr,
 	}
+}
+
+// combineExecOutcomes folds the verdict that unmounting the job's mounts
+// reached into the outcome of the command itself.
+//
+// A command that failed decides its own fate: its fail reason and exit code are
+// the more useful ones to report. But a command that worked must not archive as
+// a clean success if its output could not be uploaded, since that output is
+// gone: the unmount's verdict has to survive to get the job run again.
+func combineExecOutcomes(unmount, cmd execOutcome) execOutcome {
+	if !unmount.dorelease || cmd.dobury || cmd.dorelease {
+		return cmd
+	}
+
+	return unmount
 }
 
 // GetRecent gets archived Jobs across all rep groups that finished running
@@ -637,6 +656,29 @@ func newClientForSocket(sock mangos.Socket, addr, caFile, certDomain string,
 		port:     addrParts[1],
 		args:     []string{addr, caFile, certDomain},
 	}, nil
+}
+
+// appendExecProblems appends to a finished job's stderr the problems that its
+// own stderr cannot carry: the logs of its mounts (only worth reporting for a
+// job that failed), any problem running its behaviours, and any problem
+// handling the command's stderr.
+func appendExecProblems(stderr []byte, jobFailed bool, mountLogs string, berr, errsew error) []byte {
+	if jobFailed && mountLogs != "" {
+		stderr = append(stderr, "\n\nMount logs:\n"...)
+		stderr = append(stderr, mountLogs...)
+	}
+
+	if berr != nil {
+		stderr = append(stderr, "\n\nBehaviour problems:\n"...)
+		stderr = append(stderr, berr.Error()...)
+	}
+
+	if errsew != nil {
+		stderr = append(stderr, "\n\nSTDERR handling problems:\n"...)
+		stderr = append(stderr, errsew.Error()...)
+	}
+
+	return stderr
 }
 
 // dialClientSocket creates a req socket configured with TLS for the given
@@ -2138,13 +2180,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	exceededMemEstimate = commandExceededMemoryEstimate(peakmem, job.Requirements.RAM)
 
-	// get the exit code and figure out what to do with the Job; dobury,
-	// dorelease and failreason are consulted by the unmount/behaviour reporting
-	// below before being finalised by the outcome classification.
-	var (
-		dobury, dorelease bool
-		failreason        string
-	)
+	// the unmount below can decide the job must be redone even when the
+	// command itself worked, so its verdict is kept here and folded into the
+	// command's own outcome after classification.
+	var unmountOutcome execOutcome
 
 	var mayBeTemp string
 	if job.UntilBuried > 1 {
@@ -2166,33 +2205,31 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	// try and unmount now, because if we fail to upload files, we'll have to
 	// start over
-	addMountLogs := dobury || dorelease
-
 	logs, unmountErr := job.Unmount()
 	if unmountErr != nil {
-		if strings.Contains(unmountErr.Error(), "failed to upload") && !dobury {
-			// dorelease feeds the behaviour-problem reporting below; the fail
-			// reason and exit code are then set by the outcome classification.
-			dorelease = true
+		if strings.Contains(unmountErr.Error(), "failed to upload") {
+			// the files that did not upload only existed in the mount's cache,
+			// which is deleted at unmount regardless, so the job must be redone
+			unmountOutcome = execOutcome{
+				dorelease:  true,
+				failreason: FailReasonUpload,
+				exitcode:   exitCodeUploadFailure,
+			}
 		}
 
 		myerr = appendExecErr(myerr, unmountErr, "unmounting also caused problem(s)")
 	}
 
-	if addMountLogs && logs != "" {
-		finalStdErr = append(finalStdErr, "\n\nMount logs:\n"...)
-		finalStdErr = append(finalStdErr, logs...)
-	}
+	// the accumulated problems are what we report if the unmount's verdict is
+	// the one that survives the combination below.
+	unmountOutcome.myerr = myerr
 
-	if (dobury || dorelease) && berr != nil {
-		finalStdErr = append(finalStdErr, "\n\nBehaviour problems:\n"...)
-		finalStdErr = append(finalStdErr, berr.Error()...)
-	}
+	// the mount logs are only worth adding to the job's stderr if the job did
+	// not simply succeed: either the command failed (classifyExecOutcome then
+	// always buries or releases it) or its output failed to upload.
+	jobFailed := err != nil || unmountOutcome.dorelease
 
-	if errsew != nil {
-		finalStdErr = append(finalStdErr, "\n\nSTDERR handling problems:\n"...)
-		finalStdErr = append(finalStdErr, errsew.Error()...)
-	}
+	finalStdErr = appendExecProblems(finalStdErr, jobFailed, logs, berr, errsew)
 
 	// *** following is useful when debugging; need a better way to see these
 	// errors from runner clients...
@@ -2224,13 +2261,9 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		},
 	})
 
-	dobury = outcome.dobury
-	dorelease = outcome.dorelease
-	failreason = outcome.failreason
+	outcome = combineExecOutcomes(unmountOutcome, outcome)
 	myerr = outcome.myerr
-
 	exitcode := outcome.exitcode
-	doarchive := outcome.doarchive
 
 	// now we've done everything time-consuming so can stop touching the job
 	stopTouching <- true
@@ -2248,7 +2281,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	}
 
 	worked, hadProblems := c.reportFinalState(ctx, job, jes, execAction{
-		bury: dobury, release: dorelease, archive: doarchive, failreason: failreason,
+		bury: outcome.dobury, release: outcome.dorelease, archive: outcome.doarchive,
+		failreason: outcome.failreason,
 	})
 	if !worked {
 		//nolint:contextcheck // behaviours run detached from the cancellable job context
