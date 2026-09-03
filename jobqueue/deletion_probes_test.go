@@ -1688,3 +1688,48 @@ func probeReuseWorkSpaceName(job *Job) (reusedCwd, workSpace string) {
 
 	return reusedCwd, workSpace
 }
+
+func TestProbeWorkSpaceOnAnotherFilesystem(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a workspace wr built on a filesystem mounted inside the Job's Cwd", t, func() {
+		// every deletion is made through an os.Root, and RESOLVE_BENEATH does
+		// not imply RESOLVE_NO_XDEV, so nothing in wr asks whether a path
+		// crosses a mount boundary. A Cwd with fast scratch mounted somewhere
+		// below it is ordinary on the shared filesystems jobs run on, and the
+		// hashed levels are exactly where such a mount would be: the sweep then
+		// works entirely on the other filesystem, and the upward walk arrives at
+		// the mount point itself.
+		if !probeCanMountFuse() {
+			SkipConvey("this host will not let an unprivileged process raise a FUSE mount", func() {})
+
+			return
+		}
+
+		cwd := t.TempDir()
+		precious := writeFileIn(filepath.Join(cwd, "user_scripts"), probeMineName)
+
+		job := &Job{Cwd: cwd, Cmd: probeCmd, Behaviours: Behaviours{{When: OnExit, Do: CleanupAll}}}
+
+		// the deepest hashed level is where mkHashedDir will put this Job's
+		// workspace, so mounting there puts the whole workspace across the
+		// boundary before the workspace exists.
+		hashed, _ := calculateHashedDir(filepath.Join(cwd, AppName+createdCwdBaseSuffix), job.Key())
+		scratch := probeMountRemote(t, hashed)
+
+		actualCwd, workSpace, tmpDir := realWorkSpace(job)
+		output := writeFileIn(actualCwd, "own_output.txt")
+
+		err := job.Behaviours.Trigger(false, job)
+
+		// the file of the user's on the OTHER filesystem is beside the
+		// workspace, so only the upward walk could reach it - and that walk
+		// removes empty directories, which the mount point is not.
+		soPathsExist(scratch, precious, cwd, hashed)
+		soPathsGone(output, actualCwd, tmpDir, workSpace)
+
+		So(err, ShouldBeNil)
+	})
+}
