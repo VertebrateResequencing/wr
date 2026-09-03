@@ -73,6 +73,12 @@ type runnerServerFixture struct {
 // child of TestJobqueueRunnerScheduling held 16498 sockets on port 5023,
 // listening on it and connecting to itself at roughly 250 connections/second.
 //
+// Running those tests also cost about 3s of CPU per child, which with 16
+// runners launched at once on a loaded host staggered their reserves over tens
+// of seconds. For TestJobqueueRunnerScheduling that is not merely slow: its
+// whole subject is how many jobs run SIMULTANEOUSLY, so a stagger of that size
+// falsifies the thing being measured.
+//
 // The flag is a fixed part of the runner cmdline, so crash recovery, which
 // matches a recovered runner by its exact cmdline, is unaffected.
 const runnerModeTestRun = " -test.run TestJobqueueRunnerModeEntrypoint"
