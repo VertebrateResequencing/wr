@@ -624,16 +624,59 @@ func (j *Job) WallTime() time.Duration {
 // In both cases, alters the return value to apply any overrides stored in
 // job.EnvOverride.
 func (j *Job) Env() ([]string, error) {
-	overrideEs, err := j.envCurrentOverrides()
+	return jobEnv{envC: j.EnvC, overrides: j.envOverrideSnapshot(), retrieved: j.EnvCRetrieved}.decode()
+}
+
+// envDecodeHook, when set, is called every time a Job's stored environment is
+// decoded, so that a test can count the decodes a code path makes. Decoding is a
+// decompress plus a decode of every variable the Job was added with, on the path
+// of every Job that exits, and a path that does none of it cannot show that in
+// its result, only in the work it did. It is nil in production.
+var envDecodeHook func() //nolint:gochecknoglobals // the only seam onto work that has no result
+
+// jobEnv is a Job's environment in the compressed form the Job keeps it in:
+// EnvC, EnvOverride, and whether EnvC was asked for (see Env for what each case
+// means).
+//
+// Copying it costs three fields, while decoding it costs a decompress and a
+// decode of every variable, so a consumer that may not need the environment can
+// carry this and decode only if it turns out to need it; see jobRunEnv.
+type jobEnv struct {
+	envC      []byte
+	overrides []byte
+	retrieved bool
+}
+
+// storedEnvLocked copies the Job's stored environment. The caller must hold at
+// least the Job's read lock.
+//
+// Copying the slice headers is enough, since both are only ever replaced
+// wholesale - EnvC by the retrieval that fills it, EnvOverride by
+// EnvAddOverride.
+func (j *Job) storedEnvLocked() jobEnv {
+	return jobEnv{envC: j.EnvC, overrides: j.EnvOverride, retrieved: j.EnvCRetrieved}
+}
+
+// decode is Env for an environment already copied out of a Job.
+func (e jobEnv) decode() ([]string, error) {
+	if envDecodeHook != nil {
+		envDecodeHook()
+	}
+
+	overrideEs, err := decodeCompressedEnv(e.overrides)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(j.EnvC) == 0 {
-		return j.envWithoutStored(overrideEs)
+	if len(e.envC) == 0 {
+		if !e.retrieved {
+			return nil, nil
+		}
+
+		return applyEnvOverrides(os.Environ(), overrideEs), nil
 	}
 
-	env, err := j.decodeStoredEnv()
+	env, err := e.decodeStored()
 	if err != nil {
 		return nil, err
 	}
@@ -641,21 +684,29 @@ func (j *Job) Env() ([]string, error) {
 	return applyEnvOverrides(env, overrideEs), nil
 }
 
-// envWithoutStored returns the environment to use for a Job that has no stored
-// EnvC: the current environment (with overrides applied) if its environment was
-// retrieved, else nil.
-func (j *Job) envWithoutStored(overrideEs []string) ([]string, error) {
-	if !j.EnvCRetrieved {
+// decodeStored decodes e.envC, falling back to the current environment if a nil
+// environment was stored.
+func (e jobEnv) decodeStored() ([]string, error) {
+	env, err := decodeCompressedEnv(e.envC)
+	if err != nil {
+		return nil, err
+	}
+
+	if env == nil {
+		return os.Environ(), nil
+	}
+
+	return env, nil
+}
+
+// decodeCompressedEnv decompresses and decodes an environment stored by
+// compressEnv, answering nil for a blank one.
+func decodeCompressedEnv(compressed []byte) ([]string, error) {
+	if len(compressed) == 0 {
 		return nil, nil
 	}
 
-	return applyEnvOverrides(os.Environ(), overrideEs), nil
-}
-
-// decodeStoredEnv decompresses and decodes j.EnvC, falling back to the current
-// environment if a nil environment was stored.
-func (j *Job) decodeStoredEnv() ([]string, error) {
-	decompressed, err := decompress(j.EnvC)
+	decompressed, err := decompress(compressed)
 	if err != nil {
 		return nil, err
 	}
@@ -666,10 +717,6 @@ func (j *Job) decodeStoredEnv() ([]string, error) {
 
 	if err = dec.Decode(es); err != nil {
 		return nil, err
-	}
-
-	if es.Environ == nil {
-		return os.Environ(), nil
 	}
 
 	return es.Environ, nil
@@ -687,26 +734,7 @@ func applyEnvOverrides(env, overrideEs []string) []string {
 
 // envCurrentOverrides decompresses and decodes any existing EnvOverride.
 func (j *Job) envCurrentOverrides() ([]string, error) {
-	envOverride := j.envOverrideSnapshot()
-	if len(envOverride) == 0 {
-		return nil, nil
-	}
-
-	decompressed, err := decompress(envOverride)
-	if err != nil {
-		return nil, err
-	}
-
-	ch := new(codec.BincHandle)
-	dec := codec.NewDecoderBytes(decompressed, ch)
-	overrideEs := &envStr{}
-
-	err = dec.Decode(overrideEs)
-	if err != nil {
-		return nil, err
-	}
-
-	return overrideEs.Environ, err
+	return decodeCompressedEnv(j.envOverrideSnapshot())
 }
 
 func (j *Job) envOverrideSnapshot() []byte {

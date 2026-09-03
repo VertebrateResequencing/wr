@@ -74,17 +74,49 @@ var workSpaceResolveHook func() //nolint:gochecknoglobals // the only seam onto 
 // unconditionally rather than judging whether Unmount has already run.
 const muxfysCachePrefix = ".muxfys"
 
-// jobWorkSpaceSnapshot is the copy of a Job's fields that the workspace
-// resolution needs, taken under the Job's lock and used only after releasing it:
-// the resolution walks the filesystem, and ActualCwd is written under the lock
-// by applyLiveSnapshot while cleanup runs in the same manager process, so
-// reading it unlocked is a race that decides which directory gets deleted.
+// jobWorkSpaceSnapshot is the copy of a Job's state that its behaviours act on -
+// the fields the workspace resolution needs, and the environment a `run`
+// Behaviour's command executes with - taken under the Job's lock and used only
+// after releasing it: the resolution walks the filesystem, and ActualCwd is
+// written under the lock by applyLiveSnapshot while cleanup runs in the same
+// manager process, so reading it unlocked is a race that decides which directory
+// gets deleted.
 type jobWorkSpaceSnapshot struct {
 	cwdMatters bool
 	cwd        string
 	actualCwd  string
 	key        string
 	mounts     MountConfigs
+	env        jobRunEnv
+}
+
+// jobRunEnv is the Job state a `run` Behaviour needs to execute its command in
+// the environment the Job's Cmd ran in.
+//
+// The environment is carried in the compressed form the Job stores it in, and
+// decoded only when a `run` Behaviour actually fires: Behaviours.Trigger answers
+// "are there any behaviours at all?" before taking a snapshot because most Jobs
+// have none, and most of those that do have only a cleanup, while decoding costs
+// a decompress and a decode of every variable the Job was added with.
+type jobRunEnv struct {
+	// stored is the Job's own environment: what Execute gave its Cmd, before the
+	// directories below are put in it.
+	stored jobEnv
+
+	// changeHome says whether HOME is to become the Job's working directory, as
+	// Execute makes it for the Job's own Cmd.
+	changeHome bool
+
+	// envKey names stored.envC in the manager's database, which is where the
+	// manager keeps it rather than on the Job; see
+	// pinnedBehaviours.fillEnvFromDB.
+	envKey string
+
+	// unread is why the Job's environment could not be read, when the attempt to
+	// read it failed. It is what tells "the Job's environment is empty" - which
+	// runs the command with this process's, as the Job's own Cmd does - apart
+	// from "the Job's environment is unknown to us", which must not.
+	unread error
 }
 
 // cleanupWorkSpace resolves the snapshot's workspace and clears it out, doing
@@ -144,7 +176,47 @@ func (j *Job) workSpaceSnapshotLocked() jobWorkSpaceSnapshot {
 		actualCwd:  j.ActualCwd,
 		key:        j.Key(),
 		mounts:     j.MountConfigs,
+		env: jobRunEnv{
+			stored:     j.storedEnvLocked(),
+			changeHome: j.ChangeHome,
+			envKey:     j.EnvKey,
+		},
 	}
+}
+
+// runEnv is the environment a `run` Behaviour's command executes with: the one
+// Execute gave the Job's own Cmd, with the directories wr made for the Job put in
+// it exactly as Execute puts them (see runDir.dirEnv). The command is part of the
+// same job as the Cmd, so the two run in the same environment.
+//
+// A nil result means the Job carried no environment and none was asked for, and
+// leaves exec.Cmd inheriting this process's. An environment that could not be
+// read is an error instead, so the command is refused rather than run with the
+// triggering process's; see jobRunEnv.unread.
+func (s jobWorkSpaceSnapshot) runEnv(dir *runDir) ([]string, error) {
+	if s.env.unread != nil {
+		return nil, s.env.unread
+	}
+
+	env, err := s.env.stored.decode()
+	if err != nil {
+		return nil, err
+	}
+
+	dirEnv := dir.dirEnv(s.env.changeHome)
+	if len(dirEnv) == 0 {
+		return env, nil
+	}
+
+	if env == nil {
+		// the Job's own environment was never stored and never retrieved, so
+		// this process's is all there is to run with - which is what exec.Cmd
+		// would inherit anyway. Naming it is what lets the Job's own directories
+		// still be put in it.
+		env = os.Environ()
+	}
+
+	return envOverride(env, dirEnv), nil
 }
 
 // workSpacePaths is the lexical half of the resolution: the Job's directories,
@@ -400,6 +472,30 @@ type runDir struct {
 	// path is the directory's name, used when there is no handle and as the
 	// fallback where a handle cannot be named to exec.
 	path string
+
+	// tmp is the tmp dir wr made beside the working directory to be the Job's
+	// TMPDIR, or blank when wr made no workspace and so no tmp dir; see dirEnv.
+	tmp string
+}
+
+// dirEnv is the part of a `run` Behaviour's environment that comes from the
+// directories wr made for the Job: its TMPDIR, and its working directory as HOME
+// when the Job asked for that.
+//
+// Execute sets both on the Job's own Cmd, and only for a Job it made a workspace
+// for: a CwdMatters Job runs in the user's own Cwd with neither, whatever
+// --change_home says, so this answers nothing for one.
+func (r *runDir) dirEnv(changeHome bool) []string {
+	if r.tmp == "" {
+		return nil
+	}
+
+	dirEnv := []string{"TMPDIR=" + r.tmp}
+	if changeHome {
+		dirEnv = append(dirEnv, "HOME="+r.path)
+	}
+
+	return dirEnv
 }
 
 // openRunDir hands back the Job's working directory, held open.
@@ -414,7 +510,11 @@ func (ws *jobWorkSpace) openRunDir() (*runDir, error) {
 		return nil, fmt.Errorf("%w: refusing to run in %s: %w", errNotBelowBaseDir, ws.paths.actualCwd, err)
 	}
 
-	return &runDir{held: held, path: ws.paths.actualCwd}, nil
+	return &runDir{
+		held: held,
+		path: ws.paths.actualCwd,
+		tmp:  filepath.Join(ws.paths.workSpace, createdTmpName),
+	}, nil
 }
 
 // execDir is the name to give exec.Cmd's Dir.
