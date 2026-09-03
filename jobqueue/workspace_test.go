@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -38,6 +39,7 @@ import (
 	"testing"
 
 	"github.com/VertebrateResequencing/wr/clog"
+	gofuse "github.com/hanwen/go-fuse/v2/fs"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -50,6 +52,7 @@ const (
 	testWSMount      = "mnt"
 	testWSTargetPath = "s3/path"
 	testWSCmd        = "run"
+	testWSRemote     = "REMOTE_OBJECT"
 )
 
 // keyGrindMax bounds jobWithKeyPrefix's search, which is expected to take about
@@ -1257,6 +1260,143 @@ func TestWorkSpaceOfAnotherJob(t *testing.T) {
 			So(errors.Is(err, errNotACreatedCwd), ShouldBeTrue)
 		})
 	})
+}
+
+// nestedSweepCases are the two sweeps a Job's working directory can get,
+// chosen by whether the Job has mounts: with none, the whole directory is handed
+// to one deletion, and with some, its contents are swept entry by entry around
+// the Job's keep set. Both have to keep a nested Job's workspace.
+func nestedSweepCases() []MountConfigs {
+	return []MountConfigs{nil, {{Mount: testWSMount}}}
+}
+
+func TestCleanupOfNestedJobWorkSpace(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// a Job that adds jobs - the documented `wr add --bsubs` pattern for
+	// nextflow and cellranger - hands its children a Cwd of os.Getwd(), which IS
+	// the working directory wr gave IT (Execute sets the Cmd's Dir to it), so wr
+	// builds their workspaces INSIDE the tree the parent's own default
+	// `--on_exit [{"cleanup":true}]` is licensed to wipe. The children are still
+	// running there when the parent exits.
+	for _, mounts := range nestedSweepCases() {
+		Convey("Given a Job whose working directory holds the workspace wr made for a nested Job", t, func() {
+			cwd := t.TempDir()
+
+			parent := &Job{Cwd: cwd, Cmd: "wr add --bsubs nextflow", MountConfigs: mounts}
+			parentCwd, parentWorkSpace, parentTmp := realWorkSpace(parent)
+			parentOutput := writeFileIn(parentCwd, "parent_output.txt")
+
+			child := &Job{Cwd: parentCwd, Cmd: "still running child"}
+			childCwd, childWorkSpace, childTmp := realWorkSpace(child)
+			childOutput := writeFileIn(childCwd, "child_output.txt")
+			childScratch := writeFileIn(childTmp, "child_scratch.txt")
+
+			Convey(fmt.Sprintf("cleanup with %d mounts keeps all of it, and still deletes its own",
+				len(mounts)), func() {
+				err := (&Behaviour{When: OnExit, Do: Cleanup}).Trigger(OnExit, parent)
+
+				soPathsExist(childOutput, childScratch, childCwd, childTmp, childWorkSpace)
+				soPathsGone(parentOutput, parentTmp)
+
+				// the parent's own working directory and the workspace holding
+				// it are what the child's tree is inside, so they survive with
+				// it; see nestedWorkSpaceBase on why that leak is the right way
+				// round.
+				soPathsExist(parentCwd, parentWorkSpace)
+
+				So(err, ShouldBeNil)
+			})
+		})
+	}
+}
+
+func TestCleanupCrossesNoMountBoundary(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// the keep set is built from the Job's own MountConfigs, so it knows nothing
+	// of a mount raised by the Job's own Cmd (sshfs, s3fs) or by a nested wr,
+	// and a sweep that recurses through one unlinks the user's remote objects.
+	Convey("Given a Job whose Cmd raised a live mount wr did not configure", t, func() {
+		if !canMountFuse() {
+			SkipConvey("this host will not let an unprivileged process raise a FUSE mount", func() {})
+
+			return
+		}
+
+		cwd := t.TempDir()
+
+		job := &Job{Cwd: cwd, Cmd: "sshfs remote:/data unconfigured && analyse"}
+		actualCwd, workSpace, tmpDir := realWorkSpace(job)
+		output := writeFileIn(actualCwd, "own_output.txt")
+		scratch := writeFileIn(tmpDir, "scratch.txt")
+
+		mountPoint := filepath.Join(actualCwd, "unconfigured")
+		remote := mountLoopbackOver(t, mountPoint)
+
+		Convey("cleanup deletes nothing through it, and still deletes what it made", func() {
+			err := (&Behaviour{When: OnExit, Do: Cleanup}).Trigger(OnExit, job)
+
+			soPathsExist(remote, filepath.Join(mountPoint, testWSRemote), mountPoint, actualCwd, workSpace)
+			soPathsGone(output, scratch, tmpDir)
+
+			So(err, ShouldBeNil)
+		})
+	})
+}
+
+// canMountFuse reports whether this host lets an unprivileged process raise a
+// FUSE mount, which a host with no /dev/fuse or no setuid fusermount cannot.
+func canMountFuse() bool {
+	dev, err := os.OpenFile("/dev/fuse", os.O_RDWR, 0)
+	if err != nil {
+		return false
+	}
+
+	defer dev.Close()
+
+	for _, bin := range []string{"fusermount3", "fusermount"} {
+		if _, err = exec.LookPath(bin); err == nil {
+			return true
+		}
+	}
+
+	return false
+}
+
+// mountLoopbackOver plants a file of the user's remote data in a directory
+// OUTSIDE the Job's Cwd and really FUSE mounts that directory over mountPoint,
+// returning the planted file's path. The mount is taken down when the test ends.
+//
+// go-fuse's loopback filesystem is what makes the mount real, and it is the
+// cheapest one an unprivileged process can raise. What is behind it is an
+// ordinary directory, so what survived can be asserted about directly; muxfys
+// would need an object store to talk to, and the deletion under test does not
+// care which filesystem is mounted, only that a mount gets crossed.
+func mountLoopbackOver(t *testing.T, mountPoint string) string {
+	t.Helper()
+
+	backing := t.TempDir()
+	remote := writeFileIn(backing, testWSRemote)
+
+	root, err := gofuse.NewLoopbackRoot(backing)
+	So(err, ShouldBeNil)
+	So(os.MkdirAll(mountPoint, os.ModePerm), ShouldBeNil)
+
+	server, err := gofuse.Mount(mountPoint, root, &gofuse.Options{})
+	So(err, ShouldBeNil)
+
+	t.Cleanup(func() {
+		if uerr := server.Unmount(); uerr != nil {
+			t.Logf("could not unmount the loopback at %s: %s", mountPoint, uerr)
+		}
+	})
+
+	return remote
 }
 
 func TestRunDirWithoutProcFD(t *testing.T) {

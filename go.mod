@@ -16,6 +16,7 @@ require (
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 	github.com/gophercloud/gophercloud/v2 v2.12.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/hanwen/go-fuse/v2 v2.10.1
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/hashicorp/golang-lru/arc/v2 v2.0.7
 	github.com/hpcloud/tail v1.0.0
@@ -71,7 +72,6 @@ require (
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gopherjs/gopherjs v1.20.2 // indirect
-	github.com/hanwen/go-fuse/v2 v2.10.1 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
