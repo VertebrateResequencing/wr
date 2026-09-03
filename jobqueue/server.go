@@ -3547,6 +3547,9 @@ func jobUpdateFromLockedJob(job *Job, state JobState) *JobUpdate {
 	}
 }
 
+// lostJobRetryCheck re-reads the job the confirm-dead retry path is about to
+// re-check, returning a fresh snapshot of the run currently parked Lost under
+// jobKey, and false if there is no longer such a run to check.
 func (s *Server) lostJobRetryCheck(jobKey string) (lostJobDetails, bool) {
 	item, err := s.q.Get(jobKey)
 	if err != nil || item.Stats().State != queue.ItemStateRun {
@@ -3569,15 +3572,6 @@ func (s *Server) lostJobRetryCheck(jobKey string) (lostJobDetails, bool) {
 	}
 
 	timeout, _ := s.lostJobCheckDurations()
-
-	// how long the job has been parked Lost: ttrCallback stamps job.EndTime when it
-	// marks the job Lost, and nothing resets it while it stays parked (a recovering
-	// touch clears it, a completing archive removes the job). Used by the backstop.
-	var lostFor time.Duration
-	if !job.EndTime.IsZero() {
-		lostFor = time.Since(job.EndTime)
-	}
-
 	pin := job.pinBehavioursLocked()
 
 	return lostJobDetails{
@@ -3585,7 +3579,7 @@ func (s *Server) lostJobRetryCheck(jobKey string) (lostJobDetails, bool) {
 		host:         job.Host,
 		pid:          job.Pid,
 		runnerPid:    job.RunnerPid,
-		lostFor:      lostFor,
+		lostFor:      job.lostForLocked(),
 		checkTimeout: timeout,
 		pin:          pin,
 	}, true

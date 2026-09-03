@@ -346,6 +346,23 @@ func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host,
 	return "ssh -- " + shellquote.Join(target) + " " + singleQuoteShellArg(remote)
 }
 
+// lostForLocked is how long this Job has been parked Lost, which is what the
+// confirm-dead retry path's backstop uses to spot a wedged runner. The caller
+// must hold at least the Job's read lock.
+//
+// ttrCallback stamps EndTime when it marks the job Lost, and nothing resets it
+// while the job stays parked (a recovering touch clears Lost, and a completing
+// archive removes the job). A job with no EndTime at all reports 0 rather than
+// the age of the zero time, which would look like a wedge to every backstop
+// there could ever be.
+func (j *Job) lostForLocked() time.Duration {
+	if j.EndTime.IsZero() {
+		return 0
+	}
+
+	return time.Since(j.EndTime)
+}
+
 // mergeBehaviours returns existing with, for each trigger that modifications
 // supplies behaviours for, all of existing's behaviours for that trigger
 // replaced by the whole supplied set in the supplied order. Triggers that
