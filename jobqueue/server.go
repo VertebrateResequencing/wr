@@ -5104,7 +5104,15 @@ type lostJobDetails struct {
 	checkRetryTime time.Duration
 
 	// lostFor is how long the job had been parked Lost when this snapshot was
-	// taken; the retry path's backstop uses it to spot a wedged runner.
+	// taken, which is what the retry path's backstop uses to spot a wedged runner
+	// (Job.lostForLocked measures it).
+	//
+	// It is meaningful ONLY on the value lostJobRetryCheck returns. Neither path
+	// that ENQUEUES a check fills it in (markJobLost, and retryAfter's re-enqueue),
+	// because the backstop deliberately reads the freshly re-measured value that
+	// lostJobRetryCheck just returned rather than however long the check it is
+	// retrying has been in flight. So do not read it off an enqueued check: there
+	// it is always zero.
 	lostFor time.Duration
 
 	// pin is the lost RUN: its Behaviours and the state they must act on, taken when
