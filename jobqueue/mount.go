@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2017-2019 Genome Research Ltd.
+ * Copyright (c) 2017-2019, 2026 Genome Research Ltd.
  *
  * Author: Sendu Bala <sb10@sanger.ac.uk>
  *
@@ -30,9 +30,19 @@ package jobqueue
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 )
+
+// defaultMountDir is the subdirectory of the working directory that a
+// MountConfig with no Mount of its own is mounted on.
+const defaultMountDir = "mnt"
+
+// homeDirPrefix is the start of a path that means the user's home directory,
+// which muxfys expands for us.
+const homeDirPrefix = "~"
 
 // MountConfig struct is used for setting in a Job to specify that a remote file
 // system or object store should be fuse mounted prior to running the Job's Cmd.
@@ -144,6 +154,55 @@ type MountTarget struct {
 // MountConfigs is a slice of MountConfig.
 type MountConfigs []MountConfig
 
+// Resolve returns a copy of these MountConfigs in which every path is one that
+// means the same thing from any working directory: an unset Mount becomes the
+// "mnt" subdirectory of cwd and an unset CacheBase becomes cwd (the documented
+// defaults), while a relative Mount, CacheBase or Target CacheDir is resolved
+// against cwd (so it can also climb out of it, eg. "../shared").
+//
+// Paths that already mean the same thing from anywhere - absolute ones, and
+// ones starting with "~", which the mount expands to the user's home directory
+// - are left as they are.
+//
+// It is for a command that must mount from a different working directory than
+// the user was in when they configured the mount, which is what 'wr mount'
+// does when it daemonizes.
+func (mcs MountConfigs) Resolve(cwd string) MountConfigs {
+	resolved := make(MountConfigs, 0, len(mcs))
+
+	for _, mc := range mcs {
+		mc.Mount = resolveAgainst(mc.Mount, cwd)
+		if mc.Mount == "" {
+			mc.Mount = filepath.Join(cwd, defaultMountDir)
+		}
+
+		mc.CacheBase = resolveAgainst(mc.CacheBase, cwd)
+		if mc.CacheBase == "" {
+			mc.CacheBase = cwd
+		}
+
+		mc.Targets = slices.Clone(mc.Targets)
+		for i, mt := range mc.Targets {
+			mc.Targets[i].CacheDir = resolveAgainst(mt.CacheDir, cwd)
+		}
+
+		resolved = append(resolved, mc)
+	}
+
+	return resolved
+}
+
+// resolveAgainst returns path resolved against dir, unless it is one that does
+// not depend on the working directory: an unset path (which the caller must
+// give its own default), an absolute one, or one starting with "~".
+func resolveAgainst(path, dir string) string {
+	if path == "" || filepath.IsAbs(path) || strings.HasPrefix(path, homeDirPrefix) {
+		return path
+	}
+
+	return filepath.Join(dir, path)
+}
+
 // String provides a JSON representation of the MountConfigs.
 func (mcs MountConfigs) String() string {
 	if len(mcs) == 0 {
@@ -181,7 +240,7 @@ func (mcs MountConfigs) Key() string {
 	for _, mc := range mcs.sortedByMount() {
 		mount := mc.Mount
 		if mount == "" {
-			mount = "mnt"
+			mount = defaultMountDir
 		}
 
 		key.WriteString(mount)

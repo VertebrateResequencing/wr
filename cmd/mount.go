@@ -49,6 +49,21 @@ const defaultMountRetries = 10
 // that tell a mount to unmount and exit.
 const deathSignalBuffer = 2
 
+// mountCwdEnvVar is the environment variable that tells a daemonized mount
+// which directory the user ran the command in, since the daemon itself does not
+// run in it.
+const mountCwdEnvVar = "WR_MOUNT_CWD"
+
+// mountDaemonLogDest is the LogFileName that makes go-daemon give the
+// daemonized mount the stderr the user is looking at. Without it the daemon
+// gets a read-only /dev/null as both its stdout and its stderr, and everything
+// it says - including every error it dies of - is lost.
+//
+// It is spelt as the file descriptor rather than as "/dev/stderr" because
+// go-daemon special-cases that name to hand the child our own os.Stderr, and
+// then closes it, leaving us unable to report a failure to daemonize.
+const mountDaemonLogDest = "/dev/fd/2"
+
 // options for this cmd.
 var (
 	mountSimple  string
@@ -201,31 +216,20 @@ not cached, only serial writes are possible.`,
 
 		muxfys.SetLogHandler(l15h.CallerInfoHandler(log15.LvlFilterHandler(logLevel, log15.StderrHandler)))
 
+		// parse the options and resolve their paths before daemonizing, so that
+		// bad options are reported on the terminal of the person who typed the
+		// command, and so that relative paths mean what they say: the directory
+		// they ran us in, not the "/" the daemon runs in
+		configs := resolvedMountConfigs()
+
 		// now daemonize unless in foreground mode
 		if foreground {
-			mountAndWait()
-		} else {
-			dContext := &daemon.Context{
-				WorkDir: "/",
-			}
+			mountAndWait(configs)
 
-			child, err := dContext.Reborn()
-			if err != nil {
-				die("failed to daemonize: %s", err)
-			}
-
-			if child == nil {
-				// daemonized child, that will run until signalled to stop
-				defer func() {
-					err := dContext.Release()
-					if err != nil {
-						warn("daemon release failed: %s", err)
-					}
-				}()
-
-				mountAndWait()
-			}
+			return
 		}
+
+		mountDaemonized(configs)
 	},
 }
 
@@ -240,10 +244,72 @@ func init() {
 	mountCmd.Flags().BoolVarP(&mountVerbose, "verbose", "v", false, "print timing info on all remote calls")
 }
 
-// mountAndWait does the main work of this cmd.
-func mountAndWait() {
-	// mount everything
-	configs := mountParse(mountJSON, mountSimple)
+// mountDaemonized daemonizes and then does the work of this cmd in the
+// daemonized child process, which runs until signalled to stop.
+//
+// The daemon runs in "/" rather than in the user's working directory, so that
+// it does not keep that directory (which can be the very directory it mounts
+// on) busy for as long as it is mounted. Since it is a fresh run of this
+// command, which parses the same options again, it is told where that directory
+// is in its environment, and resolves those options against it exactly as we
+// did.
+func mountDaemonized(configs jobqueue.MountConfigs) {
+	dContext := &daemon.Context{
+		WorkDir:     "/",
+		LogFileName: mountDaemonLogDest,
+		Env:         append(os.Environ(), mountCwdEnvVar+"="+mountCwd()),
+	}
+
+	child, err := dContext.Reborn()
+	if err != nil {
+		die("failed to daemonize: %s", err)
+	}
+
+	if child != nil {
+		return
+	}
+
+	defer func() {
+		err := dContext.Release()
+		if err != nil {
+			warn("daemon release failed: %s", err)
+		}
+	}()
+
+	// our messages now go to the terminal the user typed the command in; if
+	// that goes away, writing to it must not kill a mount that still has
+	// uploads to do
+	signal.Ignore(syscall.SIGPIPE)
+
+	mountAndWait(configs)
+}
+
+// mountCwd returns the directory the user ran this command in, which their
+// relative Mount, CacheBase and CacheDir options are relative to. A daemonized
+// mount is told this by mountDaemonized, since it does not run in it.
+func mountCwd() string {
+	if cwd := os.Getenv(mountCwdEnvVar); cwd != "" {
+		return cwd
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		die("could not determine the working directory: %s", err)
+	}
+
+	return cwd
+}
+
+// resolvedMountConfigs parses this cmd's mount options and resolves the paths
+// in them against the directory the user ran the command in, dying on any
+// problem with the options.
+func resolvedMountConfigs() jobqueue.MountConfigs {
+	return mountParse(mountJSON, mountSimple).Resolve(mountCwd())
+}
+
+// mountAndWait mounts the given configs, then waits for a signal to unmount
+// them and return.
+func mountAndWait(configs jobqueue.MountConfigs) {
 	mounted := make([]*muxfys.MuxFys, 0, len(configs))
 
 	for _, mc := range configs {
