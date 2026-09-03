@@ -81,12 +81,6 @@ const (
 	retryOutputName = "retry_output.tmp"
 )
 
-// lostCleanupDrivers is how many lost jobs TestLostJobCleanupsAreBounded drives
-// at once. It is a literal rather than a multiple of maxConcurrentLostCleanups
-// on purpose: raising the bound without raising this too would leave the test
-// unable to reach the bound, and it then says so rather than passing.
-const lostCleanupDrivers = 64
-
 // lostRunOpts says which ordinary manager and job the fixture is to be. Each
 // combination is a case in which the reported ActualCwd is blank or stale for
 // the whole of a run, so that pinning it identifies no run at all.
@@ -1496,6 +1490,12 @@ func TestMintedRunTokenIsNeverTheRecoveredOne(t *testing.T) {
 		})
 	})
 }
+
+// lostCleanupDrivers is how many lost jobs TestLostJobCleanupsAreBounded drives
+// at once. It is a literal rather than a multiple of maxConcurrentLostCleanups
+// on purpose: raising the bound without raising this too would leave the test
+// unable to reach the bound, and it then says so rather than passing.
+const lostCleanupDrivers = 64
 
 // boundedCleanups is the gate every lost job's cleanup is held at, and the count
 // of how many are held there at once.
