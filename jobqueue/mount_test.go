@@ -104,6 +104,28 @@ func TestMountConfigsResolve(t *testing.T) {
 			wantCacheBase: "~/cache",
 			wantCacheDirs: []string{"~/target1"},
 		},
+		{
+			name: "the home directory itself is left for the mount to expand",
+			config: MountConfig{
+				Mount:     "~",
+				CacheBase: "~",
+				Targets:   []MountTarget{{Path: testResolveBucket, CacheDir: "~"}},
+			},
+			wantMount:     "~",
+			wantCacheBase: "~",
+			wantCacheDirs: []string{"~"},
+		},
+		{
+			name: "a path that only starts with a tilda is relative like any other",
+			config: MountConfig{
+				Mount:     "~mnt",
+				CacheBase: "~cache",
+				Targets:   []MountTarget{{Path: testResolveBucket, CacheDir: "~target1"}},
+			},
+			wantMount:     "/user/dir/~mnt",
+			wantCacheBase: "/user/dir/~cache",
+			wantCacheDirs: []string{"/user/dir/~target1"},
+		},
 	} {
 		Convey("Resolve says "+tc.name, t, func() {
 			resolved := MountConfigs{tc.config}.Resolve(testResolveCwd)

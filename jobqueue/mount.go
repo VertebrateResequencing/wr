@@ -40,9 +40,15 @@ import (
 // MountConfig with no Mount of its own is mounted on.
 const defaultMountDir = "mnt"
 
-// homeDirPrefix is the start of a path that means the user's home directory,
-// which muxfys expands for us.
-const homeDirPrefix = "~"
+// homeDir is the path that means the user's home directory, and homeDirPrefix
+// starts a path inside it; muxfys expands both for us (homedir.Expand). As in
+// internal.TildaToHome, a tilda not followed by a "/" is neither of these:
+// "~cache" is a legal relative directory name, and muxfys refuses to expand it
+// ("cannot expand user-specific home dir").
+const (
+	homeDir       = "~"
+	homeDirPrefix = homeDir + "/"
+)
 
 // MountConfig struct is used for setting in a Job to specify that a remote file
 // system or object store should be fuse mounted prior to running the Job's Cmd.
@@ -161,8 +167,9 @@ type MountConfigs []MountConfig
 // against cwd (so it can also climb out of it, eg. "../shared").
 //
 // Paths that already mean the same thing from anywhere - absolute ones, and
-// ones starting with "~", which the mount expands to the user's home directory
-// - are left as they are.
+// "~" and "~/..." ones, which the mount expands to the user's home directory
+// - are left as they are. A tilda not followed by a "/" is not one of those:
+// "~cache" is resolved against cwd like any other relative path.
 //
 // It is for a command that must mount from a different working directory than
 // the user was in when they configured the mount, which is what 'wr mount'
@@ -194,9 +201,10 @@ func (mcs MountConfigs) Resolve(cwd string) MountConfigs {
 
 // resolveAgainst returns path resolved against dir, unless it is one that does
 // not depend on the working directory: an unset path (which the caller must
-// give its own default), an absolute one, or one starting with "~".
+// give its own default), an absolute one, the home directory, or one inside it.
 func resolveAgainst(path, dir string) string {
-	if path == "" || filepath.IsAbs(path) || strings.HasPrefix(path, homeDirPrefix) {
+	if path == "" || path == homeDir || filepath.IsAbs(path) ||
+		strings.HasPrefix(path, homeDirPrefix) {
 		return path
 	}
 
