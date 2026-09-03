@@ -47,6 +47,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -83,6 +84,13 @@ const (
 	// probeSiblingDigits turns a workspace name into the name os.MkdirTemp would
 	// have given ANOTHER run of the same Job.
 	probeSiblingDigits = "999"
+
+	// probeArabicDigit is the digit three written in Arabic-Indic numerals: a
+	// character unicode calls a digit and os.MkdirTemp never writes.
+	probeArabicDigit = "\u0663"
+
+	// probeRelativeDir is a relative path, which a Job's directories may not be.
+	probeRelativeDir = "relative/cwd"
 )
 
 // probeWorld is the filesystem a (Cwd, ActualCwd) probe runs against: the
@@ -207,6 +215,18 @@ func probeCwdRows() []probeCwdRow {
 			actualCwd: func(w probeWorld) string { return w.actualCwd + "/." },
 			sweptOwn:  true,
 		},
+		{
+			name:      "that path with a doubled separator in it",
+			actualCwd: func(w probeWorld) string { return w.workSpace + "//" + createdCwdName },
+			sweptOwn:  true,
+		},
+		{
+			name: "that path spelled through a component of its own and ..",
+			actualCwd: func(w probeWorld) string {
+				return filepath.Join(w.workSpace, "x", "..", createdCwdName)
+			},
+			sweptOwn: true,
+		},
 
 		// every level of wr's own tree except the working directory itself. Each
 		// is at the wrong depth for the path mkHashedDir builds, and treating one
@@ -219,6 +239,15 @@ func probeCwdRows() []probeCwdRow {
 		{
 			name:      "the workspace holding it",
 			actualCwd: func(w probeWorld) string { return w.workSpace },
+			wantErr:   errNotACreatedCwd,
+		},
+		{
+			// the tmp dir wr made beside the working directory sits at the right
+			// depth below the same workspace, so only its NAME tells the two
+			// apart - and treating it as a working directory would hand the
+			// workspace to the sweep from a Job that reported the wrong sister.
+			name:      "the tmp dir wr made beside it",
+			actualCwd: func(w probeWorld) string { return filepath.Join(w.workSpace, createdTmpName) },
 			wantErr:   errNotACreatedCwd,
 		},
 		{
@@ -257,6 +286,16 @@ func probeCwdRows() []probeCwdRow {
 			actualCwd: func(w probeWorld) string { return w.decoy(probeOtherLeaf) },
 			wantErr:   errNotACreatedCwd,
 		},
+		{
+			// the digits os.MkdirTemp appends are ASCII, and the check spells
+			// that out as a range rather than asking unicode: a name whose
+			// suffix is a digit in another script is a name the user chose.
+			name: "the same leaf with a digit of another script appended",
+			actualCwd: func(w probeWorld) string {
+				return filepath.Join(w.hashed, filepath.Base(w.workSpace)+probeArabicDigit, createdCwdName)
+			},
+			wantErr: errNotACreatedCwd,
+		},
 
 		// ANOTHER run of the same Job, which the path check accepts by design:
 		// the key is what it recognises, and two runs of one key differ only in
@@ -289,6 +328,34 @@ func probeCwdRows() []probeCwdRow {
 			cwd:       func(_ probeWorld) string { return "/" },
 			actualCwd: own,
 			wantErr:   errNotACreatedCwd,
+		},
+		{
+			// Cwd is stored exactly as it was typed, because it feeds Job.Key(),
+			// so an unclean spelling of the right directory is one wr is GIVEN
+			// and must reach the control's verdict.
+			name:      "Cwd with a trailing separator",
+			cwd:       func(w probeWorld) string { return w.cwd + "/" },
+			actualCwd: own,
+			sweptOwn:  true,
+		},
+		{
+			// this code runs in the runner AND in the manager, which have
+			// different working directories, so a relative Cwd names a
+			// different tree in each. Refusing it costs a leaked workspace.
+			name:      "Cwd given as a relative path",
+			cwd:       func(_ probeWorld) string { return probeRelativeDir },
+			actualCwd: own,
+			wantErr:   errNotBelowBaseDir,
+		},
+		{
+			name: "ActualCwd given as a relative path",
+			actualCwd: func(w probeWorld) string {
+				rel, err := filepath.Rel(w.cwd, w.actualCwd)
+				So(err, ShouldBeNil)
+
+				return rel
+			},
+			wantErr: errNotBelowBaseDir,
 		},
 
 		// a blank ActualCwd means wr never learned of a working directory for
@@ -370,6 +437,62 @@ func TestProbeReportedDirectories(t *testing.T) {
 
 		So(err, ShouldBeNil)
 	})
+
+	Convey("A Job refuses the live workspace of another whose key shares its hashed levels", t, func() {
+		// the hashed levels are the first three characters of the key, so two
+		// Jobs whose keys agree there share EVERY directory above their own
+		// workspace: the *_cwd base and all mkHashedLevels-1 of them. Only the
+		// MkdirTemp leaf differs, and that leaf is named for the REST of the
+		// key - so this is the closest two different Jobs of one Cwd can get,
+		// and the one place the leaf check is the only thing left standing.
+		//
+		// Three characters is a 4096-way space that whoever submits a Job can
+		// grind a Cmd through, which is why the check does not stop there.
+		cwd := t.TempDir()
+		precious := writeFileIn(filepath.Join(cwd, "user_scripts"), probeMineName)
+
+		victim := &Job{Cwd: cwd, Cmd: probeCmd + " victim"}
+
+		cleaner := probeJobSharingHashedLevels(cwd, victim)
+		So(cleaner, ShouldNotBeNil)
+
+		victimCwd, victimWorkSpace, victimTmp := realWorkSpace(victim)
+		results := writeFileIn(victimCwd, "results.txt")
+
+		cleanerCwd, _, _ := realWorkSpace(cleaner)
+		So(filepath.Dir(filepath.Dir(cleanerCwd)), ShouldEqual, filepath.Dir(victimWorkSpace))
+
+		cleaner.ActualCwd = victimCwd
+
+		err := (&Behaviour{When: OnExit, Do: CleanupAll}).Trigger(OnExit, cleaner)
+
+		soPathsExist(precious, cwd)
+		soPathsExist(results, victimCwd, victimTmp, victimWorkSpace)
+
+		soProbeRefused(err, errNotACreatedCwd)
+	})
+}
+
+// probeJobSharingHashedLevels finds a Job of the given Cwd whose key starts with
+// the same characters as other's - so mkHashedDir puts its workspace below the
+// very same hashed levels - but which is not the same Job.
+//
+// The Cmd is ground out rather than written down because the key is a hash of
+// it: a literal would stop sharing the levels the moment anything else about
+// what Key() reads changed.
+func probeJobSharingHashedLevels(cwd string, other *Job) *Job {
+	const probeGrindLimit = 1 << 20
+
+	prefix := other.Key()[:mkHashedLevels-1]
+
+	for i := range probeGrindLimit {
+		job := &Job{Cwd: cwd, Cmd: probeCmd + " sharer " + strconv.Itoa(i)}
+		if job.Key()[:mkHashedLevels-1] == prefix && job.Key() != other.Key() {
+			return job
+		}
+	}
+
+	return nil
 }
 
 // soProbeSwept asserts that a directory and the file in it either went or
@@ -452,6 +575,30 @@ func TestProbeCleanupActionsAgree(t *testing.T) {
 				})
 			})
 		}
+	})
+
+	Convey("A hard link into the workspace costs the user a name, not their file", t, func() {
+		// every deletion in the sweep is an unlinkat of one name, so a second
+		// name for a file of the user's - which their own Cmd can make, and
+		// which no check here could tell from an ordinary output file - loses
+		// that name and leaves the file. There is no route by which the sweep
+		// truncates or empties what it unlinks.
+		cwd := t.TempDir()
+		precious := writeFileIn(filepath.Join(cwd, "user_scripts"), probeMineName)
+
+		job := &Job{Cwd: cwd, Cmd: probeCmd, Behaviours: Behaviours{{When: OnExit, Do: CleanupAll}}}
+		actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+		for _, dir := range []string{actualCwd, workSpace, tmpDir} {
+			So(os.Link(precious, filepath.Join(dir, "another_name.txt")), ShouldBeNil)
+		}
+
+		err := job.Behaviours.Trigger(false, job)
+
+		soPathsExist(precious, cwd)
+		soPathsGone(workSpace)
+
+		So(err, ShouldBeNil)
 	})
 }
 
@@ -558,6 +705,17 @@ func probeMountRows() []probeMountRow {
 		{
 			name: "a mount point that IS the workspace, which puts the TMPDIR inside a live mount",
 			mc:   MountConfig{Mount: "..", Targets: probeCachedTargets()},
+			live: []string{".", createdCwdName, createdTmpName},
+			kept: []string{".", createdCwdName, createdTmpName, output, scratch},
+		},
+		{
+			// a mount point ABOVE the workspace puts the workspace inside the
+			// live mount just as surely, and the rule is about being at or above
+			// rather than about being the workspace itself: everything wr made
+			// for the Job is then the user's remote data, read through a mount
+			// Unmount has not got to yet.
+			name: "a mount point at the hashed level above the workspace",
+			mc:   MountConfig{Mount: "../..", Targets: probeCachedTargets()},
 			live: []string{".", createdCwdName, createdTmpName},
 			kept: []string{".", createdCwdName, createdTmpName, output, scratch},
 		},
