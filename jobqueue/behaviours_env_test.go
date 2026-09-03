@@ -76,6 +76,18 @@ func readProbedEnv(out string) probedEnv {
 	return probedEnv{home: lines[0], tmpDir: lines[1], testVar: lines[2]}
 }
 
+// probedEnvIfRun is what a `run` Behaviour's command reported, or the zero
+// probedEnv when the behaviour refused to run the command at all: a refused
+// behaviour writes nothing, so any value here names an environment some process
+// handed the command.
+func probedEnvIfRun(out string) probedEnv {
+	if _, err := os.Stat(filepath.Clean(out)); os.IsNotExist(err) {
+		return probedEnv{}
+	}
+
+	return readProbedEnv(out)
+}
+
 // storeTestEnv gives job the environment it was added with: the calling process's
 // (so the command has a PATH) with its HOME replaced and a variable of the test's
 // own added, the way wr's own --env override does it.
@@ -206,6 +218,41 @@ func TestBehaviourRunEnv(t *testing.T) {
 			got := readProbedEnv(out)
 			So(got.testVar, ShouldEqual, "from_job_env")
 			So(got.home, ShouldEqual, actualCwd)
+		})
+
+		Convey("the manager refuses a lost Job's run behaviour when the environment is missing from its database", func() {
+			// an environment the database cannot produce is NOT an empty one:
+			// falling back to the current environment here would run the user's
+			// command with the MANAGER's, which is the exact leak the cases
+			// above pin. It must refuse, and say so.
+			ctx := context.Background()
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, Behaviours: Behaviours{probe}}
+			realWorkSpace(job)
+
+			testDB, _, err := initDB(ctx, filepath.Join(t.TempDir(), "queue.db"), "",
+				internal.Development, false, false)
+			So(err, ShouldBeNil)
+
+			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+			// the key of an environment that was never stored, as a Job whose
+			// env record has gone from the database has
+			job.EnvKey = byteKey([]byte("an environment that was never stored"))
+
+			pin := job.pinBehaviours()
+			pin.fillEnvFromDB(ctx, testDB)
+
+			err = pin.trigger()
+
+			// nothing reported means the command never ran; a HOME or a TMPDIR
+			// here is one the triggering process handed it
+			got := probedEnvIfRun(out)
+			So(got.home, ShouldBeBlank)
+			So(got.tmpDir, ShouldBeBlank)
+
+			// and the refusal is reported rather than silent
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "the job's environment could not be read")
 		})
 
 		Convey("only a run behaviour makes the Job's environment be decoded", func() {

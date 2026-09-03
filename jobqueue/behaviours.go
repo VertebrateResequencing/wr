@@ -47,6 +47,7 @@ var (
 	errBehaviourInvalidStatus = errors.New("invalid status")
 	errBehaviourArgNotStr     = errors.New("arg is not a string")
 	errBehaviourArgNotStrSl   = errors.New("arg is not a []string")
+	errEnvNotInDB             = errors.New("no environment is stored in the database under the job's env key")
 )
 
 // cleanupProvenHook, when set, is called between the cleanup path proving which
@@ -470,6 +471,16 @@ func (p pinnedBehaviours) trigger() error {
 // deployment - so the same behaviour string would act on a different HOME
 // depending on whether the job failed normally or was declared lost.
 //
+// A key with no record behind it is recorded as unread rather than filled in as
+// an empty environment: an empty one is decoded as "the Job stored none", which
+// falls back to the current process's, and that is this triggering process - the
+// manager - all over again. The pin then refuses the `run` behaviour instead of
+// running the user's command with the wrong environment; see jobRunEnv.unread.
+//
+// db.retrieve draws that distinction for us, copying only a value bolt found, so
+// an environment stored as empty comes back non-nil and empty while an absent
+// key comes back nil.
+//
 // It must be called with no lock held, since it reads the database, and it reads
 // nothing unless a `run` behaviour is there to need it.
 func (p *pinnedBehaviours) fillEnvFromDB(ctx context.Context, jobsDB *db) {
@@ -478,7 +489,14 @@ func (p *pinnedBehaviours) fillEnvFromDB(ctx context.Context, jobsDB *db) {
 		return
 	}
 
-	env.stored.envC = jobsDB.retrieveEnv(ctx, env.envKey)
+	envC := jobsDB.retrieveEnv(ctx, env.envKey)
+	if envC == nil {
+		env.unread = fmt.Errorf("%w: %s", errEnvNotInDB, env.envKey)
+
+		return
+	}
+
+	env.stored.envC = envC
 	env.stored.retrieved = true
 }
 

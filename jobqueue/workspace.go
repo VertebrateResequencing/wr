@@ -111,6 +111,12 @@ type jobRunEnv struct {
 	// manager keeps it rather than on the Job; see
 	// pinnedBehaviours.fillEnvFromDB.
 	envKey string
+
+	// unread is why the Job's environment could not be read, when the attempt to
+	// read it failed. It is what tells "the Job's environment is empty" - which
+	// runs the command with this process's, as the Job's own Cmd does - apart
+	// from "the Job's environment is unknown to us", which must not.
+	unread error
 }
 
 // cleanupWorkSpace resolves the snapshot's workspace and clears it out, doing
@@ -184,8 +190,14 @@ func (j *Job) workSpaceSnapshotLocked() jobWorkSpaceSnapshot {
 // same job as the Cmd, so the two run in the same environment.
 //
 // A nil result means the Job carried no environment and none was asked for, and
-// leaves exec.Cmd inheriting this process's.
+// leaves exec.Cmd inheriting this process's. An environment that could not be
+// read is an error instead, so the command is refused rather than run with the
+// triggering process's; see jobRunEnv.unread.
 func (s jobWorkSpaceSnapshot) runEnv(dir *runDir) ([]string, error) {
+	if s.env.unread != nil {
+		return nil, s.env.unread
+	}
+
 	env, err := s.env.stored.decode()
 	if err != nil {
 		return nil, err
