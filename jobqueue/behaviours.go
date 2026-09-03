@@ -304,6 +304,10 @@ func (b *Behaviour) cleanup(snap jobWorkSpaceSnapshot, _ bool) error {
 // The directory comes back held open, and cmd.Dir names that handle where the
 // platform allows it to be named, so the command starts in the directory that was
 // proven rather than in whatever its path resolves to by then; see runDir.
+//
+// The environment comes from the same snapshot, so the command runs in the one
+// the Job's own Cmd ran in - including the HOME --change_home gave it; see
+// runEnv.
 func (b *Behaviour) run(snap jobWorkSpaceSnapshot) error {
 	bc, wasStr := b.Arg.(string)
 	if !wasStr {
@@ -323,12 +327,23 @@ func (b *Behaviour) run(snap jobWorkSpaceSnapshot) error {
 	if strings.Contains(bc, " | ") {
 		bc = "set -o pipefail; " + bc
 	}
+
+	// the command is part of the same job as the Cmd, so it runs in the same
+	// environment; an environment that cannot be read refuses the behaviour, the
+	// way Execute buries a Job whose environment it cannot read, rather than
+	// running the user's command in the wrong one. See runEnv.
+	env, err := snap.runEnv(dir)
+	if err != nil {
+		return fmt.Errorf("run behaviour refused: the job's environment could not be read: %w", err)
+	}
+
 	// *** hardcoding bash here, when we could in theory have client.Execute()
 	// pass shell in? And yes, we're allowing user to run absolutely any command
 	// they like, but that is the very nature of this app. This runs as them,
 	// so can do whatever they can do...
 	cmd := exec.CommandContext(context.Background(), "/bin/bash", "-c", bc)
 	cmd.Dir = dir.execDir()
+	cmd.Env = env
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -436,9 +451,43 @@ func (j *Job) pinBehavioursLocked() pinnedBehaviours {
 	return pinnedBehaviours{behaviours: j.Behaviours, workSpace: j.workSpaceSnapshotLocked(), run: j.runID}
 }
 
-// trigger runs the pinned Behaviours against the pinned state.
-func (p pinnedBehaviours) trigger(success bool) error {
-	return p.behaviours.trigger(success, p.workSpace)
+// trigger runs the pinned Behaviours against the pinned state, as the FAILURE it
+// always is: a pin is only ever triggered after the lost run it names was
+// confirmed dead and killed (see triggerLostRunBehaviours), so that run did not
+// succeed and OnFailure is the trigger it gets.
+func (p pinnedBehaviours) trigger() error {
+	return p.behaviours.trigger(false, p.workSpace)
+}
+
+// fillEnvFromDB gives the pinned state the environment the Job's Cmd ran under,
+// which the MANAGER does not hold on the Job: it keeps one copy per distinct
+// environment in its database and only the key naming it on each Job (see
+// Job.EnvKey). The pin carries that key, and the stored value is content-
+// addressed by it, so fetching it here gets the same value the pin named.
+//
+// Without this, a `run` behaviour the manager triggers for a lost job would
+// execute with the MANAGER's environment - a different machine's under a cloud
+// deployment - so the same behaviour string would act on a different HOME
+// depending on whether the job failed normally or was declared lost.
+//
+// It must be called with no lock held, since it reads the database, and it reads
+// nothing unless a `run` behaviour is there to need it.
+func (p *pinnedBehaviours) fillEnvFromDB(ctx context.Context, jobsDB *db) {
+	env := &p.workSpace.env
+	if env.stored.retrieved || env.envKey == "" || !p.behaviours.includesRun() {
+		return
+	}
+
+	env.stored.envC = jobsDB.retrieveEnv(ctx, env.envKey)
+	env.stored.retrieved = true
+}
+
+// includesRun tells you if one of the behaviours is Run, ie. if any of them
+// needs the Job's environment.
+func (bs Behaviours) includesRun() bool {
+	return slices.ContainsFunc(bs, func(b *Behaviour) bool {
+		return b.Do == Run
+	})
 }
 
 // RemovalRequested tells you if one of the behaviours is Remove.

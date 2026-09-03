@@ -4673,8 +4673,14 @@ func (s *Server) triggerLostRunBehaviours(ctx context.Context, d lostJobDetails)
 
 	defer func() { <-s.lostCleanupTokens }()
 
+	// the manager keeps a job's environment in its database rather than on the
+	// job, so the bytes the pinned key names are fetched here: after every lock
+	// the pin was taken under was released, and before the behaviours that need
+	// them run. See pinnedBehaviours.fillEnvFromDB.
+	d.pin.fillEnvFromDB(ctx, s.db)
+
 	//nolint:contextcheck // behaviours run detached from the cancellable job context
-	if errt := d.pin.trigger(false); errt != nil {
+	if errt := d.pin.trigger(); errt != nil {
 		clog.Warn(ctx, "failed to run behaviours for a killed lost job", "err", errt)
 	}
 }

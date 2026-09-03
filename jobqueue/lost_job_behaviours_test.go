@@ -1406,7 +1406,7 @@ func TestReservedRunDoesNotInheritThePreviousRunsWorkingDir(t *testing.T) {
 
 			pin := r.live.pinBehaviours()
 			So(pin.workSpace.actualCwd, ShouldBeBlank)
-			So(pin.trigger(false), ShouldNotBeNil)
+			So(pin.trigger(), ShouldNotBeNil)
 			soPathsGone(ranIn)
 			soPathsExist(r.actualCwd)
 
