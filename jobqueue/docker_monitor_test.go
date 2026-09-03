@@ -103,6 +103,23 @@ func TestCheckingRendezvous(t *testing.T) {
 
 			So(rendezvous.await(dockerTestBound), ShouldBeTrue)
 		})
+
+		Convey("A checker that reports finishing twice does not block on the second report", func() {
+			finishedCh := make(chan bool, 1)
+
+			go func() {
+				rendezvous.finished()
+				rendezvous.finished()
+
+				finishedCh <- true
+			}()
+
+			select {
+			case <-finishedCh:
+			case <-time.After(dockerTestBound):
+				So("the second finished() blocked", ShouldBeBlank)
+			}
+		})
 	})
 }
 

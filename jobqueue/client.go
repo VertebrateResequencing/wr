@@ -343,9 +343,15 @@ func newCheckingRendezvous() *checkingRendezvous {
 	return &checkingRendezvous{ch: make(chan bool, 1)}
 }
 
-// finished reports that the checking goroutine has stopped. It never blocks.
+// finished reports that the checking goroutine has stopped. It never blocks: a
+// report that the buffer has no room for is dropped, since the buffered one
+// says the same thing, and a blocking send would park the caller for the
+// lifetime of the runner.
 func (r *checkingRendezvous) finished() {
-	r.ch <- true
+	select {
+	case r.ch <- true:
+	default:
+	}
 }
 
 // await waits for finished() to be called, giving up after timeout and
