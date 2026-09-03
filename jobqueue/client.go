@@ -89,6 +89,13 @@ const (
 	FailReasonKilled   = "killed by user request"
 )
 
+// JobCwdEnvVar is the environment variable a run's command finds its Job's own
+// Cwd in, when wr gave the run a working directory below that Cwd instead of
+// running it in the Cwd itself. `wr add` defaults a new Job's Cwd to it, so that
+// a Job added by a Job gets a working directory beside the adding Job's instead
+// of inside it.
+const JobCwdEnvVar = "WR_JOB_CWD"
+
 // lsfEmulationDir is the name of the directory we store our LSF emulation
 // symlinks in.
 const lsfEmulationDir = ".wr_lsf_emulation"
@@ -556,6 +563,29 @@ func reserveHostAndPid() (string, int) {
 	}
 
 	return host, os.Getpid()
+}
+
+// jobRunEnv returns env with the overrides a run of job needs. A tmpDir is only
+// made for a job whose Cwd does not matter, ie. one wr gave a working directory
+// of its own below its Cwd, so an empty tmpDir means the run is happening in the
+// job's Cwd itself: nothing needs overriding, and any JobCwdEnvVar inherited
+// from the job that added this one has to go, because os.Getwd() is then the
+// right answer for anything this run adds.
+func jobRunEnv(env []string, job *Job, actualCwd, tmpDir string) []string {
+	if tmpDir == "" {
+		return slices.DeleteFunc(env, func(envvar string) bool {
+			return strings.HasPrefix(envvar, JobCwdEnvVar+"=")
+		})
+	}
+
+	// (this works fine even if tmpDir has a space in one of the dir names)
+	over := []string{"TMPDIR=" + tmpDir, JobCwdEnvVar + "=" + job.Cwd}
+
+	if job.ChangeHome {
+		over = append(over, "HOME="+actualCwd)
+	}
+
+	return envOverride(env, over)
 }
 
 func currentProcessTreeCPUtime(pid int) time.Duration {
@@ -1977,14 +2007,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		return fmt.Errorf("failed to extract environment variables for job [%s]: %w%s", job.Key(), err, extra)
 	}
 
-	if tmpDir != "" {
-		// (this works fine even if tmpDir has a space in one of the dir names)
-		env = envOverride(env, []string{"TMPDIR=" + tmpDir})
-
-		if job.ChangeHome {
-			env = envOverride(env, []string{"HOME=" + actualCwd})
-		}
-	}
+	env = jobRunEnv(env, job, actualCwd, tmpDir)
 
 	if prependPath != "" {
 		env, err = c.addBsubEnv(env, job, prependPath, host, shell)

@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -184,7 +185,10 @@ output","cwd":"/path/to/cwd","priority":1,"dep_grps":["dg2","dg3"],"deps":
 "cwd" determines the directory to cd to before running the command (the 'command
 working directory'). If none is specified, the default will be your current
 directory right now. (If adding to a remote cloud-deployed manager, then cwd
-will instead default to /tmp.)
+will instead default to /tmp.) If you are adding from inside a running wr
+command, the default is instead that command's own job's cwd, so that the new
+job's working directory is a sibling of the adding job's and not inside it (an
+adding job's cleanup behaviour would otherwise delete the new job's work).
 
 "cwd_matters" by default is false, causing "cwd" to taken as the parent
 directory to create a unique working directory inside. This unique directory can
@@ -903,12 +907,41 @@ func parseDurationOrDie(value, flagName string) time.Duration {
 
 // defaultCwd determines the default command working directory to use when
 // --cwd was not supplied. It returns the empty string (and no warning) when
-// --cwd was supplied. Otherwise it returns the current directory when the
-// manager is local, --cwd_matters is set, or remote adds should behave like
-// local adds, and /tmp (with remoteWarning true) when the manager is remote.
+// --cwd was supplied. Otherwise it returns addFromDir() when the manager is
+// local, --cwd_matters is set, or remote adds should behave like local adds, and
+// /tmp (with remoteWarning true) when the manager is remote.
 func defaultCwd(isLocal, remoteSameAsLocal bool) (pwd string, remoteWarning bool) {
 	if cmdCwd != "" {
 		return "", false
+	}
+
+	wd := addFromDir()
+
+	if isLocal || cmdCwdMatters || remoteSameAsLocal {
+		return wd, false
+	}
+
+	return "/tmp", true
+}
+
+// addFromDir returns the directory this add should be treated as having been
+// made from: the cwd of the job we are running inside, if we are running inside
+// one, and the actual current directory otherwise.
+//
+// A job's command runs in a disposable working directory wr made below the job's
+// cwd, so os.Getwd() inside a job is that working directory. Defaulting a new
+// job to it would put the new job's working directory inside the adding job's,
+// where the adding job's cleanup behaviour deletes the new job's live work, and
+// where a still-running new job stops the adding job's working directory ever
+// being reclaimed. The runner tells us the adding job's own cwd so that we can
+// default to that instead, making the new job's working directory a sibling of
+// the adding job's.
+//
+// A relative value is ignored because it would resolve inside the working
+// directory we are trying to avoid.
+func addFromDir() string {
+	if jobCwd := os.Getenv(jobqueue.JobCwdEnvVar); filepath.IsAbs(jobCwd) {
+		return jobCwd
 	}
 
 	wd, err := os.Getwd()
@@ -916,11 +949,7 @@ func defaultCwd(isLocal, remoteSameAsLocal bool) (pwd string, remoteWarning bool
 		die("%s", err)
 	}
 
-	if isLocal || cmdCwdMatters || remoteSameAsLocal {
-		return wd, false
-	}
-
-	return "/tmp", true
+	return wd
 }
 
 // parseJobViaJSON converts the columns of a single commands-file line into a
