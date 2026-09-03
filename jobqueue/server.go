@@ -3640,7 +3640,9 @@ func (s *Server) uploadFile(ctx context.Context, source io.Reader, savePath stri
 // openUploadDestination opens the file that uploaded data should be written to.
 // If savePath is empty a temporary file is created under the server's upload
 // directory (usedTempFile is then true and the returned path is its name);
-// otherwise the chosen savePath (with ~/ expanded) is created.
+// otherwise the chosen savePath (with ~/ expanded) is created, truncating any
+// existing file so the upload replaces its content instead of overwriting only
+// the start of it.
 func (s *Server) openUploadDestination(ctx context.Context, savePath string) (*os.File, string, bool, error) {
 	if savePath == "" {
 		file, tempPath, err := s.createUploadTempFile(ctx)
@@ -3658,7 +3660,7 @@ func (s *Server) openUploadDestination(ctx context.Context, savePath string) (*o
 	}
 
 	//nolint:gosec // savePath is the destination an authenticated client deliberately chose to upload to
-	file, err := os.OpenFile(savePath, os.O_RDWR|os.O_CREATE, ownerReadWrite)
+	file, err := os.OpenFile(savePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, ownerReadWrite)
 	if err != nil {
 		clog.Error(ctx, "uploadFile create file error", "err", err)
 
