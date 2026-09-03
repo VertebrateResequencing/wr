@@ -1536,6 +1536,12 @@ func nestedWorkSpaceBase(rel string) bool {
 // while the mount may have been raised by the Job's own Cmd (sshfs, s3fs) or by a
 // nested wr, appearing in no config wr has ever seen.
 //
+// It only sees a boundary BELOW the directory being swept, and is blind to the
+// swept directory being a mount root itself: every entry of a mount root is on
+// the mount's own device, so comparing them finds nothing to stop. A Cmd that
+// mounts over its own working directory, or over the workspace, is therefore
+// still swept into. Do not read this guard as covering every live mount.
+//
 // A host that gives us no *syscall.Stat_t can tell us no devices, and the answer
 // is then "no boundary": that leaves the sweep exactly as it was, whereas
 // refusing on an unknown would strand every workspace on such a host.
