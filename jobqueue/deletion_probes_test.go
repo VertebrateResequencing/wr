@@ -1017,6 +1017,144 @@ func (r probeRun) cleanUp(cwd, cmd string) error {
 	return job.workSpaceSnapshot().cleanupWorkSpace()
 }
 
+// probeWindowRow is one thing that can happen to the directories a cleanup has
+// already proven, in the window between the proof and the sweep, when ANOTHER of
+// the user's own jobs is working below the same Cwd - the normal condition at
+// scale.
+//
+// Every level above the workspace is shared with every other run of the same
+// key, and the workspace's own name is unique only among the workspaces that
+// EXIST: os.MkdirTemp hands the name of a workspace that has gone to the next
+// run that asks. So each row leaves a path that still names something, just not
+// the thing that was proven, and only the inodes the descent lstat'ed - or the
+// upward walk's refusal to remove anything but an empty directory - tell the two
+// apart.
+type probeWindowRow struct {
+	name string
+
+	// inWindow is called between the proof and the sweep, with the Job whose
+	// cleanup is running, its own workspace and the deepest hashed level above
+	// it, and returns the paths that must ALL still be there afterwards.
+	inWindow func(job *Job, workSpace, hashed string) []string
+
+	// wantErr is the error class the refusal must carry, or nil where the row
+	// leaves the cleanup something it may legitimately finish.
+	wantErr error
+}
+
+func probeWindowRows() []probeWindowRow {
+	return []probeWindowRow{
+		// the workspace itself, replaced. What was proven is gone, and the
+		// deletion is aimed at whatever holds its name now.
+		{
+			// this is the name-reuse residual, arriving one moment too late to
+			// be one: a stale ActualCwd naming a workspace since handed out
+			// again is indistinguishable by path (the "another run of the same
+			// job" row), but a workspace this cleanup PROVED and then lost is
+			// not - the inode of the dir that was checked says so.
+			name: "another run of the same key is handed this workspace's name",
+			inWindow: func(_ *Job, workSpace, _ string) []string {
+				So(os.RemoveAll(workSpace), ShouldBeNil)
+				So(os.MkdirAll(workSpace, os.ModePerm), ShouldBeNil)
+
+				reusedCwd, reusedTmp, err := mkCwdAndTmp(workSpace)
+				So(err, ShouldBeNil)
+
+				return []string{
+					writeFileIn(reusedCwd, "live_output.txt"), reusedCwd, reusedTmp, workSpace,
+				}
+			},
+			wantErr: errNotBelowBaseDir,
+		},
+		{
+			// the same window with a directory of the user's in it instead,
+			// which the hashed levels being inside their own Cwd puts within
+			// reach of anything running as them. Nothing about its SHAPE is
+			// what refuses it: it sits at the path mkHashedDir built for this
+			// very Job, so the sweep would empty it entirely, keeping nothing.
+			name: "a directory of the user's is renamed onto the workspace's name",
+			inWindow: func(job *Job, workSpace, _ string) []string {
+				userTree := filepath.Join(job.Cwd, "scripts")
+				writeFileIn(userTree, "analyse.sh")
+				writeFileIn(filepath.Join(userTree, "lib"), "helpers.sh")
+
+				So(os.RemoveAll(workSpace), ShouldBeNil)
+				So(os.Rename(userTree, workSpace), ShouldBeNil)
+
+				return []string{
+					filepath.Join(workSpace, "analyse.sh"),
+					filepath.Join(workSpace, "lib", "helpers.sh"), workSpace,
+				}
+			},
+			wantErr: errNotBelowBaseDir,
+		},
+
+		// the hashed level ABOVE the workspace, taken and put back. This is the
+		// ordering two runs of one key really produce: one run's cleanup walks
+		// up removing the empty levels it shares with every other run, and the
+		// next run's mkHashedDir creates them again. The cleanup has nothing
+		// left to delete and must say so quietly, since a workspace that has
+		// gone is the ordinary state of a second cleanup - but the handles it
+		// still holds are on the levels it descended through, not on the ones
+		// that replaced them, and the only thing its upward walk may remove is
+		// an empty directory.
+		{
+			name: "the hashed level above the workspace is recreated by another run of the same key",
+			inWindow: func(job *Job, _, hashed string) []string {
+				So(os.RemoveAll(hashed), ShouldBeNil)
+
+				other, err := startProbeRun(job.Cwd, job.Key(), "other")
+				So(err, ShouldBeNil)
+
+				return []string{other.output, other.actualCwd, other.tmpDir, hashed}
+			},
+		},
+		{
+			name: "the hashed level above the workspace is recreated holding a tree of the user's",
+			inWindow: func(_ *Job, _, hashed string) []string {
+				So(os.RemoveAll(hashed), ShouldBeNil)
+
+				return []string{writeFileIn(filepath.Join(hashed, "someone_elses"), probeMineName), hashed}
+			},
+		},
+	}
+}
+
+func TestProbeWorkSpaceChangedInTheWindow(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a cleanup that has proven its workspace, and another run of the same key below the Cwd", t, func() {
+		for _, row := range probeWindowRows() {
+			Convey(row.name, func() {
+				cwd := t.TempDir()
+				precious := writeFileIn(filepath.Join(cwd, "user_scripts"), probeMineName)
+
+				job := &Job{Cmd: probeCmd, Cwd: cwd, Behaviours: Behaviours{{When: OnExit, Do: CleanupAll}}}
+				_, workSpace, _ := realWorkSpace(job)
+
+				var survivors []string
+
+				cleanupProvenHook = func() {
+					cleanupProvenHook = nil
+
+					survivors = row.inWindow(job, workSpace, filepath.Dir(workSpace))
+				}
+
+				Reset(func() { cleanupProvenHook = nil })
+
+				err := job.Behaviours.Trigger(false, job)
+
+				soPathsExist(survivors...)
+				soPathsExist(precious, cwd)
+
+				soProbeRefused(err, row.wantErr)
+			})
+		}
+	})
+}
+
 func TestProbeConcurrentRunsOfOneCwd(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -1075,6 +1213,47 @@ func TestProbeConcurrentRunsOfOneCwd(t *testing.T) {
 			}
 
 			soPathsExist(live.output, live.actualCwd, live.tmpDir, precious, cwd)
+		})
+	})
+
+	Convey("Given a workspace name the next run of the same key was handed", t, func() {
+		// os.MkdirTemp's digits are unique only among the workspaces that
+		// EXIST, so once a run's workspace has gone its name is free for the
+		// next run of the same key to be given - and the finished run's OWN
+		// ActualCwd, which nobody reported and which its own mkHashedDir
+		// returned, then names a LIVE run's working directory byte for byte.
+		//
+		// Nothing about the path can tell the two apart, since they are one job
+		// by key and the key is the whole of what the check recognises. For
+		// cleanup that residual is recorded by the "another run of the same
+		// job" row. `run` shares the same resolution, so it inherits the same
+		// residual - and what it does with the directory is the user's own
+		// command, which can do anything they can.
+		cwd := t.TempDir()
+		precious := writeFileIn(filepath.Join(cwd, "user_scripts"), probeMineName)
+
+		job := &Job{Cmd: probeCmd, Cwd: cwd}
+		finished, workSpace, _ := realWorkSpace(job)
+
+		So(os.RemoveAll(workSpace), ShouldBeNil)
+		So(os.MkdirAll(workSpace, os.ModePerm), ShouldBeNil)
+
+		reusedCwd, reusedTmp, err := mkCwdAndTmp(workSpace)
+		So(err, ShouldBeNil)
+		So(reusedCwd, ShouldEqual, finished)
+
+		live := writeFileIn(reusedCwd, "live_output.txt")
+
+		Convey("a run behaviour of the finished run executes in the live run's working directory", func() {
+			err = (&Behaviour{When: OnExit, Do: Run, Arg: "rm -rf ./*"}).Trigger(OnExit, job)
+
+			// nothing of the USER's goes, and the deletion stops at the working
+			// directory the command was pointed at: it is the live run's own
+			// output that this residual costs.
+			soPathsExist(precious, cwd, workSpace, reusedCwd, reusedTmp)
+			soPathsGone(live)
+
+			So(err, ShouldBeNil)
 		})
 	})
 }
