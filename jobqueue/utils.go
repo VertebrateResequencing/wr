@@ -1459,9 +1459,11 @@ func removeSweptDir(dirRoot *os.Root, dir string, dirInfo os.FileInfo, keepDirs 
 	return err
 }
 
-// nestedWorkSpaceBase says whether rel - an entry of a directory a Job's cleanup
-// is sweeping - is a base directory wr created working directories below, and so
-// holds the workspace of some OTHER Job.
+// nestedWorkSpaceBase says whether the name of rel - any entry of a directory a
+// Job's cleanup is sweeping, file or directory - ends in createdCwdBaseSuffix,
+// the shape of the base component wr creates working directories below. An entry
+// of that shape holds the workspace of some OTHER Job, so the sweep leaves it
+// alone without looking inside.
 //
 // Nothing wr made for the Job being swept can be inside such an entry: that
 // Job's own base component is ABOVE its workspace, and the sweep never goes
@@ -1475,9 +1477,10 @@ func removeSweptDir(dirRoot *os.Root, dir string, dirInfo os.FileInfo, keepDirs 
 // The name is matched by SUFFIX rather than against AppName+createdCwdBaseSuffix
 // for the reason createdCwdBaseSuffix gives: AppName is "jobqueue" in the
 // manager and "wr" in the runner, and cleanup runs in both, so an equality check
-// would silently protect nothing in one of them. The suffix also spares a
-// directory of the user's own whose name merely ends in _cwd, which is the safe
-// direction to be wrong in.
+// would silently protect nothing in one of them. A suffix match also keeps an
+// entry of the user's own whose name merely ends in _cwd, which is deliberately
+// conservative: it leaves behind something that was the Job's to delete, rather
+// than deleting something that was not.
 //
 // What this costs is a LEAK: a parent whose children left workspaces behind can
 // no longer reclaim its own working directory or the workspace holding it,
