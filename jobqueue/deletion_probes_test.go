@@ -44,6 +44,7 @@ package jobqueue
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,6 +84,12 @@ const (
 	// probeSiblingDigits turns a workspace name into the name os.MkdirTemp would
 	// have given ANOTHER run of the same Job.
 	probeSiblingDigits = "999"
+
+	// probeOutputName is the file a run left in its own working directory, which
+	// cleanup IS entitled to delete, and probeOwnOutput is where that file sits
+	// relative to the workspace.
+	probeOutputName = "own_output.txt"
+	probeOwnOutput  = createdCwdName + "/" + probeOutputName
 )
 
 // probeWorld is the filesystem a (Cwd, ActualCwd) probe runs against: the
@@ -1346,6 +1353,303 @@ func TestProbeV037PoisonedJob(t *testing.T) {
 				So(strings.Contains(job.Behaviours.String(), "cleanup"), ShouldEqual, row.wantCleanup)
 
 				soProbeRefused(err, row.wantErr)
+			})
+		}
+	})
+}
+
+// probeNestedRow is one tree belonging to ANOTHER process, planted where a Job's
+// own cleanup is licensed to delete: inside its working directory or inside the
+// TMPDIR wr made beside it.
+//
+// Nothing in the Job's keep set can name such a tree - that set is built from
+// the Job's own MountConfigs - so what has to refuse each of these is
+// nestedWorkSpaceBase, which keeps any entry whose name ends in
+// createdCwdBaseSuffix without looking inside it.
+//
+// Each row is driven through BOTH sweeps of the working directory (see
+// probeNestedSweeps), because they reach the guard by different routes: with no
+// mounts the whole directory is handed to removeAllGuarded, and with mounts its
+// contents are swept entry by entry by removeAllExcept.
+type probeNestedRow struct {
+	name string
+
+	// at is where the tree goes, and kept and gone are the paths of wr's own
+	// making that the sweep must have left and deleted. All of them are spelled
+	// relative to the WORKSPACE and written out literally, as probeMountRow
+	// spells its own.
+	//
+	// What is kept is every directory ABOVE the planted tree, since keeping the
+	// tree keeps them too. What goes is the Job's own output, and its TMPDIR
+	// where the tree is not in there - the working directory is not named as
+	// gone, because a Job with a mount point inside it keeps that directory for
+	// the mount and leaves it to Unmount to reclaim.
+	at   string
+	kept []string
+	gone []string
+
+	// plant creates the tree in the (absolute) dir at names, and returns every
+	// path of it that must still be there after the sweep.
+	plant func(dir string) []string
+}
+
+// probeNestedSweeps are the two sweeps a Job's working directory can get, chosen
+// by whether the Job has any mounts at all.
+func probeNestedSweeps() []MountConfigs {
+	return []MountConfigs{nil, {{Mount: testWSMount}}}
+}
+
+// probeNestedJob plants the workspace mkHashedDir really builds for a Job whose
+// Cwd is dir, with a live output file in it, as a nested `wr add` does.
+func probeNestedJob(dir string) []string {
+	So(os.MkdirAll(dir, os.ModePerm), ShouldBeNil)
+
+	child := &Job{Cwd: dir, Cmd: probeCmd + " nested"}
+	childCwd, childWorkSpace, childTmp := realWorkSpace(child)
+
+	return []string{writeFileIn(childCwd, probeMineName), childCwd, childTmp, childWorkSpace}
+}
+
+func probeNestedRows() []probeNestedRow {
+	return []probeNestedRow{
+		// a nested Job whose Cwd is a directory the PARENT's own Cmd created,
+		// which `wr add --cwd outputs/run1` from inside a job produces. The
+		// _cwd base is then not an entry of the swept directory but two levels
+		// below it, so the guard has to be asked at every level of the descent
+		// rather than only of the entries it starts with.
+		{
+			name:  "the workspace of a nested job below a dir the Cmd created",
+			at:    createdCwdName + "/outputs/run1",
+			kept:  []string{".", createdCwdName, createdCwdName + "/outputs", createdCwdName + "/outputs/run1"},
+			gone:  []string{probeOwnOutput, createdTmpName},
+			plant: probeNestedJob,
+		},
+
+		// the TMPDIR wr made beside the working directory, which is reclaimed on
+		// every exit whether the Job has a cleanup Behaviour or not, so a tree
+		// planted there has to survive a deletion the workspace sweep never
+		// makes.
+		{
+			name:  "the workspace of a nested job inside the job's TMPDIR",
+			at:    createdTmpName,
+			kept:  []string{".", createdTmpName},
+			gone:  []string{probeOwnOutput},
+			plant: probeNestedJob,
+		},
+
+		// a nested wr running under an AppName of its own, whose base component
+		// is therefore neither "wr_cwd" nor "jobqueue_cwd". Only the SUFFIX
+		// match recognises it; an equality check against this wr's own AppName
+		// would delete another wr's live jobs.
+		{
+			name: "the tree a nested wr of another AppName built",
+			at:   createdCwdName + "/nextflow" + createdCwdBaseSuffix + "/f/9",
+			kept: []string{".", createdCwdName, createdCwdName + "/nextflow" + createdCwdBaseSuffix},
+			gone: []string{probeOwnOutput, createdTmpName},
+			plant: func(dir string) []string {
+				return []string{writeFileIn(dir, probeMineName), dir}
+			},
+		},
+	}
+}
+
+func TestProbeNestedJobTrees(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	for _, mounts := range probeNestedSweeps() {
+		Convey("Given a Job whose tree holds work another process owns", t, func() {
+			for _, row := range probeNestedRows() {
+				Convey(fmt.Sprintf("%s survives the sweep of a Job with %d mounts", row.name, len(mounts)), func() {
+					cwd := t.TempDir()
+					precious := writeFileIn(filepath.Join(cwd, "user_scripts"), probeMineName)
+
+					job := &Job{Cwd: cwd, Cmd: probeCmd, MountConfigs: mounts}
+					actualCwd, workSpace, _ := realWorkSpace(job)
+					writeFileIn(actualCwd, probeOutputName)
+
+					survivors := row.plant(filepath.Join(workSpace, row.at))
+
+					snap := job.workSpaceSnapshot()
+					cleanErr := snap.cleanupWorkSpace()
+					tmpErr := snap.removeTmpDir()
+
+					soPathsExist(survivors...)
+					soPathsExist(probePaths(workSpace, row.kept)...)
+					soPathsExist(precious, cwd)
+					soPathsGone(probePaths(workSpace, row.gone)...)
+
+					So(cleanErr, ShouldBeNil)
+					So(tmpErr, ShouldBeNil)
+				})
+			}
+		})
+	}
+}
+
+// probeRaisedMountRow is one place a Job's own Cmd can raise a mount wr never
+// configured - `sshfs remote:/data sub/mnt`, or a nested wr's own mount - and
+// which therefore appears in no keep set. Only crossesMountBoundary stands
+// between such a mount and the sweep, and what is behind it is the user's remote
+// objects.
+//
+// The rows are the two places a deletion reaches such a mount by DESCENDING to
+// it, which is where the boundary check has to be asked with the device of the
+// directory it is descending from rather than of the directory it started at.
+type probeRaisedMountRow struct {
+	name string
+
+	// mount is where the Cmd raised it, and kept and gone are the paths of wr's
+	// own making that the sweep must have left and deleted, all spelled
+	// relative to the WORKSPACE as probeNestedRow spells its own.
+	mount string
+	kept  []string
+	gone  []string
+}
+
+func probeRaisedMountRows() []probeRaisedMountRow {
+	return []probeRaisedMountRow{
+		{
+			name:  "two dirs below the working directory",
+			mount: createdCwdName + "/inputs/shared/" + testWSMount,
+			kept:  []string{".", createdCwdName, createdCwdName + "/inputs", createdCwdName + "/inputs/shared"},
+			gone:  []string{probeOwnOutput, createdTmpName},
+		},
+		{
+			name:  "inside the job's TMPDIR, which is reclaimed on every exit",
+			mount: createdTmpName + "/" + testWSMount,
+			kept:  []string{".", createdTmpName},
+			gone:  []string{probeOwnOutput},
+		},
+	}
+}
+
+func TestProbeMountsTheCmdRaised(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a Job whose own Cmd raised a live mount wr never configured", t, func() {
+		if !probeCanMountFuse() {
+			SkipConvey("this host will not let an unprivileged process raise a FUSE mount", func() {})
+
+			return
+		}
+
+		for _, mounts := range probeNestedSweeps() {
+			for _, row := range probeRaisedMountRows() {
+				Convey(fmt.Sprintf("one %s survives the sweep of a Job with %d mounts",
+					row.name, len(mounts)), func() {
+					cwd := t.TempDir()
+					precious := writeFileIn(filepath.Join(cwd, "user_scripts"), probeMineName)
+
+					job := &Job{Cwd: cwd, Cmd: probeCmd + " && sshfs remote:/data", MountConfigs: mounts}
+					actualCwd, workSpace, _ := realWorkSpace(job)
+					writeFileIn(actualCwd, probeOutputName)
+
+					mountPoint := filepath.Join(workSpace, row.mount)
+					remote := probeMountRemote(t, mountPoint)
+
+					snap := job.workSpaceSnapshot()
+					cleanErr := snap.cleanupWorkSpace()
+					tmpErr := snap.removeTmpDir()
+
+					soPathsExist(remote, filepath.Join(mountPoint, probeRemoteName), mountPoint)
+					soPathsExist(probePaths(workSpace, row.kept)...)
+					soPathsExist(precious, cwd)
+					soPathsGone(probePaths(workSpace, row.gone)...)
+
+					So(cleanErr, ShouldBeNil)
+					So(tmpErr, ShouldBeNil)
+				})
+			}
+		}
+	})
+}
+
+// probeOutcomeRow is one verdict classifyExecOutcome really reaches about a
+// finished command, to be combined with the verdict of an unmount that could not
+// upload the Job's output.
+//
+// The upload failure is the only thing that can make a Job whose command
+// SUCCEEDED need running again, and the only thing whose loss silently archives
+// a Job whose output no longer exists anywhere: the cache the output was in is
+// deleted at unmount regardless. So the combination must never archive unless
+// both halves are happy, and must never drop a bury or a release the command
+// itself earned.
+//
+// Two of these shapes carry dobury AND dorelease at once (classifyReleasedExit
+// starts every shape as a release and some arms then bury as well), which is
+// exactly the pairing a combination reading one flag alone would get wrong.
+type probeOutcomeRow struct {
+	name string
+	cmd  execOutcome
+}
+
+func probeOutcomeRows() []probeOutcomeRow {
+	return []probeOutcomeRow{
+		{name: "exited zero", cmd: execOutcome{doarchive: true}},
+		{
+			name: "exited with a code that buries",
+			cmd: execOutcome{
+				failreason: FailReasonCFound, exitcode: exitCodeCommandNotFound, dobury: true,
+			},
+		},
+		{
+			name: "exited non-zero, to be retried",
+			cmd:  execOutcome{failreason: FailReasonExit, exitcode: 1, dorelease: true},
+		},
+		{
+			name: "failed to complete normally",
+			cmd: execOutcome{
+				failreason: FailReasonAbnormal, exitcode: exitCodeAbnormal, dorelease: true,
+			},
+		},
+		{
+			name: "was killed, which releases AND buries",
+			cmd: execOutcome{
+				failreason: FailReasonKilled, exitcode: 1, dorelease: true, dobury: true,
+			},
+		},
+		{
+			name: "exited non-zero past its noretries time, which releases AND buries",
+			cmd: execOutcome{
+				failreason: FailReasonExit, exitcode: 1, dorelease: true, dobury: true,
+			},
+		},
+	}
+}
+
+func TestProbeUploadFailureCombination(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a command that finished", t, func() {
+		for _, row := range probeOutcomeRows() {
+			Convey("one that "+row.name, func() {
+				Convey("keeps its own verdict when the unmount was clean", func() {
+					So(combineExecOutcomes(execOutcome{}, row.cmd), ShouldResemble, row.cmd)
+				})
+
+				Convey("never archives, and keeps any bury or release, when the output did not upload", func() {
+					final := combineExecOutcomes(uploadFailedOutcome(errTestUploadFailed), row.cmd)
+
+					So(final.doarchive, ShouldBeFalse)
+					So(final.dobury, ShouldEqual, row.cmd.dobury)
+					So(final.dorelease, ShouldEqual, row.cmd.dorelease || row.cmd.doarchive)
+
+					if row.cmd.doarchive {
+						So(final.failreason, ShouldEqual, FailReasonUpload)
+						So(final.exitcode, ShouldEqual, exitCodeUploadFailure)
+
+						return
+					}
+
+					So(final.failreason, ShouldEqual, row.cmd.failreason)
+					So(final.exitcode, ShouldEqual, row.cmd.exitcode)
+				})
 			})
 		}
 	})
