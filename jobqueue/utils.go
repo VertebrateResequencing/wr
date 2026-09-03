@@ -1056,10 +1056,37 @@ func (c dirChain) openLeaf() (*os.Root, error) {
 	return openVerifiedDir(c.roots[last], c.names[last], c.info)
 }
 
+// sweptWorkSpace opens the proven dir as a root of its own - see openLeaf - and
+// pairs it with the lstat of the directory that dir is an entry of, which is the
+// deepest handle the descent opened. The pair is what lets a sweep refuse a
+// workspace that is itself the root of a mount the Job's own Cmd raised; see
+// sweptDir.
+//
+// The lstat goes through that pinned handle, so no part of the path above the
+// workspace is resolved from a string a second time, and it is taken once for
+// the whole sweep rather than once per entry. The caller closes the root.
+func (c dirChain) sweptWorkSpace() (sweptDir, error) {
+	wsRoot, err := c.openLeaf()
+	if err != nil {
+		return sweptDir{}, err
+	}
+
+	aboveInfo, err := c.deepest().Lstat(".")
+	if err != nil {
+		wsRoot.Close()
+
+		return sweptDir{}, err
+	}
+
+	return sweptDir{root: wsRoot, above: aboveInfo}, nil
+}
+
 // removeUpward removes the proven dir and then each of its parents in turn,
 // stopping before it reaches the base (leaving that, and everything above it,
 // undeleted) and stopping early at a dir it cannot remove - which is expected
-// when another Job is running from the same base, so that is not an error.
+// when another Job is running from the same base, or when the workspace is
+// itself the mount point of a mount the Job's own Cmd raised, so that is not an
+// error; see errIsDirInUse.
 //
 // Each removal names a single entry of the pinned handle on the directory that
 // entry lives in, so no part of the path is left to be resolved again, and like
@@ -1077,7 +1104,7 @@ func (c dirChain) removeUpward() error {
 
 	err := c.roots[last].Remove(c.names[last])
 	if err != nil && !os.IsNotExist(err) {
-		if errIsDirNotEmpty(err) {
+		if errIsDirInUse(err) {
 			return nil
 		}
 
@@ -1183,6 +1210,27 @@ func openVerifiedDir(parent *os.Root, name string, info os.FileInfo) (*os.Root, 
 // any contract.
 func errIsDirNotEmpty(err error) bool {
 	return errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST)
+}
+
+// errIsDirInUse says if err is a directory removal that failed because the
+// directory is still in use, which every removal of a DIRECTORY that a Job's
+// cleanup makes can tolerate: there is nothing of ours left to delete there, and
+// nothing to retry.
+//
+// Beyond the directory still having entries in it, that covers EBUSY, which
+// rmdir gives for a directory that is a mount point. Cleanup runs before wr
+// takes its own mounts down, and a mount raised over the workspace by the Job's
+// own Cmd is refused by the sweep rather than swept through (see sweptDir), so
+// the mount point being left standing is the ordinary outcome of protecting it,
+// not a failure of the Job's cleanup. The one other thing Linux reports EBUSY
+// for here is the calling process's own root directory, which no workspace of
+// wr's ever is.
+//
+// It is asked only of the removal of a directory, so a mounted-on FILE - which
+// unlink also refuses with EBUSY - is still reported: the sweep leaves that
+// entry alone via the mount boundary rather than trying and forgiving it.
+func errIsDirInUse(err error) bool {
+	return errIsDirNotEmpty(err) || errors.Is(err, syscall.EBUSY)
 }
 
 // realDirBelow proves that dir is a proper descendant of baseRoot's dir, ie.
@@ -1343,7 +1391,60 @@ func readDirIn(dirRoot *os.Root) ([]os.DirEntry, error) {
 	return f.ReadDir(-1)
 }
 
-// removeAllExcept deletes the contents of dirRoot's own directory, except for
+// sweptDir pairs a handle on a directory a Job's cleanup is about to sweep with
+// the lstat of the directory that handle is itself an entry of.
+//
+// The pair exists because crossesMountBoundary can only see a mount that is
+// INSIDE the swept directory: every entry of a mount root is on the mount's own
+// device, so where the swept directory IS the mount root no entry of it ever
+// looks like a boundary, and the sweep walks straight into the user's mounted
+// filesystem. The device does change one level up, so the swept directory has to
+// be judged against the directory above it as well as its entries against it.
+//
+// Holding the two together also names them, so a transposition of the two
+// os.FileInfos a sweep of the working directory needs - the directory above it,
+// and the identity its own handle is opened against - reads wrong at a call
+// site, where a pair of bare arguments would swap silently and answer the
+// boundary question about the wrong directory.
+type sweptDir struct {
+	// root is the handle on the directory whose contents are being swept.
+	root *os.Root
+
+	// above is the lstat of the directory root is an entry of, read through the
+	// pinned handle on that directory so that no path is resolved from a string.
+	above os.FileInfo
+}
+
+// sweepable lstats the swept directory itself, giving the device every entry's
+// mount boundary is judged against - what removeWithExceptions documents as its
+// dirInfo - and says whether the sweep may happen at all.
+//
+// The directory is not sweepable, with a nil error rather than a failure, where
+// it is across a mount boundary from the directory above it, ie. it is itself a
+// mount root and nothing inside it is wr's. Refusing costs one comparison and
+// happens before any readdir below the directory.
+//
+// What this cannot see, and statx(STATX_ATTR_MOUNT_ROOT) could, is a mount root
+// on the SAME device as the directory above it: a bind mount, or a second mount
+// of the same filesystem. Raising either needs CAP_SYS_ADMIN or a user
+// namespace, which the shape being defended against - a Job's own unprivileged
+// Cmd running sshfs, s3fs or a nested wr, all of which get a device of their own
+// - does not have. It is the same kind of residual crossesMountBoundary already
+// documents for a host that hands back no *syscall.Stat_t.
+func (d sweptDir) sweepable() (os.FileInfo, bool, error) {
+	info, err := d.root.Lstat(".")
+	if err != nil {
+		return nil, false, err
+	}
+
+	if crossesMountBoundary(d.above, info) {
+		return nil, false, nil
+	}
+
+	return info, true, nil
+}
+
+// removeAllExcept deletes the contents of dir's own directory, except for
 // the given folders (paths relative to it), and except for whatever
 // removeEntryWithExceptions refuses to touch at all.
 //
@@ -1353,19 +1454,19 @@ func readDirIn(dirRoot *os.Root) ([]os.DirEntry, error) {
 // because only descendants of the directory are ever deleted here, so an
 // exception outside it was protecting nothing, whereas erroring would abandon the
 // job's workspace for no gain.
-func removeAllExcept(dirRoot *os.Root, exceptions []string) error {
-	info, err := dirRoot.Lstat(".")
-	if err != nil {
+func removeAllExcept(dir sweptDir, exceptions []string) error {
+	info, ok, err := dir.sweepable()
+	if !ok {
 		return err
 	}
 
-	return removeWithExceptions(dirRoot, ".", info, exceptionDirs(exceptions))
+	return removeWithExceptions(dir.root, ".", info, exceptionDirs(exceptions))
 }
 
-// removeAllGuarded deletes the entry of dirRoot called name, and everything
-// below it. It stands in for os.Root.RemoveAll everywhere a Job's cleanup
-// deletes inside the workspace wr made for it, and differs from it only in what
-// it refuses to touch; see removeEntryWithExceptions.
+// removeAllGuarded deletes the entry of dir's own directory called name, and
+// everything below it. It stands in for os.Root.RemoveAll everywhere a Job's
+// cleanup deletes inside the workspace wr made for it, and differs from it only
+// in what it refuses to touch; see removeEntryWithExceptions and sweptDir.
 //
 // Whether name is the Job's to delete at all is decided long before this, by
 // jobWorkSpace; all this bounds is how far a deletion already licensed goes.
@@ -1374,13 +1475,13 @@ func removeAllExcept(dirRoot *os.Root, exceptions []string) error {
 // on as its own keep-set spelling, which nothing then reads. Every caller passes
 // a single component anyway - an entry of the workspace, its tmp or its working
 // directory - so the two spellings are the same string.
-func removeAllGuarded(dirRoot *os.Root, name string) error {
-	info, err := dirRoot.Lstat(".")
-	if err != nil {
+func removeAllGuarded(dir sweptDir, name string) error {
+	info, ok, err := dir.sweepable()
+	if !ok {
 		return err
 	}
 
-	return removeEntryWithExceptions(dirRoot, name, name, info, nil)
+	return removeEntryWithExceptions(dir.root, name, name, info, nil)
 }
 
 // exceptionDirs turns removeAllExcept's exceptions into the set of dirs to keep,
@@ -1548,7 +1649,7 @@ func removeSweptDir(dirRoot *os.Root, name, keepRel string, dirInfo os.FileInfo,
 	}
 
 	err = dirRoot.Remove(name)
-	if err == nil || os.IsNotExist(err) || errIsDirNotEmpty(err) {
+	if err == nil || os.IsNotExist(err) || errIsDirInUse(err) {
 		return nil
 	}
 

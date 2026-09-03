@@ -26,6 +26,7 @@
 package jobqueue
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -40,6 +41,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/clog"
 	gofuse "github.com/hanwen/go-fuse/v2/fs"
+	"github.com/hanwen/go-fuse/v2/fuse"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -58,6 +60,244 @@ const (
 // keyGrindMax bounds jobWithKeyPrefix's search, which is expected to take about
 // 16^len(prefix) tries.
 const keyGrindMax = 1 << 20
+
+// TestCleanupCrossesNoMountBoundaryAtTheWorkingDir drives the sweep whose device
+// number comes from the working directory itself: removeAllExcept, reached by
+// removeActualCwd when the Job's keep set is non-empty.
+//
+// The SWEPT directory is where the boundary question is blind, because every
+// entry of a mount root is on the mount's own device: judged against the
+// directory they are entries of, nothing inside a mount root ever looks like a
+// crossing, and the sweep walks the user's mounted filesystem believing it is
+// walking the workspace wr made. So the swept directory has to be judged against
+// the directory ABOVE it, which is the one level where the device does change.
+func TestCleanupCrossesNoMountBoundaryAtTheWorkingDir(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// the mount the Job's own Cmd raised is AT the working directory rather than
+	// an entry of it, and the working directory is where removeAllExcept takes
+	// the device it judges every entry against.
+	//
+	// Both sweeps are driven, because only one of them takes its device from the
+	// working directory: with no mounts the keep set is empty, removeActualCwd
+	// hands the whole directory to removeAllGuarded, and the device that judges
+	// it is the WORKSPACE's - from which the mount is a device change and IS
+	// caught, even before this fix.
+	for _, mounts := range nestedSweepCases() {
+		Convey("Given a Job whose Cmd raised a live mount over the working directory wr gave it", t, func() {
+			if !canMountFuse() {
+				SkipConvey("this host will not let an unprivileged process raise a FUSE mount", func() {})
+
+				return
+			}
+
+			cwd := t.TempDir()
+
+			job := &Job{
+				Cwd:          cwd,
+				Cmd:          "sshfs remote:/data . && analyse",
+				MountConfigs: mounts,
+			}
+			actualCwd, workSpace, tmpDir := realWorkSpace(job)
+			scratch := writeFileIn(tmpDir, "scratch.txt")
+
+			// the Job's keep set is built from its MountConfigs LEXICALLY and kept
+			// unconditionally (keptDirs), so the mount point inside the working
+			// directory does not have to be there for the keep set to name it -
+			// which is what sends the sweep down the removeAllExcept branch. It
+			// being absent is also what lets fusermount 2 mount over the working
+			// directory at all; see mountLoopback on the "nonempty" option.
+			remote, mounted := mountLoopbackOver(t, actualCwd)
+			if !mounted {
+				SkipConvey("this host refused an unprivileged FUSE mount", func() {})
+
+				return
+			}
+
+			Convey(fmt.Sprintf("cleanup with %d mounts deletes nothing through it, and still deletes what it made",
+				len(mounts)), func() {
+				err := (&Behaviour{When: OnExit, Do: Cleanup}).Trigger(OnExit, job)
+
+				soPathsExist(remote, filepath.Join(actualCwd, testWSRemote), actualCwd, workSpace)
+				soPathsGone(scratch, tmpDir)
+
+				So(err, ShouldBeNil)
+			})
+		})
+	}
+}
+
+// TestCleanupCrossesNoMountBoundaryOverAPopulatedWorkingDir is the test above
+// with the ordering wr really produces: wr raises its own configured mount
+// INSIDE the working directory before the Job's Cmd runs, so that directory is
+// not empty when the Cmd mounts over it.
+func TestCleanupCrossesNoMountBoundaryOverAPopulatedWorkingDir(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a working dir that held wr's own mount point when the Cmd mounted over it", t, func() {
+		if !canMountFuse() {
+			SkipConvey("this host will not let an unprivileged process raise a FUSE mount", func() {})
+
+			return
+		}
+
+		cwd := t.TempDir()
+		job := &Job{
+			Cwd:          cwd,
+			Cmd:          "sshfs remote:/data . && analyse",
+			MountConfigs: MountConfigs{{Mount: testWSMount}},
+		}
+		actualCwd, workSpace, tmpDir := realWorkSpace(job)
+		scratch := writeFileIn(tmpDir, "scratch.txt")
+
+		So(os.MkdirAll(filepath.Join(actualCwd, testWSMount), os.ModePerm), ShouldBeNil)
+
+		backing := t.TempDir()
+		remote := writeFileIn(backing, testWSRemote)
+
+		if !mountLoopback(t, actualCwd, backing, "nonempty") {
+			SkipConvey("this host refused an unprivileged FUSE mount over a non-empty dir", func() {})
+
+			return
+		}
+
+		Convey("cleanup deletes nothing through it, and still deletes what it made", func() {
+			err := (&Behaviour{When: OnExit, Do: Cleanup}).Trigger(OnExit, job)
+
+			soPathsExist(remote, filepath.Join(actualCwd, testWSRemote), actualCwd, workSpace)
+			soPathsGone(scratch, tmpDir)
+
+			So(err, ShouldBeNil)
+		})
+	})
+}
+
+// TestCleanupCrossesNoMountBoundaryAtTheWorkSpace drives the sweep of the
+// workspace's own entries - removeWorkSpaceEntries - by making the WORKSPACE the
+// mount root. It takes its device from the workspace's own Lstat("."), so it is
+// blind there for the same reason, and it needs no keep set at all to be
+// reached. Reclaiming the TMPDIR is blind in the same place, and is reached from
+// Execute rather than from a cleanup Behaviour; see
+// TestJobTmpDirRemovalCrossesNoMountBoundary.
+func TestCleanupCrossesNoMountBoundaryAtTheWorkSpace(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// withCwdEntry says whether the mounted remote happens to hold an entry
+	// called cwd, which is what the working directory resolves to through the
+	// mount. With one, the working-directory sweep runs against it as well; with
+	// none, proveActualCwd's tolerated absence leaves actualCwdInfo nil and only
+	// removeWorkSpaceEntries runs - and that alone is enough to wipe the remote's
+	// top level.
+	//
+	// The mounts decide which sweep that working directory then gets, and only
+	// the keep-set one reaches inside it: from the working directory's own device
+	// - the mount's - nothing below is a crossing, so what refuses it is the
+	// workspace being a mount root, asked one level higher up.
+	for _, withCwdEntry := range []bool{false, true} {
+		for _, mounts := range nestedSweepCases() {
+			Convey("Given a Job whose Cmd raised a live mount over the workspace wr gave it", t, func() {
+				if !canMountFuse() {
+					SkipConvey("this host will not let an unprivileged process raise a FUSE mount", func() {})
+
+					return
+				}
+
+				cwd := t.TempDir()
+				job := &Job{Cwd: cwd, Cmd: "sshfs remote:/data .. && analyse", MountConfigs: mounts}
+				actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+				backing := t.TempDir()
+				remote := writeFileIn(backing, testWSRemote)
+				remoteDeep := remote
+
+				if withCwdEntry {
+					remoteDeep = writeFileIn(filepath.Join(backing, createdCwdName), "remote_output.txt")
+				}
+
+				// fusermount 2 refuses a non-empty mount point, which libfuse 3
+				// permits by default, so what wr made in the workspace goes first.
+				So(os.RemoveAll(actualCwd), ShouldBeNil)
+				So(os.RemoveAll(tmpDir), ShouldBeNil)
+
+				if !mountLoopback(t, workSpace, backing) {
+					SkipConvey("this host refused an unprivileged FUSE mount", func() {})
+
+					return
+				}
+
+				Convey(fmt.Sprintf("cleanup with a cwd entry present=%v and %d mounts deletes nothing through it",
+					withCwdEntry, len(mounts)), func() {
+					err := (&Behaviour{When: OnExit, Do: Cleanup}).Trigger(OnExit, job)
+
+					soPathsExist(remoteDeep, remote, workSpace)
+
+					So(err, ShouldBeNil)
+				})
+			})
+		}
+	}
+}
+
+// TestJobTmpDirRemovalCrossesNoMountBoundary drives the sweep no cleanup
+// Behaviour reaches: removeTmp, which Execute asks for on every exit through
+// removeJobTmpDir, including for the great majority of Jobs that have no cleanup
+// Behaviour at all and so never sweep anything else.
+//
+// It takes its device from the workspace's own Lstat("."), so with a mount the
+// Job's own Cmd raised over the workspace, the tmp it deletes is whatever the
+// mounted filesystem happens to call tmp.
+func TestJobTmpDirRemovalCrossesNoMountBoundary(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a Job whose Cmd raised a live mount over the workspace holding its TMPDIR", t, func() {
+		if !canMountFuse() {
+			SkipConvey("this host will not let an unprivileged process raise a FUSE mount", func() {})
+
+			return
+		}
+
+		cwd := t.TempDir()
+		job := &Job{Cwd: cwd, Cmd: "sshfs remote:/data .. && analyse"}
+		actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+		backing := t.TempDir()
+		remote := writeFileIn(backing, testWSRemote)
+
+		// what the TMPDIR wr made resolves to through the mount is the mounted
+		// filesystem's own tmp, so that is what removeTmp deletes.
+		remoteTmp := writeFileIn(filepath.Join(backing, createdTmpName), "remote_output.txt")
+
+		// fusermount 2 refuses a non-empty mount point, which libfuse 3 permits
+		// by default, so what wr made in the workspace goes first.
+		So(os.RemoveAll(actualCwd), ShouldBeNil)
+		So(os.RemoveAll(tmpDir), ShouldBeNil)
+
+		if !mountLoopback(t, workSpace, backing) {
+			SkipConvey("this host refused an unprivileged FUSE mount", func() {})
+
+			return
+		}
+
+		buff := clog.ToBufferAtLevel("warn")
+
+		Reset(clog.ToDefault)
+
+		Convey("reclaiming the TMPDIR deletes nothing through the mount", func() {
+			removeJobTmpDir(context.Background(), job)
+
+			soPathsExist(remoteTmp, remote, filepath.Join(workSpace, createdTmpName), workSpace)
+			So(buff.String(), ShouldBeEmpty)
+		})
+	})
+}
 
 // realWorkSpace gives job the working directory mkHashedDir really creates for it
 // below job.Cwd, and returns that dir, the workspace holding it, and the tmp dir
@@ -538,6 +778,45 @@ func TestCleanupKeepsCacheAtWorkSpace(t *testing.T) {
 			So(err, ShouldBeNil)
 		})
 	})
+}
+
+// mountLoopback really FUSE mounts backing over mountPoint, with the given mount
+// options, and takes the mount down when the test ends. ok is false where the
+// host refused the mount, for the reason mountLoopbackOver gives.
+//
+// go-fuse's loopback filesystem is what makes the mount real, and it is the
+// cheapest one an unprivileged process can raise. What is behind it is an
+// ordinary directory, so what survived can be asserted about directly; muxfys
+// would need an object store to talk to, and the deletion under test does not
+// care which filesystem is mounted, only that a mount gets crossed.
+//
+// The one option any of this needs is "nonempty", for a mount point that is not
+// empty: fusermount 2 refuses that without it, while libfuse 3 dropped the check
+// and permits it by default. It decides only whether the mount is PERMITTED,
+// never what the sweep does once it is up.
+func mountLoopback(t *testing.T, mountPoint, backing string, options ...string) bool {
+	t.Helper()
+
+	root, err := gofuse.NewLoopbackRoot(backing)
+	So(err, ShouldBeNil)
+	So(os.MkdirAll(mountPoint, os.ModePerm), ShouldBeNil)
+
+	server, err := gofuse.Mount(mountPoint, root, &gofuse.Options{
+		MountOptions: fuse.MountOptions{Options: options},
+	})
+	if err != nil {
+		t.Logf("this host refused a loopback FUSE mount at %s: %s", mountPoint, err)
+
+		return false
+	}
+
+	t.Cleanup(func() {
+		if uerr := server.Unmount(); uerr != nil {
+			t.Logf("could not unmount the loopback at %s: %s", mountPoint, uerr)
+		}
+	})
+
+	return true
 }
 
 // jobKeptDirs is the keep set the real resolution classifies for job: everything
@@ -1451,33 +1730,17 @@ func canMountFuse() bool {
 // and a fusermount binary and still deny an unprivileged mount, so a failed
 // mount is a skip and never a test failure.
 //
-// go-fuse's loopback filesystem is what makes the mount real, and it is the
-// cheapest one an unprivileged process can raise. What is behind it is an
-// ordinary directory, so what survived can be asserted about directly; muxfys
-// would need an object store to talk to, and the deletion under test does not
-// care which filesystem is mounted, only that a mount gets crossed.
+// A test that needs to choose the NAMES behind the mount plants its own backing
+// directory and calls mountLoopback itself.
 func mountLoopbackOver(t *testing.T, mountPoint string) (string, bool) {
 	t.Helper()
 
 	backing := t.TempDir()
 	remote := writeFileIn(backing, testWSRemote)
 
-	root, err := gofuse.NewLoopbackRoot(backing)
-	So(err, ShouldBeNil)
-	So(os.MkdirAll(mountPoint, os.ModePerm), ShouldBeNil)
-
-	server, err := gofuse.Mount(mountPoint, root, &gofuse.Options{})
-	if err != nil {
-		t.Logf("this host refused a loopback FUSE mount at %s: %s", mountPoint, err)
-
+	if !mountLoopback(t, mountPoint, backing) {
 		return "", false
 	}
-
-	t.Cleanup(func() {
-		if uerr := server.Unmount(); uerr != nil {
-			t.Logf("could not unmount the loopback at %s: %s", mountPoint, uerr)
-		}
-	})
 
 	return remote, true
 }
