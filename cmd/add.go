@@ -97,6 +97,7 @@ var (
 	cmdFile                 string
 	cmdHead                 int
 	cmdCwdMatters           bool
+	cmdCwdMattersChanged    *bool
 	cmdChangeHome           bool
 	cmdRepGroup             string
 	cmdGroup                string
@@ -501,6 +502,11 @@ this manager session) job id, and turns on bsub emulation, which means that if
 your Cmd calls bsub, it will instead result in a command being added to wr. The
 new job will have this job's mount and cloud_* options.
 
+Because those new jobs are given this job's working directory as their own
+literal one, "bsub_mode" defaults "cwd_matters" to true, so that this job's
+working directory is your own directory and not one wr made and may delete. Say
+--cwd_matters=false if you want the old behaviour.
+
 NB: When running with sudo that is configured to not pass through environmental
 variables, you must have a wr config file, accessible from the working
 directory, with ManagerHost, ManagerPort, and ManagerCertDomain set.`,
@@ -610,6 +616,12 @@ func addCmdCoreFlags() {
 	flags.StringVarP(&cmdDepGroups, "dep_grps", "e", "", "comma-separated list of dependency groups")
 	flags.StringVarP(&cmdCwd, "cwd", "c", "", "base for the command's working dir")
 	flags.BoolVar(&cmdCwdMatters, "cwd_matters", false, "--cwd should be used as the actual working directory")
+
+	// cwdMatters() has to know whether --cwd_matters was GIVEN, not just its
+	// value, and cannot ask addCmd: addCmd's own initialiser refers to
+	// parseCmdFile, so a reference back to addCmd from anything parseCmdFile
+	// calls is an initialisation cycle.
+	cmdCwdMattersChanged = &flags.Lookup("cwd_matters").Changed
 	flags.BoolVar(&cmdChangeHome, "change_home", false,
 		"when not --cwd_matters, set $HOME to the actual working directory")
 	flags.StringVar(&cmdGroup, "group", "", "unix group to start the command as")
@@ -698,7 +710,7 @@ func addCmdMiscFlags() {
 		"make remote-manager adds use the same cwd and environment behaviour as local-manager adds")
 	flags.BoolVar(&cmdReRun, "rerun", false,
 		"re-run any commands that you add that had been previously added and have since completed")
-	flags.BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
+	flags.BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode; implies --cwd_matters")
 	flags.BoolVar(&cmdDisableRelativeCheck, "disable_relative_check", false,
 		"disable the relative path checking when cwd_matters is false")
 	flags.IntVar(&timeoutint, "timeout", defaultAddTimeout,
@@ -908,8 +920,8 @@ func parseDurationOrDie(value, flagName string) time.Duration {
 // defaultCwd determines the default command working directory to use when
 // --cwd was not supplied. It returns the empty string (and no warning) when
 // --cwd was supplied. Otherwise it returns addFromDir() when the manager is
-// local, --cwd_matters is set, or remote adds should behave like local adds, and
-// /tmp (with remoteWarning true) when the manager is remote.
+// local, cwdMatters(), or remote adds should behave like local adds, and /tmp
+// (with remoteWarning true) when the manager is remote.
 func defaultCwd(isLocal, remoteSameAsLocal bool) (pwd string, remoteWarning bool) {
 	if cmdCwd != "" {
 		return "", false
@@ -917,7 +929,7 @@ func defaultCwd(isLocal, remoteSameAsLocal bool) (pwd string, remoteWarning bool
 
 	wd := addFromDir()
 
-	if isLocal || cmdCwdMatters || remoteSameAsLocal {
+	if isLocal || cwdMatters() || remoteSameAsLocal {
 		return wd, false
 	}
 
@@ -950,6 +962,29 @@ func addFromDir() string {
 	}
 
 	return wd
+}
+
+// cwdMatters reports whether --cwd should be taken as the literal command
+// working directory rather than as the parent to create one below.
+//
+// --bsub defaults it to true. A bsub-mode job's Cmd submits its children with
+// `wr bsub`, which gives them the submitting Cmd's own working directory as
+// their Cwd, with CwdMatters true (cmd/lsf.go) - so a wr-created working
+// directory for the parent becomes the children's shared submission directory,
+// and the parent's cleanup behaviour deletes their live work. The parent is the
+// only job in a --bsub tree that creates a working directory, the children being
+// cwd_matters already, so not creating it removes the whole class.
+//
+// An explicit --cwd_matters=false still wins, for anyone who wants the old
+// shape.
+func cwdMatters() bool {
+	given := cmdCwdMattersChanged != nil && *cmdCwdMattersChanged
+
+	if cmdBsubMode && !given {
+		return true
+	}
+
+	return cmdCwdMatters
 }
 
 // parseJobViaJSON converts the columns of a single commands-file line into a
@@ -1030,7 +1065,7 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 		ReqGrp:               reqGroup,
 		Group:                cmdGroup,
 		Cwd:                  cmdCwd,
-		CwdMatters:           cmdCwdMatters,
+		CwdMatters:           cwdMatters(),
 		ChangeHome:           cmdChangeHome,
 		CPUs:                 cmdCPUs,
 		Disk:                 cmdDisk,

@@ -613,6 +613,70 @@ func insideJobAdd(t *testing.T) (string, string, *jobqueue.Client) {
 	return orig, workSpace, &jobqueue.Client{ServerInfo: &jobqueue.ServerInfo{Addr: remoteManagerAddr}}
 }
 
+// TestAddBsubImpliesCwdMatters covers the working directory of a --bsub job. Its
+// children are submitted by `wr bsub` from the job's own working directory and
+// are cwd_matters themselves, so a wr-created working directory for the parent
+// would be the children's shared submission directory, which the parent's
+// cleanup deletes.
+func TestAddBsubImpliesCwdMatters(t *testing.T) {
+	Convey("--bsub defaults cwd_matters to true, so the parent creates no working directory", t, func() {
+		jq := bsubModeAdd(t)
+
+		jobs, _, _ := parseCmdFile(jq, false, true)
+
+		So(jobs, ShouldHaveLength, 1)
+		So(jobs[0].BsubMode, ShouldNotBeBlank)
+		So(jobs[0].CwdMatters, ShouldBeTrue)
+
+		Convey("An explicit --cwd_matters=false still wins", func() {
+			So(addCmd.Flags().Set("cwd_matters", "false"), ShouldBeNil)
+
+			jobs, _, _ = parseCmdFile(jq, false, true)
+
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].CwdMatters, ShouldBeFalse)
+		})
+
+		Convey("An explicit --cwd_matters is honoured too", func() {
+			So(addCmd.Flags().Set("cwd_matters", "true"), ShouldBeNil)
+
+			jobs, _, _ = parseCmdFile(jq, false, true)
+
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].CwdMatters, ShouldBeTrue)
+		})
+	})
+
+	Convey("Without --bsub, cwd_matters is still false unless asked for", t, func() {
+		jq := bsubModeAdd(t)
+		cmdBsubMode = false
+
+		jobs, _, _ := parseCmdFile(jq, false, true)
+
+		So(jobs, ShouldHaveLength, 1)
+		So(jobs[0].BsubMode, ShouldBeBlank)
+		So(jobs[0].CwdMatters, ShouldBeFalse)
+	})
+}
+
+// bsubModeAdd sets cmd's add globals up for a `wr add --bsub` with --cwd_matters
+// left unmentioned, and returns a client for a remote manager.
+func bsubModeAdd(t *testing.T) *jobqueue.Client {
+	t.Helper()
+
+	cmdPath := filepath.Join(t.TempDir(), "cmds.txt")
+	err := os.WriteFile(cmdPath, []byte("pipeline that bsubs\n"), 0600)
+	So(err, ShouldBeNil)
+
+	configureAddParserTest(t, cmdPath)
+
+	cmdCwd = t.TempDir()
+	cmdCwdMatters = false
+	cmdBsubMode = true
+
+	return &jobqueue.Client{ServerInfo: &jobqueue.ServerInfo{Addr: remoteManagerAddr}}
+}
+
 func TestAddCommandDependenciesDoNotWarnForMissingTargets(t *testing.T) {
 	ctx := context.Background()
 
@@ -922,6 +986,8 @@ func configureAddParserTest(t *testing.T, cmdPath string) {
 				t.Errorf("reset add --head: %s", err)
 			}
 		}
+
+		resetCwdMattersGiven(t)
 	})
 
 	config = &internal.Config{ManagerPort: "4321"}
@@ -932,6 +998,8 @@ func configureAddParserTest(t *testing.T, cmdPath string) {
 	cmdDepGroups = ""
 	cmdCwd = t.TempDir()
 	cmdCwdMatters = true
+
+	resetCwdMattersGiven(t)
 	cmdChangeHome = false
 	reqGroup = ""
 	cmdMem = "1G"
@@ -972,6 +1040,20 @@ func configureAddParserTest(t *testing.T, cmdPath string) {
 	rtimeoutint = 1
 	simpleOutput = false
 	syncMode = false
+}
+
+// resetCwdMattersGiven makes --cwd_matters unmentioned again, so that a test
+// that says it explicitly does not leak that into the next one (or into the next
+// run of a Convey block's own body).
+func resetCwdMattersGiven(t *testing.T) {
+	t.Helper()
+
+	flag := addCmd.Flags().Lookup("cwd_matters")
+	if flag == nil {
+		t.Fatal("add has no cwd_matters flag")
+	}
+
+	flag.Changed = false
 }
 
 func runAddForTest(t *testing.T) string {
