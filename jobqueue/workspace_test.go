@@ -784,6 +784,60 @@ func TestCleanupKeepsSymlinkSpelledMounts(t *testing.T) {
 	})
 }
 
+func TestCleanupUnlinksSymlinkSpelledKeeps(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// relsBelowDirResolved records a mount point in EVERY spelling that puts it
+	// inside the working directory, so a mount named through a symlink there
+	// reaches the keep set twice: once as the LINK, and once as the directory the
+	// link leads to. Only the resolved one is the mount, and it is kept under its
+	// OWN name, which makes the link a redundant SECOND name for something already
+	// protected: keeping it protects nothing - unlinking a symlink cannot touch
+	// what it points at - and leaves a name in a workspace the Job was supposed to
+	// have reclaimed.
+	Convey("Given a Job whose mount point is a symlink to a dir inside its working directory", t, func() {
+		cwd := t.TempDir()
+		cleanup := &Behaviour{When: OnExit, Do: Cleanup}
+
+		// a relative Mount is resolved against the working directory, so this
+		// names <actualCwd>/link without needing the workspace's name, and the
+		// kernel puts the mount itself at <actualCwd>/real.
+		job := &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{Mount: "link"}}}
+		actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+		realDir := filepath.Join(actualCwd, "real")
+		remote := writeFileIn(realDir, testWSRemote)
+		output := writeFileIn(actualCwd, "out.txt")
+
+		link := filepath.Join(actualCwd, "link")
+		So(os.Symlink("real", link), ShouldBeNil)
+
+		Convey("cleanup keeps the dir the mount is really in, and unlinks the symlink", func() {
+			keep := jobKeptDirs(job)
+
+			err := cleanup.Trigger(OnExit, job)
+
+			soPathsExist(remote, realDir, actualCwd, workSpace, cwd)
+
+			// the link is lstat'ed rather than handed to soPathsGone, because a
+			// surviving link whose target had ALSO been deleted would satisfy the
+			// os.Stat that helper makes.
+			_, linkErr := os.Lstat(link)
+			So(os.IsNotExist(linkErr), ShouldBeTrue)
+
+			soPathsGone(output, tmpDir)
+
+			// both spellings are in the keep set, which is why the sweep meets the
+			// link at all.
+			So(keep.inActualCwd, ShouldContain, "link")
+			So(keep.inActualCwd, ShouldContain, "real")
+			So(err, ShouldBeNil)
+		})
+	})
+}
+
 func TestCleanupIsIdempotent(t *testing.T) {
 	if runnermode || servermode {
 		return

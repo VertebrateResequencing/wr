@@ -1418,21 +1418,36 @@ func removeWithExceptions(dirRoot *os.Root, dir string, dirInfo os.FileInfo, kee
 }
 
 // removeEntryWithExceptions deletes the entry of dirRoot at rel, and everything
-// below it, unless it is one of the three things a sweep inside a Job's
-// workspace must leave alone: a dir the Job's own keep set claims, the base
-// another Job's workspaces sit below, or something across a mount boundary.
+// below it, unless it is one of the three things a sweep inside a Job's workspace
+// must leave alone: something across a mount boundary, a dir the Job's own keep
+// set claims, or the base another Job's workspaces sit below.
 //
 // dirInfo is the lstat of the directory rel is an entry of.
+//
+// Only the mount boundary is asked of an entry that is NOT a directory: one it
+// lets through is unlinked, keep set or not. What the keep set describes is mount
+// points and cache locations, which are directories by role (see keptDirs), and
+// it deliberately holds EVERY spelling that puts one of them inside the working
+// directory (see relsBelowDirResolved) - so a symlink inside that directory can
+// itself be one of those spellings. Keeping it protects nothing, since unlinking
+// a symlink never touches what it points at: where the link leads to another
+// entry of that directory the set names that entry too, so the mount or the cache
+// is kept under its OWN name; where it leads out of that directory, nothing
+// inside the tree being swept needed protecting. All keeping the link leaves is a
+// second name in a tree the Job was licensed to clear. The nested-workspace name
+// says the same of a non-dir: only a directory can hold another Job's workspace.
+//
+// The boundary is asked of a non-dir as well, which refuses slightly more than
+// the sweep this restores: short of a filesystem that reports a non-dir's device
+// from a lower layer, a device number differs from its parent directory's only
+// when something is mounted ON the entry, and unlinking a mounted file gets
+// EBUSY, so trying leaves the same file behind and fails the Job's whole cleanup.
 //
 // A dir is descended into and then removed, rather than handed to
 // os.Root.RemoveAll, because RemoveAll asks none of those questions of what it
 // finds on the way down, and the deeper entries are exactly the ones that are
 // another Job's live output or the user's remote objects behind a live mount.
 func removeEntryWithExceptions(dirRoot *os.Root, rel string, dirInfo os.FileInfo, keepDirs map[string]bool) error {
-	if keepDirs[rel] || nestedWorkSpaceBase(rel) {
-		return nil
-	}
-
 	info, err := dirRoot.Lstat(rel)
 	if err != nil {
 		return ignoreGone(err)
@@ -1442,11 +1457,15 @@ func removeEntryWithExceptions(dirRoot *os.Root, rel string, dirInfo os.FileInfo
 		return nil
 	}
 
-	if info.IsDir() {
-		return removeSweptDir(dirRoot, rel, info, keepDirs)
+	if !info.IsDir() {
+		return ignoreGone(dirRoot.Remove(rel))
 	}
 
-	return ignoreGone(dirRoot.Remove(rel))
+	if keepDirs[rel] || nestedWorkSpaceBase(rel) {
+		return nil
+	}
+
+	return removeSweptDir(dirRoot, rel, info, keepDirs)
 }
 
 // removeSweptDir empties dir - an entry of dirRoot the sweep has decided it may
@@ -1469,11 +1488,16 @@ func removeSweptDir(dirRoot *os.Root, dir string, dirInfo os.FileInfo, keepDirs 
 	return err
 }
 
-// nestedWorkSpaceBase says whether the name of rel - any entry of a directory a
-// Job's cleanup is sweeping, file or directory - ends in createdCwdBaseSuffix,
-// the shape of the base component wr creates working directories below. An entry
-// of that shape holds the workspace of some OTHER Job, so the sweep leaves it
-// alone without looking inside.
+// nestedWorkSpaceBase says whether the name of rel - a DIRECTORY entry of a
+// directory a Job's cleanup is sweeping - ends in createdCwdBaseSuffix, the
+// shape of the base component wr creates working directories below. An entry of
+// that shape holds the workspace of some OTHER Job, so the sweep leaves it alone
+// without looking inside.
+//
+// It is only ever asked of a directory, because only a directory can hold a
+// workspace: removeEntryWithExceptions unlinks or skips anything else before it
+// gets here, so a mere FILE of the user's whose name ends in _cwd is swept like
+// any other file the Job left in a tree it was licensed to clear.
 //
 // Nothing wr made for the Job being swept can be inside such an entry: that
 // Job's own base component is ABOVE its workspace, and the sweep never goes
@@ -1487,10 +1511,10 @@ func removeSweptDir(dirRoot *os.Root, dir string, dirInfo os.FileInfo, keepDirs 
 // The name is matched by SUFFIX rather than against AppName+createdCwdBaseSuffix
 // for the reason createdCwdBaseSuffix gives: AppName is "jobqueue" in the
 // manager and "wr" in the runner, and cleanup runs in both, so an equality check
-// would silently protect nothing in one of them. A suffix match also keeps an
-// entry of the user's own whose name merely ends in _cwd, which is deliberately
-// conservative: it leaves behind something that was the Job's to delete, rather
-// than deleting something that was not.
+// would silently protect nothing in one of them. A suffix match also keeps a
+// directory of the user's own whose name merely ends in _cwd, which is
+// deliberately conservative: it leaves behind something that was the Job's to
+// delete, rather than deleting something that was not.
 //
 // What this costs is a LEAK: a parent whose children left workspaces behind can
 // no longer reclaim its own working directory or the workspace holding it,
