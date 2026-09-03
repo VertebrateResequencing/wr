@@ -555,17 +555,17 @@ func (l *lostRun) reportItStarted(reserved *Job, pid int) {
 // that has already exited. That is what a runner killed by its node leaves
 // behind: a reservation held by nothing, and no Started ever coming.
 //
-// It clears the RunnerPid the run before it left on the shared *Job for the same
-// reason, since the manager needs every pid it holds for the run to be gone
-// before it will declare it dead - see runnerExited.
+// That pid is the ONLY one the manager holds for this run, which is why setting
+// it is enough: a reservation has no runner pid of its own until its Started
+// arrives, and resetJobForReservation cleared the one the run before it left. The
+// manager needs every pid it holds for a run to be gone before it will declare
+// it dead - see runnerExited.
 func (l *lostRun) runnerDied() {
 	pid := exitedPid()
-	runnerPid := exitedPid()
 
 	l.live.Lock()
 	l.live.Host = localhost
 	l.live.Pid = pid
-	l.live.RunnerPid = runnerPid
 	l.live.Unlock()
 }
 

@@ -217,6 +217,81 @@ func TestReliable4LostRunnerBackstop(t *testing.T) {
 	})
 }
 
+// TestReservedRunDoesNotAnswerForThePreviousRunsRunner guards the INPUT to the
+// both-pid rule above: a reservation must not be confirm-checked against the
+// runner pid of the run before it. Nothing reports a runner pid until Started, so
+// a reservation has none of its own, and resetJobForReservation has to clear the
+// one the previous run left - or a runner that is off running other jobs (or an
+// unrelated process that was since given its pid) keeps this run parked until the
+// wedged-runner backstop, which then kills it.
+//
+// It echoes develop's TestReservedRunDoesNotClaimThePreviousRunsHost, which
+// guards HostID against the same "a reservation must not answer for the run
+// before it" leak, and borrows that test's startedRun fixture - but lives here,
+// because lost_job_behaviours_test.go is develop's file and this branch keeps its
+// changes to it down to the dead runner pid its confirm-dead rule has to have.
+func TestReservedRunDoesNotAnswerForThePreviousRunsRunner(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a job whose first run reported a runner that is still alive", t, func() {
+		r := newStartedRun(ctx, t, "reserve_clears_runner_pid", t.TempDir(), nil)
+
+		// Client.startedRequest reports the runner's own os.Getpid(), because the
+		// client process IS the runner - and in a test that is this live process.
+		So(r.liveRunnerPid(), ShouldEqual, os.Getpid())
+
+		Convey("a fresh reservation stops it answering for that runner", func() {
+			r.reserveAgain()
+
+			So(r.liveRunnerPid(), ShouldEqual, 0)
+
+			// the manager declares a lost run dead only once EVERY pid it holds
+			// for it has gone (jobConfirmedDead), and a reservation has no runner
+			// pid of its own until its Started arrives. So a run whose own runner
+			// dies before then must not be kept alive by the runner of the run
+			// before it - which is off running other jobs, or whose pid an
+			// unrelated process has since been given. Left holding it, this run
+			// waits out the wedged-runner backstop (an hour) instead of being
+			// retried, and the backstop then kills that innocent process.
+			r.reservedByARunnerThatDied()
+			r.markLost()
+
+			d, ok := r.server.lostJobRetryCheck(r.key)
+			So(ok, ShouldBeTrue)
+
+			notRunning := r.server.scheduler.ProcessesNotRunningOnHost(ctx, d.host, batchPids([]lostJobDetails{d}))
+			So(jobConfirmedDead(d, notRunning), ShouldBeTrue)
+		})
+	})
+}
+
+// liveRunnerPid is the pid of the RUNNER process the manager currently holds for
+// the job, which it checks alongside the command's own pid before it will declare
+// a lost run dead (jobConfirmedDead).
+func (r *startedRun) liveRunnerPid() int {
+	r.live.RLock()
+	defer r.live.RUnlock()
+
+	return r.live.RunnerPid
+}
+
+// reservedByARunnerThatDied records for the reservation what
+// respondWithReservedJob records - the reserving runner's own host and pid - for
+// a runner that its node then kills before it ever calls Started, so the pid is
+// of a process that has really gone.
+func (r *startedRun) reservedByARunnerThatDied() {
+	pid := exitedPid()
+
+	r.live.Lock()
+	r.live.Host = localhost
+	r.live.Pid = pid
+	r.live.Unlock()
+}
+
 // setServerJobRunnerPid overwrites the server-side job's recorded RunnerPid under
 // lock (white-box; the test is in package jobqueue), to model a dead or specific
 // runner process.

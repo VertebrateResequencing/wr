@@ -1073,6 +1073,14 @@ func (s *Server) resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, 
 	sjob.Exited = false
 	// Host/Pid are NOT zeroed here: respondWithReservedJob records the reserving
 	// runner's host+pid so a reserved-not-started job's liveness can be confirmed.
+	// RunnerPid IS, because nothing reports one until Started, so 0 is its
+	// documented pre-Started value. Left set it would name the runner of the run
+	// BEFORE this one, and jobConfirmedDead will not declare a lost run dead while
+	// any pid it holds for it is still running: that runner is off running other
+	// jobs (or an unrelated process has since been given its pid), so this run
+	// would wait out the wedged-runner backstop instead of being retried - and the
+	// backstop would then kill that innocent process.
+	sjob.RunnerPid = 0
 	// StartTime stays zeroed - it is set at Started.
 	sjob.StartTime = time.Time{}
 	sjob.EndTime = time.Time{}
