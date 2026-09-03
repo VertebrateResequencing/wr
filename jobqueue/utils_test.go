@@ -379,3 +379,84 @@ func TestCreatedCwdDepthMatchesMkHashedDir(t *testing.T) {
 		So(filepath.Base(actualCwd), ShouldEqual, createdCwdName)
 	})
 }
+
+// TestMkHashedDirHoldFileFailure covers what mkHashedDir does when it can make
+// the hashed directories but not the hold file inside them. A full filesystem,
+// an exceeded quota, a read-only remount or an unwritable hashed level all do
+// that, and every one of them is permanent: the job must be buried with the
+// error rather than the runner spinning on it for ever, holding its scheduler
+// slot.
+func TestMkHashedDirHoldFileFailure(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	key := "0123456789abcdef0123456789abcdef"
+
+	Convey("mkHashedDir gives up when the hold file cannot be created", t, func() {
+		base := t.TempDir()
+
+		// a first call leaves the hashed levels behind, which is the normal state
+		// after any job has run in this Cwd, and means the MkdirAll of every later
+		// call succeeds.
+		_, _, err := mkHashedDir(base, key)
+		So(err, ShouldBeNil)
+
+		hashed, _ := calculateHashedDir(filepath.Join(base, AppName+createdCwdBaseSuffix), key)
+		So(os.Chmod(hashed, 0o500), ShouldBeNil)
+
+		defer func() {
+			So(os.Chmod(hashed, 0o700), ShouldBeNil)
+		}()
+
+		returned, err := mkHashedDirWithin(30*time.Second, base, key)
+		So(returned, ShouldBeTrue)
+		So(err, ShouldNotBeNil)
+	})
+
+	// the transient half is driven one attempt at a time rather than through
+	// mkHashedDir, because the failure the retry exists for - a concurrent
+	// rmEmptyDirsIn removing the directory between our MkdirAll and our hold
+	// file - heals in the microseconds between two attempts of the loop, so
+	// nothing outside the loop can repair the arrangement in time to be seen.
+	Convey("A hold-file failure that clears is retried, not treated as fatal", t, func() {
+		dir := filepath.Join(t.TempDir(), "hashed")
+		So(os.MkdirAll(dir, 0o700), ShouldBeNil)
+
+		holdFile := filepath.Join(dir, ".hold")
+		So(os.Chmod(dir, 0o500), ShouldBeNil)
+
+		mkdirTries, holdTries := 0, 0
+		retry, err := tryMkHeldDir(dir, holdFile, &mkdirTries, &holdTries)
+		So(retry, ShouldBeTrue)
+		So(err, ShouldBeNil)
+
+		So(os.Chmod(dir, 0o700), ShouldBeNil)
+
+		retry, err = tryMkHeldDir(dir, holdFile, &mkdirTries, &holdTries)
+		So(retry, ShouldBeFalse)
+		So(err, ShouldBeNil)
+
+		_, err = os.Stat(holdFile)
+		So(err, ShouldBeNil)
+	})
+}
+
+// mkHashedDirWithin calls mkHashedDir in a goroutine and reports whether it
+// returned within limit, so a livelock fails the test instead of hanging the
+// suite for ever.
+func mkHashedDirWithin(limit time.Duration, base, tohash string) (returned bool, err error) {
+	errCh := make(chan error, 1)
+
+	go func() {
+		_, _, errm := mkHashedDir(base, tohash)
+		errCh <- errm
+	}()
+
+	select {
+	case errm := <-errCh:
+		return true, errm
+	case <-time.After(limit):
+		return false, nil
+	}
+}
