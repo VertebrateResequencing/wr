@@ -235,6 +235,23 @@ func TestJobTmpDirRemoval(t *testing.T) {
 			So(buff.String(), ShouldContainSubstring, "could not remove the job's tmp dir")
 		})
 
+		Convey("and a nested job's workspace inside it is left alone", func() {
+			// a Job's script can `cd $TMPDIR` before it adds jobs, and wr then
+			// builds the children's workspaces inside the very directory this
+			// reclaims, while they are still running in them.
+			scratch := writeFileIn(tmpDir, "scratch.txt")
+
+			child := &Job{Cwd: tmpDir, Cmd: "still running child"}
+			childCwd, childWorkSpace, childTmp := realWorkSpace(child)
+			childOutput := writeFileIn(childCwd, "child_output.txt")
+
+			removeJobTmpDir(context.Background(), job)
+
+			soPathsExist(childOutput, childCwd, childTmp, childWorkSpace, tmpDir)
+			soPathsGone(scratch)
+			So(buff.String(), ShouldBeEmpty)
+		})
+
 		Convey("and a tmp dir one of the job's mounts caches in is left alone", func() {
 			// deleting it could delete a writable mount's output before Unmount
 			// has uploaded it, so it is kept unconditionally, exactly as the

@@ -1000,6 +1000,10 @@ func (ws *jobWorkSpace) keptEntry(name string) bool {
 // else, so there is no second answer to what cleanup may delete. Each entry is
 // named to wsRoot by its own name alone, with no path above it left to resolve,
 // so nothing done here can be redirected elsewhere.
+//
+// The keep set is not the whole of what survives, because it can only describe
+// what the Job itself configured: removeAllGuarded is what stops the deletion
+// crossing into another Job's workspace or through a live mount deeper down.
 func (ws *jobWorkSpace) removeWorkSpaceEntries(wsRoot *os.Root) error {
 	entries, err := readDirIn(wsRoot, ".")
 	if err != nil {
@@ -1011,7 +1015,7 @@ func (ws *jobWorkSpace) removeWorkSpaceEntries(wsRoot *os.Root) error {
 			continue
 		}
 
-		if err = wsRoot.RemoveAll(entry.Name()); err != nil {
+		if err = removeAllGuarded(wsRoot, entry.Name()); err != nil {
 			return err
 		}
 	}
@@ -1047,14 +1051,19 @@ func (ws *jobWorkSpace) removeTmp() error {
 	}
 	defer wsRoot.Close()
 
-	return wsRoot.RemoveAll(createdTmpName)
+	return removeAllGuarded(wsRoot, createdTmpName)
 }
 
 // removeActualCwd deletes the Job's working directory, keeping the given relative
 // dirs if any were specified.
+//
+// Either way the deletion goes through the guarded sweep rather than an
+// os.Root.RemoveAll: the working directory is where a Job that adds jobs leaves
+// its children's workspaces, and where a mount the Job raised itself is
+// mounted, and the Job's keep set knows about neither.
 func removeActualCwd(wsRoot *os.Root, actualCwdName string, actualCwdInfo os.FileInfo, keepDirs []string) error {
 	if len(keepDirs) == 0 {
-		return wsRoot.RemoveAll(actualCwdName)
+		return removeAllGuarded(wsRoot, actualCwdName)
 	}
 
 	actualCwdRoot, err := openVerifiedDir(wsRoot, actualCwdName, actualCwdInfo)
