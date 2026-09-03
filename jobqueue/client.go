@@ -158,6 +158,28 @@ const (
 	// executeSignalChannelBuffer is the buffer size of the OS signal channel.
 	executeSignalChannelBuffer = 5
 
+	// dockerCallTimeout is how long we allow any single docker API call made
+	// while monitoring a job's container to take. The moby client sets no HTTP
+	// timeout of its own and a runner's job context has no deadline, so without
+	// this a docker daemon that accepts connections but never answers blocks
+	// its caller for ever: the goroutine that would notice the job has finished
+	// stops servicing its stop channel, so a finished job never completes and
+	// its runner holds its scheduler slot for ever.
+	dockerCallTimeout = 10 * time.Second
+
+	// dockerFailureTolerance is how many consecutive failed docker calls we
+	// tolerate before giving up on monitoring a job's container. The job's
+	// command runs independently of docker's responsiveness, so it is better to
+	// let it finish with incomplete container resource usage than to keep
+	// paying dockerCallTimeout on every check.
+	dockerFailureTolerance = 3
+
+	// checkingFinishTimeout is how long Execute() waits for its resource
+	// checking goroutine to confirm that it has stopped. It is a backstop for
+	// that goroutine blocking in something we don't control: a finished job
+	// must be able to complete regardless.
+	checkingFinishTimeout = 60 * time.Second
+
 	// fusermountRetryDelaySeconds is how long we wait before retrying a mount
 	// that failed with "fusermount exited with code 256".
 	fusermountRetryDelaySeconds = 5
@@ -305,6 +327,42 @@ func (state *serverContactState) recordTouchResult(err error) {
 
 func (state *serverContactState) schedulerMemoryFallbackAllowed() bool {
 	return !state.lost.Load()
+}
+
+// checkingRendezvous lets Execute() wait for its resource checking goroutine to
+// confirm that it has stopped.
+type checkingRendezvous struct {
+	ch chan bool
+}
+
+// newCheckingRendezvous creates a checkingRendezvous. Its channel is buffered
+// so that finished() can never block: await() gives up after a timeout, and an
+// unbuffered send would then park the checking goroutine for the lifetime of
+// the runner.
+func newCheckingRendezvous() *checkingRendezvous {
+	return &checkingRendezvous{ch: make(chan bool, 1)}
+}
+
+// finished reports that the checking goroutine has stopped. It never blocks: a
+// report that the buffer has no room for is dropped, since the buffered one
+// says the same thing, and a blocking send would park the caller for the
+// lifetime of the runner.
+func (r *checkingRendezvous) finished() {
+	select {
+	case r.ch <- true:
+	default:
+	}
+}
+
+// await waits for finished() to be called, giving up after timeout and
+// returning false.
+func (r *checkingRendezvous) await(timeout time.Duration) bool {
+	select {
+	case <-r.ch:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 type executeLiveState struct {
@@ -1156,10 +1214,16 @@ func prepareCommand(ctx context.Context, job *Job, shell, jc string) (*executeCm
 // dockerMonitor holds the docker client plumbing used to monitor a job's
 // container, and the id of the container once it has been identified.
 type dockerMonitor struct {
-	operator        *container.Operator
-	interactor      *docker.Interactor
-	monitorDocker   string
+	operator      *container.Operator
+	interactor    container.Interactor
+	monitorDocker string
+
+	// callTimeout is how long any single docker API call we make is allowed to
+	// take.
+	callTimeout     time.Duration
+	failures        int
 	getFirstAppears bool
+	givenUp         bool
 	containerID     string
 }
 
@@ -1171,59 +1235,153 @@ func (c *Client) setupDockerMonitor(ctx context.Context, job *Job) (*dockerMonit
 		return nil, nil //nolint:nilnil // no docker monitoring requested is a valid, non-error result.
 	}
 
-	cli, err := client.NewClientWithOpts(client.FromEnv)
+	interactor, err := newDockerInteractor(dockerCallTimeout)
 	if err != nil {
 		return nil, c.buryWithCause(job, FailReasonDocker, err, "failed to create docker client")
 	}
 
-	interactor := docker.NewInteractor(cli)
-	dm := &dockerMonitor{
-		operator:      container.NewOperator(interactor),
-		interactor:    interactor,
-		monitorDocker: job.MonitorDocker,
-	}
-
-	// if we've been asked to monitor the first container that appears, remember
-	// existing containers
-	if job.MonitorDocker == "?" {
-		dm.getFirstAppears = true
-
-		if errc := dm.operator.RememberCurrentContainers(ctx); errc != nil {
-			return nil, c.buryWithCause(job, FailReasonDocker, errc, "failed to get docker containers")
-		}
+	dm, err := newDockerMonitor(ctx, job.MonitorDocker, interactor, dockerCallTimeout)
+	if err != nil {
+		return nil, c.buryWithCause(job, FailReasonDocker, err, "failed to get docker containers")
 	}
 
 	return dm, nil
 }
 
+// newDockerInteractor creates an Interactor for talking to the local docker
+// daemon, that gives up on any request that takes longer than timeout.
+//
+// The timeout is applied to the client's HTTP requests, which no call path can
+// bypass: the moby client single-flights its API version negotiation behind a
+// plain mutex held across a request, so one deadline-less request to an
+// unresponsive daemon would otherwise block every later call on this client
+// regardless of their own deadlines.
+func newDockerInteractor(timeout time.Duration) (container.Interactor, error) {
+	cli, err := client.New(client.FromEnv, client.WithTimeout(timeout))
+	if err != nil {
+		return nil, err
+	}
+
+	return docker.NewInteractor(cli), nil
+}
+
+// newDockerMonitor creates a dockerMonitor for the container identified by
+// monitorDocker (its --name, the path to its --cidfile, or "?" for the first
+// container to appear), monitored using the given interactor and allowing
+// timeout for each docker API call.
+//
+// The containers that already exist are remembered, so that only a container
+// that appears after this call can be adopted - and so killed - by the job,
+// whichever way monitorDocker identifies it.
+func newDockerMonitor(ctx context.Context, monitorDocker string, interactor container.Interactor,
+	timeout time.Duration,
+) (*dockerMonitor, error) {
+	dm := &dockerMonitor{
+		operator:        container.NewOperator(interactor),
+		interactor:      interactor,
+		monitorDocker:   monitorDocker,
+		callTimeout:     timeout,
+		getFirstAppears: monitorDocker == "?",
+	}
+
+	callCtx, cancel := dm.callCtx(ctx)
+	defer cancel()
+
+	if err := dm.operator.RememberCurrentContainers(callCtx); err != nil {
+		return nil, err
+	}
+
+	return dm, nil
+}
+
+// callCtx returns ctx with dm.callTimeout applied, so that the docker calls
+// made with it can't block for ever.
+func (dm *dockerMonitor) callCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, dm.callTimeout)
+}
+
 // resolveContainerMem looks up (and caches) the monitored container's id and, if
 // found, returns the larger of mem and the container's memory plus its CPU
-// seconds. Any error finding the container is returned for accumulation.
-func (dm *dockerMonitor) resolveContainerMem(ctx context.Context, cmdDir string, mem int) (int, int, error) {
-	if dm == nil {
-		return mem, 0, nil
+// seconds.
+//
+// The docker calls it makes get dm.callTimeout to complete, and after
+// dockerFailureTolerance consecutive failures it stops monitoring; see
+// noteCallResult.
+//
+// It returns no error, deliberately: noteCallResult logs and counts every
+// failure, and the job's command runs independently of docker's
+// responsiveness, so all a failed reading costs the user is under-reported
+// usage. Returned to Execute(), it would instead accumulate into myerr and so
+// make job.TriggerBehaviours() run the on_failure behaviours - a cleanup_all,
+// or any command the user chose - of a job whose command succeeded, on nothing
+// worse than a docker daemon hiccup.
+func (dm *dockerMonitor) resolveContainerMem(ctx context.Context, cmdDir string, mem int) (int, int) {
+	if dm == nil || dm.givenUp {
+		return mem, 0
 	}
+
+	callCtx, cancel := dm.callCtx(ctx)
+	defer cancel()
 
 	var findErr error
 
 	if dm.containerID == "" {
-		findErr = dm.findContainerID(ctx, cmdDir)
+		findErr = dm.findContainerID(callCtx, cmdDir)
 	}
 
 	if dm.containerID == "" {
-		return mem, 0, findErr
+		dm.noteCallResult(ctx, findErr)
+
+		return mem, 0
 	}
 
-	dockerStats, errs := dm.interactor.ContainerStats(ctx, dm.containerID)
+	dockerStats, errs := dm.interactor.ContainerStats(callCtx, dm.containerID)
+
+	dm.noteCallResult(ctx, errors.Join(findErr, errs))
+
 	if errs != nil {
-		return mem, 0, findErr
+		return mem, 0
 	}
 
-	if dockerStats.MemoryMB > mem {
-		mem = dockerStats.MemoryMB
+	return max(mem, dockerStats.MemoryMB), dockerStats.CPUSec
+}
+
+// noteCallResult records whether a round of docker calls worked, and gives up
+// on monitoring this job's container after dockerFailureTolerance consecutive
+// failures, logging why.
+func (dm *dockerMonitor) noteCallResult(ctx context.Context, err error) {
+	if err == nil {
+		dm.failures = 0
+
+		return
 	}
 
-	return mem, dockerStats.CPUSec, findErr
+	dm.failures++
+
+	clog.Warn(ctx, "a docker call failed while monitoring a job's container",
+		"container", dm.monitorDocker, "failures", dm.failures, "err", err)
+
+	if dm.failures >= dockerFailureTolerance {
+		dm.givenUp = true
+
+		clog.Warn(ctx, "giving up on monitoring a job's docker container; its usage will be under-reported",
+			"container", dm.monitorDocker)
+	}
+}
+
+// killContainer kills the container being monitored, giving up after
+// dm.callTimeout so that an unresponsive docker daemon can't make a kill
+// request hang for ever.
+//
+// Unlike resolveContainerMem's readings, this error IS returned to Execute()
+// and does reach the job's outcome: a kill we were asked to do and could not
+// do leaves the user's container running, which is a real failure of this run
+// and not something a later check can make good.
+func (dm *dockerMonitor) killContainer(ctx context.Context) error {
+	callCtx, cancel := dm.callCtx(ctx)
+	defer cancel()
+
+	return dm.operator.KillContainer(callCtx, dm.containerID)
 }
 
 // findContainerID tries to identify the container to monitor, caching its id on
@@ -1239,20 +1397,23 @@ func (dm *dockerMonitor) findContainerID(ctx context.Context, cmdDir string) err
 	}
 
 	// monitorDocker might be the name of a new container
-	dockerContainer, err := dm.operator.GetNewContainerByName(ctx, dm.monitorDocker)
+	dockerContainer, nameErr := dm.operator.GetNewContainerByName(ctx, dm.monitorDocker)
 	if dockerContainer != nil {
 		dm.containerID = dockerContainer.ID
 
-		return err
+		return nameErr
 	}
 
 	// monitorDocker might be a file path containing the id of a container
-	dockerContainer, err = dm.operator.GetContainerByPath(ctx, dm.monitorDocker, cmdDir)
+	dockerContainer, pathErr := dm.operator.GetNewContainerByPath(ctx, dm.monitorDocker, cmdDir)
 	if dockerContainer != nil {
 		dm.containerID = dockerContainer.ID
 	}
 
-	return err
+	// nameErr is joined rather than dropped: it is how an unresponsive docker
+	// daemon gets noticed (see noteCallResult) when we're looking for a
+	// container by name.
+	return errors.Join(nameErr, pathErr)
 }
 
 // addBsubEnv augments env with the PATH override and LSF emulation variables a
@@ -1938,7 +2099,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 		return used, nil
 	}
-	finishedChecking := make(chan bool)
+	finishedChecking := newCheckingRendezvous()
 
 	go func() {
 		killCmd := func() error {
@@ -1961,7 +2122,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 			if dm != nil && dm.containerID != "" {
 				// kill the docker container as well
-				errd := dm.operator.KillContainer(ctx, dm.containerID)
+				errd := dm.killContainer(ctx)
 				if errk == nil {
 					errk = errd
 				} else {
@@ -1999,7 +2160,14 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			return errk
 		}
 
+		// closeErr and killErr are written here but read by Execute() once the
+		// checking rendezvous is over, and that rendezvous can now give up on
+		// this goroutine, so their writes take stateMutex like the other shared
+		// state does.
 		closeReaders := func() {
+			stateMutex.Lock()
+			defer stateMutex.Unlock()
+
 			errc := errReader.Close()
 			if errc != nil {
 				closeErr = errc
@@ -2031,9 +2199,11 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			case signal := <-sigs:
 				clog.Warn(ctx, "aborting due to signal", "sig", signal.String())
 
-				killErr = killCmd()
+				errk := killCmd()
 
 				stateMutex.Lock()
+				killErr = errk
+
 				if time.Now().After(endT) {
 					// we allow things to go over time, but if signalled, we now
 					// know it may be because we used too much time
@@ -2065,14 +2235,14 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				mem, errf := currentMemory(job.Pid)
 
 				// deal with docker monitoring
-				mem, cpuS, findErr := dm.resolveContainerMem(ctx, cmd.Dir, mem)
-				myerr = joinExecErr(myerr, findErr, "finding the docker container had issues")
+				mem, cpuS := dm.resolveContainerMem(ctx, cmd.Dir, mem)
 
 				// get current disk usage
 				disk, errd := diskUsageCheck()
 
 				// now update peaks
 				stateMutex.Lock()
+
 				if errf == nil && mem > peakmem {
 					peakmem = mem
 
@@ -2109,7 +2279,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			}
 		}
 
-		finishedChecking <- true
+		finishedChecking.finished()
 	}()
 
 	// wait for the command to exit
@@ -2121,7 +2291,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	stopChecking <- true
 
-	<-finishedChecking
+	if !finishedChecking.await(checkingFinishTimeout) {
+		clog.Warn(ctx, "gave up waiting for the resource checking goroutine to stop", "cmd", job.Cmd)
+	}
+
 	stateMutex.Lock()
 	defer stateMutex.Unlock()
 

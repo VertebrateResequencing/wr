@@ -176,6 +176,23 @@ func (o *Operator) GetNewContainerByName(ctx context.Context, name string) (*Con
 	return nil, nil //nolint:nilnil
 }
 
+// GetNewContainerByPath is like GetContainerByPath, but only new containers
+// (those not remembered by the last RememberCurrentContainers() call) are
+// considered, so that a stale or shared cidfile can't identify a container that
+// the caller did not create.
+func (o *Operator) GetNewContainerByPath(ctx context.Context, path string, dir string) (*Container, error) {
+	cntr, err := o.GetContainerByPath(ctx, path, dir)
+	if err != nil || cntr == nil {
+		return nil, err
+	}
+
+	if o.existingContainers[cntr.ID] {
+		return nil, nil //nolint:nilnil
+	}
+
+	return cntr, nil
+}
+
 // GetContainerByPath checks the file at the given path, and if the first line
 // contains the ID of a container, that container is returned.
 //

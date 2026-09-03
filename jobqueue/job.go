@@ -381,6 +381,11 @@ type Job struct {
 	// --name or path to its --cidfile, adding its peak RAM and CPU usage to the
 	// reported RAM and CPU usage of this job.
 	//
+	// Only a container that appears after the job starts is monitored, however
+	// it is identified: a container that is already running under that name (or
+	// named in a stale cidfile) belongs to someone else, and monitoring it
+	// would make wr kill it when this job is killed or runs out of resources.
+	//
 	// If the special argument "?" is supplied, monitoring will apply to the
 	// first new docker container that appears after the Cmd starts to run.
 	// NB: if multiple jobs that run docker containers start running at the same
