@@ -29,9 +29,12 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -54,6 +57,10 @@ const (
 	// under test hung, and we want that to fail an assertion rather than hang
 	// the whole suite.
 	dockerTestBound = 30 * time.Second
+
+	// dockerTestAPIVersion is the docker API version our fake daemon serves; the
+	// moby client asks for a pinned version directly instead of negotiating one.
+	dockerTestAPIVersion = "1.51"
 )
 
 func TestCheckingRendezvous(t *testing.T) {
@@ -155,25 +162,21 @@ func TestDockerMonitorUnresponsiveDaemon(t *testing.T) {
 			}
 
 			memCh := make(chan int, 1)
-			errCh := make(chan error, 1)
 
 			go func() {
-				mem, _, err := dm.resolveContainerMem(ctx, "/tmp", 100)
+				mem, _ := dm.resolveContainerMem(ctx, "/tmp", 100)
 
 				memCh <- mem
-
-				errCh <- err
 			}()
 
-			statsErr, returned := awaitErr(errCh)
+			mem, returned := awaitMem(memCh)
 			So(returned, ShouldBeTrue)
-			So(statsErr, ShouldBeNil)
-			So(<-memCh, ShouldEqual, 100)
+			So(mem, ShouldEqual, 100)
+			So(dm.failures, ShouldEqual, 1)
 
 			Convey("And monitoring is given up on after repeated failures", func() {
 				for range dockerFailureTolerance + 2 {
-					_, _, err := dm.resolveContainerMem(ctx, "/tmp", 100)
-					So(err, ShouldBeNil)
+					dm.resolveContainerMem(ctx, "/tmp", 100)
 				}
 
 				So(stalled.callCount(), ShouldEqual, dockerFailureTolerance)
@@ -188,18 +191,19 @@ func TestDockerMonitorUnresponsiveDaemon(t *testing.T) {
 				callTimeout:   dockerTestCallTimeout,
 			}
 
-			errCh := make(chan error, 1)
+			memCh := make(chan int, 1)
 
 			go func() {
-				_, _, err := dm.resolveContainerMem(ctx, "/tmp", 100)
+				mem, _ := dm.resolveContainerMem(ctx, "/tmp", 100)
 
-				errCh <- err
+				memCh <- mem
 			}()
 
-			err, returned := awaitErr(errCh)
+			mem, returned := awaitMem(memCh)
 			So(returned, ShouldBeTrue)
-			So(err, ShouldNotBeNil)
+			So(mem, ShouldEqual, 100)
 			So(dm.containerID, ShouldBeBlank)
+			So(dm.failures, ShouldEqual, 1)
 		})
 
 		Convey("Killing a monitored container does not block for ever", func() {
@@ -252,6 +256,17 @@ func TestDockerMonitorUnresponsiveDaemon(t *testing.T) {
 		So(returned, ShouldBeTrue)
 		So(statsErr, ShouldNotBeNil)
 	})
+}
+
+// awaitMem waits up to dockerTestBound for a memory reading to arrive on ch,
+// returning it and whether it arrived in time.
+func awaitMem(ch <-chan int) (int, bool) {
+	select {
+	case mem := <-ch:
+		return mem, true
+	case <-time.After(dockerTestBound):
+		return 0, false
+	}
 }
 
 // awaitErr waits up to dockerTestBound for an error to arrive on ch, returning
@@ -378,8 +393,8 @@ func TestDockerMonitorAdoption(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		Convey("It is not monitored, so nothing of it can be killed", func() {
-			mem, cpu, errr := dm.resolveContainerMem(ctx, "/tmp", 100)
-			So(errr, ShouldBeNil)
+			mem, cpu := dm.resolveContainerMem(ctx, "/tmp", 100)
+			So(dm.failures, ShouldEqual, 0)
 			So(mem, ShouldEqual, 100)
 			So(cpu, ShouldEqual, 0)
 			So(fake.killedIDs(), ShouldBeEmpty)
@@ -388,8 +403,8 @@ func TestDockerMonitorAdoption(t *testing.T) {
 		Convey("But a container of that name that appears afterwards is monitored", func() {
 			fake.add("jobs", "mytool", 300)
 
-			mem, _, errr := dm.resolveContainerMem(ctx, "/tmp", 100)
-			So(errr, ShouldBeNil)
+			mem, _ := dm.resolveContainerMem(ctx, "/tmp", 100)
+			So(dm.failures, ShouldEqual, 0)
 			So(mem, ShouldEqual, 300)
 
 			Convey("And a kill request kills only that container", func() {
@@ -411,8 +426,8 @@ func TestDockerMonitorAdoption(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		Convey("It is not monitored", func() {
-			mem, _, errr := dm.resolveContainerMem(ctx, dir, 100)
-			So(errr, ShouldBeNil)
+			mem, _ := dm.resolveContainerMem(ctx, dir, 100)
+			So(dm.failures, ShouldEqual, 0)
 			So(mem, ShouldEqual, 100)
 		})
 
@@ -420,8 +435,8 @@ func TestDockerMonitorAdoption(t *testing.T) {
 			fake.add("jobs", "jobs_own", 300)
 			So(os.WriteFile(cidPath, []byte("jobs\n"), 0600), ShouldBeNil)
 
-			mem, _, errr := dm.resolveContainerMem(ctx, dir, 100)
-			So(errr, ShouldBeNil)
+			mem, _ := dm.resolveContainerMem(ctx, dir, 100)
+			So(dm.failures, ShouldEqual, 0)
 			So(mem, ShouldEqual, 300)
 		})
 	})
@@ -434,17 +449,124 @@ func TestDockerMonitorAdoption(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		Convey("The already running one is not monitored", func() {
-			mem, _, errr := dm.resolveContainerMem(ctx, "/tmp", 100)
-			So(errr, ShouldBeNil)
+			mem, _ := dm.resolveContainerMem(ctx, "/tmp", 100)
+			So(dm.failures, ShouldEqual, 0)
 			So(mem, ShouldEqual, 100)
 		})
 
 		Convey("The next one to appear is monitored", func() {
 			fake.add("jobs", "jobs_own", 300)
 
-			mem, _, errr := dm.resolveContainerMem(ctx, "/tmp", 100)
-			So(errr, ShouldBeNil)
+			mem, _ := dm.resolveContainerMem(ctx, "/tmp", 100)
+			So(dm.failures, ShouldEqual, 0)
 			So(mem, ShouldEqual, 300)
+		})
+	})
+}
+
+// failingListDockerSocket serves a fake docker API on a unix socket, returning
+// the DOCKER_HOST value that addresses it. It answers the first container
+// listing (so that a monitor can be created for a job) and fails every listing
+// after that, which is what a docker daemon hiccup during a job's run looks
+// like. It needs no docker.
+func failingListDockerSocket(t *testing.T) string {
+	t.Helper()
+
+	sock := filepath.Join(t.TempDir(), "docker.sock")
+
+	var listenConfig net.ListenConfig
+
+	listener, err := listenConfig.Listen(context.Background(), "unix", sock)
+	So(err, ShouldBeNil)
+
+	var (
+		mu    sync.Mutex
+		lists int
+	)
+
+	server := &http.Server{
+		ReadHeaderTimeout: dockerTestBound,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !strings.HasSuffix(r.URL.Path, "/containers/json") {
+				http.Error(w, `{"message":"not implemented by this fake"}`, http.StatusNotFound)
+
+				return
+			}
+
+			mu.Lock()
+			lists++
+			first := lists == 1
+			mu.Unlock()
+
+			if !first {
+				http.Error(w, `{"message":"a transient docker problem"}`, http.StatusInternalServerError)
+
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+
+			//nolint:errcheck // a client that has gone away is not this fake's problem.
+			w.Write([]byte("[]"))
+		}),
+	}
+
+	go func() {
+		//nolint:errcheck // Serve only ever ends with the error from our Close below.
+		server.Serve(listener)
+	}()
+
+	t.Cleanup(func() {
+		_ = server.Close()
+	})
+
+	return "unix://" + sock
+}
+
+// soBehavioursRan asserts whether the `run` behaviour that creates the marker
+// file at path ran, naming the behaviour set in any failure so that the output
+// says which one wrongly ran or wrongly did not.
+func soBehavioursRan(name, path string, wanted bool) {
+	_, err := os.Stat(path)
+
+	So(name+" behaviours ran: "+strconv.FormatBool(err == nil), ShouldEqual,
+		name+" behaviours ran: "+strconv.FormatBool(wanted))
+}
+
+func TestDockerLookupErrorNotJobFailure(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a job with success and failure behaviours, whose command succeeds", t, func() {
+		markers := t.TempDir()
+		successMarker := filepath.Join(markers, "success")
+		failureMarker := filepath.Join(markers, "failure")
+
+		client := newLiveExecuteCaptureClient(&liveTouchCapture{})
+		job := liveExecuteJob(client, liveExecuteCwd(t), "sleep 1.5")
+		job.Behaviours = Behaviours{
+			{When: OnSuccess, Do: Run, Arg: "touch " + successMarker},
+			{When: OnFailure, Do: Run, Arg: "touch " + failureMarker},
+		}
+
+		Convey("Only its success behaviours are triggered", func() {
+			So(client.Execute(context.Background(), job, "/bin/bash"), ShouldBeNil)
+
+			soBehavioursRan("on_failure", failureMarker, false)
+			soBehavioursRan("on_success", successMarker, true)
+		})
+
+		Convey("A docker container lookup that fails while it runs does not make it a failure", func() {
+			t.Setenv("DOCKER_HOST", failingListDockerSocket(t))
+			t.Setenv("DOCKER_API_VERSION", dockerTestAPIVersion)
+
+			job.MonitorDocker = "mytool"
+
+			So(client.Execute(context.Background(), job, "/bin/bash"), ShouldBeNil)
+
+			soBehavioursRan("on_failure", failureMarker, false)
+			soBehavioursRan("on_success", successMarker, true)
 		})
 	})
 }

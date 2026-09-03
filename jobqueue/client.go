@@ -1296,14 +1296,22 @@ func (dm *dockerMonitor) callCtx(ctx context.Context) (context.Context, context.
 
 // resolveContainerMem looks up (and caches) the monitored container's id and, if
 // found, returns the larger of mem and the container's memory plus its CPU
-// seconds. Any error finding the container is returned for accumulation.
+// seconds.
 //
 // The docker calls it makes get dm.callTimeout to complete, and after
 // dockerFailureTolerance consecutive failures it stops monitoring; see
 // noteCallResult.
-func (dm *dockerMonitor) resolveContainerMem(ctx context.Context, cmdDir string, mem int) (int, int, error) {
+//
+// It returns no error, deliberately: noteCallResult logs and counts every
+// failure, and the job's command runs independently of docker's
+// responsiveness, so all a failed reading costs the user is under-reported
+// usage. Returned to Execute(), it would instead accumulate into myerr and so
+// make job.TriggerBehaviours() run the on_failure behaviours - a cleanup_all,
+// or any command the user chose - of a job whose command succeeded, on nothing
+// worse than a docker daemon hiccup.
+func (dm *dockerMonitor) resolveContainerMem(ctx context.Context, cmdDir string, mem int) (int, int) {
 	if dm == nil || dm.givenUp {
-		return mem, 0, nil
+		return mem, 0
 	}
 
 	callCtx, cancel := dm.callCtx(ctx)
@@ -1318,7 +1326,7 @@ func (dm *dockerMonitor) resolveContainerMem(ctx context.Context, cmdDir string,
 	if dm.containerID == "" {
 		dm.noteCallResult(ctx, findErr)
 
-		return mem, 0, findErr
+		return mem, 0
 	}
 
 	dockerStats, errs := dm.interactor.ContainerStats(callCtx, dm.containerID)
@@ -1326,16 +1334,10 @@ func (dm *dockerMonitor) resolveContainerMem(ctx context.Context, cmdDir string,
 	dm.noteCallResult(ctx, errors.Join(findErr, errs))
 
 	if errs != nil {
-		// a container that has gone away is normal and not the job's problem,
-		// so unlike findErr this is not returned for accumulation
-		return mem, 0, findErr
+		return mem, 0
 	}
 
-	if dockerStats.MemoryMB > mem {
-		mem = dockerStats.MemoryMB
-	}
-
-	return mem, dockerStats.CPUSec, findErr
+	return max(mem, dockerStats.MemoryMB), dockerStats.CPUSec
 }
 
 // noteCallResult records whether a round of docker calls worked, and gives up
@@ -1364,6 +1366,11 @@ func (dm *dockerMonitor) noteCallResult(ctx context.Context, err error) {
 // killContainer kills the container being monitored, giving up after
 // dm.callTimeout so that an unresponsive docker daemon can't make a kill
 // request hang for ever.
+//
+// Unlike resolveContainerMem's readings, this error IS returned to Execute()
+// and does reach the job's outcome: a kill we were asked to do and could not
+// do leaves the user's container running, which is a real failure of this run
+// and not something a later check can make good.
 func (dm *dockerMonitor) killContainer(ctx context.Context) error {
 	callCtx, cancel := dm.callCtx(ctx)
 	defer cancel()
@@ -2147,10 +2154,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			return errk
 		}
 
-		// closeErr, killErr and myerr are written here but read by Execute()
-		// once the checking rendezvous is over, and that rendezvous can now
-		// give up on this goroutine, so their writes take stateMutex like the
-		// other shared state does.
+		// closeErr and killErr are written here but read by Execute() once the
+		// checking rendezvous is over, and that rendezvous can now give up on
+		// this goroutine, so their writes take stateMutex like the other shared
+		// state does.
 		closeReaders := func() {
 			stateMutex.Lock()
 			defer stateMutex.Unlock()
@@ -2222,14 +2229,13 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				mem, errf := currentMemory(job.Pid)
 
 				// deal with docker monitoring
-				mem, cpuS, findErr := dm.resolveContainerMem(ctx, cmd.Dir, mem)
+				mem, cpuS := dm.resolveContainerMem(ctx, cmd.Dir, mem)
 
 				// get current disk usage
 				disk, errd := diskUsageCheck()
 
 				// now update peaks
 				stateMutex.Lock()
-				myerr = joinExecErr(myerr, findErr, "finding the docker container had issues")
 
 				if errf == nil && mem > peakmem {
 					peakmem = mem
