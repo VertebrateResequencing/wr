@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2017-2019 Genome Research Ltd.
+ * Copyright (c) 2017-2019, 2026 Genome Research Ltd.
  *
  * Author: Sendu Bala <sb10@sanger.ac.uk>
  *
@@ -30,8 +30,24 @@ package jobqueue
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
+)
+
+// defaultMountDir is the subdirectory of the working directory that a
+// MountConfig with no Mount of its own is mounted on.
+const defaultMountDir = "mnt"
+
+// homeDir is the path that means the user's home directory, and homeDirPrefix
+// starts a path inside it; muxfys expands both for us (homedir.Expand). As in
+// internal.TildaToHome, a tilda not followed by a "/" is neither of these:
+// "~cache" is a legal relative directory name, and muxfys refuses to expand it
+// ("cannot expand user-specific home dir").
+const (
+	homeDir       = "~"
+	homeDirPrefix = homeDir + "/"
 )
 
 // MountConfig struct is used for setting in a Job to specify that a remote file
@@ -144,6 +160,63 @@ type MountTarget struct {
 // MountConfigs is a slice of MountConfig.
 type MountConfigs []MountConfig
 
+// Resolve returns a copy of these MountConfigs in which every path is one that
+// means the same thing from any working directory: an unset Mount becomes the
+// "mnt" subdirectory of cwd and an unset CacheBase becomes cwd (the documented
+// defaults), while a relative Mount, CacheBase or Target CacheDir is resolved
+// against cwd (so it can also climb out of it, eg. "../shared").
+//
+// Paths that already mean the same thing from anywhere - absolute ones, and
+// "~" and "~/..." ones, which the mount expands to the user's home directory
+// - are left as they are. A tilda not followed by a "/" is not one of those:
+// "~cache" is resolved against cwd like any other relative path.
+//
+// It is for a command that must mount from a different working directory than
+// the user was in when they configured the mount, which is what 'wr mount'
+// does when it daemonizes.
+func (mcs MountConfigs) Resolve(cwd string) MountConfigs {
+	resolved := make(MountConfigs, 0, len(mcs))
+
+	for _, mc := range mcs {
+		mc.Mount = resolveAgainst(mc.Mount, cwd)
+		if mc.Mount == "" {
+			mc.Mount = filepath.Join(cwd, defaultMountDir)
+		}
+
+		mc.CacheBase = resolveAgainst(mc.CacheBase, cwd)
+		if mc.CacheBase == "" {
+			mc.CacheBase = cwd
+		}
+
+		mc.Targets = slices.Clone(mc.Targets)
+		for i, mt := range mc.Targets {
+			mc.Targets[i].CacheDir = resolveAgainst(mt.CacheDir, cwd)
+		}
+
+		resolved = append(resolved, mc)
+	}
+
+	return resolved
+}
+
+// resolveAgainst returns path resolved against dir, unless it is one that does
+// not depend on the working directory: an unset path (which the caller must
+// give its own default), an absolute one, the home directory, or one inside it.
+func resolveAgainst(path, dir string) string {
+	if pathIgnoresDir(path) {
+		return path
+	}
+
+	return filepath.Join(dir, path)
+}
+
+// pathIgnoresDir tells you if path means the same thing wherever it is resolved
+// from: an unset path, an absolute one, the home directory, or one inside it.
+func pathIgnoresDir(path string) bool {
+	return path == "" || path == homeDir || filepath.IsAbs(path) ||
+		strings.HasPrefix(path, homeDirPrefix)
+}
+
 // String provides a JSON representation of the MountConfigs.
 func (mcs MountConfigs) String() string {
 	if len(mcs) == 0 {
@@ -181,7 +254,7 @@ func (mcs MountConfigs) Key() string {
 	for _, mc := range mcs.sortedByMount() {
 		mount := mc.Mount
 		if mount == "" {
-			mount = "mnt"
+			mount = defaultMountDir
 		}
 
 		key.WriteString(mount)
