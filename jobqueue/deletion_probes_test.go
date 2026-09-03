@@ -866,7 +866,7 @@ func TestProbeLiveFuseMounts(t *testing.T) {
 			job.ActualCwd = retry.actualCwd
 			job.Unlock()
 
-			err = pin.trigger(false)
+			err = pin.trigger()
 
 			soPathsExist(remote)
 			soPathsExist(filepath.Join(lostCwd, testWSMount, probeRemoteName))
