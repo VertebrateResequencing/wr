@@ -1321,32 +1321,45 @@ func TestCleanupCrossesNoMountBoundary(t *testing.T) {
 	// the keep set is built from the Job's own MountConfigs, so it knows nothing
 	// of a mount raised by the Job's own Cmd (sshfs, s3fs) or by a nested wr,
 	// and a sweep that recurses through one unlinks the user's remote objects.
-	Convey("Given a Job whose Cmd raised a live mount wr did not configure", t, func() {
-		if !canMountFuse() {
-			SkipConvey("this host will not let an unprivileged process raise a FUSE mount", func() {})
+	//
+	// Both sweeps of the working directory are driven, because they get the
+	// device the boundary is judged against from different places: the
+	// mount-free sweep lstats each directory as it descends into it, while the
+	// sweep around a keep set starts from the lstat of the working directory
+	// itself, and the mount here is a direct entry of that directory.
+	for _, mounts := range nestedSweepCases() {
+		Convey("Given a Job whose Cmd raised a live mount wr did not configure", t, func() {
+			if !canMountFuse() {
+				SkipConvey("this host will not let an unprivileged process raise a FUSE mount", func() {})
 
-			return
-		}
+				return
+			}
 
-		cwd := t.TempDir()
+			cwd := t.TempDir()
 
-		job := &Job{Cwd: cwd, Cmd: "sshfs remote:/data unconfigured && analyse"}
-		actualCwd, workSpace, tmpDir := realWorkSpace(job)
-		output := writeFileIn(actualCwd, "own_output.txt")
-		scratch := writeFileIn(tmpDir, "scratch.txt")
+			job := &Job{
+				Cwd:          cwd,
+				Cmd:          "sshfs remote:/data unconfigured && analyse",
+				MountConfigs: mounts,
+			}
+			actualCwd, workSpace, tmpDir := realWorkSpace(job)
+			output := writeFileIn(actualCwd, "own_output.txt")
+			scratch := writeFileIn(tmpDir, "scratch.txt")
 
-		mountPoint := filepath.Join(actualCwd, "unconfigured")
-		remote := mountLoopbackOver(t, mountPoint)
+			mountPoint := filepath.Join(actualCwd, "unconfigured")
+			remote := mountLoopbackOver(t, mountPoint)
 
-		Convey("cleanup deletes nothing through it, and still deletes what it made", func() {
-			err := (&Behaviour{When: OnExit, Do: Cleanup}).Trigger(OnExit, job)
+			Convey(fmt.Sprintf("cleanup with %d mounts deletes nothing through it, and still deletes what it made",
+				len(mounts)), func() {
+				err := (&Behaviour{When: OnExit, Do: Cleanup}).Trigger(OnExit, job)
 
-			soPathsExist(remote, filepath.Join(mountPoint, testWSRemote), mountPoint, actualCwd, workSpace)
-			soPathsGone(output, scratch, tmpDir)
+				soPathsExist(remote, filepath.Join(mountPoint, testWSRemote), mountPoint, actualCwd, workSpace)
+				soPathsGone(output, scratch, tmpDir)
 
-			So(err, ShouldBeNil)
+				So(err, ShouldBeNil)
+			})
 		})
-	})
+	}
 }
 
 // canMountFuse reports whether this host lets an unprivileged process raise a

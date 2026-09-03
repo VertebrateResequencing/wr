@@ -1339,7 +1339,7 @@ func readDirIn(dirRoot *os.Root, dir string) ([]os.DirEntry, error) {
 // exception outside it was protecting nothing, whereas erroring would abandon the
 // job's workspace for no gain.
 func removeAllExcept(dirRoot *os.Root, exceptions []string) error {
-	info, err := dirRoot.Stat(".")
+	info, err := dirRoot.Lstat(".")
 	if err != nil {
 		return err
 	}
@@ -1355,7 +1355,7 @@ func removeAllExcept(dirRoot *os.Root, exceptions []string) error {
 // Whether name is the Job's to delete at all is decided long before this, by
 // jobWorkSpace; all this bounds is how far a deletion already licensed goes.
 func removeAllGuarded(dirRoot *os.Root, name string) error {
-	info, err := dirRoot.Stat(".")
+	info, err := dirRoot.Lstat(".")
 	if err != nil {
 		return err
 	}
@@ -1388,7 +1388,9 @@ func exceptionDirs(exceptions []string) map[string]bool {
 
 // removeWithExceptions deletes the contents of dir, a path relative to dirRoot,
 // keeping the dirs named in keepDirs. dirInfo must be the lstat of dir itself,
-// since that is what each entry's mount boundary is judged against.
+// since that is what each entry's mount boundary is judged against, and the
+// entry's side of that comparison is an Lstat as well: a device number read
+// through a symlink would describe a filesystem that is not the one being swept.
 func removeWithExceptions(dirRoot *os.Root, dir string, dirInfo os.FileInfo, keepDirs map[string]bool) error {
 	entries, err := readDirIn(dirRoot, dir)
 	if err != nil {
