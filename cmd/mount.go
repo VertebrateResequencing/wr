@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -257,7 +258,7 @@ func mountDaemonized(configs jobqueue.MountConfigs) {
 	dContext := &daemon.Context{
 		WorkDir:     "/",
 		LogFileName: mountDaemonLogDest,
-		Env:         append(os.Environ(), mountCwdEnvVar+"="+mountCwd()),
+		Env:         mountDaemonEnv(mountCwd()),
 	}
 
 	child, err := dContext.Reborn()
@@ -284,12 +285,37 @@ func mountDaemonized(configs jobqueue.MountConfigs) {
 	mountAndWait(configs)
 }
 
+// mountDaemonEnv returns the environment for the daemonized child: our own,
+// with mountCwdEnvVar set to the given directory.
+//
+// Any mountCwdEnvVar the user already had is REMOVED rather than left to be
+// shadowed by ours: go-daemon starts the child with os.StartProcess
+// (daemon_unix.go:104), which passes duplicated names through as they are, and
+// os.Getenv then answers with the FIRST of them (syscall.copyenv keeps the
+// "first mention of key"), which would be theirs.
+func mountDaemonEnv(cwd string) []string {
+	env := slices.DeleteFunc(os.Environ(), func(nameValue string) bool {
+		return strings.HasPrefix(nameValue, mountCwdEnvVar+"=")
+	})
+
+	return append(env, mountCwdEnvVar+"="+cwd)
+}
+
 // mountCwd returns the directory the user ran this command in, which their
-// relative Mount, CacheBase and CacheDir options are relative to. A daemonized
-// mount is told this by mountDaemonized, since it does not run in it.
+// relative Mount, CacheBase and CacheDir options are relative to.
+//
+// Only a daemonized mount may believe mountCwdEnvVar, which mountDaemonized
+// told it because it does not run in that directory. In any other process that
+// variable is just something in the user's environment, and letting it decide
+// where their relative paths land would be the bug this whole mechanism exists
+// to fix. go-daemon marks the process it re-executes with _GO_DAEMON=1
+// (daemon_unix.go:193, read by daemon.WasReborn), which is how we tell the two
+// apart.
 func mountCwd() string {
-	if cwd := os.Getenv(mountCwdEnvVar); cwd != "" {
-		return cwd
+	if daemon.WasReborn() {
+		if cwd := os.Getenv(mountCwdEnvVar); cwd != "" {
+			return cwd
+		}
 	}
 
 	cwd, err := os.Getwd()

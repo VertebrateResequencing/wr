@@ -27,20 +27,22 @@ package cmd
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/sevlyar/go-daemon"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestMountResolvesToUsersDir(t *testing.T) {
 	Convey("Given a user who mounts a bucket with --mounts and no other options", t, func() {
-		dir, err := filepath.EvalSymlinks(t.TempDir())
-		So(err, ShouldBeNil)
+		dir := dirForTest(t)
+		otherDir := dirForTest(t)
 
 		setMountOptionsForTest(t, "", "cw:mybucket/path")
 
 		Convey("the mount point and cache are in the directory they ran wr mount in", func() {
-			t.Chdir(dir)
+			setMountParentForTest(t, dir, "")
 
 			configs := resolvedMountConfigs()
 
@@ -49,9 +51,24 @@ func TestMountResolvesToUsersDir(t *testing.T) {
 			So(configs[0].CacheBase, ShouldEqual, dir)
 		})
 
+		Convey("a WR_MOUNT_CWD of their own does not move them elsewhere", func() {
+			setMountParentForTest(t, dir, otherDir)
+
+			configs := resolvedMountConfigs()
+
+			So(configs, ShouldHaveLength, 1)
+			So(configs[0].Mount, ShouldEqual, filepath.Join(dir, "mnt"))
+			So(configs[0].CacheBase, ShouldEqual, dir)
+		})
+
+		Convey("nor does it reach the daemon they start", func() {
+			setMountParentForTest(t, dir, otherDir)
+
+			So(mountCwdEnvValues(mountDaemonEnv(mountCwd())), ShouldResemble, []string{dir})
+		})
+
 		Convey("they are in that directory for the daemon too, which runs from /", func() {
-			t.Setenv(mountCwdEnvVar, dir)
-			t.Chdir("/")
+			setMountDaemonForTest(t, dir)
 
 			configs := resolvedMountConfigs()
 
@@ -62,14 +79,12 @@ func TestMountResolvesToUsersDir(t *testing.T) {
 	})
 
 	Convey("Given a user who mounts with a relative --mount_json CacheDir", t, func() {
-		dir, err := filepath.EvalSymlinks(t.TempDir())
-		So(err, ShouldBeNil)
+		dir := dirForTest(t)
 
 		setMountOptionsForTest(t, `[{"Mount":"mymnt","Targets":[{"Path":"mybucket","CacheDir":"mycache"}]}]`, "")
 
 		Convey("the mount point and cache dir are in the directory the daemon was started from", func() {
-			t.Setenv(mountCwdEnvVar, dir)
-			t.Chdir("/")
+			setMountDaemonForTest(t, dir)
 
 			configs := resolvedMountConfigs()
 
@@ -79,6 +94,18 @@ func TestMountResolvesToUsersDir(t *testing.T) {
 			So(configs[0].Targets[0].CacheDir, ShouldEqual, filepath.Join(dir, "mycache"))
 		})
 	})
+}
+
+// dirForTest returns a symlink-free directory that only exists for the duration
+// of the test, since the paths a mount resolves to are compared as the strings
+// they are.
+func dirForTest(t *testing.T) string {
+	t.Helper()
+
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	So(err, ShouldBeNil)
+
+	return dir
 }
 
 // setMountOptionsForTest sets the mount command's option variables for the
@@ -96,4 +123,49 @@ func setMountOptionsForTest(t *testing.T, jsonString, simpleString string) {
 
 	mountJSON = jsonString
 	mountSimple = simpleString
+}
+
+// setMountParentForTest puts this process in the situation of the wr mount the
+// user typed: running in cwd, with envCwd as the value of mountCwdEnvVar in its
+// environment, which only a daemonized mount may believe.
+func setMountParentForTest(t *testing.T, cwd, envCwd string) {
+	t.Helper()
+
+	setMountProcessForTest(t, cwd, envCwd, "")
+}
+
+// mountCwdEnvValues returns the value of every mountCwdEnvVar entry in the
+// given environment, in the order the child process would see them: with a
+// duplicated name, os.Getenv answers with the first.
+func mountCwdEnvValues(env []string) []string {
+	values := make([]string, 0, 1)
+
+	for _, nameValue := range env {
+		if value, ok := strings.CutPrefix(nameValue, mountCwdEnvVar+"="); ok {
+			values = append(values, value)
+		}
+	}
+
+	return values
+}
+
+// setMountDaemonForTest puts this process in the situation of a daemonized
+// mount: re-executed by go-daemon with its mark set, running from "/", and told
+// the user's directory in mountCwdEnvVar.
+func setMountDaemonForTest(t *testing.T, envCwd string) {
+	t.Helper()
+
+	setMountProcessForTest(t, "/", envCwd, daemon.MARK_VALUE)
+}
+
+// setMountProcessForTest gives this process the working directory,
+// mountCwdEnvVar value and go-daemon mark of the wr mount process being
+// modelled. Each of the three is always set, since t.Chdir and t.Setenv only
+// undo themselves when the test as a whole ends, not when a Convey leaf does.
+func setMountProcessForTest(t *testing.T, cwd, envCwd, daemonMark string) {
+	t.Helper()
+
+	t.Setenv(daemon.MARK_NAME, daemonMark)
+	t.Setenv(mountCwdEnvVar, envCwd)
+	t.Chdir(cwd)
 }
