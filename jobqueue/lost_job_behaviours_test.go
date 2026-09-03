@@ -81,6 +81,12 @@ const (
 	retryOutputName = "retry_output.tmp"
 )
 
+// lostCleanupDrivers is how many lost jobs TestLostJobCleanupsAreBounded drives
+// at once. It is a literal rather than a multiple of maxConcurrentLostCleanups
+// on purpose: raising the bound without raising this too would leave the test
+// unable to reach the bound, and it then says so rather than passing.
+const lostCleanupDrivers = 64
+
 // lostRunOpts says which ordinary manager and job the fixture is to be. Each
 // combination is a case in which the reported ActualCwd is blank or stale for
 // the whole of a run, so that pinning it identifies no run at all.
@@ -217,7 +223,7 @@ func (l *lostRun) installHooks() {
 }
 
 // startLostRun adds the job, reserves it, makes the workspace of the run that is
-// about to be lost, and starts it with a dead pid.
+// about to be lost, and starts it with dead pids.
 //
 // It does those last two in the order a runner does them: Client.Execute
 // resolves the working directory (resolveWorkingDir) before it calls Started, so
@@ -245,9 +251,13 @@ func (l *lostRun) startLostRun(jq *Client, rg string, reqs *scheduler.Requiremen
 
 	l.makeLostWorkSpace(reserved)
 
-	// started with a pid that has already exited, so the manager's dead-check
-	// really does confirm this run dead, through the real scheduler.
+	// started with a command pid that has already exited, so the manager's
+	// dead-check really does confirm this run dead, through the real scheduler.
 	So(jq.Started(reserved, exitedPid()), ShouldBeNil)
+
+	// and with a dead RUNNER pid too, which the manager equally requires - see
+	// runnerExited.
+	l.runnerExited()
 
 	if !l.opts.cwdMatters && !l.opts.webless {
 		applyLiveSnapshot(l.live, &JobEndState{Cwd: l.lostCwd})
@@ -276,6 +286,29 @@ func (l *lostRun) makeLostWorkSpace(reserved *Job) {
 	reserved.Lock()
 	reserved.setActualCwd(l.lostCwd)
 	reserved.Unlock()
+}
+
+// runnerExited replaces the RUNNER pid the manager recorded for the run that has
+// just reported its Started with the pid of a process that has already exited.
+//
+// It is not optional, and it must not be "simplified" away: the manager confirms
+// a lost run dead only when BOTH the pids it holds for it are gone - the
+// command's, and the pid of the runner process that reported it (jobConfirmedDead
+// in confirmdead.go). That is deliberate, and it is what stops a slow runner whose
+// command has finished from having its success re-run underneath it; only when the
+// runner pid was never reported (0) does the manager fall back to the command pid
+// alone.
+//
+// Client.startedRequest reports os.Getpid() as the runner pid, because the client
+// process IS the runner - and in a test that is the live test process. So a
+// command pid that has exited is half of what this fixture needs: without the
+// runner dying too, the manager rightly refuses to declare the run dead, no test
+// here ever reaches lostJobDeadCheckedHook, and each waits out lostRunSettleTime
+// instead.
+func (l *lostRun) runnerExited() {
+	l.live.Lock()
+	l.live.RunnerPid = exitedPid()
+	l.live.Unlock()
 }
 
 // handOver parks the manager, telling the test it has reached one of its two
@@ -527,12 +560,18 @@ func (l *lostRun) reportItStarted(reserved *Job, pid int) {
 // (respondWithReservedJob records the reserving runner's own) with a process
 // that has already exited. That is what a runner killed by its node leaves
 // behind: a reservation held by nothing, and no Started ever coming.
+//
+// It clears the RunnerPid the run before it left on the shared *Job for the same
+// reason, since the manager needs every pid it holds for the run to be gone
+// before it will declare it dead - see runnerExited.
 func (l *lostRun) runnerDied() {
 	pid := exitedPid()
+	runnerPid := exitedPid()
 
 	l.live.Lock()
 	l.live.Host = localhost
 	l.live.Pid = pid
+	l.live.RunnerPid = runnerPid
 	l.live.Unlock()
 }
 
@@ -1099,11 +1138,14 @@ func TestKilledLostJobsReplacementIsStillWatched(t *testing.T) {
 
 		l.waitForDeadCheckWindow()
 
-		// the retry is started with a pid that has already exited, so it goes
-		// silent the way a run killed by its node does.
+		// the retry is started with a command pid that has already exited, and
+		// its runner then exits too, so it goes silent the way a run killed by
+		// its node does - and the manager, which needs both pids gone, can
+		// confirm THIS run dead in its turn (see runnerExited).
 		reserved := l.killAndReserveTheJob(ctx)
 		retryCwd, _, _ := l.getOnWithTheRun(reserved)
 		l.reportItStarted(reserved, exitedPid())
+		l.runnerExited()
 
 		l.proceedManager()
 		So(l.waitForKillDecision(), ShouldBeFalse)
@@ -1454,12 +1496,6 @@ func TestMintedRunTokenIsNeverTheRecoveredOne(t *testing.T) {
 		})
 	})
 }
-
-// lostCleanupDrivers is how many lost jobs TestLostJobCleanupsAreBounded drives
-// at once. It is a literal rather than a multiple of maxConcurrentLostCleanups
-// on purpose: raising the bound without raising this too would leave the test
-// unable to reach the bound, and it then says so rather than passing.
-const lostCleanupDrivers = 64
 
 // boundedCleanups is the gate every lost job's cleanup is held at, and the count
 // of how many are held there at once.
