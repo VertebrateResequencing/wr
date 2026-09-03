@@ -27,8 +27,11 @@ package jobqueue
 
 import (
 	"context"
+	"errors"
 	"net"
+	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -36,6 +39,10 @@ import (
 	"github.com/VertebrateResequencing/wr/container"
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+// errNoSuchContainer is what a fake interactor returns for a container that
+// does not exist, as docker would.
+var errNoSuchContainer = errors.New("no such container")
 
 const (
 	// dockerTestCallTimeout is the per-docker-call timeout we give monitors
@@ -295,4 +302,149 @@ func stallingDockerSocket(t *testing.T) string {
 	}()
 
 	return "unix://" + sock
+}
+
+// fakeInteractor is a container.Interactor over a set of containers the test
+// controls, recording which of them get killed.
+type fakeInteractor struct {
+	mu         sync.Mutex
+	mems       map[string]int
+	containers []*container.Container
+	killed     []string
+}
+
+// newFakeInteractor creates a fakeInteractor with no containers.
+func newFakeInteractor() *fakeInteractor {
+	return &fakeInteractor{mems: make(map[string]int)}
+}
+
+// add makes a container with the given id and name, using the given memory in
+// MB, exist.
+func (f *fakeInteractor) add(id, name string, memMB int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	cntr := &container.Container{ID: id, Names: []string{"/" + name}}
+	cntr.TrimNamePrefixes()
+
+	f.containers = append(f.containers, cntr)
+	f.mems[id] = memMB
+}
+
+// killedIDs returns the ids of the containers that have been killed.
+func (f *fakeInteractor) killedIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return slices.Clone(f.killed)
+}
+
+func (f *fakeInteractor) ContainerList(_ context.Context) ([]*container.Container, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return slices.Clone(f.containers), nil
+}
+
+func (f *fakeInteractor) ContainerStats(_ context.Context, containerID string) (*container.Stats, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	memMB, exists := f.mems[containerID]
+	if !exists {
+		return nil, errNoSuchContainer
+	}
+
+	return &container.Stats{MemoryMB: memMB}, nil
+}
+
+func (f *fakeInteractor) ContainerKill(_ context.Context, containerID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.killed = append(f.killed, containerID)
+
+	return nil
+}
+
+func TestDockerMonitorAdoption(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a container already running under the name a job asks to monitor", t, func() {
+		fake := newFakeInteractor()
+		fake.add("preexisting", "mytool", 500)
+
+		dm, err := newDockerMonitor(ctx, "mytool", fake, dockerTestCallTimeout)
+		So(err, ShouldBeNil)
+
+		Convey("It is not monitored, so nothing of it can be killed", func() {
+			mem, cpu, errr := dm.resolveContainerMem(ctx, "/tmp", 100)
+			So(errr, ShouldBeNil)
+			So(mem, ShouldEqual, 100)
+			So(cpu, ShouldEqual, 0)
+			So(fake.killedIDs(), ShouldBeEmpty)
+		})
+
+		Convey("But a container of that name that appears afterwards is monitored", func() {
+			fake.add("jobs", "mytool", 300)
+
+			mem, _, errr := dm.resolveContainerMem(ctx, "/tmp", 100)
+			So(errr, ShouldBeNil)
+			So(mem, ShouldEqual, 300)
+
+			Convey("And a kill request kills only that container", func() {
+				So(dm.killContainer(ctx), ShouldBeNil)
+				So(fake.killedIDs(), ShouldResemble, []string{"jobs"})
+			})
+		})
+	})
+
+	Convey("Given a cidfile naming a container that is already running", t, func() {
+		fake := newFakeInteractor()
+		fake.add("preexisting", "someone_elses", 500)
+
+		dir := t.TempDir()
+		cidPath := filepath.Join(dir, "job.cid")
+		So(os.WriteFile(cidPath, []byte("preexisting\n"), 0600), ShouldBeNil)
+
+		dm, err := newDockerMonitor(ctx, cidPath, fake, dockerTestCallTimeout)
+		So(err, ShouldBeNil)
+
+		Convey("It is not monitored", func() {
+			mem, _, errr := dm.resolveContainerMem(ctx, dir, 100)
+			So(errr, ShouldBeNil)
+			So(mem, ShouldEqual, 100)
+		})
+
+		Convey("But the container the job goes on to create is monitored", func() {
+			fake.add("jobs", "jobs_own", 300)
+			So(os.WriteFile(cidPath, []byte("jobs\n"), 0600), ShouldBeNil)
+
+			mem, _, errr := dm.resolveContainerMem(ctx, dir, 100)
+			So(errr, ShouldBeNil)
+			So(mem, ShouldEqual, 300)
+		})
+	})
+
+	Convey("Given a monitor of the first container to appear, with one already running", t, func() {
+		fake := newFakeInteractor()
+		fake.add("preexisting", "someone_elses", 500)
+
+		dm, err := newDockerMonitor(ctx, "?", fake, dockerTestCallTimeout)
+		So(err, ShouldBeNil)
+
+		Convey("The already running one is not monitored", func() {
+			mem, _, errr := dm.resolveContainerMem(ctx, "/tmp", 100)
+			So(errr, ShouldBeNil)
+			So(mem, ShouldEqual, 100)
+		})
+
+		Convey("The next one to appear is monitored", func() {
+			fake.add("jobs", "jobs_own", 300)
+
+			mem, _, errr := dm.resolveContainerMem(ctx, "/tmp", 100)
+			So(errr, ShouldBeNil)
+			So(mem, ShouldEqual, 300)
+		})
+	})
 }

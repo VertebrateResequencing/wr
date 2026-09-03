@@ -1264,27 +1264,25 @@ func newDockerInteractor(timeout time.Duration) (container.Interactor, error) {
 // container to appear), monitored using the given interactor and allowing
 // timeout for each docker API call.
 //
-// In "?" mode the containers that already exist are remembered, so that only a
-// container that appears after this call is adopted.
+// The containers that already exist are remembered, so that only a container
+// that appears after this call can be adopted - and so killed - by the job,
+// whichever way monitorDocker identifies it.
 func newDockerMonitor(ctx context.Context, monitorDocker string, interactor container.Interactor,
 	timeout time.Duration,
 ) (*dockerMonitor, error) {
 	dm := &dockerMonitor{
-		operator:      container.NewOperator(interactor),
-		interactor:    interactor,
-		monitorDocker: monitorDocker,
-		callTimeout:   timeout,
+		operator:        container.NewOperator(interactor),
+		interactor:      interactor,
+		monitorDocker:   monitorDocker,
+		callTimeout:     timeout,
+		getFirstAppears: monitorDocker == "?",
 	}
 
-	if monitorDocker == "?" {
-		dm.getFirstAppears = true
+	callCtx, cancel := dm.callCtx(ctx)
+	defer cancel()
 
-		callCtx, cancel := dm.callCtx(ctx)
-		defer cancel()
-
-		if err := dm.operator.RememberCurrentContainers(callCtx); err != nil {
-			return nil, err
-		}
+	if err := dm.operator.RememberCurrentContainers(callCtx); err != nil {
+		return nil, err
 	}
 
 	return dm, nil
@@ -1394,7 +1392,7 @@ func (dm *dockerMonitor) findContainerID(ctx context.Context, cmdDir string) err
 	}
 
 	// monitorDocker might be a file path containing the id of a container
-	dockerContainer, pathErr := dm.operator.GetContainerByPath(ctx, dm.monitorDocker, cmdDir)
+	dockerContainer, pathErr := dm.operator.GetNewContainerByPath(ctx, dm.monitorDocker, cmdDir)
 	if dockerContainer != nil {
 		dm.containerID = dockerContainer.ID
 	}
