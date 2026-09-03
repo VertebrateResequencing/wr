@@ -1347,7 +1347,13 @@ func TestCleanupCrossesNoMountBoundary(t *testing.T) {
 			scratch := writeFileIn(tmpDir, "scratch.txt")
 
 			mountPoint := filepath.Join(actualCwd, "unconfigured")
-			remote := mountLoopbackOver(t, mountPoint)
+
+			remote, mounted := mountLoopbackOver(t, mountPoint)
+			if !mounted {
+				SkipConvey("this host refused an unprivileged FUSE mount", func() {})
+
+				return
+			}
 
 			Convey(fmt.Sprintf("cleanup with %d mounts deletes nothing through it, and still deletes what it made",
 				len(mounts)), func() {
@@ -1362,8 +1368,9 @@ func TestCleanupCrossesNoMountBoundary(t *testing.T) {
 	}
 }
 
-// canMountFuse reports whether this host lets an unprivileged process raise a
-// FUSE mount, which a host with no /dev/fuse or no setuid fusermount cannot.
+// canMountFuse is a best-effort check that this host has what a FUSE mount
+// needs: an openable /dev/fuse, and a fusermount binary on PATH. A host with
+// both can still refuse the mount, so mountLoopbackOver reports that for real.
 func canMountFuse() bool {
 	dev, err := os.OpenFile("/dev/fuse", os.O_RDWR, 0)
 	if err != nil {
@@ -1385,12 +1392,17 @@ func canMountFuse() bool {
 // OUTSIDE the Job's Cwd and really FUSE mounts that directory over mountPoint,
 // returning the planted file's path. The mount is taken down when the test ends.
 //
+// ok is false where the host refused the mount, which is the only answer that
+// settles whether this environment can run the test: a host can have /dev/fuse
+// and a fusermount binary and still deny an unprivileged mount, so a failed
+// mount is a skip and never a test failure.
+//
 // go-fuse's loopback filesystem is what makes the mount real, and it is the
 // cheapest one an unprivileged process can raise. What is behind it is an
 // ordinary directory, so what survived can be asserted about directly; muxfys
 // would need an object store to talk to, and the deletion under test does not
 // care which filesystem is mounted, only that a mount gets crossed.
-func mountLoopbackOver(t *testing.T, mountPoint string) string {
+func mountLoopbackOver(t *testing.T, mountPoint string) (string, bool) {
 	t.Helper()
 
 	backing := t.TempDir()
@@ -1401,7 +1413,11 @@ func mountLoopbackOver(t *testing.T, mountPoint string) string {
 	So(os.MkdirAll(mountPoint, os.ModePerm), ShouldBeNil)
 
 	server, err := gofuse.Mount(mountPoint, root, &gofuse.Options{})
-	So(err, ShouldBeNil)
+	if err != nil {
+		t.Logf("this host refused a loopback FUSE mount at %s: %s", mountPoint, err)
+
+		return "", false
+	}
 
 	t.Cleanup(func() {
 		if uerr := server.Unmount(); uerr != nil {
@@ -1409,7 +1425,7 @@ func mountLoopbackOver(t *testing.T, mountPoint string) string {
 		}
 	})
 
-	return remote
+	return remote, true
 }
 
 func TestRunDirWithoutProcFD(t *testing.T) {
