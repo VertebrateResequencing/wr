@@ -203,12 +203,18 @@ func (mcs MountConfigs) Resolve(cwd string) MountConfigs {
 // not depend on the working directory: an unset path (which the caller must
 // give its own default), an absolute one, the home directory, or one inside it.
 func resolveAgainst(path, dir string) string {
-	if path == "" || path == homeDir || filepath.IsAbs(path) ||
-		strings.HasPrefix(path, homeDirPrefix) {
+	if pathIgnoresDir(path) {
 		return path
 	}
 
 	return filepath.Join(dir, path)
+}
+
+// pathIgnoresDir tells you if path means the same thing wherever it is resolved
+// from: an unset path, an absolute one, the home directory, or one inside it.
+func pathIgnoresDir(path string) bool {
+	return path == "" || path == homeDir || filepath.IsAbs(path) ||
+		strings.HasPrefix(path, homeDirPrefix)
 }
 
 // String provides a JSON representation of the MountConfigs.
