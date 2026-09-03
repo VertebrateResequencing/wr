@@ -951,13 +951,14 @@ func TestServerAddDropsImpossibleCleanups(t *testing.T) {
 		sock := &captureSocket{ch: ch}
 		repGroup := "payload-impossible-cleanups"
 		server := &Server{
-			ch:    ch,
-			sock:  sock,
-			token: token,
-			db:    testDB,
-			q:     queue.New(ctx, repGroup),
-			rpl:   newRGToKeys(),
-			up:    true,
+			ch:        ch,
+			sock:      sock,
+			token:     token,
+			db:        testDB,
+			q:         queue.New(ctx, repGroup),
+			rpl:       newRGToKeys(),
+			depGroups: newDepGroupMembers(),
+			up:        true,
 		}
 		sock.server = server
 
