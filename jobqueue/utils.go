@@ -55,6 +55,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/dgryski/go-farm"
+	"github.com/gofrs/uuid/v5"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/jpillora/backoff"
 	"github.com/shirou/gopsutil/v4/process"
@@ -79,9 +80,18 @@ const mkHashedLevels = 4
 // directory while still being something wr chose.
 const createdCwdBaseSuffix = "_cwd"
 
+// workSpaceNameSep separates the tail of a Job's key from the per-run UUID in
+// the name mkHashedDir gives a workspace. It cannot be a digit, so it also tells
+// the minted name apart from the digits-only one an older wr would have left.
+const workSpaceNameSep = "-"
+
+// workSpaceNamePerm is the permission mkHashedDir creates a workspace with. It
+// is what os.MkdirTemp, which used to create it, always used.
+const workSpaceNamePerm = 0o700
+
 // createdCwdDepth is how many path components below a Job's Cwd the working
 // directory wr creates for it sits: the <AppName>_cwd base, then the
-// mkHashedLevels-1 hashed dirs, then the MkdirTemp leaf, then cwd itself.
+// mkHashedLevels-1 hashed dirs, then the per-run workspace dir, then cwd itself.
 // TestCreatedCwdDepthMatchesMkHashedDir pins it against what mkHashedDir
 // produces, because a wrong value here would quietly stop every cleanup rather
 // than fail loudly.
@@ -720,18 +730,68 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 		return cwd, tmpDir, err
 	}
 
-	// if tohash is a job key then we expect that only 1 of that job is
-	// running at any one time per jobqueue, but there could be multiple users
-	// running the same cmd, or this user could be running the same command in
-	// multiple queues, so we must still create a unique dir at the leaf of our
-	// hashed dir structure, to avoid any conflict of multiple processes using
-	// the same working directory
-	dir, err = os.MkdirTemp(dir, leaf)
+	dir, err = mkWorkSpace(dir, leaf)
 	if err != nil {
 		return cwd, tmpDir, err
 	}
 
 	return mkCwdAndTmp(dir)
+}
+
+// workSpaceMintedHook, when set, is called with each workspace path
+// tryMkWorkSpace has minted, before it attempts to create it, so that a test
+// can create that exact directory itself and make the create fail with EEXIST.
+// A v4 UUID cannot be made to collide, so this is the only seam onto the
+// name-already-taken retry. It is nil in production.
+//
+// It is given the path, rather than merely called, because the name a test has
+// to act on is the one just drawn and so is different every run.
+var workSpaceMintedHook func(path string) //nolint:gochecknoglobals // the only seam onto a name we cannot make collide
+
+// mkWorkSpace creates a uniquely named directory inside dir, prefixed with
+// leaf, and returns it. It is where os.MkdirTemp, which used to name this dir,
+// was called, and it keeps that call's contract: a name that turns out to be
+// taken is not the caller's problem, being answered by another name, within a
+// budget.
+//
+// Where leaf comes from a job key we expect that only 1 of that job is running
+// at any one time per jobqueue, but there could be multiple users running the
+// same cmd, or this user could be running the same command in multiple queues,
+// so we must still create a unique dir at the leaf of our hashed dir structure,
+// to avoid any conflict of multiple processes using the same working directory.
+//
+// That uniqueness wants to hold FOR ALL TIME, not just at the instant the dir
+// is made. os.MkdirTemp drew a fresh 32-bit suffix per call and tried again
+// while the name existed, so two runs alive at once never shared one. But once
+// a run's dir had been removed, a later run of the same key could draw the same
+// suffix again - 1 in 2^32 - and a finished run's stored ActualCwd then names a
+// LIVE run's workspace byte for byte, so the finished run's cleanup sweeps
+// through the live run's mounts and caches.
+//
+// A v4 UUID carries 122 random bits instead of 32, which does not make a repeat
+// impossible, only small enough to disregard. This is hardening of a narrow
+// window, not a guard: a repeat of a name that is still on disk is caught by
+// the create failing, but a repeat of the name of a workspace that has since
+// been REMOVED - which is the case that loses data - leaves nothing to detect,
+// and nothing detects it.
+//
+// What bounds the damage then is sweptDir's mount-boundary guard and the keep
+// set, NOT relIsJobCreatedCwd: a stale ActualCwd naming a live workspace of the
+// same key has exactly the shape that function accepts, which is the whole
+// reason a repeated name loses data.
+func mkWorkSpace(dir, leaf string) (string, error) {
+	takenTries := 0
+
+	for {
+		workSpace, retry, err := tryMkWorkSpace(dir, leaf, &takenTries)
+		if err != nil {
+			return "", err
+		}
+
+		if !retry {
+			return workSpace, nil
+		}
+	}
 }
 
 // holdFilePerm is the permission used for the hold file dropped by mkHeldDir.
@@ -826,6 +886,45 @@ func tryMkHeldDir(dir, holdFile string, mkdirTries, holdTries *int) (retry bool,
 	}
 
 	return false, f.Close()
+}
+
+// tryMkWorkSpace makes one attempt to mint a workspace name inside dir and
+// create it. It returns retry=true if mkWorkSpace should loop again, or an
+// error if we've run out of retries. retry=false with a nil error means
+// success, and workSpace is then the dir that was made.
+//
+// Each attempt draws its OWN UUID: the only reason to try again is that the
+// name is taken, and the same name will be just as taken next time. Only
+// os.IsExist is retried, because every other reason the create can fail - a
+// full filesystem, an exceeded quota, a read-only remount, a hashed level that
+// has gone - would fail identically for any other name, so trying again only
+// delays burying the job with it. takenTries is never reset, because nothing
+// between two attempts makes progress; resetting it inside the loop would make
+// a name that somehow always exists loop for ever, which is the livelock #569
+// fixed in tryMkHeldDir.
+func tryMkWorkSpace(dir, leaf string, takenTries *int) (workSpace string, retry bool, err error) {
+	u, err := uuid.NewV4()
+	if err != nil {
+		return "", false, err
+	}
+
+	workSpace = filepath.Join(dir, leaf+workSpaceNameSep+u.String())
+
+	if workSpaceMintedHook != nil {
+		workSpaceMintedHook(workSpace)
+	}
+
+	if err = mkdirManaged(workSpace, workSpaceNamePerm); err != nil {
+		if !os.IsExist(err) {
+			return "", false, err
+		}
+
+		retry, err = retryOrFail(takenTries, err)
+
+		return "", retry, err
+	}
+
+	return workSpace, false, nil
 }
 
 // retryOrFail increments *tries and reports whether the caller should retry
@@ -1316,8 +1415,11 @@ func componentsAreRealDirs(absDir, absBase string) ([]os.FileInfo, bool) {
 //
 // It is built by asking calculateHashedDir - the function that laid the path
 // down - what it would produce, so recogniser and builder cannot drift apart.
-// The whole shape it accepts is <something>_cwd/k0/k1/k2/<k3..><digits>/cwd,
-// where k0-k2 are the first three characters of the key and k3.. is the rest.
+// The whole shape it accepts is <something>_cwd/k0/k1/k2/<k3..>-<uuid>/cwd,
+// where k0-k2 are the first three characters of the key, k3.. is the rest, and
+// <uuid> is the v4 UUID mkHashedDir minted for the run. A workspace a
+// pre-upgrade wr created has a digits-only suffix in place of the UUID and is
+// accepted too; see isJobCreatedWorkSpaceName on both shapes.
 //
 // The base component is checked by SUFFIX and never by the name this process
 // would build, for the reason createdCwdBaseSuffix gives: AppName differs between
@@ -1330,8 +1432,8 @@ func componentsAreRealDirs(absDir, absBase string) ([]os.FileInfo, bool) {
 //
 // Only three characters of the key are cheap to grind out, but what they buy is
 // bounded by the rest: the ground path still has to exist, below a *_cwd base
-// inside the Job's own Cwd, with a leaf called cwd under the unique dir
-// os.MkdirTemp named for the REST of that same key.
+// inside the Job's own Cwd, with a leaf called cwd under a per-run dir wr named
+// for the REST of that same key.
 func relIsJobCreatedCwd(rel, key string) bool {
 	names := strings.Split(rel, string(filepath.Separator))
 
@@ -1354,18 +1456,73 @@ func relIsJobCreatedCwd(rel, key string) bool {
 		return false
 	}
 
-	return isMkTempName(names[createdCwdDepth-2], leaf)
+	return isJobCreatedWorkSpaceName(names[createdCwdDepth-2], leaf)
 }
 
-// isMkTempName tells you if name is what os.MkdirTemp creates for the given
-// prefix: the prefix followed by a non-empty run of digits.
-func isMkTempName(name, prefix string) bool {
-	suffix, ok := strings.CutPrefix(name, prefix)
-	if !ok || suffix == "" {
+// legacyWorkSpaceNameMaxDigits bounds the run of digits a workspace named by an
+// older wr can end in. os.MkdirTemp, which named those, appends the decimal form
+// of an unsigned integer, and the widest formatting it is known to have used is
+// a uint32 - on go1.26.3 it is
+// strconv.FormatUint(uint64(uint32(runtime_rand())), 10), os/tempfile.go - which
+// is at most 10 digits. The bound is the 20 digits of a uint64 rather than that
+// observed 10 because only the releases actually read are known: a release whose
+// formatting was not checked must not be able to strand a pre-upgrade workspace
+// by having left a name this refuses.
+const legacyWorkSpaceNameMaxDigits = 20
+
+// isJobCreatedWorkSpaceName tells you if name is a per-run workspace directory
+// wr named for the given prefix, which is the tail of a Job's key. Two shapes
+// are accepted:
+//
+//   - <prefix>-<uuid>, the uuid being a v4 UUID in canonical lowercase form.
+//     This is what mkHashedDir mints now, one per run, so that a name a run is
+//     given is never given to another run.
+//   - <prefix><digits>, at most legacyWorkSpaceNameMaxDigits of them, which is
+//     what os.MkdirTemp produced when it named these. This shape is still
+//     accepted because a workspace an older wr created has a digits-only name
+//     and will still be on disk across an upgrade: refusing it would leave every
+//     such workspace unrecognised and so uncleanable for ever, stranding the
+//     real job output inside it.
+//
+// The digit bound is the only tightening of the legacy shape. It rejects an
+// arbitrarily long run of digits, which the check here used to accept and which
+// os.MkdirTemp could never have produced. It goes no further - no minimum
+// length, no ceiling on the value - because either would strand a measurable
+// fraction of the pre-upgrade workspaces this arm exists to let cleanup reach.
+//
+// Neither shape stops a Job's own Cmd fabricating a SIBLING directory of the
+// accepted shape, and it is not meant to: a fabricated directory only causes
+// loss if a STALE run's stored ActualCwd happens to name it, and wr only ever
+// stores a name it minted itself.
+func isJobCreatedWorkSpaceName(name, prefix string) bool {
+	rest, ok := strings.CutPrefix(name, prefix)
+	if !ok || rest == "" {
 		return false
 	}
 
-	return strings.IndexFunc(suffix, func(r rune) bool { return r < '0' || r > '9' }) < 0
+	if minted, isMinted := strings.CutPrefix(rest, workSpaceNameSep); isMinted {
+		return isCanonicalV4UUID(minted)
+	}
+
+	if len(rest) > legacyWorkSpaceNameMaxDigits {
+		return false
+	}
+
+	return strings.IndexFunc(rest, func(r rune) bool { return r < '0' || r > '9' }) < 0
+}
+
+// isCanonicalV4UUID tells you if s is a v4 UUID spelled exactly the way
+// uuid.UUID.String() spells one: 36 characters, lowercase hex, hyphens at the
+// usual offsets. Round-tripping through the library is what pins that spelling,
+// since uuid.FromString also accepts braced, urn and hyphenless forms in either
+// case, none of which mkHashedDir can produce.
+func isCanonicalV4UUID(s string) bool {
+	u, err := uuid.FromString(s)
+	if err != nil {
+		return false
+	}
+
+	return u.String() == s && u.Version() == uuid.V4 && u.Variant() == uuid.VariantRFC4122
 }
 
 // relIsBelow tells you if a relative path produced by filepath.Rel describes

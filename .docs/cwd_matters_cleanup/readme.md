@@ -91,7 +91,7 @@ The resolution, in order:
    `ActualCwd`; refuses either directory unless it is **already absolute**; and
    calls `createdCwdRel`, which requires the reported directory to be strictly
    inside `Cwd` and to be the path `mkHashedDir` builds **from this Job's own
-   key** — `<something>_cwd/k0/k1/k2/<key[3:]><digits>/cwd`, checked by asking
+   key** — `<something>_cwd/k0/k1/k2/<key[3:]>-<uuid>/cwd`, checked by asking
    `calculateHashedDir` what it would produce, so recogniser and builder cannot
    drift.
 3. `prove()` opens `Cwd` as an `os.Root`, proves the workspace (the parent of
@@ -204,8 +204,8 @@ Every job of a `Cwd` has the created shape at the created depth below the same
   whose leaf is still `cwd` — which a Job's own Cmd can make inside the
   directory wr gave it — satisfies everything else, and would have that
   directory swept as a workspace; every index in the predicate is also fixed.
-  `isMkTempName`'s digit check is load-bearing for the same reason: without it
-  `<key[3:]>-mydata/cwd` is accepted (LAYER 60).
+  `isJobCreatedWorkSpaceName`'s suffix check is load-bearing for the same
+  reason: without it `<key[3:]>-mydata/cwd` is accepted (LAYER 60).
 
 **`wholeWorkSpace` exists even though the case looks unreachable.** A mount
 point at or above the workspace makes everything wr created the inside of a live
@@ -314,7 +314,7 @@ Three smaller decisions, each with a measured reason:
 Each with what must be true for it to bite.
 
 **Shape and origin, not proof of provenance.** A reported `ActualCwd` must be
-`Cwd/<name ending _cwd>/k0/k1/k2/<key[3:]><digits>/cwd` where the key is the
+`Cwd/<name ending _cwd>/k0/k1/k2/<key[3:]>-<uuid>/cwd` where the key is the
 reporting Job's OWN. `k0`-`k2` are three hex characters, grindable in about 4096
 tries (or one in 4096 by chance), but the component carrying the other 29 has to
 be named for the rest of that same key. **Bites when** a user directory of
@@ -322,14 +322,87 @@ exactly that shape exists inside the Job's `Cwd`. For scale: when the check was
 depth-and-name only, a user tree at that depth lost 13 of 13 files and its
 parent was unlinked with `err == nil`.
 
-**The same-key residual is open.** `os.MkdirTemp`'s digits are not pinned and
-cannot be from a stored path alone, so a Job may name any workspace built from
-its own key, including one another LIVE instance of that Job is using. Probed on
-the committed tree: `cleanup err=<nil> out.txt=gone cwd=gone tmp=gone`,
-`run err=<nil> ranInOther=true`. **Bites when** two live instances of one Job
-share a `Cwd`: two managers, two queues, or two users running the same Cmd
-there. Closing it means recording the workspace path somewhere cleanup can
-trust.
+**The same-key residual is narrowed.** `mkHashedDir` no longer asks
+`os.MkdirTemp` to name the workspace. The leaf is `<key[3:]>-<uuid>`, the UUID a
+v4 minted per RUN from `crypto/rand` (`uuid.NewV4`). `os.MkdirTemp` drew a fresh 32-bit suffix on
+every call and retried while the name existed, so two runs alive at once never
+shared one - measured at 0 reuses in 20000 create/remove/recreate rounds on
+go1.26.3. The window is narrower than that: once a run's leaf has been removed,
+a later run of the same key can draw the same suffix again, 1 in 2^32, and a
+finished run's stored `ActualCwd` then names a live run's workspace, which is
+the route from the key blindness below to a deletion.
+
+A v4 UUID carries 122 random bits rather than 32. **This is hardening, not a
+guard.** It does not make a repeat impossible, only small enough to disregard,
+and nothing detects one if it happens - the sweep's own containment
+(`relIsJobCreatedCwd`, `sweptDir`) is what bounds the damage. It also does not
+change the loss a repeat would cause; see the residual below.
+
+That route was open, and was measured open. `MountConfigs.Key()` normalises an
+empty `Mount` to `"mnt"` while `resolveMountPoint` gives it the working
+DIRECTORY, and `CacheBase`, `CacheDir`, `Cache` and `Write` reach the key not at
+all, so two runs of ONE key can have their live mounts and un-uploaded output in
+different places, and the keep set a finished run computes from its own
+`MountConfigs` does not name what a live run of that key has on disk. Measured
+on the branch point, four such key-blind pairs each lost the live run's data to
+the stale run's cleanup with `cleanup err=<nil>` and `removeTmpDir err=<nil>`:
+`stat .../REMOTE_DATA: no such file or directory`, for a writable mount's
+un-uploaded output in three of them and in the first for the backing directory
+of a real go-fuse loopback mount — the user's remote objects, unlinked THROUGH
+the live mount, because `os.Root` bounds a deletion with `RESOLVE_BENEATH`,
+which does not imply `RESOLVE_NO_XDEV`.
+
+**What is left of it.** Four things, and none of them is nothing.
+
+- The collision probability is 2^-122, not zero. No test can measure the
+  improvement: `os.MkdirTemp` already drew a fresh 32-bit suffix on every call
+  — 0 reuses in 20000 create/remove/recreate rounds on go1.26.3 — so
+  `TestWorkSpaceNameIsMintedPerRun` passes on the pre-fix code too. What it
+  holds is that the mint is fresh per RUN; the guarantee itself is structural,
+  in the name space rather than in a sample. The sweep guards above stay the
+  defence in depth for anything that does collide.
+- A Job's own `Cmd` can still fabricate a SIBLING directory of the accepted
+  shape, since it can read the name wr gave it. **Bites when** a STALE run's
+  stored `ActualCwd` names the fabrication — and wr only ever stores a name it
+  minted itself.
+- A workspace made by a pre-upgrade wr still has a digits-only name, and
+  `isJobCreatedWorkSpaceName` still accepts that shape, because refusing it
+  would leave every such workspace unrecognised and so uncleanable for ever,
+  stranding the real job output inside it. **Bites when** two such workspaces of
+  one key exist, which retain the old 2^-32 exposure between them until each has
+  been swept once.
+- The key blindness above is unchanged, and so is what a collision costs; what
+  the mint removes is wr's ability to hand out a repeated name, not the
+  consequences of one. `Job.Key()` was deliberately not touched, being the
+  persisted BoltDB key. **Bites when** a path collision arises anyway — the
+  2^-122 mint, or two pre-upgrade digits-named workspaces of one key. The four
+  deliberately-red rows of the probe round that found this bug
+  (`probeKeyBlindRows` / `TestProbeMountConfigsOneKeyCovers`, on
+  `origin/probe-round8-cases`) force that collision by hand, removing a
+  workspace and recreating the same path through `mkCwdAndTmp` instead of
+  `mkHashedDir`, so the shape they arrange is one production can no longer
+  produce. Dropped onto the fixed tree, row 1 now PASSES, 19 assertions and
+  every survival green: its live remote sits behind a real go-fuse loopback
+  mount raised at the workspace's `cwd`, and #577's mount-boundary guard
+  (`sweptDir.sweepable`'s device check) stops the sweep crossing into the live
+  mount, so the user's remote objects survive the forced collision. Rows 2, 3
+  and 4 still FAIL, on a writable mount's un-uploaded output waiting for
+  `Unmount` to upload it: `REMOTE_DATA` deleted under `s3.example.com/bucket`
+  in the workspace, under `tmp` in the Job's TMPDIR (by the separate
+  `removeTmpDir` deletion) and under muxfys's own default `.muxfys_cache123`,
+  each with `cleanErr` and `tmpErr` nil. Content awaiting upload is a plain
+  directory, not a mount, so no boundary guard sees it, and the keep set the
+  stale run computes from its own `MountConfigs` does not name it.
+
+**A per-run identity file was rejected.** The alternative built first was to
+write the minted UUID into each workspace as a `.run_token` file, carry it
+alongside `ActualCwd`, and have `prove()` refuse a workspace whose record the
+reporting run could not be shown to have written. It measured as closing the
+same four pairs, and it is not what shipped: wr's benefit is that it does not
+scatter small state files through the user's filesystem, and that put one in
+every working directory wr makes. It also DETECTS the collision where naming the
+workspace uniquely PREVENTS it, and the detection is only as good as the
+record's survival of every sweep, its own removal included. Do not reinvent it.
 
 **The `exec.Cmd` window is closed on Linux only.** `os/exec` has no `DirFD` and
 nothing portable replaces `/proc/self/fd`. With the descriptor prefix pointed at
@@ -447,18 +520,18 @@ mutations are recorded across the eight rounds that ran them (27, 23, 24, 26,
 **Guards found load-bearing but untested — what the mutations bought.** In round
 5, two guards had NO coverage at all: `createdWorkSpace`'s `isRealDirBelow` and
 `provenActualCwd`'s must-exist check. The whole suite stayed green while a
-user's directory was deleted. Later rounds added tests for
-`relIsCreatedCwd`'s leaf-name check; `HasSuffix` versus `Contains` on the base
-component; the depth check and the hashed-dir comparison, both masked by the
-other conditions of the same predicate; `IsDir` for a working directory that had
-become a regular FILE, masked in all three consumers; `execDir`'s nothing-held
-check, without which the no-`/proc` warning fires for every ordinary Job;
-`dirIsAtOrAbove` resolving the second of two spellings; and `isMkTempName`'s
-digit check, whose mutation survived the entire suite. Three more were pinned
-after the last recorded round: `setActualCwd`'s refusal to write `ActualCwd` on
-a `CwdMatters` Job, `wr status`'s display for a job carrying the v0.37.0|1
-poison, and `openLeaf`'s refusal to open a workspace that reappeared after the
-proof. Nothing failed when any of the three was removed.
+user's directory was deleted. Later rounds added tests for `relIsCreatedCwd`'s
+leaf-name check; `HasSuffix` versus `Contains` on the base component; the depth
+check and the hashed-dir comparison, both masked by the other conditions of the
+same predicate; `IsDir` for a working directory that had become a regular FILE,
+masked in all three consumers; `execDir`'s nothing-held check, without which the
+no-`/proc` warning fires for every ordinary Job; `dirIsAtOrAbove` resolving the
+second of two spellings; and the unique dir's suffix check in
+`isJobCreatedWorkSpaceName`, whose mutation survived the entire suite. Three
+more were pinned after the last recorded round: `setActualCwd`'s refusal to
+write `ActualCwd` on a `CwdMatters` Job, `wr status`'s display for a job
+carrying the v0.37.0|1 poison, and `openLeaf`'s refusal to open a workspace that
+reappeared after the proof. Nothing failed when any of the three was removed.
 
 **Fixtures had to be rebuilt.** 17 workspace fixtures were 2 to 3 directories
 deep, i.e. shapes wr cannot produce; they now go through helpers that build the
