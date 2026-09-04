@@ -591,7 +591,7 @@ func soGoneWithin(path string) {
 	deadline := time.Now().Add(lostRunSettleTime)
 
 	for time.Now().Before(deadline) {
-		_, err := os.Stat(path) //nolint:gosec // test-controlled path under a temp dir
+		_, err := os.Stat(filepath.Clean(path))
 		if os.IsNotExist(err) {
 			return
 		}
