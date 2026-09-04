@@ -491,7 +491,7 @@ func TestMkHashedDirNameTaken(t *testing.T) {
 			}
 
 			taken = path
-			hookErr = os.MkdirAll(path, workSpaceNamePerm)
+			hookErr = os.MkdirAll(path, workSpaceNamePerm) //nolint:gosec // test-controlled path under a temp dir
 		}
 
 		Reset(func() { workSpaceMintedHook = nil })
@@ -541,7 +541,8 @@ func TestMkHashedDirNameTaken(t *testing.T) {
 				return
 			}
 
-			if err := os.MkdirAll(path, workSpaceNamePerm); err != nil && hookErr == nil {
+			err := os.MkdirAll(path, workSpaceNamePerm) //nolint:gosec // test-controlled path under a temp dir
+			if err != nil && hookErr == nil {
 				hookErr = err
 			}
 		}
@@ -571,7 +572,8 @@ func TestMkHashedDirNameTaken(t *testing.T) {
 			calls++
 			// removing the hashed dir the workspace was to go in makes the create
 			// fail with ENOENT rather than EEXIST.
-			if err := os.RemoveAll(filepath.Dir(path)); err != nil && hookErr == nil {
+			err := os.RemoveAll(filepath.Dir(path)) //nolint:gosec // test-controlled path under a temp dir
+			if err != nil && hookErr == nil {
 				hookErr = err
 			}
 		}
