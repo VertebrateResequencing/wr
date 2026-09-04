@@ -194,7 +194,7 @@ func benchDepthJob(tb testing.TB, cwd string, i, depth, nFiles int) *Job {
 
 	job := &Job{Cwd: cwd, Cmd: fmt.Sprintf("echo bench.depth.%d", i)}
 
-	actualCwd, _, err := mkHashedDir(cwd, job.Key())
+	actualCwd, _, wsToken, err := mkHashedDir(cwd, job.Key())
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -216,6 +216,7 @@ func benchDepthJob(tb testing.TB, cwd string, i, depth, nFiles int) *Job {
 	}
 
 	job.ActualCwd = actualCwd
+	job.ActualCwdToken = wsToken
 
 	return job
 }

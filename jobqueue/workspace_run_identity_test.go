@@ -33,7 +33,6 @@ package jobqueue
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -280,26 +279,6 @@ func setUpKeyBlindScene(t *testing.T, row keyBlindRow) (keyBlindScene, bool) {
 	}
 
 	return keyBlindScene{live: live, stale: stale, survivors: append(survivors, precious, cwd)}, true
-}
-
-// canMountFuse reports whether this host lets an unprivileged process raise a
-// FUSE mount, which a row with a mount needs and a host with no /dev/fuse or no
-// setuid fusermount cannot give it.
-func canMountFuse() bool {
-	dev, err := os.OpenFile("/dev/fuse", os.O_RDWR, 0)
-	if err != nil {
-		return false
-	}
-
-	defer dev.Close()
-
-	for _, bin := range []string{"fusermount3", "fusermount"} {
-		if _, err = exec.LookPath(bin); err == nil {
-			return true
-		}
-	}
-
-	return false
 }
 
 // reuseWorkSpaceName arranges the name reuse os.MkdirTemp really allows: stale's
