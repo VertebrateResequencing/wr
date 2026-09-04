@@ -821,7 +821,7 @@ const holdFilePerm = 0o600
 // handles on it are arranged.
 //
 // Nothing on the ordinary path waits: this is only reached after a failed try,
-// and an strace of the success path shows 4 metadata syscalls and no sleep.
+// and a strace of the success path shows 4 metadata syscalls and no sleep.
 //
 // 5ms is a deliberately conservative round number, not a tuned or benchmarked
 // one. It is comfortably longer than the window being waited out - the measured
