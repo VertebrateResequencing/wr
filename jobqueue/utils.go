@@ -721,16 +721,7 @@ func calculateHashedDir(baseDir, tohash string) (string, string) {
 func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 	dir, leaf := calculateHashedDir(filepath.Join(baseDir, AppName+createdCwdBaseSuffix), tohash)
 
-	holdFile := filepath.Join(dir, ".hold")
-	defer func() {
-		err = removeHoldFile(holdFile, err)
-	}()
-
-	if err = mkHeldDir(dir, holdFile); err != nil {
-		return cwd, tmpDir, err
-	}
-
-	dir, err = mkWorkSpace(dir, leaf)
+	dir, err = mkUniqueDir(dir, leaf)
 	if err != nil {
 		return cwd, tmpDir, err
 	}
@@ -739,7 +730,7 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 }
 
 // workSpaceMintedHook, when set, is called with each workspace path
-// tryMkWorkSpace has minted, before it attempts to create it, so that a test
+// mkWorkSpace has minted, before it attempts to create it, so that a test
 // can create that exact directory itself and make the create fail with EEXIST.
 // A v4 UUID cannot be made to collide, so this is the only seam onto the
 // name-already-taken retry. It is nil in production.
@@ -779,54 +770,95 @@ var workSpaceMintedHook func(path string) //nolint:gochecknoglobals // the only 
 // set, NOT relIsJobCreatedCwd: a stale ActualCwd naming a live workspace of the
 // same key has exactly the shape that function accepts, which is the whole
 // reason a repeated name loses data.
+//
+// A name that turns out to be taken is answered one level up, by mkUniqueDir,
+// which remakes the hashed dir and asks for another name. This function briefly
+// had a retry budget of its own for that, and it is gone: mkUniqueDir's loop
+// covers the same case, the only difference being one no-op MkdirAll and one
+// pause paid by an event of probability 2^-122 - and no test could tell the two
+// apart, because the outer loop rescues every case the inner budget covered. A
+// guard nothing can observe is worse than no guard, so it is the outer one that
+// stays.
 func mkWorkSpace(dir, leaf string) (string, error) {
-	takenTries := 0
-
-	for {
-		workSpace, retry, err := tryMkWorkSpace(dir, leaf, &takenTries)
-		if err != nil {
-			return "", err
-		}
-
-		if !retry {
-			return workSpace, nil
-		}
+	u, err := uuid.NewV4()
+	if err != nil {
+		return "", err
 	}
+
+	workSpace := filepath.Join(dir, leaf+workSpaceNameSep+u.String())
+
+	if workSpaceMintedHook != nil {
+		workSpaceMintedHook(workSpace)
+	}
+
+	if err = mkdirManaged(workSpace, workSpaceNamePerm); err != nil {
+		return "", err
+	}
+
+	return workSpace, nil
 }
 
 // holdFilePerm is the permission used for the hold file dropped by mkHeldDir.
 const holdFilePerm = 0o600
 
-// removeHoldFile removes the hold file created by mkHeldDir, folding any removal
-// error into the given prior error.
-func removeHoldFile(holdFile string, prior error) error {
-	errr := removeManaged(holdFile)
-	if errr == nil || os.IsNotExist(errr) {
-		return prior
-	}
+// mkHashedDirRetryPause is how long mkUniqueDir waits before trying again. It is
+// not a retry budget - mkHashedDirMaxTries is still that - but the gap between
+// two tries, and without it the tries buy nothing.
+//
+// A hashed dir being removed by a concurrent rmEmptyDirsIn passes through a state
+// in which its name still resolves - a stat of it succeeds, reporting a link
+// count of 0 - while the kernel refuses every create inside it with ENOENT,
+// because the directory it names is already dead. os.MkdirAll believes that stat
+// and returns success without remaking anything, so a try made inside that state
+// cannot get past the create, and an immediate next try sees the same state and
+// fails identically: measured, four tries in a row inside 60us all failed that
+// way, and the whole budget went with them. Waiting is what lets the removal
+// finish, after which the name is properly missing and MkdirAll really does
+// remake the dir.
+//
+// The state needs the removal to be concurrent: removing a hashed dir and
+// immediately looking at it, in one goroutine, never produces it, however the
+// handles on it are arranged.
+//
+// Nothing on the ordinary path waits: this is only reached after a failed try,
+// and an strace of the success path shows 4 metadata syscalls and no sleep.
+//
+// 5ms is a deliberately conservative round number, not a tuned or benchmarked
+// one. It is comfortably longer than the window being waited out - the measured
+// failures were four tries inside 60us all hitting the same state - while the
+// total wait it can add stays bounded: leafTries is monotone with a budget of
+// 3, so at most 4 leaf failures, each preceded by a successful MkdirAll, and at
+// most 3 MkdirAll retries can sit between two leaf failures. That is at most 16
+// loop iterations and 15 sleeps, so 75ms of waiting at worst before the error
+// is returned, which does not visibly delay a job's start.
+const mkHashedDirRetryPause = 5 * time.Millisecond
 
-	if prior == nil {
-		return errr
-	}
-
-	return fmt.Errorf("%w (and removing the hold file failed: %w)", prior, errr)
-}
-
-// mkHeldDir creates dir (retrying a few times in case a concurrent rmEmptyDirsIn
-// conflicts with us) and drops a hold file in it so rmEmptyDirsIn will not
-// immediately remove it.
-func mkHeldDir(dir, holdFile string) error {
-	mkdirTries, holdTries := 0, 0
+// mkUniqueDir creates dir and a uniquely named directory inside it, prefixed
+// with leaf, and returns that unique dir.
+//
+// The unique dir inside it is minted by mkWorkSpace, which is where the naming
+// and its uniqueness are explained.
+//
+// Both steps are retried a few times, because a concurrent rmEmptyDirsIn walking
+// up from another Job's workspace removes the empty dirs this one has just made.
+// The unique dir is what ends that race for good rather than merely surviving
+// it: once it exists dir is not empty, so no later sweep can take dir, and no
+// sweep ever names the unique dir itself - a sweep walks up from its OWN
+// workspace, which is a sibling of this one, never an ancestor.
+func mkUniqueDir(dir, leaf string) (string, error) {
+	mkdirTries, leafTries := 0, 0
 
 	for {
-		retry, err := tryMkHeldDir(dir, holdFile, &mkdirTries, &holdTries)
+		unique, retry, err := tryMkUniqueDir(dir, leaf, &mkdirTries, &leafTries)
 		if err != nil {
-			return err
+			return "", err
 		}
 
 		if !retry {
-			return nil
+			return unique, nil
 		}
+
+		time.Sleep(mkHashedDirRetryPause)
 	}
 }
 
@@ -855,76 +887,39 @@ func mkdirAllManaged(path string, perm os.FileMode) error {
 	return os.MkdirAll(filepath.Clean(path), perm)
 }
 
-// openFileManaged is os.OpenFile for a jobqueue-managed path.
-func openFileManaged(path string, flag int, perm os.FileMode) (*os.File, error) {
-	return os.OpenFile(filepath.Clean(path), flag, perm)
-}
-
-// tryMkHeldDir makes one attempt to create dir and its hold file. It returns
-// retry=true if mkHeldDir should loop again, or an error if we've run out of
-// retries. retry=false with a nil error means success.
+// tryMkUniqueDir makes one attempt to create dir and a unique dir inside it. It
+// returns retry=true if mkUniqueDir should loop again, or an error if we've run
+// out of retries. retry=false with a nil error means success, and unique is then
+// the dir that was made.
 //
 // The two steps get a retry budget each. mkdirTries is reset by a successful
 // MkdirAll, because making the directories is real progress and a later
-// conflict with rmEmptyDirsIn deserves a fresh budget; holdTries is never
-// reset, because nothing after it makes progress, so a hold file that cannot be
+// conflict with rmEmptyDirsIn deserves a fresh budget; leafTries is never reset,
+// because nothing after it makes progress, so a unique dir that cannot be
 // created (a full filesystem, an exceeded quota, a read-only remount, an
-// unwritable hashed level) runs the budget down and fails instead of looping
-// for ever. Resetting a single shared counter here would make every hold-file
-// failure permanently retryable, since the MkdirAll of every later attempt
-// succeeds once the hashed levels exist.
-func tryMkHeldDir(dir, holdFile string, mkdirTries, holdTries *int) (retry bool, err error) {
+// unwritable hashed level) runs the budget down and fails instead of looping for
+// ever. A name that is merely already TAKEN is not one of those: mkWorkSpace
+// answers that with another name inside its own budget, so it never reaches
+// leafTries. Resetting a single shared counter here would make every such failure
+// permanently retryable, since the MkdirAll of every later attempt succeeds once
+// the hashed levels exist.
+func tryMkUniqueDir(dir, leaf string, mkdirTries, leafTries *int) (unique string, retry bool, err error) {
 	if err = mkdirAllManaged(dir, os.ModePerm); err != nil {
-		return retryOrFail(mkdirTries, err)
-	}
-
-	*mkdirTries = 0
-
-	f, err := openFileManaged(holdFile, os.O_RDONLY|os.O_CREATE, holdFilePerm)
-	if err != nil {
-		return retryOrFail(holdTries, err)
-	}
-
-	return false, f.Close()
-}
-
-// tryMkWorkSpace makes one attempt to mint a workspace name inside dir and
-// create it. It returns retry=true if mkWorkSpace should loop again, or an
-// error if we've run out of retries. retry=false with a nil error means
-// success, and workSpace is then the dir that was made.
-//
-// Each attempt draws its OWN UUID: the only reason to try again is that the
-// name is taken, and the same name will be just as taken next time. Only
-// os.IsExist is retried, because every other reason the create can fail - a
-// full filesystem, an exceeded quota, a read-only remount, a hashed level that
-// has gone - would fail identically for any other name, so trying again only
-// delays burying the job with it. takenTries is never reset, because nothing
-// between two attempts makes progress; resetting it inside the loop would make
-// a name that somehow always exists loop for ever, which is the livelock #569
-// fixed in tryMkHeldDir.
-func tryMkWorkSpace(dir, leaf string, takenTries *int) (workSpace string, retry bool, err error) {
-	u, err := uuid.NewV4()
-	if err != nil {
-		return "", false, err
-	}
-
-	workSpace = filepath.Join(dir, leaf+workSpaceNameSep+u.String())
-
-	if workSpaceMintedHook != nil {
-		workSpaceMintedHook(workSpace)
-	}
-
-	if err = mkdirManaged(workSpace, workSpaceNamePerm); err != nil {
-		if !os.IsExist(err) {
-			return "", false, err
-		}
-
-		retry, err = retryOrFail(takenTries, err)
+		retry, err = retryOrFail(mkdirTries, err)
 
 		return "", retry, err
 	}
 
-	return workSpace, false, nil
+	*mkdirTries = 0
+
+	unique, err = mkWorkSpace(dir, leaf)
+	if err != nil {
+		retry, err = retryOrFail(leafTries, err)
+
+		return "", retry, err
+	}
+
+	return unique, false, nil
 }
 
 // retryOrFail increments *tries and reports whether the caller should retry
