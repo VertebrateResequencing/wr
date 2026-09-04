@@ -164,6 +164,8 @@ func BenchmarkJobCleanupDepth8(b *testing.B) { benchJobCleanupDepth(b, 8, 200) }
 // buried depth directories below the job's working directory, with the setup
 // excluded from the timer as in BenchmarkJobCleanup.
 func benchJobCleanupDepth(b *testing.B, depth, nFiles int) {
+	b.Helper()
+
 	cwd := b.TempDir()
 	behaviour := &Behaviour{When: OnExit, Do: Cleanup}
 
