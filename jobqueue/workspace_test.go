@@ -305,10 +305,14 @@ func TestJobTmpDirRemovalCrossesNoMountBoundary(t *testing.T) {
 // so a hand-made fixture of merely the right shape does not reach the same
 // guards.
 func realWorkSpace(job *Job) (actualCwd, workSpace, tmpDir string) {
-	actualCwd, tmpDir, err := mkHashedDir(job.Cwd, job.Key())
+	actualCwd, tmpDir, wsToken, err := mkHashedDir(job.Cwd, job.Key())
 	So(err, ShouldBeNil)
 
+	// the token is reported with the path because production reports the pair:
+	// mkCwdAndTmp records the run's identity inside the workspace, and cleanup
+	// refuses a workspace whose record it cannot be shown to have written.
 	job.ActualCwd = actualCwd
+	job.ActualCwdToken = wsToken
 
 	return actualCwd, filepath.Dir(actualCwd), tmpDir
 }
@@ -336,7 +340,7 @@ func TestRelIsJobCreatedCwd(t *testing.T) {
 		cwd := t.TempDir()
 		job := &Job{Cwd: cwd, Cmd: "echo created"}
 
-		actualCwd, _, err := mkHashedDir(cwd, job.Key())
+		actualCwd, _, _, err := mkHashedDir(cwd, job.Key())
 		So(err, ShouldBeNil)
 
 		rel, err := filepath.Rel(cwd, actualCwd)

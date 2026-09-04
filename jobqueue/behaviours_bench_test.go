@@ -82,7 +82,7 @@ func benchCleanupJob(tb testing.TB, cwd string, i int) *Job {
 	// every field feeding it has to be set before the key is taken.
 	job := &Job{Cwd: cwd, Cmd: fmt.Sprintf("echo bench.cleanup.%d", i)}
 
-	actualCwd, tmpDir, err := mkHashedDir(cwd, job.Key())
+	actualCwd, tmpDir, wsToken, err := mkHashedDir(cwd, job.Key())
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -101,6 +101,7 @@ func benchCleanupJob(tb testing.TB, cwd string, i int) *Job {
 	}
 
 	job.ActualCwd = actualCwd
+	job.ActualCwdToken = wsToken
 
 	return job
 }

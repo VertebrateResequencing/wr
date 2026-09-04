@@ -43,6 +43,10 @@ import (
 // testCwdPath is a fake absolute Cwd used by Job tests that don't actually run.
 const testCwdPath = "/cwd"
 
+// testRunIdentity stands in for the identity mkCwdAndTmp records in the workspace
+// it makes, which every report of a working directory carries beside it.
+const testRunIdentity = "run-identity-fixture"
+
 // testTrueCmd is the no-op shell command used as a Job Cmd in tests.
 const testTrueCmd = "true"
 
@@ -289,22 +293,26 @@ func TestJobSetActualCwd(t *testing.T) {
 		job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath, CwdMatters: true}
 
 		Convey("whatever it is told directly", func() {
-			job.setActualCwd(reported)
+			job.setActualCwd(reported, testRunIdentity)
 			So(job.ActualCwd, ShouldBeBlank)
+			So(job.ActualCwdToken, ShouldBeBlank)
 
-			job.setActualCwd(job.Cwd)
+			job.setActualCwd(job.Cwd, testRunIdentity)
 			So(job.ActualCwd, ShouldBeBlank)
+			So(job.ActualCwdToken, ShouldBeBlank)
 		})
 
 		Convey("and whatever a live snapshot reports", func() {
 			// this is the route a report really arrives by: JobEndState.Cwd off
 			// the wire, through applyLiveSnapshot, under the Job's lock, on every
 			// Touch of a running job.
-			applyLiveSnapshot(job, &JobEndState{Cwd: job.Cwd})
+			applyLiveSnapshot(job, &JobEndState{Cwd: job.Cwd, CwdToken: testRunIdentity})
 			So(job.ActualCwd, ShouldBeBlank)
+			So(job.ActualCwdToken, ShouldBeBlank)
 
-			applyLiveSnapshot(job, &JobEndState{Cwd: reported})
+			applyLiveSnapshot(job, &JobEndState{Cwd: reported, CwdToken: testRunIdentity})
 			So(job.ActualCwd, ShouldBeBlank)
+			So(job.ActualCwdToken, ShouldBeBlank)
 		})
 
 		Convey("while a Job wr did create one for records what is reported", func() {
@@ -312,12 +320,17 @@ func TestJobSetActualCwd(t *testing.T) {
 			// recording nothing at all.
 			created := &Job{Cmd: testTrueCmd, Cwd: testCwdPath}
 
-			applyLiveSnapshot(created, &JobEndState{Cwd: reported})
+			applyLiveSnapshot(created, &JobEndState{Cwd: reported, CwdToken: testRunIdentity})
 			So(created.ActualCwd, ShouldEqual, reported)
+
+			// the run identity is stored WITH the path, since a path stored
+			// without one is a path cleanup has to refuse.
+			So(created.ActualCwdToken, ShouldEqual, testRunIdentity)
 
 			Convey("and a report of nowhere leaves the directory it already had", func() {
 				applyLiveSnapshot(created, &JobEndState{})
 				So(created.ActualCwd, ShouldEqual, reported)
+				So(created.ActualCwdToken, ShouldEqual, testRunIdentity)
 			})
 		})
 	})

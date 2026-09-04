@@ -84,9 +84,9 @@ disagree about which directories are wr's.
 
 The resolution, in order:
 
-1. `Job.workSpaceSnapshot()` copies `CwdMatters`, `Cwd`, `ActualCwd`, `Key()`
-   and `MountConfigs` under the Job's read lock, and releases it before any
-   filesystem work.
+1. `Job.workSpaceSnapshot()` copies `CwdMatters`, `Cwd`, `ActualCwd`,
+   `ActualCwdToken`, `Key()` and `MountConfigs` under the Job's read lock, and
+   releases it before any filesystem work.
 2. `paths()` returns "wr created nothing here" for a `CwdMatters` Job or a blank
    `ActualCwd`; refuses either directory unless it is **already absolute**; and
    calls `createdCwdRel`, which requires the reported directory to be strictly
@@ -98,7 +98,9 @@ The resolution, in order:
    the working directory) is a real directory strictly inside it with no symlink
    among the components leading to it, keeping the `FileInfo` it lstat'ed at
    **each** component, then lstats the working directory as a name relative to
-   that root.
+   that root, and finally reads the run record inside the workspace through the
+   same handle (`proveWSToken`), refusing a workspace another RUN recorded
+   itself in.
 4. `keptDirs()` resolves every mount point and cache location once and
    classifies each against the proven dirs: `wholeActualCwd`, `inActualCwd`,
    `workSpaceEntries`, `mountPoints`, `wholeWorkSpace`,
@@ -322,14 +324,117 @@ exactly that shape exists inside the Job's `Cwd`. For scale: when the check was
 depth-and-name only, a user tree at that depth lost 13 of 13 files and its
 parent was unlinked with `err == nil`.
 
-**The same-key residual is open.** `os.MkdirTemp`'s digits are not pinned and
-cannot be from a stored path alone, so a Job may name any workspace built from
-its own key, including one another LIVE instance of that Job is using. Probed on
-the committed tree: `cleanup err=<nil> out.txt=gone cwd=gone tmp=gone`,
-`run err=<nil> ranInOther=true`. **Bites when** two live instances of one Job
-share a `Cwd`: two managers, two queues, or two users running the same Cmd
-there. Closing it means recording the workspace path somewhere cleanup can
-trust.
+The run record below does not close this one, and cannot: a directory of the
+user's has no record in it, and an absent record has to mean "this may be
+mine" or every workspace made before wr recorded runs would leak for ever.
+What the record proves is WHICH RUN made a workspace wr did make, not that wr
+made it.
+
+**The same-key residual is closed for every workspace that still carries the
+record of the run that made it.** `os.MkdirTemp`'s digits are still not pinned,
+so a Job can still NAME any workspace built from its own key, including one
+another LIVE instance of that Job is using. Naming it is no longer enough:
+`mkCwdAndTmp` mints a random v4 UUID per RUN, writes it into the workspace
+beside `cwd` and `tmp`, and returns it, and it travels with `ActualCwd` as a
+pair (`Job.ActualCwdToken`, `JobEndState.CwdToken`) through every site that
+reports or stores a working directory. `workSpacePaths.proveWSToken` reads the
+record back through the already-open handle on the Job's `Cwd`, before anything
+is deleted, at the single resolution point all three deletion paths and the
+`run` behaviour go through — so a run that cannot show it is the run recorded
+deletes nothing and says why.
+
+The record therefore has to outlive every deletion decision made about the
+workspace, not only the ones that empty it. `jobWorkSpace.keptEntry` claims it
+unconditionally, so no sweep removes it — including the PARTIAL sweep the live
+run's own `on_exit cleanup` makes, which keeps the workspace because a live
+mount or an un-uploaded cache is in it, and which `Client.Execute` fires BEFORE
+`Job.Unmount`. Measured on the tree before it did: `wr add --mounts
+cw:bucket/path --on_exit cleanup`, whose mount point IS the working directory,
+swept its own record while its mount was up, and the stale run then deleted the
+mounted remote through it — `stat .../REMOTE_DATA: no such file or directory`,
+with `cleanup err=<nil>` and `removeTmpDir err=<nil>` again. The one removal
+entitled to delete the record is `removeDirHoldingOnlyWSToken`, which unlinks it
+only in order to remove the directory holding it, and puts it back if that
+directory turns out to still be in use (see the ordering window below). It is
+tolerated at the chain's leaf and at its PARENTS: for a mounting job the walk
+`Job.Unmount` makes starts at the mount point, which is the working directory,
+so the workspace is a parent there, and without it that job would leak its
+workspace and every hashed level above it.
+
+The residual was reasoned as affordable while two runs of one key were assumed
+to mount the same remote in the same place. They need not: `MountConfigs.Key()`
+normalises an empty `Mount` to `"mnt"` while `resolveMountPoint` gives it the
+working DIRECTORY, and `CacheBase`, `CacheDir`, `Cache` and `Write` reach the
+key not at all. Measured on the branch point, four such pairs each lost the
+live run's data to the stale run's cleanup with `cleanup err=<nil>` and
+`removeTmpDir err=<nil>`: `stat .../REMOTE_DATA: no such file or directory`,
+for a writable mount's un-uploaded output in three of them and in the first for
+the backing directory of a real go-fuse loopback mount — the user's remote
+objects, unlinked THROUGH the live mount, because `os.Root` bounds a deletion
+with `RESOLVE_BENEATH`, which does not imply `RESOLVE_NO_XDEV`. With the record
+in place all four are refused with `errNotThisRunsWorkSpace`, every planted
+object and the mounted remote survive, and the run that really created the
+workspace still resolves it, all in
+`jobqueue/workspace_run_identity_test.go`. Mutating `proveWSToken` to accept
+any record that is present puts all four deletions back, each as its own
+`stat .../REMOTE_DATA: no such file or directory`, and reddens the mismatch
+guards with it. Mutating the MINT to a constant shows something narrower:
+every leaf halts at `So(liveToken, ShouldNotEqual, stale.ActualCwdToken)`
+before a cleanup runs, so what that measures is that the mint is unique per
+RUN, not that the deletions return. Mutating `keptEntry` to stop claiming the
+record puts back the deletion through the live mount, and removing the
+record-tolerance from either the leaf or the parents of `removeUpward` leaks
+the workspace instead.
+
+**What is left of it.** A workspace made by a wr too old to write a record
+still has the old residual until something sweeps it once, since an absent
+record is allowed. So does one whose record the Job's own `Cmd` deleted — the
+`Cmd` sabotaging the directory wr made for it, as elsewhere here. And the trade
+is paid in leaks: a refusal leaves a workspace behind, including where a report
+lost its token to a wr old enough not to send one while the workspace was made
+by one new enough to record it.
+
+`mkCwdAndTmp` writes the record BEFORE `cwd` and `tmp`, so for an instant a
+live workspace holds only the record — which is the shape that licenses removal.
+That instant is REACHABLE, measured through the production paths with the
+`cleanupProvenHook` seam: a cleanup that resolved while the leaf `os.MkdirTemp`
+had just returned was still empty reads an ABSENT record, which has to be
+allowed, so it is entitled to remove a leaf the live run writes its record into
+a moment later. Passing `proveWSToken` is not the same as passing it AFTER the
+record exists.
+
+What keeps that from ending in an unrecorded live workspace is
+`removeDirHoldingOnlyWSToken` itself. It cannot take the record and its
+directory atomically — rmdir will not take a directory the record is still in,
+and no syscall removes a directory together with its last entry — so it reads
+the record's bytes, unlinks it, and PUTS THEM BACK when the directory then
+refuses to go, which is what the creating run making its `cwd` in that window
+does. `wsTokenUnlinkedHook` fires between the unlink and the removal so that a
+test can be the creating run at exactly that moment: without the restore the
+workspace is left live with no record at all — `stat .../.run_token: no such
+file or directory` — and the same-key residual is open against it again, this
+time with wr's own hand having removed the protection
+(`TestWorkSpaceRecordThroughItsOwnRemoval`). What that guarantees is not
+atomicity but that no CALL of it leaves a live workspace unrecorded. A record
+longer than `wsTokenMaxBytes` is not unlinked at all, since putting it back
+means holding its bytes and it lives where the Job's own `Cmd` can write.
+
+What is left of that is a restore that itself fails, which leaves the workspace
+unrecorded for the rest of its life. That one is RETURNED, and so fails the
+cleanup, naming the directory — not logged as `runDir.execDir` logs this
+package's other unactionable hazards, because the walk's own callers
+(`cleanupWorkSpace`, `rmEmptyDirsIn`) already return an error, so the channel is
+there, while logging from that depth would mean minting a context in a call
+chain that has one, which `contextcheck` refuses.
+
+The record still goes down first, because the reverse order leaves a worse state
+on a crash: a workspace with a working directory and no record is
+indistinguishable from a pre-upgrade one, and so has the old residual. What that
+ordering does leave is a workspace whose creation FAILED
+after the record went down, which no run ever reports and so nothing sweeps —
+one abandoned leaf that blocks the reclamation of the hashed levels above it,
+exactly as the empty leaf it used to leave did (see
+`cleanupUnstartedWorkSpace`).
 
 **The `exec.Cmd` window is closed on Linux only.** `os/exec` has no `DirFD` and
 nothing portable replaces `/proc/self/fd`. With the descriptor prefix pointed at

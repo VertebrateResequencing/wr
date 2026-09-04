@@ -55,6 +55,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/dgryski/go-farm"
+	"github.com/gofrs/uuid/v5"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/jpillora/backoff"
 	"github.com/shirou/gopsutil/v4/process"
@@ -708,7 +709,11 @@ func calculateHashedDir(baseDir, tohash string) (string, string) {
 // byteKey()) to create a folder nested within baseDir, and in that folder
 // creates 2 folders called cwd and tmp, which it returns. Returns an error if
 // there were problems making the directories.
-func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
+//
+// It also returns the identity mkCwdAndTmp minted for the run this workspace
+// belongs to, which is what lets cleanup tell this run's workspace from the one
+// another run of the same key has at the same name; see createdWSTokenName.
+func mkHashedDir(baseDir, tohash string) (cwd, tmpDir, wsToken string, err error) {
 	dir, leaf := calculateHashedDir(filepath.Join(baseDir, AppName+createdCwdBaseSuffix), tohash)
 
 	holdFile := filepath.Join(dir, ".hold")
@@ -717,7 +722,7 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 	}()
 
 	if err = mkHeldDir(dir, holdFile); err != nil {
-		return cwd, tmpDir, err
+		return cwd, tmpDir, wsToken, err
 	}
 
 	// if tohash is a job key then we expect that only 1 of that job is
@@ -728,7 +733,7 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 	// the same working directory
 	dir, err = os.MkdirTemp(dir, leaf)
 	if err != nil {
-		return cwd, tmpDir, err
+		return cwd, tmpDir, wsToken, err
 	}
 
 	return mkCwdAndTmp(dir)
@@ -850,16 +855,88 @@ const createdCwdName = "cwd"
 // path string the Job was given; see jobWorkSpaceSnapshot.removeTmpDir.
 const createdTmpName = "tmp"
 
-// mkCwdAndTmp creates "cwd" and "tmp" dirs within dir, returning their paths.
-func mkCwdAndTmp(dir string) (cwd, tmpDir string, err error) {
+// createdWSTokenName is what mkCwdAndTmp calls the file it writes in a
+// workspace to record WHICH RUN made it, and wsTokenMaxBytes is the most of that
+// file anything reads.
+//
+// Nothing else about a workspace tells two runs of one Job apart: every component
+// of the path is built from the Job's key, which is the same for every run of it,
+// and os.MkdirTemp hands the leaf name a finished run's workspace had to the next
+// run of that key to ask for one. So a run's own stored ActualCwd can name
+// ANOTHER live run's workspace byte for byte, and the keep set the first run
+// computes from its own MountConfigs protects a different place than the second
+// run's data is in. The record is what cleanup checks before it deletes anything;
+// see workSpacePaths.proveWSToken.
+//
+// The cap is how much of the record anything reads, because it lives in a
+// directory the Job's own Cmd can write to and so has whatever length that Cmd
+// gave it. Reading more of it would buy nothing: what is longer than this cannot
+// be a record of ours, so it matches nothing either way.
+const (
+	createdWSTokenName = ".run_token"
+	wsTokenMaxBytes    = 64
+)
+
+// wsTokenPerm is the permission of the run record, matching the hold file's:
+// nothing but wr ever reads it.
+const wsTokenPerm = 0o600
+
+// mkCwdAndTmp creates "cwd" and "tmp" dirs within dir, and records the identity
+// of the run they are being made for in dir itself, returning their paths and
+// that identity.
+//
+// The record goes down BEFORE the directories, so that a workspace holding a
+// working directory is only ever missing one because a wr too old to write one
+// made it: cleanup reads an absent record as "this may be mine", which is all it
+// can do without leaking every workspace made before the upgrade.
+func mkCwdAndTmp(dir string) (cwd, tmpDir, wsToken string, err error) {
+	wsToken, err = writeWSToken(dir)
+	if err != nil {
+		return cwd, tmpDir, wsToken, err
+	}
+
 	cwd = filepath.Join(dir, createdCwdName)
 	if err = mkdirManaged(cwd, os.ModePerm); err != nil {
-		return cwd, tmpDir, err
+		return cwd, tmpDir, wsToken, err
 	}
 
 	tmpDir = filepath.Join(dir, createdTmpName)
 
-	return cwd, tmpDir, mkdirManaged(tmpDir, os.ModePerm)
+	return cwd, tmpDir, wsToken, mkdirManaged(tmpDir, os.ModePerm)
+}
+
+// writeWSToken mints the identity of the run dir is being made for, writes it
+// into dir, and returns it.
+//
+// It is a fresh random v4 UUID per CALL: the identity has to be unique per RUN
+// rather than per job, and nothing about either the job or the process supplies
+// that. Job.Pid becomes the COMMAND's pid at Started, so the runner's own pid does
+// not survive on the manager's side of this, and pids recycle; every path and key
+// a run reports is identical to the last run's by construction (see
+// createdWSTokenName). 122 random bits from crypto/rand cannot repeat across the
+// workspaces one filesystem holds.
+//
+// O_EXCL because a directory that already carries a record is another run's
+// workspace, not this one's: every caller here has just created dir.
+func writeWSToken(dir string) (string, error) {
+	token, err := uuid.NewV4()
+	if err != nil {
+		return "", err
+	}
+
+	f, err := openFileManaged(filepath.Join(dir, createdWSTokenName),
+		os.O_WRONLY|os.O_CREATE|os.O_EXCL, wsTokenPerm)
+	if err != nil {
+		return "", err
+	}
+
+	if _, err = f.WriteString(token.String()); err != nil {
+		f.Close()
+
+		return "", err
+	}
+
+	return token.String(), f.Close()
 }
 
 // errNotBelowBaseDir is returned when we're asked to delete a directory that is
@@ -1095,25 +1172,64 @@ func (c dirChain) sweptWorkSpace() (sweptDir, error) {
 //
 // A leaf that has already gone is not a failure: its parents are still ours to
 // tidy, which is the ordinary state on the second cleanup of a Job.
+//
+// A dir whose only remaining entry is the workspace run record counts as empty
+// here; see removeDirHoldingOnlyWSToken.
 func (c dirChain) removeUpward() error {
 	if !c.complete() {
 		return nil
 	}
 
-	last := len(c.names) - 1
-
-	err := c.roots[last].Remove(c.names[last])
-	if err != nil && !os.IsNotExist(err) {
-		if errIsDirInUse(err) {
-			return nil
-		}
-
+	gone, err := c.removeLeaf()
+	if err != nil {
 		return err
 	}
 
-	c.removeEmptyParents()
+	if !gone {
+		return nil
+	}
 
-	return nil
+	return c.removeEmptyParents()
+}
+
+// removeLeaf removes the chain's leaf, reporting whether it is gone - which a
+// leaf that had already gone is - so the caller knows whether the parents above
+// it are now worth tidying.
+//
+// A leaf that will not go because something else is in it is not an error, and
+// not gone either: that is what another Job running from the same base looks
+// like. A leaf holding nothing but the run record does go; see
+// removeDirHoldingOnlyWSToken.
+func (c dirChain) removeLeaf() (bool, error) {
+	last := len(c.names) - 1
+
+	err := c.roots[last].Remove(c.names[last])
+	if err == nil || os.IsNotExist(err) {
+		return true, nil
+	}
+
+	if !errIsDirInUse(err) {
+		return false, err
+	}
+
+	if !errIsDirNotEmpty(err) {
+		// in use but not merely non-empty, ie. EBUSY: a mount stands on the
+		// directory, so nothing of ours is left inside it and there is no record
+		// of ours to take back.
+		return false, nil
+	}
+
+	// openLeaf is what gives the handle the record is read and deleted through,
+	// so it is named to a directory the descent opened and proved to be the one
+	// it lstat'ed, by its own name alone, exactly as every other deletion here
+	// is.
+	leafRoot, err := c.openLeaf()
+	if err != nil {
+		return false, nil
+	}
+	defer leafRoot.Close()
+
+	return removeDirHoldingOnlyWSToken(c.roots[last], c.names[last], leafRoot)
 }
 
 // removeEmptyParents removes the empty parent directories of the chain's leaf,
@@ -1124,14 +1240,147 @@ func (c dirChain) removeUpward() error {
 // every one is an ancestor of a leaf already proven to be inside the base, and
 // each removal is made in the directory the descent opened, which cannot be
 // outside the base however the names resolve now.
-func (c dirChain) removeEmptyParents() {
+//
+// A parent has to be able to hold nothing but a run record too, not just the
+// leaf: for the commonest mounting job the walk starts at the mount point, which
+// IS the working directory, so the WORKSPACE is a parent here - and a workspace
+// keeps its record through every sweep (see jobWorkSpace.keptEntry). Without
+// this, that job would leak its workspace and every hashed level above it.
+func (c dirChain) removeEmptyParents() error {
 	parents := c.names[:len(c.names)-1]
 
 	for i := len(parents) - 1; i >= 0; i-- {
-		if c.roots[i].Remove(parents[i]) != nil {
-			return
+		gone, err := c.removeParent(i)
+		if err != nil {
+			return err
+		}
+
+		if !gone {
+			return nil
 		}
 	}
+
+	return nil
+}
+
+// removeParent removes the i'th component of the chain, which is a parent of its
+// leaf, reporting whether it went. c.roots[i+1] is the handle the descent opened
+// on that component, so what is inside it is read and deleted through the pinned
+// directory rather than through a re-resolved path.
+func (c dirChain) removeParent(i int) (bool, error) {
+	err := c.roots[i].Remove(c.names[i])
+	if err == nil {
+		return true, nil
+	}
+
+	if !errIsDirNotEmpty(err) {
+		return false, nil
+	}
+
+	return removeDirHoldingOnlyWSToken(c.roots[i], c.names[i], c.roots[i+1])
+}
+
+// wsTokenUnlinkedHook, when set, is called in the window between the workspace
+// run record being unlinked and the directory it identified being removed, so
+// that a test can have the run that owns that directory keep it during exactly
+// that moment - the interleaving that decides whether the record comes back. It
+// is nil in production.
+var wsTokenUnlinkedHook func() //nolint:gochecknoglobals // the only seam onto work that has no result
+
+// removeDirHoldingOnlyWSToken removes a directory whose ONLY remaining entry is
+// the workspace run record, reporting whether the directory went. dirRoot is the
+// handle the descent opened on that directory, and parentRoot holds it as the
+// entry name, so both the record and the directory are named by a single
+// component of a pinned handle with no path above them left to resolve.
+//
+// This is the one place in wr that deletes a run record, and it cannot do it in
+// one step: rmdir will not take a directory the record is still in, and no
+// syscall removes a directory together with its last entry. So the record is
+// unlinked, and PUT BACK if the directory then refuses to go - which is what
+// happens when the run that owns it has created something in it since, the very
+// state the record exists to protect. What that guarantees is therefore not that
+// record and directory go atomically, but that no call of this leaves a LIVE
+// workspace with no record; a restore that fails is the one exception, and is
+// why the failure is returned rather than swallowed.
+//
+// Cleanup keeps the record through every sweep (see jobWorkSpace.keptEntry),
+// which leaves a swept workspace holding just the record: exactly this shape.
+func removeDirHoldingOnlyWSToken(parentRoot *os.Root, name string, dirRoot *os.Root) (bool, error) {
+	record, taken := takeSoleWSToken(dirRoot)
+	if !taken {
+		return false, nil
+	}
+
+	if wsTokenUnlinkedHook != nil {
+		wsTokenUnlinkedHook()
+	}
+
+	if parentRoot.Remove(name) == nil {
+		return true, nil
+	}
+
+	return false, restoreWSToken(dirRoot, record)
+}
+
+// takeSoleWSToken unlinks the workspace run record from the directory dirRoot
+// holds open, but only when that record is the only entry left there, returning
+// the bytes it held so they can be put back.
+//
+// A record longer than a run identity is left alone entirely: putting one back
+// means holding its bytes, the record lives where the Job's own Cmd can write,
+// and putting back a truncated copy would make wr the rewriter of a file of the
+// user's. Leaving the directory behind is the affordable half.
+//
+// The name check is redundant by construction - the read and the unlink name
+// that entry themselves, and neither can succeed unless it is there - so no test
+// can redden it. It is kept to say which single entry is meant rather than as a
+// guard. This is all asked only after a removal has already failed with
+// "directory not empty", so the ordinary case pays nothing for any of it.
+func takeSoleWSToken(dirRoot *os.Root) ([]byte, bool) {
+	entries, err := readDirIn(dirRoot)
+	if err != nil || len(entries) != 1 || entries[0].Name() != createdWSTokenName {
+		return nil, false
+	}
+
+	record, err := readWSTokenFile(dirRoot, createdWSTokenName)
+	if err != nil || len(record) > wsTokenMaxBytes {
+		return nil, false
+	}
+
+	if dirRoot.Remove(createdWSTokenName) != nil {
+		return nil, false
+	}
+
+	return record, true
+}
+
+// restoreWSToken writes record back into the directory dirRoot holds open, which
+// the removal above has just left live with no record of the run that owns it.
+//
+// O_EXCL, because the only thing that can be at that name now is something
+// written since the unlink, which belongs to whoever wrote it and is not this
+// stale copy's to overwrite.
+//
+// The failure is RETURNED, and so fails the cleanup, rather than being logged as
+// the package logs its other unactionable hazards (see runDir.execDir): the
+// walk's own callers already return an error, so the channel is there, and
+// logging from this depth would mean minting a context in a call chain that has
+// one - which the repo's linter refuses (contextcheck). It is not a failure to
+// keep quiet about either way: the workspace is left with no record for the rest
+// of its life, so no cleanup of another run of the same key can be shown that it
+// is not its own, which is the same-key residual reopened by wr's own hand.
+func restoreWSToken(dirRoot *os.Root, record []byte) error {
+	f, err := dirRoot.OpenFile(createdWSTokenName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, wsTokenPerm)
+	if err == nil {
+		_, werr := f.Write(record)
+		err = errors.Join(werr, f.Close())
+	}
+
+	if err == nil {
+		return nil
+	}
+
+	return fmt.Errorf("%s was left with no record of the run using it: %w", dirRoot.Name(), err)
 }
 
 // proveSameDir reports whether now and checked are the same inode, ie. whether
