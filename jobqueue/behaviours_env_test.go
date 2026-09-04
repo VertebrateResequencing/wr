@@ -52,6 +52,7 @@ const testStoredHome = "/nonexistent/stored-home"
 type probedEnv struct {
 	home    string
 	tmpDir  string
+	jobCwd  string
 	testVar string
 }
 
@@ -61,7 +62,8 @@ func envProbeBehaviour(out string) *Behaviour {
 	return &Behaviour{
 		When: OnExit,
 		Do:   Run,
-		Arg:  `printf '%s\n%s\n%s\n' "$HOME" "$TMPDIR" "$` + testEnvVar + `" > ` + out,
+		Arg: `printf '%s\n%s\n%s\n%s\n' "$HOME" "$TMPDIR" "$` + JobCwdEnvVar +
+			`" "$` + testEnvVar + `" > ` + out,
 	}
 }
 
@@ -71,9 +73,9 @@ func readProbedEnv(out string) probedEnv {
 	So(err, ShouldBeNil)
 
 	lines := strings.Split(strings.TrimSuffix(string(reported), "\n"), "\n")
-	So(len(lines), ShouldEqual, 3)
+	So(len(lines), ShouldEqual, 4)
 
-	return probedEnv{home: lines[0], tmpDir: lines[1], testVar: lines[2]}
+	return probedEnv{home: lines[0], tmpDir: lines[1], jobCwd: lines[2], testVar: lines[3]}
 }
 
 // probedEnvIfRun is what a `run` Behaviour's command reported, or the zero
@@ -89,11 +91,12 @@ func probedEnvIfRun(out string) probedEnv {
 }
 
 // storeTestEnv gives job the environment it was added with: the calling process's
-// (so the command has a PATH) with its HOME replaced and a variable of the test's
-// own added, the way wr's own --env override does it.
-func storeTestEnv(job *Job) {
+// (so the command has a PATH) with its HOME replaced, a variable of the test's
+// own added, and any extra variables the caller names, the way wr's own --env
+// override does it.
+func storeTestEnv(job *Job, extra ...string) {
 	env, err := compressEnv(envOverride(os.Environ(),
-		[]string{"HOME=" + testStoredHome, testEnvVar + "=from_job_env"}))
+		append([]string{"HOME=" + testStoredHome, testEnvVar + "=from_job_env"}, extra...)))
 	So(err, ShouldBeNil)
 
 	job.EnvC = env
@@ -172,6 +175,57 @@ func TestBehaviourRunEnv(t *testing.T) {
 			So(got.testVar, ShouldEqual, "from_job_env")
 			So(got.home, ShouldEqual, testStoredHome)
 			So(got.tmpDir, ShouldBeBlank)
+		})
+
+		// a `run` behaviour's command adds jobs as readily as the Cmd does -
+		// `on_success: {"run": "wr add -f followup.txt"}` - and it runs in the
+		// working directory wr made for the Cmd, so os.Getwd() there is that
+		// disposable directory. It needs the Job's own Cwd for the same reason
+		// the Cmd does, or the jobs it adds get their workspaces built inside
+		// this one's; see JobCwdEnvVar.
+		Convey("a run behaviour is told the Job's own Cwd, not the working directory it runs in", func() {
+			job := &Job{Cwd: cwd, Cmd: testWSCmd}
+			storeTestEnv(job)
+			actualCwd, _, _ := realWorkSpace(job)
+
+			So(probe.Trigger(OnExit, job), ShouldBeNil)
+
+			got := readProbedEnv(out)
+			So(got.jobCwd, ShouldEqual, cwd)
+			So(got.jobCwd, ShouldNotEqual, actualCwd)
+		})
+
+		Convey("a CwdMatters Job's run behaviour is told nothing, not even what it inherited", func() {
+			// wr moved this Job out of nothing, so os.Getwd() is the right answer
+			// for anything its command adds - while the value the Job that added
+			// THIS one was given names a different directory altogether.
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, CwdMatters: true}
+			storeTestEnv(job, JobCwdEnvVar+"="+filepath.Join("/", "grandparent"))
+
+			So(probe.Trigger(OnExit, job), ShouldBeNil)
+
+			got := readProbedEnv(out)
+			So(got.jobCwd, ShouldBeBlank)
+			So(got.testVar, ShouldEqual, "from_job_env")
+		})
+
+		Convey("a CwdMatters Job with no environment of its own is told nothing either", func() {
+			// with nothing stored and nothing retrieved the Job names no
+			// environment at all, so the run gets the triggering process's - and
+			// that process is a wr runner or manager, which was itself given a
+			// WR_JOB_CWD naming ITS Job's Cwd. Leaving the run to inherit it
+			// silently would hand this Job's command a directory it was never in.
+			t.Setenv(JobCwdEnvVar, filepath.Join("/", "grandparent"))
+
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, CwdMatters: true}
+
+			So(probe.Trigger(OnExit, job), ShouldBeNil)
+
+			got := readProbedEnv(out)
+			So(got.jobCwd, ShouldBeBlank)
+			// the rest of that environment is still what the run has to work
+			// with, so only the one variable goes
+			So(got.home, ShouldEqual, os.Getenv("HOME"))
 		})
 
 		Convey("the behaviours the manager pins carry the Job's environment", func() {

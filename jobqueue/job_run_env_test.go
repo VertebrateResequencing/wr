@@ -35,19 +35,20 @@ import (
 // unrelatedEnvVar is an environment variable setting envWithRunDirs must leave alone.
 const unrelatedEnvVar = "FOO=bar"
 
-// TestJobRunEnv covers the environment Execute gives a run's command. The
-// interesting part is JobCwdEnvVar: a command that runs `wr add` finds its own
-// Cwd there instead of having to trust os.Getwd(), which is the disposable
-// working directory wr made for it.
+// TestJobRunEnv covers the environment wr gives the commands it runs for a Job -
+// the Job's own Cmd and a `run` Behaviour's command alike, since both go through
+// envWithRunDirs. The interesting part is JobCwdEnvVar: a command that runs
+// `wr add` finds its own Cwd there instead of having to trust os.Getwd(), which
+// is the disposable working directory wr made for it.
 func TestJobRunEnv(t *testing.T) {
 	origCwd := filepath.Join("/", "some", "user", "dir")
 	workSpace := filepath.Join(origCwd, "wr_cwd", "d", "4", "1", "7364d1", "cwd")
 	tmpDir := filepath.Join(origCwd, "wr_cwd", "d", "4", "1", "7364d1", "tmp")
 
 	Convey("A run in a wr-created working directory is told its Job's own Cwd", t, func() {
-		job := &Job{Cmd: "wr add -f cmds", Cwd: origCwd}
+		dirs := jobRunDirs{cwd: origCwd, actualCwd: workSpace, tmp: tmpDir}
 
-		env := envWithRunDirs([]string{unrelatedEnvVar}, job, workSpace, tmpDir)
+		env := envWithRunDirs([]string{unrelatedEnvVar}, dirs, false)
 
 		So(env, ShouldContain, JobCwdEnvVar+"="+origCwd)
 		So(env, ShouldContain, "TMPDIR="+tmpDir)
@@ -58,16 +59,14 @@ func TestJobRunEnv(t *testing.T) {
 		})
 
 		Convey("And --change_home still moves HOME to the working directory", func() {
-			job.ChangeHome = true
-
-			env = envWithRunDirs([]string{unrelatedEnvVar, "HOME=/home/user"}, job, workSpace, tmpDir)
+			env = envWithRunDirs([]string{unrelatedEnvVar, "HOME=/home/user"}, dirs, true)
 
 			So(env, ShouldContain, "HOME="+workSpace)
 			So(env, ShouldContain, JobCwdEnvVar+"="+origCwd)
 		})
 
 		Convey("An existing value is replaced, not duplicated", func() {
-			env = envWithRunDirs([]string{JobCwdEnvVar + "=" + filepath.Join("/", "grandparent")}, job, workSpace, tmpDir)
+			env = envWithRunDirs([]string{JobCwdEnvVar + "=" + filepath.Join("/", "grandparent")}, dirs, false)
 
 			So(env, ShouldContain, JobCwdEnvVar+"="+origCwd)
 			So(env, ShouldNotContain, JobCwdEnvVar+"="+filepath.Join("/", "grandparent"))
@@ -75,20 +74,24 @@ func TestJobRunEnv(t *testing.T) {
 	})
 
 	Convey("A cwd_matters run, which runs in its Cwd, is told nothing", t, func() {
-		job := &Job{Cmd: "wr add -f cmds", Cwd: origCwd, CwdMatters: true}
+		// wr makes no directories for such a Job, which is what tells the two
+		// cases apart: there is no tmp dir to be its TMPDIR, and no working
+		// directory for --change_home to make its HOME.
+		dirs := jobRunDirs{cwd: origCwd}
 
-		env := envWithRunDirs([]string{unrelatedEnvVar}, job, "", "")
+		env := envWithRunDirs([]string{unrelatedEnvVar}, dirs, true)
 
 		So(env, ShouldResemble, []string{unrelatedEnvVar})
 
 		Convey("Even if it inherited a value from the Job that added it, since os.Getwd() is right for it", func() {
-			env = envWithRunDirs([]string{unrelatedEnvVar, JobCwdEnvVar + "=" + filepath.Join("/", "grandparent")}, job, "", "")
+			env = envWithRunDirs([]string{unrelatedEnvVar, JobCwdEnvVar + "=" + filepath.Join("/", "grandparent")},
+				dirs, false)
 
 			So(env, ShouldResemble, []string{unrelatedEnvVar})
 		})
 
-		Convey("And a nil environment stays nil, so the run inherits the runner's", func() {
-			So(envWithRunDirs(nil, job, "", ""), ShouldBeNil)
+		Convey("And a nil environment comes back nil, there being nothing to delete from", func() {
+			So(envWithRunDirs(nil, dirs, false), ShouldBeNil)
 		})
 	})
 }

@@ -185,14 +185,16 @@ func (j *Job) workSpaceSnapshotLocked() jobWorkSpaceSnapshot {
 }
 
 // runEnv is the environment a `run` Behaviour's command executes with: the one
-// Execute gave the Job's own Cmd, with the directories wr made for the Job put in
-// it exactly as Execute puts them (see runDir.dirEnv). The command is part of the
+// Execute gave the Job's own Cmd, with the directories wr made for the Job put
+// into it by the envWithRunDirs Execute itself uses. The command is part of the
 // same job as the Cmd, so the two run in the same environment.
 //
-// A nil result means the Job carried no environment and none was asked for, and
-// leaves exec.Cmd inheriting this process's. An environment that could not be
-// read is an error instead, so the command is refused rather than run with the
-// triggering process's; see jobRunEnv.unread.
+// Where the Job named no environment of its own the command gets this process's,
+// which is what exec.Cmd would have inherited anyway - but NAMED, so that
+// envWithRunDirs decides JobCwdEnvVar over it too, rather than the command
+// inheriting the one the triggering runner or manager was given for its own Job.
+// An environment that could not be read is an error instead, so the command is
+// refused rather than run with the triggering process's; see jobRunEnv.unread.
 func (s jobWorkSpaceSnapshot) runEnv(dir *runDir) ([]string, error) {
 	if s.env.unread != nil {
 		return nil, s.env.unread
@@ -203,20 +205,17 @@ func (s jobWorkSpaceSnapshot) runEnv(dir *runDir) ([]string, error) {
 		return nil, err
 	}
 
-	dirEnv := dir.dirEnv(s.env.changeHome)
-	if len(dirEnv) == 0 {
-		return env, nil
-	}
-
 	if env == nil {
 		// the Job's own environment was never stored and never retrieved, so
-		// this process's is all there is to run with - which is what exec.Cmd
-		// would inherit anyway. Naming it is what lets the Job's own directories
-		// still be put in it.
+		// this process's is all there is to run with. Naming it is what lets the
+		// Job's own directories be put in it - and lets the JobCwdEnvVar of the
+		// runner's or manager's OWN Job be taken back out of it.
 		env = os.Environ()
 	}
 
-	return envOverride(env, dirEnv), nil
+	dirs := jobRunDirs{cwd: s.cwd, actualCwd: dir.path, tmp: dir.tmp}
+
+	return envWithRunDirs(env, dirs, s.env.changeHome), nil
 }
 
 // workSpacePaths is the lexical half of the resolution: the Job's directories,
@@ -474,28 +473,9 @@ type runDir struct {
 	path string
 
 	// tmp is the tmp dir wr made beside the working directory to be the Job's
-	// TMPDIR, or blank when wr made no workspace and so no tmp dir; see dirEnv.
+	// TMPDIR, or blank when wr made no workspace and so no tmp dir; see
+	// jobRunDirs.wrMade.
 	tmp string
-}
-
-// dirEnv is the part of a `run` Behaviour's environment that comes from the
-// directories wr made for the Job: its TMPDIR, and its working directory as HOME
-// when the Job asked for that.
-//
-// Execute sets both on the Job's own Cmd, and only for a Job it made a workspace
-// for: a CwdMatters Job runs in the user's own Cwd with neither, whatever
-// --change_home says, so this answers nothing for one.
-func (r *runDir) dirEnv(changeHome bool) []string {
-	if r.tmp == "" {
-		return nil
-	}
-
-	dirEnv := []string{"TMPDIR=" + r.tmp}
-	if changeHome {
-		dirEnv = append(dirEnv, "HOME="+r.path)
-	}
-
-	return dirEnv
 }
 
 // openRunDir hands back the Job's working directory, held open.
