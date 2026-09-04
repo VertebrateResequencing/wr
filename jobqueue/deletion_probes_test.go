@@ -1219,6 +1219,29 @@ type probeWindowRow struct {
 	wantErr error
 }
 
+// replaceWithADirOfItsOwn removes dir and leaves an empty directory of its own
+// in its place, one that CANNOT be the directory that was there: the replacement
+// is made while dir still holds its inode, so the freed inode cannot be handed
+// back to it, and it takes dir's name only once dir has gone. A plain remove and
+// recreate guarantees nothing, since ext4 hands the freed inode straight back.
+//
+// It asserts the identity really did change, so an ordering that lets the inode
+// be reused fails here, naming the premise, rather than turning over the
+// expectation of whichever row relied on it.
+func replaceWithADirOfItsOwn(dir string) {
+	checked, err := os.Lstat(dir)
+	So(err, ShouldBeNil)
+
+	spare := dir + "_spare"
+	So(os.MkdirAll(spare, os.ModePerm), ShouldBeNil)
+	So(os.RemoveAll(dir), ShouldBeNil)
+	So(os.Rename(spare, dir), ShouldBeNil)
+
+	now, err := os.Lstat(dir)
+	So(err, ShouldBeNil)
+	So(os.SameFile(now, checked), ShouldBeFalse)
+}
+
 func probeWindowRows() []probeWindowRow {
 	return []probeWindowRow{
 		// the workspace itself, replaced. What was proven is gone, and the
@@ -1289,30 +1312,50 @@ func probeWindowRows() []probeWindowRow {
 		// the hashed level ABOVE the workspace, taken and put back. This is the
 		// ordering two runs of one key really produce: one run's cleanup walks
 		// up removing the empty levels it shares with every other run, and the
-		// next run's mkHashedDir creates them again. The cleanup has nothing
-		// left to delete and must say so quietly, since a workspace that has
-		// gone is the ordinary state of a second cleanup - but the handles it
+		// next run's mkHashedDir creates them again. The handles this cleanup
 		// still holds are on the levels it descended through, not on the ones
-		// that replaced them, and the only thing its upward walk may remove is
-		// an empty directory.
+		// that replaced them, and openChain proves every level it reopens by
+		// inode (proveSameDir), so a level that is there but is not the one
+		// that was checked is not absence: cleanup returns before it empties
+		// anything or walks up anything.
+		//
+		// Both rows below therefore give the replacement level an inode of its
+		// own, and pin that refusal, which is the one of production's three
+		// answers here they can hold it to:
+		//   - the level removed and NOT recreated is absence, so the chain is
+		//     incomplete and cleanup returns nil. That is the quiet case, and
+		//     it is a different window from the one these rows arrange.
+		//   - the level recreated with a DIFFERENT inode is refused, with
+		//     errNotBelowBaseDir. That is what these rows arrange, and the
+		//     survivors are asserted first, so a refusal costs nothing.
+		//   - the level recreated with the SAME inode satisfies the proof, and
+		//     the sweep proceeds as though nothing had changed. ext4 hands a
+		//     freed directory inode straight back to the next mkdir, so that
+		//     is the ordinary outcome of a plain remove-and-recreate, and it is
+		//     a recorded residual rather than something a row can hold
+		//     production to - see "Measured residuals" in
+		//     .docs/cwd_matters_cleanup/readme.md, "os.SameFile is not an
+		//     identity check across delete and recreate".
 		{
 			name: "the hashed level above the workspace is recreated by another run of the same key",
 			inWindow: func(job *Job, _, hashed string) []string {
-				So(os.RemoveAll(hashed), ShouldBeNil)
+				replaceWithADirOfItsOwn(hashed)
 
 				other, err := startProbeRun(job.Cwd, job.Key(), "other")
 				So(err, ShouldBeNil)
 
 				return []string{other.output, other.actualCwd, other.tmpDir, hashed}
 			},
+			wantErr: errNotBelowBaseDir,
 		},
 		{
 			name: "the hashed level above the workspace is recreated holding a tree of the user's",
 			inWindow: func(_ *Job, _, hashed string) []string {
-				So(os.RemoveAll(hashed), ShouldBeNil)
+				replaceWithADirOfItsOwn(hashed)
 
 				return []string{writeFileIn(filepath.Join(hashed, "someone_elses"), probeMineName), hashed}
 			},
+			wantErr: errNotBelowBaseDir,
 		},
 	}
 }
