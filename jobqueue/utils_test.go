@@ -370,7 +370,7 @@ func TestCreatedCwdDepthMatchesMkHashedDir(t *testing.T) {
 	Convey("The working dir mkHashedDir creates is createdCwdDepth below the base", t, func() {
 		base := t.TempDir()
 
-		actualCwd, _, _, err := mkHashedDir(base, "0123456789abcdef0123456789abcdef")
+		actualCwd, _, err := mkHashedDir(base, "0123456789abcdef0123456789abcdef")
 		So(err, ShouldBeNil)
 
 		rel, err := filepath.Rel(base, actualCwd)
@@ -399,7 +399,7 @@ func TestMkHashedDirHoldFileFailure(t *testing.T) {
 		// a first call leaves the hashed levels behind, which is the normal state
 		// after any job has run in this Cwd, and means the MkdirAll of every later
 		// call succeeds.
-		_, _, _, err := mkHashedDir(base, key)
+		_, _, err := mkHashedDir(base, key)
 		So(err, ShouldBeNil)
 
 		hashed, _ := calculateHashedDir(filepath.Join(base, AppName+createdCwdBaseSuffix), key)
@@ -449,7 +449,7 @@ func mkHashedDirWithin(limit time.Duration, base, tohash string) (returned bool,
 	errCh := make(chan error, 1)
 
 	go func() {
-		_, _, _, errm := mkHashedDir(base, tohash)
+		_, _, errm := mkHashedDir(base, tohash)
 		errCh <- errm
 	}()
 

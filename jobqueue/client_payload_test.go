@@ -71,7 +71,7 @@ func TestExecuteLiveStateSnapshots(t *testing.T) {
 	}
 
 	Convey("Live execute snapshots keep cwd and resources on repeated touches", t, func() {
-		state := newExecuteLiveState("/work/actual", testRunIdentity, &liveTailSaver{}, &liveTailSaver{})
+		state := newExecuteLiveState("/work/actual", &liveTailSaver{}, &liveTailSaver{})
 		state.updateResources(123, 456, 7*time.Second)
 
 		first := state.snapshot()
@@ -85,27 +85,20 @@ func TestExecuteLiveStateSnapshots(t *testing.T) {
 		So(second.PeakRAM, ShouldEqual, 123)
 		So(second.PeakDisk, ShouldEqual, int64(456))
 		So(second.CPUtime, ShouldEqual, 7*time.Second)
-
-		// EVERY snapshot carries the run identity beside the path, because a
-		// working directory the manager cannot show belongs to the run it is
-		// acting for is one it refuses to delete.
-		So(first.CwdToken, ShouldEqual, testRunIdentity)
-		So(second.CwdToken, ShouldEqual, testRunIdentity)
 	})
 
 	Convey("Live execute snapshots of a cwd_matters job carry no cwd", t, func() {
-		state := newExecuteLiveState("", "", &liveTailSaver{}, &liveTailSaver{})
+		state := newExecuteLiveState("", &liveTailSaver{}, &liveTailSaver{})
 		state.updateResources(123, 456, 7*time.Second)
 
 		snapshot := state.snapshot()
 
 		So(snapshot.Cwd, ShouldBeBlank)
-		So(snapshot.CwdToken, ShouldBeBlank)
 		So(snapshot.PeakRAM, ShouldEqual, 123)
 	})
 
 	Convey("Live execute resource snapshots keep maximum observed values", t, func() {
-		state := newExecuteLiveState("/work/actual", testRunIdentity, &liveTailSaver{}, &liveTailSaver{})
+		state := newExecuteLiveState("/work/actual", &liveTailSaver{}, &liveTailSaver{})
 		state.updateResources(123, 456, 7*time.Second)
 		state.updateResources(111, 400, 6*time.Second)
 

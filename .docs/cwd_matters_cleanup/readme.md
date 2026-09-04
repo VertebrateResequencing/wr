@@ -84,23 +84,21 @@ disagree about which directories are wr's.
 
 The resolution, in order:
 
-1. `Job.workSpaceSnapshot()` copies `CwdMatters`, `Cwd`, `ActualCwd`,
-   `ActualCwdToken`, `Key()` and `MountConfigs` under the Job's read lock, and
-   releases it before any filesystem work.
+1. `Job.workSpaceSnapshot()` copies `CwdMatters`, `Cwd`, `ActualCwd`, `Key()`
+   and `MountConfigs` under the Job's read lock, and releases it before any
+   filesystem work.
 2. `paths()` returns "wr created nothing here" for a `CwdMatters` Job or a blank
    `ActualCwd`; refuses either directory unless it is **already absolute**; and
    calls `createdCwdRel`, which requires the reported directory to be strictly
    inside `Cwd` and to be the path `mkHashedDir` builds **from this Job's own
-   key** — `<something>_cwd/k0/k1/k2/<key[3:]><digits>/cwd`, checked by asking
+   key** — `<something>_cwd/k0/k1/k2/<key[3:]>-<uuid>/cwd`, checked by asking
    `calculateHashedDir` what it would produce, so recogniser and builder cannot
    drift.
 3. `prove()` opens `Cwd` as an `os.Root`, proves the workspace (the parent of
    the working directory) is a real directory strictly inside it with no symlink
    among the components leading to it, keeping the `FileInfo` it lstat'ed at
    **each** component, then lstats the working directory as a name relative to
-   that root, and finally reads the run record inside the workspace through the
-   same handle (`proveWSToken`), refusing a workspace another RUN recorded
-   itself in.
+   that root.
 4. `keptDirs()` resolves every mount point and cache location once and
    classifies each against the proven dirs: `wholeActualCwd`, `inActualCwd`,
    `workSpaceEntries`, `mountPoints`, `wholeWorkSpace`,
@@ -206,8 +204,8 @@ Every job of a `Cwd` has the created shape at the created depth below the same
   whose leaf is still `cwd` — which a Job's own Cmd can make inside the
   directory wr gave it — satisfies everything else, and would have that
   directory swept as a workspace; every index in the predicate is also fixed.
-  `isMkTempName`'s digit check is load-bearing for the same reason: without it
-  `<key[3:]>-mydata/cwd` is accepted (LAYER 60).
+  `isJobCreatedWorkSpaceName`'s suffix check is load-bearing for the same
+  reason: without it `<key[3:]>-mydata/cwd` is accepted (LAYER 60).
 
 **`wholeWorkSpace` exists even though the case looks unreachable.** A mount
 point at or above the workspace makes everything wr created the inside of a live
@@ -316,7 +314,7 @@ Three smaller decisions, each with a measured reason:
 Each with what must be true for it to bite.
 
 **Shape and origin, not proof of provenance.** A reported `ActualCwd` must be
-`Cwd/<name ending _cwd>/k0/k1/k2/<key[3:]><digits>/cwd` where the key is the
+`Cwd/<name ending _cwd>/k0/k1/k2/<key[3:]>-<uuid>/cwd` where the key is the
 reporting Job's OWN. `k0`-`k2` are three hex characters, grindable in about 4096
 tries (or one in 4096 by chance), but the component carrying the other 29 has to
 be named for the rest of that same key. **Bites when** a user directory of
@@ -324,140 +322,82 @@ exactly that shape exists inside the Job's `Cwd`. For scale: when the check was
 depth-and-name only, a user tree at that depth lost 13 of 13 files and its
 parent was unlinked with `err == nil`.
 
-The run record below does not close this one, and cannot: a directory of the
-user's has no record in it, and an absent record has to mean "this may be
-mine" or every workspace made before wr recorded runs would leak for ever.
-What the record proves is WHICH RUN made a workspace wr did make, not that wr
-made it.
+**The same-key residual is closed.** `mkHashedDir` no longer asks
+`os.MkdirTemp` to name the workspace. The leaf is `<key[3:]>-<uuid>`, the UUID a
+v4 minted per RUN from `crypto/rand` (`uuid.NewV4`). `os.MkdirTemp` only ever
+avoided a name that existed WHEN IT LOOKED, so a name it gave one run was free
+to be handed to the next run of the same key once the first run's leaf had been
+removed; a minted name is never handed out twice. What that removes is wr's
+ability to hand out a repeated name, not the loss a repeat causes. No name a
+run is given is ever given to another run, so a finished run's stored
+`ActualCwd` cannot name a live run's workspace, which is the only route from
+the key blindness below to a deletion.
 
-**The same-key residual is closed for every workspace that still carries the
-record of the run that made it.** `os.MkdirTemp`'s digits are still not pinned,
-so a Job can still NAME any workspace built from its own key, including one
-another LIVE instance of that Job is using. Naming it is no longer enough:
-`mkCwdAndTmp` mints a random v4 UUID per RUN, writes it into the workspace
-beside `cwd` and `tmp`, and returns it, and it travels with `ActualCwd` as a
-pair (`Job.ActualCwdToken`, `JobEndState.CwdToken`) through every site that
-reports or stores a working directory. `workSpacePaths.proveWSToken` reads the
-record back through the already-open handle on the Job's `Cwd`, before anything
-is deleted, at the single resolution point all three deletion paths and the
-`run` behaviour go through — so a run that cannot show it is the run recorded
-deletes nothing and says why.
+That route was open, and was measured open. `MountConfigs.Key()` normalises an
+empty `Mount` to `"mnt"` while `resolveMountPoint` gives it the working
+DIRECTORY, and `CacheBase`, `CacheDir`, `Cache` and `Write` reach the key not at
+all, so two runs of ONE key can have their live mounts and un-uploaded output in
+different places, and the keep set a finished run computes from its own
+`MountConfigs` does not name what a live run of that key has on disk. Measured
+on the branch point, four such key-blind pairs each lost the live run's data to
+the stale run's cleanup with `cleanup err=<nil>` and `removeTmpDir err=<nil>`:
+`stat .../REMOTE_DATA: no such file or directory`, for a writable mount's
+un-uploaded output in three of them and in the first for the backing directory
+of a real go-fuse loopback mount — the user's remote objects, unlinked THROUGH
+the live mount, because `os.Root` bounds a deletion with `RESOLVE_BENEATH`,
+which does not imply `RESOLVE_NO_XDEV`.
 
-The record therefore has to outlive every deletion decision made about the
-workspace, not only the ones that empty it. `jobWorkSpace.keptEntry` claims it
-unconditionally, so no sweep removes it — including the PARTIAL sweep the live
-run's own `on_exit cleanup` makes, which keeps the workspace because a live
-mount or an un-uploaded cache is in it, and which `Client.Execute` fires BEFORE
-`Job.Unmount`. Measured on the tree before it did: `wr add --mounts
-cw:bucket/path --on_exit cleanup`, whose mount point IS the working directory,
-swept its own record while its mount was up, and the stale run then deleted the
-mounted remote through it — `stat .../REMOTE_DATA: no such file or directory`,
-with `cleanup err=<nil>` and `removeTmpDir err=<nil>` again. The one removal
-entitled to delete the record is `removeDirHoldingOnlyWSToken`, which unlinks it
-only in order to remove the directory holding it, and puts it back if that
-directory turns out to still be in use (see the ordering window below). It is
-tolerated at the chain's leaf and at its PARENTS: for a mounting job the walk
-`Job.Unmount` makes starts at the mount point, which is the working directory,
-so the workspace is a parent there, and without it that job would leak its
-workspace and every hashed level above it.
+**What is left of it.** Four things, and none of them is nothing.
 
-The residual was reasoned as affordable while two runs of one key were assumed
-to mount the same remote in the same place. They need not: `MountConfigs.Key()`
-normalises an empty `Mount` to `"mnt"` while `resolveMountPoint` gives it the
-working DIRECTORY, and `CacheBase`, `CacheDir`, `Cache` and `Write` reach the
-key not at all. Measured on the branch point, four such pairs each lost the
-live run's data to the stale run's cleanup with `cleanup err=<nil>` and
-`removeTmpDir err=<nil>`: `stat .../REMOTE_DATA: no such file or directory`,
-for a writable mount's un-uploaded output in three of them and in the first for
-the backing directory of a real go-fuse loopback mount — the user's remote
-objects, unlinked THROUGH the live mount, because `os.Root` bounds a deletion
-with `RESOLVE_BENEATH`, which does not imply `RESOLVE_NO_XDEV`. With the record
-in place all four are refused with `errNotThisRunsWorkSpace`, every planted
-object and the mounted remote survive, and the run that really created the
-workspace still resolves it, all in
-`jobqueue/workspace_run_identity_test.go`. Mutating `proveWSToken` to accept
-any record that is present puts all four deletions back, each as its own
-`stat .../REMOTE_DATA: no such file or directory`, and reddens the mismatch
-guards with it. Mutating the MINT to a constant shows something narrower:
-every leaf halts at `So(liveToken, ShouldNotEqual, stale.ActualCwdToken)`
-before a cleanup runs, so what that measures is that the mint is unique per
-RUN, not that the deletions return. Mutating `keptEntry` to stop claiming the
-record puts back the deletion through the live mount, and removing the
-record-tolerance from either the leaf or the parents of `removeUpward` leaks
-the workspace instead.
+- The name space is 2^-122, not zero. No test can measure the improvement:
+  `os.MkdirTemp` already drew a fresh 32-bit suffix on every call — 0 reuses in
+  20000 create/remove/recreate rounds on go1.26.3 — so
+  `TestWorkSpaceNameNeverRecurs` passes on the pre-fix code too. What it holds
+  is that the mint is fresh per RUN; the guarantee itself is structural, in the
+  name space rather than in a sample. The sweep guards above stay the defence in
+  depth for anything that does collide.
+- A Job's own `Cmd` can still fabricate a SIBLING directory of the accepted
+  shape, since it can read the name wr gave it. **Bites when** a STALE run's
+  stored `ActualCwd` names the fabrication — and wr only ever stores a name it
+  minted itself.
+- A workspace made by a pre-upgrade wr still has a digits-only name, and
+  `isJobCreatedWorkSpaceName` still accepts that shape, because refusing it
+  would leave every such workspace unrecognised and so uncleanable for ever,
+  stranding the real job output inside it. **Bites when** two such workspaces of
+  one key exist, which retain the old 2^-32 exposure between them until each has
+  been swept once.
+- The key blindness above is unchanged, and so is what a collision costs; what
+  the mint removes is wr's ability to hand out a repeated name, not the
+  consequences of one. `Job.Key()` was deliberately not touched, being the
+  persisted BoltDB key. **Bites when** a path collision arises anyway — the
+  2^-122 mint, or two pre-upgrade digits-named workspaces of one key. The four
+  deliberately-red rows of the probe round that found this bug
+  (`probeKeyBlindRows` / `TestProbeMountConfigsOneKeyCovers`, on
+  `origin/probe-round8-cases`) force that collision by hand, removing a
+  workspace and recreating the same path through `mkCwdAndTmp` instead of
+  `mkHashedDir`, so the shape they arrange is one production can no longer
+  produce. Dropped onto the fixed tree, row 1 now PASSES, 19 assertions and
+  every survival green: its live remote sits behind a real go-fuse loopback
+  mount raised at the workspace's `cwd`, and #577's mount-boundary guard
+  (`sweptDir.sweepable`'s device check) stops the sweep crossing into the live
+  mount, so the user's remote objects survive the forced collision. Rows 2, 3
+  and 4 still FAIL, on a writable mount's un-uploaded output waiting for
+  `Unmount` to upload it: `REMOTE_DATA` deleted under `s3.example.com/bucket`
+  in the workspace, under `tmp` in the Job's TMPDIR (by the separate
+  `removeTmpDir` deletion) and under muxfys's own default `.muxfys_cache123`,
+  each with `cleanErr` and `tmpErr` nil. Content awaiting upload is a plain
+  directory, not a mount, so no boundary guard sees it, and the keep set the
+  stale run computes from its own `MountConfigs` does not name it.
 
-**What is left of it.** A workspace made by a wr too old to write a record
-still has the old residual until something sweeps it once, since an absent
-record is allowed. So does one whose record the Job's own `Cmd` deleted — the
-`Cmd` sabotaging the directory wr made for it, as elsewhere here. And the trade
-is paid in leaks: a refusal leaves a workspace behind, including where a report
-lost its token to a wr old enough not to send one while the workspace was made
-by one new enough to record it.
-
-`mkCwdAndTmp` writes the record BEFORE `cwd` and `tmp`, so for an instant a
-live workspace holds only the record — which is the shape that licenses removal.
-That instant is REACHABLE, measured through the production paths with the
-`cleanupProvenHook` seam: a cleanup that resolved while the leaf `os.MkdirTemp`
-had just returned was still empty reads an ABSENT record, which has to be
-allowed, so it is entitled to remove a leaf the live run writes its record into
-a moment later. Passing `proveWSToken` is not the same as passing it AFTER the
-record exists.
-
-What keeps that from ending in an unrecorded live workspace is
-`removeDirHoldingOnlyWSToken` itself. It cannot take the record and its
-directory atomically — rmdir will not take a directory the record is still in,
-and no syscall removes a directory together with its last entry — so it reads
-the record's bytes, unlinks it, and PUTS THEM BACK when the directory then
-refuses to go, which is what the creating run making its `cwd` in that window
-does. `wsTokenUnlinkedHook` fires between the unlink and the removal so that a
-test can be the creating run at exactly that moment: without the restore the
-workspace is left live with no record at all — `stat .../.run_token: no such
-file or directory` — and the same-key residual is open against it again, this
-time with wr's own hand having removed the protection
-(`TestWorkSpaceRecordThroughItsOwnRemoval`). What that guarantees is not
-atomicity but that no CALL of it leaves a live workspace unrecorded. A record
-longer than `wsTokenMaxBytes` is not unlinked at all, since putting it back
-means holding its bytes and it lives where the Job's own `Cmd` can write.
-
-What is left of that is a restore that does not put the record back, and it
-leaves three different states rather than one.
-
-The directory can have GONE while the record was down, which the OTHER cleanup
-of a lost job does — the two run in different processes — and then there is no
-live workspace to record and nothing was left unprotected. That is not a
-failure at all, exactly as it is not one when the plain `Remove` is the call
-that finds the directory gone. Reporting it was a regression rather than a
-check: `Client.Execute` folds a behaviour's error into the Job's own
-(`client.go`), so a Job whose `Cmd` had succeeded was reported FAILED for a
-tidy another process had already done — measured as `cleanupWorkSpace err=...
-was left with no record of the run using it: openat .run_token: no such file or
-directory`, with the workspace itself already gone.
-
-Something else can be at the name, which the compound race `O_EXCL` is there
-for: another cleanup takes the emptied workspace, `os.MkdirTemp` hands that
-leaf name to a new run of the key, and that run records ITSELF in it. The
-directory DOES record a run then, just not the one this copy came from, so
-nothing is left unprotected and those bytes are not this stale copy's to
-overwrite — mutating `O_EXCL` to `O_TRUNC` overwrites them.
-
-Only a write that fails for any OTHER reason leaves the workspace unrecorded
-for the rest of its life. The last two are RETURNED, and so fail the cleanup,
-each naming the directory and saying which of the two it was — not logged as
-`runDir.execDir` logs this package's other unactionable hazards, because the
-walk's own callers (`cleanupWorkSpace`, `rmEmptyDirsIn`) already return an
-error, so the channel is there, while logging from that depth would mean
-minting a context in a call chain that has one, which `contextcheck` refuses.
-All three states are measured through the `wsTokenUnlinkedHook` seam in
-`TestWorkSpaceRecordThroughItsOwnRemoval`.
-
-The record still goes down first, because the reverse order leaves a worse state
-on a crash: a workspace with a working directory and no record is
-indistinguishable from a pre-upgrade one, and so has the old residual. What that
-ordering does leave is a workspace whose creation FAILED
-after the record went down, which no run ever reports and so nothing sweeps —
-one abandoned leaf that blocks the reclamation of the hashed levels above it,
-exactly as the empty leaf it used to leave did (see
-`cleanupUnstartedWorkSpace`).
+**A per-run identity file was rejected.** The alternative built first was to
+write the minted UUID into each workspace as a `.run_token` file, carry it
+alongside `ActualCwd`, and have `prove()` refuse a workspace whose record the
+reporting run could not be shown to have written. It measured as closing the
+same four pairs, and it is not what shipped: wr's benefit is that it does not
+scatter small state files through the user's filesystem, and that put one in
+every working directory wr makes. It also DETECTS the collision where naming the
+workspace uniquely PREVENTS it, and the detection is only as good as the
+record's survival of every sweep, its own removal included. Do not reinvent it.
 
 **The `exec.Cmd` window is closed on Linux only.** `os/exec` has no `DirFD` and
 nothing portable replaces `/proc/self/fd`. With the descriptor prefix pointed at
@@ -581,8 +521,9 @@ component; the depth check and the hashed-dir comparison, both masked by the
 other conditions of the same predicate; `IsDir` for a working directory that had
 become a regular FILE, masked in all three consumers; `execDir`'s nothing-held
 check, without which the no-`/proc` warning fires for every ordinary Job;
-`dirIsAtOrAbove` resolving the second of two spellings; and `isMkTempName`'s
-digit check, whose mutation survived the entire suite. Three more were pinned
+`dirIsAtOrAbove` resolving the second of two spellings; and the unique dir's
+suffix check in `isJobCreatedWorkSpaceName`, whose mutation survived the entire
+suite. Three more were pinned
 after the last recorded round: `setActualCwd`'s refusal to write `ActualCwd` on
 a `CwdMatters` Job, `wr status`'s display for a job carrying the v0.37.0|1
 poison, and `openLeaf`'s refusal to open a workspace that reappeared after the

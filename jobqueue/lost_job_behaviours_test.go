@@ -126,14 +126,10 @@ type lostRun struct {
 	ranIn string
 
 	// lostCwd, lostTmp and lostOut are the working directory, TMPDIR and output
-	// of the run that gets lost, and lostToken is the identity mkCwdAndTmp
-	// recorded in that workspace. Every report of the directory carries the token
-	// with it, as production's do: the manager refuses to sweep a workspace it
-	// cannot show belongs to the run it is acting for.
-	lostCwd   string
-	lostTmp   string
-	lostOut   string
-	lostToken string
+	// of the run that gets lost.
+	lostCwd string
+	lostTmp string
+	lostOut string
 
 	// deadChecked and proceed hand the test the window the dead-check occupies:
 	// after the job was declared lost and its behaviours pinned, and before the
@@ -254,7 +250,7 @@ func (l *lostRun) startLostRun(jq *Client, rg string, reqs *scheduler.Requiremen
 	So(jq.Started(reserved, exitedPid()), ShouldBeNil)
 
 	if !l.opts.cwdMatters && !l.opts.webless {
-		applyLiveSnapshot(l.live, &JobEndState{Cwd: l.lostCwd, CwdToken: l.lostToken})
+		applyLiveSnapshot(l.live, &JobEndState{Cwd: l.lostCwd})
 	}
 }
 
@@ -272,13 +268,13 @@ func (l *lostRun) makeLostWorkSpace(reserved *Job) {
 
 	var err error
 
-	l.lostCwd, l.lostTmp, l.lostToken, err = mkHashedDir(l.cwd, l.key)
+	l.lostCwd, l.lostTmp, err = mkHashedDir(l.cwd, l.key)
 	So(err, ShouldBeNil)
 
 	l.lostOut = writeFileIn(l.lostCwd, "abandoned.txt")
 
 	reserved.Lock()
-	reserved.setActualCwd(l.lostCwd, l.lostToken)
+	reserved.setActualCwd(l.lostCwd)
 	reserved.Unlock()
 }
 
@@ -414,13 +410,13 @@ func (l *lostRun) jobStateAndKillCalled() (JobState, bool) {
 func (l *lostRun) makeRetryWorkspace() (actualCwd, tmpDir, output string) {
 	l.reserveRetry()
 
-	actualCwd, tmpDir, wsToken, err := mkHashedDir(l.cwd, l.key)
+	actualCwd, tmpDir, err := mkHashedDir(l.cwd, l.key)
 	So(err, ShouldBeNil)
 	So(actualCwd, ShouldNotEqual, l.lostCwd)
 
 	output = writeFileIn(actualCwd, "partial.txt")
 
-	applyLiveSnapshot(l.live, &JobEndState{Cwd: actualCwd, CwdToken: wsToken})
+	applyLiveSnapshot(l.live, &JobEndState{Cwd: actualCwd})
 
 	return actualCwd, tmpDir, output
 }
@@ -442,18 +438,18 @@ func (l *lostRun) startRetryInWindow(touched bool) (actualCwd, tmpDir, output st
 	l.reserveRetry()
 
 	if l.opts.cwdMatters {
-		l.startRetry("", "", touched)
+		l.startRetry("", touched)
 
 		return "", "", writeFileIn(l.cwd, retryOutputName)
 	}
 
-	actualCwd, tmpDir, wsToken, err := mkHashedDir(l.cwd, l.key)
+	actualCwd, tmpDir, err := mkHashedDir(l.cwd, l.key)
 	So(err, ShouldBeNil)
 	So(actualCwd, ShouldNotEqual, l.lostCwd)
 
 	output = writeFileIn(actualCwd, retryOutputName)
 
-	l.startRetry(actualCwd, wsToken, touched)
+	l.startRetry(actualCwd, touched)
 
 	return actualCwd, tmpDir, output
 }
@@ -470,17 +466,14 @@ func (l *lostRun) reserveRetry() {
 }
 
 // startRetry is the retry's own Started, carrying the working directory it has
-// already made and the identity recorded in that workspace, plus the touch
-// snapshot a manager with a web port gets from a run that lived long enough to
-// touch. Both reports carry the pair, as Client.Started and the live snapshots
-// production sends do.
-func (l *lostRun) startRetry(actualCwd, wsToken string, touched bool) {
-	So(l.server.applyJobStart(l.live, &Job{
-		Pid: os.Getpid(), Host: localhost, ActualCwd: actualCwd, ActualCwdToken: wsToken,
-	}), ShouldBeTrue)
+// already made, plus the touch snapshot a manager with a web port gets from a
+// run that lived long enough to touch.
+func (l *lostRun) startRetry(actualCwd string, touched bool) {
+	So(l.server.applyJobStart(l.live, &Job{Pid: os.Getpid(), Host: localhost, ActualCwd: actualCwd}),
+		ShouldBeTrue)
 
 	if actualCwd != "" && touched && !l.opts.webless {
-		applyLiveSnapshot(l.live, &JobEndState{Cwd: actualCwd, CwdToken: wsToken})
+		applyLiveSnapshot(l.live, &JobEndState{Cwd: actualCwd})
 	}
 }
 
@@ -511,14 +504,14 @@ func (l *lostRun) killAndReserveTheJob(ctx context.Context) *Job {
 // already executing, in a directory the manager has not been told about, for the
 // whole of the window this models.
 func (l *lostRun) getOnWithTheRun(reserved *Job) (actualCwd, tmpDir, output string) {
-	actualCwd, tmpDir, wsToken, err := mkHashedDir(l.cwd, l.key)
+	actualCwd, tmpDir, err := mkHashedDir(l.cwd, l.key)
 	So(err, ShouldBeNil)
 	So(actualCwd, ShouldNotEqual, l.lostCwd)
 
 	output = writeFileIn(actualCwd, retryOutputName)
 
 	reserved.Lock()
-	reserved.setActualCwd(actualCwd, wsToken)
+	reserved.setActualCwd(actualCwd)
 	reserved.Unlock()
 
 	return actualCwd, tmpDir, output
@@ -1221,13 +1214,11 @@ func newStartedRun(ctx context.Context, t *testing.T, rg, cwd string, bs Behavio
 
 	r := &startedRun{server: server, key: reserved.Key()}
 
-	var wsToken string
-
-	r.actualCwd, _, wsToken, err = mkHashedDir(cwd, r.key)
+	r.actualCwd, _, err = mkHashedDir(cwd, r.key)
 	So(err, ShouldBeNil)
 
 	reserved.Lock()
-	reserved.setActualCwd(r.actualCwd, wsToken)
+	reserved.setActualCwd(r.actualCwd)
 	reserved.Unlock()
 
 	So(jq.Started(reserved, os.Getpid()), ShouldBeNil)
@@ -1720,7 +1711,7 @@ func loseEveryRun(server *Server, jq *Client, cwd string, n int) ([]pinnedBehavi
 // manager's own Job lost and pins the behaviours of that run in the same lock,
 // as markJobLost does.
 func startAndLoseRun(server *Server, jq *Client, reserved *Job, cwd string) (pinnedBehaviours, string, error) {
-	actualCwd, _, wsToken, err := mkHashedDir(cwd, reserved.Key())
+	actualCwd, _, err := mkHashedDir(cwd, reserved.Key())
 	if err != nil {
 		return pinnedBehaviours{}, "", err
 	}
@@ -1730,7 +1721,7 @@ func startAndLoseRun(server *Server, jq *Client, reserved *Job, cwd string) (pin
 	}
 
 	reserved.Lock()
-	reserved.setActualCwd(actualCwd, wsToken)
+	reserved.setActualCwd(actualCwd)
 	reserved.Unlock()
 
 	if err = jq.Started(reserved, os.Getpid()); err != nil {

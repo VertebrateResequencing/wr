@@ -377,23 +377,16 @@ type executeLiveState struct {
 	stdout   *liveTailSaver
 	stderr   *liveTailSaver
 	cwd      string
-	cwdToken string
 	peakRAM  int
 	peakDisk int64
 	cpuTime  time.Duration
 }
 
-// newExecuteLiveState takes the run's working directory and the identity
-// mkHashedDir recorded in its workspace as a PAIR, because every snapshot that
-// reports the one has to report the other: the manager cleans up after a run that
-// dies without ever touching, and a path it cannot show belongs to this run is a
-// path it must refuse. See Job.ActualCwdToken.
-func newExecuteLiveState(cwd, cwdToken string, stdout, stderr *liveTailSaver) *executeLiveState {
+func newExecuteLiveState(cwd string, stdout, stderr *liveTailSaver) *executeLiveState {
 	return &executeLiveState{
-		stdout:   stdout,
-		stderr:   stderr,
-		cwd:      cwd,
-		cwdToken: cwdToken,
+		stdout: stdout,
+		stderr: stderr,
+		cwd:    cwd,
 	}
 }
 
@@ -423,7 +416,6 @@ func (state *executeLiveState) snapshot() *JobEndState {
 
 	return &JobEndState{
 		Cwd:      state.cwd,
-		CwdToken: state.cwdToken,
 		PeakRAM:  state.peakRAM,
 		PeakDisk: state.peakDisk,
 		CPUtime:  state.cpuTime,
@@ -752,36 +744,6 @@ func appendExecProblems(stderr []byte, jobFailed bool, mountLogs string, berr, e
 	}
 
 	return stderr
-}
-
-// startRequestJob records on the caller's own Job where and as what this run
-// started, and returns the job to report that with: the fields that identify it,
-// plus this run's host, pid and working directory.
-//
-// The working directory is reported HERE, and with the identity of the run
-// recorded in its workspace, because that lets the manager clean up after a run
-// that dies without ever touching, and after every run on a manager with no web
-// port. The token travels with the path wherever the path goes, so that what the
-// manager deletes can be shown to belong to the run it is acting for; see
-// Job.ActualCwdToken.
-func startRequestJob(job *Job, host, hostIP string, pid int) *Job {
-	job.Lock()
-	defer job.Unlock()
-
-	job.Host = host
-	job.HostIP = hostIP
-	job.Pid = pid
-	job.Attempts++             // not considered by server, which does this itself - just for benefit of this process
-	job.StartTime = time.Now() // ditto
-
-	requestJob := keyOnlyJob(job)
-	requestJob.Host = job.Host
-	requestJob.HostIP = job.HostIP
-	requestJob.Pid = job.Pid
-	requestJob.ActualCwd = job.ActualCwd
-	requestJob.ActualCwdToken = job.ActualCwdToken
-
-	return requestJob
 }
 
 // dialClientSocket creates a req socket configured with TLS for the given
@@ -1528,20 +1490,18 @@ func (c *Client) bsubConfigJSON(job *Job, host string) ([]byte, error) {
 }
 
 // resolveWorkingDir sets cmd.Dir to the directory the command should run in. If
-// the job's Cwd matters it is used directly and ("", "", "", nil) is returned;
+// the job's Cwd matters it is used directly and ("", "", nil) is returned;
 // otherwise a unique hashed working directory is created and its cwd and tmp dir
-// are returned (the job is buried and an error returned on failure), along with
-// the identity mkHashedDir recorded in the workspace for THIS run, which travels
-// with the working directory everywhere it is reported; see Job.ActualCwdToken.
-func (c *Client) resolveWorkingDir(job *Job, cmd *exec.Cmd) (actualCwd, tmpDir, wsToken string, err error) {
+// are returned (the job is buried and an error returned on failure).
+func (c *Client) resolveWorkingDir(job *Job, cmd *exec.Cmd) (actualCwd, tmpDir string, err error) {
 	if job.CwdMatters {
 		cmd.Dir = job.Cwd
 
-		return "", "", "", nil
+		return "", "", nil
 	}
 
 	// we'll create a unique location to work in
-	actualCwd, tmpDir, wsToken, err = mkHashedDir(job.Cwd, job.Key())
+	actualCwd, tmpDir, err = mkHashedDir(job.Cwd, job.Key())
 	if err != nil {
 		buryErr := fmt.Errorf("could not create working directory: %w", err)
 
@@ -1550,16 +1510,16 @@ func (c *Client) resolveWorkingDir(job *Job, cmd *exec.Cmd) (actualCwd, tmpDir, 
 			buryErr = fmt.Errorf("%w (and burying the job failed: %w)", buryErr, errb)
 		}
 
-		return "", "", "", buryErr
+		return "", "", buryErr
 	}
 
 	cmd.Dir = actualCwd
 
 	job.Lock()
-	job.setActualCwd(actualCwd, wsToken)
+	job.setActualCwd(actualCwd)
 	job.Unlock()
 
-	return actualCwd, tmpDir, wsToken, nil
+	return actualCwd, tmpDir, nil
 }
 
 // ensureMachineRAM returns machineRAM if it is already known (non-zero),
@@ -1847,7 +1807,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	var dirsToCheckDiskSpace []string
 
-	actualCwd, tmpDir, wsToken, err := c.resolveWorkingDir(job, cmd)
+	actualCwd, tmpDir, err := c.resolveWorkingDir(job, cmd)
 	if err != nil {
 		return err
 	}
@@ -1878,7 +1838,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// before doing any other pre-start tasks, which might take time, start
 	// touching the job, and keep doing so until after we've run the job and
 	// carried out post-exit tasks
-	liveState := newExecuteLiveState(actualCwd, wsToken, liveStdout, liveStderr)
+	liveState := newExecuteLiveState(actualCwd, liveStdout, liveStderr)
 	touchTicker := time.NewTicker(c.touchInterval) // server-provided default (< its ItemTTR), overridable per client
 
 	var wkbsMutex sync.RWMutex
@@ -2483,7 +2443,6 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	jes := &JobEndState{
 		Cwd:      actualCwd,
-		CwdToken: wsToken,
 		Exitcode: exitcode,
 		PeakRAM:  peakmem,
 		PeakDisk: peakdisk,
@@ -2958,9 +2917,24 @@ func (c *Client) Started(job *Job, pid int) error {
 		return err
 	}
 
-	_, err = c.request(&clientRequest{
-		Method: requestMethodStart, Job: startRequestJob(job, host, hostIP, pid),
-	})
+	job.Lock()
+	job.Host = host
+	job.HostIP = hostIP
+	job.Pid = pid
+	job.Attempts++             // not considered by server, which does this itself - just for benefit of this process
+	job.StartTime = time.Now() // ditto
+	requestJob := keyOnlyJob(job)
+	requestJob.Host = job.Host
+	requestJob.HostIP = job.HostIP
+	requestJob.Pid = job.Pid
+
+	// the working directory resolveWorkingDir already created. Reporting it HERE
+	// lets the manager clean up after a run that dies without ever touching, and
+	// after every run on a manager with no web port.
+	requestJob.ActualCwd = job.ActualCwd
+	job.Unlock()
+
+	_, err = c.request(&clientRequest{Method: requestMethodStart, Job: requestJob})
 
 	return err
 }
@@ -2997,13 +2971,7 @@ func (c *Client) Touch(job *Job) (bool, error) {
 // tried to execute the Cmd, in which case you would just provide a nil
 // JobEndState to the methods that need one.
 type JobEndState struct {
-	Cwd string
-	// CwdToken is the identity of the run that created Cwd, which the workspace
-	// records; supply the one Execute's working directory was made with, or empty
-	// string along with an empty Cwd. Without it the manager cannot show that a
-	// workspace it deletes belongs to the run it is acting for, and refuses to
-	// delete it at all. See Job.ActualCwdToken.
-	CwdToken string
+	Cwd      string
 	Exitcode int
 	PeakRAM  int
 	PeakDisk int64
@@ -3059,7 +3027,7 @@ func (c *Client) ended(job *Job, jes *JobEndState) {
 	job.PeakDisk = jes.PeakDisk
 	job.CPUtime = jes.CPUtime
 	job.EndTime = jes.EndTime
-	job.setActualCwd(jes.Cwd, jes.CwdToken)
+	job.setActualCwd(jes.Cwd)
 	job.StdOutC = jes.Stdout
 	job.StdErrC = jes.Stderr
 }

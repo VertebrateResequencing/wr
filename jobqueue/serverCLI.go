@@ -355,7 +355,7 @@ func applyLiveSnapshot(job *Job, jes *JobEndState) {
 	job.Lock()
 	defer job.Unlock()
 
-	job.setActualCwd(jes.Cwd, jes.CwdToken)
+	job.setActualCwd(jes.Cwd)
 	job.PeakRAM = jes.PeakRAM
 	job.PeakDisk = jes.PeakDisk
 	job.CPUtime = jes.CPUtime
@@ -869,7 +869,7 @@ func (s *Server) resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, 
 	// nor has it made a working directory or landed on a machine yet. ActualCwd is
 	// what cleanup deletes and what a `run` behaviour executes in, and HostID is
 	// what killJobsOnBadServers matches condemned cloud servers against.
-	sjob.clearActualCwd()
+	sjob.ActualCwd = ""
 	sjob.HostID = ""
 
 	return sjob.schedulerGroup, sjob.Retries, sjob.UntilBuried
@@ -922,7 +922,7 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 	job.StartTime = time.Now()
 	job.EndTime = time.Time{}
 	job.Attempts++
-	job.setActualCwd(crJob.ActualCwd, crJob.ActualCwdToken)
+	job.setActualCwd(crJob.ActualCwd)
 
 	// a reservation whose reserve-to-Started stretch outlasts the TTR is declared
 	// lost while its Cmd starts, under this run's own token, so taking the job off
@@ -1116,7 +1116,7 @@ func (j *Job) applySuccessfulEndStateLocked(endState *JobEndState, lim *limiter.
 	j.PeakDisk = endState.PeakDisk
 	j.CPUtime = endState.CPUtime
 	j.EndTime = endState.EndTime
-	j.setActualCwd(endState.Cwd, endState.CwdToken)
+	j.setActualCwd(endState.Cwd)
 }
 
 // archiveCompletedJob persists a completed job to the complete bucket and
@@ -1826,7 +1826,6 @@ func copyJobForClient(sjob *Job, state JobState) *Job {
 		CwdMatters:            sjob.CwdMatters,
 		ChangeHome:            sjob.ChangeHome,
 		ActualCwd:             sjob.ActualCwd,
-		ActualCwdToken:        sjob.ActualCwdToken,
 		Requirements:          req,
 		Override:              sjob.Override,
 		Priority:              sjob.Priority,

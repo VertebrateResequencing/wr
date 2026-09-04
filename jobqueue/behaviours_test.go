@@ -426,7 +426,7 @@ func TestCleanupWithRelativeCwd(t *testing.T) {
 		work := filepath.Join(base, "work")
 		So(os.MkdirAll(work, os.ModePerm), ShouldBeNil)
 
-		actualCwd, _, _, err := mkHashedDir(work, "0123456789abcdef0123456789abcdef")
+		actualCwd, _, err := mkHashedDir(work, "0123456789abcdef0123456789abcdef")
 		So(err, ShouldBeNil)
 
 		mounted := filepath.Join(actualCwd, "mnt", "REMOTE_DATA")

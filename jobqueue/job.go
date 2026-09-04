@@ -215,15 +215,6 @@ func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host,
 	return "ssh -- " + shellquote.Join(target) + " " + singleQuoteShellArg(remote)
 }
 
-// clearActualCwd forgets the working directory wr created for a run of this Job,
-// and with it the run identity that qualified that path. Both always go: keeping
-// the path without its identity leaves a value cleanup must refuse, and keeping
-// the identity without a path names nothing. Must be called with the Job locked.
-func (j *Job) clearActualCwd() {
-	j.ActualCwd = ""
-	j.ActualCwdToken = ""
-}
-
 // mergeBehaviours returns existing with, for each trigger that modifications
 // supplies behaviours for, all of existing's behaviours for that trigger
 // replaced by the whole supplied set in the supplied order. Triggers that
@@ -438,14 +429,6 @@ type Job struct {
 	// the actual working directory used, which would have been created with a
 	// unique name if CwdMatters = false
 	ActualCwd string
-	// the identity of the RUN that created ActualCwd, minted and recorded inside
-	// the workspace by mkCwdAndTmp. Cleanup compares the two before deleting
-	// anything, because the path alone cannot show which run's workspace it is:
-	// every component of it is built from the job's Key(), the same for every run,
-	// and os.MkdirTemp hands a finished run's workspace name to the next run of
-	// that key. It is set and cleared with ActualCwd and never on its own; see
-	// setActualCwd and clearActualCwd.
-	ActualCwdToken string
 	// peak RAM (MB) used.
 	PeakRAM int
 	// peak disk (MB) used.
@@ -1230,7 +1213,7 @@ func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	j.CPUtime = jes.CPUtime
 
 	j.EndTime = jes.EndTime
-	j.setActualCwd(jes.Cwd, jes.CwdToken)
+	j.setActualCwd(jes.Cwd)
 	j.Unlock()
 }
 
@@ -1533,22 +1516,16 @@ func (j *Job) isLostRunLocked(run runToken) bool {
 }
 
 // setActualCwd records cwd as the unique working directory that wr created below
-// Cwd for this Job's Cmd, together with the identity of the run that created it.
-// A blank cwd is ignored, and so is any cwd for a CwdMatters Job: that Cmd runs
-// in the user's own Cwd, and a blank ActualCwd is how the rest of wr knows there
-// is no wr-created directory to delete. Must be called with the Job locked.
-//
-// The two are taken and stored TOGETHER, here and at every site that reports a
-// working directory, because the token is the only thing that makes the path this
-// RUN's: a path stored without one is a path cleanup can no longer show belongs
-// to the run reporting it, and would be refused. See ActualCwdToken.
-func (j *Job) setActualCwd(cwd, token string) {
+// Cwd for this Job's Cmd. A blank cwd is ignored, and so is any cwd for a
+// CwdMatters Job: that Cmd runs in the user's own Cwd, and a blank ActualCwd is
+// how the rest of wr knows there is no wr-created directory to delete. Must be
+// called with the Job locked.
+func (j *Job) setActualCwd(cwd string) {
 	if cwd == "" || j.CwdMatters {
 		return
 	}
 
 	j.ActualCwd = cwd
-	j.ActualCwdToken = token
 }
 
 // createdCwd returns the unique working directory wr created for this Job below
@@ -2082,7 +2059,7 @@ func (j *JobModifier) applyTo(job *Job) {
 	j.applyContainer(job)
 
 	if job.Key() != keyBefore {
-		job.clearActualCwd()
+		job.ActualCwd = ""
 	}
 }
 
@@ -2106,14 +2083,14 @@ func (j *JobModifier) applyCmdCwd(job *Job) {
 	// user clears it.
 	if j.Cwd != "" {
 		job.Cwd = j.Cwd
-		job.clearActualCwd()
+		job.ActualCwd = ""
 	}
 
 	if j.CwdMattersSet {
 		job.CwdMatters = j.CwdMatters
 
 		if j.CwdMatters {
-			job.clearActualCwd()
+			job.ActualCwd = ""
 		}
 	}
 

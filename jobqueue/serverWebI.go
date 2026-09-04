@@ -792,7 +792,7 @@ func resetCompletedJobForRerun(job *Job) {
 }
 
 func resetJobExecutionFields(job *Job) {
-	job.clearActualCwd()
+	job.ActualCwd = ""
 	job.PeakRAM = 0
 	job.PeakDisk = 0
 	job.Exited = false

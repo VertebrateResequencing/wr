@@ -221,9 +221,8 @@ func TestCleanupCrossesNoMountBoundaryAtTheWorkSpace(t *testing.T) {
 				}
 
 				// the workspace is never empty when the Job's own Cmd mounts over
-				// it: wr's cwd, wr's tmp and the record of the run using it are all
-				// in it. So raising the mount needs "nonempty"; see mountLoopback
-				// on that option.
+				// it: wr's cwd and wr's tmp are both in it. So raising the mount
+				// needs "nonempty"; see mountLoopback on that option.
 				if !mountLoopback(t, workSpace, backing, "nonempty") {
 					SkipConvey("this host refused an unprivileged FUSE mount over a non-empty dir", func() {})
 
@@ -275,8 +274,8 @@ func TestJobTmpDirRemovalCrossesNoMountBoundary(t *testing.T) {
 		remoteTmp := writeFileIn(filepath.Join(backing, createdTmpName), "remote_output.txt")
 
 		// the workspace is never empty when the Job's own Cmd mounts over it:
-		// wr's cwd, wr's tmp and the record of the run using it are all in it. So
-		// raising the mount needs "nonempty"; see mountLoopback on that option.
+		// wr's cwd and wr's tmp are both in it. So raising the mount needs
+		// "nonempty"; see mountLoopback on that option.
 		if !mountLoopback(t, workSpace, backing, "nonempty") {
 			SkipConvey("this host refused an unprivileged FUSE mount over a non-empty dir", func() {})
 
@@ -302,14 +301,10 @@ func TestJobTmpDirRemovalCrossesNoMountBoundary(t *testing.T) {
 // so a hand-made fixture of merely the right shape does not reach the same
 // guards.
 func realWorkSpace(job *Job) (actualCwd, workSpace, tmpDir string) {
-	actualCwd, tmpDir, wsToken, err := mkHashedDir(job.Cwd, job.Key())
+	actualCwd, tmpDir, err := mkHashedDir(job.Cwd, job.Key())
 	So(err, ShouldBeNil)
 
-	// the token is reported with the path because production reports the pair:
-	// mkCwdAndTmp records the run's identity inside the workspace, and cleanup
-	// refuses a workspace whose record it cannot be shown to have written.
 	job.ActualCwd = actualCwd
-	job.ActualCwdToken = wsToken
 
 	return actualCwd, filepath.Dir(actualCwd), tmpDir
 }
@@ -337,7 +332,7 @@ func TestRelIsJobCreatedCwd(t *testing.T) {
 		cwd := t.TempDir()
 		job := &Job{Cwd: cwd, Cmd: "echo created"}
 
-		actualCwd, _, _, err := mkHashedDir(cwd, job.Key())
+		actualCwd, _, err := mkHashedDir(cwd, job.Key())
 		So(err, ShouldBeNil)
 
 		rel, err := filepath.Rel(cwd, actualCwd)
@@ -376,26 +371,75 @@ func TestRelIsJobCreatedCwd(t *testing.T) {
 			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeFalse)
 		})
 
-		Convey("nor one whose unique dir was not made by MkdirTemp", func() {
-			// what MkdirTemp adds to the prefix is a non-empty run of DIGITS,
-			// and both halves of that have to be required. The bare prefix is
-			// the dir wr would have made had it not needed a unique one...
+		Convey("nor one whose unique dir is not named the way wr names one", func() {
+			// what wr adds to the prefix is either a hyphen and a v4 UUID or, from
+			// an older wr, a run of digits, and both halves of that have to be
+			// required. The bare prefix is the dir wr would have made had it not
+			// needed a unique one...
 			names := strings.Split(rel, string(filepath.Separator))
 			leaf := job.Key()[mkHashedLevels-1:]
 
 			names[len(names)-2] = leaf
 			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeFalse)
 
-			// ...and a suffix of anything else is a name something other than
-			// MkdirTemp chose. Whoever submits the Job picks the Cmd that Key()
-			// hashes, so they can put a directory of their own beside the job's at
-			// exactly this prefix, and accepting it would hand its PARENT to the
-			// sweep as this Job's workspace.
+			// ...and a suffix of anything else is a name wr did not choose.
+			// Whoever submits the Job picks the Cmd that Key() hashes, so they can
+			// put a directory of their own beside the job's at exactly this prefix,
+			// and accepting it would hand its PARENT to the sweep as this Job's
+			// workspace.
 			names[len(names)-2] = leaf + "-mydata"
 			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeFalse)
 
 			names[len(names)-2] = leaf + "12x"
 			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeFalse)
+		})
+
+		Convey("but a digits-only unique dir from an older wr is still accepted", func() {
+			// os.MkdirTemp named the unique dir before wr minted a UUID for it, so
+			// a workspace a pre-upgrade wr created is on disk with a digits-only
+			// name. Refusing it would leave it unrecognised and so uncleanable for
+			// ever, stranding the real job output inside it.
+			names := strings.Split(rel, string(filepath.Separator))
+			leaf := job.Key()[mkHashedLevels-1:]
+
+			names[len(names)-2] = leaf + "1234567890"
+			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeTrue)
+
+			// os.MkdirTemp's suffix has always been the decimal form of an unsigned
+			// integer no wider than 64 bits, so it could never have run past 20
+			// digits, and a longer run is a name of somebody else's.
+			names[len(names)-2] = leaf + strings.Repeat("9", 20)
+			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeTrue)
+
+			names[len(names)-2] = leaf + strings.Repeat("9", 21)
+			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeFalse)
+		})
+
+		Convey("nor one whose UUID is not the canonical v4 form wr mints", func() {
+			// only the spelling uuid.UUID.String() produces is accepted, because
+			// that is the only one mkHashedDir can have written. Everything else at
+			// this prefix is a directory something other than wr made, and
+			// accepting it would hand its PARENT to the sweep as this Job's
+			// workspace.
+			names := strings.Split(rel, string(filepath.Separator))
+			leaf := job.Key()[mkHashedLevels-1:]
+
+			for _, notMinted := range []string{
+				"3F2A1C4E-5B6D-4F80-9A1B-2C3D4E5F6071", // uppercase
+				"3f2a1c4e-5b6d-1f80-9a1b-2c3d4e5f6071", // version nibble 1, not 4
+				"3f2a1c4e-5b6d-4f80-ca1b-2c3d4e5f6071", // Microsoft variant
+				"3f2a1c4e5b6d4f809a1b2c3d4e5f6071",     // the hyphenless form
+				"3f2a1c4e-5b6d-4f80-9a1b-2c3d4e5f60",   // truncated
+			} {
+				names[len(names)-2] = leaf + "-" + notMinted
+				So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeFalse)
+			}
+
+			// the same UUID in the form wr does mint IS accepted, so each row above
+			// is refused for the deviation its comment names rather than because
+			// its digits were made up here.
+			names[len(names)-2] = leaf + "-3f2a1c4e-5b6d-4f80-9a1b-2c3d4e5f6071"
+			So(relIsJobCreatedCwd(filepath.Join(names...), job.Key()), ShouldBeTrue)
 		})
 
 		Convey("nor one whose leaf is not the dir mkCwdAndTmp makes", func() {

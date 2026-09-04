@@ -82,7 +82,7 @@ func benchCleanupJob(tb testing.TB, cwd string, i int) *Job {
 	// every field feeding it has to be set before the key is taken.
 	job := &Job{Cwd: cwd, Cmd: fmt.Sprintf("echo bench.cleanup.%d", i)}
 
-	actualCwd, tmpDir, wsToken, err := mkHashedDir(cwd, job.Key())
+	actualCwd, tmpDir, err := mkHashedDir(cwd, job.Key())
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -101,7 +101,6 @@ func benchCleanupJob(tb testing.TB, cwd string, i int) *Job {
 	}
 
 	job.ActualCwd = actualCwd
-	job.ActualCwdToken = wsToken
 
 	return job
 }
@@ -194,7 +193,7 @@ func benchDepthJob(tb testing.TB, cwd string, i, depth, nFiles int) *Job {
 
 	job := &Job{Cwd: cwd, Cmd: fmt.Sprintf("echo bench.depth.%d", i)}
 
-	actualCwd, _, wsToken, err := mkHashedDir(cwd, job.Key())
+	actualCwd, _, err := mkHashedDir(cwd, job.Key())
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -216,7 +215,6 @@ func benchDepthJob(tb testing.TB, cwd string, i, depth, nFiles int) *Job {
 	}
 
 	job.ActualCwd = actualCwd
-	job.ActualCwdToken = wsToken
 
 	return job
 }

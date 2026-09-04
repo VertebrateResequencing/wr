@@ -39,17 +39,10 @@ package jobqueue
 // same Cwd has a workspace path of the same shape, so what identifies THIS
 // Job's is the path mkHashedDir builds from its own key - which is what
 // relIsJobCreatedCwd requires.
-//
-// Nor is the path enough on its own, because every RUN of one Job builds it from
-// the same key and os.MkdirTemp hands a finished run's workspace name to the next
-// run that asks. What identifies this RUN's workspace is the identity the run that
-// created it recorded INSIDE it - which is what proveWSToken requires.
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -92,15 +85,9 @@ type jobWorkSpaceSnapshot struct {
 	cwdMatters bool
 	cwd        string
 	actualCwd  string
-	// actualCwdToken is the identity of the RUN that created actualCwd, which
-	// mkCwdAndTmp recorded inside the workspace. It is what tells this run's
-	// workspace from the one another run of the same key has at the same name;
-	// see workSpacePaths.proveWSToken.
-	actualCwdToken string
-
-	key    string
-	mounts MountConfigs
-	env    jobRunEnv
+	key        string
+	mounts     MountConfigs
+	env        jobRunEnv
 }
 
 // jobRunEnv is the Job state a `run` Behaviour needs to execute its command in
@@ -184,12 +171,11 @@ func (j *Job) workSpaceSnapshot() jobWorkSpaceSnapshot {
 // at least the Job's read lock; see pinBehavioursLocked.
 func (j *Job) workSpaceSnapshotLocked() jobWorkSpaceSnapshot {
 	return jobWorkSpaceSnapshot{
-		cwdMatters:     j.CwdMatters,
-		cwd:            j.Cwd,
-		actualCwd:      j.ActualCwd,
-		actualCwdToken: j.ActualCwdToken,
-		key:            j.Key(),
-		mounts:         j.MountConfigs,
+		cwdMatters: j.CwdMatters,
+		cwd:        j.Cwd,
+		actualCwd:  j.ActualCwd,
+		key:        j.Key(),
+		mounts:     j.MountConfigs,
 		env: jobRunEnv{
 			stored:     j.storedEnvLocked(),
 			changeHome: j.ChangeHome,
@@ -251,11 +237,6 @@ type workSpacePaths struct {
 	workSpace     string
 	actualCwdName string
 
-	// wsToken is the identity the run reporting actualCwd was given when the
-	// workspace was created for it, to be checked against the record inside that
-	// workspace; see proveWSToken.
-	wsToken string
-
 	mounts MountConfigs
 }
 
@@ -292,7 +273,6 @@ func (s jobWorkSpaceSnapshot) paths() (*workSpacePaths, error) {
 		actualCwd:     actualCwd,
 		workSpace:     filepath.Dir(actualCwd),
 		actualCwdName: filepath.Base(actualCwd),
-		wsToken:       s.actualCwdToken,
 		mounts:        s.mounts,
 	}, nil
 }
@@ -601,8 +581,7 @@ const (
 )
 
 // prove opens the Job's Cwd and proves the workspace is a real directory
-// strictly inside it, with no symlink among the components leading to it, and
-// that the run reporting it is the run that created it; see proveWSToken.
+// strictly inside it, with no symlink among the components leading to it.
 //
 // There is deliberately no fallback that resolves the symlinks instead: a
 // resolved path names a symlink's target rather than the directory itself, and
@@ -619,10 +598,6 @@ func (p *workSpacePaths) prove(absent absenceRule) (*jobWorkSpace, error) {
 	}
 
 	proven, actualCwdInfo, err := p.proveBelow(cwdRoot, absent)
-	if err == nil {
-		err = p.proveWSToken(cwdRoot)
-	}
-
 	if err != nil {
 		cwdRoot.Close()
 
@@ -674,128 +649,6 @@ func (p *workSpacePaths) proveActualCwd(cwdRoot *os.Root, absent absenceRule) (o
 
 	return nil, fmt.Errorf("%w: refusing to use %s, which is not a real dir inside the job's cwd %s",
 		errNotBelowBaseDir, p.actualCwd, p.cwd)
-}
-
-// errNotThisRunsWorkSpace is returned when the workspace a Job reports records a
-// different run of that Job as its creator, so nothing there is this run's to
-// delete or to run a command in.
-var errNotThisRunsWorkSpace = errors.New("workspace was created by another run of the job")
-
-// proveWSToken refuses a workspace that records a run other than the one
-// reporting it.
-//
-// It is the only part of the resolution that does not come from the reported path,
-// and the path cannot answer this: every component of it is built from the Job's
-// key, which is the same for every run of that Job, and os.MkdirTemp hands the
-// leaf name of a workspace that has gone to the next run of that key to ask for
-// one. So a finished run's own ActualCwd can name a LIVE run's workspace byte for
-// byte, while the keep set the finished run computes from its own MountConfigs
-// protects somewhere else entirely - Job.Key() reads neither where a mount lands
-// (an empty MountConfig.Mount is "mnt" to the key but the working DIRECTORY to
-// resolveMountPoint) nor where a cache does (CacheBase, CacheDir, Cache and Write
-// reach the key not at all). Measured, that deleted a live FUSE mount's remote
-// data through the mount, and a writable mount's output before Unmount had
-// uploaded it, returning nil.
-//
-// The record on disk is the authority:
-//
-//   - Absent: allowed, exactly as before this check existed. A workspace with no
-//     record was made by a wr too old to write one, and refusing would leak every
-//     workspace made before the upgrade for ever. It is also the state on the
-//     SECOND cleanup of one run, which is ordinary for a lost job (see
-//     absenceRule): the first sweep deletes the record along with everything else
-//     it is entitled to delete.
-//   - Present, and the run reporting the path cannot show it is the run recorded:
-//     refused, whether it offers a different identity or none at all. A record
-//     being there proves a token-aware wr created the workspace, so a deleter with
-//     no identity of its own is a deleter that cannot be shown to be its run - and
-//     the only paths that report a working directory without one are the paths of
-//     an older wr, whose workspaces carry no record.
-//
-// A refusal deletes nothing and says why, which leaves a workspace behind; that is
-// the affordable half of the trade, as everywhere else here.
-func (p *workSpacePaths) proveWSToken(cwdRoot *os.Root) error {
-	recorded, present, err := p.recordedWSToken(cwdRoot)
-	if err != nil {
-		return err
-	}
-
-	if !present {
-		return nil
-	}
-
-	// a record that says nothing matches nothing: it was still written by a
-	// token-aware wr, so an empty expectation cannot be shown to be its run
-	// either.
-	if recorded != "" && recorded == p.wsToken {
-		return nil
-	}
-
-	return fmt.Errorf("%w: %s records a different run than the one reporting it",
-		errNotThisRunsWorkSpace, p.workSpace)
-}
-
-// recordedWSToken reads the identity mkCwdAndTmp recorded in the workspace,
-// reporting whether there was a record there at all.
-//
-// It is read through the handle on the Job's Cwd, at the workspace's already
-// proven relative path, rather than by re-resolving a path string: every component
-// above the record has been proven a real directory inside that handle, so nothing
-// here can be redirected out of the Job's Cwd.
-//
-// The record's own name is the one component that proof does not cover, and an
-// os.Root follows a relative symlink that stays inside its root, so anything there
-// that is not a REGULAR FILE is reported as present and left UNREAD rather than
-// allowed to decide what the comparison sees: whoever can write in the workspace
-// could otherwise leave a link pointing at a file holding the deleter's own
-// identity. Present-and-unread matches nothing, so it leaves a workspace behind.
-//
-// A record that has gone between the lstat and the read is read as absent, not as
-// an error: the two cleanups of a lost job run in different processes, and the one
-// that gets there second must still tidy the empty parents.
-func (p *workSpacePaths) recordedWSToken(cwdRoot *os.Root) (recorded string, present bool, err error) {
-	rel := filepath.Join(filepath.Dir(p.rel), createdWSTokenName)
-
-	info, err := cwdRoot.Lstat(rel)
-	if err == nil && !info.Mode().IsRegular() {
-		return "", true, nil
-	}
-
-	var content []byte
-
-	if err == nil {
-		content, err = readWSTokenFile(cwdRoot, rel)
-	}
-
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", false, nil
-		}
-
-		return "", false, fmt.Errorf("%w: could not read the run recorded in %s: %w",
-			errNotThisRunsWorkSpace, p.workSpace, err)
-	}
-
-	return strings.TrimSpace(string(content)), true, nil
-}
-
-// readWSTokenFile reads the record at rel, a path relative to cwdRoot.
-//
-// The read is BOUNDED rather than checked against the record's size, so that
-// there is no branch here that both outcomes of would refuse identically: what
-// bounds it is the read itself. It is bounded at all because the record lives in
-// a directory the Job's own Cmd can write to, so its content and its length are
-// the Cmd's to choose, and nothing longer than the bound can be a record of ours
-// anyway.
-func readWSTokenFile(cwdRoot *os.Root, rel string) ([]byte, error) {
-	f, err := cwdRoot.OpenFile(rel, os.O_RDONLY, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	defer f.Close()
-
-	return io.ReadAll(io.LimitReader(f, wsTokenMaxBytes+1))
 }
 
 // Close releases the handle on the Job's Cwd, and so also the root proven holds.
@@ -1111,33 +964,14 @@ func (ws *jobWorkSpace) actualCwdNow(wsRoot *os.Root) (os.FileInfo, error) {
 	return ws.actualCwdInfo, nil
 }
 
-// keptEntry says if an entry of the Job's workspace must survive cleanup: the
-// run record, an entry leading to one of the Job's mount points or cache
-// locations, or a cache dir muxfys named for itself where the Job has a mount
-// that puts one there.
-//
-// The run record is kept UNCONDITIONALLY, because it has to outlive every
-// deletion decision that could be made about the workspace, not just the ones
-// that empty it. A sweep that KEEPS the workspace - because a live mount or an
-// un-uploaded cache is in it - would otherwise leave a live workspace with no
-// record, and proveWSToken reads an absent record as "this may be mine": the
-// live run's OWN on_exit cleanup is exactly such a sweep, since Client.Execute
-// fires the behaviours BEFORE Job.Unmount, so a job whose mount point is its
-// working directory would delete the one thing stopping another run of its key
-// deleting its remote data through that mount.
-//
-// That leaves exactly one place entitled to delete the record: the removal of
-// the workspace DIRECTORY, which tolerates a directory holding nothing but the
-// record; see dirChain.removeUpward.
+// keptEntry says if an entry of the Job's workspace must survive cleanup: an
+// entry leading to one of the Job's mount points or cache locations, or a cache
+// dir muxfys named for itself where the Job has a mount that puts one there.
 //
 // The working directory needs no rule of its own: it survives exactly when
 // something inside or at it must, and protect() records that as the workspace
 // entry leading to it, which is the working directory's own name.
 func (ws *jobWorkSpace) keptEntry(name string) bool {
-	if name == createdWSTokenName {
-		return true
-	}
-
 	if ws.keep.workSpaceEntries[name] {
 		return true
 	}
