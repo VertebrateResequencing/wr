@@ -1326,10 +1326,15 @@ func relIsBelow(rel string) bool {
 	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// readDirIn reads the entries of dir, a path relative to dirRoot, through the
-// root handle, so the read cannot be redirected outside it.
-func readDirIn(dirRoot *os.Root, dir string) ([]os.DirEntry, error) {
-	f, err := dirRoot.Open(dir)
+// readDirIn reads the entries of dirRoot's own directory through the root
+// handle, so the read cannot be redirected outside it.
+//
+// It names "." rather than taking a path, because "." is the directory the
+// handle's descriptor already refers to and so is the one spelling no component
+// of which can be resolved afresh: every sweep below holds a handle on the
+// directory it is reading, and nothing is left to be re-resolved from a string.
+func readDirIn(dirRoot *os.Root) ([]os.DirEntry, error) {
+	f, err := dirRoot.Open(".")
 	if err != nil {
 		return nil, err
 	}
@@ -1364,13 +1369,18 @@ func removeAllExcept(dirRoot *os.Root, exceptions []string) error {
 //
 // Whether name is the Job's to delete at all is decided long before this, by
 // jobWorkSpace; all this bounds is how far a deletion already licensed goes.
+//
+// It keeps nothing, so it has no keep set to spell name against: name is handed
+// on as its own keep-set spelling, which nothing then reads. Every caller passes
+// a single component anyway - an entry of the workspace, its tmp or its working
+// directory - so the two spellings are the same string.
 func removeAllGuarded(dirRoot *os.Root, name string) error {
 	info, err := dirRoot.Lstat(".")
 	if err != nil {
 		return err
 	}
 
-	return removeEntryWithExceptions(dirRoot, name, info, nil)
+	return removeEntryWithExceptions(dirRoot, name, name, info, nil)
 }
 
 // exceptionDirs turns removeAllExcept's exceptions into the set of dirs to keep,
@@ -1396,19 +1406,33 @@ func exceptionDirs(exceptions []string) map[string]bool {
 	return keepDirs
 }
 
-// removeWithExceptions deletes the contents of dir, a path relative to dirRoot,
-// keeping the dirs named in keepDirs. dirInfo must be the lstat of dir itself,
-// since that is what each entry's mount boundary is judged against, and the
-// entry's side of that comparison is an Lstat as well: a device number read
-// through a symlink would describe a filesystem that is not the one being swept.
-func removeWithExceptions(dirRoot *os.Root, dir string, dirInfo os.FileInfo, keepDirs map[string]bool) error {
-	entries, err := readDirIn(dirRoot, dir)
+// removeWithExceptions deletes the contents of dirRoot's OWN directory, keeping
+// the dirs named in keepDirs. dirInfo must be the lstat of that directory, since
+// that is what each entry's mount boundary is judged against, and the entry's
+// side of that comparison is an Lstat as well: a device number read through a
+// symlink would describe a filesystem that is not the one being swept.
+//
+// keepDir is that same directory's path relative to the root the sweep started
+// from, which is the spelling keepDirs is keyed by (see exceptionDirs). It is
+// only ever joined with an entry's name to make a key, and never resolved by any
+// syscall - every syscall here names an entry of the held handle by its own
+// single component. That is what keeps the sweep's cost to one lookup per entry
+// plus one open per directory: os.Root emulates RESOLVE_BENEATH by re-opening
+// each component of a path it is given, so naming an entry through the path it
+// has below the swept root would cost an openat per component per entry, which
+// is the same O(depth^2) the dirChain type describes and avoids the same way, by
+// keeping the handle the descent already opened.
+func removeWithExceptions(dirRoot *os.Root, keepDir string, dirInfo os.FileInfo,
+	keepDirs map[string]bool) error {
+	entries, err := readDirIn(dirRoot)
 	if err != nil {
 		return err
 	}
 
 	for _, entry := range entries {
-		err = removeEntryWithExceptions(dirRoot, filepath.Join(dir, entry.Name()), dirInfo, keepDirs)
+		name := entry.Name()
+
+		err = removeEntryWithExceptions(dirRoot, name, filepath.Join(keepDir, name), dirInfo, keepDirs)
 		if err != nil {
 			return err
 		}
@@ -1417,12 +1441,19 @@ func removeWithExceptions(dirRoot *os.Root, dir string, dirInfo os.FileInfo, kee
 	return nil
 }
 
-// removeEntryWithExceptions deletes the entry of dirRoot at rel, and everything
-// below it, unless it is one of the three things a sweep inside a Job's workspace
-// must leave alone: something across a mount boundary, a dir the Job's own keep
-// set claims, or the base another Job's workspaces sit below.
+// removeEntryWithExceptions deletes the entry of dirRoot called name, and
+// everything below it, unless it is one of the three things a sweep inside a
+// Job's workspace must leave alone: something across a mount boundary, a dir the
+// Job's own keep set claims, or the base another Job's workspaces sit below.
 //
-// dirInfo is the lstat of the directory rel is an entry of.
+// name is a single component, an entry of the directory dirRoot is the handle
+// on, and every syscall here names it. keepRel is the same entry's path relative
+// to the root the sweep started from, which is how keepDirs spells it, and it is
+// used for nothing else: getting the two the wrong way round would leave every
+// keep below the top level unmatched, which looks exactly like a working sweep
+// (see TestCleanupKeepsMountsNestedBelowTheWorkingDir).
+//
+// dirInfo is the lstat of the directory name is an entry of.
 //
 // Only the mount boundary is asked of an entry that is NOT a directory: one it
 // lets through is unlinked, keep set or not. What the keep set describes is mount
@@ -1447,8 +1478,9 @@ func removeWithExceptions(dirRoot *os.Root, dir string, dirInfo os.FileInfo, kee
 // os.Root.RemoveAll, because RemoveAll asks none of those questions of what it
 // finds on the way down, and the deeper entries are exactly the ones that are
 // another Job's live output or the user's remote objects behind a live mount.
-func removeEntryWithExceptions(dirRoot *os.Root, rel string, dirInfo os.FileInfo, keepDirs map[string]bool) error {
-	info, err := dirRoot.Lstat(rel)
+func removeEntryWithExceptions(dirRoot *os.Root, name, keepRel string, dirInfo os.FileInfo,
+	keepDirs map[string]bool) error {
+	info, err := dirRoot.Lstat(name)
 	if err != nil {
 		return ignoreGone(err)
 	}
@@ -1458,29 +1490,64 @@ func removeEntryWithExceptions(dirRoot *os.Root, rel string, dirInfo os.FileInfo
 	}
 
 	if !info.IsDir() {
-		return ignoreGone(dirRoot.Remove(rel))
+		return ignoreGone(dirRoot.Remove(name))
 	}
 
-	if keepDirs[rel] || nestedWorkSpaceBase(rel) {
+	if keepDirs[keepRel] || nestedWorkSpaceBase(name) {
 		return nil
 	}
 
-	return removeSweptDir(dirRoot, rel, info, keepDirs)
+	return removeSweptDir(dirRoot, name, keepRel, info, keepDirs)
 }
 
-// removeSweptDir empties dir - an entry of dirRoot the sweep has decided it may
-// delete - and then removes the emptied dir itself.
+// removeSweptDir empties name - a directory entry of dirRoot the sweep has
+// decided it may delete - and then removes the emptied dir itself. dirInfo is
+// name's own lstat, which becomes what the entries inside it are judged against,
+// and keepRel is name's path relative to the root the sweep started from.
+//
+// It descends by opening name as a root of its own, so the sweep inside it names
+// each entry by a single component of a handle already open on their directory,
+// rather than by a path the root would re-resolve component by component for
+// every entry. The open goes through openVerifiedDir, so the handle is proven to
+// be the same inode the lstat above classified as a directory and judged against
+// the mount boundary: an os.Root refuses an escape from itself but follows a
+// relative symlink that stays inside it, so without that proof a component
+// swapped for a link to a sibling between the lstat and the open would move the
+// descent. Once opened, the handle pins its directory, so everything below is
+// read and deleted in the directory the descent opened whatever happens to the
+// names above it.
+//
+// A dir that has gone between the lstat and the open fails the sweep, exactly as
+// it did when the descent read it by path: cleanup is not made more tolerant
+// here than the deletion it stands in for.
 //
 // A dir that will not go because something inside it survived is not a failure:
 // keeping another Job's workspace, or a live mount, necessarily keeps every
 // directory above it too. That is the leak nestedWorkSpaceBase describes, and it
 // is reported as success because there is nothing wrong and nothing to retry.
-func removeSweptDir(dirRoot *os.Root, dir string, dirInfo os.FileInfo, keepDirs map[string]bool) error {
-	if err := removeWithExceptions(dirRoot, dir, dirInfo, keepDirs); err != nil {
+func removeSweptDir(dirRoot *os.Root, name, keepRel string, dirInfo os.FileInfo,
+	keepDirs map[string]bool) error {
+	if sweptDirCheckedHook != nil {
+		sweptDirCheckedHook(name)
+	}
+
+	childRoot, err := openVerifiedDir(dirRoot, name, dirInfo)
+	if err != nil {
 		return err
 	}
 
-	err := dirRoot.Remove(dir)
+	err = removeWithExceptions(childRoot, keepRel, dirInfo, keepDirs)
+
+	// closed before the rmdir below, and before returning any error, so a deep
+	// descent holds one handle per level of the path it is currently on and no
+	// more.
+	childRoot.Close()
+
+	if err != nil {
+		return err
+	}
+
+	err = dirRoot.Remove(name)
 	if err == nil || os.IsNotExist(err) || errIsDirNotEmpty(err) {
 		return nil
 	}

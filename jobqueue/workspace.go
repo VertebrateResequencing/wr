@@ -1005,7 +1005,7 @@ func (ws *jobWorkSpace) keptEntry(name string) bool {
 // what the Job itself configured: removeAllGuarded is what stops the deletion
 // crossing into another Job's workspace or through a live mount deeper down.
 func (ws *jobWorkSpace) removeWorkSpaceEntries(wsRoot *os.Root) error {
-	entries, err := readDirIn(wsRoot, ".")
+	entries, err := readDirIn(wsRoot)
 	if err != nil {
 		return err
 	}
