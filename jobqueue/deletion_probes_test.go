@@ -70,20 +70,14 @@ const (
 	// itself inside whatever CacheBase it was given.
 	probeMuxfysDir = muxfysCachePrefix + "_cache123"
 
-	// probeBareLeaf and probeOtherLeaf name the two decoy dirs of probeWorld,
-	// and probeDigits is what os.MkdirTemp appends to a name it chooses.
+	// probeBareLeaf and probeOtherLeaf name the two decoy dirs of probeWorld.
 	probeBareLeaf  = "bare prefix"
 	probeOtherLeaf = "user's own"
-	probeDigits    = "0123456789"
 
 	// probeLinkName is the name of a symlink a mount config spells a mount point
 	// or a cache location through, and probeRealDir the dir it leads to.
 	probeLinkName = "link"
 	probeRealDir  = "real"
-
-	// probeSiblingDigits turns a workspace name into the name os.MkdirTemp would
-	// have given ANOTHER run of the same Job.
-	probeSiblingDigits = "999"
 
 	// probeArabicDigit is the digit three written in Arabic-Indic numerals: a
 	// character unicode calls a digit and os.MkdirTemp never writes.
@@ -114,17 +108,19 @@ type probeWorld struct {
 	tmpDir string
 
 	// decoys are directories of the USER's, beside the Job's own workspace and
-	// named the two ways a name os.MkdirTemp chose can be mis-recognised: the
-	// bare prefix wr would have used had it not needed a unique dir, and a name
-	// of the user's own at the same depth. Whoever submits the Job picks the Cmd
-	// that Key() hashes, so they can put a directory at either.
+	// named the two ways the unique name wr minted can be mis-recognised: the
+	// bare prefix wr would have used had it not needed a unique dir, ie. that
+	// prefix with an EMPTY suffix, and a name of the user's own at the same
+	// depth. Whoever submits the Job picks the Cmd that Key() hashes, so they
+	// can put a directory at either.
 	decoys map[string]string
 
 	// output is this run's own file, which cleanup IS entitled to delete.
 	output string
 
-	// sibling is another run of the same Job, differing only in the digits
-	// os.MkdirTemp chose, and siblingFile its live output.
+	// sibling is the working directory mkHashedDir made for ANOTHER run of the
+	// same Job, so it differs from this run's only in the unique suffix wr chose
+	// for it, and siblingFile is its live output.
 	sibling     string
 	siblingFile string
 
@@ -151,13 +147,29 @@ func seedProbeWorld(t *testing.T, job *Job) probeWorld {
 	w.actualCwd, w.workSpace, w.tmpDir = realWorkSpace(job)
 	w.base = filepath.Join(w.cwd, AppName+createdCwdBaseSuffix)
 	w.hashed = filepath.Dir(w.workSpace)
+
+	// the prefix comes from calculateHashedDir, the helper both mkHashedDir and
+	// the guard ask, so the bare-prefix decoy is the prefix with an EMPTY suffix
+	// however wr spells the suffix it adds. Deriving it from the workspace name
+	// instead cannot: the prefix is hex, so trimming the suffix off by character
+	// class eats into it.
+	hashed, bare := calculateHashedDir(w.base, job.Key())
+	So(hashed, ShouldEqual, w.hashed)
+
 	w.decoys = map[string]string{
-		probeBareLeaf:  strings.TrimRight(filepath.Base(w.workSpace), probeDigits),
+		probeBareLeaf:  bare,
 		probeOtherLeaf: "zzzz1234",
 	}
 
-	for _, leaf := range w.decoys {
-		w.mine = append(w.mine, writeFileIn(filepath.Join(w.hashed, leaf, createdCwdName), probeMineName))
+	// the real workspace is that same prefix plus the unique suffix wr chose, so
+	// the two names differ in the suffix ALONE - which is what makes the row
+	// fed by this decoy a test of the empty suffix rather than of a name that
+	// merely resembles the prefix.
+	So(filepath.Base(w.workSpace), ShouldStartWith, w.decoys[probeBareLeaf])
+	So(filepath.Base(w.workSpace), ShouldNotEqual, w.decoys[probeBareLeaf])
+
+	for _, name := range w.decoys {
+		w.mine = append(w.mine, writeFileIn(filepath.Join(w.hashed, name, createdCwdName), probeMineName))
 	}
 
 	for _, dir := range []string{
@@ -168,7 +180,14 @@ func seedProbeWorld(t *testing.T, job *Job) probeWorld {
 		w.mine = append(w.mine, writeFileIn(dir, probeMineName))
 	}
 
-	w.sibling = filepath.Join(w.workSpace+probeSiblingDigits, createdCwdName)
+	// the sibling is minted by asking production for a second workspace of the
+	// SAME key, which is exactly what a second run does, rather than by building
+	// a name of the shape one is expected to have.
+	sibling, _, err := mkHashedDir(job.Cwd, job.Key())
+	So(err, ShouldBeNil)
+	So(sibling, ShouldNotEqual, w.actualCwd)
+
+	w.sibling = sibling
 	w.siblingFile = writeFileIn(w.sibling, "other_run.txt")
 	w.output = writeFileIn(w.actualCwd, "own_output.txt")
 
