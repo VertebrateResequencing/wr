@@ -1228,14 +1228,34 @@ func probeWindowRows() []probeWindowRow {
 			// be one: a stale ActualCwd naming a workspace since handed out
 			// again is indistinguishable by path (the "another run of the same
 			// job" row), but a workspace this cleanup PROVED and then lost is
-			// not - the inode of the dir that was checked says so.
+			// told apart by the inode of the dir that was checked - PROVIDED
+			// the replacement got an inode of its own, which is why the other
+			// run is minted while this workspace still holds its own, and moved
+			// onto its name only afterwards. Freeing the name first would not
+			// guarantee it: ext4 hands a freed directory inode straight back to
+			// the next mkdir, and a replacement given the proven inode
+			// satisfies proveSameDir, so the sweep proceeds and takes the live
+			// run's output with it. That case is a recorded residual, not
+			// something this row can hold production to - see "Measured
+			// residuals" in .docs/cwd_matters_cleanup/readme.md, "os.SameFile
+			// is not an identity check across delete and recreate".
 			name: "another run of the same key is handed this workspace's name",
-			inWindow: func(_ *Job, workSpace, _ string) []string {
-				So(os.RemoveAll(workSpace), ShouldBeNil)
-				So(os.MkdirAll(workSpace, os.ModePerm), ShouldBeNil)
-
-				reusedCwd, reusedTmp, err := mkCwdAndTmp(workSpace)
+			inWindow: func(job *Job, workSpace, _ string) []string {
+				checked, err := os.Lstat(workSpace)
 				So(err, ShouldBeNil)
+
+				otherCwd, otherTmp, err := mkHashedDir(job.Cwd, job.Key())
+				So(err, ShouldBeNil)
+
+				So(os.RemoveAll(workSpace), ShouldBeNil)
+				So(os.Rename(filepath.Dir(otherCwd), workSpace), ShouldBeNil)
+
+				now, err := os.Lstat(workSpace)
+				So(err, ShouldBeNil)
+				So(os.SameFile(now, checked), ShouldBeFalse)
+
+				reusedCwd := filepath.Join(workSpace, filepath.Base(otherCwd))
+				reusedTmp := filepath.Join(workSpace, filepath.Base(otherTmp))
 
 				return []string{
 					writeFileIn(reusedCwd, "live_output.txt"), reusedCwd, reusedTmp, workSpace,
