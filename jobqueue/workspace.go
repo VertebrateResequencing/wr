@@ -910,8 +910,12 @@ func (ws *jobWorkSpace) cleanup() error {
 //
 // A Job with no mounts gets no fast path around the keep set: that set is
 // already empty for such a Job, so the sweep below deletes everything anyway.
+//
+// What the workspace handle is paired with is the lstat of the directory above
+// it, without which a mount the Job's own Cmd raised over the workspace is
+// indistinguishable from the workspace itself; see sweptWorkSpace.
 func (ws *jobWorkSpace) empty(chain dirChain) error {
-	wsRoot, err := chain.openLeaf()
+	workSpace, err := chain.sweptWorkSpace()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -919,20 +923,20 @@ func (ws *jobWorkSpace) empty(chain dirChain) error {
 
 		return err
 	}
-	defer wsRoot.Close()
+	defer workSpace.root.Close()
 
-	actualCwd, err := ws.actualCwdNow(wsRoot)
+	actualCwd, err := ws.actualCwdNow(workSpace.root)
 	if err != nil {
 		return err
 	}
 
 	if !ws.keep.wholeActualCwd && actualCwd != nil {
-		if err = removeActualCwd(wsRoot, ws.paths.actualCwdName, actualCwd, ws.keep.inActualCwd); err != nil {
+		if err = removeActualCwd(workSpace, ws.paths.actualCwdName, actualCwd, ws.keep.inActualCwd); err != nil {
 			return err
 		}
 	}
 
-	return ws.removeWorkSpaceEntries(wsRoot)
+	return ws.removeWorkSpaceEntries(workSpace)
 }
 
 // actualCwdNow lstats the working directory again, as a single named entry of the
@@ -1003,9 +1007,11 @@ func (ws *jobWorkSpace) keptEntry(name string) bool {
 //
 // The keep set is not the whole of what survives, because it can only describe
 // what the Job itself configured: removeAllGuarded is what stops the deletion
-// crossing into another Job's workspace or through a live mount deeper down.
-func (ws *jobWorkSpace) removeWorkSpaceEntries(wsRoot *os.Root) error {
-	entries, err := readDirIn(wsRoot)
+// crossing into another Job's workspace, through a live mount deeper down, or -
+// via the info sweptWorkSpace paired with the handle - into a mount raised over
+// the workspace itself, whose entries all look like ordinary entries of it.
+func (ws *jobWorkSpace) removeWorkSpaceEntries(workSpace sweptDir) error {
+	entries, err := readDirIn(workSpace.root)
 	if err != nil {
 		return err
 	}
@@ -1015,7 +1021,7 @@ func (ws *jobWorkSpace) removeWorkSpaceEntries(wsRoot *os.Root) error {
 			continue
 		}
 
-		if err = removeAllGuarded(wsRoot, entry.Name()); err != nil {
+		if err = removeAllGuarded(workSpace, entry.Name()); err != nil {
 			return err
 		}
 	}
@@ -1041,7 +1047,7 @@ func (ws *jobWorkSpace) removeTmp() error {
 	}
 	defer chain.closeAll()
 
-	wsRoot, err := chain.openLeaf()
+	workSpace, err := chain.sweptWorkSpace()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -1049,9 +1055,9 @@ func (ws *jobWorkSpace) removeTmp() error {
 
 		return err
 	}
-	defer wsRoot.Close()
+	defer workSpace.root.Close()
 
-	return removeAllGuarded(wsRoot, createdTmpName)
+	return removeAllGuarded(workSpace, createdTmpName)
 }
 
 // removeActualCwd deletes the Job's working directory, keeping the given relative
@@ -1061,12 +1067,24 @@ func (ws *jobWorkSpace) removeTmp() error {
 // os.Root.RemoveAll: the working directory is where a Job that adds jobs leaves
 // its children's workspaces, and where a mount the Job raised itself is
 // mounted, and the Job's keep set knows about neither.
-func removeActualCwd(wsRoot *os.Root, actualCwdName string, actualCwdInfo os.FileInfo, keepDirs []string) error {
+//
+// Sweeping around a keep set means sweeping the working directory itself, so the
+// device its own mount boundary is judged against is the workspace's, that being
+// the directory it is an entry of. That info comes from workSpace.sweepable
+// rather than a bare lstat so that a workspace which is itself a mount root
+// refuses the sweep of everything inside it, exactly as it refuses the
+// whole-directory deletion above.
+func removeActualCwd(workSpace sweptDir, actualCwdName string, actualCwdInfo os.FileInfo, keepDirs []string) error {
 	if len(keepDirs) == 0 {
-		return removeAllGuarded(wsRoot, actualCwdName)
+		return removeAllGuarded(workSpace, actualCwdName)
 	}
 
-	actualCwdRoot, err := openVerifiedDir(wsRoot, actualCwdName, actualCwdInfo)
+	wsInfo, ok, err := workSpace.sweepable()
+	if !ok {
+		return err
+	}
+
+	actualCwdRoot, err := openVerifiedDir(workSpace.root, actualCwdName, actualCwdInfo)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -1076,7 +1094,7 @@ func removeActualCwd(wsRoot *os.Root, actualCwdName string, actualCwdInfo os.Fil
 	}
 	defer actualCwdRoot.Close()
 
-	return removeAllExcept(actualCwdRoot, keepDirs)
+	return removeAllExcept(sweptDir{root: actualCwdRoot, above: wsInfo}, keepDirs)
 }
 
 // rmEmptyMountDirs deletes any empty directories between the Job's mount points

@@ -591,7 +591,8 @@ func soGoneWithin(path string) {
 	deadline := time.Now().Add(lostRunSettleTime)
 
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
+		_, err := os.Stat(path)
+		if os.IsNotExist(err) {
 			return
 		}
 
