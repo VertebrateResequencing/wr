@@ -489,9 +489,9 @@ func TestMkHashedDirDuringSweep(t *testing.T) {
 // exits, so a spinning sweep would say nothing about production and everything
 // about how many retries wr happens to have.
 //
-// stop waits for the goroutine and reports how many of those sweeps left
-// removedDir gone, ie. how many really removed the dir they were walking up
-// through.
+// stop waits for the goroutine and reports how many of those sweeps really
+// removed removedDir - counting only a sweep that found it there and left it
+// gone, so a dir that was absent all along cannot be counted as a removal.
 //
 // Sweep errors are not reported: a sweep racing with a dir being remade sees the
 // level it proved replaced by a new inode, and refusing that is the sweep working
@@ -505,9 +505,24 @@ func sweepEmptyDirsPerTick(root *os.Root, leafDir, removedDir string) (tick func
 		defer close(done)
 
 		for range ticks {
+			// whether the dir was there BEFORE this sweep is what makes the
+			// count mean anything: "missing afterwards" is also true of a dir
+			// that was never there, and removedDir is absent for much of this
+			// test - it does not exist before the first tick, and the caller
+			// removes the workspace under it on every iteration. Counting
+			// absence rather than removal made this counter roughly half
+			// fiction (measured: 1060 counted, 551 real) and the assertion on
+			// it unfalsifiable.
+			_, err := os.Stat(removedDir)
+			existed := err == nil
+
 			_ = rmEmptyDirsIn(root, leafDir) //nolint:errcheck // the sweep racing us is the point; its own outcome is irrelevant
 
-			if _, err := os.Stat(removedDir); os.IsNotExist(err) {
+			if !existed {
+				continue
+			}
+
+			if _, err = os.Stat(removedDir); os.IsNotExist(err) {
 				removals.Add(1)
 			}
 		}
