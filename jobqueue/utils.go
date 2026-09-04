@@ -895,9 +895,11 @@ func mkdirAllManaged(path string, perm os.FileMode) error {
 // because nothing after it makes progress, so a unique dir that cannot be
 // created (a full filesystem, an exceeded quota, a read-only remount, an
 // unwritable hashed level) runs the budget down and fails instead of looping for
-// ever. A name that is merely already TAKEN is not one of those: mkWorkSpace
-// answers that with another name inside its own budget, so it never reaches
-// leafTries. Resetting a single shared counter here would make every such failure
+// ever. A name that is merely already TAKEN spends leafTries too, and that is
+// deliberate: mkWorkSpace mints a fresh UUID on every call, so a retry here
+// asks for a different name, and the only cost over answering it inside the
+// mint is one no-op MkdirAll and one pause - paid by an event of probability
+// 2^-122. Resetting a single shared counter here would make every such failure
 // permanently retryable, since the MkdirAll of every later attempt succeeds once
 // the hashed levels exist.
 func tryMkUniqueDir(dir, leaf string, mkdirTries, leafTries *int) (unique string, retry bool, err error) {
