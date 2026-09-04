@@ -1004,7 +1004,11 @@ func TestProbeLiveFuseMounts(t *testing.T) {
 					row.setUp(actualCwd, workSpace)
 				}
 
-				remote := probeMountRemote(t, filepath.Join(workSpace, row.mount))
+				remote, mounted := probeMountRemote(t, filepath.Join(workSpace, row.mount))
+				if !mounted {
+					return
+				}
+
 				probeOwnFiles(workSpace, row.own)
 
 				snap := job.workSpaceSnapshot()
@@ -1040,7 +1044,10 @@ func TestProbeLiveFuseMounts(t *testing.T) {
 			}
 			lostCwd, _, lostTmp := realWorkSpace(job)
 
-			remote := probeMountRemote(t, filepath.Join(lostCwd, testWSMount))
+			remote, mounted := probeMountRemote(t, filepath.Join(lostCwd, testWSMount))
+			if !mounted {
+				return
+			}
 
 			pin := job.pinBehaviours()
 
@@ -1102,7 +1109,11 @@ func TestProbeLiveFuseMounts(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(reusedCwd, ShouldEqual, finished)
 
-			remote := probeMountRemote(t, filepath.Join(reusedCwd, testWSMount))
+			remote, mounted := probeMountRemote(t, filepath.Join(reusedCwd, testWSMount))
+			if !mounted {
+				return
+			}
+
 			live := writeFileIn(reusedCwd, "live_output.txt")
 
 			snap := job.workSpaceSnapshot()
@@ -1158,7 +1169,7 @@ func probeCanMountFuse() bool {
 // ordinary directory, so what survived can be asserted about directly; muxfys
 // would need an object store to talk to, and the deletion under test does not
 // care which filesystem is mounted, only that a mount gets crossed.
-func probeMountRemote(t *testing.T, mountPoint string) string {
+func probeMountRemote(t *testing.T, mountPoint string) (string, bool) {
 	t.Helper()
 
 	backing := t.TempDir()
@@ -1169,7 +1180,17 @@ func probeMountRemote(t *testing.T, mountPoint string) string {
 	So(os.MkdirAll(mountPoint, os.ModePerm), ShouldBeNil)
 
 	server, err := gofuse.Mount(mountPoint, root, &gofuse.Options{})
-	So(err, ShouldBeNil)
+	if err != nil {
+		// probeCanMountFuse only asks whether /dev/fuse and a fusermount
+		// binary are there. A host can have both and still refuse the mount -
+		// a container without SYS_ADMIN, a restrictive fusermount, a full
+		// /dev/fuse - and a probe that cannot raise its remote proves nothing
+		// either way, so it skips rather than reporting a deletion wr did not
+		// make. workspace_test.go's mountLoopback does the same.
+		t.Logf("this host refused a loopback FUSE mount at %s: %s", mountPoint, err)
+
+		return "", false
+	}
 
 	t.Cleanup(func() {
 		if uerr := server.Unmount(); uerr != nil {
@@ -1177,7 +1198,7 @@ func probeMountRemote(t *testing.T, mountPoint string) string {
 		}
 	})
 
-	return remote
+	return remote, true
 }
 
 // probe counts for the concurrency probes below. They are the smallest that
@@ -1642,7 +1663,11 @@ func TestProbeWorkSpaceOnAnotherFilesystem(t *testing.T) {
 		// workspace, so mounting there puts the whole workspace across the
 		// boundary before the workspace exists.
 		hashed, _ := calculateHashedDir(filepath.Join(cwd, AppName+createdCwdBaseSuffix), job.Key())
-		scratch := probeMountRemote(t, hashed)
+
+		scratch, mounted := probeMountRemote(t, hashed)
+		if !mounted {
+			return
+		}
 
 		actualCwd, workSpace, tmpDir := realWorkSpace(job)
 		output := writeFileIn(actualCwd, "own_output.txt")
