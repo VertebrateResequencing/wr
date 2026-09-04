@@ -773,8 +773,12 @@ var workSpaceMintedHook func(path string) //nolint:gochecknoglobals // the only 
 // window, not a guard: a repeat of a name that is still on disk is caught by
 // the create failing, but a repeat of the name of a workspace that has since
 // been REMOVED - which is the case that loses data - leaves nothing to detect,
-// and the sweep's own containment (see relIsJobCreatedCwd and sweptDir) is what
-// bounds the damage if one ever occurs.
+// and nothing detects it.
+//
+// What bounds the damage then is sweptDir's mount-boundary guard and the keep
+// set, NOT relIsJobCreatedCwd: a stale ActualCwd naming a live workspace of the
+// same key has exactly the shape that function accepts, which is the whole
+// reason a repeated name loses data.
 func mkWorkSpace(dir, leaf string) (string, error) {
 	takenTries := 0
 
