@@ -361,7 +361,9 @@ func deterministicLiveBytes(size int) []byte {
 // TestCreatedCwdDepthMatchesMkHashedDir pins createdCwdDepth against what
 // mkHashedDir actually creates. Cleanup refuses to treat a directory at any
 // other depth as a workspace, so if the two ever drift apart every cleanup
-// would silently stop working rather than fail loudly.
+// would silently stop working rather than fail loudly. It calls the real
+// mkHashedDir, so it also pins the workspace's mode, which is user-visible on a
+// shared filesystem rather than an implementation detail.
 func TestCreatedCwdDepthMatchesMkHashedDir(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -377,6 +379,19 @@ func TestCreatedCwdDepthMatchesMkHashedDir(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(len(strings.Split(rel, string(filepath.Separator))), ShouldEqual, createdCwdDepth)
 		So(filepath.Base(actualCwd), ShouldEqual, createdCwdName)
+
+		Convey("and nobody but its owner can enter the workspace that dir sits in", func() {
+			// the workspace holds the Job's output and its TMPDIR, so on a shared
+			// filesystem any group or other bit here would let another user read
+			// and write another user's job data. umask can only clear bits, never
+			// set them, so what the mode has to say is that those bits are already
+			// clear before any umask is applied.
+			const groupAndOtherPerms = 0o077
+
+			info, err := os.Stat(filepath.Dir(actualCwd))
+			So(err, ShouldBeNil)
+			So(info.Mode()&os.ModePerm&groupAndOtherPerms, ShouldEqual, os.FileMode(0))
+		})
 	})
 }
 

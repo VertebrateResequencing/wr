@@ -31,11 +31,11 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-// TestWorkSpaceNameNeverRecurs asserts the invariant the workspace name carries:
-// a name one run of a key is given is never given to another run of that key, so
-// a finished run's stored ActualCwd cannot name a LIVE run's workspace, and the
-// finished run's cleanup therefore cannot sweep through the live run's mounts
-// and caches.
+// TestWorkSpaceNameIsMintedPerRun asserts the invariant the workspace name
+// carries: a name one run of a key is given is never given to another run of
+// that key, so a finished run's stored ActualCwd cannot name a LIVE run's
+// workspace, and the finished run's cleanup therefore cannot sweep through the
+// live run's mounts and caches.
 //
 // It asserts at the boundary wr hands out - the paths mkHashedDir returns and the
 // cleanup the snapshot performs on them - and it does NOT prove that a collision
@@ -52,7 +52,7 @@ import (
 // in depth: nestedWorkSpaceBase keeps a nested job's own workspace out of the
 // sweep, and sweptDir.sweepable stops the sweep at a device boundary, so a
 // live mount inside a colliding workspace is still not deleted through.
-func TestWorkSpaceNameNeverRecurs(t *testing.T) {
+func TestWorkSpaceNameIsMintedPerRun(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}

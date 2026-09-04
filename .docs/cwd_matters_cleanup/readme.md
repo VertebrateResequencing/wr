@@ -322,7 +322,7 @@ exactly that shape exists inside the Job's `Cwd`. For scale: when the check was
 depth-and-name only, a user tree at that depth lost 13 of 13 files and its
 parent was unlinked with `err == nil`.
 
-**The same-key residual is closed.** `mkHashedDir` no longer asks
+**The same-key residual is narrowed.** `mkHashedDir` no longer asks
 `os.MkdirTemp` to name the workspace. The leaf is `<key[3:]>-<uuid>`, the UUID a
 v4 minted per RUN from `crypto/rand` (`uuid.NewV4`). `os.MkdirTemp` only ever
 avoided a name that existed WHEN IT LOOKED, so a name it gave one run was free
@@ -349,13 +349,13 @@ which does not imply `RESOLVE_NO_XDEV`.
 
 **What is left of it.** Four things, and none of them is nothing.
 
-- The name space is 2^-122, not zero. No test can measure the improvement:
-  `os.MkdirTemp` already drew a fresh 32-bit suffix on every call — 0 reuses in
-  20000 create/remove/recreate rounds on go1.26.3 — so
-  `TestWorkSpaceNameNeverRecurs` passes on the pre-fix code too. What it holds
-  is that the mint is fresh per RUN; the guarantee itself is structural, in the
-  name space rather than in a sample. The sweep guards above stay the defence in
-  depth for anything that does collide.
+- The collision probability is 2^-122, not zero. No test can measure the
+  improvement: `os.MkdirTemp` already drew a fresh 32-bit suffix on every call
+  — 0 reuses in 20000 create/remove/recreate rounds on go1.26.3 — so
+  `TestWorkSpaceNameIsMintedPerRun` passes on the pre-fix code too. What it
+  holds is that the mint is fresh per RUN; the guarantee itself is structural,
+  in the name space rather than in a sample. The sweep guards above stay the
+  defence in depth for anything that does collide.
 - A Job's own `Cmd` can still fabricate a SIBLING directory of the accepted
   shape, since it can read the name wr gave it. **Bites when** a STALE run's
   stored `ActualCwd` names the fabrication — and wr only ever stores a name it
@@ -515,19 +515,18 @@ mutations are recorded across the eight rounds that ran them (27, 23, 24, 26,
 **Guards found load-bearing but untested — what the mutations bought.** In round
 5, two guards had NO coverage at all: `createdWorkSpace`'s `isRealDirBelow` and
 `provenActualCwd`'s must-exist check. The whole suite stayed green while a
-user's directory was deleted. Later rounds added tests for
-`relIsCreatedCwd`'s leaf-name check; `HasSuffix` versus `Contains` on the base
-component; the depth check and the hashed-dir comparison, both masked by the
-other conditions of the same predicate; `IsDir` for a working directory that had
-become a regular FILE, masked in all three consumers; `execDir`'s nothing-held
-check, without which the no-`/proc` warning fires for every ordinary Job;
-`dirIsAtOrAbove` resolving the second of two spellings; and the unique dir's
-suffix check in `isJobCreatedWorkSpaceName`, whose mutation survived the entire
-suite. Three more were pinned
-after the last recorded round: `setActualCwd`'s refusal to write `ActualCwd` on
-a `CwdMatters` Job, `wr status`'s display for a job carrying the v0.37.0|1
-poison, and `openLeaf`'s refusal to open a workspace that reappeared after the
-proof. Nothing failed when any of the three was removed.
+user's directory was deleted. Later rounds added tests for `relIsCreatedCwd`'s
+leaf-name check; `HasSuffix` versus `Contains` on the base component; the depth
+check and the hashed-dir comparison, both masked by the other conditions of the
+same predicate; `IsDir` for a working directory that had become a regular FILE,
+masked in all three consumers; `execDir`'s nothing-held check, without which the
+no-`/proc` warning fires for every ordinary Job; `dirIsAtOrAbove` resolving the
+second of two spellings; and the unique dir's suffix check in
+`isJobCreatedWorkSpaceName`, whose mutation survived the entire suite. Three
+more were pinned after the last recorded round: `setActualCwd`'s refusal to
+write `ActualCwd` on a `CwdMatters` Job, `wr status`'s display for a job
+carrying the v0.37.0|1 poison, and `openLeaf`'s refusal to open a workspace that
+reappeared after the proof. Nothing failed when any of the three was removed.
 
 **Fixtures had to be rebuilt.** 17 workspace fixtures were 2 to 3 directories
 deep, i.e. shapes wr cannot produce; they now go through helpers that build the

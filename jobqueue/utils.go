@@ -1386,11 +1386,14 @@ func relIsJobCreatedCwd(rel, key string) bool {
 }
 
 // legacyWorkSpaceNameMaxDigits bounds the run of digits a workspace named by an
-// older wr can end in. os.MkdirTemp, which named those, has always appended the
-// decimal form of an unsigned integer no wider than 64 bits - on go1.26.3 it is
-// strconv.FormatUint(uint64(uint32(runtime_rand())), 10), os/tempfile.go - and
-// 20 digits is the widest a uint64 can be, so no Go release could have exceeded
-// it.
+// older wr can end in. os.MkdirTemp, which named those, appends the decimal form
+// of an unsigned integer, and the widest formatting it is known to have used is
+// a uint32 - on go1.26.3 it is
+// strconv.FormatUint(uint64(uint32(runtime_rand())), 10), os/tempfile.go - which
+// is at most 10 digits. The bound is the 20 digits of a uint64 rather than that
+// observed 10 because only the releases actually read are known: a release whose
+// formatting was not checked must not be able to strand a pre-upgrade workspace
+// by having left a name this refuses.
 const legacyWorkSpaceNameMaxDigits = 20
 
 // isJobCreatedWorkSpaceName tells you if name is a per-run workspace directory
