@@ -501,7 +501,7 @@ func sweepEmptyDirsPerTick(root *os.Root, leafDir, removedDir string) (tick func
 		defer close(done)
 
 		for range ticks {
-			_ = rmEmptyDirsIn(root, leafDir)
+			_ = rmEmptyDirsIn(root, leafDir) //nolint:errcheck // the sweep racing us is the point; its own outcome is irrelevant
 
 			if _, err := os.Stat(removedDir); os.IsNotExist(err) {
 				removals.Add(1)
