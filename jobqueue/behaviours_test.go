@@ -1446,6 +1446,109 @@ func runBehaviour() *Behaviour {
 	return &Behaviour{When: OnExit, Do: Run, Arg: "touch " + testRunMarker}
 }
 
+// TestCleanupKeepsMountsNestedBelowTheWorkingDir pins the mapping between the
+// single-component names the working-directory sweep makes its syscalls with and
+// the paths relative to that directory the keep set is spelled by. Getting the
+// two the wrong way round leaves every keep below the top level unmatched, which
+// a test whose mount point is a direct entry of the working directory cannot
+// see: there the entry's own name and its path relative to that directory are
+// the same string.
+func TestCleanupKeepsMountsNestedBelowTheWorkingDir(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a Job with a mount point two dirs below its working directory", t, func() {
+		cwd := t.TempDir()
+
+		job := &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{Mount: "a/b/" + testWSMount}}}
+		actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+		nested := filepath.Join(actualCwd, "a", "b")
+		mountPoint := filepath.Join(nested, testWSMount)
+		mounted := writeFileIn(mountPoint, "remote.txt")
+
+		sibling := filepath.Join(nested, "sibling")
+		siblingFile := writeFileIn(sibling, "out.txt")
+		output := writeFileIn(actualCwd, "out.txt")
+
+		Convey("cleanup keeps it, and still deletes an unkept dir beside it", func() {
+			err := (&Behaviour{When: OnExit, Do: Cleanup}).Trigger(OnExit, job)
+
+			// survival is asserted before the error, since a leaf stops at its
+			// first failed So and the deletion is the evidence that matters.
+			soPathsExist(mounted, mountPoint, nested, filepath.Join(actualCwd, "a"),
+				actualCwd, workSpace, cwd)
+			soPathsGone(siblingFile, sibling, output, tmpDir)
+
+			So(err, ShouldBeNil)
+		})
+	})
+}
+
+func TestCleanupSweptDirSwappedForASymlinkAfterItWasChecked(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a Job whose workspace holds another Job's workspaces beside a dir of its own", t, func() {
+		// the sweep asks what an entry IS with an lstat and then opens it to
+		// descend, and an os.Root follows a relative symlink that stays inside
+		// itself: a directory entry swapped for a link to a sibling in between
+		// would move the whole descent into a directory the sweep never
+		// device-checked, never classified and never decided it could delete.
+		// The sibling here is the base another Job's workspaces sit below, which
+		// nestedWorkSpaceBase keeps without ever looking inside, so a redirected
+		// descent deletes that Job's live output - the loss this guard exists to
+		// prevent.
+		cwd := t.TempDir()
+		job := &Job{Cwd: cwd, Cmd: testWSCmd}
+		actualCwd, workSpace, _ := realWorkSpace(job)
+
+		output := writeFileIn(actualCwd, "out.txt")
+
+		nestedBase := filepath.Join(workSpace, "nested"+createdCwdBaseSuffix)
+		nestedCwd := filepath.Join(nestedBase, "child")
+		nestedOutput := writeFileIn(nestedCwd, "child.txt")
+
+		stray := filepath.Join(workSpace, "logs")
+		strayFile := writeFileIn(stray, "log.txt")
+
+		Reset(func() { sweptDirCheckedHook = nil })
+
+		Convey("cleanup deletes nothing through a swept dir swapped for a symlink to them", func() {
+			sweptDirCheckedHook = func(name string) {
+				// the sweep descends into the working directory and into every
+				// dir below it too, so only the one entry this test made is
+				// swapped; anything else would depend on readdir order.
+				if name != filepath.Base(stray) {
+					return
+				}
+
+				sweptDirCheckedHook = nil
+
+				So(os.Rename(stray, stray+".moved"), ShouldBeNil)
+				So(os.Symlink(filepath.Base(nestedBase), stray), ShouldBeNil)
+			}
+
+			err := (&Behaviour{When: OnExit, Do: Cleanup}).Trigger(OnExit, job)
+
+			// survival is asserted before the error, since a leaf stops at its
+			// first failed So and the deletion is the evidence that matters.
+			soPathsExist(nestedOutput, nestedCwd, nestedBase, workSpace, cwd,
+				filepath.Join(stray+".moved", filepath.Base(strayFile)))
+
+			// what the sweep was licensed to delete it still deleted: the
+			// working directory is emptied and removed before the workspace's
+			// own entries are swept, so this says nothing about readdir order.
+			soPathsGone(output, actualCwd)
+
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
+		})
+	})
+}
+
 func TestBehaviourRunDir(t *testing.T) {
 	if runnermode || servermode {
 		return

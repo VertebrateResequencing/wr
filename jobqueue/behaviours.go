@@ -55,6 +55,17 @@ var (
 // swap something in during that window. It is nil in production.
 var cleanupProvenHook func() //nolint:gochecknoglobals
 
+// sweptDirCheckedHook, when set, is called by removeSweptDir after the sweep has
+// lstat'ed a directory entry it is entitled to delete and before it opens that
+// entry to descend into it, so that a test can swap something in during that
+// window. It is nil in production.
+//
+// It is given the entry's name so that a test can act on the ONE entry it made:
+// the sweep descends into every directory it may delete, so a hook that acted on
+// whichever of them readdir happened to yield first would swap in a different
+// place from run to run.
+var sweptDirCheckedHook func(name string) //nolint:gochecknoglobals
+
 // runResolvedHook and runProvenHook, when set, are called in the two windows a
 // `run` Behaviour has to survive, so that a test can swap something in during
 // them; both are nil in production.

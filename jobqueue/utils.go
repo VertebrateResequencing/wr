@@ -1326,10 +1326,15 @@ func relIsBelow(rel string) bool {
 	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// readDirIn reads the entries of dir, a path relative to dirRoot, through the
-// root handle, so the read cannot be redirected outside it.
-func readDirIn(dirRoot *os.Root, dir string) ([]os.DirEntry, error) {
-	f, err := dirRoot.Open(dir)
+// readDirIn reads the entries of dirRoot's own directory through the root
+// handle, so the read cannot be redirected outside it.
+//
+// It names "." rather than taking a path, because "." is the directory the
+// handle's descriptor already refers to and so is the one spelling no component
+// of which can be resolved afresh: every sweep below holds a handle on the
+// directory it is reading, and nothing is left to be re-resolved from a string.
+func readDirIn(dirRoot *os.Root) ([]os.DirEntry, error) {
+	f, err := dirRoot.Open(".")
 	if err != nil {
 		return nil, err
 	}
@@ -1339,7 +1344,8 @@ func readDirIn(dirRoot *os.Root, dir string) ([]os.DirEntry, error) {
 }
 
 // removeAllExcept deletes the contents of dirRoot's own directory, except for
-// the given folders (paths relative to it).
+// the given folders (paths relative to it), and except for whatever
+// removeEntryWithExceptions refuses to touch at all.
 //
 // An exception that doesn't land strictly inside the directory is skipped rather
 // than treated as an error. A MountConfig.Mount is whatever the user typed for
@@ -1348,22 +1354,45 @@ func readDirIn(dirRoot *os.Root, dir string) ([]os.DirEntry, error) {
 // exception outside it was protecting nothing, whereas erroring would abandon the
 // job's workspace for no gain.
 func removeAllExcept(dirRoot *os.Root, exceptions []string) error {
-	keepDirs, checkDirs := exceptionDirs(exceptions)
+	info, err := dirRoot.Lstat(".")
+	if err != nil {
+		return err
+	}
 
-	return removeWithExceptions(dirRoot, ".", keepDirs, checkDirs)
+	return removeWithExceptions(dirRoot, ".", info, exceptionDirs(exceptions))
 }
 
-// exceptionDirs turns removeAllExcept's exceptions into the set of dirs to keep
-// and the set of dirs that must be recursed into to reach them, both as paths
-// relative to the dir being emptied.
+// removeAllGuarded deletes the entry of dirRoot called name, and everything
+// below it. It stands in for os.Root.RemoveAll everywhere a Job's cleanup
+// deletes inside the workspace wr made for it, and differs from it only in what
+// it refuses to touch; see removeEntryWithExceptions.
 //
-// What stops the upward walk running past the filesystem root is its own
-// relIsBelow(parent), which is false at once for the "." and ".."-shaped rels
-// removeAllExcept describes. The skip ahead of it keeps a path that protects
-// nothing out of the sets, rather than being what makes the walk terminate.
-func exceptionDirs(exceptions []string) (keepDirs, checkDirs map[string]bool) {
-	keepDirs = make(map[string]bool, len(exceptions))
-	checkDirs = make(map[string]bool, len(exceptions))
+// Whether name is the Job's to delete at all is decided long before this, by
+// jobWorkSpace; all this bounds is how far a deletion already licensed goes.
+//
+// It keeps nothing, so it has no keep set to spell name against: name is handed
+// on as its own keep-set spelling, which nothing then reads. Every caller passes
+// a single component anyway - an entry of the workspace, its tmp or its working
+// directory - so the two spellings are the same string.
+func removeAllGuarded(dirRoot *os.Root, name string) error {
+	info, err := dirRoot.Lstat(".")
+	if err != nil {
+		return err
+	}
+
+	return removeEntryWithExceptions(dirRoot, name, name, info, nil)
+}
+
+// exceptionDirs turns removeAllExcept's exceptions into the set of dirs to keep,
+// as paths relative to the dir being emptied.
+//
+// A path that does not land strictly inside that dir is left out rather than
+// stopping anything: only descendants of the dir are ever deleted, so such an
+// exception was protecting nothing. There is no second set naming the dirs to
+// recurse INTO to reach these, because the sweep recurses into every dir it does
+// not leave alone.
+func exceptionDirs(exceptions []string) map[string]bool {
+	keepDirs := make(map[string]bool, len(exceptions))
 
 	for _, dir := range exceptions {
 		rel := filepath.Join(".", dir)
@@ -1372,25 +1401,38 @@ func exceptionDirs(exceptions []string) (keepDirs, checkDirs map[string]bool) {
 		}
 
 		keepDirs[rel] = true
-
-		for parent := filepath.Dir(rel); relIsBelow(parent); parent = filepath.Dir(parent) {
-			checkDirs[parent] = true
-		}
 	}
 
-	return keepDirs, checkDirs
+	return keepDirs
 }
 
-// removeWithExceptions deletes the contents of dir, a path relative to dirRoot,
-// keeping the dirs named in keepDirs and recursing into those in checkDirs.
-func removeWithExceptions(dirRoot *os.Root, dir string, keepDirs, checkDirs map[string]bool) error {
-	entries, err := readDirIn(dirRoot, dir)
+// removeWithExceptions deletes the contents of dirRoot's OWN directory, keeping
+// the dirs named in keepDirs. dirInfo must be the lstat of that directory, since
+// that is what each entry's mount boundary is judged against, and the entry's
+// side of that comparison is an Lstat as well: a device number read through a
+// symlink would describe a filesystem that is not the one being swept.
+//
+// keepDir is that same directory's path relative to the root the sweep started
+// from, which is the spelling keepDirs is keyed by (see exceptionDirs). It is
+// only ever joined with an entry's name to make a key, and never resolved by any
+// syscall - every syscall here names an entry of the held handle by its own
+// single component. That is what keeps the sweep's cost to one lookup per entry
+// plus one open per directory: os.Root emulates RESOLVE_BENEATH by re-opening
+// each component of a path it is given, so naming an entry through the path it
+// has below the swept root would cost an openat per component per entry, which
+// is the same O(depth^2) the dirChain type describes and avoids the same way, by
+// keeping the handle the descent already opened.
+func removeWithExceptions(dirRoot *os.Root, keepDir string, dirInfo os.FileInfo,
+	keepDirs map[string]bool) error {
+	entries, err := readDirIn(dirRoot)
 	if err != nil {
 		return err
 	}
 
 	for _, entry := range entries {
-		err = removeEntryWithExceptions(dirRoot, filepath.Join(dir, entry.Name()), entry.IsDir(), keepDirs, checkDirs)
+		name := entry.Name()
+
+		err = removeEntryWithExceptions(dirRoot, name, filepath.Join(keepDir, name), dirInfo, keepDirs)
 		if err != nil {
 			return err
 		}
@@ -1399,20 +1441,197 @@ func removeWithExceptions(dirRoot *os.Root, dir string, keepDirs, checkDirs map[
 	return nil
 }
 
-// removeEntryWithExceptions handles a single entry for removeWithExceptions:
-// files are removed, kept dirs are left, dirs containing exceptions are
-// recursed into, and other dirs are removed entirely.
-func removeEntryWithExceptions(dirRoot *os.Root, rel string, isDir bool, keepDirs, checkDirs map[string]bool) error {
-	switch {
-	case !isDir:
-		return dirRoot.Remove(rel)
-	case keepDirs[rel]:
-		return nil
-	case checkDirs[rel]:
-		return removeWithExceptions(dirRoot, rel, keepDirs, checkDirs)
-	default:
-		return dirRoot.RemoveAll(rel)
+// removeEntryWithExceptions deletes the entry of dirRoot called name, and
+// everything below it, unless it is one of the three things a sweep inside a
+// Job's workspace must leave alone: something across a mount boundary, a dir the
+// Job's own keep set claims, or the base another Job's workspaces sit below.
+//
+// name is a single component, an entry of the directory dirRoot is the handle
+// on, and every syscall here names it. keepRel is the same entry's path relative
+// to the root the sweep started from, which is how keepDirs spells it, and it is
+// used for nothing else: getting the two the wrong way round would leave every
+// keep below the top level unmatched, which looks exactly like a working sweep
+// (see TestCleanupKeepsMountsNestedBelowTheWorkingDir).
+//
+// dirInfo is the lstat of the directory name is an entry of.
+//
+// Only the mount boundary is asked of an entry that is NOT a directory: one it
+// lets through is unlinked, keep set or not. What the keep set describes is mount
+// points and cache locations, which are directories by role (see keptDirs), and
+// it deliberately holds EVERY spelling that puts one of them inside the working
+// directory (see relsBelowDirResolved) - so a symlink inside that directory can
+// itself be one of those spellings. Keeping it protects nothing, since unlinking
+// a symlink never touches what it points at: where the link leads to another
+// entry of that directory the set names that entry too, so the mount or the cache
+// is kept under its OWN name; where it leads out of that directory, nothing
+// inside the tree being swept needed protecting. All keeping the link leaves is a
+// second name in a tree the Job was licensed to clear. The nested-workspace name
+// says the same of a non-dir: only a directory can hold another Job's workspace.
+//
+// The boundary is asked of a non-dir as well, which refuses slightly more than
+// the sweep this restores: short of a filesystem that reports a non-dir's device
+// from a lower layer, a device number differs from its parent directory's only
+// when something is mounted ON the entry, and unlinking a mounted file gets
+// EBUSY, so trying leaves the same file behind and fails the Job's whole cleanup.
+//
+// A dir is descended into and then removed, rather than handed to
+// os.Root.RemoveAll, because RemoveAll asks none of those questions of what it
+// finds on the way down, and the deeper entries are exactly the ones that are
+// another Job's live output or the user's remote objects behind a live mount.
+func removeEntryWithExceptions(dirRoot *os.Root, name, keepRel string, dirInfo os.FileInfo,
+	keepDirs map[string]bool) error {
+	info, err := dirRoot.Lstat(name)
+	if err != nil {
+		return ignoreGone(err)
 	}
+
+	if crossesMountBoundary(dirInfo, info) {
+		return nil
+	}
+
+	if !info.IsDir() {
+		return ignoreGone(dirRoot.Remove(name))
+	}
+
+	if keepDirs[keepRel] || nestedWorkSpaceBase(name) {
+		return nil
+	}
+
+	return removeSweptDir(dirRoot, name, keepRel, info, keepDirs)
+}
+
+// removeSweptDir empties name - a directory entry of dirRoot the sweep has
+// decided it may delete - and then removes the emptied dir itself. dirInfo is
+// name's own lstat, which becomes what the entries inside it are judged against,
+// and keepRel is name's path relative to the root the sweep started from.
+//
+// It descends by opening name as a root of its own, so the sweep inside it names
+// each entry by a single component of a handle already open on their directory,
+// rather than by a path the root would re-resolve component by component for
+// every entry. The open goes through openVerifiedDir, so the handle is proven to
+// be the same inode the lstat above classified as a directory and judged against
+// the mount boundary: an os.Root refuses an escape from itself but follows a
+// relative symlink that stays inside it, so without that proof a component
+// swapped for a link to a sibling between the lstat and the open would move the
+// descent. Once opened, the handle pins its directory, so everything below is
+// read and deleted in the directory the descent opened whatever happens to the
+// names above it.
+//
+// A dir that has gone between the lstat and the open fails the sweep, exactly as
+// it did when the descent read it by path: cleanup is not made more tolerant
+// here than the deletion it stands in for.
+//
+// A dir that will not go because something inside it survived is not a failure:
+// keeping another Job's workspace, or a live mount, necessarily keeps every
+// directory above it too. That is the leak nestedWorkSpaceBase describes, and it
+// is reported as success because there is nothing wrong and nothing to retry.
+func removeSweptDir(dirRoot *os.Root, name, keepRel string, dirInfo os.FileInfo,
+	keepDirs map[string]bool) error {
+	if sweptDirCheckedHook != nil {
+		sweptDirCheckedHook(name)
+	}
+
+	childRoot, err := openVerifiedDir(dirRoot, name, dirInfo)
+	if err != nil {
+		return err
+	}
+
+	err = removeWithExceptions(childRoot, keepRel, dirInfo, keepDirs)
+
+	// closed before the rmdir below, and before returning any error, so a deep
+	// descent holds one handle per level of the path it is currently on and no
+	// more.
+	childRoot.Close()
+
+	if err != nil {
+		return err
+	}
+
+	err = dirRoot.Remove(name)
+	if err == nil || os.IsNotExist(err) || errIsDirNotEmpty(err) {
+		return nil
+	}
+
+	return err
+}
+
+// nestedWorkSpaceBase says whether the name of rel - a DIRECTORY entry of a
+// directory a Job's cleanup is sweeping - ends in createdCwdBaseSuffix, the
+// shape of the base component wr creates working directories below. An entry of
+// that shape holds the workspace of some OTHER Job, so the sweep leaves it alone
+// without looking inside.
+//
+// It is only ever asked of a directory, because only a directory can hold a
+// workspace: removeEntryWithExceptions unlinks or skips anything else before it
+// gets here, so a mere FILE of the user's whose name ends in _cwd is swept like
+// any other file the Job left in a tree it was licensed to clear.
+//
+// Nothing wr made for the Job being swept can be inside such an entry: that
+// Job's own base component is ABOVE its workspace, and the sweep never goes
+// above it. So the entry is another Job's, and wr's own defaults are what put it
+// there: a Job that adds jobs (the documented `wr add --bsubs` pattern, and
+// `wr bsub`) hands its children a Cwd of os.Getwd(), which IS the working
+// directory wr gave it, so their workspaces get built inside the tree its
+// default `--on_exit [{"cleanup":true}]` sweeps - while they are still running
+// in them.
+//
+// The name is matched by SUFFIX rather than against AppName+createdCwdBaseSuffix
+// for the reason createdCwdBaseSuffix gives: AppName is "jobqueue" in the
+// manager and "wr" in the runner, and cleanup runs in both, so an equality check
+// would silently protect nothing in one of them. A suffix match also keeps a
+// directory of the user's own whose name merely ends in _cwd, which is
+// deliberately conservative: it leaves behind something that was the Job's to
+// delete, rather than deleting something that was not.
+//
+// What this costs is a LEAK: a parent whose children left workspaces behind can
+// no longer reclaim its own working directory or the workspace holding it,
+// because the child tree is inside them and keeps them non-empty. That is
+// deliberate, and not to be "fixed" by deleting the tree anyway: a workspace
+// left behind is recoverable, another Job's live output is not.
+func nestedWorkSpaceBase(rel string) bool {
+	return strings.HasSuffix(filepath.Base(rel), createdCwdBaseSuffix)
+}
+
+// crossesMountBoundary reports whether entry is on a different device from the
+// directory it is an entry of, ie. whether deleting it, or descending into it,
+// would cross a mount boundary.
+//
+// It is RESOLVE_NO_XDEV done by hand. An os.Root gives RESOLVE_BENEATH, which
+// does not imply it, so a deletion bounded by a root still recurses through a
+// live mount inside that root and unlinks the objects behind it. The Job's keep
+// set cannot cover those, because it is built from the Job's own MountConfigs
+// while the mount may have been raised by the Job's own Cmd (sshfs, s3fs) or by a
+// nested wr, appearing in no config wr has ever seen.
+//
+// It only sees a boundary BELOW the directory being swept, and is blind to the
+// swept directory being a mount root itself: every entry of a mount root is on
+// the mount's own device, so comparing them finds nothing to stop. A Cmd that
+// mounts over its own working directory, or over the workspace, is therefore
+// still swept into. Do not read this guard as covering every live mount.
+//
+// A host that gives us no *syscall.Stat_t can tell us no devices, and the answer
+// is then "no boundary": that leaves the sweep exactly as it was, whereas
+// refusing on an unknown would strand every workspace on such a host.
+func crossesMountBoundary(dir, entry os.FileInfo) bool {
+	dirStat, dirOK := dir.Sys().(*syscall.Stat_t)
+	entryStat, entryOK := entry.Sys().(*syscall.Stat_t)
+
+	if !dirOK || !entryOK {
+		return false
+	}
+
+	return dirStat.Dev != entryStat.Dev
+}
+
+// ignoreGone drops a not-exist error, which a deletion has no reason to report:
+// the sweep reads a directory, then lstats an entry, then deletes it, and
+// something that has gone in between needs no deleting.
+func ignoreGone(err error) error {
+	if os.IsNotExist(err) {
+		return nil
+	}
+
+	return err
 }
 
 // compressFile reads the content of the given file then compresses that. Since
