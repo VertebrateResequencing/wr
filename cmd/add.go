@@ -504,8 +504,8 @@ new job will have this job's mount and cloud_* options.
 
 Because those new jobs are given this job's working directory as their own
 literal one, "bsub_mode" defaults "cwd_matters" to true, so that this job's
-working directory is your own directory and not one wr made and may delete. Say
---cwd_matters=false if you want the old behaviour.
+working directory is your own directory and not one wr made and may delete. An
+explicit --cwd_matters=false overrides that default.
 
 NB: When running with sudo that is configured to not pass through environmental
 variables, you must have a wr config file, accessible from the working
@@ -975,8 +975,7 @@ func addFromDir() string {
 // only job in a --bsub tree that creates a working directory, the children being
 // cwd_matters already, so not creating it removes the whole class.
 //
-// An explicit --cwd_matters=false still wins, for anyone who wants the old
-// shape.
+// An explicit --cwd_matters=false still wins.
 func cwdMatters() bool {
 	given := cmdCwdMattersChanged != nil && *cmdCwdMattersChanged
 
