@@ -365,6 +365,10 @@ func deterministicLiveBytes(size int) []byte {
 // would silently stop working rather than fail loudly. It calls the real
 // mkHashedDir, so it also pins the workspace's mode, which is user-visible on a
 // shared filesystem rather than an implementation detail.
+// testJobKey stands in for a Job's Key(): 32 hex characters, which is what
+// byteKey produces and what calculateHashedDir and relIsJobCreatedCwd expect.
+const testJobKey = "0123456789abcdef0123456789abcdef"
+
 func TestCreatedCwdDepthMatchesMkHashedDir(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -373,7 +377,7 @@ func TestCreatedCwdDepthMatchesMkHashedDir(t *testing.T) {
 	Convey("The working dir mkHashedDir creates is createdCwdDepth below the base", t, func() {
 		base := t.TempDir()
 
-		actualCwd, _, err := mkHashedDir(base, "0123456789abcdef0123456789abcdef")
+		actualCwd, _, err := mkHashedDir(base, testJobKey)
 		So(err, ShouldBeNil)
 
 		rel, err := filepath.Rel(base, actualCwd)
@@ -424,7 +428,7 @@ func TestMkHashedDirDuringSweep(t *testing.T) {
 
 	Convey("mkHashedDir makes a workspace while a sweep runs against the dir it makes it in", t, func() {
 		base := t.TempDir()
-		key := "0123456789abcdef0123456789abcdef"
+		key := testJobKey
 		cwdBase := filepath.Join(base, AppName+createdCwdBaseSuffix)
 		hashed, _ := calculateHashedDir(cwdBase, key)
 
@@ -543,7 +547,7 @@ func TestMkHashedDirUnwritableHashedDir(t *testing.T) {
 		return
 	}
 
-	key := "0123456789abcdef0123456789abcdef"
+	key := testJobKey
 
 	Convey("mkHashedDir gives up when it cannot create anything in the hashed dirs", t, func() {
 		base := t.TempDir()
@@ -608,7 +612,7 @@ func TestMkHashedDirNameTaken(t *testing.T) {
 		return
 	}
 
-	key := "0123456789abcdef0123456789abcdef"
+	key := testJobKey
 
 	Convey("mkHashedDir works around a workspace name that is already taken", t, func() {
 		base := t.TempDir()
@@ -626,7 +630,7 @@ func TestMkHashedDirNameTaken(t *testing.T) {
 			}
 
 			taken = path
-			hookErr = os.MkdirAll(path, workSpaceNamePerm) //nolint:gosec // test-controlled path under a temp dir
+			hookErr = os.MkdirAll(path, workSpaceNamePerm)
 		}
 
 		Reset(func() { workSpaceMintedHook = nil })
@@ -676,7 +680,7 @@ func TestMkHashedDirNameTaken(t *testing.T) {
 				return
 			}
 
-			err := os.MkdirAll(path, workSpaceNamePerm) //nolint:gosec // test-controlled path under a temp dir
+			err := os.MkdirAll(path, workSpaceNamePerm)
 			if err != nil && hookErr == nil {
 				hookErr = err
 			}
@@ -707,7 +711,7 @@ func TestMkHashedDirNameTaken(t *testing.T) {
 			calls++
 			// removing the hashed dir the workspace was to go in makes the create
 			// fail with ENOENT rather than EEXIST.
-			err := os.RemoveAll(filepath.Dir(path)) //nolint:gosec // test-controlled path under a temp dir
+			err := os.RemoveAll(filepath.Dir(path))
 			if err != nil && hookErr == nil {
 				hookErr = err
 			}

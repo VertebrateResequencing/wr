@@ -798,9 +798,6 @@ func mkWorkSpace(dir, leaf string) (string, error) {
 	return workSpace, nil
 }
 
-// holdFilePerm is the permission used for the hold file dropped by mkHeldDir.
-const holdFilePerm = 0o600
-
 // mkHashedDirRetryPause is how long mkUniqueDir waits before trying again. It is
 // not a retry budget - mkHashedDirMaxTries is still that - but the gap between
 // two tries, and without it the tries buy nothing.
