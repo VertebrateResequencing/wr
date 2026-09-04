@@ -730,38 +730,64 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 		return cwd, tmpDir, err
 	}
 
-	// if tohash is a job key then we expect that only 1 of that job is
-	// running at any one time per jobqueue, but there could be multiple users
-	// running the same cmd, or this user could be running the same command in
-	// multiple queues, so we must still create a unique dir at the leaf of our
-	// hashed dir structure, to avoid any conflict of multiple processes using
-	// the same working directory.
-	//
-	// That uniqueness wants to hold FOR ALL TIME, not just at the instant the
-	// dir is made. os.MkdirTemp, which used to name this dir, draws a fresh
-	// 32-bit suffix per call and retries while the name exists, so two runs
-	// alive at once never share one. But once a run's dir has been removed, a
-	// later run of the same key can draw the same suffix again - 1 in 2^32 -
-	// and a finished run's stored ActualCwd then names a LIVE run's workspace
-	// byte for byte, so the finished run's cleanup sweeps through the live
-	// run's mounts and caches.
-	//
-	// A v4 UUID carries 122 random bits instead of 32, which does not make a
-	// repeat impossible, only small enough to disregard. This is hardening of
-	// a narrow window, not a guard: nothing here DETECTS a repeat, and the
-	// sweep's own containment (see relIsJobCreatedCwd and sweptDir) is what
-	// bounds the damage if one ever occurs.
-	u, err := uuid.NewV4()
+	dir, err = mkWorkSpace(dir, leaf)
 	if err != nil {
 		return cwd, tmpDir, err
 	}
 
-	dir = filepath.Join(dir, leaf+workSpaceNameSep+u.String())
-	if err = mkdirManaged(dir, workSpaceNamePerm); err != nil {
-		return cwd, tmpDir, err
-	}
-
 	return mkCwdAndTmp(dir)
+}
+
+// workSpaceMintedHook, when set, is called with each workspace path
+// tryMkWorkSpace has minted, before it attempts to create it, so that a test
+// can create that exact directory itself and make the create fail with EEXIST.
+// A v4 UUID cannot be made to collide, so this is the only seam onto the
+// name-already-taken retry. It is nil in production.
+//
+// It is given the path, rather than merely called, because the name a test has
+// to act on is the one just drawn and so is different every run.
+var workSpaceMintedHook func(path string) //nolint:gochecknoglobals // the only seam onto a name we cannot make collide
+
+// mkWorkSpace creates a uniquely named directory inside dir, prefixed with
+// leaf, and returns it. It is where os.MkdirTemp, which used to name this dir,
+// was called, and it keeps that call's contract: a name that turns out to be
+// taken is not the caller's problem, being answered by another name, within a
+// budget.
+//
+// Where leaf comes from a job key we expect that only 1 of that job is running
+// at any one time per jobqueue, but there could be multiple users running the
+// same cmd, or this user could be running the same command in multiple queues,
+// so we must still create a unique dir at the leaf of our hashed dir structure,
+// to avoid any conflict of multiple processes using the same working directory.
+//
+// That uniqueness wants to hold FOR ALL TIME, not just at the instant the dir
+// is made. os.MkdirTemp drew a fresh 32-bit suffix per call and tried again
+// while the name existed, so two runs alive at once never shared one. But once
+// a run's dir had been removed, a later run of the same key could draw the same
+// suffix again - 1 in 2^32 - and a finished run's stored ActualCwd then names a
+// LIVE run's workspace byte for byte, so the finished run's cleanup sweeps
+// through the live run's mounts and caches.
+//
+// A v4 UUID carries 122 random bits instead of 32, which does not make a repeat
+// impossible, only small enough to disregard. This is hardening of a narrow
+// window, not a guard: a repeat of a name that is still on disk is caught by
+// the create failing, but a repeat of the name of a workspace that has since
+// been REMOVED - which is the case that loses data - leaves nothing to detect,
+// and the sweep's own containment (see relIsJobCreatedCwd and sweptDir) is what
+// bounds the damage if one ever occurs.
+func mkWorkSpace(dir, leaf string) (string, error) {
+	takenTries := 0
+
+	for {
+		workSpace, retry, err := tryMkWorkSpace(dir, leaf, &takenTries)
+		if err != nil {
+			return "", err
+		}
+
+		if !retry {
+			return workSpace, nil
+		}
+	}
 }
 
 // holdFilePerm is the permission used for the hold file dropped by mkHeldDir.
@@ -856,6 +882,45 @@ func tryMkHeldDir(dir, holdFile string, mkdirTries, holdTries *int) (retry bool,
 	}
 
 	return false, f.Close()
+}
+
+// tryMkWorkSpace makes one attempt to mint a workspace name inside dir and
+// create it. It returns retry=true if mkWorkSpace should loop again, or an
+// error if we've run out of retries. retry=false with a nil error means
+// success, and workSpace is then the dir that was made.
+//
+// Each attempt draws its OWN UUID: the only reason to try again is that the
+// name is taken, and the same name will be just as taken next time. Only
+// os.IsExist is retried, because every other reason the create can fail - a
+// full filesystem, an exceeded quota, a read-only remount, a hashed level that
+// has gone - would fail identically for any other name, so trying again only
+// delays burying the job with it. takenTries is never reset, because nothing
+// between two attempts makes progress; resetting it inside the loop would make
+// a name that somehow always exists loop for ever, which is the livelock #569
+// fixed in tryMkHeldDir.
+func tryMkWorkSpace(dir, leaf string, takenTries *int) (workSpace string, retry bool, err error) {
+	u, err := uuid.NewV4()
+	if err != nil {
+		return "", false, err
+	}
+
+	workSpace = filepath.Join(dir, leaf+workSpaceNameSep+u.String())
+
+	if workSpaceMintedHook != nil {
+		workSpaceMintedHook(workSpace)
+	}
+
+	if err = mkdirManaged(workSpace, workSpaceNamePerm); err != nil {
+		if !os.IsExist(err) {
+			return "", false, err
+		}
+
+		retry, err = retryOrFail(takenTries, err)
+
+		return "", retry, err
+	}
+
+	return workSpace, false, nil
 }
 
 // retryOrFail increments *tries and reports whether the caller should retry

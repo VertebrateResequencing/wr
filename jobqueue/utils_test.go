@@ -457,6 +457,136 @@ func TestMkHashedDirHoldFileFailure(t *testing.T) {
 	})
 }
 
+// TestMkHashedDirNameTaken covers what mkHashedDir does when the workspace name
+// it minted is already taken on disk. os.MkdirTemp, which used to name the
+// workspace, drew a fresh suffix and tried again whenever the name it drew
+// existed, so a taken name never reached the caller; the UUID mint has to keep
+// that, or a name-exists error - from a UUID repeat, or from anything else
+// sitting at that exact path - buries the job with FailReasonCwd where it used
+// to succeed.
+//
+// The name is driven through workSpaceMintedHook because a v4 UUID cannot be
+// made to collide, and the tests call mkHashedDir itself rather than the retry,
+// so what they pin is the directory a job actually gets.
+func TestMkHashedDirNameTaken(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	key := "0123456789abcdef0123456789abcdef"
+
+	Convey("mkHashedDir works around a workspace name that is already taken", t, func() {
+		base := t.TempDir()
+
+		var (
+			taken   string
+			hookErr error
+			calls   int
+		)
+
+		workSpaceMintedHook = func(path string) {
+			calls++
+			if calls > 1 {
+				return
+			}
+
+			taken = path
+			hookErr = os.MkdirAll(path, workSpaceNamePerm)
+		}
+
+		Reset(func() { workSpaceMintedHook = nil })
+
+		cwd, tmpDir, err := mkHashedDir(base, key)
+
+		So(hookErr, ShouldBeNil)
+
+		cwdInfo, statErr := os.Stat(cwd)
+		So(statErr, ShouldBeNil)
+		So(cwdInfo.IsDir(), ShouldBeTrue)
+
+		tmpInfo, statErr := os.Stat(tmpDir)
+		So(statErr, ShouldBeNil)
+		So(tmpInfo.IsDir(), ShouldBeTrue)
+
+		// the workspace the job got must be a fresh sibling of the taken one, not
+		// the taken one itself: reusing it would put this job's output in whatever
+		// already owns that directory.
+		workSpace := filepath.Dir(cwd)
+		So(workSpace, ShouldNotEqual, taken)
+		So(filepath.Dir(workSpace), ShouldEqual, filepath.Dir(taken))
+		So(calls, ShouldEqual, 2)
+
+		So(err, ShouldBeNil)
+	})
+
+	// hookTakeLimit is how many minted names the hook below takes before it
+	// stops taking them. It is generously above mkHashedDirMaxTries so that
+	// correctly bounded code never reaches it, while code that retries without a
+	// bound - or that resets its counter mid-loop, which is the livelock #569
+	// fixed in mkHeldDir - runs past it and then succeeds. That way this test
+	// reports a verdict instead of hanging the suite or filling the disk.
+	const hookTakeLimit = 20
+
+	Convey("mkHashedDir gives up when every workspace name it mints is taken", t, func() {
+		base := t.TempDir()
+
+		var (
+			hookErr error
+			calls   int
+		)
+
+		workSpaceMintedHook = func(path string) {
+			calls++
+			if calls > hookTakeLimit {
+				return
+			}
+
+			if err := os.MkdirAll(path, workSpaceNamePerm); err != nil && hookErr == nil {
+				hookErr = err
+			}
+		}
+
+		Reset(func() { workSpaceMintedHook = nil })
+
+		returned, err := mkHashedDirWithin(30*time.Second, base, key)
+		So(returned, ShouldBeTrue)
+		So(hookErr, ShouldBeNil)
+		So(calls, ShouldBeLessThanOrEqualTo, hookTakeLimit)
+		So(err, ShouldNotBeNil)
+	})
+
+	// the retry is only for a name that is taken. Every other reason a workspace
+	// cannot be created - a full filesystem, an exceeded quota, a read-only
+	// remount, a hashed level that has gone - is answered by drawing another
+	// name identically, so retrying it only delays the job's burial.
+	Convey("mkHashedDir returns a non-existence workspace failure without retrying", t, func() {
+		base := t.TempDir()
+
+		var (
+			hookErr error
+			calls   int
+		)
+
+		workSpaceMintedHook = func(path string) {
+			calls++
+			// removing the hashed dir the workspace was to go in makes the create
+			// fail with ENOENT rather than EEXIST.
+			if err := os.RemoveAll(filepath.Dir(path)); err != nil && hookErr == nil {
+				hookErr = err
+			}
+		}
+
+		Reset(func() { workSpaceMintedHook = nil })
+
+		returned, err := mkHashedDirWithin(30*time.Second, base, key)
+		So(returned, ShouldBeTrue)
+		So(hookErr, ShouldBeNil)
+		So(calls, ShouldEqual, 1)
+		So(err, ShouldNotBeNil)
+		So(os.IsExist(err), ShouldBeFalse)
+	})
+}
+
 // mkHashedDirWithin calls mkHashedDir in a goroutine and reports whether it
 // returned within limit, so a livelock fails the test instead of hanging the
 // suite for ever.
