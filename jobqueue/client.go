@@ -565,13 +565,14 @@ func reserveHostAndPid() (string, int) {
 	return host, os.Getpid()
 }
 
-// jobRunEnv returns env with the overrides a run of job needs. A tmpDir is only
+// envWithRunDirs returns env with the directories wr gave this run put into it.
+// A tmpDir is only
 // made for a job whose Cwd does not matter, ie. one wr gave a working directory
 // of its own below its Cwd, so an empty tmpDir means the run is happening in the
 // job's Cwd itself: nothing needs overriding, and any JobCwdEnvVar inherited
 // from the job that added this one has to go, because os.Getwd() is then the
 // right answer for anything this run adds.
-func jobRunEnv(env []string, job *Job, actualCwd, tmpDir string) []string {
+func envWithRunDirs(env []string, job *Job, actualCwd, tmpDir string) []string {
 	if tmpDir == "" {
 		return slices.DeleteFunc(env, func(envvar string) bool {
 			return strings.HasPrefix(envvar, JobCwdEnvVar+"=")
@@ -2007,7 +2008,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		return fmt.Errorf("failed to extract environment variables for job [%s]: %w%s", job.Key(), err, extra)
 	}
 
-	env = jobRunEnv(env, job, actualCwd, tmpDir)
+	env = envWithRunDirs(env, job, actualCwd, tmpDir)
 
 	if prependPath != "" {
 		env, err = c.addBsubEnv(env, job, prependPath, host, shell)
