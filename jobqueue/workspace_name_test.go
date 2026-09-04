@@ -32,10 +32,10 @@ import (
 )
 
 // TestWorkSpaceNameIsMintedPerRun asserts the invariant the workspace name
-// carries: a name one run of a key is given is never given to another run of
-// that key, so a finished run's stored ActualCwd cannot name a LIVE run's
-// workspace, and the finished run's cleanup therefore cannot sweep through the
-// live run's mounts and caches.
+// carries: each run of a key is given a freshly minted name, so a finished
+// run's stored ActualCwd is overwhelmingly unlikely to name a LIVE run's
+// workspace, and the finished run's cleanup therefore does not sweep through
+// the live run's mounts and caches.
 //
 // It asserts at the boundary wr hands out - the paths mkHashedDir returns and the
 // cleanup the snapshot performs on them - and it does NOT prove that a collision

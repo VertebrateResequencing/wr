@@ -737,15 +737,20 @@ func mkHashedDir(baseDir, tohash string) (cwd, tmpDir string, err error) {
 	// hashed dir structure, to avoid any conflict of multiple processes using
 	// the same working directory.
 	//
-	// That uniqueness has to hold FOR ALL TIME, not just at the instant the dir
-	// is made. os.MkdirTemp, which used to name this dir, only avoided a name
-	// that existed when it looked, so a name it gave one run was free to be
-	// handed to the next run of the same key once the first run's dir had been
-	// removed. A finished run's stored ActualCwd would then name a LIVE run's
-	// workspace byte for byte, and the finished run's cleanup would sweep
-	// through the live run's mounts and caches. A v4 UUID minted per run is
-	// never handed out twice, so no name a run is given is ever given to
-	// another run.
+	// That uniqueness wants to hold FOR ALL TIME, not just at the instant the
+	// dir is made. os.MkdirTemp, which used to name this dir, draws a fresh
+	// 32-bit suffix per call and retries while the name exists, so two runs
+	// alive at once never share one. But once a run's dir has been removed, a
+	// later run of the same key can draw the same suffix again - 1 in 2^32 -
+	// and a finished run's stored ActualCwd then names a LIVE run's workspace
+	// byte for byte, so the finished run's cleanup sweeps through the live
+	// run's mounts and caches.
+	//
+	// A v4 UUID carries 122 random bits instead of 32, which does not make a
+	// repeat impossible, only small enough to disregard. This is hardening of
+	// a narrow window, not a guard: nothing here DETECTS a repeat, and the
+	// sweep's own containment (see relIsJobCreatedCwd and sweptDir) is what
+	// bounds the damage if one ever occurs.
 	u, err := uuid.NewV4()
 	if err != nil {
 		return cwd, tmpDir, err

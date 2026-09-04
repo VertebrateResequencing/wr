@@ -324,14 +324,19 @@ parent was unlinked with `err == nil`.
 
 **The same-key residual is narrowed.** `mkHashedDir` no longer asks
 `os.MkdirTemp` to name the workspace. The leaf is `<key[3:]>-<uuid>`, the UUID a
-v4 minted per RUN from `crypto/rand` (`uuid.NewV4`). `os.MkdirTemp` only ever
-avoided a name that existed WHEN IT LOOKED, so a name it gave one run was free
-to be handed to the next run of the same key once the first run's leaf had been
-removed; a minted name is never handed out twice. What that removes is wr's
-ability to hand out a repeated name, not the loss a repeat causes. No name a
-run is given is ever given to another run, so a finished run's stored
-`ActualCwd` cannot name a live run's workspace, which is the only route from
-the key blindness below to a deletion.
+v4 minted per RUN from `crypto/rand` (`uuid.NewV4`). `os.MkdirTemp` drew a fresh 32-bit suffix on
+every call and retried while the name existed, so two runs alive at once never
+shared one - measured at 0 reuses in 20000 create/remove/recreate rounds on
+go1.26.3. The window is narrower than that: once a run's leaf has been removed,
+a later run of the same key can draw the same suffix again, 1 in 2^32, and a
+finished run's stored `ActualCwd` then names a live run's workspace, which is
+the route from the key blindness below to a deletion.
+
+A v4 UUID carries 122 random bits rather than 32. **This is hardening, not a
+guard.** It does not make a repeat impossible, only small enough to disregard,
+and nothing detects one if it happens - the sweep's own containment
+(`relIsJobCreatedCwd`, `sweptDir`) is what bounds the damage. It also does not
+change the loss a repeat would cause; see the residual below.
 
 That route was open, and was measured open. `MountConfigs.Key()` normalises an
 empty `Mount` to `"mnt"` while `resolveMountPoint` gives it the working
