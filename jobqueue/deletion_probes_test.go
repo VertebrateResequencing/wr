@@ -316,11 +316,21 @@ func probeCwdRows() []probeCwdRow {
 			wantErr: errNotACreatedCwd,
 		},
 
-		// ANOTHER run of the same Job, which the path check accepts by design:
-		// the key is what it recognises, and two runs of one key differ only in
-		// the digits os.MkdirTemp chose. Only one run of a key is live at a time,
-		// so this is a documented residual rather than an escape - but it must
-		// still stop at the sibling, taking nothing of the user's with it.
+		// ANOTHER run of the same Job, which the path check accepts by design: the
+		// key is what it recognises, and the only thing that tells one run of a key
+		// from another is the per-run suffix wr appends, which no stored path can be
+		// shown to own. What this row pins is that the sweep stops at the sibling,
+		// taking nothing of the user's with it; it does not pin that a repeated name
+		// is harmless. If one ever arises, a live run's un-uploaded writable-mount
+		// output is deletable by a finished run of the same key: content awaiting
+		// upload is a plain directory rather than a mount, so no mount-boundary guard
+		// sees it, and the stale run's keep set need not name it. Written up in
+		// .docs/cwd_matters_cleanup/readme.md, "Measured residuals"; the four rows
+		// that measured it are preserved on origin/probe-round8-cases. #578's per-run
+		// mint, held by its TestWorkSpaceNameIsMintedPerRun, closes the issuing half:
+		// it leaves wr handing a finished run's name to a later one too unlikely to
+		// plan for, which is why the above is what a repeat would cost rather than a
+		// live hole.
 		{
 			name:         "another run of the same job",
 			actualCwd:    func(w probeWorld) string { return w.sibling },
@@ -1055,14 +1065,27 @@ func TestProbeLiveFuseMounts(t *testing.T) {
 		})
 
 		Convey("a run handed a workspace name an earlier run finished with keeps its mount", func() {
-			// os.MkdirTemp's digits are not pinned to a run, so the name one
-			// manager's run finished with is free for another manager's run of the
-			// SAME key to be handed later, and a stale ActualCwd then names a live
-			// workspace byte for byte. Nothing about the path can tell the two
-			// apart - the residual the "another run of the same job" row records -
-			// but the two are one job by key, so they mount the same remote at the
-			// same place, and the stale run's own keep set still names it. The
-			// local workspace goes; the user's remote data does not.
+			// the per-run suffix that tells one run of a key from another is not pinned
+			// to a run by anything a stored path records, so the name one manager's run
+			// finished with could be handed to another manager's run of the SAME key
+			// later, and a stale ActualCwd then names a live workspace byte for byte.
+			// Nothing about the path can tell the two apart - the residual the "another
+			// run of the same job" row records. This row forces that collision with ONE
+			// MountConfigs on both sides, and that config is why it is safe: it mounts
+			// the same remote at the same place for both runs, so the stale run's keep
+			// set names the live mount. The local workspace goes; the user's remote data
+			// does not. Key equality alone does not buy that. Key() reads Mount, Profile
+			// and Path, and nothing that decides where a mount or a cache lands, so two
+			// runs of one key can put theirs in different places, and then the finished
+			// run can delete the live run's un-uploaded writable-mount output: content
+			// awaiting upload is a plain directory rather than a mount, so no
+			// mount-boundary guard sees it, and the stale keep set need not name it.
+			// Written up in .docs/cwd_matters_cleanup/readme.md, "Measured residuals";
+			// the four rows that measured it are preserved on origin/probe-round8-cases.
+			// #578's per-run mint, held by its TestWorkSpaceNameIsMintedPerRun, closes
+			// the issuing half: it leaves wr handing a finished run's name to a later
+			// one too unlikely to plan for, which is why the above is what a repeat
+			// would cost rather than a live hole.
 			cwd := t.TempDir()
 			precious := writeFileIn(filepath.Join(cwd, "user_scripts"), probeMineName)
 
