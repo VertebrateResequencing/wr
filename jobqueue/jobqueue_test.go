@@ -4558,8 +4558,22 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					reserveErr = os.Mkdir(tmpDir, os.ModePerm)
 					So(reserveErr, ShouldBeNil)
 
-					jobs = append(jobs, &Job{Cmd: "perl -MCwd -MFile::Spec -e '$cwd = getcwd(); print $cwd, qq[-], $ENV{HOME}, qq[\\n]; warn File::Spec->tmpdir, qq[\\n]'", Cwd: tmpDir, CwdMatters: true, ChangeHome: true, ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_pass"})
-					jobs = append(jobs, &Job{Cmd: "perl -MCwd -MFile::Spec -e '$cwd = getcwd(); print $cwd, qq[-], $ENV{HOME}, qq[\\n]; die File::Spec->tmpdir, qq[\\n]'", Cwd: tmpDir, CwdMatters: false, ChangeHome: true, ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_fail"})
+					// each command reports its own cwd, its HOME and the Cwd wr gave it,
+					// so what Execute really put in its environment is read back from its
+					// stdout
+					passCmd := `perl -MCwd -MFile::Spec -e '$cwd = getcwd(); print $cwd, qq[-], $ENV{HOME}, qq[-], $ENV{` +
+						JobCwdEnvVar + `}, qq[\n]; warn File::Spec->tmpdir, qq[\n]'`
+					failCmd := `perl -MCwd -MFile::Spec -e '$cwd = getcwd(); print $cwd, qq[-], $ENV{HOME}, qq[-], $ENV{` +
+						JobCwdEnvVar + `}, qq[\n]; die File::Spec->tmpdir, qq[\n]'`
+
+					jobs = append(jobs, &Job{
+						Cmd: passCmd, Cwd: tmpDir, CwdMatters: true, ChangeHome: true,
+						ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_pass",
+					})
+					jobs = append(jobs, &Job{
+						Cmd: failCmd, Cwd: tmpDir, CwdMatters: false, ChangeHome: true,
+						ReqGroup: "fake_group", Requirements: standardReqs, RepGroup: "should_fail",
+					})
 					inserts, _, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
 					So(inserts, ShouldEqual, 2)
@@ -4567,7 +4581,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					// job that outputs to stdout and stderr but succeeds
 					job, err := jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
-					So(job.Cmd, ShouldEqual, "perl -MCwd -MFile::Spec -e '$cwd = getcwd(); print $cwd, qq[-], $ENV{HOME}, qq[\\n]; warn File::Spec->tmpdir, qq[\\n]'")
+					So(job.Cmd, ShouldEqual, passCmd)
 					So(job.State, ShouldEqual, JobStateReserved)
 
 					err = jq.Execute(ctx, job, config.RunnerExecShell)
@@ -4580,19 +4594,21 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 
 					home, herr := os.UserHomeDir()
 					So(herr, ShouldBeNil)
-					So(stdout, ShouldEqual, tmpDir+"-"+home)
+					// wr moved this Job out of nothing, so it is told no Cwd of its own:
+					// os.Getwd() is the right answer for anything it adds
+					So(stdout, ShouldEqual, tmpDir+"-"+home+"-")
 
 					stderr, err := job.StdErr()
 					So(err, ShouldBeNil)
 					So(stderr, ShouldEqual, os.TempDir())
 
-					job2, err := jq2.GetByEssence(&JobEssence{Cmd: "perl -MCwd -MFile::Spec -e '$cwd = getcwd(); print $cwd, qq[-], $ENV{HOME}, qq[\\n]; warn File::Spec->tmpdir, qq[\\n]'", Cwd: tmpDir}, true, false)
+					job2, err := jq2.GetByEssence(&JobEssence{Cmd: passCmd, Cwd: tmpDir}, true, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
 					So(job2.State, ShouldEqual, JobStateComplete)
 					stdout, err = job2.StdOut()
 					So(err, ShouldBeNil)
-					So(stdout, ShouldEqual, tmpDir+"-"+home)
+					So(stdout, ShouldEqual, tmpDir+"-"+home+"-")
 
 					stderr, err = job2.StdErr()
 					So(err, ShouldBeNil)
@@ -4601,7 +4617,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					// job that outputs to stdout and stderr and fails
 					job, err = jq.Reserve(50 * time.Millisecond)
 					So(err, ShouldBeNil)
-					So(job.Cmd, ShouldEqual, "perl -MCwd -MFile::Spec -e '$cwd = getcwd(); print $cwd, qq[-], $ENV{HOME}, qq[\\n]; die File::Spec->tmpdir, qq[\\n]'")
+					So(job.Cmd, ShouldEqual, failCmd)
 					So(job.State, ShouldEqual, JobStateReserved)
 
 					err = jq.Execute(ctx, job, config.RunnerExecShell)
@@ -4614,28 +4630,32 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					So(err, ShouldBeNil)
 
 					actualCwd := job.ActualCwd
-					So(actualCwd, ShouldStartWith, filepath.Join(tmpDir, "jobqueue_cwd", "d", "4", "1", "7364d743329da784e74f2d69d438d"))
+					So(actualCwd, ShouldStartWith,
+						filepath.Join(tmpDir, "jobqueue_cwd", "3", "5", "5", "65da5ced642d9c5026565e20149b5"))
 					So(actualCwd, ShouldEndWith, "cwd")
-					So(stdout, ShouldEqual, actualCwd+"-"+actualCwd)
+					// the third field is the Cwd it was added with, not the disposable
+					// directory wr moved it into, so a `wr add` in it gives the new job a
+					// workspace beside this one rather than inside it
+					So(stdout, ShouldEqual, actualCwd+"-"+actualCwd+"-"+tmpDir)
 
 					stderr, err = job.StdErr()
 					So(err, ShouldBeNil)
 
-					tmpDir = actualCwd[:len(actualCwd)-3] + "tmp"
-					So(stderr, ShouldEqual, tmpDir)
+					wrTmpDir := actualCwd[:len(actualCwd)-3] + "tmp"
+					So(stderr, ShouldEqual, wrTmpDir)
 
-					job2, err = jq2.GetByEssence(&JobEssence{Cmd: "perl -MCwd -MFile::Spec -e '$cwd = getcwd(); print $cwd, qq[-], $ENV{HOME}, qq[\\n]; die File::Spec->tmpdir, qq[\\n]'"}, true, false)
+					job2, err = jq2.GetByEssence(&JobEssence{Cmd: failCmd}, true, false)
 					So(err, ShouldBeNil)
 					So(job2, ShouldNotBeNil)
 					So(job2.State, ShouldEqual, JobStateBuried)
 					So(job2.FailReason, ShouldEqual, FailReasonExit)
 					stdout, err = job2.StdOut()
 					So(err, ShouldBeNil)
-					So(stdout, ShouldEqual, actualCwd+"-"+actualCwd)
+					So(stdout, ShouldEqual, actualCwd+"-"+actualCwd+"-"+tmpDir)
 
 					stderr, err = job2.StdErr()
 					So(err, ShouldBeNil)
-					So(stderr, ShouldEqual, tmpDir)
+					So(stderr, ShouldEqual, wrTmpDir)
 				})
 
 				Convey("The stdout/err of jobs is limited in size", func() {

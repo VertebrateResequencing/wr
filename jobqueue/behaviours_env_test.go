@@ -228,6 +228,35 @@ func TestBehaviourRunEnv(t *testing.T) {
 			So(got.home, ShouldEqual, os.Getenv("HOME"))
 		})
 
+		Convey("a Job with no environment of its own still gets wr's dirs over the triggering process's", func() {
+			// the other direction of the same fallback: wr DID make directories
+			// here, so they go OVER the triggering process's environment rather
+			// than instead of it. That environment is all the command has to work
+			// with - a PATH included - and the overrides do not name it, so losing
+			// it would leave the command with three variables and nothing to
+			// notice it by.
+			//
+			// os.Setenv and Reset rather than t.Setenv, whose restore waits for
+			// the whole test to end: the enclosing block asserts this variable is
+			// named nowhere but the Job, and every later leaf re-checks that.
+			So(os.Setenv(testEnvVar, "from_triggering_process"), ShouldBeNil)
+
+			Reset(func() { So(os.Unsetenv(testEnvVar), ShouldBeNil) })
+
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, ChangeHome: true}
+			actualCwd, _, tmpDir := realWorkSpace(job)
+
+			So(probe.Trigger(OnExit, job), ShouldBeNil)
+
+			got := readProbedEnv(out)
+			So(got.home, ShouldEqual, actualCwd)
+			So(got.tmpDir, ShouldEqual, tmpDir)
+			So(got.jobCwd, ShouldEqual, cwd)
+			// and the variable only the triggering process named, which is what
+			// makes keeping its environment observable at all
+			So(got.testVar, ShouldEqual, "from_triggering_process")
+		})
+
 		Convey("the behaviours the manager pins carry the Job's environment", func() {
 			job := &Job{Cwd: cwd, Cmd: testWSCmd, ChangeHome: true, Behaviours: Behaviours{probe}}
 			storeTestEnv(job)

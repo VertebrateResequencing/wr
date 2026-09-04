@@ -42,9 +42,10 @@ import (
 // Cwd the Job was added with, the working directory wr created below it, and the
 // tmp dir wr created beside that.
 //
-// cwd is always the Job's own Cwd. actualCwd and tmp are the two wr makes, and
-// it makes them only for a Job whose Cwd does not matter, so those two arrive
-// together or not at all; see wrMade.
+// cwd is always the Job's own Cwd. tmp is set exactly when wr made a working
+// directory for this run, so it is the one discriminator anything here reads;
+// see wrMade. actualCwd is the field the two callers fill differently where wr
+// made none, and neither of them is wrong, because nothing reads it then.
 type jobRunDirs struct {
 	// cwd is the Job's own Cwd, which is what JobCwdEnvVar names - not the
 	// working directory below it, so that every generation of Jobs added by Jobs
@@ -52,9 +53,11 @@ type jobRunDirs struct {
 	cwd string
 
 	// actualCwd is the directory the commands run in, which --change_home makes
-	// HOME. Where wr made one below cwd that is it; where it made none this is
-	// cwd itself and nothing reads it, since --change_home has no working
-	// directory of wr's to point HOME at.
+	// HOME. Where wr made one below cwd, that is it. Where it made none the two
+	// callers differ - Client.Execute passes the blank resolveWorkingDir handed
+	// it, jobWorkSpaceSnapshot.runEnv the Job's own Cwd the command really runs
+	// in - and neither is wrong, because nothing reads this field when there is
+	// no working directory of wr's for --change_home to point HOME at.
 	actualCwd string
 
 	// tmp is the dir wr made beside actualCwd to be TMPDIR.
@@ -83,10 +86,12 @@ func (d jobRunDirs) wrMade() bool {
 // variable is present exactly when wr moved the run out of its Cwd, in both
 // directions.
 //
-// A nil env comes back nil, since there is neither anything to delete from nor
-// anything to override; that is not the invariant holding, but there being no
-// environment to hold it over. Naming one - this process's, where the Job named
-// none of its own - is the caller's business; see jobWorkSpaceSnapshot.runEnv.
+// A nil env comes back nil where wr made no directories, there being nothing to
+// delete from. Where it made some it comes back as the overrides alone, which is
+// a command with no PATH rather than the invariant holding: envOverride appends
+// to a nil slice. Either way there is no environment to hold the invariant over,
+// and naming one first - this process's, where the Job named none of its own -
+// is the caller's business; see jobWorkSpaceSnapshot.runEnv.
 func envWithRunDirs(env []string, dirs jobRunDirs, changeHome bool) []string {
 	if !dirs.wrMade() {
 		return slices.DeleteFunc(env, func(envvar string) bool {
