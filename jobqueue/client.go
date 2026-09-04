@@ -89,6 +89,13 @@ const (
 	FailReasonKilled   = "killed by user request"
 )
 
+// JobCwdEnvVar is the environment variable a run's command finds its Job's own
+// Cwd in, when wr gave the run a working directory below that Cwd instead of
+// running it in the Cwd itself. `wr add` defaults a new Job's Cwd to it, so that
+// a Job added by a Job gets a working directory beside the adding Job's instead
+// of inside it.
+const JobCwdEnvVar = "WR_JOB_CWD"
+
 // lsfEmulationDir is the name of the directory we store our LSF emulation
 // symlinks in.
 const lsfEmulationDir = ".wr_lsf_emulation"
@@ -1977,14 +1984,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		return fmt.Errorf("failed to extract environment variables for job [%s]: %w%s", job.Key(), err, extra)
 	}
 
-	if tmpDir != "" {
-		// (this works fine even if tmpDir has a space in one of the dir names)
-		env = envOverride(env, []string{"TMPDIR=" + tmpDir})
-
-		if job.ChangeHome {
-			env = envOverride(env, []string{"HOME=" + actualCwd})
-		}
-	}
+	env = envWithRunDirs(env, jobRunDirs{cwd: job.Cwd, actualCwd: actualCwd, tmp: tmpDir}, job.ChangeHome)
 
 	if prependPath != "" {
 		env, err = c.addBsubEnv(env, job, prependPath, host, shell)

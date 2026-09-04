@@ -500,6 +500,183 @@ func runSynchronousAddHelper(exitCode int, stdout string, stderr string, exit fu
 	)
 }
 
+// TestAddDefaultCwdInsideJob covers the default working directory of a job added
+// by another job's command. Such a command runs in the disposable working
+// directory wr made for its job below the job's Cwd, so defaulting to
+// os.Getwd() would nest the added job's working directory inside the adding
+// job's, where the adding job's cleanup behaviour destroys it.
+func TestAddDefaultCwdInsideJob(t *testing.T) {
+	Convey("Adding from inside a job defaults the new job's cwd to the adding job's cwd", t, func() {
+		orig, workSpace, jq := insideJobAdd(t)
+
+		jobs, _, _ := parseCmdFile(jq, false, true)
+
+		So(jobs, ShouldHaveLength, 1)
+		So(jobs[0].Cwd, ShouldEqual, orig)
+		So(jobs[0].Cwd, ShouldNotEqual, workSpace)
+
+		Convey("So its working directory becomes a sibling of the adding job's, not a child", func() {
+			So(workSpace, ShouldStartWith, orig)
+			So(jobs[0].Cwd, ShouldNotStartWith, workSpace)
+		})
+
+		Convey("And --cwd_matters does not change that", func() {
+			cmdCwdMatters = true
+
+			jobs, _, _ = parseCmdFile(jq, false, true)
+
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Cwd, ShouldEqual, orig)
+		})
+
+		Convey("But an explicit --cwd still wins, for someone who wants the nesting", func() {
+			cmdCwd = workSpace
+
+			jobs, _, _ = parseCmdFile(jq, false, true)
+
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Cwd, ShouldEqual, workSpace)
+		})
+
+		Convey("And a remote manager still defaults to /tmp", func() {
+			jobs, _, _ = parseCmdFile(jq, false, false)
+
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Cwd, ShouldEqual, "/tmp")
+		})
+
+		Convey("A relative value is ignored, since it would resolve inside the working directory", func() {
+			t.Setenv(jobqueue.JobCwdEnvVar, "..")
+
+			jobs, _, _ = parseCmdFile(jq, false, true)
+
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Cwd, ShouldEqual, workSpace)
+		})
+	})
+
+	Convey("Adding from outside a job defaults the new job's cwd to the current directory", t, func() {
+		_, workSpace, jq := insideJobAdd(t)
+
+		os.Unsetenv(jobqueue.JobCwdEnvVar)
+
+		jobs, _, _ := parseCmdFile(jq, false, true)
+
+		So(jobs, ShouldHaveLength, 1)
+		So(jobs[0].Cwd, ShouldEqual, workSpace)
+	})
+
+	Convey("Every generation of jobs adding jobs ends up a sibling of the first", t, func() {
+		orig, _, jq := insideJobAdd(t)
+
+		children, _, _ := parseCmdFile(jq, false, true)
+		So(children, ShouldHaveLength, 1)
+		So(children[0].Cwd, ShouldEqual, orig)
+
+		// the runner gives a child the child's own Cwd in JobCwdEnvVar (see
+		// TestJobRunEnv), and runs it in a working directory below that Cwd, so
+		// that is the situation the grandchild gets added from.
+		childWorkSpace := jobCreatedCwd(t, children[0].Cwd)
+		t.Chdir(childWorkSpace)
+		t.Setenv(jobqueue.JobCwdEnvVar, children[0].Cwd)
+
+		grandChildren, _, _ := parseCmdFile(jq, false, true)
+
+		So(grandChildren, ShouldHaveLength, 1)
+		So(grandChildren[0].Cwd, ShouldEqual, orig)
+		So(grandChildren[0].Cwd, ShouldNotEqual, childWorkSpace)
+	})
+}
+
+// insideJobAdd sets cmd's add globals up for an add with no --cwd, made from
+// inside the working directory wr would create for a job with a Cwd of the
+// returned orig, as the runner sets that situation up. It returns orig, that
+// working directory, and a client for a remote manager.
+func insideJobAdd(t *testing.T) (string, string, *jobqueue.Client) {
+	t.Helper()
+
+	cmdPath := filepath.Join(t.TempDir(), "cmds.txt")
+	err := os.WriteFile(cmdPath, []byte("cmd one\n"), 0600)
+	So(err, ShouldBeNil)
+
+	configureAddParserTest(t, cmdPath)
+
+	cmdCwd = ""
+	cmdCwdMatters = false
+
+	orig := t.TempDir()
+	workSpace := jobCreatedCwd(t, orig)
+
+	t.Chdir(workSpace)
+	t.Setenv(jobqueue.JobCwdEnvVar, orig)
+
+	return orig, workSpace, &jobqueue.Client{ServerInfo: &jobqueue.ServerInfo{Addr: remoteManagerAddr}}
+}
+
+// TestAddBsubImpliesCwdMatters covers the working directory of a --bsub job. Its
+// children are submitted by `wr bsub` from the job's own working directory and
+// are cwd_matters themselves, so a wr-created working directory for the parent
+// would be the children's shared submission directory, which the parent's
+// cleanup deletes.
+func TestAddBsubImpliesCwdMatters(t *testing.T) {
+	Convey("--bsub defaults cwd_matters to true, so the parent creates no working directory", t, func() {
+		jq := bsubModeAdd(t)
+
+		jobs, _, _ := parseCmdFile(jq, false, true)
+
+		So(jobs, ShouldHaveLength, 1)
+		So(jobs[0].BsubMode, ShouldNotBeBlank)
+		So(jobs[0].CwdMatters, ShouldBeTrue)
+
+		Convey("An explicit --cwd_matters=false still wins", func() {
+			So(addCmd.Flags().Set("cwd_matters", "false"), ShouldBeNil)
+
+			jobs, _, _ = parseCmdFile(jq, false, true)
+
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].CwdMatters, ShouldBeFalse)
+		})
+
+		Convey("An explicit --cwd_matters is honoured too", func() {
+			So(addCmd.Flags().Set("cwd_matters", "true"), ShouldBeNil)
+
+			jobs, _, _ = parseCmdFile(jq, false, true)
+
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].CwdMatters, ShouldBeTrue)
+		})
+	})
+
+	Convey("Without --bsub, cwd_matters is still false unless asked for", t, func() {
+		jq := bsubModeAdd(t)
+		cmdBsubMode = false
+
+		jobs, _, _ := parseCmdFile(jq, false, true)
+
+		So(jobs, ShouldHaveLength, 1)
+		So(jobs[0].BsubMode, ShouldBeBlank)
+		So(jobs[0].CwdMatters, ShouldBeFalse)
+	})
+}
+
+// bsubModeAdd sets cmd's add globals up for a `wr add --bsub` with --cwd_matters
+// left unmentioned, and returns a client for a remote manager.
+func bsubModeAdd(t *testing.T) *jobqueue.Client {
+	t.Helper()
+
+	cmdPath := filepath.Join(t.TempDir(), "cmds.txt")
+	err := os.WriteFile(cmdPath, []byte("pipeline that bsubs\n"), 0600)
+	So(err, ShouldBeNil)
+
+	configureAddParserTest(t, cmdPath)
+
+	cmdCwd = t.TempDir()
+	cmdCwdMatters = false
+	cmdBsubMode = true
+
+	return &jobqueue.Client{ServerInfo: &jobqueue.ServerInfo{Addr: remoteManagerAddr}}
+}
+
 func TestAddCommandDependenciesDoNotWarnForMissingTargets(t *testing.T) {
 	ctx := context.Background()
 
@@ -809,6 +986,8 @@ func configureAddParserTest(t *testing.T, cmdPath string) {
 				t.Errorf("reset add --head: %s", err)
 			}
 		}
+
+		resetCwdMattersGiven(t)
 	})
 
 	config = &internal.Config{ManagerPort: "4321"}
@@ -819,6 +998,8 @@ func configureAddParserTest(t *testing.T, cmdPath string) {
 	cmdDepGroups = ""
 	cmdCwd = t.TempDir()
 	cmdCwdMatters = true
+
+	resetCwdMattersGiven(t)
 	cmdChangeHome = false
 	reqGroup = ""
 	cmdMem = "1G"
@@ -861,6 +1042,20 @@ func configureAddParserTest(t *testing.T, cmdPath string) {
 	syncMode = false
 }
 
+// resetCwdMattersGiven makes --cwd_matters unmentioned again, so that a test
+// that says it explicitly does not leak that into the next one (or into the next
+// run of a Convey block's own body).
+func resetCwdMattersGiven(t *testing.T) {
+	t.Helper()
+
+	flag := addCmd.Flags().Lookup("cwd_matters")
+	if flag == nil {
+		t.Fatal("add has no cwd_matters flag")
+	}
+
+	flag.Changed = false
+}
+
 func runAddForTest(t *testing.T) string {
 	t.Helper()
 
@@ -899,6 +1094,17 @@ func runAddCaptureForTest(t *testing.T) (string, string) {
 	So(err, ShouldBeNil)
 
 	return string(stdout), string(stderr)
+}
+
+// jobCreatedCwd creates and returns a directory of the shape wr creates below a
+// job's cwd to be that job's working directory.
+func jobCreatedCwd(t *testing.T, cwd string) string {
+	t.Helper()
+
+	created := filepath.Join(cwd, "wr_cwd", "d", "4", "1", "7364d1", "cwd")
+	So(os.MkdirAll(created, 0700), ShouldBeNil)
+
+	return created
 }
 
 func TestSynchronousAddPrintsStdoutAndExitsZero(t *testing.T) {
