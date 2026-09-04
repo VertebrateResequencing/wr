@@ -419,13 +419,36 @@ atomicity but that no CALL of it leaves a live workspace unrecorded. A record
 longer than `wsTokenMaxBytes` is not unlinked at all, since putting it back
 means holding its bytes and it lives where the Job's own `Cmd` can write.
 
-What is left of that is a restore that itself fails, which leaves the workspace
-unrecorded for the rest of its life. That one is RETURNED, and so fails the
-cleanup, naming the directory — not logged as `runDir.execDir` logs this
-package's other unactionable hazards, because the walk's own callers
-(`cleanupWorkSpace`, `rmEmptyDirsIn`) already return an error, so the channel is
-there, while logging from that depth would mean minting a context in a call
-chain that has one, which `contextcheck` refuses.
+What is left of that is a restore that does not put the record back, and it
+leaves three different states rather than one.
+
+The directory can have GONE while the record was down, which the OTHER cleanup
+of a lost job does — the two run in different processes — and then there is no
+live workspace to record and nothing was left unprotected. That is not a
+failure at all, exactly as it is not one when the plain `Remove` is the call
+that finds the directory gone. Reporting it was a regression rather than a
+check: `Client.Execute` folds a behaviour's error into the Job's own
+(`client.go`), so a Job whose `Cmd` had succeeded was reported FAILED for a
+tidy another process had already done — measured as `cleanupWorkSpace err=...
+was left with no record of the run using it: openat .run_token: no such file or
+directory`, with the workspace itself already gone.
+
+Something else can be at the name, which the compound race `O_EXCL` is there
+for: another cleanup takes the emptied workspace, `os.MkdirTemp` hands that
+leaf name to a new run of the key, and that run records ITSELF in it. The
+directory DOES record a run then, just not the one this copy came from, so
+nothing is left unprotected and those bytes are not this stale copy's to
+overwrite — mutating `O_EXCL` to `O_TRUNC` overwrites them.
+
+Only a write that fails for any OTHER reason leaves the workspace unrecorded
+for the rest of its life. The last two are RETURNED, and so fail the cleanup,
+each naming the directory and saying which of the two it was — not logged as
+`runDir.execDir` logs this package's other unactionable hazards, because the
+walk's own callers (`cleanupWorkSpace`, `rmEmptyDirsIn`) already return an
+error, so the channel is there, while logging from that depth would mean
+minting a context in a call chain that has one, which `contextcheck` refuses.
+All three states are measured through the `wsTokenUnlinkedHook` seam in
+`TestWorkSpaceRecordThroughItsOwnRemoval`.
 
 The record still goes down first, because the reverse order leaves a worse state
 on a crash: a workspace with a working directory and no record is

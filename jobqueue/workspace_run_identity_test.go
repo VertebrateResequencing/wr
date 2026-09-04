@@ -552,6 +552,7 @@ func TestWorkSpaceRecordThroughItsOwnRemoval(t *testing.T) {
 
 		record := filepath.Join(workSpace, createdWSTokenName)
 		liveCwd := filepath.Join(workSpace, createdCwdName)
+		hashedBase := filepath.Join(cwd, AppName+createdCwdBaseSuffix)
 
 		Reset(func() {
 			cleanupProvenHook = nil
@@ -592,6 +593,69 @@ func TestWorkSpaceRecordThroughItsOwnRemoval(t *testing.T) {
 			content, err := os.ReadFile(record)
 			So(err, ShouldBeNil)
 			So(string(content), ShouldEqual, liveToken)
+		})
+
+		Convey("the directory going under it inside the window is not a failure", func() {
+			// the two cleanups of a lost job run in different processes, so the
+			// directory this one has just unlinked the record from can be taken
+			// by the other one while the record is down. There is then no live
+			// workspace left to record and nothing to restore the record into -
+			// the same interleaving removeLeaf already treats as ordinary when
+			// its own Remove is the call that finds the directory gone. It must
+			// not fail the cleanup, and through it (Client.Execute folds a
+			// behaviour's error into the Job's own) a Job whose Cmd succeeded.
+			cleanupProvenHook = func() {
+				cleanupProvenHook = nil
+
+				_, err := writeWSToken(workSpace)
+				So(err, ShouldBeNil)
+			}
+
+			wsTokenUnlinkedHook = func() {
+				wsTokenUnlinkedHook = nil
+
+				So(os.RemoveAll(workSpace), ShouldBeNil)
+			}
+
+			So(stale.workSpaceSnapshot().cleanupWorkSpace(), ShouldBeNil)
+
+			// gone counts as removed, as it does at the leaf, so the hashed levels
+			// above the workspace are still tidied rather than left behind.
+			soPathsGone(record, workSpace, hashedBase)
+			soPathsExist(cwd)
+		})
+
+		Convey("a record written by someone else inside the window is left alone", func() {
+			// the compound race O_EXCL is there for: another cleanup removes the
+			// emptied workspace while this one holds the record down, os.MkdirTemp
+			// hands that same leaf name to a new run of the key, and that run
+			// records ITSELF in it. The bytes at that name are then the new run's
+			// protection, and are not this stale copy's to overwrite.
+			const foreign = "6f1c0b1e-0000-4000-8000-000000000001"
+
+			cleanupProvenHook = func() {
+				cleanupProvenHook = nil
+
+				_, err := writeWSToken(workSpace)
+				So(err, ShouldBeNil)
+			}
+
+			wsTokenUnlinkedHook = func() {
+				wsTokenUnlinkedHook = nil
+
+				So(os.WriteFile(record, []byte(foreign), wsTokenPerm), ShouldBeNil)
+			}
+
+			err := stale.workSpaceSnapshot().cleanupWorkSpace()
+
+			content, readErr := os.ReadFile(record)
+			So(readErr, ShouldBeNil)
+			So(string(content), ShouldEqual, foreign)
+
+			soPathsExist(workSpace)
+
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "now records another run")
 		})
 
 		Convey("a record too long to be one of wr's is not unlinked at all", func() {

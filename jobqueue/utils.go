@@ -1300,8 +1300,14 @@ var wsTokenUnlinkedHook func() //nolint:gochecknoglobals // the only seam onto w
 // happens when the run that owns it has created something in it since, the very
 // state the record exists to protect. What that guarantees is therefore not that
 // record and directory go atomically, but that no call of this leaves a LIVE
-// workspace with no record; a restore that fails is the one exception, and is
-// why the failure is returned rather than swallowed.
+// workspace with no record.
+//
+// A directory that has GONE while the record was down is not a failure, exactly
+// as it is not one when the plain Remove in removeLeaf is the call that finds it
+// gone: the two cleanups of a lost job run in different processes, so the other
+// one can take the emptied workspace mid-window, and then there is no live
+// workspace to record and nothing to restore the record into. It counts as
+// removed, so the parents above it are still tidied.
 //
 // Cleanup keeps the record through every sweep (see jobWorkSpace.keptEntry),
 // which leaves a swept workspace holding just the record: exactly this shape.
@@ -1315,7 +1321,7 @@ func removeDirHoldingOnlyWSToken(parentRoot *os.Root, name string, dirRoot *os.R
 		wsTokenUnlinkedHook()
 	}
 
-	if parentRoot.Remove(name) == nil {
+	if err := parentRoot.Remove(name); err == nil || os.IsNotExist(err) {
 		return true, nil
 	}
 
@@ -1365,10 +1371,17 @@ func takeSoleWSToken(dirRoot *os.Root) ([]byte, bool) {
 // the package logs its other unactionable hazards (see runDir.execDir): the
 // walk's own callers already return an error, so the channel is there, and
 // logging from this depth would mean minting a context in a call chain that has
-// one - which the repo's linter refuses (contextcheck). It is not a failure to
-// keep quiet about either way: the workspace is left with no record for the rest
-// of its life, so no cleanup of another run of the same key can be shown that it
-// is not its own, which is the same-key residual reopened by wr's own hand.
+// one - which the repo's linter refuses (contextcheck).
+//
+// The two ways it can fail leave different states, so they are reported
+// differently rather than under one sentence that is only true of one of them.
+// Something else already at the name (EEXIST) means the directory DOES record a
+// run, just not the one this copy came from: nothing is left unprotected, and
+// what is lost is only wr's ability to say whose workspace it was. Any other
+// failure means the write could not be made at all, so the directory is left
+// with no record for the rest of its life and no cleanup of another run of the
+// same key can be shown that it is not its own - the same-key residual reopened
+// by wr's own hand.
 func restoreWSToken(dirRoot *os.Root, record []byte) error {
 	f, err := dirRoot.OpenFile(createdWSTokenName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, wsTokenPerm)
 	if err == nil {
@@ -1378,6 +1391,11 @@ func restoreWSToken(dirRoot *os.Root, record []byte) error {
 
 	if err == nil {
 		return nil
+	}
+
+	if os.IsExist(err) {
+		return fmt.Errorf("%s now records another run, so the record removed from it was not put back: %w",
+			dirRoot.Name(), err)
 	}
 
 	return fmt.Errorf("%s was left with no record of the run using it: %w", dirRoot.Name(), err)
