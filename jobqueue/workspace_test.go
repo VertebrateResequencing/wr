@@ -210,7 +210,7 @@ func TestCleanupCrossesNoMountBoundaryAtTheWorkSpace(t *testing.T) {
 
 				cwd := t.TempDir()
 				job := &Job{Cwd: cwd, Cmd: "sshfs remote:/data .. && analyse", MountConfigs: mounts}
-				actualCwd, workSpace, tmpDir := realWorkSpace(job)
+				_, workSpace, _ := realWorkSpace(job)
 
 				backing := t.TempDir()
 				remote := writeFileIn(backing, testWSRemote)
@@ -220,13 +220,12 @@ func TestCleanupCrossesNoMountBoundaryAtTheWorkSpace(t *testing.T) {
 					remoteDeep = writeFileIn(filepath.Join(backing, createdCwdName), "remote_output.txt")
 				}
 
-				// fusermount 2 refuses a non-empty mount point, which libfuse 3
-				// permits by default, so what wr made in the workspace goes first.
-				So(os.RemoveAll(actualCwd), ShouldBeNil)
-				So(os.RemoveAll(tmpDir), ShouldBeNil)
-
-				if !mountLoopback(t, workSpace, backing) {
-					SkipConvey("this host refused an unprivileged FUSE mount", func() {})
+				// the workspace is never empty when the Job's own Cmd mounts over
+				// it: wr's cwd, wr's tmp and the record of the run using it are all
+				// in it. So raising the mount needs "nonempty"; see mountLoopback
+				// on that option.
+				if !mountLoopback(t, workSpace, backing, "nonempty") {
+					SkipConvey("this host refused an unprivileged FUSE mount over a non-empty dir", func() {})
 
 					return
 				}
@@ -266,7 +265,7 @@ func TestJobTmpDirRemovalCrossesNoMountBoundary(t *testing.T) {
 
 		cwd := t.TempDir()
 		job := &Job{Cwd: cwd, Cmd: "sshfs remote:/data .. && analyse"}
-		actualCwd, workSpace, tmpDir := realWorkSpace(job)
+		_, workSpace, _ := realWorkSpace(job)
 
 		backing := t.TempDir()
 		remote := writeFileIn(backing, testWSRemote)
@@ -275,13 +274,11 @@ func TestJobTmpDirRemovalCrossesNoMountBoundary(t *testing.T) {
 		// filesystem's own tmp, so that is what removeTmp deletes.
 		remoteTmp := writeFileIn(filepath.Join(backing, createdTmpName), "remote_output.txt")
 
-		// fusermount 2 refuses a non-empty mount point, which libfuse 3 permits
-		// by default, so what wr made in the workspace goes first.
-		So(os.RemoveAll(actualCwd), ShouldBeNil)
-		So(os.RemoveAll(tmpDir), ShouldBeNil)
-
-		if !mountLoopback(t, workSpace, backing) {
-			SkipConvey("this host refused an unprivileged FUSE mount", func() {})
+		// the workspace is never empty when the Job's own Cmd mounts over it:
+		// wr's cwd, wr's tmp and the record of the run using it are all in it. So
+		// raising the mount needs "nonempty"; see mountLoopback on that option.
+		if !mountLoopback(t, workSpace, backing, "nonempty") {
+			SkipConvey("this host refused an unprivileged FUSE mount over a non-empty dir", func() {})
 
 			return
 		}
