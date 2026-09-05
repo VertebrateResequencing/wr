@@ -39,6 +39,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -82,6 +83,16 @@ const (
 	// what makes a resubscribe cap recomputed from it a widening rather than a
 	// narrowing.
 	wrAddWaitConnectTimeout = 120 * time.Second
+
+	// socketSwapReconnects, socketSwapDeadlineOps and socketSwapDeadlineWait
+	// bound TestSubscriptionReconnectSocketSwap: the reconnecting goroutine
+	// decides when the test ends, and the deadline goroutine paces itself so it
+	// is still running when each socket swap lands without spinning a core to do
+	// it. Its own bound is only a backstop against a reconnect loop that never
+	// finishes.
+	socketSwapReconnects   = 20
+	socketSwapDeadlineOps  = 20000
+	socketSwapDeadlineWait = 100 * time.Microsecond
 )
 
 var (
@@ -1773,7 +1784,7 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 		// connect timeout
 		reconnected := requestTimeout(subscriptionReconnectTimeout)
 		So(reconnected, ShouldEqual, ClientMinRequestTimeout)
-		So(jq.sock.SetOption(mangos.OptionRecvDeadline, reconnected), ShouldBeNil)
+		So(setRecvDeadlineUnderLock(jq, reconnected), ShouldBeNil)
 
 		// the production reconnect budget is ClientRetryTime, far wider than that
 		// floor, so capping the resubscribe by it must change nothing
@@ -1781,7 +1792,7 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 
 		resp, reqErr := jq.requestWithin(&clientRequest{Method: requestMethodPing}, ClientRetryTime)
 
-		deadline, optErr := jq.sock.GetOption(mangos.OptionRecvDeadline)
+		deadline, optErr := recvDeadlineUnderLock(jq)
 		So(optErr, ShouldBeNil)
 		So(deadline, ShouldEqual, reconnected)
 
@@ -1908,7 +1919,7 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 		// a reconnect re-Connect()s, which leaves the client on the
 		// ClientMinRequestTimeout floor, so that is the deadline this step has
 		// to narrow to stay inside its budget
-		So(jq.sock.SetOption(mangos.OptionRecvDeadline, requestTimeout(subscriptionReconnectTimeout)), ShouldBeNil)
+		So(setRecvDeadlineUnderLock(jq, requestTimeout(subscriptionReconnectTimeout)), ShouldBeNil)
 
 		took, returned, unsubErr := unsubscribeRejectedWithin(sub, unboundedRequestBudget, unreadPingWait)
 
@@ -1954,6 +1965,122 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 		So(serverClientSubscriptionCount(server), ShouldEqual, 1)
 		So(errors.Is(unsubErr, ErrSubscriptionClosed), ShouldBeTrue)
 	})
+}
+
+func TestSubscriptionReconnectSocketSwap(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A reconnect can replace a client's socket while its receive deadline is set and read", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		reconnectErrs, deadlineErrs := reconnectWhileUsingRecvDeadline(jq, clientConnectTime)
+
+		So(reconnectErrs, ShouldEqual, 0)
+		So(deadlineErrs, ShouldEqual, 0)
+	})
+}
+
+// reconnectWhileUsingRecvDeadline reconnects jq socketSwapReconnects times on
+// one goroutine while another sets and reads jq's receive deadline, and returns
+// how many reconnects and how many deadline operations failed.
+//
+// This is the minimal form of what a subscription's poll goroutine does to a
+// client its test is also touching: reconnect() swaps c.sock and closes the old
+// socket, so both goroutines must go through the client's lock.
+func reconnectWhileUsingRecvDeadline(jq *Client, timeout time.Duration) (int, int) {
+	var (
+		wg                          sync.WaitGroup
+		reconnectErrs, deadlineErrs int
+	)
+
+	reconnected := make(chan struct{})
+
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+		defer close(reconnected)
+
+		for range socketSwapReconnects {
+			if err := jq.reconnect(timeout); err != nil {
+				reconnectErrs++
+			}
+		}
+	}()
+
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+
+		deadlineErrs = countRecvDeadlineErrors(jq, reconnected)
+	}()
+
+	wg.Wait()
+
+	return reconnectErrs, deadlineErrs
+}
+
+// countRecvDeadlineErrors sets and reads jq's receive deadline until done is
+// closed, or until socketSwapDeadlineOps operations have been done, and returns
+// how many of those failed. A deadline read back as non-positive counts as a
+// failure too: mangos reads that as "wait forever", which no live client socket
+// is set to.
+func countRecvDeadlineErrors(jq *Client, done <-chan struct{}) int {
+	errs := 0
+
+	for range socketSwapDeadlineOps {
+		select {
+		case <-done:
+			return errs
+		case <-time.After(socketSwapDeadlineWait):
+		}
+
+		if err := setRecvDeadlineUnderLock(jq, ClientMinRequestTimeout); err != nil {
+			errs++
+
+			continue
+		}
+
+		if deadline, err := recvDeadlineUnderLock(jq); err != nil || deadline <= 0 {
+			errs++
+		}
+	}
+
+	return errs
+}
+
+// setRecvDeadlineUnderLock sets the receive deadline of jq's socket while
+// holding jq's lock, so that a concurrent reconnect() can neither swap the
+// socket out from under the call nor close the socket it is setting the option
+// on.
+func setRecvDeadlineUnderLock(jq *Client, deadline time.Duration) error {
+	jq.Lock()
+	defer jq.Unlock()
+
+	return jq.sock.SetOption(mangos.OptionRecvDeadline, deadline)
+}
+
+// recvDeadlineUnderLock returns the receive deadline of jq's socket, taking the
+// lock that recvDeadline() requires its caller to hold.
+func recvDeadlineUnderLock(jq *Client) (time.Duration, error) {
+	jq.Lock()
+	defer jq.Unlock()
+
+	return jq.recvDeadline()
 }
 
 // applySubscriptionReconnectTimings sets the reconnect backoff/total-retry-time
