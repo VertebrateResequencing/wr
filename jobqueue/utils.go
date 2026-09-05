@@ -1211,17 +1211,28 @@ func (c dirChain) removeUpward() error {
 
 // removeEmptyParents removes the empty parent directories of the chain's leaf,
 // from the deepest up, stopping before the base and at the first dir that will
-// not go.
+// not go. A dir that has ALREADY gone is not one of those: it counts as removed,
+// and the walk carries on above it, which is the same rule removeUpward applies
+// to the leaf.
+//
+// That is deliberately NOT folded into errIsDirNotEmpty or errIsDirInUse, which
+// carry the opposite verdict: they mean "stop, there is nothing of ours left
+// here", while "already gone" means "this level is done, keep going". Two
+// cleanups of one lost Job run in different processes, so a parent that the
+// other one removed between our descent and this walk is ordinary; stopping
+// there stranded every hashed level above it under <Cwd>/<AppName>_cwd for good.
 //
 // The chain is what makes it safe to remove these without re-proving each level:
 // every one is an ancestor of a leaf already proven to be inside the base, and
 // each removal is made in the directory the descent opened, which cannot be
-// outside the base however the names resolve now.
+// outside the base however the names resolve now. Carrying on cannot widen that:
+// the candidate set is fixed before the loop, so the shallowest removal is still
+// an entry of the base rather than the base itself.
 func (c dirChain) removeEmptyParents() {
 	parents := c.names[:len(c.names)-1]
 
 	for i := len(parents) - 1; i >= 0; i-- {
-		if c.roots[i].Remove(parents[i]) != nil {
+		if err := c.roots[i].Remove(parents[i]); err != nil && !os.IsNotExist(err) {
 			return
 		}
 	}

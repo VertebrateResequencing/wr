@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -278,6 +279,127 @@ func TestRmEmptyDirsIn(t *testing.T) {
 			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
 		})
 	})
+}
+
+// TestRemoveUpwardPastGoneParent covers the ordinary case of two cleanups of
+// one lost Job running in different processes: the hashed levels under
+// <Cwd>/<AppName>_cwd are shared, so the other process's cleanup can take a
+// level out from under ours at any moment.
+//
+// The concurrent removal is made BETWEEN openChain and removeUpward because
+// that is the production interleaving: the other cleanup lands after our
+// descent has pinned its handles, and those two calls are exactly what
+// rmEmptyDirsIn makes. Removing anything earlier would only exercise the
+// descent, which already treats a component that has gone as its end.
+//
+// The assertions are on which directories survive on disk, because a stranded
+// hashed level is invisible in the return value: the walk returns nil whether
+// it tidied everything or gave up at the first level someone else had taken.
+func TestRemoveUpwardPastGoneParent(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a proven workspace under wr's hashed levels", t, func() {
+		cwd := t.TempDir()
+		cwdBase := AppName + createdCwdBaseSuffix
+		base := filepath.Join(cwd, cwdBase)
+		h1 := filepath.Join(base, "a")
+		h2 := filepath.Join(h1, "b")
+		h3 := filepath.Join(h2, "c")
+		workSpace := filepath.Join(h3, "key-uuid")
+		So(os.MkdirAll(workSpace, 0o700), ShouldBeNil)
+
+		cwdRoot := rootOf(cwd)
+		defer cwdRoot.Close()
+
+		proven, ok := realDirBelow(cwdRoot, workSpace)
+		So(ok, ShouldBeTrue)
+
+		chain, err := proven.openChain()
+		So(err, ShouldBeNil)
+
+		defer chain.closeAll()
+
+		Convey("a second cleanup taking the workspace and deepest hashed level first still leaves nothing behind", func() {
+			So(os.Remove(workSpace), ShouldBeNil)
+			So(os.Remove(h3), ShouldBeNil)
+
+			So(chain.removeUpward(), ShouldBeNil)
+
+			So(survivorsBelow(cwd), ShouldBeEmpty)
+		})
+
+		Convey("a genuinely non-empty parent still stops the walk", func() {
+			So(os.WriteFile(filepath.Join(h1, "output.txt"), []byte("kept\n"), 0o600), ShouldBeNil)
+
+			So(chain.removeUpward(), ShouldBeNil)
+
+			So(survivorsBelow(cwd), ShouldResemble, []string{
+				cwdBase,
+				filepath.Join(cwdBase, "a"),
+				filepath.Join(cwdBase, "a", "output.txt"),
+			})
+		})
+
+		Convey("a parent that will not go stops the walk, even where the level above it would give way", func() {
+			// what the stop is worth: a pinned handle and the current name
+			// disagree once something in the tree has been renamed, which any
+			// process sharing the Cwd can do, so the level above a dir that will
+			// not go is no longer bound to be non-empty. Carrying on there would
+			// take the fresh hashed level another Job's mkHashedDir has just
+			// made. Without a rename the stop saves doomed syscalls and nothing
+			// else, since a dir that would not go is still an entry of its own
+			// parent.
+			moved := filepath.Join(base, "a.old")
+			So(os.Rename(h1, moved), ShouldBeNil)
+			So(os.Mkdir(h1, 0o700), ShouldBeNil)
+			So(os.WriteFile(filepath.Join(moved, "b", "keep.txt"), []byte("kept\n"), 0o600), ShouldBeNil)
+
+			So(chain.removeUpward(), ShouldBeNil)
+
+			So(survivorsBelow(cwd), ShouldResemble, []string{
+				cwdBase,
+				filepath.Join(cwdBase, "a"),
+				filepath.Join(cwdBase, "a.old"),
+				filepath.Join(cwdBase, "a.old", "b"),
+				filepath.Join(cwdBase, "a.old", "b", "keep.txt"),
+			})
+		})
+	})
+}
+
+// survivorsBelow lists every path still under dir, relative to it, so a strand
+// shows up as the directories it is rather than as a stat error.
+//
+// WalkDir reports an error only for dir itself or for a directory it has
+// already visited, never for a file. A directory below dir is therefore
+// recorded before the read of it fails, so the skip drops only its contents,
+// and a strand can never be passed off as an empty tree; the skip does drop
+// the children that were readable, which no assertion here needs. An error on
+// dir itself, a failed lstat of it say, leaves the list empty, but dir is the
+// test's own temp dir and the shallowest removal the code under test can make
+// is an entry of dir, never dir itself.
+func survivorsBelow(dir string) []string {
+	var out []string
+
+	prefix := dir + string(filepath.Separator)
+
+	// the walk function returns nothing but fs.SkipDir, which WalkDir itself
+	// swallows, so there is never an error here to check.
+	_ = filepath.WalkDir(dir, func(path string, _ fs.DirEntry, err error) error { //nolint:errcheck
+		if err != nil {
+			return fs.SkipDir
+		}
+
+		if path != dir {
+			out = append(out, strings.TrimPrefix(path, prefix))
+		}
+
+		return nil
+	})
+
+	return out
 }
 
 // startMemoryHoldingChild runs this test binary as a child holding
