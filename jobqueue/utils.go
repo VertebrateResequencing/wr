@@ -1232,7 +1232,7 @@ func (c dirChain) removeEmptyParents() {
 	parents := c.names[:len(c.names)-1]
 
 	for i := len(parents) - 1; i >= 0; i-- {
-		if err := c.roots[i].Remove(parents[i]); err != nil && !errIsGone(err) {
+		if err := c.roots[i].Remove(parents[i]); err != nil && !os.IsNotExist(err) {
 			return
 		}
 	}
@@ -1333,25 +1333,6 @@ func errIsDirNotEmpty(err error) bool {
 // It is asked only of the removal of a directory, so a mounted-on FILE - which
 // unlink also refuses with EBUSY - is still reported: the sweep leaves that
 // entry alone via the mount boundary rather than trying and forgiving it.
-// errIsGone says if err means the thing being removed is no longer there, so a
-// walk removing a chain of directories may treat that level as done and carry on
-// above it.
-//
-// ENOENT is what a local filesystem gives, measured through an os.Root on ext4,
-// including the case the removal goes through a handle whose own directory has
-// since been removed.
-//
-// ESTALE is here for the network filesystems wr actually runs on - Lustre, NFS -
-// where an operation through a handle whose object has been removed reports the
-// handle as stale rather than the name as missing. That is UNVERIFIED: no such
-// filesystem was available to measure, and mounting one needs root. It is
-// included because it means the same thing and because being wrong is cheap: if
-// the directory somehow still exists, the level above it is not empty either, so
-// the next removal fails with ENOTEMPTY and the walk stops there anyway.
-func errIsGone(err error) bool {
-	return os.IsNotExist(err) || errors.Is(err, syscall.ESTALE)
-}
-
 func errIsDirInUse(err error) bool {
 	return errIsDirNotEmpty(err) || errors.Is(err, syscall.EBUSY)
 }

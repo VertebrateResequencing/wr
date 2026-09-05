@@ -28,6 +28,7 @@ package jobqueue
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -44,6 +45,7 @@ import (
 	"testing"
 	"time"
 
+	gofuse "github.com/hanwen/go-fuse/v2/fs"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -296,29 +298,6 @@ func TestRmEmptyDirsIn(t *testing.T) {
 // The assertions are on which directories survive on disk, because a stranded
 // hashed level is invisible in the return value: the walk returns nil whether
 // it tidied everything or gave up at the first level someone else had taken.
-// TestErrIsGone pins which errnos count as "already removed" for the upward
-// walk. ENOENT is measured on ext4 by the walk's own test above; ESTALE cannot
-// be, because it needs a network filesystem this machine does not have, so it is
-// asserted directly on the predicate rather than left as an untested branch.
-func TestErrIsGone(t *testing.T) {
-	if runnermode || servermode {
-		return
-	}
-
-	Convey("errIsGone recognises a thing that is no longer there", t, func() {
-		So(errIsGone(syscall.ENOENT), ShouldBeTrue)
-		So(errIsGone(syscall.ESTALE), ShouldBeTrue)
-		So(errIsGone(&os.PathError{Op: "unlinkat", Err: syscall.ESTALE}), ShouldBeTrue)
-
-		Convey("and nothing else, so a real failure still stops the walk", func() {
-			So(errIsGone(syscall.ENOTEMPTY), ShouldBeFalse)
-			So(errIsGone(syscall.EBUSY), ShouldBeFalse)
-			So(errIsGone(syscall.EACCES), ShouldBeFalse)
-			So(errIsGone(nil), ShouldBeFalse)
-		})
-	})
-}
-
 func TestRemoveUpwardPastGoneParent(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -388,6 +367,169 @@ func TestRemoveUpwardPastGoneParent(t *testing.T) {
 				filepath.Join(cwdBase, "a.old"),
 				filepath.Join(cwdBase, "a.old", "b"),
 				filepath.Join(cwdBase, "a.old", "b", "keep.txt"),
+			})
+		})
+	})
+}
+
+// staleRmdirFS is a filesystem whose rmdir answers ESTALE for one named entry,
+// and leaves that entry where it is. That is what a stale handle means: the
+// HANDLE the operation went through is unusable, while the object it named is
+// still there.
+//
+// The name is set by the test goroutine after the tree has been built through
+// the mount, while the FUSE server goroutine reads it in Rmdir. The kernel
+// syscall between the two is not an edge the race detector can see, so the name
+// is held atomically; nil means nothing is stale yet.
+type staleRmdirFS struct {
+	staleName atomic.Pointer[string]
+}
+
+// setStale names the entry whose removal reports a stale handle from now on.
+func (f *staleRmdirFS) setStale(name string) {
+	f.staleName.Store(&name)
+}
+
+// isStale says whether name is the entry whose removal reports a stale handle.
+func (f *staleRmdirFS) isStale(name string) bool {
+	stale := f.staleName.Load()
+
+	return stale != nil && *stale == name
+}
+
+// staleRmdirNode is a loopback node that asks its filesystem whether an entry is
+// stale before passing a directory removal down to the backing directory.
+type staleRmdirNode struct {
+	gofuse.LoopbackNode
+
+	fs *staleRmdirFS
+}
+
+// Rmdir answers ESTALE for the one entry the test named, without touching it,
+// and otherwise removes it the way the loopback does.
+func (n *staleRmdirNode) Rmdir(ctx context.Context, name string) syscall.Errno {
+	if n.fs.isStale(name) {
+		return syscall.ESTALE
+	}
+
+	return n.LoopbackNode.Rmdir(ctx, name)
+}
+
+// mountStaleRmdir really FUSE mounts backing over mountPoint as a staleRmdirFS,
+// returning the filesystem so a test can name the entry whose removal reports a
+// stale handle, and takes the mount down when the test ends. ok is false where
+// the host refused the mount, exactly as for mountLoopback.
+//
+// The mount has to be the real thing rather than a wrapped os.Root, because what
+// is under test is what an errno arriving at c.roots[i].Remove does to the walk,
+// and only a filesystem can produce that errno.
+func mountStaleRmdir(t *testing.T, mountPoint, backing string) (*staleRmdirFS, bool) {
+	t.Helper()
+
+	var st syscall.Stat_t
+
+	So(syscall.Stat(backing, &st), ShouldBeNil)
+
+	sfs := &staleRmdirFS{}
+	root := &gofuse.LoopbackRoot{Path: backing, Dev: st.Dev}
+	root.NewNode = func(rootData *gofuse.LoopbackRoot, _ *gofuse.Inode, _ string,
+		_ *syscall.Stat_t) gofuse.InodeEmbedder {
+		return &staleRmdirNode{LoopbackNode: gofuse.LoopbackNode{RootData: rootData}, fs: sfs}
+	}
+	root.RootNode = root.NewNode(root, nil, "", &st)
+
+	server, err := gofuse.Mount(mountPoint, root.RootNode, &gofuse.Options{})
+	if err != nil {
+		t.Logf("this host refused a FUSE mount at %s: %s", mountPoint, err)
+
+		return nil, false
+	}
+
+	t.Cleanup(func() {
+		if uerr := server.Unmount(); uerr != nil {
+			t.Logf("could not unmount the stale-rmdir filesystem at %s: %s", mountPoint, uerr)
+		}
+	})
+
+	return sfs, true
+}
+
+// TestRemoveUpwardOnStaleHandle pins what the upward walk does with an errno it
+// does not recognise: it stops there, and whatever directory is standing at that
+// name is left alone.
+//
+// ESTALE is the case that makes the conservative verdict the right one to pin.
+// It says the HANDLE is unusable, never that the name is missing, so the
+// directory can still be there - and the walk's next removal names the CURRENT
+// entry of the next pinned handle, which after a rename or a remove-and-recreate
+// of a shared hashed level is a different, fresh, empty directory another Job's
+// mkHashedDir has just made. Treating ESTALE as "already gone" therefore deletes
+// that directory, and this test is where that shows: the fresh <base>/a/b below
+// does not survive it.
+//
+// Whether Lustre or NFS really report ESTALE for a removal through a pinned
+// handle is UNMEASURED; no such filesystem was available. That is why the errno
+// does not belong in the "gone" set, and anyone widening that set later has to
+// answer the deletion here first.
+func TestRemoveUpwardOnStaleHandle(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a proven workspace on a filesystem that can report a stale handle", t, func() {
+		if !canMountFuse() {
+			SkipConvey("this host will not let an unprivileged process raise a FUSE mount", func() {})
+
+			return
+		}
+
+		backing := t.TempDir()
+		cwd := t.TempDir()
+
+		stale, mounted := mountStaleRmdir(t, cwd, backing)
+		if !mounted {
+			SkipConvey("this host refused an unprivileged FUSE mount", func() {})
+
+			return
+		}
+
+		cwdBase := AppName + createdCwdBaseSuffix
+		base := filepath.Join(cwd, cwdBase)
+		h1 := filepath.Join(base, "a")
+		h2 := filepath.Join(h1, "b")
+		h3 := filepath.Join(h2, "c")
+		workSpace := filepath.Join(h3, "key-uuid")
+		So(os.MkdirAll(workSpace, 0o700), ShouldBeNil)
+
+		cwdRoot := rootOf(cwd)
+		defer cwdRoot.Close()
+
+		proven, ok := realDirBelow(cwdRoot, workSpace)
+		So(ok, ShouldBeTrue)
+
+		chain, err := proven.openChain()
+		So(err, ShouldBeNil)
+
+		defer chain.closeAll()
+
+		Convey("a stale handle stops the walk, sparing the fresh dir standing at the name above it", func() {
+			// another Job's mkHashedDir has taken b and made a new one since our
+			// descent pinned the old, so our handle and the name now disagree:
+			// the only thing keeping the walk off the new b is its refusal to
+			// carry on past an errno it does not recognise.
+			So(os.Rename(h2, filepath.Join(h1, "b.old")), ShouldBeNil)
+			So(os.Mkdir(h2, 0o700), ShouldBeNil)
+
+			stale.setStale("c")
+
+			So(chain.removeUpward(), ShouldBeNil)
+
+			So(survivorsBelow(cwd), ShouldResemble, []string{
+				cwdBase,
+				filepath.Join(cwdBase, "a"),
+				filepath.Join(cwdBase, "a", "b"),
+				filepath.Join(cwdBase, "a", "b.old"),
+				filepath.Join(cwdBase, "a", "b.old", "c"),
 			})
 		})
 	})
