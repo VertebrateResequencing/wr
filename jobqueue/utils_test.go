@@ -40,6 +40,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -295,6 +296,29 @@ func TestRmEmptyDirsIn(t *testing.T) {
 // The assertions are on which directories survive on disk, because a stranded
 // hashed level is invisible in the return value: the walk returns nil whether
 // it tidied everything or gave up at the first level someone else had taken.
+// TestErrIsGone pins which errnos count as "already removed" for the upward
+// walk. ENOENT is measured on ext4 by the walk's own test above; ESTALE cannot
+// be, because it needs a network filesystem this machine does not have, so it is
+// asserted directly on the predicate rather than left as an untested branch.
+func TestErrIsGone(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("errIsGone recognises a thing that is no longer there", t, func() {
+		So(errIsGone(syscall.ENOENT), ShouldBeTrue)
+		So(errIsGone(syscall.ESTALE), ShouldBeTrue)
+		So(errIsGone(&os.PathError{Op: "unlinkat", Err: syscall.ESTALE}), ShouldBeTrue)
+
+		Convey("and nothing else, so a real failure still stops the walk", func() {
+			So(errIsGone(syscall.ENOTEMPTY), ShouldBeFalse)
+			So(errIsGone(syscall.EBUSY), ShouldBeFalse)
+			So(errIsGone(syscall.EACCES), ShouldBeFalse)
+			So(errIsGone(nil), ShouldBeFalse)
+		})
+	})
+}
+
 func TestRemoveUpwardPastGoneParent(t *testing.T) {
 	if runnermode || servermode {
 		return
