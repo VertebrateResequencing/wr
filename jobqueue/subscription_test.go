@@ -2042,31 +2042,47 @@ func reconnectWhileUsingRecvDeadline(jq *Client, timeout time.Duration) (int, in
 
 // countRecvDeadlineErrors sets and reads jq's receive deadline until done is
 // closed, or until socketSwapDeadlineOps operations have been done, and returns
-// how many of those failed. A deadline read back as non-positive counts as a
-// failure too: mangos reads that as "wait forever", which no live client socket
-// is set to.
+// how many of those failed.
 func countRecvDeadlineErrors(jq *Client, done <-chan struct{}) int {
 	errs := 0
+
+	timer := time.NewTimer(socketSwapDeadlineWait)
+	defer timer.Stop()
 
 	for range socketSwapDeadlineOps {
 		select {
 		case <-done:
 			return errs
-		case <-time.After(socketSwapDeadlineWait):
+		case <-timer.C:
 		}
 
-		if err := setRecvDeadlineUnderLock(jq, ClientMinRequestTimeout); err != nil {
-			errs++
-
-			continue
-		}
-
-		if deadline, err := recvDeadlineUnderLock(jq); err != nil || deadline <= 0 {
+		if !recvDeadlineRoundTripped(jq) {
 			errs++
 		}
+
+		// Resetting here, after the deadline operations rather than as soon as
+		// the timer fires, keeps each wait starting when the previous iteration
+		// finished, which is what time.After at the top of the select did. A
+		// ticker would instead fire early whenever an iteration outlasts the
+		// period, changing how often these operations meet a socket swap.
+		timer.Reset(socketSwapDeadlineWait)
 	}
 
 	return errs
+}
+
+// recvDeadlineRoundTripped sets jq's receive deadline and reads it back, and
+// says if both succeeded. A deadline read back as non-positive counts as a
+// failure too: mangos reads that as "wait forever", which no live client socket
+// is set to.
+func recvDeadlineRoundTripped(jq *Client) bool {
+	if err := setRecvDeadlineUnderLock(jq, ClientMinRequestTimeout); err != nil {
+		return false
+	}
+
+	deadline, err := recvDeadlineUnderLock(jq)
+
+	return err == nil && deadline > 0
 }
 
 // setRecvDeadlineUnderLock sets the receive deadline of jq's socket while
