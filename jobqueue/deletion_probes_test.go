@@ -1272,16 +1272,24 @@ type probeWindowRow struct {
 // It asserts the identity really did change, so an ordering that lets the inode
 // be reused fails here, naming the premise, rather than turning over the
 // expectation of whichever row relied on it.
+//
+// gosec cannot prove the dir passed in is clean, so it reports G703 on each of
+// the calls below; every caller passes a path this test built under its own
+// t.TempDir(), so the only taint is the test's own. #nosec rather than
+// //nolint:gosec because nolintlint does not inspect #nosec, so it cannot report
+// the directive as unused on a run that does not reach gosec's analysis of this
+// file - which is also the repo's convention for this rule in a test (see
+// serverWebI_test.go).
 func replaceWithADirOfItsOwn(dir string) {
-	checked, err := os.Lstat(dir)
+	checked, err := os.Lstat(dir) // #nosec G703 -- test-controlled path under t.TempDir
 	So(err, ShouldBeNil)
 
 	spare := dir + "_spare"
-	So(os.MkdirAll(spare, os.ModePerm), ShouldBeNil)
-	So(os.RemoveAll(dir), ShouldBeNil)
-	So(os.Rename(spare, dir), ShouldBeNil)
+	So(os.MkdirAll(spare, os.ModePerm), ShouldBeNil) // #nosec G703 -- test-controlled path under t.TempDir
+	So(os.RemoveAll(dir), ShouldBeNil)               // #nosec G703 -- test-controlled path under t.TempDir
+	So(os.Rename(spare, dir), ShouldBeNil)           // #nosec G703 -- test-controlled path under t.TempDir
 
-	now, err := os.Lstat(dir)
+	now, err := os.Lstat(dir) // #nosec G703 -- test-controlled path under t.TempDir
 	So(err, ShouldBeNil)
 	So(os.SameFile(now, checked), ShouldBeFalse)
 }
