@@ -1272,6 +1272,12 @@ type probeWindowRow struct {
 // It asserts the identity really did change, so an ordering that lets the inode
 // be reused fails here, naming the premise, rather than turning over the
 // expectation of whichever row relied on it.
+// The os calls below take a caller-supplied dir that gosec's taint analysis
+// cannot prove is clean, so it reports G703 on each of them. Every caller passes
+// a path this test built under its own t.TempDir(), so the only taint is the
+// test's own.
+//
+//nolint:gosec // test-controlled path under a temp dir
 func replaceWithADirOfItsOwn(dir string) {
 	checked, err := os.Lstat(dir)
 	So(err, ShouldBeNil)
