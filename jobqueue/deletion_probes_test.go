@@ -1275,9 +1275,11 @@ type probeWindowRow struct {
 //
 // gosec cannot prove the dir passed in is clean, so it reports G703 on each of
 // the calls below; every caller passes a path this test built under its own
-// t.TempDir(), so the only taint is the test's own. #nosec is used rather than
-// //nolint:gosec because nolintlint reports an unused //nolint on any run where
-// gosec stays silent, and this rule does not fire consistently.
+// t.TempDir(), so the only taint is the test's own. #nosec rather than
+// //nolint:gosec because nolintlint does not inspect #nosec, so it cannot report
+// the directive as unused on a run that does not reach gosec's analysis of this
+// file - which is also the repo's convention for this rule in a test (see
+// serverWebI_test.go).
 func replaceWithADirOfItsOwn(dir string) {
 	checked, err := os.Lstat(dir) // #nosec G703 -- test-controlled path under t.TempDir
 	So(err, ShouldBeNil)
