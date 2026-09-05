@@ -88,8 +88,14 @@ const (
 	// bound TestSubscriptionReconnectSocketSwap: the reconnecting goroutine
 	// decides when the test ends, and the deadline goroutine paces itself so it
 	// is still running when each socket swap lands without spinning a core to do
-	// it. Its own bound is only a backstop against a reconnect loop that never
-	// finishes.
+	// it. socketSwapDeadlineOps caps that goroutine's own iterations and nothing
+	// else; reconnectWhileUsingRecvDeadline waits on both goroutines, so
+	// reaching the cap does not end the test. Runtime is bounded by the
+	// reconnect loop instead: socketSwapReconnects reconnects, each of which
+	// only calls Connect() with the connect timeout it was given. If a reconnect
+	// ever stalled past that, only go test's own timeout would end the run.
+	// Observed runs use under 400 deadline ops, so the cap sits well above what
+	// pacing at socketSwapDeadlineWait needs.
 	socketSwapReconnects   = 20
 	socketSwapDeadlineOps  = 20000
 	socketSwapDeadlineWait = 100 * time.Microsecond
