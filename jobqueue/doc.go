@@ -68,6 +68,11 @@ Server
 	        Deployment:      "production",
 	        CIDR:            "",
 	    })
+
+	    // Serve() returns while prior-state recovery is still running, so the
+	    // server is not reachable yet; wait for it to publish before using it.
+	    <-server.Serving()
+
 	    err = server.Block()
 
 # Client

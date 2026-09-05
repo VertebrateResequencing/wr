@@ -55,6 +55,11 @@ const (
 	jstatusRequestUnsubscribe = requestMethodUnsubscribe
 	statusAllRepGroups        = "+all+"
 
+	// seedBoundaryBegin and seedBoundaryEnd are the jstatusSeedBoundary values
+	// that bracket the scan-on-connect status-count seed.
+	seedBoundaryBegin = "begin"
+	seedBoundaryEnd   = "end"
+
 	// webSocketBufferSize is the read and write buffer size (bytes) for status
 	// page websocket connections.
 	webSocketBufferSize = 1024
@@ -101,12 +106,52 @@ type jstatusReq struct {
 	Msg        string // required argument for dismissMsg
 }
 
-// webInterfaceStatusSendGroupStateCount sends the per-RepGroup state counts to
+// jstatusSeedBoundary brackets the scan-on-connect status-count seed on the
+// status page websocket: one is sent immediately before the queue snapshot the
+// seed is built from, and one immediately after the last seed message, both
+// under the connection's write mutex so no live jstateCount delta can
+// interleave the pair.
+//
+// It exists because the seed and the live delta feed are two unsynchronised
+// views of the same queue: setupUpdateListener joins s.statusCaster as its
+// first act, so a client is on the live feed before its "current" request can
+// even arrive, and every transition emitted between that join and the snapshot
+// is then reported twice - once as its own from->to delta and once by the seed,
+// which already shows the job in its destination state. Deltas are anonymous
+// counts rather than job identities, so the client cannot spot the duplicate
+// and one unit of occupancy moves permanently from the source bucket to the
+// destination one (reliable4 Finding 7: 274 running shown with 4 running, cured
+// only by a page refresh, i.e. by re-seeding).
+//
+// The boundary lets the client discard everything it received before the seed:
+// a delta is only ever written after the transition it reports, and the "begin"
+// boundary is written before the snapshot, so anything received before it
+// describes a transition the snapshot has already accounted for. What is left
+// is the snapshot walk itself - a transition that happens while the walk is in
+// progress may be both seen by the walk and reported by a delta written after
+// the "end" boundary. That residual is bounded by the walk's duration rather
+// than by the whole connect handshake; see .docs/bugfixes/260820-2.md.
+//
+// It is a new message type rather than a new jstateCount field so that a client
+// that predates it ignores it: the status page dispatches on the presence of
+// FromState/State/IP/Msg, none of which this carries.
+type jstatusSeedBoundary struct {
+	SeedBoundary string // seedBoundaryBegin or seedBoundaryEnd
+}
+
+// writeSeedBoundary sends one seed boundary marker to a status page client. The
+// caller must hold the connection's write mutex, which is what makes the seed
+// atomic with respect to the live delta feed.
+func writeSeedBoundary(conn *websocket.Conn, boundary string) error {
+	return conn.WriteJSON(&jstatusSeedBoundary{SeedBoundary: boundary})
+}
+
+// webInterfaceStatusSendStateCounts sends per-RepGroup display-state counts to
 // the status webpage websocket as jstateCount deltas from the new state, so a
 // fresh connection's counts are seeded the v0.36.5 way (reserved is merged into
-// running for display).
-func webInterfaceStatusSendGroupStateCount(conn *websocket.Conn, repGroup string, jobs []*Job) error {
-	for to, count := range statusStateCounts(jobs) {
+// running for display, by whoever counted).
+func webInterfaceStatusSendStateCounts(conn *websocket.Conn, repGroup string, counts map[JobState]int) error {
+	for to, count := range counts {
 		msg := &jstateCount{RepGroup: repGroup, FromState: JobStateNew, ToState: to, Count: count}
 		if err := conn.WriteJSON(msg); err != nil {
 			return err
@@ -322,6 +367,70 @@ func webInterfaceStatic(ctx context.Context, s *Server) http.HandlerFunc {
 	}
 }
 
+// statusSeedCounts walks the queue once and returns the display-state counts the
+// scan-on-connect seed needs: the "+all+" live aggregate, and the same counts
+// broken down per RepGroup. It is exactly statusStateCounts(getJobsCurrent(...)),
+// grouped by RepGroup, and TestReliable4StatusSeedCounts pins that equivalence.
+//
+// It deliberately does not materialise Jobs. getJobsCurrent goes through
+// itemToJob, which deep-copies every field of every job and populates its
+// std/env, and for a production-sized queue (prod: 118k live jobs) that copying
+// is nearly all of the walk's cost - while the seed only needs each job's
+// RepGroup and display state. The walk's duration matters because it is the one
+// window jstatusSeedBoundary cannot close: a transition that happens while the
+// walk is in progress can be both seen by the walk and reported by a delta
+// written after the closing boundary, so the residual error is the walk's
+// duration times the transition rate. Keeping the walk short is what keeps that
+// residual small.
+func (s *Server) statusSeedCounts() (map[JobState]int, map[string]map[JobState]int) {
+	items := s.q.AllItems()
+	all := make(map[JobState]int)
+	perRepGroup := make(map[string]map[JobState]int)
+
+	for _, item := range items {
+		repGroup, state, ok := s.itemDisplayState(item)
+		if !ok {
+			continue
+		}
+
+		all[state]++
+
+		counts, exists := perRepGroup[repGroup]
+		if !exists {
+			counts = make(map[JobState]int)
+			perRepGroup[repGroup] = counts
+		}
+
+		counts[state]++
+	}
+
+	return all, perRepGroup
+}
+
+// itemDisplayState returns the RepGroup and status-bar display state of a queue
+// item's job, reporting false if the item does not hold one.
+func (s *Server) itemDisplayState(item *queue.Item) (string, JobState, bool) {
+	job, ok := item.Data().(*Job)
+	if !ok {
+		return "", "", false
+	}
+
+	// the same lock order as itemToJob: the job's read lock, then the item's
+	// stats.
+	job.RLock()
+	state := s.itemStateToJobState(item.Stats().State, job.Lost)
+	repGroup := job.RepGroup
+	job.RUnlock()
+
+	// for display simplicity purposes, merge reserved in to running, exactly as
+	// statusStateCounts does.
+	if state == JobStateReserved {
+		state = JobStateRunning
+	}
+
+	return repGroup, state, true
+}
+
 // serveStaticDoc serves an embedded static document, requiring authorization for
 // the status page.
 func (s *Server) serveStaticDoc(ctx context.Context, w http.ResponseWriter, r *http.Request) {
@@ -517,7 +626,7 @@ func (s *Server) handleStatusWSRequest(ctx context.Context, r statusWSRequest) {
 func (s *Server) handleStatusWSCommand(ctx context.Context, r statusWSRequest) {
 	switch r.req.Request {
 	case jstatusRequestCurrent:
-		s.sendCurrentStatus(ctx, r)
+		s.sendCurrentStatus(r)
 	case jstatusRequestDetails:
 		s.sendJobDetails(ctx, r)
 	case jstatusRequestUnsubscribe:
@@ -555,8 +664,8 @@ func (s *Server) handleStatusWSCommand(ctx context.Context, r statusWSRequest) {
 // incomplete-only so a completed-only RepGroup is naturally omitted from a fresh
 // connection's seed (terminal-hiding on refresh); a RepGroup that COMPLETES
 // while connected stays visible via the live running->complete delta.
-func (s *Server) sendCurrentStatus(ctx context.Context, r statusWSRequest) {
-	s.sendCurrentStatusCounts(ctx, r)
+func (s *Server) sendCurrentStatus(r statusWSRequest) {
+	s.sendCurrentStatusCounts(r)
 
 	for _, bs := range s.getBadServers() {
 		s.badServerCaster.Send(bs)
@@ -571,36 +680,59 @@ func (s *Server) sendCurrentStatus(ctx context.Context, r statusWSRequest) {
 }
 
 // sendCurrentStatusCounts sends the scan-on-connect status-count seed to the
-// requesting client under its write mutex. It gets all current (incomplete)
-// jobs, seeds the "+all+" live aggregate from them, then for each RepGroup among
-// them seeds that RepGroup from its incomplete jobs plus its complete jobs.
-func (s *Server) sendCurrentStatusCounts(ctx context.Context, r statusWSRequest) {
-	jobs := s.getJobsCurrent(ctx, "", RepGroupMatchExact, 0, "", false, false, false)
-
+// requesting client, bracketed by jstatusSeedBoundary markers.
+//
+// The connection's write mutex is taken before the queue snapshot the seed is
+// built from and held until the closing boundary, so the whole bracket is one
+// uninterrupted run of messages: no live delta can be written inside it, and
+// every delta written before it reports a transition that predates the snapshot
+// and is therefore already counted by the seed. That is what lets the client
+// throw away what it received before the boundary instead of double-counting
+// it. See jstatusSeedBoundary for the mechanism and the residual.
+func (s *Server) sendCurrentStatusCounts(r statusWSRequest) {
 	r.writeMutex.Lock()
 	defer r.writeMutex.Unlock()
 
-	if err := webInterfaceStatusSendGroupStateCount(r.conn, statusAllRepGroups, jobs); err != nil {
+	if err := writeSeedBoundary(r.conn, seedBoundaryBegin); err != nil {
 		return
 	}
 
-	repGroups := make(map[string][]*Job)
-	for _, job := range jobs {
-		repGroups[job.RepGroup] = append(repGroups[job.RepGroup], job)
+	if !s.writeStatusCountSeed(r.conn) {
+		return
 	}
 
-	for repGroup, rgJobs := range repGroups {
+	if err := writeSeedBoundary(r.conn, seedBoundaryEnd); err != nil {
+		return
+	}
+}
+
+// writeStatusCountSeed counts all current (incomplete) jobs, seeds the "+all+"
+// live aggregate from them, then for each RepGroup among them seeds that
+// RepGroup from its incomplete jobs plus its complete jobs. It reports whether
+// the whole seed was written; the caller must hold the connection's write mutex.
+func (s *Server) writeStatusCountSeed(conn *websocket.Conn) bool {
+	all, perRepGroup := s.statusSeedCounts()
+
+	if err := webInterfaceStatusSendStateCounts(conn, statusAllRepGroups, all); err != nil {
+		return false
+	}
+
+	for repGroup, counts := range perRepGroup {
 		complete, _, qerr := s.getCompleteJobsByRepGroup(repGroup)
 		if qerr != "" {
-			return
+			return false
 		}
 
-		rgJobs = append(rgJobs, complete...)
+		for state, count := range statusStateCounts(complete) {
+			counts[state] += count
+		}
 
-		if err := webInterfaceStatusSendGroupStateCount(r.conn, repGroup, rgJobs); err != nil {
-			return
+		if err := webInterfaceStatusSendStateCounts(conn, repGroup, counts); err != nil {
+			return false
 		}
 	}
+
+	return true
 }
 
 // sendJobDetails sends the full status of every matching job in a rep group to
@@ -608,9 +740,12 @@ func (s *Server) sendCurrentStatusCounts(ctx context.Context, r statusWSRequest)
 func (s *Server) sendJobDetails(ctx context.Context, r statusWSRequest) {
 	req := r.req
 
+	// the status webpage lists a RepGroup's complete jobs alongside its live ones
+	// (and offers to re-run them), so this asks for the history.
 	opts := repGroupOptions{
-		RepGroup: req.RepGroup,
-		Match:    normalizeRepGroupMatch("", req.Search),
+		RepGroup:        req.RepGroup,
+		Match:           normalizeRepGroupMatch("", req.Search),
+		IncludeComplete: true,
 		limitJobsOptions: limitJobsOptions{
 			Limit:      req.Limit,
 			Offset:     req.Offset,
@@ -815,7 +950,7 @@ func resetJobStatusFields(job *Job) {
 	job.EnvCRetrieved = false
 	job.State = JobStateReady
 	job.Attempts = 0
-	job.UntilBuried = job.Retries + 1
+	job.UntilBuried = initialUntilBuried(job.Retries)
 	job.ReservedBy = uuid.UUID{}
 	job.Similar = 0
 	job.DelayTime = 0

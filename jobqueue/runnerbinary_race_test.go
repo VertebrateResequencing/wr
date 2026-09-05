@@ -33,30 +33,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"testing"
 )
 
 const envTestRunnerBinary = "WR_TEST_RUNNER_BINARY"
-
-//nolint:gochecknoglobals // TestMain cleans up the process-wide compiled binary.
-var runnerBinaryTempDir string
-
-func TestMain(m *testing.M) {
-	dispatchSubprocessMode()
-
-	code := m.Run()
-
-	if runnerBinaryTempDir != "" {
-		if err := os.RemoveAll(runnerBinaryTempDir); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "failed to remove %s: %s\n", runnerBinaryTempDir, err)
-			if code == 0 {
-				code = 1
-			}
-		}
-	}
-
-	os.Exit(code)
-}
 
 // runnerBinary returns the path to a test binary to run as the --servermode or
 // --runnermode subprocess. Under the race detector we must NOT reuse the
@@ -79,7 +58,7 @@ func runnerBinary() (string, error) {
 		return path, nil
 	}
 
-	dir, err := os.MkdirTemp("", "wr_self_test")
+	dir, err := newTestTempDir("selftest")
 	if err != nil {
 		return "", err
 	}
@@ -93,8 +72,6 @@ func runnerBinary() (string, error) {
 
 		return "", fmt.Errorf("failed to compile self: %w: %s", err, string(out))
 	}
-
-	runnerBinaryTempDir = dir
 
 	return path, nil
 }

@@ -29,17 +29,7 @@ package jobqueue
 
 import (
 	"os"
-	"testing"
 )
-
-// TestMain lets dispatchSubprocessMode() handle a --runnermode or --servermode
-// child before any test runs. The race build has its own TestMain, which calls
-// the same function for the same reason.
-func TestMain(m *testing.M) {
-	dispatchSubprocessMode()
-
-	os.Exit(m.Run())
-}
 
 // runnerBinary returns the path to a test binary to run as the --servermode or
 // --runnermode subprocess. Outside the race detector the running test binary is

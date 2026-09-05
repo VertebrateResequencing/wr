@@ -26,11 +26,17 @@
 package jobqueue
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
+	"io"
 	"math/rand"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -39,6 +45,61 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+const (
+	// memoryChildHoldMB is how much resident memory TestMemoryHoldingChild
+	// holds, and memoryChildMinExcessMB the excess that currentMemory must
+	// therefore report over ownMemoryMB. The slack between the two is what makes
+	// the comparison sound: the two figures are separate /proc samples of a live
+	// quantity, so they drift by whole MB, and only a signal far larger than
+	// that drift makes the difference between them provable.
+	memoryChildHoldMB      = 256
+	memoryChildMinExcessMB = 128
+
+	// memoryChildPageBytes is the granularity the child touches its allocation
+	// at, so it becomes resident without writing every byte of it (which the
+	// race detector would instrument 268 million times).
+	memoryChildPageBytes = 4096
+
+	// envMemoryChild makes TestMemoryHoldingChild hold memory instead of
+	// skipping, and memoryChildReady is what it prints once that memory is
+	// resident.
+	envMemoryChild   = "WR_TEST_MEMORY_CHILD"
+	memoryChildReady = "MEMHELD"
+)
+
+// TestMemoryHoldingChild is the child half of TestOwnMemoryMB: it makes
+// memoryChildHoldMB of memory resident, says so, then holds it until its stdin
+// closes.
+func TestMemoryHoldingChild(t *testing.T) {
+	if os.Getenv(envMemoryChild) == "" {
+		t.Skip("child of TestOwnMemoryMB")
+	}
+
+	held := make([]byte, memoryChildHoldMB*bytesPerMB)
+	for page := range len(held) / memoryChildPageBytes {
+		held[page*memoryChildPageBytes] = 1
+	}
+
+	fmt.Println(memoryChildReady) //nolint:forbidigo
+
+	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+		t.Logf("child stopped reading stdin: %s", err)
+	}
+
+	runtime.KeepAlive(held)
+}
+
+// TestOwnMemoryMB checks that ownMemoryMB reports this process's own Pss and,
+// unlike currentMemory, excludes child processes.
+//
+// It proves that against a child holding a large known amount of memory, and
+// deliberately returns pages to the OS between the two readings. An earlier
+// version used no child and asserted ownMemoryMB() <= currentMemory(self)+1,
+// which flaked ("Expected '480' to be less than or equal to '479'"): the two
+// figures are separate samples of a live quantity, so Pss can drop between them
+// by more than any fixed tolerance allows. That version also could not have
+// failed had ownMemoryMB started counting children, which is the property it
+// was there to check.
 func TestOwnMemoryMB(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -49,18 +110,23 @@ func TestOwnMemoryMB(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(mb, ShouldBeGreaterThanOrEqualTo, 0)
 
-		Convey("and it never meaningfully exceeds currentMemory, which also includes children", func() {
-			// currentMemory(self) reads the same smaps Pss and then adds the
-			// memory of any child processes, so the own-only figure should never
-			// be larger. The two figures sample /proc at slightly different
-			// instants and both truncate to whole MB, though, so if Pss drops by a
-			// sub-MB amount between the reads (eg. GC returning pages) ownMemoryMB()
-			// can come out 1MB higher purely from truncation. We therefore allow a
-			// 1MB tolerance: the ordering invariant is still validated, without
-			// flaking on that boundary effect.
-			withChildren, errc := currentMemory(os.Getpid())
-			So(errc, ShouldBeNil)
-			So(mb, ShouldBeLessThanOrEqualTo, withChildren+1)
+		Convey("and it excludes children, which currentMemory includes", func() {
+			stopChild := startMemoryHoldingChild(t)
+			defer stopChild()
+
+			own, err := ownMemoryMB()
+			So(err, ShouldBeNil)
+
+			// the flake this replaced came from the two figures being sampled at
+			// different instants, so make that drift happen rather than hope it
+			// does not: the assertions below have to survive it.
+			debug.FreeOSMemory()
+
+			withChildren, err := currentMemory(os.Getpid())
+			So(err, ShouldBeNil)
+
+			So(own, ShouldBeLessThan, withChildren)
+			So(withChildren-own, ShouldBeGreaterThanOrEqualTo, memoryChildMinExcessMB)
 		})
 	})
 }
@@ -212,6 +278,44 @@ func TestRmEmptyDirsIn(t *testing.T) {
 			So(errors.Is(err, errNotBelowBaseDir), ShouldBeTrue)
 		})
 	})
+}
+
+// startMemoryHoldingChild runs this test binary as a child holding
+// memoryChildHoldMB of resident memory, returning once that memory is resident.
+// The returned function stops the child.
+func startMemoryHoldingChild(t *testing.T) func() {
+	t.Helper()
+
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run", "^TestMemoryHoldingChild$") //nolint:gosec
+
+	cmd.Env = append(os.Environ(), envMemoryChild+"=1")
+
+	stdin, err := cmd.StdinPipe()
+	So(err, ShouldBeNil)
+
+	stdout, err := cmd.StdoutPipe()
+	So(err, ShouldBeNil)
+	So(cmd.Start(), ShouldBeNil)
+
+	stop := func() {
+		_ = stdin.Close()
+
+		if err := cmd.Wait(); err != nil {
+			t.Logf("memory-holding child: %s", err)
+		}
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		if strings.TrimSpace(scanner.Text()) == memoryChildReady {
+			return stop
+		}
+	}
+
+	stop()
+	So("the child never reported holding memory", ShouldBeBlank)
+
+	return func() {}
 }
 
 func TestLiveTailSaver(t *testing.T) {

@@ -74,6 +74,7 @@ const (
 	FailReasonStart    = "command failed to start"
 	FailReasonCPerm    = "command permission problem"
 	FailReasonCFound   = "command not found"
+	FailReasonCArgs    = "command line too long"
 	FailReasonCExit    = "command invalid exit code"
 	FailReasonExit     = "command exited non-zero"
 	FailReasonRAM      = "command used too much RAM"
@@ -284,6 +285,11 @@ type clientRequest struct {
 	ConfirmDeadCloudServers bool
 	DestroyCloudHost        string
 	ReturnIDs               bool // when adding jobs, return the IDs of the added jobs
+	// Attempted is ADDITIVE wire-only: on a release it says the runner actually
+	// tried to run the job's Cmd, so the release must spend one of the job's
+	// retries even though no start was ever reported (an old client sends false,
+	// keeping its pre-existing unbounded-retry behaviour).
+	Attempted bool
 }
 
 // RepGroupMatch controls how RepGroup filters are applied by repgroup-based
@@ -552,6 +558,123 @@ func (c *Client) requestLocked(cr *clientRequest) (*serverResponse, error) {
 	return sr, nil
 }
 
+// reportStartFailure reports a cmd.Start() failure to the server and returns the
+// error to give Execute's caller.
+//
+// A fork/exec failure that can never succeed (see permanentStartFailReason) is
+// buried on this FIRST attempt with a FailReason naming the real cause: releasing
+// it just spends another scheduled runner, another reservation, another copy of
+// the command over RPC and another bolt write to learn the same answer again.
+// Those retries are no longer unbounded - releaseAfterAttempt below makes a
+// pre-start release spend one of the job's Retries, so even an unclassified
+// never-startable command now stops after Retries+1 attempts - but Retries+1
+// runner slots spent relearning a permanent answer is still Retries+1 too many,
+// which is what the permanent bury saves. Any other start failure may be
+// transient (host load, a deploy race, a briefly exhausted resource), so it is
+// released for a retry, spending one of the job's Retries per attempt.
+//
+// The bury records the error as the job's stderr (via buryWrapErr), because a
+// bury is only operator-recoverable - with `wr kick` - if the operator can see
+// what was actually wrong: the FailReason alone cannot distinguish a missing
+// shell from a missing command. `wr status` shows it as a "Details:" line, since
+// the job never exited. The command line is abbreviated (abbreviateCmdLine) so
+// that an over-MAX_ARG_STRLEN Cmd is not copied whole into the error, which is
+// what took production's runner log lines to 1.3MB.
+func (c *Client) reportStartFailure(job *Job, jc string, startErr error) error {
+	failReason, permanent := permanentStartFailReason(startErr)
+	if !permanent {
+		extra := recoveryExtra("releasing the job", c.releaseAfterAttempt(job, nil, FailReasonStart))
+		extra += unmountExtra(job)
+
+		return fmt.Errorf("could not start command [%s]: %w%s", internal.Abbreviate(jc), startErr, extra)
+	}
+
+	// unmounted before burying, so that any failure to unmount is recorded in
+	// the job's stderr along with the start failure itself.
+	buryErr := fmt.Errorf("could not start command [%s]: %w (%s, which is permanent, so it has been buried)%s",
+		internal.Abbreviate(jc), startErr, failReason, unmountExtra(job))
+
+	return c.buryWrapErr(job, failReason, buryErr)
+}
+
+// permanentStartFailReason classifies a cmd.Start() error, returning the
+// FailReason to bury with and true if the fork/exec can never succeed for this
+// job however often it is retried, or "" and false if the failure may be
+// transient (in which case the job must be released for a retry).
+//
+// cmd.Start() surfaces a fork/exec failure as an *fs.PathError with Op
+// "fork/exec" wrapping the raw errno, so errors.Is finds the errno through the
+// wrapper (pinned by TestReliable4ForkExecErrnoWrapping).
+//
+// The permanent set is deliberately tiny, because misclassifying a transient
+// failure buries healthy work - far worse than an extra retry. In particular
+// ETXTBSY (the executable is being written right now), ENOMEM, EAGAIN and
+// EMFILE/ENFILE are load- or race-dependent and must stay retryable, as must a
+// bare-name $PATH lookup miss: that arrives as *exec.Error wrapping
+// exec.ErrNotFound rather than an errno, and $PATH is per-host, so another host
+// can legitimately succeed.
+//
+// That $PATH carve-out does NOT make the ENOENT/EACCES cases below inconsistent
+// with it, even though a path is per-host too, and the two branches cannot be
+// collapsed into each other: exec.Command only pre-resolves the name via
+// LookPath when filepath.Base(name) == name, so a bare name can only ever fail
+// with *exec.Error{Err: exec.ErrNotFound} and never with an errno, while a
+// slash-containing path skips LookPath entirely and fails with the raw errno
+// from the exec syscall. The two are therefore disjoint by construction (both
+// halves pinned by TestReliable4ForkExecErrnoWrapping), and reaching an errno
+// here means an explicit path that does not exist or is not executable. Burying
+// that matches wr's existing policy for a command that gets far enough to give
+// shell exit code 127 or 126, which classifyExitStatus already buries as
+// FailReasonCFound/FailReasonCPerm because it "seems permanent".
+func permanentStartFailReason(err error) (string, bool) {
+	switch {
+	case errors.Is(err, syscall.E2BIG):
+		// the command line exceeds Linux's MAX_ARG_STRLEN (128KB for a SINGLE
+		// argv element, whatever the much larger total ARG_MAX is), and wr passes
+		// the whole command line to the shell as one argument. True on every
+		// host, at every time.
+		return FailReasonCArgs, true
+	case errors.Is(err, syscall.ENOENT):
+		return FailReasonCFound, true
+	case errors.Is(err, syscall.EACCES):
+		return FailReasonCPerm, true
+	default:
+		return "", false
+	}
+}
+
+// releaseAfterAttempt is Release for a job whose Cmd we actually tried to run.
+// It tells the server to spend one of the job's Retries on this release even if
+// the job never got as far as reporting a start, so a command that can never
+// start is buried after Retries+1 attempts instead of retrying for ever.
+func (c *Client) releaseAfterAttempt(job *Job, jes *JobEndState, failreason string) error {
+	return c.release(job, jes, failreason, true)
+}
+
+// release sends the jrelease request and applies what the server would have done
+// to our local copy of job.
+func (c *Client) release(job *Job, jes *JobEndState, failreason string, attempted bool) error {
+	c.teMutex.Lock()
+	defer c.teMutex.Unlock()
+
+	key := setJobFailReason(job, failreason)
+
+	_, err := c.request(&clientRequest{
+		Method:      "jrelease",
+		Keys:        []string{key},
+		JobEndState: jes,
+		FailReason:  failreason,
+		Attempted:   attempted,
+	})
+	if err != nil {
+		return err
+	}
+
+	c.finishRelease(job, jes, attempted)
+
+	return nil
+}
+
 // reserveHostAndPid returns this runner's hostname (falling back to localhost if
 // it can't be determined) and its own pid, to stamp on a reserve request so the
 // server can record which runner holds the reservation before the command's own
@@ -563,6 +686,46 @@ func reserveHostAndPid() (string, int) {
 	}
 
 	return host, os.Getpid()
+}
+
+// isDefinitiveReject reports whether a failed server report - a Started() report or
+// a final-state Archive/Release/Bury report - was a definitive server-side rejection
+// (the job is not, or is no longer, ours) rather than a transient RPC failure. It is
+// the single give-up test shared by every report path, so the set that counts as
+// definitive stays identical across them.
+//
+// The callers act on a definitive verdict differently: the SYNCHRONOUS Started()
+// caller in Execute, immediately after exec, kills the still-running command to avoid
+// a double-run; a definitive rejection found LATER during the background Started()
+// retry (reportStartAttempt via retryStartReport) does NOT kill - it stops retrying
+// and leaves the job to the touch loop and the double-run-safe archive-time owner
+// check; and handleFinalStateError gives up its retry loop (discarding the completed
+// work) rather than looping the full 24h ClientRetryTime, the already-applied terminal
+// state or the new owner being authoritative. A timeout, connection loss, or the
+// retryable ErrRecovering is NOT definitive: the command/report is kept alive and
+// re-tried in the background, mirroring the touch loop, which likewise only acts on an
+// explicit server signal and otherwise retries.
+func isDefinitiveReject(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// c.request wraps a server RESPONSE carrying an error into a typed jobqueue.Error
+	// whose .Err field is EXACTLY one of our sentinel strings (the server handlers
+	// return the raw sentinel). Match on that typed value rather than substring-scanning the
+	// rendered message: a transport/timeout/connection failure (a non-Error error, or
+	// the retryable ErrRecovering) is NOT a definitive rejection and stays transient.
+	var jqErr Error
+	if !errors.As(err, &jqErr) {
+		return false
+	}
+
+	switch jqErr.Err {
+	case ErrBadJob, ErrBadRequest, ErrMustReserve:
+		return true
+	default:
+		return false
+	}
 }
 
 func currentProcessTreeCPUtime(pid int) time.Duration {
@@ -744,6 +907,27 @@ func appendExecProblems(stderr []byte, jobFailed bool, mountLogs string, berr, e
 	}
 
 	return stderr
+}
+
+// retryStartReportLoop re-sends startReq every retryWait until reportStartAttempt
+// says to stop (accepted or definitively rejected) or stop is closed. It is the
+// periodic fallback used by retryStartReport after its immediate first attempt.
+func (c *Client) retryStartReportLoop(ctx context.Context, startReq *clientRequest,
+	serverContact *serverContactState, stop <-chan struct{},
+) {
+	ticker := time.NewTicker(c.retryWait)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			if c.reportStartAttempt(ctx, startReq, serverContact) {
+				return
+			}
+		}
+	}
 }
 
 // dialClientSocket creates a req socket configured with TLS for the given
@@ -2017,20 +2201,16 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	err = cmd.Start()
 	if err != nil {
-		// some obscure internal error about setting things up
 		stopTouching <- true
 
-		extra := recoveryExtra("releasing the job", c.Release(job, nil, FailReasonStart))
-		extra += unmountExtra(job)
-
-		return fmt.Errorf("could not start command [%s]: %w%s", jc, err, extra)
+		return c.reportStartFailure(job, jc, err)
 	}
 
 	// the run owns its workspace from here on: the c.Started failure path below
 	// and the normal exit path both trigger the job's behaviours.
 	cmdStarted = true
 
-	clog.Info(ctx, "started executing", "cmd", job.Cmd, "pid", cmd.Process.Pid)
+	clog.Info(ctx, "started executing", "cmd", job.loggableCmd(), "pid", cmd.Process.Pid)
 
 	var oomMonitor *cgroupOOMMonitor
 
@@ -2039,19 +2219,50 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		oomMonitor = monitor
 	}
 
-	// update the server that we've started the job
-	//nolint:contextcheck // transitively calls internal.CurrentIP, a self-contained local-IP lookup with its own context
-	err = c.Started(job, cmd.Process.Pid)
-	if err != nil {
-		// if we can't access the server, may as well bail out now - kill the
-		// command (and don't bother trying to Release(); it will auto-Release)
+	// report to the server that we've started the job (its pid, our host). A
+	// definitive rejection (the job is not, or is no longer, ours to run) still
+	// kills the command to avoid a double-run, but a TRANSIENT failure of this
+	// outbound report (server slow or briefly unreachable, e.g. "receive time
+	// out" under saturation) must NOT destroy the healthy running command: we
+	// keep it running, let the ongoing touch loop hold the job's TTR, and re-send
+	// the report in the background until it lands. Server slowness then costs
+	// latency, not lost work - mirroring the touch loop, which likewise tolerates
+	// transient errors and only kills on an explicit server signal.
+	//nolint:contextcheck // behaviours run detached from the cancellable job context
+	killAfterStartFailure := func(startErr error) error {
+		// kill the command (and don't bother trying to Release(); it will
+		// auto-Release)
 		extra := recoveryExtra("killing the cmd", cmd.Process.Kill())
-		//nolint:contextcheck // behaviours run detached from the cancellable job context
 		extra += recoveryExtra("triggering behaviours", job.TriggerBehaviours(false))
 		extra += unmountExtra(job)
 
 		return fmt.Errorf("command [%s] started running, but I killed it due to a jobqueue server error: %w%s",
-			job.Cmd, err, extra)
+			job.Cmd, startErr, extra)
+	}
+
+	//nolint:contextcheck // transitively calls internal.CurrentIP, a self-contained local-IP lookup with its own context
+	startReq, err := c.startedRequest(job, cmd.Process.Pid)
+	if err != nil {
+		// we couldn't even build the report (e.g. cannot determine our IP): a
+		// local failure, so bail out and kill as before.
+		return killAfterStartFailure(err)
+	}
+
+	if _, err = c.request(startReq); err != nil {
+		if isDefinitiveReject(err) {
+			return killAfterStartFailure(err)
+		}
+
+		// transient failure: keep the healthy command running and re-report in
+		// the background; the touch loop keeps the job alive via its TTR.
+		serverContact.recordTouchResult(err)
+		clog.Warn(ctx, "could not report command start to server; keeping the healthy "+
+			"command running and re-reporting in the background", "err", err)
+
+		stopReporting := make(chan struct{})
+		c.retryStartReport(ctx, startReq, serverContact, stopReporting)
+
+		defer close(stopReporting)
 	}
 
 	// update peak mem and disk used by command, and check if we use too much
@@ -2111,11 +2322,11 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 			if errc != nil {
 				if errk == nil {
-					clog.Info(ctx, "killed cmd", "cmd", job.Cmd, "pid", cmd.Process.Pid)
+					clog.Info(ctx, "killed cmd", "cmd", job.loggableCmd(), "pid", cmd.Process.Pid)
 
 					errk = errc
 				} else {
-					clog.Warn(ctx, "failed to kill cmd", "cmd", job.Cmd, "pid", cmd.Process.Pid, "err", errk)
+					clog.Warn(ctx, "failed to kill cmd", "cmd", job.loggableCmd(), "pid", cmd.Process.Pid, "err", errk)
 					errk = fmt.Errorf("%w, and getting child processes failed: %w", errk, errc)
 				}
 			}
@@ -2139,11 +2350,11 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				// result in their death
 				errc = child.Terminate()
 				if errk == nil {
-					clog.Info(ctx, "killed child of cmd", "cmd", job.Cmd, "pid", child.Pid)
+					clog.Info(ctx, "killed child of cmd", "cmd", job.loggableCmd(), "pid", child.Pid)
 
 					errk = errc
 				} else {
-					clog.Warn(ctx, "failed to kill child of cmd", "cmd", job.Cmd, "pid", child.Pid)
+					clog.Warn(ctx, "failed to kill child of cmd", "cmd", job.loggableCmd(), "pid", child.Pid)
 
 					errk = fmt.Errorf("%w, and killing its child process failed: %w", errk, errc)
 				}
@@ -2533,8 +2744,14 @@ func (c *Client) handleFinalStateError(ctx context.Context, err error) (disconne
 
 	disconnected = c.disconnectAfterFailure(ctx)
 
-	if strings.Contains(err.Error(), ErrBadJob) || strings.Contains(err.Error(), ErrBadRequest) {
-		// this is a permanent error, give up
+	if isDefinitiveReject(err) {
+		// a permanent error: the job is gone/terminal (ErrBadJob/ErrBadRequest) or a
+		// new runner has taken it over (ErrMustReserve, new-run-wins). Either way this
+		// runner must give up promptly rather than loop the 24h retry - the new owner
+		// (or the already-applied terminal state) is authoritative. Matched by typed
+		// jobqueue.Error value, not substring, so only an authoritative server
+		// rejection - never a transient error whose text merely contains a sentinel -
+		// discards this runner's completed work.
 		return disconnected, true
 	}
 
@@ -2576,7 +2793,10 @@ func (c *Client) applyFinalState(job *Job, jes *JobEndState, action execAction) 
 	case action.bury:
 		return c.Bury(job, jes, action.failreason)
 	case action.release:
-		return c.Release(job, jes, action.failreason) // which buries after job.Retries fails in a row
+		// releaseAfterAttempt, not Release: the Cmd was run, so this spends one of
+		// the job's Retries and buries it after Retries+1 failures in a row - even
+		// if the start report never landed and the server has no StartTime for it.
+		return c.releaseAfterAttempt(job, jes, action.failreason)
 	case action.archive:
 		return c.Archive(job, jes)
 	default:
@@ -2671,7 +2891,7 @@ func abnormalOutcome(in execOutcomeInput, cmdOut string) execOutcome {
 		dorelease:  true,
 		failreason: FailReasonAbnormal,
 		myerr: fmt.Errorf("command [%s] failed to complete normally (%w)%s%s",
-			in.job.Cmd, in.err, in.mayBeTemp, cmdOut),
+			in.job.loggableCmd(), in.err, in.mayBeTemp, cmdOut),
 	}
 }
 
@@ -2705,21 +2925,21 @@ func (c *Client) classifyExitStatus(in execOutcomeInput, waitStatus syscall.Wait
 		out.myerr = fmt.Errorf(
 			"command [%s] exited with code %d (permission problem, or command is not executable), "+
 				"which seems permanent, so it has been buried%s",
-			in.job.Cmd, exitcode, cmdOut,
+			in.job.loggableCmd(), exitcode, cmdOut,
 		)
 	case exitCodeCommandNotFound:
 		out.failreason = FailReasonCFound
 		//nolint:err113
 		out.myerr = fmt.Errorf(
 			"command [%s] exited with code %d (command not found), which seems permanent, so it has been buried%s",
-			in.job.Cmd, exitcode, cmdOut,
+			in.job.loggableCmd(), exitcode, cmdOut,
 		)
 	case exitCodeCommandInvalid:
 		out.failreason = FailReasonCExit
 		//nolint:err113
 		out.myerr = fmt.Errorf(
 			"command [%s] exited with code %d (invalid exit code), which seems permanent, so it has been buried%s",
-			in.job.Cmd, exitcode, cmdOut,
+			in.job.loggableCmd(), exitcode, cmdOut,
 		)
 	default:
 		out = c.classifyReleasedExit(in, waitStatus, exitcode, cmdOut)
@@ -2771,7 +2991,7 @@ func signalExitError(job *Job, waitStatus syscall.WaitStatus, mayBeTemp, cmdOut 
 	//nolint:err113
 	return fmt.Errorf(
 		"command [%s] terminated by signal %s (shell exit code %d)%s%s",
-		job.Cmd, waitStatus.Signal(), shellExitCode, mayBeTemp, cmdOut,
+		job.loggableCmd(), waitStatus.Signal(), shellExitCode, mayBeTemp, cmdOut,
 	)
 }
 
@@ -2793,13 +3013,13 @@ func plainExitOutcome(job *Job, exitcode int, mayBeTemp, cmdOut string) (bury bo
 		//nolint:err113
 		return true, fmt.Errorf(
 			"command [%s] exited with code %d%s%s",
-			job.Cmd, exitcode, ", after the noretries time, so will not be tried again", cmdOut,
+			job.loggableCmd(), exitcode, ", after the noretries time, so will not be tried again", cmdOut,
 		)
 	}
 
 	//nolint:err113
 	return false, fmt.Errorf(
-		"command [%s] exited with code %d%s%s", job.Cmd, exitcode, mayBeTemp, cmdOut)
+		"command [%s] exited with code %d%s%s", job.loggableCmd(), exitcode, mayBeTemp, cmdOut)
 }
 
 // signalledOutcome returns the fail reason and error for a job killed by a
@@ -2906,6 +3126,23 @@ func compressStd(data []byte) []byte {
 // about it (use one of the Get methods afterwards to get a new object with the
 // HostID set if necessary).
 func (c *Client) Started(job *Job, pid int) error {
+	req, err := c.startedRequest(job, pid)
+	if err != nil {
+		return err
+	}
+
+	_, err = c.request(req)
+
+	return err
+}
+
+// startedRequest records the job's host/pid/start-time (under lock, exactly as
+// Started() did before this was split out) and returns the jstart request to send
+// to the server. It is separated from the send so that the post-exec report can be
+// re-sent in the background after a transient failure without re-mutating job
+// (which would race the resource monitor's lock-free read of job.Pid): the caller
+// re-sends the SAME returned request.
+func (c *Client) startedRequest(job *Job, pid int) (*clientRequest, error) {
 	// host details
 	host, err := os.Hostname()
 	if err != nil {
@@ -2914,7 +3151,7 @@ func (c *Client) Started(job *Job, pid int) error {
 
 	hostIP, err := internal.CurrentIP("")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	job.Lock()
@@ -2927,6 +3164,7 @@ func (c *Client) Started(job *Job, pid int) error {
 	requestJob.Host = job.Host
 	requestJob.HostIP = job.HostIP
 	requestJob.Pid = job.Pid
+	requestJob.RunnerPid = os.Getpid() // this client IS the runner process; report it for liveness
 
 	// the working directory resolveWorkingDir already created. Reporting it HERE
 	// lets the manager clean up after a run that dies without ever touching, and
@@ -2934,9 +3172,63 @@ func (c *Client) Started(job *Job, pid int) error {
 	requestJob.ActualCwd = job.ActualCwd
 	job.Unlock()
 
-	_, err = c.request(&clientRequest{Method: requestMethodStart, Job: requestJob})
+	return &clientRequest{Method: requestMethodStart, Job: requestJob}, nil
+}
 
-	return err
+// retryStartReport re-sends the post-exec Started() report in the background after
+// its first attempt failed transiently, so a slow or briefly unreachable server
+// eventually learns the running command's pid without the healthy command being
+// killed. It re-sends the SAME pre-built request (never re-mutating job): once
+// IMMEDIATELY, then every retryWait, until the report is accepted, the server
+// definitively rejects it (the job is no longer ours - left to the touch loop and
+// the archive-time owner check rather than killed here, exactly as the touch loop
+// tolerates a bad-job touch), or stop is closed (Execute has finished with the
+// command). The immediate first attempt matters for a command that finishes faster
+// than retryWait: the server only records StartTime on a successful Started(), and
+// completion is rejected while StartTime is zero, so waiting a full retryWait before
+// re-reporting could let a short command's Archive lose to the still-zero StartTime.
+// The concurrent touch loop keeps the job's TTR alive throughout.
+func (c *Client) retryStartReport(ctx context.Context, startReq *clientRequest,
+	serverContact *serverContactState, stop <-chan struct{},
+) {
+	go func() {
+		// try immediately so a short-lived command's start is recorded in time,
+		// only falling back to the periodic ticker if this still fails transiently.
+		if c.reportStartAttempt(ctx, startReq, serverContact) {
+			return
+		}
+
+		c.retryStartReportLoop(ctx, startReq, serverContact, stop)
+	}()
+}
+
+// reportStartAttempt makes one background attempt to re-send the post-exec
+// Started() report, recording the outcome on serverContact. It returns true when
+// no further attempts should be made: the report was accepted, or the server
+// definitively rejected it.
+func (c *Client) reportStartAttempt(ctx context.Context, startReq *clientRequest,
+	serverContact *serverContactState,
+) bool {
+	_, err := c.request(startReq)
+	if err == nil {
+		serverContact.recordTouchResult(nil)
+		clog.Info(ctx, "reported command start to server after retrying")
+
+		return true
+	}
+
+	serverContact.recordTouchResult(err)
+
+	if isDefinitiveReject(err) {
+		clog.Warn(ctx, "server rejected the delayed command-start report; "+
+			"leaving the job to the touch loop", "err", err)
+
+		return true
+	}
+
+	clog.Warn(ctx, "could not report command start to server; will keep retrying", "err", err)
+
+	return false
 }
 
 func keyOnlyJob(job *Job) *Job {
@@ -3058,44 +3350,48 @@ func (c *Client) Archive(job *Job, jes *JobEndState) error {
 	return nil
 }
 
-// Release places a job back on the jobqueue, for use when you can't handle the
-// job right now (eg. there was a suspected transient error) but maybe someone
-// else can later. Note that you must reserve a job before you can release it.
+// Release hands a reserved job back to the jobqueue WITHOUT having tried to run
+// its Cmd, for use when you can't handle the job right now (eg. you don't have
+// enough time left, or you couldn't read its environment) but maybe someone else
+// can later. Note that you must reserve a job before you can release it.
+//
 // You can only Release() the same job as many times as its Retries value if it
-// has been run and failed; a subsequent call to Release() will instead result
-// in a Bury(). (If the job's Cmd was not run, you can Release() an unlimited
-// number of times.)
+// has been run: once the job has reported a start (Started()), every release of
+// it spends one of its Retries however that release is made, and a subsequent
+// call to Release() will instead result in a Bury(). If the job's Cmd was never
+// started and was not attempted, you can Release() an unlimited number of times.
+//
+// A release that follows an actual attempt to run the Cmd - which is what
+// Execute() reports, whether the command failed to start or ran and ended badly
+// - always spends one of the job's Retries, even when no start was ever
+// reported, and the job is buried once they are used up.
 func (c *Client) Release(job *Job, jes *JobEndState, failreason string) error {
-	c.teMutex.Lock()
-	defer c.teMutex.Unlock()
-
-	key := setJobFailReason(job, failreason)
-
-	_, err := c.request(&clientRequest{
-		Method:      "jrelease",
-		Keys:        []string{key},
-		JobEndState: jes,
-		FailReason:  failreason,
-	})
-	if err != nil {
-		return err
-	}
-
-	c.finishRelease(job, jes)
-
-	return nil
+	return c.release(job, jes, failreason, false)
 }
 
 // finishRelease updates our local copy of job with the state the server would
 // have applied after a release.
-func (c *Client) finishRelease(job *Job, jes *JobEndState) {
+//
+// attempted mirrors the server's releaseSpendsARetry: an attempted release
+// spends a retry whether or not the command got as far as exiting, so without
+// it a runner whose cmd.Start() failed (jes is nil there, so job.Exited stays
+// false) would be left holding a job.UntilBuried and job.State that disagree
+// with the server's.
+//
+// This closes the client/server divergence for the paths that report an attempt
+// - Execute's applyFinalState and reportStartFailure - ONLY. A plain Release()
+// made after a start report has landed still diverges when the job did not exit
+// non-zero: there the server spends a retry on the strength of its StartTime,
+// which the client does not track. Fixing that would need the server's answer on
+// the wire, which no caller has ever needed.
+func (c *Client) finishRelease(job *Job, jes *JobEndState, attempted bool) {
 	job.Lock()
 	defer job.Unlock()
 
 	c.ended(job, jes)
 
 	// update our process with what the server would have done
-	if job.Exited && job.Exitcode != 0 {
+	if attempted || (job.Exited && job.Exitcode != 0) {
 		job.UntilBuried--
 	}
 

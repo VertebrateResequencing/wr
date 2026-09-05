@@ -32,6 +32,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -44,6 +45,7 @@ import (
 
 	"github.com/VertebrateResequencing/muxfys/v5"
 	"github.com/VertebrateResequencing/wr/container"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -76,21 +78,27 @@ type JobState string
 // status-bar delta feed). "lost" is also a "fake" state indicating the job was
 // running and we lost contact with it; it may be dead. "unknown" is an error
 // case that shouldn't happen. "deletable" is a meta state that can be used
-// when filtering jobs to mean !(reserved|running|complete).
+// when filtering jobs to mean !(reserved|running|complete), and "incomplete" is
+// a meta state meaning !complete, ie. every job still live in the queue: it lets
+// a command that can only ever act on live jobs (wr suspend, wr resume) say so,
+// which is what keeps the manager from scanning and decoding the whole archived
+// history of every matching RepGroup for them (reliable4 FINDING 1). Neither
+// meta state is ever the state OF a job, so they are only meaningful as filters.
 const (
-	JobStateNew       JobState = "new"
-	JobStateDelayed   JobState = "delayed"
-	JobStateReady     JobState = "ready"
-	JobStateReserved  JobState = "reserved"
-	JobStateRunning   JobState = "running"
-	JobStateLost      JobState = "lost"
-	JobStateBuried    JobState = "buried"
-	JobStateDependent JobState = "dependent"
-	JobStateSuspended JobState = "suspended"
-	JobStateComplete  JobState = "complete"
-	JobStateDeleted   JobState = "deleted"
-	JobStateDeletable JobState = "deletable"
-	JobStateUnknown   JobState = "unknown"
+	JobStateNew        JobState = "new"
+	JobStateDelayed    JobState = "delayed"
+	JobStateReady      JobState = "ready"
+	JobStateReserved   JobState = "reserved"
+	JobStateRunning    JobState = "running"
+	JobStateLost       JobState = "lost"
+	JobStateBuried     JobState = "buried"
+	JobStateDependent  JobState = "dependent"
+	JobStateSuspended  JobState = "suspended"
+	JobStateComplete   JobState = "complete"
+	JobStateDeleted    JobState = "deleted"
+	JobStateDeletable  JobState = "deletable"
+	JobStateIncomplete JobState = "incomplete"
+	JobStateUnknown    JobState = "unknown"
 )
 
 // subqueueToJobState converts queue.SubQueue entries to JobStates.
@@ -134,6 +142,38 @@ func resolveMountPoint(mcMount, cwd, defaultMount string) string {
 	}
 
 	return filepath.Join(cwd, mcMount)
+}
+
+// jobDerived holds the EXPENSIVE derived strings a rac cycle needs for a ready
+// job: its Key() (which MD5s Cwd+Cmd+mount+container), the scheduler-adjusted
+// Requirements from reqForScheduler, and the scheduler group name those imply
+// (which sorts and MD5s Requirements.Other). Computing them costs 2 MD5s, a sort
+// and several allocations, and the rac pre-pass needs them for EVERY ready job on
+// EVERY cycle, so they are memoised on the Job (reliable4 FINDING 3: an idle
+// 61,000-job limit-blocked backlog burnt 0.79 cores recomputing them).
+//
+// Their inputs (Cmd, Cwd, CwdMatters, MountConfigs, the container fields,
+// Requirements and LimitGroups) do not change for the great majority of a job's
+// life, but they are not immutable: see Job.invalidateDerivedLocked for the
+// complete set of places that change them, each of which invalidates the memo.
+// The priority and current scheduler group a snapshot also carries DO change
+// often and are cheap, so they are deliberately not memoised and are read live.
+//
+// The requirements pointer is shared by every snapshot taken from the memo, so it
+// must be treated as read-only; the only consumer, ensureGroup, Clone()s it.
+//
+// Job.Key() is deliberately left uncached in itself, and memoised only here. The
+// reason is re-entrancy, not the before/after key comparison modifyJob makes:
+// Key() is called with the job's write lock ALREADY held (prepareInputJobs,
+// modifyJob before and after applyTo, and derivedLocked below), so a Key() that
+// took the lock to read or fill a cache would deadlock, and one that used its own
+// atomic instead would need a second invalidation discipline for exactly the same
+// set of mutators. Memoising it here gets the whole saving on the only hot path,
+// under a lock its callers already hold.
+type jobDerived struct {
+	key          string
+	requirements *scheduler.Requirements
+	group        string
 }
 
 func (j *Job) decrementLimitGroupsLocked(lim *limiter.Limiter) {
@@ -200,6 +240,97 @@ func cwdLeaf(cwdBase, cwd string) (string, error) {
 	return "/" + rel, nil
 }
 
+// memoisedSchedulerGroupSnapshot returns the snapshot built from the memoised
+// derived strings under a read lock, with memoised false if they have not been
+// computed yet (or have been invalidated), in which case the caller must go
+// through derivedLocked under the write lock.
+func (j *Job) memoisedSchedulerGroupSnapshot() (schedulerGroupSnapshot, bool) {
+	j.RLock()
+	defer j.RUnlock()
+
+	if j.derived == nil {
+		return schedulerGroupSnapshot{}, false
+	}
+
+	return j.snapshotWithDerived(j.derived), true
+}
+
+// snapshotWithDerived combines the given memoised derived strings with this job's
+// live priority and current scheduler group. Call with at least the read lock
+// held.
+func (j *Job) snapshotWithDerived(derived *jobDerived) schedulerGroupSnapshot {
+	return schedulerGroupSnapshot{
+		key:           derived.key,
+		requirements:  derived.requirements,
+		previousGroup: j.schedulerGroup,
+		group:         derived.group,
+		priority:      j.Priority,
+	}
+}
+
+// derivedLocked returns this job's memoised derived strings, computing them if
+// this is the first call since the job was created or last invalidated. The write
+// lock must be held, both because it stores the result and so that a mutator that
+// invalidates under that same lock can never be overtaken by a computation made
+// from the fields as they were before its change.
+func (j *Job) derivedLocked() *jobDerived {
+	if j.derived != nil {
+		return j.derived
+	}
+
+	req := reqForScheduler(j.Requirements)
+
+	derived := &jobDerived{
+		key:          j.Key(),
+		requirements: req,
+		group:        schedulerGroupString(req, j.LimitGroups),
+	}
+
+	j.derived = derived
+	j.derivations++
+
+	return derived
+}
+
+// invalidateDerivedLocked drops this job's memoised derived strings, so the next
+// schedulerGroupSnapshot recomputes them. It must be called, with the job's write
+// lock held, by everything that changes an input of jobDerived. Those are:
+//
+//   - JobModifier.applyTo (Cmd, Cwd, CwdMatters, MountConfigs, the container
+//     fields, LimitGroups and the Requirements fields), the only path that
+//     changes a live job's Cmd/Cwd/mounts/container fields at all;
+//   - updateJobRequirementsForRetry (Requirements RAM/Disk/Time), the only path
+//     that applies learned or post-failure requirements to a live job, via
+//     prepareReadyJob;
+//   - Server.handleUserSpecifiedJobLimitGroups (LimitGroups normalisation).
+//
+// That the set is complete is necessary but not sufficient: each of those call
+// sites must also invalidate on EVERY path through it that can have mutated an
+// input. applyTo and handleUserSpecifiedJobLimitGroups have a single exit each and
+// invalidate at it, but updateJobRequirementsForRetry mutates Requirements before
+// an early return, so it invalidates in a DEFER; invalidating at its tail instead
+// would silently leave a stale memo (and so schedule against stale requirements)
+// for every job whose override says to keep its own values but which still learns
+// the resources it did not specify.
+//
+// Everywhere else those fields are only ever set while building a brand new Job
+// (at add time, on decoding a database record, or in the field-by-field copies
+// made for clients), which starts with no memo, so nothing to invalidate.
+func (j *Job) invalidateDerivedLocked() {
+	j.derived = nil
+}
+
+// loggableCmd returns the job's command line bounded for a log line or an error
+// message (see internal.Abbreviate). Every runner logs its job's command line
+// several times per job, and a Cmd big enough to fail exec with E2BIG is by
+// definition over 128KB, which is what took production's runner log lines to
+// 1.3MB. It is presentation only: j.Cmd itself is untouched, so the command that
+// actually gets run - and the command `wr status` reports for j.Key() - is
+// always the whole thing.
+func (j *Job) loggableCmd() string {
+	return internal.Abbreviate(j.Cmd)
+}
+
 func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host, hostIP, workingDir string) string {
 	if state != JobStateRunning || workingDir == "" {
 		return ""
@@ -213,6 +344,23 @@ func sshCommandForRunningJob(state JobState, reqs *scheduler.Requirements, host,
 	remote := "cd " + quoteRemoteCwd(workingDir) + " && exec ${SHELL:-/bin/sh} -l"
 
 	return "ssh -- " + shellquote.Join(target) + " " + singleQuoteShellArg(remote)
+}
+
+// lostForLocked is how long this Job has been parked Lost, which is what the
+// confirm-dead retry path's backstop uses to spot a wedged runner. The caller
+// must hold at least the Job's read lock.
+//
+// ttrCallback stamps EndTime when it marks the job Lost, and nothing resets it
+// while the job stays parked (a recovering touch clears Lost, and a completing
+// archive removes the job). A job with no EndTime at all reports 0 rather than
+// the age of the zero time, which would look like a wedge to every backstop
+// there could ever be.
+func (j *Job) lostForLocked() time.Duration {
+	if j.EndTime.IsZero() {
+		return 0
+	}
+
+	return time.Since(j.EndTime)
 }
 
 // mergeBehaviours returns existing with, for each trigger that modifications
@@ -445,6 +593,13 @@ type Job struct {
 	FailReason string
 	// pid of the running or ran process.
 	Pid int
+	// RunnerPid is the pid of the wr runner process that reserved and is executing
+	// this job (its own os.Getpid()), as distinct from Pid (the command's child
+	// process). The runner outlives the command and is what sends the archive, so it
+	// is the correct liveness signal: a lost job is only truly dead (and safe to
+	// re-run) if BOTH the command AND its runner are gone. 0 if not reported (old
+	// records / pre-Started).
+	RunnerPid int
 	// host the process is running or did run on.
 	Host string
 	// host id the process is running or did run on (cloud specific).
@@ -500,6 +655,24 @@ type Job struct {
 	// we add this internally to match up runners we spawn via the scheduler to
 	// the Jobs they're allowed to ReserveFiltered().
 	schedulerGroup string
+
+	// derived memoises this job's expensive derived scheduler-group strings; nil
+	// means "not computed yet or invalidated". See jobDerived and
+	// schedulerGroupSnapshot. Being unexported it is neither serialised to the
+	// database nor sent to clients, and the field-by-field copies made for clients
+	// (copyJobForClient) and for key calculations (JobModifier.modifiedKey) start
+	// out with it unset, so a memo can never travel to a different Job.
+	derived *jobDerived
+
+	// derivations counts how many times derived has actually been computed (ie.
+	// how many 2-MD5-plus-sort derivations this job has cost). It is INERT
+	// observability in the style of Server.racScanWork: nothing but the reliable4
+	// memoisation test reads it, and it affects no behaviour. It lives here, rather
+	// than on the Server a Job has no reference to, so that a test can count the
+	// derivations of ITS OWN jobs; a process-wide counter would be perturbed by any
+	// other live server in the same test binary. It is written under the write lock
+	// (in derivedLocked) and so must be read under at least the read lock.
+	derivations uint32
 
 	// we store the MuxFys that we mount during Mount() so we can Unmount() them
 	// later; this is purely client side.
@@ -1294,19 +1467,20 @@ type schedulerGroupSnapshot struct {
 	priority      uint8
 }
 
+// schedulerGroupSnapshot returns the cheap per-rac-cycle view of this job: its
+// memoised derived strings (see jobDerived), plus its live priority and current
+// scheduler group. The memo is computed on first use and after any invalidation,
+// under this job's own write lock; every later call takes only its read lock, so
+// there is no server-wide lock on this path.
 func (j *Job) schedulerGroupSnapshot() schedulerGroupSnapshot {
-	j.RLock()
-	defer j.RUnlock()
-
-	req := reqForScheduler(j.Requirements)
-
-	return schedulerGroupSnapshot{
-		key:           j.Key(),
-		requirements:  req,
-		previousGroup: j.schedulerGroup,
-		group:         schedulerGroupString(req, j.LimitGroups),
-		priority:      j.Priority,
+	if snapshot, memoised := j.memoisedSchedulerGroupSnapshot(); memoised {
+		return snapshot
 	}
+
+	j.Lock()
+	defer j.Unlock()
+
+	return j.snapshotWithDerived(j.derivedLocked())
 }
 
 func schedulerGroupString(req *scheduler.Requirements, limitGroups []string) string {
@@ -2048,6 +2222,8 @@ func (j *JobModifier) overrideKeyContainer(newJob *Job) {
 // rather than pointing a deletion at something else. applyCmdCwd clears it for a
 // Cwd change separately, since moving Cwd invalidates the path without changing
 // the key.
+//
+// The caller must hold job's write lock (modifyJob does).
 func (j *JobModifier) applyTo(job *Job) {
 	keyBefore := job.Key()
 
@@ -2061,6 +2237,10 @@ func (j *JobModifier) applyTo(job *Job) {
 	if job.Key() != keyBefore {
 		job.ActualCwd = ""
 	}
+
+	// this is the one path that changes a live job's Key() and scheduler group
+	// inputs, so the memoised derived strings must be recomputed.
+	job.invalidateDerivedLocked()
 }
 
 // applyCmdCwd applies the Cmd/Cwd/CwdMatters/ChangeHome modifications to job.
@@ -2229,6 +2409,29 @@ func (j *JobModifier) applyContainer(job *Job) {
 	if j.ContainerMountsSet {
 		job.ContainerMounts = j.ContainerMounts
 	}
+}
+
+// initialUntilBuried returns the retry budget a job starts (or restarts) with,
+// given its Retries: the first attempt, plus one per retry.
+//
+// It saturates instead of wrapping. UntilBuried is a uint8 and Retries is a
+// documented, accepted 0-255 (cmd/add.go's "--retries [0-255]", wr mod -r, and
+// the REST API's restModifyUint8Max), so a plain Retries+1 overflows to 0 at
+// the maximum - seeding a LIVE job with an already-exhausted budget. That is
+// exactly the state finalizeReleasedJob's clamp defends against: the release
+// path would not bury the item (there is no budget left to spend down to the
+// bury threshold) while finalizeReleasedJob still called the job buried, so
+// wr status would report it buried for ever while it kept being reserved, run
+// and released, burning a runner slot each time.
+//
+// Saturating costs the --retries 255 case exactly one attempt (255 attempts
+// rather than a nonsensical 256) and leaves every other value untouched.
+func initialUntilBuried(retries uint8) uint8 {
+	if retries == math.MaxUint8 {
+		return math.MaxUint8
+	}
+
+	return retries + 1
 }
 
 func quoteRemoteCwd(cwd string) string {

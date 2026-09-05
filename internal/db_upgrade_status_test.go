@@ -63,3 +63,53 @@ func TestDBUpgradeStatusFileReplacement(t *testing.T) {
 		So(os.IsNotExist(err), ShouldBeTrue)
 	})
 }
+
+// TestDBUpgradeStatusTotalRoundTrip covers E4 acceptance test 1: Total is
+// additive, so a file written without it is byte-identical to one written before
+// the field existed and an older reader ignores it.
+//
+// The equality is scoped to the four payload fields because
+// WriteDBUpgradeStatus overwrites PID and UpdatedAt and fills a zero StartedAt,
+// so no whole-struct comparison can hold.
+func TestDBUpgradeStatusTotalRoundTrip(t *testing.T) {
+	Convey("A status with no total writes no total key", t, func() {
+		dbFile := filepath.Join(t.TempDir(), "db")
+		original := DBUpgradeStatus{State: DBStartupRecoveryState, Detail: "no total here"}
+
+		So(WriteDBUpgradeStatus(dbFile, original), ShouldBeNil)
+		So(readDBUpgradeStatusJSON(t, dbFile), ShouldNotContainSubstring, `"total"`)
+
+		status, _, err := ReadDBUpgradeStatus(dbFile)
+		So(err, ShouldBeNil)
+		So(status.State, ShouldEqual, original.State)
+		So(status.Detail, ShouldEqual, original.Detail)
+		So(status.Processed, ShouldEqual, 0)
+		So(status.Total, ShouldEqual, 0)
+	})
+
+	Convey("A status with a total writes and reads it back", t, func() {
+		dbFile := filepath.Join(t.TempDir(), "db")
+		original := DBUpgradeStatus{
+			State: DBStartupRecoveryState, Detail: "1m2s elapsed", Processed: 9000, Total: 150472,
+		}
+
+		So(WriteDBUpgradeStatus(dbFile, original), ShouldBeNil)
+		So(readDBUpgradeStatusJSON(t, dbFile), ShouldContainSubstring, `"total": 150472`)
+
+		status, _, err := ReadDBUpgradeStatus(dbFile)
+		So(err, ShouldBeNil)
+		So(status.State, ShouldEqual, original.State)
+		So(status.Detail, ShouldEqual, original.Detail)
+		So(status.Processed, ShouldEqual, original.Processed)
+		So(status.Total, ShouldEqual, original.Total)
+	})
+}
+
+func readDBUpgradeStatusJSON(t *testing.T, dbFile string) string {
+	t.Helper()
+
+	payload, err := os.ReadFile(DBUpgradeStatusPath(dbFile))
+	So(err, ShouldBeNil)
+
+	return string(payload)
+}

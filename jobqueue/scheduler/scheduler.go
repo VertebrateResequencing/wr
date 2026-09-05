@@ -53,6 +53,7 @@ import (
 	"crypto/md5" // #nosec - not used for cryptographic purposes here
 	"fmt"
 	"maps"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -159,6 +160,75 @@ func (s *Scheduler) warnCannotConfirm(ctx context.Context, hostName string, pid 
 		"host", hostName, "pid", pid, "reason", reason)
 }
 
+// ProcessesNotRunningOnHost checks, over a SINGLE reused connection to hostName,
+// whether each pid in pids is still running, returning a map from pid to
+// not-running (true means the process is gone, i.e. confirmed dead). It opens the
+// host connection ONCE (getHost), runs the same per-pid check as
+// ProcessNotRunningOnHost over that one connection for every pid -- so all of a
+// dead host's lost-job pid checks share one ssh client instead of dialling one
+// connection per check -- then closes the connection once.
+//
+// A pid whose liveness cannot be determined (the host could not be obtained, its
+// ps command failed, or the output was unrecognised) maps to false, exactly as
+// ProcessNotRunningOnHost returns false in those cases, so a lost job is never
+// falsely confirmed dead by an inconclusive check. The whole batch is bounded by
+// the caller's context: a cancelled/timed-out context fails the remaining checks
+// closed (false), leaving those jobs parked for a later retry.
+func (s *Scheduler) ProcessesNotRunningOnHost(ctx context.Context, hostName string, pids []int) map[int]bool {
+	notRunning := make(map[int]bool, len(pids))
+
+	if len(pids) == 0 {
+		return notRunning
+	}
+
+	host, ok := s.impl.getHost(hostName)
+	if !ok {
+		for _, pid := range pids {
+			s.warnCannotConfirm(ctx, hostName, pid, "could not get the host to ssh to")
+
+			notRunning[pid] = false
+		}
+
+		return notRunning
+	}
+
+	defer host.Close(ctx)
+
+	for _, pid := range pids {
+		notRunning[pid] = s.processNotRunningOnHost(ctx, host, hostName, pid)
+	}
+
+	return notRunning
+}
+
+// processNotRunningOnHost runs the `ps -o stat= -p <pid>` liveness-check command
+// (see ProcessNotRunningOnHost's CONTRACT WARNING, which this embodies) for one
+// pid over an already-obtained Host connection, returning true if the process is
+// not running. It is the shared core of ProcessNotRunningOnHost (single pid, owns
+// its connection) and ProcessesNotRunningOnHost (many pids, one shared
+// connection). An errored or unrecognised result returns false (cannot confirm).
+func (s *Scheduler) processNotRunningOnHost(ctx context.Context, host Host, hostName string, pid int) bool {
+	stdo, _, err := host.RunCmd(ctx, fmt.Sprintf("ps -o stat= -p %d 2>/dev/null || test $? -eq 1", pid), false)
+	if err != nil {
+		s.warnCannotConfirm(ctx, hostName, pid, "the remote ps command failed: "+err.Error())
+
+		return false
+	}
+
+	state := strings.TrimSpace(stdo)
+
+	switch interpretProcessState(state) {
+	case processDead:
+		return true
+	case processAlive:
+		return false
+	case processUnknown:
+		s.warnCannotConfirm(ctx, hostName, pid, "unexpected ps output: "+loggableProcessOutput(state))
+	}
+
+	return false
+}
+
 // loggableProcessOutput returns a short, single-line, length-capped excerpt of a
 // remote command's output that is safe to put in a log field: only its first line,
 // truncated to loggableProcessOutputMax characters, with a trailing "..." marker
@@ -190,6 +260,17 @@ func loggableProcessOutput(output string) string {
 	}
 
 	return excerpt
+}
+
+// killProcessCommand builds the exact shell command KillProcessOnHost sends over
+// ssh to force-kill pid. It is a package-level helper (rather than an inline
+// Sprintf) so the compatibility contract described in KillProcessOnHost's CONTRACT
+// WARNING can be unit-tested in isolation. The "%[1]d" verb places the same pid in
+// both the literal `kill -9 <pid>` (run by an unrestricted key or the updated
+// forced command's kill branch) and the `# wr-kill -p <pid>` token (from which the
+// forced command's shared extractor reads the pid).
+func killProcessCommand(pid int) string {
+	return fmt.Sprintf("kill -9 %[1]d 2>/dev/null || true # wr-kill -p %[1]d", pid)
 }
 
 // Error records an error and the operation and scheduler that caused it.
@@ -317,6 +398,14 @@ type Host interface {
 	// cancellable with the context, returning stdout, stderr from the command,
 	// or an error if running the command wasn't possible.
 	RunCmd(ctx context.Context, cmd string, background bool) (stdout, stderr string, err error)
+
+	// Close releases any resources (in particular ssh connections) that using
+	// the Host opened. Callers that obtain a Host from a scheduler's getHost must
+	// Close it when done, so a throwaway per-command host does not leak its ssh
+	// client (its background goroutines and socket). It is a no-op for hosts that
+	// hold no closable resources, or that wrap a cached connection shared with
+	// other operations.
+	Close(ctx context.Context)
 }
 
 // scheduleri interface must be satisfied to add support for a particular job
@@ -606,6 +695,10 @@ func (s *Scheduler) GetHost(hostName string) Host {
 // reclaimed and limit-group scheduling stalls. Prefer to fail loudly (log) on
 // output that is neither empty nor a plausible process state, rather than
 // treating an unexpected value as "still running".
+//
+// KillProcessOnHost sends a second, parallel command (`kill -9 <pid>`) under the
+// same forced-command contract; see its CONTRACT WARNING and the cmd/conf.go
+// example that parses BOTH the ps string here and that kill string.
 func (s *Scheduler) ProcessNotRunningOnHost(ctx context.Context, pid int, hostName string) bool {
 	host, ok := s.impl.getHost(hostName)
 	if !ok {
@@ -614,25 +707,51 @@ func (s *Scheduler) ProcessNotRunningOnHost(ctx context.Context, pid int, hostNa
 		return false
 	}
 
-	stdo, _, err := host.RunCmd(ctx, fmt.Sprintf("ps -o stat= -p %d 2>/dev/null || test $? -eq 1", pid), false)
-	if err != nil {
-		s.warnCannotConfirm(ctx, hostName, pid, "the remote ps command failed: "+err.Error())
+	defer host.Close(ctx)
 
-		return false
+	return s.processNotRunningOnHost(ctx, host, hostName, pid)
+}
+
+// KillProcessOnHost force-kills (SIGKILL) the given pid on hostName, best-effort:
+// a pid that is already gone is not an error. It is the counterpart to
+// ProcessNotRunningOnHost, used as a last-resort backstop to terminate a wedged
+// runner that has stopped reporting for far longer than any plausible archive
+// delay, so the normal dead-confirmation path can then re-run its job. Returns an
+// error only if the host is unreachable / the kill could not be issued.
+//
+// CONTRACT WARNING: like ProcessNotRunningOnHost, the remote command below is a
+// compatibility contract with any forced command a user has configured for this
+// key in their farm nodes' authorized_keys (see the privatekeypath docs in
+// cmd/conf.go). The command killProcessCommand builds is:
+//
+//	kill -9 <pid> 2>/dev/null || true # wr-kill -p <pid>
+//
+// which (a) is a valid literal kill for an unrestricted key (the trailing "#" is a
+// shell comment); (b) carries the pid in the SAME "-p <pid>" token the ps-check's
+// extractor already parses; and (c) begins with the "kill" marker an UPDATED
+// forced command can branch on to run the real kill. On the OLD ps-only forced
+// command (which ignores the requested command, extracts the pid, and only ever
+// runs `ps -o stat= -p <pid>`) this degrades to a harmless `ps -p <pid>`: no kill
+// happens and no error is returned, so the backstop is a SAFE NO-OP -- the wedged
+// job simply stays parked, exactly today's behaviour, no regression. Only an
+// operator who installs the updated forced command (or uses an unrestricted key)
+// gets the actual kill. Do NOT change the string without a migration plan and a
+// matching update to the cmd/conf.go example forced command.
+func (s *Scheduler) KillProcessOnHost(ctx context.Context, pid int, hostName string) error {
+	if pid <= 0 {
+		return nil
 	}
 
-	state := strings.TrimSpace(stdo)
-
-	switch interpretProcessState(state) {
-	case processDead:
-		return true
-	case processAlive:
-		return false
-	case processUnknown:
-		s.warnCannotConfirm(ctx, hostName, pid, "unexpected ps output: "+loggableProcessOutput(state))
+	host, ok := s.impl.getHost(hostName)
+	if !ok {
+		return fmt.Errorf("could not get host %q to kill pid %d", hostName, pid) //nolint:err113
 	}
 
-	return false
+	defer host.Close(ctx)
+
+	_, _, err := host.RunCmd(ctx, killProcessCommand(pid), false)
+
+	return err
 }
 
 // Cleanup means you've finished using a scheduler and it can delete any
@@ -675,13 +794,67 @@ func isProcessState(state string) bool {
 // jobName could be useful to a scheduleri implementer if it needs a constant-
 // width (length 36) string unique to the cmd and deployment, and optionally
 // suffixed with a random string (length 9, total length 45).
+//
+// When the WR_JOBNAME_TOKEN environment variable is set (see jobNameToken), the
+// token is inserted right after the deployment initial (e.g. "wrp<token>_..."),
+// so an isolated development/reproducer manager's scheduler jobs can be told
+// apart from a real deployment's "wrp_..." / "wrd_..." jobs and cleaned up
+// safely. The token is empty in production and normal use, leaving the name
+// (and its width) byte-identical to before.
 func jobName(cmd string, deployment string, unique bool) string {
 	l, h := farm.Hash128([]byte(cmd))
-	name := fmt.Sprintf("wr%s_%016x%016x", deployment[0:1], l, h)
+	name := jobNamePrefix(deployment) + fmt.Sprintf("%016x%016x", l, h)
 
 	if unique {
 		name += "_" + internal.RandomString()
 	}
 
 	return name
+}
+
+// jobNamePrefix returns the constant "wr<deployment-initial><token>_" prefix
+// shared by every scheduler job name (see jobName). It is the single source of
+// that prefix: job-name scans that must match all of a deployment's jobs (the
+// LSF checkCmd full-scan pruning and cleanup() bkill) derive their scan prefix
+// from here, so they stay byte-identical to jobName's leading prefix and can
+// never drift into matching - and killing - a different deployment's jobs.
+//
+// When WR_JOBNAME_TOKEN is set the token is included (see jobNameToken), so an
+// isolated manager scans only its own namespaced jobs; unset, it is the legacy
+// "wr<initial>_" prefix, byte-identical to before.
+func jobNamePrefix(deployment string) string {
+	return fmt.Sprintf("wr%s%s_", deployment[0:1], jobNameToken())
+}
+
+// jobNameToken returns the sanitised (alphanumeric-only) value of the
+// WR_JOBNAME_TOKEN environment variable, or "" if unset. It namespaces a
+// manager's scheduler job names (wrp<token>_...) so it identifies and kills only
+// its OWN jobs, never another manager's (see jobName).
+//
+// This supports the real requirement that multiple production deployments on
+// different ports coexist safely: today's shared wrp_ prefix lets one manager's
+// cleanup match another's jobs. INTERIM: driven by an env var; the proper fix
+// derives the namespace from the manager's port via config so it is automatic
+// and needs no opt-in. See .docs/bugfixes/260727-1.md.
+func jobNameToken() string {
+	tok := os.Getenv("WR_JOBNAME_TOKEN")
+	if tok == "" {
+		return ""
+	}
+
+	var b strings.Builder
+
+	for _, r := range tok {
+		if isJobNameTokenChar(r) {
+			b.WriteRune(r)
+		}
+	}
+
+	return b.String()
+}
+
+// isJobNameTokenChar reports whether r is allowed in a job-name token (ASCII
+// alphanumerics only, so the token can never break the job-name layout).
+func isJobNameTokenChar(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
 }

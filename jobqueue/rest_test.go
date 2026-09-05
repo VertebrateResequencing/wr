@@ -682,6 +682,34 @@ func TestRESTJobModificationValidation(t *testing.T) {
 			So(len(jobs), ShouldEqual, 0)
 		})
 
+		Convey("PATCH reports no editable jobs for a report group whose jobs have all completed", func() {
+			// the spec (.docs/issue-197/spec.md) reserves 404 for an id that resolves to
+			// no queued OR complete job and no RepGroup; a RepGroup that resolves only to
+			// complete jobs resolves to complete jobs, so it is the 409 case. The
+			// modification path deliberately does not FETCH the archived history any more
+			// (reliable4 FINDING 1), so this pins that it still tells the two apart.
+			key := addJob(&Job{
+				Cmd: "echo rest complete rep group", Cwd: testCwd, ReqGroup: restA2ReqGroup,
+				Requirements: standardReqs, RepGroup: "rest-a2-complete-only", Retries: 1,
+			})
+			job := reserveOnly(key)
+			err = jq.Started(job, os.Getpid())
+			So(err, ShouldBeNil)
+			err = jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()})
+			So(err, ShouldBeNil)
+			So(getJobStatus(key, false).State, ShouldEqual, JobStateComplete)
+
+			status, body, _ := patchJob("rest-a2-complete-only", `{"retries":9}`)
+			So(status, ShouldEqual, http.StatusConflict)
+			So(body, ShouldEqual, "no editable jobs matched\n")
+
+			Convey("while an unknown report group is still not found", func() {
+				status, body, _ = patchJob("rest-a2-no-such-rep-group", `{"retries":9}`)
+				So(status, ShouldEqual, http.StatusNotFound)
+				So(body, ShouldEqual, "job not found\n")
+			})
+		})
+
 		Convey("PATCH rejects reserved jobs without changing them", func() {
 			key := addJob(&Job{
 				Cmd: "echo rest reserved", Cwd: testCwd, ReqGroup: restA2ReqGroup,
@@ -1097,6 +1125,16 @@ func TestREST(t *testing.T) {
 	Convey("Once the jobqueue server is up", t, func() {
 		server, _, token, errt = Serve(ctx, serverConfig)
 		So(errt, ShouldBeNil)
+
+		// Serve returns while prior-state recovery is still running, so neither
+		// the REST endpoints nor the manager port are up yet. A server that never
+		// publishes stops the test here rather than leaving every step below to
+		// fail against an unreachable one.
+		select {
+		case <-server.Serving():
+		case <-time.After(servePublishWait):
+			t.Fatal("timed out waiting for the server to start serving")
+		}
 
 		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)

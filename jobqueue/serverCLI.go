@@ -36,10 +36,12 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -65,6 +67,39 @@ const (
 	// groups).
 	schedGroupWithLimitParts = 2
 )
+
+// slowRequestThresholdDefault is how long a single client RPC may take before
+// handleRequest warns about it.
+//
+// It has to be quiet on a healthy busy manager and unmissable on a sick one. The
+// slowest LEGITIMATE hot-path RPC measured at scale is an archive at p99 2.75s
+// (660 concurrent archivers against a 9.99GiB DB, f7e36bc), so 10s sits ~3.6x
+// above the worst normal case and a busy manager does not spam the log. At the
+// other end, ClientMinRequestTimeout is 60s: warning at 10s reaches an operator
+// while the manager is merely degrading, rather than only after clients have
+// already given up. Production's silent 12-minute, 12GB request is 72x over it.
+const slowRequestThresholdDefault = 10 * time.Second
+
+// slowRequestLogMsg is the message of the slow-request warning; operators and
+// log summarisers grep for it, so it is a constant rather than a literal.
+const slowRequestLogMsg = "slow request"
+
+// slowRequestDecodeLogMsg is the message of the slow-DECODE warning. It extends
+// slowRequestLogMsg so that one grep finds both halves of "the manager sat on a
+// request for minutes".
+const slowRequestDecodeLogMsg = slowRequestLogMsg + " decode"
+
+// slowRequestSelectorParts is the initial capacity for a rendered selector's
+// parts: how many clientRequest fields requestSelector can report.
+const slowRequestSelectorParts = 6
+
+// slowRequestThreshold is the live threshold. It is a var only so tests can
+// drive it down; nothing in the manager writes it, so it needs no
+// synchronisation (a test must set it before the server it measures starts
+// serving).
+//
+//nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
+var slowRequestThreshold = slowRequestThresholdDefault
 
 type subscriptionCatchUpRecord struct {
 	job    *Job
@@ -387,6 +422,181 @@ func malformedAddJobMessage(jobs []*Job) string {
 	return ""
 }
 
+// warnIfSlowRequest warns when one client RPC took longer than
+// slowRequestThreshold, naming the method, what it was asking about, how long it
+// took and how big a reply it produced. Production ran a 12-minute, 12GB request
+// and logged NOTHING about it: it was identified only because a profiling
+// session happened to be attached.
+//
+// The fast path is a single duration comparison, so it costs nothing on the
+// per-RPC hot path (measured at 88ns and ZERO allocations per RPC, against a
+// 5.6us RPC); everything that costs anything (rendering the selector,
+// formatting) happens only once the threshold has already been crossed.
+//
+// It deliberately does NOT sample runtime.ReadMemStats for an allocation delta,
+// even on the slow path. ReadMemStats stops the world, and the slow path is
+// precisely where that is unaffordable: when the manager is degrading EVERY
+// request crosses the threshold, so a per-slow-request stop-the-world would
+// amplify the stall being diagnosed - the same observer effect that ruined the
+// 2026-07-28 CPU profile. A process-wide cumulative allocation counter could not
+// be attributed to one request anyway, because handleRequest runs concurrently
+// with the other RPC readers, so it would credit other goroutines' work to
+// whichever request happened to be slow. replyBytes is exact, correctly
+// attributed and free: production's case was handleGetByRepGroup encoding a
+// multi-GB reply for a client that had already given up, and the reply's encoded
+// size names that precisely.
+//
+// It logs at WARN deliberately, and that level is asserted: the manager runs at
+// logLevel "warn" unless started with --debug (cmd/manager.go's
+// setupManagerLogging), and clog wraps the handler in log.LvlFilterHandler, so
+// demoting this line to debug or info would delete it from the shipped manager
+// log entirely and silently restore the exact production silence it exists to
+// fix. This is Bug 5's lesson: an unexplained outcome must reach an operator at
+// the DEFAULT log level.
+func warnIfSlowRequest(ctx context.Context, cr *clientRequest, sr *serverResponse,
+	srerr string, replyBytes int, start time.Time,
+) {
+	// the whole fast path: one duration comparison against a threshold the request
+	// itself may legitimately raise. A separate cheaper pre-check against the bare
+	// threshold was measured to save ~3ns of the 88ns this costs (the two nanotime
+	// reads dominate), and it could never fail a test, because a wait is never
+	// negative - so it was dead weight, not an optimisation.
+	elapsed := time.Since(start)
+
+	wait := requestWait(cr)
+	if elapsed < slowRequestThreshold+wait {
+		return
+	}
+
+	// report the reply that was actually SENT: replyToClient discards sr entirely
+	// when srerr is set and sends {Err: srerr}, so counting sr.Jobs there would
+	// credit the client with jobs it never received.
+	jobs := 0
+	if srerr == "" && sr != nil {
+		jobs = len(sr.Jobs)
+	}
+
+	args := []any{
+		"method", cr.Method, "selector", requestSelector(cr), "duration", elapsed,
+		"clientWait", wait, "replyBytes", replyBytes, "replyJobs", jobs,
+	}
+	if srerr != "" {
+		args = append(args, "replyErr", srerr)
+	}
+
+	clog.Warn(ctx, slowRequestLogMsg, args...)
+}
+
+// requestWait is how long a request explicitly asked the server to HOLD it
+// before answering, which is not the manager being slow. Two methods block by
+// design: a reserve waits for a job to become ready (a runner polls with -r
+// seconds, 2 by default) and a subscription long-poll is held for
+// serverSubscriptionHoldTime, 25 SECONDS - so without this every idle subscriber
+// would trip any threshold under 25s on every poll, which is exactly the log
+// spam that would make the warning worthless. Every other method ignores
+// cr.Timeout, so a client cannot use it to hide a genuinely slow request.
+//
+// The two exemptions differ, and each mirrors what the server actually does with
+// the client's number.
+func requestWait(cr *clientRequest) time.Duration {
+	switch cr.Method {
+	case requestMethodReserve:
+		// reserveWithLimits passes cr.Timeout straight through to the limiter and
+		// then to queue.Reserve without clamping it, so the whole claim really is
+		// time the client asked to wait. A zero/negative timeout does not block at
+		// all, so it buys no exemption.
+		if cr.Timeout > 0 {
+			return cr.Timeout
+		}
+	case requestMethodWaitForUpdates:
+		// mirror waitForSubscriptionUpdates' own clamp exactly (see
+		// server_subscription.go): it holds the poll for serverSubscriptionHoldTime
+		// both when the client asks for nothing (<= 0, which the wire format
+		// accepts and which any hand-written client or a refactor dropping
+		// Subscription.updateRequest's Timeout would send) AND when it asks for
+		// more than the hold. Not mirroring the first half would put one spurious
+		// warning per idle subscriber per poll in the log; not mirroring the second
+		// would let a client hide a genuinely wedged waitForUpdates - one stuck on
+		// csmutex, say - for as long as it cared to claim.
+		if cr.Timeout <= 0 || cr.Timeout > serverSubscriptionHoldTime {
+			return serverSubscriptionHoldTime
+		}
+
+		return cr.Timeout
+	}
+
+	return 0
+}
+
+// requestSelector renders what a request was asking about, so a slow-request
+// warning is actionable without a profiler attached. Only called once the
+// duration threshold has been crossed.
+func requestSelector(cr *clientRequest) string {
+	parts := make([]string, 0, slowRequestSelectorParts)
+	parts = appendSelector(parts, "repgroup", requestRepGroup(cr))
+	parts = appendSelector(parts, "match", string(cr.RepGroupMatch))
+	parts = appendSelector(parts, "state", string(cr.State))
+	parts = appendSelector(parts, "limitgroup", cr.LimitGroup)
+	parts = appendSelector(parts, "schedgroup", cr.SchedulerGroup)
+	parts = appendSelector(parts, "keys", selectorCount(len(cr.Keys)))
+	parts = appendSelector(parts, "jobs", selectorCount(len(cr.Jobs)))
+
+	return strings.Join(parts, " ")
+}
+
+// appendSelector appends "key=value" to parts, skipping an empty value and
+// bounding value's length: RepGroups and limit group names are user-supplied, and
+// a warning about an over-sized request must not itself be over-sized.
+func appendSelector(parts []string, key, value string) []string {
+	if value == "" {
+		return parts
+	}
+
+	return append(parts, key+"="+internal.Abbreviate(value))
+}
+
+// requestRepGroup returns the RepGroup a request selects on, or "" if it does
+// not select on one.
+func requestRepGroup(cr *clientRequest) string {
+	if cr.Job == nil {
+		return ""
+	}
+
+	return cr.Job.RepGroup
+}
+
+// selectorCount renders a count for a selector, or "" when there is nothing to
+// report.
+func selectorCount(n int) string {
+	if n == 0 {
+		return ""
+	}
+
+	return strconv.Itoa(n)
+}
+
+// warnIfSlowDecode warns when a request took longer than slowRequestThreshold
+// just to be DECODED off the wire, which handleRequest cannot report as an
+// ordinary slow request because a failed decode leaves it with no method and no
+// selector to name.
+//
+// The gap is small but it is exactly the shape of the incident this whole item
+// exists for: production's silent request was 12 GB, and a multi-GB body that
+// runs out of memory or hits a codec error spends its minutes inside
+// dec.Decode() and then returns early. dispatchClientRequest does log the decode
+// error itself, but only when ServerLogClientErrors is set and never with a
+// duration or a size, so "the manager was wedged for 12 minutes" was still
+// invisible. requestBytes is the actionable fact here, and it is free.
+func warnIfSlowDecode(ctx context.Context, requestBytes int, start time.Time, decodeErr error) {
+	elapsed := time.Since(start)
+	if elapsed < slowRequestThreshold {
+		return
+	}
+
+	clog.Warn(ctx, slowRequestDecodeLogMsg, "duration", elapsed,
+		"requestBytes", requestBytes, "err", decodeErr)
+}
+
 func (s *Server) subscriptionCatchUpByRepGroup(ctx context.Context, repGroup string) ([]*JobUpdate, error) {
 	records, allTerminal, err := s.subscriptionCatchUpRepGroupRecords(ctx, repGroup)
 	if err != nil {
@@ -404,12 +614,18 @@ func (s *Server) subscriptionCatchUpByRepGroup(ctx context.Context, repGroup str
 // clientRequest, does the requested work, then responds back to the client with
 // a serverResponse.
 func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
+	start := time.Now()
+
 	dec := codec.NewDecoderBytes(m.Body, s.ch)
 	cr := &clientRequest{}
 
 	errd := dec.Decode(cr)
 	if errd != nil {
+		requestBytes := len(m.Body)
+
 		m.Free()
+
+		warnIfSlowDecode(ctx, requestBytes, start, errd)
 
 		return errd
 	}
@@ -428,7 +644,11 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 		sr, srerr, qerr = s.dispatchMethod(ctx, cr, drain)
 	}
 
-	return s.replyToClient(ctx, m, cr, sr, srerr, qerr)
+	replyBytes, err := s.replyToClient(ctx, m, cr, sr, srerr, qerr)
+
+	warnIfSlowRequest(ctx, cr, sr, srerr, replyBytes, start)
+
+	return err
 }
 
 // validateRequest checks a request's token and that the server can serve it,
@@ -462,10 +682,11 @@ func (s *Server) validateRequest(cr *clientRequest, up, drain bool) (string, str
 	return "", ""
 }
 
-// replyToClient sends sr (or an error response) back to the client, returning a
-// detailed error for logging when srerr is set.
+// replyToClient sends sr (or an error response) back to the client, returning
+// how many bytes the reply encoded to and a detailed error for logging when
+// srerr is set.
 func (s *Server) replyToClient(ctx context.Context, m *mangos.Message, cr *clientRequest,
-	sr *serverResponse, srerr, qerr string) error {
+	sr *serverResponse, srerr, qerr string) (int, error) {
 	// on error, just send the error back to client and return a more detailed
 	// error for logging
 	if srerr != "" {
@@ -481,10 +702,13 @@ func (s *Server) replyToClient(ctx context.Context, m *mangos.Message, cr *clien
 	return s.reply(m, sr) // *** log failure to reply?
 }
 
-// replyError sends an error response to the client and returns a detailed
-// jobqueue Error for logging (defaulting qerr to srerr).
-func (s *Server) replyError(ctx context.Context, m *mangos.Message, cr *clientRequest, srerr, qerr string) error {
-	if errr := s.reply(m, &serverResponse{Err: srerr}); errr != nil {
+// replyError sends an error response to the client and returns how many bytes it
+// encoded to plus a detailed jobqueue Error for logging (defaulting qerr to
+// srerr).
+func (s *Server) replyError(ctx context.Context, m *mangos.Message, cr *clientRequest,
+	srerr, qerr string) (int, error) {
+	replyBytes, errr := s.reply(m, &serverResponse{Err: srerr})
+	if errr != nil {
 		clog.Warn(ctx, "reply to client failed", "err", errr)
 	}
 
@@ -492,7 +716,7 @@ func (s *Server) replyError(ctx context.Context, m *mangos.Message, cr *clientRe
 		qerr = srerr
 	}
 
-	return Error{cr.Method, cr.key(), qerr}
+	return replyBytes, Error{cr.Method, cr.key(), qerr}
 }
 
 // handlePing returns server info for a ping request.
@@ -828,7 +1052,7 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 	// make a copy of the job with some extra stuff filled in (that we don't want
 	// taking up memory here) for the client
 	job := s.itemToJob(ctx, item, false, true)
-	clog.Debug(ctx, "reserved job", "cmd", job.Cmd, "schedGrp", sgroup)
+	clog.Debug(ctx, "reserved job", "key", item.Key, "cmd", job.loggableCmd(), "schedGrp", sgroup)
 
 	return &serverResponse{Job: job}
 }
@@ -849,6 +1073,14 @@ func (s *Server) resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, 
 	sjob.Exited = false
 	// Host/Pid are NOT zeroed here: respondWithReservedJob records the reserving
 	// runner's host+pid so a reserved-not-started job's liveness can be confirmed.
+	// RunnerPid IS, because nothing reports one until Started, so 0 is its
+	// documented pre-Started value. Left set it would name the runner of the run
+	// BEFORE this one, and jobConfirmedDead will not declare a lost run dead while
+	// any pid it holds for it is still running: that runner is off running other
+	// jobs (or an unrelated process has since been given its pid), so this run
+	// would wait out the wedged-runner backstop instead of being retried - and the
+	// backstop would then kill that innocent process.
+	sjob.RunnerPid = 0
 	// StartTime stays zeroed - it is set at Started.
 	sjob.StartTime = time.Time{}
 	sjob.EndTime = time.Time{}
@@ -912,6 +1144,31 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 		return false
 	}
 
+	// idempotent ack: a DUPLICATE report of the SAME start (e.g. retryStartReport
+	// re-sending after a reply was lost) must not re-increment Attempts, which would
+	// prematurely erode the retry budget (UntilBuried) and bury the job one real
+	// attempt early. A genuinely new attempt is a new process (different pid) or a
+	// different host, so Running + same pid + same host uniquely identifies a
+	// duplicate of the current start (pids are not reused fast enough to alias). We
+	// still clear Lost, because the duplicate report is fresh proof the runner is
+	// alive (a spurious TTR-driven markJobLost can set Lost=true while State stays
+	// Running); we deliberately do NOT touch Attempts/StartTime/EndTime, which is the
+	// whole point of the guard. We DO adopt a first-seen runner pid: a job that went
+	// Running with RunnerPid==0 (recovered from the DB, or first-started by an older
+	// runner that reported none) needs the current runner's pid recorded so
+	// the confirm-dead check keeps the both-pid liveness protection instead of falling
+	// back to the command-pid-only verdict; we only fill an unset RunnerPid and never
+	// overwrite or clobber an existing one.
+	if job.State == JobStateRunning && job.Pid == crJob.Pid && job.Host == crJob.Host {
+		job.Lost = false
+
+		if job.RunnerPid == 0 && crJob.RunnerPid > 0 {
+			job.RunnerPid = crJob.RunnerPid
+		}
+
+		return true
+	}
+
 	job.Host = crJob.Host
 	if job.Host != "" {
 		job.HostID = s.scheduler.HostToID(job.Host)
@@ -919,6 +1176,7 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 
 	job.HostIP = crJob.HostIP
 	job.Pid = crJob.Pid
+	job.RunnerPid = crJob.RunnerPid
 	job.StartTime = time.Now()
 	job.EndTime = time.Time{}
 	job.Attempts++
@@ -1039,12 +1297,18 @@ func (s *Server) recoverLostTouchedJob(job *Job) countContribution {
 // live bucket, and adds it to the complete bucket.
 func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
 	// remove the job from the queue, rpl and live bucket and add to complete
-	// bucket. The item must be in queue.ItemStateRun (getij's checkRunning): this
-	// restores v0.36.5's lenient acceptance - an alive owner's successful archive
-	// is always accepted while it still holds the reservation - while preserving
-	// the ErrRecovering retry path and the owner check that yields ErrMustReserve.
-	_, job, srerr := s.getij(cr, true)
+	// bucket. getijForReport accepts the owner's successful archive while the item
+	// is in ANY in-flight sub-queue (Run, or Delay/Ready after a busy manager
+	// speculatively released it) - not just Run - so a completed job's result is
+	// not discarded and re-run. A job that is already gone-and-complete is handled
+	// idempotently (jobAlreadyComplete), a new owner yields ErrMustReserve
+	// (new-run-wins) and a missing item during recovery yields ErrRecovering.
+	job, srerr := s.getijForReport(cr)
 	if srerr != "" {
+		if srerr == ErrBadJob && s.jobAlreadyComplete(cr.key()) {
+			return nil, "", "" // idempotent: the job is already archived/complete
+		}
+
 		return nil, srerr, ""
 	}
 
@@ -1059,9 +1323,9 @@ func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverR
 // markJobComplete applies a successfully exited job's terminal state and marks it
 // complete under lock, returning its key, rep group and scheduler group (or an
 // Err* string if it cannot be completed). It does NOT gate on the queue item
-// state or job.State - that run-queue gating is done by getij(cr, true) at the
-// call site. It validates the owner (job.ReservedBy must match the optional
-// expectedReservedBy, else ErrMustReserve) and the end state
+// state or job.State - that item/ownership gating is done by getijForReport at
+// the call site (handleArchive). It validates the owner (job.ReservedBy must
+// match the optional expectedReservedBy, else ErrMustReserve) and the end state
 // (canCompleteFromEndState, else ErrBadRequest); on success it applies the end
 // state, sets State to JobStateComplete and clears FailReason, but deliberately
 // does NOT clear job.Lost (see the inline comment) so a parked-lost job's later
@@ -1132,10 +1396,17 @@ func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup,
 		return nil, ErrInternalError, err.Error()
 	}
 
+	// this job has left the live bucket, so it is no longer a live member of its
+	// dep groups; any group it was the last live member of now has nothing left
+	// to wait for. It is after the archive and the q.Remove, not before, because a
+	// group's waiters must not be promoted until the job they waited for has
+	// really completed and left the queue.
+	s.releaseDepGroupMembership(ctx, key)
+
 	s.rpl.Lock()
 	s.rpl.Delete(rgroup, key)
 	s.rpl.Unlock()
-	clog.Debug(ctx, "completed job", "cmd", job.Cmd, "schedGrp", sgroup)
+	clog.Debug(ctx, "completed job", "key", key, "cmd", job.loggableCmd(), "schedGrp", sgroup)
 	s.decrementGroupCount(ctx, sgroup, 1)
 
 	return nil, "", ""
@@ -1145,15 +1416,23 @@ func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup,
 // (if forceBury, or it has failed too many times).
 func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury bool,
 	failMsg string) (*serverResponse, string, string) {
-	// require the item to still be in the Run sub-queue (getij's checkRunning),
-	// mirroring handleArchive. A release whose item has left Run - e.g. a winning
-	// double-reservation runner already dealt with it - is authoritatively "gone"
-	// on a live manager and returns ErrBadJob (or ErrRecovering while recovering),
-	// which lands in the client's give-up set so the losing runner abandons the
-	// dead reservation promptly instead of looping for the full 24h retryTime. A
-	// legitimate release (item in Run, owner matches) still proceeds (srerr == "").
-	_, job, srerr := s.getij(cr, true)
+	// getijForReport accepts the owner's release/bury report while the item is in
+	// ANY in-flight sub-queue (Run, or Delay/Ready after a busy manager
+	// speculatively released it) - not just Run - mirroring handleArchive, so a
+	// genuine failure report is applied rather than discarded and the job re-run.
+	// A job that is already gone-and-complete is handled idempotently
+	// (jobAlreadyComplete). A new owner yields ErrMustReserve (new-run-wins). A
+	// terminal (e.g. a winning double-reservation runner already buried it) or
+	// otherwise-gone item yields ErrBadJob, which lands in the client's give-up
+	// set so the losing runner abandons the dead reservation promptly instead of
+	// looping for the full 24h retryTime (reliable2 D1); a missing item during
+	// recovery yields ErrRecovering.
+	job, srerr := s.getijForReport(cr)
 	if srerr != "" {
+		if srerr == ErrBadJob && s.jobAlreadyComplete(cr.key()) {
+			return nil, "", "" // idempotent: the job is already terminal
+		}
+
 		return nil, srerr, ""
 	}
 
@@ -1161,7 +1440,13 @@ func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury
 		cr.JobEndState = &JobEndState{}
 	}
 
-	if errq := s.releaseJob(ctx, job, cr.JobEndState, cr.failReason(), true, forceBury); errq != nil {
+	if errq := s.releaseJob(ctx, job, releaseReport{
+		endState:     cr.JobEndState,
+		failReason:   cr.failReason(),
+		attempted:    cr.Attempted,
+		forceStorage: true,
+		forceBury:    forceBury,
+	}); errq != nil {
 		clog.Warn(ctx, failMsg, "err", errq)
 
 		return nil, ErrInternalError, errq.Error()
@@ -1368,8 +1653,15 @@ func (s *Server) persistModifiedJobs(ctx context.Context, cr *clientRequest,
 	// additional handling of changed limit groups
 	if cr.Modifier.LimitGroupsSet {
 		limitGroups := make(map[string]*limiter.GroupData)
+
 		for _, job := range toModify {
+			// handleUserSpecifiedJobLimitGroups rewrites job.LimitGroups (and
+			// invalidates the job's memoised derived scheduler-group strings), so
+			// the job's lock must be held, as its own docs and the equivalent REST
+			// path (storeModifiedLimitGroups) require.
+			job.Lock()
 			s.handleUserSpecifiedJobLimitGroups(job, limitGroups)
+			job.Unlock()
 		}
 
 		if err := s.storeLimitGroups(limitGroups); err != nil {
@@ -1426,6 +1718,11 @@ func (s *Server) persistModifiedJobsToDB(ctx context.Context, cr *clientRequest,
 		return
 	}
 
+	// this is above the DependenciesSet || PrioritySet guard below because a
+	// DepGroups-only modification never passes that guard, and that is exactly
+	// the case that must not wedge a group's waiters.
+	s.rekeyDepGroupMembershipForModifiedJobs(ctx, oldKeys, toModify)
+
 	if !cr.Modifier.DependenciesSet && !cr.Modifier.PrioritySet {
 		return
 	}
@@ -1439,7 +1736,7 @@ func (s *Server) persistModifiedJobsToDB(ctx context.Context, cr *clientRequest,
 
 // reflectModifiedJobInQueue updates a modified job's dependencies in the queue.
 func (s *Server) reflectModifiedJobInQueue(ctx context.Context, job *Job) {
-	deps, waitingForDepGroups, depErr := job.Dependencies.incompleteJobKeys(s.db)
+	deps, waitingForDepGroups, depErr := job.Dependencies.dependencyKeys(s.db, s.depGroups)
 	if depErr != nil {
 		clog.Error(ctx, "failed to get job dependencies", "err", depErr)
 
@@ -1474,9 +1771,16 @@ func (s *Server) handleGetByRepGroup(ctx context.Context, cr *clientRequest) (*s
 		return nil, ErrBadRequest, ""
 	}
 
+	// this is the request `wr status -i` makes, and Client.GetByRepGroupMatch's
+	// documented contract is to return complete jobs as well as live ones, so it
+	// asks for the history. What keeps a caller that can only act on LIVE jobs off
+	// that scan is its State filter: `wr suspend`/`wr resume` send
+	// JobStateIncomplete, `wr remove`/`wr mod` JobStateDeletable, and any
+	// non-complete state stops getDBJobsByRepGroup before it reads the DB.
 	opts := repGroupOptions{
-		RepGroup: cr.Job.RepGroup,
-		Match:    normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search),
+		RepGroup:        cr.Job.RepGroup,
+		Match:           normalizeRepGroupMatch(cr.RepGroupMatch, cr.Search),
+		IncludeComplete: true,
 		limitJobsOptions: limitJobsOptions{
 			Limit:               cr.Limit,
 			State:               cr.State,
@@ -1705,6 +2009,68 @@ func (s *Server) dispatchMethod(ctx context.Context, cr *clientRequest, drain bo
 	default:
 		return nil, ErrUnknownCommand, ""
 	}
+}
+
+// getijForReport resolves the item and job for a runner's FINAL-state report
+// (archive/release/bury). Unlike getij(cr, true) it does NOT require the item to
+// still be in the Run sub-queue: an exiting runner is the authority on its
+// command's outcome, so while it still holds the reservation (job.ReservedBy ==
+// cr.ClientID) its report is applied wherever a busy manager has parked the item
+// (Run, or Delay after a speculative lost-release), rather than being rejected as
+// ErrBadJob and re-run. A report from a client that no longer holds the
+// reservation - a genuinely new runner took the job over - is rejected with
+// ErrMustReserve (new-run-wins). A missing item is retryable during recovery
+// (ErrRecovering) and otherwise ErrBadJob (the caller may still treat an
+// already-completed job idempotently via jobAlreadyComplete).
+func (s *Server) getijForReport(cr *clientRequest) (*Job, string) {
+	key := cr.key()
+	if key == "" {
+		return nil, ErrBadRequest
+	}
+
+	item, err := s.q.Get(key)
+	if err != nil {
+		if s.isRecovering() {
+			return nil, ErrRecovering
+		}
+
+		return nil, ErrBadJob
+	}
+
+	// accept a report only for an IN-FLIGHT item: Run (normal, or parked Lost),
+	// or Delay/Ready after a busy manager speculatively released it. A TERMINAL
+	// item (Bury) or any other state is authoritatively "gone/resolved", so we
+	// return ErrBadJob and the runner gives up cleanly (D1) instead of looping on
+	// an internal release error - and an already-completed job is handled
+	// idempotently by the caller via jobAlreadyComplete.
+	switch item.Stats().State {
+	case queue.ItemStateRun, queue.ItemStateDelay, queue.ItemStateReady:
+	default:
+		return nil, ErrBadJob
+	}
+
+	job, ok := item.Data().(*Job)
+	if !ok {
+		return nil, ErrBadJob
+	}
+
+	if cr.ClientID != job.ReservedBy {
+		return job, ErrMustReserve
+	}
+
+	return job, ""
+}
+
+// jobAlreadyComplete reports whether the keyed job is already in the completed
+// bucket. It makes a runner's archive/release retry idempotent when a busy
+// manager processed the first attempt but the response was lost to a client
+// timeout: the job is already done, so the caller returns success rather than
+// ErrBadJob (which the runner treats as a reason to re-run an already-complete
+// job, discarding the work and doubling it up).
+func (s *Server) jobAlreadyComplete(key string) bool {
+	complete, err := s.db.checkIfComplete(key)
+
+	return err == nil && complete
 }
 
 // for the many j* methods in handleRequest, we do this common stuff to get
@@ -1997,7 +2363,7 @@ func (s *Server) schedGroupToLimitGroups(group string) []string {
 }
 
 // reply to a client.
-func (s *Server) reply(m *mangos.Message, sr *serverResponse) error {
+func (s *Server) reply(m *mangos.Message, sr *serverResponse) (int, error) {
 	var encoded []byte
 
 	enc := codec.NewEncoderBytes(&encoded, s.ch)
@@ -2006,7 +2372,7 @@ func (s *Server) reply(m *mangos.Message, sr *serverResponse) error {
 	if err != nil {
 		m.Free()
 
-		return err
+		return 0, err
 	}
 
 	m.Body = encoded
@@ -2016,5 +2382,5 @@ func (s *Server) reply(m *mangos.Message, sr *serverResponse) error {
 		m.Free()
 	}
 
-	return err
+	return len(encoded), err
 }

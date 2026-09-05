@@ -46,6 +46,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VertebrateResequencing/muxfys/v5"
@@ -69,13 +70,21 @@ const (
 	minimumTimeBetweenBackups     = 30 * time.Second
 	dbRunningTransactionsWaitTime = 1 * time.Minute
 
+	// backupDirtyPollInterval is how often the backup ticker checks the
+	// (lock-free) backupDirty flag. This is only the CHECK cadence: actual
+	// backups stay spaced out by backupWait (>= minimumTimeBetweenBackups) via
+	// waitBeforeBackup. A short cadence preserves the pre-fix behaviour that the
+	// first backup after activity is prompt (only subsequent ones are spaced),
+	// which several backup regression tests rely on.
+	backupDirtyPollInterval = 1 * time.Second
+
 	// offlineDBOpenTimeout bounds how long the offline subcommand (CompactDBFile)
 	// waits for the BoltDB file lock before erroring. The up-check in cmd guards
 	// against a running manager,
 	// but if that check is fooled (e.g. a missing token file) a manager may still
 	// hold the lock; a bounded timeout makes the subcommand fail cleanly instead
-	// of blocking forever. The running manager's own initDB opens intentionally
-	// omit this and block/wait.
+	// of blocking forever. The manager's own initDB opens are bounded too, by
+	// managerDBOpenTimeout.
 	offlineDBOpenTimeout = 10 * time.Second
 
 	// s3ProfilePathParts is the number of parts in a "profile@path" S3 spec.
@@ -112,8 +121,45 @@ var (
 	RecSecRound = 1   // when we recommend time to reserve for a job, we round up to the nearest RecSecRound seconds
 )
 
+// managerDBOpenTimeout bounds how long the manager's initDB waits for the
+// BoltDB file lock before failing with ErrDBLocked (spec E7). Without it bbolt
+// retries the flock every 50ms forever, so a second manager started while the
+// first is still in its startup window blocks indefinitely and then acquires the
+// database the instant the winner exits - which collides with the documented
+// rollback procedure, since it would start writing to the file being restored.
+//
+// 30s is not derived from ServerShutdownWaitTime: the lock is held well past it,
+// because db.close copies the whole database to db_bk before closing bolt, and
+// at production's 7GB on NFS that copy alone can exceed 30s. It sits between the
+// bounded waits inside a shutdown and the 120s wr manager stop itself allows
+// (daemonStopGiveupS), so a start racing a prompt shutdown still wins the lock
+// while a start racing a slow one fails with a message naming the file rather
+// than lurking until the winner exits. The cost is real and accepted: a restart
+// that overlaps a slow shutdown can now fail and need retrying.
+//
+// It is a package var (not user-configurable) purely so tests can shorten it,
+// which is also what keeps their harness deadlines short.
+//
+//nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
+var managerDBOpenTimeout = 30 * time.Second
+
+// ErrDBLocked is returned by initDB when another wr manager holds the database
+// file lock. It is deliberately NOT treated as a corrupt database: the
+// restore-from-backup path would unlink the live file out from under the running
+// manager and come up on a stale backup, on a fresh inode so the flock protects
+// nothing (spec E7).
+var ErrDBLocked = errors.New("another wr manager holds this database")
+
 // errDBClosed is returned when an operation is attempted on a closed database.
 var errDBClosed = errors.New("database closed")
+
+// errArchivePanic is returned to the one caller whose archive panicked, so a
+// malformed job fails only itself (as it did under bbolt.Batch's safelyCall).
+var errArchivePanic = errors.New("panic while archiving job")
+
+// errNewJobsPanic is the same for the one add whose bucket puts panicked, so a
+// malformed job fails only its own add.
+var errNewJobsPanic = errors.New("panic while storing new jobs")
 
 // jobExitUpdatePollInterval is how often retrieveJobStd polls for in-progress
 // updateJobAfterExit() calls to complete.
@@ -140,13 +186,49 @@ const slowBackupTestDelay = 100 * time.Millisecond
 const (
 	dbUpgradeProgressEntries  = 10000
 	dbUpgradeProgressInterval = 2 * time.Second
+
+	// dbUpgradeLogIntervalDefault is how often a database upgrade's progress is
+	// logged where a default `wr manager start` can show it (see
+	// dbUpgradeReporter). It is far coarser than dbUpgradeProgressInterval, which
+	// paces the status sidecar: a rebuild of millions of entries must add tens of
+	// manager log lines, not thousands, while still showing an operator that a
+	// minutes-long phase is moving. A phase shorter than one interval logs no
+	// progress at all, its start and completion lines being enough.
+	dbUpgradeLogIntervalDefault = 30 * time.Second
 )
+
+// dbUpgradeLogInterval is the live interval. It is a var only so tests can
+// shorten it; nothing user-facing changes it.
+//
+//nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
+var dbUpgradeLogInterval = dbUpgradeLogIntervalDefault
 
 // compactTxMaxSize bounds the size (bytes) of each bolt.Compact destination
 // transaction, so compacting a multi-gigabyte database commits regularly instead
 // of buffering the whole copy in one transaction (see bolt.Compact). A value of
 // 0 would use a single transaction.
 const compactTxMaxSize = 64 * 1024 * 1024
+
+// backupCopySyncInterval is how many bytes copyBackup writes to the backup file
+// before forcing writeback of that region (see backupCopyWriter.pace). 8 MiB caps
+// the delay a concurrent foreground archive/touch commit's fdatasync can suffer to
+// roughly one interval's worth of backup writeback, independent of the DB's size
+// or the storage's speed; it was tuned as the freeze-floor minimum below which the
+// periodic full-file backup no longer stalls the manager.
+const backupCopySyncInterval = 8 * 1024 * 1024
+
+//nolint:gochecknoglobals // prod-inert test seams for exercising the backup copy's pacing.
+var (
+	// backupCopySyncBytes is the pacing interval copyBackup uses; it defaults to
+	// backupCopySyncInterval and is a var only so tests can shrink it to exercise
+	// pacing on a small DB. Production never changes it.
+	backupCopySyncBytes int64 = backupCopySyncInterval
+
+	// backupPaceHook, when non-nil, is called at the start of each
+	// backupCopyWriter.pace(). It is nil in production and exists only so tests
+	// can observe that the backup copy is being paced.
+	backupPaceHook func()
+)
 
 const (
 	limitGroupUnchanged limitGroupOutcome = iota
@@ -157,6 +239,61 @@ const (
 	// count (a uint64).
 	limitGroupBytes = 8
 )
+
+// limitGroupWrite is the bucket write that achieving a limit group's outcome
+// needs.
+type limitGroupWrite int
+
+const (
+	limitGroupWriteNone limitGroupWrite = iota
+	limitGroupWritePut
+	limitGroupWriteDelete
+)
+
+// planLimitGroup decides what should happen to a single limit group: the
+// outcome to report, and the bucket write (if any) that achieving it needs. The
+// outcome does not imply a write, and vice versa: a group whose limit is being
+// forgotten is reported removed whether or not it had a record to delete, while
+// a group stored for the first time is reported unchanged, having had no
+// previous value to change.
+//
+// It only reads b, so it can also be called in a read transaction, to find out
+// whether a write transaction is needed at all.
+func planLimitGroup(b *bolt.Bucket, group string, limitG *limiter.GroupData) (limitGroupOutcome, limitGroupWrite) {
+	existing := b.Get([]byte(group))
+
+	if limitG.IsCount() {
+		return planLimitGroupStore(existing, limitG.Limit())
+	}
+
+	// what is left is either a time-based group, which derives its limit from
+	// its own name and so is never stored, or the invalid GroupData that
+	// limiter.NewCountGroupData() makes of the negative limit a user gives
+	// (name:-1) to forget a group's limit entirely. That one has to take any
+	// record with it: the limiter vivifies groups from this bucket on demand, so
+	// a surviving record brings the removed limit straight back.
+	if limitG.IsValid() || existing == nil {
+		return limitGroupRemoved, limitGroupWriteNone
+	}
+
+	return limitGroupRemoved, limitGroupWriteDelete
+}
+
+// planLimitGroupStore decides the outcome and write for a limit group with a
+// non-negative limit, given the value currently stored for it (nil if it has
+// none).
+func planLimitGroupStore(existing []byte, limit int64) (limitGroupOutcome, limitGroupWrite) {
+	if existing == nil {
+		return limitGroupUnchanged, limitGroupWritePut
+	}
+
+	//nolint:gosec // limit is >= 0 here, so fits in a uint64
+	if binary.BigEndian.Uint64(existing) == uint64(limit) {
+		return limitGroupUnchanged, limitGroupWriteNone
+	}
+
+	return limitGroupChanged, limitGroupWritePut
+}
 
 // sobsd ('slice of byte slice doublets') implements sort interface so we can
 // sort a slice of []byte doublets, sorting on the first byte slice, needed for
@@ -180,6 +317,10 @@ func (s sobsd) Less(i, j int) bool {
 // sobsdStorer is the kind of function that stores the contents of a sobsd in
 // a particular bucket.
 type sobsdStorer func(bucket []byte, encodes sobsd) (err error)
+
+// sobsdPutter is the kind of function that puts the contents of a sobsd in the
+// given bucket, inside a bolt write transaction.
+type sobsdPutter func(tx *bolt.Tx, bucket []byte, encodes sobsd) error
 
 // reverseLookupEntries stores complete keys for bucketJobLookupEntries. During
 // old-DB upgrades we collect only these index keys, not job payloads, so they
@@ -259,7 +400,7 @@ func collectReverseLookupRebuildBucket(tx *bolt.Tx, bucket []byte, progress *dbU
 
 		totalProcessed := processedBefore + processed
 		if progress.progressDue(totalProcessed) {
-			progress.progress("rebuild job lookup index",
+			progress.progress(internal.DBUpgradeJobLookupState,
 				fmt.Sprintf("rebuilding database job lookup index (%d source entries processed so far; currently reading %s)",
 					totalProcessed, bucketName),
 				totalProcessed)
@@ -292,7 +433,7 @@ func putReverseLookupRebuildEntries(tx *bolt.Tx, entries reverseLookupEntries, p
 
 	for i, key := range entries {
 		if i > 0 && progress.progressDue(i) {
-			progress.writeProgress("rebuild job lookup index",
+			progress.writeProgress(internal.DBUpgradeJobLookupState,
 				fmt.Sprintf("writing sorted database job lookup index (%d reverse entries written, %d entries processed)",
 					i, totalProcessed),
 				totalProcessed)
@@ -304,6 +445,196 @@ func putReverseLookupRebuildEntries(tx *bolt.Tx, entries reverseLookupEntries, p
 	}
 
 	return nil
+}
+
+// archivedJobFacets are the few fields of an archived job needed to place it in a
+// bounded page of its RepGroup's history: the two times it is ordered by, and the
+// state, exit code, fail reason and lost flag that decide which of limitJobs'
+// groups it falls in.
+//
+// Its field names are deliberately the same as Job's. The codec encodes a Job as
+// a map of its exported field names, so decoding a record into this instead
+// matches these six by name and structurally SKIPS the rest, without allocating
+// the Cmd, Env, StdOut and StdErr values that make a full decode expensive: a
+// 130KB-command record costs 1.7us and 48 bytes here versus 46.5us and 134KB
+// through decodeArchivedJob.
+type archivedJobFacets struct {
+	StartTime  time.Time
+	EndTime    time.Time
+	State      JobState
+	Exitcode   int
+	FailReason string
+	Lost       bool
+}
+
+// completeJobsQuery describes how the caller of
+// retrieveOldestCompleteJobsByRepGroup will group and limit the archived jobs it
+// asks for, so that the ones it could never return are counted instead of
+// decoded.
+type completeJobsQuery struct {
+	// group returns the key of the group the caller will put an archived job with
+	// these facets in, and false if the caller's filters discard it outright.
+	group func(*archivedJobFacets) (string, bool)
+
+	// limit returns how many more jobs of the given group the caller can still
+	// use. Any beyond that are only counted.
+	limit func(string) int
+}
+
+// completeJobsPage is a bounded page of one RepGroup's archived jobs.
+type completeJobsPage struct {
+	// jobs are the archived jobs that were decoded, oldest-started first.
+	jobs []*Job
+
+	// fetched is how many of jobs fell in each group.
+	fetched map[string]int
+
+	// counted is how many of the RepGroup's archived jobs fall in each group,
+	// including the ones jobs does not contain.
+	counted map[string]int
+}
+
+// archivedJobCandidate is an archived job a bounded page might contain: its bolt
+// key (which, like every bolt key, is only valid for the life of the transaction
+// it was read in), its group, and the times it is ordered by.
+type archivedJobCandidate struct {
+	key   []byte
+	group string
+	start time.Time
+	end   time.Time
+}
+
+// oldestArchivedJobs keeps the limit oldest-started of the archived jobs offered
+// to it, without holding on to the rest.
+//
+// It sorts and truncates only once it has twice as many candidates as it needs,
+// so offering the whole of a RepGroup's history costs O(history log limit) time
+// but only O(limit) memory - which is the entire point, since it is the memory
+// that took production's manager to a 12.1GB heap. The sort is stable, so jobs
+// with identical times stay in the order the cursor produced them.
+type oldestArchivedJobs struct {
+	limit      int
+	pruneAt    int
+	candidates []archivedJobCandidate
+}
+
+// newOldestArchivedJobs returns a selector that keeps the limit oldest-started of
+// the jobs offered to it, pruning once it holds twice that many - or never, if
+// twice that many would overflow, which can only mean the limit already exceeds
+// any history it could be asked about.
+func newOldestArchivedJobs(limit int) *oldestArchivedJobs {
+	limit = max(limit, 0)
+
+	pruneAt := limit + limit
+	if pruneAt < limit {
+		pruneAt = math.MaxInt
+	}
+
+	return &oldestArchivedJobs{limit: limit, pruneAt: pruneAt}
+}
+
+// offer gives the selector another of the group's archived jobs to consider.
+func (o *oldestArchivedJobs) offer(key []byte, group string, facets *archivedJobFacets) {
+	// NOTE: this early-out is a memory optimisation, NOT a protected guarantee: with
+	// limit 0 pruneAt is 0 too, so without it every offer would append and then
+	// immediately have oldest() truncate back to nothing, returning the same (empty)
+	// selection. It matters because a group whose budget is already spent is offered
+	// every remaining record of the history, and that is exactly the append this fix
+	// exists to avoid.
+	if o.limit == 0 {
+		return
+	}
+
+	o.candidates = append(o.candidates, archivedJobCandidate{
+		key:   key,
+		group: group,
+		start: facets.StartTime,
+		end:   facets.EndTime,
+	})
+
+	if len(o.candidates) >= o.pruneAt {
+		o.oldest()
+	}
+}
+
+// oldest sorts the candidates offered so far oldest-started first, drops any
+// beyond the limit, and returns what is left.
+func (o *oldestArchivedJobs) oldest() []archivedJobCandidate {
+	sort.SliceStable(o.candidates, func(i, j int) bool {
+		return startedBefore(o.candidates[i].start, o.candidates[i].end,
+			o.candidates[j].start, o.candidates[j].end)
+	})
+
+	if len(o.candidates) > o.limit {
+		o.candidates = o.candidates[:o.limit]
+	}
+
+	return o.candidates
+}
+
+// startedBefore orders archived jobs by start time, then end time. Both the
+// unbounded fetch and the bounded one must order by it, or a limited request
+// would return different jobs from the ones the same request without a limit puts
+// first.
+func startedBefore(aStart, aEnd, bStart, bEnd time.Time) bool {
+	if aStart.Equal(bStart) {
+		return aEnd.Before(bEnd)
+	}
+
+	return aStart.Before(bStart)
+}
+
+// newJobStore is one bucket's worth of the data prepareNewJobs produced, and
+// the put that stores it inside a write transaction.
+type newJobStore struct {
+	bucket  []byte
+	encodes sobsd
+	put     sobsdPutter
+}
+
+// pace bounds the backup copy's dirty-page backlog for the bytes written since the
+// last pace. On Linux it starts asynchronous writeback of the just-written range
+// and waits on the previous one (cheap, pipelined, no full-file round-trip);
+// elsewhere it falls back to a full fsync (portable, but adds copy duration).
+func (w *backupCopyWriter) pace() error {
+	if backupPaceHook != nil {
+		backupPaceHook()
+	}
+
+	curOffset, curLength := w.syncedOffset, w.written-w.syncedOffset
+	if handled, err := backupPaceRange(w.f, curOffset, curLength, w.prevOffset, w.prevLength); handled {
+		w.prevOffset, w.prevLength = curOffset, curLength
+		w.syncedOffset = w.written
+
+		return err
+	}
+
+	return w.f.Sync()
+}
+
+// writePacedChunk writes the leading syncEvery-bounded slice of p to the backup
+// file, advancing w.written and w.sinceSync, and paces once if that slice completes
+// a syncEvery interval. Sizing each slice to the interval boundary keeps pacing at
+// most one interval behind regardless of len(p). It returns the bytes consumed and
+// the first error (a short write or a pace failure).
+func (w *backupCopyWriter) writePacedChunk(p []byte) (int, error) {
+	chunk := p[:min(int64(len(p)), w.syncEvery-w.sinceSync)]
+
+	n, err := w.f.Write(chunk)
+	w.written += int64(n)
+	w.sinceSync += int64(n)
+
+	if err != nil {
+		return n, err
+	}
+
+	if w.sinceSync < w.syncEvery {
+		return n, nil
+	}
+
+	w.sinceSync = 0
+
+	return n, w.pace()
 }
 
 func newJobExitData(job *Job, stdo, stde []byte, forceStorage bool) jobExitData {
@@ -333,6 +664,102 @@ func (e jobExitData) shouldRecordHighPeakRAMStat() bool {
 		commandExceededMemoryEstimate(e.peakRAM, e.requiredRAM)
 }
 
+// beBatch is a snapshot of pending best-effort writes, taken by swapBestEffort
+// and persisted by the writer in one transaction.
+type beBatch struct {
+	changes map[string][]byte
+	exits   []jobExitData
+	wgkeys  []string
+}
+
+// apply writes the batch's coalesced live-bucket changes and its ordered exit ops
+// within tx.
+func (b beBatch) apply(tx *bolt.Tx) error {
+	if err := b.applyChanges(tx); err != nil {
+		return err
+	}
+
+	return b.applyExits(tx)
+}
+
+// applyChanges rewrites each coalesced live job, but only if it is still present,
+// preserving the archive-vs-change race guard: a "started" update must not
+// resurrect a job that a concurrent archiveJob already removed from the live
+// bucket.
+func (b beBatch) applyChanges(tx *bolt.Tx) error {
+	bjl := tx.Bucket(bucketJobsLive)
+
+	for key, encoded := range b.changes {
+		if bjl.Get([]byte(key)) == nil {
+			continue
+		}
+
+		if err := bjl.Put([]byte(key), encoded); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// applyExits runs each exit op's transactional update (live-bucket rewrite, std
+// refresh and fail-stat) in order, preserving every per-op side effect.
+func (b beBatch) applyExits(tx *bolt.Tx) error {
+	for i := range b.exits {
+		if err := b.exits[i].update(tx); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// archivedScan is the state selectOldestArchivedJobs carries across the records it
+// walks: the caller's query, the per-group counts and selections being built, and
+// a decoder and facets buffer reused for every record so that walking a whole
+// history allocates nothing per record.
+type archivedScan struct {
+	query     completeJobsQuery
+	counted   map[string]int
+	selectors map[string]*oldestArchivedJobs
+	decoder   *codec.Decoder
+	facets    archivedJobFacets
+}
+
+// consider decodes one archived record's facets and, if the query keeps it, counts
+// it and offers it to its group's selector.
+func (a *archivedScan) consider(key, encoded []byte) error {
+	a.facets = archivedJobFacets{}
+
+	a.decoder.ResetBytes(encoded)
+
+	if err := a.decoder.Decode(&a.facets); err != nil {
+		return err
+	}
+
+	group, keep := a.query.group(&a.facets)
+	if !keep {
+		return nil
+	}
+
+	a.counted[group]++
+	a.selector(group).offer(key, group, &a.facets)
+
+	return nil
+}
+
+// selector returns the selector keeping group's oldest jobs, creating it with the
+// group's limit if this is the first job seen in it.
+func (a *archivedScan) selector(group string) *oldestArchivedJobs {
+	selector, exists := a.selectors[group]
+	if !exists {
+		selector = newOldestArchivedJobs(a.query.limit(group))
+		a.selectors[group] = selector
+	}
+
+	return selector
+}
+
 type db struct {
 	backupLast           time.Time
 	backupPath           string
@@ -342,15 +769,107 @@ type db struct {
 	backupMount          *muxfys.MuxFys
 	backupNotification   chan bool
 	backupWait           time.Duration
+	backupTickerStop     chan struct{} // closed by close() to stop the backup ticker
 	bolt                 *bolt.DB
 	envcache             *lru.ARCCache[string, []byte]
-	updatingAfterJobExit int
-	wg                   *waitgroup.WaitGroup
-	wgMutex              sync.Mutex // protects wg since we want to call Wait() while another goroutine might call Add()
+	updatingAfterJobExit atomic.Int64
+	// archivedDecodes counts how many archived jobs decodeArchivedJob has actually
+	// codec-decoded. It is INERT observability in the style of Job.derivations and
+	// archiveTxObserver: nothing but the reliable4 history-scan tests read it and it
+	// affects no behaviour. It lives on the db, rather than being a package global,
+	// so a test counts only the decodes of ITS OWN server; a process-wide counter
+	// would be perturbed by any other live server in the same test binary.
+	archivedDecodes atomic.Uint64
+	// depGroupSeenGets counts the dep groups a resolution pass actually read from
+	// bucketDepGroups - one per distinct group with no live member, not one per
+	// job naming it. resolveDependencies passes it to newSeenDepGroupCache. Like
+	// archivedDecodes it is INERT observability, and lives on the db so a test
+	// counts only its own server's reads.
+	depGroupSeenGets atomic.Uint64
+	wg               *waitgroup.WaitGroup
+	wgMutex          sync.Mutex // protects wg since we want to call Wait() while another goroutine might call Add()
 	sync.RWMutex
+	// The best-effort change/exit updates are persisted by a single long-lived
+	// writer goroutine (bestEffortWriter) that folds ALL currently-pending work
+	// into ONE write transaction per drain, instead of spawning one goroutine plus
+	// one tiny bolt batch per state change. The old per-change spawn piled up ~100k
+	// goroutines on a mass un-suspend and collapsed into thousands of fsync'd txns
+	// that starved the synchronous archive path (the reliable4 prod freeze). beMu
+	// guards the pending structures below; the writer never takes db.Lock or
+	// db.wgMutex, so enqueuing under those locks can never deadlock against it.
+	beMu         sync.Mutex
+	beChanges    map[string][]byte // key -> latest encoded live value (coalescing, latest-wins)
+	beExits      []jobExitData     // exit ops, applied in order (std/fail-stat side effects, not coalesced)
+	beWGKeys     []string          // db.wg keys to Done once the pending batch is persisted
+	beSignal     chan struct{}     // buffered(1) kick: work is pending
+	beStop       chan struct{}     // closed by close() to stop the writer after a final drain
+	beWriterDone chan struct{}     // closed by the writer when it has fully stopped
+	// Archives are SYNCHRONOUS - the client's archive RPC blocks on the outcome -
+	// but they too are persisted by a single long-lived coalescing writer
+	// (archiveWriter), which folds every currently-pending archive into ONE
+	// db.Update and then replies to each waiter individually. Previously each
+	// archive committed its own transaction via db.bolt.Batch, and bbolt's batching
+	// could not save it: Batch detaches its current batch the instant one STARTS
+	// and arms a fresh MaxBatchDelay timer, so archives arriving further apart than
+	// that delay each got a transaction of their own and queued on the single bolt
+	// write lock. Live production (2026-08-17, ~660 runners) measured that queue
+	// persistently ~600 deep draining at ~12/s, spread over 234 concurrent
+	// bbolt.(*batch).run goroutines, for a MEAN archive block of 43s against the
+	// 60s ClientMinRequestTimeout floor - which turned successfully exited jobs
+	// into `delayed` ones (reliable4 FINDING 2). arMu guards the pending queue; the
+	// writer takes neither db.Lock nor db.wgMutex, so the archive path stays off
+	// the exclusive db lock exactly as before (bugfix 260727-2 part A).
+	arMu         sync.Mutex
+	arPending    []*archiveOp  // archives waiting to be folded into the next transaction
+	arSignal     chan struct{} // buffered(1) kick: archives are pending
+	arStop       chan struct{} // closed by close() to stop the writer after a final drain
+	arWriterDone chan struct{} // closed by the writer when it has fully stopped
+	arStopped    bool          // guarded by arMu: the writer will drain no more
+	// arFold is what the archive writer's folding actually achieved, summarised
+	// to the log once per arFoldInterval (see archivefold.go). Atomics only: it
+	// adds no lock to the archive path and no behaviour depends on it.
+	arFold archiveFoldStats
+	// arFoldInterval is this db's own copy of archiveFoldReportInterval, taken
+	// here by initDB so the reporter goroutine only reads a value its own db
+	// owns. The reporter is deliberately not joined on close (see
+	// stopArchiveFoldReporter), so a read of the package var on that goroutine
+	// has no happens-before edge with the next test that shortens it, which is
+	// a -race failure.
+	arFoldInterval time.Duration
+	arFoldStop     chan struct{} // closed by close() to stop the fold reporter
+	// New adds are SYNCHRONOUS too - the client's add RPC blocks until its jobs
+	// are durable - and are persisted by their own single coalescing writer
+	// (newJobsWriter), for the same reason the archives have one: db.bolt.Batch
+	// detaches its current batch the instant one STARTS and arms a fresh
+	// MaxBatchDelay timer, so on the production-shaped database, where a commit
+	// costs 50-120ms whatever it carries, adds arriving during a commit each got a
+	// transaction of their own and queued on bolt's single write lock. Live
+	// production (2026-08-27) measured 763 goroutines parked in DB.Batch against
+	// 573 transactions queued in beginRWTx, for a MEDIAN single-job add of 12.8s.
+	// bbolt coalesces WITHIN a 10ms window but never ACROSS a commit, which is the
+	// wrong way round when a commit is an order of magnitude longer than the
+	// window; this writer coalesces across the commit instead, so whatever arrives
+	// while one transaction is committing rides in the next one. The fold each
+	// transaction takes is bounded (see newJobsFoldMaxBytes), so a deep queue
+	// cannot turn into unbounded dirty-page memory. njMu guards the pending queue;
+	// the writer takes neither db.Lock nor db.wgMutex.
+	njMu         sync.Mutex
+	njPending    []*newJobsOp  // adds waiting to be folded into the next transaction
+	njSignal     chan struct{} // buffered(1) kick: adds are pending
+	njStop       chan struct{} // closed by close() to stop the writer after a final drain
+	njWriterDone chan struct{} // closed by the writer when it has fully stopped
+	njStopped    bool          // guarded by njMu: the writer will drain no more
+	// backupMu guards the backup-state fields below (backingUp, backupFinal,
+	// backupQueued, backupStopped, slowBackups, backupLast, backupWait), keeping
+	// backup coordination off the exclusive db RWMutex so the archive/exit hot
+	// path never contends with it. backupDirty is lock-free (set by every
+	// completion, consumed by the backup ticker).
+	backupMu       sync.Mutex
+	backupDirty    atomic.Bool
 	backingUp      bool
 	backupFinal    bool
 	backupQueued   bool
+	backupStopped  bool // set by close() so no further periodic backup starts
 	backupsEnabled bool
 	s3accessor     *muxfys.S3Accessor
 	closed         bool
@@ -358,6 +877,79 @@ type db struct {
 	upgradedOnOpen bool
 	recSecRound    int // rounding (secs) for recommended reserve times; from the server's timings
 	recMBRound     int // rounding (MBs) for recommended memory/disk; from the server's timings
+}
+
+// backupCopyWriter streams a consistent DB backup copy to f, forcing writeback of
+// the copy every syncEvery bytes via pace(). Without this the copy's writes
+// accumulate as gigabytes of dirty (e.g. NFS) pages that starve a concurrent
+// foreground archive's fdatasync, freezing the manager for the copy's duration
+// (the periodic full-file backup stall).
+type backupCopyWriter struct {
+	f            *os.File
+	written      int64
+	sinceSync    int64
+	syncedOffset int64
+	prevOffset   int64 // previous paced chunk (SFR pipeline: one chunk behind)
+	prevLength   int64
+	syncEvery    int64
+}
+
+// Write streams p to the backup file, pacing writeback every syncEvery bytes. It
+// splits p into sub-writes that each land on a syncEvery boundary, so a single
+// write larger than syncEvery (tx.WriteTo can hand us one) still paces once per
+// interval instead of accumulating an unbounded dirty-page backlog behind one late
+// pace. It returns the bytes consumed from p and the first error encountered.
+func (w *backupCopyWriter) Write(p []byte) (int, error) {
+	if w.syncEvery <= 0 {
+		n, err := w.f.Write(p)
+		w.written += int64(n)
+
+		return n, err
+	}
+
+	var total int
+
+	for len(p) > 0 {
+		n, err := w.writePacedChunk(p)
+		total += n
+		p = p[n:]
+
+		if err != nil {
+			return total, err
+		}
+	}
+
+	return total, nil
+}
+
+// copyBackup writes a consistent copy of the DB (via a read tx) to path. It always
+// streams the copy through a backupCopyWriter that paces writeback every
+// backupCopySyncBytes, then fsyncs for durability. This produces the same file
+// tx.CopyFile would, but without letting the copy's dirty pages accumulate and
+// stall concurrent foreground commits.
+func (db *db) copyBackup(tx *bolt.Tx, path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, dbFilePermission)
+	if err != nil {
+		return err
+	}
+
+	w := &backupCopyWriter{
+		f:         f,
+		syncEvery: backupCopySyncBytes,
+	}
+
+	_, werr := tx.WriteTo(w)
+	if werr == nil {
+		werr = f.Sync()
+	}
+
+	cerr := f.Close()
+
+	if werr != nil {
+		return werr
+	}
+
+	return cerr
 }
 
 // initDB opens/creates our database and sets things up for use. If dbFile
@@ -374,6 +966,14 @@ type db struct {
 //
 //nolint:lll,gocognit,gocyclo,cyclop,funlen,maintidx,nestif // entry point: sequential fallible db open/recovery
 func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB, forceBackups bool) (*db, string, error) {
+	// the manager is unreachable for the whole of this and the recovery phases
+	// that follow it, so each phase reports its own elapsed time at warn, where
+	// the default log level shows it and an operator sizing the startup window
+	// can see where the time went (spec E9). initDB's own cost is dominated by
+	// opening and mmapping the file, which at production's multi-GB size is the
+	// bulk of "process start to first log line".
+	initStarted := time.Now()
+
 	var backupsEnabled bool
 
 	var accessor *muxfys.S3Accessor
@@ -453,7 +1053,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 	)
 	if _, err = os.Stat(dbFile); os.IsNotExist(err) {
 		if _, err = os.Stat(dbBkFile); os.IsNotExist(err) {
-			boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
+			boltdb, err = openManagerBolt(dbFile)
 			msg = "created new empty db file " + dbFile
 		} else {
 			err = copyFile(dbBkFile, dbFile)
@@ -461,15 +1061,26 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 				return nil, msg, err
 			}
 
-			boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
+			boltdb, err = openManagerBolt(dbFile)
 			msg = "recreated missing db file " + dbFile + " from backup file " + dbBkFile
 			openedExistingDB = true
 		}
 	} else {
 		openedExistingDB = true
 
-		boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
+		boltdb, err = openManagerBolt(dbFile)
 		if err != nil {
+			// a lock timeout means another wr manager is running, NOT that the
+			// file is corrupt, and it must never reach the restore path below:
+			// that path treats any open error as "corrupt (?) db file", so it
+			// would unlink the live database out from under the running manager
+			// (which keeps writing to a deleted inode and loses everything at
+			// exit) and come up as a second live manager on a stale backup, on a
+			// fresh inode so the flock protects nothing (spec E7).
+			if errors.Is(err, berrors.ErrTimeout) {
+				return nil, msg, fmt.Errorf("%w: %s", ErrDBLocked, dbFile)
+			}
+
 			// try the backup
 			bkPath := dbBkFile
 			if accessor != nil {
@@ -493,7 +1104,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 			}
 
 			if _, errbk := os.Stat(bkPath); errbk == nil {
-				backupDB, errbk := bolt.Open(bkPath, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
+				backupDB, errbk := openManagerBolt(bkPath)
 				if errbk == nil {
 					msg = fmt.Sprintf("tried to recreate corrupt (?) db file %s from backup file %s "+
 						"(error with original db file was: %s)", dbFile, dbBkFile, err)
@@ -513,7 +1124,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 						return nil, msg, err
 					}
 
-					boltdb, err = bolt.Open(dbFile, dbFilePermission, &bolt.Options{FreelistType: bolt.FreelistMapType})
+					boltdb, err = openManagerBolt(dbFile)
 					msg = fmt.Sprintf("recreated corrupt (?) db file %s from backup file %s "+
 						"(error with original db file was: %s)", dbFile, dbBkFile, origerr)
 				}
@@ -567,7 +1178,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		}
 
 		if openedExistingDB && !hadDepGroups {
-			upgrade.startPhase("rebuild dep-group index", "rebuilding database dependency-group index")
+			upgrade.startPhase(internal.DBUpgradeDepGroupIndexState, "rebuilding database dependency-group index")
 
 			errf = rebuildDepGroups(tx, upgrade)
 			if errf != nil {
@@ -588,7 +1199,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		}
 
 		if openedExistingDB && !hadJobLookupEntries {
-			upgrade.startPhase("rebuild job lookup index", "rebuilding database job lookup index")
+			upgrade.startPhase(internal.DBUpgradeJobLookupState, "rebuilding database job lookup index")
 
 			errf = rebuildJobLookupEntries(tx, upgrade)
 			if errf != nil {
@@ -637,7 +1248,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		}
 
 		if upgrade.active() {
-			upgrade.startPhase("commit database upgrade", "committing database upgrade")
+			upgrade.startPhase(internal.DBUpgradeCommitState, "committing database upgrade")
 		}
 
 		return nil
@@ -665,10 +1276,35 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		backupNotification: make(chan bool),
 		backupWait:         minimumTimeBetweenBackups,
 		backupStopWait:     make(chan bool),
+		backupTickerStop:   make(chan struct{}),
 		s3accessor:         accessor,
 		wg:                 waitgroup.New(),
+		beChanges:          make(map[string][]byte),
+		beSignal:           make(chan struct{}, 1),
+		beStop:             make(chan struct{}),
+		beWriterDone:       make(chan struct{}),
+		arSignal:           make(chan struct{}, 1),
+		arStop:             make(chan struct{}),
+		arWriterDone:       make(chan struct{}),
+		arFoldInterval:     archiveFoldReportInterval,
+		arFoldStop:         make(chan struct{}),
+		njSignal:           make(chan struct{}, 1),
+		njStop:             make(chan struct{}),
+		njWriterDone:       make(chan struct{}),
 		upgradedOnOpen:     upgradedOnOpen,
 	}
+
+	go dbstruct.bestEffortWriter(ctx)
+	go dbstruct.archiveWriter(ctx)
+	go dbstruct.newJobsWriter(ctx)
+	go dbstruct.archiveFoldReporter(ctx)
+
+	if backupsEnabled {
+		go dbstruct.backupTicker(ctx)
+	}
+
+	clog.Warn(ctx, "recovering: opened database", "db", dbFile,
+		"elapsed", time.Since(initStarted).Round(time.Millisecond))
 
 	return dbstruct, msg, err
 }
@@ -696,8 +1332,22 @@ func (db *db) setBatchTuning(delay time.Duration, size int) {
 // database; any existing entry is removed and the name is returned in the
 // removed slice.
 func (db *db) storeLimitGroups(limitGroups map[string]*limiter.GroupData) (changed, removed []string, err error) {
+	var writeNeeded bool
+
+	changed, removed, writeNeeded, err = db.planLimitGroups(limitGroups)
+	if err != nil || !writeNeeded {
+		return changed, removed, err
+	}
+
 	err = db.bolt.Batch(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketLGs)
+
+		// classified again in here, discarding what the read transaction found:
+		// only the write transaction's view of the bucket is authoritative.
+		// Assigning rather than appending also keeps every group reported once if
+		// bbolt re-runs this function, which it does to the surviving members of a
+		// batch when one member fails.
+		changed, removed = nil, nil
 
 		for group, limitG := range limitGroups {
 			outcome, errs := storeLimitGroup(b, group, limitG)
@@ -705,13 +1355,7 @@ func (db *db) storeLimitGroups(limitGroups map[string]*limiter.GroupData) (chang
 				return errs
 			}
 
-			switch outcome {
-			case limitGroupRemoved:
-				removed = append(removed, group)
-			case limitGroupChanged:
-				changed = append(changed, group)
-			case limitGroupUnchanged:
-			}
+			changed, removed = recordLimitGroupOutcome(outcome, group, changed, removed)
 		}
 
 		return nil
@@ -724,33 +1368,71 @@ func (db *db) storeLimitGroups(limitGroups map[string]*limiter.GroupData) (chang
 type limitGroupOutcome int
 
 // storeLimitGroup stores (or deletes) a single limit group in the given bucket,
-// reporting what it did.
+// reporting what it did. b must come from a write transaction.
 func storeLimitGroup(b *bolt.Bucket, group string, limitG *limiter.GroupData) (limitGroupOutcome, error) {
-	if !limitG.IsCount() {
-		return limitGroupRemoved, nil
+	outcome, write := planLimitGroup(b, group, limitG)
+
+	var err error
+
+	switch write {
+	case limitGroupWritePut:
+		err = putLimitGroup(b, []byte(group), limitG.Limit())
+	case limitGroupWriteDelete:
+		err = b.Delete([]byte(group))
+	case limitGroupWriteNone:
 	}
 
-	limit := limitG.Limit()
-	key := []byte(group)
-	existing := b.Get(key)
-
-	if limit < 0 {
-		return deleteLimitGroup(b, key, existing)
-	}
-
-	if existing != nil && binary.BigEndian.Uint64(existing) == uint64(limit) {
-		return limitGroupUnchanged, nil
-	}
-
-	if err := putLimitGroup(b, key, limit); err != nil {
+	if err != nil {
 		return limitGroupUnchanged, err
 	}
 
-	if existing != nil {
-		return limitGroupChanged, nil
+	return outcome, nil
+}
+
+// recordLimitGroupOutcome appends group to changed or removed as its outcome
+// requires, returning both slices.
+func recordLimitGroupOutcome(outcome limitGroupOutcome, group string,
+	changed, removed []string,
+) ([]string, []string) {
+	switch outcome {
+	case limitGroupRemoved:
+		removed = append(removed, group)
+	case limitGroupChanged:
+		changed = append(changed, group)
+	case limitGroupUnchanged:
 	}
 
-	return limitGroupUnchanged, nil
+	return changed, removed
+}
+
+// planLimitGroups classifies limitGroups in a read transaction, returning what
+// storeLimitGroups' write transaction would report for them, and whether any of
+// them actually needs a bucket write. A read transaction fsyncs nothing, while
+// bolt's Commit has no early-out: it always rewrites the freelist page and
+// fsyncs twice, even for a transaction that wrote nothing.
+func (db *db) planLimitGroups(limitGroups map[string]*limiter.GroupData) (
+	changed, removed []string, writeNeeded bool, err error,
+) {
+	if len(limitGroups) == 0 {
+		return nil, nil, false, nil
+	}
+
+	err = db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketLGs)
+
+		for group, limitG := range limitGroups {
+			outcome, write := planLimitGroup(b, group, limitG)
+			if write != limitGroupWriteNone {
+				writeNeeded = true
+			}
+
+			changed, removed = recordLimitGroupOutcome(outcome, group, changed, removed)
+		}
+
+		return nil
+	})
+
+	return changed, removed, writeNeeded, err
 }
 
 // retrieveCompleteJobsRecent returns archived jobs whose end time is at or past
@@ -814,6 +1496,18 @@ func endTimeSeekKey(cutoff time.Time) []byte {
 	return endTimeToBytes(cutoff.UnixNano())
 }
 
+// archiveTxObserver, when non-nil, is called at the start of every archive's
+// transactional work with the id of the write transaction it is being applied in
+// and the job key being archived. It is nil in production (a single nil compare
+// per archive) and affects no behaviour: it is INERT observability in the style
+// of Job.derivations, and exists so the reliable4 coalescing tests can count how
+// many SEPARATE write transactions M concurrent archives cost (bolt's Tx.ID is
+// unique per write transaction), which is the invariant the coalescing archive
+// writer exists to hold.
+//
+//nolint:gochecknoglobals // prod-inert test seam, like backupPaceHook above.
+var archiveTxObserver func(txID int, key []byte)
+
 // archiveJobTx is the transactional part of archiveJob: it moves the job from
 // the live bucket to the complete bucket, removes its std buckets, records its
 // resource-usage stats, updates its repgroup end time and records the job's end
@@ -821,6 +1515,10 @@ func endTimeSeekKey(cutoff time.Time) []byte {
 // before the complete-record Put because it recovers the job's prior end time
 // from that record to drop any stale forward index entry.
 func (db *db) archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) error {
+	if archiveTxObserver != nil {
+		archiveTxObserver(tx.ID(), key)
+	}
+
 	for _, bucket := range [][]byte{bucketStdO, bucketStdE, bucketJobsLive} {
 		if err := tx.Bucket(bucket).Delete(key); err != nil {
 			return err
@@ -930,25 +1628,825 @@ func (db *db) decodeJob(encoded []byte) (*Job, error) {
 	return job, nil
 }
 
-// deleteLimitGroup deletes a limit group's stored value if it had one.
-func deleteLimitGroup(b *bolt.Bucket, key, existing []byte) (limitGroupOutcome, error) {
-	if existing == nil {
-		return limitGroupUnchanged, nil
-	}
+// bestEffortWriter is the single long-lived goroutine that persists all queued
+// best-effort change/exit updates. Each wake drains everything currently pending
+// into ONE write transaction, so a mass state-change burst can neither spawn an
+// unbounded number of write goroutines nor collapse into thousands of tiny
+// fsync'd txns that starve the synchronous archive path (the reliable4 freeze).
+// Started by initDB; stopped, after a final drain, by close() via
+// stopBestEffortWriter.
+func (db *db) bestEffortWriter(ctx context.Context) {
+	defer close(db.beWriterDone)
+	defer internal.LogPanic(ctx, "jobqueue database best-effort writer", true)
 
-	if err := b.Delete(key); err != nil {
-		return limitGroupUnchanged, err
-	}
+	for {
+		select {
+		case <-db.beStop:
+			db.drainBestEffort(ctx)
 
-	return limitGroupRemoved, nil
+			return
+		case <-db.beSignal:
+			db.drainBestEffort(ctx)
+		}
+	}
 }
 
+// kickBestEffortWriter wakes the writer to drain pending work. beSignal is
+// buffered(1) so this never blocks the caller (which may hold db.Lock/wgMutex)
+// and coalesced kicks are harmless: one drain persists everything pending.
+func (db *db) kickBestEffortWriter() {
+	select {
+	case db.beSignal <- struct{}{}:
+	default:
+	}
+}
+
+// drainBestEffort persists every currently-pending best-effort write in a single
+// transaction, then releases the batch's wg/exit tracking. Best-effort: a write
+// error is logged, not returned.
+func (db *db) drainBestEffort(ctx context.Context) {
+	batch := db.swapBestEffort()
+	if len(batch.wgkeys) == 0 {
+		return
+	}
+
+	defer db.doneBestEffort(batch)
+
+	if err := db.bolt.Update(batch.apply); err != nil {
+		clog.Error(ctx, "Database best-effort job update failed", "err", err)
+
+		return
+	}
+
+	// Only change-updates mark the db dirty for backup, exactly as the pre-fix
+	// per-path code did (launchJobChangeUpdate set it; launchJobExitUpdate did
+	// not); a periodic backup may lag the last exit-only writes, which is fine for
+	// the DR snapshot (see bugfix 260727-2).
+	if len(batch.changes) > 0 {
+		db.backupDirty.Store(true)
+	}
+}
+
+// swapBestEffort atomically takes ownership of all currently-pending best-effort
+// work and resets the shared structures, so enqueuers keep appending (never
+// blocking) while the writer persists the snapshot.
+func (db *db) swapBestEffort() beBatch {
+	db.beMu.Lock()
+	defer db.beMu.Unlock()
+
+	batch := beBatch{changes: db.beChanges, exits: db.beExits, wgkeys: db.beWGKeys}
+	db.beChanges = make(map[string][]byte)
+	db.beExits = nil
+	db.beWGKeys = nil
+
+	return batch
+}
+
+// doneBestEffort releases a drained batch's db.wg tracking and decrements the
+// in-progress exit counter. It is deferred so it runs even if the write panicked
+// or errored, so close()'s wg.Wait and waitForJobExitUpdates can never hang.
+func (db *db) doneBestEffort(batch beBatch) {
+	for _, wgk := range batch.wgkeys {
+		db.wg.Done(wgk)
+	}
+
+	if len(batch.exits) > 0 {
+		db.updatingAfterJobExit.Add(-int64(len(batch.exits)))
+	}
+}
+
+// stopBestEffortWriter tells the writer to do a final drain and exit, then waits
+// for it. Called once from finaliseBackup (close()), before the wg drain and
+// final backup, so no queued change/exit write is lost on shutdown.
+func (db *db) stopBestEffortWriter() {
+	close(db.beStop)
+	<-db.beWriterDone
+}
+
+// archiveOp is one caller's pending archive, waiting for the coalescing archive
+// writer to persist it and hand back its own outcome.
+type archiveOp struct {
+	key     []byte
+	encoded []byte
+	job     *Job
+	result  chan error // buffered(1): this caller's individual reply
+	// queued is when the caller offered this archive to the writer, so the
+	// periodic fold summary can report how long it then waited to be picked up
+	// (see archivefold.go). Set by archiveJob before enqueuing, so the wait
+	// includes acquiring arMu.
+	queued  time.Time
+	replied bool // writer-only, so reply() is idempotent
+}
+
+// reply gives this archive's own outcome to its waiting caller, at most once.
+// result is buffered and never closed, so this neither blocks the writer nor can
+// ever send on a closed channel.
+func (op *archiveOp) reply(err error) {
+	if op.replied {
+		return
+	}
+
+	op.replied = true
+	op.result <- err
+}
+
+// archiveWriter is the single long-lived goroutine that persists archives. Each
+// wake folds EVERY currently-pending archive into ONE write transaction and then
+// replies to each waiter individually, so a deep archive queue drains in one
+// commit rather than one commit per job (see the arMu comment on the db struct for
+// the production failure this exists to prevent). Started by initDB; stopped,
+// after a final drain, by close() via stopArchiveWriter.
+func (db *db) archiveWriter(ctx context.Context) {
+	defer close(db.arWriterDone)
+	defer db.failPendingArchives()
+	defer internal.LogPanic(ctx, "jobqueue database archive writer", true)
+
+	for {
+		select {
+		case <-db.arStop:
+			db.drainArchives(true)
+
+			return
+		case <-db.arSignal:
+			db.drainArchives(false)
+		}
+	}
+}
+
+// enqueueArchive queues op for the archive writer and kicks it. It reports false
+// if the writer has already made its final drain, so the caller is told the
+// database is closed instead of waiting for a reply that can never come. arSignal
+// is buffered(1), so the kick never blocks and coalesced kicks are harmless: one
+// drain persists everything pending.
+func (db *db) enqueueArchive(op *archiveOp) bool {
+	db.arMu.Lock()
+
+	if db.arStopped {
+		db.arMu.Unlock()
+
+		return false
+	}
+
+	db.arPending = append(db.arPending, op)
+	db.arMu.Unlock()
+
+	select {
+	case db.arSignal <- struct{}{}:
+	default:
+	}
+
+	return true
+}
+
+// swapArchives takes ownership of every currently-pending archive and resets the
+// queue, so callers keep enqueuing (never blocking) while the writer persists the
+// snapshot. When final is true it also latches the queue shut in the same critical
+// section, so an archive submitted after the last drain is rejected rather than
+// left waiting forever.
+func (db *db) swapArchives(final bool) []*archiveOp {
+	db.arMu.Lock()
+	defer db.arMu.Unlock()
+
+	ops := db.arPending
+	db.arPending = nil
+
+	if final {
+		db.arStopped = true
+	}
+
+	return ops
+}
+
+// drainArchives persists every currently-pending archive, all of them in ONE write
+// transaction, and replies to each waiter with its own outcome.
+func (db *db) drainArchives(final bool) {
+	ops := db.swapArchives(final)
+	if len(ops) == 0 {
+		return
+	}
+
+	// how long these callers waited to be picked up, recorded once per archive
+	// here rather than per transaction, so a per-job retry cannot double-count it
+	// (see archivefold.go).
+	db.arFold.observeWaits(ops, time.Now())
+
+	applyFolded(ops, db.archiveTx)
+
+	// mark the db dirty for the backup ticker exactly as the pre-fix per-archive
+	// path did: unconditionally, after the write attempt.
+	db.backupDirty.Store(true)
+}
+
+// foldedOp is one caller's pending write, waiting for a coalescing writer to
+// persist it and hand back that caller's own outcome. Both synchronous coalescing
+// writers' ops (archiveOp, newJobsOp) are one.
+type foldedOp interface {
+	reply(err error)
+}
+
+// applyFolded folds ops into ONE write transaction, via applyTx, and replies to
+// each waiter individually. It mirrors bbolt.Batch's per-caller error semantics,
+// so one bad op cannot fail its transaction-mates: an op that fails the shared
+// transaction is taken out of it and the rest are retried together, then each
+// removed op is re-run in a transaction of its own so its caller gets its own
+// error. The loop always terminates because every pass either replies to
+// everything left or removes one op.
+//
+// applyTx must report a failing op's index through its second argument (and
+// nothing at all when that argument is nil), so this can tell "the shared
+// transaction failed because of one op" from "it failed as a whole".
+//
+// This is shared by the archive and new jobs writers rather than written twice
+// because the error isolation is the subtle part of both - the swap-remove, the
+// solo re-runs, and the termination argument above - and a third coalescing
+// writer would otherwise copy it a third time.
+func applyFolded[T foldedOp](ops []T, applyTx func(ops []T, failed *int) error) {
+	var solo []T
+
+	for len(ops) > 0 {
+		failed := -1
+
+		err := applyTx(ops, &failed)
+		if failed >= 0 {
+			solo = append(solo, ops[failed])
+			ops[failed], ops = ops[len(ops)-1], ops[:len(ops)-1]
+
+			continue
+		}
+
+		for _, op := range ops {
+			op.reply(err)
+		}
+
+		break
+	}
+
+	for _, op := range solo {
+		op.reply(applyTx([]T{op}, nil))
+	}
+}
+
+// archiveTx applies every op's archive within one write transaction. If an op's
+// own work fails, its index is recorded in failed (when non-nil) and the whole
+// transaction is rolled back, so the caller can take that op out and retry the
+// rest.
+func (db *db) archiveTx(ops []*archiveOp, failed *int) error {
+	started := time.Now()
+
+	var begun time.Time
+
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		begun = time.Now()
+
+		for i, op := range ops {
+			if err := db.applyArchiveOp(tx, op); err != nil {
+				if failed != nil {
+					*failed = i
+				}
+
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	// the fold this transaction achieved, how long it took in total, and how much
+	// of that was spent acquiring bolt's single write lock before the transaction
+	// body ran - so a concurrent add's transactions starving the archive writer is
+	// distinguishable from this transaction's own commit being expensive
+	// (archivefold.go).
+	db.arFold.observeTx(len(ops), time.Since(started), begun.Sub(started))
+
+	return err
+}
+
+// applyArchiveOp applies one archive within tx, turning a panic into that
+// archive's own error. bbolt.Batch did this (safelyCall) and db.bolt.Update does
+// not, so without it a single malformed job would take the whole manager down
+// instead of failing one archive; the transaction is rolled back either way.
+func (db *db) applyArchiveOp(tx *bolt.Tx, op *archiveOp) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("%w: %v", errArchivePanic, p)
+		}
+	}()
+
+	return db.archiveJobTx(tx, op.key, op.encoded, op.job)
+}
+
+// failPendingArchives latches the archive queue shut and fails anything still in
+// it. The normal shutdown drain (drainArchives(true)) leaves nothing to do here;
+// this is the safety net for a writer that stopped without it, so no archive
+// caller can be left waiting forever.
+func (db *db) failPendingArchives() {
+	for _, op := range db.swapArchives(true) {
+		op.reply(errDBClosed)
+	}
+}
+
+// stopArchiveWriter tells the archive writer to do a final drain and exit, then
+// waits for it. Called once from finaliseBackup (close()), before the wg drain and
+// final backup, so no queued archive is lost on shutdown.
+func (db *db) stopArchiveWriter() {
+	close(db.arStop)
+	<-db.arWriterDone
+}
+
+const (
+	// newJobsFoldMaxBytes bounds how many encoded key and value bytes the adds
+	// folded into ONE write transaction may carry. bbolt holds every page a write
+	// transaction dirties in memory until it commits, so an unbounded fold makes
+	// the writer's peak memory a function of how deep the add queue got. That
+	// matters because an add stays on the folded path until storesNeedChunking
+	// splits it, which allows nearly storeBatchGranularity items per bucket, and
+	// production's real jobs carry ~25KB commands: a handful of concurrent
+	// large-but-unchunked adds would dirty gigabytes. It is also self-amplifying,
+	// since a longer commit gives the next fold longer to grow.
+	//
+	// 32MB sits well above the case this writer exists for and well below anything
+	// that threatens the manager. The measured 700-concurrent-single-job-add storm
+	// folds ~1,750 puts of ~1.5KB, about 2.6MB, so that whole storm still commits
+	// in ONE transaction with an order of magnitude of headroom. It is also a
+	// couple of times the ~13.5MB freelist that production's 15GB database rewrites
+	// on every commit, so the fixed per-commit cost cannot come to dominate the
+	// useful bytes a bounded transaction carries: at production's ~25KB commands a
+	// full fold is still ~1,300 jobs.
+	newJobsFoldMaxBytes = 32 * 1024 * 1024
+
+	// newJobsFoldMaxPuts bounds how many Puts those same folded adds may make,
+	// because bytes alone do not bound the work: a lookup-bucket item is a key with
+	// no value at all, so a flood of them costs B+tree splits and rebalances (and a
+	// page dirtied per touched node) while barely moving the byte budget.
+	//
+	// 50,000 is ~20,000 folded single-job adds, each of which is only a couple of
+	// puts, so it is more than an order of magnitude past the 700-client storm: in
+	// practice newJobsFoldMaxBytes governs the large-add case and this bound only
+	// catches a pathological tiny-put flood.
+	newJobsFoldMaxPuts = 50000
+)
+
+// newJobsOp is one add's prepared bucket stores, waiting for the coalescing new
+// jobs writer to persist them and hand back its own outcome.
+type newJobsOp struct {
+	stores []newJobStore
+	result chan error // buffered(1): this caller's individual reply
+	// foldBytes and foldPuts are what this add costs the fold budget: the encoded
+	// key and value bytes it will dirty, and the number of Puts it will make. They
+	// are measured once, where the op is built and outside every lock, because
+	// swapNewJobs spends the budget while holding njMu and so must not re-walk
+	// every pending add's stores on every transaction.
+	foldBytes int
+	foldPuts  int
+	replied   bool // writer-only, so reply() is idempotent
+}
+
+// reply gives this add's own outcome to its waiting caller, at most once. result
+// is buffered and never closed, so this neither blocks the writer nor can ever
+// send on a closed channel.
+func (op *newJobsOp) reply(err error) {
+	if op.replied {
+		return
+	}
+
+	op.replied = true
+	op.result <- err
+}
+
+// newJobsFoldCost measures what an add costs the fold budget. Keys count as well
+// as values because they occupy the same dirtied pages, and an item destined for
+// an indexed lookup bucket counts twice: putLookups mirrors each of those into
+// bucketJobLookupEntries, so it is two keyed puts rather than one (see
+// putReverseLookupEntry). That mirror's key is somewhat longer than the lookup key
+// it derives from, which this ignores; a budget only has to track the dominant
+// term, which is the encoded job payload.
+func newJobsFoldCost(stores []newJobStore) (foldBytes, foldPuts int) {
+	for _, s := range stores {
+		perItem := 1
+		if isIndexedLookupBucket(s.bucket) {
+			perItem = 2
+		}
+
+		for _, doublet := range s.encodes {
+			foldBytes += perItem * (len(doublet[0]) + len(doublet[1]))
+			foldPuts += perItem
+		}
+	}
+
+	return foldBytes, foldPuts
+}
+
+// splitNewJobsFold divides the pending adds into the leading run one write
+// transaction can afford (newJobsFoldMaxBytes, newJobsFoldMaxPuts) and the
+// remainder to leave pending, spending the budget in arrival order so no add is
+// reordered behind a later one. The first op is always taken even if it alone
+// exceeds the budget, so an add bigger than the whole budget makes progress in a
+// transaction of its own instead of being starved forever.
+//
+// The remainder is copied to a fresh slice rather than resliced, so the taken ops
+// (up to a budget's worth of encoded bytes) become garbage the moment they are
+// persisted, instead of staying reachable through the pending queue's backing
+// array - which would hand back the memory the budget exists to bound.
+func splitNewJobsFold(pending []*newJobsOp) (fold, remainder []*newJobsOp) {
+	foldBytes, foldPuts := 0, 0
+
+	for i, op := range pending {
+		if i > 0 && overNewJobsFoldBudget(foldBytes+op.foldBytes, foldPuts+op.foldPuts) {
+			return pending[:i], append([]*newJobsOp(nil), pending[i:]...)
+		}
+
+		foldBytes += op.foldBytes
+		foldPuts += op.foldPuts
+	}
+
+	return pending, nil
+}
+
+// overNewJobsFoldBudget says whether a fold carrying these bytes and puts would
+// exceed what one write transaction is allowed to hold dirty.
+func overNewJobsFoldBudget(foldBytes, foldPuts int) bool {
+	return foldBytes > newJobsFoldMaxBytes || foldPuts > newJobsFoldMaxPuts
+}
+
+// newJobsWriter is the single long-lived goroutine that persists new jobs. Each
+// wake folds as many currently-pending adds as the fold budget allows into ONE
+// write transaction and then replies to each of their waiters individually, so
+// adds that arrive while a commit is in flight cost one shared commit rather than
+// one commit each (see the njMu comment on the db struct for the production
+// failure this exists to prevent, and newJobsFoldMaxBytes for why the fold is
+// bounded). A wake that leaves adds pending re-arms njSignal, so the next
+// transaction starts at once rather than waiting for another arrival. Started by
+// initDB; stopped, after a final drain, by close() via stopNewJobsWriter.
+func (db *db) newJobsWriter(ctx context.Context) {
+	defer close(db.njWriterDone)
+	defer db.failPendingNewJobs()
+	defer internal.LogPanic(ctx, "jobqueue database new jobs writer", true)
+
+	for {
+		select {
+		case <-db.njStop:
+			db.drainNewJobs(true)
+
+			return
+		case <-db.njSignal:
+			db.drainNewJobs(false)
+		}
+	}
+}
+
+// enqueueNewJobs queues op for the new jobs writer and kicks it. It reports false
+// if the writer has already made its final drain, so the caller is told the
+// database is closed instead of waiting for a reply that can never come.
+func (db *db) enqueueNewJobs(op *newJobsOp) bool {
+	db.njMu.Lock()
+
+	if db.njStopped {
+		db.njMu.Unlock()
+
+		return false
+	}
+
+	db.njPending = append(db.njPending, op)
+	db.njMu.Unlock()
+
+	db.kickNewJobsWriter()
+
+	return true
+}
+
+// kickNewJobsWriter tells the new jobs writer that adds are pending. njSignal is
+// buffered(1), so this never blocks (with or without njMu held) and coalesced
+// kicks are harmless: a drain persists everything the budget allows and re-arms
+// the signal for whatever is left.
+func (db *db) kickNewJobsWriter() {
+	select {
+	case db.njSignal <- struct{}{}:
+	default:
+	}
+}
+
+// swapNewJobs takes ownership of as many currently-pending adds as one write
+// transaction can afford and leaves the rest pending, so callers keep enqueuing
+// (never blocking) while the writer persists the snapshot, and the writer's
+// dirty-page memory stays bounded however deep the queue got. If it leaves
+// anything pending it re-arms njSignal, so the writer starts the next transaction
+// immediately instead of waiting for the next arrival; when it leaves nothing the
+// signal stays unarmed, so an empty queue parks the writer rather than spinning
+// it.
+//
+// When final is true it also latches the queue shut in the same critical section,
+// so an add submitted after the last drain is rejected rather than left waiting
+// forever. A final swap is bounded like any other, so its caller must keep
+// swapping until it returns nothing (see drainNewJobs and failPendingNewJobs).
+func (db *db) swapNewJobs(final bool) []*newJobsOp {
+	db.njMu.Lock()
+	defer db.njMu.Unlock()
+
+	if final {
+		db.njStopped = true
+	}
+
+	ops, remaining := splitNewJobsFold(db.njPending)
+	db.njPending = remaining
+
+	if len(remaining) > 0 {
+		db.kickNewJobsWriter()
+	}
+
+	return ops
+}
+
+// drainNewJobs persists currently-pending adds, at most one fold budget's worth
+// per write transaction, and replies to each waiter with its own outcome.
+//
+// A non-final drain does one transaction and returns, having re-armed njSignal if
+// it left anything pending, so the writer gets to check njStop between
+// transactions. A final drain has no later wake to rely on, so it loops until the
+// queue is empty: it persists EVERYTHING pending, in as many transactions as the
+// budget needs, and terminates because the first swap latched the queue shut so
+// nothing new can arrive.
+func (db *db) drainNewJobs(final bool) {
+	for {
+		ops := db.swapNewJobs(final)
+		if len(ops) == 0 {
+			return
+		}
+
+		applyFolded(ops, db.newJobsTx)
+
+		if !final {
+			return
+		}
+	}
+}
+
+// newJobsTx applies every op's bucket puts within one write transaction. If an
+// op's own work fails, its index is recorded in failed (when non-nil) and the
+// whole transaction is rolled back, so the caller can take that op out and retry
+// the rest.
+func (db *db) newJobsTx(ops []*newJobsOp, failed *int) error {
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		for i, op := range ops {
+			if err := db.applyNewJobsOp(tx, op); err != nil {
+				if failed != nil {
+					*failed = i
+				}
+
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
+// applyNewJobsOp applies one add's stores within tx, turning a panic into that
+// add's own error. bbolt.Batch did this (safelyCall) and db.bolt.Update does not,
+// so without it a single malformed job would take the whole manager down instead
+// of failing one add; the transaction is rolled back either way.
+func (db *db) applyNewJobsOp(tx *bolt.Tx, op *newJobsOp) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("%w: %v", errNewJobsPanic, p)
+		}
+	}()
+
+	for _, s := range op.stores {
+		if err = s.put(tx, s.bucket, s.encodes); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// failPendingNewJobs latches the add queue shut and fails anything still in it.
+// The normal shutdown drain (drainNewJobs(true)) leaves nothing to do here; this
+// is the safety net for a writer that stopped without it, so no add caller can be
+// left waiting forever. It loops for the same reason that drain does: each swap
+// takes only a fold budget's worth, and a caller left in the remainder would wait
+// forever.
+func (db *db) failPendingNewJobs() {
+	for {
+		ops := db.swapNewJobs(true)
+		if len(ops) == 0 {
+			return
+		}
+
+		for _, op := range ops {
+			op.reply(errDBClosed)
+		}
+	}
+}
+
+// stopNewJobsWriter tells the new jobs writer to do a final drain and exit, then
+// waits for it. Called once from finaliseBackup (close()), before the wg drain and
+// final backup, so no queued add is lost on shutdown.
+func (db *db) stopNewJobsWriter() {
+	close(db.njStop)
+	<-db.njWriterDone
+}
+
+// retrieveOldestCompleteJobsByRepGroup is retrieveCompleteJobsByRepGroup with the
+// caller's limit pushed down: it walks the same RTK cursor, but decodes only each
+// record's archivedJobFacets, and fully decodes just the oldest-started
+// query.limit(group) of each group. On the production database that is the
+// difference between materialising 2.15M Jobs (a 12.1GB heap excursion) and
+// materialising as many as the request can actually return.
+func (db *db) retrieveOldestCompleteJobsByRepGroup(repgroup string,
+	query completeJobsQuery) (*completeJobsPage, error) {
+	page := &completeJobsPage{
+		fetched: make(map[string]int),
+		counted: make(map[string]int),
+	}
+
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		selected, err := db.selectOldestArchivedJobs(tx, repgroup, query, page.counted)
+		if err != nil {
+			return err
+		}
+
+		return db.decodeArchivedJobs(tx, selected, page)
+	})
+
+	return page, err
+}
+
+// selectOldestArchivedJobs walks repgroup's archived records, counting them per
+// group in counted, and returns the keys of the oldest-started query.limit(group)
+// of each group, oldest-started first overall.
+func (db *db) selectOldestArchivedJobs(tx *bolt.Tx, repgroup string,
+	query completeJobsQuery, counted map[string]int) ([]archivedJobCandidate, error) {
+	newJobBucket := tx.Bucket(bucketJobsLive)
+	completeJobBucket := tx.Bucket(bucketJobsComplete)
+	cursor := tx.Bucket(bucketRTK).Cursor()
+	scan := &archivedScan{
+		query:     query,
+		counted:   counted,
+		selectors: make(map[string]*oldestArchivedJobs),
+		decoder:   codec.NewDecoderBytes(nil, db.ch),
+	}
+
+	prefix := []byte(repgroup + dbDelimiter)
+	for k, _ := cursor.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = cursor.Next() {
+		key := bytes.TrimPrefix(k, prefix)
+
+		encoded := completeJobBucket.Get(key)
+		if len(encoded) == 0 || newJobBucket.Get(key) != nil {
+			continue
+		}
+
+		if err := scan.consider(key, encoded); err != nil {
+			return nil, err
+		}
+	}
+
+	return mergeOldestArchivedJobs(scan.selectors), nil
+}
+
+// mergeOldestArchivedJobs flattens the per-group selections into the single
+// oldest-started-first order retrieveCompleteJobsByRepGroup's caller sorts a
+// RepGroup's whole history into.
+func mergeOldestArchivedJobs(selectors map[string]*oldestArchivedJobs) []archivedJobCandidate {
+	var merged []archivedJobCandidate
+
+	for _, selector := range selectors {
+		merged = append(merged, selector.oldest()...)
+	}
+
+	// NOTE: this cross-group sort is presentation only, and is NOT a protected
+	// guarantee: each selector's output is already oldest-first, and limitJobs
+	// re-groups the page by the same key the selectors are keyed on, so removing
+	// the sort changes no answer. It is here so that a page reads like the
+	// unbounded fetch it stands in for (which sorts the same way), and so that a
+	// future caller of this that does not re-group is not silently handed a
+	// map-ordered list.
+	sort.SliceStable(merged, func(i, j int) bool {
+		return startedBefore(merged[i].start, merged[i].end, merged[j].start, merged[j].end)
+	})
+
+	return merged
+}
+
+// decodeArchivedJobs fully decodes the selected candidates into page.jobs,
+// recording how many of them fell in each group.
+func (db *db) decodeArchivedJobs(tx *bolt.Tx, selected []archivedJobCandidate, page *completeJobsPage) error {
+	newJobBucket := tx.Bucket(bucketJobsLive)
+	completeJobBucket := tx.Bucket(bucketJobsComplete)
+	page.jobs = make([]*Job, 0, len(selected))
+
+	for i := range selected {
+		job, err := db.decodeArchivedJob(completeJobBucket, newJobBucket, selected[i].key)
+		if err != nil {
+			return err
+		}
+
+		if job == nil {
+			// unreachable: selectOldestArchivedJobs applied decodeArchivedJob's two
+			// guards (a non-empty complete record, and no live record under the same
+			// key) to this very key, in this very bolt.View - and a View is a
+			// consistent snapshot, so no writer can have changed either bucket since.
+			// The count is undone rather than merely skipped so that this cannot be
+			// silently WRONG if that ever stops holding: a candidate that yields no
+			// job must leave counted as well as fetched, or the difference between
+			// them would add a phantom to its group's Similar.
+			page.counted[selected[i].group]--
+
+			continue
+		}
+
+		page.jobs = append(page.jobs, job)
+		page.fetched[selected[i].group]++
+	}
+
+	return nil
+}
+
+// newJobStores returns the bucket stores for the data prepareNewJobs produced,
+// in the order they get written.
+func (db *db) newJobStores(encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs sobsd) []newJobStore {
+	stores := []newJobStore{{bucketRTK, rgLookups, db.putLookups}}
+
+	for _, s := range []newJobStore{
+		{bucketRGs, rgs, db.putLookups},
+		{bucketDepGroups, depGroupsSeen, db.putLookups},
+		{bucketRDTK, rdgLookups, db.putLookups},
+	} {
+		if len(s.encodes) > 0 {
+			stores = append(stores, s)
+		}
+	}
+
+	return append(stores, newJobStore{bucketJobsLive, encodedJobs, db.putEncodedJobs})
+}
+
+// storeNewJobDataChunked stores each bucket's data in storeBatched-sized write
+// transactions, for an add too big to put in one.
+func (db *db) storeNewJobDataChunked(stores []newJobStore) error {
+	for _, s := range stores {
+		storer := func(bucket []byte, chunk sobsd) error {
+			return db.bolt.Batch(func(tx *bolt.Tx) error {
+				return s.put(tx, bucket, chunk)
+			})
+		}
+
+		if err := db.storeBatched(s.bucket, s.encodes, storer); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// storesNeedChunking says whether any of the stores holds enough data that
+// storeBatched would split it over more than one write transaction.
+func storesNeedChunking(stores []newJobStore) bool {
+	for _, s := range stores {
+		if !fitsOneBatch(len(s.encodes)) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// fitsOneBatch says whether num items are few enough for storeBatched to store
+// them in a single storer call.
+func fitsOneBatch(num int) bool {
+	return num < batchSizeFor(num)
+}
+
+// dbUpgradeReporter reports a one-off database upgrade (the index rebuilds
+// initDB does the first time it opens a database an older wr wrote) to both the
+// status sidecar `wr manager start` polls and the manager log.
+//
+// Its milestones - the upgrade starting, each phase starting and completing, and
+// the upgrade finishing - are logged at warn, not info, because the log handler
+// the manager hands the server is warn-filtered unless --debug is given
+// (cmd.setupManagerLogging), and the upgrade runs before the manager serves
+// anything: with nothing in the log, a rebuild that takes minutes on a large
+// database is indistinguishable from a hang (.docs/bugfixes/260825-3.md item 2).
+// That is the same reason prior-state recovery's milestones are warns - see
+// recoverPriorJobsAndNote.
+//
+// Per-entry progress stays at info, ie. --debug only, because a real rebuild
+// processes millions of entries and this log has to stay readable (53c323f).
+// Alongside it, at most one "still running" line per dbUpgradeLogInterval is
+// logged at warn, so that a phase long enough to worry an operator visibly moves
+// while the default log stays proportional to the phase's duration rather than
+// to how many entries it processed.
 type dbUpgradeReporter struct {
-	dbFile         string
-	info           func(string, ...any)
-	warn           func(string, ...any)
+	dbFile string
+	info   func(string, ...any)
+	warn   func(string, ...any)
+	// now supplies the time the "still running" rate limit measures, and nothing
+	// else (the sidecar's own pacing keeps its own clock). It is time.Now in
+	// production, and a test seam only so the rate limit can be pinned exactly,
+	// without depending on how long a loaded host takes to run a rebuild.
+	now            func() time.Time
 	startedAt      time.Time
 	lastWrite      time.Time
+	lastLog        time.Time
 	started        bool
 	phaseActive    bool
 	phaseStartedAt time.Time
@@ -973,6 +2471,7 @@ func newDBUpgradeReporter(ctx context.Context, dbFile string) *dbUpgradeReporter
 		dbFile:    dbFile,
 		info:      info,
 		warn:      warn,
+		now:       time.Now,
 		startedAt: time.Now(),
 	}
 }
@@ -988,7 +2487,7 @@ func (r *dbUpgradeReporter) startPhase(state, detail string) {
 
 	if !r.started {
 		r.started = true
-		r.info("database upgrade started", "db", r.dbFile)
+		r.warn("database upgrade started", "db", r.dbFile)
 	}
 
 	r.phaseActive = true
@@ -996,9 +2495,13 @@ func (r *dbUpgradeReporter) startPhase(state, detail string) {
 	r.phaseState = state
 	r.phaseDetail = detail
 	r.phaseProcessed = 0
+	// the phase's own start line is the first thing an operator sees of it, so
+	// the rate limit's interval runs from here: a phase shorter than one interval
+	// says nothing more.
+	r.lastLog = r.now()
 
 	r.writeStatus(state, detail, 0)
-	r.info("database upgrade step started", "state", state, "detail", detail, "processed", 0)
+	r.warn("database upgrade step started", "state", state, "detail", detail, "processed", 0)
 }
 
 func (r *dbUpgradeReporter) progress(state, detail string, processed int) {
@@ -1018,7 +2521,28 @@ func (r *dbUpgradeReporter) writeProgress(state, detail string, processed int) {
 	r.phaseProcessed = processed
 
 	r.writeStatus(state, detail, processed)
+	r.logProgress(state, detail, processed)
+}
+
+// logProgress logs every progress point at info, which only --debug records, and
+// additionally reports at warn, at most once per dbUpgradeLogInterval, that the
+// phase is still running and how far it has got. The warn line is what a default
+// `wr manager start` shows, and it carries its own message so that a default-level
+// log makes plain it is a sample taken every dbUpgradeLogInterval and not one
+// line per progress point (the same reason recovery's heartbeat has its own
+// message - see startRecoveryHeartbeat).
+func (r *dbUpgradeReporter) logProgress(state, detail string, processed int) {
 	r.info("database upgrade progress", "state", state, "detail", detail, "processed", processed)
+
+	now := r.now()
+	if now.Sub(r.lastLog) < dbUpgradeLogInterval {
+		return
+	}
+
+	r.lastLog = now
+
+	r.warn("database upgrade step still running", "state", state, "detail", detail, "processed", processed,
+		"took", time.Since(r.phaseStartedAt))
 }
 
 func (r *dbUpgradeReporter) progressDue(processed int) bool {
@@ -1045,7 +2569,7 @@ func (r *dbUpgradeReporter) completePhase(state, detail string, processed int) {
 	r.phaseProcessed = processed
 
 	r.writeStatus(state, detail, processed)
-	r.info("database upgrade step complete", "state", state, "detail", detail,
+	r.warn("database upgrade step complete", "state", state, "detail", detail,
 		"processed", processed, "took", time.Since(r.phaseStartedAt))
 }
 
@@ -1074,7 +2598,7 @@ func (r *dbUpgradeReporter) finish(upgradeErr error) {
 			"took", time.Since(r.startedAt))
 	} else {
 		r.completePhase(r.phaseState, r.phaseDetail, r.phaseProcessed)
-		r.info("database upgrade complete", "db", r.dbFile, "took", time.Since(r.startedAt))
+		r.warn("database upgrade complete", "db", r.dbFile, "took", time.Since(r.startedAt))
 	}
 
 	if err := internal.RemoveDBUpgradeStatus(r.dbFile); err != nil {
@@ -1087,7 +2611,7 @@ func rebuildDepGroupEntries(depGroupBucket, lookupBucket *bolt.Bucket, progress 
 	err := lookupBucket.ForEach(func(k, _ []byte) error {
 		processed++
 		if progress.progressDue(processed) {
-			progress.progress("rebuild dep-group index",
+			progress.progress(internal.DBUpgradeDepGroupIndexState,
 				fmt.Sprintf("rebuilding database dependency-group index (%d entries processed)", processed),
 				processed)
 		}
@@ -1206,6 +2730,17 @@ func compactBoltInto(dstPath, srcPath string) (err error) {
 	return bolt.Compact(dst, src, compactTxMaxSize)
 }
 
+// openManagerBolt opens one of the manager's BoltDB files, bounding the wait for
+// its file lock at managerDBOpenTimeout so a second manager fails with
+// ErrDBLocked instead of blocking forever and then acquiring the database the
+// instant the winner exits (spec E7).
+func openManagerBolt(path string) (*bolt.DB, error) {
+	return bolt.Open(path, dbFilePermission, &bolt.Options{
+		FreelistType: bolt.FreelistMapType,
+		Timeout:      managerDBOpenTimeout,
+	})
+}
+
 // putLimitGroup stores a non-negative limit for a group.
 func putLimitGroup(b *bolt.Bucket, key []byte, limit int64) error {
 	v := make([]byte, limitGroupBytes)
@@ -1250,115 +2785,97 @@ func (db *db) retrieveLimitGroup(ctx context.Context, group string) *limiter.Gro
 // will be returned in the jobsToUpdate slice: you should use queue methods to
 // update the job in the queue.
 //
+// An add that fails normally stores nothing, since everything goes in one write
+// transaction. Only an add with enough data to need chunking (see
+// storeNewJobData) can leave part of it stored, which is harmless: those jobs
+// do not enter the in-memory queue, the user gets an error and adds them again,
+// and a lookup pointing at a job that was not stored is silently skipped on
+// retrieval.
+//
 // Finally, it triggers a background database backup.
 func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 	jobsToQueue, jobsToUpdate []*Job, alreadyAdded int, err error,
 ) {
-	encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs,
+	encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs,
 		jobsToQueue, jobsToUpdate, alreadyAdded, err := db.prepareNewJobs(jobs, ignoreAdded)
 	if err != nil {
 		return jobsToQueue, jobsToUpdate, alreadyAdded, err
 	}
 
 	if len(encodedJobs) > 0 {
-		err = db.storeNewJobData(ctx, encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs)
+		err = db.storeNewJobData(ctx, encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs)
 	}
 
-	// *** on error, because we were batching, and doing lookups separately to
-	// each other and jobs, we should go through and remove anything we did
-	// manage to add... (but this isn't so critical, since on failure here,
-	// they are not added to the in-memory queue and user gets an error and they
-	// would try to add everything back again; conversely, if we try to retrieve
-	// non-existent jobs based on lookups that shouldn't be there, they are
-	// silently skipped)
-
 	if err == nil && alreadyAdded != len(jobs) {
-		db.backgroundBackup(ctx)
+		db.backupDirty.Store(true)
 	}
 
 	return jobsToQueue, jobsToUpdate, alreadyAdded, err
 }
 
-// batchStore describes one bucket-store to carry out concurrently in
-// storeNewJobData.
-type batchStore struct {
-	label   string
-	bucket  []byte
-	encodes sobsd
-	storer  sobsdStorer
-}
-
-// storeNewJobData concurrently stores the job and lookup data prepared by
-// prepareNewJobs, returning the first error encountered. rgLookups and
-// encodedJobs are always stored; the other lookups only if non-empty.
-func (db *db) storeNewJobData(ctx context.Context, encodedJobs, rgLookups, dgLookups,
+// storeNewJobData stores the job and lookup data prepared by prepareNewJobs.
+// rgLookups and encodedJobs are always stored; the other lookups only if
+// non-empty.
+//
+// It stores them all in ONE write transaction, unless there is enough data that
+// storeBatched would chunk it. Bolt write transactions serialise on a single
+// mutex, so storing the buckets concurrently overlapped no work; it only cost a
+// commit per bucket, and every commit rewrites the freelist page and fsyncs
+// twice. One transaction also means a failure stores nothing, instead of
+// leaving some buckets written and others not.
+//
+// The sorting happens here, OUTSIDE any transaction, and the stores are then
+// handed to the single coalescing newJobsWriter, which folds them in with as many
+// other pending adds as one transaction's budget allows into ONE db.Update and
+// replies here with this add's own outcome. That is what makes concurrent adds
+// share a commit instead of queueing one transaction each on bolt's single write
+// lock; see the njMu comment on the db struct. This call blocks until this add is
+// persisted, exactly as the previous db.bolt.Batch did.
+//
+// Folding does not widen the read-then-write window that prepareNewJobs' own
+// dependency resolution reads in (two adds that are each other's resolution input
+// can each see the other's jobs as not yet stored). That window is this caller's
+// wait for its own commit, and it gets SHORTER: under bbolt.Batch an add's
+// transaction queued behind every other add's transaction on the one write lock
+// (production measured that queue 573 deep), whereas here it waits for at most the
+// commit already in flight.
+func (db *db) storeNewJobData(ctx context.Context, encodedJobs, rgLookups,
 	depGroupsSeen, rdgLookups, rgs sobsd) error {
-	stores := []batchStore{{"rglookups", bucketRTK, rgLookups, db.storeLookups}}
+	// the sorting below used to happen in per-bucket goroutines, which is where
+	// a panic in it was logged and exited on.
+	defer internal.LogPanic(ctx, "jobqueue database storeNewJobs", true)
 
-	for _, s := range []batchStore{
-		{"repGroups", bucketRGs, rgs, db.storeLookups},
-		{"dgLookups", bucketDTK, dgLookups, db.storeLookups},
-		{"depGroupsSeen", bucketDepGroups, depGroupsSeen, db.storeLookups},
-		{"rdgLookups", bucketRDTK, rdgLookups, db.storeLookups},
-	} {
-		if len(s.encodes) > 0 {
-			stores = append(stores, s)
-		}
-	}
+	stores := db.newJobStores(encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs)
 
-	stores = append(stores, batchStore{"encodedJobs", bucketJobsLive, encodedJobs, db.storeEncodedJobs})
-
-	errs := make(chan error, len(stores))
-
-	db.wgMutex.Lock()
 	for _, s := range stores {
-		db.launchBatchStore(ctx, s, errs)
-	}
-	db.wgMutex.Unlock()
-
-	return collectFirstError(errs, len(stores))
-}
-
-// launchBatchStore launches a goroutine that sorts and stores one batchStore,
-// sending the result to errs. Must be called with db.wgMutex held.
-func (db *db) launchBatchStore(ctx context.Context, s batchStore, errs chan<- error) {
-	wgk := db.wg.Add(1)
-
-	go func() {
-		defer internal.LogPanic(ctx, "jobqueue database storeNewJobs "+s.label, true)
-		defer db.wg.Done(wgk)
-
 		sort.Sort(s.encodes)
-
-		errs <- db.storeBatched(s.bucket, s.encodes, s.storer)
-	}()
-}
-
-// collectFirstError reads n results from errs, returning the last non-nil error
-// seen (matching the original storeNewJobs behaviour) and closing errs.
-func collectFirstError(errs chan error, n int) error {
-	var err error
-
-	seen := 0
-
-	for thisErr := range errs {
-		if thisErr != nil {
-			err = thisErr
-		}
-
-		seen++
-		if seen == n {
-			close(errs)
-
-			break
-		}
 	}
 
-	return err
+	// an add too big for one transaction keeps its own chunked path: those are
+	// rare and each of their chunks is already a full transaction's worth, so
+	// there is nothing for folding to win.
+	if storesNeedChunking(stores) {
+		return db.storeNewJobDataChunked(stores)
+	}
+
+	foldBytes, foldPuts := newJobsFoldCost(stores)
+
+	op := &newJobsOp{
+		stores:    stores,
+		result:    make(chan error, 1),
+		foldBytes: foldBytes,
+		foldPuts:  foldPuts,
+	}
+
+	if !db.enqueueNewJobs(op) {
+		return errDBClosed
+	}
+
+	return <-op.result
 }
 
 //nolint:gocognit,gocyclo,cyclop,funlen,lll,nestif // Legacy persistence path coordinates several lookup buckets.
-func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs sobsd, jobsToQueue []*Job, jobsToUpdate []*Job, alreadyAdded int, err error) {
+func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs sobsd, jobsToQueue []*Job, jobsToUpdate []*Job, alreadyAdded int, err error) {
 	// turn the jobs in to sobsd and sort by their keys, likewise for the
 	// lookups
 	repGroups := make(map[string]bool)
@@ -1375,7 +2892,7 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 
 			added, err = db.checkIfComplete(keyStr)
 			if err != nil {
-				return encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs,
+				return encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs,
 					jobsToQueue, jobsToUpdate, alreadyAdded, err
 			}
 
@@ -1397,7 +2914,6 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 
 		for _, depGroup := range job.DepGroups {
 			if depGroup != "" {
-				dgLookups = append(dgLookups, [2][]byte{db.generateLookupKey(depGroup, key), nil})
 				depGroups[depGroup] = true
 			}
 		}
@@ -1417,7 +2933,7 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 		job.RUnlock()
 
 		if err != nil {
-			return encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs,
+			return encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs,
 				jobsToQueue, jobsToUpdate, alreadyAdded, err
 		}
 
@@ -1448,7 +2964,7 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 				job.RUnlock()
 
 				if err != nil {
-					return encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs,
+					return encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs,
 						jobsToQueue, jobsToUpdate, alreadyAdded, err
 				}
 
@@ -1471,7 +2987,7 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 		}
 	}
 
-	return encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs, jobsToQueue, jobsToUpdate, alreadyAdded, err
+	return encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs, jobsToQueue, jobsToUpdate, alreadyAdded, err
 }
 
 // generateLookupKey creates a lookup key understood by the retrieval methods,
@@ -1490,15 +3006,17 @@ func (db *db) checkIfLive(key string) (bool, error) {
 	var isLive bool
 
 	err := db.bolt.View(func(tx *bolt.Tx) error {
-		newJobBucket := tx.Bucket(bucketJobsLive)
-		if newJobBucket.Get([]byte(key)) != nil {
-			isLive = true
-		}
+		isLive = checkIfLiveTx(tx, key)
 
 		return nil
 	})
 
 	return isLive, err
+}
+
+// checkIfLiveTx is checkIfLive using the given read transaction.
+func checkIfLiveTx(tx *bolt.Tx, key string) bool {
+	return tx.Bucket(bucketJobsLive).Get([]byte(key)) != nil
 }
 
 // checkIfComplete tells you if a job with the given key is currently in the
@@ -1523,7 +3041,16 @@ func (db *db) checkIfComplete(key string) (bool, error) {
 // stdout/err.
 //
 // The key you supply must be the key of the job you supply, or bad things will
-// happen - no checking is done! A backgroundBackup() is triggered afterwards.
+// happen - no checking is done! The db is marked dirty afterwards, so the
+// backup ticker will back it up (this path takes no db lock).
+//
+// The job is encoded here, OUTSIDE any transaction, and then handed to the single
+// coalescing archiveWriter, which folds it in with every other archive pending at
+// that moment into ONE db.Update and replies here with this archive's own outcome.
+// That keeps the per-job CPU (encoding) off the one bolt write lock and makes a
+// deep archive queue cost one commit rather than one commit per job; see the arMu
+// comment on the db struct. This call blocks until its own archive is persisted,
+// exactly as the previous db.bolt.Batch did.
 func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 	var encoded []byte
 
@@ -1537,13 +3064,19 @@ func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
 		return err
 	}
 
-	err = db.bolt.Batch(func(tx *bolt.Tx) error {
-		return db.archiveJobTx(tx, []byte(key), encoded, job)
-	})
+	op := &archiveOp{
+		key:     []byte(key),
+		encoded: encoded,
+		job:     job,
+		result:  make(chan error, 1),
+		queued:  time.Now(),
+	}
 
-	db.backgroundBackup(ctx)
+	if !db.enqueueArchive(op) {
+		return errDBClosed
+	}
 
-	return err
+	return <-op.result
 }
 
 // putJobStats records a completed job's peak RAM, peak disk and runtime in
@@ -1612,7 +3145,7 @@ func (db *db) deleteLiveJobs(ctx context.Context, keys []string) error {
 		return err
 	}
 
-	db.backgroundBackup(ctx)
+	db.backupDirty.Store(true)
 	// *** we're not removing the lookup entries from the bucket*TK buckets, or
 	// their reverse entries, because the lookup buckets are historical.
 
@@ -1689,6 +3222,28 @@ func (db *db) retrieveRepGroups() ([]string, error) {
 	return rgs, err
 }
 
+// repGroupHasHistory says if repGroup has any archived (complete) job, ie. if it
+// has completion history in the database.
+//
+// archiveJobTx always records a RepGroup's end time (updateRGEndTime), so this is
+// a single O(log n) B+tree Get: it answers "did anything in this RepGroup ever
+// complete?" without the unbounded cursor scan and codec decode of every one of
+// those jobs that actually fetching them costs (see
+// repGroupOptions.IncludeComplete).
+func (db *db) repGroupHasHistory(repGroup string) bool {
+	has := false
+
+	if err := db.bolt.View(func(tx *bolt.Tx) error {
+		has = len(tx.Bucket(bucketRGEndTime).Get([]byte(repGroup))) == rgEndTimeBytes
+
+		return nil
+	}); err != nil {
+		return false
+	}
+
+	return has
+}
+
 // retrieveLastCompletionTimeByRepGroup gets the latest archived completion
 // time for each supplied RepGroup as UTC instants.
 func (db *db) retrieveLastCompletionTimeByRepGroup(repGroups []string) (map[string]time.Time, error) {
@@ -1744,6 +3299,100 @@ func (db *db) retrieveCompleteJobsByRepGroup(repgroup string) ([]*Job, error) {
 	return jobs, err
 }
 
+// spendArchivedBytesByRepGroup charges budget for every archived record
+// retrieveCompleteJobsByRepGroup would decode for this RepGroup, WITHOUT decoding
+// any of them: it walks the same index and reads each record's encoded length,
+// which costs no allocation. It returns the budget's error as soon as the budget
+// is exhausted, so a request that cannot bound how much history it will
+// materialise finds out before it has materialised any of it.
+//
+// A record that is currently live (being re-run), which the decode would skip, is
+// charged too. That makes the refusal marginally early rather than late.
+func (db *db) spendArchivedBytesByRepGroup(repgroup string, budget *archivedBytesBudget) error {
+	return db.bolt.View(func(tx *bolt.Tx) error {
+		completeJobBucket := tx.Bucket(bucketJobsComplete)
+		lookupBucket := tx.Bucket(bucketRTK).Cursor()
+
+		prefix := []byte(repgroup + dbDelimiter)
+		for k, _ := lookupBucket.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = lookupBucket.Next() {
+			if err := budget.spend(completeJobBucket.Get(bytes.TrimPrefix(k, prefix))); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
+// ErrArchivedHistoryTooBig is what a request that asks for complete jobs with no
+// limit gets when the history it matches is too large to materialise. It is a
+// deliberate, operator-visible refusal: the alternative is what production
+// actually did, which was to take the manager's heap from 0.35GB to over 12GB
+// (and, for 2.15M complete jobs, would be over 12GB again through
+// `wr status -o plain`). The message names the way out, since every route to
+// this request has one.
+var ErrArchivedHistoryTooBig = errors.New("too much completed-job history to return at once: " +
+	"re-run with --limit, or a state filter, or -o counts")
+
+// isArchivedHistoryTooBig reports whether a getJobsByRepGroup error string is the
+// ErrArchivedHistoryTooBig refusal rather than a genuine failure. spend wraps the
+// sentinel with the numbers that produced it, so it is recognised by its prefix -
+// the pricing pass returns no other error of its own. It exists so that a caller
+// which has to translate the refusal (restJobsStatusByID, into an HTTP status)
+// does not have to decide what the message looks like for itself.
+func isArchivedHistoryTooBig(err string) bool {
+	return strings.HasPrefix(err, ErrArchivedHistoryTooBig.Error())
+}
+
+// maxArchivedBytesDefault caps how many bytes of encoded archived records ONE
+// request that cannot push its limit down (see newCompleteJobsBudget) will
+// decode. It is a byte budget rather than a job count because archived records
+// vary by three orders of magnitude in size - a job with a 130KB command line
+// costs as much as a hundred ordinary ones - so only bytes bound the heap.
+// Production's 12.1GB excursion came from roughly 3GB of records; at this cap
+// that request is refused instead, while everything that fits (the 154,000-record
+// group the 2026-08-20 validation gate measured is ~230MB) is returned exactly as
+// before.
+const maxArchivedBytesDefault = 256 * 1024 * 1024
+
+// maxArchivedBytes is the live cap. It is a var only so tests can drive it down;
+// nothing in the manager writes it, so it needs no synchronisation.
+//
+//nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
+var maxArchivedBytes = maxArchivedBytesDefault
+
+// archivedBytesBudget is the byte budget one unbounded archived fetch may spend
+// across all the RepGroups its request matches, spent by
+// spendArchivedBytesByRepGroup before anything is decoded. A nil budget is
+// unlimited.
+type archivedBytesBudget struct {
+	remaining int
+	priced    int
+}
+
+// newArchivedBytesBudget returns a budget of maxArchivedBytes bytes.
+func newArchivedBytesBudget() *archivedBytesBudget {
+	return &archivedBytesBudget{remaining: maxArchivedBytes}
+}
+
+// spend accounts for one archived record, returning ErrArchivedHistoryTooBig
+// once the budget is exhausted. A nil budget spends nothing and never errors.
+func (b *archivedBytesBudget) spend(encoded []byte) error {
+	if b == nil {
+		return nil
+	}
+
+	b.remaining -= len(encoded)
+	b.priced++
+
+	if b.remaining < 0 {
+		return fmt.Errorf("%w (over %d bytes at %d complete jobs)", ErrArchivedHistoryTooBig,
+			maxArchivedBytes, b.priced)
+	}
+
+	return nil
+}
+
 // decodeArchivedJob decodes the job with the given key from the complete bucket,
 // returning nil (and no error) if it is not present there or is currently live
 // (being re-run).
@@ -1752,6 +3401,8 @@ func (db *db) decodeArchivedJob(completeJobBucket, newJobBucket *bolt.Bucket, ke
 	if len(encoded) == 0 || newJobBucket.Get(key) != nil {
 		return nil, nil //nolint:nilnil // absent/live job is a valid non-error nil result
 	}
+
+	db.archivedDecodes.Add(1)
 
 	return db.decodeJob(encoded)
 }
@@ -1968,16 +3619,7 @@ func (db *db) retrieveIncompleteJobKeysByDepGroup(depgroup string) ([]string, er
 	var jobKeys []string
 
 	err := db.bolt.View(func(tx *bolt.Tx) error {
-		newJobBucket := tx.Bucket(bucketJobsLive)
-		lookupBucket := tx.Bucket(bucketDTK).Cursor()
-
-		prefix := []byte(depgroup + dbDelimiter)
-		for k, _ := lookupBucket.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = lookupBucket.Next() {
-			key := bytes.TrimPrefix(k, prefix)
-			if newJobBucket.Get(key) != nil {
-				jobKeys = append(jobKeys, string(key))
-			}
-		}
+		jobKeys = retrieveIncompleteJobKeysByDepGroupTx(tx, depgroup)
 
 		return nil
 	})
@@ -1985,12 +3627,30 @@ func (db *db) retrieveIncompleteJobKeysByDepGroup(depgroup string) ([]string, er
 	return jobKeys, err
 }
 
+// retrieveIncompleteJobKeysByDepGroupTx is retrieveIncompleteJobKeysByDepGroup
+// using the given read transaction.
+func retrieveIncompleteJobKeysByDepGroupTx(tx *bolt.Tx, depgroup string) []string {
+	var jobKeys []string
+
+	newJobBucket := tx.Bucket(bucketJobsLive)
+	lookupBucket := tx.Bucket(bucketDTK).Cursor()
+
+	prefix := []byte(depgroup + dbDelimiter)
+	for k, _ := lookupBucket.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = lookupBucket.Next() {
+		key := bytes.TrimPrefix(k, prefix)
+		if newJobBucket.Get(key) != nil {
+			jobKeys = append(jobKeys, string(key))
+		}
+	}
+
+	return jobKeys
+}
+
 func (db *db) depGroupEverSeen(depGroup string) (bool, error) {
 	var seen bool
 
 	err := db.bolt.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketDepGroups)
-		seen = b.Get([]byte(depGroup)) != nil
+		seen = depGroupEverSeenTx(tx, depGroup)
 
 		return nil
 	})
@@ -1998,14 +3658,28 @@ func (db *db) depGroupEverSeen(depGroup string) (bool, error) {
 	return seen, err
 }
 
+// depGroupEverSeenTx is depGroupEverSeen using the given read transaction.
+func depGroupEverSeenTx(tx *bolt.Tx, depGroup string) bool {
+	return tx.Bucket(bucketDepGroups).Get([]byte(depGroup)) != nil
+}
+
+// depGroupsEverSeen says, for each of the given dep groups, whether a job with
+// that dep group has ever been added.
+//
+// An empty list is answered without opening a transaction: every job's
+// dependencies are resolved through here, and a job with no dep group
+// dependencies (the common case) has nothing to look up. Paying a bolt read
+// transaction for it cost prior-state recovery 150,472 pointless transactions
+// against a cold 7 GB database in production (.docs/bugfixes/260825-2.md).
 func (db *db) depGroupsEverSeen(depGroups []string) (map[string]bool, error) {
+	if len(depGroups) == 0 {
+		return make(map[string]bool), nil
+	}
+
 	seen := make(map[string]bool, len(depGroups))
 
 	err := db.bolt.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketDepGroups)
-		for _, depGroup := range depGroups {
-			seen[depGroup] = b.Get([]byte(depGroup)) != nil
-		}
+		seen = depGroupsEverSeenTx(tx, depGroups)
 
 		return nil
 	})
@@ -2013,24 +3687,64 @@ func (db *db) depGroupsEverSeen(depGroups []string) (map[string]bool, error) {
 	return seen, err
 }
 
-// storeEnv stores a clientRequest.Env in db unless cached, which means it must
-// already be there. Returns a key by which the stored Env can be retrieved.
+// depGroupsEverSeenTx is depGroupsEverSeen using the given read transaction.
+func depGroupsEverSeenTx(tx *bolt.Tx, depGroups []string) map[string]bool {
+	seen := make(map[string]bool, len(depGroups))
+
+	b := tx.Bucket(bucketDepGroups)
+	for _, depGroup := range depGroups {
+		seen[depGroup] = b.Get([]byte(depGroup)) != nil
+	}
+
+	return seen
+}
+
+// storeEnv stores a clientRequest.Env in db unless it is already stored.
+// Returns a key by which the stored Env can be retrieved.
+//
+// A miss in the envCacheSize-entry cache does not mean the record is absent:
+// production holds 549 distinct envs, so a cache miss whose bytes are already in
+// bucketEnvs, identical under the same key, is the ordinary case. Asking a read
+// transaction first keeps the write transaction - a full commit that rewrites the
+// freelist and fsyncs twice, taken sequentially before createJobs on the add
+// path - for the envs that are genuinely new (.docs/bugfixes/260827-2.md).
+//
+// Finding the key stored is as conclusive as finding it cached was: both assume
+// no collision of byteKey's 128-bit hash, and bucketEnvs is never deleted from,
+// so a stored key cannot go away.
 func (db *db) storeEnv(env []byte) (string, error) {
 	envkey := byteKey(env)
-	if !db.envcache.Contains(envkey) {
-		err := db.store(bucketEnvs, envkey, env)
-		if err != nil {
-			return envkey, err
-		}
-
-		db.envcache.Add(envkey, env)
+	if db.envcache.Contains(envkey) {
+		return envkey, nil
 	}
+
+	var stored bool
+
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		stored = tx.Bucket(bucketEnvs).Get([]byte(envkey)) != nil
+
+		return nil
+	})
+	if err == nil && !stored {
+		err = db.store(bucketEnvs, envkey, env)
+	}
+
+	if err != nil {
+		return envkey, err
+	}
+
+	db.envcache.Add(envkey, env)
 
 	return envkey, nil
 }
 
 // retrieveEnv gets a value from the db that was stored with storeEnv(). The
 // value may come from the cache, avoiding db access.
+//
+// Only a hit is cached. retrieve() returns a nil value for a key the database
+// does not hold, and caching that would make envcache.Contains report true for
+// a key with no record behind it, which is what storeEnv takes as proof that
+// those bytes are already stored: storing them would then be a no-op forever.
 func (db *db) retrieveEnv(ctx context.Context, envkey string) []byte {
 	cached, got := db.envcache.Get(envkey)
 	if got {
@@ -2038,6 +3752,10 @@ func (db *db) retrieveEnv(ctx context.Context, envkey string) []byte {
 	}
 
 	envc := db.retrieve(ctx, bucketEnvs, envkey)
+	if envc == nil {
+		return nil
+	}
+
 	db.envcache.Add(envkey, envc)
 
 	return envc
@@ -2074,12 +3792,12 @@ func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo, stde []byt
 		return
 	}
 
-	db.updatingAfterJobExit++
+	db.updatingAfterJobExit.Add(1)
 
 	db.wgMutex.Lock()
 	defer db.wgMutex.Unlock()
 
-	db.launchJobExitUpdate(ctx, exit)
+	db.launchJobExitUpdate(exit)
 }
 
 // snapshotJobExit encodes the job and snapshots the fields needed to persist it
@@ -2105,26 +3823,18 @@ func (db *db) snapshotJobExit(ctx context.Context, job *Job, stdo, stde []byte, 
 	return exit, true
 }
 
-// launchJobExitUpdate runs exit.update in a background batch, decrementing the
-// in-progress counter when done. Must be called with db.Lock and db.wgMutex
-// held.
-func (db *db) launchJobExitUpdate(ctx context.Context, exit jobExitData) {
-	wgk := db.wg.Add(1)
+// launchJobExitUpdate queues an exit op for the best-effort writer. Exit ops are
+// not coalesced (their std/fail-stat side effects must each run), so the writer
+// applies them in order within its folded write tx. db.updatingAfterJobExit was
+// already incremented by updateJobAfterExit and is decremented by the writer once
+// the op is persisted. Must be called with db.Lock and db.wgMutex held.
+func (db *db) launchJobExitUpdate(exit jobExitData) {
+	db.beMu.Lock()
+	db.beExits = append(db.beExits, exit)
+	db.beWGKeys = append(db.beWGKeys, db.wg.Add(1))
+	db.beMu.Unlock()
 
-	go func() {
-		defer internal.LogPanic(ctx, "updateJobAfterExit", true)
-
-		err := db.bolt.Batch(exit.update)
-		db.wg.Done(wgk)
-
-		if err != nil {
-			clog.Error(ctx, "Database operation updateJobAfterExit failed", "err", err)
-		}
-
-		db.Lock()
-		db.updatingAfterJobExit--
-		db.Unlock()
-	}()
+	db.kickBestEffortWriter()
 }
 
 // jobExitData is the snapshot of a job's state needed to persist it after it
@@ -2244,40 +3954,21 @@ func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
 	db.wgMutex.Lock()
 	defer db.wgMutex.Unlock()
 
-	db.launchJobChangeUpdate(ctx, key, encoded)
+	db.launchJobChangeUpdate(key, encoded)
 }
 
-// launchJobChangeUpdate rewrites the live job in a background batch and triggers
-// a backup. Must be called with db.RLock and db.wgMutex held.
-func (db *db) launchJobChangeUpdate(ctx context.Context, key, encoded []byte) {
-	wgk := db.wg.Add(1)
+// launchJobChangeUpdate queues the job's latest encoded live-bucket value for the
+// best-effort writer, coalescing by key so a churning job is persisted once per
+// drain (latest-wins), not once per change. The archive-vs-change guard (only
+// rewrite a job that is still live) is applied by the writer at drain time. Must
+// be called with db.RLock and db.wgMutex held.
+func (db *db) launchJobChangeUpdate(key, encoded []byte) {
+	db.beMu.Lock()
+	db.beChanges[string(key)] = encoded
+	db.beWGKeys = append(db.beWGKeys, db.wg.Add(1))
+	db.beMu.Unlock()
 
-	go func() {
-		defer internal.LogPanic(ctx, "updateJobAfterChange", true)
-
-		err := db.bolt.Batch(func(tx *bolt.Tx) error {
-			bjl := tx.Bucket(bucketJobsLive)
-			if bjl.Get(key) == nil {
-				// it's possible for these batches to be interleaved with
-				// archiveJob batches, and for this batch to update that a job
-				// was started to actually execute after the batch that says the
-				// job completed, removing it from the live bucket. In that
-				// case, don't add it back to the live bucket here.
-				return nil
-			}
-
-			return bjl.Put(key, encoded)
-		})
-		db.wg.Done(wgk)
-
-		if err != nil {
-			clog.Error(ctx, "Database operation updateJobAfterChange failed", "err", err)
-
-			return
-		}
-
-		db.backgroundBackup(ctx)
-	}()
+	db.kickBestEffortWriter()
 }
 
 // modifyLiveJobs is for use if jobs currently in the queue are modified such
@@ -2292,12 +3983,12 @@ func (db *db) launchJobChangeUpdate(ctx context.Context, key, encoded []byte) {
 // associated with the new jobs.
 func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job) error {
 	//nolint:dogsled // modifyLiveJobs only needs the persistence fields from prepareNewJobs.
-	encodedJobs, rgLookups, dgLookups, depGroupsSeen, rdgLookups, rgs, _, _, _, err := db.prepareNewJobs(jobs, false)
+	encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs, _, _, _, err := db.prepareNewJobs(jobs, false)
 	if err != nil {
 		return err
 	}
 
-	lookups := newJobLookups(rgLookups, rgs, dgLookups, depGroupsSeen, rdgLookups)
+	lookups := newJobLookups(rgLookups, rgs, depGroupsSeen, rdgLookups)
 
 	sort.Sort(encodedJobs)
 
@@ -2308,7 +3999,7 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 		clog.Error(ctx, "Database error during modify", "err", err)
 	}
 
-	go db.backgroundBackup(ctx)
+	db.backupDirty.Store(true)
 
 	return err
 }
@@ -2318,23 +4009,20 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 type jobLookups struct {
 	rg         sobsd
 	repGroups  sobsd
-	dg         sobsd
 	depGroups  sobsd
 	reverseDep sobsd
 }
 
 // newJobLookups sorts and groups the lookup sobsds prepared by prepareNewJobs.
-func newJobLookups(rgLookups, rgs, dgLookups, depGroupsSeen, rdgLookups sobsd) jobLookups {
+func newJobLookups(rgLookups, rgs, depGroupsSeen, rdgLookups sobsd) jobLookups {
 	sort.Sort(rgLookups)
 	sort.Sort(rgs)
-	sort.Sort(dgLookups)
 	sort.Sort(depGroupsSeen)
 	sort.Sort(rdgLookups)
 
 	return jobLookups{
 		rg:         rgLookups,
 		repGroups:  rgs,
-		dg:         dgLookups,
 		depGroups:  depGroupsSeen,
 		reverseDep: rdgLookups,
 	}
@@ -2462,7 +4150,6 @@ func (db *db) putAllLookups(tx *bolt.Tx, lookups jobLookups) error {
 	}{
 		{bucketRTK, lookups.rg},
 		{bucketRGs, lookups.repGroups},
-		{bucketDTK, lookups.dg},
 		{bucketDepGroups, lookups.depGroups},
 		{bucketRDTK, lookups.reverseDep},
 	}
@@ -2536,16 +4223,7 @@ func (db *db) retrieveJobStd(ctx context.Context, jobkey string) (stdo []byte, s
 // *** this method of waiting seems really bad and should be improved, but in
 // practice we probably never wait.
 func (db *db) waitForJobExitUpdates() {
-	for {
-		db.RLock()
-
-		if db.updatingAfterJobExit == 0 {
-			db.RUnlock()
-
-			return
-		}
-
-		db.RUnlock()
+	for db.updatingAfterJobExit.Load() != 0 {
 		<-time.After(jobExitUpdatePollInterval)
 	}
 }
@@ -2726,13 +4404,13 @@ func (db *db) retrieve(ctx context.Context, bucket []byte, key string) []byte {
 // name of the bucket to store in.
 func (db *db) storeBatched(bucket []byte, data sobsd, storer sobsdStorer) error {
 	num := len(data)
-	batchSize := batchSizeFor(num)
 
 	// based on https://github.com/boltdb/bolt/issues/337#issue-64861745
-	if num < batchSize {
+	if fitsOneBatch(num) {
 		return storer(bucket, data)
 	}
 
+	batchSize := batchSizeFor(num)
 	batches := num / batchSize
 
 	for i := range batches {
@@ -2741,8 +4419,11 @@ func (db *db) storeBatched(bucket []byte, data sobsd, storer sobsdStorer) error 
 		}
 	}
 
-	if offset := num - (num % batchSize); offset != 0 {
-		if err := storer(bucket, data[offset:]); err != nil {
+	// only a partial final batch is left to store: when batchSize divides num
+	// exactly there is nothing, and storing it anyway would commit an empty
+	// write transaction.
+	if rem := num % batchSize; rem != 0 {
+		if err := storer(bucket, data[num-rem:]); err != nil {
 			return err
 		}
 	}
@@ -2822,15 +4503,6 @@ func putReverseLookupEntry(tx *bolt.Tx, lookupBucket, lookupKey []byte) error {
 	return b.Put(reverseLookupEntryKey(jobKey, lookupBucket, lookupKey), nil)
 }
 
-// storeEncodedJobs is a sobsdStorer for storing Jobs in the db.
-func (db *db) storeEncodedJobs(bucket []byte, encodes sobsd) error {
-	err := db.bolt.Batch(func(tx *bolt.Tx) error {
-		return db.putEncodedJobs(tx, bucket, encodes)
-	})
-
-	return err
-}
-
 // putEncodedJobs does the work of storeEncodedJobs(). You nust be inside a bolt
 // transaction when calling this.
 func (db *db) putEncodedJobs(tx *bolt.Tx, bucket []byte, encodes sobsd) error {
@@ -2845,9 +4517,10 @@ func (db *db) putEncodedJobs(tx *bolt.Tx, bucket []byte, encodes sobsd) error {
 	return nil
 }
 
-// close shuts down the db, should be used prior to exiting. Ensures any
-// ongoing backgroundBackup() completes first (but does not wait for backup() to
-// complete).
+// close shuts down the db, should be used prior to exiting. It stops the
+// periodic backup ticker, waits for any in-progress periodic backup and all
+// ongoing async write transactions to finish, then writes a final backup that
+// captures the fully-drained committed state before closing bolt.
 func (db *db) close(ctx context.Context) error {
 	db.Lock()
 	defer db.Unlock()
@@ -2858,37 +4531,101 @@ func (db *db) close(ctx context.Context) error {
 
 	db.closed = true
 
-	// before actually closing, wait for any go routines doing database
-	// transactions to complete
-	db.waitForOngoingTransactions()
-
-	// do a final backup
-	if db.backupsEnabled && db.backupQueued {
-		clog.Debug(ctx, "Jobqueue database not backed up, will do final backup")
-		db.backupToBackupFile(ctx, false)
-	}
+	db.finaliseBackup(ctx)
 
 	return db.closeBolt()
 }
 
-// waitForOngoingTransactions waits, with db.Lock held, for any in-progress
-// background backup and database transaction goroutines to finish. It
-// temporarily releases db.Lock while waiting, and re-acquires it before
-// returning.
-func (db *db) waitForOngoingTransactions() {
-	if db.backingUp {
-		db.backupFinal = true
-		close(db.backupStopWait)
-		db.Unlock()
-		<-db.backupNotification
-	} else {
-		db.Unlock()
+// finaliseBackup is called once from close() (with db.Lock held). It stops the
+// periodic backup ticker (if backups are enabled), waits for any in-progress
+// periodic backup and all ongoing async write transactions to finish, then -
+// unlike the periodic path - writes a final backup that captures everything, so
+// a clean shutdown's backup is complete. No backup-path code takes db.Lock, so
+// holding it here does not deadlock the in-progress backup we wait for.
+func (db *db) finaliseBackup(ctx context.Context) {
+	var inProgress bool
+
+	if db.backupsEnabled {
+		inProgress = db.stopBackupTicker()
 	}
 
+	// stop the add, archive and best-effort writers and drain their queues first,
+	// so every enqueued add and archive is persisted (and its caller replied to)
+	// and all enqueued change/exit writes are persisted (and their db.wg tracking
+	// released) before the wg drain and final backup below. The add and archive
+	// queues are drained first because their callers are synchronously waiting on
+	// the outcome.
+	db.stopNewJobsWriter()
+	db.stopArchiveWriter()
+	db.stopBestEffortWriter()
+
+	// after the archive writer's final drain, so its last transactions make it
+	// into the final fold summary.
+	db.stopArchiveFoldReporter(ctx)
+
+	// drain ongoing async write transactions so the final backup captures them.
 	db.wgMutex.Lock()
 	db.wg.Wait(dbRunningTransactionsWaitTime)
 	db.wgMutex.Unlock()
-	db.Lock()
+
+	if db.backupsEnabled && (db.backupDirty.Swap(false) || inProgress) {
+		clog.Debug(ctx, "Jobqueue database doing final backup before close")
+		db.backupToBackupFile(ctx, false)
+	}
+}
+
+// stopBackupTicker stops the periodic backup ticker and, if a periodic backup is
+// currently running, waits for it to finish (cutting short any spacing wait so
+// shutdown stays prompt). It returns whether a backup was in progress. Only
+// called from close(), when backups are enabled.
+func (db *db) stopBackupTicker() bool {
+	close(db.backupTickerStop)
+
+	db.backupMu.Lock()
+	db.backupStopped = true
+
+	inProgress := db.backingUp
+	if inProgress {
+		db.backupFinal = true
+		close(db.backupStopWait)
+	}
+	db.backupMu.Unlock()
+
+	if inProgress {
+		<-db.backupNotification
+	}
+
+	return inProgress
+}
+
+// backupTicker is the single long-lived goroutine that drives periodic backups.
+// Every backupDirtyPollInterval it consumes the lock-free backupDirty flag and,
+// if set, runs one backup (spaced out by backupWait via waitBeforeBackup). It
+// runs until close() closes backupTickerStop. Decoupling backup-triggering from
+// the archive/exit hot path (which now just sets backupDirty, taking no lock) is
+// the point of the fix.
+func (db *db) backupTicker(ctx context.Context) {
+	defer internal.LogPanic(ctx, "jobqueue database backup ticker", true)
+
+	for db.awaitBackupTick() {
+		if db.backupDirty.Swap(false) {
+			db.backgroundBackup(ctx)
+		}
+	}
+}
+
+// awaitBackupTick waits one backupDirtyPollInterval, returning true when it is
+// time to check backupDirty, or false when close() has stopped the ticker.
+func (db *db) awaitBackupTick() bool {
+	timer := time.NewTimer(backupDirtyPollInterval)
+	defer timer.Stop()
+
+	select {
+	case <-db.backupTickerStop:
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // closeBolt closes the underlying bolt db and unmounts any backup mount,
@@ -2913,15 +4650,16 @@ func (db *db) closeBolt() error {
 
 // backgroundBackup backs up the database to a file (the location given during
 // initDB()) in a goroutine, doing one backup at a time and queueing a further
-// backup if any other backup requests come in while a backup is running. Any
-// errors are silently ignored. Spaces out sequential backups so that there is a
-// gap of max(30s, [time taken to complete previous backup]) seconds between
-// them.
+// backup if the ticker fires again while a backup is running. Any errors are
+// silently ignored. Spaces out sequential backups so that there is a gap of
+// max(30s, [time taken to complete previous backup]) seconds between them. It is
+// driven by the backup ticker (and requeues), never by the hot path, and takes
+// only backupMu - never the db RWMutex.
 func (db *db) backgroundBackup(ctx context.Context) {
-	db.Lock()
-	defer db.Unlock()
+	db.backupMu.Lock()
+	defer db.backupMu.Unlock()
 
-	if db.closed || !db.backupsEnabled {
+	if db.backupStopped || !db.backupsEnabled {
 		return
 	}
 
@@ -2980,21 +4718,21 @@ func (db *db) waitBeforeBackup(last time.Time, wait time.Duration, doNotWait boo
 // finishBackgroundBackup updates backup bookkeeping after a backup completes
 // and either notifies a waiting close() or kicks off a queued backup.
 func (db *db) finishBackgroundBackup(ctx context.Context, start time.Time) {
-	db.Lock()
+	db.backupMu.Lock()
 	db.backingUp = false
 	db.backupLast = time.Now()
 
+	// don't backup more often than backups take
 	duration := time.Since(start)
 	if duration > minimumTimeBetweenBackups {
 		db.backupWait = duration
 	}
 
 	if db.backupFinal {
-		// close() has been called, don't do any more backups and tell close()
-		// we finished our backup
+		// close() is waiting for this in-progress backup; tell it we finished
+		// and do not start any more backups.
 		db.backupFinal = false
-		db.backupStopWait = make(chan bool)
-		db.Unlock()
+		db.backupMu.Unlock()
 
 		db.backupNotification <- true
 
@@ -3003,32 +4741,29 @@ func (db *db) finishBackgroundBackup(ctx context.Context, start time.Time) {
 
 	if db.backupQueued {
 		db.backupQueued = false
-		db.Unlock()
+		db.backupMu.Unlock()
 		db.backgroundBackup(ctx)
 	} else {
-		db.Unlock()
+		db.backupMu.Unlock()
 	}
 }
 
-// backupToBackupFile is used by backgroundBackup() and close() to do the actual
-// backup.
+// backupToBackupFile writes a consistent snapshot of the committed database to
+// the backup file. It is called by the periodic backup ticker (via
+// runBackgroundBackup) and by close()'s final backup. bbolt's read transaction
+// already yields a consistent view of committed state, so the PERIODIC path does
+// NOT drain in-flight async writes here - that would hold db.wgMutex across a
+// (up to) dbRunningTransactionsWaitTime wg.Wait, blocking every new async-write
+// registration and serialising the exit hot path. A periodic backup may
+// therefore miss the last few in-flight writes (they land in the next backup) -
+// fine for a disaster-recovery fallback. close() instead drains the wg BEFORE
+// calling this, so a clean shutdown's final backup still captures everything.
 func (db *db) backupToBackupFile(ctx context.Context, slowBackups bool) {
-	// we most likely triggered this backup immediately following an operation
-	// that alters (the important parts of) the database; wait for those
-	// transactions to actually complete before backing up
-	db.wgMutex.Lock()
-	db.wg.Wait(dbRunningTransactionsWaitTime)
-
-	wgk := db.wg.Add(1)
-
-	db.wgMutex.Unlock()
-	defer db.wg.Done(wgk)
-
 	// create the new backup file with temp name
 	tmpBackupPath := db.backupPathTmp
 
 	err := db.bolt.View(func(tx *bolt.Tx) error {
-		return tx.CopyFile(tmpBackupPath, dbFilePermission)
+		return db.copyBackup(tx, tmpBackupPath)
 	})
 
 	if slowBackups {
@@ -3158,7 +4893,7 @@ func rebuildJobLookupEntries(tx *bolt.Tx, progress *dbUpgradeReporter) error {
 		return err
 	}
 
-	progress.completePhase("rebuild job lookup index",
+	progress.completePhase(internal.DBUpgradeJobLookupState,
 		fmt.Sprintf("rebuilt database job lookup index (%d entries processed, %d reverse entries written)",
 			totalProcessed, len(entries)),
 		totalProcessed)
@@ -3175,7 +4910,7 @@ func rebuildDepGroups(tx *bolt.Tx, progress *dbUpgradeReporter) error {
 
 	lookupBucket := tx.Bucket(bucketDTK)
 	if depGroupBucket == nil || lookupBucket == nil {
-		progress.completePhase("rebuild dep-group index",
+		progress.completePhase(internal.DBUpgradeDepGroupIndexState,
 			"rebuilt database dependency-group index (0 entries processed)",
 			0)
 
@@ -3187,7 +4922,7 @@ func rebuildDepGroups(tx *bolt.Tx, progress *dbUpgradeReporter) error {
 		return err
 	}
 
-	progress.completePhase("rebuild dep-group index",
+	progress.completePhase(internal.DBUpgradeDepGroupIndexState,
 		fmt.Sprintf("rebuilt database dependency-group index (%d entries processed)", processed),
 		processed)
 

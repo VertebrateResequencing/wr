@@ -60,6 +60,12 @@ const (
 	runlimitKey = "runlimit"
 )
 
+// testPipeCloseGrace is the pipe-close grace the fake-LSF tests run with. The
+// shipped graces are a minute (bsub) and 15s (bkill), so a fake exe that
+// deliberately leaves a descendant on its pipes would cost that long; lowering the
+// grace makes the same code path cost milliseconds.
+const testPipeCloseGrace = 200 * time.Millisecond
+
 func init() {
 	testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlWarn, log15.StderrHandler))
 }
@@ -102,6 +108,160 @@ func TestLSFLoadPrivateKey(t *testing.T) {
 
 		So(s.privateKey, ShouldBeEmpty)
 		So(buf.String(), ShouldBeEmpty)
+	})
+}
+
+// fakeLSFDelays is how the fake exes of newFakeLSFScheduler should hold things
+// up. The zero value is an LSF that responds immediately and leaves nothing
+// behind.
+type fakeLSFDelays struct {
+	// sleepSecs, if >0, makes the fake bsub sleep that many seconds before
+	// responding, to exercise bsubExecTimeout.
+	sleepSecs int
+
+	// lingerSecs, if >0, makes the fake bsub background a subshell that holds the
+	// inherited stdout pipe open for that many seconds after bsub itself has
+	// exited successfully, to exercise bsubPipeCloseGrace (see
+	// TestReliable4BsubPipeLinger).
+	lingerSecs int
+
+	// bjobsSleepSecs, if >0, makes the fake bjobs sleep that many seconds before
+	// answering a `bjobs -w` list call (see bjobsAppearSleepSecs for the
+	// appearance check, which is otherwise answered at once), to exercise
+	// bjobsExecTimeout.
+	bjobsSleepSecs int
+
+	// bjobsAppearSleepSecs, if >0, makes the fake bjobs sleep that many seconds
+	// before answering a `bjobs -w <id>` appearance check (the call waitForBjob
+	// polls with), to exercise the bound on that check (see
+	// TestReliable4BjobAppearedBound).
+	bjobsAppearSleepSecs int
+
+	// bjobsLingerSecs, if >0, makes the fake bjobs background a subshell that
+	// holds the inherited stdout pipe open for that many seconds after bjobs
+	// itself has exited successfully, to exercise bjobsPipeCloseGrace (see
+	// TestReliable4BjobsBound).
+	bjobsLingerSecs int
+
+	// bjobsListJobs is how many RUN jobs of the "false" cmd the fake `bjobs -w`
+	// list call reports, so a caller can tell a complete read of that list from a
+	// short one.
+	bjobsListJobs int
+}
+
+// setPipeCloseGraces lowers the bsub and bkill pipe-close graces for the duration
+// of the test, restoring them afterwards.
+func setPipeCloseGraces(t *testing.T, grace time.Duration) {
+	t.Helper()
+
+	origBsub, origBkill := bsubPipeCloseGrace, bkillPipeCloseGrace
+	bsubPipeCloseGrace, bkillPipeCloseGrace = grace, grace
+
+	t.Cleanup(func() {
+		bsubPipeCloseGrace, bkillPipeCloseGrace = origBsub, origBkill
+	})
+}
+
+// fakeBjobsListBody is the part of newFakeLSFScheduler's fake bjobs that answers
+// a `bjobs -w` list call: it sleeps and/or lingers on its stdout pipe as delays
+// asks, and reports delays.bjobsListJobs RUN elements of one array of the "false"
+// cmd (the cmd the fake-LSF tests schedule), in real `bjobs -w` column order.
+func fakeBjobsListBody(delays fakeLSFDelays) string {
+	var body strings.Builder
+
+	if delays.bjobsSleepSecs > 0 {
+		fmt.Fprintf(&body, "sleep %d\n", delays.bjobsSleepSecs)
+	}
+
+	prefix := jobName("false", "development", false)
+
+	for i := 1; i <= delays.bjobsListJobs; i++ {
+		fmt.Fprintf(&body, "echo %q\n", fmt.Sprintf(
+			"9876543 sb10 RUN normal host1 exec-host-1 %s_Xn0KpDLt[%d] Jul 22 12:00", prefix, i))
+	}
+
+	if delays.bjobsLingerSecs > 0 {
+		fmt.Fprintf(&body, "( sleep %d ) &\n", delays.bjobsLingerSecs)
+	}
+
+	body.WriteString("exit 0\n")
+
+	return body.String()
+}
+
+// TestLSFSubmitToQueueStderr guards submitToQueue's bsub-failure error message.
+// When bsub runs but exits non-zero it surfaces bsub's stderr (which holds the
+// real LSF rejection reason) rather than only the bare "exit status 255"; when
+// bsub could not be executed at all there is no stderr, so the "(bsub stderr:"
+// suffix is omitted rather than misleadingly showing an empty one. It needs no
+// real LSF: bsubExe is pointed at a tiny script (or a missing path), and
+// submitToQueue returns on the Output() error before any bjobs/regex work, so
+// the fake alone exercises the real error path.
+func TestLSFSubmitToQueueStderr(t *testing.T) {
+	Convey("submitToQueue surfaces bsub's stderr in the returned error when bsub exits non-zero", t, func() {
+		const wantStderr = "Job not submitted: pending job threshold reached"
+
+		fakeBsub := filepath.Join(t.TempDir(), "bsub")
+		writeFakeExe(t, fakeBsub, "#!/bin/sh\necho '"+wantStderr+"' >&2\nexit 255\n")
+
+		s := &lsf{bsubExe: fakeBsub}
+
+		err := s.submitToQueue(context.Background(), []string{"-J", "test"})
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, wantStderr)
+		So(err.Error(), ShouldContainSubstring, "(bsub stderr:")
+	})
+
+	Convey("submitToQueue omits the stderr suffix when bsub could not be executed at all", t, func() {
+		// a non-existent bsub makes Output() fail with an *exec.Error (not an
+		// *exec.ExitError), so bsubStderr returns "": the empty `(bsub stderr: "")`
+		// suffix must be omitted rather than hiding the real failure mode.
+		missingBsub := filepath.Join(t.TempDir(), "does-not-exist-bsub")
+
+		s := &lsf{bsubExe: missingBsub}
+
+		err := s.submitToQueue(context.Background(), []string{"-J", "test"})
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "failed to run "+missingBsub)
+		So(err.Error(), ShouldNotContainSubstring, "(bsub stderr:")
+	})
+}
+
+// TestLSFParseBjobsStderr guards parseBjobs' bjobs-failure error message, as
+// TestLSFSubmitToQueueStderr does submitToQueue's. Every scheduling pass asks
+// LSF what it already has with `bjobs -w`, and when that exits non-zero the
+// error used to carry only the bare "exit status 1" while the reason mbatchd
+// gave went to bjobs' stderr and was dropped. When there is no stderr to
+// surface, the "(bjobs stderr:" suffix is omitted rather than misleadingly
+// showing an empty one. It needs no real LSF: bjobsExe is pointed at a tiny
+// script.
+func TestLSFParseBjobsStderr(t *testing.T) {
+	countNothing := func(_, _, _ string) {}
+
+	Convey("parseBjobs surfaces bjobs' stderr in the returned error when bjobs exits non-zero", t, func() {
+		const wantStderr = "Batch system daemon not responding ... still trying"
+
+		fakeBjobs := filepath.Join(t.TempDir(), "bjobs")
+		writeFakeExe(t, fakeBjobs, "#!/bin/sh\necho '"+wantStderr+"' >&2\nexit 1\n")
+
+		s := &lsf{config: &ConfigLSF{Shell: "bash"}, bjobsExe: fakeBjobs}
+
+		err := s.parseBjobs(context.Background(), "wrd_", countNothing)
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, wantStderr)
+		So(err.Error(), ShouldContainSubstring, "(bjobs stderr:")
+	})
+
+	Convey("parseBjobs omits the stderr suffix when bjobs wrote nothing to stderr", t, func() {
+		fakeBjobs := filepath.Join(t.TempDir(), "bjobs")
+		writeFakeExe(t, fakeBjobs, "#!/bin/sh\nexit 1\n")
+
+		s := &lsf{config: &ConfigLSF{Shell: "bash"}, bjobsExe: fakeBjobs}
+
+		err := s.parseBjobs(context.Background(), "wrd_", countNothing)
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "failed to run [bjobs -w]")
+		So(err.Error(), ShouldNotContainSubstring, "(bjobs stderr:")
 	})
 }
 
@@ -675,7 +835,7 @@ func TestLSFArrayChunking(t *testing.T) {
 	Convey("Given an lsf scheduler with fake LSF exes and a small max array size", t, func() {
 		dir := t.TempDir()
 		jArgsFile := filepath.Join(dir, "jargs")
-		s := newFakeLSFScheduler(t, dir, jArgsFile, 0)
+		s := newFakeLSFScheduler(t, dir, jArgsFile, fakeLSFDelays{})
 
 		origMax := maxBsubArraySize
 
@@ -738,12 +898,18 @@ func TestLSFArrayChunking(t *testing.T) {
 	Convey("Given an lsf scheduler whose bsub hangs", t, func() {
 		dir := t.TempDir()
 		jArgsFile := filepath.Join(dir, "jargs")
-		s := newFakeLSFScheduler(t, dir, jArgsFile, 30)
+		s := newFakeLSFScheduler(t, dir, jArgsFile, fakeLSFDelays{sleepSecs: 30})
 
 		origTimeout := bsubExecTimeout
 
 		bsubExecTimeout = 300 * time.Millisecond
 		defer func() { bsubExecTimeout = origTimeout }()
+
+		// the fake bsub's `sleep 30` inherits the stdout pipe and outlives the
+		// bsub the timeout kills, so what bounds the return is the exec timeout
+		// plus the pipe-close grace; the shipped grace is a minute (see
+		// bsubPipeCloseGrace), so lower it too to keep this fast.
+		setPipeCloseGraces(t, testPipeCloseGrace)
 
 		Convey("schedule returns a retryable error bounded by the exec timeout", func() {
 			start := time.Now()
@@ -758,15 +924,19 @@ func TestLSFArrayChunking(t *testing.T) {
 
 // newFakeLSFScheduler builds an *lsf wired to fake bsub/bjobs/bkill executables
 // written into dir, so schedule() can be driven without a real LSF. The fake
-// bsub appends the value of each -J argument (one per line) to jArgsFile and
-// prints a parseable "Job <id>" line; bsubSleep, if >0, makes the fake bsub
-// sleep that many seconds before responding (to exercise the exec timeout).
-func newFakeLSFScheduler(t *testing.T, dir, jArgsFile string, bsubSleep int) *lsf {
+// bsub appends the value of each -J argument (one per line) to jArgsFile, prints
+// a parseable "Job <id>" line and exits 0, held up as delays asks.
+func newFakeLSFScheduler(t *testing.T, dir, jArgsFile string, delays fakeLSFDelays) *lsf {
 	t.Helper()
 
 	sleep := ""
-	if bsubSleep > 0 {
-		sleep = fmt.Sprintf("sleep %d\n", bsubSleep)
+	if delays.sleepSecs > 0 {
+		sleep = fmt.Sprintf("sleep %d\n", delays.sleepSecs)
+	}
+
+	linger := ""
+	if delays.lingerSecs > 0 {
+		linger = fmt.Sprintf("( sleep %d ) &\n", delays.lingerSecs)
 	}
 
 	bsubExe := filepath.Join(dir, "bsub")
@@ -777,17 +947,25 @@ for a in "$@"; do
   if [ "$a" = "-J" ]; then capture=1; fi
 done
 echo "Job <321>"
-`, sleep, jArgsFile))
+%sexit 0
+`, sleep, jArgsFile, linger))
 
-	// bjobs is called both as `bjobs -w` (list, must report nothing so the
-	// scheduler thinks 0 are already scheduled) and as `bjobs -w <id>` (the
-	// post-submit appearance check, which must report a long-enough line).
+	appearSleep := ""
+	if delays.bjobsAppearSleepSecs > 0 {
+		appearSleep = fmt.Sprintf("  sleep %d\n", delays.bjobsAppearSleepSecs)
+	}
+
+	// bjobs is called both as `bjobs -w` (list, reporting delays.bjobsListJobs
+	// jobs of the "false" cmd, so by default the scheduler thinks 0 are already
+	// scheduled) and as `bjobs -w <id>` (the post-submit appearance check, which
+	// must report a long-enough line).
 	bjobsExe := filepath.Join(dir, "bjobs")
 	writeFakeExe(t, bjobsExe, `#!/bin/bash
 if [ -n "$2" ]; then
-  echo "$2 sb10 RUN normal host1 host2 fakejobname000000000000000 Jul 22 12:00"
+`+appearSleep+`  echo "$2 sb10 RUN normal host1 host2 fakejobname000000000000000 Jul 22 12:00"
+  exit 0
 fi
-`)
+`+fakeBjobsListBody(delays))
 
 	bkillExe := filepath.Join(dir, "bkill")
 	writeFakeExe(t, bkillExe, "#!/bin/bash\nexit 0\n")
@@ -856,4 +1034,42 @@ func parseJArray(t *testing.T, re *regexp.Regexp, line string) (string, int) {
 	}
 
 	return m[1], n
+}
+
+// TestLSFJobNamePrefix pins that the job-name prefix the LSF checkCmd full-scan
+// and cleanup() paths scan (and bkill) for is derived from the same source as
+// jobName, so it is WR_JOBNAME_TOKEN-inclusive and can never drift into matching
+// a *different* deployment's jobs. A legacy, un-tokenised cleanup prefix would
+// both miss this manager's own namespaced jobs and match (and bkill) another
+// deployment's jobs - the cross-deployment kill the token exists to prevent.
+// See jobNamePrefix in scheduler.go and .docs/bugfixes/260727-1.md.
+func TestLSFJobNamePrefix(t *testing.T) {
+	const deployment = "production"
+
+	Convey("The shared job-name scan prefix is consistent with jobName", t, func() {
+		Convey("Without WR_JOBNAME_TOKEN it is the legacy wr<initial>_ prefix", func() {
+			t.Setenv("WR_JOBNAME_TOKEN", "")
+
+			prefix := jobNamePrefix(deployment)
+
+			So(prefix, ShouldEqual, "wrp_")
+			So(jobName("anycmd", deployment, false), ShouldStartWith, prefix)
+		})
+
+		Convey("With WR_JOBNAME_TOKEN set it namespaces the prefix with the token", func() {
+			t.Setenv("WR_JOBNAME_TOKEN", "iso42")
+
+			prefix := jobNamePrefix(deployment)
+
+			// the scan prefix (used by both cleanup() and the checkCmd
+			// full-scan) must include the token so it matches jobName's
+			// namespaced output, i.e. this manager's OWN jobs...
+			So(prefix, ShouldEqual, "wrpiso42_")
+			So(jobName("anycmd", deployment, false), ShouldStartWith, prefix)
+
+			// ...and must NOT be the legacy wr<initial>_ prefix, which would
+			// instead match a different (e.g. production) deployment's jobs.
+			So(jobName("anycmd", deployment, false), ShouldNotStartWith, "wrp_")
+		})
+	})
 }

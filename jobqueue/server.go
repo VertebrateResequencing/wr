@@ -120,9 +120,17 @@ const (
 	// enough to hold a SIGINT and a SIGTERM.
 	signalChanBuffer = 2
 
-	// serverListenWait is how long Serve() waits for ListenAndServe() to start
-	// listening before declaring itself ready.
+	// serverListenWait is how long the web interface waits for ListenAndServe()
+	// to start listening before declaring itself ready.
 	serverListenWait = 10 * time.Millisecond
+
+	// serverBindRetryInterval and serverBindRetryBudget are how often, and for
+	// how long, publication retries the RPC port bind before giving up and
+	// exiting (spec E1). They are the budget the serve test helper already used
+	// for exactly this failure, back when the bind happened inside Serve: time
+	// for a server a prior test recently stopped to really stop listening.
+	serverBindRetryInterval = 500 * time.Millisecond
+	serverBindRetryBudget   = 5 * time.Second
 
 	// ownerReadWrite is the file mode for files only the owning user may read
 	// or write (used for the auth token and uploaded files).
@@ -130,6 +138,17 @@ const (
 
 	postUpgradeStartupState  = internal.DBUpgradePostStartupState
 	postUpgradeStartupDetail = internal.DBUpgradePostStartupDetail
+
+	// startupPrepareDetail, startupDecodeDetail and startupDepGroupDetail
+	// describe the three startup phases that precede recovery.
+	startupPrepareDetail  = "preparing sockets, certificates and the scheduler"
+	startupDecodeDetail   = "reading prior incomplete jobs from the database"
+	startupDepGroupDetail = "building dependency-group state from the prior jobs"
+
+	// startupRecoveryDetailPrefix and startupRecoveryDetailSuffix bracket the
+	// elapsed time the recovery phase reports as its detail.
+	startupRecoveryDetailPrefix = "recovering prior state, "
+	startupRecoveryDetailSuffix = " elapsed"
 
 	// ttrReleaseWait is how long the TTR callback waits for a lost item to
 	// return to the run queue before releasing it.
@@ -194,30 +213,53 @@ var (
 	ServerShutdownWaitTime                          = 5 * time.Second
 	ServerLostJobCheckTimeout                       = 15 * time.Second
 	ServerLostJobCheckRetryTime                     = 30 * time.Minute
+	ServerLostRunnerBackstop                        = 1 * time.Hour
+	ServerConfirmDeadConcurrency                    = 16
 	ServerMaximumRunForResourceRecommendation       = 100
 	ServerMinimumScheduledForResourceRecommendation = 10
 	ServerLogClientErrors                           = true
 	serverShutdownRunnerTickerTime                  = 50 * time.Millisecond
 
 	// ServerDBBatchDelay is the default DB.MaxBatchDelay applied to the
-	// manager's live BoltDB: how long a write transaction may wait for
-	// concurrent writes to coalesce into a single fsync'd commit. It is left at
-	// bbolt's 10ms default: on normal/fast disks the manager's per-job
-	// bottleneck is CPU/lock contention rather than fsync, so a wider window
-	// only adds latency to the synchronous archive commit with no fsync benefit
-	// (measured on an 8-core VM, raising it to 25-50ms made 10000 jobs
-	// dramatically slower). Operators whose manager DB is on high-fsync-latency
-	// storage (NFS/Lustre) AND whose workload is genuinely fsync-bound can raise
-	// it per-server via ServerTimings.DBBatchDelay (and operationally via
-	// WR_MANAGERDBBATCHDELAY); we just don't impose that latency by default.
+	// manager's live BoltDB: how long a db.bolt.Batch call may wait for
+	// concurrent Batch calls to coalesce into a single fsync'd commit.
+	//
+	// It reaches none of the manager's three busiest write paths. Job state
+	// changes (db.drainBestEffort), archives (db.archiveTx) and adds
+	// (db.newJobsTx) each have their own single coalescing writer, which folds
+	// what is pending into one db.bolt.Update - across a commit, not within a
+	// fixed window - so MaxBatchDelay never applies to them. What is left on
+	// db.bolt.Batch is db.storeLimitGroups, db.storeEnv's db.store,
+	// db.deleteLiveJobs, db.modifyLiveJobs and db.storeNewJobDataChunked (an add
+	// too big for one transaction), all occasional except that
+	// deleteJobIfRequested reaches db.deleteLiveJobs once per job for jobs
+	// carrying the Remove behaviour, which can therefore arrive in bulk. A grep
+	// for db.bolt.Batch finds one more, db.storeLookups, which now only tests
+	// call.
+	//
+	// It is left at bbolt's 10ms default. On normal/fast disks the manager's
+	// per-job bottleneck is CPU/lock contention rather than fsync (measured on an
+	// 8-core VM in 308d294, when the state-change and archive paths still went
+	// through Batch: raising it to 25-50ms made 10000 jobs dramatically slower).
+	// For the add path the verdict is now the opposite of a fix: a 500ms window
+	// was tried against the production add-latency collapse and refuted, reaching
+	// 96.64 adds/s against a ~100/s pass mark and costing low-concurrency p50
+	// 124ms -> 480ms, because newJobsWriter's group commit supersedes it
+	// (.docs/reliable4/addstorm-fix-trials.md, sections T1 and SUMMARY).
+	// Operators whose manager DB is on high-fsync-latency storage (NFS/Lustre)
+	// can still raise it per-server via ServerTimings.DBBatchDelay (and
+	// operationally via WR_MANAGERDBBATCHDELAY) for the Batch writes named above;
+	// we just don't impose that latency on them by default.
 	ServerDBBatchDelay = 10 * time.Millisecond
 
 	// ServerDBBatchSize is the default DB.MaxBatchSize applied to the manager's
-	// live BoltDB: the number of concurrent write transactions that may
-	// coalesce into one commit before it commits early. It is set well above
-	// the number of writes expected in flight at once so the delay, not this
-	// cap, governs coalescing. Overridable via ServerTimings.DBBatchSize (and
-	// operationally via WR_MANAGERDBBATCHSIZE).
+	// live BoltDB: the number of concurrent db.bolt.Batch calls that may coalesce
+	// into one commit before it commits early. Its scope is exactly
+	// ServerDBBatchDelay's - the residual Batch callers named there, none of the
+	// three coalescing writers. It is set well above the number of those writes
+	// expected in flight at once so the delay, not this cap, governs coalescing.
+	// Overridable via ServerTimings.DBBatchSize (and operationally via
+	// WR_MANAGERDBBATCHSIZE).
 	ServerDBBatchSize = 10000
 
 	// httpServerShutdownTime is the time we'll wait before forcing
@@ -242,16 +284,38 @@ var BsubID uint64 //nolint:gochecknoglobals
 //nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
 var numRPCReaders = 6
 
+// recoveryHeartbeatInterval is how often the background prior-state recovery
+// says it is still working while the re-enqueue is in flight (spec B1). The
+// enqueue is a single batch, so there is no per-job progress to report (the
+// restored count jumps 0 -> total in one step); a time-based heartbeat is the
+// only thing that distinguishes a slow recovery from a hung manager. It is
+// deliberately longer than a whole warm restart's recovery (~40s for ~148k
+// jobs) so the common fast case logs no heartbeat at all. It is a package var
+// (not user-configurable) purely so tests can shorten it.
+//
+//nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
+var recoveryHeartbeatInterval = time.Minute
+
 // envPprofAddr is the environment variable that, when set to a host:port (eg.
 // "localhost:6060"), makes Serve() start an opt-in net/http/pprof endpoint for
 // profiling the manager. It is unset by default, in which case no endpoint is
 // started and there is no profiling overhead.
 const envPprofAddr = "WR_PPROF_ADDR"
 
+// publishExit is how publication ends the process when it cannot make the
+// server reachable: the token file could not be written, or the RPC port could
+// not be bound within the retry budget (spec E1). An invisible manager holding
+// the database lock is worse than a dead one. It is a var so a test can observe
+// the exit instead of ending the test binary, in the style of
+// recoveryPauseHookForTest.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring recoveryPauseHookForTest
+var publishExit = os.Exit
+
 // recoveryPauseHookForTest, if non-nil, is copied into each new Server's
 // recoveryPauseHook during Serve so a test can install a hook that blocks
-// background recovery before recovery has a chance to run. It is a test-only
-// seam and is nil in production.
+// background recovery before it re-enqueues anything. It is a test-only seam
+// and is nil in production.
 //
 //nolint:gochecknoglobals // deliberate test seam, mirroring statusWSDetailsHook
 var recoveryPauseHookForTest func()
@@ -310,6 +374,31 @@ type ServerTimings struct {
 	// ServerLostJobCheckRetryTime). Adjustable at runtime.
 	LostJobCheckRetryTime time.Duration
 
+	// LostRunnerBackstop is how long a job may sit parked Lost -- its command's
+	// process gone but its runner process apparently still alive (so the
+	// confirm-dead check will not declare it dead) -- before the server treats the
+	// runner as wedged and force-kills it on its host, letting the normal
+	// dead-confirmation path re-run the job and reclaim its limit-group slot
+	// (default ServerLostRunnerBackstop, a generous 1h essentially never hit in
+	// normal operation). Non-positive values are replaced by the default, so the
+	// backstop is always on. In production it only takes effect if the operator's
+	// forced command permits the kill; otherwise it is a safe no-op (see the
+	// privatekeypath docs in cmd/conf.go and KillProcessOnHost). Tests set it low.
+	LostRunnerBackstop time.Duration
+
+	// ConfirmDeadConcurrency bounds how many HOSTS are confirm-dead ssh-checked at
+	// once (default ServerConfirmDeadConcurrency). The confirm-dead coordinator
+	// (confirmdead.go) groups a host's lost-job pid checks onto one connection and
+	// holds one slot here per host it is checking. Under a mass false-lost event (a
+	// freeze/overload firing the TTR on thousands of jobs at once) markJobLost
+	// would otherwise spawn an unbounded storm of concurrent ssh sessions (file
+	// descriptors, network, CPU, and load on the single ssh auth path); excess
+	// hosts' checks wait for a slot. A delayed confirmation is safe: the both-pid
+	// check never condemns a live runner, so genuinely-dead jobs are merely
+	// reclaimed a little more slowly. Tests set it low. Non-positive values are
+	// replaced by the default.
+	ConfirmDeadConcurrency int
+
 	// ReleaseDelayMin is the minimum backoff before a released job becomes
 	// runnable again (default ClientReleaseDelayMin).
 	ReleaseDelayMin time.Duration
@@ -338,16 +427,18 @@ type ServerTimings struct {
 	RecMBRound int
 
 	// DBBatchDelay is the BoltDB DB.MaxBatchDelay applied to the manager's live
-	// database: how long a write transaction may wait for concurrent writes to
-	// coalesce into a single fsync'd commit (default ServerDBBatchDelay).
+	// database: how long a db.bolt.Batch call may wait for concurrent Batch calls
+	// to coalesce into a single fsync'd commit (default ServerDBBatchDelay).
 	// Durability is unaffected (every commit still fsyncs); a larger value only
 	// widens the coalescing window, trading per-write latency for fewer fsyncs
-	// when many writes are in flight.
+	// when many of those writes are in flight. See ServerDBBatchDelay for which
+	// writes those are, and for the three write paths it cannot reach.
 	DBBatchDelay time.Duration
 
 	// DBBatchSize is the BoltDB DB.MaxBatchSize applied to the manager's live
-	// database: the number of concurrent write transactions that may coalesce
-	// into one commit before it commits early (default ServerDBBatchSize).
+	// database: the number of concurrent db.bolt.Batch calls that may coalesce
+	// into one commit before it commits early (default ServerDBBatchSize), with
+	// the same scope as DBBatchDelay.
 	DBBatchSize int
 
 	// ShutdownSocketWait is how long shutdown waits, after client handling has
@@ -374,10 +465,15 @@ func (t ServerTimings) withDefaults() ServerTimings {
 	t.CheckRunnerTime = dfltDuration(t.CheckRunnerTime, ServerCheckRunnerTime)
 	t.LostJobCheckTimeout = dfltDuration(t.LostJobCheckTimeout, ServerLostJobCheckTimeout)
 	t.LostJobCheckRetryTime = dfltDuration(t.LostJobCheckRetryTime, ServerLostJobCheckRetryTime)
+	t.LostRunnerBackstop = dfltDuration(t.LostRunnerBackstop, ServerLostRunnerBackstop)
 	t.ReleaseDelayMin = dfltDuration(t.ReleaseDelayMin, ClientReleaseDelayMin)
 	t.TouchInterval = dfltDuration(t.TouchInterval, ClientTouchInterval)
 	t.RetryWait = dfltDuration(t.RetryWait, ClientRetryWait)
 	t.RetryTime = dfltDuration(t.RetryTime, ClientRetryTime)
+
+	if t.ConfirmDeadConcurrency <= 0 {
+		t.ConfirmDeadConcurrency = ServerConfirmDeadConcurrency
+	}
 
 	if t.RecSecRound <= 0 {
 		t.RecSecRound = RecSecRound
@@ -587,6 +683,24 @@ type sgroup struct {
 	// discipline as failures.
 	retryBackoff *backoff.Backoff
 	sync.RWMutex
+}
+
+// ensureGroup returns groups[snapshot.group], creating it (seeded with the
+// snapshot's requirements) on first use. The scheduler group string encodes the
+// requirements, so every job mapping to the same group carries the same
+// requirements, and it does not matter whether a counted or a skipped job creates
+// the group first.
+func ensureGroup(groups map[string]*sgroup, snapshot schedulerGroupSnapshot) *sgroup {
+	group, set := groups[snapshot.group]
+	if !set {
+		group = &sgroup{
+			name: snapshot.group,
+			req:  snapshot.requirements.Clone(),
+		}
+		groups[snapshot.group] = group
+	}
+
+	return group
 }
 
 // ensureRetryBackoff returns the group's schedule-retry backoff, lazily creating
@@ -906,12 +1020,270 @@ type repGroupStatusOptions struct {
 	IncludeStatusDetails bool
 }
 
+// readyJobCandidate pairs a ready job with a CHEAP scheduler-group snapshot of it
+// (priority, current scheduler group and requirements, taken via a single
+// job.RLock with no DB access and no q.SetReserveGroup). buildSchedulerGroups takes
+// one per ready job, then runs the expensive prepareReadyJob path only on the
+// subset it selects as schedulable this cycle.
+type readyJobCandidate struct {
+	job      *Job
+	snapshot schedulerGroupSnapshot
+}
+
+// releaseReport describes one release of a job: the end state and fail reason
+// to record, whether the release must be persisted or forced to a bury, and -
+// crucially for the retry budget - whether it was reported by the job's owner
+// after it actually tried to run the command.
+type releaseReport struct {
+	endState   *JobEndState
+	failReason string
+
+	// attempted is true when the job's OWNER reported this release having
+	// actually tried to run the job's Cmd (a cmd.Start() failure, or a command
+	// that ran and then ended badly). Such a release spends one of the job's
+	// retries even when the job has no server-side StartTime: StartTime is only
+	// set by a landed start report (applyJobStart, which needs a real pid+host)
+	// and resetJobForReservation re-zeroes it at every reservation, so without
+	// this a command that fails before it can start retries for ever, ignoring
+	// --retries and burning a scheduled runner per iteration.
+	//
+	// It is deliberately false for a MANAGER-initiated release (TTR/lost/kill),
+	// and for an owner handing a job straight back without running it (see
+	// Client.Release): a job that never reported a start may be a healthy runner
+	// merely slow to get its Started() through under load, and taking its
+	// retries away would be exactly the false-lost failure this whole effort
+	// exists to fight.
+	attempted bool
+
+	// forceStorage forces the released job's new state to be written to disk.
+	forceStorage bool
+
+	// forceBury buries the job regardless of its remaining retry budget.
+	forceBury bool
+
+	// spendsRetry is the answer to releaseSpendsARetry for this release, decided
+	// ONCE by releaseJobSnapshot and then carried to finalizeReleasedJob. It is
+	// filled in by releaseJobSnapshot, never by a caller.
+	//
+	// It has to be carried rather than recomputed because the two sites that need
+	// it take different locks at different times (RLock in releaseJobSnapshot,
+	// Lock in finalizeReleasedJob, with applyReleaseQueueChange in between), and
+	// job.StartTime is mutable: a jstart landing in that window on a release that
+	// is not attempted would make the snapshot decide "do not bury" while
+	// finalizeReleasedJob decided "spend a retry", so UntilBuried could reach 0
+	// with the item left in Delay - and the next attempted release would then
+	// underflow the uint8 to 255, silently restoring the unbounded retrying this
+	// field exists to remove.
+	spendsRetry bool
+}
+
+// lostJobReleaseReport is the release report the manager makes on its own
+// behalf when it gives up on a job whose runner is confirmed dead, or which the
+// user killed. It is never "attempted": the manager cannot know whether the
+// runner got as far as trying to run the command, so a job that never reported
+// a start keeps its full retry budget.
+func lostJobReleaseReport() releaseReport {
+	return releaseReport{
+		endState:   &JobEndState{Exitcode: -1, Exited: true},
+		failReason: FailReasonLost,
+	}
+}
+
+// releaseSpendsARetry reports whether this release counts as one of the job's
+// Retries, which it does if the job's command was actually tried: either the
+// job reported a start, or its owner reported the release having tried to run
+// the command (see releaseReport.attempted, which is what makes a job whose
+// command can never start obey --retries instead of retrying for ever).
+//
+// job must be at least read-locked. Call this ONCE per release, from
+// releaseJobSnapshot, and read the answer back off releaseReport.spendsRetry
+// afterwards: job.StartTime is mutable, so a second evaluation can disagree with
+// the first (see releaseReport.spendsRetry).
+func releaseSpendsARetry(job *Job, rep releaseReport) bool {
+	return rep.attempted || !job.StartTime.IsZero()
+}
+
+// completeJobsBudget tracks how many more archived jobs each of limitJobs' groups
+// can still contribute to a getJobsByRepGroup answer. A limit applies to the
+// groups as a whole and not to each matching RepGroup, so the budget is spent as
+// the RepGroup loop walks them: once a group is full, later RepGroups only count
+// their members of it.
+type completeJobsBudget struct {
+	perGroup  int
+	remaining map[string]int
+}
+
+// newCompleteJobsBudget returns the budget opts allows each of limitJobs' groups,
+// or nil if opts' limit cannot be pushed down to the database at all.
+//
+// limitJobs groups jobs by state, exit code and fail reason, keeps the first
+// Offset+Limit members of each group, and counts the rest in the last kept
+// member's Similar (addJobToGroup, applyOffsetToGroups). So no more than
+// Offset+Limit jobs of any one group can ever be returned, and the rest only need
+// counting - a cursor step rather than a codec decode of a production-sized
+// record.
+//
+// A filter stops the pushdown only when the pre-pass cannot DECIDE it from an
+// archived record's facets, since the whole point is that a record the pre-pass
+// merely counts stands in for one it never decoded. Of jobMatchesFilters' three
+// filters:
+//
+//   - the State filter is decidable: State and Lost are both facets, and
+//     archivedJobGrouper applies matchesStateFilter to them exactly as
+//     jobMatchesFilters does (getDBJobsByRepGroup has also already rejected every
+//     state filter but complete before the database is read at all);
+//   - the FailReason/ExitCode filter is decidable for the same reason:
+//     matchesFailureFilter reads only FailReason and Exitcode, and both are
+//     facets. Whether an archived record can actually match it is beside the
+//     point - markJobComplete clears FailReason, so today's archived records
+//     mostly cannot, and discarding them in the pre-pass is precisely how they
+//     stop costing a decode. Only the web status page's failed-job drill-down
+//     (sendJobDetails) sets it, and it sets a Limit with it;
+//   - WaitingForDepGroups is NOT decidable, so it is refused. Its input is a
+//     variable-length []string that archivedJobFacets deliberately does not
+//     carry, because decoding one per archived record is the very per-record
+//     allocation this pushdown exists to remove - and it cannot be assumed away
+//     either, since nothing clears the field when a job is archived.
+func newCompleteJobsBudget(opts repGroupOptions) *completeJobsBudget {
+	if opts.Limit <= 0 || opts.WaitingForDepGroups {
+		return nil
+	}
+
+	return &completeJobsBudget{
+		perGroup:  max(opts.Offset, 0) + opts.Limit,
+		remaining: make(map[string]int),
+	}
+}
+
+// limit says how many more of the given group's archived jobs are worth decoding.
+func (b *completeJobsBudget) limit(group string) int {
+	if remaining, spent := b.remaining[group]; spent {
+		return remaining
+	}
+
+	return b.perGroup
+}
+
+// spend records that n of the given group's archived jobs have been decoded.
+func (b *completeJobsBudget) spend(group string, n int) {
+	b.remaining[group] = max(b.limit(group)-n, 0)
+}
+
+// startupStatusReporter writes the manager's startup-phase sidecar, which for
+// however many minutes prior-state recovery takes is the PRIMARY operator
+// channel: nothing is listening, so wr manager start polls this file and wr
+// manager status reads it (spec E4).
+//
+// It is written on every start, not only after a database upgrade, and its
+// removal belongs to publication and to shutdown rather than to Serve returning
+// - Serve now returns at the instant the sidecar becomes the only channel. The
+// PID checks in cmd's currentManagerDBUpgradeStatus are the backstop for a
+// process killed without returning, not a licence to leave the file.
+//
+// Serve is its only constructor and every Server it builds has one, so its
+// methods do not tolerate a nil receiver, the same as depGroupMembers.
+type startupStatusReporter struct {
+	dbFile string
+	logger log15.Logger
+	// startedAt is carried into every write so the sidecar's StartedAt stays the
+	// start of this startup rather than the time of its latest phase.
+	startedAt time.Time
+
+	// mu guards the current phase, which refresh (called from the recovery
+	// heartbeat's goroutine) rewrites with a fresh elapsed time.
+	mu    sync.Mutex
+	state string
+	total int
+}
+
+// newStartupStatusReporter returns a reporter for dbFile's sidecar, having
+// written the phase the database open has just left the manager in: at this
+// point the database is open, but sockets, certificates, this host's IP and the
+// scheduler are still to come and the manager cannot yet accept connections.
+//
+// Only a start that really did upgrade the database on open reports the
+// post-upgrade phase. This file is written on EVERY start (spec E4), so a start
+// that upgraded nothing reporting the post-upgrade phase would have every reader
+// of the sidecar - `wr manager start`'s log line and `wr manager status` alike -
+// tell the operator about a database upgrade that never happened.
+func newStartupStatusReporter(dbFile string, logger log15.Logger, upgradedOnOpen bool) *startupStatusReporter {
+	r := &startupStatusReporter{dbFile: dbFile, logger: logger, startedAt: time.Now()}
+
+	if upgradedOnOpen {
+		r.report(postUpgradeStartupState, postUpgradeStartupDetail, 0)
+	} else {
+		r.report(internal.DBStartupPrepareState, startupPrepareDetail, 0)
+	}
+
+	return r
+}
+
+// report writes state as the current startup phase, remembering it so refresh
+// can rewrite it with a later elapsed time. total is the size of the wait when
+// it is known, and 0 when it is not.
+func (r *startupStatusReporter) report(state, detail string, total int) {
+	r.mu.Lock()
+	r.state, r.total = state, total
+	r.mu.Unlock()
+
+	r.write(state, detail, total)
+}
+
+// refresh rewrites the current phase with a new detail and a fresh UpdatedAt.
+// That pair is the whole signal distinguishing a slow start from a hang, because
+// there is no per-job progress to report: recovery enqueues in a single batch.
+func (r *startupStatusReporter) refresh(detail string) {
+	r.mu.Lock()
+	state, total := r.state, r.total
+	r.mu.Unlock()
+
+	if state == "" {
+		return
+	}
+
+	r.write(state, detail, total)
+}
+
+func (r *startupStatusReporter) write(state, detail string, total int) {
+	err := internal.WriteDBUpgradeStatus(r.dbFile, internal.DBUpgradeStatus{
+		State:     state,
+		Detail:    detail,
+		Total:     total,
+		StartedAt: r.startedAt,
+	})
+	if err != nil {
+		r.logger.Warn("failed to write startup status", "path", internal.DBUpgradeStatusPath(r.dbFile), "err", err)
+	}
+}
+
+// remove deletes the sidecar. Publication calls it once the manager is
+// reachable, shutdown calls it so the file does not outlive a manager that died
+// in the window, and Serve's error path calls it because neither of those runs
+// there.
+func (r *startupStatusReporter) remove() {
+	if err := internal.RemoveDBUpgradeStatus(r.dbFile); err != nil {
+		r.logger.Warn("failed to remove startup status", "path", internal.DBUpgradeStatusPath(r.dbFile), "err", err)
+	}
+}
+
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	token     []byte
 	uploadDir string
 	sock      mangos.Socket
-	ch        codec.Handle
+	// tlsConfig is the keypair and CA pool prepareListener loaded during Serve,
+	// used by the port bind publication does when recovery ends (spec E1).
+	tlsConfig *tls.Config
+	// serving is closed once the server has published its externally observable
+	// surface, and also by beginShutdown so a caller never waits forever on a
+	// server that is being stopped (spec E2). servingOnce guards that double
+	// close.
+	serving     chan struct{}
+	servingOnce sync.Once
+	// startupStatus writes the startup-phase sidecar that is the only operator
+	// channel while the manager is not yet reachable (spec E4).
+	startupStatus *startupStatusReporter
+	ch            codec.Handle
 	// runner command string compatible with fmt.Sprintf(..., schedulerGroup,
 	// deployment, serverAddr, reserveTimeout, maxMinsAllowed).
 	rc string
@@ -932,10 +1304,14 @@ type Server struct {
 	// and queue destroy - rather than at the final wg.Wait. bgCancel cancels the
 	// context those goroutines observe, so shutdown can tell them to abort
 	// promptly and quietly instead of racing the teardown.
-	bgWG                      *waitgroup.WaitGroup
-	bgCancel                  context.CancelFunc
-	q                         *queue.Queue
-	rpl                       *rgToKeys
+	bgWG     *waitgroup.WaitGroup
+	bgCancel context.CancelFunc
+	q        *queue.Queue
+	rpl      *rgToKeys
+	// depGroups holds, per dep group with at least one live member job, the keys
+	// of those members, so a dep-group dependency resolves to one opaque
+	// depgroup:G key instead of one key per member job.
+	depGroups                 *depGroupMembers
 	limiter                   *limiter.Limiter
 	scheduler                 *scheduler.Scheduler
 	previouslyScheduledGroups map[string]*sgroup
@@ -946,9 +1322,11 @@ type Server struct {
 	schedCaster               *caster
 	racCheckTimer             *time.Timer
 	statusWSDetailsHook       func()
-	// recoveryPauseHook, if non-nil, is called at the top of the background
-	// prior-state recovery goroutine so a test can block recovery and observe
-	// the recovering window (modelled on statusWSDetailsHook). nil in production.
+	// recoveryPauseHook, if non-nil, is called by the background prior-state
+	// recovery just before it re-enqueues the prior jobs, so a test can block
+	// recovery and observe the recovering window - including the "still
+	// recovering" heartbeat, whose window the hook sits inside (modelled on
+	// statusWSDetailsHook). nil in production.
 	recoveryPauseHook   func()
 	pauseRequests       int
 	wsconns             map[string]*websocket.Conn
@@ -962,7 +1340,6 @@ type Server struct {
 	simutex             sync.RWMutex
 	krmutex             sync.RWMutex
 	ssmutex             sync.RWMutex // up, drain, blocking, Mode, shutdown's q-nil, recovering state
-	rrjMu               sync.RWMutex // leaf lock guarding recoveredRunningJobs
 	psgmutex            sync.RWMutex // to protect previouslyScheduledGroups
 	csmutex             sync.RWMutex // to protect clientSubscriptions and subsClosed
 	rpmutex             sync.Mutex   // to protect racPending, racRunning and waitingReserves
@@ -973,20 +1350,39 @@ type Server struct {
 	blocking bool
 	// recovering, recoveryTotal and recoveryRestored track background prior-state
 	// recovery (spec B1); all guarded by ssmutex.
-	recovering           bool
-	recoveryTotal        int
-	recoveryRestored     int
-	racChecking          bool
-	killRunners          bool
-	subsClosed           bool // shutdown swept the subscriptions; see storeClientSubscription
-	racPending           bool
-	racRunning           bool
-	waitingReserves      []chan struct{}
-	recoveredRunningJobs map[string]bool
-	nextSubscriptionID   uint64
+	recovering       bool
+	recoveryTotal    int
+	recoveryRestored int
+	// readersStarted records whether publication got as far as starting the RPC
+	// readers, so shutdown inside the startup window does not wait
+	// ServerShutdownWaitTime for a clientHandlingDone that nothing will ever
+	// close (spec E3). Guarded by ssmutex.
+	readersStarted     bool
+	racChecking        bool
+	killRunners        bool
+	subsClosed         bool // shutdown swept the subscriptions; see storeClientSubscription
+	racPending         bool
+	racRunning         bool
+	waitingReserves    []chan struct{}
+	nextSubscriptionID uint64
 
 	// lastRunToken is the last runToken this manager minted; only mintRunToken touches it.
 	lastRunToken atomic.Uint64
+
+	// racScanWork is INERT observability for the reliable4 rac-scan-bound
+	// invariant (issue #1). buildSchedulerGroups resets it to 0 at the start of
+	// each cycle, and prepareReadyJob (the EXPENSIVE per-job path) increments it
+	// once per call. When a runner command is configured (rc != "", the production
+	// case the backlog-rescan reproducer drives), buildSchedulerGroups runs
+	// prepareReadyJob only for the jobs its priority/limit-group selection deems
+	// schedulable this cycle (the cheap pre-pass does not count), so the counter
+	// stays bounded by the schedulable count (~limit), not by the ready backlog
+	// size. The rc == "" path (a manager with no scheduler command) schedules
+	// nothing but still refreshes every ready job's requirements, calling
+	// prepareReadyJob once per ready job, so there racScanWork equals the backlog
+	// and the bound does not apply. It affects no scheduling behaviour: nothing
+	// reads it except that test.
+	racScanWork atomic.Int64
 
 	// timings holds this server's resolved timing parameters. The fixed ones
 	// are set once in Serve() and then only read; the three below
@@ -998,6 +1394,20 @@ type Server struct {
 	itemTTR               time.Duration
 	lostJobCheckTimeout   time.Duration
 	lostJobCheckRetryTime time.Duration
+
+	// confirmDeadLimiter is a counting semaphore (buffered to
+	// timings.ConfirmDeadConcurrency) that bounds how many HOSTS are being
+	// confirm-dead ssh-checked at once. The confirm-dead coordinator groups a
+	// host's lost-job pid checks onto one connection and holds one slot here per
+	// host it is checking, so a mass false-lost event (a whole node's jobs going
+	// lost together) cannot spawn an unbounded ssh storm. It is a per-Server field
+	// (not a package global) so independent servers, and tests, can size it
+	// differently.
+	confirmDeadLimiter chan struct{}
+
+	// confirmDead groups lost jobs' confirm-dead ssh checks by host so all of a
+	// dead host's pid checks share one ssh connection (see confirmdead.go).
+	confirmDead *confirmDeadCoordinator
 }
 
 // itemTTRDuration returns the current (runtime-adjustable) time-to-release given
@@ -1186,38 +1596,333 @@ func (s *Server) getJobsRecent(ctx context.Context, period time.Duration,
 	return jobs, "", ""
 }
 
-// startPriorStateRecovery reads the prior incomplete jobs (a cheap live-bucket
-// scan), fills in that total on the already-active recovering state, and
-// launches a background goroutine that re-enqueues them so Serve returns while
-// recovery is still running (spec B1). The recovering flag was set true by
-// Serve before it began accepting client RPCs (so the recovery window is closed
-// with no false losses, spec B2); here we only fill in the true total, which
-// happens before the background goroutine (and thus recoveryPauseHook) runs so
-// progress reporting is correct at the pause (spec B1 acceptance test 4). The
-// goroutine calls recoveryPauseHook (if set) at the top so a test can block and
-// observe the recovering window, updates progress via noteRecovered, and calls
-// finishRecovering when done. Recovery keeps the single-batch enqueue
-// (recoverPriorJobs -> enqueueItems).
-func (s *Server) startPriorStateRecovery(ctx context.Context, config ServerConfig, db *db) error {
-	priorJobs, err := db.recoverIncompleteJobs()
+// registerDepGroupMembers records each job as a live member of its DepGroups,
+// releasing nothing: it only adds, so no group can empty. It is recovery's bulk
+// rebuild and the add path's first pass. Call it before resolving any dependency
+// against this state.
+func (s *Server) registerDepGroupMembers(jobs []*Job) {
+	for _, job := range jobs {
+		if len(job.DepGroups) == 0 {
+			continue
+		}
+
+		s.depGroups.add(job.DepGroups, job.Key())
+	}
+}
+
+// releaseDepGroupMembership drops jobKey from every group it is a member of and
+// satisfies the queue dependency key of every group thereby emptied. Must not be
+// called while holding the queue mutex.
+func (s *Server) releaseDepGroupMembership(ctx context.Context, jobKey string) {
+	s.satisfyEmptiedDepGroups(ctx, s.depGroups.remove(jobKey))
+}
+
+// replaceDepGroupMembership makes newGroups jobKey's membership and satisfies the
+// queue dependency key of every group thereby emptied. On the add path it is the
+// second of two passes, after registerDepGroupMembers has recorded the whole
+// batch's groups, so it only ever applies drops there. Must not be called while
+// holding the queue mutex.
+func (s *Server) replaceDepGroupMembership(ctx context.Context, jobKey string, newGroups []string) {
+	s.satisfyEmptiedDepGroups(ctx, s.depGroups.replace(jobKey, newGroups))
+}
+
+// rekeyDepGroupMembership is replaceDepGroupMembership across a key change, for
+// the modify path: newKey takes newGroups before oldKey's membership is dropped,
+// so a group both keys belong to is never seen as empty and its waiters are not
+// released early. Must not be called while holding the queue mutex.
+func (s *Server) rekeyDepGroupMembership(ctx context.Context, oldKey, newKey string, newGroups []string) {
+	s.satisfyEmptiedDepGroups(ctx, s.depGroups.rekey(oldKey, newKey, newGroups))
+}
+
+// rekeyDepGroupMembershipForModifiedJobs makes each modified job's declared
+// DepGroups its membership under its (possibly new) key, dropping the membership
+// held under the old key paired with it in oldKeys, which must be index-parallel
+// with jobs.
+//
+// Dropping the old key is not optional: nothing else does it, so a key-changing
+// modification would otherwise leave a phantom member keeping the group
+// non-empty and wedging its waiters forever.
+func (s *Server) rekeyDepGroupMembershipForModifiedJobs(ctx context.Context, oldKeys []string, jobs []*Job) {
+	for i, job := range jobs {
+		// the modification wrote DepGroups under the job's own lock, and another
+		// request could be modifying the same job now, so read it under the lock
+		// and release before rekeying: satisfying an emptied group takes the queue
+		// mutex, which is above the job lock in the lock order.
+		job.RLock()
+		newKey, depGroups := job.Key(), job.DepGroups
+		job.RUnlock()
+
+		s.rekeyDepGroupMembership(ctx, oldKeys[i], newKey, depGroups)
+	}
+}
+
+// satisfyEmptiedDepGroups resolves the queue dependency key of each of these dep
+// groups, which have no live member left, so that anything waiting only on one of
+// them becomes ready. It takes the queue mutex, so no membership shard lock may
+// be held here.
+func (s *Server) satisfyEmptiedDepGroups(ctx context.Context, emptied []string) {
+	for _, depGroup := range emptied {
+		if err := s.q.SatisfyDependency(ctx, depGroupDependencyKey(depGroup)); err != nil {
+			// the only error is a closed queue, ie. we are shutting down, so the
+			// waiters will be resolved afresh by the next server's recovery.
+			clog.Debug(ctx, "could not satisfy an emptied dep group's waiters",
+				"depGroup", depGroup, "err", err)
+		}
+	}
+}
+
+// startPriorStateRecovery marks the server recovering, reads the prior
+// incomplete jobs (a cheap live-bucket scan), fills in that total, and launches
+// a background goroutine that re-enqueues them and then publishes the server's
+// externally observable surface, so Serve returns while recovery is still
+// running (spec E1). The goroutine calls recoveryPauseHook (if set) just before
+// the re-enqueue so a test can block and observe the startup window, updates
+// progress via noteRecovered, and calls finishRecovering when done. Recovery
+// keeps the single-batch enqueue (recoverPriorJobs -> enqueueItems).
+//
+// setRecovering must come first, before the decode: it resets recoveryTotal and
+// recoveryRestored, whereas setRecoveryTotal deliberately does not touch the
+// flag, so calling setRecovering afterwards would zero the total just filled in.
+//
+// ctx is the background-startup context shutdown cancels; serveCtx is Serve's
+// own, which shutdown never cancels, and is what publication hands the web
+// interface and the RPC readers - stopBackgroundStartupTasks cancels ctx at the
+// top of shutdown, long before the readers are meant to stop.
+func (s *Server) startPriorStateRecovery(ctx, serveCtx context.Context, config ServerConfig, db *db) error {
+	s.setRecovering(0)
+
+	s.startupStatus.report(internal.DBStartupDecodeState, startupDecodeDetail, 0)
+
+	priorJobs, err := s.decodePriorJobs(serveCtx, db)
 	if err != nil {
 		return err
 	}
 
+	// the per-group live-member state has to exist before any dependency is
+	// resolved against it, or a group whose members are all still live would
+	// resolve as satisfied and its waiters would run in the wrong order.
+	s.buildDepGroupState(serveCtx, priorJobs)
+
 	s.setRecoveryTotal(len(priorJobs))
+
+	// written here, as the last synchronous statement, rather than inside
+	// recoverInBackground: written there it would usually land before Serve
+	// returns and occasionally not, which is a manufactured flake for anything
+	// reading the sidecar as soon as Serve has returned (spec E4).
+	s.startupStatus.report(internal.DBStartupRecoveryState, startupRecoveryDetail(0), len(priorJobs))
 
 	wgk := s.bgWG.Add(1)
 
-	go s.recoverInBackground(ctx, config, wgk, priorJobs)
+	go s.recoverInBackground(ctx, serveCtx, config, wgk, priorJobs)
 
 	return nil
 }
 
+// startupRecoveryDetail describes the recovery phase by how long it has been
+// going, since its restored count is all-or-nothing and would read 0 for the
+// whole window.
+func startupRecoveryDetail(elapsed time.Duration) string {
+	return startupRecoveryDetailPrefix + elapsed.Round(time.Millisecond).String() + startupRecoveryDetailSuffix
+}
+
+// decodePriorJobs reads the prior incomplete jobs out of the live bucket, timing
+// the phase. The elapsed field is at warn, not info, so it appears at the
+// default log level and an operator sizing this startup window can see where the
+// time went (spec E9).
+func (s *Server) decodePriorJobs(ctx context.Context, db *db) ([]*Job, error) {
+	started := time.Now()
+
+	priorJobs, err := db.recoverIncompleteJobs()
+	if err != nil {
+		return nil, err
+	}
+
+	clog.Warn(ctx, "recovering: decoded live jobs", "jobs", len(priorJobs),
+		"elapsed", time.Since(started).Round(time.Millisecond))
+
+	return priorJobs, nil
+}
+
+// buildDepGroupState registers the prior jobs' dep-group memberships, timing the
+// phase (spec E9).
+func (s *Server) buildDepGroupState(ctx context.Context, priorJobs []*Job) {
+	s.startupStatus.report(internal.DBStartupDepGroupState, startupDepGroupDetail, len(priorJobs))
+
+	started := time.Now()
+
+	s.registerDepGroupMembers(priorJobs)
+
+	clog.Warn(ctx, "recovering: built dependency-group state", "memberships", s.depGroups.memberships(),
+		"elapsed", time.Since(started).Round(time.Millisecond))
+}
+
+// Serving returns a channel that is closed once the server has published its
+// externally observable surface: the web interface is up, the token file is
+// written and the RPC listener is bound and being read (spec E2). Serve returns
+// before any of that, while prior-state recovery is still running, so a caller
+// that then talks to the server must wait on this first.
+//
+// It is also closed by shutdown, so a caller never waits forever on a server
+// that is being stopped; a receive on it therefore means "reachable, or never
+// going to be", not "reachable".
+func (s *Server) Serving() <-chan struct{} {
+	return s.serving
+}
+
+// closeServing closes the serving channel, at most once: publication and
+// shutdown can both reach it.
+func (s *Server) closeServing() {
+	s.servingOnce.Do(func() { close(s.serving) })
+}
+
+// noteReadersStarted records that publication started the RPC readers, so
+// shutdown knows clientHandlingDone will actually be closed (spec E3).
+func (s *Server) noteReadersStarted() {
+	s.ssmutex.Lock()
+	defer s.ssmutex.Unlock()
+
+	s.readersStarted = true
+}
+
+// clientHandlingStarted reports whether publication got as far as starting the
+// RPC readers.
+func (s *Server) clientHandlingStarted() bool {
+	s.ssmutex.RLock()
+	defer s.ssmutex.RUnlock()
+
+	return s.readersStarted
+}
+
+// publishServingSurface makes the server externally observable, in the order
+// spec E1 lays out: the web interface (which also starts the casters and
+// registers the scheduler callbacks), the token file, the RPC port bind, the RPC
+// readers, and finally close(s.serving).
+//
+// It is the last plain statement of recoverInBackground rather than a defer:
+// recoverInBackground's LogPanic defer exits the process, and a publication
+// defer registered after it would publish a listener microseconds before that
+// exit. The cost of a tail statement is that publication happens before
+// finishRecovering (a defer), leaving a sub-millisecond window with the listener
+// up while isRecovering() is still true. That order is deliberate: it means
+// isRecovering() == false implies a bound listener, which is what keeps
+// waitUntilRecovered-gated tests race-free, and any request that does land in
+// the window gets the retryable ErrRecovering.
+//
+// bgCtx is the background-startup context: recoverPriorJobsAndNote returns early
+// when shutdown cancels it, so this tail IS reached while the socket is being
+// torn down, and publishing then would race the teardown.
+//
+// An invisible manager holding the database lock is worse than a dead one, so a
+// token write failure, or a port bind still failing after the retry budget,
+// exits the process through publishExit. Publication returns immediately after
+// that call: with the real os.Exit the difference is unobservable, but a test
+// double returns, and none of the steps after the bind may run against an
+// unbound socket.
+func (s *Server) publishServingSurface(bgCtx, ctx context.Context, config ServerConfig) {
+	if err := bgCtx.Err(); err != nil {
+		clog.Debug(ctx, "not publishing the serving surface during shutdown", "err", err)
+
+		return
+	}
+
+	s.startWebInterface(ctx, config)
+
+	if !s.persistTokenAndListen(ctx, config) {
+		return
+	}
+
+	wgk := s.wg.Add(1)
+
+	go s.serveClients(ctx, s.sock, s.wg, wgk, s.stopClientHandling, s.clientHandlingDone)
+
+	s.noteReadersStarted()
+
+	// the sidecar's job is done: from here the manager answers for itself.
+	s.startupStatus.remove()
+
+	s.closeServing()
+}
+
+// persistTokenAndListen writes the token file and binds the RPC listener,
+// reporting whether both succeeded. On failure it exits the process through
+// publishExit: an invisible manager holding the database lock is worse than a
+// dead one. The token write is not retried, because unlike the bind its failure
+// is not port contention.
+func (s *Server) persistTokenAndListen(ctx context.Context, config ServerConfig) bool {
+	if err := persistToken(config.TokenFile, s.token); err != nil {
+		clog.Error(ctx, "could not write the token file, so exiting", "path", config.TokenFile, "err", err)
+		publishExit(1)
+
+		return false
+	}
+
+	if err := s.listenWithRetries(ctx, config.Port); err != nil {
+		clog.Error(ctx, "could not listen on the manager port, so exiting", "port", config.Port, "err", err)
+		publishExit(1)
+
+		return false
+	}
+
+	return true
+}
+
+// startWebInterface starts the web interface and blocks until it reports itself
+// ready, which is also when s.httpServer, the casters and the scheduler
+// callbacks are in place.
+//
+// Its waitgroup key is registered here, immediately before its go, rather than
+// in Serve: a key issued in Serve would be outstanding on every run where
+// publication does not happen (a shutdown inside the startup window, or the
+// publishExit path), and shutdown's s.wg.Wait would then never return.
+func (s *Server) startWebInterface(ctx context.Context, config ServerConfig) {
+	ready := make(chan bool)
+	wgk := s.wg.Add(1)
+
+	go s.serveWebInterface(ctx, config, "0.0.0.0:"+config.WebPort,
+		config.CertFile, config.KeyFile, s.wg, wgk, ready)
+
+	<-ready
+}
+
+// listenWithRetries binds the command socket to port, retrying every
+// serverBindRetryInterval for up to serverBindRetryBudget before giving up.
+//
+// The retry is not belt and braces: the bind used to happen in Serve, where an
+// in-use port came back as a Serve error the caller could retry, and it now
+// happens in the recovery goroutine where nothing can. The committed suite
+// really does re-bind ports a just-stopped server has not finished releasing
+// (reliable4_dependency_tx_test.go:551-554, and each reliable2_dbcompat_test.go
+// test binds the ports the previous one held), so without this a whole go test
+// binary would be taken down by publishExit.
+func (s *Server) listenWithRetries(ctx context.Context, port string) error {
+	err := listenTLS(s.sock, s.tlsConfig, port)
+	if err == nil {
+		return nil
+	}
+
+	clog.Warn(ctx, "could not listen on the manager port yet, retrying", "port", port, "err", err)
+
+	limit := time.After(serverBindRetryBudget)
+	ticker := time.NewTicker(serverBindRetryInterval)
+
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if err = listenTLS(s.sock, s.tlsConfig, port); err == nil {
+				return nil
+			}
+		case <-limit:
+			return err
+		}
+	}
+}
+
 // recoverInBackground is the body of the background prior-state recovery
-// goroutine launched by startPriorStateRecovery (spec B1). It calls
-// recoveryPauseHook (if set) at the top so a test can block and observe the
-// recovering window, re-enqueues the prior jobs in a single batch, records the
-// result via noteRecovered, and marks recovery finished on return.
+// goroutine launched by startPriorStateRecovery (spec B1). It re-enqueues the
+// prior jobs in a single batch, records the result via noteRecovered, and marks
+// recovery finished on return.
 //
 // Because the enqueue is a single batch, progress is all-or-nothing: the
 // restored count set by noteRecovered goes from 0 straight to the total in one
@@ -1228,7 +1933,17 @@ func (s *Server) startPriorStateRecovery(ctx context.Context, config ServerConfi
 // destroy. On cancellation it returns quietly (finishRecovering still runs, so
 // the recovering flag is cleared) without calling scheduler.Recover, enqueuing,
 // or logging the shutdown as a failure.
-func (s *Server) recoverInBackground(ctx context.Context, config ServerConfig, wgk string, priorJobs []*Job) {
+//
+// Publication is its last plain statement, and hangs off recovery ENDING rather
+// than succeeding: recoverPriorJobsAndNote logs and returns on failure, so
+// gating publication on success would leave a manager that is up, holds the
+// database lock, and is invisible forever while wr manager start polls
+// indefinitely. The correctness-critical half still fails loudly, because a
+// decode or group-build error returns from startPriorStateRecovery and makes
+// Serve error out.
+func (s *Server) recoverInBackground(ctx, serveCtx context.Context, config ServerConfig,
+	wgk string, priorJobs []*Job,
+) {
 	defer internal.LogPanic(ctx, "jobqueue prior-state recovery", true)
 	defer s.bgWG.Done(wgk)
 	// re-schedule ready work once recovery has finished. Defers run LIFO, so
@@ -1239,11 +1954,9 @@ func (s *Server) recoverInBackground(ctx context.Context, config ServerConfig, w
 	defer s.rescheduleReadyAfterRecovery(ctx)
 	defer s.finishRecovering()
 
-	if s.recoveryPauseHook != nil {
-		s.recoveryPauseHook()
-	}
-
 	s.recoverPriorJobsAndNote(ctx, config, priorJobs)
+
+	s.publishServingSurface(ctx, serveCtx, config)
 }
 
 // recoverPriorJobsAndNote re-enqueues the prior jobs (in a single batch) and
@@ -1251,6 +1964,15 @@ func (s *Server) recoverInBackground(ctx context.Context, config ServerConfig, w
 // shutdown has cancelled ctx (so we never touch the scheduler, DB or queue
 // during teardown), and treats a cancellation surfaced by recoverPriorJobs as
 // an expected quiet return rather than a failure.
+//
+// The milestones are logged at warn, not info, because the log handler the
+// manager hands the server is warn-filtered unless --debug is given
+// (cmd.setupManagerLogging), and on a default start an operator must be able to
+// tell a recovering manager from one that has lost every job: production once
+// spent 15+ minutes recovering 148,393 jobs with nothing in the log but client
+// "server is recovering prior state" errors, which read as total job loss (spec
+// B1, .docs/bugfixes/260825-1.md). This is the same reason the "pprof profiling
+// endpoint enabled" notice is a warn.
 func (s *Server) recoverPriorJobsAndNote(ctx context.Context, config ServerConfig, priorJobs []*Job) {
 	if err := ctx.Err(); err != nil {
 		clog.Debug(ctx, "prior-state recovery aborted during shutdown", "err", err)
@@ -1258,9 +1980,9 @@ func (s *Server) recoverPriorJobsAndNote(ctx context.Context, config ServerConfi
 		return
 	}
 
-	clog.Info(ctx, "recovering prior state", "total", len(priorJobs))
+	clog.Warn(ctx, "recovering prior state", "total", len(priorJobs))
 
-	err := s.recoverPriorJobs(ctx, config, priorJobs)
+	err := s.recoverPriorJobsWithHeartbeat(ctx, config, priorJobs)
 	if err != nil && errors.Is(err, context.Canceled) {
 		clog.Debug(ctx, "prior-state recovery aborted during shutdown", "err", err)
 
@@ -1276,7 +1998,76 @@ func (s *Server) recoverPriorJobsAndNote(ctx context.Context, config ServerConfi
 	s.noteRecovered(len(priorJobs))
 
 	restored, total := s.recoveryProgress()
-	clog.Info(ctx, "recovering: prior state recovered", "restored", restored, "total", total)
+	clog.Warn(ctx, "recovering: prior state recovered", "restored", restored, "total", total)
+}
+
+// recoverPriorJobsWithHeartbeat re-enqueues the prior jobs while a heartbeat
+// reports that recovery is still working, and stops that heartbeat before
+// returning, so no "still recovering" line can ever follow recovery's outcome
+// line.
+//
+// It also calls recoveryPauseHook (if set) inside the heartbeat's window, so a
+// test can block here to exercise a long recovery; the hook is nil in
+// production.
+func (s *Server) recoverPriorJobsWithHeartbeat(ctx context.Context, config ServerConfig, priorJobs []*Job) error {
+	stopHeartbeat := s.startRecoveryHeartbeat(ctx, len(priorJobs))
+	defer stopHeartbeat()
+
+	if s.recoveryPauseHook != nil {
+		s.recoveryPauseHook()
+	}
+
+	return s.recoverPriorJobs(ctx, config, priorJobs)
+}
+
+// startRecoveryHeartbeat starts a goroutine that logs, every
+// recoveryHeartbeatInterval, that prior-state recovery is still working, with
+// how long it has been going. It reports elapsed time rather than a job count
+// because the re-enqueue is a single batch (the restored count jumps 0 -> total
+// in one step), so there is no per-job progress to report.
+//
+// The returned function stops the heartbeat and waits for the goroutine to
+// exit, so the heartbeat can neither outlive recovery nor leak; the goroutine
+// also observes ctx (s.bgCtx), so a shutdown during recovery ends it promptly.
+func (s *Server) startRecoveryHeartbeat(ctx context.Context, total int) func() {
+	stop := make(chan struct{})
+	stopped := make(chan struct{})
+	started := time.Now()
+
+	go func() {
+		defer close(stopped)
+		defer internal.LogPanic(ctx, "jobqueue prior-state recovery heartbeat", false)
+
+		ticker := time.NewTicker(recoveryHeartbeatInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.reportStillRecovering(ctx, total, time.Since(started))
+			}
+		}
+	}()
+
+	return func() {
+		close(stop)
+		<-stopped
+	}
+}
+
+// reportStillRecovering says, in the log and in the startup sidecar, that
+// recovery has been going for elapsed. The sidecar rides this existing tick
+// rather than a timer of its own, so an operator watching wr manager start sees
+// the same heartbeat through the file (spec E4).
+func (s *Server) reportStillRecovering(ctx context.Context, total int, elapsed time.Duration) {
+	clog.Warn(ctx, "recovering: still recovering prior state", "total", total,
+		"elapsed", elapsed.Round(time.Millisecond))
+
+	s.startupStatus.refresh(startupRecoveryDetail(elapsed))
 }
 
 // rescheduleReadyAfterRecovery re-triggers the ready-added callback when the
@@ -1304,7 +2095,7 @@ func (s *Server) rescheduleReadyAfterRecovery(ctx context.Context) {
 // return promptly; ServerShutdownWaitTime is only the threshold after which
 // bgWG.Wait logs any still-outstanding tasks (the wait itself does not time
 // out). It holds no server locks, so waiting cannot deadlock against the
-// goroutines' own lock acquisitions (queue mutex, rrjMu, ssmutex, db locks).
+// goroutines' own lock acquisitions (queue mutex, ssmutex, db locks).
 func (s *Server) stopBackgroundStartupTasks() {
 	if s.bgCancel != nil {
 		s.bgCancel()
@@ -1351,6 +2142,11 @@ func (s *Server) serveClientsReader(ctx context.Context, sock mangos.Socket, wg 
 // and q.SetReserveGroup, when rc is set and the group has changed.)
 func (s *Server) prepareReadyJob(ctx context.Context, q *queue.Queue, job *Job, rc string,
 	reqGroupToReqs map[string]*scheduler.Requirements) (schedulerGroupSnapshot, bool) {
+	// count one unit of EXPENSIVE per-job scheduling work (see Server.racScanWork):
+	// buildSchedulerGroups runs this only for the jobs it selects as schedulable
+	// this cycle, so the counter stays bounded by the schedulable count.
+	s.racScanWork.Add(1)
+
 	job.RLock()
 	jobOverride := job.Override
 	reqGroup := job.ReqGroup
@@ -1823,11 +2619,25 @@ func failureMayUpdateJobRequirements(job *Job) bool {
 		job.FailReason == FailReasonTime
 }
 
-func updateJobRequirementsForRetry(
-	job *Job,
-	jobOverride uint8,
-	recommendedReq *scheduler.Requirements,
-) {
+// updateJobRequirementsForRetry applies the learned requirements a retry should
+// use, and invalidates the job's memoised derived scheduler-group strings.
+//
+// Requirements is an input of those derived strings (jobDerived), and everything
+// below can change it in place on EITHER exit: applyRecommendedJobRequirements
+// applies a learned value for any resource the user did not specify whatever
+// their override (see cmd/add.go's "If you choose to override eg. only
+// disk..."), including on the jobOverrideAlwaysUseJobReqs early return below.
+// Invalidating in a defer is therefore not just tidier, it is the only placement
+// no future edit to those branches or that early return can silently defeat.
+//
+// It is also deliberately unconditional rather than conditional on a value
+// actually changing: only the jobs a rac cycle deems schedulable reach here
+// (prepareReadyJob is the bounded half of the cycle, see
+// scheduleReadyJobsByPriority), so re-deriving when the numbers happen to come
+// out the same costs nothing at backlog scale.
+func updateJobRequirementsForRetry(job *Job, jobOverride uint8, recommendedReq *scheduler.Requirements) {
+	defer job.invalidateDerivedLocked()
+
 	if job.RequirementsOrig == nil {
 		job.RequirementsOrig = &scheduler.Requirements{
 			RAM:     job.Requirements.RAM,
@@ -2007,8 +2817,398 @@ func trimGroupsToLimit(siblings []*sgroup, limit int) {
 	}
 }
 
+// snapshotReadyJobs takes a CHEAP scheduler-group snapshot of every ready job,
+// pairing each with its job. This is the O(backlog) pre-pass that lets
+// buildSchedulerGroups decide which jobs are schedulable this cycle without running
+// the expensive prepareReadyJob path (requirement recompute + q.SetReserveGroup)
+// for the limit-blocked backlog. It does no DB access and does not count towards
+// racScanWork (only prepareReadyJob does).
+func (s *Server) snapshotReadyJobs(allitemdata []any) []readyJobCandidate {
+	candidates := make([]readyJobCandidate, 0, len(allitemdata))
+
+	for _, inter := range allitemdata {
+		job, ok := inter.(*Job)
+		if !ok {
+			continue
+		}
+
+		candidates = append(candidates, readyJobCandidate{
+			job:      job,
+			snapshot: job.schedulerGroupSnapshot(),
+		})
+	}
+
+	return candidates
+}
+
+// scheduleReadyJobsByPriority selects, priority-fair within each limit group, the
+// ready jobs that are schedulable this cycle (bounded by each limit group's
+// remaining capacity), runs the expensive prepareReadyJob path only for those, and
+// counts them into their scheduler groups. Limit-blocked jobs are recorded as
+// skipped WITHOUT that expensive work, so a rac cycle's per-job work stays bounded
+// by the schedulable count, not the ready-backlog size.
+//
+// Selection uses the SAME shared per-limit-group budget accounting as
+// countJobInGroup (seedLimitGroupBudgets), so the reliable3 over-provision and
+// priority-fairness invariants are preserved: a limit group's summed schedulable
+// count never exceeds its remaining capacity, and the budget is handed to the
+// highest-priority jobs first. A job carrying no limit group is never blocked, so
+// it is always schedulable (as before).
+func (s *Server) scheduleReadyJobsByPriority(ctx context.Context, q *queue.Queue,
+	groups map[string]*sgroup, candidates []readyJobCandidate, rc string,
+	reqGroupToReqs map[string]*scheduler.Requirements) {
+	// When any job carries a limit group its shared budget can be contended, so
+	// count highest-priority-first: a low-priority job scanned first must not starve
+	// a higher-priority one of the budget. When no job carries a limit group nothing
+	// can be blocked, so the sort would not change the outcome and is skipped (the
+	// gate is on limit-group presence, not GetLimits(), because a limit is enforced
+	// via GetRemainingCapacity's callback even before the group is first vivified,
+	// so GetLimits() can still be empty here).
+	if candidatesCarryLimitGroup(candidates) {
+		slices.SortStableFunc(candidates, func(a, b readyJobCandidate) int {
+			return cmp.Compare(b.snapshot.priority, a.snapshot.priority)
+		})
+	}
+
+	limitBudgets := make(map[string]int)
+
+	for _, candidate := range candidates {
+		if s.readyJobLimitBlocked(ctx, limitBudgets, candidate.snapshot) {
+			s.recordSkippedReadyJob(ctx, q, groups, candidate)
+
+			continue
+		}
+
+		s.prepareAndCountReadyJob(ctx, q, groups, candidate.job, rc, reqGroupToReqs)
+	}
+}
+
+// candidatesCarryLimitGroup reports whether any ready-job candidate carries a limit
+// group (its scheduler group string contains jobSchedLimitGroupSeparator), i.e.
+// whether a shared per-limit-group budget could be contended this cycle and so
+// scheduleReadyJobsByPriority must sort the candidates highest-priority-first.
+func candidatesCarryLimitGroup(candidates []readyJobCandidate) bool {
+	for _, candidate := range candidates {
+		if strings.Contains(candidate.snapshot.group, jobSchedLimitGroupSeparator) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// recordSkippedReadyJob records one limit-blocked ready job against its scheduler
+// group's skipped count and keeps it reservable, WITHOUT the expensive
+// prepareReadyJob requirement recompute. The skipped count keeps the deferred job
+// accounted so a later completion re-triggers scheduling (decrementGroupCount /
+// hasSkippedScheduledGroups) and it is fully prepared once it becomes schedulable.
+// Meanwhile it must still be reservable so a runner scheduled for its group can pick
+// it up the moment capacity frees, so we establish its scheduler/queue reserve group
+// from the cheap snapshot (a one-time write, a no-op on later cycles once the group
+// is set), which does not count towards racScanWork.
+func (s *Server) recordSkippedReadyJob(ctx context.Context, q *queue.Queue,
+	groups map[string]*sgroup, candidate readyJobCandidate) {
+	ensureGroup(groups, candidate.snapshot).skipped++
+
+	s.ensureReserveGroup(ctx, q, candidate.job, candidate.snapshot)
+}
+
+// ensureReserveGroup establishes a ready job's scheduler and queue reserve group
+// from its cheap pre-pass snapshot, but ONLY when the group actually changed
+// (snapshot.previousGroup != snapshot.group). This makes a limit-blocked job
+// reservable without the expensive prepareReadyJob requirement recompute, and is a
+// one-time cost per job: once its group is set, later rac cycles find it unchanged
+// and do no work, keeping the sustained hot loop bounded. It deliberately does NOT
+// recompute requirements (that is deferred to prepareReadyJob when the job becomes
+// schedulable), so on the rare cycle where a job's requirements would change this
+// sets the pre-change group; prepareReadyJob later corrects it when scheduling.
+func (s *Server) ensureReserveGroup(ctx context.Context, q *queue.Queue, job *Job,
+	snapshot schedulerGroupSnapshot) {
+	if snapshot.previousGroup == snapshot.group {
+		return
+	}
+
+	job.setSchedulerGroup(snapshot.group)
+
+	warnUnexpectedSetReserveGroupError(ctx, q.SetReserveGroup(snapshot.key, snapshot.group))
+}
+
+// readyJobLimitBlocked reports whether the snapshot's ready job is limit-blocked
+// this cycle. If it is NOT blocked it consumes one unit of each of its limited
+// limit groups' shared budget (so the summed schedulable count for a limit group
+// never exceeds its remaining capacity) and returns false; if some limit group's
+// budget is already exhausted it consumes nothing and returns true. This is the
+// same shared per-limit-group budget accounting countJobInGroup applies, decoupled
+// from the expensive prepareReadyJob work so only schedulable jobs incur it. A
+// job's limit groups come from its LimitGroups (fixed), so they are unaffected by
+// any requirement change prepareReadyJob later makes to a schedulable job.
+func (s *Server) readyJobLimitBlocked(ctx context.Context, limitBudgets map[string]int,
+	snapshot schedulerGroupSnapshot) bool {
+	limitGroups := s.seedLimitGroupBudgets(ctx, snapshot.group, limitBudgets)
+
+	// a budget of -1 means "no limit", so it never blocks and is never decremented.
+	for _, lg := range limitGroups {
+		if limitBudgets[lg] == 0 {
+			return true
+		}
+	}
+
+	for _, lg := range limitGroups {
+		if limitBudgets[lg] > 0 {
+			limitBudgets[lg]--
+		}
+	}
+
+	return false
+}
+
+// prepareAndCountReadyJob runs the expensive prepareReadyJob path for one
+// schedulable ready job (updating its requirements and, on change, its scheduler
+// and queue reserve group so runners can reserve it) and counts the resulting
+// post-update snapshot against its scheduler group. prepareReadyJob increments
+// racScanWork, so this is the only per-job path that does.
+func (s *Server) prepareAndCountReadyJob(ctx context.Context, q *queue.Queue,
+	groups map[string]*sgroup, job *Job, rc string,
+	reqGroupToReqs map[string]*scheduler.Requirements) {
+	snapshot, ready := s.prepareReadyJob(ctx, q, job, rc, reqGroupToReqs)
+	if !ready {
+		return
+	}
+
+	group := ensureGroup(groups, snapshot)
+	group.count++
+
+	if snapshot.priority > group.priority {
+		group.priority = snapshot.priority
+	}
+}
+
+// updateDepGroupMembershipForNewJobs makes each of these jobs' declared
+// DepGroups its whole live membership, and releases the waiters of any dep group
+// the batch has left with no live member.
+//
+// It is two passes, and the order is load-bearing: registerDepGroupMembers
+// records every job's groups first, so a batch that both drops a group from one
+// job and adds another member of it cannot see that group momentarily empty and
+// release its waiters ahead of the new member. After that pass, no group named
+// anywhere in the batch is empty, so the drops the second pass applies can only
+// empty groups the batch no longer declares at all.
+//
+// Call it after storeNewJobs, which is what lets a member and a dependent added
+// in the same batch see each other, and before anything resolves a dependency
+// against this state.
+func (s *Server) updateDepGroupMembershipForNewJobs(ctx context.Context, jobsToQueue []*Job) {
+	s.registerDepGroupMembers(jobsToQueue)
+
+	for _, job := range jobsToQueue {
+		s.replaceDepGroupMembership(ctx, job.Key(), job.DepGroups)
+	}
+}
+
+// jobHasDependents says whether anything still depends on this job, either on
+// its own key (an essence dependency) or through one of its dep groups. Both
+// have to be asked: a dep-group dependency is an edge on the group's own key, so
+// a member's key is not among the queue's dependants at all.
+func (s *Server) jobHasDependents(job *Job, jobKey string) (bool, error) {
+	hasDeps, err := s.q.HasDependents(jobKey)
+	if err != nil || hasDeps {
+		return hasDeps, err
+	}
+
+	job.RLock()
+	depGroups := job.DepGroups
+	job.RUnlock()
+
+	for _, depGroup := range depGroups {
+		hasDeps, err = s.q.HasDependents(depGroupDependencyKey(depGroup))
+		if err != nil || hasDeps {
+			return hasDeps, err
+		}
+	}
+
+	return false, nil
+}
+
+// scheduleRunnersAsync schedules runners for the given group in its own
+// goroutine, so no caller waits on the external scheduler command (eg. bsub, and
+// on LSF a `bjobs -w` over every job in the account) that scheduleRunners
+// reaches: scheduleGroup must not hold s.psgmutex across it, and
+// decrementGroupCount is the last thing an archive RPC does before replying.
+//
+// The group must be a clone/snapshot the goroutine then exclusively owns, since
+// scheduleRunners mutates its failures and retry-backoff state (and hands it to
+// retryScheduleRunnersLater) without taking the sgroup lock.
+func (s *Server) scheduleRunnersAsync(ctx context.Context, group *sgroup) {
+	wgk := s.wg.Add(1)
+
+	go func() {
+		defer internal.LogPanic(ctx, "jobqueue schedule runners", true)
+		defer s.wg.Done(wgk)
+
+		s.scheduleRunners(ctx, group)
+	}()
+}
+
 func queueClosedError(op, key string) error {
 	return queue.Error{Queue: serverQueueName, Op: op, Item: key, Err: queue.ErrQueueClosed}
+}
+
+// allCompleteJobsByRepGroup gets every one of rg's complete jobs, oldest-started
+// first. This is the unbounded fetch a request whose limit cannot be pushed down
+// still needs; see newCompleteJobsBudget, and checkArchivedHistoryFits for what
+// keeps its heap use bounded.
+func (s *Server) allCompleteJobsByRepGroup(rg string, srerr *string, qerr *string) []*Job {
+	var complete []*Job
+
+	complete, *srerr, *qerr = s.getCompleteJobsByRepGroup(rg)
+
+	sort.Slice(complete, func(i, j int) bool {
+		return startedBefore(complete[i].StartTime, complete[i].EndTime,
+			complete[j].StartTime, complete[j].EndTime)
+	})
+
+	return stampRepGroup(complete, rg)
+}
+
+// checkArchivedHistoryFits prices the archived history a request is about to
+// materialise, and refuses the request if it does not fit in one
+// archivedBytesBudget. It only applies to a request that asked for complete jobs
+// and whose limit could not be pushed down (see newCompleteJobsBudget): those -
+// `wr status -o plain`, `-o summary`, and any explicit `--limit 0`, since
+// cmd/status.go zeroes the limit for the ungrouped output formats - decode every
+// matching record, which took production's manager from 0.35GB to over 12GB and
+// is what DEVELOPERS.md rule 6 forbids on a control path.
+//
+// There is no result-preserving bound available for those shapes: `-o plain`
+// prints one line per job KEY and `-o summary` accumulates per-job statistics, so
+// neither can be served from the folded representatives the grouped formats use.
+// So the choice is between an unbounded heap and an explicit refusal, and this is
+// the refusal. It prices the whole request BEFORE anything is decoded, so a
+// refused request costs no heap at all, and it names the ways out, all of which
+// work: a limit, a state filter, or the count-only output.
+//
+// Everything that fits is fetched exactly as it always was.
+func (s *Server) checkArchivedHistoryFits(rgs []string, opts repGroupOptions,
+	budget *completeJobsBudget) (string, string) {
+	if !archivedHistoryNeedsPricing(opts, budget) {
+		return "", ""
+	}
+
+	return s.priceArchivedHistory(rgs)
+}
+
+// archivedHistoryNeedsPricing reports whether this request is one of the ones
+// that will decode every matching archived record, and so has to be priced
+// first.
+func archivedHistoryNeedsPricing(opts repGroupOptions, budget *completeJobsBudget) bool {
+	if budget != nil || !opts.IncludeComplete {
+		return false
+	}
+
+	return opts.State == "" || opts.State == JobStateComplete
+}
+
+// priceArchivedHistory spends one budget across every RepGroup the request
+// matches, and returns the (srerr, qerr) refusal as soon as it is exhausted. The
+// refusal reaches the operator verbatim, so it goes in srerr, which is the half
+// of the pair the client turns into its error.
+func (s *Server) priceArchivedHistory(rgs []string) (string, string) {
+	budget := newArchivedBytesBudget()
+
+	for _, rg := range rgs {
+		err := s.db.spendArchivedBytesByRepGroup(rg, budget)
+		if err == nil {
+			continue
+		}
+
+		if errors.Is(err, ErrArchivedHistoryTooBig) {
+			return err.Error(), err.Error()
+		}
+
+		return dbErrorStrings(err)
+	}
+
+	return "", ""
+}
+
+// stampRepGroup sets each job's RepGroup to the one they were fetched for, since a
+// job that has been re-run can have been archived under a different one.
+func stampRepGroup(jobs []*Job, rg string) []*Job {
+	for _, job := range jobs {
+		job.RepGroup = rg
+	}
+
+	return jobs
+}
+
+// oldestCompleteJobsByRepGroup gets only as many of rg's complete jobs as budget
+// can still use, oldest-started first, plus a per-group count of the ones it
+// counted but did not decode. It spends what it used out of budget, so that a
+// limit spans the RepGroups getJobsByRepGroup loops over rather than applying to
+// each of them separately.
+func (s *Server) oldestCompleteJobsByRepGroup(rg string, opts repGroupOptions,
+	budget *completeJobsBudget, srerr *string, qerr *string) ([]*Job, map[string]int) {
+	page, err := s.db.retrieveOldestCompleteJobsByRepGroup(rg, completeJobsQuery{
+		group: s.archivedJobGrouper(opts),
+		limit: budget.limit,
+	})
+
+	*srerr, *qerr = dbErrorStrings(err)
+
+	if err != nil {
+		return nil, nil
+	}
+
+	undecoded := make(map[string]int, len(page.counted))
+
+	for group, count := range page.counted {
+		budget.spend(group, page.fetched[group])
+
+		if left := count - page.fetched[group]; left > 0 {
+			undecoded[group] = left
+		}
+	}
+
+	return stampRepGroup(page.jobs, rg), undecoded
+}
+
+// dbErrorStrings converts a database error into the (srerr, qerr) pair
+// getJobsByRepGroup reports, both empty when there was no error.
+func dbErrorStrings(err error) (string, string) {
+	if err == nil {
+		return "", ""
+	}
+
+	return ErrDBError, err.Error()
+}
+
+// archivedJobGrouper returns the function retrieveOldestCompleteJobsByRepGroup
+// uses to decide which of limitJobs' groups an archived record belongs to, and
+// whether opts' filters keep it at all. It must agree exactly with
+// jobMatchesFilters and groupJobsByCharacteristics, since that is what lets a
+// record it merely counts stand in for one it never decoded; newCompleteJobsBudget
+// refuses the pushdown for the filters that cannot be answered from the facets.
+func (s *Server) archivedJobGrouper(opts repGroupOptions) func(*archivedJobFacets) (string, bool) {
+	return func(facets *archivedJobFacets) (string, bool) {
+		state := s.normalizeJobState(facets.State, facets.Lost)
+		if !s.matchesStateFilter(state, opts.State) {
+			return "", false
+		}
+
+		if !s.matchesFailureFilter(facets.FailReason, facets.Exitcode, opts.FailReason, opts.ExitCode) {
+			return "", false
+		}
+
+		return jobGroup(state, facets.Exitcode, facets.FailReason), true
+	}
+}
+
+// jobGroup is the key limitJobs groups a job under: jobs sharing it are
+// interchangeable in the answer, so all but the first Offset+Limit of them are
+// only counted, in the last of those jobs' Similar. archivedJobGrouper must
+// produce the same key from an archived record's facets alone.
+func jobGroup(state JobState, exitCode int, failReason string) string {
+	return fmt.Sprintf("%s.%d.%s", state, exitCode, failReason)
 }
 
 func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
@@ -2038,6 +3238,21 @@ func (s *Server) setRC(rc string) {
 	s.racmutex.Lock()
 	s.rc = rc
 	s.racmutex.Unlock()
+}
+
+// countUndecodedJobs adds the jobs that were counted but never decoded to the
+// Similar of their group's last member - the very member addJobToGroup would have
+// incremented once for each of them. A group can only have had members left
+// undecoded once it was already full, so it always has that member.
+func countUndecodedJobs(groups map[string][]*Job, undecoded map[string]int) {
+	for group, count := range undecoded {
+		members := groups[group]
+		if len(members) == 0 {
+			continue
+		}
+
+		members[len(members)-1].Similar += count
+	}
 }
 
 // shutdownPprofServer gracefully shuts down the pprof endpoint started by
@@ -2332,6 +3547,9 @@ func jobUpdateFromLockedJob(job *Job, state JobState) *JobUpdate {
 	}
 }
 
+// lostJobRetryCheck re-reads the job the confirm-dead retry path is about to
+// re-check, returning a fresh snapshot of the run currently parked Lost under
+// jobKey, and false if there is no longer such a run to check.
 func (s *Server) lostJobRetryCheck(jobKey string) (lostJobDetails, bool) {
 	item, err := s.q.Get(jobKey)
 	if err != nil || item.Stats().State != queue.ItemStateRun {
@@ -2354,13 +3572,14 @@ func (s *Server) lostJobRetryCheck(jobKey string) (lostJobDetails, bool) {
 	}
 
 	timeout, _ := s.lostJobCheckDurations()
-
 	pin := job.pinBehavioursLocked()
 
 	return lostJobDetails{
 		key:          pin.workSpace.key,
 		host:         job.Host,
 		pid:          job.Pid,
+		runnerPid:    job.RunnerPid,
+		lostFor:      job.lostForLocked(),
 		checkTimeout: timeout,
 		pin:          pin,
 	}, true
@@ -2559,27 +3778,6 @@ func joinStartupMessages(certMsg, dbMsg string) string {
 	}
 }
 
-func keepPostUpgradeStartupStatus(dbFile string, upgradedOnOpen bool, logger log15.Logger) func() {
-	if !upgradedOnOpen {
-		return func() {}
-	}
-
-	if err := internal.WriteDBUpgradeStatus(dbFile, internal.DBUpgradeStatus{
-		State:  postUpgradeStartupState,
-		Detail: postUpgradeStartupDetail,
-	}); err != nil {
-		logger.Warn("failed to write post-upgrade startup status", "path", internal.DBUpgradeStatusPath(dbFile),
-			"err", err)
-	}
-
-	return func() {
-		if err := internal.RemoveDBUpgradeStatus(dbFile); err != nil {
-			logger.Warn("failed to remove post-upgrade startup status", "path", internal.DBUpgradeStatusPath(dbFile),
-				"err", err)
-		}
-	}
-}
-
 // closeOnError calls closeFn (typically a deferred resource close) only when
 // *errp is already non-nil, wrapping any close error into *errp under name so
 // the original error is preserved.
@@ -2613,6 +3811,47 @@ func ensureCertificates(config ServerConfig, certDomain string, serverLogger log
 	return "created a new key and certificate for TLS", nil
 }
 
+// prepareListener sets the command socket's receive options, verifies the
+// certificates have not expired, and loads the TLS keypair and CA pool,
+// returning the earliest certificate expiry time and the TLS config the eventual
+// bind will use.
+//
+// It deliberately does NOT bind the port. Everything that can fail on bad input
+// - an expired certificate, a mismatched keypair - fails here, fast, through
+// Serve's error return, while the bind itself happens only when prior-state
+// recovery ends and the server publishes its externally observable surface (spec
+// E1).
+func prepareListener(sock mangos.Socket, interruptTime time.Duration,
+	caFile, certFile, keyFile string) (time.Time, *tls.Config, error) {
+	// we open ourselves up to possible denial-of-service attack if a client
+	// sends us tons of data, but at least the client doesn't silently hang
+	// forever when it legitimately wants to Add() a ton of jobs
+	// unlimited Recv() length
+	if err := sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
+		return time.Time{}, nil, err
+	}
+
+	// we'll wait ServerInterruptTime to recv from clients before trying again,
+	// allowing us to check if signals have been passed
+	if err := sock.SetOption(mangos.OptionRecvDeadline, interruptTime); err != nil {
+		return time.Time{}, nil, err
+	}
+
+	// check certificate expiry, because everything breaks with generic errors
+	// when it expires
+	expiry, err := earliestCertExpiry(caFile, certFile)
+	if err != nil {
+		return time.Time{}, nil, err
+	}
+
+	tlsConfig, err := serverTLSConfig(caFile, certFile, keyFile)
+	if err != nil {
+		return time.Time{}, nil, err
+	}
+
+	return expiry, tlsConfig, nil
+}
+
 // earliestCertExpiry returns the sooner of the CA and server certificate expiry
 // times, erroring if either has already expired or cannot be read.
 func earliestCertExpiry(caFile, certFile string) (time.Time, error) {
@@ -2641,61 +3880,10 @@ func earliestCertExpiry(caFile, certFile string) (time.Time, error) {
 	return expiry, nil
 }
 
-// configureAndListen sets the command socket's receive options, verifies the
-// certificates have not expired, and starts listening for TLS connections,
-// returning the earliest certificate expiry time.
-func configureAndListen(sock mangos.Socket, interruptTime time.Duration,
-	caFile, certFile, keyFile, port string) (time.Time, error) {
-	// we open ourselves up to possible denial-of-service attack if a client
-	// sends us tons of data, but at least the client doesn't silently hang
-	// forever when it legitimately wants to Add() a ton of jobs
-	// unlimited Recv() length
-	if err := sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
-		return time.Time{}, err
-	}
-
-	// we'll wait ServerInterruptTime to recv from clients before trying again,
-	// allowing us to check if signals have been passed
-	if err := sock.SetOption(mangos.OptionRecvDeadline, interruptTime); err != nil {
-		return time.Time{}, err
-	}
-
-	// check certificate expiry, because everything breaks with generic errors
-	// when it expires
-	expiry, err := earliestCertExpiry(caFile, certFile)
-	if err != nil {
-		return time.Time{}, err
-	}
-
-	// have mangos listen using TLS over TCP
-	if err := listenTLS(sock, caFile, certFile, keyFile, port); err != nil {
-		return time.Time{}, err
-	}
-
-	return expiry, nil
-}
-
 // listenTLS makes the given socket listen for TLS-over-TCP connections on port,
-// using the configured certificate and (if readable) CA pool.
-func listenTLS(sock mangos.Socket, caFile, certFile, keyFile, port string) error {
-	cer, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return err
-	}
-
-	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cer}}
-	listenOpts := make(map[string]any)
-
-	caCert, err := os.ReadFile(caFile)
-	if err == nil {
-		certPool := x509.NewCertPool()
-		certPool.AppendCertsFromPEM(caCert)
-		tlsConfig.RootCAs = certPool
-	}
-
-	listenOpts[mangos.OptionTLSConfig] = tlsConfig
-
-	return sock.ListenOptions("tls+tcp://0.0.0.0:"+port, listenOpts)
+// using the config prepareListener built.
+func listenTLS(sock mangos.Socket, tlsConfig *tls.Config, port string) error {
+	return sock.ListenOptions("tls+tcp://0.0.0.0:"+port, map[string]any{mangos.OptionTLSConfig: tlsConfig})
 }
 
 // currentServerIP determines the non-loopback IP address other machines should
@@ -2717,9 +3905,16 @@ func currentServerIP(config ServerConfig, serverLogger log15.Logger) (string, er
 	return ip, nil
 }
 
-// Serve is for use by a server executable and makes it start listening on
-// localhost at the configured port for Connect()ions from clients, and then
-// handles those clients.
+// Serve is for use by a server executable and makes it serve clients on
+// localhost at the configured port.
+//
+// It returns once startup has been validated and prior-state recovery has
+// begun, which is BEFORE the server is reachable: the RPC listener, the web
+// interface and the token file are published only when recovery ends, which
+// takes as long as the recovered live jobs need (minutes, at scale). A caller
+// that then talks to the server must wait on Serving() first; a Connect() before
+// that gets ErrNoServer, exactly as it would against a manager that is simply
+// down.
 //
 // It returns a *Server that you will typically call Block() on to block until
 // your executable receives a SIGINT or SIGTERM, or you call Stop(), at which
@@ -2777,7 +3972,6 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	}
 
 	// check if the cert files are available
-	httpAddr := "0.0.0.0:" + config.WebPort
 	caFile := config.CAFile
 	certFile := config.CertFile
 	keyFile := config.KeyFile
@@ -2805,7 +3999,20 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	db.setBatchTuning(timings.DBBatchDelay, timings.DBBatchSize)
 
 	defer func() { closeOnError(&err, "db", func() error { return db.close(ctx) }) }()
-	defer keepPostUpgradeStartupStatus(config.DBFile, db.upgradedOnOpen, serverLogger)()
+
+	// the startup sidecar is written from here on. Its removal belongs to
+	// publication and to shutdown, so this defer covers only the paths where
+	// neither runs: an error return from here on would otherwise leave the file
+	// behind for the next reader (spec E4).
+	startupStatus := newStartupStatusReporter(config.DBFile, serverLogger, db.upgradedOnOpen)
+
+	defer func() {
+		closeOnError(&err, "startup status", func() error {
+			startupStatus.remove()
+
+			return nil
+		})
+	}()
 
 	sock, err := xrep.NewSocket()
 	if err != nil {
@@ -2814,9 +4021,12 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	defer func() { closeOnError(&err, "socket", sock.Close) }()
 
-	var expiry time.Time
+	var (
+		expiry    time.Time
+		tlsConfig *tls.Config
+	)
 
-	expiry, err = configureAndListen(sock, timings.InterruptTime, caFile, certFile, keyFile, config.Port)
+	expiry, tlsConfig, err = prepareListener(sock, timings.InterruptTime, caFile, certFile, keyFile)
 	if err != nil {
 		return s, msg, token, err
 	}
@@ -2881,8 +4091,12 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		token:                     token,
 		uploadDir:                 uploadDir,
 		sock:                      sock,
+		tlsConfig:                 tlsConfig,
+		serving:                   make(chan struct{}),
+		startupStatus:             startupStatus,
 		ch:                        new(codec.BincHandle),
 		rpl:                       newRGToKeys(),
+		depGroups:                 newDepGroupMembers(),
 		limiter:                   l,
 		db:                        db,
 		pprofServer:               pprofServer,
@@ -2906,13 +4120,17 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		badServers:                make(map[string]*cloud.Server),
 		schedCaster:               newCaster(false),
 		schedIssues:               make(map[string]*schedulerIssue),
-		recoveredRunningJobs:      make(map[string]bool),
 		recoveryPauseHook:         recoveryPauseHookForTest,
 		timings:                   timings,
 		itemTTR:                   timings.ItemTTR,
 		lostJobCheckTimeout:       timings.LostJobCheckTimeout,
 		lostJobCheckRetryTime:     timings.LostJobCheckRetryTime,
+		confirmDeadLimiter:        make(chan struct{}, timings.ConfirmDeadConcurrency),
 	}
+
+	// the confirm-dead coordinator groups lost jobs' ssh checks by host; it needs
+	// the fully-built Server, so it is wired up after the literal above.
+	s.confirmDead = newConfirmDeadCoordinator(s)
 
 	// create the queue now (its ready-added callback, which recovery's enqueue
 	// relies on, is registered here rather than in serveWebInterface, so it is
@@ -2925,45 +4143,21 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	go s.handleSignals(ctx, sigs, certExpired, stopSigHandling)
 
-	// set up the web interface
-	ready := make(chan bool)
-	wgk := wg.Add(1)
-
-	go s.serveWebInterface(ctx, config, httpAddr, certFile, keyFile, wg, wgk, ready)
-
-	<-ready
-
-	// store token on disk
-	if err = persistToken(config.TokenFile, token); err != nil {
-		return s, msg, token, err
-	}
-
-	// mark ourselves recovering (total unknown for now) BEFORE we start
-	// accepting client RPCs, so a pre-crash runner reconnecting during the
-	// cheap live-bucket scan below gets a retryable ErrRecovering rather than a
-	// terminal ErrBadJob for a to-be-restored job (spec B2: recovery timing
-	// never causes a new false loss). This only sets an O(1) flag, so readiness
-	// is not delayed; the true total is filled in by startPriorStateRecovery
-	// after the scan, before the background goroutine runs (spec B1).
-	s.setRecovering(0)
-
-	// now that we're ready, set up responding to command-line clients
-	wgk = wg.Add(1)
-
-	go s.serveClients(ctx, sock, wg, wgk, stopClientHandling, clientHandlingDone)
-
-	// recover any prior incomplete jobs in the background, so the manager
-	// answers clients (ping/status/add) immediately regardless of how much
-	// history or how many running jobs the db holds (spec B1). We read the
+	// recover any prior incomplete jobs in the background, and publish the
+	// externally observable surface (web interface, token file, RPC listener)
+	// only when that recovery ends (spec E1). Nothing may serve a request before
+	// the per-group live-member state exists, because a dep group the state has
+	// not yet learned looks empty, and an empty seen group means satisfied - the
+	// newly added job would be released ahead of its dependencies. We read the
 	// prior jobs synchronously (a cheap live-bucket scan) so recoveryProgress's
 	// total is known before the background goroutine runs, then re-enqueue them
 	// in the goroutine. Recovery keeps the single-batch enqueue so AddMany
 	// resolves dependencies within the one batch.
-	if err = s.startPriorStateRecovery(bgCtx, config, db); err != nil {
+	if err = s.startPriorStateRecovery(bgCtx, ctx, config, db); err != nil {
 		// the scan failed before the background goroutine (which would clear
-		// the flag) was launched, so clear the recovering flag we set above to
-		// avoid leaving it stuck true (production die()s on this error, but keep
-		// it clean).
+		// the flag) was launched, so clear the recovering flag it set to avoid
+		// leaving it stuck true (production die()s on this error, but keep it
+		// clean).
 		s.finishRecovering()
 
 		return s, msg, token, err
@@ -2975,6 +4169,14 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 // serveWebInterface runs the server's HTTP web interface and REST API, starts
 // the status broadcasters, and registers the scheduler callbacks, signalling
 // ready once ListenAndServe has had time to start.
+//
+// Publication calls it, so it runs only once prior-state recovery has ended
+// (spec E1). Scheduler messages and bad-server updates raised before then are
+// therefore DISCARDED rather than queued: the openstack implementation
+// nil-checks both callbacks, caster.Broadcasting is a no-op and Send with no
+// members drops. That is deliberate and harmless - nothing is watching the web
+// interface during the window, since it is not up - but it is written down here
+// rather than lost by accident (spec E3).
 func (s *Server) serveWebInterface(ctx context.Context, config ServerConfig, httpAddr, certFile,
 	keyFile string, wg *waitgroup.WaitGroup, wgk string, ready chan<- bool) {
 	// log panics and die
@@ -3295,9 +4497,25 @@ func (s *Server) recoverPriorJobs(ctx context.Context, config ServerConfig, prio
 		ttd = cloudConfig.GetServerKeepTime()
 	}
 
-	itemdefs := make([]*queue.ItemDef, 0, len(priorJobs))
+	// every job's dependencies are resolved up front, a chunk of jobs per read
+	// transaction, rather than one or more transactions per job below: resolving
+	// 150,472 of them one at a time cost production hundreds of thousands of read
+	// transactions on a cold database (.docs/bugfixes/260825-2.md). It is a
+	// separate pass because the loop below calls the scheduler, which must not run
+	// inside a read transaction.
+	resolveStarted := time.Now()
 
-	for _, job := range priorJobs {
+	resolved, errd := s.db.resolveDependencies(ctx, priorJobs, s.depGroups)
+	if errd != nil {
+		return errd
+	}
+
+	clog.Warn(ctx, "recovering: resolved prior job dependencies", "jobs", len(resolved),
+		"elapsed", time.Since(resolveStarted).Round(time.Millisecond))
+
+	itemdefs := make([]*queue.ItemDef, 0, len(resolved))
+
+	for _, recovered := range resolved {
 		// abort promptly if shutdown cancelled us, before doing further
 		// per-job scheduler.Recover work or the enqueue below (which would
 		// otherwise race scheduler cleanup and queue destroy during shutdown).
@@ -3305,34 +4523,30 @@ func (s *Server) recoverPriorJobs(ctx context.Context, config ServerConfig, prio
 			return err
 		}
 
-		itemdef, err := s.recoveredItemDef(ctx, job, loginUser, ttd)
-		if err != nil {
-			return err
-		}
-
-		itemdefs = append(itemdefs, itemdef)
+		itemdefs = append(itemdefs, s.recoveredItemDef(ctx, recovered, loginUser, ttd))
 	}
 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
+	enqueueStarted := time.Now()
+
 	_, _, err := s.enqueueItems(ctx, itemdefs)
+
+	clog.Warn(ctx, "recovering: enqueued prior jobs", "jobs", len(itemdefs),
+		"elapsed", time.Since(enqueueStarted).Round(time.Millisecond))
 
 	return err
 }
 
-// recoveredItemDef builds the queue item definition for a single recovered job,
-// setting its start sub-queue based on the job's prior state and, for running
-// jobs, re-incrementing limit groups and asking the scheduler to recover them.
-func (s *Server) recoveredItemDef(ctx context.Context, job *Job, loginUser string,
-	ttd time.Duration) (*queue.ItemDef, error) {
-	deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
-	if err != nil {
-		return nil, err
-	}
-
-	job.setWaitingForDepGroups(waitingForDepGroups)
+// recoveredItemDef builds the queue item definition for a single recovered job
+// from its already-resolved dependency keys, setting its start sub-queue based
+// on the job's prior state and, for running jobs, re-incrementing limit groups
+// and asking the scheduler to recover them.
+func (s *Server) recoveredItemDef(ctx context.Context, recovered resolvedJob, loginUser string,
+	ttd time.Duration) *queue.ItemDef {
+	job := recovered.job
 
 	// schedulerGroup is unexported, so it is not gob-serialised and comes back
 	// empty on decode. For a recovered running job this must be recomputed from
@@ -3356,7 +4570,7 @@ func (s *Server) recoveredItemDef(ctx context.Context, job *Job, loginUser strin
 	itemdef := &queue.ItemDef{
 		Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job,
 		Priority: job.Priority, Delay: 0 * time.Second, TTR: s.itemTTRDuration(),
-		Dependencies: deps,
+		Dependencies: recovered.deps,
 	}
 
 	switch job.State {
@@ -3372,7 +4586,7 @@ func (s *Server) recoveredItemDef(ctx context.Context, job *Job, loginUser strin
 		// any other recovered state keeps the default start queue.
 	}
 
-	return itemdef, nil
+	return itemdef
 }
 
 // recoverRunningJob re-increments a recovered running job's limit groups and
@@ -3400,10 +4614,6 @@ func (s *Server) recoverRunningJob(ctx context.Context, job *Job, loginUser stri
 			clog.Warn(ctx, "recovery of an old cmd failed", "cmd", job.Cmd, "host", job.Host, "err", errr)
 		}
 	}
-
-	s.rrjMu.Lock()
-	s.recoveredRunningJobs[job.Key()] = true
-	s.rrjMu.Unlock()
 }
 
 // Block makes you block while the server does the job of serving clients. This
@@ -3806,7 +5016,7 @@ func (s *Server) createQueue(ctx context.Context) {
 // reserved-not-started job on a StartTime.IsZero() proxy, so a live-but-
 // backlogged runner's job is never re-reserved, while a genuinely dead runner's
 // job is still reclaimed once confirmed dead; an old client (pid 0) is not
-// confirmed dead and stays parked (confirmJobDead returns false), recovering
+// confirmed dead and stays parked (a pid-0 job is never confirmed dead), recovering
 // only when its Started/Touch finally drains. Only a released/finished item
 // (job.Exited) awaiting its delay proceeds to the delay sub-queue.
 func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
@@ -3834,9 +5044,12 @@ func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
 	job.EndTime = time.Now()
 	lostUpdate := jobUpdateFromLockedJob(job, JobStateLost)
 
-	// we don't test recovered jobs are dead because they might have exited
-	// while the server wasn't running, and we want the existing client to tell
-	// us if it should be archived or buried
+	// a recovered running job (restored on restart) is confirm-checked for death
+	// exactly like any other lost job: if its runner never reconnects it must be
+	// reclaimed, not parked forever. The confirm-dead both-pid liveness check is
+	// what preserves an unrecorded success - it will not declare the job dead
+	// while its runner pid is still alive, so a slow/starved runner's command that
+	// finished while the server was down still gets to report its archive.
 	defer s.markJobLost(ctx, job, lostUpdate)
 
 	return queue.SubQueueRun
@@ -3851,6 +5064,7 @@ func (s *Server) markJobLost(ctx context.Context, job *Job, lostUpdate *JobUpdat
 	killCalled := job.killCalled
 	jobHost := job.Host
 	jobPID := job.Pid
+	jobRunnerPID := job.RunnerPid
 	repGroup := job.RepGroup
 
 	// pinned in the same breath as the decision, and carried to the kill; see pin
@@ -3873,7 +5087,7 @@ func (s *Server) markJobLost(ctx context.Context, job *Job, lostUpdate *JobUpdat
 	)
 
 	go s.confirmOrReleaseLostJob(ctx, lostJobDetails{
-		key: jobKey, host: jobHost, pid: jobPID, killCalled: killCalled, pin: pin,
+		key: jobKey, host: jobHost, pid: jobPID, runnerPid: jobRunnerPID, killCalled: killCalled, pin: pin,
 		checkTimeout: serverLostJobCheckTimeout, checkRetryTime: serverLostJobCheckRetryTime,
 	})
 }
@@ -3884,9 +5098,22 @@ type lostJobDetails struct {
 	key            string
 	host           string
 	pid            int
+	runnerPid      int
 	killCalled     bool
 	checkTimeout   time.Duration
 	checkRetryTime time.Duration
+
+	// lostFor is how long the job had been parked Lost when this snapshot was
+	// taken, which is what the retry path's backstop uses to spot a wedged runner
+	// (Job.lostForLocked measures it).
+	//
+	// It is meaningful ONLY on the value lostJobRetryCheck returns. Neither path
+	// that ENQUEUES a check fills it in (markJobLost, and retryAfter's re-enqueue),
+	// because the backstop deliberately reads the freshly re-measured value that
+	// lostJobRetryCheck just returned rather than however long the check it is
+	// retrying has been in flight. So do not read it off an enqueued check: there
+	// it is always zero.
+	lostFor time.Duration
 
 	// pin is the lost RUN: its Behaviours and the state they must act on, taken when
 	// the job was declared lost and carried to the kill rather than re-fetched,
@@ -3895,30 +5122,31 @@ type lostJobDetails struct {
 	pin pinnedBehaviours
 }
 
-// confirmOrReleaseLostJob confirms whether a lost job is really dead and kills
-// it, or (if the user already called kill) releases it back to the run queue.
+// confirmOrReleaseLostJob handles a lost job: if the user already called kill it
+// is released back to the run queue; otherwise its death is confirmed (and it is
+// then killed, or retried) via the confirm-dead coordinator, which GROUPS the ssh
+// pid check(s) with other lost jobs on the same host so they share one connection
+// instead of dialling one per check (see confirmdead.go). The coordinator
+// preserves the both-pid liveness semantics and the retry/backstop cadence.
 //
 // It is given the lost RUN rather than the queue's *Job, which every run of the
 // job shares: both branches check the job is still the pinned run first.
 func (s *Server) confirmOrReleaseLostJob(ctx context.Context, d lostJobDetails) {
-	s.rrjMu.RLock()
-	recovered := s.recoveredRunningJobs[d.key]
-	s.rrjMu.RUnlock()
+	if !d.killCalled {
+		s.confirmDead.enqueue(ctx, d)
 
-	switch {
-	case !d.killCalled && !recovered:
-		s.confirmJobDeadAndKill(ctx, d)
-	case d.killCalled:
-		defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
+		return
+	}
 
-		// wait for the item to go back to run queue
-		<-time.After(ttrReleaseWait)
+	defer internal.LogPanic(ctx, "jobqueue ttr callback releaseJob", true)
 
-		// no behaviours: the user asked for the job to stop, not for its work to be
-		// swept. The wait is long enough for a different run to be under this key.
-		if _, _, err := s.killRunningJob(ctx, d.key, &d.pin.run); err != nil {
-			clog.Warn(ctx, "failed to release job after TTR", "err", err)
-		}
+	// wait for the item to go back to run queue
+	<-time.After(ttrReleaseWait)
+
+	// no behaviours: the user asked for the job to stop, not for its work to be
+	// swept. The wait is long enough for a different run to be under this key.
+	if _, _, err := s.killRunningJob(ctx, d.key, &d.pin.run); err != nil {
+		clog.Warn(ctx, "failed to release job after TTR", "err", err)
 	}
 }
 
@@ -3967,26 +5195,44 @@ func (s *Server) readyAddedCallback(ctx context.Context, q *queue.Queue, allitem
 }
 
 // buildSchedulerGroups calculates, sets and counts the ready jobs by scheduler
-// group, updating each job's requirements and (when rc is set) its scheduler
-// group, while respecting limit-group capacities.
+// group, updating each schedulable job's requirements and (when rc is set) its
+// scheduler group, while respecting limit-group capacities.
+//
+// It bounds a rac cycle's EXPENSIVE per-job work (prepareReadyJob: requirement
+// recompute + q.SetReserveGroup) by the SCHEDULABLE count, not the ready-backlog
+// size: a cheap O(backlog) pre-pass snapshots every ready job, then the expensive
+// work runs only for the jobs a priority-fair, limit-group-budgeted selection can
+// actually schedule this cycle. The limit-blocked remainder is recorded as skipped
+// (cheaply), keeping it accounted so a later completion re-triggers the callback
+// (decrementGroupCount / hasSkippedScheduledGroups) and schedules it then; a
+// deferred job keeps its add-time reserve group, so it stays reservable meanwhile.
 func (s *Server) buildSchedulerGroups(ctx context.Context, q *queue.Queue,
 	allitemdata []any, rc string) map[string]*sgroup {
 	groups := make(map[string]*sgroup)
 	reqGroupToReqs := make(map[string]*scheduler.Requirements)
-	snapshots := make([]schedulerGroupSnapshot, 0, len(allitemdata))
 
-	for _, inter := range allitemdata {
-		job, ok := inter.(*Job)
-		if !ok {
-			continue
+	// reset the inert rac-scan-work counter (see Server.racScanWork); prepareReadyJob
+	// increments it, so it measures only the expensive per-job work done below.
+	s.racScanWork.Store(0)
+
+	// cheap O(backlog) pre-pass: snapshot every ready job WITHOUT the expensive
+	// prepareReadyJob work, so we can decide which jobs are schedulable this cycle
+	// before spending that work only on them.
+	candidates := s.snapshotReadyJobs(allitemdata)
+
+	if rc == "" {
+		// no runner command: we schedule nothing (and return empty groups), but
+		// still (re)compute every ready job's requirements so scheduling and
+		// learning see up-to-date values. prepareReadyJob leaves the scheduler and
+		// reserve group untouched when rc is empty.
+		for _, candidate := range candidates {
+			s.prepareReadyJob(ctx, q, candidate.job, rc, reqGroupToReqs)
 		}
 
-		if snapshot, ready := s.prepareReadyJob(ctx, q, job, rc, reqGroupToReqs); ready {
-			snapshots = append(snapshots, snapshot)
-		}
+		return groups
 	}
 
-	s.countReadyJobsByPriority(ctx, groups, snapshots)
+	s.scheduleReadyJobsByPriority(ctx, q, groups, candidates, rc, reqGroupToReqs)
 
 	return groups
 }
@@ -4039,18 +5285,9 @@ func (s *Server) recommendedReqForGroup(reqGroup string,
 // capacity within a rac cycle -> up to N x the limit runners requested for it.)
 func (s *Server) countJobInGroup(ctx context.Context, groups map[string]*sgroup,
 	limitBudgets map[string]int, snapshot schedulerGroupSnapshot) {
-	schedulerGroup := snapshot.group
+	group := ensureGroup(groups, snapshot)
 
-	group, set := groups[schedulerGroup]
-	if !set {
-		group = &sgroup{
-			name: schedulerGroup,
-			req:  snapshot.requirements.Clone(),
-		}
-		groups[schedulerGroup] = group
-	}
-
-	limitGroups := s.seedLimitGroupBudgets(ctx, schedulerGroup, limitBudgets)
+	limitGroups := s.seedLimitGroupBudgets(ctx, snapshot.group, limitBudgets)
 
 	// ignore jobs that would put any of the job's limit groups over its limit. A
 	// budget of -1 means "no limit", so it never blocks (and is never decremented).
@@ -4116,16 +5353,7 @@ func (s *Server) scheduleGroup(ctx context.Context, name string, group *sgroup) 
 
 	s.previouslyScheduledGroups[name] = group
 
-	snapshot := group.snapshot()
-
-	wgk := s.wg.Add(1)
-
-	go func(group *sgroup) {
-		defer internal.LogPanic(ctx, "jobqueue schedule runners", true)
-		defer s.wg.Done(wgk)
-
-		s.scheduleRunners(ctx, group)
-	}(snapshot)
+	s.scheduleRunnersAsync(ctx, group.snapshot())
 }
 
 // accountForRunningJobs adds currently running jobs into the group counts so
@@ -4340,7 +5568,7 @@ func (s *Server) prepareInputJobs(inputJobs []*Job, envkey string,
 
 		job.dropImpossibleCleanups()
 
-		job.UntilBuried = job.Retries + 1
+		job.UntilBuried = initialUntilBuried(job.Retries)
 		if rcSet {
 			job.schedulerGroup = job.generateSchedulerGroup(job.Requirements)
 		}
@@ -4400,6 +5628,8 @@ func (s *Server) createJobs(
 		return added, dups, alreadyComplete, warnings, ErrDBError, err
 	}
 
+	s.updateDepGroupMembershipForNewJobs(ctx, jobsToQueue)
+
 	itemdefs := s.itemDefsForNewJobs(jobsToQueue, inputJobKeys, &warnings)
 
 	added, dups, srerr, qerr = s.queueNewJobItems(ctx, jobsToUpdate, itemdefs, ignoreComplete, queuedDups)
@@ -4424,7 +5654,7 @@ func (s *Server) itemDefsForNewJobs(jobsToQueue []*Job,
 	warningDepGroups := make(map[string]bool)
 
 	for _, job := range jobsToQueue {
-		deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
+		deps, waitingForDepGroups, err := job.Dependencies.dependencyKeys(s.db, s.depGroups)
 		if err != nil {
 			// srerr/qerr are unconditionally overwritten by
 			// updateJobDependencies below, so there is nothing to record here
@@ -4509,6 +5739,10 @@ func (s *Server) handleUserSpecifiedJobLimitGroups(job *Job, limitGroups map[str
 	for _, group := range job.LimitGroups {
 		job.LimitGroupsForDisplay = append(job.LimitGroupsForDisplay, displayByName[group])
 	}
+
+	// LimitGroups is an input of the memoised derived scheduler-group strings
+	// (jobDerived), and we may have just rewritten it, so they must be recomputed.
+	job.invalidateDerivedLocked()
 }
 
 // storeLimitGroups calls db.storeLimitGroups() and handles updating the
@@ -4530,10 +5764,12 @@ func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) err
 	return nil
 }
 
-// updateJobDependencies is used to handle the jobsToUpdate from storeNewJobs()
-// and db.modifyLiveJobs(). These are those jobs currently in the queue that
-// need their dependencies updated because they just changed when we stored the
-// jobs.
+// updateJobDependencies is used by queueNewJobItems to handle the jobsToUpdate
+// from storeNewJobs(). These are those jobs currently in the queue that need
+// their dependencies updated because they just changed when we stored the jobs.
+// The modify path does not come through here: db.modifyLiveJobs() discards
+// prepareNewJobs' jobsToQueue/jobsToUpdate, so it never refreshes a group's
+// waiters this way.
 func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr string, qerr error) {
 	updates, readyCallbackExpected, qerr := s.gatherDependencyUpdates(jobs)
 	if qerr != nil {
@@ -4563,7 +5799,7 @@ func (s *Server) gatherDependencyUpdates(jobs []*Job) ([]jobDependencyUpdate, bo
 	readyCallbackExpected := false
 
 	for _, job := range jobs {
-		deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
+		deps, waitingForDepGroups, err := job.Dependencies.dependencyKeys(s.db, s.depGroups)
 		if err != nil {
 			return updates, readyCallbackExpected, err
 		}
@@ -4605,23 +5841,6 @@ func (s *Server) applyDependencyUpdates(ctx context.Context, updates []jobDepend
 // mintRunToken hands out the identity of one run of one job; see runToken.
 func (s *Server) mintRunToken() runToken {
 	return runToken(s.lastRunToken.Add(1))
-}
-
-// confirmJobDeadAndKill calls confirmJobDead(). If it confirms, kills the job
-// and triggers behaviours in a goroutine. If not, arranges to re-call this after
-// the configured retry time. This is so that if we can't currently confirm the
-// job is dead due to an ssh issue, but later on the job really does die because
-// the server it was running on gets rebooted, we eventually auto-kill the job.
-// It reports nothing: the goroutine it starts is the only thing that knows
-// whether the kill happened, and it logs that.
-func (s *Server) confirmJobDeadAndKill(ctx context.Context, d lostJobDetails) {
-	if !s.confirmJobDead(ctx, d.pid, d.host, d.checkTimeout) {
-		go s.confirmJobDeadAndKillAfterRetryTime(ctx, d.key, d.checkRetryTime)
-
-		return
-	}
-
-	go s.killLostJobAndTriggerBehaviours(ctx, d)
 }
 
 // killLostJobAndTriggerBehaviours releases the lost RUN whose behaviours d
@@ -4685,48 +5904,29 @@ func (s *Server) triggerLostRunBehaviours(ctx context.Context, d lostJobDetails)
 	}
 }
 
-// confirmJobDead() checks if the actual PID isn't running on the job's host.
-func (s *Server) confirmJobDead(ctx context.Context, jobPID int, jobHost string,
-	serverLostJobCheckTimeout time.Duration) bool {
-	if jobPID == 0 {
-		return false
+// backstopKillWedgedRunner force-kills a wedged runner (and its lost command) on
+// the host, best-effort with a warning on failure. After this the normal
+// dead-confirmation finds both pids gone and re-runs the job.
+func (s *Server) backstopKillWedgedRunner(ctx context.Context, d lostJobDetails) {
+	if errk := s.scheduler.KillProcessOnHost(ctx, d.runnerPid, d.host); errk != nil {
+		clog.Warn(ctx, "backstop: failed to kill wedged runner",
+			"host", d.host, "pid", d.runnerPid, "err", errk)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, serverLostJobCheckTimeout)
-	defer cancel()
-
-	return s.scheduler.ProcessNotRunningOnHost(ctx, jobPID, jobHost)
-}
-
-func (s *Server) confirmJobDeadAndKillAfterRetryTime(ctx context.Context, jobKey string,
-	serverLostJobCheckRetryTime time.Duration) {
-	timer := time.NewTimer(serverLostJobCheckRetryTime)
-	defer timer.Stop()
-
-	select {
-	case <-timer.C:
-		// the check pins the run the job is still lost in; the confirmJobDead call
-		// below reopens the same window, so killLostRun is satisfied again after it.
-		d, ok := s.lostJobRetryCheck(jobKey)
-		if !ok {
-			return
-		}
-
-		d.checkRetryTime = serverLostJobCheckRetryTime
-
-		s.confirmJobDeadAndKill(ctx, d)
-	case <-s.stopClientHandling:
-		return
+	if errk := s.scheduler.KillProcessOnHost(ctx, d.pid, d.host); errk != nil {
+		clog.Warn(ctx, "backstop: failed to kill lost command",
+			"host", d.host, "pid", d.pid, "err", errk)
 	}
 }
 
 // releaseJob either releases or buries a job as per its retries, and updates
 // our scheduling counts as appropriate.
-func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState, failReason string,
-	forceStorage, forceBury bool) error {
+func (s *Server) releaseJob(ctx context.Context, job *Job, rep releaseReport) error {
 	// first check the job hasn't already been released/buried, only attempt
-	// queue changes if not
-	bury, key, currentState := releaseJobSnapshot(job, forceBury)
+	// queue changes if not. This also decides rep.spendsRetry, once, so that
+	// finalizeReleasedJob below cannot reach a different verdict from a
+	// job.StartTime that changed in between (see releaseReport.spendsRetry).
+	bury, key, currentState := releaseJobSnapshot(job, &rep)
 
 	q := s.queueIfPresent()
 	if q == nil {
@@ -4747,21 +5947,39 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, endState *JobEndState
 		return nil
 	}
 
-	s.finalizeReleasedJob(ctx, job, endState, failReason, forceStorage, forceBury)
+	s.finalizeReleasedJob(ctx, job, rep)
 
 	return nil
 }
 
 // releaseJobSnapshot reads, under the job's read lock, the values releaseJob
-// needs: whether the job should be buried, its key, and its current state.
-func releaseJobSnapshot(job *Job, forceBury bool) (bool, string, JobState) {
+// needs: whether the job should be buried, its key, and its current state. It
+// also records rep.spendsRetry, which is the only place that gets decided.
+func releaseJobSnapshot(job *Job, rep *releaseReport) (bool, string, JobState) {
 	job.RLock()
 	defer job.RUnlock()
 
-	bury := forceBury
-	if !bury && !job.StartTime.IsZero() {
-		bury = job.UntilBuried == 1
+	rep.spendsRetry = releaseSpendsARetry(job, *rep)
+
+	// bury the ITEM exactly when finalizeReleasedJob below will call the JOB
+	// buried, so the two can never disagree. It calls it buried whenever the
+	// budget it leaves behind is 0, which is what remaining works out here: a
+	// release that spends a retry decrements (clamped at 0), one that does not
+	// leaves the budget alone.
+	//
+	// Testing the whole remaining budget, rather than just "is it 1 and about to
+	// be spent", is what stops a live job that somehow reaches 0 from being
+	// reported buried by wr status while its item sits in delay - reserved,
+	// re-run and re-released for ever, burning a runner slot each time.
+	// initialUntilBuried now prevents that at source, so this is defence in
+	// depth against a future route to a live 0 (or a job read back from a
+	// database an older manager wrote).
+	remaining := job.UntilBuried
+	if rep.spendsRetry && remaining > 0 {
+		remaining--
 	}
+
+	bury := rep.forceBury || remaining == 0
 
 	return bury, job.Key(), job.State
 }
@@ -4784,6 +6002,18 @@ func (s *Server) applyReleaseQueueChange(ctx context.Context, q *queue.Queue, it
 		s.deleteJobIfRequested(ctx, job)
 	case item.Stats().State == queue.ItemStateDelay:
 		return currentState == JobStateDelayed, nil
+	case item.Stats().State == queue.ItemStateReady:
+		// a redundant release whose reservation the manager already released
+		// (TTR/lost, or a double-reservation) finds its item in ready once the
+		// release delay has elapsed (or immediately, for a zero-delay job).
+		// finalizeReleasedJob set job.State to JobStateDelayed at that first release
+		// (it never sets JobStateReady), so - mirroring the Delay case's job.State
+		// check - currentState==JobStateDelayed means the release is already applied
+		// and this report is idempotent: skip finalizeReleasedJob to avoid a double
+		// UntilBuried/group-count decrement. Ownership is confirmed by getijForReport
+		// before we get here; without this case the report would fall through to the
+		// default q.Release and error ErrNotRunning (looping the client's retry).
+		return currentState == JobStateDelayed, nil
 	default:
 		if errq := q.Release(ctx, key); errq != nil {
 			return false, errq
@@ -4796,16 +6026,21 @@ func (s *Server) applyReleaseQueueChange(ctx context.Context, q *queue.Queue, it
 // finalizeReleasedJob updates a released job's state (to buried or delayed,
 // obeying its Retries count), persists it, and decrements its scheduler group
 // count.
-func (s *Server) finalizeReleasedJob(ctx context.Context, job *Job, endState *JobEndState,
-	failReason string, forceStorage, forceBury bool) {
-	job.updateAfterExit(endState, s.limiter)
+func (s *Server) finalizeReleasedJob(ctx context.Context, job *Job, rep releaseReport) {
+	job.updateAfterExit(rep.endState, s.limiter)
 
 	job.Lock()
-	if forceBury {
+	if rep.forceBury {
 		job.UntilBuried = 0
-	} else if !job.StartTime.IsZero() {
-		// obey jobs's Retries count by adjusting UntilBuried if a client
-		// reserved this job and started to run the job's cmd
+	} else if rep.spendsRetry && job.UntilBuried > 0 {
+		// obey the job's Retries count by adjusting UntilBuried if a client
+		// reserved this job and tried to run the job's cmd. releaseJobSnapshot
+		// decided spendsRetry; do not re-derive it here (see
+		// releaseReport.spendsRetry).
+		//
+		// The > 0 clamp is load-bearing, not defensive noise: UntilBuried is a
+		// uint8, so decrementing an already-exhausted budget wraps it to 255 and
+		// silently restores the unbounded retrying this whole change removes.
 		job.UntilBuried--
 	}
 
@@ -4821,12 +6056,12 @@ func (s *Server) finalizeReleasedJob(ctx context.Context, job *Job, endState *Jo
 		msg = "released job"
 	}
 
-	job.FailReason = failReason
+	job.FailReason = rep.failReason
 	job.Unlock()
 
 	s.decrementGroupCount(ctx, sgroup)
-	s.db.updateJobAfterExit(ctx, job, endState.Stdout, endState.Stderr, forceStorage)
-	clog.Debug(ctx, msg, "cmd", job.Cmd, "schedGrp", sgroup)
+	s.db.updateJobAfterExit(ctx, job, rep.endState.Stdout, rep.endState.Stderr, rep.forceStorage)
+	clog.Debug(ctx, msg, "key", job.Key(), "cmd", job.loggableCmd(), "schedGrp", sgroup)
 }
 
 // inputToQueuedJobs shows you which of the inputJobs are now actually in the
@@ -4919,8 +6154,7 @@ func (s *Server) killRunningJob(ctx context.Context, jobkey string,
 	// released reports that this WAS the run to release, not that the queue change
 	// succeeded. ttrCallback does not re-mark an already-lost job, so no second
 	// confirmation is coming and withholding the behaviours would leak for ever.
-	return true, true, s.releaseJob(ctx, job, &JobEndState{Exitcode: -1, Exited: true},
-		FailReasonLost, false, false)
+	return true, true, s.releaseJob(ctx, job, lostJobReleaseReport())
 }
 
 // deleteJobs deletes the given jobs from the bury/delay/dependent/ready queue
@@ -4972,7 +6206,7 @@ func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePas
 		// we can't allow the removal of jobs that have dependencies, as *queue
 		// would regard that as satisfying the dependency and downstream jobs
 		// would start
-		hasDeps, err := s.q.HasDependents(jobkey)
+		hasDeps, err := s.jobHasDependents(job, jobkey)
 		if err != nil || hasDeps {
 			if hasDeps {
 				pass.skippedDeps = append(pass.skippedDeps, job)
@@ -4995,7 +6229,7 @@ func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePas
 		// paths). schedulerGroup is the field getSchedulerGroup() reads under
 		// its own lock; capture it directly here to avoid re-locking.
 		repGroup := job.RepGroup
-		cmd := job.Cmd
+		cmd := job.loggableCmd()
 		schedGroup := job.schedulerGroup
 		job.Unlock()
 
@@ -5004,7 +6238,7 @@ func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePas
 			pass.schedGroups[schedGroup]++
 			pass.repGroups = append(pass.repGroups, repGroup)
 
-			clog.Debug(ctx, "removed job", "cmd", cmd)
+			clog.Debug(ctx, "removed job", "key", jobkey, "cmd", cmd)
 		} else {
 			// removal failed, so the job is still in the queue; revert its state
 			// so it is not left visibly Deleted.
@@ -5023,6 +6257,13 @@ func (s *Server) finalizeDeletedJobs(ctx context.Context, pass deletePass) {
 	// delete from db live bucket all in one go
 	if errd := s.db.deleteLiveJobs(ctx, pass.toDelete); errd != nil {
 		clog.Error(ctx, "job deletion from database failed", "err", errd)
+	}
+
+	// these jobs have left the live bucket, so they are no longer live members of
+	// their dep groups; any group whose last live member was among them now has
+	// nothing left to wait for.
+	for _, key := range pass.toDelete {
+		s.releaseDepGroupMembership(ctx, key)
 	}
 
 	// update scheduler now we have fewer jobs
@@ -5122,18 +6363,23 @@ func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 	for _, job := range jobs {
 		readyCallbackExpected := false
 
-		item, errg := s.q.Get(job.Key())
+		// hoisted: Key() rebuilds and hashes the whole Cmd, so a job with a 130KB
+		// command line paid for that once per call site.
+		key := job.Key()
+
+		item, errg := s.q.Get(key)
 		if errg == nil && item != nil && len(item.UnresolvedDependencies()) == 0 {
 			readyCallbackExpected = true
 
 			s.setRACPending()
 		}
 
-		err := s.q.Kick(ctx, job.Key())
+		err := s.q.Kick(ctx, key)
 		if err == nil {
 			job.Lock()
-			job.UntilBuried = job.Retries + 1
-			clog.Debug(ctx, "unburied job", "cmd", job.Cmd, "schedGrp", job.schedulerGroup)
+			job.UntilBuried = initialUntilBuried(job.Retries)
+			clog.Debug(ctx, "unburied job", "key", key, "cmd", job.loggableCmd(),
+				"schedGrp", job.schedulerGroup)
 			job.State = JobStateReady
 			job.Unlock()
 
@@ -5238,6 +6484,22 @@ func (s *Server) checkJobByKey(key string) (bool, error) {
 type repGroupOptions struct {
 	RepGroup string // The RepGroup to get jobs for
 	Match    RepGroupMatch
+	// IncludeComplete must be set by (and only by) callers that genuinely want
+	// archived jobs as well as live ones, because satisfying it means
+	// cursor-scanning the ENTIRE archived history of every matching RepGroup, with
+	// no streaming. On the production DB that cost minutes of CPU per request and
+	// 12GB of heap (reliable4 FINDING 1), so it must be an explicit ask: it used to
+	// be inferred from State being empty, which silently handed the whole scan to
+	// every caller that just did not have a state to filter on.
+	//
+	// How much of that history is codec-DECODED, which is where the heap went,
+	// depends on the Limit below: a pushable Limit (see newCompleteJobsBudget)
+	// bounds the decodes by Offset+Limit per limitJobs group, leaving the rest of
+	// the history counted but not materialised. Without one - which includes
+	// `wr status -o plain` and any `--limit 0`, since cmd/status.go zeroes the
+	// limit for the ungrouped output formats - every matching record is still
+	// decoded in full.
+	IncludeComplete bool
 	limitJobsOptions
 }
 
@@ -5254,10 +6516,26 @@ func (opts *repGroupOptions) toLimitOpts() limitJobsOptions {
 	}
 }
 
-// getJobsByRepGroup gets jobs in the given group (current and complete).
+// getJobsByRepGroup gets the live jobs in the given group, plus its complete ones
+// if opts.IncludeComplete is set (which is unbounded work unless opts also has a
+// pushable Limit - see the warning there and newCompleteJobsBudget).
 func (s *Server) getJobsByRepGroup(ctx context.Context, opts repGroupOptions) (jobs []*Job, srerr string, qerr string) {
 	rgs, srerr, qerr := s.getRepGroupsList(opts.RepGroup, opts.Match)
 	if srerr != "" {
+		return nil, srerr, qerr
+	}
+
+	limitOpts := opts.toLimitOpts()
+	budget := newCompleteJobsBudget(opts)
+
+	if budget != nil {
+		limitOpts.undecodedComplete = make(map[string]int)
+	}
+
+	// a request whose limit cannot be pushed down has to materialise every
+	// matching archived record, so before any of them is decoded its whole
+	// history is priced against a heap budget - see newArchivedBytesBudget.
+	if srerr, qerr = s.checkArchivedHistoryFits(rgs, opts, budget); srerr != "" {
 		return nil, srerr, qerr
 	}
 
@@ -5266,11 +6544,15 @@ func (s *Server) getJobsByRepGroup(ctx context.Context, opts repGroupOptions) (j
 		queueJobs := s.getQueueJobsByRepGroup(ctx, rg, opts.GetStd)
 		jobs = append(jobs, queueJobs...)
 
-		complete := s.getDBJobsByRepGroup(rg, opts.State, &srerr, &qerr)
+		complete, undecoded := s.getDBJobsByRepGroup(rg, opts, budget, &srerr, &qerr)
 		jobs = append(jobs, complete...)
+
+		for group, count := range undecoded {
+			limitOpts.undecodedComplete[group] += count
+		}
 	}
 
-	jobs = s.limitJobs(ctx, jobs, opts.toLimitOpts())
+	jobs = s.limitJobs(ctx, jobs, limitOpts)
 
 	return jobs, srerr, qerr
 }
@@ -5314,29 +6596,27 @@ func (s *Server) getQueueJobsByRepGroup(ctx context.Context, repGroup string, ge
 	return jobs
 }
 
-// getDBJobsByRepGroup gets jobs from the permanent store for a given RepGroup.
-func (s *Server) getDBJobsByRepGroup(rg string, state JobState, srerr *string, qerr *string) []*Job {
-	if state != "" && state != JobStateComplete {
-		return nil
+// getDBJobsByRepGroup gets jobs from the permanent store for a given RepGroup,
+// but only if the caller explicitly asked for complete jobs (see
+// repGroupOptions.IncludeComplete) and its state filter can match one. With a
+// budget it fetches only the jobs that budget can still use, and also returns a
+// per-group count of the archived jobs it counted but deliberately did not
+// decode.
+func (s *Server) getDBJobsByRepGroup(rg string, opts repGroupOptions, budget *completeJobsBudget,
+	srerr *string, qerr *string) ([]*Job, map[string]int) {
+	if !opts.IncludeComplete {
+		return nil, nil
 	}
 
-	var complete []*Job
-
-	complete, *srerr, *qerr = s.getCompleteJobsByRepGroup(rg)
-
-	for _, cj := range complete {
-		cj.RepGroup = rg
+	if opts.State != "" && opts.State != JobStateComplete {
+		return nil, nil
 	}
 
-	sort.Slice(complete, func(i, j int) bool {
-		if complete[i].StartTime.Equal(complete[j].StartTime) {
-			return complete[i].EndTime.Before(complete[j].EndTime)
-		}
+	if budget == nil {
+		return s.allCompleteJobsByRepGroup(rg, srerr, qerr), nil
+	}
 
-		return complete[i].StartTime.Before(complete[j].StartTime)
-	})
-
-	return complete
+	return s.oldestCompleteJobsByRepGroup(rg, opts, budget, srerr, qerr)
 }
 
 // getCompleteJobsByRepGroup gets complete jobs in the given group.
@@ -5425,6 +6705,26 @@ func (s *Server) getQueueJobsByRepGroupMatch(ctx context.Context, repGroup strin
 	return jobs
 }
 
+// serverTLSConfig loads the server certificate and key, adding the CA pool if
+// the CA file is readable.
+func serverTLSConfig(caFile, certFile, keyFile string) (*tls.Config, error) {
+	cer, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, err
+	}
+
+	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cer}}
+
+	caCert, err := os.ReadFile(caFile)
+	if err == nil {
+		certPool := x509.NewCertPool()
+		certPool.AppendCertsFromPEM(caCert)
+		tlsConfig.RootCAs = certPool
+	}
+
+	return tlsConfig, nil
+}
+
 func increaseJobDiskAfterFailure(job *Job) {
 	const diskIncreaseRoundGB = 100
 
@@ -5496,6 +6796,13 @@ type limitJobsOptions struct {
 	GetStd              bool     // If true, populate StdOut and StdErr of jobs
 	GetEnv              bool     // If true, populate Env of jobs
 	WaitingForDepGroups bool     // If true, return jobs waiting on never-seen dep groups
+
+	// undecodedComplete counts, per group, the archived jobs getJobsByRepGroup
+	// counted but deliberately did not decode because Limit was already satisfied
+	// (see newCompleteJobsBudget). They are added to the Similar of their group's
+	// last kept member, which is exactly what addJobToGroup would have done with
+	// them had they been decoded.
+	undecodedComplete map[string]int
 }
 
 // limitJobs handles the limiting of jobs for getJobsByRepGroup() and
@@ -5594,6 +6901,10 @@ func (s *Server) matchesStateFilter(jobState JobState, filterState JobState) boo
 		return jobState != JobStateReserved && jobState != JobStateRunning && jobState != JobStateComplete
 	}
 
+	if filterState == JobStateIncomplete {
+		return jobState != JobStateComplete
+	}
+
 	return jobState == filterState
 }
 
@@ -5611,6 +6922,7 @@ func (s *Server) matchesFailureFilter(jobFailReason string, jobExitCode int,
 // groupAndLimitJobs groups jobs by characteristics and applies limits.
 func (s *Server) groupAndLimitJobs(jobs []*Job, opts limitJobsOptions) []*Job {
 	groups := s.groupJobsByCharacteristics(jobs, opts)
+	countUndecodedJobs(groups, opts.undecodedComplete)
 	groups = s.applyOffsetToGroups(groups, opts.Offset)
 
 	return s.collectJobsFromGroups(groups)
@@ -5629,8 +6941,7 @@ func (s *Server) groupJobsByCharacteristics(jobs []*Job, opts limitJobsOptions) 
 		jState, jExitCode, jFailReason, jLost := getJobProps(job)
 		jState = s.normalizeJobState(jState, jLost)
 
-		group := fmt.Sprintf("%s.%d.%s", jState, jExitCode, jFailReason)
-		s.addJobToGroup(job, group, groups, opts)
+		s.addJobToGroup(job, jobGroup(jState, jExitCode, jFailReason), groups, opts)
 	}
 
 	return groups
@@ -5882,6 +7193,15 @@ func (s *Server) retryScheduleRunnersLater(ctx context.Context, group *sgroup) {
 
 // adjust our count of how many jobs with this schedulerGroup we need in the job
 // scheduler. Optionally supply the number to decrement by (default 1).
+//
+// The decrement itself is synchronous, so the group's count is correct the moment
+// this returns, but telling the external scheduler about it is not: this is the
+// last thing an archive RPC does before replying, and scheduleRunners reaches a
+// command (bsub, and on LSF a `bjobs -w` over every job in the account) that can
+// take seconds. Concurrent RPC handlers already gave the sync call no ordering
+// guarantee over which count reaches the scheduler last, and the scheduler's own
+// per-cmd coalescing plus the next rac pass converge on the current count
+// regardless.
 func (s *Server) decrementGroupCount(ctx context.Context, schedulerGroup string, optionalDrop ...int) {
 	drop := 1
 	if len(optionalDrop) == 1 {
@@ -5907,8 +7227,7 @@ func (s *Server) decrementGroupCount(ctx context.Context, schedulerGroup string,
 
 	count := group.decrement(drop)
 	if count >= 0 {
-		clone := group.clone(count)
-		s.scheduleRunners(ctx, clone)
+		s.scheduleRunnersAsync(ctx, group.clone(count))
 	}
 }
 
@@ -6161,6 +7480,11 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	// no enqueue while s.q.Destroy runs.
 	s.stopBackgroundStartupTasks()
 
+	// that wait includes publication, so nothing can write the sidecar after
+	// this: remove it here so it does not outlive a manager stopped inside the
+	// startup window (spec E4).
+	s.startupStatus.remove()
+
 	s.waitForRunnersToDie(ctx, wait)
 
 	// stop the scheduler
@@ -6197,11 +7521,20 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 
 // closeServerCommsAndDB closes the command line interface, command socket and
 // database, and frees any clients waiting on a reserve.
+//
+// Stopping the readers is skipped when publication never started them (a
+// shutdown inside the startup window, spec E3): nothing would ever close
+// clientHandlingDone, so waitForClientHandling would burn a whole
+// ServerShutdownWaitTime and log a spurious timeout warning.
 func (s *Server) closeServerCommsAndDB(ctx context.Context) {
 	// close our command line interface
 	s.closeClientSubscriptions()
-	close(s.stopClientHandling)
-	s.waitForClientHandling(ctx)
+
+	if s.clientHandlingStarted() {
+		close(s.stopClientHandling)
+		s.waitForClientHandling(ctx)
+	}
+
 	time.Sleep(s.timings.ShutdownSocketWait)
 
 	if err := s.sock.Close(); err != nil {
@@ -6270,6 +7603,11 @@ func (s *Server) beginShutdown(ctx context.Context, stopSigHandling bool) bool {
 	s.killRunners = true
 	s.krmutex.Unlock()
 
+	// a caller waiting for publication must not wait forever on a server that is
+	// being stopped, and publication is skipped once bgCtx is cancelled - which
+	// stopBackgroundStartupTasks does immediately after this returns (spec E2).
+	s.closeServing()
+
 	return true
 }
 
@@ -6326,7 +7664,15 @@ func (s *Server) closeWebSockets(ctx context.Context) {
 // shutdownHTTPServer shuts the web interface down, forcing completion after
 // httpServerShutdownTime because a graceful shutdown is slow due to a fixed
 // 500ms poll.
+//
+// s.httpServer is set inside serveWebInterface, which publication runs only once
+// prior-state recovery has ended, so a SIGTERM inside the startup window arrives
+// with nothing to shut down (spec E3).
 func (s *Server) shutdownHTTPServer(ctx context.Context) {
+	if s.httpServer == nil {
+		return
+	}
+
 	httpCtx, cancel := context.WithTimeout(ctx, ServerShutdownWaitTime)
 
 	go func() {
@@ -6343,6 +7689,15 @@ func (s *Server) shutdownHTTPServer(ctx context.Context) {
 // waitForPortsClosed blocks until both the command and web ports are no longer
 // being listened to (which is the best proxy we have for them being free).
 // portStillListening closes any open connection as a side effect.
+//
+// Since publication moved the binds past Serve's return (spec E1), the manager
+// may never have bound these ports: they come from the config in the Server
+// literal, not from the bind. Inside the startup window that is benign - nothing
+// is listening, both dials fail, and this returns on its first iteration - which
+// is why no production change is needed. It bites only when something ELSE holds
+// one of them, because this loop has neither a deadline nor a context check, and
+// that is why E1 acceptance test 5 closes its own listener before stopping the
+// server.
 func (s *Server) waitForPortsClosed(ctx context.Context) {
 	for {
 		stillUp := s.portStillListening(ctx, s.ServerInfo.Port)

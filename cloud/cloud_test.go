@@ -129,6 +129,33 @@ func TestUtility(t *testing.T) {
 	})
 }
 
+// TestServerCloseSSHConnections exercises the ssh-connection close helpers the
+// job scheduler's confirm-dead path relies on to avoid leaking ssh clients (it
+// dials a throwaway Server per check, then must close it). It needs no real
+// cloud provider or ssh server: it covers the never-dialled case, which must be
+// a safe, idempotent no-op, plus the deliberate no-op Close.
+func TestServerCloseSSHConnections(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("A Server that never dialled an ssh client closes cleanly", t, func() {
+		server := NewServer("user", "127.0.0.1", "")
+		So(server, ShouldNotBeNil)
+
+		Convey("CloseSSHConnections is a safe no-op and is idempotent", func() {
+			So(func() { server.CloseSSHConnections(ctx) }, ShouldNotPanic)
+			So(func() { server.CloseSSHConnections(ctx) }, ShouldNotPanic)
+
+			So(server.sshClients, ShouldBeEmpty)
+			So(server.sshClientSessions, ShouldBeEmpty)
+			So(server.sshStarted, ShouldBeFalse)
+		})
+
+		Convey("Close is a no-op (a cached, shared Server must not drop its connections)", func() {
+			So(func() { server.Close(ctx) }, ShouldNotPanic)
+		})
+	})
+}
+
 func TestOpenStack(t *testing.T) {
 	ctx := context.Background()
 	osPrefix := os.Getenv("OS_OS_PREFIX")

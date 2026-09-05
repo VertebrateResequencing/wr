@@ -46,6 +46,7 @@ require (
 	go.etcd.io/bbolt v1.4.3
 	go.nanomsg.org/mangos/v3 v3.4.2
 	golang.org/x/crypto v0.53.0
+	golang.org/x/sys v0.46.0
 	golang.org/x/term v0.44.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	vimagination.zapto.org/parser v1.2.3
@@ -109,7 +110,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/net v0.56.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	gopkg.in/fsnotify.v1 v1.4.7 // indirect
 	gopkg.in/ini.v1 v1.67.3 // indirect

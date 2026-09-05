@@ -242,6 +242,8 @@ func startQueueCommandTestServer(ctx context.Context, t *testing.T) (
 
 		server, _, token, err := jobqueue.Serve(ctx, serverConfig)
 		if err == nil {
+			waitForTestServerServing(t, server)
+
 			return testConfig, serverConfig, addr, reqs, server, token
 		}
 
@@ -399,6 +401,12 @@ func resetSelectionCommandForTest(t *testing.T, command *cobra.Command) {
 	cmdLine = ""
 	cmdCwd = ""
 	cmdAll = false
+	// cmdRecent is one of the mutually-exclusive selectors countGetJobArgs counts, so
+	// a status test that ran earlier in this package and left --recent set would
+	// otherwise make every selection command here die with "-f, -i, -l and -a are
+	// mutually exclusive". It has no flag on these commands, so only the var is reset.
+	cmdRecent = ""
+	cmdRecentPeriod = 0
 	mountJSON = ""
 	mountSimple = ""
 	timeoutint = 120

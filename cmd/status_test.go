@@ -63,6 +63,10 @@ const (
 	statusTestFutureDepGroup  = "future"
 	statusTestCarrierDepGroup = "carrier"
 	statusTestLiveDepGroup    = "live"
+
+	// testServerPublishTimeout bounds how long a cmd test server is given to
+	// publish itself. It is a hang detector, not a latency budget.
+	testServerPublishTimeout = 60 * time.Second
 )
 
 //nolint:gosmopolitan // This test asserts local CLI rendering.
@@ -1200,6 +1204,27 @@ func freeStatusTestPorts(t *testing.T) (string, string) {
 	return strconv.Itoa(a1.Port), strconv.Itoa(a2.Port)
 }
 
+// waitForTestServerServing waits for a test server to publish its externally
+// observable surface. jobqueue.Serve returns while prior-state recovery is still
+// running, so the manager port is not yet bound and jobqueue.Connect (which
+// turns a failed dial straight into ErrNoServer with no retry) would fail on
+// every run, not intermittently. The bound is a hang detector, not a latency
+// budget: these test databases hold no prior jobs.
+//
+// It t.Fatals rather than recording a failed assertion and returning, so a
+// server that never published stops the test there instead of handing every
+// subsequent step an unreachable server and burying the one real cause under a
+// cascade of ErrNoServer failures.
+func waitForTestServerServing(t *testing.T, server *jobqueue.Server) {
+	t.Helper()
+
+	select {
+	case <-server.Serving():
+	case <-time.After(testServerPublishTimeout):
+		t.Fatal("timed out waiting for the test server to start serving")
+	}
+}
+
 // archiveNextStatusJob reserves the next ready job, marks it Started and then
 // Archives it with the given exit-0 end time, completing it the real way so it
 // enters the recent end-time index.
@@ -1303,6 +1328,16 @@ func runStatusForTest(t *testing.T, args ...string) string {
 func resetStatusForTest(t *testing.T) {
 	t.Helper()
 
+	// the --recent selectors these tests set (directly, or by parsing --recent) are
+	// package-level vars that outlive the test, and only `wr status` has a flag to
+	// reset them from: a leftover cmdRecent made every later suspend/resume selection
+	// test die with "-f, -i, -l and -a are mutually exclusive", since countGetJobArgs
+	// counts cmdRecent too. Clear them when the test that reset them finishes.
+	t.Cleanup(func() {
+		cmdRecent = ""
+		cmdRecentPeriod = 0
+	})
+
 	cmdFileStatus = ""
 	cmdIDStatus = ""
 	cmdIDIsSubStr = false
@@ -1378,6 +1413,7 @@ func startStatusTestServer(ctx context.Context, t *testing.T) (
 	}
 
 	So(err, ShouldBeNil)
+	waitForTestServerServing(t, server)
 
 	return testConfig, serverConfig, addr, reqs, server, token
 }

@@ -44,8 +44,10 @@ priority (or for those with equal priority, the oldest - fifo) one which
 switches it from the ready queue to the run queue. Items can also have
 dependencies, in which case they start in the dependency queue and only move to
 the ready queue (bypassing the delay queue) once all its dependencies have been
-Remove()d from the queue. Items can also belong to a reservation group, in which
-case you can Reserve() an item in a desired group.
+satisfied. A dependency is an opaque key that need never name an item in the
+queue; it is satisfied when an item with that key is Remove()d from the queue,
+or when the key is passed to SatisfyDependency(). Items can also belong to a
+reservation group, in which case you can Reserve() an item in a desired group.
 
 In the run queue the item starts a time-to-release (ttr) countdown; when that
 runs out the item is placed back on the ready queue. This is to handle a
@@ -119,6 +121,7 @@ const (
 	opBury      = "Bury"
 	opKick      = "Kick"
 	opRemove    = "Remove"
+	opSatisfy   = "SatisfyDependency"
 )
 
 // Queue has some typical errors.
@@ -294,6 +297,38 @@ func (queue *Queue) notifyTTRMoveChanges(moves ttrMoves) {
 	if len(moves.ready) > 0 {
 		queue.changed(SubQueueRun, SubQueueReady, moves.ready)
 	}
+}
+
+// SatisfyDependency is a thread-safe way to tell the queue that the dependency
+// on the given key is now satisfied, without removing an item. It is Remove()'s
+// dependant half: items depending on key have that dependency resolved, and
+// those with nothing else left to wait for move to the ready sub-queue.
+//
+// Unlike Remove(), key does not have to name an item in the queue, and need
+// never have named one. If no item depends on key, nothing happens and nil is
+// returned.
+func (queue *Queue) SatisfyDependency(ctx context.Context, key string) error {
+	queue.mutex.Lock()
+
+	if queue.closed {
+		queue.mutex.Unlock()
+
+		return Error{queue.Name, opSatisfy, key, ErrQueueClosed}
+	}
+
+	addedReadyItems := queue.promoteDependants(key)
+
+	if len(addedReadyItems) > 0 {
+		queue.changed(SubQueueDependent, SubQueueReady, addedReadyItems)
+	}
+
+	queue.mutex.Unlock()
+
+	if len(addedReadyItems) > 0 {
+		queue.readyAdded(ctx, "dependent")
+	}
+
+	return nil
 }
 
 // Error records an error and the operation, item and queue that caused it.
@@ -613,10 +648,12 @@ func (queue *Queue) Stats() *Stats {
 // either SubQueueRun or SubQueueBury to start the item in one of those
 // sub-queues. If the item has unmet dependencies, startQueue is ignored.
 //
-// The final argument to Add() is an optional slice of item ids on which this
-// item depends: this item will first enter the dependency sub-queue and only
-// transfer to the ready sub-queue when items with these ids get Remove()d from
-// the queue.
+// The final argument to Add() is an optional slice of opaque dependency keys on
+// which this item depends: this item will first enter the dependency sub-queue
+// and only transfer to the ready sub-queue once every one of those keys has been
+// satisfied. A key is satisfied when an item with that key gets Remove()d from
+// the queue, or when the key is passed to SatisfyDependency(); a key need never
+// name an item in the queue.
 //
 // Add() returns an item, which may have already existed (in which case, nothing
 // was actually added or changed).
@@ -797,16 +834,11 @@ func (queue *Queue) setQueueDeps(item *Item) {
 	}
 }
 
-// itemHasDeps returns true if the item has unresolved dependencies according
-// to the queue's lookup of parent items to their dependent children.
+// itemHasDeps returns true if the item still has unresolved dependencies. A
+// dependency key does not have to name an item in the queue, so the item's own
+// unresolved set is the only thing that can answer this.
 func (queue *Queue) itemHasDeps(item *Item) bool {
-	for _, dep := range item.Dependencies() {
-		if _, exists := queue.items[dep]; exists {
-			return true
-		}
-	}
-
-	return false
+	return len(item.UnresolvedDependencies()) > 0
 }
 
 // AddMany is like Add(), except that you supply a slice of *ItemDef, and it
@@ -1121,16 +1153,15 @@ func diffDependencies(item *Item, newDeps []string) ([]string, int) {
 }
 
 // pruneDependants removes the given key from the dependants lookup for each of
-// the toRemove parent keys that still exist in the queue. You must hold the
-// mutex lock before calling this.
+// the toRemove parent keys. Those keys need not name items in the queue, so
+// there is nothing to check them against first. You must hold the mutex lock
+// before calling this.
 func (queue *Queue) pruneDependants(key string, toRemove []string) {
 	for _, dep := range toRemove {
-		if _, exists := queue.items[dep]; exists {
-			delete(queue.dependants[dep], key)
+		delete(queue.dependants[dep], key)
 
-			if len(queue.dependants[dep]) == 0 {
-				delete(queue.dependants, dep)
-			}
+		if len(queue.dependants[dep]) == 0 {
+			delete(queue.dependants, dep)
 		}
 	}
 }

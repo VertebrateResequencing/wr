@@ -199,7 +199,9 @@ func restJobsModificationTargets(ctx context.Context, s *Server, ids string) ([]
 	}
 
 	if len(targets) == 0 {
-		return nil, http.StatusNotFound, errRESTModifyNotFound
+		status, err := restJobsModificationEmptyStatus(s, ids)
+
+		return nil, status, err
 	}
 
 	return targets, http.StatusOK, nil
@@ -223,6 +225,13 @@ func restJobsModificationTarget(ctx context.Context, s *Server, id string) ([]*J
 }
 
 func restJobsModificationRepGroupTarget(ctx context.Context, s *Server, id string) ([]*Job, int, error) {
+	// deliberately does NOT ask for complete jobs: only restEditableState (delayed,
+	// ready, dependent, buried) jobs can be modified, so every archived job this
+	// used to decode was discarded by restEditableJobKeys, at the cost of an
+	// unbounded scan (reliable4 FINDING 1). The documented 409-vs-404 distinction for
+	// a RepGroup with nothing but complete jobs is preserved without that scan by
+	// restJobsModificationEmptyStatus, which asks the O(log n) end-time index whether
+	// the RepGroup has any history at all.
 	opts := repGroupOptions{
 		RepGroup: id,
 		Match:    RepGroupMatchExact,
@@ -234,6 +243,25 @@ func restJobsModificationRepGroupTarget(ctx context.Context, s *Server, id strin
 	}
 
 	return jobs, http.StatusOK, nil
+}
+
+// restJobsModificationEmptyStatus decides which refusal a modification whose ids
+// matched no live job gets: 404 is reserved for ids that resolve to no queued or
+// complete job and no RepGroup, so an id with archived history resolved to
+// complete jobs, which are not an editable state, and is the 409 case.
+//
+// It does not fetch that history to find out (see
+// restJobsModificationRepGroupTarget): every archive records its RepGroup's end
+// time, so this is one O(log n) Get per id. A 32-char job key simply has no such
+// entry, unless it happens to also name a RepGroup with history.
+func restJobsModificationEmptyStatus(s *Server, ids string) (int, error) {
+	for id := range strings.SplitSeq(ids, ",") {
+		if s.db.repGroupHasHistory(strings.TrimSpace(id)) {
+			return http.StatusConflict, errRESTModifyNoEditable
+		}
+	}
+
+	return http.StatusNotFound, errRESTModifyNotFound
 }
 
 func restEditableJobKeys(jobs []*Job) []string {
@@ -1240,6 +1268,33 @@ type JobModifyResponse struct {
 	Jobs     []JStatus         `json:"jobs"`
 }
 
+// restStatusErrorCode is the HTTP status a failed status query reports.
+//
+// ErrArchivedHistoryTooBig is not a fault: the server is healthy and is telling
+// the caller that this particular query - an unbounded fetch of this RepGroup's
+// completed history, since limit defaults to 0 - is one it will not answer, and
+// naming the bounded queries it will (a limit, a state filter, counts). A 5xx
+// would say the server is broken and invite a blind retry, so it gets a 4xx.
+//
+// It is specifically the 400 this endpoint already returns when it cannot use the
+// limit parameter it was given (restJobsStatus, on parseRESTStatusQuery's error),
+// rather than 413: RFC 9110's 413 is about REQUEST content being too large to
+// process, and this request carries none - it is the response that would be. The
+// refusal text reaches the caller in the body either way (writeJobsResponse).
+//
+// .docs/issue-197/spec.md, the binding REST contract, fixes status codes only for
+// the PATCH modification endpoint (400/404/409), and says nothing about GET job
+// status, so nothing there is changed by this.
+//
+// Anything else really is a server-side failure, and keeps its 500.
+func restStatusErrorCode(qerr string) int {
+	if isArchivedHistoryTooBig(qerr) {
+		return http.StatusBadRequest
+	}
+
+	return http.StatusInternalServerError
+}
+
 func restEditableItemState(state queue.ItemState) bool {
 	switch state {
 	case queue.ItemStateDelay, queue.ItemStateReady, queue.ItemStateDependent, queue.ItemStateBury:
@@ -1534,10 +1589,13 @@ func (s *Server) restJobsStatusByID(ctx context.Context, id string, q restStatus
 		}
 	}
 
-	// id might be a Job.RepGroup
+	// id might be a Job.RepGroup. This is the REST status endpoint, so it wants the
+	// RepGroup's archived jobs as well as its live ones (a state filter of eg. ready
+	// still avoids the history, as before).
 	opts := repGroupOptions{
-		RepGroup: id,
-		Match:    normalizeRepGroupMatch("", q.search),
+		RepGroup:        id,
+		Match:           normalizeRepGroupMatch("", q.search),
+		IncludeComplete: true,
 		limitJobsOptions: limitJobsOptions{
 			Limit:               q.limit,
 			State:               q.state,
@@ -1549,7 +1607,7 @@ func (s *Server) restJobsStatusByID(ctx context.Context, id string, q restStatus
 
 	theseJobs, _, qerr := s.getJobsByRepGroup(ctx, opts)
 	if qerr != "" {
-		return nil, http.StatusInternalServerError, Error{Err: qerr}
+		return nil, restStatusErrorCode(qerr), Error{Err: qerr}
 	}
 
 	return theseJobs, http.StatusOK, nil
@@ -2201,9 +2259,16 @@ func (s *Server) storeModifiedJobs(ctx context.Context, modified map[string]stri
 
 	s.storeModifiedLimitGroupsIfNeeded(ctx, jobs, modifier)
 
-	if err := s.db.modifyLiveJobs(ctx, modifiedOldKeys(modified, jobs), jobs); err != nil {
+	oldKeys := modifiedOldKeys(modified, jobs)
+
+	if err := s.db.modifyLiveJobs(ctx, oldKeys, jobs); err != nil {
 		return err
 	}
+
+	// this is above the DependenciesSet || PrioritySet guard below because a
+	// DepGroups-only modification never passes that guard, and that is exactly
+	// the case that must not wedge a group's waiters.
+	s.rekeyDepGroupMembershipForModifiedJobs(ctx, oldKeys, jobs)
 
 	if modifier.DependenciesSet || modifier.PrioritySet {
 		return s.updateModifiedQueueJobs(ctx, jobs)
@@ -2260,7 +2325,7 @@ func (s *Server) changeModifiedQueueKeys(modified map[string]string, jobs []*Job
 
 func (s *Server) updateModifiedQueueJobs(ctx context.Context, jobs []*Job) error {
 	for _, job := range jobs {
-		deps, waitingForDepGroups, err := job.Dependencies.incompleteJobKeys(s.db)
+		deps, waitingForDepGroups, err := job.Dependencies.dependencyKeys(s.db, s.depGroups)
 		if err != nil {
 			return err
 		}

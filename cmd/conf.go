@@ -156,39 +156,65 @@ managerdbfile: "db"
 managerdbbkfile: "db_bk"
 
 # managerdbbatchdelay: How many milliseconds may the manager's database wait to
-# coalesce concurrent write transactions into a single disk commit?
+# coalesce its BoltDB Batch() writes - not its job add, job state-change or job
+# archive writes - into a single disk commit?
 #
-# The manager persists job state changes to its BoltDB database. BoltDB groups
-# (batches) write transactions that arrive from different goroutines within this
-# window into one commit, with one fsync, which greatly reduces disk I/O when
-# many jobs change state at once. A larger value lets more writes coalesce
-# (fewer fsyncs) but makes an individual write wait longer before it is
-# committed, so raising it too far hurts latency when few writes are in flight.
-# Durability is unchanged either way: every commit is still fsync'd to disk.
+# This sets BoltDB's MaxBatchDelay, which applies only to the writes the
+# manager makes through bolt's Batch() call: Batch() calls arriving from
+# different goroutines within this window are grouped into one commit, with one
+# fsync. Durability is unchanged whatever you set: every commit is still
+# fsync'd to disk.
+#
+# It does NOT govern the manager's three busiest write paths. Job state
+# changes, job archiving (a job finishing) and job adding each have their own
+# single coalescing writer goroutine, which folds everything pending into one
+# bolt Update() transaction; that coalesces ACROSS a commit rather than within
+# a fixed window, and this knob cannot reach it.
+#
+# What it does still govern:
+#   - defining, changing or removing limit groups (db.storeLimitGroups): wr
+#     limit, and the limit groups an added job declares
+#   - storing a client environment the database has not seen before
+#     (db.storeEnv's db.store): once per distinct environment, on add
+#   - removing jobs (db.deleteLiveJobs): wr remove, plus one write per job for
+#     jobs carrying the Remove behaviour (added with eg. --on_failure
+#     '[{"remove":true}]'), which the manager deletes as it buries them
+#   - modifying jobs (db.modifyLiveJobs): wr mod
+#   - one add whose jobs do not fit a single write transaction
+#     (db.storeNewJobDataChunked), which is split into several
+#
+# All of those are occasional except one: the Remove behaviour fires once per
+# job, not once per command you run, so a workload that uses it and buries jobs
+# in bulk is the one case here that gives a wider window plenty to combine.
 #
 # A value of 0 (the default) uses wr's built-in default of 10ms (bbolt's own
-# default), which suits normal and fast (local, SSD-backed) storage. On such
-# storage the manager's per-job bottleneck is CPU and lock contention rather
-# than fsync, so a larger value only adds commit latency without a fsync
-# benefit; leave it at 10ms.
+# default). Raising it (for example to 25-50ms) can only help if BOTH of the
+# following hold: the manager directory (managerdir) is on storage with high
+# fsync latency, such as a networked filesystem (NFS, Lustre, etc.), where each
+# commit is far more expensive; AND enough of the writes listed above are in
+# flight at once for a wider window to have something to combine. Otherwise you
+# only add latency to each of them.
 #
-# Only raise this (for example to 25-50ms) if BOTH of the following hold: the
-# manager directory (managerdir) is on storage with high fsync latency, such as
-# a networked filesystem (NFS, Lustre, etc.), where each commit is far more
-# expensive; AND your workload is genuinely fsync-bound, so that coalescing
-# more writes per commit actually reduces wall-clock time. In that case a wider
-# window can cut the number of fsyncs per job and improve throughput.
+# For the add path the measured verdict is the opposite. A 500ms window was
+# tried as a fix for a production add-latency collapse and refuted: it reached
+# 96.64 adds/s against a ~100/s pass mark, and cost the low-concurrency case
+# its latency (p50 124ms -> 480ms), because the add path's own coalescing
+# writer supersedes the window (see .docs/reliable4/addstorm-fix-trials.md,
+# sections T1 and SUMMARY).
 managerdbbatchdelay: 0
 
-# managerdbbatchsize: How many concurrent write transactions may the manager's
-# database coalesce into a single disk commit before committing early?
+# managerdbbatchsize: How many of the manager's BoltDB Batch() writes - not its
+# job add, job state-change or job archive writes - may coalesce into a single
+# disk commit before committing early?
 #
-# This is the companion cap to managerdbbatchdelay: once this many writes have
-# accumulated, the batch commits immediately rather than waiting out the delay.
-# It should comfortably exceed the number of writes you expect to be in flight
-# at once so that the delay, not this cap, governs coalescing.
+# This is the companion cap to managerdbbatchdelay, with exactly the same
+# scope: it reaches the Batch() writes listed above and no others. Once this
+# many of them have accumulated, the batch commits immediately rather than
+# waiting out the delay. It should comfortably exceed the number of writes you
+# expect to be in flight at once so that the delay, not this cap, governs
+# coalescing.
 #
-# A value of 0 (the default) uses wr's built-in default.
+# A value of 0 (the default) uses wr's built-in default of 10000.
 managerdbbatchsize: 0
 
 # managertokenfile: Where should the manager store the authentication token?
@@ -370,6 +396,31 @@ runnerexecshell: "bash"
 # This extracts only the pid from whatever command wr sends and runs the ps
 # check on it, so the key cannot be used to run anything else, while still
 # returning exactly what the manager expects.
+#
+# BACKSTOP KILL (optional): wr can additionally force-kill a wedged runner that
+# has gone silent for far longer than any plausible archive delay
+# (ServerConfig.Timings.LostRunnerBackstop, default 1h), so its limit-group slot
+# is reclaimed rather than held indefinitely. To ENABLE that in production the key
+# must ALSO permit 'kill -9 <pid>'. If you keep the ps-only example above, the
+# backstop simply degrades to a harmless ps (no kill) and wedged jobs stay parked
+# exactly as they do today - no regression. To enable the kill, install an UPDATED
+# forced command that branches on what wr sends (single line; substitute your own
+# key and comment):
+#
+` +
+	`#   command="c=\"$SSH_ORIGINAL_COMMAND\"; p=$(echo \"$c\" | grep -oE '[-]p [0-9]+' | ` +
+	`grep -oE '[0-9]+' | head -1); case \"$c\" in kill*) kill -9 \"${p:-0}\" 2>/dev/null || true;; ` +
+	`*) ps -o stat= -p \"${p:-0}\" 2>/dev/null || test $? -eq 1;; esac" ` +
+	`ssh-ed25519 AAAA...your-public-key... wr lost-job ps + backstop kill` + `
+#
+# This still only ever runs 'ps' or 'kill -9' on a digits-only pid extracted from
+# what wr sends - no arbitrary commands, no injection. wr sends either the ps check
+# 'ps -o stat= -p <pid> 2>/dev/null || test $? -eq 1' (matched by the *) branch) or
+# the kill 'kill -9 <pid> 2>/dev/null || true # wr-kill -p <pid>' (matched by the
+# kill*) branch); both carry the pid in the same '-p <pid>' token the extractor
+# reads. And because the forced command runs as the login user (not root), 'kill
+# -9' can only signal THAT user's own processes - exactly the wr runners you already
+# own on that node - so the added privilege over ps-only is modest.
 privatekeypath: "~/.ssh/id_rsa"
 
 # cloudflavor: What server flavors can be automatically picked?

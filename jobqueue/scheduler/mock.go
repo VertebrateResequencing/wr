@@ -77,7 +77,36 @@ type ConfigMock struct {
 	// returning an error for the first N calls, then nil). Leave nil for normal
 	// behaviour.
 	ScheduleError func() error
+
+	// RunCmdFunc, if non-nil, makes getHost return a stub Host (for any host
+	// name) whose RunCmd calls this. This lets a test observe and drive the
+	// ProcessNotRunningOnHost / KillProcessOnHost "ssh" path (which the real
+	// schedulers run against a getHost'd Host) without any real hosts. Leave nil
+	// for the default behaviour, where getHost reports no host exists.
+	RunCmdFunc func(ctx context.Context, cmd string, background bool) (stdout, stderr string, err error)
+
+	// GetHostHook, if non-nil, is called with the host name each time getHost
+	// returns a Host - i.e. each time an ssh connection to a host would be opened.
+	// A test can count these to verify that confirm-dead checks are GROUPED onto
+	// few connections per host rather than one connection per check.
+	GetHostHook func(host string)
 }
+
+// mockHost is a stub Host whose RunCmd delegates to a supplied function, letting
+// a test stand in for the remote command execution ProcessNotRunningOnHost and
+// KillProcessOnHost perform.
+type mockHost struct {
+	runCmd func(ctx context.Context, cmd string, background bool) (stdout, stderr string, err error)
+}
+
+// RunCmd satisfies the Host interface by delegating to the supplied function.
+func (h *mockHost) RunCmd(ctx context.Context, cmd string, background bool) (string, string, error) {
+	return h.runCmd(ctx, cmd, background)
+}
+
+// Close satisfies the Host interface. It is a no-op: the mock host opens no ssh
+// connection or other resource that needs releasing.
+func (h *mockHost) Close(_ context.Context) {}
 
 // mock is a scheduleri implementation that runs RunnerFunc goroutines instead
 // of spawning runner subprocesses.
@@ -206,7 +235,15 @@ func (s *mock) hostToID(_ string) string {
 	return ""
 }
 
-func (s *mock) getHost(_ string) (Host, bool) {
+func (s *mock) getHost(host string) (Host, bool) {
+	if s.config.RunCmdFunc != nil {
+		if s.config.GetHostHook != nil {
+			s.config.GetHostHook(host)
+		}
+
+		return &mockHost{runCmd: s.config.RunCmdFunc}, true
+	}
+
 	return nil, false
 }
 
