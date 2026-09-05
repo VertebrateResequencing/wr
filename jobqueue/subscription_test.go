@@ -2060,11 +2060,13 @@ func countRecvDeadlineErrors(jq *Client, done <-chan struct{}) int {
 			errs++
 		}
 
-		// Resetting here, after the deadline operations rather than as soon as
-		// the timer fires, keeps each wait starting when the previous iteration
-		// finished, which is what time.After at the top of the select did. A
-		// ticker would instead fire early whenever an iteration outlasts the
-		// period, changing how often these operations meet a socket swap.
+		// Resetting after the deadline operations, rather than as soon as the
+		// timer fires, means each wait starts when the previous iteration's
+		// deadline work finished. Do not simplify this to a ticker: a ticker
+		// keeps its own schedule, so an iteration that outlasts the period
+		// leaves a tick already due and the next receive returns immediately
+		// instead of waiting a full period. That collapses the pacing and
+		// changes how often these operations meet a socket swap.
 		timer.Reset(socketSwapDeadlineWait)
 	}
 
