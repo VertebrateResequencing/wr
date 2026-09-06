@@ -2073,18 +2073,26 @@ func countRecvDeadlineErrors(jq *Client, done <-chan struct{}) int {
 	return errs
 }
 
-// recvDeadlineRoundTripped sets jq's receive deadline and reads it back, and
-// says if both succeeded. A deadline read back as non-positive counts as a
-// failure too: mangos reads that as "wait forever", which no live client socket
-// is set to.
+// recvDeadlineRoundTripped sets jq's receive deadline to
+// ClientMinRequestTimeout, reads it straight back, and says whether the value
+// that came back is the value that went in. Both operations share one hold of
+// jq's lock, so no concurrent reconnect() can swap jq.sock or close it between
+// them: the value read is from the socket just written, which is what makes the
+// equality both deterministic and evidence that the option took effect. The
+// value compared against is positive, so a socket left non-positive - which
+// mangos reads as "wait forever", and no live client socket is set to - fails
+// here too.
 func recvDeadlineRoundTripped(jq *Client) bool {
-	if err := setRecvDeadlineUnderLock(jq, ClientMinRequestTimeout); err != nil {
+	jq.Lock()
+	defer jq.Unlock()
+
+	if err := jq.sock.SetOption(mangos.OptionRecvDeadline, ClientMinRequestTimeout); err != nil {
 		return false
 	}
 
-	deadline, err := recvDeadlineUnderLock(jq)
+	deadline, err := jq.recvDeadline()
 
-	return err == nil && deadline > 0
+	return err == nil && deadline == ClientMinRequestTimeout
 }
 
 // setRecvDeadlineUnderLock sets the receive deadline of jq's socket while
