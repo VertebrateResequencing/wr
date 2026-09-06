@@ -523,7 +523,8 @@ func (c *Client) requestWithin(cr *clientRequest, timeout time.Duration) (sr *se
 	return c.requestLocked(cr)
 }
 
-// recvDeadline returns the receive deadline the client's socket currently has.
+// recvDeadline returns the receive deadline the client's socket currently
+// has. It reads c.sock, so callers must hold the client's lock.
 func (c *Client) recvDeadline() (time.Duration, error) {
 	val, err := c.sock.GetOption(mangos.OptionRecvDeadline)
 	if err != nil {
