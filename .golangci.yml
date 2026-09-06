@@ -139,6 +139,10 @@ linters:
           - revive
         path: _test\.go
       - linters:
+          - gosec
+        path: _test\.go
+        text: "G703"
+      - linters:
           - funlen
           - mnd
         path: internal
