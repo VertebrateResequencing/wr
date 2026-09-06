@@ -796,8 +796,16 @@ func (j *Job) WallTime() time.Duration {
 // variables instead. A stored non-nil empty environment returns an empty slice.
 // In both cases, alters the return value to apply any overrides stored in
 // job.EnvOverride.
+//
+// The stored environment is copied out under the Job's read lock and decoded
+// after releasing it, since the manager writes these fields under the Job's
+// write lock while a status gather is reading them.
 func (j *Job) Env() ([]string, error) {
-	return jobEnv{envC: j.EnvC, overrides: j.envOverrideSnapshot(), retrieved: j.EnvCRetrieved}.decode()
+	j.RLock()
+	stored := j.storedEnvLocked()
+	j.RUnlock()
+
+	return stored.decode()
 }
 
 // envDecodeHook, when set, is called every time a Job's stored environment is
@@ -964,17 +972,28 @@ func (j *Job) Getenv(key string) string {
 // nothing to STDOUT, you will get an empty string. Note that StdOutC is only
 // populated if you got the Job from GetByCmd(_, true), and if the Job's Cmd ran
 // but failed.
+//
+// The manager writes StdOutC and StdErrC under the Job's write lock while a
+// status gather is reading them, so the slice header is copied out under the
+// read lock, which is then released for the decompress. Copying the header is
+// enough, since both are only ever replaced wholesale - by a runner's snapshot
+// of its Cmd's output, by the retrieval that fills them from the database, and
+// by the reset that clears them for a rerun - so the bytes are never written to.
 func (j *Job) StdOut() (string, error) {
-	if len(j.StdOutC) == 0 {
+	j.RLock()
+	stdOutC := j.StdOutC
+	j.RUnlock()
+
+	if len(stdOutC) == 0 {
 		return "", nil
 	}
 
-	decomp, err := decompress(j.StdOutC)
+	decomp, err := decompress(stdOutC)
 	if err != nil {
 		return "", err
 	}
 
-	return string(decomp), err
+	return string(decomp), nil
 }
 
 // StdErr returns the decompressed job.StdErrC, which is the head and tail of
@@ -982,17 +1001,23 @@ func (j *Job) StdOut() (string, error) {
 // nothing to STDERR, you will get an empty string. Note that StdErrC is only
 // populated if you got the Job from GetByCmd(_, true), and if the Job's Cmd ran
 // but failed.
+//
+// It takes the read lock for the same reason StdOut does.
 func (j *Job) StdErr() (string, error) {
-	if len(j.StdErrC) == 0 {
+	j.RLock()
+	stdErrC := j.StdErrC
+	j.RUnlock()
+
+	if len(stdErrC) == 0 {
 		return "", nil
 	}
 
-	decomp, err := decompress(j.StdErrC)
+	decomp, err := decompress(stdErrC)
 	if err != nil {
 		return "", err
 	}
 
-	return string(decomp), err
+	return string(decomp), nil
 }
 
 // TriggerBehaviours triggers this Job's Behaviours based on if its Cmd got
