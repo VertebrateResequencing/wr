@@ -399,10 +399,33 @@ func (f *staleRmdirFS) isStale(name string) bool {
 
 // staleRmdirNode is a loopback node that asks its filesystem whether an entry is
 // stale before passing a directory removal down to the backing directory.
+//
+// The loopback is embedded by pointer because WrapChild is handed the plain
+// loopback node the loopback just made, and has to keep that node rather than a
+// copy of it: the node carries the Inode the FUSE bridge tracks it by.
 type staleRmdirNode struct {
-	gofuse.LoopbackNode
+	*gofuse.LoopbackNode
 
 	fs *staleRmdirFS
+}
+
+var _ = (gofuse.NodeWrapChilder)((*staleRmdirNode)(nil))
+
+// WrapChild puts the stale check on every node the loopback makes below this
+// one. It is what carries the behaviour down the whole tree: a node's children
+// are only wrapped where the node itself implements this, so each wrapper has to
+// hand the same wrapping on to its own children.
+//
+// The loopback only ever makes plain loopback nodes, so anything else is handed
+// back unwrapped rather than guessed at; were that ever to happen the stale
+// check would stop firing, and the test that depends on it would say so.
+func (n *staleRmdirNode) WrapChild(_ context.Context, ops gofuse.InodeEmbedder) gofuse.InodeEmbedder {
+	loopback, ok := ops.(*gofuse.LoopbackNode)
+	if !ok {
+		return ops
+	}
+
+	return &staleRmdirNode{LoopbackNode: loopback, fs: n.fs}
 }
 
 // Rmdir answers ESTALE for the one entry the test named, without touching it,
@@ -432,13 +455,10 @@ func mountStaleRmdir(t *testing.T, mountPoint, backing string) (*staleRmdirFS, b
 
 	sfs := &staleRmdirFS{}
 	root := &gofuse.LoopbackRoot{Path: backing, Dev: st.Dev}
-	root.NewNode = func(rootData *gofuse.LoopbackRoot, _ *gofuse.Inode, _ string,
-		_ *syscall.Stat_t) gofuse.InodeEmbedder {
-		return &staleRmdirNode{LoopbackNode: gofuse.LoopbackNode{RootData: rootData}, fs: sfs}
-	}
-	root.RootNode = root.NewNode(root, nil, "", &st)
+	rootNode := &staleRmdirNode{LoopbackNode: &gofuse.LoopbackNode{RootData: root}, fs: sfs}
+	root.RootNode = rootNode
 
-	server, err := gofuse.Mount(mountPoint, root.RootNode, &gofuse.Options{})
+	server, err := gofuse.Mount(mountPoint, rootNode, &gofuse.Options{})
 	if err != nil {
 		t.Logf("this host refused a FUSE mount at %s: %s", mountPoint, err)
 
