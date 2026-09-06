@@ -203,7 +203,9 @@ or any data you wish to upload.
 CacheDir is the local directory to store cached data. If this parameter is
 supplied, Cache is forced true and so doesn't need to be provided. If this
 parameter is not supplied but Cache is true, the directory will be a unique
-directory in CacheBase, which will get deleted on unmount.
+directory in CacheBase, which will get deleted on unmount, except when files
+failed to upload: the directory is then kept, and the unmount error says where
+it is.
 
 Write is a boolean, which if true, makes the mount point writeable. If you
 don't intend to write to a mount, just leave this parameter out. Note that when

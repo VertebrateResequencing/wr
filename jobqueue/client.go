@@ -2601,8 +2601,11 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	logs, unmountErr := job.Unmount()
 	if unmountErr != nil {
 		if strings.Contains(unmountErr.Error(), "failed to upload") {
-			// the files that did not upload only existed in the mount's cache,
-			// which is deleted at unmount regardless, so the job must be redone
+			// muxfys keeps the cache directory that holds the files which
+			// failed to upload, and names its path in the unmount error, so
+			// the data itself survives. wr has no way to complete the upload
+			// from here, and the job's output only counts once it is on the
+			// remote, so the job must be redone.
 			unmountOutcome = execOutcome{
 				dorelease:  true,
 				failreason: FailReasonUpload,

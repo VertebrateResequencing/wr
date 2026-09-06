@@ -142,8 +142,9 @@ type MountTarget struct {
 	// is supplied, Cache is forced true and so doesn't need to be provided. If
 	// this parameter is not supplied but Cache is true, the directory will be a
 	// unique directory in the containing MountConfig's CacheBase, and will get
-	// deleted on unmount. If it's a relative path, it will be relative to the
-	// CacheBase.
+	// deleted on unmount, except when files failed to upload: the directory is
+	// then kept, and the unmount error says where it is. If it's a relative
+	// path, it will be relative to the CacheBase.
 	CacheDir string `json:",omitempty"`
 
 	// Cache is a boolean, which if true, turns on data caching of any data
