@@ -67,16 +67,24 @@ func TestJobStatusStreamsStdRace(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		Convey("ToStatus() on a Job a runner is touching does not race with the touch", func() {
-			var status JStatus
+			var (
+				status  JStatus
+				raceErr error
+			)
 
 			for range statusStreamsRaceJobs {
 				job := newStatusStreamsRaceJob()
 				snapshot := &JobEndState{Cwd: job.Cwd, Stdout: compressed, Stderr: compressed}
 
-				status, err = statusRacedAgainst(job, func() { applyLiveSnapshot(job, snapshot) })
+				var roundErr error
+
+				status, roundErr = statusRacedAgainst(job, func() { applyLiveSnapshot(job, snapshot) })
+				if raceErr == nil {
+					raceErr = roundErr
+				}
 			}
 
-			So(err, ShouldBeNil)
+			So(raceErr, ShouldBeNil)
 			So(status.StdOut, ShouldEqual, std)
 			So(status.StdErr, ShouldEqual, std)
 		})
@@ -97,7 +105,10 @@ func TestJobStatusStreamsEnvRace(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		Convey("ToStatus() on it does not race with the web interface rerunning it", func() {
-			var status JStatus
+			var (
+				status  JStatus
+				raceErr error
+			)
 
 			for range statusStreamsRaceJobs {
 				job := newStatusStreamsRaceJob()
@@ -105,10 +116,15 @@ func TestJobStatusStreamsEnvRace(t *testing.T) {
 				job.EnvC = envC
 				job.EnvCRetrieved = true
 
-				status, err = statusRacedAgainst(job, func() { resetCompletedJobForRerun(job) })
+				var roundErr error
+
+				status, roundErr = statusRacedAgainst(job, func() { resetCompletedJobForRerun(job) })
+				if raceErr == nil {
+					raceErr = roundErr
+				}
 			}
 
-			So(err, ShouldBeNil)
+			So(raceErr, ShouldBeNil)
 			So(status.Env, ShouldBeEmpty)
 		})
 	})
@@ -127,18 +143,26 @@ func newStatusStreamsRaceJob() *Job {
 
 // statusRacedAgainst calls job.ToStatus() on one goroutine while write runs on
 // another, both statusStreamsRaceCalls times against the one *Job, then returns
-// the status of the settled Job.
+// the status of the settled Job, along with the first error either the racing
+// reads or that final read produced.
 func statusRacedAgainst(job *Job, write func()) (JStatus, error) {
-	var wg sync.WaitGroup
+	var (
+		wg      sync.WaitGroup
+		readErr error
+	)
 
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
 
+		// this loop must run in full even after a failure: its job is to keep
+		// reads overlapping the writer's entire run, so stopping early would
+		// silently shrink the window the race detector gets to watch. readErr
+		// is written only here and read only after wg.Wait().
 		for range statusStreamsRaceCalls {
-			if _, err := job.ToStatus(); err != nil {
-				return
+			if _, err := job.ToStatus(); err != nil && readErr == nil {
+				readErr = err
 			}
 		}
 	}()
@@ -153,5 +177,10 @@ func statusRacedAgainst(job *Job, write func()) (JStatus, error) {
 
 	wg.Wait()
 
-	return job.ToStatus()
+	status, err := job.ToStatus()
+	if readErr != nil {
+		return status, readErr
+	}
+
+	return status, err
 }
