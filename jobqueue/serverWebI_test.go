@@ -3486,7 +3486,6 @@ export function setupLiveWalltime(job, walltime) {
 	rewritten = strings.ReplaceAll(rewritten, "'/js/wr/utility.js'", fmt.Sprintf("%q", fileURL(utilityPath)))
 
 	modalPath := filepath.Join(dir, "modal-handlers.js")
-	// #nosec G703 -- modalPath is generated inside t.TempDir for a test-only module.
 	err = os.WriteFile(modalPath, []byte(rewritten), 0600)
 	So(err, ShouldBeNil)
 
