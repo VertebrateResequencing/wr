@@ -1217,8 +1217,8 @@ func (c dirChain) removeUpward() error {
 //
 // That is deliberately NOT folded into errIsDirNotEmpty or errIsDirInUse, which
 // carry the opposite verdict: they mean "stop, there is nothing of ours left
-// here", while "already gone" means "this level is done, keep going". Two
-// cleanups of one lost Job run in different processes, so a parent that the
+// here", while "already gone" means "this level is done, keep going". One lost
+// Job gets two cleanups, running in different processes, so a parent that the
 // other one removed between our descent and this walk is ordinary; stopping
 // there stranded every hashed level above it under <Cwd>/<AppName>_cwd for good.
 //
