@@ -57,11 +57,11 @@ during "wr status".
 
 The file to provide -f is in the format taken by "wr add".
 
-In -f and -l mode you must provide the cwd the commands were set to run in, if
-CwdMatters (and must NOT be provided otherwise). Likewise provide the mounts
-options that was used when the command was added, if any. You can do this by
-using the -c and --mounts/--mounts_json options in -l mode, or by providing the
-same file you gave to "wr add" in -f mode.
+In -f and -l mode you must describe the commands the way they were added. In -l
+mode that means the cwd they were added with (-c), whether or not --cwd_matters
+was used, plus any mounts options (--mounts/--mounts_json) and container image
+options (--with_docker/--with_singularity and --container_mounts) they were added
+with. In -f mode, provide the same file you gave to "wr add".
 
 Note that you can't remove a job that has other jobs depending upon it, unless
 you also remove those jobs at the same time. If there is a mistake in the
@@ -80,6 +80,10 @@ command line of a job with dependants, you can either:
 
 		if set == 0 {
 			die("1 of -f, -i, -l or -a is required")
+		}
+
+		if err := validateSelectionContainerFlags(); err != nil {
+			die("%s", err)
 		}
 
 		timeout := time.Duration(timeoutint) * time.Second
@@ -131,11 +135,13 @@ func init() {
 	removeCmd.Flags().BoolVarP(&cmdIDIsInternal, "internal", "y", false, "treat -i as an internal job id")
 	removeCmd.Flags().StringVarP(&cmdLine, "cmdline", "l", "", "a command line you want to remove")
 	removeCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "",
-		"working dir that the command(s) specified by -l or -f were set to run in")
+		"working dir that the command(s) specified by -l or -f were added with, "+
+			"whether or not --cwd_matters was used")
 	removeCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "",
 		"mounts that the command(s) specified by -l or -f were set to use (JSON format)")
 	removeCmd.Flags().StringVar(&mountSimple, "mounts", "",
 		"mounts that the command(s) specified by -l or -f were set to use (simple format)")
+	addSelectionContainerFlags(removeCmd)
 	removeCmd.Flags().BoolVarP(&onlyBuried, "buried", "b", false, "only delete jobs that are currently buried")
 
 	removeCmd.Flags().IntVar(&timeoutint, "timeout", defaultManagerConnectTimeout,

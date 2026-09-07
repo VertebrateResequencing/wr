@@ -409,6 +409,12 @@ func resetSelectionCommandForTest(t *testing.T, command *cobra.Command) {
 	cmdRecentPeriod = 0
 	mountJSON = ""
 	mountSimple = ""
+	// the container image selectors are package globals shared with `wr add`'s
+	// tests, so a leftover value would silently change the key every selection
+	// here looks up.
+	cmdWithDocker = ""
+	cmdWithSingularity = ""
+	cmdContainerMounts = ""
 	timeoutint = 120
 
 	for _, flag := range []struct {
@@ -424,6 +430,9 @@ func resetSelectionCommandForTest(t *testing.T, command *cobra.Command) {
 		{"all", statusTestFalse},
 		{"mount_json", ""},
 		{"mounts", ""},
+		{"with_docker", ""},
+		{"with_singularity", ""},
+		{"container_mounts", ""},
 		{"timeout", "120"},
 	} {
 		So(command.Flags().Set(flag.name, flag.value), ShouldBeNil)

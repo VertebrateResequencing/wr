@@ -62,11 +62,11 @@ during "wr status".
 
 The file to provide -f is in the format taken by "wr add".
 
-In -f and -l mode you must provide the cwd the commands were set to run in, if
-CwdMatters (and must NOT be provided otherwise). Likewise provide the mounts
-options that were used when the command was added, if any. You can do this by
-using the -c and --mounts/--mounts_json options in -l mode, or by providing the
-same file you gave to "wr add" in -f mode.`,
+In -f and -l mode you must describe the commands the way they were added. In -l
+mode that means the cwd they were added with (-c), whether or not --cwd_matters
+was used, plus any mounts options (--mounts/--mounts_json) and container image
+options (--with_docker/--with_singularity and --container_mounts) they were added
+with. In -f mode, provide the same file you gave to "wr add".`,
 	Run: func(_ *cobra.Command, _ []string) {
 		if err := runSuspendCommand(); err != nil {
 			die("%s", err)
@@ -132,7 +132,7 @@ func validateSelectedJobsCommand() error {
 		return errSelectedJobsNeedSelector
 	}
 
-	return nil
+	return validateSelectionContainerFlags()
 }
 
 func disconnectSelectedJobsClient(jq *jobqueue.Client) {
@@ -181,7 +181,8 @@ func addSelectedJobsFlags(command *cobra.Command, verb, allHelp string) {
 	flags.StringVarP(&cmdLine, "cmdline", "l", "", "a command line you want to "+verb)
 	flags.StringVarP(
 		&cmdCwd, "cwd", "c", "",
-		"working dir that the command(s) specified by -l or -f were set to run in",
+		"working dir that the command(s) specified by -l or -f were added with, "+
+			"whether or not --cwd_matters was used",
 	)
 	flags.StringVarP(
 		&mountJSON, "mount_json", "j", "",
@@ -191,6 +192,7 @@ func addSelectedJobsFlags(command *cobra.Command, verb, allHelp string) {
 		&mountSimple, "mounts", "",
 		"mounts that the command(s) specified by -l or -f were set to use (simple format)",
 	)
+	addSelectionContainerFlags(command)
 	flags.IntVar(
 		&timeoutint, "timeout", selectedJobsDefaultTimeout,
 		"how long (seconds) to wait to get a reply from 'wr manager'",

@@ -105,11 +105,11 @@ reported when using this command.
 
 The file to provide -f is in the format taken by "wr add".
 
-In -f and -l mode you must provide the cwd the commands were set to run in, if
-CwdMatters (and must NOT be provided otherwise). Likewise provide the mounts
-option that was used when the command was added, if any. You can do this by
-using the -c and --mounts/--mounts_json options in -l mode, or by providing the
-same file you gave to "wr add" in -f mode.
+In -f and -l mode you must describe the commands the way they were added. In -l
+mode that means the cwd they were added with (-c), whether or not --cwd_matters
+was used, plus any mounts options (--mounts/--mounts_json) and container image
+options (--with_docker/--with_singularity and --container_mounts) they were added
+with. In -f mode, provide the same file you gave to "wr add".
 
 --recent <duration> returns jobs that finished (were archived) within the last
 duration across all report groups. It is mutually exclusive with -f, -l and -i.
@@ -163,6 +163,10 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 		set := countGetJobArgs()
 		if set > 1 {
 			die(statusSelectorsMutuallyExclusive)
+		}
+
+		if err := validateSelectionContainerFlags(); err != nil {
+			die("%s", err)
 		}
 
 		cmdStates := statusStateFilters()
@@ -686,6 +690,20 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 	},
 }
 
+// errSelectionContainerExclusive is the failure when both container image flags
+// are given to a command that selects jobs.
+var errSelectionContainerExclusive = errors.New("--with_docker and --with_singularity are mutually exclusive")
+
+// validateSelectionContainerFlags returns an error if the container image flags
+// addSelectionContainerFlags registers describe an impossible job.
+func validateSelectionContainerFlags() error {
+	if cmdWithDocker != "" && cmdWithSingularity != "" {
+		return errSelectionContainerExclusive
+	}
+
+	return nil
+}
+
 func init() {
 	RootCmd.AddCommand(statusCmd)
 
@@ -708,11 +726,13 @@ func registerStatusFlags() {
 		"show jobs that finished within the last <duration> across all report groups; "+
 			"accepts Go duration units plus d (days) and w (weeks), eg. 1d, 2w, 36h, 90m")
 	statusCmd.Flags().StringVarP(&cmdCwd, "cwd", "c", "",
-		"working dir that the command(s) specified by -l or -f were set to run in")
+		"working dir that the command(s) specified by -l or -f were added with, "+
+			"whether or not --cwd_matters was used")
 	statusCmd.Flags().StringVarP(&mountJSON, "mount_json", "j", "",
 		"mounts that the command(s) specified by -l or -f were set to use (JSON format)")
 	statusCmd.Flags().StringVar(&mountSimple, "mounts", "",
 		"mounts that the command(s) specified by -l or -f were set to use (simple format)")
+	addSelectionContainerFlags(statusCmd)
 	statusCmd.Flags().StringVar(&fromHost, "host", "",
 		"filter output to only show the status of commands that ran on the given host (ID, name or IP)")
 	statusCmd.Flags().StringVarP(&outputFormat, "output", "o", "details",
@@ -722,6 +742,21 @@ func registerStatusFlags() {
 			"the same properties to display per group; 0 displays all")
 
 	registerStatusStateFlags()
+}
+
+// addSelectionContainerFlags registers the container image flags on a command
+// that selects jobs with -l or -f, so that such a selection can reach a job that
+// was added with --with_docker or --with_singularity: the image is part of that
+// job's key, so naming its command line alone does not describe it.
+func addSelectionContainerFlags(command *cobra.Command) {
+	flags := command.Flags()
+
+	flags.StringVar(&cmdWithDocker, "with_docker", "",
+		"docker image that the command(s) specified by -l or -f were set to run inside")
+	flags.StringVar(&cmdWithSingularity, "with_singularity", "",
+		"singularity image that the command(s) specified by -l or -f were set to run inside")
+	flags.StringVar(&cmdContainerMounts, "container_mounts", "",
+		"container mounts that the command(s) specified by -l or -f were set to use")
 }
 
 // registerStatusStateFlags registers the status sub-command's state-filter
@@ -1153,8 +1188,14 @@ func getJobsByCmdLine(jq *jobqueue.Client, showStd, showEnv bool) ([]*jobqueue.J
 		defaultMounts = mountParse(mountJSON, mountSimple)
 	}
 
-	job, err := jq.GetByEssence(
-		&jobqueue.JobEssence{Cmd: cmdLine, Cwd: cmdCwd, MountConfigs: defaultMounts}, showStd, showEnv)
+	job, err := jq.GetByEssence(&jobqueue.JobEssence{
+		Cmd:             cmdLine,
+		Cwd:             cmdCwd,
+		MountConfigs:    defaultMounts,
+		WithDocker:      cmdWithDocker,
+		WithSingularity: cmdWithSingularity,
+		ContainerMounts: cmdContainerMounts,
+	}, showStd, showEnv)
 	if job == nil {
 		return nil, err
 	}

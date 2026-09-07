@@ -413,6 +413,26 @@ func TestJobUnmount(t *testing.T) {
 	})
 }
 
+func TestKeyCwdDistinctness(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// A Job's key is its identity: it is a BoltDB key, a lookup-index key and a
+	// Go map key, so 2 Jobs that wr must tell apart cannot share one.
+	Convey("A Job whose Cwd matters but is empty keys differently to Jobs whose Cwd does not matter", t, func() {
+		emptyCwdMatters := (&Job{Cmd: testTrueCmd, CwdMatters: true}).Key()
+
+		So(emptyCwdMatters, ShouldNotEqual, (&Job{Cmd: testTrueCmd}).Key())
+		So(emptyCwdMatters, ShouldNotEqual, (&Job{Cmd: testTrueCmd, Cwd: testCwdPath}).Key())
+
+		Convey("while a Cwd that does not matter is no part of the key, so those 2 share one", func() {
+			So((&Job{Cmd: testTrueCmd, Cwd: testCwdPath}).Key(),
+				ShouldEqual, (&Job{Cmd: testTrueCmd}).Key())
+		})
+	})
+}
+
 func TestJob(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -1036,6 +1056,8 @@ func TestKeyByteIdentity(t *testing.T) {
 
 		jobs := []*Job{
 			{Cmd: testTrueCmd},
+			// CwdMatters with an empty Cwd still keys with a bare "." prefix.
+			{Cmd: testTrueCmd, CwdMatters: true},
 			{Cmd: testTrueCmd, Cwd: testCwdPath},
 			{Cmd: testTrueCmd, Cwd: testCwdPath, CwdMatters: true},
 			{Cmd: testTrueCmd, MountConfigs: mcs},
@@ -1087,6 +1109,26 @@ func TestKeyByteIdentity(t *testing.T) {
 		// container-free job (the cross-type identity the lookups rely on).
 		So((&JobEssence{Cmd: testTrueCmd, Cwd: testCwdPath, MountConfigs: mcs}).Key(),
 			ShouldEqual, (&Job{Cmd: testTrueCmd, Cwd: testCwdPath, CwdMatters: true, MountConfigs: mcs}).Key())
+
+		// It must also match for the 2 kinds of Job that a JobEssence built
+		// from a command line could not previously describe: one that runs in a
+		// container, and one whose CwdMatters is false (which is keyed with no
+		// Cwd at all, whatever Cwd it was given).
+		So((&JobEssence{Cmd: testTrueCmd, MountConfigs: mcs}).Key(),
+			ShouldEqual, (&Job{Cmd: testTrueCmd, Cwd: testCwdPath, MountConfigs: mcs}).Key())
+		So((&JobEssence{Cmd: testTrueCmd, WithDocker: "alpine", ContainerMounts: "/out:/in"}).Key(),
+			ShouldEqual, (&Job{Cmd: testTrueCmd, Cwd: testCwdPath, WithDocker: "alpine",
+				ContainerMounts: "/out:/in"}).Key())
+		So((&JobEssence{Cmd: testTrueCmd, Cwd: testCwdPath, MountConfigs: mcs,
+			WithSingularity: "alpine.sif", ContainerMounts: "/out:/in"}).Key(),
+			ShouldEqual, (&Job{Cmd: testTrueCmd, Cwd: testCwdPath, CwdMatters: true, MountConfigs: mcs,
+				WithSingularity: "alpine.sif", ContainerMounts: "/out:/in"}).Key())
+
+		// With both images set, both types must pick docker.
+		So((&JobEssence{Cmd: testTrueCmd, WithDocker: "d", WithSingularity: "s"}).Key(),
+			ShouldEqual, (&Job{Cmd: testTrueCmd, WithDocker: "d", WithSingularity: "s"}).Key())
+		So((&JobEssence{Cmd: testTrueCmd, WithDocker: "d", WithSingularity: "s"}).Key(),
+			ShouldEqual, (&Job{Cmd: testTrueCmd, WithDocker: "d"}).Key())
 	})
 }
 
