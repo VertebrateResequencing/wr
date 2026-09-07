@@ -295,6 +295,233 @@ func TestJobTmpDirRemovalCrossesNoMountBoundary(t *testing.T) {
 	})
 }
 
+// TestCleanupKeepsMountCachesSpelledInAnotherCase is TestCleanupKeepsMountCaches
+// again, on a filesystem where one directory has two spellings.
+//
+// wr's keep set is built from the strings in the Job's MountConfigs, and both
+// sweeps match those strings against the names readdir hands back. A
+// case-insensitive filesystem hands back the spelling the directory was CREATED
+// with (see caseFoldNode), which is whatever made the directory rather than
+// whatever the Job configured, so the two spellings differ and the keep misses.
+// What is then swept is a muxfys cache holding output that no Unmount has
+// uploaded yet: cleanup runs BEFORE Job.Unmount (client.go), so this destroys
+// the job's own output, which is the whole of what TestCleanupKeepsMountCaches
+// exists to prevent.
+//
+// There is one case per keep mechanism, because each matches by different means:
+// an absolute MountTarget.CacheDir is kept as an entry NAME of the workspace
+// (jobWorkSpace.keptEntry), a relative MountConfig.CacheBase as a PATH relative
+// to the working directory (removeAllExcept's keep set), and a cache at the Job's
+// own TMPDIR by the one name jobWorkSpace.removeTmp asks about. A CacheDir
+// relative to the workspace that spells the working directory's own name reaches
+// none of those three until the CLASSIFICATION handing a keep to one sweep or the
+// other recognises it (keptDirs.actualCwdKeeps). Fixing any of them alone leaves
+// a cache deletable through the others.
+//
+// Every case that can carries deletion controls, since a rule that kept too much
+// would satisfy the survival assertions on its own while stranding a workspace,
+// or a TMPDIR, per job.
+//
+// Case folding is the instance of this that can be reproduced on Linux. Unicode
+// normalisation - APFS, HFS+, SMB, some NFS servers - gives one directory two
+// spellings the same way, and is kept from by the same identity comparison.
+func TestCleanupKeepsMountCachesSpelledInAnotherCase(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a Job whose cache dirs are on disk under another spelling", t, func() {
+		if !canMountFuse() {
+			SkipConvey("this host will not let an unprivileged process raise a FUSE mount", func() {})
+
+			return
+		}
+
+		cwd, mounted := mountCaseFold(t)
+		if !mounted {
+			SkipConvey("this host refused an unprivileged FUSE mount", func() {})
+
+			return
+		}
+
+		cleanup := &Behaviour{When: OnExit, Do: Cleanup}
+
+		Convey("an absolute MountTarget.CacheDir in the workspace survives", func() {
+			job := &Job{Cwd: cwd, MountConfigs: MountConfigs{{
+				Mount:   testWSMount,
+				Targets: []MountTarget{{Path: testWSTargetPath, Cache: true, Write: true}},
+			}}}
+			actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+			job.MountConfigs[0].Targets[0].CacheDir = filepath.Join(workSpace, "MixedCache")
+
+			cached := writeFileIn(filepath.Join(workSpace, "mixedcache"), "unuploaded.txt")
+			output := writeFileIn(actualCwd, "out.txt")
+
+			err := cleanup.Trigger(OnExit, job)
+
+			soPathsExist(cached, cwd)
+			soPathsGone(output, tmpDir)
+
+			So(err, ShouldBeNil)
+		})
+
+		Convey("a relative MountConfig.CacheBase in the working dir survives", func() {
+			job := &Job{Cwd: cwd, MountConfigs: MountConfigs{{
+				Mount:     testWSMount,
+				CacheBase: "MixedBase",
+				Targets:   []MountTarget{{Path: testWSTargetPath, Cache: true, Write: true}},
+			}}}
+			actualCwd, _, tmpDir := realWorkSpace(job)
+
+			cached := writeFileIn(filepath.Join(actualCwd, "mixedbase", muxfysCachePrefix+"_c1"),
+				"unuploaded.txt")
+			output := writeFileIn(actualCwd, "out.txt")
+
+			err := cleanup.Trigger(OnExit, job)
+
+			soPathsExist(cached, cwd)
+			soPathsGone(output, tmpDir)
+
+			So(err, ShouldBeNil)
+		})
+
+		Convey("a MountTarget.CacheDir spelling the working dir itself in another case survives", func() {
+			// a CacheDir relative to the workspace that leads through the working
+			// directory is an already-supported shape, so the case a user gets
+			// wrong is one component of a path wr itself named. Spelled that way
+			// the cache is inside the working directory but classifies as neither
+			// inside it nor as an entry of the workspace leading anywhere the
+			// working-directory sweep hears about, so BOTH sweeps have to agree
+			// about it from one classification or the working directory is emptied
+			// out from under a keep the workspace sweep then honours.
+			job := &Job{Cwd: cwd, MountConfigs: MountConfigs{{
+				Mount: testWSMount,
+				Targets: []MountTarget{{
+					Path: testWSTargetPath, Cache: true, Write: true,
+					CacheDir: filepath.Join(strings.ToUpper(createdCwdName), "mixedcache"),
+				}},
+			}}}
+			actualCwd, _, tmpDir := realWorkSpace(job)
+
+			cached := writeFileIn(filepath.Join(actualCwd, "mixedcache"), "unuploaded.txt")
+			output := writeFileIn(actualCwd, "out.txt")
+
+			err := cleanup.Trigger(OnExit, job)
+
+			soPathsExist(cached, cwd)
+			soPathsGone(output, tmpDir)
+
+			So(err, ShouldBeNil)
+		})
+
+		Convey("a MountTarget.CacheDir at the Job's own TMPDIR survives its reclaim", func() {
+			// Execute reclaims TMPDIR on every exit, whether or not the Job has a
+			// cleanup Behaviour, and asks the keep set about the one name it
+			// deletes; a Job that spelled that name in another case would
+			// otherwise have its cache reclaimed with the dir.
+			job := &Job{Cwd: cwd, MountConfigs: MountConfigs{{
+				Mount:   testWSMount,
+				Targets: []MountTarget{{Path: testWSTargetPath, Cache: true, Write: true}},
+			}}}
+			_, workSpace, tmpDir := realWorkSpace(job)
+
+			job.MountConfigs[0].Targets[0].CacheDir = filepath.Join(workSpace, "TMP")
+
+			cached := writeFileIn(tmpDir, "unuploaded.txt")
+
+			buff := clog.ToBufferAtLevel("warn")
+
+			Reset(clog.ToDefault)
+
+			removeJobTmpDir(context.Background(), job)
+
+			soPathsExist(cached, cwd)
+			So(buff.String(), ShouldBeEmpty)
+		})
+
+		Convey("while a Job that names no cache there still has its TMPDIR reclaimed", func() {
+			// the control for the case above: keeping TMPDIR whenever a Job merely
+			// has a mount would leave one per job behind on this filesystem, and
+			// the survival assertion alone cannot tell that apart from the keep
+			// working.
+			job := &Job{Cwd: cwd, MountConfigs: MountConfigs{{
+				Mount:   testWSMount,
+				Targets: []MountTarget{{Path: testWSTargetPath, Cache: true, Write: true}},
+			}}}
+			_, _, tmpDir := realWorkSpace(job)
+
+			junk := writeFileIn(tmpDir, "junk.txt")
+
+			buff := clog.ToBufferAtLevel("warn")
+
+			Reset(clog.ToDefault)
+
+			removeJobTmpDir(context.Background(), job)
+
+			soPathsGone(junk, tmpDir)
+			soPathsExist(cwd)
+			So(buff.String(), ShouldBeEmpty)
+		})
+	})
+}
+
+// TestCleanupKeepsADirThatAppearsDuringTheSweep pins the half of the keep set
+// that matches an entry by NAME, which the half that matches it by identity
+// cannot stand in for.
+//
+// The keep set's paths are resolved into identities once, at the top of a sweep,
+// while the entries they are compared against are read directory by directory on
+// the way down. A directory that appears at a kept path in that window has no
+// identity in the set, and its name is then the only account of it there is. A
+// Job's own mounts can put one there: cleanup runs BEFORE Job.Unmount
+// (client.go), so muxfys is still running, and still making cache dirs, while the
+// sweep walks the tree those mounts are in.
+func TestCleanupKeepsADirThatAppearsDuringTheSweep(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a Job whose mount point does not exist when cleanup starts", t, func() {
+		cwd := t.TempDir()
+		job := &Job{Cwd: cwd, MountConfigs: MountConfigs{{
+			Mount:   filepath.Join("holder", testWSMount),
+			Targets: []MountTarget{{Path: testWSTargetPath}},
+		}}}
+		actualCwd, _, tmpDir := realWorkSpace(job)
+
+		holder := filepath.Join(actualCwd, "holder")
+		So(os.MkdirAll(holder, os.ModePerm), ShouldBeNil)
+
+		output := writeFileIn(actualCwd, "out.txt")
+
+		Reset(func() { sweptDirCheckedHook = nil })
+
+		Convey("a dir appearing at the mount point mid-sweep is still kept", func() {
+			var mounted string
+
+			sweptDirCheckedHook = func(name string) {
+				// only the one entry this test made is acted on, so nothing here
+				// depends on readdir order.
+				if name != filepath.Base(holder) {
+					return
+				}
+
+				sweptDirCheckedHook = nil
+
+				mounted = writeFileIn(filepath.Join(holder, testWSMount), "unuploaded.txt")
+			}
+
+			err := (&Behaviour{When: OnExit, Do: Cleanup}).Trigger(OnExit, job)
+
+			soPathsExist(mounted, filepath.Join(holder, testWSMount), holder, actualCwd, cwd)
+			soPathsGone(output, tmpDir)
+
+			So(err, ShouldBeNil)
+		})
+	})
+}
+
 // realWorkSpace gives job the working directory mkHashedDir really creates for it
 // below job.Cwd, and returns that dir, the workspace holding it, and the tmp dir
 // wr makes beside it. The path wr builds is what proves a workspace is wr's own,

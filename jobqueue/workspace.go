@@ -677,6 +677,24 @@ type keptDirs struct {
 	// the directories above a deeper one along with it.
 	workSpaceEntries map[string]bool
 
+	// workSpaceRels are the whole of those same paths, relative to the workspace,
+	// in every spelling relsBelowDirResolved gives them.
+	//
+	// They are what the working directory's keeps are recovered from at sweep
+	// time. The two sweeps meet at the working directory, and which of them hears
+	// about a keep is decided above by comparing STRINGS: a filesystem that
+	// spells one directory two ways hides a keep from BOTH. A CacheDir of
+	// "CWD/cache" is lexically not below the working directory wr created as
+	// "cwd", so inActualCwd records nothing, while only the leading entry name
+	// reaches workSpaceEntries. The working directory would then be emptied
+	// whole, cache included, and kept by the workspace sweep, which is the two
+	// consumers disagreeing about one workspace that .docs/bugfixes/260902-3.md
+	// rejected a design for producing.
+	//
+	// Asking the FILESYSTEM which entry of the workspace each of these leads
+	// through is what recovers it; see actualCwdKeeps.
+	workSpaceRels map[string]bool
+
 	// mountPoints are the Job's mount points that lie at or inside the
 	// workspace, absolute. They are the only directories Unmount's empty-dir
 	// tidy-up may walk: MountConfig.Mount may be an absolute path to any
@@ -715,7 +733,10 @@ type keptDirs struct {
 // keptDirs resolves every mount point and cache location the Job has, and
 // classifies each one against the workspace and the working directory.
 func (p *workSpacePaths) keptDirs() keptDirs {
-	keep := keptDirs{workSpaceEntries: make(map[string]bool, len(p.mounts))}
+	keep := keptDirs{
+		workSpaceEntries: make(map[string]bool, len(p.mounts)),
+		workSpaceRels:    make(map[string]bool, len(p.mounts)),
+	}
 
 	for _, mount := range p.mountPoints() {
 		// mountPoints keeps the LEXICAL answer, and is the one classification
@@ -821,10 +842,24 @@ func (k *keptDirs) protectCaches(p *workSpacePaths, mc MountConfig) {
 // directory is also inside the workspace, so it names the working directory as
 // the workspace entry leading to it, and that is what stops the workspace sweep
 // deleting the working directory out from under the first sweep's exceptions.
+//
+// There is a rel, and so a leading name, per spelling because the workspace sweep
+// works entry by entry: a symlink inside the workspace leading to another entry
+// of it gives one mount point two names, and only the resolved one names the
+// directory the mount is physically in - the one a RemoveAll would recurse into,
+// through the live mount. A dir that IS the workspace is an entry of nothing and
+// is left out; keptDirs records that as wholeWorkSpace instead.
 func (k *keptDirs) protect(p *workSpacePaths, dir string) {
 	k.protectInActualCwd(p.actualCwd, dir)
 
-	for _, name := range entriesLeadingTo(p.workSpace, dir) {
+	for _, rel := range relsBelowDirResolved(p.workSpace, dir) {
+		if rel == "." {
+			continue
+		}
+
+		k.workSpaceRels[rel] = true
+
+		name, _, _ := strings.Cut(rel, string(filepath.Separator))
 		k.workSpaceEntries[name] = true
 	}
 }
@@ -846,6 +881,51 @@ func (k *keptDirs) protectInActualCwd(actualCwd, dir string) {
 
 		k.inActualCwd = append(k.inActualCwd, rel)
 	}
+}
+
+// actualCwdKeeps is everything that must survive at or inside the Job's working
+// directory, as paths relative to it: what protectInActualCwd placed there by
+// name, and what only the FILESYSTEM can place there. whole says the working
+// directory itself must survive entire, and there is then nothing to sweep
+// around.
+//
+// protectInActualCwd compares strings, and a filesystem can spell one directory
+// two ways (see workSpaceRels), so a keep leading through the working directory
+// under another spelling of its NAME is missing from what that produced. Here
+// wsRoot is asked to look the leading entry of each keep up instead - the kernel
+// folds case and normalises for that lookup, which no comparison of wr's own can
+// - and the rest of the path becomes a keep of the working directory's own sweep.
+//
+// Only that leading entry needs asking: every component below it is resolved by
+// sweepKeepIn through the handle on the directory it is an entry of, so a
+// mis-spelling deeper down is already matched by identity there. The two sweeps
+// cannot disagree about that entry because both resolve the same leading names
+// through the same workspace handle, so neither can conclude on its own that the
+// working directory holds nothing worth keeping.
+//
+// It costs one lstat per configured keep, once per cleanup rather than once per
+// entry swept, and a Job that configured none pays none of them.
+func (k *keptDirs) actualCwdKeeps(wsRoot *os.Root, actualCwdInfo os.FileInfo) (bool, []string) {
+	whole, rels := k.wholeActualCwd, slices.Clone(k.inActualCwd)
+
+	for rel := range k.workSpaceRels {
+		name, below, _ := strings.Cut(rel, string(filepath.Separator))
+
+		info, err := wsRoot.Lstat(name)
+		if err != nil || !os.SameFile(info, actualCwdInfo) {
+			continue
+		}
+
+		if below == "" {
+			whole = true
+
+			continue
+		}
+
+		rels = append(rels, below)
+	}
+
+	return whole, rels
 }
 
 // cleanup wipes out the Job's working directory and the workspace holding it, as
@@ -891,6 +971,11 @@ func (ws *jobWorkSpace) cleanup() error {
 // A Job with no mounts gets no fast path around the keep set: that set is
 // already empty for such a Job, so the sweep below deletes everything anyway.
 //
+// What the working directory's own sweep must keep is asked of the workspace
+// handle rather than taken from classification alone, so that the two sweeps
+// cannot disagree about a keep the Job spelled in a case the filesystem does not
+// store it in; see actualCwdKeeps.
+//
 // What the workspace handle is paired with is the lstat of the directory above
 // it, without which a mount the Job's own Cmd raised over the workspace is
 // indistinguishable from the workspace itself; see sweptWorkSpace.
@@ -910,8 +995,8 @@ func (ws *jobWorkSpace) empty(chain dirChain) error {
 		return err
 	}
 
-	if !ws.keep.wholeActualCwd && actualCwd != nil {
-		if err = removeActualCwd(workSpace, ws.paths.actualCwdName, actualCwd, ws.keep.inActualCwd); err != nil {
+	if actualCwd != nil {
+		if err = removeActualCwd(workSpace, ws.paths.actualCwdName, actualCwd, ws.keep); err != nil {
 			return err
 		}
 	}
@@ -971,6 +1056,15 @@ func (ws *jobWorkSpace) actualCwdNow(wsRoot *os.Root) (os.FileInfo, error) {
 // The working directory needs no rule of its own: it survives exactly when
 // something inside or at it must, and protect() records that as the workspace
 // entry leading to it, which is the working directory's own name.
+//
+// This asks only about names, and a filesystem can spell one directory two ways
+// (see sweepKeep), so it is half of what the workspace sweep keeps rather than
+// the whole of it. The muxfysCachePrefix half needs no other half: a prefix has
+// no single path to resolve, and needs none, because muxfys makes that directory
+// itself inside a CacheBase wr made for this Job. readdir therefore hands back
+// muxfys's OWN spelling of it, and a filesystem that folds case cannot give it a
+// second one, there having been no entry of that name for muxfys's own mkdir to
+// find already there.
 func (ws *jobWorkSpace) keptEntry(name string) bool {
 	if ws.keep.workSpaceEntries[name] {
 		return true
@@ -979,29 +1073,53 @@ func (ws *jobWorkSpace) keptEntry(name string) bool {
 	return ws.keep.muxfysNamesWorkSpaceEntry && strings.HasPrefix(name, muxfysCachePrefix)
 }
 
-// removeWorkSpaceEntries deletes every entry of the workspace that keptEntry
-// doesn't claim. What survives is asked of the Job's own keep set and of nothing
-// else, so there is no second answer to what cleanup may delete. Each entry is
-// named to wsRoot by its own name alone, with no path above it left to resolve,
-// so nothing done here can be redirected elsewhere.
+// removeWorkSpaceEntries deletes every entry of the workspace that the Job's own
+// keep set doesn't claim, by the name it spells that entry with or by that entry
+// being one of the directories those names reach (see sweepKeep). What survives
+// is asked of that set and of nothing else, so there is no second answer to what
+// cleanup may delete. Each entry is named to the workspace handle by its own name
+// alone, with no path above it left to resolve, so nothing done here can be
+// redirected elsewhere.
 //
 // The keep set is not the whole of what survives, because it can only describe
-// what the Job itself configured: removeAllGuarded is what stops the deletion
-// crossing into another Job's workspace, through a live mount deeper down, or -
-// via the info sweptWorkSpace paired with the handle - into a mount raised over
-// the workspace itself, whose entries all look like ordinary entries of it.
+// what the Job itself configured: removeEntryWithExceptions is what stops the
+// deletion crossing into another Job's workspace, through a live mount deeper
+// down, or - via the info sweptWorkSpace paired with the handle - into a mount
+// raised over the workspace itself, whose entries all look like ordinary entries
+// of it.
+//
+// The workspace is asked whether it may be swept at all, and the keep set
+// resolved, ONCE for the whole sweep rather than once per entry as
+// removeAllGuarded would have it: both answers are the same for every entry, and
+// this is a loop every job cleanup runs.
+//
+// keptEntry and the sweep's own keep set read the same names, deliberately: an
+// entry the Job spelled the way the filesystem stores it is answered here and
+// costs no lstat, and what the sweep adds below is the IDENTITY of those same
+// names, which is the half keptEntry has no handle to ask. Those names never
+// match anything deeper than the top level either way, being single components
+// where a path below it has a separator in it.
 func (ws *jobWorkSpace) removeWorkSpaceEntries(workSpace sweptDir) error {
 	entries, err := readDirIn(workSpace.root)
 	if err != nil {
 		return err
 	}
 
+	wsInfo, ok, err := workSpace.sweepable()
+	if !ok {
+		return err
+	}
+
+	keep := sweepKeepIn(workSpace.root, ws.keep.workSpaceEntries)
+
 	for _, entry := range entries {
-		if ws.keptEntry(entry.Name()) {
+		name := entry.Name()
+
+		if ws.keptEntry(name) {
 			continue
 		}
 
-		if err = removeAllGuarded(workSpace, entry.Name()); err != nil {
+		if err = removeEntryWithExceptions(workSpace.root, name, name, wsInfo, keep); err != nil {
 			return err
 		}
 	}
@@ -1016,6 +1134,12 @@ func (ws *jobWorkSpace) removeWorkSpaceEntries(workSpace sweptDir) error {
 // alone, so nothing here can be redirected elsewhere.
 //
 // A workspace that has gone since it was proven leaves nothing to remove.
+//
+// The keep set is consulted twice, by name before the descent and by identity
+// after it, for the reason sweepKeep gives: a Job that pointed a cache at wr's
+// own TMPDIR spelled the name, and a filesystem that folds case need not spell it
+// the same way. The name check comes first so that a Job which keeps tmp pays no
+// descent at all.
 func (ws *jobWorkSpace) removeTmp() error {
 	if ws.keep.wholeWorkSpace || ws.keptEntry(createdTmpName) {
 		return nil
@@ -1037,11 +1161,26 @@ func (ws *jobWorkSpace) removeTmp() error {
 	}
 	defer workSpace.root.Close()
 
-	return removeAllGuarded(workSpace, createdTmpName)
+	wsInfo, ok, err := workSpace.sweepable()
+	if !ok {
+		return err
+	}
+
+	return removeEntryWithExceptions(workSpace.root, createdTmpName, createdTmpName, wsInfo,
+		sweepKeepIn(workSpace.root, ws.keep.workSpaceEntries))
 }
 
-// removeActualCwd deletes the Job's working directory, keeping the given relative
-// dirs if any were specified.
+// removeActualCwd deletes the Job's working directory, keeping whatever of the
+// Job's keep set lies at or inside it.
+//
+// What that is gets asked of actualCwdKeeps rather than read off the
+// classification, so that an empty answer means the Job's keep set really claims
+// nothing at or inside the working directory rather than merely having failed to
+// recognise that it does. That is what licenses the whole-directory branch below
+// to sweep with no keep set at all: a keep lost to classification would become a
+// deletion exactly here (.docs/bugfixes/260828-3.md LAYER 48). Both of the
+// answers it gives are honoured here and nowhere else, so there is one decision
+// about the working directory rather than one per caller.
 //
 // Either way the deletion goes through the guarded sweep rather than an
 // os.Root.RemoveAll: the working directory is where a Job that adds jobs leaves
@@ -1054,7 +1193,13 @@ func (ws *jobWorkSpace) removeTmp() error {
 // rather than a bare lstat so that a workspace which is itself a mount root
 // refuses the sweep of everything inside it, exactly as it refuses the
 // whole-directory deletion above.
-func removeActualCwd(workSpace sweptDir, actualCwdName string, actualCwdInfo os.FileInfo, keepDirs []string) error {
+func removeActualCwd(workSpace sweptDir, actualCwdName string, actualCwdInfo os.FileInfo,
+	keep keptDirs) error {
+	whole, keepDirs := keep.actualCwdKeeps(workSpace.root, actualCwdInfo)
+	if whole {
+		return nil
+	}
+
 	if len(keepDirs) == 0 {
 		return removeAllGuarded(workSpace, actualCwdName)
 	}
@@ -1182,29 +1327,4 @@ func resolvedDir(dir string) string {
 	}
 
 	return resolved
-}
-
-// entriesLeadingTo returns the name of the entry of dir that path is inside
-// (path itself, if it is a direct child), in each spelling that puts path
-// strictly inside dir. Nothing is returned for a path that is dir itself, which
-// relBelowDir reports as ".", or is not inside it at all.
-//
-// There is a name per spelling because this is what protects a mount point from
-// the workspace sweep and the sweep works entry by entry: a symlink inside dir
-// leading to another entry of dir gives the one mount point two names, and only
-// the resolved one names the directory the mount is physically in - the one a
-// RemoveAll would recurse into, through the live mount.
-func entriesLeadingTo(dir, path string) []string {
-	var names []string
-
-	for _, rel := range relsBelowDirResolved(dir, path) {
-		if rel == "." {
-			continue
-		}
-
-		name, _, _ := strings.Cut(rel, string(filepath.Separator))
-		names = append(names, name)
-	}
-
-	return names
 }
