@@ -154,7 +154,14 @@ func TestUploadFailureCacheDeletion(t *testing.T) {
 		So(err.Error(), ShouldContainSubstring, "failed to upload")
 		So(job.ActualCwd, ShouldNotBeBlank)
 
-		So(muxfysCacheNamesIn(filepath.Dir(job.ActualCwd)), ShouldBeEmpty)
+		// the workspace is still there to be looked in, and so a read of it
+		// that fails is this test's own workspace going missing rather than
+		// anything the deletion did: Unmount returns at the upload failure
+		// without walking up removing the empty dirs it would otherwise take,
+		// and rmMuxfysCaches then deletes the caches and nothing else.
+		names, err := muxfysCacheNamesIn(filepath.Dir(job.ActualCwd))
+		So(err, ShouldBeNil)
+		So(names, ShouldBeEmpty)
 	})
 
 	Convey("A successful job's cache survives cleanup, so its output reaches the remote", t, func() {
@@ -170,7 +177,21 @@ func TestUploadFailureCacheDeletion(t *testing.T) {
 		So(job.ActualCwd, ShouldNotBeBlank)
 
 		So(remote.uploaded(uploadFailureCacheUploadedKey), ShouldContainSubstring, uploadFailureCacheOutputText)
-		So(muxfysCacheNamesIn(filepath.Dir(job.ActualCwd)), ShouldBeEmpty)
+
+		// here the workspace is expected to be GONE, and that absence is an
+		// empty answer this deliberately accepts: CleanupAll empties the
+		// workspace, and the Unmount that follows removes the mount point and
+		// then the emptied dirs above it, up to the Job's Cwd. Only EMPTY dirs
+		// go, so a cache still sitting in the workspace is exactly what would
+		// have kept the workspace itself alive - an absent workspace is
+		// therefore a cache that was not kept. Any other read error is not
+		// that, and has to fail rather than pass as an empty list.
+		names, err := muxfysCacheNamesIn(filepath.Dir(job.ActualCwd))
+		if err != nil {
+			So(err, ShouldWrap, os.ErrNotExist)
+		}
+
+		So(names, ShouldBeEmpty)
 	})
 }
 
@@ -231,13 +252,19 @@ func mountTestCwd(t *testing.T) string {
 // muxfysCacheNamesIn is what a muxfys-chosen cache directory looks like from
 // outside: an entry of the given directory whose name starts with the prefix
 // muxfys gives the caches it names for itself.
-func muxfysCacheNamesIn(dir string) []string {
-	var found []string
-
+//
+// The read error comes back instead of being swallowed because every caller
+// asserts the names are empty, and a directory that could not be read gives
+// exactly the same empty answer as one holding no cache. "The cache is gone"
+// and "I could not look" are the two verdicts a deletion test exists to tell
+// apart, so each caller has to say for itself which of them it means.
+func muxfysCacheNamesIn(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		return nil, err
 	}
+
+	var found []string
 
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), muxfysCachePrefix) {
@@ -245,7 +272,7 @@ func muxfysCacheNamesIn(dir string) []string {
 		}
 	}
 
-	return found
+	return found, nil
 }
 
 // useFakeS3Config points muxfys.S3ConfigFromEnvironment at the given fake S3 for
