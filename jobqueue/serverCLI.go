@@ -417,6 +417,10 @@ func malformedAddJobMessage(jobs []*Job) string {
 		if behaviourIndex := slices.Index(job.Behaviours, nil); behaviourIndex >= 0 {
 			return fmt.Sprintf("jobs[%d].Behaviours[%d] is nil", jobIndex, behaviourIndex)
 		}
+
+		if message := job.containerMountsMessage(); message != "" {
+			return fmt.Sprintf("jobs[%d].%s", jobIndex, message)
+		}
 	}
 
 	return ""

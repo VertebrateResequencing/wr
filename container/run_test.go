@@ -40,6 +40,69 @@ import (
 
 const dirMode os.FileMode = 0755
 
+// realTestDirNames are the base names of the directories realTestSetup
+// creates: the one that becomes the working directory, and the 2 that get
+// mounted inside the container.
+type realTestDirNames struct {
+	home   string
+	mountA string
+	mountB string
+}
+
+func plainTestDirNames() realTestDirNames {
+	return realTestDirNames{home: "home", mountA: "mntA", mountB: "mntB"}
+}
+
+// awkwardTestDirNames contain a space and shell metacharacters, which must
+// survive being interpolated in to a command line that a shell then executes.
+func awkwardTestDirNames() realTestDirNames {
+	return realTestDirNames{home: "home dir", mountA: "mnt A", mountB: "mnt B;rm -rf x&*'q'"}
+}
+
+func TestRunRealAwkwardPaths(t *testing.T) {
+	containerCmd := "pwd && ls *.file && ls /mntA && ls /mntB"
+
+	Convey("DockerRunCmd's command really works when the paths contain spaces and metacharacters", t, func() {
+		cmdFile, homeDir, mounts, cleanup, err := realTestSetup(t, "docker", containerCmd, awkwardTestDirNames())
+		if err != nil {
+			SkipConvey(fmt.Sprintf("Can't really test the docker command line: %s", err), nil)
+
+			return
+		}
+
+		defer cleanup()
+
+		uniqueDir := filepath.Dir(homeDir)
+		cmd := DockerRunCmd("alpine", cmdFile, filepath.Base(uniqueDir), mounts, nil)
+
+		actual, err := realTestTryCmd(cmd, homeDir)
+		So(err, ShouldBeNil)
+
+		// the space-containing working directory really is the container's
+		// cwd, and the space and metacharacter containing directories really
+		// are mounted where they were asked for.
+		So(actual, ShouldContainSubstring, homeDir+"\n")
+		So(actual, ShouldContainSubstring, "home.file\na.file\nb.file\n")
+	})
+
+	Convey("SingularityRunCmd's command really works when the paths contain spaces and metacharacters", t, func() {
+		cmdFile, homeDir, mounts, cleanup, err := realTestSetup(t, "singularity", containerCmd, awkwardTestDirNames())
+		if err != nil {
+			SkipConvey(fmt.Sprintf("Can't really test the singularity command line: %s", err), nil)
+
+			return
+		}
+
+		defer cleanup()
+
+		cmd := SingularityRunCmd("docker://alpine", cmdFile, mounts)
+
+		actual, err := realTestTryCmd(cmd, homeDir)
+		So(err, ShouldBeNil)
+		So(actual, ShouldEqual, homeDir+"\nhome.file\na.file\nb.file\n")
+	})
+}
+
 func TestRunPrepare(t *testing.T) {
 	ctx := context.Background()
 
@@ -101,15 +164,26 @@ func TestRunDocker(t *testing.T) {
 		cmd := DockerRunCmd("myimage", "/path/to/cmds", "uniqueID", nil, nil)
 
 		So(cmd, ShouldEqual, "cat /path/to/cmds | docker run --rm --name uniqueID"+
-			" -w $PWD --mount type=bind,source=$PWD,target=$PWD -i myimage /bin/sh")
+			` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD" -i myimage /bin/sh`)
 
 		cmd = DockerRunCmd("myimage", "/path/to/cmds", "uniqueID",
 			[]string{"/foo/bar:/bar", "/foo/car"}, []string{"A", "B"})
 
 		So(cmd, ShouldEqual, "cat /path/to/cmds | docker run --rm --name uniqueID"+
-			" -w $PWD --mount type=bind,source=$PWD,target=$PWD"+
+			` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD"`+
 			" --mount type=bind,source=/foo/bar,target=/bar --mount type=bind,source=/foo/car,target=/foo/car"+
 			" -e A -e B -i myimage /bin/sh")
+	})
+
+	Convey("DockerRunCmd quotes values containing spaces and shell metacharacters", t, func() {
+		cmd := DockerRunCmd("my image", "/path to/cmds", "unique ID",
+			[]string{"/foo/b ar;rm -rf x:/b ar", "/foo/car"}, []string{"A B"})
+
+		So(cmd, ShouldEqual, "cat '/path to/cmds' | docker run --rm --name 'unique ID'"+
+			` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD"`+
+			" --mount 'type=bind,source=/foo/b ar;rm -rf x,target=/b ar'"+
+			" --mount type=bind,source=/foo/car,target=/foo/car"+
+			" -e 'A B' -i 'my image' /bin/sh")
 	})
 }
 
@@ -123,6 +197,13 @@ func TestRunSingularity(t *testing.T) {
 
 		So(cmd, ShouldEqual, "cat /path/to/cmds | singularity shell -B /foo/bar:/bar -B /foo/car myimage")
 	})
+
+	Convey("SingularityRunCmd quotes values containing spaces and shell metacharacters", t, func() {
+		cmd := SingularityRunCmd("my image", "/path to/cmds", []string{"/foo/b ar;rm -rf x:/b ar", "/foo/car"})
+
+		So(cmd, ShouldEqual, "cat '/path to/cmds' | singularity shell"+
+			" -B '/foo/b ar;rm -rf x:/b ar' -B /foo/car 'my image'")
+	})
 }
 
 func TestRunReal(t *testing.T) {
@@ -133,7 +214,7 @@ func TestRunReal(t *testing.T) {
 	expected := "car\nrab\nhome.file\na.file\nb.file\n"
 
 	Convey("DockerRunCmd's command really works", t, func() {
-		cmdFile, homeDir, mounts, cleanup, err := realTestSetup(t, "docker", containerCmd)
+		cmdFile, homeDir, mounts, cleanup, err := realTestSetup(t, "docker", containerCmd, plainTestDirNames())
 		if err != nil {
 			SkipConvey(fmt.Sprintf("Can't really test the docker command line: %s", err), nil)
 
@@ -151,7 +232,7 @@ func TestRunReal(t *testing.T) {
 	})
 
 	Convey("SingularityRunCmd's command really works", t, func() {
-		cmdFile, homeDir, mounts, cleanup, err := realTestSetup(t, "singularity", containerCmd)
+		cmdFile, homeDir, mounts, cleanup, err := realTestSetup(t, "singularity", containerCmd, plainTestDirNames())
 		if err != nil {
 			SkipConvey(fmt.Sprintf("Can't really test the singularity command line: %s", err), nil)
 
@@ -180,7 +261,7 @@ func fileDoesNotExist(path string) bool {
 	return os.IsNotExist(err)
 }
 
-func realTestSetup(t *testing.T, exe, containerCmd string) (cmdFile, homeDir string,
+func realTestSetup(t *testing.T, exe, containerCmd string, names realTestDirNames) (cmdFile, homeDir string,
 	mounts []string, cleanup func(), err error) {
 	t.Helper()
 
@@ -189,7 +270,7 @@ func realTestSetup(t *testing.T, exe, containerCmd string) (cmdFile, homeDir str
 			mounts, cleanup, err
 	}
 
-	rootDir, homeDir, mountADir, mountBDir, err := createRealTestDirs()
+	rootDir, homeDir, mountADir, mountBDir, err := createRealTestDirs(names)
 	if err != nil {
 		return cmdFile, homeDir,
 			mounts, cleanup, err
@@ -228,25 +309,25 @@ func removeTestRootDir(t *testing.T, dir string) {
 	}
 }
 
-func createRealTestDirs() (root, home, mountA, mountB string, err error) {
+func createRealTestDirs(names realTestDirNames) (root, home, mountA, mountB string, err error) {
 	root, err = os.MkdirTemp("", "container_run_test")
 	if err != nil {
 		return root, home, mountA, mountB, err
 	}
 
-	home = filepath.Join(root, "home")
+	home = filepath.Join(root, names.home)
 
 	if err = os.Mkdir(home, dirMode); err != nil {
 		return root, home, mountA, mountB, err
 	}
 
-	mountA = filepath.Join(root, "mntA")
+	mountA = filepath.Join(root, names.mountA)
 
 	if err = os.Mkdir(mountA, dirMode); err != nil {
 		return root, home, mountA, mountB, err
 	}
 
-	mountB = filepath.Join(root, "mntB")
+	mountB = filepath.Join(root, names.mountB)
 	err = os.Mkdir(mountB, dirMode)
 
 	return root, home, mountA, mountB, err

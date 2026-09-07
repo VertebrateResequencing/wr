@@ -205,6 +205,18 @@ func (j *Job) dropImpossibleCleanups() {
 	j.Behaviours = j.Behaviours.withoutCleanups()
 }
 
+// containerMountsMessage returns a message describing why this Job's
+// ContainerMounts cannot be used, or "" if it can be. ContainerMounts is
+// ignored unless a container image is in use, so an unused value is never
+// rejected.
+func (j *Job) containerMountsMessage() string {
+	if j.WithDocker == "" && j.WithSingularity == "" {
+		return ""
+	}
+
+	return containerMountsMessage(j.ContainerMounts)
+}
+
 // cwdLeaf returns the part of cwd below cwdBase, prefixed with "/", for display
 // alongside cwdBase as a Job's working directory. It is the single projection
 // used for both a stored Job's JStatus and a live Job's JobUpdate, so that
@@ -361,6 +373,24 @@ func (j *Job) lostForLocked() time.Duration {
 	}
 
 	return time.Since(j.EndTime)
+}
+
+// nilEntryMessage returns a message naming the first nil entry in an explicitly
+// set pointer collection, or "" if there isn't one.
+func (j *JobModifier) nilEntryMessage() string {
+	if j.DependenciesSet {
+		if index := slices.Index(j.Dependencies, nil); index >= 0 {
+			return fmt.Sprintf("modifier.Dependencies[%d] is nil", index)
+		}
+	}
+
+	if j.BehavioursSet {
+		if index := slices.Index(j.Behaviours, nil); index >= 0 {
+			return fmt.Sprintf("modifier.Behaviours[%d] is nil", index)
+		}
+	}
+
+	return ""
 }
 
 // mergeBehaviours returns existing with, for each trigger that modifications
@@ -1196,6 +1226,34 @@ func (ms *mountState) buildRemoteConfigs(mc MountConfig, defaultCacheBase string
 	}
 
 	return rcs, nil
+}
+
+// containerMountsMessage returns a message describing why the given
+// ContainerMounts value cannot be used, or "" if it can be.
+//
+// Commas separate mounts, which is also how docker separates the options of its
+// own --mount argument, so a mount path containing a comma gets split in to 2
+// malformed mounts before the container runtime ever sees it. Quoting can't fix
+// that, but the detectable symptom is a resulting path that isn't absolute,
+// which a bind mount path has to be anyway.
+func containerMountsMessage(containerMounts string) string {
+	if containerMounts == "" {
+		return ""
+	}
+
+	for _, spec := range strings.Split(containerMounts, ",") {
+		local, inContainer := container.MountSpecPaths(spec)
+
+		for _, path := range []string{local, inContainer} {
+			if !filepath.IsAbs(path) {
+				return fmt.Sprintf("ContainerMounts %q is invalid: %q is not an absolute path; commas "+
+					"separate mounts, so a mount path containing a comma can't be expressed in this format",
+					containerMounts, path)
+			}
+		}
+	}
+
+	return ""
 }
 
 // resolveCacheDir resolves a target's CacheDir relative to defaultCacheBase. An
@@ -2086,16 +2144,19 @@ func (j *JobModifier) validationMessage() string {
 		return "modifier is nil"
 	}
 
-	if j.DependenciesSet {
-		if index := slices.Index(j.Dependencies, nil); index >= 0 {
-			return fmt.Sprintf("modifier.Dependencies[%d] is nil", index)
-		}
+	if message := j.nilEntryMessage(); message != "" {
+		return message
 	}
 
-	if j.BehavioursSet {
-		if index := slices.Index(j.Behaviours, nil); index >= 0 {
-			return fmt.Sprintf("modifier.Behaviours[%d] is nil", index)
-		}
+	// unlike a Job, whose ContainerMounts may be a value it never uses, a
+	// modifier only carries the field when the user explicitly asked to set
+	// it, and it can't see the images of the Jobs it will be applied to.
+	if !j.ContainerMountsSet {
+		return ""
+	}
+
+	if message := containerMountsMessage(j.ContainerMounts); message != "" {
+		return "modifier." + message
 	}
 
 	return ""

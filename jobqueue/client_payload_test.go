@@ -55,6 +55,24 @@ import (
 var errCaptureSocketUnsupported = errors.New("unsupported capture socket operation")
 
 const (
+	// payloadContainerMountsGroup is the rep and req group of the jobs the
+	// container_mounts validation test adds.
+	payloadContainerMountsGroup = "payload-container-mounts"
+
+	// containerMountsTestImage is a container image name, needed because
+	// ContainerMounts is only validated when an image is in use.
+	containerMountsTestImage = "alpine"
+
+	// containerMountsWithComma has a comma inside its local path, so splitting
+	// it on the comma yields "1" as a local path.
+	containerMountsWithComma = "/data/set,1:/data"
+
+	// containerMountsWellFormed has 2 mounts, one of them without an
+	// in-container path.
+	containerMountsWellFormed = "/data/set:/data,/other"
+)
+
+const (
 	liveExecuteTouchInterval      = 100 * time.Millisecond
 	liveExecuteRetryWait          = 10 * time.Millisecond
 	liveExecuteRetryTime          = time.Second
@@ -770,6 +788,89 @@ func TestServerRejectsAddWithNilDependency(t *testing.T) {
 		So(existed, ShouldEqual, 0)
 		So(server.q.Stats().Items, ShouldEqual, 1)
 	})
+}
+
+func TestServerRejectsAddWithCommaInContainerMountPath(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A container_mounts path containing a comma is rejected at the add boundary", t, func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		tmpDir := t.TempDir()
+		testDB, _, err := initDB(ctx, filepath.Join(tmpDir, "queue.db"),
+			filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false, false)
+
+		So(err, ShouldBeNil)
+
+		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+		ch := new(codec.BincHandle)
+		token := bytes.Repeat([]byte("x"), tokenLength)
+		sock := &captureSocket{ch: ch}
+		server := &Server{
+			ch: ch, sock: sock, token: token, db: testDB,
+			q: queue.New(ctx, payloadContainerMountsGroup), rpl: newRGToKeys(),
+			depGroups: newDepGroupMembers(), up: true,
+		}
+		sock.server = server
+
+		id, err := uuid.NewV4()
+		So(err, ShouldBeNil)
+
+		client := &Client{ch: ch, clientid: id, sock: sock, token: token}
+		env := []string{"PAYLOAD_CONTAINER_MOUNTS=1"}
+
+		assertRejected := func(err error) {
+			var jqErr Error
+
+			So(errors.As(err, &jqErr), ShouldBeTrue)
+			So(jqErr, ShouldResemble, Error{Op: requestMethodAdd, Err: ErrBadRequest})
+			So(sock.serverErr, ShouldNotBeNil)
+			So(sock.serverErr.Error(), ShouldContainSubstring,
+				fmt.Sprintf("jobs[0].ContainerMounts %q is invalid: %q is not an absolute path",
+					containerMountsWithComma, "1"))
+			So(sock.serverErr.Error(), ShouldContainSubstring,
+				"commas separate mounts, so a mount path containing a comma can't be expressed in this format")
+			So(server.q.Stats().Items, ShouldEqual, 0)
+		}
+
+		dockerJob := containerMountsJob(containerMountsWithComma, containerMountsTestImage, "")
+		singularityJob := containerMountsJob(containerMountsWithComma, "", containerMountsTestImage+".sif")
+
+		_, _, err = client.Add([]*Job{dockerJob}, env, false)
+		assertRejected(err)
+
+		_, _, err = client.Add([]*Job{singularityJob}, env, false)
+		assertRejected(err)
+
+		Convey("While well-formed mounts, and a value no container will use, are accepted", func() {
+			added, existed, err := client.Add([]*Job{
+				containerMountsJob(containerMountsWellFormed, containerMountsTestImage, ""),
+				containerMountsJob(containerMountsWithComma, "", ""),
+			}, env, false)
+
+			So(err, ShouldBeNil)
+			So(sock.serverErr, ShouldBeNil)
+			So(added, ShouldEqual, 2)
+			So(existed, ShouldEqual, 0)
+			So(server.q.Stats().Items, ShouldEqual, 2)
+		})
+	})
+}
+
+func containerMountsJob(mounts, docker, singularity string) *Job {
+	return &Job{
+		Cmd:             "echo " + mounts + " " + docker + singularity,
+		RepGroup:        payloadContainerMountsGroup,
+		ReqGroup:        payloadContainerMountsGroup,
+		Requirements:    &scheduler.Requirements{RAM: 100, Time: time.Second, Cores: 1, Disk: 1},
+		ContainerMounts: mounts,
+		WithDocker:      docker,
+		WithSingularity: singularity,
+	}
 }
 
 func TestServerRejectsAddWithNilBehaviour(t *testing.T) {

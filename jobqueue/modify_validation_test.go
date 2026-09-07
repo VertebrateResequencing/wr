@@ -49,6 +49,61 @@ import (
 
 const modifierValidationRepGroup = "modifier-validation"
 
+func TestClientModifyRejectsCommaInContainerMountPath(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Client Modify rejects a container_mounts path containing a comma before sending it", t, func() {
+		client, sock := newCaptureClient()
+		untouched := []*JobEssence{{Cmd: "echo untouched"}}
+		modifier := NewJobModifer()
+		modifier.SetContainerMounts(containerMountsWithComma)
+
+		modified, err := client.Modify(untouched, modifier)
+
+		var jqErr Error
+
+		So(modified, ShouldBeNil)
+		So(errors.As(err, &jqErr), ShouldBeTrue)
+		So(jqErr, ShouldResemble, Error{
+			Op: requestMethodModify,
+			Item: `modifier.ContainerMounts "/data/set,1:/data" is invalid: "1" is not an absolute path; ` +
+				`commas separate mounts, so a mount path containing a comma can't be expressed in this format`,
+			Err: ErrBadRequest,
+		})
+		So(sock.sent, ShouldBeNil)
+
+		Convey("While well-formed mounts are sent", func() {
+			modifier = NewJobModifer()
+			modifier.SetContainerMounts(containerMountsWellFormed)
+
+			_, err = client.Modify(untouched, modifier)
+			So(err, ShouldBeNil)
+			So(sock.request().Modifier.ContainerMounts, ShouldEqual, containerMountsWellFormed)
+		})
+
+		Convey("While clearing the mounts is sent", func() {
+			modifier = NewJobModifer()
+			modifier.SetContainerMounts("")
+
+			_, err = client.Modify(untouched, modifier)
+			So(err, ShouldBeNil)
+			So(sock.request().Modifier.ContainerMountsSet, ShouldBeTrue)
+			So(sock.request().Modifier.ContainerMounts, ShouldBeBlank)
+		})
+
+		Convey("While a value that was never set is sent untouched", func() {
+			modifier = &JobModifier{ContainerMounts: containerMountsWithComma}
+			modifier.SetPriority(7)
+
+			_, err = client.Modify(untouched, modifier)
+			So(err, ShouldBeNil)
+			So(sock.request().Modifier.Priority, ShouldEqual, 7)
+		})
+	})
+}
+
 type modifierJobSnapshot struct {
 	key          string
 	cmd          string
