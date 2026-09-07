@@ -114,14 +114,18 @@ func writeStringToFile(f *os.File, content string, cleanup func()) error {
 //     their values outside the container.
 //   - That will run the command in the given file (by piping the file contents
 //     to /bin/sh); use PrepareCmdFile() to create one.
+//   - That carries the JobKeyLabel label with the given name as its value, so
+//     that the container can later be identified as the one created here
+//     rather than by anyone else on the host.
 //
 // * Automatically remove the container when it exits.
 func DockerRunCmd(image, cmdFile, name string, mounts, env []string) string {
 	mountArgs := dockerMounts(mounts)
 	envArgs := dockerEnv(env)
 
-	return fmt.Sprintf("cat %s | docker run --rm --name %s%s%s -i %s /bin/sh",
-		shellquote.Join(cmdFile), shellquote.Join(name), mountArgs, envArgs, shellquote.Join(image))
+	return fmt.Sprintf("cat %s | docker run --rm --name %s --label %s%s%s -i %s /bin/sh",
+		shellquote.Join(cmdFile), shellquote.Join(name), shellquote.Join(JobKeyLabel+"="+name),
+		mountArgs, envArgs, shellquote.Join(image))
 }
 
 // dockerMounts takes a list of "/local/path[:/inside/container/path]" values

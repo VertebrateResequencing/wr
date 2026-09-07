@@ -28,11 +28,15 @@ package docker
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/VertebrateResequencing/wr/container"
 	cn "github.com/moby/moby/api/types/container"
@@ -43,6 +47,14 @@ import (
 )
 
 const linuxOS = "linux"
+
+// testAPIVersion is the docker API version our fake daemon serves; the moby
+// client asks for a pinned version directly instead of negotiating one.
+const testAPIVersion = "1.51"
+
+// testFakeDaemonBound is how long our fake daemon will wait for a client's
+// request headers before giving up on it.
+const testFakeDaemonBound = 30 * time.Second
 
 var errCloseStats = errors.New("close stats")
 
@@ -163,6 +175,81 @@ func TestDockerDecodeContainerStats(t *testing.T) {
 			So(stats, ShouldNotBeNil)
 			So(err, ShouldEqual, errCloseStats)
 			So(nonEmptyRC.closed, ShouldBeTrue)
+		})
+	})
+}
+
+// listingDockerSocket serves a fake docker API on a unix socket that answers
+// every container listing with the given containers, returning the DOCKER_HOST
+// value that addresses it. It lets a listing be tested without docker.
+func listingDockerSocket(t *testing.T, containers []cn.Summary) string {
+	t.Helper()
+
+	sock := filepath.Join(t.TempDir(), "docker.sock")
+
+	var listenConfig net.ListenConfig
+
+	listener, err := listenConfig.Listen(context.Background(), "unix", sock)
+	So(err, ShouldBeNil)
+
+	listing, err := json.Marshal(containers)
+	So(err, ShouldBeNil)
+
+	server := &http.Server{
+		ReadHeaderTimeout: testFakeDaemonBound,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+
+			//nolint:errcheck // a client that has gone away is not this fake's problem.
+			w.Write(listing)
+		}),
+	}
+
+	go func() {
+		//nolint:errcheck // Serve only ever ends with the error from our Close below.
+		server.Serve(listener)
+	}()
+
+	t.Cleanup(func() {
+		_ = server.Close()
+	})
+
+	return "unix://" + sock
+}
+
+func TestDockerContainerLabels(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a docker daemon with a labelled and an unlabelled container", t, func() {
+		t.Setenv("DOCKER_HOST", listingDockerSocket(t, []cn.Summary{
+			{
+				ID:     "labelledid",
+				Names:  []string{"/thejobskey"},
+				Labels: map[string]string{container.JobKeyLabel: "thejobskey"},
+			},
+			{ID: "unlabelledid", Names: []string{"/someone_elses"}},
+		}))
+		t.Setenv("DOCKER_API_VERSION", testAPIVersion)
+
+		cli, err := client.New(client.FromEnv)
+		So(err, ShouldBeNil)
+
+		Convey("Listing them reports the labels, so a caller can recognise its own container", func() {
+			cntrs, err := NewInteractor(cli).ContainerList(ctx)
+			So(err, ShouldBeNil)
+			So(len(cntrs), ShouldEqual, 2)
+
+			So(cntrs[0].ID, ShouldEqual, "labelledid")
+			So(cntrs[0].Names, ShouldResemble, []string{"thejobskey"})
+
+			value, set := cntrs[0].Label(container.JobKeyLabel)
+			So(set, ShouldBeTrue)
+			So(value, ShouldEqual, "thejobskey")
+
+			So(cntrs[1].ID, ShouldEqual, "unlabelledid")
+
+			_, set = cntrs[1].Label(container.JobKeyLabel)
+			So(set, ShouldBeFalse)
 		})
 	})
 }

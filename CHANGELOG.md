@@ -5,6 +5,19 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [Unreleased]
+### Fixed
+- With `--monitor_docker '?'`, wr could charge another container's RAM to your
+  job as its peak, and SIGKILL a container it never started, whenever more than
+  one container appeared while the job ran; on a shared machine that other
+  container could even belong to another of your wr jobs. When it cannot tell
+  which of the new containers is the job's, wr now monitors none of them rather
+  than guess, and logs a warning saying that the job's usage will be
+  under-reported and that no container will be killed with it. A container wr
+  started for the job itself (`--with_docker`) is still recognised whatever
+  else appears alongside it.
+
+
 ## [0.37.2] - 2026-09-01
 ### Added
 - New `wr manager compact` command, which rewrites wr's database into a

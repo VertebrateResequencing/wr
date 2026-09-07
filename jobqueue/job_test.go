@@ -543,8 +543,9 @@ func TestJob(t *testing.T) {
 
 			So(cmd, ShouldStartWith, "cat ")
 
-			dockerPrefix := ` | docker run --rm --name %s -w "$PWD" --mount type=bind,source="$PWD",target="$PWD"`
-			dockerSuffix := " -i %s /bin/sh"
+			dockerPrefix := ` | docker run --rm --name %[1]s --label uk.ac.sanger.wr.job-key=%[1]s` +
+				` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD"`
+			dockerSuffix := " -i %[2]s /bin/sh"
 			So(cmd, ShouldEndWith, fmt.Sprintf(dockerPrefix+dockerSuffix, job.Key(), image))
 			So(job.MonitorDocker, ShouldEqual, job.Key())
 

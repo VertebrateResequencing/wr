@@ -33,10 +33,18 @@ import (
 	"strings"
 )
 
+// JobKeyLabel is the key of the label that DockerRunCmd puts on the container
+// it creates, with the container's name as its value. Since only we set it, a
+// container carrying it with a given name as its value is one we started for
+// the job of that name, which is how a caller can tell its own container apart
+// from every other container on the host.
+const JobKeyLabel = "uk.ac.sanger.wr.job-key"
+
 // Container struct represents a container type with specific properties.
 type Container struct {
 	ID     string
 	Names  []string
+	Labels map[string]string
 	client Interactor
 }
 
@@ -75,4 +83,14 @@ func (c *Container) TrimNamePrefixes() {
 // call the TrimNamePrefixes on the container before calling this function.
 func (c *Container) HasName(name string) bool {
 	return slices.Contains(c.Names, name)
+}
+
+// Label returns the value of this container's label with the given key, and
+// whether the container has that label at all. The 2 are distinguished so that
+// a caller can tell a container that another job's label claims from one that
+// carries no claim.
+func (c *Container) Label(key string) (string, bool) {
+	value, set := c.Labels[key]
+
+	return value, set
 }

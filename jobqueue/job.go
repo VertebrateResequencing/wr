@@ -698,10 +698,13 @@ type Job struct {
 	// would make wr kill it when this job is killed or runs out of resources.
 	//
 	// If the special argument "?" is supplied, monitoring will apply to the
-	// first new docker container that appears after the Cmd starts to run.
-	// NB: if multiple jobs that run docker containers start running at the same
-	// time on the same machine, the reported stats could be wrong for one or
-	// more of those jobs.
+	// only new docker container that appears after the Cmd starts to run. If
+	// more than one appears, which of them is this job's cannot be told, so
+	// none of them is monitored (and a warning is logged saying so) for the
+	// rest of the job's run: a container someone else started must not be
+	// charged to this job, and must not be killed with it. A container wr
+	// itself started for this job is always recognised, however many others
+	// appear.
 	//
 	// Requires that docker is installed on the machine where the job will run
 	// (and that the Cmd uses docker to run a container). NB: does not handle
