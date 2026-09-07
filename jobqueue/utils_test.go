@@ -46,6 +46,7 @@ import (
 	"time"
 
 	gofuse "github.com/hanwen/go-fuse/v2/fs"
+	"github.com/hanwen/go-fuse/v2/fuse"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -472,6 +473,201 @@ func mountStaleRmdir(t *testing.T, mountPoint, backing string) (*staleRmdirFS, b
 	})
 
 	return sfs, true
+}
+
+// caseFoldNode is a loopback node whose LOOKUP folds case while its READDIR does
+// not, which is what a case-insensitive filesystem really does. ext4 with the
+// casefold feature was measured to behave exactly this way, and APFS, HFS+, SMB
+// and some NFS servers make the same bargain by a different route: the name a
+// directory was CREATED with is the name stored and the name readdir hands back,
+// and folding happens only to a name the filesystem is GIVEN. So `mkdir -p
+// MyCache` over an existing `mycache` exits 0 without making a second directory,
+// and from then on one inode has two spellings.
+//
+// That is the shape a Job's cleanup has to survive: its keep set is spelled by
+// the Job's MountConfig, while the sweep reads back the spelling whatever
+// created the directory used, and a byte-for-byte comparison of the two misses.
+//
+// Removals fold as well, so a directory named in one case really is deleted when
+// the sweep names it in the other, and a test sees the file that was inside it
+// gone rather than an error from a filesystem that merely refused the name.
+//
+// Every node is the root of a gofuse.LoopbackRoot of its OWN, so that no backing
+// path is ever derived from the name a node currently has in the kernel's tree:
+// the plain loopback builds one by joining the names of its ancestors, which
+// spells the path in the case that was LOOKED UP rather than the case on disk,
+// and the child then answers ENOENT to its own GETATTR.
+type caseFoldNode struct {
+	*gofuse.LoopbackNode
+}
+
+var _ = (gofuse.NodeWrapChilder)((*caseFoldNode)(nil))
+
+// WrapChild puts the folding on every node the loopback makes below this one,
+// for the reason staleRmdirNode.WrapChild gives: wrapping is not inherited, so
+// each wrapper has to hand it on to its own children.
+func (n *caseFoldNode) WrapChild(_ context.Context, ops gofuse.InodeEmbedder) gofuse.InodeEmbedder {
+	loopback, ok := ops.(*gofuse.LoopbackNode)
+	if !ok {
+		return ops
+	}
+
+	return &caseFoldNode{LoopbackNode: loopback}
+}
+
+// resolve gives the backing path of name, and whether anything is there at all.
+//
+// An exact match wins without a readdir, so the fold costs nothing for the
+// spelling on disk. Only a name that is NOT there is looked for case-insensitively
+// among the entries, which is the order a real folding filesystem's hash lookup
+// amounts to.
+func (n *caseFoldNode) resolve(name string) (string, bool) {
+	path := filepath.Join(n.RootData.Path, name)
+	if _, err := os.Lstat(path); err == nil {
+		return path, true
+	}
+
+	entries, err := os.ReadDir(n.RootData.Path)
+	if err != nil {
+		return "", false
+	}
+
+	for _, entry := range entries {
+		if strings.EqualFold(entry.Name(), name) {
+			return filepath.Join(n.RootData.Path, entry.Name()), true
+		}
+	}
+
+	return "", false
+}
+
+// childAt makes the node for the backing path resolve found, rooted at that path
+// so nothing below it is spelled by the names above it, and fills out with the
+// backing entry's own attributes.
+func (n *caseFoldNode) childAt(ctx context.Context, backing string,
+	out *fuse.EntryOut) (*gofuse.Inode, syscall.Errno) {
+	var st syscall.Stat_t
+
+	if err := syscall.Lstat(backing, &st); err != nil {
+		return nil, gofuse.ToErrno(err)
+	}
+
+	out.FromStat(&st)
+
+	sub := &gofuse.LoopbackRoot{Path: backing, Dev: n.RootData.Dev}
+	node := &caseFoldNode{LoopbackNode: &gofuse.LoopbackNode{RootData: sub}}
+	sub.RootNode = node
+
+	return n.NewInode(ctx, node, gofuse.StableAttr{Mode: st.Mode, Gen: 1, Ino: st.Ino}), 0
+}
+
+// Lookup finds an entry under any spelling of its name, which is the whole of
+// what makes this filesystem case-insensitive.
+func (n *caseFoldNode) Lookup(ctx context.Context, name string,
+	out *fuse.EntryOut) (*gofuse.Inode, syscall.Errno) {
+	backing, ok := n.resolve(name)
+	if !ok {
+		return nil, syscall.ENOENT
+	}
+
+	return n.childAt(ctx, backing, out)
+}
+
+// Mkdir refuses a name the directory already holds in ANOTHER case, as a
+// case-insensitive filesystem does. That is what makes `mkdir -p MyCache` over
+// an existing `mycache` leave one directory rather than two: MkdirAll reads the
+// EEXIST as success and keeps the directory that is already there, under the
+// spelling it already had.
+func (n *caseFoldNode) Mkdir(ctx context.Context, name string, mode uint32,
+	out *fuse.EntryOut) (*gofuse.Inode, syscall.Errno) {
+	if _, ok := n.resolve(name); ok {
+		return nil, syscall.EEXIST
+	}
+
+	path := filepath.Join(n.RootData.Path, name)
+	if err := os.Mkdir(path, os.FileMode(mode)); err != nil {
+		return nil, gofuse.ToErrno(err)
+	}
+
+	return n.childAt(ctx, path, out)
+}
+
+// backingName is the name the backing store spells name with, which is name
+// itself unless only a case-insensitive lookup finds it.
+func (n *caseFoldNode) backingName(name string) string {
+	backing, ok := n.resolve(name)
+	if !ok {
+		return name
+	}
+
+	return filepath.Base(backing)
+}
+
+// Rmdir deletes the directory the name resolves to, whichever case it is spelled
+// in on disk. Folding the removals as well as the lookups is what makes the
+// deletion this filesystem exists to expose a real one: a sweep that names the
+// configured spelling destroys the directory made under the other, rather than
+// being turned away by a name that does not exist.
+func (n *caseFoldNode) Rmdir(ctx context.Context, name string) syscall.Errno {
+	return n.LoopbackNode.Rmdir(ctx, n.backingName(name))
+}
+
+// Unlink deletes the entry the name resolves to; see Rmdir.
+func (n *caseFoldNode) Unlink(ctx context.Context, name string) syscall.Errno {
+	return n.LoopbackNode.Unlink(ctx, n.backingName(name))
+}
+
+// mountCaseFold really FUSE mounts a case-insensitive filesystem and returns a
+// directory inside it for a Job to use as its Cwd, taking the mount down when
+// the test ends. ok is false where the host refused the mount, exactly as for
+// mountStaleRmdir.
+//
+// Before it returns, it proves the mount folds: a directory created as
+// "FoldProbe" is found as "foldprobe", readdir still reports "FoldProbe", and a
+// removal aimed at "foldprobe" takes it away. Without that a host whose FUSE
+// behaved like plain ext4 would let the tests below pass while proving nothing.
+func mountCaseFold(t *testing.T) (string, bool) {
+	t.Helper()
+
+	backing := t.TempDir()
+	mountPoint := t.TempDir()
+
+	var st syscall.Stat_t
+
+	So(syscall.Stat(backing, &st), ShouldBeNil)
+
+	root := &gofuse.LoopbackRoot{Path: backing, Dev: st.Dev}
+	rootNode := &caseFoldNode{LoopbackNode: &gofuse.LoopbackNode{RootData: root}}
+	root.RootNode = rootNode
+
+	server, err := gofuse.Mount(mountPoint, rootNode, &gofuse.Options{})
+	if err != nil {
+		t.Logf("this host refused a FUSE mount at %s: %s", mountPoint, err)
+
+		return "", false
+	}
+
+	t.Cleanup(func() {
+		if uerr := server.Unmount(); uerr != nil {
+			t.Logf("could not unmount the case-insensitive filesystem at %s: %s", mountPoint, uerr)
+		}
+	})
+
+	cwd := filepath.Join(mountPoint, "cwd")
+	So(os.MkdirAll(filepath.Join(cwd, "FoldProbe"), os.ModePerm), ShouldBeNil)
+
+	info, err := os.Stat(filepath.Join(cwd, "foldprobe"))
+	So(err, ShouldBeNil)
+	So(info.IsDir(), ShouldBeTrue)
+
+	entries, err := os.ReadDir(cwd)
+	So(err, ShouldBeNil)
+	So(len(entries), ShouldEqual, 1)
+	So(entries[0].Name(), ShouldEqual, "FoldProbe")
+
+	So(os.Remove(filepath.Join(cwd, "foldprobe")), ShouldBeNil)
+
+	return cwd, true
 }
 
 // TestRemoveUpwardOnStaleHandle pins what the upward walk does with an errno it
