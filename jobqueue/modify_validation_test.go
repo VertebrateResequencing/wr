@@ -211,6 +211,100 @@ func TestServerRejectsModifyWithNilNestedEntriesAtomically(t *testing.T) {
 	}
 }
 
+func TestServerRejectsModifyThatMakesContainerMountsLive(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Giving an image to a job whose container_mounts has a comma is rejected", t, func() {
+		// neither job has an image, so job 1's comma-broken mounts are ignored
+		// and accepted at add time.
+		harness := newModifierValidationHarnessForJobs(t,
+			validationJobsWithMounts(containerMountsWellFormed, containerMountsWithComma))
+		defer harness.close()
+
+		beforeQueue := harness.queueSnapshot()
+		beforeDB := harness.dbSnapshot()
+
+		modifier := NewJobModifer()
+		modifier.SetWithDocker(containerMountsTestImage)
+
+		modified, err := harness.client.Modify(jobsToJobEssenses(harness.jobs), modifier)
+
+		var jqErr Error
+
+		So(modified, ShouldBeNil)
+		So(errors.As(err, &jqErr), ShouldBeTrue)
+		So(jqErr.Err, ShouldEqual, ErrBadRequest)
+		So(harness.sock.serverErr, ShouldNotBeNil)
+		So(harness.sock.serverErr.Error(), ShouldContainSubstring, fmt.Sprintf(
+			`job "echo original 1": ContainerMounts %q is invalid: %q is not an absolute path`,
+			containerMountsWithComma, "1"))
+
+		Convey("And the whole batch is left untouched, including its well-formed job", func() {
+			So(harness.queueSnapshot(), ShouldResemble, beforeQueue)
+			So(harness.dbSnapshot(), ShouldResemble, beforeDB)
+			So(harness.serverMode(), ShouldResemble, modifierServerMode{mode: ServerModeNormal})
+
+			queued, errg := harness.client.GetByRepGroup(modifierValidationRepGroup, false, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(queued, ShouldHaveLength, len(harness.jobs))
+
+			sort.Slice(queued, func(i, j int) bool { return queued[i].Cmd < queued[j].Cmd })
+
+			So(queued[0].WithDocker, ShouldBeBlank)
+			So(queued[0].ContainerMounts, ShouldEqual, containerMountsWellFormed)
+			So(queued[1].WithDocker, ShouldBeBlank)
+			So(queued[1].ContainerMounts, ShouldEqual, containerMountsWithComma)
+
+			harness.assertSubsequentValidModifications()
+		})
+
+		Convey("While giving an image to the well-formed job alone is accepted", func() {
+			modifier = NewJobModifer()
+			modifier.SetWithDocker(containerMountsTestImage)
+
+			modified, err = harness.client.Modify(jobsToJobEssenses(harness.jobs[:1]), modifier)
+
+			So(err, ShouldBeNil)
+			So(harness.sock.serverErr, ShouldBeNil)
+			So(modified, ShouldHaveLength, 1)
+		})
+
+		Convey("While replacing the broken mounts as the image is set is accepted", func() {
+			modifier = NewJobModifer()
+			modifier.SetWithDocker(containerMountsTestImage)
+			modifier.SetContainerMounts(containerMountsWellFormed)
+
+			modified, err = harness.client.Modify(jobsToJobEssenses(harness.jobs), modifier)
+
+			So(err, ShouldBeNil)
+			So(harness.sock.serverErr, ShouldBeNil)
+			So(modified, ShouldHaveLength, len(harness.jobs))
+
+			queued, errg := harness.client.GetByRepGroup(modifierValidationRepGroup, false, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(queued, ShouldHaveLength, len(harness.jobs))
+
+			for _, job := range queued {
+				So(job.WithDocker, ShouldEqual, containerMountsTestImage)
+				So(job.ContainerMounts, ShouldEqual, containerMountsWellFormed)
+			}
+		})
+
+		Convey("While a modification that leaves the mounts unused is accepted", func() {
+			modifier = NewJobModifer()
+			modifier.SetPriority(7)
+
+			modified, err = harness.client.Modify(jobsToJobEssenses(harness.jobs), modifier)
+
+			So(err, ShouldBeNil)
+			So(harness.sock.serverErr, ShouldBeNil)
+			So(modified, ShouldHaveLength, len(harness.jobs))
+		})
+	})
+}
+
 func atomicMalformedModifier() *JobModifier {
 	modifier := NewJobModifer()
 	modifier.SetCwd("/modified")
@@ -225,6 +319,12 @@ func atomicMalformedModifier() *JobModifier {
 }
 
 func newModifierValidationHarness(t *testing.T) *modifierValidationHarness {
+	t.Helper()
+
+	return newModifierValidationHarnessForJobs(t, validationJobs())
+}
+
+func newModifierValidationHarnessForJobs(t *testing.T, jobs []*Job) *modifierValidationHarness {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -252,7 +352,7 @@ func newModifierValidationHarness(t *testing.T) *modifierValidationHarness {
 	harness := &modifierValidationHarness{
 		cancel: cancel, db: testDB, server: server, sock: sock, client: client,
 	}
-	harness.jobs = validationJobs()
+	harness.jobs = jobs
 	added, existed, err := client.Add(harness.jobs, []string{"MODIFIER_VALIDATION=1"}, false)
 	So(err, ShouldBeNil)
 	So(added, ShouldEqual, len(harness.jobs))
@@ -263,10 +363,18 @@ func newModifierValidationHarness(t *testing.T) *modifierValidationHarness {
 }
 
 func validationJobs() []*Job {
-	jobs := make([]*Job, 0, 2)
-	for i := range 2 {
+	return validationJobsWithMounts("", "")
+}
+
+// validationJobsWithMounts creates one job per given ContainerMounts value, all
+// otherwise identical apart from their command and resource requirements. No job
+// has a container image, so a malformed ContainerMounts value is accepted.
+func validationJobsWithMounts(containerMounts ...string) []*Job {
+	jobs := make([]*Job, 0, len(containerMounts))
+	for i, mounts := range containerMounts {
 		jobs = append(jobs, &Job{
 			Cmd: fmt.Sprintf("echo original %d", i), Cwd: "/original", CwdMatters: true,
+			ContainerMounts: mounts,
 			RepGroup: modifierValidationRepGroup, ReqGroup: modifierValidationRepGroup,
 			Requirements: &scheduler.Requirements{
 				RAM: 100 + i, Time: 10 * time.Second, Cores: 1, Disk: 1,

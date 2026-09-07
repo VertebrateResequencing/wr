@@ -1663,7 +1663,7 @@ func decodeAndConvertJobs(r *http.Request, jd *JobDefaults) ([]*Job, int, error)
 
 	inputJobs := make([]*Job, 0, len(jvjs))
 
-	for _, jvj := range jvjs {
+	for jobIndex, jvj := range jvjs {
 		job, err := jvj.Convert(jd)
 		if err != nil {
 			return nil, http.StatusBadRequest, fmt.Errorf("there was a problem interpreting your job: %w", err)
@@ -1671,9 +1671,10 @@ func decodeAndConvertJobs(r *http.Request, jd *JobDefaults) ([]*Job, int, error)
 
 		// this endpoint does not go through handleAdd, so it has to make the
 		// same check that malformedAddJobMessage makes for every other way of
-		// adding a job.
+		// adding a job, naming the offending job by index the same way, so a
+		// multi-job POST says which one was rejected.
 		if message := job.containerMountsMessage(); message != "" {
-			return nil, http.StatusBadRequest, fmt.Errorf("%w: %s", errRESTUnusableJob, message)
+			return nil, http.StatusBadRequest, fmt.Errorf("%w: jobs[%d].%s", errRESTUnusableJob, jobIndex, message)
 		}
 
 		inputJobs = append(inputJobs, job)

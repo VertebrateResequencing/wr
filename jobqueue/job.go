@@ -1246,14 +1246,30 @@ func containerMountsMessage(containerMounts string) string {
 
 		for _, path := range []string{local, inContainer} {
 			if !filepath.IsAbs(path) {
-				return fmt.Sprintf("ContainerMounts %q is invalid: %q is not an absolute path; commas "+
-					"separate mounts, so a mount path containing a comma can't be expressed in this format",
-					containerMounts, path)
+				return containerMountsInvalidMessage(containerMounts, path)
 			}
 		}
 	}
 
 	return ""
+}
+
+// containerMountsInvalidMessage describes a ContainerMounts value rejected
+// because path isn't absolute.
+//
+// The comma advice is only appended when the value actually contains a comma,
+// where it names the likely cause. For a value like "data:/data" the user simply
+// gave a relative path, and the advice would be irrelevant and confusing.
+func containerMountsInvalidMessage(containerMounts, path string) string {
+	message := fmt.Sprintf("ContainerMounts %q is invalid: %q is not an absolute path",
+		containerMounts, path)
+
+	if !strings.Contains(containerMounts, ",") {
+		return message
+	}
+
+	return message + "; commas separate mounts, so a mount path containing a comma " +
+		"can't be expressed in this format"
 }
 
 // resolveCacheDir resolves a target's CacheDir relative to defaultCacheBase. An
@@ -2128,10 +2144,64 @@ func (j *JobModifier) SetContainerMounts(newVal string) {
 	j.ContainerMountsSet = true
 }
 
-// validationError rejects nil entries in explicitly set pointer collections.
+// validationError rejects nil entries in explicitly set pointer collections and
+// an explicitly set ContainerMounts value that can't be used. It sees only the
+// modifier itself, not the Jobs it will be applied to; jobsValidationError
+// covers those.
 func (j *JobModifier) validationError() (Error, bool) {
-	message := j.validationMessage()
+	return modifyValidationError(j.validationMessage())
+}
 
+// jobsValidationError rejects a modification that would leave any of jobs with
+// container mounts it can't use.
+//
+// A Job's ContainerMounts is ignored unless it has a container image, so a
+// malformed value is accepted at add time when there is no image. Setting an
+// image later makes those mounts live, which is why each Job has to be checked
+// as it would be after the modification, and not just the modifier's own
+// explicitly set values.
+//
+// Every Job is checked before Modify changes any of them, so a rejected
+// modification leaves the whole batch untouched.
+func (j *JobModifier) jobsValidationError(jobs []*Job) (Error, bool) {
+	for _, job := range jobs {
+		if message := j.modifiedContainerMountsMessage(job); message != "" {
+			return modifyValidationError(message)
+		}
+	}
+
+	return Error{}, false
+}
+
+// modifiedContainerMountsMessage returns a message, naming job, describing why
+// the container mounts job would have after modification can't be used, or "" if
+// they can be.
+//
+// It uses overrideKeyContainer to preview the modification, the same way
+// modifiedKey does, so that what would be applied is worked out in one place.
+func (j *JobModifier) modifiedContainerMountsMessage(job *Job) string {
+	job.RLock()
+	defer job.RUnlock()
+
+	newJob := &Job{
+		WithDocker:      job.WithDocker,
+		WithSingularity: job.WithSingularity,
+		ContainerMounts: job.ContainerMounts,
+	}
+
+	j.overrideKeyContainer(newJob)
+
+	message := newJob.containerMountsMessage()
+	if message == "" {
+		return ""
+	}
+
+	return fmt.Sprintf("job %q: %s", job.Cmd, message)
+}
+
+// modifyValidationError turns a non-empty modify validation message in to a bad
+// request Error.
+func modifyValidationError(message string) (Error, bool) {
 	if message == "" {
 		return Error{}, false
 	}
@@ -2175,6 +2245,10 @@ func (j *JobModifier) validationMessage() string {
 // Returns a REVERSE mapping of new to old Job keys.
 func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, error) {
 	if validationErr, invalid := j.validationError(); invalid {
+		return nil, validationErr
+	}
+
+	if validationErr, invalid := j.jobsValidationError(jobs); invalid {
 		return nil, validationErr
 	}
 

@@ -509,10 +509,28 @@ func TestRESTAddContainerMountsValidation(t *testing.T) {
 			}})
 
 			So(status, ShouldEqual, http.StatusBadRequest)
-			So(body, ShouldContainSubstring, "there was a problem with your job: ContainerMounts "+
+			So(body, ShouldContainSubstring, "there was a problem with your job: jobs[0].ContainerMounts "+
 				`"`+containerMountsWithComma+`" is invalid: "1" is not an absolute path`)
 			So(body, ShouldContainSubstring,
 				"commas separate mounts, so a mount path containing a comma can't be expressed in this format")
+
+			jobs, errg := jq.GetByRepGroup(restCMRepGroup, false, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(jobs, ShouldBeEmpty)
+		})
+
+		Convey("POST names the index of the rejected job", func() {
+			status, body := postJobs([]*JobViaJSON{{
+				Cmd: "echo rest good mount first", Cwd: testCwd, RepGrp: restCMRepGroup,
+				WithDocker: containerMountsTestImage, ContainerMounts: containerMountsWellFormed,
+			}, {
+				Cmd: "echo rest comma mount second", Cwd: testCwd, RepGrp: restCMRepGroup,
+				WithDocker: containerMountsTestImage, ContainerMounts: containerMountsWithComma,
+			}})
+
+			So(status, ShouldEqual, http.StatusBadRequest)
+			So(body, ShouldContainSubstring, "there was a problem with your job: jobs[1].ContainerMounts "+
+				`"`+containerMountsWithComma+`" is invalid: "1" is not an absolute path`)
 
 			jobs, errg := jq.GetByRepGroup(restCMRepGroup, false, 0, "", false, false)
 			So(errg, ShouldBeNil)

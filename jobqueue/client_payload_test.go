@@ -70,6 +70,10 @@ const (
 	// containerMountsWellFormed has 2 mounts, one of them without an
 	// in-container path.
 	containerMountsWellFormed = "/data/set:/data,/other"
+
+	// containerMountsRelative is a single invalid mount with no comma in it, so
+	// the comma advice would be irrelevant to it.
+	containerMountsRelative = "data:/data"
 )
 
 const (
@@ -845,6 +849,22 @@ func TestServerRejectsAddWithCommaInContainerMountPath(t *testing.T) {
 
 		_, _, err = client.Add([]*Job{singularityJob}, env, false)
 		assertRejected(err)
+
+		Convey("While a relative mount path with no comma is rejected without the comma advice", func() {
+			_, _, err = client.Add([]*Job{
+				containerMountsJob(containerMountsRelative, containerMountsTestImage, ""),
+			}, env, false)
+
+			var jqErr Error
+
+			So(errors.As(err, &jqErr), ShouldBeTrue)
+			So(sock.serverErr, ShouldNotBeNil)
+			So(sock.serverErr.Error(), ShouldContainSubstring,
+				fmt.Sprintf("jobs[0].ContainerMounts %q is invalid: %q is not an absolute path",
+					containerMountsRelative, "data"))
+			So(sock.serverErr.Error(), ShouldNotContainSubstring, "commas separate mounts")
+			So(server.q.Stats().Items, ShouldEqual, 0)
+		})
 
 		Convey("While well-formed mounts, and a value no container will use, are accepted", func() {
 			added, existed, err := client.Add([]*Job{
