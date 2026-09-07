@@ -130,6 +130,16 @@ func TestUploadFailureCacheDeletion(t *testing.T) {
 		return
 	}
 
+	// both cases below mount a real muxfys filesystem, which mounts with
+	// allow_other, so a host without user_allow_other in its /etc/fuse.conf
+	// can make no mount at all here; probing once says so for both of them.
+	if _, err := mountMuxFysForTest(t); err != nil {
+		SkipConvey("Without a usable fuse mount we can't test what a job's mount leaves behind: "+err.Error(),
+			t, func() {})
+
+		return
+	}
+
 	Convey("When a job's output fails to upload, the cache muxfys keeps is deleted", t, func() {
 		remote := newFakeS3(true)
 		defer remote.srv.Close()

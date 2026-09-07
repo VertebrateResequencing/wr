@@ -32,6 +32,22 @@ jobs:
         docker version
         singularity --version
 
+    # muxfys mounts with allow_other, which fusermount refuses unless
+    # user_allow_other is enabled in /etc/fuse.conf. The runner image ships that
+    # line commented out, so without this step every muxfys-mounting test skips.
+    # It is modelled on the incantation wr applies to its own cloud instances, in
+    # cloud.sentinelInitScript, hardened here because a runner image is not ours
+    # to know: the sed is anchored, and it is deliberately tolerant of a file that
+    # is missing, already enabled, or has no user_allow_other line to uncomment.
+    - name: Allow fuse mounts with allow_other
+      run: |
+        sudo touch /etc/fuse.conf
+        sudo sed -i 's/^#[[:space:]]*user_allow_other/user_allow_other/' /etc/fuse.conf
+        grep -qE '^[[:space:]]*user_allow_other[[:space:]]*$' /etc/fuse.conf \
+          || printf '\nuser_allow_other\n' | sudo tee -a /etc/fuse.conf
+        sudo chmod o+r /etc/fuse.conf
+        cat /etc/fuse.conf
+
     - name: Run tests
       run: make test
 
