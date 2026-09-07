@@ -204,8 +204,11 @@ CacheDir is the local directory to store cached data. If this parameter is
 supplied, Cache is forced true and so doesn't need to be provided. If this
 parameter is not supplied but Cache is true, the directory will be a unique
 directory in CacheBase, which will get deleted on unmount, except when files
-failed to upload: the directory is then kept, and the unmount error says where
-it is.
+failed to upload: 'wr mount' then keeps that directory and tells you where it
+is, leaving the data for you to recover or discard. (Under 'wr add', if
+--cwd_matters has not been set and CacheBase has been left undefined, that kept
+directory is deleted for you instead, because your cmd will be run again from
+scratch; a cache in a location you chose is kept, just as here.)
 
 Write is a boolean, which if true, makes the mount point writeable. If you
 don't intend to write to a mount, just leave this parameter out. Note that when

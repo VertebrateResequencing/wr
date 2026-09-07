@@ -522,6 +522,120 @@ func TestCleanupKeepsADirThatAppearsDuringTheSweep(t *testing.T) {
 	})
 }
 
+func TestRmMuxfysCachesKeepsWhatItMustNotDelete(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// Job.rmMuxfysCaches is the one deletion that goes the other way round from
+	// cleanup: it destroys a cache that holds files, which every other sweep in
+	// this file keeps. Only a cache muxfys named for ITSELF, in a workspace wr
+	// made, is worthless once Unmount has failed to upload it. Everything else
+	// that can carry the same name is a directory the user chose the location
+	// of, or one wr never made, and deleting either loses data that has no
+	// other copy.
+	Convey("Given a Job whose workspace holds a directory named like a muxfys cache", t, func() {
+		cwd := t.TempDir()
+
+		Convey("rmMuxfysCaches deletes the one muxfys named for itself", func() {
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{
+				Mount:   testWSMount,
+				Targets: []MountTarget{{Path: testWSTargetPath, Cache: true, Write: true}},
+			}}}
+			_, workSpace, _ := realWorkSpace(job)
+
+			cacheDir := filepath.Join(workSpace, muxfysCachePrefix+"_cache456")
+			cached := writeFileIn(cacheDir, "unuploaded.txt")
+
+			So(job.rmMuxfysCaches(), ShouldBeNil)
+
+			soPathsGone(cached, cacheDir)
+			soPathsExist(workSpace, cwd)
+		})
+
+		// a MountTarget.CacheDir is a path the user gave, so muxfys never
+		// deletes it and there is nothing for wr to undo; it may also be shared
+		// between Jobs. protectCaches claims it as a workspace entry whatever it
+		// is called, which is what keeps one that happens to start with the
+		// muxfys prefix.
+		soNamedCacheDirSurvives := func(name string) {
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{
+				Mount: testWSMount,
+				Targets: []MountTarget{{
+					Path: testWSTargetPath, Cache: true, Write: true, CacheDir: name,
+				}},
+			}}}
+			_, workSpace, _ := realWorkSpace(job)
+
+			cached := writeFileIn(filepath.Join(workSpace, name), "unuploaded.txt")
+
+			So(job.rmMuxfysCaches(), ShouldBeNil)
+
+			soPathsExist(cached, workSpace, cwd)
+		}
+
+		Convey("but not a MountTarget.CacheDir the user named", func() {
+			soNamedCacheDirSurvives("mycache")
+		})
+
+		Convey("nor one the user named with the muxfys prefix", func() {
+			soNamedCacheDirSurvives(muxfysCachePrefix + "mine")
+		})
+
+		Convey("nor anything in the workspace of a Job that mounts nothing", func() {
+			// such a Job has no muxfys, so nothing in its workspace is a cache
+			// of muxfys's naming however it is spelled: applying the prefix rule
+			// to one anyway would let its own Cmd have its output deleted by
+			// creating ../.muxfyssquat.
+			job := &Job{Cwd: cwd, Cmd: testWSCmd}
+			actualCwd, workSpace, tmpDir := realWorkSpace(job)
+
+			squat := writeFileIn(filepath.Join(workSpace, muxfysCachePrefix+"squat"), "junk.txt")
+			output := writeFileIn(actualCwd, "out.txt")
+
+			So(job.rmMuxfysCaches(), ShouldBeNil)
+
+			soPathsExist(squat, output, tmpDir, cwd)
+		})
+
+		Convey("nor anything at all when a MountTarget.CacheDir IS the workspace", func() {
+			// the workspace root then holds a writable mount's un-uploaded
+			// output under names only the remote knows, so wr cannot tell which
+			// of its entries the upload failed on; see keptDirs.wholeWorkSpace.
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{
+				Mount: testWSMount,
+				Targets: []MountTarget{{
+					Path: testWSTargetPath, Cache: true, Write: true, CacheDir: ".",
+				}},
+			}}}
+			_, workSpace, _ := realWorkSpace(job)
+
+			cached := writeFileIn(filepath.Join(workSpace, muxfysCachePrefix+"_cache456"),
+				"unuploaded.txt")
+
+			So(job.rmMuxfysCaches(), ShouldBeNil)
+
+			soPathsExist(cached, workSpace, cwd)
+		})
+
+		Convey("nor anything of a CwdMatters Job's, which has no workspace at all", func() {
+			// mountBaseDirs gives such a Job a cache base of its own Cwd, so
+			// muxfys names its cache directly inside a directory of the user's
+			// that wr did not make and may not delete from.
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, CwdMatters: true, MountConfigs: MountConfigs{{
+				Mount:   testWSMount,
+				Targets: []MountTarget{{Path: testWSTargetPath, Cache: true, Write: true}},
+			}}}
+
+			cached := writeFileIn(filepath.Join(cwd, muxfysCachePrefix+"_cache456"), "unuploaded.txt")
+
+			So(job.rmMuxfysCaches(), ShouldBeNil)
+
+			soPathsExist(cached, cwd)
+		})
+	})
+}
+
 // realWorkSpace gives job the working directory mkHashedDir really creates for it
 // below job.Cwd, and returns that dir, the workspace holding it, and the tmp dir
 // wr makes beside it. The path wr builds is what proves a workspace is wr's own,

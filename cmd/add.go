@@ -252,9 +252,14 @@ mount point(s). The "cleanup" and "cleanup_all" behaviours, however, will ignore
 your mounted directories and any mount cache directories, so that nothing on
 your remote file systems gets deleted. Unmounting will get rid of them though,
 so you would still end up with a "cleaned" workspace - except for a cache
-directory unmounting deliberately leaves in place, either one you named
-yourself or one holding files that failed to upload, which will therefore be
-left behind along with the workspace holding it.
+directory you named yourself, which unmounting deliberately leaves in place, and
+which will therefore be left behind along with the workspace holding it.
+Unmounting also leaves behind a cache directory holding files that failed to
+upload. Where wr made the directory that cache sits in - that is, when
+cwd_matters is false and your mount leaves CacheBase undefined - wr deletes it
+for you, because your cmd will be run again from scratch and would write the
+files afresh. A cache anywhere else is in a location of your own choosing, and
+is left behind like the one you named yourself.
 
 "req_grp" is an arbitrary string that identifies the kind of commands you are
 adding, such that future commands you add with this same requirements group are
