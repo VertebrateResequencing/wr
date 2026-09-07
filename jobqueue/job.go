@@ -1272,6 +1272,47 @@ func containerMountsInvalidMessage(containerMounts, path string) string {
 		"can't be expressed in this format"
 }
 
+// addValidationError rejects a batch of jobs that can't be added, as a bad
+// request Error naming the problem.
+//
+// Client.Add* calls this before sending, because Server.replyError sends the
+// client only the bare ErrBadRequest and keeps the detail for the manager log:
+// checking client-side is the only way the reason reaches a `wr add` user. The
+// server checks again for any other client, so the check has to stay callable
+// from both sides.
+func addValidationError(jobs []*Job) (Error, bool) {
+	message := malformedAddJobMessage(jobs)
+	if message == "" {
+		return Error{}, false
+	}
+
+	return Error{Op: requestMethodAdd, Item: message, Err: ErrBadRequest}, true
+}
+
+// malformedAddJobMessage returns a message describing why the given jobs can't
+// be added, or "" if they can be.
+func malformedAddJobMessage(jobs []*Job) string {
+	for jobIndex, job := range jobs {
+		if job == nil {
+			return fmt.Sprintf("job at index %d is nil", jobIndex)
+		}
+
+		if dependencyIndex := slices.Index(job.Dependencies, nil); dependencyIndex >= 0 {
+			return fmt.Sprintf("jobs[%d].Dependencies[%d] is nil", jobIndex, dependencyIndex)
+		}
+
+		if behaviourIndex := slices.Index(job.Behaviours, nil); behaviourIndex >= 0 {
+			return fmt.Sprintf("jobs[%d].Behaviours[%d] is nil", jobIndex, behaviourIndex)
+		}
+
+		if message := job.containerMountsMessage(); message != "" {
+			return fmt.Sprintf("jobs[%d].%s", jobIndex, message)
+		}
+	}
+
+	return ""
+}
+
 // resolveCacheDir resolves a target's CacheDir relative to defaultCacheBase. An
 // unset CacheDir (muxfys then chooses its own dir inside the CacheBase) or an
 // absolute one is returned as given.
@@ -2163,7 +2204,17 @@ func (j *JobModifier) validationError() (Error, bool) {
 //
 // Every Job is checked before Modify changes any of them, so a rejected
 // modification leaves the whole batch untouched.
+//
+// Only a modification that could change whether the mounts are live is checked.
+// Nothing validates ContainerMounts on database recovery, so a Job persisted by
+// a pre-fix wr can already hold an image alongside comma-broken mounts, and an
+// unrelated `wr mod --priority 7` over its rep group must not be rejected
+// wholesale for a value it does not touch.
 func (j *JobModifier) jobsValidationError(jobs []*Job) (Error, bool) {
+	if !j.WithDockerSet && !j.WithSingularitySet && !j.ContainerMountsSet {
+		return Error{}, false
+	}
+
 	for _, job := range jobs {
 		if message := j.modifiedContainerMountsMessage(job); message != "" {
 			return modifyValidationError(message)
@@ -2179,6 +2230,10 @@ func (j *JobModifier) jobsValidationError(jobs []*Job) (Error, bool) {
 //
 // It uses overrideKeyContainer to preview the modification, the same way
 // modifiedKey does, so that what would be applied is worked out in one place.
+// The locking is not the same: this takes job's read lock itself, so the caller
+// must hold neither of job's locks (jobsValidationError, running before the
+// modifyJob loop, holds neither), while modifiedKey requires the caller's write
+// lock.
 func (j *JobModifier) modifiedContainerMountsMessage(job *Job) string {
 	job.RLock()
 	defer job.RUnlock()

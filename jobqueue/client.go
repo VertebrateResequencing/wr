@@ -1197,6 +1197,10 @@ func (c *Client) AddWithWarnings(
 	envVars []string,
 	ignoreComplete bool,
 ) (added int, existed int, warnings AddWarnings, err error) {
+	if validationErr, invalid := addValidationError(jobs); invalid {
+		return 0, 0, AddWarnings{}, validationErr
+	}
+
 	compressed, err := c.CompressEnv(envVars)
 	if err != nil {
 		return 0, 0, AddWarnings{}, err
@@ -1226,6 +1230,10 @@ func (c *Client) AddAndReturnIDsWithWarnings(
 	envVars []string,
 	ignoreComplete bool,
 ) (ids []string, warnings AddWarnings, err error) {
+	if validationErr, invalid := addValidationError(jobs); invalid {
+		return nil, AddWarnings{}, validationErr
+	}
+
 	compressed, err := c.CompressEnv(envVars)
 	if err != nil {
 		return nil, AddWarnings{}, err

@@ -47,7 +47,14 @@ import (
 	"go.nanomsg.org/mangos/v3"
 )
 
-const modifierValidationRepGroup = "modifier-validation"
+const (
+	modifierValidationRepGroup = "modifier-validation"
+
+	// modifierValidationDepGroup is the dep group every validation job waits
+	// on. Nothing is ever a member of it, so an add of these jobs warns that it
+	// has never been seen.
+	modifierValidationDepGroup = "original-dependency"
+)
 
 func TestClientModifyRejectsCommaInContainerMountPath(t *testing.T) {
 	if runnermode || servermode {
@@ -302,6 +309,42 @@ func TestServerRejectsModifyThatMakesContainerMountsLive(t *testing.T) {
 			So(harness.sock.serverErr, ShouldBeNil)
 			So(modified, ShouldHaveLength, len(harness.jobs))
 		})
+
+		Convey("While a modification that can't make the mounts live is accepted even for a job "+
+			"that already has an image and broken mounts", func() {
+			preFix := harness.addUnvalidatedJob(containerMountsWithComma, containerMountsTestImage)
+
+			modifier = NewJobModifer()
+			modifier.SetPriority(7)
+
+			modified, err = harness.client.Modify(jobsToJobEssenses([]*Job{preFix}), modifier)
+
+			So(err, ShouldBeNil)
+			So(harness.sock.serverErr, ShouldBeNil)
+			So(modified, ShouldHaveLength, 1)
+
+			queued, errg := harness.client.GetByRepGroup(modifierValidationRepGroup, false, 0, "", false, false)
+			So(errg, ShouldBeNil)
+
+			index := slices.IndexFunc(queued, func(job *Job) bool { return job.Cmd == preFix.Cmd })
+			So(index, ShouldBeGreaterThanOrEqualTo, 0)
+			So(queued[index].Priority, ShouldEqual, 7)
+			So(queued[index].WithDocker, ShouldEqual, containerMountsTestImage)
+			So(queued[index].ContainerMounts, ShouldEqual, containerMountsWithComma)
+
+			Convey("But one that could still is rejected", func() {
+				modifier = NewJobModifer()
+				modifier.SetWithSingularity(containerMountsTestImage + ".sif")
+
+				modified, err = harness.client.Modify(jobsToJobEssenses([]*Job{preFix}), modifier)
+
+				var jqErr Error
+
+				So(modified, ShouldBeNil)
+				So(errors.As(err, &jqErr), ShouldBeTrue)
+				So(jqErr.Err, ShouldEqual, ErrBadRequest)
+			})
+		})
 	})
 }
 
@@ -381,7 +424,7 @@ func validationJobsWithMounts(containerMounts ...string) []*Job {
 				Other: map[string]string{"original": strconv.Itoa(i)},
 			},
 			Priority: 2, DepGroups: []string{"original-index"},
-			Dependencies: Dependencies{NewDepGroupDependency("original-dependency")},
+			Dependencies: Dependencies{NewDepGroupDependency(modifierValidationDepGroup)},
 			Behaviours: Behaviours{
 				&Behaviour{When: OnExit, Do: Nothing},
 			},
@@ -403,6 +446,34 @@ type modifierValidationHarness struct {
 func (h *modifierValidationHarness) close() {
 	h.cancel()
 	So(h.db.close(context.Background()), ShouldBeNil)
+}
+
+// addUnvalidatedJob queues a job with the given ContainerMounts and docker image
+// through Server.createJobs, which is what handleAdd calls after
+// malformedAddJobMessage has passed, so no add validation sees it. That models a
+// Job persisted by a pre-fix wr: database recovery puts such a Job back in the
+// queue without checking ContainerMounts at all, so a modification has to cope
+// with an image and broken mounts already being live together.
+func (h *modifierValidationHarness) addUnvalidatedJob(containerMounts, image string) *Job {
+	job := validationJobsWithMounts(containerMounts)[0]
+	job.Cmd = "echo pre-fix " + containerMounts
+	job.WithDocker = image
+
+	envkey, err := h.db.storeEnv([]byte("MODIFIER_VALIDATION=1"))
+	So(err, ShouldBeNil)
+
+	added, dups, complete, warnings, srerr, err := h.server.createJobs(
+		context.Background(), []*Job{job}, envkey, false)
+	So(err, ShouldBeNil)
+	So(srerr, ShouldBeBlank)
+	So(added, ShouldEqual, 1)
+	So(dups, ShouldEqual, 0)
+	So(complete, ShouldEqual, 0)
+	So(warnings, ShouldResemble, AddWarnings{
+		NeverSeenDepGroups: []string{modifierValidationDepGroup},
+	})
+
+	return job
 }
 
 func (h *modifierValidationHarness) rawModify(modifier *JobModifier) (panicValue any, err error) {
