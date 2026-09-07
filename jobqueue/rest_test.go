@@ -458,6 +458,101 @@ func TestRESTJobModificationEndpoint(t *testing.T) {
 	})
 }
 
+func TestRESTAddContainerMountsValidation(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+	config, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(true)
+
+	const restCMRepGroup = "rest-container-mounts"
+
+	Convey("Once the REST add server is up", t, func() {
+		server, _, token, errs := serve(ctx, serverConfig)
+		So(errs, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		handler := restJobs(ctx, server)
+		bearer := "Bearer " + string(token)
+
+		postJobs := func(jvjs []*JobViaJSON) (int, string) {
+			jsonValue, errm := json.Marshal(jvjs)
+			So(errm, ShouldBeNil)
+
+			w := httptest.NewRecorder()
+			r := httptest.NewRequestWithContext(ctx, http.MethodPost, restJobsEndpoint, bytes.NewReader(jsonValue))
+			r.Header.Set("Authorization", bearer)
+			r.Header.Set("Content-Type", "application/json")
+
+			handler(w, r)
+
+			resp := w.Result()
+			defer resp.Body.Close()
+
+			responseData, errr := io.ReadAll(resp.Body)
+			So(errr, ShouldBeNil)
+
+			return resp.StatusCode, string(responseData)
+		}
+
+		Convey("POST rejects a container_mounts path containing a comma", func() {
+			status, body := postJobs([]*JobViaJSON{{
+				Cmd: "echo rest comma mount", Cwd: testCwd, RepGrp: restCMRepGroup,
+				WithDocker: containerMountsTestImage, ContainerMounts: containerMountsWithComma,
+			}})
+
+			So(status, ShouldEqual, http.StatusBadRequest)
+			So(body, ShouldContainSubstring, "there was a problem with your job: jobs[0].ContainerMounts "+
+				`"`+containerMountsWithComma+`" is invalid: "1" is not an absolute path`)
+			So(body, ShouldContainSubstring,
+				"commas separate mounts, so a mount path containing a comma can't be expressed in this format")
+
+			jobs, errg := jq.GetByRepGroup(restCMRepGroup, false, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(jobs, ShouldBeEmpty)
+		})
+
+		Convey("POST names the index of the rejected job", func() {
+			status, body := postJobs([]*JobViaJSON{{
+				Cmd: "echo rest good mount first", Cwd: testCwd, RepGrp: restCMRepGroup,
+				WithDocker: containerMountsTestImage, ContainerMounts: containerMountsWellFormed,
+			}, {
+				Cmd: "echo rest comma mount second", Cwd: testCwd, RepGrp: restCMRepGroup,
+				WithDocker: containerMountsTestImage, ContainerMounts: containerMountsWithComma,
+			}})
+
+			So(status, ShouldEqual, http.StatusBadRequest)
+			So(body, ShouldContainSubstring, "there was a problem with your job: jobs[1].ContainerMounts "+
+				`"`+containerMountsWithComma+`" is invalid: "1" is not an absolute path`)
+
+			jobs, errg := jq.GetByRepGroup(restCMRepGroup, false, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(jobs, ShouldBeEmpty)
+		})
+
+		Convey("POST accepts well-formed container_mounts", func() {
+			status, _ := postJobs([]*JobViaJSON{{
+				Cmd: "echo rest good mount", Cwd: testCwd, RepGrp: restCMRepGroup,
+				WithDocker: containerMountsTestImage, ContainerMounts: containerMountsWellFormed,
+			}})
+
+			So(status, ShouldEqual, http.StatusCreated)
+
+			jobs, errg := jq.GetByRepGroup(restCMRepGroup, false, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].ContainerMounts, ShouldEqual, containerMountsWellFormed)
+		})
+	})
+}
+
 func TestRESTJobModificationValidation(t *testing.T) {
 	if runnermode || servermode {
 		return

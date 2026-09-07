@@ -205,6 +205,18 @@ func (j *Job) dropImpossibleCleanups() {
 	j.Behaviours = j.Behaviours.withoutCleanups()
 }
 
+// containerMountsMessage returns a message describing why this Job's
+// ContainerMounts cannot be used, or "" if it can be. ContainerMounts is
+// ignored unless a container image is in use, so an unused value is never
+// rejected.
+func (j *Job) containerMountsMessage() string {
+	if j.WithDocker == "" && j.WithSingularity == "" {
+		return ""
+	}
+
+	return containerMountsMessage(j.ContainerMounts)
+}
+
 // cwdLeaf returns the part of cwd below cwdBase, prefixed with "/", for display
 // alongside cwdBase as a Job's working directory. It is the single projection
 // used for both a stored Job's JStatus and a live Job's JobUpdate, so that
@@ -361,6 +373,24 @@ func (j *Job) lostForLocked() time.Duration {
 	}
 
 	return time.Since(j.EndTime)
+}
+
+// nilEntryMessage returns a message naming the first nil entry in an explicitly
+// set pointer collection, or "" if there isn't one.
+func (j *JobModifier) nilEntryMessage() string {
+	if j.DependenciesSet {
+		if index := slices.Index(j.Dependencies, nil); index >= 0 {
+			return fmt.Sprintf("modifier.Dependencies[%d] is nil", index)
+		}
+	}
+
+	if j.BehavioursSet {
+		if index := slices.Index(j.Behaviours, nil); index >= 0 {
+			return fmt.Sprintf("modifier.Behaviours[%d] is nil", index)
+		}
+	}
+
+	return ""
 }
 
 // mergeBehaviours returns existing with, for each trigger that modifications
@@ -1196,6 +1226,91 @@ func (ms *mountState) buildRemoteConfigs(mc MountConfig, defaultCacheBase string
 	}
 
 	return rcs, nil
+}
+
+// containerMountsMessage returns a message describing why the given
+// ContainerMounts value cannot be used, or "" if it can be.
+//
+// Commas separate mounts, which is also how docker separates the options of its
+// own --mount argument, so a mount path containing a comma gets split in to 2
+// malformed mounts before the container runtime ever sees it. Quoting can't fix
+// that, but the detectable symptom is a resulting path that isn't absolute,
+// which a bind mount path has to be anyway.
+func containerMountsMessage(containerMounts string) string {
+	if containerMounts == "" {
+		return ""
+	}
+
+	for _, spec := range strings.Split(containerMounts, ",") {
+		local, inContainer := container.MountSpecPaths(spec)
+
+		for _, path := range []string{local, inContainer} {
+			if !filepath.IsAbs(path) {
+				return containerMountsInvalidMessage(containerMounts, path)
+			}
+		}
+	}
+
+	return ""
+}
+
+// containerMountsInvalidMessage describes a ContainerMounts value rejected
+// because path isn't absolute.
+//
+// The comma advice is only appended when the value actually contains a comma,
+// where it names the likely cause. For a value like "data:/data" the user simply
+// gave a relative path, and the advice would be irrelevant and confusing.
+func containerMountsInvalidMessage(containerMounts, path string) string {
+	message := fmt.Sprintf("ContainerMounts %q is invalid: %q is not an absolute path",
+		containerMounts, path)
+
+	if !strings.Contains(containerMounts, ",") {
+		return message
+	}
+
+	return message + "; commas separate mounts, so a mount path containing a comma " +
+		"can't be expressed in this format"
+}
+
+// addValidationError rejects a batch of jobs that can't be added, as a bad
+// request Error naming the problem.
+//
+// Client.Add* calls this before sending, because Server.replyError sends the
+// client only the bare ErrBadRequest and keeps the detail for the manager log:
+// checking client-side is the only way the reason reaches a `wr add` user. The
+// server checks again for any other client, so the check has to stay callable
+// from both sides.
+func addValidationError(jobs []*Job) (Error, bool) {
+	message := malformedAddJobMessage(jobs)
+	if message == "" {
+		return Error{}, false
+	}
+
+	return Error{Op: requestMethodAdd, Item: message, Err: ErrBadRequest}, true
+}
+
+// malformedAddJobMessage returns a message describing why the given jobs can't
+// be added, or "" if they can be.
+func malformedAddJobMessage(jobs []*Job) string {
+	for jobIndex, job := range jobs {
+		if job == nil {
+			return fmt.Sprintf("job at index %d is nil", jobIndex)
+		}
+
+		if dependencyIndex := slices.Index(job.Dependencies, nil); dependencyIndex >= 0 {
+			return fmt.Sprintf("jobs[%d].Dependencies[%d] is nil", jobIndex, dependencyIndex)
+		}
+
+		if behaviourIndex := slices.Index(job.Behaviours, nil); behaviourIndex >= 0 {
+			return fmt.Sprintf("jobs[%d].Behaviours[%d] is nil", jobIndex, behaviourIndex)
+		}
+
+		if message := job.containerMountsMessage(); message != "" {
+			return fmt.Sprintf("jobs[%d].%s", jobIndex, message)
+		}
+	}
+
+	return ""
 }
 
 // resolveCacheDir resolves a target's CacheDir relative to defaultCacheBase. An
@@ -2070,10 +2185,78 @@ func (j *JobModifier) SetContainerMounts(newVal string) {
 	j.ContainerMountsSet = true
 }
 
-// validationError rejects nil entries in explicitly set pointer collections.
+// validationError rejects nil entries in explicitly set pointer collections and
+// an explicitly set ContainerMounts value that can't be used. It sees only the
+// modifier itself, not the Jobs it will be applied to; jobsValidationError
+// covers those.
 func (j *JobModifier) validationError() (Error, bool) {
-	message := j.validationMessage()
+	return modifyValidationError(j.validationMessage())
+}
 
+// jobsValidationError rejects a modification that would leave any of jobs with
+// container mounts it can't use.
+//
+// A Job's ContainerMounts is ignored unless it has a container image, so a
+// malformed value is accepted at add time when there is no image. Setting an
+// image later makes those mounts live, which is why each Job has to be checked
+// as it would be after the modification, and not just the modifier's own
+// explicitly set values.
+//
+// Every Job is checked before Modify changes any of them, so a rejected
+// modification leaves the whole batch untouched.
+//
+// Only a modification that could change whether the mounts are live is checked.
+// Nothing validates ContainerMounts on database recovery, so a Job persisted by
+// a pre-fix wr can already hold an image alongside comma-broken mounts, and an
+// unrelated `wr mod --priority 7` over its rep group must not be rejected
+// wholesale for a value it does not touch.
+func (j *JobModifier) jobsValidationError(jobs []*Job) (Error, bool) {
+	if !j.WithDockerSet && !j.WithSingularitySet && !j.ContainerMountsSet {
+		return Error{}, false
+	}
+
+	for _, job := range jobs {
+		if message := j.modifiedContainerMountsMessage(job); message != "" {
+			return modifyValidationError(message)
+		}
+	}
+
+	return Error{}, false
+}
+
+// modifiedContainerMountsMessage returns a message, naming job, describing why
+// the container mounts job would have after modification can't be used, or "" if
+// they can be.
+//
+// It uses overrideKeyContainer to preview the modification, the same way
+// modifiedKey does, so that what would be applied is worked out in one place.
+// The locking is not the same: this takes job's read lock itself, so the caller
+// must hold neither of job's locks (jobsValidationError, running before the
+// modifyJob loop, holds neither), while modifiedKey requires the caller's write
+// lock.
+func (j *JobModifier) modifiedContainerMountsMessage(job *Job) string {
+	job.RLock()
+	defer job.RUnlock()
+
+	newJob := &Job{
+		WithDocker:      job.WithDocker,
+		WithSingularity: job.WithSingularity,
+		ContainerMounts: job.ContainerMounts,
+	}
+
+	j.overrideKeyContainer(newJob)
+
+	message := newJob.containerMountsMessage()
+	if message == "" {
+		return ""
+	}
+
+	return fmt.Sprintf("job %q: %s", job.Cmd, message)
+}
+
+// modifyValidationError turns a non-empty modify validation message in to a bad
+// request Error.
+func modifyValidationError(message string) (Error, bool) {
 	if message == "" {
 		return Error{}, false
 	}
@@ -2086,16 +2269,19 @@ func (j *JobModifier) validationMessage() string {
 		return "modifier is nil"
 	}
 
-	if j.DependenciesSet {
-		if index := slices.Index(j.Dependencies, nil); index >= 0 {
-			return fmt.Sprintf("modifier.Dependencies[%d] is nil", index)
-		}
+	if message := j.nilEntryMessage(); message != "" {
+		return message
 	}
 
-	if j.BehavioursSet {
-		if index := slices.Index(j.Behaviours, nil); index >= 0 {
-			return fmt.Sprintf("modifier.Behaviours[%d] is nil", index)
-		}
+	// unlike a Job, whose ContainerMounts may be a value it never uses, a
+	// modifier only carries the field when the user explicitly asked to set
+	// it, and it can't see the images of the Jobs it will be applied to.
+	if !j.ContainerMountsSet {
+		return ""
+	}
+
+	if message := containerMountsMessage(j.ContainerMounts); message != "" {
+		return "modifier." + message
 	}
 
 	return ""
@@ -2114,6 +2300,10 @@ func (j *JobModifier) validationMessage() string {
 // Returns a REVERSE mapping of new to old Job keys.
 func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, error) {
 	if validationErr, invalid := j.validationError(); invalid {
+		return nil, validationErr
+	}
+
+	if validationErr, invalid := j.jobsValidationError(jobs); invalid {
 		return nil, validationErr
 	}
 

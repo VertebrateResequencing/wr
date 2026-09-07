@@ -38,11 +38,22 @@ import (
 	"strings"
 
 	"github.com/VertebrateResequencing/wr/clog"
+	"github.com/kballard/go-shellquote"
 )
 
 // dockerMountParts is the number of parts we expect to see after splitting
 // mount args on a colon.
 const dockerMountParts = 2
+
+// workDirMountArgs bind mounts the current working directory inside the
+// container and makes it the workdir.
+//
+// $PWD stays a shell expansion so that the shell we build the command line for
+// resolves it at run time, which rules out shellquote.Join(): that would emit
+// '$PWD' and kill the expansion. The double quotes keep the expansion while
+// still making each of these a single argument when the working directory
+// contains a space.
+const workDirMountArgs = ` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD"`
 
 // PrepareCmdFile creates a temporary file containing the given command and
 // returns its path, as well as a method you can defer that will delete the
@@ -110,7 +121,7 @@ func DockerRunCmd(image, cmdFile, name string, mounts, env []string) string {
 	envArgs := dockerEnv(env)
 
 	return fmt.Sprintf("cat %s | docker run --rm --name %s%s%s -i %s /bin/sh",
-		cmdFile, name, mountArgs, envArgs, image)
+		shellquote.Join(cmdFile), shellquote.Join(name), mountArgs, envArgs, shellquote.Join(image))
 }
 
 // dockerMounts takes a list of "/local/path[:/inside/container/path]" values
@@ -118,31 +129,43 @@ func DockerRunCmd(image, cmdFile, name string, mounts, env []string) string {
 //
 // It always returns a mount for $PWD and sets -w to that as well.
 func dockerMounts(mounts []string) string {
-	args := " -w $PWD --mount type=bind,source=$PWD,target=$PWD"
+	var args strings.Builder
 
-	var argsSb121 strings.Builder
+	args.WriteString(workDirMountArgs)
 
 	for _, spec := range mounts {
-		parts := strings.Split(spec, ":")
-		out := parts[0]
-		in := parts[0]
+		out, in := MountSpecPaths(spec)
 
-		if len(parts) == dockerMountParts {
-			in = parts[1]
-		}
-
-		fmt.Fprintf(&argsSb121, " --mount type=bind,source=%s,target=%s", out, in)
+		fmt.Fprintf(&args, " --mount %s", shellquote.Join("type=bind,source="+out+",target="+in))
 	}
 
-	args += argsSb121.String()
+	return args.String()
+}
 
-	return args
+// MountSpecPaths splits a mount specification in the form
+// "/local/path[:/inside/container/path]" in to its local path and its path
+// inside the container.
+//
+// The 2 are the same when the spec has no colon, and - preserving the behaviour
+// of the code this was extracted from - also when it has 2 or more, so "/a:/b:ro"
+// gives ("/a", "/a") rather than ("/a", "/b"). One consequence is that
+// jobqueue's containerMountsMessage then checks the local path twice and never
+// inspects the in-container one. What a 3-part spec should mean is a user-facing
+// format question, so the behaviour is left as it was.
+func MountSpecPaths(spec string) (local, inContainer string) {
+	parts := strings.Split(spec, ":")
+
+	if len(parts) == dockerMountParts {
+		return parts[0], parts[1]
+	}
+
+	return parts[0], parts[0]
 }
 
 // dockerEnv takes a list of environment variable names and converts them in to
 // a series of `docker run -e` args.
 func dockerEnv(names []string) string {
-	return listToPrefixedString(names, " -e ")
+	return listToPrefixedString(shellQuoteEach(names), " -e ")
 }
 
 // listToPrefixedString creates a single string comprising vals concatenated
@@ -174,11 +197,24 @@ func listToPrefixedString(vals []string, prefix string) string {
 func SingularityRunCmd(image, cmdFile string, mounts []string) string {
 	mountArgs := singularityMounts(mounts)
 
-	return fmt.Sprintf("cat %s | singularity shell%s %s", cmdFile, mountArgs, image)
+	return fmt.Sprintf("cat %s | singularity shell%s %s",
+		shellquote.Join(cmdFile), mountArgs, shellquote.Join(image))
 }
 
 // singularityMounts takes a list of "/local/path[:/inside/container/path]"
 // values and converts them in to a series of `singularity shell -B` args.
 func singularityMounts(mounts []string) string {
-	return listToPrefixedString(mounts, " -B ")
+	return listToPrefixedString(shellQuoteEach(mounts), " -B ")
+}
+
+// shellQuoteEach shell quotes each of the given values, so that each stays a
+// single word once the command line built from them is executed by a shell.
+func shellQuoteEach(vals []string) []string {
+	quoted := make([]string, len(vals))
+
+	for i, val := range vals {
+		quoted[i] = shellquote.Join(val)
+	}
+
+	return quoted
 }

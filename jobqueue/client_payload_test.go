@@ -55,6 +55,32 @@ import (
 var errCaptureSocketUnsupported = errors.New("unsupported capture socket operation")
 
 const (
+	// payloadContainerMountsGroup is the rep and req group of the jobs the
+	// container_mounts validation test adds.
+	payloadContainerMountsGroup = "payload-container-mounts"
+
+	// containerMountsTestImage is a container image name, needed because
+	// ContainerMounts is only validated when an image is in use.
+	containerMountsTestImage = "alpine"
+
+	// containerMountsWithComma has a comma inside its local path, so splitting
+	// it on the comma yields "1" as a local path.
+	containerMountsWithComma = "/data/set,1:/data"
+
+	// containerMountsWellFormed has 2 mounts, one of them without an
+	// in-container path.
+	containerMountsWellFormed = "/data/set:/data,/other"
+
+	// containerMountsRelative is a single invalid mount with no comma in it, so
+	// the comma advice would be irrelevant to it.
+	containerMountsRelative = "data:/data"
+
+	// nilBehaviourItem is the item a malformed add names when the second
+	// behaviour of the second job is nil.
+	nilBehaviourItem = "jobs[1].Behaviours[1] is nil"
+)
+
+const (
 	liveExecuteTouchInterval      = 100 * time.Millisecond
 	liveExecuteRetryWait          = 10 * time.Millisecond
 	liveExecuteRetryTime          = time.Second
@@ -722,13 +748,28 @@ func TestServerRejectsAddWithNilDependency(t *testing.T) {
 			var jqErr Error
 
 			So(errors.As(err, &jqErr), ShouldBeTrue)
-			So(jqErr, ShouldResemble, Error{Op: requestMethodAdd, Err: ErrBadRequest})
-			So(sock.serverErr, ShouldNotBeNil)
-			So(sock.serverErr.Error(), ShouldContainSubstring, "jobs[1].Dependencies[1] is nil")
+			So(jqErr, ShouldResemble, Error{
+				Op: requestMethodAdd, Item: "jobs[1].Dependencies[1] is nil", Err: ErrBadRequest,
+			})
+			So(sock.sent, ShouldBeNil)
 			So(server.q.Stats().Items, ShouldEqual, 0)
 			So(valid.EnvKey, ShouldBeBlank)
 			So(malformed.EnvKey, ShouldBeBlank)
 		}
+
+		var encoded []byte
+
+		enc := codec.NewEncoderBytes(&encoded, ch)
+		err = enc.Encode(&clientRequest{
+			Method: requestMethodAdd, Token: token, Env: []byte("encoded environment"), Jobs: jobs,
+		})
+		So(err, ShouldBeNil)
+
+		err = server.handleRequest(ctx, &mangos.Message{Body: encoded})
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "jobs[1].Dependencies[1] is nil")
+		So(sock.response().Err, ShouldEqual, ErrBadRequest)
+		So(server.q.Stats().Items, ShouldEqual, 0)
 
 		_, _, err = client.Add(jobs, env, false)
 		assertRejected(err)
@@ -770,6 +811,302 @@ func TestServerRejectsAddWithNilDependency(t *testing.T) {
 		So(existed, ShouldEqual, 0)
 		So(server.q.Stats().Items, ShouldEqual, 1)
 	})
+}
+
+func TestServerRejectsAddWithCommaInContainerMountPath(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A container_mounts path containing a comma is rejected at the add boundary", t, func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		tmpDir := t.TempDir()
+		testDB, _, err := initDB(ctx, filepath.Join(tmpDir, "queue.db"),
+			filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false, false)
+
+		So(err, ShouldBeNil)
+
+		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+		ch := new(codec.BincHandle)
+		token := bytes.Repeat([]byte("x"), tokenLength)
+		sock := &captureSocket{ch: ch}
+		server := &Server{
+			ch: ch, sock: sock, token: token, db: testDB,
+			q: queue.New(ctx, payloadContainerMountsGroup), rpl: newRGToKeys(),
+			depGroups: newDepGroupMembers(), up: true,
+		}
+		sock.server = server
+
+		id, err := uuid.NewV4()
+		So(err, ShouldBeNil)
+
+		client := &Client{ch: ch, clientid: id, sock: sock, token: token}
+		env := []string{"PAYLOAD_CONTAINER_MOUNTS=1"}
+
+		assertRejected := func(err error) {
+			var jqErr Error
+
+			So(errors.As(err, &jqErr), ShouldBeTrue)
+			So(jqErr, ShouldResemble, Error{
+				Op: requestMethodAdd,
+				Item: fmt.Sprintf("jobs[0].ContainerMounts %q is invalid: %q is not an absolute path; "+
+					"commas separate mounts, so a mount path containing a comma "+
+					"can't be expressed in this format", containerMountsWithComma, "1"),
+				Err: ErrBadRequest,
+			})
+			So(sock.sent, ShouldBeNil)
+			So(server.q.Stats().Items, ShouldEqual, 0)
+		}
+
+		dockerJob := containerMountsJob(containerMountsWithComma, containerMountsTestImage, "")
+		singularityJob := containerMountsJob(containerMountsWithComma, "", containerMountsTestImage+".sif")
+
+		_, _, err = client.Add([]*Job{dockerJob}, env, false)
+		assertRejected(err)
+
+		_, _, err = client.Add([]*Job{singularityJob}, env, false)
+		assertRejected(err)
+
+		Convey("And a client that skips the client-side check is still rejected by the server", func() {
+			var encoded []byte
+
+			enc := codec.NewEncoderBytes(&encoded, ch)
+			err = enc.Encode(&clientRequest{
+				Method: requestMethodAdd, Token: token, Env: []byte("encoded environment"),
+				Jobs: []*Job{dockerJob},
+			})
+			So(err, ShouldBeNil)
+
+			err = server.handleRequest(ctx, &mangos.Message{Body: encoded})
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring,
+				fmt.Sprintf("jobs[0].ContainerMounts %q is invalid: %q is not an absolute path",
+					containerMountsWithComma, "1"))
+			So(sock.response().Err, ShouldEqual, ErrBadRequest)
+			So(server.q.Stats().Items, ShouldEqual, 0)
+		})
+
+		Convey("While a relative mount path with no comma is rejected without the comma advice", func() {
+			_, _, err = client.Add([]*Job{
+				containerMountsJob(containerMountsRelative, containerMountsTestImage, ""),
+			}, env, false)
+
+			var jqErr Error
+
+			So(errors.As(err, &jqErr), ShouldBeTrue)
+			So(jqErr.Err, ShouldEqual, ErrBadRequest)
+			So(jqErr.Item, ShouldContainSubstring,
+				fmt.Sprintf("jobs[0].ContainerMounts %q is invalid: %q is not an absolute path",
+					containerMountsRelative, "data"))
+			So(jqErr.Item, ShouldNotContainSubstring, "commas separate mounts")
+			So(sock.sent, ShouldBeNil)
+			So(server.q.Stats().Items, ShouldEqual, 0)
+		})
+
+		Convey("While well-formed mounts, and a value no container will use, are accepted", func() {
+			added, existed, err := client.Add([]*Job{
+				containerMountsJob(containerMountsWellFormed, containerMountsTestImage, ""),
+				containerMountsJob(containerMountsWithComma, "", ""),
+			}, env, false)
+
+			So(err, ShouldBeNil)
+			So(sock.serverErr, ShouldBeNil)
+			So(added, ShouldEqual, 2)
+			So(existed, ShouldEqual, 0)
+			So(server.q.Stats().Items, ShouldEqual, 2)
+		})
+	})
+}
+
+func containerMountsJob(mounts, docker, singularity string) *Job {
+	return &Job{
+		Cmd:             "echo " + mounts + " " + docker + singularity,
+		RepGroup:        payloadContainerMountsGroup,
+		ReqGroup:        payloadContainerMountsGroup,
+		Requirements:    &scheduler.Requirements{RAM: 100, Time: time.Second, Cores: 1, Disk: 1},
+		ContainerMounts: mounts,
+		WithDocker:      docker,
+		WithSingularity: singularity,
+	}
+}
+
+// TestClientAddErrorNamesTheProblem covers what a `wr add` user actually sees.
+// Server.replyError sends the client the bare ErrBadRequest and keeps the
+// detailed reason for the manager log, so a server-side rejection used to tell
+// the user only "bad request (missing arguments?)" - which defeats the point of
+// naming the offending value at all. Client.Add* therefore makes the same checks
+// before sending, the way Client.Modify already did.
+func TestClientAddErrorNamesTheProblem(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A client Add error names the problem rather than just a bad request", t, func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		tmpDir := t.TempDir()
+		testDB, _, err := initDB(ctx, filepath.Join(tmpDir, "queue.db"),
+			filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+		ch := new(codec.BincHandle)
+		token := bytes.Repeat([]byte("x"), tokenLength)
+		sock := &captureSocket{ch: ch}
+		server := &Server{
+			ch: ch, sock: sock, token: token, db: testDB,
+			q: queue.New(ctx, payloadContainerMountsGroup), rpl: newRGToKeys(),
+			depGroups: newDepGroupMembers(), up: true,
+		}
+		sock.server = server
+
+		id, err := uuid.NewV4()
+		So(err, ShouldBeNil)
+
+		client := &Client{ch: ch, clientid: id, sock: sock, token: token}
+		env := []string{"PAYLOAD_ADD_ERROR=1"}
+		valid := containerMountsJob(containerMountsWellFormed, containerMountsTestImage, "")
+
+		for _, test := range malformedAddTests() {
+			for _, variant := range clientAddVariants(client, env) {
+				Convey(test.name+" via "+variant.name, func() {
+					err = variant.add(test.jobs(valid))
+
+					var jqErr Error
+
+					So(errors.As(err, &jqErr), ShouldBeTrue)
+					So(jqErr, ShouldResemble, Error{
+						Op: requestMethodAdd, Item: test.item, Err: ErrBadRequest,
+					})
+					So(err.Error(), ShouldContainSubstring, test.item)
+					So(sock.sent, ShouldBeNil)
+					So(server.q.Stats().Items, ShouldEqual, 0)
+					So(valid.EnvKey, ShouldBeBlank)
+				})
+			}
+		}
+
+		Convey("While a well-formed batch is sent and queued", func() {
+			added, existed, errAdd := client.Add([]*Job{valid}, env, false)
+
+			So(errAdd, ShouldBeNil)
+			So(sock.serverErr, ShouldBeNil)
+			So(added, ShouldEqual, 1)
+			So(existed, ShouldEqual, 0)
+			So(server.q.Stats().Items, ShouldEqual, 1)
+		})
+	})
+}
+
+// malformedAddTests returns one case per check malformedAddJobMessage makes,
+// each with the exact Error.Item the caller must be given. jobs takes the valid
+// job the malformed one is batched with, so that a rejection can be seen to
+// discard the whole batch.
+func malformedAddTests() []struct {
+	name string
+	item string
+	jobs func(valid *Job) []*Job
+} {
+	return []struct {
+		name string
+		item string
+		jobs func(valid *Job) []*Job
+	}{
+		{
+			name: "a comma in a container mount path",
+			item: fmt.Sprintf("jobs[1].ContainerMounts %q is invalid: %q is not an absolute path; "+
+				"commas separate mounts, so a mount path containing a comma can't be expressed in this format",
+				containerMountsWithComma, "1"),
+			jobs: func(valid *Job) []*Job {
+				return []*Job{valid, containerMountsJob(containerMountsWithComma, containerMountsTestImage, "")}
+			},
+		},
+		{
+			name: "a relative container mount path",
+			item: fmt.Sprintf("jobs[1].ContainerMounts %q is invalid: %q is not an absolute path",
+				containerMountsRelative, "data"),
+			jobs: func(valid *Job) []*Job {
+				return []*Job{valid, containerMountsJob(containerMountsRelative, containerMountsTestImage, "")}
+			},
+		},
+		{
+			name: "a nil job",
+			item: "job at index 1 is nil",
+			jobs: func(valid *Job) []*Job { return []*Job{valid, nil} },
+		},
+		{
+			name: "a nil dependency",
+			item: "jobs[1].Dependencies[1] is nil",
+			jobs: func(valid *Job) []*Job {
+				malformed := containerMountsJob(containerMountsWellFormed, containerMountsTestImage, "")
+				malformed.Cmd = "echo nil dependency"
+				malformed.Dependencies = Dependencies{&Dependency{}, nil}
+
+				return []*Job{valid, malformed}
+			},
+		},
+		{
+			name: "a nil behaviour",
+			item: nilBehaviourItem,
+			jobs: func(valid *Job) []*Job {
+				malformed := containerMountsJob(containerMountsWellFormed, containerMountsTestImage, "")
+				malformed.Cmd = "echo nil behaviour"
+				malformed.Behaviours = Behaviours{&Behaviour{When: OnSuccess, Do: Nothing}, nil}
+
+				return []*Job{valid, malformed}
+			},
+		},
+	}
+}
+
+// clientAddVariants returns every public Add entry point that funnels through
+// the two Client methods the check was added to.
+func clientAddVariants(client *Client, env []string) []struct {
+	name string
+	add  func(jobs []*Job) error
+} {
+	return []struct {
+		name string
+		add  func(jobs []*Job) error
+	}{
+		{
+			name: "Add",
+			add: func(jobs []*Job) error {
+				_, _, err := client.Add(jobs, env, false)
+
+				return err
+			},
+		},
+		{
+			name: "AddWithWarnings",
+			add: func(jobs []*Job) error {
+				_, _, _, err := client.AddWithWarnings(jobs, env, false)
+
+				return err
+			},
+		},
+		{
+			name: "AddAndReturnIDs",
+			add: func(jobs []*Job) error {
+				_, err := client.AddAndReturnIDs(jobs, env, false)
+
+				return err
+			},
+		},
+		{
+			name: "AddAndReturnIDsWithWarnings",
+			add: func(jobs []*Job) error {
+				_, _, err := client.AddAndReturnIDsWithWarnings(jobs, env, false)
+
+				return err
+			},
+		},
+	}
 }
 
 func TestServerRejectsAddWithNilBehaviour(t *testing.T) {
@@ -828,9 +1165,10 @@ func TestServerRejectsAddWithNilBehaviour(t *testing.T) {
 			var jqErr Error
 
 			So(errors.As(err, &jqErr), ShouldBeTrue)
-			So(jqErr, ShouldResemble, Error{Op: requestMethodAdd, Err: ErrBadRequest})
-			So(sock.serverErr, ShouldNotBeNil)
-			So(sock.serverErr.Error(), ShouldContainSubstring, "jobs[1].Behaviours[1] is nil")
+			So(jqErr, ShouldResemble, Error{
+				Op: requestMethodAdd, Item: nilBehaviourItem, Err: ErrBadRequest,
+			})
+			So(sock.sent, ShouldBeNil)
 			So(server.q.Stats().Items, ShouldEqual, 0)
 			So(valid.EnvKey, ShouldBeBlank)
 			So(malformed.EnvKey, ShouldBeBlank)
@@ -853,7 +1191,7 @@ func TestServerRejectsAddWithNilBehaviour(t *testing.T) {
 
 			So(errors.As(err, &detailedErr), ShouldBeTrue)
 			So(detailedErr, ShouldResemble, Error{
-				Op: requestMethodAdd, Err: "jobs[1].Behaviours[1] is nil",
+				Op: requestMethodAdd, Err: nilBehaviourItem,
 			})
 			So(sock.response().Err, ShouldEqual, ErrBadRequest)
 			So(server.q.Stats().Items, ShouldEqual, 0)

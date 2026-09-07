@@ -33,7 +33,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"sort"
 	"strconv"
@@ -402,24 +401,6 @@ func applyLiveSnapshot(job *Job, jes *JobEndState) {
 	if len(jes.Stderr) != 0 {
 		job.StdErrC = jes.Stderr
 	}
-}
-
-func malformedAddJobMessage(jobs []*Job) string {
-	for jobIndex, job := range jobs {
-		if job == nil {
-			return fmt.Sprintf("job at index %d is nil", jobIndex)
-		}
-
-		if dependencyIndex := slices.Index(job.Dependencies, nil); dependencyIndex >= 0 {
-			return fmt.Sprintf("jobs[%d].Dependencies[%d] is nil", jobIndex, dependencyIndex)
-		}
-
-		if behaviourIndex := slices.Index(job.Behaviours, nil); behaviourIndex >= 0 {
-			return fmt.Sprintf("jobs[%d].Behaviours[%d] is nil", jobIndex, behaviourIndex)
-		}
-	}
-
-	return ""
 }
 
 // warnIfSlowRequest warns when one client RPC took longer than
