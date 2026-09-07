@@ -553,6 +553,127 @@ func TestRESTAddContainerMountsValidation(t *testing.T) {
 	})
 }
 
+func TestRESTContainerImageUser(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+	config, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(true)
+
+	const restCIURepGroup = "rest-container-image-user"
+
+	Convey("Once the REST server is up", t, func() {
+		server, _, token, errs := serve(ctx, serverConfig)
+		So(errs, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		handler := restJobs(ctx, server)
+		bearer := "Bearer " + string(token)
+
+		// the bodies are raw JSON, not marshalled structs, so the
+		// container_image_user key itself is what is being exercised.
+		request := func(method, target, body string) (int, string) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequestWithContext(ctx, method, target, strings.NewReader(body))
+			r.Header.Set("Authorization", bearer)
+			r.Header.Set("Content-Type", "application/json")
+
+			handler(w, r)
+
+			resp := w.Result()
+			defer resp.Body.Close()
+
+			responseData, errr := io.ReadAll(resp.Body)
+			So(errr, ShouldBeNil)
+
+			return resp.StatusCode, string(responseData)
+		}
+
+		onlyJob := func() *Job {
+			jobs, errg := jq.GetByRepGroup(restCIURepGroup, false, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 1)
+
+			return jobs[0]
+		}
+
+		Convey("POSTing container_image_user true gives the job the flag", func() {
+			status, body := request(http.MethodPost, restJobsEndpoint, `[{
+				"cmd": "echo rest image user", "cwd": "`+testCwd+`",
+				"rep_grp": "`+restCIURepGroup+`", "with_docker": "`+containerMountsTestImage+`",
+				"container_image_user": true
+			}]`)
+			So(status, ShouldEqual, http.StatusCreated)
+			So(body, ShouldContainSubstring, restCIURepGroup)
+
+			job := onlyJob()
+			So(job.ContainerImageUser, ShouldBeTrue)
+
+			cmd, cleanup, errc := job.CmdLine(ctx)
+			So(errc, ShouldBeNil)
+
+			defer cleanup()
+
+			So(cmd, ShouldNotContainSubstring, "--user")
+
+			Convey("and PATCHing it false takes the flag away again", func() {
+				status, _ = request(http.MethodPatch, restJobsEndpoint+job.Key(),
+					`{"container_image_user": false}`)
+				So(status, ShouldEqual, http.StatusOK)
+
+				modified := onlyJob()
+				So(modified.ContainerImageUser, ShouldBeFalse)
+				So(modified.Key(), ShouldNotEqual, job.Key())
+
+				cmd, cleanup, errc = modified.CmdLine(ctx)
+				So(errc, ShouldBeNil)
+
+				defer cleanup()
+
+				So(cmd, ShouldContainSubstring, `--user "$(id -u):$(id -g)"`)
+			})
+		})
+
+		Convey("POSTing without it leaves the job running as the calling user", func() {
+			status, _ := request(http.MethodPost, restJobsEndpoint, `[{
+				"cmd": "echo rest calling user", "cwd": "`+testCwd+`",
+				"rep_grp": "`+restCIURepGroup+`", "with_docker": "`+containerMountsTestImage+`"
+			}]`)
+			So(status, ShouldEqual, http.StatusCreated)
+
+			job := onlyJob()
+			So(job.ContainerImageUser, ShouldBeFalse)
+
+			cmd, cleanup, errc := job.CmdLine(ctx)
+			So(errc, ShouldBeNil)
+
+			defer cleanup()
+
+			So(cmd, ShouldContainSubstring, `--user "$(id -u):$(id -g)"`)
+
+			Convey("until a PATCH sets it, which the returned status row reports", func() {
+				status, patchBody := request(http.MethodPatch, restJobsEndpoint+job.Key(),
+					`{"container_image_user": true}`)
+				So(status, ShouldEqual, http.StatusOK)
+
+				var decoded JobModifyResponse
+				So(json.Unmarshal([]byte(patchBody), &decoded), ShouldBeNil)
+				So(decoded.Jobs, ShouldHaveLength, 1)
+				So(decoded.Jobs[0].ContainerImageUser, ShouldBeTrue)
+
+				So(onlyJob().ContainerImageUser, ShouldBeTrue)
+			})
+		})
+	})
+}
+
 func TestRESTJobModificationValidation(t *testing.T) {
 	if runnermode || servermode {
 		return

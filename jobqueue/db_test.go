@@ -1044,6 +1044,104 @@ func TestDBLoadDropsImpossibleCleanups(t *testing.T) {
 	})
 }
 
+// preFlagJob is the subset of Job that a wr predating ContainerImageUser
+// encoded: it deliberately has no such field. The codec encodes a struct as a
+// map of its exported field names, so a record one of these produces is
+// indistinguishable from one an older wr's Job produced, and decoding it into
+// today's Job matches the fields it does carry by name.
+type preFlagJob struct {
+	Requirements    *jqs.Requirements
+	Cmd             string
+	Cwd             string
+	RepGroup        string
+	ReqGroup        string
+	WithDocker      string
+	ContainerMounts string
+}
+
+func TestDBContainerImageUser(t *testing.T) {
+	ctx := context.Background()
+
+	const (
+		imageUserCmd   = "echo image user"
+		callingUserCmd = "echo calling user"
+		imageUserImage = "ubuntu:latest"
+	)
+
+	Convey("Given a db file holding docker jobs that differ only in ContainerImageUser", t, func() {
+		tmpdir := t.TempDir()
+		dbFile := filepath.Join(tmpdir, "queue.db")
+		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
+
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		imageUser := testDBJob(imageUserCmd, "rg-image-user")
+		imageUser.WithDocker = imageUserImage
+		imageUser.ContainerImageUser = true
+
+		callingUser := testDBJob(callingUserCmd, "rg-calling-user")
+		callingUser.WithDocker = imageUserImage
+
+		_, _, _, err = testDB.storeNewJobs(ctx, []*Job{imageUser, callingUser}, false)
+		So(err, ShouldBeNil)
+		So(testDB.close(ctx), ShouldBeNil)
+
+		Convey("recovering it brings each job's flag back as it was stored", func() {
+			testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+			So(err, ShouldBeNil)
+
+			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+			jobs, errr := testDB.recoverIncompleteJobs()
+			So(errr, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 2)
+
+			byCmd := make(map[string]*Job, len(jobs))
+			for _, job := range jobs {
+				byCmd[job.Cmd] = job
+			}
+
+			So(byCmd[imageUserCmd], ShouldNotBeNil)
+			So(byCmd[imageUserCmd].ContainerImageUser, ShouldBeTrue)
+			So(byCmd[callingUserCmd], ShouldNotBeNil)
+			So(byCmd[callingUserCmd].ContainerImageUser, ShouldBeFalse)
+			So(byCmd[imageUserCmd].Key(), ShouldNotEqual, byCmd[callingUserCmd].Key())
+		})
+
+		Convey("a record a wr predating the flag wrote decodes with it off", func() {
+			// no schema change was needed for the new field, so the check that
+			// matters is that an older record still decodes, and picks up the
+			// new safe default rather than the image's user.
+			testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+			So(err, ShouldBeNil)
+
+			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+			var encoded []byte
+
+			err = codec.NewEncoderBytes(&encoded, testDB.ch).Encode(&preFlagJob{
+				Cmd: imageUserCmd, Cwd: testCwd, RepGroup: "rg-old", ReqGroup: "db_test",
+				WithDocker: imageUserImage, ContainerMounts: "/data:/data",
+				Requirements: &jqs.Requirements{RAM: 10, Time: time.Second, Cores: 1},
+			})
+			So(err, ShouldBeNil)
+
+			decoded, errd := testDB.decodeJob(encoded)
+			So(errd, ShouldBeNil)
+			So(decoded.Cmd, ShouldEqual, imageUserCmd)
+			So(decoded.WithDocker, ShouldEqual, imageUserImage)
+			So(decoded.ContainerMounts, ShouldEqual, "/data:/data")
+			So(decoded.ContainerImageUser, ShouldBeFalse)
+
+			// and its key is the one that wr stored it under.
+			So(decoded.Key(), ShouldEqual, (&Job{
+				Cmd: imageUserCmd, WithDocker: imageUserImage, ContainerMounts: "/data:/data",
+			}).Key())
+		})
+	})
+}
+
 // TestDBMapFreelistOpen covers D1 acceptance test 1: a fresh db opened by
 // initDB and an existing db reopened by initDB both open without error, and the
 // map freelist option actually takes effect (the option only affects freelist

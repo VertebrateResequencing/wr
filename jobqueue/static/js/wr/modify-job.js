@@ -58,6 +58,7 @@ export function createModifyForm(job) {
         withDocker: job.WithDocker || '',
         withSingularity: job.WithSingularity || '',
         containerMounts: job.ContainerMounts || '',
+        containerImageUser: Boolean(job.ContainerImageUser),
         env,
         originalJob: job,
         originalCmdDeps: cmdDeps,
@@ -97,6 +98,7 @@ export function createModifyPayload(form) {
         with_docker: textField(form, 'withDocker'),
         with_singularity: textField(form, 'withSingularity'),
         container_mounts: textField(form, 'containerMounts'),
+        container_image_user: boolField(form, 'containerImageUser'),
     };
 
     setJSONPayloadField(payload, 'cmd_deps', form, 'cmdDeps', 'originalCmdDeps');

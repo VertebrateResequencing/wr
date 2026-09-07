@@ -339,6 +339,7 @@ type JobViaJSON struct {
 	RTimeout              *int   `json:"reserve_timeout"`
 	CwdMatters            bool   `json:"cwd_matters"`
 	ChangeHome            bool   `json:"change_home"`
+	ContainerImageUser    bool   `json:"container_image_user"`
 	CloudShared           bool   `json:"cloud_shared"`
 }
 
@@ -396,6 +397,8 @@ type JobDefaults struct {
 	RTimeout   int
 	CwdMatters bool
 	ChangeHome bool
+	// ContainerImageUser only affects with_docker commands.
+	ContainerImageUser bool
 	// DiskSet is used to distinguish between Disk not being provided, and
 	// being provided with a value of 0 or more.
 	DiskSet     bool
@@ -507,6 +510,7 @@ func (jvj *JobViaJSON) buildJob(jd *JobDefaults, cmd string, fields convertedFie
 		WithDocker:            firstNonEmpty(jvj.WithDocker, jd.WithDocker),
 		WithSingularity:       firstNonEmpty(jvj.WithSingularity, jd.WithSingularity),
 		ContainerMounts:       firstNonEmpty(jvj.ContainerMounts, jd.ContainerMounts),
+		ContainerImageUser:    jvj.ContainerImageUser || jd.ContainerImageUser,
 		BsubMode:              firstNonEmpty(jvj.BsubMode, jd.BsubMode),
 	}
 }
@@ -881,6 +885,7 @@ type JobModifyViaJSON struct {
 	NoRetryOverWalltime  *string            `json:"no_retry_over_walltime,omitempty"`
 	CwdMatters           *bool              `json:"cwd_matters,omitempty"`
 	ChangeHome           *bool              `json:"change_home,omitempty"`
+	ContainerImageUser   *bool              `json:"container_image_user,omitempty"`
 }
 
 // Convert converts REST JSON modification fields to a JobModifier.
@@ -1260,6 +1265,10 @@ func (jvj *JobModifyViaJSON) setModifierContainerFields(modifier *JobModifier) {
 
 	if jvj.ContainerMounts != nil {
 		modifier.SetContainerMounts(*jvj.ContainerMounts)
+	}
+
+	if jvj.ContainerImageUser != nil {
+		modifier.SetContainerImageUser(*jvj.ContainerImageUser)
 	}
 }
 
@@ -1690,6 +1699,7 @@ func jobDefaultsFromForm(r *http.Request) (*JobDefaults, error) {
 
 	jd.CwdMatters = r.Form.Get("cwd_matters") == restFormTrue
 	jd.ChangeHome = r.Form.Get("change_home") == restFormTrue
+	jd.ContainerImageUser = r.Form.Get("container_image_user") == restFormTrue
 	jd.CloudShared = r.Form.Get("cloud_shared") == restFormTrue
 
 	for _, depgroup := range urlStringToSlice(r.Form.Get("deps")) {

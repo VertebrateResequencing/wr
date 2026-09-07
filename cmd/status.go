@@ -492,6 +492,10 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 					containerInfo += fmt.Sprintf("Container has these mounts: %s\n", job.ContainerMounts)
 				}
 
+				if job.RunsAsImageUser() {
+					containerInfo += "Cmd runs as the docker image's user, not you\n"
+				}
+
 				if job.MonitorDocker != "" {
 					dockerID := job.MonitorDocker
 					if dockerID == "?" {

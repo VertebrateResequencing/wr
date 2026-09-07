@@ -38,6 +38,7 @@ const modifyFormObservableFields = [
     'withDocker',
     'withSingularity',
     'containerMounts',
+    'containerImageUser',
     'env',
 ];
 

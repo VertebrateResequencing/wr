@@ -2842,6 +2842,7 @@ func TestWebUIModificationStaticContract(t *testing.T) {
 			"with_docker",
 			"with_singularity",
 			"container_mounts",
+			"container_image_user",
 			"env",
 		} {
 			So(statusHTML, ShouldContainSubstring, `data-modify-field="`+field+`"`)
@@ -2888,6 +2889,7 @@ const oldJob = {
   WithDocker: '',
   WithSingularity: 'old.sif',
   ContainerMounts: '/old:/old',
+  ContainerImageUser: false,
   Env: [],
   EnvOverrides: []
 };
@@ -2919,6 +2921,7 @@ assert.equal(form.monitorDocker, 'old-docker');
 assert.equal(form.withDocker, '');
 assert.equal(form.withSingularity, 'old.sif');
 assert.equal(form.containerMounts, '/old:/old');
+assert.equal(form.containerImageUser, false);
 
 const dayDurationForm = createModifyForm({
   ...oldJob,
@@ -2957,7 +2960,8 @@ Object.assign(form, {
   monitorDocker: 'dock-new',
   withDocker: 'ubuntu:22.04',
   withSingularity: '',
-  containerMounts: '/data:/data'
+  containerMounts: '/data:/data',
+  containerImageUser: true
 });
 
 const expectedPayload = {
@@ -2986,7 +2990,8 @@ const expectedPayload = {
   monitor_docker: 'dock-new',
   with_docker: 'ubuntu:22.04',
   with_singularity: '',
-  container_mounts: '/data:/data'
+  container_mounts: '/data:/data',
+  container_image_user: true
 };
 
 assert.deepEqual(createModifyPayload(form), expectedPayload);
@@ -3030,7 +3035,8 @@ const returnedJob = {
   MonitorDocker: 'dock-new',
   WithDocker: 'ubuntu:22.04',
   WithSingularity: '',
-  ContainerMounts: '/data:/data'
+  ContainerMounts: '/data:/data',
+  ContainerImageUser: true
 };
 const replaced = replaceModifiedJobs([oldJob], {modified: {[newKey]: oldKey}, jobs: [returnedJob]});
 assert.equal(replaced.length, 1);

@@ -906,6 +906,7 @@ func configureAddParserTest(t *testing.T, cmdPath string) {
 	oldCmdWithDocker := cmdWithDocker
 	oldCmdWithSingularity := cmdWithSingularity
 	oldCmdContainerMounts := cmdContainerMounts
+	oldCmdContainerImageUser := cmdContainerImageUser
 	oldCmdOnFailure := cmdOnFailure
 	oldCmdOnSuccess := cmdOnSuccess
 	oldCmdOnExit := cmdOnExit
@@ -956,6 +957,7 @@ func configureAddParserTest(t *testing.T, cmdPath string) {
 		cmdWithDocker = oldCmdWithDocker
 		cmdWithSingularity = oldCmdWithSingularity
 		cmdContainerMounts = oldCmdContainerMounts
+		cmdContainerImageUser = oldCmdContainerImageUser
 		cmdOnFailure = oldCmdOnFailure
 		cmdOnSuccess = oldCmdOnSuccess
 		cmdOnExit = oldCmdOnExit
@@ -1016,6 +1018,7 @@ func configureAddParserTest(t *testing.T, cmdPath string) {
 	cmdWithDocker = ""
 	cmdWithSingularity = ""
 	cmdContainerMounts = ""
+	cmdContainerImageUser = false
 	cmdOnFailure = ""
 	cmdOnSuccess = ""
 	cmdOnExit = `[{"cleanup":true}]`

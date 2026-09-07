@@ -67,6 +67,11 @@ const jobLimitGroupSeparator = ","
 // MountConfig doesn't specify its own Retries.
 const defaultMountRetries = 10
 
+// imageUserKeyPrefix marks a Job.Key() whose ContainerImageUser is in effect.
+// It prefixes the key's image token, which otherwise always starts "docker:" or
+// "singularity:", so a key with the prefix can never equal one without it.
+const imageUserKeyPrefix = "imageuser."
+
 // errNoTargets is returned by Mount when a MountConfig has no usable Targets.
 var errNoTargets = errors.New("no Targets specified")
 
@@ -736,6 +741,18 @@ type Job struct {
 	// inside paths in the cmd returned by CmdLine().
 	ContainerMounts string
 
+	// ContainerImageUser makes the Cmd run as the user the container image
+	// specifies (usually root) instead of as you. By default CmdLine()'s
+	// `docker run` command passes --user with your own uid and gid, so that
+	// files the Cmd creates in Cwd belong to you, and both you and a "cleanup"
+	// Behaviour can delete them. Only set this if the Cmd needs to write to
+	// root-owned paths inside the image, and accept that anything it creates in
+	// Cwd will then be owned by the image's user.
+	//
+	// This only affects WithDocker. Singularity runs the container as the
+	// calling user already, so WithSingularity ignores it.
+	ContainerImageUser bool
+
 	// The remaining properties are used to record information about what
 	// happened when Cmd was executed, or otherwise provide its current state.
 	// It is meaningless to set these yourself.
@@ -867,6 +884,8 @@ type Job struct {
 //   - Creates a container (with docker, it's name will be our Key()).
 //   - That will mount Cwd inside the container and use it as the workdir.
 //   - That will also mount any ContainerMounts.
+//   - That for docker will run as the calling user, unless
+//     ContainerImageUser is set.
 //   - That for docker will tell it to use our explicit EnvOverrides
 //     (singularity will use all env vars).
 //   - That will receive a pipe of the Cmd file contents to its shell.
@@ -907,10 +926,21 @@ func (j *Job) containerRunCmd(path string) (string, error) {
 		return "", err
 	}
 
-	cmd := container.DockerRunCmd(j.WithDocker, path, j.Key(), j.containerMounts(), envs)
+	cmd := container.DockerRunCmd(j.WithDocker, path, j.Key(), j.containerMounts(), envs, j.RunsAsImageUser())
 	j.MonitorDocker = j.Key()
 
 	return cmd, nil
+}
+
+// RunsAsImageUser tells you if the Cmd's processes will really run as the user
+// the container image specifies instead of as you. That needs both
+// ContainerImageUser and a WithDocker image, since singularity runs the
+// container as the calling user whatever ContainerImageUser says.
+//
+// Anything deciding or describing that behaviour must ask this, not
+// ContainerImageUser alone.
+func (j *Job) RunsAsImageUser() bool {
+	return j.ContainerImageUser && j.WithDocker != ""
 }
 
 // containerMounts converts ContainerMounts to a slice of the mount values.
@@ -1708,8 +1738,26 @@ func (j *Job) decrementLimitGroups(lim *limiter.Limiter) {
 // The Cwd is part of the key only when CwdMatters, since otherwise the Cmd does
 // not run in Cwd itself but in a unique directory wr creates below it.
 func (j *Job) Key() string {
+	image := containerImageKey(j.WithDocker, j.WithSingularity)
+
+	// ContainerImageUser changes the uid the Cmd's processes run as, so it
+	// changes what the job produces and belongs in the key - but only where it
+	// takes effect, which is docker alone, so that 2 singularity jobs differing
+	// only in it keep colliding as they behave identically.
+	//
+	// It goes on the front of the image token rather than after
+	// ContainerMounts, for 2 reasons: nothing at all is added when it is unset,
+	// so every key a previous wr stored stays byte-identical; and it can't
+	// collide, since a token without it always starts "docker:" or
+	// "singularity:" and one with it always starts imageUserKeyPrefix, whereas
+	// a marker appended after ContainerMounts could be forged by a mount value
+	// ending in it.
+	if j.RunsAsImageUser() {
+		image = imageUserKeyPrefix + image
+	}
+
 	return byteKey(jobKeyConcat(j.CwdMatters, j.Cwd, j.Cmd, j.MountConfigs.Key(),
-		containerImageKey(j.WithDocker, j.WithSingularity), j.ContainerMounts))
+		image, j.ContainerMounts))
 }
 
 // generateSchedulerGroup returns a stringified form of the given requirements,
@@ -1841,6 +1889,7 @@ func (j *Job) buildJStatus(streams jobStatusStreams, leaf string) JStatus {
 		WithDocker:          j.WithDocker,
 		WithSingularity:     j.WithSingularity,
 		ContainerMounts:     j.ContainerMounts,
+		ContainerImageUser:  j.ContainerImageUser,
 		ExpectedRAM:         j.Requirements.RAM,
 		ExpectedTime:        j.Requirements.Time.Seconds(),
 		RequestedDisk:       j.Requirements.Disk,
@@ -2100,6 +2149,8 @@ type JobModifier struct {
 	WithSingularity          string
 	ContainerMounts          string
 	Requirements             *scheduler.Requirements
+	ContainerImageUser       bool
+	ContainerImageUserSet    bool
 	CwdMatters               bool
 	CwdMattersSet            bool
 	ChangeHome               bool
@@ -2309,6 +2360,13 @@ func (j *JobModifier) SetContainerMounts(newVal string) {
 	j.ContainerMountsSet = true
 }
 
+// SetContainerImageUser notes that you want to modify the ContainerImageUser of
+// Jobs. It only affects Jobs using docker.
+func (j *JobModifier) SetContainerImageUser(newVal bool) {
+	j.ContainerImageUser = newVal
+	j.ContainerImageUserSet = true
+}
+
 // validationError rejects nil entries in explicitly set pointer collections and
 // an explicitly set ContainerMounts value that can't be used. It sees only the
 // modifier itself, not the Jobs it will be applied to; jobsValidationError
@@ -2492,13 +2550,14 @@ func (j *JobModifier) skipForDuplicateKey(job *Job, server *Server, keys map[str
 // without actually modifying it.
 func (j *JobModifier) modifiedKey(job *Job) string {
 	newJob := &Job{
-		Cmd:             job.Cmd,
-		Cwd:             job.Cwd,
-		CwdMatters:      job.CwdMatters,
-		MountConfigs:    job.MountConfigs,
-		WithDocker:      job.WithDocker,
-		WithSingularity: job.WithSingularity,
-		ContainerMounts: job.ContainerMounts,
+		Cmd:                job.Cmd,
+		Cwd:                job.Cwd,
+		CwdMatters:         job.CwdMatters,
+		MountConfigs:       job.MountConfigs,
+		WithDocker:         job.WithDocker,
+		WithSingularity:    job.WithSingularity,
+		ContainerMounts:    job.ContainerMounts,
+		ContainerImageUser: job.ContainerImageUser,
 	}
 
 	j.overrideKeyCwd(newJob)
@@ -2540,6 +2599,10 @@ func (j *JobModifier) overrideKeyContainer(newJob *Job) {
 
 	if j.ContainerMountsSet {
 		newJob.ContainerMounts = j.ContainerMounts
+	}
+
+	if j.ContainerImageUserSet {
+		newJob.ContainerImageUser = j.ContainerImageUser
 	}
 }
 
@@ -2747,6 +2810,10 @@ func (j *JobModifier) applyContainer(job *Job) {
 
 	if j.ContainerMountsSet {
 		job.ContainerMounts = j.ContainerMounts
+	}
+
+	if j.ContainerImageUserSet {
+		job.ContainerImageUser = j.ContainerImageUser
 	}
 }
 

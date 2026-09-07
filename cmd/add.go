@@ -127,6 +127,7 @@ var (
 	cmdWithDocker           string
 	cmdWithSingularity      string
 	cmdContainerMounts      string
+	cmdContainerImageUser   bool
 	cmdNoRetry              string
 	cmdDisableRelativeCheck bool
 	rtimeoutint             int
@@ -164,10 +165,10 @@ command as one of the name:value pairs. The possible options are:
 
 cmd cwd cwd_matters change_home on_failure on_success on_exit mounts req_grp
 memory time override cpus disk queue misc priority retries rep_grp dep_grps deps
-cmd_deps monitor_docker with_docker with_singularity container_mounts cloud_os
-cloud_username cloud_ram cloud_script cloud_config_files cloud_flavor
-cloud_shared env bsub_mode modules limit_grps queues_avoid reserve_timeout
-no_retry_over_walltime
+cmd_deps monitor_docker with_docker with_singularity container_mounts
+container_image_user cloud_os cloud_username cloud_ram cloud_script
+cloud_config_files cloud_flavor cloud_shared env bsub_mode modules limit_grps
+queues_avoid reserve_timeout no_retry_over_walltime
 
 If any of these will be the same for all your commands, you can instead specify
 them as flags (which are treated as defaults in the case that they are
@@ -466,6 +467,13 @@ with_docker will be obeyed.
 to the same as the outside path. It will result in the outside paths being
 readable and writable inside the container at the inside paths.
 
+"container_image_user" only affects "with_docker". Normally wr runs your
+command as you, so that files it creates in your working directory belong to
+you and can be cleaned up afterwards. Enable this to run it as the user the
+image specifies instead, which is usually root; do that only if your command
+needs to write to root-owned paths inside the image, and expect anything it
+creates in your working directory to be owned by that user.
+
 The "cloud_*" related options let you override the defaults of your cloud
 deployment. For example, if you do 'wr cloud deploy --os "Ubuntu 16" --os_ram
 2048 -u ubuntu -s ~/my_ubuntu_post_creation_script.sh', any commands you add
@@ -676,6 +684,8 @@ func addCmdContainerFlags() {
 		"run the cmd inside a singularity container running this image")
 	flags.StringVar(&cmdContainerMounts, "container_mounts", "",
 		"mount additional locations inside your container")
+	flags.BoolVar(&cmdContainerImageUser, "container_image_user", false,
+		"with --with_docker, run the cmd as the image's user (usually root) instead of as you")
 	flags.StringVarP(&mountJSON, "mount_json", "j", "",
 		"remote file systems to mount, in JSON format; see 'wr mount -h'")
 	flags.StringVar(&mountSimple, "mounts", "",
@@ -1083,6 +1093,7 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 		WithDocker:           cmdWithDocker,
 		WithSingularity:      cmdWithSingularity,
 		ContainerMounts:      cmdContainerMounts,
+		ContainerImageUser:   cmdContainerImageUser,
 		CloudOS:              cmdOsPrefix,
 		CloudUser:            cmdOsUsername,
 		CloudScript:          cmdPostCreationScript,

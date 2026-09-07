@@ -259,6 +259,30 @@ func TestJobModifierActualCwd(t *testing.T) {
 			So(job.ActualCwd, ShouldBeBlank)
 		})
 
+		Convey("a ContainerImageUser change clears it for a docker Job", func() {
+			// it changes the uid the Cmd runs as, so it changes what the job
+			// produces, and Key() covers it for docker Jobs.
+			job := newJob()
+			job.WithDocker = "ubuntu:latest"
+
+			jm := NewJobModifer()
+			jm.SetContainerImageUser(true)
+			jm.applyTo(job)
+
+			So(job.ActualCwd, ShouldBeBlank)
+		})
+
+		Convey("but not for a singularity Job, which ignores it", func() {
+			job := newJob()
+			job.WithSingularity = "ubuntu.sif"
+
+			jm := NewJobModifer()
+			jm.SetContainerImageUser(true)
+			jm.applyTo(job)
+
+			So(job.ActualCwd, ShouldEqual, ran)
+		})
+
 		Convey("--cwd_matters on a Job that already had it clears the v0.37 poison", func() {
 			// such a Job's key does not change, but wr v0.37.0|1 persisted it
 			// with ActualCwd set to Cwd, and this is where a user clears that.
@@ -480,6 +504,20 @@ func TestJob(t *testing.T) {
 			So(job1.Key(), ShouldEqual, job3.Key())
 		})
 
+		Convey("but not on ContainerImageUser if not using a container", func() {
+			job1.ContainerImageUser = true
+			So(job1.Key(), ShouldEqual, job3.Key())
+			So(job1.Key(), ShouldEqual, "4d846ed67258e4c39a4840eea4d851dd")
+		})
+
+		Convey("but not on ContainerImageUser if using singularity, which ignores it", func() {
+			job1.WithSingularity = image
+			job3.WithSingularity = image
+			job1.ContainerImageUser = true
+			So(job1.Key(), ShouldEqual, job3.Key())
+			So(job1.Key(), ShouldEqual, "c5ea91079a8270931c3627ff56859482")
+		})
+
 		Convey("and WithDocker", func() {
 			job1.WithDocker = image
 			So(job1.Key(), ShouldNotEqual, job3.Key())
@@ -492,6 +530,16 @@ func TestJob(t *testing.T) {
 				job1.CwdMatters = true
 				So(job1.Key(), ShouldNotEqual, job3.Key())
 				So(job1.Key(), ShouldEqual, "7c1d8eb670b811be0556de67da115e0a")
+			})
+
+			Convey("which is also affected by ContainerImageUser", func() {
+				job1.ContainerImageUser = true
+				So(job1.Key(), ShouldNotEqual, job3.Key())
+				So(job1.Key(), ShouldNotEqual, "ae87ca2898ee15157db9804718368723")
+				So(job1.Key(), ShouldEqual, "2ddb85d07bbf8640f5c28b70d125a8ee")
+
+				job3.ContainerImageUser = true
+				So(job1.Key(), ShouldEqual, job3.Key())
 			})
 
 			Convey("which is also affected by ContainerMounts", func() {
@@ -544,10 +592,25 @@ func TestJob(t *testing.T) {
 			So(cmd, ShouldStartWith, "cat ")
 
 			dockerPrefix := ` | docker run --rm --name %[1]s --label uk.ac.sanger.wr.job-key=%[1]s` +
+				` --user "$(id -u):$(id -g)"` +
 				` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD"`
 			dockerSuffix := " -i %[2]s /bin/sh"
 			So(cmd, ShouldEndWith, fmt.Sprintf(dockerPrefix+dockerSuffix, job.Key(), image))
 			So(job.MonitorDocker, ShouldEqual, job.Key())
+
+			Convey("That runs as the image's user when ContainerImageUser is set", func() {
+				job.ContainerImageUser = true
+
+				cmd, cleanup, err = job.CmdLine(ctx)
+				So(err, ShouldBeNil)
+				So(cleanup, ShouldNotBeNil)
+
+				defer cleanup()
+
+				imageUserPrefix := ` | docker run --rm --name %[1]s --label uk.ac.sanger.wr.job-key=%[1]s` +
+					` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD"`
+				So(cmd, ShouldEndWith, fmt.Sprintf(imageUserPrefix+dockerSuffix, job.Key(), image))
+			})
 
 			Convey("That can include additional mounts and env vars", func() {
 				job.ContainerMounts = "/foo/bar:/bar,/foo/baz:/baz"
@@ -587,6 +650,18 @@ func TestJob(t *testing.T) {
 			So(cmd, ShouldStartWith, "cat ")
 			So(cmd, ShouldEndWith, " | singularity shell "+image)
 			So(job.MonitorDocker, ShouldBeBlank)
+
+			Convey("That ContainerImageUser does not change, singularity having no such option", func() {
+				job.ContainerImageUser = true
+
+				cmd, cleanup, err = job.CmdLine(ctx)
+				So(err, ShouldBeNil)
+				So(cleanup, ShouldNotBeNil)
+
+				defer cleanup()
+
+				So(cmd, ShouldEndWith, " | singularity shell "+image)
+			})
 
 			Convey("That can include additional mounts", func() {
 				job.ContainerMounts = "/foo/bar:/bar,/foo/baz:/baz"
@@ -1083,6 +1158,15 @@ func TestKeyByteIdentity(t *testing.T) {
 		}
 
 		So(mismatches, ShouldEqual, 0)
+
+		// ContainerImageUser is the only thing added to the key since oldJobKey
+		// was written, so a job without it must still match the oracle - which
+		// is what keeps every key a previous wr stored valid - while a docker
+		// job with it must not, or the flag would be silently keyless.
+		So((&Job{Cmd: testTrueCmd, WithDocker: img, ContainerImageUser: true}).Key(),
+			ShouldNotEqual, oldJobKey(&Job{Cmd: testTrueCmd, WithDocker: img}))
+		So((&Job{Cmd: testTrueCmd, WithSingularity: img, ContainerImageUser: true}).Key(),
+			ShouldEqual, oldJobKey(&Job{Cmd: testTrueCmd, WithSingularity: img}))
 	})
 
 	Convey("The optimised JobEssence.Key() is byte-identical to the previous fmt-based concatenation", t, func() {

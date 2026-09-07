@@ -8,8 +8,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '../../..');
 const staticRoot = path.join(repoRoot, 'jobqueue/static');
-const defaultOutput = path.join(repoRoot, '.tmp/agent/webui-test/status-webui-live-heartbeat-details.png');
+const defaultOutput = path.join(repoRoot, '.tmp/agent/webui-test/status-webui-image-user-details.png');
 const outputPath = path.resolve(process.cwd(), process.argv[2] || defaultOutput);
+const imageUserPhrase = "the docker image's user";
+const imageUserLine = `runs as: ${imageUserPhrase}`;
 
 if (outputPath !== repoRoot && !outputPath.startsWith(repoRoot + path.sep)) {
   throw new Error(`refusing to write outside repo: ${outputPath}`);
@@ -97,25 +99,29 @@ function createStaticServer() {
   });
 }
 
-function liveJob(overrides = {}) {
+// containerJob returns a job shaped like the JStatus the manager marshals for a
+// details reply, because websocket-handler.js pushes the parsed JSON itself into
+// the knockout context (detailsOA.push(json)) rather than mapping it first.
+function containerJob(overrides = {}) {
   return {
-    Key: 'live-heartbeat-job-1',
-    RepGroup: 'livetest',
-    ReqGroup: 'live-fixture',
-    State: 'running',
-    Cmd: "bash -c 'for i in $(seq 1 60); do echo progress $i; sleep 1; done'",
-    Cwd: '/job1',
+    Key: 'image-user-job',
+    RepGroup: 'containers',
+    ReqGroup: 'image-user-fixture',
+    State: 'buried',
+    Cmd: 'echo container',
+    Cwd: '/job',
     CwdBase: '/tmp/wr',
     Host: 'worker1',
     HostID: '',
     HostIP: '10.0.0.8',
-    SSHCommand: "ssh -- ubuntu@10.0.0.8 'cd /tmp/wr/job1 && exec ${SHELL:-/bin/sh} -l'",
-    StdErr: 'warning 1\n',
-    StdOut: 'progress 1\n',
+    SSHCommand: '',
+    StdErr: '',
+    StdOut: '',
     ExpectedRAM: 1024,
     ExpectedTime: 300,
     RequestedDisk: 0,
     Cores: 1,
+    NoRetryOverWalltime: 0,
     Attempts: 1,
     WaitingForDepGroups: [],
     Dependencies: [],
@@ -124,6 +130,7 @@ function liveJob(overrides = {}) {
     Modules: [],
     OtherRequests: [],
     Env: [],
+    EnvOverrides: [],
     Behaviours: '',
     Mounts: '',
     MonitorDocker: '',
@@ -131,14 +138,16 @@ function liveJob(overrides = {}) {
     WithSingularity: '',
     ContainerMounts: '',
     ContainerImageUser: false,
-    FailReason: '',
-    Exitcode: -1,
+    FailReason: 'command exited non-zero',
+    Exitcode: 1,
     Walltime: 5,
-    CPUtime: 0,
-    PeakRAM: 0,
+    CPUtime: 1,
+    PeakRAM: 10,
     PeakDisk: 0,
     Pid: 1234,
-    Exited: false,
+    Started: 1757000000,
+    Ended: 1757000005,
+    Exited: true,
     Similar: 0,
     Override: 0,
     Priority: 0,
@@ -149,22 +158,66 @@ function liveJob(overrides = {}) {
   };
 }
 
+// The three cases the "runs as" display guard has to separate. Only the first
+// one really runs as the image's user: --container_image_user suppresses
+// docker's --user, while singularity has no such option and always maps the
+// calling user in, so the flag is inert there.
+//
+// Each case carries a distinct exit code because the manager groups a details
+// reply by state, exit code and fail reason and returns one job per group for
+// the page's opening `Limit: 1` request, so a real server sends all three of
+// these together and the page renders all three panels at once.
+const cases = [
+  {
+    label: 'docker job with --container_image_user',
+    cmd: 'echo docker-image-user',
+    imageLine: 'docker image: ubuntu:latest',
+    saysImageUser: true,
+    overrides: {
+      Key: 'image-user-docker-flag',
+      Exitcode: 1,
+      WithDocker: 'ubuntu:latest',
+      ContainerImageUser: true
+    }
+  },
+  {
+    label: 'singularity job with --container_image_user',
+    cmd: 'echo singularity-image-user',
+    imageLine: 'singularity image: ubuntu.sif',
+    saysImageUser: false,
+    overrides: {
+      Key: 'image-user-singularity-flag',
+      Exitcode: 2,
+      WithSingularity: 'ubuntu.sif',
+      ContainerImageUser: true
+    }
+  },
+  {
+    label: 'docker job without --container_image_user',
+    cmd: 'echo docker-calling-user',
+    imageLine: 'docker image: ubuntu:latest',
+    saysImageUser: false,
+    overrides: {
+      Key: 'image-user-docker-default',
+      Exitcode: 3,
+      WithDocker: 'ubuntu:latest',
+      ContainerImageUser: false
+    }
+  }
+];
+
 function fakeWebSocketScript() {
+  const jobs = cases.map(testCase => containerJob({ Cmd: testCase.cmd, ...testCase.overrides }));
+
   return `(() => {
-    window.__wrLiveHeartbeatFixtureRequests = [];
+    window.__wrImageUserFixtureRequests = [];
 
     const currentSnapshot = [
-      { RepGroup: '+all+', FromState: 'new', ToState: 'running', Count: 1 },
-      { RepGroup: 'livetest', FromState: 'new', ToState: 'running', Count: 1 }
+      { RepGroup: '+all+', FromState: 'new', ToState: 'buried', Count: ${jobs.length} },
+      { RepGroup: 'containers', FromState: 'new', ToState: 'buried', Count: ${jobs.length} }
     ];
 
-    const initialJob = ${JSON.stringify(liveJob())};
-    const heartbeatUpdate = ${JSON.stringify(liveJob({
-      IsPushUpdate: true,
-      PeakRAM: 321,
-      CPUtime: 4,
-      PeakDisk: 12
-    }))};
+    const buriedJobs = ${JSON.stringify(jobs)};
 
     class FixtureWebSocket {
       constructor() {
@@ -176,7 +229,7 @@ function fakeWebSocketScript() {
       }
 
       send(raw) {
-        window.__wrLiveHeartbeatFixtureRequests.push(raw);
+        window.__wrImageUserFixtureRequests.push(raw);
         let request = {};
         try {
           request = JSON.parse(raw);
@@ -188,10 +241,8 @@ function fakeWebSocketScript() {
           this.emitEach(currentSnapshot);
         }
 
-        if (request.Request === 'details' && request.RepGroup === 'livetest' &&
-            (request.State === 'running' || request.State === 'reserved')) {
-          this.emitEach([initialJob], 10);
-          this.emitEach([heartbeatUpdate], 80);
+        if (request.Request === 'details' && request.RepGroup === 'containers' && request.State === 'buried') {
+          this.emitEach(buriedJobs, 10);
         }
       }
 
@@ -213,6 +264,45 @@ function fakeWebSocketScript() {
 
     window.WebSocket = FixtureWebSocket;
   })();`;
+}
+
+// panelTexts returns the whitespace-normalised rendered text of every job
+// details panel on the page.
+async function panelTexts(page) {
+  const panels = await page.locator('.top-margin.panel').all();
+  if (panels.length !== cases.length) {
+    throw new Error(`expected ${cases.length} job details panels, got ${panels.length}`);
+  }
+
+  const texts = [];
+  for (const panel of panels) {
+    texts.push((await panel.innerText()).replace(/\s+/g, ' '));
+  }
+
+  return texts;
+}
+
+function assertPanel(texts, testCase) {
+  const matches = texts.filter(text => text.includes(testCase.cmd));
+  if (matches.length !== 1) {
+    throw new Error(`expected exactly 1 details panel for ${JSON.stringify(testCase.cmd)}, got ${matches.length}`);
+  }
+
+  const text = matches[0];
+  if (!text.includes(testCase.imageLine)) {
+    throw new Error(`the ${testCase.label}'s panel did not show ${JSON.stringify(testCase.imageLine)}`);
+  }
+
+  const says = text.includes(imageUserPhrase);
+  console.log(`${testCase.label} => ${says ? 'says' : 'does not say'} it runs as ${imageUserPhrase}`);
+
+  if (testCase.saysImageUser && !text.includes(imageUserLine)) {
+    throw new Error(`the ${testCase.label}'s panel did not show ${JSON.stringify(imageUserLine)}`);
+  }
+
+  if (!testCase.saysImageUser && says) {
+    throw new Error(`the ${testCase.label}'s panel wrongly showed ${JSON.stringify(imageUserPhrase)}`);
+  }
 }
 
 async function captureScreenshot() {
@@ -237,26 +327,33 @@ async function captureScreenshot() {
     });
 
     await page.addInitScript(fakeWebSocketScript());
-    await page.goto(`${baseURL}/status.html?token=live-heartbeat-fixture`, {
+    await page.goto(`${baseURL}/status.html?token=image-user-fixture`, {
       waitUntil: 'networkidle',
       timeout: 30000
     });
     await page.waitForSelector('body.ko-initialized', { timeout: 10000 });
-    await page.locator('[data-repgroup="livetest"] .progress-bar', { hasText: '1 running' }).click();
+    await page.locator('[data-repgroup="containers"] .progress-bar', { hasText: `${cases.length} buried` }).click();
     await page.waitForFunction(() => {
-      return window.__wrLiveHeartbeatFixtureRequests.some(raw => raw.includes('"details"'));
+      return window.__wrImageUserFixtureRequests.some(raw => raw.includes('"details"'));
     }, { timeout: 10000 });
-    await page.getByText('progress 1').waitFor({ timeout: 10000 });
-    await page.getByText('warning 1').waitFor({ timeout: 10000 });
-    await page.locator('.actual-value.live-value', { hasText: '321 MB' }).waitFor({ timeout: 10000 });
-    await page.getByText('CPU: 4s').waitFor({ timeout: 10000 });
+
+    for (const testCase of cases) {
+      await page.getByText(testCase.cmd).first().waitFor({ timeout: 10000 });
+    }
+
     await page.screenshot({ path: outputPath, fullPage: true });
 
-    const visibleText = await page.locator('body').innerText();
-    for (const expected of ['STDOUT', 'STDERR', 'progress 1', 'warning 1', '321 MB']) {
-      if (!visibleText.includes(expected)) {
-        throw new Error(`live heartbeat details did not include ${JSON.stringify(expected)}`);
-      }
+    const texts = await panelTexts(page);
+    for (const testCase of cases) {
+      assertPanel(texts, testCase);
+    }
+
+    const bodyText = await page.locator('body').innerText();
+    const occurrences = bodyText.split(imageUserPhrase).length - 1;
+    console.log(`rendered ${JSON.stringify(imageUserPhrase)} lines: ${occurrences}`);
+
+    if (occurrences !== 1) {
+      throw new Error(`expected exactly 1 rendered ${JSON.stringify(imageUserPhrase)} line, got ${occurrences}`);
     }
   } finally {
     await browser.close();

@@ -6,6 +6,21 @@ project adheres to [Semantic Versioning](http://semver.org/).
 
 
 ## [Unreleased]
+### Added
+- New `--container_image_user` option for `wr add` and `wr mod` (and
+  `container_image_user` for the JSON and REST interfaces), which runs a
+  `--with_docker` command as the user the image specifies after all. You need it
+  if your command writes to root-owned paths inside the image, and should expect
+  anything it creates in your working directory to be owned by that user.
+
+### Changed
+- Commands you run with `--with_docker` now run as you instead of as the user
+  the image specifies, which is normally root. Files they create in your working
+  directory are therefore yours, so you can delete them and so can wr's own
+  `cleanup` behaviours; previously a root-owned file or directory left your
+  working directory littered and the command's workspace undeletable. Only
+  docker is affected: singularity already ran your commands as you.
+
 ### Fixed
 - With `--monitor_docker '?'`, wr could charge another container's RAM to your
   job as its peak, and SIGKILL a container it never started, whenever more than
