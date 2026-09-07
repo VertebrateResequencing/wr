@@ -37,6 +37,7 @@ import (
 	"sync"
 	"testing"
 
+	homedir "github.com/mitchellh/go-homedir"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -277,7 +278,8 @@ func muxfysCacheNamesIn(dir string) ([]string, error) {
 
 // useFakeS3Config points muxfys.S3ConfigFromEnvironment at the given fake S3 for
 // the rest of the test, by writing an s3 config that names it under this test's
-// own profile section and putting that file in the environment.
+// own profile section, putting that file in the environment, and pointing HOME
+// at an empty directory.
 //
 // The environment variables have to be set because they are where muxfys reads a
 // s3cmd-style config from, but they are not on their own enough to keep the test
@@ -293,6 +295,16 @@ func muxfysCacheNamesIn(dir string) ([]string, error) {
 // cannot be merged into, and muxfys errors rather than falling back when a NAMED
 // profile's section is missing, so the test either reaches this server or fails
 // loudly.
+//
+// HOME is in the list because three of those five files are ~ paths that no
+// AWS_* variable can reach, and ~/.aws/config is loaded last of all, so it wins
+// over the file named here for whatever sections it does carry - including this
+// test's own, which only an empty HOME rules out. go-homedir, which muxfys
+// expands those paths with, memoises the home it finds in a process-global
+// cache, so HOME set here has no effect at all once anything earlier in this
+// test binary has expanded a ~ path; homedir.Reset() is the only way to clear
+// it. Resetting again on cleanup stops the next test inheriting a cached path
+// to a temp dir that has since been deleted.
 func useFakeS3Config(t *testing.T, remote *fakeS3) {
 	t.Helper()
 
@@ -300,6 +312,10 @@ func useFakeS3Config(t *testing.T, remote *fakeS3) {
 	content := "[" + uploadFailureCacheProfile + "]\naccess_key = k\nsecret_key = s\nhost_base = " +
 		remote.host() + "\nuse_https = False\nregion = us-east-1\n"
 	So(os.WriteFile(config, []byte(content), 0o600), ShouldBeNil)
+
+	t.Setenv("HOME", t.TempDir())
+	homedir.Reset()
+	t.Cleanup(homedir.Reset)
 
 	t.Setenv("AWS_CONFIG_FILE", config)
 	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", config)
