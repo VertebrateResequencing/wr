@@ -636,6 +636,67 @@ func TestRmMuxfysCachesKeepsWhatItMustNotDelete(t *testing.T) {
 	})
 }
 
+// TestRmMuxfysCachesSpelledInAnotherCase is
+// TestRmMuxfysCachesKeepsWhatItMustNotDelete's user-named-CacheDir case again, on
+// a filesystem where one directory has two spellings.
+//
+// rmMuxfysCaches deletes by a prefix of the NAME readdir hands back, and spares
+// only what the Job's keep set claims. That set is built from the strings in the
+// Job's MountConfigs, so a MountTarget.CacheDir whose directory is on disk under
+// another spelling (see caseFoldNode) matches the prefix and misses the keep set,
+// and the deletion falls on a directory the user chose the location of - one
+// muxfys never deletes, so nothing there is worthless once an upload has failed,
+// and one that may be shared between Jobs. It is the same byte comparison
+// TestCleanupKeepsMountCachesSpelledInAnotherCase pins for cleanup, on the sweep
+// that goes the other way round.
+//
+// The muxfys-named cache beside it carries the deletion control: a rule that
+// simply stopped deleting would satisfy the survival assertion on its own while
+// stranding, on the failed-upload path, exactly the cache that path exists to
+// remove.
+func TestRmMuxfysCachesSpelledInAnotherCase(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a Job whose user-named cache dir is on disk under another spelling", t, func() {
+		if !canMountFuse() {
+			SkipConvey("this host will not let an unprivileged process raise a FUSE mount", func() {})
+
+			return
+		}
+
+		cwd, mounted := mountCaseFold(t)
+		if !mounted {
+			SkipConvey("this host refused an unprivileged FUSE mount", func() {})
+
+			return
+		}
+
+		Convey("rmMuxfysCaches keeps it, and still deletes the one muxfys named itself", func() {
+			job := &Job{Cwd: cwd, Cmd: testWSCmd, MountConfigs: MountConfigs{{
+				Mount: testWSMount,
+				Targets: []MountTarget{{
+					Path: testWSTargetPath, Cache: true, Write: true,
+					CacheDir: muxfysCachePrefix + "Mine",
+				}},
+			}}}
+			_, workSpace, _ := realWorkSpace(job)
+
+			userChosen := writeFileIn(filepath.Join(workSpace, muxfysCachePrefix+"mine"),
+				"unuploaded.txt")
+
+			muxfysNamedDir := filepath.Join(workSpace, muxfysCachePrefix+"_cache456")
+			muxfysNamed := writeFileIn(muxfysNamedDir, "unuploaded.txt")
+
+			So(job.rmMuxfysCaches(), ShouldBeNil)
+
+			soPathsGone(muxfysNamed, muxfysNamedDir)
+			soPathsExist(userChosen, workSpace, cwd)
+		})
+	})
+}
+
 // realWorkSpace gives job the working directory mkHashedDir really creates for it
 // below job.Cwd, and returns that dir, the workspace holding it, and the tmp dir
 // wr makes beside it. The path wr builds is what proves a workspace is wr's own,

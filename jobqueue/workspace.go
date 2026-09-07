@@ -1231,13 +1231,49 @@ func (ws *jobWorkSpace) removeMuxfysCaches() error {
 // removeMuxfysCacheEntries deletes every entry of the workspace that is a cache
 // muxfys named for itself and that the Job's keep set does not claim. As in
 // removeWorkSpaceEntries, what may be deleted is asked of the Job's own keep set
-// and of nothing else, and removeAllGuarded is what stops a deletion crossing
-// into another Job's workspace or through a live mount deeper down.
+// and of nothing else, and removeEntryWithExceptions is what stops a deletion
+// crossing into another Job's workspace or through a live mount deeper down.
+//
+// That keep set is consulted in BOTH of the halves sweepKeep describes, exactly
+// as removeWorkSpaceEntries consults them: the NAMES the Job's MountConfigs
+// spell, answered by the check below at no cost in syscalls, and the IDENTITIES
+// those names reach when the KERNEL resolves them through the workspace handle,
+// which is the half no byte comparison can ask for. A MountTarget.CacheDir whose
+// name carries the muxfys prefix and which the filesystem stores under another
+// spelling matches the prefix rule and misses the name rule, and this is the one
+// deletion that must not fall on it: the user chose that directory's location,
+// so muxfys never deletes it and a failed upload leaves nothing there for wr to
+// undo, and it may be shared between Jobs.
+//
+// The name check below is asked first because it is still needed and not merely
+// cheaper: removeEntryWithExceptions unlinks a non-dir before it asks the sweep's
+// keep set anything at all, so leaving that check to that set - to either half of
+// it, since sweepKeep.keeps reads the same names first - would WIDEN this
+// deletion to an entry the Job named that is not a directory.
+//
+// Whether the workspace may be swept at all, and those identities, are settled
+// ONCE for the whole loop rather than once per entry as removeAllGuarded had it.
+// The identities cost one lstat per keep the Job configured - a Job has one or
+// two - and settling the sweepable check once gives back the lstat of the
+// workspace removeAllGuarded made for every entry it deleted, so the whole call
+// lands within an lstat or two of what it spent before. Asking it once also
+// reports a failure to lstat the workspace where a loop with nothing to delete
+// never reached removeAllGuarded to ask, which is what removeWorkSpaceEntries and
+// removeTmp already do with the same refusal. It is the failed-upload path either
+// way (see Job.rmMuxfysCaches), reached once for a Job whose Unmount has already
+// failed to write its output to the remote.
 func (ws *jobWorkSpace) removeMuxfysCacheEntries(workSpace sweptDir) error {
 	entries, err := readDirIn(workSpace.root)
 	if err != nil {
 		return err
 	}
+
+	wsInfo, ok, err := workSpace.sweepable()
+	if !ok {
+		return err
+	}
+
+	keep := sweepKeepIn(workSpace.root, ws.keep.workSpaceEntries)
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -1246,7 +1282,7 @@ func (ws *jobWorkSpace) removeMuxfysCacheEntries(workSpace sweptDir) error {
 			continue
 		}
 
-		if err = removeAllGuarded(workSpace, name); err != nil {
+		if err = removeEntryWithExceptions(workSpace.root, name, name, wsInfo, keep); err != nil {
 			return err
 		}
 	}
