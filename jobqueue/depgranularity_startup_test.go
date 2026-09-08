@@ -893,7 +893,7 @@ func dgsSeedIncompleteJobs(ctx context.Context, t *testing.T, config ServerConfi
 	So(err, ShouldBeNil)
 	So(jobsToQueue, ShouldHaveLength, count)
 	So(jobsToUpdate, ShouldHaveLength, 0)
-	So(alreadyAdded, ShouldEqual, 0)
+	So(alreadyAdded, ShouldResemble, DuplicateBreakdown{})
 	So(testDB.close(ctx), ShouldBeNil)
 }
 

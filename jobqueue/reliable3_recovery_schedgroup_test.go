@@ -153,7 +153,7 @@ func persistRunningJobForRecovery(ctx context.Context, t *testing.T, serverConfi
 	So(err, ShouldBeNil)
 	So(jobsToQueue, ShouldHaveLength, 1)
 	So(jobsToUpdate, ShouldHaveLength, 0)
-	So(alreadyAdded, ShouldEqual, 0)
+	So(alreadyAdded, ShouldResemble, DuplicateBreakdown{})
 
 	So(testDB.close(ctx), ShouldBeNil)
 

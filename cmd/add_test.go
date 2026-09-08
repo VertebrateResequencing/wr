@@ -31,6 +31,7 @@ import (
 	"compress/zlib"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -61,6 +62,14 @@ const (
 	testSyncEnv                = "SYNC_TEST=1"
 	testSyncJobKey             = "sync-job"
 	testWarningJobKey          = "job1"
+	dupBreakdownCmd            = "echo breakdown"
+	dupBreakdownRepGroup       = "breakdownA"
+	dupBreakdownOtherRepGroup  = "breakdownB"
+	dupBreakdownNewRepGroup    = "breakdownNew"
+	dupBreakdownCapRepGroup    = "breakdownCap"
+	dupBreakdownCapCmds        = 6
+	dupBreakdownCapNamed       = 5
+	dupBreakdownLastCompleted  = "', last completed "
 	futureDepGroupWarningLine  = "dependency group \"" + testFutureDepGroup +
 		"\" has not been seen; dependent job(s) will wait until it appears\n"
 )
@@ -841,6 +850,216 @@ func TestAddDoesNotWarnForSeenDepGroups(t *testing.T) {
 	})
 }
 
+func TestAddPrintsDuplicateBreakdown(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("wr add breaks down duplicates of already completed commands", t, func() {
+		testConfig, serverConfig, addr, _, server, token := startStatusTestServer(ctx, t)
+		defer server.Stop(ctx, true)
+
+		jobCwd := t.TempDir()
+		cmdDir := t.TempDir()
+		cmdPath := filepath.Join(cmdDir, "cmds.txt")
+		So(os.WriteFile(cmdPath, []byte(dupBreakdownCmd+"\n"), 0o600), ShouldBeNil)
+
+		configureAddParserTest(t, cmdPath)
+
+		config = testConfig
+		caFile = testConfig.ManagerCAFile
+		timeoutint = 2
+		cmdCwd = jobCwd
+		cmdRepGroup = dupBreakdownRepGroup
+
+		stdout, _ := runAddCaptureForTest(t)
+		So(stdout, ShouldEqual, "Added 1 new commands (0 were duplicates) to the queue"+
+			" using default identifier '"+dupBreakdownRepGroup+"'\n")
+
+		completeTestJobs(ctx, testConfig, serverConfig, addr, token, 1)
+
+		today := time.Now().Format(time.DateOnly)
+
+		Convey("re-adding under the same identifier attributes them to it, naming no other", func() {
+			stdoutSame, _ := runAddCaptureForTest(t)
+			So(stdoutSame, ShouldEqual, "Added 0 new commands (1 were duplicates:\n"+
+				"  1 already completed\n"+
+				"    1 under this identifier\n"+
+				"    0 under other identifiers\n"+
+				"  0 already in the queue) to the queue using default identifier '"+dupBreakdownRepGroup+"'\n")
+		})
+
+		Convey("re-adding under a different identifier names the one they completed under", func() {
+			cmdRepGroup = dupBreakdownOtherRepGroup
+
+			stdoutOther, _ := runAddCaptureForTest(t)
+			So(stdoutOther, ShouldEqual, "Added 0 new commands (1 were duplicates:\n"+
+				"  1 already completed\n"+
+				"    0 under this identifier\n"+
+				"    1 under other identifiers:\n"+
+				"      1 as '"+dupBreakdownRepGroup+dupBreakdownLastCompleted+today+"\n"+
+				"  0 already in the queue) to the queue using default identifier '"+
+				dupBreakdownOtherRepGroup+"'\n")
+		})
+
+		Convey("each command line is attributed by its own identifier", func() {
+			So(os.WriteFile(cmdPath, []byte(
+				dupBreakdownCmd+"\t{\"rep_grp\":\""+dupBreakdownRepGroup+"\"}\n"+
+					dupBreakdownCmd+"\t{\"rep_grp\":\""+dupBreakdownOtherRepGroup+"\"}\n",
+			), 0o600), ShouldBeNil)
+
+			stdoutMixed, _ := runAddCaptureForTest(t)
+			So(stdoutMixed, ShouldEqual, "Added 0 new commands (2 were duplicates:\n"+
+				"  2 already completed\n"+
+				"    1 under this identifier\n"+
+				"    1 under other identifiers:\n"+
+				"      1 as '"+dupBreakdownRepGroup+dupBreakdownLastCompleted+today+"\n"+
+				"  0 already in the queue) to the queue\n")
+		})
+
+		Convey("a command repeated in the file counts once per line", func() {
+			So(os.WriteFile(cmdPath, []byte(dupBreakdownCmd+"\n"+dupBreakdownCmd+"\n"), 0o600), ShouldBeNil)
+
+			stdoutRepeat, _ := runAddCaptureForTest(t)
+			So(stdoutRepeat, ShouldEqual, "Added 0 new commands (2 were duplicates:\n"+
+				"  2 already completed\n"+
+				"    2 under this identifier\n"+
+				"    0 under other identifiers\n"+
+				"  0 already in the queue) to the queue using default identifier '"+
+				dupBreakdownRepGroup+"'\n")
+		})
+	})
+
+	Convey("wr add lists the identifiers duplicates completed under, biggest count first", t, func() {
+		testConfig, serverConfig, addr, _, server, token := startStatusTestServer(ctx, t)
+		defer server.Stop(ctx, true)
+
+		cmdPath := filepath.Join(t.TempDir(), "cmds.txt")
+		So(os.WriteFile(cmdPath, []byte(
+			dupBreakdownCmd+" 1\t{\"rep_grp\":\""+dupBreakdownRepGroup+"\"}\n"+
+				dupBreakdownCmd+" 2\t{\"rep_grp\":\""+dupBreakdownRepGroup+"\"}\n"+
+				dupBreakdownCmd+" 3\t{\"rep_grp\":\""+dupBreakdownOtherRepGroup+"\"}\n",
+		), 0o600), ShouldBeNil)
+
+		configureAddParserTest(t, cmdPath)
+
+		config = testConfig
+		caFile = testConfig.ManagerCAFile
+		timeoutint = 2
+		cmdCwd = t.TempDir()
+		cmdRepGroup = dupBreakdownNewRepGroup
+
+		stdout, _ := runAddCaptureForTest(t)
+		So(stdout, ShouldEqual, "Added 3 new commands (0 were duplicates) to the queue\n")
+
+		completeTestJobs(ctx, testConfig, serverConfig, addr, token, 3)
+
+		So(os.WriteFile(cmdPath, []byte(dupBreakdownCmd+" 1\n"+dupBreakdownCmd+" 2\n"+
+			dupBreakdownCmd+" 3\n"), 0o600), ShouldBeNil)
+
+		today := time.Now().Format(time.DateOnly)
+
+		stdoutNamed, _ := runAddCaptureForTest(t)
+		So(stdoutNamed, ShouldEqual, "Added 0 new commands (3 were duplicates:\n"+
+			"  3 already completed\n"+
+			"    0 under this identifier\n"+
+			"    3 under other identifiers:\n"+
+			"      2 as '"+dupBreakdownRepGroup+dupBreakdownLastCompleted+today+"\n"+
+			"      1 as '"+dupBreakdownOtherRepGroup+dupBreakdownLastCompleted+today+"\n"+
+			"  0 already in the queue) to the queue using default identifier '"+
+			dupBreakdownNewRepGroup+"'\n")
+	})
+
+	Convey("wr add names at most 5 identifiers, then says how many more there are", t, func() {
+		testConfig, serverConfig, addr, _, server, token := startStatusTestServer(ctx, t)
+		defer server.Stop(ctx, true)
+
+		cmdPath := filepath.Join(t.TempDir(), "cmds.txt")
+		So(os.WriteFile(cmdPath, []byte(dupBreakdownCapCmdFile(true)), 0o600), ShouldBeNil)
+
+		configureAddParserTest(t, cmdPath)
+
+		config = testConfig
+		caFile = testConfig.ManagerCAFile
+		timeoutint = 2
+		cmdCwd = t.TempDir()
+		cmdRepGroup = dupBreakdownNewRepGroup
+
+		stdout, _ := runAddCaptureForTest(t)
+		So(stdout, ShouldEqual, "Added 6 new commands (0 were duplicates) to the queue\n")
+
+		completeTestJobs(ctx, testConfig, serverConfig, addr, token, dupBreakdownCapCmds)
+
+		So(os.WriteFile(cmdPath, []byte(dupBreakdownCapCmdFile(false)), 0o600), ShouldBeNil)
+
+		today := time.Now().Format(time.DateOnly)
+
+		var named strings.Builder
+
+		for i := range dupBreakdownCapNamed {
+			fmt.Fprintf(&named, "      1 as '%s%d%s%s\n",
+				dupBreakdownCapRepGroup, i, dupBreakdownLastCompleted, today)
+		}
+
+		stdoutCapped, _ := runAddCaptureForTest(t)
+		So(stdoutCapped, ShouldEqual, "Added 0 new commands (6 were duplicates:\n"+
+			"  6 already completed\n"+
+			"    0 under this identifier\n"+
+			"    6 under other identifiers:\n"+
+			named.String()+
+			"      and 1 more identifiers\n"+
+			"  0 already in the queue) to the queue using default identifier '"+
+			dupBreakdownNewRepGroup+"'\n")
+	})
+
+	Convey("wr add reports duplicates that are still live in the queue", t, func() {
+		testConfig, _, _, _, server, _ := startStatusTestServer(ctx, t)
+		defer server.Stop(ctx, true)
+
+		cmdPath := filepath.Join(t.TempDir(), "cmds.txt")
+		So(os.WriteFile(cmdPath, []byte("echo queued dup\n"), 0o600), ShouldBeNil)
+
+		configureAddParserTest(t, cmdPath)
+
+		config = testConfig
+		caFile = testConfig.ManagerCAFile
+		timeoutint = 2
+		cmdCwd = t.TempDir()
+		cmdRepGroup = dupBreakdownRepGroup
+		cmdGroupDeps = testFutureDepGroup
+
+		stdout, _ := runAddCaptureForTest(t)
+		So(stdout, ShouldEqual, "Added 1 new commands (0 were duplicates) to the queue"+
+			" using default identifier '"+dupBreakdownRepGroup+"'\n")
+
+		cmdRepGroup = dupBreakdownOtherRepGroup
+
+		stdoutDup, _ := runAddCaptureForTest(t)
+		So(stdoutDup, ShouldEqual, "Added 0 new commands (1 were duplicates:\n"+
+			"  0 already completed\n"+
+			"  1 already in the queue) to the queue using default identifier '"+
+			dupBreakdownOtherRepGroup+"'\n")
+	})
+
+	Convey("wr add counts duplicates a manager did not break down, without a breakdown", t, func() {
+		// there is no client/server version handshake, so a manager too old to
+		// break duplicates down simply reports their total and nothing else.
+		oldManagerDups := jobqueue.NewAddDuplicates(1, jobqueue.DuplicateBreakdown{})
+
+		So(addedMessage(0, oldManagerDups, dupBreakdownRepGroup), ShouldEqual,
+			"Added 0 new commands (1 were duplicates) to the queue using default identifier '"+
+				dupBreakdownRepGroup+"'")
+		So(addedMessage(0, oldManagerDups, ""), ShouldEqual,
+			"Added 0 new commands (1 were duplicates) to the queue")
+
+		Convey("as it does for a breakdown that does not account for that total", func() {
+			mismatchedDups := jobqueue.NewAddDuplicates(3, jobqueue.DuplicateBreakdown{Complete: 2})
+
+			So(addedMessage(0, mismatchedDups, dupBreakdownRepGroup), ShouldEqual,
+				"Added 0 new commands (3 were duplicates) to the queue using default identifier '"+
+					dupBreakdownRepGroup+"'")
+		})
+	})
+}
+
 func TestAddHeadKeepsFirstParsedCommands(t *testing.T) {
 	Convey("wr add --head keeps only the first parsed commands from a command file", t, func() {
 		cmdPath := filepath.Join(t.TempDir(), "cmds.txt")
@@ -1097,6 +1316,51 @@ func runAddCaptureForTest(t *testing.T) (string, string) {
 	So(err, ShouldBeNil)
 
 	return string(stdout), string(stderr)
+}
+
+// completeTestJobs reserves and executes count jobs, so that they become
+// complete jobs the next add can find as duplicates.
+func completeTestJobs(ctx context.Context, testConfig *internal.Config,
+	serverConfig jobqueue.ServerConfig, addr string, token []byte, count int,
+) {
+	jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+	So(err, ShouldBeNil)
+
+	defer func() {
+		So(jq.Disconnect(), ShouldBeNil)
+	}()
+
+	for range count {
+		reserved, errr := jq.Reserve(2 * time.Second)
+		So(errr, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		if reserved == nil {
+			return
+		}
+
+		So(jq.Execute(ctx, reserved, testConfig.RunnerExecShell), ShouldBeNil)
+	}
+}
+
+// dupBreakdownCapCmdFile returns the contents of a command file holding more
+// unique commands than the number of identifiers an add will name. With
+// identifiers true each command gets its own identifier, so that a later add of
+// the same file without them has one duplicate per identifier.
+func dupBreakdownCapCmdFile(identifiers bool) string {
+	var file strings.Builder
+
+	for i := range dupBreakdownCapCmds {
+		fmt.Fprintf(&file, "%s %d", dupBreakdownCmd, i)
+
+		if identifiers {
+			fmt.Fprintf(&file, "\t{\"rep_grp\":\"%s%d\"}", dupBreakdownCapRepGroup, i)
+		}
+
+		file.WriteString("\n")
+	}
+
+	return file.String()
 }
 
 // jobCreatedCwd creates and returns a directory of the shape wr creates below a

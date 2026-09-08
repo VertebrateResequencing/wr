@@ -1117,14 +1117,14 @@ func (s *Server) rerunCompletedJobs(ctx context.Context, jobs []*Job) {
 	}
 
 	for envkey, envJobs := range jobsByEnvKey {
-		added, dups, _, _, srerr, err := s.createJobs(ctx, envJobs, envkey, false)
+		added, dups, _, srerr, err := s.createJobs(ctx, envJobs, envkey, false)
 		if err != nil {
 			clog.Warn(ctx, "web interface rerun failed", "err", err, "srerr", srerr)
 
 			continue
 		}
 
-		clog.Debug(ctx, "reran completed jobs", "new", added, "dups", dups)
+		clog.Debug(ctx, "reran completed jobs", "new", added, "dups", dups.Total())
 	}
 }
 

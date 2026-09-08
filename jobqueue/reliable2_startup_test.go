@@ -180,7 +180,7 @@ func prepareCompletedHistory(ctx context.Context, t *testing.T, config ServerCon
 	So(err, ShouldBeNil)
 	So(jobsToQueue, ShouldHaveLength, 1)
 	So(jobsToUpdate, ShouldHaveLength, 0)
-	So(alreadyAdded, ShouldEqual, 0)
+	So(alreadyAdded, ShouldResemble, DuplicateBreakdown{})
 	So(testDB.archiveJob(ctx, seed.Key(), seed), ShouldBeNil)
 
 	historical := testDBArchivedJob("echo historical", "historical", time.Now())
@@ -273,7 +273,7 @@ func prepareArchivedJobsInRepGroup(ctx context.Context, t *testing.T, config Ser
 	So(err, ShouldBeNil)
 	So(jobsToQueue, ShouldHaveLength, n)
 	So(jobsToUpdate, ShouldHaveLength, 0)
-	So(alreadyAdded, ShouldEqual, 0)
+	So(alreadyAdded, ShouldResemble, DuplicateBreakdown{})
 
 	for _, job := range jobs {
 		So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)

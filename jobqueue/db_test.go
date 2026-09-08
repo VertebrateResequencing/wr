@@ -609,7 +609,7 @@ func TestDBDepGroups(t *testing.T) {
 
 		jobsToQueue, _, alreadyAdded, err := testDB.storeNewJobs(ctx, []*Job{firstMember, secondMember}, true)
 		So(err, ShouldBeNil)
-		So(alreadyAdded, ShouldEqual, 1)
+		So(alreadyAdded, ShouldResemble, DuplicateBreakdown{Complete: 1, CompleteSameRepGroup: 1})
 
 		queued := make([]string, 0, len(jobsToQueue))
 		for _, job := range jobsToQueue {

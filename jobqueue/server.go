@@ -517,6 +517,7 @@ type serverResponse struct {
 	Err             string // string instead of error so we can decode on the client side
 	Added           int
 	Existed         int
+	Duplicates      DuplicateBreakdown
 	AddedIDs        []string
 	AddWarnings     AddWarnings
 	Modified        map[string]string
@@ -5597,7 +5598,7 @@ func (s *Server) createJobs(
 	inputJobs []*Job,
 	envkey string,
 	ignoreComplete bool,
-) (added int, dups int, alreadyComplete int, warnings AddWarnings, srerr string, qerr error) {
+) (added int, dups DuplicateBreakdown, warnings AddWarnings, srerr string, qerr error) {
 	s.racmutex.RLock()
 	rcSet := s.rc != ""
 	s.racmutex.RUnlock()
@@ -5611,7 +5612,7 @@ func (s *Server) createJobs(
 
 	err := s.storeLimitGroups(limitGroups)
 	if err != nil {
-		return added, dups, alreadyComplete, warnings, ErrDBError, err
+		return added, dups, warnings, ErrDBError, err
 	}
 
 	// keep an on-disk record of these new jobs; we sacrifice a lot of speed by
@@ -5623,18 +5624,20 @@ func (s *Server) createJobs(
 	// disk succeeding. (If we don't return success to the client, it won't
 	// Remove the job that created the new jobs from the queue and when we
 	// recover, at worst the creating job will be run again - no jobs get lost.)
-	jobsToQueue, jobsToUpdate, alreadyComplete, err := s.db.storeNewJobs(ctx, inputJobs, ignoreComplete)
+	var jobsToQueue, jobsToUpdate []*Job
+
+	jobsToQueue, jobsToUpdate, dups, err = s.db.storeNewJobs(ctx, inputJobs, ignoreComplete)
 	if err != nil {
-		return added, dups, alreadyComplete, warnings, ErrDBError, err
+		return added, dups, warnings, ErrDBError, err
 	}
 
 	s.updateDepGroupMembershipForNewJobs(ctx, jobsToQueue)
 
 	itemdefs := s.itemDefsForNewJobs(jobsToQueue, inputJobKeys, &warnings)
 
-	added, dups, srerr, qerr = s.queueNewJobItems(ctx, jobsToUpdate, itemdefs, ignoreComplete, queuedDups)
+	added, dups.Queued, srerr, qerr = s.queueNewJobItems(ctx, jobsToUpdate, itemdefs, ignoreComplete, queuedDups)
 
-	return added, dups, alreadyComplete, warnings, srerr, qerr
+	return added, dups, warnings, srerr, qerr
 }
 
 // itemDefsForNewJobs builds the queue item definitions for the jobs returned by

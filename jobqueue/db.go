@@ -34,6 +34,7 @@ package jobqueue
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -43,6 +44,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -2824,7 +2826,8 @@ func (db *db) retrieveLimitGroup(ctx context.Context, group string) *limiter.Gro
 // we store a lookup for the Job.DepGroups and .Dependencies.DepGroups().
 //
 // If ignoreAdded is true, jobs that have already completed will be ignored and
-// the returned alreadyAdded value will increase. Callers should filter jobs
+// counted in the returned alreadyAdded, attributed to whether they had
+// previously completed under their own RepGroup. Callers should filter jobs
 // known to be in the live queue before calling; live DB rows that did not reach
 // the queue are then recovered through the normal queue add path.
 //
@@ -2846,7 +2849,7 @@ func (db *db) retrieveLimitGroup(ctx context.Context, group string) *limiter.Gro
 //
 // Finally, it triggers a background database backup.
 func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
-	jobsToQueue, jobsToUpdate []*Job, alreadyAdded int, err error,
+	jobsToQueue, jobsToUpdate []*Job, alreadyAdded DuplicateBreakdown, err error,
 ) {
 	encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs,
 		jobsToQueue, jobsToUpdate, alreadyAdded, err := db.prepareNewJobs(jobs, ignoreAdded)
@@ -2858,7 +2861,7 @@ func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 		err = db.storeNewJobData(ctx, encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs)
 	}
 
-	if err == nil && alreadyAdded != len(jobs) {
+	if err == nil && alreadyAdded.Complete != len(jobs) {
 		db.backupDirty.Store(true)
 	}
 
@@ -2927,29 +2930,35 @@ func (db *db) storeNewJobData(ctx context.Context, encodedJobs, rgLookups,
 }
 
 //nolint:gocognit,gocyclo,cyclop,funlen,lll,nestif // Legacy persistence path coordinates several lookup buckets.
-func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs sobsd, jobsToQueue []*Job, jobsToUpdate []*Job, alreadyAdded int, err error) {
+func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs sobsd, jobsToQueue []*Job, jobsToUpdate []*Job, alreadyAdded DuplicateBreakdown, err error) {
 	// turn the jobs in to sobsd and sort by their keys, likewise for the
 	// lookups
 	repGroups := make(map[string]bool)
 	depGroups := make(map[string]bool)
 	newJobKeys := make(map[string]bool)
 
-	var keptJobs []*Job
+	var (
+		keptJobs   []*Job
+		dupCounter duplicateCounter
+	)
 
 	for _, job := range jobs {
 		keyStr := job.Key()
 
 		if ignoreAdded {
-			var added bool
+			var (
+				complete  bool
+				elsewhere *completedElsewhere
+			)
 
-			added, err = db.checkIfComplete(keyStr)
+			complete, elsewhere, err = db.checkIfCompleteUnderRepGroup(job, keyStr)
 			if err != nil {
 				return encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs,
 					jobsToQueue, jobsToUpdate, alreadyAdded, err
 			}
 
-			if added {
-				alreadyAdded++
+			if complete {
+				dupCounter.count(elsewhere)
 
 				continue
 			}
@@ -2992,6 +3001,8 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 		encodedJobs = append(encodedJobs, [2][]byte{key, encoded})
 	}
 
+	alreadyAdded = dupCounter.duplicates()
+
 	if len(encodedJobs) > 0 {
 		if !ignoreAdded {
 			keptJobs = jobs
@@ -3026,7 +3037,7 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 
 		// jobsToQueue now holds any resurrected archived dependents, to which we
 		// add the input jobs we actually stored. It must be keptJobs and not
-		// jobs: an input job that checkIfComplete ruled out was never encoded,
+		// jobs: an input job ruled out for being complete was never encoded,
 		// so queueing it would run it while it is absent from the live bucket.
 		jobsToQueue = append(jobsToQueue, keptJobs...)
 
@@ -3069,6 +3080,131 @@ func (db *db) checkIfLive(key string) (bool, error) {
 // checkIfLiveTx is checkIfLive using the given read transaction.
 func checkIfLiveTx(tx *bolt.Tx, key string) bool {
 	return tx.Bucket(bucketJobsLive).Get([]byte(key)) != nil
+}
+
+// completedElsewhere describes the archived record of a job that last completed
+// under a RepGroup other than the one it is now being added with.
+type completedElsewhere struct {
+	repGroup string
+	endTime  time.Time
+}
+
+// checkIfCompleteUnderRepGroup is checkIfComplete for the given job's key, that
+// additionally tells you which other RepGroup the key completed under, if the
+// repgroup->key index does not already link that key to the job's own RepGroup.
+// A nil elsewhere therefore means the job completed under the RepGroup it is now
+// being added with.
+//
+// It costs one index Get in the same read transaction, and only reads the
+// archived record when that Get showed the key belongs to some other RepGroup -
+// so a re-add under the same identifier decodes nothing at all.
+//
+// A record with no index entry of its own (an old or hand-built database) is
+// still reported as the same RepGroup when the record itself says so, since
+// naming the identifier the caller just typed would tell them nothing.
+func (db *db) checkIfCompleteUnderRepGroup(job *Job, key string) (bool, *completedElsewhere, error) {
+	job.RLock()
+	repGroup := job.RepGroup
+	job.RUnlock()
+
+	var (
+		complete  bool
+		elsewhere *completedElsewhere
+	)
+
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		var errt error
+
+		complete, elsewhere, errt = db.checkIfCompleteUnderRepGroupTx(tx, []byte(key), repGroup)
+
+		return errt
+	})
+
+	return complete, elsewhere, err
+}
+
+// checkIfCompleteUnderRepGroupTx does checkIfCompleteUnderRepGroup's reads
+// inside its read transaction.
+func (db *db) checkIfCompleteUnderRepGroupTx(tx *bolt.Tx, key []byte, repGroup string) (
+	bool, *completedElsewhere, error,
+) {
+	encoded := tx.Bucket(bucketJobsComplete).Get(key)
+	if encoded == nil {
+		return false, nil, nil
+	}
+
+	if tx.Bucket(bucketRTK).Get(db.generateLookupKey(repGroup, key)) != nil {
+		return true, nil, nil
+	}
+
+	archived, err := db.decodeJob(encoded)
+	if err != nil {
+		return true, nil, err
+	}
+
+	if archived.RepGroup == repGroup {
+		return true, nil, nil
+	}
+
+	return true, &completedElsewhere{repGroup: archived.RepGroup, endTime: archived.EndTime}, nil
+}
+
+// duplicateCounter accumulates the attribution of an Add's already-complete
+// input jobs, so they can be reported as a DuplicateBreakdown.
+type duplicateCounter struct {
+	complete       int
+	sameRepGroup   int
+	otherRepGroups map[string]*DuplicateRepGroup
+}
+
+// count records one input job that had already completed. A nil elsewhere means
+// it had completed under the RepGroup it was being added with; otherwise
+// elsewhere describes the RepGroup it had actually completed under.
+func (d *duplicateCounter) count(elsewhere *completedElsewhere) {
+	d.complete++
+
+	if elsewhere == nil {
+		d.sameRepGroup++
+
+		return
+	}
+
+	if d.otherRepGroups == nil {
+		d.otherRepGroups = make(map[string]*DuplicateRepGroup)
+	}
+
+	group, exists := d.otherRepGroups[elsewhere.repGroup]
+	if !exists {
+		group = &DuplicateRepGroup{RepGroup: elsewhere.repGroup}
+		d.otherRepGroups[elsewhere.repGroup] = group
+	}
+
+	group.Count++
+
+	if elsewhere.endTime.After(group.LastCompleted) {
+		group.LastCompleted = elsewhere.endTime
+	}
+}
+
+// duplicates returns what was counted, with the other RepGroups ordered biggest
+// count first and then by RepGroup, so that what an operator is told is
+// deterministic.
+func (d *duplicateCounter) duplicates() DuplicateBreakdown {
+	dups := DuplicateBreakdown{Complete: d.complete, CompleteSameRepGroup: d.sameRepGroup}
+
+	for _, group := range d.otherRepGroups {
+		dups.OtherRepGroups = append(dups.OtherRepGroups, *group)
+	}
+
+	slices.SortFunc(dups.OtherRepGroups, func(a, b DuplicateRepGroup) int {
+		if byCount := cmp.Compare(b.Count, a.Count); byCount != 0 {
+			return byCount
+		}
+
+		return cmp.Compare(a.RepGroup, b.RepGroup)
+	})
+
+	return dups
 }
 
 // checkIfComplete tells you if a job with the given key is currently in the

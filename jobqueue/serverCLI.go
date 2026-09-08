@@ -841,17 +841,17 @@ func (s *Server) handleAdd(ctx context.Context, cr *clientRequest) (*serverRespo
 	}
 
 	// create the jobs server-side
-	added, dups, alreadyComplete, warnings, thisSrerr, err := s.createJobs(ctx, cr.Jobs, envkey, cr.IgnoreComplete)
+	added, dups, warnings, thisSrerr, err := s.createJobs(ctx, cr.Jobs, envkey, cr.IgnoreComplete)
 	if err != nil {
 		return nil, thisSrerr, err.Error()
 	}
 
-	clog.Debug(ctx, "added jobs", "new", added, "dups", dups, "complete", alreadyComplete)
+	clog.Debug(ctx, "added jobs", "new", added, "dups", dups.Queued, "complete", dups.Complete)
 
-	existed := dups + alreadyComplete
+	existed := dups.Total()
 
 	if !cr.ReturnIDs {
-		return &serverResponse{Added: added, Existed: existed, AddWarnings: warnings}, "", ""
+		return &serverResponse{Added: added, Existed: existed, Duplicates: dups, AddWarnings: warnings}, "", ""
 	}
 
 	jobs := s.inputToQueuedJobs(ctx, cr.Jobs)
@@ -861,7 +861,9 @@ func (s *Server) handleAdd(ctx context.Context, cr *clientRequest) (*serverRespo
 		ids = append(ids, job.Key())
 	}
 
-	return &serverResponse{Added: added, Existed: existed, AddedIDs: ids, AddWarnings: warnings}, "", ""
+	return &serverResponse{
+		Added: added, Existed: existed, Duplicates: dups, AddedIDs: ids, AddWarnings: warnings,
+	}, "", ""
 }
 
 // handleSubscribe registers a client subscription and returns its id plus the

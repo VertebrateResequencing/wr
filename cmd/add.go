@@ -77,6 +77,10 @@ const (
 	// configFilePathParts is the number of colon-separated parts in a config
 	// file spec that specifies both a source and a destination path.
 	configFilePathParts = 2
+
+	// maxNamedIdentifiers is the maximum number of identifiers that an add's
+	// duplicate breakdown names, before summarising the rest as a count.
+	maxNamedIdentifiers = 5
 )
 
 var (
@@ -583,25 +587,101 @@ directory, with ManagerHost, ManagerPort, and ManagerCertDomain set.`,
 		} else if syncMode {
 			synchronousAdd(jq, jobs[0], envVars, !cmdReRun)
 		} else {
-			inserts, dups, warnings, err := jq.AddWithWarnings(jobs, envVars, !cmdReRun)
+			inserts, dups, warnings, err := jq.AddWithDuplicates(jobs, envVars, !cmdReRun)
 			if err != nil {
 				die("%s", err)
 			}
 
 			printAddWarnings(warnings)
 
+			defaultIdentifier := ""
 			if defaultedRepG {
-				fmt.Printf(
-					"Added %d new commands (%d were duplicates) to the queue using default identifier '%s'\n",
-					inserts,
-					dups,
-					cmdRepGroup,
-				)
-			} else {
-				fmt.Printf("Added %d new commands (%d were duplicates) to the queue\n", inserts, dups)
+				defaultIdentifier = cmdRepGroup
 			}
+
+			fmt.Println(addedMessage(inserts, dups, defaultIdentifier))
 		}
 	},
+}
+
+// addedMessage is what an add tells the user it did: how many commands it
+// added, how many of them were duplicates and, when the manager broke those
+// down, why each was one.
+//
+// defaultIdentifier is the identifier the add gave commands that came without
+// one, or empty if every command carried its own.
+func addedMessage(inserts int, dups jobqueue.AddDuplicates, defaultIdentifier string) string {
+	message := fmt.Sprintf("Added %d new commands (%d were duplicates%s) to the queue",
+		inserts, dups.Total(), duplicateBreakdown(dups))
+
+	if defaultIdentifier != "" {
+		message += " using default identifier '" + defaultIdentifier + "'"
+	}
+
+	return message
+}
+
+// duplicateBreakdown returns the multi-line explanation of an add's duplicates
+// that goes inside the "(n were duplicates...)" parenthesis, so an operator can
+// reconcile the add against `wr status -i`.
+//
+// It is empty when there were no duplicates, and when the manager that answered
+// the add is too old to have broken them down, leaving the single-line message
+// unchanged in both cases.
+func duplicateBreakdown(dups jobqueue.AddDuplicates) string {
+	breakdown, ok := dups.Breakdown()
+	if !ok || breakdown.Total() == 0 {
+		return ""
+	}
+
+	lines := fmt.Sprintf(":\n  %d already completed\n", breakdown.Complete)
+
+	if breakdown.Complete > 0 {
+		lines += fmt.Sprintf("    %d under this identifier\n", breakdown.CompleteSameRepGroup)
+		lines += otherIdentifiers(breakdown)
+	}
+
+	return lines + fmt.Sprintf("  %d already in the queue", breakdown.Queued)
+}
+
+// otherIdentifiers names the identifiers that an add's already-completed
+// duplicates had instead completed under, one per line and at most
+// maxNamedIdentifiers of them, so that an operator can go and look at the runs
+// that consumed those commands. The header count is the breakdown's own sum of
+// those lines, so the two cannot disagree.
+func otherIdentifiers(breakdown jobqueue.DuplicateBreakdown) string {
+	total := breakdown.CompleteOtherRepGroups()
+	if total == 0 {
+		return "    0 under other identifiers\n"
+	}
+
+	var lines strings.Builder
+
+	fmt.Fprintf(&lines, "    %d under other identifiers:\n", total)
+
+	groups := breakdown.OtherRepGroups
+	named := min(len(groups), maxNamedIdentifiers)
+
+	for _, group := range groups[:named] {
+		fmt.Fprintf(&lines, "      %d as '%s'%s\n", group.Count, group.RepGroup,
+			lastCompleted(group.LastCompleted))
+	}
+
+	if unnamed := len(groups) - named; unnamed > 0 {
+		fmt.Fprintf(&lines, "      and %d more identifiers\n", unnamed)
+	}
+
+	return lines.String()
+}
+
+// lastCompleted describes when an identifier's duplicates last completed, or
+// nothing at all if none of them recorded an end time.
+func lastCompleted(endTime time.Time) string {
+	if endTime.IsZero() {
+		return ""
+	}
+
+	return ", last completed " + endTime.Format(time.DateOnly)
 }
 
 func init() {
