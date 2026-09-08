@@ -2030,17 +2030,17 @@ type JobEssence struct {
 	MountConfigs MountConfigs
 
 	// WithDocker must be set to the WithDocker the Job was created with, if any.
-	WithDocker string
+	WithDocker string `codec:",omitempty"`
 
 	// WithSingularity must be set to the WithSingularity the Job was created
 	// with, if any. It is ignored when WithDocker is also set, just as it is on
 	// a Job that was created with both.
-	WithSingularity string
+	WithSingularity string `codec:",omitempty"`
 
 	// ContainerMounts must be set to the ContainerMounts the Job was created
 	// with, if it was created with a WithDocker or WithSingularity image. Like
 	// the Job's own, it is ignored when neither image is set.
-	ContainerMounts string
+	ContainerMounts string `codec:",omitempty"`
 }
 
 // Key returns the same value that Key() on the matching Job would give you.

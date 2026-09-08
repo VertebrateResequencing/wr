@@ -39,6 +39,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/ugorji/go/codec"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -117,6 +118,90 @@ func TestBackupCopyWriterChunking(t *testing.T) {
 			So(got, ShouldResemble, p)
 		})
 	})
+}
+
+// preContainerJobEssence mirrors the shape JobEssence had before it gained its
+// WithDocker, WithSingularity and ContainerMounts fields. The db's codec handle
+// encodes a struct as a map of all its exported field names, so encoding this
+// gives exactly the bytes an older wr wrote for a container-free essence, and
+// exactly the shape it can still read back.
+type preContainerJobEssence struct {
+	JobKey       string
+	Cmd          string
+	Cwd          string
+	MountConfigs MountConfigs
+}
+
+func TestDBJobEssenceEncoding(t *testing.T) {
+	Convey("Given a database and its codec handle", t, func() {
+		ctx := context.Background()
+		tmpdir := t.TempDir()
+
+		testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
+			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+		mcs := MountConfigs{{Targets: []MountTarget{{Path: testMountPath}}}}
+
+		Convey("An essence with no container fields stores as the pre-container shape", func() {
+			essence := &JobEssence{Cmd: testTrueCmd, Cwd: testCwdPath, MountConfigs: mcs}
+			pre := &preContainerJobEssence{Cmd: essence.Cmd, Cwd: essence.Cwd, MountConfigs: essence.MountConfigs}
+
+			So(encodeWithDBHandle(testDB, essence), ShouldResemble, encodeWithDBHandle(testDB, pre))
+		})
+
+		Convey("A record written by the pre-container code decodes into a JobEssence", func() {
+			pre := &preContainerJobEssence{Cmd: testTrueCmd, Cwd: testCwdPath, MountConfigs: mcs}
+
+			decoded := &JobEssence{}
+			So(codec.NewDecoderBytes(encodeWithDBHandle(testDB, pre), testDB.ch).Decode(decoded), ShouldBeNil)
+
+			So(decoded.Cmd, ShouldEqual, testTrueCmd)
+			So(decoded.Cwd, ShouldEqual, testCwdPath)
+			So(decoded.MountConfigs.Key(), ShouldEqual, mcs.Key())
+			So(decoded.WithDocker, ShouldBeBlank)
+			So(decoded.WithSingularity, ShouldBeBlank)
+			So(decoded.ContainerMounts, ShouldBeBlank)
+			So(decoded.Key(), ShouldEqual, (&JobEssence{Cmd: testTrueCmd, Cwd: testCwdPath,
+				MountConfigs: mcs}).Key())
+		})
+
+		Convey("Essences round-trip with every field and their key intact", func() {
+			dockerImage := "essence:latest"
+			sifImage := "essence.sif"
+			containerMounts := "/essence-out:/essence-in"
+
+			for _, essence := range []*JobEssence{
+				{Cmd: testTrueCmd, Cwd: testCwdPath, MountConfigs: mcs},
+				{Cmd: testTrueCmd, Cwd: testCwdPath, WithDocker: dockerImage, ContainerMounts: containerMounts},
+				{Cmd: testTrueCmd, MountConfigs: mcs, WithSingularity: sifImage, ContainerMounts: containerMounts},
+			} {
+				decoded := &JobEssence{}
+				So(codec.NewDecoderBytes(encodeWithDBHandle(testDB, essence), testDB.ch).Decode(decoded),
+					ShouldBeNil)
+
+				So(decoded.Cmd, ShouldEqual, essence.Cmd)
+				So(decoded.Cwd, ShouldEqual, essence.Cwd)
+				So(decoded.MountConfigs.Key(), ShouldEqual, essence.MountConfigs.Key())
+				So(decoded.WithDocker, ShouldEqual, essence.WithDocker)
+				So(decoded.WithSingularity, ShouldEqual, essence.WithSingularity)
+				So(decoded.ContainerMounts, ShouldEqual, essence.ContainerMounts)
+				So(decoded.Key(), ShouldEqual, essence.Key())
+			}
+		})
+	})
+}
+
+// encodeWithDBHandle encodes v through the db's own codec handle, the way every
+// Job (and so every Dependency's Essence) is encoded before being stored.
+func encodeWithDBHandle(testDB *db, v any) []byte {
+	var encoded []byte
+
+	So(codec.NewEncoderBytes(&encoded, testDB.ch).Encode(v), ShouldBeNil)
+
+	return encoded
 }
 
 func TestDBHighPeakMemoryRecommendation(t *testing.T) {
