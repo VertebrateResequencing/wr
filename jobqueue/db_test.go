@@ -43,6 +43,11 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+// jobImageUserField is the name Job.ContainerImageUser is stored under. db.ch
+// sets neither StructToArray nor per-field names, so a Job is stored as a map
+// of the exported field names it spends bytes on.
+const jobImageUserField = "ContainerImageUser"
+
 func TestDBBatchTuning(t *testing.T) {
 	Convey("A freshly opened db uses bbolt's default batch tuning", t, func() {
 		ctx := context.Background()
@@ -1140,6 +1145,93 @@ func TestDBContainerImageUser(t *testing.T) {
 			}).Key())
 		})
 	})
+}
+
+// TestDBContainerImageUserStorageCost asserts on the stored record rather than
+// on a round trip, because a round trip cannot see either thing that matters
+// here: that a job with the flag off costs a user's database nothing for it,
+// and that a job with it on stores it under its own field name. A codec tag
+// written without its leading comma renames the field and orphans every stored
+// record, yet round trips, keys and goldens all stay green under the rename.
+func TestDBContainerImageUserStorageCost(t *testing.T) {
+	ctx := context.Background()
+
+	const (
+		callingUserCmd = "echo stored as the calling user"
+		imageUserCmd   = "echo stored as the image user"
+		storageImage   = "debian:storage-cost"
+	)
+
+	Convey("Given stored jobs, one running as the calling user and one as the image's user", t, func() {
+		tmpdir := t.TempDir()
+		dbFile := filepath.Join(tmpdir, "queue.db")
+		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
+
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		callingUser := testDBJob(callingUserCmd, "rg-storage-cost-calling-user")
+
+		imageUser := testDBJob(imageUserCmd, "rg-storage-cost-image-user")
+		imageUser.WithDocker = storageImage
+		imageUser.ContainerImageUser = true
+
+		_, _, _, err = testDB.storeNewJobs(ctx, []*Job{callingUser, imageUser}, false)
+		So(err, ShouldBeNil)
+		So(testDB.close(ctx), ShouldBeNil)
+
+		testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
+		Convey("the calling user's record spends no bytes on the flag", func() {
+			record := storedJobRecord(testDB, callingUser.Key())
+			So(record, ShouldNotBeEmpty)
+			So(storedJobRecordFields(testDB.ch, record), ShouldNotContain, jobImageUserField)
+		})
+
+		Convey("the image user's record keeps it under its own field name, and it comes back true", func() {
+			record := storedJobRecord(testDB, imageUser.Key())
+			So(record, ShouldNotBeEmpty)
+			So(storedJobRecordFields(testDB.ch, record), ShouldContain, jobImageUserField)
+
+			decoded, errd := testDB.decodeJob(record)
+			So(errd, ShouldBeNil)
+			So(decoded.ContainerImageUser, ShouldBeTrue)
+		})
+	})
+}
+
+// storedJobRecord returns the raw bytes the db file holds for the job with the
+// given key, ie. what a user's database actually pays for that job.
+func storedJobRecord(testDB *db, jobKey string) []byte {
+	var record []byte
+
+	err := testDB.bolt.View(func(tx *bolt.Tx) error {
+		record = bytes.Clone(tx.Bucket(bucketJobsLive).Get([]byte(jobKey)))
+
+		return nil
+	})
+	So(err, ShouldBeNil)
+
+	return record
+}
+
+// storedJobRecordFields returns the field names a stored job record spends
+// bytes on, decoded with the db's own handle.
+func storedJobRecordFields(handle codec.Handle, record []byte) []string {
+	fields := make(map[string]any)
+
+	So(codec.NewDecoderBytes(record, handle).Decode(&fields), ShouldBeNil)
+
+	names := make([]string, 0, len(fields))
+
+	for name := range fields {
+		names = append(names, name)
+	}
+
+	return names
 }
 
 // TestDBMapFreelistOpen covers D1 acceptance test 1: a fresh db opened by

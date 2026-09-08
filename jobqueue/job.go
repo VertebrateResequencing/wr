@@ -751,7 +751,7 @@ type Job struct {
 	//
 	// This only affects WithDocker. Singularity runs the container as the
 	// calling user already, so WithSingularity ignores it.
-	ContainerImageUser bool
+	ContainerImageUser bool `codec:",omitempty"`
 
 	// The remaining properties are used to record information about what
 	// happened when Cmd was executed, or otherwise provide its current state.
