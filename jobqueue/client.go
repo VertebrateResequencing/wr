@@ -2601,13 +2601,23 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	logs, unmountErr := job.Unmount()
 	if unmountErr != nil {
 		if strings.Contains(unmountErr.Error(), "failed to upload") {
-			// the files that did not upload only existed in the mount's cache,
-			// which is deleted at unmount regardless, so the job must be redone
+			// muxfys keeps the cache directory that holds the files which
+			// failed to upload, and names its path in the unmount error. wr has
+			// no way to complete the upload from here, and the job's output
+			// only counts once it is on the remote, so the job must be redone -
+			// from scratch, whether it is released and retried below, or buried
+			// and retried by hand later. Nothing will therefore ever read those
+			// kept files, so wr deletes them instead of leaving them on the
+			// node's disk for nobody; this is the one place that may, being the
+			// only one that knows the upload has already failed.
 			unmountOutcome = execOutcome{
 				dorelease:  true,
 				failreason: FailReasonUpload,
 				exitcode:   exitCodeUploadFailure,
 			}
+
+			myerr = appendExecErr(myerr, job.rmMuxfysCaches(),
+				"deleting the un-uploaded mount cache also failed")
 		}
 
 		myerr = appendExecErr(myerr, unmountErr, "unmounting also caused problem(s)")

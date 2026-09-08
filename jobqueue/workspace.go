@@ -1066,10 +1066,19 @@ func (ws *jobWorkSpace) actualCwdNow(wsRoot *os.Root) (os.FileInfo, error) {
 // second one, there having been no entry of that name for muxfys's own mkdir to
 // find already there.
 func (ws *jobWorkSpace) keptEntry(name string) bool {
-	if ws.keep.workSpaceEntries[name] {
-		return true
-	}
+	return ws.keep.workSpaceEntries[name] || ws.muxfysNamedCache(name)
+}
 
+// muxfysNamedCache says if an entry of the Job's workspace is a cache directory
+// muxfys named for ITSELF, which it does only inside a CacheBase it was given -
+// so the name means what it says only where the Job's own configuration put such
+// a CacheBase on the workspace; see keptDirs.muxfysNamesWorkSpaceEntry.
+//
+// It is the single place the prefix rule is applied, because the two callers ask
+// opposite questions of it: cleanup keeps such a cache, since Unmount has yet to
+// upload what is in it, while removeMuxfysCaches deletes one once Unmount has
+// failed to. A second spelling of the rule could answer them differently.
+func (ws *jobWorkSpace) muxfysNamedCache(name string) bool {
 	return ws.keep.muxfysNamesWorkSpaceEntry && strings.HasPrefix(name, muxfysCachePrefix)
 }
 
@@ -1168,6 +1177,117 @@ func (ws *jobWorkSpace) removeTmp() error {
 
 	return removeEntryWithExceptions(workSpace.root, createdTmpName, createdTmpName, wsInfo,
 		sweepKeepIn(workSpace.root, ws.keep.workSpaceEntries))
+}
+
+// removeMuxfysCaches removes the workspace's muxfys-named cache entries, by the
+// same route removeTmp removes tmp: a handle on the workspace opened by the
+// proven descent and confirmed by inode against what that descent saw, with each
+// entry named to that handle by its own name alone, so no part of any path here
+// is resolved from a string a second time.
+//
+// It is the one deletion in this file that cleanup must NOT make. Those caches
+// hold a writable mount's output until Unmount uploads it, and cleanup runs
+// BEFORE Unmount (Client.Execute), so a cleanup that deleted them would destroy
+// a successful Job's output before it had ever been uploaded; only an Unmount
+// that has already failed to upload makes them worthless. See Job.rmMuxfysCaches,
+// the only caller, for why the kept files are then of no use to anyone.
+//
+// It goes the other way round from keptEntry, but deliberately not all the way
+// round: an entry the keep set claims is left alone even when its name carries
+// the muxfys prefix. Such an entry is one the Job's own configuration named - a
+// mount point, or a MountTarget.CacheDir the user chose the location of - and a
+// user-named CacheDir is not something muxfys ever deletes, so there is nothing
+// there for wr to undo. It may also be shared between Jobs.
+//
+// A workspace that has gone since it was proven leaves nothing to remove, and
+// neither does one wholeWorkSpace is set for, by either of its causes: a live
+// mount of the Job's own at or above the workspace, or a MountTarget.CacheDir
+// that IS the workspace, whose un-uploaded contents are named after the remote
+// rather than by muxfys; see keptDirs.wholeWorkSpace.
+func (ws *jobWorkSpace) removeMuxfysCaches() error {
+	if ws.keep.wholeWorkSpace || !ws.keep.muxfysNamesWorkSpaceEntry {
+		return nil
+	}
+
+	chain, err := ws.proven.openChain()
+	if err != nil {
+		return err
+	}
+	defer chain.closeAll()
+
+	workSpace, err := chain.sweptWorkSpace()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+
+		return err
+	}
+	defer workSpace.root.Close()
+
+	return ws.removeMuxfysCacheEntries(workSpace)
+}
+
+// removeMuxfysCacheEntries deletes every entry of the workspace that is a cache
+// muxfys named for itself and that the Job's keep set does not claim. As in
+// removeWorkSpaceEntries, what may be deleted is asked of the Job's own keep set
+// and of nothing else, and removeEntryWithExceptions is what stops a deletion
+// crossing into another Job's workspace or through a live mount deeper down.
+//
+// That keep set is consulted in BOTH of the halves sweepKeep describes, exactly
+// as removeWorkSpaceEntries consults them: the NAMES the Job's MountConfigs
+// spell, answered by the check below at no cost in syscalls, and the IDENTITIES
+// those names reach when the KERNEL resolves them through the workspace handle,
+// which is the half no byte comparison can ask for. A MountTarget.CacheDir whose
+// name carries the muxfys prefix and which the filesystem stores under another
+// spelling matches the prefix rule and misses the name rule, and this is the one
+// deletion that must not fall on it: the user chose that directory's location,
+// so muxfys never deletes it and a failed upload leaves nothing there for wr to
+// undo, and it may be shared between Jobs.
+//
+// The name check below is asked first because it is still needed and not merely
+// cheaper: removeEntryWithExceptions unlinks a non-dir before it asks the sweep's
+// keep set anything at all, so leaving that check to that set - to either half of
+// it, since sweepKeep.keeps reads the same names first - would WIDEN this
+// deletion to an entry the Job named that is not a directory.
+//
+// Whether the workspace may be swept at all, and those identities, are settled
+// ONCE for the whole loop rather than once per entry as removeAllGuarded had it.
+// The identities cost one lstat per keep the Job configured - a Job has one or
+// two - and settling the sweepable check once gives back the lstat of the
+// workspace removeAllGuarded made for every entry it deleted, so the whole call
+// lands within an lstat or two of what it spent before. Asking it once also
+// reports a failure to lstat the workspace where a loop with nothing to delete
+// never reached removeAllGuarded to ask, which is what removeWorkSpaceEntries and
+// removeTmp already do with the same refusal. It is the failed-upload path either
+// way (see Job.rmMuxfysCaches), reached once for a Job whose Unmount has already
+// failed to write its output to the remote.
+func (ws *jobWorkSpace) removeMuxfysCacheEntries(workSpace sweptDir) error {
+	entries, err := readDirIn(workSpace.root)
+	if err != nil {
+		return err
+	}
+
+	wsInfo, ok, err := workSpace.sweepable()
+	if !ok {
+		return err
+	}
+
+	keep := sweepKeepIn(workSpace.root, ws.keep.workSpaceEntries)
+
+	for _, entry := range entries {
+		name := entry.Name()
+
+		if !ws.muxfysNamedCache(name) || ws.keep.workSpaceEntries[name] {
+			continue
+		}
+
+		if err = removeEntryWithExceptions(workSpace.root, name, name, wsInfo, keep); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // removeActualCwd deletes the Job's working directory, keeping whatever of the

@@ -1464,6 +1464,40 @@ func (j *Job) rmEmptyMountDirs() error {
 	return ws.rmEmptyMountDirs()
 }
 
+// rmMuxfysCaches deletes the cache directories muxfys named for itself inside
+// the workspace wr made for the Job.
+//
+// It is for a caller that has just had "failed to upload" out of Unmount, and
+// for no other. muxfys keeps such a cache rather than deleting it, because it
+// holds the only copy of the files that did not reach the remote. wr cannot
+// finish the upload from here, so the Job is released and run again from
+// scratch, and a Job that runs out of retries and is buried is redone from
+// scratch too, once the user has fixed whatever stopped the upload. Nothing
+// will ever read the kept files, so leaving them only fills the node's disk
+// with output for nobody.
+//
+// Called at any other moment it would destroy the Job's output instead: for a
+// writable cached mount that cache IS the output until Unmount uploads it.
+//
+// Which dirs it may delete is decided by the same resolution Behaviour.cleanup
+// uses, so the two cannot disagree about what wr created, and it deletes only
+// where the Job's own mounts put a cache in that workspace; see
+// keptDirs.muxfysNamesWorkSpaceEntry.
+//
+// Unlike rmEmptyMountDirs it reports a refusal from that resolution rather than
+// swallowing it, because it is not on any Job's success path: its caller has
+// already decided this Job failed, and folds what this says into the problems
+// it reports with that failure.
+func (j *Job) rmMuxfysCaches() error {
+	ws, err := j.workSpaceSnapshot().resolveWorkSpace()
+	if err != nil || ws == nil {
+		return err
+	}
+	defer ws.Close()
+
+	return ws.removeMuxfysCaches()
+}
+
 // hasMounts reports whether the Job has any MountConfigs, read under its read
 // lock as workSpaceSnapshot reads them: the field is only ever replaced
 // wholesale, so the slice header is all this has to see, and the lock is

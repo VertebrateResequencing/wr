@@ -142,8 +142,14 @@ type MountTarget struct {
 	// is supplied, Cache is forced true and so doesn't need to be provided. If
 	// this parameter is not supplied but Cache is true, the directory will be a
 	// unique directory in the containing MountConfig's CacheBase, and will get
-	// deleted on unmount. If it's a relative path, it will be relative to the
-	// CacheBase.
+	// deleted on unmount. The exception is when files failed to upload: the
+	// unmount keeps that directory and its error says where it is, leaving the
+	// data to be recovered or discarded. For a Job, Client.Execute discards it
+	// instead, because a Job whose output failed to upload is run again from
+	// scratch - but only where wr made the directory the cache sits in, ie.
+	// where the Job is not CwdMatters and CacheBase resolves to the parent of
+	// its actual working directory. If it's a relative path, it will be
+	// relative to the CacheBase.
 	CacheDir string `json:",omitempty"`
 
 	// Cache is a boolean, which if true, turns on data caching of any data
