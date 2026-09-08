@@ -105,6 +105,12 @@ progress with:
 $ wr status`,
 }
 
+// cmdExit lets tests drive a command's Run past the point where die() would
+// otherwise terminate the test process (mirroring statusExit in status.go). In
+// production it is os.Exit, so die() ends the process non-zero exactly as
+// before.
+var cmdExit = os.Exit
+
 // Execute adds all child commands to the root command and sets flags
 // appropriately. This is called by main.main(). It only needs to happen once to
 // the rootCmd.
@@ -222,7 +228,7 @@ func warn(msg string, a ...any) {
 // die is a convenience to log a message at the Error level and exit non zero.
 func die(msg string, a ...any) {
 	clog.Error(context.Background(), fmt.Sprintf(msg, a...))
-	os.Exit(1)
+	cmdExit(1)
 }
 
 // createWorkingDir ensures the main working directory is available.

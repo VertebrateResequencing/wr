@@ -694,11 +694,23 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 // are given to a command that selects jobs.
 var errSelectionContainerExclusive = errors.New("--with_docker and --with_singularity are mutually exclusive")
 
+// errSelectionContainerMountsNeedImage is the failure when container mounts are
+// given to a command that selects jobs, but neither container image flag is. A
+// job added without an image has no mounts in its key, so such a selection can
+// only ever reach a plain non-container job the user did not name.
+var errSelectionContainerMountsNeedImage = errors.New(
+	"--container_mounts only describes a job alongside --with_docker or --with_singularity; " +
+		"add the image the job was added with, or drop --container_mounts")
+
 // validateSelectionContainerFlags returns an error if the container image flags
 // addSelectionContainerFlags registers describe an impossible job.
 func validateSelectionContainerFlags() error {
 	if cmdWithDocker != "" && cmdWithSingularity != "" {
 		return errSelectionContainerExclusive
+	}
+
+	if cmdContainerMounts != "" && cmdWithDocker == "" && cmdWithSingularity == "" {
+		return errSelectionContainerMountsNeedImage
 	}
 
 	return nil

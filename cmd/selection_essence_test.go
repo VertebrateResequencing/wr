@@ -27,16 +27,28 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/spf13/cobra"
 )
 
 // selectionEssenceImage is the container image the containerised jobs below are
 // added with. Nothing runs them, so no container runtime is involved.
 const selectionEssenceImage = "ubuntu:latest"
+
+// selectionEssenceLoneMounts is a container mounts value used only where no
+// image accompanies it, describing a job that cannot exist.
+const selectionEssenceLoneMounts = "/lone:/mounts"
+
+// selectionEssenceDyingCmd is the command line of the plain non-container job
+// that the commands which die() rather than return an error would reach if they
+// let --container_mounts through without an image.
+const selectionEssenceDyingCmd = "echo reachable only by a plain key"
 
 // TestSelectionByCmdLine drives the real -l selection path of a queue command
 // for the kinds of job whose key -l has to reproduce: one added with a cwd but
@@ -160,6 +172,19 @@ func TestSelectionByCmdLine(t *testing.T) {
 		})
 	})
 
+	Convey("-l with --container_mounts and no image cannot reach the plain job of that Cmd", t, func() {
+		withQueueCommandTestServer(t, func(jq *jobqueue.Client, reqs *jqs.Requirements, _ jobqueue.ServerConfig) {
+			job := newQueueCommandJob("echo no container at all", "rg-select-mounts-only", reqs)
+			addQueueCommandJobs(jq, job)
+
+			output, err := runSuspendForTest(t, "-l", "echo no container at all",
+				"--container_mounts", selectionEssenceLoneMounts)
+			So(err, ShouldEqual, errSelectionContainerMountsNeedImage)
+			So(output, ShouldBeEmpty)
+			So(jobStateByEssence(jq, job), ShouldEqual, jobqueue.JobStateReady)
+		})
+	})
+
 	Convey("selection commands reject both container images at once", t, func() {
 		output, err := runSuspendForTest(t, "-l", "echo both images",
 			"--with_docker", selectionEssenceImage, "--with_singularity", "image.sif")
@@ -170,5 +195,35 @@ func TestSelectionByCmdLine(t *testing.T) {
 			"--with_docker", selectionEssenceImage, "--with_singularity", "image.sif")
 		So(err, ShouldEqual, errSelectionContainerExclusive)
 		So(output, ShouldBeEmpty)
+	})
+
+	Convey("the resume command also rejects container mounts without an image", t, func() {
+		withQueueCommandTestServer(t, func(_ *jobqueue.Client, _ *jqs.Requirements, _ jobqueue.ServerConfig) {
+			output, err := runResumeForTest(t, "-l", "echo mounts only",
+				"--container_mounts", selectionEssenceLoneMounts)
+			So(err, ShouldEqual, errSelectionContainerMountsNeedImage)
+			So(output, ShouldBeEmpty)
+		})
+	})
+
+	Convey("the commands that die rather than return also reject mounts without an image", t, func() {
+		withQueueCommandTestServer(t, func(jq *jobqueue.Client, reqs *jqs.Requirements, _ jobqueue.ServerConfig) {
+			job := newQueueCommandJob(selectionEssenceDyingCmd, "rg-select-dying", reqs)
+			addQueueCommandJobs(jq, job)
+
+			var accepted []string
+
+			for _, command := range []*cobra.Command{statusCmd, killCmd, removeCmd, retryCmd} {
+				exitCode, logged := runSelectionCommandRunForTest(t, command,
+					"-l", selectionEssenceDyingCmd, "--container_mounts", selectionEssenceLoneMounts)
+				if exitCode != 1 || !strings.Contains(logged, errSelectionContainerMountsNeedImage.Error()) {
+					accepted = append(accepted, fmt.Sprintf("%s (exit %d, logged %q)",
+						command.Name(), exitCode, logged))
+				}
+			}
+
+			So(accepted, ShouldBeEmpty)
+			So(jobStateByEssence(jq, job), ShouldEqual, jobqueue.JobStateReady)
+		})
 	})
 }

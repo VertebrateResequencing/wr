@@ -34,6 +34,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
@@ -46,6 +47,101 @@ const (
 	queueCommandCwd   = "/tmp"
 	queueCommandReq   = "queue-command"
 )
+
+// commandExitPanic is what a stubbed exit function panics with, so that the code
+// under test stops where os.Exit would have stopped it.
+type commandExitPanic struct {
+	code int
+}
+
+// runSelectionCommandRunForTest drives command's REAL Run with args, rather
+// than any part of it, so that a command which skips a check its siblings make
+// fails here instead of passing by construction. It returns the code the Run
+// asked to exit with (0 if it never did) and everything die() logged on the way.
+func runSelectionCommandRunForTest(t *testing.T, command *cobra.Command, args ...string) (int, string) {
+	t.Helper()
+
+	if command == statusCmd {
+		resetStatusForTest(t)
+	} else {
+		resetSelectionCommandForTest(t, command)
+	}
+
+	So(command.ParseFlags(args), ShouldBeNil)
+
+	logged := clog.ToBufferAtLevel("error")
+	originalCmdExit, originalStatusExit := cmdExit, statusExit
+	// statusExit is stubbed alongside cmdExit because a Run that gets past the
+	// check under test can reach it, and a real os.Exit there would end the test
+	// binary mid-suite instead of failing an assertion.
+	cmdExit = func(code int) {
+		panic(commandExitPanic{code: code})
+	}
+	statusExit = cmdExit
+
+	defer func() {
+		cmdExit, statusExit = originalCmdExit, originalStatusExit
+
+		clog.ToDefault()
+	}()
+
+	exitCode := 0
+
+	captureStdout(func() {
+		exitCode = recoverCommandExit(func() {
+			command.Run(command, nil)
+		})
+	})
+
+	return exitCode, logged.String()
+}
+
+// captureStdout runs run with os.Stdout redirected to a pipe, returning
+// everything it wrote there.
+func captureStdout(run func()) string {
+	reader, writer, err := os.Pipe()
+	So(err, ShouldBeNil)
+
+	defer reader.Close()
+
+	originalStdout := os.Stdout
+
+	os.Stdout = writer
+	defer func() {
+		os.Stdout = originalStdout
+	}()
+
+	run()
+
+	So(writer.Close(), ShouldBeNil)
+
+	output, err := io.ReadAll(reader)
+	So(err, ShouldBeNil)
+
+	return string(output)
+}
+
+// recoverCommandExit runs run and returns the code it asked a stubbed exit
+// function for, or 0 if it returned without asking to exit.
+func recoverCommandExit(run func()) (exitCode int) {
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			return
+		}
+
+		exitPanic, ok := recovered.(commandExitPanic)
+		if !ok {
+			panic(recovered)
+		}
+
+		exitCode = exitPanic.code
+	}()
+
+	run()
+
+	return 0
+}
 
 func TestSuspendCommand(t *testing.T) {
 	Convey("wr suspend handles selected queued jobs", t, func() {
@@ -295,30 +391,13 @@ func runSelectionCommandForTest(
 	resetSelectionCommandForTest(t, command)
 	So(command.ParseFlags(args), ShouldBeNil)
 
-	reader, writer, err := os.Pipe()
-	So(err, ShouldBeNil)
+	var runErr error
 
-	defer reader.Close()
+	output := captureStdout(func() {
+		runErr = run()
+	})
 
-	originalStdout := os.Stdout
-
-	os.Stdout = writer
-	defer func() {
-		os.Stdout = originalStdout
-	}()
-
-	runErr := run()
-
-	So(writer.Close(), ShouldBeNil)
-
-	output, err := io.ReadAll(reader)
-	So(err, ShouldBeNil)
-
-	return string(output), runErr
-}
-
-type statusExitPanic struct {
-	code int
+	return output, runErr
 }
 
 func runStatusPlainForTest(t *testing.T, args ...string) (string, int) {
@@ -327,50 +406,25 @@ func runStatusPlainForTest(t *testing.T, args ...string) (string, int) {
 	resetStatusForTest(t)
 	So(statusCmd.ParseFlags(args), ShouldBeNil)
 
-	reader, writer, err := os.Pipe()
-	So(err, ShouldBeNil)
-
-	defer reader.Close()
-
-	originalStdout := os.Stdout
 	originalStatusExit := statusExit
 
-	os.Stdout = writer
 	statusExit = func(code int) {
-		panic(statusExitPanic{code: code})
+		panic(commandExitPanic{code: code})
 	}
 
 	defer func() {
-		os.Stdout = originalStdout
 		statusExit = originalStatusExit
 	}()
 
 	exitCode := 0
 
-	func() {
-		defer func() {
-			recovered := recover()
-			if recovered == nil {
-				return
-			}
+	output := captureStdout(func() {
+		exitCode = recoverCommandExit(func() {
+			statusCmd.Run(statusCmd, nil)
+		})
+	})
 
-			exitPanic, ok := recovered.(statusExitPanic)
-			if !ok {
-				panic(recovered)
-			}
-
-			exitCode = exitPanic.code
-		}()
-
-		statusCmd.Run(statusCmd, nil)
-	}()
-
-	So(writer.Close(), ShouldBeNil)
-
-	output, err := io.ReadAll(reader)
-	So(err, ShouldBeNil)
-
-	return string(output), exitCode
+	return output, exitCode
 }
 
 func assertStatusPlainStateCount(t *testing.T, state jobqueue.JobState, count int, args ...string) {
