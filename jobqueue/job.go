@@ -236,8 +236,9 @@ func (j *JobEssence) pickCandidateJob(jobs []*Job) *Job {
 }
 
 // keyForCwd builds the key of a Job that has this JobEssence's properties and
-// the given Cwd, which is part of the key only when it is not "" (a JobEssence
-// sets a Cwd only for a Job whose CwdMatters is true; see Key()).
+// the given Cwd, which is part of the key only when it is not "": it therefore
+// gives the key of a Job with CwdMatters true when cwd is set, and the key of a
+// Job with CwdMatters false when cwd is "". See Key() and candidateKeys().
 func (j *JobEssence) keyForCwd(cwd string) string {
 	return byteKey(jobKeyConcat(cwd != "", cwd, j.Cmd, j.MountConfigs.Key(),
 		containerImageKey(j.WithDocker, j.WithSingularity), j.ContainerMounts))
@@ -2017,8 +2018,12 @@ type JobEssence struct {
 	// Cmd always forms an essential part of a Job.
 	Cmd string
 
-	// Cwd should only be set if the Job was created with CwdMatters = true. See
-	// Key() for what setting it does and does not describe.
+	// Cwd should only be set if the Job was created with CwdMatters = true,
+	// whenever the single key that Key() returns is used on its own, as a
+	// Dependency's Essence is. A caller that does not know the Job's CwdMatters
+	// may set Cwd anyway and look the Job up with Client.GetByEssence(), which
+	// considers both interpretations. See Key() for what setting it does and
+	// does not describe.
 	Cwd string
 
 	// Mounts should only be set if the Job was created with Mounts
