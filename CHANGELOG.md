@@ -88,6 +88,14 @@ project adheres to [Semantic Versioning](http://semver.org/).
   under-reported and that no container will be killed with it. A container wr
   started for the job itself (`--with_docker`) is still recognised whatever
   else appears alongside it.
+- `--with_singularity` now really does what it has always said it does: your
+  working directory is mounted at the same path inside the container, and is
+  the working directory your command runs in there. Previously wr asked
+  singularity for neither, so your command ran wherever your site's
+  `singularity.conf` put it, commonly `/` or your real home directory, with the
+  command's own working directory not visible inside the container at all and
+  `--change_home` having no effect there. If your site's `singularity.conf`
+  already bound your working directory, nothing changes.
 
 
 ## [0.37.2] - 2026-09-01

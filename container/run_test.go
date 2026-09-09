@@ -54,6 +54,19 @@ const (
 // command makes in the caller's own Cwd.
 const ownershipCmd = "touch created.file && mkdir created.dir"
 
+// workDirCmd reports the container's working directory and lists what the
+// caller's own Cwd holds, so a test can see if the containerised command
+// really runs in that Cwd.
+const workDirCmd = "pwd && ls *.file"
+
+// singularityImage is the image the real singularity tests run, in the
+// docker:// form that makes singularity convert a docker image to a sif.
+const singularityImage = "docker://alpine"
+
+// expectedSingularityWorkDirArgs is the bind of the working directory, and the
+// choice of it as the container's cwd, that SingularityRunCmd always emits.
+const expectedSingularityWorkDirArgs = ` -B "$PWD" --pwd "$PWD"`
+
 // mountNoColon is a mount spec with no ":/inside/container/path" part, so its
 // path is used on both sides of the mount. Several of the command-line tests
 // mount it alongside one that does name an inside path.
@@ -114,7 +127,7 @@ func TestRunRealAwkwardPaths(t *testing.T) {
 
 		defer cleanup()
 
-		cmd := SingularityRunCmd("docker://alpine", cmdFile, mounts)
+		cmd := SingularityRunCmd(singularityImage, cmdFile, mounts)
 
 		actual, err := realTestTryCmd(cmd, homeDir)
 		So(err, ShouldBeNil)
@@ -191,6 +204,38 @@ func soOwnedBy(t *testing.T, dir string, uid, gid int) {
 		So(int(stat.Uid), ShouldEqual, uid)
 		So(int(stat.Gid), ShouldEqual, gid)
 	}
+}
+
+func TestRunRealSingularityWorkDir(t *testing.T) {
+	Convey("SingularityRunCmd's command really runs in the working directory, "+
+		"even at a site that binds nothing useful", t, func() {
+		cmdFile, homeDir, _, cleanup, err := realTestSetup(t, "singularity", workDirCmd, plainTestDirNames())
+		if err != nil {
+			SkipConvey(fmt.Sprintf("Can't really test the singularity working directory: %s", err), nil)
+
+			return
+		}
+
+		defer cleanup()
+
+		// singularity reads this the way it reads its --no-mount option, so it
+		// stands in for a singularity.conf that binds neither the user's home
+		// directory, nor the current working directory, nor /tmp.
+		t.Setenv("SINGULARITY_NO_MOUNT", "cwd,home,tmp")
+
+		cmd := SingularityRunCmd(singularityImage, cmdFile, nil)
+		t.Logf("cmdline: %s", cmd)
+
+		actual, err := realTestTryCmd(cmd, homeDir)
+
+		// workDirCmd's `pwd` names the directory the container actually
+		// started in, so log it before asserting: if the bind or the cwd is
+		// missing, `ls` fails and the error alone says only "exit status 1".
+		t.Logf("output: %q", actual)
+
+		So(err, ShouldBeNil)
+		So(actual, ShouldEqual, homeDir+"\nhome.file\n")
+	})
 }
 
 func TestRunPrepare(t *testing.T) {
@@ -295,17 +340,20 @@ func TestRunSingularity(t *testing.T) {
 	Convey("SingularityRunCmd formulates the correct command line", t, func() {
 		cmd := SingularityRunCmd("myimage", "/path/to/cmds", nil)
 
-		So(cmd, ShouldEqual, "cat /path/to/cmds | singularity shell myimage")
+		So(cmd, ShouldEqual, "cat /path/to/cmds | singularity shell"+
+			expectedSingularityWorkDirArgs+" myimage")
 
 		cmd = SingularityRunCmd("myimage", "/path/to/cmds", []string{"/foo/bar:/bar", mountNoColon})
 
-		So(cmd, ShouldEqual, "cat /path/to/cmds | singularity shell -B /foo/bar:/bar -B /foo/car myimage")
+		So(cmd, ShouldEqual, "cat /path/to/cmds | singularity shell"+
+			expectedSingularityWorkDirArgs+" -B /foo/bar:/bar -B /foo/car myimage")
 	})
 
 	Convey("SingularityRunCmd quotes values containing spaces and shell metacharacters", t, func() {
 		cmd := SingularityRunCmd("my image", "/path to/cmds", []string{"/foo/b ar;rm -rf x:/b ar", mountNoColon})
 
 		So(cmd, ShouldEqual, "cat '/path to/cmds' | singularity shell"+
+			expectedSingularityWorkDirArgs+
 			" -B '/foo/b ar;rm -rf x:/b ar' -B /foo/car 'my image'")
 	})
 }
@@ -345,7 +393,7 @@ func TestRunReal(t *testing.T) {
 
 		defer cleanup()
 
-		cmd := SingularityRunCmd("docker://alpine", cmdFile, mounts)
+		cmd := SingularityRunCmd(singularityImage, cmdFile, mounts)
 
 		actual, err := realTestTryCmd(cmd, homeDir)
 		So(err, ShouldBeNil)

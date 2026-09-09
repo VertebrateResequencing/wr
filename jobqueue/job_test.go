@@ -674,8 +674,10 @@ func TestJob(t *testing.T) {
 
 			defer cleanup()
 
+			singularityPrefix := ` | singularity shell -B "$PWD" --pwd "$PWD"`
+
 			So(cmd, ShouldStartWith, "cat ")
-			So(cmd, ShouldEndWith, " | singularity shell "+image)
+			So(cmd, ShouldEndWith, singularityPrefix+" "+image)
 			So(job.MonitorDocker, ShouldBeBlank)
 
 			Convey("That ContainerImageUser does not change, singularity having no such option", func() {
@@ -687,7 +689,7 @@ func TestJob(t *testing.T) {
 
 				defer cleanup()
 
-				So(cmd, ShouldEndWith, " | singularity shell "+image)
+				So(cmd, ShouldEndWith, singularityPrefix+" "+image)
 			})
 
 			Convey("That can include additional mounts", func() {
@@ -700,7 +702,7 @@ func TestJob(t *testing.T) {
 
 				defer cleanup()
 
-				So(cmd, ShouldEndWith, " | singularity shell -B /foo/bar:/bar -B /foo/baz:/baz "+image)
+				So(cmd, ShouldEndWith, singularityPrefix+" -B /foo/bar:/bar -B /foo/baz:/baz "+image)
 			})
 		})
 	})

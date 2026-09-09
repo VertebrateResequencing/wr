@@ -55,6 +55,18 @@ const dockerMountParts = 2
 // contains a space.
 const workDirMountArgs = ` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD"`
 
+// singularityWorkDirArgs is workDirMountArgs in singularity's own syntax: -B
+// with no ":dest" binds the working directory at the same path it has outside,
+// which is what docker's target="$PWD" does, and --pwd then starts the
+// command there.
+//
+// Without these, the container gets the working directory only if the site's
+// singularity.conf happens to bind it, and starts in / if it does not.
+//
+// $PWD stays a shell expansion for the same reason it does in
+// workDirMountArgs.
+const singularityWorkDirArgs = ` -B "$PWD" --pwd "$PWD"`
+
 // runAsCallingUserArgs makes the container's processes run as the user that runs
 // the command line, instead of as the user the image specifies (normally root).
 // Without it, everything the command creates in the working directory
@@ -216,10 +228,11 @@ func listToPrefixedString(vals []string, prefix string) string {
 //   - Create a container.
 //   - That will run the command in the given file (by piping the file contents
 //     to the container's shell); use PrepareCmdFile() to create one.
-//   - That will mount the given disk locations, in the format
+//   - That will mount the current working directory at the same path inside
+//     the container and use it as the workdir.
+//   - That will also mount any given disk locations, in the format
 //     "/local/path:/inside/container/path" (the colon and inside path being
-//     optional if the same as local path). The CWD is always mounted at / in
-//     container.
+//     optional if the same as local path).
 //   - That will have all environment variables outside the container
 //     replicated inside the container.
 //   - That will run as the calling user, which singularity does by design, so
@@ -234,8 +247,10 @@ func SingularityRunCmd(image, cmdFile string, mounts []string) string {
 
 // singularityMounts takes a list of "/local/path[:/inside/container/path]"
 // values and converts them in to a series of `singularity shell -B` args.
+//
+// It always binds $PWD and makes it the container's working directory as well.
 func singularityMounts(mounts []string) string {
-	return listToPrefixedString(shellQuoteEach(mounts), " -B ")
+	return singularityWorkDirArgs + listToPrefixedString(shellQuoteEach(mounts), " -B ")
 }
 
 // shellQuoteEach shell quotes each of the given values, so that each stays a

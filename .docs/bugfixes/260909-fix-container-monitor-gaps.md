@@ -1,0 +1,169 @@
+# Bugfixes 2026-09-09
+
+fix-container-monitor-gaps
+
+The remaining items from `origin/record-container-monitor-gaps`
+(`.docs/bugfixes/260903-8.md`, commit `bdd17d4`). Items 1, 2 and 3 of that
+record are already fixed and merged, as #589, #587 and #590 respectively.
+
+FOUR items remain, not the two that were expected: 6 and 7 were open too. Each
+was re-verified against `develop` at `0cc79218` before this branch started.
+
+No `file.go:NNN` references below. PR #591 shipped with stale ones after three
+rebases and Copilot caught it; this file names functions instead.
+
+- [ ] 4. A container that outlives its `docker run` keeps the job key as its
+  name, and then every retry of that job fails immediately.
+    - `containerRunCmd` (`jobqueue/job.go`) passes `j.Key()` as `--name`.
+      `--rm` covers the normal case, but a container that outlives its client
+      keeps the name: the runner SIGKILLed, the host lost, the daemon restarted
+      mid-run.
+    - wr only removes a container via `KillContainer` from `killCmd`, which
+      needs a live runner that has already identified it. Verified still true:
+      a repo-wide grep for `ContainerRemove` / `RemoveContainer` outside tests
+      finds nothing.
+    - So after a lost run, every retry dies at `docker run` with "The container
+      name ... is already in use", and the message names an opaque
+      32-character key rather than the job. The job is effectively unrunnable
+      until someone removes the container by hand.
+    - Two halves to weigh: making the retry work, and making the failure
+      legible if it still happens.
+    - Constraint: #589 gave the container a
+      `--label uk.ac.sanger.wr.job-key=<key>` and its monitor matches on that
+      label, so whatever is done to the NAME must keep that correlation
+      working.
+
+- [x] 5. `SingularityRunCmd` contradicts its own doc comment.
+    - The comment promises "The CWD is always mounted at / in container". The
+      implementation emits only `cat %s | singularity shell%s %s`, with `-B`
+      for each explicitly configured mount and nothing else: no bind for the
+      working directory, and no `--pwd`. Verified unchanged on `develop`.
+    - So the command runs wherever singularity puts it, with whatever the
+      site's `singularity.conf` binds. Typical site defaults bind the user's
+      real `$HOME` read-write and NOT wr's working directory - the opposite of
+      what a wr job wants. The job writes to its home instead of its workspace,
+      and `--change_home` has no effect inside the container.
+    - The record is careful about what it can prove, and so should the fix be:
+      the singularity-default half is a claim about site configuration, not
+      about this repo. The missing bind and the missing `--pwd` are in the
+      code, and those are what this item owns.
+    - `DockerRunCmd` already does the equivalent: `-w "$PWD"` plus
+      `--mount type=bind,source="$PWD",target="$PWD"`.
+
+- [ ] 6. A cid-file glob can read a large data file once a second, and inflate
+  the job's recorded PeakRAM.
+    - `GetContainerByPath` falls back to `cidPathGlobToContainer` when the
+      configured path is not an existing file, and each glob match goes through
+      `cidPathToContainer` -> `file.GetFirstLine` -> `file.ToString` ->
+      `os.ReadFile`. Verified: `GetFirstLine` reads the WHOLE file into memory
+      and then trims one trailing newline.
+    - `findContainerID` runs on the 1-second resource ticker for as long as no
+      container has been identified, so a `--monitor_docker` glob matching a
+      large output file - `*.txt`, `out*` - re-reads that file every second for
+      the life of the job.
+    - The record corrects its own first telling of where the cost lands, and
+      the correction matters: `currentMemory(job.Pid)` measures the job's own
+      process tree, not the runner, so the read does not land there. It lands
+      through the runner's own footprint, which wr deliberately adds to the
+      job's peak (`ourmem, _ := ownMemoryMB()` then `peakmem += ourmem`). So a
+      big glob match inflates the job's recorded PeakRAM, and with it the RAM
+      wr reserves for its next run.
+
+- [ ] 7. `container/docker/docker_test.go` uses the developer's real docker.
+    - `pullUbuntuImage` calls `cli.ImagePull(ctx, "ubuntu", ...)` against
+      `client.FromEnv`, and the tests start containers named `container_1` and
+      `container_2` in that same daemon. Verified all three still present.
+    - Running the package's tests therefore pulls
+      `docker.io/library/ubuntu:latest` into the developer's real docker,
+      re-pointing the `ubuntu:latest` tag if they had built their own, and
+      takes names that may collide with theirs.
+    - A test that needs a real daemon should at least use a digest-pinned image
+      and unique names.
+
+## Item 5, as fixed
+
+- The code was made to match the promise, not the other way round, and the case
+  is stronger than this item put it: there were TWO pre-existing promises, both
+  verified by the reviewer and both predating the branch.
+  * `cmd/add.go`'s `with_singularity` help: "The container is created with cwd
+    mounted and set to current directory inside the container", dating to
+    `f7995da` (Nov 2021), the commit that added container support.
+  * `jobqueue/job.go`'s `WithSingularity` field doc: "Cwd will be mounted
+    inside the container and will be the working directory in the container."
+  A repo-wide grep finds exactly 4 such statements - 2 docker, already true,
+  and these 2. So every user-facing and API-facing thing wr said already
+  described the fixed behaviour, and fixing only the doc comment would have
+  left the text users actually read still lying.
+- New `singularityWorkDirArgs` mirrors `workDirMountArgs`, emitting
+  `-B "$PWD" --pwd "$PWD"` before the explicit `-B` mounts. `$PWD` stays a
+  double-quoted shell expansion for the reason `260907-1.md` established:
+  `shellquote.Join` would emit `'$PWD'` and kill the expansion.
+- CORRECTION to the mechanism the implementor gave, which the reviewer
+  disproved empirically. It argued "mounted at `/`" cannot be literal because
+  binding CWD over `/` would shadow the image root and leave no `/bin/sh`. Not
+  so - singularity-ce 4.1.1 accepts the bind and makes it a SILENT NO-OP,
+  mounting the source and then layering the rootfs over it:
+
+  ```
+  $ echo 'pwd; ls /' | singularity shell -B "$PWD/bindroot:/" docker://alpine
+  bin dev environment etc home lib ... usr var
+  EXIT=0
+  ```
+
+  The image root survives and `/bin/sh` runs. The conclusion is unchanged and
+  actually stronger: the comment's literal reading is not implementable at all,
+  so it can only ever have been the symptom written down as the mechanism -
+  when a site binds nothing, singularity simply STARTS the process at `/`.
+- `--pwd` rather than `--cwd`, deliberately. 4.1.1's help presents `--cwd` as
+  the flag and `--pwd` as its synonym, so the naive choice is `--cwd` - but
+  `--cwd` is the NEWER name (SingularityCE 3.11 / Apptainer 1.1) while `--pwd`
+  goes back to Singularity 2.x and works on every release. A
+  `with_singularity` job runs against whatever singularity is on the worker
+  nodes.
+- The existing real tests were STRUCTURALLY BLIND to this, which is why it
+  survived: they build their working directory under `/tmp`, which singularity
+  binds by default, so the job landed in the right place by accident. Proved by
+  the reviewer running the unfixed line both ways:
+
+  ```
+  no fix, no NO_MOUNT  -> /tmp/.../home + home.file   exit 0   (the old tests' world)
+  no fix, NO_MOUNT set -> /  + ls: *.file not found   exit 1   (a hostile site)
+  ```
+
+- The new `TestRunRealSingularityWorkDir` therefore sets
+  `SINGULARITY_NO_MOUNT=cwd,home,tmp`, which is singularity's own `--no-mount`
+  and so genuinely stands in for a site whose `singularity.conf` binds none of
+  them. That `t.Setenv` is itself load-bearing: with the fix reverted AND the
+  setenv removed, the test passes.
+- Verified against real singularity, not asserted: with the fix the container
+  prints its wr working directory and lists the file placed there; without it,
+  `/` and `ls: *.file: No such file or directory`. Also driven with a working
+  directory containing a space, and one containing `;rm -rf x&*'q'` - the path
+  is printed verbatim, nothing executed, nothing removed.
+- Known and accepted: the real test CANNOT discriminate `--pwd`. Under
+  `SINGULARITY_NO_MOUNT`, `-B "$PWD"` alone already lands in the working
+  directory, because singularity defaults its cwd to the host cwd once that
+  path exists in the container; only the string assertions cover `--pwd`. It is
+  kept because it states the contract explicitly, mirrors docker's `-w`, and
+  does not depend on a default that varies by version and with `--contain`.
+- Two failure modes checked for regression risk, both benign: `--pwd` at a path
+  that does not exist in the container (a site with `user bind control = no`,
+  where `-B` is ignored) does not hard-fail, singularity falls back to `$HOME`;
+  and a duplicate bind, where the user's own `container_mounts` also names the
+  cwd, warns and proceeds.
+- `jobqueue/job_test.go` asserts the same command string in 3 more places,
+  which this item did not name. Updated, and every changed assertion got
+  LONGER: `ShouldEqual` stayed `ShouldEqual`, `ShouldEndWith` stayed
+  `ShouldEndWith` with a longer suffix, and no `ShouldContainSubstring` was
+  introduced anywhere.
+- CHANGELOG entry added under `### Fixed`, not `### Changed`: no documented
+  contract moved, the code caught up with one that had been wrong since 2021.
+- The test's red output now names the directory the container actually started
+  in, so a future regression reads `output: "/\n"` rather than only
+  `exit status 1`.
+- Residual limitation, confirmed present in DOCKER too and therefore left for
+  consistency: a working directory containing a comma breaks `-B "$PWD"`
+  (`unable to add ... to mount list`), exactly as it breaks
+  `--mount type=bind,source="$PWD"` (`invalid field 'me' must be a key=value
+  pair`). `Job.containerMounts()` already splits `ContainerMounts` on comma, so
+  the assumption is baked in upstream.
