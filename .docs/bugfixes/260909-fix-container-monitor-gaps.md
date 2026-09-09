@@ -50,7 +50,7 @@ rebases and Copilot caught it; this file names functions instead.
     - `DockerRunCmd` already does the equivalent: `-w "$PWD"` plus
       `--mount type=bind,source="$PWD",target="$PWD"`.
 
-- [ ] 6. A cid-file glob can read a large data file once a second, and inflate
+- [x] 6. A cid-file glob can read a large data file once a second, and inflate
   the job's recorded PeakRAM.
     - `GetContainerByPath` falls back to `cidPathGlobToContainer` when the
       configured path is not an existing file, and each glob match goes through
@@ -274,3 +274,81 @@ rebases and Copilot caught it; this file names functions instead.
   `FailReasonExit`, "command exited non-zero", though the command never ran.
   Special-casing 125 would misclassify a real job that legitimately exits 125,
   and telling the 2 apart needs the stderr sniffing that was avoided.
+
+## Item 6, as fixed
+
+- A FUNCTIONAL BUG the record did not spot, and the more user-visible half:
+  `GetFirstLine` never returned a first line. For any multi-line file it
+  returned everything with ONE trailing newline trimmed, so
+  `"id1\nsome other output\n"` came back as `"id1\nsome other output"` and
+  never matched a container id. A cidfile with any trailing content therefore
+  left the job unmonitored, silently.
+- Its consequence, confirmed at the monitor level by the reviewer: a cidfile
+  containing `jobs\ntrailing junk\n` now yields `containerID="jobs"` and that
+  container's memory is charged to the job - AND the container is SIGKILLed
+  with the job, inside `killCmd`. So the fix widens what wr kills, which is why
+  it earned its own CHANGELOG entry rather than being folded into the memory
+  one.
+- The widening is bounded, checked rather than assumed: only a container that
+  appeared AFTER `newDockerMonitor` remembered the baseline can be adopted, so
+  #589's guard is untouched; the first line must equal a container id exactly,
+  so a longer line can never match; and `GetContainerByPath`'s documented
+  contract already said "if the first line contains the ID of a container".
+- All 3 links of the memory chain verified. The harm was MEASURED: a 500 MB
+  file read once a second took `ownMemoryMB()` from 2 MB to 957 MB, and the
+  fixed version stays at 2. The reviewer independently confirmed the mechanism
+  at 32 MB, 67 MB allocated for a 4-byte answer - about 2x the file, because
+  `os.ReadFile` grows its buffer and `string()` copies it.
+- CORRECTION to the record's implication that the inflation is permanent: Go's
+  scavenger reclaims it after roughly 2 to 5 minutes. It does not matter,
+  because `ownMemoryMB()` is called once after `cmd.Wait()`, within a second of
+  the last 1-second tick, deep inside the inflated window.
+- `GetFirstLine` itself was changed rather than only its caller, because no
+  caller wants the old behaviour: it has exactly ONE non-test caller,
+  `cidPathToContainer`. `ToString` is byte-identical and has NO non-test
+  callers at all.
+- Bound is a named `maxFirstLineBytes = 4096`, 64x the 64 hex characters a cid
+  actually is, so no real cidfile can trip it. Past the bound it returns
+  `ErrLineTooLong` rather than a truncated prefix, because a 4096-byte prefix
+  is not the first line and a caller cannot tell it from one. Zero `//nolint`
+  in the diff - `mnd` was satisfied by naming the constants, not silenced.
+- A deliberate behaviour change, flagged by its author and kept: on the
+  EXACT-PATH route a too-long first line is now counted as a failure, and after
+  3 ticks wr warns and stops monitoring, where before it re-read for ever in
+  silence. The job is unaffected - `resolveContainerMem` returns no error by
+  design, so no `on_failure` behaviour fires, and `killCmd` is gated on a
+  non-empty container id so nothing is killed.
+- The asymmetry with the GLOB route, which skips a bad match silently, is
+  correct rather than an oversight: a glob is EXPECTED to match non-cidfiles,
+  while an exact path names one file the user asserted is a cidfile. 3 ticks is
+  right because the condition is not transient - the same file gives the same
+  answer every tick - and the latch is what stops one warning per second.
+- Tests measure ALLOCATION, which is the harm itself rather than a proxy for
+  it, via `TotalAlloc` deltas after a `runtime.GC()`. Deliberately not wall
+  clock. Proved deterministic: 25 in-process runs plus 20 separate processes,
+  zero failures, with a 60-200x margin below budget and a 3,300x gap from the
+  broken value. Files are made 32 MB instantly with a sparse `Truncate`, so the
+  tests cost nothing.
+- 4 mutations, each red for its own reason: the old `GetFirstLine` body; the
+  length guard removed; the length check reordered before the newline search
+  (which pins the exact boundary, a 4096-byte line returned and 4097 rejected);
+  and `cidPathToContainer` swallowing the error.
+- 2 GoConvey traps hit and worth passing on: the default `FailureHalts` meant
+  an allocation assertion silently never ran until it was moved first, so the
+  first "red" proved only the wrong half; and asserting equality on a 32 MB
+  string dumped 128 MB into the failure output, fixed with a `shorten()`
+  helper.
+- `PathReadError` gained an `Unwrap` so `errors.Is` works on it. Its sibling
+  `OperatorError` already had one, so this is consistency rather than a new
+  pattern, and no existing caller does `errors.Is`/`errors.As` on it.
+- CHANGELOG failed review twice over and now says the truth: the old entry
+  claimed wr "ignores" a too-long match, which is true only of the glob loop,
+  and was framed as "a path WITH A GLOB IN IT", which excluded the exact-path
+  route entirely. It is now 2 entries - the memory one covering both routes and
+  saying the job itself is unaffected, and a separate one for the recognition
+  fix that ends on the kill, which is the sentence a user needs.
+- Caveat, contrived and non-blocking: `--monitor_docker mycontainer` resolves
+  to `<cmdDir>/mycontainer`, so if the job's own working directory happens to
+  hold a large file of that name with no newline in its first 4096 bytes, the
+  latch now disables the BY-NAME lookup too. That setup was already inflating
+  PeakRAM every second before this change.

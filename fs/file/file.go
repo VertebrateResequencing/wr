@@ -28,12 +28,26 @@ package file
 // this file implements utility routines related to files.
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
-	"strings"
+	"path/filepath"
+	"strconv"
 
 	fp "github.com/VertebrateResequencing/wr/fs/filepath"
 )
+
+// maxFirstLineBytes is the longest first line GetFirstLine will return. It is
+// far more than the 64 hexadecimal characters of the container ids that
+// GetFirstLine exists to read, and little enough that a file which merely
+// happens to match a cidfile glob never gets read in to memory.
+const maxFirstLineBytes = 4096
+
+// ErrLineTooLong is wrapped by the error GetFirstLine returns when a file's
+// first line is longer than maxFirstLineBytes.
+var ErrLineTooLong = errors.New("first line longer than " + strconv.Itoa(maxFirstLineBytes) + " bytes")
 
 // PathReadError records an path read error.
 type PathReadError struct {
@@ -46,17 +60,59 @@ func (p *PathReadError) Error() string {
 	return fmt.Sprintf("path [%s] could not be read: %s", p.path, p.Err)
 }
 
-// GetFirstLine reads the content of a file given its absolute or tilda path and
-// returns the first line excluding trailing newline.
+// Unwrap returns the error that stopped the path being read.
+func (p *PathReadError) Unwrap() error {
+	return p.Err
+}
+
+// GetFirstLine returns the first line, excluding its newline, of the file at
+// the given absolute or tilda path.
+//
+// At most maxFirstLineBytes are read, so that a large file which is not the
+// short id file this is for does not get read in to memory; if the first line
+// is longer than that, the returned error wraps ErrLineTooLong.
 func GetFirstLine(filename string) (string, error) {
-	content, err := ToString(filename)
+	if filename == "" {
+		return "", &PathReadError{"", nil}
+	}
+
+	absPath := fp.TildaToHome(filename)
+
+	f, err := os.Open(filepath.Clean(absPath))
 	if err != nil {
+		return "", &PathReadError{absPath, err}
+	}
+
+	defer f.Close()
+
+	line, err := firstLine(f)
+	if err != nil {
+		return "", &PathReadError{absPath, err}
+	}
+
+	return line, nil
+}
+
+// firstLine returns the content of r up to its first newline, reading no more
+// than maxFirstLineBytes+1 bytes. If r gives maxFirstLineBytes bytes without a
+// newline and still has more, ErrLineTooLong is returned.
+func firstLine(r io.Reader) (string, error) {
+	buf := make([]byte, maxFirstLineBytes+1)
+
+	n, err := io.ReadFull(r, buf)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return "", err
 	}
 
-	firstLine := strings.TrimSuffix(content, "\n")
+	if i := bytes.IndexByte(buf[:n], '\n'); i >= 0 {
+		return string(buf[:i]), nil
+	}
 
-	return firstLine, nil
+	if n > maxFirstLineBytes {
+		return "", ErrLineTooLong
+	}
+
+	return string(buf[:n]), nil
 }
 
 // ToString takes the path to a file and returns its contents as a string. If

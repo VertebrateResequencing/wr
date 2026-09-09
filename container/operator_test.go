@@ -31,6 +31,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -38,6 +39,18 @@ import (
 
 // fileMode is the mode of the temp file created for testing.
 const fileMode os.FileMode = 0600
+
+const (
+	// hugeOutputFileBytes is the size of the job output file that a careless
+	// --monitor_docker glob such as *.txt can match.
+	hugeOutputFileBytes = 32 * 1024 * 1024
+
+	// maxGlobAllocBytes is the most that looking for a cid may allocate,
+	// whatever the glob matches. findContainerID tries again every second for
+	// the life of the job, and the runner's own memory is added to the job's
+	// recorded PeakRAM.
+	maxGlobAllocBytes = 1024 * 1024
+)
 
 // MockInteractor represents a mock implementation of container.Interactor.
 type MockInteractor struct {
@@ -405,6 +418,49 @@ func TestOperator(t *testing.T) {
 			var e *OperatorError
 			So(errors.As(err, &e), ShouldBeTrue)
 			So(e.Unwrap(), ShouldNotBeNil)
+		})
+	})
+}
+
+func TestCidGlobMemory(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a cid glob that matches a job's huge output file", t, func() {
+		dir := t.TempDir()
+
+		f, err := os.OpenFile(filepath.Clean(filepath.Join(dir, "out.txt")),
+			os.O_CREATE|os.O_WRONLY|os.O_TRUNC, fileMode)
+		So(err, ShouldBeNil)
+
+		_, err = f.WriteString("some job output\n")
+		So(err, ShouldBeNil)
+		So(f.Truncate(hugeOutputFileBytes), ShouldBeNil)
+		So(f.Close(), ShouldBeNil)
+
+		operator := NewOperator(&MockInteractor{
+			ContainerListFn: func() ([]*Container, error) {
+				return []*Container{{ID: testContainerID1}}, nil
+			},
+		})
+
+		Convey("looking for a container does not read that file in to memory", func() {
+			var (
+				cntr *Container
+				gerr error
+
+				before, after runtime.MemStats
+			)
+
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+
+			cntr, gerr = operator.GetContainerByPath(ctx, "*.txt", dir)
+
+			runtime.ReadMemStats(&after)
+
+			So(after.TotalAlloc-before.TotalAlloc, ShouldBeLessThan, maxGlobAllocBytes)
+			So(gerr, ShouldBeNil)
+			So(cntr, ShouldBeNil)
 		})
 	})
 }
