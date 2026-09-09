@@ -309,3 +309,175 @@ stay findable.
   `/opt/wrtest/bin`; and with `PATH=A` (already containing exePath) followed by
   `PATH=B` (not), the `break` skips the append and exec's last-wins gives `B`
   without exePath.
+
+- [x] 4. NOT in the original record, found while fixing item 2 and escalated by
+  its reviewer: **a one-typo command line crash-loops a scheduler group.** An
+  environment entry that is a bare NAME with no "=" makes the runner panic.
+    - `strings.Split("PATH", "=")` has length 1, and both
+      `jobEnvOverrider.overridesFor` (`cmd/runner.go`), `Job.Getenv`
+      (`jobqueue/job.go`) and `prependedPath` (`jobqueue/client.go`, on the
+      bsub path) index `pair[1]`. CORRECTION: this item named only the first 2
+      when filed; the 3rd was found by the implementor and confirmed by the
+      reviewer, and fixing only the named 2 would have left the bsub path
+      crash-looping:
+
+      ```
+      panic: runtime error: index out of range [1] with length 1
+        cmd.(*jobEnvOverrider).overridesFor(...) cmd/runner.go
+      ```
+
+    - PRE-EXISTING, not introduced by item 2's extraction. Proved by running
+      HEAD's own loop body, copied out of `git show HEAD:cmd/runner.go`, over
+      the identical env: same panic, same line, same input.
+    - Reachable from ordinary user input by 4 unvalidated routes, not the 1
+      first reported (this item said 3 when filed; the implementor found a
+      4th). Both `compressEnv(strings.Split(...))` sites take the value
+      verbatim:
+      * `wr add --env PATH` -> `JobDefaults.Env` ->
+        `jobqueue/serverREST.go`'s `compressEnv(strings.Split(jd.Env, ","))`.
+        This is the likeliest trigger and the one the implementor missed: the
+        flag help says "comma-separated list of key=value environment
+        variables", so a user writing `--env PATH` to mean "pass PATH through"
+        poisons the job at ADD time.
+      * `wr mod --env PATH` -> `JobModifier.SetEnvOverride` ->
+        `compressEnv(strings.Split(newVal, ","))`.
+      * `wr add` with a JSON line `{"cmd":..., "env":["PATH"]}`, and REST
+        `POST /rest/v1/jobs` with the same body -> `JobViaJSON.resolveEnvOverride`.
+        This is a SEPARATE route from `JobDefaults.Env` above, and is the 4th.
+      * REST `PATCH /rest/v1/jobs/<ids>` with `env: ["PATH"]` ->
+        `JobModifier.setEnvOverrideValues`. CORRECTION: this item said `PUT`
+        when filed; `restJobs` dispatches PATCH to `restJobsModifyResponse`
+        and rejects PUT as unsupported.
+    - `Job.Env()` -> `applyEnvOverrides` -> `envOverride` then faithfully
+      substitutes the bare `PATH` for the job's real `PATH=...` entry, or
+      appends it if absent, and the runner walks into `pair[1]`.
+    - Blast radius, which is why this is worth doing now. There is no
+      `recover()` anywhere in `cmd`. The runner dies with exit 2. The deferred
+      `jq.Disconnect()` closes the socket, so the reserved job is never
+      touched, times out on `ServerTimings.ItemTTR` and returns to the queue as
+      lost with `numrun` still 0 - so the manager spawns another runner, which
+      reserves the same poisoned job and dies the same way. Each dying runner
+      also takes down every other job it would have gone on to execute in its
+      sequence.
+    - Validation at entry is necessary but NOT sufficient, and this is the part
+      that decides the shape of the fix: it does nothing for a job ALREADY
+      STORED with a bare entry. Those exist in any database where someone has
+      already typed it, and they would keep crash-looping after an upgrade. So
+      both halves are needed:
+      * reject an env element with no "=" at every write route, with an error
+        that names the offending element and says what the format is; and
+      * make the 3 `pair[1]` reads non-panicking, so a stored bad entry
+        degrades instead of killing the runner.
+    - The second half is NOT the symptom-suppression `implementation-principles`
+      warns against, precisely because the first half is also being done. A
+      guard alone would leave the malformed entry in place, leave the user with
+      a silently broken `PATH` and no diagnostic, and leave `Job.Getenv`
+      panicking. A read accessor that panics on stored data is its own defect.
+
+## Item 4, as fixed
+
+- Half A: one new `compressUserEnv` in `jobqueue/utils.go`, beside `envName`
+  and `envOverride` which already own what an environment entry looks like. It
+  validates then delegates to `compressEnv`. `SetEnvOverride` was reduced to
+  call `setEnvOverrideValues`, which was its duplicate, so 4 routes are 3 call
+  sites of 1 implementation. Each route was proved individually load-bearing:
+  reverting any one of them to plain `compressEnv` reddens only that route.
+- The check is deliberately NOT inside `compressEnv`, and this is the crux of
+  the design. `Job.EnvAddOverride` re-compresses an environment ALREADY STORED
+  on a job, and the runner calls it on every job it reserves. Validating there
+  would make a legacy bad job fail `EnvAddOverride`, whose handler is
+  `jq.Release(job, nil, "failed to add env var overrides")` then `break` - so
+  the job returns to the queue and the runner exits, and the manager starts
+  another. That converts half B's degradation into a GRACEFUL crash-loop: the
+  same bug in a nicer coat.
+- The reviewer proved that rather than accepting it, by moving the check into
+  `compressEnv` and driving a legacy job through: `EnvAddOverride` returned
+  `environment variable is not in key=value format: "PATH"`, where the shipped
+  design returns nil.
+- It also proved the loop is genuinely INFINITE, which this item asserted
+  without proof. `Client.Release` passes `attempted=false`, and the server's
+  `releaseSpendsARetry` is `rep.attempted || !job.StartTime.IsZero()`. A job
+  released before execution has a zero `StartTime`, so no retry is spent,
+  `UntilBuried` never reaches 0, and the job is never buried. `Client.Release`'s
+  own doc says as much.
+- End-to-end proof on 2 real managers. Pre-fix build, job added with
+  `--env PATH`:
+
+  ```
+  lvl=eror msg="runCmd wait" cmd="... wr_head runner -s '1024:60:1:0:456997...'" err="exit status 2"
+  lvl=eror msg="runCmd wait" cmd="... wr_head runner -s '200:30:1:0:456997...'"  err="exit status 2"
+  poisoned : complete=0 running=1 ... buried=0
+  ```
+
+  Two runner deaths 2 minutes apart, job stuck running, never buried. Fixed
+  build, same job: `complete=1`, exit code 0, the bare entry STILL stored, and
+  the shell supplying its own default PATH.
+- Half B: 3 reads, not the 2 this item named. `prependedPath`
+  (`jobqueue/client.go`, reached from `Client.Execute` -> `addBsubEnv`) has the
+  same `pair[1]`, so a `--bsub` job crash-looped identically and fixing only
+  the named 2 would have left it alive. All 3 now use `strings.Cut` and skip an
+  entry with no "=", matching what `getenv(3)` does with one.
+- Degradations chosen: `overridesFor` skips it and keeps looking, so such a job
+  behaves exactly like a job with no PATH - it does NOT synthesise
+  `PATH=<exeDir>`, which would leave the command with a one-directory PATH,
+  worse than the shell's fallback. It is also strictly better than before on
+  `["PATH", "PATH=/real"]`, where the old code panicked on the first entry and
+  the new one walks past it to the real one. `Getenv` returns blank, its
+  existing answer for an absent variable. `prependedPath` falls through to its
+  no-PATH branch.
+- A SECOND pre-existing bug the same `Cut` fixes: `Split(...)[1]` truncated any
+  value containing a further "=". CORRECTION to how this was first described -
+  it was called a live bug on the grounds that `Getenv`'s only production
+  caller reads JSON (`WR_BSUB_CONFIG`). The reviewer marshalled the actual
+  struct: for a plain bsub job it is 1081 bytes containing NO "=" at all,
+  because every `[]byte` field is nil and the string fields are empty. It bites
+  only when a field carries one - `Requirements.Other["cloud_script"]` holding
+  something like `export FOO=bar` is the realistic case, and then the JSON
+  truncates mid-value, `json.Unmarshal` fails, `mountCouldFail` stays false,
+  and a bsub child job is buried on a mount failure it should have tolerated.
+  Reachable, not routine.
+- Empty elements are rejected too, so `wr add --env "A=1,"` now errors. That is
+  not merely tidiness: an empty element reaches `containerEnv` as the empty
+  name and `dockerEnv` emits `-e ''`, which docker 29.1.3 rejects with
+  `invalid argument "" for "-e, --env" flag`, exit 125. The old behaviour
+  silently stored a value that made any `--with_docker` job fail to start.
+  `--env "A=1,2"` likewise now errors rather than storing a bare "2".
+- `=value` is rejected as well, on the reviewer's recommendation and verified
+  rather than taken: docker gives the same exit 125 for it, and on the
+  non-container path `os/exec` passes it to a child that has no name to look it
+  up by, so it defines nothing either way. Item 3's own record above had
+  already nominated this exact home for the check.
+- 3 sentinels, not 1, because each input has a different remedy and a message
+  carrying a remedy must not be reused for an input that remedy does not fit:
+
+  ```
+  "PATH"   -> "PATH": environment variable is not in key=value format; to pass a variable through, write NAME=$NAME
+  ""       -> environment variable is empty; check for a stray or doubled comma
+  "=value" -> "=value": environment variable has no name before the =
+  ```
+
+  The hint names the generic `NAME=$NAME` rather than interpolating the
+  element, since the element is arbitrary user text and "write foo bar=$foo
+  bar" would be nonsense; the element is already quoted at the front of the
+  same line.
+- Well-formed values are untouched, asserted across all 4 routes: `A=1`,
+  `PATH=/usr/bin`, a value containing "=" (`WR_ENV_EQUALS=a=b`), a value
+  containing ":" (`WR_ENV_COLON=/usr/bin:/bin`) and a legitimately empty value
+  (`D=`).
+- Gap named rather than papered over: all 4 checks are client-side, and the
+  server stores whatever compressed `EnvOverride` bytes a client sends, so an
+  OLDER wr client against an upgraded manager can still poison a job. Half B is
+  what covers that. Validating server-side would mean decompressing every job's
+  override on add.
+- Not done, raised as its own item rather than folded in: `--env` is now the
+  only comma-separated `wr add` flag that hard-errors on a trailing comma.
+  `--limit_grps "a,"`, `--modules "x,"` and `--queues_avoid "z,"` all accept
+  one silently (`cmd/add.go` does a bare `strings.Split` with no element
+  validation). The asymmetry tracks blast radius rather than taste - an empty
+  env entry crash-looped a scheduler group, an empty limit group appears to be
+  inert - and removing it either way is a user-visible change to 3 unrelated
+  flags. Anyone taking it should first measure what an empty limit group and an
+  empty module name actually DO, since the right answer may differ per flag.
+- Also left, non-blocking: nothing is logged when a read skips a malformed
+  stored entry, so a legacy job degrades silently. A `warn` in the runner would
+  close the last "no diagnostic" case this item complained about.

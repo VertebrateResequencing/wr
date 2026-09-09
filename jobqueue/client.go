@@ -1772,11 +1772,16 @@ func (c *Client) addBsubEnv(env []string, job *Job, prependPath, host, shell str
 
 // prependedPath returns a "PATH=" override that puts prependPath before the
 // existing PATH value found in env (if any).
+//
+// An entry with no "=" in it defines nothing, as far as the C library's getenv()
+// is concerned, so it is skipped: a job stored with a bare "PATH" gets
+// prependPath alone, the same as one with no PATH at all, where reading it used
+// to panic and kill the runner.
 func prependedPath(env []string, prependPath string) string {
 	for _, envvar := range env {
-		pair := strings.Split(envvar, "=")
-		if pair[0] == "PATH" {
-			return "PATH=" + prependPath + ":" + pair[1]
+		name, path, ok := strings.Cut(envvar, "=")
+		if ok && name == "PATH" {
+			return "PATH=" + prependPath + ":" + path
 		}
 	}
 

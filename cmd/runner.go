@@ -396,18 +396,25 @@ type jobEnvOverrider struct {
 // appended to: a runner runs many jobs in sequence, and a job whose PATH already
 // has the exe directory adds nothing, which would otherwise leave it running
 // with an earlier job's PATH.
+//
+// An entry with no "=" in it defines nothing, as far as the C library's getenv()
+// is concerned, so it is skipped rather than read for a value it does not have.
+// A job stored with a bare "PATH" therefore runs with the base overrides alone,
+// where reading it used to panic and kill the runner.
 func (j *jobEnvOverrider) overridesFor(env []string) []string {
 	overrides := slices.Clone(j.base)
 
 	for _, envvar := range env {
-		pair := strings.Split(envvar, "=")
-		if pair[0] == "PATH" {
-			if !strings.Contains(pair[1], j.exePath) {
-				overrides = append(overrides, envvar+":"+j.exePath)
-			}
-
-			break
+		name, path, ok := strings.Cut(envvar, "=")
+		if !ok || name != "PATH" {
+			continue
 		}
+
+		if !strings.Contains(path, j.exePath) {
+			overrides = append(overrides, envvar+":"+j.exePath)
+		}
+
+		break
 	}
 
 	return overrides

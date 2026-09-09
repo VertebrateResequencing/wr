@@ -25,10 +25,12 @@
 
 package cmd
 
-// This file tests item 2 of .docs/bugfixes/260909-fix-env-propagation.md: a
-// runner accumulated its environment overrides across the jobs it ran, so a job
-// that needed no PATH override of its own was handed the PREVIOUS job's PATH and
-// could resolve the wrong binaries.
+// This file tests items 2 and 4 of
+// .docs/bugfixes/260909-fix-env-propagation.md. Item 2: a runner accumulated
+// its environment overrides across the jobs it ran, so a job that needed no
+// PATH override of its own was handed the PREVIOUS job's PATH and could resolve
+// the wrong binaries. Item 4: a job whose stored environment held a bare name
+// with no "=" made the runner panic as it read the value after the "=".
 
 import (
 	"slices"
@@ -137,6 +139,56 @@ func TestRunnerJobEnvOverrides(t *testing.T) {
 			env, err := last.Env()
 			So(err, ShouldBeNil)
 			So(overrider.overridesFor(env), ShouldResemble, baseOnly)
+		})
+	})
+}
+
+// TestRunnerStoredBareEnvName covers a job that was stored with an environment
+// entry that has no "=" in it. Rejecting such an entry at the routes that write
+// it does nothing for the jobs already in a database, and one of those used to
+// panic the runner that reserved it: the runner died, the job was never touched
+// so it returned to the queue as lost with numrun 0, and the manager started
+// another runner to die on it in turn.
+func TestRunnerStoredBareEnvName(t *testing.T) {
+	Convey("Given a runner's overrider and a job stored with a bare environment name", t, func() {
+		overrider := &jobEnvOverrider{exePath: runnerEnvExeDir}
+		overrider.base = append(overrider.base, runnerEnvHostName+"="+runnerEnvHost)
+
+		baseOnly := slices.Clone(overrider.base)
+
+		job := &jobqueue.Job{
+			Cmd:           runnerEnvTestCmd,
+			Cwd:           statusTestCwd,
+			RepGroup:      runnerEnvTestRepGrp,
+			EnvCRetrieved: true,
+		}
+		So(job.EnvAddOverride([]string{runnerEnvPathName}), ShouldBeNil)
+
+		env, err := job.Env()
+		So(err, ShouldBeNil)
+		So(env, ShouldContain, runnerEnvPathName)
+
+		Convey("Preparing that job to run leaves the runner alive", func() {
+			So(func() { runnerEnvTestRun(overrider, job) }, ShouldNotPanic)
+		})
+
+		Convey("The job runs with the base overrides and no PATH the runner made up", func() {
+			So(overrider.overridesFor(env), ShouldResemble, baseOnly)
+
+			runnerEnvTestRun(overrider, job)
+
+			So(job.Getenv(runnerEnvHostName), ShouldEqual, runnerEnvHost)
+			So(job.Getenv(runnerEnvPathName), ShouldBeBlank)
+		})
+
+		Convey("A later job with a usable PATH still gets the exe dir appended", func() {
+			runnerEnvTestRun(overrider, job)
+
+			later := runnerEnvTestJob(runnerEnvPathWithout)
+			runnerEnvTestRun(overrider, later)
+
+			So(later.Getenv(runnerEnvPathName), ShouldEqual, runnerEnvPathWithout+":"+runnerEnvExeDir)
+			So(later.Getenv(runnerEnvHostName), ShouldEqual, runnerEnvHost)
 		})
 	})
 }
