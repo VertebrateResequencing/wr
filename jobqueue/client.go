@@ -3550,8 +3550,18 @@ func (c *Client) Kill(jes []*JobEssence) (int, error) {
 // args set to true, this is the only way to get a Job that StdOut() and
 // StdErr() will work on, and one of 2 ways that Env() will work (the other
 // being Reserve()).
+//
+// A JobEssence with a Cwd but no JobKey is ambiguous: the Job it describes might
+// have been created with CwdMatters true, in which case its Cwd is part of its
+// key, or false, in which case it is not, and a user naming the Cwd of the job
+// they want cannot be expected to know which. Both keys are therefore looked up.
+// At most one Job is returned: the CwdMatters one if it exists, and otherwise the
+// non-CwdMatters one only if its Cwd really is the requested Cwd, so that a
+// different Job that merely shares the Cmd is never returned.
 func (c *Client) GetByEssence(je *JobEssence, getstd bool, getenv bool) (*Job, error) {
-	resp, err := c.request(&clientRequest{Method: "getbc", Keys: []string{je.Key()}, GetStd: getstd, GetEnv: getenv})
+	keys := je.candidateKeys()
+
+	resp, err := c.request(&clientRequest{Method: "getbc", Keys: keys, GetStd: getstd, GetEnv: getenv})
 	if err != nil {
 		return nil, err
 	}
@@ -3561,7 +3571,11 @@ func (c *Client) GetByEssence(je *JobEssence, getstd bool, getenv bool) (*Job, e
 		return nil, err
 	}
 
-	return jobs[0], err
+	if len(keys) == 1 {
+		return jobs[0], err
+	}
+
+	return je.pickCandidateJob(jobs), err
 }
 
 // GetByEssences gets multiple Jobs at once given JobEssences that describe

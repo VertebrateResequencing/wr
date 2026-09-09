@@ -1349,6 +1349,9 @@ func resetStatusForTest(t *testing.T) {
 	cmdAll = false
 	mountJSON = ""
 	mountSimple = ""
+	cmdWithDocker = ""
+	cmdWithSingularity = ""
+	cmdContainerMounts = ""
 	showBuried = false
 	showRunning = false
 	showPending = false
@@ -1376,6 +1379,9 @@ func resetStatusForTest(t *testing.T) {
 		{"limit", "1"},
 		{"timeout", "120"},
 		{"recent", ""},
+		{"with_docker", ""},
+		{"with_singularity", ""},
+		{"container_mounts", ""},
 	} {
 		So(statusCmd.Flags().Set(flag.name, flag.value), ShouldBeNil)
 	}

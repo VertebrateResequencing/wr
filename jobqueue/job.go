@@ -70,6 +70,13 @@ const defaultMountRetries = 10
 // errNoTargets is returned by Mount when a MountConfig has no usable Targets.
 var errNoTargets = errors.New("no Targets specified")
 
+// envDecodeHook, when set, is called every time a Job's stored environment is
+// decoded, so that a test can count the decodes a code path makes. Decoding is a
+// decompress plus a decode of every variable the Job was added with, on the path
+// of every Job that exits, and a path that does none of it cannot show that in
+// its result, only in the work it did. It is nil in production.
+var envDecodeHook func() //nolint:gochecknoglobals // the only seam onto work that has no result
+
 // JobState is how we describe the possible job states.
 type JobState string
 
@@ -174,6 +181,132 @@ type jobDerived struct {
 	key          string
 	requirements *scheduler.Requirements
 	group        string
+}
+
+// candidateKeys returns every Job key this JobEssence could be describing, most
+// specific first, so that a caller can prefer an earlier one over a later one.
+//
+// A set Cwd is ambiguous, since the user of a Job's Cwd usually cannot know
+// whether that Job was created with CwdMatters (see Key()), so it gives 2 keys:
+// the CwdMatters one Key() returns, then the non-CwdMatters one. Everything else
+// gives just Key().
+func (j *JobEssence) candidateKeys() []string {
+	primary := j.Key()
+
+	if j.JobKey != "" || j.Cwd == "" {
+		return []string{primary}
+	}
+
+	const withoutCwd = ""
+
+	return []string{primary, j.keyForCwd(withoutCwd)}
+}
+
+// pickCandidateJob returns the single Job amongst jobs that this JobEssence
+// describes: the one with its primary candidate key if jobs holds that Job, and
+// otherwise one with a less specific candidate key, but only if its Cwd is the
+// Cwd this JobEssence asked for. Returns nil if jobs holds no such Job.
+//
+// The Cwd check is what makes looking a less specific key up safe, since these
+// keys go on to drive kill/remove/retry/suspend/resume. Cwd is compared exactly,
+// as Job.Key() treats it.
+//
+// The candidate keys are derived here rather than taken from the caller, so that
+// they can never be a different set from the ones candidateKeys() gave, and so
+// that there is always a primary key to compare against.
+func (j *JobEssence) pickCandidateJob(jobs []*Job) *Job {
+	keys := j.candidateKeys()
+	primary, lessSpecific := keys[0], keys[1:]
+
+	var fallback *Job
+
+	for _, job := range jobs {
+		key := job.Key()
+
+		if key == primary {
+			return job
+		}
+
+		if fallback == nil && job.Cwd == j.Cwd && slices.Contains(lessSpecific, key) {
+			fallback = job
+		}
+	}
+
+	return fallback
+}
+
+// keyForCwd builds the key of a Job that has this JobEssence's properties and
+// the given Cwd, which is part of the key only when it is not "": it therefore
+// gives the key of a Job with CwdMatters true when cwd is set, and the key of a
+// Job with CwdMatters false when cwd is "". See Key() and candidateKeys().
+func (j *JobEssence) keyForCwd(cwd string) string {
+	return byteKey(jobKeyConcat(cwd != "", cwd, j.Cmd, j.MountConfigs.Key(),
+		containerImageKey(j.WithDocker, j.WithSingularity), j.ContainerMounts))
+}
+
+// jobKeyConcat builds the bytes that byteKey turns into a job key, for a job
+// with the given Cmd, MountConfigs key, container image (omitted entirely, along
+// with containerMounts, if image is "") and ContainerMounts, prefixed with the
+// given cwd if cwdMatters. The layout is, in order:
+//
+//	[cwd "."]  cmd "." mountKey  ["." image "." containerMounts]
+//
+// Whether the cwd is written is asked for explicitly rather than inferred from
+// cwd being set, because a Job with CwdMatters true and an empty Cwd is keyed
+// with the bare "." prefix, and its key must not change.
+//
+// Job.Key() and JobEssence.Key() must produce byte-identical keys for the same
+// job, or a job cannot be looked up by the essence describing it, so this is the
+// one place the layout is written down. It fills a single preallocated buffer
+// rather than formatting each component, because Job.Key() is a hot path.
+func jobKeyConcat(cwdMatters bool, cwd, cmd, mountKey, image, containerMounts string) []byte {
+	size := len(cmd) + 1 + len(mountKey)
+	if cwdMatters {
+		size += len(cwd) + 1
+	}
+
+	if image != "" {
+		size += 1 + len(image) + 1 + len(containerMounts)
+	}
+
+	concat := make([]byte, 0, size)
+
+	if cwdMatters {
+		concat = append(concat, cwd...)
+		concat = append(concat, '.')
+	}
+
+	concat = append(concat, cmd...)
+	concat = append(concat, '.')
+	concat = append(concat, mountKey...)
+
+	if image != "" {
+		concat = append(concat, '.')
+		concat = append(concat, image...)
+		concat = append(concat, '.')
+		concat = append(concat, containerMounts...)
+	}
+
+	return concat
+}
+
+// containerImageKey returns the container image part of a job key, for a job
+// created with the given WithDocker and WithSingularity values, or "" if the job
+// uses no container image. WithDocker wins when both are set, matching the rest
+// of wr's behaviour for such a job.
+//
+// Job.Key() and JobEssence.Key() must produce byte-identical keys for the same
+// job, so they share this instead of each spelling the form out.
+func containerImageKey(withDocker, withSingularity string) string {
+	if withDocker != "" {
+		return "docker:" + withDocker
+	}
+
+	if withSingularity != "" {
+		return "singularity:" + withSingularity
+	}
+
+	return ""
 }
 
 func (j *Job) decrementLimitGroupsLocked(lim *limiter.Limiter) {
@@ -837,13 +970,6 @@ func (j *Job) Env() ([]string, error) {
 
 	return stored.decode()
 }
-
-// envDecodeHook, when set, is called every time a Job's stored environment is
-// decoded, so that a test can count the decodes a code path makes. Decoding is a
-// decompress plus a decode of every variable the Job was added with, on the path
-// of every Job that exits, and a path that does none of it cannot show that in
-// its result, only in the work it did. It is nil in production.
-var envDecodeHook func() //nolint:gochecknoglobals // the only seam onto work that has no result
 
 // jobEnv is a Job's environment in the compressed form the Job keeps it in:
 // EnvC, EnvOverride, and whether EnvC was asked for (see Env for what each case
@@ -1575,54 +1701,12 @@ func (j *Job) decrementLimitGroups(lim *limiter.Limiter) {
 }
 
 // Key calculates a unique key to describe the job.
+//
+// The Cwd is part of the key only when CwdMatters, since otherwise the Cmd does
+// not run in Cwd itself but in a unique directory wr creates below it.
 func (j *Job) Key() string {
-	mountKey := j.MountConfigs.Key()
-
-	var image string
-
-	if j.WithDocker != "" {
-		image = "docker:" + j.WithDocker
-	} else if j.WithSingularity != "" {
-		image = "singularity:" + j.WithSingularity
-	}
-
-	// Build the same concatenation that the previous fmt.Sprintf calls
-	// produced, byte-for-byte, but with a single preallocated buffer to avoid
-	// the per-component reflection-based formatting and intermediate strings on
-	// this hot path. The layout is, in order:
-	//   [Cwd "."]  Cmd "." mountKey  ["." image "." ContainerMounts]
-	// where the Cwd prefix is only present when CwdMatters and the image suffix
-	// only when a container image is in use.
-	size := len(j.Cmd) + 1 + len(mountKey)
-	if j.CwdMatters {
-		size += len(j.Cwd) + 1
-	}
-
-	if image != "" {
-		size += 1 + len(image) + 1 + len(j.ContainerMounts)
-	}
-
-	var concat strings.Builder
-
-	concat.Grow(size)
-
-	if j.CwdMatters {
-		concat.WriteString(j.Cwd)
-		concat.WriteByte('.')
-	}
-
-	concat.WriteString(j.Cmd)
-	concat.WriteByte('.')
-	concat.WriteString(mountKey)
-
-	if image != "" {
-		concat.WriteByte('.')
-		concat.WriteString(image)
-		concat.WriteByte('.')
-		concat.WriteString(j.ContainerMounts)
-	}
-
-	return byteKey([]byte(concat.String()))
+	return byteKey(jobKeyConcat(j.CwdMatters, j.Cwd, j.Cmd, j.MountConfigs.Key(),
+		containerImageKey(j.WithDocker, j.WithSingularity), j.ContainerMounts))
 }
 
 // generateSchedulerGroup returns a stringified form of the given requirements,
@@ -1934,42 +2018,45 @@ type JobEssence struct {
 	// Cmd always forms an essential part of a Job.
 	Cmd string
 
-	// Cwd should only be set if the Job was created with CwdMatters = true.
+	// Cwd should only be set if the Job was created with CwdMatters = true,
+	// whenever the single key that Key() returns is used on its own, as a
+	// Dependency's Essence is. A caller that does not know the Job's CwdMatters
+	// may set Cwd anyway and look the Job up with Client.GetByEssence(), which
+	// considers both interpretations. See Key() for what setting it does and
+	// does not describe.
 	Cwd string
 
 	// Mounts should only be set if the Job was created with Mounts
 	MountConfigs MountConfigs
+
+	// WithDocker must be set to the WithDocker the Job was created with, if any.
+	WithDocker string `codec:",omitempty"`
+
+	// WithSingularity must be set to the WithSingularity the Job was created
+	// with, if any. It is ignored when WithDocker is also set, just as it is on
+	// a Job that was created with both.
+	WithSingularity string `codec:",omitempty"`
+
+	// ContainerMounts must be set to the ContainerMounts the Job was created
+	// with, if it was created with a WithDocker or WithSingularity image. Like
+	// the Job's own, it is ignored when neither image is set.
+	ContainerMounts string `codec:",omitempty"`
 }
 
-// Key returns the same value that key() on the matching Job would give you.
+// Key returns the same value that Key() on the matching Job would give you.
+//
+// A Cwd is part of the key only when it is set here, exactly as it is part of a
+// Job's key only when that Job has CwdMatters true. This therefore reproduces
+// the key of a matching Job with CwdMatters true when Cwd is set, and the key of
+// a matching Job with CwdMatters false when Cwd is empty. A caller describing a
+// Job whose CwdMatters it does not know should use Client.GetByEssence(), which
+// considers both interpretations of a set Cwd.
 func (j *JobEssence) Key() string {
 	if j.JobKey != "" {
 		return j.JobKey
 	}
 
-	mountKey := j.MountConfigs.Key()
-
-	// Build the same byte slice the previous fmt.Appendf calls produced,
-	// byte-for-byte, but via a single preallocated buffer rather than
-	// reflection-based formatting: "Cmd.mountKey", optionally prefixed with
-	// "Cwd." when a Cwd is set.
-	size := len(j.Cmd) + 1 + len(mountKey)
-	if j.Cwd != "" {
-		size += len(j.Cwd) + 1
-	}
-
-	concat := make([]byte, 0, size)
-
-	if j.Cwd != "" {
-		concat = append(concat, j.Cwd...)
-		concat = append(concat, '.')
-	}
-
-	concat = append(concat, j.Cmd...)
-	concat = append(concat, '.')
-	concat = append(concat, mountKey...)
-
-	return byteKey(concat)
+	return j.keyForCwd(j.Cwd)
 }
 
 // Stringify returns a nice printable form of a JobEssence.
