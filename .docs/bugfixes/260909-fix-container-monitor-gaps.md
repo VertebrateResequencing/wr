@@ -466,3 +466,43 @@ rebases and Copilot caught it; this file names functions instead.
       not this job's", whose body uses an UNLABELLED container, which genuinely
       never is removed - the two-manager container carries this job's own key,
       so it is not a counterexample to what that test asserts.
+
+- [x] Sighting only, and NOT a test failure at all: CI `test` for `73c5db7`
+  failed in the "Install container runtimes" step, before any test ran.
+    - `sudo apt-get update` failed on the GitHub runner's PREINSTALLED Google
+      Chrome repository, which served an index whose hashes did not match its
+      Release file:
+
+      ```
+      Err:24 https://dl.google.com/linux/chrome-stable/deb stable/main amd64 Packages
+        Hash Sum mismatch
+        Last modification reported: Wed, 09 Sep 2026 09:41:12 +0000
+        Release file created at:    Wed, 09 Sep 2026 17:16:59 +0000
+      E: Some index files failed to download.
+      ##[error]Process completed with exit code 100
+      ```
+
+      An 8-hour gap between the Release file and the Packages file it points
+      at: a stale mirror, momentarily inconsistent.
+    - Nothing to do with wr, and nothing to do with this branch: the branch
+      changes no `.github/` file and no `Makefile`, and the failing step is
+      `apt-get update` fetching a repository the runner image ships and wr does
+      not ask for. `make lint` passed on the same commit, and `make test` and
+      `make race` both passed locally at `645 passed · 13 skipped`.
+    - Recorded rather than waved through, and worth knowing for next time: a
+      red CI `test` on this repo is not necessarily a test. Read which STEP
+      failed before reading the assertions.
+    - Remedy: re-ran the job. It took THREE attempts, not one - the first
+      re-run failed identically, which briefly looked like a persistent broken
+      mirror rather than a transient one. It was transient: PR #592's CI passed
+      minutes after that second failure, on the same runner image, so the
+      mirror had already recovered. 2 consecutive failures of ONE pull request
+      is not evidence of a systemic problem, and reading it that way nearly
+      cost a needless change to `.github/workflows/tests.yml`.
+    - What would have been wrong about that change, recorded so nobody makes
+      it later on this evidence: the workflow's bare `sudo apt-get update`
+      refreshes every repository the runner image ships, including a Google
+      Chrome one wr never asks for. Dropping that repo before updating is a
+      defensible hardening, but it is not a fix for anything wr did, and doing
+      it in reaction to a transient upstream hiccup would have been treating
+      the symptom of somebody else's mirror.
