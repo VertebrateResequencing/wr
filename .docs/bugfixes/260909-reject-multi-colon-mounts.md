@@ -212,3 +212,39 @@ reject-multi-colon-mounts
       reduced to bare file names rather than re-pinned, since the next rebase
       would stale them again. Function and identifier names are what make a
       reference findable.
+
+- [x] Sighting only, provably NOT caused by this branch:
+  `TestReliable4RacBoundedBySchedulable`
+  (`jobqueue/reliable4_rac_bound_test.go`, the
+  `So(scanWork, ShouldEqual, limit)` at the "only the schedulable (limit) jobs
+  incur the expensive prepareReadyJob work" Convey) failed on CI for
+  `ec0966ca`: `Expected: 5 Actual: 19`. CI run 34342089929.
+    - Decisively not this commit's: `git diff --name-only 5fc08d00 ec0966ca`
+      is 2 `.md` files and nothing else, so the compiled code is BYTE-IDENTICAL
+      to `5fc08d00`, on which the same CI `test` job had already passed. A
+      commit that changes no code cannot change a test result.
+    - Not reproducible on this box: 20/20 green plain, and 12/12 green under 6
+      spinning CPU hogs. `make test` had also passed twice on this exact code
+      locally, at `640 passed · 13 skipped`.
+    - What the assertion means: the test pins that the scheduler does the
+      expensive `prepareReadyJob` work for EXACTLY the number of schedulable
+      jobs, which is the bound `.docs/bugfixes/260725-2.md` introduced the test
+      to protect. CI measured 19 against a limit of 5, so more of the backlog
+      was scanned than the bound allows.
+    - So it is either a genuine bound violation that only a slower, contended
+      machine exposes, or an assertion that is too tight to hold under
+      scheduling jitter. Worth the repo owner deciding which, because the 2
+      answers are very different: the first is a real performance regression
+      hiding in a flake, the second is a test to loosen. `ShouldEqual` on a
+      work COUNT is the kind of assertion that is exact by design here - the
+      whole point of `260725-2` was that the count used to be the whole
+      backlog - so it should not simply be relaxed without establishing which
+      it is.
+    - Remedy applied here: re-ran the CI job on the unchanged commit, as the
+      repo does for its other load-sensitive tests. It PASSED, which confirms
+      the failure is intermittent on CI rather than deterministic - but note
+      that this does not distinguish the 2 explanations above, since a real
+      bound violation exposed only under contention would also pass on a
+      quieter runner. This is a NEW name for
+      that family; it is not on the known list and no prior bugfix doc records
+      it as flaky, only as a test that was added and passed.
