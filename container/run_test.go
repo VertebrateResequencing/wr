@@ -26,11 +26,14 @@
 package container
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -66,6 +69,24 @@ const singularityImage = "docker://alpine"
 // expectedSingularityWorkDirArgs is the bind of the working directory, and the
 // choice of it as the container's cwd, that SingularityRunCmd always emits.
 const expectedSingularityWorkDirArgs = ` -B "$PWD" --pwd "$PWD"`
+
+// staleContainerSleepSecs is how long the container standing in for one that
+// outlived its `docker run` client sleeps for. It only has to outlast the test
+// that removes it.
+const staleContainerSleepSecs = 300
+
+// dockerShortIDLen is how many characters of a container id `docker ps` shows
+// when not asked for the full one, which is what our removal message names.
+const dockerShortIDLen = 12
+
+// expectedStaleRemoval is the removal of a stale container named "uniqueID"
+// that DockerRunCmd always emits before its `docker run`, so that a container
+// a lost run left behind under that name cannot make this run fail before it
+// starts.
+const expectedStaleRemoval = `for c in $(docker ps --all --quiet --filter name=^uniqueID\$ ` +
+	`--filter label=uk.ac.sanger.wr.job-key=uniqueID); do ` +
+	`echo "wr: removing container $c, left behind by a lost run of this same command" >&2; ` +
+	`docker rm --force "$c" >/dev/null; done; `
 
 // mountNoColon is a mount spec with no ":/inside/container/path" part, so its
 // path is used on both sides of the mount. Several of the command-line tests
@@ -133,6 +154,25 @@ func TestRunRealAwkwardPaths(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(actual, ShouldEqual, homeDir+"\nhome.file\na.file\nb.file\n")
 	})
+}
+
+// realTestTryCmdStd is realTestTryCmd, also returning STDERR, which is where
+// docker puts its reason for refusing to run and where our own command line
+// announces anything it destroyed.
+func realTestTryCmdStd(cmdLine, homeDir string) (stdout, stderr string, err error) {
+	cmdLine = "set -o pipefail; " + cmdLine
+	cmd := exec.CommandContext(context.Background(), "/bin/bash", "-c", cmdLine)
+	cmd.Dir = homeDir
+	cmd.Env = os.Environ()
+
+	var outBuf, errBuf bytes.Buffer
+
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+
+	err = cmd.Run()
+
+	return outBuf.String(), errBuf.String(), err
 }
 
 func TestRunRealFileOwnership(t *testing.T) {
@@ -204,6 +244,141 @@ func soOwnedBy(t *testing.T, dir string, uid, gid int) {
 		So(int(stat.Uid), ShouldEqual, uid)
 		So(int(stat.Gid), ShouldEqual, gid)
 	}
+}
+
+func TestRunRealDockerStaleContainer(t *testing.T) {
+	Convey("DockerRunCmd's command really runs when a lost run of the same job left a container "+
+		"holding its name", t, func() {
+		cmdFile, homeDir, _, cleanup, err := realTestSetup(t, "docker", workDirCmd, plainTestDirNames())
+		if err != nil {
+			SkipConvey(fmt.Sprintf("Can't really test the docker stale container: %s", err), nil)
+
+			return
+		}
+
+		defer cleanup()
+
+		name := realTestContainerName(homeDir)
+		defer removeTestContainer(t, name)
+
+		// this stands in for the container of a run whose `docker run` client
+		// was SIGKILLed: still running, still holding the name, and still
+		// carrying the label wr gave it.
+		id, err := startTestContainer(t, name, JobKeyLabel+"="+name)
+		So(err, ShouldBeNil)
+		So(testContainerExists(t, name), ShouldBeTrue)
+
+		cmd := DockerRunCmd("alpine", cmdFile, name, nil, nil, false)
+		t.Logf("cmdline: %s", cmd)
+
+		stdout, stderr, err := realTestTryCmdStd(cmd, homeDir)
+
+		// the working directory workDirCmd reports names the container that
+		// really ran, and STDERR carries both docker's reason for refusing to
+		// run and our own account of what we removed.
+		t.Logf("stdout: %q, stderr: %q, err: %v", stdout, stderr, err)
+
+		So(err, ShouldBeNil)
+		So(stdout, ShouldEqual, homeDir+"\nhome.file\n")
+		So(stderr, ShouldEqual, "wr: removing container "+id[:dockerShortIDLen]+
+			", left behind by a lost run of this same command\n")
+	})
+
+	Convey("But it never removes a container of that name that is not this job's", t, func() {
+		cmdFile, homeDir, _, cleanup, err := realTestSetup(t, "docker", workDirCmd, plainTestDirNames())
+		if err != nil {
+			SkipConvey(fmt.Sprintf("Can't really test the docker stale container: %s", err), nil)
+
+			return
+		}
+
+		defer cleanup()
+
+		name := realTestContainerName(homeDir)
+		defer removeTestContainer(t, name)
+
+		// a co-tenant's container that happens to have our name carries no
+		// claim from us, so it is not ours to destroy, even though it is in
+		// our way.
+		_, err = startTestContainer(t, name, "")
+		So(err, ShouldBeNil)
+
+		cmd := DockerRunCmd("alpine", cmdFile, name, nil, nil, false)
+
+		stdout, stderr, err := realTestTryCmdStd(cmd, homeDir)
+		t.Logf("stdout: %q, stderr: %q, err: %v", stdout, stderr, err)
+
+		So(err, ShouldNotBeNil)
+		So(stderr, ShouldNotContainSubstring, "wr: removing container")
+		So(stderr, ShouldContainSubstring, "is already in use by container")
+		So(testContainerExists(t, name), ShouldBeTrue)
+	})
+}
+
+// realTestContainerName is a container name unique to this test run, derived
+// from the temporary directory realTestSetup made for it, so that these tests
+// only ever create and destroy containers of their own.
+func realTestContainerName(homeDir string) string {
+	return filepath.Base(filepath.Dir(homeDir))
+}
+
+// removeTestContainer force-removes the container this test run created with
+// the given name, if it is still there. The name is unique to the test run, so
+// nothing else can be removed by it.
+func removeTestContainer(t *testing.T, name string) {
+	t.Helper()
+
+	out, err := exec.CommandContext(context.Background(), "docker", "rm", "--force", name).CombinedOutput()
+	if err != nil {
+		t.Logf("docker rm --force %s failed: %s [%s]", name, err, out)
+	}
+}
+
+// startTestContainer starts a detached container with the given name, and the
+// given label if it is not blank, that sleeps until something removes it. It
+// stands in for a container that outlived the `docker run` client that created
+// it, and its id is returned.
+func startTestContainer(t *testing.T, name, label string) (string, error) {
+	t.Helper()
+
+	args := []string{"run", "--detach", "--name", name}
+	if label != "" {
+		args = append(args, "--label", label)
+	}
+
+	args = append(args, "alpine", "sleep", strconv.Itoa(staleContainerSleepSecs))
+
+	cmd := exec.CommandContext(context.Background(), "docker", args...)
+
+	var errBuf bytes.Buffer
+
+	// the id is read from STDOUT alone: docker announces any pull of a missing
+	// image on STDERR, so merging the two would make the "id" that pull's
+	// progress on a machine that has not cached the image.
+	cmd.Stderr = &errBuf
+
+	out, err := cmd.Output()
+	t.Logf("docker %v: %s [stderr: %s]", args, out, errBuf.String())
+
+	return strings.TrimSpace(string(out)), err
+}
+
+// testContainerExists says if a container of the given name exists, running or
+// not.
+func testContainerExists(t *testing.T, name string) bool {
+	t.Helper()
+
+	nameFilter := "name=^" + name + "$"
+
+	out, err := exec.CommandContext(context.Background(), "docker", "ps", "--all", "--quiet",
+		"--filter", nameFilter).Output()
+	if err != nil {
+		t.Logf("docker ps failed: %s", err)
+
+		return false
+	}
+
+	return len(strings.TrimSpace(string(out))) > 0
 }
 
 func TestRunRealSingularityWorkDir(t *testing.T) {
@@ -298,7 +473,7 @@ func TestRunDocker(t *testing.T) {
 	Convey("DockerRunCmd formulates the correct command line", t, func() {
 		cmd := DockerRunCmd("myimage", "/path/to/cmds", "uniqueID", nil, nil, false)
 
-		So(cmd, ShouldEqual, "cat /path/to/cmds | docker run --rm --name uniqueID"+
+		So(cmd, ShouldEqual, expectedStaleRemoval+"cat /path/to/cmds | docker run --rm --name uniqueID"+
 			" --label uk.ac.sanger.wr.job-key=uniqueID"+
 			` --user "$(id -u):$(id -g)"`+
 			` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD" -i myimage /bin/sh`)
@@ -306,7 +481,7 @@ func TestRunDocker(t *testing.T) {
 		cmd = DockerRunCmd("myimage", "/path/to/cmds", "uniqueID",
 			[]string{"/foo/bar:/bar", mountNoColon}, []string{"A", "B"}, false)
 
-		So(cmd, ShouldEqual, "cat /path/to/cmds | docker run --rm --name uniqueID"+
+		So(cmd, ShouldEqual, expectedStaleRemoval+"cat /path/to/cmds | docker run --rm --name uniqueID"+
 			" --label uk.ac.sanger.wr.job-key=uniqueID"+
 			` --user "$(id -u):$(id -g)"`+
 			` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD"`+
@@ -317,8 +492,23 @@ func TestRunDocker(t *testing.T) {
 	Convey("DockerRunCmd leaves --user off when told to run as the image's user", t, func() {
 		cmd := DockerRunCmd("myimage", "/path/to/cmds", "uniqueID", nil, nil, true)
 
-		So(cmd, ShouldEqual, "cat /path/to/cmds | docker run --rm --name uniqueID"+
+		So(cmd, ShouldEqual, expectedStaleRemoval+"cat /path/to/cmds | docker run --rm --name uniqueID"+
 			" --label uk.ac.sanger.wr.job-key=uniqueID"+
+			` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD" -i myimage /bin/sh`)
+	})
+
+	Convey("DockerRunCmd escapes regex metacharacters in the name it filters stale containers by", t, func() {
+		// docker matches the name filter as a regular expression, so an
+		// unescaped "." here would have this job remove a container named
+		// "wrrevXG", which is somebody else's.
+		cmd := DockerRunCmd("myimage", "/path/to/cmds", "wrrev.G", nil, nil, true)
+
+		So(cmd, ShouldEqual, `for c in $(docker ps --all --quiet --filter name=^wrrev\\.G\$ `+
+			`--filter label=uk.ac.sanger.wr.job-key=wrrev.G); do `+
+			`echo "wr: removing container $c, left behind by a lost run of this same command" >&2; `+
+			`docker rm --force "$c" >/dev/null; done; `+
+			"cat /path/to/cmds | docker run --rm --name wrrev.G"+
+			" --label uk.ac.sanger.wr.job-key=wrrev.G"+
 			` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD" -i myimage /bin/sh`)
 	})
 
@@ -326,7 +516,11 @@ func TestRunDocker(t *testing.T) {
 		cmd := DockerRunCmd("my image", "/path to/cmds", "unique ID",
 			[]string{"/foo/b ar;rm -rf x:/b ar", mountNoColon}, []string{"A B"}, false)
 
-		So(cmd, ShouldEqual, "cat '/path to/cmds' | docker run --rm --name 'unique ID'"+
+		So(cmd, ShouldEqual, `for c in $(docker ps --all --quiet --filter 'name=^unique ID$' `+
+			`--filter 'label=uk.ac.sanger.wr.job-key=unique ID'); do `+
+			`echo "wr: removing container $c, left behind by a lost run of this same command" >&2; `+
+			`docker rm --force "$c" >/dev/null; done; `+
+			"cat '/path to/cmds' | docker run --rm --name 'unique ID'"+
 			" --label 'uk.ac.sanger.wr.job-key=unique ID'"+
 			` --user "$(id -u):$(id -g)"`+
 			` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD"`+
@@ -511,12 +705,7 @@ func createRealTestFile(dir, baseName string) error {
 }
 
 func realTestTryCmd(cmdLine, homeDir string) (string, error) {
-	cmdLine = "set -o pipefail; " + cmdLine
-	cmd := exec.CommandContext(context.Background(), "/bin/bash", "-c", cmdLine)
-	cmd.Dir = homeDir
-	cmd.Env = os.Environ()
+	stdout, _, err := realTestTryCmdStd(cmdLine, homeDir)
 
-	out, err := cmd.Output()
-
-	return string(out), err
+	return stdout, err
 }

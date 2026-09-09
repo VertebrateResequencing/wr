@@ -96,6 +96,16 @@ project adheres to [Semantic Versioning](http://semver.org/).
   command's own working directory not visible inside the container at all and
   `--change_home` having no effect there. If your site's `singularity.conf`
   already bound your working directory, nothing changes.
+- A `--with_docker` command whose container outlived the run that started it -
+  the runner SIGKILLed, its host lost, or the docker daemon restarted mid-run -
+  could not be retried. Every attempt failed immediately with docker's "The
+  container name ... is already in use", naming only wr's own 32-character key
+  for the command, and the command stayed unrunnable until someone removed that
+  container by hand. wr now removes the leftover container itself before
+  starting the new one, and reports on the command's STDERR which container it
+  removed. It only ever removes a container that both holds the name it needs
+  and carries wr's own label naming that same command, so any other container of
+  that name is left alone and docker's conflict is reported as before.
 
 
 ## [0.37.2] - 2026-09-01

@@ -442,11 +442,16 @@ automatically pulled if it is missing. The container is created with cwd mounted
 and set to the workdir. Any mounts specified by "container_mounts" will also be
 mounted inside the container. Any environment variables you explicitly override
 with "env" will be set inside the container, but not other environment variables
-you have set at the time you add the command. Finally, "monitor_docker" will be
-overridden and set to monitor the container wr creates. If you would need to run
-your docker container with additional options or in a different way, don't use
-"with_docker", and instead have command be your own 'docker run [...]' command,
-and set "monitor_docker" as appropriate.
+you have set at the time you add the command. If a previous run of this same
+command left its container behind, wr removes that container first, so that the
+command can be retried. A container of that name that wr did not create for this
+same command is left alone, and still fails the run. Two wr managers on one
+docker host running this command in the same directory are indistinguishable
+here, so either can remove a container the other is running. Finally,
+"monitor_docker" will be overridden and set to monitor the container wr creates.
+If you would need to run your docker container with additional options or in a
+different way, don't use "with_docker", and instead have command be your own
+'docker run [...]' command, and set "monitor_docker" as appropriate.
 
 "with_singularity" takes an image name/location and is a convenience feature
 that will run your command by piping it into 'singularity shell [image]'.

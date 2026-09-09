@@ -12,7 +12,7 @@ was re-verified against `develop` at `0cc79218` before this branch started.
 No `file.go:NNN` references below. PR #591 shipped with stale ones after three
 rebases and Copilot caught it; this file names functions instead.
 
-- [ ] 4. A container that outlives its `docker run` keeps the job key as its
+- [x] 4. A container that outlives its `docker run` keeps the job key as its
   name, and then every retry of that job fails immediately.
     - `containerRunCmd` (`jobqueue/job.go`) passes `j.Key()` as `--name`.
       `--rm` covers the normal case, but a container that outlives its client
@@ -167,3 +167,110 @@ rebases and Copilot caught it; this file names functions instead.
   `--mount type=bind,source="$PWD"` (`invalid field 'me' must be a key=value
   pair`). `Job.containerMounts()` already splits `ContainerMounts` on comma, so
   the assumption is baked in upstream.
+
+## Item 4, as fixed
+
+- `DockerRunCmd`'s line is now prefixed by `removeStaleContainerCmd(name)`,
+  which removes a container matching BOTH filters, `AND`ed by docker:
+  `name=^<name>$` says it is in our way, and
+  `label=uk.ac.sanger.wr.job-key=<name>` says it is ours.
+  `regexp.QuoteMeta` on the name, because docker's `name` filter is a regex.
+- Name and label are UNCHANGED, both still `j.Key()`, so #589's correlation is
+  untouched. The reviewer proved that independently by driving the real
+  `Operator` over the real docker `Interactor` in `setupDockerMonitor`'s order:
+  after the stale container is removed, both `GetNewContainerByName` and
+  `adoptLabelledNewContainer`'s label loop resolve to the same new container.
+- Design, with the rejected options recorded because they look attractive:
+  * a UNIQUE NAME per attempt fixes the retry without any destructive call,
+    but leaves the orphan alive FOREVER - wr's only removal path is
+    `KillContainer` from a live runner that has already identified the
+    container, and there is no reaper - so orphans accumulate on worker nodes.
+    It also races the retry, since `mkHashedDir` is deterministic on the key
+    and both land in the same `$PWD`. And it moves the monitor surface,
+    because `containerRunCmd` sets `MonitorDocker = j.Key()` and
+    `findContainerID` takes the by-name path for `--with_docker` jobs.
+  * DETECTING docker's error and renaming it never makes the job runnable, and
+    means string-matching another tool's prose.
+  * DOING IT IN GO is blocked: `Interactor.ContainerList` passes `All: false`,
+    so an EXITED leftover is invisible to the Go client, and widening that
+    listing is exactly what the monitor's new-container diff is built on.
+- CORRECTION to that last point as first reported: "the Go client cannot see
+  the leftover at all" is true only for an exited one. A RUNNING leftover IS in
+  the baseline the monitor remembers - benign, and in fact helpful, since being
+  remembered it can never be adopted.
+- Safety, verified by the reviewer against real docker 29.1.3 across 8 cases,
+  with an unrelated bystander present throughout. It could not be made to
+  remove anything it should not:
+
+  ```
+  running leftover, our label                 -> removed
+  exited leftover, our label                  -> removed
+  our name, ANOTHER job's label               -> survives, run fails as before
+  our name, no label at all                   -> survives, run fails as before
+  our label, different name                   -> survives
+  name wrrevF, container wrrevFextra          -> survives (the ^...$ anchors)
+  job wrrev.G, container wrrevXG              -> survives (regexp.QuoteMeta)
+  job wrrev.G, container really named wrrev.G -> removed
+  ```
+
+- Shell safety: 8 hostile names driven through the real line under `/bin/sh`
+  (`evil; touch`, `evil$(touch)`, backticks, embedded newline, `evil*`, quote
+  breakouts) created ZERO files. The failure in each case is docker's own
+  "Invalid container name". This does not rely on `j.Key()` being hex.
+  `260907-1.md`'s trap is avoided because the `$` here is MEANT to be literal,
+  unlike `$PWD`.
+- Failure modes of the prefix are all clean no-ops with the exit status still
+  `docker run`'s, checked against the bare line: filter matches nothing (bash
+  and dash), docker absent from PATH, daemon down, `docker ps` failing,
+  `docker ps` printing a non-id. It introduces no `|`, so
+  `buildExecCmd`'s `set -o pipefail` trigger is unchanged.
+- The still-running case is deliberate, and the justification was verified
+  against code rather than accepted: `wr retry` only touches buried jobs;
+  `jobConfirmedDead` re-runs only when the command pid and the runner pid are
+  both confirmed dead, and the command pid IS the shell running `docker run`;
+  `backstopKillWedgedRunner` kills the runner and command but NOT the
+  container, which is what manufactures the leftover; and
+  `killLostJobAndTriggerBehaviours` latches, so one manager never has 2 live
+  runners for a key.
+- The LIMIT of that, now stated in the code rather than asserted away:
+  `Job.Key()` is derived from Cwd, Cmd, mounts and image and names no manager,
+  so 2 managers on one docker host running the identical command in the
+  identical Cwd share a key, and either could remove a container the other has
+  running. Before this change the second merely failed loudly. Mitigating: that
+  pair already shares the same deterministic `mkHashedDir` working directory
+  and is already corrupting each other. A second additive label carrying a
+  manager id would close it without disturbing #589, and is NOT done here.
+- That overstatement had reached 4 places. All 4 corrected:
+  `removeStaleContainerCmd`'s comment, `WithDocker`'s field doc, `CmdLine`'s
+  doc bullet, and `cmd/add.go`'s terminal help - the last being the only copy a
+  wr USER sees, so it keeps the caveat in the user's own vocabulary, with no
+  mention of the label or the key. The CHANGELOG's trailing "cannot prove is
+  its own" became the literal consequence of the 2 filters.
+- Blocking test defect found by the reviewer and fixed, and it would have
+  broken CI rather than this box: `startTestContainer` read the container id
+  from `CombinedOutput()`, but `docker run --detach` writes the id to STDOUT
+  and any image pull to STDERR, so on a machine without `alpine:latest` cached
+  the "id" is the pull progress and the assertion compares against
+  `"Unable to fi"`. `realTestSetup` never pre-pulls, so that is a fresh
+  runner's normal state. Proved by `docker save`, `docker rmi`, run, then
+  `docker load` - and the fix proved the same way, with the image id and repo
+  digest verified byte-identical afterwards.
+- `regexp.QuoteMeta` had NO test: removing it left `./container/...` and
+  `TestJob` green, on the most destructive change here. Closed with an exact
+  string case for a name containing a metacharacter, which also pins the
+  asymmetry that makes the 2 filters do different jobs - the name filter
+  escapes, the label filter carries the name raw.
+- The co-tenant Convey, honestly flagged by its author as green before and
+  after, IS load-bearing: it goes red under the mutation that drops the label
+  filter, which is precisely the mutation that would make the change
+  destructive.
+- Legibility: the item claimed the failure "names an opaque key rather than the
+  job". Only docker's half does - wr's `loggableCmd()` already puts the user's
+  own command line in front of it, and `wr status` prints `StdErr:` alongside
+  the `Cmd`. So no error sniffing was added. When wr does destroy something it
+  says so on the job's own stderr:
+  `wr: removing container 08a4951e32a5, left behind by a lost run of this same command`.
+- Left alone deliberately, and worth its own item: exit 125 is classified
+  `FailReasonExit`, "command exited non-zero", though the command never ran.
+  Special-casing 125 would misclassify a real job that legitimately exits 125,
+  and telling the 2 apart needs the stderr sniffing that was avoided.

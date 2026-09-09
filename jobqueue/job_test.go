@@ -589,7 +589,13 @@ func TestJob(t *testing.T) {
 
 			defer cleanup()
 
-			So(cmd, ShouldStartWith, "cat ")
+			// both filters on the removal carry the job's key, so it can only
+			// ever remove a container wr itself started for this same job.
+			staleRemoval := fmt.Sprintf(`for c in $(docker ps --all --quiet --filter name=^%[1]s\$ `+
+				`--filter label=uk.ac.sanger.wr.job-key=%[1]s); do `+
+				`echo "wr: removing container $c, left behind by a lost run of this same command" >&2; `+
+				`docker rm --force "$c" >/dev/null; done; cat `, job.Key())
+			So(cmd, ShouldStartWith, staleRemoval)
 
 			dockerPrefix := ` | docker run --rm --name %[1]s --label uk.ac.sanger.wr.job-key=%[1]s` +
 				` --user "$(id -u):$(id -g)"` +

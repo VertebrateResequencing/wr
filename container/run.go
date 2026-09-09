@@ -35,6 +35,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/VertebrateResequencing/wr/clog"
@@ -66,6 +67,18 @@ const workDirMountArgs = ` -w "$PWD" --mount type=bind,source="$PWD",target="$PW
 // $PWD stays a shell expansion for the same reason it does in
 // workDirMountArgs.
 const singularityWorkDirArgs = ` -B "$PWD" --pwd "$PWD"`
+
+// staleContainerRemovalFormat removes the containers that the 2 `docker ps`
+// filters interpolated in to it select; see removeStaleContainerCmd for which
+// those are, and why only those.
+//
+// The removal is announced on STDERR because it destroys something, and that
+// lands in the job's own STDERR, where whoever wonders what happened to the
+// lost run's container can read it. `docker rm` prints the id it removed on
+// STDOUT, which would otherwise be mixed in to the command's own output.
+const staleContainerRemovalFormat = "for c in $(docker ps --all --quiet --filter %s --filter %s); do " +
+	`echo "wr: removing container $c, left behind by a lost run of this same command" >&2; ` +
+	`docker rm --force "$c" >/dev/null; done; `
 
 // runAsCallingUserArgs makes the container's processes run as the user that runs
 // the command line, instead of as the user the image specifies (normally root).
@@ -150,6 +163,10 @@ func writeStringToFile(f *os.File, content string, cleanup func()) error {
 //     it creates in the working directory is owned by that user.
 //
 // * Automatically remove the container when it exits.
+//
+// It is prefixed by removeStaleContainerCmd, so that a container of the same
+// name that a previous run of the same thing left behind does not make this
+// run fail before it starts.
 func DockerRunCmd(image, cmdFile, name string, mounts, env []string, imageUser bool) string {
 	userArgs := runAsCallingUserArgs
 	if imageUser {
@@ -159,9 +176,10 @@ func DockerRunCmd(image, cmdFile, name string, mounts, env []string, imageUser b
 	mountArgs := dockerMounts(mounts)
 	envArgs := dockerEnv(env)
 
-	return fmt.Sprintf("cat %s | docker run --rm --name %s --label %s%s%s%s -i %s /bin/sh",
-		shellquote.Join(cmdFile), shellquote.Join(name), shellquote.Join(JobKeyLabel+"="+name),
-		userArgs, mountArgs, envArgs, shellquote.Join(image))
+	return removeStaleContainerCmd(name) +
+		fmt.Sprintf("cat %s | docker run --rm --name %s --label %s%s%s%s -i %s /bin/sh",
+			shellquote.Join(cmdFile), shellquote.Join(name), shellquote.Join(JobKeyLabel+"="+name),
+			userArgs, mountArgs, envArgs, shellquote.Join(image))
 }
 
 // dockerMounts takes a list of "/local/path[:/inside/container/path]" values
@@ -207,6 +225,42 @@ func MountSpecPaths(spec string) (local, inContainer string) {
 // a series of `docker run -e` args.
 func dockerEnv(names []string) string {
 	return listToPrefixedString(shellQuoteEach(names), " -e ")
+}
+
+// removeStaleContainerCmd returns shell that frees name for the `docker run`
+// that follows it, by removing every container that both holds that name and
+// carries JobKeyLabel with name as its value.
+//
+// --rm covers the normal case, but a container that outlives its `docker run`
+// client keeps the name - the runner SIGKILLed, the host lost, the daemon
+// restarted mid-run - and then every later run under that name fails at once
+// with docker's "container name is already in use".
+//
+// Both filters are required, and neither is redundant. The name filter says
+// the container is in our way; the label says it is ours to remove. Only we
+// set that label, so a container carrying it with this name is taken to be
+// one we started for this same thing, whose run has since been given up on -
+// doing work nobody will collect, and racing the run we are about to start in
+// the same working directory. That rests on one manager owning the key, which
+// is derived from Cwd, Cmd, mounts and image and names no manager: 2 managers
+// on one docker host running the identical command in the identical Cwd share
+// a key, so this would remove the other's live container, where before the
+// run merely failed loudly. A container of this name that we cannot prove is
+// ours is left alone and still fails the run, which is the safe way round:
+// #589 exists because an earlier version of this code decided a container was
+// the job's without proof, and being wrong here destroys a co-tenant's work
+// rather than merely mis-attributing it.
+//
+// The name goes through regexp.QuoteMeta because docker matches that filter as
+// a regular expression, so a name containing regex metacharacters would
+// otherwise match containers of other names.
+//
+// When the filters match nothing, which is every normal run, the loop body
+// runs no times: nothing is printed and no container is touched.
+func removeStaleContainerCmd(name string) string {
+	return fmt.Sprintf(staleContainerRemovalFormat,
+		shellquote.Join("name=^"+regexp.QuoteMeta(name)+"$"),
+		shellquote.Join("label="+JobKeyLabel+"="+name))
 }
 
 // listToPrefixedString creates a single string comprising vals concatenated
