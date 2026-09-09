@@ -141,9 +141,10 @@ func TestEnvOverrideDuplicates(t *testing.T) {
 			So(env, ShouldResemble, []string{first, other, second, "WR_NEW=new", "WR_ALSO=also"})
 		})
 
-		// cmd/runner.go accumulates its envOverrides across reserve-loop
-		// iterations, so a repeated name in the overrides is what actually
-		// reaches this path.
+		// a repeated name in the overrides comes from the user: what is refused
+		// is an element that defines no variable, not one whose name repeats,
+		// so `wr add --env "A=1,A=2"` and `wr mod --env "A=1,A=2"` both store
+		// both elements and hand them to this path.
 		Convey("An override given twice for a variable it lacks is appended once, with the last value", func() {
 			So(job.EnvAddOverride([]string{newOne, newTwo}), ShouldBeNil)
 

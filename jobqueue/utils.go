@@ -651,7 +651,14 @@ func writeStd(out io.Writer, b []byte, merr **multierror.Error) {
 }
 
 // envOverride deals with values you get from os.Environ, overriding one set
-// with values from another. Returns the new slice of environment variables.
+// with values from another. Returns the resulting slice of environment
+// variables.
+//
+// The result is not a copy: every override is written into orig in place, and
+// an append may take orig's spare capacity. A caller still holding orig can
+// therefore only assume its length is unchanged, not its contents nor what any
+// longer slice over the same array sees, so it should read the return value
+// instead. Every call site passes a slice it owns.
 //
 // A name that appears more than once in orig is overridden at every occurrence,
 // since a stored environment (unlike os.Environ) can hold duplicates, and which

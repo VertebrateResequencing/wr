@@ -481,3 +481,51 @@ stay findable.
 - Also left, non-blocking: nothing is logged when a read skips a malformed
   stored entry, so a legacy job degrades silently. A `warn` in the runner would
   close the last "no diagnostic" case this item complained about.
+
+- [x] Copilot review of PR #592, both findings valid and both taken.
+    - `envOverride`'s doc said it "returns the new slice", hiding that it
+      assigns `env := orig` and mutates the caller's backing array in place -
+      and this branch's fix makes it write to MORE indices than before. The
+      implementor verified the behaviour rather than describing it from the
+      code, running the real function over 5 shapes:
+      * every replaced index is written through to `orig`, at EVERY duplicate
+        index now;
+      * when `cap(orig) > len(orig)` the append writes into `orig`'s own array
+        past its length, overwriting what another slice over that array sees;
+      * when the append must grow, the result is a fresh array and `orig` keeps
+        the replacements but not the appends - so whether a caller sees
+        appended entries is CAPACITY-dependent, and not something to rely on
+        either way;
+      * two results derived from the same over-capacity `orig` alias each
+        other, which is precisely the class of bug item 2's `slices.Clone`
+        guards against in `cmd/runner.go`.
+      The doc now says a caller holding `orig` can assume its length is
+      unchanged and nothing else.
+    - A test comment documented behaviour THIS PR removed, which is the sharper
+      finding: `TestEnvOverrideDuplicates`'s third Convey justified itself by
+      citing `cmd/runner.go` accumulating overrides across the reserve loop -
+      and item 2, 2 commits later on this same branch, deleted exactly that.
+      Stale on arrival.
+    - The correct remaining rationale was established, not invented, and the
+      duplicate case is NOT dead: `wr mod --env "A=1,A=2"` is accepted. Item
+      4's `compressUserEnv` rejects 3 shapes - empty, no "=", no name before
+      the "=" - and says nothing about a name repeating, and all 4 write routes
+      funnel through it. Proved by driving the exact call `cmd/mod.go` makes:
+      `SetEnvOverride("A=1,A=2")` returns nil and the stored override decodes
+      to `[A=1 A=2]`. Both of `envOverride`'s arguments can carry duplicates -
+      `over` via `applyEnvOverrides`, and `orig` via `EnvAddOverride`, which
+      the runner calls on every job it reserves.
+    - CORRECTION to this item's own opening claim, and it is worth having
+      exactly right: it said "`os.Environ()` NORMALLY has no duplicates". It
+      can never have them. Go's `syscall.copyenv` blanks every duplicate key -
+      the source comment is literally `// Clear duplicate keys.` - so it is a
+      language-level guarantee, not a convention. Confirmed by `syscall.Exec`ing
+      a binary with an `envp` containing the same key twice: the child's
+      `os.Environ()` reported only the first. So the justification for item 1
+      rests entirely on environments that came from a CLIENT, never on the
+      ambient one, and `wr add`'s own `addEnvVars` returns `os.Environ()` and
+      so contributes no duplicate either.
+    - Checked and NOT stale, having been suspected: `cmd/runner_env_test.go`'s
+      header describes the accumulation in the PAST tense, as the bug this PR
+      fixed, which is accurate. A repo-wide grep plus a scan of every comment
+      line added by this branch found no other instance in Go code.
