@@ -69,7 +69,7 @@ rebases and Copilot caught it; this file names functions instead.
       big glob match inflates the job's recorded PeakRAM, and with it the RAM
       wr reserves for its next run.
 
-- [ ] 7. `container/docker/docker_test.go` uses the developer's real docker.
+- [x] 7. `container/docker/docker_test.go` uses the developer's real docker.
     - `pullUbuntuImage` calls `cli.ImagePull(ctx, "ubuntu", ...)` against
       `client.FromEnv`, and the tests start containers named `container_1` and
       `container_2` in that same daemon. Verified all three still present.
@@ -352,3 +352,71 @@ rebases and Copilot caught it; this file names functions instead.
   hold a large file of that name with no newline in its first 4096 bytes, the
   latch now disables the BY-NAME lookup too. That setup was already inflating
   PeakRAM every second before this change.
+
+## Item 7, as fixed
+
+- All 3 problems were proved real rather than argued, and the first is the
+  worst because it is silent:
+  * a COLLIDING NAME does not fail the test, it SKIPS it -
+    `skipping docker tests: ... Conflict. The container name "/container_1" is
+    already in use` then `--- SKIP: TestDocker`. A developer with their own
+    `container_1` had these tests quietly not running.
+  * the TAG really is re-pointed: pointing `ubuntu:latest` at another image and
+    running the unmodified test replaced it with the registry's, while the pull
+    stream said `Status: Image is up to date`.
+  * a FAILURE leaks: one forced assertion left 2 containers behind.
+- Now `alpine@sha256:28bd5fe8...`, 13 MB rather than ubuntu's 160 MB. Nothing
+  depended on it being ubuntu: every assertion in the file is `err == nil`,
+  `stats != nil`, `len(list) >= 2` or an error case. Nothing execs, reads a
+  shell path, or reads a stats VALUE. The only implicit requirement is that the
+  container stays RUNNING, because `ContainerList` passes `All: false`, and
+  alpine's `/bin/sh` with `Tty: true` does that as well as ubuntu's
+  `/bin/bash`.
+- The digest is the multi-platform OCI INDEX, verified against the registry by
+  both agents: `content-type: application/vnd.oci.image.index.v1+json`, 8
+  architectures. A per-arch manifest digest would have quietly broken the suite
+  on arm64.
+- Names are `filepath.Base(filepath.Dir(t.TempDir())) + "_1"/"_2"`, reusing
+  item 4's scheme rather than inventing a second. Proved under concurrency: 3
+  simultaneous test binaries produced 6 distinct names, all green.
+- Cleanup moved to `t.Cleanup`, registered BEFORE the start attempt, because a
+  container that fails to start still exists and still holds its name. Verified
+  on all 3 paths - pass, forced failure, and forced start failure - each
+  leaving `docker ps -a` identical to baseline. The old code leaked on the
+  failure path, demonstrated against `git show HEAD`'s version.
+- The cold-pull claim was checked the hard way: the reviewer removed the real
+  alpine, planted a FAKE `alpine:latest` standing in for a developer's own
+  build, and ran the tests. The developer's image survived untouched and the
+  pull landed as a separate digest-only row with no tag. With no alpine at all,
+  no `alpine:latest` was created either.
+- Honest footnote the implementor missed and the reviewer added: the digest
+  pull DOES persist `alpine@sha256:...` in the reference store, so on a machine
+  that does not already hold that content, `./container/...` leaves a 13 MB
+  `alpine <none>` row behind. Benign and unavoidable for a suite needing a real
+  daemon - but it means "daemon identical before and after" was true on this
+  box only because it already had that exact digest.
+- `Platform: {Architecture: "amd64"}` removed from `createContainer`, with the
+  now-unused `linuxOS` const and `specs` import. It contradicted the new
+  comment 3 functions above, and on an arm64 host it made the whole
+  real-daemon test SKIP - simulated by flipping the literal to `arm64` on this
+  amd64 box. With it gone the daemon resolves the multi-arch index to its own
+  platform, which is what the comment promises. `TestDocker` runs rather than
+  skipping.
+- Judged out of scope, with the reasoning recorded because the 2 look alike:
+  `container/run_test.go` still passes an unpinned `alpine` in 5 places, but
+  that is MATERIALLY WEAKER - `docker run` pulls only when the image is
+  ABSENT, so it can never re-point an existing tag, proved by resolving
+  `docker create alpine` against a fake local tag with no registry contact.
+  Item 7's defect was `cli.ImagePull`, which pulls UNCONDITIONALLY and
+  therefore always re-points. Worth its own item, since 3 of those 5 sites are
+  new on this branch.
+- Follow-up for the repo owner, NOT done here because it is outside a test-only
+  item: `github.com/opencontainers/image-spec v1.1.1` is in go.mod's DIRECT
+  require block and this was its last direct import in the repo. A `go mod
+  tidy` will move it to indirect. `make lint` is `0 issues.` as it stands, so
+  nothing fails on it today.
+- No CHANGELOG entry: test-only, no user-visible behaviour.
+- Pre-existing and unchanged, worth knowing: `TestDocker` turns EVERY
+  `createContainers` error into "skipping docker tests", so a real regression
+  in container creation reads as "no docker". Unique names shrink that surface
+  but do not close it.
