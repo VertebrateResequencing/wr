@@ -652,29 +652,53 @@ func writeStd(out io.Writer, b []byte, merr **multierror.Error) {
 
 // envOverride deals with values you get from os.Environ, overriding one set
 // with values from another. Returns the new slice of environment variables.
+//
+// A name that appears more than once in orig is overridden at every occurrence,
+// since a stored environment (unlike os.Environ) can hold duplicates, and which
+// copy the command then sees is up to the child: libc getenv() answers with the
+// first, while os/exec's Cmd.Env dedup answers with the last.
 func envOverride(orig []string, over []string) []string {
-	override := make(map[string]string)
+	override := make(map[string]string, len(over))
 
 	for _, envvar := range over {
-		pair := strings.Split(envvar, "=")
-		override[pair[0]] = envvar
+		override[envName(envvar)] = envvar
 	}
+
+	applied := make(map[string]bool, len(override))
 
 	env := orig
 	for i, envvar := range env {
-		pair := strings.Split(envvar, "=")
-		if replace, do := override[pair[0]]; do {
+		name := envName(envvar)
+		if replace, do := override[name]; do {
 			env[i] = replace
 
-			delete(override, pair[0])
+			applied[name] = true
 		}
 	}
 
-	for _, envvar := range override {
-		env = append(env, envvar)
+	// over, not override, so that what gets appended comes out in the order it
+	// was supplied rather than a map's random one; applied then also stops a
+	// name supplied twice being appended twice.
+	for _, envvar := range over {
+		name := envName(envvar)
+		if applied[name] {
+			continue
+		}
+
+		applied[name] = true
+
+		env = append(env, override[name])
 	}
 
 	return env
+}
+
+// envName returns the variable name of a "NAME=value" environment variable,
+// which is the whole string if it has no "=" in it.
+func envName(envvar string) string {
+	name, _, _ := strings.Cut(envvar, "=")
+
+	return name
 }
 
 func compressedLiveTailSuffix(tail []byte) []byte {

@@ -12,7 +12,7 @@ Deliberately no `file.go:NNN` references anywhere below: PR #591 shipped with
 stale ones after 3 rebases, and Copilot caught it. Function and identifier names
 stay findable.
 
-- [ ] 1. `envOverride` (`jobqueue/utils.go`) overrides only the FIRST
+- [x] 1. `envOverride` (`jobqueue/utils.go`) overrides only the FIRST
   occurrence of a duplicated variable name, because it DELETES the map entry as
   it uses it:
 
@@ -143,3 +143,85 @@ stay findable.
     - Pre-existing typo noted, not fixed here: "envionrment" in
       `containerEnv`'s doc comment. Worth sweeping when that comment is next
       touched.
+
+## Item 1, as fixed
+
+- Stopping the delete was not enough on its own. The trailing append loop USED
+  the delete as its signal for "this override went unused", so removing it
+  alone would have appended a second copy of every override already applied,
+  turning a stale-value bug into a duplicate-entry bug. That signal is now an
+  explicit `applied map[string]bool`, marked in the replacement loop.
+- The append loop now ranges the caller's `over` slice rather than the map,
+  reading each value back by name. Two gains in one change: `applied` already
+  provides the skip test, so iterating the map bought nothing, and iterating
+  the input makes the appended ORDER deterministic - caller order, where it
+  used to be Go's randomised map order. Marking `applied` as it appends stops a
+  name given twice in `over` being appended twice, while `override[name]`
+  keeps the existing last-wins value.
+- `envName(envvar string) string` extracted using `strings.Cut`, now that name
+  extraction happens 3 times in the function. Verified behaviourally identical
+  to the `strings.Split(envvar, "=")[0]` it replaces across `"" "=" "=v" "A"
+  "A=" "A=1" "A=1=2" "==" "a b=c"` and a NUL-containing name: zero mismatches.
+- Output length is IDENTICAL to the old implementation's, not merely no larger.
+  The reviewer ran both side by side over 13 shapes; every one reported
+  SAME-LEN. The old code appended exactly the names never matched in `orig`
+  (the un-deleted map remainder); the new code appends exactly the names not in
+  `applied`. Same set.
+- Regression test `TestEnvOverrideDuplicates` (`jobqueue/utils_test.go`) drives
+  `Job.Env()`, not `envOverride`. That is the exported call whose result
+  becomes `cmd.Env` in `Client.Execute`, and it is the only seam where the 2
+  halves of the bug meet: a stored environment that came from a client, which
+  CAN hold duplicates unlike `os.Environ()`, and an override applied to it.
+- Red proved 25/25, deterministic in both directions:
+  `Expected ["WR_DUP=fresh" "WR_OTHER=other" "WR_DUP=fresh"]` against
+  `Actual [... "WR_DUP=staler"]`. Post-fix, 25/25 green.
+- CORRECTION to the implementor's own report: it described the SECOND Convey as
+  intermittently red "five passes and one failure in six". The reviewer
+  measured 4 failures in 25, about 16%. The Convey that actually guards the bug
+  is the first, and that one is fully deterministic. Recorded because an
+  intermittent red is only an intermittent guard, and the distinction between
+  the 2 Conveys matters.
+- A line had NO test behind it, found by the reviewer deleting it: the append
+  loop's `applied[name] = true`. The whole gate stayed green without it, yet
+  its absence makes the result GAIN an entry and breaks the length invariant
+  above. Not hypothetical either - `cmd/runner.go` accumulates `envOverrides`
+  across its reserve loop (item 2, still open), so a repeated name in `over`
+  happens in production today. Closed with a third Convey, proved red under
+  that exact mutation:
+  `Actual [... "WR_NEW=two", "WR_NEW=two"]`.
+- The interaction with item 3 was settled against real docker 29.1.3, not
+  argued. A Job whose stored env names `WR_DUP` twice, with an override for it,
+  run through the same wiring `Client.Execute` uses:
+
+  ```
+  with this fix:      job.Env() = [WR_DUP=fresh, WR_OTHER=other, WR_DUP=fresh]   container prints "fresh"
+  utils.go reverted:  job.Env() = [WR_DUP=fresh, WR_OTHER=other, WR_DUP=staler]  container prints "staler"
+  ```
+
+  So item 3's `-e NAME` form really was handing the stale duplicate to the
+  container, and this fixes it. The `os/exec` last-wins dedup was confirmed in
+  the same run by the host's own `printenv`.
+- Aliasing checked, pre-existing and harmless: `env := orig` then `env[i] = ...`
+  mutates the caller's backing array, and the fix now writes to MORE indices
+  than before. Every call site was traced - `applyEnvOverrides`,
+  `EnvAddOverride`, `envWithRunDirs`, `addBsubEnv` - and each passes a slice it
+  already owns.
+- No existing test asserted the old behaviour; the test diff is insertions
+  only.
+- `goconst` rejected the first test draft for 3 occurrences of a literal, the
+  same class of surprise as item 3's `mnd` rejection. Fixed with a
+  function-local `const` block.
+- Tooling problem, pre-existing and NOT caused by this branch, confirmed
+  independently by 2 agents and by running it on `HEAD`'s copy:
+  `cleanorder -min-diff jobqueue/utils_test.go` hoists `const testJobKey`,
+  `const mkHashedDirSweepTries` and 2 interface assertions to the top of the
+  file, stranding `TestCreatedCwdDepthMatchesMkHashedDir`'s doc comment
+  hundreds of lines from its function. Both agents reverted it and hand-placed
+  their additions. `make lint` is `0 issues.` either way, so nothing enforces
+  cleanorder's preference here. Someone should decide whether that file takes
+  the reorder as its own commit or whether cleanorder is simply wrong about
+  test files that document a constant through the test above it.
+- Tidies noted, both out of scope for this item: `Job.containerEnv()` in
+  `jobqueue/job.go` still inlines a 4th copy of the name extraction that
+  `envName` now owns, and `jobqueue/job_test.go`'s either-order hedge for 2 env
+  vars is now dead code, since the append order is deterministic.
