@@ -118,6 +118,24 @@ func TestFile(t *testing.T) {
 	})
 }
 
+func TestEmptyPath(t *testing.T) {
+	Convey("GetFirstLine given an empty path says so, and the error matches ErrEmptyPath", t, func() {
+		line, err := GetFirstLine("")
+		So(line, ShouldBeEmpty)
+		So(err, ShouldNotBeNil)
+		So(errors.Is(err, ErrEmptyPath), ShouldBeTrue)
+		So(err.Error(), ShouldEqual, "path [] could not be read: path is empty")
+	})
+
+	Convey("ToString given an empty path says the same", t, func() {
+		content, err := ToString("")
+		So(content, ShouldBeEmpty)
+		So(err, ShouldNotBeNil)
+		So(errors.Is(err, ErrEmptyPath), ShouldBeTrue)
+		So(err.Error(), ShouldEqual, "path [] could not be read: path is empty")
+	})
+}
+
 func TestGetFirstLine(t *testing.T) {
 	Convey("GetFirstLine returns only the first line of a multi-line file", t, func() {
 		path := filepath.Join(t.TempDir(), "lines.txt")

@@ -590,7 +590,10 @@ func TestJob(t *testing.T) {
 			defer cleanup()
 
 			// both filters on the removal carry the job's key, so it can only
-			// ever remove a container wr itself started for this same job.
+			// remove a container wr itself started under that key: normally
+			// just this job's own, but 2 managers share a key when they run
+			// this same Cmd in this same Cwd, and container/run.go's
+			// removeStaleContainerCmd says what that costs.
 			staleRemoval := fmt.Sprintf(`for c in $(docker ps --all --quiet --filter name=^%[1]s\$ `+
 				`--filter label=uk.ac.sanger.wr.job-key=%[1]s); do `+
 				`echo "wr: removing container $c, left behind by a lost run of this same command" >&2; `+

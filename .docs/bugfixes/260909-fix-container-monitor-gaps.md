@@ -420,3 +420,49 @@ rebases and Copilot caught it; this file names functions instead.
   `createContainers` error into "skipping docker tests", so a real regression
   in container creation reads as "no docker". Unique names shrink that surface
   but do not close it.
+
+- [x] Copilot review of PR #593, 3 findings, all valid, all taken.
+    - `PathReadError` could carry a NIL `Err`: `&PathReadError{"", nil}` at 2
+      sites, so an empty filename rendered
+      `path [] could not be read: %!s(<nil>)` in a log, and `Unwrap()` returned
+      nil, defeating the `errors.Is` matching item 6 had just added. Both nil
+      sites predate this branch; the `Unwrap` it added is what makes the second
+      half bite.
+    - Fixed with a package-level `ErrEmptyPath` sentinel wrapped by both sites,
+      beside `ErrLineTooLong` in the same file, so it is the file's existing
+      pattern rather than a new one. The 2 alternatives were rejected for
+      leaving the nil in place: a nil guard in `Error()` would make the
+      rendering tolerable while `Unwrap()` still returned nil, which is the
+      guard-around-a-should-never-be-nil that implementation-principles warns
+      about; and refusing to construct the struct without an error would mean
+      unexporting the `Err` field.
+    - Behaviour change, so red first, and each half proved separately because
+      GoConvey's `FailureHalts` hides the second assertion of a pair:
+      `errors.Is(err, ErrEmptyPath)` false, and the rendering
+      `Expected "path [] could not be read: path is empty"` against
+      `Actual "path [] could not be read: %!s(<nil>)"`. No CHANGELOG entry: the
+      only non-test caller is `cidPathToContainer`, whose path always comes
+      from an existing file or a glob match, so the branch is unreachable from
+      a user's job.
+    - "tilda" corrected to "tilde" in the 2 comments in `fs/file/file.go`.
+      Deliberately left, and listed rather than silently skipped: the exported
+      `TildaToHome` in `fs/filepath` and `internal`, its 10 call sites,
+      comments in `jobqueue/mount.go` and `internal/utils.go`, a test name in
+      `jobqueue/mount_test.go`, and 2 historical `.docs` records. Renaming an
+      exported identifier is not a comment fix.
+    - A FIFTH instance of the safety overstatement, in
+      `jobqueue/job_test.go`. That claim had already been corrected in 4 places
+      on this branch - `removeStaleContainerCmd`'s comment, `WithDocker`'s
+      field doc, `CmdLine`'s bullet and `cmd/add.go`'s help - and 4 separate
+      sweeps still missed this one. Worth recording as a lesson: finding the
+      same wrong claim 5 times by accident is not a search.
+    - So the 5th fix came with a deliberate repo-wide sweep across all text
+      files on 10 phrasings, with everything found reported whether changed or
+      not. Result: the 4 already-corrected sites, this 5th, and 2 that read as
+      the property but are NOT it - `CmdLine`'s bullet states the 2 filters and
+      defers to `WithDocker`, and the CHANGELOG states the literal consequence
+      of the filters. Also examined and correctly left:
+      `container/run_test.go`'s "never removes a container of that name that is
+      not this job's", whose body uses an UNLABELLED container, which genuinely
+      never is removed - the two-manager container carries this job's own key,
+      so it is not a counterexample to what that test asserts.
