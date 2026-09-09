@@ -4,12 +4,12 @@ reject-multi-colon-mounts
 
 - [ ] A `ContainerMounts` spec with 2 or more colons is accepted and then
   silently means something the user did not ask for.
-  `container.MountSpecPaths` (`container/run.go:179`) splits on ":" and returns
+  `container.MountSpecPaths` (`container/run.go`) splits on ":" and returns
   `parts[0], parts[1]` ONLY when there are exactly 2 parts; for anything else it
   returns `parts[0], parts[0]`. So `/data/a:b:/mnt` yields source AND target
   both `/data/a`, and the `/mnt` the user asked for is dropped.
     - The validation `#587` added does not catch it. `containerMountsMessage`
-      (`jobqueue/job.go:1239`) checks that both returned paths are absolute, but
+      (`jobqueue/job.go`) checks that both returned paths are absolute, but
       for a 3-part spec both ARE `parts[0]`, so it inspects the same path twice,
       never sees the in-container one, and accepts the spec. The job then runs
       with a bind mount the user never asked for.
@@ -19,8 +19,8 @@ reject-multi-colon-mounts
     - The repo owner has DECIDED: reject multi-colon mount specs. That decision
       is settled and is not to be re-litigated.
     - One place covers every path. `containerMountsMessage` is reached from all
-      4 submission and modification routes: `jobqueue/serverREST.go:1676`,
-      `jobqueue/job.go:1308`, and the modify routes at `jobqueue/job.go:2283`
+      4 submission and modification routes: `jobqueue/serverREST.go`,
+      `jobqueue/job.go`, and the modify routes at `jobqueue/job.go`
       and `:2317`.
     - Note for whoever writes the message: docker's real syntax allows a third
       field for options, such as `/a:/b:ro`. wr has never supported it - that
@@ -29,10 +29,10 @@ reject-multi-colon-mounts
       say what the supported format IS, not only that the value is wrong.
     - Fixed in `containerMountsMessage` (`jobqueue/job.go`), which is the one
       function all 4 routes reach, verified by the implementor rather than
-      taken from the item: `jobqueue/serverREST.go:1676` (REST add),
-      `jobqueue/job.go:1308` (`malformedAddJobMessage`, reached from
-      `addValidationError` in `client.go` and from `serverCLI.go:826`),
-      `job.go:2283` (`modifiedContainerMountsMessage`) and `job.go:2317`
+      taken from the item: `jobqueue/serverREST.go` (REST add),
+      `jobqueue/job.go` (`malformedAddJobMessage`, reached from
+      `addValidationError` in `client.go` and from `serverCLI.go`),
+      `job.go` (`modifiedContainerMountsMessage`) and `job.go`
       (`validationMessage`). A grep for every caller of both the method and the
       function confirms there is no fifth.
     - The check goes FIRST in the loop, before the absolute-path check,
@@ -49,9 +49,9 @@ reject-multi-colon-mounts
       not supported
       ```
 
-      Traced to where a user sees it, not assumed: `cmd/add.go:556`/`:573`
+      Traced to where a user sees it, not assumed: `cmd/add.go`/`:573`
       `die("%s", err)` on the Add error, and `Error.Error()`
-      (`jobqueue/server.go:510`) renders it as
+      (`jobqueue/server.go`) renders it as
       `jobqueue add(<item>): bad request`.
     - Red command: a new case in `malformedAddTests()`
       (`jobqueue/client_payload_test.go`), the table whose doc comment says it
@@ -74,15 +74,15 @@ reject-multi-colon-mounts
       jobqueue validation, still gets the silent collapse. `MountSpecPaths`'s
       doc comment now records that as the deliberate contract, replacing the
       text that recorded it as an open question.
-    - Bounds proved: a 1-part spec still works (`container/run_test.go:169`
+    - Bounds proved: a 1-part spec still works (`container/run_test.go`
       and `:196` both drive `/foo/car` with no colon, and
       `containerMountsWellFormed = "/data/set:/data,/other"` is the value every
       "is accepted" assertion uses); a valid 2-part spec is unchanged;
       `TestKeyByteIdentity` and `TestJob` pass, and the key path concatenates
       `ContainerMounts` verbatim and never calls `MountSpecPaths`; and jobs
       already stored with a multi-colon spec still load, since
-      `db.recoverIncompleteJobs` and `server.go:1735` do no validation and
-      `modify_validation_test.go:313` already exercises that path.
+      `db.recoverIncompleteJobs` and `server.go` do no validation and
+      `modify_validation_test.go` already exercises that path.
 
 - [x] **For the repo owner, before merging: this is a small capability
   REMOVAL for singularity users, not purely a fix.** The item above assumed a
@@ -172,14 +172,14 @@ reject-multi-colon-mounts
       multi-colon spec "as a job is added or modified, so only a job stored
       before that check existed can still carry one". Two holes, and the
       implementor refined the second one further than the review had:
-      * `(*Job).containerMountsMessage()` (`jobqueue/job.go:345`) returns ""
+      * `(*Job).containerMountsMessage()` (`jobqueue/job.go`) returns ""
         when the Job has no container image, and all 3 add routes reach that
         METHOD rather than the free function, so a job ADDED today with no
         image keeps its spec unchecked. Harmless, since mounts are inert
         without an image, and setting one later IS caught by
         `modifiedContainerMountsMessage`.
       * but MODIFY is guarded regardless of image, which the review had not
-        separated out: `JobModifier.validationMessage()` (`job.go:2414`) calls
+        separated out: `JobModifier.validationMessage()` (`job.go`) calls
         the FREE `containerMountsMessage` with no image gate whenever
         `ContainerMountsSet`, so `wr mod --container_mounts /a:/b:ro` on an
         image-less job is refused. So the only real holes are add-with-no-image
@@ -196,3 +196,19 @@ reject-multi-colon-mounts
       LOSE a working capability, which belongs in Changed where someone
       scanning for what might break them will look, and docker users get a
       silent wrong-mount defect fixed, which belongs in Fixed.
+
+- [x] Copilot review of PR #591, both findings valid and both taken.
+    - The CHANGELOG entry claimed "`wr add` and `wr mod` now refuse" a
+      multi-colon value outright. `wr add` does NOT, when no image flag is
+      given: all 3 add routes reach `(*Job).containerMountsMessage()`, which
+      returns "" with no image. Release notes that overstate a rejection are
+      worse than none, so the entry now says exactly which command refuses
+      when: add with an image flag, mod whenever `--container_mounts` is set,
+      and mod refusing to add an image to a job whose existing mounts have the
+      problem.
+    - The write-up carried hard-coded `file.go:NNN` references that were
+      already stale, because this branch has been rebased twice - onto #588
+      and #589, then onto #590 - and every rebase moved them. All 11 have been
+      reduced to bare file names rather than re-pinned, since the next rebase
+      would stale them again. Function and identifier names are what make a
+      reference findable.

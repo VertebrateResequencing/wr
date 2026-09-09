@@ -20,14 +20,17 @@ project adheres to [Semantic Versioning](http://semver.org/).
   `cleanup` behaviours; previously a root-owned file or directory left your
   working directory littered and the command's workspace undeletable. Only
   docker is affected: singularity already ran your commands as you.
-- `wr add` and `wr mod` now refuse a `--container_mounts` value in which any
-  single mount has more than one colon, naming the offending mount and the
-  supported format: `/outside/container`, or
-  `/outside/container:/inside/container`. If you use `--with_singularity`, a
-  mount option such as the `:ro` in `/data/opt:/opt:ro` did reach
-  `singularity -B` and really did make the mount read-only; it is no longer
-  accepted, so drop it from new submissions and modifications. Commands already
-  in the queue keep running with the mounts they were added with.
+- wr now refuses a `--container_mounts` value in which any single mount has more
+  than one colon, naming the offending mount and the supported format:
+  `/outside/container`, or `/outside/container:/inside/container`. `wr add`
+  refuses it when you also give `--with_docker` or `--with_singularity`, since
+  without an image the mounts are unused; `wr mod` refuses it whenever you set
+  `--container_mounts`, and also refuses to add an image to a job whose existing
+  mounts have this problem. If you use `--with_singularity`, a mount option such
+  as the `:ro` in `/data/opt:/opt:ro` did reach `singularity -B` and really did
+  make the mount read-only; it is no longer accepted, so drop it from new
+  submissions and modifications. Commands already in the queue keep running with
+  the mounts they were added with.
 
 ### Fixed
 - With `--with_docker`, a `--container_mounts` mount with more than one colon,
