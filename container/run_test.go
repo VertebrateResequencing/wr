@@ -164,12 +164,14 @@ func TestRunDocker(t *testing.T) {
 		cmd := DockerRunCmd("myimage", "/path/to/cmds", "uniqueID", nil, nil)
 
 		So(cmd, ShouldEqual, "cat /path/to/cmds | docker run --rm --name uniqueID"+
+			" --label uk.ac.sanger.wr.job-key=uniqueID"+
 			` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD" -i myimage /bin/sh`)
 
 		cmd = DockerRunCmd("myimage", "/path/to/cmds", "uniqueID",
 			[]string{"/foo/bar:/bar", "/foo/car"}, []string{"A", "B"})
 
 		So(cmd, ShouldEqual, "cat /path/to/cmds | docker run --rm --name uniqueID"+
+			" --label uk.ac.sanger.wr.job-key=uniqueID"+
 			` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD"`+
 			" --mount type=bind,source=/foo/bar,target=/bar --mount type=bind,source=/foo/car,target=/foo/car"+
 			" -e A -e B -i myimage /bin/sh")
@@ -180,6 +182,7 @@ func TestRunDocker(t *testing.T) {
 			[]string{"/foo/b ar;rm -rf x:/b ar", "/foo/car"}, []string{"A B"})
 
 		So(cmd, ShouldEqual, "cat '/path to/cmds' | docker run --rm --name 'unique ID'"+
+			" --label 'uk.ac.sanger.wr.job-key=unique ID'"+
 			` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD"`+
 			" --mount 'type=bind,source=/foo/b ar;rm -rf x,target=/b ar'"+
 			" --mount type=bind,source=/foo/car,target=/foo/car"+

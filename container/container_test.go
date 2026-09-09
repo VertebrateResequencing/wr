@@ -94,6 +94,22 @@ func TestContainer(t *testing.T) {
 			So(newContainer.Names[1], ShouldEqual, "test_container1_new")
 		})
 
+		Convey("it can report the value of a label, and whether it is set", func() {
+			So(newContainer.Labels, ShouldBeNil)
+
+			_, set := newContainer.Label(JobKeyLabel)
+			So(set, ShouldBeFalse)
+
+			newContainer.Labels = map[string]string{JobKeyLabel: "somejobskey"}
+
+			value, set := newContainer.Label(JobKeyLabel)
+			So(set, ShouldBeTrue)
+			So(value, ShouldEqual, "somejobskey")
+
+			_, set = newContainer.Label("some.other.label")
+			So(set, ShouldBeFalse)
+		})
+
 		Convey("it can check if a given name is its valid name", func() {
 			// call TrimNamePrefixes on the container
 			newContainer.TrimNamePrefixes()

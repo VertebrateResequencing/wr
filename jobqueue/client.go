@@ -182,6 +182,14 @@ const (
 	// paying dockerCallTimeout on every check.
 	dockerFailureTolerance = 3
 
+	// ambiguousContainerMsg is logged when more than one container appeared
+	// during a job's run and none of them can be told to be the job's, so that
+	// a user wondering why their job reported no container usage can find out
+	// why.
+	ambiguousContainerMsg = "not monitoring a job's docker container; more than one container appeared while " +
+		"it ran and none of them is identifiably the job's, so its usage will be under-reported and no " +
+		"container will be killed with the job"
+
 	// checkingFinishTimeout is how long Execute() waits for its resource
 	// checking goroutine to confirm that it has stopped. It is a backstop for
 	// that goroutine blocking in something we don't control: a finished job
@@ -428,6 +436,97 @@ func (state *executeLiveState) snapshot() *JobEndState {
 		Stdout:   stdout,
 		Stderr:   stderr,
 	}
+}
+
+// adoptLabelledNewContainer adopts the new container that wr started for this
+// job, recognised by it carrying container.JobKeyLabel with this job's key,
+// and says if it adopted one.
+//
+// More than one container claiming to be this job's is as ambiguous as none,
+// so nothing is adopted then.
+//
+// jobKey is a Job.Key(), which is a hash and so is never empty; neither this
+// nor adoptUnambiguousNewContainer special-cases an empty one, so both agree
+// that a container labelled with an empty value is the container of a job
+// whose key is empty.
+func (dm *dockerMonitor) adoptLabelledNewContainer(newContainers []*container.Container) bool {
+	var ours *container.Container
+
+	for _, cntr := range newContainers {
+		if key, set := cntr.Label(container.JobKeyLabel); !set || key != dm.jobKey {
+			continue
+		}
+
+		if ours != nil {
+			return false
+		}
+
+		ours = cntr
+	}
+
+	if ours == nil {
+		return false
+	}
+
+	dm.containerID = ours.ID
+
+	return true
+}
+
+// adoptUnambiguousNewContainer adopts the one new container that could be this
+// job's, if exactly one could be.
+//
+// A container labelled as another job's demonstrably is not this job's, so it
+// is not a candidate. If 2 or more candidates remain there is no way to tell
+// which is this job's, and adopting the wrong one would charge its usage to
+// this job and SIGKILL it with this job - so nothing is adopted, and the
+// refusal is latched: a candidate that becomes the only one left later on (its
+// rival having exited) is no more identifiable than it was, and adopting it
+// would be a coin flip on a kill. A later label match can still win, being the
+// one unambiguous answer.
+//
+// Nothing is logged when there are no candidates at all: this runs on every
+// poll of a running job, and "no container yet" is what a job that has not got
+// as far as starting its container looks like.
+func (dm *dockerMonitor) adoptUnambiguousNewContainer(ctx context.Context, newContainers []*container.Container) {
+	if dm.diffAmbiguous {
+		return
+	}
+
+	var candidates []*container.Container
+
+	for _, cntr := range newContainers {
+		if key, set := cntr.Label(container.JobKeyLabel); set && key != dm.jobKey {
+			continue
+		}
+
+		candidates = append(candidates, cntr)
+	}
+
+	if len(candidates) == 1 {
+		dm.containerID = candidates[0].ID
+
+		return
+	}
+
+	if len(candidates) > 1 {
+		dm.diffAmbiguous = true
+
+		clog.Warn(ctx, ambiguousContainerMsg, "container", dm.monitorDocker,
+			"candidates", describeContainers(candidates))
+	}
+}
+
+// describeContainers renders containers as "id[name,name]" values, so that a
+// log message can say which containers it could not choose between.
+func describeContainers(containers []*container.Container) []string {
+	described := make([]string, len(containers))
+
+	for i, cntr := range containers {
+		described[i] = cntr.ID + "[" + strings.Join(cntr.Names, ",") + "]"
+	}
+
+	return described
 }
 
 // combineExecOutcomes folds the verdict that unmounting the job's mounts
@@ -1418,13 +1517,22 @@ type dockerMonitor struct {
 	interactor    container.Interactor
 	monitorDocker string
 
+	// jobKey is the Key() of the job we monitor for, which is the value of the
+	// container.JobKeyLabel label on a container wr started for that job.
+	jobKey string
+
 	// callTimeout is how long any single docker API call we make is allowed to
 	// take.
 	callTimeout     time.Duration
 	failures        int
 	getFirstAppears bool
 	givenUp         bool
-	containerID     string
+
+	// diffAmbiguous notes that more than one container we could not rule out
+	// appeared during this job's run, so no container can be adopted by
+	// appearance any more; see adoptUnambiguousNewContainer.
+	diffAmbiguous bool
+	containerID   string
 }
 
 // setupDockerMonitor creates the docker client used to monitor the job's
@@ -1440,7 +1548,7 @@ func (c *Client) setupDockerMonitor(ctx context.Context, job *Job) (*dockerMonit
 		return nil, c.buryWithCause(job, FailReasonDocker, err, "failed to create docker client")
 	}
 
-	dm, err := newDockerMonitor(ctx, job.MonitorDocker, interactor, dockerCallTimeout)
+	dm, err := newDockerMonitor(ctx, job.MonitorDocker, job.Key(), interactor, dockerCallTimeout)
 	if err != nil {
 		return nil, c.buryWithCause(job, FailReasonDocker, err, "failed to get docker containers")
 	}
@@ -1468,18 +1576,20 @@ func newDockerInteractor(timeout time.Duration) (container.Interactor, error) {
 // newDockerMonitor creates a dockerMonitor for the container identified by
 // monitorDocker (its --name, the path to its --cidfile, or "?" for the first
 // container to appear), monitored using the given interactor and allowing
-// timeout for each docker API call.
+// timeout for each docker API call. jobKey is the Key() of the job being
+// monitored, used to recognise a container that wr itself started for it.
 //
 // The containers that already exist are remembered, so that only a container
 // that appears after this call can be adopted - and so killed - by the job,
 // whichever way monitorDocker identifies it.
-func newDockerMonitor(ctx context.Context, monitorDocker string, interactor container.Interactor,
+func newDockerMonitor(ctx context.Context, monitorDocker, jobKey string, interactor container.Interactor,
 	timeout time.Duration,
 ) (*dockerMonitor, error) {
 	dm := &dockerMonitor{
 		operator:        container.NewOperator(interactor),
 		interactor:      interactor,
 		monitorDocker:   monitorDocker,
+		jobKey:          jobKey,
 		callTimeout:     timeout,
 		getFirstAppears: monitorDocker == "?",
 	}
@@ -1577,7 +1687,15 @@ func (dm *dockerMonitor) noteCallResult(ctx context.Context, err error) {
 // and does reach the job's outcome: a kill we were asked to do and could not
 // do leaves the user's container running, which is a real failure of this run
 // and not something a later check can make good.
+//
+// With no container adopted there is nothing to kill, so docker is not called
+// at all: an empty id is not a container the daemon would refuse, it is a
+// request we must not make.
 func (dm *dockerMonitor) killContainer(ctx context.Context) error {
+	if dm.containerID == "" {
+		return nil
+	}
+
 	callCtx, cancel := dm.callCtx(ctx)
 	defer cancel()
 
@@ -1586,14 +1704,27 @@ func (dm *dockerMonitor) killContainer(ctx context.Context) error {
 
 // findContainerID tries to identify the container to monitor, caching its id on
 // success.
+//
+// The label match is only consulted when monitorDocker is "?", ie. when we
+// would otherwise have to guess from the diff. It buys nothing on the other
+// paths and would cost them an extra listing per poll: a --with_docker job's
+// monitorDocker is never "?" but always its Key(), because Job.CmdLine() sets
+// it before Execute() gets as far as setupDockerMonitor, and DockerRunCmd
+// gives the container that same key as both its --name and its label value, so
+// the by-name lookup already finds exactly the container the label match would
+// have.
 func (dm *dockerMonitor) findContainerID(ctx context.Context, cmdDir string) error {
 	if dm.getFirstAppears {
-		containers, err := dm.operator.GetNewContainers(ctx)
-		if len(containers) > 0 {
-			dm.containerID = containers[0].ID
+		newContainers, newErr := dm.operator.GetNewContainers(ctx)
+
+		// a container labelled as this job's is the one unambiguous answer,
+		// since only wr sets that label and it says whose container this is,
+		// so the diff is only fallen back on when no container claims us.
+		if !dm.adoptLabelledNewContainer(newContainers) {
+			dm.adoptUnambiguousNewContainer(ctx, newContainers)
 		}
 
-		return err
+		return newErr
 	}
 
 	// monitorDocker might be the name of a new container

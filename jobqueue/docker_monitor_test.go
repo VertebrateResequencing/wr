@@ -39,6 +39,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/container"
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -61,6 +62,20 @@ const (
 	// dockerTestAPIVersion is the docker API version our fake daemon serves; the
 	// moby client asks for a pinned version directly instead of negotiating one.
 	dockerTestAPIVersion = "1.51"
+
+	// dockerTestJobKey stands in for the Key() of the job whose container is
+	// being monitored, which is the value wr labels a container it starts for
+	// that job with.
+	dockerTestJobKey = "thisjobskey"
+
+	// dockerTestOtherJobKey is the same for a different job, whose container
+	// must never be adopted by the job under test.
+	dockerTestOtherJobKey = "anotherjobskey"
+
+	// dockerTestJobsContainerID is the id the tests give the container that is
+	// the job's own, so that an assertion can name the only container that may
+	// be monitored, and killed, with that job.
+	dockerTestJobsContainerID = "jobs"
 )
 
 func TestCheckingRendezvous(t *testing.T) {
@@ -246,7 +261,7 @@ func TestDockerMonitorUnresponsiveDaemon(t *testing.T) {
 			errCh := make(chan error, 1)
 
 			go func() {
-				_, err := newDockerMonitor(ctx, "?", stalled, dockerTestCallTimeout)
+				_, err := newDockerMonitor(ctx, "?", dockerTestJobKey, stalled, dockerTestCallTimeout)
 				errCh <- err
 			}()
 
@@ -351,16 +366,42 @@ func newFakeInteractor() *fakeInteractor {
 }
 
 // add makes a container with the given id and name, using the given memory in
-// MB, exist.
+// MB, exist. It carries no labels, like a container started by anything other
+// than wr.
 func (f *fakeInteractor) add(id, name string, memMB int) {
+	f.addLabelled(id, name, memMB, nil)
+}
+
+// addForJob is like add, but the container carries the label wr puts on a
+// container it starts for the job with the given key.
+func (f *fakeInteractor) addForJob(id, name, jobKey string, memMB int) {
+	f.addLabelled(id, name, memMB, map[string]string{container.JobKeyLabel: jobKey})
+}
+
+// addLabelled makes a container with the given id, name and labels, using the
+// given memory in MB, exist.
+func (f *fakeInteractor) addLabelled(id, name string, memMB int, labels map[string]string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	cntr := &container.Container{ID: id, Names: []string{"/" + name}}
+	cntr := &container.Container{ID: id, Names: []string{"/" + name}, Labels: labels}
 	cntr.TrimNamePrefixes()
 
 	f.containers = append(f.containers, cntr)
 	f.mems[id] = memMB
+}
+
+// remove makes the container with the given id stop existing, as one that
+// exits during a job's run does.
+func (f *fakeInteractor) remove(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.containers = slices.DeleteFunc(f.containers, func(cntr *container.Container) bool {
+		return cntr.ID == id
+	})
+
+	delete(f.mems, id)
 }
 
 // killedIDs returns the ids of the containers that have been killed.
@@ -406,7 +447,7 @@ func TestDockerMonitorAdoption(t *testing.T) {
 		fake := newFakeInteractor()
 		fake.add("preexisting", "mytool", 500)
 
-		dm, err := newDockerMonitor(ctx, "mytool", fake, dockerTestCallTimeout)
+		dm, err := newDockerMonitor(ctx, "mytool", dockerTestJobKey, fake, dockerTestCallTimeout)
 		So(err, ShouldBeNil)
 
 		Convey("It is not monitored, so nothing of it can be killed", func() {
@@ -418,7 +459,7 @@ func TestDockerMonitorAdoption(t *testing.T) {
 		})
 
 		Convey("But a container of that name that appears afterwards is monitored", func() {
-			fake.add("jobs", "mytool", 300)
+			fake.add(dockerTestJobsContainerID, "mytool", 300)
 
 			mem, _ := dm.resolveContainerMem(ctx, "/tmp", 100)
 			So(dm.failures, ShouldEqual, 0)
@@ -426,7 +467,7 @@ func TestDockerMonitorAdoption(t *testing.T) {
 
 			Convey("And a kill request kills only that container", func() {
 				So(dm.killContainer(ctx), ShouldBeNil)
-				So(fake.killedIDs(), ShouldResemble, []string{"jobs"})
+				So(fake.killedIDs(), ShouldResemble, []string{dockerTestJobsContainerID})
 			})
 		})
 	})
@@ -439,7 +480,7 @@ func TestDockerMonitorAdoption(t *testing.T) {
 		cidPath := filepath.Join(dir, "job.cid")
 		So(os.WriteFile(cidPath, []byte("preexisting\n"), 0600), ShouldBeNil)
 
-		dm, err := newDockerMonitor(ctx, cidPath, fake, dockerTestCallTimeout)
+		dm, err := newDockerMonitor(ctx, cidPath, dockerTestJobKey, fake, dockerTestCallTimeout)
 		So(err, ShouldBeNil)
 
 		Convey("It is not monitored", func() {
@@ -449,8 +490,8 @@ func TestDockerMonitorAdoption(t *testing.T) {
 		})
 
 		Convey("But the container the job goes on to create is monitored", func() {
-			fake.add("jobs", "jobs_own", 300)
-			So(os.WriteFile(cidPath, []byte("jobs\n"), 0600), ShouldBeNil)
+			fake.add(dockerTestJobsContainerID, "jobs_own", 300)
+			So(os.WriteFile(cidPath, []byte(dockerTestJobsContainerID+"\n"), 0600), ShouldBeNil)
 
 			mem, _ := dm.resolveContainerMem(ctx, dir, 100)
 			So(dm.failures, ShouldEqual, 0)
@@ -462,7 +503,7 @@ func TestDockerMonitorAdoption(t *testing.T) {
 		fake := newFakeInteractor()
 		fake.add("preexisting", "someone_elses", 500)
 
-		dm, err := newDockerMonitor(ctx, "?", fake, dockerTestCallTimeout)
+		dm, err := newDockerMonitor(ctx, "?", dockerTestJobKey, fake, dockerTestCallTimeout)
 		So(err, ShouldBeNil)
 
 		Convey("The already running one is not monitored", func() {
@@ -472,13 +513,173 @@ func TestDockerMonitorAdoption(t *testing.T) {
 		})
 
 		Convey("The next one to appear is monitored", func() {
-			fake.add("jobs", "jobs_own", 300)
+			fake.add(dockerTestJobsContainerID, "jobs_own", 300)
 
 			mem, _ := dm.resolveContainerMem(ctx, "/tmp", 100)
 			So(dm.failures, ShouldEqual, 0)
 			So(mem, ShouldEqual, 300)
 		})
 	})
+
+	Convey("Given a monitor of the first container to appear, and 2 unlabelled ones appearing", t, func() {
+		fake := newFakeInteractor()
+		fake.add("preexisting", "was_here_first", 500)
+
+		dm, err := newDockerMonitor(ctx, "?", dockerTestJobKey, fake, dockerTestCallTimeout)
+		So(err, ShouldBeNil)
+
+		// a co-tenant's container appears first, then the job's own one, and
+		// nothing about either of them says which is which
+		fake.add("cotenants", "someone_elses_tool", 900)
+		fake.add(dockerTestJobsContainerID, "jobs_own", 300)
+
+		buff := clog.ToBufferAtLevel("warn")
+
+		defer clog.ToDefault()
+
+		Convey("Neither is monitored, so neither one's memory is charged to the job", func() {
+			mem, cpu := dm.resolveContainerMem(ctx, "/tmp", 100)
+			So(dm.failures, ShouldEqual, 0)
+			So(mem, ShouldEqual, 100)
+			So(cpu, ShouldEqual, 0)
+
+			Convey("And a kill request kills neither of them", func() {
+				So(dm.killContainer(ctx), ShouldBeNil)
+				So(fake.killedIDs(), ShouldBeEmpty)
+			})
+
+			Convey("And a warning says the job's usage is under-reported", func() {
+				So(buff.String(), ShouldContainSubstring, "lvl=warn")
+				So(buff.String(), ShouldContainSubstring, "more than one container appeared while it ran")
+				So(buff.String(), ShouldContainSubstring, "so its usage will be under-reported")
+				So(buff.String(), ShouldContainSubstring, "no container will be killed with the job")
+
+				// the ids let a user find the containers the warning is about,
+				// so the warning has to actually carry them
+				So(buff.String(), ShouldContainSubstring, "cotenants[someone_elses_tool]")
+				So(buff.String(), ShouldContainSubstring, dockerTestJobsContainerID+"[jobs_own]")
+			})
+		})
+	})
+
+	Convey("Given a monitor of the first container to appear, and a new one labelled as another job's", t, func() {
+		fake := newFakeInteractor()
+		fake.add("preexisting", "was_here_first", 500)
+
+		dm, err := newDockerMonitor(ctx, "?", dockerTestJobKey, fake, dockerTestCallTimeout)
+		So(err, ShouldBeNil)
+
+		fake.addForJob("anothers", "another_jobs_own", dockerTestOtherJobKey, 900)
+		fake.add(dockerTestJobsContainerID, "jobs_own", 300)
+
+		buff := clog.ToBufferAtLevel("warn")
+
+		defer clog.ToDefault()
+
+		Convey("The other job's is ruled out, so the one that could be this job's is monitored", func() {
+			mem, _ := dm.resolveContainerMem(ctx, "/tmp", 100)
+			So(dm.failures, ShouldEqual, 0)
+			So(mem, ShouldEqual, 300)
+			So(buff.String(), ShouldBeBlank)
+
+			Convey("And a kill request kills only that container", func() {
+				So(dm.killContainer(ctx), ShouldBeNil)
+				So(fake.killedIDs(), ShouldResemble, []string{dockerTestJobsContainerID})
+			})
+		})
+	})
+
+	Convey("Given a monitor of the first container to appear, and a new one labelled as this job's", t, func() {
+		fake := newFakeInteractor()
+		fake.add("preexisting", "was_here_first", 500)
+
+		dm, err := newDockerMonitor(ctx, "?", dockerTestJobKey, fake, dockerTestCallTimeout)
+		So(err, ShouldBeNil)
+
+		Convey("It is monitored when another new container appeared before it", func() {
+			fake.add("cotenants", "someone_elses_tool", 900)
+			fake.addForJob(dockerTestJobsContainerID, "jobs_own", dockerTestJobKey, 300)
+
+			soOnlyTheJobsContainerIsMonitored(ctx, dm, fake)
+		})
+
+		Convey("It is monitored when another new container appeared after it", func() {
+			fake.addForJob(dockerTestJobsContainerID, "jobs_own", dockerTestJobKey, 300)
+			fake.add("cotenants", "someone_elses_tool", 900)
+
+			soOnlyTheJobsContainerIsMonitored(ctx, dm, fake)
+		})
+	})
+
+	Convey("Given a monitor of the first container to appear, and none appearing", t, func() {
+		fake := newFakeInteractor()
+		fake.add("preexisting", "was_here_first", 500)
+
+		dm, err := newDockerMonitor(ctx, "?", dockerTestJobKey, fake, dockerTestCallTimeout)
+		So(err, ShouldBeNil)
+
+		buff := clog.ToBufferAtLevel("warn")
+
+		defer clog.ToDefault()
+
+		Convey("Nothing is monitored, and nothing is said about a container that never came", func() {
+			mem, _ := dm.resolveContainerMem(ctx, "/tmp", 100)
+			So(dm.failures, ShouldEqual, 0)
+			So(mem, ShouldEqual, 100)
+			So(buff.String(), ShouldBeBlank)
+
+			Convey("And a kill request made anyway kills nothing", func() {
+				So(dm.killContainer(ctx), ShouldBeNil)
+				So(fake.killedIDs(), ShouldBeEmpty)
+			})
+		})
+	})
+
+	Convey("Given a monitor that has refused to choose between 2 new containers", t, func() {
+		fake := newFakeInteractor()
+		fake.add("preexisting", "was_here_first", 500)
+
+		dm, err := newDockerMonitor(ctx, "?", dockerTestJobKey, fake, dockerTestCallTimeout)
+		So(err, ShouldBeNil)
+
+		fake.add("cotenants", "someone_elses_tool", 900)
+		fake.add(dockerTestJobsContainerID, "jobs_own", 300)
+
+		buff := clog.ToBufferAtLevel("warn")
+
+		defer clog.ToDefault()
+
+		mem, _ := dm.resolveContainerMem(ctx, "/tmp", 100)
+		So(mem, ShouldEqual, 100)
+
+		Convey("One of them exiting does not make the other one the job's", func() {
+			fake.remove("cotenants")
+
+			mem, _ = dm.resolveContainerMem(ctx, "/tmp", 100)
+			So(dm.failures, ShouldEqual, 0)
+			So(mem, ShouldEqual, 100)
+
+			So(dm.killContainer(ctx), ShouldBeNil)
+			So(fake.killedIDs(), ShouldBeEmpty)
+
+			Convey("And the warning is not repeated on every check", func() {
+				So(strings.Count(buff.String(), "more than one container appeared while it ran"),
+					ShouldEqual, 1)
+			})
+		})
+	})
+}
+
+// soOnlyTheJobsContainerIsMonitored asserts that dm has adopted the container
+// the test gave dockerTestJobsContainerID and 300MB of memory, and that a kill
+// request kills that container alone.
+func soOnlyTheJobsContainerIsMonitored(ctx context.Context, dm *dockerMonitor, fake *fakeInteractor) {
+	mem, _ := dm.resolveContainerMem(ctx, "/tmp", 100)
+	So(dm.failures, ShouldEqual, 0)
+	So(mem, ShouldEqual, 300)
+
+	So(dm.killContainer(ctx), ShouldBeNil)
+	So(fake.killedIDs(), ShouldResemble, []string{dockerTestJobsContainerID})
 }
 
 // failingListDockerSocket serves a fake docker API on a unix socket, returning
