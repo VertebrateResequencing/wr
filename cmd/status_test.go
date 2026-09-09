@@ -64,6 +64,13 @@ const (
 	statusTestCarrierDepGroup = "carrier"
 	statusTestLiveDepGroup    = "live"
 
+	statusTestImageUserDockerRepGroup = "status-image-user-docker"
+	statusTestImageUserSingRepGroup   = "status-image-user-singularity"
+
+	// statusTestImageUserLine is what `wr status -o details` says about a job
+	// whose Cmd will really run as the container image's user.
+	statusTestImageUserLine = "Cmd runs as the docker image's user, not you"
+
 	// testServerPublishTimeout bounds how long a cmd test server is given to
 	// publish itself. It is a hang detector, not a latency budget.
 	testServerPublishTimeout = 60 * time.Second
@@ -717,6 +724,52 @@ func TestStatusDetailsIgnoresActualCwdOfCwdMattersJob(t *testing.T) {
 	})
 }
 
+func TestStatusDetailsReportsImageUserOnlyForDocker(t *testing.T) {
+	Convey("wr status details says a job runs as the image's user only when that can happen", t, func() {
+		// --container_image_user is accepted alongside --with_singularity, but
+		// singularity runs the container as the calling user whatever the flag
+		// says, so reporting it for such a job describes behaviour that never
+		// happens. Unlike the container mounts line next to it, this one is a
+		// claim about the run, not an echo of a stored value.
+		ctx := context.Background()
+		testConfig, serverConfig, addr, reqs, server, token := startStatusTestServer(ctx, t)
+
+		oldConfig, oldCAFile := config, caFile
+
+		config, caFile = testConfig, testConfig.ManagerCAFile
+		defer func() {
+			config, caFile = oldConfig, oldCAFile
+		}()
+
+		defer server.Stop(ctx, true)
+
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+
+		So(err, ShouldBeNil)
+		defer func() {
+			So(jq.Disconnect(), ShouldBeNil)
+		}()
+
+		dockerJob := statusTestJob("echo docker image user", statusTestImageUserDockerRepGroup, reqs)
+		dockerJob.WithDocker = "ubuntu:latest"
+		dockerJob.ContainerImageUser = true
+
+		singularityJob := statusTestJob("echo singularity image user", statusTestImageUserSingRepGroup, reqs)
+		singularityJob.WithSingularity = "ubuntu.sif"
+		singularityJob.ContainerImageUser = true
+
+		addStatusJobs(jq, dockerJob, singularityJob)
+
+		details := runStatusForTest(t, "--identifier", statusTestImageUserDockerRepGroup, "--output", "details")
+		So(details, ShouldContainSubstring, "docker container running image: ubuntu:latest")
+		So(details, ShouldContainSubstring, statusTestImageUserLine)
+
+		details = runStatusForTest(t, "--identifier", statusTestImageUserSingRepGroup, "--output", "details")
+		So(details, ShouldContainSubstring, "singularity container running image: ubuntu.sif")
+		So(details, ShouldNotContainSubstring, statusTestImageUserLine)
+	})
+}
+
 func TestStatusShowsAndFiltersSuspendedJobs(t *testing.T) {
 	Convey("wr status shows and filters suspended jobs", t, func() {
 		ctx := context.Background()
@@ -1352,6 +1405,7 @@ func resetStatusForTest(t *testing.T) {
 	cmdWithDocker = ""
 	cmdWithSingularity = ""
 	cmdContainerMounts = ""
+	cmdContainerImageUser = false
 	showBuried = false
 	showRunning = false
 	showPending = false
@@ -1382,6 +1436,7 @@ func resetStatusForTest(t *testing.T) {
 		{"with_docker", ""},
 		{"with_singularity", ""},
 		{"container_mounts", ""},
+		{"container_image_user", statusTestFalse},
 	} {
 		So(statusCmd.Flags().Set(flag.name, flag.value), ShouldBeNil)
 	}

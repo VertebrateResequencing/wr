@@ -469,6 +469,7 @@ func resetSelectionCommandForTest(t *testing.T, command *cobra.Command) {
 	cmdWithDocker = ""
 	cmdWithSingularity = ""
 	cmdContainerMounts = ""
+	cmdContainerImageUser = false
 	timeoutint = 120
 
 	for _, flag := range []struct {
@@ -487,6 +488,7 @@ func resetSelectionCommandForTest(t *testing.T, command *cobra.Command) {
 		{"with_docker", ""},
 		{"with_singularity", ""},
 		{"container_mounts", ""},
+		{"container_image_user", statusTestFalse},
 		{"timeout", "120"},
 	} {
 		So(command.Flags().Set(flag.name, flag.value), ShouldBeNil)

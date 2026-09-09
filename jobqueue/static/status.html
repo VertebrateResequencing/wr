@@ -589,6 +589,9 @@
                                     <!-- ko if: ContainerMounts -->
                                     <i>container mounts:</i> <span data-bind="text: ContainerMounts"></span>
                                     <!-- /ko -->
+                                    <!-- ko if: ContainerImageUser && WithDocker != '' -->
+                                    <i>runs as:</i> <span>the docker image's user</span>
+                                    <!-- /ko -->
                                 </small>
 
                                 <h5 style="margin: 0; padding: 0">$ <span data-bind="text: Cmd"></span></h5>
@@ -1123,6 +1126,14 @@
                             <div class="col-sm-8">
                                 <input type="text" class="form-control" data-modify-field="container_mounts"
                                     data-bind="value: containerMounts">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <div class="col-sm-offset-4 col-sm-8">
+                                <label class="checkbox-inline">
+                                    <input type="checkbox" data-modify-field="container_image_user"
+                                        data-bind="checked: containerImageUser"> run as docker image's user
+                                </label>
                             </div>
                         </div>
                     </div>

@@ -151,6 +151,24 @@ websocket, opens a running job details row whose live stdout/stderr are already
 visible, then delivers a live heartbeat push and asserts that peak RAM, CPU
 time, STDOUT, and STDERR are all visible together.
 
+## Container image user details
+
+`image-user-details/` contains a browser fixture for the status page's "runs as:
+the docker image's user" details line, which must appear only for a job that
+really will run as the image's user. `--container_image_user` suppresses
+docker's `--user`, but singularity has no equivalent option and always maps the
+calling user in, so the flag is inert for a singularity job and the line would
+describe behaviour that never happens. The fixture serves the real status page,
+injects a fake websocket, opens the buried details of a RepGroup holding three
+containerised jobs - docker with the flag, singularity with the flag, and docker
+without it - and asserts on the rendered panel text that only the first says it
+runs as the docker image's user, plus that the phrase occurs exactly once in the
+whole rendered page so neither an extra nor a missing line passes. The three
+jobs carry distinct exit codes because the manager groups a details reply by
+state, exit code and fail reason and returns one job per group for the page's
+opening `Limit: 1` request, so a real server sends all three together. It is
+wired into `make browser-test`.
+
 ## Completed RepGroup visibility
 
 `completed-repgroup-visibility/` contains a browser regression fixture for a

@@ -2205,6 +2205,7 @@ func copyJobForClient(sjob *Job, state JobState) *Job {
 		WithDocker:            sjob.WithDocker,
 		WithSingularity:       sjob.WithSingularity,
 		ContainerMounts:       sjob.ContainerMounts,
+		ContainerImageUser:    sjob.ContainerImageUser,
 		BsubMode:              sjob.BsubMode,
 		BsubID:                sjob.BsubID,
 	}

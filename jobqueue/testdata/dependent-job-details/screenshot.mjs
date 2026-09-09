@@ -139,6 +139,7 @@ function fakeWebSocketScript() {
       WithDocker: '',
       WithSingularity: '',
       ContainerMounts: '',
+      ContainerImageUser: false,
       FailReason: '',
       Exitcode: 0,
       Walltime: 0,

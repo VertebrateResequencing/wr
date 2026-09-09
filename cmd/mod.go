@@ -44,10 +44,11 @@ import (
 
 // options for this cmd.
 var (
-	cmdCwdMattersUnset      bool
-	cmdChangeHomeUnset      bool
-	cmdCloudSharedDiskUnset bool
-	cmdQueuesAvoidMod       string
+	cmdCwdMattersUnset         bool
+	cmdChangeHomeUnset         bool
+	cmdContainerImageUserUnset bool
+	cmdCloudSharedDiskUnset    bool
+	cmdQueuesAvoidMod          string
 )
 
 const nothingBehaviour = `[{"Nothing":true}]`
@@ -87,10 +88,11 @@ reported during "wr status".
 
 Having identified the command(s) to modify, provide any of "wr add"'s options
 (except for -f, -i, --rerun, --dep_grps and --bsub) to change that aspect of the
-command. If the boolean options --cwd_matters, --change_home or --cloud_shared
-were used during "add", these can be turned off with the special options
---unset_cwd_matters, --unset_change_home and --unset_cloud_shared respectively.
-To turn off other options, supply an empty string as the value.
+command. If the boolean options --cwd_matters, --change_home, --cloud_shared or
+--container_image_user were used during "add", these can be turned off with the
+special options --unset_cwd_matters, --unset_change_home, --unset_cloud_shared
+and --unset_container_image_user respectively. To turn off other options, supply
+an empty string as the value.
 
 To turn off a behaviour, supply an empty string, eg. --on_exit "".
 
@@ -353,6 +355,12 @@ new internal ids is printed.`,
 			jm.SetContainerMounts(cmdContainerMounts)
 		}
 
+		if cmdContainerImageUser {
+			jm.SetContainerImageUser(true)
+		} else if cmdContainerImageUserUnset {
+			jm.SetContainerImageUser(false)
+		}
+
 		if behaviours, behavioursSet := modBehaviours(cobraCmd); behavioursSet {
 			jm.SetBehaviours(behaviours)
 		}
@@ -516,6 +524,10 @@ func registerModBehaviourFlags() {
 		"run the cmd inside a singularity container running this image")
 	modCmd.Flags().StringVar(&cmdContainerMounts, "container_mounts", "",
 		"mount additional locations inside your container")
+	modCmd.Flags().BoolVar(&cmdContainerImageUser, "container_image_user", false,
+		"with --with_docker, run the cmd as the image's user (usually root) instead of as you")
+	modCmd.Flags().BoolVar(&cmdContainerImageUserUnset, "unset_container_image_user", false,
+		"unset --container_image_user")
 	modCmd.Flags().StringVar(&cmdOnFailure, "on_failure", "", "behaviours to carry out when cmds fails, in JSON format")
 	modCmd.Flags().StringVar(&cmdOnSuccess, "on_success", "",
 		"behaviours to carry out when cmds succeed, in JSON format")

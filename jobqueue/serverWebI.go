@@ -274,6 +274,7 @@ type JStatus struct {
 	Retries             uint8
 	HomeChanged         bool
 	CwdMatters          bool
+	ContainerImageUser  bool
 	Exited              bool
 	IsPushUpdate        bool
 }

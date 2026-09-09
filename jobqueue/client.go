@@ -2064,6 +2064,8 @@ func removeJobTmpDir(ctx context.Context, job *Job) {
 //
 // If WithDocker or WithSingularity has been set, the Cmd is run within the
 // corresponding container image, with any additional ContainerMounts mounted.
+// With docker, the Cmd runs as the calling user unless ContainerImageUser has
+// been set.
 //
 // Internally, Execute() calls Mount() and Started() and keeps track of peak RAM
 // and disk used. It regularly calls Touch() on the Job so that the server knows
@@ -3383,13 +3385,14 @@ func (c *Client) reportStartAttempt(ctx context.Context, startReq *clientRequest
 
 func keyOnlyJob(job *Job) *Job {
 	return &Job{
-		Cmd:             job.Cmd,
-		Cwd:             job.Cwd,
-		CwdMatters:      job.CwdMatters,
-		MountConfigs:    cloneMountConfigs(job.MountConfigs),
-		WithDocker:      job.WithDocker,
-		WithSingularity: job.WithSingularity,
-		ContainerMounts: job.ContainerMounts,
+		Cmd:                job.Cmd,
+		Cwd:                job.Cwd,
+		CwdMatters:         job.CwdMatters,
+		MountConfigs:       cloneMountConfigs(job.MountConfigs),
+		WithDocker:         job.WithDocker,
+		WithSingularity:    job.WithSingularity,
+		ContainerMounts:    job.ContainerMounts,
+		ContainerImageUser: job.ContainerImageUser,
 	}
 }
 

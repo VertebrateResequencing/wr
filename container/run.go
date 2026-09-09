@@ -55,6 +55,22 @@ const dockerMountParts = 2
 // contains a space.
 const workDirMountArgs = ` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD"`
 
+// runAsCallingUserArgs makes the container's processes run as the user that runs
+// the command line, instead of as the user the image specifies (normally root).
+// Without it, everything the command creates in the working directory
+// workDirMountArgs bind mounts is owned by that image user, so neither the user
+// nor wr's own os.Root-based cleanup can delete it.
+//
+// The uid and gid are shell substitutions rather than os.Getuid()/os.Getgid()
+// for the same reason $PWD is one above: the line is built by Job.CmdLine() and
+// then handed to a shell to run, so a run-time substitution is evaluated on the
+// execution host as the user that actually runs the command - the same user
+// whose cleanup has to be able to delete the files - and stays correct even if
+// the process that runs the line is ever not the process that built it. It also
+// keeps DockerRunCmd a pure function, whose tests don't depend on the uid of
+// whoever runs them.
+const runAsCallingUserArgs = ` --user "$(id -u):$(id -g)"`
+
 // PrepareCmdFile creates a temporary file containing the given command and
 // returns its path, as well as a method you can defer that will delete the
 // file.
@@ -117,15 +133,23 @@ func writeStringToFile(f *os.File, content string, cleanup func()) error {
 //   - That carries the JobKeyLabel label with the given name as its value, so
 //     that the container can later be identified as the one created here
 //     rather than by anyone else on the host.
+//   - That will run as the calling user, unless imageUser is true, in which
+//     case it runs as the user the image specifies (usually root) and anything
+//     it creates in the working directory is owned by that user.
 //
 // * Automatically remove the container when it exits.
-func DockerRunCmd(image, cmdFile, name string, mounts, env []string) string {
+func DockerRunCmd(image, cmdFile, name string, mounts, env []string, imageUser bool) string {
+	userArgs := runAsCallingUserArgs
+	if imageUser {
+		userArgs = ""
+	}
+
 	mountArgs := dockerMounts(mounts)
 	envArgs := dockerEnv(env)
 
-	return fmt.Sprintf("cat %s | docker run --rm --name %s --label %s%s%s -i %s /bin/sh",
+	return fmt.Sprintf("cat %s | docker run --rm --name %s --label %s%s%s%s -i %s /bin/sh",
 		shellquote.Join(cmdFile), shellquote.Join(name), shellquote.Join(JobKeyLabel+"="+name),
-		mountArgs, envArgs, shellquote.Join(image))
+		userArgs, mountArgs, envArgs, shellquote.Join(image))
 }
 
 // dockerMounts takes a list of "/local/path[:/inside/container/path]" values
@@ -197,6 +221,8 @@ func listToPrefixedString(vals []string, prefix string) string {
 //     container.
 //   - That will have all environment variables outside the container
 //     replicated inside the container.
+//   - That will run as the calling user, which singularity does by design, so
+//     there is no equivalent of DockerRunCmd's imageUser here.
 //   - Automatically remove the container when it exits.
 func SingularityRunCmd(image, cmdFile string, mounts []string) string {
 	mountArgs := singularityMounts(mounts)
