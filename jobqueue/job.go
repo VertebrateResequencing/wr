@@ -1423,12 +1423,21 @@ func (ms *mountState) buildRemoteConfigs(mc MountConfig, defaultCacheBase string
 // malformed mounts before the container runtime ever sees it. Quoting can't fix
 // that, but the detectable symptom is a resulting path that isn't absolute,
 // which a bind mount path has to be anyway.
+//
+// A colon separates the 2 paths of a mount, so a second colon leaves a field wr
+// has no meaning for. That is checked first, because container.MountSpecPaths
+// answers such a spec with its local path twice, which would otherwise look like
+// a pair of perfectly absolute paths.
 func containerMountsMessage(containerMounts string) string {
 	if containerMounts == "" {
 		return ""
 	}
 
 	for _, spec := range strings.Split(containerMounts, ",") {
+		if strings.Count(spec, ":") > 1 {
+			return containerMountsMultiColonMessage(containerMounts, spec)
+		}
+
 		local, inContainer := container.MountSpecPaths(spec)
 
 		for _, path := range []string{local, inContainer} {
@@ -1439,6 +1448,20 @@ func containerMountsMessage(containerMounts string) string {
 	}
 
 	return ""
+}
+
+// containerMountsMultiColonMessage describes a ContainerMounts value rejected
+// because spec has more than one colon.
+//
+// Docker's own --mount syntax gives a third field to mount options, but wr has
+// never passed one on: such a spec used to be read as its local path twice, so
+// the container got a mount the user never asked for. The message therefore
+// names the whole supported format, since a user who wrote ":ro" needs to know
+// wr has no way to express it rather than just that their value was refused.
+func containerMountsMultiColonMessage(containerMounts, spec string) string {
+	return fmt.Sprintf("ContainerMounts %q is invalid: mount %q has more than one colon; "+
+		"each mount must be /outside/container or /outside/container:/inside/container, "+
+		"and mount options such as %q are not supported", containerMounts, spec, ":ro")
 }
 
 // containerMountsInvalidMessage describes a ContainerMounts value rejected
