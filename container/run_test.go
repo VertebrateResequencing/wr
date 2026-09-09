@@ -273,6 +273,7 @@ func TestRunDocker(t *testing.T) {
 		cmd := DockerRunCmd("myimage", "/path/to/cmds", "uniqueID", nil, nil, true)
 
 		So(cmd, ShouldEqual, "cat /path/to/cmds | docker run --rm --name uniqueID"+
+			" --label uk.ac.sanger.wr.job-key=uniqueID"+
 			` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD" -i myimage /bin/sh`)
 	})
 
