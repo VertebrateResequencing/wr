@@ -169,6 +169,7 @@ func TestDBJobEssenceEncoding(t *testing.T) {
 			So(decoded.WithDocker, ShouldBeBlank)
 			So(decoded.WithSingularity, ShouldBeBlank)
 			So(decoded.ContainerMounts, ShouldBeBlank)
+			So(decoded.ContainerImageUser, ShouldBeFalse)
 			So(decoded.Key(), ShouldEqual, (&JobEssence{Cmd: testTrueCmd, Cwd: testCwdPath,
 				MountConfigs: mcs}).Key())
 		})
@@ -182,6 +183,8 @@ func TestDBJobEssenceEncoding(t *testing.T) {
 				{Cmd: testTrueCmd, Cwd: testCwdPath, MountConfigs: mcs},
 				{Cmd: testTrueCmd, Cwd: testCwdPath, WithDocker: dockerImage, ContainerMounts: containerMounts},
 				{Cmd: testTrueCmd, MountConfigs: mcs, WithSingularity: sifImage, ContainerMounts: containerMounts},
+				{Cmd: testTrueCmd, Cwd: testCwdPath, WithDocker: dockerImage, ContainerImageUser: true},
+				{Cmd: testTrueCmd, WithSingularity: sifImage, ContainerImageUser: true},
 			} {
 				decoded := &JobEssence{}
 				So(codec.NewDecoderBytes(encodeWithDBHandle(testDB, essence), testDB.ch).Decode(decoded),
@@ -193,6 +196,7 @@ func TestDBJobEssenceEncoding(t *testing.T) {
 				So(decoded.WithDocker, ShouldEqual, essence.WithDocker)
 				So(decoded.WithSingularity, ShouldEqual, essence.WithSingularity)
 				So(decoded.ContainerMounts, ShouldEqual, essence.ContainerMounts)
+				So(decoded.ContainerImageUser, ShouldEqual, essence.ContainerImageUser)
 				So(decoded.Key(), ShouldEqual, essence.Key())
 			}
 		})

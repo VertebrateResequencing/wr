@@ -41,9 +41,21 @@ import (
 // added with. Nothing runs them, so no container runtime is involved.
 const selectionEssenceImage = "ubuntu:latest"
 
+// selectionEssenceDockerFlag is the --with_docker flag name, spelled once for
+// the arg tables below that hold it as data rather than pass it to a call.
+const selectionEssenceDockerFlag = "--with_docker"
+
+// selectionEssenceSingularityImage is the singularity image of the job added
+// with ContainerImageUser that singularity cannot honour.
+const selectionEssenceSingularityImage = "selection.sif"
+
 // selectionEssenceLoneMounts is a container mounts value used only where no
 // image accompanies it, describing a job that cannot exist.
 const selectionEssenceLoneMounts = "/lone:/mounts"
+
+// selectionEssenceImageUserCmd is the command line of the docker job added with
+// ContainerImageUser, which keys differently to the same job without it.
+const selectionEssenceImageUserCmd = "echo containerised as the image user"
 
 // selectionEssenceDyingCmd is the command line of the plain non-container job
 // that the commands which die() rather than return an error would reach if they
@@ -135,6 +147,41 @@ func TestSelectionByCmdLine(t *testing.T) {
 		})
 	})
 
+	Convey("-l with --with_docker and --container_image_user finds an image-user job", t, func() {
+		withQueueCommandTestServer(t, func(jq *jobqueue.Client, reqs *jqs.Requirements, _ jobqueue.ServerConfig) {
+			job := newQueueCommandJob(selectionEssenceImageUserCmd, "rg-select-image-user", reqs)
+			job.WithDocker = selectionEssenceImage
+			job.ContainerImageUser = true
+			addQueueCommandJobs(jq, job)
+
+			output, err := runSuspendForTest(t, "-l", selectionEssenceImageUserCmd,
+				"--with_docker", selectionEssenceImage, "--container_image_user")
+			So(err, ShouldBeNil)
+			So(output, ShouldEqual, "Suspended 1 queued commands (out of 1 matching)\n")
+			assertStatusPlainStateCount(t, jobqueue.JobStateSuspended, 1, "-l", selectionEssenceImageUserCmd,
+				"--with_docker", selectionEssenceImage, "--container_image_user", "-o", "plain")
+			So(jobStateByEssence(jq, job), ShouldEqual, jobqueue.JobStateSuspended)
+		})
+	})
+
+	Convey("-l with --with_singularity and --container_image_user finds the singularity job", t, func() {
+		withQueueCommandTestServer(t, func(jq *jobqueue.Client, reqs *jqs.Requirements, _ jobqueue.ServerConfig) {
+			// singularity runs the container as the calling user whatever
+			// ContainerImageUser says, so such a job keys exactly as it would
+			// without the flag, and selecting it either way must reach it.
+			job := newQueueCommandJob("echo singularity image user", "rg-select-sing-image-user", reqs)
+			job.WithSingularity = selectionEssenceSingularityImage
+			job.ContainerImageUser = true
+			addQueueCommandJobs(jq, job)
+
+			output, err := runSuspendForTest(t, "-l", "echo singularity image user",
+				"--with_singularity", selectionEssenceSingularityImage, "--container_image_user")
+			So(err, ShouldBeNil)
+			So(output, ShouldEqual, "Suspended 1 queued commands (out of 1 matching)\n")
+			So(jobStateByEssence(jq, job), ShouldEqual, jobqueue.JobStateSuspended)
+		})
+	})
+
 	Convey("-l with the wrong container options matches no containerised job", t, func() {
 		withQueueCommandTestServer(t, func(jq *jobqueue.Client, reqs *jqs.Requirements, _ jobqueue.ServerConfig) {
 			job := newQueueCommandJob("echo container mismatch", "rg-select-mismatch", reqs)
@@ -149,11 +196,15 @@ func TestSelectionByCmdLine(t *testing.T) {
 			}{
 				{
 					name: "wrong container_mounts",
-					args: []string{"--with_docker", selectionEssenceImage, "--container_mounts", "/mnt"},
+					args: []string{selectionEssenceDockerFlag, selectionEssenceImage, "--container_mounts", "/mnt"},
 				},
 				{
 					name: "wrong image",
-					args: []string{"--with_docker", "alpine:latest"},
+					args: []string{selectionEssenceDockerFlag, "alpine:latest"},
+				},
+				{
+					name: "container_image_user it was not added with",
+					args: []string{selectionEssenceDockerFlag, selectionEssenceImage, "--container_image_user"},
 				},
 				{
 					name: "no image",
@@ -180,6 +231,18 @@ func TestSelectionByCmdLine(t *testing.T) {
 			output, err := runSuspendForTest(t, "-l", "echo no container at all",
 				"--container_mounts", selectionEssenceLoneMounts)
 			So(err, ShouldEqual, errSelectionContainerMountsNeedImage)
+			So(output, ShouldBeEmpty)
+			So(jobStateByEssence(jq, job), ShouldEqual, jobqueue.JobStateReady)
+		})
+	})
+
+	Convey("-l with --container_image_user and no image cannot reach the plain job of that Cmd", t, func() {
+		withQueueCommandTestServer(t, func(jq *jobqueue.Client, reqs *jqs.Requirements, _ jobqueue.ServerConfig) {
+			job := newQueueCommandJob("echo no image to run as", "rg-select-image-user-only", reqs)
+			addQueueCommandJobs(jq, job)
+
+			output, err := runSuspendForTest(t, "-l", "echo no image to run as", "--container_image_user")
+			So(err, ShouldEqual, errSelectionContainerImageUserNeedsImage)
 			So(output, ShouldBeEmpty)
 			So(jobStateByEssence(jq, job), ShouldEqual, jobqueue.JobStateReady)
 		})
@@ -218,6 +281,13 @@ func TestSelectionByCmdLine(t *testing.T) {
 					"-l", selectionEssenceDyingCmd, "--container_mounts", selectionEssenceLoneMounts)
 				if exitCode != 1 || !strings.Contains(logged, errSelectionContainerMountsNeedImage.Error()) {
 					accepted = append(accepted, fmt.Sprintf("%s (exit %d, logged %q)",
+						command.Name(), exitCode, logged))
+				}
+
+				exitCode, logged = runSelectionCommandRunForTest(t, command,
+					"-l", selectionEssenceDyingCmd, "--container_image_user")
+				if exitCode != 1 || !strings.Contains(logged, errSelectionContainerImageUserNeedsImage.Error()) {
+					accepted = append(accepted, fmt.Sprintf("%s image user (exit %d, logged %q)",
 						command.Name(), exitCode, logged))
 				}
 			}

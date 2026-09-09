@@ -246,7 +246,7 @@ func (j *JobEssence) pickCandidateJob(jobs []*Job) *Job {
 // Job with CwdMatters false when cwd is "". See Key() and candidateKeys().
 func (j *JobEssence) keyForCwd(cwd string) string {
 	return byteKey(jobKeyConcat(cwd != "", cwd, j.Cmd, j.MountConfigs.Key(),
-		containerImageKey(j.WithDocker, j.WithSingularity), j.ContainerMounts))
+		containerImageKey(j.WithDocker, j.WithSingularity, j.ContainerImageUser), j.ContainerMounts))
 }
 
 // jobKeyConcat builds the bytes that byteKey turns into a job key, for a job
@@ -296,22 +296,42 @@ func jobKeyConcat(cwdMatters bool, cwd, cmd, mountKey, image, containerMounts st
 }
 
 // containerImageKey returns the container image part of a job key, for a job
-// created with the given WithDocker and WithSingularity values, or "" if the job
-// uses no container image. WithDocker wins when both are set, matching the rest
-// of wr's behaviour for such a job.
+// created with the given WithDocker, WithSingularity and ContainerImageUser
+// values, or "" if the job uses no container image. WithDocker wins when both
+// images are set, matching the rest of wr's behaviour for such a job.
+//
+// ContainerImageUser changes the uid the Cmd's processes run as, so it changes
+// what the job produces and belongs in the key - but only where it takes effect,
+// which is docker alone, so that 2 singularity jobs differing only in it keep
+// colliding as they behave identically. runsAsImageUser is what says so, here
+// and everywhere else.
+//
+// The marker goes on the front of the image token rather than after
+// ContainerMounts, for 2 reasons: nothing at all is added when it is unset, so
+// every key a previous wr stored stays byte-identical; and it can't collide,
+// since a token without it always starts "docker:" or "singularity:" and one
+// with it always starts imageUserKeyPrefix, whereas a marker appended after
+// ContainerMounts could be forged by a mount value ending in it.
 //
 // Job.Key() and JobEssence.Key() must produce byte-identical keys for the same
 // job, so they share this instead of each spelling the form out.
-func containerImageKey(withDocker, withSingularity string) string {
-	if withDocker != "" {
-		return "docker:" + withDocker
+func containerImageKey(withDocker, withSingularity string, containerImageUser bool) string {
+	var image string
+
+	switch {
+	case withDocker != "":
+		image = "docker:" + withDocker
+	case withSingularity != "":
+		image = "singularity:" + withSingularity
+	default:
+		return ""
 	}
 
-	if withSingularity != "" {
-		return "singularity:" + withSingularity
+	if runsAsImageUser(containerImageUser, withDocker) {
+		return imageUserKeyPrefix + image
 	}
 
-	return ""
+	return image
 }
 
 func (j *Job) decrementLimitGroupsLocked(lim *limiter.Limiter) {
@@ -353,6 +373,19 @@ func (j *Job) containerMountsMessage() string {
 	}
 
 	return containerMountsMessage(j.ContainerMounts)
+}
+
+// runsAsImageUser tells you if the Cmd's processes of a job with the given
+// ContainerImageUser and WithDocker will really run as the user the container
+// image specifies instead of as the calling user. That needs both, since
+// singularity runs the container as the calling user whatever
+// ContainerImageUser says.
+//
+// Anything deciding or describing that behaviour must ask this, not
+// ContainerImageUser alone, so that a Job and the JobEssence naming it can never
+// disagree about it.
+func runsAsImageUser(containerImageUser bool, withDocker string) bool {
+	return containerImageUser && withDocker != ""
 }
 
 // cwdLeaf returns the part of cwd below cwdBase, prefixed with "/", for display
@@ -933,14 +966,9 @@ func (j *Job) containerRunCmd(path string) (string, error) {
 }
 
 // RunsAsImageUser tells you if the Cmd's processes will really run as the user
-// the container image specifies instead of as you. That needs both
-// ContainerImageUser and a WithDocker image, since singularity runs the
-// container as the calling user whatever ContainerImageUser says.
-//
-// Anything deciding or describing that behaviour must ask this, not
-// ContainerImageUser alone.
+// the container image specifies instead of as you. See runsAsImageUser.
 func (j *Job) RunsAsImageUser() bool {
-	return j.ContainerImageUser && j.WithDocker != ""
+	return runsAsImageUser(j.ContainerImageUser, j.WithDocker)
 }
 
 // containerMounts converts ContainerMounts to a slice of the mount values.
@@ -1738,26 +1766,8 @@ func (j *Job) decrementLimitGroups(lim *limiter.Limiter) {
 // The Cwd is part of the key only when CwdMatters, since otherwise the Cmd does
 // not run in Cwd itself but in a unique directory wr creates below it.
 func (j *Job) Key() string {
-	image := containerImageKey(j.WithDocker, j.WithSingularity)
-
-	// ContainerImageUser changes the uid the Cmd's processes run as, so it
-	// changes what the job produces and belongs in the key - but only where it
-	// takes effect, which is docker alone, so that 2 singularity jobs differing
-	// only in it keep colliding as they behave identically.
-	//
-	// It goes on the front of the image token rather than after
-	// ContainerMounts, for 2 reasons: nothing at all is added when it is unset,
-	// so every key a previous wr stored stays byte-identical; and it can't
-	// collide, since a token without it always starts "docker:" or
-	// "singularity:" and one with it always starts imageUserKeyPrefix, whereas
-	// a marker appended after ContainerMounts could be forged by a mount value
-	// ending in it.
-	if j.RunsAsImageUser() {
-		image = imageUserKeyPrefix + image
-	}
-
 	return byteKey(jobKeyConcat(j.CwdMatters, j.Cwd, j.Cmd, j.MountConfigs.Key(),
-		image, j.ContainerMounts))
+		containerImageKey(j.WithDocker, j.WithSingularity, j.ContainerImageUser), j.ContainerMounts))
 }
 
 // generateSchedulerGroup returns a stringified form of the given requirements,
@@ -2093,6 +2103,11 @@ type JobEssence struct {
 	// with, if it was created with a WithDocker or WithSingularity image. Like
 	// the Job's own, it is ignored when neither image is set.
 	ContainerMounts string `codec:",omitempty"`
+
+	// ContainerImageUser must be set to the ContainerImageUser the Job was
+	// created with, if it was created with a WithDocker image. Like the Job's
+	// own, it is ignored without one, since only docker honours it.
+	ContainerImageUser bool `codec:",omitempty"`
 }
 
 // Key returns the same value that Key() on the matching Job would give you.

@@ -1209,6 +1209,21 @@ func TestKeyByteIdentity(t *testing.T) {
 			ShouldEqual, (&Job{Cmd: testTrueCmd, Cwd: testCwdPath, CwdMatters: true, MountConfigs: mcs,
 				WithSingularity: "alpine.sif", ContainerMounts: "/out:/in"}).Key())
 
+		// A docker Job that runs as the image's user keys differently to one
+		// that does not, so an essence must be able to say so or it can never
+		// name that Job. A singularity one must not, since the flag has no
+		// effect there and both types must agree it does not.
+		dockerImg, singImg := "busybox", "busybox.sif"
+
+		So((&JobEssence{Cmd: testTrueCmd, WithDocker: dockerImg, ContainerImageUser: true}).Key(),
+			ShouldEqual, (&Job{Cmd: testTrueCmd, WithDocker: dockerImg, ContainerImageUser: true}).Key())
+		So((&JobEssence{Cmd: testTrueCmd, WithDocker: dockerImg, ContainerImageUser: true}).Key(),
+			ShouldNotEqual, (&JobEssence{Cmd: testTrueCmd, WithDocker: dockerImg}).Key())
+		So((&JobEssence{Cmd: testTrueCmd, WithSingularity: singImg, ContainerImageUser: true}).Key(),
+			ShouldEqual, (&Job{Cmd: testTrueCmd, WithSingularity: singImg, ContainerImageUser: true}).Key())
+		So((&JobEssence{Cmd: testTrueCmd, WithSingularity: singImg, ContainerImageUser: true}).Key(),
+			ShouldEqual, (&JobEssence{Cmd: testTrueCmd, WithSingularity: singImg}).Key())
+
 		// With both images set, both types must pick docker.
 		So((&JobEssence{Cmd: testTrueCmd, WithDocker: "d", WithSingularity: "s"}).Key(),
 			ShouldEqual, (&Job{Cmd: testTrueCmd, WithDocker: "d", WithSingularity: "s"}).Key())

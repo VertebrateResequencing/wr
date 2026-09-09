@@ -1405,6 +1405,7 @@ func resetStatusForTest(t *testing.T) {
 	cmdWithDocker = ""
 	cmdWithSingularity = ""
 	cmdContainerMounts = ""
+	cmdContainerImageUser = false
 	showBuried = false
 	showRunning = false
 	showPending = false
@@ -1435,6 +1436,7 @@ func resetStatusForTest(t *testing.T) {
 		{"with_docker", ""},
 		{"with_singularity", ""},
 		{"container_mounts", ""},
+		{"container_image_user", statusTestFalse},
 	} {
 		So(statusCmd.Flags().Set(flag.name, flag.value), ShouldBeNil)
 	}

@@ -108,8 +108,9 @@ The file to provide -f is in the format taken by "wr add".
 In -f and -l mode you must describe the commands the way they were added. In -l
 mode that means the cwd they were added with (-c), whether or not --cwd_matters
 was used, plus any mounts options (--mounts/--mounts_json) and container image
-options (--with_docker/--with_singularity and --container_mounts) they were added
-with. In -f mode, provide the same file you gave to "wr add".
+options (--with_docker/--with_singularity, --container_mounts and
+--container_image_user) they were added with. In -f mode, provide the same
+file you gave to "wr add".
 
 --recent <duration> returns jobs that finished (were archived) within the last
 duration across all report groups. It is mutually exclusive with -f, -l and -i.
@@ -706,6 +707,14 @@ var errSelectionContainerMountsNeedImage = errors.New(
 	"--container_mounts only describes a job alongside --with_docker or --with_singularity; " +
 		"add the image the job was added with, or drop --container_mounts")
 
+// errSelectionContainerImageUserNeedsImage is the failure when the image-user
+// flag is given to a command that selects jobs, but neither container image flag
+// is. A job added without an image runs as you whatever the flag says, so such a
+// selection can only ever reach a plain non-container job the user did not name.
+var errSelectionContainerImageUserNeedsImage = errors.New(
+	"--container_image_user only describes a job alongside --with_docker or --with_singularity; " +
+		"add the image the job was added with, or drop --container_image_user")
+
 // validateSelectionContainerFlags returns an error if the container image flags
 // addSelectionContainerFlags registers describe an impossible job.
 func validateSelectionContainerFlags() error {
@@ -713,8 +722,16 @@ func validateSelectionContainerFlags() error {
 		return errSelectionContainerExclusive
 	}
 
-	if cmdContainerMounts != "" && cmdWithDocker == "" && cmdWithSingularity == "" {
+	if cmdWithDocker != "" || cmdWithSingularity != "" {
+		return nil
+	}
+
+	if cmdContainerMounts != "" {
 		return errSelectionContainerMountsNeedImage
+	}
+
+	if cmdContainerImageUser {
+		return errSelectionContainerImageUserNeedsImage
 	}
 
 	return nil
@@ -760,10 +777,11 @@ func registerStatusFlags() {
 	registerStatusStateFlags()
 }
 
-// addSelectionContainerFlags registers the container image flags on a command
-// that selects jobs with -l or -f, so that such a selection can reach a job that
-// was added with --with_docker or --with_singularity: the image is part of that
-// job's key, so naming its command line alone does not describe it.
+// addSelectionContainerFlags registers the container flags on a command that
+// selects jobs with -l or -f, so that such a selection can reach a job that was
+// added with --with_docker or --with_singularity: the image, its mounts and
+// whether it runs as the image's user are all part of that job's key, so naming
+// its command line alone does not describe it.
 func addSelectionContainerFlags(command *cobra.Command) {
 	flags := command.Flags()
 
@@ -773,6 +791,8 @@ func addSelectionContainerFlags(command *cobra.Command) {
 		"singularity image that the command(s) specified by -l or -f were set to run inside")
 	flags.StringVar(&cmdContainerMounts, "container_mounts", "",
 		"container mounts that the command(s) specified by -l or -f were set to use")
+	flags.BoolVar(&cmdContainerImageUser, "container_image_user", false,
+		"the command(s) specified by -l or -f were added with --container_image_user")
 }
 
 // registerStatusStateFlags registers the status sub-command's state-filter
@@ -1205,12 +1225,13 @@ func getJobsByCmdLine(jq *jobqueue.Client, showStd, showEnv bool) ([]*jobqueue.J
 	}
 
 	job, err := jq.GetByEssence(&jobqueue.JobEssence{
-		Cmd:             cmdLine,
-		Cwd:             cmdCwd,
-		MountConfigs:    defaultMounts,
-		WithDocker:      cmdWithDocker,
-		WithSingularity: cmdWithSingularity,
-		ContainerMounts: cmdContainerMounts,
+		Cmd:                cmdLine,
+		Cwd:                cmdCwd,
+		MountConfigs:       defaultMounts,
+		WithDocker:         cmdWithDocker,
+		WithSingularity:    cmdWithSingularity,
+		ContainerMounts:    cmdContainerMounts,
+		ContainerImageUser: cmdContainerImageUser,
 	}, showStd, showEnv)
 	if job == nil {
 		return nil, err
