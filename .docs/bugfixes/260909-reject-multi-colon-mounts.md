@@ -84,7 +84,7 @@ reject-multi-colon-mounts
       `db.recoverIncompleteJobs` and `server.go:1735` do no validation and
       `modify_validation_test.go:313` already exercises that path.
 
-- [ ] **For the repo owner, before merging: this is a small capability
+- [x] **For the repo owner, before merging: this is a small capability
   REMOVAL for singularity users, not purely a fix.** The item above assumed a
   multi-colon spec is always the silent-collapse case. That is true only on
   the docker path, which goes through `MountSpecPaths`.
@@ -112,3 +112,87 @@ reject-multi-colon-mounts
       singularity user is the one who will be surprised.
     - If the owner would rather reject only on the docker path, that is a
       small change to the same one function.
+    - The reviewer did not stop at singularity's help text. It built a busybox
+      sandbox and ran singularity-ce 4.1.1 for real:
+
+      ```
+      $ singularity exec -B $SRC:/mnt/x:ro sbox sh -c 'echo nope > /mnt/x/w.txt'
+      sh: can't create /mnt/x/w.txt: Read-only file system   exit=1
+      $ singularity exec -B $SRC:/mnt/x    sbox sh -c 'echo yes  > /mnt/x/w.txt'
+      exit=0
+      ```
+
+      So `:ro` is honoured today on wr's singularity path. The removal is real,
+      not theoretical.
+    - CORRECTION to the argument this item first gave. It justified rejecting
+      for singularity partly by "a user moving a job from singularity to docker
+      would silently lose them". That trap is already covered EITHER way:
+      `modifiedContainerMountsMessage` previews the modification, so
+      `wr mod --with_docker` on a `:ro` singularity job would be rejected by a
+      docker-only check too. The case for rejecting both runtimes therefore
+      rests on 2 other grounds, which the reviewer independently reached and
+      which are stronger:
+      * the published contract is already 2-field only.
+        `Job.ContainerMounts`'s own doc says
+        `/outside/container/path[:/inside/container/path]`, and both
+        `--container_mounts` helps say only "mount additional locations". The
+        singularity `:ro` support is undocumented and accidental - it works
+        solely because `singularityMounts` passes the raw string through. So
+        this aligns behaviour with the published contract rather than removing
+        a promised feature.
+      * one field, one meaning: making acceptance depend on which image flag
+        is set is its own trap.
+    - Follow-up worth raising separately, and the honest resolution of the
+      tension: support `:ro` PROPERLY on both runtimes - singularity `:ro`,
+      docker `--mount ...,readonly`. That turns a capability removal into a
+      capability everyone gets.
+
+- [x] Selection deliberately does NOT reject a multi-colon value, and that
+  asymmetry with `wr add` is correct rather than an oversight. Recorded
+  because nothing else says so.
+    - #588 gave `status`, `kill`, `remove`, `retry`, `suspend` and `resume` a
+      `--container_mounts` SELECTION flag, and its
+      `validateSelectionContainerFlags` does not call
+      `containerMountsMessage`. The value flows verbatim into
+      `JobEssence.ContainerMounts` and `keyForCwd` concatenates it verbatim;
+      `MountSpecPaths` is never involved. Run for real:
+
+      ```
+      $ wr kill -l 'sleep 300' --with_docker img --container_mounts /a:/b:ro
+      EROR  No matching jobs found
+      ```
+
+    - It must stay that way: selection is the only command-line route to a
+      LEGACY job that was stored with such a spec plus an image, and rejecting
+      it would leave those jobs reachable only by rep group or internal id. A
+      value matching nothing already fails loudly.
+
+- [x] Follow-ups from the review, both applied.
+    - `MountSpecPaths`'s doc comment overclaimed. It said jobqueue rejects a
+      multi-colon spec "as a job is added or modified, so only a job stored
+      before that check existed can still carry one". Two holes, and the
+      implementor refined the second one further than the review had:
+      * `(*Job).containerMountsMessage()` (`jobqueue/job.go:345`) returns ""
+        when the Job has no container image, and all 3 add routes reach that
+        METHOD rather than the free function, so a job ADDED today with no
+        image keeps its spec unchecked. Harmless, since mounts are inert
+        without an image, and setting one later IS caught by
+        `modifiedContainerMountsMessage`.
+      * but MODIFY is guarded regardless of image, which the review had not
+        separated out: `JobModifier.validationMessage()` (`job.go:2414`) calls
+        the FREE `containerMountsMessage` with no image gate whenever
+        `ContainerMountsSet`, so `wr mod --container_mounts /a:/b:ro` on an
+        image-less job is refused. So the only real holes are add-with-no-image
+        and a Go caller of the `container` package, which jobqueue cannot
+        guard at all.
+      * The comment now says exactly that, in the same space.
+    - Not closed, deliberately: the add-with-no-image hole. Closing it is a
+      one-line change (drop the image guard from the method, or call the free
+      function from `malformedAddJobMessage`), but the existing guard is
+      deliberate and an image-less job's mounts are inert, so changing it is a
+      behaviour decision for the owner rather than part of this fix.
+    - CHANGELOG entry added under BOTH `### Changed` and `### Fixed`, because
+      the change is genuinely both and the audiences differ: singularity users
+      LOSE a working capability, which belongs in Changed where someone
+      scanning for what might break them will look, and docker users get a
+      silent wrong-mount defect fixed, which belongs in Fixed.
