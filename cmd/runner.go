@@ -34,6 +34,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -183,19 +184,16 @@ complete.`,
 
 		// in case any job we execute has a Cmd that calls `wr add`, we will
 		// override their environment to make that call work
-		var (
-			envOverrides []string
-			exePath      string
-		)
+		overrider := &jobEnvOverrider{}
 
 		if rserver != "" {
 			hostPort := strings.Split(rserver, ":")
 			if len(hostPort) == hostPortParts {
-				envOverrides = append(envOverrides, "WR_MANAGERHOST="+hostPort[0])
-				envOverrides = append(envOverrides, "WR_MANAGERPORT="+hostPort[1])
+				overrider.base = append(overrider.base, "WR_MANAGERHOST="+hostPort[0])
+				overrider.base = append(overrider.base, "WR_MANAGERPORT="+hostPort[1])
 			}
 
-			envOverrides = append(envOverrides, "WR_MANAGERCERTDOMAIN="+rdomain)
+			overrider.base = append(overrider.base, "WR_MANAGERCERTDOMAIN="+rdomain)
 
 			// later we will add our own wr exe to the path if not there
 			exe, err := osext.Executable()
@@ -203,7 +201,7 @@ complete.`,
 				die("%s", err)
 			}
 
-			exePath = filepath.Dir(exe)
+			overrider.exePath = filepath.Dir(exe)
 		}
 
 		// we'll stop the below loop before using up too much time
@@ -266,8 +264,7 @@ complete.`,
 			}
 
 			// actually run the cmd
-			if len(envOverrides) > 0 {
-				// add exePath to this job's PATH
+			if len(overrider.base) > 0 {
 				env, erre := job.Env()
 				if erre != nil {
 					err = jq.Release(job, nil, "failed to read job's Env")
@@ -280,18 +277,7 @@ complete.`,
 					break
 				}
 
-				for _, envvar := range env {
-					pair := strings.Split(envvar, "=")
-					if pair[0] == "PATH" {
-						if !strings.Contains(pair[1], exePath) {
-							envOverrides = append(envOverrides, envvar+":"+exePath)
-						}
-
-						break
-					}
-				}
-
-				err = job.EnvAddOverride(envOverrides)
+				err = job.EnvAddOverride(overrider.overridesFor(env))
 				if err != nil {
 					err = jq.Release(job, nil, "failed to add env var overrides")
 					if err != nil {
@@ -392,4 +378,37 @@ func init() {
 		"domain the manager's cert is valid for")
 	runnerCmd.Flags().BoolVar(&logToSyslog, "syslog", false, "enable logging to syslog")
 	runnerCmd.Flags().StringVar(&logToDir, "logdir", "", "enable logging to files within the given dir")
+}
+
+// jobEnvOverrider builds the environment overrides a runner applies to each job
+// it runs: the manager's connection details, which are the same for every job,
+// plus the runner's own exe directory appended to the job's PATH when the job's
+// PATH lacks it, so that a Cmd calling `wr add` finds the wr exe.
+type jobEnvOverrider struct {
+	base    []string
+	exePath string
+}
+
+// overridesFor returns the overrides to apply to a job whose environment is
+// env.
+//
+// The PATH entry belongs to this job alone, so base is cloned rather than
+// appended to: a runner runs many jobs in sequence, and a job whose PATH already
+// has the exe directory adds nothing, which would otherwise leave it running
+// with an earlier job's PATH.
+func (j *jobEnvOverrider) overridesFor(env []string) []string {
+	overrides := slices.Clone(j.base)
+
+	for _, envvar := range env {
+		pair := strings.Split(envvar, "=")
+		if pair[0] == "PATH" {
+			if !strings.Contains(pair[1], j.exePath) {
+				overrides = append(overrides, envvar+":"+j.exePath)
+			}
+
+			break
+		}
+	}
+
+	return overrides
 }

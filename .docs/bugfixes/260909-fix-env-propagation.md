@@ -39,7 +39,7 @@ stay findable.
       has stopped controlling the answer.
     - Nothing needs the entry deleted.
 
-- [ ] 2. `cmd/runner.go` accumulates `envOverrides` ACROSS reserve-loop
+- [x] 2. `cmd/runner.go` accumulates `envOverrides` ACROSS reserve-loop
   iterations. The slice is declared once, outside the loop, alongside
   `exePath`, and appended to inside it: for each job the runner reads that job's
   own `PATH` and, if it does not already contain the runner's exe directory,
@@ -225,3 +225,87 @@ stay findable.
   `jobqueue/job.go` still inlines a 4th copy of the name extraction that
   `envName` now owns, and `jobqueue/job_test.go`'s either-order hedge for 2 env
   vars is now dead code, since the append order is deterministic.
+
+## Item 2, as fixed
+
+- `cmd/runner.go` gained `jobEnvOverrider{base, exePath}` with one method,
+  `overridesFor(env) []string`, owning exactly the 2 things previously declared
+  outside the reserve loop. The PATH-scanning loop and its append moved into the
+  method verbatim. Each call returns `slices.Clone(j.base)` plus that job's own
+  `PATH` line, so nothing survives into the next job.
+- Why a struct and not a plain function, which is the interesting design point:
+  a pure `jobEnvOverrides(base, exePath, env)` CANNOT go red for this bug.
+  Extracting one silently fixes it, because the accumulation lives in the
+  caller's `envOverrides = append(...)`, and that line sits in a cobra `Run`
+  closure needing a live manager, scheduler and `jq.Execute` to reach. The
+  state that persists across jobs has to be inside the seam for a test to prove
+  it gone. The reviewer checked this reasoning and agreed, while noting the
+  implementor's "could NOT go red" was too absolute: a pure function CAN be
+  red-tested for "the base you hand me is not mutated", which is a different
+  half of the property.
+- Behaviour preservation verified line by line by the reviewer: the guard
+  `len(overrider.base) > 0` is equivalent to the old `len(envOverrides) > 0`
+  (`base` is non-empty iff `rserver != ""`, and the old in-loop append was
+  itself gated by that same condition so could never be what first made the
+  slice non-empty); both release paths, both `warn` texts and both exit reasons
+  are byte-identical; `job.Env()` and `job.EnvAddOverride` happen at the same
+  points.
+- Red proved, and reproduced independently by the reviewer: 3 of 5 Conveys go
+  red under the accumulating mutation.
+
+  ```
+  Line  99  Expected "/opt/wrtest/bin:/jobtwo/bin"   Actual "/jobone/bin:/usr/bin:/opt/wrtest/bin"
+  Line 112  Actual [...base..., "PATH=/jobone/bin:/usr/bin:/opt/wrtest/bin"]
+  Line 120  Actual [...base..., "PATH=...", "PATH=...", "PATH=..."]
+  ```
+
+  Line 99 is the poisoning, line 112 is the no-PATH victim, line 120 is the
+  growth: 3 jobs, 3 entries.
+- The growth is fully fixed, not just the wrong value. `overrider.base` is only
+  appended to during setup; after 3 jobs a 4th still gets exactly the 3 base
+  entries.
+- A test gap the reviewer PROVED and we closed: the test was blind to the
+  `slices.Clone`. Replacing it with `overrides := j.base` left the whole `cmd`
+  package green. The mechanical reason is capacity, and it is worth knowing:
+
+  ```
+  production-shaped base len/cap: 3 4   (var base; 3 appends onto nil -> cap 1,2,4)
+  test-literal base len/cap:      3 3   ([]string{a,b,c})
+  ```
+
+  In production `cap > len`, so a no-clone `append` writes into the shared
+  backing array and 2 successive results alias. The test's composite literal
+  had `cap == len`, so every append reallocated and the aliasing could not
+  occur AT ALL. Doubly blind, since `EnvAddOverride` also compresses each
+  result before the next call.
+- Closed by building the fixture the way the runner builds it - appending to
+  the field one at a time - and asserting one job's overrides still hold their
+  own values after a later job's call. Exactly one leaf goes red under
+  `overrides := j.base`, with
+  `Expected "PATH=/jobone/bin:..." Actual "PATH=/jobthree/bin:..."`, and the
+  other 5 stay green, which is itself the proof that they were blind.
+- A linter rule would have re-created the blindness, which is worth recording:
+  `prealloc` rejects `var base []string` followed by appends, suggesting
+  `make([]string, 0, 3)` - and that gives `cap == len`, the very shape that
+  hides the bug. Sidestepped by appending to the struct field instead, which
+  `prealloc` does not inspect and which matches production more closely anyway.
+- Tidies taken: the assertion on the private `overrider.base` field was dropped
+  as implementation-detail coupling, with no coverage lost because the
+  following behavioural assertion fails just the same on a grown base; and the
+  poisoned-run Convey was renamed to say that it depends on an earlier job.
+- The `break` in the PATH search is right and item 1 is what makes it right. It
+  takes the first `PATH` entry, matching libc `getenv`; with a duplicated
+  `PATH`, item 1 now replaces every copy with the same value, so the
+  first-match read and `os/exec`'s last-wins dedup agree. They could disagree
+  before item 1.
+- Item 2 removes the production source of repeated names in `over` that item
+  1's write-up cited when justifying `applied[name] = true`. That guard is
+  still correct and still needed, since a user can repeat a name through
+  `wr mod --env`, and item 1's third Convey still covers it - it simply no
+  longer has this caller behind it.
+- Pre-existing quirks found and deliberately left, neither a regression:
+  `strings.Contains(pair[1], exePath)` is a substring test rather than a
+  path-element one, so `PATH=/opt/wrtest/binx` counts as already containing
+  `/opt/wrtest/bin`; and with `PATH=A` (already containing exePath) followed by
+  `PATH=B` (not), the `break` skips the append and exec's last-wins gives `B`
+  without exePath.
