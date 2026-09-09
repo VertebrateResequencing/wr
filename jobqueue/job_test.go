@@ -624,8 +624,8 @@ func TestJob(t *testing.T) {
 
 				dockerExtra := " --mount type=bind,source=/foo/bar,target=/bar" +
 					" --mount type=bind,source=/foo/baz,target=/baz"
-				dockerEnv1 := " -e FOO=bar -e OOF=rab"
-				dockerEnv2 := " -e OOF=rab -e FOO=bar"
+				dockerEnv1 := " -e FOO -e OOF"
+				dockerEnv2 := " -e OOF -e FOO"
 
 				exp1 := fmt.Sprintf(dockerPrefix+dockerExtra+dockerEnv1+dockerSuffix, job.Key(), image)
 				exp2 := fmt.Sprintf(dockerPrefix+dockerExtra+dockerEnv2+dockerSuffix, job.Key(), image)
@@ -635,6 +635,18 @@ func TestJob(t *testing.T) {
 				} else {
 					So(cmd, ShouldEndWith, exp2)
 				}
+			})
+
+			Convey("That names an env var whose value contains a colon, not a truncation of it", func() {
+				So(job.EnvAddOverride([]string{"PATH=/usr/local/sbin:/opt/wrtest/bin"}), ShouldBeNil)
+
+				cmd, cleanup, err = job.CmdLine(ctx)
+				So(err, ShouldBeNil)
+				So(cleanup, ShouldNotBeNil)
+
+				defer cleanup()
+
+				So(cmd, ShouldEndWith, fmt.Sprintf(dockerPrefix+" -e PATH"+dockerSuffix, job.Key(), image))
 			})
 		})
 

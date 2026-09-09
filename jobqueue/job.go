@@ -991,8 +991,8 @@ func (j *Job) containerEnv() ([]string, error) {
 	names := make([]string, len(overrideEs))
 
 	for i, envvar := range overrideEs {
-		parts := strings.Split(envvar, ":")
-		names[i] = parts[0]
+		name, _, _ := strings.Cut(envvar, "=")
+		names[i] = name
 	}
 
 	return names, nil
