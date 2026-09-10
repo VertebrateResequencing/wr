@@ -2070,10 +2070,10 @@ func splitNewJobsFold(pending []*newJobsOp) (fold, remainder []*newJobsOp) {
 // That path unlinks the database and copies an older backup over it, losing
 // every job recorded since that backup, so it must only ever see an error that
 // is evidence of damage. A lock timeout is not: another wr manager is running
-// and still writing to the file, which would keep writing to a deleted inode
+// and still writing to the file, and it would keep writing to a deleted inode
 // and lose everything at exit, while this manager came up on a stale backup on
-// a fresh inode where the flock protects nothing (spec E7). Nor is any of the
-// rest, which mean the file could not be reached at all - most often because
+// a fresh inode where the flock protects nothing (spec E7). Nor are the rest:
+// they all mean the file could not be reached at all - most often because
 // somebody made the database read-only, or mounted its filesystem read-only,
 // before copying or inspecting it, which is the ordinary careful thing to do.
 //
