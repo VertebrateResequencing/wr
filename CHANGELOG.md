@@ -48,7 +48,7 @@ project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Fixed
 - `wr manager start` could delete your database and copy an older backup over
-  it just because it failed to open the file, losing every job recorded since
+  it just because wr failed to open the file, losing every job recorded since
   that backup was taken. Nearly every way of failing to open the file counted
   as corruption, so making the database read-only before copying or inspecting
   it sent wr down that path, as did a read-only mount, a directory sitting
@@ -57,7 +57,7 @@ project adheres to [Semantic Versioning](http://semver.org/).
   leaves the database untouched in those cases and refuses to start, reporting
   the error it hit so you can resolve that problem and start wr again. A
   database that really is damaged still restores from its backup as before, and
-  so does one wr could not open for a reason it does not recognise.
+  so does one that wr could not open for a reason it does not recognise.
 - One mistyped `--env` element could stop every command in a scheduler group.
   An entry with no `=`, such as a bare `PATH`, crashed the runner as it
   prepared the command. The command went back to the queue without using up a
