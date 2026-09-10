@@ -35,6 +35,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/VertebrateResequencing/wr/clog"
@@ -54,6 +55,30 @@ const dockerMountParts = 2
 // still making each of these a single argument when the working directory
 // contains a space.
 const workDirMountArgs = ` -w "$PWD" --mount type=bind,source="$PWD",target="$PWD"`
+
+// singularityWorkDirArgs is workDirMountArgs in singularity's own syntax: -B
+// with no ":dest" binds the working directory at the same path it has outside,
+// which is what docker's target="$PWD" does, and --pwd then starts the
+// command there.
+//
+// Without these, the container gets the working directory only if the site's
+// singularity.conf happens to bind it, and starts in / if it does not.
+//
+// $PWD stays a shell expansion for the same reason it does in
+// workDirMountArgs.
+const singularityWorkDirArgs = ` -B "$PWD" --pwd "$PWD"`
+
+// staleContainerRemovalFormat removes the containers that the 2 `docker ps`
+// filters interpolated in to it select; see removeStaleContainerCmd for which
+// those are, and why only those.
+//
+// The removal is announced on STDERR because it destroys something, and that
+// lands in the job's own STDERR, where whoever wonders what happened to the
+// lost run's container can read it. `docker rm` prints the id it removed on
+// STDOUT, which would otherwise be mixed in to the command's own output.
+const staleContainerRemovalFormat = "for c in $(docker ps --all --quiet --filter %s --filter %s); do " +
+	`echo "wr: removing container $c, left behind by a lost run of this same command" >&2; ` +
+	`docker rm --force "$c" >/dev/null; done; `
 
 // runAsCallingUserArgs makes the container's processes run as the user that runs
 // the command line, instead of as the user the image specifies (normally root).
@@ -138,6 +163,10 @@ func writeStringToFile(f *os.File, content string, cleanup func()) error {
 //     it creates in the working directory is owned by that user.
 //
 // * Automatically remove the container when it exits.
+//
+// It is prefixed by removeStaleContainerCmd, so that a container of the same
+// name that a previous run of the same thing left behind does not make this
+// run fail before it starts.
 func DockerRunCmd(image, cmdFile, name string, mounts, env []string, imageUser bool) string {
 	userArgs := runAsCallingUserArgs
 	if imageUser {
@@ -147,9 +176,10 @@ func DockerRunCmd(image, cmdFile, name string, mounts, env []string, imageUser b
 	mountArgs := dockerMounts(mounts)
 	envArgs := dockerEnv(env)
 
-	return fmt.Sprintf("cat %s | docker run --rm --name %s --label %s%s%s%s -i %s /bin/sh",
-		shellquote.Join(cmdFile), shellquote.Join(name), shellquote.Join(JobKeyLabel+"="+name),
-		userArgs, mountArgs, envArgs, shellquote.Join(image))
+	return removeStaleContainerCmd(name) +
+		fmt.Sprintf("cat %s | docker run --rm --name %s --label %s%s%s%s -i %s /bin/sh",
+			shellquote.Join(cmdFile), shellquote.Join(name), shellquote.Join(JobKeyLabel+"="+name),
+			userArgs, mountArgs, envArgs, shellquote.Join(image))
 }
 
 // dockerMounts takes a list of "/local/path[:/inside/container/path]" values
@@ -197,6 +227,42 @@ func dockerEnv(names []string) string {
 	return listToPrefixedString(shellQuoteEach(names), " -e ")
 }
 
+// removeStaleContainerCmd returns shell that frees name for the `docker run`
+// that follows it, by removing every container that both holds that name and
+// carries JobKeyLabel with name as its value.
+//
+// --rm covers the normal case, but a container that outlives its `docker run`
+// client keeps the name - the runner SIGKILLed, the host lost, the daemon
+// restarted mid-run - and then every later run under that name fails at once
+// with docker's "container name is already in use".
+//
+// Both filters are required, and neither is redundant. The name filter says
+// the container is in our way; the label says it is ours to remove. Only we
+// set that label, so a container carrying it with this name is taken to be
+// one we started for this same thing, whose run has since been given up on -
+// doing work nobody will collect, and racing the run we are about to start in
+// the same working directory. That rests on one manager owning the key, which
+// is derived from Cwd, Cmd, mounts and image and names no manager: 2 managers
+// on one docker host running the identical command in the identical Cwd share
+// a key, so this would remove the other's live container, where before the
+// run merely failed loudly. A container of this name that we cannot prove is
+// ours is left alone and still fails the run, which is the safe way round:
+// #589 exists because an earlier version of this code decided a container was
+// the job's without proof, and being wrong here destroys a co-tenant's work
+// rather than merely mis-attributing it.
+//
+// The name goes through regexp.QuoteMeta because docker matches that filter as
+// a regular expression, so a name containing regex metacharacters would
+// otherwise match containers of other names.
+//
+// When the filters match nothing, which is every normal run, the loop body
+// runs no times: nothing is printed and no container is touched.
+func removeStaleContainerCmd(name string) string {
+	return fmt.Sprintf(staleContainerRemovalFormat,
+		shellquote.Join("name=^"+regexp.QuoteMeta(name)+"$"),
+		shellquote.Join("label="+JobKeyLabel+"="+name))
+}
+
 // listToPrefixedString creates a single string comprising vals concatenated
 // together with prefix.
 func listToPrefixedString(vals []string, prefix string) string {
@@ -216,10 +282,11 @@ func listToPrefixedString(vals []string, prefix string) string {
 //   - Create a container.
 //   - That will run the command in the given file (by piping the file contents
 //     to the container's shell); use PrepareCmdFile() to create one.
-//   - That will mount the given disk locations, in the format
+//   - That will mount the current working directory at the same path inside
+//     the container and use it as the workdir.
+//   - That will also mount any given disk locations, in the format
 //     "/local/path:/inside/container/path" (the colon and inside path being
-//     optional if the same as local path). The CWD is always mounted at / in
-//     container.
+//     optional if the same as local path).
 //   - That will have all environment variables outside the container
 //     replicated inside the container.
 //   - That will run as the calling user, which singularity does by design, so
@@ -234,8 +301,10 @@ func SingularityRunCmd(image, cmdFile string, mounts []string) string {
 
 // singularityMounts takes a list of "/local/path[:/inside/container/path]"
 // values and converts them in to a series of `singularity shell -B` args.
+//
+// It always binds $PWD and makes it the container's working directory as well.
 func singularityMounts(mounts []string) string {
-	return listToPrefixedString(shellQuoteEach(mounts), " -B ")
+	return singularityWorkDirArgs + listToPrefixedString(shellQuoteEach(mounts), " -B ")
 }
 
 // shellQuoteEach shell quotes each of the given values, so that each stays a

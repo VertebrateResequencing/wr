@@ -28,43 +28,103 @@ package file
 // this file implements utility routines related to files.
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
-	"strings"
+	"path/filepath"
+	"strconv"
 
 	fp "github.com/VertebrateResequencing/wr/fs/filepath"
 )
 
-// PathReadError records an path read error.
+// maxFirstLineBytes is the longest first line GetFirstLine will return. It is
+// far more than the 64 hexadecimal characters of the container ids that
+// GetFirstLine exists to read, and little enough that a file which merely
+// happens to match a cidfile glob never gets read into memory.
+const maxFirstLineBytes = 4096
+
+// ErrLineTooLong is wrapped by the error GetFirstLine returns when a file's
+// first line is longer than maxFirstLineBytes.
+var ErrLineTooLong = errors.New("first line longer than " + strconv.Itoa(maxFirstLineBytes) + " bytes")
+
+// ErrEmptyPath is wrapped by the error GetFirstLine and ToString return when
+// given an empty path.
+var ErrEmptyPath = errors.New("path is empty")
+
+// PathReadError records a path read error.
 type PathReadError struct {
 	path string
 	Err  error
 }
 
-// Error returns an error related to path could not be read.
+// Error returns an error related to a path that could not be read.
 func (p *PathReadError) Error() string {
 	return fmt.Sprintf("path [%s] could not be read: %s", p.path, p.Err)
 }
 
-// GetFirstLine reads the content of a file given its absolute or tilda path and
-// returns the first line excluding trailing newline.
+// Unwrap returns the error that stopped the path being read.
+func (p *PathReadError) Unwrap() error {
+	return p.Err
+}
+
+// GetFirstLine returns the first line, excluding its newline, of the file at
+// the given absolute or tilde path.
+//
+// At most maxFirstLineBytes are read, so that a large file which is not the
+// short id file this is for does not get read into memory; if the first line
+// is longer than that, the returned error wraps ErrLineTooLong.
 func GetFirstLine(filename string) (string, error) {
-	content, err := ToString(filename)
+	if filename == "" {
+		return "", &PathReadError{"", ErrEmptyPath}
+	}
+
+	absPath := fp.TildaToHome(filename)
+
+	f, err := os.Open(filepath.Clean(absPath))
 	if err != nil {
+		return "", &PathReadError{absPath, err}
+	}
+
+	defer f.Close()
+
+	line, err := firstLine(f)
+	if err != nil {
+		return "", &PathReadError{absPath, err}
+	}
+
+	return line, nil
+}
+
+// firstLine returns the content of r up to its first newline, reading no more
+// than maxFirstLineBytes+1 bytes. If r gives maxFirstLineBytes bytes without a
+// newline and still has more, ErrLineTooLong is returned.
+func firstLine(r io.Reader) (string, error) {
+	buf := make([]byte, maxFirstLineBytes+1)
+
+	n, err := io.ReadFull(r, buf)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return "", err
 	}
 
-	firstLine := strings.TrimSuffix(content, "\n")
+	if i := bytes.IndexByte(buf[:n], '\n'); i >= 0 {
+		return string(buf[:i]), nil
+	}
 
-	return firstLine, nil
+	if n > maxFirstLineBytes {
+		return "", ErrLineTooLong
+	}
+
+	return string(buf[:n]), nil
 }
 
 // ToString takes the path to a file and returns its contents as a string. If
-// path begins with a tilda, TildaToHome() is used to first convert the path to
+// path begins with a tilde, TildaToHome() is used to first convert the path to
 // an absolute path, in order to find the file.
 func ToString(path string) (string, error) {
 	if path == "" {
-		return "", &PathReadError{"", nil}
+		return "", &PathReadError{"", ErrEmptyPath}
 	}
 
 	absPath := fp.TildaToHome(path)

@@ -30,23 +30,34 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/container"
 	cn "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/jsonstream"
 	nw "github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
-	specs "github.com/opencontainers/image-spec/specs-go/v1"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-const linuxOS = "linux"
+// testImage is the image the tests that need a real docker daemon run. It is
+// alpine, not ubuntu, because all they need is a container that stays up, and
+// alpine is a 13MB pull rather than a 160MB one; it is also what
+// container/run_test.go's real tests use, so a developer running ./container/...
+// needs one image and not two.
+//
+// It is pinned by digest so that pulling it cannot re-point a developer's own
+// alpine:latest: docker only writes a tag when it pulls one, and this asks for
+// a digest. The digest is that of the multi-platform index alpine:latest
+// pointed at on 2026-09-09 (alpine 3.24.1), so it resolves on any architecture
+// the daemon runs.
+const testImage = "alpine@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b"
 
 // testAPIVersion is the docker API version our fake daemon serves; the moby
 // client asks for a pinned version directly instead of negotiating one.
@@ -217,6 +228,51 @@ func listingDockerSocket(t *testing.T, containers []cn.Summary) string {
 	return "unix://" + sock
 }
 
+// pullTestImage pulls testImage, which the tests that need a real daemon run.
+// The progress stream has to be consumed for the pull to complete, but it is
+// not copied anywhere: it is a screenful of progress bars that says nothing a
+// passing test needs.
+func pullTestImage(ctx context.Context, cli *client.Client) error {
+	rc, err := cli.ImagePull(ctx, testImage, client.ImagePullOptions{})
+	if err != nil {
+		return err
+	}
+
+	drainErr := drainPullProgress(rc)
+	closeErr := rc.Close()
+
+	if drainErr != nil {
+		return drainErr
+	}
+
+	return closeErr
+}
+
+// drainPullProgress reads a pull's progress stream to its end and discards the
+// progress, but returns the first error the stream reports. A pull that fails
+// after the image reference has resolved says so only in the stream, so
+// discarding the whole thing would turn that into a bare "no such image" from
+// whatever tried to use the image next.
+func drainPullProgress(r io.Reader) error {
+	decoder := json.NewDecoder(r)
+
+	for {
+		var msg jsonstream.Message
+
+		if err := decoder.Decode(&msg); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+
+			return err
+		}
+
+		if msg.Error != nil {
+			return msg.Error
+		}
+	}
+}
+
 func TestDockerContainerLabels(t *testing.T) {
 	ctx := context.Background()
 
@@ -255,45 +311,40 @@ func TestDockerContainerLabels(t *testing.T) {
 }
 
 // createContainers creates and starts the test containers, given a list of
-// container names.
-func createContainers(ctx context.Context, cli *client.Client, containerNames []string) ([]string, error) {
-	if err := pullUbuntuImage(ctx, cli); err != nil {
+// container names, and arranges for each one it creates to be removed when the
+// test ends.
+func createContainers(ctx context.Context, t *testing.T, cli *client.Client,
+	containerNames []string) ([]string, error) {
+	t.Helper()
+
+	if err := pullTestImage(ctx, cli); err != nil {
 		return nil, err
 	}
 
-	return createAndStartNamedContainers(ctx, cli, containerNames)
+	return createAndStartNamedContainers(ctx, t, cli, containerNames)
 }
 
-func pullUbuntuImage(ctx context.Context, cli *client.Client) error {
-	rc, err := cli.ImagePull(ctx, "ubuntu", client.ImagePullOptions{})
-	if err != nil {
-		return err
-	}
+func createAndStartNamedContainers(ctx context.Context, t *testing.T, cli *client.Client,
+	containerNames []string) ([]string, error) {
+	t.Helper()
 
-	_, copyErr := io.Copy(os.Stdout, rc)
-	closeErr := rc.Close()
+	cntrIDs := make([]string, 0, len(containerNames))
 
-	if copyErr != nil {
-		return copyErr
-	}
-
-	return closeErr
-}
-
-func createAndStartNamedContainers(ctx context.Context, cli *client.Client, containerNames []string) ([]string, error) {
-	cntrIDs := make([]string, len(containerNames))
-
-	for idx, cname := range containerNames {
+	for _, cname := range containerNames {
 		containerID, err := createContainer(ctx, cli, cname)
 		if err != nil {
-			return nil, err
+			return cntrIDs, err
 		}
+
+		// registered before the start, because a container that fails to start
+		// still exists and still holds its name.
+		removeContainerAtEnd(t, cli, containerID)
 
 		if err = startContainer(ctx, cli, containerID); err != nil {
-			return nil, err
+			return cntrIDs, err
 		}
 
-		cntrIDs[idx] = containerID
+		cntrIDs = append(cntrIDs, containerID)
 	}
 
 	return cntrIDs, nil
@@ -301,33 +352,34 @@ func createAndStartNamedContainers(ctx context.Context, cli *client.Client, cont
 
 func createContainer(ctx context.Context, cli *client.Client, cname string) (string, error) {
 	cbody, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
-		Config:           &cn.Config{Image: "ubuntu", Tty: true},
+		Config:           &cn.Config{Image: testImage, Tty: true},
 		HostConfig:       &cn.HostConfig{},
 		NetworkingConfig: &nw.NetworkingConfig{},
-		Platform:         &specs.Platform{Architecture: "amd64", OS: linuxOS},
 		Name:             cname,
 	})
 
 	return cbody.ID, err
 }
 
+// removeContainerAtEnd force-removes the given container when the test ends,
+// however it ends, so that a failed assertion or a skip cannot leave a
+// container running on the developer's daemon.
+func removeContainerAtEnd(t *testing.T, cli *client.Client, containerID string) {
+	t.Helper()
+
+	t.Cleanup(func() {
+		_, err := cli.ContainerRemove(context.Background(), containerID,
+			client.ContainerRemoveOptions{Force: true})
+		if err != nil {
+			t.Logf("container %s could not be removed: %s", containerID, err)
+		}
+	})
+}
+
 func startContainer(ctx context.Context, cli *client.Client, containerID string) error {
 	_, err := cli.ContainerStart(ctx, containerID, client.ContainerStartOptions{})
 
 	return err
-}
-
-// removeContainers removes all the containers given a list of containers as a
-// part of clean up step.
-func removeContainers(ctx context.Context, cli *client.Client, containerIDs []string) error {
-	for _, cid := range containerIDs {
-		_, err := cli.ContainerRemove(ctx, cid, client.ContainerRemoveOptions{Force: true})
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 func TestDocker(t *testing.T) {
@@ -346,9 +398,7 @@ func TestDocker(t *testing.T) {
 	}
 
 	// create and start the test containers
-	var cntrNames = []string{"container_1", "container_2"}
-
-	cntrIDs, err := createContainers(ctx, cli, cntrNames)
+	cntrIDs, err := createContainers(ctx, t, cli, testContainerNames(t, 2))
 	if err != nil {
 		t.Skip("skipping docker tests: ", err)
 	}
@@ -407,12 +457,6 @@ func TestDocker(t *testing.T) {
 					remainList, err := dockerInterator.ContainerList(ctx)
 					So(err, ShouldBeNil)
 					So(remainList, ShouldNotBeNil)
-
-					// Cleanup: Remove all the dummy container
-					err = removeContainers(ctx, cli, cntrIDs)
-					if err != nil {
-						t.Log("Containers could not be removed: ", err)
-					}
 				})
 			})
 
@@ -430,4 +474,22 @@ func TestDocker(t *testing.T) {
 			})
 		})
 	})
+}
+
+// testContainerNames returns the given number of container names unique to this
+// test run, derived from the temporary directory the test framework made for it
+// the way container/run_test.go's realTestContainerName is, so that these tests
+// only ever create and destroy containers of their own: not a developer's, and
+// not those of a run happening at the same time.
+func testContainerNames(t *testing.T, n int) []string {
+	t.Helper()
+
+	prefix := filepath.Base(filepath.Dir(t.TempDir()))
+
+	names := make([]string, n)
+	for i := range n {
+		names[i] = fmt.Sprintf("%s_%d", prefix, i+1)
+	}
+
+	return names
 }

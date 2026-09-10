@@ -589,7 +589,16 @@ func TestJob(t *testing.T) {
 
 			defer cleanup()
 
-			So(cmd, ShouldStartWith, "cat ")
+			// both filters on the removal carry the job's key, so it can only
+			// remove a container wr itself started under that key: normally
+			// just this job's own, but 2 managers share a key when they run
+			// this same Cmd in this same Cwd, and container/run.go's
+			// removeStaleContainerCmd says what that costs.
+			staleRemoval := fmt.Sprintf(`for c in $(docker ps --all --quiet --filter name=^%[1]s\$ `+
+				`--filter label=uk.ac.sanger.wr.job-key=%[1]s); do `+
+				`echo "wr: removing container $c, left behind by a lost run of this same command" >&2; `+
+				`docker rm --force "$c" >/dev/null; done; cat `, job.Key())
+			So(cmd, ShouldStartWith, staleRemoval)
 
 			dockerPrefix := ` | docker run --rm --name %[1]s --label uk.ac.sanger.wr.job-key=%[1]s` +
 				` --user "$(id -u):$(id -g)"` +
@@ -674,8 +683,10 @@ func TestJob(t *testing.T) {
 
 			defer cleanup()
 
+			singularityPrefix := ` | singularity shell -B "$PWD" --pwd "$PWD"`
+
 			So(cmd, ShouldStartWith, "cat ")
-			So(cmd, ShouldEndWith, " | singularity shell "+image)
+			So(cmd, ShouldEndWith, singularityPrefix+" "+image)
 			So(job.MonitorDocker, ShouldBeBlank)
 
 			Convey("That ContainerImageUser does not change, singularity having no such option", func() {
@@ -687,7 +698,7 @@ func TestJob(t *testing.T) {
 
 				defer cleanup()
 
-				So(cmd, ShouldEndWith, " | singularity shell "+image)
+				So(cmd, ShouldEndWith, singularityPrefix+" "+image)
 			})
 
 			Convey("That can include additional mounts", func() {
@@ -700,7 +711,7 @@ func TestJob(t *testing.T) {
 
 				defer cleanup()
 
-				So(cmd, ShouldEndWith, " | singularity shell -B /foo/bar:/bar -B /foo/baz:/baz "+image)
+				So(cmd, ShouldEndWith, singularityPrefix+" -B /foo/bar:/bar -B /foo/baz:/baz "+image)
 			})
 		})
 	})

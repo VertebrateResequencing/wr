@@ -757,6 +757,17 @@ type Job struct {
 	// environment variable name values will also be set for import in to the
 	// container. Setting this sets (and overrides) MonitorDocker to this Job's
 	// Key(), which will also be the container's --name.
+	//
+	// A container of that name that also carries wr's own label naming that
+	// Key is removed before the new one is created, so that a Job whose
+	// container outlived the run that started it can still be retried. A
+	// container of that name without the label is left alone, and the run
+	// fails as it would have before.
+	//
+	// Normally only this Job's own earlier run can have left such a container
+	// behind. But Key() names no manager, so 2 managers on one docker host
+	// running this same Cmd in this same Cwd share a Key, and either could
+	// then remove a container the other has running.
 	WithDocker string
 
 	// WithSingularity will result in CmdLine() returning a `singularity shell`
@@ -914,6 +925,9 @@ type Job struct {
 // * Cmd is stored in a tmp file.
 // * A new `docker run` or `singularity shell` command is returned that:
 //   - Pulls the image specified in WithDocker|Singularity if it is missing.
+//   - With docker, first removes a container holding the name the new one
+//     needs, if it also carries our own label for this Job's Key (see
+//     WithDocker).
 //   - Creates a container (with docker, it's name will be our Key()).
 //   - That will mount Cwd inside the container and use it as the workdir.
 //   - That will also mount any ContainerMounts.

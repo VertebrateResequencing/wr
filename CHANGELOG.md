@@ -88,6 +88,47 @@ project adheres to [Semantic Versioning](http://semver.org/).
   under-reported and that no container will be killed with it. A container wr
   started for the job itself (`--with_docker`) is still recognised whatever
   else appears alongside it.
+- `--with_singularity` now really does what it has always said it does: your
+  working directory is mounted at the same path inside the container, and is
+  the working directory your command runs in there. Previously wr asked
+  singularity for neither, so your command ran wherever your site's
+  `singularity.conf` put it, commonly `/` or your real home directory, with the
+  command's own working directory not visible inside the container at all and
+  `--change_home` having no effect there. If your site's `singularity.conf`
+  already bound your working directory, nothing changes.
+- A `--with_docker` command whose container outlived the run that started it -
+  the runner SIGKILLed, its host lost, or the docker daemon restarted mid-run -
+  could not be retried. Every attempt failed immediately with docker's "The
+  container name ... is already in use", naming only wr's own 32-character key
+  for the command, and the command stayed unrunnable until someone removed that
+  container by hand. wr now removes the leftover container itself before
+  starting the new one, and reports on the command's STDERR which container it
+  removed. It only ever removes a container that both holds the name it needs
+  and carries wr's own label naming that same command, so any other container of
+  that name is left alone and docker's conflict is reported as before.
+- A `--monitor_docker` cidfile path, with or without a glob in it (`*.cid`,
+  `out*`, or a plain path to a single file), no longer inflates the peak RAM wr
+  records for your command. Until wr found the container, it re-read the whole
+  of every file the path matched, once a second for the life of the command; if
+  the path also matched one of your command's large output files, the memory
+  that took was added to the command's peak, and so to the RAM wr reserved for
+  it next time. wr now reads no more than the first 4096 bytes of a match: far
+  more than a container id needs, and little enough that a large file the path
+  matched by accident is never read in. A match whose first line is longer than
+  that is skipped if the path had a glob in it, the remaining matches still
+  being checked; if the path named that one file, wr instead warns that it could
+  not read it, and after three such checks stops monitoring for the rest of the
+  command, so no container's RAM and CPU are added to what wr reports for it and
+  no container is killed if you kill the job. Either way your command itself is
+  unaffected: it runs on as normal, and none of its `on_failure` behaviours
+  fire.
+- A `--monitor_docker` cidfile with anything after the container id in it, such
+  as your command's own output appended to the same file, is now recognised. wr
+  took the id to be the whole file bar one trailing newline, so such a file
+  never matched a container and the command ran unmonitored without wr saying
+  so. wr now reads just the first line, so the container's peak RAM and total
+  CPU are added to the usage wr reports for the command - and, as for any
+  monitored container, wr kills that container too when you kill the job.
 
 
 ## [0.37.2] - 2026-09-01
