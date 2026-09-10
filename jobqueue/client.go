@@ -799,7 +799,7 @@ func stageBackup(path string, db []byte) (string, error) {
 // to it so a leftover staging file is never silently left behind.
 func errWithRemoval(err error, path string) error {
 	if rerr := os.Remove(path); rerr != nil {
-		return fmt.Errorf("%w\n%w", err, rerr)
+		return errors.Join(err, rerr)
 	}
 
 	return err
