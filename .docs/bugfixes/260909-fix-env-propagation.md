@@ -529,3 +529,73 @@ stay findable.
       header describes the accumulation in the PAST tense, as the bug this PR
       fixed, which is accurate. A repo-wide grep plus a scan of every comment
       line added by this branch found no other instance in Go code.
+
+- [x] Copilot review of the rebased head `cd99fc4a` (PR #592): `containerEnv`
+  is a FOURTH read path and item 4 missed it.
+    - Item 4 established that validation at the write routes cannot help a job
+      ALREADY STORED with a malformed entry, so the reads must degrade, and it
+      hardened 3 of them: `jobEnvOverrider.overridesFor`, `Job.Getenv` and
+      `prependedPath`. `containerEnv` was not touched, so a legacy job whose
+      stored overrides hold `""` or `=value` still produced
+      `docker run -e ''`, which docker rejects outright.
+    - This is a gap in the reasoning, not only the code: the principle was
+      stated correctly and then applied to 3 of 4 places.
+    - Proved end to end against real docker 29.1.3, through the actual
+      `Job.CmdLine()` output:
+
+      ```
+      pre-fix   ... -e '' -e FOO -e '' -i alpine /bin/sh
+                exit 125: invalid argument "" for "-e, --env" flag
+      post-fix  ... -e FOO -i alpine /bin/sh
+                exit 0: FOO is [bar]
+      ```
+
+    - One detail nearly let the bug survive its own fix: the slice was
+      `make([]string, len(overrideEs))`, so skipping an entry would have left a
+      trailing `""` - the same `-e ''`, at the end instead of the middle. It
+      needed `make([]string, 0, len(...))` with `append`, which is also the
+      shape `prealloc` wants.
+    - Skips SILENTLY, matching all 3 siblings, rather than logging. Item 4
+      recorded that silence as a known gap and named the runner as the single
+      right place to close it for every read at once; a log here alone would be
+      a 4th style, in a pure accessor with no logger, leaving the other 3
+      silent.
+    - One deliberate difference from the siblings, in the TEST rather than the
+      treatment: they skip on "no `=`", this skips on an empty NAME. A bare
+      `NOEQUALS` is a legitimate copy-from-environment argument - `-e NAME` is
+      exactly the form this function exists to emit - and was re-verified at
+      29.1.3 to give exit 0 with the variable unset. Skipping it would be a
+      behaviour change with no bug behind it. `""` and `=value` both yield the
+      empty name and are both covered.
+    - Took 2 tidies the earlier records had nominated: `containerEnv` now uses
+      the `envName` helper item 1 extracted, which item 3's write-up had
+      already flagged as the 4th inlined copy, and the `envionrment` typo in
+      its doc comment is fixed.
+
+- [x] The branch owed a CHANGELOG entry and had written NONE, which the
+  implementor caught rather than the orchestrator: `git log 098b2227..HEAD --
+  CHANGELOG.md` was empty, for 4 user-visible fixes and 1 behaviour change.
+    - Now 1 bullet under `### Changed` and 4 under `### Fixed`, grouped by what
+      a USER would recognise as one thing rather than by item number.
+    - Item 4 is deliberately SPLIT across both sections: the fix half ("you
+      were bitten and now you are not") and the validation half ("your working
+      command line may now error") go to different readers, and putting both in
+      Fixed would hide a breaking change inside a list of repairs.
+    - Items 4-fix and 5 are MERGED, because a user recognises one thing: an env
+      entry that names no variable no longer breaks their job.
+    - Items 1 and 2 are kept apart despite both being "wrong environment",
+      because the triggers differ - item 1 needs a repeated name in your own
+      environment, item 2 needs nothing from you beyond sharing a runner - so
+      someone hitting one would not recognise the other's description.
+    - The behaviour change leads the section, enumerates all 3 now-rejected
+      shapes with a literal example of each, gives the remedy for the likeliest
+      (`--env PATH=$PATH`), names all the affected routes including both REST
+      verbs, and warns explicitly about a script that joins an `--env` list and
+      leaves a trailing comma.
+
+- [x] Tooling hazard found while doing this, worth knowing:
+  `golangci-lint run --fix` silently rewrites a doubled apostrophe `''` inside
+  a Go DOC COMMENT into a typographic close-quote, because gofmt's doc-comment
+  reformatter treats it as a quotation. It then reports `0 issues.` having
+  mangled the text. Anyone writing a shell-quoting example in a Go comment will
+  hit it; reword to avoid `''` rather than keeping the mangled character.

@@ -648,6 +648,21 @@ func TestJob(t *testing.T) {
 
 				So(cmd, ShouldEndWith, fmt.Sprintf(dockerPrefix+" -e PATH"+dockerSuffix, job.Key(), image))
 			})
+
+			Convey("That leaves out a stored env entry naming nothing, which docker refuses to start with", func() {
+				stored, errc := compressEnv([]string{"", "FOO=bar", "=orphan", "EQ=a=b"})
+				So(errc, ShouldBeNil)
+
+				job.EnvOverride = stored
+
+				cmd, cleanup, err = job.CmdLine(ctx)
+				So(err, ShouldBeNil)
+				So(cleanup, ShouldNotBeNil)
+
+				defer cleanup()
+
+				So(cmd, ShouldEndWith, fmt.Sprintf(dockerPrefix+" -e FOO -e EQ"+dockerSuffix, job.Key(), image))
+			})
 		})
 
 		Convey("Though with WithSingularity it returns a singularity shell command", func() {

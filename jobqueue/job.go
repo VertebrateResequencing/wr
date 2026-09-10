@@ -980,19 +980,26 @@ func (j *Job) containerMounts() []string {
 	return strings.Split(j.ContainerMounts, ",")
 }
 
-// containerEnv converts EnvOverride to a slice of the envionrment variable
+// containerEnv converts EnvOverride to a slice of the environment variable
 // names that were set.
+//
+// A stored entry that is empty, or that has no name before its "=", names no
+// variable, so it is left out: it would reach docker as an empty -e argument,
+// which docker refuses to start the container at all for. Jobs stored before
+// the write routes started refusing such an entry still hold them, and one made
+// every containerised job of theirs fail to start.
 func (j *Job) containerEnv() ([]string, error) {
 	overrideEs, err := j.envCurrentOverrides()
 	if err != nil {
 		return nil, err
 	}
 
-	names := make([]string, len(overrideEs))
+	names := make([]string, 0, len(overrideEs))
 
-	for i, envvar := range overrideEs {
-		name, _, _ := strings.Cut(envvar, "=")
-		names[i] = name
+	for _, envvar := range overrideEs {
+		if name := envName(envvar); name != "" {
+			names = append(names, name)
+		}
 	}
 
 	return names, nil
