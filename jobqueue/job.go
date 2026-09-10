@@ -980,19 +980,26 @@ func (j *Job) containerMounts() []string {
 	return strings.Split(j.ContainerMounts, ",")
 }
 
-// containerEnv converts EnvOverride to a slice of the envionrment variable
+// containerEnv converts EnvOverride to a slice of the environment variable
 // names that were set.
+//
+// A stored entry that is empty, or that has no name before its "=", names no
+// variable, so it is left out: it would reach docker as an empty -e argument,
+// which docker refuses to start the container at all for. Jobs stored before
+// the write routes started refusing such an entry still hold them, and one made
+// every containerised job of theirs fail to start.
 func (j *Job) containerEnv() ([]string, error) {
 	overrideEs, err := j.envCurrentOverrides()
 	if err != nil {
 		return nil, err
 	}
 
-	names := make([]string, len(overrideEs))
+	names := make([]string, 0, len(overrideEs))
 
-	for i, envvar := range overrideEs {
-		parts := strings.Split(envvar, ":")
-		names[i] = parts[0]
+	for _, envvar := range overrideEs {
+		if name := envName(envvar); name != "" {
+			names = append(names, name)
+		}
 	}
 
 	return names, nil
@@ -1168,6 +1175,12 @@ func (j *Job) EnvAddOverride(env []string) error {
 // Getenv is like os.Getenv(), but for the environment variables stored in the
 // job, including any overrides. Returns blank if Env() would have returned
 // an error.
+//
+// Like the C library's getenv(), a stored entry with no "=" in it defines
+// nothing, so it is skipped: asking for its name gets you blank, the same
+// answer as for a variable the job does not have. Jobs stored before the write
+// routes started refusing such an entry still hold them, and reading one used
+// to panic.
 func (j *Job) Getenv(key string) string {
 	env, err := j.Env()
 	if err != nil {
@@ -1175,9 +1188,9 @@ func (j *Job) Getenv(key string) string {
 	}
 
 	for _, envvar := range env {
-		pair := strings.Split(envvar, "=")
-		if pair[0] == key {
-			return pair[1]
+		name, value, ok := strings.Cut(envvar, "=")
+		if ok && name == key {
+			return value
 		}
 	}
 
@@ -2294,24 +2307,16 @@ func (j *JobModifier) SetNoRetriesOverWalltime(newVal time.Duration) {
 }
 
 // SetEnvOverride notes that you want to modify the EnvOverride of Jobs. The
-// supplied string should be a comma separated list of key=value pairs. This can
-// generate an error if compression of the data fails.
+// supplied string should be a comma separated list of key=value pairs. This
+// generates an error if an element is not a key=value pair, or if compression
+// of the data fails.
 func (j *JobModifier) SetEnvOverride(newVal string) error {
-	var compressedEnv []byte
-
+	var envars []string
 	if newVal != "" {
-		var err error
-
-		compressedEnv, err = compressEnv(strings.Split(newVal, ","))
-		if err != nil {
-			return err
-		}
+		envars = strings.Split(newVal, ",")
 	}
 
-	j.EnvOverride = compressedEnv
-	j.EnvOverrideSet = true
-
-	return nil
+	return j.setEnvOverrideValues(envars)
 }
 
 func (j *JobModifier) setEnvOverrideValues(newVal []string) error {
@@ -2320,7 +2325,7 @@ func (j *JobModifier) setEnvOverrideValues(newVal []string) error {
 	if len(newVal) > 0 {
 		var err error
 
-		compressedEnv, err = compressEnv(newVal)
+		compressedEnv, err = compressUserEnv(newVal)
 		if err != nil {
 			return err
 		}

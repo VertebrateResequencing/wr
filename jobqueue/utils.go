@@ -651,30 +651,108 @@ func writeStd(out io.Writer, b []byte, merr **multierror.Error) {
 }
 
 // envOverride deals with values you get from os.Environ, overriding one set
-// with values from another. Returns the new slice of environment variables.
+// with values from another. Returns the resulting slice of environment
+// variables.
+//
+// The result is not a copy: every override is written into orig in place, and
+// an append may take orig's spare capacity. A caller still holding orig can
+// therefore only assume its length is unchanged, not its contents nor what any
+// longer slice over the same array sees, so it should read the return value
+// instead. Every call site passes a slice it owns.
+//
+// A name that appears more than once in orig is overridden at every occurrence,
+// since a stored environment (unlike os.Environ) can hold duplicates, and which
+// copy the command then sees is up to the child: libc getenv() answers with the
+// first, while os/exec's Cmd.Env dedup answers with the last.
 func envOverride(orig []string, over []string) []string {
-	override := make(map[string]string)
+	override := make(map[string]string, len(over))
 
 	for _, envvar := range over {
-		pair := strings.Split(envvar, "=")
-		override[pair[0]] = envvar
+		override[envName(envvar)] = envvar
 	}
+
+	applied := make(map[string]bool, len(override))
 
 	env := orig
 	for i, envvar := range env {
-		pair := strings.Split(envvar, "=")
-		if replace, do := override[pair[0]]; do {
+		name := envName(envvar)
+		if replace, do := override[name]; do {
 			env[i] = replace
 
-			delete(override, pair[0])
+			applied[name] = true
 		}
 	}
 
-	for _, envvar := range override {
-		env = append(env, envvar)
+	// over, not override, so that what gets appended comes out in the order it
+	// was supplied rather than a map's random one; applied then also stops a
+	// name supplied twice being appended twice.
+	for _, envvar := range over {
+		name := envName(envvar)
+		if applied[name] {
+			continue
+		}
+
+		applied[name] = true
+
+		env = append(env, override[name])
 	}
 
 	return env
+}
+
+// envName returns the variable name of a "NAME=value" environment variable,
+// which is the whole string if it has no "=" in it.
+func envName(envvar string) string {
+	name, _, _ := strings.Cut(envvar, "=")
+
+	return name
+}
+
+// The ways a user's environment variable can fail to define anything, each
+// saying what the user most likely meant to type.
+var (
+	// errEnvNotKeyValue is for a bare name like the "PATH" someone types hoping
+	// to pass their current PATH through, which is why it says how to.
+	errEnvNotKeyValue = errors.New("environment variable is not in key=value format; " +
+		"to pass a variable through, write NAME=$NAME")
+
+	// errEnvEmpty is for an element with nothing in it at all, which in a comma
+	// separated list means the user typed one comma too many.
+	errEnvEmpty = errors.New("environment variable is empty; " +
+		"check for a stray or doubled comma")
+
+	// errEnvNoName is for an element like "=value". Nothing can read it: docker
+	// refuses to start the container at all, and a command run directly just
+	// gets an entry with no name to look it up by.
+	errEnvNoName = errors.New("environment variable has no name before the =")
+)
+
+// compressUserEnv is compressEnv for an environment a user supplied, refusing
+// any element that defines no variable: one that is empty, one with no "=", and
+// one with no name before its "=". The middle kind also used to make the runner
+// that read the value after the "=" panic.
+//
+// The check belongs to this wrapper rather than to compressEnv itself because
+// compressEnv is also how an environment already stored on a job is written
+// back (Job.EnvAddOverride). Refusing it there would take a job stored with a
+// malformed entry - which validation cannot help, since it is already in the
+// database - and turn it from one a runner can now get past into one that
+// releases the job and exits every time.
+func compressUserEnv(envars []string) ([]byte, error) {
+	for _, envvar := range envars {
+		name, _, hasValue := strings.Cut(envvar, "=")
+
+		switch {
+		case envvar == "":
+			return nil, errEnvEmpty
+		case !hasValue:
+			return nil, fmt.Errorf("%q: %w", envvar, errEnvNotKeyValue)
+		case name == "":
+			return nil, fmt.Errorf("%q: %w", envvar, errEnvNoName)
+		}
+	}
+
+	return compressEnv(envars)
 }
 
 func compressedLiveTailSuffix(tail []byte) []byte {

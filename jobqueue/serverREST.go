@@ -441,11 +441,12 @@ func (jd *JobDefaults) DefaultTime() time.Duration {
 	return jd.Time
 }
 
-// DefaultEnv returns an encoded compressed version of the Env value.
+// DefaultEnv returns an encoded compressed version of the Env value, erroring
+// if one of its comma separated elements is not a key=value pair.
 func (jd *JobDefaults) DefaultEnv() ([]byte, error) {
 	var err error
 	if len(jd.compressedEnv) == 0 {
-		jd.compressedEnv, err = compressEnv(strings.Split(jd.Env, ","))
+		jd.compressedEnv, err = compressUserEnv(strings.Split(jd.Env, ","))
 	}
 
 	return jd.compressedEnv, err
@@ -722,7 +723,7 @@ func (jvj *JobViaJSON) resolveDependencies(jd *JobDefaults) Dependencies {
 // resolveEnvOverride resolves the compressed environment variable override.
 func (jvj *JobViaJSON) resolveEnvOverride(jd *JobDefaults) ([]byte, error) {
 	if len(jvj.Env) > 0 {
-		return compressEnv(jvj.Env)
+		return compressUserEnv(jvj.Env)
 	}
 
 	if len(jd.Env) > 0 {

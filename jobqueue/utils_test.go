@@ -94,6 +94,67 @@ func TestMemoryHoldingChild(t *testing.T) {
 	runtime.KeepAlive(held)
 }
 
+// TestEnvOverrideDuplicates goes through Job.Env() rather than calling
+// envOverride directly, because that is the slice that becomes the command's
+// Cmd.Env: it is where a user suffers the symptom, and it is the only place
+// that shows the stored environment and the overrides meeting.
+//
+// os.Environ() holds no duplicates, but a Job's stored environment is whatever
+// the client sent, and that can. The overrides applied to it are wr's own
+// guarantees - TMPDIR, HOME for --change_home, the bsub PATH prepend,
+// WR_MANAGER_HOST/PORT - so a surviving stale copy takes wr's control of them
+// away: libc getenv() answers with the first match, while os/exec's Cmd.Env
+// dedup and some shells answer with the last.
+func TestEnvOverrideDuplicates(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	const (
+		first  = "WR_DUP=stale"
+		second = "WR_DUP=staler"
+		other  = "WR_OTHER=other"
+		fresh  = "WR_DUP=fresh"
+		newOne = "WR_NEW=one"
+		newTwo = "WR_NEW=two"
+	)
+
+	Convey("Given a stored environment that names the same variable twice", t, func() {
+		envc, err := compressEnv([]string{first, other, second})
+		So(err, ShouldBeNil)
+
+		job := &Job{EnvC: envc, EnvCRetrieved: true}
+
+		Convey("An override for that variable replaces every occurrence of it", func() {
+			So(job.EnvAddOverride([]string{fresh}), ShouldBeNil)
+
+			env, err := job.Env()
+			So(err, ShouldBeNil)
+			So(env, ShouldResemble, []string{fresh, other, fresh})
+		})
+
+		Convey("Overrides for variables it lacks are appended once each, in the order given", func() {
+			So(job.EnvAddOverride([]string{"WR_NEW=new", "WR_ALSO=also"}), ShouldBeNil)
+
+			env, err := job.Env()
+			So(err, ShouldBeNil)
+			So(env, ShouldResemble, []string{first, other, second, "WR_NEW=new", "WR_ALSO=also"})
+		})
+
+		// a repeated name in the overrides comes from the user: what is refused
+		// is an element that defines no variable, not one whose name repeats,
+		// so `wr add --env "A=1,A=2"` and `wr mod --env "A=1,A=2"` both store
+		// both elements and hand them to this path.
+		Convey("An override given twice for a variable it lacks is appended once, with the last value", func() {
+			So(job.EnvAddOverride([]string{newOne, newTwo}), ShouldBeNil)
+
+			env, err := job.Env()
+			So(err, ShouldBeNil)
+			So(env, ShouldResemble, []string{first, other, second, newTwo})
+		})
+	})
+}
+
 // TestOwnMemoryMB checks that ownMemoryMB reports this process's own Pss and,
 // unlike currentMemory, excludes child processes.
 //

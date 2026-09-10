@@ -14,6 +14,20 @@ project adheres to [Semantic Versioning](http://semver.org/).
   anything it creates in your working directory to be owned by that user.
 
 ### Changed
+- `--env` now refuses an element that defines no variable, naming the offending
+  element and saying what to write instead, where before it stored one that no
+  command could read. This covers `wr add --env`, `wr mod --env`, the `env`
+  array of a JSON job, and the same field in a REST `POST /rest/v1/jobs` or
+  `PATCH /rest/v1/jobs/<ids>`. Three things that used to be accepted are now
+  errors: a bare name such as `--env PATH`, which you might write hoping to
+  pass your own value through (write `--env PATH=$PATH` for that); an element
+  with no name before its `=`, such as `--env =value`; and an empty element, so
+  `--env "A=1,"` and `--env "A=1,,B=2"` now fail on the trailing or doubled
+  comma, and `--env "A=1,2"` fails on the bare `2`. Check any script that
+  builds an `--env` list by joining, because a trailing comma there used to be
+  accepted silently. Commands already in the queue with such an entry are not
+  rejected retrospectively; wr now skips the entry when it runs them, as
+  described below.
 - Commands you run with `--with_docker` now run as you instead of as the user
   the image specifies, which is normally root. Files they create in your working
   directory are therefore yours, so you can delete them and so can wr's own
@@ -33,6 +47,33 @@ project adheres to [Semantic Versioning](http://semver.org/).
   the mounts they were added with.
 
 ### Fixed
+- One mistyped `--env` element could stop every command in a scheduler group.
+  An entry with no `=`, such as a bare `PATH`, crashed the runner as it
+  prepared the command. The command went back to the queue without using up a
+  retry, so it was never buried, and the manager kept starting runners that
+  died on it the same way, each of them also taking down the other commands it
+  would have gone on to run. An entry with no name before its `=` broke a
+  `--with_docker` command differently but as completely: docker was asked to
+  set a variable with no name, and refused to start the container at all. wr
+  now skips such an entry when it runs a command, so commands added before this
+  release run rather than failing, and `--env` refuses to store a new one.
+- A command could run with a different command's `PATH`. A runner runs many
+  commands in turn, and one that needed no `PATH` adjustment of its own,
+  because its `PATH` already included the directory wr's executable is in, was
+  handed the `PATH` of the previous command that runner ran, and so could
+  resolve binaries it never asked for. One command with an unusual `PATH`
+  affected every later command in that runner.
+- A `--with_docker` command ran with its `PATH` cut off at the first colon, so
+  it could not find binaries that were on its `PATH` outside the container, and
+  reported only that the command was not found. Any other overridden value
+  containing a colon, such as `LD_LIBRARY_PATH`, `MANPATH` or `PYTHONPATH`, was
+  truncated the same way. Overridden variables now reach the container whole.
+- When a command's environment named the same variable twice, the settings wr
+  makes for you could fail to take effect: `TMPDIR`, the `HOME` that
+  `--change_home` sets, the host and port a command uses to talk back to the
+  manager, and the `PATH` that `--bsub` prepends to. Only the first copy was
+  replaced, so which value the command saw came down to how the program it ran
+  reads its environment. Every copy is now replaced.
 - With `--with_docker`, a `--container_mounts` mount with more than one colon,
   such as `/data/opt:/opt:ro`, silently mounted your local path at that same
   path inside the container, dropping both the in-container path and the option
