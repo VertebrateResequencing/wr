@@ -75,6 +75,11 @@ const (
 	// the comma advice would be irrelevant to it.
 	containerMountsRelative = "data:/data"
 
+	// containerMountsWithOptions asks for a docker mount option, which wr has
+	// never supported, and which has 2 colons and so no in-container path wr
+	// can work out.
+	containerMountsWithOptions = "/data/opt:/opt:ro"
+
 	// nilBehaviourItem is the item a malformed add names when the second
 	// behaviour of the second job is nil.
 	nilBehaviourItem = "jobs[1].Behaviours[1] is nil"
@@ -1024,6 +1029,16 @@ func malformedAddTests() []struct {
 				containerMountsWithComma, "1"),
 			jobs: func(valid *Job) []*Job {
 				return []*Job{valid, containerMountsJob(containerMountsWithComma, containerMountsTestImage, "")}
+			},
+		},
+		{
+			name: "a mount option after a second colon",
+			item: fmt.Sprintf("jobs[1].ContainerMounts %q is invalid: mount %q has more than one colon; "+
+				"each mount must be /outside/container or /outside/container:/inside/container, "+
+				"and mount options such as \":ro\" are not supported",
+				containerMountsWithOptions, containerMountsWithOptions),
+			jobs: func(valid *Job) []*Job {
+				return []*Job{valid, containerMountsJob(containerMountsWithOptions, containerMountsTestImage, "")}
 			},
 		},
 		{

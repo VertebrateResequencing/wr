@@ -172,14 +172,15 @@ func dockerMounts(mounts []string) string {
 
 // MountSpecPaths splits a mount specification in the form
 // "/local/path[:/inside/container/path]" in to its local path and its path
-// inside the container.
+// inside the container. The 2 are the same when the spec has no colon.
 //
-// The 2 are the same when the spec has no colon, and - preserving the behaviour
-// of the code this was extracted from - also when it has 2 or more, so "/a:/b:ro"
-// gives ("/a", "/a") rather than ("/a", "/b"). One consequence is that
-// jobqueue's containerMountsMessage then checks the local path twice and never
-// inspects the in-container one. What a 3-part spec should mean is a user-facing
-// format question, so the behaviour is left as it was.
+// A spec with 2 or more colons has no meaning in this format. jobqueue rejects
+// one as a job with a container image is added, and as any job's mounts or image
+// are modified, but a job added with no image keeps its spec unchecked, and a Go
+// caller of this package is not guarded at all. Such a spec gives the local path
+// twice, as the code this was extracted from did: "/a:/b:ro" gives ("/a", "/a").
+// Making it ("/a", "/b") here would silently move an already-stored job's mount,
+// and would still drop the "ro" the user asked for.
 func MountSpecPaths(spec string) (local, inContainer string) {
 	parts := strings.Split(spec, ":")
 
