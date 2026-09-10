@@ -129,6 +129,21 @@ project adheres to [Semantic Versioning](http://semver.org/).
   so. wr now reads just the first line, so the container's peak RAM and total
   CPU are added to the usage wr reports for the command - and, as for any
   monitored container, wr kills that container too when you kill the job.
+- `wr manager backup -p <path>` no longer destroys a file of yours at
+  `<path>.tmp`. wr staged every backup at that exact name, overwriting what was
+  there without a word and then either renaming it away over `<path>` when the
+  backup succeeded or deleting it when it failed; making your own `<path>.tmp`
+  read-only did not save it, because deleting a file needs write permission on
+  its directory rather than on the file, so you were left with neither your file
+  nor a backup. A backup whose final rename failed also left a database-sized
+  staging file behind, and of two backups running to the same `<path>` at once
+  one usually failed, its rename finding the shared staging file already moved
+  away. wr now stages the backup under a unique name in `<path>`'s own
+  directory, so no file of yours is touched, anyone reading `<path>` still sees
+  either the old backup or the complete new one, and a backup that fails leaves
+  nothing behind. The manager's own automatic backups still stage under a fixed
+  `.tmp` name, deliberately: if you point `managerdbbkfile` at a path, don't
+  keep a file of your own at that path with `.tmp` on the end.
 
 
 ## [0.37.2] - 2026-09-01

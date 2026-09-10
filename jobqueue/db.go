@@ -978,6 +978,12 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 
 	var accessor *muxfys.S3Accessor
 
+	// this staging name is deliberately fixed, not os.CreateTemp unique like
+	// the client's stageBackup(): copyBackup() opens it O_CREATE|O_TRUNC, so a
+	// leftover from a crashed manager is reclaimed by the next backup. Nothing
+	// sweeps these, and a busy manager writes one every 30s indefinitely, so a
+	// unique name would leak an entire db copy (multi-GB in production) per
+	// crash, and O_EXCL would make one stale leftover fail every later backup.
 	backupPathTmp := dbBkFile + ".tmp"
 
 	var msg string
@@ -1018,6 +1024,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 				return nil, "", err
 			}
 
+			// fixed for the same reason as backupPathTmp above.
 			backupPathTmp = dbFile + ".s3backup_tmp"
 
 			if _, err = os.Stat(dbFile); os.IsNotExist(err) {

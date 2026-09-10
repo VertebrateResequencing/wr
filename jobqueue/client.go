@@ -775,6 +775,36 @@ func (c *Client) release(job *Job, jes *JobEndState, failreason string, attempte
 	return nil
 }
 
+// stageBackup writes db to a uniquely named file in path's own directory,
+// returning that file's name for the caller to rename over path. The name is
+// unique because a fixed name is one the user may already have a file at, and
+// staging there would destroy it. The directory is path's own so that the
+// publishing rename stays within one filesystem.
+func stageBackup(path string, db []byte) (string, error) {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp.")
+	if err != nil {
+		return "", err
+	}
+
+	tmpPath := tmp.Name()
+
+	if err = writeBackupTemp(tmp, db); err != nil {
+		return "", errWithRemoval(err, tmpPath)
+	}
+
+	return tmpPath, nil
+}
+
+// errWithRemoval removes path, returning err with any removal error joined on
+// to it so a leftover staging file is never silently left behind.
+func errWithRemoval(err error, path string) error {
+	if rerr := os.Remove(path); rerr != nil {
+		return errors.Join(err, rerr)
+	}
+
+	return err
+}
+
 // reserveHostAndPid returns this runner's hostname (falling back to localhost if
 // it can't be determined) and its own pid, to stamp on a reserve request so the
 // server can record which runner holds the reservation before the command's own
@@ -1246,25 +1276,28 @@ func (c *Client) ShutdownServer() bool {
 
 // BackupDB backs up the server's database to the given path. Note that
 // automatic backups occur to the configured location without calling this.
+//
+// The backup is staged in a uniquely named file in path's own directory and
+// then renamed over path, so a concurrent reader of path sees either the old
+// file or the complete new one, and no other file of yours is disturbed. The
+// staged bytes are not fsynced before the rename, so that covers a concurrent
+// reader, not a machine that loses power mid-backup.
 func (c *Client) BackupDB(path string) error {
 	resp, err := c.request(&clientRequest{Method: "backup"})
 	if err != nil {
 		return err
 	}
 
-	tmpPath := path + ".tmp"
-
-	err = os.WriteFile(tmpPath, resp.DB, dbFilePermission)
+	tmpPath, err := stageBackup(path, resp.DB)
 	if err != nil {
-		rerr := os.Remove(tmpPath)
-		if rerr != nil {
-			err = fmt.Errorf("%w\n%w", err, rerr)
-		}
-
 		return err
 	}
 
-	return os.Rename(tmpPath, path)
+	if err = os.Rename(tmpPath, path); err != nil {
+		return errWithRemoval(err, tmpPath)
+	}
+
+	return nil
 }
 
 // Add adds new jobs to the job queue, but only if those jobs aren't already in
@@ -1449,6 +1482,25 @@ type executeCmd struct {
 	liveStdout           *liveTailSaver
 	stderrWait           <-chan error
 	stdoutWait           <-chan error
+}
+
+// writeBackupTemp writes db to tmp and closes it. os.CreateTemp's mode is
+// subject to the umask, so the mode the backup is meant to have is set
+// explicitly.
+func writeBackupTemp(tmp *os.File, db []byte) error {
+	if _, err := tmp.Write(db); err != nil {
+		_ = tmp.Close()
+
+		return err
+	}
+
+	if err := tmp.Chmod(dbFilePermission); err != nil {
+		_ = tmp.Close()
+
+		return err
+	}
+
+	return tmp.Close()
 }
 
 // buildExecCmd builds the exec.Cmd that will run the job's command line jc,
