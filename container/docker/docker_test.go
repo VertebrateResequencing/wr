@@ -34,13 +34,13 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/container"
 	cn "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/jsonstream"
 	nw "github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 	. "github.com/smartystreets/goconvey/convey"
@@ -228,20 +228,49 @@ func listingDockerSocket(t *testing.T, containers []cn.Summary) string {
 	return "unix://" + sock
 }
 
+// pullTestImage pulls testImage, which the tests that need a real daemon run.
+// The progress stream has to be consumed for the pull to complete, but it is
+// not copied anywhere: it is a screenful of progress bars that says nothing a
+// passing test needs.
 func pullTestImage(ctx context.Context, cli *client.Client) error {
 	rc, err := cli.ImagePull(ctx, testImage, client.ImagePullOptions{})
 	if err != nil {
 		return err
 	}
 
-	_, copyErr := io.Copy(os.Stdout, rc)
+	drainErr := drainPullProgress(rc)
 	closeErr := rc.Close()
 
-	if copyErr != nil {
-		return copyErr
+	if drainErr != nil {
+		return drainErr
 	}
 
 	return closeErr
+}
+
+// drainPullProgress reads a pull's progress stream to its end and discards the
+// progress, but returns the first error the stream reports. A pull that fails
+// after the image reference has resolved says so only in the stream, so
+// discarding the whole thing would turn that into a bare "no such image" from
+// whatever tried to use the image next.
+func drainPullProgress(r io.Reader) error {
+	decoder := json.NewDecoder(r)
+
+	for {
+		var msg jsonstream.Message
+
+		if err := decoder.Decode(&msg); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+
+			return err
+		}
+
+		if msg.Error != nil {
+			return msg.Error
+		}
+	}
 }
 
 func TestDockerContainerLabels(t *testing.T) {

@@ -506,3 +506,39 @@ rebases and Copilot caught it; this file names functions instead.
       defensible hardening, but it is not a fix for anything wr did, and doing
       it in reaction to a transient upstream hiccup would have been treating
       the symptom of somebody else's mirror.
+
+- [x] Copilot review of PR #593, 2 findings, both taken.
+    - `container/docker/docker_test.go` copied `docker pull` progress to
+      `os.Stdout`, spamming CI logs. It could NOT simply be dropped:
+      `ImagePull` does not complete until its body is consumed, verified
+      rather than assumed - a throwaway that closed the body without reading
+      it left the image absent from the daemon 9 seconds later, while the
+      draining version had it present immediately.
+    - Drained with a `json.Decoder` over moby's own `jsonstream.Message`
+      rather than `io.Discard`, which is MORE than the finding asked for, so
+      the trade-off is recorded. What plain discard loses: a pull that dies
+      part way through, AFTER the reference resolves, is reported by docker
+      only as an `errorDetail` inside the stream, and `io.Copy(io.Discard,
+      rc)` returns nil for it - the test would then fail later at
+      `ContainerCreate` with a bare "No such image", naming the image but not
+      the cause. Every failure BEFORE resolution is already returned by
+      `ImagePull` itself, checked on this daemon for both a bad digest and an
+      unknown repository, so the stream added nothing for those.
+    - Accepted over the 1-line version because it uses moby's own message type
+      rather than sniffing another tool's output format, and
+      `github.com/moby/moby/api` is already a direct dependency, so it costs
+      no `go.mod` change. The 1-line `io.Discard` alternative remains
+      available if the extra 15 lines in a test helper are judged not worth a
+      rare failure mode.
+    - Proved quiet AND working from a cold image: with alpine removed from the
+      daemon, `go test -v ./container/docker/` printed not one line of pull
+      progress and still passed in 1.5s, with the image present afterwards.
+      Honest caveat recorded by the implementor: containerd still held the
+      layer blobs, so it was a cold pull of the IMAGE rather than a cold
+      download of its layers - which does not weaken the drain finding, since
+      the no-drain run had the same warm blobs and still produced no image.
+    - Grammar in `fs/file/file.go` comments: "records an path read error" ->
+      "a path", the one Copilot named, plus "an error related to path could
+      not be read" -> "related to a path that could not be read", which is
+      ungrammatical rather than merely stylistic, and 2 of "read in to memory"
+      -> "read into memory". Comments only, no reword for style.

@@ -42,7 +42,7 @@ import (
 // maxFirstLineBytes is the longest first line GetFirstLine will return. It is
 // far more than the 64 hexadecimal characters of the container ids that
 // GetFirstLine exists to read, and little enough that a file which merely
-// happens to match a cidfile glob never gets read in to memory.
+// happens to match a cidfile glob never gets read into memory.
 const maxFirstLineBytes = 4096
 
 // ErrLineTooLong is wrapped by the error GetFirstLine returns when a file's
@@ -53,13 +53,13 @@ var ErrLineTooLong = errors.New("first line longer than " + strconv.Itoa(maxFirs
 // given an empty path.
 var ErrEmptyPath = errors.New("path is empty")
 
-// PathReadError records an path read error.
+// PathReadError records a path read error.
 type PathReadError struct {
 	path string
 	Err  error
 }
 
-// Error returns an error related to path could not be read.
+// Error returns an error related to a path that could not be read.
 func (p *PathReadError) Error() string {
 	return fmt.Sprintf("path [%s] could not be read: %s", p.path, p.Err)
 }
@@ -73,7 +73,7 @@ func (p *PathReadError) Unwrap() error {
 // the given absolute or tilde path.
 //
 // At most maxFirstLineBytes are read, so that a large file which is not the
-// short id file this is for does not get read in to memory; if the first line
+// short id file this is for does not get read into memory; if the first line
 // is longer than that, the returned error wraps ErrLineTooLong.
 func GetFirstLine(filename string) (string, error) {
 	if filename == "" {
