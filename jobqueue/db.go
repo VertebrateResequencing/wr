@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -47,6 +48,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/VertebrateResequencing/muxfys/v5"
@@ -149,6 +151,10 @@ var managerDBOpenTimeout = 30 * time.Second
 // manager and come up on a stale backup, on a fresh inode so the flock protects
 // nothing (spec E7).
 var ErrDBLocked = errors.New("another wr manager holds this database")
+
+// ErrDBUnreadable is returned by initDB when the database file exists but could
+// not be opened for a reason that says nothing about its contents.
+var ErrDBUnreadable = errors.New("could not open the database file")
 
 // errDBClosed is returned when an operation is attempted on a closed database.
 var errDBClosed = errors.New("database closed")
@@ -954,7 +960,8 @@ func (db *db) copyBackup(tx *bolt.Tx, path string) error {
 
 // initDB opens/creates our database and sets things up for use. If dbFile
 // doesn't exist or seems corrupted, we copy it from backup if that exists,
-// otherwise we start fresh.
+// otherwise we start fresh. A dbFile we merely failed to open never counts as
+// corrupted; see openErrorThatIsNotCorruption.
 //
 // dbBkFile can be an S3 url specified like: s3://[profile@]bucket/path/file
 // which will cause that s3 path to be mounted in the same directory as dbFile
@@ -1070,15 +1077,8 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 
 		boltdb, err = openManagerBolt(dbFile)
 		if err != nil {
-			// a lock timeout means another wr manager is running, NOT that the
-			// file is corrupt, and it must never reach the restore path below:
-			// that path treats any open error as "corrupt (?) db file", so it
-			// would unlink the live database out from under the running manager
-			// (which keeps writing to a deleted inode and loses everything at
-			// exit) and come up as a second live manager on a stale backup, on a
-			// fresh inode so the flock protects nothing (spec E7).
-			if errors.Is(err, berrors.ErrTimeout) {
-				return nil, msg, fmt.Errorf("%w: %s", ErrDBLocked, dbFile)
+			if notCorrupt := openErrorThatIsNotCorruption(err, dbFile); notCorrupt != nil {
+				return nil, msg, notCorrupt
 			}
 
 			// try the backup
@@ -2060,6 +2060,51 @@ func splitNewJobsFold(pending []*newJobsOp) (fold, remainder []*newJobsOp) {
 	}
 
 	return pending, nil
+}
+
+// openErrorThatIsNotCorruption returns the error initDB should fail with when
+// an attempt to open an existing database file failed for a reason that says
+// nothing about what the file contains, or nil when the file really might be
+// damaged and the restore-from-backup path should run.
+//
+// That path unlinks the database and copies an older backup over it, losing
+// every job recorded since that backup, so it must only ever see an error that
+// is evidence of damage. A lock timeout is not: another wr manager is running
+// and still writing to the file, and it would keep writing to a deleted inode
+// and lose everything at exit, while this manager came up on a stale backup on
+// a fresh inode where the flock protects nothing (spec E7). Nor are the rest:
+// they all mean the file could not be reached at all - most often because
+// somebody made the database read-only, or mounted its filesystem read-only,
+// before copying or inspecting it, which is the ordinary careful thing to do.
+//
+// The guidance in the returned error points at the errno it wraps rather than
+// at the file, because for several of these the file is blameless: the process
+// or the machine is out of descriptors, or there is too little memory to map
+// the database.
+//
+// Everything else stays "corrupt (?)" and still restores from backup, since
+// that is what the restore path exists for: bolt's ErrInvalid,
+// ErrVersionMismatch and ErrChecksum, a file too short to hold two meta pages,
+// and any error not named below. A new case that is not evidence of damage
+// belongs in this switch.
+func openErrorThatIsNotCorruption(err error, dbFile string) error {
+	switch {
+	case errors.Is(err, berrors.ErrTimeout):
+		return fmt.Errorf("%w: %s", ErrDBLocked, dbFile)
+	case errors.Is(err, fs.ErrPermission), // includes EACCES and EPERM
+		errors.Is(err, syscall.EROFS),  // read-only filesystem
+		errors.Is(err, syscall.EISDIR), // a directory where the database should be
+		errors.Is(err, syscall.EIO),    // the device could not be read
+		errors.Is(err, syscall.EMFILE), // this process is out of file descriptors
+		errors.Is(err, syscall.ENFILE), // the machine is out of file descriptors
+		errors.Is(err, syscall.ENOMEM), // too little memory to map the database
+		errors.Is(err, syscall.ESTALE), // a stale handle on a network filesystem
+		errors.Is(err, syscall.ELOOP):  // symlinks the path could not be resolved through
+		return fmt.Errorf("%w %s (%w); it has been left untouched, so resolve "+
+			"the reported problem and start wr again", ErrDBUnreadable, dbFile, err)
+	}
+
+	return nil
 }
 
 // overNewJobsFoldBudget says whether a fold carrying these bytes and puts would
