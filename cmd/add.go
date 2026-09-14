@@ -668,7 +668,7 @@ func otherIdentifiers(breakdown jobqueue.DuplicateBreakdown) string {
 	}
 
 	if unnamed := len(groups) - named; unnamed > 0 {
-		fmt.Fprintf(&lines, "      and %d more identifiers\n", unnamed)
+		fmt.Fprintf(&lines, "      and %d more identifier%s\n", unnamed, plural(unnamed))
 	}
 
 	return lines.String()
@@ -682,6 +682,19 @@ func lastCompleted(endTime time.Time) string {
 	}
 
 	return ", last completed " + endTime.Format(time.DateOnly)
+}
+
+// plural is the suffix that makes a noun agree with the count of it just
+// printed, so a message says "1 identifier" but "2 identifiers".
+//
+// It only ever appends an -s, so it suits only nouns that pluralise that way:
+// anything else (a "match", an "entry") needs its own wording.
+func plural(count int) string {
+	if count == 1 {
+		return ""
+	}
+
+	return "s"
 }
 
 func init() {

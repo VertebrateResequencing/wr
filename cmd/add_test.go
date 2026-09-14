@@ -67,7 +67,7 @@ const (
 	dupBreakdownOtherRepGroup  = "breakdownB"
 	dupBreakdownNewRepGroup    = "breakdownNew"
 	dupBreakdownCapRepGroup    = "breakdownCap"
-	dupBreakdownCapCmds        = 6
+	dupBreakdownCapCmds        = 7
 	dupBreakdownCapNamed       = 5
 	dupBreakdownLastCompleted  = "', last completed "
 	futureDepGroupWarningLine  = "dependency group \"" + testFutureDepGroup +
@@ -973,7 +973,7 @@ func TestAddPrintsDuplicateBreakdown(t *testing.T) {
 		defer server.Stop(ctx, true)
 
 		cmdPath := filepath.Join(t.TempDir(), "cmds.txt")
-		So(os.WriteFile(cmdPath, []byte(dupBreakdownCapCmdFile(true)), 0o600), ShouldBeNil)
+		So(os.WriteFile(cmdPath, []byte(dupBreakdownCapCmdFile(dupBreakdownCapCmds, true)), 0o600), ShouldBeNil)
 
 		configureAddParserTest(t, cmdPath)
 
@@ -984,11 +984,9 @@ func TestAddPrintsDuplicateBreakdown(t *testing.T) {
 		cmdRepGroup = dupBreakdownNewRepGroup
 
 		stdout, _ := runAddCaptureForTest(t)
-		So(stdout, ShouldEqual, "Added 6 new commands (0 were duplicates) to the queue\n")
+		So(stdout, ShouldEqual, "Added 7 new commands (0 were duplicates) to the queue\n")
 
 		completeTestJobs(ctx, testConfig, serverConfig, addr, token, dupBreakdownCapCmds)
-
-		So(os.WriteFile(cmdPath, []byte(dupBreakdownCapCmdFile(false)), 0o600), ShouldBeNil)
 
 		today := time.Now().Format(time.DateOnly)
 
@@ -999,15 +997,35 @@ func TestAddPrintsDuplicateBreakdown(t *testing.T) {
 				dupBreakdownCapRepGroup, i, dupBreakdownLastCompleted, today)
 		}
 
-		stdoutCapped, _ := runAddCaptureForTest(t)
-		So(stdoutCapped, ShouldEqual, "Added 0 new commands (6 were duplicates:\n"+
-			"  6 already completed\n"+
-			"    0 under this identifier\n"+
-			"    6 under other identifiers:\n"+
-			named.String()+
-			"      and 1 more identifiers\n"+
-			"  0 already in the queue) to the queue using default identifier '"+
-			dupBreakdownNewRepGroup+"'\n")
+		Convey("One identifier over the cap is reported in the singular", func() {
+			So(os.WriteFile(cmdPath,
+				[]byte(dupBreakdownCapCmdFile(dupBreakdownCapNamed+1, false)), 0o600), ShouldBeNil)
+
+			stdoutCapped, _ := runAddCaptureForTest(t)
+			So(stdoutCapped, ShouldEqual, "Added 0 new commands (6 were duplicates:\n"+
+				"  6 already completed\n"+
+				"    0 under this identifier\n"+
+				"    6 under other identifiers:\n"+
+				named.String()+
+				"      and 1 more identifier\n"+
+				"  0 already in the queue) to the queue using default identifier '"+
+				dupBreakdownNewRepGroup+"'\n")
+		})
+
+		Convey("Two identifiers over the cap are reported in the plural", func() {
+			So(os.WriteFile(cmdPath,
+				[]byte(dupBreakdownCapCmdFile(dupBreakdownCapNamed+2, false)), 0o600), ShouldBeNil)
+
+			stdoutCapped, _ := runAddCaptureForTest(t)
+			So(stdoutCapped, ShouldEqual, "Added 0 new commands (7 were duplicates:\n"+
+				"  7 already completed\n"+
+				"    0 under this identifier\n"+
+				"    7 under other identifiers:\n"+
+				named.String()+
+				"      and 2 more identifiers\n"+
+				"  0 already in the queue) to the queue using default identifier '"+
+				dupBreakdownNewRepGroup+"'\n")
+		})
 	})
 
 	Convey("wr add reports duplicates that are still live in the queue", t, func() {
@@ -1343,14 +1361,14 @@ func completeTestJobs(ctx context.Context, testConfig *internal.Config,
 	}
 }
 
-// dupBreakdownCapCmdFile returns the contents of a command file holding more
-// unique commands than the number of identifiers an add will name. With
-// identifiers true each command gets its own identifier, so that a later add of
-// the same file without them has one duplicate per identifier.
-func dupBreakdownCapCmdFile(identifiers bool) string {
+// dupBreakdownCapCmdFile returns the contents of a command file holding count
+// unique commands, the first of however many were seeded. With identifiers true
+// each command gets its own identifier, so that a later add of the same
+// commands without them has one duplicate per identifier.
+func dupBreakdownCapCmdFile(count int, identifiers bool) string {
 	var file strings.Builder
 
-	for i := range dupBreakdownCapCmds {
+	for i := range count {
 		fmt.Fprintf(&file, "%s %d", dupBreakdownCmd, i)
 
 		if identifiers {
