@@ -293,6 +293,18 @@ func TestAddDuplicatesReporting(t *testing.T) {
 		})
 	})
 
+	Convey("Given an add answered by an old manager that had no duplicates", t, func() {
+		resp := decodePreBreakdownAddResponse(0)
+
+		Convey("No breakdown is reported, since that manager sent none", func() {
+			dups := NewAddDuplicates(resp.Existed, resp.Duplicates)
+			So(dups.Total(), ShouldEqual, 0)
+
+			_, ok := dups.Breakdown()
+			So(ok, ShouldBeFalse)
+		})
+	})
+
 	Convey("Given an add whose breakdown does not account for its total", t, func() {
 		dups := NewAddDuplicates(3, DuplicateBreakdown{Complete: 2})
 

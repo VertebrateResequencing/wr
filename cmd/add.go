@@ -630,7 +630,7 @@ func addedMessage(inserts int, dups jobqueue.AddDuplicates, defaultIdentifier st
 // unchanged in both cases.
 func duplicateBreakdown(dups jobqueue.AddDuplicates) string {
 	breakdown, ok := dups.Breakdown()
-	if !ok || breakdown.Total() == 0 {
+	if !ok {
 		return ""
 	}
 

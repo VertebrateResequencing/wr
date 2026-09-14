@@ -308,16 +308,19 @@ func (a AddDuplicates) Breakdown() (DuplicateBreakdown, bool) {
 
 // NewAddDuplicates pairs the number of duplicates a server reported for an Add
 // with that server's breakdown of them, keeping the breakdown only when it
-// accounts for exactly that number. It is the only way to make an AddDuplicates
-// that reports a breakdown, so a total can never come from one.
+// accounts for exactly that number and has something in it. It is the only way
+// to make an AddDuplicates that reports a breakdown, so a total can never come
+// from one.
 //
 // wr has no client/server version handshake, so a manager predating the
 // breakdown answers a current client with a total and no breakdown at all; that
-// total must still be reported, and its zero breakdown must not be.
+// total must still be reported, and its zero breakdown must not be. An Add with
+// no duplicates therefore reports no breakdown either, whatever the manager:
+// there is nothing to tell apart, and nothing to say.
 func NewAddDuplicates(existed int, breakdown DuplicateBreakdown) AddDuplicates {
 	dups := AddDuplicates{total: existed}
 
-	if breakdown.Total() == existed {
+	if existed > 0 && breakdown.Total() == existed {
 		dups.breakdown = &breakdown
 	}
 
