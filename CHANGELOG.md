@@ -68,6 +68,24 @@ project adheres to [Semantic Versioning](http://semver.org/).
   the error it hit so you can resolve that problem and start wr again. A
   database that really is damaged still restores from its backup as before, and
   so does one that wr could not open for a reason it does not recognise.
+- `wr manager start` and `wr cloud deploy` made `~/.wr_<deployment>` with mode
+  0777 before your umask, so under a permissive umask any other user of the
+  machine could delete or replace the database, the client token, the TLS key
+  and, after a cloud deploy, the SSH private key inside it, however tightly
+  those files themselves were locked down: unlinking a file needs write
+  permission on the directory, not on the file. A directory wr creates from now
+  on is mode 0700. An existing one has only the other-user write bits taken off
+  it, and wr logs what it changed and why, so your directory is repaired
+  without you having to do anything and nothing else about its mode is touched:
+  if you set 0750 on purpose to let a colleague read the certificates, it stays
+  0750. Two things to know. A repaired directory is only closed to WRITING, so
+  a 0777 one becomes 0755 and other users on the machine can still list it and
+  read the 0644 `pid` file and the 0660 `ca.pem` and `cert.pem`; run
+  `chmod 700 ~/.wr_<deployment>` yourself if you want that shut too. And 0700
+  on a directory wr makes means group members can no longer read `ca.pem` and
+  `cert.pem` from it, so if you rely on that, chmod it after wr creates it - wr
+  leaves 0750 alone, though it will still take `g+w`/`o+w` off every start, so
+  a deliberate 0770 comes back 0750.
 - One mistyped `--env` element could stop every command in a scheduler group.
   An entry with no `=`, such as a bare `PATH`, crashed the runner as it
   prepared the command. The command went back to the queue without using up a
