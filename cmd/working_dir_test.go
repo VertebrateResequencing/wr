@@ -70,10 +70,17 @@ const (
 	stickySharedDirPerm       = os.ModeSticky | sharedDirPerm
 	closedStickySharedDirPerm = os.ModeSticky | closedSharedDirPerm
 
+	// uploadsName is what config's manageruploaddir defaults to below the
+	// working directory.
+	uploadsName = "uploads"
+
 	// sharedFilePerm is the mode of a plain file left where the working
 	// directory should be. It has write bits to clear, so it would be
 	// chmodded if wr did not check that it has a directory.
 	sharedFilePerm os.FileMode = 0o666
+
+	// uploadedFilePerm is the mode jobqueue gives every uploaded file.
+	uploadedFilePerm os.FileMode = 0o600
 )
 
 // TestCreateWorkingDirIsOwnerOnly proves the manager's working directory is
@@ -213,6 +220,113 @@ func TestOpenWorkingDirClassifiesRejectedFinalSymlink(t *testing.T) {
 	})
 }
 
+// TestCreateWorkingDirClosesUploadDir proves the manager repairs an upload
+// tree an older wr left open, not just the working directory above it. What
+// `wr add --cloud_config_files` uploads is copied to every cloud server the
+// manager spawns and defaults to the submitter's AWS credentials, and write
+// permission on a directory is what it takes to rename the directories inside
+// it aside, so every level of the tree has to be closed and not just the top.
+// It is closed to the same 0700 jobqueue makes a new upload directory with.
+func TestCreateWorkingDirClosesUploadDir(t *testing.T) {
+	Convey("An upload tree an older wr left open to others is made owner-only", t, func() {
+		managerDir := makeDirWithMode(t, sharedDirPerm)
+		hashed := makeUploadTree(managerDir, sharedDirPerm)
+
+		_, logged := createWorkingDirUnderUmask(t, managerDir, filepath.Join(managerDir, uploadsName))
+
+		So(modeOf(filepath.Join(managerDir, uploadsName)), ShouldEqual, ownerOnlyPerm)
+		So(modeOf(filepath.Dir(filepath.Dir(hashed))), ShouldEqual, ownerOnlyPerm)
+		So(modeOf(filepath.Dir(hashed)), ShouldEqual, ownerOnlyPerm)
+		So(modeOf(hashed), ShouldEqual, ownerOnlyPerm)
+		So(logged, ShouldContainSubstring, "made 4 of the directories in the upload directory")
+	})
+
+	Convey("The deepest hashed level is closed but not walked into, since it only holds files", t, func() {
+		managerDir := makeDirWithMode(t, sharedDirPerm)
+		hashed := makeUploadTree(managerDir, sharedDirPerm)
+
+		// nothing jobqueue makes is ever below the deepest level; a directory
+		// planted there is left alone only if the walk never reads that level.
+		below := filepath.Join(hashed, "notwalked")
+		So(os.Mkdir(below, sharedDirPerm), ShouldBeNil)
+		So(os.Chmod(below, sharedDirPerm), ShouldBeNil)
+
+		createWorkingDirUnderUmask(t, managerDir)
+
+		So(modeOf(hashed), ShouldEqual, ownerOnlyPerm)
+		So(modeOf(below), ShouldEqual, sharedDirPerm)
+	})
+
+	Convey("An upload tree others can only read, as an older wr made it under umask 022, is made owner-only", t, func() {
+		managerDir := makeDirWithMode(t, closedSharedDirPerm)
+		hashed := makeUploadTree(managerDir, closedSharedDirPerm)
+
+		createWorkingDirUnderUmask(t, managerDir)
+
+		So(modeOf(filepath.Join(managerDir, uploadsName)), ShouldEqual, ownerOnlyPerm)
+		So(modeOf(hashed), ShouldEqual, ownerOnlyPerm)
+		So(modeOf(managerDir), ShouldEqual, closedSharedDirPerm)
+	})
+
+	Convey("An upload directory that is the working directory itself is not walked", t, func() {
+		managerDir := makeDirWithMode(t, sharedDirPerm)
+		inside := filepath.Join(managerDir, "other")
+		So(os.Mkdir(inside, sharedDirPerm), ShouldBeNil)
+		So(os.Chmod(inside, sharedDirPerm), ShouldBeNil)
+
+		mode, _ := createWorkingDirUnderUmask(t, managerDir, managerDir)
+
+		So(mode, ShouldEqual, closedSharedDirPerm)
+		So(modeOf(inside), ShouldEqual, sharedDirPerm)
+	})
+
+	Convey("An upload directory an operator has pointed outside the working directory is left alone", t, func() {
+		managerDir := makeDirWithMode(t, sharedDirPerm)
+		elsewhere := makeDirWithMode(t, sharedDirPerm)
+
+		createWorkingDirUnderUmask(t, managerDir, elsewhere)
+
+		So(modeOf(elsewhere), ShouldEqual, sharedDirPerm)
+	})
+}
+
+// TestCreateWorkingDirWalksNoSymlink proves the upload walk is not a way round
+// the refusal that keeps the single chmod from following a symlink. The upload
+// directory is <ManagerDir>/uploads, so a symlink standing where the working
+// directory should be is on the way to the walk root: following it would aim
+// the same chmod at every directory of somebody else's tree, one line after wr
+// had refused to follow that link for the working directory itself.
+func TestCreateWorkingDirWalksNoSymlink(t *testing.T) {
+	Convey("An upload tree reached only through a symlinked working directory is left alone", t, func() {
+		target := makeDirWithMode(t, sharedDirPerm)
+		hashed := makeUploadTree(target, sharedDirPerm)
+
+		managerDir := filepath.Join(t.TempDir(), ".wr_development")
+		So(os.Symlink(target, managerDir), ShouldBeNil)
+
+		createWorkingDirUnderUmask(t, managerDir, filepath.Join(managerDir, uploadsName))
+
+		So(modeOf(filepath.Join(target, uploadsName)), ShouldEqual, sharedDirPerm)
+		So(modeOf(filepath.Dir(hashed)), ShouldEqual, sharedDirPerm)
+		So(modeOf(hashed), ShouldEqual, sharedDirPerm)
+	})
+}
+
+// makeUploadTree makes an upload directory under managerDir with the three
+// hashed levels an md5-named upload would have created below it, all with
+// exactly mode, and an uploaded file in the deepest one, which it returns.
+func makeUploadTree(managerDir string, mode os.FileMode) string {
+	hashed := filepath.Join(managerDir, uploadsName, "7", "a", "c")
+	So(os.MkdirAll(hashed, mode), ShouldBeNil)
+	So(os.WriteFile(filepath.Join(hashed, "e2f1"), []byte("uploaded"), uploadedFilePerm), ShouldBeNil)
+
+	for dir := hashed; dir != managerDir; dir = filepath.Dir(dir) {
+		So(os.Chmod(dir, mode), ShouldBeNil)
+	}
+
+	return hashed
+}
+
 // createWorkingDirUnderUmask points config at dir and calls createWorkingDir
 // with the process umask set to permissiveUmask, returning the mode dir then
 // has - sticky bit included, which os.FileMode.Perm() would hide - and
@@ -224,11 +338,16 @@ func TestOpenWorkingDirClassifiesRejectedFinalSymlink(t *testing.T) {
 // in this package calls t.Parallel(), so no other test body can run inside this
 // window, but background goroutines outliving earlier tests could still create
 // files in it, and one call is as narrow as the window gets.
-func createWorkingDirUnderUmask(t *testing.T, dir string) (os.FileMode, string) {
+func createWorkingDirUnderUmask(t *testing.T, dir string, uploadDir ...string) (os.FileMode, string) {
 	t.Helper()
 
+	managerUploadDir := filepath.Join(dir, uploadsName)
+	if len(uploadDir) == 1 {
+		managerUploadDir = uploadDir[0]
+	}
+
 	originalConfig, originalCmdExit := config, cmdExit
-	config = &internal.Config{ManagerDir: dir}
+	config = &internal.Config{ManagerDir: dir, ManagerUploadDir: managerUploadDir}
 	cmdExit = func(code int) {
 		panic(commandExitPanic{code: code})
 	}

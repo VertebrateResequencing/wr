@@ -33,9 +33,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -82,6 +84,17 @@ const managerDirPerm = 0o700
 // managerDirOtherWritePerms are the bits that would let somebody other than the
 // working directory's owner delete, replace or plant a file inside it.
 const managerDirOtherWritePerms = 0o022
+
+// uploadDirOtherPerms are every permission bit a user other than the owner has
+// on a directory. Clearing them repairs an old upload tree to the 0700 that
+// jobqueue now makes new upload directories with.
+const uploadDirOtherPerms = os.ModePerm &^ managerDirPerm
+
+// uploadHashedLevels is how many single-character directory levels
+// jobqueue's calculateHashedDir puts below the upload directory:
+// mkHashedLevels (4) parts of an md5, the last of which is the file name. The
+// deepest level holds only uploaded files, so nothing below it is walked.
+const uploadHashedLevels = 3
 
 // these variables are accessible by all subcommands.
 var (
@@ -249,10 +262,165 @@ func openWorkingDir(dir string) (*os.File, error) {
 	return file, nil
 }
 
+// closeUploadDirToOthers takes every permission other users have off each
+// directory in the manager's upload tree, which an older wr made 0777 before
+// the umask.
+//
+// os.MkdirAll leaves the mode of a directory that already exists alone,
+// whatever mode jobqueue gives the ones it makes, so the install that needs
+// this most is the one that has been running for years. The exposure is not
+// just the files: what `wr add --cloud_config_files` uploads is copied to
+// every cloud server the manager spawns and defaults to the submitter's
+// ~/.s3cfg and AWS credentials, and write permission on a directory is what it
+// takes to rename the directories INSIDE it aside and put your own there. So
+// every level is closed, not just the top: write on the upload directory moves
+// the hashed levels, write on a hashed level moves the one below it, and a
+// closed parent does not stop a process whose cwd or descriptor is already on
+// one.
+//
+// Read and search are taken off along with write, so a repaired level is the
+// same 0700 as one jobqueue makes today. Unlike the working directory, nothing
+// in the tree is readable by anybody but the owner - every file in it is 0600
+// - so no other user has a use for those bits, and leaving them would only
+// let them list what was uploaded and when.
+//
+// The walk is bounded by the hash fan-out rather than by the upload count:
+// calculateHashedDir splits an md5 into mkHashedLevels (4) parts, so the tree
+// is uploadHashedLevels single-hex-character levels deep and can never hold
+// more than 16 + 256 + 4096 = 4368 directories however many files are
+// uploaded. The deepest level holds only the files, so it is closed but not
+// read, and the READDIR work is bounded the same way as the chmods. It is paid
+// once per manager start.
+//
+// A relocated manageruploaddir is deliberately left alone: wr repairs the tree
+// it owns inside its own working directory, and must not chmod a path an
+// operator has pointed somewhere else, which could be shared with other people
+// or could be /tmp - the fallback jobqueue uses when a Server is built without
+// an upload directory at all.
+func closeUploadDirToOthers() {
+	rel, inside := uploadDirInManagerDir()
+	if !inside {
+		return
+	}
+
+	root, err := openManagerDirRoot()
+	if err != nil {
+		return
+	}
+
+	defer root.Close()
+
+	if closed := closeUploadTreeIn(root, rel); closed > 0 {
+		// "%d of the directories" rather than "%d directories" so that the
+		// count does not have to agree with the noun after it: this line is
+		// user-facing and there is regularly only one.
+		info("made %d of the directories in the upload directory '%s' yours alone, so that other "+
+			"users can no longer replace the config files wr copies to cloud servers",
+			closed, config.ManagerUploadDir)
+	}
+}
+
+// uploadDirInManagerDir returns the upload directory as a slash-separated path
+// relative to the working directory, and whether it is strictly below it.
+//
+// An upload directory that IS the working directory is refused, although
+// filepath.IsLocal accepts ".": walking from there would make the working
+// directory itself owner-only, overriding a deliberate 0750 that
+// closeWorkingDirToOthers leaves alone, along with every directory in it.
+func uploadDirInManagerDir() (string, bool) {
+	rel, err := filepath.Rel(config.ManagerDir, config.ManagerUploadDir)
+	if err != nil || rel == "." || !filepath.IsLocal(rel) {
+		return "", false
+	}
+
+	return filepath.ToSlash(rel), true
+}
+
+// openManagerDirRoot opens the working directory as an os.Root, so that every
+// path resolved below it is checked against escaping it.
+//
+// It REFUSES a working directory that is itself a symlink, and that refusal is
+// what stops the walk being a way round takeOtherWriteOff's. os.OpenRoot
+// resolves the path it is given like any other, and the upload directory is
+// <ManagerDir>/uploads, so without this a symlink planted where the working
+// directory should be would be followed on the way to the walk root - aiming
+// the same chmod primitive at more targets than the single one ever could,
+// one line after wr had refused to follow that link.
+func openManagerDirRoot() (*os.Root, error) {
+	if isFinalSymlink(config.ManagerDir) {
+		return nil, errDirIsSymlink
+	}
+
+	return os.OpenRoot(config.ManagerDir)
+}
+
 func isFinalSymlink(path string) bool {
 	fi, err := os.Lstat(path)
 
 	return err == nil && fi.Mode()&os.ModeSymlink != 0
+}
+
+// closeUploadTreeIn closes every directory of the upload tree at rel inside
+// root to other users, returning how many it changed.
+func closeUploadTreeIn(root *os.Root, rel string) int {
+	closed := 0
+
+	// the walk's own error is discarded along with every error inside it: the
+	// callback only ever stops descending, never the walk, so the only one it
+	// can return is a failure to read the top of a tree wr is merely trying to
+	// repair, and a level wr cannot read is a level it cannot fix.
+	_ = fs.WalkDir(root.FS(), rel, func(path string, d fs.DirEntry, err error) error { //nolint:errcheck
+		if err != nil || !d.IsDir() {
+			return nil //nolint:nilerr // see above: an unreadable entry is one wr cannot fix
+		}
+
+		if closedToOthersIn(root, path) {
+			closed++
+		}
+
+		if strings.Count(strings.TrimPrefix(path, rel), "/") >= uploadHashedLevels {
+			return fs.SkipDir
+		}
+
+		return nil
+	})
+
+	return closed
+}
+
+// closedToOthersIn takes every permission other users have off the directory
+// at path inside root, reporting whether that changed its mode.
+//
+// The directory is OPENED and then read and changed through that one
+// descriptor, rather than stat'd and chmod'd by path. The walk's whole premise
+// is a tree another user can write to, so that user can swap a directory for a
+// symlink between the two calls; fstat and fchmod on a descriptor cannot be
+// redirected that way, and the os.Root the descriptor came from will not
+// resolve a path out of the working directory in the first place. What remains
+// is bounded rather than eliminated: a swap made before the open can still
+// point wr at a different directory INSIDE its own working directory, which is
+// wr's to chmod anyway.
+func closedToOthersIn(root *os.Root, path string) bool {
+	dir, err := root.Open(filepath.FromSlash(path))
+	if err != nil {
+		return false
+	}
+
+	defer dir.Close()
+
+	fi, err := dir.Stat()
+	if err != nil {
+		return false
+	}
+
+	closed := fi.Mode() &^ uploadDirOtherPerms
+	if closed == fi.Mode() {
+		return false
+	}
+
+	changed, err := chmodWorkingDir(dir, closed)
+
+	return err == nil && changed
 }
 
 func chmodWorkingDir(file *os.File, mode os.FileMode) (bool, error) {
@@ -393,7 +561,8 @@ func die(msg string, a ...any) {
 }
 
 // createWorkingDir ensures the main working directory is available, and that
-// no user other than its owner can write to it.
+// no user other than its owner can write to it or reach into the upload
+// directory inside it.
 //
 // An EXISTING directory is not forced to managerDirPerm, because this runs on
 // every manager start and every cloud deploy, and re-imposing a whole mode
@@ -407,6 +576,7 @@ func createWorkingDir() {
 		// somebody else put there is a side effect nobody asked for.
 		if fi.IsDir() {
 			closeWorkingDirToOthers(fi.Mode())
+			closeUploadDirToOthers()
 		}
 
 		return
