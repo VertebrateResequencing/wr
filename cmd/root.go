@@ -33,6 +33,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -200,6 +201,137 @@ func takeOtherWriteOff(dir string, mode os.FileMode) (os.FileMode, error) {
 	return closed, nil
 }
 
+// closeUploadDirToOthers takes other users' write permission off every
+// directory in the manager's upload tree that an older wr left open to them.
+//
+// os.MkdirAll leaves the mode of a directory that already exists alone,
+// whatever mode the manager gives the ones it makes, so the install that needs
+// this most is the one that has been running for years. The exposure is not
+// just the files: what
+// `wr add --cloud_config_files` uploads is copied to every cloud server the
+// manager spawns and defaults to the submitter's ~/.s3cfg and AWS credentials,
+// and write permission on a directory is what it takes to rename the
+// directories INSIDE it aside and put your own there. So every level is
+// closed, not just the top: write on the upload directory moves the hashed
+// levels, write on a hashed level moves the one below it.
+//
+// The CHMODS are bounded by the hash fan-out rather than by the upload count:
+// calculateHashedDir splits an md5 into mkHashedLevels (4) parts, so the tree
+// is 3 single-hex-character levels deep and can never hold more than
+// 16 + 256 + 4096 = 4368 directories however many files are uploaded. The
+// READDIR work is not bounded that way - fs.WalkDir reads and sorts every
+// entry at every level, so it grows with the number of files uploaded, and
+// nothing prunes them. Both are paid once per manager start.
+//
+// A relocated manageruploaddir is deliberately left alone: wr repairs the tree
+// it owns inside its own working directory, and must not chmod a path an
+// operator has pointed somewhere else, which could be shared with other people
+// or could be /tmp - the fallback jobqueue uses when a Server is built without
+// an upload directory at all.
+func closeUploadDirToOthers() {
+	rel, inside := uploadDirInManagerDir()
+	if !inside {
+		return
+	}
+
+	root, err := openManagerDirRoot()
+	if err != nil {
+		return
+	}
+
+	defer root.Close()
+
+	closed := 0
+
+	// the walk's own error is discarded along with every error inside it: the
+	// callback never stops the walk, so the only one it can return is a
+	// failure to read the top of a tree wr is merely trying to repair, and a
+	// level wr cannot read is a level it cannot fix.
+	_ = fs.WalkDir(root.FS(), rel, func(path string, d fs.DirEntry, err error) error { //nolint:errcheck
+		if err == nil && d.IsDir() && otherWriteTakenOffIn(root, path) {
+			closed++
+		}
+
+		return nil
+	})
+
+	if closed > 0 {
+		// "%d of the directories" rather than "%d directories" so that the
+		// count does not have to agree with the noun after it: this line is
+		// user-facing and there is regularly only one.
+		info("took other users' write permission off %d of the directories in the upload directory "+
+			"'%s', so that they can no longer replace the config files wr copies to cloud servers",
+			closed, config.ManagerUploadDir)
+	}
+}
+
+// uploadDirInManagerDir returns the upload directory as a slash-separated path
+// relative to the working directory, and whether it is below it at all.
+func uploadDirInManagerDir() (string, bool) {
+	rel, err := filepath.Rel(config.ManagerDir, config.ManagerUploadDir)
+	if err != nil || !filepath.IsLocal(rel) {
+		return "", false
+	}
+
+	return filepath.ToSlash(rel), true
+}
+
+// openManagerDirRoot opens the working directory as an os.Root, so that every
+// path resolved below it is checked against escaping it.
+//
+// It REFUSES a working directory that is itself a symlink, and that refusal is
+// what stops the walk being a way round takeOtherWriteOff's. os.OpenRoot
+// resolves the path it is given like any other, and the upload directory is
+// <ManagerDir>/uploads, so without this a symlink planted where the working
+// directory should be would be followed on the way to the walk root - aiming
+// the same chmod primitive at more targets than the single one ever could,
+// one line after wr had refused to follow that link.
+func openManagerDirRoot() (*os.Root, error) {
+	fi, err := os.Lstat(config.ManagerDir)
+	if err != nil {
+		return nil, err
+	}
+
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return nil, errDirIsSymlink
+	}
+
+	return os.OpenRoot(config.ManagerDir)
+}
+
+// otherWriteTakenOffIn takes other users' write permission off the directory
+// at path inside root, reporting whether that changed its mode.
+//
+// The directory is OPENED and then read and changed through that one
+// descriptor, rather than stat'd and chmod'd by path. The walk's whole premise
+// is a tree another user can write to, so that user can swap a directory for a
+// symlink between the two calls; fstat and fchmod on a descriptor cannot be
+// redirected that way, and the os.Root the descriptor came from will not
+// resolve a path out of the working directory in the first place. What remains
+// is bounded rather than eliminated: a swap made before the open can still
+// point wr at a different directory INSIDE its own working directory, which is
+// wr's to chmod anyway.
+func otherWriteTakenOffIn(root *os.Root, path string) bool {
+	dir, err := root.Open(filepath.FromSlash(path))
+	if err != nil {
+		return false
+	}
+
+	defer dir.Close()
+
+	fi, err := dir.Stat()
+	if err != nil || !fi.IsDir() {
+		return false
+	}
+
+	closed := fi.Mode() &^ managerDirOtherWritePerms
+	if closed == fi.Mode() {
+		return false
+	}
+
+	return dir.Chmod(closed) == nil
+}
+
 // Execute adds all child commands to the root command and sets flags
 // appropriately. This is called by main.main(). It only needs to happen once to
 // the rootCmd.
@@ -321,7 +453,8 @@ func die(msg string, a ...any) {
 }
 
 // createWorkingDir ensures the main working directory is available, and that
-// no user other than its owner can write to it.
+// no user other than its owner can write to it or to the upload directory
+// inside it.
 //
 // An EXISTING directory is not forced to managerDirPerm, because this runs on
 // every manager start and every cloud deploy, and re-imposing a whole mode
@@ -335,6 +468,7 @@ func createWorkingDir() {
 		// somebody else put there is a side effect nobody asked for.
 		if fi.IsDir() {
 			closeWorkingDirToOthers(fi.Mode())
+			closeUploadDirToOthers()
 		}
 
 		return

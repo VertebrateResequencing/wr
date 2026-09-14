@@ -76,6 +76,17 @@ project adheres to [Semantic Versioning](http://semver.org/).
   `cert.pem` from it, so if you rely on that, chmod it after wr creates it - wr
   leaves 0750 alone, though it will still take `g+w`/`o+w` off every start, so
   a deliberate 0770 comes back 0750.
+- An upload tree an older wr already made kept its mode, because `os.MkdirAll`
+  never touches a directory that is already there. Your next manager start now
+  takes other users' write permission off every level of
+  `~/.wr_<deployment>/uploads`, so they can no longer rename a level aside and
+  put their own `~/.aws/credentials` where wr looks for the config files it
+  copies to your cloud servers. Like the working directory above it, a
+  repaired level is only closed to WRITING: 0777 becomes 0755, and another
+  user on the machine can still list it. An upload directory you have pointed
+  outside your `~/.wr_<deployment>` with `manageruploaddir` is not touched,
+  since wr will not chmod a path you chose somewhere else; check that one
+  yourself.
 - One mistyped `--env` element could stop every command in a scheduler group.
   An entry with no `=`, such as a bare `PATH`, crashed the runner as it
   prepared the command. The command went back to the queue without using up a
