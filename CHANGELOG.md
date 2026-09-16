@@ -46,6 +46,16 @@ project adheres to [Semantic Versioning](http://semver.org/).
   submissions and modifications. Commands already in the queue keep running with
   the mounts they were added with.
 
+- `wr add` now explains its duplicate count instead of just totalling it: how
+  many of your commands were already in the queue, how many had already
+  completed, and of those, how many completed under the identifier you are
+  adding with versus under other identifiers, naming those identifiers and when
+  they last completed. A job's identity does not include its identifier, so a
+  command that already completed under a different `-i` is a duplicate that
+  `wr status -i` cannot show you; this is what makes those two commands
+  reconcilable. The message is unchanged when there are no duplicates, and an
+  older manager (which sends no breakdown) still reports the total as before.
+
 ### Fixed
 - `wr manager start` could delete your database and copy an older backup over
   it just because wr failed to open the file, losing every job recorded since

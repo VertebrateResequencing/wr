@@ -231,6 +231,102 @@ type AddWarnings struct {
 	NeverSeenDepGroups []string
 }
 
+// DuplicateRepGroup is how many of an Add's already-complete input jobs had
+// last completed under a particular RepGroup other than the one they were being
+// added with.
+type DuplicateRepGroup struct {
+	// RepGroup is the identifier those jobs completed under.
+	RepGroup string
+
+	// Count is how many of the Add's input jobs completed under RepGroup.
+	Count int
+
+	// LastCompleted is the newest end time amongst those jobs, and is the zero
+	// time if none of them recorded one.
+	LastCompleted time.Time
+}
+
+// DuplicateBreakdown breaks down the input jobs an Add did not add because a
+// job with the same key was already known about. The counts are of input jobs,
+// so the same command supplied twice in one Add counts twice.
+type DuplicateBreakdown struct {
+	// Queued is how many were already live in the in-memory queue.
+	Queued int
+
+	// Complete is how many had already completed.
+	Complete int
+
+	// CompleteSameRepGroup is how many of Complete had previously completed
+	// under the RepGroup they were now being added with.
+	CompleteSameRepGroup int
+
+	// OtherRepGroups names the RepGroups that the rest of Complete had instead
+	// completed under, biggest count first and then by RepGroup.
+	OtherRepGroups []DuplicateRepGroup
+}
+
+// Total is how many input jobs this accounts for.
+func (d DuplicateBreakdown) Total() int {
+	return d.Queued + d.Complete
+}
+
+// CompleteOtherRepGroups is how many of Complete had only previously completed
+// under some other RepGroup, ie. the sum of the OtherRepGroups counts.
+func (d DuplicateBreakdown) CompleteOtherRepGroups() int {
+	var total int
+
+	for _, group := range d.OtherRepGroups {
+		total += group.Count
+	}
+
+	return total
+}
+
+// AddDuplicates is how many of an Add's input jobs were not added because a job
+// with the same key already existed, and - when the server said - why.
+type AddDuplicates struct {
+	total     int
+	breakdown *DuplicateBreakdown
+}
+
+// Total is how many of the Add's input jobs were not added because a job with
+// the same key already existed. It is the count the server reported itself, so
+// it is right whatever version that server is.
+func (a AddDuplicates) Total() int {
+	return a.total
+}
+
+// Breakdown is why each of Total() was a duplicate, and whether this server
+// supplied that breakdown at all: false means only Total() is known.
+func (a AddDuplicates) Breakdown() (DuplicateBreakdown, bool) {
+	if a.breakdown == nil {
+		return DuplicateBreakdown{}, false
+	}
+
+	return *a.breakdown, true
+}
+
+// NewAddDuplicates pairs the number of duplicates a server reported for an Add
+// with that server's breakdown of them, keeping the breakdown only when it
+// accounts for exactly that number and has something in it. It is the only way
+// to make an AddDuplicates that reports a breakdown, so a total can never come
+// from one.
+//
+// wr has no client/server version handshake, so a manager predating the
+// breakdown answers a current client with a total and no breakdown at all; that
+// total must still be reported, and its zero breakdown must not be. An Add with
+// no duplicates therefore reports no breakdown either, whatever the manager:
+// there is nothing to tell apart, and nothing to say.
+func NewAddDuplicates(existed int, breakdown DuplicateBreakdown) AddDuplicates {
+	dups := AddDuplicates{total: existed}
+
+	if existed > 0 && breakdown.Total() == existed {
+		dups.breakdown = &breakdown
+	}
+
+	return dups
+}
+
 func touchEndState(job *Job) *JobEndState {
 	return &JobEndState{
 		PeakRAM:  job.PeakRAM,
@@ -805,6 +901,31 @@ func errWithRemoval(err error, path string) error {
 	return err
 }
 
+// AddWithDuplicates is like AddWithWarnings, but as well as the total number of
+// jobs that already existed it returns the breakdown of why each of them was a
+// duplicate, when the server it talked to supplied one.
+func (c *Client) AddWithDuplicates(
+	jobs []*Job,
+	envVars []string,
+	ignoreComplete bool,
+) (added int, dups AddDuplicates, warnings AddWarnings, err error) {
+	if validationErr, invalid := addValidationError(jobs); invalid {
+		return 0, AddDuplicates{}, AddWarnings{}, validationErr
+	}
+
+	compressed, err := c.CompressEnv(envVars)
+	if err != nil {
+		return 0, AddDuplicates{}, AddWarnings{}, err
+	}
+
+	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete})
+	if err != nil {
+		return 0, AddDuplicates{}, AddWarnings{}, err
+	}
+
+	return resp.Added, NewAddDuplicates(resp.Existed, resp.Duplicates), resp.AddWarnings, err
+}
+
 // reserveHostAndPid returns this runner's hostname (falling back to localhost if
 // it can't be determined) and its own pid, to stamp on a reserve request so the
 // server can record which runner holds the reservation before the command's own
@@ -1329,21 +1450,9 @@ func (c *Client) AddWithWarnings(
 	envVars []string,
 	ignoreComplete bool,
 ) (added int, existed int, warnings AddWarnings, err error) {
-	if validationErr, invalid := addValidationError(jobs); invalid {
-		return 0, 0, AddWarnings{}, validationErr
-	}
+	added, dups, warnings, err := c.AddWithDuplicates(jobs, envVars, ignoreComplete)
 
-	compressed, err := c.CompressEnv(envVars)
-	if err != nil {
-		return 0, 0, AddWarnings{}, err
-	}
-
-	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete})
-	if err != nil {
-		return 0, 0, AddWarnings{}, err
-	}
-
-	return resp.Added, resp.Existed, resp.AddWarnings, err
+	return added, dups.Total(), warnings, err
 }
 
 // AddAndReturnIDs is like Add(), except that the internal IDs of jobs that are

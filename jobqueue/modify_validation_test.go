@@ -462,13 +462,12 @@ func (h *modifierValidationHarness) addUnvalidatedJob(containerMounts, image str
 	envkey, err := h.db.storeEnv([]byte("MODIFIER_VALIDATION=1"))
 	So(err, ShouldBeNil)
 
-	added, dups, complete, warnings, srerr, err := h.server.createJobs(
+	added, dups, warnings, srerr, err := h.server.createJobs(
 		context.Background(), []*Job{job}, envkey, false)
 	So(err, ShouldBeNil)
 	So(srerr, ShouldBeBlank)
 	So(added, ShouldEqual, 1)
-	So(dups, ShouldEqual, 0)
-	So(complete, ShouldEqual, 0)
+	So(dups, ShouldResemble, DuplicateBreakdown{})
 	So(warnings, ShouldResemble, AddWarnings{
 		NeverSeenDepGroups: []string{modifierValidationDepGroup},
 	})

@@ -1528,6 +1528,14 @@ func TestServerWebI(t *testing.T) {
 			})
 
 			Convey("The websocket handler supports multiple concurrent clients", func() {
+				broadcastJobs := make([]*Job, 0, 1)
+
+				broadcastJobs = append(broadcastJobs, &Job{Cmd: "echo broadcast", Cwd: testCwd,
+					ReqGroup: "group4", Requirements: standardReqs, RepGroup: "rg4"})
+				inserts, _, erra := jq.Add(broadcastJobs, envVars, true)
+				So(erra, ShouldBeNil)
+				So(inserts, ShouldEqual, 1)
+
 				ws2, _, errw := websocket.DefaultDialer.Dial(wsURL, header)
 				So(errw, ShouldBeNil)
 
@@ -1538,14 +1546,6 @@ func TestServerWebI(t *testing.T) {
 
 				defer ws3.Close()
 
-				broadcastJobs := make([]*Job, 0, 1)
-
-				broadcastJobs = append(broadcastJobs, &Job{Cmd: "echo broadcast", Cwd: testCwd,
-					ReqGroup: "group4", Requirements: standardReqs, RepGroup: "rg4"})
-				inserts, _, erra := jq.Add(broadcastJobs, envVars, true)
-				So(erra, ShouldBeNil)
-				So(inserts, ShouldEqual, 1)
-
 				err = ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 				So(err, ShouldBeNil)
 				err = ws2.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
@@ -1553,56 +1553,20 @@ func TestServerWebI(t *testing.T) {
 				err = ws3.WriteJSON(jstatusReq{Request: jstatusRequestCurrent})
 				So(err, ShouldBeNil)
 
-				var wg sync.WaitGroup
-
-				wg.Add(3)
-
-				r1ch := make(chan jstateCount, 1)
-				r2ch := make(chan jstateCount, 1)
-				r3ch := make(chan jstateCount, 1)
-
-				go func() {
-					defer wg.Done()
-
-					var sc jstateCount
-
-					ws.ReadJSON(&sc) //nolint:errcheck
-
-					r1ch <- sc
-				}()
-
-				go func() {
-					defer wg.Done()
-
-					var sc jstateCount
-
-					ws2.ReadJSON(&sc) //nolint:errcheck
-
-					r2ch <- sc
-				}()
-
-				go func() {
-					defer wg.Done()
-
-					var sc jstateCount
-
-					ws3.ReadJSON(&sc) //nolint:errcheck
-
-					r3ch <- sc
-				}()
-
-				wg.Wait()
-
-				sc1 := <-r1ch
-				So(sc1, ShouldNotBeNil)
+				// every client must receive a status COUNT naming a RepGroup,
+				// which is what proves the counts reached it; the first message
+				// of its seed is a jstatusSeedBoundary marker rather than a
+				// count, so each read has to get past that.
+				sc1, errr := readFirstJStateCount(ws, 30*time.Second)
+				So(errr, ShouldBeNil)
 				So(sc1.RepGroup, ShouldNotBeBlank)
 
-				sc2 := <-r2ch
-				So(sc2, ShouldNotBeNil)
+				sc2, errr := readFirstJStateCount(ws2, 30*time.Second)
+				So(errr, ShouldBeNil)
 				So(sc2.RepGroup, ShouldNotBeBlank)
 
-				sc3 := <-r3ch
-				So(sc3, ShouldNotBeNil)
+				sc3, errr := readFirstJStateCount(ws3, 30*time.Second)
+				So(errr, ShouldBeNil)
 				So(sc3.RepGroup, ShouldNotBeBlank)
 
 				job, errr := jq.Reserve(50 * time.Millisecond)
@@ -1912,6 +1876,41 @@ func readPushStates(ws *websocket.Conn, repGroup string, states ...JobState) {
 		So(asked, ShouldBeTrue)
 
 		delete(unseen, status.State)
+	}
+}
+
+// readFirstJStateCount reads status websocket messages until the first state
+// count arrives, and returns it.
+//
+// The first message after a "current" request is normally not a count:
+// sendCurrentStatusCounts brackets the scan-on-connect seed with
+// jstatusSeedBoundary markers, and a marker decodes into a jstateCount with
+// every field blank, as do the other count-path shapes (a scheduler issue, a
+// bad server). Only a message naming a RepGroup is a count, which is how
+// deltaCounts.apply tells them apart too, so the rest are skipped; the bounded
+// read deadline makes a count that never arrives fail the caller rather than
+// hang it.
+//
+// That discriminator assumes a socket that has not requested details and is not
+// subscribed to job updates: a JStatus carries a RepGroup as well, so it would
+// be returned as if it were a count. Pick a detail out of such a stream with
+// readJStatusMatching instead.
+func readFirstJStateCount(ws *websocket.Conn, timeout time.Duration) (jstateCount, error) {
+	if err := ws.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return jstateCount{}, err
+	}
+	defer clearReadDeadlineBestEffort(ws)
+
+	for {
+		var msg jstateCount
+
+		if err := ws.ReadJSON(&msg); err != nil {
+			return jstateCount{}, err
+		}
+
+		if msg.RepGroup != "" {
+			return msg, nil
+		}
 	}
 }
 

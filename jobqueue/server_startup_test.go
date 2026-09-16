@@ -147,7 +147,7 @@ func prepareDBNeedingStartupUpgrade(ctx context.Context, t *testing.T, config Se
 	So(err, ShouldBeNil)
 	So(jobsToQueue, ShouldHaveLength, 2)
 	So(jobsToUpdate, ShouldHaveLength, 0)
-	So(alreadyAdded, ShouldEqual, 0)
+	So(alreadyAdded, ShouldResemble, DuplicateBreakdown{})
 
 	err = testDB.bolt.Update(func(tx *bolt.Tx) error {
 		if errd := tx.DeleteBucket(bucketDepGroups); errd != nil {
