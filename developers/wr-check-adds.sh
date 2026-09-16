@@ -19,8 +19,9 @@
 # one command in two different cwds is reported as one command.
 #
 # Read-only: the only thing it runs is "wr status". It exits non-zero if any of
-# those queries failed, since the report would then understate what the manager
-# knows.
+# those queries did not make it into the report - whether wr failed or its
+# output could not be parsed - since the report would then understate what the
+# manager knows.
 #
 # NOT part of the shipped binary or test suite.
 
@@ -110,18 +111,25 @@ split -l "$CHUNK" -d -a 5 "$FILE" "$OUTDIR/chunk." || exit 2
 nchunks=$(find "$OUTDIR" -name 'chunk.*' | wc -l)
 [ "$nchunks" -gt 0 ] || { echo "$FILE has no lines" >&2; exit 2; }
 i=0
-failed=0
+askFailed=0
+parseFailed=0
 for chunk in "$OUTDIR"/chunk.*; do
   i=$((i + 1))
   printf '\rquerying the manager: chunk %d/%d' "$i" "$nchunks" >&2
-  # captured rather than piped straight into jq, so that the failure counted
-  # here is wr's own: a pipeline under pipefail merges the two exit statuses,
-  # and a consumer that stops early (grep -q) makes wr die of SIGPIPE.
+  # captured rather than piped straight into jq, so that each way a chunk can
+  # go missing is counted as its own: a pipeline under pipefail merges wr's
+  # exit status with jq's, and a consumer that stops early (grep -q) makes wr
+  # die of SIGPIPE. wr failing and wr returning output jq cannot parse both
+  # lose that chunk's jobs, so both have to be counted - a chunk missing from
+  # found.jsonl otherwise reads as "these commands were never added".
   if ! json=$("$WR" status ${SEL[@]+"${SEL[@]}"} ${WR_ARGS[@]+"${WR_ARGS[@]}"} \
     -f "$chunk" -o json --limit 0 2>>"$OUTDIR/wr.err"); then
-    failed=$((failed + 1))
+    askFailed=$((askFailed + 1))
+    continue
   fi
-  printf '%s' "$json" | jq -c '.[]?' >> "$OUTDIR/found.jsonl"
+  if ! printf '%s' "$json" | jq -c '.[]?' >> "$OUTDIR/found.jsonl"; then
+    parseFailed=$((parseFailed + 1))
+  fi
 done
 printf '\r%*s\r' 40 '' >&2
 rm -f "$OUTDIR"/chunk.*
@@ -288,8 +296,11 @@ jq -r --argjson top "$TOP" --arg dir "$OUTDIR" '
     ""
 ' "$OUTDIR/report.json"
 
-if [ "$failed" -gt 0 ]; then
-  echo "WARNING: $failed/$nchunks status queries failed, so this report understates" \
-    "what the manager knows; see $OUTDIR/wr.err" >&2
+if [ "$((askFailed + parseFailed))" -gt 0 ]; then
+  echo "WARNING: of $nchunks status queries, $askFailed failed and $parseFailed" \
+    "returned output that could not be parsed, so their commands are missing" \
+    "from the report above: it understates what the manager knows, and nothing" \
+    "in it can be read as \"never added\". The errors are above, and wr's own" \
+    "are in $OUTDIR/wr.err" >&2
   exit 1
 fi
