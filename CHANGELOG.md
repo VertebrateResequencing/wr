@@ -171,11 +171,13 @@ project adheres to [Semantic Versioning](http://semver.org/).
   `wr status` has no `--cwd_matters` flag of its own there was no way to ask
   about such a file at all - which is the mode that matters for a file of
   thousands of commands. The `-f` mode of `wr kill`, `wr remove`, `wr retry`,
-  `wr suspend` and `wr resume` gains the same. One narrowing comes with it:
-  when you give `-c`, `-f` no longer reports a command whose working directory
-  is a different one, matching what `-l` has always done. Leave `-c` off if you
-  were relying on `-f` matching a command whatever working directory it was
-  added with.
+  `wr suspend` and `wr resume` gains the same. Each command is matched at the
+  working directory the file and your flags describe for it: its own line's
+  `cwd` where the line sets one, and the `-c` you gave otherwise. One narrowing
+  comes with that: a command taking its working directory from `-c` no longer
+  matches a job added in a different one, matching what `-l` has always done.
+  Leave `-c` off if you were relying on `-f` matching such a command whatever
+  working directory it was added with.
 
 
 ## [0.37.2] - 2026-09-01
