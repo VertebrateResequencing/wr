@@ -220,24 +220,82 @@ func (j *JobEssence) candidateKeys() []string {
 // they can never be a different set from the ones candidateKeys() gave, and so
 // that there is always a primary key to compare against.
 func (j *JobEssence) pickCandidateJob(jobs []*Job) *Job {
+	return j.pickKeyedCandidateJob(jobsByKey(jobs))
+}
+
+// pickKeyedCandidateJob holds the rule that pickCandidateJob and the plural
+// pickCandidateJobs share, for a caller that has already keyed the Jobs by
+// Job.Key(). Picking for many JobEssences at once has to key the Jobs once like
+// this rather than call pickCandidateJob per essence, since Job.Key() MD5s and a
+// commands file brings thousands of essences and thousands of Jobs.
+func (j *JobEssence) pickKeyedCandidateJob(byKey map[string]*Job) *Job {
 	keys := j.candidateKeys()
-	primary, lessSpecific := keys[0], keys[1:]
 
-	var fallback *Job
+	if job, found := byKey[keys[0]]; found {
+		return job
+	}
 
-	for _, job := range jobs {
-		key := job.Key()
-
-		if key == primary {
+	for _, key := range keys[1:] {
+		if job, found := byKey[key]; found && job.Cwd == j.Cwd {
 			return job
-		}
-
-		if fallback == nil && job.Cwd == j.Cwd && slices.Contains(lessSpecific, key) {
-			fallback = job
 		}
 	}
 
-	return fallback
+	return nil
+}
+
+// pickCandidateJobs returns the Job each of jes describes, in the order the
+// essences are given, and nothing for an essence that describes none of jobs. It
+// is pickCandidateJob for the plural read path, which asks for the candidate keys
+// of many essences in one request (see jesToCandidateKeys) and must then work out
+// which of the answers belongs to which essence.
+func pickCandidateJobs(jes []*JobEssence, jobs []*Job) []*Job {
+	byKey := jobsByKey(jobs)
+	picked := make([]*Job, 0, len(jes))
+
+	for _, je := range jes {
+		if job := je.pickKeyedCandidateJob(byKey); job != nil {
+			picked = append(picked, job)
+		}
+	}
+
+	return picked
+}
+
+// jesToCandidateKeys returns every candidate key of every given JobEssence,
+// without repeats, for a caller that looks them all up at once and then picks per
+// essence with pickCandidateJobs.
+func jesToCandidateKeys(jes []*JobEssence) []string {
+	keys := make([]string, 0, len(jes))
+	seen := make(map[string]bool, len(jes))
+
+	for _, je := range jes {
+		for _, key := range je.candidateKeys() {
+			if seen[key] {
+				continue
+			}
+
+			seen[key] = true
+
+			keys = append(keys, key)
+		}
+	}
+
+	return keys
+}
+
+// jobsByKey maps the given Jobs by their Key(). A key describes exactly one Job,
+// so a repeated key can only be the same Job again, and the first one wins.
+func jobsByKey(jobs []*Job) map[string]*Job {
+	byKey := make(map[string]*Job, len(jobs))
+
+	for _, job := range jobs {
+		if key := job.Key(); byKey[key] == nil {
+			byKey[key] = job
+		}
+	}
+
+	return byKey
 }
 
 // keyForCwd builds the key of a Job that has this JobEssence's properties and

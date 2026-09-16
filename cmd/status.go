@@ -50,6 +50,20 @@ const (
 	statusSelectorsMutuallyExclusive = "-f, -i, -l and --recent are mutually exclusive; only specify one of them"
 )
 
+// selectionDescriptionHelp is the help paragraph on how to describe the
+// commands you are selecting. Every command that selects jobs with -f or -l
+// includes it, and there is one copy because they share the selection code
+// itself: wording that drifted in one command's help would be describing
+// behaviour that command does not have.
+const selectionDescriptionHelp = `In -f and -l mode you must describe the commands the way they were added: the
+cwd they were added with (-c), whether or not --cwd_matters was used, plus any
+mounts options (--mounts/--mounts_json) and container image options
+(--with_docker/--with_singularity, --container_mounts and
+--container_image_user) they were added with. In -f mode, provide the same file
+you gave to "wr add" and the same flags. A command whose own line in that file
+sets cwd_matters is fully described by the file, so it needs no -c; when -c is
+given, only commands added with that cwd match.`
+
 var (
 	errStatusStateFiltersFile = errors.New("state filters (" + statusStateFilterFlags + ") are only " +
 		"supported in default or report group (-i) mode; remove them when using -f")
@@ -105,12 +119,7 @@ reported when using this command.
 
 The file to provide -f is in the format taken by "wr add".
 
-In -f and -l mode you must describe the commands the way they were added. In -l
-mode that means the cwd they were added with (-c), whether or not --cwd_matters
-was used, plus any mounts options (--mounts/--mounts_json) and container image
-options (--with_docker/--with_singularity, --container_mounts and
---container_image_user) they were added with. In -f mode, provide the same
-file you gave to "wr add".
+` + selectionDescriptionHelp + `
 
 --recent <duration> returns jobs that finished (were archived) within the last
 duration across all report groups. It is mutually exclusive with -f, -l and -i.
@@ -1207,7 +1216,7 @@ func getJobsByFile(jq *jobqueue.Client) ([]*jobqueue.Job, error) {
 
 	// round-trip via the server to get those that actually exist in
 	// the queue
-	jes := jobsToJobEssenses(parsedJobs)
+	jes := parsedJobsToJobEssences(parsedJobs)
 
 	jobs, err := jq.GetByEssences(jes)
 	if len(jobs) < len(parsedJobs) {
@@ -1253,10 +1262,50 @@ func parseCmdFileStatusSelection(jq *jobqueue.Client) []*jobqueue.Job {
 	return parsedJobs
 }
 
+// jobsToJobEssenses describes jobs that came back from the server, which
+// therefore have their real key: it is for the commands that go on to change
+// those jobs, and must stay a single key per job.
 func jobsToJobEssenses(jobs []*jobqueue.Job) []*jobqueue.JobEssence {
 	jes := make([]*jobqueue.JobEssence, 0, len(jobs))
 	for _, job := range jobs {
 		jes = append(jes, job.ToEssense())
+	}
+
+	return jes
+}
+
+// parsedJobsToJobEssences describes the commands parsed from a commands file so
+// that they can be looked up. Unlike jobsToJobEssenses it keeps the properties
+// that form a Job's key instead of precomputing that key, because a command the
+// file does not say cwd_matters for might have been added either way (no command
+// that takes -f has a --cwd_matters flag), and an essence that still carries the
+// cwd is looked up as both kinds of job. See jobqueue.JobEssence.candidateKeys.
+//
+// The cwd is part of the description in 2 cases, for different reasons. A line
+// the file gives cwd_matters is unambiguous: its cwd really is part of its key,
+// whether or not a -c repeats it. Otherwise the cwd only counts when the user
+// named one with -c, because the parse gives every command a default cwd of its
+// own, and describing that default as the cwd the command was added with would
+// stop -f finding the non-cwd_matters jobs it has always found, which are keyed
+// without any cwd at all.
+func parsedJobsToJobEssences(jobs []*jobqueue.Job) []*jobqueue.JobEssence {
+	jes := make([]*jobqueue.JobEssence, 0, len(jobs))
+
+	for _, job := range jobs {
+		cwd := ""
+		if job.CwdMatters || cmdCwd != "" {
+			cwd = job.Cwd
+		}
+
+		jes = append(jes, &jobqueue.JobEssence{
+			Cmd:                job.Cmd,
+			Cwd:                cwd,
+			MountConfigs:       job.MountConfigs,
+			WithDocker:         job.WithDocker,
+			WithSingularity:    job.WithSingularity,
+			ContainerMounts:    job.ContainerMounts,
+			ContainerImageUser: job.ContainerImageUser,
+		})
 	}
 
 	return jes

@@ -28,9 +28,12 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
@@ -61,6 +64,17 @@ const selectionEssenceImageUserCmd = "echo containerised as the image user"
 // that the commands which die() rather than return an error would reach if they
 // let --container_mounts through without an image.
 const selectionEssenceDyingCmd = "echo reachable only by a plain key"
+
+// The -f tests below name these commands in a commands file: the first two are
+// added with --cwd_matters, the third without it, the fourth in a different cwd,
+// and the last is never added at all.
+const (
+	selectionFileMattersCmd      = "echo file cwd matters"
+	selectionFileMattersOtherCmd = "echo file cwd matters too"
+	selectionFilePlainCmd        = "echo file cwd does not matter"
+	selectionFileElsewhereCmd    = "echo file cwd elsewhere"
+	selectionFileUnknownCmd      = "echo file never added"
+)
 
 // TestSelectionByCmdLine drives the real -l selection path of a queue command
 // for the kinds of job whose key -l has to reproduce: one added with a cwd but
@@ -296,4 +310,149 @@ func TestSelectionByCmdLine(t *testing.T) {
 			So(jobStateByEssence(jq, job), ShouldEqual, jobqueue.JobStateReady)
 		})
 	})
+}
+
+// TestSelectionByCmdFile drives the real -f selection path of `wr status` for
+// the kinds of job a file of commands can name. -f has no --cwd_matters flag of
+// its own, so -c alone has to reach a job added either way, exactly as the -c
+// help text and the -l path promise.
+func TestSelectionByCmdFile(t *testing.T) {
+	Convey("-f with -c finds the jobs added with cwd_matters", t, func() {
+		withQueueCommandTestServer(t, func(jq *jobqueue.Client, reqs *jqs.Requirements, _ jobqueue.ServerConfig) {
+			matters := newQueueCommandJob(selectionFileMattersCmd, "rg-file-matters", reqs)
+			matters.CwdMatters = true
+			mattersOther := newQueueCommandJob(selectionFileMattersOtherCmd, "rg-file-matters", reqs)
+			mattersOther.CwdMatters = true
+			addQueueCommandJobs(jq, matters, mattersOther)
+
+			file := writeSelectionCmdFile(t, selectionFileMattersCmd, selectionFileMattersOtherCmd)
+
+			output, warnings := statusPlainOutputAndWarnings(t, "-f", file, "-c", queueCommandCwd, "-o", "plain")
+			So(output, ShouldEqual, statusPlainLine(matters)+statusPlainLine(mattersOther))
+			So(warnings, ShouldNotContainSubstring, "cmds were not found")
+		})
+	})
+
+	Convey("-f with -c still finds a job added without cwd_matters", t, func() {
+		withQueueCommandTestServer(t, func(jq *jobqueue.Client, reqs *jqs.Requirements, _ jobqueue.ServerConfig) {
+			plain := newQueueCommandJob(selectionFilePlainCmd, "rg-file-plain", reqs)
+			So(plain.CwdMatters, ShouldBeFalse)
+			addQueueCommandJobs(jq, plain)
+
+			file := writeSelectionCmdFile(t, selectionFilePlainCmd)
+
+			output, warnings := statusPlainOutputAndWarnings(t, "-f", file, "-c", queueCommandCwd, "-o", "plain")
+			So(output, ShouldEqual, statusPlainLine(plain))
+			So(warnings, ShouldNotContainSubstring, "cmds were not found")
+		})
+	})
+
+	Convey("-f with -c does not find a job whose cwd is a different one", t, func() {
+		withQueueCommandTestServer(t, func(jq *jobqueue.Client, reqs *jqs.Requirements, _ jobqueue.ServerConfig) {
+			elsewhere := newQueueCommandJob(selectionFileElsewhereCmd, "rg-file-elsewhere", reqs)
+			elsewhere.Cwd = t.TempDir()
+			addQueueCommandJobs(jq, elsewhere)
+
+			file := writeSelectionCmdFile(t, selectionFileElsewhereCmd)
+
+			output, warnings := statusPlainOutputAndWarnings(t, "-f", file, "-c", queueCommandCwd, "-o", "plain")
+			So(output, ShouldBeEmpty)
+			So(warnings, ShouldContainSubstring, "1/1 cmds were not found")
+		})
+	})
+
+	Convey("-f with -c changes only the cwd_matters job of that cwd", t, func() {
+		withQueueCommandTestServer(t, func(jq *jobqueue.Client, reqs *jqs.Requirements, _ jobqueue.ServerConfig) {
+			// both jobs are candidates of an essence naming this cmd and cwd, so a
+			// selection that widened past the cwd_matters one would suspend a job
+			// the user did not name.
+			matters := newQueueCommandJob(selectionFileMattersCmd, "rg-file-suspend", reqs)
+			matters.CwdMatters = true
+			doesNot := newQueueCommandJob(selectionFileMattersCmd, "rg-file-suspend", reqs)
+			addQueueCommandJobs(jq, matters, doesNot)
+
+			file := writeSelectionCmdFile(t, selectionFileMattersCmd)
+
+			output, err := runSuspendForTest(t, "-f", file, "-c", queueCommandCwd)
+			So(err, ShouldBeNil)
+			So(output, ShouldEqual, "Suspended 1 queued commands (out of 1 matching)\n")
+			So(jobStateByEssence(jq, matters), ShouldEqual, jobqueue.JobStateSuspended)
+			So(jobStateByEssence(jq, doesNot), ShouldEqual, jobqueue.JobStateReady)
+		})
+	})
+
+	Convey("-f honours the cwd_matters the file itself carries, with no -c", t, func() {
+		withQueueCommandTestServer(t, func(jq *jobqueue.Client, reqs *jqs.Requirements, _ jobqueue.ServerConfig) {
+			// the file says these commands were added with their cwd mattering, so
+			// their cwd is part of their key with or without a -c to repeat it.
+			matters := newQueueCommandJob(selectionFileMattersCmd, "rg-file-per-line", reqs)
+			matters.CwdMatters = true
+			mattersOther := newQueueCommandJob(selectionFileMattersOtherCmd, "rg-file-per-line", reqs)
+			mattersOther.CwdMatters = true
+			addQueueCommandJobs(jq, matters, mattersOther)
+
+			file := writeSelectionCmdFile(t,
+				selectionCmdFileCwdMattersLine(selectionFileMattersCmd, queueCommandCwd),
+				selectionCmdFileCwdMattersLine(selectionFileMattersOtherCmd, queueCommandCwd))
+
+			output, warnings := statusPlainOutputAndWarnings(t, "-f", file, "-o", "plain")
+			So(output, ShouldEqual, statusPlainLine(matters)+statusPlainLine(mattersOther))
+			So(warnings, ShouldNotContainSubstring, "cmds were not found")
+		})
+	})
+
+	Convey("-f counts only the commands it really did not find", t, func() {
+		withQueueCommandTestServer(t, func(jq *jobqueue.Client, reqs *jqs.Requirements, _ jobqueue.ServerConfig) {
+			matters := newQueueCommandJob(selectionFileMattersCmd, "rg-file-mixed", reqs)
+			matters.CwdMatters = true
+			addQueueCommandJobs(jq, matters)
+
+			file := writeSelectionCmdFile(t, selectionFileMattersCmd, selectionFileUnknownCmd)
+
+			output, warnings := statusPlainOutputAndWarnings(t, "-f", file, "-c", queueCommandCwd, "-o", "plain")
+			So(output, ShouldEqual, statusPlainLine(matters))
+			So(warnings, ShouldContainSubstring, "1/2 cmds were not found")
+		})
+	})
+}
+
+// writeSelectionCmdFile writes the given lines - each a bare command, or the
+// JSON object form `wr add -f` also accepts - to a commands file of their own,
+// configures the cmd-file selection flags for it, and returns its path.
+func writeSelectionCmdFile(t *testing.T, lines ...string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "commands.txt")
+	So(os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600), ShouldBeNil)
+	configureQueueCommandFileSelection(t, path)
+
+	return path
+}
+
+// statusPlainOutputAndWarnings runs `wr status` with args, returning what it
+// printed and what it logged at warn level or above: -f mode reports the
+// commands it could not find as a warning rather than as output.
+func statusPlainOutputAndWarnings(t *testing.T, args ...string) (string, string) {
+	t.Helper()
+
+	logged := clog.ToBufferAtLevel("warn")
+
+	defer clog.ToDefault()
+
+	output, exitCode := runStatusPlainForTest(t, args...)
+	So(exitCode, ShouldEqual, 0)
+
+	return output, logged.String()
+}
+
+// statusPlainLine is the line `wr status -o plain` prints for the given job.
+func statusPlainLine(job *jobqueue.Job) string {
+	return job.Key() + "\t" + string(jobqueue.JobStateReady) + "\n"
+}
+
+// selectionCmdFileCwdMattersLine is the JSON object line that describes cmd as
+// `wr add -f` would have added it with the given cwd and cwd_matters set, which
+// is a command a file can carry without any flag naming that cwd.
+func selectionCmdFileCwdMattersLine(cmd, cwd string) string {
+	return `{"cmd":"` + cmd + `","cwd":"` + cwd + `","cwd_matters":true}`
 }
