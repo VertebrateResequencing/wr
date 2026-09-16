@@ -57,7 +57,7 @@ const (
 // behaviour that command does not have.
 const selectionDescriptionHelp = `In -f and -l mode you must describe the commands the way they were added: the
 cwd they were added with (-c), whether or not --cwd_matters was used, plus any
-mounts options (--mounts/--mounts_json) and container image options
+mounts options (--mounts/--mount_json) and container image options
 (--with_docker/--with_singularity, --container_mounts and
 --container_image_user) they were added with. In -f mode, provide the same file
 you gave to "wr add" and the same flags. A command whose own line in that file

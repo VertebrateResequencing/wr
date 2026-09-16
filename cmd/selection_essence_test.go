@@ -28,8 +28,11 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -75,6 +78,18 @@ const (
 	selectionFileElsewhereCmd    = "echo file cwd elsewhere"
 	selectionFileUnknownCmd      = "echo file never added"
 )
+
+// selectionDescriptionHelpAddOnlyFlags are the long flags the shared selection
+// help paragraph names that belong to "wr add" rather than to the commands that
+// include the paragraph: the paragraph names --cwd_matters to say how the
+// commands were added, which is the point of the sentence it appears in, and
+// the selecting commands deliberately have no flag of that name.
+var selectionDescriptionHelpAddOnlyFlags = []string{"cwd_matters"}
+
+// selectionDescriptionHelpLongFlag matches the long flag names the shared
+// selection help paragraph offers, so that a future edit which names another
+// flag is checked without touching the test.
+var selectionDescriptionHelpLongFlag = regexp.MustCompile(`--([a-z_]+)`)
 
 // TestSelectionByCmdLine drives the real -l selection path of a queue command
 // for the kinds of job whose key -l has to reproduce: one added with a cwd but
@@ -455,4 +470,75 @@ func statusPlainLine(job *jobqueue.Job) string {
 // is a command a file can carry without any flag naming that cwd.
 func selectionCmdFileCwdMattersLine(cmd, cwd string) string {
 	return `{"cmd":"` + cmd + `","cwd":"` + cwd + `","cwd_matters":true}`
+}
+
+// TestSelectionDescriptionHelp checks that every long flag the shared selection
+// help paragraph offers is a flag that every command including the paragraph
+// actually registers, so no command can offer a flag name it does not have.
+func TestSelectionDescriptionHelp(t *testing.T) {
+	Convey("the shared selection help offers only flags of the commands that include it", t, func() {
+		offered := selectionDescriptionHelpFlagNames()
+		So(offered, ShouldNotBeEmpty)
+
+		commands := commandsIncludingSelectionDescriptionHelp()
+		So(commandNames(commands), ShouldResemble, commandNames([]*cobra.Command{
+			statusCmd, killCmd, removeCmd, retryCmd, suspendCmd, resumeCmd,
+		}))
+
+		var unregistered []string
+
+		for _, command := range commands {
+			for _, name := range offered {
+				if command.Flags().Lookup(name) == nil {
+					unregistered = append(unregistered, command.Name()+" --"+name)
+				}
+			}
+		}
+
+		So(unregistered, ShouldBeEmpty)
+	})
+}
+
+// selectionDescriptionHelpFlagNames are the long flag names the shared
+// selection help paragraph offers as flags of the commands that include it,
+// deduplicated and sorted.
+func selectionDescriptionHelpFlagNames() []string {
+	names := make(map[string]bool)
+
+	for _, match := range selectionDescriptionHelpLongFlag.FindAllStringSubmatch(selectionDescriptionHelp, -1) {
+		if slices.Contains(selectionDescriptionHelpAddOnlyFlags, match[1]) {
+			continue
+		}
+
+		names[match[1]] = true
+	}
+
+	return slices.Sorted(maps.Keys(names))
+}
+
+// commandsIncludingSelectionDescriptionHelp are the wr commands whose help
+// includes the shared selection help paragraph.
+func commandsIncludingSelectionDescriptionHelp() []*cobra.Command {
+	var commands []*cobra.Command
+
+	for _, command := range RootCmd.Commands() {
+		if strings.Contains(command.Long, selectionDescriptionHelp) {
+			commands = append(commands, command)
+		}
+	}
+
+	return commands
+}
+
+// commandNames are the names of the given commands, sorted.
+func commandNames(commands []*cobra.Command) []string {
+	names := make([]string, len(commands))
+
+	for i, command := range commands {
+		names[i] = command.Name()
+	}
+
+	slices.Sort(names)
+
+	return names
 }
