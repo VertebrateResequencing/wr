@@ -219,12 +219,14 @@ func openWorkingDir(dir string) (*os.File, error) {
 	defer parent.Close()
 
 	file, err := parent.Open(filepath.Base(dir))
-
-	if errors.Is(err, syscall.ELOOP) {
-		return nil, errDirIsSymlink
-	}
-
 	if err != nil {
+		// os.Root.Open can report a rejected final symlink as its internal
+		// path-escape error rather than syscall.ELOOP. Recheck the final
+		// component so both forms receive the same user-facing warning.
+		if isFinalSymlink(dir) || errors.Is(err, syscall.ELOOP) {
+			return nil, errDirIsSymlink
+		}
+
 		return nil, err
 	}
 
@@ -245,6 +247,12 @@ func openWorkingDir(dir string) (*os.File, error) {
 	}
 
 	return file, nil
+}
+
+func isFinalSymlink(path string) bool {
+	fi, err := os.Lstat(path)
+
+	return err == nil && fi.Mode()&os.ModeSymlink != 0
 }
 
 func chmodWorkingDir(file *os.File, mode os.FileMode) (bool, error) {

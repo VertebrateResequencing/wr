@@ -200,6 +200,19 @@ func TestOpenWorkingDirClassifiesSymlink(t *testing.T) {
 	})
 }
 
+func TestOpenWorkingDirClassifiesRejectedFinalSymlink(t *testing.T) {
+	Convey("A final symlink rejected by the root is classified as a symlink", t, func() {
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "manager")
+
+		So(os.Symlink(filepath.Join(t.TempDir(), "outside"), dir), ShouldBeNil)
+
+		_, err := openWorkingDir(dir)
+
+		So(errors.Is(err, errDirIsSymlink), ShouldBeTrue)
+	})
+}
+
 // createWorkingDirUnderUmask points config at dir and calls createWorkingDir
 // with the process umask set to permissiveUmask, returning the mode dir then
 // has - sticky bit included, which os.FileMode.Perm() would hide - and
