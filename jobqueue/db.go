@@ -678,6 +678,7 @@ type beBatch struct {
 	changes map[string][]byte
 	exits   []jobExitData
 	wgkeys  []string
+	waiters []chan error
 }
 
 // apply writes the batch's coalesced live-bucket changes and its ordered exit ops
@@ -809,6 +810,7 @@ type db struct {
 	beChanges    map[string][]byte // key -> latest encoded live value (coalescing, latest-wins)
 	beExits      []jobExitData     // exit ops, applied in order (std/fail-stat side effects, not coalesced)
 	beWGKeys     []string          // db.wg keys to Done once the pending batch is persisted
+	beWaiters    []chan error      // callers blocked until the pending batch is persisted
 	beSignal     chan struct{}     // buffered(1) kick: work is pending
 	beStop       chan struct{}     // closed by close() to stop the writer after a final drain
 	beWriterDone chan struct{}     // closed by the writer when it has fully stopped
@@ -1671,17 +1673,20 @@ func (db *db) kickBestEffortWriter() {
 }
 
 // drainBestEffort persists every currently-pending best-effort write in a single
-// transaction, then releases the batch's wg/exit tracking. Best-effort: a write
-// error is logged, not returned.
+// transaction, then releases the batch's wg/exit tracking and replies to any
+// caller waiting on this drain. Best-effort for the callers that do not wait: a
+// write error is logged, not returned.
 func (db *db) drainBestEffort(ctx context.Context) {
 	batch := db.swapBestEffort()
 	if len(batch.wgkeys) == 0 {
 		return
 	}
 
-	defer db.doneBestEffort(batch)
+	var err error
 
-	if err := db.bolt.Update(batch.apply); err != nil {
+	defer func() { db.doneBestEffort(batch, err) }()
+
+	if err = db.bolt.Update(batch.apply); err != nil {
 		clog.Error(ctx, "Database best-effort job update failed", "err", err)
 
 		return
@@ -1703,20 +1708,28 @@ func (db *db) swapBestEffort() beBatch {
 	db.beMu.Lock()
 	defer db.beMu.Unlock()
 
-	batch := beBatch{changes: db.beChanges, exits: db.beExits, wgkeys: db.beWGKeys}
+	batch := beBatch{changes: db.beChanges, exits: db.beExits, wgkeys: db.beWGKeys, waiters: db.beWaiters}
 	db.beChanges = make(map[string][]byte)
 	db.beExits = nil
 	db.beWGKeys = nil
+	db.beWaiters = nil
 
 	return batch
 }
 
-// doneBestEffort releases a drained batch's db.wg tracking and decrements the
-// in-progress exit counter. It is deferred so it runs even if the write panicked
-// or errored, so close()'s wg.Wait and waitForJobExitUpdates can never hang.
-func (db *db) doneBestEffort(batch beBatch) {
+// doneBestEffort releases a drained batch's db.wg tracking, hands the drain's
+// outcome to every caller waiting on it, and decrements the in-progress exit
+// counter. It is deferred so it runs even if the write panicked or errored, so
+// close()'s wg.Wait, waitForJobExitUpdates and any waiter can never hang.
+func (db *db) doneBestEffort(batch beBatch, err error) {
 	for _, wgk := range batch.wgkeys {
 		db.wg.Done(wgk)
+	}
+
+	// each waiter channel is buffered(1) and never closed, so this neither blocks
+	// the writer nor can send on a closed channel (as archiveOp.reply does).
+	for _, waiter := range batch.waiters {
+		waiter <- err
 	}
 
 	if len(batch.exits) > 0 {
@@ -4114,9 +4127,41 @@ func (e jobExitData) updateFailStat(tx *bolt.Tx) error {
 }
 
 // updateJobAfterChange rewrites the job's entry in the live bucket, to enable
-// complete recovery after a crash. This happens in a goroutine, since it isn't
-// essential this happens, and we benefit from the speed.
+// complete recovery after a crash. The write is queued for the coalescing
+// best-effort writer and not waited for, since it isn't essential this happens,
+// and we benefit from the speed. A caller that must not acknowledge the change
+// before it is on disk uses updateJobAfterChangeDurable instead.
 func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
+	err := db.queueJobChange(job, nil)
+	if err != nil && !errors.Is(err, errDBClosed) {
+		clog.Error(ctx, "Database operation updateJobAfterChange failed due to Encode failure", "err", err)
+	}
+}
+
+// updateJobAfterChangeDurable is updateJobAfterChange, but it blocks until the
+// drain that covers this job's write has committed, and returns that write's
+// outcome. It is what lets a caller acknowledge a change only once recovery
+// would see it (see handleStart).
+//
+// It does NOT cost a transaction per call: the best-effort writer folds every
+// write pending when it next wakes into one commit, so concurrent waiters share
+// a single fsync and the write-storm amplification PR #555 removed
+// (.docs/reliable4/) is not reintroduced.
+func (db *db) updateJobAfterChangeDurable(job *Job) error {
+	waiter := make(chan error, 1)
+
+	if err := db.queueJobChange(job, waiter); err != nil {
+		return err
+	}
+
+	return <-waiter
+}
+
+// queueJobChange encodes job outside any transaction and queues its latest
+// live-bucket value for the best-effort writer. A non-nil waiter is answered by
+// the drain that covers this write; on error nothing was queued and the waiter
+// will never be answered.
+func (db *db) queueJobChange(job *Job, waiter chan error) error {
 	var encoded []byte
 
 	enc := codec.NewEncoderBytes(&encoded, db.ch)
@@ -4125,7 +4170,7 @@ func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
 	defer db.RUnlock()
 
 	if db.closed {
-		return
+		return errDBClosed
 	}
 
 	key := []byte(job.Key())
@@ -4134,26 +4179,31 @@ func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
 	job.RUnlock()
 
 	if err != nil {
-		clog.Error(ctx, "Database operation updateJobAfterChange failed due to Encode failure", "err", err)
-
-		return
+		return err
 	}
 
 	db.wgMutex.Lock()
 	defer db.wgMutex.Unlock()
 
-	db.launchJobChangeUpdate(key, encoded)
+	db.launchJobChangeUpdate(key, encoded, waiter)
+
+	return nil
 }
 
 // launchJobChangeUpdate queues the job's latest encoded live-bucket value for the
 // best-effort writer, coalescing by key so a churning job is persisted once per
-// drain (latest-wins), not once per change. The archive-vs-change guard (only
+// drain (latest-wins), not once per change. A non-nil waiter is answered once the
+// drain that includes this write has finished. The archive-vs-change guard (only
 // rewrite a job that is still live) is applied by the writer at drain time. Must
 // be called with db.RLock and db.wgMutex held.
-func (db *db) launchJobChangeUpdate(key, encoded []byte) {
+func (db *db) launchJobChangeUpdate(key, encoded []byte, waiter chan error) {
 	db.beMu.Lock()
 	db.beChanges[string(key)] = encoded
 	db.beWGKeys = append(db.beWGKeys, db.wg.Add(1))
+
+	if waiter != nil {
+		db.beWaiters = append(db.beWaiters, waiter)
+	}
 	db.beMu.Unlock()
 
 	db.kickBestEffortWriter()

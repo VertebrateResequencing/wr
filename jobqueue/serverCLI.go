@@ -1090,8 +1090,9 @@ func (s *Server) resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, 
 	return sjob.schedulerGroup, sjob.Retries, sjob.UntilBuried
 }
 
-// handleStart records that a reserved job's command has started running.
-func (s *Server) handleStart(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
+// handleStart records that a reserved job's command has started running. It does
+// not return until that record is on disk; see the comment on the write below.
+func (s *Server) handleStart(_ context.Context, cr *clientRequest) (*serverResponse, string, string) {
 	// update the job's cmd-started-related properties
 	if cr.Job == nil {
 		return nil, ErrBadRequest, ""
@@ -1106,9 +1107,27 @@ func (s *Server) handleStart(ctx context.Context, cr *clientRequest) (*serverRes
 		return nil, ErrBadRequest, ""
 	}
 
-	// we'll save-to-disk that we started running this job, so recovery is
-	// possible after a crash
-	s.db.updateJobAfterChange(ctx, job)
+	// we save-to-disk that we started running this job, so recovery is possible
+	// after a crash, and we do NOT acknowledge the start until that write has
+	// committed. A manager that acknowledged first and then died before the queued
+	// write drained came back reading the job with no state at all, so
+	// recoveredItemDef put it on the ready queue and a fresh runner re-ran a
+	// command that was still alive - the simultaneous double run DEVELOPERS.md
+	// rule 4 exists to prevent (.docs/bugfixes/260917-start-durability.md). This is
+	// the symmetry db.archiveJob has always had for "job completed".
+	//
+	// It costs one coalesced drain, NOT one transaction per start: every write
+	// pending when the best-effort writer next wakes lands in the same commit, so
+	// the write-storm amplification PR #555 removed (.docs/reliable4/) stays
+	// removed. The other updateJobAfterChange callers (suspend, resume, kick)
+	// acknowledge nothing a crash could act on, so they stay async.
+	if err := s.db.updateJobAfterChangeDurable(job); err != nil {
+		// ErrInternalError is not a definitive rejection, so the runner keeps its
+		// healthy command running, lets its touch loop hold the job's TTR, and
+		// re-sends the start until it persists (retryStartReport) - rather than
+		// running on with a start this manager could not record.
+		return nil, ErrInternalError, err.Error()
+	}
 
 	return nil, "", ""
 }
