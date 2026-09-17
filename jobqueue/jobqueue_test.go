@@ -1361,7 +1361,7 @@ func TestJobqueueServerLog(t *testing.T) {
 // log to the file named by the WR_TEST_SERVER_LOG environment variable. The
 // daemon is a subprocess whose stderr is discarded, so this is the only way to
 // see what its manager did - which the TestJobqueueSignal crash-recovery
-// investigations need (see .docs/bugfixes/260903-1-incidental.md). With it unset,
+// investigations need (see BUG 20 in .docs/bugfixes/260829-1.md). With it unset,
 // as in a normal test run, nothing changes and nil is returned.
 //
 // If the file cannot be opened, the error is returned rather than logged and
