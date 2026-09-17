@@ -86,6 +86,16 @@ project adheres to [Semantic Versioning](http://semver.org/).
   `cert.pem` from it, so if you rely on that, chmod it after wr creates it - wr
   leaves 0750 alone, though it will still take `g+w`/`o+w` off every start, so
   a deliberate 0770 comes back 0750.
+- The directories the manager made for uploaded files, under `manageruploaddir`
+  and under any path you uploaded to, were mode 0777 before the umask. The
+  files themselves were already created 0600, but replacing a file only needs
+  write permission on its directory, and renaming a whole directory aside needs
+  it only on the directory above. What goes through there is
+  `wr add --cloud_config_files` when your manager is remote, which the manager
+  copies to every cloud server it spawns, and which defaults to your
+  `~/.s3cfg`, `~/.aws/credentials` and `~/.aws/config` - so another user of the
+  manager's machine could have chosen the cloud credentials your servers ran
+  with. Directories wr makes there are now 0700.
 - One mistyped `--env` element could stop every command in a scheduler group.
   An entry with no `=`, such as a bare `PATH`, crashed the runner as it
   prepared the command. The command went back to the queue without using up a
