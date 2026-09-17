@@ -196,6 +196,13 @@ project adheres to [Semantic Versioning](http://semver.org/).
   matches a job added in a different one, matching what `-l` has always done.
   Leave `-c` off if you were relying on `-f` matching such a command whatever
   working directory it was added with.
+- `wr limit -g <group>` reported 9223372036854775807 for a group with no limit,
+  though the command's own help says "Groups that are not known about will
+  report -1". It now reports -1 for a group nothing knows a limit for, for a
+  group whose limit you have just removed with `-g <group>:-1`, and for one
+  limited by time of day rather than by a count of jobs. A group with a count
+  limit still reports that count, including a limit of 0, and `wr limit` with no
+  options lists exactly the groups it listed before.
 
 
 ## [0.37.2] - 2026-09-01
