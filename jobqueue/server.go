@@ -6455,7 +6455,12 @@ func (s *Server) completeJobsByKeys(ctx context.Context, keys []string, getEnv b
 		return nil, ErrDBError, err.Error()
 	}
 
-	if getEnv { // complete jobs don't have any std
+	// getStd is false because an archived job's std needs no fetching, NOT because
+	// it has none: the complete record carries it already (markJobComplete puts
+	// the runner's final output on the job before db.archiveJob encodes it, which
+	// is what serves .docs/issue-98 D1 test 2), and archiveJobTx deleted the
+	// bucketStdO/bucketStdE entries a fetch would read.
+	if getEnv {
 		for _, job := range found {
 			s.jobPopulateStdEnv(ctx, job, false, getEnv)
 		}
