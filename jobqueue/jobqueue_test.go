@@ -1310,18 +1310,37 @@ func startServer(
 	return jq, token, cmd, err
 }
 
+// logServerToFileIfAsked makes a --servermode test daemon write its own debug
+// log to the file named by the WR_TEST_SERVER_LOG environment variable. The
+// daemon is a subprocess whose stderr is discarded, so this is the only way to
+// see what its manager did - which the TestJobqueueSignal crash-recovery
+// investigations need (see .docs/bugfixes/260903-1-incidental.md). With it unset,
+// as in a normal test run, nothing changes.
+func logServerToFileIfAsked(ctx context.Context) {
+	path := os.Getenv("WR_TEST_SERVER_LOG")
+	if path == "" {
+		return
+	}
+
+	handler, err := log15.FileHandler(path, log15.LogfmtFormat())
+	if err != nil {
+		// #nosec G706 -- path is this test binary's own WR_TEST_SERVER_LOG, set by
+		// the developer running it, and all we do with it is say why it would not
+		// open.
+		log.Printf("failed to open WR_TEST_SERVER_LOG %s: %s\n", path, err)
+
+		return
+	}
+
+	clog.ToHandlerAtLevel(handler, "debug")
+	clog.Info(ctx, "test daemon logging to file", "pid", os.Getpid())
+}
+
 // runServer starts a jobqueue server, and is what calling this test script in
 // --servermode runs.
 func runServer(ctx context.Context) {
-	// uncomment and set a log path to debug server issues in TestJobqueueSignal
-	// fh, err := log15.FileHandler("/log", log15.LogfmtFormat())
-	// if err != nil {
-	// 	log.Fatalf("error opening file: %v", err)
-	// }
-	// h := l15h.CallerInfoHandler(fh)
-	// testLogger.SetHandler(log15.LvlFilterHandler(log15.LvlDebug, h))
-	// pid := os.Getpid()
-	// testLogger = testLogger.New("pid", pid)
+	logServerToFileIfAsked(ctx)
+
 	_, serverConfig, _, _, _ := jobqueueTestInit(false) //nolint:dogsled
 
 	// constrain the local scheduler to a small fixed core capacity so
