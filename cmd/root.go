@@ -31,6 +31,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,6 +72,17 @@ const (
 	daemonStopPollFreq = 50 * time.Millisecond
 )
 
+// managerDirPerm is the permission createWorkingDir makes the manager's working
+// directory with. That directory holds the database, the client token and the
+// TLS key, and deleting or replacing any of those needs write permission on the
+// DIRECTORY, not on the file, so however tightly the files themselves are
+// locked down the directory has to be the owner's alone.
+const managerDirPerm = 0o700
+
+// managerDirOtherWritePerms are the bits that would let somebody other than the
+// working directory's owner delete, replace or plant a file inside it.
+const managerDirOtherWritePerms = 0o022
+
 // these variables are accessible by all subcommands.
 var (
 	deployment string
@@ -110,6 +122,155 @@ $ wr status`,
 // production it is os.Exit, so die() ends the process non-zero exactly as
 // before.
 var cmdExit = os.Exit
+
+// errDirIsSymlink is why wr will not take write permission off a path that is
+// itself a symlink.
+var errDirIsSymlink = errors.New("it is a symlink")
+
+// closeWorkingDirToOthers takes other users' write permission off an existing
+// working directory, which is how an older wr's 0777 or 0775 stops letting
+// anybody on the machine delete, replace or plant a file in it.
+//
+// ONLY those bits are cleared, and the rest of the mode is left as it was.
+// Clearing just them closes the hole without disturbing a directory somebody
+// opened up on purpose: a deliberate 0750, to let a colleague read ca.pem,
+// still reads 0750 afterwards. A sticky directory is not exempt, because
+// sticky only stops others REMOVING a file they do not own - it still lets
+// them create one, and a file they own, sitting where wr expects to write
+// client.token, is read by them after wr fills it in.
+func closeWorkingDirToOthers(mode os.FileMode) {
+	closed, err := takeOtherWriteOff(config.ManagerDir, mode)
+
+	switch {
+	case errors.Is(err, errDirIsSymlink):
+		// no mode is quoted here: the one we were given came from a stat that
+		// followed the link, so it describes the target, not what the user
+		// would be looking at.
+		warn("the working directory '%s' is a symlink, so wr will not change its mode - following it "+
+			"would chmod whatever it points at. Check the target yourself: users other than you must "+
+			"not be able to write to the directory holding the database, the client token and the TLS "+
+			"key, and 'chmod g-w,o-w %s' does that",
+			config.ManagerDir, config.ManagerDir)
+	case err != nil:
+		warn("the working directory '%s' is %s, so users other than you can delete or replace the "+
+			"database, the client token and the TLS key in it, and wr could not change that: %s. "+
+			"Run 'chmod g-w,o-w %s' yourself, or ask the directory's owner to",
+			config.ManagerDir, mode, err, config.ManagerDir)
+	case closed != mode:
+		// the modes are logged in the Go spelling of a mode rather than in
+		// octal, because the sticky bit this deliberately preserves has no
+		// digit in os.FileMode.Perm() and would silently vanish from the
+		// message. Note that Go writes a sticky directory 'dtrwxr-xr-x' where
+		// ls -l writes 'drwxr-xr-t'.
+		info("changed the working directory '%s' from %s to %s, so that users other than you can no "+
+			"longer delete or replace the database, the client token and the TLS key in it",
+			config.ManagerDir, mode, closed)
+	}
+}
+
+// takeOtherWriteOff takes the write permission of users other than the owner
+// off dir, which currently has mode, and returns the mode it now has. Every
+// other bit, the sticky and setgid bits included, is left exactly as it was.
+//
+// A dir that is ITSELF a symlink is refused rather than followed. os.Chmod
+// follows one, so a symlink planted where wr expects its directory would aim
+// this chmod at a target of somebody else's choosing. Planting it needs write
+// permission on an ancestor - normally the user's own home - so this is a hole
+// only for an unusual layout or a manager run as root, but refusing costs
+// nothing.
+func takeOtherWriteOff(dir string, mode os.FileMode) (os.FileMode, error) {
+	closed := mode &^ managerDirOtherWritePerms
+	if closed == mode {
+		return mode, nil
+	}
+
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return mode, err
+	}
+
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return mode, errDirIsSymlink
+	}
+
+	file, err := openWorkingDir(dir)
+	if err != nil {
+		return mode, err
+	}
+	defer file.Close()
+
+	changed, err := chmodWorkingDir(file, closed)
+	if err != nil {
+		return mode, err
+	}
+
+	if !changed {
+		return mode, nil
+	}
+
+	return closed, nil
+}
+
+func openWorkingDir(dir string) (*os.File, error) {
+	parent, err := os.OpenRoot(filepath.Dir(dir))
+	if err != nil {
+		return nil, err
+	}
+	defer parent.Close()
+
+	file, err := parent.Open(filepath.Base(dir))
+	if err != nil {
+		// os.Root.Open can report a rejected final symlink as its internal
+		// path-escape error rather than syscall.ELOOP. Recheck the final
+		// component so both forms receive the same user-facing warning.
+		if isFinalSymlink(dir) || errors.Is(err, syscall.ELOOP) {
+			return nil, errDirIsSymlink
+		}
+
+		return nil, err
+	}
+
+	// os.Root.Open reports a final symlink through an internal error while it
+	// follows the link. Check the name after opening so that error is converted
+	// to the user-facing classification without depending on os internals.
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		file.Close()
+
+		return nil, err
+	}
+
+	if fi.Mode()&os.ModeSymlink != 0 {
+		file.Close()
+
+		return nil, errDirIsSymlink
+	}
+
+	return file, nil
+}
+
+func isFinalSymlink(path string) bool {
+	fi, err := os.Lstat(path)
+
+	return err == nil && fi.Mode()&os.ModeSymlink != 0
+}
+
+func chmodWorkingDir(file *os.File, mode os.FileMode) (bool, error) {
+	fi, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+
+	if !fi.IsDir() {
+		return false, nil
+	}
+
+	if err = file.Chmod(mode); err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
 
 // Execute adds all child commands to the root command and sets flags
 // appropriately. This is called by main.main(). It only needs to happen once to
@@ -231,10 +392,23 @@ func die(msg string, a ...any) {
 	cmdExit(1)
 }
 
-// createWorkingDir ensures the main working directory is available.
+// createWorkingDir ensures the main working directory is available, and that
+// no user other than its owner can write to it.
+//
+// An EXISTING directory is not forced to managerDirPerm, because this runs on
+// every manager start and every cloud deploy, and re-imposing a whole mode
+// would silently undo an owner's chmod every time. Only the bits that are a
+// hole are cleared; see closeWorkingDirToOthers.
 func createWorkingDir() {
-	_, err := os.Stat(config.ManagerDir)
+	fi, err := os.Stat(config.ManagerDir)
 	if err == nil {
+		// a working directory that is not a directory at all is left entirely
+		// alone: wr dies on it moments later either way, and chmodding a file
+		// somebody else put there is a side effect nobody asked for.
+		if fi.IsDir() {
+			closeWorkingDirToOthers(fi.Mode())
+		}
+
 		return
 	}
 
@@ -243,7 +417,7 @@ func createWorkingDir() {
 	}
 
 	// try and create the directory
-	if err = os.MkdirAll(config.ManagerDir, os.ModePerm); err != nil {
+	if err = os.MkdirAll(config.ManagerDir, managerDirPerm); err != nil {
 		die("could not create the working directory '%s': %v", config.ManagerDir, err)
 	}
 }
