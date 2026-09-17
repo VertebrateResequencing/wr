@@ -239,6 +239,22 @@ func (g *GroupData) Limit() int64 {
 	return math.MaxInt64
 }
 
+// LimitForDisplay returns the limit to report to a user: the same count as
+// Limit() for a simple run limit group, and -1 for a group that does not limit
+// how many of its jobs run at once, which is the value a user supplies to mean
+// that. Limit() saturates such a group to math.MaxInt64 instead, a convention
+// kept for outside consumers of the exported API rather than something wr
+// depends on: scheduling asks canIncrement() and capacity(), which read the
+// group's own mode and counts, and the two places that call Limit() do so inside
+// an IsCount() branch, to persist a count.
+func (g *GroupData) LimitForDisplay() int64 {
+	if g.IsCount() {
+		return g.limit
+	}
+
+	return -1
+}
+
 // group struct describes an individual limit group.
 type group struct {
 	name string

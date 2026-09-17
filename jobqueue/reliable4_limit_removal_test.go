@@ -39,7 +39,8 @@ const (
 	rl4rmLimit = 3
 
 	// rl4rmUnlimited is what the limiter reports as the remaining capacity of a
-	// group it knows no limit for.
+	// group it knows no limit for, and what the server reports as such a group's
+	// limit.
 	rl4rmUnlimited = -1
 )
 
@@ -68,6 +69,7 @@ func TestReliable4LimitGroupRemoval(t *testing.T) {
 		Convey("A limit that was not removed survives a restart", func() {
 			d.restart(ctx)
 
+			So(rl4rmReportedLimit(d, rl4rmGroup), ShouldEqual, rl4rmLimit)
 			So(rl4rmLimitCmd(d, rl4rmGroup), ShouldResemble, map[string]int{rl4rmGroup: rl4rmLimit})
 			So(limitGroupRecorded(d, rl4rmGroup), ShouldBeTrue)
 			So(d.server.limiter.GetRemainingCapacity(ctx, []string{rl4rmGroup}), ShouldEqual, rl4rmLimit)
@@ -80,6 +82,7 @@ func TestReliable4LimitGroupRemoval(t *testing.T) {
 
 			d.restart(ctx)
 
+			So(rl4rmReportedLimit(d, rl4rmGroup), ShouldEqual, rl4rmUnlimited)
 			So(rl4rmLimitCmd(d, rl4rmGroup), ShouldBeEmpty)
 			So(limitGroupRecorded(d, rl4rmGroup), ShouldBeFalse)
 			So(d.server.limiter.GetRemainingCapacity(ctx, []string{rl4rmGroup}), ShouldEqual, rl4rmUnlimited)
@@ -120,4 +123,19 @@ func limitGroupRecorded(d *dgrServer, group string) bool {
 	So(err, ShouldBeNil)
 
 	return recorded
+}
+
+// rl4rmReportedLimit returns the limit `wr limit -g <group>` prints for the
+// group. Used as the first read after a restart, it is also the call that makes
+// the fresh limiter vivify the group from bucketLGs, so it says what a user is
+// told about a group that only the database still knows about.
+func rl4rmReportedLimit(d *dgrServer, group string) int {
+	jq := d.connect()
+
+	defer disconnect(jq)
+
+	limit, err := jq.GetOrSetLimitGroup(group)
+	So(err, ShouldBeNil)
+
+	return limit
 }
