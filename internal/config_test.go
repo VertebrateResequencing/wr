@@ -120,10 +120,11 @@ func checkErrorFromBuffer(buff *bytes.Buffer, subStr string) {
 	So(bufferStr, ShouldContainSubstring, subStr)
 }
 
-func getTempHome(ctx context.Context) (string, func()) {
+func getTempHome(ctx context.Context, t *testing.T) (string, func()) {
+	t.Helper()
+
 	origHome := fsd.GetHome(ctx)
-	tempHome, err := os.MkdirTemp("", "tempHome")
-	So(err, ShouldBeNil)
+	tempHome := t.TempDir()
 	os.Setenv("HOME", tempHome)
 
 	return tempHome, func() {
@@ -186,7 +187,7 @@ func TestConfig(t *testing.T) {
 		So(content, ShouldContainSubstring, expected)
 
 		Convey("not when file is not writable", func() {
-			f, err := os.OpenFile(filepath.Join(os.TempDir(), "testNoWrite"),
+			f, err := os.OpenFile(ft.FilePathInTempDir(t, "testNoWrite"),
 				os.O_APPEND|os.O_CREATE|os.O_RDONLY, 0o444)
 			So(err, ShouldBeNil)
 
@@ -221,12 +222,7 @@ func TestConfig(t *testing.T) {
 		pn := 1000
 
 		Convey("and a directory", func() {
-			tempHome, err := os.MkdirTemp("", "temp_home")
-			if err != nil {
-				clog.Fatal(ctx, "err", err)
-			}
-
-			defer os.RemoveAll(tempHome)
+			tempHome := t.TempDir()
 
 			Convey("we can write a port to a config file in that directory", func() {
 				writePortsToConfigFile(ctx, pn, tempHome, deployment)
@@ -259,11 +255,7 @@ func TestConfig(t *testing.T) {
 
 		Convey("we can write dev and prod ports to config files in our home directory", func() {
 			origHome := fsd.GetHome(ctx)
-
-			tempHome, err := os.MkdirTemp("", "temp_home")
-			if err != nil {
-				clog.Fatal(ctx, "err", err)
-			}
+			tempHome := t.TempDir()
 
 			os.Setenv("HOME", tempHome)
 			defer os.Setenv("HOME", origHome)
@@ -296,7 +288,7 @@ func TestConfig(t *testing.T) {
 			checker := getPortChecker(ctx, localhost)
 
 			Convey("it can find a port range", func() {
-				tempHome, d1 := getTempHome(ctx)
+				tempHome, d1 := getTempHome(ctx, t)
 				defer d1()
 
 				fsi, err := ft.NewMockStdIn()
@@ -313,7 +305,7 @@ func TestConfig(t *testing.T) {
 			})
 
 			Convey("it cannot update config file when user chooses to not use suggested ports", func() {
-				tempHome, d1 := getTempHome(ctx)
+				tempHome, d1 := getTempHome(ctx, t)
 				defer d1()
 
 				fsi, err := ft.NewMockStdIn()
@@ -431,7 +423,7 @@ func TestConfig(t *testing.T) {
 				})
 
 				Convey("user chooses to save ports to config file", func() {
-					_, d1 := getTempHome(ctx)
+					_, d1 := getTempHome(ctx, t)
 					defer d1()
 
 					fsi, err := ft.NewMockStdIn()
@@ -516,10 +508,7 @@ func TestConfig(t *testing.T) {
 		})
 
 		Convey("it can convert the relative to an actual Abs path", func() {
-			tempHome, err := os.MkdirTemp("", "temp_home")
-			if err != nil {
-				clog.Fatal(ctx, "err", err)
-			}
+			tempHome := t.TempDir()
 
 			So(defConfig.ManagerDBFile, ShouldEqual, "db")
 
@@ -557,10 +546,7 @@ func TestConfig(t *testing.T) {
 		})
 
 		Convey("it can be overridden with a config file given its path", func() {
-			dir, err := os.MkdirTemp("", "wr_conf_test")
-			So(err, ShouldBeNil)
-
-			defer os.RemoveAll(dir)
+			dir := t.TempDir()
 
 			mport := "1234"
 			mweb1 := "1235"
@@ -599,10 +585,7 @@ func TestConfig(t *testing.T) {
 
 		Convey("these can be overridden with config files in WR_CONFIG_DIR", func() {
 			uid := 1000
-			dir, err := os.MkdirTemp("", "wr_conf_test")
-			So(err, ShouldBeNil)
-
-			defer os.RemoveAll(dir)
+			dir := t.TempDir()
 
 			mport := "1234"
 			mweb1 := "1235"
@@ -627,7 +610,7 @@ func TestConfig(t *testing.T) {
 			So(defConfig.Source("ManagerWeb"), ShouldEqual, path2)
 
 			Convey("these can be overridden with config files in home dir", func() {
-				tempHome, d1 := getTempHome(ctx)
+				tempHome, d1 := getTempHome(ctx, t)
 				defer d1()
 
 				mport := "1334"
@@ -659,8 +642,7 @@ func TestConfig(t *testing.T) {
 				})
 
 				Convey("these can be overridden with config files in current dir", func() {
-					pwd, err := os.MkdirTemp("", "temp_pwd")
-					So(err, ShouldBeNil)
+					pwd := t.TempDir()
 
 					mport = "1434"
 					mweb1 = "1435"
@@ -740,16 +722,11 @@ func TestConfig(t *testing.T) {
 			orgPWD, err := os.Getwd()
 			So(err, ShouldBeNil)
 
-			dir, err := os.MkdirTemp("", "wr_conf_test")
-			So(err, ShouldBeNil)
+			dir := t.TempDir()
 
 			path := dir + "/jobqueue/server.go"
 			err = os.MkdirAll(path, 0o777)
 			So(err, ShouldBeNil)
-
-			defer func() {
-				defer os.RemoveAll(dir)
-			}()
 
 			err = os.Chdir(dir)
 
@@ -844,8 +821,7 @@ func TestConfig(t *testing.T) {
 		defer os.Unsetenv("WR_MANAGERUMASK")
 
 		uid := 1000
-		pwd, err := os.MkdirTemp("", "temp_wd")
-		So(err, ShouldBeNil)
+		pwd := t.TempDir()
 
 		mport := "5434"
 		mweb1 := "5435"

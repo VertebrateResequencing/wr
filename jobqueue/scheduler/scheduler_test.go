@@ -903,10 +903,7 @@ func testLocalFewerCPUs(ctx context.Context, t *testing.T) {
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
-		tmpDir, err := os.MkdirTemp("", "wr_schedulers_local_test_slee[_output_dir_")
-		if err != nil {
-			log.Fatal(err)
-		}
+		tmpDir := t.TempDir()
 
 		cmd := fmt.Sprintf("mktemp --tmpdir=%s tmp.XXXXXX && sleep 0.5", tmpDir)
 		sleepReq := &Requirements{1, 1 * time.Second, 1, 0, otherReqs, true, true, true}
