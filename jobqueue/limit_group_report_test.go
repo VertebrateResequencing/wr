@@ -47,7 +47,8 @@ const (
 // group's limit is (.docs/bugfixes/260917-limit-group.md). A group nothing
 // knows a limit for, and a group whose limit was removed with :-1, are the same
 // unlimited group data internally, and both have to reach the client as -1
-// rather than as the MaxInt64 that makes the scheduler's comparisons work.
+// rather than as the MaxInt64 that limiter.GroupData.Limit() saturates them to
+// for outside consumers of that exported API.
 func TestLimitGroupReport(t *testing.T) {
 	if runnermode || servermode {
 		return

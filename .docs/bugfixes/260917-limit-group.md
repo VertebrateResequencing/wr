@@ -77,20 +77,26 @@ today, and a `YYMMDD-N.md` name would collide as an add/add conflict, which
     are the control, and the empty listing is item 10's behaviour, which must
     not change.
 
-  - Fixed in `limiter/group.go` and `jobqueue/serverCLI.go`, 14 lines. The
-    saturation stays where scheduling needs it: `GroupData.Limit()` is untouched
-    and its two other callers, both of them `jobqueue/db.go` persisting a count,
-    are untouched with it. A new `GroupData.LimitForDisplay()` next to it returns
-    the count for a count group and -1 for every other kind, and
-    `handleGetSetLimitGroup` reports that instead. So the one place that knows
-    MaxInt64 is a scheduling convention rather than a limit is still the limiter,
-    and `serverCLI.go` gained no knowledge of group modes.
+  - Fixed in `limiter/group.go` and `jobqueue/serverCLI.go`, 17 lines.
+    `GroupData.Limit()` is untouched, and so are its only two callers, both of
+    them `jobqueue/db.go` persisting a count inside an `IsCount()` branch. A new
+    `GroupData.LimitForDisplay()` next to it returns the count for a count group
+    and -1 for every other kind, and `handleGetSetLimitGroup` reports that
+    instead. The knowledge that MaxInt64 stands in for "no limit" stays inside
+    the limiter, and `serverCLI.go` gained no knowledge of group modes.
+  - What MaxInt64 is NOT: scheduling does not read it. `canIncrement()`,
+    `capacity()` and `GetRemainingCapacity()` all work from the group's own mode
+    and counts, so after this fix nothing in the tree reaches `Limit()`'s
+    `math.MaxInt64` branch at all. It stays because `Limit()` is exported and an
+    outside consumer may saturate on it; collapsing it would change the exported
+    API's semantics, which is a separate decision from this bug.
   - Both MaxInt64 cases report -1, as the help text already promised for the
     unknown one, and nothing at the CLI needs to tell them apart: a group nothing
     knows a limit for and a group whose limit was just removed are the same
     unlimited group, and `wr limit` with no options already omits both from its
-    listing. A group limited by time of day rather than by a count reports -1
-    too, which is the same answer the listing gives by leaving it out.
+    listing. A group limited by time of day or by absolute date-time, rather than
+    by a count, reports -1 too, which is the same answer the listing gives by
+    leaving it out.
   - Regression test `TestLimitGroupReport` in
     `jobqueue/limit_group_report_test.go`, on the existing `dgrStartServer`
     fixture. It asserts on what a real client is told by `GetOrSetLimitGroup`,
@@ -98,11 +104,15 @@ today, and a `YYMMDD-N.md` name would collide as an add/add conflict, which
     a group set to 5 and read back, a group set to 0 and read back (so -1 cannot
     be reached by treating any falsy limit as unlimited), a group removed with
     `:-1` and read back after, and a time-of-day group.
-  - Item 10's `TestReliable4LimitGroupRemoval` needed no change. It discards
-    `GetOrSetLimitGroup`'s limit (`_, err := jq.GetOrSetLimitGroup(group)`) and
-    asserts on the listing, on `bucketLGs` and on the limiter's remaining
-    capacity, none of which this fix touches. It passes unchanged, and the real
-    `wr limit` with no options still lists a `:0` group and omits a removed one.
+  - Item 10's `TestReliable4LimitGroupRemoval` did not need changing to keep
+    passing: it discarded `GetOrSetLimitGroup`'s limit and asserts on the
+    listing, on `bucketLGs` and on the limiter's remaining capacity, none of
+    which this fix touches. Its two post-restart reads now also assert the
+    scalar the server reports (`rl4rmReportedLimit`, the first read after each
+    restart, so it is the call that makes the fresh limiter vivify the group from
+    `bucketLGs`): the limit that survived a restart reports 3, and the removed
+    one reports -1. That is the only path `TestLimitGroupReport` does not reach,
+    since it never restarts a server. Nothing else in that test changed.
   - Not changed: `cmd/limit.go`'s help, which already says -1; the wire protocol,
     where `serverResponse.Limit` is still an `int` carrying the same -1 the
     client's doc comment has always promised; and `Limiter.GetLimits()`, which
@@ -132,18 +142,39 @@ today, and a `YYMMDD-N.md` name would collide as an add/add conflict, which
 
   | Reverted | Assertion that fails |
   | --- | --- |
-  | `handleGetSetLimitGroup` reports `int(limit.Limit())` again | `limit_group_report_test.go:68` Expected -1, Actual 9223372036854775807 (also `:81` and `:89`) |
-  | `LimitForDisplay` returns -1 for every group | `:72` Expected 5, Actual -1 |
+  | `handleGetSetLimitGroup` reports `int(limit.Limit())` again | `limit_group_report_test.go:69` Expected -1, Actual 9223372036854775807 (also `:82` and `:90`) |
+  | `LimitForDisplay` returns -1 for every group | `:73` Expected 5, Actual -1 |
+  | the same revert, against item 10's test | `reliable4_limit_removal_test.go:85` Expected -1, Actual 9223372036854775807 |
 
-  **Gates** (host load average 3-6, 8 cores). `make lint`: 2 issues, exactly the
-  pre-existing `jobqueue/behaviours.go:323` funlen and
-  `jobqueue/modify_validation_test.go:421` gci. `make test`: **668 passed - 20
-  skipped - 29 packages - 6m17s**, PASSED, no flake. `CGO_ENABLED=1 make race`:
-  668 passed - 19 skipped - 29 packages - 9m53s, PASSED. `cleanorder -min-diff`
-  is a no-op on all three edited Go files.
+  **Lint baseline: `0 issues.`, and check your `master` ref before believing
+  anything else.** `.golangci.yml` pins `new-from-rev: master`, so `make lint`
+  reports only what is new relative to whatever the local `master` ref points at.
+  This clone's was stale (`3caeba4`, v0.37.1), which made `make lint` report 2
+  issues - `jobqueue/behaviours.go:323` funlen and
+  `jobqueue/modify_validation_test.go:421` gci - that an earlier run of these
+  gates recorded as pre-existing. They are phantoms of the stale ref: both
+  constructs are already on the real `origin/master` at `b2f0ff9`, so neither is
+  new. With `master` fetched up to `b2f0ff9`, `make lint` is `0 issues.` A clone
+  with no local `master` at all is worse and quieter: `golangci-lint` then falls
+  back to reporting every issue in the tree, 44 of them here. Fetch `master` to
+  `origin/master` before reading a lint result.
 
-  Note for whoever runs the gates next in a fresh clone: `.golangci.yml` sets
-  `new-from-rev: master`, and this clone had no local `master`, so
-  `golangci-lint` silently fell back to reporting every issue in the tree (44).
-  `git branch master origin/master` (both at `3caeba4`) restores the 2-issue
-  baseline. The branch was created for that reason and nothing else.
+  **Gates**, with `master` at `b2f0ff9` and `WR_TEST_PORT_BASE` set to keep off
+  the sibling clones' ports (23011 for test, 23511 for race):
+
+  - `make lint`: **0 issues.**
+  - `make test`: **PASSED - 668 passed, 20 skipped, 29 packages, 7m48s.**
+  - `CGO_ENABLED=1 make race`: **PASSED - 668 passed, 19 skipped, 29 packages,
+    10m11s**, on a re-run. The first attempt failed six tests
+    (`TestSubscriptionBoundedIsolatedBuffer`, `TestSubscriptionReconnectResync`,
+    `TestJobqueueExecutionAndDependencyScenarios`, `TestSchedulerSubmitJobsAndWait`,
+    `TestJobqueueSignal`, `TestClientExecuteLiveTouchPayloads`), none of them
+    anywhere near limit groups and none reporting a port error. Host load, not a
+    defect: a sibling clone was running its own race suite at the same time, the
+    15-minute load average over that run was 18 against 8 cores, and one of the
+    six failures is a bare clock reading - `jobqueue_test.go:1730` wanted a
+    measured 3601-3630 and got 3644.58. The re-run at load ~5, with no other
+    suite running, passed every one of them.
+  - `cleanorder -min-diff` is a no-op on all four edited Go files. It wanted
+    `rl4rmReportedLimit` moved below `limitGroupRecorded`, and that move is
+    applied.

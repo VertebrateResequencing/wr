@@ -200,7 +200,7 @@ project adheres to [Semantic Versioning](http://semver.org/).
   though the command's own help says "Groups that are not known about will
   report -1". It now reports -1 for a group nothing knows a limit for, for a
   group whose limit you have just removed with `-g <group>:-1`, and for one
-  limited by time of day rather than by a count of jobs. A group with a count
+  limited by time rather than by a count of jobs. A group with a count
   limit still reports that count, including a limit of 0, and `wr limit` with no
   options lists exactly the groups it listed before.
 
