@@ -169,6 +169,13 @@ var errArchivePanic = errors.New("panic while archiving job")
 // malformed job fails only its own add.
 var errNewJobsPanic = errors.New("panic while storing new jobs")
 
+// errBestEffortWriteAborted is what a caller waiting on a best-effort drain is
+// told when that drain did not commit. It is drainBestEffort's DEFAULT, cleared
+// only by a successful write, so a panic inside the transaction body - which
+// db.bolt.Update rolls back but, unlike bbolt.Batch's safelyCall, does not
+// recover - can never be reported to a waiter as a write that reached disk.
+var errBestEffortWriteAborted = errors.New("best-effort write transaction aborted")
+
 // jobExitUpdatePollInterval is how often retrieveJobStd polls for in-progress
 // updateJobAfterExit() calls to complete.
 const jobExitUpdatePollInterval = 10 * time.Millisecond
@@ -1682,7 +1689,14 @@ func (db *db) drainBestEffort(ctx context.Context) {
 		return
 	}
 
-	var err error
+	// the default is "did not commit", not nil: db.bolt.Update rolls a panicking
+	// transaction back but does not recover it (applyArchiveOp exists precisely
+	// because bbolt.Batch's safelyCall did and Update does not), so a panic inside
+	// batch.apply unwinds through this deferred reply carrying no error of its own.
+	// A waiter handed nil there would read it as "your write is on disk" for a
+	// transaction that rolled back, which is the acknowledge-before-durable bug
+	// handleStart's wait exists to close. Only a successful write clears it.
+	err := errBestEffortWriteAborted
 
 	defer func() { db.doneBestEffort(batch, err) }()
 

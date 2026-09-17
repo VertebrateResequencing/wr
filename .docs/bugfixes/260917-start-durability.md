@@ -257,30 +257,46 @@ provided it can tell "started but not persisted" from "never started".
       -run '^TestStartDurability$'
     ```
 
-    Without the fix (`jobqueue/db.go` and `jobqueue/serverCLI.go` reverted, the
-    test kept):
+    Without the fix (`handleStart` reverted to `updateJobAfterChange`, the test
+    kept):
 
     ```text
+    start_durability_test.go:181: start acknowledged while its write was held
+      off disk: true
+
     Failures:
 
       * .../jobqueue/start_durability_test.go
-      Line 196:
+      Line 227:
       Expected: 1
       Actual:   2
 
-    17 total assertions
+    20 total assertions
 
-    --- FAIL: TestStartDurability (0.75s)
+    --- FAIL: TestStartDurability (0.66s)
     ```
 
     Two runs of the command in the marker file, the first still alive: the
     double run itself, not a proxy for it. With the fix:
 
     ```text
-    19 total assertions
+    start_durability_test.go:181: start acknowledged while its write was held
+      off disk: false
 
-    --- PASS: TestStartDurability (7.90s)
+    26 total assertions
+
+    --- PASS: TestStartDurability (7.82s)
     ```
+
+    Nothing in the unfixed run depends on a timer. The crash image is taken the
+    instant the ack arrives and BEFORE the hold on the write is released, so a
+    manager that answers early is snapshotted against the state it answered
+    against, whatever the box's speed. The timer only releases the hold for a
+    manager that is waiting on the write, which cannot answer until it does. The
+    one way this could still go quietly green - a box slow enough for the
+    `Started()` round trip to outlast the hold - is caught by the last
+    assertion, `ackedWhileWriteHeld`, ordered after the run-count assertions so
+    the double run stays the headline failure whenever there is one.
 
   - How the test opens the window without fault-injection knobs. Holding the
     single bbolt write transaction (`server.db.bolt.Begin(true)`, the seam
@@ -293,14 +309,51 @@ provided it can tell "started but not persisted" from "never started".
     manager opens. The assertion is then the criterion itself: a fresh client
     Reserves and Executes whatever the recovered manager gives it, and the
     command's marker file must still record exactly one run, with the first
-    run's process still alive.
+    run's process still alive. Two further assertions pin what the recovered
+    manager did, so a manager that hands out no work for an unrelated reason
+    cannot satisfy that run count while leaving the job on the ready queue: the
+    job reads back `JobStateRunning` through the client, and the Reserve returns
+    nothing.
+
+  - **The panic path had to be closed too, or the waiter would be told a lie.**
+    Review caught this and it is worth stating on its own, because it is the one
+    path that reintroduced the bug inside the fix for it. `db.bolt.Update` rolls
+    a panicking transaction back but does NOT recover it - `applyArchiveOp`
+    exists precisely because `bbolt.Batch`'s `safelyCall` did and `Update` does
+    not - so a panic in `batch.apply` unwinds through `drainBestEffort`'s
+    deferred reply carrying no error of its own. With `var err error` as the
+    default, every waiter was told `nil`, `handleStart` acknowledged a start
+    whose transaction had rolled back, and the restarted manager re-ran the live
+    command. `drainBestEffort` now starts from `errBestEffortWriteAborted` and
+    only a successful `Update` clears it.
+
+    `TestStartDurabilityAbortedWriteIsNotCommitted` proves it. It drops the live
+    bucket so `applyChanges` dereferences a nil `*bolt.Bucket` - a panic raised
+    inside the transaction body, not an error returned from it - and asserts
+    both that the drain panicked and what the waiter was told. With the default
+    back to `var err error`:
+
+    ```text
+    start_durability_test.go:346: a waiter on a rolled-back drain was told
+      <nil>, want errBestEffortWriteAborted
+    --- FAIL: TestStartDurabilityAbortedWriteIsNotCommitted (0.01s)
+    ```
+
+    The drain runs on the test's own goroutine and the batch is queued without
+    waking the writer, because `bestEffortWriter`'s deferred `internal.LogPanic`
+    calls `os.Exit(1)`: a panicking drain on the writer goroutine would take the
+    whole test binary down rather than fail one test. The reply itself is not
+    racy: `drainBestEffort`'s defer completes before the outer `LogPanic` runs,
+    so what races the exit is only the waiting goroutine's receive, and if that
+    wins it now gets the truth.
 
   - Files changed:
     - `jobqueue/db.go`: `beBatch` and the pending state gain a `waiters`
-      list; `drainBestEffort`/`doneBestEffort` hand the drain's error to each
-      waiter (buffered(1), never closed, as `archiveOp.reply` does);
-      `updateJobAfterChange` is split into `queueJobChange` (encode + enqueue)
-      plus the existing fire-and-forget entry point and a new
+      list; `drainBestEffort`/`doneBestEffort` hand the drain's outcome to each
+      waiter (buffered(1), never closed, as `archiveOp.reply` does), defaulting
+      to the new `errBestEffortWriteAborted` so only a committed write reports
+      success; `updateJobAfterChange` is split into `queueJobChange` (encode +
+      enqueue) plus the existing fire-and-forget entry point and a new
       `updateJobAfterChangeDurable` that blocks on its waiter.
     - `jobqueue/serverCLI.go`: `handleStart` calls
       `updateJobAfterChangeDurable` and returns `ErrInternalError` if the write
@@ -309,7 +362,11 @@ provided it can tell "started but not persisted" from "never started".
       its touch loop holds the TTR, and `retryStartReport` re-sends the start
       until it persists - instead of the command being killed or run on with an
       unrecorded start.
-    - `jobqueue/start_durability_test.go`: the regression test above.
+    - `jobqueue/start_durability_test.go`: the two regression tests above.
+    - `jobqueue/db_bench_test.go`: `BenchmarkUpdateJobState`'s doc comment no
+      longer claims to cover a job's start, nor a write done "in a background
+      goroutine" (#555 replaced that with the single coalescing writer). The
+      benchmark itself is unchanged; suspend/resume/kick still take that path.
 
   - Deadlock and shutdown checked, not assumed. The waiter is created and
     enqueued under `db.RLock`, and waited on only after that lock is released,
@@ -341,24 +398,34 @@ provided it can tell "started but not persisted" from "never started".
     are answered by the same commit, so the fix adds one drain's latency to a
     start, not one transaction per start.
 
+  - `handleStart` now takes `_ context.Context`, and the discard is deliberate
+    rather than tidy-up: the wait is unbounded, exactly as `db.archiveJob`'s
+    `<-op.result` has always been, and what bounds it in practice is the
+    client's own request timeout. A deadline was considered and rejected for
+    now: there is no correct duration short of the client's, and a manager that
+    gave up on the wait would be acknowledging a start it had not persisted.
+    That parameter is the hook a deadline-aware wait would use, so it stays in
+    the signature rather than being removed.
+
   - Accepted cost, consistent with criterion 3. A start now shares the archive
     path's exposure to a slow commit: under the reliable4 freeze conditions it
     would block up to the client's 60s `ClientMinRequestTimeout` floor, after
     which the runner treats it as transient, keeps the command running and
     re-reports. That is latency, not a lost or doubled run.
 
-  - **What is NOT fixed, and must not be claimed.** Step 2 above is still open,
-    and `TestJobqueueSignal` is untouched, so its `signal_b` flake is NOT
-    fixed. This fix makes the *acknowledged* start durable; a manager SIGKILLed
-    strictly before the acknowledgement still comes back with the job on the
-    ready queue, and that is the window the signal test's marker-file trigger
-    lands in. Polling the manager for `running` does not close it either:
-    `applyJobStart` sets `State` in memory before the write is queued, so a
-    client can observe `running` while the write is still pending. Closing it
-    needs a precondition that observes the runner's `Started()` having
-    RETURNED, which the signal test has no supported boundary for today - which
-    is why the regression test above is a separate deterministic test rather
-    than a change to that one.
+  - **What is NOT fixed, and must not be claimed.** Two things, and the first
+    has its own unchecked item below because it is a production window, not a
+    test one. Step 2 above is still open, and `TestJobqueueSignal` is untouched,
+    so its `signal_b` flake is NOT fixed. This fix makes the *acknowledged*
+    start durable; a manager SIGKILLed strictly before the acknowledgement still
+    comes back with the job on the ready queue, and that is the window the
+    signal test's marker-file trigger lands in. Polling the manager for
+    `running` does not close it either: `applyJobStart` sets `State` in memory
+    before the write is queued, so a client can observe `running` while the
+    write is still pending. Closing it needs a precondition that observes the
+    runner's `Started()` having RETURNED, which the signal test has no supported
+    boundary for today - which is why the regression test above is a separate
+    deterministic test rather than a change to that one.
 
   - Gates, all `OS_*` unset. `make lint`: **0 issues**, which is the passing
     baseline - any issue at all belongs to the change. Two things had to be put
@@ -382,3 +449,43 @@ provided it can tell "started but not persisted" from "never started".
     three - `funlen` 14 -> 13 (`queueJobChange`), `nilnil` 1 -> 0 (the closed-db
     return), `noctx` 1 -> 0 (the test's `exec.Command`) - with every other count
     identical.
+
+- [ ] **A manager killed strictly BEFORE it acknowledges a start still re-runs
+      that job on restart while the first run's command is alive.** The fix
+      above narrows criterion 1's window; it does not close it. Recorded as its
+      own item because reading only "chosen option" above would leave the
+      impression that it did.
+
+  What the fix guarantees is conditional: *if* the runner got its `Started` ack,
+  the `running` state is on disk, so recovery sees `JobStateRunning` and the job
+  is never offered to a fresh runner. The window that remains is the runner
+  having NO ack - the manager died between `applyJobStart` and the drain
+  committing. Recovery then reads `State == ""`, `recoveredItemDef` takes its
+  `default` branch, the job lands on the ready queue, and a fresh runner can be
+  given a command that is still running.
+
+  It is smaller than it was and it degrades more safely, but neither is a fix:
+  - The window is now bounded by one drain rather than by "whenever the writer
+    goroutine is next scheduled", and the runner KNOWS it has no ack.
+  - `retryStartReport` re-sends that unacknowledged start, and the restarted
+    manager answers `ErrBadJob` (the recovered item is in Ready, not Run), which
+    `isDefinitiveReject` treats as definitive, so the runner kills its command.
+    That is a race against the fresh runner, not an ordering, so it cannot be
+    claimed as criterion 1.
+
+  Closing it properly needs the recovery side, and the evidence gathered for
+  this fix says that route has no discriminator to work with: nothing about a
+  started job is persisted earlier than `handleStart`'s write (see the three
+  candidates checked under the fix above), so recovery cannot tell this job from
+  one that was added and never reserved. Options, none costless:
+  1. Persist the RESERVATION, so a recovered reserved-but-not-started job can be
+     held rather than made ready. That is a synchronous write per reserve, on a
+     path with no coalescing waiter today, and reserve is hotter than start.
+  2. Have the runner treat an unacknowledged `Started` as "I do not own this
+     run" and kill its own command before retrying. Ordered rather than racy,
+     but it destroys healthy work on any transient manager slowness, which is
+     the behaviour #555 deliberately introduced and would be reverting.
+  3. Accept it, and rely on the wedged-runner backstop plus operator notice.
+
+  This needs the repo owner's call on which cost is acceptable; do not pick one
+  in passing while fixing something else.

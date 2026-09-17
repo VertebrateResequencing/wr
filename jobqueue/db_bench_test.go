@@ -82,6 +82,23 @@ const benchDBWaitTimeout = 5 * time.Minute
 // all.
 const benchArchiveConcurrency = 64
 
+// benchSpacedArchives is how many archives BenchmarkArchiveSpacedArrivals drives.
+// It is small because that benchmark deliberately paces arrivals in wall-clock
+// time rather than saturating the write path.
+const benchSpacedArchives = 200
+
+// benchSpacedInterval paces those arrivals. It is longer than bbolt's 10ms
+// MaxBatchDelay, so bbolt's own batching cannot coalesce them (production's
+// archives arrived ~83ms apart) - only an explicit coalescing writer can.
+const benchSpacedInterval = 12 * time.Millisecond
+
+// benchSpacedCommitCost is the artificial cost charged once per archive write
+// transaction, standing in for production's freelist-bound commit on its 10.3GB
+// database. Without it a fresh temp-dir DB commits in well under the arrival
+// interval, so no queue of pending archives can form and there is nothing to
+// coalesce.
+const benchSpacedCommitCost = 60 * time.Millisecond
+
 // BenchmarkOwnMemoryAccounting guards the per-job own-memory accounting cost on
 // the runner's hot path. After a job command exits, Client.Execute adds the
 // runner's own memory footprint to the job's peak RAM. It does this once per
@@ -159,14 +176,17 @@ func BenchmarkAddJobs(b *testing.B) {
 }
 
 // BenchmarkUpdateJobState measures the per-job state-change persistence path:
-// the reserve/start/touch style updates that re-encode a live job and rewrite
-// its live-bucket entry via updateJobAfterChange. updateJobAfterChange performs
-// its BoltDB write in a background goroutine tracked by db.wg, so each iteration
-// fires the whole batch of updates and then waits for those goroutines to drain
-// before the next iteration; the timer therefore covers the full persistence of
-// the batch, and the bolt write counters reflect every commit. How those
-// per-job changes coalesce into BoltDB commits is exactly the write-coalescing
-// behaviour we want to keep observable.
+// the suspend/resume/kick style updates that re-encode a live job and rewrite its
+// live-bucket entry via updateJobAfterChange. A job's START is no longer one of
+// them - handleStart uses updateJobAfterChangeDurable and waits for the drain that
+// covers its own write (.docs/bugfixes/260917-start-durability.md) - so what this
+// measures is the callers that stay fire-and-forget. updateJobAfterChange queues
+// its BoltDB write for the single coalescing best-effort writer and returns,
+// tracking it in db.wg, so each iteration fires the whole batch of updates and
+// then waits for db.wg to drain before the next iteration; the timer therefore
+// covers the full persistence of the batch, and the bolt write counters reflect
+// every commit. How those per-job changes coalesce into BoltDB commits is exactly
+// the write-coalescing behaviour we want to keep observable.
 func BenchmarkUpdateJobState(b *testing.B) {
 	ctx := context.Background()
 	testDB := newBenchDB(b)
@@ -189,7 +209,7 @@ func BenchmarkUpdateJobState(b *testing.B) {
 
 		for _, job := range jobs {
 			job.Lock()
-			// Simulate a reserve/start/touch state change: flip the state and
+			// Simulate a suspend/resume style state change: flip the state and
 			// bump a timestamp so the encoded value genuinely differs.
 			if job.State == JobStateRunning {
 				job.State = JobStateReserved
@@ -202,7 +222,7 @@ func BenchmarkUpdateJobState(b *testing.B) {
 			testDB.updateJobAfterChange(ctx, job)
 		}
 
-		// Wait for the background live-bucket writes of this batch to complete
+		// Wait for the queued live-bucket writes of this batch to complete
 		// so the next iteration (and the final metric capture) sees a quiescent
 		// db, and so the timer covers the full persistence of the batch.
 		testDB.wg.Wait(benchDBWaitTimeout)
@@ -274,23 +294,6 @@ func BenchmarkArchiveJobs(b *testing.B) {
 		b.ReportMetric(float64(txns)/float64(jobsTotal), "bolt_txns/job")
 	}
 }
-
-// benchSpacedArchives is how many archives BenchmarkArchiveSpacedArrivals drives.
-// It is small because that benchmark deliberately paces arrivals in wall-clock
-// time rather than saturating the write path.
-const benchSpacedArchives = 200
-
-// benchSpacedInterval paces those arrivals. It is longer than bbolt's 10ms
-// MaxBatchDelay, so bbolt's own batching cannot coalesce them (production's
-// archives arrived ~83ms apart) - only an explicit coalescing writer can.
-const benchSpacedInterval = 12 * time.Millisecond
-
-// benchSpacedCommitCost is the artificial cost charged once per archive write
-// transaction, standing in for production's freelist-bound commit on its 10.3GB
-// database. Without it a fresh temp-dir DB commits in well under the arrival
-// interval, so no queue of pending archives can form and there is nothing to
-// coalesce.
-const benchSpacedCommitCost = 60 * time.Millisecond
 
 // BenchmarkArchiveSpacedArrivals measures the completion path in the PRODUCTION
 // regime that reliable4 FINDING 2 diagnosed: archives arriving further apart than
