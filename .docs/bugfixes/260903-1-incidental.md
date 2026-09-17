@@ -59,30 +59,43 @@ whose suggested "Next" step (disk load) that work disproves.
 
 ## Open
 
-- [ ] **`make lint` is red on develop, in two places.** Found while gating
-      this branch's work; recorded rather than waived.
+- [ ] **`make lint`'s verdict depends on a local ref nothing keeps current,
+      and says nothing when that ref is missing.** Recorded in place of a
+      finding that turned out to be an artefact of exactly this - see the
+      correction below.
 
-      Both re-confirmed on develop `41a04a26` on 2026-09-17 by a whole-repo
-      `make lint` with a cleaned cache, golangci-lint v2.12.2 (the pinned
-      version). Those two are the only issues it reports, and both still report
-      with this branch's only source edit replaced by develop's version of the
-      file, so neither comes from anything here:
+      `.golangci.yml` sets `new-from-rev: master`, so `make lint` reports only
+      what is new since the LOCAL `master` branch. Nothing updates that ref: a
+      clone made long ago keeps whatever `master` pointed at then, and `git
+      fetch` does not move a local branch. Measured on 2026-09-17:
 
-      ```text
-      jobqueue/behaviours.go:323:21: Function 'run' has too many statements (21 > 20) (funlen)
-      jobqueue/modify_validation_test.go:421:1: File is not properly formatted (gci)
-      ```
+      | clone's local `master` | `make lint` |
+      |---|---|
+      | `b2f0ff97`, i.e. `origin/master` | `0 issues.` |
+      | `3caeba4d`, an ancestor of it (this clone) | 2 issues |
+      | absent | 44 issues |
 
-      `Behaviour.run` grew past the statement limit on develop, in #572 or #575.
+      The last row is the worst of the three: with the ref missing,
+      golangci-lint does not error, it silently falls back to reporting the
+      whole tree. A fresh clone therefore fails its first `make lint` with 44
+      findings in code nobody touched, and the fix is to create a ref rather
+      than to change any code.
 
-      `modify_validation_test.go` is not `gofmt`-clean: one struct-literal field
-      is not padded to align with the field above it. `gofmt -l` names the file
-      and `golangci-lint fmt` fixes it. The line arrived with #547.
+  - suggested direction: have the gate name a revision that is always right -
+    `origin/master`, as `.github/workflows/golangci-lint.yml` already does for
+    CI - or fail loudly when the configured rev does not resolve. The choice
+    between "same as CI" and "stricter than CI on purpose" is the maintainer's;
+    the defect is that today it is neither reliably, and quietly so.
 
-      CI does not catch either because `.github/workflows/golangci-lint.yml`
-      runs `make lint GOLANGCI_LINT_ARGS=--new-from-rev=origin/master`, which
-      reports `0 issues.` here. So the plain `make lint` in the local gate set
-      is stricter than CI's, and this is the gap between them.
+  - **CORRECTION.** This entry first claimed `make lint` was red on develop in
+    two places, `jobqueue/behaviours.go:323` (funlen, 21 > 20) and
+    `jobqueue/modify_validation_test.go:421` (gci), and blamed CI's
+    `--new-from-rev=origin/master` for not catching them. That was wrong. Both
+    constructs are already present on `origin/master` (`#547` is an ancestor of
+    it), so neither is new relative to it, and a clone whose `master` is at
+    `origin/master` reports `0 issues.` both with the config default and with
+    CI's invocation. They surfaced here only because this clone's `master` is
+    the older `3caeba4d`. Nothing is red on develop; the reporting is.
 
   - Note for whoever runs the gates: a `golangci-lint run` straight after
     editing a file in this clone also reported two G703 hits in
@@ -129,8 +142,8 @@ whose suggested "Next" step (disk load) that work disproves.
     port bind, so the daemon dies in milliseconds. Unset, the hook still
     returns early and a normal run is unchanged.
   - The old `#nosec G706` went with the `log.Printf` it annotated, and no new
-    gosec finding replaced it; `make lint` still reports only the two
-    pre-existing develop issues above.
+    gosec finding replaced it: `make lint` reports no issue this change is
+    responsible for, at either of the baselines the item above describes.
   - Regression test `TestJobqueueServerLog` drives the real binary as its own
     `--servermode` child with an unopenable path and asserts the process
     boundary: exit 1, the reason on combined output, and no `test daemon up`.
