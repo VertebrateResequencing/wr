@@ -97,6 +97,13 @@ const (
 	// sequence with headroom. It is free on the success path (the test stops the
 	// daemon itself, so Block() returns long before this fires).
 	daemonBackstopWait = 3 * runnerStartWait
+	// daemonLogFailureWait bounds how long TestJobqueueServerLog waits for a
+	// --servermode daemon that cannot open its requested log file to exit. It is
+	// a hang detector, not a latency budget: the daemon makes that decision
+	// before it loads any config or opens any port, so it exits within
+	// milliseconds, and only the bug it guards against (carrying on and serving
+	// anyway) reaches this bound.
+	daemonLogFailureWait = 30 * time.Second
 	// servePublishWait bounds how long the serve helper waits for a server to
 	// publish itself. It is a hang detector, not a latency budget: the only thing
 	// between Serve returning and publication is the recovery of whatever prior
@@ -1310,36 +1317,81 @@ func startServer(
 	return jq, token, cmd, err
 }
 
+func TestJobqueueServerLog(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A --servermode daemon asked for a log it cannot open dies instead of running without one", t, func() {
+		dir := t.TempDir()
+
+		port, err := freeTestPort()
+		So(err, ShouldBeNil)
+
+		webPort, err := freeTestPort()
+		So(err, ShouldBeNil)
+
+		ctx, cancel := context.WithTimeout(t.Context(), daemonLogFailureWait)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run", "TestJobqueue", "--servermode") //nolint:gosec
+
+		cmd.Env = append(os.Environ(),
+			"WR_TEST_SERVER_LOG="+filepath.Join(dir, "nosuchdir", "server.log"),
+			"WR_MANAGERDIR="+filepath.Join(dir, "mgr"),
+			"WR_MANAGERPORT="+strconv.Itoa(port),
+			"WR_MANAGERWEB="+strconv.Itoa(webPort),
+		)
+
+		out, err := cmd.CombinedOutput()
+
+		// a daemon that ignored the failure serves until something kills it, so
+		// the deadline expiring is the bug, not a slow machine.
+		So(ctx.Err(), ShouldBeNil)
+
+		var exitErr *exec.ExitError
+		So(errors.As(err, &exitErr), ShouldBeTrue)
+		So(exitErr.ExitCode(), ShouldEqual, 1)
+		So(string(out), ShouldContainSubstring, "WR_TEST_SERVER_LOG")
+		So(string(out), ShouldNotContainSubstring, "test daemon up")
+	})
+}
+
 // logServerToFileIfAsked makes a --servermode test daemon write its own debug
 // log to the file named by the WR_TEST_SERVER_LOG environment variable. The
 // daemon is a subprocess whose stderr is discarded, so this is the only way to
 // see what its manager did - which the TestJobqueueSignal crash-recovery
 // investigations need (see .docs/bugfixes/260903-1-incidental.md). With it unset,
-// as in a normal test run, nothing changes.
-func logServerToFileIfAsked(ctx context.Context) {
+// as in a normal test run, nothing changes and nil is returned.
+//
+// If the file cannot be opened, the error is returned rather than logged and
+// ignored: the whole point of setting the variable is to get that log, so a
+// daemon that carries on without one just discards the rest of the run's
+// evidence, and the parent test then waits out its full timeout wondering why.
+func logServerToFileIfAsked(ctx context.Context) error {
 	path := os.Getenv("WR_TEST_SERVER_LOG")
 	if path == "" {
-		return
+		return nil
 	}
 
 	handler, err := log15.FileHandler(path, log15.LogfmtFormat())
 	if err != nil {
-		// #nosec G706 -- path is this test binary's own WR_TEST_SERVER_LOG, set by
-		// the developer running it, and all we do with it is say why it would not
-		// open.
-		log.Printf("failed to open WR_TEST_SERVER_LOG %s: %s\n", path, err)
-
-		return
+		return fmt.Errorf("failed to open WR_TEST_SERVER_LOG %s: %w", path, err)
 	}
 
 	clog.ToHandlerAtLevel(handler, "debug")
 	clog.Info(ctx, "test daemon logging to file", "pid", os.Getpid())
+
+	return nil
 }
 
 // runServer starts a jobqueue server, and is what calling this test script in
 // --servermode runs.
 func runServer(ctx context.Context) {
-	logServerToFileIfAsked(ctx)
+	if err := logServerToFileIfAsked(ctx); err != nil {
+		clog.Crit(ctx, "test daemon failed to start", "err", err)
+		os.Exit(1)
+	}
 
 	_, serverConfig, _, _, _ := jobqueueTestInit(false) //nolint:dogsled
 
