@@ -26,6 +26,7 @@
 package cmd
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -156,6 +157,46 @@ func TestCreateWorkingDirRefusesSymlinkedDir(t *testing.T) {
 		So(modeOf("/tmp"), ShouldEqual, before)
 		So(logged, ShouldContainSubstring, "is a symlink, so wr will not change its mode")
 		So(logged, ShouldContainSubstring, "chmod g-w,o-w "+dir)
+	})
+}
+
+func TestOpenWorkingDirKeepsHandleAfterPathSwap(t *testing.T) {
+	Convey("A handle opened before a path swap still names the original directory", t, func() {
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "manager")
+		victim := filepath.Join(parent, "victim")
+
+		So(os.Mkdir(dir, sharedDirPerm), ShouldBeNil)
+		So(os.Mkdir(victim, sharedDirPerm), ShouldBeNil)
+		So(os.Chmod(dir, sharedDirPerm), ShouldBeNil)
+		So(os.Chmod(victim, sharedDirPerm), ShouldBeNil)
+
+		file, err := openWorkingDir(dir)
+		So(err, ShouldBeNil)
+
+		defer file.Close()
+
+		So(os.Rename(dir, dir+".real"), ShouldBeNil)
+		So(os.Symlink(victim, dir), ShouldBeNil)
+		So(file.Chmod(closedSharedDirPerm), ShouldBeNil)
+
+		So(modeOf(victim), ShouldEqual, sharedDirPerm)
+		So(modeOf(dir+".real"), ShouldEqual, closedSharedDirPerm)
+	})
+}
+
+func TestOpenWorkingDirClassifiesSymlink(t *testing.T) {
+	Convey("A symlink opened after the initial directory check is classified as a symlink", t, func() {
+		parent := t.TempDir()
+		target := filepath.Join(parent, "target")
+		dir := filepath.Join(parent, "manager")
+
+		So(os.Mkdir(target, sharedDirPerm), ShouldBeNil)
+		So(os.Symlink("target", dir), ShouldBeNil)
+
+		_, err := openWorkingDir(dir)
+
+		So(errors.Is(err, errDirIsSymlink), ShouldBeTrue)
 	})
 }
 

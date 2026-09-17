@@ -193,11 +193,75 @@ func takeOtherWriteOff(dir string, mode os.FileMode) (os.FileMode, error) {
 		return mode, errDirIsSymlink
 	}
 
-	if err = os.Chmod(dir, closed); err != nil {
+	file, err := openWorkingDir(dir)
+	if err != nil {
+		return mode, err
+	}
+	defer file.Close()
+
+	changed, err := chmodWorkingDir(file, closed)
+	if err != nil {
 		return mode, err
 	}
 
+	if !changed {
+		return mode, nil
+	}
+
 	return closed, nil
+}
+
+func openWorkingDir(dir string) (*os.File, error) {
+	parent, err := os.OpenRoot(filepath.Dir(dir))
+	if err != nil {
+		return nil, err
+	}
+	defer parent.Close()
+
+	file, err := parent.Open(filepath.Base(dir))
+
+	if errors.Is(err, syscall.ELOOP) {
+		return nil, errDirIsSymlink
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	// os.Root.Open reports a final symlink through an internal error while it
+	// follows the link. Check the name after opening so that error is converted
+	// to the user-facing classification without depending on os internals.
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		file.Close()
+
+		return nil, err
+	}
+
+	if fi.Mode()&os.ModeSymlink != 0 {
+		file.Close()
+
+		return nil, errDirIsSymlink
+	}
+
+	return file, nil
+}
+
+func chmodWorkingDir(file *os.File, mode os.FileMode) (bool, error) {
+	fi, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+
+	if !fi.IsDir() {
+		return false, nil
+	}
+
+	if err = file.Chmod(mode); err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
 
 // Execute adds all child commands to the root command and sets flags
