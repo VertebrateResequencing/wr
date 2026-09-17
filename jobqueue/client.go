@@ -3879,20 +3879,28 @@ func (c *Client) GetByEssence(je *JobEssence, getstd bool, getenv bool) (*Job, e
 }
 
 // GetByEssences gets multiple Jobs at once given JobEssences that describe
-// them.
+// them, returning the Job each essence describes in the order the essences are
+// given, and nothing for an essence that describes no Job.
+//
+// As in GetByEssence(), an essence with a Cwd but no JobKey is ambiguous, so
+// both interpretations of that Cwd are looked up and at most one Job comes back
+// for it: the CwdMatters one if it exists, and otherwise the non-CwdMatters one
+// only if its Cwd really is the requested Cwd. This is a read, so the looser key
+// is offered here but never by the methods that change jobs (see jesToKeys).
 func (c *Client) GetByEssences(jes []*JobEssence) ([]*Job, error) {
-	keys := c.jesToKeys(jes)
-
-	resp, err := c.request(&clientRequest{Method: "getbc", Keys: keys})
+	resp, err := c.request(&clientRequest{Method: "getbc", Keys: jesToCandidateKeys(jes)})
 	if err != nil {
 		return nil, err
 	}
 
-	return resp.Jobs, err
+	return pickCandidateJobs(jes, resp.Jobs), err
 }
 
-// jesToKeys deals with the jes arg that GetByEccences(), Kick() and Delete()
-// take.
+// jesToKeys deals with the jes arg that the methods which change jobs -
+// Modify(), Kick(), Suspend(), Resume(), Delete() and Kill() - take. It gives
+// each essence's single Key(), deliberately: those callers build their essences
+// from jobs they already have, and an essence's looser candidate key must never
+// widen what they change (see JobEssence.candidateKeys).
 func (c *Client) jesToKeys(jes []*JobEssence) []string {
 	keys := make([]string, 0, len(jes))
 	for _, je := range jes {

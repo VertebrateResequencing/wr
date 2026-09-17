@@ -165,6 +165,19 @@ project adheres to [Semantic Versioning](http://semver.org/).
   nothing behind. The manager's own automatic backups still stage under a fixed
   `.tmp` name, deliberately: if you point `managerdbbkfile` at a path, don't
   keep a file of your own at that path with `.tmp` on the end.
+- `wr status -f` now finds the commands in your file that were added with
+  `--cwd_matters`, given the same `-c` you gave `wr add`, or a file whose own
+  lines set `cwd_matters`. Before, `-f` silently found none of them, and since
+  `wr status` has no `--cwd_matters` flag of its own there was no way to ask
+  about such a file at all - which is the mode that matters for a file of
+  thousands of commands. The `-f` mode of `wr kill`, `wr remove`, `wr retry`,
+  `wr suspend` and `wr resume` gains the same. Each command is matched at the
+  working directory the file and your flags describe for it: its own line's
+  `cwd` where the line sets one, and the `-c` you gave otherwise. One narrowing
+  comes with that: a command taking its working directory from `-c` no longer
+  matches a job added in a different one, matching what `-l` has always done.
+  Leave `-c` off if you were relying on `-f` matching such a command whatever
+  working directory it was added with.
 
 
 ## [0.37.2] - 2026-09-01

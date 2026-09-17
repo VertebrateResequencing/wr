@@ -26,6 +26,7 @@
 package jobqueue
 
 import (
+	"context"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -34,6 +35,19 @@ import (
 // testOtherCwdPath is a second fake absolute Cwd, for a Job that is not the one
 // a JobEssence naming testCwdPath is describing.
 const testOtherCwdPath = "/other"
+
+const (
+	// candidateMattersCmd is the command of the Job added with CwdMatters,
+	// candidatePlainCmd that of the Job added without it, candidateElsewhereCmd
+	// that of a Job in a different Cwd, and candidateUnknownCmd one no Job was
+	// ever added with.
+	candidateMattersCmd   = "echo candidate cwd matters"
+	candidatePlainCmd     = "echo candidate cwd does not matter"
+	candidateElsewhereCmd = "echo candidate cwd elsewhere"
+	candidateUnknownCmd   = "echo candidate never added"
+
+	candidateRepGroup = "candidate-keys"
+)
 
 func TestCandidateJobSelection(t *testing.T) {
 	if runnermode || servermode {
@@ -63,6 +77,75 @@ func TestCandidateJobSelection(t *testing.T) {
 
 		Convey("and no Job is picked out of no Jobs", func() {
 			So(je.pickCandidateJob(nil), ShouldBeNil)
+		})
+	})
+}
+
+// TestGetByEssencesCandidateKeys covers the plural read path that a file of
+// commands reaches (`wr status -f`, and the kill/remove/retry/suspend selection
+// built on it), where each JobEssence describes its command rather than carrying
+// a precomputed key: such an essence must resolve the same Job the
+// single-command path resolves, and no other.
+func TestGetByEssencesCandidateKeys(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given jobs added with and without CwdMatters", t, func() {
+		d := dgrStartServer(ctx)
+
+		defer d.stop(ctx)
+
+		jq := d.connect()
+
+		defer disconnect(jq)
+
+		matters := d.job(candidateMattersCmd, candidateRepGroup)
+		matters.CwdMatters = true
+		plain := d.job(candidatePlainCmd, candidateRepGroup)
+		// elsewhere has no CwdMatters, so its key is one of the candidate keys of
+		// an essence naming its Cmd and ANY Cwd: only the Cwd check in
+		// pickCandidateJob keeps it out of the answers below.
+		elsewhere := d.job(candidateElsewhereCmd, candidateRepGroup)
+		elsewhere.Cwd = testOtherCwdPath
+
+		dgrAddJobs(jq, []*Job{matters, plain, elsewhere})
+
+		Convey("GetByEssences resolves each of them from its Cmd and Cwd alone", func() {
+			jobs, err := jq.GetByEssences([]*JobEssence{
+				{Cmd: candidateMattersCmd, Cwd: testCwd},
+				{Cmd: candidatePlainCmd, Cwd: testCwd},
+			})
+			So(err, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 2)
+			So(jobs[0].Key(), ShouldEqual, matters.Key())
+			So(jobs[1].Key(), ShouldEqual, plain.Key())
+		})
+
+		Convey("GetByEssences does not resolve a job of another Cwd", func() {
+			jobs, err := jq.GetByEssences([]*JobEssence{{Cmd: candidateElsewhereCmd, Cwd: testCwd}})
+			So(err, ShouldBeNil)
+			So(jobs, ShouldBeEmpty)
+		})
+
+		Convey("GetByEssences returns one job per essence that resolves, in order", func() {
+			jobs, err := jq.GetByEssences([]*JobEssence{
+				{Cmd: candidateUnknownCmd, Cwd: testCwd},
+				{Cmd: candidatePlainCmd, Cwd: testCwd},
+			})
+			So(err, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Key(), ShouldEqual, plain.Key())
+		})
+
+		Convey("GetByEssences still resolves an essence that carries a JobKey", func() {
+			jobs, err := jq.GetByEssences([]*JobEssence{matters.ToEssense(), plain.ToEssense()})
+			So(err, ShouldBeNil)
+			So(jobs, ShouldHaveLength, 2)
+			So(jobs[0].Key(), ShouldEqual, matters.Key())
+			So(jobs[1].Key(), ShouldEqual, plain.Key())
 		})
 	})
 }
