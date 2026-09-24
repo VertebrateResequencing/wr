@@ -54,7 +54,8 @@ fix-lint-baseline-ref
       `GOLANGCI_LINT_ARGS` replaces it, because golangci-lint also gives the
       command-line flag precedence over the config. So the rev that gets
       checked is the rev golangci-lint will use. A comment on the config line
-      says that the Makefile reads it.
+      says that the Makefile reads it, so the value must stay unquoted and
+      alone on the line, with no trailing comment.
     - The `lint` target first runs
       `git rev-parse --verify --quiet '<rev>^{commit}'`. If that fails, it
       prints to stderr which baseline is missing, says to run
@@ -66,10 +67,16 @@ fix-lint-baseline-ref
       `origin/master`, and the config supplies the same rev CI used to pass, so
       the baseline has one source. If CI ever lacked the ref, the check would
       fail the job rather than lint the whole tree.
-    - Limitation: only the `--new-from-rev=<rev>` form of the override is
-      recognised. With the space-separated `--new-from-rev <rev>` form, the
-      check verifies the config rev, while golangci-lint still uses `<rev>`.
-      The failure message and the Makefile comment both give the `=` form.
+    - The space-separated `--new-from-rev <rev>` form is refused. The first
+      version accepted it, and review found that it brought the bug back:
+      the check verified the config rev, then golangci-lint linted the whole
+      tree against the unresolvable `<rev>`. The mixed form
+      `--new-from-rev=HEAD~1 --new-from-rev <rev>` did the same, with the
+      check verifying `HEAD~1`. Now the first line of the `lint` recipe calls
+      `$(error ...)` when `GOLANGCI_LINT_ARGS` contains a bare
+      `--new-from-rev` word, so make stops before the rev check or
+      golangci-lint runs. Because the line sits in the recipe, it fires only
+      for `make lint`. Rejecting the form is simpler than parsing it.
   - Stale `origin/master`: accepted, with the message pointing at
     `git fetch origin`. Any `git fetch origin` updates it. A stale
     `origin/master` only widens the diff, so it can add phantom issues but
@@ -77,7 +84,7 @@ fix-lint-baseline-ref
     which `make lint` must not do.
   - Why no automated test: the repo has no harness for Makefile targets, and a
     Go test would have to shell out to `make` against crafted git states,
-    which is heavier than this three-line check. The proof is the real
+    which is heavier than this short check. The proof is the real
     `make lint` in every git state below, run against this clone.
   - Green commands, after the fix (`golangci-lint cache clean` before each
     lint run):
@@ -93,8 +100,21 @@ fix-lint-baseline-ref
       ```
       make lint: lint baseline 'origin/no-such-branch' is not a commit in this clone.
       Run 'git fetch origin', or choose a baseline with GOLANGCI_LINT_ARGS=--new-from-rev=<rev>.
-      make: *** [Makefile:104: lint] Error 1
+      make: *** [Makefile:107: lint] Error 1
       ```
+
+    - The space form,
+      `make lint GOLANGCI_LINT_ARGS="--new-from-rev origin/no-such-branch"`,
+      and the mixed form,
+      `make lint GOLANGCI_LINT_ARGS="--new-from-rev=HEAD~1 --new-from-rev origin/no-such-branch"`,
+      both stop before golangci-lint runs, with exit 2:
+
+      ```
+      Makefile:106: *** make lint: GOLANGCI_LINT_ARGS must use --new-from-rev=<rev> rather than --new-from-rev <rev>. Stop.
+      ```
+
+      After this change, `make lint GOLANGCI_LINT_ARGS=--new-from-rev=HEAD~1`
+      still gives `0 issues.`, exit 0.
 
     - `origin/master` absent: a scratch
       `git clone --single-branch --branch fix-lint-baseline-ref` of this clone,

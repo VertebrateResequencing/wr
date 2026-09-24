@@ -160,7 +160,7 @@ issues:
   max-same-issues: 0
   # The lint baseline for make lint, CI, and direct golangci-lint runs. The
   # Makefile reads this line and makes make lint fail if it does not resolve,
-  # so keep the value alone on it.
+  # so keep the value unquoted and alone on it, with no trailing comment.
   new-from-rev: origin/master
 formatters:
   enable:
