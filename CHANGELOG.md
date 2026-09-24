@@ -27,8 +27,9 @@ project adheres to [Semantic Versioning](http://semver.org/).
   showed a successful command's output. Failed (including released for retry)
   and buried commands still keep theirs, and it is still shown as before. This
   stops the database growing by up to about 16KB for every successful command
-  that prints something. Commands that completed before you upgraded keep the
-  output they already have stored.
+  that prints something. Run `wr manager compact` once, with the manager
+  stopped, to remove the output stored for commands that completed before you
+  upgraded and recover that space; later compactions skip this step.
 - `--env` now refuses an element that defines no variable, naming the offending
   element and saying what to write instead, where before it stored one that no
   command could read. This covers `wr add --env`, `wr mod --env`, the `env`

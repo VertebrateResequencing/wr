@@ -242,3 +242,151 @@ sibling branch's sequence number.
     **PASSED - 669 passed, 20 skipped, 29 packages, 6m14s.**
   - `CGO_ENABLED=1 make race`: **PASSED - 669 passed, 19 skipped, 29 packages,
     9m10s**, at a 1-minute load of 0.45 and with no other suite running.
+
+- [x] Records already in `bucketJobsComplete` keep the output stored by
+      v0.37.0 to v0.37.2, so the space is never recovered.
+
+  ## Decision
+
+  The repo owner wants `wr manager compact` to strip that stored output, once
+  per database, with no flag. Knowing whether a database has had it done needs
+  a schema version, which wr did not have: its one-time upgrades key off
+  whether a bucket exists.
+
+  ## Design
+
+  - `jobqueue/db_schema.go` adds a `meta` bucket whose `schemaVersion` key
+    holds an 8-byte big-endian version. A database with no version is version
+    0. `dbSchemaVersionNoCompleteStd` (1) means no complete record holds
+    `StdOutC` or `StdErrC`, and is `currentDBSchemaVersion`. The comment beside
+    the constants says how to add a version.
+  - `initDB` stamps a database it creates (`!openedExistingDB`) with the current
+    version. It leaves an existing unversioned database unstamped, since
+    unversioned means not yet cleaned. A database recreated from a backup is
+    existing, so it carries whatever version the backup has.
+  - `CompactDBFile` now returns a `CompactStats` (sizes before and after,
+    whether the strip ran, and how many jobs it stripped) in place of its two
+    sizes. `compactBolt` reads the source version. At version 1 or later it
+    calls `bolt.Compact` exactly as before, with no decoding. Below 1 it calls
+    `compactStrippingStd` (`jobqueue/db_compact.go`).
+  - `compactStrippingStd` mirrors bbolt's `Compact`, which has no hook to change
+    a value: the same walk order, bucket sequences copied, `FillPercent` 1.0 on
+    every bucket written to, and a commit whenever the next key and value would
+    take the transaction over `compactTxMaxSize`. Only values directly in the
+    top-level `bucketJobsComplete` are touched. Each is decoded into a `Job`
+    with a fresh `codec.BincHandle`, as `initDB` builds the db's. A record with
+    no output is copied as its original bytes. Otherwise both fields are set to
+    nil and the job is re-encoded as `archiveJob` encodes it. `decodeJob` is
+    not used, because its `dropImpossibleCleanups` would change another field.
+    It stamps the destination with version 1 in the final transaction.
+  - It strips every complete record. Only successful jobs reach
+    `bucketJobsComplete`: `archiveJobTx` is its only writer, reached only via
+    `handleArchive`, and `canCompleteFromEndState` requires exit code 0.
+    v0.36.5's `jarchive` refused a non-zero exit too. So no record there can
+    need its output kept.
+  - A record that cannot be decoded fails the compaction, leaving the original
+    untouched, rather than being copied as it is. The current code cannot read
+    such a record either, so the operator should hear about it.
+  - The strip happens during the copy into the temporary file, so compact's
+    guarantee that an error leaves the original untouched still holds.
+  - `wr manager compact` adds the stripped count to its existing line, only
+    when the strip ran. Its help says it removes output stored by 0.37.0 to
+    0.37.2 the first time it compacts a database that has not had it done. The
+    CHANGELOG entry above says running it once recovers the space.
+
+  Accepted edge case: after a database is stamped, downgrading to a wr that
+  stores a successful job's output would store it again under a version 1
+  stamp, and a later compact would not strip it. That is rare, and accepted.
+  `TestDBCompactStripsOldCompleteStd` pins this: a version 1 database with
+  output in its complete records is copied verbatim.
+
+  ## Red command
+
+  ```bash
+  CGO_ENABLED=1 go test -tags netgo --count 1 ./jobqueue -run 'TestDBSchemaVersionOnOpen|TestDBCompactStripsOldCompleteStd|TestDBCompactGoldenFixture'
+  ```
+
+  Before the change, with `CompactStats` and the schema version reader already
+  in place so the tests compiled, the new db was not stamped, so there was no
+  meta bucket to remove to make an unversioned one, and the golden db was not
+  stripped:
+
+  ```text
+    Line 64:
+    Expected: true
+    Actual:   false
+  --- FAIL: TestDBSchemaVersionOnOpen (0.01s)
+    Line 447:
+    Expected: nil
+    Actual:   'bucket not found'
+  --- FAIL: TestDBCompactStripsOldCompleteStd (0.06s)
+    Line 233:
+    Expected: true
+    Actual:   false
+  --- FAIL: TestDBCompactGoldenFixture (0.01s)
+  ```
+
+  After:
+
+  ```text
+  --- PASS: TestDBSchemaVersionOnOpen (0.01s)
+  --- PASS: TestDBCompactStripsOldCompleteStd (0.16s)
+  --- PASS: TestDBCompactGoldenFixture (0.01s)
+  ```
+
+  ## Tests
+
+  In `jobqueue/db_compact_std_test.go`:
+
+  - `TestDBSchemaVersionOnOpen`: `initDB` stamps a new db with version 1, and
+    reopening an existing db whose meta bucket was removed leaves it without
+    one.
+  - `TestDBCompactStripsOldCompleteStd`, on an unversioned db written through
+    `initDB` and `db.archiveJob` with `StdOutC` and `StdErrC` set, as pre-#608
+    code wrote them, plus live jobs, std bucket entries, a complete job with no
+    output, and a nested bucket with a sequence:
+    - `CompactDBFile` strips all 20 records, reports it, stamps version 1 and
+      shrinks the file. Every value outside `jobscomplete` and every bucket
+      sequence is unchanged, the complete record with no output is
+      byte-identical, and each stripped record decodes equal to its original
+      with the two fields nil. The current code reads them back with empty
+      output. A second compaction does no strip pass.
+    - `compactStrippingStd` with a 1-byte `txMaxSize` commits before every key
+      and produces the same data.
+    - With an undecodable complete record, `CompactDBFile` fails, the original
+      file's bytes are unchanged, it is still unversioned, and no temporary
+      file is left.
+    - On a version 1 db with output in its complete records, `CompactDBFile`
+      decodes nothing (counted by the `compactStdDecodeObserver` seam), reports
+      no strip, and copies every value and sequence verbatim.
+  - `TestDBCompactGoldenFixture`: a copy of `testdata/dbcompat/db.golden` is
+    unversioned, compacts with a strip pass that strips 0 records, is stamped,
+    and keeps every other value. The golden file's bytes are unchanged.
+
+  `TestDBCompactRoundTrip` (`jobqueue/db_test.go`) and
+  `TestManagerCompactRefusesWhileRunning` (`cmd/manager_test.go`) take the new
+  return type. New `TestManagerCompactReportsStrippedOutput` drives the
+  command's `Run` with no manager up and asserts its log line with and without
+  a strip.
+
+  Output from a real `wr manager compact` on an unversioned db with 20 stripped
+  jobs, then run again:
+
+  ```text
+  compacted .../wrdemo_development/db: 262.1 kB -> 131.1 kB; removed output stored by older wr versions from 20 completed jobs
+  compacted .../wrdemo_development/db: 131.1 kB -> 131.1 kB
+  ```
+
+  ## Gates
+
+  With `OS_*` unset and develop at `99beac5`:
+
+  - `make lint`: **0 issues.**
+  - `make test`: the first run failed only `TestJobqueueRunnerKillRequests`
+    (`runner_lifecycle_test.go:557`), the known kill-path flake. The re-run was
+    **PASSED - 679 passed, 20 skipped, 29 packages, 6m14s.**
+  - `CGO_ENABLED=1 make race`: **PASSED - 679 passed, 19 skipped, 29 packages,
+    9m29s**, at a 1-minute load of 1.5 and with no other suite running.
+  - `cleanorder -min-diff` was run on the new files and the edited test files.
+    On `jobqueue/db.go` it wants to move about 2,500 lines of existing code even
+    at `HEAD`, so that file was left in its existing order.

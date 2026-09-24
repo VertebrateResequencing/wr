@@ -596,7 +596,13 @@ Compaction copies the whole database (needing roughly twice its size in free
 disk temporarily) and cannot run cleanly online, so the manager must be stopped:
 this command opens the database file directly, and BoltDB permits only one
 process to open it at a time. It refuses to run (exiting non-zero, leaving the
-database untouched) if a manager is currently running.`,
+database untouched) if a manager is currently running.
+
+wr versions 0.37.0 to 0.37.2 kept the output of every successfully completed
+command in the database, up to about 16KB each. The first time you compact a
+database that has not had it done, compact also removes that stored output and
+reports how many completed commands it was removed from. Later compactions skip
+this.`,
 	Run: func(_ *cobra.Command, _ []string) {
 		// refuse to run while a manager is up (pid file / port check): it holds
 		// the database file open, so compaction cannot open it and must not run.
@@ -614,7 +620,7 @@ database untouched) if a manager is currently running.`,
 			return
 		}
 
-		beforeSize, afterSize, err := compactDBFile(config.ManagerDBFile)
+		stats, err := compactDBFile(config.ManagerDBFile)
 		if err != nil {
 			clog.Error(context.Background(), fmt.Sprintf("failed to compact the database: %s", err))
 			managerCompactExit(1)
@@ -622,9 +628,21 @@ database untouched) if a manager is currently running.`,
 			return
 		}
 
-		info("compacted %s: %s -> %s", config.ManagerDBFile,
-			humanBytes(beforeSize), humanBytes(afterSize))
+		info("%s", compactReport(config.ManagerDBFile, stats))
 	},
+}
+
+// compactReport describes a completed compaction of dbFile.
+func compactReport(dbFile string, stats jobqueue.CompactStats) string {
+	report := fmt.Sprintf("compacted %s: %s -> %s", dbFile,
+		humanBytes(stats.BeforeSize), humanBytes(stats.AfterSize))
+
+	if stats.OutputStripped {
+		report += fmt.Sprintf("; removed output stored by older wr versions from %d completed jobs",
+			stats.JobsStripped)
+	}
+
+	return report
 }
 
 // humanBytes formats a byte count as a short human-readable string (e.g. 1.5
