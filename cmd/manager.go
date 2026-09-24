@@ -579,7 +579,7 @@ var managerCompactExit = os.Exit
 // compactDBFile is the DB-mutating step of the compact subcommand, a var so a
 // test can prove the running-manager guard refuses before it is ever called
 // (i.e. the database is left untouched).
-var compactDBFile = jobqueue.CompactDBFile
+var compactDBFile = jobqueue.CompactDBFileStats
 
 var managerCompactCmd = &cobra.Command{
 	Use:   "compact",

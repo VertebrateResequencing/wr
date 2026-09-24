@@ -88,10 +88,10 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 
 		before := readBoltData(t, dbFile)
 
-		Convey("CompactDBFile strips the output once, keeps everything else, stamps it and shrinks it", func() {
+		Convey("CompactDBFileStats strips the output once, keeps everything else, stamps it and shrinks it", func() {
 			decodes := observeCompactStdDecodes(t)
 
-			stats, err := CompactDBFile(dbFile)
+			stats, err := CompactDBFileStats(dbFile)
 			So(err, ShouldBeNil)
 			So(stats.OutputStripped, ShouldBeTrue)
 			So(stats.JobsStripped, ShouldEqual, len(keys))
@@ -155,7 +155,7 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 			Convey("and a second compaction does no strip pass", func() {
 				*decodes = 0
 
-				stats, err = CompactDBFile(dbFile)
+				stats, err = CompactDBFileStats(dbFile)
 				So(err, ShouldBeNil)
 				So(stats.OutputStripped, ShouldBeFalse)
 				So(stats.JobsStripped, ShouldEqual, 0)
@@ -191,7 +191,7 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 			So(version, ShouldEqual, dbSchemaVersionNoCompleteStd)
 		})
 
-		Convey("CompactDBFile copies undecodable complete records unchanged, reports them and still stamps", func() {
+		Convey("CompactDBFileStats copies undecodable complete records unchanged, reports them and still stamps", func() {
 			const badRecords = maxUnreadableKeysReported + 2
 
 			badKeys := make([]string, 0, badRecords)
@@ -203,7 +203,7 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 				badKeys = append(badKeys, key)
 			}
 
-			stats, err := CompactDBFile(dbFile)
+			stats, err := CompactDBFileStats(dbFile)
 			So(err, ShouldBeNil)
 			So(stats.OutputStripped, ShouldBeTrue)
 			So(stats.JobsStripped, ShouldEqual, len(keys))
@@ -226,7 +226,7 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 			So(version, ShouldEqual, dbSchemaVersionNoCompleteStd)
 		})
 
-		Convey("CompactDBFile leaves the original untouched when it fails", func() {
+		Convey("CompactDBFileStats leaves the original untouched when it fails", func() {
 			So(updateRawBolt(t, dbFile, func(tx *bolt.Tx) error {
 				b, errc := tx.CreateBucket(bucketMeta)
 				if errc != nil {
@@ -239,7 +239,7 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 			original, errr := os.ReadFile(dbFile)
 			So(errr, ShouldBeNil)
 
-			stats, err := CompactDBFile(dbFile)
+			stats, err := CompactDBFileStats(dbFile)
 			So(err, ShouldWrap, errBadDBSchemaVersion)
 			So(stats.OutputStripped, ShouldBeFalse)
 
@@ -268,10 +268,10 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 
 		before := readBoltData(t, dbFile)
 
-		Convey("CompactDBFile copies it verbatim without decoding any record", func() {
+		Convey("CompactDBFileStats copies it verbatim without decoding any record", func() {
 			decodes := observeCompactStdDecodes(t)
 
-			stats, err := CompactDBFile(dbFile)
+			stats, err := CompactDBFileStats(dbFile)
 			So(err, ShouldBeNil)
 			So(stats.OutputStripped, ShouldBeFalse)
 			So(stats.JobsStripped, ShouldEqual, 0)
@@ -487,7 +487,7 @@ func TestDBCompactGoldenFixture(t *testing.T) {
 
 		before := readBoltData(t, dbFile)
 
-		stats, err := CompactDBFile(dbFile)
+		stats, err := CompactDBFileStats(dbFile)
 		So(err, ShouldBeNil)
 		So(stats.OutputStripped, ShouldBeTrue)
 		So(stats.JobsStripped, ShouldEqual, 0)
@@ -516,6 +516,54 @@ func collectBoltData(prefix string, b *bolt.Bucket, data boltData) error {
 		data.values[prefix+string(k)] = string(v)
 
 		return nil
+	})
+}
+
+func TestDBCompactFileSizes(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("CompactDBFile returns the same sizes as CompactDBFileStats", t, func() {
+		dir := t.TempDir()
+		sizesFile := filepath.Join(dir, "sizes.db")
+		statsFile := filepath.Join(dir, "stats.db")
+
+		populateCompactStdDB(ctx, t, sizesFile, true)
+
+		original, err := os.ReadFile(sizesFile)
+		So(err, ShouldBeNil)
+		So(os.WriteFile(statsFile, original, dbFilePermission), ShouldBeNil)
+
+		beforeSize, afterSize, err := CompactDBFile(sizesFile)
+		So(err, ShouldBeNil)
+
+		stats, err := CompactDBFileStats(statsFile)
+		So(err, ShouldBeNil)
+		So(stats.JobsStripped, ShouldEqual, compactStdTestJobs)
+
+		So(beforeSize, ShouldEqual, stats.BeforeSize)
+		So(afterSize, ShouldEqual, stats.AfterSize)
+		So(afterSize, ShouldBeLessThan, beforeSize)
+
+		Convey("and, as before, the size before when compaction fails", func() {
+			So(updateRawBolt(t, sizesFile, func(tx *bolt.Tx) error {
+				return tx.Bucket(bucketMeta).Put(metaKeySchemaVersion, []byte("bad"))
+			}), ShouldBeNil)
+
+			info, errs := os.Stat(sizesFile)
+			So(errs, ShouldBeNil)
+
+			beforeSize, afterSize, err = CompactDBFile(sizesFile)
+			So(err, ShouldWrap, errBadDBSchemaVersion)
+			So(beforeSize, ShouldEqual, info.Size())
+			So(afterSize, ShouldEqual, 0)
+		})
+
+		Convey("and zero sizes for a missing file", func() {
+			beforeSize, afterSize, err = CompactDBFile(filepath.Join(dir, "missing.db"))
+			So(err, ShouldWrap, os.ErrNotExist)
+			So(beforeSize, ShouldEqual, 0)
+			So(afterSize, ShouldEqual, 0)
+		})
 	})
 }
 

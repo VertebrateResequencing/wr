@@ -264,12 +264,13 @@ sibling branch's sequence number.
     version. It leaves an existing unversioned database unstamped, since
     unversioned means not yet cleaned. A database recreated from a backup is
     existing, so it carries whatever version the backup has.
-  - `CompactDBFile` now returns a `CompactStats` (sizes before and after,
-    whether the strip ran and succeeded, how many jobs it stripped, and how
-    many complete records it could not read, with the first 10 of their keys)
-    in place of its two sizes. `compactBolt` reads the source version. At
-    version 1 or later it calls `bolt.Compact` exactly as before, with no
-    decoding. Below 1 it calls `compactStrippingStd` (`jobqueue/db_compact.go`).
+  - A new `CompactDBFileStats` does the work and returns a `CompactStats`
+    (sizes before and after, whether the strip ran and succeeded, how many jobs
+    it stripped, and how many complete records it could not read, with the
+    first 10 of their keys). `CompactDBFile` keeps its released signature and
+    wraps it. `compactBolt` reads the source version. At version 1 or later it
+    calls `bolt.Compact` exactly as before, with no decoding. Below 1 it calls
+    `compactStrippingStd` (`jobqueue/db_compact.go`).
   - `compactStrippingStd` mirrors bbolt's `Compact`, which has no hook to change
     a value: the same walk order, bucket sequences copied, `FillPercent` 1.0 on
     every bucket written to, and a commit whenever the next key and value would
@@ -355,22 +356,23 @@ sibling branch's sequence number.
     `initDB` and `db.archiveJob` with `StdOutC` and `StdErrC` set, as pre-#608
     code wrote them, plus live jobs, std bucket entries, a complete job with no
     output, and a nested bucket with a sequence:
-    - `CompactDBFile` strips all 20 records, reports it, stamps version 1 and
-      shrinks the file. Every value outside `jobscomplete` and every bucket
+    - `CompactDBFileStats` strips all 20 records, reports it, stamps version 1
+      and shrinks the file. Every value outside `jobscomplete` and every bucket
       sequence is unchanged, the complete record with no output is
       byte-identical, and each stripped record decodes equal to its original
       with the two fields nil. The current code reads them back with empty
       output. A second compaction does no strip pass.
     - `compactStrippingStd` with a 1-byte `txMaxSize` commits before every key
       and produces the same data.
-    - With 12 undecodable complete records, `CompactDBFile` succeeds, strips
-      the other 20, copies each bad record byte for byte, reports 12
+    - With 12 undecodable complete records, `CompactDBFileStats` succeeds,
+      strips the other 20, copies each bad record byte for byte, reports 12
       unreadable with the first 10 keys, and stamps version 1.
-    - With a malformed schema version, `CompactDBFile` fails, the original
+    - With a malformed schema version, `CompactDBFileStats` fails, the original
       file's bytes are unchanged, and no temporary file is left.
-    - On a version 1 db with output in its complete records, `CompactDBFile`
-      decodes nothing (counted by the `compactStdDecodeObserver` seam), reports
-      no strip, and copies every value and sequence verbatim.
+    - On a version 1 db with output in its complete records,
+      `CompactDBFileStats` decodes nothing (counted by the
+      `compactStdDecodeObserver` seam), reports no strip, and copies every value
+      and sequence verbatim.
   - `TestDBCompactGoldenFixture`: a copy of `testdata/dbcompat/db.golden` is
     unversioned, compacts with a strip pass that strips 0 records, is stamped,
     and keeps every other value. The golden file's bytes are unchanged.
@@ -415,3 +417,32 @@ sibling branch's sequence number.
   - `make test`: **PASSED - 679 passed, 20 skipped, 29 packages, 6m21s.**
   - `CGO_ENABLED=1 make race`: **PASSED - 679 passed, 19 skipped, 29 packages,
     9m23s**, started at a 1-minute load of 3.0 with no other suite running.
+
+- [x] Copilot, thread comment 4095963883: `CompactDBFile` shipped in v0.37.2
+      as `(beforeSize, afterSize int64, err error)`, and changing it to
+      `(CompactStats, error)` broke anything importing it.
+
+  The implementation moved to a new exported `CompactDBFileStats(dbFile)
+  (CompactStats, error)`, which `cmd/manager.go`'s `compactDBFile` var now
+  points at. `CompactDBFile` is again `(beforeSize, afterSize int64, err
+  error)`, a wrapper returning `stats.BeforeSize, stats.AfterSize, err`. That
+  matches `origin/develop`'s returns on every path: 0 and 0 if the stat fails,
+  the size before and 0 if compaction fails (`AfterSize` is set only once the
+  temp file is complete), and both sizes if the rename fails.
+  `TestDBCompactRoundTrip` is back to its `origin/develop` form, calling the
+  wrapper. New `TestDBCompactFileSizes` compacts two copies of one db, one
+  through each function, and asserts the same sizes, then asserts the wrapper
+  returns the size before and 0 when compaction fails, and 0 and 0 for a
+  missing file.
+
+- [x] Copilot, thread comment 4095963970: the `compactStdDecodeObserver`
+      comment in `jobqueue/db_compact.go` said a compaction "did no strip
+      pass". It now says "did not run a strip pass".
+
+  Gates, with `OS_*` unset:
+
+  - `make lint`: **0 issues.**
+  - `CGO_ENABLED=1 go test -tags netgo --count 1 ./jobqueue -run
+    'TestDBCompact|TestDBSchemaVersionOnOpen'`: **ok.**
+  - `CGO_ENABLED=0 go test -tags netgo -count=1 -run TestManagerCompact
+    ./cmd/`: **ok.**

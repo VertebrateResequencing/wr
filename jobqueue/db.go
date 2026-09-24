@@ -82,7 +82,7 @@ const (
 	// which several backup regression tests rely on.
 	backupDirtyPollInterval = 1 * time.Second
 
-	// offlineDBOpenTimeout bounds how long the offline subcommand (CompactDBFile)
+	// offlineDBOpenTimeout bounds how long the offline subcommand (CompactDBFileStats)
 	// waits for the BoltDB file lock before erroring. The up-check in cmd guards
 	// against a running manager,
 	// but if that check is fooled (e.g. a missing token file) a manager may still
@@ -2720,7 +2720,7 @@ func putDepGroupFromLookupKey(depGroupBucket *bolt.Bucket, lookupKey []byte) err
 	return depGroupBucket.Put(lookupKey[:idx], nil)
 }
 
-// CompactStats reports what CompactDBFile did.
+// CompactStats reports what CompactDBFileStats did.
 type CompactStats struct {
 	// BeforeSize and AfterSize are the database file's size in bytes before
 	// and after compaction.
@@ -2742,7 +2742,17 @@ type CompactStats struct {
 	UnreadableKeys []string
 }
 
-// CompactDBFile is the exported entry point for the offline `wr manager compact`
+// CompactDBFile compacts the BoltDB at dbFile as CompactDBFileStats does, and
+// returns the file size (bytes) before and after. On error it returns the size
+// before if it got that far, and the size after only if the compacted copy was
+// made but could not replace the original.
+func CompactDBFile(dbFile string) (beforeSize, afterSize int64, err error) {
+	stats, err := CompactDBFileStats(dbFile)
+
+	return stats.BeforeSize, stats.AfterSize, err
+}
+
+// CompactDBFileStats is the entry point for the offline `wr manager compact`
 // subcommand (spec D2). It compacts the BoltDB at dbFile, reclaiming the free
 // pages left by churn. A database below dbSchemaVersionNoCompleteStd also has
 // its completed jobs' stored output removed during the copy, and is then
@@ -2755,7 +2765,7 @@ type CompactStats struct {
 // failed compaction never corrupts or partially overwrites the database. The
 // manager MUST be stopped: BoltDB permits only one process to open the file at
 // a time, so the subcommand refuses to run while a manager is up.
-func CompactDBFile(dbFile string) (CompactStats, error) {
+func CompactDBFileStats(dbFile string) (CompactStats, error) {
 	var stats CompactStats
 
 	beforeInfo, err := os.Stat(dbFile)
@@ -2784,7 +2794,7 @@ func CompactDBFile(dbFile string) (CompactStats, error) {
 }
 
 // compactToTempFile compacts the BoltDB at dbFile into a fresh temporary file in
-// the SAME directory (so CompactDBFile's later os.Rename onto dbFile is an atomic
+// the SAME directory (so CompactDBFileStats's later os.Rename onto dbFile is an atomic
 // same-filesystem rename), returning the temp file's path and filling in stats.
 // On error it returns the temp path (if one was created) so the caller can
 // remove it, leaving the original database untouched.

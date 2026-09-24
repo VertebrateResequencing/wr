@@ -1392,10 +1392,10 @@ func TestDBCompactRoundTrip(t *testing.T) {
 		So(testDB.close(ctx), ShouldBeNil)
 
 		Convey("CompactDBFile shrinks it and preserves every bucket/job/lookup", func() {
-			stats, errcmp := CompactDBFile(dbFile)
+			beforeSize, afterSize, errcmp := CompactDBFile(dbFile)
 			So(errcmp, ShouldBeNil)
-			So(stats.BeforeSize, ShouldBeGreaterThan, 0)
-			So(stats.AfterSize, ShouldBeLessThanOrEqualTo, stats.BeforeSize)
+			So(beforeSize, ShouldBeGreaterThan, 0)
+			So(afterSize, ShouldBeLessThanOrEqualTo, beforeSize)
 
 			reDB, _, errr := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
 			So(errr, ShouldBeNil)

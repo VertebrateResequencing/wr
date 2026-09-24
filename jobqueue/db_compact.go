@@ -45,7 +45,7 @@ const maxUnreadableKeysReported = 10
 
 // compactStdDecodeObserver, if set, is called each time compaction decodes a
 // complete record to strip its output. It is prod-inert and exists so tests can
-// prove a compaction did no strip pass.
+// prove a compaction did not run a strip pass.
 //
 //nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver.
 var compactStdDecodeObserver func()
