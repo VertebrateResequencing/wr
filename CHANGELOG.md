@@ -111,7 +111,10 @@ project adheres to [Semantic Versioning](http://semver.org/).
   copies to every cloud server it spawns, and which defaults to your
   `~/.s3cfg`, `~/.aws/credentials` and `~/.aws/config` - so another user of the
   manager's machine could have chosen the cloud credentials your servers ran
-  with. Directories wr makes there are now 0700.
+  with. Directories wr makes there are now 0700. And uploading to a path that
+  already held a file left that file at its old mode, so over a 0644 file the
+  uploaded credentials were readable by everyone; the file is now always made
+  0600.
 - One mistyped `--env` element could stop every command in a scheduler group.
   An entry with no `=`, such as a bare `PATH`, crashed the runner as it
   prepared the command. The command went back to the queue without using up a

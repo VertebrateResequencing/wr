@@ -50,6 +50,14 @@ const uploadHostileUmask = 0
 // catch.
 const uploadOwnerOnlyPerm os.FileMode = 0o700
 
+// uploadOwnerOnlyFilePerm is the mode an uploaded file has to have, written out
+// for the same reason as uploadOwnerOnlyPerm.
+const uploadOwnerOnlyFilePerm os.FileMode = 0o600
+
+// uploadWorldReadablePerm is the mode of a file a caller-named upload replaces,
+// wider than the upload may leave it.
+const uploadWorldReadablePerm os.FileMode = 0o644
+
 func TestServerUploadFile(t *testing.T) {
 	ctx := context.Background()
 
@@ -85,6 +93,29 @@ func TestServerUploadFile(t *testing.T) {
 			So(string(content), ShouldEqual, newContent)
 			So(returned, ShouldEqual, savePath)
 			So(err, ShouldBeNil)
+		})
+
+		Convey("Uploading to a caller-named path that holds a world-readable file leaves it owner-only", func() {
+			savePath := filepath.Join(t.TempDir(), "credentials")
+			err := os.WriteFile(savePath, []byte("old\n"), uploadWorldReadablePerm)
+			So(err, ShouldBeNil)
+
+			// set explicitly, since WriteFile's mode is filtered by the umask
+			err = os.Chmod(savePath, uploadWorldReadablePerm)
+			So(err, ShouldBeNil)
+
+			newContent := "aws_secret_access_key = secret\n"
+			returned, err := s.uploadFile(ctx, strings.NewReader(newContent), savePath)
+			So(err, ShouldBeNil)
+			So(returned, ShouldEqual, savePath)
+
+			info, err := os.Stat(savePath)
+			So(err, ShouldBeNil)
+			So(info.Mode().Perm(), ShouldEqual, uploadOwnerOnlyFilePerm)
+
+			content, err := os.ReadFile(savePath)
+			So(err, ShouldBeNil)
+			So(string(content), ShouldEqual, newContent)
 		})
 
 		Convey("Uploading with an empty savePath stores the data at an md5-based path", func() {

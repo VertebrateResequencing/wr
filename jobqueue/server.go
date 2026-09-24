@@ -4866,7 +4866,7 @@ func (s *Server) uploadFile(ctx context.Context, source io.Reader, savePath stri
 // directory (usedTempFile is then true and the returned path is its name);
 // otherwise the chosen savePath (with ~/ expanded) is created, truncating any
 // existing file so the upload replaces its content instead of overwriting only
-// the start of it.
+// the start of it, and making it owner read/write only whatever its mode was.
 func (s *Server) openUploadDestination(ctx context.Context, savePath string) (*os.File, string, bool, error) {
 	if savePath == "" {
 		file, tempPath, err := s.createUploadTempFile(ctx)
@@ -4887,6 +4887,19 @@ func (s *Server) openUploadDestination(ctx context.Context, savePath string) (*o
 	file, err := os.OpenFile(savePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, ownerReadWrite)
 	if err != nil {
 		clog.Error(ctx, "uploadFile create file error", "err", err)
+
+		return nil, "", false, err
+	}
+
+	// OpenFile's mode only applies when it creates the file, so a file already
+	// at savePath would keep its wider mode. Chmod before anything is written,
+	// so another user can only ever have seen it empty.
+	if err = file.Chmod(ownerReadWrite); err != nil {
+		clog.Error(ctx, "uploadFile chmod file error", "err", err)
+
+		if errc := file.Close(); errc != nil {
+			clog.Warn(ctx, "uploadFile close file error", "err", errc)
+		}
 
 		return nil, "", false, err
 	}
