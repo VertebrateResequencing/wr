@@ -1379,8 +1379,7 @@ func (j *Job) applySuccessfulEndStateLocked(endState *JobEndState, lim *limiter.
 	j.EndTime = endState.EndTime
 	j.setActualCwd(endState.Cwd)
 
-	// a successful job keeps no output, so the end state's is not copied, and the
-	// live tail a touch may have left here is cleared rather than archived.
+	// a successful job keeps no output, including any live tail from a touch.
 	j.StdOutC = nil
 	j.StdErrC = nil
 }

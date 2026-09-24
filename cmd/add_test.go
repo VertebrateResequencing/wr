@@ -207,10 +207,7 @@ func (c synchronousAddWarningTestClient) GetByEssence(essence *jobqueue.JobEssen
 		return nil, errUnexpectedSynchronousKeys
 	}
 
-	return &jobqueue.Job{
-		Exitcode: 0,
-		StdOutC:  zlibCompress([]byte("sync complete")),
-	}, nil
+	return &jobqueue.Job{Exitcode: 0}, nil
 }
 
 func TestSynchronousAddPrintsWarningsBeforeWaiting(t *testing.T) {
@@ -1392,12 +1389,12 @@ func jobCreatedCwd(t *testing.T, cwd string) string {
 	return created
 }
 
-func TestSynchronousAddPrintsStdoutAndExitsZero(t *testing.T) {
-	Convey("wr add --sync prints stdout and exits zero for a successful job", t, func() {
+func TestSynchronousAddPrintsNoOutputAndExitsZero(t *testing.T) {
+	Convey("wr add --sync prints no output and exits zero for a successful job", t, func() {
 		stdout, stderr, exitCode := runSynchronousAddInProcess(t, "success")
 
 		So(exitCode, ShouldEqual, 0)
-		So(stdout, ShouldEqual, "sync stdout\n")
+		So(stdout, ShouldBeBlank)
 		So(stderr, ShouldBeBlank)
 	})
 }
@@ -1474,7 +1471,7 @@ func synchronousAddPipe(t *testing.T) (*os.File, *os.File) {
 func runSynchronousAddNamedHelper(helper string, exit func(int)) {
 	switch helper {
 	case "success":
-		runSynchronousAddHelper(0, "sync stdout", "", exit)
+		runSynchronousAddHelper(0, "", "", exit)
 	case synchronousAddBuriedHelper:
 		runSynchronousAddHelper(3, "", "sync stderr", exit)
 	}

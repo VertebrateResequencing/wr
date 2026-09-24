@@ -35,28 +35,36 @@ sibling branch's sequence number.
     `bucketStdO`/`bucketStdE` entries, and the completion path never writes
     them: only a release or bury reaches `updateJobAfterExit`'s `updateStd`.
 
-  Who served the kept output:
+  Who served the kept output. The record's `StdOutC`/`StdErrC` came back on
+  every decoded complete job, whatever `getStd` the caller passed, because
+  `jobPopulateStdEnv` neither overwrites nor clears them for a successful job
+  (`jobCouldHaveStd` is false):
 
   - The web UI's rep-group details view: `sendJobDetails` ->
-    `getDBJobsByRepGroup` -> `db.decodeArchivedJob` -> `db.decodeJob`.
-    `jobPopulateStdEnv` leaves the decoded `StdOutC`/`StdErrC` alone because
-    `jobCouldHaveStd` is false for a successful job, and `job.ToStatus()`
-    decompresses them into `JStatus.StdOut`/`StdErr`.
-  - Lookups by key via `getJobsByKeys` -> `completeJobsByKeys`: REST
-    `/rest/v1/jobs/<key>?std=true`, `handleGetByKeys` (the client's
-    `GetByEssence`/`GetByEssences`), and the web UI's single-job lookups and
-    subscription status updates.
-  - Not `wr status`: `wr status -o d` prints std only when
-    `showextra && job.Exitcode != 0` (`cmd/status.go`).
+    `getDBJobsByRepGroup` -> `db.decodeArchivedJob` -> `db.decodeJob`, then
+    `job.ToStatus()` decompresses them into `JStatus.StdOut`/`StdErr`. The web
+    UI's single-job lookups and subscription status updates read them too.
+  - Lookups by key via `getJobsByKeys` -> `completeJobsByKeys`, and rep-group
+    lookups via `getJobsByRepGroup`: REST `/rest/v1/jobs/<key>?std=true` and
+    `/rest/v1/jobs/<repgroup>?std=true`, and `handleGetByKeys` and the
+    rep-group and recent handlers behind the Go APIs.
+  - `wr status -o json`: `statusOutputGetsStd` is true for json, and
+    `cmd/status.go` JSON-encodes `ToStatus()`, so it printed a successful
+    job's output however the jobs were chosen (`-i`, `-f`, `-l`, `--recent`).
+  - Any Go API that returns a completed job: the `jobqueue.Client` getters
+    (`GetByEssence(s)`, `GetByRepGroup(Match)`, `GetRecent`, `AddAndWait*`)
+    and the `client` package (`GetJobByKey`, `SubmitJobsAndWait`,
+    `WaitForJobs`, `WaitForRunning` for a job that has already completed,
+    `FindJobsByRepGroup*`).
+  - `wr add --sync`, whose `printSynchronousJobOutput` (`cmd/add.go`) prints
+    whatever output the re-fetched job carries. Since v0.37.0 it has printed a
+    successful command's output, though its help says it outputs the head and
+    tail of STDOUT and STDERR "if it had failed".
+  - Not `wr status -o d`, which prints std only when
+    `showextra && job.Exitcode != 0` (`cmd/status.go`), and is unchanged.
 
-  Found while running the suite, and not in the earlier investigation: the same
-  by-key path feeds `Client.AddAndWait`, the Go `client` package's
-  `SubmitJobsAndWait`, `WaitForJobs` and `GetJobByKey`, and `wr add --sync`,
-  whose `printSynchronousJobOutput` (`cmd/add.go`) prints whatever output the
-  re-fetched job carries. So since v0.37.0 `wr add --sync` has printed a
-  successful command's output, though its help says it outputs the head and
-  tail of STDOUT and STDERR "if it had failed". After this fix it prints
-  nothing for a successful command again.
+  The earlier investigation named only the web UI and REST; the rest were found
+  while running the suite and in review.
 
   The kept output was new in v0.37.0. v0.36.5's `jarchive` applied the end
   state through `Job.updateAfterExit`, which never touched `StdOutC`/`StdErrC`,
@@ -195,6 +203,17 @@ sibling branch's sequence number.
     already terminal jobs, with output only for the buried one", and the
     complete job's stdout and stderr are asserted `""`. The buried job's
     stderr assertion is unchanged.
+  - `cmd/add_test.go`: `TestSynchronousAddPrintsStdoutAndExitsZero` ("wr add
+    --sync prints stdout and exits zero for a successful job") faked a
+    successful job carrying output, which the manager can no longer return. It
+    is now `TestSynchronousAddPrintsNoOutputAndExitsZero` ("wr add --sync
+    prints no output and exits zero for a successful job"): its helper returns
+    a successful job with no output, and it asserts blank stdout and stderr and
+    exit code 0. The warning test's fake `GetByEssence` likewise returns its
+    successful job without the `"sync complete"` output. The shared
+    `synchronousAddTestClient` fakes, which build output from their `stdout` and
+    `stderr` fields, are unchanged, so the buried case still returns and prints
+    its stderr.
   - `.docs/issue-98/spec.md` D1 test 2 carries a dated note that the
     requirement was reversed, pointing here.
 
@@ -210,3 +229,16 @@ sibling branch's sequence number.
   - `CGO_ENABLED=1 make race`: **PASSED - 669 passed, 19 skipped, 29 packages,
     9m32s**, at a 1-minute load of 2.7.
   - `cleanorder -min-diff` is a no-op on every edited Go file.
+
+  After review (CHANGELOG consumer list, this doc's consumer list, the
+  `cmd/add_test.go` fakes and the `applySuccessfulEndStateLocked` comment):
+
+  - `make lint`: **0 issues.**
+  - `CGO_ENABLED=0 go test -tags netgo -count=1 ./cmd/`: **ok**, 91.6s.
+  - `make test`: the first run failed only `TestJobqueueRunnerKillRequests`
+    (`runner_lifecycle_test.go:557`, the killed job ran to completion). That
+    test covers kill via touch, not output, and `.docs/bugfixes/260916-1.md`
+    records it flaking before. The re-run, with no other suite running, was
+    **PASSED - 669 passed, 20 skipped, 29 packages, 6m14s.**
+  - `CGO_ENABLED=1 make race`: **PASSED - 669 passed, 19 skipped, 29 packages,
+    9m10s**, at a 1-minute load of 0.45 and with no other suite running.
