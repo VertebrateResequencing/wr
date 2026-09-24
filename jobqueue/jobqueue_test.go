@@ -1992,7 +1992,11 @@ func TestJobqueueSignal(t *testing.T) {
 			// fixed-duration "lost" job would finish - it would then be recorded
 			// "complete" before we kill its runner. Blocking jobs stay running
 			// until the test decides, so the outcome is deterministic.
-			markerDir, errMarker := os.MkdirTemp("", "wr_signal_marker")
+			//
+			// Removing markerDir is what ends those jobs, so it cannot wait for
+			// TestMain; newTestTempDir still creates it, so that a run killed
+			// before that defer leaves a dir the next run's reaper recognises.
+			markerDir, errMarker := newTestTempDir("signalmarker")
 			So(errMarker, ShouldBeNil)
 
 			defer os.RemoveAll(markerDir)
