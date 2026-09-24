@@ -632,8 +632,8 @@ func (j *Job) resetRunLocked(state JobState, exitcode int) {
 	// pid), so this run would wait out the wedged-runner backstop instead of being
 	// retried - and the backstop would then kill that innocent process.
 	j.RunnerPid = 0
-	// HostID is what killJobsOnBadServers matches condemned cloud servers against.
 	j.Host = ""
+	// HostID is what killJobsOnBadServers matches condemned cloud servers against.
 	j.HostID = ""
 	j.HostIP = ""
 	// ActualCwd is what cleanup deletes and what a `run` behaviour executes in.
