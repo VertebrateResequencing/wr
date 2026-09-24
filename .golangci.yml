@@ -158,7 +158,10 @@ linters:
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  new-from-rev: master
+  # The lint baseline for make lint, CI, and direct golangci-lint runs. The
+  # Makefile reads this line and makes make lint fail if it does not resolve,
+  # so keep the value alone on it.
+  new-from-rev: origin/master
 formatters:
   enable:
     - gci

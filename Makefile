@@ -93,8 +93,18 @@ bench: export CGO_ENABLED = 0
 bench:
 	@go test -tags netgo -run='^$$' -bench='$(BENCH)' -benchmem -benchtime=$(BENCHTIME) ./jobqueue/
 
+# The baseline is new-from-rev in .golangci.yml, unless GOLANGCI_LINT_ARGS
+# passes --new-from-rev=<rev>, which wins. golangci-lint lints the whole tree
+# with only a warning when the baseline does not resolve, so check it first.
+LINT_BASE_REV = $(lastword $(shell sed -n 's/^[[:space:]]*new-from-rev:[[:space:]]*//p' .golangci.yml) \
+	$(patsubst --new-from-rev=%,%,$(filter --new-from-rev=%,${GOLANGCI_LINT_ARGS})))
+
 # curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.12.2
 lint:
+	@git rev-parse --verify --quiet '$(LINT_BASE_REV)^{commit}' >/dev/null || { \
+		echo "make lint: lint baseline '$(LINT_BASE_REV)' is not a commit in this clone." >&2; \
+		echo "Run 'git fetch origin', or choose a baseline with GOLANGCI_LINT_ARGS=--new-from-rev=<rev>." >&2; \
+		exit 1; }
 	@golangci-lint run ${GOLANGCI_LINT_ARGS}
 
 # Browser-only status page regression gate. It is intentionally not a
