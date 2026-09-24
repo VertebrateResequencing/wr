@@ -203,6 +203,13 @@ project adheres to [Semantic Versioning](http://semver.org/).
   limited by time rather than by a count of jobs. A group with a count
   limit still reports that count, including a limit of 0, and `wr limit` with no
   options lists exactly the groups it listed before.
+- A manager that was killed or crashed just after one of its jobs started could,
+  once restarted, run that job a second time while the first run was still
+  going. The manager now records on disk that a job is running before it tells
+  the job's runner the start was recorded, so a restarted manager knows the job
+  is running and leaves it alone. Only a manager that dies in the brief moment
+  after a job starts but before it has acknowledged the start can still lose
+  track of it.
 
 
 ## [0.37.2] - 2026-09-01
