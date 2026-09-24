@@ -5961,6 +5961,14 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, rep releaseReport) er
 	// job.StartTime that changed in between (see releaseReport.spendsRetry).
 	bury, key, currentState := releaseJobSnapshot(job, &rep)
 
+	// the queue change below is what a waiting client (AddAndWait, `wr add
+	// --sync`) is told about, and it happens before finalizeReleasedJob queues
+	// the write of the job's std. A client that then asked for the std found
+	// none, so retrieveJobStd is made to wait from here on: until the write is
+	// queued (after which it waits on that), or until it is clear there will be
+	// none.
+	defer s.db.expectJobExitUpdate()()
+
 	q := s.queueIfPresent()
 	if q == nil {
 		return queueClosedError("Get", key)

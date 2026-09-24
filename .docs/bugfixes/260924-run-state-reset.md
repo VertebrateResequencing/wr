@@ -265,3 +265,95 @@ The reservation test then passed 40 runs in a row.
   `jobqueue/run_state_reset_test.go`; it made no change to `serverCLI.go`,
   `serverWebI.go`, `server.go` or `serverWebI_test.go`, and was reverted on
   `lost_job_behaviours_test.go`, where it moved an unrelated constant.
+
+## CI failure on PR #609: a buried job's stderr read back empty
+
+- [x] `TestSchedulerSubmitJobsAndWait` (`client/client_test.go:1042`) failed in
+      the race lane of CI run 36066509523 at `6dda09c1`, with the buried job's
+      stderr `""` instead of `"b1 stderr"`.
+
+**This bug is not caused by this branch.** It is a race that already exists on
+`origin/develop` (`1c75ffb8`). It is fixed here only because it blocks this
+PR's CI.
+
+### Cause
+
+`buryNextSchedulerJob` sends the stderr in the `JobEndState` of a `jbury`
+(`Client.Bury`). It uses no touch and no live snapshot, so `resetRunLocked`
+never sees it. The in-memory `StdErrC` that the reservation now clears plays
+no part either: a buried job's std is read only from the database.
+
+On the manager, `handleRelease` calls `releaseJob`, which does two things in
+order:
+
+1. `applyReleaseQueueChange` moves the item to bury. Its change callback sends
+   the "buried" update that `AddAndWait` is waiting for.
+2. `finalizeReleasedJob` sets `Exitcode`, `State` and `FailReason` under the
+   job's lock, unlocks, calls `decrementGroupCount`, then calls
+   `updateJobAfterExit`. That takes `db.Lock`, encodes the job, and only then
+   increments `updatingAfterJobExit` and hands the std write to the
+   best-effort writer.
+
+When the client sees "buried", it calls `GetByEssence(std=true)`.
+`jobPopulateStdEnv` then calls `retrieveJobStd`, which waits in
+`waitForJobExitUpdates` only while `updatingAfterJobExit` is non-zero. A read
+that lands after the job's lock is released but before that increment finds
+the counter at 0 and an empty std bucket. That matches CI exactly:
+`State`, `Exitcode` 12 and `FailReason` were right, and only the std was
+missing. Once the counter is incremented, `waitForJobExitUpdates` does cover
+the write, because the writer decrements it only after the transaction that
+stores the std.
+
+### Evidence
+
+- The client test is rare here. Looped under `-race` (`CGO_ENABLED=1 go test
+  -tags netgo -race -count 50 -run TestSchedulerSubmitJobsAndWait ./client/`)
+  it failed 0 of 50 on this branch, 0 of 50 with `GOMAXPROCS=1`, and 0 of 50
+  on an `origin/develop` copy in the scratchpad. The window is only as wide as
+  a `db.Lock` wait, so it needs a loaded runner like CI's.
+- A deterministic reproduction, `TestBuriedJobsStdIsThereOnceItIsBuried` in
+  `jobqueue/release_std_test.go`, holds `db.Lock`. That parks the bury inside
+  the window, once the item is buried and `State` is recorded. A second client
+  then asks for the std.
+
+Red command, on this branch before the fix:
+
+```
+CGO_ENABLED=1 go test -tags netgo --count 1 ./jobqueue \
+  -run TestBuriedJobsStdIsThereOnceItIsBuried
+  Line 138:
+  Expected: "RELEASESTDBURIEDSTDERR"
+  Actual:   ""
+  (Should equal)!
+FAIL
+```
+
+It failed 3 of 3 on this branch, and 3 of 3 on the `origin/develop` copy with
+only the test file added.
+
+### Fix
+
+`releaseJob` now calls `defer s.db.expectJobExitUpdate()()` before the queue
+change. The new `db.expectJobExitUpdate` increments `updatingAfterJobExit`
+straight away and returns the matching decrement. The deferred decrement runs
+after `finalizeReleasedJob` has registered its own count, so the counter never
+drops to 0 between the item moving and the write being queued. On the
+already-done, error and closed-database paths nobody writes, so the defer just
+decrements. No waiter holds a lock that `releaseJob` needs:
+`jobPopulateStdEnv` is the only caller of `retrieveJobStd`, and it holds no
+lock while it waits. The same path serves `jrelease` and the manager's
+lost-job release, so a released-for-retry job's std is covered too.
+
+Green: the new test passed 5 of 5, and 20 of 20 under `-race`. The client test
+passed 50 of 50 under `-race`.
+
+A narrower window remains, and this fix does not cover it: between the queue
+move and `finalizeReleasedJob` taking the job's lock, a reader can still see
+the buried item with the previous `Exitcode`/`FailReason`. Nothing that blocks
+lies in that stretch (no database lock, no I/O), and the CI failure was not
+this. Closing it would mean reordering the release against the queue change,
+which is outside this fix.
+
+Gates after this fix: `make lint` `0 issues.`; `make test` 683 passed, 20
+skipped, PASSED; `CGO_ENABLED=1 make race` (load about 1, no other suite
+running) 683 passed, 19 skipped, PASSED.
