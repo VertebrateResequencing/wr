@@ -6455,11 +6455,15 @@ func (s *Server) completeJobsByKeys(ctx context.Context, keys []string, getEnv b
 		return nil, ErrDBError, err.Error()
 	}
 
-	// getStd is false because an archived job's std needs no fetching, NOT because
-	// it has none: the complete record carries it already (markJobComplete puts
-	// the runner's final output on the job before db.archiveJob encodes it, which
-	// is what serves .docs/issue-98 D1 test 2), and archiveJobTx deleted the
-	// bucketStdO/bucketStdE entries a fetch would read.
+	// jobPopulateStdEnv's getStd is passed false because an archived job's std
+	// needs no fetching, not because it has none. The complete record carries it
+	// already (markJobComplete puts the runner's final output on the job before
+	// db.archiveJob encodes it), and archiveJobTx deleted the
+	// bucketStdO/bucketStdE entries a fetch would read. This by-key path is what
+	// returns that std for REST /rest/v1/jobs/<key>?std=true, GetByKeys and the
+	// web UI's single-job lookups. The web UI's rep-group details view, which
+	// .docs/issue-98 D1 test 2 covers, reads the record via getDBJobsByRepGroup
+	// instead.
 	if getEnv {
 		for _, job := range found {
 			s.jobPopulateStdEnv(ctx, job, false, getEnv)

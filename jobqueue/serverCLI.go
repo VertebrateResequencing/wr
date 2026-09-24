@@ -1343,17 +1343,20 @@ func markJobComplete(job *Job, endState *JobEndState,
 	// Complete job carrying Lost==true is invisible everywhere else.
 
 	// the runner's final output is put on the job deliberately, and deliberately
-	// survives into the bucketJobsComplete record that archiveCompletedJob encodes
-	// from this same *Job moments later. That record is the ONLY place a
-	// successful job's output is kept - archiveJobTx deletes its bucketStdO and
-	// bucketStdE entries, and jobExitData.updateStd never wrote them for an
-	// exitcode of 0 - and it is what serves the completed job's STDOUT/STDERR in
-	// the status web UI and in REST with std=true (.docs/issue-98 spec D1 test 2,
-	// TestStatusDetailsLiveCompatibility). Clearing it here, or before the archive
-	// encode, would shrink the db at the price of that feature; see
-	// .docs/bugfixes/260917-complete-job-std.md. The CLI shows it only for a
-	// non-zero exit code (jobCouldHaveStd, cmd/status.go), which is why it is easy
-	// to mistake this for dead weight.
+	// survives into the bucketJobsComplete record that db.archiveJob, via
+	// archiveCompletedJob, encodes from this same *Job moments later. That record
+	// is the only place a successful job's output is kept: archiveJobTx deletes
+	// its bucketStdO and bucketStdE entries, and the completion path never writes
+	// them, because only a release or bury reaches updateJobAfterExit's
+	// updateStd. The record is what serves the completed job's stdout and stderr
+	// in the status web UI and in REST with std=true (.docs/issue-98 spec D1
+	// test 2, TestStatusDetailsLiveCompatibility). Clearing it here, or before
+	// the archive encode, would shrink the db at the price of that feature; see
+	// .docs/bugfixes/260917-complete-job-std.md. Two separate gates make it look
+	// like dead weight. The CLI prints std only for a non-zero exit code, by its
+	// own showextra && job.Exitcode != 0 check in cmd/status.go. And the
+	// server's jobCouldHaveStd, which cmd/ never calls, limits reads from the std
+	// buckets to failed or buried jobs; it does not govern this record.
 	if endState != nil {
 		job.StdOutC = endState.Stdout
 		job.StdErrC = endState.Stderr
