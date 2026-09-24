@@ -82,7 +82,7 @@ const (
 	// which several backup regression tests rely on.
 	backupDirtyPollInterval = 1 * time.Second
 
-	// offlineDBOpenTimeout bounds how long the offline subcommand (CompactDBFile)
+	// offlineDBOpenTimeout bounds how long the offline subcommand (CompactDBFileStats)
 	// waits for the BoltDB file lock before erroring. The up-check in cmd guards
 	// against a running manager,
 	// but if that check is fooled (e.g. a missing token file) a manager may still
@@ -1263,6 +1263,14 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		_, errf = tx.CreateBucketIfNotExists(bucketEndTimeToKey)
 		if errf != nil {
 			return fmt.Errorf("create bucket %s: %w", bucketEndTimeToKey, errf)
+		}
+
+		// an existing database with no version may hold what older wr versions
+		// wrote, so only `wr manager compact` stamps it, once it has cleaned it.
+		if !openedExistingDB {
+			if errf = putDBSchemaVersion(tx, currentDBSchemaVersion); errf != nil {
+				return errf
+			}
 		}
 
 		if upgrade.active() {
@@ -2712,75 +2720,113 @@ func putDepGroupFromLookupKey(depGroupBucket *bolt.Bucket, lookupKey []byte) err
 	return depGroupBucket.Put(lookupKey[:idx], nil)
 }
 
-// CompactDBFile is the exported entry point for the offline `wr manager compact`
-// subcommand (spec D2). It compacts the BoltDB at dbFile, reclaiming the free
-// pages left by churn, and returns the file size (bytes) before and after.
-//
-// It opens the source with the map freelist, compacts (bolt.Compact) into a
-// temporary file in the SAME directory as dbFile, then atomically replaces the
-// original with os.Rename (same directory => same filesystem => atomic rename).
-// On any error the original file is left untouched and the temporary file is
-// removed, so a failed compaction never corrupts or partially overwrites the
-// database. The manager MUST be stopped: BoltDB permits only one process to open
-// the file at a time, so the subcommand refuses to run while a manager is up.
+// CompactStats reports what CompactDBFileStats did.
+type CompactStats struct {
+	// BeforeSize and AfterSize are the database file's size in bytes before
+	// and after compaction.
+	BeforeSize int64
+	AfterSize  int64
+
+	// OutputStripped is true if this compaction removed the output that older
+	// wr versions stored with successfully completed jobs (see
+	// dbSchemaVersionNoCompleteStd). It happens once per database.
+	OutputStripped bool
+
+	// JobsStripped is how many completed jobs had output removed.
+	JobsStripped int
+
+	// JobsUnreadable is how many completed jobs' records could not be decoded
+	// while stripping output, and so were copied unchanged. UnreadableKeys
+	// holds the keys of the first few of them.
+	JobsUnreadable int
+	UnreadableKeys []string
+}
+
+// CompactDBFile compacts the BoltDB at dbFile as CompactDBFileStats does, and
+// returns the file size (bytes) before and after. On error it returns the size
+// before if it got that far, and the size after only if the compacted copy was
+// made but could not replace the original.
 func CompactDBFile(dbFile string) (beforeSize, afterSize int64, err error) {
+	stats, err := CompactDBFileStats(dbFile)
+
+	return stats.BeforeSize, stats.AfterSize, err
+}
+
+// CompactDBFileStats is the entry point for the offline `wr manager compact`
+// subcommand (spec D2). It compacts the BoltDB at dbFile, reclaiming the free
+// pages left by churn. A database below dbSchemaVersionNoCompleteStd also has
+// its completed jobs' stored output removed during the copy, and is then
+// stamped with that version.
+//
+// It opens the source with the map freelist, compacts into a temporary file in
+// the SAME directory as dbFile, then atomically replaces the original with
+// os.Rename (same directory => same filesystem => atomic rename). On any error
+// the original file is left untouched and the temporary file is removed, so a
+// failed compaction never corrupts or partially overwrites the database. The
+// manager MUST be stopped: BoltDB permits only one process to open the file at
+// a time, so the subcommand refuses to run while a manager is up.
+func CompactDBFileStats(dbFile string) (CompactStats, error) {
+	var stats CompactStats
+
 	beforeInfo, err := os.Stat(dbFile)
 	if err != nil {
-		return 0, 0, err
+		return stats, err
 	}
 
-	beforeSize = beforeInfo.Size()
+	stats.BeforeSize = beforeInfo.Size()
 
-	tmpPath, afterSize, err := compactToTempFile(dbFile)
+	tmpPath, err := compactToTempFile(dbFile, &stats)
 	if err != nil {
 		if tmpPath != "" {
 			_ = os.Remove(tmpPath)
 		}
 
-		return beforeSize, 0, err
+		return stats, err
 	}
 
 	if err = os.Rename(tmpPath, dbFile); err != nil {
 		_ = os.Remove(tmpPath)
 
-		return beforeSize, afterSize, err
+		return stats, err
 	}
 
-	return beforeSize, afterSize, nil
+	return stats, nil
 }
 
 // compactToTempFile compacts the BoltDB at dbFile into a fresh temporary file in
-// the SAME directory (so CompactDBFile's later os.Rename onto dbFile is an atomic
-// same-filesystem rename), returning the temp file's path and its (compacted)
-// size. On error it returns the temp path (if one was created) so the caller can
+// the SAME directory (so CompactDBFileStats's later os.Rename onto dbFile is an atomic
+// same-filesystem rename), returning the temp file's path and filling in stats.
+// On error it returns the temp path (if one was created) so the caller can
 // remove it, leaving the original database untouched.
-func compactToTempFile(dbFile string) (tmpPath string, afterSize int64, err error) {
+func compactToTempFile(dbFile string, stats *CompactStats) (tmpPath string, err error) {
 	tmp, err := os.CreateTemp(filepath.Dir(dbFile), filepath.Base(dbFile)+".compact-*")
 	if err != nil {
-		return "", 0, err
+		return "", err
 	}
 
 	tmpPath = tmp.Name()
 	if cerr := tmp.Close(); cerr != nil {
-		return tmpPath, 0, cerr
+		return tmpPath, cerr
 	}
 
-	if err = compactBoltInto(tmpPath, dbFile); err != nil {
-		return tmpPath, 0, err
+	if err = compactBoltInto(tmpPath, dbFile, stats); err != nil {
+		return tmpPath, err
 	}
 
 	afterInfo, err := os.Stat(tmpPath)
 	if err != nil {
-		return tmpPath, 0, err
+		return tmpPath, err
 	}
 
-	return tmpPath, afterInfo.Size(), nil
+	stats.AfterSize = afterInfo.Size()
+
+	return tmpPath, nil
 }
 
 // compactBoltInto opens srcPath (map freelist) and the empty dstPath and copies a
-// compacted image of the source into the destination via bolt.Compact, closing
+// compacted image of the source into the destination with compactBolt, closing
 // both handles before returning.
-func compactBoltInto(dstPath, srcPath string) (err error) {
+func compactBoltInto(dstPath, srcPath string, stats *CompactStats) (err error) {
 	// a bounded timeout so, if the up-check was fooled and a manager still holds
 	// the source file lock, this errors cleanly instead of blocking forever (the
 	// dst is a fresh temp file, but it uses the same options for consistency).
@@ -2808,7 +2854,33 @@ func compactBoltInto(dstPath, srcPath string) (err error) {
 		}
 	}()
 
-	return bolt.Compact(dst, src, compactTxMaxSize)
+	return compactBolt(dst, src, stats)
+}
+
+// compactBolt copies a compacted image of src into the empty dst: verbatim with
+// bolt.Compact if src is at dbSchemaVersionNoCompleteStd or later, else with
+// compactStrippingStd, recording the stripping in stats.
+func compactBolt(dst, src *bolt.DB, stats *CompactStats) error {
+	version, err := dbFileSchemaVersion(src)
+	if err != nil {
+		return err
+	}
+
+	if version >= dbSchemaVersionNoCompleteStd {
+		return bolt.Compact(dst, src, compactTxMaxSize)
+	}
+
+	result, err := compactStrippingStd(dst, src, compactTxMaxSize)
+	if err != nil {
+		return err
+	}
+
+	stats.OutputStripped = true
+	stats.JobsStripped = result.stripped
+	stats.JobsUnreadable = result.unreadable
+	stats.UnreadableKeys = result.unreadableKeys
+
+	return nil
 }
 
 // openManagerBolt opens one of the manager's BoltDB files, bounding the wait for

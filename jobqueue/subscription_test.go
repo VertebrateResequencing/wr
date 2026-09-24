@@ -225,11 +225,11 @@ func TestClientAddAndWait(t *testing.T) {
 
 		stdout, err := result.jobs[0].StdOut()
 		So(err, ShouldBeNil)
-		So(stdout, ShouldEqual, "subscription e1 stdout")
+		So(stdout, ShouldEqual, "")
 
 		stderr, err := result.jobs[0].StdErr()
 		So(err, ShouldBeNil)
-		So(stderr, ShouldEqual, "subscription e1 stderr")
+		So(stderr, ShouldEqual, "")
 	})
 
 	Convey("AddAndWait returns a buried job with non-zero exit code and inline stderr without a Go error", t, func() {

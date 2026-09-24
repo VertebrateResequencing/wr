@@ -4667,7 +4667,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					})
 				}
 
-				Convey("The stdout/err of archived jobs is retained, and cwd&TMPDIR&HOME get set appropriately", func() {
+				Convey("The stdout/err of jobs is only kept for failed jobs, and cwd&TMPDIR&HOME get set appropriately", func() {
 					jobs = nil
 					baseDir := t.TempDir()
 
@@ -4727,11 +4727,11 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					So(job2.State, ShouldEqual, JobStateComplete)
 					stdout, err = job2.StdOut()
 					So(err, ShouldBeNil)
-					So(stdout, ShouldEqual, tmpDir+"-"+home+"-")
+					So(stdout, ShouldEqual, "")
 
 					stderr, err = job2.StdErr()
 					So(err, ShouldBeNil)
-					So(stderr, ShouldEqual, os.TempDir())
+					So(stderr, ShouldEqual, "")
 
 					// job that outputs to stdout and stderr and fails
 					job, err = jq.Reserve(50 * time.Millisecond)

@@ -1361,11 +1361,6 @@ func markJobComplete(job *Job, endState *JobEndState,
 	// Lost is only ever surfaced when State==Running (see buildJStatus), so a
 	// Complete job carrying Lost==true is invisible everywhere else.
 
-	if endState != nil {
-		job.StdOutC = endState.Stdout
-		job.StdErrC = endState.Stderr
-	}
-
 	return job.Key(), job.RepGroup, job.schedulerGroup, ""
 }
 
@@ -1383,6 +1378,10 @@ func (j *Job) applySuccessfulEndStateLocked(endState *JobEndState, lim *limiter.
 	j.CPUtime = endState.CPUtime
 	j.EndTime = endState.EndTime
 	j.setActualCwd(endState.Cwd)
+
+	// a successful job keeps no output, including any live tail from a touch.
+	j.StdOutC = nil
+	j.StdErrC = nil
 }
 
 // archiveCompletedJob persists a completed job to the complete bucket and

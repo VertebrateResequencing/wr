@@ -14,6 +14,22 @@ project adheres to [Semantic Versioning](http://semver.org/).
   anything it creates in your working directory to be owned by that user.
 
 ### Changed
+- A command that completes successfully no longer has its output kept. Its
+  stdout and stderr are now empty everywhere a completed command is shown: the
+  status web page, `wr status -o json` (however you choose the commands, with
+  `-i`, `-f`, `-l` or `--recent`), the REST API's
+  `/rest/v1/jobs/<key>?std=true` and `/rest/v1/jobs/<repgroup>?std=true`,
+  `wr add --sync` (which no longer prints a successful command's output, as its
+  help always said), and any Go API that returns a completed job, such as
+  `jobqueue.Client.GetByEssence` or the `client` package's `WaitForJobs`.
+  Before, a successful command's output came back from those Go APIs even when
+  you had not asked for std. `wr status -o d` is unchanged, since it never
+  showed a successful command's output. Failed (including released for retry)
+  and buried commands still keep theirs, and it is still shown as before. This
+  stops the database growing by up to about 16KB for every successful command
+  that prints something. Run `wr manager compact` once, with the manager
+  stopped, to remove the output stored for commands that completed before you
+  upgraded and recover that space; later compactions skip this step.
 - `--env` now refuses an element that defines no variable, naming the offending
   element and saying what to write instead, where before it stored one that no
   command could read. This covers `wr add --env`, `wr mod --env`, the `env`

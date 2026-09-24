@@ -36,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	. "github.com/smartystreets/goconvey/convey"
@@ -227,10 +228,10 @@ func TestManagerCompactRefusesWhileRunning(t *testing.T) {
 		managerCompactExit = func(code int) { exitCode = code }
 
 		compactCalled := false
-		compactDBFile = func(string) (int64, int64, error) {
+		compactDBFile = func(string) (jobqueue.CompactStats, error) {
 			compactCalled = true
 
-			return 0, 0, nil
+			return jobqueue.CompactStats{}, nil
 		}
 
 		managerCompactCmd.Run(managerCompactCmd, nil)
@@ -238,6 +239,79 @@ func TestManagerCompactRefusesWhileRunning(t *testing.T) {
 		Convey("D2.2: it exits non-zero and never touches (compacts) the database", func() {
 			So(exitCode, ShouldEqual, 1)
 			So(compactCalled, ShouldBeFalse)
+		})
+	})
+}
+
+func TestManagerCompactReportsStrippedOutput(t *testing.T) {
+	Convey("With no manager running, compact reports what it did", t, func() {
+		oldConfig := config
+		oldCAFile := caFile
+		oldExit := managerCompactExit
+		oldCompact := compactDBFile
+
+		t.Cleanup(func() {
+			config = oldConfig
+			caFile = oldCAFile
+			managerCompactExit = oldExit
+			compactDBFile = oldCompact
+
+			clog.ToDefault()
+		})
+
+		dir := t.TempDir()
+		config = &internal.Config{
+			ManagerDBFile:    filepath.Join(dir, "db"),
+			ManagerTokenFile: filepath.Join(dir, "client.token"),
+		}
+		caFile = filepath.Join(dir, "ca.pem")
+
+		exitCode := -1
+		managerCompactExit = func(code int) { exitCode = code }
+
+		stats := jobqueue.CompactStats{BeforeSize: 2500000, AfterSize: 1200000}
+		compactDBFile = func(string) (jobqueue.CompactStats, error) { return stats, nil }
+
+		Convey("including how many jobs it removed stored output from", func() {
+			stats.OutputStripped = true
+			stats.JobsStripped = 42
+
+			logged := clog.ToBufferAtLevel("info")
+
+			managerCompactCmd.Run(managerCompactCmd, nil)
+
+			So(exitCode, ShouldEqual, -1)
+			So(logged.String(), ShouldContainSubstring, "compacted "+config.ManagerDBFile+
+				": 2.5 MB -> 1.2 MB; removed output stored by older wr versions from 42 completed jobs")
+		})
+
+		Convey("warning about the completed jobs it could not read", func() {
+			stats.OutputStripped = true
+			stats.JobsUnreadable = 3
+			stats.UnreadableKeys = []string{"k1", "k2"}
+
+			logged := clog.ToBufferAtLevel("info")
+
+			managerCompactCmd.Run(managerCompactCmd, nil)
+
+			So(exitCode, ShouldEqual, -1)
+			So(logged.String(), ShouldContainSubstring, "compacted "+config.ManagerDBFile+": 2.5 MB -> 1.2 MB")
+			So(logged.String(), ShouldContainSubstring, "could not read 3 completed jobs while removing their "+
+				"stored output, so copied them unchanged: k1, k2 (and 1 more)")
+			So(logged.String(), ShouldNotContainSubstring, "removed output")
+		})
+
+		Convey("with only the sizes when it removed no stored output", func() {
+			stats.OutputStripped = true
+
+			logged := clog.ToBufferAtLevel("info")
+
+			managerCompactCmd.Run(managerCompactCmd, nil)
+
+			So(exitCode, ShouldEqual, -1)
+			So(logged.String(), ShouldContainSubstring, "compacted "+config.ManagerDBFile+": 2.5 MB -> 1.2 MB")
+			So(logged.String(), ShouldNotContainSubstring, "removed output")
+			So(logged.String(), ShouldNotContainSubstring, "could not read")
 		})
 	})
 }
