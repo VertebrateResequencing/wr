@@ -300,7 +300,7 @@ sibling branch's sequence number.
   - `wr manager compact` adds the stripped count to its existing line when it
     is above 0, and logs any unreadable records at warn level, with their
     count and up to 10 keys. Its help says it removes output stored by 0.37.0
-    to 0.37.2 the first time it compacts a database last used by wr 0.37.2 or
+    to 0.37.2 the first time it compacts a database created by wr 0.37.2 or
     earlier. The CHANGELOG entry above says running it once recovers the
     space.
 

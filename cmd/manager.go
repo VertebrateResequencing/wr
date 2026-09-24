@@ -600,7 +600,7 @@ database untouched) if a manager is currently running.
 
 wr versions 0.37.0 to 0.37.2 kept the output of every successfully completed
 command in the database, up to about 16KB each. The first time you compact a
-database last used by wr 0.37.2 or earlier, compact also removes that stored
+database created by wr 0.37.2 or earlier, compact also removes that stored
 output and reports how many completed commands it was removed from. Later
 compactions skip this.`,
 	Run: func(_ *cobra.Command, _ []string) {
