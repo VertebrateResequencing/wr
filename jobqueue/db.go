@@ -2734,6 +2734,12 @@ type CompactStats struct {
 
 	// JobsStripped is how many completed jobs had output removed.
 	JobsStripped int
+
+	// JobsUnreadable is how many completed jobs' records could not be decoded
+	// while stripping output, and so were copied unchanged. UnreadableKeys
+	// holds the keys of the first few of them.
+	JobsUnreadable int
+	UnreadableKeys []string
 }
 
 // CompactDBFile is the exported entry point for the offline `wr manager compact`
@@ -2854,10 +2860,17 @@ func compactBolt(dst, src *bolt.DB, stats *CompactStats) error {
 		return bolt.Compact(dst, src, compactTxMaxSize)
 	}
 
-	stats.OutputStripped = true
-	stats.JobsStripped, err = compactStrippingStd(dst, src, compactTxMaxSize)
+	result, err := compactStrippingStd(dst, src, compactTxMaxSize)
+	if err != nil {
+		return err
+	}
 
-	return err
+	stats.OutputStripped = true
+	stats.JobsStripped = result.stripped
+	stats.JobsUnreadable = result.unreadable
+	stats.UnreadableKeys = result.unreadableKeys
+
+	return nil
 }
 
 // openManagerBolt opens one of the manager's BoltDB files, bounding the wait for

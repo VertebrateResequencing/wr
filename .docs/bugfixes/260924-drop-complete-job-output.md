@@ -265,10 +265,11 @@ sibling branch's sequence number.
     unversioned means not yet cleaned. A database recreated from a backup is
     existing, so it carries whatever version the backup has.
   - `CompactDBFile` now returns a `CompactStats` (sizes before and after,
-    whether the strip ran, and how many jobs it stripped) in place of its two
-    sizes. `compactBolt` reads the source version. At version 1 or later it
-    calls `bolt.Compact` exactly as before, with no decoding. Below 1 it calls
-    `compactStrippingStd` (`jobqueue/db_compact.go`).
+    whether the strip ran and succeeded, how many jobs it stripped, and how
+    many complete records it could not read, with the first 10 of their keys)
+    in place of its two sizes. `compactBolt` reads the source version. At
+    version 1 or later it calls `bolt.Compact` exactly as before, with no
+    decoding. Below 1 it calls `compactStrippingStd` (`jobqueue/db_compact.go`).
   - `compactStrippingStd` mirrors bbolt's `Compact`, which has no hook to change
     a value: the same walk order, bucket sequences copied, `FillPercent` 1.0 on
     every bucket written to, and a commit whenever the next key and value would
@@ -284,15 +285,24 @@ sibling branch's sequence number.
     `handleArchive`, and `canCompleteFromEndState` requires exit code 0.
     v0.36.5's `jarchive` refused a non-zero exit too. So no record there can
     need its output kept.
-  - A record that cannot be decoded fails the compaction, leaving the original
-    untouched, rather than being copied as it is. The current code cannot read
-    such a record either, so the operator should hear about it.
+  - v0.36.0 to v0.36.5 (from #486) could also leave an earlier failed
+    attempt's output in a complete record, when a job subscribed to in the web
+    UI failed, was retried and then succeeded. Stripping it is still correct,
+    because the job finally succeeded.
+  - A record that cannot be decoded is copied as its original bytes, counted,
+    and its key reported. Nothing at manager startup decodes complete records,
+    so a database with one corrupt complete record runs today; failing the
+    strip on it would leave compact, wr's only offline way to recover space,
+    failing for ever. The destination is still stamped version 1, since output
+    in a record nothing can read cannot be served.
   - The strip happens during the copy into the temporary file, so compact's
     guarantee that an error leaves the original untouched still holds.
-  - `wr manager compact` adds the stripped count to its existing line, only
-    when the strip ran. Its help says it removes output stored by 0.37.0 to
-    0.37.2 the first time it compacts a database that has not had it done. The
-    CHANGELOG entry above says running it once recovers the space.
+  - `wr manager compact` adds the stripped count to its existing line when it
+    is above 0, and logs any unreadable records at warn level, with their
+    count and up to 10 keys. Its help says it removes output stored by 0.37.0
+    to 0.37.2 the first time it compacts a database last used by wr 0.37.2 or
+    earlier. The CHANGELOG entry above says running it once recovers the
+    space.
 
   Accepted edge case: after a database is stamped, downgrading to a wr that
   stores a successful job's output would store it again under a version 1
@@ -353,9 +363,11 @@ sibling branch's sequence number.
       output. A second compaction does no strip pass.
     - `compactStrippingStd` with a 1-byte `txMaxSize` commits before every key
       and produces the same data.
-    - With an undecodable complete record, `CompactDBFile` fails, the original
-      file's bytes are unchanged, it is still unversioned, and no temporary
-      file is left.
+    - With 12 undecodable complete records, `CompactDBFile` succeeds, strips
+      the other 20, copies each bad record byte for byte, reports 12
+      unreadable with the first 10 keys, and stamps version 1.
+    - With a malformed schema version, `CompactDBFile` fails, the original
+      file's bytes are unchanged, and no temporary file is left.
     - On a version 1 db with output in its complete records, `CompactDBFile`
       decodes nothing (counted by the `compactStdDecodeObserver` seam), reports
       no strip, and copies every value and sequence verbatim.
@@ -366,20 +378,23 @@ sibling branch's sequence number.
   `TestDBCompactRoundTrip` (`jobqueue/db_test.go`) and
   `TestManagerCompactRefusesWhileRunning` (`cmd/manager_test.go`) take the new
   return type. New `TestManagerCompactReportsStrippedOutput` drives the
-  command's `Run` with no manager up and asserts its log line with and without
-  a strip.
+  command's `Run` with no manager up and asserts its log lines for a strip, a
+  strip pass that stripped nothing, and unreadable records.
 
-  Output from a real `wr manager compact` on an unversioned db with 20 stripped
-  jobs, then run again:
+  Output from a real `wr manager compact` on an unversioned db with 20 jobs to
+  strip, then run again, then on another such db with 12 corrupt complete
+  records added:
 
   ```text
-  compacted .../wrdemo_development/db: 262.1 kB -> 131.1 kB; removed output stored by older wr versions from 20 completed jobs
-  compacted .../wrdemo_development/db: 131.1 kB -> 131.1 kB
+  INFO compacted .../wrdemo_development/db: 262.1 kB -> 131.1 kB; removed output stored by older wr versions from 20 completed jobs
+  INFO compacted .../wrdemo_development/db: 131.1 kB -> 131.1 kB
+  INFO compacted .../wrbad_development/db: 262.1 kB -> 131.1 kB; removed output stored by older wr versions from 20 completed jobs
+  WARN could not read 12 completed jobs while removing their stored output, so copied them unchanged: corrupt00, corrupt01, corrupt02, corrupt03, corrupt04, corrupt05, corrupt06, corrupt07, corrupt08, corrupt09 (and 2 more)
   ```
 
   ## Gates
 
-  With `OS_*` unset and develop at `99beac5`:
+  With `OS_*` unset and master at `b2f0ff9`:
 
   - `make lint`: **0 issues.**
   - `make test`: the first run failed only `TestJobqueueRunnerKillRequests`
@@ -390,3 +405,13 @@ sibling branch's sequence number.
   - `cleanorder -min-diff` was run on the new files and the edited test files.
     On `jobqueue/db.go` it wants to move about 2,500 lines of existing code even
     at `HEAD`, so that file was left in its existing order.
+
+  After review (unreadable records copied rather than failing, the rollback
+  defer, help text, log lines, `OutputStripped` set only on success):
+
+  - `make lint`: **0 issues.**
+  - `TestDBSchemaVersionOnOpen`, `TestDBCompactStripsOldCompleteStd`,
+    `TestDBCompactGoldenFixture`, `TestDBCompactRoundTrip`: **ok.**
+  - `make test`: **PASSED - 679 passed, 20 skipped, 29 packages, 6m21s.**
+  - `CGO_ENABLED=1 make race`: **PASSED - 679 passed, 19 skipped, 29 packages,
+    9m23s**, started at a 1-minute load of 3.0 with no other suite running.

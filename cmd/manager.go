@@ -600,9 +600,9 @@ database untouched) if a manager is currently running.
 
 wr versions 0.37.0 to 0.37.2 kept the output of every successfully completed
 command in the database, up to about 16KB each. The first time you compact a
-database that has not had it done, compact also removes that stored output and
-reports how many completed commands it was removed from. Later compactions skip
-this.`,
+database last used by wr 0.37.2 or earlier, compact also removes that stored
+output and reports how many completed commands it was removed from. Later
+compactions skip this.`,
 	Run: func(_ *cobra.Command, _ []string) {
 		// refuse to run while a manager is up (pid file / port check): it holds
 		// the database file open, so compaction cannot open it and must not run.
@@ -629,6 +629,10 @@ this.`,
 		}
 
 		info("%s", compactReport(config.ManagerDBFile, stats))
+
+		if stats.JobsUnreadable > 0 {
+			warn("%s", compactUnreadableReport(stats))
+		}
 	},
 }
 
@@ -637,9 +641,23 @@ func compactReport(dbFile string, stats jobqueue.CompactStats) string {
 	report := fmt.Sprintf("compacted %s: %s -> %s", dbFile,
 		humanBytes(stats.BeforeSize), humanBytes(stats.AfterSize))
 
-	if stats.OutputStripped {
+	if stats.JobsStripped > 0 {
 		report += fmt.Sprintf("; removed output stored by older wr versions from %d completed jobs",
 			stats.JobsStripped)
+	}
+
+	return report
+}
+
+// compactUnreadableReport describes the completed jobs a compaction could not
+// read, and so copied unchanged.
+func compactUnreadableReport(stats jobqueue.CompactStats) string {
+	report := fmt.Sprintf("could not read %d completed jobs while removing their stored output, "+
+		"so copied them unchanged: %s",
+		stats.JobsUnreadable, strings.Join(stats.UnreadableKeys, ", "))
+
+	if more := stats.JobsUnreadable - len(stats.UnreadableKeys); more > 0 {
+		report += fmt.Sprintf(" (and %d more)", more)
 	}
 
 	return report

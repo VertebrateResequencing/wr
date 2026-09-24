@@ -285,7 +285,25 @@ func TestManagerCompactReportsStrippedOutput(t *testing.T) {
 				": 2.5 MB -> 1.2 MB; removed output stored by older wr versions from 42 completed jobs")
 		})
 
+		Convey("warning about the completed jobs it could not read", func() {
+			stats.OutputStripped = true
+			stats.JobsUnreadable = 3
+			stats.UnreadableKeys = []string{"k1", "k2"}
+
+			logged := clog.ToBufferAtLevel("info")
+
+			managerCompactCmd.Run(managerCompactCmd, nil)
+
+			So(exitCode, ShouldEqual, -1)
+			So(logged.String(), ShouldContainSubstring, "compacted "+config.ManagerDBFile+": 2.5 MB -> 1.2 MB")
+			So(logged.String(), ShouldContainSubstring, "could not read 3 completed jobs while removing their "+
+				"stored output, so copied them unchanged: k1, k2 (and 1 more)")
+			So(logged.String(), ShouldNotContainSubstring, "removed output")
+		})
+
 		Convey("with only the sizes when it removed no stored output", func() {
+			stats.OutputStripped = true
+
 			logged := clog.ToBufferAtLevel("info")
 
 			managerCompactCmd.Run(managerCompactCmd, nil)
@@ -293,6 +311,7 @@ func TestManagerCompactReportsStrippedOutput(t *testing.T) {
 			So(exitCode, ShouldEqual, -1)
 			So(logged.String(), ShouldContainSubstring, "compacted "+config.ManagerDBFile+": 2.5 MB -> 1.2 MB")
 			So(logged.String(), ShouldNotContainSubstring, "removed output")
+			So(logged.String(), ShouldNotContainSubstring, "could not read")
 		})
 	})
 }

@@ -175,9 +175,9 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 			txBefore := boltTxID(dst)
 
 			// a 1-byte limit commits before every key after the first.
-			stripped, err := compactStrippingStd(dst, src, 1)
+			result, err := compactStrippingStd(dst, src, 1)
 			So(err, ShouldBeNil)
-			So(stripped, ShouldEqual, len(keys))
+			So(result.stripped, ShouldEqual, len(keys))
 			So(boltTxID(dst)-txBefore, ShouldBeGreaterThanOrEqualTo, len(before.values))
 			So(src.Close(), ShouldBeNil)
 			So(dst.Close(), ShouldBeNil)
@@ -191,14 +191,57 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 			So(version, ShouldEqual, dbSchemaVersionNoCompleteStd)
 		})
 
-		Convey("CompactDBFile leaves the original untouched when a complete record cannot be decoded", func() {
-			So(putRawBolt(t, dbFile, bucketJobsComplete, []byte("undecodable"), []byte{0xff, 0xff, 0xff}), ShouldBeNil)
+		Convey("CompactDBFile copies undecodable complete records unchanged, reports them and still stamps", func() {
+			const badRecords = maxUnreadableKeysReported + 2
+
+			badKeys := make([]string, 0, badRecords)
+
+			for i := range badRecords {
+				key := fmt.Sprintf("undecodable%02d", i)
+				So(putRawBolt(t, dbFile, bucketJobsComplete, []byte(key), []byte{0xff, 0xff, 0xff}), ShouldBeNil)
+
+				badKeys = append(badKeys, key)
+			}
+
+			stats, err := CompactDBFile(dbFile)
+			So(err, ShouldBeNil)
+			So(stats.OutputStripped, ShouldBeTrue)
+			So(stats.JobsStripped, ShouldEqual, len(keys))
+			So(stats.JobsUnreadable, ShouldEqual, badRecords)
+			So(stats.UnreadableKeys, ShouldResemble, badKeys[:maxUnreadableKeysReported])
+
+			after := readBoltData(t, dbFile)
+
+			var identical int
+
+			for _, key := range badKeys {
+				if after.values["jobscomplete/"+key] == "\xff\xff\xff" {
+					identical++
+				}
+			}
+
+			So(identical, ShouldEqual, badRecords)
+
+			version, _ := testDBSchemaVersion(t, dbFile)
+			So(version, ShouldEqual, dbSchemaVersionNoCompleteStd)
+		})
+
+		Convey("CompactDBFile leaves the original untouched when it fails", func() {
+			So(updateRawBolt(t, dbFile, func(tx *bolt.Tx) error {
+				b, errc := tx.CreateBucket(bucketMeta)
+				if errc != nil {
+					return errc
+				}
+
+				return b.Put(metaKeySchemaVersion, []byte("bad"))
+			}), ShouldBeNil)
 
 			original, errr := os.ReadFile(dbFile)
 			So(errr, ShouldBeNil)
 
-			_, err := CompactDBFile(dbFile)
-			So(err, ShouldNotBeNil)
+			stats, err := CompactDBFile(dbFile)
+			So(err, ShouldWrap, errBadDBSchemaVersion)
+			So(stats.OutputStripped, ShouldBeFalse)
 
 			now, errr := os.ReadFile(dbFile)
 			So(errr, ShouldBeNil)
@@ -216,10 +259,6 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 			}
 
 			So(leftovers, ShouldEqual, 0)
-
-			version, hasMeta := testDBSchemaVersion(t, dbFile)
-			So(hasMeta, ShouldBeFalse)
-			So(version, ShouldEqual, 0)
 		})
 	})
 

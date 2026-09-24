@@ -39,12 +39,28 @@ import (
 	berrors "go.etcd.io/bbolt/errors"
 )
 
+// maxUnreadableKeysReported caps how many unreadable complete records' keys a
+// compaction reports, since a badly damaged database could have many.
+const maxUnreadableKeysReported = 10
+
 // compactStdDecodeObserver, if set, is called each time compaction decodes a
 // complete record to strip its output. It is prod-inert and exists so tests can
 // prove a compaction did no strip pass.
 //
 //nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver.
 var compactStdDecodeObserver func()
+
+// stdStripResult is what compactStrippingStd did to the complete records.
+type stdStripResult struct {
+	// stripped is how many records had output removed.
+	stripped int
+
+	// unreadable is how many records could not be decoded, and so were copied
+	// unchanged; unreadableKeys holds the first maxUnreadableKeysReported of
+	// their keys.
+	unreadable     int
+	unreadableKeys []string
+}
 
 // stdStrippingCopier copies one BoltDB into another the way bolt.Compact does,
 // except that it removes the StdOutC and StdErrC of every bucketJobsComplete
@@ -58,7 +74,7 @@ type stdStrippingCopier struct {
 	txMaxSize int64
 	size      int64
 	ch        codec.Handle
-	stripped  int
+	result    stdStripResult
 }
 
 // copyBucket creates the bucket name, beneath the buckets named by path, and
@@ -162,7 +178,9 @@ func (c *stdStrippingCopier) bucket(path [][]byte) *bolt.Bucket {
 
 // stripStd returns the complete record encoded, stored under key, without its
 // StdOutC and StdErrC. It decodes and re-encodes with the db's codec as
-// archiveJob does, and returns encoded itself if the record holds no output.
+// archiveJob does. It returns encoded itself if the record holds no output, or
+// if it cannot be decoded: nothing can serve an unreadable record's output, and
+// refusing to copy it would leave the database uncompactable for ever.
 func (c *stdStrippingCopier) stripStd(key, encoded []byte) ([]byte, error) {
 	if compactStdDecodeObserver != nil {
 		compactStdDecodeObserver()
@@ -170,7 +188,12 @@ func (c *stdStrippingCopier) stripStd(key, encoded []byte) ([]byte, error) {
 
 	job := &Job{}
 	if err := codec.NewDecoderBytes(encoded, c.ch).Decode(job); err != nil {
-		return nil, fmt.Errorf("decode completed job %q: %w", key, err)
+		c.result.unreadable++
+		if len(c.result.unreadableKeys) < maxUnreadableKeysReported {
+			c.result.unreadableKeys = append(c.result.unreadableKeys, string(key))
+		}
+
+		return encoded, nil
 	}
 
 	if len(job.StdOutC) == 0 && len(job.StdErrC) == 0 {
@@ -185,7 +208,7 @@ func (c *stdStrippingCopier) stripStd(key, encoded []byte) ([]byte, error) {
 		return nil, fmt.Errorf("encode completed job %q: %w", key, err)
 	}
 
-	c.stripped++
+	c.result.stripped++
 
 	return stripped, nil
 }
@@ -193,38 +216,49 @@ func (c *stdStrippingCopier) stripStd(key, encoded []byte) ([]byte, error) {
 // compactStrippingStd copies src into the empty dst, removing the output of
 // every completed job, then stamps dst with dbSchemaVersionNoCompleteStd. Every
 // other value, nested bucket and bucket sequence is copied unchanged, as is a
-// complete record that holds no output. It returns how many complete records
-// had output removed.
+// complete record that holds no output or cannot be decoded. It returns what it
+// did to the complete records.
 //
 // Only successful jobs are ever archived into bucketJobsComplete (every wr
 // version has refused to archive a non-zero exit), so no record there has
 // output that should be kept.
-func compactStrippingStd(dst, src *bolt.DB, txMaxSize int64) (int, error) {
+func compactStrippingStd(dst, src *bolt.DB, txMaxSize int64) (result stdStripResult, err error) {
 	tx, err := dst.Begin(true)
 	if err != nil {
-		return 0, err
+		return stdStripResult{}, err
 	}
 
 	c := &stdStrippingCopier{dst: dst, tx: tx, txMaxSize: txMaxSize, ch: new(codec.BincHandle)}
 
+	// after a successful Commit this is a no-op returning ErrTxClosed.
 	defer func() {
 		if errr := c.tx.Rollback(); errr != nil && !errors.Is(errr, berrors.ErrTxClosed) {
 			err = errors.Join(err, errr)
 		}
 	}()
 
-	err = src.View(func(stx *bolt.Tx) error {
+	if err = c.copyAll(src); err != nil {
+		return stdStripResult{}, err
+	}
+
+	return c.result, nil
+}
+
+// copyAll copies every bucket of src, then stamps the destination with
+// dbSchemaVersionNoCompleteStd and commits.
+func (c *stdStrippingCopier) copyAll(src *bolt.DB) error {
+	err := src.View(func(stx *bolt.Tx) error {
 		return stx.ForEach(func(name []byte, b *bolt.Bucket) error {
 			return c.copyBucket(nil, name, b)
 		})
 	})
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	if err = putDBSchemaVersion(c.tx, dbSchemaVersionNoCompleteStd); err != nil {
-		return 0, err
+		return err
 	}
 
-	return c.stripped, c.tx.Commit()
+	return c.tx.Commit()
 }
