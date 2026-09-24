@@ -64,14 +64,19 @@
 
   - Which sites got `t.TempDir()`:
 
-    - `internal/config_test.go`, all nine `os.MkdirTemp("", ...)` calls. Five
-      of them are the one in `getTempHome`, which gained a `t *testing.T`
-      parameter; all four of its callers are inside `TestConfig`, as are the
-      other eight sites, so `t` was in scope everywhere. Four of the nine
-      (`temp_home`, `wr_conf_test` x3) already had a `defer os.RemoveAll` and
-      did not leak, and were converted anyway: they are the same hand-rolled
-      cleanup in the same test, and leaving half the file on `os.MkdirTemp`
-      leaves the next edit a template to copy.
+    - `internal/config_test.go`, all nine `os.MkdirTemp("", ...)` call sites.
+      Five of them leaked, together accounting for the nine dirs:
+      - `getTempHome`, one call site that leaked five dirs per run. It has four
+        callers, and GoConvey re-runs a parent block once per leaf, so it runs
+        five times. It gained a `t *testing.T` parameter; all four callers are
+        inside `TestConfig`.
+      - `temp_home` x2, `temp_pwd` and `temp_wd`, one dir each.
+
+      The other four call sites (`temp_home`, `wr_conf_test` x3) already had a
+      `defer os.RemoveAll` and did not leak, and were converted anyway: they
+      are the same hand-rolled cleanup in the same test, and leaving half the
+      file on `os.MkdirTemp` leaves the next edit a template to copy. All nine
+      are inside `TestConfig`, so `t` was in scope everywhere.
     - `internal/config_test.go`'s `/tmp/testNoWrite`, which is a **fixed**
       shared path opened `O_CREATE` at mode 0444, not a random-suffixed dir.
       It now uses `ft.FilePathInTempDir(t, ...)`, the existing helper the same
@@ -96,8 +101,11 @@
       `defer os.RemoveAll`), which is why they contributed 0 to the measured
       leak. Threading a `t` through both to reach `t.TempDir()` would also move
       removal to the end of `TestLocal`, where that cleanup *fails the test* if
-      a still-running scheduled job holds a file open - a new flake in the
-      suite's most load-sensitive package, bought with no leak fixed.
+      a still-running scheduled job is still creating files in the dir while
+      it is removed, so `RemoveAll` meets a directory that is no longer empty
+      (`ENOTEMPTY`) - a new flake in the suite's most load-sensitive package,
+      bought with no leak fixed. On Linux an open file does not block removal;
+      a writer racing it does.
     - The `os.MkdirTemp("./", ...)` sites in `scheduler_test.go` and
       `scheduler_lsf_test.go` write into the package directory rather than
       `/tmp`, so they are not this item.
@@ -210,3 +218,58 @@
       only edit to `jobqueue_test.go` here is `TestJobqueueSignal`'s marker
       dir. A fixed-sleep kill race is worth its own item, in the family of
       `.docs/bugfixes/260916-1.md`'s port-contention entry.
+
+- [x] The scheduler regression test would pass without testing anything if
+      one of the tests it names were renamed.
+
+  Raised in review of `014bf6c`. `jobqueue/scheduler/testtempdir_test.go`
+  runs its child with `-test.run '^(TestLocal|TestStartOrderRecorder)$'`. A
+  pattern naming a test that no longer exists matches nothing, and a Go test
+  binary that runs nothing still exits 0 - and leaves `TMPDIR` empty, which is
+  exactly the regression test's pass condition. Renaming `TestLocal`, the test
+  holding the fixed `testLocalFewerCPUs` site, would silently turn the check
+  off.
+
+  - Fixed by running the child with `-test.v` and requiring
+    `--- PASS: <name> ` in its output for each named test, alongside the
+    existing exit-status and empty-`TMPDIR` assertions. The trailing space
+    stops `TestLocal` matching `TestLocalRecoverOnce`. `--- SKIP` is not
+    accepted: neither test calls `t.Skip` (`TestLocal`'s `SkipConvey` for
+    one-cpu hosts is a nested Convey, not a test skip, so the test still
+    reports PASS). The pattern and the ran-check are both built from one
+    `localTempDirTests()` list, so they cannot drift apart.
+  - Proved, with each run restored afterwards
+    (`CGO_ENABLED=0 go test -tags netgo -count=1 ./jobqueue/scheduler/
+    -run '^TestTestBinaryTempDirs$'`):
+
+    ```
+    == 1. guard present, real names ==
+    ok  	github.com/VertebrateResequencing/wr/jobqueue/scheduler	4.309s
+    == 2. rename TestLocal -> TestLocalRenamed, guard present ==
+      Expected '=== RUN   TestStartOrderRecorder
+      ' to contain substring '--- PASS: TestLocalRenamed ' (but it didn't)!
+    --- FAIL: TestTestBinaryTempDirs (0.04s)
+    == 3. same rename, guard removed (the behaviour at 014bf6c) ==
+    ok  	github.com/VertebrateResequencing/wr/jobqueue/scheduler	0.044s
+    ```
+
+    Run 3 is the weakness reproduced: 0.04s, `TestLocal` never ran, green.
+  - `internal/testtempdir_test.go` does not have this weakness, so it was left
+    alone. Its child passes no `-test.run` at all and runs the whole binary, so
+    there is no pattern for a rename to fall out of; a renamed `TestConfig`
+    still runs. The only test the child leaves out is the regression test
+    itself, via `WR_INTERNAL_TEMPDIR_CHILD`, and that exclusion is by env var
+    rather than by name.
+
+- [x] This checklist miscounted the `getTempHome` site and misstated the
+      `t.TempDir()` cleanup risk.
+
+  Raised in review of `014bf6c`. It said "all nine `os.MkdirTemp` calls. Five
+  of them are the one in `getTempHome`", which counts dirs as call sites:
+  there are nine call sites, one of them in `getTempHome`, and that one site
+  leaks five dirs. It also said the cleanup would fail if a scheduled job
+  "holds a file open". On Linux an open file does not stop removal; the real
+  risk is a job still creating files while `RemoveAll` runs, which then fails
+  with `ENOTEMPTY`.
+
+  - Reworded both in the first item above. No code change.
