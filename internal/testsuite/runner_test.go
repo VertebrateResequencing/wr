@@ -211,7 +211,12 @@ func occupiedPortBase(t *testing.T) int {
 			net.JoinHostPort("0.0.0.0", strconv.Itoa(base+offset)))
 		So(errl, ShouldBeNil)
 
-		t.Cleanup(func() { listener.Close() })
+		// t.Errorf, not So: the Convey block has ended by the time this runs.
+		t.Cleanup(func() {
+			if errc := listener.Close(); errc != nil {
+				t.Errorf("closing the port holder on %s: %s", listener.Addr(), errc)
+			}
+		})
 	}
 
 	return base

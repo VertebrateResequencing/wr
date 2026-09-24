@@ -68,3 +68,11 @@ fix-testsuite-nested-port-base
       29 packages`, PASSED; `WR_TEST_PORT_BASE=11000 make test` gives the same,
       PASSED; `CGO_ENABLED=1 make race` gives `668 passed · 19 skipped · 29
       packages`, PASSED.
+
+- [x] PR #605 review (Copilot, comment 4091965277): `occupiedPortBase`'s
+  cleanup discarded the error from `listener.Close()`, so a failed close went
+  unreported. Lint misses it because the `std-error-handling` preset exempts
+  `Close`. The cleanup now reports it with `t.Errorf`, not `So`, since the
+  Convey context has ended by then. This is a test-only robustness change with
+  no change to supported behaviour, so it needs no new test; the package tests
+  and `make lint` pass.
