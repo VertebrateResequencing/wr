@@ -4847,6 +4847,10 @@ func (s *Server) uploadFile(ctx context.Context, source io.Reader, savePath stri
 	if err != nil {
 		clog.Error(ctx, "uploadFile store file error", "err", err)
 
+		if errc := file.Close(); errc != nil {
+			clog.Warn(ctx, "uploadFile close file error", "err", errc)
+		}
+
 		return "", err
 	}
 
@@ -4893,7 +4897,8 @@ func (s *Server) openUploadDestination(ctx context.Context, savePath string) (*o
 
 	// OpenFile's mode only applies when it creates the file, so a file already
 	// at savePath would keep its wider mode. Chmod before anything is written,
-	// so another user can only ever have seen it empty.
+	// so nobody else can open it afterwards; a descriptor someone already had
+	// open keeps working, since permissions are only checked on open.
 	if err = file.Chmod(ownerReadWrite); err != nil {
 		clog.Error(ctx, "uploadFile chmod file error", "err", err)
 
