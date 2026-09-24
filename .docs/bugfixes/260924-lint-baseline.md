@@ -124,3 +124,10 @@ fix-lint-baseline-ref
   - `DEVELOPERS.md` mentions `make lint` only to say that it ignores
     `developers/`, and it does not describe the baseline, so it is unchanged.
   - Local `master` is back at `3caeba4d`, as the repro requires.
+
+- [x] PR #603 review, Copilot comment 4091791910: the `.golangci.yml` comment
+  on the `new-from-rev` line said to keep the value "alone on it", which is
+  unclear. It now says the value must be unquoted and alone on its line, with
+  no trailing comment. This changes only the comment, not behaviour, so no new
+  test is needed. `make -n lint` still expands the baseline to
+  `origin/master`.
