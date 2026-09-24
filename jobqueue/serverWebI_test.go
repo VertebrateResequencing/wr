@@ -2018,8 +2018,8 @@ func TestStatusDetailsLiveCompatibility(t *testing.T) {
 
 		completeStatus := requestDetails(completeJob.RepGroup, JobStateComplete, completeJob.Key())
 
-		So(completeStatus.StdOut, ShouldEqual, "final\n")
-		So(completeStatus.StdErr, ShouldEqual, "done\n")
+		So(completeStatus.StdOut, ShouldEqual, "")
+		So(completeStatus.StdErr, ShouldEqual, "")
 		So(completeStatus.Exited, ShouldBeTrue)
 		So(completeStatus.PeakRAM, ShouldEqual, 654)
 		So(completeStatus.CPUtime, ShouldEqual, 8)

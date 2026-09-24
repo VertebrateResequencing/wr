@@ -436,6 +436,11 @@ data to keep working, so that rolling upgrades do not break live status.
    requested after completion, then `StdOut == "final\n"`,
    `StdErr == "done\n"`, `Exited == true`, and the final `PeakRAM` and
    `CPUtime` values are the archive values, not stale live values.
+
+   Reversed on 2026-09-24: a successfully completed job now keeps no stdout or
+   stderr, so `StdOut == ""` and `StdErr == ""` here, while `Exited`,
+   `PeakRAM` and `CPUtime` are still the archive values. See
+   `.docs/bugfixes/260924-drop-complete-job-output.md`.
 3. Given a running job has `KillCalled == true` and existing live fields, when
    an authenticated live `jtouch` or older-runner `jtouch` with
    `&JobEndState{}` arrives, then the response still has

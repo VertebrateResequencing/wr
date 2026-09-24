@@ -105,7 +105,7 @@ func TestSchedulerGetJobByKey(t *testing.T) {
 			So(stored.State, ShouldEqual, jobqueue.JobStateReady)
 		})
 
-		Convey("GetJobByKey fetches stdout and stderr for complete jobs when requested", func() {
+		Convey("GetJobByKey fetches no stdout or stderr for a successful complete job", func() {
 			job := s.NewJob("printf 'typed stdout'; printf 'typed stderr' >&2",
 				"rg-b3-std", "req-b3-std", "", "", nil)
 
@@ -125,11 +125,11 @@ func TestSchedulerGetJobByKey(t *testing.T) {
 
 			stdout, err := stored.StdOut()
 			So(err, ShouldBeNil)
-			So(stdout, ShouldEqual, "typed stdout")
+			So(stdout, ShouldEqual, "")
 
 			stderr, err := stored.StdErr()
 			So(err, ShouldBeNil)
-			So(stderr, ShouldEqual, "typed stderr")
+			So(stderr, ShouldEqual, "")
 		})
 
 		Convey("GetJobByKey rejects a blank key", func() {
@@ -1031,11 +1031,11 @@ func TestSchedulerSubmitJobsAndWait(t *testing.T) {
 
 			stdout, err := result.jobs[0].StdOut()
 			So(err, ShouldBeNil)
-			So(stdout, ShouldEqual, "a1 stdout")
+			So(stdout, ShouldEqual, "")
 
 			stderr, err := result.jobs[0].StdErr()
 			So(err, ShouldBeNil)
-			So(stderr, ShouldEqual, "a1 stderr")
+			So(stderr, ShouldEqual, "")
 
 			stderr, err = result.jobs[1].StdErr()
 			So(err, ShouldBeNil)
@@ -1247,7 +1247,7 @@ func TestSchedulerWaitForJobs(t *testing.T) {
 			So(result.jobs[1].State, ShouldEqual, jobqueue.JobStateComplete)
 		})
 
-		Convey("WaitForJobs returns already terminal jobs with stdout and stderr", func() {
+		Convey("WaitForJobs returns already terminal jobs, with output only for the buried one", func() {
 			completeJob := s.NewJob("printf 'pre stdout'; printf 'pre stderr' >&2",
 				"rg-b2-pre-complete", "req-b2-pre", "", "", nil)
 			buriedJob := s.NewJob("echo b2 pre buried", "rg-b2-pre-buried",
@@ -1277,11 +1277,11 @@ func TestSchedulerWaitForJobs(t *testing.T) {
 
 			stdout, err := got[0].StdOut()
 			So(err, ShouldBeNil)
-			So(stdout, ShouldEqual, "pre stdout")
+			So(stdout, ShouldEqual, "")
 
 			stderr, err := got[0].StdErr()
 			So(err, ShouldBeNil)
-			So(stderr, ShouldEqual, "pre stderr")
+			So(stderr, ShouldEqual, "")
 
 			stderr, err = got[1].StdErr()
 			So(err, ShouldBeNil)

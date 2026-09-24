@@ -14,6 +14,16 @@ project adheres to [Semantic Versioning](http://semver.org/).
   anything it creates in your working directory to be owned by that user.
 
 ### Changed
+- A command that completes successfully no longer has its output kept, so the
+  status web page and the REST API (`/rest/v1/jobs/<key>?std=true`) no longer
+  show the stdout and stderr of successful completed commands. `wr add --sync`
+  no longer prints a successful command's output either, which is what its
+  help always said, and the Go `client` package's `SubmitJobsAndWait`,
+  `WaitForJobs` and `GetJobByKey` return successful complete jobs with empty
+  output. Failed and buried commands still keep theirs, and it is still shown
+  as before. This stops the database growing by up to about 16KB for every
+  successful command that prints something. Commands that completed before you
+  upgraded keep the output they already have stored.
 - `--env` now refuses an element that defines no variable, naming the offending
   element and saying what to write instead, where before it stored one that no
   command could read. This covers `wr add --env`, `wr mod --env`, the `env`
