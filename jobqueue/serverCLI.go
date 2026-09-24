@@ -1881,7 +1881,7 @@ func (s *Server) handleGetSetLimitGroup(ctx context.Context, cr *clientRequest) 
 		return nil, serr, err.Error()
 	}
 
-	return &serverResponse{Limit: int(limit.Limit())}, "", ""
+	return &serverResponse{Limit: int(limit.LimitForDisplay())}, "", ""
 }
 
 // jobsResponse returns a response containing jobs, or nil if there are none.
