@@ -29,6 +29,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -91,8 +92,7 @@ func TestSuiteTempReaping(t *testing.T) {
 			So(os.RemoveAll(live), ShouldBeNil)
 		}()
 
-		So(RunPlan(t.Context(), io.Discard, io.Discard, t.TempDir(),
-			Plan{Mode: ModeTest, Module: "example.com/m"}), ShouldBeNil)
+		So(runNestedPlan(t), ShouldBeNil)
 
 		_, err = os.Stat(dead)
 		So(os.IsNotExist(err), ShouldBeTrue)
@@ -123,8 +123,7 @@ func TestSuiteLeavesForeignJobDirsAlone(t *testing.T) {
 	Convey("A run leaves the working dir of a job someone else submitted alone", t, func() {
 		foreign := plantJobqueueCwdDir(t)
 
-		So(RunPlan(t.Context(), io.Discard, io.Discard, t.TempDir(),
-			Plan{Mode: ModeTest, Module: "example.com/m"}), ShouldBeNil)
+		So(runNestedPlan(t), ShouldBeNil)
 
 		_, err := os.Stat(foreign)
 		So(err, ShouldBeNil)
@@ -187,6 +186,53 @@ func killedRunSuiteTemp(t *testing.T) string {
 	So(string(out), ShouldContainSubstring, suiteTempChildReport)
 
 	return ""
+}
+
+func TestNestedRunFindsItsOwnPortBase(t *testing.T) {
+	Convey("A run nested in a suite lane succeeds while the lane's port block is occupied", t, func() {
+		t.Setenv(envTestPortBase, strconv.Itoa(occupiedPortBase(t)))
+
+		So(runNestedPlan(t), ShouldBeNil)
+	})
+}
+
+// occupiedPortBase returns a port base whose lane-0 ports are held until the
+// test ends, as the outer suite's lanes hold theirs while a lane runs.
+func occupiedPortBase(t *testing.T) int {
+	t.Helper()
+
+	base, err := chooseRunPortBase(t.Context(), Plan{})
+	So(err, ShouldBeNil)
+
+	var listenConfig net.ListenConfig
+
+	for _, offset := range []int{1, 2, 3} {
+		listener, errl := listenConfig.Listen(t.Context(), "tcp",
+			net.JoinHostPort("0.0.0.0", strconv.Itoa(base+offset)))
+		So(errl, ShouldBeNil)
+
+		t.Cleanup(func() { listener.Close() })
+	}
+
+	return base
+}
+
+// runNestedPlan runs an empty plan in-process, as the tests here do from
+// inside a suite lane. Every in-process RunPlan must go through it.
+//
+// The WR_TEST_PORT_BASE this process inherited belongs to the outer run, which
+// the suite exported, or the operator set, for its lanes, and those lanes hold
+// ports in that very block while this one runs. Were the nested run to see it,
+// it would validate that base, not search for one, and fail with "could not
+// find a free port range". Clearing it gives the nested run a base of its own;
+// t.Setenv puts the lane's value back when the test ends.
+func runNestedPlan(t *testing.T) error {
+	t.Helper()
+
+	t.Setenv(envTestPortBase, "")
+
+	return RunPlan(t.Context(), io.Discard, io.Discard, t.TempDir(),
+		Plan{Mode: ModeTest, Module: "example.com/m"})
 }
 
 // suiteTempDirsOf returns the temp dirs in os.TempDir() that pid made for the
