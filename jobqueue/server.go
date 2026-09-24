@@ -136,6 +136,19 @@ const (
 	// or write (used for the auth token and uploaded files).
 	ownerReadWrite = 0o600
 
+	// ownerOnlyDir is the mode for a directory made to hold ownerReadWrite
+	// files. Those files being unreadable is not enough on its own: deleting
+	// or replacing a file needs write permission on the DIRECTORY rather than
+	// on the file, so a directory anybody else can write to lets them swap an
+	// uploaded file for one of their own. What `wr add --cloud_config_files`
+	// uploads through here is copied to every cloud server the manager spawns,
+	// and defaults to ~/.s3cfg, ~/.aws/credentials and ~/.aws/config.
+	//
+	// This only governs directories MADE here: os.MkdirAll leaves the mode of
+	// one that already exists alone, so an upload tree an older wr made keeps
+	// whatever mode it was given then.
+	ownerOnlyDir = 0o700
+
 	postUpgradeStartupState  = internal.DBUpgradePostStartupState
 	postUpgradeStartupDetail = internal.DBUpgradePostStartupDetail
 
@@ -4834,6 +4847,10 @@ func (s *Server) uploadFile(ctx context.Context, source io.Reader, savePath stri
 	if err != nil {
 		clog.Error(ctx, "uploadFile store file error", "err", err)
 
+		if errc := file.Close(); errc != nil {
+			clog.Warn(ctx, "uploadFile close file error", "err", errc)
+		}
+
 		return "", err
 	}
 
@@ -4853,7 +4870,7 @@ func (s *Server) uploadFile(ctx context.Context, source io.Reader, savePath stri
 // directory (usedTempFile is then true and the returned path is its name);
 // otherwise the chosen savePath (with ~/ expanded) is created, truncating any
 // existing file so the upload replaces its content instead of overwriting only
-// the start of it.
+// the start of it, and making it owner read/write only whatever its mode was.
 func (s *Server) openUploadDestination(ctx context.Context, savePath string) (*os.File, string, bool, error) {
 	if savePath == "" {
 		file, tempPath, err := s.createUploadTempFile(ctx)
@@ -4864,7 +4881,7 @@ func (s *Server) openUploadDestination(ctx context.Context, savePath string) (*o
 	savePath = internal.TildaToHome(savePath)
 
 	//nolint:gosec // savePath is the destination an authenticated client deliberately chose to upload to
-	if err := os.MkdirAll(filepath.Dir(savePath), os.ModePerm); err != nil {
+	if err := os.MkdirAll(filepath.Dir(savePath), ownerOnlyDir); err != nil {
 		clog.Error(ctx, "uploadFile create directory error", "err", err)
 
 		return nil, "", false, err
@@ -4878,6 +4895,20 @@ func (s *Server) openUploadDestination(ctx context.Context, savePath string) (*o
 		return nil, "", false, err
 	}
 
+	// OpenFile's mode only applies when it creates the file, so a file already
+	// at savePath would keep its wider mode. Chmod before anything is written,
+	// so nobody else can open it afterwards; a descriptor someone already had
+	// open keeps working, since permissions are only checked on open.
+	if err = file.Chmod(ownerReadWrite); err != nil {
+		clog.Error(ctx, "uploadFile chmod file error", "err", err)
+
+		if errc := file.Close(); errc != nil {
+			clog.Warn(ctx, "uploadFile close file error", "err", errc)
+		}
+
+		return nil, "", false, err
+	}
+
 	return file, savePath, false, nil
 }
 
@@ -4885,7 +4916,7 @@ func (s *Server) openUploadDestination(ctx context.Context, savePath string) (*o
 // directory, creating the directory first if necessary.
 func (s *Server) createUploadTempFile(ctx context.Context) (*os.File, string, error) {
 	if _, err := os.Stat(s.uploadDir); err != nil && os.IsNotExist(err) {
-		if err = os.MkdirAll(s.uploadDir, os.ModePerm); err != nil {
+		if err = os.MkdirAll(s.uploadDir, ownerOnlyDir); err != nil {
 			clog.Error(ctx, "uploadFile create directory error", "err", err)
 
 			return nil, "", err
@@ -4916,7 +4947,7 @@ func (s *Server) finalizeTempUpload(ctx context.Context, tempPath string) (strin
 	dir, leaf := calculateHashedDir(s.uploadDir, md5)
 
 	//nolint:gosec // dir is rooted in the server's configured UploadDir, named after an md5 hash
-	if err = os.MkdirAll(dir, os.ModePerm); err != nil {
+	if err = os.MkdirAll(dir, ownerOnlyDir); err != nil {
 		clog.Error(ctx, "uploadFile create directory error", "err", err)
 
 		return "", err
