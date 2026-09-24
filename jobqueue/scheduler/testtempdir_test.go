@@ -36,8 +36,8 @@ import (
 )
 
 // pristineEnv is the environment this test binary was started with, captured
-// before any test can alter it. The child TestTestBinaryTempDirs runs gets this
-// rather than os.Environ(), because the claim being made is about a real
+// before any test can alter it. The child TestTestBinaryTempDirs runs must get
+// this rather than os.Environ(), because the claim being made is about a real
 // `go test` run of this package, and a real run starts from the environment the
 // binary was given, not from one an earlier test left behind.
 //

@@ -273,3 +273,10 @@
   with `ENOTEMPTY`.
 
   - Reworded both in the first item above. No code change.
+
+- [x] A comment in `jobqueue/scheduler/testtempdir_test.go` read "The child
+      TestTestBinaryTempDirs runs gets this", which does not parse.
+
+  Raised by Copilot on PR #607 (comment 4092631611). Now reads "runs must get
+  this", matching the same comment in `internal/testtempdir_test.go`.
+  Comment-only, so no test.
