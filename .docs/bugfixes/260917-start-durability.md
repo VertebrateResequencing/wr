@@ -489,3 +489,72 @@ provided it can tell "started but not persisted" from "never started".
 
   This needs the repo owner's call on which cost is acceptable; do not pick one
   in passing while fixing something else.
+
+## The WR_TEST_SERVER_LOG hook
+
+The hook this checklist's re-diagnosis step relies on, moved here from
+`incidental-fixes-2` (PR #600) so the diagnosis and the tool it names live on
+the same branch. Its two review findings came with it.
+
+- [x] **A `WR_TEST_SERVER_LOG` that cannot be opened is ignored, and the
+      reason is discarded.** `logServerToFileIfAsked` logs the open failure
+      with the standard library logger and returns, so the daemon comes up
+      with no log and the developer who asked for one gets no explanation:
+      `startServer` (`jobqueue/jobqueue_test.go:1287`) leaves `cmd.Stdout` and
+      `cmd.Stderr` nil, and `os/exec` connects a nil `Stderr` to `os.DevNull`.
+
+      Raised by Copilot on PR #600, before the hook moved here: thread
+      `4036106276`, comment on `jobqueue/jobqueue_test.go:1333` at `dd7666f8`.
+
+  - red: build the test binary and start the daemon with an unopenable path.
+    The daemon starts anyway, so `timeout` has to kill it (exit 124):
+
+    ```bash
+    go test -tags netgo -c -o /tmp/jq.test ./jobqueue/
+    WR_TEST_SERVER_LOG=/tmp/probe/no/such/dir/log.txt \
+      WR_MANAGERDIR=/tmp/probe/mgr WR_MANAGERPORT=44411 WR_MANAGERWEB=44412 \
+      timeout 12 /tmp/jq.test -test.run TestJobqueue --servermode; echo $?
+    ```
+
+    ```text
+    2026/09/17 12:08:44 failed to open WR_TEST_SERVER_LOG ...: no such file or directory
+    t=... lvl=warn msg="test daemon up, will block"
+    exit=124
+    ```
+
+  - wanted: a log that was explicitly asked for and cannot be provided stops
+    the daemon promptly, rather than being ignored for the rest of the run.
+
+  - FIXED in `jobqueue/jobqueue_test.go`. `logServerToFileIfAsked` returns the
+    open error instead of swallowing it, and `runServer` turns that into
+    `clog.Crit` + `os.Exit(1)`, the same fatal idiom its two other startup
+    failure paths already use. The decision happens before any config load or
+    port bind, so the daemon dies in milliseconds. Unset, the hook still
+    returns early and a normal run is unchanged.
+  - The old `#nosec G706` went with the `log.Printf` it annotated, and no new
+    gosec finding replaced it: `make lint` reports no issue this change is
+    responsible for, at either of the baselines the item above describes.
+  - Regression test `TestJobqueueServerLog` drives the real binary as its own
+    `--servermode` child with an unopenable path and asserts the process
+    boundary: exit 1, the reason on combined output, and no `test daemon up`.
+    Proven red both ways - with the fix it passes in 0.01s, and with
+    `runServer` reverted to `_ = logServerToFileIfAsked(ctx)` it fails after
+    30s on `context deadline exceeded`.
+
+- [ ] **A `--servermode` daemon's fatal reason never reaches the developer.**
+      Found reviewing the fix above, and pre-existing rather than caused by it.
+      `startServer` (`jobqueue/jobqueue_test.go:1287`) leaves `cmd.Stdout` and
+      `cmd.Stderr` nil, so `os/exec` wires both to `os.DevNull`. Every fatal
+      path in `runServer` - a failed `os.Executable()`, a failed `serve()`, and
+      now a failed log open - writes its reason there and it is lost. What the
+      developer sees is the parent timing out in `readManagerToken`.
+
+  - the fix above deliberately does not address this: it makes the run fail
+    fast and unambiguously instead of silently carrying on, which is a
+    different thing from saying why.
+  - smallest treatment is `cmd.Stderr = os.Stderr` in `startServer`, which
+    exposes every daemon-fatal reason rather than one. That trades against the
+    test output noise a blocking daemon produces, so it is a choice about the
+    suite's output rather than a defect fix - hence recorded, not done.
+    Capturing into a buffer and surfacing it on the `readManagerToken` error
+    avoids the noise at the cost of touching a path many tests share.
