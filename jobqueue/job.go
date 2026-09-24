@@ -604,6 +604,49 @@ func (j *Job) lostForLocked() time.Duration {
 	return time.Since(j.EndTime)
 }
 
+// resetRunLocked clears every field that describes one run of this Job, so that
+// nothing the last run left can be reported as, or decided on as, the next one.
+// It is the one list of those fields: a reservation (resetJobForReservation) and
+// a web-interface rerun of a completed job (resetCompletedJobForRerun) both clear
+// through it. state and exitcode are what the Job reads as afterwards, and are
+// the only things the two do differently. Must be called with the Job locked.
+//
+// What a run records about itself is set after this: the reserving runner's
+// host+pid and the run's token at reserve, and the command's pid, host and start
+// time at Started (applyJobStart).
+func (j *Job) resetRunLocked(state JobState, exitcode int) {
+	j.State = state
+	j.Exited = false
+	j.Exitcode = exitcode
+	j.FailReason = ""
+	// Lost gates every lost-run decision, and ttrCallback refuses to re-mark an
+	// already-lost job, so a Lost carried into a fresh run would park it for ever.
+	j.Lost = false
+	j.killCalled = false
+	j.runID = 0
+	j.Pid = 0
+	// nothing reports a runner pid until Started. Left set it would name the
+	// runner of the run BEFORE this one, and jobConfirmedDead will not declare a
+	// lost run dead while any pid it holds for it is still running: that runner
+	// is off running other jobs (or an unrelated process has since been given its
+	// pid), so this run would wait out the wedged-runner backstop instead of being
+	// retried - and the backstop would then kill that innocent process.
+	j.RunnerPid = 0
+	// HostID is what killJobsOnBadServers matches condemned cloud servers against.
+	j.Host = ""
+	j.HostID = ""
+	j.HostIP = ""
+	// ActualCwd is what cleanup deletes and what a `run` behaviour executes in.
+	j.ActualCwd = ""
+	j.StartTime = time.Time{}
+	j.EndTime = time.Time{}
+	j.PeakRAM = 0
+	j.PeakDisk = 0
+	j.CPUtime = 0
+	j.StdOutC = nil
+	j.StdErrC = nil
+}
+
 // nilEntryMessage returns a message naming the first nil entry in an explicitly
 // set pointer collection, or "" if there isn't one.
 func (j *JobModifier) nilEntryMessage() string {

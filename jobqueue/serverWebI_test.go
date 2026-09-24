@@ -1336,6 +1336,9 @@ func TestServerWebI(t *testing.T) {
 				So(completeJobs[0].Cmd, ShouldEqual, webiEcho2)
 				So(completeJobs[0].Exited, ShouldBeTrue)
 				So(completeJobs[0].Attempts, ShouldEqual, 1)
+				So(completeJobs[0].Host, ShouldNotBeBlank)
+				So(completeJobs[0].HostIP, ShouldNotBeBlank)
+				So(completeJobs[0].Pid, ShouldNotEqual, 0)
 
 				err = ws.WriteJSON(jstatusReq{
 					Request:  jstatusRequestRerun,
@@ -1364,6 +1367,26 @@ func TestServerWebI(t *testing.T) {
 				So(rerunJobs[0].PeakRAM, ShouldEqual, 0)
 				So(rerunJobs[0].PeakDisk, ShouldEqual, 0)
 				So(rerunJobs[0].FailReason, ShouldBeBlank)
+				So(rerunJobs[0].Exitcode, ShouldEqual, 0)
+				So(rerunJobs[0].Host, ShouldBeBlank)
+				So(rerunJobs[0].HostID, ShouldBeBlank)
+				So(rerunJobs[0].HostIP, ShouldBeBlank)
+				So(rerunJobs[0].Pid, ShouldEqual, 0)
+				So(rerunJobs[0].CPUtime, ShouldEqual, 0)
+				So(rerunJobs[0].ActualCwd, ShouldBeBlank)
+
+				// the runner pid never reaches a client, but the manager's own
+				// copy must not carry the completed run's into the rerun either.
+				item, errq := server.q.Get(rerunJobs[0].Key())
+				So(errq, ShouldBeNil)
+
+				live, ok := item.Data().(*Job)
+				So(ok, ShouldBeTrue)
+
+				live.RLock()
+				runnerPid := live.RunnerPid
+				live.RUnlock()
+				So(runnerPid, ShouldEqual, 0)
 			})
 
 			Convey("The websocket handler can rerun completed jobs by key in the requested RepGroup", func() {

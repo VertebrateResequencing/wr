@@ -3578,9 +3578,8 @@ func (s *Server) lostJobRetryCheck(jobKey string) (lostJobDetails, bool) {
 	job.RLock()
 	defer job.RUnlock()
 
-	// Job.State is written at Started and at each exit, never at Reserve, so
-	// through a whole reservation it reads the PREVIOUS run's value. job.Exited is
-	// the question ttrCallback asks, and refuses the same archived run.
+	// job.Exited is the question ttrCallback asks, and refuses the same archived
+	// run.
 	if job.Exited || !job.Lost {
 		return lostJobDetails{}, false
 	}

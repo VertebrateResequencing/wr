@@ -1011,18 +1011,12 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 	// clean up any past state to have a fresh job ready to run
 	sjob := item.Data().(*Job) //nolint:errcheck,forcetypeassert // queue only ever stores *Job
 
-	sgroup, retries, ub := s.resetJobForReservation(sjob, cr.ClientID)
+	sgroup, retries, ub := s.resetJobForReservation(sjob, cr)
 
 	delay := s.setItemDelay(ctx, item.Key, retries, ub)
 
 	sjob.Lock()
 	sjob.DelayTime = delay
-	// record which runner holds this reservation (its own host+pid) before the
-	// command's own pid is reported at Started, so a reserved-not-started job's
-	// liveness can be confirmed independently of the RPC stream. An old client
-	// sends no host+pid, leaving Host "" and Pid 0.
-	sjob.Host = cr.Host
-	sjob.Pid = cr.Pid
 	sjob.Unlock()
 
 	// tell the scheduler which of its elements (e.g. an LSF "jobid[index]") holds
@@ -1048,44 +1042,27 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 // identity (see runToken) and clears the fields that described the run before. The
 // runner makes its working directory, mounts filesystems and starts the Cmd on
 // the strength of the reservation alone, before its Started reaches us.
-func (s *Server) resetJobForReservation(sjob *Job, clientID uuid.UUID) (string, uint8, uint8) {
+func (s *Server) resetJobForReservation(sjob *Job, cr *clientRequest) (string, uint8, uint8) {
 	sjob.Lock()
 	defer sjob.Unlock()
 
-	sjob.ReservedBy = clientID // *** we should unset this on moving out of run state, to save space
-	sjob.Exited = false
-	// Host/Pid are NOT zeroed here: respondWithReservedJob records the reserving
-	// runner's host+pid so a reserved-not-started job's liveness can be confirmed.
-	// RunnerPid IS, because nothing reports one until Started, so 0 is its
-	// documented pre-Started value. Left set it would name the runner of the run
-	// BEFORE this one, and jobConfirmedDead will not declare a lost run dead while
-	// any pid it holds for it is still running: that runner is off running other
-	// jobs (or an unrelated process has since been given its pid), so this run
-	// would wait out the wedged-runner backstop instead of being retried - and the
-	// backstop would then kill that innocent process.
-	sjob.RunnerPid = 0
-	// StartTime stays zeroed - it is set at Started.
-	sjob.StartTime = time.Time{}
-	sjob.EndTime = time.Time{}
-	sjob.PeakRAM = 0
-	sjob.PeakDisk = 0
-	sjob.Exitcode = -1
-	sjob.killCalled = false
+	// Exitcode -1 says "has not exited" to anything that forgets to check Exited
+	// first.
+	sjob.resetRunLocked(JobStateReserved, -1)
+
+	sjob.ReservedBy = cr.ClientID // *** we should unset this on moving out of run state, to save space
+
+	// record which runner holds this reservation (its own host+pid) before the
+	// command's own pid is reported at Started, so a reserved-not-started job's
+	// liveness can be confirmed independently of the RPC stream. An old client
+	// sends no host+pid, leaving Host "" and Pid 0. It is under the same lock as
+	// the clear, so no reader can catch the job between the two with no host+pid.
+	sjob.Host = cr.Host
+	sjob.Pid = cr.Pid
 
 	// the identity of the run beginning now, which nothing pinned to an earlier
 	// run of this job answers to.
 	sjob.runID = s.mintRunToken()
-
-	// this run has not been lost. Lost gates every lost-run decision, and
-	// ttrCallback refuses to re-mark an already-lost job, so a Lost carried into a
-	// fresh reservation would park the job for ever.
-	sjob.Lost = false
-
-	// nor has it made a working directory or landed on a machine yet. ActualCwd is
-	// what cleanup deletes and what a `run` behaviour executes in, and HostID is
-	// what killJobsOnBadServers matches condemned cloud servers against.
-	sjob.ActualCwd = ""
-	sjob.HostID = ""
 
 	return sjob.schedulerGroup, sjob.Retries, sjob.UntilBuried
 }

@@ -1797,7 +1797,9 @@ func TestJobqueueSignal(t *testing.T) {
 				So(job2, ShouldNotBeNil)
 				So(job2.Cmd, ShouldEqual, cmd2)
 				So(job2.State, ShouldEqual, JobStateReserved)
-				So(job2.FailReason, ShouldEqual, FailReasonTime)
+				// the new run has not failed; the time limit it fails over is
+				// learnt as the raised requirement, not carried as its reason.
+				So(job2.FailReason, ShouldBeBlank)
 				So(job2.Requirements.Time.Seconds(), ShouldBeBetweenOrEqual, 3601, 3630)
 
 				// all signals handled the same way, so no need for further
