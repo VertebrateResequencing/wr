@@ -33,4 +33,4 @@ jobs:
         run: git fetch --no-tags origin master:refs/remotes/origin/master
 
       - name: golangci-lint
-        run: make lint GOLANGCI_LINT_ARGS=--new-from-rev=origin/master
+        run: make lint
