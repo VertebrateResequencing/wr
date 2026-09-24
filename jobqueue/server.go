@@ -6460,10 +6460,10 @@ func (s *Server) completeJobsByKeys(ctx context.Context, keys []string, getEnv b
 	// already (markJobComplete puts the runner's final output on the job before
 	// db.archiveJob encodes it), and archiveJobTx deleted the
 	// bucketStdO/bucketStdE entries a fetch would read. This by-key path is what
-	// returns that std for REST /rest/v1/jobs/<key>?std=true, GetByKeys and the
-	// web UI's single-job lookups. The web UI's rep-group details view, which
-	// .docs/issue-98 D1 test 2 covers, reads the record via getDBJobsByRepGroup
-	// instead.
+	// returns that std for REST /rest/v1/jobs/<key>?std=true, handleGetByKeys
+	// (the client's GetByEssence and GetByEssences) and the web UI's single-job
+	// lookups. The web UI's rep-group details view, which .docs/issue-98 D1
+	// test 2 covers, reads the record via getDBJobsByRepGroup instead.
 	if getEnv {
 		for _, job := range found {
 			s.jobPopulateStdEnv(ctx, job, false, getEnv)
