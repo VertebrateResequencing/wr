@@ -178,3 +178,25 @@ today, and a `YYMMDD-N.md` name would collide as an add/add conflict, which
   - `cleanorder -min-diff` is a no-op on all four edited Go files. It wanted
     `rl4rmReportedLimit` moved below `limitGroupRecorded`, and that move is
     applied.
+
+- [x] Copilot review on PR #602 (thread comment `4039267018`): the
+      `LimitForDisplay` doc comment in `limiter/group.go` says "the two places
+      that call Limit()", but there are three.
+
+  Verified. `grep -rn '\.Limit()' --include='*.go' .` lists three call sites
+  against a comment that says two: `jobqueue/db.go:274` and
+  `jobqueue/db.go:1388` in production, and
+  `jobqueue/reliable4_add_tx_test.go:255` in a test. The comment's point
+  survives: `db.go:274` is inside an `IsCount()` branch, `db.go:1388` is reached
+  only through that branch, and the test asserts `IsCount()` first. Only the
+  count is wrong, and any count goes stale when a caller is added or removed.
+
+  Reworded to say wr's own callers of `Limit()` are all reached only after an
+  `IsCount()` check, so they only ever see a real count. It no longer says
+  "to persist a count", which the test caller does not do. The MaxInt64
+  saturation convention and the `canIncrement()`/`capacity()` point are
+  unchanged.
+
+  Comment-only change with no behaviour change, so per testing-principles'
+  Cleanup and Removal rule no new test is appropriate; the existing `limiter`
+  tests and the limit-group `jobqueue` tests are the gate.

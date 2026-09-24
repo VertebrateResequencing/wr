@@ -245,8 +245,8 @@ func (g *GroupData) Limit() int64 {
 // that. Limit() saturates such a group to math.MaxInt64 instead, a convention
 // kept for outside consumers of the exported API rather than something wr
 // depends on: scheduling asks canIncrement() and capacity(), which read the
-// group's own mode and counts, and the two places that call Limit() do so inside
-// an IsCount() branch, to persist a count.
+// group's own mode and counts, and wr's own callers of Limit() are all reached
+// only after an IsCount() check, so they only ever see a real count.
 func (g *GroupData) LimitForDisplay() int64 {
 	if g.IsCount() {
 		return g.limit
