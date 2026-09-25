@@ -28,6 +28,7 @@ package jobqueue
 import (
 	"context"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -151,6 +152,116 @@ func TestStopWaitsForARemoveOnFailureDelete(t *testing.T) {
 
 			So(stoppedBeforeRelease, ShouldBeFalse)
 			So(stoppedAfterRelease, ShouldBeTrue)
+		})
+	})
+}
+
+// TestStopStillRemovesAJobBuriedWhileRunnersDie holds shutdown in
+// waitForRunnersToDie, the window in which a runner the shutdown kills buries
+// its job, and buries a remove-on-failure job there. The job must still be
+// removed, as it was before shutdown waited for such deletes.
+func TestStopStillRemovesAJobBuriedWhileRunnersDie(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+
+	Convey("Given a running remove-on-failure job and a manager waiting for runners to die", t, func() {
+		entered := make(chan struct{}, 1)
+		release := make(chan struct{})
+
+		shutdownRunnersWaitHook = func() {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+
+			<-release
+		}
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		stopped := make(chan struct{})
+		stopStarted := false
+
+		defer func() {
+			if stopStarted {
+				<-stopped
+			} else {
+				server.Stop(ctx, true)
+			}
+
+			shutdownRunnersWaitHook = nil
+		}()
+
+		released := false
+		releaseShutdown := func() {
+			if !released {
+				released = true
+
+				close(release)
+			}
+		}
+
+		defer releaseShutdown()
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		inserts, _, err := jq.Add([]*Job{{
+			Cmd: "echo buried while runners die", Cwd: testCwd, RepGroup: "delete_during_stop",
+			ReqGroup: "delete_during_stop", Requirements: standardReqs,
+			Behaviours: Behaviours{&Behaviour{When: OnFailure, Do: Remove}},
+		}}, os.Environ(), true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+
+		job, err := jq.Reserve(2 * time.Second)
+		So(err, ShouldBeNil)
+		So(job, ShouldNotBeNil)
+		So(jq.Started(job, os.Getpid()), ShouldBeNil)
+
+		stopStarted = true
+
+		go func() {
+			server.Stop(ctx, true)
+			close(stopped)
+		}()
+
+		So(pollUntil(func() bool {
+			select {
+			case <-entered:
+				return true
+			default:
+				return false
+			}
+		}), ShouldBeTrue)
+
+		Convey("burying it then still removes it from the queue and the database", func() {
+			So(jq.Bury(job, &JobEndState{Exited: true, Exitcode: 1, EndTime: time.Now()}, "killed"), ShouldBeNil)
+
+			key := job.Key()
+
+			So(pollUntil(func() bool {
+				_, errg := server.queueIfPresent().Get(key)
+				if errg == nil {
+					return false
+				}
+
+				live, errr := server.db.recoverIncompleteJobs()
+				if errr != nil {
+					return false
+				}
+
+				return !slices.ContainsFunc(live, func(j *Job) bool { return j.Key() == key })
+			}), ShouldBeTrue)
+
+			releaseShutdown()
 		})
 	})
 }

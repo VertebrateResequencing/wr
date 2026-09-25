@@ -332,6 +332,13 @@ var recoveryPauseHookForTest func()
 //nolint:gochecknoglobals // deliberate test seam, mirroring recoveryPauseHookForTest
 var deleteOnFailureHook func()
 
+// shutdownRunnersWaitHook, if non-nil, is called when shutdown starts waiting
+// for runners to die, so a test can hold shutdown in that window. It is a
+// test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var shutdownRunnersWaitHook func()
+
 // sgroup represents a scheduler group.
 const (
 	// persistentScheduleFailures is the number of consecutive scheduling
@@ -1411,9 +1418,12 @@ type Server struct {
 	readersStarted bool
 	// boundPorts are the ports publication actually bound, the only ones
 	// shutdown waits to see closed. Guarded by ssmutex.
-	boundPorts         []string
-	racChecking        bool
-	killRunners        bool
+	boundPorts  []string
+	racChecking bool
+	killRunners bool
+	// deletesStopped is set, under krmutex, once shutdown is about to close
+	// the database, after which deleteJobIfRequested starts no more deletes.
+	deletesStopped     bool
 	subsClosed         bool // shutdown swept the subscriptions; see storeClientSubscription
 	racPending         bool
 	racRunning         bool
@@ -3349,6 +3359,16 @@ func shutdownPprofServer(ctx context.Context, srv *http.Server) {
 	}
 
 	disablePprofProfiling()
+}
+
+// stopDeletes stops deleteJobIfRequested starting any more deletes. Shutdown
+// calls it once no more client requests are being read and before the database
+// closes, so a delete whose database write could only fail is not started, and
+// every started one is on s.wg before shutdown waits on it.
+func (s *Server) stopDeletes() {
+	s.krmutex.Lock()
+	s.deletesStopped = true
+	s.krmutex.Unlock()
 }
 
 // maybeStartPprofServer starts a dedicated net/http/pprof endpoint if the
@@ -6372,8 +6392,10 @@ func (s *Server) finalizeDeletedJobs(ctx context.Context, pass deletePass) {
 // removed, deletes it in the background.
 //
 // The goroutine is on s.wg so shutdown waits for it before destroying and
-// letting go of the queue. It is not started once shutdown is under way (see
-// inShutdown): holding krmutex across the check and the wg.Add orders every Add
+// letting go of the queue. Jobs buried while shutdown waits for runners to die
+// (eg. killed by the shutdown itself) are still deleted; only once
+// stopDeletes has run, just before the database closes, is no goroutine
+// started. Holding krmutex across that check and the wg.Add orders every Add
 // before shutdown's wg.Wait, which matters because not every caller is itself
 // on s.wg (the lost-job release is not). It is krmutex rather than ssmutex
 // because beginShutdown holds ssmutex while unscheduleAllGroups can reach
@@ -6386,7 +6408,7 @@ func (s *Server) deleteJobIfRequested(ctx context.Context, job *Job) {
 	s.krmutex.RLock()
 	defer s.krmutex.RUnlock()
 
-	if s.killRunners {
+	if s.deletesStopped {
 		return
 	}
 
@@ -7658,6 +7680,8 @@ func (s *Server) closeServerCommsAndDB(ctx context.Context) {
 		clog.Warn(ctx, "server shutdown socket close failed", "err", err)
 	}
 
+	s.stopDeletes()
+
 	// close the database
 	if err := s.db.close(ctx); err != nil {
 		clog.Warn(ctx, "server shutdown database close failed", "err", err)
@@ -7681,6 +7705,7 @@ func (s *Server) resetStateAfterShutdown() bool {
 
 	s.krmutex.Lock()
 	s.killRunners = false
+	s.deletesStopped = false
 	s.krmutex.Unlock()
 
 	s.ssmutex.Lock()
@@ -7743,6 +7768,10 @@ func (s *Server) unscheduleAllGroups(ctx context.Context) {
 // waitForRunnersToDie waits long enough for runners to have attempted a touch
 // (and so learn they should die) and, if wait is set, polls until none remain.
 func (s *Server) waitForRunnersToDie(ctx context.Context, wait bool) {
+	if shutdownRunnersWaitHook != nil {
+		shutdownRunnersWaitHook()
+	}
+
 	if s.HasRunners(ctx) {
 		// wait until everything must have attempted a touch
 		<-time.After(s.timings.TouchInterval)
