@@ -55,6 +55,11 @@ import (
 // the lost-job failure path.
 const confirmDeadCoalesceWindow = 50 * time.Millisecond
 
+// pidsPerCheck is the most pids a single confirm-dead check contributes to a
+// batch: the job's command pid and, when reported, its runner pid. It only sizes
+// the batchPids working slices.
+const pidsPerCheck = 2
+
 // confirmDeadCoordinator groups lost jobs' confirm-dead ssh checks by host so all
 // of a dead host's pid checks share one ssh connection. A per-host worker
 // goroutine drains that host's queued checks in batches, and the number of hosts
@@ -199,8 +204,10 @@ func (c *confirmDeadCoordinator) processBatch(ctx context.Context, host string, 
 // per-host confirmDeadLimiter for the duration of the ssh work, so the number of
 // hosts ssh-checked at once stays bounded; a server stop received while waiting
 // for a slot abandons the round (returning nil, so the jobs are simply retried),
-// keeping Stop() unblocked. The whole round shares one host connection and the
-// batch's check timeout.
+// and one received during it ends the round, confirming nothing more, keeping
+// Stop() unblocked. The whole round shares one host connection, and each
+// remote round trip in it gets the batch's check timeout, so a big batch on a
+// slow host is not cut short part way through.
 func (c *confirmDeadCoordinator) checkHost(ctx context.Context, host string, batch []lostJobDetails) map[int]bool {
 	pids := batchPids(batch)
 	if len(pids) == 0 {
@@ -217,16 +224,21 @@ func (c *confirmDeadCoordinator) checkHost(ctx context.Context, host string, bat
 
 	defer func() { <-s.confirmDeadLimiter }()
 
-	ctx, cancel := context.WithTimeout(ctx, batch[0].checkTimeout)
+	// a forced command answers one pid per round trip, so a big batch can hold
+	// this slot for pids x checkTimeout: end it at once if the server stops.
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	return s.scheduler.ProcessesNotRunningOnHost(ctx, host, pids)
-}
+	go func() {
+		select {
+		case <-s.stopClientHandling:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
-// pidsPerCheck is the most pids a single confirm-dead check contributes to a
-// batch: the job's command pid and, when reported, its runner pid. It only sizes
-// the batchPids working slices.
-const pidsPerCheck = 2
+	return s.scheduler.ProcessesNotRunningOnHost(ctx, host, pids, batch[0].checkTimeout)
+}
 
 // batchPids returns the distinct, positive pids a batch of confirm-dead checks
 // must test on the host: each job's command pid, plus its runner pid when one was

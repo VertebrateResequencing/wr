@@ -81,6 +81,29 @@ project adheres to [Semantic Versioning](http://semver.org/).
   attempts are bounded the same way. Likewise, the manager now drops a
   connection that never completes its handshake after 30 seconds, where before
   it kept it open forever.
+- Jobs whose runner died soon after starting no longer sit lost for 30 minutes
+  or more when several died on the same host. To confirm they were dead, the
+  manager ran one ssh command per job on that host, one after another, all
+  within a single 15 second limit, so on a node whose login shell is slow only
+  the first few were confirmed and the rest waited out the lost-job retry time
+  before being tried again. It now asks about all of a host's jobs in one ssh
+  command. If your `privatekeypath` key is restricted by a forced command, such
+  as the examples in the config file, that command answers for one job at a
+  time; the manager notices and still checks each one separately, but now gives
+  each check its own 15 seconds, so none of them are left waiting.
+- The manager could decide a lost job's process had died, and so rerun the job
+  while it was still running, if `ps` on the job's host failed without printing
+  anything, for example because it did not accept the options the manager
+  passed. The check now also asks `ps` about the remote shell running it, and
+  confirms nothing unless `ps` lists that shell. If your `privatekeypath` key is
+  restricted by a forced command, that command's output has no room for this
+  check, so make sure the `ps` it runs prints nothing only for a pid that does
+  not exist. The command the manager runs over ssh is now
+  `echo wr-ps-batch $$; ps -o pid=,stat= -p <pid>,$$,<pid>,... 2>/dev/null || test $? -eq 1`,
+  so a forced command that only allows the old exact string,
+  `ps -o stat= -p <pid> 2>/dev/null || test $? -eq 1`, must be updated, or no
+  lost job on that host will ever be confirmed dead. The example forced
+  commands in the config file are unaffected.
 - `wr manager start` could delete your database and copy an older backup over
   it just because wr failed to open the file, losing every job recorded since
   that backup was taken. Nearly every way of failing to open the file counted
