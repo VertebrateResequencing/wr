@@ -85,13 +85,12 @@ const managerDirPerm = 0o700
 // working directory's owner delete, replace or plant a file inside it.
 const managerDirOtherWritePerms = 0o022
 
-// uploadDirOtherPerms are every permission bit a user other than the owner has
-// on a directory. Clearing them repairs an old upload tree to the 0700 that
-// jobqueue's ownerOnlyDir makes new upload directories with. It is written out
-// rather than derived from managerDirPerm, so that loosening the working
-// directory's mode cannot quietly loosen the upload tree's too; ownerOnlyDir
-// itself is unexported.
-const uploadDirOtherPerms = 0o077
+// uploadDirPerm is the permission a repaired upload directory is given: the
+// 0700 that jobqueue's ownerOnlyDir makes new upload directories with. It is
+// written out rather than derived from managerDirPerm, so that loosening the
+// working directory's mode cannot quietly loosen the upload tree's too;
+// ownerOnlyDir itself is unexported.
+const uploadDirPerm os.FileMode = 0o700
 
 // uploadHashedLevels is how many single-character directory levels
 // jobqueue's calculateHashedDir puts below the upload directory:
@@ -281,8 +280,8 @@ func openWorkingDir(dir string) (*os.File, error) {
 // closed parent does not stop a process whose cwd or descriptor is already on
 // one.
 //
-// Read and search are taken off along with write, so a repaired level is the
-// same 0700 as one jobqueue makes today. Unlike the working directory, nothing
+// Read and search are taken off along with write, and the owner is given all
+// three, so a repaired level is exactly the 0700 one jobqueue makes today. Unlike the working directory, nothing
 // in the tree is readable by anybody but the owner - every file in it is 0600
 // - so no other user has a use for those bits, and leaving them would only
 // let them list what was uploaded and when.
@@ -443,8 +442,10 @@ func (c *uploadTreeCloser) record(err error) {
 	}
 }
 
-// closedToOthersIn takes every permission other users have off the directory
-// at path inside root, reporting whether that changed its mode.
+// closedToOthersIn makes the directory at path inside root uploadDirPerm,
+// taking every permission other users have off it and giving its owner full
+// access, and reports whether that changed its mode. The setuid, setgid and
+// sticky bits are left as they were.
 //
 // The directory is OPENED and then read and changed through that one
 // descriptor, rather than stat'd and chmod'd by path. The walk's whole premise
@@ -468,7 +469,9 @@ func closedToOthersIn(root *os.Root, path string) (bool, error) {
 		return false, err
 	}
 
-	closed := fi.Mode() &^ uploadDirOtherPerms
+	// the owner's bits are set as well as the others' cleared: a 0555 level
+	// made merely 0500 would still refuse the uploads wr has to put there.
+	closed := fi.Mode()&^os.ModePerm | uploadDirPerm
 	if closed == fi.Mode() {
 		return false, nil
 	}
@@ -506,14 +509,18 @@ func chmodWorkingDir(file *os.File, mode os.FileMode) (bool, error) {
 // on, so it is not reported.
 func warnIfUploadDirOpenBehindSymlink() {
 	fi, err := os.Stat(config.ManagerUploadDir)
-	if err != nil || fi.Mode()&uploadDirOtherPerms == 0 {
+	if err != nil || fi.Mode().Perm()&^uploadDirPerm == 0 {
 		return
 	}
 
+	exposure := "other users can list what was uploaded"
+	if fi.Mode()&managerDirOtherWritePerms != 0 {
+		exposure = "other users may be able to replace the config files wr copies to cloud servers"
+	}
+
 	warn("the working directory '%s' is a symlink, so wr will not repair the upload directory '%s' "+
-		"below it, which is %s: other users may be able to replace the config files wr copies to "+
-		"cloud servers. Check the target yourself; 'chmod -R go-rwx %s' closes it",
-		config.ManagerDir, config.ManagerUploadDir, fi.Mode(), config.ManagerUploadDir)
+		"below it, which is %s: %s. Check the target yourself; 'chmod -R go-rwx %s' closes it",
+		config.ManagerDir, config.ManagerUploadDir, fi.Mode(), exposure, config.ManagerUploadDir)
 }
 
 // warnUploadDirStillOpen tells the operator that wr could not close the
