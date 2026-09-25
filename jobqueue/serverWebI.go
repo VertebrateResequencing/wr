@@ -923,39 +923,20 @@ func resetCompletedJobForRerun(job *Job) {
 	job.Lock()
 	defer job.Unlock()
 
-	resetJobExecutionFields(job)
+	// a rerun goes back on the queue as though newly added, and a newly added
+	// job reads Exitcode 0.
+	job.resetRunLocked(JobStateReady, 0)
 	resetJobStatusFields(job)
-}
-
-func resetJobExecutionFields(job *Job) {
-	job.ActualCwd = ""
-	job.PeakRAM = 0
-	job.PeakDisk = 0
-	job.Exited = false
-	job.Exitcode = 0
-	job.Lost = false
-	job.FailReason = ""
-	job.Pid = 0
-	job.Host = ""
-	job.HostID = ""
-	job.HostIP = ""
-	job.StartTime = time.Time{}
-	job.EndTime = time.Time{}
-	job.CPUtime = 0
-	job.StdErrC = nil
-	job.StdOutC = nil
 }
 
 func resetJobStatusFields(job *Job) {
 	job.EnvC = nil
 	job.EnvCRetrieved = false
-	job.State = JobStateReady
 	job.Attempts = 0
 	job.UntilBuried = initialUntilBuried(job.Retries)
 	job.ReservedBy = uuid.UUID{}
 	job.Similar = 0
 	job.DelayTime = 0
-	job.killCalled = false
 	job.incrementedLimitGroups = nil
 }
 

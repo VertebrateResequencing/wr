@@ -239,6 +239,17 @@ project adheres to [Semantic Versioning](http://semver.org/).
   is running and leaves it alone. Only a manager that dies in the brief moment
   after a job starts but before it has acknowledged the start can still lose
   track of it.
+- A job reserved to be retried no longer shows anything of the attempt that
+  failed before it. Until the retry actually started, `wr status` and the status
+  web page reported the new attempt with the previous attempt's host IP, CPU
+  time, failure reason (such as "command exited non-zero" or "lost contact with
+  runner") and output, alongside the new attempt's host. A reserved retry now
+  reports none of those until it produces its own.
+- `wr add --sync`, and Go code waiting on jobs with `jobqueue.Client.AddAndWait`
+  or the `client` package's `SubmitJobsAndWait`, could occasionally get back a
+  buried or failed command without its output, if they asked for it just as the
+  command was buried. The manager now makes that request wait until the output
+  has been recorded.
 
 
 ## [0.37.2] - 2026-09-01

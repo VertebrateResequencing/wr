@@ -4541,7 +4541,17 @@ func (db *db) retrieveJobStd(ctx context.Context, jobkey string) (stdo []byte, s
 	return stdo, stde
 }
 
-// waitForJobExitUpdates blocks until there are no in-progress
+// expectJobExitUpdate makes waitForJobExitUpdates wait for an
+// updateJobAfterExit() the caller may be about to make, starting now rather than
+// when that call is made. The caller must call the returned func once it has
+// made the call, or knows it will not.
+func (db *db) expectJobExitUpdate() func() {
+	db.updatingAfterJobExit.Add(1)
+
+	return func() { db.updatingAfterJobExit.Add(-1) }
+}
+
+// waitForJobExitUpdates blocks until there are no in-progress or expected
 // updateJobAfterExit() calls.
 //
 // *** this method of waiting seems really bad and should be improved, but in

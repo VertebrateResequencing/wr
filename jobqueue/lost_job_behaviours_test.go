@@ -489,7 +489,7 @@ func (l *lostRun) startRetryInWindow(touched bool) (actualCwd, tmpDir, output st
 // working directory, mounting, starting the Cmd - it does after this and before
 // its Started reaches the manager.
 func (l *lostRun) reserveRetry() {
-	l.server.resetJobForReservation(l.live, newTestClientID())
+	l.server.resetJobForReservation(l.live, newTestReservation())
 }
 
 // startRetry is the retry's own Started, carrying the working directory it has
@@ -848,12 +848,11 @@ func TestLostJobRetryCheckFindsAReservedNotStartedRun(t *testing.T) {
 			So(l.waitForKillDecision(), ShouldBeFalse)
 			So(l.reportedState(ctx), ShouldEqual, JobStateLost)
 
-			// and Job.State is written at Started and at each exit, never at
-			// Reserve, so for the whole of this reservation it still reads what
-			// the release of the run before left there. A check that asks it
-			// whether the run is over is asking about a run that is finished.
+			// and the reservation cleared what the release of the run before
+			// left in Job.State, so it says this run is reserved rather than
+			// that the one before it was delayed.
 			state, _ := l.jobStateAndKillCalled()
-			So(state, ShouldEqual, JobStateDelayed)
+			So(state, ShouldEqual, JobStateReserved)
 
 			So(checked, ShouldBeTrue)
 			So(retry.key, ShouldEqual, l.key)
@@ -1308,7 +1307,13 @@ func (r *startedRun) markLost() {
 // is what a runner taking the job on again does to it - and where the run it is
 // taking on begins.
 func (r *startedRun) reserveAgain() {
-	r.server.resetJobForReservation(r.live, newTestClientID())
+	r.server.resetJobForReservation(r.live, newTestReservation())
+}
+
+// newTestReservation is the reserve request of a runner other than the one that
+// had the job before, running as this live process on this host.
+func newTestReservation() *clientRequest {
+	return &clientRequest{ClientID: newTestClientID(), Host: localhost, Pid: os.Getpid()}
 }
 
 // newTestClientID is the id of a runner other than the one that had the job
@@ -1481,7 +1486,7 @@ func TestMintedRunTokenIsNeverTheRecoveredOne(t *testing.T) {
 			pin := recovered.pinBehaviours()
 			So(recovered.isLostRunLocked(pin.run), ShouldBeTrue)
 
-			server.resetJobForReservation(recovered, newTestClientID())
+			server.resetJobForReservation(recovered, newTestReservation())
 
 			// and when that run is itself lost, so that the Lost half answers
 			// yes again, the token is the whole of what refuses the pin.

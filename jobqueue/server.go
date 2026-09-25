@@ -3578,9 +3578,8 @@ func (s *Server) lostJobRetryCheck(jobKey string) (lostJobDetails, bool) {
 	job.RLock()
 	defer job.RUnlock()
 
-	// Job.State is written at Started and at each exit, never at Reserve, so
-	// through a whole reservation it reads the PREVIOUS run's value. job.Exited is
-	// the question ttrCallback asks, and refuses the same archived run.
+	// job.Exited is the question ttrCallback asks, and refuses the same archived
+	// run.
 	if job.Exited || !job.Lost {
 		return lostJobDetails{}, false
 	}
@@ -5961,6 +5960,14 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, rep releaseReport) er
 	// finalizeReleasedJob below cannot reach a different verdict from a
 	// job.StartTime that changed in between (see releaseReport.spendsRetry).
 	bury, key, currentState := releaseJobSnapshot(job, &rep)
+
+	// the queue change below is what a waiting client (AddAndWait, `wr add
+	// --sync`) is told about, and it happens before finalizeReleasedJob queues
+	// the write of the job's std. A client that then asked for the std found
+	// none, so retrieveJobStd is made to wait from here on: until the write is
+	// queued (after which it waits on that), or until it is clear there will be
+	// none.
+	defer s.db.expectJobExitUpdate()()
 
 	q := s.queueIfPresent()
 	if q == nil {
