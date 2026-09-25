@@ -1,0 +1,12 @@
+- [x] TestLSF's `Busy() starts off false` assertion (jobqueue/scheduler/scheduler_lsf_test.go:530) isn't isolated. Busy() runs bjobs and counts every LSF job of this user whose name has the shared development prefix `wrd_`. So the test fails whenever another wr test suite, a wrdev.sh run or a development manager on the same farm account has jobs queued. It failed both local `make race` runs on 2026-09-25 while about 8,860 `wrd_*` jobs from a concurrent suite and the wrdev sweep were live. jobNamePrefix already honours WR_JOBNAME_TOKEN (jobqueue/scheduler/scheduler.go:825-850).
+  - Red command: `jid=$(bsub -J wrd_redprobe_lsftest -q normal -o /dev/null -e /dev/null sleep 900 | grep -o '<[0-9]*>' | tr -d '<>'); sleep 5; CGO_ENABLED=0 go test -tags netgo -count=1 -run 'TestLSF$' ./jobqueue/scheduler/; bkill $jid`. It needs LSF. Output:
+    ```
+      Line 530:
+      Expected: false
+      Actual:   true
+    --- FAIL: TestLSF (1.75s)
+    ```
+  - Fixed: TestLSF now sets `WR_JOBNAME_TOKEN` to `lsftest` plus `internal.RandomString()` via `t.Setenv` before creating its scheduler. Its jobs are then named `wrdlsftest<rand>_...`, and Busy(), waitToFinish and the kill paths match only them. jobNameToken reads the env on every call, so nothing is cached at init. TestLSF also defers `s.Cleanup(ctx)` after each pass. With the token that only kills this run's leftovers. Without it, a timed-out pass would leave jobs under a token no later run can see.
+  - Only TestLSF lists, counts or kills real LSF jobs by prefix. The other LSF tests (bkill, bkill-scale, bjobs-bound, bjob-appeared, waitdelay, reserved-prune, parseBjobs stderr) drive fake bjobs/bkill exes whose output carries a literal `wrd_`. They never touch the env, so they are unchanged. TestReliable4ConfirmDeadSSHLeak and the jobqueue reliable3 key-warning test only construct an lsf scheduler. No test asserts a real `wrd_` bsub `-J` value: TestLSF's generateBsubArgs checks overwrite the `-J` slot. TestLSFJobNamePrefix still covers both the legacy and the token prefix.
+  - No new test: the red command, with a foreign `wrd_` job live, is the behavioural check. A test asserting that TestLSF sets the env would only restate the fix.
+  - Red before: the output above (`Line 530: Expected: false, Actual: true`, FAIL). Red after: `ok github.com/VertebrateResequencing/wr/jobqueue/scheduler 2.435s`, and `bjobs -w` showed the foreign `wrd_redprobe_lsftest` probe still RUN after the test's Cleanup.
