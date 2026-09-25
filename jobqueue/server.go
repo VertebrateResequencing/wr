@@ -62,6 +62,7 @@ import (
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	_ "github.com/VertebrateResequencing/wr/internal/mangostlstcp" // register race-clean tls+tcp transport
+	"github.com/VertebrateResequencing/wr/internal/publishexit"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -314,16 +315,6 @@ var recoveryHeartbeatInterval = time.Minute
 // profiling the manager. It is unset by default, in which case no endpoint is
 // started and there is no profiling overhead.
 const envPprofAddr = "WR_PPROF_ADDR"
-
-// publishExit is how publication ends the process when it cannot make the
-// server reachable: the token file could not be written, or the RPC port could
-// not be bound within the retry budget (spec E1). An invisible manager holding
-// the database lock is worse than a dead one. It is a var so a test can observe
-// the exit instead of ending the test binary, in the style of
-// recoveryPauseHookForTest.
-//
-//nolint:gochecknoglobals // deliberate test seam, mirroring recoveryPauseHookForTest
-var publishExit = os.Exit
 
 // recoveryPauseHookForTest, if non-nil, is copied into each new Server's
 // recoveryPauseHook during Serve so a test can install a hook that blocks
@@ -1828,7 +1819,7 @@ func (s *Server) clientHandlingStarted() bool {
 //
 // An invisible manager holding the database lock is worse than a dead one, so a
 // token write failure, or a port bind still failing after the retry budget,
-// exits the process through publishExit. Publication returns immediately after
+// exits the process through publishexit.Exit. Publication returns immediately after
 // that call: with the real os.Exit the difference is unobservable, but a test
 // double returns, and none of the steps after the bind may run against an
 // unbound socket.
@@ -1859,20 +1850,20 @@ func (s *Server) publishServingSurface(bgCtx, ctx context.Context, config Server
 
 // persistTokenAndListen writes the token file and binds the RPC listener,
 // reporting whether both succeeded. On failure it exits the process through
-// publishExit: an invisible manager holding the database lock is worse than a
+// publishexit.Exit: an invisible manager holding the database lock is worse than a
 // dead one. The token write is not retried, because unlike the bind its failure
 // is not port contention.
 func (s *Server) persistTokenAndListen(ctx context.Context, config ServerConfig) bool {
 	if err := persistToken(config.TokenFile, s.token); err != nil {
 		clog.Error(ctx, "could not write the token file, so exiting", "path", config.TokenFile, "err", err)
-		publishExit(1)
+		publishexit.Exit(1)
 
 		return false
 	}
 
 	if err := s.listenWithRetries(ctx, config.Port); err != nil {
 		clog.Error(ctx, "could not listen on the manager port, so exiting", "port", config.Port, "err", err)
-		publishExit(1)
+		publishexit.Exit(1)
 
 		return false
 	}
@@ -1887,7 +1878,7 @@ func (s *Server) persistTokenAndListen(ctx context.Context, config ServerConfig)
 // Its waitgroup key is registered here, immediately before its go, rather than
 // in Serve: a key issued in Serve would be outstanding on every run where
 // publication does not happen (a shutdown inside the startup window, or the
-// publishExit path), and shutdown's s.wg.Wait would then never return.
+// publishexit.Exit path), and shutdown's s.wg.Wait would then never return.
 func (s *Server) startWebInterface(ctx context.Context, config ServerConfig) {
 	ready := make(chan bool)
 	wgk := s.wg.Add(1)
@@ -1907,7 +1898,7 @@ func (s *Server) startWebInterface(ctx context.Context, config ServerConfig) {
 // really does re-bind ports a just-stopped server has not finished releasing
 // (reliable4_dependency_tx_test.go:551-554, and each reliable2_dbcompat_test.go
 // test binds the ports the previous one held), so without this a whole go test
-// binary would be taken down by publishExit.
+// binary would be taken down by publishexit.Exit.
 func (s *Server) listenWithRetries(ctx context.Context, port string) error {
 	err := listenTLS(s.sock, s.tlsConfig, port)
 	if err == nil {

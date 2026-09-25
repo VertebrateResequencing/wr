@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/internal/publishexit"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
@@ -82,7 +83,15 @@ const (
 	// budget.
 	testConnectTimeoutSeconds = 30
 	testConnectTimeout        = testConnectTimeoutSeconds * time.Second
+
+	// testServerStartAttempts is how many sets of picked ports startTestServer
+	// tries before failing the test.
+	testServerStartAttempts = 21
 )
+
+// pickTestServerPorts is how statusTestServerConfig picks its ports. It is a
+// var so a test can take a picked port before the server binds it.
+var pickTestServerPorts = freeStatusTestPorts
 
 //nolint:gosmopolitan // This test asserts local CLI rendering.
 func TestStatusAlertTimeFormatting(t *testing.T) {
@@ -1191,11 +1200,92 @@ func TestStatusRecentHonoursLimitAndHost(t *testing.T) {
 	})
 }
 
+// TestStartStatusTestServerRetriesTakenPort covers the window between
+// freeStatusTestPorts releasing a port and the server binding it after
+// recovery: another process that takes the manager port in that window must
+// cost the helper a retry with fresh ports, not the test.
+func TestStartStatusTestServerRetriesTakenPort(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("startStatusTestServer serves on fresh ports if its manager port is taken before the bind", t, func() {
+		var (
+			squatter     net.Listener
+			squattedPort string
+		)
+
+		defer func() {
+			if squatter != nil {
+				So(squatter.Close(), ShouldBeNil)
+			}
+		}()
+
+		originalPick := pickTestServerPorts
+
+		defer func() { pickTestServerPorts = originalPick }()
+
+		pickTestServerPorts = func(t *testing.T) (string, string) {
+			t.Helper()
+
+			port, webPort := originalPick(t)
+			if squatter != nil {
+				return port, webPort
+			}
+
+			var err error
+
+			squatter, err = (&net.ListenConfig{}).Listen(ctx, "tcp", "0.0.0.0:"+port)
+			So(err, ShouldBeNil)
+
+			squattedPort = port
+
+			return port, webPort
+		}
+
+		_, serverConfig, addr, _, server, token := startStatusTestServer(ctx, t)
+		defer server.Stop(ctx, true)
+
+		So(squattedPort, ShouldNotBeBlank)
+		So(serverConfig.Port, ShouldNotEqual, squattedPort)
+
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
+		So(err, ShouldBeNil)
+		So(jq.Disconnect(), ShouldBeNil)
+	})
+}
+
+// startTestServer builds a test config, lets configure adjust the server config,
+// and starts a server that is serving, retrying with fresh ports if a picked
+// port is taken by something else in the window between picking it and the
+// server binding it. That can happen on a busy machine: either Serve reports
+// the port in use, or, since the manager port is only bound after recovery,
+// publication gives up after its bind retry budget. It returns the config,
+// server config, connection address, requirements, running server and its
+// token.
+func startTestServer(ctx context.Context, t *testing.T, configure func(*jobqueue.ServerConfig)) (
+	*internal.Config, jobqueue.ServerConfig, string, *jqs.Requirements, *jobqueue.Server, []byte,
+) {
+	t.Helper()
+
+	for attempt := range testServerStartAttempts {
+		testConfig, serverConfig, addr, reqs := statusTestServerConfig(t)
+		configure(&serverConfig)
+
+		server, token, ok := tryStartTestServer(ctx, t, serverConfig, attempt == testServerStartAttempts-1)
+		if ok {
+			return testConfig, serverConfig, addr, reqs, server, token
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	panic("unreachable")
+}
+
 func statusTestServerConfig(t *testing.T) (*internal.Config, jobqueue.ServerConfig, string, *jqs.Requirements) {
 	t.Helper()
 
 	tmpDir := t.TempDir()
-	port, webPort := freeStatusTestPorts(t)
+	port, webPort := pickTestServerPorts(t)
 
 	testConfig := &internal.Config{
 		ManagerHost:       statusTestHost,
@@ -1265,25 +1355,70 @@ func freeStatusTestPorts(t *testing.T) (string, string) {
 	return strconv.Itoa(a1.Port), strconv.Itoa(a2.Port)
 }
 
+// tryStartTestServer starts a server with serverConfig and waits for it to
+// serve, reporting false if it could not bind a port and last is false.
+//
+// A server whose publication gave up is stopped in the background, because
+// shutdown waits, with no deadline, until nothing is listening on its ports, and
+// whatever took the manager port may hold it for a while yet.
+func tryStartTestServer(ctx context.Context, t *testing.T, serverConfig jobqueue.ServerConfig, last bool) (
+	*jobqueue.Server, []byte, bool,
+) {
+	t.Helper()
+
+	exits := make(chan int, 1)
+	restore := publishexit.Set(func(code int) { exits <- code })
+
+	defer restore()
+
+	server, _, token, err := jobqueue.Serve(ctx, serverConfig)
+	if err != nil {
+		if last || !strings.Contains(err.Error(), "address already in use") {
+			t.Fatalf("test server did not start: %s", err)
+		}
+
+		return nil, nil, false
+	}
+
+	if waitForTestServerServing(t, server, exits) {
+		return server, token, true
+	}
+
+	go server.Stop(ctx)
+
+	if last {
+		t.Fatal("test server could not bind its manager port")
+	}
+
+	return nil, nil, false
+}
+
 // waitForTestServerServing waits for a test server to publish its externally
-// observable surface. jobqueue.Serve returns while prior-state recovery is still
-// running, so the manager port is not yet bound and jobqueue.Connect (which
-// turns a failed dial straight into ErrNoServer with no retry) would fail on
-// every run, not intermittently. The bound is a hang detector, not a latency
-// budget: these test databases hold no prior jobs.
+// observable surface, reporting false if publication gave up instead (a value
+// arrived on exits, the test's publishexit.Set replacement).
+// jobqueue.Serve returns while prior-state recovery is still running, so the
+// manager port is not yet bound and jobqueue.Connect (which turns a failed dial
+// straight into ErrNoServer with no retry) would fail on every run, not
+// intermittently. The bound is a hang detector, not a latency budget: these
+// test databases hold no prior jobs.
 //
 // It t.Fatals rather than recording a failed assertion and returning, so a
 // server that never published stops the test there instead of handing every
 // subsequent step an unreachable server and burying the one real cause under a
 // cascade of ErrNoServer failures.
-func waitForTestServerServing(t *testing.T, server *jobqueue.Server) {
+func waitForTestServerServing(t *testing.T, server *jobqueue.Server, exits <-chan int) bool {
 	t.Helper()
 
 	select {
 	case <-server.Serving():
+		return true
+	case <-exits:
+		return false
 	case <-time.After(testServerPublishTimeout):
 		t.Fatal("timed out waiting for the test server to start serving")
 	}
+
+	return false
 }
 
 // archiveNextStatusJob reserves the next ready job, marks it Started and then
@@ -1450,41 +1585,14 @@ func resetStatusForTest(t *testing.T) {
 	}
 }
 
-// startStatusTestServer builds a test config and starts a server, retrying with
-// fresh ports if a chosen port is momentarily in use (which can happen on a
-// busy machine in the window between picking a free port and the server binding
-// it). It returns the config, server config, connection address, requirements,
-// running server and its token.
+// startStatusTestServer builds a test config and starts a server with it; see
+// startTestServer.
 func startStatusTestServer(ctx context.Context, t *testing.T) (
 	*internal.Config, jobqueue.ServerConfig, string, *jqs.Requirements, *jobqueue.Server, []byte,
 ) {
 	t.Helper()
 
-	var (
-		testConfig   *internal.Config
-		serverConfig jobqueue.ServerConfig
-		addr         string
-		reqs         *jqs.Requirements
-		server       *jobqueue.Server
-		token        []byte
-		err          error
-	)
-
-	for attempt := 0; ; attempt++ {
-		testConfig, serverConfig, addr, reqs = statusTestServerConfig(t)
-
-		server, _, token, err = jobqueue.Serve(ctx, serverConfig)
-		if err == nil || attempt >= 20 || !strings.Contains(err.Error(), "address already in use") {
-			break
-		}
-
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	So(err, ShouldBeNil)
-	waitForTestServerServing(t, server)
-
-	return testConfig, serverConfig, addr, reqs, server, token
+	return startTestServer(ctx, t, func(*jobqueue.ServerConfig) {})
 }
 
 func nonEmptyStatusLines(output string) []string {

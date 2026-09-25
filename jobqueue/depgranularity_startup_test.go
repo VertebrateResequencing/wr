@@ -50,6 +50,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/internal/publishexit"
 	log15 "github.com/inconshreveable/log15/v3"
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -70,7 +71,7 @@ const (
 	// prove it does not: a port that should be closed, or a publication that
 	// should not have occurred. It is paid in full on every run, so it is short;
 	// what makes it sound is that each thing it waits on has already been
-	// sequenced by something observable (Serve returning, or publishExit being
+	// sequenced by something observable (Serve returning, or publishexit.Exit being
 	// called).
 	dgsClosedWait = 200 * time.Millisecond
 
@@ -998,7 +999,7 @@ func dgsStopReleasingHook(ctx context.Context, server *Server, release func()) (
 // retry budget exits the process, and returns immediately rather than falling
 // through to start readers against an unbound socket.
 //
-// The order of three steps makes or breaks this test: observe publishExit, then
+// The order of three steps makes or breaks this test: observe publishexit.Exit, then
 // close the test's own listener, then assert Connect. Connect against a plain
 // listener that never speaks TLS would hang forever (mangos dials synchronously
 // and the tls+tcp dialer has no handshake deadline), and while the test owns the
@@ -1021,9 +1022,8 @@ func TestDepGranularityStartupExitsWhenPortUnavailable(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		exits := make(chan int, 2)
-		publishExit = func(code int) { exits <- code }
 
-		defer func() { publishExit = os.Exit }()
+		defer publishexit.Set(func(code int) { exits <- code })()
 
 		server, _, release := pausedRecoveringFixtureServer(ctx, serverConfig)
 
@@ -1050,7 +1050,7 @@ func TestDepGranularityStartupExitsWhenPortUnavailable(t *testing.T) {
 		So(code, ShouldNotEqual, 0)
 		So(elapsed, ShouldBeGreaterThanOrEqualTo, serverBindRetryBudget)
 
-		// publication returns straight after publishExit, so the server is left
+		// publication returns straight after publishexit.Exit, so the server is left
 		// unpublished.
 		So(dgsNotServing(server), ShouldBeTrue)
 
@@ -1062,7 +1062,7 @@ func TestDepGranularityStartupExitsWhenPortUnavailable(t *testing.T) {
 		So(errc.Error(), ShouldContainSubstring, ErrNoServer)
 
 		// asserted after the fact rather than inside a loop: publication returns
-		// immediately after its single publishExit call, so nothing can add
+		// immediately after its single publishexit.Exit call, so nothing can add
 		// another.
 		So(exits, ShouldHaveLength, 0)
 	})
@@ -1100,9 +1100,8 @@ func TestDepGranularityStartupRetriesPortBind(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		exits := make(chan int, 2)
-		publishExit = func(code int) { exits <- code }
 
-		defer func() { publishExit = os.Exit }()
+		defer publishexit.Set(func(code int) { exits <- code })()
 
 		server, _, release := pausedRecoveringFixtureServer(ctx, serverConfig)
 
