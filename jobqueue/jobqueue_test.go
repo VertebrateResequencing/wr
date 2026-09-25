@@ -1489,9 +1489,10 @@ func runServer(ctx context.Context) {
 // these tests start publishes as soon as its (empty or tiny) recovery finishes.
 var errServeNeverPublished = errors.New("the server did not start serving")
 
-// errServePortTaken is what the serve helper returns when publication gave up
-// because it could not bind the server's ports.
-var errServePortTaken = errors.New("the server could not bind its ports")
+// errServePublishGaveUp is what the serve helper returns when publication gave
+// up, because the server could not bind its manager port or write its token
+// file.
+var errServePublishGaveUp = errors.New("the server's publication gave up")
 
 // serve calls serveWithoutPublication and then waits for the server to publish
 // itself, so a test that connects straight afterwards does not get ErrNoServer:
@@ -1507,10 +1508,10 @@ var errServePortTaken = errors.New("the server could not bind its ports")
 // daemon) calls it outside any Convey, where a So would panic about a missing
 // Convey context instead of saying what went wrong.
 //
-// If publication gives up because another process took one of the picked
-// ports before the server bound it, the server is stopped and errServePortTaken
-// returned, so the test fails there instead of publishexit.Exit ending the whole
-// test binary. It can't retry with fresh ports: the caller already holds the
+// If publication gives up, for example because another process took the
+// picked manager port before the server bound it, the server is stopped and
+// errServePublishGaveUp returned, so the test fails there instead of
+// publishexit.Exit ending the whole test binary. It can't retry with fresh ports: the caller already holds the
 // ports in its config and address.
 func serve(ctx context.Context, config ServerConfig) (*Server, string, []byte, error) {
 	exits := make(chan int, 1)
@@ -1528,7 +1529,7 @@ func serve(ctx context.Context, config ServerConfig) (*Server, string, []byte, e
 	case <-exits:
 		server.Stop(ctx, true)
 
-		return server, msg, token, errServePortTaken
+		return server, msg, token, errServePublishGaveUp
 	case <-time.After(servePublishWait):
 		return server, msg, token, fmt.Errorf("%w after %s", errServeNeverPublished, servePublishWait)
 	}
@@ -6949,7 +6950,7 @@ func TestJobqueueModify(t *testing.T) {
 			// the failed run is released into the delay queue, and only the
 			// queue's delay goroutine moves it to ready.
 			So(pollUntil(func() bool {
-				jobs, errg := jq.GetByRepGroup("a", false, 0, "", true, false)
+				jobs, errg := jq.GetByRepGroup("a", false, 0, "", false, false)
 				if errg != nil || len(jobs) != 1 {
 					return false
 				}

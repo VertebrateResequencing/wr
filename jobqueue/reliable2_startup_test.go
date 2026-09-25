@@ -64,7 +64,7 @@ const (
 	// small one whatever the ratio. Non-scanning startups take a few ms, so on a
 	// busy runner a few ms of noise alone can break the ratio. A scan of the
 	// larger history costs far more than this: decoding it takes over a second,
-	// and even walking its keys without decoding adds about 70ms.
+	// and even walking its keys without decoding adds tens of ms.
 	c2HistoryScaleSlack = 30 * time.Millisecond
 
 	// c2AbsoluteStartupLimit is the "within a few seconds" absolute bound: even

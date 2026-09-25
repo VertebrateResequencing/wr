@@ -62,7 +62,7 @@ func TestServeFailsCleanlyWhenPortTaken(t *testing.T) {
 
 	ctx := context.Background()
 
-	Convey("serve returns errServePortTaken if the manager port is taken before the bind", t, func() {
+	Convey("serve returns errServePublishGaveUp if the manager port is taken before the bind", t, func() {
 		var squatter net.Listener
 
 		defer func() {
@@ -94,7 +94,7 @@ func TestServeFailsCleanlyWhenPortTaken(t *testing.T) {
 		}
 
 		So(squatter, ShouldNotBeNil)
-		So(errors.Is(err, errServePortTaken), ShouldBeTrue)
+		So(errors.Is(err, errServePublishGaveUp), ShouldBeTrue)
 	})
 }
 
