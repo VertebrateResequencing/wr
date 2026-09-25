@@ -1433,7 +1433,10 @@ type Server struct {
 	killRunners bool
 	// deletesStopped is set, under krmutex, once shutdown is about to close
 	// the database, after which deleteJobIfRequested starts no more deletes.
-	deletesStopped     bool
+	deletesStopped bool
+	// deletesWG counts deleteJobIfRequested's goroutines (as well as s.wg), so
+	// shutdown can let them finish before it closes the database they write to.
+	deletesWG          sync.WaitGroup
 	subsClosed         bool // shutdown swept the subscriptions; see storeClientSubscription
 	racPending         bool
 	racRunning         bool
@@ -3402,6 +3405,28 @@ func (s *Server) stopDeletes() {
 	s.krmutex.Lock()
 	s.deletesStopped = true
 	s.krmutex.Unlock()
+}
+
+// waitForDeletes waits, for up to ServerShutdownWaitTime, for the deletes
+// deleteJobIfRequested started to finish, so their database writes land before
+// the database closes. Call it after stopDeletes, so no more can start. The
+// deletes need only the queue, which outlives this, and the database, and take
+// no lock shutdown holds here. One that is still running when the wait gives up
+// stays on s.wg, so it still finishes before the queue is destroyed.
+func (s *Server) waitForDeletes(ctx context.Context) {
+	done := make(chan struct{})
+
+	go func() {
+		s.deletesWG.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(ServerShutdownWaitTime):
+		clog.Warn(ctx, "server shutdown gave up waiting for remove-on-failure deletes",
+			"waited", ServerShutdownWaitTime)
+	}
 }
 
 // maybeStartPprofServer starts a dedicated net/http/pprof endpoint if the
@@ -6458,10 +6483,12 @@ func (s *Server) deleteJobIfRequested(ctx context.Context, job *Job) {
 	}
 
 	wgk := s.wg.Add(1)
+	s.deletesWG.Add(1)
 
 	go func() {
 		defer internal.LogPanic(ctx, "jobqueue delete on failure", true)
 		defer s.wg.Done(wgk)
+		defer s.deletesWG.Done()
 
 		if deleteOnFailureHook != nil {
 			deleteOnFailureHook()
@@ -7733,6 +7760,7 @@ func (s *Server) closeServerCommsAndDB(ctx context.Context) {
 	}
 
 	s.stopDeletes()
+	s.waitForDeletes(ctx)
 
 	// close the database
 	if err := s.db.close(ctx); err != nil {
