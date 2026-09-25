@@ -83,7 +83,7 @@ func TestReliable2DeleteRemoveFailureRevert(t *testing.T) {
 		_, err = server.q.Get(job.Key())
 		So(err, ShouldNotBeNil)
 
-		pass := server.removeDeletableJobs(ctx, []*Job{job})
+		pass := server.removeDeletableJobs(ctx, server.q, []*Job{job})
 
 		// the removal failed, so nothing was collected for deletion...
 		So(pass.toDelete, ShouldBeEmpty)

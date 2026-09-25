@@ -324,6 +324,28 @@ const envPprofAddr = "WR_PPROF_ADDR"
 //nolint:gochecknoglobals // deliberate test seam, mirroring statusWSDetailsHook
 var recoveryPauseHookForTest func()
 
+// deleteOnFailureHook, if non-nil, is called by the goroutine that removes a
+// buried job with a remove-on-failure behaviour, just before it removes it, so a
+// test can hold that goroutine while the server stops. It is a test-only seam
+// and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring recoveryPauseHookForTest
+var deleteOnFailureHook func()
+
+// shutdownRunnersWaitHook, if non-nil, is called when shutdown starts waiting
+// for runners to die, so a test can hold shutdown in that window. It is a
+// test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var shutdownRunnersWaitHook func()
+
+// confirmServerDeadHook, if non-nil, is called by the goroutine that confirms a
+// bad cloud server dead, before it waits, so a test can hold that goroutine
+// while the server stops. It is a test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var confirmServerDeadHook func()
+
 // sgroup represents a scheduler group.
 const (
 	// persistentScheduleFailures is the number of consecutive scheduling
@@ -1271,6 +1293,44 @@ func (r *startupStatusReporter) remove() {
 	}
 }
 
+// remove removes a job with no dependents from the queue, recording it in the
+// pass if that worked.
+func (p *deletePass) remove(ctx context.Context, q *queue.Queue, job *Job, jobkey string) {
+	// mark the job deleted BEFORE removing it, so the queue change callback
+	// (which reads each removed job's own State to decide complete vs deleted,
+	// see emitChangeCallbackTransition) observes JobStateDeleted and broadcasts
+	// a deleted update for this genuinely-removed incomplete job. Capture the
+	// previous state so we can revert if the removal fails and the job remains
+	// in the queue (otherwise it would be left visibly Deleted).
+	job.Lock()
+	prevState := job.State
+	job.State = JobStateDeleted
+	// capture the mutable fields we need after the lock is released, so
+	// they are not read unsynchronised (they can be modified by web modify
+	// paths). schedulerGroup is the field getSchedulerGroup() reads under
+	// its own lock; capture it directly here to avoid re-locking.
+	repGroup := job.RepGroup
+	cmd := job.loggableCmd()
+	schedGroup := job.schedulerGroup
+	job.Unlock()
+
+	if err := q.Remove(ctx, jobkey); err != nil {
+		// removal failed, so the job is still in the queue; revert its state
+		// so it is not left visibly Deleted.
+		job.Lock()
+		job.State = prevState
+		job.Unlock()
+
+		return
+	}
+
+	p.toDelete = append(p.toDelete, jobkey)
+	p.schedGroups[schedGroup]++
+	p.repGroups = append(p.repGroups, repGroup)
+
+	clog.Debug(ctx, "removed job", "key", jobkey, "cmd", cmd)
+}
+
 // Server represents the server side of the socket that clients Connect() to.
 type Server struct {
 	token     []byte
@@ -1285,6 +1345,9 @@ type Server struct {
 	// close.
 	serving     chan struct{}
 	servingOnce sync.Once
+	// stopping is closed by beginShutdown, so a wait that should not hold up
+	// shutdown can end when it starts.
+	stopping chan struct{}
 	// startupStatus writes the startup-phase sidecar that is the only operator
 	// channel while the manager is not yet reachable (spec E4).
 	startupStatus *startupStatusReporter
@@ -1365,9 +1428,15 @@ type Server struct {
 	readersStarted bool
 	// boundPorts are the ports publication actually bound, the only ones
 	// shutdown waits to see closed. Guarded by ssmutex.
-	boundPorts         []string
-	racChecking        bool
-	killRunners        bool
+	boundPorts  []string
+	racChecking bool
+	killRunners bool
+	// deletesStopped is set, under krmutex, once shutdown is about to close
+	// the database, after which deleteJobIfRequested starts no more deletes.
+	deletesStopped bool
+	// deletesWG counts deleteJobIfRequested's goroutines (as well as s.wg), so
+	// shutdown can let them finish before it closes the database they write to.
+	deletesWG          sync.WaitGroup
 	subsClosed         bool // shutdown swept the subscriptions; see storeClientSubscription
 	racPending         bool
 	racRunning         bool
@@ -3032,30 +3101,6 @@ func (s *Server) updateDepGroupMembershipForNewJobs(ctx context.Context, jobsToQ
 	}
 }
 
-// jobHasDependents says whether anything still depends on this job, either on
-// its own key (an essence dependency) or through one of its dep groups. Both
-// have to be asked: a dep-group dependency is an edge on the group's own key, so
-// a member's key is not among the queue's dependants at all.
-func (s *Server) jobHasDependents(job *Job, jobKey string) (bool, error) {
-	hasDeps, err := s.q.HasDependents(jobKey)
-	if err != nil || hasDeps {
-		return hasDeps, err
-	}
-
-	job.RLock()
-	depGroups := job.DepGroups
-	job.RUnlock()
-
-	for _, depGroup := range depGroups {
-		hasDeps, err = s.q.HasDependents(depGroupDependencyKey(depGroup))
-		if err != nil || hasDeps {
-			return hasDeps, err
-		}
-	}
-
-	return false, nil
-}
-
 // scheduleRunnersAsync schedules runners for the given group in its own
 // goroutine, so no caller waits on the external scheduler command (eg. bsub, and
 // on LSF a `bjobs -w` over every job in the account) that scheduleRunners
@@ -3073,6 +3118,29 @@ func (s *Server) scheduleRunnersAsync(ctx context.Context, group *sgroup) {
 		defer s.wg.Done(wgk)
 
 		s.scheduleRunners(ctx, group)
+	}()
+}
+
+// confirmServerDeadLater runs confirmServerDeadAfter in a goroutine on s.wg, so
+// shutdown waits for it before letting go of the queue, unless shutdown is
+// already under way. As in deleteJobIfRequested, holding krmutex across that
+// check and the wg.Add orders the Add before shutdown's wg.Wait, since the
+// scheduler's bad-server callback that gets here is not on s.wg.
+func (s *Server) confirmServerDeadLater(ctx context.Context, serverID string, autoConfirmDead time.Duration) {
+	s.krmutex.RLock()
+	defer s.krmutex.RUnlock()
+
+	if s.killRunners {
+		return
+	}
+
+	wgk := s.wg.Add(1)
+
+	go func() {
+		defer internal.LogPanic(ctx, "jobqueue confirm server dead", true)
+		defer s.wg.Done(wgk)
+
+		s.confirmServerDeadAfter(ctx, serverID, autoConfirmDead)
 	}()
 }
 
@@ -3238,6 +3306,30 @@ func jobGroup(state JobState, exitCode int, failReason string) string {
 	return fmt.Sprintf("%s.%d.%s", state, exitCode, failReason)
 }
 
+// jobHasDependents says whether anything still depends on this job, either on
+// its own key (an essence dependency) or through one of its dep groups. Both
+// have to be asked: a dep-group dependency is an edge on the group's own key, so
+// a member's key is not among the queue's dependants at all.
+func jobHasDependents(q *queue.Queue, job *Job, jobKey string) (bool, error) {
+	hasDeps, err := q.HasDependents(jobKey)
+	if err != nil || hasDeps {
+		return hasDeps, err
+	}
+
+	job.RLock()
+	depGroups := job.DepGroups
+	job.RUnlock()
+
+	for _, depGroup := range depGroups {
+		hasDeps, err = q.HasDependents(depGroupDependencyKey(depGroup))
+		if err != nil || hasDeps {
+			return hasDeps, err
+		}
+	}
+
+	return false, nil
+}
+
 func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
 	if !filter {
 		return true
@@ -3303,6 +3395,38 @@ func shutdownPprofServer(ctx context.Context, srv *http.Server) {
 	}
 
 	disablePprofProfiling()
+}
+
+// stopDeletes stops deleteJobIfRequested starting any more deletes. Shutdown
+// calls it once no more client requests are being read and before the database
+// closes, so a delete whose database write could only fail is not started, and
+// every started one is on s.wg before shutdown waits on it.
+func (s *Server) stopDeletes() {
+	s.krmutex.Lock()
+	s.deletesStopped = true
+	s.krmutex.Unlock()
+}
+
+// waitForDeletes waits, for up to ServerShutdownWaitTime, for the deletes
+// deleteJobIfRequested started to finish, so their database writes land before
+// the database closes. Call it after stopDeletes, so no more can start. The
+// deletes need only the queue, which outlives this, and the database, and take
+// no lock shutdown holds here. One that is still running when the wait gives up
+// stays on s.wg, so it still finishes before the queue is destroyed.
+func (s *Server) waitForDeletes(ctx context.Context) {
+	done := make(chan struct{})
+
+	go func() {
+		s.deletesWG.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(ServerShutdownWaitTime):
+		clog.Warn(ctx, "server shutdown gave up waiting for remove-on-failure deletes",
+			"waited", ServerShutdownWaitTime)
+	}
 }
 
 // maybeStartPprofServer starts a dedicated net/http/pprof endpoint if the
@@ -4119,6 +4243,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		sock:                      sock,
 		tlsConfig:                 tlsConfig,
 		serving:                   make(chan struct{}),
+		stopping:                  make(chan struct{}),
 		startupStatus:             startupStatus,
 		ch:                        new(codec.BincHandle),
 		rpl:                       newRGToKeys(),
@@ -4429,7 +4554,7 @@ func (s *Server) recordBadServerState(ctx context.Context, server *cloud.Server,
 
 	// arrange to confirm this dead after the configured time
 	if autoConfirmDead > 0 {
-		go s.confirmServerDeadAfter(ctx, server.ID, autoConfirmDead)
+		s.confirmServerDeadLater(ctx, server.ID, autoConfirmDead)
 	}
 
 	return false
@@ -4460,7 +4585,18 @@ func (s *Server) handleBadServerUpdate(ctx context.Context, server *cloud.Server
 // still bad for at least that long, destroys it, kills its jobs and clears the
 // web interface warning about it.
 func (s *Server) confirmServerDeadAfter(ctx context.Context, serverID string, autoConfirmDead time.Duration) {
-	<-time.After(autoConfirmDead)
+	if confirmServerDeadHook != nil {
+		confirmServerDeadHook()
+	}
+
+	timer := time.NewTimer(autoConfirmDead)
+	defer timer.Stop()
+
+	select {
+	case <-s.stopping:
+		return
+	case <-timer.C:
+	}
 	s.bsmutex.Lock()
 	defer s.bsmutex.Unlock()
 
@@ -6227,12 +6363,18 @@ func (s *Server) killRunningJob(ctx context.Context, jobkey string,
 // deleteJobs deletes the given jobs from the bury/delay/dependent/ready queue
 // and the live bucket. Does not delete jobs that have jobs dependant upon them,
 // unless all those dependants were also supplied to this method at the same
-// time (in any order). Returns the keys of jobs actually deleted.
+// time (in any order). Returns the keys of jobs actually deleted, which is none
+// once shutdown has let go of the queue.
 func (s *Server) deleteJobs(ctx context.Context, jobs []*Job) []string {
+	q := s.queueIfPresent()
+	if q == nil {
+		return nil
+	}
+
 	var deleted []string
 
 	for {
-		pass := s.removeDeletableJobs(ctx, jobs)
+		pass := s.removeDeletableJobs(ctx, q, jobs)
 		deleted = append(deleted, pass.toDelete...)
 
 		if len(pass.toDelete) == 0 {
@@ -6264,7 +6406,7 @@ type deletePass struct {
 
 // removeDeletableJobs removes from the queue every job that has no dependents,
 // collecting what was removed (and what was skipped) for finalizeDeletedJobs.
-func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePass {
+func (s *Server) removeDeletableJobs(ctx context.Context, q *queue.Queue, jobs []*Job) deletePass {
 	pass := deletePass{schedGroups: make(map[string]int)}
 
 	for _, job := range jobs {
@@ -6273,7 +6415,7 @@ func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePas
 		// we can't allow the removal of jobs that have dependencies, as *queue
 		// would regard that as satisfying the dependency and downstream jobs
 		// would start
-		hasDeps, err := s.jobHasDependents(job, jobkey)
+		hasDeps, err := jobHasDependents(q, job, jobkey)
 		if err != nil || hasDeps {
 			if hasDeps {
 				pass.skippedDeps = append(pass.skippedDeps, job)
@@ -6282,37 +6424,7 @@ func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePas
 			continue
 		}
 
-		// mark the job deleted BEFORE removing it, so the queue change callback
-		// (which reads each removed job's own State to decide complete vs deleted,
-		// see emitChangeCallbackTransition) observes JobStateDeleted and broadcasts
-		// a deleted update for this genuinely-removed incomplete job. Capture the
-		// previous state so we can revert if the removal fails and the job remains
-		// in the queue (otherwise it would be left visibly Deleted).
-		job.Lock()
-		prevState := job.State
-		job.State = JobStateDeleted
-		// capture the mutable fields we need after the lock is released, so
-		// they are not read unsynchronised (they can be modified by web modify
-		// paths). schedulerGroup is the field getSchedulerGroup() reads under
-		// its own lock; capture it directly here to avoid re-locking.
-		repGroup := job.RepGroup
-		cmd := job.loggableCmd()
-		schedGroup := job.schedulerGroup
-		job.Unlock()
-
-		if err = s.q.Remove(ctx, jobkey); err == nil {
-			pass.toDelete = append(pass.toDelete, jobkey)
-			pass.schedGroups[schedGroup]++
-			pass.repGroups = append(pass.repGroups, repGroup)
-
-			clog.Debug(ctx, "removed job", "key", jobkey, "cmd", cmd)
-		} else {
-			// removal failed, so the job is still in the queue; revert its state
-			// so it is not left visibly Deleted.
-			job.Lock()
-			job.State = prevState
-			job.Unlock()
-		}
+		pass.remove(ctx, q, job, jobkey)
 	}
 
 	return pass
@@ -6346,12 +6458,44 @@ func (s *Server) finalizeDeletedJobs(ctx context.Context, pass deletePass) {
 	s.rpl.Unlock()
 }
 
-// deleteJobIfRequested checks the job's behaviours and deletes the job if
-// requested.
+// deleteJobIfRequested checks the job's behaviours and, if it asks to be
+// removed, deletes it in the background.
+//
+// The goroutine is on s.wg so shutdown waits for it before destroying and
+// letting go of the queue. Jobs buried while shutdown waits for runners to die
+// (eg. killed by the shutdown itself) are still deleted; only once
+// stopDeletes has run, just before the database closes, is no goroutine
+// started. Holding krmutex across that check and the wg.Add orders every Add
+// before shutdown's wg.Wait, which matters because not every caller is itself
+// on s.wg (the lost-job release is not). It is krmutex rather than ssmutex
+// because beginShutdown holds ssmutex while unscheduleAllGroups can reach
+// buryImpossibleItem, and so this.
 func (s *Server) deleteJobIfRequested(ctx context.Context, job *Job) {
-	if job.RemovalRequested() {
-		go s.deleteJobs(ctx, []*Job{job})
+	if !job.RemovalRequested() {
+		return
 	}
+
+	s.krmutex.RLock()
+	defer s.krmutex.RUnlock()
+
+	if s.deletesStopped {
+		return
+	}
+
+	wgk := s.wg.Add(1)
+	s.deletesWG.Add(1)
+
+	go func() {
+		defer internal.LogPanic(ctx, "jobqueue delete on failure", true)
+		defer s.wg.Done(wgk)
+		defer s.deletesWG.Done()
+
+		if deleteOnFailureHook != nil {
+			deleteOnFailureHook()
+		}
+
+		s.deleteJobs(ctx, []*Job{job})
+	}()
 }
 
 // killJobsOnServers kills running and confirms lost jobs that were running on
@@ -6401,8 +6545,10 @@ func (s *Server) killJobOnServer(ctx context.Context, job *Job) bool {
 
 	// try and grab the latest job state after having killed it, but still
 	// return the client version of the job
-	if item, errg := s.q.Get(job.Key()); errg == nil && item != nil {
-		refreshJobFromLiveItem(job, item)
+	if q := s.queueIfPresent(); q != nil {
+		if item, errg := q.Get(job.Key()); errg == nil && item != nil {
+			refreshJobFromLiveItem(job, item)
+		}
 	}
 
 	return true
@@ -6745,7 +6891,12 @@ func (s *Server) getQueueJobsCurrent(ctx context.Context, repGroup string, match
 }
 
 func (s *Server) getAllQueueJobs(ctx context.Context, getStd bool) []*Job {
-	allItems := s.q.AllItems()
+	q := s.queueIfPresent()
+	if q == nil {
+		return nil
+	}
+
+	allItems := q.AllItems()
 	jobs := make([]*Job, 0, len(allItems))
 
 	for _, item := range allItems {
@@ -7608,6 +7759,9 @@ func (s *Server) closeServerCommsAndDB(ctx context.Context) {
 		clog.Warn(ctx, "server shutdown socket close failed", "err", err)
 	}
 
+	s.stopDeletes()
+	s.waitForDeletes(ctx)
+
 	// close the database
 	if err := s.db.close(ctx); err != nil {
 		clog.Warn(ctx, "server shutdown database close failed", "err", err)
@@ -7631,6 +7785,7 @@ func (s *Server) resetStateAfterShutdown() bool {
 
 	s.krmutex.Lock()
 	s.killRunners = false
+	s.deletesStopped = false
 	s.krmutex.Unlock()
 
 	s.ssmutex.Lock()
@@ -7656,6 +7811,11 @@ func (s *Server) beginShutdown(ctx context.Context, stopSigHandling bool) bool {
 
 	if stopSigHandling {
 		close(s.stopSigHandling)
+	}
+
+	// a hand-built test Server has none
+	if s.stopping != nil {
+		close(s.stopping)
 	}
 
 	s.unscheduleAllGroups(ctx)
@@ -7693,6 +7853,10 @@ func (s *Server) unscheduleAllGroups(ctx context.Context) {
 // waitForRunnersToDie waits long enough for runners to have attempted a touch
 // (and so learn they should die) and, if wait is set, polls until none remain.
 func (s *Server) waitForRunnersToDie(ctx context.Context, wait bool) {
+	if shutdownRunnersWaitHook != nil {
+		shutdownRunnersWaitHook()
+	}
+
 	if s.HasRunners(ctx) {
 		// wait until everything must have attempted a touch
 		<-time.After(s.timings.TouchInterval)
