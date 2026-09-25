@@ -101,7 +101,7 @@ bench:
 LINT_BASE_REV = $(lastword $(shell sed -n 's/^[[:space:]]*new-from-rev:[[:space:]]*//p' .golangci.yml) \
 	$(patsubst --new-from-rev=%,%,$(filter --new-from-rev=%,${GOLANGCI_LINT_ARGS})))
 
-# curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.12.2
+# curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.14.0
 lint:
 	$(if $(filter --new-from-rev,${GOLANGCI_LINT_ARGS}),$(error make lint: GOLANGCI_LINT_ARGS must use --new-from-rev=<rev> rather than --new-from-rev <rev>))
 	@git rev-parse --verify --quiet '$(LINT_BASE_REV)^{commit}' >/dev/null || { \
