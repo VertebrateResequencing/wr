@@ -1106,6 +1106,10 @@ func (s *Server) handleStart(_ context.Context, cr *clientRequest) (*serverRespo
 		return nil, ErrInternalError, err.Error()
 	}
 
+	if startPersistedHook != nil {
+		startPersistedHook(job.Key())
+	}
+
 	return nil, "", ""
 }
 

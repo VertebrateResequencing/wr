@@ -346,6 +346,16 @@ var shutdownRunnersWaitHook func()
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var confirmServerDeadHook func()
 
+// startPersistedHook, if non-nil, is called with a job's key once handleStart's
+// durable write of that job's start has committed, before the start is
+// acknowledged. A crash-recovery test needs that boundary: a manager killed
+// before it restores the job as never started, and the in-memory running state
+// is set before the write, so it cannot tell the two apart. It is a test-only
+// seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var startPersistedHook func(key string)
+
 // sgroup represents a scheduler group.
 const (
 	// persistentScheduleFailures is the number of consecutive scheduling
