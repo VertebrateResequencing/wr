@@ -6939,8 +6939,20 @@ func TestJobqueueModify(t *testing.T) {
 			jm.SetRetries(uint8(3))
 			modify("a", 1)
 
-			job = kick("a", retryRgroup, cmd, "")
-			So(job.State, ShouldEqual, JobStateReady)
+			kick("a", retryRgroup, cmd, "")
+
+			// the failed run is released into the delay queue, and only the
+			// queue's delay goroutine moves it to ready.
+			So(pollUntil(func() bool {
+				jobs, errg := jq.GetByRepGroup("a", false, 0, "", true, false)
+				if errg != nil || len(jobs) != 1 {
+					return false
+				}
+
+				job = jobs[0]
+
+				return job.State == JobStateReady
+			}), ShouldBeTrue)
 			So(job.Retries, ShouldEqual, 3)
 
 			jm.SetNoRetriesOverWalltime(1 * time.Millisecond)
