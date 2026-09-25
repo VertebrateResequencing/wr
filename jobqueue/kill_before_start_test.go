@@ -103,12 +103,18 @@ func TestKillBeforeCmdStartIsHonoured(t *testing.T) {
 			_, errs := os.Stat(marker)
 			So(os.IsNotExist(errs), ShouldBeTrue)
 
-			jobs, errg := jq.GetByRepGroup(repGroup, false, 0, "", false, false)
+			jobs, errg := jq.GetByRepGroup(repGroup, false, 0, "", true, false)
 			So(errg, ShouldBeNil)
 			So(len(jobs), ShouldEqual, 1)
 			So(jobs[0].State, ShouldEqual, JobStateBuried)
 			So(jobs[0].FailReason, ShouldEqual, FailReasonKilled)
 			So(jobs[0].Exited, ShouldBeFalse)
+			So(jobs[0].Exitcode, ShouldEqual, -1)
+
+			stderr, errs := jobs[0].StdErr()
+			So(errs, ShouldBeNil)
+			So(stderr, ShouldContainSubstring, "was not started")
+			So(stderr, ShouldContainSubstring, FailReasonKilled)
 		})
 	})
 }

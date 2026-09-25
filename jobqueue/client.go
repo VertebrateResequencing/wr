@@ -2261,6 +2261,12 @@ func (c *Client) ensureCwdExists(job *Job) error {
 // deliberately not run: OnFailure would execute the user's `run` command on, say,
 // a mount failure.
 //
+// The one exception is a kill that arrives before the start
+// (buryKilledBeforeStart), which does run the behaviours: the user asked for the
+// kill, and it should act the same whether or not the command had started. The
+// directory is still removed here afterwards, if a cleanup behaviour has not
+// already done so, since nothing ran in it.
+//
 // Unmounting comes FIRST, and a failed unmount deletes nothing at all: the
 // pre-start failure paths do not all unmount, a Job with no ActualCwd-relative
 // Mount has the working directory itself as a mount point, and deleting through a
