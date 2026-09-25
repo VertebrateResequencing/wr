@@ -55,6 +55,20 @@ import (
 	"go.nanomsg.org/mangos/v3/transport"
 )
 
+// OptionHandshakeTimeout is a dialer and listener option, a time.Duration that
+// bounds how long establishing each connection may take: for a dialer the TCP
+// connect, TLS handshake and SP handshake together, and for a listener the TLS
+// and SP handshakes of each accepted connection. A peer that accepts the TCP
+// connection but then never completes a handshake is dropped once it expires,
+// instead of blocking the dial, or pinning a listener goroutine, forever. It
+// also bounds the redials mangos makes in the background after a connection
+// drops. A value of 0 or less means DefaultHandshakeTimeout.
+const OptionHandshakeTimeout = "WR-HANDSHAKE-TIMEOUT"
+
+// DefaultHandshakeTimeout is the bound used when OptionHandshakeTimeout has not
+// been set to a positive value.
+const DefaultHandshakeTimeout = 30 * time.Second
+
 // Transport is a transport.Transport for TLS over TCP.
 const Transport = tlsTran(0)
 
@@ -63,19 +77,22 @@ func init() { //nolint:gochecknoinits // Mangos transports are discovered throug
 }
 
 type connPipe struct {
-	c       net.Conn
-	proto   transport.ProtocolInfo
-	closed  bool
-	options map[string]any
-	maxrx   int
+	c        net.Conn
+	proto    transport.ProtocolInfo
+	closed   bool
+	options  map[string]any
+	maxrx    int
+	deadline time.Time
 	sync.Mutex
 }
 
-func newConnPipe(c net.Conn, proto transport.ProtocolInfo) *connPipe {
+// newConnPipe wraps c, whose handshake() must complete by deadline.
+func newConnPipe(c net.Conn, proto transport.ProtocolInfo, deadline time.Time) *connPipe {
 	p := &connPipe{
-		c:       c,
-		proto:   proto,
-		options: make(map[string]any),
+		c:        c,
+		proto:    proto,
+		options:  make(map[string]any),
+		deadline: deadline,
 	}
 
 	p.options[mangos.OptionMaxRecvSize] = 0
@@ -178,7 +195,14 @@ type connHeader struct {
 	Reserved uint16
 }
 
+// handshake exchanges SP headers with the peer (for a listener's connection,
+// first completing the TLS handshake that the write triggers), failing if that
+// is not done by p.deadline.
 func (p *connPipe) handshake() error {
+	if err := p.c.SetDeadline(p.deadline); err != nil {
+		return err
+	}
+
 	h := connHeader{S: 'S', P: 'P', Proto: p.proto.Self}
 	if err := binary.Write(p.c, binary.BigEndian, &h); err != nil {
 		return err
@@ -191,6 +215,12 @@ func (p *connPipe) handshake() error {
 	}
 
 	if err := validateHeader(h, p.proto.Peer); err != nil {
+		_ = p.Close()
+
+		return err
+	}
+
+	if err := p.c.SetDeadline(time.Time{}); err != nil {
 		_ = p.Close()
 
 		return err
@@ -350,29 +380,36 @@ func (h *handshaker) worker(conn handshakerPipe) {
 }
 
 type dialer struct {
-	addr        string
-	proto       transport.ProtocolInfo
-	hs          *handshaker
-	d           *net.Dialer
-	config      *tls.Config
-	maxRecvSize int
-	lock        sync.Mutex
+	addr             string
+	proto            transport.ProtocolInfo
+	hs               *handshaker
+	d                *net.Dialer
+	config           *tls.Config
+	maxRecvSize      int
+	handshakeTimeout time.Duration
+	lock             sync.Mutex
 }
 
+// Dial connects to the dialer's address, completing the TCP connect, TLS
+// handshake and SP handshake within the dialer's handshake timeout.
 func (d *dialer) Dial() (transport.Pipe, error) {
 	d.lock.Lock()
 	config := d.config
 	maxRecvSize := d.maxRecvSize
+	deadline := time.Now().Add(handshakeTimeoutOrDefault(d.handshakeTimeout))
 	d.lock.Unlock()
 
 	tlsDialer := tls.Dialer{NetDialer: d.d, Config: config}
 
-	conn, err := tlsDialer.DialContext(context.Background(), "tcp", d.addr)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+
+	conn, err := tlsDialer.DialContext(ctx, "tcp", d.addr)
 	if err != nil {
 		return nil, err
 	}
 
-	p := newConnPipe(conn, d.proto)
+	p := newConnPipe(conn, d.proto, deadline)
 	p.SetOption(mangos.OptionMaxRecvSize, maxRecvSize)
 
 	if tlsConn, ok := conn.(*tls.Conn); ok {
@@ -382,6 +419,16 @@ func (d *dialer) Dial() (transport.Pipe, error) {
 	d.hs.Start(p)
 
 	return d.hs.Wait()
+}
+
+// handshakeTimeoutOrDefault returns t, or DefaultHandshakeTimeout if t is not
+// positive.
+func handshakeTimeoutOrDefault(t time.Duration) time.Duration {
+	if t <= 0 {
+		return DefaultHandshakeTimeout
+	}
+
+	return t
 }
 
 //nolint:dupl,gocyclo // Dialers and listeners intentionally support the same transport options.
@@ -406,6 +453,15 @@ func (d *dialer) SetOption(n string, v any) error {
 		}
 
 		d.config = config
+
+		return nil
+	case OptionHandshakeTimeout:
+		timeout, err := durationOption(v)
+		if err != nil {
+			return err
+		}
+
+		d.handshakeTimeout = timeout
 
 		return nil
 	case mangos.OptionKeepAliveTime:
@@ -489,6 +545,8 @@ func (d *dialer) GetOption(n string) (any, error) {
 		return true, nil
 	case mangos.OptionTLSConfig:
 		return d.config, nil
+	case OptionHandshakeTimeout:
+		return d.handshakeTimeout, nil
 	case mangos.OptionKeepAlive:
 		return d.d.KeepAlive >= 0, nil
 	case mangos.OptionKeepAliveTime:
@@ -499,17 +557,18 @@ func (d *dialer) GetOption(n string) (any, error) {
 }
 
 type listener struct {
-	addr        string
-	bound       net.Addr
-	lc          net.ListenConfig
-	l           net.Listener
-	maxRecvSize int
-	proto       transport.ProtocolInfo
-	config      *tls.Config
-	hs          *handshaker
-	closeQ      chan struct{}
-	once        sync.Once
-	lock        sync.Mutex
+	addr             string
+	bound            net.Addr
+	lc               net.ListenConfig
+	l                net.Listener
+	maxRecvSize      int
+	handshakeTimeout time.Duration
+	proto            transport.ProtocolInfo
+	config           *tls.Config
+	hs               *handshaker
+	closeQ           chan struct{}
+	once             sync.Once
+	lock             sync.Mutex
 }
 
 func (l *listener) Listen() error {
@@ -571,8 +630,8 @@ func (l *listener) accept() {
 			continue
 		}
 
-		p := newConnPipe(conn, l.proto)
 		l.lock.Lock()
+		p := newConnPipe(conn, l.proto, time.Now().Add(handshakeTimeoutOrDefault(l.handshakeTimeout)))
 		p.SetOption(mangos.OptionMaxRecvSize, l.maxRecvSize)
 		p.SetOption(mangos.OptionTLSConnState, tc.ConnectionState())
 		l.lock.Unlock()
@@ -635,6 +694,15 @@ func (l *listener) SetOption(n string, v any) error {
 		l.config = config
 
 		return nil
+	case OptionHandshakeTimeout:
+		timeout, err := durationOption(v)
+		if err != nil {
+			return err
+		}
+
+		l.handshakeTimeout = timeout
+
+		return nil
 	case mangos.OptionKeepAliveTime:
 		keepAlive, err := durationOption(v)
 		if err != nil {
@@ -669,6 +737,8 @@ func (l *listener) GetOption(n string) (any, error) {
 		return l.maxRecvSize, nil
 	case mangos.OptionTLSConfig:
 		return l.config, nil
+	case OptionHandshakeTimeout:
+		return l.handshakeTimeout, nil
 	case mangos.OptionKeepAliveTime:
 		return l.lc.KeepAlive, nil
 	case mangos.OptionNoDelay:

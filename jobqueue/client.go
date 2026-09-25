@@ -57,7 +57,7 @@ import (
 	"github.com/VertebrateResequencing/wr/container/docker"
 	"github.com/VertebrateResequencing/wr/fs/local"
 	"github.com/VertebrateResequencing/wr/internal"
-	_ "github.com/VertebrateResequencing/wr/internal/mangostlstcp" // register race-clean tls+tcp transport
+	"github.com/VertebrateResequencing/wr/internal/mangostlstcp"
 	"github.com/gofrs/uuid/v5"
 	"github.com/kballard/go-shellquote"
 	"github.com/moby/moby/client"
@@ -1182,7 +1182,10 @@ func (c *Client) retryStartReportLoop(ctx context.Context, startReq *clientReque
 }
 
 // dialClientSocket creates a req socket configured with TLS for the given
-// server and dials it, returning ErrNoServer if the dial fails.
+// server and dials it, returning ErrNoServer if the dial fails. The dial,
+// including its TLS and SP handshakes, must complete within timeout, as must
+// any redial after the connection drops, so a server that accepts connections
+// but never responds cannot block it forever.
 func dialClientSocket(addr, caFile, certDomain string, timeout time.Duration) (mangos.Socket, error) {
 	sock, err := req.NewSocket()
 	if err != nil {
@@ -1193,7 +1196,10 @@ func dialClientSocket(addr, caFile, certDomain string, timeout time.Duration) (m
 		return nil, err
 	}
 
-	dialOpts := map[string]any{mangos.OptionTLSConfig: clientTLSConfig(caFile, certDomain)}
+	dialOpts := map[string]any{
+		mangos.OptionTLSConfig:              clientTLSConfig(caFile, certDomain),
+		mangostlstcp.OptionHandshakeTimeout: timeout,
+	}
 	if err = sock.DialOptions("tls+tcp://"+addr, dialOpts); err != nil {
 		if errc := sock.Close(); errc != nil && !isClosedSocketError(errc) {
 			return nil, errc
