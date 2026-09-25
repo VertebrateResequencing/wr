@@ -288,6 +288,13 @@ func TestLSF(t *testing.T) {
 		return
 	}
 
+	// Busy(), waitToFinish and Cleanup() see every LSF job of this user with our
+	// job-name prefix, so without a per-run token another suite, a wrdev.sh run
+	// or a development manager on the same account makes Busy() start off true,
+	// and Cleanup() would kill their jobs. See
+	// .docs/bugfixes/260925-lsf-test-isolation.md.
+	t.Setenv("WR_JOBNAME_TOKEN", "lsftest"+internal.RandomString())
+
 	Convey("You can get a new lsf scheduler", t, func() {
 		otherReqs := make(map[string]string)
 
@@ -317,6 +324,13 @@ func TestLSF(t *testing.T) {
 		s, err := New(ctx, "lsf", &ConfigLSF{"development", "bash", os.Getenv("WR_LSF_TEST_KEY")})
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
+
+		// kills whatever a pass that timed out left behind; the token means it
+		// can only kill this run's jobs. Guarded so a failed New() reports its
+		// own error, not a nil-receiver panic, whatever the failure mode.
+		if s != nil {
+			defer s.Cleanup(ctx)
+		}
 
 		Convey("ReserveTimeout() returns 25 seconds", func() {
 			So(s.ReserveTimeout(ctx, possibleReq), ShouldEqual, 1)
