@@ -25,3 +25,16 @@
     FAIL	github.com/VertebrateResequencing/wr/cmd	5.162s
     ```
     After the fix, it passes in 6.4s. It serves on a different port, and a client connects. The throwaway harness also failed before the fix and was deleted. A copy is kept in the scratchpad.
+- [x] Flake: TestJobqueueRunnerKillRequests (lane runner_kill_requests) failed at jobqueue/runner_lifecycle_test.go:557 in a local `make test` on 2026-09-25, at load average about 6-7. A killed 20s job ran to completion instead of being buried. It passed when the lane binary was re-run, and in the next full run. No red command yet. Logs: scratchpad/flake/item2-test.log.
+  - Diagnosed as a product bug: a kill that reaches the runner before Execute installs its kill handler is dropped. It moved to its own branch, fix-kill-request-lost, with checklist .docs/bugfixes/260925-kill-before-start.md.
+- [ ] Flake: TestJobqueueModify (lane modify_b) failed at jobqueue/jobqueue_test.go:6921 in a local `make test` on 2026-09-25, at load average about 6-7. It expected `ready` after a kick and a failed re-run, and got `delayed`. The lane binary passed 3 of 3 on re-run. No red command yet. Logs: scratchpad/flake/item2-test2.log.
+- [x] A manager stopped while still recovering, with another process listening on its manager port, never exits. Found in review of item 2. Shutdown's waitForPortsClosed (jobqueue/server.go) dialled the configured manager and web ports until nothing answered, with no deadline. Publication binds those ports only after recovery (spec E1), so a manager stopped during recovery holds neither of them, and a foreign listener that accepts connections kept the loop spinning forever. item 2's cmd helper stopped a failed server in the background to avoid this.
+  - Red command: `cd jobqueue && CGO_ENABLED=0 go test -tags netgo -count=1 -run 'TestDepGranularityStartupStopIgnoresForeignPort$' .`. This is the committed regression test in jobqueue/depgranularity_startup_test.go. It holds the manager port with a listener that accepts and closes connections, pauses recovery, starts Stop, releases recovery once Serving() closes, and asserts Stop returns within 15s. A listener that never accepts doesn't reproduce the bug, because its backlog fills and the 10ms check dials then time out as if the port were closed. Before the fix it failed:
+    ```
+      Line 1189:
+      Expected: true
+      Actual:   false
+    --- FAIL: TestDepGranularityStartupStopIgnoresForeignPort (15.20s)
+    ```
+    After the fix it passes in 0.3s.
+  - Fix: publication records each port it actually binds (`noteBound`, guarded by ssmutex): the manager port after listenWithRetries succeeds, and the web port in serveWebInterface. The web port is now bound with net.ListenConfig.Listen and served with ServeTLS instead of ListenAndServeTLS, so the bind is observable. A bind failure logs the same "server web interface had problems" error as before, and runHTTPServer closes the listener if ServeTLS fails before serving. waitForPortsClosed now waits only on the bound ports. cmd's tryStartTestServer now stops a server whose publication gave up with a synchronous `server.Stop(ctx, true)`, and the background-stop comment is gone. Stale comments in TestDepGranularityStartupExitsWhenPortUnavailable about Stop needing the listener closed first are removed. CHANGELOG has a "### Fixed" entry.

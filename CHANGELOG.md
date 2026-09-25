@@ -104,6 +104,10 @@ project adheres to [Semantic Versioning](http://semver.org/).
   `ps -o stat= -p <pid> 2>/dev/null || test $? -eq 1`, must be updated, or no
   lost job on that host will ever be confirmed dead. The example forced
   commands in the config file are unaffected.
+- A manager stopped while it was still recovering its prior jobs, when another
+  process was listening on its manager or web port, never exited. It kept
+  waiting for that port to close, even though it had never bound it. It now
+  only waits for the ports it actually bound, so it exits as normal.
 - `wr manager start` could delete your database and copy an older backup over
   it just because wr failed to open the file, losing every job recorded since
   that backup was taken. Nearly every way of failing to open the file counted

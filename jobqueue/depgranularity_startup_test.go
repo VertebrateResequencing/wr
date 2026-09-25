@@ -75,6 +75,11 @@ const (
 	// called).
 	dgsClosedWait = 200 * time.Millisecond
 
+	// dgsStopWait is how long a Stop that has nothing to wait for is given to
+	// return. It is well over the 5s ServerShutdownWaitTime a shutdown can spend
+	// on its own goroutines, and a hang detector rather than a latency budget.
+	dgsStopWait = 15 * time.Second
+
 	// dgsExpiredCertBits is the RSA key size of the deliberately-expired
 	// certificate E1 acceptance test 6 uses. It matches the manager's own root
 	// key size, since a smaller one is a lint finding rather than a saving.
@@ -194,6 +199,70 @@ func TestDepGranularityStartupSidecarNamesTheRealPhase(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(status.State, ShouldEqual, internal.DBUpgradePostStartupState)
 		So(status.Detail, ShouldEqual, internal.DBUpgradePostStartupDetail)
+	})
+}
+
+// TestDepGranularityStartupStopIgnoresForeignPort: a manager stopped while
+// still recovering never bound its ports, so shutdown must not wait for a port
+// that another process holds to close. It used to wait forever.
+func TestDepGranularityStartupStopIgnoresForeignPort(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Stopping a recovering server returns even if another process holds its manager port", t, func() {
+		_, serverConfig, _, _, _ := jobqueueTestInit(true)
+
+		var listenConfig net.ListenConfig
+
+		listener, err := listenConfig.Listen(ctx, "tcp", "0.0.0.0:"+serverConfig.Port)
+		So(err, ShouldBeNil)
+
+		// accept like a real server would: a listener that never accepts fills
+		// its backlog, and dials to it then time out as if it were closed.
+		go func() {
+			for {
+				conn, erra := listener.Accept()
+				if erra != nil {
+					return
+				}
+
+				_ = conn.Close()
+			}
+		}()
+
+		defer publishexit.Set(func(int) {})()
+
+		server, _, release := pausedRecoveringFixtureServer(ctx, serverConfig)
+
+		defer release()
+
+		stopped := make(chan struct{})
+
+		go func() {
+			server.Stop(ctx, true)
+			close(stopped)
+		}()
+
+		// Serving() closes as shutdown begins, just before it cancels recovery,
+		// so releasing now lets recovery end without publishing.
+		<-server.Serving()
+		release()
+
+		var returned bool
+
+		select {
+		case <-stopped:
+			returned = true
+		case <-time.After(dgsStopWait):
+		}
+
+		So(listener.Close(), ShouldBeNil)
+		<-stopped
+
+		So(returned, ShouldBeTrue)
 	})
 }
 
@@ -1004,8 +1073,7 @@ func dgsStopReleasingHook(ctx context.Context, server *Server, release func()) (
 // listener that never speaks TLS would hang forever (mangos dials synchronously
 // and the tls+tcp dialer has no handshake deadline), and while the test owns the
 // port a failed Connect would say nothing about whether publication bound
-// anything. Closing first is also what lets Stop return, since shutdown calls
-// waitForPortsClosed unconditionally.
+// anything.
 func TestDepGranularityStartupExitsWhenPortUnavailable(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -1028,9 +1096,6 @@ func TestDepGranularityStartupExitsWhenPortUnavailable(t *testing.T) {
 		server, _, release := pausedRecoveringFixtureServer(ctx, serverConfig)
 
 		defer dgsCleanup(ctx, server, release)()
-		// registered after the cleanup, so it runs BEFORE it: shutdown calls
-		// waitForPortsClosed unconditionally, and that loop has no deadline, so a
-		// Stop with the test still holding the manager port never returns.
 		defer func() { _ = listener.Close() }()
 
 		started := time.Now()

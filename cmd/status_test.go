@@ -1356,11 +1356,8 @@ func freeStatusTestPorts(t *testing.T) (string, string) {
 }
 
 // tryStartTestServer starts a server with serverConfig and waits for it to
-// serve, reporting false if it could not bind a port and last is false.
-//
-// A server whose publication gave up is stopped in the background, because
-// shutdown waits, with no deadline, until nothing is listening on its ports, and
-// whatever took the manager port may hold it for a while yet.
+// serve, reporting false if it could not bind a port and last is false. A server
+// whose publication gave up is stopped before returning.
 func tryStartTestServer(ctx context.Context, t *testing.T, serverConfig jobqueue.ServerConfig, last bool) (
 	*jobqueue.Server, []byte, bool,
 ) {
@@ -1384,7 +1381,7 @@ func tryStartTestServer(ctx context.Context, t *testing.T, serverConfig jobqueue
 		return server, token, true
 	}
 
-	go server.Stop(ctx)
+	server.Stop(ctx, true)
 
 	if last {
 		t.Fatal("test server could not bind its manager port")
