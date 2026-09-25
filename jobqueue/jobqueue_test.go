@@ -61,6 +61,7 @@ import (
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/internal/publishexit"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid/v5"
@@ -1084,12 +1085,12 @@ func isIdent(expr ast.Expr, name string) bool {
 // that created it (its runner subprocesses keep using the manager dir inside
 // it), and TestMain removes it when this test binary exits.
 func isolateTestConfig(config *internal.Config) {
-	port, err := freeTestPort()
+	port, err := pickTestPort()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	webPort, err := freeTestPort()
+	webPort, err := pickTestPort()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1488,6 +1489,10 @@ func runServer(ctx context.Context) {
 // these tests start publishes as soon as its (empty or tiny) recovery finishes.
 var errServeNeverPublished = errors.New("the server did not start serving")
 
+// errServePortTaken is what the serve helper returns when publication gave up
+// because it could not bind the server's ports.
+var errServePortTaken = errors.New("the server could not bind its ports")
+
 // serve calls serveWithoutPublication and then waits for the server to publish
 // itself, so a test that connects straight afterwards does not get ErrNoServer:
 // Serve() returns while prior-state recovery is still running, and the manager
@@ -1501,7 +1506,18 @@ var errServeNeverPublished = errors.New("the server did not start serving")
 // failed So: the helper has no *testing.T, and runServer (the --servermode
 // daemon) calls it outside any Convey, where a So would panic about a missing
 // Convey context instead of saying what went wrong.
+//
+// If publication gives up because another process took one of the picked
+// ports before the server bound it, the server is stopped and errServePortTaken
+// returned, so the test fails there instead of publishexit.Exit ending the whole
+// test binary. It can't retry with fresh ports: the caller already holds the
+// ports in its config and address.
 func serve(ctx context.Context, config ServerConfig) (*Server, string, []byte, error) {
+	exits := make(chan int, 1)
+	restore := publishexit.Set(func(code int) { exits <- code })
+
+	defer restore()
+
 	server, msg, token, err := serveWithoutPublication(ctx, config)
 	if err != nil {
 		return server, msg, token, err
@@ -1509,6 +1525,10 @@ func serve(ctx context.Context, config ServerConfig) (*Server, string, []byte, e
 
 	select {
 	case <-server.Serving():
+	case <-exits:
+		server.Stop(ctx, true)
+
+		return server, msg, token, errServePortTaken
 	case <-time.After(servePublishWait):
 		return server, msg, token, fmt.Errorf("%w after %s", errServeNeverPublished, servePublishWait)
 	}
@@ -9998,6 +10018,10 @@ func setDomainIP(domain string) {
 //     with request responses), read until the message that matches your request
 //     rather than asserting on the next one read - otherwise the assertion races
 //     whatever broadcast happens to arrive first.
+
+// pickTestPort is how isolateTestConfig picks each port, the manager port
+// first. It is a var so a test can take a picked port before a server binds it.
+var pickTestPort = freeTestPort //nolint:gochecknoglobals
 
 // testPortNext is the per-lane sequential offset used by freeTestPort. The
 // tests in a lane run sequentially, so it needs no synchronisation.
