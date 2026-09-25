@@ -173,3 +173,37 @@ func TestStopWaitsForABadServerConfirmation(t *testing.T) {
 		})
 	})
 }
+
+// TestBadServerIsConfirmedDeadWhileRunning guards the normal path that
+// TestStopWaitsForABadServerConfirmation's shutdown handling must not break: a
+// server that stays bad for autoConfirmDead is still destroyed and forgotten.
+func TestBadServerIsConfirmedDeadWhileRunning(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+	_, serverConfig, _, _, _ := jobqueueTestInit(true) //nolint:dogsled // only the manager is needed
+
+	Convey("Given a running manager told about a bad server", t, func() {
+		server, _, _, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		bad := &cloud.Server{ID: "confirm-dead-while-running", Name: "bad", IP: "192.168.0.2"}
+		bad.GoneBad("gone bad for the test")
+
+		server.handleBadServerUpdate(ctx, bad, 50*time.Millisecond)
+
+		Convey("it is destroyed and forgotten once it has been bad for autoConfirmDead", func() {
+			So(pollUntil(func() bool {
+				server.bsmutex.RLock()
+				_, stillBad := server.badServers[bad.ID]
+				server.bsmutex.RUnlock()
+
+				return !stillBad && bad.Destroyed()
+			}), ShouldBeTrue)
+		})
+	})
+}
