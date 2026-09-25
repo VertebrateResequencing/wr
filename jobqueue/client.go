@@ -871,6 +871,22 @@ func (c *Client) release(job *Job, jes *JobEndState, failreason string, attempte
 	return nil
 }
 
+// buryKilledBeforeStart ends a run whose kill arrived before its command was
+// started, the way a kill of a running command ends: the job's behaviours run as
+// for a failure, it is unmounted, and it is buried as killed. The workspace is
+// still reclaimed as for any run that never started (see
+// cleanupUnstartedWorkSpace), since nothing ran in it. The unmount does not
+// upload, for the same reason.
+func (c *Client) buryKilledBeforeStart(job *Job, jc string) error {
+	extra := recoveryExtra("triggering behaviours", job.TriggerBehaviours(false))
+	extra += unmountExtra(job)
+
+	buryErr := fmt.Errorf("command [%s] was not started: %w%s",
+		internal.Abbreviate(jc), Error{clientOpExecute, job.Key(), FailReasonKilled}, extra)
+
+	return c.buryWrapErr(job, FailReasonKilled, buryErr)
+}
+
 // stageBackup writes db to a uniquely named file in path's own directory,
 // returning that file's name for the caller to rename over path. The name is
 // unique because a fixed name is one the user may already have a file at, and
@@ -937,6 +953,32 @@ func reserveHostAndPid() (string, int) {
 	}
 
 	return host, os.Getpid()
+}
+
+// newKillCmd returns the function that kills a started job's command: the
+// command itself, any docker container adopted as the job's, and the command's
+// child processes.
+func newKillCmd(ctx context.Context, job *Job, cmd *exec.Cmd, dm *dockerMonitor) func() error {
+	return func() error {
+		// get children first
+		children, errc := getChildProcesses(int32(cmd.Process.Pid)) //nolint:gosec // an OS pid always fits in an int32.
+
+		// then kill *** race condition if cmd spawns more children...
+		errk := cmd.Process.Kill()
+
+		if errc != nil {
+			logCmdKill(ctx, job, cmd, errk)
+
+			errk = chainKillErr(errk, errc, "getting child processes")
+		}
+
+		if dm != nil && dm.containerID != "" {
+			// kill the docker container as well
+			errk = chainKillErr(errk, dm.killContainer(ctx), "killing the docker container")
+		}
+
+		return terminateChildren(ctx, job, children, errk)
+	}
 }
 
 // isDefinitiveReject reports whether a failed server report - a Started() report or
@@ -1179,6 +1221,58 @@ func (c *Client) retryStartReportLoop(ctx context.Context, startReq *clientReque
 			}
 		}
 	}
+}
+
+// terminateChildren tries to kill the children of a job's killed command, in
+// case killing the command did not already result in their death, and returns
+// errk with any failure to do so chained on.
+func terminateChildren(ctx context.Context, job *Job, children []*process.Process, errk error) error {
+	var wg sync.WaitGroup
+
+	wg.Add(len(children))
+
+	for _, child := range children {
+		errc := child.Terminate()
+		if errk == nil {
+			clog.Info(ctx, "killed child of cmd", "cmd", job.loggableCmd(), "pid", child.Pid)
+		} else {
+			clog.Warn(ctx, "failed to kill child of cmd", "cmd", job.loggableCmd(), "pid", child.Pid)
+		}
+
+		errk = chainKillErr(errk, errc, "killing its child process")
+
+		go func(child *process.Process) {
+			time.Sleep(terminateGrace)
+			child.Kill() //nolint:errcheck
+			wg.Done()
+		}(child)
+	}
+
+	wg.Wait()
+
+	return errk
+}
+
+// chainKillErr returns next if errk is nil, or errk noting that the step named
+// by what then failed with next.
+func chainKillErr(errk, next error, what string) error {
+	if errk == nil {
+		return next
+	}
+
+	return fmt.Errorf("%w, and %s failed: %w", errk, what, next)
+}
+
+// logCmdKill logs whether killing a job's command, which failed with errk if
+// errk is not nil, worked.
+func logCmdKill(ctx context.Context, job *Job, cmd *exec.Cmd, errk error) {
+	if errk == nil {
+		clog.Info(ctx, "killed cmd", "cmd", job.loggableCmd(), "pid", cmd.Process.Pid)
+
+		return
+	}
+
+	clog.Warn(ctx, "failed to kill cmd", "cmd", job.loggableCmd(), "pid", cmd.Process.Pid, "err", errk)
 }
 
 // dialClientSocket creates a req socket configured with TLS for the given
@@ -2247,7 +2341,9 @@ func removeJobTmpDir(ctx context.Context, job *Job) {
 // exit your process. Finally it calls Unmount() and TriggerBehaviours().
 //
 // If Kill() is called while executing the Cmd, the next internal Touch() call
-// will result in the Cmd being killed and the job being Bury()ied.
+// will result in the Cmd being killed and the job being Bury()ied. If that Touch()
+// comes before the Cmd has started, the Cmd is not started at all, and the job is
+// buried in the same way.
 //
 // If no error is returned, the Cmd will have run OK, exited with status 0, and
 // been Archive()d from the queue while being placed in the permanent store.
@@ -2264,7 +2360,7 @@ func removeJobTmpDir(ctx context.Context, job *Job) {
 // docker monitoring, outcome classification and the final state reporting) has
 // been extracted into helpers. What remains here is the orchestration of two
 // long-lived goroutines (the touch loop and the resource-monitor loop) that
-// share mutable state under wkbsMutex/stateMutex and a set of channels, plus the
+// share mutable state under stateMutex and a set of channels, plus the
 // deferred cleanups that must run in this scope. Splitting that choreography
 // across methods would obscure it and risk a concurrency regression in this
 // timing-sensitive path, so its residual gocognit/nestif are tolerated here.
@@ -2339,15 +2435,33 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	liveState := newExecuteLiveState(actualCwd, liveStdout, liveStderr)
 	touchTicker := time.NewTicker(c.touchInterval) // server-provided default (< its ItemTTR), overridable per client
 
-	var wkbsMutex sync.RWMutex
-
 	serverContact := &serverContactState{}
-	killDoneCh := make(chan bool, 1)
-	whenKilledByServer := func() {
-		killDoneCh <- true
-	}
 	stopTouching := make(chan bool, executeStopChannelBuffer)
 	stopChecking := make(chan bool, executeStopChannelBuffer)
+
+	// A kill the server asks for can come back on any touch, including one made
+	// before the command has started, when there is nothing yet to kill.
+	// killCalled records the request and killCmd, nil until cmd.Start, is how it
+	// is carried out; whichever of the touch loop and the start of the command
+	// sees both first does the kill, so it happens exactly once, and a kill that
+	// arrives before the start stops the command from being started at all.
+	var (
+		stateMutex sync.Mutex
+		killCalled bool
+		killCmd    func() error
+		killErr    error
+	)
+
+	// killErr is written here unguarded: Execute reads it only after
+	// <-killDoneCh, which orders the two, and taking stateMutex here would
+	// deadlock against Execute holding it while waiting on that channel.
+	killDoneCh := make(chan bool, 1)
+	killForServer := func() {
+		killErr = killCmd()
+		killDoneCh <- true
+
+		stopChecking <- true
+	}
 
 	go func() {
 		for {
@@ -2355,14 +2469,24 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			case <-touchTicker.C:
 				kc, errf := c.touch(job, liveState.snapshot())
 				if kc {
-					wkbsMutex.RLock()
-					defer wkbsMutex.RUnlock()
+					stateMutex.Lock()
+					first := !killCalled
+					killCalled = true
+					started := killCmd != nil
+					stateMutex.Unlock()
 
-					whenKilledByServer()
-					touchTicker.Stop()
+					if !first {
+						continue
+					}
+
 					clog.Warn(ctx, "kill requested externally")
 
-					stopChecking <- true
+					if !started {
+						continue
+					}
+
+					touchTicker.Stop()
+					killForServer()
 
 					return
 				}
@@ -2510,6 +2634,17 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGUSR1, syscall.SIGUSR2)
 	defer signal.Stop(sigs)
 
+	stateMutex.Lock()
+	killedBeforeStart := killCalled
+	stateMutex.Unlock()
+
+	if killedBeforeStart {
+		stopTouching <- true
+
+		//nolint:contextcheck // behaviours run detached from the cancellable job context
+		return c.buryKilledBeforeStart(job, jc)
+	}
+
 	// start running the command
 	endT := time.Now().Add(job.Requirements.Time)
 
@@ -2523,6 +2658,15 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// the run owns its workspace from here on: the c.Started failure path below
 	// and the normal exit path both trigger the job's behaviours.
 	cmdStarted = true
+
+	stateMutex.Lock()
+	killCmd = newKillCmd(ctx, job, cmd, dm)
+	killedDuringStart := killCalled
+	stateMutex.Unlock()
+
+	if killedDuringStart {
+		killForServer()
+	}
 
 	clog.Info(ctx, "started executing", "cmd", job.loggableCmd(), "pid", cmd.Process.Pid)
 
@@ -2593,13 +2737,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	ranoutTime := false
 	ranoutDisk := false
 	signalled := false
-	killCalled := false
 
-	var (
-		killErr    error
-		closeErr   error
-		stateMutex sync.Mutex
-	)
+	var closeErr error
 
 	diskUsageCheck := func() (int64, error) {
 		var used int64
@@ -2627,64 +2766,6 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	finishedChecking := newCheckingRendezvous()
 
 	go func() {
-		killCmd := func() error {
-			// get children first
-			children, errc := getChildProcesses(int32(cmd.Process.Pid)) //nolint:gosec // an OS pid always fits in an int32.
-
-			// then kill *** race condition if cmd spawns more children...
-			errk := cmd.Process.Kill()
-
-			if errc != nil {
-				if errk == nil {
-					clog.Info(ctx, "killed cmd", "cmd", job.loggableCmd(), "pid", cmd.Process.Pid)
-
-					errk = errc
-				} else {
-					clog.Warn(ctx, "failed to kill cmd", "cmd", job.loggableCmd(), "pid", cmd.Process.Pid, "err", errk)
-					errk = fmt.Errorf("%w, and getting child processes failed: %w", errk, errc)
-				}
-			}
-
-			if dm != nil && dm.containerID != "" {
-				// kill the docker container as well
-				errd := dm.killContainer(ctx)
-				if errk == nil {
-					errk = errd
-				} else {
-					errk = fmt.Errorf("%w, and killing the docker container failed: %w", errk, errd)
-				}
-			}
-
-			var wg sync.WaitGroup
-
-			wg.Add(len(children))
-
-			for _, child := range children {
-				// try and kill any children in case the above didn't already
-				// result in their death
-				errc = child.Terminate()
-				if errk == nil {
-					clog.Info(ctx, "killed child of cmd", "cmd", job.loggableCmd(), "pid", child.Pid)
-
-					errk = errc
-				} else {
-					clog.Warn(ctx, "failed to kill child of cmd", "cmd", job.loggableCmd(), "pid", child.Pid)
-
-					errk = fmt.Errorf("%w, and killing its child process failed: %w", errk, errc)
-				}
-
-				go func(child *process.Process) {
-					time.Sleep(terminateGrace)
-					child.Kill() //nolint:errcheck
-					wg.Done()
-				}(child)
-			}
-
-			wg.Wait()
-
-			return errk
-		}
-
 		// closeErr and killErr are written here but read by Execute() once the
 		// checking rendezvous is over, and that rendezvous can now give up on
 		// this goroutine, so their writes take stateMutex like the other shared
@@ -2703,18 +2784,6 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				closeErr = errc
 			}
 		}
-
-		wkbsMutex.Lock()
-		whenKilledByServer = func() {
-			stateMutex.Lock()
-			killCalled = true
-			stateMutex.Unlock()
-
-			killErr = killCmd()
-
-			killDoneCh <- true
-		}
-		wkbsMutex.Unlock()
 
 		volume := local.NewVolume(job.Cwd)
 

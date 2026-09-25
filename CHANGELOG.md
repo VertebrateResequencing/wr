@@ -80,6 +80,11 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - In the cloud, a manager stopping while it was waiting to confirm a bad server
   dead (`--cloud_auto_confirm_dead`) could crash when that wait ran out after
   the stop. The wait now ends when the manager stops.
+- `wr kill` of a command that hadn't started yet was reported as done, but the
+  command ran anyway and completed as normal. A kill that arrives while wr is
+  still getting ready to run a command, such as mounting its file systems, now
+  stops it being started at all: its failure behaviours run and it is buried as
+  killed, just as a running command that you kill is.
 - A `wr` command or runner no longer hangs forever connecting to a manager that
   accepts connections but doesn't respond, as a frozen manager does (its
   machine still accepts connections for it). The attempt now gives up after the

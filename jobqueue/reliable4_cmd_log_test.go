@@ -79,6 +79,10 @@ const cmdLogTestMaxManagerLine = 1024
 // production default.
 const cmdLogTestTouchInterval = 100 * time.Millisecond
 
+// cmdLogTestKillWait bounds how long the kill test waits for its command to
+// start; it is shorter than cmdLogTestKillCmd runs for, and free on success.
+const cmdLogTestKillWait = 20 * time.Second
+
 // cmdLogTestKillCmd is a command that keeps the shell forked (so it has a CHILD
 // process to kill) for long enough to be killed mid-run.
 const cmdLogTestKillCmd = "sleep 30 && true"
@@ -311,16 +315,23 @@ func TestReliable4KilledCmdLogsBoundedCmd(t *testing.T) {
 			So(errr, ShouldBeNil)
 			So(reserved, ShouldNotBeNil)
 
-			// killing before Execute makes the kill land on the FIRST touch, which
-			// is what runs the kill path deterministically.
-			killed, errk := jq.Kill([]*JobEssence{{JobKey: job.Key()}})
-			So(errk, ShouldBeNil)
-			So(killed, ShouldEqual, 1)
+			// the kill is only asked for once the manager knows the command's
+			// pid, which Execute reports after starting it, so it can only reach
+			// the runner once there is a command to kill; a kill that landed
+			// before the start would bury the job without starting it, and log
+			// no child kill.
+			killed := make(chan int, 1)
+
+			go func() {
+				killed <- killOnceStarted(jq, job)
+			}()
 
 			// the kill path logs from goroutines that outlive Execute, so this
 			// capture has to be the concurrency-safe one.
 			logCtx, buf := cmdLogSyncCapture(ctx)
 			execErr := jq.Execute(logCtx, reserved, "/bin/sh")
+
+			So(<-killed, ShouldEqual, 1)
 
 			out := buf.String()
 			t.Logf("KILLLOG-MEASURED cmdLen=%d logBytes=%d errBytes=%d",
@@ -333,6 +344,28 @@ func TestReliable4KilledCmdLogsBoundedCmd(t *testing.T) {
 			So(reserved.Cmd, ShouldEqual, cmd)
 		})
 	})
+}
+
+// killOnceStarted waits, for up to cmdLogTestKillWait, until the manager has
+// the pid of job's command, then kills job, returning how many jobs were killed.
+func killOnceStarted(jq *Client, job *Job) int {
+	deadline := time.Now().Add(cmdLogTestKillWait)
+
+	for time.Now().Before(deadline) {
+		got, err := jq.GetByRepGroup(job.RepGroup, false, 0, JobStateRunning, false, false)
+		if err == nil && len(got) == 1 && got[0].Pid != 0 {
+			killed, errk := jq.Kill([]*JobEssence{{JobKey: job.Key()}})
+			if errk != nil {
+				return 0
+			}
+
+			return killed
+		}
+
+		time.Sleep(cmdLogTestTouchInterval / 10)
+	}
+
+	return 0
 }
 
 // errLen is len(err.Error()), or 0 for a nil error.
