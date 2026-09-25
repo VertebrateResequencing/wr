@@ -27,10 +27,13 @@ package jobqueue
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -42,6 +45,72 @@ import (
 // killAfterExitWait is how long the test watches for a late kill after Execute
 // has returned: many touch intervals, and more than terminateGrace.
 const killAfterExitWait = 2 * time.Second
+
+// TestSignalAfterCmdExitDoesNotBlameSignal: a signal that reaches the runner
+// after its command has exited, and been waited for, played no part in how the
+// command ended, so it must not change how the job is reported. It must still
+// make Execute return a signal error, so the runner stops as the signal asks.
+func TestSignalAfterCmdExitDoesNotBlameSignal(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+	config, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(false)
+
+	Convey("Given a live manager and a job whose command exits 3", t, func() {
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		// Execute is listening for SIGUSR1 while this runs, and the pause gives
+		// the signal time to be queued before Execute stops listening.
+		jq.afterWaitHook = func() {
+			So(syscall.Kill(os.Getpid(), syscall.SIGUSR1), ShouldBeNil)
+			time.Sleep(200 * time.Millisecond)
+		}
+
+		cwd := filepath.Join(t.TempDir(), "job")
+		So(os.MkdirAll(cwd, 0o700), ShouldBeNil)
+
+		const repGroup = "signal_after_exit"
+
+		job := &Job{
+			Cmd: "exit 3", Cwd: cwd, CwdMatters: true,
+			RepGroup: repGroup, ReqGroup: repGroup,
+			Requirements: &jqs.Requirements{RAM: 10, Time: time.Minute, Cores: 0, Other: make(map[string]string)},
+		}
+
+		added, _, err := jq.Add([]*Job{job}, os.Environ(), true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+
+		reserved, err := jq.Reserve(2 * time.Second)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		Convey("Execute reports the command's own exit, and still says it was signalled", func() {
+			execErr := jq.Execute(ctx, reserved, "/bin/sh")
+
+			var jqerr Error
+
+			So(errors.As(execErr, &jqerr), ShouldBeTrue)
+			So(strings.Contains(jqerr.Err, FailReasonSignal), ShouldBeTrue)
+
+			jobs, errg := jq.GetByRepGroup(repGroup, false, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 1)
+			So(jobs[0].FailReason, ShouldEqual, FailReasonExit)
+			So(jobs[0].Exitcode, ShouldEqual, 3)
+		})
+	})
+}
 
 // TestKillAfterCmdExitKillsNothing: a kill whose touch reply arrives after the
 // command has exited and been waited for must kill nothing. Its pid is free for
@@ -124,21 +193,30 @@ func TestKillAfterCmdExitKillsNothing(t *testing.T) {
 			// kill is made, and its touch reply comes back, after that.
 			killed := make(chan int, 1)
 
+			var touchesAtKill atomic.Int32
+
 			go func() {
-				killed <- killOnceFileExists(jq, job, waited)
+				n := killOnceFileExists(jq, job, waited)
+
+				touchesAtKill.Store(touches.Load())
+
+				killed <- n
 			}()
 
 			So(jq.Execute(ctx, reserved, "/bin/sh"), ShouldBeNil)
-			So(<-killed, ShouldEqual, 1)
 
-			touchesAfterExecute := touches.Load()
+			touchesAfterKill := touches.Load() - touchesAtKill.Load()
+
+			So(<-killed, ShouldEqual, 1)
 
 			select {
 			case <-standInDone:
 			case <-time.After(killAfterExitWait):
 			}
 
-			So(touchesAfterExecute, ShouldBeGreaterThan, 0)
+			// a touch made after the kill, while Execute was still running,
+			// is one whose reply carried the kill.
+			So(touchesAfterKill, ShouldBeGreaterThan, 0)
 			So(swept.Load(), ShouldEqual, 0)
 
 			select {

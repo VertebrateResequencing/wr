@@ -66,3 +66,38 @@
     now goes to its own `serverKillErr`, which is ordered by `killDoneCh`.
     `Execute` folds it into `killErr` after the wait. The disk branch now
     writes `killErr` under `stateMutex`, as the memory and signal branches do.
+- [x] A signal, disk or memory tick that fired after `cmd.Wait` still set
+  `signalled`, `ranoutDisk` or `killedForMem`, even though the second item made
+  `killCmd` do nothing by then. So a command that exited non-zero on its own
+  could be reported as signalled or out of disk. This predates both earlier
+  items. A clean exit (code 0) was unaffected, since it is archived whatever
+  those flags say. Found in review of the second item.
+  - Red command: `CGO_ENABLED=1 go test -tags netgo --count 1 ./jobqueue -run TestSignalAfterCmdExitDoesNotBlameSignal -v`
+    (jobqueue/kill_after_exit_test.go). A new in-package seam,
+    `Client.afterWaitHook`, runs right after `cmd.Wait`. The test uses it to
+    send the test process SIGUSR1, which Execute is listening for, and pauses
+    so the signal is queued before the checking goroutine is told to stop. The
+    command is `exit 3`. Before the fix it failed:
+    ```
+    Line 244:
+    Expected: "command exited non-zero"
+    Actual:   "runner received a signal to stop"
+    ```
+    After the fix it passed 4/4, and 2/2 under `-race` together with the other
+    kill tests.
+  - Fix: `killCmd` now reports whether it acted, and each caller sets its flag
+    only if it did. That covers the signal branch (`signalled`, and
+    `ranoutTime` with it), the disk branch (`ranoutDisk`) and the memory branch
+    (`killedForMem`). The server kill is handled the same way: `killDoneCh` now
+    carries whether the kill acted, and Execute sets `killCalled` from it, so a
+    server kill that races the exit and does nothing no longer buries the job
+    as killed.
+  - A signal that arrives after the exit still asks the runner to stop. The job
+    is reported as its command ended, but Execute's error is led by a
+    `FailReasonSignal` `Error` (`signalledAfterExitErr`), so `cmd/runner.go`'s
+    `errors.As` check still stops the runner. Before, that only happened for a
+    non-zero exit, and only because the job was misreported.
+  - Also, as a review nit on the second item, `TestKillAfterCmdExitKillsNothing`
+    now counts touches made after the kill, not after Execute returned. That
+    proves a touch whose reply carried the kill was made while Execute was still
+    running.

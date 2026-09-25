@@ -1094,6 +1094,10 @@ type Client struct {
 	// the kill would sweep up.
 	childProcessesHook func(pid int32) ([]*process.Process, error)
 
+	// afterWaitHook, if set, is called by Execute() right after it has waited
+	// for the command, so in-package tests can make something happen then.
+	afterWaitHook func()
+
 	// reserveSchedulerID is the scheduler element id (e.g. an LSF "jobid[index]")
 	// of the runner using this client, set by the runner via
 	// SetReserveSchedulerID and sent on reserve requests so the server can tell
@@ -1288,6 +1292,20 @@ func logCmdKill(ctx context.Context, job *Job, cmd *exec.Cmd, errk error) {
 	}
 
 	clog.Warn(ctx, "failed to kill cmd", "cmd", job.loggableCmd(), "pid", cmd.Process.Pid, "err", errk)
+}
+
+// signalledAfterExitErr returns myerr led by an error saying the runner was
+// signalled, for a signal that arrived after the job's command had exited. The
+// signal did not end the command, so the job is reported as the command ended,
+// but the signal error comes first so that errors.As finds it and the runner
+// stops as the signal asks.
+func signalledAfterExitErr(job *Job, myerr error) error {
+	sigErr := Error{clientOpExecute, job.Key(), FailReasonSignal}
+	if myerr == nil {
+		return sigErr
+	}
+
+	return fmt.Errorf("%w; %w", sigErr, myerr)
 }
 
 // dialClientSocket creates a req socket configured with TLS for the given
@@ -2470,10 +2488,12 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// Once the command has been waited for, its pid is free for reuse, so
 	// cmdWaited then turns every kill into a no-op, and the touch loop ignores a
 	// kill it hears about after that: the command ended of its own accord.
+	// killCmd reports whether it acted, and a kill that did not act must not
+	// change how the job is reported, whatever asked for it.
 	var (
 		stateMutex sync.Mutex
 		killCalled bool
-		killCmd    func() error
+		killCmd    func() (bool, error)
 		killErr    error
 		cmdWaited  atomic.Bool
 	)
@@ -2481,13 +2501,16 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// serverKillErr is kept apart from killErr, which the checking goroutine
 	// writes, and is written unguarded: Execute reads it only after
 	// <-killDoneCh, which orders the two, and taking stateMutex here would
-	// deadlock against Execute holding it while waiting on that channel.
+	// deadlock against Execute holding it while waiting on that channel. What
+	// killDoneCh carries is whether the kill acted.
 	var serverKillErr error
 
 	killDoneCh := make(chan bool, 1)
 	killForServer := func() {
-		serverKillErr = killCmd()
-		killDoneCh <- true
+		acted, errk := killCmd()
+		serverKillErr = errk
+
+		killDoneCh <- acted
 
 		stopChecking <- true
 	}
@@ -2697,12 +2720,12 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	stateMutex.Lock()
 	killStartedCmd := c.newKillCmd(ctx, job, cmd, dm)
-	killCmd = func() error {
+	killCmd = func() (bool, error) {
 		if cmdWaited.Load() {
-			return nil
+			return false, nil
 		}
 
-		return killStartedCmd()
+		return true, killStartedCmd()
 	}
 	killedDuringStart := killCalled
 	stateMutex.Unlock()
@@ -2780,6 +2803,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	ranoutTime := false
 	ranoutDisk := false
 	signalled := false
+	signalledAfterExit := false
 
 	var closeErr error
 
@@ -2836,18 +2860,21 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			case signal := <-sigs:
 				clog.Warn(ctx, "aborting due to signal", "sig", signal.String())
 
-				errk := killCmd()
+				acted, errk := killCmd()
 
 				stateMutex.Lock()
 				killErr = errk
 
-				if time.Now().After(endT) {
+				if acted && time.Now().After(endT) {
 					// we allow things to go over time, but if signalled, we now
 					// know it may be because we used too much time
 					ranoutTime = true
 				}
 
-				signalled = true
+				// a signal that came after the command had exited did not end
+				// it, but still asks the runner to stop.
+				signalled = acted
+				signalledAfterExit = !acted
 				stateMutex.Unlock()
 				closeReaders()
 
@@ -2858,11 +2885,11 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				if volume.NoSpaceLeft(ctx) {
 					clog.Warn(ctx, "aborting due to lack of disk space")
 
-					errk := killCmd()
+					acted, errk := killCmd()
 
 					stateMutex.Lock()
 					killErr = errk
-					ranoutDisk = true
+					ranoutDisk = acted
 					stateMutex.Unlock()
 					closeReaders()
 
@@ -2890,8 +2917,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 						machineRAM = ensureMachineRAM(machineRAM)
 
 						if c.peakMemNeedsKill(peakmem, machineRAM) {
-							killErr = killCmd()
-							killedForMem = true
+							killedForMem, killErr = killCmd()
 							stateMutex.Unlock()
 
 							break CHECKING
@@ -2926,6 +2952,11 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	err = cmd.Wait()
 
 	cmdWaited.Store(true)
+
+	if c.afterWaitHook != nil {
+		c.afterWaitHook()
+	}
+
 	resourceTicker.Stop()
 
 	stopChecking <- true
@@ -2940,7 +2971,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	endTime := time.Now()
 
 	if killCalled {
-		<-killDoneCh
+		killCalled = <-killDoneCh
 
 		if killErr == nil {
 			killErr = serverKillErr
@@ -3129,6 +3160,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		} else {
 			myerr = Error{clientOpExecute, job.Key(), ErrStopReserving}
 		}
+	}
+
+	if signalledAfterExit {
+		myerr = signalledAfterExitErr(job, myerr)
 	}
 
 	return myerr
