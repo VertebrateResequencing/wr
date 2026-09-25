@@ -6920,8 +6920,27 @@ func TestJobqueueModify(t *testing.T) {
 			job = reserve(learnedRgroup, cmd)
 			So(jq.Started(job, 1), ShouldBeNil)
 
+			item, err := server.q.Get(job.Key())
+			So(err, ShouldBeNil)
+
+			running, ok := item.Data().(*Job)
+			So(ok, ShouldBeTrue)
+
+			running.RLock()
+			end := running.StartTime.Add(running.Requirements.Time).Truncate(time.Second)
+			running.RUnlock()
+
+			// ETC is in whole seconds relative to the stats call's own clock
+			// read, so a second boundary between Started and the call lowers
+			// it; bracket that read to allow for the boundary.
+			before := time.Now()
 			stats = server.GetServerStats()
-			So(stats.ETC, ShouldEqual, job.Requirements.Time)
+			after := time.Now()
+
+			So(stats.ETC, ShouldBeIn, []time.Duration{
+				end.Sub(before.Truncate(time.Second)),
+				end.Sub(after.Truncate(time.Second)),
+			})
 		})
 
 		Convey("You can modify the retries and noretries of a job", func() {
