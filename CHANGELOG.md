@@ -85,6 +85,19 @@ project adheres to [Semantic Versioning](http://semver.org/).
   still getting ready to run a command, such as mounting its file systems, now
   stops it being started at all: its failure behaviours run and it is buried as
   killed, just as a running command that you kill is.
+- Killing a command could signal processes that had nothing to do with it. If
+  `wr kill` reached the runner after the command had already exited, the
+  runner could still kill whatever process had since been given the command's
+  pid, and that process's children. Separately, when it killed a command's
+  child processes, it sent each one a final SIGKILL half a second later, even
+  if that child had already exited and its pid had gone to another process.
+  wr now does nothing to a command that has exited, and only sends that final
+  SIGKILL to a child that is still the same process.
+- A command that exited with a non-zero code on its own could be reported as
+  killed by a signal, or as having run out of disk space, if the runner
+  received a signal, or found the disk full, just as the command exited. It is
+  now reported with its own exit code. A signal that arrives then still makes
+  the runner stop, as it should.
 - A `wr` command or runner no longer hangs forever connecting to a manager that
   accepts connections but doesn't respond, as a frozen manager does (its
   machine still accepts connections for it). The attempt now gives up after the
