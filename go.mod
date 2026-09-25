@@ -2,6 +2,8 @@ module github.com/VertebrateResequencing/wr
 
 go 1.26.3
 
+toolchain go1.27.1
+
 require (
 	code.cloudfoundry.org/bytefmt v0.77.0
 	github.com/VertebrateResequencing/muxfys/v5 v5.1.0
