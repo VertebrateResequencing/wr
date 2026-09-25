@@ -46,6 +46,10 @@ import (
 // has returned: many touch intervals, and more than terminateGrace.
 const killAfterExitWait = 2 * time.Second
 
+// killAfterExitTouches is how many touches TestKillAfterCmdExitKeepsTouching
+// needs to see after its kill: more than the one whose reply carries the kill.
+const killAfterExitTouches = 3
+
 // TestSignalAfterCmdExitDoesNotBlameSignal: a signal that reaches the runner
 // after its command has exited, and been waited for, played no part in how the
 // command ended, so it must not change how the job is reported. It must still
@@ -230,6 +234,81 @@ func TestKillAfterCmdExitKillsNothing(t *testing.T) {
 	})
 }
 
+// TestKillAfterCmdExitKeepsTouching: a kill whose touch reply arrives while
+// Execute is doing its post-exit work (behaviours, unmount, upload, reporting)
+// must not stop the touch loop, which has to keep touching, and keep handling
+// stopTouching, until Execute is done.
+func TestKillAfterCmdExitKeepsTouching(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+	config, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(false)
+	serverConfig.Timings.TouchInterval = 50 * time.Millisecond
+
+	Convey("Given a live manager and a job whose exit behaviour waits to be released", t, func() {
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		var touches atomic.Int32
+
+		jq.liveTouchHook = func(*JobEndState) { touches.Add(1) }
+
+		cwd := filepath.Join(t.TempDir(), "job")
+		So(os.MkdirAll(cwd, 0o700), ShouldBeNil)
+
+		dir := t.TempDir()
+		waited := filepath.Join(dir, "waited")
+		release := filepath.Join(dir, "release")
+
+		const repGroup = "kill_after_exit_touching"
+
+		job := &Job{
+			Cmd: "exit 0", Cwd: cwd, CwdMatters: true,
+			RepGroup: repGroup, ReqGroup: repGroup,
+			Requirements: &jqs.Requirements{RAM: 10, Time: time.Minute, Cores: 0, Other: make(map[string]string)},
+			Behaviours: Behaviours{{
+				When: OnExit, Do: Run,
+				Arg: "touch " + waited + "; for i in $(seq 200); do [ -e " + release +
+					" ] && break; sleep 0.05; done",
+			}},
+		}
+
+		added, _, err := jq.Add([]*Job{job}, os.Environ(), true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+
+		reserved, err := jq.Reserve(2 * time.Second)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		Convey("Touches keep flowing after the kill, while the behaviour is held", func() {
+			kept := make(chan bool, 1)
+
+			go func() {
+				killed := killOnceFileExists(jq, job, waited)
+				kept <- killed == 1 && touchesRise(&touches, killAfterExitTouches, killAfterExitWait)
+
+				f, errc := os.Create(release)
+				if errc == nil {
+					f.Close()
+				}
+			}()
+
+			So(jq.Execute(ctx, reserved, "/bin/sh"), ShouldBeNil)
+			So(<-kept, ShouldBeTrue)
+		})
+	})
+}
+
 // killOnceFileExists waits, for up to killAfterExitWait, until path exists,
 // then kills job, returning how many jobs were killed.
 func killOnceFileExists(jq *Client, job *Job, path string) int {
@@ -249,4 +328,20 @@ func killOnceFileExists(jq *Client, job *Job, path string) int {
 	}
 
 	return 0
+}
+
+// touchesRise reports whether touches rises by at least n within wait.
+func touchesRise(touches *atomic.Int32, n int32, wait time.Duration) bool {
+	from := touches.Load()
+	deadline := time.Now().Add(wait)
+
+	for time.Now().Before(deadline) {
+		if touches.Load()-from >= n {
+			return true
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	return false
 }

@@ -124,3 +124,33 @@
     `kill failed` was expected. After the fix it passes.
   - Fix: when the next step's error is nil, `chainKillErr` returns `errk`
     unchanged.
+- [x] Copilot on PR #614 (client.go:~2533), and the gap left open in the second
+  item: when a kill reply arrived after `cmd.Wait`, the touch loop took
+  `stateMutex` before it checked `cmdWaited`. Execute holds `stateMutex` for
+  all of its post-exit work, so the touch goroutine blocked there. It stopped
+  touching, and stopped handling `stopTouching`, through behaviours,
+  unmounting, uploading and reporting. During a long upload, that could let
+  the reservation's TTR run out. The blocking predates the second item: the old
+  `whenKilledByServer` handler took `stateMutex` too.
+  - Red: `TestKillAfterCmdExitKeepsTouching` in
+    jobqueue/kill_after_exit_test.go. The job's OnExit behaviour touches a
+    marker, then waits until the test creates a release file. The test kills
+    the job once the marker exists, and before releasing the behaviour it
+    requires 3 more touches within 2s. Before the fix it failed at `Line 324`
+    (`Expected: true`, `Actual: false`): only the touch whose reply carried the
+    kill was made. After the fix it passes in 0.39s.
+  - Fix: a new `killMu` guards `killCalled` and `killCmd`, and `cmdWaited` is
+    set under it, so the touch loop's decision to kill is ordered with the wait
+    without a separate check before locking. `killMu` is never held across
+    anything that blocks, or while taking `stateMutex`, so the touch loop never
+    waits on `stateMutex`.
+  - Lock order: the only nesting is Execute briefly taking `killMu` while it
+    holds `stateMutex`. The memory branch calls `killCmd` while holding
+    `stateMutex`, but the installed `killCmd` only reads the atomic
+    `cmdWaited`, and `killForServer` takes no locks, so neither can deadlock.
+    Execute reads `killCalled` into `serverKillCalled` under `killMu` when it
+    sets `cmdWaited`, and nothing can set `killCalled` after that.
+  - Still true, and unchanged: once a job is killed, the manager's touch
+    handler replies with the kill and does not refresh the TTR. So touches
+    after a kill keep the loop responsive, but they do not extend the
+    reservation.

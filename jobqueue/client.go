@@ -2494,8 +2494,16 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// kill it hears about after that: the command ended of its own accord.
 	// killCmd reports whether it acted, and a kill that did not act must not
 	// change how the job is reported, whatever asked for it.
+	//
+	// killMu guards killCalled and killCmd, and cmdWaited is set under it, so
+	// that the touch loop's decision to kill is ordered with the wait. It is
+	// never held across anything that blocks, or while taking stateMutex, which
+	// Execute holds for all of its post-exit work: the touch loop must never
+	// wait on stateMutex, or it would stop touching, and stop handling
+	// stopTouching, for as long as behaviours, unmounting and uploading take.
 	var (
 		stateMutex sync.Mutex
+		killMu     sync.Mutex
 		killCalled bool
 		killCmd    func() (bool, error)
 		killErr    error
@@ -2525,10 +2533,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			case <-touchTicker.C:
 				kc, errf := c.touch(job, liveState.snapshot())
 				if kc {
-					stateMutex.Lock()
+					killMu.Lock()
 
 					if cmdWaited.Load() {
-						stateMutex.Unlock()
+						killMu.Unlock()
 
 						continue
 					}
@@ -2536,7 +2544,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 					first := !killCalled
 					killCalled = true
 					started := killCmd != nil
-					stateMutex.Unlock()
+					killMu.Unlock()
 
 					if !first {
 						continue
@@ -2697,9 +2705,9 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGUSR1, syscall.SIGUSR2)
 	defer signal.Stop(sigs)
 
-	stateMutex.Lock()
+	killMu.Lock()
 	killedBeforeStart := killCalled
-	stateMutex.Unlock()
+	killMu.Unlock()
 
 	if killedBeforeStart {
 		stopTouching <- true
@@ -2722,7 +2730,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// and the normal exit path both trigger the job's behaviours.
 	cmdStarted = true
 
-	stateMutex.Lock()
+	killMu.Lock()
 	killStartedCmd := c.newKillCmd(ctx, job, cmd, dm)
 	killCmd = func() (bool, error) {
 		if cmdWaited.Load() {
@@ -2732,7 +2740,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		return true, killStartedCmd()
 	}
 	killedDuringStart := killCalled
-	stateMutex.Unlock()
+	killMu.Unlock()
 
 	if killedDuringStart {
 		killForServer()
@@ -2955,7 +2963,12 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	errsow := <-stdoutWait
 	err = cmd.Wait()
 
+	killMu.Lock()
 	cmdWaited.Store(true)
+
+	serverKillCalled := killCalled
+
+	killMu.Unlock()
 
 	if c.afterWaitHook != nil {
 		c.afterWaitHook()
@@ -2974,8 +2987,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	endTime := time.Now()
 
-	if killCalled {
-		killCalled = <-killDoneCh
+	if serverKillCalled {
+		serverKillCalled = <-killDoneCh
 
 		if killErr == nil {
 			killErr = serverKillErr
@@ -3118,7 +3131,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		exceededMemEstimate: exceededMemEstimate,
 		flags: execRunFlags{
 			ranoutDisk: ranoutDisk, signalled: signalled, ranoutTime: ranoutTime,
-			killCalled: killCalled, killedForMem: killedForMem,
+			killCalled: serverKillCalled, killedForMem: killedForMem,
 		},
 	})
 
