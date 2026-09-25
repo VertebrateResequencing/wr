@@ -62,6 +62,7 @@ import (
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	_ "github.com/VertebrateResequencing/wr/internal/mangostlstcp" // register race-clean tls+tcp transport
+	"github.com/VertebrateResequencing/wr/internal/publishexit"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -120,8 +121,8 @@ const (
 	// enough to hold a SIGINT and a SIGTERM.
 	signalChanBuffer = 2
 
-	// serverListenWait is how long the web interface waits for ListenAndServe()
-	// to start listening before declaring itself ready.
+	// serverListenWait is how long the web interface waits for ServeTLS() to
+	// start serving before declaring itself ready.
 	serverListenWait = 10 * time.Millisecond
 
 	// serverBindRetryInterval and serverBindRetryBudget are how often, and for
@@ -314,16 +315,6 @@ var recoveryHeartbeatInterval = time.Minute
 // profiling the manager. It is unset by default, in which case no endpoint is
 // started and there is no profiling overhead.
 const envPprofAddr = "WR_PPROF_ADDR"
-
-// publishExit is how publication ends the process when it cannot make the
-// server reachable: the token file could not be written, or the RPC port could
-// not be bound within the retry budget (spec E1). An invisible manager holding
-// the database lock is worse than a dead one. It is a var so a test can observe
-// the exit instead of ending the test binary, in the style of
-// recoveryPauseHookForTest.
-//
-//nolint:gochecknoglobals // deliberate test seam, mirroring recoveryPauseHookForTest
-var publishExit = os.Exit
 
 // recoveryPauseHookForTest, if non-nil, is copied into each new Server's
 // recoveryPauseHook during Serve so a test can install a hook that blocks
@@ -1371,7 +1362,10 @@ type Server struct {
 	// readers, so shutdown inside the startup window does not wait
 	// ServerShutdownWaitTime for a clientHandlingDone that nothing will ever
 	// close (spec E3). Guarded by ssmutex.
-	readersStarted     bool
+	readersStarted bool
+	// boundPorts are the ports publication actually bound, the only ones
+	// shutdown waits to see closed. Guarded by ssmutex.
+	boundPorts         []string
 	racChecking        bool
 	killRunners        bool
 	subsClosed         bool // shutdown swept the subscriptions; see storeClientSubscription
@@ -1798,6 +1792,23 @@ func (s *Server) noteReadersStarted() {
 	s.readersStarted = true
 }
 
+// noteBound records that publication bound port, so shutdown waits for it to
+// close.
+func (s *Server) noteBound(port string) {
+	s.ssmutex.Lock()
+	defer s.ssmutex.Unlock()
+
+	s.boundPorts = append(s.boundPorts, port)
+}
+
+// portsBound returns the ports publication bound.
+func (s *Server) portsBound() []string {
+	s.ssmutex.RLock()
+	defer s.ssmutex.RUnlock()
+
+	return slices.Clone(s.boundPorts)
+}
+
 // clientHandlingStarted reports whether publication got as far as starting the
 // RPC readers.
 func (s *Server) clientHandlingStarted() bool {
@@ -1828,7 +1839,7 @@ func (s *Server) clientHandlingStarted() bool {
 //
 // An invisible manager holding the database lock is worse than a dead one, so a
 // token write failure, or a port bind still failing after the retry budget,
-// exits the process through publishExit. Publication returns immediately after
+// exits the process through publishexit.Exit. Publication returns immediately after
 // that call: with the real os.Exit the difference is unobservable, but a test
 // double returns, and none of the steps after the bind may run against an
 // unbound socket.
@@ -1859,23 +1870,25 @@ func (s *Server) publishServingSurface(bgCtx, ctx context.Context, config Server
 
 // persistTokenAndListen writes the token file and binds the RPC listener,
 // reporting whether both succeeded. On failure it exits the process through
-// publishExit: an invisible manager holding the database lock is worse than a
+// publishexit.Exit: an invisible manager holding the database lock is worse than a
 // dead one. The token write is not retried, because unlike the bind its failure
 // is not port contention.
 func (s *Server) persistTokenAndListen(ctx context.Context, config ServerConfig) bool {
 	if err := persistToken(config.TokenFile, s.token); err != nil {
 		clog.Error(ctx, "could not write the token file, so exiting", "path", config.TokenFile, "err", err)
-		publishExit(1)
+		publishexit.Exit(1)
 
 		return false
 	}
 
 	if err := s.listenWithRetries(ctx, config.Port); err != nil {
 		clog.Error(ctx, "could not listen on the manager port, so exiting", "port", config.Port, "err", err)
-		publishExit(1)
+		publishexit.Exit(1)
 
 		return false
 	}
+
+	s.noteBound(config.Port)
 
 	return true
 }
@@ -1887,7 +1900,7 @@ func (s *Server) persistTokenAndListen(ctx context.Context, config ServerConfig)
 // Its waitgroup key is registered here, immediately before its go, rather than
 // in Serve: a key issued in Serve would be outstanding on every run where
 // publication does not happen (a shutdown inside the startup window, or the
-// publishExit path), and shutdown's s.wg.Wait would then never return.
+// publishexit.Exit path), and shutdown's s.wg.Wait would then never return.
 func (s *Server) startWebInterface(ctx context.Context, config ServerConfig) {
 	ready := make(chan bool)
 	wgk := s.wg.Add(1)
@@ -1907,7 +1920,7 @@ func (s *Server) startWebInterface(ctx context.Context, config ServerConfig) {
 // really does re-bind ports a just-stopped server has not finished releasing
 // (reliable4_dependency_tx_test.go:551-554, and each reliable2_dbcompat_test.go
 // test binds the ports the previous one held), so without this a whole go test
-// binary would be taken down by publishExit.
+// binary would be taken down by publishexit.Exit.
 func (s *Server) listenWithRetries(ctx context.Context, port string) error {
 	err := listenTLS(s.sock, s.tlsConfig, port)
 	if err == nil {
@@ -4181,7 +4194,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 // serveWebInterface runs the server's HTTP web interface and REST API, starts
 // the status broadcasters, and registers the scheduler callbacks, signalling
-// ready once ListenAndServe has had time to start.
+// ready once ServeTLS has had time to start.
 //
 // Publication calls it, so it runs only once prior-state recovery has ended
 // (spec E1). Scheduler messages and bad-server updates raised before then are
@@ -4198,8 +4211,17 @@ func (s *Server) serveWebInterface(ctx context.Context, config ServerConfig, htt
 
 	srv := &http.Server{Addr: httpAddr, Handler: s.newWebMux(ctx), ReadHeaderTimeout: httpReadHeaderTimeout}
 
-	wgk2 := wg.Add(1)
-	go s.runHTTPServer(ctx, srv, certFile, keyFile, wg, wgk2)
+	// bound here rather than by ListenAndServeTLS, so shutdown only waits on the
+	// web port if this server really holds it.
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", httpAddr)
+	if err != nil {
+		clog.Error(ctx, "server web interface had problems", "err", err)
+	} else {
+		s.noteBound(config.WebPort)
+
+		wgk2 := wg.Add(1)
+		go s.runHTTPServer(ctx, srv, listener, certFile, keyFile, wg, wgk2)
+	}
 
 	s.httpServer = srv
 
@@ -4211,7 +4233,7 @@ func (s *Server) serveWebInterface(ctx context.Context, config ServerConfig, htt
 
 	s.scheduler.SetMessageCallBack(ctx, s.recordSchedulerMessage)
 
-	// wait a while for ListenAndServe() to start listening
+	// wait a while for ServeTLS() to start serving
 	<-time.After(serverListenWait)
 
 	ready <- true
@@ -4219,12 +4241,16 @@ func (s *Server) serveWebInterface(ctx context.Context, config ServerConfig, htt
 
 // runHTTPServer serves the web interface over TLS until the server is shut
 // down, logging any unexpected error.
-func (s *Server) runHTTPServer(ctx context.Context, srv *http.Server, certFile, keyFile string,
-	wg *waitgroup.WaitGroup, wgk string) {
+func (s *Server) runHTTPServer(ctx context.Context, srv *http.Server, listener net.Listener, certFile,
+	keyFile string, wg *waitgroup.WaitGroup, wgk string) {
 	defer internal.LogPanic(ctx, "jobqueue web server listenAndServe", true)
 	defer wg.Done(wgk)
 
-	errs := srv.ListenAndServeTLS(certFile, keyFile)
+	// ServeTLS leaves the listener open if it fails before serving, such as on
+	// a bad certificate.
+	defer func() { _ = listener.Close() }()
+
+	errs := srv.ServeTLS(listener, certFile, keyFile)
 	if errs != nil && !errors.Is(errs, http.ErrServerClosed) {
 		clog.Error(ctx, "server web interface had problems", "err", errs)
 	}
@@ -7727,24 +7753,22 @@ func (s *Server) shutdownHTTPServer(ctx context.Context) {
 	}
 }
 
-// waitForPortsClosed blocks until both the command and web ports are no longer
-// being listened to (which is the best proxy we have for them being free).
-// portStillListening closes any open connection as a side effect.
+// waitForPortsClosed blocks until the command and web ports this server bound
+// are no longer being listened to (which is the best proxy we have for them
+// being free). portStillListening closes any open connection as a side effect.
 //
-// Since publication moved the binds past Serve's return (spec E1), the manager
-// may never have bound these ports: they come from the config in the Server
-// literal, not from the bind. Inside the startup window that is benign - nothing
-// is listening, both dials fail, and this returns on its first iteration - which
-// is why no production change is needed. It bites only when something ELSE holds
-// one of them, because this loop has neither a deadline nor a context check, and
-// that is why E1 acceptance test 5 closes its own listener before stopping the
-// server.
+// Since publication moved the binds past Serve's return (spec E1), a manager
+// stopped inside the startup window, or whose publication could not bind, holds
+// neither port. It must not wait on them then: something else may be listening
+// there, and this loop has neither a deadline nor a context check, so it would
+// never return.
 func (s *Server) waitForPortsClosed(ctx context.Context) {
+	ports := s.portsBound()
+
 	for {
-		stillUp := s.portStillListening(ctx, s.ServerInfo.Port)
-		if !stillUp {
-			stillUp = s.portStillListening(ctx, s.ServerInfo.WebPort)
-		}
+		stillUp := slices.ContainsFunc(ports, func(port string) bool {
+			return s.portStillListening(ctx, port)
+		})
 
 		if !stillUp {
 			return

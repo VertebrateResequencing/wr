@@ -317,7 +317,7 @@ func withQueueCommandTestServer(t *testing.T, run func(*jobqueue.Client, *jqs.Re
 	}()
 	defer server.Stop(ctx, true)
 
-	jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+	jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
 
 	So(err, ShouldBeNil)
 	defer func() {
@@ -332,25 +332,9 @@ func startQueueCommandTestServer(ctx context.Context, t *testing.T) (
 ) {
 	t.Helper()
 
-	for attempt := range 20 {
-		testConfig, serverConfig, addr, reqs := statusTestServerConfig(t)
+	return startTestServer(ctx, t, func(serverConfig *jobqueue.ServerConfig) {
 		serverConfig.Timings.ReleaseDelayMin = queueCommandDelay
-
-		server, _, token, err := jobqueue.Serve(ctx, serverConfig)
-		if err == nil {
-			waitForTestServerServing(t, server)
-
-			return testConfig, serverConfig, addr, reqs, server, token
-		}
-
-		if attempt == 19 || !strings.Contains(err.Error(), "address already in use") {
-			So(err, ShouldBeNil)
-		}
-
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	panic("unreachable")
+	})
 }
 
 func newQueueCommandJob(cmd, repGroup string, reqs *jqs.Requirements) *jobqueue.Job {

@@ -35,6 +35,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -47,6 +48,55 @@ import (
 var errTimedOutWaitingForServeTokenRead = errors.New("timed out waiting for Serve to read the initial token")
 
 var errTimedOutWaitingForServeTokenWrite = errors.New("timed out waiting for Serve to write the startup token")
+
+const recoveryWaitTimeout = 10 * time.Second
+
+// TestServeFailsCleanlyWhenPortTaken covers the window between isolateTestConfig
+// picking a manager port and the server binding it after recovery: if another
+// process takes the port in that window, the serve helper must return an error
+// for the test to fail on, not let publication exit the whole test binary.
+func TestServeFailsCleanlyWhenPortTaken(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("serve returns errServePublishGaveUp if the manager port is taken before the bind", t, func() {
+		var squatter net.Listener
+
+		defer func() {
+			if squatter != nil {
+				So(squatter.Close(), ShouldBeNil)
+			}
+		}()
+
+		originalPick := pickTestPort
+
+		defer func() { pickTestPort = originalPick }()
+
+		pickTestPort = func() (int, error) {
+			port, err := originalPick()
+			if err != nil || squatter != nil {
+				return port, err
+			}
+
+			squatter, err = (&net.ListenConfig{}).Listen(ctx, "tcp", "0.0.0.0:"+strconv.Itoa(port))
+
+			return port, err
+		}
+
+		_, serverConfig, _, _, _ := jobqueueTestInit(true)
+
+		server, _, _, err := serve(ctx, serverConfig)
+		if server != nil {
+			defer server.Stop(ctx, true)
+		}
+
+		So(squatter, ShouldNotBeNil)
+		So(errors.Is(err, errServePublishGaveUp), ShouldBeTrue)
+	})
+}
 
 type serveStartupResult struct {
 	server *Server
@@ -375,8 +425,6 @@ type fifoReadResult struct {
 	payload []byte
 	err     error
 }
-
-const recoveryWaitTimeout = 10 * time.Second
 
 // waitUntilRecovered blocks until the server stops recovering or
 // recoveryWaitTimeout elapses, returning whether recovery finished in time.

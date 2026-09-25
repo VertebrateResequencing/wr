@@ -60,6 +60,13 @@ const (
 	// while still failing a genuinely history-scaling startup.
 	c2HistoryScaleLimit = 4
 
+	// c2HistoryScaleSlack is how far the large-history startup may exceed the
+	// small one whatever the ratio. Non-scanning startups take a few ms, so on a
+	// busy runner a few ms of noise alone can break the ratio. A scan of the
+	// larger history costs far more than this: decoding it takes over a second,
+	// and even walking its keys without decoding adds tens of ms.
+	c2HistoryScaleSlack = 30 * time.Millisecond
+
 	// c2AbsoluteStartupLimit is the "within a few seconds" absolute bound: even
 	// the large-history startup must be responsive.
 	c2AbsoluteStartupLimit = 5 * time.Second
@@ -109,7 +116,7 @@ func TestReliable2FastStartupNoHistoryScan(t *testing.T) {
 		// C2 acceptance test: no scaling with history size, and an absolute
 		// responsiveness bound. Wait for the background recovery to finish so the
 		// large-history startup is fully settled before the assertions.
-		So(largeElapsed, ShouldBeLessThan, c2HistoryScaleLimit*smallElapsed)
+		So(c2StartupScalesWithHistory(smallElapsed, largeElapsed), ShouldBeFalse)
 		So(largeElapsed, ShouldBeLessThan, c2AbsoluteStartupLimit)
 		So(waitUntilRecovered(largeServer), ShouldBeTrue)
 	})
@@ -214,6 +221,13 @@ func prepareCompletedHistory(ctx context.Context, t *testing.T, config ServerCon
 	})
 	So(err, ShouldBeNil)
 	So(testDB.close(ctx), ShouldBeNil)
+}
+
+// c2StartupScalesWithHistory reports whether the large-history startup took so
+// much longer than the small one that startup must be scanning history: over
+// c2HistoryScaleLimit times as long, and more than c2HistoryScaleSlack longer.
+func c2StartupScalesWithHistory(smallElapsed, largeElapsed time.Duration) bool {
+	return largeElapsed >= max(c2HistoryScaleLimit*smallElapsed, smallElapsed+c2HistoryScaleSlack)
 }
 
 // TestReliable2CLIStatusCountStaysAScan covers the D2 acceptance test: after a

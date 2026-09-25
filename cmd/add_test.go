@@ -698,14 +698,14 @@ func TestAddCommandDependenciesDoNotWarnForMissingTargets(t *testing.T) {
 
 		config = testConfig
 		caFile = testConfig.ManagerCAFile
-		timeoutint = 2
+		timeoutint = testConnectTimeoutSeconds
 		cmdRepGroup = "cmd-missing"
 		cmdCmdDeps = "echo missing,"
 
 		stderr := runAddForTest(t)
 		So(stderr, ShouldNotContainSubstring, "has not been seen")
 
-		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
 
 		So(err, ShouldBeNil)
 		defer func() {
@@ -745,7 +745,7 @@ func TestAddWarnsForNeverSeenDepGroups(t *testing.T) {
 
 		config = testConfig
 		caFile = testConfig.ManagerCAFile
-		timeoutint = 2
+		timeoutint = testConnectTimeoutSeconds
 		cmdRepGroup = "add-warning"
 		cmdGroupDeps = testFutureDepGroup
 
@@ -753,7 +753,7 @@ func TestAddWarnsForNeverSeenDepGroups(t *testing.T) {
 		So(strings.Count(stderr, futureDepGroupWarningLine), ShouldEqual, 1)
 		So(stdout, ShouldContainSubstring, "Added 1 new commands (0 were duplicates) to the queue")
 
-		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
 
 		So(err, ShouldBeNil)
 		defer func() {
@@ -779,7 +779,7 @@ func TestAddWarnsForNeverSeenDepGroups(t *testing.T) {
 
 		config = testConfig
 		caFile = testConfig.ManagerCAFile
-		timeoutint = 2
+		timeoutint = testConnectTimeoutSeconds
 		cmdRepGroup = "add-warning-simple"
 		cmdGroupDeps = testFutureDepGroup
 		simpleOutput = true
@@ -798,7 +798,7 @@ func TestAddDoesNotWarnForSeenDepGroups(t *testing.T) {
 		testConfig, serverConfig, addr, reqs, server, token := startStatusTestServer(ctx, t)
 		defer server.Stop(ctx, true)
 
-		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
 
 		So(err, ShouldBeNil)
 		defer func() {
@@ -838,7 +838,7 @@ func TestAddDoesNotWarnForSeenDepGroups(t *testing.T) {
 
 		config = testConfig
 		caFile = testConfig.ManagerCAFile
-		timeoutint = 2
+		timeoutint = testConnectTimeoutSeconds
 		cmdRepGroup = "seen-dependent"
 		cmdGroupDeps = "done"
 
@@ -863,7 +863,7 @@ func TestAddPrintsDuplicateBreakdown(t *testing.T) {
 
 		config = testConfig
 		caFile = testConfig.ManagerCAFile
-		timeoutint = 2
+		timeoutint = testConnectTimeoutSeconds
 		cmdCwd = jobCwd
 		cmdRepGroup = dupBreakdownRepGroup
 
@@ -940,7 +940,7 @@ func TestAddPrintsDuplicateBreakdown(t *testing.T) {
 
 		config = testConfig
 		caFile = testConfig.ManagerCAFile
-		timeoutint = 2
+		timeoutint = testConnectTimeoutSeconds
 		cmdCwd = t.TempDir()
 		cmdRepGroup = dupBreakdownNewRepGroup
 
@@ -976,7 +976,7 @@ func TestAddPrintsDuplicateBreakdown(t *testing.T) {
 
 		config = testConfig
 		caFile = testConfig.ManagerCAFile
-		timeoutint = 2
+		timeoutint = testConnectTimeoutSeconds
 		cmdCwd = t.TempDir()
 		cmdRepGroup = dupBreakdownNewRepGroup
 
@@ -1036,7 +1036,7 @@ func TestAddPrintsDuplicateBreakdown(t *testing.T) {
 
 		config = testConfig
 		caFile = testConfig.ManagerCAFile
-		timeoutint = 2
+		timeoutint = testConnectTimeoutSeconds
 		cmdCwd = t.TempDir()
 		cmdRepGroup = dupBreakdownRepGroup
 		cmdGroupDeps = testFutureDepGroup
@@ -1338,7 +1338,7 @@ func runAddCaptureForTest(t *testing.T) (string, string) {
 func completeTestJobs(ctx context.Context, testConfig *internal.Config,
 	serverConfig jobqueue.ServerConfig, addr string, token []byte, count int,
 ) {
-	jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+	jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
 	So(err, ShouldBeNil)
 
 	defer func() {
