@@ -87,8 +87,11 @@ const managerDirOtherWritePerms = 0o022
 
 // uploadDirOtherPerms are every permission bit a user other than the owner has
 // on a directory. Clearing them repairs an old upload tree to the 0700 that
-// jobqueue now makes new upload directories with.
-const uploadDirOtherPerms = os.ModePerm &^ managerDirPerm
+// jobqueue's ownerOnlyDir makes new upload directories with. It is written out
+// rather than derived from managerDirPerm, so that loosening the working
+// directory's mode cannot quietly loosen the upload tree's too; ownerOnlyDir
+// itself is unexported.
+const uploadDirOtherPerms = 0o077
 
 // uploadHashedLevels is how many single-character directory levels
 // jobqueue's calculateHashedDir puts below the upload directory:
