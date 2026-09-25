@@ -204,7 +204,8 @@ func TestDepGranularityStartupSidecarNamesTheRealPhase(t *testing.T) {
 
 // TestDepGranularityStartupStopIgnoresForeignPort: a manager stopped while
 // still recovering never bound its ports, so shutdown must not wait for a port
-// that another process holds to close. It used to wait forever.
+// that another process holds to close, whether that is the manager port or the
+// web port. It used to wait forever.
 func TestDepGranularityStartupStopIgnoresForeignPort(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -213,56 +214,11 @@ func TestDepGranularityStartupStopIgnoresForeignPort(t *testing.T) {
 	ctx := context.Background()
 
 	Convey("Stopping a recovering server returns even if another process holds its manager port", t, func() {
-		_, serverConfig, _, _, _ := jobqueueTestInit(true)
+		dgsStopWithForeignListener(ctx, func(config ServerConfig) string { return config.Port })
+	})
 
-		var listenConfig net.ListenConfig
-
-		listener, err := listenConfig.Listen(ctx, "tcp", "0.0.0.0:"+serverConfig.Port)
-		So(err, ShouldBeNil)
-
-		// accept like a real server would: a listener that never accepts fills
-		// its backlog, and dials to it then time out as if it were closed.
-		go func() {
-			for {
-				conn, erra := listener.Accept()
-				if erra != nil {
-					return
-				}
-
-				_ = conn.Close()
-			}
-		}()
-
-		defer publishexit.Set(func(int) {})()
-
-		server, _, release := pausedRecoveringFixtureServer(ctx, serverConfig)
-
-		defer release()
-
-		stopped := make(chan struct{})
-
-		go func() {
-			server.Stop(ctx, true)
-			close(stopped)
-		}()
-
-		// Serving() closes as shutdown begins, just before it cancels recovery,
-		// so releasing now lets recovery end without publishing.
-		<-server.Serving()
-		release()
-
-		var returned bool
-
-		select {
-		case <-stopped:
-			returned = true
-		case <-time.After(dgsStopWait):
-		}
-
-		So(listener.Close(), ShouldBeNil)
-		<-stopped
-
-		So(returned, ShouldBeTrue)
+	Convey("Stopping a recovering server returns even if another process holds its web port", t, func() {
+		dgsStopWithForeignListener(ctx, func(config ServerConfig) string { return config.WebPort })
 	})
 }
 
@@ -446,6 +402,62 @@ func dgsCleanup(ctx context.Context, server *Server, release func()) func() {
 		release()
 		server.Stop(ctx, true)
 	}
+}
+
+// dgsStopWithForeignListener has another listener, one that accepts connections,
+// hold the port that port picks from a recovering server's config, then asserts
+// that stopping the server before it publishes returns.
+func dgsStopWithForeignListener(ctx context.Context, port func(ServerConfig) string) {
+	_, serverConfig, _, _, _ := jobqueueTestInit(true) //nolint:dogsled
+
+	var listenConfig net.ListenConfig
+
+	listener, err := listenConfig.Listen(ctx, "tcp", "0.0.0.0:"+port(serverConfig))
+	So(err, ShouldBeNil)
+
+	// accept like a real server would: a listener that never accepts fills
+	// its backlog, and dials to it then time out as if it were closed.
+	go func() {
+		for {
+			conn, erra := listener.Accept()
+			if erra != nil {
+				return
+			}
+
+			_ = conn.Close()
+		}
+	}()
+
+	defer publishexit.Set(func(int) {})()
+
+	server, _, release := pausedRecoveringFixtureServer(ctx, serverConfig)
+
+	defer release()
+
+	stopped := make(chan struct{})
+
+	go func() {
+		server.Stop(ctx, true)
+		close(stopped)
+	}()
+
+	// Serving() closes as shutdown begins, just before it cancels recovery,
+	// so releasing now lets recovery end without publishing.
+	<-server.Serving()
+	release()
+
+	var returned bool
+
+	select {
+	case <-stopped:
+		returned = true
+	case <-time.After(dgsStopWait):
+	}
+
+	So(listener.Close(), ShouldBeNil)
+	<-stopped
+
+	So(returned, ShouldBeTrue)
 }
 
 // TestDepGranularityStartupWindowIsInvisible covers E1 acceptance test 1: while

@@ -121,8 +121,8 @@ const (
 	// enough to hold a SIGINT and a SIGTERM.
 	signalChanBuffer = 2
 
-	// serverListenWait is how long the web interface waits for ListenAndServe()
-	// to start listening before declaring itself ready.
+	// serverListenWait is how long the web interface waits for ServeTLS() to
+	// start serving before declaring itself ready.
 	serverListenWait = 10 * time.Millisecond
 
 	// serverBindRetryInterval and serverBindRetryBudget are how often, and for
@@ -4194,7 +4194,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 // serveWebInterface runs the server's HTTP web interface and REST API, starts
 // the status broadcasters, and registers the scheduler callbacks, signalling
-// ready once ListenAndServe has had time to start.
+// ready once ServeTLS has had time to start.
 //
 // Publication calls it, so it runs only once prior-state recovery has ended
 // (spec E1). Scheduler messages and bad-server updates raised before then are
