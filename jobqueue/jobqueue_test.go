@@ -5091,9 +5091,14 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 						return err == nil && len(jobs) == 1
 					}), ShouldBeTrue)
 					So(len(jobs), ShouldEqual, 1)
-					jobs, err = jq.GetByRepGroup("should_delete", false, 0, JobStateBuried, false, false)
-					So(err, ShouldBeNil)
-					So(len(jobs), ShouldEqual, 0)
+
+					// a job whose removal was requested is deleted in a
+					// goroutine, so poll for it to go.
+					So(pollUntil(func() bool {
+						jobs, err = jq.GetByRepGroup("should_delete", false, 0, JobStateBuried, false, false)
+
+						return err == nil && len(jobs) == 0
+					}), ShouldBeTrue)
 				})
 
 				Convey("Jobs that take longer than the ttr can execute successfully, even if clienttouchinterval is > ttr", func() {
