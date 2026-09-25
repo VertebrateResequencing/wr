@@ -73,6 +73,10 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- A manager stopping just after it buried a failed command with a
+  remove-on-failure behaviour (`wr add --on_failure '[{"remove":true}]'`) could
+  crash instead of shutting down cleanly. It now finishes removing the command
+  before it stops.
 - A `wr` command or runner no longer hangs forever connecting to a manager that
   accepts connections but doesn't respond, as a frozen manager does (its
   machine still accepts connections for it). The attempt now gives up after the

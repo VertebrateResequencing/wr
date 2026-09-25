@@ -324,6 +324,14 @@ const envPprofAddr = "WR_PPROF_ADDR"
 //nolint:gochecknoglobals // deliberate test seam, mirroring statusWSDetailsHook
 var recoveryPauseHookForTest func()
 
+// deleteOnFailureHook, if non-nil, is called by the goroutine that removes a
+// buried job with a remove-on-failure behaviour, just before it removes it, so a
+// test can hold that goroutine while the server stops. It is a test-only seam
+// and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring recoveryPauseHookForTest
+var deleteOnFailureHook func()
+
 // sgroup represents a scheduler group.
 const (
 	// persistentScheduleFailures is the number of consecutive scheduling
@@ -1269,6 +1277,44 @@ func (r *startupStatusReporter) remove() {
 	if err := internal.RemoveDBUpgradeStatus(r.dbFile); err != nil {
 		r.logger.Warn("failed to remove startup status", "path", internal.DBUpgradeStatusPath(r.dbFile), "err", err)
 	}
+}
+
+// remove removes a job with no dependents from the queue, recording it in the
+// pass if that worked.
+func (p *deletePass) remove(ctx context.Context, q *queue.Queue, job *Job, jobkey string) {
+	// mark the job deleted BEFORE removing it, so the queue change callback
+	// (which reads each removed job's own State to decide complete vs deleted,
+	// see emitChangeCallbackTransition) observes JobStateDeleted and broadcasts
+	// a deleted update for this genuinely-removed incomplete job. Capture the
+	// previous state so we can revert if the removal fails and the job remains
+	// in the queue (otherwise it would be left visibly Deleted).
+	job.Lock()
+	prevState := job.State
+	job.State = JobStateDeleted
+	// capture the mutable fields we need after the lock is released, so
+	// they are not read unsynchronised (they can be modified by web modify
+	// paths). schedulerGroup is the field getSchedulerGroup() reads under
+	// its own lock; capture it directly here to avoid re-locking.
+	repGroup := job.RepGroup
+	cmd := job.loggableCmd()
+	schedGroup := job.schedulerGroup
+	job.Unlock()
+
+	if err := q.Remove(ctx, jobkey); err != nil {
+		// removal failed, so the job is still in the queue; revert its state
+		// so it is not left visibly Deleted.
+		job.Lock()
+		job.State = prevState
+		job.Unlock()
+
+		return
+	}
+
+	p.toDelete = append(p.toDelete, jobkey)
+	p.schedGroups[schedGroup]++
+	p.repGroups = append(p.repGroups, repGroup)
+
+	clog.Debug(ctx, "removed job", "key", jobkey, "cmd", cmd)
 }
 
 // Server represents the server side of the socket that clients Connect() to.
@@ -3032,30 +3078,6 @@ func (s *Server) updateDepGroupMembershipForNewJobs(ctx context.Context, jobsToQ
 	}
 }
 
-// jobHasDependents says whether anything still depends on this job, either on
-// its own key (an essence dependency) or through one of its dep groups. Both
-// have to be asked: a dep-group dependency is an edge on the group's own key, so
-// a member's key is not among the queue's dependants at all.
-func (s *Server) jobHasDependents(job *Job, jobKey string) (bool, error) {
-	hasDeps, err := s.q.HasDependents(jobKey)
-	if err != nil || hasDeps {
-		return hasDeps, err
-	}
-
-	job.RLock()
-	depGroups := job.DepGroups
-	job.RUnlock()
-
-	for _, depGroup := range depGroups {
-		hasDeps, err = s.q.HasDependents(depGroupDependencyKey(depGroup))
-		if err != nil || hasDeps {
-			return hasDeps, err
-		}
-	}
-
-	return false, nil
-}
-
 // scheduleRunnersAsync schedules runners for the given group in its own
 // goroutine, so no caller waits on the external scheduler command (eg. bsub, and
 // on LSF a `bjobs -w` over every job in the account) that scheduleRunners
@@ -3236,6 +3258,30 @@ func (s *Server) archivedJobGrouper(opts repGroupOptions) func(*archivedJobFacet
 // produce the same key from an archived record's facets alone.
 func jobGroup(state JobState, exitCode int, failReason string) string {
 	return fmt.Sprintf("%s.%d.%s", state, exitCode, failReason)
+}
+
+// jobHasDependents says whether anything still depends on this job, either on
+// its own key (an essence dependency) or through one of its dep groups. Both
+// have to be asked: a dep-group dependency is an edge on the group's own key, so
+// a member's key is not among the queue's dependants at all.
+func jobHasDependents(q *queue.Queue, job *Job, jobKey string) (bool, error) {
+	hasDeps, err := q.HasDependents(jobKey)
+	if err != nil || hasDeps {
+		return hasDeps, err
+	}
+
+	job.RLock()
+	depGroups := job.DepGroups
+	job.RUnlock()
+
+	for _, depGroup := range depGroups {
+		hasDeps, err = q.HasDependents(depGroupDependencyKey(depGroup))
+		if err != nil || hasDeps {
+			return hasDeps, err
+		}
+	}
+
+	return false, nil
 }
 
 func matchesWaitingForDepGroupsFilter(job *Job, filter bool) bool {
@@ -6227,12 +6273,18 @@ func (s *Server) killRunningJob(ctx context.Context, jobkey string,
 // deleteJobs deletes the given jobs from the bury/delay/dependent/ready queue
 // and the live bucket. Does not delete jobs that have jobs dependant upon them,
 // unless all those dependants were also supplied to this method at the same
-// time (in any order). Returns the keys of jobs actually deleted.
+// time (in any order). Returns the keys of jobs actually deleted, which is none
+// once shutdown has let go of the queue.
 func (s *Server) deleteJobs(ctx context.Context, jobs []*Job) []string {
+	q := s.queueIfPresent()
+	if q == nil {
+		return nil
+	}
+
 	var deleted []string
 
 	for {
-		pass := s.removeDeletableJobs(ctx, jobs)
+		pass := s.removeDeletableJobs(ctx, q, jobs)
 		deleted = append(deleted, pass.toDelete...)
 
 		if len(pass.toDelete) == 0 {
@@ -6264,7 +6316,7 @@ type deletePass struct {
 
 // removeDeletableJobs removes from the queue every job that has no dependents,
 // collecting what was removed (and what was skipped) for finalizeDeletedJobs.
-func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePass {
+func (s *Server) removeDeletableJobs(ctx context.Context, q *queue.Queue, jobs []*Job) deletePass {
 	pass := deletePass{schedGroups: make(map[string]int)}
 
 	for _, job := range jobs {
@@ -6273,7 +6325,7 @@ func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePas
 		// we can't allow the removal of jobs that have dependencies, as *queue
 		// would regard that as satisfying the dependency and downstream jobs
 		// would start
-		hasDeps, err := s.jobHasDependents(job, jobkey)
+		hasDeps, err := jobHasDependents(q, job, jobkey)
 		if err != nil || hasDeps {
 			if hasDeps {
 				pass.skippedDeps = append(pass.skippedDeps, job)
@@ -6282,37 +6334,7 @@ func (s *Server) removeDeletableJobs(ctx context.Context, jobs []*Job) deletePas
 			continue
 		}
 
-		// mark the job deleted BEFORE removing it, so the queue change callback
-		// (which reads each removed job's own State to decide complete vs deleted,
-		// see emitChangeCallbackTransition) observes JobStateDeleted and broadcasts
-		// a deleted update for this genuinely-removed incomplete job. Capture the
-		// previous state so we can revert if the removal fails and the job remains
-		// in the queue (otherwise it would be left visibly Deleted).
-		job.Lock()
-		prevState := job.State
-		job.State = JobStateDeleted
-		// capture the mutable fields we need after the lock is released, so
-		// they are not read unsynchronised (they can be modified by web modify
-		// paths). schedulerGroup is the field getSchedulerGroup() reads under
-		// its own lock; capture it directly here to avoid re-locking.
-		repGroup := job.RepGroup
-		cmd := job.loggableCmd()
-		schedGroup := job.schedulerGroup
-		job.Unlock()
-
-		if err = s.q.Remove(ctx, jobkey); err == nil {
-			pass.toDelete = append(pass.toDelete, jobkey)
-			pass.schedGroups[schedGroup]++
-			pass.repGroups = append(pass.repGroups, repGroup)
-
-			clog.Debug(ctx, "removed job", "key", jobkey, "cmd", cmd)
-		} else {
-			// removal failed, so the job is still in the queue; revert its state
-			// so it is not left visibly Deleted.
-			job.Lock()
-			job.State = prevState
-			job.Unlock()
-		}
+		pass.remove(ctx, q, job, jobkey)
 	}
 
 	return pass
@@ -6346,12 +6368,40 @@ func (s *Server) finalizeDeletedJobs(ctx context.Context, pass deletePass) {
 	s.rpl.Unlock()
 }
 
-// deleteJobIfRequested checks the job's behaviours and deletes the job if
-// requested.
+// deleteJobIfRequested checks the job's behaviours and, if it asks to be
+// removed, deletes it in the background.
+//
+// The goroutine is on s.wg so shutdown waits for it before destroying and
+// letting go of the queue. It is not started once shutdown is under way (see
+// inShutdown): holding krmutex across the check and the wg.Add orders every Add
+// before shutdown's wg.Wait, which matters because not every caller is itself
+// on s.wg (the lost-job release is not). It is krmutex rather than ssmutex
+// because beginShutdown holds ssmutex while unscheduleAllGroups can reach
+// buryImpossibleItem, and so this.
 func (s *Server) deleteJobIfRequested(ctx context.Context, job *Job) {
-	if job.RemovalRequested() {
-		go s.deleteJobs(ctx, []*Job{job})
+	if !job.RemovalRequested() {
+		return
 	}
+
+	s.krmutex.RLock()
+	defer s.krmutex.RUnlock()
+
+	if s.killRunners {
+		return
+	}
+
+	wgk := s.wg.Add(1)
+
+	go func() {
+		defer internal.LogPanic(ctx, "jobqueue delete on failure", true)
+		defer s.wg.Done(wgk)
+
+		if deleteOnFailureHook != nil {
+			deleteOnFailureHook()
+		}
+
+		s.deleteJobs(ctx, []*Job{job})
+	}()
 }
 
 // killJobsOnServers kills running and confirms lost jobs that were running on
