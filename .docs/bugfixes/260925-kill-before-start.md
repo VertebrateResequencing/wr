@@ -101,3 +101,26 @@
     now counts touches made after the kill, not after Execute returned. That
     proves a touch whose reply carried the kill was made while Execute was still
     running.
+- [x] Copilot on PR #614 (thread PRRT_kwDOAKD33M6mAlGt): `terminateChildren`
+  decided whether to log "killed child of cmd" or "failed to kill child of cmd"
+  from the error built up so far (`errk`), not from that child's own
+  `Terminate()` result. So it could log success for a child it failed to
+  terminate, or failure for one it did terminate, and the failure line never
+  said what the error was. This predates the refactor: the old inline `killCmd`
+  at d056b6f (client.go:2659-2667) had the same logic.
+  - Red: `TestTerminateChildren` in the new jobqueue/kill_cmd_test.go
+    terminates a child whose process has already gone. Before the fix it
+    failed at `Line 53`, because the log had
+    `lvl=info msg="killed child of cmd"` for a Terminate that failed. After the
+    fix it passes.
+  - Fix: the log now depends on that child's own result, and the failure line
+    includes it as `err`.
+- [x] Copilot on PR #614 (thread PRRT_kwDOAKD33M6mAlHT): `chainKillErr` wrapped
+  `errk` even when the next step had worked, which gave
+  `... failed: %!w(<nil>)`. This also predates the refactor: the old inline
+  code's docker and child branches wrapped the same way.
+  - Red: `TestChainKillErr` (same file). Before the fix it failed at
+    `Line 67`, with `kill failed, and the next step failed: %!w(<nil>)` where
+    `kill failed` was expected. After the fix it passes.
+  - Fix: when the next step's error is nil, `chainKillErr` returns `errk`
+    unchanged.

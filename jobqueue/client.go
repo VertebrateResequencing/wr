@@ -1252,10 +1252,10 @@ func terminateChildren(ctx context.Context, job *Job, children []*process.Proces
 
 	for _, child := range children {
 		errc := child.Terminate()
-		if errk == nil {
+		if errc == nil {
 			clog.Info(ctx, "killed child of cmd", "cmd", job.loggableCmd(), "pid", child.Pid)
 		} else {
-			clog.Warn(ctx, "failed to kill child of cmd", "cmd", job.loggableCmd(), "pid", child.Pid)
+			clog.Warn(ctx, "failed to kill child of cmd", "cmd", job.loggableCmd(), "pid", child.Pid, "err", errc)
 		}
 
 		errk = chainKillErr(errk, errc, "killing its child process")
@@ -1272,9 +1272,13 @@ func terminateChildren(ctx context.Context, job *Job, children []*process.Proces
 	return errk
 }
 
-// chainKillErr returns next if errk is nil, or errk noting that the step named
-// by what then failed with next.
+// chainKillErr returns next if errk is nil, errk if next is nil, or else errk
+// noting that the step named by what then failed with next.
 func chainKillErr(errk, next error, what string) error {
+	if next == nil {
+		return errk
+	}
+
 	if errk == nil {
 		return next
 	}
