@@ -81,6 +81,22 @@ const (
 
 	// uploadedFilePerm is the mode jobqueue gives every uploaded file.
 	uploadedFilePerm os.FileMode = 0o600
+
+	// searchOnlyDirPerm and readOnlyDirPerm take away some of a working
+	// directory's owner's own access, so that wr fails to open it or fails to
+	// look inside it. Neither has other-user bits, so closeWorkingDirToOthers
+	// leaves them as they are.
+	searchOnlyDirPerm os.FileMode = 0o300
+	readOnlyDirPerm   os.FileMode = 0o600
+
+	// openToOthersOnlyPerm is a level of the upload tree that needs repairing,
+	// since others can do anything in it, but that wr cannot open to repair
+	// through a descriptor, since its owner can do nothing.
+	openToOthersOnlyPerm os.FileMode = 0o077
+
+	// uploadRepairFailed is what wr warns when it could not close the upload
+	// tree.
+	uploadRepairFailed = "could not make every directory in the upload directory"
 )
 
 // TestCreateWorkingDirIsOwnerOnly proves the manager's working directory is
@@ -274,19 +290,66 @@ func TestCreateWorkingDirClosesUploadDir(t *testing.T) {
 		So(os.Mkdir(inside, sharedDirPerm), ShouldBeNil)
 		So(os.Chmod(inside, sharedDirPerm), ShouldBeNil)
 
-		mode, _ := createWorkingDirUnderUmask(t, managerDir, managerDir)
+		mode, logged := createWorkingDirUnderUmask(t, managerDir, managerDir)
 
 		So(mode, ShouldEqual, closedSharedDirPerm)
 		So(modeOf(inside), ShouldEqual, sharedDirPerm)
+		So(logged, ShouldNotContainSubstring, "upload directory")
 	})
 
 	Convey("An upload directory an operator has pointed outside the working directory is left alone", t, func() {
 		managerDir := makeDirWithMode(t, sharedDirPerm)
 		elsewhere := makeDirWithMode(t, sharedDirPerm)
 
-		createWorkingDirUnderUmask(t, managerDir, elsewhere)
+		_, logged := createWorkingDirUnderUmask(t, managerDir, elsewhere)
 
 		So(modeOf(elsewhere), ShouldEqual, sharedDirPerm)
+		So(logged, ShouldNotContainSubstring, "upload directory")
+	})
+
+	Convey("A working directory with no upload directory in it yet logs nothing about one", t, func() {
+		managerDir := makeDirWithMode(t, sharedDirPerm)
+
+		_, logged := createWorkingDirUnderUmask(t, managerDir)
+
+		So(logged, ShouldNotContainSubstring, "upload directory")
+	})
+}
+
+// TestCreateWorkingDirWarnsWhenUploadRepairFails proves a repair wr could not
+// make is reported rather than dropped. The manager still starts, but the
+// operator is the only one left who can close the tree, so they have to be
+// told it is still open.
+func TestCreateWorkingDirWarnsWhenUploadRepairFails(t *testing.T) {
+	Convey("A working directory wr cannot open is warned about", t, func() {
+		managerDir := makeDirWithMode(t, sharedDirPerm)
+		makeUploadTree(managerDir, sharedDirPerm)
+		lockOut(t, managerDir, searchOnlyDirPerm)
+
+		_, logged := createWorkingDirUnderUmask(t, managerDir)
+
+		So(logged, ShouldContainSubstring, uploadRepairFailed)
+	})
+
+	Convey("An upload directory wr cannot reach inside the working directory is warned about", t, func() {
+		managerDir := makeDirWithMode(t, sharedDirPerm)
+		makeUploadTree(managerDir, sharedDirPerm)
+		lockOut(t, managerDir, readOnlyDirPerm)
+
+		_, logged := createWorkingDirUnderUmask(t, managerDir)
+
+		So(logged, ShouldContainSubstring, uploadRepairFailed)
+	})
+
+	Convey("A level of the upload tree wr cannot open is warned about, and the rest still closed", t, func() {
+		managerDir := makeDirWithMode(t, sharedDirPerm)
+		hashed := makeUploadTree(managerDir, sharedDirPerm)
+		lockOut(t, hashed, openToOthersOnlyPerm)
+
+		_, logged := createWorkingDirUnderUmask(t, managerDir)
+
+		So(logged, ShouldContainSubstring, uploadRepairFailed)
+		So(modeOf(filepath.Dir(hashed)), ShouldEqual, ownerOnlyPerm)
 	})
 }
 
@@ -304,12 +367,34 @@ func TestCreateWorkingDirWalksNoSymlink(t *testing.T) {
 		managerDir := filepath.Join(t.TempDir(), ".wr_development")
 		So(os.Symlink(target, managerDir), ShouldBeNil)
 
-		createWorkingDirUnderUmask(t, managerDir, filepath.Join(managerDir, uploadsName))
+		_, logged := createWorkingDirUnderUmask(t, managerDir, filepath.Join(managerDir, uploadsName))
 
 		So(modeOf(filepath.Join(target, uploadsName)), ShouldEqual, sharedDirPerm)
 		So(modeOf(filepath.Dir(hashed)), ShouldEqual, sharedDirPerm)
 		So(modeOf(hashed), ShouldEqual, sharedDirPerm)
+		So(logged, ShouldContainSubstring, "so wr will not repair the upload directory")
 	})
+
+	Convey("An owner-only upload tree under a symlinked working directory logs nothing about it", t, func() {
+		target := makeDirWithMode(t, closedSharedDirPerm)
+		makeUploadTree(target, ownerOnlyPerm)
+
+		managerDir := filepath.Join(t.TempDir(), ".wr_development")
+		So(os.Symlink(target, managerDir), ShouldBeNil)
+
+		_, logged := createWorkingDirUnderUmask(t, managerDir)
+
+		So(logged, ShouldNotContainSubstring, "upload directory")
+	})
+}
+
+// lockOut sets dir to mode, which takes some of its owner's own access away,
+// and gives it back when the test ends so that t.TempDir can clean up.
+func lockOut(t *testing.T, dir string, mode os.FileMode) {
+	t.Helper()
+
+	So(os.Chmod(dir, mode), ShouldBeNil)
+	t.Cleanup(func() { os.Chmod(dir, ownerOnlyPerm) }) //nolint:errcheck
 }
 
 // makeUploadTree makes an upload directory under managerDir with the three
