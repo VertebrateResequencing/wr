@@ -157,3 +157,27 @@
     handler replies with the kill and does not refresh the TTR. So touches
     after a kill keep the loop responsive, but they do not extend the
     reservation.
+- [x] Copilot on PR #614 (thread PRRT_kwDOAKD33M6mG8uO, client.go:~2935): the
+  memory branch of the checking goroutine called `killCmd` while holding
+  `stateMutex`. The disk and signal branches kill outside it and lock only to
+  record the result. `killCmd` can block, on a docker container kill or on
+  `terminateGrace` waits for children, so this held `stateMutex` for the whole
+  kill. This predates the refactor: the old inline code at d056b6f also called
+  `killCmd` under `stateMutex` there.
+  - Red: not feasible with the existing seams. Since the item before this one,
+    the only other `stateMutex` user that can run at the same time is
+    Execute's end, after the checking rendezvous has given up. That takes
+    `checkingFinishTimeout`, a fixed 60s, and a kill slower than that. The
+    blocking part of a kill comes after `cmd.Process.Kill()` (the container
+    kill and the `terminateGrace` wait), and no seam reaches it. So showing the
+    stall would need two new test-only seams on top of the three this branch
+    already added. The fix is a local lock-scope change, covered by the
+    existing memory-kill test `TestJobqueueHighMem` (a real memory kill, buried
+    `FailReasonRAM`) and the kill tests.
+  - Fix: a small `killForCheck(record)` helper in the checking goroutine,
+    used by all three branches. It calls `killCmd` outside `stateMutex`, then
+    locks just long enough to store `killErr` and to call `record(acted)`,
+    which sets that branch's flag. The memory branch still reads the peaks and
+    decides under the lock. It unlocks before killing, then leaves the loop, so
+    nothing changes the peaks after the decision. Each branch kills at most
+    once, because it breaks out of the loop straight after.

@@ -2864,6 +2864,21 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			}
 		}
 
+		// killForCheck kills the command for a reason this goroutine found. The
+		// kill is made outside stateMutex, since it can block (killing a docker
+		// container, or waiting for children to die), and record then notes,
+		// under stateMutex, whether it acted.
+		killForCheck := func(record func(acted bool)) {
+			acted, errk := killCmd()
+
+			stateMutex.Lock()
+			defer stateMutex.Unlock()
+
+			killErr = errk
+
+			record(acted)
+		}
+
 		volume := local.NewVolume(job.Cwd)
 
 	CHECKING:
@@ -2872,22 +2887,18 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 			case signal := <-sigs:
 				clog.Warn(ctx, "aborting due to signal", "sig", signal.String())
 
-				acted, errk := killCmd()
+				killForCheck(func(acted bool) {
+					if acted && time.Now().After(endT) {
+						// we allow things to go over time, but if signalled, we
+						// now know it may be because we used too much time
+						ranoutTime = true
+					}
 
-				stateMutex.Lock()
-				killErr = errk
-
-				if acted && time.Now().After(endT) {
-					// we allow things to go over time, but if signalled, we now
-					// know it may be because we used too much time
-					ranoutTime = true
-				}
-
-				// a signal that came after the command had exited did not end
-				// it, but still asks the runner to stop.
-				signalled = acted
-				signalledAfterExit = !acted
-				stateMutex.Unlock()
+					// a signal that came after the command had exited did not
+					// end it, but still asks the runner to stop.
+					signalled = acted
+					signalledAfterExit = !acted
+				})
 				closeReaders()
 
 				break CHECKING
@@ -2897,12 +2908,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				if volume.NoSpaceLeft(ctx) {
 					clog.Warn(ctx, "aborting due to lack of disk space")
 
-					acted, errk := killCmd()
-
-					stateMutex.Lock()
-					killErr = errk
-					ranoutDisk = acted
-					stateMutex.Unlock()
+					killForCheck(func(acted bool) { ranoutDisk = acted })
 					closeReaders()
 
 					break CHECKING
@@ -2929,8 +2935,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 						machineRAM = ensureMachineRAM(machineRAM)
 
 						if c.peakMemNeedsKill(peakmem, machineRAM) {
-							killedForMem, killErr = killCmd()
 							stateMutex.Unlock()
+							killForCheck(func(acted bool) { killedForMem = acted })
 
 							break CHECKING
 						}
