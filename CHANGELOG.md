@@ -159,7 +159,11 @@ project adheres to [Semantic Versioning](http://semver.org/).
   will not chmod a path you chose somewhere else: an upload directory you have
   pointed outside your `~/.wr_<deployment>` with `manageruploaddir` is not
   touched, and nor are the directories an older wr made under any other path
-  you uploaded to. Check those yourself.
+  you uploaded to. Check those yourself. Closing the tree does not undo what
+  somebody may already have done to it, so if yours was open, check what is in
+  it too. wr warns about anything other than a directory where it only makes
+  directories, such as a symlink in place of a hashed level, but it cannot
+  check the uploaded files themselves.
 - One mistyped `--env` element could stop every command in a scheduler group.
   An entry with no `=`, such as a bare `PATH`, crashed the runner as it
   prepared the command. The command went back to the queue without using up a

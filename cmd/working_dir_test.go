@@ -101,7 +101,7 @@ const (
 
 	// uploadRepairFailed is what wr warns when it could not close the upload
 	// tree.
-	uploadRepairFailed = "could not make every directory in the upload directory"
+	uploadRepairFailed = "could not fully secure the upload directory"
 )
 
 // TestCreateWorkingDirIsOwnerOnly proves the manager's working directory is
@@ -440,6 +440,62 @@ func TestCreateWorkingDirWalksNoSymlink(t *testing.T) {
 		_, logged := createWorkingDirUnderUmask(t, managerDir)
 
 		So(logged, ShouldNotContainSubstring, "upload directory")
+	})
+}
+
+// TestCreateWorkingDirWarnsAboutPlantedEntries proves the repair reports what
+// another user may have left behind while the tree was open to them. Closing
+// the directories stops new tampering but does not undo old tampering, and a
+// symlink standing where jobqueue expects a hashed directory would send later
+// uploads through it, out of the upload directory. wr warns rather than
+// removing anything: it cannot tell a planted entry from one the operator put
+// there.
+func TestCreateWorkingDirWarnsAboutPlantedEntries(t *testing.T) {
+	Convey("A symlink at a hashed level is named in the warning and left in place", t, func() {
+		managerDir := makeDirWithMode(t, sharedDirPerm)
+		hashed := makeUploadTree(managerDir, sharedDirPerm)
+		planted := filepath.Join(filepath.Dir(hashed), "b")
+		So(os.Symlink(t.TempDir(), planted), ShouldBeNil)
+
+		_, logged := createWorkingDirUnderUmask(t, managerDir)
+
+		So(logged, ShouldContainSubstring, uploadRepairFailed)
+		So(logged, ShouldContainSubstring, planted+" is a symlink")
+		So(isFinalSymlink(planted), ShouldBeTrue)
+		So(modeOf(hashed), ShouldEqual, ownerOnlyPerm)
+	})
+
+	Convey("A file between the hashed levels is named in the warning", t, func() {
+		managerDir := makeDirWithMode(t, sharedDirPerm)
+		hashed := makeUploadTree(managerDir, sharedDirPerm)
+		planted := filepath.Join(filepath.Dir(filepath.Dir(hashed)), "f")
+		So(os.WriteFile(planted, []byte("planted"), uploadedFilePerm), ShouldBeNil)
+
+		_, logged := createWorkingDirUnderUmask(t, managerDir)
+
+		So(logged, ShouldContainSubstring, planted+" is a file")
+	})
+
+	Convey("An upload directory that is itself a symlink is named in the warning and not walked", t, func() {
+		managerDir := makeDirWithMode(t, colleagueReadableDirPerm)
+		So(os.Symlink(".", filepath.Join(managerDir, uploadsName)), ShouldBeNil)
+
+		mode, logged := createWorkingDirUnderUmask(t, managerDir)
+
+		So(logged, ShouldContainSubstring, filepath.Join(managerDir, uploadsName)+" is a symlink")
+		So(mode, ShouldEqual, colleagueReadableDirPerm)
+	})
+
+	Convey("A normal tree, with a temp file an interrupted upload left at its top, gets no warning", t, func() {
+		managerDir := makeDirWithMode(t, sharedDirPerm)
+		makeUploadTree(managerDir, sharedDirPerm)
+		temp := filepath.Join(managerDir, uploadsName, "file_upload123")
+		So(os.WriteFile(temp, []byte("partial"), uploadedFilePerm), ShouldBeNil)
+
+		_, logged := createWorkingDirUnderUmask(t, managerDir)
+
+		So(logged, ShouldContainSubstring, "made 4 of the directories in the upload directory")
+		So(logged, ShouldNotContainSubstring, "lvl=warn")
 	})
 }
 

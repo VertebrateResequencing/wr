@@ -142,6 +142,41 @@ var cmdExit = os.Exit
 // itself a symlink.
 var errDirIsSymlink = errors.New("it is a symlink")
 
+// errUnexpectedUploadEntry is why wr reports an entry in the upload tree that
+// jobqueue would never have made.
+var errUnexpectedUploadEntry = errors.New("unexpected entry")
+
+// checkEntry records a failure for a non-directory entry at a level where
+// jobqueue only makes directories. The walk never reads the deepest level, so
+// every entry it sees is in the upload directory itself or in a hashed level
+// above the deepest. The upload directory itself also holds the temp file of an
+// upload that was interrupted, so a plain file there is expected.
+func (c *uploadTreeCloser) checkEntry(path string, d fs.DirEntry) {
+	topLevel := strings.Count(strings.TrimPrefix(path, c.rel), "/") == 1
+	if topLevel && d.Type().IsRegular() {
+		return
+	}
+
+	c.record(c.unexpected(path, d.Type()))
+}
+
+// unexpected is the failure for the entry at path, of type typ, standing
+// where only a directory should be.
+func (c *uploadTreeCloser) unexpected(path string, typ fs.FileMode) error {
+	kind := "a special file"
+
+	switch {
+	case typ&fs.ModeSymlink != 0:
+		kind = "a symlink"
+	case typ.IsRegular():
+		kind = "a file"
+	}
+
+	return fmt.Errorf("%w: %s is %s where wr only makes directories, so another user may have put it "+
+		"there while the tree was open",
+		errUnexpectedUploadEntry, filepath.Join(c.root.Name(), filepath.FromSlash(path)), kind)
+}
+
 // closeWorkingDirToOthers takes other users' write permission off an existing
 // working directory, which is how an older wr's 0777 or 0775 stops letting
 // anybody on the machine delete, replace or plant a file in it.
@@ -383,8 +418,25 @@ func isFinalSymlink(path string) bool {
 // happened in, so one level wr cannot fix does not leave the rest open. A
 // path that does not exist is not a failure: an upload directory that has
 // never been made, or a level removed mid-walk, has nothing left to repair.
+//
+// It also reports, as a failure, anything other than a directory where
+// jobqueue only ever makes directories, since while the tree was open another
+// user could have put it there. A symlink in place of a hashed level would
+// send later uploads through it, out of the upload directory. Such an entry
+// is neither followed nor removed: wr cannot tell a planted one from one the
+// operator put there. The deepest level, which holds the uploaded files, is
+// not read, and its files could not be checked by their mode anyway.
 func closeUploadTreeIn(root *os.Root, rel string) (int, error) {
 	c := &uploadTreeCloser{root: root, rel: rel}
+
+	// the walk would resolve an upload directory that is itself a symlink,
+	// which os.Root only confines to the working directory: one pointing at
+	// "." would repair the working directory itself.
+	if fi, err := root.Lstat(filepath.FromSlash(rel)); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
+		c.record(c.unexpected(rel, fi.Mode().Type()))
+
+		return 0, c.err
+	}
 
 	// visit never returns an error, so neither should the walk; any it does
 	// return is kept rather than trusted to be impossible.
@@ -411,6 +463,8 @@ func (c *uploadTreeCloser) visit(path string, d fs.DirEntry, err error) error {
 	}
 
 	if !d.IsDir() {
+		c.checkEntry(path, d)
+
 		return nil
 	}
 
@@ -531,9 +585,9 @@ func warnIfUploadDirOpenBehindSymlink() {
 // upload tree, and how to do it themselves. The manager still starts: a
 // hardening step that failed leaves the tree no worse than it was.
 func warnUploadDirStillOpen(err error) {
-	warn("could not make every directory in the upload directory '%s' yours alone: %s. Other users "+
-		"may still be able to replace the config files wr copies to cloud servers; run "+
-		"'chmod -R go-rwx %s' yourself",
+	warn("could not fully secure the upload directory '%s': %s. Other users may still be able to "+
+		"replace the config files wr copies to cloud servers; run 'chmod -R go-rwx %s' yourself, and "+
+		"inspect and remove anything in it you did not put there",
 		config.ManagerUploadDir, err, config.ManagerUploadDir)
 }
 
