@@ -79,10 +79,6 @@ const cmdLogTestMaxManagerLine = 1024
 // production default.
 const cmdLogTestTouchInterval = 100 * time.Millisecond
 
-// cmdLogTestKillWait bounds how long the kill test waits for its command to
-// start; it is shorter than cmdLogTestKillCmd runs for, and free on success.
-const cmdLogTestKillWait = 20 * time.Second
-
 // cmdLogTestKillCmd is a command that keeps the shell forked (so it has a CHILD
 // process to kill) for long enough to be killed mid-run.
 const cmdLogTestKillCmd = "sleep 30 && true"
@@ -344,28 +340,6 @@ func TestReliable4KilledCmdLogsBoundedCmd(t *testing.T) {
 			So(reserved.Cmd, ShouldEqual, cmd)
 		})
 	})
-}
-
-// killOnceStarted waits, for up to cmdLogTestKillWait, until the manager has
-// the pid of job's command, then kills job, returning how many jobs were killed.
-func killOnceStarted(jq *Client, job *Job) int {
-	deadline := time.Now().Add(cmdLogTestKillWait)
-
-	for time.Now().Before(deadline) {
-		got, err := jq.GetByRepGroup(job.RepGroup, false, 0, JobStateRunning, false, false)
-		if err == nil && len(got) == 1 && got[0].Pid != 0 {
-			killed, errk := jq.Kill([]*JobEssence{{JobKey: job.Key()}})
-			if errk != nil {
-				return 0
-			}
-
-			return killed
-		}
-
-		time.Sleep(cmdLogTestTouchInterval / 10)
-	}
-
-	return 0
 }
 
 // errLen is len(err.Error()), or 0 for a nil error.

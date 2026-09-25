@@ -47,10 +47,17 @@ var errTestNoStartTime = errors.New("no start time")
 
 func TestTerminateChildren(t *testing.T) {
 	Convey("Given a child process that has already gone", t, func() {
-		gone := exec.CommandContext(context.Background(), "true")
-		So(gone.Run(), ShouldBeNil)
+		// the child is listed while it is alive, as getChildProcesses lists
+		// one, and only then made to exit and be reaped.
+		gone := exec.CommandContext(context.Background(), "sleep", "30")
+		So(gone.Start(), ShouldBeNil)
 
-		child := &process.Process{Pid: int32(gone.Process.Pid)} //nolint:gosec // an OS pid always fits in an int32.
+		child, err := process.NewProcess(int32(gone.Process.Pid)) //nolint:gosec // an OS pid always fits in an int32.
+		So(err, ShouldBeNil)
+
+		So(gone.Process.Kill(), ShouldBeNil)
+		So(gone.Wait(), ShouldNotBeNil)
+
 		job := &Job{Cmd: "the job's cmd"}
 
 		Convey("terminateChildren logs the failure to terminate it, with its error", func() {
