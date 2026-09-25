@@ -326,8 +326,11 @@ func TestLSF(t *testing.T) {
 		So(s, ShouldNotBeNil)
 
 		// kills whatever a pass that timed out left behind; the token means it
-		// can only kill this run's jobs.
-		defer s.Cleanup(ctx)
+		// can only kill this run's jobs. Guarded so a failed New() reports its
+		// own error, not a nil-receiver panic, whatever the failure mode.
+		if s != nil {
+			defer s.Cleanup(ctx)
+		}
 
 		Convey("ReserveTimeout() returns 25 seconds", func() {
 			So(s.ReserveTimeout(ctx, possibleReq), ShouldEqual, 1)
