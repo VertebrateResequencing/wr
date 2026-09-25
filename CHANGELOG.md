@@ -146,6 +146,24 @@ project adheres to [Semantic Versioning](http://semver.org/).
   already held a file left that file at its old mode, so over a 0644 file the
   uploaded credentials were readable by everyone; the file is now always made
   0600.
+- An upload tree an older wr already made kept its old mode, because
+  `os.MkdirAll` never touches a directory that is already there, so the fix
+  above only protected directories wr made from then on. Your next
+  `wr manager start` or `wr cloud deploy` now makes every level of
+  `~/.wr_<deployment>/uploads` yours alone, the same 0700 a new one gets, and
+  logs how many it changed. Other users can no longer rename a level aside and
+  put their own `~/.aws/credentials` where wr looks for the config files it
+  copies to your cloud servers, nor list what you uploaded. Unlike the working
+  directory, read access is taken off as well as write: every file in there is
+  0600, so nobody else had a use for it. Only that tree is repaired, since wr
+  will not chmod a path you chose somewhere else: an upload directory you have
+  pointed outside your `~/.wr_<deployment>` with `manageruploaddir` is not
+  touched, and nor are the directories an older wr made under any other path
+  you uploaded to. Check those yourself. Closing the tree does not undo what
+  somebody may already have done to it, so if yours was open, check what is in
+  it too. wr warns about anything other than a directory where it only makes
+  directories, such as a symlink in place of a hashed level, but it cannot
+  check the uploaded files themselves.
 - One mistyped `--env` element could stop every command in a scheduler group.
   An entry with no `=`, such as a bare `PATH`, crashed the runner as it
   prepared the command. The command went back to the queue without using up a
