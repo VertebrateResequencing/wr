@@ -27,10 +27,16 @@ package jobqueue
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
+	"net"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/internal"
 	. "github.com/smartystreets/goconvey/convey"
 	"go.nanomsg.org/mangos/v3"
 )
@@ -61,6 +67,14 @@ const heldReplyLimit = heldReplyWait + time.Second
 // provably ends on its own budget rather than on the socket's deadline or on
 // the manager's held reply.
 const narrowedRequestBudget = 200 * time.Millisecond
+
+// stalledConnectTimeout is the timeout given to Connect against a server that
+// never responds, and stalledConnectLimit how long Connect is given to return:
+// comfortably longer than the timeout, and far shorter than forever.
+const (
+	stalledConnectTimeout = 1 * time.Second
+	stalledConnectLimit   = stalledConnectTimeout + 4*time.Second
+)
 
 // errDeadlineRestoreFailed stands in for whatever a socket might fail a
 // deadline restore with, so a test can tell that failure apart from the
@@ -345,4 +359,137 @@ func pingUntilUnread(c *Client, limit time.Duration) (time.Duration, bool) {
 	}
 
 	return 0, false
+}
+
+// TestConnectToStalledServerFailsPromptly proves that Connect's timeout bounds
+// establishing the connection, and not only the requests made once connected.
+// A manager that is frozen still has the kernel accept TCP connections into its
+// backlog, but never completes the TLS or SP handshake, and before the fix that
+// left Connect (and so any wr command, or a runner) blocked forever
+// (.docs/bugfixes/260925-connect-dial-timeout.md).
+func TestConnectToStalledServerFailsPromptly(t *testing.T) {
+	Convey("Given a CA certificate", t, func() {
+		caFile := generateTestCerts(t)
+
+		Convey("Connect to a server that accepts connections but never responds fails within about its timeout", func() {
+			addr := stalledListener(t)
+
+			took, returned, err := connectWithin(addr, caFile, stalledConnectTimeout, stalledConnectLimit)
+			So(returned, ShouldBeTrue)
+			So(took, ShouldBeGreaterThanOrEqualTo, stalledConnectTimeout)
+
+			var jqerr Error
+
+			So(errors.As(err, &jqerr), ShouldBeTrue)
+			So(jqerr.Err, ShouldEqual, ErrNoServer)
+		})
+
+		Convey("Connect to an address nothing listens on still fails at once", func() {
+			var lc net.ListenConfig
+
+			ln, err := lc.Listen(context.Background(), "tcp", "localhost:0")
+			So(err, ShouldBeNil)
+
+			addr := ln.Addr().String()
+			So(ln.Close(), ShouldBeNil)
+
+			took, returned, err := connectWithin(addr, caFile, stalledConnectTimeout, stalledConnectLimit)
+			So(returned, ShouldBeTrue)
+			So(took, ShouldBeLessThan, stalledConnectTimeout)
+
+			var jqerr Error
+
+			So(errors.As(err, &jqerr), ShouldBeTrue)
+			So(jqerr.Err, ShouldEqual, ErrNoServer)
+		})
+	})
+}
+
+// generateTestCerts creates a CA and a server certificate for localhost in a
+// temp dir, returning the CA file's path.
+func generateTestCerts(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	caFile := filepath.Join(dir, "ca.pem")
+
+	err := internal.GenerateCerts(caFile, filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem"),
+		"localhost", 2048, 2048, rand.Reader, os.O_RDWR|os.O_CREATE|os.O_TRUNC)
+	So(err, ShouldBeNil)
+
+	return caFile
+}
+
+// stalledListener listens on a localhost port, accepting TCP connections and
+// holding them open without ever reading or writing, as a frozen manager's
+// kernel backlog does. It returns the listener's address, and stops listening
+// and closes the connections it holds when the test ends.
+func stalledListener(t *testing.T) string {
+	t.Helper()
+
+	var lc net.ListenConfig
+
+	ln, err := lc.Listen(context.Background(), "tcp", "localhost:0")
+	So(err, ShouldBeNil)
+
+	var (
+		mu    sync.Mutex
+		conns []net.Conn
+		wg    sync.WaitGroup
+	)
+
+	wg.Go(func() {
+		for {
+			c, errl := ln.Accept()
+			if errl != nil {
+				return
+			}
+
+			mu.Lock()
+
+			conns = append(conns, c)
+
+			mu.Unlock()
+		}
+	})
+
+	t.Cleanup(func() {
+		_ = ln.Close()
+
+		wg.Wait()
+
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+
+	return ln.Addr().String()
+}
+
+// connectWithin calls Connect with the given timeout, reporting how long it took
+// and its error, and whether it returned at all within limit.
+func connectWithin(addr, caFile string, timeout, limit time.Duration) (time.Duration, bool, error) {
+	type outcome struct {
+		took time.Duration
+		err  error
+	}
+
+	done := make(chan outcome, 1)
+	start := time.Now()
+
+	go func() {
+		jq, err := Connect(addr, caFile, "localhost", []byte("token"), timeout)
+		if jq != nil {
+			disconnect(jq)
+		}
+
+		done <- outcome{took: time.Since(start), err: err}
+	}()
+
+	select {
+	case o := <-done:
+		return o.took, true, o.err
+	case <-time.After(limit):
+		return limit, false, nil
+	}
 }

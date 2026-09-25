@@ -426,7 +426,8 @@ func (s *Subscription) reconnectOnce(retryEnd time.Time) ([]*JobUpdate, error) {
 //
 // It does not bound a whole attempt: dialling the replacement subscription
 // socket carries only that socket's own deadline, and mangos's first Dial is
-// synchronous with no timeout of its own.
+// synchronous, bounded only by the transport's default handshake timeout
+// (mangostlstcp.DefaultHandshakeTimeout).
 func subscriptionBudgetRemaining(retryEnd time.Time) (time.Duration, error) {
 	remaining := time.Until(retryEnd)
 	if remaining <= 0 {

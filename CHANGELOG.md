@@ -73,6 +73,14 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- A `wr` command or runner no longer hangs forever connecting to a manager that
+  accepts connections but doesn't respond, as a frozen manager does (its
+  machine still accepts connections for it). The attempt now gives up after the
+  command's usual connect timeout and reports that it could not reach the
+  manager, the same as when no manager is running at all, and reconnection
+  attempts are bounded the same way. Likewise, the manager now drops a
+  connection that never completes its handshake after 30 seconds, where before
+  it kept it open forever.
 - `wr manager start` could delete your database and copy an older backup over
   it just because wr failed to open the file, losing every job recorded since
   that backup was taken. Nearly every way of failing to open the file counted
