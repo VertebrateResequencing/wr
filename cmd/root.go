@@ -143,49 +143,6 @@ var cmdExit = os.Exit
 // itself a symlink.
 var errDirIsSymlink = errors.New("it is a symlink")
 
-// uploadTreeCloser is the state of one closeUploadTreeIn walk.
-type uploadTreeCloser struct {
-	root   *os.Root
-	rel    string
-	closed int
-	err    error
-}
-
-// visit is the fs.WalkDirFunc that closes each directory of the tree, and
-// does not descend below the deepest hashed level, which only holds files.
-func (c *uploadTreeCloser) visit(path string, d fs.DirEntry, err error) error {
-	if err != nil {
-		c.record(err)
-
-		return fs.SkipDir
-	}
-
-	if !d.IsDir() {
-		return nil
-	}
-
-	changed, err := closedToOthersIn(c.root, path)
-	if changed {
-		c.closed++
-	}
-
-	c.record(err)
-
-	if strings.Count(strings.TrimPrefix(path, c.rel), "/") >= uploadHashedLevels {
-		return fs.SkipDir
-	}
-
-	return nil
-}
-
-// record keeps err if it is the first failure of the walk. A nil err, or one
-// saying a path does not exist, is not a failure.
-func (c *uploadTreeCloser) record(err error) {
-	if c.err == nil && err != nil && !errors.Is(err, fs.ErrNotExist) {
-		c.err = err
-	}
-}
-
 // closeWorkingDirToOthers takes other users' write permission off an existing
 // working directory, which is how an older wr's 0777 or 0775 stops letting
 // anybody on the machine delete, replace or plant a file in it.
@@ -435,6 +392,55 @@ func closeUploadTreeIn(root *os.Root, rel string) (int, error) {
 	c.record(fs.WalkDir(root.FS(), rel, c.visit))
 
 	return c.closed, c.err
+}
+
+// uploadTreeCloser is the state of one closeUploadTreeIn walk.
+type uploadTreeCloser struct {
+	root   *os.Root
+	rel    string
+	closed int
+	err    error
+}
+
+// visit is the fs.WalkDirFunc that closes each directory of the tree, and
+// does not descend below the deepest hashed level, which only holds files.
+func (c *uploadTreeCloser) visit(path string, d fs.DirEntry, err error) error {
+	if err != nil {
+		c.record(err)
+
+		return fs.SkipDir
+	}
+
+	if !d.IsDir() {
+		return nil
+	}
+
+	// a directory wr could not secure is not read either: whatever is below
+	// it was reached through a level others may still control.
+	changed, err := closedToOthersIn(c.root, path)
+	if err != nil {
+		c.record(err)
+
+		return fs.SkipDir
+	}
+
+	if changed {
+		c.closed++
+	}
+
+	if strings.Count(strings.TrimPrefix(path, c.rel), "/") >= uploadHashedLevels {
+		return fs.SkipDir
+	}
+
+	return nil
+}
+
+// record keeps err if it is the first failure of the walk. A nil err, or one
+// saying a path does not exist, is not a failure.
+func (c *uploadTreeCloser) record(err error) {
+	if c.err == nil && err != nil && !errors.Is(err, fs.ErrNotExist) {
+		c.err = err
+	}
 }
 
 // closedToOthersIn takes every permission other users have off the directory
