@@ -411,10 +411,11 @@ func TestCreateWorkingDirWalksNoSymlink(t *testing.T) {
 		So(modeOf(filepath.Dir(hashed)), ShouldEqual, sharedDirPerm)
 		So(modeOf(hashed), ShouldEqual, sharedDirPerm)
 		So(logged, ShouldContainSubstring, "so wr will not repair the upload directory")
-		So(logged, ShouldContainSubstring, "other users may be able to replace the config files")
+		So(logged, ShouldContainSubstring, "which is mode 0777, so other users have access to it")
+		So(logged, ShouldContainSubstring, "they may be able to replace the config files")
 	})
 
-	Convey("An upload tree others can only read under a symlinked working directory is warned about as listable", t,
+	Convey("An upload tree others cannot write to under a symlinked working directory is warned about by its mode", t,
 		func() {
 			target := makeDirWithMode(t, closedSharedDirPerm)
 			makeUploadTree(target, closedSharedDirPerm)
@@ -425,7 +426,7 @@ func TestCreateWorkingDirWalksNoSymlink(t *testing.T) {
 			_, logged := createWorkingDirUnderUmask(t, managerDir)
 
 			So(logged, ShouldContainSubstring, "so wr will not repair the upload directory")
-			So(logged, ShouldContainSubstring, "other users can list what was uploaded")
+			So(logged, ShouldContainSubstring, "which is mode 0755, so other users have access to it")
 			So(logged, ShouldNotContainSubstring, "replace")
 		})
 

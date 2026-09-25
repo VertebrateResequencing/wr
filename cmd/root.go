@@ -513,14 +513,18 @@ func warnIfUploadDirOpenBehindSymlink() {
 		return
 	}
 
-	exposure := "other users can list what was uploaded"
+	// the mode is quoted rather than described: which of read, write and
+	// search others have varies, and only write changes what they can do to
+	// the config files, so only write gets a clause of its own.
+	consequence := ""
 	if fi.Mode()&managerDirOtherWritePerms != 0 {
-		exposure = "other users may be able to replace the config files wr copies to cloud servers"
+		consequence = ", and they may be able to replace the config files wr copies to cloud servers"
 	}
 
 	warn("the working directory '%s' is a symlink, so wr will not repair the upload directory '%s' "+
-		"below it, which is %s: %s. Check the target yourself; 'chmod -R go-rwx %s' closes it",
-		config.ManagerDir, config.ManagerUploadDir, fi.Mode(), exposure, config.ManagerUploadDir)
+		"below it, which is mode %04o, so other users have access to it%s. Check the target yourself; "+
+		"'chmod -R go-rwx %s' closes it",
+		config.ManagerDir, config.ManagerUploadDir, fi.Mode().Perm(), consequence, config.ManagerUploadDir)
 }
 
 // warnUploadDirStillOpen tells the operator that wr could not close the
