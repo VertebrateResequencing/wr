@@ -384,6 +384,14 @@ runnerexecshell: "bash"
 # a zombie. An untrusted answer, or any ssh error, means "still running / cannot
 # confirm".
 #
+# This command replaced the older one:
+#
+#   ps -o stat= -p <pid> 2>/dev/null || test $? -eq 1
+#
+# If you have a forced command that only allows wr's exact old string, update
+# it, or no lost job on that host will ever be confirmed dead. The example
+# forced commands below are unaffected.
+#
 # For security you may want to restrict this key so it can ONLY run a ps check
 # on your farm nodes, via a forced command in the remote ~/.ssh/authorized_keys.
 # Such a command answers with no wr-ps-batch line, and the manager then reads

@@ -107,6 +107,10 @@ const loggableProcessOutputMax = 120
 // which every other pid is absent, and so dead.
 const psBatchMarker = "wr-ps-batch"
 
+// markerLineFields is how many fields a well-formed psBatchMarker line has: the
+// marker and the shell's pid.
+const markerLineFields = 2
+
 // maxPidsPerPsCommand caps the pids in one batched ps. It keeps the command far
 // below Linux's 128KiB limit on a single argument, since the remote shell gets
 // the whole command as one `sh -c` argument.
@@ -1007,7 +1011,7 @@ func findProcessCheckAnswer(output string) (int, []string, bool) {
 	}
 
 	fields := strings.Fields(lines[marker])
-	if len(fields) != 2 { //nolint:mnd
+	if len(fields) != markerLineFields {
 		return 0, lines[marker+1:], true
 	}
 
