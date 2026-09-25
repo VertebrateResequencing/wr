@@ -359,7 +359,7 @@ func TestKillProcessCommandContract(t *testing.T) {
 	const pid = 424242
 
 	killStr := killProcessCommand(pid)
-	psStr := fmt.Sprintf("ps -o stat= -p %d 2>/dev/null || test $? -eq 1", pid)
+	psStr := processCheckCommand([]int{pid})
 
 	Convey("The kill command string satisfies the forced-command contract", t, func() {
 		Convey("(a) it starts with the kill marker an updated forced command branches on", func() {

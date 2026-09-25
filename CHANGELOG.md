@@ -91,6 +91,14 @@ project adheres to [Semantic Versioning](http://semver.org/).
   as the examples in the config file, that command answers for one job at a
   time; the manager notices and still checks each one separately, but now gives
   each check its own 15 seconds, so none of them are left waiting.
+- The manager could decide a lost job's process had died, and so rerun the job
+  while it was still running, if `ps` on the job's host failed without printing
+  anything, for example because it did not accept the options the manager
+  passed. The check now also asks `ps` about the remote shell running it, and
+  confirms nothing unless `ps` lists that shell. If your `privatekeypath` key is
+  restricted by a forced command, that command's output has no room for this
+  check, so make sure the `ps` it runs prints nothing only for a pid that does
+  not exist.
 - `wr manager start` could delete your database and copy an older backup over
   it just because wr failed to open the file, losing every job recorded since
   that backup was taken. Nearly every way of failing to open the file counted

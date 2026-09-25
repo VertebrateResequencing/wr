@@ -374,27 +374,32 @@ runnerexecshell: "bash"
 # slot). So if this check never succeeds, lost jobs are never reclaimed, limit
 # groups fill up with dead-but-uncleared jobs, and scheduling can grind to a
 # halt. To check all of a host's lost jobs in one ssh round trip, the manager
-# first runs:
+# runs:
 #
-#   echo wr-ps-batch; ps -o pid=,stat= -p <pid>,<pid>,... 2>/dev/null || test $? -eq 1
+#   echo wr-ps-batch $$; ps -o pid=,stat= -p <pid>,$$,<pid>,... 2>/dev/null || test $? -eq 1
 #
-# and treats a pid missing from the output after the wr-ps-batch line as dead.
-# If that line is missing (as it is with the forced commands below), or the
-# command fails without timing out, it checks each pid in its own ssh round
-# trip instead, with:
+# The remote shell's own pid ($$) is a sentinel: the answer is trusted only if
+# ps lists it as running, so a ps that fails without printing anything never
+# makes a live job look dead. A pid missing from a trusted answer is dead, as is
+# a zombie. An untrusted answer, or any ssh error, means "still running / cannot
+# confirm".
 #
-#   ps -o stat= -p <pid> 2>/dev/null || test $? -eq 1
+# For security you may want to restrict this key so it can ONLY run a ps check
+# on your farm nodes, via a forced command in the remote ~/.ssh/authorized_keys.
+# Such a command answers with no wr-ps-batch line, and the manager then reads
+# its output as the raw output of:
 #
-# and it treats EMPTY output as "process is dead" (a non-empty process state, or
-# any ssh error, means "still running / cannot confirm").
+#   ps -o stat= -p <first pid>
 #
-# For security you may want to restrict this key so it can ONLY run that ps
-# check on your farm nodes, via a forced command in the remote
-# ~/.ssh/authorized_keys. IMPORTANT: the forced command must reproduce the raw
-# 'ps -o stat=' output above (empty for a dead pid) - a wrapper that instead
-# returns a transformed value (e.g. a line count from '... | wc -l') will make
-# every check look like "still running" and cause the stall described above. A
-# working example (single line; substitute your own key and comment):
+# treating EMPTY output as "process is dead" and a process state as "still
+# running", and asks about each other pid in its own ssh round trip. That output
+# has no room for a sentinel, so make sure the ps on your nodes prints nothing
+# only for a pid that does not exist. IMPORTANT: the forced command must
+# reproduce that raw 'ps -o stat=' output (empty for a dead pid) - a wrapper
+# that instead returns a transformed value (e.g. a line count from
+# '... | wc -l') will make every check look like "still running" and cause the
+# stall described above. A working example (single line; substitute your own
+# key and comment):
 #
 ` +
 	`#   command="p=$(echo \"$SSH_ORIGINAL_COMMAND\" | grep -oE '[-]p [0-9]+' | grep -oE '[0-9]+' | head -1); ` +
@@ -403,9 +408,9 @@ runnerexecshell: "bash"
 #
 # This extracts only the pid from whatever command wr sends and runs the ps
 # check on it, so the key cannot be used to run anything else, while still
-# returning exactly what the manager expects. It answers the batched check for
-# its first pid only, so the manager falls back to one ssh round trip per pid,
-# which is slower when many jobs are lost on one host.
+# returning exactly what the manager expects. It answers for the first pid only,
+# so the manager needs one ssh round trip per pid, which is slower when many
+# jobs are lost on one host.
 #
 # BACKSTOP KILL (optional): wr can additionally force-kill a wedged runner that
 # has gone silent for far longer than any plausible archive delay
@@ -425,7 +430,7 @@ runnerexecshell: "bash"
 #
 # This still only ever runs 'ps' or 'kill -9' on a digits-only pid extracted from
 # what wr sends - no arbitrary commands, no injection. wr sends either the ps check
-# 'ps -o stat= -p <pid> 2>/dev/null || test $? -eq 1' (matched by the *) branch) or
+# above, starting 'echo wr-ps-batch' (matched by the *) branch), or
 # the kill 'kill -9 <pid> 2>/dev/null || true # wr-kill -p <pid>' (matched by the
 # kill*) branch); both carry the pid in the same '-p <pid>' token the extractor
 # reads. And because the forced command runs as the login user (not root), 'kill

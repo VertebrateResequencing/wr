@@ -189,3 +189,75 @@ func slowHost(perCall time.Duration, forced bool) func(context.Context, string, 
 		return string(out), "", err
 	}
 }
+
+// TestConfirmDeadRoundEndsOnStop guards that a confirm-dead round, which on a
+// forced-command host costs a round trip per pid, gives up its in-flight check
+// when the server stops rather than holding its slot until the check timeout.
+func TestConfirmDeadRoundEndsOnStop(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Stopping the server cancels an in-flight confirm-dead check", t, func() {
+		ctx := context.Background()
+		_, serverConfig, _, _, _ := jobqueueTestInit(true)
+		serverConfig.SchedulerName = schedulerNameMock
+		serverConfig.RunnerCmd = mockRunnerCmd
+
+		started := make(chan struct{}, 1)
+		cancelled := make(chan struct{}, 1)
+
+		serverConfig.SchedulerConfig = &jqs.ConfigMock{
+			RunnerFunc: func(context.Context, string) {},
+			RunCmdFunc: func(ctx context.Context, _ string, _ bool) (string, string, error) {
+				select {
+				case started <- struct{}{}:
+				default:
+				}
+
+				<-ctx.Done()
+
+				select {
+				case cancelled <- struct{}{}:
+				default:
+				}
+
+				return "", "", errSlowHostCancelled
+			},
+		}
+
+		server, _, _, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		stopped := false
+
+		defer func() {
+			if !stopped {
+				server.Stop(ctx, true)
+			}
+		}()
+
+		server.confirmOrReleaseLostJob(ctx, lostJobDetails{
+			key: "stopkey", host: "slownode", pid: 1000, runnerPid: 5000,
+			checkTimeout: time.Hour, checkRetryTime: time.Hour,
+		})
+
+		So(waitForSignal(started, 10*time.Second), ShouldBeTrue)
+
+		server.Stop(ctx, true)
+
+		stopped = true
+
+		So(waitForSignal(cancelled, 10*time.Second), ShouldBeTrue)
+	})
+}
+
+// waitForSignal reports whether ch receives within timeout.
+func waitForSignal(ch <-chan struct{}, timeout time.Duration) bool {
+	select {
+	case <-ch:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
