@@ -205,9 +205,11 @@ func TestKillAfterCmdExitKillsNothing(t *testing.T) {
 
 			So(jq.Execute(ctx, reserved, "/bin/sh"), ShouldBeNil)
 
-			touchesAfterKill := touches.Load() - touchesAtKill.Load()
+			touchesAtExecuteEnd := touches.Load()
 
 			So(<-killed, ShouldEqual, 1)
+
+			touchesAfterKill := touchesAtExecuteEnd - touchesAtKill.Load()
 
 			select {
 			case <-standInDone:
