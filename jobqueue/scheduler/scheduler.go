@@ -54,6 +54,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -98,6 +99,17 @@ const cannotConfirmWarnInterval = time.Minute
 // command (see ProcessNotRunningOnHost's CONTRACT WARNING) that emits many lines or
 // a large banner from blowing up the manager log.
 const loggableProcessOutputMax = 120
+
+// psBatchMarker is echoed ahead of the batched ps, so its presence in the output
+// proves a real shell ran the whole command. A forced command that runs only the
+// single-pid ps never prints it, so its answer about one pid is never mistaken
+// for a batch answer in which every other pid is absent, and so dead.
+const psBatchMarker = "wr-ps-batch"
+
+// maxPidsPerPsCommand caps the pids in one batched ps. It keeps the command far
+// below Linux's 128KiB limit on a single argument, since the remote shell gets
+// the whole command as one `sh -c` argument.
+const maxPidsPerPsCommand = 1000
 
 // processLiveness is the outcome of interpreting a host's `ps` output for a pid.
 type processLiveness int
@@ -163,18 +175,25 @@ func (s *Scheduler) warnCannotConfirm(ctx context.Context, hostName string, pid 
 // ProcessesNotRunningOnHost checks, over a SINGLE reused connection to hostName,
 // whether each pid in pids is still running, returning a map from pid to
 // not-running (true means the process is gone, i.e. confirmed dead). It opens the
-// host connection ONCE (getHost), runs the same per-pid check as
-// ProcessNotRunningOnHost over that one connection for every pid -- so all of a
-// dead host's lost-job pid checks share one ssh client instead of dialling one
-// connection per check -- then closes the connection once.
+// host connection ONCE (getHost) and closes it once, so all of a dead host's
+// lost-job pid checks share one ssh client instead of dialling one connection per
+// check.
 //
-// A pid whose liveness cannot be determined (the host could not be obtained, its
-// ps command failed, or the output was unrecognised) maps to false, exactly as
-// ProcessNotRunningOnHost returns false in those cases, so a lost job is never
-// falsely confirmed dead by an inconclusive check. The whole batch is bounded by
-// the caller's context: a cancelled/timed-out context fails the remaining checks
-// closed (false), leaving those jobs parked for a later retry.
-func (s *Scheduler) ProcessesNotRunningOnHost(ctx context.Context, hostName string, pids []int) map[int]bool {
+// It asks about all the pids in one remote command (see batchProcessCommand), so
+// a round costs one round trip however many pids there are, and that round trip
+// is bounded by timeout. If the host does not answer that command the way a real
+// shell would (a forced command, see ProcessNotRunningOnHost's CONTRACT WARNING,
+// runs only the single-pid ps on the first pid it finds), it falls back to
+// ProcessNotRunningOnHost's single-pid check for each pid, each bounded by its own
+// timeout, so a slow host cannot leave the later pids of a big batch unchecked.
+//
+// A pid whose liveness cannot be determined (the host could not be obtained, the
+// batch timed out, or the per-pid check failed or was unrecognised) maps to
+// false, exactly as ProcessNotRunningOnHost returns false in those cases, so a
+// lost job is never falsely confirmed dead by an inconclusive check.
+func (s *Scheduler) ProcessesNotRunningOnHost(ctx context.Context, hostName string, pids []int,
+	timeout time.Duration,
+) map[int]bool {
 	notRunning := make(map[int]bool, len(pids))
 
 	if len(pids) == 0 {
@@ -194,11 +213,99 @@ func (s *Scheduler) ProcessesNotRunningOnHost(ctx context.Context, hostName stri
 
 	defer host.Close(ctx)
 
-	for _, pid := range pids {
-		notRunning[pid] = s.processNotRunningOnHost(ctx, host, hostName, pid)
+	for chunk := range slices.Chunk(pids, maxPidsPerPsCommand) {
+		s.checkProcessBatch(ctx, host, hostName, chunk, timeout, notRunning)
 	}
 
 	return notRunning
+}
+
+// checkProcessBatch records in notRunning whether each of pids is running on
+// host, using one batched ps bounded by timeout. A batch that timed out (or whose
+// ctx ended) leaves every pid unconfirmed; one that failed otherwise, or whose
+// output is not a batch answer, falls back to a per-pid check for each pid.
+func (s *Scheduler) checkProcessBatch(ctx context.Context, host Host, hostName string, pids []int,
+	timeout time.Duration, notRunning map[int]bool,
+) {
+	batchCtx, cancel := context.WithTimeout(ctx, timeout)
+	stdo, _, err := host.RunCmd(batchCtx, batchProcessCommand(pids), false)
+	ended := batchCtx.Err() != nil
+
+	cancel()
+
+	if err != nil && ended {
+		for _, pid := range pids {
+			s.warnCannotConfirm(ctx, hostName, pid, "the remote ps command failed: "+err.Error())
+
+			notRunning[pid] = false
+		}
+
+		return
+	}
+
+	if dead, ok := parseBatchProcessStates(stdo, pids); err == nil && ok {
+		maps.Copy(notRunning, dead)
+
+		return
+	}
+
+	for _, pid := range pids {
+		pidCtx, cancelPid := context.WithTimeout(ctx, timeout)
+		notRunning[pid] = s.processNotRunningOnHost(pidCtx, host, hostName, pid)
+
+		cancelPid()
+	}
+}
+
+// batchProcessCommand returns the remote command that reports the pid and ps stat
+// of every one of pids that exists, after a psBatchMarker line. It starts with
+// "echo" rather than "kill", and carries a "-p <pid>" token, so the forced
+// commands documented in cmd/conf.go treat it as a ps check of its first pid.
+func batchProcessCommand(pids []int) string {
+	list := make([]string, len(pids))
+	for i, pid := range pids {
+		list[i] = strconv.Itoa(pid)
+	}
+
+	return fmt.Sprintf("echo %s; ps -o pid=,stat= -p %s 2>/dev/null || test $? -eq 1",
+		psBatchMarker, strings.Join(list, ","))
+}
+
+// parseBatchProcessStates interprets the output of batchProcessCommand(pids),
+// returning a map from each of pids to not-running, and true. A pid absent from
+// the output is not running, as is a zombie; any other listed pid is running. It
+// returns false if the output has no psBatchMarker line, or if any line after it
+// is not a "<pid> <stat>" pair for one of pids, since the output then did not come
+// from the batched ps and cannot be trusted to name every live pid.
+func parseBatchProcessStates(output string, pids []int) (map[int]bool, bool) {
+	lines, ok := linesAfterBatchMarker(output)
+	if !ok {
+		return nil, false
+	}
+
+	dead := make(map[int]bool, len(pids))
+	for _, pid := range pids {
+		dead[pid] = true
+	}
+
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		pid, state, ok := parseProcessLine(line)
+		if !ok {
+			return nil, false
+		}
+
+		if _, requested := dead[pid]; !requested {
+			return nil, false
+		}
+
+		dead[pid] = interpretProcessState(state) == processDead
+	}
+
+	return dead, true
 }
 
 // processNotRunningOnHost runs the `ps -o stat= -p <pid>` liveness-check command
@@ -699,6 +806,11 @@ func (s *Scheduler) GetHost(hostName string) Host {
 // KillProcessOnHost sends a second, parallel command (`kill -9 <pid>`) under the
 // same forced-command contract; see its CONTRACT WARNING and the cmd/conf.go
 // example that parses BOTH the ps string here and that kill string.
+//
+// ProcessesNotRunningOnHost first sends a batched ps (batchProcessCommand) under
+// the same contract. It trusts only output carrying psBatchMarker, and otherwise
+// falls back to the command here, so a forced command that runs only this one
+// keeps working.
 func (s *Scheduler) ProcessNotRunningOnHost(ctx context.Context, pid int, hostName string) bool {
 	host, ok := s.impl.getHost(hostName)
 	if !ok {
@@ -758,6 +870,37 @@ func (s *Scheduler) KillProcessOnHost(ctx context.Context, pid int, hostName str
 // remaining jobs in its system and clean up any other used resources.
 func (s *Scheduler) Cleanup(ctx context.Context) {
 	s.impl.cleanup(s.typeContext(ctx))
+}
+
+// linesAfterBatchMarker returns the lines of output that follow its psBatchMarker
+// line, or false if it has none.
+func linesAfterBatchMarker(output string) ([]string, bool) {
+	lines := strings.Split(output, "\n")
+
+	marker := slices.IndexFunc(lines, func(line string) bool {
+		return strings.TrimSpace(line) == psBatchMarker
+	})
+	if marker < 0 {
+		return nil, false
+	}
+
+	return lines[marker+1:], true
+}
+
+// parseProcessLine splits one line of `ps -o pid=,stat=` output into its pid and
+// stat, returning false unless it is exactly a positive pid and a valid stat.
+func parseProcessLine(line string) (int, string, bool) {
+	fields := strings.Fields(line)
+	if len(fields) != 2 || !isProcessState(fields[1]) {
+		return 0, "", false
+	}
+
+	pid, err := strconv.Atoi(fields[0])
+	if err != nil || pid <= 0 {
+		return 0, "", false
+	}
+
+	return pid, fields[1], true
 }
 
 // isProcessState reports whether state is a single, whitespace-free ps stat token

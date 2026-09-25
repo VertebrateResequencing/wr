@@ -263,7 +263,8 @@ func TestReservedRunDoesNotAnswerForThePreviousRunsRunner(t *testing.T) {
 			d, ok := r.server.lostJobRetryCheck(r.key)
 			So(ok, ShouldBeTrue)
 
-			notRunning := r.server.scheduler.ProcessesNotRunningOnHost(ctx, d.host, batchPids([]lostJobDetails{d}))
+			notRunning := r.server.scheduler.ProcessesNotRunningOnHost(ctx, d.host,
+				batchPids([]lostJobDetails{d}), d.checkTimeout)
 			So(jobConfirmedDead(d, notRunning), ShouldBeTrue)
 		})
 	})

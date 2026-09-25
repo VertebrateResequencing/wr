@@ -373,7 +373,15 @@ runnerexecshell: "bash"
 # process is dead, the job is left occupying its slot (including any limit-group
 # slot). So if this check never succeeds, lost jobs are never reclaimed, limit
 # groups fill up with dead-but-uncleared jobs, and scheduling can grind to a
-# halt. The exact command the manager runs over ssh is:
+# halt. To check all of a host's lost jobs in one ssh round trip, the manager
+# first runs:
+#
+#   echo wr-ps-batch; ps -o pid=,stat= -p <pid>,<pid>,... 2>/dev/null || test $? -eq 1
+#
+# and treats a pid missing from the output after the wr-ps-batch line as dead.
+# If that line is missing (as it is with the forced commands below), or the
+# command fails without timing out, it checks each pid in its own ssh round
+# trip instead, with:
 #
 #   ps -o stat= -p <pid> 2>/dev/null || test $? -eq 1
 #
@@ -395,7 +403,9 @@ runnerexecshell: "bash"
 #
 # This extracts only the pid from whatever command wr sends and runs the ps
 # check on it, so the key cannot be used to run anything else, while still
-# returning exactly what the manager expects.
+# returning exactly what the manager expects. It answers the batched check for
+# its first pid only, so the manager falls back to one ssh round trip per pid,
+# which is slower when many jobs are lost on one host.
 #
 # BACKSTOP KILL (optional): wr can additionally force-kill a wedged runner that
 # has gone silent for far longer than any plausible archive delay

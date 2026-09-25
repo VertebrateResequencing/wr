@@ -81,6 +81,16 @@ project adheres to [Semantic Versioning](http://semver.org/).
   attempts are bounded the same way. Likewise, the manager now drops a
   connection that never completes its handshake after 30 seconds, where before
   it kept it open forever.
+- Jobs whose runner died soon after starting no longer sit lost for 30 minutes
+  or more when several died on the same host. To confirm they were dead, the
+  manager ran one ssh command per job on that host, one after another, all
+  within a single 15 second limit, so on a node whose login shell is slow only
+  the first few were confirmed and the rest waited out the lost-job retry time
+  before being tried again. It now asks about all of a host's jobs in one ssh
+  command. If your `privatekeypath` key is restricted by a forced command, such
+  as the examples in the config file, that command answers for one job at a
+  time; the manager notices and still checks each one separately, but now gives
+  each check its own 15 seconds, so none of them are left waiting.
 - `wr manager start` could delete your database and copy an older backup over
   it just because wr failed to open the file, losing every job recorded since
   that backup was taken. Nearly every way of failing to open the file counted
