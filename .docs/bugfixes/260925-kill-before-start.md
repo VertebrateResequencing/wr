@@ -205,3 +205,26 @@
     the kill if the child is gone, or its pid now belongs to a different
     process. If the start time couldn't be read when the child was listed, it
     logs at debug and skips the kill, rather than killing blind.
+- [x] Copilot on PR #614 (thread PRRT_kwDOAKD33M6mJAsg, client.go:~2608): once
+  the touch loop had decided to carry out a server kill (the command had
+  started and had not yet been waited for), it stopped the touch ticker and
+  returned, whatever the kill did. If the command was waited for between that
+  decision and `killCmd`, the kill did nothing (`acted` false), yet the loop
+  still stopped touching for the rest of Execute's post-exit work. The job was
+  already reported correctly: `killDoneCh` carries `acted`, so
+  `serverKillCalled` was false and the job was not reported killed.
+  - Red: `TestKillRacingCmdExitKeepsTouching` in
+    jobqueue/kill_after_exit_test.go. A new in-package seam,
+    `Client.beforeServerKillHook`, runs between the touch loop's decision and
+    the kill. The test uses it with `afterWaitHook` to hold a kill that was
+    decided while the command (`sleep 0.5`) ran, until the command has been
+    waited for. The job's OnExit behaviour then holds until released, and the
+    test requires 3 more touches during that hold. It also checks that the kill
+    was held once, so the race was really exercised, and that the job ends
+    complete. Before the fix it failed at `Line 424` (`Expected: true`,
+    `Actual: false`): touches stopped. After the fix it passes 3/3.
+  - Fix: `killForServer` still always sends `acted` on `killDoneCh`, since
+    Execute waits on it whenever `killCalled` is set. It now also returns
+    `acted`, and queues `stopChecking` only if the kill acted. The touch loop
+    stops its ticker and returns only when the kill acted. Otherwise it carries
+    on touching, and every later kill reply is dropped by its `cmdWaited` check.

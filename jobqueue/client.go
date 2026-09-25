@@ -1169,6 +1169,11 @@ type Client struct {
 	// for the command, so in-package tests can make something happen then.
 	afterWaitHook func()
 
+	// beforeServerKillHook, if set, is called by Execute()'s touch loop once it
+	// has decided to carry out a kill the server asked for, just before it does,
+	// so in-package tests can make the command exit in between.
+	beforeServerKillHook func()
+
 	// processStartHook, if set, is used by in-package tests in place of reading
 	// a process's start time, which is what tells a killed command's child apart
 	// from a later process given the same pid.
@@ -2563,14 +2568,21 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// killDoneCh carries is whether the kill acted.
 	var serverKillErr error
 
+	// killForServer always sends on killDoneCh, since Execute waits on it
+	// whenever killCalled is set, and returns whether the kill acted: it does
+	// not if the command was waited for after the kill was decided on.
 	killDoneCh := make(chan bool, 1)
-	killForServer := func() {
+	killForServer := func() bool {
 		acted, errk := killCmd()
 		serverKillErr = errk
 
 		killDoneCh <- acted
 
-		stopChecking <- true
+		if acted {
+			stopChecking <- true
+		}
+
+		return acted
 	}
 
 	go func() {
@@ -2602,8 +2614,18 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 						continue
 					}
 
+					if c.beforeServerKillHook != nil {
+						c.beforeServerKillHook()
+					}
+
+					// a kill that did not act leaves the command to have
+					// ended of its own accord, and Execute still to finish, so
+					// keep touching until told to stop.
+					if !killForServer() {
+						continue
+					}
+
 					touchTicker.Stop()
-					killForServer()
 
 					return
 				}

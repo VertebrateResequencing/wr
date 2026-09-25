@@ -330,6 +330,123 @@ func killOnceFileExists(jq *Client, job *Job, path string) int {
 	return 0
 }
 
+// TestKillRacingCmdExitKeepsTouching: a kill the touch loop decides to carry
+// out while the command is running, but that only reaches killCmd once the
+// command has exited and been waited for, does nothing. The touch loop must
+// then carry on touching through Execute's post-exit work, and the job must be
+// reported as its command ended, not as killed.
+func TestKillRacingCmdExitKeepsTouching(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+	config, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(false)
+	serverConfig.Timings.TouchInterval = 50 * time.Millisecond
+
+	Convey("Given a live manager and a job whose exit behaviour waits to be released", t, func() {
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		var touches atomic.Int32
+
+		jq.liveTouchHook = func(*JobEndState) { touches.Add(1) }
+
+		// the kill is decided while the command runs, and held until the
+		// command has been waited for.
+		waited := make(chan struct{})
+		jq.afterWaitHook = func() { close(waited) }
+
+		var heldKills atomic.Int32
+
+		jq.beforeServerKillHook = func() {
+			heldKills.Add(1)
+
+			select {
+			case <-waited:
+			case <-time.After(killAfterExitWait):
+			}
+		}
+
+		cwd := filepath.Join(t.TempDir(), "job")
+		So(os.MkdirAll(cwd, 0o700), ShouldBeNil)
+
+		dir := t.TempDir()
+		behaving := filepath.Join(dir, "behaving")
+		release := filepath.Join(dir, "release")
+
+		const repGroup = "kill_racing_exit"
+
+		job := &Job{
+			Cmd: "sleep 0.5", Cwd: cwd, CwdMatters: true,
+			RepGroup: repGroup, ReqGroup: repGroup,
+			Requirements: &jqs.Requirements{RAM: 10, Time: time.Minute, Cores: 0, Other: make(map[string]string)},
+			Behaviours: Behaviours{{
+				When: OnExit, Do: Run,
+				Arg: "touch " + behaving + "; for i in $(seq 200); do [ -e " + release +
+					" ] && break; sleep 0.05; done",
+			}},
+		}
+
+		added, _, err := jq.Add([]*Job{job}, os.Environ(), true)
+		So(err, ShouldBeNil)
+		So(added, ShouldEqual, 1)
+
+		reserved, err := jq.Reserve(2 * time.Second)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		Convey("Touches keep flowing through the post-exit work, and the job completes", func() {
+			killed := make(chan int, 1)
+			kept := make(chan bool, 1)
+
+			go func() {
+				killed <- killOnceStarted(jq, job)
+
+				kept <- fileAppears(behaving, killAfterExitWait) &&
+					touchesRise(&touches, killAfterExitTouches, killAfterExitWait)
+
+				f, errc := os.Create(release)
+				if errc == nil {
+					f.Close()
+				}
+			}()
+
+			So(jq.Execute(ctx, reserved, "/bin/sh"), ShouldBeNil)
+			So(<-killed, ShouldEqual, 1)
+			So(<-kept, ShouldBeTrue)
+			So(heldKills.Load(), ShouldEqual, 1)
+
+			jobs, errg := jq.GetByRepGroup(repGroup, false, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 1)
+			So(jobs[0].State, ShouldEqual, JobStateComplete)
+		})
+	})
+}
+
+// fileAppears reports whether path exists within wait.
+func fileAppears(path string, wait time.Duration) bool {
+	deadline := time.Now().Add(wait)
+
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	return false
+}
+
 // touchesRise reports whether touches rises by at least n within wait.
 func touchesRise(touches *atomic.Int32, n int32, wait time.Duration) bool {
 	from := touches.Load()
