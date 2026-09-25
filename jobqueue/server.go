@@ -339,6 +339,13 @@ var deleteOnFailureHook func()
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var shutdownRunnersWaitHook func()
 
+// confirmServerDeadHook, if non-nil, is called by the goroutine that confirms a
+// bad cloud server dead, before it waits, so a test can hold that goroutine
+// while the server stops. It is a test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var confirmServerDeadHook func()
+
 // sgroup represents a scheduler group.
 const (
 	// persistentScheduleFailures is the number of consecutive scheduling
@@ -1338,6 +1345,9 @@ type Server struct {
 	// close.
 	serving     chan struct{}
 	servingOnce sync.Once
+	// stopping is closed by beginShutdown, so a wait that should not hold up
+	// shutdown can end when it starts.
+	stopping chan struct{}
 	// startupStatus writes the startup-phase sidecar that is the only operator
 	// channel while the manager is not yet reachable (spec E4).
 	startupStatus *startupStatusReporter
@@ -3108,6 +3118,29 @@ func (s *Server) scheduleRunnersAsync(ctx context.Context, group *sgroup) {
 	}()
 }
 
+// confirmServerDeadLater runs confirmServerDeadAfter in a goroutine on s.wg, so
+// shutdown waits for it before letting go of the queue, unless shutdown is
+// already under way. As in deleteJobIfRequested, holding krmutex across that
+// check and the wg.Add orders the Add before shutdown's wg.Wait, since the
+// scheduler's bad-server callback that gets here is not on s.wg.
+func (s *Server) confirmServerDeadLater(ctx context.Context, serverID string, autoConfirmDead time.Duration) {
+	s.krmutex.RLock()
+	defer s.krmutex.RUnlock()
+
+	if s.killRunners {
+		return
+	}
+
+	wgk := s.wg.Add(1)
+
+	go func() {
+		defer internal.LogPanic(ctx, "jobqueue confirm server dead", true)
+		defer s.wg.Done(wgk)
+
+		s.confirmServerDeadAfter(ctx, serverID, autoConfirmDead)
+	}()
+}
+
 func queueClosedError(op, key string) error {
 	return queue.Error{Queue: serverQueueName, Op: op, Item: key, Err: queue.ErrQueueClosed}
 }
@@ -4185,6 +4218,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		sock:                      sock,
 		tlsConfig:                 tlsConfig,
 		serving:                   make(chan struct{}),
+		stopping:                  make(chan struct{}),
 		startupStatus:             startupStatus,
 		ch:                        new(codec.BincHandle),
 		rpl:                       newRGToKeys(),
@@ -4495,7 +4529,7 @@ func (s *Server) recordBadServerState(ctx context.Context, server *cloud.Server,
 
 	// arrange to confirm this dead after the configured time
 	if autoConfirmDead > 0 {
-		go s.confirmServerDeadAfter(ctx, server.ID, autoConfirmDead)
+		s.confirmServerDeadLater(ctx, server.ID, autoConfirmDead)
 	}
 
 	return false
@@ -4526,7 +4560,18 @@ func (s *Server) handleBadServerUpdate(ctx context.Context, server *cloud.Server
 // still bad for at least that long, destroys it, kills its jobs and clears the
 // web interface warning about it.
 func (s *Server) confirmServerDeadAfter(ctx context.Context, serverID string, autoConfirmDead time.Duration) {
-	<-time.After(autoConfirmDead)
+	if confirmServerDeadHook != nil {
+		confirmServerDeadHook()
+	}
+
+	timer := time.NewTimer(autoConfirmDead)
+	defer timer.Stop()
+
+	select {
+	case <-s.stopping:
+		return
+	case <-timer.C:
+	}
 	s.bsmutex.Lock()
 	defer s.bsmutex.Unlock()
 
@@ -6473,8 +6518,10 @@ func (s *Server) killJobOnServer(ctx context.Context, job *Job) bool {
 
 	// try and grab the latest job state after having killed it, but still
 	// return the client version of the job
-	if item, errg := s.q.Get(job.Key()); errg == nil && item != nil {
-		refreshJobFromLiveItem(job, item)
+	if q := s.queueIfPresent(); q != nil {
+		if item, errg := q.Get(job.Key()); errg == nil && item != nil {
+			refreshJobFromLiveItem(job, item)
+		}
 	}
 
 	return true
@@ -6817,7 +6864,12 @@ func (s *Server) getQueueJobsCurrent(ctx context.Context, repGroup string, match
 }
 
 func (s *Server) getAllQueueJobs(ctx context.Context, getStd bool) []*Job {
-	allItems := s.q.AllItems()
+	q := s.queueIfPresent()
+	if q == nil {
+		return nil
+	}
+
+	allItems := q.AllItems()
 	jobs := make([]*Job, 0, len(allItems))
 
 	for _, item := range allItems {
@@ -7731,6 +7783,11 @@ func (s *Server) beginShutdown(ctx context.Context, stopSigHandling bool) bool {
 
 	if stopSigHandling {
 		close(s.stopSigHandling)
+	}
+
+	// a hand-built test Server has none
+	if s.stopping != nil {
+		close(s.stopping)
 	}
 
 	s.unscheduleAllGroups(ctx)

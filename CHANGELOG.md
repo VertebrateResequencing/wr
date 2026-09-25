@@ -77,6 +77,9 @@ project adheres to [Semantic Versioning](http://semver.org/).
   remove-on-failure behaviour (`wr add --on_failure '[{"remove":true}]'`) could
   crash instead of shutting down cleanly. It now finishes removing the command
   before it stops.
+- In the cloud, a manager stopping while it was waiting to confirm a bad server
+  dead (`--cloud_auto_confirm_dead`) could crash when that wait ran out after
+  the stop. The wait now ends when the manager stops.
 - A `wr` command or runner no longer hangs forever connecting to a manager that
   accepts connections but doesn't respond, as a frozen manager does (its
   machine still accepts connections for it). The attempt now gives up after the
