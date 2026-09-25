@@ -1511,11 +1511,10 @@ var errServePublishGaveUp = errors.New("the server's publication gave up")
 // If publication gives up, for example because another process took the
 // picked manager port before the server bound it, the server is stopped and
 // errServePublishGaveUp returned, so the test fails there instead of
-// publishexit.Exit ending the whole test binary. It can't retry with fresh ports: the caller already holds the
-// ports in its config and address.
+// publishexit.Exit ending the whole test binary. It can't retry with fresh
+// ports: the caller already holds the ports in its config and address.
 func serve(ctx context.Context, config ServerConfig) (*Server, string, []byte, error) {
-	exits := make(chan int, 1)
-	restore := publishexit.Set(func(code int) { exits <- code })
+	exits, restore := publishexit.Notify()
 
 	defer restore()
 

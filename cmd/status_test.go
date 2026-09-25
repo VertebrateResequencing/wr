@@ -1363,8 +1363,7 @@ func tryStartTestServer(ctx context.Context, t *testing.T, serverConfig jobqueue
 ) {
 	t.Helper()
 
-	exits := make(chan int, 1)
-	restore := publishexit.Set(func(code int) { exits <- code })
+	exits, restore := publishexit.Notify()
 
 	defer restore()
 
@@ -1392,7 +1391,7 @@ func tryStartTestServer(ctx context.Context, t *testing.T, serverConfig jobqueue
 
 // waitForTestServerServing waits for a test server to publish its externally
 // observable surface, reporting false if publication gave up instead (a value
-// arrived on exits, the test's publishexit.Set replacement).
+// arrived on exits, from publishexit.Notify).
 // jobqueue.Serve returns while prior-state recovery is still running, so the
 // manager port is not yet bound and jobqueue.Connect (which turns a failed dial
 // straight into ErrNoServer with no retry) would fail on every run, not

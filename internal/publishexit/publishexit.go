@@ -37,6 +37,24 @@ import "os"
 //nolint:gochecknoglobals // deliberate test seam
 var Exit = os.Exit
 
+// Notify replaces Exit with a func that reports the exit code on the returned
+// channel instead of exiting, and returns a func that restores the previous
+// Exit. The channel holds one code, and later calls are dropped rather than
+// blocking, so a server's publication can never block on it. Call it only
+// while no server is starting.
+func Notify() (exits <-chan int, restore func()) {
+	codes := make(chan int, 1)
+
+	restore = Set(func(code int) {
+		select {
+		case codes <- code:
+		default:
+		}
+	})
+
+	return codes, restore
+}
+
 // Set replaces Exit with exit and returns a func that restores the previous
 // one. With a replacement that returns, publication gives up, the server's
 // Serving() stays open, and the test can Stop the server. Call it only while no
