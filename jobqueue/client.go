@@ -887,6 +887,42 @@ func (c *Client) buryKilledBeforeStart(job *Job, jc string) error {
 	return c.buryWrapErr(job, FailReasonKilled, buryErr)
 }
 
+// newKillCmd returns the function that kills a started job's command: the
+// command itself, any docker container adopted as the job's, and the command's
+// child processes.
+func (c *Client) newKillCmd(ctx context.Context, job *Job, cmd *exec.Cmd, dm *dockerMonitor) func() error {
+	return func() error {
+		// get children first
+		children, errc := c.childProcesses(int32(cmd.Process.Pid)) //nolint:gosec // an OS pid always fits in an int32.
+
+		// then kill *** race condition if cmd spawns more children...
+		errk := cmd.Process.Kill()
+
+		if errc != nil {
+			logCmdKill(ctx, job, cmd, errk)
+
+			errk = chainKillErr(errk, errc, "getting child processes")
+		}
+
+		if dm != nil && dm.containerID != "" {
+			// kill the docker container as well
+			errk = chainKillErr(errk, dm.killContainer(ctx), "killing the docker container")
+		}
+
+		return terminateChildren(ctx, job, children, errk)
+	}
+}
+
+// childProcesses returns all the descendants of the process with the given pid;
+// see getChildProcesses.
+func (c *Client) childProcesses(pid int32) ([]*process.Process, error) {
+	if c.childProcessesHook != nil {
+		return c.childProcessesHook(pid)
+	}
+
+	return getChildProcesses(pid)
+}
+
 // stageBackup writes db to a uniquely named file in path's own directory,
 // returning that file's name for the caller to rename over path. The name is
 // unique because a fixed name is one the user may already have a file at, and
@@ -953,32 +989,6 @@ func reserveHostAndPid() (string, int) {
 	}
 
 	return host, os.Getpid()
-}
-
-// newKillCmd returns the function that kills a started job's command: the
-// command itself, any docker container adopted as the job's, and the command's
-// child processes.
-func newKillCmd(ctx context.Context, job *Job, cmd *exec.Cmd, dm *dockerMonitor) func() error {
-	return func() error {
-		// get children first
-		children, errc := getChildProcesses(int32(cmd.Process.Pid)) //nolint:gosec // an OS pid always fits in an int32.
-
-		// then kill *** race condition if cmd spawns more children...
-		errk := cmd.Process.Kill()
-
-		if errc != nil {
-			logCmdKill(ctx, job, cmd, errk)
-
-			errk = chainKillErr(errk, errc, "getting child processes")
-		}
-
-		if dm != nil && dm.containerID != "" {
-			// kill the docker container as well
-			errk = chainKillErr(errk, dm.killContainer(ctx), "killing the docker container")
-		}
-
-		return terminateChildren(ctx, job, children, errk)
-	}
 }
 
 // isDefinitiveReject reports whether a failed server report - a Started() report or
@@ -1078,6 +1088,11 @@ type Client struct {
 	// liveTouchHook is used by in-package tests to inspect the live touch state
 	// assembled during Execute().
 	liveTouchHook func(*JobEndState)
+
+	// childProcessesHook, if set, is used by in-package tests in place of
+	// getChildProcesses when Execute kills a command, to see which processes
+	// the kill would sweep up.
+	childProcessesHook func(pid int32) ([]*process.Process, error)
 
 	// reserveSchedulerID is the scheduler element id (e.g. an LSF "jobid[index]")
 	// of the runner using this client, set by the runner via
@@ -2451,19 +2466,27 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// is carried out; whichever of the touch loop and the start of the command
 	// sees both first does the kill, so it happens exactly once, and a kill that
 	// arrives before the start stops the command from being started at all.
+	//
+	// Once the command has been waited for, its pid is free for reuse, so
+	// cmdWaited then turns every kill into a no-op, and the touch loop ignores a
+	// kill it hears about after that: the command ended of its own accord.
 	var (
 		stateMutex sync.Mutex
 		killCalled bool
 		killCmd    func() error
 		killErr    error
+		cmdWaited  atomic.Bool
 	)
 
-	// killErr is written here unguarded: Execute reads it only after
+	// serverKillErr is kept apart from killErr, which the checking goroutine
+	// writes, and is written unguarded: Execute reads it only after
 	// <-killDoneCh, which orders the two, and taking stateMutex here would
 	// deadlock against Execute holding it while waiting on that channel.
+	var serverKillErr error
+
 	killDoneCh := make(chan bool, 1)
 	killForServer := func() {
-		killErr = killCmd()
+		serverKillErr = killCmd()
 		killDoneCh <- true
 
 		stopChecking <- true
@@ -2476,6 +2499,13 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				kc, errf := c.touch(job, liveState.snapshot())
 				if kc {
 					stateMutex.Lock()
+
+					if cmdWaited.Load() {
+						stateMutex.Unlock()
+
+						continue
+					}
+
 					first := !killCalled
 					killCalled = true
 					started := killCmd != nil
@@ -2666,7 +2696,14 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	cmdStarted = true
 
 	stateMutex.Lock()
-	killCmd = newKillCmd(ctx, job, cmd, dm)
+	killStartedCmd := c.newKillCmd(ctx, job, cmd, dm)
+	killCmd = func() error {
+		if cmdWaited.Load() {
+			return nil
+		}
+
+		return killStartedCmd()
+	}
 	killedDuringStart := killCalled
 	stateMutex.Unlock()
 
@@ -2821,9 +2858,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				if volume.NoSpaceLeft(ctx) {
 					clog.Warn(ctx, "aborting due to lack of disk space")
 
-					killErr = killCmd()
+					errk := killCmd()
 
 					stateMutex.Lock()
+					killErr = errk
 					ranoutDisk = true
 					stateMutex.Unlock()
 					closeReaders()
@@ -2887,6 +2925,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	errsow := <-stdoutWait
 	err = cmd.Wait()
 
+	cmdWaited.Store(true)
 	resourceTicker.Stop()
 
 	stopChecking <- true
@@ -2902,6 +2941,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	if killCalled {
 		<-killDoneCh
+
+		if killErr == nil {
+			killErr = serverKillErr
+		}
 	}
 
 	// though we have tried to track peak memory while the cmd ran (mainly to

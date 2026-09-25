@@ -36,3 +36,33 @@
     a running command. `TestJobqueueRunnerKillRequests` has a comment saying
     its Running wait also matches a reserved job, and why its Exitcode -1
     assertion holds either way.
+- [x] A kill whose touch reply arrives after `cmd.Wait` could kill an unrelated
+  process tree. This predates the first item. The touch goroutine blocked on
+  `stateMutex` until `Execute` returned, which could be minutes later, after
+  behaviours and an uploading unmount, and then ran `killCmd` anyway.
+  `cmd.Process.Kill()` is safe there, but the child sweep is not:
+  `getChildProcesses(cmd.Process.Pid)` builds a gopsutil process from the bare
+  pid, and `terminateChildren` SIGTERMs, then SIGKILLs, its descendants. If
+  the pid had been reused, that is someone else's process tree. Found in review
+  of the first item. A separate pre-existing race: the server-kill path and the
+  checking goroutine's disk branch both wrote `killErr` unguarded.
+  - Red command: `CGO_ENABLED=1 go test -tags netgo --count 1 ./jobqueue -run TestKillAfterCmdExitKillsNothing -v`
+    (jobqueue/kill_after_exit_test.go). The job's OnExit `run` behaviour
+    touches a marker and sleeps 1s. Behaviours run only after the command has
+    been waited for, so the test kills the job once the marker exists. A new
+    in-package seam, `Client.childProcessesHook`, stands in for pid reuse: it
+    names an unrelated `sleep 30` process as the old pid's child and counts
+    sweeps. Before the fix it failed:
+    ```
+    lvl=warn msg="failed to kill child of cmd" ... pid=979184
+    Line 142: Expected: 0  (the sweep ran once, after Execute returned)
+    ```
+    After the fix it passed 3/3, and 2/2 under `-race`.
+  - Fix: `Execute` sets an atomic `cmdWaited` right after `cmd.Wait`. `killCmd`
+    is now a no-op once the flag is set, which covers every caller, including
+    a disk or memory check that fires just after the wait. The touch loop
+    checks the flag under `stateMutex` and drops the kill, so a command that
+    ended of its own accord is no longer marked killed. The server-kill error
+    now goes to its own `serverKillErr`, which is ordered by `killDoneCh`.
+    `Execute` folds it into `killErr` after the wait. The disk branch now
+    writes `killErr` under `stateMutex`, as the memory and signal branches do.
