@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	code.cloudfoundry.org/bytefmt v0.77.0
-	github.com/VertebrateResequencing/muxfys/v5 v5.1.0
+	github.com/VertebrateResequencing/muxfys/v5 v5.1.1
 	github.com/VividCortex/ewma v1.2.0
 	github.com/acarl005/stripansi v0.0.0-20180116102854-5a71ef0e047d
 	github.com/carbocation/runningvariance v0.0.0-20221016154922-fd8c026dff91
@@ -27,10 +27,10 @@ require (
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
 	github.com/lindell/go-ordered-set v1.1.0
 	github.com/mattn/go-shellwords v1.0.13
+	github.com/mitchellh/go-homedir v1.1.0
 	github.com/moby/moby/api v1.55.0
 	github.com/moby/moby/client v0.5.0
 	github.com/olekukonko/tablewriter v1.1.4
-	github.com/opencontainers/image-spec v1.1.1
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/phayes/freeport v0.0.0-20220201140144-74d24b5ae9f5
 	github.com/pkg/sftp v1.13.10
@@ -88,12 +88,12 @@ require (
 	github.com/minio/crc64nvme v1.1.1 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
 	github.com/minio/minio-go/v7 v7.3.0 // indirect
-	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/olekukonko/cat v0.0.0-20250911104152-50322a0618f6 // indirect
 	github.com/olekukonko/errors v1.3.0 // indirect
 	github.com/olekukonko/ll v0.1.8 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
+	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/smarty/assertions v1.16.0 // indirect
