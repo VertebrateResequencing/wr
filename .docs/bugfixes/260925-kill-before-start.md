@@ -181,3 +181,27 @@
     decides under the lock. It unlocks before killing, then leaves the loop, so
     nothing changes the peaks after the decision. Each branch kills at most
     once, because it breaks out of the loop straight after.
+- [x] Copilot on PR #614 (thread PRRT_kwDOAKD33M6mHnQE, client.go:~1268):
+  `terminateChildren` sent each child of a killed command SIGTERM, then always
+  sent it SIGKILL after `terminateGrace`, even if the child had already exited.
+  If its pid was reused within the grace period, that delayed kill signalled
+  an unrelated process. This is the same pid-reuse class as the second item,
+  for the command's children. It predates the refactor: the old inline code at
+  d056b6f (client.go:2670-2674) did the same.
+  - Red: `TestTerminateChildrenFollowUpKill` in jobqueue/kill_cmd_test.go. Its
+    stand-in child is a real shell that ignores SIGTERM, so only the follow-up
+    SIGKILL can end it. A new in-package seam, `Client.processStartHook`,
+    stands in for reading a process's start time. With a start time that
+    differs at the recheck (the pid reused), and with a start time that can't
+    be read, the child must survive. Before the fix, both cases failed
+    (`Line 132` and `Line 141`: `Expected: false`, `Actual: true`), so the
+    stand-in was SIGKILLed. After the fix, those checks (now at lines 121 and
+    130) pass, and so do the cases where the SIGKILL must still land (the same
+    start time, and the real start time read with no hook).
+  - Fix: `terminateChildren` records each child's start time
+    (`processStart`, gopsutil's `CreateTime`) before it sends SIGTERM. After
+    the grace period, `killIfSameProcess` reads the start time again and sends
+    SIGKILL only if the pid still exists with the same start time. It skips
+    the kill if the child is gone, or its pid now belongs to a different
+    process. If the start time couldn't be read when the child was listed, it
+    logs at debug and skips the kill, rather than killing blind.

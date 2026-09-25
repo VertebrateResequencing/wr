@@ -909,7 +909,7 @@ func (c *Client) newKillCmd(ctx context.Context, job *Job, cmd *exec.Cmd, dm *do
 			errk = chainKillErr(errk, dm.killContainer(ctx), "killing the docker container")
 		}
 
-		return terminateChildren(ctx, job, children, errk)
+		return c.terminateChildren(ctx, job, children, errk)
 	}
 }
 
@@ -921,6 +921,77 @@ func (c *Client) childProcesses(pid int32) ([]*process.Process, error) {
 	}
 
 	return getChildProcesses(pid)
+}
+
+// terminateChildren tries to kill the children of a job's killed command, in
+// case killing the command did not already result in their death, and returns
+// errk with any failure to do so chained on. Each is sent SIGTERM, and then
+// SIGKILL after terminateGrace, but only if its pid still belongs to the same
+// process (see killIfSameProcess).
+func (c *Client) terminateChildren(ctx context.Context, job *Job, children []*process.Process, errk error) error {
+	var wg sync.WaitGroup
+
+	wg.Add(len(children))
+
+	for _, child := range children {
+		started, errs := c.processStart(child.Pid)
+
+		errc := child.Terminate()
+		if errc == nil {
+			clog.Info(ctx, "killed child of cmd", "cmd", job.loggableCmd(), "pid", child.Pid)
+		} else {
+			clog.Warn(ctx, "failed to kill child of cmd", "cmd", job.loggableCmd(), "pid", child.Pid, "err", errc)
+		}
+
+		errk = chainKillErr(errk, errc, "killing its child process")
+
+		go func(child *process.Process) {
+			defer wg.Done()
+
+			time.Sleep(terminateGrace)
+			c.killIfSameProcess(ctx, child, started, errs)
+		}(child)
+	}
+
+	wg.Wait()
+
+	return errk
+}
+
+// killIfSameProcess SIGKILLs child, which started at started (or whose start
+// time could not be read, giving errs), but only if its pid still belongs to a
+// process that started then. By the end of the grace period a child may have
+// exited and had its pid given to an unrelated process, which must not be
+// killed; so if that cannot be ruled out, nothing is killed.
+func (c *Client) killIfSameProcess(ctx context.Context, child *process.Process, started int64, errs error) {
+	if errs != nil {
+		clog.Debug(ctx, "not sending SIGKILL to child of cmd, since which process it is can't be told",
+			"pid", child.Pid, "err", errs)
+
+		return
+	}
+
+	now, errn := c.processStart(child.Pid)
+	if errn != nil || now != started {
+		return
+	}
+
+	child.Kill() //nolint:errcheck
+}
+
+// processStart returns the start time of the process with the given pid, which
+// tells it apart from any later process given the same pid.
+func (c *Client) processStart(pid int32) (int64, error) {
+	if c.processStartHook != nil {
+		return c.processStartHook(pid)
+	}
+
+	p, err := process.NewProcess(pid)
+	if err != nil {
+		return 0, err
+	}
+
+	return p.CreateTime()
 }
 
 // stageBackup writes db to a uniquely named file in path's own directory,
@@ -1098,6 +1169,11 @@ type Client struct {
 	// for the command, so in-package tests can make something happen then.
 	afterWaitHook func()
 
+	// processStartHook, if set, is used by in-package tests in place of reading
+	// a process's start time, which is what tells a killed command's child apart
+	// from a later process given the same pid.
+	processStartHook func(pid int32) (int64, error)
+
 	// reserveSchedulerID is the scheduler element id (e.g. an LSF "jobid[index]")
 	// of the runner using this client, set by the runner via
 	// SetReserveSchedulerID and sent on reserve requests so the server can tell
@@ -1240,36 +1316,6 @@ func (c *Client) retryStartReportLoop(ctx context.Context, startReq *clientReque
 			}
 		}
 	}
-}
-
-// terminateChildren tries to kill the children of a job's killed command, in
-// case killing the command did not already result in their death, and returns
-// errk with any failure to do so chained on.
-func terminateChildren(ctx context.Context, job *Job, children []*process.Process, errk error) error {
-	var wg sync.WaitGroup
-
-	wg.Add(len(children))
-
-	for _, child := range children {
-		errc := child.Terminate()
-		if errc == nil {
-			clog.Info(ctx, "killed child of cmd", "cmd", job.loggableCmd(), "pid", child.Pid)
-		} else {
-			clog.Warn(ctx, "failed to kill child of cmd", "cmd", job.loggableCmd(), "pid", child.Pid, "err", errc)
-		}
-
-		errk = chainKillErr(errk, errc, "killing its child process")
-
-		go func(child *process.Process) {
-			time.Sleep(terminateGrace)
-			child.Kill() //nolint:errcheck
-			wg.Done()
-		}(child)
-	}
-
-	wg.Wait()
-
-	return errk
 }
 
 // chainKillErr returns next if errk is nil, errk if next is nil, or else errk

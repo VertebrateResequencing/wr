@@ -29,7 +29,9 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/shirou/gopsutil/v4/process"
 	. "github.com/smartystreets/goconvey/convey"
@@ -39,6 +41,9 @@ var (
 	errTestKillFailed     = errors.New("kill failed")
 	errTestNextStepFailed = errors.New("next step failed")
 )
+
+// errTestNoStartTime stands in for a process start time that cannot be read.
+var errTestNoStartTime = errors.New("no start time")
 
 func TestTerminateChildren(t *testing.T) {
 	Convey("Given a child process that has already gone", t, func() {
@@ -51,7 +56,7 @@ func TestTerminateChildren(t *testing.T) {
 		Convey("terminateChildren logs the failure to terminate it, with its error", func() {
 			ctx, buf := cmdLogSyncCapture(context.Background())
 
-			errk := terminateChildren(ctx, job, []*process.Process{child}, nil)
+			errk := (&Client{}).terminateChildren(ctx, job, []*process.Process{child}, nil)
 			So(errk, ShouldNotBeNil)
 
 			out := buf.String()
@@ -84,4 +89,87 @@ func TestChainKillErr(t *testing.T) {
 			So(errors.Is(chained, next), ShouldBeTrue)
 		})
 	})
+}
+
+func TestTerminateChildrenFollowUpKill(t *testing.T) {
+	Convey("Given a child of a killed cmd that ignores SIGTERM", t, func() {
+		child, done := startTermIgnorer(t)
+		job := &Job{Cmd: "the job's cmd"}
+		c := &Client{}
+
+		var reads atomic.Int32
+
+		Convey("it is SIGKILLed after the grace period, reading its real start time", func() {
+			c.terminateChildren(context.Background(), job, []*process.Process{child}, nil) //nolint:errcheck
+
+			So(exitedSoon(done), ShouldBeTrue)
+		})
+
+		Convey("it is SIGKILLed after the grace period if it is still the same process", func() {
+			c.processStartHook = func(int32) (int64, error) { return 1000, nil }
+
+			c.terminateChildren(context.Background(), job, []*process.Process{child}, nil) //nolint:errcheck
+
+			So(exitedSoon(done), ShouldBeTrue)
+		})
+
+		Convey("it is not SIGKILLed if its pid now belongs to a different process", func() {
+			c.processStartHook = func(int32) (int64, error) { return 1000 + int64(reads.Add(1)), nil }
+
+			c.terminateChildren(context.Background(), job, []*process.Process{child}, nil) //nolint:errcheck
+
+			So(exitedSoon(done), ShouldBeFalse)
+		})
+
+		Convey("it is not SIGKILLed if what process has its pid can't be told", func() {
+			c.processStartHook = func(int32) (int64, error) { return 0, errTestNoStartTime }
+
+			ctx, buf := cmdLogSyncCapture(context.Background())
+			c.terminateChildren(ctx, job, []*process.Process{child}, nil) //nolint:errcheck
+
+			So(exitedSoon(done), ShouldBeFalse)
+			So(buf.String(), ShouldContainSubstring, "not sending SIGKILL")
+		})
+	})
+}
+
+// startTermIgnorer starts a process that ignores SIGTERM, so that only the
+// follow-up SIGKILL of terminateChildren can end it, and returns it as a child
+// process along with a channel closed once it has exited.
+func startTermIgnorer(t *testing.T) (*process.Process, <-chan struct{}) {
+	t.Helper()
+
+	cmd := exec.CommandContext(context.Background(), "sh", "-c", `trap "" TERM; while :; do sleep 0.1; done`)
+	So(cmd.Start(), ShouldBeNil)
+
+	done := make(chan struct{})
+
+	go func() {
+		cmd.Wait() //nolint:errcheck
+		close(done)
+	}()
+
+	t.Cleanup(func() {
+		cmd.Process.Kill() //nolint:errcheck
+		<-done
+	})
+
+	// let the trap be set before anything signals it
+	time.Sleep(200 * time.Millisecond)
+
+	p, err := process.NewProcess(int32(cmd.Process.Pid)) //nolint:gosec // an OS pid always fits in an int32.
+	So(err, ShouldBeNil)
+
+	return p, done
+}
+
+// exitedSoon reports whether done is closed within a second: well after
+// terminateGrace, when any follow-up SIGKILL will have been sent.
+func exitedSoon(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	case <-time.After(time.Second):
+		return false
+	}
 }
