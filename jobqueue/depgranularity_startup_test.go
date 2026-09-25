@@ -454,8 +454,15 @@ func dgsStopWithForeignListener(ctx context.Context, port func(ServerConfig) str
 	case <-time.After(dgsStopWait):
 	}
 
+	// closing the listener lets a Stop that is still waiting on it return, but
+	// that wait is bounded too, so a Stop that never returns fails the test
+	// rather than hanging it.
 	So(listener.Close(), ShouldBeNil)
-	<-stopped
+
+	select {
+	case <-stopped:
+	case <-time.After(dgsStopWait):
+	}
 
 	So(returned, ShouldBeTrue)
 }
