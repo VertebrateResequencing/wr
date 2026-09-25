@@ -74,6 +74,14 @@ const (
 	// testServerPublishTimeout bounds how long a cmd test server is given to
 	// publish itself. It is a hang detector, not a latency budget.
 	testServerPublishTimeout = 60 * time.Second
+
+	// testConnectTimeoutSeconds bounds how long a cmd test's client, or the
+	// CLI command it runs, waits to connect to the test server. A healthy
+	// connect takes milliseconds, but a loaded CI runner can stall one for
+	// seconds, so this is generous. It is a hang detector, not a latency
+	// budget.
+	testConnectTimeoutSeconds = 30
+	testConnectTimeout        = testConnectTimeoutSeconds * time.Second
 )
 
 //nolint:gosmopolitan // This test asserts local CLI rendering.
@@ -265,7 +273,7 @@ func TestStatusFiltersPendingAndDependentJobs(t *testing.T) {
 
 		defer server.Stop(ctx, true)
 
-		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
 
 		So(err, ShouldBeNil)
 		defer func() {
@@ -387,7 +395,7 @@ func TestStatusFiltersMissingDepGroups(t *testing.T) {
 
 		defer server.Stop(ctx, true)
 
-		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
 
 		So(err, ShouldBeNil)
 		defer func() {
@@ -532,7 +540,7 @@ func TestStatusDisplaysMissingDepGroups(t *testing.T) {
 
 		defer server.Stop(ctx, true)
 
-		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
 
 		So(err, ShouldBeNil)
 		defer func() {
@@ -596,7 +604,7 @@ func TestStatusDetailsPreservesHighMemoryFailureNote(t *testing.T) {
 
 		defer server.Stop(ctx, true)
 
-		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
 
 		So(err, ShouldBeNil)
 		defer func() {
@@ -641,7 +649,7 @@ func TestStatusDetailsShowsRunningLiveHeartbeatFields(t *testing.T) {
 
 		defer server.Stop(ctx, true)
 
-		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
 
 		So(err, ShouldBeNil)
 		defer func() {
@@ -698,7 +706,7 @@ func TestStatusDetailsIgnoresActualCwdOfCwdMattersJob(t *testing.T) {
 
 		defer server.Stop(ctx, true)
 
-		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
 
 		So(err, ShouldBeNil)
 		defer func() {
@@ -743,7 +751,7 @@ func TestStatusDetailsReportsImageUserOnlyForDocker(t *testing.T) {
 
 		defer server.Stop(ctx, true)
 
-		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
 
 		So(err, ShouldBeNil)
 		defer func() {
@@ -787,7 +795,7 @@ func TestStatusShowsAndFiltersSuspendedJobs(t *testing.T) {
 
 		defer server.Stop(ctx, true)
 
-		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
 
 		So(err, ShouldBeNil)
 		defer func() {
@@ -904,7 +912,7 @@ func TestStatusTableOutput(t *testing.T) {
 
 		defer server.Stop(ctx, true)
 
-		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
 
 		So(err, ShouldBeNil)
 		defer func() {
@@ -1056,7 +1064,7 @@ func TestStatusRecentSelectsArchivedJobs(t *testing.T) {
 
 		defer server.Stop(ctx, true)
 
-		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
 
 		So(err, ShouldBeNil)
 		defer func() {
@@ -1139,7 +1147,7 @@ func TestStatusRecentHonoursLimitAndHost(t *testing.T) {
 
 		defer server.Stop(ctx, true)
 
-		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+		jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
 
 		So(err, ShouldBeNil)
 		defer func() {

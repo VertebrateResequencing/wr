@@ -317,7 +317,7 @@ func withQueueCommandTestServer(t *testing.T, run func(*jobqueue.Client, *jqs.Re
 	}()
 	defer server.Stop(ctx, true)
 
-	jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 2*time.Second)
+	jq, err := jobqueue.Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, testConnectTimeout)
 
 	So(err, ShouldBeNil)
 	defer func() {
