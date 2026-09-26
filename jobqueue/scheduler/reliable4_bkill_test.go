@@ -252,8 +252,8 @@ func TestReliable4BkillBounded(t *testing.T) {
 
 		Convey("elements wr has reserved are never handed to bkill, across any batch", func() {
 			first, last := h.ids[0], h.ids[len(h.ids)-1]
-			h.s.reserved(first)
-			h.s.reserved(last)
+			h.s.claimForReserve(first)
+			h.s.claimForReserve(last)
 
 			count, err := h.s.killExcessCmds(ctx, bkillTestPrefix, 0)
 			So(err, ShouldBeNil)
