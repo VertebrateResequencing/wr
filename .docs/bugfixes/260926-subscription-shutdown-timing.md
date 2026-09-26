@@ -113,13 +113,19 @@
     `Disconnect`, which takes the same lock. Narrowing only the receive
     deadline (mutation M3 below) leaves the lock wait. The rejected
     replacement step still doesn't count lock wait against its budget. That
-    budget is 24h in production, and after this fix the only other lock
-    holder on the stop path is this 5s-bounded unsubscribe.
-  - Accepted risk: if a reconnect or another goroutine's request holds the
-    Client for the whole 5s while the manager is alive, the old
-    subscription id stays registered on the manager. A reconnect's
-    replacement registration is still removed by
-    `unsubscribeRejectedReplacement`.
+    budget is 24h in production. On the stop path it can wait behind this
+    5s-bounded unsubscribe, and behind any request the caller makes
+    concurrently on the same Client, which this fix does not bound.
+  - Accepted risk: any request that holds a shared Client's lock for the
+    whole 5s makes the unsubscribe give up without sending, leaving the
+    subscription registered on a manager that may be alive and healthy.
+    That covers a reconnect step against a slow manager, and also ordinary
+    long-held requests a caller makes concurrently on the same Client: for
+    example `Reserve(timeout)`, which a healthy manager holds open for up
+    to its timeout while nothing is ready. wr's own callers (`wr add
+    --sync`, `client.WaitForJobs`) make no such concurrent requests, but a
+    Go API user sharing one Client can. A reconnect's replacement
+    registration is still removed by `unsubscribeRejectedReplacement`.
   - After: the Convey passes with Unsubscribe taking 5.0004s and 5.0005s,
     with the stand-in resubscribe still ending on `receive time out`, which
     shows it held the lock for the whole floor.
@@ -127,6 +133,18 @@
     (receive deadline narrowed, lock wait uncounted), fails
     `Expected '11.500596418s' to be less than '6.4s'`.
   - CHANGELOG: "### Fixed" entry added.
+  - Cancel-then-Unsubscribe, which the CHANGELOG claims (added after review):
+    new Convey "Unsubscribe after cancelling the context is bounded against an
+    unresponsive manager". Same setup as above, except the subscription keeps a
+    full retry budget and a 1 minute retry wait, so it is still live when its
+    context is cancelled. The test waits for the cancellation to stop it before
+    calling `Unsubscribe`, so the context watcher's unsubscribe holds
+    `unsubOnce` and `Unsubscribe` waits on it. In 4 of 4 traced runs `Err()`
+    ended as `context canceled` joined with `errClientBusy`, which only the
+    watcher's path sets, and cancel-to-return took 5.0001-5.0010s. With
+    `unsubscribeServer` back on plain `request()` it fails with `Expected
+    '19.999677825s' to be less than '6.4s'`: 10s waiting for the lock, then 10s
+    on the floor, all while the caller waited in `Unsubscribe`.
   - Gates: `make lint` 0 issues; `go test -count=5 -run TestSubscription
     ./jobqueue/` ok (295s); `make test` 711 passed / 20 skipped (6m56s);
     `CGO_ENABLED=1 make race` 711 passed / 19 skipped (10m23s).
