@@ -32,7 +32,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -55,6 +57,73 @@ func TestGoTestLaneHonoursRunAndSkipPatterns(t *testing.T) {
 			"-race", "-run", "^(TestOpenStack)$", "-skip", "^(TestOther)$", "-p", "2",
 			pkg(testModule, "cloud"),
 		})
+	})
+}
+
+func TestRunnerStartsLanesInPriorityOrder(t *testing.T) {
+	Convey("work capped to one at a time runs in the order it was given", t, func() {
+		const (
+			items  = 45
+			limit  = 1
+			rounds = 50
+		)
+
+		want := make([]int, items)
+		for i := range want {
+			want[i] = i
+		}
+
+		inOrder := 0
+
+		for range rounds {
+			var mu sync.Mutex
+
+			started := make([]int, 0, items)
+
+			runInOrder(items, limit, func(index int) {
+				mu.Lock()
+				defer mu.Unlock()
+
+				started = append(started, index)
+			})
+
+			if slices.Equal(started, want) {
+				inOrder++
+			}
+		}
+
+		So(inOrder, ShouldEqual, rounds)
+	})
+
+	Convey("capped parallel work never runs more than the cap at once", t, func() {
+		const (
+			items = 45
+			limit = 4
+		)
+
+		var (
+			mu      sync.Mutex
+			running int
+			peak    int
+			ran     int
+		)
+
+		runInOrder(items, limit, func(int) {
+			mu.Lock()
+			running++
+			ran++
+			peak = max(peak, running)
+			mu.Unlock()
+
+			time.Sleep(time.Millisecond)
+
+			mu.Lock()
+			running--
+			mu.Unlock()
+		})
+
+		So(ran, ShouldEqual, items)
+		So(peak, ShouldEqual, limit)
 	})
 }
 
@@ -421,19 +490,23 @@ func disableLiveS3MountEnv(t *testing.T) {
 func TestRunnerPrioritizesLongLanes(t *testing.T) {
 	Convey("long lanes start before short lanes when parallelism is capped", t, func() {
 		lanes := prioritizedLanes([]Lane{
-			{Name: "jq_payload"},
+			{Name: "unlisted"},
 			{Name: "client_wait"},
 			{Name: "other"},
+			{Name: "cmd_default"},
 			{Name: "cmd_add"},
-			{Name: "runner_lost_jobs"},
+			{Name: "jq_default"},
+			{Name: "jq_reliable4"},
 		})
 
 		So(laneNames(lanes), ShouldResemble, []string{
-			"runner_lost_jobs",
+			"jq_default",
+			"jq_reliable4",
+			"cmd_default",
 			"other",
 			"client_wait",
 			"cmd_add",
-			"jq_payload",
+			"unlisted",
 		})
 	})
 }
