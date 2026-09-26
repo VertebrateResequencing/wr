@@ -73,6 +73,12 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- In the Go client, a job subscription's `Unsubscribe` could block for a
+  minute against a manager that had stopped responding, and for up to two
+  minutes if the subscription was reconnecting at the time. This happened
+  whether or not you had cancelled the subscription's context first. The same
+  wait could hold up `wr add --sync` and the `client` package's `WaitForJobs`
+  as they finished. It now gives up telling the manager after 5 seconds.
 - A manager stopping just after it buried a failed command with a
   remove-on-failure behaviour (`wr add --on_failure '[{"remove":true}]'`) could
   crash instead of shutting down cleanly. It now finishes removing the command
