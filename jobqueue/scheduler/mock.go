@@ -90,6 +90,12 @@ type ConfigMock struct {
 	// A test can count these to verify that confirm-dead checks are GROUPED onto
 	// few connections per host rather than one connection per check.
 	GetHostHook func(host string)
+
+	// ClaimForReserveFunc, if non-nil, is what claimForReserve returns for each
+	// scheduler element id, letting a test stand in for a scheduler (like LSF)
+	// that refuses an element it has decided to kill. Leave nil to allow every
+	// claim.
+	ClaimForReserveFunc func(schedulerID string) bool
 }
 
 // mockHost is a stub Host whose RunCmd delegates to a supplied function, letting
@@ -251,8 +257,15 @@ func (s *mock) setMessageCallBack(_ context.Context, _ MessageCallBack) {}
 
 func (s *mock) setBadServerCallBack(_ context.Context, _ BadServerCallBack) {}
 
-// reserved is a no-op for the mock scheduler.
-func (s *mock) reserved(_ string) {}
+// claimForReserve returns what ConfigMock.ClaimForReserveFunc does, or true if
+// that is nil.
+func (s *mock) claimForReserve(schedulerID string) bool {
+	if s.config.ClaimForReserveFunc == nil {
+		return true
+	}
+
+	return s.config.ClaimForReserveFunc(schedulerID)
+}
 
 // cleanup achieves the aims of Cleanup().
 func (s *mock) cleanup(_ context.Context) {

@@ -781,7 +781,12 @@ type lsf struct {
 	// wr has handed a job reservation to, so killExcessCmds never bkills them as
 	// excess even before bjobs reports them as RUN. Guarded by reservedMu.
 	reservedElements map[string]bool
-	reservedMu       sync.Mutex
+	// doomedElements holds the element ids killExcessCmds has decided to
+	// bkill. A runner that starts in one before LSF kills it is refused a job by
+	// claimForReserve, so the decision to kill and the hand-off of a job can
+	// never both win. Guarded by reservedMu.
+	doomedElements doomedSet
+	reservedMu     sync.Mutex
 	// killDeferred holds, per element id wr has asked bkill to kill, the earliest
 	// time wr may ask LSF to kill it again, so an identical failing kill is not
 	// re-issued every scheduling cycle. killBackoff (with killSleeper) is the
@@ -915,18 +920,26 @@ func (s *lsf) detectMemLimitMultiplier() error {
 	return nil
 }
 
-// reserved records that the given scheduler element id (an LSF "jobid[index]")
-// has been handed a wr job reservation, so killExcessCmds must never bkill it as
-// excess, even before bjobs reports it as RUN.
-func (s *lsf) reserved(schedulerID string) {
+// claimForReserve refuses the given scheduler element id (an LSF
+// "jobid[index]") if killExcessCmds has already decided to bkill it. Otherwise
+// it records the element as holding a wr job reservation, so killExcessCmds
+// never bkills it as excess, even before bjobs reports it as RUN. Both happen
+// under reservedMu, the lock killExcessCmds dooms elements under.
+func (s *lsf) claimForReserve(schedulerID string) bool {
 	s.reservedMu.Lock()
 	defer s.reservedMu.Unlock()
+
+	if s.doomedElements.contains(schedulerID) {
+		return false
+	}
 
 	if s.reservedElements == nil {
 		s.reservedElements = make(map[string]bool)
 	}
 
 	s.reservedElements[schedulerID] = true
+
+	return true
 }
 
 // snapshotReserved returns a copy of the currently reserved element ids, safe to
@@ -943,9 +956,18 @@ func (s *lsf) snapshotReserved() map[string]bool {
 	return snapshot
 }
 
-// pruneReserved drops any reserved element ids not present in the given full
-// snapshot of currently-known LSF element ids (parseBjobs excludes exited
-// elements), bounding the reserved set over a long-lived manager.
+// snapshotDoomed returns a copy of the element ids doomed by scans of jobPrefix,
+// safe to read without holding reservedMu.
+func (s *lsf) snapshotDoomed(jobPrefix string) map[string]bool {
+	s.reservedMu.Lock()
+	defer s.reservedMu.Unlock()
+
+	return s.doomedElements.ofPrefix(jobPrefix)
+}
+
+// pruneReserved drops any reserved or doomed element ids not present in the
+// given full snapshot of currently-known LSF element ids (parseBjobs excludes
+// exited elements), bounding both sets over a long-lived manager.
 func (s *lsf) pruneReserved(present map[string]bool) {
 	s.reservedMu.Lock()
 	defer s.reservedMu.Unlock()
@@ -955,6 +977,38 @@ func (s *lsf) pruneReserved(present map[string]bool) {
 			delete(s.reservedElements, id)
 		}
 	}
+
+	s.doomedElements.forgetAbsent(present)
+}
+
+// doomUnreserved is called once killExcessCmds' bjobs scan of jobPrefix has
+// finished. Under reservedMu it drops from toKill any element that claimed a
+// reservation while bjobs was running, marks the rest doomed so claimForReserve
+// refuses them, and returns the ids to kill and how many were spared. When the
+// scan was complete, it also forgets doomed elements of jobPrefix that the scan
+// no longer saw (LSF has killed them or they exited).
+func (s *lsf) doomUnreserved(jobPrefix string, toKill []string, seen map[string]bool,
+	complete bool,
+) (kill []string, spared int) {
+	s.reservedMu.Lock()
+	defer s.reservedMu.Unlock()
+
+	if complete {
+		s.doomedElements.forgetUnseen(jobPrefix, seen)
+	}
+
+	for _, id := range toKill {
+		if s.reservedElements[id] {
+			spared++
+
+			continue
+		}
+
+		s.doomedElements.add(jobPrefix, id)
+		kill = append(kill, id)
+	}
+
+	return kill, spared
 }
 
 // killElements asks LSF to kill the given excess LSF element ids. The ids are
@@ -2221,6 +2275,12 @@ func (s *lsf) countCmds(ctx context.Context, jobPrefix string, full bool) (count
 type killCollector struct {
 	reAid    *regexp.Regexp
 	reserved map[string]bool
+	// doomed holds the elements an earlier scan decided to kill. Their runners
+	// can never take a job, so they are not counted as runners.
+	doomed map[string]bool
+	// seen holds the killable id (see killableID) of each element the scan
+	// reported that has one, so doomed elements that have gone can be forgotten.
+	seen map[string]bool
 	// toKill holds just the element ids (killElements batches them into bkill
 	// argvs, so no bkill flags belong here).
 	toKill     []string
@@ -2229,12 +2289,25 @@ type killCollector struct {
 }
 
 // consider counts the given job, and if we're now over maxAllowed and the job
-// isn't running, records it for killing (and doesn't count it).
+// isn't running, records it for killing (and doesn't count it). A job an earlier
+// scan doomed is never counted, and is recorded for killing again unless it is
+// running.
 func (k *killCollector) consider(jobID, stat, jobName string) {
+	sidaid := killableID(jobID, jobName, k.reAid)
+	if sidaid != "" && k.seen != nil {
+		k.seen[sidaid] = true
+	}
+
+	if sidaid != "" && k.doomed[sidaid] {
+		if stat != "RUN" {
+			k.toKill = append(k.toKill, sidaid)
+		}
+
+		return
+	}
+
 	k.count++
 	if k.count > k.maxAllowed && stat != "RUN" {
-		sidaid := killableID(jobID, jobName, k.reAid)
-
 		if sidaid != "" && k.reserved[sidaid] {
 			// wr has handed this element a job reservation; never kill it, even
 			// though bjobs still reports it as non-RUN. Keep it counted toward
@@ -2262,19 +2335,28 @@ func (s *lsf) killExcessCmds(ctx context.Context, jobPrefix string, maxAllowed i
 	// in big rescheduling delays, and overall it seemed better (in terms of
 	// getting jobs run quicker) to allow the race condition and allow some
 	// cmds to start running and then get killed.
+	//
+	// That trade-off never extends to an element wr has handed a job: the
+	// reserved snapshot spares those known before bjobs, and doomUnreserved
+	// spares those that claimed a reservation while bjobs ran, while dooming the
+	// rest so none of them can claim one before bkill lands (DEVELOPERS.md rule
+	// 5).
 	kc := &killCollector{
 		reAid:      regexp.MustCompile(`\[(\d+)\]$`),
 		reserved:   s.snapshotReserved(),
+		doomed:     s.snapshotDoomed(jobPrefix),
+		seen:       make(map[string]bool),
 		maxAllowed: maxAllowed,
 	}
 
 	err = s.parseBjobs(ctx, jobPrefix, kc.consider)
 
-	if len(kc.toKill) > 0 {
-		s.killElements(ctx, kc.toKill)
+	toKill, spared := s.doomUnreserved(jobPrefix, kc.toKill, kc.seen, err == nil)
+	if len(toKill) > 0 {
+		s.killElements(ctx, toKill)
 	}
 
-	return kc.count, err
+	return kc.count + spared, err
 }
 
 // killableID returns the submission-id[array-index] string to pass to bkill for
