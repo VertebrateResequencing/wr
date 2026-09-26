@@ -77,6 +77,12 @@ project adheres to [Semantic Versioning](http://semver.org/).
   just picked up a command, so that command was retried or went lost. A runner
   wr has decided to kill is now given no command, and one that has picked up a
   command is never killed as excess.
+- In the Go client, a job subscription's `Unsubscribe` could block for a
+  minute against a manager that had stopped responding, and for up to two
+  minutes if the subscription was reconnecting at the time. This happened
+  whether or not you had cancelled the subscription's context first. The same
+  wait could hold up `wr add --sync` and the `client` package's `WaitForJobs`
+  as they finished. It now gives up telling the manager after 5 seconds.
 - A manager stopping just after it buried a failed command with a
   remove-on-failure behaviour (`wr add --on_failure '[{"remove":true}]'`) could
   crash instead of shutting down cleanly. It now finishes removing the command
