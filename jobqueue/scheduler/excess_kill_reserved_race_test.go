@@ -130,7 +130,23 @@ func TestExcessKillRefusesClaimFromDoomedElement(t *testing.T) {
 			s.reservedMu.Lock()
 			defer s.reservedMu.Unlock()
 
-			So(s.doomedElements, ShouldBeEmpty)
+			So(s.doomedElements.len(), ShouldEqual, 0)
+		})
+
+		Convey("a doomed element still PEND next cycle doesn't take the place of a wanted runner", func() {
+			const later = "4242[3]"
+
+			writeFakeExe(t, bjobsExe, "#!/bin/bash\n"+
+				"echo '4242 sb10 PEND normal host1 host2 wrd_fakecmd.uniq[1] Sep 26 08:00'\n"+
+				"echo '4242 sb10 PEND normal host1 host2 wrd_fakecmd.uniq[2] Sep 26 08:00'\n"+
+				"echo '4242 sb10 PEND normal host1 host2 wrd_fakecmd.uniq[3] Sep 26 08:00'\n")
+
+			count, err = s.killExcessCmds(context.Background(), bkillTestPrefix, 2)
+			So(err, ShouldBeNil)
+			So(count, ShouldEqual, 2)
+			So(bkilledIDs(t, argvFile), ShouldNotContain, later)
+			So(s.claimForReserve(later), ShouldBeTrue)
+			So(s.claimForReserve(excess), ShouldBeFalse)
 		})
 	})
 }
