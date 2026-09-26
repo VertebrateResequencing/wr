@@ -81,6 +81,12 @@ const (
 	retryOutputName = "retry_output.tmp"
 )
 
+// lostCleanupDrivers is how many lost jobs TestLostJobCleanupsAreBounded drives
+// at once. It is a literal rather than a multiple of maxConcurrentLostCleanups
+// on purpose: raising the bound without raising this too would leave the test
+// unable to reach the bound, and it then says so rather than passing.
+const lostCleanupDrivers = 64
+
 // lostRunOpts says which ordinary manager and job the fixture is to be. Each
 // combination is a case in which the reported ActualCwd is blank or stale for
 // the whole of a run, so that pinning it identifies no run at all.
@@ -578,6 +584,33 @@ func (l *lostRun) reportedState(ctx context.Context) JobState {
 	So(err, ShouldBeNil)
 
 	return l.server.itemToJob(ctx, item, false, false).State
+}
+
+// reportedStateBecomesWithin waits up to lostRunSettleTime for reportedState to
+// be state, reporting whether it was.
+func (l *lostRun) reportedStateBecomesWithin(ctx context.Context, state JobState) bool {
+	deadline := time.Now().Add(lostRunSettleTime)
+
+	for time.Now().Before(deadline) {
+		if l.reportedState(ctx) == state {
+			return true
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	return false
+}
+
+// holdTTR gives the job's queue item a TTR of d, starting now, so that no TTR
+// expiry can mark the job lost for that long. It changes nothing else about the
+// item, and leaves the job's Lost flag as it was.
+func (l *lostRun) holdTTR(ctx context.Context, d time.Duration) {
+	item, err := l.server.q.Get(l.key)
+	So(err, ShouldBeNil)
+
+	stats := item.Stats()
+	So(l.server.q.Update(ctx, l.key, item.ReserveGroup, item.Data(), stats.Priority, stats.Delay, d), ShouldBeNil)
 }
 
 // soLeavesRunQueueWithin waits up to lostRunSettleTime for the job to stop
@@ -1111,6 +1144,14 @@ func TestKillingALostJobSparesTheRunThatReplacesIt(t *testing.T) {
 
 			// and the retry still holds the reservation, so it gets to report
 			// its Started - which a job released out from under it cannot.
+			//
+			// By now the retry's own 1s TTR has expired, so it is lost, and its
+			// Started is what takes it off lost. Nothing touches it afterwards,
+			// so the TTR is held open across the Started and the check: another
+			// expiry landing between them would mark it lost again.
+			So(l.reportedStateBecomesWithin(ctx, JobStateLost), ShouldBeTrue)
+			l.holdTTR(ctx, lostRunSettleTime)
+
 			l.reportItStarted(reserved, os.Getpid())
 			So(l.reportedState(ctx), ShouldEqual, JobStateRunning)
 		})
@@ -1495,12 +1536,6 @@ func TestMintedRunTokenIsNeverTheRecoveredOne(t *testing.T) {
 		})
 	})
 }
-
-// lostCleanupDrivers is how many lost jobs TestLostJobCleanupsAreBounded drives
-// at once. It is a literal rather than a multiple of maxConcurrentLostCleanups
-// on purpose: raising the bound without raising this too would leave the test
-// unable to reach the bound, and it then says so rather than passing.
-const lostCleanupDrivers = 64
 
 // boundedCleanups is the gate every lost job's cleanup is held at, and the count
 // of how many are held there at once.
