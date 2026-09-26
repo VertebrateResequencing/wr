@@ -1868,8 +1868,13 @@ func TestSchedulerSubmissionMethodsRejectNilBehaviours(t *testing.T) {
 }
 
 func TestFakeScheduler(t *testing.T) {
+	origPretend := PretendSubmissions
+
 	Convey("Given scheduler settings configured to store add commands", t, func() {
-		PretendSubmissions = " "
+		// restored by a defer in this Convey, not a t.Cleanup, so it is unset
+		// again before any later Convey of this test runs.
+		restorePretend := setPretendSubmissionsForTest(" ")
+		defer restorePretend()
 
 		settings := SchedulerSettings{
 			Deployment: testDeployment,
@@ -2071,6 +2076,12 @@ func TestFakeScheduler(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(flags&syscall.FD_CLOEXEC, ShouldEqual, syscall.FD_CLOEXEC)
 		})
+	})
+
+	Convey("After the fake scheduler Conveys, PretendSubmissions is back as it was", t, func() {
+		// every later New in this package would otherwise quietly make a fake
+		// scheduler that records submissions instead of submitting them.
+		So(PretendSubmissions, ShouldEqual, origPretend)
 	})
 }
 

@@ -26,3 +26,15 @@
   - Fixed: the three Conveys now restore config and the startup intervals they change with a Convey `Reset` instead of `t.Cleanup`, so each Convey's overrides end with it. The slow-answering connector stays as the regression guard.
   - Red after: `go test -count=3 -run TestWaitForLiveManagerStartup ./cmd/` ok.
   - Files: cmd/manager_test.go.
+- [x] Reviewer sweep of b2d12ed found client/client_test.go TestFakeScheduler sets `PretendSubmissions = " "` and never restores it, so every later `New` in the package makes a fake scheduler that records submissions instead of submitting them.
+  - Red command: `go test -count=1 -run 'TestFakeScheduler$' ./client/`, with a trailing top-level Convey asserting PretendSubmissions equals its value at the start of the test. Exit 1:
+    ```
+      Line 2081:
+      Expected: ""
+      Actual:   " "
+    --- FAIL: TestFakeScheduler (0.00s)
+    ```
+  - Fixed: the Convey sets it through the existing `setPretendSubmissionsForTest` helper and `defer`s the restore, as TestSchedulerPretendNewMethods does. The defer runs at the end of each pass through the Convey, before any later Convey. A `t.Cleanup` would not: it runs only when the test ends, so the trailing check would still see `" "`. The trailing Convey stays as the regression guard.
+  - Red after: `go test -count=3 -run 'TestFakeScheduler$' ./client/` ok.
+  - Files: client/client_test.go.
+- Gates for items 2 and 3: `make lint` 0 issues; `CGO_ENABLED=1 go test -tags netgo -count=3 ./cmd/ ./client/` ok; `make test` passed; `CGO_ENABLED=1 make race` passed (711 passed, 19 skipped).
