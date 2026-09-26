@@ -2278,8 +2278,8 @@ type killCollector struct {
 	// doomed holds the elements an earlier scan decided to kill. Their runners
 	// can never take a job, so they are not counted as runners.
 	doomed map[string]bool
-	// seen holds the id of every element the scan reported, so doomed elements
-	// that have gone can be forgotten.
+	// seen holds the killable id (see killableID) of each element the scan
+	// reported that has one, so doomed elements that have gone can be forgotten.
 	seen map[string]bool
 	// toKill holds just the element ids (killElements batches them into bkill
 	// argvs, so no bkill flags belong here).
