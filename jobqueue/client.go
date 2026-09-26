@@ -218,6 +218,10 @@ var errGetRecentState = errors.New(
 // receive deadline as a time.Duration.
 var errRecvDeadlineType = errors.New("socket receive deadline was not a duration")
 
+// errClientBusy is returned by requestWithinIncludingLockWait when another
+// request held the client for the whole of its timeout.
+var errClientBusy = errors.New("client busy with another request for the whole timeout")
+
 const (
 	RepGroupMatchExact  RepGroupMatch = "exact"
 	RepGroupMatchSubStr RepGroupMatch = "substr"
@@ -692,10 +696,66 @@ func (c *Client) SetReserveSchedulerID(schedulerID string) {
 // ClientMinRequestTimeout (60s) floor, overrunning a budget of milliseconds.
 // Because only this request is narrowed, every other request keeps that floor
 // and a slow-but-alive server is still not mistaken for a dead one.
-func (c *Client) requestWithin(cr *clientRequest, timeout time.Duration) (sr *serverResponse, err error) {
+func (c *Client) requestWithin(cr *clientRequest, timeout time.Duration) (*serverResponse, error) {
 	c.Lock()
 	defer c.Unlock()
 
+	return c.requestWithinLocked(cr, timeout)
+}
+
+// requestWithinIncludingLockWait is requestWithin, except that timeout also
+// covers waiting for the client's lock, which requestWithin does not count: a
+// request that is itself bounded can still queue behind another that holds the
+// lock for the whole ClientMinRequestTimeout floor. If the lock is not ours in
+// time, the request is not sent and errClientBusy is returned.
+func (c *Client) requestWithinIncludingLockWait(cr *clientRequest, timeout time.Duration) (*serverResponse, error) {
+	deadline := time.Now().Add(timeout)
+
+	if !c.lockWithin(timeout) {
+		return nil, errClientBusy
+	}
+	defer c.Unlock()
+
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return nil, errClientBusy
+	}
+
+	return c.requestWithinLocked(cr, remaining)
+}
+
+// lockWithin takes the client's lock, giving up after timeout. A lock that
+// arrives after it gave up is released straight away.
+func (c *Client) lockWithin(timeout time.Duration) bool {
+	locked := make(chan struct{})
+	abandoned := make(chan struct{})
+
+	go func() {
+		c.Lock()
+
+		select {
+		case locked <- struct{}{}:
+		case <-abandoned:
+			c.Unlock()
+		}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-locked:
+		return true
+	case <-timer.C:
+		close(abandoned)
+
+		return false
+	}
+}
+
+// requestWithinLocked does the work of requestWithin, and must be called with
+// the client's lock held.
+func (c *Client) requestWithinLocked(cr *clientRequest, timeout time.Duration) (sr *serverResponse, err error) {
 	socketTimeout, err := c.recvDeadline()
 	if err != nil {
 		return nil, err

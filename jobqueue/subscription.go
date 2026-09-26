@@ -48,6 +48,11 @@ const (
 	subscriptionSocketRecvMargin = 5 * time.Second
 	subscriptionReconnectTimeout = time.Second
 	subscriptionMinReconnectWait = 10 * time.Millisecond
+
+	// subscriptionUnsubscribeTimeout bounds how long Unsubscribe, or a
+	// cancelled context, spends telling the manager, counting any wait for the
+	// client behind a reconnect step.
+	subscriptionUnsubscribeTimeout = 5 * time.Second
 )
 
 // ErrSubscriptionClosed is returned by Subscription.Err after an unrecoverable
@@ -217,11 +222,24 @@ func (s *Subscription) Unsubscribe() {
 	s.waitUntilClosed()
 }
 
+// unsubscribeServer tells the manager to drop the subscription, bounded by
+// subscriptionUnsubscribeTimeout including any wait for the client, so that
+// Unsubscribe against an unresponsive manager returns promptly. On the
+// ClientMinRequestTimeout floor it could block the caller for a minute, and
+// for as long again first if a reconnect step held the client: the step runs
+// with the production ClientRetryTime budget, which never narrows the floor.
+// Giving up is best effort, not a leak of our making: a manager that cannot
+// answer a map delete in that time is stopping or stalled, and a reconnect's
+// replacement registration is removed separately by
+// unsubscribeRejectedReplacement.
 func (s *Subscription) unsubscribeServer() error {
 	var unsubErr error
 
 	s.unsubOnce.Do(func() {
-		_, unsubErr = s.client.request(&clientRequest{Method: requestMethodUnsubscribe, SubscriptionID: s.id})
+		_, unsubErr = s.client.requestWithinIncludingLockWait(
+			&clientRequest{Method: requestMethodUnsubscribe, SubscriptionID: s.id},
+			subscriptionUnsubscribeTimeout,
+		)
 	})
 
 	return unsubErr

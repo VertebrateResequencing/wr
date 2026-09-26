@@ -70,3 +70,63 @@
   - Gates: `make lint` 0 issues; `go test -count=5 -run TestSubscription
     ./jobqueue/` ok (236s); `make test` 711 passed / 20 skipped (6m51s);
     `CGO_ENABLED=1 make race` 711 passed / 19 skipped (10m6s).
+- [x] Product bug, found by the reviewer of item 1: in the Go client,
+  `Subscription.Unsubscribe` against an unresponsive manager could block the
+  caller for 60s or more. `unsubscribeServer` was a plain `c.request()` on
+  the 60s `ClientMinRequestTimeout` floor, and it competes for the same
+  Client lock as the reconnect steps. With the production 24h
+  `ClientRetryTime` budget, `resubscribeWithinBudget` and
+  `unsubscribeRejectedReplacement` never narrow that floor, and time spent
+  waiting for the lock counts against nothing. So an `Unsubscribe` arriving
+  mid-resubscribe waited up to 60s for the lock and then 60s for its own
+  request. A cancelled context goes through the same `unsubscribeServer`
+  under `unsubOnce`, so a later `Unsubscribe` blocked behind it too. Callers:
+  `wr add --sync` (cmd/add.go) and `client.WaitForJobs` (client/client.go),
+  both via `defer sub.Unsubscribe()`.
+  - The manager doesn't drop a subscription when its client goes away:
+    `unregisterClientSubscription` is only called from `handleUnsubscribe`,
+    the websocket teardown and a failed catch-up. So a bounded unsubscribe
+    that gives up can leave a registration behind on a manager that is in
+    fact alive.
+  - Red (new Convey "Unsubscribe against an unresponsive manager is bounded,
+    even behind a reconnect step" in
+    TestSubscriptionReconnectDuringManagerShutdown).
+    It uses a single RPC reader so the manager is deterministically in its
+    unread shutdown window, a spent retry budget so the poll goroutine stays
+    off the client, and a real `sub.resubscribeWithinBudget(now +
+    ClientRetryTime)` in flight holding the lock. `ClientMinRequestTimeout`
+    is shrunk for the test to `2 * subscriptionUnsubscribeTimeout` (10s).
+    Before the fix: `Expected '11.50046666s' to be less than '6.4s'`, which
+    is 10s of lock wait plus a 1.5s send timeout once the manager's socket
+    closed. With the floor at 20s it was 21.5s.
+  - Fix: `unsubscribeServer` uses a new `requestWithinIncludingLockWait`
+    with `subscriptionUnsubscribeTimeout` (5s). That caps the lock wait (via
+    `lockWithin`, which releases a lock that arrives after it gave up) and
+    narrows the request's receive deadline to whatever is left. Unsubscribe
+    is cleanup that runs as a caller finishes, so a manager that cannot
+    answer a map delete in 5s is stopping or stalled. That bound is over
+    1000 times a live manager's normal reply time and still returns promptly.
+    Rejected alternatives: having the reconnect steps release the lock once
+    stopping is set isn't possible, because a mangos Recv already waiting
+    can't be interrupted without closing the Client's shared socket. Sending
+    the unsubscribe in the background moves the hang to the caller's next
+    `Disconnect`, which takes the same lock. Narrowing only the receive
+    deadline (mutation M3 below) leaves the lock wait. The rejected
+    replacement step still doesn't count lock wait against its budget. That
+    budget is 24h in production, and after this fix the only other lock
+    holder on the stop path is this 5s-bounded unsubscribe.
+  - Accepted risk: if a reconnect or another goroutine's request holds the
+    Client for the whole 5s while the manager is alive, the old
+    subscription id stays registered on the manager. A reconnect's
+    replacement registration is still removed by
+    `unsubscribeRejectedReplacement`.
+  - After: the Convey passes with Unsubscribe taking 5.0004s and 5.0005s,
+    with the stand-in resubscribe still ending on `receive time out`, which
+    shows it held the lock for the whole floor.
+  - Mutation M3, `unsubscribeServer` on `requestWithin` with the same 5s
+    (receive deadline narrowed, lock wait uncounted), fails
+    `Expected '11.500596418s' to be less than '6.4s'`.
+  - CHANGELOG: "### Fixed" entry added.
+  - Gates: `make lint` 0 issues; `go test -count=5 -run TestSubscription
+    ./jobqueue/` ok (295s); `make test` 711 passed / 20 skipped (6m56s);
+    `CGO_ENABLED=1 make race` 711 passed / 19 skipped (10m23s).

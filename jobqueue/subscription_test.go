@@ -99,6 +99,11 @@ const (
 	socketSwapReconnects   = 20
 	socketSwapDeadlineOps  = 20000
 	socketSwapDeadlineWait = 100 * time.Microsecond
+
+	// schedulingSlack is what a bounded wait may overrun its bound by on a
+	// loaded runner. It is less than half the gap between a correctly bounded
+	// wait and the wait each regression it guards against would produce.
+	schedulingSlack = 400 * time.Millisecond
 )
 
 var (
@@ -1946,8 +1951,6 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 		// between that and the subscriptionReconnectTimeout a step ignoring its
 		// budget for the spent-budget fallback would wait, and a step left on
 		// the socket's floor does not return within unreadPingWait at all
-		const schedulingSlack = 400 * time.Millisecond
-
 		bound := unboundedRequestBudget + schedulingSlack
 		So(subscriptionReconnectTimeout-bound, ShouldBeGreaterThanOrEqualTo, schedulingSlack)
 
@@ -1995,6 +1998,102 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 		So(serverClientSubscriptionCount(server), ShouldEqual, 1)
 		So(errors.Is(unsubErr, ErrSubscriptionClosed), ShouldBeTrue)
 	})
+
+	Convey("Unsubscribe against an unresponsive manager is bounded, even behind a reconnect step", t, func() {
+		ctx := context.Background()
+
+		// as in the first Convey, a single RPC reader makes the shutdown window
+		// deterministic: once one request goes unread, nothing else the client
+		// sends is answered while the command socket stays open.
+		defer setNumRPCReaders(1)()
+
+		// a floor twice subscriptionUnsubscribeTimeout keeps the test short while
+		// leaving a wait on it unmistakable
+		defer setClientMinRequestTimeout(2 * subscriptionUnsubscribeTimeout)()
+
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		serverConfig.Timings.InterruptTime = 5 * time.Second
+		serverConfig.Timings.ShutdownSocketWait = 3 * time.Second
+
+		// keeps the poll goroutine's own reconnect off the client, so the step
+		// holding it below is the only one and pingUntilUnread is not queued
+		// behind it
+		applySubscriptionReconnectTimings(&serverConfig, 50*time.Millisecond, time.Nanosecond)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, []string{"subscription-unsubscribe-bounded"})
+		So(err, ShouldBeNil)
+
+		stopped := make(chan struct{})
+
+		go func() {
+			server.Stop(ctx, true)
+			close(stopped)
+		}()
+
+		_, unread := pingUntilUnread(jq, serverConfig.Timings.ShutdownSocketWait)
+		So(unread, ShouldBeTrue)
+
+		// the resubscribe of a reconnect in flight when the user unsubscribes.
+		// The production ClientRetryTime budget does not narrow it, so it holds
+		// the client lock for the whole ClientMinRequestTimeout floor.
+		resubscribed := make(chan error, 1)
+
+		go func() {
+			_, resubErr := sub.resubscribeWithinBudget(time.Now().Add(ClientRetryTime))
+
+			resubscribed <- resubErr
+		}()
+
+		So(clientLockTakenWithin(jq, time.Second), ShouldBeTrue)
+
+		start := time.Now()
+
+		sub.Unsubscribe()
+
+		took := time.Since(start)
+
+		// Unsubscribe also waits up to a second for the poll goroutine to finish
+		So(took, ShouldBeLessThan, subscriptionUnsubscribeTimeout+time.Second+schedulingSlack)
+
+		So(errors.Is(<-resubscribed, mangos.ErrRecvTimeout), ShouldBeTrue)
+
+		<-stopped
+	})
+}
+
+// setClientMinRequestTimeout sets ClientMinRequestTimeout for Clients connected
+// afterwards, returning a func that restores it. No test in this package calls
+// t.Parallel(), so nothing else reads it meanwhile.
+func setClientMinRequestTimeout(d time.Duration) func() {
+	prev := ClientMinRequestTimeout
+	ClientMinRequestTimeout = d
+
+	return func() { ClientMinRequestTimeout = prev }
+}
+
+// clientLockTakenWithin reports whether something else takes jq's lock within
+// limit.
+func clientLockTakenWithin(jq *Client, limit time.Duration) bool {
+	giveUp := time.Now().Add(limit)
+
+	for time.Now().Before(giveUp) {
+		if !jq.TryLock() {
+			return true
+		}
+
+		jq.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+
+	return false
 }
 
 func TestSubscriptionReconnectSocketSwap(t *testing.T) {
