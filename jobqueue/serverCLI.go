@@ -938,7 +938,7 @@ func (s *Server) handleReserve(ctx context.Context, cr *clientRequest, drain boo
 	}
 
 	// claim the runner's scheduler element (e.g. an LSF "jobid[index]") before
-	// reserving anything, so it is never killed as excess mid-job; one the
+	// reserving anything, so it is never killed as excess mid-job; an element the
 	// scheduler has already decided to kill gets no job and its runner exits as
 	// if nothing were ready. An old/non-LSF client sends no SchedulerID.
 	if cr.SchedulerID != "" && !s.scheduler.ClaimForReserve(cr.SchedulerID) {
