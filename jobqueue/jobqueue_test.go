@@ -1394,7 +1394,16 @@ func runServer(ctx context.Context) {
 		os.Exit(1)
 	}
 
-	_, serverConfig, _, _, _ := jobqueueTestInit(false) //nolint:dogsled
+	config, serverConfig, _, _, _ := jobqueueTestInit(false) //nolint:dogsled
+
+	// let TestJobqueueSignal see when this daemon has durably recorded a job's
+	// start, the precondition for that job to be recovered as running after a
+	// crash.
+	startPersistedHook = func(key string) {
+		if err := os.WriteFile(startPersistedMarker(config.ManagerDir, key), nil, 0o600); err != nil {
+			clog.Warn(ctx, "failed to write start-persisted marker", "key", key, "err", err)
+		}
+	}
 
 	// constrain the local scheduler to a small fixed core capacity so
 	// TestJobqueueSignal's no-overcommit proof depends on the scheduler's own
@@ -1482,6 +1491,13 @@ func runServer(ctx context.Context) {
 	err = server.Block()
 	clog.Warn(ctx, "test daemon exiting", "reason", err)
 	os.Exit(0)
+}
+
+// startPersistedMarker returns the path of the file a --servermode daemon
+// using managerDir creates once it has durably recorded the start of the job
+// with the given key.
+func startPersistedMarker(managerDir, key string) string {
+	return filepath.Join(managerDir, "start_persisted."+key)
 }
 
 // errServeNeverPublished is what the serve helper returns when a server never
@@ -2055,6 +2071,19 @@ func TestJobqueueSignal(t *testing.T) {
 			// runners the server spawned
 			So(waitUntilFileExists(recoverStarted), ShouldBeTrue)
 			So(waitUntilFileExists(lostStarted), ShouldBeTrue)
+
+			// a command touches its marker before its runner reports Started,
+			// and the manager sets running in memory before it writes that to
+			// disk. Killing the manager before the write commits brings the job
+			// back as never started, so it is re-run instead of coming up lost
+			// (or, for the recover job, recovered). Wait for the manager to have
+			// durably recorded both starts.
+			for _, c := range []string{cmd, cmd2} {
+				started, errg := jq.GetByEssence(&JobEssence{Cmd: c}, false, false)
+				So(errg, ShouldBeNil)
+				So(started, ShouldNotBeNil)
+				So(waitUntilFileExists(startPersistedMarker(config.ManagerDir, started.Key())), ShouldBeTrue)
+			}
 
 			processes, err := process.Processes()
 			So(err, ShouldBeNil)
