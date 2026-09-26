@@ -173,9 +173,9 @@ churn_add() {
   fi
 }
 
-cmd_monitor() {  # watch drain + churn counts + control-RPC latency until terminal/stall
+cmd_monitor() {  # watch drain + churn counts + control-RPC latency until terminal/stall; fails unless fully drained
   need_bin
-  local half="${1:-40000}"; local t0; t0=$(date +%s); local prev=-1 stall=0
+  local half="${1:-40000}"; local t0; t0=$(date +%s); local prev=-1 stall=0 drained=0
   num(){ echo "$1" | grep -oE "$2: [0-9]+" | grep -oE '[0-9]+' | head -1; }
   for _ in $(seq 1 80); do
     local ct cf tc tb fb fc run s e
@@ -188,12 +188,13 @@ cmd_monitor() {  # watch drain + churn counts + control-RPC latency until termin
     local bj nr; bj=$(grep -c 'bad job' "$DEV_RUN/log" 2>/dev/null || true); nr=$(grep -ciE 'not running' "$DEV_RUN/log" 2>/dev/null || true)
     s=$(date +%s%3N); timeout 65 "$WR" status --deployment development -o counts >/dev/null 2>&1; e=$(date +%s%3N)
     echo "t+$(( $(date +%s)-t0 ))s RUN=$run terminal=$total/$((half*2)) rgtrue(c=$tc,b=$tb) rgfalse(b=$fb,c=$fc) badjob=${bj:-0} notrun=${nr:-0} status_rpc=$((e-s))ms"
-    if [ "$tterm" -ge "$half" ] && [ "$fterm" -ge "$half" ]; then echo "FULLY DRAINED"; break; fi
+    if [ "$tterm" -ge "$half" ] && [ "$fterm" -ge "$half" ]; then echo "FULLY DRAINED"; drained=1; break; fi
     if [ "$total" -eq "$prev" ]; then stall=$((stall+1)); else stall=0; fi
     prev=$total
     [ "$stall" -ge 8 ] && { echo "NO PROGRESS ~6min at terminal=$total (investigate: $0 dump)"; break; }
     sleep 45
   done
+  [ "$drained" -eq 1 ]
 }
 
 cmd_limit_drain() {  # limit-drain [N] [limit] [runsec] - LSF-scale FAITHFUL repro of the production stall
@@ -231,9 +232,9 @@ cmd_limit_drain() {  # limit-drain [N] [limit] [runsec] - LSF-scale FAITHFUL rep
   cmd_limit_monitor "$n"
 }
 
-cmd_limit_monitor() {  # drain/stall monitor for the single limit-group workload
+cmd_limit_monitor() {  # drain/stall monitor for the single limit-group workload; fails unless fully drained
   need_bin
-  local n="${1:-60000}"; local t0; t0=$(date +%s); local prevc=-1 stall=0
+  local n="${1:-60000}"; local t0; t0=$(date +%s); local prevc=-1 stall=0 drained=0
   num(){ echo "$1" | grep -oE "$2: [0-9]+" | grep -oE '[0-9]+' | head -1; }
   for _ in $(seq 1 80); do
     local st cc cb cr cl crun s e
@@ -247,12 +248,13 @@ cmd_limit_monitor() {  # drain/stall monitor for the single limit-group workload
     ar=$(grep -ac 'jarchive.*bad job\|jarchive.*must Reserve' "$DEV_RUN/log" 2>/dev/null); ar=${ar:-0}
     s=$(date +%s%3N); timeout 65 "$WR" status --deployment development -i rglimit -o counts >/dev/null 2>&1; e=$(date +%s%3N)
     echo "t+$(( $(date +%s)-t0 ))s complete=$cc/$n running=$cr lost=$cl LSF_RUN=$crun buried=$cb badjob=$bj confirmed_dead=$kd archive_reject=$ar status_rpc=$((e-s))ms"
-    if [ $((cc+cb)) -ge "$n" ]; then echo "FULLY DRAINED (complete=$cc buried=$cb)"; break; fi
+    if [ $((cc+cb)) -ge "$n" ]; then echo "FULLY DRAINED (complete=$cc buried=$cb)"; drained=1; break; fi
     if [ "$cc" -eq "$prevc" ]; then stall=$((stall+1)); else stall=0; fi
     prevc=$cc
     [ "$stall" -ge 6 ] && { echo "STALL REPRODUCED: complete stuck at $cc/~$n for ~4.5min while work remains (running=$cr lost=$cl badjob=$bj confirmed_dead=$kd archive_reject=$ar). goroutine dump: $0 dump"; break; }
     sleep 45
   done
+  [ "$drained" -eq 1 ]
 }
 
 cmd_backup_stall_check() {  # backup-stall-check [dbGB] [N] [limit] [runsec] - reliable4 DB-backup freeze/churn
@@ -300,7 +302,7 @@ cmd_backup_stall_check() {  # backup-stall-check [dbGB] [N] [limit] [runsec] - r
   echo "adding $n sleep-$runsec jobs (limit $limit); they CANNOT fail, so delayed/lost/badjob == churn"
   perl -e "for my \$i (1..$n){my \$m=500+((\$i%$MEM_GROUPS)*10); print '{\"cmd\":\"sleep $runsec #'.\$i.'\",\"queue\":\"$QUEUE\",\"memory\":\"'.\$m.'M\"}'.\"\n\"}" > "$WRDEV_ROOT/bkjobs.json"
   osunset; timeout 180 "$WR" add -f "$WRDEV_ROOT/bkjobs.json" --rep_grp rgbk --limit_grps "bklimit:$limit" --retries 30 --deployment production 2>&1 | tail -1
-  local t0; t0=$(date +%s); local maxdelayed=0 basebadjob=-1 maxbadjob=0 maxrpc=0
+  local t0; t0=$(date +%s); local maxdelayed=0 basebadjob=-1 maxbadjob=0 maxrpc=0 verdict=0
   num(){ echo "$1" | grep -oE "$2: [0-9]+" | grep -oE '[0-9]+' | head -1; }
   for _ in $(seq 1 40); do
     local st cc cd cl cr run bj kd s e rpc
@@ -323,6 +325,7 @@ cmd_backup_stall_check() {  # backup-stall-check [dbGB] [N] [limit] [runsec] - r
   local badjobdelta=$(( maxbadjob - basebadjob ))
   echo "## VERDICT: maxDelayed=$maxdelayed badjobDelta=$badjobdelta maxStatusRPC=${maxrpc}ms"
   if [ "$maxdelayed" -gt 50 ] || [ "$badjobdelta" -gt 200 ] || [ "$maxrpc" -gt 1500 ]; then
+    verdict=1
     echo "BACKUP-STALL REPRODUCED: sleep jobs churned and/or the manager froze during backups of the ${dbgb}GB DB (FAILS until the backup fix lands)"
   else
     echo "NO STALL: jobs drained cleanly despite backups (the fix works)"
@@ -332,6 +335,7 @@ cmd_backup_stall_check() {  # backup-stall-check [dbGB] [N] [limit] [runsec] - r
   timeout 60 bkill -J "${PROD_JOB_PREFIX}*" 0 >/dev/null 2>&1
   bjobs -o 'jobid job_name' -noheader 2>/dev/null | awk -v p="$PROD_JOB_PREFIX" 'index($2,p)==1{print $1}' | sort -u | while read -r j; do timeout 30 bkill "$j" >/dev/null 2>&1; done
   rm -f "$WRDEV_ROOT/bkjobs.json" "$pr/db" "$pr/db_bk"* 2>/dev/null
+  return "$verdict"
 }
 
 cmd_backup_stall_fast() {  # backup-stall-fast [archivers] [seconds] [pauseMs] - FAST in-process repro/iterate
@@ -1958,11 +1962,12 @@ cmd_unsuspend_burst() {  # unsuspend-burst [jobs] [pprofPort] - reliable4 PROD F
   awk -F'\t' 'NR>1{if($2>mt)mt=$2; if($3>mb)mb=$3; if($4>mx)mx=$4; if($5>mc)mc=$5}
     END{printf "  peak total=%d  peak bw(Batch-blocked)=%d  peak bwmax=%dmin  peak in_commit=%d\n", mt,mb,mx,mc}' \
     "$pdir/signals.tsv" 2>/dev/null
-  local peakbw peakbwmax
+  local peakbw peakbwmax verdict=0
   peakbw=$(awk -F'\t' 'NR>1&&$3>m{m=$3}END{print m+0}' "$pdir/signals.tsv" 2>/dev/null)
   peakbwmax=$(awk -F'\t' 'NR>1&&$4>m{m=$4}END{print m+0}' "$pdir/signals.tsv" 2>/dev/null)
   echo "## VERDICT (write-storm): peak bw(Batch-blocked goroutines)=${peakbw:-0} peak bwmax=${peakbwmax:-0}min maxStatusRPC (see above)"
   if [ "${peakbw:-0}" -gt 5000 ]; then
+    verdict=1
     echo "WRITE-STORM REPRODUCED: the un-suspend burst spawned ${peakbw} concurrent bbolt.(*DB).Batch goroutines"
     echo "  (prod measured 114,459). The unbounded per-change 'go db.bolt.Batch' is the freeze's engine."
     if [ "${peakbwmax:-0}" -ge 1 ]; then
@@ -1981,6 +1986,7 @@ cmd_unsuspend_burst() {  # unsuspend-burst [jobs] [pprofPort] - reliable4 PROD F
 
   echo "## CLEANUP"; cmd_prod_stop >/dev/null 2>&1
   rm -f "$WRDEV_ROOT/ubjobs.json" "$pr/db" "$pr/db_bk"* 2>/dev/null
+  return "$verdict"
 }
 
 # ub_wait_settle waits until the total goroutine count stops moving (the staged
@@ -4247,11 +4253,16 @@ cmd_crash_recovery() {  # end-to-end Idea-1 crash-recovery on an isolated prod-m
   cmd_prod_start lsf
   local ok=0
   for _ in $(seq 1 20); do sleep 8; local c m; c=$(timeout 20 "$WR" status --deployment production -i rgCR -o counts 2>/dev/null | tr '\n' ' '); m=$(wc -l < "$WRDEV_ROOT/cr_count" 2>/dev/null || echo 0); echo "  rgCR[$c] marker=$m"; echo "$c" | grep -qE 'complete: 1' && { ok=1; break; }; done
-  [ "$ok" = 1 ] && [ "$(wc -l < "$WRDEV_ROOT/cr_count" 2>/dev/null)" = 1 ] \
-    && echo "PASS: re-sent archive accepted (complete=1), command ran exactly once" \
-    || echo "FAIL: check rgCR / marker above"
+  local verdict=1
+  if [ "$ok" = 1 ] && [ "$(wc -l < "$WRDEV_ROOT/cr_count" 2>/dev/null)" = 1 ]; then
+    verdict=0
+    echo "PASS: re-sent archive accepted (complete=1), command ran exactly once"
+  else
+    echo "FAIL: check rgCR / marker above"
+  fi
   [ -n "$jid" ] && timeout 30 bkill "$jid" >/dev/null 2>&1  # exact jobid only, never 'wrp_*'
   safe_kill "$(mgr_pid "$PROD_RUN")"
+  return "$verdict"
 }
 
 cmd_dump() {  # dump - start dev manager FOREGROUND, so you can SIGQUIT it for a goroutine dump
