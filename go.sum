@@ -8,8 +8,8 @@ github.com/Masterminds/semver/v3 v3.5.0/go.mod h1:4V+yj/TJE1HU9XfppCwVMZq3I84lpr
 github.com/Microsoft/go-winio v0.5.2/go.mod h1:WpS1mjBmmwHBEWmogvA2mj8546UReBk4v8QkMxJ6pZY=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
-github.com/VertebrateResequencing/muxfys/v5 v5.1.0 h1:ea3KFVDyXX1ABBKjZU64Hjc4jiafHJ3SuMAU5VeI/oU=
-github.com/VertebrateResequencing/muxfys/v5 v5.1.0/go.mod h1:2xjvwXc8fUpan8AW/0qh90kq7BMoHT5kN1YVO/fhqAg=
+github.com/VertebrateResequencing/muxfys/v5 v5.1.1 h1:6zZuBie/qQqLe2UjJvDTvVS8d6EE8b3X3a/2NyeQO3Y=
+github.com/VertebrateResequencing/muxfys/v5 v5.1.1/go.mod h1:BSGVGgbJb1Lld+DS0F3OrO+qsNS1kfE1clav0WwVHbI=
 github.com/VividCortex/ewma v1.2.0 h1:f58SaIzcDXrSy3kWaHNvuJgJ3Nmz59Zji6XoJR/q1ow=
 github.com/VividCortex/ewma v1.2.0/go.mod h1:nz4BbCtbLyFDeC9SUHbtcT5644juEuWfUAUnGx7j5l4=
 github.com/acarl005/stripansi v0.0.0-20180116102854-5a71ef0e047d h1:licZJFw2RwpHMqeKTCYkitsPqHNxTmd4SNR5r94FGM8=

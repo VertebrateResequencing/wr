@@ -133,6 +133,10 @@ project adheres to [Semantic Versioning](http://semver.org/).
   process was listening on its manager or web port, never exited. It kept
   waiting for that port to close, even though it had never bound it. It now
   only waits for the ports it actually bound, so it exits as normal.
+- A runner could occasionally hang forever, leaving its mount stuck, when it
+  started a command whose working directory was one of its own mounts. This is
+  the default for a command with mounts and no explicit `Mount`. Fixed by
+  updating muxfys to v5.1.1.
 - `wr manager start` could delete your database and copy an older backup over
   it just because wr failed to open the file, losing every job recorded since
   that backup was taken. Nearly every way of failing to open the file counted
