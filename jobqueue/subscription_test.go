@@ -1901,6 +1901,16 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 		serverConfig.Timings.InterruptTime = 5 * time.Second
 		serverConfig.Timings.ShutdownSocketWait = 3 * time.Second
 
+		// in production this step runs on the subscription's own poll goroutine,
+		// in the middle of its reconnect, so nothing else is using the client.
+		// Here that goroutine is still live, and on the default budget it
+		// reconnects the same client once the shutdown sweep closes its
+		// subscription: it takes the client lock to swap the socket and again for
+		// a resubscribe that waits out the ClientMinRequestTimeout floor, so this
+		// step would be timed behind it. A spent budget makes it give up without
+		// touching the client.
+		applySubscriptionReconnectTimings(&serverConfig, 50*time.Millisecond, time.Nanosecond)
+
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1908,6 +1918,8 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		defer disconnect(jq)
+
+		So(jq.retryTime, ShouldEqual, time.Nanosecond)
 
 		sub, err := jq.SubscribeToJobKeys(ctx, []string{"subscription-rejected-replacement"})
 		So(err, ShouldBeNil)
@@ -1929,9 +1941,20 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 
 		took, returned, unsubErr := unsubscribeRejectedWithin(sub, unboundedRequestBudget, unreadPingWait)
 
+		// the step waits out its own budget and no more. The bound sits halfway
+		// between that and the subscriptionReconnectTimeout a step ignoring its
+		// budget for the spent-budget fallback would wait, and a step left on
+		// the socket's floor does not return within unreadPingWait at all
+		const schedulingSlack = 400 * time.Millisecond
+
+		bound := unboundedRequestBudget + schedulingSlack
+		So(subscriptionReconnectTimeout-bound, ShouldBeGreaterThanOrEqualTo, schedulingSlack)
+
 		So(returned, ShouldBeTrue)
-		So(took, ShouldBeLessThan, time.Second)
+		So(took, ShouldBeGreaterThanOrEqualTo, unboundedRequestBudget)
+		So(took, ShouldBeLessThan, bound)
 		So(errors.Is(unsubErr, ErrSubscriptionClosed), ShouldBeTrue)
+		So(errors.Is(unsubErr, mangos.ErrRecvTimeout), ShouldBeTrue)
 
 		<-stopped
 	})
