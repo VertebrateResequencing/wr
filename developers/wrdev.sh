@@ -63,7 +63,7 @@ EOF
 
 # only ever kills a PID whose cmdline runs OUR isolated binary; never a real
 # production manager or anything else.
-is_ours() { ps -o cmd= -p "$1" 2>/dev/null | grep -qF "$WR"; }
+is_ours() { ps -ww -o cmd= -p "$1" 2>/dev/null | grep -qF "$WR"; }
 safe_kill() {
   local pid="$1"
   [ -n "$pid" ] || return 0
@@ -76,10 +76,12 @@ mgr_pid() { cat "$1/pid" 2>/dev/null; }
 # confirmed_dead_count <rundir> prints how many lost jobs the manager running
 # from <rundir> killed after confirming them dead. It logs that at Info, and
 # without --debug the manager's log only takes warnings and above, so a count
-# would always be 0: print n/a instead of a number that can be misread.
+# would always be 0: print n/a instead of a number that can be misread. A pid
+# file can outlive its manager and the pid be reused, so only a process running
+# our isolated binary counts as that manager.
 confirmed_dead_count() {
   local pid; pid=$(mgr_pid "$1")
-  if [ -n "$pid" ] && ps -ww -o args= -p "$pid" 2>/dev/null | grep -qF -- '--debug'; then
+  if [ -n "$pid" ] && is_ours "$pid" && ps -ww -o args= -p "$pid" 2>/dev/null | grep -qF -- '--debug'; then
     local n; n=$(grep -ac 'killed a job after confirming it was dead' "$1/log" 2>/dev/null)
     echo "${n:-0}"
   else
