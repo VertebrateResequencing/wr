@@ -148,6 +148,26 @@ func TestExcessKillRefusesClaimFromDoomedElement(t *testing.T) {
 			So(s.claimForReserve(later), ShouldBeTrue)
 			So(s.claimForReserve(excess), ShouldBeFalse)
 		})
+
+		Convey("a doomed element now RUN is neither counted nor bkilled, and is still refused", func() {
+			writeFakeExe(t, bjobsExe, "#!/bin/bash\n"+
+				"echo '4242 sb10 PEND normal host1 host2 wrd_fakecmd.uniq[1] Sep 26 08:00'\n"+
+				"echo '4242 sb10 RUN normal host1 host2 wrd_fakecmd.uniq[2] Sep 26 08:00'\n")
+
+			// forget the first cycle's bkill and its back-off, so any kill of the
+			// RUN element this cycle would reach the fake bkill.
+			So(os.Remove(argvFile), ShouldBeNil)
+
+			s.killMu.Lock()
+			s.killDeferred = nil
+			s.killMu.Unlock()
+
+			count, err = s.killExcessCmds(context.Background(), bkillTestPrefix, 1)
+			So(err, ShouldBeNil)
+			So(count, ShouldEqual, 1)
+			So(bkilledIDs(t, argvFile), ShouldBeEmpty)
+			So(s.claimForReserve(excess), ShouldBeFalse)
+		})
 	})
 }
 
