@@ -2067,6 +2067,80 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 
 		<-stopped
 	})
+
+	Convey("Unsubscribe after cancelling the context is bounded against an unresponsive manager", t, func() {
+		defer setNumRPCReaders(1)()
+		defer setClientMinRequestTimeout(2 * subscriptionUnsubscribeTimeout)()
+
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		serverConfig.Timings.InterruptTime = 5 * time.Second
+
+		// the command socket stays open, and unread, for the whole of the
+		// wait for the manager to stop reading (up to the floor, if the poll
+		// goroutine's resubscribe holds the client meanwhile), the step
+		// holding the client below, and the bounded unsubscribe
+		serverConfig.Timings.ShutdownSocketWait = 4 * subscriptionUnsubscribeTimeout
+
+		// the context must still be live when it is cancelled, so the
+		// subscription has to outlast the shutdown sweep: a full budget keeps
+		// it retrying, and a long wait between attempts keeps it off the client
+		// after its first attempt fails
+		applySubscriptionReconnectTimings(&serverConfig, time.Minute, ClientRetryTime)
+
+		server, _, token, err := serve(context.Background(), serverConfig)
+		So(err, ShouldBeNil)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		subCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		sub, err := jq.SubscribeToJobKeys(subCtx, []string{"subscription-cancel-then-unsubscribe"})
+		So(err, ShouldBeNil)
+
+		stopped := make(chan struct{})
+
+		go func() {
+			server.Stop(context.Background(), true)
+			close(stopped)
+		}()
+
+		_, unread := pingUntilUnread(jq, serverConfig.Timings.ShutdownSocketWait)
+		So(unread, ShouldBeTrue)
+		So(sub.isStopping(), ShouldBeFalse)
+
+		resubscribed := make(chan error, 1)
+
+		go func() {
+			_, resubErr := sub.resubscribeWithinBudget(time.Now().Add(ClientRetryTime))
+
+			resubscribed <- resubErr
+		}()
+
+		So(clientLockTakenWithin(jq, time.Second), ShouldBeTrue)
+
+		start := time.Now()
+
+		cancel()
+
+		// the cancellation, not Unsubscribe, is what stops the subscription and
+		// starts its unsubscribe, which Unsubscribe then waits on
+		So(subscriptionStoppingWithin(sub, time.Second), ShouldBeTrue)
+
+		sub.Unsubscribe()
+
+		took := time.Since(start)
+
+		So(took, ShouldBeLessThan, subscriptionUnsubscribeTimeout+time.Second+schedulingSlack)
+		So(errors.Is(sub.Err(), context.Canceled), ShouldBeTrue)
+
+		So(errors.Is(<-resubscribed, mangos.ErrRecvTimeout), ShouldBeTrue)
+
+		<-stopped
+	})
 }
 
 // setClientMinRequestTimeout sets ClientMinRequestTimeout for Clients connected
@@ -2090,6 +2164,21 @@ func clientLockTakenWithin(jq *Client, limit time.Duration) bool {
 		}
 
 		jq.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+
+	return false
+}
+
+// subscriptionStoppingWithin reports whether sub starts stopping within limit.
+func subscriptionStoppingWithin(sub *Subscription, limit time.Duration) bool {
+	giveUp := time.Now().Add(limit)
+
+	for time.Now().Before(giveUp) {
+		if sub.isStopping() {
+			return true
+		}
+
 		time.Sleep(time.Millisecond)
 	}
 
