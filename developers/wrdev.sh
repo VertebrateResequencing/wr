@@ -300,7 +300,15 @@ cmd_backup_stall_check() {  # backup-stall-check [dbGB] [N] [limit] [runsec] - r
   fi
   echo "db size: $(ls -la "$pr/db" 2>/dev/null | awk '{print $5}') bytes"
   echo "starting isolated PROD-mode manager (backups ON) on the big DB"
-  cmd_prod_start lsf 2>&1 | tail -1; sleep 5
+  local startout
+  if ! startout=$(cmd_prod_start lsf 2>&1); then
+    printf '%s\n' "$startout" | tail -2
+    echo "backup-stall-check aborted - the prod-mode manager did not start" >&2
+    cmd_prod_stop >/dev/null 2>&1
+    rm -f "$pr/db" "$pr/db_bk"* 2>/dev/null
+    return 1
+  fi
+  printf '%s\n' "$startout" | tail -1; sleep 5
   echo "adding $n sleep-$runsec jobs (limit $limit); they CANNOT fail, so delayed/lost/badjob == churn"
   perl -e "for my \$i (1..$n){my \$m=500+((\$i%$MEM_GROUPS)*10); print '{\"cmd\":\"sleep $runsec #'.\$i.'\",\"queue\":\"$QUEUE\",\"memory\":\"'.\$m.'M\"}'.\"\n\"}" > "$WRDEV_ROOT/bkjobs.json"
   osunset; timeout 180 "$WR" add -f "$WRDEV_ROOT/bkjobs.json" --rep_grp rgbk --limit_grps "bklimit:$limit" --retries 30 --deployment production 2>&1 | tail -1
@@ -2948,6 +2956,12 @@ cmd_control_rpc_history() {  # control-rpc-history [archived] [groups] [live] - 
 
   echo "=== starting the isolated prod-mode manager on that DB ==="
   cmd_prod_start local 2>&1 | sed 's/^/  /'
+  if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+    echo "control-rpc-history aborted - the prod-mode manager did not start" >&2
+    safe_kill "$(mgr_pid "$PROD_RUN")"
+    rm -rf "$PROD_RUN" 2>/dev/null
+    return 1
+  fi
   local mpid; mpid=$(mgr_pid "$PROD_RUN")
   sleep 3
 
@@ -4244,9 +4258,21 @@ cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (prese
   echo "starting ISOLATED prod-mode manager (-s $sched${dbg:+ $dbg}) on :$PROD_PORT / web :$PROD_WEB"
   echo "NOTE: our prod-mode LSF runners are ${PROD_JOB_PREFIX}* (WR_JOBNAME_TOKEN=$PROD_JOBTOKEN);"
   echo "      that prefix can NEVER match a real deployment's wrp_*, so it is safe to bkill by pattern."
-  osunset ; WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" timeout 90 "$WR" manager start --deployment production -s "$sched" $dbg 2>&1 \
-    | grep -aE 'started on|token=' | head -2
-  echo "pid $(mgr_pid "$PROD_RUN")"
+  # captured whole rather than piped, so the start's own exit status survives
+  # (and head closing the pipe early cannot SIGPIPE it)
+  local out rc pid
+  out=$(osunset ; WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" timeout 90 "$WR" manager start --deployment production -s "$sched" $dbg 2>&1); rc=$?
+  printf '%s\n' "$out" | grep -aE 'started on|token=' | head -2
+  pid=$(mgr_pid "$PROD_RUN")
+  echo "pid $pid"
+  if [ "$rc" -ne 0 ]; then
+    echo "prod-start: wr manager start failed (exit $rc)" >&2
+    return 1
+  fi
+  if [ -z "$pid" ] || ! is_ours "$pid"; then
+    echo "prod-start: no isolated prod-mode manager is running after the start" >&2
+    return 1
+  fi
 }
 
 cmd_prod_stop() {  # stop the isolated prod-mode manager only (verified pid); does NOT bkill wrp_*
@@ -4257,7 +4283,11 @@ cmd_prod_stop() {  # stop the isolated prod-mode manager only (verified pid); do
 cmd_crash_recovery() {  # end-to-end Idea-1 crash-recovery on an isolated prod-mode LSF manager
   need_bin; ensure_config
   safe_kill "$(mgr_pid "$PROD_RUN")"; rm -rf "$PROD_RUN" 2>/dev/null; rm -f "$WRDEV_ROOT/cr_count"
-  cmd_prod_start lsf
+  if ! cmd_prod_start lsf; then
+    echo "crash-recovery aborted - the prod-mode manager did not start" >&2
+    safe_kill "$(mgr_pid "$PROD_RUN")"
+    return 1
+  fi
   printf '{"cmd":"bash -c \\"echo ran >> %s/cr_count; sleep 30\\"","queue":"%s","memory":"500M"}\n' \
     "$WRDEV_ROOT" "$QUEUE" > "$WRDEV_ROOT/cr.json"
   osunset; timeout 40 "$WR" add -f "$WRDEV_ROOT/cr.json" --rep_grp rgCR --retries 0 --deployment production 2>&1 | tail -1
@@ -4266,7 +4296,12 @@ cmd_crash_recovery() {  # end-to-end Idea-1 crash-recovery on an isolated prod-m
   echo "job running; marker=$(wc -l < "$WRDEV_ROOT/cr_count" 2>/dev/null || echo 0) my wrp_ jobid=$jid"
   echo "--- killing prod manager mid-run (LSF runner $jid survives), then restarting (DB preserved) ---"
   safe_kill "$(mgr_pid "$PROD_RUN")"; sleep 12
-  cmd_prod_start lsf
+  if ! cmd_prod_start lsf; then
+    echo "crash-recovery aborted - the prod-mode manager did not restart" >&2
+    [ -n "$jid" ] && timeout 30 bkill "$jid" >/dev/null 2>&1  # exact jobid only, never 'wrp_*'
+    safe_kill "$(mgr_pid "$PROD_RUN")"
+    return 1
+  fi
   local ok=0
   for _ in $(seq 1 20); do sleep 8; local c m; c=$(timeout 20 "$WR" status --deployment production -i rgCR -o counts 2>/dev/null | tr '\n' ' '); m=$(wc -l < "$WRDEV_ROOT/cr_count" 2>/dev/null || echo 0); echo "  rgCR[$c] marker=$m"; echo "$c" | grep -qE 'complete: 1' && { ok=1; break; }; done
   local verdict=1
