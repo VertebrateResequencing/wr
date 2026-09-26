@@ -91,9 +91,9 @@ var ErrSuiteFailed = errors.New("test suite failed")
 var lanesLongestFirst = []string{
 	"jq_default",
 	"jq_reliable4",
-	"jq_dep_granularity",
-	"cmd_default",
 	"jq_reliable2",
+	"cmd_default",
+	"jq_dep_granularity",
 	"scheduler",
 	"other",
 	"production",
