@@ -2007,8 +2007,9 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 		// sends is answered while the command socket stays open.
 		defer setNumRPCReaders(1)()
 
-		// a floor twice subscriptionUnsubscribeTimeout keeps the test short while
-		// leaving a wait on it unmistakable
+		// a short unsubscribe bound, and a floor twice that, keep the test short
+		// while leaving a wait on the floor unmistakable
+		defer setSubscriptionUnsubscribeTimeout(time.Second)()
 		defer setClientMinRequestTimeout(2 * subscriptionUnsubscribeTimeout)()
 
 		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
@@ -2070,6 +2071,7 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 
 	Convey("Unsubscribe after cancelling the context is bounded against an unresponsive manager", t, func() {
 		defer setNumRPCReaders(1)()
+		defer setSubscriptionUnsubscribeTimeout(time.Second)()
 		defer setClientMinRequestTimeout(2 * subscriptionUnsubscribeTimeout)()
 
 		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
@@ -2178,8 +2180,6 @@ func TestSubscriptionStopDuringReplace(t *testing.T) {
 
 		unsubscribed := make(chan struct{})
 
-		var stopLandedMidSwap bool
-
 		replaceSockDecidedHook = func() {
 			go func() {
 				sub.Unsubscribe()
@@ -2188,7 +2188,7 @@ func TestSubscriptionStopDuringReplace(t *testing.T) {
 
 			// give the stop every chance to land between replaceSock's decision
 			// and its swap
-			stopLandedMidSwap = subscriptionStoppingWithin(sub, 200*time.Millisecond)
+			subscriptionStoppingWithin(sub, 200*time.Millisecond)
 		}
 
 		defer func() { replaceSockDecidedHook = nil }()
@@ -2197,13 +2197,18 @@ func TestSubscriptionStopDuringReplace(t *testing.T) {
 
 		<-unsubscribed
 
-		// the stop waits for the swap, so Unsubscribe sends the replacement's
-		// id rather than the one it replaced
-		So(stopLandedMidSwap, ShouldBeFalse)
-
 		_, stillRegistered := server.clientSubscription(replacement.SubscriptionID)
 		So(stillRegistered, ShouldBeFalse)
 	})
+}
+
+// setSubscriptionUnsubscribeTimeout sets subscriptionUnsubscribeTimeout,
+// returning a func that restores it.
+func setSubscriptionUnsubscribeTimeout(d time.Duration) func() {
+	prev := subscriptionUnsubscribeTimeout
+	subscriptionUnsubscribeTimeout = d
+
+	return func() { subscriptionUnsubscribeTimeout = prev }
 }
 
 // setClientMinRequestTimeout sets ClientMinRequestTimeout for Clients connected
@@ -4014,4 +4019,16 @@ func portNumber(port string) uint32 {
 	So(err, ShouldBeNil)
 
 	return uint32(parsed)
+}
+
+// closeSock closes the subscription's socket, as a manager going away would,
+// without stopping the subscription.
+func (s *Subscription) closeSock() {
+	s.sockMu.RLock()
+	sock := s.sock
+	s.sockMu.RUnlock()
+
+	if sock != nil {
+		_ = sock.Close()
+	}
 }

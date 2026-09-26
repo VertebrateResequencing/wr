@@ -192,3 +192,27 @@
     -count=3 -run TestSubscription ./jobqueue/` ok (237s), and with `-race`
     ok (258s); `make test` 712 passed / 20 skipped (7m21s);
     `CGO_ENABLED=1 make race` 712 passed / 19 skipped (10m23s).
+- [x] Follow-ups from review of items 2 and 3, before the PR:
+  - Test speed: `subscriptionUnsubscribeTimeout` is now a package var (still
+    5s in production), with a test-only `setSubscriptionUnsubscribeTimeout`
+    helper. The two unsubscribe Conveys set it to 1s, so everything derived
+    from it scales down: the floor to 2s, the cancel Convey's socket wait
+    to 4s, and the bound to 2.4s. `Unsubscribe` still takes exactly the
+    bound, because the lock is held throughout.
+    TestSubscriptionReconnectDuringManagerShutdown went from ~48s to
+    24.7-29.1s over 3 runs. The mutations still fail both Conveys: M3
+    (deadline narrowed, lock wait uncounted) gives 3.00s and 3.00s against
+    2.4s, and plain `request()` gives 4.00s and 4.00s against 2.4s.
+  - TestSubscriptionStopDuringReplace no longer asserts that the stop did not
+    land mid-swap, because that describes the mechanism rather than the
+    behaviour. The behavioural check stays: the replacement is not left
+    registered. As a result the code before item 3's fix now passes this
+    test, as it behaved correctly. The mutation with the stop and both
+    reads taken outside `sockMu` still fails it under `-race`, with a DATA
+    RACE and `So(stillRegistered, ShouldBeFalse)` failing.
+  - `closeSock` is only used by tests now, so it moved to
+    subscription_test.go.
+  - Gates: `make lint` 0 issues; `go test -count=3 -run TestSubscription
+    ./jobqueue/` ok (169s), and with `-race` ok (187s); `make test` 712
+    passed / 20 skipped (6m57s); `CGO_ENABLED=1 make race` 712 passed / 19
+    skipped (9m51s).
