@@ -64,6 +64,13 @@ const (
 	// unmistakable.
 	testBjobsAppearHangSecs = 10
 
+	// testBjobsAppearSlowSecs is how many seconds the fake bjobs takes to answer
+	// the appearance check in the slow-answer test. It is several times
+	// testBjobsAppearTimeout, so a wait still running under the window test's
+	// lowered window gives up on it, but a small fraction of the shipped
+	// bjobsAppearTimeout, which is what an ordinary wait runs under.
+	testBjobsAppearSlowSecs = 1
+
 	// testBjobsAppearTimeout is the appearance window the window test runs with,
 	// so it costs milliseconds rather than the shipped 10 seconds.
 	testBjobsAppearTimeout = 300 * time.Millisecond
@@ -90,7 +97,7 @@ func TestReliable4BjobAppearedBound(t *testing.T) {
 		s := newFakeLSFScheduler(t, dir, filepath.Join(dir, "jargs"), fakeLSFDelays{})
 
 		writeLateAppearanceBjobs(t, s.bjobsExe)
-		setBjobsAppearTimeout(t, testBjobsAppearTimeout)
+		setBjobsAppearTimeout(testBjobsAppearTimeout)
 
 		ctx, _ := captureLogCtx()
 
@@ -123,6 +130,22 @@ func TestReliable4BjobAppearedBound(t *testing.T) {
 			// not sit in LSF indefinitely.
 			So(appeared, ShouldBeFalse)
 			So(elapsed, ShouldBeLessThan, bjobsAppearCheckMax)
+		})
+	})
+
+	Convey("Given an lsf whose `bjobs -w <id>` answers slowly, well within the shipped window", t, func() {
+		dir := t.TempDir()
+		s := newFakeLSFScheduler(t, dir, filepath.Join(dir, "jargs"), fakeLSFDelays{
+			bjobsAppearSleepSecs: testBjobsAppearSlowSecs,
+		})
+
+		ctx, _ := captureLogCtx()
+
+		Convey("waitForBjob still reports the submitted job as having appeared", func() {
+			// a real bjobs can take this long on a busy farm, and so can a fake
+			// one on a loaded host. It only comes back false if the window test's
+			// lowered window outlived that test.
+			So(s.waitForBjob(ctx, "321"), ShouldBeTrue)
 		})
 	})
 
@@ -167,14 +190,15 @@ exit 0
 }
 
 // setBjobsAppearTimeout sets how long waitForBjob waits for a submitted job to
-// appear, for the duration of the test, restoring it afterwards.
-func setBjobsAppearTimeout(t *testing.T, timeout time.Duration) {
-	t.Helper()
-
+// appear, for the rest of the calling Convey, restoring it afterwards. It must be
+// called inside a Convey. The restore is a Convey Reset, not a t.Cleanup: a
+// Cleanup would only run when the whole test ends, so every later top-level
+// Convey of that test would wait under this window instead of the shipped one.
+func setBjobsAppearTimeout(timeout time.Duration) {
 	orig := bjobsAppearTimeout
 	bjobsAppearTimeout = timeout
 
-	t.Cleanup(func() {
+	Reset(func() {
 		bjobsAppearTimeout = orig
 	})
 }
