@@ -1836,9 +1836,17 @@ cmd_report_storm_lsf() {  # report-storm-lsf [jobs] [limit] [runsec] - LSF-scale
   local out rc
   out=$(osunset; timeout 300 "$WR" add -f "$WRDEV_ROOT/rsjobs.json" --rep_grp rgrs --limit_grps "reprolimit:$limit" --retries 30 --deployment production 2>&1); rc=$?
   echo "$out" | tail -1
-  echo "$out" | grep -qE 'Added [1-9][0-9]* new commands' || die "report-storm-lsf aborted - 0 jobs added (manager up?)"
+  # a failed add (including a timeout, rc 124) still has a manager, maybe a
+  # sampler and LSF jobs to clean up, so it falls through to the cleanup below
+  # rather than dying here
   local verdict=0
-  report_storm_lsf_monitor "$n" "$plog" || verdict=1
+  if [ "$rc" -ne 0 ] || echo "$out" | grep -qiE 'could not reach the server|Connect\(\)|connection refused' \
+    || ! echo "$out" | grep -qE 'Added [1-9][0-9]* new commands'; then
+    echo "report-storm-lsf aborted - could not add jobs (wr add exit $rc; manager up?)" >&2
+    verdict=1
+  else
+    report_storm_lsf_monitor "$n" "$plog" || verdict=1
+  fi
   if [ -n "${WR_RS_PPROF:-}" ]; then
     echo "## capturing block/mutex/heap profiles -> $pdir (analyse with: go tool pprof -top <file>)"
     timeout 20 curl -s "http://localhost:$WR_RS_PPROF/debug/pprof/block" -o "$pdir/block.pprof" 2>/dev/null
