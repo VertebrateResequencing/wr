@@ -798,6 +798,43 @@ func TestLSFReservedElements(t *testing.T) {
 			So(s.reservedElements, ShouldContainKey, "99999[1]")
 			So(len(s.reservedElements), ShouldEqual, 2)
 		})
+
+		Convey("pruneReserved also drops doomed ids absent from the snapshot", func() {
+			s.doomedElements = map[string]string{"12345[9]": "wrp_a", "99999[2]": "wrp_b"}
+			s.pruneReserved(map[string]bool{"99999[2]": true})
+
+			So(s.doomedElements, ShouldResemble, map[string]string{"99999[2]": "wrp_b"})
+		})
+	})
+
+	Convey("Given an lsf scheduler with a reserved and a doomed element", t, func() {
+		s := &lsf{}
+		So(s.claimForReserve("12345[7]"), ShouldBeTrue)
+
+		kill, spared := s.doomUnreserved("wrp_a", []string{"12345[7]", "12345[8]"}, nil, false)
+		So(kill, ShouldResemble, []string{"12345[8]"})
+		So(spared, ShouldEqual, 1)
+
+		Convey("only the doomed element's claim is refused", func() {
+			So(s.claimForReserve("12345[8]"), ShouldBeFalse)
+			So(s.claimForReserve("12345[7]"), ShouldBeTrue)
+			So(s.claimForReserve("12345[9]"), ShouldBeTrue)
+		})
+
+		Convey("a complete scan of another prefix does not forget the doomed element", func() {
+			_, _ = s.doomUnreserved("wrp_b", nil, map[string]bool{}, true)
+			So(s.claimForReserve("12345[8]"), ShouldBeFalse)
+		})
+
+		Convey("an incomplete scan of its prefix that missed it does not forget it", func() {
+			_, _ = s.doomUnreserved("wrp_a", nil, map[string]bool{}, false)
+			So(s.claimForReserve("12345[8]"), ShouldBeFalse)
+		})
+
+		Convey("a complete scan of its prefix that missed it forgets it", func() {
+			_, _ = s.doomUnreserved("wrp_a", nil, map[string]bool{}, true)
+			So(s.claimForReserve("12345[8]"), ShouldBeTrue)
+		})
 	})
 
 	Convey("Given a non-LSF scheduler", t, func() {
@@ -806,8 +843,8 @@ func TestLSFReservedElements(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
-		Convey("Reserved() is a no-op and does not panic", func() {
-			So(func() { s.Reserved("12345[7]") }, ShouldNotPanic)
+		Convey("ClaimForReserve() always allows the claim", func() {
+			So(s.ClaimForReserve("12345[7]"), ShouldBeTrue)
 		})
 	})
 }

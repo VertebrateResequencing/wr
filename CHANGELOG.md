@@ -73,6 +73,10 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- At LSF scale, wr's trimming of excess runners could kill a runner that had
+  just picked up a command, so that command was retried or went lost. A runner
+  wr has decided to kill is now given no command, and one that has picked up a
+  command is never killed as excess.
 - A manager stopping just after it buried a failed command with a
   remove-on-failure behaviour (`wr add --on_failure '[{"remove":true}]'`) could
   crash instead of shutting down cleanly. It now finishes removing the command
