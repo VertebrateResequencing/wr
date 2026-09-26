@@ -781,12 +781,11 @@ type lsf struct {
 	// wr has handed a job reservation to, so killExcessCmds never bkills them as
 	// excess even before bjobs reports them as RUN. Guarded by reservedMu.
 	reservedElements map[string]bool
-	// doomedElements holds, against the job name prefix of the scan that chose
-	// them, the element ids killExcessCmds has decided to bkill. A runner that
-	// starts in one before LSF kills it is refused a job by claimForReserve, so
-	// the decision to kill and the hand-off of a job can never both win. Guarded
-	// by reservedMu.
-	doomedElements map[string]string
+	// doomedElements holds the element ids killExcessCmds has decided to
+	// bkill. A runner that starts in one before LSF kills it is refused a job by
+	// claimForReserve, so the decision to kill and the hand-off of a job can
+	// never both win. Guarded by reservedMu.
+	doomedElements doomedSet
 	reservedMu     sync.Mutex
 	// killDeferred holds, per element id wr has asked bkill to kill, the earliest
 	// time wr may ask LSF to kill it again, so an identical failing kill is not
@@ -930,7 +929,7 @@ func (s *lsf) claimForReserve(schedulerID string) bool {
 	s.reservedMu.Lock()
 	defer s.reservedMu.Unlock()
 
-	if _, doomed := s.doomedElements[schedulerID]; doomed {
+	if s.doomedElements.contains(schedulerID) {
 		return false
 	}
 
@@ -957,6 +956,15 @@ func (s *lsf) snapshotReserved() map[string]bool {
 	return snapshot
 }
 
+// snapshotDoomed returns a copy of the element ids doomed by scans of jobPrefix,
+// safe to read without holding reservedMu.
+func (s *lsf) snapshotDoomed(jobPrefix string) map[string]bool {
+	s.reservedMu.Lock()
+	defer s.reservedMu.Unlock()
+
+	return s.doomedElements.ofPrefix(jobPrefix)
+}
+
 // pruneReserved drops any reserved or doomed element ids not present in the
 // given full snapshot of currently-known LSF element ids (parseBjobs excludes
 // exited elements), bounding both sets over a long-lived manager.
@@ -970,11 +978,7 @@ func (s *lsf) pruneReserved(present map[string]bool) {
 		}
 	}
 
-	for id := range s.doomedElements {
-		if !present[id] {
-			delete(s.doomedElements, id)
-		}
-	}
+	s.doomedElements.forgetAbsent(present)
 }
 
 // doomUnreserved is called once killExcessCmds' bjobs scan of jobPrefix has
@@ -990,11 +994,7 @@ func (s *lsf) doomUnreserved(jobPrefix string, toKill []string, seen map[string]
 	defer s.reservedMu.Unlock()
 
 	if complete {
-		s.forgetGoneDoomedLocked(jobPrefix, seen)
-	}
-
-	if len(toKill) > 0 && s.doomedElements == nil {
-		s.doomedElements = make(map[string]string)
+		s.doomedElements.forgetUnseen(jobPrefix, seen)
 	}
 
 	for _, id := range toKill {
@@ -1004,21 +1004,11 @@ func (s *lsf) doomUnreserved(jobPrefix string, toKill []string, seen map[string]
 			continue
 		}
 
-		s.doomedElements[id] = jobPrefix
+		s.doomedElements.add(jobPrefix, id)
 		kill = append(kill, id)
 	}
 
 	return kill, spared
-}
-
-// forgetGoneDoomedLocked drops the doomed elements of jobPrefix that a complete
-// scan of it did not see. Callers must hold reservedMu.
-func (s *lsf) forgetGoneDoomedLocked(jobPrefix string, seen map[string]bool) {
-	for id, prefix := range s.doomedElements {
-		if prefix == jobPrefix && !seen[id] {
-			delete(s.doomedElements, id)
-		}
-	}
 }
 
 // killElements asks LSF to kill the given excess LSF element ids. The ids are
@@ -2285,6 +2275,9 @@ func (s *lsf) countCmds(ctx context.Context, jobPrefix string, full bool) (count
 type killCollector struct {
 	reAid    *regexp.Regexp
 	reserved map[string]bool
+	// doomed holds the elements an earlier scan decided to kill. Their runners
+	// can never take a job, so they are not counted as runners.
+	doomed map[string]bool
 	// seen holds the id of every element the scan reported, so doomed elements
 	// that have gone can be forgotten.
 	seen map[string]bool
@@ -2296,11 +2289,21 @@ type killCollector struct {
 }
 
 // consider counts the given job, and if we're now over maxAllowed and the job
-// isn't running, records it for killing (and doesn't count it).
+// isn't running, records it for killing (and doesn't count it). A job an earlier
+// scan doomed is never counted, and is recorded for killing again unless it is
+// running.
 func (k *killCollector) consider(jobID, stat, jobName string) {
 	sidaid := killableID(jobID, jobName, k.reAid)
 	if sidaid != "" && k.seen != nil {
 		k.seen[sidaid] = true
+	}
+
+	if sidaid != "" && k.doomed[sidaid] {
+		if stat != "RUN" {
+			k.toKill = append(k.toKill, sidaid)
+		}
+
+		return
 	}
 
 	k.count++
@@ -2341,6 +2344,7 @@ func (s *lsf) killExcessCmds(ctx context.Context, jobPrefix string, maxAllowed i
 	kc := &killCollector{
 		reAid:      regexp.MustCompile(`\[(\d+)\]$`),
 		reserved:   s.snapshotReserved(),
+		doomed:     s.snapshotDoomed(jobPrefix),
 		seen:       make(map[string]bool),
 		maxAllowed: maxAllowed,
 	}

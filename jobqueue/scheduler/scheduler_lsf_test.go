@@ -800,10 +800,14 @@ func TestLSFReservedElements(t *testing.T) {
 		})
 
 		Convey("pruneReserved also drops doomed ids absent from the snapshot", func() {
-			s.doomedElements = map[string]string{"12345[9]": "wrp_a", "99999[2]": "wrp_b"}
+			s.doomedElements.add("wrp_a", "12345[9]")
+			s.doomedElements.add("wrp_b", "99999[2]")
 			s.pruneReserved(map[string]bool{"99999[2]": true})
 
-			So(s.doomedElements, ShouldResemble, map[string]string{"99999[2]": "wrp_b"})
+			So(s.doomedElements.contains("12345[9]"), ShouldBeFalse)
+			So(s.doomedElements.contains("99999[2]"), ShouldBeTrue)
+			So(s.doomedElements.len(), ShouldEqual, 1)
+			So(s.doomedElements.ofPrefix("wrp_a"), ShouldBeEmpty)
 		})
 	})
 
@@ -834,6 +838,13 @@ func TestLSFReservedElements(t *testing.T) {
 		Convey("a complete scan of its prefix that missed it forgets it", func() {
 			_, _ = s.doomUnreserved("wrp_a", nil, map[string]bool{}, true)
 			So(s.claimForReserve("12345[8]"), ShouldBeTrue)
+		})
+
+		Convey("dooming it again under another prefix moves it there", func() {
+			_, _ = s.doomUnreserved("wrp_b", []string{"12345[8]"}, nil, false)
+			So(s.doomedElements.ofPrefix("wrp_a"), ShouldBeEmpty)
+			So(s.doomedElements.ofPrefix("wrp_b"), ShouldResemble, map[string]bool{"12345[8]": true})
+			So(s.doomedElements.len(), ShouldEqual, 1)
 		})
 	})
 
