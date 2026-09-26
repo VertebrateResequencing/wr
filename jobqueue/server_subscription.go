@@ -26,11 +26,11 @@
 package jobqueue
 
 import (
-	"fmt"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
+
+	"github.com/gofrs/uuid/v5"
 )
 
 type serverSubscription struct {
@@ -338,8 +338,13 @@ func (s *serverSubscription) repGroupEmptyDoneUpdate() *JobUpdate {
 // admitted just before shutdown began cannot slip a subscription in behind the
 // sweep, where nothing would ever close it and the subscriber would long-poll a
 // manager that is gone.
+//
+// The id is unique across manager instances, not just within this one: a
+// client reconnecting after a restart names its previous manager's id in its
+// resubscribe for handleSubscribe to drop, and a counter restarting at 1 would
+// have that drop another client's subscription on the new manager.
 func (s *Server) storeClientSubscription(sub *serverSubscription) (string, bool) {
-	id := fmt.Sprintf("sub-%d", atomic.AddUint64(&s.nextSubscriptionID, 1))
+	id := "sub-" + uuid.Must(uuid.NewV4()).String()
 
 	s.csmutex.Lock()
 

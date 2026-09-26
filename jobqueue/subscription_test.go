@@ -1696,6 +1696,101 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 	})
 }
 
+func TestSubscriptionReconnectReleasesOldRegistration(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A reconnect to a manager that is still up leaves it holding only the replacement", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionReconnectTimings(&serverConfig, 50*time.Millisecond, 5*time.Second)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			server.Stop(ctx, true)
+		}()
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, []string{"subscription-reconnect-leak"})
+		So(err, ShouldBeNil)
+
+		defer sub.Unsubscribe()
+
+		oldID := subscriptionIDOf(sub)
+
+		So(serverClientSubscriptionCount(server), ShouldEqual, 1)
+
+		// a transient poll error with the manager alive, as a network blip
+		// breaking the subscription socket would cause
+		sub.closeSock()
+
+		update := receiveSubscriptionUpdate(sub, 5*time.Second)
+		So(update, ShouldNotBeNil)
+		So(update.Kind, ShouldEqual, JobUpdateResync)
+		So(subscriptionIDOf(sub), ShouldNotEqual, oldID)
+
+		_, oldStillRegistered := server.clientSubscription(oldID)
+		So(oldStillRegistered, ShouldBeFalse)
+		So(serverClientSubscriptionCount(server), ShouldEqual, 1)
+
+		sub.Unsubscribe()
+		So(serverClientSubscriptionCount(server), ShouldEqual, 0)
+	})
+
+	Convey("A resubscribe naming an old manager's subscription leaves a restarted manager's own ones alone", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		resp, err := jq.request(&clientRequest{Method: requestMethodSubscribe, Keys: []string{"subscription-restart-a"}})
+		So(err, ShouldBeNil)
+
+		previousManagersID := resp.SubscriptionID
+
+		server.Stop(ctx, true)
+		server = restartSubscriptionTestServer(ctx, serverConfig)
+
+		defer func() {
+			server.Stop(ctx, true)
+		}()
+
+		other, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(other)
+
+		otherSub, err := other.SubscribeToJobKeys(ctx, []string{"subscription-restart-b"})
+		So(err, ShouldBeNil)
+
+		defer otherSub.Unsubscribe()
+
+		So(jq.reconnect(clientConnectTime), ShouldBeNil)
+
+		_, err = jq.request(&clientRequest{
+			Method:         requestMethodSubscribe,
+			Keys:           []string{"subscription-restart-a"},
+			SubscriptionID: previousManagersID,
+		})
+		So(err, ShouldBeNil)
+
+		_, otherStillRegistered := server.clientSubscription(subscriptionIDOf(otherSub))
+		So(otherStillRegistered, ShouldBeTrue)
+		So(serverClientSubscriptionCount(server), ShouldEqual, 2)
+	})
+}
+
 func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -2143,6 +2238,13 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 
 		<-stopped
 	})
+}
+
+func subscriptionIDOf(sub *Subscription) string {
+	sub.sockMu.RLock()
+	defer sub.sockMu.RUnlock()
+
+	return sub.id
 }
 
 func TestSubscriptionStopDuringReplace(t *testing.T) {

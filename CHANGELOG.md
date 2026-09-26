@@ -73,6 +73,14 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- A network blip on a `wr add --sync`, a `client` package `WaitForJobs` or any
+  other Go client job subscription left a copy of that subscription behind on
+  the manager each time the client reconnected, for as long as the manager ran.
+  Each copy kept a goroutine and a queue of updates nobody read, and made the
+  manager do extra work on every job state change. The manager now drops the
+  old copy when the client reconnects. Subscription ids also now differ between
+  manager runs, so a client reconnecting after a manager restart cannot remove
+  another client's subscription.
 - At LSF scale, wr's trimming of excess runners could kill a runner that had
   just picked up a command, so that command was retried or went lost. A runner
   wr has decided to kill is now given no command, and one that has picked up a

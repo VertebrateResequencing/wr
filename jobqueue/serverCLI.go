@@ -867,7 +867,10 @@ func (s *Server) handleAdd(ctx context.Context, cr *clientRequest) (*serverRespo
 }
 
 // handleSubscribe registers a client subscription and returns its id plus the
-// catch-up updates for the already-known state of the subscribed jobs.
+// catch-up updates for the already-known state of the subscribed jobs. A
+// reconnecting client names the subscription it is replacing in
+// cr.SubscriptionID, which is dropped only once the replacement is registered
+// and caught up, so a failed resubscribe leaves it for the client's next try.
 func (s *Server) handleSubscribe(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
 	repGroup := ""
 	if cr.Job != nil {
@@ -888,6 +891,10 @@ func (s *Server) handleSubscribe(ctx context.Context, cr *clientRequest) (*serve
 		s.unregisterClientSubscription(id)
 
 		return nil, ErrDBError, catchUpErr.Error()
+	}
+
+	if cr.SubscriptionID != "" {
+		s.unregisterClientSubscription(cr.SubscriptionID)
 	}
 
 	return &serverResponse{SubscriptionID: id, JobUpdates: catchUp}, "", ""

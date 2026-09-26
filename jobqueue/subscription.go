@@ -528,10 +528,20 @@ func rejectedReplacementUnsubscribeTimeout(retryEnd time.Time) time.Duration {
 	return remaining
 }
 
+// subscribeRequest builds a reconnect's resubscribe. It names the id being
+// replaced so the manager drops that registration once the replacement is in
+// place: a reconnect after a poll error with the manager still up would
+// otherwise strand it, since the manager never drops a subscription on its own.
+// A restarted manager doesn't know the id and ignores it.
 func (s *Subscription) subscribeRequest() *clientRequest {
+	s.sockMu.RLock()
+	id := s.id
+	s.sockMu.RUnlock()
+
 	req := &clientRequest{
-		Method: requestMethodSubscribe,
-		Keys:   append([]string(nil), s.keys...),
+		Method:         requestMethodSubscribe,
+		Keys:           append([]string(nil), s.keys...),
+		SubscriptionID: id,
 	}
 
 	if s.repGroup != "" {
