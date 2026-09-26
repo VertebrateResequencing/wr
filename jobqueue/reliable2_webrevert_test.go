@@ -402,6 +402,14 @@ func TestReliable2StatusFeedNeverDrops(t *testing.T) {
 		totalMsgs   = jobCount * perJobMsgs
 		consumerNap = 20 * time.Microsecond
 		repGroup    = "rg-never-drop"
+
+		// A timer cannot sleep for consumerNap: each such sleep takes the timer's
+		// granularity, about 1ms, which made this test take a minute. The
+		// never-drop consumer instead naps that granularity once per
+		// throttleBatch deltas, keeping the consumer's average rate at about
+		// consumerNap per delta, still far slower than the producer.
+		throttleNap   = time.Millisecond
+		throttleBatch = int(throttleNap / consumerNap)
 	)
 
 	Convey("The never-drop status caster delivers every delta to a slow consumer", t, func() {
@@ -420,7 +428,10 @@ func TestReliable2StatusFeedNeverDrops(t *testing.T) {
 				select {
 				case v := <-member.In:
 					acc.apply(*asJStateCount(v))
-					time.Sleep(consumerNap) // model a throttled browser
+
+					if received%throttleBatch == 0 {
+						time.Sleep(throttleNap) // model a throttled browser
+					}
 				case <-time.After(30 * time.Second):
 					return // safety net: never block the suite if a delta was dropped
 				}
