@@ -289,7 +289,7 @@ cmd_backup_stall_check() {  # backup-stall-check [dbGB] [N] [limit] [runsec] - r
   # regenerating (2.1M records takes ~20min); that pristine copy is never mutated.
   if [ -n "${WRDEV_PRISTINE_DB:-}" ] && [ -f "${WRDEV_PRISTINE_DB}" ]; then
     echo "copying pristine DB ${WRDEV_PRISTINE_DB} -> $pr/db"
-    cp -f "${WRDEV_PRISTINE_DB}" "$pr/db" || die "could not copy pristine DB"
+    cp -f "${WRDEV_PRISTINE_DB}" "$pr/db" || { rm -f "$pr/db"; die "could not copy pristine DB"; }
   else
     echo "inflating a fresh record-dense DB at $pr/db ($records records, ~${dbgb}GB, ~${flgb}GB freelist)"
     WR_INFLATE_DB="$pr/db" WR_INFLATE_RECORDS="$records" WR_INFLATE_GB="$dbgb" WR_INFLATE_FREELIST_GB="$flgb" \
@@ -1815,7 +1815,7 @@ cmd_report_storm_lsf() {  # report-storm-lsf [jobs] [limit] [runsec] - LSF-scale
   cmd_prod_stop >/dev/null 2>&1; sleep 2
   mkdir -p "$pr"; rm -f "$pr/db" "$pr/db_bk"* "$pr/log" 2>/dev/null
   echo "copying pristine DB ${WRDEV_PRISTINE_DB} -> $pr/db (mutated by this run)"
-  cp -f "${WRDEV_PRISTINE_DB}" "$pr/db" || die "could not copy pristine DB (room for ~2x its size under $WRDEV_ROOT?)"
+  cp -f "${WRDEV_PRISTINE_DB}" "$pr/db" || { rm -f "$pr/db"; die "could not copy pristine DB (room for ~2x its size under $WRDEV_ROOT?)"; }
   echo "db size: $(ls -la "$pr/db" 2>/dev/null | awk '{print $5}') bytes; LSF jobs will be ${PROD_JOB_PREFIX}*"
   local dbg=""; [ "${WRDEV_DEBUG:-0}" = "1" ] && dbg="--debug"
   local ppf=""; [ -n "${WR_RS_PPROF:-}" ] && ppf="WR_PPROF_ADDR=localhost:$WR_RS_PPROF"
@@ -1945,7 +1945,7 @@ cmd_unsuspend_burst() {  # unsuspend-burst [jobs] [pprofPort] - reliable4 PROD F
   cmd_prod_stop >/dev/null 2>&1; sleep 2
   mkdir -p "$pr"; rm -f "$pr/db" "$pr/db_bk"* "$pr/log" 2>/dev/null
   echo "copying pristine DB ${WRDEV_PRISTINE_DB} -> $pr/db (mutated by this run)"
-  cp -f "${WRDEV_PRISTINE_DB}" "$pr/db" || die "could not copy pristine DB (room for ~2x its size under $WRDEV_ROOT?)"
+  cp -f "${WRDEV_PRISTINE_DB}" "$pr/db" || { rm -f "$pr/db"; die "could not copy pristine DB (room for ~2x its size under $WRDEV_ROOT?)"; }
   echo "db size: $(ls -la "$pr/db" 2>/dev/null | awk '{print $5}') bytes; scheduler=local (limit 0 => 0 LSF jobs)"
   echo "starting isolated PROD-mode manager (backups ON, pprof localhost:$pprof) on the big DB"
   osunset ; env WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" WR_PPROF_ADDR="localhost:$pprof" timeout 90 "$WR" \
@@ -1958,7 +1958,15 @@ cmd_unsuspend_burst() {  # unsuspend-burst [jobs] [pprofPort] - reliable4 PROD F
   local out rc
   out=$(osunset; timeout 300 "$WR" add -f "$WRDEV_ROOT/ubjobs.json" --rep_grp rgburst --limit_grps "burstlimit:0" --retries 0 --deployment production 2>&1); rc=$?
   echo "$out" | tail -1
-  echo "$out" | grep -qE 'Added [1-9][0-9]* new commands' || die "unsuspend-burst aborted - 0 jobs added (manager up?)"
+  # a failed add (including a timeout, rc 124) must still stop the manager this
+  # mode started and remove its DB copy, so it returns rather than dying
+  if [ "$rc" -ne 0 ] || echo "$out" | grep -qiE 'could not reach the server|Connect\(\)|connection refused' \
+    || ! echo "$out" | grep -qE 'Added [1-9][0-9]* new commands'; then
+    echo "unsuspend-burst aborted - could not add jobs (wr add exit $rc; manager up?)" >&2
+    echo "## CLEANUP"; cmd_prod_stop >/dev/null 2>&1
+    rm -f "$WRDEV_ROOT/ubjobs.json" "$pr/db" "$pr/db_bk"* 2>/dev/null
+    return 1
+  fi
   sleep 3
 
   echo "STAGING: mass-suspend all $n jobs (ready -> suspended), then let the write goroutines settle"
