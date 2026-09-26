@@ -429,7 +429,7 @@ func TestReliable2StatusFeedNeverDrops(t *testing.T) {
 				case v := <-member.In:
 					acc.apply(*asJStateCount(v))
 
-					if received%throttleBatch == 0 {
+					if (received+1)%throttleBatch == 0 {
 						time.Sleep(throttleNap) // model a throttled browser
 					}
 				case <-time.After(30 * time.Second):
