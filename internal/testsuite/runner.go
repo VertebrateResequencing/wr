@@ -137,9 +137,12 @@ var lanesLongestFirst = []string{
 }
 
 // runInOrder calls run for each index from 0 to count-1, at most limit at a
-// time, starting them in index order. A fixed set of workers takes the indexes
-// from a queue because goroutines blocked on a semaphore acquire it in no
-// particular order, which would ignore the order the caller chose.
+// time, handing the indexes out in index order: index i is never dispatched
+// before every earlier index has been taken by a worker, though workers that
+// take indexes at almost the same moment may begin running them in either
+// order. A fixed set of workers takes the indexes from a queue because
+// goroutines blocked on a semaphore acquire it in no particular order, which
+// would ignore the priority order the caller chose.
 func runInOrder(count, limit int, run func(index int)) {
 	queue := make(chan int)
 
