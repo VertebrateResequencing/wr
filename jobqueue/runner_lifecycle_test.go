@@ -478,6 +478,12 @@ func TestJobqueueRunnerKillRequests(t *testing.T) {
 					// and only retry on the next runner-availability check; wait
 					// long enough to span several such cycles. Free on success - this
 					// returns the instant the job reaches Running.
+					//
+					// A reserved job also reads as Running, so the kill below can
+					// land while the runner is still setting up, before its
+					// command has started. The runner then never starts the
+					// command and buries the job as killed without it exiting,
+					// so the Exitcode checked below is -1 either way.
 					limit := time.After(runnerStartWait)
 					ticker := time.NewTicker(50 * time.Millisecond)
 

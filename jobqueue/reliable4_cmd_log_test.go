@@ -311,16 +311,23 @@ func TestReliable4KilledCmdLogsBoundedCmd(t *testing.T) {
 			So(errr, ShouldBeNil)
 			So(reserved, ShouldNotBeNil)
 
-			// killing before Execute makes the kill land on the FIRST touch, which
-			// is what runs the kill path deterministically.
-			killed, errk := jq.Kill([]*JobEssence{{JobKey: job.Key()}})
-			So(errk, ShouldBeNil)
-			So(killed, ShouldEqual, 1)
+			// the kill is only asked for once the manager knows the command's
+			// pid, which Execute reports after starting it, so it can only reach
+			// the runner once there is a command to kill; a kill that landed
+			// before the start would bury the job without starting it, and log
+			// no child kill.
+			killed := make(chan int, 1)
+
+			go func() {
+				killed <- killOnceStarted(jq, job)
+			}()
 
 			// the kill path logs from goroutines that outlive Execute, so this
 			// capture has to be the concurrency-safe one.
 			logCtx, buf := cmdLogSyncCapture(ctx)
 			execErr := jq.Execute(logCtx, reserved, "/bin/sh")
+
+			So(<-killed, ShouldEqual, 1)
 
 			out := buf.String()
 			t.Logf("KILLLOG-MEASURED cmdLen=%d logBytes=%d errBytes=%d",
