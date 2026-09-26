@@ -48,12 +48,14 @@ const (
 	subscriptionSocketRecvMargin = 5 * time.Second
 	subscriptionReconnectTimeout = time.Second
 	subscriptionMinReconnectWait = 10 * time.Millisecond
-
-	// subscriptionUnsubscribeTimeout bounds how long Unsubscribe, or a
-	// cancelled context, spends telling the manager, counting any wait for the
-	// client behind a reconnect step.
-	subscriptionUnsubscribeTimeout = 5 * time.Second
 )
+
+// subscriptionUnsubscribeTimeout bounds how long Unsubscribe, or a cancelled
+// context, spends telling the manager, counting any wait for the client behind
+// a reconnect step. A var only so tests can shorten it.
+//
+//nolint:gochecknoglobals // test-tunable timeout.
+var subscriptionUnsubscribeTimeout = 5 * time.Second
 
 // ErrSubscriptionClosed is returned by Subscription.Err after an unrecoverable
 // subscription disconnect.
@@ -633,16 +635,6 @@ func (s *Subscription) finish(err error) {
 		close(s.updates)
 		close(s.closed)
 	})
-}
-
-func (s *Subscription) closeSock() {
-	s.sockMu.RLock()
-	sock := s.sock
-	s.sockMu.RUnlock()
-
-	if sock != nil {
-		_ = sock.Close()
-	}
 }
 
 func (s *Subscription) replaceSock(sock mangos.Socket, id, dialAddr string) bool {
