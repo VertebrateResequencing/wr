@@ -95,10 +95,12 @@ func TestRunnerStartsLanesInPriorityOrder(t *testing.T) {
 		So(inOrder, ShouldEqual, rounds)
 	})
 
-	Convey("capped parallel work never runs more than the cap at once", t, func() {
+	Convey("capped parallel work reaches the cap and never runs more than it at once", t, func() {
 		const (
-			items = 45
-			limit = 4
+			items       = 45
+			limit       = 4
+			capTimeout  = 30 * time.Second
+			excessGrace = 50 * time.Millisecond
 		)
 
 		var (
@@ -108,14 +110,33 @@ func TestRunnerStartsLanesInPriorityOrder(t *testing.T) {
 			ran     int
 		)
 
+		// each call waits here until limit calls are running at once, so the cap
+		// is reached however the calls are scheduled; a pool that never runs
+		// limit at once lets them go on after capTimeout, failing the test. The
+		// calls are held for excessGrace more once the cap is reached, so that a
+		// pool running more than limit at once has time to show it. A correct
+		// pool cannot fail because of either wait.
+		capReached := make(chan struct{})
+		releaseOnce := sync.Once{}
+
+		timeout, cancel := context.WithTimeout(context.Background(), capTimeout)
+		defer cancel()
+
 		runInOrder(items, limit, func(int) {
 			mu.Lock()
 			running++
 			ran++
 			peak = max(peak, running)
+
+			if running == limit {
+				releaseOnce.Do(func() { time.AfterFunc(excessGrace, func() { close(capReached) }) })
+			}
 			mu.Unlock()
 
-			time.Sleep(time.Millisecond)
+			select {
+			case <-capReached:
+			case <-timeout.Done():
+			}
 
 			mu.Lock()
 			running--
@@ -123,6 +144,7 @@ func TestRunnerStartsLanesInPriorityOrder(t *testing.T) {
 		})
 
 		So(ran, ShouldEqual, items)
+		So(peak, ShouldBeLessThanOrEqualTo, limit)
 		So(peak, ShouldEqual, limit)
 	})
 }
