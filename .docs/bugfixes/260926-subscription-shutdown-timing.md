@@ -25,11 +25,16 @@
     again for a resubscribe that waits out the 60s floor. A trace of the
     unfixed test showed `reconnect SWAP` at the moment the unsubscribe's
     200ms ended (it had been waiting for the lock), then `reconnectOnce
-    took=1m0.2s`. So the step was timed behind a concurrent reconnect that
-    production never has: there, this step runs on the poll goroutine
-    itself. No CI trace exists, so which of the two lock holds, or the 1s
-    send deadline on a swapped socket, produced exactly 1.0001s is inferred,
-    not observed.
+    took=1m0.2s`. So the Convey timed the step behind a concurrent reconnect.
+    The same lock contention exists in production, with a different
+    partner: the step only runs once the subscription is stopping, and only
+    `Unsubscribe` or a cancelled context set that, both of which then send
+    their own unsubscribe on the same Client lock. That is the product bug
+    in the next item. The Convey's job is narrower: it proves the step
+    narrows its own receive deadline to its budget, so measuring it in
+    isolation is right. No CI trace exists, so which of the two lock holds,
+    or the 1s send deadline on a swapped socket, produced exactly 1.0001s is
+    inferred, not observed.
   - Red (deterministic seam, reverted): in the unfixed test, a goroutine
     stood in for the poll goroutine's reconnect by holding `jq.Lock()` for
     800ms, taken just before `unsubscribeRejectedWithin`. Result:

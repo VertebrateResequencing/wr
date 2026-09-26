@@ -1901,14 +1901,15 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 		serverConfig.Timings.InterruptTime = 5 * time.Second
 		serverConfig.Timings.ShutdownSocketWait = 3 * time.Second
 
-		// in production this step runs on the subscription's own poll goroutine,
-		// in the middle of its reconnect, so nothing else is using the client.
-		// Here that goroutine is still live, and on the default budget it
-		// reconnects the same client once the shutdown sweep closes its
-		// subscription: it takes the client lock to swap the socket and again for
+		// this measures the step's own deadline narrowing in isolation. The
+		// subscription's poll goroutine is still live, and on the default budget
+		// it reconnects the same client once the shutdown sweep closes its
+		// subscription, holding the client lock to swap the socket and again for
 		// a resubscribe that waits out the ClientMinRequestTimeout floor, so this
 		// step would be timed behind it. A spent budget makes it give up without
-		// touching the client.
+		// touching the client. Contention for that lock is real in production,
+		// between this step and the Unsubscribe that makes it run; see
+		// .docs/bugfixes/260926-subscription-shutdown-timing.md.
 		applySubscriptionReconnectTimings(&serverConfig, 50*time.Millisecond, time.Nanosecond)
 
 		server, _, token, err := serve(ctx, serverConfig)
