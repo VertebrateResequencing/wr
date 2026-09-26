@@ -73,6 +73,20 @@ safe_kill() {
 }
 mgr_pid() { cat "$1/pid" 2>/dev/null; }
 
+# confirmed_dead_count <rundir> prints how many lost jobs the manager running
+# from <rundir> killed after confirming them dead. It logs that at Info, and
+# without --debug the manager's log only takes warnings and above, so a count
+# would always be 0: print n/a instead of a number that can be misread.
+confirmed_dead_count() {
+  local pid; pid=$(mgr_pid "$1")
+  if [ -n "$pid" ] && ps -o args= -p "$pid" 2>/dev/null | grep -qF -- '--debug'; then
+    local n; n=$(grep -ac 'killed a job after confirming it was dead' "$1/log" 2>/dev/null)
+    echo "${n:-0}"
+  else
+    echo "n/a (needs WRDEV_DEBUG=1)"
+  fi
+}
+
 # ensure_dev_manager guarantees OUR isolated dev manager is up before jobs are
 # added, so churn can never silently loop at terminal=0 just because nothing was
 # running. If a dev manager we own is already alive it is REUSED (never
@@ -229,7 +243,7 @@ cmd_limit_monitor() {  # drain/stall monitor for the single limit-group workload
     crun=$(timeout 20 bjobs -o stat -noheader 2>/dev/null | grep -c RUN)
     local bj kd ar
     bj=$(grep -ac 'bad job' "$DEV_RUN/log" 2>/dev/null); bj=${bj:-0}
-    kd=$(grep -ac 'killed a job after confirming it was dead' "$DEV_RUN/log" 2>/dev/null); kd=${kd:-0}
+    kd=$(confirmed_dead_count "$DEV_RUN")
     ar=$(grep -ac 'jarchive.*bad job\|jarchive.*must Reserve' "$DEV_RUN/log" 2>/dev/null); ar=${ar:-0}
     s=$(date +%s%3N); timeout 65 "$WR" status --deployment development -i rglimit -o counts >/dev/null 2>&1; e=$(date +%s%3N)
     echo "t+$(( $(date +%s)-t0 ))s complete=$cc/$n running=$cr lost=$cl LSF_RUN=$crun buried=$cb badjob=$bj confirmed_dead=$kd archive_reject=$ar status_rpc=$((e-s))ms"
@@ -294,7 +308,7 @@ cmd_backup_stall_check() {  # backup-stall-check [dbGB] [N] [limit] [runsec] - r
     cc=$(num "$st" complete); cd=$(num "$st" delayed); cr=$(num "$st" running); cl=$(echo "$st"|grep -oE 'lost[^0-9]*[0-9]+'|grep -oE '[0-9]+'|head -1)
     cc=${cc:-0}; cd=${cd:-0}; cr=${cr:-0}; cl=${cl:-0}
     run=$(timeout 20 bjobs -o stat -noheader 2>/dev/null | grep -c RUN)
-    bj=$(grep -ac 'bad job' "$plog" 2>/dev/null); bj=${bj:-0}; kd=$(grep -ac 'confirming it was dead' "$plog" 2>/dev/null); kd=${kd:-0}
+    bj=$(grep -ac 'bad job' "$plog" 2>/dev/null); bj=${bj:-0}; kd=$(confirmed_dead_count "$PROD_RUN")
     [ "$basebadjob" -lt 0 ] && basebadjob=$bj
     s=$(date +%s%3N); timeout 65 "$WR" status --deployment production -i rgbk -o counts >/dev/null 2>&1; e=$(date +%s%3N); rpc=$((e-s))
     [ "$cd" -gt "$maxdelayed" ] && maxdelayed=$cd
@@ -1842,7 +1856,7 @@ report_storm_lsf_monitor() {  # churn/stall monitor for report-storm-lsf (prod-m
     cc=${cc:-0}; cb=${cb:-0}; cr=${cr:-0}; cd=${cd:-0}; cl=${cl:-0}
     run=$(timeout 20 bjobs -o stat -noheader 2>/dev/null | grep -c RUN)
     bj=$(grep -ac 'bad job' "$plog" 2>/dev/null); bj=${bj:-0}
-    kd=$(grep -ac 'confirming it was dead' "$plog" 2>/dev/null); kd=${kd:-0}
+    kd=$(confirmed_dead_count "$PROD_RUN")
     ar=$(grep -ac 'jarchive.*bad job\|jarchive.*must Reserve' "$plog" 2>/dev/null); ar=${ar:-0}
     [ "$basebad" -lt 0 ] && basebad=$bj
     s=$(date +%s%3N); timeout 65 "$WR" status --deployment production -i rgrs -o counts >/dev/null 2>&1; e=$(date +%s%3N); rpc=$((e-s))
@@ -4201,13 +4215,14 @@ rl_bytes() {  # <logdir>
   case "$n" in (*[!0-9]*|'') echo 0 ;; (*) echo "$n" ;; esac
 }
 
-cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (preserves DB across restart)
+cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (preserves DB across restart); WRDEV_DEBUG=1 adds --debug
   need_bin; ensure_config
   local sched="${1:-local}"
-  echo "starting ISOLATED prod-mode manager (-s $sched) on :$PROD_PORT / web :$PROD_WEB"
+  local dbg=""; [ "${WRDEV_DEBUG:-0}" = "1" ] && dbg="--debug"
+  echo "starting ISOLATED prod-mode manager (-s $sched${dbg:+ $dbg}) on :$PROD_PORT / web :$PROD_WEB"
   echo "NOTE: our prod-mode LSF runners are ${PROD_JOB_PREFIX}* (WR_JOBNAME_TOKEN=$PROD_JOBTOKEN);"
   echo "      that prefix can NEVER match a real deployment's wrp_*, so it is safe to bkill by pattern."
-  osunset ; WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" timeout 90 "$WR" manager start --deployment production -s "$sched" 2>&1 \
+  osunset ; WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" timeout 90 "$WR" manager start --deployment production -s "$sched" $dbg 2>&1 \
     | grep -aE 'started on|token=' | head -2
   echo "pid $(mgr_pid "$PROD_RUN")"
 }
