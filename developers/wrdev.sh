@@ -4312,25 +4312,29 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   build                 build wr + wsprobe from the current checkout into \$WRDEV_ROOT
   start [lsf|local]     start the isolated dev manager (default lsf)
   stop                  kill the (verified) dev manager + bkill wrd_ jobs
-  churn [N]             ensure dev manager up, submit N true/false jobs (default 40000) then monitor
+  churn [N]             ensure dev manager up, submit N true/false jobs (default 40000) then monitor;
+                        exits 1 unless they fully drain
   limit-drain [N] [limit] [runsec] [padKB]
                         FAITHFUL LSF-scale stall repro: N>>limit jobs in ONE limit group
-                        (defaults 60000 2000 30 0); must fully drain once the stall is fixed.
-                        Set WRDEV_DEBUG=1 (manager --debug, like prod) + padKB~25 so per-reserve
-                        log lines match production's ~25KB cmds (the suspected stall trigger).
+                        (defaults 60000 2000 30 0); must fully drain once the stall is fixed,
+                        and exits 1 unless it does. Set WRDEV_DEBUG=1 (manager --debug, like
+                        prod) + padKB~25 so per-reserve log lines match production's ~25KB cmds
+                        (the suspected stall trigger). confirmed_dead shows n/a without WRDEV_DEBUG=1.
   backup-stall-check [dbGB] [N] [limit] [runsec] [records] [freelistGB]
                         FAITHFUL LSF repro: inflates a fresh RECORD-DENSE DB from scratch
                         (records real complete-jobs + a large persisted freelist; portable),
                         runs an isolated PROD-mode manager (backups ON) + N sleep jobs, showing
                         the periodic full-file DB backup freeze the manager -> archive timeouts ->
-                        churn (defaults 8 8000 2000 30 2100000 2). Fails until the backup fix lands.
+                        churn (defaults 8 8000 2000 30 2100000 2). Fails (exit 1) until the backup
+                        fix lands. WRDEV_DEBUG=1 runs the manager with --debug, which the
+                        confirmed_dead count needs; without it confirmed_dead shows n/a.
                         WRDEV_ROOT holds the DB + backup (needs ~2x dbGB free). Set WRDEV_PRISTINE_DB
                         to COPY a pre-generated DB instead of regenerating. A/B a fix with WR_EXP_*.
   backup-stall-fast [archivers] [seconds] [pauseMs]
                         FAST in-process repro (no LSF/manager): opens WRDEV_PRISTINE_DB via the real
                         initDB (backups ON) and hammers db.archiveJob, timing each; archives over the
                         TTR would churn. Seconds to run - the iteration harness for fixes (WR_EXP_*).
-  monitor [halfN]       watch drain / churn counts / control-RPC latency
+  monitor [halfN]       watch drain / churn counts / control-RPC latency; exits 1 unless fully drained
   probe [secs] [slowms] read the dev web /status_ws feed via wsprobe
   web-burst [N]         reproduce the status-bar freeze-under-burst (local + slow reader)
   flicker-check [h.js]  reproduce/verify the web status-bar flicker/overcount family
@@ -4410,6 +4414,7 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         nothing was measured (no seed, dead manager, no reference history scan),
                         OR the seeded history is under WRDEV_HS_MIN_PERGROUP (1000) per group or
                         WRDEV_HS_MIN_ARCHIVED (100000) in total, which the pre-fix code passes too.
+                        Its manager comes from prod-start, so WRDEV_DEBUG=1 adds --debug here too.
   dep-granularity-check [waiters] [members] [groups]
                         dep-granularity SCALE GATE (real binary, farm-safe - every fixture job waits
                         on a never-seen dep group, so nothing is ever scheduled and no runner or LSF
@@ -4583,7 +4588,9 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         reliable4 FAITHFUL LSF-scale report-storm CHURN repro: isolated PROD-mode
                         manager (backups ON) on a big DB copy + N fast jobs in one limit group; real
                         LSF runners (distinct pids) + backup stall crossing 60s => the discard+rerun
-                        spiral (defaults 100000 2000 1). REQUIRES WRDEV_PRISTINE_DB=<big DB>. Safe:
+                        spiral (defaults 100000 2000 1); exits 1 unless it fully drains, and
+                        confirmed_dead shows n/a without WRDEV_DEBUG=1. REQUIRES
+                        WRDEV_PRISTINE_DB=<big DB>. Safe:
                         its LSF jobs are namespaced (never a real wrp_*). WRDEV_DEBUG=1 / WR_RS_PADKB /
                         WR_RS_PPROF=<port> (profile the real manager) / WR_RS_BKDIR=<dir on another FS,
                         e.g. Lustre> (back up to a separate filesystem so it can't starve the DB's I/O).
@@ -4644,9 +4651,10 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         `completed job`), so the sentinel is present in both. It is the only thing
                         that pins the cmd/runner.go call sites, which no unit test can reach, and
                         the only end-to-end check of the manager log with --debug on, as prod had it.
-  prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart)
+  prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart); WRDEV_DEBUG=1
+                        adds --debug, which modes counting confirmed_dead need
   prod-stop             stop the isolated prod-mode manager (verified pid)
-  crash-recovery        end-to-end Idea-1 crash-recovery test (isolated prod-mode LSF)
+  crash-recovery        end-to-end Idea-1 crash-recovery test (isolated prod-mode LSF); exits 1 on FAIL
   dump [lsf|local]      run dev manager foreground for a SIGQUIT goroutine dump
   clean                 stop all our managers + bkill wrd_ (production untouched)
   status                show what is running
