@@ -79,7 +79,7 @@ mgr_pid() { cat "$1/pid" 2>/dev/null; }
 # would always be 0: print n/a instead of a number that can be misread.
 confirmed_dead_count() {
   local pid; pid=$(mgr_pid "$1")
-  if [ -n "$pid" ] && ps -o args= -p "$pid" 2>/dev/null | grep -qF -- '--debug'; then
+  if [ -n "$pid" ] && ps -ww -o args= -p "$pid" 2>/dev/null | grep -qF -- '--debug'; then
     local n; n=$(grep -ac 'killed a job after confirming it was dead' "$1/log" 2>/dev/null)
     echo "${n:-0}"
   else
