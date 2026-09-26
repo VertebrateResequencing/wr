@@ -1811,7 +1811,8 @@ cmd_report_storm_lsf() {  # report-storm-lsf [jobs] [limit] [runsec] - LSF-scale
   out=$(osunset; timeout 300 "$WR" add -f "$WRDEV_ROOT/rsjobs.json" --rep_grp rgrs --limit_grps "reprolimit:$limit" --retries 30 --deployment production 2>&1); rc=$?
   echo "$out" | tail -1
   echo "$out" | grep -qE 'Added [1-9][0-9]* new commands' || die "report-storm-lsf aborted - 0 jobs added (manager up?)"
-  report_storm_lsf_monitor "$n" "$plog"
+  local verdict=0
+  report_storm_lsf_monitor "$n" "$plog" || verdict=1
   if [ -n "${WR_RS_PPROF:-}" ]; then
     echo "## capturing block/mutex/heap profiles -> $pdir (analyse with: go tool pprof -top <file>)"
     timeout 20 curl -s "http://localhost:$WR_RS_PPROF/debug/pprof/block" -o "$pdir/block.pprof" 2>/dev/null
@@ -1826,10 +1827,11 @@ cmd_report_storm_lsf() {  # report-storm-lsf [jobs] [limit] [runsec] - LSF-scale
   bjobs -o 'jobid job_name' -noheader 2>/dev/null | awk -v p="$PROD_JOB_PREFIX" 'index($2,p)==1{print $1}' | sort -u | while read -r j; do timeout 30 bkill "$j" >/dev/null 2>&1; done
   rm -f "$WRDEV_ROOT/rsjobs.json" "$pr/db" "$pr/db_bk"* 2>/dev/null
   [ -n "${WRDEV_PROD_BKFILE:-}" ] && rm -f "$WRDEV_PROD_BKFILE"* 2>/dev/null
+  return "$verdict"
 }
 
-report_storm_lsf_monitor() {  # churn/stall monitor for report-storm-lsf (prod-mode manager)
-  local n="${1:-100000}" plog="$2"; local t0; t0=$(date +%s); local prevc=-1 stall=0
+report_storm_lsf_monitor() {  # churn/stall monitor for report-storm-lsf (prod-mode manager); fails unless fully drained
+  local n="${1:-100000}" plog="$2"; local t0; t0=$(date +%s); local prevc=-1 stall=0 drained=0
   local basebad=-1 maxrpc=0 maxdelayed=0 maxlost=0 bj=0
   num(){ echo "$1" | grep -oE "$2: [0-9]+" | grep -oE '[0-9]+' | head -1; }
   for _ in $(seq 1 60); do
@@ -1846,7 +1848,7 @@ report_storm_lsf_monitor() {  # churn/stall monitor for report-storm-lsf (prod-m
     s=$(date +%s%3N); timeout 65 "$WR" status --deployment production -i rgrs -o counts >/dev/null 2>&1; e=$(date +%s%3N); rpc=$((e-s))
     [ "$cd" -gt "$maxdelayed" ] && maxdelayed=$cd; [ "$rpc" -gt "$maxrpc" ] && maxrpc=$rpc; [ "$cl" -gt "$maxlost" ] && maxlost=$cl
     echo "t+$(( $(date +%s)-t0 ))s complete=$cc/$n running=$cr delayed=$cd lost=$cl LSF_RUN=$run badjob=$bj confirmed_dead=$kd archive_reject=$ar status_rpc=${rpc}ms"
-    [ $((cc+cb)) -ge "$n" ] && { echo "FULLY DRAINED (complete=$cc buried=$cb)"; break; }
+    [ $((cc+cb)) -ge "$n" ] && { echo "FULLY DRAINED (complete=$cc buried=$cb)"; drained=1; break; }
     if [ "$cc" -eq "$prevc" ]; then stall=$((stall+1)); else stall=0; fi
     prevc=$cc
     [ "$stall" -ge 6 ] && { echo "CHURN/STALL REPRODUCED: complete stuck at $cc/$n ~3min (badjob=$bj confirmed_dead=$kd archive_reject=$ar delayed=$cd lost=$cl)"; break; }
@@ -1855,6 +1857,7 @@ report_storm_lsf_monitor() {  # churn/stall monitor for report-storm-lsf (prod-m
   echo "## manager log freezes (gaps >5s) - a gap > 60s crosses the client receive floor:"
   grep -oaP 'T\d\d:\d\d:\d\d' "$plog" 2>/dev/null | uniq | awk -F: '{t=$1*3600+$2*60+$3} NR==1{p=t} {if(t-p>5)print "  GAP "(t-p)"s ending "$0; p=t}' | tail -10
   echo "## VERDICT: badjobDelta=$(( bj - basebad )) maxDelayed=$maxdelayed maxLost=$maxlost maxStatusRPC=${maxrpc}ms"
+  [ "$drained" -eq 1 ]
 }
 
 cmd_unsuspend_burst() {  # unsuspend-burst [jobs] [pprofPort] - reliable4 PROD FREEZE repro (write-storm)
