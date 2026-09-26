@@ -15,3 +15,14 @@
   - Red after: `go test -count=10 -run TestReliable4BjobAppeared ./jobqueue/scheduler/` passed (`ok ... 20.184s`). The same 80-loop single-CPU load run passed 20 of 20 on both Go 1.27.1 and Go 1.26.3.
   - Gates: `make lint` 0 issues; `go test -count=10 -run TestReliable4BjobAppeared` ok; `make test` passed; `CGO_ENABLED=1 make race` passed (711 passed, 19 skipped).
   - Files: jobqueue/scheduler/reliable4_bjob_appeared_test.go.
+- [x] Reviewer sweep of b2d12ed found the same leak in cmd/manager_test.go TestWaitForLiveManagerStartup. The first Convey sets managerStartupConnectAttempt=1ms and managerStartupReportInterval=15ms (defaults 500ms and 30s), restored only with t.Cleanup, and the later siblings "daemon exits before ready" and "quick manager startup remains quiet" inherit them. "Remains quiet" expects zero reports and is safe only because its connector answers on the first attempt.
+  - Red command: `go test -count=1 -run TestWaitForLiveManagerStartup ./cmd/`, with "remains quiet" given a connector that models a manager that is already up but needs 10ms to answer, so it connects only when given at least that long. Exit 1. Before the fix every attempt got the leaked 1ms budget, the wait ran past its 1s timeout and reported:
+    ```
+      Line 986:
+      Expected: 0
+      Actual:   1
+    --- FAIL: TestWaitForLiveManagerStartup (1.08s)
+    ```
+  - Fixed: the three Conveys now restore config and the startup intervals they change with a Convey `Reset` instead of `t.Cleanup`, so each Convey's overrides end with it. The slow-answering connector stays as the regression guard.
+  - Red after: `go test -count=3 -run TestWaitForLiveManagerStartup ./cmd/` ok.
+  - Files: cmd/manager_test.go.
