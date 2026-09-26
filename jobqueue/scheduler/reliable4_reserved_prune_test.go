@@ -62,8 +62,8 @@ func TestReliable4ReservedPruneOnlyWhenComplete(t *testing.T) {
 		dir := t.TempDir()
 		s := newFakeLSFScheduler(t, dir, filepath.Join(dir, "jargs"), fakeLSFDelays{bjobsListJobs: 1})
 
-		s.reserved(reservedReportedElement)
-		s.reserved(reservedGoneElement)
+		s.claimForReserve(reservedReportedElement)
+		s.claimForReserve(reservedGoneElement)
 
 		ctx, _ := captureLogCtx()
 

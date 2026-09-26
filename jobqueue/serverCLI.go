@@ -937,6 +937,16 @@ func (s *Server) handleReserve(ctx context.Context, cr *clientRequest, drain boo
 		return nil, "", ""
 	}
 
+	// claim the runner's scheduler element (e.g. an LSF "jobid[index]") before
+	// reserving anything, so it is never killed as excess mid-job; one the
+	// scheduler has already decided to kill gets no job and its runner exits as
+	// if nothing were ready. An old/non-LSF client sends no SchedulerID.
+	if cr.SchedulerID != "" && !s.scheduler.ClaimForReserve(cr.SchedulerID) {
+		clog.Debug(ctx, "refused a reserve from a runner being killed as excess", "schedulerID", cr.SchedulerID)
+
+		return nil, "", ""
+	}
+
 	item, srerr := s.reserveItem(ctx, cr)
 	if srerr != "" || item == nil {
 		return nil, srerr, ""
@@ -1018,13 +1028,6 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 	sjob.Lock()
 	sjob.DelayTime = delay
 	sjob.Unlock()
-
-	// tell the scheduler which of its elements (e.g. an LSF "jobid[index]") holds
-	// this reservation, so it is never killed as excess mid-job. An old/non-LSF
-	// client sends no SchedulerID.
-	if cr.SchedulerID != "" {
-		s.scheduler.Reserved(cr.SchedulerID)
-	}
 
 	// make a copy of the job with some extra stuff filled in (that we don't want
 	// taking up memory here) for the client

@@ -149,13 +149,6 @@ func applyProcessLines(lines []string, dead map[int]bool) bool {
 	return true
 }
 
-// Reserved records that a scheduler element (opaque, scheduler-specific id,
-// e.g. LSF "jobid[index]") has been handed a wr job reservation, so it must not
-// be killed as excess. Non-LSF schedulers ignore it.
-func (s *Scheduler) Reserved(schedulerID string) {
-	s.impl.reserved(schedulerID)
-}
-
 // interpretProcessState maps a ps stat: the trimmed stdout of the
 // `ps -o stat= -p <pid>` a forced command runs (see ProcessNotRunningOnHost's
 // CONTRACT WARNING), or one stat from a shell's answer, to a liveness outcome:
@@ -178,6 +171,16 @@ func interpretProcessState(state string) processLiveness {
 	default:
 		return processAlive
 	}
+}
+
+// ClaimForReserve is called before a runner in the given scheduler element
+// (opaque, scheduler-specific id, e.g. LSF "jobid[index]") is handed a job
+// reservation. It returns false if the scheduler has already decided to kill
+// that element as excess, in which case the runner must be given no job.
+// Otherwise it records the element as holding a reservation, so it is never
+// killed as excess, and returns true. Non-LSF schedulers always return true.
+func (s *Scheduler) ClaimForReserve(schedulerID string) bool {
+	return s.impl.claimForReserve(schedulerID)
 }
 
 // warnCannotConfirm logs, at most once per cannotConfirmWarnInterval, that
@@ -578,8 +581,8 @@ type scheduleri interface {
 	// setBadServerCallBack achieves the aims of SetBadServerCallBack().
 	setBadServerCallBack(ctx context.Context, cb BadServerCallBack)
 
-	// reserved achieves the aims of Reserved().
-	reserved(schedulerID string)
+	// claimForReserve achieves the aims of ClaimForReserve().
+	claimForReserve(schedulerID string) bool
 
 	// cleanup does any clean up once you've finished using the job scheduler.
 	cleanup(ctx context.Context)
