@@ -140,6 +140,30 @@ func TestPlannerCoversJobqueueTestsByExactName(t *testing.T) {
 	})
 }
 
+func TestPlannerSplitsJobqueueTestFamiliesFromTheDefaultLane(t *testing.T) {
+	Convey("each large jobqueue test family gets its own lane, and every test runs in exactly one lane", t, func() {
+		disableLiveIntegrationEnv(t)
+
+		plan := NewPlan(ModeTest, testModule, []string{pkg(testModule, "jobqueue")})
+
+		So(jobqueueLanesForTest(plan, "TestReliable2FutureCase"), ShouldResemble, []string{"jq_reliable2"})
+		So(jobqueueLanesForTest(plan, "TestReliable4FutureCase"), ShouldResemble, []string{"jq_reliable4"})
+		So(jobqueueLanesForTest(plan, "TestDepGranularityFutureCase"), ShouldResemble, []string{"jq_dep_granularity"})
+		So(jobqueueLanesForTest(plan, "TestReliable3FutureCase"), ShouldResemble, []string{"jq_default"})
+		So(jobqueueLanesForTest(plan, "TestFutureCase"), ShouldResemble, []string{"jq_default"})
+
+		for _, config := range jobqueueRunLaneConfigs() {
+			if config.shard != "" {
+				continue
+			}
+
+			for _, test := range config.tests {
+				So(jobqueueLanesForTest(plan, test), ShouldResemble, []string{config.name})
+			}
+		}
+	})
+}
+
 func TestPlannerPreservesShardLanes(t *testing.T) {
 	Convey("tests split by WR_TEST_SHARD still get both shard lanes", t, func() {
 		disableLiveIntegrationEnv(t)
