@@ -66,6 +66,12 @@ var ErrSubscriptionClosed = errors.New("jobqueue subscription closed: unrecovera
 // exactly as before, and a spent budget ends the loop there rather than here.
 var errRetryBudgetSpent = errors.New("jobqueue subscription reconnect: retry budget spent")
 
+// replaceSockDecidedHook, if set, runs inside replaceSock once it has decided
+// to swap, before it does. Tests use it to land a stop in that window.
+//
+//nolint:gochecknoglobals // test seam; nil in production.
+var replaceSockDecidedHook func()
+
 // JobUpdateKind discriminates the events on a Subscription channel.
 type JobUpdateKind int
 
@@ -228,16 +234,24 @@ func (s *Subscription) Unsubscribe() {
 // ClientMinRequestTimeout floor it could block the caller for a minute, and
 // for as long again first if a reconnect step held the client: the step runs
 // with the production ClientRetryTime budget, which never narrows the floor.
-// Giving up is best effort, not a leak of our making: a manager that cannot
-// answer a map delete in that time is stopping or stalled, and a reconnect's
-// replacement registration is removed separately by
-// unsubscribeRejectedReplacement.
+// Giving up is best effort: a manager that cannot answer a map delete in that
+// time is stopping or stalled, though a long-held request on a shared Client
+// can also use up the time.
+//
+// It must only be called after requestStop. The id is read under sockMu after
+// the stop, so it is final: replaceSock either swapped a reconnect's
+// replacement in before the stop, making its id the one sent here, or refuses
+// it, leaving it to unsubscribeRejectedReplacement.
 func (s *Subscription) unsubscribeServer() error {
 	var unsubErr error
 
 	s.unsubOnce.Do(func() {
+		s.sockMu.RLock()
+		id := s.id
+		s.sockMu.RUnlock()
+
 		_, unsubErr = s.client.requestWithinIncludingLockWait(
-			&clientRequest{Method: requestMethodUnsubscribe, SubscriptionID: s.id},
+			&clientRequest{Method: requestMethodUnsubscribe, SubscriptionID: id},
 			subscriptionUnsubscribeTimeout,
 		)
 	})
@@ -568,12 +582,22 @@ func (s *Subscription) publishClientUpdate(ctx context.Context, update *JobUpdat
 	}
 }
 
+// requestStop stops the subscription. The stop is decided under sockMu, the
+// lock replaceSock decides and swaps under, so a reconnect's replacement is
+// either swapped in before the stop, and becomes the id unsubscribeServer
+// sends, or refused after it, and removed by unsubscribeRejectedReplacement.
 func (s *Subscription) requestStop(err error) {
 	s.stopOnce.Do(func() {
 		s.setErr(err)
 
+		s.sockMu.Lock()
 		close(s.stop)
-		s.closeSock()
+		sock := s.sock
+		s.sockMu.Unlock()
+
+		if sock != nil {
+			_ = sock.Close()
+		}
 	})
 }
 
@@ -629,6 +653,10 @@ func (s *Subscription) replaceSock(sock mangos.Socket, id, dialAddr string) bool
 		_ = sock.Close()
 
 		return false
+	}
+
+	if replaceSockDecidedHook != nil {
+		replaceSockDecidedHook()
 	}
 
 	oldSock := s.sock

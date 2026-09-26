@@ -148,3 +148,47 @@
   - Gates: `make lint` 0 issues; `go test -count=5 -run TestSubscription
     ./jobqueue/` ok (295s); `make test` 711 passed / 20 skipped (6m56s);
     `CGO_ENABLED=1 make race` 711 passed / 19 skipped (10m23s).
+- [x] Reported race (from review of item 2): `unsubscribeServer` read `s.id`
+  without `sockMu` while `replaceSock` writes it under `sockMu`, so an
+  `Unsubscribe` landing just after `replaceSock` passed its `isStopping`
+  check would unsubscribe the old id and leave the replacement registered,
+  which `unsubscribeRejectedReplacement` doesn't cover.
+  - Finding: the reported wrong-id outcome and data race do not happen on
+    the code as it was, but only because of an ordering that nothing
+    documented. `requestStop` closed `stop` outside `sockMu` and then called
+    `closeSock`, which takes `sockMu.RLock`. A stop landing between
+    `replaceSock`'s check and its swap therefore waited in `closeSock` until
+    the swap finished, and `unsubscribeServer`, which always runs after a
+    completed `requestStop`, then read the new id with a happens-before edge
+    from `replaceSock`'s unlock. So the stop and replace decisions were not
+    atomic, but the id read was saved by an unrelated lock.
+  - Hook: `replaceSockDecidedHook`, a nil-in-production test seam that runs
+    inside `replaceSock` after it decides to swap and before it swaps. New
+    test `TestSubscriptionStopDuringReplace`: against a healthy manager, it
+    registers a replacement and dials its socket as a reconnect would, then
+    calls `replaceSock`. The hook starts `Unsubscribe` and gives the stop up
+    to 200ms to land in the window. The test asserts that the replacement is
+    no longer registered afterwards, and that the stop did not land mid-swap.
+  - Before, under `-race`: the stop landed in the window (traced
+    `stop landed in window: true`), the replacement was still removed, and
+    there was no race report. The new test fails only on
+    `So(stopLandedMidSwap, ShouldBeFalse)`. Mutation: with `closeSock`
+    reading `s.sock` unlocked as well, the old code reports two DATA RACEs
+    and leaves the replacement registered
+    (`So(stillRegistered, ShouldBeFalse)` fails). That is the reported bug,
+    one edit away.
+  - Fix: `requestStop` closes `stop` and takes the socket to close under
+    `sockMu.Lock`, the lock `replaceSock` decides and swaps under. So a stop
+    either comes before the swap decision (which is then refused, and
+    `unsubscribeRejectedReplacement` removes the replacement) or after the
+    swap (and `unsubscribeServer` sends the replacement's id). Exactly one
+    of them unsubscribes each registration. `unsubscribeServer` also reads
+    `s.id` under `sockMu.RLock`, and its comment now says it must follow
+    `requestStop` and why the id it reads is final. The comment also says
+    that a long-held request on a shared Client can use up the 5s.
+  - After, under `-race`, 3 of 3: stop landed in window false, replacement
+    removed, no race report.
+  - Gates (items 1-3 of this round): `make lint` 0 issues; `go test
+    -count=3 -run TestSubscription ./jobqueue/` ok (237s), and with `-race`
+    ok (258s); `make test` 712 passed / 20 skipped (7m21s);
+    `CGO_ENABLED=1 make race` 712 passed / 19 skipped (10m23s).

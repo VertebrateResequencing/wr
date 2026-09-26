@@ -2143,6 +2143,69 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 	})
 }
 
+func TestSubscriptionStopDuringReplace(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("An Unsubscribe landing while a reconnect swaps in its replacement removes the replacement", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		keys := []string{"subscription-stop-during-replace"}
+
+		sub, err := jq.SubscribeToJobKeys(ctx, keys)
+		So(err, ShouldBeNil)
+
+		// the replacement registration and socket a reconnect attempt has made
+		// by the time it calls replaceSock
+		replacement, err := jq.request(&clientRequest{Method: requestMethodSubscribe, Keys: keys})
+		So(err, ShouldBeNil)
+
+		replacementSock, err := dialSubscriptionSocket(jq.subscriptionDialAddr(), serverConfig.CAFile,
+			serverConfig.CertDomain, serverSubscriptionHoldTime+subscriptionSocketRecvMargin)
+		So(err, ShouldBeNil)
+
+		unsubscribed := make(chan struct{})
+
+		var stopLandedMidSwap bool
+
+		replaceSockDecidedHook = func() {
+			go func() {
+				sub.Unsubscribe()
+				close(unsubscribed)
+			}()
+
+			// give the stop every chance to land between replaceSock's decision
+			// and its swap
+			stopLandedMidSwap = subscriptionStoppingWithin(sub, 200*time.Millisecond)
+		}
+
+		defer func() { replaceSockDecidedHook = nil }()
+
+		So(sub.replaceSock(replacementSock, replacement.SubscriptionID, jq.subscriptionDialAddr()), ShouldBeTrue)
+
+		<-unsubscribed
+
+		// the stop waits for the swap, so Unsubscribe sends the replacement's
+		// id rather than the one it replaced
+		So(stopLandedMidSwap, ShouldBeFalse)
+
+		_, stillRegistered := server.clientSubscription(replacement.SubscriptionID)
+		So(stillRegistered, ShouldBeFalse)
+	})
+}
+
 // setClientMinRequestTimeout sets ClientMinRequestTimeout for Clients connected
 // afterwards, returning a func that restores it. No test in this package calls
 // t.Parallel(), so nothing else reads it meanwhile.
