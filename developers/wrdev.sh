@@ -365,7 +365,9 @@ cmd_backup_stall_fast() {  # backup-stall-fast [archivers] [seconds] [pauseMs] -
     timeout $((seconds + 360)) go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
       -run TestReliable4BackupStall -count=1 -v -timeout $((seconds + 300))s 2>&1 \
     | grep -aE 'STALL|INFLATE|DUMP|BACKUP|relevant|goroutine|PASS|FAIL|panic|^ok |^---' | grep -avE 'no test files'
+  local rc=${PIPESTATUS[0]}
   rm -f "$work" "${work}_bk" "${work}_bk.tmp" 2>/dev/null
+  return "$rc"
 }
 
 cmd_writestorm_freeze() {  # writestorm-freeze [N] [archivers] - reliable4 FULL prod-freeze repro (A/B)
@@ -394,7 +396,8 @@ cmd_writestorm_freeze() {  # writestorm-freeze [N] [archivers] - reliable4 FULL 
   WRDEV_ROOT="$WRDEV_ROOT" WR_WSFREEZE_DB="$db" WR_WSFREEZE_N="$n" WR_WSFREEZE_ARCHIVERS="$archivers" \
     timeout 2400 go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
       -run TestReliable4WriteStormFreeze -count=1 -v -timeout 39m 2>&1 \
-    | grep -aE 'WSFREEZE|FREEZE|PASS|FAIL|panic|^ok |^---' | grep -avE 'no test files' || rc=$?
+    | grep -aE 'WSFREEZE|FREEZE|PASS|FAIL|panic|^ok |^---' | grep -avE 'no test files'
+  rc=${PIPESTATUS[0]}
   # the Go test removes its own copy, but only if it lives to run its cleanup: a
   # timeout-killed or interrupted run would otherwise leave the whole DB behind.
   rm -f "$work" "${work}_bk" 2>/dev/null
@@ -1681,6 +1684,7 @@ cmd_confirm_dead_leak() {  # confirm-dead-leak [checks] [host] - reliable4 Fix 5
     timeout 300 go -C "$REPO" test -tags reliability_repro ./jobqueue/scheduler/ \
       -run TestReliable4ConfirmDeadSSHLeak -count=1 -v -timeout 240s 2>&1 \
     | grep -aE 'CONFIRMDEAD-LEAK|confirm-dead SSH|PASS|FAIL|SKIP|panic|^ok |^---' | grep -avE 'no test files'
+  return "${PIPESTATUS[0]}"
 }
 
 cmd_ttrmiss_check() {  # ttrmiss-check [jobs] [runners] [archiveDelayMs] - in-process TTR-miss archive-reject churn
@@ -1707,6 +1711,7 @@ cmd_ttrmiss_check() {  # ttrmiss-check [jobs] [runners] [archiveDelayMs] - in-pr
     timeout $((secs + 150)) go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
       -run TestReliable4TtrMissChurn -count=1 -v -timeout $((secs + 120))s 2>&1 \
     | grep -aE 'TTRMISS|PASS|FAIL|panic|^ok ' | grep -avE 'no test files'
+  return "${PIPESTATUS[0]}"
 }
 
 cmd_report_storm() {  # report-storm [jobs] [runners] [limit] [seconds] - reliable4 post-resume report storm
@@ -1747,7 +1752,8 @@ cmd_report_storm() {  # report-storm [jobs] [runners] [limit] [seconds] - reliab
   WR_RS_STATUS="${WR_RS_STATUS:-0}" WR_RS_STATUS_MS="${WR_RS_STATUS_MS:-500}" \
     timeout $((secs + 600)) go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
       -run TestReliable4ReportStorm -count=1 -v -timeout $((secs + 540))s 2>&1 \
-    | grep -aE 'REPORTSTORM|PASS|FAIL|panic|^ok ' | grep -avE 'no test files' || rc=$?
+    | grep -aE 'REPORTSTORM|PASS|FAIL|panic|^ok ' | grep -avE 'no test files'
+  rc=${PIPESTATUS[0]}
   # the Go test removes its own copy (and its backups), but only if it lives to run
   # its cleanup: a timeout-killed or interrupted run would otherwise leave the whole
   # DB behind.
