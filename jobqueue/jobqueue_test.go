@@ -6932,14 +6932,16 @@ func TestJobqueueModify(t *testing.T) {
 
 			// ETC is in whole seconds relative to the stats call's own clock
 			// read, so a second boundary between Started and the call lowers
-			// it; bracket that read to allow for the boundary.
+			// it; bracket that read to allow for the boundary. The server never
+			// reports a negative ETC (a job past its expected end leaves it at
+			// now), so neither may the expectation on a slow runner.
 			before := time.Now()
 			stats = server.GetServerStats()
 			after := time.Now()
 
 			So(stats.ETC, ShouldBeIn, []time.Duration{
-				end.Sub(before.Truncate(time.Second)),
-				end.Sub(after.Truncate(time.Second)),
+				max(end.Sub(before.Truncate(time.Second)), 0),
+				max(end.Sub(after.Truncate(time.Second)), 0),
 			})
 		})
 
