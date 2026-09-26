@@ -4343,7 +4343,7 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         reliable4 FINDING 7 gate: the scan-on-connect seed and the live delta
                         feed are not a consistent cut, so a transition straddling the seed is
                         counted TWICE and a never-reconnecting status page over-counts
-                        `running` for the rest of the run (prod: 274 shown vs 4 real). Runs a
+                        'running' for the rest of the run (prod: 274 shown vs 4 real). Runs a
                         forced-interleaving shape (exact, non-flaky, the discriminating one)
                         and a natural one (the browser's own connect sequence) that measures
                         the accepted residual - the seed walk itself - by replaying one
@@ -4598,8 +4598,8 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         reliable4 FAITHFUL PROD-FREEZE repro (write-storm root cause): N jobs in ONE
                         limit group set to 0 (ready-but-blocked; NEVER run => 0 LSF load) on an
                         isolated PROD-mode manager (backups+pprof ON) on a big freelist-bloated DB copy;
-                        mass-suspend to stage, then a single `wr resume` un-suspends all N at once =>
-                        the unbounded per-change `go db.bolt.Batch` storm. An embedded goroutine
+                        mass-suspend to stage, then a single 'wr resume' un-suspends all N at once =>
+                        the unbounded per-change 'go db.bolt.Batch' storm. An embedded goroutine
                         classifier reports the freeze signature (bw Batch-blocked / bwmax / in_commit /
                         total) + control-RPC latency (defaults 100000 6062). REQUIRES
                         WRDEV_PRISTINE_DB=<big DB> (pristine10, or .../prod.db). Post-fix gate: bw stays
@@ -4619,7 +4619,7 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         reliable4 ITEM A SCALE GATE (real binary, farm-safe - -s local, no LSF job
                         ever submitted): N jobs with --retries R whose cmd.Start() fails with a
                         TRANSIENT errno every time (they are added with --group, so buildExecCmd
-                        execs the bare name `newgrp`, and a `newgrp` that is executable but not a
+                        execs the bare name 'newgrp', and a 'newgrp' that is executable but not a
                         valid executable format is prepended to the manager's PATH => ENOEXEC, which
                         permanentStartFailReason deliberately keeps retryable). Asserts the retries
                         are actually SPENT: buried == N (manager side) AND 'exec format error' lines
@@ -4646,9 +4646,9 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         WRDEV_RUNLOG_MAX_BYTES_PER_JOB (4096), manager bytes/job <=
                         WRDEV_MGRLOG_MAX_BYTES_PER_JOB (8192) and 0 sentinel lines in either
                         (defaults 30 180 2 20). Pre-fix: ~4 copies of the whole Cmd per job in the
-                        runner log (`reserved a job`, `will start executing`, `started executing`,
-                        `command ... ran OK`) and 2 more in the manager log (`reserved job`,
-                        `completed job`), so the sentinel is present in both. It is the only thing
+                        runner log ('reserved a job', 'will start executing', 'started executing',
+                        'command ... ran OK') and 2 more in the manager log ('reserved job',
+                        'completed job'), so the sentinel is present in both. It is the only thing
                         that pins the cmd/runner.go call sites, which no unit test can reach, and
                         the only end-to-end check of the manager log with --debug on, as prod had it.
   prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart); WRDEV_DEBUG=1
