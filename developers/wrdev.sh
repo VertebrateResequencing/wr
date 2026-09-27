@@ -1679,14 +1679,13 @@ cmd_confirm_dead_leak() {  # confirm-dead-leak [checks] [host] - reliable4 Fix 5
   # Real-LSF, on-farm reproducer for the confirm-dead SSH connection LEAK (diagnosis Fix 5).
   # Drives Scheduler.ProcessNotRunningOnHost (the lost-job dead-confirmation ssh check) N
   # times against a reachable host and counts the ssh-client goroutines left alive. On LSF
-  # each check does getHost -> cloud.NewServer (fresh) -> RunCmd -> dials an ssh client and
-  # closes only the SESSION; the Host interface has no Close() and the throwaway server is
-  # never Destroy()ed, so the client (its goroutines + socket) is NEVER closed - a per-check
-  # leak (confirmJobDead does 2 checks/lost job; prod saw confirm-dead ssh conns 892->~5,300,
-  # ~31,875 goroutines). Needs LSF present + PASSWORDLESS ssh to the host (default localhost;
-  # the leak only forms on SUCCESSFUL dials - a failed dial errors out before caching the
-  # client), and SKIPS otherwise. RED now; GREEN once the confirm-dead path closes its host
-  # connection after use (add Host.Close(); group checks per host over one connection).
+  # each check does getHost -> cloud.NewServer (fresh) -> RunCmd -> dials an ssh client; before
+  # Fix 5 nothing closed it - a per-check leak (confirmJobDead does 2 checks/lost job; prod saw
+  # confirm-dead ssh conns 892->~5,300, ~31,875 goroutines). Host.Close() now closes it. The
+  # test waits up to 5s for closed clients' goroutines to unwind, then fails on ANY left
+  # (leaked>0). Needs LSF present + PASSWORDLESS ssh to the host (default localhost; the leak
+  # only forms on SUCCESSFUL dials - a failed dial errors out before caching the client), and
+  # SKIPS otherwise.
   need_repo
   local checks="${1:-40}" host="${2:-localhost}"
   osunset
