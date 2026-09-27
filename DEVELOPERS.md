@@ -7,8 +7,9 @@ scheduling, the RPC server, the status web feed, or the LSF scheduler.
 
 > This file and the `developers/` directory are **developer tooling and
 > guidance, not part of the shipped binary or the test suite**. `developers/`
-> contains only shell scripts, so `go build ./...`, `make test`, and
-> `make lint` never touch it.
+> holds shell scripts and one Go command, `developers/prodsim`. `make lint`
+> lints prodsim and `go build ./...` compiles it, but it has no tests, so
+> `make test` runs nothing from it.
 
 Helper: `developers/wrdev.sh` (run `developers/wrdev.sh help`). It encodes the
 safe-testing rules below so you don't have to remember them.
@@ -177,6 +178,9 @@ for:
 | **Web status flicker / transient overcount / connect-mid-burst divergence** | `wrdev.sh flicker-check` — a deterministic node harness driving the real `websocket-handler.js` with out-of-order + seed-race + rerun-cycle delta streams, plus the browser fixtures | reconstructed per-RepGroup and `+all+` counts stay coherent (no transient overcount, no dip) and converge exactly; the browser bar never collapses. Runs without a manager or LSF |
 | **Deadlock / stall** (CLI fine, manager stops progressing) | reproduce at scale, then `wrdev.sh dump` | goroutine dump shows a lock cycle or a lock held across `bsub`/`bjobs` |
 | **Crash-recovery** (a genuine success survives a restart) | `wrdev.sh crash-recovery` (prod-mode preserves the DB) | after restart within `retryTime`, the re-sent archive is accepted, `complete`, and the command ran **once** (marker file) |
+| **Anything that only shows when every client runs at once, for hours** | `wrdev.sh prodsim` — the production-shaped soak (see `developers/README.md`) | `report.txt`: call latencies that grow from the first quarter to the last, errors, and manager RSS/heap/goroutines/fds that keep climbing |
+| **Archived jobs kept in the heap** | `wrdev.sh retention-check` | forced-GC `HeapInuse` stays flat over rounds with nothing live |
+| **A backup copy stalling the DB once it grows past its mapping** | `wrdev.sh remap-stall-check` | a trivial read never waits for the copy |
 | **Slow startup** | measure `Serve()` time with N completed-only jobs (see `jobqueue/reliable2_startup_test.go`) | startup does not scale with history size |
 
 For churn/responsiveness the authoritative evidence is a **real-LSF** run; the
