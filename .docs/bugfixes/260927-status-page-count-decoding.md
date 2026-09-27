@@ -1,12 +1,12 @@
 # Status page count decoding
 
-- [x] `writeStatusCountSeed` (`jobqueue/serverWebI.go:718`, loop at `:724-735`)
-  calls `getCompleteJobsByRepGroup` for every live rep group. That fully decodes
-  every archived record of the group, `Cmd` and env included, only to count
-  them, and every such record is `complete`. It does this on each page load and
-  on each websocket reconnect, holding that connection's write mutex.
-  `retrieveCompleteJobStatusByRepGroup(rg, false)` already counts without
-  decoding.
+- [x] Before this fix, `writeStatusCountSeed` (`jobqueue/serverWebI.go`)
+  called `getCompleteJobsByRepGroup` for every live rep group. That fully
+  decoded every archived record of the group, `Cmd` and env included, only to
+  count them, and every such record is `complete`. It did this on each page
+  load and on each websocket reconnect, holding that connection's write mutex,
+  though `retrieveCompleteJobStatusByRepGroup(rg, false)` already counted
+  without decoding.
   - Source: prodsim soak finding 3 (`.docs/bugfixes/260927-prodsim-findings.md`
     on branch `prodsim`). With 3 simulated users the seed path took 9.7-14% of
     manager CPU, and `ws_seed` latency rose to 3.1-8.4s mean (max 37s).
