@@ -1465,9 +1465,7 @@ func TestDBBackupCopy(t *testing.T) {
 		copyPath := filepath.Join(tmpdir, "copy.db")
 
 		Convey("copyBackup produces a re-openable, data-identical copy", func() {
-			err = testDB.bolt.View(func(tx *bolt.Tx) error {
-				return testDB.copyBackup(tx, copyPath)
-			})
+			err = testDB.copyBackup(copyPath)
 			So(err, ShouldBeNil)
 
 			originalData := dbAllBucketData(t, testDB.bolt)
@@ -1496,9 +1494,7 @@ func TestDBBackupCopy(t *testing.T) {
 			backupCopySyncBytes = testInterval
 			backupPaceHook = func() { paceCount++ }
 
-			err = testDB.bolt.View(func(tx *bolt.Tx) error {
-				return testDB.copyBackup(tx, copyPath)
-			})
+			err = testDB.copyBackup(copyPath)
 			So(err, ShouldBeNil)
 
 			info, errs := os.Stat(copyPath)
