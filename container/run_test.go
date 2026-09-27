@@ -39,6 +39,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/fs/file"
+	"github.com/VertebrateResequencing/wr/internal/testimage"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -126,7 +127,7 @@ func TestRunRealAwkwardPaths(t *testing.T) {
 		defer cleanup()
 
 		uniqueDir := filepath.Dir(homeDir)
-		cmd := DockerRunCmd("alpine", cmdFile, filepath.Base(uniqueDir), mounts, nil, false)
+		cmd := DockerRunCmd(testimage.Alpine, cmdFile, filepath.Base(uniqueDir), mounts, nil, false)
 
 		actual, err := realTestTryCmd(cmd, homeDir)
 		So(err, ShouldBeNil)
@@ -217,7 +218,7 @@ func realOwnershipTestRun(t *testing.T, cmdFile, homeDir string, imageUser bool)
 	t.Helper()
 
 	uniqueDir := filepath.Dir(homeDir)
-	cmd := DockerRunCmd("alpine", cmdFile, filepath.Base(uniqueDir), nil, nil, imageUser)
+	cmd := DockerRunCmd(testimage.Alpine, cmdFile, filepath.Base(uniqueDir), nil, nil, imageUser)
 	t.Logf("cmdline: %s", cmd)
 
 	out, err := realTestTryCmd(cmd, homeDir)
@@ -268,7 +269,7 @@ func TestRunRealDockerStaleContainer(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(testContainerExists(t, name), ShouldBeTrue)
 
-		cmd := DockerRunCmd("alpine", cmdFile, name, nil, nil, false)
+		cmd := DockerRunCmd(testimage.Alpine, cmdFile, name, nil, nil, false)
 		t.Logf("cmdline: %s", cmd)
 
 		stdout, stderr, err := realTestTryCmdStd(cmd, homeDir)
@@ -303,7 +304,7 @@ func TestRunRealDockerStaleContainer(t *testing.T) {
 		_, err = startTestContainer(t, name, "")
 		So(err, ShouldBeNil)
 
-		cmd := DockerRunCmd("alpine", cmdFile, name, nil, nil, false)
+		cmd := DockerRunCmd(testimage.Alpine, cmdFile, name, nil, nil, false)
 
 		stdout, stderr, err := realTestTryCmdStd(cmd, homeDir)
 		t.Logf("stdout: %q, stderr: %q, err: %v", stdout, stderr, err)
@@ -346,7 +347,7 @@ func startTestContainer(t *testing.T, name, label string) (string, error) {
 		args = append(args, "--label", label)
 	}
 
-	args = append(args, "alpine", "sleep", strconv.Itoa(staleContainerSleepSecs))
+	args = append(args, testimage.Alpine, "sleep", strconv.Itoa(staleContainerSleepSecs))
 
 	cmd := exec.CommandContext(context.Background(), "docker", args...)
 
@@ -581,7 +582,7 @@ func TestRunReal(t *testing.T) {
 		defer cleanup()
 
 		uniqueDir := filepath.Dir(homeDir)
-		cmd := DockerRunCmd("alpine", cmdFile, filepath.Base(uniqueDir), mounts, []string{"FOO", "OOF"}, false)
+		cmd := DockerRunCmd(testimage.Alpine, cmdFile, filepath.Base(uniqueDir), mounts, []string{"FOO", "OOF"}, false)
 
 		actual, err := realTestTryCmd(cmd, homeDir)
 		So(err, ShouldBeNil)
