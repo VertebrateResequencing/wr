@@ -227,8 +227,8 @@ var errRecvDeadlineType = errors.New("socket receive deadline was not a duration
 // request held the client for the whole of its timeout.
 var errClientBusy = errors.New("client busy with another request for the whole timeout")
 
-// errNoTokenFile is returned by ConnectWithTokenFile when given no path.
-var errNoTokenFile = errors.New("no token file given")
+// ErrNoTokenFile is returned by ConnectWithTokenFile when given no path.
+var ErrNoTokenFile = errors.New("no token file given")
 
 const (
 	RepGroupMatchExact  RepGroupMatch = "exact"
@@ -662,10 +662,11 @@ func combineExecOutcomes(unmount, cmd execOutcome) execOutcome {
 // ErrPermissionDenied. A client made with this function, on such a rejection,
 // re-reads tokenFile and, only if it now holds a different token, adopts it and
 // sends the rejected request once more. It never retries more than once per
-// request, and never if the file is unchanged or unreadable.
+// request, and never if the file is unchanged or unreadable. A blank tokenFile
+// returns ErrNoTokenFile.
 func ConnectWithTokenFile(addr, caFile, certDomain, tokenFile string, timeout time.Duration) (*Client, error) {
 	if tokenFile == "" {
-		return nil, errNoTokenFile
+		return nil, ErrNoTokenFile
 	}
 
 	// the path is made absolute now, so that a later reload reads the same file
