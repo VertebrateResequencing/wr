@@ -719,9 +719,9 @@ func (s *Server) replyError(ctx context.Context, m *mangos.Message, cr *clientRe
 		qerr = srerr
 	}
 
-	jqerr := Error{cr.Method, cr.key(), qerr}
+	jqerr := Error{Op: cr.Method, Item: cr.key(), Err: qerr}
 	if isRoutineClientRefusal(cr, srerr, qerr) {
-		return replyBytes, routineClientRequestError{jqerr}
+		return replyBytes, routineClientRequestError{err: jqerr}
 	}
 
 	return replyBytes, jqerr
