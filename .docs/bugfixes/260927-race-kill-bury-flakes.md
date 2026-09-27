@@ -189,3 +189,7 @@
     ./jobqueue` failed at line 503 twice (exit 1). After: it passes, as do
     the kill tests, `TestExecuteLiveStateSnapshots` and
     `TestClientTouchSendsLiveEndState`.
+- Gates on the final commit: `make lint` 0 issues; `make test` 722 passed,
+  20 skipped; `CGO_ENABLED=1 make race` 722 passed, 19 skipped. Under
+  `stress -c 40` with `GOMAXPROCS=2`: lane jq_execution_details 3 of 3, and
+  every test named above, plus the other `TestKill*` tests, 3 of 3 each.
