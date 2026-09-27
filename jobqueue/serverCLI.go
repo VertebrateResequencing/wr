@@ -1209,8 +1209,9 @@ func (s *Server) handleTouch(ctx context.Context, cr *clientRequest) (*serverRes
 	// runner is still busy killing the command and finishing up, which can take
 	// longer than the TTR, and it is its report that buries the job as killed.
 	// Were the job left to go lost instead, the manager would release it, maybe
-	// to run again, and reject the runner's report.
-	srerr, qerr := s.touchJob(ctx, cr, item, job, lost)
+	// to run again, and reject the runner's report. Its live snapshot is not
+	// applied, though: that describes a command being killed.
+	srerr, qerr := s.touchJob(ctx, cr, item, job, lost, !killCalled)
 
 	if killCalled {
 		return &serverResponse{KillCalled: true}, "", ""
@@ -1219,10 +1220,11 @@ func (s *Server) handleTouch(ctx context.Context, cr *clientRequest) (*serverRes
 	return &serverResponse{KillCalled: false}, srerr, qerr
 }
 
-// touchJob updates the job's TTR and routes its lost->running count and any live
-// subscription snapshot through the single transition chokepoint.
+// touchJob updates the job's TTR and routes its lost->running count and, when
+// applyLive, any live subscription snapshot through the single transition
+// chokepoint.
 func (s *Server) touchJob(ctx context.Context, cr *clientRequest, item *queue.Item, job *Job,
-	lost bool) (string, string) {
+	lost, applyLive bool) (string, string) {
 	var srerr, qerr string
 
 	// else, update the job's ttr
@@ -1243,9 +1245,12 @@ func (s *Server) touchJob(ctx context.Context, cr *clientRequest, item *queue.It
 	// them here makes it impossible to record one without considering the other.
 	// No lock is held here (q.Touch released queue.mutex), and the emitter
 	// helpers manage their own job/subscription locking.
-	s.emitJobTransition(counts, func() {
-		s.emitLiveTouchSnapshot(ctx, cr, job, srerr)
-	})
+	var emitLive func()
+	if applyLive {
+		emitLive = func() { s.emitLiveTouchSnapshot(ctx, cr, job, srerr) }
+	}
+
+	s.emitJobTransition(counts, emitLive)
 
 	return srerr, qerr
 }

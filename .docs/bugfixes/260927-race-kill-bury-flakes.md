@@ -172,3 +172,20 @@
   - After, same load: 20 of 20 passed.
 - [ ] TestStatusCountReconcile hit its 120s timeout at load 80+ on develop.
   - Recorded only, as asked (low priority). Not investigated.
+- [x] `make test` after the first item: TestManagerLiveJTouch failed at
+  jobqueue/live_jtouch_test.go:503 in the two KillCalled Conveys,
+  `Expected '999958368' to be less than or equal to '978465193'`: a touch of
+  a killed job now renews its TTR, and the tests pinned that it did not.
+  - That pinned behaviour is the first item's root cause, so the change to
+    it stands: both Conveys now assert the TTR is renewed. This overrides
+    the issue-98 spec's "keep existing jtouch TTR and KillCalled behaviour"
+    for killed jobs only.
+  - The first item's fix also applied a killed job's live snapshot, which
+    those Conveys rightly say must not happen: it describes a command being
+    killed. `touchJob` now takes `applyLive`, which `handleTouch` sets only
+    when kill has not been called, so a killed job's live fields stay as
+    they were, as before.
+  - Red: `CGO_ENABLED=1 go test -race -run '^TestManagerLiveJTouch$'
+    ./jobqueue` failed at line 503 twice (exit 1). After: it passes, as do
+    the kill tests, `TestExecuteLiveStateSnapshots` and
+    `TestClientTouchSendsLiveEndState`.
