@@ -670,12 +670,15 @@ func ConnectWithTokenFile(addr, caFile, certDomain, tokenFile string, timeout ti
 	}
 
 	// the path is made absolute now, so that a later reload reads the same file
-	// even if the process has changed its working directory since
-	if abs, errA := filepath.Abs(tokenFile); errA == nil {
-		tokenFile = abs
-	} else {
-		tokenFile = filepath.Clean(tokenFile)
+	// even if the process has changed its working directory since. Abs only
+	// fails for a relative path whose working directory cannot be found, which
+	// the read would not survive either.
+	abs, err := filepath.Abs(tokenFile)
+	if err != nil {
+		return nil, fmt.Errorf("could not resolve token file path %q: %w", tokenFile, err)
 	}
+
+	tokenFile = abs
 
 	token, err := os.ReadFile(tokenFile)
 	if err != nil {
