@@ -616,7 +616,7 @@ func TestRESTContainerImageUser(t *testing.T) {
 			job := onlyJob()
 			So(job.ContainerImageUser, ShouldBeTrue)
 
-			cmd, cleanup, errc := job.CmdLine(ctx)
+			cmd, cleanup, errc := job.CmdLine(ctx, "")
 			So(errc, ShouldBeNil)
 
 			defer cleanup()
@@ -632,7 +632,7 @@ func TestRESTContainerImageUser(t *testing.T) {
 				So(modified.ContainerImageUser, ShouldBeFalse)
 				So(modified.Key(), ShouldNotEqual, job.Key())
 
-				cmd, cleanup, errc = modified.CmdLine(ctx)
+				cmd, cleanup, errc = modified.CmdLine(ctx, "")
 				So(errc, ShouldBeNil)
 
 				defer cleanup()
@@ -651,7 +651,7 @@ func TestRESTContainerImageUser(t *testing.T) {
 			job := onlyJob()
 			So(job.ContainerImageUser, ShouldBeFalse)
 
-			cmd, cleanup, errc := job.CmdLine(ctx)
+			cmd, cleanup, errc := job.CmdLine(ctx, "")
 			So(errc, ShouldBeNil)
 
 			defer cleanup()

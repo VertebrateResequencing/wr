@@ -79,6 +79,13 @@ project adheres to [Semantic Versioning](http://semver.org/).
   cleaned up after it at the same time. A working directory that the other
   cleanup has already removed is now treated as done, and the empty
   directories above it are still removed.
+- The small file wr writes each `--with_docker` or `--with_singularity`
+  command to is now made in that command's own TMPDIR, instead of the system
+  tmp dir of the runner, so it is removed with the command's workspace. Before,
+  a runner that was killed, for example by the scheduler, left the file behind
+  in `/tmp`. (`--cwd_matters` commands have no TMPDIR of wr's, so theirs is
+  still made in the system tmp dir.) In the Go API, `Job.CmdLine` and
+  `container.PrepareCmdFile` now take the dir to make the file in.
 - A path you give wr that starts with `~/` followed by another `~`, such as a
   `manager_dir` of `~/~wr` or a `--cloud_config_files` file of `~/~cfg/a`, now
   means that path in your home directory. Before, wr dropped every `~` and `/`
