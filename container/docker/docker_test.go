@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/container"
+	"github.com/VertebrateResequencing/wr/internal/testimage"
 	cn "github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/jsonstream"
 	nw "github.com/moby/moby/api/types/network"
@@ -46,18 +47,10 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-// testImage is the image the tests that need a real docker daemon run. It is
-// alpine, not ubuntu, because all they need is a container that stays up, and
-// alpine is a 13MB pull rather than a 160MB one; it is also what
-// container/run_test.go's real tests use, so a developer running ./container/...
-// needs one image and not two.
-//
-// It is pinned by digest so that pulling it cannot re-point a developer's own
-// alpine:latest: docker only writes a tag when it pulls one, and this asks for
-// a digest. The digest is that of the multi-platform index alpine:latest
-// pointed at on 2026-09-09 (alpine 3.24.1), so it resolves on any architecture
-// the daemon runs.
-const testImage = "alpine@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b"
+// testImage is the image the tests that need a real docker daemon run: the
+// same pinned alpine container/run_test.go's real tests use, so a developer
+// running ./container/... needs one image and not two.
+const testImage = testimage.Alpine
 
 // testAPIVersion is the docker API version our fake daemon serves; the moby
 // client asks for a pinned version directly instead of negotiating one.

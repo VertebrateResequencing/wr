@@ -101,6 +101,31 @@ project adheres to [Semantic Versioning](http://semver.org/).
   mounts stayed live with no process left to unmount them, and you had to find
   and `fusermount -u` them yourself. It now unmounts them before it exits. The
   same goes for a signal to stop that arrives while it is still mounting.
+- `wr add --cmd_deps`, `wr mod --cmd_deps` and a `cmd`/`cwd` dependency in a
+  REST `POST /rest/v1/jobs` did not wait for a command you had added with
+  `--with_docker`, `--with_singularity` or `--mounts`, so the dependent command
+  could start before that command had finished. A command dependency now waits
+  for every incomplete command with that command line (and working directory,
+  if that command was added with `--cwd_matters`), whatever container or mounts
+  it uses. If more than one such command is in the queue, it waits for all of
+  them.
+- An empty element in `--queues_avoid`, such as the trailing comma in
+  `wr add --queues_avoid "interactive,"`, made wr avoid every LSF queue, so the
+  command could never run. `wr add` and `wr mod` now drop empty and
+  whitespace-only elements from `--queues_avoid`, `--limit_grps` and
+  `--modules`, as does a REST `POST /rest/v1/jobs` from its `limit_grps`
+  parameter, and the LSF scheduler ignores an empty queue name to avoid or
+  choose from, however it reached it (including the `queues_avoid` field of a
+  REST or JSON job).
+- A `--with_docker` command that docker could not start, for example because
+  its image could not be pulled, was reported with the fail reason "command
+  exited non-zero", as if the command had run. It is now reported as
+  "container failed to start" when docker exits with its own start-failure
+  code, 125, and likewise for `--with_singularity` when singularity exits with
+  255. A command that itself exits with that code inside the container is
+  reported the same way, since wr cannot tell the two apart; `wr status` shows
+  the runtime's own explanation in the command's stderr. Whether the command is
+  retried or buried is unchanged.
 - A network blip on a `wr add --sync`, a `client` package `WaitForJobs` or any
   other Go client job subscription left a copy of that subscription behind on
   the manager each time the client reconnected, for as long as the manager ran.

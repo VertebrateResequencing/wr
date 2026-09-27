@@ -1686,20 +1686,29 @@ func (s *Server) getJobsRecent(ctx context.Context, period time.Duration,
 // releasing nothing: it only adds, so no group can empty. It is recovery's bulk
 // rebuild and the add path's first pass. Call it before resolving any dependency
 // against this state.
+//
+// It also indexes each job by its command key, so that a command dependency
+// finds it whatever mounts or container image it has.
 func (s *Server) registerDepGroupMembers(jobs []*Job) {
 	for _, job := range jobs {
+		key := job.Key()
+
+		s.depGroups.variants.record(key, job.commandKey(key))
+
 		if len(job.DepGroups) == 0 {
 			continue
 		}
 
-		s.depGroups.add(job.DepGroups, job.Key())
+		s.depGroups.add(job.DepGroups, key)
 	}
 }
 
 // releaseDepGroupMembership drops jobKey from every group it is a member of and
-// satisfies the queue dependency key of every group thereby emptied. Must not be
-// called while holding the queue mutex.
+// satisfies the queue dependency key of every group thereby emptied, and drops
+// it from the command key index. Must not be called while holding the queue
+// mutex.
 func (s *Server) releaseDepGroupMembership(ctx context.Context, jobKey string) {
+	s.depGroups.variants.forget(jobKey)
 	s.satisfyEmptiedDepGroups(ctx, s.depGroups.remove(jobKey))
 }
 
@@ -1736,8 +1745,10 @@ func (s *Server) rekeyDepGroupMembershipForModifiedJobs(ctx context.Context, old
 		// mutex, which is above the job lock in the lock order.
 		job.RLock()
 		newKey, depGroups := job.Key(), job.DepGroups
+		commandKey := job.commandKey(newKey)
 		job.RUnlock()
 
+		s.depGroups.variants.rekey(oldKeys[i], newKey, commandKey)
 		s.rekeyDepGroupMembership(ctx, oldKeys[i], newKey, depGroups)
 	}
 }

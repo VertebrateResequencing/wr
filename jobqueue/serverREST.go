@@ -1728,7 +1728,7 @@ func newJobDefaultsFromForm(r *http.Request) *JobDefaults {
 	jd := &JobDefaults{
 		Cwd:             r.Form.Get("cwd"),
 		RepGrp:          r.Form.Get("rep_grp"),
-		LimitGroups:     urlStringToSlice(r.Form.Get("limit_grps")),
+		LimitGroups:     internal.SplitCommaList(r.Form.Get("limit_grps")),
 		ReqGrp:          r.Form.Get("req_grp"),
 		CPUs:            urlStringToFloat(r.Form.Get("cpus")),
 		Disk:            urlStringToInt(r.Form.Get("disk")),

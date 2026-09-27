@@ -233,9 +233,14 @@ func (s *jobGroupShard) setLocked(jobKey string, groups map[string]bool) {
 //     ascending shard index, and takes the shard once when both keys fall in it.
 //     Locking them in call order deadlocks two opposing rekeys (a -> b against
 //     b -> a).
+//
+// It also holds the commandVariants index, which is the other half of the live
+// state dependency resolution reads from memory, and is kept current at the same
+// points as the membership.
 type depGroupMembers struct {
-	groups [depGroupShards]depGroupShard
-	jobs   [depGroupShards]jobGroupShard
+	groups   [depGroupShards]depGroupShard
+	jobs     [depGroupShards]jobGroupShard
+	variants commandVariants
 }
 
 // newDepGroupMembers returns a depGroupMembers holding no memberships.
@@ -246,6 +251,8 @@ func newDepGroupMembers() *depGroupMembers {
 		m.groups[i].members = make(map[string]map[string]bool)
 		m.jobs[i].groups = make(map[string]map[string]bool)
 	}
+
+	m.variants.init()
 
 	return m
 }
@@ -258,6 +265,13 @@ func (m *depGroupMembers) hasMembers(depGroup string) bool {
 	defer shard.mu.Unlock()
 
 	return len(shard.members[depGroup]) > 0
+}
+
+// liveCommandVariants returns the keys of the jobs with the given command key
+// (see Job.commandKey) that have mounts or a container image, and so a key of
+// their own. Some may have just stopped being live.
+func (m *depGroupMembers) liveCommandVariants(commandKey string) []string {
+	return m.variants.of(commandKey)
 }
 
 // memberships returns the total number of (group, member) pairs held. It is

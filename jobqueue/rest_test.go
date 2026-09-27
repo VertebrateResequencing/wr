@@ -1059,6 +1059,22 @@ func TestJobViaJSONBehaviours(t *testing.T) {
 	})
 }
 
+func TestRESTFormDropsEmptyLimitGroups(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A POST's limit_grps parameter drops empty elements, as wr add --limit_grps does", t, func() {
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
+			restJobsEndpoint+"?limit_grps="+url.QueryEscape("lg1,, ,lg2,"), nil)
+		So(r.ParseForm(), ShouldBeNil)
+
+		jd, err := jobDefaultsFromForm(r)
+		So(err, ShouldBeNil)
+		So(jd.LimitGroups, ShouldResemble, []string{"lg1", "lg2"})
+	})
+}
+
 // hasCleanupBehaviour tells you if any of bs would delete a job's working
 // directory.
 func hasCleanupBehaviour(bs Behaviours) bool {

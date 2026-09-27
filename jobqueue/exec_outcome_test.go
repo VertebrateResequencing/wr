@@ -26,10 +26,25 @@
 package jobqueue
 
 import (
+	"context"
 	"errors"
+	"os/exec"
+	"strconv"
 	"testing"
 
+	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
+)
+
+// static errors standing in for the problems Execute accumulates.
+var (
+	errTestUploadFailed   = errors.New("unmounting also caused problem(s): failed to upload 1 files")
+	errTestBehaviour      = errors.New("cleanup failed")
+	errTestStderrHandling = errors.New("disk full")
+	errTestCmdNotFound    = errors.New("command not found")
+	errTestCmdExited      = errors.New("command exited with code 1")
+	errTestCmdAbnormal    = errors.New("command failed to complete normally")
+	errTestCmdKilled      = errors.New("command was killed")
 )
 
 func TestExecProblemReporting(t *testing.T) {
@@ -153,17 +168,6 @@ func TestExecOutcomeCombination(t *testing.T) {
 	})
 }
 
-// static errors standing in for the problems Execute accumulates.
-var (
-	errTestUploadFailed   = errors.New("unmounting also caused problem(s): failed to upload 1 files")
-	errTestBehaviour      = errors.New("cleanup failed")
-	errTestStderrHandling = errors.New("disk full")
-	errTestCmdNotFound    = errors.New("command not found")
-	errTestCmdExited      = errors.New("command exited with code 1")
-	errTestCmdAbnormal    = errors.New("command failed to complete normally")
-	errTestCmdKilled      = errors.New("command was killed")
-)
-
 // uploadFailedOutcome is the verdict Execute reaches when unmounting a job's
 // writable mount could not upload the job's output.
 func uploadFailedOutcome(myerr error) execOutcome {
@@ -173,4 +177,61 @@ func uploadFailedOutcome(myerr error) execOutcome {
 		exitcode:   exitCodeUploadFailure,
 		dorelease:  true,
 	}
+}
+
+func TestExecOutcomeContainerStartFailure(t *testing.T) {
+	Convey("Given commands that exited with a container runtime's start-failure code", t, func() {
+		c := &Client{}
+
+		Convey("a docker job exiting 125 failed because its container did not start", func() {
+			out := classifyTestExit(c, &Job{WithDocker: testContainerImage}, dockerStartFailureExitCode)
+
+			So(out.failreason, ShouldEqual, FailReasonContainer)
+			So(out.exitcode, ShouldEqual, dockerStartFailureExitCode)
+			So(out.dorelease, ShouldBeTrue)
+			So(out.dobury, ShouldBeFalse)
+		})
+
+		Convey("a singularity job exiting 255 failed because its container did not start", func() {
+			out := classifyTestExit(c, &Job{WithSingularity: testContainerImage}, singularityStartFailureExitCode)
+
+			So(out.failreason, ShouldEqual, FailReasonContainer)
+			So(out.dorelease, ShouldBeTrue)
+		})
+
+		Convey("a job with both images is docker's, as it runs under docker", func() {
+			both := &Job{WithDocker: testContainerImage, WithSingularity: testContainerImage}
+
+			So(classifyTestExit(c, both, dockerStartFailureExitCode).failreason, ShouldEqual, FailReasonContainer)
+			So(classifyTestExit(c, both, singularityStartFailureExitCode).failreason, ShouldEqual, FailReasonExit)
+		})
+
+		Convey("the other runtime's code, or a job with no container, is an ordinary non-zero exit", func() {
+			So(classifyTestExit(c, &Job{WithDocker: testContainerImage}, singularityStartFailureExitCode).failreason,
+				ShouldEqual, FailReasonExit)
+			So(classifyTestExit(c, &Job{WithSingularity: testContainerImage}, dockerStartFailureExitCode).failreason,
+				ShouldEqual, FailReasonExit)
+			So(classifyTestExit(c, &Job{}, dockerStartFailureExitCode).failreason, ShouldEqual, FailReasonExit)
+			So(classifyTestExit(c, &Job{}, singularityStartFailureExitCode).failreason, ShouldEqual, FailReasonExit)
+		})
+	})
+}
+
+// testContainerImage stands in for a container image; nothing runs it.
+const testContainerImage = "image"
+
+// classifyTestExit runs a real process that exits with code, and classifies its
+// ending as Execute would for job.
+func classifyTestExit(c *Client, job *Job, code int) execOutcome {
+	job.Cmd = "exit " + strconv.Itoa(code)
+	job.Requirements = &scheduler.Requirements{RAM: 1}
+
+	// job.Cmd is "exit <int>", built above.
+	cmd := exec.CommandContext(context.Background(), "sh", "-c", job.Cmd) //nolint:gosec
+	err := cmd.Run()
+	So(err, ShouldNotBeNil)
+
+	return c.classifyExecOutcome(execOutcomeInput{
+		err: err, cmd: cmd, job: job, serverContact: &serverContactState{},
+	})
 }

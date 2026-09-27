@@ -140,6 +140,21 @@ func SortMapKeysByMapIntValue(imap map[string]map[string]int, criterion string, 
 	return sortedKeys
 }
 
+// SplitCommaList splits a comma-separated list, dropping any element that is
+// empty or only whitespace, as a trailing or doubled comma gives. It returns nil
+// if no element is left.
+func SplitCommaList(list string) []string {
+	var elements []string
+
+	for element := range strings.SplitSeq(list, ",") {
+		if strings.TrimSpace(element) != "" {
+			elements = append(elements, element)
+		}
+	}
+
+	return elements
+}
+
 // DedupSortStrings removes duplicates and then sorts the given strings,
 // returning a new slice.
 func DedupSortStrings(s []string) []string {

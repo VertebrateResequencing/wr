@@ -110,9 +110,10 @@ type resolvedJob struct {
 // so a cancel cannot leave the transaction open).
 //
 // Only work that reads the database belongs in here. It does also call
-// groups.hasMembers, which takes one of depGroupMembers' shard mutexes for a
-// single O(1) map read, and job.setWaitingForDepGroups, which takes that Job's
-// own mutex; both are safe because recoverIncompleteJobs decodes a fresh *Job
+// groups.hasMembers and groups.liveCommandVariants, each of which takes one of
+// depGroupMembers' shard mutexes for a single map read (the latter copying out
+// the matching keys), and job.setWaitingForDepGroups, which takes that Job's
+// own mutex; all are safe because recoverIncompleteJobs decodes a fresh *Job
 // per database record, so these pointers are private to the recovery goroutine
 // and the locks are uncontended. Nothing that can block on another goroutine -
 // the scheduler, the queue, a client write - may be done in here, since the
@@ -149,10 +150,12 @@ func (db *db) resolveDependencyChunk(
 	return resolved, nil
 }
 
-// depGroupState answers whether a dep group has a live member job, without a
-// database read.
+// depGroupState answers, without a database read, whether a dep group has a
+// live member job, and which jobs with a command key (see Job.commandKey) have a
+// key of their own because they have mounts or a container image.
 type depGroupState interface {
 	hasMembers(depGroup string) bool
+	liveCommandVariants(commandKey string) []string
 }
 
 // newSeenDepGroupCache returns an empty cache that counts the reads it makes
@@ -247,45 +250,49 @@ func (d *Dependency) collectDepGroupKey(
 	}
 }
 
-// collectEssenceJobKey adds this essence dependency's job key to jobKeys if that
-// job is still live; a job that is not live has nothing left to wait for.
-func (d *Dependency) collectEssenceJobKey(reader depReader, jobKeys map[string]bool) error {
-	if d.Essence == nil {
-		return nil
-	}
-
-	keys, err := d.incompleteEssenceJobKeys(reader)
-	if err != nil {
-		return err
-	}
-
-	collectStrings(keys, jobKeys)
-
-	return nil
-}
-
 func collectStrings(values []string, set map[string]bool) {
 	for _, value := range values {
 		set[value] = true
 	}
 }
 
-// incompleteEssenceJobKeys returns this essence dependency's job key if that job
-// is still live, and nothing if it is not: a job that is not live has nothing
-// left to wait for.
-func (d *Dependency) incompleteEssenceJobKeys(reader depReader) ([]string, error) {
-	jobKey := d.Essence.Key()
-
-	live, err := reader.checkIfLive(jobKey)
-	if err != nil {
-		return nil, err
+// collectEssenceJobKeys adds the key of each still live job this essence
+// dependency names to jobKeys; a job that is not live has nothing left to wait
+// for.
+func (d *Dependency) collectEssenceJobKeys(
+	reader depReader, groups depGroupState, jobKeys map[string]bool,
+) error {
+	if d.Essence == nil {
+		return nil
 	}
 
-	if live {
-		return []string{jobKey}, nil
+	for _, jobKey := range d.essenceCandidateKeys(groups) {
+		live, err := reader.checkIfLive(jobKey)
+		if err != nil {
+			return err
+		}
+
+		if live {
+			jobKeys[jobKey] = true
+		}
 	}
 
-	return nil, nil
+	return nil
+}
+
+// essenceCandidateKeys returns the keys of the jobs this essence dependency
+// might name. An essence giving only a Cmd and Cwd, as a command dependency
+// does, names every job with that Cmd (and Cwd, if the job's CwdMatters),
+// whatever mounts or container image the job has: the user named a command, so
+// the dependent must not start while any job running it is incomplete.
+func (d *Dependency) essenceCandidateKeys(groups depGroupState) []string {
+	key := d.Essence.Key()
+
+	if !d.Essence.namesOnlyCommand() {
+		return []string{key}
+	}
+
+	return append(groups.liveCommandVariants(key), key)
 }
 
 // Dependencies is a slice of *Dependency, for use in Job.Dependencies. It
@@ -345,8 +352,8 @@ func appendDependencyViaJSON(deps Dependencies, dep dependencyViaJSON) Dependenc
 }
 
 // dependencyKeys returns the queue dependency keys for these Dependencies - one
-// depgroup:G key per unsatisfied declared group, one job key per live essence
-// dependency - plus the declared groups that have never been seen.
+// depgroup:G key per unsatisfied declared group, and the key of each live job an
+// essence dependency names - plus the declared groups that have never been seen.
 //
 // A dep group edge stays at the granularity the user declared it: one opaque key
 // for the whole group, never one key per member job. Whether the group still has
@@ -379,7 +386,7 @@ func (d Dependencies) dependencyKeys(
 			continue
 		}
 
-		if errd := dep.collectEssenceJobKey(reader, jobKeys); errd != nil {
+		if errd := dep.collectEssenceJobKeys(reader, groups, jobKeys); errd != nil {
 			return []string{}, []string{}, errd
 		}
 	}

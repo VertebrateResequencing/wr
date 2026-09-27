@@ -1206,7 +1206,7 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 		CloudFlavor:          cmdFlavor,
 		CloudShared:          cmdCloudSharedDisk,
 		SchedulerQueue:       cmdQueue,
-		SchedulerQueuesAvoid: cmdQueuesAvoidAdd,
+		SchedulerQueuesAvoid: strings.Join(internal.SplitCommaList(cmdQueuesAvoidAdd), ","),
 		SchedulerMisc:        cmdMisc,
 		BsubMode:             bsubMode,
 		RTimeout:             rtimeoutint,
@@ -1220,13 +1220,8 @@ func parseCmdFile(jq *jobqueue.Client, diskSet bool, remoteSameAsLocal bool) ([]
 	jd.Time = parseDurationOrDie(cmdTime, "--time")
 	jd.NoRetriesOverWalltime = parseDurationOrDie(cmdNoRetry, "--no_retry_over_walltime")
 
-	if cmdLimitGroups != "" {
-		jd.LimitGroups = strings.Split(cmdLimitGroups, ",")
-	}
-
-	if cmdModules != "" {
-		jd.Modules = strings.Split(cmdModules, ",")
-	}
+	jd.LimitGroups = internal.SplitCommaList(cmdLimitGroups)
+	jd.Modules = internal.SplitCommaList(cmdModules)
 
 	if cmdDepGroups != "" {
 		jd.DepGroups = strings.Split(cmdDepGroups, ",")

@@ -162,11 +162,11 @@ new internal ids is printed.`,
 		}
 
 		if cobraCmd.Flags().Changed("limit_grps") {
-			jm.SetLimitGroups(strings.Split(cmdLimitGroups, ","))
+			jm.SetLimitGroups(internal.SplitCommaList(cmdLimitGroups))
 		}
 
 		if cobraCmd.Flags().Changed("modules") {
-			jm.SetModules(strings.Split(cmdModules, ","))
+			jm.SetModules(internal.SplitCommaList(cmdModules))
 		}
 
 		// *** implementing dep_grps modification is complex; not done for now
@@ -289,8 +289,8 @@ new internal ids is printed.`,
 			other["scheduler_queue"] = cmdQueue
 		}
 
-		if cmdQueuesAvoidMod != "" {
-			other["scheduler_queues_avoid"] = cmdQueuesAvoidMod
+		if queuesAvoid := strings.Join(internal.SplitCommaList(cmdQueuesAvoidMod), ","); queuesAvoid != "" {
+			other["scheduler_queues_avoid"] = queuesAvoid
 		}
 
 		if len(other) > 0 || otherSet {
