@@ -362,8 +362,36 @@ func resolvedMountConfigs() jobqueue.MountConfigs {
 //
 // If any config fails to mount, it unmounts the ones it has already mounted
 // before dying with the error, so that it does not exit leaving live mounts
-// behind with no process left to signal.
+// behind with no process left to signal. For the same reason it listens for
+// the signal before it starts mounting: one that arrives part way through is
+// acted on once the mount in progress returns, unmounting everything mounted,
+// instead of killing the process with the earlier mounts still live.
 func mountAndWait(configs jobqueue.MountConfigs, mount mountFunc) {
+	deathSignals := make(chan os.Signal, deathSignalBuffer)
+	signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
+
+	defer signal.Stop(deathSignals)
+
+	mounted, signalled := mountEach(configs, mount, deathSignals)
+	if signalled || len(mounted) == 0 {
+		unmountAll(mounted)
+
+		return
+	}
+
+	// wait for death
+	<-deathSignals
+
+	unmountAll(mounted)
+}
+
+// mountEach mounts each of the given configs with mount, returning what it
+// mounted. It stops early, returning true, if a signal arrives on deathSignals
+// part way through. If a config fails to mount, it unmounts what it mounted and
+// dies with the error.
+func mountEach(configs jobqueue.MountConfigs, mount mountFunc,
+	deathSignals <-chan os.Signal,
+) ([]mountedFS, bool) {
 	mounted := make([]mountedFS, 0, len(configs))
 
 	for _, mc := range configs {
@@ -376,18 +404,15 @@ func mountAndWait(configs jobqueue.MountConfigs, mount mountFunc) {
 		}
 
 		mounted = append(mounted, fs)
+
+		select {
+		case <-deathSignals:
+			return mounted, true
+		default:
+		}
 	}
 
-	if len(mounted) == 0 {
-		return
-	}
-
-	// wait for death
-	deathSignals := make(chan os.Signal, deathSignalBuffer)
-	signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
-	<-deathSignals
-
-	unmountAll(mounted)
+	return mounted, false
 }
 
 // mountConfig creates and mounts a MuxFys for the given MountConfig.

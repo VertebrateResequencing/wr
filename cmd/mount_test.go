@@ -27,9 +27,12 @@ package cmd
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/jobqueue"
@@ -38,6 +41,13 @@ import (
 )
 
 var errTestSecondMount = errors.New("second mount failed")
+
+// mountTestSignalDelay is how long a fake mount waits for a signal it sent
+// itself to be delivered.
+const mountTestSignalDelay = 100 * time.Millisecond
+
+// mountTestFirst is the Mount of the first of two test mount configs.
+const mountTestFirst = "first"
 
 // fakeMountedFS records whether it was unmounted.
 type fakeMountedFS struct {
@@ -54,7 +64,7 @@ func TestMountFailureUnmountsEarlierMounts(t *testing.T) {
 	Convey("Given two mount configs where the second fails to mount", t, func() {
 		const failingMount = "second"
 
-		configs := jobqueue.MountConfigs{{Mount: "first"}, {Mount: failingMount}}
+		configs := jobqueue.MountConfigs{{Mount: mountTestFirst}, {Mount: failingMount}}
 		first := &fakeMountedFS{}
 
 		mount := func(mc jobqueue.MountConfig) (mountedFS, error) {
@@ -84,6 +94,30 @@ func TestMountFailureUnmountsEarlierMounts(t *testing.T) {
 		Convey("wr mount exits non-zero with the error, having unmounted the first", func() {
 			So(exitCode, ShouldEqual, 1)
 			So(logged.String(), ShouldContainSubstring, errTestSecondMount.Error())
+			So(first.unmounted, ShouldEqual, 1)
+		})
+	})
+}
+
+func TestMountSignalMidwayUnmountsEarlierMounts(t *testing.T) {
+	Convey("Given two mount configs and a SIGTERM that arrives while the first is mounting", t, func() {
+		configs := jobqueue.MountConfigs{{Mount: mountTestFirst}, {Mount: "second"}}
+		first := &fakeMountedFS{}
+
+		mount := func(mc jobqueue.MountConfig) (mountedFS, error) {
+			if mc.Mount == mountTestFirst {
+				So(syscall.Kill(os.Getpid(), syscall.SIGTERM), ShouldBeNil)
+
+				// give the signal time to be delivered before this mount ends
+				time.Sleep(mountTestSignalDelay)
+			}
+
+			return first, nil
+		}
+
+		mountAndWait(configs, mount)
+
+		Convey("wr mount unmounts what it mounted and returns, instead of dying with it live", func() {
 			So(first.unmounted, ShouldEqual, 1)
 		})
 	})
