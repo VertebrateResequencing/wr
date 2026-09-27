@@ -109,6 +109,13 @@ project adheres to [Semantic Versioning](http://semver.org/).
   if that command was added with `--cwd_matters`), whatever container or mounts
   it uses. If more than one such command is in the queue, it waits for all of
   them.
+- An empty element in `--queues_avoid`, such as the trailing comma in
+  `wr add --queues_avoid "interactive,"`, made wr avoid every LSF queue, so the
+  command could never run. `wr add` and `wr mod` now drop empty and
+  whitespace-only elements from `--queues_avoid`, `--limit_grps` and
+  `--modules`, and the LSF scheduler ignores an empty queue name to avoid or
+  choose from, however it reached it (including the `queues_avoid` field of a
+  REST or JSON job).
 - A network blip on a `wr add --sync`, a `client` package `WaitForJobs` or any
   other Go client job subscription left a copy of that subscription behind on
   the manager each time the client reconnected, for as long as the manager ran.

@@ -60,6 +60,22 @@ func TestTildaToHomeStripsOnlyTheLeadingTilda(t *testing.T) {
 	})
 }
 
+func TestSplitCommaList(t *testing.T) {
+	Convey("SplitCommaList splits on commas", t, func() {
+		So(SplitCommaList("a,b"), ShouldResemble, []string{"a", "b"})
+
+		Convey("dropping empty and whitespace-only elements", func() {
+			So(SplitCommaList("interactive,"), ShouldResemble, []string{"interactive"})
+			So(SplitCommaList(",a,, ,\t,b, "), ShouldResemble, []string{"a", "b"})
+		})
+
+		Convey("giving nothing for a list with no real element", func() {
+			So(SplitCommaList(""), ShouldBeEmpty)
+			So(SplitCommaList(", ,"), ShouldBeEmpty)
+		})
+	})
+}
+
 type wrappedEOFCloser struct{}
 
 func (wrappedEOFCloser) Close() error {

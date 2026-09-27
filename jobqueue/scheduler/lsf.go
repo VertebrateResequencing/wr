@@ -2134,17 +2134,14 @@ func (s *lsf) determineQueue(req *Requirements) (string, error) {
 	queues := s.sortedqs
 
 	if queue, ok := req.Other["scheduler_queue"]; strings.Contains(queue, ",") {
-		queues = strings.Split(queue, ",")
+		queues = internal.SplitCommaList(queue)
 	} else if ok {
 		return queue, nil
 	}
 
 	seconds := req.Time.Seconds() + minimumQueueTime.Seconds()
 
-	var queuesToAvoid []string
-	if req.Other["scheduler_queues_avoid"] != "" {
-		queuesToAvoid = strings.Split(req.Other["scheduler_queues_avoid"], ",")
-	}
+	queuesToAvoid := internal.SplitCommaList(req.Other["scheduler_queues_avoid"])
 
 	if queue, ok := s.firstSuitableQueue(queues, queuesToAvoid, req, seconds); ok {
 		return queue, nil
@@ -2175,9 +2172,11 @@ func (s *lsf) firstSuitableQueue(queues, queuesToAvoid []string, req *Requiremen
 	return "", false
 }
 
+// queueShouldBeAvoided says whether queue's name contains any of queuesToAvoid.
+// An empty element is skipped, since every name contains it.
 func queueShouldBeAvoided(queue string, queuesToAvoid []string) bool {
 	for _, queueToAvoid := range queuesToAvoid {
-		if strings.Contains(queue, queueToAvoid) {
+		if queueToAvoid != "" && strings.Contains(queue, queueToAvoid) {
 			return true
 		}
 	}

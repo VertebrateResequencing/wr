@@ -1094,6 +1094,29 @@ func TestAddHeadKeepsFirstParsedCommands(t *testing.T) {
 	})
 }
 
+func TestAddDropsEmptyListElements(t *testing.T) {
+	Convey("wr add drops empty elements from --limit_grps, --modules and --queues_avoid", t, func() {
+		cmdPath := filepath.Join(t.TempDir(), "cmds.txt")
+		err := os.WriteFile(cmdPath, []byte("cmd one\n"), 0600)
+		So(err, ShouldBeNil)
+
+		configureAddParserTest(t, cmdPath)
+		So(addCmd.Flags().Set("head", "0"), ShouldBeNil)
+
+		cmdLimitGroups = "lg1,, ,lg2,"
+		cmdModules = "mod1,"
+		cmdQueuesAvoidAdd = "interactive,"
+
+		jq := &jobqueue.Client{ServerInfo: &jobqueue.ServerInfo{Addr: remoteManagerAddr}}
+		jobs, _, _ := parseCmdFile(jq, false, false)
+
+		So(jobs, ShouldHaveLength, 1)
+		So(jobs[0].LimitGroups, ShouldResemble, []string{"lg1", "lg2"})
+		So(jobs[0].Modules, ShouldResemble, []string{"mod1"})
+		So(jobs[0].Requirements.Other["scheduler_queues_avoid"], ShouldEqual, "interactive")
+	})
+}
+
 func TestAddHeadZeroKeepsAllParsedCommands(t *testing.T) {
 	Convey("wr add --head 0 keeps all parsed commands from a command file", t, func() {
 		cmdPath := filepath.Join(t.TempDir(), "cmds.txt")
