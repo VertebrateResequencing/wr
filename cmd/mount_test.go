@@ -26,13 +26,68 @@
 package cmd
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/VertebrateResequencing/wr/clog"
+	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/sevlyar/go-daemon"
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+var errTestSecondMount = errors.New("second mount failed")
+
+// fakeMountedFS records whether it was unmounted.
+type fakeMountedFS struct {
+	unmounted int
+}
+
+func (f *fakeMountedFS) Unmount(_ ...bool) error {
+	f.unmounted++
+
+	return nil
+}
+
+func TestMountFailureUnmountsEarlierMounts(t *testing.T) {
+	Convey("Given two mount configs where the second fails to mount", t, func() {
+		const failingMount = "second"
+
+		configs := jobqueue.MountConfigs{{Mount: "first"}, {Mount: failingMount}}
+		first := &fakeMountedFS{}
+
+		mount := func(mc jobqueue.MountConfig) (mountedFS, error) {
+			if mc.Mount == failingMount {
+				return nil, errTestSecondMount
+			}
+
+			return first, nil
+		}
+
+		logged := clog.ToBufferAtLevel("error")
+		originalCmdExit := cmdExit
+		cmdExit = func(code int) {
+			panic(commandExitPanic{code: code})
+		}
+
+		defer func() {
+			cmdExit = originalCmdExit
+
+			clog.ToDefault()
+		}()
+
+		exitCode := recoverCommandExit(func() {
+			mountAndWait(configs, mount)
+		})
+
+		Convey("wr mount exits non-zero with the error, having unmounted the first", func() {
+			So(exitCode, ShouldEqual, 1)
+			So(logged.String(), ShouldContainSubstring, errTestSecondMount.Error())
+			So(first.unmounted, ShouldEqual, 1)
+		})
+	})
+}
 
 func TestMountResolvesToUsersDir(t *testing.T) {
 	Convey("Given a user who mounts a bucket with --mounts and no other options", t, func() {

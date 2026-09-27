@@ -79,6 +79,10 @@ project adheres to [Semantic Versioning](http://semver.org/).
   cleaned up after it at the same time. A working directory that the other
   cleanup has already removed is now treated as done, and the empty
   directories above it are still removed.
+- `wr mount` given several mounts no longer leaves the earlier ones mounted
+  when a later one fails. Before, it exited with the error while the earlier
+  mounts stayed live with no process left to unmount them, and you had to find
+  and `fusermount -u` them yourself. It now unmounts them before it exits.
 - A network blip on a `wr add --sync`, a `client` package `WaitForJobs` or any
   other Go client job subscription left a copy of that subscription behind on
   the manager each time the client reconnected, for as long as the manager ran.
