@@ -61,6 +61,56 @@ $bkline
 EOF
 }
 
+# private_config <dir> points every wr this invocation runs (and every job its managers run,
+# since jobs inherit the submitter's environment) at a config dir of its own, and writes it.
+# ensure_config rewrites the shared $CONFIG_DIR on every call, so a long run using the shared
+# dir would pick up whatever PROD_PORT/DEV_PORT the next wrdev.sh invocation happens to have.
+private_config() {
+  CONFIG_DIR="$1"
+  export WR_CONFIG_DIR="$CONFIG_DIR"
+  ensure_config
+}
+
+# conf_value <conf> <field> prints the value of <field> from the table `wr conf` printed as <conf>.
+conf_value() {
+  printf '%s\n' "$1" | awk -F'│' -v k="$2" \
+    '{ f = $2; gsub(/ /, "", f); if (f == k) { v = $3; gsub(/^ +| +$/, "", v); print v; exit } }'
+}
+
+# assert_isolated <deployment> <port> <web> <rundir> dies unless wr, run from the current
+# directory with the current environment, resolves <deployment> to our isolated manager: its
+# ports, its managerdir, and every file it would write inside that managerdir. wr lets env vars,
+# ~/.wr_config*.yml and ./.wr_config*.yml override WR_CONFIG_DIR, so this asks wr itself (wr
+# conf) rather than trusting the file we wrote. It also refuses a manager that would set a DNS
+# record (managersetdomainip).
+assert_isolated() {
+  local dep="$1" port="$2" web="$3" run="$4" conf f v
+  conf=$(osunset; timeout 60 "$WR" conf --deployment "$dep" 2>&1) || die "wr conf --deployment $dep failed"
+  v=$(conf_value "$conf" ManagerPort)
+  [ "$v" = "$port" ] || die "refusing: $dep resolves to port '$v', not our isolated $port (see wr conf)"
+  v=$(conf_value "$conf" ManagerWeb)
+  [ "$v" = "$web" ] || die "refusing: $dep resolves to web port '$v', not our isolated $web (see wr conf)"
+  v=$(conf_value "$conf" ManagerDir)
+  [ "$v" = "$run" ] || die "refusing: $dep resolves to managerdir '$v', not our isolated $run (see wr conf)"
+  for f in ManagerPidFile ManagerLogFile ManagerDBFile ManagerTokenFile ManagerUploadDir; do
+    v=$(conf_value "$conf" "$f")
+    case "$v" in ("$run"/*) ;; (*) die "refusing: $dep resolves $f to '$v', outside $run (see wr conf)" ;; esac
+  done
+  v=$(conf_value "$conf" ManagerDBBkFile)
+  case "$v" in
+    ("$run"/*) ;;
+    (*) [ -n "${WRDEV_PROD_BKFILE:-}" ] && [ "$v" = "$WRDEV_PROD_BKFILE" ] \
+          || die "refusing: $dep resolves ManagerDBBkFile to '$v', outside $run (see wr conf)" ;;
+  esac
+  [ "$(conf_value "$conf" ManagerSetDomainIP)" = "false" ] || die "refusing: $dep would set a domain IP"
+}
+
+# port_free <port> dies if something already listens on localhost:<port>, so a pprof reading can
+# never come from another process.
+port_free() {
+  if (exec 3<>"/dev/tcp/localhost/$1") 2>/dev/null; then die "localhost:$1 is already in use"; fi
+}
+
 # only ever kills a PID whose cmdline runs OUR isolated binary; never a real
 # production manager or anything else.
 is_ours() { ps -ww -o cmd= -p "$1" 2>/dev/null | grep -qF "$WR"; }
@@ -4717,50 +4767,56 @@ Never touches --deployment production managers or wrp_* jobs.
 EOF
 }
 
-case "${1:-help}" in
-  build) cmd_build ;;
-  start) cmd_start "${2:-lsf}" ;;
-  stop) cmd_stop ;;
-  churn) cmd_churn "${2:-40000}" ;;
-  monitor) cmd_monitor "${2:-20000}" ;;
-  probe) cmd_probe "${2:-3}" "${3:-0}" ;;
-  web-burst) cmd_web_burst "${2:-10000}" ;;
-  flicker-check) cmd_flicker_check "${2:-}" ;;
-  status-seed-overlap) cmd_status_seed_overlap "${2:-120}" "${3:-20000}" ;;
-  overprovision-check) cmd_overprovision_check "${2:-2000}" "${3:-50}" "${4:-5000}" ;;
-  overcount-check) cmd_overcount_check "${2:-2000}" "${3:-300}" "${4:-1500}" ;;
-  limit-stall-check) cmd_limit_stall_check "${2:-2000}" "${3:-5000}" ;;
-  priority-fairness-check) cmd_priority_fairness_check "${2:-2000}" "${3:-500}" ;;
-  backlog-rescan-check) cmd_backlog_rescan_check "${2:-2000}" "${3:-50000}" ;;
-  idle-backlog-cpu) cmd_idle_backlog_cpu "${2:-50000}" "${3:-25}" "${4:-6063}" ;;
-  bkill-hygiene) cmd_bkill_hygiene "${2:-1900}" "${3:-120}" ;;
-  control-rpc-history) cmd_control_rpc_history "${2:-200000}" "${3:-20}" "${4:-5000}" ;;
-  dep-granularity-check) cmd_dep_granularity_check "${2:-}" "${3:-}" "${4:-}" ;;
-  runner-started-timeout-check) cmd_runner_started_timeout_check ;;
-  exec-impossible-retries) cmd_exec_impossible_retries "${2:-20}" "${3:-120}" "${4:-2}" ;;
-  transient-start-retries) cmd_transient_start_retries "${2:-20}" "${3:-300}" "${4:-2}" "${5:-2}" ;;
-  ttrmiss-check) cmd_ttrmiss_check "${2:-60}" "${3:-20}" "${4:-1500}" ;;
-  archive-rate) cmd_archive_rate "${2:-660}" "${3:-180}" "${4:-3800}" ;;
-  archive-ceiling) cmd_archive_ceiling "${2:-20}" "${3:-1143}" "${4:-180}" "${5:-2300}" ;;
-  add-storm) cmd_add_storm "${2:-20}" "${3:-700}" "${4:-120}" "${5:-2000}" ;;
-  add-storm-lsf) cmd_add_storm_lsf "${2:-24}" "${3:-120}" "${4:-120}" "${5:-30}" "${6:-1000}" ;;
-  add-storm-fixture) cmd_add_storm_fixture "${2:-20000}" "${3:-5}" "${4:-200}" ;;
-  confirm-dead-leak) cmd_confirm_dead_leak "${2:-40}" "${3:-localhost}" ;;
-  writestorm-freeze) cmd_writestorm_freeze "${2:-100000}" "${3:-8}" ;;
-  report-storm) cmd_report_storm "${2:-5000}" "${3:-200}" "${4:-2000}" "${5:-120}" ;;
-  report-storm-profile) cmd_report_storm_profile "${2:-50000}" "${3:-1000}" "${4:-2000}" "${5:-240}" ;;
-  report-storm-lsf) cmd_report_storm_lsf "${2:-100000}" "${3:-2000}" "${4:-1}" ;;
-  unsuspend-burst) cmd_unsuspend_burst "${2:-100000}" "${3:-6062}" ;;
-  limit-drain) cmd_limit_drain "${2:-60000}" "${3:-2000}" "${4:-30}" "${5:-0}" ;;
-  backup-stall-check) cmd_backup_stall_check "${2:-8}" "${3:-8000}" "${4:-2000}" "${5:-30}" "${6:-2100000}" "${7:-2}" ;;
-  backup-stall-fast) cmd_backup_stall_fast "${2:-50}" "${3:-180}" "${4:-100}" ;;
-  runner-log-bytes) cmd_runner_log_bytes "${2:-30}" "${3:-180}" "${4:-2}" "${5:-20}" ;;
-  prod-start) cmd_prod_start "${2:-local}" ;;
-  prod-stop) cmd_prod_stop ;;
-  crash-recovery) cmd_crash_recovery ;;
-  dump) cmd_dump "${2:-lsf}" ;;
-  clean) cmd_clean ;;
-  status) cmd_status ;;
-  help|-h|--help) usage ;;
-  *) usage; exit 1 ;;
-esac
+main() {
+  case "${1:-help}" in
+    build) cmd_build ;;
+    start) cmd_start "${2:-lsf}" ;;
+    stop) cmd_stop ;;
+    churn) cmd_churn "${2:-40000}" ;;
+    monitor) cmd_monitor "${2:-20000}" ;;
+    probe) cmd_probe "${2:-3}" "${3:-0}" ;;
+    web-burst) cmd_web_burst "${2:-10000}" ;;
+    flicker-check) cmd_flicker_check "${2:-}" ;;
+    status-seed-overlap) cmd_status_seed_overlap "${2:-120}" "${3:-20000}" ;;
+    overprovision-check) cmd_overprovision_check "${2:-2000}" "${3:-50}" "${4:-5000}" ;;
+    overcount-check) cmd_overcount_check "${2:-2000}" "${3:-300}" "${4:-1500}" ;;
+    limit-stall-check) cmd_limit_stall_check "${2:-2000}" "${3:-5000}" ;;
+    priority-fairness-check) cmd_priority_fairness_check "${2:-2000}" "${3:-500}" ;;
+    backlog-rescan-check) cmd_backlog_rescan_check "${2:-2000}" "${3:-50000}" ;;
+    idle-backlog-cpu) cmd_idle_backlog_cpu "${2:-50000}" "${3:-25}" "${4:-6063}" ;;
+    bkill-hygiene) cmd_bkill_hygiene "${2:-1900}" "${3:-120}" ;;
+    control-rpc-history) cmd_control_rpc_history "${2:-200000}" "${3:-20}" "${4:-5000}" ;;
+    dep-granularity-check) cmd_dep_granularity_check "${2:-}" "${3:-}" "${4:-}" ;;
+    runner-started-timeout-check) cmd_runner_started_timeout_check ;;
+    exec-impossible-retries) cmd_exec_impossible_retries "${2:-20}" "${3:-120}" "${4:-2}" ;;
+    transient-start-retries) cmd_transient_start_retries "${2:-20}" "${3:-300}" "${4:-2}" "${5:-2}" ;;
+    ttrmiss-check) cmd_ttrmiss_check "${2:-60}" "${3:-20}" "${4:-1500}" ;;
+    archive-rate) cmd_archive_rate "${2:-660}" "${3:-180}" "${4:-3800}" ;;
+    archive-ceiling) cmd_archive_ceiling "${2:-20}" "${3:-1143}" "${4:-180}" "${5:-2300}" ;;
+    add-storm) cmd_add_storm "${2:-20}" "${3:-700}" "${4:-120}" "${5:-2000}" ;;
+    add-storm-lsf) cmd_add_storm_lsf "${2:-24}" "${3:-120}" "${4:-120}" "${5:-30}" "${6:-1000}" ;;
+    add-storm-fixture) cmd_add_storm_fixture "${2:-20000}" "${3:-5}" "${4:-200}" ;;
+    confirm-dead-leak) cmd_confirm_dead_leak "${2:-40}" "${3:-localhost}" ;;
+    writestorm-freeze) cmd_writestorm_freeze "${2:-100000}" "${3:-8}" ;;
+    report-storm) cmd_report_storm "${2:-5000}" "${3:-200}" "${4:-2000}" "${5:-120}" ;;
+    report-storm-profile) cmd_report_storm_profile "${2:-50000}" "${3:-1000}" "${4:-2000}" "${5:-240}" ;;
+    report-storm-lsf) cmd_report_storm_lsf "${2:-100000}" "${3:-2000}" "${4:-1}" ;;
+    unsuspend-burst) cmd_unsuspend_burst "${2:-100000}" "${3:-6062}" ;;
+    limit-drain) cmd_limit_drain "${2:-60000}" "${3:-2000}" "${4:-30}" "${5:-0}" ;;
+    backup-stall-check) cmd_backup_stall_check "${2:-8}" "${3:-8000}" "${4:-2000}" "${5:-30}" "${6:-2100000}" "${7:-2}" ;;
+    backup-stall-fast) cmd_backup_stall_fast "${2:-50}" "${3:-180}" "${4:-100}" ;;
+    runner-log-bytes) cmd_runner_log_bytes "${2:-30}" "${3:-180}" "${4:-2}" "${5:-20}" ;;
+    prod-start) cmd_prod_start "${2:-local}" ;;
+    prod-stop) cmd_prod_stop ;;
+    crash-recovery) cmd_crash_recovery ;;
+    dump) cmd_dump "${2:-lsf}" ;;
+    clean) cmd_clean ;;
+    status) cmd_status ;;
+    help|-h|--help) usage ;;
+    *) usage; exit 1 ;;
+  esac
+}
+
+# main runs from one line, and exits on that line, so bash never reads further into this file
+# after a mode returns: editing the file while a mode runs cannot run stray lines.
+main "$@"; exit $?
