@@ -82,7 +82,8 @@ project adheres to [Semantic Versioning](http://semver.org/).
   deployment, and otherwise reports the pid file as stale. A manager that is
   running but not responding can still be stopped. `wr manager status` also
   says `stopped` for such a stale pid file, instead of reporting a
-  non-responsive manager.
+  non-responsive manager, and `wr cloud teardown` no longer SIGKILLs an
+  unrelated process named by a stale ssh forwarder pid file.
 - The `cleanup` and `cleanup_all` behaviours (`cleanup` is the default
   `--on_exit`) of a lost command could leave empty directories behind in the
   command's `--cwd` and report a warning, when its runner and the manager both

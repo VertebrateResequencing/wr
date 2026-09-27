@@ -52,3 +52,20 @@
     CONTRACT WARNING describes).
   - Tests: `cmd/manager_stop_test.go` (stale stop, non-responsive real
     manager still SIGTERMed, stale status, argv matcher, argv-change polling).
+- [x] Found in the audit: the cloud ssh forwarder pid files
+  (`cloud_resources.<provider>.fm.pid` / `.fw.pid`) are read by checkProcess
+  (cmd/cloud.go), which only checks that the pid is alive; `wr cloud teardown`
+  and deploy cleanup then SIGKILL it via killProcess, so a stale forwarder pid
+  file can SIGKILL an unrelated process, and startForwarding skips starting a
+  forwarder because it thinks the reused pid is one.
+  - Red command:
+    `CGO_ENABLED=1 go test -tags netgo --count 1 ./cmd -run TestCheckProcessStalePid`
+    exit 1 without the fix: `Line 243: Expected: false Actual: true`
+    (checkProcess reported a `sleep 30` as a running forwarder).
+  - Fix: checkProcess also requires the pid's argv to contain
+    `sshForwarderFlags` (`-qngNTL`), the option cluster startForwarding runs
+    every forwarder with.
+  - Tests: `TestCheckProcessStalePid` in `cmd/cloud_test.go`; the existing
+    TestCleanupDeployForwardingProcesses fixture now starts a process with a
+    forwarder-shaped argv instead of a bare `sleep`, since a bare `sleep` is
+    exactly the unrelated process the check must now spare.
