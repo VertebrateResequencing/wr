@@ -1446,12 +1446,11 @@ type Server struct {
 	deletesStopped bool
 	// deletesWG counts deleteJobIfRequested's goroutines (as well as s.wg), so
 	// shutdown can let them finish before it closes the database they write to.
-	deletesWG          sync.WaitGroup
-	subsClosed         bool // shutdown swept the subscriptions; see storeClientSubscription
-	racPending         bool
-	racRunning         bool
-	waitingReserves    []chan struct{}
-	nextSubscriptionID uint64
+	deletesWG       sync.WaitGroup
+	subsClosed      bool // shutdown swept the subscriptions; see storeClientSubscription
+	racPending      bool
+	racRunning      bool
+	waitingReserves []chan struct{}
 
 	// lastRunToken is the last runToken this manager minted; only mintRunToken touches it.
 	lastRunToken atomic.Uint64

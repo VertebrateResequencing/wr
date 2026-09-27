@@ -266,7 +266,11 @@ func TestReliable2ScaleSaturation(t *testing.T) {
 	// uses (stateChanges=true), scoped to every job key, counting JobStateDeleted
 	// broadcasts (and, for reference, JobStateComplete). Started before any job
 	// runs so no terminal transition is missed.
-	statusSubID := server.registerStatusSubscription()
+	statusSubID, err := server.registerStatusSubscription()
+	if err != nil {
+		t.Fatalf("register status subscription: %s", err)
+	}
+
 	server.subscribeToJobs(statusSubID, jobKeys)
 
 	var (

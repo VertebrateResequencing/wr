@@ -31,6 +31,7 @@ package jobqueue
 import (
 	"context"
 	"embed"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -534,7 +535,10 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 			return
 		}
 
-		statusSubscriptionID := s.registerStatusSubscription()
+		statusSubscriptionID, err := s.registerStatusSubscription()
+		if err != nil && !errors.Is(err, errSubscriptionClosed) {
+			clog.Warn(ctx, "status websocket will not get job status pushes", "err", err)
+		}
 
 		// when the main goroutine closes we will end all the others
 		stopper := make(chan bool)

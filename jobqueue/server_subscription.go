@@ -29,9 +29,14 @@ import (
 	"fmt"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
+
+	"github.com/gofrs/uuid/v5"
 )
+
+// subscriptionIDGen mints subscription ids; tests replace it to make minting
+// fail.
+var subscriptionIDGen uuid.Generator = uuid.DefaultGenerator //nolint:gochecknoglobals // test seam
 
 type serverSubscription struct {
 	keys           map[string]struct{}
@@ -333,13 +338,27 @@ func (s *serverSubscription) repGroupEmptyDoneUpdate() *JobUpdate {
 }
 
 // storeClientSubscription registers sub and returns its id, or refuses (closing
-// sub and returning ok=false) once shutdown's closeClientSubscriptions() sweep
-// has run. Registration and the sweep share csmutex, so a subscribe request
-// admitted just before shutdown began cannot slip a subscription in behind the
-// sweep, where nothing would ever close it and the subscriber would long-poll a
-// manager that is gone.
-func (s *Server) storeClientSubscription(sub *serverSubscription) (string, bool) {
-	id := fmt.Sprintf("sub-%d", atomic.AddUint64(&s.nextSubscriptionID, 1))
+// sub and returning errSubscriptionClosed) once shutdown's
+// closeClientSubscriptions() sweep has run. Registration and the sweep share
+// csmutex, so a subscribe request admitted just before shutdown began cannot
+// slip a subscription in behind the sweep, where nothing would ever close it and
+// the subscriber would long-poll a manager that is gone.
+//
+// The id is unique across manager instances, not just within this one: a
+// client reconnecting after a restart names its previous manager's id in its
+// resubscribe for handleSubscribe to drop, and a counter restarting at 1 would
+// have that drop another client's subscription on the new manager. Failing to
+// mint one also closes sub and is returned, so the request fails instead of
+// the manager.
+func (s *Server) storeClientSubscription(sub *serverSubscription) (string, error) {
+	u, err := subscriptionIDGen.NewV4()
+	if err != nil {
+		sub.close()
+
+		return "", fmt.Errorf("could not create a subscription id: %w", err)
+	}
+
+	id := "sub-" + u.String()
 
 	s.csmutex.Lock()
 
@@ -347,7 +366,7 @@ func (s *Server) storeClientSubscription(sub *serverSubscription) (string, bool)
 		s.csmutex.Unlock()
 		sub.close()
 
-		return "", false
+		return "", errSubscriptionClosed
 	}
 
 	if s.clientSubscriptions == nil {
@@ -358,7 +377,7 @@ func (s *Server) storeClientSubscription(sub *serverSubscription) (string, bool)
 
 	s.csmutex.Unlock()
 
-	return id, true
+	return id, nil
 }
 
 func (s *Server) closeClientSubscriptions() {
@@ -464,21 +483,15 @@ func (s *Server) registerClientSubscription(keys []string, repGroup string) (str
 
 	sub := newServerSubscription(keys, repGroup, s.repGroupSubscriptionKeys(repGroup))
 
-	id, ok := s.storeClientSubscription(sub)
-	if !ok {
-		return "", errSubscriptionClosed
-	}
-
-	return id, nil
+	return s.storeClientSubscription(sub)
 }
 
 // registerStatusSubscription registers the server-side subscription a status
-// websocket reads from, returning "" if the server is shutting down; the
-// websocket's readers treat that as an unknown subscription and stop.
-func (s *Server) registerStatusSubscription() string {
-	id, _ := s.storeClientSubscription(newStatusServerSubscription())
-
-	return id
+// websocket reads from. On error, which is errSubscriptionClosed if the server
+// is shutting down, the id is "", which the websocket's status subscription
+// listener treats as an unknown subscription and stops.
+func (s *Server) registerStatusSubscription() (string, error) {
+	return s.storeClientSubscription(newStatusServerSubscription())
 }
 
 func (s *Server) repGroupSubscriptionKeys(repGroup string) []string {
