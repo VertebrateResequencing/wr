@@ -1214,6 +1214,13 @@ func (s *Server) handleTouch(ctx context.Context, cr *clientRequest) (*serverRes
 	srerr, qerr := s.touchJob(ctx, cr, item, job, lost, !killCalled)
 
 	if killCalled {
+		// the runner goes on touching until it has finished, so a failed touch
+		// here is retried, but KillCalled must still reach it; log the failure
+		// rather than lose it.
+		if srerr != "" {
+			clog.Warn(ctx, "touch of a killed job failed", "job", item.Key, "err", qerr)
+		}
+
 		return &serverResponse{KillCalled: true}, "", ""
 	}
 
