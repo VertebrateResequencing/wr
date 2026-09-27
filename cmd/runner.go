@@ -262,6 +262,8 @@ complete.`,
 					break
 				}
 
+				warnUndefinedEnvEntries(context.Background(), job.Key(), env)
+
 				err = job.EnvAddOverride(overrider.overridesFor(env, job.ChangeHome))
 				if err != nil {
 					err = jq.Release(job, nil, "failed to add env var overrides")
@@ -363,6 +365,24 @@ func init() {
 		"domain the manager's cert is valid for")
 	runnerCmd.Flags().BoolVar(&logToSyslog, "syslog", false, "enable logging to syslog")
 	runnerCmd.Flags().StringVar(&logToDir, "logdir", "", "enable logging to files within the given dir")
+}
+
+// warnUndefinedEnvEntries logs a warning for each entry of the job's stored
+// environment env that defines no variable: a bare name, or one with nothing
+// before its "=". overridesFor and the jobqueue readers skip such an entry,
+// which #592 stopped being accepted but which a job stored before then may
+// still have, so this is where its owner learns why a variable they set is
+// absent. Only the name part is logged, never a value.
+func warnUndefinedEnvEntries(ctx context.Context, jobKey string, env []string) {
+	for _, envvar := range env {
+		name, _, ok := strings.Cut(envvar, "=")
+		if ok && name != "" {
+			continue
+		}
+
+		clog.Warn(ctx, "skipping a stored environment entry that defines no variable",
+			"key", jobKey, "entry", name)
+	}
 }
 
 // jobEnvOverrider builds the environment overrides a runner applies to each job

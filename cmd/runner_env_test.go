@@ -40,6 +40,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	. "github.com/smartystreets/goconvey/convey"
@@ -62,16 +63,54 @@ const (
 	// so the runner appends the exe dir to this one as well.
 	runnerEnvPathLater = "/jobthree/bin:/usr/bin"
 
-	runnerEnvPathName    = "PATH"
-	runnerEnvHostName    = "WR_MANAGERHOST"
-	runnerEnvHost        = "localhost"
-	runnerEnvTestRepGrp  = "runner-env-test"
-	runnerEnvTestCmd     = "true"
-	runnerEnvSequenceLen = 3
+	runnerEnvPathName     = "PATH"
+	runnerEnvHostName     = "WR_MANAGERHOST"
+	runnerEnvHost         = "localhost"
+	runnerEnvTestRepGrp   = "runner-env-test"
+	runnerEnvTestCmd      = "true"
+	runnerEnvSequenceLen  = 3
+	runnerEnvTestKey      = "runner-env-test-key"
+	runnerEnvUnnamedValue = "runner-env-unnamed-value"
 
 	runnerEnvTestDirPerm  = 0o700
 	runnerEnvTestFilePerm = 0o600
 )
+
+// TestRunnerWarnsOfUndefinedEnvEntries covers item 2 of
+// .docs/bugfixes/260910-1.md: a stored entry that defines no variable is
+// skipped, and the runner now says so rather than leaving the job's owner to
+// wonder where their variable went.
+func TestRunnerWarnsOfUndefinedEnvEntries(t *testing.T) {
+	Convey("Given the runner's log captured at warn", t, func() {
+		logged := clog.ToBufferAtLevel("warn")
+
+		defer clog.ToDefault()
+
+		ctx := context.Background()
+
+		Convey("a bare name is warned about, naming the job and the entry", func() {
+			warnUndefinedEnvEntries(ctx, runnerEnvTestKey, []string{runnerEnvHostName + "=" + runnerEnvHost, runnerEnvPathName})
+
+			So(logged.String(), ShouldContainSubstring, "defines no variable")
+			So(logged.String(), ShouldContainSubstring, runnerEnvTestKey)
+			So(logged.String(), ShouldContainSubstring, "entry="+runnerEnvPathName)
+			So(logged.String(), ShouldNotContainSubstring, runnerEnvHost)
+		})
+
+		Convey("an entry with no name is warned about without logging its value", func() {
+			warnUndefinedEnvEntries(ctx, runnerEnvTestKey, []string{"=" + runnerEnvUnnamedValue})
+
+			So(logged.String(), ShouldContainSubstring, "defines no variable")
+			So(logged.String(), ShouldNotContainSubstring, runnerEnvUnnamedValue)
+		})
+
+		Convey("a well-formed environment logs nothing", func() {
+			warnUndefinedEnvEntries(ctx, runnerEnvTestKey, []string{runnerEnvPathName + "=" + runnerEnvPathWith})
+
+			So(logged.String(), ShouldBeBlank)
+		})
+	})
+}
 
 func TestRunnerJobEnvOverrides(t *testing.T) {
 	Convey("Given a runner's job environment overrider", t, func() {
