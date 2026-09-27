@@ -41,11 +41,11 @@
     after the checks, poll every 100ms for up to 5s until the count is back to
     base, and fail if any ssh goroutine is left (`leaked > 0`). The bound of 20
     is gone, so the test is stricter: the old bound missed one unclosed client
-    (6 goroutines). The log line now prints `peak` (first sample, diagnostic)
-    and `settled`. The comments no longer describe the fixed bug as current.
+    (6 goroutines). The log line now prints `peak` (the highest count seen
+    while waiting to settle, diagnostic only) and `settled` (the last count). The comments no longer describe the fixed bug as current.
     The `developers/wrdev.sh` comment for the mode says the same.
   - After: 20 of 20 runs (4 concurrent x 5) passed with `settled=0
-    leaked=0`, 9 of them having seen `peak=3` or `4` first.
+    leaked=0`, 9 of them with `peak=3` or `4` while settling.
     `wrdev.sh confirm-dead-leak` passed with `leaked=0`.
   - Mutations (reverted): M1, `lsfHost.Close` a no-op, gave `peak=240
     settled=240 leaked=240` and FAIL. M2, skipping the close on only the 20th
@@ -62,3 +62,6 @@
   if ssh goroutines that existed before the checks exited during them. It is
   now `max(settled-base, 0)`. No red test: the fail condition `leaked > 0`
   gives the same result either way, so only the log line changes.
+- [x] PR #626 review: the Fix note called `peak` the "first sample", but
+  `reliable4CDLeakSettledSSHGoroutines` returns the highest count seen
+  during the settle polling. The note now says that. Doc only.
