@@ -56,3 +56,30 @@
     its retry. The rest of that block still checks the failed run's host,
     fail reason, CPU time and output. A 300ms sleep before the read (to force
     ready, then reverted) left the test passing 3 of 3.
+- [x] TestSubscriptionReconnectDuringManagerShutdown fails at
+  jobqueue/subscription_test.go:2108 with "2.4ms measured against a 200ms
+  minimum". The test asserts a lower bound on a duration, so check whether the
+  bound is meaningful or whether the wait can end early for a legitimate
+  reason. Seen in a full race run under heavy load; passed 3 of 3 alone.
+  - Red command: `stress -c 40` alongside `GOMAXPROCS=2 WR_TEST_LANE=9
+    jobqueue.test -test.run '^TestSubscriptionReconnectDuringManagerShutdown$'
+    -test.count=15` (race build). Before: 6 of 15 failed, 4 at line 2108 and
+    2 in the "Unsubscribe while a reconnect holds the client" Convey
+    (`clientLockTakenWithin` false, and the resubscribe not ending in
+    ErrRecvTimeout). A temporary log showed the failing unsubscribes
+    returning in 1-8ms, 11-53ms after `server.Stop` began, where passing ones
+    took 200-208ms.
+  - Root cause (test): `pingUntilUnread` took a 10ms ping timing out as proof
+    that the stopping manager had stopped reading. A loaded manager that is
+    still reading can take longer than 10ms to answer, so the helper returned
+    long before the window opened, and the steps that followed were answered
+    at once instead of waiting on their own deadline. The 200ms lower bound
+    is meaningful: it is what shows the step waited out its budget.
+  - Fix (test only), in `jobqueue/client_connect_test.go`: `pingUntilUnread`
+    now also takes the server. It keeps pinging (which gives the last reader
+    the request it admits before exiting) until the server's
+    `clientHandlingDone` is closed, meaning every RPC reader has exited, and
+    then sends the one ping it reports on, which nothing can read. Its 4
+    callers pass the server.
+  - After, same load: 15 of 15 passed, and `TestPingBoundedDuringManagerShutdown`
+    (the helper's other user) 15 of 15.

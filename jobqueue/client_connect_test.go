@@ -319,7 +319,7 @@ func TestPingBoundedDuringManagerShutdown(t *testing.T) {
 				close(stopped)
 			}()
 
-			took, unread := pingUntilUnread(jq, serverConfig.Timings.ShutdownSocketWait)
+			took, unread := pingUntilUnread(jq, server, serverConfig.Timings.ShutdownSocketWait)
 
 			So(unread, ShouldBeTrue)
 			So(took, ShouldBeLessThan, time.Second)
@@ -338,22 +338,32 @@ func TestPingBoundedDuringManagerShutdown(t *testing.T) {
 	})
 }
 
-// pingUntilUnread pings a stopping manager until one of the pings goes unread,
-// returning how long that ping took and whether the window was reached within
-// limit. limit must be no longer than the manager's ShutdownSocketWait: a ping
-// sent after the command socket closes blocks on the send deadline instead, and
+// pingUntilUnread pings a stopping manager until its RPC readers have all
+// exited, then sends one more ping, which nothing can read. It returns how long
+// that last ping took and whether it went unread (timed out) within limit.
+//
+// The readers' exit, not a ping timing out, is what says the window has been
+// reached: a reader still blocked in its receive admits one last request once
+// client handling stops, which these pings provide, and a manager that is still
+// reading can take longer than a ping's timeout to answer on a loaded machine.
+//
+// limit must be no longer than the manager's ShutdownSocketWait: a ping sent
+// after the command socket closes blocks on the send deadline instead, and
 // would measure something else.
-func pingUntilUnread(c *Client, limit time.Duration) (time.Duration, bool) {
+func pingUntilUnread(c *Client, s *Server, limit time.Duration) (time.Duration, bool) {
 	giveUp := time.Now().Add(limit)
 
 	for time.Now().Before(giveUp) {
-		start := time.Now()
-		_, err := c.Ping(ClientSuggestedPingTimeout)
-		took := time.Since(start)
+		select {
+		case <-s.clientHandlingDone:
+			start := time.Now()
+			_, err := c.Ping(ClientSuggestedPingTimeout)
 
-		if errors.Is(err, mangos.ErrRecvTimeout) || took > unreadPingWait {
-			return took, true
+			return time.Since(start), errors.Is(err, mangos.ErrRecvTimeout)
+		default:
 		}
+
+		_, _ = c.Ping(ClientSuggestedPingTimeout) //nolint:errcheck // only here to be admitted
 
 		time.Sleep(ClientSuggestedPingTimeout)
 	}
