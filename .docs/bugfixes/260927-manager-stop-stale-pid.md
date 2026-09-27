@@ -76,3 +76,41 @@
     TestCleanupDeployForwardingProcesses fixture now starts a process with a
     forwarder-shaped argv instead of a bare `sleep`, since a bare `sleep` is
     exactly the unrelated process the check must now spare.
+- [x] PR #639 review (Copilot): reject pid <= 0 everywhere a pid read from a
+  file, or reported by a server, is signalled or probed. kill(0, sig) targets
+  the caller's own process group and kill(-1, sig) every process the user
+  owns. Sites: checkProcess and killProcess (cmd/cloud.go), daemonStillRunning,
+  stopdaemon and waitForDaemonStop (cmd/root.go), the ServerInfo.PID stop
+  path, and anything else grep finds. A pid file containing 0, -1 or garbage
+  must signal nothing, and stop must report the pid file as stale or invalid.
+  (Copilot raised daemonStillRunning separately; it is the same fix.)
+  - Red command:
+    `CGO_ENABLED=1 go test -tags netgo --count 1 ./cmd -run 'TestManagerStopInvalidPidFile|TestNonPositivePidsAreNeverSignalled'`
+    exit 1 on c6e6ccb1:
+
+    ```
+    Line 155:
+    Expected 't=... lvl=eror msg="wr manager does not seem to be running on port 40077" ...
+    --- FAIL: TestManagerStopInvalidPidFile (0.00s)
+    Line 173:
+    Expected: false
+    Actual:   true
+    --- FAIL: TestNonPositivePidsAreNeverSignalled (0.05s)
+    ```
+
+    (a garbage pid file was ignored silently, and `stopdaemon(-pgid)` SIGTERMed
+    a whole test process group). Pid files of 0 and -1 were already refused
+    by this PR's argv check, which reads no argv for them.
+  - Fix: `internal/pid.go` adds `ValidPid` (1..MaxInt32) and `SignalPid`, which
+    returns `ErrInvalidPid` without calling kill for any other pid. Every
+    signal or probe of a pid that wr did not just start goes through it:
+    stopdaemon (so the pid file and ServerInfo.PID paths), daemonStillRunning
+    (so waitForDaemonStop), checkProcess, killProcess,
+    managerDBUpgradeProcessRunning, and the local scheduler's pidAlive.
+    processArgs uses ValidPid too. The remaining kill calls in the repo are
+    `exec.Cmd.Process.Kill` on processes wr started itself.
+  - `wr manager stop` now warns that a pid file it cannot parse is invalid and
+    was not signalled, then carries on as if there were no pid file.
+  - Tests: `TestSignalPid` (internal), `TestNonPositivePidsAreNeverSignalled`
+    and `TestManagerStopInvalidPidFile` (0, -1, garbage) in
+    `cmd/manager_stop_test.go`.

@@ -596,7 +596,7 @@ func warnUploadDirStillOpen(err error) {
 // has that argv. So a zombie, or a pid the kernel has already given to another
 // process, counts as stopped.
 func daemonStillRunning(pid int, identity []string) bool {
-	if syscall.Kill(pid, syscall.Signal(0)) != nil {
+	if internal.SignalPid(pid, syscall.Signal(0)) != nil {
 		return false
 	}
 
@@ -810,7 +810,7 @@ func reborn(dContext *daemon.Context, pidFile string) *os.Process {
 func stopdaemon(pid int, source string) bool {
 	identity := processArgs(pid)
 
-	err := syscall.Kill(pid, syscall.SIGTERM)
+	err := internal.SignalPid(pid, syscall.SIGTERM)
 	if err != nil {
 		warn("wr manager is running with pid %d according to %s, but failed to send it SIGTERM: %s", pid, source, err)
 
