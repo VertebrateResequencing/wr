@@ -11,19 +11,45 @@ on:
     - develop
 
 jobs:
-  test:
+  # make test and make race run as separate jobs on separate runners, so CI
+  # takes as long as the slower of the two rather than their sum. Each runner
+  # has its own ports, temp dirs and fuse.conf, so they cannot interfere.
+  suite:
+    name: make ${{ matrix.target }}
     runs-on: ubuntu-latest
+    strategy:
+      # Let the other target finish, so a failure in one still reports the
+      # other's result.
+      fail-fast: false
+      matrix:
+        target: [test, race]
     env:
       WR_TESTSUITE_MAX_PARALLEL: 4
       WR_TESTSUITE_TIMINGS: 1
 
     steps:
     - uses: actions/checkout@v7.0.0
-    
+
+    # setup-go's own cache is keyed only on the Go version and go.sum, so it
+    # shares one key with the lint workflow, whose job finishes first and saves
+    # it. These jobs would then restore lint's build cache and compile every
+    # dependency from scratch. Cache per target instead, so each restores the
+    # objects its own build (with or without -race) needs.
     - name: Setup Go
       uses: actions/setup-go@v6.4.0
       with:
         go-version-file: go.mod
+        cache: false
+
+    - name: Cache Go modules and build
+      uses: actions/cache@v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: go-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('go.mod', 'go.sum') }}
+        restore-keys: |
+          go-${{ runner.os }}-${{ matrix.target }}-
 
     - name: Install container runtimes
       run: |
@@ -48,8 +74,17 @@ jobs:
         sudo chmod o+r /etc/fuse.conf
         cat /etc/fuse.conf
 
-    - name: Run tests
-      run: make test
+    - name: Run make ${{ matrix.target }}
+      run: make ${{ matrix.target }}
 
-    - name: Run tests with race detection
-      run: make race
+  # Branch protection requires a check named "test", so this job reports the
+  # combined result of both suite targets under that name. It must run even when
+  # a target fails or is cancelled, because a skipped required check counts as
+  # passing.
+  test:
+    if: always()
+    needs: suite
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check both suite targets passed
+      run: test "${{ needs.suite.result }}" = success

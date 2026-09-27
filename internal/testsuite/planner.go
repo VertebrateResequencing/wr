@@ -109,6 +109,42 @@ func jobqueueOpenStackLane(module string) Lane {
 	return jobqueueRunLane(module, jqConfig("jobqueue_openstack", 43, "TestJobqueueWithOpenStack"))
 }
 
+// jobqueueFamilyLaneConfigs lists the test families split out of jq_default.
+// Together they took most of its time, which made it the suite's critical path
+// by minutes. A family's future tests join its lane automatically, so no prefix
+// here may begin the name of a test that another lane runs by exact name.
+func jobqueueFamilyLaneConfigs() []jobqueueFamilyLaneConfig {
+	return []jobqueueFamilyLaneConfig{
+		{name: "jq_reliable2", lane: 45, prefix: "TestReliable2"},
+		{name: "jq_reliable4", lane: 46, prefix: "TestReliable4"},
+		{name: "jq_dep_granularity", lane: 47, prefix: "TestDepGranularity"},
+	}
+}
+
+func jobqueueFamilyLane(module string, config jobqueueFamilyLaneConfig) Lane {
+	return Lane{
+		Name:       config.name,
+		Kind:       LaneKindBinary,
+		Package:    pkg(module, "jobqueue"),
+		Dir:        "jobqueue",
+		Binary:     "jobqueue",
+		RunPattern: prefixedTests(config.prefix),
+		Env:        laneEnv(config.lane),
+	}
+}
+
+// prefixedTests returns a pattern matching every test whose name begins with
+// one of the given prefixes.
+func prefixedTests(prefixes ...string) string {
+	quoted := make([]string, 0, len(prefixes))
+
+	for _, prefix := range prefixes {
+		quoted = append(quoted, regexp.QuoteMeta(prefix))
+	}
+
+	return "^(" + strings.Join(quoted, "|") + ")"
+}
+
 func schedulerLanes(module string, liveOpenStack bool) []Lane {
 	lane := schedulerLane(module)
 	if !liveOpenStack {
@@ -345,17 +381,34 @@ func jobqueueLanes(module string, liveOpenStack bool, liveS3Mounts bool) []Lane 
 		explicit = append(explicit, "TestJobqueueWithMounts")
 	}
 
+	families := jobqueueFamilyLaneConfigs()
+	prefixes := make([]string, 0, len(families))
+
+	for _, family := range families {
+		lanes = append(lanes, jobqueueFamilyLane(module, family))
+		prefixes = append(prefixes, family.prefix)
+	}
+
 	lanes = append(lanes, Lane{
 		Name:        "jq_default",
 		Kind:        LaneKindBinary,
 		Package:     pkg(module, "jobqueue"),
 		Dir:         "jobqueue",
 		Binary:      "jobqueue",
-		SkipPattern: exactTests(uniqueTests(explicit)...),
+		SkipPattern: exactTests(uniqueTests(explicit)...) + "|" + prefixedTests(prefixes...),
 		Env:         laneEnv(9),
 	})
 
 	return lanes
+}
+
+// jobqueueFamilyLaneConfig names a family of jobqueue tests that share a name
+// prefix, one per group of test files, which runs in its own lane rather than
+// in jq_default.
+type jobqueueFamilyLaneConfig struct {
+	name   string
+	lane   int
+	prefix string
 }
 
 type jobqueueRunLaneConfig struct {

@@ -32,7 +32,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -55,6 +57,95 @@ func TestGoTestLaneHonoursRunAndSkipPatterns(t *testing.T) {
 			"-race", "-run", "^(TestOpenStack)$", "-skip", "^(TestOther)$", "-p", "2",
 			pkg(testModule, "cloud"),
 		})
+	})
+}
+
+func TestRunnerStartsLanesInPriorityOrder(t *testing.T) {
+	Convey("work capped to one at a time runs in the order it was given", t, func() {
+		const (
+			items  = 45
+			limit  = 1
+			rounds = 50
+		)
+
+		want := make([]int, items)
+		for i := range want {
+			want[i] = i
+		}
+
+		inOrder := 0
+
+		for range rounds {
+			var mu sync.Mutex
+
+			started := make([]int, 0, items)
+
+			runInOrder(items, limit, func(index int) {
+				mu.Lock()
+				defer mu.Unlock()
+
+				started = append(started, index)
+			})
+
+			if slices.Equal(started, want) {
+				inOrder++
+			}
+		}
+
+		So(inOrder, ShouldEqual, rounds)
+	})
+
+	Convey("capped parallel work reaches the cap and never runs more than it at once", t, func() {
+		const (
+			items       = 45
+			limit       = 4
+			capTimeout  = 30 * time.Second
+			excessGrace = 50 * time.Millisecond
+		)
+
+		var (
+			mu      sync.Mutex
+			running int
+			peak    int
+			ran     int
+		)
+
+		// each call waits here until limit calls are running at once, so the cap
+		// is reached however the calls are scheduled; a pool that never runs
+		// limit at once lets them go on after capTimeout, failing the test. The
+		// calls are held for excessGrace more once the cap is reached, so that a
+		// pool running more than limit at once has time to show it. A correct
+		// pool cannot fail because of either wait.
+		capReached := make(chan struct{})
+		releaseOnce := sync.Once{}
+
+		timeout, cancel := context.WithTimeout(context.Background(), capTimeout)
+		defer cancel()
+
+		runInOrder(items, limit, func(int) {
+			mu.Lock()
+			running++
+			ran++
+			peak = max(peak, running)
+
+			if running == limit {
+				releaseOnce.Do(func() { time.AfterFunc(excessGrace, func() { close(capReached) }) })
+			}
+			mu.Unlock()
+
+			select {
+			case <-capReached:
+			case <-timeout.Done():
+			}
+
+			mu.Lock()
+			running--
+			mu.Unlock()
+		})
+
+		So(ran, ShouldEqual, items)
+		So(peak, ShouldBeLessThanOrEqualTo, limit)
+		So(peak, ShouldEqual, limit)
 	})
 }
 
@@ -137,6 +228,30 @@ func TestPlannerCoversJobqueueTestsByExactName(t *testing.T) {
 		So(jobqueueLanesForTest(plan, "TestRESTJobModificationEndpoint"), ShouldResemble, []string{"jq_rest_extra"})
 		So(jobqueueLanesForTest(plan, "TestServerWebISuspendedStatus"), ShouldResemble, []string{"jq_rest_extra"})
 		So(jobqueueLanesForTest(plan, "TestRESTFutureCase"), ShouldResemble, []string{"jq_default"})
+	})
+}
+
+func TestPlannerSplitsJobqueueTestFamiliesFromTheDefaultLane(t *testing.T) {
+	Convey("each large jobqueue test family gets its own lane, and every test runs in exactly one lane", t, func() {
+		disableLiveIntegrationEnv(t)
+
+		plan := NewPlan(ModeTest, testModule, []string{pkg(testModule, "jobqueue")})
+
+		So(jobqueueLanesForTest(plan, "TestReliable2FutureCase"), ShouldResemble, []string{"jq_reliable2"})
+		So(jobqueueLanesForTest(plan, "TestReliable4FutureCase"), ShouldResemble, []string{"jq_reliable4"})
+		So(jobqueueLanesForTest(plan, "TestDepGranularityFutureCase"), ShouldResemble, []string{"jq_dep_granularity"})
+		So(jobqueueLanesForTest(plan, "TestReliable3FutureCase"), ShouldResemble, []string{"jq_default"})
+		So(jobqueueLanesForTest(plan, "TestFutureCase"), ShouldResemble, []string{"jq_default"})
+
+		for _, config := range jobqueueRunLaneConfigs() {
+			if config.shard != "" {
+				continue
+			}
+
+			for _, test := range config.tests {
+				So(jobqueueLanesForTest(plan, test), ShouldResemble, []string{config.name})
+			}
+		}
 	})
 }
 
@@ -397,19 +512,23 @@ func disableLiveS3MountEnv(t *testing.T) {
 func TestRunnerPrioritizesLongLanes(t *testing.T) {
 	Convey("long lanes start before short lanes when parallelism is capped", t, func() {
 		lanes := prioritizedLanes([]Lane{
-			{Name: "jq_payload"},
+			{Name: "unlisted"},
 			{Name: "client_wait"},
 			{Name: "other"},
+			{Name: "cmd_default"},
 			{Name: "cmd_add"},
-			{Name: "runner_lost_jobs"},
+			{Name: "jq_default"},
+			{Name: "jq_reliable4"},
 		})
 
 		So(laneNames(lanes), ShouldResemble, []string{
-			"runner_lost_jobs",
+			"jq_default",
+			"jq_reliable4",
+			"cmd_default",
 			"other",
 			"client_wait",
 			"cmd_add",
-			"jq_payload",
+			"unlisted",
 		})
 	})
 }
