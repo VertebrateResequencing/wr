@@ -50,6 +50,13 @@
     `Scheduler.KillProcessOnHost` sends a contract-fixed `kill -9` to a
     runner pid over ssh (changing it needs the forced-command migration its
     CONTRACT WARNING describes).
+  - Review: daemonize() only added `--deployment <resolved>` when argv had no
+    `--deployment`, so `wr manager start --deployment prod` (an unknown name
+    that resolves to the default deployment) left argv without the resolved
+    name, and stop would have refused to SIGTERM that manager once it stopped
+    responding. `daemonArgs` now always appends the resolved deployment (the
+    last flag wins). A foreground (`-f`) manager writes no pid file, so stop
+    reaches it through the ServerInfo PID path as before.
   - Tests: `cmd/manager_stop_test.go` (stale stop, non-responsive real
     manager still SIGTERMed, stale status, argv matcher, argv-change polling).
 - [x] Found in the audit: the cloud ssh forwarder pid files
