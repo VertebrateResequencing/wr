@@ -29,6 +29,7 @@ import (
 	"errors"
 	"math"
 	"os"
+	"strconv"
 	"syscall"
 	"testing"
 
@@ -37,7 +38,17 @@ import (
 
 func TestSignalPid(t *testing.T) {
 	Convey("SignalPid refuses pids that kill(2) treats as process groups", t, func() {
-		for _, pid := range []int{0, -1, -2, math.MaxInt32 + 1} {
+		invalid := []int{0, -1, -2}
+
+		if strconv.IntSize == 64 {
+			// beyond any kernel pid, but only representable in a 64-bit int
+			beyond := int64(math.MaxInt32)
+			beyond++
+
+			invalid = append(invalid, int(beyond))
+		}
+
+		for _, pid := range invalid {
 			So(ValidPid(pid), ShouldBeFalse)
 			So(errors.Is(SignalPid(pid, syscall.Signal(0)), ErrInvalidPid), ShouldBeTrue)
 		}
