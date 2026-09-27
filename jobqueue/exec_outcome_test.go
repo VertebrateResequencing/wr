@@ -62,61 +62,94 @@ func TestExecProblemReporting(t *testing.T) {
 	})
 }
 
-func TestExecOutcomeCombination(t *testing.T) {
-	Convey("Given a command that exited zero", t, func() {
-		cmdWorked := execOutcome{doarchive: true}
+// execOutcomeRow is one verdict classifyExecOutcome really reaches about a
+// finished command, to be combined with the verdict of a clean unmount and of one
+// that could not upload the Job's output.
+//
+// The upload failure is the only thing that can make a Job whose command
+// SUCCEEDED need running again, and the only thing whose loss silently archives
+// a Job whose output no longer exists anywhere: the cache the output was in is
+// deleted at unmount regardless. So the combination must never archive unless
+// both halves are happy, and must never drop a bury or a release the command
+// itself earned.
+//
+// Two of these shapes carry dobury AND dorelease at once (classifyReleasedExit
+// starts every shape as a release and some arms then bury as well), which is
+// exactly the pairing a combination reading one flag alone would get wrong.
+type execOutcomeRow struct {
+	name string
+	cmd  execOutcome
+}
 
-		Convey("its job is archived when its mounts unmounted cleanly", func() {
-			final := combineExecOutcomes(execOutcome{}, cmdWorked)
-
-			So(final.doarchive, ShouldBeTrue)
-			So(final.dorelease, ShouldBeFalse)
-			So(final.dobury, ShouldBeFalse)
-			So(final.failreason, ShouldBeBlank)
-			So(final.exitcode, ShouldEqual, 0)
-			So(final.myerr, ShouldBeNil)
-		})
-
-		Convey("its job is not archived when its output failed to upload", func() {
-			final := combineExecOutcomes(uploadFailedOutcome(errTestUploadFailed), cmdWorked)
-
-			So(final.doarchive, ShouldBeFalse)
-			So(final.dorelease, ShouldBeTrue)
-			So(final.failreason, ShouldEqual, FailReasonUpload)
-			So(final.exitcode, ShouldEqual, exitCodeUploadFailure)
-			So(final.myerr, ShouldEqual, errTestUploadFailed)
-		})
-	})
-
-	Convey("Given a command that failed", t, func() {
-		Convey("an upload failure does not replace its bury reason", func() {
-			cmdBuried := execOutcome{
+func execOutcomeRows() []execOutcomeRow {
+	return []execOutcomeRow{
+		{name: "exited zero", cmd: execOutcome{doarchive: true}},
+		{
+			name: "exited with a code that buries",
+			cmd: execOutcome{
 				myerr: errTestCmdNotFound, failreason: FailReasonCFound,
 				exitcode: exitCodeCommandNotFound, dobury: true,
-			}
-
-			final := combineExecOutcomes(uploadFailedOutcome(errTestUploadFailed), cmdBuried)
-
-			So(final.dobury, ShouldBeTrue)
-			So(final.dorelease, ShouldBeFalse)
-			So(final.doarchive, ShouldBeFalse)
-			So(final.failreason, ShouldEqual, FailReasonCFound)
-			So(final.exitcode, ShouldEqual, exitCodeCommandNotFound)
-		})
-
-		Convey("an upload failure does not replace its release reason", func() {
-			cmdReleased := execOutcome{
+			},
+		},
+		{
+			name: "exited non-zero, to be retried",
+			cmd: execOutcome{
+				myerr: errTestCmdExited, failreason: FailReasonExit, exitcode: 1, dorelease: true,
+			},
+		},
+		{
+			name: "failed to complete normally",
+			cmd: execOutcome{
+				myerr: errTestCmdAbnormal, failreason: FailReasonAbnormal,
+				exitcode: exitCodeAbnormal, dorelease: true,
+			},
+		},
+		{
+			name: "was killed, which releases AND buries",
+			cmd: execOutcome{
+				myerr: errTestCmdKilled, failreason: FailReasonKilled,
+				exitcode: 1, dorelease: true, dobury: true,
+			},
+		},
+		{
+			name: "exited non-zero past its noretries time, which releases AND buries",
+			cmd: execOutcome{
 				myerr: errTestCmdExited, failreason: FailReasonExit,
-				exitcode: 1, dorelease: true,
-			}
+				exitcode: 1, dorelease: true, dobury: true,
+			},
+		},
+	}
+}
 
-			final := combineExecOutcomes(uploadFailedOutcome(errTestUploadFailed), cmdReleased)
+func TestExecOutcomeCombination(t *testing.T) {
+	Convey("Given a command that finished", t, func() {
+		for _, row := range execOutcomeRows() {
+			Convey("one that "+row.name, func() {
+				Convey("keeps its own verdict when the unmount was clean", func() {
+					So(combineExecOutcomes(execOutcome{}, row.cmd), ShouldResemble, row.cmd)
+				})
 
-			So(final.dorelease, ShouldBeTrue)
-			So(final.doarchive, ShouldBeFalse)
-			So(final.failreason, ShouldEqual, FailReasonExit)
-			So(final.exitcode, ShouldEqual, 1)
-		})
+				Convey("never archives, and keeps any bury or release, when the output did not upload", func() {
+					final := combineExecOutcomes(uploadFailedOutcome(errTestUploadFailed), row.cmd)
+
+					So(final.doarchive, ShouldBeFalse)
+					So(final.dobury, ShouldEqual, row.cmd.dobury)
+					So(final.dorelease, ShouldEqual, row.cmd.dorelease || row.cmd.doarchive)
+
+					if row.cmd.doarchive {
+						So(final.failreason, ShouldEqual, FailReasonUpload)
+						So(final.exitcode, ShouldEqual, exitCodeUploadFailure)
+						So(final.myerr, ShouldEqual, errTestUploadFailed)
+
+						return
+					}
+
+					So(final.failreason, ShouldEqual, row.cmd.failreason)
+					So(final.exitcode, ShouldEqual, row.cmd.exitcode)
+					So(final.myerr, ShouldEqual, row.cmd.myerr)
+				})
+			})
+		}
 	})
 }
 
@@ -127,6 +160,8 @@ var (
 	errTestStderrHandling = errors.New("disk full")
 	errTestCmdNotFound    = errors.New("command not found")
 	errTestCmdExited      = errors.New("command exited with code 1")
+	errTestCmdAbnormal    = errors.New("command failed to complete normally")
+	errTestCmdKilled      = errors.New("command was killed")
 )
 
 // uploadFailedOutcome is the verdict Execute reaches when unmounting a job's
