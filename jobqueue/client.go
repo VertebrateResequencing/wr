@@ -807,7 +807,23 @@ func (c *Client) requestWithinLocked(cr *clientRequest, timeout time.Duration) (
 		}
 	}()
 
-	return c.requestLocked(cr)
+	deadline := time.Now().Add(timeout)
+
+	return c.requestResendingLocked(cr, func() bool {
+		return c.narrowToDeadline(deadline)
+	})
+}
+
+// narrowToDeadline narrows the socket's receive deadline to what is left until
+// deadline, reporting false, and leaving it unchanged, if nothing is left or it
+// could not be set. It must be called with the client's lock held.
+func (c *Client) narrowToDeadline(deadline time.Time) bool {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return false
+	}
+
+	return c.sock.SetOption(mangos.OptionRecvDeadline, remaining) == nil
 }
 
 // recvDeadline returns the receive deadline the client's socket currently
@@ -835,12 +851,25 @@ func (c *Client) recvDeadline() (time.Duration, error) {
 // rejects a bad token before acting on the request. Holding the lock throughout
 // means no other request can reload the token in between.
 func (c *Client) requestLocked(cr *clientRequest) (*serverResponse, error) {
+	return c.requestResendingLocked(cr, nil)
+}
+
+// requestResendingLocked is requestLocked, except that if beforeResend is not
+// nil it is called before the resend, and the rejection is returned instead of
+// resending if it reports false. The bounded requests use it to give the resend
+// only what is left of their bound. It must be called with the client's lock
+// held.
+func (c *Client) requestResendingLocked(cr *clientRequest, beforeResend func() bool) (*serverResponse, error) {
 	sr, err := c.requestOnceLocked(cr)
-	if isPermissionDeniedErr(err) && c.reloadToken(cr.Token) {
-		return c.requestOnceLocked(cr)
+	if !isPermissionDeniedErr(err) || !c.reloadToken(cr.Token) {
+		return sr, err
 	}
 
-	return sr, err
+	if beforeResend != nil && !beforeResend() {
+		return sr, err
+	}
+
+	return c.requestOnceLocked(cr)
 }
 
 // isPermissionDeniedErr reports whether err is the manager rejecting a request
