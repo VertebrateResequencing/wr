@@ -38,7 +38,7 @@
     instant the last check returned, so a close still unwinding was counted
     as leaked. It stayed green only because 4 is under the bound of 20.
   - Fix (test only), in `jobqueue/scheduler/reliable4_confirmdead_leak_test.go`:
-    after the checks, poll every 10ms for up to 5s until the count is back to
+    after the checks, poll every 100ms for up to 5s until the count is back to
     base, and fail if any ssh goroutine is left (`leaked > 0`). The bound of 20
     is gone, so the test is stricter: the old bound missed one unclosed client
     (6 goroutines). The log line now prints `peak` (first sample, diagnostic)
@@ -53,3 +53,8 @@
     would have passed.
   - Gates: `make lint` 0 issues; `make test` 715 passed, 20 skipped;
     `CGO_ENABLED=1 make race` 715 passed, 19 skipped.
+- [x] PR #626 review: `reliable4CDLeakPoll` was 10ms, and each poll dumps
+  every goroutine's stack into an 8MiB buffer, so a failing run took about
+  500 dumps in 5s. It is now 100ms, the interval the goroutines were seen to
+  unwind within. No red test: this is a sampling interval, and the check it
+  drives is unchanged. The test still passes with `leaked=0`.

@@ -79,8 +79,10 @@ const (
 	// flight.
 	reliable4CDLeakSettle = 5 * time.Second
 
-	// reliable4CDLeakPoll is how often the settle wait recounts.
-	reliable4CDLeakPoll = 10 * time.Millisecond
+	// reliable4CDLeakPoll is how often the settle wait recounts. Each recount
+	// dumps every goroutine's stack, so it matches the 100ms sample above
+	// rather than polling faster than the goroutines take to unwind.
+	reliable4CDLeakPoll = 100 * time.Millisecond
 )
 
 // TestReliable4ConfirmDeadSSHLeak proves the confirm-dead ssh path closes the
