@@ -222,6 +222,9 @@ var errRecvDeadlineType = errors.New("socket receive deadline was not a duration
 // request held the client for the whole of its timeout.
 var errClientBusy = errors.New("client busy with another request for the whole timeout")
 
+// errNoTokenFile is returned by ConnectWithTokenFile when given no path.
+var errNoTokenFile = errors.New("no token file given")
+
 const (
 	RepGroupMatchExact  RepGroupMatch = "exact"
 	RepGroupMatchSubStr RepGroupMatch = "substr"
@@ -656,6 +659,10 @@ func combineExecOutcomes(unmount, cmd execOutcome) execOutcome {
 // sends the rejected request once more. It never retries more than once per
 // request, and never if the file is unchanged or unreadable.
 func ConnectWithTokenFile(addr, caFile, certDomain, tokenFile string, timeout time.Duration) (*Client, error) {
+	if tokenFile == "" {
+		return nil, errNoTokenFile
+	}
+
 	// the path is made absolute now, so that a later reload reads the same file
 	// even if the process has changed its working directory since
 	if abs, errA := filepath.Abs(tokenFile); errA == nil {
