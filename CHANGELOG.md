@@ -113,7 +113,8 @@ project adheres to [Semantic Versioning](http://semver.org/).
   `wr add --queues_avoid "interactive,"`, made wr avoid every LSF queue, so the
   command could never run. `wr add` and `wr mod` now drop empty and
   whitespace-only elements from `--queues_avoid`, `--limit_grps` and
-  `--modules`, and the LSF scheduler ignores an empty queue name to avoid or
+  `--modules`, as does a REST `POST /rest/v1/jobs` from its `limit_grps`
+  parameter, and the LSF scheduler ignores an empty queue name to avoid or
   choose from, however it reached it (including the `queues_avoid` field of a
   REST or JSON job).
 - A `--with_docker` command that docker could not start, for example because
