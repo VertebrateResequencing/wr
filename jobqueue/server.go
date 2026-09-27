@@ -633,14 +633,21 @@ func (r *rgToKeys) Add(rg string, key string) {
 	r.lookup[rg].Add(key)
 }
 
-// Delete removes the key from the list of keys for the given RepGroup. You must
-// hold a Lock() when using this method!
+// Delete removes the key from the list of keys for the given RepGroup, and
+// forgets the RepGroup once it has no keys left, so that RepGroups that are
+// never used again do not accumulate. You must hold a Lock() when using this
+// method!
 func (r *rgToKeys) Delete(rg string, key string) {
-	if _, ok := r.lookup[rg]; !ok {
+	keys, ok := r.lookup[rg]
+	if !ok {
 		return
 	}
 
-	r.lookup[rg].Delete(key)
+	keys.Delete(key)
+
+	if keys.Size() == 0 {
+		delete(r.lookup, rg)
+	}
 }
 
 // Values gets the keys for the given RepGroup. It does its own RLock(); do not
