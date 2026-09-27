@@ -71,7 +71,7 @@ func TestClientTokenReload(t *testing.T) {
 
 		Convey("connecting with a blank token file path is refused with a clear error", func() {
 			jq, errc := ConnectWithTokenFile(addr, serverConfig.CAFile, serverConfig.CertDomain, "", clientConnectTime)
-			So(errc, ShouldEqual, errNoTokenFile)
+			So(errc, ShouldEqual, ErrNoTokenFile)
 			So(jq, ShouldBeNil)
 		})
 
