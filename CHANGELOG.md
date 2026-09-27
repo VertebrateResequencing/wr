@@ -79,6 +79,16 @@ project adheres to [Semantic Versioning](http://semver.org/).
   cleaned up after it at the same time. A working directory that the other
   cleanup has already removed is now treated as done, and the empty
   directories above it are still removed.
+- A long-lived Go client, such as one made by the `client` package's `New` or
+  by `jobqueue.ConnectUsingConfig`, had every request rejected with "bad token"
+  after `wr manager stop` and a new `wr manager start`, until the program using
+  it was restarted. A clean stop deletes the manager's token, so the next
+  manager makes a new one. Such a client now reads the new token from the
+  token file and sends the rejected request once more. A crash or kill of the
+  manager was not affected, since the token is kept then. New
+  `jobqueue.ConnectWithTokenFile` gives the same behaviour to a client that
+  connects with an address and a token file of its own. A client made with
+  `jobqueue.Connect` and a token is unchanged.
 - A network blip on a `wr add --sync`, a `client` package `WaitForJobs` or any
   other Go client job subscription left a copy of that subscription behind on
   the manager each time the client reconnected, for as long as the manager ran.

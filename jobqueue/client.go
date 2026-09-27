@@ -644,6 +644,33 @@ func combineExecOutcomes(unmount, cmd execOutcome) execOutcome {
 	return unmount
 }
 
+// ConnectWithTokenFile is like Connect(), but reads the token from tokenFile,
+// the file the manager was configured to write its token to (its
+// ServerConfig.TokenFile, which is ManagerTokenFile in wr's config).
+//
+// Prefer this over Connect() for a long-lived client. A cleanly stopped manager
+// deletes its token file, and the next manager started writes a new token to
+// it, so a client holding the old token has every request rejected with
+// ErrPermissionDenied. A client made with this function, on such a rejection,
+// re-reads tokenFile and, only if it now holds a different token, adopts it and
+// sends the rejected request once more. It never retries more than once per
+// request, and never if the file is unchanged or unreadable.
+func ConnectWithTokenFile(addr, caFile, certDomain, tokenFile string, timeout time.Duration) (*Client, error) {
+	token, err := os.ReadFile(filepath.Clean(tokenFile))
+	if err != nil {
+		return nil, fmt.Errorf("could not read token file; has the manager been started? [%w]", err)
+	}
+
+	c, err := Connect(addr, caFile, certDomain, token, timeout)
+	if err != nil {
+		return c, err
+	}
+
+	c.tokenFile = tokenFile
+
+	return c, nil
+}
+
 // GetRecent gets archived Jobs across all rep groups that finished running
 // (were Archive()d) within the last period. Only exit-0 jobs are ever archived,
 // so all returned jobs are complete; state must be "" (a non-"" state is a
@@ -796,7 +823,64 @@ func (c *Client) recvDeadline() (time.Duration, error) {
 
 // requestLocked does the work of request(), and must be called with the
 // client's lock held.
+//
+// If the manager rejects the token, and the client knows the file its token
+// came from and that file now holds a different token, the request is sent once
+// more with the new one. That is safe for every method, because the manager
+// rejects a bad token before acting on the request. Holding the lock throughout
+// means no other request can reload the token in between.
 func (c *Client) requestLocked(cr *clientRequest) (*serverResponse, error) {
+	sr, err := c.requestOnceLocked(cr)
+	if isPermissionDeniedErr(err) && c.reloadToken(cr.Token) {
+		return c.requestOnceLocked(cr)
+	}
+
+	return sr, err
+}
+
+// isPermissionDeniedErr reports whether err is the manager rejecting a request
+// for a bad token.
+func isPermissionDeniedErr(err error) bool {
+	var jqerr Error
+
+	return errors.As(err, &jqerr) && jqerr.Err == ErrPermissionDenied
+}
+
+// reloadToken re-reads the client's token file, if it has one, and adopts the
+// token in it if that is a well-formed token other than rejected, the one the
+// manager just refused. It reports whether it adopted a new token. It must be
+// called with the client's lock held.
+func (c *Client) reloadToken(rejected []byte) bool {
+	if c.tokenFile == "" {
+		return false
+	}
+
+	// the path is the one the caller gave ConnectWithTokenFile, already read there.
+	token, err := os.ReadFile(filepath.Clean(c.tokenFile)) //nolint:gosec
+	if err != nil || len(token) != tokenLength || bytes.Equal(token, rejected) {
+		return false
+	}
+
+	c.tokenMu.Lock()
+	c.token = token
+	c.tokenMu.Unlock()
+
+	c.tokenReloads++
+
+	return true
+}
+
+// currentToken returns the token the client authenticates with.
+func (c *Client) currentToken() []byte {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+
+	return c.token
+}
+
+// requestOnceLocked sends cr and returns the manager's reply, and must be
+// called with the client's lock held.
+func (c *Client) requestOnceLocked(cr *clientRequest) (*serverResponse, error) {
 	if err := c.encodeAndSend(cr); err != nil {
 		return nil, err
 	}
@@ -1196,13 +1280,29 @@ type Client struct {
 	sock        mangos.Socket
 	sync.Mutex
 	teMutex    sync.Mutex // to protect Touch() from other methods during Execute()
-	token      []byte
 	timeout    time.Duration
 	restClient *http.Client
 	ServerInfo *ServerInfo
 	host       string
 	port       string
 	args       []string // allowing internal reconnects
+
+	// token is what the client authenticates with. It is guarded by tokenMu,
+	// not the client's main lock, because reconnects and subscription polls
+	// read it without that lock. Read it with currentToken().
+	tokenMu sync.Mutex
+	token   []byte
+
+	// tokenFile, if set, is where token came from. A request the manager
+	// rejects with ErrPermissionDenied re-reads it, and is sent once more if
+	// the file now holds a different token, since a manager that was cleanly
+	// stopped and started again has a new one.
+	tokenFile string
+
+	// tokenReloads counts the tokens taken from tokenFile after a rejected
+	// request, so in-package tests can see whether a reload happened. It is
+	// guarded by the client's main lock.
+	tokenReloads int
 
 	// timing parameters this client uses; defaulted from the server's
 	// ServerInfo at Connect() (falling back to the Client* package defaults for
@@ -1526,20 +1626,18 @@ func (c *Client) handlePingFailure(pingErr error) (*Client, error) {
 	return nil, Error{"Connect", "", msg}
 }
 
-// ConnectUsingConfig calls Connect(), supplying values from user configuration
-// available in the environment (config files and environment variables). To
-// load the correct config, a deployment must be provided ('production' or
-// 'development', whichever was used when starting the server).
+// ConnectUsingConfig calls ConnectWithTokenFile(), supplying values from user
+// configuration available in the environment (config files and environment
+// variables). To load the correct config, a deployment must be provided
+// ('production' or 'development', whichever was used when starting the server).
+//
+// As with ConnectWithTokenFile(), the returned client picks up the new token of
+// a manager that was cleanly stopped and started again.
 func ConnectUsingConfig(ctx context.Context, deployment string, timeout time.Duration) (*Client, error) {
 	config := internal.ConfigLoadFromCurrentDir(ctx, deployment)
 
-	token, err := os.ReadFile(filepath.Clean(config.ManagerTokenFile))
-	if err != nil {
-		return nil, fmt.Errorf("could not read token file; has the manager been started? [%w]", err)
-	}
-
-	return Connect(config.ManagerHost+":"+config.ManagerPort, config.ManagerCAFile,
-		config.ManagerCertDomain, token, timeout)
+	return ConnectWithTokenFile(config.ManagerHost+":"+config.ManagerPort, config.ManagerCAFile,
+		config.ManagerCertDomain, config.ManagerTokenFile, timeout)
 }
 
 // Disconnect closes the connection to the jobqueue server. It is CRITICAL that
@@ -3392,7 +3490,7 @@ func (c *Client) handleFinalStateError(ctx context.Context, err error) (disconne
 // socket on success. On failure it logs, sleeps a jittered retry delay and
 // returns false.
 func (c *Client) quickReconnect(ctx context.Context) bool {
-	newC, errc := Connect(c.args[0], c.args[1], c.args[2], c.token, 1*time.Second)
+	newC, errc := Connect(c.args[0], c.args[1], c.args[2], c.currentToken(), 1*time.Second)
 	if errc != nil {
 		clog.Warn(ctx, "tried to reconnect to server but failed", "err", errc)
 
@@ -4456,7 +4554,7 @@ func (c *Client) encodeAndSend(cr *clientRequest) error {
 	var encoded []byte
 
 	enc := codec.NewEncoderBytes(&encoded, c.ch)
-	cr.Token = c.token
+	cr.Token = c.currentToken()
 	cr.ClientID = c.clientid
 
 	if err := enc.Encode(cr); err != nil {
