@@ -135,6 +135,7 @@ func createTmpFileAndCleanupMethod(ctx context.Context, dir string) (*os.File, f
 // write fails, the given cleanup method will be called.
 func writeStringToFile(f *os.File, content string, cleanup func()) error {
 	if _, err := f.WriteString(content + "\n"); err != nil {
+		_ = f.Close() // the write error is what matters
 		cleanup()
 
 		return err

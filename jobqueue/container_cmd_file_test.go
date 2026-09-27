@@ -67,7 +67,7 @@ func TestContainerCmdFileInJobTmpDir(t *testing.T) {
 		// command line runs with, while the cmd file is being read
 		binDir := t.TempDir()
 		listing := filepath.Join(t.TempDir(), "listing")
-		fake := "#!/bin/sh\ncat >/dev/null\nls \"$TMPDIR\" > " + listing + "\n"
+		fake := "#!/bin/sh\ncat >/dev/null\nls \"$TMPDIR\" > '" + listing + "'\n"
 		So(os.WriteFile(filepath.Join(binDir, "singularity"), []byte(fake), 0o700), ShouldBeNil) //nolint:gosec
 
 		env := append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"))
