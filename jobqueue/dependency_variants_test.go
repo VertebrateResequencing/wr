@@ -34,8 +34,10 @@ package jobqueue
 
 import (
 	"context"
+	"os"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/VertebrateResequencing/wr/queue"
 	. "github.com/smartystreets/goconvey/convey"
@@ -49,6 +51,12 @@ const (
 	dvCwd         = "/dependency/variants/cwd"
 	dvOtherCwd    = "/dependency/variants/other"
 	dvMountTarget = "dependency-variants-bucket/path"
+
+	dvCommandKey    = "command key"
+	dvDockerKey     = "docker job key"
+	dvDockerRekeyed = "rekeyed docker job key"
+	dvMountsKey     = "mounts job key"
+	dvPlainKey      = "plain job key"
 )
 
 func TestCommandDependencyMatchesContainerAndMountJobs(t *testing.T) {
@@ -110,6 +118,15 @@ func TestCommandDependencyMatchesContainerAndMountJobs(t *testing.T) {
 			So(dvSorted(item.UnresolvedDependencies()...), ShouldResemble,
 				dvSorted(docker.Key(), singularity.Key()))
 			So(dgaItemState(d.server, dependent.Key()), ShouldEqual, queue.ItemStateDependent)
+
+			Convey("and archiving the rest empties the index and releases the dependent", func() {
+				for range 2 {
+					dvArchiveReserved(jq)
+				}
+
+				So(d.server.depGroups.liveCommandVariants(docker.commandKey(docker.Key())), ShouldBeEmpty)
+				So(dgaItemState(d.server, dependent.Key()), ShouldEqual, queue.ItemStateReady)
+			})
 		})
 
 		Convey("A Cwd is matched only as the job's key would match it", func() {
@@ -197,6 +214,57 @@ func TestCommandDependencyMatchesContainerAndMountJobs(t *testing.T) {
 			So(dvItemDeps(d.server, dependent.Key()), ShouldBeEmpty)
 		})
 	})
+}
+
+func TestCommandVariantsHoldsNothingOnceForgotten(t *testing.T) {
+	Convey("Given an empty commandVariants", t, func() {
+		var v commandVariants
+
+		v.init()
+
+		Convey("recording, rekeying and forgetting every job leaves no entry behind", func() {
+			v.record(dvDockerKey, dvCommandKey)
+			v.record(dvMountsKey, dvCommandKey)
+			v.record(dvDockerKey, dvCommandKey)
+			v.record(dvPlainKey, dvPlainKey)
+			So(dvSorted(v.of(dvCommandKey)...), ShouldResemble, dvSorted(dvDockerKey, dvMountsKey))
+			So(v.of(dvPlainKey), ShouldBeEmpty)
+
+			v.rekey(dvDockerKey, dvDockerRekeyed, dvCommandKey)
+			So(dvSorted(v.of(dvCommandKey)...), ShouldResemble, dvSorted(dvDockerRekeyed, dvMountsKey))
+
+			v.rekey(dvMountsKey, dvCommandKey, dvCommandKey)
+			So(v.of(dvCommandKey), ShouldResemble, []string{dvDockerRekeyed})
+
+			v.forget(dvDockerRekeyed)
+			v.forget(dvDockerRekeyed)
+			v.forget(dvPlainKey)
+
+			So(dvIndexEntries(&v), ShouldEqual, 0)
+		})
+	})
+}
+
+// dvIndexEntries returns how many entries both of v's maps hold, so a test can
+// see that forgetting a job deletes its entries rather than leaving them empty.
+func dvIndexEntries(v *commandVariants) int {
+	entries := 0
+
+	for i := range depGroupShards {
+		entries += len(v.byCommand[i].members) + len(v.byJob[i].command)
+	}
+
+	return entries
+}
+
+// dvArchiveReserved reserves the next ready job and archives it as a success,
+// without running its command.
+func dvArchiveReserved(jq *Client) {
+	job, err := jq.Reserve(dgrReserveWait)
+	So(err, ShouldBeNil)
+	So(job, ShouldNotBeNil)
+	So(jq.Started(job, os.Getpid()), ShouldBeNil)
+	So(jq.Archive(job, &JobEndState{Exited: true, EndTime: time.Now()}), ShouldBeNil)
 }
 
 // dvDependency returns a job running dvCmd, for the caller to give container or
