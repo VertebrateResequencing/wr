@@ -67,8 +67,8 @@ func TestManagerInitialMmapSize(t *testing.T) {
 		const gib = int64(1) << 30
 
 		Convey("at least managerMmapMinHeadroom beyond a small or new file", func() {
-			So(managerInitialMmapSize(0), ShouldEqual, managerMmapMinHeadroom)
-			So(managerInitialMmapSize(100<<20), ShouldEqual, 100<<20+managerMmapMinHeadroom)
+			So(managerInitialMmapSize(0), ShouldEqual, int64(managerMmapMinHeadroom))
+			So(managerInitialMmapSize(100<<20), ShouldEqual, int64(100<<20+managerMmapMinHeadroom))
 		})
 
 		Convey("twice the size of a multi-GB file", func() {
@@ -76,8 +76,8 @@ func TestManagerInitialMmapSize(t *testing.T) {
 		})
 
 		Convey("capped at managerMmapMaxSize, but never below the file's size", func() {
-			So(managerInitialMmapSize(600*gib), ShouldEqual, managerMmapMaxSize)
-			So(managerInitialMmapSize(2*managerMmapMaxSize), ShouldEqual, 2*managerMmapMaxSize)
+			So(managerInitialMmapSize(600*gib), ShouldEqual, int64(managerMmapMaxSize))
+			So(managerInitialMmapSize(2*managerMmapMaxSize), ShouldEqual, int64(2*managerMmapMaxSize))
 		})
 	})
 }
@@ -175,6 +175,10 @@ func TestOpenManagerBoltLimitChild(t *testing.T) {
 // blocking new reads, so before the fix the whole database stalled for the rest
 // of the copy (prodsim finding 2).
 func TestDBBackupRemap(t *testing.T) {
+	if math.MaxInt < managerMmapMaxSize {
+		t.Skip("no headroom is mapped on 32-bit platforms, so a backup can still stall a remap there")
+	}
+
 	ctx := context.Background()
 
 	Convey("Given a small db whose backup copy is held open mid-copy", t, func() {
