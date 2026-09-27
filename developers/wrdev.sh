@@ -4480,7 +4480,7 @@ prodsim_cleanup() {  # idempotent: stop the restarter, prodsim, our manager, and
 # the psimjob.sh commands of this run (its own copy in $PS_OUT, so no other run's). LSF runs
 # have none; their runners go with the bkill.
 prodsim_reap_local() {
-  local list p n=0; list=$(ps -u "$(id -un)" -o pid=,args= 2>/dev/null)
+  local list p n=0; list=$(ps -ww -u "$(id -un)" -o pid=,args= 2>/dev/null)
   for p in $(printf '%s\n' "$list" | awk -v wr="$WR" -v port=":$PROD_PORT" -v job="${PS_OUT:-/nonexistent}/psimjob.sh" '
       $2 == wr && $3 == "runner" { for (i = 4; i < NF; i++) if ($i == "--server" && substr($(i+1), length($(i+1)) - length(port) + 1) == port) { print $1; next } }
       $2 == "bash" && $3 == job { print $1 }'); do
