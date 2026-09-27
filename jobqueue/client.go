@@ -2709,16 +2709,15 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 						c.beforeServerKillHook()
 					}
 
-					// a kill that did not act leaves the command to have
-					// ended of its own accord, and Execute still to finish, so
-					// keep touching until told to stop.
-					if !killForServer() {
-						continue
-					}
+					// the kill runs apart from this loop, and whether or not it
+					// acts, Execute has still to finish and report, so keep
+					// touching until told to stop. Killing can take a while (it
+					// waits for the command's children to die), and it is these
+					// touches that stop the manager deciding meanwhile that the
+					// job is lost.
+					go killForServer()
 
-					touchTicker.Stop()
-
-					return
+					continue
 				}
 
 				if errf != nil {

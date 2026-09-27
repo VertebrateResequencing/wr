@@ -144,6 +144,14 @@ project adheres to [Semantic Versioning](http://semver.org/).
   the job in the wrong place in its queue, when the manager had last handled a
   job with different resource requirements or limit groups. A changed priority
   now always reorders the job among the other ready jobs like it.
+- `wr kill` of a command could leave it retried, or buried as lost
+  rather than killed, if the runner took longer than a minute to kill the
+  command and finish up (for example, a slow upload of its outputs).
+  The runner stopped telling the manager it was alive once it had carried out
+  the kill, and the manager ignored its messages from the moment kill was
+  asked for, so the manager decided the job was lost, released it, and then
+  refused the runner's own report. A runner now keeps the job alive until it
+  has reported, and that report buries the job as killed.
 - A network blip on a `wr add --sync`, a `client` package `WaitForJobs` or any
   other Go client job subscription left a copy of that subscription behind on
   the manager each time the client reconnected, for as long as the manager ran.

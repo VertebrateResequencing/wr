@@ -1195,22 +1195,26 @@ func (s *Server) handleTouch(ctx context.Context, cr *clientRequest) (*serverRes
 		return nil, srerr, ""
 	}
 
-	// if kill has been called for this job, just return KillCalled
 	job.RLock()
 	killCalled := job.killCalled
 	lost := job.Lost
 	job.RUnlock()
 
 	if !killCalled {
-		// also just return killCalled if server has been set to kill all jobs
+		// the server shutting down kills every job
 		killCalled = s.inShutdown()
 	}
+
+	// a touch keeps the reservation alive even once kill has been called: the
+	// runner is still busy killing the command and finishing up, which can take
+	// longer than the TTR, and it is its report that buries the job as killed.
+	// Were the job left to go lost instead, the manager would release it, maybe
+	// to run again, and reject the runner's report.
+	srerr, qerr := s.touchJob(ctx, cr, item, job, lost)
 
 	if killCalled {
 		return &serverResponse{KillCalled: true}, "", ""
 	}
-
-	srerr, qerr := s.touchJob(ctx, cr, item, job, lost)
 
 	return &serverResponse{KillCalled: false}, srerr, qerr
 }
