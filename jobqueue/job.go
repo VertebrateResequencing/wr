@@ -244,6 +244,15 @@ func (j *JobEssence) pickKeyedCandidateJob(byKey map[string]*Job) *Job {
 	return nil
 }
 
+// namesOnlyCommand says whether this essence describes a job by its Cmd, and
+// maybe Cwd, alone: it gives no JobKey, MountConfigs or container image. That
+// is the essence a command dependency (NewEssenceDependency) builds, which
+// should match a job with that Cmd whatever mounts or image it was added with.
+// Such an essence's Key() is the Job.commandKey of the jobs it describes.
+func (j *JobEssence) namesOnlyCommand() bool {
+	return j.JobKey == "" && len(j.MountConfigs) == 0 && j.WithDocker == "" && j.WithSingularity == ""
+}
+
 // pickCandidateJobs returns the Job each of jes describes, in the order the
 // essences are given, and nothing for an essence that describes none of jobs. It
 // is pickCandidateJob for the plural read path, which asks for the candidate keys
@@ -444,6 +453,18 @@ func (j *Job) containerMountsMessage() string {
 // disagree about it.
 func runsAsImageUser(containerImageUser bool, withDocker string) bool {
 	return containerImageUser && withDocker != ""
+}
+
+// commandKey returns the key this Job would have without its MountConfigs,
+// container image and ContainerMounts: its Cmd, and its Cwd if CwdMatters. key
+// must be the job's Key(), which is what it returns, without hashing again, for
+// a job with none of those.
+func (j *Job) commandKey(key string) string {
+	if len(j.MountConfigs) == 0 && j.WithDocker == "" && j.WithSingularity == "" {
+		return key
+	}
+
+	return byteKey(jobKeyConcat(j.CwdMatters, j.Cwd, j.Cmd, "", "", ""))
 }
 
 // cwdLeaf returns the part of cwd below cwdBase, prefixed with "/", for display

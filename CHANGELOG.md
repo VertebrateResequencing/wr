@@ -101,6 +101,14 @@ project adheres to [Semantic Versioning](http://semver.org/).
   mounts stayed live with no process left to unmount them, and you had to find
   and `fusermount -u` them yourself. It now unmounts them before it exits. The
   same goes for a signal to stop that arrives while it is still mounting.
+- `wr add --cmd_deps`, `wr mod --cmd_deps` and a `cmd`/`cwd` dependency in a
+  REST `POST /rest/v1/jobs` did not wait for a command you had added with
+  `--with_docker`, `--with_singularity` or `--mounts`, so the dependent command
+  could start before that command had finished. A command dependency now waits
+  for every incomplete command with that command line (and working directory,
+  if that command was added with `--cwd_matters`), whatever container or mounts
+  it uses. If more than one such command is in the queue, it waits for all of
+  them.
 - A network blip on a `wr add --sync`, a `client` package `WaitForJobs` or any
   other Go client job subscription left a copy of that subscription behind on
   the manager each time the client reconnected, for as long as the manager ran.
