@@ -207,13 +207,15 @@ func setManagerStopTestConfig(t *testing.T, pid int) {
 }
 
 // setManagerStopTestConfigPidFile is setManagerStopTestConfig with the pid
-// file's raw content.
+// file's raw content. It must be called inside a Convey: the globals it
+// changes are restored by a Reset when that Convey ends, so sibling Conveys
+// never see them.
 func setManagerStopTestConfigPidFile(t *testing.T, content string) {
 	t.Helper()
 
 	oldConfig, oldCAFile := config, caFile
 
-	t.Cleanup(func() {
+	Reset(func() {
 		config, caFile = oldConfig, oldCAFile
 	})
 
@@ -329,4 +331,8 @@ func TestManagerStopInvalidPidFile(t *testing.T) {
 			So(logged, ShouldContainSubstring, "does not seem to be running")
 		})
 	}
+
+	Convey("the config a stop test changed is restored before a sibling Convey runs", t, func() {
+		So(config == nil || config.Deployment != managerStopTestDeployment, ShouldBeTrue)
+	})
 }
