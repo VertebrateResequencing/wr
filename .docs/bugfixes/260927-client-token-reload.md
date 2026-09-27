@@ -58,9 +58,10 @@ Branch `fix-client-token-reload`, based on `origin/develop` at `cb9bb03`
     after a clean restart resubscribes through `requestWithin`, so the
     resubscribe reloads the token and later polls use it. On the bounded paths
     from #622 (`requestWithin`, `requestWithinIncludingLockWait`) the resend
-    reuses the same narrowed deadline, so in the one reload case a request can
-    take up to twice its bound; the first send is answered straight away with
-    the rejection, so in practice it adds one round trip.
+    gets only what is left of the narrowed deadline, and is not sent at all if
+    none is left, so a request still never outlives its bound. The
+    subscription reconnect's resubscribe is one of these, and its retry budget
+    must hold.
   - Design decision: keep deleting the token on a clean stop, and reload in
     the client. `deleteToken` was added in 1e3d6d2 ("Manager now re-uses
     existing token files, only deleted on clean stop"), which keeps the token
@@ -83,6 +84,14 @@ Branch `fix-client-token-reload`, based on `origin/develop` at `cb9bb03`
     requests after a restart, a subscription resubscribing after a restart, a
     raw-token client still being refused, an unchanged wrong token file
     causing no reload, and a changed but still wrong file causing exactly one.
+  - Review: the resend on the bounded paths first reused the whole narrowed
+    deadline, so a rejection that took most of the bound to arrive let the
+    request run to nearly twice it. `requestWithinLocked` now narrows the
+    socket to the time remaining before the resend. Red, with the resend
+    given the full deadline again: the new case "a bounded request resent
+    after a reload gets only what is left of its bound" fails (`Expected:
+    true / Actual: false` for the resend timing out), and passes with the
+    fix.
 
 ## Gate flakes seen while verifying this fix
 

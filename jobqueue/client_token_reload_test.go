@@ -27,12 +27,14 @@ package jobqueue
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sync"
 	"testing"
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
+	"go.nanomsg.org/mangos/v3"
 )
 
 // tokenReloadPingWait is how long a client is given to find the restarted
@@ -42,6 +44,14 @@ const tokenReloadPingWait = 10 * time.Second
 // tokenReloadConcurrentCalls is how many requests race each other into the
 // restarted manager in the concurrency test.
 const tokenReloadConcurrentCalls = 8
+
+// tokenReloadBoundedBudget is the bound given to a request whose first send is
+// rejected for its token, and tokenReloadSlowRejection is how long that
+// rejection is made to take to arrive, most of the bound.
+const (
+	tokenReloadBoundedBudget = 1 * time.Second
+	tokenReloadSlowRejection = 600 * time.Millisecond
+)
 
 func TestClientTokenReload(t *testing.T) {
 	if runnermode || servermode {
@@ -133,6 +143,37 @@ func TestClientTokenReload(t *testing.T) {
 			So(update.Kind, ShouldEqual, JobUpdateResync)
 		})
 
+		Convey("a bounded request resent after a reload gets only what is left of its bound", func() {
+			So(os.WriteFile(serverConfig.TokenFile, mismatchedToken(token), ownerReadWrite), ShouldBeNil)
+
+			jq, errc := ConnectWithTokenFile(addr, serverConfig.CAFile, serverConfig.CertDomain,
+				serverConfig.TokenFile, clientConnectTime)
+			So(errc, ShouldBeNil)
+
+			defer disconnect(jq)
+
+			So(os.WriteFile(serverConfig.TokenFile, token, ownerReadWrite), ShouldBeNil)
+
+			realSock := jq.sock
+			slowSock := &slowFirstReplySocket{Socket: realSock, delay: tokenReloadSlowRejection}
+			jq.sock = slowSock
+
+			// the manager holds a reserve against an empty queue open for
+			// heldReplyWait, longer than the bound, so the resend times out
+			_, err = jq.requestWithin(&clientRequest{Method: requestMethodReserve, Timeout: heldReplyWait},
+				tokenReloadBoundedBudget)
+
+			jq.sock = realSock
+
+			So(errors.Is(err, mangos.ErrRecvTimeout), ShouldBeTrue)
+			So(jq.tokenReloads, ShouldEqual, 1)
+
+			deadlines := slowSock.recvDeadlines()
+			So(len(deadlines), ShouldEqual, 3)
+			So(deadlines[0], ShouldEqual, tokenReloadBoundedBudget)
+			So(deadlines[1], ShouldBeLessThanOrEqualTo, tokenReloadBoundedBudget-tokenReloadSlowRejection)
+		})
+
 		Convey("a client given a raw token does not look for a new one", func() {
 			jq, errc := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
 			So(errc, ShouldBeNil)
@@ -201,4 +242,48 @@ func waitForPing(jq *Client) bool {
 	}
 
 	return false
+}
+
+// slowFirstReplySocket is the socket it wraps, except that the first reply it
+// receives is handed over only after delay, and it records every receive
+// deadline set on it.
+type slowFirstReplySocket struct {
+	mangos.Socket
+	delay time.Duration
+
+	mu        sync.Mutex
+	received  bool
+	deadlines []time.Duration
+}
+
+func (s *slowFirstReplySocket) Recv() ([]byte, error) {
+	b, err := s.Socket.Recv()
+
+	s.mu.Lock()
+	first := !s.received
+	s.received = true
+	s.mu.Unlock()
+
+	if first {
+		time.Sleep(s.delay)
+	}
+
+	return b, err
+}
+
+func (s *slowFirstReplySocket) SetOption(name string, value any) error {
+	if d, ok := value.(time.Duration); ok && name == mangos.OptionRecvDeadline {
+		s.mu.Lock()
+		s.deadlines = append(s.deadlines, d)
+		s.mu.Unlock()
+	}
+
+	return s.Socket.SetOption(name, value)
+}
+
+func (s *slowFirstReplySocket) recvDeadlines() []time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return append([]time.Duration(nil), s.deadlines...)
 }
