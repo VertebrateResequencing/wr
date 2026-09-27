@@ -114,3 +114,14 @@
   - Tests: `TestSignalPid` (internal), `TestNonPositivePidsAreNeverSignalled`
     and `TestManagerStopInvalidPidFile` (0, -1, garbage) in
     `cmd/manager_stop_test.go`.
+- [x] PR #639 review (Copilot): the setManagerStopTestConfig helper in
+  cmd/manager_stop_test.go restores the global config/caFile with t.Cleanup,
+  which only runs when the whole test ends, so sibling top-level Conveys can
+  see mutated globals. Use Convey Reset or a defer inside the Convey.
+  - Red command:
+    `CGO_ENABLED=1 go test -tags netgo --count 1 ./cmd -run TestManagerStopInvalidPidFile`
+    with a sibling Convey asserting config no longer names the test deployment,
+    exit 1 with t.Cleanup: `Line 336: Expected: true Actual: false`.
+  - Fix: the helper registers the restore with GoConvey's `Reset`, so it runs
+    as each Convey that called it ends. The sibling Convey stays as the
+    regression test.
