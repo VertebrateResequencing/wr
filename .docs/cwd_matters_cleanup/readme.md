@@ -377,15 +377,18 @@ which does not imply `RESOLVE_NO_XDEV`.
   persisted BoltDB key. **Bites when** a path collision arises anyway — the
   2^-122 mint, or two pre-upgrade digits-named workspaces of one key. The four
   deliberately-red rows of the probe round that found this bug
-  (`probeKeyBlindRows` / `TestProbeMountConfigsOneKeyCovers`, on
-  `origin/probe-round8-cases`) force that collision by hand, removing a
-  workspace and recreating the same path through `mkCwdAndTmp` instead of
-  `mkHashedDir`, so the shape they arrange is one production can no longer
-  produce. Dropped onto the fixed tree, row 1 now PASSES, 19 assertions and
-  every survival green: its live remote sits behind a real go-fuse loopback
-  mount raised at the workspace's `cwd`, and #577's mount-boundary guard
-  (`sweptDir.sweepable`'s device check) stops the sweep crossing into the live
-  mount, so the user's remote objects survive the forced collision. Rows 2, 3
+  (`probeKeyBlindRows` / `TestProbeMountConfigsOneKeyCovers`, kept in
+  `jobqueue/deletion_probes_keyblind_test.go` behind the `reliability_repro`
+  build tag, so `make test` does not run them) force that collision by hand,
+  removing a workspace and recreating the same path through `mkCwdAndTmp`
+  instead of `mkHashedDir`, so the shape they arrange is one production can no
+  longer produce. Run them with
+  `go test -tags reliability_repro ./jobqueue/ -run TestProbeMountConfigsOneKeyCovers`.
+  On the fixed tree row 1 PASSES, every survival green: its live remote sits
+  behind a real go-fuse loopback mount raised at the workspace's `cwd`, and
+  #577's mount-boundary guard (`sweptDir.sweepable`'s device check) stops the
+  sweep crossing into the live mount, so the user's remote objects survive the
+  forced collision. Rows 2, 3
   and 4 still FAIL, on a writable mount's un-uploaded output waiting for
   `Unmount` to upload it: `REMOTE_DATA` deleted under `s3.example.com/bucket`
   in the workspace, under `tmp` in the Job's TMPDIR (by the separate
