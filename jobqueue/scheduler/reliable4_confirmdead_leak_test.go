@@ -33,21 +33,22 @@ package scheduler
 // When a job is marked lost, the manager confirms it dead by ssh'ing to the exec
 // host to run `ps` (Scheduler.ProcessNotRunningOnHost). On the LSF scheduler that
 // path is: getHost -> cloud.NewServer(host) [a FRESH server every call] ->
-// RunCmd -> dials a new ssh.Client, runs ps, closes only the SESSION. The Host
-// interface has no Close(), the throwaway server is never Destroy()ed, so the
-// dialed ssh.Client (and its background goroutines + open TCP socket) is NEVER
-// closed. confirmJobDead does this TWICE per lost job (command pid + runner pid),
-// so a lost-job storm leaks ~2 ssh connections per job — the prod diagnosis saw
-// the confirm-dead ssh connections climb 892 -> ~5,300 (~31,875 goroutines).
+// RunCmd -> dials a new ssh.Client, runs ps, closes only the SESSION. Before
+// Fix 5 the Host interface had no Close() and the throwaway server was never
+// Destroy()ed, so the dialled ssh.Client (and its background goroutines + open
+// TCP socket) was NEVER closed. confirmJobDead does this TWICE per lost job
+// (command pid + runner pid), so a lost-job storm leaked ~2 ssh connections per
+// job — the prod diagnosis saw the confirm-dead ssh connections climb 892 ->
+// ~5,300 (~31,875 goroutines). Now lsfHost.Close closes that connection.
 //
 // This drives the real ProcessNotRunningOnHost against a reachable host N times
 // and counts the ssh-client goroutines left alive afterwards. It needs a host the
 // manager's key can ssh into (the leak only manifests on SUCCESSFUL dials — a
 // failed dial errors out before the client is cached); it uses localhost by
 // default (WR_CDLEAK_HOST / WR_CDLEAK_KEY / WR_CDLEAK_N to override) and SKIPS if
-// passwordless ssh is unavailable or LSF is absent. RED on current code (leaked
-// ssh goroutines ~= 2-4 per check); GREEN once the confirm-dead path closes its
-// host connection after use (add Host.Close()).
+// passwordless ssh is unavailable or LSF is absent. Without Host.Close() it
+// leaves 6 ssh goroutines per check; with it, none once the closes have
+// finished unwinding (see reliable4CDLeakSettle).
 //
 // Run via developers/wrdev.sh confirm-dead-leak, or directly on a farm node:
 //
@@ -68,18 +69,24 @@ const (
 	// reliable4CDLeakChecks is how many confirm-dead ssh checks to drive.
 	reliable4CDLeakChecks = 40
 
-	// reliable4CDLeakBound is the most ssh-client goroutines the confirm-dead path
-	// may leave alive after the checks. Each leaked ssh.Client carries ~2-4
-	// long-lived goroutines (transport read/kex loops, mux loop), so the current
-	// never-close code leaves ~2-4x the check count; this bound is far below that
-	// yet generous for transients, so it is RED now and GREEN once connections are
-	// closed after each check.
-	reliable4CDLeakBound = 20
+	// reliable4CDLeakSettle bounds the wait for closed clients' goroutines to
+	// exit. ssh.Client.Close only closes the socket; the client's goroutines
+	// then unwind asynchronously, so a count taken the instant the last check
+	// returns can still see up to 4 of the last client's (mux loop,
+	// global-request and channel-open handlers, the Wait closer). They are gone
+	// within one 100ms sample, whereas a client that was never closed keeps 6
+	// forever, so the count after this wait tells a leak from a close still in
+	// flight.
+	reliable4CDLeakSettle = 5 * time.Second
+
+	// reliable4CDLeakPoll is how often the settle wait recounts. Each recount
+	// dumps every goroutine's stack, so it matches the 100ms sample above
+	// rather than polling faster than the goroutines take to unwind.
+	reliable4CDLeakPoll = 100 * time.Millisecond
 )
 
-// TestReliable4ConfirmDeadSSHLeak proves the confirm-dead ssh path leaks one
-// unclosed ssh client per check (Host has no Close(), the throwaway cloud.Server
-// is never destroyed).
+// TestReliable4ConfirmDeadSSHLeak proves the confirm-dead ssh path closes the
+// ssh client it dials for each check, leaving no ssh-client goroutines behind.
 func TestReliable4ConfirmDeadSSHLeak(t *testing.T) {
 	host := reliable4CDLeakEnv("WR_CDLEAK_HOST", "localhost")
 	key := reliable4CDLeakEnv("WR_CDLEAK_KEY", "~/.ssh/id_rsa")
@@ -95,7 +102,7 @@ func TestReliable4ConfirmDeadSSHLeak(t *testing.T) {
 
 	ctx := context.Background()
 
-	sched, err := New(ctx, "lsf", &ConfigLSF{Deployment: "development", Shell: "bash", PrivateKeyPath: key})
+	sched, err := New(ctx, "lsf", &ConfigLSF{Deployment: "development", Shell: testShell, PrivateKeyPath: key})
 	if err != nil {
 		t.Skipf("could not init lsf scheduler (is LSF present on this host?): %v", err)
 	}
@@ -108,27 +115,16 @@ func TestReliable4ConfirmDeadSSHLeak(t *testing.T) {
 		_ = sched.ProcessNotRunningOnHost(ctx, livePid, host)
 	}
 
-	// let the dialled clients' goroutines settle, sampling the peak.
-	peak := base
+	peak, settled := reliable4CDLeakSettledSSHGoroutines(base)
+	leaked := max(settled-base, 0) // unrelated ssh goroutines exiting can take settled under base
 
-	for range 20 {
-		if c := reliable4CDLeakSSHGoroutines(); c > peak {
-			peak = c
-		}
+	t.Logf("CONFIRMDEAD-LEAK: %d confirm-dead ssh checks to %s -> ssh-client goroutines base=%d peak=%d "+
+		"settled=%d leaked=%d (after up to %s to settle)", n, host, base, peak, settled, leaked, reliable4CDLeakSettle)
 
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	leaked := peak - base
-
-	t.Logf("CONFIRMDEAD-LEAK: %d confirm-dead ssh checks to %s -> ssh-client goroutines base=%d peak=%d leaked=%d bound=%d",
-		n, host, base, peak, leaked, reliable4CDLeakBound)
-
-	if leaked > reliable4CDLeakBound {
-		t.Errorf("confirm-dead SSH leak: %d checks left %d ssh-client goroutines alive (bound %d). Each "+
-			"ProcessNotRunningOnHost dials a cloud.Server ssh client that is never closed (the Host interface has "+
-			"no Close(), the throwaway server is never Destroy()ed). Fix: close the host connection after the "+
-			"check (and group checks per host over one connection).", n, leaked, reliable4CDLeakBound)
+	if leaked > 0 {
+		t.Errorf("confirm-dead SSH leak: %d checks left %d ssh-client goroutines alive %s after the last check. "+
+			"Each ProcessNotRunningOnHost dials a cloud.Server ssh client that must be closed via Host.Close() "+
+			"(lsfHost.Close -> CloseSSHConnections) after the check.", n, leaked, reliable4CDLeakSettle)
 	}
 }
 
@@ -151,6 +147,24 @@ func reliable4CDLeakSSHWorks(host string) bool {
 		"-o", "StrictHostKeyChecking=no", host, "ps -o stat= -p 1 2>/dev/null || test $? -eq 1")
 
 	return cmd.Run() == nil
+}
+
+// reliable4CDLeakSettledSSHGoroutines waits up to reliable4CDLeakSettle for the
+// ssh-client goroutine count to fall back to base, returning the highest count
+// seen while waiting and the last count.
+func reliable4CDLeakSettledSSHGoroutines(base int) (peak, last int) {
+	deadline := time.Now().Add(reliable4CDLeakSettle)
+
+	for {
+		last = reliable4CDLeakSSHGoroutines()
+		peak = max(peak, last)
+
+		if last <= base || time.Now().After(deadline) {
+			return peak, last
+		}
+
+		time.Sleep(reliable4CDLeakPoll)
+	}
 }
 
 // reliable4CDLeakSSHGoroutines counts the currently-live goroutines whose stack is
