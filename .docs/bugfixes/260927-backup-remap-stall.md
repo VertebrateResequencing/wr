@@ -1,7 +1,7 @@
 - [x] Every DB read and write stalls until the backup copy finishes if the file
-  grows past bbolt's mmap size during a backup. The backup copies the whole
-  file inside one read txn, including the fsync (jobqueue/db.go:5095, :947,
-  :960). The DB is opened without InitialMmapSize (jobqueue/db.go:2891). A
+  grows past bbolt's mmap size during a backup. Before this fix,
+  `backupToBackupFile` copied the whole file inside one read txn, including
+  the fsync, and `openManagerBolt` opened the DB without InitialMmapSize. A
   write that needs a remap waits, holding the writer lock, for that read txn
   to close (bbolt's mmaplock), and every new read queues behind it. In the
   soak, a 7GB file crossed 7168MiB and caused 583 slow requests in a minute,

@@ -121,7 +121,16 @@ func TestOpenManagerBoltLimitChild(t *testing.T) {
 	}
 
 	limit := pages*uint64(os.Getpagesize()) + mmapLimitChildSlack //nolint:gosec // page size is positive
-	if err = syscall.Setrlimit(syscall.RLIMIT_AS, &syscall.Rlimit{Cur: limit, Max: limit}); err != nil {
+
+	// Only the soft limit is lowered, and never above the hard one, since an
+	// unprivileged process cannot raise its hard limit.
+	var rlim syscall.Rlimit
+	if err = syscall.Getrlimit(syscall.RLIMIT_AS, &rlim); err != nil {
+		t.Fatal(err)
+	}
+
+	rlim.Cur = min(limit, rlim.Max)
+	if err = syscall.Setrlimit(syscall.RLIMIT_AS, &rlim); err != nil {
 		t.Fatal(err)
 	}
 
