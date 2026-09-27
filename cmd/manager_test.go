@@ -811,13 +811,16 @@ func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
 }
 
 func TestWaitForLiveManagerStartup(t *testing.T) {
+	// each Convey restores the globals it lowers with Reset, not t.Cleanup: a
+	// Cleanup only runs when the whole test ends, so later sibling Conveys would
+	// run under this one's millisecond intervals instead of the shipped ones.
 	Convey("manager start keeps waiting for its live daemon and reports delayed startup", t, func() {
 		oldConfig := config
 		oldPoll := managerStartupPollInterval
 		oldConnect := managerStartupConnectAttempt
 		oldReport := managerStartupReportInterval
 
-		t.Cleanup(func() {
+		Reset(func() {
 			config = oldConfig
 			managerStartupPollInterval = oldPoll
 			managerStartupConnectAttempt = oldConnect
@@ -917,7 +920,7 @@ func TestWaitForLiveManagerStartup(t *testing.T) {
 		oldConfig := config
 		oldPoll := managerStartupPollInterval
 
-		t.Cleanup(func() {
+		Reset(func() {
 			config = oldConfig
 			managerStartupPollInterval = oldPoll
 		})
@@ -950,7 +953,7 @@ func TestWaitForLiveManagerStartup(t *testing.T) {
 	Convey("quick manager startup remains quiet", t, func() {
 		oldConfig := config
 
-		t.Cleanup(func() {
+		Reset(func() {
 			config = oldConfig
 		})
 
@@ -964,8 +967,18 @@ func TestWaitForLiveManagerStartup(t *testing.T) {
 		processDone := make(chan error)
 		reports := 0
 
+		// the connector is a manager that is already up but, like a real one,
+		// needs a few milliseconds to answer, so it only connects when given at
+		// least that long. Once a delayed-startup report has fired the wait has
+		// already failed to stay quiet, so it answers then to end the wait.
+		const managerAnswerTime = 10 * time.Millisecond
+
 		jq, err := waitForLiveManagerStartupWith(time.Now(), time.Second, 123, processDone,
-			func(time.Duration) *jobqueue.Client {
+			func(wait time.Duration) *jobqueue.Client {
+				if wait < managerAnswerTime && reports == 0 {
+					return nil
+				}
+
 				return &jobqueue.Client{}
 			}, func(internal.DBUpgradeStatus) {}, func(time.Duration, string) {
 				reports++
