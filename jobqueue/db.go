@@ -224,6 +224,18 @@ var dbUpgradeLogInterval = dbUpgradeLogIntervalDefault
 // 0 would use a single transaction.
 const compactTxMaxSize = 64 * 1024 * 1024
 
+// managerMmapMinHeadroom is the least room to grow that managerInitialMmapSize
+// maps beyond a manager database's current size. Growth past the mapping during
+// a backup copy stalls the database (see openManagerBolt), and a backup window
+// lasts seconds for a small database, in which it cannot grow 4 GiB.
+const managerMmapMinHeadroom = 4 << 30
+
+// managerMmapMaxSize caps managerInitialMmapSize for a database that is already
+// huge, well within the 256 TiB bbolt can map on amd64 and arm64. (mips64's
+// 512 GiB limit is below it, so there a database over about 256 GiB would fail
+// to open with "mmap too large"; wr is not released for mips64.)
+const managerMmapMaxSize = 1 << 40
+
 // backupCopySyncInterval is how many bytes copyBackup writes to the backup file
 // before forcing writeback of that region (see backupCopyWriter.pace). 8 MiB caps
 // the delay a concurrent foreground archive/touch commit's fdatasync can suffer to
@@ -943,8 +955,11 @@ func (w *backupCopyWriter) Write(p []byte) (int, error) {
 // streams the copy through a backupCopyWriter that paces writeback every
 // backupCopySyncBytes, then fsyncs for durability. This produces the same file
 // tx.CopyFile would, but without letting the copy's dirty pages accumulate and
-// stall concurrent foreground commits.
-func (db *db) copyBackup(tx *bolt.Tx, path string) error {
+// stall concurrent foreground commits. The fsync happens after the read tx has
+// closed: the file's content is already the tx's snapshot by then, and a read tx
+// held open any longer than the copy needs could block a remap (see
+// openManagerBolt).
+func (db *db) copyBackup(path string) error {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, dbFilePermission)
 	if err != nil {
 		return err
@@ -955,7 +970,11 @@ func (db *db) copyBackup(tx *bolt.Tx, path string) error {
 		syncEvery: backupCopySyncBytes,
 	}
 
-	_, werr := tx.WriteTo(w)
+	werr := db.bolt.View(func(tx *bolt.Tx) error {
+		_, errw := tx.WriteTo(w)
+
+		return errw
+	})
 	if werr == nil {
 		werr = f.Sync()
 	}
@@ -2887,11 +2906,52 @@ func compactBolt(dst, src *bolt.DB, stats *CompactStats) error {
 // its file lock at managerDBOpenTimeout so a second manager fails with
 // ErrDBLocked instead of blocking forever and then acquiring the database the
 // instant the winner exits (spec E7).
+//
+// It maps the file with managerInitialMmapSize's headroom, so the database can
+// grow for a long time before bbolt has to remap it. A remap waits for every
+// open read transaction while holding the write lock and blocking new reads, so
+// a remap during a backup copy (one read transaction for the whole multi-GB
+// copy) would stall every database read and write until the copy finished. If
+// the process may not map that much address space (eg. under ulimit -v), it
+// falls back to bbolt's default mapping.
 func openManagerBolt(path string) (*bolt.DB, error) {
-	return bolt.Open(path, dbFilePermission, &bolt.Options{
-		FreelistType: bolt.FreelistMapType,
-		Timeout:      managerDBOpenTimeout,
-	})
+	var fileSize int64
+	if info, err := os.Stat(path); err == nil { //nolint:gosec // G703: path is the manager's own db file
+		fileSize = info.Size()
+	}
+
+	opts := &bolt.Options{
+		FreelistType:    bolt.FreelistMapType,
+		Timeout:         managerDBOpenTimeout,
+		InitialMmapSize: managerInitialMmapSize(fileSize),
+	}
+
+	bdb, err := bolt.Open(path, dbFilePermission, opts)
+	if err == nil || opts.InitialMmapSize == 0 || !errors.Is(err, syscall.ENOMEM) {
+		return bdb, err
+	}
+
+	opts.InitialMmapSize = 0
+
+	return bolt.Open(path, dbFilePermission, opts)
+}
+
+// managerInitialMmapSize returns the InitialMmapSize to open a manager database
+// of fileSize bytes with: the file's size plus the larger of that size again
+// and managerMmapMinHeadroom, capped at the larger of the file's size and
+// managerMmapMaxSize. The mapping is shared, read-only and file-backed, so it
+// costs virtual address space and page tables only for pages actually read, not
+// RAM or overcommit (vm.overcommit_memory=2) commit charge; it does count
+// against RLIMIT_AS. It returns 0 (bbolt's default) on 32-bit platforms, whose
+// maximum mapping is too small for headroom.
+func managerInitialMmapSize(fileSize int64) int {
+	if math.MaxInt < managerMmapMaxSize {
+		return 0
+	}
+
+	size := fileSize + max(fileSize, managerMmapMinHeadroom)
+
+	return int(min(size, max(fileSize, managerMmapMaxSize)))
 }
 
 // putLimitGroup stores a non-negative limit for a group.
@@ -5096,9 +5156,7 @@ func (db *db) backupToBackupFile(ctx context.Context, slowBackups bool) {
 	// create the new backup file with temp name
 	tmpBackupPath := db.backupPathTmp
 
-	err := db.bolt.View(func(tx *bolt.Tx) error {
-		return db.copyBackup(tx, tmpBackupPath)
-	})
+	err := db.copyBackup(tmpBackupPath)
 
 	if slowBackups {
 		<-time.After(slowBackupTestDelay)

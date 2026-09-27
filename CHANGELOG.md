@@ -126,6 +126,15 @@ project adheres to [Semantic Versioning](http://semver.org/).
   reported the same way, since wr cannot tell the two apart; `wr status` shows
   the runtime's own explanation in the command's stderr. Whether the command is
   retried or buried is unchanged.
+- If the manager's database grew past the size it had mapped into memory while
+  a backup was being written, every command that read or wrote the database
+  (adds, starts, completions, most status requests) waited until the backup
+  finished. For a multi-GB database that could be minutes, long enough for
+  clients to time out. The manager now maps its database with room to grow (the
+  larger of its size again and 4GB) each time it starts, so this no longer
+  happens unless the database grows by that much during one manager run. The
+  extra mapping uses address space, not memory; if `ulimit -v` stops the
+  manager mapping it, the manager opens the database as before.
 - A network blip on a `wr add --sync`, a `client` package `WaitForJobs` or any
   other Go client job subscription left a copy of that subscription behind on
   the manager each time the client reconnected, for as long as the manager ran.
