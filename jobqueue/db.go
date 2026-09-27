@@ -231,7 +231,9 @@ const compactTxMaxSize = 64 * 1024 * 1024
 const managerMmapMinHeadroom = 4 << 30
 
 // managerMmapMaxSize caps managerInitialMmapSize for a database that is already
-// huge, well within the 256 TiB bbolt can map on 64-bit platforms.
+// huge, well within the 256 TiB bbolt can map on amd64 and arm64. (mips64's
+// 512 GiB limit is below it, so there a database over about 256 GiB would fail
+// to open with "mmap too large"; wr is not released for mips64.)
 const managerMmapMaxSize = 1 << 40
 
 // backupCopySyncInterval is how many bytes copyBackup writes to the backup file
