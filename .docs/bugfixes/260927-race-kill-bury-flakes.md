@@ -38,3 +38,21 @@
     touch, and still answers KillCalled. The touch loop runs the server kill
     in its own goroutine and keeps touching until Execute stops it.
     CHANGELOG entry added, since a killed command could be retried.
+- [x] TestReservedRetryShowsNothingOfThePreviousRun, lane jq_default,
+  jobqueue/run_state_reset_test.go:108. Expected state delayed, got ready.
+  Seen once.
+  - Red command: `GOMAXPROCS=2 WR_TEST_LANE=9 jobqueue.test -test.run
+    '^TestReservedRetryShowsNothingOfThePreviousRun$' -test.count=20` (race
+    build) at host load about 70. Before: 8 of 20 failed at line 108,
+    `Expected: "delayed"`, `Actual: "ready"` (exit 1). After, under `stress
+    -c 40`: 20 of 20 passed.
+  - Root cause (test): the test sets `ReleaseDelayMin` to 10ms, so the
+    released job leaves delayed for ready 10ms after `Release` returns. A
+    loaded machine easily takes longer than that to get to the
+    `GetByEssence` that asserted delayed. The manager was right in both
+    cases.
+  - Fix (test only), in `jobqueue/run_state_reset_test.go`: the assertion
+    accepts delayed or ready, either of which says the run was released for
+    its retry. The rest of that block still checks the failed run's host,
+    fail reason, CPU time and output. A 300ms sleep before the read (to force
+    ready, then reverted) left the test passing 3 of 3.
