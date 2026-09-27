@@ -117,7 +117,11 @@ func (s *sim) wsDial(ctx context.Context) (*websocket.Conn, error) {
 
 	conn, resp, err := d.DialContext(ctx, u.String(), nil)
 	if resp != nil {
-		err = errors.Join(err, resp.Body.Close())
+		// a failed body close must not turn a working connection into a
+		// failure, which the caller would then leak
+		if errb := resp.Body.Close(); errb != nil && err != nil {
+			err = errors.Join(err, errb)
+		}
 	}
 
 	return conn, err

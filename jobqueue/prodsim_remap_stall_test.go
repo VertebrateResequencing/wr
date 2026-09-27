@@ -138,7 +138,11 @@ func prodsimRemapRun(t *testing.T, dir string, cross bool, backupSecs float64) (
 	}()
 
 	// slow the real backup copy to backupSecs, as a multi-GB copy to NFS is.
-	info, _ := os.Stat(dbFile) //nolint:errcheck
+	info, err := os.Stat(dbFile)
+	if err != nil {
+		t.Fatalf("stat %s: %s", dbFile, err)
+	}
+
 	oldBytes, oldHook := backupCopySyncBytes, backupPaceHook
 	backupCopySyncBytes = 1 << 20
 	paces := float64(info.Size()) / float64(backupCopySyncBytes)

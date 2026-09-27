@@ -115,8 +115,14 @@ func (s *sim) sample(ctx context.Context, pp *pprofClient, pingMS int64) {
 	gor, heap, objs := pp.summary(ctx)
 	load, _, _ := strings.Cut(readTrim("/proc/loadavg"), " ")
 
+	// with no pid, "/proc//fd" would count prodsim's own fds, not the manager's
+	fds := unknown
+	if pid != "" {
+		fds = countDir(fmt.Sprintf("/proc/%s/fd", pid))
+	}
+
 	s.samples.line(fmt.Sprintf("%.1f\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s", s.since(), pid,
-		st.rssMB, st.hwmMB, st.threads, countDir(fmt.Sprintf("/proc/%s/fd", pid)), gor, heap, objs,
+		st.rssMB, st.hwmMB, st.threads, fds, gor, heap, objs,
 		fileMB(filepath.Join(s.cfg.runDir, "db")), fileMB(filepath.Join(s.cfg.runDir, "db_bk")),
 		fileMB(filepath.Join(s.cfg.runDir, "log")), pingMS, s.submitted.Load(), load))
 }

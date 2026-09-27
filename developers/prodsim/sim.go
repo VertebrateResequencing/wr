@@ -90,6 +90,7 @@ type tsvWriter struct {
 // newTSV opens path for appending, writing header first if path is new.
 func newTSV(path, header string) (*tsvWriter, error) {
 	_, statErr := os.Stat(path)
+	isNew := errors.Is(statErr, os.ErrNotExist)
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, filePerm)
 	if err != nil {
@@ -97,7 +98,7 @@ func newTSV(path, header string) (*tsvWriter, error) {
 	}
 
 	t := &tsvWriter{f: f, w: bufio.NewWriter(f)}
-	if statErr != nil {
+	if isNew {
 		t.line(header)
 	}
 
