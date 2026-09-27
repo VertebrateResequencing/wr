@@ -118,9 +118,9 @@ func TestRunnerJobEnvOverrides(t *testing.T) {
 		})
 
 		Convey("A job's overrides keep its own PATH once a later job's are built", func() {
-			first := overrider.overridesFor([]string{runnerEnvPathName + "=" + runnerEnvPathWithout})
+			first := overrider.overridesFor([]string{runnerEnvPathName + "=" + runnerEnvPathWithout}, false)
 
-			overrider.overridesFor([]string{runnerEnvPathName + "=" + runnerEnvPathLater})
+			overrider.overridesFor([]string{runnerEnvPathName + "=" + runnerEnvPathLater}, false)
 
 			So(first, ShouldResemble, append(slices.Clone(baseOnly),
 				runnerEnvPathName+"="+runnerEnvPathWithout+":"+runnerEnvExeDir))
@@ -135,7 +135,7 @@ func TestRunnerJobEnvOverrides(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(env, ShouldBeEmpty)
 
-			So(overrider.overridesFor(env), ShouldResemble, baseOnly)
+			So(overrider.overridesFor(env, false), ShouldResemble, baseOnly)
 		})
 
 		Convey("The overrides do not grow as the runner works through jobs", func() {
@@ -146,7 +146,7 @@ func TestRunnerJobEnvOverrides(t *testing.T) {
 			last := runnerEnvTestJob(runnerEnvPathWith)
 			env, err := last.Env()
 			So(err, ShouldBeNil)
-			So(overrider.overridesFor(env), ShouldResemble, baseOnly)
+			So(overrider.overridesFor(env, false), ShouldResemble, baseOnly)
 		})
 	})
 }
@@ -181,7 +181,7 @@ func TestRunnerStoredBareEnvName(t *testing.T) {
 		})
 
 		Convey("The job runs with the base overrides and no PATH the runner made up", func() {
-			So(overrider.overridesFor(env), ShouldResemble, baseOnly)
+			So(overrider.overridesFor(env, false), ShouldResemble, baseOnly)
 
 			runnerEnvTestRun(overrider, job)
 
@@ -206,41 +206,34 @@ func TestRunnerStoredBareEnvName(t *testing.T) {
 // directory, so a `wr` its Cmd runs looked for the manager's token and CA files
 // under that directory, where they are not, and could not connect.
 func TestRunnerChangeHomeJobFindsManager(t *testing.T) {
-	Convey("Given a runner whose manager files are in the real home", t, func() {
+	Convey("Given a runner whose manager dir is in the real home", t, func() {
 		realHome := t.TempDir()
-		managerDir := filepath.Join(realHome, ".wr_production")
+		managerBase := filepath.Join(realHome, ".wr")
+		managerDir := managerBase + "_" + internal.Production
 		So(os.MkdirAll(managerDir, runnerEnvTestDirPerm), ShouldBeNil)
 
 		tokenFile := filepath.Join(managerDir, "client.token")
 		So(os.WriteFile(tokenFile, []byte("token"), runnerEnvTestFilePerm), ShouldBeNil)
 
-		originalConfig, originalCAFile := config, caFile
-		config = &internal.Config{ManagerDir: managerDir, ManagerTokenFile: tokenFile}
-		caFile = filepath.Join(managerDir, "ca.pem")
+		originalConfig := config
+		config = &internal.Config{ManagerDir: managerDir, Deployment: internal.Production}
 
 		defer func() {
-			config, caFile = originalConfig, originalCAFile
+			config = originalConfig
 		}()
 
 		overrider, err := newJobEnvOverrider("localhost:1234", "localhost")
 		So(err, ShouldBeNil)
 
-		Convey("a wr run by a --change_home job's Cmd uses the runner's token and CA files", func() {
-			job := &jobqueue.Job{
-				Cmd:           runnerEnvTestCmd,
-				Cwd:           statusTestCwd,
-				RepGroup:      runnerEnvTestRepGrp,
-				ChangeHome:    true,
-				EnvCRetrieved: true,
-			}
-
+		// nestedConfig runs job the way the runner does, then loads config for
+		// deployment the way a `wr` run by job's Cmd would, with HOME set to
+		// jobHome as --change_home does.
+		nestedConfig := func(job *jobqueue.Job, jobHome, deployment string) *internal.Config {
 			runnerEnvTestRun(overrider, job)
 
-			env, err := job.Env()
-			So(err, ShouldBeNil)
+			env, errc := job.Env()
+			So(errc, ShouldBeNil)
 
-			// what --change_home then does to the Cmd's environment
-			jobHome := t.TempDir()
 			env = append(env, "HOME="+jobHome)
 
 			for _, envvar := range env {
@@ -250,9 +243,36 @@ func TestRunnerChangeHomeJobFindsManager(t *testing.T) {
 				}
 			}
 
-			nested := internal.ConfigLoadFromCurrentDir(context.Background(), "production")
+			return internal.ConfigLoadFromCurrentDir(context.Background(), deployment)
+		}
+
+		changeHomeJob := func() *jobqueue.Job {
+			return &jobqueue.Job{
+				Cmd:           runnerEnvTestCmd,
+				Cwd:           statusTestCwd,
+				RepGroup:      runnerEnvTestRepGrp,
+				ChangeHome:    true,
+				EnvCRetrieved: true,
+			}
+		}
+
+		Convey("a wr run by a --change_home job's Cmd uses the runner's token and CA files", func() {
+			nested := nestedConfig(changeHomeJob(), t.TempDir(), internal.Production)
 			So(nested.ManagerTokenFile, ShouldEqual, tokenFile)
-			So(nested.ManagerCAFile, ShouldEqual, caFile)
+			So(nested.ManagerCAFile, ShouldEqual, filepath.Join(managerDir, "ca.pem"))
+		})
+
+		Convey("a wr run by a --change_home job's Cmd for another deployment uses that deployment's dir", func() {
+			nested := nestedConfig(changeHomeJob(), t.TempDir(), internal.Development)
+			So(nested.ManagerTokenFile, ShouldEqual,
+				filepath.Join(managerBase+"_"+internal.Development, "client.token"))
+		})
+
+		Convey("only a --change_home job gets a manager dir override", func() {
+			managerDirOverride := "WR_MANAGERDIR=" + managerBase
+
+			So(overrider.overridesFor(nil, true), ShouldContain, managerDirOverride)
+			So(overrider.overridesFor(nil, false), ShouldNotContain, managerDirOverride)
 		})
 	})
 }
@@ -284,5 +304,5 @@ func runnerEnvTestRun(overrider *jobEnvOverrider, job *jobqueue.Job) {
 	env, err := job.Env()
 	So(err, ShouldBeNil)
 
-	So(job.EnvAddOverride(overrider.overridesFor(env)), ShouldBeNil)
+	So(job.EnvAddOverride(overrider.overridesFor(env, job.ChangeHome)), ShouldBeNil)
 }

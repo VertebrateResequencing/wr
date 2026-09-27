@@ -64,10 +64,6 @@ const runnerTimeoutBufferSeconds = 5
 // string.
 const hostPortParts = 2
 
-// managerFileOverridesLen is the number of manager files, token and CA, that
-// managerFileOverrides names.
-const managerFileOverridesLen = 2
-
 // runner flag defaults.
 const (
 	runnerConnectTimeout = 30
@@ -266,7 +262,7 @@ complete.`,
 					break
 				}
 
-				err = job.EnvAddOverride(overrider.overridesFor(env))
+				err = job.EnvAddOverride(overrider.overridesFor(env, job.ChangeHome))
 				if err != nil {
 					err = jq.Release(job, nil, "failed to add env var overrides")
 					if err != nil {
@@ -372,22 +368,17 @@ func init() {
 // jobEnvOverrider builds the environment overrides a runner applies to each job
 // it runs: the manager's connection details, which are the same for every job,
 // plus the runner's own exe directory appended to the job's PATH when the job's
-// PATH lacks it, so that a Cmd calling `wr add` finds the wr exe.
+// PATH lacks it, so that a Cmd calling `wr add` finds the wr exe, plus the
+// manager dir for a --change_home job.
 type jobEnvOverrider struct {
-	base    []string
-	exePath string
+	base       []string
+	exePath    string
+	managerDir string
 }
 
 // newJobEnvOverrider returns the jobEnvOverrider for a runner connected to the
 // manager at server ("ip:port"), whose certificate is valid for domain. With no
 // server there is nothing to override.
-//
-// Besides the address, a job's `wr` is pointed at the token and CA files this
-// runner connected with, as absolute paths. Otherwise it would find them under
-// its ManagerDir, which defaults to ~/.wr: a --change_home job has HOME set to
-// its working directory, so that `wr` would look for them there and fail to
-// connect. The files are named rather than ManagerDir, because a `wr` appends
-// its own deployment to a ManagerDir, and a file path it uses as it is.
 func newJobEnvOverrider(server, domain string) (*jobEnvOverrider, error) {
 	overrider := &jobEnvOverrider{}
 
@@ -403,12 +394,7 @@ func newJobEnvOverrider(server, domain string) (*jobEnvOverrider, error) {
 
 	overrider.base = append(overrider.base, "WR_MANAGERCERTDOMAIN="+domain)
 
-	fileOverrides, err := managerFileOverrides()
-	if err != nil {
-		return nil, err
-	}
-
-	overrider.base = append(overrider.base, fileOverrides...)
+	overrider.managerDir = strings.TrimSuffix(config.ManagerDir, "_"+config.Deployment)
 
 	// later we will add our own wr exe to the path if not there
 	exe, err := osext.Executable()
@@ -433,8 +419,21 @@ func newJobEnvOverrider(server, domain string) (*jobEnvOverrider, error) {
 // is concerned, so it is skipped rather than read for a value it does not have.
 // A job stored with a bare "PATH" therefore runs with the base overrides alone,
 // where reading it used to panic and kill the runner.
-func (j *jobEnvOverrider) overridesFor(env []string) []string {
+//
+// A changeHome job also gets WR_MANAGERDIR, set to this runner's manager dir
+// without its deployment suffix. --change_home sets the job's HOME to its
+// working directory, so a `wr` its Cmd runs would otherwise look for the
+// default ~/.wr there, and not find the manager's token. With it, that `wr`
+// finds its token, CA and address files where it would without --change_home,
+// including under another deployment's dir if it is told to use one. A job
+// without --change_home already has that dir under its own HOME, so it gets no
+// such override.
+func (j *jobEnvOverrider) overridesFor(env []string, changeHome bool) []string {
 	overrides := slices.Clone(j.base)
+
+	if changeHome && j.managerDir != "" {
+		overrides = append(overrides, "WR_MANAGERDIR="+j.managerDir)
+	}
 
 	for _, envvar := range env {
 		name, path, ok := strings.Cut(envvar, "=")
@@ -450,25 +449,4 @@ func (j *jobEnvOverrider) overridesFor(env []string) []string {
 	}
 
 	return overrides
-}
-
-// managerFileOverrides returns environment overrides naming the absolute paths
-// of the token and CA files this process connects to the manager with.
-func managerFileOverrides() ([]string, error) {
-	overrides := make([]string, 0, managerFileOverridesLen)
-
-	for _, file := range [][2]string{{"WR_MANAGERTOKENFILE", config.ManagerTokenFile}, {"WR_MANAGERCAFILE", caFile}} {
-		if file[1] == "" {
-			continue
-		}
-
-		absPath, err := filepath.Abs(file[1])
-		if err != nil {
-			return nil, err
-		}
-
-		overrides = append(overrides, file[0]+"="+absPath)
-	}
-
-	return overrides, nil
 }
