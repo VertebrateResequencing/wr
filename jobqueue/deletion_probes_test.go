@@ -44,6 +44,7 @@ package jobqueue
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,6 +66,12 @@ const (
 	// no probe may lose either.
 	probeMineName   = "MINE.txt"
 	probeRemoteName = "REMOTE_DATA"
+
+	// probeOutputName is a file a run wrote in its own working directory, which
+	// cleanup is there to delete, and probeOwnOutput that file spelled relative
+	// to the workspace.
+	probeOutputName = "own_output.txt"
+	probeOwnOutput  = createdCwdName + "/" + probeOutputName
 
 	// probeMuxfysDir is named the way muxfys names the cache dir it chooses for
 	// itself inside whatever CacheBase it was given.
@@ -189,7 +196,7 @@ func seedProbeWorld(t *testing.T, job *Job) probeWorld {
 
 	w.sibling = sibling
 	w.siblingFile = writeFileIn(w.sibling, "other_run.txt")
-	w.output = writeFileIn(w.actualCwd, "own_output.txt")
+	w.output = writeFileIn(w.actualCwd, probeOutputName)
 
 	return w
 }
@@ -458,7 +465,7 @@ func TestProbeReportedDirectories(t *testing.T) {
 
 		job := &Job{Cmd: probeCmd, Cwd: link}
 		actualCwd, workSpace, tmpDir := realWorkSpace(job)
-		output := writeFileIn(actualCwd, "own_output.txt")
+		output := writeFileIn(actualCwd, probeOutputName)
 
 		err := (&Behaviour{When: OnExit, Do: CleanupAll}).Trigger(OnExit, job)
 
@@ -673,7 +680,6 @@ func probeSymlink(target, link string) {
 
 func probeMountRows() []probeMountRow {
 	const (
-		output   = createdCwdName + "/own_output.txt"
 		scratch  = createdTmpName + "/scratch.txt"
 		mountDir = testWSMount
 	)
@@ -687,14 +693,14 @@ func probeMountRows() []probeMountRow {
 			mc:   MountConfig{Mount: "../" + createdTmpName, Targets: probeCachedTargets()},
 			live: []string{createdTmpName, probeMuxfysDir},
 			kept: []string{".", createdTmpName, scratch},
-			gone: []string{createdCwdName, output},
+			gone: []string{createdCwdName, probeOwnOutput},
 		},
 		{
 			name: "a mount point inside the job's TMPDIR",
 			mc:   MountConfig{Mount: "../" + createdTmpName + "/m", Targets: probeCachedTargets()},
 			live: []string{createdTmpName + "/m", probeMuxfysDir},
 			kept: []string{".", createdTmpName, scratch},
-			gone: []string{createdCwdName, output},
+			gone: []string{createdCwdName, probeOwnOutput},
 		},
 		{
 			name: "a muxfys CacheBase inside the job's TMPDIR",
@@ -703,7 +709,7 @@ func probeMountRows() []probeMountRow {
 			},
 			live: []string{createdCwdName + "/" + mountDir, createdTmpName + "/" + probeMuxfysDir},
 			kept: []string{".", createdCwdName, createdTmpName, scratch},
-			gone: []string{output},
+			gone: []string{probeOwnOutput},
 		},
 		{
 			name: "an explicit CacheDir inside the job's TMPDIR",
@@ -712,7 +718,7 @@ func probeMountRows() []probeMountRow {
 			}}},
 			live: []string{createdCwdName + "/" + mountDir, createdTmpName + "/c"},
 			kept: []string{".", createdCwdName, createdTmpName, scratch},
-			gone: []string{output},
+			gone: []string{probeOwnOutput},
 		},
 
 		// a mount point and a cache location ABOVE the workspace need protecting
@@ -726,7 +732,7 @@ func probeMountRows() []probeMountRow {
 			}}},
 			live: []string{"../up", "../" + testWSTargetPath},
 			kept: []string{".."},
-			gone: []string{".", createdCwdName, createdTmpName, output, scratch},
+			gone: []string{".", createdCwdName, createdTmpName, probeOwnOutput, scratch},
 		},
 
 		// a mount point at the workspace makes everything wr created for the Job
@@ -736,7 +742,7 @@ func probeMountRows() []probeMountRow {
 			name: "a mount point that IS the workspace, which puts the TMPDIR inside a live mount",
 			mc:   MountConfig{Mount: "..", Targets: probeCachedTargets()},
 			live: []string{".", createdCwdName, createdTmpName},
-			kept: []string{".", createdCwdName, createdTmpName, output, scratch},
+			kept: []string{".", createdCwdName, createdTmpName, probeOwnOutput, scratch},
 		},
 		{
 			// a mount point ABOVE the workspace puts the workspace inside the
@@ -747,7 +753,7 @@ func probeMountRows() []probeMountRow {
 			name: "a mount point at the hashed level above the workspace",
 			mc:   MountConfig{Mount: "../..", Targets: probeCachedTargets()},
 			live: []string{".", createdCwdName, createdTmpName},
-			kept: []string{".", createdCwdName, createdTmpName, output, scratch},
+			kept: []string{".", createdCwdName, createdTmpName, probeOwnOutput, scratch},
 		},
 
 		// a symlink INSIDE the tree being swept makes the two spellings of a
@@ -767,7 +773,7 @@ func probeMountRows() []probeMountRow {
 			kept: []string{".", createdCwdName, createdCwdName + "/" + probeRealDir},
 			// the symlink itself is not a dir, so the sweep unlinks it: what had
 			// to be recognised is the dir it led to, which is where the cache is.
-			gone: []string{output, createdCwdName + "/" + probeLinkName, createdTmpName, scratch},
+			gone: []string{probeOwnOutput, createdCwdName + "/" + probeLinkName, createdTmpName, scratch},
 		},
 		{
 			name: "an explicit CacheDir spelled through a symlink inside the workspace",
@@ -780,7 +786,7 @@ func probeMountRows() []probeMountRow {
 			},
 			live: []string{probeRealDir + "/" + testWSTargetPath, createdCwdName + "/" + mountDir},
 			kept: []string{".", createdCwdName, probeRealDir, probeLinkName},
-			gone: []string{output, createdTmpName, scratch},
+			gone: []string{probeOwnOutput, createdTmpName, scratch},
 		},
 	}
 }
@@ -799,7 +805,7 @@ func TestProbeMountAndCacheShapes(t *testing.T) {
 				job := &Job{Cwd: cwd, Cmd: probeCmd, MountConfigs: MountConfigs{row.mc}}
 				actualCwd, workSpace, tmpDir := realWorkSpace(job)
 
-				writeFileIn(actualCwd, "own_output.txt")
+				writeFileIn(actualCwd, probeOutputName)
 				writeFileIn(tmpDir, "scratch.txt")
 
 				if row.setUp != nil {
@@ -886,7 +892,6 @@ type probeFuseRow struct {
 
 func probeFuseRows() []probeFuseRow {
 	const (
-		output   = createdCwdName + "/own_output.txt"
 		scratch  = createdTmpName + "/scratch.txt"
 		cwdMount = createdCwdName + "/" + testWSMount
 		realDir  = createdCwdName + "/" + probeRealDir
@@ -900,9 +905,9 @@ func probeFuseRows() []probeFuseRow {
 			name:  "a live mount inside the working directory",
 			mc:    MountConfig{Mount: testWSMount, Targets: probeCachedTargets()},
 			mount: cwdMount,
-			own:   []string{output, scratch},
+			own:   []string{probeOwnOutput, scratch},
 			kept:  []string{".", createdCwdName, cwdMount},
-			gone:  []string{output, createdTmpName, scratch},
+			gone:  []string{probeOwnOutput, createdTmpName, scratch},
 		},
 		{
 			// keptDirs.wholeActualCwd: the working directory IS the mount, so
@@ -921,9 +926,9 @@ func probeFuseRows() []probeFuseRow {
 			name:  "a live mount that IS the job's TMPDIR",
 			mc:    MountConfig{Mount: "../" + createdTmpName, Targets: probeCachedTargets()},
 			mount: createdTmpName,
-			own:   []string{output},
+			own:   []string{probeOwnOutput},
 			kept:  []string{".", createdTmpName},
-			gone:  []string{createdCwdName, output},
+			gone:  []string{createdCwdName, probeOwnOutput},
 		},
 		{
 			// relsBelowDirResolved: only the RESOLVED spelling names the
@@ -936,11 +941,11 @@ func probeFuseRows() []probeFuseRow {
 				probeSymlink(probeRealDir, filepath.Join(actualCwd, probeLinkName))
 			},
 			mount: realDir + "/" + testWSMount,
-			own:   []string{output, scratch},
+			own:   []string{probeOwnOutput, scratch},
 			kept:  []string{".", createdCwdName, realDir, realDir + "/" + testWSMount},
 			// the symlink itself is not a dir, so the sweep unlinks it: what had
 			// to be recognised is the dir it led to, which is where the mount is.
-			gone: []string{output, createdCwdName + "/" + probeLinkName, createdTmpName, scratch},
+			gone: []string{probeOwnOutput, createdCwdName + "/" + probeLinkName, createdTmpName, scratch},
 		},
 		{
 			// removeAllExcept's keep-before-check ordering. A dir that must
@@ -954,9 +959,9 @@ func probeFuseRows() []probeFuseRow {
 				Path: testWSTargetPath, CacheDir: createdCwdName + "/" + testWSMount + "/c", Write: true,
 			}}},
 			mount: cwdMount,
-			own:   []string{output, scratch},
+			own:   []string{probeOwnOutput, scratch},
 			kept:  []string{".", createdCwdName, cwdMount},
-			gone:  []string{output, createdTmpName, scratch},
+			gone:  []string{probeOwnOutput, createdTmpName, scratch},
 		},
 		{
 			// keptDirs.wholeWorkSpace, honoured by BOTH sweeps. A CacheDir that IS
@@ -973,9 +978,9 @@ func probeFuseRows() []probeFuseRow {
 				Path: testWSTargetPath, CacheDir: ".", Write: true,
 			}}},
 			mount: cwdMount,
-			own:   []string{output, scratch},
+			own:   []string{probeOwnOutput, scratch},
 			kept: []string{
-				".", createdCwdName, createdTmpName, cwdMount, output, scratch,
+				".", createdCwdName, createdTmpName, cwdMount, probeOwnOutput, scratch,
 			},
 		},
 	}
@@ -1672,7 +1677,7 @@ func TestProbeWorkSpaceOnAnotherFilesystem(t *testing.T) {
 		}
 
 		actualCwd, workSpace, tmpDir := realWorkSpace(job)
-		output := writeFileIn(actualCwd, "own_output.txt")
+		output := writeFileIn(actualCwd, probeOutputName)
 
 		err := job.Behaviours.Trigger(false, job)
 
@@ -1683,5 +1688,213 @@ func TestProbeWorkSpaceOnAnotherFilesystem(t *testing.T) {
 		soPathsGone(output, actualCwd, tmpDir, workSpace)
 
 		So(err, ShouldBeNil)
+	})
+}
+
+// probeNestedRow is one tree belonging to ANOTHER process, planted where a Job's
+// own cleanup is licensed to delete: inside its working directory or inside the
+// TMPDIR wr made beside it.
+//
+// Nothing in the Job's keep set can name such a tree - that set is built from
+// the Job's own MountConfigs - so what has to refuse each of these is
+// nestedWorkSpaceBase, which keeps any entry whose name ends in
+// createdCwdBaseSuffix without looking inside it.
+//
+// Each row is driven through BOTH sweeps of the working directory (see
+// nestedSweepCases), because they reach the guard by different routes: with no
+// mounts the whole directory is handed to removeAllGuarded, and with mounts its
+// contents are swept entry by entry by removeAllExcept.
+type probeNestedRow struct {
+	name string
+
+	// at is where the tree goes, and kept and gone are the paths of wr's own
+	// making that the sweep must have left and deleted. All of them are spelled
+	// relative to the WORKSPACE and written out literally, as probeMountRow
+	// spells its own.
+	//
+	// What is kept is every directory ABOVE the planted tree, since keeping the
+	// tree keeps them too. What goes is the Job's own output, and its TMPDIR
+	// where the tree is not in there - the working directory is not named as
+	// gone, because a Job with a mount point inside it keeps that directory for
+	// the mount and leaves it to Unmount to reclaim.
+	at   string
+	kept []string
+	gone []string
+
+	// plant creates the tree in the (absolute) dir at names, and returns every
+	// path of it that must still be there after the sweep.
+	plant func(dir string) []string
+}
+
+// probeNestedJob plants the workspace mkHashedDir really builds for a Job whose
+// Cwd is dir, with a live output file in it, as a nested `wr add` does.
+func probeNestedJob(dir string) []string {
+	So(os.MkdirAll(dir, os.ModePerm), ShouldBeNil)
+
+	child := &Job{Cwd: dir, Cmd: probeCmd + " nested"}
+	childCwd, childWorkSpace, childTmp := realWorkSpace(child)
+
+	return []string{writeFileIn(childCwd, probeMineName), childCwd, childTmp, childWorkSpace}
+}
+
+func probeNestedRows() []probeNestedRow {
+	return []probeNestedRow{
+		// a nested Job whose Cwd is a directory the PARENT's own Cmd created,
+		// which `wr add --cwd outputs/run1` from inside a job produces. The
+		// _cwd base is then not an entry of the swept directory but two levels
+		// below it, so the guard has to be asked at every level of the descent
+		// rather than only of the entries it starts with.
+		{
+			name:  "the workspace of a nested job below a dir the Cmd created",
+			at:    createdCwdName + "/outputs/run1",
+			kept:  []string{".", createdCwdName, createdCwdName + "/outputs", createdCwdName + "/outputs/run1"},
+			gone:  []string{probeOwnOutput, createdTmpName},
+			plant: probeNestedJob,
+		},
+
+		// the TMPDIR wr made beside the working directory, which is reclaimed on
+		// every exit whether the Job has a cleanup Behaviour or not, so a tree
+		// planted there has to survive a deletion the workspace sweep never
+		// makes.
+		{
+			name:  "the workspace of a nested job inside the job's TMPDIR",
+			at:    createdTmpName,
+			kept:  []string{".", createdTmpName},
+			gone:  []string{probeOwnOutput},
+			plant: probeNestedJob,
+		},
+
+		// a nested wr running under an AppName of its own, whose base component
+		// is therefore neither "wr_cwd" nor "jobqueue_cwd". Only the SUFFIX
+		// match recognises it; an equality check against this wr's own AppName
+		// would delete another wr's live jobs.
+		{
+			name: "the tree a nested wr of another AppName built",
+			at:   createdCwdName + "/nextflow" + createdCwdBaseSuffix + "/f/9",
+			kept: []string{".", createdCwdName, createdCwdName + "/nextflow" + createdCwdBaseSuffix},
+			gone: []string{probeOwnOutput, createdTmpName},
+			plant: func(dir string) []string {
+				return []string{writeFileIn(dir, probeMineName), dir}
+			},
+		},
+	}
+}
+
+func TestProbeNestedJobTrees(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	for _, mounts := range nestedSweepCases() {
+		Convey("Given a Job whose tree holds work another process owns", t, func() {
+			for _, row := range probeNestedRows() {
+				Convey(fmt.Sprintf("%s survives the sweep of a Job with %d mounts", row.name, len(mounts)), func() {
+					cwd := t.TempDir()
+					precious := writeFileIn(filepath.Join(cwd, "user_scripts"), probeMineName)
+
+					job := &Job{Cwd: cwd, Cmd: probeCmd, MountConfigs: mounts}
+					actualCwd, workSpace, _ := realWorkSpace(job)
+					writeFileIn(actualCwd, probeOutputName)
+
+					survivors := row.plant(filepath.Join(workSpace, row.at))
+
+					snap := job.workSpaceSnapshot()
+					cleanErr := snap.cleanupWorkSpace()
+					tmpErr := snap.removeTmpDir()
+
+					soPathsExist(survivors...)
+					soPathsExist(probePaths(workSpace, row.kept)...)
+					soPathsExist(precious, cwd)
+					soPathsGone(probePaths(workSpace, row.gone)...)
+
+					So(cleanErr, ShouldBeNil)
+					So(tmpErr, ShouldBeNil)
+				})
+			}
+		})
+	}
+}
+
+// probeRaisedMountRow is one place a Job's own Cmd can raise a mount wr never
+// configured - `sshfs remote:/data sub/mnt`, or a nested wr's own mount - and
+// which therefore appears in no keep set. Only crossesMountBoundary stands
+// between such a mount and the sweep, and what is behind it is the user's remote
+// objects.
+//
+// The rows are the two places a deletion reaches such a mount by DESCENDING to
+// it, which is where the boundary check has to be asked with the device of the
+// directory it is descending from rather than of the directory it started at.
+type probeRaisedMountRow struct {
+	name string
+
+	// mount is where the Cmd raised it, and kept and gone are the paths of wr's
+	// own making that the sweep must have left and deleted, all spelled
+	// relative to the WORKSPACE as probeNestedRow spells its own.
+	mount string
+	kept  []string
+	gone  []string
+}
+
+func probeRaisedMountRows() []probeRaisedMountRow {
+	return []probeRaisedMountRow{
+		{
+			name:  "two dirs below the working directory",
+			mount: createdCwdName + "/inputs/shared/" + testWSMount,
+			kept:  []string{".", createdCwdName, createdCwdName + "/inputs", createdCwdName + "/inputs/shared"},
+			gone:  []string{probeOwnOutput, createdTmpName},
+		},
+		{
+			name:  "inside the job's TMPDIR, which is reclaimed on every exit",
+			mount: createdTmpName + "/" + testWSMount,
+			kept:  []string{".", createdTmpName},
+			gone:  []string{probeOwnOutput},
+		},
+	}
+}
+
+func TestProbeMountsTheCmdRaised(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a Job whose own Cmd raised a live mount wr never configured", t, func() {
+		if !probeCanMountFuse() {
+			SkipConvey("this host will not let an unprivileged process raise a FUSE mount", func() {})
+
+			return
+		}
+
+		for _, mounts := range nestedSweepCases() {
+			for _, row := range probeRaisedMountRows() {
+				Convey(fmt.Sprintf("one %s survives the sweep of a Job with %d mounts",
+					row.name, len(mounts)), func() {
+					cwd := t.TempDir()
+					precious := writeFileIn(filepath.Join(cwd, "user_scripts"), probeMineName)
+
+					job := &Job{Cwd: cwd, Cmd: probeCmd + " && sshfs remote:/data", MountConfigs: mounts}
+					actualCwd, workSpace, _ := realWorkSpace(job)
+					writeFileIn(actualCwd, probeOutputName)
+
+					mountPoint := filepath.Join(workSpace, row.mount)
+
+					remote, mounted := probeMountRemote(t, mountPoint)
+					if !mounted {
+						return
+					}
+
+					snap := job.workSpaceSnapshot()
+					cleanErr := snap.cleanupWorkSpace()
+					tmpErr := snap.removeTmpDir()
+
+					soPathsExist(remote, filepath.Join(mountPoint, probeRemoteName), mountPoint)
+					soPathsExist(probePaths(workSpace, row.kept)...)
+					soPathsExist(precious, cwd)
+					soPathsGone(probePaths(workSpace, row.gone)...)
+
+					So(cleanErr, ShouldBeNil)
+					So(tmpErr, ShouldBeNil)
+				})
+			}
+		}
 	})
 }
