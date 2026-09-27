@@ -75,6 +75,14 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- `wr manager stop` no longer sends SIGTERM to an unrelated process when the
+  manager died without removing its pid file (for example after a crash or a
+  reboot) and its pid has since been given to another of your processes. It
+  now signals the pid only if it is a `wr manager start` for the same
+  deployment, and otherwise reports the pid file as stale. A manager that is
+  running but not responding can still be stopped. `wr manager status` also
+  says `stopped` for such a stale pid file, instead of reporting a
+  non-responsive manager.
 - The `cleanup` and `cleanup_all` behaviours (`cleanup` is the default
   `--on_exit`) of a lost command could leave empty directories behind in the
   command's `--cwd` and report a warning, when its runner and the manager both
