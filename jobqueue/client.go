@@ -656,7 +656,15 @@ func combineExecOutcomes(unmount, cmd execOutcome) execOutcome {
 // sends the rejected request once more. It never retries more than once per
 // request, and never if the file is unchanged or unreadable.
 func ConnectWithTokenFile(addr, caFile, certDomain, tokenFile string, timeout time.Duration) (*Client, error) {
-	token, err := os.ReadFile(filepath.Clean(tokenFile))
+	// the path is made absolute now, so that a later reload reads the same file
+	// even if the process has changed its working directory since
+	if abs, errA := filepath.Abs(tokenFile); errA == nil {
+		tokenFile = abs
+	} else {
+		tokenFile = filepath.Clean(tokenFile)
+	}
+
+	token, err := os.ReadFile(tokenFile)
 	if err != nil {
 		return nil, fmt.Errorf("could not read token file; has the manager been started? [%w]", err)
 	}
