@@ -35,6 +35,10 @@ import (
 // deploymentFlag is the root flag naming the deployment a command acts on.
 const deploymentFlag = "--deployment"
 
+// sshForwarderFlags is the distinctive ssh option cluster startForwarding()
+// runs every forwarder with, by which isForwarderProcess recognises one.
+const sshForwarderFlags = "-qngNTL"
+
 // isManagerProcess reports whether pid is a live daemonized wr manager for
 // deployment, judged by its argv. The argv is what daemonize() gave the child,
 // so it is unaffected by the binary being renamed, moved or replaced in place
@@ -71,6 +75,12 @@ func hasDeploymentArg(args []string, deployment string) bool {
 	}
 
 	return false
+}
+
+// isForwarderProcess reports whether pid is a live ssh port forwarder started by
+// startForwarding(), judged by its argv.
+func isForwarderProcess(pid int) bool {
+	return slices.Contains(processArgs(pid), sshForwarderFlags)
 }
 
 // processArgs returns the argv of the live process pid, or nil if there is no

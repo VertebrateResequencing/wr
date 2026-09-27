@@ -1549,7 +1549,7 @@ func startForwarding(serverIP, serverUser, keyFile string, port int, pidPath str
 		"-o", "ExitOnForwardFailure yes",
 		"-o", "UserKnownHostsFile /dev/null",
 		"-o", "StrictHostKeyChecking no",
-		"-qngNTL", fmt.Sprintf("%d:0.0.0.0:%d", port, port),
+		sshForwarderFlags, fmt.Sprintf("%d:0.0.0.0:%d", port, port),
 		fmt.Sprintf("%s@%s", serverUser, serverIP),
 	}
 
@@ -1591,6 +1591,10 @@ func cleanupDeployForwardingProcesses(pidPaths ...string) {
 	}
 }
 
+// checkProcess reads the pid of an ssh forwarder started by startForwarding()
+// from pidPath, and reports whether it is still running. A pid that is alive but
+// is not such a forwarder (the kernel reused it after the forwarder died) is not
+// running, so callers never kill an unrelated process.
 func checkProcess(pidPath string) (pid int, running bool) {
 	// read file (treat errors such as file not existing as no process)
 	pidBytes, err := os.ReadFile(pidPath)
@@ -1611,7 +1615,7 @@ func checkProcess(pidPath string) (pid int, running bool) {
 	}
 
 	err = process.Signal(syscall.Signal(0))
-	running = err == nil
+	running = err == nil && isForwarderProcess(pid)
 
 	return pid, running
 }
