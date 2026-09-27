@@ -1407,6 +1407,10 @@ type Server struct {
 	schedCaster               *caster
 	racCheckTimer             *time.Timer
 	statusWSDetailsHook       func()
+	// statusWSUpgradedHook, if non-nil, is called by the status websocket
+	// handler just after it has opened the socket, so a test can make the rest
+	// of the handler late, as a loaded machine can. nil in production.
+	statusWSUpgradedHook func()
 	// recoveryPauseHook, if non-nil, is called by the background prior-state
 	// recovery just before it re-enqueues the prior jobs, so a test can block
 	// recovery and observe the recovering window - including the "still

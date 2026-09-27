@@ -83,3 +83,32 @@
     callers pass the server.
   - After, same load: 15 of 15 passed, and `TestPingBoundedDuringManagerShutdown`
     (the helper's other user) 15 of 15.
+- [x] TestReliable4StatusSeedBoundary fails at
+  jobqueue/reliable4_seedboundary_test.go:344. Seen in a full race run under
+  heavy load; passed 3 of 3 alone.
+  - Line 344 is `So(recorder.waitForMessages(1), ShouldBeTrue)`: the canary
+    job's ready->running delta never reached the freshly dialled status
+    websocket in 60s.
+  - Red command (deterministic): `CGO_ENABLED=1 go test -race -run
+    '^TestStatusWSOnDeltaFeedOnceDialled$' ./jobqueue`, which makes the
+    handler sleep 1s just after the upgrade (`statusWSUpgradedHook`), then
+    starts one job and waits for its delta. On the original handler plus the
+    hook: FAIL at line 79 after 60s. Under load (`stress -c 40`,
+    `GOMAXPROCS=2`, `-test.count=20`), the original test failed 0 of 20 on
+    develop's handler and 1 of 20 on a first fix that only moved the joins
+    ahead of the goroutines, at line 344 both times it failed.
+  - Root cause (production): the status websocket handler joined the status,
+    bad-server and scheduler casters inside the listener goroutines, which it
+    started after the upgrade and after the goroutine that reads the page's
+    requests. The page asks for its seed counts as soon as the socket opens,
+    so on a loaded manager the seed could be taken before the join, and a
+    transition between the two reached the page in neither, leaving its
+    counts wrong until a refresh. The test's canary delta was lost the same
+    way: the dial returns on the upgrade, not on the join.
+  - Fix: `webInterfaceStatusWS` joins all three casters before the upgrade
+    (closing them if the upgrade or the connection's registration fails) and
+    hands the members to `setupUpdateListener`, which no longer joins. New
+    test hook `statusWSUpgradedHook` and regression test
+    `jobqueue/status_ws_join_test.go`. CHANGELOG entry added.
+  - After, same load: `TestReliable4StatusSeedBoundary` 30 of 30 and
+    `TestReliable4StatusSeedCounts` 30 of 30; the hook test passes.

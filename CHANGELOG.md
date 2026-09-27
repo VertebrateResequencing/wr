@@ -144,6 +144,9 @@ project adheres to [Semantic Versioning](http://semver.org/).
   the job in the wrong place in its queue, when the manager had last handled a
   job with different resource requirements or limit groups. A changed priority
   now always reorders the job among the other ready jobs like it.
+- On a busy manager, the status web page could open and miss a command
+  changing state, so its counts stayed wrong until you refreshed the page. The
+  manager now sends the page every change from the moment it opens.
 - `wr kill` of a command could leave it retried, or buried as lost
   rather than killed, if the runner took longer than a minute to kill the
   command and finish up (for example, a slow upload of its outputs).
