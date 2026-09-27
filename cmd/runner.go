@@ -64,6 +64,10 @@ const runnerTimeoutBufferSeconds = 5
 // string.
 const hostPortParts = 2
 
+// managerFileOverridesLen is the number of manager files, token and CA, that
+// managerFileOverrides names.
+const managerFileOverridesLen = 2
+
 // runner flag defaults.
 const (
 	runnerConnectTimeout = 30
@@ -184,24 +188,9 @@ complete.`,
 
 		// in case any job we execute has a Cmd that calls `wr add`, we will
 		// override their environment to make that call work
-		overrider := &jobEnvOverrider{}
-
-		if rserver != "" {
-			hostPort := strings.Split(rserver, ":")
-			if len(hostPort) == hostPortParts {
-				overrider.base = append(overrider.base, "WR_MANAGERHOST="+hostPort[0])
-				overrider.base = append(overrider.base, "WR_MANAGERPORT="+hostPort[1])
-			}
-
-			overrider.base = append(overrider.base, "WR_MANAGERCERTDOMAIN="+rdomain)
-
-			// later we will add our own wr exe to the path if not there
-			exe, err := osext.Executable()
-			if err != nil {
-				die("%s", err)
-			}
-
-			overrider.exePath = filepath.Dir(exe)
+		overrider, err := newJobEnvOverrider(rserver, rdomain)
+		if err != nil {
+			die("%s", err)
 		}
 
 		// we'll stop the below loop before using up too much time
@@ -389,6 +378,49 @@ type jobEnvOverrider struct {
 	exePath string
 }
 
+// newJobEnvOverrider returns the jobEnvOverrider for a runner connected to the
+// manager at server ("ip:port"), whose certificate is valid for domain. With no
+// server there is nothing to override.
+//
+// Besides the address, a job's `wr` is pointed at the token and CA files this
+// runner connected with, as absolute paths. Otherwise it would find them under
+// its ManagerDir, which defaults to ~/.wr: a --change_home job has HOME set to
+// its working directory, so that `wr` would look for them there and fail to
+// connect. The files are named rather than ManagerDir, because a `wr` appends
+// its own deployment to a ManagerDir, and a file path it uses as it is.
+func newJobEnvOverrider(server, domain string) (*jobEnvOverrider, error) {
+	overrider := &jobEnvOverrider{}
+
+	if server == "" {
+		return overrider, nil
+	}
+
+	hostPort := strings.Split(server, ":")
+	if len(hostPort) == hostPortParts {
+		overrider.base = append(overrider.base, "WR_MANAGERHOST="+hostPort[0])
+		overrider.base = append(overrider.base, "WR_MANAGERPORT="+hostPort[1])
+	}
+
+	overrider.base = append(overrider.base, "WR_MANAGERCERTDOMAIN="+domain)
+
+	fileOverrides, err := managerFileOverrides()
+	if err != nil {
+		return nil, err
+	}
+
+	overrider.base = append(overrider.base, fileOverrides...)
+
+	// later we will add our own wr exe to the path if not there
+	exe, err := osext.Executable()
+	if err != nil {
+		return nil, err
+	}
+
+	overrider.exePath = filepath.Dir(exe)
+
+	return overrider, nil
+}
+
 // overridesFor returns the overrides to apply to a job whose environment is
 // env.
 //
@@ -418,4 +450,25 @@ func (j *jobEnvOverrider) overridesFor(env []string) []string {
 	}
 
 	return overrides
+}
+
+// managerFileOverrides returns environment overrides naming the absolute paths
+// of the token and CA files this process connects to the manager with.
+func managerFileOverrides() ([]string, error) {
+	overrides := make([]string, 0, managerFileOverridesLen)
+
+	for _, file := range [][2]string{{"WR_MANAGERTOKENFILE", config.ManagerTokenFile}, {"WR_MANAGERCAFILE", caFile}} {
+		if file[1] == "" {
+			continue
+		}
+
+		absPath, err := filepath.Abs(file[1])
+		if err != nil {
+			return nil, err
+		}
+
+		overrides = append(overrides, file[0]+"="+absPath)
+	}
+
+	return overrides, nil
 }

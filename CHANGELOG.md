@@ -79,6 +79,10 @@ project adheres to [Semantic Versioning](http://semver.org/).
   cleaned up after it at the same time. A working directory that the other
   cleanup has already removed is now treated as done, and the empty
   directories above it are still removed.
+- A command added with `--change_home` can now run `wr` itself, for example to
+  `wr add` more commands. Before, that `wr` looked for the manager's token in
+  the command's working directory, because `--change_home` makes that HOME, so
+  it failed to connect.
 - `wr mount` given several mounts no longer leaves the earlier ones mounted
   when a later one fails. Before, it exited with the error while the earlier
   mounts stayed live with no process left to unmount them, and you had to find

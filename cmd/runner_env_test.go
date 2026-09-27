@@ -33,9 +33,14 @@ package cmd
 // with no "=" made the runner panic as it read the value after the "=".
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -63,6 +68,9 @@ const (
 	runnerEnvTestRepGrp  = "runner-env-test"
 	runnerEnvTestCmd     = "true"
 	runnerEnvSequenceLen = 3
+
+	runnerEnvTestDirPerm  = 0o700
+	runnerEnvTestFilePerm = 0o600
 )
 
 func TestRunnerJobEnvOverrides(t *testing.T) {
@@ -189,6 +197,62 @@ func TestRunnerStoredBareEnvName(t *testing.T) {
 
 			So(later.Getenv(runnerEnvPathName), ShouldEqual, runnerEnvPathWithout+":"+runnerEnvExeDir)
 			So(later.Getenv(runnerEnvHostName), ShouldEqual, runnerEnvHost)
+		})
+	})
+}
+
+// TestRunnerChangeHomeJobFindsManager covers item 8 of
+// .docs/bugfixes/260903-9.md: --change_home sets a job's HOME to its working
+// directory, so a `wr` its Cmd runs looked for the manager's token and CA files
+// under that directory, where they are not, and could not connect.
+func TestRunnerChangeHomeJobFindsManager(t *testing.T) {
+	Convey("Given a runner whose manager files are in the real home", t, func() {
+		realHome := t.TempDir()
+		managerDir := filepath.Join(realHome, ".wr_production")
+		So(os.MkdirAll(managerDir, runnerEnvTestDirPerm), ShouldBeNil)
+
+		tokenFile := filepath.Join(managerDir, "client.token")
+		So(os.WriteFile(tokenFile, []byte("token"), runnerEnvTestFilePerm), ShouldBeNil)
+
+		originalConfig, originalCAFile := config, caFile
+		config = &internal.Config{ManagerDir: managerDir, ManagerTokenFile: tokenFile}
+		caFile = filepath.Join(managerDir, "ca.pem")
+
+		defer func() {
+			config, caFile = originalConfig, originalCAFile
+		}()
+
+		overrider, err := newJobEnvOverrider("localhost:1234", "localhost")
+		So(err, ShouldBeNil)
+
+		Convey("a wr run by a --change_home job's Cmd uses the runner's token and CA files", func() {
+			job := &jobqueue.Job{
+				Cmd:           runnerEnvTestCmd,
+				Cwd:           statusTestCwd,
+				RepGroup:      runnerEnvTestRepGrp,
+				ChangeHome:    true,
+				EnvCRetrieved: true,
+			}
+
+			runnerEnvTestRun(overrider, job)
+
+			env, err := job.Env()
+			So(err, ShouldBeNil)
+
+			// what --change_home then does to the Cmd's environment
+			jobHome := t.TempDir()
+			env = append(env, "HOME="+jobHome)
+
+			for _, envvar := range env {
+				name, value, _ := strings.Cut(envvar, "=")
+				if name == "HOME" || strings.HasPrefix(name, "WR_") {
+					t.Setenv(name, value)
+				}
+			}
+
+			nested := internal.ConfigLoadFromCurrentDir(context.Background(), "production")
+			So(nested.ManagerTokenFile, ShouldEqual, tokenFile)
+			So(nested.ManagerCAFile, ShouldEqual, caFile)
 		})
 	})
 }
