@@ -26,9 +26,9 @@
 package cmd
 
 import (
-	"math"
 	"slices"
 
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/shirou/gopsutil/v4/process"
 )
 
@@ -88,11 +88,11 @@ func isForwarderProcess(pid int) bool {
 // Linux and the kern.procargs2 sysctl on macOS (via gopsutil, without cgo). A
 // zombie has an empty argv, so it also gives nil.
 func processArgs(pid int) []string {
-	if pid <= 0 || pid > math.MaxInt32 {
+	if !internal.ValidPid(pid) {
 		return nil
 	}
 
-	p, err := process.NewProcess(int32(pid))
+	p, err := process.NewProcess(int32(pid)) //nolint:gosec // ValidPid bounds pid to int32
 	if err != nil {
 		return nil
 	}

@@ -144,6 +144,26 @@ func (p *managerStopTestProcess) exitedWithin(d time.Duration) (bool, syscall.Si
 	}
 }
 
+func TestNonPositivePidsAreNeverSignalled(t *testing.T) {
+	// kill(0, sig) signals our own process group and kill(-n, sig) signals
+	// process group n, so a pid of 0 or less must never reach kill. A child in
+	// its own group stands in for the group a negative pid would hit.
+	Convey("stopdaemon, killProcess and daemonStillRunning refuse a non-positive pid", t, func() {
+		group := startManagerStopTestProcess(t, "sleep", "60")
+		pgid := -group.cmd.Process.Pid
+
+		So(stopdaemon(pgid, "test"), ShouldBeFalse)
+		So(killProcess(pgid), ShouldNotBeNil)
+
+		exited, _ := group.exitedWithin(200 * time.Millisecond)
+		So(exited, ShouldBeFalse)
+
+		for _, pid := range []int{0, -1, pgid} {
+			So(daemonStillRunning(pid, nil), ShouldBeFalse)
+		}
+	})
+}
+
 func TestManagerStatusStalePidFile(t *testing.T) {
 	Convey("wr manager status reports stopped, not non-responsive, for a stale pid file", t, func() {
 		unrelated := startManagerStopTestProcess(t, "sleep", "60")
@@ -183,6 +203,14 @@ func TestManagerStatusStalePidFile(t *testing.T) {
 func setManagerStopTestConfig(t *testing.T, pid int) {
 	t.Helper()
 
+	setManagerStopTestConfigPidFile(t, strconv.Itoa(pid))
+}
+
+// setManagerStopTestConfigPidFile is setManagerStopTestConfig with the pid
+// file's raw content.
+func setManagerStopTestConfigPidFile(t *testing.T, content string) {
+	t.Helper()
+
 	oldConfig, oldCAFile := config, caFile
 
 	t.Cleanup(func() {
@@ -201,7 +229,7 @@ func setManagerStopTestConfig(t *testing.T, pid int) {
 	}
 	caFile = config.ManagerCAFile
 
-	So(os.WriteFile(config.ManagerPidFile, []byte(strconv.Itoa(pid)), 0o600), ShouldBeNil)
+	So(os.WriteFile(config.ManagerPidFile, []byte(content), 0o600), ShouldBeNil)
 }
 
 // closedLocalPort returns a localhost port nothing is listening on.
@@ -287,4 +315,18 @@ func TestDaemonStillRunning(t *testing.T) {
 		So(exited, ShouldBeTrue)
 		So(daemonStillRunning(pid, identity), ShouldBeFalse)
 	})
+}
+
+func TestManagerStopInvalidPidFile(t *testing.T) {
+	for _, content := range []string{"0", "-1", "garbage"} {
+		Convey("wr manager stop signals nothing for a pid file containing "+content, t, func() {
+			setManagerStopTestConfigPidFile(t, content)
+
+			exitCode, logged := runManagerStopForTest()
+
+			So(exitCode, ShouldEqual, 1)
+			So(logged, ShouldContainSubstring, "so it was not signalled")
+			So(logged, ShouldContainSubstring, "does not seem to be running")
+		})
+	}
 }

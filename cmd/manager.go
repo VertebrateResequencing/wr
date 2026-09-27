@@ -35,6 +35,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -271,6 +272,10 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		// eventualities we check the pid file first, try and terminate its pid,
 		// then confirm we can't connect
 		pid, err := daemon.ReadPidFile(config.ManagerPidFile)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			warn("the pid file %s is invalid (%s), so it was not signalled", config.ManagerPidFile, err)
+		}
+
 		if err == nil && !isManagerProcess(pid, config.Deployment) {
 			// the manager died without removing its pid file and the kernel
 			// may have given its pid to an unrelated process, which we must
@@ -1056,11 +1061,7 @@ func monitorManagerStartupProcess(process *os.Process) <-chan error {
 }
 
 func managerDBUpgradeProcessRunning(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-
-	err := syscall.Kill(pid, syscall.Signal(0))
+	err := internal.SignalPid(pid, syscall.Signal(0))
 
 	return err == nil || errors.Is(err, syscall.EPERM)
 }

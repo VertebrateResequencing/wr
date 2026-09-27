@@ -1609,24 +1609,15 @@ func checkProcess(pidPath string) (pid int, running bool) {
 	}
 
 	// see if the pid is running
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return pid, running
-	}
-
-	err = process.Signal(syscall.Signal(0))
+	err = internal.SignalPid(pid, syscall.Signal(0))
 	running = err == nil && isForwarderProcess(pid)
 
 	return pid, running
 }
 
+// killProcess SIGKILLs pid, refusing a pid that would signal a process group.
 func killProcess(pid int) error {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return err
-	}
-
-	return process.Signal(syscall.SIGKILL)
+	return internal.SignalPid(pid, syscall.SIGKILL)
 }
 
 func teardown(ctx context.Context, p *cloud.Provider) {

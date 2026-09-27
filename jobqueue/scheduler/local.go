@@ -36,7 +36,6 @@ import (
 	"errors"
 	"io"
 	"math"
-	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -709,12 +708,7 @@ func (s *local) monitorRecoveredPid(ctx context.Context, pid int, req *Requireme
 
 // pidAlive reports whether the process with the given pid still exists.
 func pidAlive(pid int) bool {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-
-	return process.Signal(syscall.Signal(0)) == nil
+	return internal.SignalPid(pid, syscall.Signal(0)) == nil
 }
 
 // reqCheck gives an ErrImpossible if the given Requirements can not be met.
