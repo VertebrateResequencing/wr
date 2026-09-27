@@ -282,6 +282,12 @@ func (q *subQueue) update(item *Item, oldGroup ...string) {
 		return
 	}
 
+	if q.sqIndex == readyQueueIndex {
+		// the heap methods work on q.reserveGroup's slice, which is otherwise
+		// whichever group was last pushed to or popped from
+		q.reserveGroup = item.ReserveGroup
+	}
+
 	heap.Fix(q, item.queueIndexes[q.sqIndex])
 }
 

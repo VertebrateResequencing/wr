@@ -138,8 +138,12 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - The manager kept jobs in memory, command and all, after they were archived,
   until it was restarted. Memory use stayed at the size of the biggest burst of
   jobs, and grew without limit for workloads such as wrstat that use a new limit
-  group on every run. Archived jobs are now freed, and the
-  manager forgets reserve groups and rep groups once they have no jobs left.
+  group on every run. Archived jobs are now freed, and the manager forgets
+  reserve groups and rep groups once they have no jobs left.
+- `wr mod -p` on a job that was ready to run could crash the manager, or leave
+  the job in the wrong place in its queue, when the manager had last handled a
+  job with different resource requirements or limit groups. A changed priority
+  now always reorders the job among the other ready jobs like it.
 - A network blip on a `wr add --sync`, a `client` package `WaitForJobs` or any
   other Go client job subscription left a copy of that subscription behind on
   the manager each time the client reconnected, for as long as the manager ran.

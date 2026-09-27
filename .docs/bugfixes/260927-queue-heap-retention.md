@@ -78,3 +78,22 @@ on the `prodsim` branch (commits `299e48dc` and `44ade97e`).
     printed `firstMB=5 lastMB=5 growthMB=0 bound=32` and `PASS`. Before the
     fix, the findings record `retention-check 4 1000 20` growing from 29MB to
     102MB and FAILing.
+- [x] Review finding, pre-existing on develop: `subQueue.update`
+  (queue/subqueue.go) called `heap.Fix` on a ready item whose ReserveGroup had
+  not changed without first setting `q.reserveGroup`, so the heap methods
+  worked on whichever group was last pushed to or popped from. A priority
+  change to a ready job (`wr mod -p`, or any `Queue.Update` that keeps the
+  group) then left the job misplaced, could reorder and re-index items of the
+  other group, and panicked with an index out of range when the other group
+  was smaller. Nothing in the server recovers that panic.
+  - Red:
+    `CGO_ENABLED=1 go test -tags netgo --count 1 -timeout 30s ./queue/ -run TestQueuePriorityUpdateInAnotherReserveGroup`
+    panicked in `subQueue.Less` (index out of range) and timed out.
+  - Fix: `update` sets `q.reserveGroup` to the item's group before
+    `heap.Fix` in the ready sub-queue.
+  - After: the test passes, as do the whole queue package and it under
+    `-race`.
+  - Gates after both fixes: `make lint` 0 issues; `make test` 724 passed, 20
+    skipped; `CGO_ENABLED=1 make race` 724 passed, 19 skipped. The jobqueue
+    heap test passed 5 times under `-race` with a growth under 0.2MB each
+    time.
