@@ -73,6 +73,11 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- When you open the status web page, or it reconnects, the manager no longer
+  reads the full details of every completed command in each report group that
+  still has commands to run, just to count them. On a manager with a lot of
+  completed history this made page loads take seconds and used a noticeable
+  share of the manager's CPU. The page shows the same counts as before.
 - A network blip on a `wr add --sync`, a `client` package `WaitForJobs` or any
   other Go client job subscription left a copy of that subscription behind on
   the manager each time the client reconnected, for as long as the manager ran.

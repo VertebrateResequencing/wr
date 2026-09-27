@@ -723,12 +723,14 @@ func (s *Server) writeStatusCountSeed(conn *websocket.Conn) bool {
 	}
 
 	for repGroup, counts := range perRepGroup {
-		complete, _, qerr := s.getCompleteJobsByRepGroup(repGroup)
-		if qerr != "" {
+		// the page only shows how many complete jobs there are, so count them
+		// from their keys rather than decoding the whole history
+		complete, err := s.db.retrieveCompleteJobStatusByRepGroup(repGroup, false)
+		if err != nil {
 			return false
 		}
 
-		for state, count := range statusStateCounts(complete) {
+		for state, count := range complete.Counts {
 			counts[state] += count
 		}
 
