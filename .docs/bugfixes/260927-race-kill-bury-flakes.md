@@ -134,3 +134,41 @@
     until it holds the one live job; it no longer downloads into the path
     the manager uses for its own temporary backup file.
   - After: the concurrent pair passed 2 runs of 2.
+- [ ] TestReliable2KeepReconnectResync failed once in a plain `make test` run
+  at load around 90; it passed on rerun.
+  - Seen once, no repro. `stress -c 40` alongside `GOMAXPROCS=2
+    WR_TEST_LANE=45 jobqueue.test -test.run
+    '^TestReliable2KeepReconnectResync$' -test.count=30` (non-race build, as
+    `make test` runs it) passed 30 of 30. The failing output was not
+    captured, so the failing line is unknown. A candidate, unconfirmed: the
+    test gives the subscription a 2s reconnect budget
+    (`applySubscriptionReconnectTimings(..., 250ms, 2s)`), which a manager
+    restart plus recovery at load 90 could outlast.
+- [x] TestKillRacingCmdExitKeepsTouching failed at
+  jobqueue/kill_after_exit_test.go:422 with "not started: killed by user
+  request" in a full race run at load 15-32. It passed 10 of 10 alone on
+  both develop and the branch.
+  - Not explained by the first item's fix: it fails the same with it.
+  - Red command (deterministic): `CGO_ENABLED=1 go test -race -run
+    '^TestKillOnceStartedWaitsForTheStart$' ./jobqueue`, which reserves a
+    job, calls `killOnceStarted`, and reports the start 500ms later. With the
+    old helper: FAIL at line 124, the kill came before the start. Under load
+    (`stress -c 40`, `GOMAXPROCS=2 WR_TEST_LANE=40 -test.count=20`, race
+    build with the first item's fix), `TestKillRacingCmdExitKeepsTouching`
+    failed 6 of 20: 2 at line 422 and 4 at line 425 (`heldKills` 0, so the
+    kill was never held by the touch loop, because it came before the start).
+  - Root cause (test): `killOnceStarted` took a non-zero pid as the sign that
+    the command had started, but a reservation already records the runner's
+    own host and pid (see `resetJobForReservation`), and a reserved job
+    matches `JobStateRunning` in `GetByRepGroup`. So it killed at once after
+    `Reserve`. The test only passed when Execute reached `cmd.Start` before
+    its first touch, 50ms in; under load it got to the touch first, saw the
+    kill, and never started the command.
+  - Fix (test only), in `jobqueue/kill_helpers_test.go`: `killOnceStarted`
+    waits for the job's `StartTime`, which only `Started` sets. The new
+    `TestKillOnceStartedWaitsForTheStart` pins that. The other users of the
+    helper (`reliable4_cmd_log_test.go` and the first item's
+    `kill_wind_down_test.go`) now kill a started command, as they meant to.
+  - After, same load: 20 of 20 passed.
+- [ ] TestStatusCountReconcile hit its 120s timeout at load 80+ on develop.
+  - Recorded only, as asked (low priority). Not investigated.
