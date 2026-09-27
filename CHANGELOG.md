@@ -73,6 +73,15 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- The manager no longer logs two normal client actions as errors. An add of no
+  jobs, which a client that polls for work sends when it has nothing new,
+  logged `jobqueue add(): bad request (missing arguments?)`, and every `wr add --sync`,
+  `client` package `SubmitJobsAndWait` or `WaitForJobs` that finished normally
+  logged `jobqueue waitForUpdates(): subscription closed`. Both are now logged
+  only at debug level. Clients see no change: an add of no jobs is still
+  refused with the same error. A wait on an unknown subscription, or an add
+  that is really missing its jobs' environment or requirements, is still
+  logged as an error.
 - A network blip on a `wr add --sync`, a `client` package `WaitForJobs` or any
   other Go client job subscription left a copy of that subscription behind on
   the manager each time the client reconnected, for as long as the manager ran.

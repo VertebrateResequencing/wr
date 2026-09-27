@@ -547,6 +547,21 @@ func (e Error) Error() string {
 	return "jobqueue " + e.Op + "(" + e.Item + "): " + e.Err
 }
 
+// routineClientRequestError wraps the Error a client request was refused with
+// when refusing it is the expected outcome of normal client behaviour, so the
+// client still gets its error but the manager does not log it as a failure.
+type routineClientRequestError struct {
+	err Error
+}
+
+func (e routineClientRequestError) Error() string {
+	return e.err.Error()
+}
+
+func (e routineClientRequestError) Unwrap() error {
+	return e.err
+}
+
 // serverResponse is the struct that the server sends to clients over the
 // network in response to their clientRequest.
 type serverResponse struct {
@@ -3153,6 +3168,20 @@ func (s *Server) confirmServerDeadLater(ctx context.Context, serverID string, au
 	}()
 }
 
+// logClientRequestError logs the error handleRequest returned for a client
+// request: at debug level if it is only the routine outcome of normal client
+// behaviour, otherwise at error level.
+func logClientRequestError(ctx context.Context, herr error) {
+	var routine routineClientRequestError
+	if errors.As(herr, &routine) {
+		clog.Debug(ctx, "Server refused a routine client request", "err", herr)
+
+		return
+	}
+
+	clog.Error(ctx, "Server handle client request error", "err", herr)
+}
+
 func queueClosedError(op, key string) error {
 	return queue.Error{Queue: serverQueueName, Op: op, Item: key, Err: queue.ErrQueueClosed}
 }
@@ -4503,7 +4532,7 @@ func (s *Server) dispatchClientRequest(ctx context.Context, m *mangos.Message, w
 
 	herr := s.handleRequest(ctx, m)
 	if ServerLogClientErrors && herr != nil && !s.inShutdown() {
-		clog.Error(ctx, "Server handle client request error", "err", herr)
+		logClientRequestError(ctx, herr)
 	}
 }
 
