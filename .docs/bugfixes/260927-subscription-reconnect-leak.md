@@ -103,3 +103,29 @@ Branch `fix-subscription-reconnect-leak`, based on `origin/develop` at
     ok (210.9s).
   - `make test`: 716 passed / 20 skipped (7m9s).
   - `CGO_ENABLED=1 make race`: 716 passed / 19 skipped (10m50s).
+- [x] PR #625 Copilot thread PRRT_kwDOAKD33M6mVzS2
+  (jobqueue/server_subscription.go:347): `uuid.Must(uuid.NewV4())` panics if
+  minting fails, where the rest of the repo checks the error.
+  - Fix: `storeClientSubscription` returns `(string, error)`. A mint failure
+    closes the new `serverSubscription` and returns a wrapped error;
+    `errSubscriptionClosed` replaces the old `ok=false`.
+    `registerClientSubscription` passes it on. `handleSubscribe` now maps
+    `errSubscriptionClosed` to `ErrClosedStop`, `errMissingSubscriptionScope`
+    to `ErrBadRequest`, and anything else to `ErrInternalError`.
+    `registerStatusSubscription` also returns the error. The status websocket
+    logs a warning for anything but `errSubscriptionClosed` and carries on
+    with id `""`, as it already did during shutdown: its status subscription
+    listener stops, and the page's other casters keep working.
+  - Seam: a package var `subscriptionIDGen` (`uuid.DefaultGenerator`), which
+    the new `TestSubscriptionIDMintFailure` replaces with a real gofrs
+    generator whose random reader fails. The Convey checks four things: the
+    Go client's subscribe returns `ErrInternalError`, nothing is registered,
+    `registerStatusSubscription` returns an error that isn't
+    `errSubscriptionClosed`, and the manager still answers a Ping. Mutation:
+    with `uuid.Must` restored, the handler panics (`jobqueue server client
+    handling panic err="no randomness"`) and the test fails after the
+    client's 60s receive timeout.
+  - Gates: `make lint` 0 issues; `go test -count=2 -run
+    'TestSubscription|TestServerWebI|Status' ./jobqueue/` ok (332.6s);
+    `go vet -tags reliability ./jobqueue/` ok (covers the
+    `reliable2_scale_test.go` caller).

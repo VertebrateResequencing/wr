@@ -45,6 +45,7 @@ import (
 
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/gofrs/uuid/v5"
 	"github.com/gorilla/websocket"
 	gpnet "github.com/shirou/gopsutil/v4/net"
 	. "github.com/smartystreets/goconvey/convey"
@@ -111,6 +112,8 @@ var (
 	errNoReservedJob     = errors.New("reserve returned no job")
 	errAsyncDriverWait   = errors.New("timed out waiting for async job driver")
 )
+
+var errNoRandomness = errors.New("no randomness")
 
 func TestLiveJobUpdateCwd(t *testing.T) {
 	if runnermode || servermode {
@@ -981,6 +984,58 @@ func assertNoPushedJStatus(ws *websocket.Conn, key string, timeout time.Duration
 
 		So(status.Key == key && status.IsPushUpdate, ShouldBeFalse)
 	}
+}
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) {
+	return 0, errNoRandomness
+}
+
+func TestSubscriptionIDMintFailure(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A subscription id that can't be minted fails the subscribe, not the manager", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+
+		// swapped before serve, so every handler goroutine is started after it
+		// and restored only after Stop has waited for them
+		realGen := subscriptionIDGen
+		subscriptionIDGen = uuid.NewGenWithOptions(uuid.WithRandomReader(failingReader{}))
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			server.Stop(ctx, true)
+
+			subscriptionIDGen = realGen
+		}()
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		sub, err := jq.SubscribeToJobKeys(ctx, []string{"subscription-mint-failure"})
+		So(sub, ShouldBeNil)
+
+		var jqErr Error
+
+		So(errors.As(err, &jqErr), ShouldBeTrue)
+		So(jqErr.Err, ShouldEqual, ErrInternalError)
+		So(serverClientSubscriptionCount(server), ShouldEqual, 0)
+
+		_, err = server.registerStatusSubscription()
+		So(err, ShouldNotBeNil)
+		So(errors.Is(err, errSubscriptionClosed), ShouldBeFalse)
+
+		_, err = jq.Ping(clientConnectTime)
+		So(err, ShouldBeNil)
+	})
 }
 
 func TestSubscriptionLongPollOverExistingPort(t *testing.T) {
