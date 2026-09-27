@@ -326,7 +326,7 @@ func probeCwdRows() []probeCwdRow {
 		// upload is a plain directory rather than a mount, so no mount-boundary guard
 		// sees it, and the stale run's keep set need not name it. Written up in
 		// .docs/cwd_matters_cleanup/readme.md, "Measured residuals"; the four rows
-		// that measured it are preserved on origin/probe-round8-cases. #578's per-run
+		// that measured it are kept in tag archive/probe-round8-cases. #578's per-run
 		// mint, held by its TestWorkSpaceNameIsMintedPerRun, closes the issuing half:
 		// it leaves wr handing a finished run's name to a later one too unlikely to
 		// plan for, which is why the above is what a repeat would cost rather than a
@@ -1088,7 +1088,7 @@ func TestProbeLiveFuseMounts(t *testing.T) {
 			// awaiting upload is a plain directory rather than a mount, so no
 			// mount-boundary guard sees it, and the stale keep set need not name it.
 			// Written up in .docs/cwd_matters_cleanup/readme.md, "Measured residuals";
-			// the four rows that measured it are preserved on origin/probe-round8-cases.
+			// the four rows that measured it are kept in tag archive/probe-round8-cases.
 			// #578's per-run mint, held by its TestWorkSpaceNameIsMintedPerRun, closes
 			// the issuing half: it leaves wr handing a finished run's name to a later
 			// one too unlikely to plan for, which is why the above is what a repeat

@@ -377,8 +377,8 @@ which does not imply `RESOLVE_NO_XDEV`.
   persisted BoltDB key. **Bites when** a path collision arises anyway — the
   2^-122 mint, or two pre-upgrade digits-named workspaces of one key. The four
   deliberately-red rows of the probe round that found this bug
-  (`probeKeyBlindRows` / `TestProbeMountConfigsOneKeyCovers`, on
-  `origin/probe-round8-cases`) force that collision by hand, removing a
+  (`probeKeyBlindRows` / `TestProbeMountConfigsOneKeyCovers`, in the
+  `archive/probe-round8-cases` tag) force that collision by hand, removing a
   workspace and recreating the same path through `mkCwdAndTmp` instead of
   `mkHashedDir`, so the shape they arrange is one production can no longer
   produce. Dropped onto the fixed tree, row 1 now PASSES, 19 assertions and
