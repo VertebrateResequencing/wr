@@ -2561,7 +2561,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		dirsToCheckDiskSpace = append(dirsToCheckDiskSpace, tmpDir)
 	}
 
-	// we have a convienience feature that can run Cmd in a container, so get
+	// we have a convenience feature that can run Cmd in a container, so get
 	// possibly modified Cmd; its cmd file goes in the Job's own TMPDIR, so that
 	// it goes with the workspace even if we die before cmdLineCleanup
 	jc, cmdLineCleanup, err := job.CmdLine(ctx, tmpDir)
