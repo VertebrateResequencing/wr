@@ -83,3 +83,30 @@ Branch `fix-client-token-reload`, based on `origin/develop` at `cb9bb03`
     requests after a restart, a subscription resubscribing after a restart, a
     raw-token client still being refused, an unchanged wrong token file
     causing no reload, and a changed but still wrong file causing exactly one.
+
+## Gate flakes seen while verifying this fix
+
+The host was shared and heavily loaded (1-min load often 30 to 65). These
+failed in a gate run, then passed when run alone on this branch. None touch
+the token code. They are recorded here, not fixed.
+
+- [ ] `TestFuseMountReaping` (jobqueue/testfusemount_test.go:491) failed in
+  one `make test` run and in one isolated run with `--count 5`: `Expected:
+  true / Actual: false` for `So(pidInFuseWait(child.pid), ShouldBeTrue)`, the
+  premise that the wedged child is blocked in a fuse request. It passed
+  twice on this branch and 5 times on develop at `cb9bb03` right after.
+- [ ] `TestDepGranularityAddTransactionCost`
+  (jobqueue/depgranularity_add_test.go:156) failed in one `make test` run:
+  `Expected '99' to be less than or equal to '53.75'`. It passed 3 times
+  alone.
+- [ ] One `make test` run failed the `jq_default` and `jq_reliable4` lanes
+  with no failure text in either lane's summary. `go test -run
+  '^TestReliable4'` on this branch then passed.
+- Known develop flake: `TestSubscriptionReconnectDuringManagerShutdown` failed
+  in one `make race` run (subscription_test.go:2206,
+  `clientLockTakenWithin`) and in one targeted race run. It also failed on
+  develop at `cb9bb03` (line 2292) in 1 of 3 race runs. Its clients use a raw
+  token, so the reload never runs in it.
+
+Final gates on this branch: `make lint` 0 issues; `make test` PASSED on the
+fourth run; `CGO_ENABLED=1 make race` PASSED on the second run.
