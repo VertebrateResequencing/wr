@@ -697,6 +697,41 @@ func TestRmMuxfysCachesSpelledInAnotherCase(t *testing.T) {
 	})
 }
 
+func TestCleanupWorkSpaceGoneAfterItWasOpened(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Cleanup tidies the empty parents of a workspace deleted after it was opened", t, func() {
+		// a lost job is cleaned up twice, by its runner and by the manager, so
+		// one cleanup can delete the workspace while the other holds a handle on
+		// it. The handle outlives the name, but reading a directory that has
+		// been removed fails with ENOENT, and that is the same "already gone" the
+		// open tolerates: it must not cost the parents their tidy-up.
+		cwd := t.TempDir()
+		precious := writeFileIn(cwd, "05_RunCisEQTL.R")
+		job := &Job{Cwd: cwd, Cmd: testWSCmd}
+		_, workSpace, _ := realWorkSpace(job)
+
+		workSpaceOpenedHook = func() {
+			workSpaceOpenedHook = nil
+
+			So(os.RemoveAll(workSpace), ShouldBeNil)
+		}
+
+		Reset(func() { workSpaceOpenedHook = nil })
+
+		err := (&Behaviour{When: OnExit, Do: Cleanup}).Trigger(OnExit, job)
+
+		// the tidy-up first, so an early return shows up as the untidied tree it
+		// leaves rather than only as an error value.
+		soPathsGone(workSpace, filepath.Join(cwd, AppName+createdCwdBaseSuffix))
+		soPathsExist(precious, cwd)
+
+		So(err, ShouldBeNil)
+	})
+}
+
 // realWorkSpace gives job the working directory mkHashedDir really creates for it
 // below job.Cwd, and returns that dir, the workspace holding it, and the tmp dir
 // wr makes beside it. The path wr builds is what proves a workspace is wr's own,

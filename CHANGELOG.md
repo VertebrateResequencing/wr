@@ -73,6 +73,12 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- The `cleanup` and `cleanup_all` behaviours (`cleanup` is the default
+  `--on_exit`) of a lost command could leave empty directories behind in the
+  command's `--cwd` and report a warning, when its runner and the manager both
+  cleaned up after it at the same time. A working directory that the other
+  cleanup has already removed is now treated as done, and the empty
+  directories above it are still removed.
 - A network blip on a `wr add --sync`, a `client` package `WaitForJobs` or any
   other Go client job subscription left a copy of that subscription behind on
   the manager each time the client reconnected, for as long as the manager ran.
