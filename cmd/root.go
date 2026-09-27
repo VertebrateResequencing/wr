@@ -591,6 +591,18 @@ func warnUploadDirStillOpen(err error) {
 		config.ManagerUploadDir, err, config.ManagerUploadDir)
 }
 
+// daemonStillRunning reports whether pid is still the process that was
+// signalled: it exists and, when its argv from before the signal is known, still
+// has that argv. So a zombie, or a pid the kernel has already given to another
+// process, counts as stopped.
+func daemonStillRunning(pid int, identity []string) bool {
+	if syscall.Kill(pid, syscall.Signal(0)) != nil {
+		return false
+	}
+
+	return identity == nil || slices.Equal(processArgs(pid), identity)
+}
+
 // Execute adds all child commands to the root command and sets flags
 // appropriately. This is called by main.main(). It only needs to happen once to
 // the rootCmd.
@@ -751,9 +763,9 @@ func createWorkingDir() {
 func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *daemon.Context) {
 	args := os.Args
 
-	hadDeployment := slices.Contains(args, "--deployment")
+	hadDeployment := slices.Contains(args, deploymentFlag)
 	if !hadDeployment {
-		args = append(args, "--deployment")
+		args = append(args, deploymentFlag)
 		args = append(args, config.Deployment)
 	}
 
@@ -794,6 +806,8 @@ func reborn(dContext *daemon.Context, pidFile string) *os.Process {
 // stopdaemon stops the daemon created by daemonize() by sending it SIGTERM and
 // checking it really exited.
 func stopdaemon(pid int, source string) bool {
+	identity := processArgs(pid)
+
 	err := syscall.Kill(pid, syscall.SIGTERM)
 	if err != nil {
 		warn("wr manager is running with pid %d according to %s, but failed to send it SIGTERM: %s", pid, source, err)
@@ -801,7 +815,7 @@ func stopdaemon(pid int, source string) bool {
 		return false
 	}
 
-	ok := waitForDaemonStop(pid)
+	ok := waitForDaemonStop(pid, identity)
 
 	// if it didn't stop, offer to force kill it? That's a bit dangerous...
 	// just warn for now
@@ -815,8 +829,9 @@ func stopdaemon(pid int, source string) bool {
 
 // waitForDaemonStop polls the given pid until it is no longer running, or until
 // we give up after daemonStopGiveupS seconds. It returns true if the pid
-// stopped.
-func waitForDaemonStop(pid int) bool {
+// stopped. identity is the pid's argv from before it was signalled (nil if
+// unknown); see daemonStillRunning.
+func waitForDaemonStop(pid int, identity []string) bool {
 	giveup := time.After(time.Duration(daemonStopGiveupS) * time.Second)
 	ticker := time.NewTicker(daemonStopPollFreq)
 	stopped := make(chan bool, 1)
@@ -825,11 +840,10 @@ func waitForDaemonStop(pid int) bool {
 		for {
 			select {
 			case <-ticker.C:
-				if syscall.Kill(pid, syscall.Signal(0)) == nil {
-					// pid is still running
+				if daemonStillRunning(pid, identity) {
 					continue
 				}
-				// assume the error was "no such process" *** should I do a string comparison to confirm?
+
 				ticker.Stop()
 
 				stopped <- true
