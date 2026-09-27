@@ -82,17 +82,20 @@ conf_value() {
 # ports, its managerdir, and every file it would write inside that managerdir. wr lets env vars,
 # ~/.wr_config*.yml and ./.wr_config*.yml override WR_CONFIG_DIR, so this asks wr itself (wr
 # conf) rather than trusting the file we wrote. It also refuses a manager that would set a DNS
-# record (managersetdomainip).
+# record (managersetdomainip), or clients that would connect anywhere but localhost.
 assert_isolated() {
   local dep="$1" port="$2" web="$3" run="$4" conf f v
   conf=$(osunset; timeout 60 "$WR" conf --deployment "$dep" 2>&1) || die "wr conf --deployment $dep failed"
+  v=$(conf_value "$conf" ManagerHost)
+  [ "$v" = "localhost" ] || die "refusing: $dep resolves managerhost to '$v', not localhost (see wr conf)"
   v=$(conf_value "$conf" ManagerPort)
   [ "$v" = "$port" ] || die "refusing: $dep resolves to port '$v', not our isolated $port (see wr conf)"
   v=$(conf_value "$conf" ManagerWeb)
   [ "$v" = "$web" ] || die "refusing: $dep resolves to web port '$v', not our isolated $web (see wr conf)"
   v=$(conf_value "$conf" ManagerDir)
   [ "$v" = "$run" ] || die "refusing: $dep resolves to managerdir '$v', not our isolated $run (see wr conf)"
-  for f in ManagerPidFile ManagerLogFile ManagerDBFile ManagerTokenFile ManagerUploadDir; do
+  for f in ManagerPidFile ManagerLogFile ManagerDBFile ManagerTokenFile ManagerUploadDir \
+      ManagerCAFile ManagerCertFile ManagerKeyFile; do
     v=$(conf_value "$conf" "$f")
     case "$v" in ("$run"/*) ;; (*) die "refusing: $dep resolves $f to '$v', outside $run (see wr conf)" ;; esac
   done
@@ -4413,9 +4416,13 @@ prodsim_start_manager() {  # (re)start the isolated prod-mode manager for prodsi
 prodsim_restart() {  # graceful stop (bounded), falling back to a kill, then start again on the same DB
   # wr manager stop stops whichever manager the config names, so check it is ours first
   assert_isolated production "$PROD_PORT" "$PROD_WEB" "$PROD_RUN"
-  local pid t0 rc; pid=$(mgr_pid "$PROD_RUN"); t0=$(date +%s%3N)
-  osunset; timeout 600 "$WR" manager stop --deployment production > /dev/null 2>&1
-  rc=$?
+  local pid t0 rc="skipped"; pid=$(mgr_pid "$PROD_RUN"); t0=$(date +%s%3N)
+  # wr manager stop SIGTERMs whatever pid the pid file names, unverified; if our manager died
+  # and its pid was reused, that could be anyone's process, so only stop a pid running our binary
+  if [ -n "$pid" ] && is_ours "$pid"; then
+    osunset; timeout 600 "$WR" manager stop --deployment production > /dev/null 2>&1
+    rc=$?
+  fi
   if [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1; then safe_kill "$pid" >/dev/null; rc="killed"; fi
   cp -f "$PROD_RUN/log" "$PS_OUT/manager.log.$(date +%s)" 2>/dev/null
   echo "$(date +%s)	stop	rc=$rc	pid=$pid	ms=$(( $(date +%s%3N) - t0 ))" >> "$PS_OUT/restarts.tsv"
@@ -4426,16 +4433,18 @@ prodsim_cleanup() {  # idempotent: stop the restarter, prodsim, our manager, and
   [ "${PS_CLEANED:-0}" = "1" ] && return 0
   PS_CLEANED=1
   echo "## prodsim CLEANUP"
-  if [ -n "${PS_RESTARTER:-}" ]; then
+  # only signal a pid that is still this shell's child, never one reused after it exited
+  our_child() { [ -n "$1" ] && [ "$(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ')" = "$$" ]; }
+  if our_child "${PS_RESTARTER:-}"; then
     # freeze it first so it cannot start a manager between losing its children and dying
     kill -STOP "$PS_RESTARTER" 2>/dev/null
     pkill -TERM -P "$PS_RESTARTER" 2>/dev/null
     kill -KILL "$PS_RESTARTER" 2>/dev/null
     wait "$PS_RESTARTER" 2>/dev/null
   fi
-  if [ -n "${PS_SIMPID:-}" ] && kill -TERM "$PS_SIMPID" 2>/dev/null; then
+  if our_child "${PS_SIMPID:-}" && kill -TERM "$PS_SIMPID" 2>/dev/null; then
     local i; for i in $(seq 1 30); do kill -0 "$PS_SIMPID" 2>/dev/null || break; sleep 1; done
-    kill -KILL "$PS_SIMPID" 2>/dev/null
+    our_child "$PS_SIMPID" && kill -KILL "$PS_SIMPID" 2>/dev/null
   fi
   cp -f "$PROD_RUN/log" "$PS_OUT/manager.log" 2>/dev/null
   # a restart the restarter was part-way through may still bring a manager up

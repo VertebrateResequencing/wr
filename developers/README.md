@@ -60,8 +60,11 @@ The soak cannot touch a real deployment:
 - It writes a config dir of its own for the run, so no other `wrdev.sh` call
   can move its ports mid-run.
 - Before every manager start and stop, it asks `wr conf` whether
-  `--deployment production` resolves to the isolated port and managerdir, so
-  an env var or `~/.wr_config*.yml` cannot redirect it.
+  `--deployment production` resolves to localhost, the isolated ports, and a
+  managerdir that holds every file the manager writes, so an env var or
+  `~/.wr_config*.yml` cannot redirect it.
+- A restart only runs `wr manager stop` while the pid file names a process
+  running the isolated binary, and cleanup only signals its own children.
 - `prodsim` itself refuses to run unless `WR_CONFIG_DIR` is set and the
   config names its `-rundir`.
 - Its LSF jobs are named `wrp<PROD_JOBTOKEN>_*`, and cleanup bkills only
