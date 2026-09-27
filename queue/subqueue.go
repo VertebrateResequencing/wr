@@ -282,6 +282,12 @@ func (q *subQueue) update(item *Item, oldGroup ...string) {
 		return
 	}
 
+	if q.sqIndex == readyQueueIndex {
+		// the heap methods work on q.reserveGroup's slice, which is otherwise
+		// whichever group was last pushed to or popped from
+		q.reserveGroup = item.ReserveGroup
+	}
+
 	heap.Fix(q, item.queueIndexes[q.sqIndex])
 }
 
@@ -449,6 +455,18 @@ func (q *subQueue) Pop() any {
 	item.mutex.Lock()
 	item.queueIndexes[q.sqIndex] = -1
 	item.mutex.Unlock()
+
+	// clear the vacated slot, or the backing array keeps the item (and its
+	// data) reachable after it leaves the queue
+	itemList[lasti] = nil
+
+	if q.sqIndex == readyQueueIndex && lasti == 0 {
+		// drop an emptied group, so that groups that are never used again do
+		// not accumulate; popItemList and Push treat a missing group as empty
+		delete(q.groupedItems, q.reserveGroup)
+
+		return item
+	}
 
 	q.setItemList(itemList[:lasti])
 

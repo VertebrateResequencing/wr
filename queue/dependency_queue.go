@@ -74,6 +74,7 @@ func (q *depQueue) pop() *Item {
 
 	item := q.items[lasti]
 	item.queueIndexes[q.index] = -1
+	q.items[lasti] = nil // so the popped item can be garbage collected
 	q.items = q.items[:lasti]
 
 	return item

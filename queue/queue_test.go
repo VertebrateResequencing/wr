@@ -2649,3 +2649,32 @@ func TestQueueChangeKeyLeavesItemlessDependency(t *testing.T) {
 		So(dependant.Stats().State, ShouldEqual, ItemStateDependent)
 	})
 }
+
+func TestQueuePriorityUpdateInAnotherReserveGroup(t *testing.T) {
+	ctx := context.Background()
+
+	synctestConvey(t, "Given ready items in 2 reserve groups, the last added to the smaller one", func() {
+		queue := New(ctx, "priority update group queue")
+		defer qdestroy(queue)
+
+		for i := range 5 {
+			_, err := queue.Add(ctx, fmt.Sprintf("a%d", i), "A", testData, 0, 0, time.Minute, SubQueueReady)
+			So(err, ShouldBeNil)
+		}
+
+		_, err := queue.Add(ctx, "b0", "B", testData, 0, 0, time.Minute, SubQueueReady)
+		So(err, ShouldBeNil)
+
+		Convey("raising the priority of an item in the bigger group puts it first in that group", func() {
+			So(queue.Update(ctx, "a4", "A", testData, 10, 0, time.Minute), ShouldBeNil)
+
+			item, errr := queue.Reserve("A", 0)
+			So(errr, ShouldBeNil)
+			So(item.Key, ShouldEqual, "a4")
+
+			item, errr = queue.Reserve("B", 0)
+			So(errr, ShouldBeNil)
+			So(item.Key, ShouldEqual, "b0")
+		})
+	})
+}
