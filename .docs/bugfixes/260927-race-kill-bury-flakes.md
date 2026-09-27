@@ -112,3 +112,25 @@
     `jobqueue/status_ws_join_test.go`. CHANGELOG entry added.
   - After, same load: `TestReliable4StatusSeedBoundary` 30 of 30 and
     `TestReliable4StatusSeedCounts` 30 of 30; the hook test passes.
+- [x] TestJobqueueWithMounts, at jobqueue/jobqueue_test.go:9321. The S3
+  database backup fails with "The specified key does not exist." The test
+  sleeps a fixed 8s and then expects the backup to be there. It failed in 2 of
+  3 full race runs, including one at low load, and passed each time it was run
+  on its own with -race. Replace the fixed sleep with a bounded wait for the
+  real condition, if that's what's wrong. Otherwise, find the real cause.
+  - Red command: two copies of the race test binary run at once, as two
+    checkouts' `make race` do, `WR_TEST_LANE=44` and `WR_TEST_LANE=50`, each
+    `-test.run '^TestJobqueueWithMounts$'`. Before: both failed at line
+    9321, `Actual: 'The specified key does not exist.'`, while the same
+    binary run alone passed 2 of 2.
+  - Root cause (test): every run of the test backs up to the same S3 key,
+    `$JOBQUEUE_REMOTES3_PATH/db.bk.development`, and deletes it at the end
+    of each Convey. Several agents' suites share this host and that path, so
+    one run's delete (or overwrite) lands between another's upload and
+    download. The fixed sleep was not the cause, but was replaced too.
+  - Fix (test only), in `jobqueue/jobqueue_test.go`: the backup goes under
+    this run's own name, the base of its pid-named `mountDir`. The 8s sleep is
+    now a poll, bounded by a minute, that downloads the backup to a temp dir
+    until it holds the one live job; it no longer downloads into the path
+    the manager uses for its own temporary backup file.
+  - After: the concurrent pair passed 2 runs of 2.

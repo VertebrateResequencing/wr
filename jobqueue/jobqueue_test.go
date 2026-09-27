@@ -9267,11 +9267,19 @@ func TestJobqueueWithMounts(t *testing.T) {
 		Deployment:      config.Deployment,
 	}
 
+	// s3BackupWait bounds the wait for a backup to reach S3; it is free on
+	// success.
+	const s3BackupWait = time.Minute
+
 	Convey("You can bring up a server configured with an S3 db backup", t, func() {
 		s3ServerConfig := serverConfig
-		s3ServerConfig.DBFileBackup = fmt.Sprintf("s3://default@%s/db.bk", s3Path)
+		// JOBQUEUE_REMOTES3_PATH is shared by every test run on every checkout,
+		// so the backup goes under this run's own name there: another run
+		// deleting or overwriting its own backup must not touch this one.
+		s3BkDir := s3Path + "/" + filepath.Base(mountDir)
+		s3ServerConfig.DBFileBackup = fmt.Sprintf("s3://default@%s/db.bk", s3BkDir)
 		localBkPath := config.ManagerDBFile + ".s3backup_tmp"
-		s3BkPath := filepath.Join(s3Path, "db.bk.development")
+		s3BkPath := filepath.Join(s3BkDir, "db.bk.development")
 		s3BkPath, err := stripBucketFromS3Path(s3BkPath)
 		So(err, ShouldBeNil)
 
@@ -9310,19 +9318,23 @@ func TestJobqueueWithMounts(t *testing.T) {
 			So(inserts, ShouldEqual, 1)
 			So(already, ShouldEqual, 0)
 
-			<-time.After(8 * time.Second)
+			// the add triggers a backup, which is uploaded some time later
+			dlPath := filepath.Join(t.TempDir(), "db.bk")
+
+			So(pollUntilFor(s3BackupWait, func() bool {
+				if errd := server.db.s3accessor.DownloadFile(s3BkPath, dlPath); errd != nil {
+					return false
+				}
+
+				liveJobs, errb := boltLiveJobs(dlPath)
+
+				return errb == nil && liveJobs == 1
+			}), ShouldBeTrue)
 
 			assertNonEmptyFile(config.ManagerDBFile)
 
 			_, err = os.Stat(localBkPath)
 			So(err, ShouldNotBeNil)
-
-			err = server.db.s3accessor.DownloadFile(s3BkPath, localBkPath)
-			So(err, ShouldBeNil)
-			assertNonEmptyFile(localBkPath)
-			assertBoltLiveJobs(localBkPath, 1)
-			err = os.Remove(localBkPath)
-			So(err, ShouldBeNil)
 
 			Convey("You can stop the server, delete the database, and it will be restored from S3 backup", func() {
 				jobsByRepGroup, err := jq.GetByRepGroup("manually_added", false, 0, "", false, false)
