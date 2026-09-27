@@ -40,6 +40,26 @@ import (
 
 var errLegacyEOF = errors.New("EOF") // Regression sentinel for legacy close behaviour.
 
+func TestTildaToHomeStripsOnlyTheLeadingTilda(t *testing.T) {
+	Convey("Given a home directory", t, func() {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+
+		Convey("TildaToHome replaces only a leading ~/ or a bare ~ with it", func() {
+			for _, tc := range []struct{ path, want string }{
+				{"~/~bk/db", filepath.Join(home, "~bk", "db")},
+				{"~", home},
+				{"~/db", filepath.Join(home, "db")},
+				{"~/~/x", filepath.Join(home, "~", "x")},
+				{"~bk/db", "~bk/db"},
+				{"", ""},
+			} {
+				So(TildaToHome(tc.path), ShouldEqual, tc.want)
+			}
+		})
+	})
+}
+
 type wrappedEOFCloser struct{}
 
 func (wrappedEOFCloser) Close() error {

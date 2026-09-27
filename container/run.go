@@ -96,14 +96,14 @@ const staleContainerRemovalFormat = "for c in $(docker ps --all --quiet --filter
 // whoever runs them.
 const runAsCallingUserArgs = ` --user "$(id -u):$(id -g)"`
 
-// PrepareCmdFile creates a temporary file containing the given command and
-// returns its path, as well as a method you can defer that will delete the
-// file.
+// PrepareCmdFile creates a temporary file in dir containing the given command
+// and returns its path, as well as a method you can defer that will delete the
+// file. An empty dir means the system's default tmp dir.
 //
 // File deletion errors in the returned method are logged using clog and the
 // given ctx.
-func PrepareCmdFile(ctx context.Context, cmd string) (string, func(), error) {
-	f, cleanup, err := createTmpFileAndCleanupMethod(ctx)
+func PrepareCmdFile(ctx context.Context, dir, cmd string) (string, func(), error) {
+	f, cleanup, err := createTmpFileAndCleanupMethod(ctx, dir)
 	if err != nil {
 		return "", nil, err
 	}
@@ -113,10 +113,11 @@ func PrepareCmdFile(ctx context.Context, cmd string) (string, func(), error) {
 	return f.Name(), cleanup, err
 }
 
-// createTmpFileAndCleanupMethod creates a tmp file and a method to delete it
-// afterwards, logging deletion errors using clog.
-func createTmpFileAndCleanupMethod(ctx context.Context) (*os.File, func(), error) {
-	f, err := os.CreateTemp("", "container.cmd")
+// createTmpFileAndCleanupMethod creates a tmp file in dir (the system's default
+// tmp dir if empty) and a method to delete it afterwards, logging deletion
+// errors using clog.
+func createTmpFileAndCleanupMethod(ctx context.Context, dir string) (*os.File, func(), error) {
+	f, err := os.CreateTemp(dir, "container.cmd")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -134,6 +135,7 @@ func createTmpFileAndCleanupMethod(ctx context.Context) (*os.File, func(), error
 // write fails, the given cleanup method will be called.
 func writeStringToFile(f *os.File, content string, cleanup func()) error {
 	if _, err := f.WriteString(content + "\n"); err != nil {
+		_ = f.Close() // the write error is what matters
 		cleanup()
 
 		return err

@@ -1040,16 +1040,21 @@ type Job struct {
 //
 // In the case of WithDocker, MonitorDocker will also be set to our Key().
 //
+// The tmp file is made in tmpDir, which should be the TMPDIR wr made for this
+// run of the Job, so that it is inside the Job's own workspace and is removed
+// with it even if this process dies before the returned function is called. An
+// empty tmpDir, for a Job wr made no workspace for, means the system tmp dir.
+//
 // Once you have executed the returned command you should call the returned
 // function which will delete the tmp file.
-func (j *Job) CmdLine(ctx context.Context) (string, func(), error) {
+func (j *Job) CmdLine(ctx context.Context, tmpDir string) (string, func(), error) {
 	noop := func() {}
 
 	if j.WithDocker == "" && j.WithSingularity == "" {
 		return j.Cmd, noop, nil
 	}
 
-	path, cleanup, err := container.PrepareCmdFile(ctx, j.Cmd)
+	path, cleanup, err := container.PrepareCmdFile(ctx, tmpDir, j.Cmd)
 	if err != nil {
 		return j.Cmd, noop, err
 	}

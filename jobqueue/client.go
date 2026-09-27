@@ -31,6 +31,7 @@ package jobqueue
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -2227,14 +2228,12 @@ func (c *Client) bsubConfigJSON(job *Job, host string) ([]byte, error) {
 	return jobJSON, nil
 }
 
-// resolveWorkingDir sets cmd.Dir to the directory the command should run in. If
-// the job's Cwd matters it is used directly and ("", "", nil) is returned;
-// otherwise a unique hashed working directory is created and its cwd and tmp dir
-// are returned (the job is buried and an error returned on failure).
-func (c *Client) resolveWorkingDir(job *Job, cmd *exec.Cmd) (actualCwd, tmpDir string, err error) {
+// resolveWorkingDir works out the directory the command should run in. If the
+// job's Cwd matters it is used directly and ("", "", nil) is returned; otherwise
+// a unique hashed working directory is created and its cwd and tmp dir are
+// returned (the job is buried and an error returned on failure).
+func (c *Client) resolveWorkingDir(job *Job) (actualCwd, tmpDir string, err error) {
 	if job.CwdMatters {
-		cmd.Dir = job.Cwd
-
 		return "", "", nil
 	}
 
@@ -2250,8 +2249,6 @@ func (c *Client) resolveWorkingDir(job *Job, cmd *exec.Cmd) (actualCwd, tmpDir s
 
 		return "", "", buryErr
 	}
-
-	cmd.Dir = actualCwd
 
 	job.Lock()
 	job.setActualCwd(actualCwd)
@@ -2530,32 +2527,13 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		return Error{clientOpExecute, job.Key(), ErrMustReserve}
 	}
 
-	// we have a convienience feature that can run Cmd in a container, so get
-	// possibly modified Cmd
-	jc, cmdLineCleanup, err := job.CmdLine(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to set up cmd file: %w", err)
-	}
-	defer cmdLineCleanup()
-
-	ec, err := prepareCommand(ctx, job, shell, jc)
-	if err != nil {
-		return err
-	}
-
-	cmd := ec.cmd
-	errReader, outReader := ec.errReader, ec.outReader
-	stderr, stdout := ec.stderr, ec.stdout
-	liveStderr, liveStdout := ec.liveStderr, ec.liveStdout
-	stderrWait, stdoutWait := ec.stderrWait, ec.stdoutWait
-
-	if err = c.ensureCwdExists(job); err != nil {
+	if err := c.ensureCwdExists(job); err != nil {
 		return err
 	}
 
 	var dirsToCheckDiskSpace []string
 
-	actualCwd, tmpDir, err := c.resolveWorkingDir(job, cmd)
+	actualCwd, tmpDir, err := c.resolveWorkingDir(job)
 	if err != nil {
 		return err
 	}
@@ -2582,6 +2560,27 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	if tmpDir != "" {
 		dirsToCheckDiskSpace = append(dirsToCheckDiskSpace, tmpDir)
 	}
+
+	// we have a convenience feature that can run Cmd in a container, so get
+	// possibly modified Cmd; its cmd file goes in the Job's own TMPDIR, so that
+	// it goes with the workspace even if we die before cmdLineCleanup
+	jc, cmdLineCleanup, err := job.CmdLine(ctx, tmpDir)
+	if err != nil {
+		return fmt.Errorf("failed to set up cmd file: %w", err)
+	}
+	defer cmdLineCleanup()
+
+	ec, err := prepareCommand(ctx, job, shell, jc)
+	if err != nil {
+		return err
+	}
+
+	cmd := ec.cmd
+	cmd.Dir = cmp.Or(actualCwd, job.Cwd)
+	errReader, outReader := ec.errReader, ec.outReader
+	stderr, stdout := ec.stderr, ec.stdout
+	liveStderr, liveStdout := ec.liveStderr, ec.liveStdout
+	stderrWait, stdoutWait := ec.stderrWait, ec.stdoutWait
 
 	// before doing any other pre-start tasks, which might take time, start
 	// touching the job, and keep doing so until after we've run the job and

@@ -574,7 +574,7 @@ func TestJob(t *testing.T) {
 	Convey("CmdLine() returns Cmd", t, func() {
 		ctx := context.Background()
 		job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath}
-		cmd, cleanup, err := job.CmdLine(ctx)
+		cmd, cleanup, err := job.CmdLine(ctx, "")
 		So(err, ShouldBeNil)
 		So(cmd, ShouldEqual, testTrueCmd)
 		So(cleanup, ShouldNotBeNil)
@@ -583,7 +583,7 @@ func TestJob(t *testing.T) {
 		Convey("Though with WithDocker it returns a docker run command", func() {
 			job.WithDocker = image
 
-			cmd, cleanup, err = job.CmdLine(ctx)
+			cmd, cleanup, err = job.CmdLine(ctx, "")
 			So(err, ShouldBeNil)
 			So(cleanup, ShouldNotBeNil)
 
@@ -610,7 +610,7 @@ func TestJob(t *testing.T) {
 			Convey("That runs as the image's user when ContainerImageUser is set", func() {
 				job.ContainerImageUser = true
 
-				cmd, cleanup, err = job.CmdLine(ctx)
+				cmd, cleanup, err = job.CmdLine(ctx, "")
 				So(err, ShouldBeNil)
 				So(cleanup, ShouldNotBeNil)
 
@@ -625,7 +625,7 @@ func TestJob(t *testing.T) {
 				job.ContainerMounts = "/foo/bar:/bar,/foo/baz:/baz"
 				So(job.EnvAddOverride([]string{"FOO=bar", "OOF=rab"}), ShouldBeNil)
 
-				cmd, cleanup, err = job.CmdLine(ctx)
+				cmd, cleanup, err = job.CmdLine(ctx, "")
 				So(err, ShouldBeNil)
 				So(cleanup, ShouldNotBeNil)
 
@@ -649,7 +649,7 @@ func TestJob(t *testing.T) {
 			Convey("That names an env var whose value contains a colon, not a truncation of it", func() {
 				So(job.EnvAddOverride([]string{"PATH=/usr/local/sbin:/opt/wrtest/bin"}), ShouldBeNil)
 
-				cmd, cleanup, err = job.CmdLine(ctx)
+				cmd, cleanup, err = job.CmdLine(ctx, "")
 				So(err, ShouldBeNil)
 				So(cleanup, ShouldNotBeNil)
 
@@ -664,7 +664,7 @@ func TestJob(t *testing.T) {
 
 				job.EnvOverride = stored
 
-				cmd, cleanup, err = job.CmdLine(ctx)
+				cmd, cleanup, err = job.CmdLine(ctx, "")
 				So(err, ShouldBeNil)
 				So(cleanup, ShouldNotBeNil)
 
@@ -677,7 +677,7 @@ func TestJob(t *testing.T) {
 		Convey("Though with WithSingularity it returns a singularity shell command", func() {
 			job.WithSingularity = image
 
-			cmd, cleanup, err = job.CmdLine(ctx)
+			cmd, cleanup, err = job.CmdLine(ctx, "")
 			So(err, ShouldBeNil)
 			So(cleanup, ShouldNotBeNil)
 
@@ -692,7 +692,7 @@ func TestJob(t *testing.T) {
 			Convey("That ContainerImageUser does not change, singularity having no such option", func() {
 				job.ContainerImageUser = true
 
-				cmd, cleanup, err = job.CmdLine(ctx)
+				cmd, cleanup, err = job.CmdLine(ctx, "")
 				So(err, ShouldBeNil)
 				So(cleanup, ShouldNotBeNil)
 
@@ -705,7 +705,7 @@ func TestJob(t *testing.T) {
 				job.ContainerMounts = "/foo/bar:/bar,/foo/baz:/baz"
 				So(job.EnvAddOverride([]string{"FOO=bar", "OOF=rab"}), ShouldBeNil)
 
-				cmd, cleanup, err = job.CmdLine(ctx)
+				cmd, cleanup, err = job.CmdLine(ctx, "")
 				So(err, ShouldBeNil)
 				So(cleanup, ShouldNotBeNil)
 

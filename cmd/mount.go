@@ -28,6 +28,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/signal"
 	"slices"
@@ -230,7 +231,7 @@ not cached, only serial writes are possible.`,
 
 		// now daemonize unless in foreground mode
 		if foreground {
-			mountAndWait(configs)
+			mountAndWait(configs, mountConfig)
 
 			return
 		}
@@ -249,6 +250,24 @@ func init() {
 	mountCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "do not daemonize")
 	mountCmd.Flags().BoolVarP(&mountVerbose, "verbose", "v", false, "print timing info on all remote calls")
 }
+
+// mountedFS is a file system mountAndWait has mounted, and so must unmount.
+type mountedFS interface {
+	Unmount(doNotUpload ...bool) error
+}
+
+// unmountAll unmounts each of the given file systems, warning about any that
+// fail to unmount.
+func unmountAll(mounted []mountedFS) {
+	for _, fs := range mounted {
+		if err := fs.Unmount(); err != nil {
+			warn("failed to unmount: %s", err)
+		}
+	}
+}
+
+// mountFunc mounts one MountConfig, returning what it mounted.
+type mountFunc func(mc jobqueue.MountConfig) (mountedFS, error)
 
 // mountDaemonized daemonizes and then does the work of this cmd in the
 // daemonized child process, which runs until signalled to stop.
@@ -287,7 +306,7 @@ func mountDaemonized(configs jobqueue.MountConfigs) {
 	// uploads to do
 	signal.Ignore(syscall.SIGPIPE)
 
-	mountAndWait(configs)
+	mountAndWait(configs, mountConfig)
 }
 
 // mountDaemonEnv returns the environment for the daemonized child: our own,
@@ -338,38 +357,70 @@ func resolvedMountConfigs() jobqueue.MountConfigs {
 	return mountParse(mountJSON, mountSimple).Resolve(mountCwd())
 }
 
-// mountAndWait mounts the given configs, then waits for a signal to unmount
-// them and return.
-func mountAndWait(configs jobqueue.MountConfigs) {
-	mounted := make([]*muxfys.MuxFys, 0, len(configs))
+// mountAndWait mounts the given configs with mount, then waits for a signal to
+// unmount them and return.
+//
+// If any config fails to mount, it unmounts the ones it has already mounted
+// before dying with the error, so that it does not exit leaving live mounts
+// behind with no process left to signal. For the same reason it listens for
+// the signal before it starts mounting: one that arrives part way through is
+// acted on once the mount in progress returns, unmounting everything mounted,
+// instead of killing the process with the earlier mounts still live.
+func mountAndWait(configs jobqueue.MountConfigs, mount mountFunc) {
+	deathSignals := make(chan os.Signal, deathSignalBuffer)
+	signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
 
-	for _, mc := range configs {
-		// (we can't use each fs's UnmountOnDeath() function because they
-		// won't wait for each other)
-		mounted = append(mounted, mountConfig(mc))
-	}
+	defer signal.Stop(deathSignals)
 
-	if len(mounted) == 0 {
+	mounted, signalled := mountEach(configs, mount, deathSignals)
+	if signalled || len(mounted) == 0 {
+		unmountAll(mounted)
+
 		return
 	}
 
 	// wait for death
-	deathSignals := make(chan os.Signal, deathSignalBuffer)
-	signal.Notify(deathSignals, os.Interrupt, syscall.SIGTERM)
 	<-deathSignals
 
-	for _, fs := range mounted {
-		err := fs.Unmount()
-		if err != nil {
-			fs.Error("Failed to unmount", "err", err)
-		}
-	}
+	unmountAll(mounted)
 }
 
-// mountConfig creates and mounts a MuxFys for the given MountConfig, dying on
-// any error.
-func mountConfig(mc jobqueue.MountConfig) *muxfys.MuxFys {
-	rcs := mountRemoteConfigs(mc)
+// mountEach mounts each of the given configs with mount, returning what it
+// mounted. It stops early, returning true, if a signal arrives on deathSignals
+// part way through. If a config fails to mount, it unmounts what it mounted and
+// dies with the error.
+func mountEach(configs jobqueue.MountConfigs, mount mountFunc,
+	deathSignals <-chan os.Signal,
+) ([]mountedFS, bool) {
+	mounted := make([]mountedFS, 0, len(configs))
+
+	for _, mc := range configs {
+		// (we can't use each fs's UnmountOnDeath() function because they
+		// won't wait for each other)
+		fs, err := mount(mc)
+		if err != nil {
+			unmountAll(mounted)
+			die("%s", err)
+		}
+
+		mounted = append(mounted, fs)
+
+		select {
+		case <-deathSignals:
+			return mounted, true
+		default:
+		}
+	}
+
+	return mounted, false
+}
+
+// mountConfig creates and mounts a MuxFys for the given MountConfig.
+func mountConfig(mc jobqueue.MountConfig) (mountedFS, error) {
+	rcs, err := mountRemoteConfigs(mc)
+	if err != nil {
+		return nil, err
+	}
 
 	retries := defaultMountRetries
 	if mc.Retries > 0 {
@@ -383,30 +434,30 @@ func mountConfig(mc jobqueue.MountConfig) *muxfys.MuxFys {
 		Verbose:   mc.Verbose,
 	})
 	if err != nil {
-		die("bad configuration: %s\n", err)
+		return nil, fmt.Errorf("bad configuration: %w", err)
 	}
 
 	if err = fs.Mount(rcs...); err != nil {
-		die("could not mount: %s\n", err)
+		return nil, fmt.Errorf("could not mount: %w", err)
 	}
 
-	return fs
+	return fs, nil
 }
 
 // mountRemoteConfigs builds the muxfys RemoteConfigs for the given
-// MountConfig's Targets, dying on any error.
-func mountRemoteConfigs(mc jobqueue.MountConfig) []*muxfys.RemoteConfig {
+// MountConfig's Targets.
+func mountRemoteConfigs(mc jobqueue.MountConfig) ([]*muxfys.RemoteConfig, error) {
 	rcs := make([]*muxfys.RemoteConfig, 0, len(mc.Targets))
 
 	for _, mt := range mc.Targets {
 		accessorConfig, err := muxfys.S3ConfigFromEnvironment(mt.Profile, mt.Path)
 		if err != nil {
-			die("had a problem reading S3 config values from the environment: %s", err)
+			return nil, fmt.Errorf("had a problem reading S3 config values from the environment: %w", err)
 		}
 
 		accessor, err := muxfys.NewS3Accessor(accessorConfig)
 		if err != nil {
-			die("had a problem creating an S3 accessor: %s", err)
+			return nil, fmt.Errorf("had a problem creating an S3 accessor: %w", err)
 		}
 
 		rcs = append(rcs, &muxfys.RemoteConfig{
@@ -417,7 +468,7 @@ func mountRemoteConfigs(mc jobqueue.MountConfig) []*muxfys.RemoteConfig {
 		})
 	}
 
-	return rcs
+	return rcs, nil
 }
 
 // mountParse takes possible json string or simple string (as per `wr mount -h`)

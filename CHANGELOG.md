@@ -61,6 +61,8 @@ project adheres to [Semantic Versioning](http://semver.org/).
   make the mount read-only; it is no longer accepted, so drop it from new
   submissions and modifications. Commands already in the queue keep running with
   the mounts they were added with.
+- Backwards incompatible change to the Go API: `jobqueue.Job.CmdLine` and
+  `container.PrepareCmdFile` now take the dir to make the command file in.
 
 - `wr add` now explains its duplicate count instead of just totalling it: how
   many of your commands were already in the queue, how many had already
@@ -79,6 +81,26 @@ project adheres to [Semantic Versioning](http://semver.org/).
   cleaned up after it at the same time. A working directory that the other
   cleanup has already removed is now treated as done, and the empty
   directories above it are still removed.
+- The small file wr writes each `--with_docker` or `--with_singularity`
+  command to is now made in that command's own TMPDIR, instead of the system
+  tmp dir of the runner, so it is removed with the command's workspace. Before,
+  a runner that was killed, for example by the scheduler, left the file behind
+  in `/tmp`. (`--cwd_matters` commands have no TMPDIR of wr's, so theirs is
+  still made in the system tmp dir.)
+- A path you give wr that starts with `~/` followed by another `~`, such as a
+  `manager_dir` of `~/~wr` or a `--cloud_config_files` file of `~/~cfg/a`, now
+  means that path in your home directory. Before, wr dropped every `~` and `/`
+  after the first `~/`, so it used `<home>/wr` or `<home>/cfg/a` instead and
+  did not say so. A path of just `~` now also means your home directory.
+- A command added with `--change_home` can now run `wr` itself, for example to
+  `wr add` more commands. Before, that `wr` looked for the manager's token in
+  the command's working directory, because `--change_home` makes that HOME, so
+  it failed to connect.
+- `wr mount` given several mounts no longer leaves the earlier ones mounted
+  when a later one fails. Before, it exited with the error while the earlier
+  mounts stayed live with no process left to unmount them, and you had to find
+  and `fusermount -u` them yourself. It now unmounts them before it exits. The
+  same goes for a signal to stop that arrives while it is still mounting.
 - A network blip on a `wr add --sync`, a `client` package `WaitForJobs` or any
   other Go client job subscription left a copy of that subscription behind on
   the manager each time the client reconnected, for as long as the manager ran.

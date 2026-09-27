@@ -211,6 +211,12 @@ be relative to your own set cwd path (otherwise you'd have to find out the
 actual cwd value in the status of a job). It also lets you specify relative
 paths to your input files in your cmd, assuming they are in your cwd.
 
+With cwd_matters false, "cwd" is not part of what makes a command unique: the
+same cmd added again with a different cwd (including on another line of your
+input file) is a duplicate of the first, so it is not added and does not run
+again, and the one command runs in the cwd it was first added with. Set
+cwd_matters if you need the same cmd to run in each of several directories.
+
 Because cwd_matters false means commands with relative paths in them won't
 work, and this is unexpected by new users, wr tries to detect this situation
 and warns about it. It's possible for wr to get this wrong, however, so there is

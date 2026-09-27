@@ -44,19 +44,20 @@ func RelToAbsPath(path string, dir string) string {
 	return absPath
 }
 
-// TildaToHome converts a path beginning with ~/ to the absolute path based in
-// the current home directory. If that cannot be determined, path is returned
-// unaltered.
+// TildaToHome converts a path that is "~", or begins with "~/", to the
+// absolute path based in the current home directory. Only that leading tilda is
+// replaced: "~/~bk" is the directory "~bk" in home, and "~bk" is returned as it
+// is, being a relative path. If the home directory cannot be determined, path is
+// returned unaltered.
 func TildaToHome(path string) string {
-	if path == "" {
-		return ""
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path
 	}
 
-	home, herr := os.UserHomeDir()
-	if herr == nil && home != "" && strings.HasPrefix(path, "~/") {
-		path = strings.TrimLeft(path, "~/")
-		path = filepath.Join(home, path)
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
 	}
 
-	return path
+	return filepath.Join(home, strings.TrimPrefix(path, "~"))
 }

@@ -50,6 +50,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
+	fp "github.com/VertebrateResequencing/wr/fs/filepath"
 	infoblox "github.com/fanatic/go-infoblox"
 	"github.com/shirou/gopsutil/v4/mem"
 )
@@ -210,17 +211,11 @@ func parseIDCmd(idopts ...string) (string, error) {
 	return strings.TrimSuffix(string(idout), "\n"), err
 }
 
-// TildaToHome converts a path beginning with ~/ to the absolute path based in
-// the current home directory. If that cannot be determined, path is returned
-// unaltered.
+// TildaToHome converts a path that is "~", or begins with "~/", to the
+// absolute path based in the current home directory, exactly as
+// fs/filepath.TildaToHome does.
 func TildaToHome(path string) string {
-	home, herr := os.UserHomeDir()
-	if herr == nil && home != "" && strings.HasPrefix(path, "~/") {
-		path = strings.TrimLeft(path, "~/")
-		path = filepath.Join(home, path)
-	}
-
-	return path
+	return fp.TildaToHome(path)
 }
 
 // ProcMeminfoMBs uses gopsutil (amd64 freebsd, linux, windows, darwin, openbds

@@ -53,3 +53,27 @@ func TestPath(t *testing.T) {
 		So(TildaToHome("~/testing_absolute_path.text"), ShouldEqual, filepth)
 	})
 }
+
+func TestTildaToHomeStripsOnlyTheLeadingTilda(t *testing.T) {
+	Convey("Given a home directory", t, func() {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+
+		Convey("TildaToHome replaces only a leading ~/ or a bare ~ with it", func() {
+			for _, tc := range []struct{ path, want string }{
+				{"~/~bk/db", filepath.Join(home, "~bk", "db")},
+				{"~", home},
+				{"~/", home},
+				{"~/db", filepath.Join(home, "db")},
+				{"~/~/x", filepath.Join(home, "~", "x")},
+				{"~///a", filepath.Join(home, "a")},
+				{"~bk/db", "~bk/db"},
+				{"/abs/~/x", "/abs/~/x"},
+				{"rel/path", "rel/path"},
+				{"", ""},
+			} {
+				So(TildaToHome(tc.path), ShouldEqual, tc.want)
+			}
+		})
+	})
+}

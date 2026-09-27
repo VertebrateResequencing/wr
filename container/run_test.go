@@ -418,7 +418,7 @@ func TestRunPrepare(t *testing.T) {
 
 	Convey("You can prepare a temporary command file", t, func() {
 		envCmd := "export FOO=bar; echo $FOO && echo $FOO"
-		path, cleanup, err := PrepareCmdFile(ctx, envCmd)
+		path, cleanup, err := PrepareCmdFile(ctx, "", envCmd)
 		So(err, ShouldBeNil)
 		So(path, ShouldNotBeBlank)
 
@@ -445,18 +445,29 @@ func TestRunPrepare(t *testing.T) {
 		})
 	})
 
+	Convey("You can prepare the command file in a dir of your choosing", t, func() {
+		dir := t.TempDir()
+
+		path, cleanup, err := PrepareCmdFile(ctx, dir, "foo")
+		So(err, ShouldBeNil)
+
+		defer cleanup()
+
+		So(filepath.Dir(path), ShouldEqual, dir)
+	})
+
 	Convey("Issues with the tmp dir will prevent command file creation", t, func() {
 		tmpdir := os.Getenv("TMPDIR")
 
 		os.Setenv("TMPDIR", "/asdf")
 		defer os.Setenv("TMPDIR", tmpdir)
 
-		_, _, err := PrepareCmdFile(ctx, "foo")
+		_, _, err := PrepareCmdFile(ctx, "", "foo")
 		So(err, ShouldNotBeNil)
 	})
 
 	Convey("Write issues during PrepareCmdFile() would be detected and delete the file", t, func() {
-		f, cleanup, err := createTmpFileAndCleanupMethod(ctx)
+		f, cleanup, err := createTmpFileAndCleanupMethod(ctx, "")
 		So(err, ShouldBeNil)
 
 		So(fileExists(f.Name()), ShouldBeTrue)
@@ -629,7 +640,7 @@ func realTestSetup(t *testing.T, exe, containerCmd string, names realTestDirName
 			mounts, cleanup, err
 	}
 
-	cmdFile, cmdFileCleanup, err := PrepareCmdFile(context.Background(), containerCmd)
+	cmdFile, cmdFileCleanup, err := PrepareCmdFile(context.Background(), "", containerCmd)
 	if err != nil {
 		removeTestRootDir(t, rootDir)
 

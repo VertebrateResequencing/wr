@@ -184,24 +184,9 @@ complete.`,
 
 		// in case any job we execute has a Cmd that calls `wr add`, we will
 		// override their environment to make that call work
-		overrider := &jobEnvOverrider{}
-
-		if rserver != "" {
-			hostPort := strings.Split(rserver, ":")
-			if len(hostPort) == hostPortParts {
-				overrider.base = append(overrider.base, "WR_MANAGERHOST="+hostPort[0])
-				overrider.base = append(overrider.base, "WR_MANAGERPORT="+hostPort[1])
-			}
-
-			overrider.base = append(overrider.base, "WR_MANAGERCERTDOMAIN="+rdomain)
-
-			// later we will add our own wr exe to the path if not there
-			exe, err := osext.Executable()
-			if err != nil {
-				die("%s", err)
-			}
-
-			overrider.exePath = filepath.Dir(exe)
+		overrider, err := newJobEnvOverrider(rserver, rdomain)
+		if err != nil {
+			die("%s", err)
 		}
 
 		// we'll stop the below loop before using up too much time
@@ -277,7 +262,7 @@ complete.`,
 					break
 				}
 
-				err = job.EnvAddOverride(overrider.overridesFor(env))
+				err = job.EnvAddOverride(overrider.overridesFor(env, job.ChangeHome))
 				if err != nil {
 					err = jq.Release(job, nil, "failed to add env var overrides")
 					if err != nil {
@@ -383,10 +368,43 @@ func init() {
 // jobEnvOverrider builds the environment overrides a runner applies to each job
 // it runs: the manager's connection details, which are the same for every job,
 // plus the runner's own exe directory appended to the job's PATH when the job's
-// PATH lacks it, so that a Cmd calling `wr add` finds the wr exe.
+// PATH lacks it, so that a Cmd calling `wr add` finds the wr exe, plus the
+// manager dir for a --change_home job.
 type jobEnvOverrider struct {
-	base    []string
-	exePath string
+	base       []string
+	exePath    string
+	managerDir string
+}
+
+// newJobEnvOverrider returns the jobEnvOverrider for a runner connected to the
+// manager at server ("ip:port"), whose certificate is valid for domain. With no
+// server there is nothing to override.
+func newJobEnvOverrider(server, domain string) (*jobEnvOverrider, error) {
+	overrider := &jobEnvOverrider{}
+
+	if server == "" {
+		return overrider, nil
+	}
+
+	hostPort := strings.Split(server, ":")
+	if len(hostPort) == hostPortParts {
+		overrider.base = append(overrider.base, "WR_MANAGERHOST="+hostPort[0])
+		overrider.base = append(overrider.base, "WR_MANAGERPORT="+hostPort[1])
+	}
+
+	overrider.base = append(overrider.base, "WR_MANAGERCERTDOMAIN="+domain)
+
+	overrider.managerDir = strings.TrimSuffix(config.ManagerDir, "_"+config.Deployment)
+
+	// later we will add our own wr exe to the path if not there
+	exe, err := osext.Executable()
+	if err != nil {
+		return nil, err
+	}
+
+	overrider.exePath = filepath.Dir(exe)
+
+	return overrider, nil
 }
 
 // overridesFor returns the overrides to apply to a job whose environment is
@@ -401,8 +419,21 @@ type jobEnvOverrider struct {
 // is concerned, so it is skipped rather than read for a value it does not have.
 // A job stored with a bare "PATH" therefore runs with the base overrides alone,
 // where reading it used to panic and kill the runner.
-func (j *jobEnvOverrider) overridesFor(env []string) []string {
+//
+// A changeHome job also gets WR_MANAGERDIR, set to this runner's manager dir
+// without its deployment suffix. --change_home sets the job's HOME to its
+// working directory, so a `wr` its Cmd runs would otherwise look for the
+// default ~/.wr there, and not find the manager's token. With it, that `wr`
+// finds its token, CA and address files where it would without --change_home,
+// including under another deployment's dir if it is told to use one. A job
+// without --change_home already has that dir under its own HOME, so it gets no
+// such override.
+func (j *jobEnvOverrider) overridesFor(env []string, changeHome bool) []string {
 	overrides := slices.Clone(j.base)
+
+	if changeHome && j.managerDir != "" {
+		overrides = append(overrides, "WR_MANAGERDIR="+j.managerDir)
+	}
 
 	for _, envvar := range env {
 		name, path, ok := strings.Cut(envvar, "=")
