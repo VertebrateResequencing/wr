@@ -70,25 +70,26 @@ import (
 
 // FailReason* are the reasons for cmd line failure stored on Jobs.
 const (
-	FailReasonEnv      = "failed to get environment variables"
-	FailReasonCwd      = "working directory does not exist"
-	FailReasonStart    = "command failed to start"
-	FailReasonCPerm    = "command permission problem"
-	FailReasonCFound   = "command not found"
-	FailReasonCArgs    = "command line too long"
-	FailReasonCExit    = "command invalid exit code"
-	FailReasonExit     = "command exited non-zero"
-	FailReasonRAM      = "command used too much RAM"
-	FailReasonDisk     = "ran out of disk space"
-	FailReasonTime     = "command used too much time"
-	FailReasonDocker   = "could not interact with docker"
-	FailReasonAbnormal = "command failed to complete normally"
-	FailReasonLost     = "lost contact with runner"
-	FailReasonSignal   = "runner received a signal to stop"
-	FailReasonResource = "resource requirements cannot be met"
-	FailReasonMount    = "mounting of remote file system(s) failed"
-	FailReasonUpload   = "failed to upload files to remote file system"
-	FailReasonKilled   = "killed by user request"
+	FailReasonEnv       = "failed to get environment variables"
+	FailReasonCwd       = "working directory does not exist"
+	FailReasonStart     = "command failed to start"
+	FailReasonCPerm     = "command permission problem"
+	FailReasonCFound    = "command not found"
+	FailReasonCArgs     = "command line too long"
+	FailReasonCExit     = "command invalid exit code"
+	FailReasonExit      = "command exited non-zero"
+	FailReasonRAM       = "command used too much RAM"
+	FailReasonDisk      = "ran out of disk space"
+	FailReasonTime      = "command used too much time"
+	FailReasonDocker    = "could not interact with docker"
+	FailReasonAbnormal  = "command failed to complete normally"
+	FailReasonLost      = "lost contact with runner"
+	FailReasonSignal    = "runner received a signal to stop"
+	FailReasonResource  = "resource requirements cannot be met"
+	FailReasonMount     = "mounting of remote file system(s) failed"
+	FailReasonUpload    = "failed to upload files to remote file system"
+	FailReasonKilled    = "killed by user request"
+	FailReasonContainer = "container failed to start"
 )
 
 // JobCwdEnvVar is the environment variable a run's command finds its Job's own
@@ -146,6 +147,9 @@ const (
 	exitCodeCommandNotFound   = 127
 	exitCodeCommandInvalid    = 128
 	exitCodeAbnormal          = 255
+
+	dockerStartFailureExitCode      = 125
+	singularityStartFailureExitCode = 255
 
 	// exitCodeUploadFailure is recorded for a job whose command exited zero but
 	// whose output could not be uploaded to its writable mount.
@@ -1422,6 +1426,34 @@ func signalledAfterExitErr(job *Job, myerr error) error {
 	}
 
 	return fmt.Errorf("%w; %w", sigErr, myerr)
+}
+
+// plainExitFailReason returns the fail reason for a non-zero exit that isn't
+// otherwise special: FailReasonContainer if the job ran in a container and
+// exited with the code that container's runtime uses when it cannot start it
+// (docker's 125, or singularity's 255, which is also what it exits with for a
+// bad image or bind), otherwise FailReasonExit.
+//
+// Both runtimes also pass on the exit code of the command inside the container,
+// so a command that itself exits with that code gets this reason too. Only the
+// reason differs: the job is still released or buried exactly as for any other
+// non-zero exit, and its stderr, where the runtime explains itself, is kept as
+// usual.
+func plainExitFailReason(job *Job, exitcode int) string {
+	startFailureCode := 0
+
+	switch {
+	case job.WithDocker != "":
+		startFailureCode = dockerStartFailureExitCode
+	case job.WithSingularity != "":
+		startFailureCode = singularityStartFailureExitCode
+	}
+
+	if startFailureCode != 0 && exitcode == startFailureCode {
+		return FailReasonContainer
+	}
+
+	return FailReasonExit
 }
 
 // dialClientSocket creates a req socket configured with TLS for the given
@@ -3597,7 +3629,7 @@ func (c *Client) classifyReleasedExit(in execOutcomeInput, waitStatus syscall.Wa
 		out.failreason = FailReasonSignal
 		out.myerr = signalExitError(job, waitStatus, in.mayBeTemp, cmdOut)
 	default:
-		out.failreason = FailReasonExit
+		out.failreason = plainExitFailReason(job, exitcode)
 		out.dobury, out.myerr = plainExitOutcome(job, exitcode, in.mayBeTemp, cmdOut)
 	}
 
@@ -3634,7 +3666,7 @@ func maybeAppendHighMemoryNote(err error, failreason string, in execOutcomeInput
 
 // plainExitOutcome classifies a non-zero exit that isn't otherwise special: if
 // the job has run past its no-retries-over-walltime it is buried, otherwise it
-// is released for a retry. The fail reason is always FailReasonExit.
+// is released for a retry. plainExitFailReason gives its fail reason.
 func plainExitOutcome(job *Job, exitcode int, mayBeTemp, cmdOut string) (bury bool, err error) {
 	if noRetriesTimeExceeded(job) {
 		//nolint:err113

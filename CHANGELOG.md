@@ -116,6 +116,15 @@ project adheres to [Semantic Versioning](http://semver.org/).
   `--modules`, and the LSF scheduler ignores an empty queue name to avoid or
   choose from, however it reached it (including the `queues_avoid` field of a
   REST or JSON job).
+- A `--with_docker` command that docker could not start, for example because
+  its image could not be pulled, was reported with the fail reason "command
+  exited non-zero", as if the command had run. It is now reported as
+  "container failed to start" when docker exits with its own start-failure
+  code, 125, and likewise for `--with_singularity` when singularity exits with
+  255. A command that itself exits with that code inside the container is
+  reported the same way, since wr cannot tell the two apart; `wr status` shows
+  the runtime's own explanation in the command's stderr. Whether the command is
+  retried or buried is unchanged.
 - A network blip on a `wr add --sync`, a `client` package `WaitForJobs` or any
   other Go client job subscription left a copy of that subscription behind on
   the manager each time the client reconnected, for as long as the manager ran.
