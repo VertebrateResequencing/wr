@@ -662,8 +662,8 @@ func combineExecOutcomes(unmount, cmd execOutcome) execOutcome {
 // ErrPermissionDenied. A client made with this function, on such a rejection,
 // re-reads tokenFile and, only if it now holds a different token, adopts it and
 // sends the rejected request once more. It never retries more than once per
-// request, and never if the file is unchanged or unreadable. A blank tokenFile
-// returns ErrNoTokenFile.
+// request, and never if the file is unchanged or unreadable. An empty tokenFile
+// path (as opposed to a file with no token in it) returns ErrNoTokenFile.
 func ConnectWithTokenFile(addr, caFile, certDomain, tokenFile string, timeout time.Duration) (*Client, error) {
 	if tokenFile == "" {
 		return nil, ErrNoTokenFile
