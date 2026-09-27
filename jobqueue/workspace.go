@@ -990,6 +990,10 @@ func (ws *jobWorkSpace) empty(chain dirChain) error {
 	}
 	defer workSpace.root.Close()
 
+	if workSpaceOpenedHook != nil {
+		workSpaceOpenedHook()
+	}
+
 	actualCwd, err := ws.actualCwdNow(workSpace.root)
 	if err != nil {
 		return err
@@ -1108,10 +1112,15 @@ func (ws *jobWorkSpace) muxfysNamedCache(name string) bool {
 // names, which is the half keptEntry has no handle to ask. Those names never
 // match anything deeper than the top level either way, being single components
 // where a path below it has a separator in it.
+//
+// A workspace removed since empty opened it reads as ENOENT through the handle
+// that outlived its name, and that is the same "already gone" empty tolerates at
+// the open, for the same reason: another cleanup of the Job got there first, and
+// erroring would skip the empty parents cleanup goes on to tidy.
 func (ws *jobWorkSpace) removeWorkSpaceEntries(workSpace sweptDir) error {
 	entries, err := readDirIn(workSpace.root)
 	if err != nil {
-		return err
+		return ignoreGone(err)
 	}
 
 	wsInfo, ok, err := workSpace.sweepable()

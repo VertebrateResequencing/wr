@@ -66,6 +66,13 @@ var cleanupProvenHook func() //nolint:gochecknoglobals
 // place from run to run.
 var sweptDirCheckedHook func(name string) //nolint:gochecknoglobals
 
+// workSpaceOpenedHook, when set, is called by jobWorkSpace.empty once it has
+// opened and verified a handle on the workspace and before it lists or sweeps
+// the workspace's entries through that handle, so that a test can take the
+// workspace away in that window, as a second cleanup of the same Job does. It
+// is nil in production.
+var workSpaceOpenedHook func() //nolint:gochecknoglobals
+
 // runResolvedHook and runProvenHook, when set, are called in the two windows a
 // `run` Behaviour has to survive, so that a test can swap something in during
 // them; both are nil in production.
