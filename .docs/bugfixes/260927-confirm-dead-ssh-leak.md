@@ -58,3 +58,7 @@
   500 dumps in 5s. It is now 100ms, the interval the goroutines were seen to
   unwind within. No red test: this is a sampling interval, and the check it
   drives is unchanged. The test still passes with `leaked=0`.
+- [x] PR #626 review: `leaked := settled - base` could log a negative count
+  if ssh goroutines that existed before the checks exited during them. It is
+  now `max(settled-base, 0)`. No red test: the fail condition `leaked > 0`
+  gives the same result either way, so only the log line changes.

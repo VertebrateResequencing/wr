@@ -116,7 +116,7 @@ func TestReliable4ConfirmDeadSSHLeak(t *testing.T) {
 	}
 
 	peak, settled := reliable4CDLeakSettledSSHGoroutines(base)
-	leaked := settled - base
+	leaked := max(settled-base, 0) // unrelated ssh goroutines exiting can take settled under base
 
 	t.Logf("CONFIRMDEAD-LEAK: %d confirm-dead ssh checks to %s -> ssh-client goroutines base=%d peak=%d "+
 		"settled=%d leaked=%d (after up to %s to settle)", n, host, base, peak, settled, leaked, reliable4CDLeakSettle)
