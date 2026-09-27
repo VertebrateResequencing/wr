@@ -76,6 +76,16 @@ func TestIsManagerArgs(t *testing.T) {
 			So(isManagerArgs(args, dep), ShouldBeFalse)
 		}
 	})
+
+	Convey("a daemonized manager's argv names its resolved deployment, whatever --deployment it was given", t, func() {
+		const dep = "production"
+
+		// an unknown --deployment value resolves to the default deployment
+		args := daemonArgs([]string{"wr", managerWord, startWord, deploymentFlag, "prod"}, dep, "-c", "/abs/path")
+
+		So(isManagerArgs(args, dep), ShouldBeTrue)
+		So(args[len(args)-2:], ShouldResemble, []string{"-c", "/abs/path"})
+	})
 }
 
 // managerStopTestProcess is a child process the test started and reaps in the

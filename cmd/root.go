@@ -761,25 +761,27 @@ func createWorkingDir() {
 // args (to eg. re-specify an option with a relative path with an absolute
 // path).
 func daemonize(pidFile string, umask int, extraArgs ...string) (*os.Process, *daemon.Context) {
-	args := os.Args
-
-	hadDeployment := slices.Contains(args, deploymentFlag)
-	if !hadDeployment {
-		args = append(args, deploymentFlag)
-		args = append(args, config.Deployment)
-	}
-
-	args = append(args, extraArgs...)
-
 	dContext := &daemon.Context{
 		PidFileName: pidFile,
 		PidFilePerm: daemonPidFilePerm,
 		WorkDir:     "/",
-		Args:        args,
+		Args:        daemonArgs(os.Args, config.Deployment, extraArgs...),
 		Umask:       umask,
 	}
 
 	return reborn(dContext, pidFile), dContext
+}
+
+// daemonArgs returns the argv for daemonize()'s child: args, then a
+// deploymentFlag for the resolved deployment, then extraArgs. The flag is added
+// even if args already have one, since the last one wins and args may give a
+// value (such as an unknown name) that resolved to a different deployment;
+// isManagerProcess relies on the resolved name being in the argv.
+func daemonArgs(args []string, deployment string, extraArgs ...string) []string {
+	out := slices.Clone(args)
+	out = append(out, deploymentFlag, deployment)
+
+	return append(out, extraArgs...)
 }
 
 // reborn calls Reborn() on the given context, retrying once after deleting the
