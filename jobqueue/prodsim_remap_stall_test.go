@@ -52,8 +52,6 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-var prodsimFillBucket = []byte("prodsimfill")
-
 // TestProdsimBackupRemapStall reports the worst latency of a trivial database
 // read and of a small write while a paced backup copy is running, first when
 // the writes stay inside the current mmap and then when one of them crosses
@@ -91,10 +89,17 @@ func prodsimRemapRun(t *testing.T, dir string, cross bool, backupSecs float64) (
 	ctx := context.Background()
 	dbFile := filepath.Join(dir, fmt.Sprintf("remap-%v.db", cross))
 
-	os.Remove(dbFile)               //nolint:errcheck
-	os.Remove(dbFile + "_bk")       //nolint:errcheck
-	defer os.Remove(dbFile)         //nolint:errcheck
-	defer os.Remove(dbFile + "_bk") //nolint:errcheck
+	fillBucket := []byte("prodsimfill")
+	removeDB := func() {
+		for _, f := range []string{dbFile, dbFile + "_bk"} {
+			if errr := os.Remove(f); errr != nil && !os.IsNotExist(errr) {
+				t.Logf("could not remove %s: %s", f, errr)
+			}
+		}
+	}
+
+	removeDB()
+	t.Cleanup(removeDB)
 
 	// fill to ~100MiB in a first open, so the reopen maps 128MiB and ~28MiB of
 	// writes cross it.
@@ -104,9 +109,10 @@ func prodsimRemapRun(t *testing.T, dir string, cross bool, backupSecs float64) (
 	}
 
 	value := make([]byte, 1<<20)
+
 	for i := range 100 {
 		if err = db1.bolt.Update(func(tx *bolt.Tx) error {
-			b, errc := tx.CreateBucketIfNotExists(prodsimFillBucket)
+			b, errc := tx.CreateBucketIfNotExists(fillBucket)
 			if errc != nil {
 				return errc
 			}
@@ -125,7 +131,11 @@ func prodsimRemapRun(t *testing.T, dir string, cross bool, backupSecs float64) (
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer testDB.close(ctx) //nolint:errcheck
+	defer func() {
+		if errc := testDB.close(ctx); errc != nil {
+			t.Logf("close: %s", errc)
+		}
+	}()
 
 	// slow the real backup copy to backupSecs, as a multi-GB copy to NFS is.
 	info, _ := os.Stat(dbFile) //nolint:errcheck
@@ -154,8 +164,11 @@ func prodsimRemapRun(t *testing.T, dir string, cross bool, backupSecs float64) (
 		defer wg.Done()
 
 		t0 := time.Now()
+
 		testDB.backupToBackupFile(ctx, false)
+
 		backupTook = time.Since(t0)
+
 		done.Store(true)
 	}()
 
@@ -169,7 +182,11 @@ func prodsimRemapRun(t *testing.T, dir string, cross bool, backupSecs float64) (
 
 		for !done.Load() {
 			t0 := time.Now()
-			testDB.retrieveLastCompletionTimeByRepGroup([]string{"rg"}) //nolint:errcheck
+
+			if _, errr := testDB.retrieveLastCompletionTimeByRepGroup([]string{"rg"}); errr != nil {
+				t.Logf("read: %s", errr)
+			}
+
 			record(time.Since(t0), &maxRead)
 			time.Sleep(50 * time.Millisecond)
 		}
@@ -186,10 +203,12 @@ func prodsimRemapRun(t *testing.T, dir string, cross bool, backupSecs float64) (
 		}
 
 		t0 := time.Now()
-		if err = testDB.bolt.Update(func(tx *bolt.Tx) error {
-			return tx.Bucket(prodsimFillBucket).Put(key, val)
-		}); err != nil {
-			t.Fatal(err)
+
+		err = testDB.bolt.Update(func(tx *bolt.Tx) error {
+			return tx.Bucket(fillBucket).Put(key, val)
+		})
+		if err != nil {
+			break
 		}
 
 		record(time.Since(t0), &maxWrite)
@@ -197,6 +216,10 @@ func prodsimRemapRun(t *testing.T, dir string, cross bool, backupSecs float64) (
 	}
 
 	wg.Wait()
+
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	return maxRead, maxWrite, backupTook
 }
