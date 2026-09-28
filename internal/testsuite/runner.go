@@ -82,9 +82,9 @@ var (
 var ErrSuiteFailed = errors.New("test suite failed")
 
 // lanesLongestFirst lists the parallel lanes from longest to shortest, as
-// measured on CI's 4-CPU runners, taking the slower of make test and make race
-// for each. Starting the longest lanes first stops a long lane that happened to
-// start last from becoming the critical path while the other slots sit idle.
+// measured on 4 CPUs, taking the slower of make test and make race for each.
+// Starting the longest lanes first stops a long lane that happened to start
+// last from becoming the critical path while the other slots sit idle.
 // Lanes missing from the list are short and start last.
 //
 //nolint:gochecknoglobals // A read-only ordering table.
@@ -93,49 +93,50 @@ var lanesLongestFirst = []string{
 	"jq_default",
 	"jq_reliable2",
 	"jq_default_a_k",
-	"cmd_default",
 	"jq_default_l_r",
-	"jq_dep_granularity",
 	"scheduler",
-	"other",
+	"jq_dep_granularity",
 	"production",
-	"modify_a",
-	"jq_execution_details",
 	"jqA1",
+	"other",
+	"jq_execution_details",
+	"modify_a",
 	"signal_a",
+	"cmd_default",
 	"server_webi",
-	"cmd_resume",
 	"client_a",
-	"jq_sub_live",
-	"jq_sub_aggregate",
-	"cmd_suspend",
+	"jq_execution_retries",
 	"jq_payload",
 	"modify_b",
-	"jq_execution_retries",
-	"subscription_catchup",
-	"jq_dependency",
-	"jq_sub_add",
-	"jq_sub_long",
-	"cmd_status",
-	"client_wait",
 	"runner_scheduling_a",
+	"subscription_catchup",
+	"jq_sub_aggregate",
 	"mock",
-	"runner_lost_jobs",
-	"client_wait_jobs",
+	"jq_sub_long",
 	"jobqueue_basics",
-	"cmd_add",
+	"jq_sub_add",
+	"jq_sub_live",
+	"runner_lost_jobs",
+	"client_wait",
 	"cloud",
 	"jq_rest_extra",
-	"jq_status",
-	"subscription_teardown",
-	"job_subscriptions",
-	"client_basics",
-	"runner_failure_retry",
+	"client_wait_jobs",
+	"jq_dependency",
 	"jq_repgroup_dependencies",
+	"job_subscriptions",
 	"runner_scheduling_b",
+	"subscription_teardown",
+	"jq_status",
+	"runner_failure_retry",
 	"signal_b",
+	"cmd_resume",
 	"runner_auto_execution",
 	"runner_resource_learning",
+	"cmd_status",
+	"cmd_suspend",
+	"client_basics",
+	"runner_kill_requests",
+	"cmd_add",
 }
 
 // runInOrder calls run for each index from 0 to count-1, at most limit at a

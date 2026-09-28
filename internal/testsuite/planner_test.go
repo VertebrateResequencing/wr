@@ -549,8 +549,8 @@ func TestRunnerPrioritizesLongLanes(t *testing.T) {
 		So(laneNames(lanes), ShouldResemble, []string{
 			"jq_reliable4",
 			"jq_default",
-			"cmd_default",
 			"other",
+			"cmd_default",
 			"client_wait",
 			"cmd_add",
 			"unlisted",
