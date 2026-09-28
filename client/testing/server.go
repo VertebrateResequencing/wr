@@ -36,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/internal/testcerts"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/phayes/freeport"
@@ -102,6 +103,11 @@ func PrepareWrConfig(t *testing.T) (jobqueue.ServerConfig, func()) {
 			ReleaseDelayMin:    testReleaseDelayMin,
 			ShutdownSocketWait: testSocketWait,
 		},
+	}
+
+	// Serve would otherwise make new RSA keys for every test server.
+	if err := testcerts.Write(config.CAFile, config.CertFile, config.KeyFile, "localhost"); err != nil {
+		t.Fatal(err)
 	}
 
 	writeConfig(t, dir, managerDir, config)

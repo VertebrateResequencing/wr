@@ -3282,6 +3282,10 @@ assert.equal(errorVM.detailsOA()[0].Priority, 1);
 // reconstructed per-RepGroup and "+all+" counts stay coherent and converge
 // exactly. It guards against the web status-bar flicker / transient-overcount /
 // connect-mid-burst divergence family (.docs/flicker/).
+//
+// The harness is pure CPU work, so its seeds are shared between
+// statusCountReconcileShards concurrent node processes; each seed runs in
+// exactly one of them, and a scenario fails if any shard's seeds fail it.
 func TestStatusCountReconcile(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -3297,14 +3301,38 @@ func TestStatusCountReconcile(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, "node",
-			"jobqueue/testdata/status-count-reconcile/reconcile-harness.mjs")
-		cmd.Dir = repoRoot
-		output, err := cmd.CombinedOutput()
-		So(err, ShouldBeNil)
-		So(string(output), ShouldContainSubstring, "ALL SCENARIOS COHERENT AND CONVERGENT")
+		outputs := make([]string, statusCountReconcileShards)
+		errs := make([]error, statusCountReconcileShards)
+
+		var wg sync.WaitGroup
+
+		for shard := range statusCountReconcileShards {
+			wg.Go(func() {
+				//nolint:gosec // The Node script and its arguments are constants.
+				cmd := exec.CommandContext(ctx, "node",
+					"jobqueue/testdata/status-count-reconcile/reconcile-harness.mjs",
+					fmt.Sprintf("--shard=%d/%d", shard, statusCountReconcileShards))
+				cmd.Dir = repoRoot
+
+				var output []byte
+
+				output, errs[shard] = cmd.CombinedOutput()
+				outputs[shard] = string(output)
+			})
+		}
+
+		wg.Wait()
+
+		for shard := range statusCountReconcileShards {
+			So(errs[shard], ShouldBeNil)
+			So(outputs[shard], ShouldContainSubstring, "ALL SCENARIOS COHERENT AND CONVERGENT")
+		}
 	})
 }
+
+// statusCountReconcileShards is how many node processes TestStatusCountReconcile
+// shares the reconcile harness's seeds between.
+const statusCountReconcileShards = 4
 
 func TestStatusPageLiveIntrospectionAssets(t *testing.T) {
 	if runnermode || servermode {

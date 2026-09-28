@@ -354,7 +354,35 @@ func (l *lostRun) stop(ctx context.Context) {
 
 	disconnect(l.client)
 	l.server.Stop(ctx, true)
+	awaitLostRunBehaviours(l.server)
 }
+
+// awaitLostRunBehaviours waits for any behaviours the stopped server is still
+// running for a lost run, by taking every one of its lost-cleanup tokens and
+// keeping them. Stop does not wait for those behaviours, and they read the
+// package-level hooks the next fixture's installHooks writes, so without this
+// they raced that write. A behaviour gives its token back only after it has
+// finished, which orders its reads before the next fixture's writes, and one
+// that has yet to start finds no token and gives up, as it does whenever the
+// server is stopping.
+func awaitLostRunBehaviours(server *Server) {
+	deadline := time.After(lostRunBehavioursTimeout)
+
+	for range cap(server.lostCleanupTokens) {
+		select {
+		case server.lostCleanupTokens <- struct{}{}:
+		case <-deadline:
+			So("a stopped server's lost-run behaviours did not finish", ShouldBeBlank)
+
+			return
+		}
+	}
+}
+
+// lostRunBehavioursTimeout bounds awaitLostRunBehaviours. It is a hang
+// detector, not a latency budget: the behaviours are a shell command and a
+// directory deletion.
+const lostRunBehavioursTimeout = time.Minute
 
 // liveJob is the manager's own *Job for the fixture's job.
 func (l *lostRun) liveJob() *Job {

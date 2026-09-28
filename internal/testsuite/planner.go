@@ -389,17 +389,58 @@ func jobqueueLanes(module string, liveOpenStack bool, liveS3Mounts bool) []Lane 
 		prefixes = append(prefixes, family.prefix)
 	}
 
+	skip := exactTests(uniqueTests(explicit)...) + "|" + prefixedTests(prefixes...)
+	ranges := jobqueueDefaultRangeLaneConfigs()
+	rangePatterns := make([]string, 0, len(ranges))
+
+	for _, config := range ranges {
+		pattern := "^Test[" + config.letters + "]"
+		rangePatterns = append(rangePatterns, pattern)
+
+		lanes = append(lanes, Lane{
+			Name:        config.name,
+			Kind:        LaneKindBinary,
+			Package:     pkg(module, "jobqueue"),
+			Dir:         "jobqueue",
+			Binary:      "jobqueue",
+			RunPattern:  pattern,
+			SkipPattern: skip,
+			Env:         laneEnv(config.lane),
+		})
+	}
+
 	lanes = append(lanes, Lane{
 		Name:        "jq_default",
 		Kind:        LaneKindBinary,
 		Package:     pkg(module, "jobqueue"),
 		Dir:         "jobqueue",
 		Binary:      "jobqueue",
-		SkipPattern: exactTests(uniqueTests(explicit)...) + "|" + prefixedTests(prefixes...),
+		SkipPattern: skip + "|" + strings.Join(rangePatterns, "|"),
 		Env:         laneEnv(9),
 	})
 
 	return lanes
+}
+
+// jobqueueDefaultRangeLaneConfig names the jobqueue tests left over from every
+// other lane whose names, after "Test", begin with one of letters (a regexp
+// character class body).
+type jobqueueDefaultRangeLaneConfig struct {
+	name    string
+	lane    int
+	letters string
+}
+
+// jobqueueDefaultRangeLaneConfigs splits the jobqueue tests no other lane runs
+// by the first letter after "Test", because in one lane they were the suite's
+// critical path. jq_default keeps the rest, including any test named outside
+// these ranges, so a new test always lands in exactly one lane. The ranges are
+// chosen to split the leftover tests' run time roughly into thirds.
+func jobqueueDefaultRangeLaneConfigs() []jobqueueDefaultRangeLaneConfig {
+	return []jobqueueDefaultRangeLaneConfig{
+		{name: "jq_default_a_k", lane: 48, letters: "A-K"},
+		{name: "jq_default_l_r", lane: 49, letters: "L-R"},
+	}
 }
 
 // jobqueueFamilyLaneConfig names a family of jobqueue tests that share a name

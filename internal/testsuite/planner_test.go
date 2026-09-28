@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -227,7 +228,7 @@ func TestPlannerCoversJobqueueTestsByExactName(t *testing.T) {
 		So(jobqueueLanesForTest(plan, "TestREST"), ShouldResemble, []string{"jqA1"})
 		So(jobqueueLanesForTest(plan, "TestRESTJobModificationEndpoint"), ShouldResemble, []string{"jq_rest_extra"})
 		So(jobqueueLanesForTest(plan, "TestServerWebISuspendedStatus"), ShouldResemble, []string{"jq_rest_extra"})
-		So(jobqueueLanesForTest(plan, "TestRESTFutureCase"), ShouldResemble, []string{"jq_default"})
+		So(jobqueueLanesForTest(plan, "TestRESTFutureCase"), ShouldResemble, []string{"jq_default_l_r"})
 	})
 }
 
@@ -240,8 +241,8 @@ func TestPlannerSplitsJobqueueTestFamiliesFromTheDefaultLane(t *testing.T) {
 		So(jobqueueLanesForTest(plan, "TestReliable2FutureCase"), ShouldResemble, []string{"jq_reliable2"})
 		So(jobqueueLanesForTest(plan, "TestReliable4FutureCase"), ShouldResemble, []string{"jq_reliable4"})
 		So(jobqueueLanesForTest(plan, "TestDepGranularityFutureCase"), ShouldResemble, []string{"jq_dep_granularity"})
-		So(jobqueueLanesForTest(plan, "TestReliable3FutureCase"), ShouldResemble, []string{"jq_default"})
-		So(jobqueueLanesForTest(plan, "TestFutureCase"), ShouldResemble, []string{"jq_default"})
+		So(jobqueueLanesForTest(plan, "TestReliable3FutureCase"), ShouldResemble, []string{"jq_default_l_r"})
+		So(jobqueueLanesForTest(plan, "TestFutureCase"), ShouldResemble, []string{"jq_default_a_k"})
 
 		for _, config := range jobqueueRunLaneConfigs() {
 			if config.shard != "" {
@@ -253,6 +254,88 @@ func TestPlannerSplitsJobqueueTestFamiliesFromTheDefaultLane(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestPlannerSplitsTheDefaultJobqueueLaneByName(t *testing.T) {
+	Convey("leftover jobqueue tests split by the letter after Test, and jq_default takes the rest", t, func() {
+		disableLiveIntegrationEnv(t)
+
+		plan := NewPlan(ModeTest, testModule, []string{pkg(testModule, "jobqueue")})
+
+		for test, lane := range map[string]string{
+			"TestAFutureCase": "jq_default_a_k",
+			"TestKFutureCase": "jq_default_a_k",
+			"TestLFutureCase": "jq_default_l_r",
+			"TestRFutureCase": "jq_default_l_r",
+			"TestSFutureCase": "jq_default",
+			"TestZFutureCase": "jq_default",
+			"Test_FutureCase": "jq_default",
+			"Test9FutureCase": "jq_default",
+		} {
+			So(jobqueueLanesForTest(plan, test), ShouldResemble, []string{lane})
+		}
+
+		So(jobqueueLanesForTest(plan, "TestCaster"), ShouldResemble, []string{"jq_status"})
+		So(jobqueueLanesForTest(plan, "TestReliable2FutureCase"), ShouldResemble, []string{"jq_reliable2"})
+		So(jobqueueLanesForTest(plan, "TestSubscriptionCatchUp"), ShouldResemble, []string{"subscription_catchup"})
+	})
+}
+
+func TestPlannerRunsEveryJobqueueTestInExactlyOneLane(t *testing.T) {
+	Convey("every Test function in the jobqueue package runs in one lane, or once in each of its shard lanes", t, func() {
+		disableLiveIntegrationEnv(t)
+
+		plan := NewPlan(ModeTest, testModule, []string{pkg(testModule, "jobqueue")})
+		names := jobqueueTestNames(t)
+		So(len(names), ShouldBeGreaterThan, 100)
+
+		for _, name := range names {
+			lanes := jobqueueLanesForTest(plan, name)
+			if len(lanes) != 1 && !distinctShardLanes(plan, lanes) {
+				So(name+" runs in "+strings.Join(lanes, ","), ShouldEqual, name+" runs in one lane")
+			}
+		}
+	})
+}
+
+// distinctShardLanes says whether lanes are two or more lanes that each run a
+// different WR_TEST_SHARD of the same tests.
+func distinctShardLanes(plan Plan, lanes []string) bool {
+	shards := make(map[string]bool, len(lanes))
+
+	for _, name := range lanes {
+		shard := laneNamed(plan, name).Env["WR_TEST_SHARD"]
+		if shard == "" || shards[shard] {
+			return false
+		}
+
+		shards[shard] = true
+	}
+
+	return len(shards) > 1
+}
+
+// jobqueueTestNames returns the name of every top-level Test function in the
+// jobqueue package's test files.
+func jobqueueTestNames(t *testing.T) []string {
+	t.Helper()
+
+	files, err := filepath.Glob(filepath.Join("..", "..", "jobqueue", "*_test.go"))
+	So(err, ShouldBeNil)
+
+	testFunc := regexp.MustCompile(`(?m)^func (Test\w*)\(t \*testing\.T\)`)
+	names := make([]string, 0)
+
+	for _, file := range files {
+		content, errr := os.ReadFile(file)
+		So(errr, ShouldBeNil)
+
+		for _, match := range testFunc.FindAllSubmatch(content, -1) {
+			names = append(names, string(match[1]))
+		}
+	}
+
+	return names
 }
 
 func TestPlannerPreservesShardLanes(t *testing.T) {
@@ -322,7 +405,7 @@ func TestPlannerSerializesLiveOpenStackTestsWhenConfigured(t *testing.T) {
 		So(lanesForTestIn(plan.Parallel, pkg(testModule, "jobqueue/scheduler"), "TestOpenstack"),
 			ShouldResemble, []string{"scheduler"})
 		So(lanesForTestIn(plan.Parallel, pkg(testModule, "jobqueue"), "TestJobqueueWithOpenStack"),
-			ShouldResemble, []string{"jq_default"})
+			ShouldResemble, []string{"jq_default_a_k"})
 		So(coveredPackages(plan), ShouldResemble, packages)
 	})
 }
@@ -349,7 +432,7 @@ func TestPlannerSerializesLiveS3MountTestsWhenConfigured(t *testing.T) {
 
 		So(lanesForTestIn(plan.Serial, pkg(testModule, "jobqueue"), "TestJobqueueWithMounts"), ShouldBeEmpty)
 		So(lanesForTestIn(plan.Parallel, pkg(testModule, "jobqueue"), "TestJobqueueWithMounts"),
-			ShouldResemble, []string{"jq_default"})
+			ShouldResemble, []string{"jq_default_a_k"})
 		So(coveredPackages(plan), ShouldResemble, packages)
 	})
 }
@@ -522,10 +605,10 @@ func TestRunnerPrioritizesLongLanes(t *testing.T) {
 		})
 
 		So(laneNames(lanes), ShouldResemble, []string{
-			"jq_default",
 			"jq_reliable4",
-			"cmd_default",
+			"jq_default",
 			"other",
+			"cmd_default",
 			"client_wait",
 			"cmd_add",
 			"unlisted",
@@ -607,12 +690,12 @@ func jobqueueLanesForTest(plan Plan, testName string) []string {
 }
 
 func laneWouldRunTest(lane Lane, testName string) bool {
-	if lane.RunPattern != "" {
-		return regexp.MustCompile(lane.RunPattern).MatchString(testName)
+	if lane.RunPattern != "" && !regexp.MustCompile(lane.RunPattern).MatchString(testName) {
+		return false
 	}
 
-	if lane.SkipPattern != "" {
-		return !regexp.MustCompile(lane.SkipPattern).MatchString(testName)
+	if lane.SkipPattern != "" && regexp.MustCompile(lane.SkipPattern).MatchString(testName) {
+		return false
 	}
 
 	return true

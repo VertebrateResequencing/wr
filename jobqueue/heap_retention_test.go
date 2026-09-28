@@ -39,6 +39,8 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,6 +52,12 @@ const (
 	hrRounds      = 6
 	hrJobsPerRnd  = 100
 	hrCmdPadBytes = 40 << 10
+
+	// hrRunners is how many clients reserve, start and archive each round's
+	// jobs at once, as a manager's runners do. Each state change is its own
+	// fsync'd commit unless others are pending to fold into it, so one client
+	// doing all of them in turn made the test take as long as 1200 fsyncs.
+	hrRunners = 10
 
 	// hrMaxGrowth bounds how much the heap may grow between the first and the
 	// last round with nothing live. Retaining the archived jobs costs at least
@@ -79,6 +87,15 @@ func TestServerArchivedJobsLeaveTheHeap(t *testing.T) {
 
 		defer disconnect(jq)
 
+		runners := make([]*Client, hrRunners)
+
+		for i := range runners {
+			runners[i], err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
+
+			defer disconnect(runners[i])
+		}
+
 		cwd := t.TempDir()
 
 		Convey("Rounds of jobs, each under a new reserve group, do not grow the heap once archived", func() {
@@ -86,7 +103,7 @@ func TestServerArchivedJobsLeaveTheHeap(t *testing.T) {
 			heaps := make([]uint64, 0, hrRounds)
 
 			for round := range hrRounds {
-				failures += hrRunRound(jq, cwd, round)
+				failures += hrRunRound(jq, runners, cwd, round)
 
 				So(server.q.Stats().Items, ShouldEqual, 0)
 
@@ -108,9 +125,10 @@ func TestServerArchivedJobsLeaveTheHeap(t *testing.T) {
 	})
 }
 
-// hrRunRound adds one round of jobs, then reserves, starts and archives every
-// one of them, returning how many of those steps failed.
-func hrRunRound(jq *Client, cwd string, round int) int {
+// hrRunRound adds one round of jobs with jq, then has the runners between them
+// reserve, start and archive every one of them, returning how many of those
+// steps failed.
+func hrRunRound(jq *Client, runners []*Client, cwd string, round int) int {
 	req := &jqs.Requirements{RAM: 10, Time: time.Second, Cores: 1}
 	limitGroup := fmt.Sprintf("datetime<2030-01-01 00:00:%02d", round)
 	group := schedulerGroupString(reqForScheduler(req), []string{limitGroup})
@@ -120,22 +138,31 @@ func hrRunRound(jq *Client, cwd string, round int) int {
 		return hrJobsPerRnd
 	}
 
-	failures := 0
+	var (
+		failures atomic.Int64
+		wg       sync.WaitGroup
+	)
 
-	for range hrJobsPerRnd {
-		job, errr := jq.ReserveScheduled(5*time.Second, group)
-		if errr != nil || job == nil {
-			failures++
+	for i, runner := range runners {
+		wg.Go(func() {
+			for j := i; j < hrJobsPerRnd; j += len(runners) {
+				job, errr := runner.ReserveScheduled(5*time.Second, group)
+				if errr != nil || job == nil {
+					failures.Add(1)
 
-			continue
-		}
+					continue
+				}
 
-		if hrStartAndArchive(jq, job) != nil {
-			failures++
-		}
+				if hrStartAndArchive(runner, job) != nil {
+					failures.Add(1)
+				}
+			}
+		})
 	}
 
-	return failures
+	wg.Wait()
+
+	return int(failures.Load())
 }
 
 // hrRoundJobs returns the jobs for one round, each with a unique long command

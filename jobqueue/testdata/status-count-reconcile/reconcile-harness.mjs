@@ -39,9 +39,11 @@
 // Exit code 1 => at least one scenario overcounts, dips or diverges (the bug).
 //
 // Usage:
-//   node reconcile-harness.mjs [handlerFile] [--verbose]
+//   node reconcile-harness.mjs [handlerFile] [--verbose] [--shard=i/n]
 //     handlerFile  path to the websocket-handler.js under test
 //                  (default: ../../static/js/wr/websocket-handler.js)
+//     --shard=i/n  run only every nth seed, starting from seed i
+//                  (0 <= i < n), so n processes can share the work
 //
 // It is deterministic (seeded PRNG), so it is safe as a CI regression gate; it
 // is exercised by TestStatusCountReconcile (go test) and
@@ -53,8 +55,27 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const args = process.argv.slice(2).filter(a => a !== '--verbose');
+const SHARD_ARG = /^--shard=(\d+)\/(\d+)$/;
+const args = process.argv.slice(2).filter(a => a !== '--verbose' && !SHARD_ARG.test(a));
 const VERBOSE = process.argv.includes('--verbose');
+
+// --shard=i/n runs only the seeds s with s % n == i, so n processes given
+// i = 0..n-1 between them run every seed exactly once. Every scenario passes
+// only if it holds for all of its seeds, so the full run passes exactly when
+// every shard does.
+const shardArgs = process.argv.slice(2).filter(a => a.startsWith('--shard'));
+if (shardArgs.length > 1 || (shardArgs.length === 1 && !SHARD_ARG.test(shardArgs[0]))) {
+  console.error(`reconcile-harness: expected at most one --shard=i/n, got ${shardArgs.join(' ')}`);
+  process.exit(2);
+}
+const shardMatch = shardArgs.length === 1 ? SHARD_ARG.exec(shardArgs[0]) : null;
+const SHARD = shardMatch ? Number(shardMatch[1]) : 0;
+const SHARDS = shardMatch ? Number(shardMatch[2]) : 1;
+if (!(SHARDS >= 1 && SHARD < SHARDS)) {
+  console.error(`reconcile-harness: bad --shard=${SHARD}/${SHARDS}`);
+  process.exit(2);
+}
+const inShard = s => s % SHARDS === SHARD;
 const handlerFile = args[0]
   ? path.resolve(process.cwd(), args[0])
   : path.resolve(scriptDir, '../../static/js/wr/websocket-handler.js');
@@ -371,6 +392,7 @@ console.error(`reconcile-harness: handler=${path.relative(process.cwd(), handler
 {
   let wErr = 0, wOver = 0, wNeg = 0, convFail = 0;
   for (let s = 1; s <= 120; s++) {
+    if (!inShard(s)) continue;
     const r = scenarioA(s * 2654435761, 2000, 20);
     wErr = Math.max(wErr, r.worstRgErr); wOver = Math.max(wOver, r.worstAllOver); wNeg = Math.max(wNeg, r.worstAllNeg);
     if (!r.converged) convFail++;
@@ -387,6 +409,7 @@ console.error(`reconcile-harness: handler=${path.relative(process.cwd(), handler
 {
   let awareFail = 0, wAware = 0, wBlind = 0, convFail = 0, exFinal = 0, exComplete = 0;
   for (let s = 1; s <= 120; s++) {
+    if (!inShard(s)) continue;
     const r = scenarioB(s * 40503, 1500, 0, 8, 0.3 + (s % 5) * 0.1, 7);
     wAware = Math.max(wAware, r.worstAware); wBlind = Math.max(wBlind, r.worstBlind);
     if (r.worstAware !== 0) awareFail++;
@@ -407,6 +430,7 @@ console.error(`reconcile-harness: handler=${path.relative(process.cwd(), handler
 {
   let wAware = 0, wBlind = 0, worse = 0, overBound = 0, dupMax = 0;
   for (let s = 1; s <= 120; s++) {
+    if (!inShard(s)) continue;
     const r = scenarioB(s * 40503, 1500, 18, 8, 0.3 + (s % 5) * 0.1, 7);
     wAware = Math.max(wAware, r.worstAware); wBlind = Math.max(wBlind, r.worstBlind);
     dupMax = Math.max(dupMax, r.dupAfterSeed);
@@ -423,6 +447,7 @@ console.error(`reconcile-harness: handler=${path.relative(process.cwd(), handler
 {
   let wErr = 0, wOver = 0, finalFail = 0, egDiff = null;
   for (let s = 1; s <= 120; s++) {
+    if (!inShard(s)) continue;
     const r = scenarioC(s * 2246822519, 1200, 25);
     wErr = Math.max(wErr, r.worstRgErr); wOver = Math.max(wOver, r.worstAllOver);
     if (!r.finalOk) { finalFail++; if (!egDiff) egDiff = r.diff; }

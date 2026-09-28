@@ -41,6 +41,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/internal/publishexit"
+	"github.com/VertebrateResequencing/wr/internal/testcerts"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
@@ -87,6 +88,17 @@ const (
 	// testServerStartAttempts is how many sets of picked ports startTestServer
 	// tries before failing the test.
 	testServerStartAttempts = 21
+
+	// testServerInterruptTime is how long a cmd test server's command socket
+	// readers block on a receive before checking whether the server is
+	// stopping. The 1s default made every server.Stop wait about a second for
+	// the readers to notice, which was most of the time many cmd tests took.
+	testServerInterruptTime = 10 * time.Millisecond
+
+	// testServerShutdownSocketWait is how long a cmd test server's shutdown
+	// waits for in-flight messages before closing its command socket, lowered
+	// from the 50ms default as jobqueue's own test servers do.
+	testServerShutdownSocketWait = time.Millisecond
 )
 
 // pickTestServerPorts is how statusTestServerConfig picks its ports. It is a
@@ -1314,8 +1326,16 @@ func statusTestServerConfig(t *testing.T) (*internal.Config, jobqueue.ServerConf
 		KeyFile:         testConfig.ManagerKeyFile,
 		CertDomain:      testConfig.ManagerCertDomain,
 		Deployment:      testConfig.Deployment,
+		Timings: jobqueue.ServerTimings{
+			InterruptTime:      testServerInterruptTime,
+			ShutdownSocketWait: testServerShutdownSocketWait,
+		},
 	}
 	reqs := &jqs.Requirements{RAM: 10, Time: time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}
+
+	// Serve would otherwise make new RSA keys for every test server.
+	So(testcerts.Write(serverConfig.CAFile, serverConfig.CertFile, serverConfig.KeyFile, serverConfig.CertDomain),
+		ShouldBeNil)
 
 	return testConfig, serverConfig, statusTestHost + ":" + port, reqs
 }

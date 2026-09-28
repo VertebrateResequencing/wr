@@ -62,6 +62,7 @@ import (
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/internal/publishexit"
+	"github.com/VertebrateResequencing/wr/internal/testcerts"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid/v5"
@@ -1173,11 +1174,12 @@ func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jq
 	// exist. Some tests Connect() before starting a server (to check the
 	// "no server" error), which needs the CA cert to be present; with the
 	// normal ~/.wr_development dir it persists between runs, but a fresh
-	// isolated WR_MANAGERDIR has none until a server first runs.
+	// isolated WR_MANAGERDIR has none until a server first runs. They are
+	// copies of one set per test process, as making new RSA keys for every
+	// test took more CPU than many of the tests themselves.
 	if internal.CheckCerts(serverConfig.CertFile, serverConfig.KeyFile) != nil {
-		if err := internal.GenerateCerts(serverConfig.CAFile, serverConfig.CertFile, serverConfig.KeyFile,
-			config.ManagerCertDomain, internal.DefaultBitsForRootRSAKey, internal.DefualtBitsForServerRSAKey,
-			crand.Reader, internal.DefaultCertFileFlags); err != nil {
+		if err := testcerts.Write(serverConfig.CAFile, serverConfig.CertFile, serverConfig.KeyFile,
+			config.ManagerCertDomain); err != nil {
 			log.Fatal(err)
 		}
 	}
