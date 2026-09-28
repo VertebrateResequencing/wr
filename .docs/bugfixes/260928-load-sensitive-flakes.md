@@ -78,3 +78,19 @@ quoted include it.
   - Mutation: `executeLiveState.updateResources` never raising `peakRAM`
     fails the Convey (after the 60s cap) with `Expected '0' to be greater
     than or equal to '1'`.
+- [x] TestFuseMountReaping (pidInFuseWait premise false)
+  - Also recorded, unfixed, in 260927-client-token-reload.md.
+  - Red: lane 9, `-test.run '^TestFuseMountReaping$'`, no added stress (host
+    load 17-21 from other work). A temporary version that, when the premise
+    was false, printed every child thread's wchan and state 40 times at 50ms
+    intervals caught it once in 20 runs: the blocked thread was `R
+    (running)` with wchan `0`, and back in `request_wait_answer` 50ms later.
+    The unmodified test then passed 40 of 40, so the rate is about 1 in 60.
+  - Cause (test): the premise was one sample of a state that is briefly left
+    and re-entered. The child waits for the same condition before reporting,
+    so the setup was right; only the parent's single read was not.
+  - Fix (test only), `jobqueue/testfusemount_test.go`: the premise is now
+    `awaitTrue(processWaitTimeout, ...)` on `pidInFuseWait(child.pid)`.
+  - After, same conditions: 30 of 30 passed.
+  - Mutation: starting that Convey's child without the wedge fails the
+    premise with `Expected: true Actual: false`.
