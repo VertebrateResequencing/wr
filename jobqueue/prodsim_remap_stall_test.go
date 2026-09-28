@@ -151,10 +151,9 @@ func prodsimRemapRun(t *testing.T, dir string, cross bool, backupSecs float64) (
 	defer func() { backupCopySyncBytes, backupPaceHook = oldBytes, oldHook }()
 
 	var (
-		wg          sync.WaitGroup
-		done        atomic.Bool
-		backupStart atomic.Int64
-		mu          sync.Mutex
+		wg   sync.WaitGroup
+		done atomic.Bool
+		mu   sync.Mutex
 	)
 
 	record := func(d time.Duration, into *time.Duration) {
@@ -163,13 +162,18 @@ func prodsimRemapRun(t *testing.T, dir string, cross bool, backupSecs float64) (
 		mu.Unlock()
 	}
 
+	// any backup initDB made is removed, so the file checked after the copy can
+	// only be the copy's own
+	if err = os.Remove(dbFile + "_bk"); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+
 	wg.Add(1)
 
 	go func() {
 		defer wg.Done()
 
 		t0 := time.Now()
-		backupStart.Store(t0.UnixNano())
 
 		testDB.backupToBackupFile(ctx, false)
 
@@ -228,9 +232,12 @@ func prodsimRemapRun(t *testing.T, dir string, cross bool, backupSecs float64) (
 	}
 
 	// backupToBackupFile returns no error, so without this a backup that failed
-	// early would look like a short copy and let the check pass falsely
+	// early would look like a short copy and let the check pass falsely. Any
+	// earlier backup was removed before the copy began, so an existing file is
+	// this copy's (no mtime comparison, which NFS's coarse or skewed clocks
+	// would make unreliable).
 	bk, errs := os.Stat(dbFile + "_bk")
-	if errs != nil || bk.Size() == 0 || bk.ModTime().UnixNano() < backupStart.Load() {
+	if errs != nil || bk.Size() == 0 {
 		t.Fatalf("the backup did not produce %s_bk during the copy (stat err %v)", dbFile, errs)
 	}
 
