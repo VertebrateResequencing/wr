@@ -933,8 +933,8 @@ func TestLostJobRetryCheckFindsAReservedNotStartedRun(t *testing.T) {
 			// stretch. Its run is over, and re-confirming a run that has
 			// reported its own exit could only kill the job it archived.
 			//
-			// The manager is left parked at its dead-check throughout, so
-			// nothing but the archive moves the job (l.stop releases it).
+			// The manager is left parked at its dead-check until the retry
+			// check is done, so nothing but the archive moves the job.
 			_, _, _, srerr := markJobComplete(l.live, &JobEndState{Exited: true, EndTime: time.Now()}, nil)
 
 			exited, checked := l.server.lostJobRetryCheck(l.key)
@@ -942,6 +942,13 @@ func TestLostJobRetryCheckFindsAReservedNotStartedRun(t *testing.T) {
 			So(checked, ShouldBeFalse)
 			So(exited, ShouldResemble, lostJobDetails{})
 			So(srerr, ShouldBeBlank)
+
+			// nor does the parked confirmation kill it: the completion's archive
+			// is pending, so releasing the job would run it again. Waiting for
+			// that decision here also orders the manager's read of the test
+			// hooks before the next fixture writes them.
+			l.proceedManager()
+			So(l.waitForKillDecision(), ShouldBeFalse)
 		})
 	})
 }

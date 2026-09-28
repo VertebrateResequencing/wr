@@ -130,3 +130,25 @@ Quality gates: `make lint`, `make test`, `CGO_ENABLED=1 make race`.
 
   - Files: `jobqueue/job.go`, `jobqueue/serverCLI.go`, `jobqueue/server.go`,
     `jobqueue/archive_stall_test.go`, `CHANGELOG.md`.
+
+  - Review: `archivesPending` is only changed under the job lock, on one path.
+    `markJobComplete` increments it as its last fallible step, `handleArchive`
+    calls `archiveCompletedJob` straight after, and that defers the decrement
+    before anything else. `db.archiveJob` always returns: the archive writer
+    replies to every op, and `failPendingArchives` fails any left at shutdown.
+    Recovery builds new Jobs, so the count starts at 0. The review added two
+    tests to `TestKillLostRunLeavesPendingArchive`: a user's `wr kill` while an
+    archive is pending neither marks nor releases the job (it counts as 0
+    killed), and an archive whose write fails drops the hold, so a TTR expiry
+    sends the job to delay again. It also reworded confirm-dead's "did not
+    kill" log line to cover a success being saved.
+
+  - Review: the fix made `-race` fail `TestLostCwdMattersJobSparesItsSecondRun`
+    in 4 of 4 runs of the targeted set. The last leaf of
+    `TestLostJobRetryCheckFindsAReservedNotStartedRun` calls `markJobComplete`
+    with the manager parked at its dead-check. Its kill used to release the
+    job, and `awaitLostRunBehaviours` waited for the behaviours that followed.
+    Now the archive is pending, so the kill is refused and no behaviour runs.
+    Nothing then ordered the manager's read of `lostJobKilledHook` before the
+    next fixture's `installHooks`. The leaf now lets the manager go on and
+    waits for its kill decision, and asserts that it is refused.

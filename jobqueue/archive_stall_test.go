@@ -266,9 +266,11 @@ func serverJobMeets(server *Server, key string, cond func(*Job) bool) bool {
 	return cond(job)
 }
 
-// TestKillLostRunLeavesPendingArchive proves that confirming a lost run dead does
-// not release the job while a successful completion of it is being archived: the
-// command has exited 0, so releasing it would run it again.
+// TestKillLostRunLeavesPendingArchive proves that neither confirming a lost run
+// dead nor a user's kill releases the job while a successful completion of it is
+// being archived: the command has exited 0, so releasing it would run it again.
+// It also proves that an archive whose write fails does not leave that hold in
+// place, so the job cannot be stuck in the run queue for ever.
 func TestKillLostRunLeavesPendingArchive(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -328,6 +330,42 @@ func TestKillLostRunLeavesPendingArchive(t *testing.T) {
 			So(errk, ShouldBeNil)
 			So(released, ShouldBeTrue)
 			So(item.Stats().State, ShouldNotEqual, queue.ItemStateRun)
+		})
+
+		Convey("a user's kill neither marks nor releases it while its archive is pending", func() {
+			lose(1)
+
+			killed, errk := server.killJob(ctx, reserved.Key())
+			So(errk, ShouldBeNil)
+			So(killed, ShouldBeFalse)
+			So(item.Stats().State, ShouldEqual, queue.ItemStateRun)
+
+			job.RLock()
+			defer job.RUnlock()
+
+			So(job.killCalled, ShouldBeFalse)
+		})
+
+		Convey("an archive whose write fails releases its hold, so a TTR expiry can release the job", func() {
+			job.Lock()
+			job.StartTime = time.Now()
+			job.Unlock()
+
+			archiveTxObserver = func(_ int, _ []byte) { panic("archive stall write failure test") }
+
+			_, srerr, _ := server.handleArchive(ctx, &clientRequest{
+				Method: "jarchive", Keys: []string{reserved.Key()}, ClientID: jq.clientid,
+				JobEndState: &JobEndState{Exited: true, EndTime: time.Now()},
+			})
+
+			archiveTxObserver = nil
+
+			So(srerr, ShouldEqual, ErrDBError)
+			So(item.Stats().State, ShouldEqual, queue.ItemStateRun)
+			So(serverJobMeets(server, reserved.Key(), func(j *Job) bool {
+				return j.Exited && !j.archivePendingLocked()
+			}), ShouldBeTrue)
+			So(server.ttrCallback(ctx, job), ShouldEqual, queue.SubQueueDelay)
 		})
 	})
 }

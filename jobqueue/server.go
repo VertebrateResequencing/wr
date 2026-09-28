@@ -6265,8 +6265,8 @@ func (s *Server) killLostJobAndTriggerBehaviours(ctx context.Context, d lostJobD
 	}
 
 	if !released {
-		clog.Info(ctx, "did not kill a job confirmed dead, because the job has moved on to another run",
-			"key", d.key)
+		clog.Info(ctx, "did not kill a job confirmed dead, because the job has moved on "+
+			"to another run or its success is being saved", "key", d.key)
 
 		return
 	}
