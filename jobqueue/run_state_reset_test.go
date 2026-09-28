@@ -105,7 +105,10 @@ func TestReservedRetryShowsNothingOfThePreviousRun(t *testing.T) {
 		failed, err := jq.GetByEssence(first.ToEssense(), true, false)
 		So(err, ShouldBeNil)
 		So(failed, ShouldNotBeNil)
-		So(failed.State, ShouldEqual, JobStateDelayed)
+		// the release parks the job in delayed for only ReleaseDelayMin, so a
+		// loaded machine can let it become ready before this read. Either way it
+		// is released and awaiting its retry, which is all that matters here.
+		So(failed.State, ShouldBeIn, []JobState{JobStateDelayed, JobStateReady})
 		So(failed.HostIP, ShouldNotBeBlank)
 		So(failed.FailReason, ShouldEqual, FailReasonExit)
 		So(failed.CPUtime, ShouldEqual, time.Second)

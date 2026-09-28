@@ -2087,7 +2087,7 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 			close(stopped)
 		}()
 
-		_, unread := pingUntilUnread(jq, serverConfig.Timings.ShutdownSocketWait)
+		_, unread := pingUntilUnread(jq, server, serverConfig.Timings.ShutdownSocketWait)
 		So(unread, ShouldBeTrue)
 
 		// a reconnect re-Connect()s, which leaves the client on the
@@ -2189,7 +2189,7 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 			close(stopped)
 		}()
 
-		_, unread := pingUntilUnread(jq, serverConfig.Timings.ShutdownSocketWait)
+		_, unread := pingUntilUnread(jq, server, serverConfig.Timings.ShutdownSocketWait)
 		So(unread, ShouldBeTrue)
 
 		// the resubscribe of a reconnect in flight when the user unsubscribes.
@@ -2260,7 +2260,7 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 			close(stopped)
 		}()
 
-		_, unread := pingUntilUnread(jq, serverConfig.Timings.ShutdownSocketWait)
+		_, unread := pingUntilUnread(jq, server, serverConfig.Timings.ShutdownSocketWait)
 		So(unread, ShouldBeTrue)
 		So(sub.isStopping(), ShouldBeFalse)
 

@@ -401,7 +401,7 @@ func TestManagerLiveJTouch(t *testing.T) {
 		)
 	})
 
-	Convey("An authenticated live jtouch preserves KillCalled jobs and existing live fields", t, func() {
+	Convey("An authenticated live jtouch of a KillCalled job renews its TTR, keeping its live fields", t, func() {
 		ctx := context.Background()
 		fixture := newKillCalledLiveJTouchFixture(ctx)
 		before := fixture.remainingTTRAfterDelay()
@@ -416,7 +416,7 @@ func TestManagerLiveJTouch(t *testing.T) {
 		})
 		So(err, ShouldBeNil)
 		So(resp.KillCalled, ShouldBeTrue)
-		assertLiveJTouchDidNotExtendTTR(before, fixture.item.Stats().Remaining)
+		assertLiveJTouchExtendedTTR(before, fixture.item.Stats().Remaining)
 		assertLiveJTouchFields(
 			fixture.job,
 			liveJTouchPreviousCwd,
@@ -428,7 +428,7 @@ func TestManagerLiveJTouch(t *testing.T) {
 		)
 	})
 
-	Convey("An authenticated older-runner jtouch preserves KillCalled jobs and existing live fields", t, func() {
+	Convey("An older-runner jtouch of a KillCalled job renews its TTR, keeping its live fields", t, func() {
 		ctx := context.Background()
 		fixture := newKillCalledLiveJTouchFixture(ctx)
 		before := fixture.remainingTTRAfterDelay()
@@ -436,7 +436,7 @@ func TestManagerLiveJTouch(t *testing.T) {
 		resp, err := fixture.touch(ctx, fixture.token, &JobEndState{})
 		So(err, ShouldBeNil)
 		So(resp.KillCalled, ShouldBeTrue)
-		assertLiveJTouchDidNotExtendTTR(before, fixture.item.Stats().Remaining)
+		assertLiveJTouchExtendedTTR(before, fixture.item.Stats().Remaining)
 		assertLiveJTouchFields(
 			fixture.job,
 			liveJTouchPreviousCwd,

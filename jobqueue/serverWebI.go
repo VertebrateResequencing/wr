@@ -517,17 +517,39 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 			return
 		}
 
+		// the page asks for its seed counts as soon as the socket is open, so it
+		// must already be on the delta feeds by then: a transition between a late
+		// join and the seed's snapshot would reach it, but one between the
+		// snapshot and a late join would reach it in neither. Joining before the
+		// upgrade means the socket is never open without them.
+		statusReceiver := s.statusCaster.Join()
+		badServerReceiver := s.badServerCaster.Join()
+		schedReceiver := s.schedCaster.Join()
+
+		closeReceivers := func() {
+			statusReceiver.Close()
+			badServerReceiver.Close()
+			schedReceiver.Close()
+		}
+
 		conn, ok := webSocket(w, r)
 		if !ok {
+			closeReceivers()
 			clog.Error(ctx, "Failed to set up websocket", "Host", r.Host)
 
 			return
+		}
+
+		if s.statusWSUpgradedHook != nil {
+			s.statusWSUpgradedHook()
 		}
 
 		// when the server shuts down it will close our conn, ending the main
 		// goroutine
 		storedName, stored := s.storeWebSocketConnection(conn)
 		if !stored {
+			closeReceivers()
+
 			if err := conn.Close(); err != nil {
 				clog.Warn(ctx, "websocket close failed", "err", err)
 			}
@@ -550,13 +572,13 @@ func webInterfaceStatusWS(ctx context.Context, s *Server) http.HandlerFunc {
 
 		// Set up goroutines to push changes to the client
 		go s.runStatusWebSocketWorker(func() {
-			s.setupUpdateListener(ctx, conn, stopper, storedName, s.statusCaster, "status updater")
+			s.setupUpdateListener(ctx, conn, stopper, storedName, statusReceiver, "status updater")
 		})
 		go s.runStatusWebSocketWorker(func() {
-			s.setupUpdateListener(ctx, conn, stopper, storedName, s.badServerCaster, "bad server caster")
+			s.setupUpdateListener(ctx, conn, stopper, storedName, badServerReceiver, "bad server caster")
 		})
 		go s.runStatusWebSocketWorker(func() {
-			s.setupUpdateListener(ctx, conn, stopper, storedName, s.schedCaster, "scheduler issues caster")
+			s.setupUpdateListener(ctx, conn, stopper, storedName, schedReceiver, "scheduler issues caster")
 		})
 		go s.runStatusWebSocketWorker(func() {
 			s.setupStatusSubscriptionUpdateListener(ctx, conn, stopper, storedName, statusSubscriptionID)
@@ -970,13 +992,11 @@ func (s *Server) completedJobByKey(req jstatusReq) ([]*Job, string, string) {
 	return jobs, "", ""
 }
 
-// setupUpdateListener creates a goroutine that listens for updates from a
-// broadcaster and forwards them to the WebSocket client.
+// setupUpdateListener forwards the updates receiver gets from its broadcaster to
+// the WebSocket client, and closes receiver when it returns.
 func (s *Server) setupUpdateListener(ctx context.Context, conn *websocket.Conn, stop chan bool, //nolint:gocognit,funlen
-	connName string, caster *caster, name string) {
+	connName string, receiver *casterMember, name string) {
 	defer internal.LogPanic(ctx, "jobqueue websocket "+name, true)
-
-	receiver := caster.Join()
 	defer receiver.Close()
 
 	for {
