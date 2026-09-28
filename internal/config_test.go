@@ -891,3 +891,66 @@ func TestConfig(t *testing.T) {
 		})
 	})
 }
+
+func TestConfigLSFQueueDefaults(t *testing.T) {
+	ctx := context.Background()
+
+	const (
+		fileQueue = "normal,long"
+		fileAvoid = "yesterday"
+		envQueue  = "basement"
+		envAvoid  = "hugemem,,"
+	)
+
+	// other tests' ToEnv() calls leave these set; restore them afterwards
+	for _, name := range []string{"WR_LSFQUEUE", "WR_LSFQUEUESAVOID"} {
+		t.Setenv(name, "")
+		os.Unsetenv(name)
+	}
+
+	Convey("The LSF queue defaults are empty and 'interactive'", t, func() {
+		config := loadDefaultConfig(ctx)
+		So(config.LSFQueue, ShouldBeEmpty)
+		So(config.LSFQueuesAvoid, ShouldEqual, "interactive")
+	})
+
+	Convey("Given a config file that sets the LSF queue defaults", t, func() {
+		_, restoreHome := getTempHome(ctx, t)
+		defer restoreHome()
+
+		pwd := t.TempDir()
+		path := filepath.Join(pwd, ".wr_config.yml")
+		err := os.WriteFile(path, []byte("lsfqueue: \""+fileQueue+"\"\nlsfqueuesavoid: \""+fileAvoid+"\"\n"), 0o600)
+		So(err, ShouldBeNil)
+
+		Convey("they are loaded from the file", func() {
+			config := mergeAllConfigs(ctx, 1000, Development, pwd)
+			So(config.LSFQueue, ShouldEqual, fileQueue)
+			So(config.Source("LSFQueue"), ShouldEqual, path)
+			So(config.LSFQueuesAvoid, ShouldEqual, fileAvoid)
+			So(config.Source("LSFQueuesAvoid"), ShouldEqual, path)
+
+			shown := config.String()
+			So(shown, ShouldContainSubstring, "LSFQueue ")
+			So(shown, ShouldContainSubstring, fileQueue)
+			So(shown, ShouldContainSubstring, "LSFQueuesAvoid")
+			So(shown, ShouldContainSubstring, fileAvoid)
+		})
+
+		Convey("WR_LSFQUEUE and WR_LSFQUEUESAVOID override the file", func() {
+			os.Setenv("WR_LSFQUEUE", envQueue)
+			os.Setenv("WR_LSFQUEUESAVOID", envAvoid)
+
+			defer func() {
+				os.Unsetenv("WR_LSFQUEUE")
+				os.Unsetenv("WR_LSFQUEUESAVOID")
+			}()
+
+			config := mergeAllConfigs(ctx, 1000, Development, pwd)
+			So(config.LSFQueue, ShouldEqual, envQueue)
+			So(config.Source("LSFQueue"), ShouldEqual, ConfigSourceEnvVar)
+			So(config.LSFQueuesAvoid, ShouldEqual, envAvoid)
+			So(config.Source("LSFQueuesAvoid"), ShouldEqual, ConfigSourceEnvVar)
+		})
+	})
+}

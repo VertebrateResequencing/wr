@@ -147,6 +147,8 @@ type Config struct {
 	CloudSpawns              int    `default:"10"`
 	CloudAutoConfirmDead     int    `default:"30"`
 	DeploySuccessScript      string `default:""`
+	LSFQueue                 string `default:""`
+	LSFQueuesAvoid           string `default:"interactive"`
 	sources                  map[string]string
 }
 
