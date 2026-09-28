@@ -2150,10 +2150,10 @@ func (s *lsf) busy(ctx context.Context) bool {
 func (s *lsf) determineQueue(req *Requirements) (string, error) {
 	queues := s.sortedqs
 
-	if queue := s.requestedQueue(req); strings.Contains(queue, ",") {
-		queues = internal.SplitCommaList(queue)
-	} else if queue != "" {
-		return queue, nil
+	if requested := s.requestedQueue(req); strings.Contains(requested, ",") {
+		queues = trimmedCommaList(requested)
+	} else if requested != "" {
+		return strings.TrimSpace(requested), nil
 	}
 
 	seconds := req.Time.Seconds() + minimumQueueTime.Seconds()
@@ -2169,6 +2169,7 @@ func (s *lsf) determineQueue(req *Requirements) (string, error) {
 
 // requestedQueue returns req's scheduler_queue if that has any non-empty
 // element, otherwise our configured default Queue if that does, otherwise "".
+// Its elements may still need trimming.
 func (s *lsf) requestedQueue(req *Requirements) string {
 	if queue := req.Other["scheduler_queue"]; len(internal.SplitCommaList(queue)) > 0 {
 		return queue
@@ -2181,11 +2182,12 @@ func (s *lsf) requestedQueue(req *Requirements) string {
 	return ""
 }
 
-// queuesToAvoid returns the non-empty elements of req's scheduler_queues_avoid
-// if there are any, otherwise those of our configured default QueuesAvoid. A
-// job's own list replaces the default rather than adding to it.
+// queuesToAvoid returns the trimmed non-empty elements of req's
+// scheduler_queues_avoid if there are any, otherwise those of our configured
+// default QueuesAvoid. A job's own list replaces the default rather than adding
+// to it.
 func (s *lsf) queuesToAvoid(req *Requirements) []string {
-	if avoid := internal.SplitCommaList(req.Other["scheduler_queues_avoid"]); len(avoid) > 0 {
+	if avoid := trimmedCommaList(req.Other["scheduler_queues_avoid"]); len(avoid) > 0 {
 		return avoid
 	}
 
@@ -2193,7 +2195,18 @@ func (s *lsf) queuesToAvoid(req *Requirements) []string {
 		return nil
 	}
 
-	return internal.SplitCommaList(s.config.QueuesAvoid)
+	return trimmedCommaList(s.config.QueuesAvoid)
+}
+
+// trimmedCommaList is like internal.SplitCommaList, but also trims spaces from
+// each element, since LSF queue names can't contain them.
+func trimmedCommaList(list string) []string {
+	elements := internal.SplitCommaList(list)
+	for i, element := range elements {
+		elements[i] = strings.TrimSpace(element)
+	}
+
+	return elements
 }
 
 // firstSuitableQueue returns the first queue (from the given preference-ordered

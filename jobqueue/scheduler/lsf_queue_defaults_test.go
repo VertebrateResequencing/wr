@@ -104,6 +104,42 @@ func TestLSFManagerQueueDefaults(t *testing.T) {
 			So(queue, ShouldEqual, lqdLong)
 		})
 
+		Convey("spaces around queue list elements are ignored", func() {
+			s.config.Queue = lqdNormal + " , " + lqdLong
+
+			queue, err := s.determineQueue(&Requirements{RAM: 1, Time: 24 * time.Hour, Cores: 1})
+			So(err, ShouldBeNil)
+			So(queue, ShouldEqual, lqdLong)
+
+			queue, err = determine(map[string]string{lqdQueueKey: " " + lqdNormal + ",  " + lqdLong + " "})
+			So(err, ShouldBeNil)
+			So(queue, ShouldEqual, lqdNormal)
+
+			Convey("including a single queue", func() {
+				queue, err = determine(map[string]string{lqdQueueKey: " " + lqdLong + " "})
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, lqdLong)
+
+				s.config.Queue = " " + lqdYesterq + " "
+
+				queue, err = determine(nil)
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, lqdYesterq)
+			})
+		})
+
+		Convey("spaces around queues to avoid elements are ignored", func() {
+			s.config.QueuesAvoid = lqdNormal + ", " + lqdInteract
+
+			queue, err := determine(nil)
+			So(err, ShouldBeNil)
+			So(queue, ShouldEqual, lqdLong)
+
+			queue, err = determine(map[string]string{lqdAvoidKey: " " + lqdInteract + " , " + lqdNormal + " "})
+			So(err, ShouldBeNil)
+			So(queue, ShouldEqual, lqdLong)
+		})
+
 		Convey("a default queue of only empty or whitespace elements counts as unset", func() {
 			s.config.Queue = " , "
 
