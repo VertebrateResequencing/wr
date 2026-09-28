@@ -145,6 +145,12 @@ project adheres to [Semantic Versioning](http://semver.org/).
   one line as a range, such as `Job <408347[1-2:1]>: Job has already
   finished`. Those elements are now counted as already gone (or killed), where
   before they were counted as unaccounted.
+- The manager no longer warns "checkCmd bkill did not reclaim all excess
+  runners" when every runner it asked LSF to kill had already finished. wr runs
+  `bkill -b`, which says so in one line for the whole request, such as `Job has
+  already finished` or `No matching job found`, without naming any job. Those
+  runners are now counted as already gone, where before they were counted as
+  unaccounted.
 - The help for `wr manager start --max_cores` and `--max_ram` said that 0
   allows only 0-core commands, or stops commands running locally. That is only
   true of the openstack scheduler. With the local scheduler, 0 has always meant

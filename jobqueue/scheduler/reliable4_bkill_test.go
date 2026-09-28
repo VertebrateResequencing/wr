@@ -111,13 +111,15 @@ exit 255
 	// exec timeout.
 	bkillHangBody = "sleep 10\nexit 0\n"
 
-	// bkillProdShapeBody is a fake bkill that fails the whole batch with ONE
-	// global message naming no element at all, which is exactly what prod's bkill
-	// did (exit status 255, out="No matching job found" for ~1,900 ids; see
-	// FINDING 4). wr cannot tell from that what happened to any individual
-	// element, so every one of them must be reported as unaccounted for, and at
-	// warn - the one thing that must never happen is silently assuming they were
-	// killed (prod problem #3) or filing them as benignly already-gone.
+	// bkillProdShapeBody is a fake bkill that answers the whole batch with ONE
+	// message naming no element at all, which is exactly what prod's bkill did
+	// (exit status 255, out="No matching job found" for ~1,900 ids; see FINDING
+	// 4). It is how bkill -b says it found nothing it could kill: had any id been
+	// a live job, it would have said "The requested operation is in progress." and
+	// exited 0 (see bkillFoundNothingToKill, and .docs/bugfixes/
+	// 260928-soak3-small-findings.md for the farm22 observations). So every
+	// element is already gone; what must never happen is silently assuming any
+	// of them was killed (prod problem #3).
 	bkillProdShapeBody = "echo 'No matching job found'\nexit 255\n"
 )
 
@@ -435,8 +437,9 @@ func TestReliable4BkillBackoff(t *testing.T) {
 // distinguishes elements bkill actually killed from elements that were already
 // gone, so a "No matching job found" can no longer hide un-reclaimed
 // over-provisioned runners. That includes the output prod actually saw, which
-// named no element at all: whatever wr cannot account for must be reported as
-// unaccounted for, at warn, never quietly counted as killed or already gone.
+// named no element at all: bkill -b's report that it found nothing to kill, so
+// every element was already gone. Whatever wr cannot account for must still be
+// reported as unaccounted for, at warn, never quietly counted as killed.
 func TestReliable4BkillOutcome(t *testing.T) {
 	const elements = 10
 
@@ -480,15 +483,15 @@ func TestReliable4BkillOutcome(t *testing.T) {
 
 		ctx, logs := captureLogCtx()
 
-		Convey("no element is assumed killed or already gone, and the operator is warned", func() {
+		Convey("no element is assumed killed, every one is already gone, and nothing is warned about", func() {
 			_, err := h.s.killExcessCmds(ctx, bkillTestPrefix, 0)
 			So(err, ShouldBeNil)
 
 			logged := logs.String()
 			So(logged, ShouldContainSubstring, "killed=0")
-			So(logged, ShouldContainSubstring, "alreadyGone=0")
-			So(logged, ShouldContainSubstring, fmt.Sprintf("unaccounted=%d", bkillTestElements))
-			So(logged, ShouldContainSubstring, "lvl=warn")
+			So(logged, ShouldContainSubstring, fmt.Sprintf("alreadyGone=%d", bkillTestElements))
+			So(logged, ShouldContainSubstring, "unaccounted=0")
+			So(logged, ShouldNotContainSubstring, "lvl=warn")
 			So(logs.Len(), ShouldBeLessThan, bkillTestLogMax)
 		})
 	})
