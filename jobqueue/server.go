@@ -698,23 +698,6 @@ func (r *rgToKeys) Values(rg string) []string {
 	return plist.Values()
 }
 
-func recoveredJobDelay(job *Job, now time.Time) time.Duration {
-	if job.DelayTime <= 0 {
-		return 0
-	}
-
-	if job.State != JobStateDelayed || job.EndTime.IsZero() {
-		return job.DelayTime
-	}
-
-	remaining := job.EndTime.Add(job.DelayTime).Sub(now)
-	if remaining < 0 {
-		return 0
-	}
-
-	return remaining
-}
-
 // BadServer is the details of servers that have gone bad that we send to the
 // status webpage. Previously bad servers can also be sent if they become good
 // again, hence the IsBad boolean.
@@ -4894,7 +4877,7 @@ func (s *Server) recoveredItemDef(ctx context.Context, recovered resolvedJob, lo
 
 	itemdef := &queue.ItemDef{
 		Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job,
-		Priority: job.Priority, Delay: recoveredJobDelay(job, time.Now()), TTR: s.itemTTRDuration(),
+		Priority: job.Priority, Delay: 0 * time.Second, TTR: s.itemTTRDuration(),
 		Dependencies: recovered.deps,
 	}
 
@@ -6015,7 +5998,7 @@ func (s *Server) itemDefsForNewJobs(jobsToQueue []*Job,
 
 		itemdefs = append(itemdefs, &queue.ItemDef{
 			Key: job.Key(), ReserveGroup: job.getSchedulerGroup(), Data: job,
-			Priority: job.Priority, Delay: job.DelayTime, TTR: s.itemTTRDuration(),
+			Priority: job.Priority, Delay: 0 * time.Second, TTR: s.itemTTRDuration(),
 			Dependencies: deps,
 		})
 	}
@@ -6169,7 +6152,7 @@ func (s *Server) applyDependencyUpdates(ctx context.Context, updates []jobDepend
 		job.setWaitingForDepGroups(update.waitingForDepGroups)
 
 		err := s.q.Update(
-			ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority, job.DelayTime, s.itemTTRDuration(), update.deps,
+			ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, s.itemTTRDuration(), update.deps,
 		)
 		if err != nil {
 			if readyCallbackExpected {
