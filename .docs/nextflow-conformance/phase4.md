@@ -44,12 +44,12 @@ missing prerequisite leaves the affected item incomplete.
 
 spec.md section: D1
 
-Extend `conformance/runner.go` to record runner-owned subprocess events,
-stdout, stderr, exits, and artifacts. Cover all four acceptance tests in
-`conformance/runner_test.go`: `D1_01`, `D1_02`, `D1_03`, and `D1_04`.
-Require exact run/terminal/package events, successful exits, completed
-subtests, and observations for a pass. Reject malformed, contradictory,
-missing, and truncated evidence at the recorder boundary.
+Extend `nextflowconformance/runner.go` to record runner-owned subprocess
+events, stdout, stderr, exits, and artifacts. Cover all four acceptance tests
+in `nextflowconformance/runner_test.go`: `D1_01`, `D1_02`, `D1_03`, and
+`D1_04`. Require exact run/terminal/package events, successful exits,
+completed subtests, and observations for a pass. Reject malformed,
+contradictory, missing, and truncated evidence at the recorder boundary.
 
 Enforce per-UAT deadlines, the suite ceiling, process-group cleanup, and
 log limits. Publish manifests atomically only after closing and hashing
@@ -63,18 +63,18 @@ and interruption failures before reports may use a passing state.
 
 spec.md section: D2
 
-After Item 4.1 review, implement `conformance/evidence.go`. Cover all five
-acceptance tests in `conformance/evidence_test.go`: `D2_01`, `D2_02`,
-`D2_03`, `D2_04`, and `D2_05`. Hash the complete D2 input inventory before
-and after execution, including dirty and untracked inputs, active source
-and dependencies outside the bound package, tool identities, effective
+After Item 4.1 review, implement `nextflowconformance/evidence.go`. Cover all
+five acceptance tests in `nextflowconformance/evidence_test.go`: `D2_01`,
+`D2_02`, `D2_03`, `D2_04`, and `D2_05`. Hash the complete D2 input inventory
+before and after execution, including dirty and untracked inputs, active
+source and dependencies outside the bound package, tool identities, effective
 environment, and applicable runtime artifacts. Include the opaque runtime's
 full-file hash, Java tree, required tools, and actual external JARs; retain
 POM provenance through the lock and corpus input hashes. For `D2_01`, change
 the distribution independently of the other input subcases and require
 `E_EVIDENCE_STALE` with passed count 0. Bundled classes remain covered by the
-full distribution hash. Fix the permitted output exclusions in the tool
-and start children from an allowlisted environment.
+full distribution hash. Fix the permitted output exclusions in the tool and
+start children from an allowlisted environment.
 
 Revalidate raw events and artifacts on verify. Select the newest completed
 attempt for the exact input key by runner sequence, preserving historical
@@ -92,9 +92,9 @@ count as passing. Deadlines leave no child alive, interrupted attempts stay
 incomplete, and a newer failure supersedes an older pass. Capture:
 
 ```bash
-timeout 15m env CGO_ENABLED=1 go test -tags netgo -count=1 ./conformance ./cmd/wr-conformance -run '^TestUAT_D[12]_[0-9]+$'
-timeout 2m go run ./cmd/wr-conformance verify --suite foundation-bootstrap
-timeout 10m golangci-lint run ./conformance/... ./cmd/wr-conformance/...
+timeout 15m env CGO_ENABLED=1 go test -tags netgo -count=1 ./nextflowconformance ./cmd/wr-nextflow-conformance -run '^TestUAT_D[12]_[0-9]+$'
+timeout 2m go run ./cmd/wr-nextflow-conformance verify --suite foundation-bootstrap
+timeout 10m golangci-lint run ./nextflowconformance/... ./cmd/wr-nextflow-conformance/...
 ```
 
 The production bootstrap verify remains incomplete until the remaining

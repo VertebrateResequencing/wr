@@ -30,9 +30,10 @@ actual runtime acquisition exposed the archive contract conflict recorded
 in blocker-phase1-1.1.md. Agent phase1_implement returned an incomplete
 handoff in evidence/phase1.md. The corrected spec has passed two feature
 reviews, two proofreading reviews, and all affected phase reviews. Next
-action: approve a fresh input bundle and complete phase 1 Item 1.1, then
-review it before resuming acquisition in Item 1.2. No oracle or runtime
-conformance is claimed.
+action: fix the additional placeholder-whitespace defect from Item 1.1's
+second review, then obtain a clean review before acquisition in Item 1.2.
+The naming migration and first three corrections passed independent review.
+No oracle or runtime conformance is claimed.
 
 ## Review evidence
 
@@ -96,6 +97,14 @@ conformance is claimed.
 - Unprivileged user/network namespace creation failed with EPERM.
 - Docker server 29.1.3 responds. A pinned, network-disabled container is a
   possible oracle environment, not yet provisioned or proven.
+- A later prerequisite check ran the verified Java tree successfully inside
+  the existing Ubuntu image with `--network none` and `--read-only`.
+  Image digest is
+  `sha256:513c074113a871b51a8d16ab445c88779d6452d937a164fb5cc479f32668a41d`.
+  A Bash TCP connection to 1.1.1.1:443 failed with network unreachable.
+  Required candidate shell utilities were present. These checks establish
+  a usable isolation prerequisite, not the full execution closure or an
+  oracle result; E1 must record and prove its actual environment.
 
 ## Runtime packaging amendment
 
@@ -132,3 +141,47 @@ implementation bundles after amendment and phase review.
   reviews/packaging-phase-04-review-01.md,
   reviews/packaging-phase-05-review-01.md, and
   reviews/packaging-phase-06-review-01.md.
+- The amendment and its review evidence are committed as 8be5bb49.
+- phase1_schema_bundle approved the Item 1.1 input bundle with an estimated
+  95k-token budget and a smaller-split fallback. See
+  reviews/phase-01-schema-bundle.md. That approval preceded implementation
+  and did not establish code correctness.
+- The first schema/CLI continuation tests pass in
+  .tmp/agent/conformance/schema-contract-green.log. The implementor reports
+  positive fixtures accepted by all eleven emitted schemas in an independent
+  stock validator. Negative agreement fixtures, remaining constraints, and
+  owned lint findings are still in progress. The intermediate file named
+  schema-contract-first-green.log contains a failed run, not passing evidence.
+- phase1_schema_implement completed Item 1.1 and stopped edits. Its 16 owned
+  tests, 11-schema/49-mutation stock-validator check, and CLI build pass.
+  Owned files have zero lint findings. Exactly five acquisition UATs still
+  fail their obsolete fixtures; source.go and source_test.go retain 61 lint
+  findings. See evidence/phase1-schema.md. Item 1.1 is marked implemented;
+  phase1_schema_review is performing fresh independent review. No phase or
+  acquisition completion is claimed.
+- phase1_schema_review returned FAIL with three reproducible findings:
+  scalar schema/decoder disagreement, invalid RFC3339 forms accepted, and
+  spans on acquired source artifacts rejected. See
+  reviews/phase-01-schema-review-01.md and its durable probes and manifest.
+  The Item 1.1 implementation checkbox is unchecked pending correction.
+  Fresh agent phase1_schema_fix_1 is handling all three with regression tests.
+- phase1_schema_fix_1 corrected all three findings. Its 16 tests, eleven
+  schemas with 138 mutations, and 15 public CLI probes pass. See
+  evidence/phase1-schema-fix-01.md. Acquisition failures remain unchanged.
+- The user requires explicit Nextflow names. The second Item 1.1 reviewer
+  was interrupted before completion so a mechanical package/CLI/path rename
+  can precede a fresh review. Preserve historical snapshots and hashes.
+- nextflow_naming moved the package to nextflowconformance/ and the CLI to
+  cmd/wr-nextflow-conformance/, including active documentation, schemas,
+  defaults, environment variables, and fixtures. All 33 migrated files
+  reverse to their prior hashes by name substitutions. Historical evidence
+  remains unchanged. See evidence/nextflow-naming.md for commands and proof.
+- The 16 owned tests, eleven schemas with 138 mutations, and 15 CLI probes
+  pass under the new names. Deferred acquisition failures remain unchanged.
+  Item 1.1 is implemented again; nextflow_schema_review_2 is reviewing it.
+- nextflow_schema_review_2 returned FAIL for one additional placeholder
+  guard defect: leading whitespace bypasses the banned sentence, and Unicode
+  sentence-boundary whitespace disagrees between validators. The prior three
+  fixes and mechanical naming migration were confirmed. See
+  reviews/phase-01-schema-review-02.md. The implementation box is unchecked;
+  nextflow_schema_fix_2 is correcting the shared whitespace rule.

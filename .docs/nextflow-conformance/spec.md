@@ -24,12 +24,12 @@ semantically exhaustive or software is bug-free.
 
 ### Repository fit and boundaries
 
-Add public package `conformance/` and developer entry point
-`cmd/wr-conformance/main.go`. Follow the existing standalone
-`cmd/wr-testsuite` pattern. Do not add a command to the production `wr` CLI
-or a dependency from `jobqueue`, `queue`, or the production executable.
-Use the standard library and existing GoConvey dependency. This work needs
-no Markdown renderer, plugin framework, database, or generic test adapter.
+Add public package `nextflowconformance/` and developer entry point
+`cmd/wr-nextflow-conformance/main.go`. Follow the existing standalone
+`cmd/wr-testsuite` pattern. Do not add a command to the production `wr` CLI or
+a dependency from `jobqueue`, `queue`, or the production executable. Use the
+standard library and existing GoConvey dependency. This work needs no Markdown
+renderer, plugin framework, database, or generic test adapter.
 
 The only new public Go API is:
 
@@ -39,26 +39,26 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int
 ```
 
 The CLI owns argument parsing and delegates to private domain functions in
-`conformance/`. `cmd/wr-conformance/main.go` supplies cancellation and exits
-with the returned code. Context cancellation reaches network requests,
-subprocess groups, pipe readers, and temporary-file cleanup.
+`nextflowconformance/`. `cmd/wr-nextflow-conformance/main.go` supplies
+cancellation and exits with the returned code. Context cancellation reaches
+network requests, subprocess groups, pipe readers, and temporary-file cleanup.
 
 Use these files; tests live beside their corresponding source files:
 
 ```tsv
 Path	Role	Authority	Owner
-conformance/model.go	Decode and validate records	Schema rules	Foundation
-conformance/source.go	Acquire and verify pinned bytes	Source lock	Foundation
-conformance/extract.go	Partition bytes and enumerate units	Pinned bytes	Foundation
-conformance/coverage.go	Check links and scope	Reviewed records	Foundation
-conformance/runner.go	Discover and run Go tests	Go JSON events	Foundation
-conformance/evidence.go	Check freshness and artifacts	Recorded inputs	Foundation
-conformance/oracle.go	Run pinned Nextflow cases	Actual subprocess	Foundation
-conformance/render.go	Generate reports and handoffs	Validated records	Foundation
-conformance/testdata/	Independent fixtures and mutations	Reviewed fixtures	Foundation
-conformance/data/	Versioned target and ledger	Reviewed JSON	Foundation
-conformance/data/cases/	Workflow inputs and expectations	Reviewed files	Foundation
-.tmp/conformance/	Acquired blobs and run artifacts	Disposable cache	Developer
+nextflowconformance/model.go	Decode and validate records	Schema rules	Foundation
+nextflowconformance/source.go	Acquire and verify pinned bytes	Source lock	Foundation
+nextflowconformance/extract.go	Partition bytes and enumerate units	Pinned bytes	Foundation
+nextflowconformance/coverage.go	Check links and scope	Reviewed records	Foundation
+nextflowconformance/runner.go	Discover and run Go tests	Go JSON events	Foundation
+nextflowconformance/evidence.go	Check freshness and artifacts	Recorded inputs	Foundation
+nextflowconformance/oracle.go	Run pinned Nextflow cases	Actual subprocess	Foundation
+nextflowconformance/render.go	Generate reports and handoffs	Validated records	Foundation
+nextflowconformance/testdata/	Independent fixtures and mutations	Reviewed fixtures	Foundation
+nextflowconformance/data/	Versioned target and ledger	Reviewed JSON	Foundation
+nextflowconformance/data/cases/	Workflow inputs and expectations	Reviewed files	Foundation
+.tmp/nextflow-conformance/	Acquired blobs and run artifacts	Disposable cache	Developer
 .docs/nextflow-conformance/generated/	Specs, reports, checklists	Generated view	Foundation
 ```
 
@@ -160,12 +160,12 @@ fields. Decode numbers without conversion through floating point. IDs use
 64 lowercase hex digits. Timestamps are RFC3339 UTC, never freshness proof.
 
 Implement these closed schemas in `model.go`; emit matching schema documents
-in `conformance/data/schema/` from that same definition. Keep schema emission
-limited to these records; it is not a reusable schema framework. The fields
-below are required unless explicitly optional.
-A `file_ref` is `{path, sha256, bytes}`. A `span` is
-`{file, start, end, sha256}`, using zero-based half-open byte offsets.
-IDs referring to other records must resolve in the same target revision.
+in `nextflowconformance/data/schema/` from that same definition. Keep schema
+emission limited to these records; it is not a reusable schema framework. The
+fields below are required unless explicitly optional. A `file_ref` is `{path,
+sha256, bytes}`. A `span` is `{file, start, end, sha256}`, using zero-based
+half-open byte offsets. IDs referring to other records must resolve in the
+same target revision.
 
 ```tsv
 Record file	Record key	Fields beyond key	Constraints
@@ -262,20 +262,20 @@ this check is a regression guard, not a semantic classifier.
 
 Commands run from the repository root. `--root` selects the corpus directory;
 `--cache` selects the acquired cache. Their defaults are
-`conformance/data` and `.tmp/conformance`. Test fixtures use `t.TempDir()`.
-Resolve paths once and reject output inside source inputs.
+`nextflowconformance/data` and `.tmp/nextflow-conformance`. Test fixtures use
+`t.TempDir()`. Resolve paths once and reject output inside source inputs.
 
 ```bash
-go run ./cmd/wr-conformance acquire --java-home /opt/java21
+go run ./cmd/wr-nextflow-conformance acquire --java-home /opt/java21
 # Review and commit the candidate lock before the remaining commands.
-go run ./cmd/wr-conformance validate
-go run ./cmd/wr-conformance extract --check
-go run ./cmd/wr-conformance render --check
-go run ./cmd/wr-conformance discover --suite foundation-bootstrap
-go run ./cmd/wr-conformance run --suite foundation-bootstrap
-go run ./cmd/wr-conformance verify --suite foundation-bootstrap
-go run ./cmd/wr-conformance verify --suite target-inventory
-go run ./cmd/wr-conformance verify --suite wr-runtime
+go run ./cmd/wr-nextflow-conformance validate
+go run ./cmd/wr-nextflow-conformance extract --check
+go run ./cmd/wr-nextflow-conformance render --check
+go run ./cmd/wr-nextflow-conformance discover --suite foundation-bootstrap
+go run ./cmd/wr-nextflow-conformance run --suite foundation-bootstrap
+go run ./cmd/wr-nextflow-conformance verify --suite foundation-bootstrap
+go run ./cmd/wr-nextflow-conformance verify --suite target-inventory
+go run ./cmd/wr-nextflow-conformance verify --suite wr-runtime
 ```
 
 `acquire` accepts optional `--lock-candidate PATH`; the default is inside the
@@ -316,9 +316,9 @@ misleading combined percentage. Unknown commands or suites return 2.
 As a maintainer, I want immutable source and runtime identities, so that
 results can be reproduced without consulting moving upstream content.
 
-**Package:** `conformance/`
-**File:** `conformance/source.go`
-**Test file:** `conformance/source_test.go`
+**Package:** `nextflowconformance/`
+**File:** `nextflowconformance/source.go`
+**Test file:** `nextflowconformance/source_test.go`
 
 Acquisition is a transaction. Every expected source and artifact must be
 present and hash-verified before publishing a candidate lock. Preserve the
@@ -370,9 +370,9 @@ As an inventory reviewer, I want every selected byte and meaningful unit
 visible, so that omitted warnings and alternatives cannot hide behind a
 heading count.
 
-**Package:** `conformance/`
-**File:** `conformance/extract.go`
-**Test file:** `conformance/extract_test.go`
+**Package:** `nextflowconformance/`
+**File:** `nextflowconformance/extract.go`
+**Test file:** `nextflowconformance/extract_test.go`
 
 Extract these complete source files from the pinned commit:
 
@@ -467,9 +467,9 @@ semantics, not a claim that unreviewed text has no requirements.
 As a reviewer, I want requirements checked against original source spans,
 so that a self-consistent generated manifest cannot conceal omitted meaning.
 
-**Package:** `conformance/`
-**File:** `conformance/coverage.go`
-**Test file:** `conformance/coverage_test.go`
+**Package:** `nextflowconformance/`
+**File:** `nextflowconformance/coverage.go`
+**Test file:** `nextflowconformance/coverage_test.go`
 
 An author proposes obligations while reading the original source. A separate
 reviewer checks the original pinned spans, including surrounding text,
@@ -515,9 +515,9 @@ cannot detect; the report keeps that distinction.
 As a product owner, I want unresolved compatibility policy visible, so that
 it cannot disappear into exclusions or observed test success.
 
-**Package:** `conformance/`
-**File:** `conformance/model.go`
-**Test file:** `conformance/model_test.go`
+**Package:** `nextflowconformance/`
+**File:** `nextflowconformance/model.go`
+**Test file:** `nextflowconformance/model_test.go`
 
 Seed unresolved decisions `D_TYPED_MILESTONE` and `D_JVM_PLUGIN_POLICY`.
 The first names typed processes, workflows, records, and feature-flag
@@ -555,9 +555,9 @@ changed-meaning result. Implementing those errors belongs to runtime work.
 As an implementor, I want concrete inputs and observable results for every
 assigned behaviour, so that I can write a meaningful failing test.
 
-**Package:** `conformance/`
-**File:** `conformance/render.go`
-**Test file:** `conformance/render_test.go`
+**Package:** `nextflowconformance/`
+**File:** `nextflowconformance/render.go`
+**Test file:** `nextflowconformance/render_test.go`
 
 Expectations use a fixed observation format with fields `exit`, `values`,
 `artifacts`, `tasks`, and `diagnostics`. Each field is explicitly checked or
@@ -617,9 +617,9 @@ non-ASCII fixture bytes in linked artifacts instead of altering them.
 As a maintainer, I want each UAT bound to a real selected test, so that a
 filename or an invented test name cannot count as coverage.
 
-**Package:** `conformance/`
-**File:** `conformance/runner.go`
-**Test file:** `conformance/runner_test.go`
+**Package:** `nextflowconformance/`
+**File:** `nextflowconformance/runner.go`
+**Test file:** `nextflowconformance/runner_test.go`
 
 Use `go list -json` to resolve package files under the current build settings
 and `go test -list` to discover top-level tests. Every required UAT has one
@@ -657,9 +657,9 @@ CLI/results or other observable boundaries, not mere source text presence.
 As a reviewer, I want proof that each test started and finished, so that
 zero-test runs and skipped tests remain incomplete.
 
-**Package:** `conformance/`
-**File:** `conformance/runner.go`
-**Test file:** `conformance/runner_test.go`
+**Package:** `nextflowconformance/`
+**File:** `nextflowconformance/runner.go`
+**Test file:** `nextflowconformance/runner_test.go`
 
 Capture raw Go JSON events, stdout, stderr, exit, and artifact receipts from
 one runner-owned invocation. A passing test requires matching `run` and
@@ -701,9 +701,9 @@ in-progress manifest is never considered passing evidence.
 As a maintainer, I want changes to invalidate affected results, so that old
 passes cannot certify a new implementation or altered expectation.
 
-**Package:** `conformance/`
-**File:** `conformance/evidence.go`
-**Test file:** `conformance/evidence_test.go`
+**Package:** `nextflowconformance/`
+**File:** `nextflowconformance/evidence.go`
+**Test file:** `nextflowconformance/evidence_test.go`
 
 An attempt records these inputs before execution and rechecks them after:
 Git commit; dirty source content digest; target and lock hashes; every
@@ -763,9 +763,9 @@ Hand-edited status fields do not override that derivation.
 As an implementor, I want a small actual oracle baseline, so that later
 runtime comparisons have tested observation and error contracts.
 
-**Package:** `conformance/`
-**File:** `conformance/oracle.go`
-**Test file:** `conformance/oracle_test.go`
+**Package:** `nextflowconformance/`
+**File:** `nextflowconformance/oracle.go`
+**Test file:** `nextflowconformance/oracle_test.go`
 
 Run the unchanged acquired distribution through its embedded launcher with
 Java 21, strict parser v2, local executor, fixed two-task concurrency,
@@ -867,9 +867,9 @@ labelled foundation evidence, and must not appear as differential passes.
 As a maintainer, I want negative controls for the verifier, so that its
 completion claim includes evidence that it detects known false success.
 
-**Package:** `conformance/`
-**File:** `conformance/coverage.go`
-**Test file:** `conformance/adversarial_test.go`
+**Package:** `nextflowconformance/`
+**File:** `nextflowconformance/coverage.go`
+**Test file:** `nextflowconformance/adversarial_test.go`
 
 Maintain a reviewed mutation manifest with mutation ID, starting fixture
 hash, one change, invoked command, expected exit and diagnostic, and the
@@ -932,9 +932,9 @@ those behaviours.
 As a maintainer, I want later work retained as requirements with explicit
 dependencies, so that foundation success does not erase the product goal.
 
-**Package:** `conformance/`
-**File:** `conformance/coverage.go`
-**Test file:** `conformance/milestones_test.go`
+**Package:** `nextflowconformance/`
+**File:** `nextflowconformance/coverage.go`
+**Test file:** `nextflowconformance/milestones_test.go`
 
 Create these machine-readable seed requirements with origin `wr`, source
 provenance to the accepted prompt, scope `required`, and runtime bindings
@@ -998,9 +998,9 @@ No current queue test satisfies these Nextflow run-level requirements.
 As an agent orchestrator, I want resumable batches with exact input and
 completion references, so that fresh context does not lose unresolved work.
 
-**Package:** `conformance/`
-**File:** `conformance/render.go`
-**Test file:** `conformance/render_test.go`
+**Package:** `nextflowconformance/`
+**File:** `nextflowconformance/render.go`
+**Test file:** `nextflowconformance/render_test.go`
 
 Each batch defines assigned IDs, dependencies, exact source excerpts and
 hashes, relevant files, commands with deadlines, UAT IDs, unresolved
@@ -1070,10 +1070,10 @@ only with a recorded deadline and continuing progress updates. Suggested
 foundation commands after offline acquisition are:
 
 ```bash
-timeout 20m go run ./cmd/wr-conformance run --suite foundation-bootstrap
-timeout 2m go run ./cmd/wr-conformance verify --suite foundation-bootstrap
-timeout 2m go run ./cmd/wr-conformance render --check
-timeout 20m env CGO_ENABLED=1 go test -tags netgo -count=1 ./conformance/...
+timeout 20m go run ./cmd/wr-nextflow-conformance run --suite foundation-bootstrap
+timeout 2m go run ./cmd/wr-nextflow-conformance verify --suite foundation-bootstrap
+timeout 2m go run ./cmd/wr-nextflow-conformance render --check
+timeout 20m env CGO_ENABLED=1 go test -tags netgo -count=1 ./nextflowconformance/...
 timeout 10m golangci-lint run
 ```
 

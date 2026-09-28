@@ -16,6 +16,23 @@
 
 ## Notes
 
+### Naming correction
+
+User instruction:
+
+> I don't want vague things like "conformance" in the repo root, or
+> "cmd/wr-conformance". Nextflow-related stuff should clearly include
+> nextflow in the name.
+
+Use `nextflowconformance/` for the Go developer package and
+`cmd/wr-nextflow-conformance/` for its executable. Active documentation,
+generated schema identities, default paths, fixtures, and commands must use
+the explicit Nextflow names. Preserve historical review evidence and hashes
+as snapshots; record the path migration separately. Use
+`nextflowconformance/data` and `.tmp/nextflow-conformance` as CLI defaults,
+`urn:wr:nextflow-conformance:schema:1:` for schema IDs, and
+`NEXTFLOW_CONFORMANCE_` for this tool's developer environment variables.
+
 ### Accepted direction
 
 - Preserve the previous branch and restore the working tree to develop in a

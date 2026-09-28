@@ -44,16 +44,16 @@ missing prerequisite leaves the affected item incomplete.
 
 spec.md section: A2
 
-Implement `conformance/extract.go` and independent fixtures under
-`conformance/testdata/`. Cover all four acceptance tests in
-`conformance/extract_test.go`: `A2_01`, `A2_02`, `A2_03`, and `A2_04`.
-Prove exact partitioning and source-unit kinds on hand-labelled LF, CRLF,
-and final-line fixtures before extracting the complete pinned file set.
-Resolve recursive includes, grammar alternatives, source declarations,
-upstream tests, and bootstrap selectors to exact spans. Preserve unknown
-constructs and pending blocks; retain reconciliation records on changes.
-Use the complete file list and bootstrap selectors in A2. Reject absent or
-ambiguous selectors; reuse their locked spans rather than narrowing scope.
+Implement `nextflowconformance/extract.go` and independent fixtures under
+`nextflowconformance/testdata/`. Cover all four acceptance tests in
+`nextflowconformance/extract_test.go`: `A2_01`, `A2_02`, `A2_03`, and `A2_04`.
+Prove exact partitioning and source-unit kinds on hand-labelled LF, CRLF, and
+final-line fixtures before extracting the complete pinned file set. Resolve
+recursive includes, grammar alternatives, source declarations, upstream tests,
+and bootstrap selectors to exact spans. Preserve unknown constructs and
+pending blocks; retain reconciliation records on changes. Use the complete
+file list and bootstrap selectors in A2. Reject absent or ambiguous selectors;
+reuse their locked spans rather than narrowing scope.
 
 Run extraction twice against the real locked corpus. Compare bytes and
 IDs, independently check each leaf partition, and resolve included map/mix
@@ -68,9 +68,9 @@ mode detects their removal without deriving its expectation from output.
 spec.md section: B1
 
 After Item 2.1 review, implement semantic accounting in
-`conformance/coverage.go`. Cover all five acceptance tests in
-`conformance/coverage_test.go`: `B1_01`, `B1_02`, `B1_03`, `B1_04`, and
-`B1_05`. Author obligations and requirement/case links from original
+`nextflowconformance/coverage.go`. Cover all five acceptance tests in
+`nextflowconformance/coverage_test.go`: `B1_01`, `B1_02`, `B1_03`, `B1_04`,
+and `B1_05`. Author obligations and requirement/case links from original
 bootstrap spans, then obtain independent semantic review with exact input
 hashes. Extraction cannot approve these records.
 
@@ -91,12 +91,13 @@ historical reviews and leave all other selected semantics pending.
 
 spec.md section: B2
 
-After Item 2.2 review, extend `conformance/model.go` and seed both unresolved
-policy decisions with their affected requirements in `conformance/data/`.
-Cover all three acceptance tests in `conformance/model_test.go`: `B2_01`,
-`B2_02`, and `B2_03`. Verify scope and observation status independently
-through CLI results. Explicit reviewed decisions alone authorize exclusion;
-an oracle observation cannot settle compatibility policy.
+After Item 2.2 review, extend `nextflowconformance/model.go` and seed both
+unresolved policy decisions with their affected requirements in
+`nextflowconformance/data/`. Cover all three acceptance tests in
+`nextflowconformance/model_test.go`: `B2_01`, `B2_02`, and `B2_03`. Verify
+scope and observation status independently through CLI results. Explicit
+reviewed decisions alone authorize exclusion; an oracle observation cannot
+settle compatibility policy.
 
 Provide the scope check used by `verify --suite wr-runtime` for `B2_01`
 now: unresolved decisions return 1 with `E_SCOPE_UNRESOLVED`. This check
@@ -115,10 +116,10 @@ non-bootstrap pending counts are nonzero, and the two decisions remain
 unresolved in production records. Capture:
 
 ```bash
-timeout 2m go run ./cmd/wr-conformance validate
-timeout 2m go run ./cmd/wr-conformance extract --check
-timeout 10m env CGO_ENABLED=1 go test -tags netgo -count=1 ./conformance ./cmd/wr-conformance -run '^TestUAT_(A2|B1|B2)_[0-9]+$'
-timeout 10m golangci-lint run ./conformance/... ./cmd/wr-conformance/...
+timeout 2m go run ./cmd/wr-nextflow-conformance validate
+timeout 2m go run ./cmd/wr-nextflow-conformance extract --check
+timeout 10m env CGO_ENABLED=1 go test -tags netgo -count=1 ./nextflowconformance ./cmd/wr-nextflow-conformance -run '^TestUAT_(A2|B1|B2)_[0-9]+$'
+timeout 10m golangci-lint run ./nextflowconformance/... ./cmd/wr-nextflow-conformance/...
 ```
 
 Validation claims record validity only. Runtime scope remains incomplete;

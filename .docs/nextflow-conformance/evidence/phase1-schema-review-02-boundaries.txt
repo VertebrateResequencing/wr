@@ -1,0 +1,82 @@
+"""Independent public boundary probes. Run after review-02-probes.txt."""
+import copy
+import json
+import subprocess
+from pathlib import Path
+
+from jsonschema import Draft202012Validator
+
+base = Path('.tmp/agent/nextflow-conformance/review02')
+source = base / 'existing-probes/full-baseline'
+out = base / 'boundaries'
+out.mkdir(parents=True, exist_ok=True)
+baseline = {str(p.relative_to(source)): p.read_bytes()
+            for p in source.rglob('*.json')}
+cases = [
+    ('description-normal', 'requirements', ['text'], 'Missing files fail.'),
+    ('description-leading-space', 'requirements', ['text'],
+     ' TODO: describe expected behaviour.'),
+    ('description-leading-tab', 'requirements', ['text'],
+     '\tTODO: describe expected behaviour.'),
+    ('description-leading-nbsp', 'requirements', ['text'],
+     '\u00a0TODO: describe expected behaviour.'),
+    ('description-bare-standin', 'requirements', ['text'],
+     'TODO: describe expected behaviour.'),
+    ('description-trailing-space', 'requirements', ['text'],
+     'TODO: describe expected behaviour. '),
+    ('description-quoted', 'requirements', ['text'],
+     'Reject the literal "TODO" in a description.'),
+    ('description-unicode-space', 'requirements', ['text'], '\u2003'),
+    ('description-nbsp-word', 'requirements', ['text'], '\u00a0TODO\u00a0'),
+    ('description-nbsp-sentence', 'requirements', ['text'],
+     'First.\u00a0TODO: describe expected behaviour.'),
+    ('time-century-leap', 'attempts', ['started'], '1600-02-29T23:59:59Z'),
+    ('time-century-invalid', 'attempts', ['started'], '1700-02-29T00:00:00Z'),
+    ('time-fraction', 'attempts', ['started'], '2026-09-28T00:00:00.999999999Z'),
+    ('time-invalid-minute', 'attempts', ['started'], '2026-09-28T00:60:00Z'),
+    ('https-ipv6-compressed', 'sources.lock', ['origin'], 'https://[1::2:3:4:5:6:7]/x'),
+    ('https-ipv6-overfull', 'sources.lock', ['origin'], 'https://[1::2:3:4:5:6:7:8]/x'),
+    ('https-escaped-path', 'sources.lock', ['origin'], 'https://example.org/%FF'),
+    ('typed-reference', 'target', ['profiles', 'foundation-bootstrap', 'required_reviews'], ['REQ']),
+    ('runtime-cycle', 'sources.lock', ['artifacts', 0, 'dependencies'], ['RUNTIME']),
+    ('runtime-missing-dependency', 'sources.lock', ['artifacts', 2, 'dependencies'], ['ABSENT']),
+    ('span-empty-end', 'reviews', ['source_spans', 0, 'start'], 3),
+    ('span-reversed', 'reviews', ['source_spans', 0, 'start'], 4),
+    ('integer-max', 'attempts', ['exit'], 9223372036854775807),
+    ('integer-overflow', 'attempts', ['exit'], 9223372036854775808),
+]
+results = []
+for name, kind, path, value in cases:
+    root = out / name
+    root.mkdir(exist_ok=True)
+    corpus = copy.deepcopy(baseline)
+    filename = 'attempts/ATTEMPTS.json' if kind == 'attempts' else kind + '.json'
+    data = json.loads(corpus[filename])
+    record = data if kind in ('target', 'sources.lock', 'attempts') else data[0]
+    cursor = record
+    for part in path[:-1]:
+        cursor = cursor[part]
+    cursor[path[-1]] = value
+    schema = json.loads(Path('nextflowconformance/data/schema', kind + '.v1.json').read_text())
+    accepts = Draft202012Validator(schema).is_valid(record)
+    corpus[filename] = (json.dumps(data) + '\n').encode()
+    for filename, content in corpus.items():
+        dest = root / filename
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(content)
+    process = subprocess.run(
+        ['.tmp/agent/bin/wr-nextflow-conformance-review02', 'validate',
+         '--root', str(root), '--cache', str(out / 'cache')],
+        capture_output=True, text=True, timeout=5)
+    (out / (name + '.stdout')).write_text(process.stdout)
+    (out / (name + '.stderr')).write_text(process.stderr)
+    (out / (name + '.exit')).write_text(str(process.returncode) + '\n')
+    result = {'name': name, 'kind': kind, 'path': path, 'value': value,
+              'schema_accepts': accepts, 'exit': process.returncode,
+              'diagnostics': json.loads(process.stdout)['diagnostics']}
+    results.append(result)
+    print(json.dumps(result))
+(out / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+assert len(results) == len(cases)
+assert all(result['exit'] == 2 for result in results)
+print('Recorded independent boundary observations; exit 0 is not a conformance pass.')

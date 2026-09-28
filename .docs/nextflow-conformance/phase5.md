@@ -44,25 +44,24 @@ missing prerequisite leaves the affected item incomplete.
 
 spec.md section: E1
 
-Implement `conformance/oracle.go` and the seven actual workflow/config
-cases under `conformance/data/cases/`. Cover all four acceptance tests in
-`conformance/oracle_test.go`: `E1_01`, `E1_02`, `E1_03`, and `E1_04`.
-Execute the unchanged opaque Nextflow 26.04.6 distribution by absolute path
-through its embedded `NXF_PACK=dist` launcher, which passes that same file to
-Java 21. Keep the separately acquired launcher as provenance; its default
-`one` package download path is outside this execution contract. Use parser
-v2, local executor, two-task concurrency, static typing disabled, no plugins,
-disabled automatic updates, isolated work and empty user home directories,
-and a private Nextflow home. Enforce network denial and record its mechanism.
-Independently review each workflow, config, and expectation before
-execution. Record verified
-source and full-file distribution hashes, version output, argv, effective
-environment, trace, stdout, stderr, and produced files. Use only the acquired
-external execution closure. POM metadata and bundled classes do not create
-additional runtime files or prove a complete Maven inventory. Successful
-offline runs prove closure sufficiency for these seven cases only. A missing
-external prerequisite fails the UAT and blocks this item without a skip or
-fixture substitute.
+Implement `nextflowconformance/oracle.go` and the seven actual workflow/config
+cases under `nextflowconformance/data/cases/`. Cover all four acceptance tests
+in `nextflowconformance/oracle_test.go`: `E1_01`, `E1_02`, `E1_03`, and
+`E1_04`. Execute the unchanged opaque Nextflow 26.04.6 distribution by
+absolute path through its embedded `NXF_PACK=dist` launcher, which passes that
+same file to Java 21. Keep the separately acquired launcher as provenance; its
+default `one` package download path is outside this execution contract. Use
+parser v2, local executor, two-task concurrency, static typing disabled, no
+plugins, disabled automatic updates, isolated work and empty user home
+directories, and a private Nextflow home. Enforce network denial and record
+its mechanism. Independently review each workflow, config, and expectation
+before execution. Record verified source and full-file distribution hashes,
+version output, argv, effective environment, trace, stdout, stderr, and
+produced files. Use only the acquired external execution closure. POM metadata
+and bundled classes do not create additional runtime files or prove a complete
+Maven inventory. Successful offline runs prove closure sufficiency for these
+seven cases only. A missing external prerequisite fails the UAT and blocks
+this item without a skip or fixture substitute.
 
 Run `ORACLE_MAP`, `ORACLE_MAP_NULL`, `ORACLE_MIX`, `ORACLE_EMPTY`,
 `ORACLE_IMPORT`, `ORACLE_FAIR`, and `ORACLE_FILE_ERROR`. Independently
@@ -86,15 +85,15 @@ restored tree.
 spec.md section: E2
 
 After Item 5.1 review, implement mutation accounting in
-`conformance/coverage.go` and reviewed fixtures in `conformance/testdata/`.
-Cover all three acceptance tests in `conformance/adversarial_test.go`:
-`E2_01`, `E2_02`, and `E2_03`. Execute every named mutation from E2's
-18-row manifest against an independent known-valid fixture copy. The clean
-baseline must pass; the specific expected exit and diagnostic must kill
-each mutation. Unrelated errors and unchanged inputs remain invalid or
-surviving controls. For `E2_02`, make one control invalid or surviving and
-require foundation verification to return 1 with `E_MUTATION_NOT_KILLED`.
-Keep mutation results as foundation evidence.
+`nextflowconformance/coverage.go` and reviewed fixtures in
+`nextflowconformance/testdata/`. Cover all three acceptance tests in
+`nextflowconformance/adversarial_test.go`: `E2_01`, `E2_02`, and `E2_03`.
+Execute every named mutation from E2's 18-row manifest against an independent
+known-valid fixture copy. The clean baseline must pass; the specific expected
+exit and diagnostic must kill each mutation. Unrelated errors and unchanged
+inputs remain invalid or surviving controls. For `E2_02`, make one control
+invalid or surviving and require foundation verification to return 1 with
+`E_MUTATION_NOT_KILLED`. Keep mutation results as foundation evidence.
 
 Also prove the three semantic observer mutations for null retention,
 multiset deduplication, and sorted fair output fail `E_EXPECTATION`.
@@ -113,9 +112,9 @@ three detected semantic observer mutations. Independent review accepts
 actual diagnostic literals and raw fair-order evidence. Capture:
 
 ```bash
-timeout 20m env CGO_ENABLED=1 go test -tags netgo -count=1 ./conformance ./cmd/wr-conformance -run '^TestUAT_E[12]_[0-9]+$'
-timeout 2m go run ./cmd/wr-conformance verify --suite wr-runtime
-timeout 10m golangci-lint run ./conformance/... ./cmd/wr-conformance/...
+timeout 20m env CGO_ENABLED=1 go test -tags netgo -count=1 ./nextflowconformance ./cmd/wr-nextflow-conformance -run '^TestUAT_E[12]_[0-9]+$'
+timeout 2m go run ./cmd/wr-nextflow-conformance verify --suite wr-runtime
+timeout 10m golangci-lint run ./nextflowconformance/... ./cmd/wr-nextflow-conformance/...
 ```
 
 The runtime verification must return 1 with `E_ADAPTER_UNAVAILABLE` and zero

@@ -44,12 +44,12 @@ missing prerequisite leaves the affected item incomplete.
 
 spec.md section: F1
 
-Extend `conformance/coverage.go` and the authoritative ledger with all nine
-named wr requirements, linked measurable draft UATs, accepted-prompt
+Extend `nextflowconformance/coverage.go` and the authoritative ledger with all
+nine named wr requirements, linked measurable draft UATs, accepted-prompt
 provenance, origin `wr`, scope `required`, and null runtime bindings. Keep
-these seeds outside the foundation execution denominator and inside the
-target ledger and runtime profile. Cover all three acceptance tests in
-`conformance/milestones_test.go`: `F1_01`, `F1_02`, and `F1_03`.
+these seeds outside the foundation execution denominator and inside the target
+ledger and runtime profile. Cover all three acceptance tests in
+`nextflowconformance/milestones_test.go`: `F1_01`, `F1_02`, and `F1_03`.
 
 Preserve both unresolved policies and all bootstrap semantics. Enforce the
 foundation, target accounting/policy, durable runtime slice, and broad
@@ -67,12 +67,12 @@ implementation mutations remain required once an adapter exists.
 
 spec.md section: F2; Implementation Order final gate
 
-After Item 6.1 review, extend `conformance/render.go` with generated batch
-briefings and a durable ledger. Cover all three acceptance tests in
-`conformance/render_test.go`: `F2_01`, `F2_02`, and `F2_03`. Generate exact
-assigned IDs, dependencies, source excerpts and hashes, relevant inputs,
-commands and deadlines, unresolved questions, and required profiles.
-Require independent approval of bounded input bundles and reject cycles.
+After Item 6.1 review, extend `nextflowconformance/render.go` with generated
+batch briefings and a durable ledger. Cover all three acceptance tests in
+`nextflowconformance/render_test.go`: `F2_01`, `F2_02`, and `F2_03`. Generate
+exact assigned IDs, dependencies, source excerpts and hashes, relevant inputs,
+commands and deadlines, unresolved questions, and required profiles. Require
+independent approval of bounded input bundles and reject cycles.
 
 Derive every checked item by revalidating current evidence. Preserve
 historical attempts, decisions, reviews, reconciliations, and artifact
@@ -101,18 +101,18 @@ any required follow-up command with a recorded deadline and communicate
 progress during longer checks:
 
 ```bash
-timeout 2m go run ./cmd/wr-conformance validate
-timeout 2m go run ./cmd/wr-conformance extract --check
-timeout 2m go run ./cmd/wr-conformance render
-timeout 5m go run ./cmd/wr-conformance discover --suite foundation-bootstrap
-timeout 20m go run ./cmd/wr-conformance run --suite foundation-bootstrap
-timeout 2m go run ./cmd/wr-conformance render
-timeout 2m go run ./cmd/wr-conformance verify --suite foundation-bootstrap
-timeout 2m go run ./cmd/wr-conformance render --check
-timeout 20m env CGO_ENABLED=1 go test -tags netgo -count=1 ./conformance/... ./cmd/wr-conformance/...
-timeout 10m golangci-lint run ./conformance/... ./cmd/wr-conformance/...
-timeout 2m go run ./cmd/wr-conformance verify --suite target-inventory
-timeout 2m go run ./cmd/wr-conformance verify --suite wr-runtime
+timeout 2m go run ./cmd/wr-nextflow-conformance validate
+timeout 2m go run ./cmd/wr-nextflow-conformance extract --check
+timeout 2m go run ./cmd/wr-nextflow-conformance render
+timeout 5m go run ./cmd/wr-nextflow-conformance discover --suite foundation-bootstrap
+timeout 20m go run ./cmd/wr-nextflow-conformance run --suite foundation-bootstrap
+timeout 2m go run ./cmd/wr-nextflow-conformance render
+timeout 2m go run ./cmd/wr-nextflow-conformance verify --suite foundation-bootstrap
+timeout 2m go run ./cmd/wr-nextflow-conformance render --check
+timeout 20m env CGO_ENABLED=1 go test -tags netgo -count=1 ./nextflowconformance/... ./cmd/wr-nextflow-conformance/...
+timeout 10m golangci-lint run ./nextflowconformance/... ./cmd/wr-nextflow-conformance/...
+timeout 2m go run ./cmd/wr-nextflow-conformance verify --suite target-inventory
+timeout 2m go run ./cmd/wr-nextflow-conformance verify --suite wr-runtime
 ```
 
 Foundation CLI commands and focused tests must return 0 with zero missing,

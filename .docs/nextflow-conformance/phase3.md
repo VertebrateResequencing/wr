@@ -45,8 +45,8 @@ missing prerequisite leaves the affected item incomplete.
 spec.md section: C1; Implementation Order step 3
 
 Implement fixed observation comparisons and generated views in
-`conformance/render.go`. Cover all four acceptance tests in
-`conformance/render_test.go`: `C1_01`, `C1_02`, `C1_03`, and `C1_04`.
+`nextflowconformance/render.go`. Cover all four acceptance tests in
+`nextflowconformance/render_test.go`: `C1_01`, `C1_02`, `C1_03`, and `C1_04`.
 Author executable expectation records with all observation fields, reviewed
 normalizations, typed values, artifact hashes, and exact error contracts.
 Replay raw observations; preserve sequence and multiset multiplicity.
@@ -83,21 +83,21 @@ After this import, update authoritative records first and regenerate views.
 
 spec.md section: C2
 
-After Item 3.1 review, implement discovery in `conformance/runner.go` with
-`go list -json` and `go test -list`. Cover all four acceptance tests in
-`conformance/runner_test.go`: `C2_01`, `C2_02`, `C2_03`, and `C2_04`.
+After Item 3.1 review, implement discovery in `nextflowconformance/runner.go`
+with `go list -json` and `go test -list`. Cover all four acceptance tests in
+`nextflowconformance/runner_test.go`: `C2_01`, `C2_02`, `C2_03`, and `C2_04`.
 Record actual build selection, active source, discovery bytes, and exact
 package/test bindings. Use anchored escaped selectors and reject package
 patterns, regex test names, unavailable tests, and incompatible evidence
-kinds. Discovery and execution use the same build selection, including
-`-tags netgo` and `CGO_ENABLED=1`. Execute with `-count=1 -json` and record
-actual argv. Prove `C2_03` executes only `TestUAT_ONE`, even when
-`TestUAT_ONE_EXTRA` exists, using temporary fixture packages. Implement
-this narrow execution path now; complete attempt recording and freshness
-belong to the next phase. Missing or excluded tests return 1 with
-`E_TEST_MISSING`; invalid-package discovery returns 2 with
-`E_TEST_DISCOVERY`. Both leave executed count 0. Evidence-kind mismatches
-return 2 with `E_EVIDENCE_KIND`, regardless of fixture success.
+kinds. Discovery and execution use the same build selection, including `-tags
+netgo` and `CGO_ENABLED=1`. Execute with `-count=1 -json` and record actual
+argv. Prove `C2_03` executes only `TestUAT_ONE`, even when `TestUAT_ONE_EXTRA`
+exists, using temporary fixture packages. Implement this narrow execution path
+now; complete attempt recording and freshness belong to the next phase.
+Missing or excluded tests return 1 with `E_TEST_MISSING`; invalid-package
+discovery returns 2 with `E_TEST_DISCOVERY`. Both leave executed count 0.
+Evidence-kind mismatches return 2 with `E_EVIDENCE_KIND`, regardless of
+fixture success.
 
 - [ ] implemented
 - [ ] reviewed
@@ -111,10 +111,10 @@ Discovery identifies implemented tests and reports future missing bindings
 honestly; it cannot claim that all 49 have executed at this stage. Capture:
 
 ```bash
-timeout 2m go run ./cmd/wr-conformance render --check
-timeout 5m go run ./cmd/wr-conformance discover --suite foundation-bootstrap
-timeout 10m env CGO_ENABLED=1 go test -tags netgo -count=1 ./conformance ./cmd/wr-conformance -run '^TestUAT_C[12]_[0-9]+$'
-timeout 10m golangci-lint run ./conformance/... ./cmd/wr-conformance/...
+timeout 2m go run ./cmd/wr-nextflow-conformance render --check
+timeout 5m go run ./cmd/wr-nextflow-conformance discover --suite foundation-bootstrap
+timeout 10m env CGO_ENABLED=1 go test -tags netgo -count=1 ./nextflowconformance ./cmd/wr-nextflow-conformance -run '^TestUAT_C[12]_[0-9]+$'
+timeout 10m golangci-lint run ./nextflowconformance/... ./cmd/wr-nextflow-conformance/...
 ```
 
 Review discovery's exit and diagnostics against the actual remaining work;
