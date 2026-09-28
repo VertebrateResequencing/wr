@@ -119,10 +119,17 @@ func TestExitedZeroDuringStopIsComplete(t *testing.T) {
 			close(stopped)
 		}()
 
+		reachedShutdown := false
+
 		select {
 		case <-inShutdown:
+			reachedShutdown = true
 		case <-time.After(stopExitedZeroWait):
 		}
+
+		// without this the rest could pass without ever exercising a command
+		// that exits 0 while the shutdown is in progress
+		So(reachedShutdown, ShouldBeTrue)
 
 		Convey("it is recorded as complete, and is still complete after a restart", func() {
 			var execErr error

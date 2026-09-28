@@ -71,6 +71,16 @@ func TestBkillAggregateOutput(t *testing.T) {
 			So(k.unaccounted, ShouldEqual, 0)
 		})
 
+		Convey("credits nothing as gone if bkill exited with another non-zero status", func() {
+			exit1 := exec.CommandContext(t.Context(), "sh", "-c", "exit 1").Run()
+			So(exit1, ShouldNotBeNil)
+
+			k.account(bkillAggregateIDs(), "Job has already finished\n", exit1)
+
+			So(k.alreadyGone, ShouldEqual, 0)
+			So(k.unaccounted, ShouldEqual, bkillAggregateElements)
+		})
+
 		Convey("credits nothing as gone if bkill also said something else", func() {
 			k.account(bkillAggregateIDs(), "Job has already finished\nUser permission denied\n", exit255)
 

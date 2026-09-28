@@ -639,7 +639,9 @@ func daemonStopWait() time.Duration {
 	wait := daemonStopGiveup
 
 	if fi, err := os.Stat(config.ManagerDBFile); err == nil {
-		wait += time.Duration(fi.Size()/daemonStopBackupBytesPerSec) * time.Second
+		// round up, so a partial 50MiB still gets its second
+		secs := (fi.Size() + daemonStopBackupBytesPerSec - 1) / daemonStopBackupBytesPerSec
+		wait += time.Duration(secs) * time.Second
 	}
 
 	return wait

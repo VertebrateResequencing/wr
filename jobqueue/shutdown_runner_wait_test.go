@@ -145,6 +145,10 @@ func startStuckRunnerJob(config internal.Config, addr, tokenFile, cmd string) bo
 		return false
 	}
 
+	// the job stays running on the manager after this client goes: it is the
+	// scheduler's runner that never exits, not this connection
+	defer disconnect(jq)
+
 	job, err := jq.ReserveScheduled(10*time.Second, fakeRunnerSchedGrp(cmd))
 	if err != nil || job == nil {
 		return false

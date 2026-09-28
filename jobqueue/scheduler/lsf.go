@@ -364,6 +364,10 @@ var (
 const (
 	bkillAllFinished   = "Job has already finished"
 	bkillNoMatchingJob = "No matching job found"
+
+	// bkillNothingToKillExit is the exit status bkill -b gives with those
+	// lines, when nothing in the batch could be killed.
+	bkillNothingToKillExit = 255
 )
 
 // bkillLineKind is the kind of per-element outcome a bkill output line reports.
@@ -505,7 +509,7 @@ func lingeredOnPipes(err error) bool {
 // next cycle's retry warns about it (see needsAttention).
 func bkillFoundNothingToKill(out string, err error) bool {
 	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) || !exitErr.Exited() {
+	if !errors.As(err, &exitErr) || !exitErr.Exited() || exitErr.ExitCode() != bkillNothingToKillExit {
 		return false
 	}
 
