@@ -288,7 +288,18 @@ var managerStopCmd = &cobra.Command{
 	Long: `Immediately stop the workflow manager, saving its state.
 
 Note that any runners that are currently running will die, along with any
-commands they were running. It is more graceful to use 'drain' instead.`,
+commands they were running. It is more graceful to use 'drain' instead.
+
+The manager can take a while to stop: up to a minute waiting for its runners to
+exit, then the time it takes to save a final backup of its database. This waits
+2 minutes for it, plus a second for every 50MiB of its database. If the manager
+is still running after that, this exits with an error saying so and leaves the
+manager to finish stopping, keeping its token; run it again to keep waiting.
+
+A manager that is stopping ignores further requests to stop. To make it exit
+without finishing, interrupt it (press Ctrl-C again if it is running in the
+foreground, or send it SIGINT) or send it SIGKILL; the next start then recovers
+as it would after a crash.`,
 	Run: func(_ *cobra.Command, _ []string) {
 		// the daemon could be running but be non-responsive, or it could have
 		// exited but left the pid file in place; to best cover all

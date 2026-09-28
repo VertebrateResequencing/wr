@@ -161,12 +161,12 @@ complete.`,
 
 		jobqueue.AppName = "wr"
 
-		token, err := token()
-		if err != nil {
-			die("%s", err)
-		}
-
-		jq, err := jobqueue.Connect(rserver, caFile, rdomain, token, timeout)
+		// the token is read from its file, not taken as bytes, so that a runner
+		// still running when its manager is cleanly stopped and started again,
+		// which changes the token, picks up the new one when the old one is
+		// rejected, and can report its job, as it could after a crash (which
+		// keeps the token).
+		jq, err := jobqueue.ConnectWithTokenFile(rserver, caFile, rdomain, config.ManagerTokenFile, timeout)
 		if err != nil {
 			die("%s", err)
 		}

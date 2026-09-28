@@ -359,6 +359,17 @@ var (
 	killBackoffMax = defaultKillBackoffMax //nolint:gochecknoglobals
 )
 
+// The whole-invocation reports bkill -b gives when none of the ids it was given
+// could be killed (see bkillFoundNothingToKill).
+const (
+	bkillAllFinished   = "Job has already finished"
+	bkillNoMatchingJob = "No matching job found"
+
+	// bkillNothingToKillExit is the exit status bkill -b gives with those
+	// lines, when nothing in the batch could be killed.
+	bkillNothingToKillExit = 255
+)
+
 // bkillLineKind is the kind of per-element outcome a bkill output line reports.
 type bkillLineKind int
 
@@ -390,7 +401,7 @@ func bkillLineOutcome(reID *regexp.Regexp, line string) (string, bkillLineKind) 
 // LSF spells them (hence the nolint on LSF's American spelling below).
 func classifyBkillLine(line string) bkillLineKind {
 	switch {
-	case strings.Contains(line, "No matching job found"),
+	case strings.Contains(line, bkillNoMatchingJob),
 		strings.Contains(line, "already finished"),
 		strings.Contains(line, "is not found"):
 		return bkillLineGone
@@ -441,17 +452,18 @@ type killSummary struct {
 	out         string // a bounded excerpt of a failing bkill's output
 }
 
-// account classifies one bkill's output against the ids it was given. LSF reports
-// what happened per element ("Job <id> is being terminated", "Job <id>: No
-// matching job found"), so elements actually killed can be distinguished from
-// elements that were already gone. Elements bkill said nothing about count as
-// killed if it exited cleanly (it accepted the request; bkill -b can be silent)
-// and as unaccounted otherwise - which is what stops a "No matching job found"
-// hiding un-reclaimed over-provisioned runners. A bkill that exited cleanly and
-// then lingered on its pipes (see lingeredOnPipes) still exited cleanly, and bkill
-// exits non-zero if ANY element it was given was already gone, so its elements are
-// credited as killed even though the output that would have said so may have been
-// cut short.
+// account classifies one bkill's output against the ids it was given. Plain bkill
+// reports what happened per element ("Job <id> is being terminated", "Job <id>:
+// No matching job found"), so elements actually killed can be distinguished from
+// elements that were already gone. bkill -b, which wr uses, instead reports once
+// for the whole invocation; when that report says there was nothing to kill, every
+// element is already gone (see bkillFoundNothingToKill). Other elements bkill said
+// nothing about count as killed if it exited cleanly (it accepted the request) and
+// as unaccounted otherwise - which is what stops unexplained output hiding
+// un-reclaimed over-provisioned runners. A bkill that exited cleanly and then
+// lingered on its pipes (see lingeredOnPipes) still exited cleanly, so its
+// elements are credited as killed even though the output that would have said so
+// may have been cut short.
 func (k *killSummary) account(ids []string, out string, err error) {
 	unexplained := make(map[string]bool, len(ids))
 	for _, id := range ids {
@@ -460,9 +472,12 @@ func (k *killSummary) account(ids []string, out string, err error) {
 
 	k.accountLines(out, unexplained)
 
-	if err == nil || lingeredOnPipes(err) {
+	switch {
+	case err == nil || lingeredOnPipes(err):
 		k.killed += len(unexplained)
-	} else {
+	case bkillFoundNothingToKill(out, err):
+		k.alreadyGone += len(unexplained)
+	default:
 		k.unaccounted += len(unexplained)
 	}
 }
@@ -477,6 +492,41 @@ func (k *killSummary) account(ids []string, out string, err error) {
 // kills that really happened as failures.
 func lingeredOnPipes(err error) bool {
 	return errors.Is(err, exec.ErrWaitDelay)
+}
+
+// bkillFoundNothingToKill reports whether a bkill -b's output and error say that
+// none of the ids it was given was a job LSF could kill. Unlike plain bkill, bkill
+// -b does not report per element: it prints one line for the whole invocation
+// (seen on farm22, LSF 10.1). If it accepted any id for killing it says "The
+// requested operation is in progress." and exits 0, however many of the others
+// were already gone; only when there was nothing to kill does it exit 255 with
+// "Job has already finished" (every id was a finished job) or "No matching job
+// found" (some id was unknown to LSF). So bkill having exited on its own, non-zero,
+// having said nothing but those lines, means every element was already gone. Any
+// other line (a rejected id, a refused permission), or a bkill killed before it
+// finished, leaves the elements unaccounted for. Should LSF ever get this wrong
+// for an element that is still live, bjobs goes on reporting it as excess and the
+// next cycle's retry warns about it (see needsAttention).
+func bkillFoundNothingToKill(out string, err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || !exitErr.Exited() || exitErr.ExitCode() != bkillNothingToKillExit {
+		return false
+	}
+
+	said := false
+
+	for line := range strings.SplitSeq(out, "\n") {
+		switch strings.TrimSpace(line) {
+		case "":
+			continue
+		case bkillAllFinished, bkillNoMatchingJob:
+			said = true
+		default:
+			return false
+		}
+	}
+
+	return said
 }
 
 // accountLines credits every element that a line of the given bkill output reports

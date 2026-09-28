@@ -110,6 +110,11 @@ const localhost = "localhost"
 // we follow up with a kill signal.
 const terminateGrace = 500 * time.Millisecond
 
+// clientFinalStateTokenRejections is how many consecutive bad token rejections
+// of a job's final state update make a runner give up on it; see
+// countTokenRejection.
+const clientFinalStateTokenRejections = 3
+
 // these global variables are primarily exported for testing purposes; you
 // probably shouldn't change them (*** and they should probably be re-factored
 // as fields of a config struct...)
@@ -1574,6 +1579,23 @@ func signalledAfterExitErr(job *Job, myerr error) error {
 	}
 
 	return fmt.Errorf("%w; %w", sigErr, myerr)
+}
+
+// countTokenRejection returns the number of consecutive final state updates
+// the manager has rejected for a bad token, given the count before err, the
+// latest update's error. A client made with ConnectWithTokenFile has already
+// re-read its token file before a rejection reaches here, so a rejection that
+// persists means the manager is one whose token this client cannot read, for
+// example because its copy of the token file was never updated, or because it
+// was made with Connect and has no token file at all. Retrying for c.retryTime
+// would then only hold a runner, and its scheduler slot, for a day for
+// nothing.
+func countTokenRejection(before int, err error) int {
+	if isPermissionDeniedErr(err) {
+		return before + 1
+	}
+
+	return 0
 }
 
 // plainExitFailReason returns the fail reason for a non-zero exit that isn't
@@ -3513,6 +3535,7 @@ func (c *Client) reportFinalState(ctx context.Context, job *Job, jes *JobEndStat
 	retryEnd := time.Now().Add(c.retryTime)
 	disconnected := false
 	hadProblems := false
+	tokenRejections := 0
 
 	for !time.Now().After(retryEnd) {
 		if disconnected && !c.quickReconnect(ctx) {
@@ -3525,6 +3548,14 @@ func (c *Client) reportFinalState(ctx context.Context, job *Job, jes *JobEndStat
 		}
 
 		hadProblems = true
+
+		tokenRejections = countTokenRejection(tokenRejections, err)
+		if tokenRejections >= clientFinalStateTokenRejections {
+			clog.Error(ctx, "giving up trying to update server with cmd's final state, since it keeps "+
+				"rejecting our token and the token file has none it accepts", "err", err)
+
+			return false, hadProblems
+		}
 
 		var giveUp bool
 

@@ -238,6 +238,13 @@ var (
 	ServerLogClientErrors                           = true
 	serverShutdownRunnerTickerTime                  = 50 * time.Millisecond
 
+	// ServerShutdownRunnerWait is the default ServerTimings.ShutdownRunnerWait:
+	// the most a shutdown waits for its runners to exit before finishing
+	// without them. It is half of the 2 minutes `wr manager stop` waits for the
+	// manager to exit before it adds time for the final backup of the
+	// database, leaving the other half for the rest of the shutdown.
+	ServerShutdownRunnerWait = 60 * time.Second
+
 	// ServerDBBatchDelay is the default DB.MaxBatchDelay applied to the
 	// manager's live BoltDB: how long a db.bolt.Batch call may wait for
 	// concurrent Batch calls to coalesce into a single fsync'd commit.
@@ -493,6 +500,12 @@ type ServerTimings struct {
 	// drain (default serverSocketWait). Tests set this low to shut servers down
 	// faster.
 	ShutdownSocketWait time.Duration
+
+	// ShutdownRunnerWait is the most a shutdown waits, from its start, for the
+	// runners it has told to die to exit. After that it finishes shutting down
+	// without them, logging how many jobs they were still running (default
+	// ServerShutdownRunnerWait).
+	ShutdownRunnerWait time.Duration
 }
 
 // dfltDuration returns v, or def if v is not positive.
@@ -538,6 +551,7 @@ func (t ServerTimings) withDefaults() ServerTimings {
 	}
 
 	t.ShutdownSocketWait = dfltDuration(t.ShutdownSocketWait, serverSocketWait)
+	t.ShutdownRunnerWait = dfltDuration(t.ShutdownRunnerWait, ServerShutdownRunnerWait)
 
 	return t
 }
@@ -3219,7 +3233,15 @@ func (s *Server) confirmServerDeadLater(ctx context.Context, serverID string, au
 
 // logClientRequestError logs the error handleRequest returned for a client
 // request: at debug level if it is only the routine outcome of normal client
-// behaviour, otherwise at error level.
+// behaviour, at warn level if the client presented the wrong token, otherwise at
+// error level.
+//
+// A wrong token is only a warning because every long-lived client's first request
+// after a clean manager restart presents the previous manager's token (the stop
+// deleted it, so the new manager made a new one); the client then re-reads its
+// token file and resends. The manager keeps no record of its previous token, so
+// cannot tell that case from a misconfigured client or an attacker, and each such
+// refusal stays visible at the default log level.
 func logClientRequestError(ctx context.Context, herr error) {
 	var routine routineClientRequestError
 	if errors.As(herr, &routine) {
@@ -3228,7 +3250,62 @@ func logClientRequestError(ctx context.Context, herr error) {
 		return
 	}
 
+	var jqerr Error
+	if errors.As(herr, &jqerr) && jqerr.Err == wrongTokenReason {
+		clog.Warn(ctx, "Server refused a client request with the wrong token", "err", herr)
+
+		return
+	}
+
 	clog.Error(ctx, "Server handle client request error", "err", herr)
+}
+
+// exitCodeInterruptedShutdown is the exit code of a manager interrupted while
+// shutting down (see shutdownIgnoringSignals): 128 plus SIGINT's number, as a
+// shell reports a process killed by SIGINT.
+const exitCodeInterruptedShutdown = 128 + int(syscall.SIGINT)
+
+// shutdownIgnoringSignals shuts the server down for reason, logging and ignoring
+// any SIGTERM that arrives before the shutdown is complete, and only then stops
+// handling signals. Were SIGTERM no longer handled, it would have its default
+// action and kill the manager part-way through its shutdown, before its
+// database had been closed; `wr manager stop` run again while an earlier one
+// waits would send one.
+//
+// A SIGINT during the shutdown, as from pressing Ctrl-C a second time with the
+// manager in the foreground, is an explicit request not to wait, so it makes
+// the process exit at once, and the next start recovers as it would after a
+// crash. `wr manager stop` never sends SIGINT.
+func (s *Server) shutdownIgnoringSignals(ctx context.Context, sigs chan os.Signal, reason string) {
+	shutDown := make(chan struct{})
+	stoppedIgnoring := make(chan struct{})
+
+	go func() {
+		defer close(stoppedIgnoring)
+
+		for {
+			select {
+			case sig := <-sigs:
+				if sig == os.Interrupt {
+					clog.Warn(ctx, "manager was interrupted while shutting down, so is exiting without "+
+						"finishing its shutdown; the next start will recover as it would after a crash")
+					os.Exit(exitCodeInterruptedShutdown)
+				}
+
+				clog.Warn(ctx, "manager is already shutting down, so ignored a signal; interrupt it "+
+					"(SIGINT) or kill it (SIGKILL) to make it exit without finishing", "signal", sig.String())
+			case <-shutDown:
+				return
+			}
+		}
+	}()
+
+	s.shutdown(ctx, reason, true, false)
+
+	close(shutDown)
+	<-stoppedIgnoring
+
+	signal.Stop(sigs)
 }
 
 // recoversIntoRun reports whether a recovered job goes back into the run
@@ -3533,6 +3610,14 @@ func (s *Server) waitForDeletes(ctx context.Context) {
 		clog.Warn(ctx, "server shutdown gave up waiting for remove-on-failure deletes",
 			"waited", ServerShutdownWaitTime)
 	}
+}
+
+// logGaveUpOnRunners warns that the shutdown has stopped waiting for runners,
+// and how many jobs they were still running.
+func (s *Server) logGaveUpOnRunners(ctx context.Context, start time.Time) {
+	clog.Warn(ctx, "gave up waiting for runners to exit; finishing the shutdown without them, "+
+		"so the scheduler will kill any that are left, and the next manager will recover their jobs",
+		"waited", time.Since(start).Round(time.Millisecond), "runningJobs", s.q.Stats().Running)
 }
 
 // maybeStartPprofServer starts a dedicated net/http/pprof endpoint if the
@@ -4639,30 +4724,22 @@ func (s *Server) handleSignals(ctx context.Context, sigs chan os.Signal,
 	// log panics and die
 	defer internal.LogPanic(ctx, "jobqueue serving", true)
 
-	for {
-		select {
-		case sig := <-sigs:
-			var reason string
+	select {
+	case sig := <-sigs:
+		var reason string
 
-			switch sig {
-			case os.Interrupt:
-				reason = ErrClosedInt
-			case syscall.SIGTERM:
-				reason = ErrClosedTerm
-			}
-
-			signal.Stop(sigs)
-			s.shutdown(ctx, reason, true, false)
-
-			return
-		case <-certExpired:
-			signal.Stop(sigs)
-			s.shutdown(ctx, ErrClosedCert, true, false)
-		case <-stopSigHandling: // s.Stop() causes this to be sent during s.shutdown(), which it calls
-			signal.Stop(sigs)
-
-			return
+		switch sig {
+		case os.Interrupt:
+			reason = ErrClosedInt
+		case syscall.SIGTERM:
+			reason = ErrClosedTerm
 		}
+
+		s.shutdownIgnoringSignals(ctx, sigs, reason)
+	case <-certExpired:
+		s.shutdownIgnoringSignals(ctx, sigs, ErrClosedCert)
+	case <-stopSigHandling: // s.Stop() causes this to be sent during s.shutdown(), which it calls
+		signal.Stop(sigs)
 	}
 }
 
@@ -5347,6 +5424,16 @@ func (s *Server) createQueue(ctx context.Context) {
 // (job.Exited) awaiting its delay proceeds to the delay sub-queue.
 func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
 	job.Lock()
+
+	// a job whose success is still being archived has run and must not run
+	// again: it stays parked for the archive to remove. It is Exited, so without
+	// this it would be taken for a released job below, and a commit that stalled
+	// for longer than the TTR would hand it to a fresh runner.
+	if job.archivePendingLocked() {
+		job.Unlock()
+
+		return queue.SubQueueRun
+	}
 
 	// a released/finished item awaiting its delay is not a live reservation; let
 	// it proceed to the delay sub-queue as before.
@@ -6193,8 +6280,8 @@ func (s *Server) killLostJobAndTriggerBehaviours(ctx context.Context, d lostJobD
 	}
 
 	if !released {
-		clog.Info(ctx, "did not kill a job confirmed dead, because the job has moved on to another run",
-			"key", d.key)
+		clog.Info(ctx, "did not kill a job confirmed dead, because the job has moved on "+
+			"to another run or its success is being saved", "key", d.key)
 
 		return
 	}
@@ -6473,7 +6560,7 @@ func (s *Server) killRunningJob(ctx context.Context, jobkey string,
 	job := item.Data().(*Job) //nolint:errcheck,forcetypeassert // queue only ever stores *Job
 	job.Lock()
 
-	if onlyRun != nil && !job.isLostRunLocked(*onlyRun) {
+	if !job.killableLocked(onlyRun) {
 		job.Unlock()
 
 		return false, false, nil
@@ -7988,14 +8075,32 @@ func (s *Server) unscheduleAllGroups(ctx context.Context) {
 
 // waitForRunnersToDie waits long enough for runners to have attempted a touch
 // (and so learn they should die) and, if wait is set, polls until none remain.
+//
+// It waits at most ShutdownRunnerWait in all, so that the rest of the shutdown
+// (the scheduler cleanup, which kills any runners still left, and saving the
+// database) always happens: a runner whose command survived being killed, or
+// that never touched, would otherwise keep the manager waiting for ever. A
+// runner still alive then can report its job to the next manager, which
+// recovers the job as still running, just as after a crash.
 func (s *Server) waitForRunnersToDie(ctx context.Context, wait bool) {
 	if shutdownRunnersWaitHook != nil {
 		shutdownRunnersWaitHook()
 	}
 
+	start := time.Now()
+	giveUp := time.NewTimer(s.timings.ShutdownRunnerWait)
+
+	defer giveUp.Stop()
+
 	if s.HasRunners(ctx) {
 		// wait until everything must have attempted a touch
-		<-time.After(s.timings.TouchInterval)
+		select {
+		case <-time.After(s.timings.TouchInterval):
+		case <-giveUp.C:
+			s.logGaveUpOnRunners(ctx, start)
+
+			return
+		}
 	}
 
 	// wait for the runners to actually die
@@ -8006,8 +8111,17 @@ func (s *Server) waitForRunnersToDie(ctx context.Context, wait bool) {
 	ticker := time.NewTicker(serverShutdownRunnerTickerTime)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		if !s.HasRunners(ctx) {
+	for {
+		select {
+		case <-ticker.C:
+			if !s.HasRunners(ctx) {
+				return
+			}
+		case <-giveUp.C:
+			if s.HasRunners(ctx) {
+				s.logGaveUpOnRunners(ctx, start)
+			}
+
 			return
 		}
 	}

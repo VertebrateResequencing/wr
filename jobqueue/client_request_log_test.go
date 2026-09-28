@@ -37,6 +37,7 @@ import (
 
 const (
 	clientRequestLogErrorLvl = "lvl=eror"
+	clientRequestLogWarnLvl  = "lvl=warn"
 	clientRequestLogDebugLvl = "lvl=dbug"
 )
 
@@ -55,8 +56,8 @@ func TestClientRequestErrorLogLevel(t *testing.T) {
 		sock, ok := server.sock.(*captureSocket)
 		So(ok, ShouldBeTrue)
 
-		handle := func(cr *clientRequest) (string, error) {
-			cr.Token = token
+		handleWithToken := func(cr *clientRequest, presented []byte) (string, error) {
+			cr.Token = presented
 			cr.ClientID = clientID
 
 			var encoded []byte
@@ -70,6 +71,10 @@ func TestClientRequestErrorLogLevel(t *testing.T) {
 			logClientRequestError(logCtx, herr)
 
 			return buf.String(), herr
+		}
+
+		handle := func(cr *clientRequest) (string, error) {
+			return handleWithToken(cr, token)
 		}
 
 		Convey("an add of zero jobs is still refused, but not logged as an error", func() {
@@ -88,6 +93,31 @@ func TestClientRequestErrorLogLevel(t *testing.T) {
 			So(out, ShouldNotContainSubstring, clientRequestLogErrorLvl)
 			So(out, ShouldContainSubstring, clientRequestLogDebugLvl)
 			So(out, ShouldContainSubstring, ErrBadRequest)
+		})
+
+		Convey("a request with the wrong token is refused, and logged as a warning rather than an error", func() {
+			// a long-lived client's first request after a clean manager restart
+			// presents the previous manager's token, and is resent with the new
+			// one once the client has re-read its token file.
+			wrong := make([]byte, len(token))
+			copy(wrong, token)
+			wrong[0]++
+
+			out, herr := handleWithToken(&clientRequest{
+				Method: requestMethodAdd,
+				Env:    []byte("environment"),
+				Jobs:   []*Job{{Cmd: "echo wrong token"}},
+			}, wrong)
+
+			var jqErr Error
+
+			So(errors.As(herr, &jqErr), ShouldBeTrue)
+			So(jqErr.Op, ShouldEqual, requestMethodAdd)
+			So(sock.response().Err, ShouldEqual, ErrPermissionDenied)
+
+			So(out, ShouldNotContainSubstring, clientRequestLogErrorLvl)
+			So(out, ShouldContainSubstring, clientRequestLogWarnLvl)
+			So(out, ShouldContainSubstring, "wrong token")
 		})
 
 		Convey("a malformed add is still logged as an error", func() {

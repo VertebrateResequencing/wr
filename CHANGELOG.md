@@ -90,6 +90,29 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- `wr manager stop` no longer says a manager "was gracefully shut down", and
+  no longer deletes its token, when the manager is still running after the
+  stop gives up waiting for it. It used to send the manager a second SIGTERM,
+  which killed it part-way through its shutdown, before it had saved its
+  database, and then reported the kill as a graceful stop. It now exits with an
+  error saying the manager is still stopping and its token was kept, and how to
+  keep waiting or kill a hung manager. It also waits longer for a manager with
+  a large database, to allow for its final backup: 2 minutes plus a second for
+  every 50MiB, and says after 10 seconds that the manager is still shutting
+  down. The manager itself now ignores (and logs) further SIGTERMs while it is
+  shutting down, so running `wr manager stop` again is safe, while a SIGINT
+  (such as a second Ctrl-C in the foreground) makes it exit at once.
+- A manager being stopped no longer waits for ever for its runners to exit. At
+  scale, a single runner still listed as running by LSF kept the manager
+  waiting until it was killed, so it never saved its database. It now waits at
+  most 60 seconds, then logs how many jobs were still running, has LSF kill any
+  runners that are left, and finishes stopping as normal.
+- A runner still running a command when its manager is cleanly stopped and
+  started again now reports that command to the new manager, as it already did
+  after a crash, instead of being rejected for its old token for up to a day
+  while holding its LSF slot. A command that exited 0 is then recorded as
+  complete, not run again. A runner that cannot read a token the new manager
+  accepts gives up after 3 attempts and exits.
 - `wr manager stop` no longer sends SIGTERM to an unrelated process when the
   manager died without removing its pid file (for example after a crash or a
   reboot) and its pid has since been given to another of your processes. It
@@ -122,6 +145,18 @@ project adheres to [Semantic Versioning](http://semver.org/).
   one line as a range, such as `Job <408347[1-2:1]>: Job has already
   finished`. Those elements are now counted as already gone (or killed), where
   before they were counted as unaccounted.
+- The manager no longer warns "checkCmd bkill did not reclaim all excess
+  runners" when every runner it asked LSF to kill had already finished. wr runs
+  `bkill -b`, which says so in one line for the whole request, such as `Job has
+  already finished` or `No matching job found`, without naming any job. Those
+  runners are now counted as already gone, where before they were counted as
+  unaccounted.
+- After a clean manager restart, the manager no longer logs an error for each
+  long-lived client whose first request still carried the previous manager's
+  token. The client re-reads its token file and resends, so the request
+  succeeds. Every request refused for a wrong token is now logged at warn
+  instead, as "Server refused a client request with the wrong token", so a
+  misconfigured client is still visible.
 - The help for `wr manager start --max_cores` and `--max_ram` said that 0
   allows only 0-core commands, or stops commands running locally. That is only
   true of the openstack scheduler. With the local scheduler, 0 has always meant
@@ -139,6 +174,15 @@ project adheres to [Semantic Versioning](http://semver.org/).
   over, so after a crash it waits for that runner to report. If that runner
   died too, the command is run again once its runner is confirmed dead, as for
   any other lost command.
+- A command that completed successfully no longer runs again when the manager's
+  database is slow to save its completion, as when the database's filesystem
+  fills up. The runner stops keeping the command alive once it has finished,
+  so if the save took longer than a minute, the manager treated the command as
+  released and gave it to another runner, which ran it a second time. A runner
+  whose report timed out and was sent again also got an "internal error"
+  (`Remove(...): not found` in the manager's log) even though its command's
+  completion had been saved. The manager now keeps a finished command until its
+  completion is saved, and accepts a repeated completion report.
 - The manager starts much faster when its database is on NFS. Opening the
   database made NFS forget the parts of the file it had already read, so
   recovering the jobs from before a restart then read it back a small piece at

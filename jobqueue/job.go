@@ -1037,6 +1037,13 @@ type Job struct {
 	// manager at every reservation. It is server side only: see runToken.
 	runID runToken
 
+	// archivesPending counts the successful-completion reports the manager has
+	// accepted for this job whose archive has not yet been written and taken off
+	// the queue. While it is non-zero the command has exited 0 and its completion
+	// is on its way to disk, so the job must stay in the run queue however long
+	// that write takes: see Job.archivePendingLocked. It is server side only.
+	archivesPending int
+
 	// incrementedLimitGroups notes that we have incremented limit groups for
 	// this job, so they should be decremented when the job finishes running.
 	incrementedLimitGroups []string
@@ -1931,6 +1938,16 @@ func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	j.Unlock()
 }
 
+// archiveFinished releases the hold on the run queue that one accepted
+// successful completion took (see archivePendingLocked), once its archive has
+// finished, whether or not it succeeded.
+func (j *Job) archiveFinished() {
+	j.Lock()
+	defer j.Unlock()
+
+	j.archivesPending--
+}
+
 // decrementLimitGroups decrements any limit groups of this job that had been
 // passed to noteIncrementedLimitGroups(), and then empties that note to make
 // multiple calls to this method safe in terms of decrementing.
@@ -2279,6 +2296,30 @@ type runToken uint64
 // pinned to the earlier run is refused from the moment the retry exists.
 func (j *Job) isLostRunLocked(run runToken) bool {
 	return j.Lost && j.runID == run
+}
+
+// killableLocked reports whether killRunningJob may mark this Job killed and
+// release it if lost. It may not when onlyRun names a run that is no longer this
+// Job's lost run, nor when a successful completion is being archived: the command
+// has already exited 0 and the archive will remove the job, so there is nothing
+// to kill, and releasing it would run it again. The caller must hold at least the
+// Job's read lock.
+func (j *Job) killableLocked(onlyRun *runToken) bool {
+	if onlyRun != nil && !j.isLostRunLocked(*onlyRun) {
+		return false
+	}
+
+	return !j.archivePendingLocked()
+}
+
+// archivePendingLocked reports whether the manager has accepted a successful
+// completion of this Job whose archive has not finished. Such a job has run: a
+// TTR expiry or a lost-job kill must leave it in the run queue for the archive to
+// remove, not release it to be run again. Its runner stopped touching when the
+// command ended, and a stalled database commit can hold the archive for longer
+// than the TTR. The caller must hold at least the Job's read lock.
+func (j *Job) archivePendingLocked() bool {
+	return j.archivesPending > 0
 }
 
 // setActualCwd records cwd as the unique working directory that wr created below

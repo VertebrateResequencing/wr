@@ -70,9 +70,22 @@ const lsfCommandName = "lsf"
 // daemon-related constants.
 const (
 	daemonPidFilePerm  = 0o644
-	daemonStopGiveupS  = 120
 	daemonStopPollFreq = 50 * time.Millisecond
 )
+
+// daemonStopGiveup is the least time stopdaemon waits for a SIGTERMed manager
+// to exit before giving up; see daemonStopWait. It is a var only so tests can
+// shorten it.
+var daemonStopGiveup = 120 * time.Second
+
+// daemonStopBackupBytesPerSec is the slowest rate at which daemonStopWait
+// expects a stopping manager to copy its database for its final backup, which
+// is the one step of a shutdown that grows with the database.
+const daemonStopBackupBytesPerSec = 50 << 20
+
+// daemonStopNoticeAfter is how long stopdaemon waits before saying that the
+// manager is still shutting down.
+const daemonStopNoticeAfter = 10 * time.Second
 
 // managerDirPerm is the permission createWorkingDir makes the manager's working
 // directory with. That directory holds the database, the client token and the
@@ -595,12 +608,56 @@ func warnUploadDirStillOpen(err error) {
 // signalled: it exists and, when its argv from before the signal is known, still
 // has that argv. So a zombie, or a pid the kernel has already given to another
 // process, counts as stopped.
+//
+// A process that is part-way through exiting also has no argv to read (the
+// kernel frees its memory, where the argv lives, before it becomes a zombie),
+// and freeing a large manager's memory can take seconds, so unreadable argv
+// only counts as stopped once the pid is a zombie.
 func daemonStillRunning(pid int, identity []string) bool {
 	if internal.SignalPid(pid, syscall.Signal(0)) != nil {
 		return false
 	}
 
-	return identity == nil || slices.Equal(processArgs(pid), identity)
+	if identity == nil {
+		return true
+	}
+
+	args := processArgs(pid)
+	if args == nil {
+		return !isZombie(pid)
+	}
+
+	return slices.Equal(args, identity)
+}
+
+// daemonStopWait returns how long stopdaemon waits for a SIGTERMed manager to
+// exit: daemonStopGiveup, plus the time the final backup of a database the size
+// of config.ManagerDBFile takes at daemonStopBackupBytesPerSec. A healthy
+// manager can spend most of daemonStopGiveup waiting for its runners, and a
+// large database's backup alone can take longer than that.
+func daemonStopWait() time.Duration {
+	wait := daemonStopGiveup
+
+	if fi, err := os.Stat(config.ManagerDBFile); err == nil {
+		// round up, so a partial 50MiB still gets its second
+		secs := (fi.Size() + daemonStopBackupBytesPerSec - 1) / daemonStopBackupBytesPerSec
+		wait += time.Duration(secs) * time.Second
+	}
+
+	return wait
+}
+
+// dieDaemonStillStopping reports that the manager with pid did not exit within
+// waited of being sent SIGTERM, and what the user can do, then dies.
+// Its token is left in place, since the manager is still running, and its
+// runners will need that token if it is killed and started again.
+func dieDaemonStillStopping(pid int, source string, waited time.Duration) {
+	die("wr manager, running with pid %d according to %s, is still running %s after I sent it a SIGTERM, "+
+		"so it has not been stopped and its token was kept. It is most likely still shutting down, for "+
+		"example waiting for its runners to exit; its log (%s) shows its progress. Run 'wr manager stop' "+
+		"again to keep waiting. If it is hung, 'kill -9 %d' stops it, and the next 'wr manager start' "+
+		"then recovers as it would after a crash",
+		pid, source, waited, config.ManagerLogFile, pid)
 }
 
 // Execute adds all child commands to the root command and sets flags
@@ -806,7 +863,11 @@ func reborn(dContext *daemon.Context, pidFile string) *os.Process {
 }
 
 // stopdaemon stops the daemon created by daemonize() by sending it SIGTERM and
-// checking it really exited.
+// checking it really exited. It returns false if pid could not be sent the
+// signal. If the signal was sent but pid is still running daemonStopWait()
+// later, it dies without trying anything else: a manager shutting down stays
+// alive until its shutdown is complete, and a second SIGTERM, or reporting it
+// stopped, would be wrong while it is.
 func stopdaemon(pid int, source string) bool {
 	identity := processArgs(pid)
 
@@ -817,51 +878,39 @@ func stopdaemon(pid int, source string) bool {
 		return false
 	}
 
-	ok := waitForDaemonStop(pid, identity)
+	wait := daemonStopWait()
 
-	// if it didn't stop, offer to force kill it? That's a bit dangerous...
-	// just warn for now
-	if !ok {
-		warn("wr manager, running with pid %d according to %s, is still running %ds after I sent it a SIGTERM",
-			pid, source, daemonStopGiveupS)
+	if !waitForDaemonStop(pid, identity, wait) {
+		dieDaemonStillStopping(pid, source, wait)
 	}
 
-	return ok
+	return true
 }
 
 // waitForDaemonStop polls the given pid until it is no longer running, or until
-// we give up after daemonStopGiveupS seconds. It returns true if the pid
-// stopped. identity is the pid's argv from before it was signalled (nil if
-// unknown); see daemonStillRunning.
-func waitForDaemonStop(pid int, identity []string) bool {
-	giveup := time.After(time.Duration(daemonStopGiveupS) * time.Second)
+// we give up after wait, saying after daemonStopNoticeAfter that it is still
+// shutting down. It returns true if the pid stopped. identity is the pid's argv
+// from before it was signalled (nil if unknown); see daemonStillRunning.
+func waitForDaemonStop(pid int, identity []string, wait time.Duration) bool {
+	giveup := time.After(wait)
+	notice := time.After(daemonStopNoticeAfter)
 	ticker := time.NewTicker(daemonStopPollFreq)
-	stopped := make(chan bool, 1)
 
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				if daemonStillRunning(pid, identity) {
-					continue
-				}
+	defer ticker.Stop()
 
-				ticker.Stop()
-
-				stopped <- true
-
-				return
-			case <-giveup:
-				ticker.Stop()
-
-				stopped <- false
-
-				return
+	for {
+		select {
+		case <-ticker.C:
+			if !daemonStillRunning(pid, identity) {
+				return true
 			}
+		case <-notice:
+			info("wr manager (pid %d) is still shutting down; waiting up to %s in all for it to finish "+
+				"(its log, %s, shows its progress)", pid, wait, config.ManagerLogFile)
+		case <-giveup:
+			return false
 		}
-	}()
-
-	return <-stopped
+	}
 }
 
 // sAddr gets a nice manager address to report in logs, preferring hostname,

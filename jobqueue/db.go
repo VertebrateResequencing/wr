@@ -135,10 +135,10 @@ var (
 // 30s is not derived from ServerShutdownWaitTime: the lock is held well past it,
 // because db.close copies the whole database to db_bk before closing bolt, and
 // at production's 7GB on NFS that copy alone can exceed 30s. It sits between the
-// bounded waits inside a shutdown and the 120s wr manager stop itself allows
-// (daemonStopGiveupS), so a start racing a prompt shutdown still wins the lock
-// while a start racing a slow one fails with a message naming the file rather
-// than lurking until the winner exits. The cost is real and accepted: a restart
+// bounded waits inside a shutdown and the at least 120s wr manager stop itself
+// allows (daemonStopGiveup), so a start racing a prompt shutdown still wins the
+// lock while a start racing a slow one fails with a message naming the file
+// rather than lurking until the winner exits. The cost is real and accepted: a restart
 // that overlaps a slow shutdown can now fail and need retrying.
 //
 // It is a package var (not user-configurable) purely so tests can shorten it,

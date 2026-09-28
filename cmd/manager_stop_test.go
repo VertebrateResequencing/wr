@@ -102,7 +102,7 @@ type managerStopTestProcess struct {
 func startManagerStopTestProcess(t *testing.T, name string, args ...string) *managerStopTestProcess {
 	t.Helper()
 
-	cmd := exec.Command(name, args...) //nolint:noctx // killed in t.Cleanup
+	cmd := exec.Command(name, args...) //nolint:noctx,gosec // killed in t.Cleanup; name is a test binary or tool
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	So(cmd.Start(), ShouldBeNil)
 

@@ -100,6 +100,10 @@ const slowRequestSelectorParts = 6
 //nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
 var slowRequestThreshold = slowRequestThresholdDefault
 
+// wrongTokenReason is the detailed reason logged for a request refused because
+// its client presented the wrong token.
+const wrongTokenReason = "Client presented the wrong token"
+
 type subscriptionCatchUpRecord struct {
 	job    *Job
 	state  JobState
@@ -659,7 +663,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 func (s *Server) validateRequest(cr *clientRequest, up, drain bool) (string, string) {
 	// check that the client making the request has the expected token
 	if (len(cr.Token) != tokenLength || !tokenMatches(cr.Token, s.token)) && cr.Method != requestMethodPing {
-		return ErrPermissionDenied, "Client presented the wrong token"
+		return ErrPermissionDenied, wrongTokenReason
 	}
 
 	if s.q == nil || (!up && !drain) {
@@ -1426,6 +1430,9 @@ func markJobComplete(job *Job, endState *JobEndState,
 	job.applySuccessfulEndStateLocked(endState, lim)
 	job.State = JobStateComplete
 	job.FailReason = ""
+	// until archiveCompletedJob has finished with it, this completion holds the
+	// job in the run queue (see Job.archivePendingLocked).
+	job.archivesPending++
 	// deliberately do NOT clear job.Lost here. A job parked Lost (Lost==true in
 	// SubQueueRun) is held as `lost` by the web-UI counter; the change-callback
 	// chokepoint (changeCallbackCounts) reads job.Lost at removal time to decide
@@ -1462,15 +1469,32 @@ func (j *Job) applySuccessfulEndStateLocked(endState *JobEndState, lim *limiter.
 }
 
 // archiveCompletedJob persists a completed job to the complete bucket and
-// removes it from the live queue and lookups.
+// removes it from the live queue and lookups. It releases the hold on the run
+// queue that markJobComplete took only once it has finished, so the job cannot
+// time out and be handed to another runner while its archive waits on a slow
+// commit. If the write fails, the hold is released all the same: the job is left
+// Exited in the run queue, where its runner's retry can still archive it and a
+// TTR expiry releases it to be run again if none does.
+//
+// A runner whose archive request timed out on a stalled commit sends it again,
+// so two archives of one completion can be in flight at once. Whichever is second
+// to reach the queue finds the job already removed by the first; its own write
+// has committed the same completion, so it succeeds without repeating the first's
+// bookkeeping instead of handing the runner an internal error to retry.
 func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup, sgroup string) (
 	*serverResponse, string, string,
 ) {
+	defer job.archiveFinished()
+
 	if err := s.db.archiveJob(ctx, key, job); err != nil {
 		return nil, ErrDBError, err.Error()
 	}
 
 	if err := s.q.Remove(ctx, key); err != nil {
+		if queueErrorIs(err, queue.ErrNotFound) {
+			return nil, "", ""
+		}
+
 		return nil, ErrInternalError, err.Error()
 	}
 
