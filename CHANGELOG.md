@@ -90,6 +90,15 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- `wr manager stop` no longer says a manager "was gracefully shut down", and
+  no longer deletes its token, when the manager is still running 2 minutes
+  after being asked to stop. It used to send the manager a second SIGTERM,
+  which killed it part-way through its shutdown, before it had saved its
+  database, and then reported the kill as a graceful stop. It now exits with an
+  error saying the manager is still stopping and its token was kept, and how to
+  keep waiting or kill a hung manager. The manager itself now ignores (and
+  logs) further SIGTERMs and SIGINTs while it is shutting down, so running
+  `wr manager stop` again is safe.
 - `wr manager stop` no longer sends SIGTERM to an unrelated process when the
   manager died without removing its pid file (for example after a crash or a
   reboot) and its pid has since been given to another of your processes. It

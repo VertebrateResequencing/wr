@@ -39,6 +39,23 @@ const deploymentFlag = "--deployment"
 // runs every forwarder with, by which isForwarderProcess recognises one.
 const sshForwarderFlags = "-qngNTL"
 
+// isZombie reports whether pid is a zombie: a process that has exited but not
+// yet been reaped by its parent.
+func isZombie(pid int) bool {
+	if !internal.ValidPid(pid) {
+		return false
+	}
+
+	p, err := process.NewProcess(int32(pid)) //nolint:gosec // ValidPid bounds pid to int32
+	if err != nil {
+		return false
+	}
+
+	status, err := p.Status()
+
+	return err == nil && slices.Contains(status, process.Zombie)
+}
+
 // isManagerProcess reports whether pid is a live daemonized wr manager for
 // deployment, judged by its argv. The argv is what daemonize() gave the child,
 // so it is unaffected by the binary being renamed, moved or replaced in place

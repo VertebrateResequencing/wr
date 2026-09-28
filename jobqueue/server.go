@@ -3231,6 +3231,37 @@ func logClientRequestError(ctx context.Context, herr error) {
 	clog.Error(ctx, "Server handle client request error", "err", herr)
 }
 
+// shutdownIgnoringSignals shuts the server down for reason, logging and ignoring
+// any SIGINT or SIGTERM that arrives before the shutdown is complete, and only
+// then stops handling them. Were they no longer handled, such a signal would
+// have its default action and kill the manager part-way through its shutdown,
+// before its database had been closed; `wr manager stop` run again while an
+// earlier one waits would send one.
+func (s *Server) shutdownIgnoringSignals(ctx context.Context, sigs chan os.Signal, reason string) {
+	shutDown := make(chan struct{})
+	stoppedIgnoring := make(chan struct{})
+
+	go func() {
+		defer close(stoppedIgnoring)
+
+		for {
+			select {
+			case sig := <-sigs:
+				clog.Warn(ctx, "manager is already shutting down, so ignored a signal", "signal", sig.String())
+			case <-shutDown:
+				return
+			}
+		}
+	}()
+
+	s.shutdown(ctx, reason, true, false)
+
+	close(shutDown)
+	<-stoppedIgnoring
+
+	signal.Stop(sigs)
+}
+
 // recoversIntoRun reports whether a recovered job goes back into the run
 // sub-queue: it was running, or it had been handed to a runner whose host and
 // pid were recorded with the reservation (persistReservation). Such a runner may
@@ -4639,30 +4670,22 @@ func (s *Server) handleSignals(ctx context.Context, sigs chan os.Signal,
 	// log panics and die
 	defer internal.LogPanic(ctx, "jobqueue serving", true)
 
-	for {
-		select {
-		case sig := <-sigs:
-			var reason string
+	select {
+	case sig := <-sigs:
+		var reason string
 
-			switch sig {
-			case os.Interrupt:
-				reason = ErrClosedInt
-			case syscall.SIGTERM:
-				reason = ErrClosedTerm
-			}
-
-			signal.Stop(sigs)
-			s.shutdown(ctx, reason, true, false)
-
-			return
-		case <-certExpired:
-			signal.Stop(sigs)
-			s.shutdown(ctx, ErrClosedCert, true, false)
-		case <-stopSigHandling: // s.Stop() causes this to be sent during s.shutdown(), which it calls
-			signal.Stop(sigs)
-
-			return
+		switch sig {
+		case os.Interrupt:
+			reason = ErrClosedInt
+		case syscall.SIGTERM:
+			reason = ErrClosedTerm
 		}
+
+		s.shutdownIgnoringSignals(ctx, sigs, reason)
+	case <-certExpired:
+		s.shutdownIgnoringSignals(ctx, sigs, ErrClosedCert)
+	case <-stopSigHandling: // s.Stop() causes this to be sent during s.shutdown(), which it calls
+		signal.Stop(sigs)
 	}
 }
 
