@@ -82,8 +82,19 @@ func Write(caFile, certFile, keyFile, domain string) error {
 		}
 	}
 
+	return writeSet(paths, set)
+}
+
+// writeSet writes set's files to paths. If one fails, it removes the ones it
+// already wrote, so a failure never leaves a partial set that later calls
+// would refuse to overwrite.
+func writeSet(paths [numFiles]string, set *certSet) error {
 	for i, path := range paths {
 		if err := writeNew(path, set.data[i], set.modes[i]); err != nil {
+			for _, written := range paths[:i] {
+				_ = os.Remove(written)
+			}
+
 			return err
 		}
 	}

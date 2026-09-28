@@ -63,7 +63,12 @@ const VERBOSE = process.argv.includes('--verbose');
 // i = 0..n-1 between them run every seed exactly once. Every scenario passes
 // only if it holds for all of its seeds, so the full run passes exactly when
 // every shard does.
-const shardMatch = process.argv.slice(2).map(a => SHARD_ARG.exec(a)).find(m => m);
+const shardArgs = process.argv.slice(2).filter(a => a.startsWith('--shard'));
+if (shardArgs.length > 1 || (shardArgs.length === 1 && !SHARD_ARG.test(shardArgs[0]))) {
+  console.error(`reconcile-harness: expected at most one --shard=i/n, got ${shardArgs.join(' ')}`);
+  process.exit(2);
+}
+const shardMatch = shardArgs.length === 1 ? SHARD_ARG.exec(shardArgs[0]) : null;
 const SHARD = shardMatch ? Number(shardMatch[1]) : 0;
 const SHARDS = shardMatch ? Number(shardMatch[2]) : 1;
 if (!(SHARDS >= 1 && SHARD < SHARDS)) {
