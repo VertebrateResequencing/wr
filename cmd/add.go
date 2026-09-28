@@ -321,14 +321,19 @@ space usage checking and learning only occurs for jobs where cwd doesn't matter
 (is a unique directory), and ignores the contents of mounted directories.
 
 "queue" tells wr which queue a job should be submitted to, when using a job
-scheduler that has queues (eg. LSF). If queue is not specified, wr will use
-heuristics to pick the most appropriate queue based on the time, memory and cpu
-requirements of the job. If a comma-separated list of queue names is supplied,
-we will limit its picking to be amongst those.
+scheduler that has queues (eg. LSF). If queue is not specified, wr will use the
+manager's default queue ('wr manager start --lsf_queue'), or if that isn't set
+either, heuristics to pick the most appropriate queue based on the time, memory
+and cpu requirements of the job. If a comma-separated list of queue names is
+supplied, we will limit its picking to be amongst those.
 
 "queues_avoid" is comma-separated list of substrings found in queue names that
 should not be submitted to, when using a job scheduler that has queues (eg. LSF)
-and not picking an explicit --queue yourself.
+and not picking a single explicit --queue yourself. If not specified, the
+manager's default list is used ('wr manager start --lsf_queues_avoid', which
+itself defaults to "interactive"). A job's own queues_avoid REPLACES the
+manager's list rather than adding to it, so include "interactive" in yours if
+you still want to avoid those queues.
 
 "misc" will be used as-is to form the command line used to submit jobs to
 external job schedulers (eg. LSF). For example, --misc '-R avx' might result
@@ -769,9 +774,9 @@ func addCmdResourceFlags() {
 	flags.StringVarP(&cmdGroupDeps, "deps", "d", "",
 		"live dep-group dependencies, in the form \"dep_grp1,dep_grp2...\"; unseen groups wait")
 	flags.StringVar(&cmdQueue, "queue", "", "name of queue to submit to, for schedulers with queues")
-	flags.StringVar(&cmdQueuesAvoidAdd, "queues_avoid", "interactive",
+	flags.StringVar(&cmdQueuesAvoidAdd, "queues_avoid", "",
 		"comma-separated list of substrings found in queues that should not be submitted to, "+
-			"for schedulers with queues")
+			"for schedulers with queues; replaces the manager's --lsf_queues_avoid (default \"interactive\")")
 	flags.StringVar(&cmdMisc, "misc", "", "miscellaneous options to pass through to scheduler when submitting")
 }
 
