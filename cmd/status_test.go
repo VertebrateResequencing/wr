@@ -94,6 +94,11 @@ const (
 	// stopping. The 1s default made every server.Stop wait about a second for
 	// the readers to notice, which was most of the time many cmd tests took.
 	testServerInterruptTime = 10 * time.Millisecond
+
+	// testServerShutdownSocketWait is how long a cmd test server's shutdown
+	// waits for in-flight messages before closing its command socket, lowered
+	// from the 50ms default as jobqueue's own test servers do.
+	testServerShutdownSocketWait = time.Millisecond
 )
 
 // pickTestServerPorts is how statusTestServerConfig picks its ports. It is a
@@ -1321,7 +1326,10 @@ func statusTestServerConfig(t *testing.T) (*internal.Config, jobqueue.ServerConf
 		KeyFile:         testConfig.ManagerKeyFile,
 		CertDomain:      testConfig.ManagerCertDomain,
 		Deployment:      testConfig.Deployment,
-		Timings:         jobqueue.ServerTimings{InterruptTime: testServerInterruptTime},
+		Timings: jobqueue.ServerTimings{
+			InterruptTime:      testServerInterruptTime,
+			ShutdownSocketWait: testServerShutdownSocketWait,
+		},
 	}
 	reqs := &jqs.Requirements{RAM: 10, Time: time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}
 
