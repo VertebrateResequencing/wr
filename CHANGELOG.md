@@ -114,6 +114,16 @@ project adheres to [Semantic Versioning](http://semver.org/).
   To keep commands off the machine, use the lsf scheduler, or the openstack
   scheduler with `--max_ram 0`. To stop a manager starting new commands, use
   `wr manager pause`.
+- A command no longer runs twice when the manager crashes just after handing
+  it to a runner. The runner starts the command as soon as it is given it, but
+  the manager did not record that anywhere until the runner reported the start.
+  A manager killed in between came back thinking nobody had the command, so it
+  gave it to a second runner, and refused the first runner's progress and
+  completion reports ("bad job" and "you must Reserve() a Job" in the manager's
+  log). The manager now records which runner has a command before handing it
+  over, so after a crash it waits for that runner to report. If that runner
+  died too, the command is run again once its runner is confirmed dead, as for
+  any other lost command.
 - The `cleanup` and `cleanup_all` behaviours (`cleanup` is the default
   `--on_exit`) of a lost command could leave empty directories behind in the
   command's `--cwd` and report a warning, when its runner and the manager both

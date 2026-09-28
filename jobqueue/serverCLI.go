@@ -1066,12 +1066,40 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 	sjob.DelayTime = delay
 	sjob.Unlock()
 
+	s.persistReservation(ctx, sjob)
+
 	// make a copy of the job with some extra stuff filled in (that we don't want
 	// taking up memory here) for the client
 	job := s.itemToJob(ctx, item, false, true)
 	clog.Debug(ctx, "reserved job", "key", item.Key, "cmd", job.loggableCmd(), "schedGrp", sgroup)
 
 	return &serverResponse{Job: job}
+}
+
+// persistReservation writes a just-reserved job to the live bucket and does not
+// return until that write has committed, so the reservation is on disk before
+// the runner is told about it.
+//
+// The runner starts the command on the strength of the reservation alone, before
+// its Started reaches us. With nothing written here, a manager that crashed
+// between the reservation and the start write came back with the job's older
+// record: recovery put it on the ready queue under a ReservedBy that was not the
+// live runner's, so that runner's start and touches were refused as ErrBadJob,
+// its archive as ErrMustReserve, and a fresh runner ran the command again
+// (.docs/bugfixes/260928-reserve-durability.md). With the reserved state and the
+// runner's client id, host and pid on disk, recovery returns the job to the Run
+// sub-queue, where its runner's reports are accepted and, if that runner died,
+// the job is confirmed dead and re-run like any other lost job.
+//
+// Like the start write, this waits for the next coalesced drain, not for a
+// transaction of its own. A failed write is logged and the job still handed out,
+// which is how reservations behaved before this write existed: refusing the
+// reservation would leave the item reserved to a runner that was never given it.
+func (s *Server) persistReservation(ctx context.Context, job *Job) {
+	err := s.db.updateJobAfterChangeDurable(job)
+	if err != nil && !errors.Is(err, errDBClosed) {
+		clog.Error(ctx, "could not record a reservation on disk", "key", job.Key(), "err", err)
+	}
 }
 
 // resetJobForReservation clears a job's past run state ready for a fresh run by

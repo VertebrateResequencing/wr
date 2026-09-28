@@ -3214,6 +3214,25 @@ func logClientRequestError(ctx context.Context, herr error) {
 	clog.Error(ctx, "Server handle client request error", "err", herr)
 }
 
+// recoversIntoRun reports whether a recovered job goes back into the run
+// sub-queue: it was running, or it had been handed to a runner whose host and
+// pid were recorded with the reservation (persistReservation). Such a runner may
+// be running the command already, so the job must not be offered to another
+// runner; in Run its runner's start, touches and final report are accepted, and
+// if that runner is gone its TTR lapses and it is confirmed dead and re-run. A
+// reservation with no runner pid (an old client's) could never be confirmed
+// dead, so would park in Run for ever; it is recovered as it always was.
+func recoversIntoRun(job *Job) bool {
+	switch job.State {
+	case JobStateRunning:
+		return true
+	case JobStateReserved:
+		return job.Pid > 0 && job.Host != ""
+	default:
+		return false
+	}
+}
+
 func queueClosedError(op, key string) error {
 	return queue.Error{Queue: serverQueueName, Op: op, Item: key, Err: queue.ErrQueueClosed}
 }
@@ -4828,13 +4847,13 @@ func (s *Server) recoveredItemDef(ctx context.Context, recovered resolvedJob, lo
 	// reads job.schedulerGroup directly) bucket the job under its real group
 	// rather than the empty group "" - otherwise the manager schedules empty-group
 	// runners that immediately exit and never adds the running work to its real
-	// group. Only JobStateRunning jobs need this: they start in the run sub-queue
-	// and never pass through prepareReadyJob (which recomputes the group for ready
-	// jobs on the next rac cycle). Ready/other recovered jobs must keep an empty
-	// group so a group-less Reserve() can still pop them from the ready sub-queue.
-	// Snapshot (RLock) and set (Lock) are separate statements to avoid
-	// self-deadlock.
-	if job.State == JobStateRunning && job.getSchedulerGroup() == "" {
+	// group. Only jobs recovered into the run sub-queue need this: they never pass
+	// through prepareReadyJob (which recomputes the group for ready jobs on the
+	// next rac cycle). Ready/other recovered jobs must keep an empty group so a
+	// group-less Reserve() can still pop them from the ready sub-queue. Snapshot
+	// (RLock) and set (Lock) are separate statements to avoid self-deadlock.
+	intoRun := recoversIntoRun(job)
+	if intoRun && job.getSchedulerGroup() == "" {
 		group := job.schedulerGroupSnapshot().group
 		job.setSchedulerGroup(group)
 	}
@@ -4845,14 +4864,14 @@ func (s *Server) recoveredItemDef(ctx context.Context, recovered resolvedJob, lo
 		Dependencies: recovered.deps,
 	}
 
-	switch job.State {
-	case JobStateRunning:
+	switch {
+	case intoRun:
 		itemdef.StartQueue = queue.SubQueueRun
 
 		s.recoverRunningJob(ctx, job, loginUser, ttd)
-	case JobStateBuried:
+	case job.State == JobStateBuried:
 		itemdef.StartQueue = queue.SubQueueBury
-	case JobStateSuspended:
+	case job.State == JobStateSuspended:
 		itemdef.StartQueue = queue.SubQueueSuspended
 	default:
 		// any other recovered state keeps the default start queue.
