@@ -104,6 +104,12 @@ project adheres to [Semantic Versioning](http://semver.org/).
   waiting until it was killed, so it never saved its database. It now waits at
   most 60 seconds, then logs how many jobs were still running, has LSF kill any
   runners that are left, and finishes stopping as normal.
+- A runner still running a command when its manager is cleanly stopped and
+  started again now reports that command to the new manager, as it already did
+  after a crash, instead of being rejected for its old token for up to a day
+  while holding its LSF slot. A command that exited 0 is then recorded as
+  complete, not run again. A runner that cannot read a token the new manager
+  accepts gives up after 3 attempts and exits.
 - `wr manager stop` no longer sends SIGTERM to an unrelated process when the
   manager died without removing its pid file (for example after a crash or a
   reboot) and its pid has since been given to another of your processes. It

@@ -128,8 +128,9 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
     logs, the manager does not log request errors while shutting down
     (`dispatchClientRequest` skips them when `inShutdown`), and the database
     was not kept. One way it can happen is a touch rejected with `ErrBadJob`
-    (the job not in the Run sub-queue, for example after the manager declared
-    it lost and released it): `handleTouch` returns that error rather than
+    (the job not in the Run sub-queue, for example after a busy manager
+    released it speculatively, as `getijForReport`'s comment describes):
+    `handleTouch` returns that error rather than
     `KillCalled`, and the runner only logs a failed touch and carries on.
     Whatever the cause, the fix below makes such a runner unable to hold the
     shutdown, and the scheduler cleanup that follows bkills it.
@@ -174,10 +175,76 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
     wait: it exits 0, the manager exits by itself rather than by a signal, the
     token is removed, and the manager logged the give-up.
 
-- [ ] **Runners that outlive a clean stop are stuck forever.** They keep the
+- [x] **Runners that outlive a clean stop are stuck forever.** They keep the
       old manager's token, which `wr runner` read once and never reloads, so
       the new manager rejects them thousands of times. One job was lost for
       about 3h while its LSF job held a slot for more than 82 minutes.
+  - Evidence: the next manager's log (manager.log, cumulative over the soak's
+    restarts) has 1,932 `jarchive(eebf1a03...)` and 107
+    `jarchive(dc4a2817...)` rejections with "Client presented the wrong
+    token", plus 55 and 3 `jtouch` rejections for the same keys.
+  - Root cause: `wr runner` (cmd/runner.go) read the token file once and
+    connected with `jobqueue.Connect`, which keeps the bytes. #640 gave Go
+    clients `ConnectWithTokenFile`, which re-reads the token file when the
+    manager rejects the token, but left runners on `Connect`, reasoning that a
+    runner cannot outlive a clean stop. This soak shows it can (item 2). A
+    clean stop deletes the token and the next manager makes a new one, so
+    every touch and final report of such a runner is rejected. Its final
+    report (`reportFinalState` in jobqueue/client.go) treats that as transient
+    and retries for `ClientRetryTime`, 24h, holding the LSF slot all the while,
+    and the job, recovered by the new manager as running, sits lost.
+  - How runners get the token: from `config.ManagerTokenFile`, the same file
+    the manager writes (`token()` in cmd/root.go), which on LSF is on the
+    shared file system, so a runner can read the new manager's token.
+  - Should an old manager's runner work for a new one? After a crash restart
+    it already does: the token is kept, the runner's reconnect succeeds, and
+    #642's recovery puts its job back in the Run sub-queue reserved by that
+    runner, so its touches and final report are accepted. A clean stop that
+    ends with runners still alive now leaves the database in the same state
+    (item 2), so letting such a runner report to the new manager treats a clean
+    restart the same way. It does not start new work: a final report that
+    needed a reconnect sets `hadProblems`, so `Execute` returns
+    `ErrStopReserving` and the runner exits "because we reconnected to a new
+    server". Reloading grants nothing new either: only a process that can read
+    the owner-only token file gets the token, which is who could connect
+    afresh anyway (#640's reasoning).
+  - Decision: (iii), both. (i) alone leaves a runner that cannot read a working
+    token (for example one on a host whose copy of the token file is never
+    updated) retrying for a day. (ii) alone would throw away the result of
+    every orphaned job that exited 0, which item 4 must keep.
+  - Red: `CGO_ENABLED=1 go test -tags netgo --count 1 ./cmd -run
+    'TestRunnerOutlivesCleanRestart$'`, exit 1 before the fix, with the soak's
+    signature in the log:
+
+    ```text
+    EROR Server handle client request error err="jobqueue jarchive(6b20da49...): Client presented the wrong token"
+    EROR failed to update server with cmd's final state jobkey=6b20da49... err="jobqueue jarchive(6b20da49...): bad token: permission denied"
+    INFO reconnected to server jobkey=6b20da49...
+    Line 201:
+    Expected: 0
+    Actual:   -1
+    --- FAIL: TestRunnerOutlivesCleanRestart (31.82s)
+    ```
+
+    The test runs the real `wr runner` in-process against an in-process
+    manager whose touch interval is longer than the test, so the runner never
+    learns of the stop, as the soak's did not. Its job's command waits for a
+    file. The manager is stopped, its token deleted as `wr manager stop` does,
+    and started again on the same database, then the command is let exit 0.
+    The runner must exit 0 within 30s and the job must be complete. Before
+    the fix it was still retrying with the old token. The second Convey starts
+    the new manager with its token somewhere the runner cannot read: the
+    runner must exit 1 within 30s. Before the fix: `Line 219: Expected: 1,
+    Actual: -1`.
+  - Fix:
+    - `cmd/runner.go`: connect with `jobqueue.ConnectWithTokenFile(rserver,
+      caFile, rdomain, config.ManagerTokenFile, timeout)`.
+    - `jobqueue/client.go`: `reportFinalState` counts consecutive rejections
+      for a bad token (new `countTokenRejection`) and gives up after
+      `clientFinalStateTokenRejections` (3) of them, logging why. Each one
+      comes after the client has already re-read its token file, so a
+      rejection that persists will not go away. The runner then finds its
+      `Reserve` rejected too, and exits, freeing its scheduler slot.
 
 - [ ] **A command that had already exited 0 before or during a clean stop must
       be recorded as complete, not buried and not later re-run.** The owner
