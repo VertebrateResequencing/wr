@@ -12,17 +12,18 @@ project adheres to [Semantic Versioning](http://semver.org/).
   `--with_docker` command as the user the image specifies after all. You need it
   if your command writes to root-owned paths inside the image, and should expect
   anything it creates in your working directory to be owned by that user.
-- New `--lsf_queue` and `--lsf_queues_avoid` options for `wr manager start`
-  (and the `lsfqueue` and `lsfqueuesavoid` config options, or `WR_LSFQUEUE` and
-  `WR_LSFQUEUESAVOID`), which set the default queue, or queues to pick amongst,
-  and the queues to avoid, for commands you add without their own `--queue` or
-  `--queues_avoid` when using the LSF scheduler. A command's own
+- New `--queue` and `--queues_avoid` options for `wr manager start` (and the
+  `managerqueue` and `managerqueuesavoid` config options, or `WR_MANAGERQUEUE`
+  and `WR_MANAGERQUEUESAVOID`), which set the default queue, or queues to pick
+  amongst, and the queues to avoid, for commands you add without their own
+  `--queue` or `--queues_avoid`, with schedulers that have queues (currently
+  only lsf). A command's own
   `--queues_avoid` replaces the default list rather than adding to it.
 
 ### Changed
 - `wr add` no longer gives each command `--queues_avoid interactive` itself.
   A command added without `--queues_avoid` now uses the manager's new
-  `--lsf_queues_avoid` list, which defaults to "interactive", so by default it
+  `--queues_avoid` list, which defaults to "interactive", so by default it
   still avoids interactive queues. That default now also applies to commands
   added through the REST API or Go client without a `queues_avoid` of their
   own. Commands added before you upgrade keep the "interactive" list they were

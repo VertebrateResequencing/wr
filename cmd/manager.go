@@ -74,8 +74,8 @@ var (
 	useCertDomain         bool
 	runnerSyslog          bool
 	runnerFilelog         string
-	managerLSFQueue       string
-	managerLSFQueuesAvoid string
+	managerQueue          string
+	managerQueuesAvoid    string
 )
 
 const (
@@ -86,6 +86,11 @@ const (
 
 	// schedulerLSF is the name of the LSF job scheduler.
 	schedulerLSF = "lsf"
+
+	// flagQueue and flagQueuesAvoid name the queue flags shared by wr add, wr
+	// mod and wr manager start.
+	flagQueue       = "queue"
+	flagQueuesAvoid = "queues_avoid"
 
 	// managerConnectTimeout is how long to wait when checking whether the
 	// manager is currently reachable.
@@ -160,12 +165,13 @@ machine. To keep cmds off this machine, use the lsf scheduler, or the openstack
 scheduler with --max_ram 0. To stop a running manager starting new cmds, use
 'wr manager pause'.
 
-With the lsf scheduler, --lsf_queue and --lsf_queues_avoid set the default
-queue(s) and queues to avoid for cmds added without their own --queue or
---queues_avoid (see 'wr add -h'). A cmd's own --queues_avoid replaces the
-default list rather than adding to it. Cmds do not record these defaults, so if
-you restart the manager with different ones, cmds not yet submitted to LSF will
-use the new values, while LSF jobs already submitted stay in their queue.
+With a scheduler that has queues (currently only lsf), --queue and
+--queues_avoid set the default queue(s) and queues to avoid for cmds added
+without their own --queue or --queues_avoid (see 'wr add -h'). A cmd's own
+--queues_avoid replaces the default list rather than adding to it. Cmds do not
+record these defaults, so if you restart the manager with different ones, cmds
+not yet submitted to the scheduler will use the new values, while those already
+submitted stay in their queue.
 
 To use the openstack scheduler, see 'wr cloud deploy -h' for the details of
 which environment variables you need to use. That help also explains some of the
@@ -202,7 +208,7 @@ fully.`,
 		// first we need our working directory to exist
 		createWorkingDir()
 
-		warnIgnoredLSFFlags(cmd, scheduler)
+		warnIgnoredQueueFlags(cmd, scheduler)
 
 		// check to see if the manager is already running (regardless of the
 		// state of the pid file), giving us a meaningful error message in the
@@ -1309,32 +1315,41 @@ func init() {
 // sub-command.
 func addManagerStartFlags(defaultConfig *internal.Config, defaultMaxRAM int) {
 	addManagerStartLocalFlags(defaultConfig, defaultMaxRAM)
-	addManagerStartLSFFlags(defaultConfig)
+	addManagerStartQueueFlags(defaultConfig)
 	addManagerStartCloudFlags(defaultConfig)
 }
 
-// addManagerStartLSFFlags registers the lsf-scheduler flags for the manager
-// start sub-command.
-func addManagerStartLSFFlags(defaultConfig *internal.Config) {
+// addManagerStartQueueFlags registers the default queue flags for the manager
+// start sub-command, used by schedulers that have queues.
+func addManagerStartQueueFlags(defaultConfig *internal.Config) {
 	flags := managerStartCmd.Flags()
 
-	flags.StringVar(&managerLSFQueue, "lsf_queue", defaultConfig.LSFQueue,
-		"for the lsf scheduler, queue (or comma-separated queues to pick amongst) for cmds added without --queue")
-	flags.StringVar(&managerLSFQueuesAvoid, "lsf_queues_avoid", defaultConfig.LSFQueuesAvoid,
-		"for the lsf scheduler, comma-separated substrings of queue names to avoid for cmds added without "+
-			"--queues_avoid; a cmd's own --queues_avoid replaces this list rather than adding to it")
+	flags.StringVar(&managerQueue, flagQueue, defaultConfig.ManagerQueue,
+		"for schedulers with queues (currently only lsf), default queue (or comma-separated queues to pick "+
+			"amongst) for cmds added without --queue")
+	flags.StringVar(&managerQueuesAvoid, flagQueuesAvoid, defaultConfig.ManagerQueuesAvoid,
+		"for schedulers with queues (currently only lsf), default comma-separated substrings of queue names to "+
+			"avoid for cmds added without --queues_avoid; a cmd's own --queues_avoid replaces this list rather "+
+			"than adding to it")
 }
 
-// warnIgnoredLSFFlags warns if any lsf-scheduler flag was given on the command
-// line when the chosen scheduler is not lsf, since it would then be ignored.
-func warnIgnoredLSFFlags(cmd *cobra.Command, chosenScheduler string) {
-	if chosenScheduler == schedulerLSF {
+// schedulerHasQueues reports whether the named scheduler uses the manager's
+// default --queue and --queues_avoid.
+func schedulerHasQueues(name string) bool {
+	return name == schedulerLSF
+}
+
+// warnIgnoredQueueFlags warns if --queue or --queues_avoid was given on the
+// command line when the chosen scheduler does not have queues, since they
+// would then be ignored.
+func warnIgnoredQueueFlags(cmd *cobra.Command, chosenScheduler string) {
+	if schedulerHasQueues(chosenScheduler) {
 		return
 	}
 
 	var given []string
 
-	for _, name := range []string{"lsf_queue", "lsf_queues_avoid"} {
+	for _, name := range []string{flagQueue, flagQueuesAvoid} {
 		if cmd.Flags().Changed(name) {
 			given = append(given, "--"+name)
 		}
@@ -1344,10 +1359,10 @@ func warnIgnoredLSFFlags(cmd *cobra.Command, chosenScheduler string) {
 	case 0:
 		return
 	case 1:
-		warn("%s only applies to the lsf scheduler, so will be ignored by the %s scheduler",
+		warn("%s only applies to schedulers with queues (currently only lsf), so will be ignored by the %s scheduler",
 			given[0], chosenScheduler)
 	default:
-		warn("%s only apply to the lsf scheduler, so will be ignored by the %s scheduler",
+		warn("%s only apply to schedulers with queues (currently only lsf), so will be ignored by the %s scheduler",
 			strings.Join(given, " and "), chosenScheduler)
 	}
 }
@@ -1642,8 +1657,8 @@ func buildSchedulerConfig(exe string, postCreation, preDestroy []byte) (any, str
 			Deployment:     config.Deployment,
 			Shell:          config.RunnerExecShell,
 			PrivateKeyPath: config.PrivateKeyPath,
-			Queue:          managerLSFQueue,
-			QueuesAvoid:    managerLSFQueuesAvoid,
+			Queue:          managerQueue,
+			QueuesAvoid:    managerQueuesAvoid,
 		}, ""
 	case "openstack":
 		return buildOpenStackConfig(exe, postCreation, preDestroy), cloudCIDR

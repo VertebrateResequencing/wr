@@ -343,6 +343,41 @@ managerumask: 007
 # works if you are starting the manager on an OpenStack server!
 managerscheduler: "local"
 
+# managerqueue: What queue should commands be submitted to by default?
+# Without being set, wr picks a queue for each command. It is overridden by the
+# --queue option to 'wr manager start'.
+#
+# This option is only relevant when you are using a scheduler that has queues
+# (currently only lsf).
+#
+# It applies to commands that do not name a queue of their own, eg. with the
+# --queue option of 'wr add'; a command's own queue always wins. If this is a
+# comma-separated list of queues, wr picks amongst only those, choosing the one
+# likely to run the command soonest that has enough memory and time for it and
+# is not avoided (see managerqueuesavoid). Empty elements are ignored.
+#
+# Commands do not record this default, so if you change it and restart the
+# manager, commands that have not yet been submitted to the scheduler will use
+# the new value, while those already submitted stay in the queue they were
+# given.
+# managerqueue: ""
+
+# managerqueuesavoid: What queues should commands not be submitted to?
+# This defaults to "interactive". It is overridden by the --queues_avoid option
+# to 'wr manager start'.
+#
+# This option is only relevant when you are using a scheduler that has queues
+# (currently only lsf).
+#
+# It is a comma-separated list of substrings of queue names; wr will not pick
+# a queue whose name contains any of them. It applies to commands that do not
+# have a --queues_avoid of their own (see 'wr add'). A command's own list
+# REPLACES this one rather than adding to it, so if you want a command to also
+# avoid the queues listed here, include them in its list. Empty elements are
+# ignored. As with managerqueue, a change applies to commands not yet submitted
+# to the scheduler once the manager restarts.
+managerqueuesavoid: "interactive"
+
 # manageruploaddir: Where should the wr manager store uploaded files?
 # This defaults to a dir named "uploads" in managerdir.
 #
@@ -445,38 +480,6 @@ runnerexecshell: "bash"
 # -9' can only signal THAT user's own processes - exactly the wr runners you already
 # own on that node - so the added privilege over ps-only is modest.
 privatekeypath: "~/.ssh/id_rsa"
-
-# lsfqueue: What LSF queue should commands be submitted to by default?
-# Without being set, wr picks a queue for each command. It is overridden by the
-# --lsf_queue option to 'wr manager start'.
-#
-# This option is only relevant when you are using the lsf scheduler.
-#
-# It applies to commands that do not name a queue of their own, eg. with the
-# --queue option of 'wr add'; a command's own queue always wins. If this is a
-# comma-separated list of queues, wr picks amongst only those, choosing the one
-# likely to run the command soonest that has enough memory and time for it and
-# is not avoided (see lsfqueuesavoid). Empty elements are ignored.
-#
-# Commands do not record this default, so if you change it and restart the
-# manager, commands that have not yet been submitted to LSF will use the new
-# value, while LSF jobs already submitted stay in the queue they were given.
-# lsfqueue: ""
-
-# lsfqueuesavoid: What LSF queues should commands not be submitted to?
-# This defaults to "interactive". It is overridden by the --lsf_queues_avoid
-# option to 'wr manager start'.
-#
-# This option is only relevant when you are using the lsf scheduler.
-#
-# It is a comma-separated list of substrings of queue names; wr will not pick
-# a queue whose name contains any of them. It applies to commands that do not
-# have a --queues_avoid of their own (see 'wr add'). A command's own list
-# REPLACES this one rather than adding to it, so if you want a command to also
-# avoid the queues listed here, include them in its list. Empty elements are
-# ignored. As with lsfqueue, a change applies to commands not yet submitted to
-# LSF once the manager restarts.
-lsfqueuesavoid: "interactive"
 
 # cloudflavor: What server flavors can be automatically picked?
 # Without being set, any available flavor can be picked. It is overridden by

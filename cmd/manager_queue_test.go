@@ -36,45 +36,45 @@ import (
 )
 
 const (
-	testLSFQueueFlag       = "lsf_queue"
-	testLSFQueuesAvoidFlag = "lsf_queues_avoid"
-	testLSFQueueIgnored    = "to the lsf scheduler, so will be ignored"
+	testQueueFlag       = flagQueue
+	testQueuesAvoidFlag = flagQueuesAvoid
+	testQueueIgnored    = "to schedulers with queues (currently only lsf), so will be ignored"
 )
 
-func TestManagerStartLSFQueueFlags(t *testing.T) {
+func TestManagerStartQueueFlags(t *testing.T) {
 	flags := managerStartCmd.Flags()
 
-	Convey("manager start's LSF queue flags default to the lsfqueue and lsfqueuesavoid config", t, func() {
+	Convey("manager start's queue flags default to the managerqueue and managerqueuesavoid config", t, func() {
 		defaultConfig := internal.DefaultConfig(context.Background())
 
-		queueFlag := flags.Lookup(testLSFQueueFlag)
+		queueFlag := flags.Lookup(testQueueFlag)
 		So(queueFlag, ShouldNotBeNil)
-		So(queueFlag.DefValue, ShouldEqual, defaultConfig.LSFQueue)
-		So(queueFlag.Usage, ShouldContainSubstring, "for the lsf scheduler")
+		So(queueFlag.DefValue, ShouldEqual, defaultConfig.ManagerQueue)
+		So(queueFlag.Usage, ShouldContainSubstring, "for schedulers with queues (currently only lsf)")
 
-		avoidFlag := flags.Lookup(testLSFQueuesAvoidFlag)
+		avoidFlag := flags.Lookup(testQueuesAvoidFlag)
 		So(avoidFlag, ShouldNotBeNil)
-		So(avoidFlag.DefValue, ShouldEqual, defaultConfig.LSFQueuesAvoid)
+		So(avoidFlag.DefValue, ShouldEqual, defaultConfig.ManagerQueuesAvoid)
 		So(avoidFlag.Usage, ShouldContainSubstring, "replaces")
 	})
 
-	Convey("Given manager start's LSF queue flags on the command line", t, func() {
+	Convey("Given manager start's queue flags on the command line", t, func() {
 		oldScheduler, oldConfig := scheduler, config
-		oldQueue, oldAvoid := managerLSFQueue, managerLSFQueuesAvoid
+		oldQueue, oldAvoid := managerQueue, managerQueuesAvoid
 
 		defer func() {
 			scheduler, config = oldScheduler, oldConfig
-			managerLSFQueue, managerLSFQueuesAvoid = oldQueue, oldAvoid
-			flags.Lookup(testLSFQueueFlag).Changed = false
-			flags.Lookup(testLSFQueuesAvoidFlag).Changed = false
+			managerQueue, managerQueuesAvoid = oldQueue, oldAvoid
+			flags.Lookup(testQueueFlag).Changed = false
+			flags.Lookup(testQueuesAvoidFlag).Changed = false
 		}()
 
 		config = &internal.Config{Deployment: internal.Development}
 
-		err := flags.Parse([]string{"--" + testLSFQueueFlag, "normal,long", "--" + testLSFQueuesAvoidFlag, "yesterday,"})
+		err := flags.Parse([]string{"--" + testQueueFlag, "normal,long", "--" + testQueuesAvoidFlag, "yesterday,"})
 		So(err, ShouldBeNil)
 
-		Convey("they reach the LSF scheduler config", func() {
+		Convey("they reach the lsf scheduler config", func() {
 			scheduler = schedulerLSF
 
 			schedulerConfig, _ := buildSchedulerConfig("wr", nil, nil)
@@ -90,8 +90,8 @@ func TestManagerStartLSFQueueFlags(t *testing.T) {
 
 			defer clog.ToDefault()
 
-			warnIgnoredLSFFlags(managerStartCmd, schedulerLSF)
-			So(logged.String(), ShouldNotContainSubstring, testLSFQueueIgnored)
+			warnIgnoredQueueFlags(managerStartCmd, schedulerLSF)
+			So(logged.String(), ShouldNotContainSubstring, testQueueIgnored)
 		})
 
 		Convey("they are warned about as ignored with another scheduler", func() {
@@ -99,35 +99,35 @@ func TestManagerStartLSFQueueFlags(t *testing.T) {
 
 			defer clog.ToDefault()
 
-			warnIgnoredLSFFlags(managerStartCmd, "local")
-			So(logged.String(), ShouldContainSubstring, "--"+testLSFQueueFlag)
-			So(logged.String(), ShouldContainSubstring, "--"+testLSFQueuesAvoidFlag)
-			So(logged.String(), ShouldContainSubstring, testLSFQueueIgnored)
+			warnIgnoredQueueFlags(managerStartCmd, "local")
+			So(logged.String(), ShouldContainSubstring, "--"+testQueueFlag)
+			So(logged.String(), ShouldContainSubstring, "--"+testQueuesAvoidFlag)
+			So(logged.String(), ShouldContainSubstring, testQueueIgnored)
 		})
 	})
 
-	Convey("A single LSF queue flag given with another scheduler is warned about on its own", t, func() {
-		defer func() { flags.Lookup(testLSFQueueFlag).Changed = false }()
+	Convey("A single queue flag given with another scheduler is warned about on its own", t, func() {
+		defer func() { flags.Lookup(testQueueFlag).Changed = false }()
 
-		oldQueue := managerLSFQueue
-		defer func() { managerLSFQueue = oldQueue }()
+		oldQueue := managerQueue
+		defer func() { managerQueue = oldQueue }()
 
-		So(flags.Set(testLSFQueueFlag, "normal"), ShouldBeNil)
+		So(flags.Set(testQueueFlag, "normal"), ShouldBeNil)
 
 		logged := clog.ToBufferAtLevel("warn")
 
 		defer clog.ToDefault()
 
-		warnIgnoredLSFFlags(managerStartCmd, "local")
-		So(logged.String(), ShouldContainSubstring, "--"+testLSFQueueFlag+" only applies to the lsf scheduler")
+		warnIgnoredQueueFlags(managerStartCmd, "local")
+		So(logged.String(), ShouldContainSubstring, "--"+testQueueFlag+" only applies to schedulers with queues")
 	})
 
-	Convey("Unset LSF queue flags are not warned about with another scheduler", t, func() {
+	Convey("Unset queue flags are not warned about with another scheduler", t, func() {
 		logged := clog.ToBufferAtLevel("warn")
 
 		defer clog.ToDefault()
 
-		warnIgnoredLSFFlags(managerStartCmd, "openstack")
-		So(logged.String(), ShouldNotContainSubstring, testLSFQueueIgnored)
+		warnIgnoredQueueFlags(managerStartCmd, "openstack")
+		So(logged.String(), ShouldNotContainSubstring, testQueueIgnored)
 	})
 }

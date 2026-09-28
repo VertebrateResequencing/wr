@@ -120,6 +120,8 @@ type Config struct {
 	ManagerUploadDir         string `default:"uploads"`
 	ManagerUmask             int    `default:"007"`
 	ManagerScheduler         string `default:"local"`
+	ManagerQueue             string `default:""`
+	ManagerQueuesAvoid       string `default:"interactive"`
 	ManagerCAFile            string `default:"ca.pem"`
 	ManagerCertFile          string `default:"cert.pem"`
 	ManagerKeyFile           string `default:"key.pem"`
@@ -147,8 +149,6 @@ type Config struct {
 	CloudSpawns              int    `default:"10"`
 	CloudAutoConfirmDead     int    `default:"30"`
 	DeploySuccessScript      string `default:""`
-	LSFQueue                 string `default:""`
-	LSFQueuesAvoid           string `default:"interactive"`
 	sources                  map[string]string
 }
 

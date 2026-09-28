@@ -75,17 +75,17 @@ const (
 )
 
 func TestAddQueuesAvoidDefault(t *testing.T) {
-	Convey("add queues_avoid defaults to the manager's --lsf_queues_avoid", t, func() {
+	Convey("add queues_avoid defaults to the manager's --queues_avoid", t, func() {
 		flag := addCmd.Flags().Lookup("queues_avoid")
 		So(flag, ShouldNotBeNil)
 		So(flag.DefValue, ShouldBeEmpty)
-		So(flag.Usage, ShouldContainSubstring, "--lsf_queues_avoid")
+		So(flag.Usage, ShouldContainSubstring, "manager's --queues_avoid")
 		So(flag.Usage, ShouldContainSubstring, "interactive")
 
 		// the manager's default avoids interactive queues, as add's own
 		// default used to
-		So(managerStartCmd.Flags().Lookup("lsf_queues_avoid").DefValue, ShouldEqual,
-			internal.DefaultConfig(context.Background()).LSFQueuesAvoid)
+		So(managerStartCmd.Flags().Lookup("queues_avoid").DefValue, ShouldEqual,
+			internal.DefaultConfig(context.Background()).ManagerQueuesAvoid)
 	})
 
 	Convey("Given a cmd file", t, func() {

@@ -39,12 +39,12 @@ func TestDefaultConfigYML(t *testing.T) {
 	})
 }
 
-func TestDefaultConfigYMLLSFQueueDefaults(t *testing.T) {
-	Convey("wr conf --default documents the LSF queue defaults", t, func() {
-		So(strings.Count(defaultYML, "\n# lsfqueue: \"\"\n"), ShouldEqual, 1)
-		So(strings.Count(defaultYML, "\nlsfqueuesavoid: \"interactive\"\n"), ShouldEqual, 1)
-		So(defaultYML, ShouldContainSubstring, "--lsf_queue option")
-		So(defaultYML, ShouldContainSubstring, "--lsf_queues_avoid")
+func TestDefaultConfigYMLQueueDefaults(t *testing.T) {
+	Convey("wr conf --default documents the manager queue defaults", t, func() {
+		So(strings.Count(defaultYML, "\n# managerqueue: \"\"\n"), ShouldEqual, 1)
+		So(strings.Count(defaultYML, "\nmanagerqueuesavoid: \"interactive\"\n"), ShouldEqual, 1)
+		So(defaultYML, ShouldContainSubstring, "--queue option to 'wr manager start'")
+		So(defaultYML, ShouldContainSubstring, "--queues_avoid option")
 		So(defaultYML, ShouldContainSubstring, "REPLACES this one")
 	})
 }
