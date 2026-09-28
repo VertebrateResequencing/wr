@@ -801,7 +801,8 @@ type lsf struct {
 }
 
 // ConfigLSF represents the configuration options required by the LSF scheduler.
-// All are required with no usable defaults.
+// All are required with no usable defaults, except for the optional Queue and
+// QueuesAvoid.
 type ConfigLSF struct {
 	// Deployment is one of "development" or "production".
 	Deployment string
@@ -813,6 +814,19 @@ type ConfigLSF struct {
 	// PrivateKeyPath is the path to your private key that can be used to ssh
 	// to LSF farm nodes to check on jobs if they become non-responsive.
 	PrivateKeyPath string
+
+	// Queue is optional: the queue to submit to, or a comma-separated list of
+	// queues to pick amongst, for jobs whose Requirements.Other has no
+	// non-empty scheduler_queue of their own. Empty (or whitespace) elements
+	// are ignored; if none remain, a queue is picked automatically.
+	Queue string
+
+	// QueuesAvoid is optional: a comma-separated list of substrings of queue
+	// names that must not be picked, for jobs whose Requirements.Other has no
+	// non-empty scheduler_queues_avoid of their own. A job's own list replaces
+	// this one rather than being merged with it. Empty (or whitespace)
+	// elements are ignored.
+	QueuesAvoid string
 }
 
 // initialize finds out about lsf's hosts and queues.
@@ -2130,25 +2144,56 @@ func (s *lsf) busy(ctx context.Context) bool {
 
 // determineQueue picks a queue, preferring ones that are more likely to run our
 // job the soonest (amongst those that are capable of running it). If req.Other
-// contains a scheduler_queue value, returns that instead.
+// contains a scheduler_queue value (or failing that, our config has a default
+// Queue), returns that instead, or picks amongst it if it is a comma-separated
+// list.
 func (s *lsf) determineQueue(req *Requirements) (string, error) {
 	queues := s.sortedqs
 
-	if queue, ok := req.Other["scheduler_queue"]; strings.Contains(queue, ",") {
+	if queue := s.requestedQueue(req); strings.Contains(queue, ",") {
 		queues = internal.SplitCommaList(queue)
-	} else if ok {
+	} else if queue != "" {
 		return queue, nil
 	}
 
 	seconds := req.Time.Seconds() + minimumQueueTime.Seconds()
 
-	queuesToAvoid := internal.SplitCommaList(req.Other["scheduler_queues_avoid"])
+	queuesToAvoid := s.queuesToAvoid(req)
 
 	if queue, ok := s.firstSuitableQueue(queues, queuesToAvoid, req, seconds); ok {
 		return queue, nil
 	}
 
 	return "", Error{lsfScheduler, opDetermineQueue, ErrImpossible}
+}
+
+// requestedQueue returns req's scheduler_queue if that has any non-empty
+// element, otherwise our configured default Queue if that does, otherwise "".
+func (s *lsf) requestedQueue(req *Requirements) string {
+	if queue := req.Other["scheduler_queue"]; len(internal.SplitCommaList(queue)) > 0 {
+		return queue
+	}
+
+	if s.config != nil && len(internal.SplitCommaList(s.config.Queue)) > 0 {
+		return s.config.Queue
+	}
+
+	return ""
+}
+
+// queuesToAvoid returns the non-empty elements of req's scheduler_queues_avoid
+// if there are any, otherwise those of our configured default QueuesAvoid. A
+// job's own list replaces the default rather than adding to it.
+func (s *lsf) queuesToAvoid(req *Requirements) []string {
+	if avoid := internal.SplitCommaList(req.Other["scheduler_queues_avoid"]); len(avoid) > 0 {
+		return avoid
+	}
+
+	if s.config == nil {
+		return nil
+	}
+
+	return internal.SplitCommaList(s.config.QueuesAvoid)
 }
 
 // firstSuitableQueue returns the first queue (from the given preference-ordered
