@@ -61,6 +61,59 @@ $bkline
 EOF
 }
 
+# private_config <dir> points every wr this invocation runs (and every job its managers run,
+# since jobs inherit the submitter's environment) at a config dir of its own, and writes it.
+# ensure_config rewrites the shared $CONFIG_DIR on every call, so a long run using the shared
+# dir would pick up whatever PROD_PORT/DEV_PORT the next wrdev.sh invocation happens to have.
+private_config() {
+  CONFIG_DIR="$1"
+  export WR_CONFIG_DIR="$CONFIG_DIR"
+  ensure_config
+}
+
+# conf_value <conf> <field> prints the value of <field> from the table `wr conf` printed as <conf>.
+conf_value() {
+  printf '%s\n' "$1" | awk -F'│' -v k="$2" \
+    '{ f = $2; gsub(/ /, "", f); if (f == k) { v = $3; gsub(/^ +| +$/, "", v); print v; exit } }'
+}
+
+# assert_isolated <deployment> <port> <web> <rundir> dies unless wr, run from the current
+# directory with the current environment, resolves <deployment> to our isolated manager: its
+# ports, its managerdir, and every file it would write inside that managerdir. wr lets env vars,
+# ~/.wr_config*.yml and ./.wr_config*.yml override WR_CONFIG_DIR, so this asks wr itself (wr
+# conf) rather than trusting the file we wrote. It also refuses a manager that would set a DNS
+# record (managersetdomainip), or clients that would connect anywhere but localhost.
+assert_isolated() {
+  local dep="$1" port="$2" web="$3" run="$4" conf f v
+  conf=$(osunset; timeout 60 "$WR" conf --deployment "$dep" 2>&1) || die "wr conf --deployment $dep failed"
+  v=$(conf_value "$conf" ManagerHost)
+  [ "$v" = "localhost" ] || die "refusing: $dep resolves managerhost to '$v', not localhost (see wr conf)"
+  v=$(conf_value "$conf" ManagerPort)
+  [ "$v" = "$port" ] || die "refusing: $dep resolves to port '$v', not our isolated $port (see wr conf)"
+  v=$(conf_value "$conf" ManagerWeb)
+  [ "$v" = "$web" ] || die "refusing: $dep resolves to web port '$v', not our isolated $web (see wr conf)"
+  v=$(conf_value "$conf" ManagerDir)
+  [ "$v" = "$run" ] || die "refusing: $dep resolves to managerdir '$v', not our isolated $run (see wr conf)"
+  for f in ManagerPidFile ManagerLogFile ManagerDBFile ManagerTokenFile ManagerUploadDir \
+      ManagerCAFile ManagerCertFile ManagerKeyFile; do
+    v=$(conf_value "$conf" "$f")
+    case "$v" in ("$run"/*) ;; (*) die "refusing: $dep resolves $f to '$v', outside $run (see wr conf)" ;; esac
+  done
+  v=$(conf_value "$conf" ManagerDBBkFile)
+  case "$v" in
+    ("$run"/*) ;;
+    (*) [ -n "${WRDEV_PROD_BKFILE:-}" ] && [ "$v" = "$WRDEV_PROD_BKFILE" ] \
+          || die "refusing: $dep resolves ManagerDBBkFile to '$v', outside $run (see wr conf)" ;;
+  esac
+  [ "$(conf_value "$conf" ManagerSetDomainIP)" = "false" ] || die "refusing: $dep would set a domain IP"
+}
+
+# port_free <port> dies if something already listens on localhost:<port>, so a pprof reading can
+# never come from another process.
+port_free() {
+  if (exec 3<>"/dev/tcp/localhost/$1") 2>/dev/null; then die "localhost:$1 is already in use"; fi
+}
+
 # only ever kills a PID whose cmdline runs OUR isolated binary; never a real
 # production manager or anything else.
 is_ours() { ps -ww -o cmd= -p "$1" 2>/dev/null | grep -qF "$WR"; }
@@ -4258,6 +4311,184 @@ rl_bytes() {  # <logdir>
   case "$n" in (*[!0-9]*|'') echo 0 ;; (*) echo "$n" ;; esac
 }
 
+cmd_prodsim() {  # prodsim [hours] [simMinuteSecs] [scale] - PRODUCTION-SHAPED SOAK of an isolated prod-mode manager
+  # Every other mode isolates ONE production ingredient for minutes. Production is all of them at
+  # once for days: a big DB with backups streaming, a large idle live population, several
+  # long-lived clients with different access patterns (ibackup's server re-adding the same put
+  # jobs every minute, ibackup's fofn watcher polling by rep-group PREFIX, wrstat's walks adding
+  # their own children into a dep group other jobs wait on under datetime< limit groups,
+  # wrstat-ui's hourly empty add, bursty portal runs with KB-long commands behind one limit
+  # group), people with the status page open, cron'd `wr status`, a Go client waiting through a
+  # subscription, an operator changing limits and retrying, and manager restarts. prodsim
+  # (developers/prodsim) drives all of those with harmless commands (psimjob.sh: sleep, hold
+  # some memory, print, sometimes fail) against an isolated PROD-mode manager with pprof on, and
+  # samples its RSS, goroutines, heap, fds, DB size and every client call's latency.
+  #
+  # Time is compressed: one simulated minute takes simMinuteSecs real seconds (default 6, so 10x),
+  # and job run times shrink with it (floor 1s). Counts are not compressed (scale multiplies them).
+  #
+  # Isolation: the run writes its own config dir ($out/config) once, so no other wrdev.sh
+  # invocation can move its ports or managerdir mid-run, and it runs from $out/work, so no
+  # ./.wr_config*.yml applies. Before every manager start and stop, assert_isolated checks that wr
+  # resolves --deployment production to this isolated manager (PROD_PORT, PROD_WEB, PROD_RUN), so
+  # an env var or ~/.wr_config*.yml can never aim it at a real deployment. Its LSF jobs are
+  # ${PROD_JOB_PREFIX}*, and cleanup (on any exit, including Ctrl-C) stops prodsim, the restarter
+  # and our manager and bkills only that prefix. Do not edit this file while a run is using it.
+  #
+  # Env: WRDEV_PRODSIM_DB=<file> starts from a COPY of that DB (eg. the 7.4GB aslfixture.db, for
+  #      production's DB size, freelist and backup cost; its live jobs stay blocked);
+  #      WRDEV_PRODSIM_SCHED=lsf|local (default lsf); WRDEV_PRODSIM_PPROF (default 6072);
+  #      WRDEV_PRODSIM_RESTART_MIN=<real minutes> restarts the manager that often (0 = never);
+  #      WRDEV_PRODSIM_ARGS extra prodsim flags (eg. "-portal-jobs 20000 -portal-limit 150");
+  #      WRDEV_PRODSIM_KEEP_DB=1 keeps the working DB afterwards.
+  # Output: $WRDEV_ROOT/prodsim-<epoch>/{calls,samples,events,restarts}.tsv, profiles/,
+  # manager.log copy and report.txt (prodsim -report). Exit 0 unless the run could not be started
+  # or measured; the verdict is the report, read by a person: this soak FINDS problems, it is not
+  # a gate.
+  need_repo; need_bin
+  local hours="${1:-2}" simmin="${2:-6}" scale="${3:-1}"
+  local sched="${WRDEV_PRODSIM_SCHED:-lsf}" pp="${WRDEV_PRODSIM_PPROF:-6072}"
+  local restartmin="${WRDEV_PRODSIM_RESTART_MIN:-0}"
+  case "$PROD_JOBTOKEN" in (*[!A-Za-z0-9]*|'') die "PROD_JOBTOKEN must be letters and digits only" ;; esac
+  case "$restartmin" in (*[!0-9]*|'') die "WRDEV_PRODSIM_RESTART_MIN must be a whole number" ;; esac
+  local out; out="$WRDEV_ROOT/prodsim-$(date +%s)"
+  local work="$out/work" bin="$out/prodsim" job="$out/psimjob.sh"
+  mkdir -p "$work" || die "could not make $work"
+  cd "$work" || die "could not cd to $work"
+  private_config "$out/config"
+  assert_isolated production "$PROD_PORT" "$PROD_WEB" "$PROD_RUN"
+  go -C "$REPO" build -o "$bin" ./developers/prodsim || die "could not build prodsim"
+  cp -f "$REPO/developers/prodsim/psimjob.sh" "$job" && chmod 755 "$job" || die "could not copy psimjob.sh"
+  osunset
+  PS_OUT="$out" PS_SCHED="$sched" PS_PP="$pp" PS_SIMPID="" PS_RESTARTER="" PS_CLEANED=0
+  trap 'prodsim_cleanup' EXIT
+  trap 'exit 130' INT TERM
+  safe_kill "$(mgr_pid "$PROD_RUN")" >/dev/null 2>&1; sleep 2
+  port_free "$pp"
+  rm -rf "$PROD_RUN" 2>/dev/null; mkdir -p "$PROD_RUN"
+  if [ -n "${WRDEV_PRODSIM_DB:-}" ]; then
+    echo "copying ${WRDEV_PRODSIM_DB} -> $PROD_RUN/db"
+    cp -f "$WRDEV_PRODSIM_DB" "$PROD_RUN/db" || die "could not copy $WRDEV_PRODSIM_DB"
+  fi
+  echo "prodsim: ${hours}h real, 1 sim minute = ${simmin}s, scale $scale, scheduler $sched, pprof :$pp"
+  echo "  isolated prod-mode manager :$PROD_PORT web :$PROD_WEB, LSF jobs ${PROD_JOB_PREFIX}*, output $out"
+  prodsim_start_manager || die "manager did not start; see $out/manager-start.out"
+  # shellcheck disable=SC2086 # deliberate word-splitting of WRDEV_PRODSIM_ARGS
+  "$bin" -wr "$WR" -job "$job" -workdir "$work" -out "$out" -queue "$QUEUE" -rundir "$PROD_RUN" \
+    -web "localhost:$PROD_WEB" -pprof "localhost:$pp" -duration "${hours}h" -simminute "${simmin}s" \
+    -scale "$scale" ${WRDEV_PRODSIM_ARGS:-} > "$out/prodsim.out" 2>&1 &
+  PS_SIMPID=$!
+  if [ "$restartmin" -gt 0 ]; then
+    ( trap - EXIT INT TERM
+      while sleep $(( restartmin * 60 )); do
+        kill -0 "$PS_SIMPID" 2>/dev/null || exit 0
+        prodsim_restart
+      done ) &
+    PS_RESTARTER=$!
+  fi
+  local t0 n=0 rc; t0=$(date +%s)
+  while kill -0 "$PS_SIMPID" 2>/dev/null; do
+    sleep 10; n=$(( n + 1 )); [ $(( n % 30 )) -eq 0 ] || continue
+    echo "t+$(( ($(date +%s)-t0)/60 ))m $(tail -1 "$out/samples.tsv" 2>/dev/null | awk -F'\t' '{print "rss="$3"MB goroutines="$7" heap="$8"MB fds="$6" db="$10"MB ping="$13"ms submitted="$14}')"
+  done
+  wait "$PS_SIMPID"; rc=$?
+  PS_SIMPID=""
+  prodsim_cleanup
+  "$bin" -report "$out" > "$out/report.txt" 2>&1
+  cat "$out/report.txt"
+  [ "$rc" -eq 0 ] || { echo "FAIL: prodsim exited $rc; see $out/prodsim.out"; return 1; }
+  [ "$(wc -l < "$out/samples.tsv" 2>/dev/null || echo 0)" -gt 1 ] \
+    || { echo "FAIL: nothing was sampled; see $out/prodsim.out"; return 1; }
+}
+
+prodsim_start_manager() {  # (re)start the isolated prod-mode manager for prodsim with pprof on
+  assert_isolated production "$PROD_PORT" "$PROD_WEB" "$PROD_RUN"
+  local dbg=""; [ "${WRDEV_DEBUG:-0}" = "1" ] && dbg="--debug"
+  local t0 rc pid; t0=$(date +%s%3N)
+  # shellcheck disable=SC2086 # deliberate word-splitting of the optional --debug flag
+  osunset; env WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" WR_PPROF_ADDR="localhost:$PS_PP" timeout 1800 "$WR" manager start \
+    --deployment production -s "$PS_SCHED" $dbg >> "$PS_OUT/manager-start.out" 2>&1
+  rc=$?; pid=$(mgr_pid "$PROD_RUN")
+  echo "$(date +%s)	start	rc=$rc	pid=$pid	ms=$(( $(date +%s%3N) - t0 ))" >> "$PS_OUT/restarts.tsv"
+  [ "$rc" -eq 0 ] && [ -n "$pid" ] && is_ours "$pid"
+}
+
+prodsim_restart() {  # graceful stop (bounded), falling back to a kill, then start again on the same DB
+  # wr manager stop stops whichever manager the config names, so check it is ours first
+  assert_isolated production "$PROD_PORT" "$PROD_WEB" "$PROD_RUN"
+  local pid t0 rc="skipped"; pid=$(mgr_pid "$PROD_RUN"); t0=$(date +%s%3N)
+  # wr manager stop SIGTERMs whatever pid the pid file names, unverified; if our manager died
+  # and its pid was reused, that could be anyone's process, so only stop a pid running our binary
+  if [ -n "$pid" ] && is_ours "$pid"; then
+    osunset; timeout 600 "$WR" manager stop --deployment production > /dev/null 2>&1
+    rc=$?
+  fi
+  if [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1; then safe_kill "$pid" >/dev/null; rc="killed"; fi
+  cp -f "$PROD_RUN/log" "$PS_OUT/manager.log.$(date +%s)" 2>/dev/null
+  echo "$(date +%s)	stop	rc=$rc	pid=$pid	ms=$(( $(date +%s%3N) - t0 ))" >> "$PS_OUT/restarts.tsv"
+  prodsim_start_manager
+}
+
+prodsim_cleanup() {  # idempotent: stop the restarter, prodsim, our manager, and OUR LSF namespace only
+  [ "${PS_CLEANED:-0}" = "1" ] && return 0
+  PS_CLEANED=1
+  echo "## prodsim CLEANUP"
+  # only signal a pid that is still this shell's child, never one reused after it exited
+  our_child() { [ -n "$1" ] && [ "$(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ')" = "$$" ]; }
+  if our_child "${PS_RESTARTER:-}"; then
+    # freeze it first so it cannot start a manager between losing its children and dying
+    kill -STOP "$PS_RESTARTER" 2>/dev/null
+    pkill -TERM -P "$PS_RESTARTER" 2>/dev/null
+    kill -KILL "$PS_RESTARTER" 2>/dev/null
+    wait "$PS_RESTARTER" 2>/dev/null
+  fi
+  if our_child "${PS_SIMPID:-}" && kill -TERM "$PS_SIMPID" 2>/dev/null; then
+    local i; for i in $(seq 1 30); do kill -0 "$PS_SIMPID" 2>/dev/null || break; sleep 1; done
+    our_child "$PS_SIMPID" && kill -KILL "$PS_SIMPID" 2>/dev/null
+  fi
+  cp -f "$PROD_RUN/log" "$PS_OUT/manager.log" 2>/dev/null
+  # a restart the restarter was part-way through may still bring a manager up
+  local pid; for _ in 1 2 3; do
+    pid=$(mgr_pid "$PROD_RUN"); [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1 && safe_kill "$pid" >/dev/null 2>&1
+    sleep 2
+  done
+  prodsim_reap_local
+  # SAFE: only the namespaced jobs of our own isolated manager; NEVER a real production wrp_*
+  case "$PROD_JOB_PREFIX" in
+    (wrp[A-Za-z0-9]*_) ;;
+    (*) echo "  refusing to bkill by pattern '$PROD_JOB_PREFIX*'; kill this run's LSF jobs by jobid"; return 1 ;;
+  esac
+  timeout 60 bkill -J "${PROD_JOB_PREFIX}*" 0 >/dev/null 2>&1
+  sleep 5
+  timeout 60 bjobs -J "${PROD_JOB_PREFIX}*" -o jobid -noheader 2>/dev/null | sort -u \
+    | while read -r j; do timeout 30 bkill -r "$j" >/dev/null 2>&1; done
+  local left
+  for _ in $(seq 1 12); do
+    left=$(timeout 60 bjobs -J "${PROD_JOB_PREFIX}*" -o stat -noheader 2>/dev/null | wc -l)
+    [ "${left:-0}" -eq 0 ] && break
+    sleep 10
+  done
+  echo "  our manager stopped; ${PROD_JOB_PREFIX}* jobs left in LSF: ${left:-0}"
+  if [ "${WRDEV_PRODSIM_KEEP_DB:-0}" != "1" ]; then
+    rm -f "$PROD_RUN/db" "$PROD_RUN/db_bk"* 2>/dev/null
+    echo "  removed the working DB; outputs kept in ${PS_OUT:-?}"
+  fi
+}
+
+# prodsim_reap_local kills what the local scheduler left running for this run once its manager
+# is gone: this user's runners of OUR isolated binary whose --server is our isolated port, and
+# the psimjob.sh commands of this run (its own copy in $PS_OUT, so no other run's). LSF runs
+# have none; their runners go with the bkill.
+prodsim_reap_local() {
+  local list p n=0; list=$(ps -ww -u "$(id -un)" -o pid=,args= 2>/dev/null)
+  for p in $(printf '%s\n' "$list" | awk -v wr="$WR" -v port=":$PROD_PORT" -v job="${PS_OUT:-/nonexistent}/psimjob.sh" '
+      $2 == wr && $3 == "runner" { for (i = 4; i < NF; i++) if ($i == "--server" && substr($(i+1), length($(i+1)) - length(port) + 1) == port) { print $1; next } }
+      $2 == "bash" && $3 == job { print $1 }'); do
+    kill -9 "$p" 2>/dev/null && n=$(( n + 1 ))
+  done
+  echo "  killed $n leftover local runner/job processes"
+}
+
 cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (preserves DB across restart); WRDEV_DEBUG=1 adds --debug
   need_bin; ensure_config
   local sched="${1:-local}"
@@ -4321,6 +4552,101 @@ cmd_crash_recovery() {  # end-to-end Idea-1 crash-recovery on an isolated prod-m
   [ -n "$jid" ] && timeout 30 bkill "$jid" >/dev/null 2>&1  # exact jobid only, never 'wrp_*'
   safe_kill "$(mgr_pid "$PROD_RUN")"
   return "$verdict"
+}
+
+cmd_remap_stall_check() {  # remap-stall-check [backupSecs] - prodsim FINDING 2: backup read tx + mmap growth
+  # prodsim FINDING 2 (.docs/bugfixes/260927-prodsim-findings.md, fixed by #632): the periodic
+  # backup copies the DB inside one bolt read transaction; a commit that grows the file past
+  # bbolt's mmap size then waits in db.mmap for that transaction with the write lock held, and
+  # every new read queues behind it, so every DB read and write stalls for the rest of the copy
+  # (soak: 583 slow requests in one minute, up to 64.6s, the moment the 7GB DB crossed 7168MiB).
+  # FAILS on develop until #632 merges; with #632 the manager maps its DB with headroom, so the
+  # same writes no longer cross the mapping.
+  #
+  # In-process, farm-safe: TestProdsimBackupRemapStall drives wr's own initDB and
+  # backupToBackupFile, with the copy slowed to backupSecs, on a DB in $WRDEV_ROOT (NFS, as
+  # production). PASS = a trivial read stays under half the copy's length even when writes cross
+  # the default mapping; FAIL = it waits for the copy (pre-fix: 6.5s of an 8s copy), or nothing
+  # was measured. #632's untagged TestDBBackupRemap is the deterministic gate; this measures how
+  # long the stall is on a real filesystem at a production-like copy pace.
+  need_repo
+  local secs="${1:-8}" dir="$WRDEV_ROOT/remapcheck" out="$WRDEV_ROOT/remap-stall-check.out" rc
+  mkdir -p "$dir" || die "could not make $dir"
+  WR_PRODSIM_REMAP_DIR="$dir" WR_PRODSIM_REMAP_BACKUP_SECS="$secs" \
+    go -C "$REPO" test -tags reliability_repro ./jobqueue/ -run '^TestProdsimBackupRemapStall$' -count=1 -v \
+    -timeout 30m > "$out" 2>&1
+  rc=$?
+  grep -a 'PRODSIM-REMAP' "$out"
+  rm -rf "$dir"
+  if ! grep -aq 'PRODSIM-REMAP crossesMmap=true' "$out"; then echo "FAIL: nothing measured; see $out"; return 1; fi
+  [ "$rc" -eq 0 ] && { echo "PASS"; return 0; }
+  echo "FAIL: reads waited for the backup copy once a write crossed the mmap size"; return 1
+}
+
+cmd_retention_check() {  # retention-check [rounds] [jobs] [cmdKB] [pprofPort] - archived jobs must be garbage
+  # prodsim FINDING 1 (.docs/bugfixes/260927-prodsim-findings.md, fixed by #633): a job that has
+  # been archived must not stay in the manager's heap. queue.subQueue.Pop truncated the heap
+  # slice without clearing the slot it popped, so every *Item that ever passed through a
+  # ready/run/delay sub-queue stayed reachable from that slice's backing array - and with it its
+  # *Job, Cmd, env and all. The ready sub-queue kept one such slice PER RESERVE GROUP and never
+  # deleted a group, so what was retained was the peak population of every reserve group the
+  # manager had ever seen: flat for a workload that reuses its groups, but growing without bound
+  # for one that keeps making new ones, as wrstat does (a fresh datetime< limit group every run).
+  # In the 4h prodsim soak 524MB of 21KB portal commands (~24.7k archived jobs) were still in the
+  # heap after the whole burst had completed. FAILS on develop until #633 merges.
+  #
+  # Farm-safe: an isolated DEV manager on the LOCAL scheduler, with a config dir of its own;
+  # commands are `true` with a cmdKB-long comment. Each round adds `jobs` jobs under a limit group
+  # of their own (datetime<2030-..., never limiting), waits until nothing is live and all of them
+  # are complete, forces a GC through pprof and reads HeapInuse. PASS = the heap after the last
+  # round is within WRDEV_RC_MAX_GROWTH_MB (default 32) of the heap after round 1, ie. archived
+  # jobs are garbage; FAIL = it grew with the rounds (pre-fix: +24MB per 1000 20KB jobs, linear),
+  # OR nothing was measured (no heap figure, jobs not added or never completed). #633's untagged
+  # queue and jobqueue retention tests are the unit-level gates.
+  need_bin
+  local rounds="${1:-6}" n="${2:-1000}" kb="${3:-20}" pp="${4:-6074}"
+  local maxgrowth="${WRDEV_RC_MAX_GROWTH_MB:-32}" dir="$WRDEV_ROOT/retention-check"
+  rm -rf "$dir"; mkdir -p "$dir" || die "could not make $dir"
+  cd "$dir" || die "could not cd to $dir"
+  private_config "$dir/config"
+  assert_isolated development "$DEV_PORT" "$DEV_WEB" "$DEV_RUN"
+  echo "retention-check: $rounds rounds x $n jobs with ${kb}KB commands, each round under its own limit group"
+  safe_kill "$(mgr_pid "$DEV_RUN")" >/dev/null 2>&1; sleep 1
+  port_free "$pp"
+  rm -rf "$DEV_RUN" 2>/dev/null
+  trap 'safe_kill "$(mgr_pid "$DEV_RUN")" >/dev/null 2>&1' EXIT
+  trap 'exit 130' INT TERM
+  osunset; WR_PPROF_ADDR="localhost:$pp" timeout 90 "$WR" manager start --deployment development -s local >/dev/null 2>&1
+  local pid; pid=$(mgr_pid "$DEV_RUN")
+  { [ -n "$pid" ] && is_ours "$pid"; } || die "could not start the dev manager"
+  local pad; pad=$(head -c $(( kb * 1024 )) /dev/zero | tr '\0' 'x')
+  rc_heap() { timeout 60 curl -s "http://localhost:$pp/debug/pprof/heap?gc=1&debug=1" | awk '/^# HeapInuse = /{printf "%d", $4/1048576}'; }
+  rc_counts() { timeout 60 "$WR" status --deployment development -o counts "$@" 2>/dev/null; }
+  rc_live() { rc_counts | awk '/^(running|ready|dependent|delayed|lost contact):/{s+=$NF} END{print s+0}'; }
+  local r i first="" last="" h lg t0 done_n
+  for r in $(seq 1 "$rounds"); do
+    lg="datetime<2030-01-01 00:00:$(printf %02d "$r")"
+    for i in $(seq 1 "$n"); do echo "true rc$r.$i # $pad"; done \
+      | timeout 300 "$WR" add --deployment development -f - -i "rc$r" -r 0 -l "$lg" >/dev/null 2>&1
+    t0=$(date +%s)
+    while [ "$(rc_live)" -ne 0 ]; do
+      [ $(( $(date +%s) - t0 )) -gt 1200 ] && { echo "FAIL: round $r never finished"; return 1; }
+      sleep 3
+    done
+    done_n=$(rc_counts -i "rc$r" | awk '/^complete:/{print $NF}')
+    [ "${done_n:-0}" -eq "$n" ] || { echo "FAIL: round $r completed ${done_n:-0} of $n jobs"; return 1; }
+    sleep 3
+    h=$(rc_heap)
+    echo "  round $r: live=0 complete=$done_n heapInuseMB=${h:-?}"
+    [ -z "$h" ] && { echo "FAIL: no heap measurement (pprof on :$pp?)"; return 1; }
+    [ -z "$first" ] && first=$h
+    last=$h
+  done
+  local growth=$(( last - first ))
+  echo "RETENTION rounds=$rounds jobsPerRound=$n cmdKB=$kb firstMB=$first lastMB=$last growthMB=$growth bound=$maxgrowth"
+  if [ "$growth" -le "$maxgrowth" ]; then echo "PASS: archived jobs are garbage"; return 0; fi
+  echo "FAIL: the heap grew ${growth}MB over $(( rounds - 1 )) rounds with nothing live - archived jobs are retained"
+  return 1
 }
 
 cmd_dump() {  # dump - start dev manager FOREGROUND, so you can SIGQUIT it for a goroutine dump
@@ -4703,6 +5029,33 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         'completed job'), so the sentinel is present in both. It is the only thing
                         that pins the cmd/runner.go call sites, which no unit test can reach, and
                         the only end-to-end check of the manager log with --debug on, as prod had it.
+  remap-stall-check [backupSecs]
+                        prodsim FINDING 2 (in-process, farm-safe): a write that grows the DB past
+                        bbolt's mmap size while the backup copy holds its read tx must not stall
+                        reads for the rest of the copy (pre-fix: 1ms -> 6.5s of an 8s copy). FAILS
+                        on develop until #632 merges (default backupSecs 8)
+  retention-check [rounds] [jobs] [cmdKB] [pprofPort]
+                        prodsim FINDING 1 (local scheduler, farm-safe): rounds of jobs with
+                        KB-long commands, each round under its own limit group (as wrstat's
+                        datetime< groups are); after each round nothing is live, so a forced-GC
+                        HeapInuse must stay flat. FAIL = it grows with the rounds (pre-fix:
+                        +24MB per 1000 20KB jobs, linear) or nothing was measured. FAILS on
+                        develop until #633 merges
+                        (defaults 6 1000 20 6074; bound WRDEV_RC_MAX_GROWTH_MB=32)
+  prodsim [hours] [simMinuteSecs] [scale]
+                        PRODUCTION-SHAPED SOAK (real LSF by default, harmless commands only): an
+                        isolated PROD-mode manager with pprof on, driven for hours by every kind of
+                        client production has at once - ibackup server re-adds and prefix polls,
+                        wrstat walks that add their own children, portal bursts with KB-long
+                        commands, status page users, wr status pollers, a subscription waiter,
+                        an operator, optional restarts - while its RSS, goroutines, heap, fds,
+                        DB size and per-call latency are sampled and pprof profiles are saved.
+                        Uses a config dir of its own and refuses to start unless wr resolves
+                        --deployment production to :\$PROD_PORT in \$WRDEV_ROOT/.wr-prod_production;
+                        cleanup bkills only ${PROD_JOB_PREFIX}* jobs.
+                        A soak for FINDING problems (read report.txt), not a gate: exits 0
+                        unless it could not run. Env: WRDEV_PRODSIM_DB, _SCHED, _PPROF,
+                        _RESTART_MIN, _ARGS, _KEEP_DB (defaults 2 6 1)
   prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart); WRDEV_DEBUG=1
                         adds --debug, which modes counting confirmed_dead need
   prod-stop             stop the isolated prod-mode manager (verified pid)
@@ -4712,55 +5065,65 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   status                show what is running
 
 Env: WRDEV_ROOT (=$WRDEV_ROOT) DEV_PORT/DEV_WEB PROD_PORT/PROD_WEB QUEUE MEM_GROUPS
-Safety: only kills processes running \$WRDEV_ROOT/wr; only pattern-bkills wrd_ (dev).
-Never touches --deployment production managers or wrp_* jobs.
+Safety: only kills processes running \$WRDEV_ROOT/wr; only pattern-bkills wrd_ (dev) and our
+isolated prod-mode manager's ${PROD_JOB_PREFIX}*. Never touches a real --deployment production
+manager or its wrp_* jobs.
 EOF
 }
 
-case "${1:-help}" in
-  build) cmd_build ;;
-  start) cmd_start "${2:-lsf}" ;;
-  stop) cmd_stop ;;
-  churn) cmd_churn "${2:-40000}" ;;
-  monitor) cmd_monitor "${2:-20000}" ;;
-  probe) cmd_probe "${2:-3}" "${3:-0}" ;;
-  web-burst) cmd_web_burst "${2:-10000}" ;;
-  flicker-check) cmd_flicker_check "${2:-}" ;;
-  status-seed-overlap) cmd_status_seed_overlap "${2:-120}" "${3:-20000}" ;;
-  overprovision-check) cmd_overprovision_check "${2:-2000}" "${3:-50}" "${4:-5000}" ;;
-  overcount-check) cmd_overcount_check "${2:-2000}" "${3:-300}" "${4:-1500}" ;;
-  limit-stall-check) cmd_limit_stall_check "${2:-2000}" "${3:-5000}" ;;
-  priority-fairness-check) cmd_priority_fairness_check "${2:-2000}" "${3:-500}" ;;
-  backlog-rescan-check) cmd_backlog_rescan_check "${2:-2000}" "${3:-50000}" ;;
-  idle-backlog-cpu) cmd_idle_backlog_cpu "${2:-50000}" "${3:-25}" "${4:-6063}" ;;
-  bkill-hygiene) cmd_bkill_hygiene "${2:-1900}" "${3:-120}" ;;
-  control-rpc-history) cmd_control_rpc_history "${2:-200000}" "${3:-20}" "${4:-5000}" ;;
-  dep-granularity-check) cmd_dep_granularity_check "${2:-}" "${3:-}" "${4:-}" ;;
-  runner-started-timeout-check) cmd_runner_started_timeout_check ;;
-  exec-impossible-retries) cmd_exec_impossible_retries "${2:-20}" "${3:-120}" "${4:-2}" ;;
-  transient-start-retries) cmd_transient_start_retries "${2:-20}" "${3:-300}" "${4:-2}" "${5:-2}" ;;
-  ttrmiss-check) cmd_ttrmiss_check "${2:-60}" "${3:-20}" "${4:-1500}" ;;
-  archive-rate) cmd_archive_rate "${2:-660}" "${3:-180}" "${4:-3800}" ;;
-  archive-ceiling) cmd_archive_ceiling "${2:-20}" "${3:-1143}" "${4:-180}" "${5:-2300}" ;;
-  add-storm) cmd_add_storm "${2:-20}" "${3:-700}" "${4:-120}" "${5:-2000}" ;;
-  add-storm-lsf) cmd_add_storm_lsf "${2:-24}" "${3:-120}" "${4:-120}" "${5:-30}" "${6:-1000}" ;;
-  add-storm-fixture) cmd_add_storm_fixture "${2:-20000}" "${3:-5}" "${4:-200}" ;;
-  confirm-dead-leak) cmd_confirm_dead_leak "${2:-40}" "${3:-localhost}" ;;
-  writestorm-freeze) cmd_writestorm_freeze "${2:-100000}" "${3:-8}" ;;
-  report-storm) cmd_report_storm "${2:-5000}" "${3:-200}" "${4:-2000}" "${5:-120}" ;;
-  report-storm-profile) cmd_report_storm_profile "${2:-50000}" "${3:-1000}" "${4:-2000}" "${5:-240}" ;;
-  report-storm-lsf) cmd_report_storm_lsf "${2:-100000}" "${3:-2000}" "${4:-1}" ;;
-  unsuspend-burst) cmd_unsuspend_burst "${2:-100000}" "${3:-6062}" ;;
-  limit-drain) cmd_limit_drain "${2:-60000}" "${3:-2000}" "${4:-30}" "${5:-0}" ;;
-  backup-stall-check) cmd_backup_stall_check "${2:-8}" "${3:-8000}" "${4:-2000}" "${5:-30}" "${6:-2100000}" "${7:-2}" ;;
-  backup-stall-fast) cmd_backup_stall_fast "${2:-50}" "${3:-180}" "${4:-100}" ;;
-  runner-log-bytes) cmd_runner_log_bytes "${2:-30}" "${3:-180}" "${4:-2}" "${5:-20}" ;;
-  prod-start) cmd_prod_start "${2:-local}" ;;
-  prod-stop) cmd_prod_stop ;;
-  crash-recovery) cmd_crash_recovery ;;
-  dump) cmd_dump "${2:-lsf}" ;;
-  clean) cmd_clean ;;
-  status) cmd_status ;;
-  help|-h|--help) usage ;;
-  *) usage; exit 1 ;;
-esac
+main() {
+  case "${1:-help}" in
+    build) cmd_build ;;
+    start) cmd_start "${2:-lsf}" ;;
+    stop) cmd_stop ;;
+    churn) cmd_churn "${2:-40000}" ;;
+    monitor) cmd_monitor "${2:-20000}" ;;
+    probe) cmd_probe "${2:-3}" "${3:-0}" ;;
+    web-burst) cmd_web_burst "${2:-10000}" ;;
+    flicker-check) cmd_flicker_check "${2:-}" ;;
+    status-seed-overlap) cmd_status_seed_overlap "${2:-120}" "${3:-20000}" ;;
+    overprovision-check) cmd_overprovision_check "${2:-2000}" "${3:-50}" "${4:-5000}" ;;
+    overcount-check) cmd_overcount_check "${2:-2000}" "${3:-300}" "${4:-1500}" ;;
+    limit-stall-check) cmd_limit_stall_check "${2:-2000}" "${3:-5000}" ;;
+    priority-fairness-check) cmd_priority_fairness_check "${2:-2000}" "${3:-500}" ;;
+    backlog-rescan-check) cmd_backlog_rescan_check "${2:-2000}" "${3:-50000}" ;;
+    idle-backlog-cpu) cmd_idle_backlog_cpu "${2:-50000}" "${3:-25}" "${4:-6063}" ;;
+    bkill-hygiene) cmd_bkill_hygiene "${2:-1900}" "${3:-120}" ;;
+    control-rpc-history) cmd_control_rpc_history "${2:-200000}" "${3:-20}" "${4:-5000}" ;;
+    dep-granularity-check) cmd_dep_granularity_check "${2:-}" "${3:-}" "${4:-}" ;;
+    runner-started-timeout-check) cmd_runner_started_timeout_check ;;
+    exec-impossible-retries) cmd_exec_impossible_retries "${2:-20}" "${3:-120}" "${4:-2}" ;;
+    transient-start-retries) cmd_transient_start_retries "${2:-20}" "${3:-300}" "${4:-2}" "${5:-2}" ;;
+    ttrmiss-check) cmd_ttrmiss_check "${2:-60}" "${3:-20}" "${4:-1500}" ;;
+    archive-rate) cmd_archive_rate "${2:-660}" "${3:-180}" "${4:-3800}" ;;
+    archive-ceiling) cmd_archive_ceiling "${2:-20}" "${3:-1143}" "${4:-180}" "${5:-2300}" ;;
+    add-storm) cmd_add_storm "${2:-20}" "${3:-700}" "${4:-120}" "${5:-2000}" ;;
+    add-storm-lsf) cmd_add_storm_lsf "${2:-24}" "${3:-120}" "${4:-120}" "${5:-30}" "${6:-1000}" ;;
+    add-storm-fixture) cmd_add_storm_fixture "${2:-20000}" "${3:-5}" "${4:-200}" ;;
+    confirm-dead-leak) cmd_confirm_dead_leak "${2:-40}" "${3:-localhost}" ;;
+    writestorm-freeze) cmd_writestorm_freeze "${2:-100000}" "${3:-8}" ;;
+    report-storm) cmd_report_storm "${2:-5000}" "${3:-200}" "${4:-2000}" "${5:-120}" ;;
+    report-storm-profile) cmd_report_storm_profile "${2:-50000}" "${3:-1000}" "${4:-2000}" "${5:-240}" ;;
+    report-storm-lsf) cmd_report_storm_lsf "${2:-100000}" "${3:-2000}" "${4:-1}" ;;
+    unsuspend-burst) cmd_unsuspend_burst "${2:-100000}" "${3:-6062}" ;;
+    limit-drain) cmd_limit_drain "${2:-60000}" "${3:-2000}" "${4:-30}" "${5:-0}" ;;
+    backup-stall-check) cmd_backup_stall_check "${2:-8}" "${3:-8000}" "${4:-2000}" "${5:-30}" "${6:-2100000}" "${7:-2}" ;;
+    backup-stall-fast) cmd_backup_stall_fast "${2:-50}" "${3:-180}" "${4:-100}" ;;
+    runner-log-bytes) cmd_runner_log_bytes "${2:-30}" "${3:-180}" "${4:-2}" "${5:-20}" ;;
+    remap-stall-check) cmd_remap_stall_check "${2:-8}" ;;
+    retention-check) cmd_retention_check "${2:-6}" "${3:-1000}" "${4:-20}" "${5:-6074}" ;;
+    prodsim) cmd_prodsim "${2:-2}" "${3:-6}" "${4:-1}" ;;
+    prod-start) cmd_prod_start "${2:-local}" ;;
+    prod-stop) cmd_prod_stop ;;
+    crash-recovery) cmd_crash_recovery ;;
+    dump) cmd_dump "${2:-lsf}" ;;
+    clean) cmd_clean ;;
+    status) cmd_status ;;
+    help|-h|--help) usage ;;
+    *) usage; exit 1 ;;
+  esac
+}
+
+# main runs from one line, and exits on that line, so bash never reads further into this file
+# after a mode returns: editing the file while a mode runs cannot run stray lines.
+main "$@"; exit $?
