@@ -39,6 +39,8 @@ package jobqueue
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"runtime"
@@ -469,16 +471,19 @@ func dbStartProbeFadvise(t *testing.T, path string, chunk int64) {
 }
 
 // dbStartProbeParallelDecode decodes the live bucket in n key ranges at once.
+// Each range gets its own read transaction, since a bbolt Tx and the cursors
+// made from it are not safe for concurrent use.
 func dbStartProbeParallelDecode(t *testing.T, d *db, n int) []*Job {
 	t.Helper()
 
 	parts := make([][]*Job, n)
+	errs := make([]error, n)
 
-	err := d.bolt.View(func(tx *bolt.Tx) error {
-		var wg sync.WaitGroup
+	var wg sync.WaitGroup
 
-		for i := range n {
-			wg.Go(func() {
+	for i := range n {
+		wg.Go(func() {
+			errs[i] = d.bolt.View(func(tx *bolt.Tx) error {
 				c := tx.Bucket(bucketJobsLive).Cursor()
 				start := []byte{byte(i * 256 / n)}
 				end := byte((i + 1) * 256 / n)
@@ -495,19 +500,20 @@ func dbStartProbeParallelDecode(t *testing.T, d *db, n int) []*Job {
 
 					job, errd := d.decodeJob(v)
 					if errd != nil {
-						return
+						return fmt.Errorf("decode %x: %w", k, errd)
 					}
 
 					parts[i] = append(parts[i], job)
 				}
+
+				return nil
 			})
-		}
+		})
+	}
 
-		wg.Wait()
+	wg.Wait()
 
-		return nil
-	})
-	if err != nil {
+	if err := errors.Join(errs...); err != nil {
 		t.Fatal(err)
 	}
 
