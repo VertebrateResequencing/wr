@@ -31,11 +31,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/ugorji/go/codec"
+	bolt "go.etcd.io/bbolt"
 )
 
 // This file covers .docs/bugfixes/260928-reserve-durability.md: a runner starts
@@ -294,4 +298,188 @@ func TestRecoversIntoRun(t *testing.T) {
 		So(recoversIntoRun(&Job{State: JobStateReady}), ShouldBeFalse)
 		So(recoversIntoRun(&Job{State: JobStateDelayed, Host: reserveDurabilityHost, Pid: 1}), ShouldBeFalse)
 	})
+}
+
+// TestReserveDurabilityStalledWrite proves a reservation whose write cannot reach
+// disk is still answered within ReserveWriteWait, well inside the client's request
+// timeout, so the runner gets the job instead of timing out and leaving it
+// reserved to nobody; and that the job then runs once.
+func TestReserveDurabilityStalledWrite(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	const (
+		bound  = 300 * time.Millisecond
+		margin = 2 * time.Second
+
+		// how long the write is stalled: long past bound+margin, so a manager
+		// that waits for the commit answers too late.
+		stall = 5 * time.Second
+	)
+
+	ctx := context.Background()
+
+	Convey("Given a manager whose reservation write is stalled past ReserveWriteWait", t, func() {
+		config, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+		serverConfig.Timings.ReserveWriteWait = bound
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		marker := filepath.Join(t.TempDir(), "runs")
+
+		inserts, _, err := jq.Add([]*Job{{
+			Cmd: "echo run >> " + marker, Cwd: testCwd, RepGroup: reserveDurabilityRepGroup,
+			ReqGroup: reserveDurabilityRepGroup, Requirements: standardReqs,
+		}}, os.Environ(), true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+
+		logs := clog.ToBufferAtLevel("warn")
+
+		defer clog.ToDefault()
+
+		// holding bolt's single write transaction stalls every best-effort drain.
+		holdTx, err := server.db.bolt.Begin(true)
+		So(err, ShouldBeNil)
+
+		released := make(chan struct{})
+		timer := time.AfterFunc(stall, func() {
+			_ = holdTx.Rollback() //nolint:errcheck // releasing the stall
+
+			close(released)
+		})
+
+		start := time.Now()
+		reserved, errr := jq.Reserve(2 * time.Second)
+		elapsed := time.Since(start)
+
+		if timer.Stop() {
+			So(holdTx.Rollback(), ShouldBeNil)
+		} else {
+			<-released
+		}
+
+		So(errr, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+		So(elapsed, ShouldBeGreaterThanOrEqualTo, bound)
+		So(elapsed, ShouldBeLessThan, bound+margin)
+		So(strings.Contains(logs.String(), "reservation not yet recorded on disk"), ShouldBeTrue)
+
+		So(jq.Execute(ctx, reserved, config.RunnerExecShell), ShouldBeNil)
+		So(runCount(marker), ShouldEqual, 1)
+
+		again, errr := jq.Reserve(200 * time.Millisecond)
+		So(errr, ShouldBeNil)
+		So(again, ShouldBeNil)
+	})
+}
+
+// TestBestEffortDrainKeepsArrivalOrder proves that when one drain holds both an
+// exit op and a change for the same job, the job's live record is whichever
+// arrived last. Before, changes were always written first, so a release queued
+// before the next reservation overwrote it, and the job recovered to ready.
+func TestBestEffortDrainKeepsArrivalOrder(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name      string
+		exitFirst bool
+		wantState JobState
+	}{
+		{"a release then a reservation leaves the reservation", true, JobStateReserved},
+		{"a reservation then a release leaves the release", false, JobStateDelayed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database := openReliable4WriteStormDB(t, ctx)
+			defer func() { _ = database.close(ctx) }()
+
+			job := reliable4WSSeedLiveJobs(t, ctx, database, 1)[0]
+
+			// each queue call encodes the job as it is at that moment.
+			queueRelease := func() {
+				job.State = JobStateDelayed
+				queueUnkickedBestEffortExit(t, database, job)
+			}
+
+			queueReservation := func() {
+				job.State = JobStateReserved
+				queueUnkickedBestEffortChange(t, database, job)
+			}
+
+			if tc.exitFirst {
+				queueRelease()
+				queueReservation()
+			} else {
+				queueReservation()
+				queueRelease()
+			}
+
+			database.drainBestEffort(ctx)
+
+			if got := storedLiveJobState(t, database, job.Key()); got != tc.wantState {
+				t.Errorf("live record state is %q, want %q", got, tc.wantState)
+			}
+		})
+	}
+}
+
+// queueUnkickedBestEffortExit queues job's exit op exactly as updateJobAfterExit
+// does, but WITHOUT kicking the writer goroutine, so the caller's own
+// drainBestEffort picks it up in the same batch as anything else queued so.
+func queueUnkickedBestEffortExit(t *testing.T, database *db, job *Job) {
+	t.Helper()
+
+	database.Lock()
+	defer database.Unlock()
+
+	exit, ok := database.snapshotJobExit(context.Background(), job, nil, nil, false)
+	if !ok {
+		t.Fatal("could not snapshot the job's exit")
+	}
+
+	database.updatingAfterJobExit.Add(1)
+
+	database.wgMutex.Lock()
+	defer database.wgMutex.Unlock()
+
+	database.beMu.Lock()
+	defer database.beMu.Unlock()
+
+	database.enqueueExitLocked(exit)
+}
+
+// storedLiveJobState decodes the job stored under key in the live bucket.
+func storedLiveJobState(t *testing.T, database *db, key string) JobState {
+	t.Helper()
+
+	var state JobState
+
+	err := database.bolt.View(func(tx *bolt.Tx) error {
+		job := &Job{}
+		if errd := codec.NewDecoderBytes(tx.Bucket(bucketJobsLive).Get([]byte(key)), database.ch).Decode(job); errd != nil {
+			return errd
+		}
+
+		state = job.State
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("could not read the live job: %v", err)
+	}
+
+	return state
 }

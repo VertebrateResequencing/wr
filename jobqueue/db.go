@@ -176,6 +176,11 @@ var errNewJobsPanic = errors.New("panic while storing new jobs")
 // recover - can never be reported to a waiter as a write that reached disk.
 var errBestEffortWriteAborted = errors.New("best-effort write transaction aborted")
 
+// errDurableWriteWaitExpired is what updateJobAfterChangeDurableWithin returns
+// when its write had not committed by the deadline. The write is still queued
+// and may commit later.
+var errDurableWriteWaitExpired = errors.New("gave up waiting for the write to commit")
+
 // jobExitUpdatePollInterval is how often retrieveJobStd polls for in-progress
 // updateJobAfterExit() calls to complete.
 const jobExitUpdatePollInterval = 10 * time.Millisecond
@@ -256,6 +261,78 @@ var (
 	// can observe that the backup copy is being paced.
 	backupPaceHook func()
 )
+
+// archiveTxObserver, when non-nil, is called at the start of every archive's
+// transactional work with the id of the write transaction it is being applied in
+// and the job key being archived. It is nil in production (a single nil compare
+// per archive) and affects no behaviour: it is INERT observability in the style
+// of Job.derivations, and exists so the reliable4 coalescing tests can count how
+// many SEPARATE write transactions M concurrent archives cost (bolt's Tx.ID is
+// unique per write transaction), which is the invariant the coalescing archive
+// writer exists to hold.
+//
+//nolint:gochecknoglobals // prod-inert test seam, like backupPaceHook above.
+var archiveTxObserver func(txID int, key []byte)
+
+const (
+	// newJobsFoldMaxBytes bounds how many encoded key and value bytes the adds
+	// folded into ONE write transaction may carry. bbolt holds every page a write
+	// transaction dirties in memory until it commits, so an unbounded fold makes
+	// the writer's peak memory a function of how deep the add queue got. That
+	// matters because an add stays on the folded path until storesNeedChunking
+	// splits it, which allows nearly storeBatchGranularity items per bucket, and
+	// production's real jobs carry ~25KB commands: a handful of concurrent
+	// large-but-unchunked adds would dirty gigabytes. It is also self-amplifying,
+	// since a longer commit gives the next fold longer to grow.
+	//
+	// 32MB sits well above the case this writer exists for and well below anything
+	// that threatens the manager. The measured 700-concurrent-single-job-add storm
+	// folds ~1,750 puts of ~1.5KB, about 2.6MB, so that whole storm still commits
+	// in ONE transaction with an order of magnitude of headroom. It is also a
+	// couple of times the ~13.5MB freelist that production's 15GB database rewrites
+	// on every commit, so the fixed per-commit cost cannot come to dominate the
+	// useful bytes a bounded transaction carries: at production's ~25KB commands a
+	// full fold is still ~1,300 jobs.
+	newJobsFoldMaxBytes = 32 * 1024 * 1024
+
+	// newJobsFoldMaxPuts bounds how many Puts those same folded adds may make,
+	// because bytes alone do not bound the work: a lookup-bucket item is a key with
+	// no value at all, so a flood of them costs B+tree splits and rebalances (and a
+	// page dirtied per touched node) while barely moving the byte budget.
+	//
+	// 50,000 is ~20,000 folded single-job adds, each of which is only a couple of
+	// puts, so it is more than an order of magnitude past the 700-client storm: in
+	// practice newJobsFoldMaxBytes governs the large-add case and this bound only
+	// catches a pathological tiny-put flood.
+	newJobsFoldMaxPuts = 50000
+)
+
+// ErrArchivedHistoryTooBig is what a request that asks for complete jobs with no
+// limit gets when the history it matches is too large to materialise. It is a
+// deliberate, operator-visible refusal: the alternative is what production
+// actually did, which was to take the manager's heap from 0.35GB to over 12GB
+// (and, for 2.15M complete jobs, would be over 12GB again through
+// `wr status -o plain`). The message names the way out, since every route to
+// this request has one.
+var ErrArchivedHistoryTooBig = errors.New("too much completed-job history to return at once: " +
+	"re-run with --limit, or a state filter, or -o counts")
+
+// maxArchivedBytesDefault caps how many bytes of encoded archived records ONE
+// request that cannot push its limit down (see newCompleteJobsBudget) will
+// decode. It is a byte budget rather than a job count because archived records
+// vary by three orders of magnitude in size - a job with a 130KB command line
+// costs as much as a hundred ordinary ones - so only bytes bound the heap.
+// Production's 12.1GB excursion came from roughly 3GB of records; at this cap
+// that request is refused instead, while everything that fits (the 154,000-record
+// group the 2026-08-20 validation gate measured is ~230MB) is returned exactly as
+// before.
+const maxArchivedBytesDefault = 256 * 1024 * 1024
+
+// maxArchivedBytes is the live cap. It is a var only so tests can drive it down;
+// nothing in the manager writes it, so it needs no synchronisation.
+//
+//nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
+var maxArchivedBytes = maxArchivedBytesDefault
 
 const (
 	limitGroupUnchanged limitGroupOutcome = iota
@@ -619,6 +696,31 @@ type newJobStore struct {
 	put     sobsdPutter
 }
 
+// beChange is a job's latest queued live-bucket value, with the arrival order
+// (db.beSeq) of the change that queued it.
+type beChange struct {
+	encoded []byte
+	seq     uint64
+}
+
+// lastExitSeqs returns, for each job with an exit op in the batch that also has a
+// change in it, the arrival order of its last exit op.
+func (b beBatch) lastExitSeqs() map[string]uint64 {
+	if len(b.changes) == 0 || len(b.exits) == 0 {
+		return nil
+	}
+
+	last := make(map[string]uint64)
+
+	for i := range b.exits {
+		if _, changed := b.changes[b.exits[i].key]; changed {
+			last[b.exits[i].key] = max(last[b.exits[i].key], b.exits[i].seq)
+		}
+	}
+
+	return last
+}
+
 // pace bounds the backup copy's dirty-page backlog for the bytes written since the
 // last pace. On Linux it starts asynchronous writeback of the just-written range
 // and waits on the previous one (cheap, pipelined, no full-file round-trip);
@@ -694,16 +796,23 @@ func (e jobExitData) shouldRecordHighPeakRAMStat() bool {
 // beBatch is a snapshot of pending best-effort writes, taken by swapBestEffort
 // and persisted by the writer in one transaction.
 type beBatch struct {
-	changes map[string][]byte
+	changes map[string]beChange
 	exits   []jobExitData
 	wgkeys  []string
 	waiters []chan error
 }
 
 // apply writes the batch's coalesced live-bucket changes and its ordered exit ops
-// within tx.
+// within tx. A job's live record ends up as whichever of its change and its exit
+// ops arrived last: a change that arrived before one of the job's exit ops is
+// not written, and an exit op that arrived before the job's change keeps its
+// std and fail-stat effects but does not rewrite the live record. Without this a
+// release queued before the job's next reservation, in the same drain, was
+// written over the reservation, and the job recovered to the ready queue.
 func (b beBatch) apply(tx *bolt.Tx) error {
-	if err := b.applyChanges(tx); err != nil {
+	lastExits := b.lastExitSeqs()
+
+	if err := b.applyChanges(tx, lastExits); err != nil {
 		return err
 	}
 
@@ -713,16 +822,21 @@ func (b beBatch) apply(tx *bolt.Tx) error {
 // applyChanges rewrites each coalesced live job, but only if it is still present,
 // preserving the archive-vs-change race guard: a "started" update must not
 // resurrect a job that a concurrent archiveJob already removed from the live
-// bucket.
-func (b beBatch) applyChanges(tx *bolt.Tx) error {
+// bucket. A change older than one of the job's exit ops in this batch is skipped,
+// since that exit op writes the newer record.
+func (b beBatch) applyChanges(tx *bolt.Tx, lastExits map[string]uint64) error {
 	bjl := tx.Bucket(bucketJobsLive)
 
-	for key, encoded := range b.changes {
+	for key, change := range b.changes {
+		if change.seq < lastExits[key] {
+			continue
+		}
+
 		if bjl.Get([]byte(key)) == nil {
 			continue
 		}
 
-		if err := bjl.Put([]byte(key), encoded); err != nil {
+		if err := bjl.Put([]byte(key), change.encoded); err != nil {
 			return err
 		}
 	}
@@ -731,10 +845,15 @@ func (b beBatch) applyChanges(tx *bolt.Tx) error {
 }
 
 // applyExits runs each exit op's transactional update (live-bucket rewrite, std
-// refresh and fail-stat) in order, preserving every per-op side effect.
+// refresh and fail-stat) in order, preserving every per-op side effect. An exit
+// op older than the job's change in this batch leaves the live record to that
+// change.
 func (b beBatch) applyExits(tx *bolt.Tx) error {
 	for i := range b.exits {
-		if err := b.exits[i].update(tx); err != nil {
+		change, changed := b.changes[b.exits[i].key]
+		writeLive := !changed || b.exits[i].seq > change.seq
+
+		if err := b.exits[i].update(tx, writeLive); err != nil {
 			return err
 		}
 	}
@@ -826,13 +945,14 @@ type db struct {
 	// guards the pending structures below; the writer never takes db.Lock or
 	// db.wgMutex, so enqueuing under those locks can never deadlock against it.
 	beMu         sync.Mutex
-	beChanges    map[string][]byte // key -> latest encoded live value (coalescing, latest-wins)
-	beExits      []jobExitData     // exit ops, applied in order (std/fail-stat side effects, not coalesced)
-	beWGKeys     []string          // db.wg keys to Done once the pending batch is persisted
-	beWaiters    []chan error      // callers blocked until the pending batch is persisted
-	beSignal     chan struct{}     // buffered(1) kick: work is pending
-	beStop       chan struct{}     // closed by close() to stop the writer after a final drain
-	beWriterDone chan struct{}     // closed by the writer when it has fully stopped
+	beChanges    map[string]beChange // key -> latest encoded live value (coalescing, latest-wins)
+	beExits      []jobExitData       // exit ops, applied in order (std/fail-stat side effects, not coalesced)
+	beSeq        uint64              // arrival order of queued changes and exits, across drains
+	beWGKeys     []string            // db.wg keys to Done once the pending batch is persisted
+	beWaiters    []chan error        // callers blocked until the pending batch is persisted
+	beSignal     chan struct{}       // buffered(1) kick: work is pending
+	beStop       chan struct{}       // closed by close() to stop the writer after a final drain
+	beWriterDone chan struct{}       // closed by the writer when it has fully stopped
 	// Archives are SYNCHRONOUS - the client's archive RPC blocks on the outcome -
 	// but they too are persisted by a single long-lived coalescing writer
 	// (archiveWriter), which folds every currently-pending archive into ONE
@@ -1324,7 +1444,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		backupTickerStop:   make(chan struct{}),
 		s3accessor:         accessor,
 		wg:                 waitgroup.New(),
-		beChanges:          make(map[string][]byte),
+		beChanges:          make(map[string]beChange),
 		beSignal:           make(chan struct{}, 1),
 		beStop:             make(chan struct{}),
 		beWriterDone:       make(chan struct{}),
@@ -1541,18 +1661,6 @@ func endTimeSeekKey(cutoff time.Time) []byte {
 	return endTimeToBytes(cutoff.UnixNano())
 }
 
-// archiveTxObserver, when non-nil, is called at the start of every archive's
-// transactional work with the id of the write transaction it is being applied in
-// and the job key being archived. It is nil in production (a single nil compare
-// per archive) and affects no behaviour: it is INERT observability in the style
-// of Job.derivations, and exists so the reliable4 coalescing tests can count how
-// many SEPARATE write transactions M concurrent archives cost (bolt's Tx.ID is
-// unique per write transaction), which is the invariant the coalescing archive
-// writer exists to hold.
-//
-//nolint:gochecknoglobals // prod-inert test seam, like backupPaceHook above.
-var archiveTxObserver func(txID int, key []byte)
-
 // archiveJobTx is the transactional part of archiveJob: it moves the job from
 // the live bucket to the complete bucket, removes its std buckets, records its
 // resource-usage stats, updates its repgroup end time and records the job's end
@@ -1750,7 +1858,7 @@ func (db *db) swapBestEffort() beBatch {
 	defer db.beMu.Unlock()
 
 	batch := beBatch{changes: db.beChanges, exits: db.beExits, wgkeys: db.beWGKeys, waiters: db.beWaiters}
-	db.beChanges = make(map[string][]byte)
+	db.beChanges = make(map[string]beChange)
 	db.beExits = nil
 	db.beWGKeys = nil
 	db.beWaiters = nil
@@ -1900,6 +2008,50 @@ func (db *db) drainArchives(final bool) {
 	db.backupDirty.Store(true)
 }
 
+// enqueueExitLocked adds exit to the pending best-effort batch. Must be called
+// with db.RLock (or Lock), db.wgMutex and db.beMu held.
+func (db *db) enqueueExitLocked(exit jobExitData) {
+	db.beSeq++
+	exit.seq = db.beSeq
+	db.beExits = append(db.beExits, exit)
+	db.beWGKeys = append(db.beWGKeys, db.wg.Add(1))
+}
+
+// updateJobAfterChangeDurableWithin is updateJobAfterChangeDurable, but gives up
+// waiting after wait, returning errDurableWriteWaitExpired. The write stays
+// queued and may still commit; the waiter channel is buffered, so the drain's
+// reply to it never blocks the writer.
+func (db *db) updateJobAfterChangeDurableWithin(job *Job, wait time.Duration) error {
+	waiter := make(chan error, 1)
+
+	if err := db.queueJobChange(job, waiter); err != nil {
+		return err
+	}
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+
+	select {
+	case err := <-waiter:
+		return err
+	case <-timer.C:
+		return errDurableWriteWaitExpired
+	}
+}
+
+// enqueueChangeLocked adds key's latest encoded live value, and waiter if not
+// nil, to the pending best-effort batch. Must be called with db.RLock (or Lock),
+// db.wgMutex and db.beMu held.
+func (db *db) enqueueChangeLocked(key string, encoded []byte, waiter chan error) {
+	db.beSeq++
+	db.beChanges[key] = beChange{encoded: encoded, seq: db.beSeq}
+	db.beWGKeys = append(db.beWGKeys, db.wg.Add(1))
+
+	if waiter != nil {
+		db.beWaiters = append(db.beWaiters, waiter)
+	}
+}
+
 // foldedOp is one caller's pending write, waiting for a coalescing writer to
 // persist it and hand back that caller's own outcome. Both synchronous coalescing
 // writers' ops (archiveOp, newJobsOp) are one.
@@ -2015,39 +2167,6 @@ func (db *db) stopArchiveWriter() {
 	close(db.arStop)
 	<-db.arWriterDone
 }
-
-const (
-	// newJobsFoldMaxBytes bounds how many encoded key and value bytes the adds
-	// folded into ONE write transaction may carry. bbolt holds every page a write
-	// transaction dirties in memory until it commits, so an unbounded fold makes
-	// the writer's peak memory a function of how deep the add queue got. That
-	// matters because an add stays on the folded path until storesNeedChunking
-	// splits it, which allows nearly storeBatchGranularity items per bucket, and
-	// production's real jobs carry ~25KB commands: a handful of concurrent
-	// large-but-unchunked adds would dirty gigabytes. It is also self-amplifying,
-	// since a longer commit gives the next fold longer to grow.
-	//
-	// 32MB sits well above the case this writer exists for and well below anything
-	// that threatens the manager. The measured 700-concurrent-single-job-add storm
-	// folds ~1,750 puts of ~1.5KB, about 2.6MB, so that whole storm still commits
-	// in ONE transaction with an order of magnitude of headroom. It is also a
-	// couple of times the ~13.5MB freelist that production's 15GB database rewrites
-	// on every commit, so the fixed per-commit cost cannot come to dominate the
-	// useful bytes a bounded transaction carries: at production's ~25KB commands a
-	// full fold is still ~1,300 jobs.
-	newJobsFoldMaxBytes = 32 * 1024 * 1024
-
-	// newJobsFoldMaxPuts bounds how many Puts those same folded adds may make,
-	// because bytes alone do not bound the work: a lookup-bucket item is a key with
-	// no value at all, so a flood of them costs B+tree splits and rebalances (and a
-	// page dirtied per touched node) while barely moving the byte budget.
-	//
-	// 50,000 is ~20,000 folded single-job adds, each of which is only a couple of
-	// puts, so it is more than an order of magnitude past the 700-client storm: in
-	// practice newJobsFoldMaxBytes governs the large-add case and this bound only
-	// catches a pathological tiny-put flood.
-	newJobsFoldMaxPuts = 50000
-)
 
 // newJobsOp is one add's prepared bucket stores, waiting for the coalescing new
 // jobs writer to persist them and hand back its own outcome.
@@ -3671,16 +3790,6 @@ func (db *db) spendArchivedBytesByRepGroup(repgroup string, budget *archivedByte
 	})
 }
 
-// ErrArchivedHistoryTooBig is what a request that asks for complete jobs with no
-// limit gets when the history it matches is too large to materialise. It is a
-// deliberate, operator-visible refusal: the alternative is what production
-// actually did, which was to take the manager's heap from 0.35GB to over 12GB
-// (and, for 2.15M complete jobs, would be over 12GB again through
-// `wr status -o plain`). The message names the way out, since every route to
-// this request has one.
-var ErrArchivedHistoryTooBig = errors.New("too much completed-job history to return at once: " +
-	"re-run with --limit, or a state filter, or -o counts")
-
 // isArchivedHistoryTooBig reports whether a getJobsByRepGroup error string is the
 // ErrArchivedHistoryTooBig refusal rather than a genuine failure. spend wraps the
 // sentinel with the numbers that produced it, so it is recognised by its prefix -
@@ -3690,23 +3799,6 @@ var ErrArchivedHistoryTooBig = errors.New("too much completed-job history to ret
 func isArchivedHistoryTooBig(err string) bool {
 	return strings.HasPrefix(err, ErrArchivedHistoryTooBig.Error())
 }
-
-// maxArchivedBytesDefault caps how many bytes of encoded archived records ONE
-// request that cannot push its limit down (see newCompleteJobsBudget) will
-// decode. It is a byte budget rather than a job count because archived records
-// vary by three orders of magnitude in size - a job with a 130KB command line
-// costs as much as a hundred ordinary ones - so only bytes bound the heap.
-// Production's 12.1GB excursion came from roughly 3GB of records; at this cap
-// that request is refused instead, while everything that fits (the 154,000-record
-// group the 2026-08-20 validation gate measured is ~230MB) is returned exactly as
-// before.
-const maxArchivedBytesDefault = 256 * 1024 * 1024
-
-// maxArchivedBytes is the live cap. It is a var only so tests can drive it down;
-// nothing in the manager writes it, so it needs no synchronisation.
-//
-//nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
-var maxArchivedBytes = maxArchivedBytesDefault
 
 // archivedBytesBudget is the byte budget one unbounded archived fetch may spend
 // across all the RepGroups its request matches, spent by
@@ -4177,8 +4269,7 @@ func (db *db) snapshotJobExit(ctx context.Context, job *Job, stdo, stde []byte, 
 // the op is persisted. Must be called with db.Lock and db.wgMutex held.
 func (db *db) launchJobExitUpdate(exit jobExitData) {
 	db.beMu.Lock()
-	db.beExits = append(db.beExits, exit)
-	db.beWGKeys = append(db.beWGKeys, db.wg.Add(1))
+	db.enqueueExitLocked(exit)
 	db.beMu.Unlock()
 
 	db.kickBestEffortWriter()
@@ -4189,6 +4280,7 @@ func (db *db) launchJobExitUpdate(exit jobExitData) {
 type jobExitData struct {
 	key          string
 	encoded      []byte
+	seq          uint64 // arrival order, set when queued (db.beSeq)
 	stdo         []byte
 	stde         []byte
 	exitcode     int
@@ -4202,12 +4294,14 @@ type jobExitData struct {
 }
 
 // update is the transactional part of updateJobAfterExit: it rewrites the live
-// job, refreshes its stored std, and records any resource-based failure stat.
-func (e jobExitData) update(tx *bolt.Tx) error {
+// job (unless writeLive is false, because a newer change for it is being
+// written), refreshes its stored std, and records any resource-based failure
+// stat.
+func (e jobExitData) update(tx *bolt.Tx, writeLive bool) error {
 	key := []byte(e.key)
 
 	bjl := tx.Bucket(bucketJobsLive)
-	if bjl.Get(key) != nil {
+	if writeLive && bjl.Get(key) != nil {
 		if errf := bjl.Put(key, e.encoded); errf != nil {
 			return errf
 		}
@@ -4344,12 +4438,7 @@ func (db *db) queueJobChange(job *Job, waiter chan error) error {
 // be called with db.RLock and db.wgMutex held.
 func (db *db) launchJobChangeUpdate(key, encoded []byte, waiter chan error) {
 	db.beMu.Lock()
-	db.beChanges[string(key)] = encoded
-	db.beWGKeys = append(db.beWGKeys, db.wg.Add(1))
-
-	if waiter != nil {
-		db.beWaiters = append(db.beWaiters, waiter)
-	}
+	db.enqueueChangeLocked(string(key), encoded, waiter)
 	db.beMu.Unlock()
 
 	db.kickBestEffortWriter()

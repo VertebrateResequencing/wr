@@ -374,9 +374,7 @@ func queueUnkickedBestEffortChange(t *testing.T, database *db, job *Job) chan er
 	database.beMu.Lock()
 	defer database.beMu.Unlock()
 
-	database.beChanges[job.Key()] = encoded
-	database.beWGKeys = append(database.beWGKeys, database.wg.Add(1))
-	database.beWaiters = append(database.beWaiters, waiter)
+	database.enqueueChangeLocked(job.Key(), encoded, waiter)
 
 	return waiter
 }

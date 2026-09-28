@@ -230,6 +230,8 @@ var (
 	ServerLostJobCheckTimeout                       = 15 * time.Second
 	ServerLostJobCheckRetryTime                     = 30 * time.Minute
 	ServerLostRunnerBackstop                        = 1 * time.Hour
+	serverReserveWriteWaitMax                       = 10 * time.Second
+	serverReserveWriteWaitFraction                  = 4
 	ServerConfirmDeadConcurrency                    = 16
 	ServerMaximumRunForResourceRecommendation       = 100
 	ServerMinimumScheduledForResourceRecommendation = 10
@@ -479,6 +481,13 @@ type ServerTimings struct {
 	// the same scope as DBBatchDelay.
 	DBBatchSize int
 
+	// ReserveWriteWait bounds how long a reservation waits for its write to reach
+	// disk before the job is handed out anyway (default serverReserveWriteWait()).
+	// It must stay well inside the client's request timeout: a runner that times
+	// out never gets the job it was reserved, which then parks lost. Tests set it
+	// low.
+	ReserveWriteWait time.Duration
+
 	// ShutdownSocketWait is how long shutdown waits, after client handling has
 	// stopped, before closing the command socket, to let in-flight messages
 	// drain (default serverSocketWait). Tests set this low to shut servers down
@@ -508,6 +517,7 @@ func (t ServerTimings) withDefaults() ServerTimings {
 	t.TouchInterval = dfltDuration(t.TouchInterval, ClientTouchInterval)
 	t.RetryWait = dfltDuration(t.RetryWait, ClientRetryWait)
 	t.RetryTime = dfltDuration(t.RetryTime, ClientRetryTime)
+	t.ReserveWriteWait = dfltDuration(t.ReserveWriteWait, serverReserveWriteWait())
 
 	if t.ConfirmDeadConcurrency <= 0 {
 		t.ConfirmDeadConcurrency = ServerConfirmDeadConcurrency
@@ -533,6 +543,13 @@ func (t ServerTimings) withDefaults() ServerTimings {
 }
 
 type subscriptionRequestError string
+
+// serverReserveWriteWait is the default ServerTimings.ReserveWriteWait:
+// serverReserveWriteWaitMax, or a quarter of ClientMinRequestTimeout if that is
+// less, so a reservation is always answered well before its client gives up.
+func serverReserveWriteWait() time.Duration {
+	return min(serverReserveWriteWaitMax, ClientMinRequestTimeout/time.Duration(serverReserveWriteWaitFraction))
+}
 
 func (e subscriptionRequestError) Error() string {
 	return string(e)

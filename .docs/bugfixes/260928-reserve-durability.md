@@ -179,21 +179,6 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
     (reserve and start). That is under 1s at 100ms commits, far inside the
     60s request timeout.
 
-  - Residual risks found in review, not fixed:
-    - A best-effort commit that stalls past the runner's 60s request timeout
-      now fails every reservation in flight. Before, reservations did not wait
-      on the DB at all. The runner that timed out never has the job, but the
-      manager holds it as reserved to that runner. Its TTR lapses, and the
-      runner is still alive, so the job is parked lost until
-      `LostRunnerBackstop`, as in the unreplied case above. Start and archive
-      already stall under such a commit.
-    - `beBatch.apply` applies coalesced changes before exit ops. If one drain
-      holds both the previous run's release (an exit op) and the job's next
-      reservation (a change), the stale release is written last. The job is
-      then recovered to the ready queue, as before this fix. A released job
-      waits at least `ReleaseDelayMin` (30s) before it can be reserved again,
-      so this needs a drain that has been pending for 30s.
-
   - With the fix, the red command passes (`--- PASS: TestReserveDurability
     (7.85s)`), as do `TestReserveDurabilityDeadRunner` and
     `TestRecoversIntoRun`.
@@ -202,3 +187,93 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
     `747 passed · 21 skipped · 31 packages · 4m14s PASSED`;
     `CGO_ENABLED=1 make race` gives
     `747 passed · 20 skipped · 31 packages · 5m4s PASSED`.
+
+- [x] **A best-effort commit stalled past the runner's 60s request timeout
+      would fail every reservation in flight.** Found in review of f5024d51.
+      Before that commit, reservations did not wait on the DB at all. A runner
+      that timed out never has the job, but the manager holds it as reserved to
+      that runner. Its TTR lapses, and the runner is still alive, so the job is
+      parked lost until `LostRunnerBackstop`. Round 1 of the soak saw 41-65s
+      commit stalls. #632 fixed that cause, but others may exist.
+
+  - Red command, all `OS_*` unset:
+
+    ```bash
+    CGO_ENABLED=1 go test -tags netgo --count 1 ./jobqueue -v \
+      -run '^TestReserveDurabilityStalledWrite$'
+    ```
+
+    The test holds bolt's single write transaction, which stalls every drain,
+    for 5s. It sets `ReserveWriteWait` to 300ms and asserts that `Reserve()`
+    returns the job in less than 300ms plus 2s, that the warning is logged, and
+    that the job then runs once. Before the fix (exit status 1):
+
+    ```text
+    Line 372:
+    Expected '5.003087395s' to be less than '2.3s' (but it wasn't)!
+    --- FAIL: TestReserveDurabilityStalledWrite (5.40s)
+    ```
+
+  - Fix:
+    - `jobqueue/server.go`: new `ServerTimings.ReserveWriteWait`. Its default
+      is `serverReserveWriteWait()`, the lesser of 10s and a quarter of
+      `ClientMinRequestTimeout`, so 10s today. Tests set it low.
+    - `jobqueue/db.go`: new `updateJobAfterChangeDurableWithin`. It returns
+      `errDurableWriteWaitExpired` when the wait runs out. The write stays
+      queued, and the waiter channel is buffered, so the drain's later reply
+      never blocks the writer.
+    - `jobqueue/serverCLI.go`: `persistReservation` waits at most
+      `ReserveWriteWait`. When the wait runs out it logs a warning, "reservation
+      not yet recorded on disk, handing the job out anyway; a manager crash
+      before the job's start is recorded may run it twice", and hands the job
+      out. That is the behaviour from before f5024d51, for that one
+      reservation.
+
+- [x] **`beBatch.apply` wrote coalesced changes before exit ops, whatever order
+      they arrived in.** Found in review of f5024d51. If one drain holds both
+      the previous run's release (an exit op) and the job's next reservation (a
+      change), the stale release was written last, and the job recovered to
+      the ready queue, as before the reservation fix. A released job waits at
+      least `ReleaseDelayMin` (30s) before it can be reserved again, so this
+      needed a drain that had been pending for 30s. That is exactly a stalled
+      commit, as in the item above.
+
+  - Red command, all `OS_*` unset:
+
+    ```bash
+    CGO_ENABLED=1 go test -tags netgo --count 1 ./jobqueue -v \
+      -run '^TestBestEffortDrainKeepsArrivalOrder$'
+    ```
+
+    The test queues a release exit and a reservation change for one job, in
+    both orders, without waking the writer. It then drains once on the test
+    goroutine and decodes the live record. Before the fix (exit status 1):
+
+    ```text
+    reserve_durability_test.go:426: live record state is "delayed", want "reserved"
+    --- FAIL: TestBestEffortDrainKeepsArrivalOrder/a_release_then_a_reservation_leaves_the_reservation (0.01s)
+    --- PASS: TestBestEffortDrainKeepsArrivalOrder/a_reservation_then_a_release_leaves_the_release (0.00s)
+    ```
+
+  - Fix, `jobqueue/db.go`: every queued change and exit op gets an arrival
+    number (`db.beSeq`, taken under `beMu`). Changes are kept as `beChange`
+    values that hold it. `beBatch.apply` skips a change that arrived before one
+    of the same job's exit ops in the batch. An exit op that arrived before the
+    job's change still refreshes std and the fail-stat, but no longer rewrites
+    the live record (`jobExitData.update` takes `writeLive`). A job's live
+    record is therefore whichever arrived last. The new `enqueueChangeLocked`
+    and `enqueueExitLocked` are the only places that queue a change or an exit
+    op. `queueUnkickedBestEffortChange` in `start_durability_test.go` now uses
+    the first of them, instead of writing `beChanges` itself.
+
+  - Gates for both items, all `OS_*` unset: `make lint` gives `0 issues.`. The
+    durability, recovery, best-effort and reliable2/3/4 tests pass under
+    `-race`:
+
+    ```bash
+    CGO_ENABLED=1 go test -race -tags netgo --count 1 ./jobqueue -run \
+      'TestReserveDurability|TestRecoversIntoRun|TestBestEffort|TestStartDurability|TestReliable4|TestReliable2|TestReliable3|Recovery|Recovered|WriteStorm|BestEffort'
+    ```
+
+    That gives `ok ... 294.841s`. `make test` gives
+    `749 passed · 21 skipped · 31 packages · 3m23s PASSED`.

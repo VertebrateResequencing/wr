@@ -1092,12 +1092,23 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 // the job is confirmed dead and re-run like any other lost job.
 //
 // Like the start write, this waits for the next coalesced drain, not for a
-// transaction of its own. A failed write is logged and the job still handed out,
-// which is how reservations behaved before this write existed: refusing the
-// reservation would leave the item reserved to a runner that was never given it.
+// transaction of its own, but for no longer than ReserveWriteWait, which is well
+// inside the client's request timeout. A runner that timed out waiting would
+// never get the job, which would stay reserved to it and park lost until
+// LostRunnerBackstop. So a failed or slow write is logged and the job still
+// handed out, which is how reservations behaved before this write existed:
+// refusing the reservation would leave the item reserved to a runner that was
+// never given it. A slow write stays queued and may still commit.
 func (s *Server) persistReservation(ctx context.Context, job *Job) {
-	err := s.db.updateJobAfterChangeDurable(job)
-	if err != nil && !errors.Is(err, errDBClosed) {
+	err := s.db.updateJobAfterChangeDurableWithin(job, s.timings.ReserveWriteWait)
+
+	switch {
+	case err == nil, errors.Is(err, errDBClosed):
+	case errors.Is(err, errDurableWriteWaitExpired):
+		clog.Warn(ctx, "reservation not yet recorded on disk, handing the job out anyway; a manager "+
+			"crash before the job's start is recorded may run it twice",
+			"key", job.Key(), "waited", s.timings.ReserveWriteWait)
+	default:
 		clog.Error(ctx, "could not record a reservation on disk; a manager crash before the job's "+
 			"start is recorded may run it twice", "key", job.Key(), "err", err)
 	}
