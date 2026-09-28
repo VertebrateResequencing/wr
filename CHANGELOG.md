@@ -75,6 +75,16 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- `wr manager stop` no longer sends SIGTERM to an unrelated process when the
+  manager died without removing its pid file (for example after a crash or a
+  reboot) and its pid has since been given to another of your processes. It
+  now signals the pid only if it is a `wr manager start` for the same
+  deployment, and otherwise reports the pid file as stale (or, if it does not
+  hold a valid pid, as invalid). A manager that is
+  running but not responding can still be stopped. `wr manager status` also
+  says `stopped` for such a stale pid file, instead of reporting a
+  non-responsive manager, and `wr cloud teardown` no longer SIGKILLs an
+  unrelated process named by a stale ssh forwarder pid file.
 - The `cleanup` and `cleanup_all` behaviours (`cleanup` is the default
   `--on_exit`) of a lost command could leave empty directories behind in the
   command's `--cwd` and report a warning, when its runner and the manager both
@@ -155,6 +165,30 @@ project adheres to [Semantic Versioning](http://semver.org/).
   asked for, so the manager decided the job was lost, released it, and then
   refused the runner's own report. A runner now keeps the job alive until it
   has reported, and that report buries the job as killed.
+- A long-lived Go client, such as one made by the `client` package's `New` or
+  by `jobqueue.ConnectUsingConfig`, had every request rejected with "bad token"
+  after `wr manager stop` and a new `wr manager start`, until the program using
+  it was restarted. A clean stop deletes the manager's token, so the next
+  manager makes a new one. Such a client now reads the new token from the
+  token file and sends the rejected request once more. A crash or kill of the
+  manager was not affected, since the token is kept then. New
+  `jobqueue.ConnectWithTokenFile` gives the same behaviour to a client that
+  connects with an address and a token file of its own. A client made with
+  `jobqueue.Connect` and a token is unchanged.
+- When you open the status web page, or it reconnects, the manager no longer
+  reads the full details of every completed command in each report group that
+  still has commands to run, just to count them. On a manager with a lot of
+  completed history this made page loads take seconds and used a noticeable
+  share of the manager's CPU. The page shows the same counts as before.
+- The manager no longer logs two normal client actions as errors. An add of no
+  jobs, which a client that polls for work sends when it has nothing new,
+  logged `jobqueue add(): bad request (missing arguments?)`, and every `wr add --sync`,
+  `client` package `SubmitJobsAndWait` or `WaitForJobs` that finished normally
+  logged `jobqueue waitForUpdates(): subscription closed`. Both are now logged
+  only at debug level. Clients see no change: an add of no jobs is still
+  refused with the same error. A wait on an unknown subscription, or an add
+  that is really missing its jobs' environment or requirements, is still
+  logged as an error.
 - A network blip on a `wr add --sync`, a `client` package `WaitForJobs` or any
   other Go client job subscription left a copy of that subscription behind on
   the manager each time the client reconnected, for as long as the manager ran.

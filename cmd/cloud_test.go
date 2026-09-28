@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -229,6 +230,25 @@ func TestCleanupDeployForwardingProcesses(t *testing.T) {
 	})
 }
 
+func TestCheckProcessStalePid(t *testing.T) {
+	Convey("a forwarder pid file naming an unrelated live process is not running, and cleanup spares it", t, func() {
+		dir := t.TempDir()
+		unrelated, unrelatedDone := startTestProcess(t, "sleep", "30")
+		pidPath := filepath.Join(dir, "forwarder.pid")
+
+		So(os.WriteFile(pidPath, []byte(strconv.Itoa(unrelated.Process.Pid)), ownerReadWrite), ShouldBeNil)
+
+		pid, running := checkProcess(pidPath)
+		So(pid, ShouldEqual, unrelated.Process.Pid)
+		So(running, ShouldBeFalse)
+
+		cleanupDeployForwardingProcesses(pidPath)
+
+		So(fileIsMissing(pidPath), ShouldBeTrue)
+		So(processExited(unrelatedDone), ShouldBeFalse)
+	})
+}
+
 func TestHandleManagerConnectFailure(t *testing.T) {
 	const (
 		managerConnectFailureEventLogs     = "logs"
@@ -363,10 +383,23 @@ func TestHandleManagerConnectFailure(t *testing.T) {
 	})
 }
 
+// startTestForwarder starts a process whose argv has the shape of an ssh
+// forwarder that startForwarding() runs (sh keeps its own argv, so the extra
+// arguments are visible in its cmdline), so checkProcess recognises it.
 func startTestForwarder(t *testing.T) (*exec.Cmd, <-chan error) {
 	t.Helper()
 
-	cmd := exec.Command("sleep", "30") //nolint:noctx // test process killed by cleanup under test
+	return startTestProcess(t, "sh", "-c", "sleep 30 & wait", sshForwarderFlags, "1234:0.0.0.0:1234", "user@host")
+}
+
+// startTestProcess starts name with args in its own process group, returning a
+// channel that receives its Wait() result. The whole group is killed when the
+// test ends.
+func startTestProcess(t *testing.T, name string, args ...string) (*exec.Cmd, <-chan error) {
+	t.Helper()
+
+	cmd := exec.Command(name, args...) //nolint:noctx // test process killed by cleanup under test
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	err := cmd.Start()
 	So(err, ShouldBeNil)
 
@@ -380,17 +413,7 @@ func startTestForwarder(t *testing.T) (*exec.Cmd, <-chan error) {
 	}()
 
 	t.Cleanup(func() {
-		if cmd.ProcessState != nil {
-			return
-		}
-
-		if err := cmd.Process.Kill(); err != nil {
-			t.Logf("failed to kill test forwarder pid %d: %s", cmd.Process.Pid, err)
-
-			return
-		}
-
-		<-done
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) //nolint:errcheck
 	})
 
 	return cmd, done

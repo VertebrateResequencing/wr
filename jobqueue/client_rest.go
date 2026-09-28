@@ -107,7 +107,7 @@ func (c *Client) restGet(endpoint string, response any) error {
 		return err
 	}
 
-	req.Header.Set("Authorization", bearerSchema+string(c.token))
+	req.Header.Set("Authorization", bearerSchema+string(c.currentToken()))
 
 	resp, err := c.restHTTPClient().Do(req)
 	if err != nil {

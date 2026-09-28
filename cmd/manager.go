@@ -35,6 +35,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -100,6 +101,10 @@ const (
 var managerStartedLogRegex = regexp.MustCompile(`lvl=info msg="wr manager \S+ started on`)
 
 var errManagerProcessExited = errors.New("manager process exited before becoming ready")
+
+// errStaleManagerPidFile is why `wr manager stop` treats a pid file naming a
+// process that is not a wr manager for this deployment as if it were absent.
+var errStaleManagerPidFile = errors.New("stale manager pid file")
 
 var (
 	managerStartupPollInterval   = 250 * time.Millisecond
@@ -267,6 +272,19 @@ commands they were running. It is more graceful to use 'drain' instead.`,
 		// eventualities we check the pid file first, try and terminate its pid,
 		// then confirm we can't connect
 		pid, err := daemon.ReadPidFile(config.ManagerPidFile)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			warn("the pid file %s is invalid (%s), so it was not signalled", config.ManagerPidFile, err)
+		}
+
+		if err == nil && !isManagerProcess(pid, config.Deployment) {
+			// the manager died without removing its pid file and the kernel
+			// may have given its pid to an unrelated process, which we must
+			// not signal
+			warn("the pid file %s is stale: pid %d is not a running wr manager for the %s deployment, "+
+				"so it was not signalled", config.ManagerPidFile, pid, config.Deployment)
+
+			err = errStaleManagerPidFile
+		}
 
 		var stopped bool
 		if err == nil {
@@ -497,9 +515,11 @@ var managerStatusCmd = &cobra.Command{
 If it's running, find out the status website URL, what scheduler the manager is
 using, and other details about the manager.`,
 	Run: func(_ *cobra.Command, _ []string) {
-		// see if pid file suggests it is supposed to be running
+		// see if pid file suggests it is supposed to be running; a pid file
+		// naming a process that is not a manager for this deployment is stale
+		// and says nothing about whether one is running
 		pid, err := daemon.ReadPidFile(config.ManagerPidFile)
-		if err == nil {
+		if err == nil && isManagerProcess(pid, config.Deployment) {
 			// confirm. connect() either returns a client or die()s, so there is
 			// nothing after this branch to report a startup phase to: during the
 			// startup window it dies reading the token file, which E1 writes only
@@ -1041,11 +1061,7 @@ func monitorManagerStartupProcess(process *os.Process) <-chan error {
 }
 
 func managerDBUpgradeProcessRunning(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-
-	err := syscall.Kill(pid, syscall.Signal(0))
+	err := internal.SignalPid(pid, syscall.Signal(0))
 
 	return err == nil || errors.Is(err, syscall.EPERM)
 }

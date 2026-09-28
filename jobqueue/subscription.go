@@ -342,7 +342,7 @@ func (s *Subscription) updateRequest() *clientRequest {
 	return &clientRequest{
 		Method:         requestMethodWaitForUpdates,
 		SubscriptionID: s.id,
-		Token:          s.client.token,
+		Token:          s.client.currentToken(),
 		ClientID:       s.client.clientid,
 		Timeout:        serverSubscriptionHoldTime,
 	}
@@ -967,7 +967,7 @@ func (c *Client) unsubscribeAfterDialFailure(subscriptionID string, dialErr erro
 }
 
 func (c *Client) reconnect(timeout time.Duration) error {
-	newClient, err := Connect(c.args[0], c.args[1], c.args[2], c.token, timeout)
+	newClient, err := Connect(c.args[0], c.args[1], c.args[2], c.currentToken(), timeout)
 	if err != nil {
 		return err
 	}

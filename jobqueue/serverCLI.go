@@ -578,6 +578,28 @@ func warnIfSlowDecode(ctx context.Context, requestBytes int, start time.Time, de
 		"requestBytes", requestBytes, "err", decodeErr)
 }
 
+// isRoutineClientRefusal reports whether refusing cr with srerr and qerr is the
+// expected outcome of normal client behaviour rather than a failure:
+//
+//   - an add of no jobs, which a client that polls for work to submit sends
+//     whenever it has nothing new. It stays a bad
+//     request to the client, but is only an error when the environment is
+//     also missing.
+//   - a waitForUpdates whose subscription was closed while the long poll was
+//     held, which is how every finished wait ends once the client unsubscribes
+//     (or a reconnect replaces the subscription). An unknown or missing
+//     subscription id is still a failure.
+func isRoutineClientRefusal(cr *clientRequest, srerr, qerr string) bool {
+	switch cr.Method {
+	case requestMethodAdd:
+		return srerr == ErrBadRequest && len(cr.Jobs) == 0 && cr.Env != nil
+	case requestMethodWaitForUpdates:
+		return qerr == errSubscriptionClosed.Error()
+	default:
+		return false
+	}
+}
+
 func (s *Server) subscriptionCatchUpByRepGroup(ctx context.Context, repGroup string) ([]*JobUpdate, error) {
 	records, allTerminal, err := s.subscriptionCatchUpRepGroupRecords(ctx, repGroup)
 	if err != nil {
@@ -697,7 +719,12 @@ func (s *Server) replyError(ctx context.Context, m *mangos.Message, cr *clientRe
 		qerr = srerr
 	}
 
-	return replyBytes, Error{cr.Method, cr.key(), qerr}
+	jqerr := Error{Op: cr.Method, Item: cr.key(), Err: qerr}
+	if isRoutineClientRefusal(cr, srerr, qerr) {
+		return replyBytes, routineClientRequestError{err: jqerr}
+	}
+
+	return replyBytes, jqerr
 }
 
 // handlePing returns server info for a ping request.
