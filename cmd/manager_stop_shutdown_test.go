@@ -201,6 +201,36 @@ func TestManagerStopWhileShuttingDown(t *testing.T) {
 				return err == nil && strings.Contains(string(helperLog), "already shutting down")
 			}), ShouldBeTrue)
 		})
+
+		Convey("an interrupt, as from pressing Ctrl-C again in the foreground, makes it exit at once", func() {
+			So(syscall.Kill(manager.cmd.Process.Pid, syscall.SIGINT), ShouldBeNil)
+
+			exited, sig := manager.exitedWithin(10 * time.Second)
+			So(exited, ShouldBeTrue)
+			So(sig, ShouldEqual, 0)
+			So(manager.cmd.ProcessState.ExitCode(), ShouldEqual, 128+int(syscall.SIGINT))
+
+			helperLog, err := os.ReadFile(filepath.Join(dir, stopHelperLogFile))
+			So(err, ShouldBeNil)
+			So(string(helperLog), ShouldContainSubstring, "interrupted while shutting down")
+		})
+	})
+}
+
+func TestDaemonStopWaitAllowsForTheFinalBackup(t *testing.T) {
+	Convey("wr manager stop waits longer for a manager with a larger database", t, func() {
+		setManagerStopTestConfigPidFile(t, "")
+
+		config.ManagerDBFile = filepath.Join(config.ManagerDir, "db")
+
+		So(daemonStopWait(), ShouldEqual, daemonStopGiveup)
+
+		f, err := os.Create(config.ManagerDBFile)
+		So(err, ShouldBeNil)
+		So(f.Truncate(30*daemonStopBackupBytesPerSec), ShouldBeNil)
+		So(f.Close(), ShouldBeNil)
+
+		So(daemonStopWait(), ShouldEqual, daemonStopGiveup+30*time.Second)
 	})
 }
 

@@ -91,14 +91,17 @@ project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Fixed
 - `wr manager stop` no longer says a manager "was gracefully shut down", and
-  no longer deletes its token, when the manager is still running 2 minutes
-  after being asked to stop. It used to send the manager a second SIGTERM,
+  no longer deletes its token, when the manager is still running after the
+  stop gives up waiting for it. It used to send the manager a second SIGTERM,
   which killed it part-way through its shutdown, before it had saved its
   database, and then reported the kill as a graceful stop. It now exits with an
   error saying the manager is still stopping and its token was kept, and how to
-  keep waiting or kill a hung manager. The manager itself now ignores (and
-  logs) further SIGTERMs and SIGINTs while it is shutting down, so running
-  `wr manager stop` again is safe.
+  keep waiting or kill a hung manager. It also waits longer for a manager with
+  a large database, to allow for its final backup: 2 minutes plus a second for
+  every 50MiB, and says after 10 seconds that the manager is still shutting
+  down. The manager itself now ignores (and logs) further SIGTERMs while it is
+  shutting down, so running `wr manager stop` again is safe, while a SIGINT
+  (such as a second Ctrl-C in the foreground) makes it exit at once.
 - A manager being stopped no longer waits for ever for its runners to exit. At
   scale, a single runner still listed as running by LSF kept the manager
   waiting until it was killed, so it never saved its database. It now waits at

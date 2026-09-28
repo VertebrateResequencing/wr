@@ -241,8 +241,8 @@ var (
 	// ServerShutdownRunnerWait is the default ServerTimings.ShutdownRunnerWait:
 	// the most a shutdown waits for its runners to exit before finishing
 	// without them. It is half of the 2 minutes `wr manager stop` waits for the
-	// manager to exit, leaving the other half for the rest of the shutdown,
-	// which includes the final backup of the database.
+	// manager to exit before it adds time for the final backup of the
+	// database, leaving the other half for the rest of the shutdown.
 	ServerShutdownRunnerWait = 60 * time.Second
 
 	// ServerDBBatchDelay is the default DB.MaxBatchDelay applied to the
@@ -3245,12 +3245,22 @@ func logClientRequestError(ctx context.Context, herr error) {
 	clog.Error(ctx, "Server handle client request error", "err", herr)
 }
 
+// exitCodeInterruptedShutdown is the exit code of a manager interrupted while
+// shutting down (see shutdownIgnoringSignals): 128 plus SIGINT's number, as a
+// shell reports a process killed by SIGINT.
+const exitCodeInterruptedShutdown = 128 + int(syscall.SIGINT)
+
 // shutdownIgnoringSignals shuts the server down for reason, logging and ignoring
-// any SIGINT or SIGTERM that arrives before the shutdown is complete, and only
-// then stops handling them. Were they no longer handled, such a signal would
-// have its default action and kill the manager part-way through its shutdown,
-// before its database had been closed; `wr manager stop` run again while an
-// earlier one waits would send one.
+// any SIGTERM that arrives before the shutdown is complete, and only then stops
+// handling signals. Were SIGTERM no longer handled, it would have its default
+// action and kill the manager part-way through its shutdown, before its
+// database had been closed; `wr manager stop` run again while an earlier one
+// waits would send one.
+//
+// A SIGINT during the shutdown, as from pressing Ctrl-C a second time with the
+// manager in the foreground, is an explicit request not to wait, so it makes
+// the process exit at once, and the next start recovers as it would after a
+// crash. `wr manager stop` never sends SIGINT.
 func (s *Server) shutdownIgnoringSignals(ctx context.Context, sigs chan os.Signal, reason string) {
 	shutDown := make(chan struct{})
 	stoppedIgnoring := make(chan struct{})
@@ -3261,7 +3271,14 @@ func (s *Server) shutdownIgnoringSignals(ctx context.Context, sigs chan os.Signa
 		for {
 			select {
 			case sig := <-sigs:
-				clog.Warn(ctx, "manager is already shutting down, so ignored a signal", "signal", sig.String())
+				if sig == os.Interrupt {
+					clog.Warn(ctx, "manager was interrupted while shutting down, so is exiting without "+
+						"finishing its shutdown; the next start will recover as it would after a crash")
+					os.Exit(exitCodeInterruptedShutdown)
+				}
+
+				clog.Warn(ctx, "manager is already shutting down, so ignored a signal; interrupt it "+
+					"(SIGINT) or kill it (SIGKILL) to make it exit without finishing", "signal", sig.String())
 			case <-shutDown:
 				return
 			}
