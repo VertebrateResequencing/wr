@@ -1,0 +1,43 @@
+"""Append independently specified opaque-span cases, retaining all 539 originals."""
+import json
+import re
+from pathlib import Path
+
+sentence = 'TODO: describe expected behaviour.'
+cases = []
+
+
+def add(name, value, valid):
+    cases.append({'name': 'description-opaque-' + name, 'kind': 'requirements',
+                  'path': ['text'], 'value': value, 'valid': valid})
+
+
+# Replacing any letter, or inserting inside a word, interrupts the sentence.
+# Adjacent, intact outside sentences must still be rejected in both positions.
+for word in re.finditer('[A-Za-z]+', sentence):
+    for operation, positions in [('replace', range(word.start(), word.end())),
+                                 ('insert', range(word.start() + 1, word.end()))]:
+        for position in positions:
+            for label, opaque in [('double', '"a fixture"'), ('escape', r'\q'),
+                                  ('backtick', '`a fixture`'), ('single', "'a fixture'")]:
+                tail = position + (operation == 'replace')
+                value = sentence[:position] + opaque + sentence[tail:]
+                name = f'{operation}-{position:02d}-{label}'
+                add(name, value, True)
+                add(name + '-outside-before', sentence + ' ' + value, False)
+                add(name + '-outside-after', value + ' ' + sentence, False)
+
+for name, value in [
+        ('review-literal', 'TODO: describe e"a fixture"pected behaviour.'),
+        ('review-escape', r'TODO: describe e\qpected behaviour.'),
+        ('review-prose', 'Inspect this negative sample. TODO: describe e"x"pected behaviour. Reject that sample.')]:
+    add(name, value, True)
+
+path = Path('nextflowconformance/testdata/schema-cases.json')
+original_bytes = path.read_bytes()
+original = json.loads(original_bytes)
+assert len(original) == 539, 'Run only against the preserved pre-fix corpus.'
+encoded = json.dumps(original + cases, indent=2) + '\n'
+assert encoded.encode().startswith(original_bytes[:-3]), 'Original serialized prefix changed.'
+path.write_text(encoded)
+print(f'Appended {len(cases)} opaque-span cases; total {len(original) + len(cases)}')

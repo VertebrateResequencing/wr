@@ -1,0 +1,337 @@
+{
+  "date": "2026-09-28",
+  "scope": "Item 1.1 review04 opaque-span masking only; edits stopped for fresh review",
+  "versions": {
+    "Go": "go1.27.1 linux/amd64",
+    "golangci-lint": "2.12.2",
+    "lint_GOTOOLCHAIN": "go1.26.3",
+    "Node": "v22.22.2",
+    "jsonschema": "4.10.3"
+  },
+  "commands": [
+    {
+      "name": "red-build",
+      "command": "timeout 2m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go build -tags netgo -o .tmp/agent/bin/wr-nextflow-conformance-fix04 ./cmd/wr-nextflow-conformance",
+      "exit": 0,
+      "seconds": 0.57,
+      "log": ".tmp/agent/nextflow-conformance/fix04/red-build.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/red-build.exit"
+    },
+    {
+      "name": "red-review04",
+      "command": "timeout 30s python3 .tmp/agent/nextflow-conformance/fix04/review04-probes.txt",
+      "exit": 1,
+      "seconds": 1.17,
+      "log": ".tmp/agent/nextflow-conformance/fix04/red-review04.log",
+      "log_sha256": "feeab8c99368bfab23659814791476375260b1ae2a801634667cbc27a9c40db6",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/red-review04.exit"
+    },
+    {
+      "name": "append-cases",
+      "command": "timeout 10s python3 .docs/nextflow-conformance/evidence/phase1-schema-fix-04-cases.txt",
+      "exit": 0,
+      "seconds": 0.06,
+      "log": ".tmp/agent/nextflow-conformance/fix04/append-cases.log",
+      "log_sha256": "32c15ba1cbdd94aefdac17d3823e8b9711942ef59fd3abf4d1f883802487aefa",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/append-cases.exit"
+    },
+    {
+      "name": "red-go",
+      "command": "timeout 3m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go test -tags netgo -count=1 -v ./nextflowconformance -run '^TestIndependentSchemaCases$'",
+      "exit": 1,
+      "seconds": 6.55,
+      "log": ".tmp/agent/nextflow-conformance/fix04/red-go.log",
+      "log_sha256": "738ec04acba49a4e4f715bd3a7430c1b428ef143c0a11b59b2fb02eeedde2798",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/red-go.exit"
+    },
+    {
+      "name": "red-new-probes",
+      "command": "timeout 60s python3 .docs/nextflow-conformance/evidence/phase1-schema-fix-04-probes.txt --output .tmp/agent/nextflow-conformance/fix04/red-probes",
+      "exit": 1,
+      "seconds": 7.24,
+      "log": ".tmp/agent/nextflow-conformance/fix04/red-new-probes.log",
+      "log_sha256": "904d8089bba340ce1ec6d1287b3e44680490660eb7a25f83af5791ea23ae6123",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/red-new-probes.exit"
+    },
+    {
+      "name": "cleanorder",
+      "command": "timeout 30s cleanorder -min-diff nextflowconformance/model.go",
+      "exit": 0,
+      "seconds": 0.06,
+      "log": ".tmp/agent/nextflow-conformance/fix04/cleanorder.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/cleanorder.exit"
+    },
+    {
+      "name": "green-go",
+      "command": "timeout 3m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go test -tags netgo -count=1 -v ./nextflowconformance -run '^TestIndependentSchemaCases$'",
+      "exit": 0,
+      "seconds": 6.99,
+      "log": ".tmp/agent/nextflow-conformance/fix04/green-go.log",
+      "log_sha256": "77b43827c89fbdd94069d43c76722ee1ee805de67e72e82ddfcb394670551b42",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/green-go.exit"
+    },
+    {
+      "name": "green-build",
+      "command": "timeout 2m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go build -tags netgo -o .tmp/agent/bin/wr-nextflow-conformance-fix04 ./cmd/wr-nextflow-conformance",
+      "exit": 0,
+      "seconds": 0.92,
+      "log": ".tmp/agent/nextflow-conformance/fix04/green-build.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/green-build.exit"
+    },
+    {
+      "name": "green-probes",
+      "command": "timeout 60s python3 .docs/nextflow-conformance/evidence/phase1-schema-fix-04-probes.txt",
+      "exit": 0,
+      "seconds": 7.13,
+      "log": ".tmp/agent/nextflow-conformance/fix04/green-probes.log",
+      "log_sha256": "e32930d5855da9b9bab242cbebdcc63526c7dc4d08582678f5e8bfc47a063e83",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/green-probes.exit"
+    },
+    {
+      "name": "owned-tests",
+      "command": "timeout 10m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go test -tags netgo -count=1 -v ./nextflowconformance ./cmd/wr-nextflow-conformance -run 'Test(EmptyCorpus|MalformedRecords|ClosedSchemas|RecordConstraints|SchemaEmission|NestedRecordConstraints|AmendedArtefactContract|CLIInvocationContract|CorpusContract|IndependentSchemaCases|RuntimeClosureMembership|TypedCorpusRelations|AttemptLoadingAndCounts|RelationalRecordConstraints|FailedCommandResultContract|ReviewSourceFileReferences)$'",
+      "exit": 0,
+      "seconds": 6.95,
+      "log": ".tmp/agent/nextflow-conformance/fix04/owned-tests.log",
+      "log_sha256": "2723e0e9136223b019da0916e6a8f6fb126ac4052c4f9e0453c0a0f3016fb3ca",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/owned-tests.exit"
+    },
+    {
+      "name": "stock-schema",
+      "command": "timeout 30s python3 nextflowconformance/testdata/check_schemas.py",
+      "exit": 0,
+      "seconds": 0.62,
+      "log": ".tmp/agent/nextflow-conformance/fix04/stock-schema.log",
+      "log_sha256": "595955540ec9f5be7430ef338012f1aeddc89268e590fac51d0167267385e1ee",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/stock-schema.exit"
+    },
+    {
+      "name": "existing-cli",
+      "command": "timeout 60s python3 .tmp/agent/nextflow-conformance/fix04/existing-cli-probes.txt",
+      "exit": 0,
+      "seconds": 4.13,
+      "log": ".tmp/agent/nextflow-conformance/fix04/existing-cli.log",
+      "log_sha256": "e33032db9304b61139c2723e02aa465aec23eb8460c8cfe7d6a85624b48a6e56",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/existing-cli.exit"
+    },
+    {
+      "name": "six-regressions",
+      "command": "timeout 30s python3 .tmp/agent/nextflow-conformance/fix04/six-regressions.txt",
+      "exit": 0,
+      "seconds": 0.27,
+      "log": ".tmp/agent/nextflow-conformance/fix04/six-regressions.log",
+      "log_sha256": "778da6345effe57babc7e7ceedc18bf3da2770d98d69ace3c27b9f491fa0d08d",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/six-regressions.exit"
+    },
+    {
+      "name": "ecmascript",
+      "command": "timeout 15s node .docs/nextflow-conformance/evidence/phase1-schema-fix-02-ecmascript.txt",
+      "exit": 0,
+      "seconds": 0.06,
+      "log": ".tmp/agent/nextflow-conformance/fix04/ecmascript.log",
+      "log_sha256": "30dab5ee44e0e530bd04be7869499b45af952f3a32146dd49d2c64129482e1a3",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/ecmascript.exit"
+    },
+    {
+      "name": "full-tests",
+      "command": "timeout 10m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go test -tags netgo -count=1 -v ./nextflowconformance ./cmd/wr-nextflow-conformance",
+      "exit": 1,
+      "seconds": 6.79,
+      "log": ".tmp/agent/nextflow-conformance/fix04/full-tests.log",
+      "log_sha256": "f0e4aedc531cd648a782b711ef2c7ecf09133cecf6edb5e67134fec86ec2a904",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/full-tests.exit"
+    },
+    {
+      "name": "lint",
+      "command": "timeout 5m env GOTOOLCHAIN=go1.26.3 .tmp/agent/bin/golangci-lint run ./nextflowconformance/... ./cmd/wr-nextflow-conformance/...",
+      "exit": 1,
+      "seconds": 2.29,
+      "log": ".tmp/agent/nextflow-conformance/fix04/lint.log",
+      "log_sha256": "0c536ba806ac423a6a54c9640281eb3b0e787c45b3a6804bdd0c923af34866da",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/lint.exit"
+    },
+    {
+      "name": "replay-red-go",
+      "command": "timeout 3m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go test -overlay .tmp/agent/nextflow-conformance/fix04/red-overlay.json -tags netgo -count=1 -v ./nextflowconformance -run '^TestIndependentSchemaCases$'",
+      "exit": 1,
+      "seconds": 6.55,
+      "log": ".tmp/agent/nextflow-conformance/fix04/replay-red-go.log",
+      "log_sha256": "9f7ca30df489e76fe5707835a6443de25beffc930cdee917c977ba15accaba2b",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/replay-red-go.exit"
+    },
+    {
+      "name": "replay-red-build",
+      "command": "timeout 2m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go build -overlay .tmp/agent/nextflow-conformance/fix04/red-overlay.json -tags netgo -o .tmp/agent/bin/wr-nextflow-conformance-fix04-red ./cmd/wr-nextflow-conformance",
+      "exit": 0,
+      "seconds": 0.52,
+      "log": ".tmp/agent/nextflow-conformance/fix04/replay-red-build.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/replay-red-build.exit"
+    },
+    {
+      "name": "replay-red-probes",
+      "command": "timeout 60s python3 .docs/nextflow-conformance/evidence/phase1-schema-fix-04-probes.txt --binary .tmp/agent/bin/wr-nextflow-conformance-fix04-red --output .tmp/agent/nextflow-conformance/fix04/replay-red-probes",
+      "exit": 1,
+      "seconds": 7.08,
+      "log": ".tmp/agent/nextflow-conformance/fix04/replay-red-probes.log",
+      "log_sha256": "904d8089bba340ce1ec6d1287b3e44680490660eb7a25f83af5791ea23ae6123",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/replay-red-probes.exit"
+    },
+    {
+      "name": "preservation",
+      "command": "timeout 30s python3 .tmp/agent/nextflow-conformance/fix04/check-preservation.txt",
+      "exit": 0,
+      "seconds": 0.06,
+      "log": ".tmp/agent/nextflow-conformance/fix04/preservation.log",
+      "log_sha256": "a3a24dc01f4e1b27b0771fdb276e92f95e54421bd6a3e750ca7ebcf8ebf2130e",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/preservation.exit"
+    },
+    {
+      "name": "final-preservation",
+      "command": "timeout 30s python3 .tmp/agent/nextflow-conformance/fix04/check-preservation.txt",
+      "exit": 0,
+      "seconds": 0.06,
+      "log": ".tmp/agent/nextflow-conformance/fix04/final-preservation.log",
+      "log_sha256": "a3a24dc01f4e1b27b0771fdb276e92f95e54421bd6a3e750ca7ebcf8ebf2130e",
+      "exit_file": ".tmp/agent/nextflow-conformance/fix04/final-preservation.exit"
+    }
+  ],
+  "summary": {
+    "changed_baseline_files": [
+      "nextflowconformance/model.go",
+      "nextflowconformance/testdata/schema-cases.json"
+    ],
+    "original_539_values_preserved": true,
+    "original_539_serialized_prefix_preserved": true,
+    "schemas_unchanged": true,
+    "historical_evidence_unchanged": true,
+    "owned_test_functions": 16,
+    "mutations": 1190,
+    "new_cases": 651,
+    "new_cli_schema_ecmascript_cases": 744,
+    "inherited_cli_assertions": 416,
+    "prior_exact_regressions": 6,
+    "native_ecmascript_description_cases": 1055,
+    "deferred": {
+      "full_suite_failures": [
+        "TestUAT_A1_01",
+        "TestUAT_A1_02",
+        "TestUAT_A1_03",
+        "TestUAT_A1_04",
+        "TestUAT_A1_05"
+      ],
+      "lint_findings_by_file": {
+        "nextflowconformance/source.go": 50,
+        "nextflowconformance/source_test.go": 11
+      },
+      "owned_lint_findings": 0
+    }
+  },
+  "baseline_index": {
+    "path": ".tmp/agent/nextflow-conformance/fix04/baseline-hashes.json",
+    "sha256": "cc433b82ee5a496ff0f4f6f3747a9392ac7d331370a397e1a3ecf9a730999b5a",
+    "files": 108
+  },
+  "changed_baseline_hashes": {
+    "nextflowconformance/model.go": "74a34220d30206388c5101b84ce0ae74358d0980c9814cf91d47557c647c6aaf",
+    "nextflowconformance/testdata/schema-cases.json": "8e8c6ba193895af3f18c4e135c943116ab996635240f361ab9b8a5da70326cbb"
+  },
+  "current_input_hashes": {
+    ".docs/nextflow-conformance/evidence/nextflow-naming.md": "8dbfad6daef814f85374f0f0fe48506a0bad46cfd1e0e891a09cc0d78fa52051",
+    ".docs/nextflow-conformance/phase1.md": "c844425fa79b04156969baa3eb7cf46bdc072abce1dd9cecab817feecd545a81",
+    ".docs/nextflow-conformance/reviews/phase-01-schema-bundle.md": "feed30f6d4d8f3321fbf34ef74cae3b9df1e96367bd6a567b7a1aefb7548d161",
+    ".docs/nextflow-conformance/reviews/phase-01-schema-review-04.md": "be788f31ef370012b8ac6a498a6b8246a1af49002d4fc9b033d607d620a8cc60",
+    ".docs/nextflow-conformance/spec.md": "86a025b97dcd79ad67137a665ab3561b4f49fcd53fc83bb514e12fb66d534383",
+    ".golangci.yml": "36a2749675d2eb3ac55870ac5f8a208a2c525e50f8dcc3e26b7be8cfb9e0307d",
+    "cmd/wr-nextflow-conformance/main.go": "13c7e4ca3d06ee4fddf0b3bac473ba65e241cca3c04e432e46bb41348d03e969",
+    "go.mod": "2c8dc14c444c3e159c3795f406e766d3a4029236d91d0420906330c2b51507c7",
+    "go.sum": "ee0f56aca7017d15ff1998315bfd8579977e3a21ee46c2ce4f328eb91cb7834e",
+    "nextflowconformance/cli.go": "558789283358b7b77b2946def9124cc53dc109947db7a10d6600b102b87ba784",
+    "nextflowconformance/data/schema/attempts.v1.json": "f197134762d871bad8a53ac1f4b7b0c6612018e197c738f3a6946ab4fee229f8",
+    "nextflowconformance/data/schema/batches.v1.json": "7c67fe99c474893f6ed7316269f953ff1a6b8eadfa19ecad0ebd349383c1e957",
+    "nextflowconformance/data/schema/bindings.v1.json": "699fe8bda94840ce2c1423e0f7258867c6e4d88736bd5ec931385fa12a584cb3",
+    "nextflowconformance/data/schema/blocks.v1.json": "550a1b385daad9e2ee995cb873c6fe1bb9f52849c9ed469bb6d9ecf73420f25a",
+    "nextflowconformance/data/schema/decisions.v1.json": "162e5ac9f44df3288eb672c61c4d1ba0241ee8f4632925db2651d5d515d2a916",
+    "nextflowconformance/data/schema/obligations.v1.json": "04beb7b84ef83137560187783a14312935fe26a20f91682660f0c9130a32b68a",
+    "nextflowconformance/data/schema/requirements.v1.json": "630e240d3f1af741c4437d8966574a8d3cca684b3b928e894dc4ef7e63b3d7a7",
+    "nextflowconformance/data/schema/reviews.v1.json": "3b44f2744411044d57eca7c04f95043449c7fe601a0ca2a24428f9c826ffc7a0",
+    "nextflowconformance/data/schema/sources.lock.v1.json": "2f744c448284fd481873e3c30c8f3de056ca600798cd2eb1b267a519152a6587",
+    "nextflowconformance/data/schema/target.v1.json": "4e697236c20f85749177f5a4ebbf6e3471900883058163b9e09d9cd0dce0b3eb",
+    "nextflowconformance/data/schema/uats.v1.json": "e65e59c795154a2aa2ea062e5a9b86575d275487d798756c7d877f74ef64a7e9",
+    "nextflowconformance/model.go": "a5384d68ee301a84e33177e3ac1ed661cc1413e5541be8b20b00c782348b04d0",
+    "nextflowconformance/model_test.go": "5bd20b2e82f6326021b9131fb8630baa731cf2f5bc4890ffd48edb205efad77f",
+    "nextflowconformance/schema.go": "ca97c1c56acbb0ccc4c9569fb4c60c02844ff750a03d55e424a70b3efe770fc6",
+    "nextflowconformance/source.go": "63d4bf2e64d55aa14a59d7047c6238b5988da837a45e67ebbea3e9f0f598aaad",
+    "nextflowconformance/source_test.go": "8f026405ab39432216c912b65122b05140c5568cec90bd4d202b1f1c86989fcb",
+    "nextflowconformance/testdata/check_schemas.py": "34dfb3e7c0c875165b8a3d43f4aa73da5a24f623d5b4eecc01aa78d1c4188e58",
+    "nextflowconformance/testdata/records/attempts.json": "949b3614192ebd83edfc4f05a61ece2d2e3b82a430d4ce68ef10ae76d1fd69b1",
+    "nextflowconformance/testdata/records/batches.json": "1a21b364162da68dead86d092977aa27268d4daeeb0e7f232eda168c1dd59076",
+    "nextflowconformance/testdata/records/bindings.json": "51288d10c7fad24eb4fb01ecf5843881513397e0de70ca719860984c6bd2d90f",
+    "nextflowconformance/testdata/records/blocks.json": "e3549c6ac6b97237f6c0d26486bbb517437c84a9519f72a85c70a12089f49ee9",
+    "nextflowconformance/testdata/records/decisions.json": "9588b8c8eaee009b1df2606e852486790878828fa018d9ae40a142f59018360e",
+    "nextflowconformance/testdata/records/obligations.json": "0493691d6080d2d38c031229aa4eae5948b8b7c93484b71bac508b5bbebaf65b",
+    "nextflowconformance/testdata/records/requirements.json": "1e6a4404e936d5595245c8cd2fddd5e5ac0e9bcba807ebf99a7d9c148602dbe8",
+    "nextflowconformance/testdata/records/reviews.json": "471e1f75e93b5950870799a1909cd30c6457780542563283947d4c7ce242c02b",
+    "nextflowconformance/testdata/records/sources.lock.json": "7c4374e097bdc20510c141f2463b1fec4187857453c180d7f549ff1c3ef956c2",
+    "nextflowconformance/testdata/records/target.json": "7b2e4d95e205fc51703a7a409390a427c9ac71fd994f6fb21996948f1c31bcd8",
+    "nextflowconformance/testdata/records/uats.json": "7804c650cea47fcb1ee863b522909ade7100df51aa6db583d430a0f0c01c484f",
+    "nextflowconformance/testdata/schema-cases.json": "589192b0c14619358819f19fde328de0e145bab83ff86f9c72e30e21d227e8c7",
+    "nextflowconformance/testdata/schema-records/ready-uat.json": "2116ac6ffcdba284fd6208d267e0bc9635167cb0957b0fde284315d6955d1124",
+    "nextflowconformance/testdata/schema-records/resolved-decision.json": "51cf8d1d213a2c42b17b034768262a05c4d6d0dfa08ea0b1fec437771f554736"
+  },
+  "new_evidence_hashes": {
+    ".docs/nextflow-conformance/evidence/phase1-schema-fix-04-cases.txt": "710ce84a8eafc4b8e935e8b6edb2c61cc8e2722c62409327b7af3c4d0d4ef7dc",
+    ".docs/nextflow-conformance/evidence/phase1-schema-fix-04-probes.txt": "b470265561f56ad93a601fb5418c68d3de02996c4b7e69efeb554c21b3c03fae",
+    ".docs/nextflow-conformance/evidence/phase1-schema-fix-04.md": "246179d2aa26cb14126031e4ae97a48bf1a094d393d35b9570330118c7a84070"
+  },
+  "scratch_and_binary_hashes": {
+    ".tmp/agent/nextflow-conformance/fix04/baseline-hashes.json": "cc433b82ee5a496ff0f4f6f3747a9392ac7d331370a397e1a3ecf9a730999b5a",
+    ".tmp/agent/nextflow-conformance/fix04/check-preservation.txt": "483e3b9b3ca65e38dbd549c1c4c657a85b3b016a7d868c71e02a9bd71335fe54",
+    ".tmp/agent/nextflow-conformance/fix04/commands.json": "11209424333d198670540a48b7deacb17d08c4e74ff9e2c77fdc1c69b1c20ab6",
+    ".tmp/agent/nextflow-conformance/fix04/deferred-checks.json": "1044e1c64b23e72ada42a789a8fc6055bcf28fc269db79059ac462e2d27ee0fc",
+    ".tmp/agent/nextflow-conformance/fix04/existing-cli-probes.txt": "985a14dc5331dc0e5b8f164d384607b9b1e9ff6463f626dc2bbb0993ec3a9dc7",
+    ".tmp/agent/nextflow-conformance/fix04/model.go.diff": "91af4c510010692de290f09ff7e159db60393a140dc0d3f8346b133a0ecab43a",
+    ".tmp/agent/nextflow-conformance/fix04/original-model.go": "74a34220d30206388c5101b84ce0ae74358d0980c9814cf91d47557c647c6aaf",
+    ".tmp/agent/nextflow-conformance/fix04/original-schema-cases.json": "8e8c6ba193895af3f18c4e135c943116ab996635240f361ab9b8a5da70326cbb",
+    ".tmp/agent/nextflow-conformance/fix04/original-schema.go": "ca97c1c56acbb0ccc4c9569fb4c60c02844ff750a03d55e424a70b3efe770fc6",
+    ".tmp/agent/nextflow-conformance/fix04/preservation-summary.json": "a3a24dc01f4e1b27b0771fdb276e92f95e54421bd6a3e750ca7ebcf8ebf2130e",
+    ".tmp/agent/nextflow-conformance/fix04/red-overlay.json": "7ebe0a66e3ae26d8f976fe9207032f3e3cb10d738a6375dbcd23bdbe78d4003f",
+    ".tmp/agent/nextflow-conformance/fix04/review04-probes.txt": "da3d28e2fb8a38e7ffac6846e316d26ea0f649c837f55e2b25115e841b3022ac",
+    ".tmp/agent/nextflow-conformance/fix04/run-command.txt": "9b4f0aa6209310e2c70af9e560dccd0b40ea37a4a9e5f345c8f996e5f72052f0",
+    ".tmp/agent/nextflow-conformance/fix04/six-regressions.txt": "2342cbdb382d9b4b3c36b8bcce1d23e9d55b3bc2a340c08b603d51fbc722967a",
+    ".tmp/agent/nextflow-conformance/fix04/write-manifest.txt": "4fe3cc2eae65ea331340f1577b91f12f551b0b008b54da6f003b6914a0a7953c",
+    ".tmp/agent/bin/wr-nextflow-conformance-fix04": "4f0ad2288a5d621b039523cf70db9d2cdfa1a82be59561df1b1017dd5360a024",
+    ".tmp/agent/bin/wr-nextflow-conformance-fix04-red": "667673cd2642552b4383de723b7a0f7ee874b1b1d32ebc851b5ff12d8c26961b"
+  },
+  "artifact_tree_digest_algorithm": "Sort relative file paths; SHA256 of each relative UTF-8 path, NUL, hexadecimal file SHA256, newline concatenation. No generated corpus files omitted.",
+  "artifact_trees": [
+    {
+      "path": ".tmp/agent/nextflow-conformance/fix04/review04",
+      "files": 1304,
+      "sha256": "a6f9fbe97b2ea6d2aec7ab6ddd2bba9bc68f05726d79f0797649da11a5a1f2dc"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/fix04/red-probes",
+      "files": 10418,
+      "sha256": "3ff1dda365e1e1f2f2a55c053eeeea6306753f842988a86bb9ed97a378d3ffc8"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/fix04/green-probes",
+      "files": 10418,
+      "sha256": "f997b69fd229b4ab848573057c25ceb9eef024e1f208fc4d767d4da8b5bca999"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/fix04/inherited",
+      "files": 5839,
+      "sha256": "648907d52cfc1cf7c8b080bc44dbf91cce40f1154ee9aad6d5978ee94184f77e"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/fix04/replay-red-probes",
+      "files": 10418,
+      "sha256": "2c51bd7441a7f97ede3ace43fa0cb242ec6725cd9603fd801a20f30cb10c76cc"
+    }
+  ]
+}

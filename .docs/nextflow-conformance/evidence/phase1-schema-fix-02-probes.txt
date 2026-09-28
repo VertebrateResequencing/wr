@@ -1,0 +1,153 @@
+"""Run with python3 from repository root after building the review CLI."""
+import copy
+import json
+import subprocess
+from pathlib import Path
+
+from jsonschema import Draft202012Validator
+
+out = Path('.tmp/agent/nextflow-conformance/fix02/probes')
+out.mkdir(parents=True, exist_ok=True)
+fixtures = Path('nextflowconformance/testdata/records')
+records = {p.stem: json.loads(p.read_text()) for p in fixtures.glob('*.json')}
+validators = {
+    kind: Draft202012Validator(
+        json.loads(Path('nextflowconformance/data/schema', kind + '.v1.json').read_text()))
+    for kind in records
+}
+cases = [
+    ('id-final-newline', 'target', ['id'], 'TARGET\n'),
+    ('hash-final-newline', 'blocks', ['span', 'sha256'], 'a' * 64 + '\n'),
+    ('path-hidden-traversal', 'blocks', ['span', 'file'], 'line\n/../escape'),
+    ('ipv6-https', 'sources.lock', ['origin'], 'https://[::1]/source'),
+    ('https-invalid-percent', 'sources.lock', ['origin'], 'https://example.org/%zz'),
+    ('include-dotdot-after-dot', 'blocks', ['include_refs'], [
+        {'path': 'dir./../shared.nf', 'block_id': 'SHARED', 'external_id': None}]),
+    ('time-comma', 'attempts', ['started'], '2026-09-28T00:00:00,1Z'),
+    ('time-single-hour', 'attempts', ['started'], '2026-09-28T0:00:00Z'),
+]
+results = []
+
+
+def run(name, corpus, schema_accepts=None):
+    root = out / name
+    root.mkdir(exist_ok=True)
+    for kind, obj in corpus.items():
+        filename = kind + '.json'
+        if kind == 'attempts':
+            (root / 'attempts').mkdir(exist_ok=True)
+            filename = 'attempts/' + obj['id'] + '.json'
+        elif kind not in ('target', 'sources.lock'):
+            obj = [obj]
+        (root / filename).write_text(json.dumps(obj) + '\n')
+    args = ['.tmp/agent/bin/wr-nextflow-conformance-fix02', 'validate',
+            '--root', str(root), '--cache', str(out / 'cache')]
+    process = subprocess.run(args, capture_output=True, text=True, timeout=5)
+    (out / (name + '.stdout')).write_text(process.stdout)
+    (out / (name + '.stderr')).write_text(process.stderr)
+    (out / (name + '.exit')).write_text(str(process.returncode) + '\n')
+    result = {'name': name, 'schema_accepts': schema_accepts,
+              'exit': process.returncode,
+              'diagnostics': json.loads(process.stdout)['diagnostics']}
+    results.append(result)
+    print(json.dumps(result))
+
+
+for name, kind, path, value in cases:
+    obj = copy.deepcopy(records[kind])
+    cursor = obj
+    for part in path[:-1]:
+        cursor = cursor[part]
+    cursor[path[-1]] = value
+    run(name, {'target': records['target'], kind: obj},
+        validators[kind].is_valid(obj))
+
+renames = {'BLOCKS': 'BLOCK', 'OBLIGATIONS': 'FACET', 'REQUIREMENTS': 'REQ',
+           'UATS': 'UAT', 'REVIEWS': 'REVIEW', 'DECISIONS': 'DECISION',
+           'BINDINGS': 'BINDING'}
+serialized = json.dumps(records)
+for old, new in renames.items():
+    serialized = serialized.replace('"' + old + '"', '"' + new + '"')
+corpus = json.loads(serialized)
+target = corpus['target']
+target['tag'] = '38ce286fe70b44a5907cf1f5b0b8fb13bd836721'
+target['commit'] = '232b60569865e9a4577e48c1955409238359d6ca'
+target['source_tree'] = '1b9ece615807c1e8feef1d38ccac124eb2eab073'
+corpus['sources.lock']['revision'] = target['commit']
+corpus['sources.lock']['tree']['sha'] = target['source_tree']
+run('full-baseline', corpus)
+mutated = copy.deepcopy(corpus)
+mutated['attempts']['started'] = '2026-09-28T00:00:00,1Z'
+run('full-time-comma', mutated)
+mutated = copy.deepcopy(corpus)
+reference = {'path': 'external.groovy', 'sha256': 'a' * 64, 'bytes': 3}
+mutated['sources.lock']['artifacts'].append({
+    'id': 'SOURCE', 'role': 'source',
+    'origin': 'https://example.org/external.groovy', 'file': reference,
+    'packaging': 'file', 'coordinate': None, 'dependencies': []})
+mutated['reviews']['input_hashes']['source'] = [reference]
+mutated['reviews']['source_spans'][0]['file'] = reference['path']
+run('full-external-source-span', mutated)
+for name, field, value in [
+        ('span-hash', 'sha256', 'b' * 64),
+        ('span-bounds', 'end', 4),
+        ('span-path', 'file', 'missing.groovy')]:
+    invalid = copy.deepcopy(mutated)
+    invalid['reviews']['source_spans'][0][field] = value
+    run('full-external-' + name, invalid)
+invalid = copy.deepcopy(mutated)
+invalid['sources.lock']['artifacts'][-1]['role'] = 'JAR'
+invalid['sources.lock']['artifacts'][2]['dependencies'].append('SOURCE')
+run('full-external-nonsource', invalid)
+(out / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+
+expected_schema = [False, False, False, True, False, False, False, False]
+for result, expected in zip(results[:8], expected_schema):
+    assert result['schema_accepts'] == expected, result
+    codes = [diagnostic['code'] for diagnostic in result['diagnostics']]
+    assert ('E_INPUT' in codes) != expected, result
+for result, code in zip(results[8:], ['E_TREE_INCOMPLETE', 'E_INPUT', 'E_TREE_INCOMPLETE'] + ['E_REFERENCE'] * 4):
+    assert result['diagnostics'][0]['code'] == code, result
+    assert result['exit'] == 2, result
+print('PASS: scalar rejection and external source spans reach their expected CLI boundaries')
+
+# New boundary assertions use the same complete corpus as the baseline.
+new_cases = [case for case in json.loads(
+    Path('nextflowconformance/testdata/schema-cases.json').read_text())
+    if case['name'].startswith(('description-whitespace-', 'description-casefold-'))]
+failures = []
+for case in new_cases:
+    mutated = copy.deepcopy(corpus)
+    mutated['requirements']['text'] = case['value']
+    run(case['name'], mutated,
+        validators['requirements'].is_valid(mutated['requirements']))
+    observed = results[-1]
+    observed['value'] = case['value']
+    observed['expected_valid'] = case['valid']
+    expected_code = 'E_TREE_INCOMPLETE' if case['valid'] else 'E_INPUT'
+    if (observed['schema_accepts'] != case['valid']
+            or observed['diagnostics'][0]['code'] != expected_code
+            or observed['exit'] != 2):
+        failures.append(observed)
+
+count_names = {'verified_artifacts', 'selected_files', 'selected_blocks',
+               'pending_blocks', 'draft_uats', 'requirements', 'uats',
+               'discovered', 'executed', 'passed', 'failed', 'skipped',
+               'timed_out', 'stale', 'blocked', 'unresolved_decisions'}
+for observed in results:
+    name = observed['name']
+    result = json.loads((out / (name + '.stdout')).read_text())
+    assert set(result['counts']) == count_names, name
+    assert all(type(value) is int for value in result['counts'].values()), name
+    assert result['counts']['verified_artifacts'] == 0, name
+    assert result['complete'] is False, name
+    assert result['diagnostics'], name
+    assert all(set(diagnostic) == {'code', 'record_id', 'path', 'message'}
+               for diagnostic in result['diagnostics']), name
+    assert (out / (name + '.stderr')).read_text().strip(), name
+    assert observed['exit'] == 2, name
+(out / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+(out / 'failures.json').write_text(json.dumps(failures, indent=2) + '\n')
+assert not failures, f'{len(failures)} description boundary mismatches; see {out}/failures.json'
+print(f'PASS: 15 inherited CLI probes, {len(new_cases)} description boundary probes, '
+      f'and {len(results)} JSON result contracts')

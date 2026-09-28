@@ -1,0 +1,489 @@
+{
+  "verdict": "FAIL",
+  "date": "2026-09-28",
+  "scope": "Item 1.1 quote guard correction; no package, A1, or phase pass",
+  "bundle": {
+    "approved_before_review": true,
+    "limit_tokens_approximate": 100000,
+    "method": "Complete correction diffs and affected guards/emitter, relevant spec and prior review spans; parsed manifests/schemas and targeted fixture groups. Unchanged full-scope coverage inherited from review 02."
+  },
+  "commands": {
+    "owned": {
+      "command": "timeout 10m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go test -tags netgo -count=1 -v ./nextflowconformance ./cmd/wr-nextflow-conformance -run 'Test(EmptyCorpus|MalformedRecords|ClosedSchemas|RecordConstraints|SchemaEmission|NestedRecordConstraints|AmendedArtefactContract|CLIInvocationContract|CorpusContract|IndependentSchemaCases|RuntimeClosureMembership|TypedCorpusRelations|AttemptLoadingAndCounts|RelationalRecordConstraints|FailedCommandResultContract|ReviewSourceFileReferences)$'",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/review04/owned.log",
+      "log_sha256": "210a1d06a4a906306830b83e75a67a4276d1952d621c6bba0cee28e52fee6563"
+    },
+    "stock": {
+      "command": "timeout 30s python3 nextflowconformance/testdata/check_schemas.py",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/review04/stock.log",
+      "log_sha256": "cc6b57597f580f72e7d1d6854e1e701f00a23e07ffc295029aff2c1c8e0eed0f"
+    },
+    "build": {
+      "command": "timeout 2m env GOTOOLCHAIN=go1.27.1 go build -o .tmp/agent/bin/wr-nextflow-conformance-fix03 ./cmd/wr-nextflow-conformance",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/review04/build.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "cli": {
+      "command": "timeout 60s python3 .docs/nextflow-conformance/evidence/phase1-schema-fix-03-probes.txt",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/review04/cli.log",
+      "log_sha256": "16514ae4852962aa6359f6fdd0a95c508f91ab83c5fa6f7a7df912e33f73fd75"
+    },
+    "six": {
+      "command": "timeout 30s python3 .docs/nextflow-conformance/evidence/phase1-schema-fix-03-review-regressions.txt",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/review04/six.log",
+      "log_sha256": "778da6345effe57babc7e7ceedc18bf3da2770d98d69ace3c27b9f491fa0d08d"
+    },
+    "ecmascript": {
+      "command": "timeout 15s node .docs/nextflow-conformance/evidence/phase1-schema-fix-02-ecmascript.txt",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/review04/ecmascript.log",
+      "log_sha256": "441a2d992ef7d0ffc647c423738283726d2d9f96b22732fcc26a2869a5f4e288"
+    },
+    "full": {
+      "command": "timeout 10m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go test -tags netgo -count=1 -v ./nextflowconformance ./cmd/wr-nextflow-conformance",
+      "exit": 1,
+      "log": ".tmp/agent/nextflow-conformance/review04/full.log",
+      "log_sha256": "a1dbc42d15b0ae6e6fb228e7dfeeeb0aa73dc4ae4e01924d37de5b5f9706e7be"
+    },
+    "lint": {
+      "command": "timeout 5m env GOTOOLCHAIN=go1.26.3 .tmp/agent/bin/golangci-lint run ./nextflowconformance/... ./cmd/wr-nextflow-conformance/...",
+      "exit": 1,
+      "log": ".tmp/agent/nextflow-conformance/review04/lint.log",
+      "log_sha256": "0c536ba806ac423a6a54c9640281eb3b0e787c45b3a6804bdd0c923af34866da"
+    },
+    "replay-red-go": {
+      "command": "timeout 3m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go test -overlay .tmp/agent/nextflow-conformance/fix03/red-overlay.json -tags netgo -count=1 -v ./nextflowconformance -run '^TestIndependentSchemaCases$'",
+      "exit": 1,
+      "log": ".tmp/agent/nextflow-conformance/review04/replay-red-go.log",
+      "log_sha256": "a13f9dabffa4503a45aad22214fa509679609d2547c563079badbb2a19c7af43"
+    },
+    "replay-red-stock": {
+      "command": "timeout 30s python3 .tmp/agent/nextflow-conformance/fix03/red-stock-reproduction/testdata/check_schemas.py",
+      "exit": 1,
+      "log": ".tmp/agent/nextflow-conformance/review04/replay-red-stock.log",
+      "log_sha256": "7f1e7aae21a9b82b75906d0bccd8093013262b7fe9c720581cf5a8d4d4de4ac9"
+    },
+    "independent": {
+      "command": "timeout 30s python3 .docs/nextflow-conformance/evidence/phase1-schema-review-04-probes.txt",
+      "exit": 1,
+      "log": ".tmp/agent/nextflow-conformance/review04/independent.log",
+      "log_sha256": "87a1ce456d8d794961b14285154b9e33e14a869d437b91603173a7ac2c9da7ff"
+    },
+    "lint-version": {
+      "command": "timeout 10s env GOTOOLCHAIN=go1.26.3 .tmp/agent/bin/golangci-lint version",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/review04/lint-version.log",
+      "log_sha256": "c616f4e39cf583e0941c1dfc70cb43c8ca2057820091b7acdbc78cc396c418f3"
+    },
+    "go-version": {
+      "command": "timeout 10s env GOTOOLCHAIN=go1.27.1 go version",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/review04/go-version.log",
+      "log_sha256": "f554cfdb85411c2bb1d503df3f53dfbad1f753eb8271938833166a5d26a7547c"
+    }
+  },
+  "results": {
+    "owned_tests": [
+      "TestEmptyCorpus",
+      "TestMalformedRecords",
+      "TestClosedSchemas",
+      "TestRecordConstraints",
+      "TestSchemaEmission",
+      "TestNestedRecordConstraints",
+      "TestAmendedArtefactContract",
+      "TestCLIInvocationContract",
+      "TestCorpusContract",
+      "TestRuntimeClosureMembership",
+      "TestFailedCommandResultContract",
+      "TestIndependentSchemaCases",
+      "TestTypedCorpusRelations",
+      "TestAttemptLoadingAndCounts",
+      "TestRelationalRecordConstraints",
+      "TestReviewSourceFileReferences"
+    ],
+    "stock_schemas": 11,
+    "stock_mutations": 539,
+    "cli_assertions": 416,
+    "exact_reviewer_regressions": 6,
+    "ecmascript_cases": 404,
+    "independent_cases": 93,
+    "independent_failures": [
+      {
+        "name": "literal-within-word",
+        "value": "TODO: describe e\"a fixture\"pected behaviour.",
+        "expected_valid": true,
+        "schema_valid": true,
+        "ecmascript_valid": true,
+        "go_exit": 2,
+        "go_codes": [
+          "E_INPUT"
+        ],
+        "passes": false
+      },
+      {
+        "name": "escaped-within-word",
+        "value": "TODO: describe e\\qpected behaviour.",
+        "expected_valid": true,
+        "schema_valid": true,
+        "ecmascript_valid": true,
+        "go_exit": 2,
+        "go_codes": [
+          "E_INPUT"
+        ],
+        "passes": false
+      },
+      {
+        "name": "literal-within-word-in-prose",
+        "value": "Inspect this negative sample. TODO: describe e\"x\"pected behaviour. Reject that sample.",
+        "expected_valid": true,
+        "schema_valid": true,
+        "ecmascript_valid": true,
+        "go_exit": 2,
+        "go_codes": [
+          "E_INPUT"
+        ],
+        "passes": false
+      }
+    ],
+    "full_failed_tests": [
+      "TestUAT_A1_01",
+      "TestUAT_A1_02",
+      "TestUAT_A1_03",
+      "TestUAT_A1_04",
+      "TestUAT_A1_05"
+    ],
+    "lint_by_file": {
+      "nextflowconformance/source.go": 50,
+      "nextflowconformance/source_test.go": 11
+    },
+    "owned_lint_findings": 0
+  },
+  "verification": {
+    "fix_input_paths": 93,
+    "fix_input_mismatches": [
+      ".docs/nextflow-conformance/phase1.md"
+    ],
+    "phase_mismatch": "Parent confirmed only Item1.1 implemented checkbox changed before review. Reversing that checkbox matches fix manifest. Frozen during review.",
+    "review_inputs_unchanged": true,
+    "original_source_hashes_match_review03": true,
+    "original_351_mutations_preserved_logically_and_serialized": true,
+    "unchanged_review02_hashes": {
+      "nextflowconformance/cli.go": "558789283358b7b77b2946def9124cc53dc109947db7a10d6600b102b87ba784",
+      "nextflowconformance/model_test.go": "5bd20b2e82f6326021b9131fb8630baa731cf2f5bc4890ffd48edb205efad77f",
+      "cmd/wr-nextflow-conformance/main.go": "13c7e4ca3d06ee4fddf0b3bac473ba65e241cca3c04e432e46bb41348d03e969"
+    },
+    "schema_changes": {
+      "nextflowconformance/data/schema/uats.v1.json": [],
+      "nextflowconformance/data/schema/reviews.v1.json": [
+        "/properties/findings/items/properties/message/not/anyOf/1/pattern",
+        "/properties/author/not/anyOf/1/pattern",
+        "/properties/reviewer/not/anyOf/1/pattern"
+      ],
+      "nextflowconformance/data/schema/decisions.v1.json": [
+        "/properties/question/not/anyOf/1/pattern",
+        "/properties/rationale/not/anyOf/1/pattern",
+        "/properties/resolution/anyOf/0/not/anyOf/1/pattern"
+      ],
+      "nextflowconformance/data/schema/attempts.v1.json": [
+        "/properties/inputs/properties/child_environment/items/properties/key/not/anyOf/1/pattern",
+        "/properties/inputs/properties/os/not/anyOf/1/pattern",
+        "/properties/inputs/properties/timezone/not/anyOf/1/pattern",
+        "/properties/inputs/properties/locale/not/anyOf/1/pattern",
+        "/properties/inputs/properties/arch/not/anyOf/1/pattern",
+        "/properties/inputs/properties/runner_version/not/anyOf/1/pattern",
+        "/properties/inputs/properties/go_compiler/properties/name/not/anyOf/1/pattern",
+        "/properties/inputs/properties/go_compiler/properties/version/not/anyOf/1/pattern",
+        "/properties/inputs/properties/executor/not/anyOf/1/pattern",
+        "/properties/inputs/properties/normalized_environment/items/properties/key/not/anyOf/1/pattern",
+        "/properties/inputs/properties/tools/items/properties/name/not/anyOf/1/pattern",
+        "/properties/inputs/properties/tools/items/properties/version/not/anyOf/1/pattern"
+      ],
+      "nextflowconformance/data/schema/batches.v1.json": [
+        "/properties/completion/items/not/anyOf/1/pattern"
+      ],
+      "nextflowconformance/data/schema/target.v1.json": [
+        "/properties/profiles/properties/foundation-bootstrap/properties/required_gates/items/not/anyOf/1/pattern",
+        "/properties/profiles/properties/wr-runtime/properties/required_gates/items/not/anyOf/1/pattern",
+        "/properties/profiles/properties/target-inventory/properties/required_gates/items/not/anyOf/1/pattern",
+        "/properties/version/not/anyOf/1/pattern"
+      ],
+      "nextflowconformance/data/schema/sources.lock.v1.json": [
+        "/properties/environment/properties/arch/not/anyOf/1/pattern",
+        "/properties/environment/properties/java_files/items/properties/link/anyOf/0/not/anyOf/1/pattern",
+        "/properties/environment/properties/dependencies/items/properties/version/not/anyOf/1/pattern",
+        "/properties/environment/properties/dependencies/items/properties/name/not/anyOf/1/pattern",
+        "/properties/environment/properties/dependencies/items/properties/group/not/anyOf/1/pattern",
+        "/properties/environment/properties/java_version/not/anyOf/1/pattern",
+        "/properties/environment/properties/os/not/anyOf/1/pattern",
+        "/properties/environment/properties/variables/items/properties/key/not/anyOf/1/pattern",
+        "/properties/files/items/properties/rationale/anyOf/0/not/anyOf/1/pattern"
+      ],
+      "nextflowconformance/data/schema/requirements.v1.json": [
+        "/properties/text/not/anyOf/1/pattern",
+        "/properties/facets/items/not/anyOf/1/pattern"
+      ],
+      "nextflowconformance/data/schema/bindings.v1.json": [],
+      "nextflowconformance/data/schema/obligations.v1.json": [
+        "/properties/facet/not/anyOf/1/pattern",
+        "/properties/statement/not/anyOf/1/pattern",
+        "/properties/rationale/anyOf/0/not/anyOf/1/pattern"
+      ],
+      "nextflowconformance/data/schema/blocks.v1.json": []
+    }
+  },
+  "initial_sha256": {
+    "nextflowconformance/cli.go": "558789283358b7b77b2946def9124cc53dc109947db7a10d6600b102b87ba784",
+    "nextflowconformance/schema.go": "ca97c1c56acbb0ccc4c9569fb4c60c02844ff750a03d55e424a70b3efe770fc6",
+    "nextflowconformance/source.go": "63d4bf2e64d55aa14a59d7047c6238b5988da837a45e67ebbea3e9f0f598aaad",
+    "nextflowconformance/source_test.go": "8f026405ab39432216c912b65122b05140c5568cec90bd4d202b1f1c86989fcb",
+    "nextflowconformance/model.go": "74a34220d30206388c5101b84ce0ae74358d0980c9814cf91d47557c647c6aaf",
+    "nextflowconformance/model_test.go": "5bd20b2e82f6326021b9131fb8630baa731cf2f5bc4890ffd48edb205efad77f",
+    "cmd/wr-nextflow-conformance/main.go": "13c7e4ca3d06ee4fddf0b3bac473ba65e241cca3c04e432e46bb41348d03e969",
+    "nextflowconformance/data/schema/uats.v1.json": "e65e59c795154a2aa2ea062e5a9b86575d275487d798756c7d877f74ef64a7e9",
+    "nextflowconformance/data/schema/reviews.v1.json": "3b44f2744411044d57eca7c04f95043449c7fe601a0ca2a24428f9c826ffc7a0",
+    "nextflowconformance/data/schema/decisions.v1.json": "162e5ac9f44df3288eb672c61c4d1ba0241ee8f4632925db2651d5d515d2a916",
+    "nextflowconformance/data/schema/attempts.v1.json": "f197134762d871bad8a53ac1f4b7b0c6612018e197c738f3a6946ab4fee229f8",
+    "nextflowconformance/data/schema/batches.v1.json": "7c67fe99c474893f6ed7316269f953ff1a6b8eadfa19ecad0ebd349383c1e957",
+    "nextflowconformance/data/schema/target.v1.json": "4e697236c20f85749177f5a4ebbf6e3471900883058163b9e09d9cd0dce0b3eb",
+    "nextflowconformance/data/schema/sources.lock.v1.json": "2f744c448284fd481873e3c30c8f3de056ca600798cd2eb1b267a519152a6587",
+    "nextflowconformance/data/schema/requirements.v1.json": "630e240d3f1af741c4437d8966574a8d3cca684b3b928e894dc4ef7e63b3d7a7",
+    "nextflowconformance/data/schema/bindings.v1.json": "699fe8bda94840ce2c1423e0f7258867c6e4d88736bd5ec931385fa12a584cb3",
+    "nextflowconformance/data/schema/obligations.v1.json": "04beb7b84ef83137560187783a14312935fe26a20f91682660f0c9130a32b68a",
+    "nextflowconformance/data/schema/blocks.v1.json": "550a1b385daad9e2ee995cb873c6fe1bb9f52849c9ed469bb6d9ecf73420f25a",
+    "nextflowconformance/testdata/schema-cases.json": "8e8c6ba193895af3f18c4e135c943116ab996635240f361ab9b8a5da70326cbb",
+    "nextflowconformance/testdata/check_schemas.py": "34dfb3e7c0c875165b8a3d43f4aa73da5a24f623d5b4eecc01aa78d1c4188e58",
+    "nextflowconformance/testdata/records/attempts.json": "949b3614192ebd83edfc4f05a61ece2d2e3b82a430d4ce68ef10ae76d1fd69b1",
+    "nextflowconformance/testdata/records/sources.lock.json": "7c4374e097bdc20510c141f2463b1fec4187857453c180d7f549ff1c3ef956c2",
+    "nextflowconformance/testdata/records/uats.json": "7804c650cea47fcb1ee863b522909ade7100df51aa6db583d430a0f0c01c484f",
+    "nextflowconformance/testdata/records/blocks.json": "e3549c6ac6b97237f6c0d26486bbb517437c84a9519f72a85c70a12089f49ee9",
+    "nextflowconformance/testdata/records/obligations.json": "0493691d6080d2d38c031229aa4eae5948b8b7c93484b71bac508b5bbebaf65b",
+    "nextflowconformance/testdata/records/requirements.json": "1e6a4404e936d5595245c8cd2fddd5e5ac0e9bcba807ebf99a7d9c148602dbe8",
+    "nextflowconformance/testdata/records/bindings.json": "51288d10c7fad24eb4fb01ecf5843881513397e0de70ca719860984c6bd2d90f",
+    "nextflowconformance/testdata/records/reviews.json": "471e1f75e93b5950870799a1909cd30c6457780542563283947d4c7ce242c02b",
+    "nextflowconformance/testdata/records/batches.json": "1a21b364162da68dead86d092977aa27268d4daeeb0e7f232eda168c1dd59076",
+    "nextflowconformance/testdata/records/decisions.json": "9588b8c8eaee009b1df2606e852486790878828fa018d9ae40a142f59018360e",
+    "nextflowconformance/testdata/records/target.json": "7b2e4d95e205fc51703a7a409390a427c9ac71fd994f6fb21996948f1c31bcd8",
+    "nextflowconformance/testdata/schema-records/resolved-decision.json": "51cf8d1d213a2c42b17b034768262a05c4d6d0dfa08ea0b1fec437771f554736",
+    "nextflowconformance/testdata/schema-records/ready-uat.json": "2116ac6ffcdba284fd6208d267e0bc9635167cb0957b0fde284315d6955d1124",
+    ".docs/nextflow-conformance/evidence/phase1-schema-fix-02-manifest.json": "7c776ed4bbc69fb6a6d8960ee374a16de7e201bd9a0ca78a46cdcfe07b4335ba",
+    ".docs/nextflow-conformance/evidence/phase1-schema-review-01-manifest.json": "ba407af52d085b268dcddc91ada1945323d7cbfb4e862440dc26690f0dfa6558",
+    ".docs/nextflow-conformance/evidence/phase1-schema-fix-01-manifest.json": "b5a75ecbe08db56837daf6c8f2640721bbc796cc1876d692b68a5015fda8f2d5",
+    ".docs/nextflow-conformance/evidence/phase1-schema-review-02-boundaries.txt": "559a52d3996a48769a28c9502699c92a6e62b5bb9de843e1187b2a99cc24b04d",
+    ".docs/nextflow-conformance/evidence/phase1-schema-fix-02.md": "61a8b60a6b8ef279217b4fb64560fb7cb7afbd9d131f7f53f755d3412a5d35c9",
+    ".docs/nextflow-conformance/evidence/phase1-schema-fix-02-probes.txt": "b037aa24fa1ddb57e227309fe36593e36d6b176a9d7ac1118948125070ee2df9",
+    ".docs/nextflow-conformance/evidence/nextflow-naming-probes.txt": "1e7ec9917abb980497ddd76b4872074767181e62258f47b3c96bb9784f5922ec",
+    ".docs/nextflow-conformance/evidence/phase1-schema-review-03-probes.txt": "60b47ea0dc964da2a7a3a0ab4278b6f88b336ec0489a944338619af3ce2555e8",
+    ".docs/nextflow-conformance/evidence/phase1-schema.md": "573cc0c0bc94a24124f32a37ca076b4cb87187300e4d472c2cba4cf7143e5243",
+    ".docs/nextflow-conformance/evidence/phase1-schema-fix-02-ecmascript.txt": "029323efef6445d71e13507c1619b6fc3c53afab24d4e71f97c42b1ca80c94cc",
+    ".docs/nextflow-conformance/evidence/nextflow-naming.md": "8dbfad6daef814f85374f0f0fe48506a0bad46cfd1e0e891a09cc0d78fa52051",
+    ".docs/nextflow-conformance/evidence/phase1-schema-review-03-manifest.json": "3cf6dac64a571f8b16620a66831a59d867046cee7b589eb05ef24eb73731ad9d",
+    ".docs/nextflow-conformance/evidence/phase1-schema-fix-01.md": "30b941809e8527d49f4197f64b812c4d8f3046d18c6fc1a0d56de828d7754a7c",
+    ".docs/nextflow-conformance/evidence/phase1-schema-fix-01-probes.txt": "7e57268f911d887b984da6ddedd3c3f472bff9c7219680b98c3ba67a3f171545",
+    ".docs/nextflow-conformance/evidence/phase1.md": "47f36f7ce62a42347304a70546d724be10a5c2e212e3816e7061b57982c8248a",
+    ".docs/nextflow-conformance/evidence/nextflow-naming-manifest.json": "27066c29aa403d21befb893de20027ee8b7b3d0f378036ea48c1ab83fcc06342",
+    ".docs/nextflow-conformance/evidence/phase1-schema-review-02-probes.txt": "213025f5569b87c7ab5b2c8732c882c2316bd15536bc1823ddcf556f1bfb0bc0",
+    ".docs/nextflow-conformance/evidence/phase1-schema-review-02-manifest.json": "4cfae6bd923e5992a573227fc7b6d188a475c1a1e8c0cfeb47f2aa989e2c2e0b",
+    ".docs/nextflow-conformance/evidence/phase1-schema-review-01-probes.txt": "6ce744f89e0295a3ac4cf2189c96a72ad787f5499bb0e2f542adcf7cd011f00c",
+    ".docs/nextflow-conformance/reviews/feature-03.md": "0bcd28a88c5ac94a11d18d475dad6583b61362ac8433eeed9b8e12f741442788",
+    ".docs/nextflow-conformance/reviews/phase-01-schema-review-01.md": "da7c7a7b9e6e963643aedc878a34bbe5c1b77e50b5d7aaee3f0cef6c68d977f4",
+    ".docs/nextflow-conformance/reviews/packaging-phase-03-review-01.md": "cab9fddc581363217fa4a85dd75473606866f860d657e8976aaa2497f8983534",
+    ".docs/nextflow-conformance/reviews/phase-05-review-02.md": "e7d63f384ba7d33445f31ab2c1a961904b0b7711f811a0399415d4675a6c5bba",
+    ".docs/nextflow-conformance/reviews/packaging-proofread-01.md": "6dc4e276e1e6b178822e3e12ccde722ba23096ea368f7a9b5966aa6c1f817820",
+    ".docs/nextflow-conformance/reviews/packaging-phase-04-review-01.md": "98963d70b994001e94c7beee331d81f61ce57d7c47378d924a6163252d597e33",
+    ".docs/nextflow-conformance/reviews/feature-04.md": "da9459d50186a3053c1b00547cfcc409dbc4a228082bd5fe88bd8b069361e364",
+    ".docs/nextflow-conformance/reviews/feature-01.md": "80fdc80524fa0fdfef54de2f4d6ab1d9535e7078ce049d95412f1c31208c6737",
+    ".docs/nextflow-conformance/reviews/phase-04-review-01.md": "2d01386b79ca7d5a9f2cbc33c7871d38abce0faf00a67c6fc2d18be2f8579ca6",
+    ".docs/nextflow-conformance/reviews/phase-01-schema-review-02.md": "fffbfb137e77d8d8424dac9fe003ab9d6e80654b33a00fd1d3f7836125c7becf",
+    ".docs/nextflow-conformance/reviews/phase-01-review-01.md": "876c22e35fd4c6cd814d11a46f3b65eb4497056a06c3d1fd219ce3100d25eb7a",
+    ".docs/nextflow-conformance/reviews/phase-06-review-02.md": "87cb5e0078a66a02ec5b3b4239b4a059bcb085becadc267fc75ffb929f3638c5",
+    ".docs/nextflow-conformance/reviews/phase-01-schema-review-03.md": "5b1293912ecc57f922ff31808675f2f78011710ea586f5661d45ba7fcc273408",
+    ".docs/nextflow-conformance/reviews/packaging-phases.md": "ab9ca372b4076d145c0797a3208835f095e25e5e2cd1b3b3133a432e869703bc",
+    ".docs/nextflow-conformance/reviews/packaging-feature-02.md": "1e7678766e7af3b930027bb2fdb429cc6d8602410bf9098b90bb2c1bfbe29d1c",
+    ".docs/nextflow-conformance/reviews/phase-03-review-01.md": "e96fd5503f6f4dccce4157bfa73e2974f3c9bea0818e9ae00344006540b67789",
+    ".docs/nextflow-conformance/reviews/phase-01-bundle.md": "94a1bf77cff0a38dafd6794e9ca83630ec6a2734745d63ac487006455bf0552d",
+    ".docs/nextflow-conformance/reviews/proofread-03.md": "b981ca87ec81ee0a77b46f75fc52ccb49712d381e8d96e3b2845c5d26a0d0d95",
+    ".docs/nextflow-conformance/reviews/runtime-packaging-author.md": "cd9071e08d519a0a146b03fa9b1ab5beccf307cf17ab9176dd44b235b0b5a532",
+    ".docs/nextflow-conformance/reviews/packaging-proofread-02.md": "3c4c430fcea040ff00039618531ad80f10af2e01554340c25c30ef6d24adb929",
+    ".docs/nextflow-conformance/reviews/phase-03-review-02.md": "1502154e5751d223e1e7eb38609ff2dd823ce2d47ab50d3037e63946b31f8b4c",
+    ".docs/nextflow-conformance/reviews/phase-01-schema-bundle.md": "feed30f6d4d8f3321fbf34ef74cae3b9df1e96367bd6a567b7a1aefb7548d161",
+    ".docs/nextflow-conformance/reviews/proofread-02.md": "1dc1ace98a4cf3505ac470b472ae2c1a80043dc0caa6c56fed853490d93486ae",
+    ".docs/nextflow-conformance/reviews/phase-02-review-01.md": "bb978e3068dd1cb88b94a041679bd7501c1f2fb518912a2a937d050892edb4b6",
+    ".docs/nextflow-conformance/reviews/packaging-phase-05-review-01.md": "26afccd0d67a4a80ec2bcd9e93ad910aac222e12ddd6750d041588f9ab005d4d",
+    ".docs/nextflow-conformance/reviews/phase-02-review-02.md": "746ec3fdf2d97930fdedab14470099faff48d70f6435f4b016a731b6b1a450fc",
+    ".docs/nextflow-conformance/reviews/packaging-phase-06-review-01.md": "16b6959d8f5c483aac411b17640504bb47e2a7cae8684d16eaf727ebb93434bf",
+    ".docs/nextflow-conformance/reviews/phase-06-review-01.md": "6f30468e7d51abc290f66dd5a6e2afdcfa5af2729ae93db8d59f45dca9123fa5",
+    ".docs/nextflow-conformance/reviews/phase-01-review-02.md": "dd8976b75287058b13db8707008455c7812be3881e4cb4f83e3542b495a422c7",
+    ".docs/nextflow-conformance/reviews/phase-05-review-01.md": "fbdd49d7b32337c7fbcc21a5c5763a8c6296f7c200e8624f852c73ac05f5f05b",
+    ".docs/nextflow-conformance/reviews/packaging-feature-01.md": "32bf1e49f59a605192571b30c3bf55ded16d7dd351f66b167d7f1828c16f9ced",
+    ".docs/nextflow-conformance/reviews/packaging-phase-01-review-01.md": "4aeaf7a64a67c269ab6f3630cff8b5ce7a892c1ff938f995400cb6d662de4676",
+    ".docs/nextflow-conformance/reviews/proofread-01.md": "9273946c9c601164445f604c2c1b05ae14cc3962e112c3c613ae636b320a639c",
+    ".docs/nextflow-conformance/reviews/packaging-phase-03-review-02.md": "2e13a88a2bdf0bceefe058f39b1abae0f0df7d6a412dfced7b5b7c376f4d5fe8",
+    ".docs/nextflow-conformance/reviews/feature-02.md": "5b3e8d0a555572e000be15cf3e238cc4039e6704e0b0170c2d522c04a692aef7",
+    "go.mod": "2c8dc14c444c3e159c3795f406e766d3a4029236d91d0420906330c2b51507c7",
+    "go.sum": "ee0f56aca7017d15ff1998315bfd8579977e3a21ee46c2ce4f328eb91cb7834e",
+    ".golangci.yml": "36a2749675d2eb3ac55870ac5f8a208a2c525e50f8dcc3e26b7be8cfb9e0307d",
+    "main.go": "4565855b68d673fb37e3da935da865f5c6a4e67549fe0bc205c903e086979345",
+    ".docs/nextflow-conformance/spec.md": "86a025b97dcd79ad67137a665ab3561b4f49fcd53fc83bb514e12fb66d534383",
+    ".docs/nextflow-conformance/phase1.md": "06540cf1e4e9386f82fe1ba946363742f57d585b4894e72ed1851e1e7115e289"
+  },
+  "final_sha256": {
+    "nextflowconformance/cli.go": "558789283358b7b77b2946def9124cc53dc109947db7a10d6600b102b87ba784",
+    "nextflowconformance/schema.go": "ca97c1c56acbb0ccc4c9569fb4c60c02844ff750a03d55e424a70b3efe770fc6",
+    "nextflowconformance/source.go": "63d4bf2e64d55aa14a59d7047c6238b5988da837a45e67ebbea3e9f0f598aaad",
+    "nextflowconformance/source_test.go": "8f026405ab39432216c912b65122b05140c5568cec90bd4d202b1f1c86989fcb",
+    "nextflowconformance/model.go": "74a34220d30206388c5101b84ce0ae74358d0980c9814cf91d47557c647c6aaf",
+    "nextflowconformance/model_test.go": "5bd20b2e82f6326021b9131fb8630baa731cf2f5bc4890ffd48edb205efad77f",
+    "cmd/wr-nextflow-conformance/main.go": "13c7e4ca3d06ee4fddf0b3bac473ba65e241cca3c04e432e46bb41348d03e969",
+    "nextflowconformance/data/schema/uats.v1.json": "e65e59c795154a2aa2ea062e5a9b86575d275487d798756c7d877f74ef64a7e9",
+    "nextflowconformance/data/schema/reviews.v1.json": "3b44f2744411044d57eca7c04f95043449c7fe601a0ca2a24428f9c826ffc7a0",
+    "nextflowconformance/data/schema/decisions.v1.json": "162e5ac9f44df3288eb672c61c4d1ba0241ee8f4632925db2651d5d515d2a916",
+    "nextflowconformance/data/schema/attempts.v1.json": "f197134762d871bad8a53ac1f4b7b0c6612018e197c738f3a6946ab4fee229f8",
+    "nextflowconformance/data/schema/batches.v1.json": "7c67fe99c474893f6ed7316269f953ff1a6b8eadfa19ecad0ebd349383c1e957",
+    "nextflowconformance/data/schema/target.v1.json": "4e697236c20f85749177f5a4ebbf6e3471900883058163b9e09d9cd0dce0b3eb",
+    "nextflowconformance/data/schema/sources.lock.v1.json": "2f744c448284fd481873e3c30c8f3de056ca600798cd2eb1b267a519152a6587",
+    "nextflowconformance/data/schema/requirements.v1.json": "630e240d3f1af741c4437d8966574a8d3cca684b3b928e894dc4ef7e63b3d7a7",
+    "nextflowconformance/data/schema/bindings.v1.json": "699fe8bda94840ce2c1423e0f7258867c6e4d88736bd5ec931385fa12a584cb3",
+    "nextflowconformance/data/schema/obligations.v1.json": "04beb7b84ef83137560187783a14312935fe26a20f91682660f0c9130a32b68a",
+    "nextflowconformance/data/schema/blocks.v1.json": "550a1b385daad9e2ee995cb873c6fe1bb9f52849c9ed469bb6d9ecf73420f25a",
+    "nextflowconformance/testdata/schema-cases.json": "8e8c6ba193895af3f18c4e135c943116ab996635240f361ab9b8a5da70326cbb",
+    "nextflowconformance/testdata/check_schemas.py": "34dfb3e7c0c875165b8a3d43f4aa73da5a24f623d5b4eecc01aa78d1c4188e58",
+    "nextflowconformance/testdata/records/attempts.json": "949b3614192ebd83edfc4f05a61ece2d2e3b82a430d4ce68ef10ae76d1fd69b1",
+    "nextflowconformance/testdata/records/sources.lock.json": "7c4374e097bdc20510c141f2463b1fec4187857453c180d7f549ff1c3ef956c2",
+    "nextflowconformance/testdata/records/uats.json": "7804c650cea47fcb1ee863b522909ade7100df51aa6db583d430a0f0c01c484f",
+    "nextflowconformance/testdata/records/blocks.json": "e3549c6ac6b97237f6c0d26486bbb517437c84a9519f72a85c70a12089f49ee9",
+    "nextflowconformance/testdata/records/obligations.json": "0493691d6080d2d38c031229aa4eae5948b8b7c93484b71bac508b5bbebaf65b",
+    "nextflowconformance/testdata/records/requirements.json": "1e6a4404e936d5595245c8cd2fddd5e5ac0e9bcba807ebf99a7d9c148602dbe8",
+    "nextflowconformance/testdata/records/bindings.json": "51288d10c7fad24eb4fb01ecf5843881513397e0de70ca719860984c6bd2d90f",
+    "nextflowconformance/testdata/records/reviews.json": "471e1f75e93b5950870799a1909cd30c6457780542563283947d4c7ce242c02b",
+    "nextflowconformance/testdata/records/batches.json": "1a21b364162da68dead86d092977aa27268d4daeeb0e7f232eda168c1dd59076",
+    "nextflowconformance/testdata/records/decisions.json": "9588b8c8eaee009b1df2606e852486790878828fa018d9ae40a142f59018360e",
+    "nextflowconformance/testdata/records/target.json": "7b2e4d95e205fc51703a7a409390a427c9ac71fd994f6fb21996948f1c31bcd8",
+    "nextflowconformance/testdata/schema-records/resolved-decision.json": "51cf8d1d213a2c42b17b034768262a05c4d6d0dfa08ea0b1fec437771f554736",
+    "nextflowconformance/testdata/schema-records/ready-uat.json": "2116ac6ffcdba284fd6208d267e0bc9635167cb0957b0fde284315d6955d1124",
+    ".docs/nextflow-conformance/evidence/phase1-schema-fix-02-manifest.json": "7c776ed4bbc69fb6a6d8960ee374a16de7e201bd9a0ca78a46cdcfe07b4335ba",
+    ".docs/nextflow-conformance/evidence/phase1-schema-review-01-manifest.json": "ba407af52d085b268dcddc91ada1945323d7cbfb4e862440dc26690f0dfa6558",
+    ".docs/nextflow-conformance/evidence/phase1-schema-fix-01-manifest.json": "b5a75ecbe08db56837daf6c8f2640721bbc796cc1876d692b68a5015fda8f2d5",
+    ".docs/nextflow-conformance/evidence/phase1-schema-review-02-boundaries.txt": "559a52d3996a48769a28c9502699c92a6e62b5bb9de843e1187b2a99cc24b04d",
+    ".docs/nextflow-conformance/evidence/phase1-schema-fix-02.md": "61a8b60a6b8ef279217b4fb64560fb7cb7afbd9d131f7f53f755d3412a5d35c9",
+    ".docs/nextflow-conformance/evidence/phase1-schema-fix-02-probes.txt": "b037aa24fa1ddb57e227309fe36593e36d6b176a9d7ac1118948125070ee2df9",
+    ".docs/nextflow-conformance/evidence/nextflow-naming-probes.txt": "1e7ec9917abb980497ddd76b4872074767181e62258f47b3c96bb9784f5922ec",
+    ".docs/nextflow-conformance/evidence/phase1-schema-review-03-probes.txt": "60b47ea0dc964da2a7a3a0ab4278b6f88b336ec0489a944338619af3ce2555e8",
+    ".docs/nextflow-conformance/evidence/phase1-schema.md": "573cc0c0bc94a24124f32a37ca076b4cb87187300e4d472c2cba4cf7143e5243",
+    ".docs/nextflow-conformance/evidence/phase1-schema-fix-02-ecmascript.txt": "029323efef6445d71e13507c1619b6fc3c53afab24d4e71f97c42b1ca80c94cc",
+    ".docs/nextflow-conformance/evidence/nextflow-naming.md": "8dbfad6daef814f85374f0f0fe48506a0bad46cfd1e0e891a09cc0d78fa52051",
+    ".docs/nextflow-conformance/evidence/phase1-schema-review-03-manifest.json": "3cf6dac64a571f8b16620a66831a59d867046cee7b589eb05ef24eb73731ad9d",
+    ".docs/nextflow-conformance/evidence/phase1-schema-fix-01.md": "30b941809e8527d49f4197f64b812c4d8f3046d18c6fc1a0d56de828d7754a7c",
+    ".docs/nextflow-conformance/evidence/phase1-schema-fix-01-probes.txt": "7e57268f911d887b984da6ddedd3c3f472bff9c7219680b98c3ba67a3f171545",
+    ".docs/nextflow-conformance/evidence/phase1.md": "47f36f7ce62a42347304a70546d724be10a5c2e212e3816e7061b57982c8248a",
+    ".docs/nextflow-conformance/evidence/nextflow-naming-manifest.json": "27066c29aa403d21befb893de20027ee8b7b3d0f378036ea48c1ab83fcc06342",
+    ".docs/nextflow-conformance/evidence/phase1-schema-review-02-probes.txt": "213025f5569b87c7ab5b2c8732c882c2316bd15536bc1823ddcf556f1bfb0bc0",
+    ".docs/nextflow-conformance/evidence/phase1-schema-review-02-manifest.json": "4cfae6bd923e5992a573227fc7b6d188a475c1a1e8c0cfeb47f2aa989e2c2e0b",
+    ".docs/nextflow-conformance/evidence/phase1-schema-review-01-probes.txt": "6ce744f89e0295a3ac4cf2189c96a72ad787f5499bb0e2f542adcf7cd011f00c",
+    ".docs/nextflow-conformance/reviews/feature-03.md": "0bcd28a88c5ac94a11d18d475dad6583b61362ac8433eeed9b8e12f741442788",
+    ".docs/nextflow-conformance/reviews/phase-01-schema-review-01.md": "da7c7a7b9e6e963643aedc878a34bbe5c1b77e50b5d7aaee3f0cef6c68d977f4",
+    ".docs/nextflow-conformance/reviews/packaging-phase-03-review-01.md": "cab9fddc581363217fa4a85dd75473606866f860d657e8976aaa2497f8983534",
+    ".docs/nextflow-conformance/reviews/phase-05-review-02.md": "e7d63f384ba7d33445f31ab2c1a961904b0b7711f811a0399415d4675a6c5bba",
+    ".docs/nextflow-conformance/reviews/packaging-proofread-01.md": "6dc4e276e1e6b178822e3e12ccde722ba23096ea368f7a9b5966aa6c1f817820",
+    ".docs/nextflow-conformance/reviews/packaging-phase-04-review-01.md": "98963d70b994001e94c7beee331d81f61ce57d7c47378d924a6163252d597e33",
+    ".docs/nextflow-conformance/reviews/feature-04.md": "da9459d50186a3053c1b00547cfcc409dbc4a228082bd5fe88bd8b069361e364",
+    ".docs/nextflow-conformance/reviews/feature-01.md": "80fdc80524fa0fdfef54de2f4d6ab1d9535e7078ce049d95412f1c31208c6737",
+    ".docs/nextflow-conformance/reviews/phase-04-review-01.md": "2d01386b79ca7d5a9f2cbc33c7871d38abce0faf00a67c6fc2d18be2f8579ca6",
+    ".docs/nextflow-conformance/reviews/phase-01-schema-review-02.md": "fffbfb137e77d8d8424dac9fe003ab9d6e80654b33a00fd1d3f7836125c7becf",
+    ".docs/nextflow-conformance/reviews/phase-01-review-01.md": "876c22e35fd4c6cd814d11a46f3b65eb4497056a06c3d1fd219ce3100d25eb7a",
+    ".docs/nextflow-conformance/reviews/phase-06-review-02.md": "87cb5e0078a66a02ec5b3b4239b4a059bcb085becadc267fc75ffb929f3638c5",
+    ".docs/nextflow-conformance/reviews/phase-01-schema-review-03.md": "5b1293912ecc57f922ff31808675f2f78011710ea586f5661d45ba7fcc273408",
+    ".docs/nextflow-conformance/reviews/packaging-phases.md": "ab9ca372b4076d145c0797a3208835f095e25e5e2cd1b3b3133a432e869703bc",
+    ".docs/nextflow-conformance/reviews/packaging-feature-02.md": "1e7678766e7af3b930027bb2fdb429cc6d8602410bf9098b90bb2c1bfbe29d1c",
+    ".docs/nextflow-conformance/reviews/phase-03-review-01.md": "e96fd5503f6f4dccce4157bfa73e2974f3c9bea0818e9ae00344006540b67789",
+    ".docs/nextflow-conformance/reviews/phase-01-bundle.md": "94a1bf77cff0a38dafd6794e9ca83630ec6a2734745d63ac487006455bf0552d",
+    ".docs/nextflow-conformance/reviews/proofread-03.md": "b981ca87ec81ee0a77b46f75fc52ccb49712d381e8d96e3b2845c5d26a0d0d95",
+    ".docs/nextflow-conformance/reviews/runtime-packaging-author.md": "cd9071e08d519a0a146b03fa9b1ab5beccf307cf17ab9176dd44b235b0b5a532",
+    ".docs/nextflow-conformance/reviews/packaging-proofread-02.md": "3c4c430fcea040ff00039618531ad80f10af2e01554340c25c30ef6d24adb929",
+    ".docs/nextflow-conformance/reviews/phase-03-review-02.md": "1502154e5751d223e1e7eb38609ff2dd823ce2d47ab50d3037e63946b31f8b4c",
+    ".docs/nextflow-conformance/reviews/phase-01-schema-bundle.md": "feed30f6d4d8f3321fbf34ef74cae3b9df1e96367bd6a567b7a1aefb7548d161",
+    ".docs/nextflow-conformance/reviews/proofread-02.md": "1dc1ace98a4cf3505ac470b472ae2c1a80043dc0caa6c56fed853490d93486ae",
+    ".docs/nextflow-conformance/reviews/phase-02-review-01.md": "bb978e3068dd1cb88b94a041679bd7501c1f2fb518912a2a937d050892edb4b6",
+    ".docs/nextflow-conformance/reviews/packaging-phase-05-review-01.md": "26afccd0d67a4a80ec2bcd9e93ad910aac222e12ddd6750d041588f9ab005d4d",
+    ".docs/nextflow-conformance/reviews/phase-02-review-02.md": "746ec3fdf2d97930fdedab14470099faff48d70f6435f4b016a731b6b1a450fc",
+    ".docs/nextflow-conformance/reviews/packaging-phase-06-review-01.md": "16b6959d8f5c483aac411b17640504bb47e2a7cae8684d16eaf727ebb93434bf",
+    ".docs/nextflow-conformance/reviews/phase-06-review-01.md": "6f30468e7d51abc290f66dd5a6e2afdcfa5af2729ae93db8d59f45dca9123fa5",
+    ".docs/nextflow-conformance/reviews/phase-01-review-02.md": "dd8976b75287058b13db8707008455c7812be3881e4cb4f83e3542b495a422c7",
+    ".docs/nextflow-conformance/reviews/phase-05-review-01.md": "fbdd49d7b32337c7fbcc21a5c5763a8c6296f7c200e8624f852c73ac05f5f05b",
+    ".docs/nextflow-conformance/reviews/packaging-feature-01.md": "32bf1e49f59a605192571b30c3bf55ded16d7dd351f66b167d7f1828c16f9ced",
+    ".docs/nextflow-conformance/reviews/packaging-phase-01-review-01.md": "4aeaf7a64a67c269ab6f3630cff8b5ce7a892c1ff938f995400cb6d662de4676",
+    ".docs/nextflow-conformance/reviews/proofread-01.md": "9273946c9c601164445f604c2c1b05ae14cc3962e112c3c613ae636b320a639c",
+    ".docs/nextflow-conformance/reviews/packaging-phase-03-review-02.md": "2e13a88a2bdf0bceefe058f39b1abae0f0df7d6a412dfced7b5b7c376f4d5fe8",
+    ".docs/nextflow-conformance/reviews/feature-02.md": "5b3e8d0a555572e000be15cf3e238cc4039e6704e0b0170c2d522c04a692aef7",
+    "go.mod": "2c8dc14c444c3e159c3795f406e766d3a4029236d91d0420906330c2b51507c7",
+    "go.sum": "ee0f56aca7017d15ff1998315bfd8579977e3a21ee46c2ce4f328eb91cb7834e",
+    ".golangci.yml": "36a2749675d2eb3ac55870ac5f8a208a2c525e50f8dcc3e26b7be8cfb9e0307d",
+    "main.go": "4565855b68d673fb37e3da935da865f5c6a4e67549fe0bc205c903e086979345",
+    ".docs/nextflow-conformance/spec.md": "86a025b97dcd79ad67137a665ab3561b4f49fcd53fc83bb514e12fb66d534383",
+    ".docs/nextflow-conformance/phase1.md": "06540cf1e4e9386f82fe1ba946363742f57d585b4894e72ed1851e1e7115e289"
+  },
+  "original_snapshot_sha256": {
+    ".tmp/agent/nextflow-conformance/fix03/original-model.go": "55fcef571c0ab824a76652ce4004d02ed56351b40e67a7752e11ce1a75d393ad",
+    ".tmp/agent/nextflow-conformance/fix03/original-schema.go": "88e129133897af183afb650db3d15c0dd539af5d854f2115dc9cbd9cb0c41629",
+    ".tmp/agent/nextflow-conformance/fix03/original-schema-cases.json": "d57cbc5d299aae316eada46ec97ad7a0d09e62728fc808146f943026d23a544c"
+  },
+  "review_sha256": {
+    ".docs/nextflow-conformance/reviews/phase-01-schema-review-04.md": "be788f31ef370012b8ac6a498a6b8246a1af49002d4fc9b033d607d620a8cc60",
+    ".docs/nextflow-conformance/evidence/phase1-schema-review-04-probes.txt": "6e9e52da6e2295d019ef0d004ccf2d464b6f35bd69bce7940bf13b8f6d89a46b"
+  },
+  "local_evidence_sha256": {
+    ".tmp/agent/nextflow-conformance/review04/independent.log": "87a1ce456d8d794961b14285154b9e33e14a869d437b91603173a7ac2c9da7ff",
+    ".tmp/agent/nextflow-conformance/review04/six.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    ".tmp/agent/nextflow-conformance/review04/lint-version.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    ".tmp/agent/nextflow-conformance/review04/cli.log": "16514ae4852962aa6359f6fdd0a95c508f91ab83c5fa6f7a7df912e33f73fd75",
+    ".tmp/agent/nextflow-conformance/review04/stock.log": "cc6b57597f580f72e7d1d6854e1e701f00a23e07ffc295029aff2c1c8e0eed0f",
+    ".tmp/agent/nextflow-conformance/review04/replay-red-go.exit": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    ".tmp/agent/nextflow-conformance/review04/replay-red-go.log": "a13f9dabffa4503a45aad22214fa509679609d2547c563079badbb2a19c7af43",
+    ".tmp/agent/nextflow-conformance/review04/ecmascript.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    ".tmp/agent/nextflow-conformance/review04/six.log": "778da6345effe57babc7e7ceedc18bf3da2770d98d69ace3c27b9f491fa0d08d",
+    ".tmp/agent/nextflow-conformance/review04/cli.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    ".tmp/agent/nextflow-conformance/review04/independent.exit": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    ".tmp/agent/nextflow-conformance/review04/owned.log": "210a1d06a4a906306830b83e75a67a4276d1952d621c6bba0cee28e52fee6563",
+    ".tmp/agent/nextflow-conformance/review04/full.exit": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    ".tmp/agent/nextflow-conformance/review04/ecmascript.log": "441a2d992ef7d0ffc647c423738283726d2d9f96b22732fcc26a2869a5f4e288",
+    ".tmp/agent/nextflow-conformance/review04/go-version.log": "f554cfdb85411c2bb1d503df3f53dfbad1f753eb8271938833166a5d26a7547c",
+    ".tmp/agent/nextflow-conformance/review04/initial-hashes.json": "afd8700d3f07ee80a2b46b0a22d0595c9a47b9940f085e036031cc94f8b4d8bc",
+    ".tmp/agent/nextflow-conformance/review04/go-version.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    ".tmp/agent/nextflow-conformance/review04/replay-red-stock.log": "7f1e7aae21a9b82b75906d0bccd8093013262b7fe9c720581cf5a8d4d4de4ac9",
+    ".tmp/agent/nextflow-conformance/review04/commands.json": "57e1fdfb9cb2f9519825e8bdca12eef0c6fba67629a6ae63e238186a2197a8eb",
+    ".tmp/agent/nextflow-conformance/review04/full.log": "a1dbc42d15b0ae6e6fb228e7dfeeeb0aa73dc4ae4e01924d37de5b5f9706e7be",
+    ".tmp/agent/nextflow-conformance/review04/build.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    ".tmp/agent/nextflow-conformance/review04/replay-red-stock.exit": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    ".tmp/agent/nextflow-conformance/review04/lint-version.log": "c616f4e39cf583e0941c1dfc70cb43c8ca2057820091b7acdbc78cc396c418f3",
+    ".tmp/agent/nextflow-conformance/review04/lint.log": "0c536ba806ac423a6a54c9640281eb3b0e787c45b3a6804bdd0c923af34866da",
+    ".tmp/agent/nextflow-conformance/review04/lint.exit": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    ".tmp/agent/nextflow-conformance/review04/stock.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    ".tmp/agent/nextflow-conformance/review04/owned.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    ".tmp/agent/nextflow-conformance/review04/build.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "tree_hash_method": "Sorted relative path UTF-8 + NUL + raw SHA-256 digest + newline for every file; digest concatenated entries with SHA-256.",
+  "retained_trees": [
+    {
+      "root": ".tmp/agent/nextflow-conformance/review04/probes",
+      "files": 1304,
+      "bytes": 870517,
+      "sha256": "5b18aa387d4feb49a06ba323623cfba6d9feb6401ced189d8a9e087f1a094a87"
+    },
+    {
+      "root": ".tmp/agent/nextflow-conformance/fix03/probes",
+      "files": 5753,
+      "bytes": 3908836,
+      "sha256": "3ce6cbbbbe04b60f698b59be34c28825458dd64200a17431fe2561ef4855e066"
+    },
+    {
+      "root": ".tmp/agent/nextflow-conformance/fix03/six-probes",
+      "files": 86,
+      "bytes": 56111,
+      "sha256": "9fb33544e31c2933a737caf45587fc92a73f3e45a8df22c650792a84e7648949"
+    }
+  ]
+}

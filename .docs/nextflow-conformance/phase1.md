@@ -81,8 +81,8 @@ handoff supports all seven A1 acceptance tests, owned by Item 1.2; later
 stories retain their acceptance IDs. Close the schema/CLI gaps and relevant
 lint findings recorded in the partial handoff before independent review.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.2: A1 - Acquire the exact runtime and external execution inputs
 

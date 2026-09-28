@@ -1,0 +1,17 @@
+// Run with node from the repository root. Tests the emitted description regexes.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const schema = JSON.parse(fs.readFileSync(
+  'nextflowconformance/data/schema/requirements.v1.json', 'utf8'));
+const text = schema.properties.text;
+const cases = JSON.parse(fs.readFileSync(
+  'nextflowconformance/testdata/schema-cases.json', 'utf8'))
+  .filter(item => item.kind === 'requirements' && item.path.length === 1
+    && item.path[0] === 'text');
+for (const item of cases) {
+  const valid = item.value.length >= text.minLength
+    && new RegExp(text.pattern, 'u').test(item.value)
+    && !text.not.anyOf.some(rule => new RegExp(rule.pattern, 'u').test(item.value));
+  assert.equal(valid, item.valid, item.name);
+}
+console.log(`PASS: ${cases.length} description cases match in ECMAScript regexes; not a full schema-engine run`);

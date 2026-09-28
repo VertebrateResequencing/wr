@@ -1,0 +1,89 @@
+"""Independent quoted-description checks. Run from the repository root."""
+import copy
+import json
+import subprocess
+from pathlib import Path
+
+from jsonschema import Draft202012Validator
+
+out = Path('.tmp/agent/nextflow-conformance/fix03/six-probes')
+out.mkdir(parents=True, exist_ok=True)
+fixtures = Path('nextflowconformance/testdata/records')
+records = {p.stem: json.loads(p.read_text()) for p in fixtures.glob('*.json')}
+serialized = json.dumps(records)
+for old, new in {'BLOCKS': 'BLOCK', 'OBLIGATIONS': 'FACET', 'REQUIREMENTS': 'REQ',
+                 'UATS': 'UAT', 'REVIEWS': 'REVIEW', 'DECISIONS': 'DECISION',
+                 'BINDINGS': 'BINDING'}.items():
+    serialized = serialized.replace('"' + old + '"', '"' + new + '"')
+records = json.loads(serialized)
+records['target'].update(tag='38ce286fe70b44a5907cf1f5b0b8fb13bd836721',
+                         commit='232b60569865e9a4577e48c1955409238359d6ca',
+                         source_tree='1b9ece615807c1e8feef1d38ccac124eb2eab073')
+records['sources.lock']['revision'] = records['target']['commit']
+records['sources.lock']['tree']['sha'] = records['target']['source_tree']
+schema = json.loads(Path(
+    'nextflowconformance/data/schema/requirements.v1.json').read_text())
+validator = Draft202012Validator(schema)
+cases = [
+    ('quoted-backtick-padding',
+     'The negative fixture is `TODO: describe expected behaviour. ` and must fail.', True),
+    ('quoted-backtick-nbsp',
+     'The negative fixture is `\u00a0TODO: describe expected behaviour.\u00a0` and must fail.', True),
+    ('quoted-multi-sentence',
+     'The negative fixture is "First. TODO: describe expected behaviour. More." and must fail.', True),
+    ('unquoted-nbsp', '\u00a0TODO: describe expected behaviour.\u00a0', False),
+    ('quoted-sentence',
+     'The fixture contains `TODO: describe expected behaviour.` and must fail.', True),
+    ('archived-heading', '`heading`: TODO: describe expected behaviour.', False),
+]
+node_script = '''
+const fs = require('node:fs');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const t = input.schema.properties.text;
+console.log(JSON.stringify(input.values.map(value =>
+  value.length >= t.minLength && new RegExp(t.pattern, 'u').test(value)
+  && !t.not.anyOf.some(rule => new RegExp(rule.pattern, 'u').test(value)))));
+'''
+js = subprocess.run(['node', '-e', node_script], input=json.dumps({
+    'schema': schema, 'values': [value for _, value, _ in cases]}),
+    text=True, capture_output=True, check=True, timeout=10)
+js_valid = json.loads(js.stdout)
+results = []
+for index, (name, value, valid) in enumerate(cases):
+    corpus = copy.deepcopy(records)
+    corpus['requirements']['text'] = value
+    root = out / name
+    root.mkdir(exist_ok=True)
+    for kind, obj in corpus.items():
+        destination = root / (kind + '.json')
+        if kind == 'attempts':
+            destination = root / 'attempts' / (obj['id'] + '.json')
+            destination.parent.mkdir(exist_ok=True)
+        elif kind not in ('target', 'sources.lock'):
+            obj = [obj]
+        destination.write_text(json.dumps(obj) + '\n')
+    row = {'name': name, 'value': value, 'expected_valid': valid,
+           'schema_valid': validator.is_valid(corpus['requirements']),
+           'ecmascript_valid': js_valid[index]}
+    for label, binary in [
+            ('current', '.tmp/agent/bin/wr-nextflow-conformance-fix03')]:
+        process = subprocess.run([binary, 'validate', '--root', str(root),
+                                  '--cache', str(out / 'cache')],
+                                 text=True, capture_output=True, timeout=5)
+        for suffix, data in [('stdout', process.stdout), ('stderr', process.stderr),
+                             ('exit', str(process.returncode) + '\n')]:
+            (out / (name + '.' + label + '.' + suffix)).write_text(data)
+        result = json.loads(process.stdout)
+        row[label] = {'exit': process.returncode,
+                      'codes': [d['code'] for d in result['diagnostics']]}
+    expected_code = 'E_TREE_INCOMPLETE' if valid else 'E_INPUT'
+    row['passes'] = (row['schema_valid'] == valid
+                     and row['ecmascript_valid'] == valid
+                     and row['current']['exit'] == 2
+                     and row['current']['codes'] == [expected_code])
+    results.append(row)
+    print(json.dumps(row))
+(out / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+failures = [r for r in results if not r['passes']]
+(out / 'failures.json').write_text(json.dumps(failures, indent=2) + '\n')
+assert not failures, f'{len(failures)} quoted-description contract failures'

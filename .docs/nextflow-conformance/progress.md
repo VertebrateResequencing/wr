@@ -30,10 +30,9 @@ actual runtime acquisition exposed the archive contract conflict recorded
 in blocker-phase1-1.1.md. Agent phase1_implement returned an incomplete
 handoff in evidence/phase1.md. The corrected spec has passed two feature
 reviews, two proofreading reviews, and all affected phase reviews. Next
-action: fix the additional placeholder-whitespace defect from Item 1.1's
-second review, then obtain a clean review before acquisition in Item 1.2.
-The naming migration and first three corrections passed independent review.
-No oracle or runtime conformance is claimed.
+action: complete acquisition in Item 1.2 using its approved bounded bundle.
+Item 1.1 passed independent review 05, including the quote-mask correction.
+No acquisition, oracle, or wr runtime completion is claimed.
 
 ## Review evidence
 
@@ -185,3 +184,51 @@ implementation bundles after amendment and phase review.
   fixes and mechanical naming migration were confirmed. See
   reviews/phase-01-schema-review-02.md. The implementation box is unchecked;
   nextflow_schema_fix_2 is correcting the shared whitespace rule.
+- nextflow_schema_fix_2 completed the shared Unicode whitespace correction
+  and an adjacent case-fold agreement fix. All 16 owned tests, eleven
+  schemas with 351 mutations, 228 CLI probes, and 216 ECMAScript regex cases
+  pass. Deferred acquisition failures remain unchanged. See
+  evidence/phase1-schema-fix-02.md. Item 1.1 is implemented and awaits a
+  fresh review; no phase completion is claimed.
+- Explicit naming and the first two schema reviews are committed as 5e16007e.
+- nextflow_schema_review_3 returned FAIL for the quoted-description
+  exemption: padded quoted fixtures and multi-sentence quoted examples can
+  be rejected. The NBSP case regressed in the whitespace correction.
+  Earlier fixes remain confirmed. See reviews/phase-01-schema-review-03.md.
+  Item 1.1 is unchecked; nextflow_schema_fix_3 is correcting quote context
+  with both quoted-positive and unquoted-negative controls.
+- nextflow_schema_fix_3 completed the quote-context correction. All 351
+  previous mutations remain, with 188 quote/boundary cases added. The 16
+  owned tests, 539 stock-schema mutations, 416 CLI assertions, six reviewer
+  regressions, and 404 ECMAScript cases pass. Deferred acquisition failures
+  remain unchanged. See evidence/phase1-schema-fix-03.md. Item 1.1 is
+  implemented and awaits fresh independent review.
+
+- nextflow_schema_review_4 returned FAIL for one decoder/schema disagreement.
+  Masking quoted spans or escapes with `x` can manufacture the forbidden
+  sentence and reject valid descriptions. Three of 93 independent probes
+  reproduce the defect; existing checks retain their expected results. See
+  reviews/phase-01-schema-review-04.md. Item 1.1 is unchecked pending the
+  correction and fresh review.
+
+- nextflow_schema_fix_4 corrected the masking defect with two substitutions
+  and a comment in model.go. All 539 previous mutations remain; 651 cases
+  cover literal insertion/replacement and outside-sentence controls. The
+  sixteen owned tests, 1,190 schema mutations, 744 new CLI/schema probes,
+  416 inherited CLI assertions, and ECMAScript checks pass. Original-source
+  replay reproduces the defect. Deferred acquisition failures are unchanged.
+  See evidence/phase1-schema-fix-04.md. Item 1.1 is implemented and awaits
+  fresh independent review.
+
+- nextflow_schema_review_5 returned PASS for Item 1.1. All owned checks and
+  195 fresh public-boundary probes pass. Original-source replay confirms
+  the masking defect, and all 112 review-start input hashes are unchanged.
+  See reviews/phase-01-schema-review-05.md. Item 1.1 is implemented and
+  reviewed. Item 1.2 retains the five acquisition failures and 61 lint
+  findings; it must complete all seven A1 UATs and actual acquisition.
+
+- nextflow_acquisition_bundle approved Item 1.2 implementation and review
+  contexts with a 90k working budget and an A1_01-04 / A1_05-07 split
+  fallback. See reviews/phase-01-acquisition-bundle.md. The retained runtime
+  hashes and Java executable were rechecked as prerequisites; actual
+  acquired-candidate and offline evidence remain implementation work.

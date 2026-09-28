@@ -1,0 +1,112 @@
+# Item 1.1 literal-masking review
+
+Verdict: PASS for Item 1.1. The review 04 masking defect is fixed. No
+blocking findings or new code-smell findings remain in the reviewed change.
+Reviewed on 2026-09-28. This verdict awards no package, A1, phase, oracle, or
+wr implementation pass.
+
+## Correction and independent evidence
+
+The complete production diff against the preserved fix 04 baseline changes
+only the comment and two replacements in `nextflowconformance/model.go`,
+lines 111-122. Both replacements now use NUL. This byte cannot supply a
+letter or whitespace in the guarded sentence. The callback still preserves
+single-quote opening boundaries and the closing backtick used by archived
+headings. The existing guard and emitter definitions in `schema.go`, lines
+251-285, retain their behavior. No parser, abstraction, or dependency was
+added.
+
+All 93 review 04 cases pass through the compiled public CLI, stock Draft
+2020-12 schema validator, and native ECMAScript expressions. In particular,
+these descriptions now pass decoding in all three paths:
+
+```text
+TODO: describe e"a fixture"pected behaviour.
+TODO: describe e\qpected behaviour.
+Inspect this negative sample. TODO: describe e"x"pected behaviour. Reject that sample.
+```
+
+The appended mutation families independently declare insertion/replacement
+outcomes at sentence-word positions, with intact outside-sentence controls
+before and after each input. All 651 additions pass, with 219 accepted and
+432 rejected descriptions. The earlier 539 values and their serialized
+prefix are unchanged.
+
+The fresh [review probe](../evidence/phase1-schema-review-05-probes.txt)
+adds 195 assertions across the same three boundaries. It tests actual NUL
+insertion, empty and escaped literals, multiline and Unicode literal
+contents, a literal containing the forbidden sentence, all 25 Unicode
+White_Space characters, long-s case folding, adjacent non-whitespace code
+points, literal boundaries, and outside-sentence controls. All pass. These
+expectations do not add arbitrary Markdown semantics to the regression
+guard.
+
+Accepted inputs must produce `E_TREE_INCOMPLETE` after successful record
+decoding. Rejected descriptions must produce `E_INPUT`. Both exit 2, so the
+probe asserts diagnostic codes as well as exit status. Complete input
+corpora, stdout, stderr, exits, and observed engine results are retained.
+These offline fixture results do not establish acquisition success.
+
+The original-source overlay still reproduces five decoder assertion
+failures and eight public probe failures, including the three exact review
+04 regressions. Stock-schema and ECMAScript expectations pass for those
+same red inputs. This isolates the repaired Go masking behavior.
+
+## Scope and preservation
+
+Approved the bounded input bundle before review. Relevant skill, Item 1.1,
+Architecture, Records, and CLI contract spans; reviews 02-04; fix 04 evidence;
+complete correction diff; affected functions; mutation-family declarations;
+and compact validation output fit within approximately 100,000 tokens.
+This is an input-size estimate, not measured model token usage. Generated
+corpora and schemas were inspected with tools, without full context dumps.
+
+Applied go-reviewer, agent-conduct, go-conventions,
+implementation-principles, testing-principles, code-smells, unslop, and
+prose-principles. Unchanged full schema/CLI coverage relies on review 02 as
+assigned. CLI, Go tests, acquisition files, entry point, module files, and
+linter configuration retain their review 02 hashes. The original model and
+schema snapshots match review 04's final hashes.
+
+All eleven emitted schemas retain their review 04 hashes. All fix 04
+manifest inputs, evidence, scratch artifacts, binaries, command logs, exit
+files, and five recorded artifact-tree digests were verified. The only
+fix-manifest input difference is the parent's Item 1.1 implemented checkbox.
+Reversing that checkbox reproduces the recorded hash. The broader fix 04
+baseline also differs in the parent's progress update, alongside the two
+intended implementation inputs. These known parent changes predate this
+review. All 112 review-start input hashes remain unchanged.
+
+## Commands and results
+
+Run from `/home/ubuntu/wr`. The
+[manifest](../evidence/phase1-schema-review-05-manifest.json) records every
+exact command, exit code, input hash, and output digest. Logs and corpora
+are under `.tmp/agent/nextflow-conformance/review05/`. Commands retain the
+fix 04 time bounds; only binary and output paths change to preserve earlier
+evidence. The owned test, stock-schema, ECMAScript, full-suite, linter, and
+red Go overlay commands are unchanged.
+
+- All sixteen owned Go test functions pass with Go 1.27.1,
+  `CGO_ENABLED=1`, `-tags netgo`, and `-count=1`.
+- Stock Draft 2020-12 validation passes eleven schemas and 1,190 mutations
+  without a format-checking plugin. The emission test checks generated bytes.
+- All 744 fix/review CLI-schema-ECMAScript cases, 195 fresh review cases,
+  416 inherited CLI assertions and JSON contracts, and six earlier quoted
+  regressions pass.
+- All 1,055 description mutations pass native ECMAScript expressions. This
+  is regex portability evidence, not a second full schema-engine run.
+- The full focused suite exits 1 with exactly `TestUAT_A1_01` through
+  `TestUAT_A1_05` failing on the deferred acquisition fixtures.
+- Lint exits 1 with exactly 61 deferred findings: 50 in `source.go` and
+  11 in `source_test.go`. Owned files have zero findings. Existing
+  golangci-lint v2.12.2 uses `GOTOOLCHAIN=go1.26.3` with unchanged analyzers
+  and configuration because Go 1.27 analyzers panic.
+- The red Go overlay and red public probe exit 1 with the five and eight
+  expected masking failures. The preservation audit exits 0.
+
+Item 1.2 still owns acquisition corrections, all seven A1 UATs, new
+A1_06/A1_07 tests, actual lock acquisition, runtime evidence, and the 61
+acquisition lint findings. Full unrelated wr tests were excluded. The
+reviewer changed only this review and review 05 evidence. No implementation,
+specification, fixture, checkbox, commit, or push was changed or made.

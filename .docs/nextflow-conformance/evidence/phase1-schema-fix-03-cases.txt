@@ -1,0 +1,71 @@
+"""Append independent quote-contract cases; retain the prior 351 mutations verbatim."""
+import json
+from pathlib import Path
+
+sentence = 'TODO: describe expected behaviour.'
+cases = []
+
+
+def add(name, value, valid):
+    cases.append({'name': 'description-quote-' + name, 'kind': 'requirements',
+                  'path': ['text'], 'value': value, 'valid': valid})
+
+
+# Expectations come from whether the stand-in is inside or outside the literal.
+for label, quote in [('backtick', '`'), ('double', '"'), ('single', "'")]:
+    for pad_name, pad in [('none', ''), ('space', ' '), ('nbsp', '\u00a0'), ('newline', '\n')]:
+        for body_name, body in [('sentence', sentence),
+                                ('multiple', 'First. ' + sentence + ' More.'),
+                                ('fold', 'First. TODO: deſcribe expected behaviour. More.')]:
+            literal = quote + pad + body + pad + quote
+            name = '-'.join([label, pad_name, body_name])
+            add(name, 'The negative fixture is ' + literal + ' and must fail.', True)
+            add(name + '-outside-after', 'The fixture is ' + literal + '. ' + sentence, False)
+            add(name + '-outside-before', sentence + ' The fixture is ' + literal + '.', False)
+    for word in ['TODO', 'TBD', 'placeholder']:
+        add(label + '-word-' + word.lower(), 'Reject ' + quote + ' ' + word + ' ' + quote + ' in the fixture.', True)
+    add(label + '-escaped-inner', 'The fixture is ' + quote + 'First. \\' + quote + ' ' + sentence + ' More.' + quote + ' and must fail.', True)
+    add(label + '-escaped-inner-outside', 'The fixture is ' + quote + 'First. \\' + quote + ' More.' + quote + '. ' + sentence, False)
+    add(label + '-escaped-close-unpaired', 'The fixture is ' + quote + 'First. ' + sentence + ' More.\\' + quote, False)
+    add(label + '-unmatched', 'The fixture starts ' + quote + 'First. ' + sentence, False)
+    add(label + '-escaped-opener', 'The fixture starts \\' + quote + 'First. ' + sentence, False)
+    add(label + '-even-slashes', 'The fixture is ' + quote + 'First. \\\\' + quote + '. ' + sentence, False)
+    add(label + '-odd-slashes', 'The fixture is ' + quote + 'First. \\\\\\' + quote + ' ' + sentence + ' More.' + quote, True)
+    add(label + '-sentence-after-colon', 'Fixture: ' + quote + 'First. ' + sentence + ' More.' + quote, True)
+    add(label + '-at-start', quote + 'First. ' + sentence + ' More.' + quote + ' is rejected.', True)
+    add(label + '-parenthesis', 'Reject (' + quote + 'First. ' + sentence + ' More.' + quote + ') in this fixture.', True)
+    add(label + '-other-quotes', 'The fixture is ' + quote + ('"word"' if quote != '"' else "'word'") + '. ' + sentence + ' More.' + quote, True)
+    add(label + '-two-literals', 'Reject ' + quote + 'one' + quote + ' and ' + quote + 'First. ' + sentence + ' More.' + quote, True)
+    add(label + '-two-literals-outside', 'Reject ' + quote + 'one' + quote + '. ' + sentence + ' Then ' + quote + 'two' + quote, False)
+
+for pad_name, pad in [('space', ' '), ('nbsp', '\u00a0'), ('newline', '\n')]:
+    add('unquoted-' + pad_name, pad + sentence + pad, False)
+    add('archived-' + pad_name, '`heading`:' + pad + sentence + pad, False)
+    add('archived-no-punctuation-' + pad_name, '`heading`' + pad + sentence, False)
+for name, value, valid in [
+        ('bare-sentence', sentence, False), ('bare-word', 'TODO', False),
+        ('contractions', "Don't omit it. " + sentence + " It isn't done.", False),
+        ('contraction-before-quoted', "Don't accept 'First. " + sentence + " More.' as a description.", True),
+        ('quoted-archived', 'Reject "`heading`: ' + sentence + '" in fixtures.', True),
+        ('escaped-punctuation', 'The fixture contains \\. ' + sentence + ' verbatim.', True),
+        ('escaped-space', 'First.\\ ' + sentence, True),
+        ('quote-immediate-outside', '`heading`' + sentence, False),
+        ('quote-no-boundary', 'The fixture is "one" ' + sentence + ' is its literal output.', True),
+        ('unmatched-after-sentence', sentence + ' "', False),
+        ('escaped-heading', '\\`heading\\`: ' + sentence, False)]:
+    add(name, value, valid)
+
+for label, quote in [('single', "'"), ('double', '"'), ('backtick', '`')]:
+    for pad_name, pad in [('space', ' '), ('nbsp', '\u00a0'), ('newline', '\n')]:
+        add('adjacent-outside-' + label + '-' + pad_name,
+            sentence + pad + quote + 'literal' + quote, False)
+
+for pad_name, pad in [('none', ''), ('space', ' '), ('nbsp', '\u00a0')]:
+    add('unmatched-backtick-immediate-' + pad_name,
+        'The fixture starts `' + pad + sentence, False)
+
+path = Path('nextflowconformance/testdata/schema-cases.json')
+existing = json.loads(path.read_text())
+assert len(existing) == 351, 'Run only once, after preserving the original cases.'
+path.write_text(json.dumps(existing + cases, indent=2) + '\n')
+print(f'Appended {len(cases)} quote cases; total {len(existing) + len(cases)}')

@@ -1,0 +1,113 @@
+"""Independent quote boundaries. Run from the repository root after CLI build."""
+import argparse
+import copy
+import json
+import subprocess
+from pathlib import Path
+
+from jsonschema import Draft202012Validator
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--binary', default='.tmp/agent/bin/wr-nextflow-conformance-fix04')
+parser.add_argument('--output', default='.tmp/agent/nextflow-conformance/fix04/green-probes')
+args = parser.parse_args()
+out = Path(args.output)
+out.mkdir(parents=True, exist_ok=True)
+records = {p.stem: json.loads(p.read_text())
+           for p in Path('nextflowconformance/testdata/records').glob('*.json')}
+serialized = json.dumps(records)
+for old, new in {'BLOCKS': 'BLOCK', 'OBLIGATIONS': 'FACET', 'REQUIREMENTS': 'REQ',
+                 'UATS': 'UAT', 'REVIEWS': 'REVIEW', 'DECISIONS': 'DECISION',
+                 'BINDINGS': 'BINDING'}.items():
+    serialized = serialized.replace('"' + old + '"', '"' + new + '"')
+records = json.loads(serialized)
+records['target'].update(tag='38ce286fe70b44a5907cf1f5b0b8fb13bd836721',
+                         commit='232b60569865e9a4577e48c1955409238359d6ca',
+                         source_tree='1b9ece615807c1e8feef1d38ccac124eb2eab073')
+records['sources.lock']['revision'] = records['target']['commit']
+records['sources.lock']['tree']['sha'] = records['target']['source_tree']
+schema = json.loads(Path('nextflowconformance/data/schema/requirements.v1.json').read_text())
+validator = Draft202012Validator(schema)
+sentence = 'TODO: describe expected behaviour.'
+cases = [
+    ('literal-within-word', 'TODO: describe e"a fixture"pected behaviour.', True),
+    ('escaped-within-word', r'TODO: describe e\qpected behaviour.', True),
+    ('literal-within-word-in-prose',
+     'Inspect this negative sample. TODO: describe e"x"pected behaviour. Reject that sample.', True),
+    ('backtick-within-word', 'TODO: describe e`a fixture`pected behaviour.', True),
+    ('apostrophe-within-word', "TODO: describe e'fixture'pected behaviour.", True),
+    ('bare-control', sentence, False),
+    ('archive-control', '`heading`: ' + sentence, False),
+    ('contraction-control', "Don't accept it. " + sentence + " It isn't complete.", False),
+    ('nested-literal-control', 'Reject "`heading`: ' + sentence + '" here.', True),
+]
+whitespace = '\t\n\v\f\r \u0085\u00a0\u1680' + ''.join(map(chr, range(0x2000, 0x200b))) + '\u2028\u2029\u202f\u205f\u3000'
+for index, space in enumerate(whitespace):
+    quote = ['"', "'", '`'][index % 3]
+    literal = quote + space + 'Before. TODO: deſcribe expected behaviour.' + space + 'After.' + quote
+    cases.extend([
+        (f'quoted-space-{ord(space):04x}', 'Reject ' + literal + ' in fixtures.', True),
+        (f'outside-space-{ord(space):04x}', 'Reject ' + literal + '.' + space + sentence, False),
+        (f'archived-space-{ord(space):04x}', '`subject`:' + space + sentence, False),
+    ])
+for index, quote in enumerate(['"', "'", '`']):
+    cases.extend([
+        (f'escaped-close-{index}', 'Reject ' + quote + 'A \\' + quote + '. ' + sentence + ' More.' + quote, True),
+        (f'unmatched-close-{index}', 'Reject ' + quote + 'A. ' + sentence, False),
+        (f'outside-before-{index}', sentence + ' ' + quote + 'literal' + quote, False),
+    ])
+# These independent expected outcomes also exercise the public compiled CLI.
+cases.extend((case['name'], case['value'], case['valid']) for case in json.loads(
+    Path('nextflowconformance/testdata/schema-cases.json').read_text())
+    if case['name'].startswith('description-opaque-'))
+node = '''
+const fs = require('node:fs');
+const {schema, values} = JSON.parse(fs.readFileSync(0, 'utf8'));
+const t = schema.properties.text;
+console.log(JSON.stringify(values.map(value => value.length >= t.minLength
+  && new RegExp(t.pattern, 'u').test(value)
+  && !t.not.anyOf.some(rule => new RegExp(rule.pattern, 'u').test(value)))));
+'''
+js = subprocess.run(['node', '-e', node], input=json.dumps({
+    'schema': schema, 'values': [value for _, value, _ in cases]}),
+    text=True, capture_output=True, check=True, timeout=10)
+js_valid = json.loads(js.stdout)
+results = []
+for index, (name, value, valid) in enumerate(cases):
+    corpus = copy.deepcopy(records)
+    corpus['requirements']['text'] = value
+    root = out / name
+    root.mkdir(exist_ok=True)
+    for kind, obj in corpus.items():
+        path = root / (kind + '.json')
+        if kind == 'attempts':
+            path = root / 'attempts' / (obj['id'] + '.json')
+            path.parent.mkdir(exist_ok=True)
+        elif kind not in ('target', 'sources.lock'):
+            obj = [obj]
+        path.write_text(json.dumps(obj) + '\n')
+    process = subprocess.run([
+        args.binary, 'validate',
+        '--root', str(root), '--cache', str(out / 'cache')],
+        text=True, capture_output=True, timeout=5)
+    for suffix, data in [('stdout', process.stdout), ('stderr', process.stderr),
+                         ('exit', str(process.returncode) + '\n')]:
+        (out / (name + '.' + suffix)).write_text(data)
+    result = json.loads(process.stdout)
+    codes = [diagnostic['code'] for diagnostic in result['diagnostics']]
+    row = {'name': name, 'value': value, 'expected_valid': valid,
+           'schema_valid': validator.is_valid(corpus['requirements']),
+           'ecmascript_valid': js_valid[index],
+           'go_exit': process.returncode, 'go_codes': codes}
+    row['passes'] = (row['schema_valid'] == valid
+                     and row['ecmascript_valid'] == valid
+                     and process.returncode == 2
+                     and codes == ['E_TREE_INCOMPLETE' if valid else 'E_INPUT'])
+    results.append(row)
+failures = [row for row in results if not row['passes']]
+(out / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+(out / 'failures.json').write_text(json.dumps(failures, indent=2) + '\n')
+for row in failures:
+    print(json.dumps(row))
+print(f'{len(cases)} independent cases; {len(failures)} failures')
+assert not failures, f'{len(failures)} quote-boundary contract failures'

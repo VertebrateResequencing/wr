@@ -1,0 +1,133 @@
+"""Review 05 independent opaque-boundary assertions. Run from repository root."""
+import argparse
+import copy
+import json
+import subprocess
+from pathlib import Path
+
+from jsonschema import Draft202012Validator
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--binary', default='.tmp/agent/bin/wr-nextflow-conformance-review05')
+parser.add_argument('--output', default='.tmp/agent/nextflow-conformance/review05/adversarial-probes')
+args = parser.parse_args()
+out = Path(args.output)
+out.mkdir(parents=True, exist_ok=True)
+records = {p.stem: json.loads(p.read_text())
+           for p in Path('nextflowconformance/testdata/records').glob('*.json')}
+serialized = json.dumps(records)
+for old, new in {'BLOCKS': 'BLOCK', 'OBLIGATIONS': 'FACET', 'REQUIREMENTS': 'REQ',
+                 'UATS': 'UAT', 'REVIEWS': 'REVIEW', 'DECISIONS': 'DECISION',
+                 'BINDINGS': 'BINDING'}.items():
+    serialized = serialized.replace('"' + old + '"', '"' + new + '"')
+records = json.loads(serialized)
+records['target'].update(tag='38ce286fe70b44a5907cf1f5b0b8fb13bd836721',
+                         commit='232b60569865e9a4577e48c1955409238359d6ca',
+                         source_tree='1b9ece615807c1e8feef1d38ccac124eb2eab073')
+records['sources.lock']['revision'] = records['target']['commit']
+records['sources.lock']['tree']['sha'] = records['target']['source_tree']
+schema = json.loads(Path('nextflowconformance/data/schema/requirements.v1.json').read_text())
+validator = Draft202012Validator(schema)
+sentence = 'TODO: describe expected behaviour.'
+cases = []
+
+
+def add(name, value, valid):
+    cases.append((name, value, valid))
+
+
+# Text containing an actual NUL remains ordinary input. The guard must not
+# delete it and join the two sides into its forbidden sentence.
+for position in [0, 1, 3, 6, 12, 16, 20, 25, 31, 32]:
+    value = sentence[:position] + '\x00' + sentence[position:]
+    add(f'nul-insertion-{position}', value, True)
+    add(f'nul-outside-before-{position}', sentence + ' ' + value, False)
+    add(f'nul-outside-after-{position}', value + ' ' + sentence, False)
+
+# Opaque contents cannot supply the missing x, whether empty, escaped,
+# non-ASCII, multiline, or containing the stand-in sentence themselves.
+for index, literal in enumerate([
+        '""', '"x"', '"\\x"', '"\x00"', '"λ🧬"',
+        '"a\nb"', '"\\\"x\\\""', '`x`', '`λ🧬`',
+        '"' + sentence + '"', '`' + sentence + '`', r'\x', r'\🧬']):
+    value = 'TODO: describe e' + literal + 'pected behaviour.'
+    add(f'opaque-x-{index}', value, True)
+    add(f'opaque-before-{index}', sentence + ' ' + value, False)
+    add(f'opaque-after-{index}', value + ' ' + sentence, False)
+
+# All Unicode White_Space boundary characters work with case-folded text.
+# Paired literals may contain that text; a following intact sentence may not.
+spaces = '\t\n\v\f\r \u0085\u00a0\u1680' + ''.join(map(chr, range(0x2000, 0x200b))) + '\u2028\u2029\u202f\u205f\u3000'
+folded = 'tOdO: deſcribe eXpected BeHaViOuR.'
+for space in spaces:
+    code = f'{ord(space):04x}'
+    add('folded-leading-' + code, space + folded + space, False)
+    add('folded-outside-' + code, 'Inspect "x".' + space + folded, False)
+    add('folded-quoted-' + code, 'Inspect "' + space + folded + space + '" here.', True)
+    add('folded-archive-' + code, '`λ🧬`:' + space + folded, False)
+
+# Adjacent Unicode characters outside White_Space do not acquire a boundary
+# merely because a quoted literal elsewhere is masked.
+for index, marker in enumerate(['\u200b', '\ufeff', '\u180e', '\x00']):
+    add(f'nonspace-boundary-{index}', 'Inspect "x".' + marker + sentence, True)
+    add(f'nonspace-outside-{index}', 'Inspect "x".' + marker + sentence + ' ' + sentence, False)
+
+for index, literal in enumerate(['"x"', "'x'", '`x`']):
+    add(f'literal-whole-{index}', literal, True)
+    add(f'literal-before-period-{index}', 'Read ' + literal + '. ' + sentence, False)
+    add(f'literal-before-question-{index}', 'Read ' + literal + '? ' + sentence, False)
+    add(f'literal-before-colon-{index}', 'Read ' + literal + ': ' + sentence, False)
+    add(f'literal-after-sentence-{index}', sentence + ' Read ' + literal + '.', False)
+    add(f'literal-contains-sentence-{index}', 'Read ' + literal[0] + 'First. ' + sentence + ' End.' + literal[-1] + '.', True)
+
+node = '''
+const fs = require('node:fs');
+const {schema, values} = JSON.parse(fs.readFileSync(0, 'utf8'));
+const t = schema.properties.text;
+console.log(JSON.stringify(values.map(value => value.length >= t.minLength
+  && new RegExp(t.pattern, 'u').test(value)
+  && !t.not.anyOf.some(rule => new RegExp(rule.pattern, 'u').test(value)))));
+'''
+js = subprocess.run(['node', '-e', node], input=json.dumps({
+    'schema': schema, 'values': [value for _, value, _ in cases]}),
+    text=True, capture_output=True, check=True, timeout=10)
+js_valid = json.loads(js.stdout)
+results = []
+for index, (name, value, valid) in enumerate(cases):
+    corpus = copy.deepcopy(records)
+    corpus['requirements']['text'] = value
+    root = out / name
+    root.mkdir(exist_ok=True)
+    for kind, obj in corpus.items():
+        path = root / (kind + '.json')
+        if kind == 'attempts':
+            path = root / 'attempts' / (obj['id'] + '.json')
+            path.parent.mkdir(exist_ok=True)
+        elif kind not in ('target', 'sources.lock'):
+            obj = [obj]
+        path.write_text(json.dumps(obj) + '\n')
+    process = subprocess.run([
+        args.binary, 'validate',
+        '--root', str(root), '--cache', str(out / 'cache')],
+        text=True, capture_output=True, timeout=5)
+    for suffix, data in [('stdout', process.stdout), ('stderr', process.stderr),
+                         ('exit', str(process.returncode) + '\n')]:
+        (out / (name + '.' + suffix)).write_text(data)
+    result = json.loads(process.stdout)
+    codes = [diagnostic['code'] for diagnostic in result['diagnostics']]
+    row = {'name': name, 'value': value, 'expected_valid': valid,
+           'schema_valid': validator.is_valid(corpus['requirements']),
+           'ecmascript_valid': js_valid[index],
+           'go_exit': process.returncode, 'go_codes': codes}
+    row['passes'] = (row['schema_valid'] == valid
+                     and row['ecmascript_valid'] == valid
+                     and process.returncode == 2
+                     and codes == ['E_TREE_INCOMPLETE' if valid else 'E_INPUT'])
+    results.append(row)
+failures = [row for row in results if not row['passes']]
+(out / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+(out / 'failures.json').write_text(json.dumps(failures, indent=2) + '\n')
+for row in failures:
+    print(json.dumps(row))
+print(f'{len(cases)} independent cases; {len(failures)} failures')
+assert not failures, f'{len(failures)} quote-boundary contract failures'
