@@ -38,9 +38,10 @@ type lsfIndexRange struct {
 	start, end, step int
 }
 
-// size is how many indices the range covers.
-func (r lsfIndexRange) size() int {
-	return (r.end-r.start)/r.step + 1
+// gaps is how many steps the range takes from its start, one fewer than the
+// indices it covers. Unlike their count, it cannot overflow an int.
+func (r lsfIndexRange) gaps() int {
+	return (r.end - r.start) / r.step
 }
 
 // covers reports whether index i is one of the range's indices.
@@ -147,10 +148,10 @@ func atois(strs ...string) ([]int, bool) {
 // of r's indices, or checking each unexplained element against r, so a huge range
 // costs no more than the elements still unexplained.
 func takeRange(jobID string, r lsfIndexRange, unexplained map[string]bool) int {
-	if r.size() <= len(unexplained) {
+	if r.gaps() < len(unexplained) {
 		taken := 0
 
-		for n := range r.size() {
+		for n := range r.gaps() + 1 {
 			element := jobID + "[" + strconv.Itoa(r.start+n*r.step) + "]"
 			if unexplained[element] {
 				delete(unexplained, element)

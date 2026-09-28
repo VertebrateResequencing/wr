@@ -27,6 +27,10 @@ Branch `fix-small-soak-findings`, based on `origin/develop` at `8cb5ff5`
   - `jobqueue/scheduler/lsf_bkill_range_test.go`: the probe as an untagged
     GoConvey test, plus stepped, stepless, comma-list, wide-range,
     other-job, duplicate-line and malformed cases.
+  - Review: a range ending at the largest int overflowed its index count to a
+    negative number, so it covered nothing. `takeRange` now compares the
+    range's step count, which cannot overflow. A test covers that range, and
+    that its scan matches no element of job 17 or 70 for a line about job 7.
 - [x] **Job.Key() cost.** Job.Key() rebuilds and hashes the whole command on
   every call (jobqueue/job.go around :1945). jobKeyConcat allocated
   11.6-15.6GB per 20 minutes with 20KB commands, at about 7 calls per job.

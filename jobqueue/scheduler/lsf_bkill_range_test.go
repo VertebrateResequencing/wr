@@ -90,6 +90,14 @@ func TestBkillRangeOutput(t *testing.T) {
 			So(k.unaccounted, ShouldEqual, 0)
 		})
 
+		Convey("as a range reaching the largest index, but only for its own job", func() {
+			k.account([]string{"7[500]", "17[500]", "70[500]"},
+				"Job <7[0-9223372036854775807]>: Job has already finished\n", errBkillRangeExit)
+
+			So(k.alreadyGone, ShouldEqual, 1)
+			So(k.unaccounted, ShouldEqual, 2)
+		})
+
 		Convey("as single elements and whole jobs, as before", func() {
 			k.account([]string{bkillRangeEl1, "8"},
 				"Job <7[1]> is being terminated\nJob <8>: Job has already finished\n", errBkillRangeExit)
