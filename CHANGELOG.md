@@ -12,6 +12,12 @@ project adheres to [Semantic Versioning](http://semver.org/).
   `--with_docker` command as the user the image specifies after all. You need it
   if your command writes to root-owned paths inside the image, and should expect
   anything it creates in your working directory to be owned by that user.
+- New `--lsf_queue` and `--lsf_queues_avoid` options for `wr manager start`
+  (and the `lsfqueue` and `lsfqueuesavoid` config options, or `WR_LSFQUEUE` and
+  `WR_LSFQUEUESAVOID`), which set the default queue, or queues to pick amongst,
+  and the queues to avoid, for commands you add without their own `--queue` or
+  `--queues_avoid` when using the LSF scheduler. A command's own
+  `--queues_avoid` replaces the default list rather than adding to it.
 
 ### Changed
 - A command that completes successfully no longer has its output kept. Its

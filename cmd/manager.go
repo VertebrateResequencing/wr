@@ -74,6 +74,8 @@ var (
 	useCertDomain         bool
 	runnerSyslog          bool
 	runnerFilelog         string
+	managerLSFQueue       string
+	managerLSFQueuesAvoid string
 )
 
 const (
@@ -158,6 +160,13 @@ machine. To keep cmds off this machine, use the lsf scheduler, or the openstack
 scheduler with --max_ram 0. To stop a running manager starting new cmds, use
 'wr manager pause'.
 
+With the lsf scheduler, --lsf_queue and --lsf_queues_avoid set the default
+queue(s) and queues to avoid for cmds added without their own --queue or
+--queues_avoid (see 'wr add -h'). A cmd's own --queues_avoid replaces the
+default list rather than adding to it. Cmds do not record these defaults, so if
+you restart the manager with different ones, cmds not yet submitted to LSF will
+use the new values, while LSF jobs already submitted stay in their queue.
+
 To use the openstack scheduler, see 'wr cloud deploy -h' for the details of
 which environment variables you need to use. That help also explains some of the
 --cloud* options in further detail.
@@ -189,9 +198,11 @@ unique, since it is used to name the private key that will be created in
 OpenStack, and if a key with that name already exists, the manager will not be
 able to create a new one (or get the existing one), and so will not function
 fully.`,
-	Run: func(_ *cobra.Command, _ []string) {
+	Run: func(cmd *cobra.Command, _ []string) {
 		// first we need our working directory to exist
 		createWorkingDir()
+
+		warnIgnoredLSFFlags(cmd, scheduler)
 
 		// check to see if the manager is already running (regardless of the
 		// state of the pid file), giving us a meaningful error message in the
@@ -1298,7 +1309,47 @@ func init() {
 // sub-command.
 func addManagerStartFlags(defaultConfig *internal.Config, defaultMaxRAM int) {
 	addManagerStartLocalFlags(defaultConfig, defaultMaxRAM)
+	addManagerStartLSFFlags(defaultConfig)
 	addManagerStartCloudFlags(defaultConfig)
+}
+
+// addManagerStartLSFFlags registers the lsf-scheduler flags for the manager
+// start sub-command.
+func addManagerStartLSFFlags(defaultConfig *internal.Config) {
+	flags := managerStartCmd.Flags()
+
+	flags.StringVar(&managerLSFQueue, "lsf_queue", defaultConfig.LSFQueue,
+		"for the lsf scheduler, queue (or comma-separated queues to pick amongst) for cmds added without --queue")
+	flags.StringVar(&managerLSFQueuesAvoid, "lsf_queues_avoid", defaultConfig.LSFQueuesAvoid,
+		"for the lsf scheduler, comma-separated substrings of queue names to avoid for cmds added without "+
+			"--queues_avoid; a cmd's own --queues_avoid replaces this list rather than adding to it")
+}
+
+// warnIgnoredLSFFlags warns if any lsf-scheduler flag was given on the command
+// line when the chosen scheduler is not lsf, since it would then be ignored.
+func warnIgnoredLSFFlags(cmd *cobra.Command, chosenScheduler string) {
+	if chosenScheduler == schedulerLSF {
+		return
+	}
+
+	var given []string
+
+	for _, name := range []string{"lsf_queue", "lsf_queues_avoid"} {
+		if cmd.Flags().Changed(name) {
+			given = append(given, "--"+name)
+		}
+	}
+
+	switch len(given) {
+	case 0:
+		return
+	case 1:
+		warn("%s only applies to the lsf scheduler, so will be ignored by the %s scheduler",
+			given[0], chosenScheduler)
+	default:
+		warn("%s only apply to the lsf scheduler, so will be ignored by the %s scheduler",
+			strings.Join(given, " and "), chosenScheduler)
+	}
 }
 
 // addManagerStartLocalFlags registers the non-cloud flags for the manager start
@@ -1591,6 +1642,8 @@ func buildSchedulerConfig(exe string, postCreation, preDestroy []byte) (any, str
 			Deployment:     config.Deployment,
 			Shell:          config.RunnerExecShell,
 			PrivateKeyPath: config.PrivateKeyPath,
+			Queue:          managerLSFQueue,
+			QueuesAvoid:    managerLSFQueuesAvoid,
 		}, ""
 	case "openstack":
 		return buildOpenStackConfig(exe, postCreation, preDestroy), cloudCIDR

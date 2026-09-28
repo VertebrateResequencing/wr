@@ -38,3 +38,13 @@ func TestDefaultConfigYML(t *testing.T) {
 		So(strings.Count(defaultYML, "\nmanagerremotesameaslocal: false\n"), ShouldEqual, 1)
 	})
 }
+
+func TestDefaultConfigYMLLSFQueueDefaults(t *testing.T) {
+	Convey("wr conf --default documents the LSF queue defaults", t, func() {
+		So(strings.Count(defaultYML, "\n# lsfqueue: \"\"\n"), ShouldEqual, 1)
+		So(strings.Count(defaultYML, "\nlsfqueuesavoid: \"interactive\"\n"), ShouldEqual, 1)
+		So(defaultYML, ShouldContainSubstring, "--lsf_queue option")
+		So(defaultYML, ShouldContainSubstring, "--lsf_queues_avoid")
+		So(defaultYML, ShouldContainSubstring, "REPLACES this one")
+	})
+}
