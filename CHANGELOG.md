@@ -99,6 +99,9 @@ project adheres to [Semantic Versioning](http://semver.org/).
   process is really listening on still stops the manager after about 5s, now
   with an error saying the port is in use by another process. macOS does not
   block the port this way, so its manager is unchanged.
+- The manager no longer rebuilds and hashes a command's whole text each time
+  it needs the command's key, which it does several times per command. With
+  20KB commands that cost 11.6-15.6GB of allocations every 20 minutes.
 - The manager no longer warns "checkCmd bkill did not reclaim all excess
   runners" when LSF's `bkill` reports several consecutive array elements on
   one line as a range, such as `Job <408347[1-2:1]>: Job has already
