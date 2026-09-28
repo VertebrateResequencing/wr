@@ -307,3 +307,44 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
 On this branch at the item 4 commit, with all `OS_*` unset: `make lint` 0
 issues; `make test` PASSED (784 passed, 21 skipped, 1m31s); `CGO_ENABLED=1 make
 race` PASSED (784 passed, 20 skipped, 3m1s). Each on the first run.
+
+## Review
+
+Changes made in review (`abbc0f02`):
+
+- `wr manager stop` now waits `daemonStopWait()`: 120s plus 1s per 50MiB of
+  `config.ManagerDBFile`, since the final backup copies the whole database and
+  at 30GB would alone exceed 120s. Without this, every clean stop of a large
+  healthy manager would exit 1. After 10s it says the manager is still shutting
+  down and where its log is. Test: `TestDaemonStopWaitAllowsForTheFinalBackup`.
+  Skipping the final backup was rejected: it is the only backup that captures
+  every write, and it is written to a temporary file and renamed, so a kill -9
+  during it leaves the previous backup intact.
+- During a shutdown a SIGINT now makes the manager exit at once with code 130,
+  so a second Ctrl-C on `wr manager start -f` works as expected. SIGTERM is
+  still ignored and logged, and `wr manager stop` sends only SIGTERM, so
+  re-running it stays safe. Test: the third Convey of
+  `TestManagerStopWhileShuttingDown`. The stop help documents both.
+- `waitForDaemonStop` no longer runs its poll in a goroutine.
+
+Checked and left alone:
+
+- A second `wr manager stop` run while the manager is freeing its memory (argv
+  unreadable, not yet a zombie) reads the pid file as stale, cannot connect,
+  and dies with "does not seem to be running". It sends no signal and keeps
+  the token, so it is safe, though the message is misleading.
+- The runner's 3 token rejections are at least `RetryWait` (15s by default)
+  apart, so they span 30s or more. A new manager writes its token file before
+  it listens (`persistTokenAndListen`), and connection errors while it is not
+  yet listening reset the count, so a restart window cannot use them up.
+- `scheduler.Cleanup` already ran after the runner wait; only its timing
+  changed. For LSF it kills only the user's jobs (`bjobs -w`) whose names start
+  with `jobNamePrefix(deployment)`. As before, two managers of one user and
+  deployment share that prefix unless `WR_JOBNAME_TOKEN` is set, and the
+  cleanup `bkill -b` has no exec timeout. Both predate this branch. A hung
+  bkill now makes the stop exit 1 with the token kept, not hang.
+- "Stop means buried" holds: nothing in the touch, kill or bury paths changed.
+
+Gates at `abbc0f02`, with all `OS_*` unset: `make lint` 0 issues; `make test`
+PASSED (785 passed, 21 skipped, 1m30s); `CGO_ENABLED=1 make race` PASSED (785
+passed, 20 skipped, 2m50s).
