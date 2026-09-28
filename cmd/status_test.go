@@ -41,6 +41,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/internal/publishexit"
+	"github.com/VertebrateResequencing/wr/internal/testcerts"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
@@ -1323,6 +1324,10 @@ func statusTestServerConfig(t *testing.T) (*internal.Config, jobqueue.ServerConf
 		Timings:         jobqueue.ServerTimings{InterruptTime: testServerInterruptTime},
 	}
 	reqs := &jqs.Requirements{RAM: 10, Time: time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}
+
+	// Serve would otherwise make new RSA keys for every test server.
+	So(testcerts.Write(serverConfig.CAFile, serverConfig.CertFile, serverConfig.KeyFile, serverConfig.CertDomain),
+		ShouldBeNil)
 
 	return testConfig, serverConfig, statusTestHost + ":" + port, reqs
 }
