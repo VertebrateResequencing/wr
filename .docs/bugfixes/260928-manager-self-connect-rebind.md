@@ -124,5 +124,22 @@ fix-manager-self-connect-rebind
       use", which the new error still contains.
   - CHANGELOG "### Fixed" entry, which says that even-numbered ports were
     exposed.
+  - Review follow-up:
+    - Reservations are Linux-only (`port_reservation_linux.go`, with
+      `port_reservation_other.go` a no-op). BSD-derived kernels such as macOS
+      let a wildcard SO_REUSEADDR bind succeed over another address's
+      TIME_WAIT, so the bug does not arise there, and their rules for binding
+      a listener beside a reservation differ and cannot be tested here. On
+      non-Linux, Serve behaves as before the fix.
+    - The Linux socket is made with SOCK_CLOEXEC, not socket() then
+      CloseOnExec under ForkLock.
+    - The serve test helper no longer retries a Serve error wrapping
+      errPortInUse, which Serve already retried for 5s: that took
+      `TestServeFailsCleanlyWhenPortTaken` from 25s to 5s.
+    - New `TestManagerPortReservationRelease` checks that reservations are
+      released on repeated reserve/release, on a Serve error after reserving,
+      on publication, and on a stop inside the startup window, across three
+      start/stop cycles on the same ports. Each of its Serve-level cases fails
+      when the matching release is removed.
   - Gates: `make lint` 0 issues; `make test` 745 passed, 21 skipped;
     `CGO_ENABLED=1 make race` 745 passed, 20 skipped.

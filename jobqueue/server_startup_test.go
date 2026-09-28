@@ -35,6 +35,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime"
 	"strconv"
 	"syscall"
 	"testing"
@@ -96,6 +97,15 @@ func TestServeFailsCleanlyWhenPortTaken(t *testing.T) {
 		}
 
 		So(squatter, ShouldNotBeNil)
+
+		if runtime.GOOS != "linux" {
+			// only Linux reserves ports (port_reservation.go), so elsewhere
+			// it is still publication that finds the port taken.
+			So(errors.Is(err, errServePublishGaveUp), ShouldBeTrue)
+
+			return
+		}
+
 		So(err, ShouldNotBeNil)
 		So(err.Error(), ShouldContainSubstring, "manager port "+serverConfig.Port+" is in use by another process")
 	})

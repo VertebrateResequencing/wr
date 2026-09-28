@@ -4136,10 +4136,10 @@ func currentServerIP(config ServerConfig, serverLogger log15.Logger) (string, er
 // that gets ErrNoServer, exactly as it would against a manager that is simply
 // down.
 //
-// It does reserve the configured ports first (bound but not listening, so a
-// client's dial is still refused), so that a local client redialling the
-// manager in the meantime cannot self-connect on one and keep the manager off
-// it. If a port is still held from before, Serve waits: for up to 5s if
+// On Linux it does reserve the configured ports first (bound but not
+// listening, so a client's dial is still refused), so that a local client
+// redialling the manager in the meantime cannot self-connect on one and keep
+// the manager off it. If a port is still held from before, Serve waits: for up to 5s if
 // something is listening there, when it fails saying the port is in use by
 // another process, and for up to 90s if nothing is, which outlasts a
 // self-connect's 60s TIME_WAIT.

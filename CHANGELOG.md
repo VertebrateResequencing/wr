@@ -93,11 +93,12 @@ project adheres to [Semantic Versioning](http://semver.org/).
   60s, longer than the manager's 5s retry. Even-numbered ports were the ones
   exposed, because Linux gives dials even source ports first: that includes
   the default web port, and any manager or web port you configured as an even
-  number. The manager now holds both ports from the moment it starts (clients
+  number. On Linux, the manager now holds both ports from the moment it starts (clients
   are still refused until it is ready), and if a port is still blocked when it
   starts, it waits up to 90s for it, saying so in its log. A port that another
   process is really listening on still stops the manager after about 5s, now
-  with an error saying the port is in use by another process.
+  with an error saying the port is in use by another process. macOS does not
+  block the port this way, so its manager is unchanged.
 - The `cleanup` and `cleanup_all` behaviours (`cleanup` is the default
   `--on_exit`) of a lost command could leave empty directories behind in the
   command's `--cwd` and report a warning, when its runner and the manager both

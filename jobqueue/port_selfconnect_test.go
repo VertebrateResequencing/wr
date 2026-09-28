@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build linux
 
 /*******************************************************************************
  * Copyright (c) 2026 Genome Research Ltd.
@@ -38,6 +38,8 @@ package jobqueue
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"testing"
@@ -59,6 +61,18 @@ const (
 	// pscFastFailSlack is how much longer than the busy-port retry budget a
 	// Serve against a port another process listens on may take to fail.
 	pscFastFailSlack = 3 * time.Second
+
+	// pscReleaseCycles is how many times a reservation is made and released on
+	// one port.
+	pscReleaseCycles = 20
+
+	// pscRestartCycles is how many times a server is started and stopped on the
+	// same ports within the one process.
+	pscRestartCycles = 3
+
+	// pscStopSettle is how long a Stop is given to cancel a paused recovery
+	// before the pause is released.
+	pscStopSettle = 100 * time.Millisecond
 )
 
 // pscPublication is how a server's publication ended.
@@ -191,6 +205,117 @@ func TestManagerPortSelfConnect(t *testing.T) {
 	})
 }
 
+func TestManagerPortReservationRelease(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Releasing a port reservation closes its socket, and releasing again is harmless", t, func() {
+		port := pscFreePort(-1)
+		p, err := strconv.Atoi(port)
+		So(err, ShouldBeNil)
+
+		stillHeld := 0
+
+		for range pscReleaseCycles {
+			res, errr := reservePort(ctx, "manager port", port)
+			So(errr, ShouldBeNil)
+
+			if pscBindable(p) {
+				stillHeld--
+			}
+
+			res.release()
+			res.release()
+
+			if !pscBindable(p) {
+				stillHeld++
+			}
+		}
+
+		So(stillHeld, ShouldEqual, 0)
+	})
+
+	Convey("A Serve that fails after reserving its ports releases them", t, func() {
+		_, serverConfig, _, _, _ := jobqueueTestInit(true)
+		serverConfig.Port = pscFreePort(-1)
+		serverConfig.WebPort = pscFreePort(-1)
+
+		notADir := filepath.Join(t.TempDir(), "file")
+		So(os.WriteFile(notADir, nil, 0o600), ShouldBeNil)
+
+		serverConfig.DBFile = filepath.Join(notADir, "db")
+		serverConfig.DBFileBackup = filepath.Join(notADir, "db.bk")
+
+		server, _, _, err := Serve(ctx, serverConfig)
+		if server != nil {
+			server.Stop(ctx, true)
+		}
+
+		So(err, ShouldNotBeNil)
+		So(pscBindableString(serverConfig.Port), ShouldBeTrue)
+		So(pscBindableString(serverConfig.WebPort), ShouldBeTrue)
+	})
+
+	Convey("A recovering server holds both reservations, publication hands both over, and stops leak none", t, func() {
+		_, serverConfig, _, _, _ := jobqueueTestInit(true)
+		serverConfig.Port = pscFreePort(-1)
+		serverConfig.WebPort = pscFreePort(-1)
+
+		exits := make(chan int, 2)
+
+		defer publishexit.Set(func(code int) { exits <- code })()
+
+		for range pscRestartCycles {
+			server, _, release := pausedRecoveringFixtureServer(ctx, serverConfig)
+			stop := dgsCleanup(ctx, server, release)
+
+			So(pscBindableString(serverConfig.Port), ShouldBeFalse)
+			So(pscBindableString(serverConfig.WebPort), ShouldBeFalse)
+
+			release()
+
+			So(pscWaitPublication(server, exits), ShouldEqual, pscPublished)
+			So(server.portReservations.rpc.held(), ShouldBeFalse)
+			So(server.portReservations.web.held(), ShouldBeFalse)
+
+			stop()
+		}
+	})
+
+	Convey("A server stopped before it publishes releases both reservations", t, func() {
+		_, serverConfig, _, _, _ := jobqueueTestInit(true)
+		serverConfig.Port = pscFreePort(-1)
+		serverConfig.WebPort = pscFreePort(-1)
+
+		defer publishexit.Set(func(int) {})()
+
+		for range pscRestartCycles {
+			server, _, release := pausedRecoveringFixtureServer(ctx, serverConfig)
+
+			stopped := make(chan struct{})
+
+			go func() {
+				server.Stop(ctx, true)
+				close(stopped)
+			}()
+
+			// Stop first cancels recovery, which then ends without
+			// publishing once the pause hook lets it go.
+			<-time.After(pscStopSettle)
+			release()
+			<-stopped
+
+			So(server.portReservations.rpc.held(), ShouldBeFalse)
+			So(server.portReservations.web.held(), ShouldBeFalse)
+			So(pscBindableString(serverConfig.Port), ShouldBeTrue)
+			So(pscBindableString(serverConfig.WebPort), ShouldBeTrue)
+		}
+	})
+}
+
 // pscFreePort returns a free port in the ephemeral range. If parity is 0 or 1,
 // the port has that parity (port%2).
 func pscFreePort(parity int) string {
@@ -228,6 +353,22 @@ func pscBindable(port int) bool {
 	defer func() { _ = syscall.Close(fd) }()
 
 	return syscall.Bind(fd, &syscall.SockaddrInet4{Port: port}) == nil
+}
+
+// held reports whether the reservation still holds its port.
+func (r *portReservation) held() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.fd >= 0
+}
+
+// pscBindableString is pscBindable for a port given as a string.
+func pscBindableString(port string) bool {
+	p, err := strconv.Atoi(port)
+	So(err, ShouldBeNil)
+
+	return pscBindable(p)
 }
 
 // pscSelfConnect connects a socket on port to itself, as a client redialling

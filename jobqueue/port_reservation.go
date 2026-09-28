@@ -41,13 +41,19 @@ package jobqueue
 // it is refused just as if it were closed. So Serve binds one on each port with
 // SO_REUSEADDR and holds it until publication's real listener, which also has
 // SO_REUSEADDR, is bound alongside it.
+//
+// All of this is Linux behaviour. BSD-derived kernels such as macOS let a
+// socket with SO_REUSEADDR bind a wildcard address over another address's
+// TIME_WAIT, so a self-connect cannot keep the manager off its port there, and
+// their rules for binding beside a reservation differ. So only Linux reserves
+// (port_reservation_linux.go); elsewhere the ports are bound at publication, as
+// they always were.
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"strconv"
 	"sync"
 	"syscall"
@@ -72,10 +78,13 @@ const (
 )
 
 // errPortInUse and errPortStillHeld are what reservePort wraps its final bind
-// error in.
+// error in. errReservationUnsupported is bindPortReservation's error on a
+// platform that does not reserve ports.
 var (
 	errPortInUse     = errors.New("in use by another process")
 	errPortStillHeld = errors.New("still held by a socket that is not listening (such as a connection in TIME_WAIT)")
+
+	errReservationUnsupported = errors.New("port reservations are not supported on this platform")
 )
 
 // portReservation is a socket bound to a port without listening on it.
@@ -100,6 +109,10 @@ func reservePort(ctx context.Context, what, port string) (*portReservation, erro
 	}
 
 	res, err := bindPortReservation(p)
+	if errors.Is(err, errReservationUnsupported) {
+		return unreserved(), nil
+	}
+
 	if !errors.Is(err, syscall.EADDRINUSE) {
 		return reservationOutcome(ctx, what, port, res, err), nil
 	}
@@ -159,42 +172,6 @@ func retryPortReservation(ctx context.Context, what, port string, p int) (*portR
 
 		lastLog = logPortStillHeld(ctx, what, port, waited, lastLog)
 	}
-}
-
-// bindPortReservation binds a socket to 0.0.0.0:port with SO_REUSEADDR, but
-// does not listen on it. SO_REUSEADDR lets it bind past the TIME_WAITs a
-// previous manager's own connections leave on the port, and lets our real
-// listener bind alongside it.
-func bindPortReservation(port int) (*portReservation, error) {
-	// hold ForkLock so that a process forked meanwhile cannot inherit the
-	// socket before it is marked close-on-exec: a runner that did would hold
-	// the port for as long as it lived.
-	syscall.ForkLock.RLock()
-
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
-	if err == nil {
-		syscall.CloseOnExec(fd)
-	}
-
-	syscall.ForkLock.RUnlock()
-
-	if err != nil {
-		return nil, os.NewSyscallError("socket", err)
-	}
-
-	if err = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
-		_ = syscall.Close(fd)
-
-		return nil, os.NewSyscallError("setsockopt", err)
-	}
-
-	if err = syscall.Bind(fd, &syscall.SockaddrInet4{Port: port}); err != nil {
-		_ = syscall.Close(fd)
-
-		return nil, os.NewSyscallError("bind", err)
-	}
-
-	return &portReservation{fd: fd}, nil
 }
 
 // release closes the reservation's socket. It may be called more than once,
