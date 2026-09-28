@@ -89,10 +89,12 @@ var ErrSuiteFailed = errors.New("test suite failed")
 //
 //nolint:gochecknoglobals // A read-only ordering table.
 var lanesLongestFirst = []string{
-	"jq_default",
 	"jq_reliable4",
+	"jq_default",
 	"jq_reliable2",
+	"jq_default_a_k",
 	"cmd_default",
+	"jq_default_l_r",
 	"jq_dep_granularity",
 	"scheduler",
 	"other",
