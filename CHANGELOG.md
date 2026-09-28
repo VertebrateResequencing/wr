@@ -162,6 +162,15 @@ project adheres to [Semantic Versioning](http://semver.org/).
   over, so after a crash it waits for that runner to report. If that runner
   died too, the command is run again once its runner is confirmed dead, as for
   any other lost command.
+- A command that completed successfully no longer runs again when the manager's
+  database is slow to save its completion, as when the database's filesystem
+  fills up. The runner stops keeping the command alive once it has finished,
+  so if the save took longer than a minute, the manager treated the command as
+  released and gave it to another runner, which ran it a second time. A runner
+  whose report timed out and was sent again also got an "internal error"
+  (`Remove(...): not found` in the manager's log) even though its command's
+  completion had been saved. The manager now keeps a finished command until its
+  completion is saved, and accepts a repeated completion report.
 - The manager starts much faster when its database is on NFS. Opening the
   database made NFS forget the parts of the file it had already read, so
   recovering the jobs from before a restart then read it back a small piece at

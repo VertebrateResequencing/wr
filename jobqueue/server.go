@@ -5410,6 +5410,16 @@ func (s *Server) createQueue(ctx context.Context) {
 func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
 	job.Lock()
 
+	// a job whose success is still being archived has run and must not run
+	// again: it stays parked for the archive to remove. It is Exited, so without
+	// this it would be taken for a released job below, and a commit that stalled
+	// for longer than the TTR would hand it to a fresh runner.
+	if job.archivePendingLocked() {
+		job.Unlock()
+
+		return queue.SubQueueRun
+	}
+
 	// a released/finished item awaiting its delay is not a live reservation; let
 	// it proceed to the delay sub-queue as before.
 	if job.Exited {
@@ -6535,7 +6545,7 @@ func (s *Server) killRunningJob(ctx context.Context, jobkey string,
 	job := item.Data().(*Job) //nolint:errcheck,forcetypeassert // queue only ever stores *Job
 	job.Lock()
 
-	if onlyRun != nil && !job.isLostRunLocked(*onlyRun) {
+	if !job.killableLocked(onlyRun) {
 		job.Unlock()
 
 		return false, false, nil
