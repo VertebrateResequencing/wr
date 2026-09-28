@@ -141,9 +141,9 @@ const (
 	// before giving up. See bjobsAppearTimeout.
 	defaultBjobsAppearTimeout = 10 * time.Second
 
-	// bjobsAppearPollFreq is how often we poll bjobs while waiting for a
-	// submitted job to appear.
-	bjobsAppearPollFreq = 100 * time.Millisecond
+	// defaultBjobsAppearPollFreq is the default for how often we re-poll bjobs
+	// while waiting for a submitted job to appear. See bjobsAppearPollFreq.
+	defaultBjobsAppearPollFreq = 100 * time.Millisecond
 
 	// defaultMaxBsubArraySize is the conservative default cap on the number of
 	// elements wr puts in a single bsub job array (the common LSF MAX_JOB_ARRAY
@@ -349,6 +349,11 @@ var bjobsPipeCloseGrace = defaultBjobsPipeCloseGrace //nolint:gochecknoglobals
 // `bjobs -w <id>` was forever (.docs/bugfixes/260827-2.md). It is a package var so
 // tests can lower it.
 var bjobsAppearTimeout = defaultBjobsAppearTimeout //nolint:gochecknoglobals
+
+// bjobsAppearPollFreq is how often pollForBjob re-polls bjobs after its first,
+// immediate check has not yet found the submitted job. It is a package var so
+// tests can change it.
+var bjobsAppearPollFreq = defaultBjobsAppearPollFreq //nolint:gochecknoglobals
 
 // killBackoffMin and killBackoffMax bound the jittered exponential interval that
 // must pass before wr re-issues a bkill for an element it has already asked LSF
@@ -1342,10 +1347,19 @@ func bsubStderr(err error) string {
 // or the given window passes without it appearing, returning false. Each poll is
 // itself bounded (see bjobAppeared), so an unanswered one cannot leave this
 // running indefinitely after waitForBjob has given up on it.
-func (s *lsf) pollForBjob(jobID string, window, execTimeout, pipeGrace time.Duration) bool {
+//
+// The first poll is made at once, and only later ones wait for pollFreq: LSF
+// normally reports a job by id as soon as bsub has returned its id, so that one
+// check is usually the only one, and waiting a tick first only delayed every
+// submission (each chunk of a large array count included) by pollFreq.
+func (s *lsf) pollForBjob(jobID string, window, pollFreq, execTimeout, pipeGrace time.Duration) bool {
 	limit := time.After(window)
 
-	ticker := time.NewTicker(bjobsAppearPollFreq)
+	if s.bjobAppeared(jobID, execTimeout, pipeGrace) {
+		return true
+	}
+
+	ticker := time.NewTicker(pollFreq)
 	defer ticker.Stop()
 
 	for {
@@ -1995,7 +2009,8 @@ func (s *lsf) waitForBjob(ctx context.Context, jobID string) bool {
 	// below: that poller can outlive this call (a poll in progress cannot be
 	// interrupted) and they are package vars tests lower, so a poller reading
 	// them itself would be reading state its caller has already moved on from.
-	window, execTimeout, pipeGrace := bjobsAppearTimeout, bjobsExecTimeout, bjobsPipeCloseGrace
+	window, pollFreq := bjobsAppearTimeout, bjobsAppearPollFreq
+	execTimeout, pipeGrace := bjobsExecTimeout, bjobsPipeCloseGrace
 
 	// ready is buffered so that when the deadline below wins, the abandoned
 	// poller's send cannot block it from returning (see bjobsAppearTimeout).
@@ -2005,7 +2020,7 @@ func (s *lsf) waitForBjob(ctx context.Context, jobID string) bool {
 		defer internal.LogPanic(ctx, "lsf scheduling", true)
 
 		//nolint:contextcheck // each poll's exec is bounded by its own ctx (see bjobAppeared)
-		ready <- s.pollForBjob(jobID, window, execTimeout, pipeGrace)
+		ready <- s.pollForBjob(jobID, window, pollFreq, execTimeout, pipeGrace)
 	}()
 
 	select {
