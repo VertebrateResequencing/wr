@@ -383,10 +383,11 @@ func TestReserveDurabilityStalledWrite(t *testing.T) {
 	})
 }
 
-// TestBestEffortDrainKeepsArrivalOrder proves that when one drain holds both an
-// exit op and a change for the same job, the job's live record is whichever
-// arrived last. Before, changes were always written first, so a release queued
-// before the next reservation overwrote it, and the job recovered to ready.
+// TestBestEffortDrainKeepsArrivalOrder proves that when one drain holds both
+// exit ops and a change for the same job, the job's live record is whichever
+// arrived last, and that an exit op whose live write is superseded still stores
+// its std. Before, changes were always written first, so a release queued before
+// the next reservation overwrote it, and the job recovered to ready.
 func TestBestEffortDrainKeepsArrivalOrder(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -394,37 +395,41 @@ func TestBestEffortDrainKeepsArrivalOrder(t *testing.T) {
 
 	ctx := context.Background()
 
+	const (
+		release     = "release"
+		reservation = "reservation"
+	)
+
 	for _, tc := range []struct {
 		name      string
-		exitFirst bool
+		order     []string
 		wantState JobState
 	}{
-		{"a release then a reservation leaves the reservation", true, JobStateReserved},
-		{"a reservation then a release leaves the release", false, JobStateDelayed},
+		{"a release then a reservation leaves the reservation", []string{release, reservation}, JobStateReserved},
+		{"a reservation then a release leaves the release", []string{reservation, release}, JobStateDelayed},
+		{"a release, a reservation and a release leaves the last release",
+			[]string{release, reservation, release}, JobStateDelayed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			database := openReliable4WriteStormDB(t, ctx)
 			defer func() { _ = database.close(ctx) }()
 
 			job := reliable4WSSeedLiveJobs(t, ctx, database, 1)[0]
+			stde := []byte("failed run's stderr")
 
-			// each queue call encodes the job as it is at that moment.
-			queueRelease := func() {
-				job.State = JobStateDelayed
-				queueUnkickedBestEffortExit(t, database, job)
-			}
-
-			queueReservation := func() {
-				job.State = JobStateReserved
-				queueUnkickedBestEffortChange(t, database, job)
-			}
-
-			if tc.exitFirst {
-				queueRelease()
-				queueReservation()
-			} else {
-				queueReservation()
-				queueRelease()
+			// each queue call encodes the job as it is at that moment. A failed
+			// release's std is stored whether or not its live write is superseded.
+			for _, op := range tc.order {
+				switch op {
+				case release:
+					job.State = JobStateDelayed
+					job.Exitcode = 1
+					queueUnkickedBestEffortExit(t, database, job, stde)
+				case reservation:
+					job.State = JobStateReserved
+					job.Exitcode = -1
+					queueUnkickedBestEffortChange(t, database, job)
+				}
 			}
 
 			database.drainBestEffort(ctx)
@@ -432,20 +437,42 @@ func TestBestEffortDrainKeepsArrivalOrder(t *testing.T) {
 			if got := storedLiveJobState(t, database, job.Key()); got != tc.wantState {
 				t.Errorf("live record state is %q, want %q", got, tc.wantState)
 			}
+
+			if got := storedStdE(t, database, job.Key()); !bytes.Equal(got, stde) {
+				t.Errorf("stored stderr is %q, want %q", got, stde)
+			}
 		})
 	}
+}
+
+// storedStdE returns the stderr stored for key.
+func storedStdE(t *testing.T, database *db, key string) []byte {
+	t.Helper()
+
+	var stde []byte
+
+	err := database.bolt.View(func(tx *bolt.Tx) error {
+		stde = bytes.Clone(tx.Bucket(bucketStdE).Get([]byte(key)))
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("could not read the job's stderr: %v", err)
+	}
+
+	return stde
 }
 
 // queueUnkickedBestEffortExit queues job's exit op exactly as updateJobAfterExit
 // does, but WITHOUT kicking the writer goroutine, so the caller's own
 // drainBestEffort picks it up in the same batch as anything else queued so.
-func queueUnkickedBestEffortExit(t *testing.T, database *db, job *Job) {
+func queueUnkickedBestEffortExit(t *testing.T, database *db, job *Job, stde []byte) {
 	t.Helper()
 
 	database.Lock()
 	defer database.Unlock()
 
-	exit, ok := database.snapshotJobExit(context.Background(), job, nil, nil, false)
+	exit, ok := database.snapshotJobExit(context.Background(), job, nil, stde, false)
 	if !ok {
 		t.Fatal("could not snapshot the job's exit")
 	}

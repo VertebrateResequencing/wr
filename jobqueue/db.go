@@ -2017,28 +2017,6 @@ func (db *db) enqueueExitLocked(exit jobExitData) {
 	db.beWGKeys = append(db.beWGKeys, db.wg.Add(1))
 }
 
-// updateJobAfterChangeDurableWithin is updateJobAfterChangeDurable, but gives up
-// waiting after wait, returning errDurableWriteWaitExpired. The write stays
-// queued and may still commit; the waiter channel is buffered, so the drain's
-// reply to it never blocks the writer.
-func (db *db) updateJobAfterChangeDurableWithin(job *Job, wait time.Duration) error {
-	waiter := make(chan error, 1)
-
-	if err := db.queueJobChange(job, waiter); err != nil {
-		return err
-	}
-
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-
-	select {
-	case err := <-waiter:
-		return err
-	case <-timer.C:
-		return errDurableWriteWaitExpired
-	}
-}
-
 // enqueueChangeLocked adds key's latest encoded live value, and waiter if not
 // nil, to the pending best-effort batch. Must be called with db.RLock (or Lock),
 // db.wgMutex and db.beMu held.
@@ -4395,6 +4373,28 @@ func (db *db) updateJobAfterChangeDurable(job *Job) error {
 	}
 
 	return <-waiter
+}
+
+// updateJobAfterChangeDurableWithin is updateJobAfterChangeDurable, but gives up
+// waiting after wait, returning errDurableWriteWaitExpired. The write stays
+// queued and may still commit; the waiter channel is buffered, so the drain's
+// reply to it never blocks the writer.
+func (db *db) updateJobAfterChangeDurableWithin(job *Job, wait time.Duration) error {
+	waiter := make(chan error, 1)
+
+	if err := db.queueJobChange(job, waiter); err != nil {
+		return err
+	}
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+
+	select {
+	case err := <-waiter:
+		return err
+	case <-timer.C:
+		return errDurableWriteWaitExpired
+	}
 }
 
 // queueJobChange encodes job outside any transaction and queues its latest
