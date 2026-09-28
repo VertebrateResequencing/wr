@@ -125,13 +125,14 @@ const (
 	// start serving before declaring itself ready.
 	serverListenWait = 10 * time.Millisecond
 
-	// serverBindRetryInterval and serverBindRetryBudget are how often, and for
-	// how long, publication retries the RPC port bind before giving up and
-	// exiting (spec E1). They are the budget the serve test helper already used
-	// for exactly this failure, back when the bind happened inside Serve: time
-	// for a server a prior test recently stopped to really stop listening.
-	// Serve's port reservation (port_reservation.go) retries on the same
-	// interval, for the same budget while something is listening on the port.
+	// serverBindRetryInterval and serverBindRetryBudget are how often, and by
+	// default for how long (see ServerTimings.BindRetryBudget), publication
+	// retries the RPC port bind before giving up and exiting (spec E1). They are
+	// the budget the serve test helper already used for exactly this failure,
+	// back when the bind happened inside Serve: time for a server a prior test
+	// recently stopped to really stop listening. Serve's port reservation
+	// (port_reservation.go) retries on the same interval, for the same budget
+	// while something is listening on the port.
 	serverBindRetryInterval = 500 * time.Millisecond
 	serverBindRetryBudget   = 5 * time.Second
 
@@ -554,6 +555,12 @@ type ServerTimings struct {
 	// without them, logging how many jobs they were still running (default
 	// ServerShutdownRunnerWait).
 	ShutdownRunnerWait time.Duration
+
+	// BindRetryBudget is how long the server retries a port something else is
+	// listening on before giving up: Serve's reservation of its ports, and
+	// publication's bind of the manager port (default serverBindRetryBudget).
+	// Tests set it low.
+	BindRetryBudget time.Duration
 }
 
 // dfltDuration returns v, or def if v is not positive.
@@ -600,6 +607,7 @@ func (t ServerTimings) withDefaults() ServerTimings {
 
 	t.ShutdownSocketWait = dfltDuration(t.ShutdownSocketWait, serverSocketWait)
 	t.ShutdownRunnerWait = dfltDuration(t.ShutdownRunnerWait, ServerShutdownRunnerWait)
+	t.BindRetryBudget = dfltDuration(t.BindRetryBudget, serverBindRetryBudget)
 
 	return t
 }
@@ -2229,7 +2237,8 @@ func (s *Server) startWebInterface(ctx context.Context, config ServerConfig) {
 }
 
 // listenWithRetries binds the command socket to port, retrying every
-// serverBindRetryInterval for up to serverBindRetryBudget before giving up.
+// serverBindRetryInterval for up to the server's BindRetryBudget before giving
+// up.
 //
 // Serve reserved the port, so no self-connect can have left it in TIME_WAIT;
 // what this waits out is a listener that bound beside the reservation.
@@ -2249,7 +2258,7 @@ func (s *Server) listenWithRetries(ctx context.Context, port string) error {
 
 	clog.Warn(ctx, "could not listen on the manager port yet, retrying", "port", port, "err", err)
 
-	limit := time.After(serverBindRetryBudget)
+	limit := time.After(s.timings.BindRetryBudget)
 	ticker := time.NewTicker(serverBindRetryInterval)
 
 	defer ticker.Stop()
@@ -4629,7 +4638,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	// hold our ports from now until publication binds them, so no client
 	// redialling us can self-connect on one and keep us off it.
-	reservations, err := reserveServerPorts(ctx, config)
+	reservations, err := reserveServerPorts(ctx, config, timings.BindRetryBudget)
 	if err != nil {
 		return s, certMsg, token, err
 	}

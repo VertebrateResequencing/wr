@@ -91,6 +91,10 @@ func TestServeFailsCleanlyWhenPortTaken(t *testing.T) {
 
 		_, serverConfig, _, _, _ := jobqueueTestInit(true)
 
+		// which error serve returns is what is tested, not how long Serve
+		// retried the port first.
+		serverConfig.Timings.BindRetryBudget = pscBindRetryBudget
+
 		server, _, _, err := serve(ctx, serverConfig)
 		if server != nil {
 			defer server.Stop(ctx, true)

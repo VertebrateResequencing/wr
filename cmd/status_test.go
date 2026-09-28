@@ -89,6 +89,12 @@ const (
 	// tries before failing the test.
 	testServerStartAttempts = 21
 
+	// statusTestBindRetryBudget is how long a test server that is about to find
+	// its manager port taken retries it before Serve gives up, when how long is
+	// not what is being tested: a fraction of the shipped 5s, but still long
+	// enough for a retry.
+	statusTestBindRetryBudget = time.Second
+
 	// testServerInterruptTime is how long a cmd test server's command socket
 	// readers block on a receive before checking whether the server is
 	// stopping. The 1s default made every server.Stop wait about a second for
@@ -1253,7 +1259,11 @@ func TestStartStatusTestServerRetriesTakenPort(t *testing.T) {
 			return port, webPort
 		}
 
-		_, serverConfig, addr, _, server, token := startStatusTestServer(ctx, t)
+		// that the helper moves to fresh ports is what is tested, not how long
+		// Serve retried the taken one first.
+		_, serverConfig, addr, _, server, token := startTestServer(ctx, t, func(c *jobqueue.ServerConfig) {
+			c.Timings.BindRetryBudget = statusTestBindRetryBudget
+		})
 		defer server.Stop(ctx, true)
 
 		So(squattedPort, ShouldNotBeBlank)
