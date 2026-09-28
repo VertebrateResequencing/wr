@@ -246,7 +246,58 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
       rejection that persists will not go away. The runner then finds its
       `Reserve` rejected too, and exits, freeing its scheduler slot.
 
-- [ ] **A command that had already exited 0 before or during a clean stop must
+- [x] **A command that had already exited 0 before or during a clean stop must
       be recorded as complete, not buried and not later re-run.** The owner
       has decided that jobs killed by a clean stop stay buried ("stop means
       buried"), so only the exited-0 case is in scope.
+  - Background: shutdown has made every touch return a kill since 1f75580
+    (2017, #103), "so that their runners don't stay alive uselessly", and the
+    runner buries a job whose command it killed for the manager with
+    `FailReasonKilled` ("killed by user request", `classifyReleasedExit`).
+    Both stay as they are.
+  - Where an exit-0 result was lost: in the report, not the kill. A command
+    whose exit status is 0 is always classified `doarchive`
+    (`classifyExecOutcome` ignores a kill once the wait status is 0), and
+    `handleArchive` has no shutdown gate, so an archive the stopping manager
+    receives is recorded, durably (the archive writer commits before
+    replying). What lost it was the manager no longer being there: before
+    item 1 it was killed by the stop's second SIGTERM, and with item 2 it
+    closes its socket after at most 60s of waiting. Either way the runner's
+    archive then went to the next manager, which rejected its token for up to
+    a day (item 3). eebf1a03 is that case: its archive was rejected 1,932
+    times after its command exited 0 at 13:38.
+  - Red: the first Convey of `TestRunnerOutlivesCleanRestart` (item 3), whose
+    command exits 0 after the clean restart. Before item 3's fix the job was
+    never recorded complete (`Line 201: Expected: 0, Actual: -1`, the runner
+    still retrying its archive); now it is complete and the runner exits 0.
+    The same code path serves a command that exits 0 during the stop but whose
+    report arrives after the stopping manager has closed its socket.
+  - Fix: item 3's (`2fefa24e`); nothing more was needed. This commit adds
+    `TestExitedZeroDuringStopIsComplete` (jobqueue/stop_exited_zero_test.go)
+    to pin the other half: a command that has exited 0 when its manager starts
+    stopping, and that the stop's kill reaches after the exit but before the
+    runner has waited for it (a temporary probe confirmed that order), is
+    reported by `Execute` without error and is complete after the manager is
+    restarted. It passed before any change here.
+  - The soak's six "DOUBLE RUNS" (`markers-analysis.txt`) are not exit-0
+    commands. Five of them are a job whose first run started 1-6s before a
+    clean stop's SIGTERM (two in stop 1, one in stop 2, two in stop 3), and
+    each first run's end marker is 15.5-16.1s after its start,
+    which is when the runner's first touch after the SIGTERM (touch interval
+    15s) returned the kill. They were buried, since `wr retry` re-ran them
+    (retry acts only on buried jobs); an archived job cannot be buried. The end
+    marker is not proof of exit 0: psimjob.sh writes it from an EXIT trap,
+    appending to an NFS file, before bash exits, so a SIGKILL from the kill
+    can land after the line is written and before the exit, and a bash killed
+    by SIGTERM also runs the trap with `$?` from its last completed command
+    (0; checked with a local script). The runner saw a killed command, which
+    "stop means buried" keeps buried. The sixth, `build
+    wrstat-ui-summarise-1790598870`, first ran on the new manager, starting 2s
+    after it came up, so it is outside the stop window and not looked at
+    here.
+  - Residual risk, not fixed: item 2's bound means `scheduler.Cleanup` can
+    bkill a runner that is still sending an exit-0 report. LSF sends SIGINT
+    and SIGTERM first, which the runner, still inside `Execute`, treats as
+    `signalledAfterExit` and reports the job as it ended; only a report still
+    unsent at LSF's final SIGKILL (10s later by default) is lost, and that job
+    is then recovered as running by the next manager.
