@@ -152,6 +152,12 @@ var managerStartCmd = &cobra.Command{
 If the manager fails to start or dies unexpectedly, you can check the logs which
 are by default found in ~/.wr_[deployment]/log.
 
+--max_cores and --max_ram limit how much of this machine is used to run cmds.
+With the local scheduler, 0 is not a limit: like -1, it means the whole
+machine. To keep cmds off this machine, use the lsf scheduler, or the openstack
+scheduler with --max_ram 0. To stop a running manager starting new cmds, use
+'wr manager pause'.
+
 To use the openstack scheduler, see 'wr cloud deploy -h' for the details of
 which environment variables you need to use. That help also explains some of the
 --cloud* options in further detail.
@@ -1306,9 +1312,11 @@ func addManagerStartLocalFlags(defaultConfig *internal.Config, defaultMaxRAM int
 	flags.IntVarP(&managerTimeoutSeconds, "timeout", "t", defaultManagerStartTimeout,
 		"how long to wait in seconds before reporting delayed manager startup")
 	flags.IntVar(&maxLocalCores, "max_cores", runtime.NumCPU(),
-		"maximum number of local cores to use to run cmds; -1 means unlimited, 0 allows only 0-core jobs")
+		"maximum number of this machine's cores to use to run cmds; with the local scheduler, 0 or -1 mean "+
+			"all cores; with openstack, -1 means all cores and 0 allows only 0-core cmds")
 	flags.IntVar(&maxLocalRAM, "max_ram", defaultMaxRAM,
-		"maximum MB of local memory to use to run cmds; -1 means unlimited, 0 prevents jobs running locally")
+		"maximum MB of this machine's memory to use to run cmds; with the local scheduler, 0 or -1 mean "+
+			"all memory; with openstack, -1 means all memory and 0 prevents cmds running on the manager's server")
 	flags.BoolVar(&setDomainIP, "set_domain_ip", defaultConfig.ManagerSetDomainIP,
 		"on success, use infoblox to set your domain's IP")
 	flags.BoolVar(&useCertDomain, "use_cert_domain", false,

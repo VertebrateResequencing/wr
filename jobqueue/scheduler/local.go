@@ -217,12 +217,15 @@ type ConfigLocal struct {
 	// MaxCores is the maximum number of CPU cores on the machine to use for
 	// running jobs. Specifying more cores than the machine has results in using
 	// as many cores as the machine has, which is also the default. Values
-	// below 1 are treated as default.
+	// below 1 (including 0) are treated as default, so they can not be used to
+	// stop jobs running locally.
 	MaxCores int
 
 	// MaxRAM is the maximum amount of machine memory to use for running jobs.
 	// The unit is in MB, and defaults to all available memory. Specifying more
-	// than this uses the default amount. Values below 1 are treated as default.
+	// than this uses the default amount. Values below 1 (including 0) are
+	// treated as default, so they can not be used to stop jobs running
+	// locally.
 	MaxRAM int
 }
 

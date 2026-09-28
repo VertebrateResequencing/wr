@@ -107,6 +107,13 @@ project adheres to [Semantic Versioning](http://semver.org/).
   one line as a range, such as `Job <408347[1-2:1]>: Job has already
   finished`. Those elements are now counted as already gone (or killed), where
   before they were counted as unaccounted.
+- The help for `wr manager start --max_cores` and `--max_ram` said that 0
+  allows only 0-core commands, or stops commands running locally. That is only
+  true of the openstack scheduler. With the local scheduler, 0 has always meant
+  the whole machine, the same as -1, and it still does. The help now says so.
+  To keep commands off the machine, use the lsf scheduler, or the openstack
+  scheduler with `--max_ram 0`. To stop a manager starting new commands, use
+  `wr manager pause`.
 - The `cleanup` and `cleanup_all` behaviours (`cleanup` is the default
   `--on_exit`) of a lost command could leave empty directories behind in the
   command's `--cwd` and report a warning, when its runner and the manager both
