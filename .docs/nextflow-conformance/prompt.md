@@ -124,3 +124,24 @@
   docs/reference/process.md, docs/strict-syntax.md, and docs/migrations/26-04.md.
 - Verify exact source commits and dependencies during research. A URL alone
   does not establish a pinned corpus or a successful oracle run.
+
+### Clarification round 1 findings
+
+- No unsettled user decision blocks the foundation spec. Its acceptance claim
+  is limited to validation on a declared bootstrap corpus. Complete target
+  inventory and wr runtime conformance are separate later milestones.
+- The typed-process/workflow implementation milestone and JVM/library/plugin
+  compatibility policy remain named unresolved product decisions. They block
+  affected scope and implementation completion; they are not exclusions.
+- Nextflow v26.04.6 resolves through annotated tag
+  38ce286fe70b44a5907cf1f5b0b8fb13bd836721 to release commit
+  232b60569865e9a4577e48c1955409238359d6ca. Hash acquired artifacts separately.
+- Relevant external parser/runtime dependencies must also be pinned. The
+  release repository alone is not proof that its whole dependency corpus has
+  been captured.
+- Use Go and the existing repository conventions for the foundation unless
+  research identifies a concrete reason otherwise. Schemas, bootstrap cases,
+  storage layout, and commands are engineering decisions for the spec author.
+- Restored wr supplies queue, container, and dependency primitives but no
+  Nextflow adapter. Foundation tests must not label a fixture or simulated
+  adapter as proof that wr executes Nextflow.
