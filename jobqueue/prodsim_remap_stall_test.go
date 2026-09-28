@@ -151,9 +151,10 @@ func prodsimRemapRun(t *testing.T, dir string, cross bool, backupSecs float64) (
 	defer func() { backupCopySyncBytes, backupPaceHook = oldBytes, oldHook }()
 
 	var (
-		wg   sync.WaitGroup
-		done atomic.Bool
-		mu   sync.Mutex
+		wg          sync.WaitGroup
+		done        atomic.Bool
+		backupStart atomic.Int64
+		mu          sync.Mutex
 	)
 
 	record := func(d time.Duration, into *time.Duration) {
@@ -168,6 +169,7 @@ func prodsimRemapRun(t *testing.T, dir string, cross bool, backupSecs float64) (
 		defer wg.Done()
 
 		t0 := time.Now()
+		backupStart.Store(t0.UnixNano())
 
 		testDB.backupToBackupFile(ctx, false)
 
@@ -223,6 +225,13 @@ func prodsimRemapRun(t *testing.T, dir string, cross bool, backupSecs float64) (
 
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	// backupToBackupFile returns no error, so without this a backup that failed
+	// early would look like a short copy and let the check pass falsely
+	bk, errs := os.Stat(dbFile + "_bk")
+	if errs != nil || bk.Size() == 0 || bk.ModTime().UnixNano() < backupStart.Load() {
+		t.Fatalf("the backup did not produce %s_bk during the copy (stat err %v)", dbFile, errs)
 	}
 
 	return maxRead, maxWrite, backupTook
