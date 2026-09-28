@@ -71,8 +71,9 @@ func TestManagerStartQueueFlags(t *testing.T) {
 
 		config = &internal.Config{Deployment: internal.Development}
 
-		err := flags.Parse([]string{"--" + testQueueFlag, "normal,long", "--" + testQueuesAvoidFlag, "yesterday,"})
-		So(err, ShouldBeNil)
+		// Set, rather than Parse, so the shared FlagSet is not marked parsed
+		So(flags.Set(testQueueFlag, "normal,long"), ShouldBeNil)
+		So(flags.Set(testQueuesAvoidFlag, "yesterday,"), ShouldBeNil)
 
 		Convey("they reach the lsf scheduler config", func() {
 			scheduler = schedulerLSF
