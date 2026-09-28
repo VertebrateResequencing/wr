@@ -90,6 +90,7 @@ const (
 	liveExecuteRetryWait          = 10 * time.Millisecond
 	liveExecuteRetryTime          = time.Second
 	liveExecuteTimeLimit          = 10 * time.Second
+	liveExecuteResourceWait       = 60 * time.Second
 	liveExecuteOutputSize         = 128 * 1024
 	liveExecuteMarkerWaitAttempts = 300
 	liveExecuteFileMode           = 0o600
@@ -1422,6 +1423,43 @@ func (c *liveTouchCapture) recordAndReleaseOnMarkers(
 	}
 }
 
+// recordAndReleaseOnceSeen returns a live touch hook that records each state
+// and writes releaseFile once every one of conds has matched some recorded
+// state.
+func (c *liveTouchCapture) recordAndReleaseOnceSeen(
+	releaseFile string,
+	conds ...func(*JobEndState) bool,
+) func(*JobEndState) {
+	seen := make([]bool, len(conds))
+
+	return func(state *JobEndState) {
+		c.record(state)
+
+		c.Lock()
+		all := !c.releaseMarkersDone
+
+		for i, cond := range conds {
+			seen[i] = seen[i] || cond(state)
+			all = all && seen[i]
+		}
+
+		if all {
+			c.releaseMarkersDone = true
+		}
+		c.Unlock()
+
+		if !all {
+			return
+		}
+
+		if err := os.WriteFile(releaseFile, []byte("ok"), liveExecuteFileMode); err != nil {
+			c.Lock()
+			c.releaseMarkersErr = err
+			c.Unlock()
+		}
+	}
+}
+
 func (c *liveTouchCapture) releaseOnMarkers(
 	state *JobEndState,
 	releaseFile string,
@@ -1635,26 +1673,31 @@ func TestClientExecuteLiveTouchPayloads(t *testing.T) {
 			capture := &liveTouchCapture{}
 			client := newLiveExecuteCaptureClient(capture)
 			cwd := liveExecuteCwd(t)
+			releaseFile := filepath.Join(cwd, "live-release")
+			withCPU := func(state *JobEndState) bool { return state.CPUtime >= time.Millisecond }
+			withRAM := func(state *JobEndState) bool { return state.PeakRAM >= 1 }
+
+			// a resource sample walks /proc, which can take seconds on a busy
+			// host, so the command holds its memory until a touch has carried
+			// both, or for at most liveExecuteResourceWait
+			client.liveTouchHook = capture.recordAndReleaseOnceSeen(releaseFile, withCPU, withRAM)
 			job := liveExecuteJob(client, cwd, strings.Join([]string{
-				"python3 - <<'PY'",
-				"import time",
+				"python3 - " + shellquote.Join(releaseFile) + " <<'PY'",
+				"import os, sys, time",
 				"x = bytearray(32 * 1024 * 1024)",
-				"end = time.time() + 5",
-				"while time.time() < end:",
+				fmt.Sprintf("end = time.time() + %d", int(liveExecuteResourceWait.Seconds())),
+				"while time.time() < end and not os.path.exists(sys.argv[1]):",
 				"    x[0] = (x[0] + 1) % 256",
 				"PY",
 			}, "\n"))
 
 			So(client.Execute(context.Background(), job, "/bin/sh"), ShouldBeNil)
+			So(capture.releaseErr(), ShouldBeNil)
 
-			states := capture.matching(func(state *JobEndState) bool {
-				return state.CPUtime >= time.Millisecond
-			})
+			states := capture.matching(withCPU)
 			So(len(states), ShouldBeGreaterThanOrEqualTo, 1)
 
-			states = capture.matching(func(state *JobEndState) bool {
-				return state.PeakRAM >= 1
-			})
+			states = capture.matching(withRAM)
 			So(len(states), ShouldBeGreaterThanOrEqualTo, 1)
 		})
 	}

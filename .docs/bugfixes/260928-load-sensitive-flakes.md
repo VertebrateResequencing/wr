@@ -41,3 +41,40 @@ quoted include it.
     `Expected: 10 Actual: 7`. Checking each pid in its own command
     (`checkEachProcess` for each chunk in `ProcessesNotRunningOnHost`) fails
     the real-shell variant with `Expected '10' to be less than '10'`.
+- [ ] TestReliable4SchedulerGroupSnapshotMemoised
+  - Seen once, no repro. The failing assertion was not captured. Lane 46:
+    `-test.run '^TestReliable4SchedulerGroupSnapshotMemoised$'
+    -test.count=10` at `stress -c 8` (load 23) passed 10 of 10; the whole
+    `^TestReliable4` lane at `stress -c 8` (load 31) passed; both
+    `^TestReliable4SchedulerGroupSnapshot` tests `-test.count=10` at `stress
+    -c 40` (load 61) passed 20 of 20; the race build at `stress -c 8` passed
+    5 of 5.
+  - Checked and ruled out as the cause here: the derivation counts are per
+    job and the server is paused, so a background cycle cannot perturb them
+    (the fix recorded in the test's comment). The malloc bound is 8 per job;
+    a temporary print showed a steady cycle making 40,007-40,061 mallocs
+    (2 per job) every time under load, so another goroutine would have to
+    allocate about 120,000 objects during one cycle to trip it. No change
+    made.
+- [x] TestClientExecuteLiveTouchPayloads (a peak-RAM sample of 0)
+  - Red: lane 48, `-test.run '^TestClientExecuteLiveTouchPayloads$'
+    -test.count=3`, with the test binary and `stress -c 30` both pinned to
+    one core (`taskset -c 7`), so the load is heavy for the test but costs
+    the host one core. Before: 3 of 3 failed, `Expected '0' to be greater
+    than or equal to '1'` in "Execute sends cumulative CPU time and observed
+    peak RAM". Unpinned at `stress -c 8`, 10 of 10 passed.
+  - Cause (test): the command held its memory for a fixed 5s, and Execute
+    samples resources once a second, each sample walking /proc (the command's
+    smaps, then a scan of every process's stat for its children, twice). A
+    temporary print showed a sample taking 0.3-2.1s at `stress -c 40` and
+    6-7s pinned: the one sample that read 36MB finished after the command had
+    exited, when touches, and so live snapshots, had stopped.
+  - Fix (test only), `jobqueue/client_payload_test.go`: the command now holds
+    its memory until a release file appears, capped at 60s. A new capture
+    hook, `recordAndReleaseOnceSeen`, writes the file once touches have
+    carried both a CPU time of at least 1ms and a peak RAM of at least 1MB.
+    Unloaded, the Convey now ends after the first sample rather than 5s.
+  - After, same pinned load: 5 of 5 passed.
+  - Mutation: `executeLiveState.updateResources` never raising `peakRAM`
+    fails the Convey (after the 60s cap) with `Expected '0' to be greater
+    than or equal to '1'`.
