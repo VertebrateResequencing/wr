@@ -158,9 +158,41 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
     and the window is now the time to send one reply rather than the time to a
     start commit.
 
-  - Not measured: reserve latency and write volume at production scale. The
-    `make bench` benchmarks drive the DB layer, not `handleReserve`. Re-running
-    the prodsim soak with a crash-restart is the check.
+  - Reserve latency, measured in review with a throwaway test (not kept): N
+    clients each made 10 concurrent `Reserve()` calls against one local manager.
+    For the "slow DB" rows, a 100ms sleep before each best-effort commit stood in
+    for the 80-100ms commits a large freelist gave the soak.
+
+    | commit    | persist | clients | reserves/s | p50   | p99   |
+    | --------- | ------- | ------- | ---------- | ----- | ----- |
+    | local     | no      | 200     | 15170      | 10ms  | 30ms  |
+    | local     | yes     | 200     | 6691       | 25ms  | 50ms  |
+    | +100ms    | no      | 200     | 17195      | 7ms   | 41ms  |
+    | +100ms    | yes     | 1       | 10         | 105ms | 107ms |
+    | +100ms    | yes     | 50      | 237        | 210ms | 217ms |
+    | +100ms    | yes     | 200     | 918        | 215ms | 238ms |
+
+    A reservation waits for at most the drain already in flight and then its
+    own, so about two commits. Throughput grows with the number of runners
+    reserving, because they share a drain. It is not bounded by one commit per
+    reserve. Each run now spends about four commit times waiting on the manager
+    (reserve and start). That is under 1s at 100ms commits, far inside the
+    60s request timeout.
+
+  - Residual risks found in review, not fixed:
+    - A best-effort commit that stalls past the runner's 60s request timeout
+      now fails every reservation in flight. Before, reservations did not wait
+      on the DB at all. The runner that timed out never has the job, but the
+      manager holds it as reserved to that runner. Its TTR lapses, and the
+      runner is still alive, so the job is parked lost until
+      `LostRunnerBackstop`, as in the unreplied case above. Start and archive
+      already stall under such a commit.
+    - `beBatch.apply` applies coalesced changes before exit ops. If one drain
+      holds both the previous run's release (an exit op) and the job's next
+      reservation (a change), the stale release is written last. The job is
+      then recovered to the ready queue, as before this fix. A released job
+      waits at least `ReleaseDelayMin` (30s) before it can be reserved again,
+      so this needs a drain that has been pending for 30s.
 
   - With the fix, the red command passes (`--- PASS: TestReserveDurability
     (7.85s)`), as do `TestReserveDurabilityDeadRunner` and

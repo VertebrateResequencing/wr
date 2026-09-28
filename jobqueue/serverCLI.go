@@ -1098,7 +1098,8 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 func (s *Server) persistReservation(ctx context.Context, job *Job) {
 	err := s.db.updateJobAfterChangeDurable(job)
 	if err != nil && !errors.Is(err, errDBClosed) {
-		clog.Error(ctx, "could not record a reservation on disk", "key", job.Key(), "err", err)
+		clog.Error(ctx, "could not record a reservation on disk; a manager crash before the job's "+
+			"start is recorded may run it twice", "key", job.Key(), "err", err)
 	}
 }
 
