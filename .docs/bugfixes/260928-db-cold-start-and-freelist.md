@@ -126,13 +126,24 @@
   - Crash safety: an unsynced freelist is bbolt's supported mode (etcd's
     default). The meta pages still switch atomically, and the rebuilt freelist
     is exactly the unreachable pages (asserted above). Every wr release since
-    the 2018 move to bbolt can open such a file.
+    the 2018 move to bbolt can open such a file: v0.11.0 onwards pin a bbolt
+    (v1.3.1-coreos.6 or later) that walks an unsynced freelist and writes it at
+    an open without NoFreelistSync. Releases up to v0.10.0 (boltdb/bolt)
+    cannot.
+  - A clean close's synced freelist is never trusted after later commits:
+    every NoFreelistSync commit writes `PgidNoFreelist` into its meta
+    (`tx.Commit`), and frees the old freelist page only as pending.
+    `TestManagerDBStaleFreelist` crashes after a clean close and many commits,
+    and after one commit whose meta is torn (so bbolt falls back to the synced
+    meta), and checks each reopen with bbolt's `Check`.
   - Trade-offs:
     - A restart after a crash walks the database. On NFS it is still faster
       than develop: 13.7s against 24-30s for 120k jobs. On local disk it costs
       more: +2.4s warm, and about +5s total cold (19.0s against 13.9s).
     - A commit that fails after spilling (eg. a write error) now rebuilds the
       freelist with a walk, where it used to re-read the freelist page.
-    - Backups are `tx.WriteTo` snapshots, so they record no freelist, and
-      restoring one walks it (prefetched).
+    - Backups are `tx.WriteTo` snapshots, which copy the meta as it stands. A
+      periodic backup so records no freelist, and restoring it walks the
+      database (prefetched). The final backup at a clean close follows
+      `syncFreelist`, so it carries the freelist.
     - The clean-close commit writes the freelist once, about 50ms on NFS here.
