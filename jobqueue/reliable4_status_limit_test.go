@@ -100,6 +100,12 @@ func TestReliable4StatusLimitPushdown(t *testing.T) {
 
 	ctx := context.Background()
 
+	// GoConvey reruns the setup below for every leaf, on a new manager seeded
+	// with the same history, so the unlimited reference fetches return the same
+	// jobs every time. They decode the whole history, which made them most of
+	// the test's run time, so they are fetched on the first manager only.
+	var reference, zReference []*Job
+
 	Convey("Given a manager with a large archived history in two report groups", t, func() {
 		config, serverConfig, addr, reqs, clientConnectTime := jobqueueTestInit(true)
 		serverConfig.dontWipeDevDB = true
@@ -119,15 +125,20 @@ func TestReliable4StatusLimitPushdown(t *testing.T) {
 		// the reference: the unlimited fetch this fix deliberately leaves alone,
 		// which is where "what wr status returned before" comes from. With no live
 		// jobs it is exactly the RepGroup's archived jobs, oldest-started first.
-		reference, refSrerr, _ := server.getJobsByRepGroup(ctx, statusLimitOpts(statusLimitRepGroup,
-			RepGroupMatchExact, limitJobsOptions{}))
-		So(refSrerr, ShouldBeEmpty)
+		if reference == nil {
+			var refSrerr, zSrerr string
+
+			reference, refSrerr, _ = server.getJobsByRepGroup(ctx, statusLimitOpts(statusLimitRepGroup,
+				RepGroupMatchExact, limitJobsOptions{}))
+			So(refSrerr, ShouldBeEmpty)
+
+			zReference, zSrerr, _ = server.getJobsByRepGroup(ctx, statusLimitOpts(statusLimitSubStr,
+				RepGroupMatchSubStr, limitJobsOptions{}))
+			So(zSrerr, ShouldBeEmpty)
+		}
+
 		So(len(reference), ShouldEqual, statusLimitArchived)
 		So(reference[0].Cmd, ShouldEqual, statusLimitCmd(statusLimitRepGroup, statusLimitArchived-1))
-
-		zReference, zSrerr, _ := server.getJobsByRepGroup(ctx, statusLimitOpts(statusLimitSubStr,
-			RepGroupMatchSubStr, limitJobsOptions{}))
-		So(zSrerr, ShouldBeEmpty)
 		So(len(zReference), ShouldEqual, statusLimitTotal)
 
 		Convey("a limit of 1 on one report group decodes 1 archived job, not all of them", func() {

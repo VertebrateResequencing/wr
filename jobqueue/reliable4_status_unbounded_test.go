@@ -82,6 +82,12 @@ func TestReliable4StatusUnboundedHistoryBudget(t *testing.T) {
 
 	ctx := context.Background()
 
+	// GoConvey reruns the setup below for every leaf, on a new manager seeded
+	// with the same history, so the unbounded reference fetch returns the same
+	// jobs every time. It decodes the whole history, so it is fetched, and its
+	// cost checked, on the first manager only.
+	var reference []*Job
+
 	Convey("Given a manager with a large archived history in two report groups", t, func() {
 		config, serverConfig, addr, reqs, clientConnectTime := jobqueueTestInit(true)
 		serverConfig.dontWipeDevDB = true
@@ -112,12 +118,17 @@ func TestReliable4StatusUnboundedHistoryBudget(t *testing.T) {
 
 		// the reference, at the shipped budget: the unbounded fetch is unchanged,
 		// so this whole history is still returned, oldest-started first.
-		before := decodes()
-		reference, refSrerr, _ := server.getJobsByRepGroup(ctx, statusLimitOpts(statusLimitRepGroup,
-			RepGroupMatchExact, limitJobsOptions{}))
-		So(refSrerr, ShouldBeEmpty)
+		if reference == nil {
+			var refSrerr string
+
+			before := decodes()
+			reference, refSrerr, _ = server.getJobsByRepGroup(ctx, statusLimitOpts(statusLimitRepGroup,
+				RepGroupMatchExact, limitJobsOptions{}))
+			So(refSrerr, ShouldBeEmpty)
+			So(decodes()-before, ShouldEqual, uint64(statusLimitArchived))
+		}
+
 		So(len(reference), ShouldEqual, statusLimitArchived)
-		So(decodes()-before, ShouldEqual, uint64(statusLimitArchived))
 		So(reference[0].Cmd, ShouldEqual, statusLimitCmd(statusLimitRepGroup, statusLimitArchived-1))
 
 		// size the budget from the records themselves, so the test says what it
