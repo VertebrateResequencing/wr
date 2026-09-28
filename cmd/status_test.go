@@ -87,6 +87,12 @@ const (
 	// testServerStartAttempts is how many sets of picked ports startTestServer
 	// tries before failing the test.
 	testServerStartAttempts = 21
+
+	// testServerInterruptTime is how long a cmd test server's command socket
+	// readers block on a receive before checking whether the server is
+	// stopping. The 1s default made every server.Stop wait about a second for
+	// the readers to notice, which was most of the time many cmd tests took.
+	testServerInterruptTime = 10 * time.Millisecond
 )
 
 // pickTestServerPorts is how statusTestServerConfig picks its ports. It is a
@@ -1314,6 +1320,7 @@ func statusTestServerConfig(t *testing.T) (*internal.Config, jobqueue.ServerConf
 		KeyFile:         testConfig.ManagerKeyFile,
 		CertDomain:      testConfig.ManagerCertDomain,
 		Deployment:      testConfig.Deployment,
+		Timings:         jobqueue.ServerTimings{InterruptTime: testServerInterruptTime},
 	}
 	reqs := &jqs.Requirements{RAM: 10, Time: time.Second, Cores: 1, Disk: 0, Other: make(map[string]string)}
 
