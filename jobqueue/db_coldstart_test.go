@@ -30,6 +30,7 @@ package jobqueue
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -302,4 +303,143 @@ func boltCheckErrors(bdb *bolt.DB) []string {
 	So(err, ShouldBeNil)
 
 	return errs
+}
+
+func TestManagerDBStaleFreelist(t *testing.T) {
+	Convey("Given a manager database closed cleanly, so with a synced freelist", t, func() {
+		ctx := context.Background()
+		dbFile := filepath.Join(t.TempDir(), "queue.db")
+
+		testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+		So(err, ShouldBeNil)
+
+		jobs := make([]*Job, 0, 100)
+		for i := range 100 {
+			jobs = append(jobs, testDBJob(fmt.Sprintf("echo %d", i), "stale"))
+		}
+
+		_, _, _, err = testDB.storeNewJobs(ctx, jobs, false)
+		So(err, ShouldBeNil)
+
+		makeFreePages(testDB.bolt)
+		So(testDB.close(ctx), ShouldBeNil)
+		So(boltFreelistSynced(dbFile), ShouldBeTrue)
+
+		reopenAndCheck := func() {
+			reDB, _, errr := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+			So(errr, ShouldBeNil)
+
+			defer func() { So(reDB.close(ctx), ShouldBeNil) }()
+
+			So(boltCheckErrors(reDB.bolt), ShouldBeEmpty)
+
+			recovered, errr := reDB.recoverIncompleteJobs()
+			So(errr, ShouldBeNil)
+			So(len(recovered), ShouldEqual, len(jobs))
+
+			// and the freelist it reopened with hands out no page in use
+			makeFreePages(reDB.bolt)
+			So(boltCheckErrors(reDB.bolt), ShouldBeEmpty)
+
+			recovered, errr = reDB.recoverIncompleteJobs()
+			So(errr, ShouldBeNil)
+			So(len(recovered), ShouldEqual, len(jobs))
+		}
+
+		Convey("a later run's commits, then a crash, leave no stale freelist to trust", func() {
+			reDB, _, errr := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+			So(errr, ShouldBeNil)
+
+			// many commits that reuse and free pages, including the synced
+			// freelist's own
+			for range 5 {
+				makeFreePages(reDB.bolt)
+			}
+
+			st := reDB.bolt.Stats()
+			free := st.FreePageN + st.PendingPageN
+
+			So(reDB.bolt.Close(), ShouldBeNil)
+			So(testDB.close(ctx), ShouldBeNil)
+			So(boltFreelistSynced(dbFile), ShouldBeFalse)
+
+			defer func() { So(reDB.close(ctx), ShouldBeNil) }()
+
+			Convey("so the reopen walks, finding exactly the free pages", func() {
+				bdb, errb := openManagerBolt(ctx, dbFile)
+				So(errb, ShouldBeNil)
+				So(bdb.Stats().FreePageN, ShouldEqual, free)
+				So(bdb.Close(), ShouldBeNil)
+
+				reopenAndCheck()
+			})
+
+			Convey("even if the newest meta was torn", func() {
+				tearNewestBoltMeta(dbFile)
+				So(boltFreelistSynced(dbFile), ShouldBeFalse)
+
+				reopenAndCheck()
+			})
+		})
+
+		Convey("one big commit, then a crash tearing its meta, falls back to the synced freelist intact", func() {
+			bdb, errb := openManagerBolt(ctx, dbFile)
+			So(errb, ShouldBeNil)
+
+			// one commit that fills free pages with new data
+			val := make([]byte, 64<<10)
+
+			So(bdb.Update(func(tx *bolt.Tx) error {
+				b := tx.Bucket(coldStartScratchBucket)
+				for i := range coldStartFreePages * bdb.Info().PageSize / len(val) / 2 {
+					if errp := b.Put([]byte(strconv.Itoa(i)), val); errp != nil {
+						return errp
+					}
+				}
+
+				return nil
+			}), ShouldBeNil)
+			So(bdb.Close(), ShouldBeNil)
+			So(boltFreelistSynced(dbFile), ShouldBeFalse)
+
+			tearNewestBoltMeta(dbFile)
+
+			// bbolt now opens the file from the clean close's meta, without the
+			// big commit's data
+			rdb, errb := bolt.Open(dbFile, dbFilePermission, &bolt.Options{ReadOnly: true})
+			So(errb, ShouldBeNil)
+			So(rdb.View(func(tx *bolt.Tx) error {
+				So(tx.Bucket(coldStartScratchBucket).Get([]byte("0")), ShouldBeNil)
+
+				return nil
+			}), ShouldBeNil)
+			So(rdb.Close(), ShouldBeNil)
+
+			reopenAndCheck()
+		})
+	})
+}
+
+// tearNewestBoltMeta corrupts the checksum of the newer meta page of the bbolt
+// file at path, as a crash part way through writing it would, so bbolt opens
+// the file from its older meta.
+func tearNewestBoltMeta(path string) {
+	metas, ok := readBoltMetas(path)
+	So(ok, ShouldBeTrue)
+
+	pageSize := int64(binary.LittleEndian.Uint32(metas[0][boltPageSizeOffset:]))
+
+	newest := int64(0)
+	if boltMetaTxid(metas[1]) > boltMetaTxid(metas[0]) {
+		newest = 1
+	}
+
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	So(err, ShouldBeNil)
+
+	defer f.Close()
+
+	// the checksum follows the txid
+	_, err = f.WriteAt([]byte{0xde, 0xad}, newest*pageSize+boltMetaEnd)
+	So(err, ShouldBeNil)
 }
