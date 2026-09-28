@@ -124,6 +124,19 @@ project adheres to [Semantic Versioning](http://semver.org/).
   over, so after a crash it waits for that runner to report. If that runner
   died too, the command is run again once its runner is confirmed dead, as for
   any other lost command.
+- The manager starts much faster when its database is on NFS. Opening the
+  database made NFS forget the parts of the file it had already read, so
+  recovering the jobs from before a restart then read it back a small piece at
+  a time: 121k jobs took about 3 minutes. The manager now reads the whole file
+  in one go as it opens it, which took a 7.4GB database with 120k jobs from
+  24-30s down to 10-14s. `wr manager compact` also reads the file this way,
+  which took compacting that database from over 6 minutes to 47s.
+- Writes to a large database no longer slow down as its free space grows.
+  Every write used to save a list of all the database's free space, which cost
+  about 50ms per write on a 7.4GB database with 3GB free. That list is now
+  saved only when the manager stops cleanly. After a crash, or a restore from
+  a backup, the manager works it out again as it starts, which can make that
+  start a few seconds slower when the database is on local disk.
 - The `cleanup` and `cleanup_all` behaviours (`cleanup` is the default
   `--on_exit`) of a lost command could leave empty directories behind in the
   command's `--cwd` and report a warning, when its runner and the manager both

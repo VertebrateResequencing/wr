@@ -157,7 +157,7 @@ func dgbLockedDB(ctx context.Context, t *testing.T) (string, string, *bolt.DB) {
 
 	dbFile, dbBkFile := dgbSeededDB(ctx, t)
 
-	holder, err := openManagerBolt(dbFile)
+	holder, err := openManagerBolt(ctx, dbFile)
 	So(err, ShouldBeNil)
 
 	return dbFile, dbBkFile, holder

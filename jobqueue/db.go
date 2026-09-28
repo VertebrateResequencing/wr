@@ -1217,7 +1217,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 	)
 	if _, err = os.Stat(dbFile); os.IsNotExist(err) {
 		if _, err = os.Stat(dbBkFile); os.IsNotExist(err) {
-			boltdb, err = openManagerBolt(dbFile)
+			boltdb, err = openManagerBolt(ctx, dbFile)
 			msg = "created new empty db file " + dbFile
 		} else {
 			err = copyFile(dbBkFile, dbFile)
@@ -1225,14 +1225,14 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 				return nil, msg, err
 			}
 
-			boltdb, err = openManagerBolt(dbFile)
+			boltdb, err = openManagerBolt(ctx, dbFile)
 			msg = "recreated missing db file " + dbFile + " from backup file " + dbBkFile
 			openedExistingDB = true
 		}
 	} else {
 		openedExistingDB = true
 
-		boltdb, err = openManagerBolt(dbFile)
+		boltdb, err = openManagerBolt(ctx, dbFile)
 		if err != nil {
 			if notCorrupt := openErrorThatIsNotCorruption(err, dbFile); notCorrupt != nil {
 				return nil, msg, notCorrupt
@@ -1261,7 +1261,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 			}
 
 			if _, errbk := os.Stat(bkPath); errbk == nil {
-				backupDB, errbk := openManagerBolt(bkPath)
+				backupDB, errbk := openManagerBolt(ctx, bkPath)
 				if errbk == nil {
 					msg = fmt.Sprintf("tried to recreate corrupt (?) db file %s from backup file %s "+
 						"(error with original db file was: %s)", dbFile, dbBkFile, err)
@@ -1281,7 +1281,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 						return nil, msg, err
 					}
 
-					boltdb, err = openManagerBolt(dbFile)
+					boltdb, err = openManagerBolt(ctx, dbFile)
 					msg = fmt.Sprintf("recreated corrupt (?) db file %s from backup file %s "+
 						"(error with original db file was: %s)", dbFile, dbBkFile, origerr)
 				}
@@ -2946,8 +2946,13 @@ func compactBoltInto(dstPath, srcPath string, stats *CompactStats) (err error) {
 	// a bounded timeout so, if the up-check was fooled and a manager still holds
 	// the source file lock, this errors cleanly instead of blocking forever (the
 	// dst is a fresh temp file, but it uses the same options for consistency).
-	src, err := bolt.Open(srcPath, dbFilePermission,
-		&bolt.Options{FreelistType: bolt.FreelistMapType, Timeout: offlineDBOpenTimeout})
+	//
+	// Compacting reads every page of the source, so it is prefetched as the
+	// manager's own opens are.
+	src, err := openBoltPrefetched(context.Background(), srcPath, func() (*bolt.DB, error) {
+		return bolt.Open(srcPath, dbFilePermission,
+			&bolt.Options{FreelistType: bolt.FreelistMapType, Timeout: offlineDBOpenTimeout})
+	})
 	if err != nil {
 		return err
 	}
@@ -3002,7 +3007,9 @@ func compactBolt(dst, src *bolt.DB, stats *CompactStats) error {
 // openManagerBolt opens one of the manager's BoltDB files, bounding the wait for
 // its file lock at managerDBOpenTimeout so a second manager fails with
 // ErrDBLocked instead of blocking forever and then acquiring the database the
-// instant the winner exits (spec E7).
+// instant the winner exits (spec E7). On NFS, or when bbolt must rebuild the
+// freelist, it reads the whole file into the page cache as it opens it (see
+// openBoltPrefetched).
 //
 // It maps the file with managerInitialMmapSize's headroom, so the database can
 // grow for a long time before bbolt has to remap it. A remap waits for every
@@ -3011,7 +3018,15 @@ func compactBolt(dst, src *bolt.DB, stats *CompactStats) error {
 // copy) would stall every database read and write until the copy finished. If
 // the process may not map that much address space (eg. under ulimit -v), it
 // falls back to bbolt's default mapping.
-func openManagerBolt(path string) (*bolt.DB, error) {
+//
+// Commits do not write the freelist (NoFreelistSync). Otherwise every commit,
+// however small, writes the id of every free page and has the map freelist
+// build and sort a slice of them all to do it: with 585k free pages that was
+// 80-100ms and 12MB of garbage per commit, where it is now about 1ms. The cost
+// moves to the open after a crash, where bbolt rebuilds the freelist by walking
+// the database (reads that the prefetch makes cheap on NFS); a clean close
+// writes the freelist once (see syncFreelist), so the next open just reads it.
+func openManagerBolt(ctx context.Context, path string) (*bolt.DB, error) {
 	var fileSize int64
 	if info, err := os.Stat(path); err == nil { //nolint:gosec // G703: path is the manager's own db file
 		fileSize = info.Size()
@@ -3019,18 +3034,21 @@ func openManagerBolt(path string) (*bolt.DB, error) {
 
 	opts := &bolt.Options{
 		FreelistType:    bolt.FreelistMapType,
+		NoFreelistSync:  true,
 		Timeout:         managerDBOpenTimeout,
 		InitialMmapSize: managerInitialMmapSize(fileSize),
 	}
 
-	bdb, err := bolt.Open(path, dbFilePermission, opts)
-	if err == nil || opts.InitialMmapSize == 0 || !errors.Is(err, syscall.ENOMEM) {
-		return bdb, err
-	}
+	return openBoltPrefetched(ctx, path, func() (*bolt.DB, error) {
+		bdb, err := bolt.Open(path, dbFilePermission, opts)
+		if err == nil || opts.InitialMmapSize == 0 || !errors.Is(err, syscall.ENOMEM) {
+			return bdb, err
+		}
 
-	opts.InitialMmapSize = 0
+		opts.InitialMmapSize = 0
 
-	return bolt.Open(path, dbFilePermission, opts)
+		return bolt.Open(path, dbFilePermission, opts)
+	})
 }
 
 // managerInitialMmapSize returns the InitialMmapSize to open a manager database
@@ -5051,9 +5069,29 @@ func (db *db) finaliseBackup(ctx context.Context) {
 	db.wg.Wait(dbRunningTransactionsWaitTime)
 	db.wgMutex.Unlock()
 
+	db.syncFreelist(ctx)
+
 	if db.backupsEnabled && (db.backupDirty.Swap(false) || inProgress) {
 		clog.Debug(ctx, "Jobqueue database doing final backup before close")
 		db.backupToBackupFile(ctx, false)
+	}
+}
+
+// syncFreelist makes one commit that writes bbolt's freelist, which the
+// manager's commits otherwise leave out (see openManagerBolt), so the next open
+// reads it instead of rebuilding it by walking the whole database. It is for
+// close, once every write has finished; a failure only costs the next open that
+// walk.
+func (db *db) syncFreelist(ctx context.Context) {
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		// set inside the transaction so that it is ordered, by bbolt's writer
+		// lock, before this and any later commit reads it
+		tx.DB().NoFreelistSync = false
+
+		return nil
+	})
+	if err != nil {
+		clog.Warn(ctx, "failed to write the database's freelist; the next start will rebuild it", "err", err)
 	}
 }
 
