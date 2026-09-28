@@ -238,6 +238,13 @@ var (
 	ServerLogClientErrors                           = true
 	serverShutdownRunnerTickerTime                  = 50 * time.Millisecond
 
+	// ServerShutdownRunnerWait is the default ServerTimings.ShutdownRunnerWait:
+	// the most a shutdown waits for its runners to exit before finishing
+	// without them. It is half of the 2 minutes `wr manager stop` waits for the
+	// manager to exit, leaving the other half for the rest of the shutdown,
+	// which includes the final backup of the database.
+	ServerShutdownRunnerWait = 60 * time.Second
+
 	// ServerDBBatchDelay is the default DB.MaxBatchDelay applied to the
 	// manager's live BoltDB: how long a db.bolt.Batch call may wait for
 	// concurrent Batch calls to coalesce into a single fsync'd commit.
@@ -493,6 +500,12 @@ type ServerTimings struct {
 	// drain (default serverSocketWait). Tests set this low to shut servers down
 	// faster.
 	ShutdownSocketWait time.Duration
+
+	// ShutdownRunnerWait is the most a shutdown waits, from its start, for the
+	// runners it has told to die to exit. After that it finishes shutting down
+	// without them, logging how many jobs they were still running (default
+	// ServerShutdownRunnerWait).
+	ShutdownRunnerWait time.Duration
 }
 
 // dfltDuration returns v, or def if v is not positive.
@@ -538,6 +551,7 @@ func (t ServerTimings) withDefaults() ServerTimings {
 	}
 
 	t.ShutdownSocketWait = dfltDuration(t.ShutdownSocketWait, serverSocketWait)
+	t.ShutdownRunnerWait = dfltDuration(t.ShutdownRunnerWait, ServerShutdownRunnerWait)
 
 	return t
 }
@@ -3564,6 +3578,14 @@ func (s *Server) waitForDeletes(ctx context.Context) {
 		clog.Warn(ctx, "server shutdown gave up waiting for remove-on-failure deletes",
 			"waited", ServerShutdownWaitTime)
 	}
+}
+
+// logGaveUpOnRunners warns that the shutdown has stopped waiting for runners,
+// and how many jobs they were still running.
+func (s *Server) logGaveUpOnRunners(ctx context.Context, start time.Time) {
+	clog.Warn(ctx, "gave up waiting for runners to exit; finishing the shutdown without them, "+
+		"so the scheduler will kill any that are left, and the next manager will recover their jobs",
+		"waited", time.Since(start).Round(time.Millisecond), "runningJobs", s.q.Stats().Running)
 }
 
 // maybeStartPprofServer starts a dedicated net/http/pprof endpoint if the
@@ -8011,14 +8033,32 @@ func (s *Server) unscheduleAllGroups(ctx context.Context) {
 
 // waitForRunnersToDie waits long enough for runners to have attempted a touch
 // (and so learn they should die) and, if wait is set, polls until none remain.
+//
+// It waits at most ShutdownRunnerWait in all, so that the rest of the shutdown
+// (the scheduler cleanup, which kills any runners still left, and saving the
+// database) always happens: a runner whose command survived being killed, or
+// that never touched, would otherwise keep the manager waiting for ever. A
+// runner still alive then can report its job to the next manager, which
+// recovers the job as still running, just as after a crash.
 func (s *Server) waitForRunnersToDie(ctx context.Context, wait bool) {
 	if shutdownRunnersWaitHook != nil {
 		shutdownRunnersWaitHook()
 	}
 
+	start := time.Now()
+	giveUp := time.NewTimer(s.timings.ShutdownRunnerWait)
+
+	defer giveUp.Stop()
+
 	if s.HasRunners(ctx) {
 		// wait until everything must have attempted a touch
-		<-time.After(s.timings.TouchInterval)
+		select {
+		case <-time.After(s.timings.TouchInterval):
+		case <-giveUp.C:
+			s.logGaveUpOnRunners(ctx, start)
+
+			return
+		}
 	}
 
 	// wait for the runners to actually die
@@ -8029,8 +8069,17 @@ func (s *Server) waitForRunnersToDie(ctx context.Context, wait bool) {
 	ticker := time.NewTicker(serverShutdownRunnerTickerTime)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		if !s.HasRunners(ctx) {
+	for {
+		select {
+		case <-ticker.C:
+			if !s.HasRunners(ctx) {
+				return
+			}
+		case <-giveUp.C:
+			if s.HasRunners(ctx) {
+				s.logGaveUpOnRunners(ctx, start)
+			}
+
 			return
 		}
 	}

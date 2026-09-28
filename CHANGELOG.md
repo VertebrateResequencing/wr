@@ -99,6 +99,11 @@ project adheres to [Semantic Versioning](http://semver.org/).
   keep waiting or kill a hung manager. The manager itself now ignores (and
   logs) further SIGTERMs and SIGINTs while it is shutting down, so running
   `wr manager stop` again is safe.
+- A manager being stopped no longer waits for ever for its runners to exit. At
+  scale, a single runner still listed as running by LSF kept the manager
+  waiting until it was killed, so it never saved its database. It now waits at
+  most 60 seconds, then logs how many jobs were still running, has LSF kill any
+  runners that are left, and finishes stopping as normal.
 - `wr manager stop` no longer sends SIGTERM to an unrelated process when the
   manager died without removing its pid file (for example after a crash or a
   reboot) and its pid has since been given to another of your processes. It

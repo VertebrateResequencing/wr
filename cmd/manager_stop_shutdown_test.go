@@ -50,6 +50,7 @@ import (
 const (
 	stopHelperEnvDir  = "WR_STOPTEST_HELPER_DIR"
 	stopHelperEnvPort = "WR_STOPTEST_HELPER_PORT"
+	stopHelperEnvWait = "WR_STOPTEST_HELPER_RUNNER_WAIT"
 
 	stopHelperReadyFile = "ready"
 	stopHelperLogFile   = "helper.log"
@@ -72,13 +73,19 @@ func TestManagerStopHelperProcess(t *testing.T) {
 		return
 	}
 
-	os.Exit(runStopHelperManager(dir, os.Getenv(stopHelperEnvPort)))
+	runnerWait, err := time.ParseDuration(os.Getenv(stopHelperEnvWait))
+	if err != nil {
+		os.Exit(2)
+	}
+
+	os.Exit(runStopHelperManager(dir, os.Getenv(stopHelperEnvPort), runnerWait))
 }
 
 // runStopHelperManager serves a manager from dir on port whose runner never
-// exits, signals readiness by creating the ready file, and blocks until the
-// server stops. It returns the exit code for the helper process.
-func runStopHelperManager(dir, port string) int {
+// exits, and which waits runnerWait for it when shutting down. It signals
+// readiness by creating the ready file, and blocks until the server stops. It
+// returns the exit code for the helper process.
+func runStopHelperManager(dir, port string, runnerWait time.Duration) int {
 	ctx := context.Background()
 
 	if err := clog.ToFileAtLevel(filepath.Join(dir, stopHelperLogFile), "info"); err != nil {
@@ -108,6 +115,7 @@ func runStopHelperManager(dir, port string) int {
 		Timings: jobqueue.ServerTimings{
 			TouchInterval:      100 * time.Millisecond,
 			ShutdownSocketWait: time.Millisecond,
+			ShutdownRunnerWait: runnerWait,
 		},
 	})
 	if err != nil {
@@ -155,7 +163,7 @@ func addStopHelperJob(port string, token []byte, caFile string) bool {
 
 func TestManagerStopWhileShuttingDown(t *testing.T) {
 	Convey("wr manager stop of a manager still shutting down after the give-up time", t, func() {
-		manager, dir := startShuttingDownManager(t)
+		manager, dir := startShuttingDownManager(t, time.Hour)
 
 		origGiveup := daemonStopGiveup
 		daemonStopGiveup = 2 * time.Second
@@ -199,8 +207,9 @@ func TestManagerStopWhileShuttingDown(t *testing.T) {
 // startShuttingDownManager starts a real manager in a helper process, looking
 // to `wr manager stop` like a daemonized `wr manager start` for the test
 // deployment, with its pid in the pid file config names. Its only runner never
-// exits. It returns the process and the directory holding its token and log.
-func startShuttingDownManager(t *testing.T) (*managerStopTestProcess, string) {
+// exits, and its shutdown waits runnerWait for that runner. It returns the
+// process and the directory holding its token and log.
+func startShuttingDownManager(t *testing.T, runnerWait time.Duration) (*managerStopTestProcess, string) {
 	t.Helper()
 
 	setManagerStopTestConfigPidFile(t, "")
@@ -216,6 +225,7 @@ func startShuttingDownManager(t *testing.T) (*managerStopTestProcess, string) {
 
 	t.Setenv(stopHelperEnvDir, dir)
 	t.Setenv(stopHelperEnvPort, config.ManagerPort)
+	t.Setenv(stopHelperEnvWait, runnerWait.String())
 
 	manager := startManagerStopTestProcess(t, os.Args[0], "-test.run=^TestManagerStopHelperProcess$", "--",
 		managerWord, startWord, deploymentFlag, managerStopTestDeployment)
@@ -286,6 +296,28 @@ func TestDaemonStillRunningUnreadableArgv(t *testing.T) {
 		So(daemonStillRunning(pid, identity), ShouldBeFalse)
 
 		So(cmd.Wait(), ShouldNotBeNil)
+	})
+}
+
+func TestManagerStopWithARunnerThatNeverExits(t *testing.T) {
+	Convey("wr manager stop of a manager whose runner never exits still stops it cleanly", t, func() {
+		manager, dir := startShuttingDownManager(t, time.Second)
+
+		exitCode, logged := runManagerStopCapturingInfo()
+
+		So(exitCode, ShouldEqual, 0)
+		So(logged, ShouldContainSubstring, "gracefully shut down")
+
+		exited, sig := manager.exitedWithin(5 * time.Second)
+		So(exited, ShouldBeTrue)
+		So(sig, ShouldEqual, 0)
+
+		_, err := os.Stat(config.ManagerTokenFile)
+		So(os.IsNotExist(err), ShouldBeTrue)
+
+		helperLog, err := os.ReadFile(filepath.Join(dir, stopHelperLogFile))
+		So(err, ShouldBeNil)
+		So(string(helperLog), ShouldContainSubstring, "gave up waiting for runners to exit")
 	})
 }
 

@@ -100,10 +100,79 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
     covers a zombie with unreadable argv counting as stopped. A process still
     in exit with its memory gone cannot be held in that state by a test.
 
-- [ ] **The manager's shutdown waits for its runners without a bound.**
+- [x] **The manager's shutdown waits for its runners without a bound.**
       `waitForRunnersToDie` (jobqueue/server.go) loops `HasRunners` ->
       `lsf.busy` -> `countCmds` for as long as even one runner is still in
       LSF RUN, so the database is never closed, synced or backed up.
+  - Evidence: every `profiles/stop.*.goroutine2.txt` has the SIGTERM handler's
+    goroutine in `waitForRunnersToDie` (server.go:8010) under `shutdown` under
+    `handleSignals`. `stopwatch.log` shows LSF's view during each stop:
+
+    ```text
+    stop 1: RUN=2124 for 60s after the SIGTERM, then RUN=1 from +73s to the end
+    stop 2: RUN=2286 for 41s, then RUN=1 from +51s to the end
+    stop 3: RUN=3132, RUN=594 at +20s to +71s, then RUN=3 from +81s to the end
+    ```
+
+  - Why a runner stays in LSF RUN: both. The fall from thousands to a handful
+    over 40-80s is LSF catching up with runners that had already been told to
+    die at their next touch (the manager's `TouchInterval` wait is 15s). The
+    handful left are real runners that outlived the stop. The next manager's
+    log has `jtouch(eebf1a03...)` rejected with "Client presented the wrong
+    token" from 13:35:43 to 13:38:13, 12s after it started, then
+    `jarchive(eebf1a03...)` rejected 1,932 times until the soak ended at
+    16:29. So that runner's command was still running when the old manager
+    died, ran on for 2.5 minutes, and exited 0. `jtouch/jarchive(dc4a2817...)`
+    after stop 3 is the same. Such a runner never acted on a kill, since a
+    killed command cannot exit 0. The soak cannot say why: runners kept no
+    logs, the manager does not log request errors while shutting down
+    (`dispatchClientRequest` skips them when `inShutdown`), and the database
+    was not kept. One way it can happen is a touch rejected with `ErrBadJob`
+    (the job not in the Run sub-queue, for example after the manager declared
+    it lost and released it): `handleTouch` returns that error rather than
+    `KillCalled`, and the runner only logs a failed touch and carries on.
+    Whatever the cause, the fix below makes such a runner unable to hold the
+    shutdown, and the scheduler cleanup that follows bkills it.
+  - Red: `CGO_ENABLED=1 go test -tags netgo --count 1 ./jobqueue -run
+    'TestShutdownRunnerWaitIsBounded$'`, exit 1 before the fix:
+
+    ```text
+    Line 122:
+    Expected: true
+    Actual:   false
+    --- FAIL: TestShutdownRunnerWaitIsBounded (30.22s)
+    ```
+
+    A mock-scheduler runner reserves and starts a job and then never exits, so
+    the scheduler reports it busy for ever; `server.Stop(ctx, true)` did not
+    return within 30s.
+  - Fix (jobqueue/server.go): new `ServerTimings.ShutdownRunnerWait`, default
+    `ServerShutdownRunnerWait` = 60s, bounds `waitForRunnersToDie` in all,
+    including its initial `TouchInterval` wait. When it runs out while the
+    scheduler still reports runners, the new `logGaveUpOnRunners` warns "gave
+    up waiting for runners to exit; finishing the shutdown without them, so
+    the scheduler will kill any that are left, and the next manager will
+    recover their jobs", with `waited` and `runningJobs` (the jobs still in
+    the Run sub-queue, one per runner that has not reported). The shutdown
+    then carries on as normal: `scheduler.Cleanup` (for LSF, `bkill -b` of
+    every job of the deployment, so the survivors are killed), then
+    `closeServerCommsAndDB`, whose `db.close` drains the writers, syncs the
+    freelist and writes the final backup.
+  - Why 60s: `wr manager stop` gives up 120s after its SIGTERM. The runner
+    wait is half of that, leaving the other half for the cleanup and for
+    saving the database. The final backup copies the whole database, and the
+    comment on `managerDBOpenTimeout` notes that at 7GB on NFS that alone can
+    take more than 30s. At this soak's 30GB it would take longer, so a clean
+    stop can still exceed 120s. The stop now says so and keeps the token (item
+    1) instead of killing the manager, so the stop is merely slow. Runners that
+    exit after the bound report their jobs to the next manager (item 3).
+  - Tests: `TestShutdownRunnerWaitIsBounded` (above) asserts the stop
+    finishes, logs the give-up with `runningJobs=1`, leaves the freelist
+    synced (`boltFreelistSynced`) and writes the final backup.
+    `TestManagerStopWithARunnerThatNeverExits` (cmd) runs the whole
+    `wr manager stop` against the helper manager from item 1 with a 1s runner
+    wait: it exits 0, the manager exits by itself rather than by a signal, the
+    token is removed, and the manager logged the give-up.
 
 - [ ] **Runners that outlive a clean stop are stuck forever.** They keep the
       old manager's token, which `wr runner` read once and never reloads, so
