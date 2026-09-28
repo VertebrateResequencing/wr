@@ -25,10 +25,14 @@
 
 ## Current handoff
 
-Spec-writer workflow complete. Six reviewed phase files cover all 12 stories
-and 47 acceptance IDs. Next action: orchestrator implements phase 1 item 1.1
-with a fresh implementor and independent reviewer. No oracle execution or
-runtime conformance is claimed.
+Spec-writer workflow was completed and committed as 3dd25b15. During phase 1,
+actual runtime acquisition exposed the archive contract conflict recorded
+in blocker-phase1-1.1.md. Agent phase1_implement returned an incomplete
+handoff in evidence/phase1.md. The corrected spec has passed two feature
+reviews, two proofreading reviews, and all affected phase reviews. Next
+action: approve a fresh input bundle and complete phase 1 Item 1.1, then
+review it before resuming acquisition in Item 1.2. No oracle or runtime
+conformance is claimed.
 
 ## Review evidence
 
@@ -92,3 +96,39 @@ runtime conformance is claimed.
 - Unprivileged user/network namespace creation failed with EPERM.
 - Docker server 29.1.3 responds. A pinned, network-disabled container is a
   possible oracle environment, not yet provisioned or proven.
+
+## Runtime packaging amendment
+
+- [x] Reproduce rejection of the actual pinned distribution.
+- [x] Independently inspect official bytes and upstream packaging code.
+- [x] Author corrected opaque-runtime and extracted-archive contracts.
+- [x] Two consecutive feature reviews pass on the amendment.
+- [x] Two consecutive proofreading reviews pass on the amendment.
+- [x] Affected phase files are updated and receive clean reviews.
+- [ ] Resume runtime acquisition under the reviewed corrected contract.
+
+The corrected spec has 49 acceptance IDs, adding A1_06 and A1_07. Source
+evidence is in reviews/runtime-packaging-author.md; the blocked acquisition
+is recorded in blocker-phase1-1.1.md. The first implementor returned
+INCOMPLETE with a durable handoff in evidence/phase1.md. Five A1 fixture UATs
+and current model tests pass under Go 1.27.1, but lint reports 148 findings
+under Go 1.26.3 and schema/validation/acquisition work remains. No phase
+checkbox may be marked from this partial work. Resume with fresh bounded
+implementation bundles after amendment and phase review.
+
+- packaging_review_1 returned PASS with independent artifact inspection.
+  See reviews/packaging-feature-01.md. Amendment feature pass count is one.
+- packaging_review_2 returned PASS without changes. See
+  reviews/packaging-feature-02.md. Amendment feature pass count is two.
+- packaging_proofread_1 and packaging_proofread_2 returned PASS without
+  changes. See reviews/packaging-proofread-01.md and
+  reviews/packaging-proofread-02.md. Amendment proofreading pass count is two.
+- packaging_phase_update amended phases 1, 3, 4, 5, and 6. Phase 2 remains
+  applicable without edits. Coverage is 49 IDs across the six phases.
+- Amendment phase reviews passed for phases 1, 4, 5, and 6 on their first
+  round. Phase 3 received a prose-only fix, then a clean second review.
+  See reviews/packaging-phase-01-review-01.md,
+  reviews/packaging-phase-03-review-02.md,
+  reviews/packaging-phase-04-review-01.md,
+  reviews/packaging-phase-05-review-01.md, and
+  reviews/packaging-phase-06-review-01.md.

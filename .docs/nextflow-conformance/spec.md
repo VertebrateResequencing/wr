@@ -94,20 +94,39 @@ Never substitute a mutable documentation website or the latest release.
 
 The pinned `modules/nf-lang/build.gradle` declares
 `me.sunlan:antlr4:4.13.2.6`, `org.apache.groovy:groovy:4.0.31`, and
-`org.pf4j:pf4j:3.14.1`. Capture these coordinates, their POMs, source
-artifacts when used for semantic review, and actual runtime JAR hashes.
-Record the resolved runtime dependency closure, including transitive JARs,
-from the distribution. A coordinate or a Gradle declaration alone is not
-proof that those bytes were acquired. Grammar source lives in this release's
-`modules/nf-lang`; it is not an unspecified external parser checkout.
+`org.pf4j:pf4j:3.14.1`. Capture these coordinates and hashed POMs as dependency
+metadata, plus source artifacts used for semantic review. Grammar source
+lives in this release's `modules/nf-lang`.
+
+The official distribution is a shell launcher followed by a shaded JAR,
+42,355,106 bytes in total. It has no nested JARs and contains repeated ZIP
+names, including class files. `packing.gradle` constructs it from the
+launcher and `modules/nextflow/build.gradle`'s `shadowJar`, which merges
+`runtimeClasspath` and `lineageImplementation`. Retain these pinned build
+files as provenance. Keep the distribution byte-identical as one opaque
+runtime artifact; never extract, deduplicate, rebuild, or repackage it.
+Its full-file hash covers both the launcher and every bundled dependency.
+
+Record the execution dependency closure as actual files: this distribution,
+the Java tree, and required environment tools. Bundled parser and transitive
+classes are covered by the distribution hash; do not invent separate or
+nested JAR artifacts. Any external JAR actually required for execution must
+be acquired, hashed, and included in the closure. POMs and declarations are
+provenance, not proof of a resolved build dependency graph or additional
+runtime files. Do not claim a complete per-component Maven inventory from
+partial shaded metadata. Offline execution in E1 proves the acquired
+closure suffices for the seven bootstrap cases only.
 
 `acquire` receives an existing Java 21 home. Hash every regular file and
 symlink target in that tree, record `java -version`, OS and architecture,
 and verify the executable comes from that tree. Never install system
-packages. Prepare a private Nextflow home with the pinned distribution and
-all runtime dependencies. Disable automatic updates and plugins for these
-local bootstrap cases. The acquired environment must run offline with an
-empty user home. Missing Java or runtime dependencies are explicit failures.
+packages. Execute the pinned distribution by its absolute path; its
+`NXF_PACK=dist` launcher passes that same file to Java. Acquire the separately
+published `nextflow` launcher for provenance, but do not invoke its default
+`one` package download path. Prepare a private Nextflow home and disable
+automatic updates and plugins for these local bootstrap cases. The acquired
+environment must run offline with an empty user home. Missing Java or runtime
+dependencies are explicit failures.
 
 Only `acquire` may access the network. It writes a candidate lock and cache;
 `validate`, `extract`, `render`, `discover`, `run`, and `verify` never fetch.
@@ -119,10 +138,16 @@ four concurrent requests. Limit an object to 256 MiB, unpacked sources to
 512 MiB and 50,000 entries, and a selected text file to 8 MiB. Fail explicitly
 on a limit; never truncate data and call it complete.
 
-Reject archive traversal, absolute member paths, duplicate members, unsafe
-symlinks, non-regular executable inputs, and local paths escaping the corpus
-or run root. Resolve relative include references against their source file.
-Network acquisition can use reviewed immutable URLs from the lock only.
+For every archive extracted into the filesystem, reject traversal, absolute
+member paths, duplicate destination paths, and unsafe symlinks before
+publishing any extracted files. Never resolve collisions by keeping one
+member. The opaque pinned distribution has no member extraction or member
+path uniqueness requirement. Verify its exact target hash and byte count
+before execution; a packaging label cannot authorize different bytes.
+Reject non-regular executable inputs and local paths escaping the corpus or
+run root in both cases. Resolve relative include references against their
+source file. Network acquisition can use reviewed immutable URLs from the
+lock only.
 
 ### Records and schema
 
@@ -169,9 +194,18 @@ Array contents and discriminated fields follow these rules:
   SHA-256, byte count, and selection state. States are `selected`,
   `unreviewed`, or `nonsemantic`. `nonsemantic` requires rationale and an
   independent review. `unreviewed` is outstanding work, never exclusion.
-- `artifacts` contains role, immutable origin, `file_ref`, and dependencies
-  by artifact ID. Roles include source, launcher, runtime, JAR, Java, and
-  environment-tool. Dependency cycles and missing entries fail validation.
+- `artifacts` contains role, immutable origin, `file_ref`, `packaging`,
+  `coordinate`, and dependencies by artifact ID. Roles include source,
+  launcher, runtime, JAR, Java, environment-tool, and dependency-metadata.
+  `packaging` is `file`, `extracted-archive`, or `opaque-dist`; only the
+  exact pinned runtime uses `opaque-dist`. `coordinate` is a Maven
+  `group:artifact:version` for Maven POMs and Maven source artifacts,
+  otherwise null. Each artifact references actual acquired bytes. Runtime
+  dependencies enumerate external execution inputs; embedded classes create
+  no separate artifact IDs. POMs use role `dependency-metadata` and packaging
+  `file`; they are not execution dependencies. Dependency cycles and missing
+  entries fail validation. The runtime closure contains exactly one opaque
+  distribution and its external execution dependencies.
 - Block kinds are `heading`, `paragraph`, `list-item`, `table-row`,
   `definition`, `code`, `directive`, `grammar-rule`, `declaration`,
   `test-case`, `trivia`, or `unclassified`. A node with children is a
@@ -307,12 +341,28 @@ the tree accounting and cannot silently alter the selected corpus.
    commit, and truncate the tree response in separate subcases. Validation
    returns 2 with respectively `E_SOURCE_HASH`, `E_SOURCE_MISSING`,
    `E_TARGET_IDENTITY`, and `E_TREE_INCOMPLETE`.
-4. `A1_04`: Supply an archive member `../escape`, a symlink outside the
-   cache, or an object one byte over its limit. Return 2 with
-   `E_SOURCE_PATH` or `E_SOURCE_LIMIT`; no file appears outside the cache.
-5. `A1_05`: Remove a parser runtime JAR or alter the Java tree after
-   acquisition. Offline preflight returns 2 with `E_RUNTIME_MISSING` or
-   `E_RUNTIME_HASH`, before starting Nextflow. Network request count is 0.
+4. `A1_04`: In separate extracted-archive subcases, supply `../escape`, an
+   absolute member path, two members with the same destination path, or a
+   symlink outside the cache. Each returns 2 with `E_SOURCE_PATH`, publishes
+   no candidate, preserves the old lock/cache, and writes nothing outside
+   the cache. An object one byte over its limit returns 2 with
+   `E_SOURCE_LIMIT` and the same transaction guarantees.
+5. `A1_05`: Remove the opaque runtime distribution or alter the Java tree
+   after acquisition. Offline preflight returns 2 with respectively
+   `E_RUNTIME_MISSING` or `E_RUNTIME_HASH`, before starting Nextflow.
+   Network request count is 0.
+6. `A1_06`: Acquire the actual pinned distribution with its repeated ZIP
+   names and no nested JARs. Acquisition returns 0 and retains all
+   42,355,106 bytes with the target hash unchanged. The candidate records
+   one `opaque-dist` runtime artifact, no invented bundled JAR artifacts,
+   hashed dependency POMs, and its external execution dependencies. Offline
+   validation succeeds; no distribution member is written to the cache.
+7. `A1_07`: Independently mutate one shell-prefix byte and one shaded-JAR
+   byte of the acquired distribution. Offline preflight returns 2 with
+   `E_RUNTIME_HASH`, starts no Nextflow process, and makes zero network
+   requests in each subcase. Changing only the packaging label or replacing
+   the lock's hash with the altered hash cannot bypass the pinned target
+   identity check; validation returns 2 with `E_TARGET_IDENTITY`.
 
 ### A2: Preserve source units without declaring their meaning complete
 
@@ -579,7 +629,7 @@ argv. Reject package patterns and arbitrary commands in bindings. Verify
 selected test source is active in the package under those build settings;
 a build-tagged-out test is missing, not exempt.
 
-All acceptance tests in this spec map one-to-one to GoConvey functions named
+All 49 acceptance tests in this spec map one-to-one to GoConvey functions named
 `TestUAT_<acceptance-ID>` in the listed test files. Unit fixtures can use
 helper subprocesses and temporary tiny Go packages to challenge discovery
 and event handling. Mark their evidence `foundation`; these fixtures cannot
@@ -691,7 +741,7 @@ Hand-edited status fields do not override that derivation.
 
 1. `D2_01`: Verify a completed fixture without changes: pass. Independently
    change implementation bytes without changing Git HEAD, a corpus block,
-   test bytes, expected bytes, normalization, build tags, or a runtime JAR.
+   test bytes, expected bytes, normalization, build tags, or the distribution.
    Each becomes stale with `E_EVIDENCE_STALE` and passed count 0.
 2. `D2_02`: Delete a raw event log or change artifact bytes. Return 2 with
    `E_EVIDENCE_MISSING` or `E_ARTIFACT_HASH`. Editing manifest status to
@@ -717,9 +767,10 @@ runtime comparisons have tested observation and error contracts.
 **File:** `conformance/oracle.go`
 **Test file:** `conformance/oracle_test.go`
 
-Run the acquired distribution with Java 21, strict parser v2, local executor,
-fixed two-task concurrency, no plugins, isolated work and home directories,
-and network access denied by the test environment. Record the actual
+Run the unchanged acquired distribution through its embedded launcher with
+Java 21, strict parser v2, local executor, fixed two-task concurrency,
+no plugins, isolated work and home directories, and network access denied
+by the test environment. Record the actual
 version output, argv, environment, trace, stdout, stderr, and produced files.
 An offline flag alone is not proof that a missing dependency did not fetch.
 The validation environment must enforce network denial and record its
@@ -1003,7 +1054,7 @@ with stale/failed status after subsequent edits.
    Reviewers can review independent semantic batches concurrently after
    source locking; dependent implementation steps remain sequential.
 
-The final `foundation-bootstrap` gate requires all numbered acceptance tests
+The final `foundation-bootstrap` gate requires all 49 acceptance tests
 above, all seven real oracle cases, all 18 accounting mutations, all three
 semantic observer mutations, current independent reviews of every bootstrap
 obligation, byte-complete extraction, matching generated views, and current

@@ -84,12 +84,17 @@ view from records and execute the complete final foundation gate.
 
 ## Exit conditions
 
-All six F UATs pass. Review the final mapping of all 47 acceptance IDs to
+All six F UATs pass. Review the final mapping of all 49 acceptance IDs to
 real GoConvey functions in their specified files, current reviewed records,
 and runner evidence. All seven oracle cases, all 18 accounting mutations,
 and all three semantic observer mutations have the required actual proof.
 Byte-complete extraction, independent bootstrap semantic reviews, generated
 views, and current input/artifact hashes satisfy the spec's final gate.
+The mapping includes
+`A1_06` and `A1_07`; review actual byte-preserving acquisition, both runtime
+mutation subcases, and packaging/lock-hash bypass failures. Oracle evidence
+must identify the unchanged opaque distribution and its actual external
+execution inputs, with hashed POMs retained as provenance.
 
 Run the following focused gates and save JSON, logs, and exit codes. Bound
 any required follow-up command with a recorded deadline and communicate

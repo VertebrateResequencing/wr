@@ -145,3 +145,18 @@
 - Restored wr supplies queue, container, and dependency primitives but no
   Nextflow adapter. Foundation tests must not label a fixture or simulated
   adapter as proof that wr executes Nextflow.
+
+### Runtime packaging evidence from phase 1
+
+- Actual acquisition found the official pinned distribution is a launcher
+  followed by a shaded JAR with repeated ZIP names and no nested JARs.
+  Independent inspection verified the exact published whole-file SHA-256.
+  See reviews/runtime-packaging-author.md for measured artifact evidence.
+- Retain and execute the verified distribution unchanged as an opaque
+  artifact. Record actual external execution dependencies; do not fabricate
+  separate embedded JARs. Capture Maven coordinates/POMs as provenance.
+- Strict path and duplicate-destination rejection still applies to extracted
+  archives. Opaque runtime integrity must detect launcher-prefix and payload
+  tampering, and an artifact's packaging label cannot bypass pinned identity.
+- This corrects an engineering assumption in the foundation spec without
+  changing the release target or broadening the runtime compatibility scope.

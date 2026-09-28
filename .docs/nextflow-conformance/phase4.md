@@ -68,8 +68,13 @@ acceptance tests in `conformance/evidence_test.go`: `D2_01`, `D2_02`,
 `D2_03`, `D2_04`, and `D2_05`. Hash the complete D2 input inventory before
 and after execution, including dirty and untracked inputs, active source
 and dependencies outside the bound package, tool identities, effective
-environment, and applicable runtime artifacts. Fix the permitted output
-exclusions in the tool and start children from an allowlisted environment.
+environment, and applicable runtime artifacts. Include the opaque runtime's
+full-file hash, Java tree, required tools, and actual external JARs; retain
+POM provenance through the lock and corpus input hashes. For `D2_01`, change
+the distribution independently of the other input subcases and require
+`E_EVIDENCE_STALE` with passed count 0. Bundled classes remain covered by the
+full distribution hash. Fix the permitted output exclusions in the tool
+and start children from an allowlisted environment.
 
 Revalidate raw events and artifacts on verify. Select the newest completed
 attempt for the exact input key by runner sequence, preserving historical

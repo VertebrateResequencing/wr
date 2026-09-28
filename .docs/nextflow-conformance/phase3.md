@@ -65,13 +65,14 @@ error or append raw `OBS:1`; every mutation fails `E_EXPECTATION`.
 Review fixture diagnostic literals now; E1 independently confirms the real
 oracle literals before awarding oracle evidence.
 
-Import all 47 numbered spec acceptance tests into foundation requirement
+Import all 49 numbered spec acceptance tests into foundation requirement
 and UAT records with unchanged IDs and source provenance. Independently
-compare that complete import with the spec. Records for unfinished tests
-remain drafts with measurable cases and null fixture, expected, binding,
-and review fields until ready under the spec's schema. Changed expectation
-or binding bytes require fresh independent review. Generate
-escaped, deterministic pages and checklists under
+compare that complete import with the amended spec, including `A1_06` and
+`A1_07` and the revised `A1_04`, `A1_05`, `D2_01`, and E1 contracts.
+Records for unfinished tests remain drafts with measurable cases and null
+fixture, expected, binding, and review fields until ready under the spec's
+schema. Changed expectation or binding bytes require fresh independent
+review. Generate escaped, deterministic pages and checklists under
 `.docs/nextflow-conformance/generated/`; check mode detects manual changes.
 After this import, update authoritative records first and regenerate views.
 
@@ -103,11 +104,11 @@ return 2 with `E_EVIDENCE_KIND`, regardless of fixture success.
 
 ## Exit conditions
 
-All eight C UATs pass. Independent review confirms exactly 47 acceptance
+All eight C UATs pass. Independent review confirms exactly 49 acceptance
 records with unchanged IDs and provenance. Generated pages reproduce their
 records, preserve failed and incomplete states, and render byte-identically.
 Discovery identifies implemented tests and reports future missing bindings
-honestly; it cannot claim that all 47 have executed at this stage. Capture:
+honestly; it cannot claim that all 49 have executed at this stage. Capture:
 
 ```bash
 timeout 2m go run ./cmd/wr-conformance render --check

@@ -47,13 +47,22 @@ spec.md section: E1
 Implement `conformance/oracle.go` and the seven actual workflow/config
 cases under `conformance/data/cases/`. Cover all four acceptance tests in
 `conformance/oracle_test.go`: `E1_01`, `E1_02`, `E1_03`, and `E1_04`.
-Use the acquired Nextflow 26.04.6 distribution, Java 21, parser v2, local
-executor, two-task concurrency, static typing disabled, no plugins, isolated
-work and home directories, and enforced network denial. Independently review
-each workflow, config, and expectation before execution. Record verified
-source and distribution hashes, the denial mechanism, and actual process
-observations. A missing external prerequisite fails the UAT and blocks this
-item without a skip or fixture substitute.
+Execute the unchanged opaque Nextflow 26.04.6 distribution by absolute path
+through its embedded `NXF_PACK=dist` launcher, which passes that same file to
+Java 21. Keep the separately acquired launcher as provenance; its default
+`one` package download path is outside this execution contract. Use parser
+v2, local executor, two-task concurrency, static typing disabled, no plugins,
+disabled automatic updates, isolated work and empty user home directories,
+and a private Nextflow home. Enforce network denial and record its mechanism.
+Independently review each workflow, config, and expectation before
+execution. Record verified
+source and full-file distribution hashes, version output, argv, effective
+environment, trace, stdout, stderr, and produced files. Use only the acquired
+external execution closure. POM metadata and bundled classes do not create
+additional runtime files or prove a complete Maven inventory. Successful
+offline runs prove closure sufficiency for these seven cases only. A missing
+external prerequisite fails the UAT and blocks this item without a skip or
+fixture substitute.
 
 Run `ORACLE_MAP`, `ORACLE_MAP_NULL`, `ORACLE_MIX`, `ORACLE_EMPTY`,
 `ORACLE_IMPORT`, `ORACLE_FAIR`, and `ORACLE_FILE_ERROR`. Independently
