@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -278,6 +279,63 @@ func TestPlannerSplitsTheDefaultJobqueueLaneByName(t *testing.T) {
 		So(jobqueueLanesForTest(plan, "TestReliable2FutureCase"), ShouldResemble, []string{"jq_reliable2"})
 		So(jobqueueLanesForTest(plan, "TestSubscriptionCatchUp"), ShouldResemble, []string{"subscription_catchup"})
 	})
+}
+
+func TestPlannerRunsEveryJobqueueTestInExactlyOneLane(t *testing.T) {
+	Convey("every Test function in the jobqueue package runs in one lane, or once in each of its shard lanes", t, func() {
+		disableLiveIntegrationEnv(t)
+
+		plan := NewPlan(ModeTest, testModule, []string{pkg(testModule, "jobqueue")})
+		names := jobqueueTestNames(t)
+		So(len(names), ShouldBeGreaterThan, 100)
+
+		for _, name := range names {
+			lanes := jobqueueLanesForTest(plan, name)
+			if len(lanes) != 1 && !distinctShardLanes(plan, lanes) {
+				So(name+" runs in "+strings.Join(lanes, ","), ShouldEqual, name+" runs in one lane")
+			}
+		}
+	})
+}
+
+// distinctShardLanes says whether lanes are two or more lanes that each run a
+// different WR_TEST_SHARD of the same tests.
+func distinctShardLanes(plan Plan, lanes []string) bool {
+	shards := make(map[string]bool, len(lanes))
+
+	for _, name := range lanes {
+		shard := laneNamed(plan, name).Env["WR_TEST_SHARD"]
+		if shard == "" || shards[shard] {
+			return false
+		}
+
+		shards[shard] = true
+	}
+
+	return len(shards) > 1
+}
+
+// jobqueueTestNames returns the name of every top-level Test function in the
+// jobqueue package's test files.
+func jobqueueTestNames(t *testing.T) []string {
+	t.Helper()
+
+	files, err := filepath.Glob(filepath.Join("..", "..", "jobqueue", "*_test.go"))
+	So(err, ShouldBeNil)
+
+	testFunc := regexp.MustCompile(`(?m)^func (Test\w*)\(t \*testing\.T\)`)
+	names := make([]string, 0)
+
+	for _, file := range files {
+		content, errr := os.ReadFile(file)
+		So(errr, ShouldBeNil)
+
+		for _, match := range testFunc.FindAllSubmatch(content, -1) {
+			names = append(names, string(match[1]))
+		}
+	}
+
+	return names
 }
 
 func TestPlannerPreservesShardLanes(t *testing.T) {
