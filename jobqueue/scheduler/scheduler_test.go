@@ -50,6 +50,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid/v5"
 	. "github.com/smartystreets/goconvey/convey"
@@ -2095,4 +2096,39 @@ func trySnapshotLock(maxWait time.Duration, tryLock func() bool) bool {
 			}
 		}
 	}
+}
+
+func TestLocalResourceLimits(t *testing.T) {
+	ctx := context.Background()
+
+	machineRAM, err := internal.ProcMeminfoMBs()
+	if err != nil {
+		t.Fatalf("could not read machine memory: %s", err)
+	}
+
+	localLimits := func(cores, ram int) (int, int) {
+		s, errn := New(ctx, "local", &ConfigLocal{testShell, time.Second, cores, ram})
+		So(errn, ShouldBeNil)
+
+		defer s.Cleanup(ctx)
+
+		l, ok := s.impl.(*local)
+		So(ok, ShouldBeTrue)
+
+		return l.maxCPU(), l.maxMem()
+	}
+
+	Convey("A local scheduler's MaxCores and MaxRAM of 0 or -1 use the whole machine", t, func() {
+		for _, limit := range []int{0, -1} {
+			cores, ram := localLimits(limit, limit)
+			So(cores, ShouldEqual, runtime.NumCPU())
+			So(ram, ShouldEqual, machineRAM)
+		}
+	})
+
+	Convey("A local scheduler's positive MaxCores and MaxRAM below the machine's cap it", t, func() {
+		cores, ram := localLimits(1, 1)
+		So(cores, ShouldEqual, 1)
+		So(ram, ShouldEqual, 1)
+	})
 }

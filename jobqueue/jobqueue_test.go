@@ -1561,10 +1561,12 @@ func serve(ctx context.Context, config ServerConfig) (*Server, string, []byte, e
 // What that retry no longer covers is the RPC port bind, which moved past
 // Serve's return into the recovery goroutine; publication carries its own retry
 // on the same 500ms/5s budget, so port contention stays the failure these
-// helpers pass through unchanged.
+// helpers pass through unchanged. Serve's own port reservation retries a port
+// something still listens on for that budget too, before returning an error
+// wrapping errPortInUse, so that error is returned without retrying it again.
 func serveWithoutPublication(ctx context.Context, config ServerConfig) (*Server, string, []byte, error) {
 	server, msg, token, err := Serve(ctx, config)
-	if err != nil {
+	if err != nil && !errors.Is(err, errPortInUse) {
 		limit := time.After(5 * time.Second)
 		ticker := time.NewTicker(500 * time.Millisecond)
 

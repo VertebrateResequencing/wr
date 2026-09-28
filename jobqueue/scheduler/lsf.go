@@ -480,22 +480,23 @@ func lingeredOnPipes(err error) bool {
 }
 
 // accountLines credits every element that a line of the given bkill output reports
-// on, removing it from unexplained as it goes.
+// on, removing it from unexplained as it goes. A line may report on several
+// elements of one array at once (see takeReportedElements).
 func (k *killSummary) accountLines(out string, unexplained map[string]bool) {
 	reID := regexp.MustCompile(`Job <([^>]+)>`)
 
 	for line := range strings.SplitSeq(out, "\n") {
 		id, kind := bkillLineOutcome(reID, line)
-		if id == "" || !unexplained[id] {
+		if id == "" {
 			continue
 		}
 
-		delete(unexplained, id)
+		n := takeReportedElements(id, unexplained)
 
 		if kind == bkillLineKilled {
-			k.killed++
+			k.killed += n
 		} else {
-			k.alreadyGone++
+			k.alreadyGone += n
 		}
 	}
 }

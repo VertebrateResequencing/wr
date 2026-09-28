@@ -174,14 +174,11 @@ func resolveMountPoint(mcMount, cwd, defaultMount string) string {
 // The requirements pointer is shared by every snapshot taken from the memo, so it
 // must be treated as read-only; the only consumer, ensureGroup, Clone()s it.
 //
-// Job.Key() is deliberately left uncached in itself, and memoised only here. The
-// reason is re-entrancy, not the before/after key comparison modifyJob makes:
-// Key() is called with the job's write lock ALREADY held (prepareInputJobs,
-// modifyJob before and after applyTo, and derivedLocked below), so a Key() that
-// took the lock to read or fill a cache would deadlock, and one that used its own
-// atomic instead would need a second invalidation discipline for exactly the same
-// set of mutators. Memoising it here gets the whole saving on the only hot path,
-// under a lock its callers already hold.
+// Job.Key() now has a memo of its own (see jobKeyMemo), which takes no lock, so
+// is safe with the job's write lock ALREADY held (prepareInputJobs, modifyJob
+// before and after applyTo, and derivedLocked below), and needs no invalidation
+// discipline, since it checks its inputs on every call. The key is still copied
+// here so a snapshot reads it with the other derived strings.
 type jobDerived struct {
 	key          string
 	requirements *scheduler.Requirements
@@ -1022,6 +1019,12 @@ type Job struct {
 	// other live server in the same test binary. It is written under the write lock
 	// (in derivedLocked) and so must be read under at least the read lock.
 	derivations uint32
+
+	// keyMemo is the last computation of Key(); see jobKeyMemo. It is atomic
+	// because Key() is called both with and without the job's lock held, and
+	// being unexported it is neither serialised to the database nor sent to
+	// clients.
+	keyMemo atomic.Pointer[jobKeyMemo]
 
 	// we store the MuxFys that we mount during Mount() so we can Unmount() them
 	// later; this is purely client side.
@@ -1942,9 +1945,101 @@ func (j *Job) decrementLimitGroups(lim *limiter.Limiter) {
 //
 // The Cwd is part of the key only when CwdMatters, since otherwise the Cmd does
 // not run in Cwd itself but in a unique directory wr creates below it.
+//
+// The key is memoised along with the inputs it was calculated from, and the memo
+// is only used while the job's inputs still equal those, so asking again costs
+// no allocation and no hashing of the (possibly very large) Cmd; see jobKeyMemo.
 func (j *Job) Key() string {
-	return byteKey(jobKeyConcat(j.CwdMatters, j.Cwd, j.Cmd, j.MountConfigs.Key(),
-		containerImageKey(j.WithDocker, j.WithSingularity, j.ContainerImageUser), j.ContainerMounts))
+	if memo := j.keyMemo.Load(); memo != nil && memo.matches(j) {
+		return memo.key
+	}
+
+	memo := newJobKeyMemo(j)
+	j.keyMemo.Store(memo)
+
+	return memo.key
+}
+
+// jobKeyMemo is one calculation of a Job's Key(): a copy of every input Key()
+// reads, and the key those inputs give. It is never modified once made.
+//
+// It needs no invalidation: Job.Key() only returns a memo's key after checking
+// that each of the job's inputs still equals the memo's copy of it, and the key
+// was calculated from exactly that copy, so the key it returns is always the one
+// the job's current inputs give. It therefore stays correct however an input
+// changes - JobModifier.applyTo, decoding over the Job, or any direct field
+// assignment, including one to an element of MountConfigs, since the memo holds
+// its own copy of those. The check is cheap because an unchanged string field
+// shares its bytes with the memo's copy, and Go compares strings that share
+// their bytes without reading them.
+type jobKeyMemo struct {
+	cwd                string
+	cmd                string
+	mountConfigs       MountConfigs
+	withDocker         string
+	withSingularity    string
+	containerMounts    string
+	cwdMatters         bool
+	containerImageUser bool
+	key                string
+}
+
+// newJobKeyMemo copies the inputs of j's Key() and calculates the key from that
+// copy, reading each field of j only once.
+func newJobKeyMemo(j *Job) *jobKeyMemo {
+	m := &jobKeyMemo{
+		cwd:                j.Cwd,
+		cmd:                j.Cmd,
+		mountConfigs:       cloneMountKeyInputs(j.MountConfigs),
+		withDocker:         j.WithDocker,
+		withSingularity:    j.WithSingularity,
+		containerMounts:    j.ContainerMounts,
+		cwdMatters:         j.CwdMatters,
+		containerImageUser: j.ContainerImageUser,
+	}
+
+	m.key = byteKey(jobKeyConcat(m.cwdMatters, m.cwd, m.cmd, m.mountConfigs.Key(),
+		containerImageKey(m.withDocker, m.withSingularity, m.containerImageUser), m.containerMounts))
+
+	return m
+}
+
+// matches reports whether every input of j's Key() still equals this memo's copy
+// of it.
+func (m *jobKeyMemo) matches(j *Job) bool {
+	return m.cmd == j.Cmd && m.cwd == j.Cwd && m.cwdMatters == j.CwdMatters &&
+		m.containerMatches(j) && mountKeyInputsEqual(m.mountConfigs, j.MountConfigs)
+}
+
+// containerMatches reports whether j's container fields still equal this memo's
+// copy of them.
+func (m *jobKeyMemo) containerMatches(j *Job) bool {
+	return m.withDocker == j.WithDocker && m.withSingularity == j.WithSingularity &&
+		m.containerImageUser == j.ContainerImageUser && m.containerMounts == j.ContainerMounts
+}
+
+// cloneMountKeyInputs returns a copy of the parts of mcs that MountConfigs.Key()
+// reads (each Mount, and its Targets), sharing no memory with mcs that mcs could
+// later modify in place.
+func cloneMountKeyInputs(mcs MountConfigs) MountConfigs {
+	if len(mcs) == 0 {
+		return nil
+	}
+
+	clone := make(MountConfigs, len(mcs))
+	for i, mc := range mcs {
+		clone[i] = MountConfig{Mount: mc.Mount, Targets: slices.Clone(mc.Targets)}
+	}
+
+	return clone
+}
+
+// mountKeyInputsEqual reports whether a and b have the same Mounts and Targets,
+// in the same order, and so the same MountConfigs.Key().
+func mountKeyInputsEqual(a, b MountConfigs) bool {
+	return slices.EqualFunc(a, b, func(x, y MountConfig) bool {
+		return x.Mount == y.Mount && slices.Equal(x.Targets, y.Targets)
+	})
 }
 
 // generateSchedulerGroup returns a stringified form of the given requirements,

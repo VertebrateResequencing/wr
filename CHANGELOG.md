@@ -85,6 +85,35 @@ project adheres to [Semantic Versioning](http://semver.org/).
   says `stopped` for such a stale pid file, instead of reporting a
   non-responsive manager, and `wr cloud teardown` no longer SIGKILLs an
   unrelated process named by a stale ssh forwarder pid file.
+- A restarted manager could exit with `bind: address already in use` on its own
+  port, or come up without its web interface. While the manager was down or
+  still recovering, local clients (runners, subscriptions, `wr manager start`)
+  kept redialling it, and one of those dials could be given the manager's port
+  as its own source port and connect to itself. That left the port blocked for
+  60s, longer than the manager's 5s retry. Even-numbered ports were the ones
+  exposed, because Linux gives dials even source ports first: that includes
+  the default web port, and any manager or web port you configured as an even
+  number. On Linux, the manager now holds both ports from the moment it starts (clients
+  are still refused until it is ready), and if a port is still blocked when it
+  starts, it waits up to 90s for it, saying so in its log. A port that another
+  process is really listening on still stops the manager after about 5s, now
+  with an error saying the port is in use by another process. macOS does not
+  block the port this way, so its manager is unchanged.
+- The manager no longer rebuilds and hashes a command's whole text each time
+  it needs the command's key, which it does several times per command. With
+  20KB commands that cost 11.6-15.6GB of allocations every 20 minutes.
+- The manager no longer warns "checkCmd bkill did not reclaim all excess
+  runners" when LSF's `bkill` reports several consecutive array elements on
+  one line as a range, such as `Job <408347[1-2:1]>: Job has already
+  finished`. Those elements are now counted as already gone (or killed), where
+  before they were counted as unaccounted.
+- The help for `wr manager start --max_cores` and `--max_ram` said that 0
+  allows only 0-core commands, or stops commands running locally. That is only
+  true of the openstack scheduler. With the local scheduler, 0 has always meant
+  the whole machine, the same as -1, and it still does. The help now says so.
+  To keep commands off the machine, use the lsf scheduler, or the openstack
+  scheduler with `--max_ram 0`. To stop a manager starting new commands, use
+  `wr manager pause`.
 - The `cleanup` and `cleanup_all` behaviours (`cleanup` is the default
   `--on_exit`) of a lost command could leave empty directories behind in the
   command's `--cwd` and report a warning, when its runner and the manager both

@@ -1177,3 +1177,20 @@ func deadPIDForTest(t *testing.T) int {
 
 	return pid
 }
+
+func TestManagerStartLocalLimitHelp(t *testing.T) {
+	Convey("manager start's --max_cores and --max_ram help matches what each scheduler does with 0", t, func() {
+		for _, name := range []string{"max_cores", "max_ram"} {
+			flag := managerStartCmd.Flags().Lookup(name)
+			So(flag, ShouldNotBeNil)
+
+			// the local scheduler treats 0 (like -1) as "use the whole
+			// machine"; only openstack gives 0 a restricting meaning
+			So(flag.Usage, ShouldContainSubstring, "local scheduler, 0 or -1 mean")
+			So(flag.Usage, ShouldContainSubstring, "openstack")
+		}
+
+		So(managerStartCmd.Flags().Lookup("max_ram").Usage, ShouldNotContainSubstring,
+			"0 prevents jobs running locally")
+	})
+}

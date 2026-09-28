@@ -130,6 +130,8 @@ const (
 	// exiting (spec E1). They are the budget the serve test helper already used
 	// for exactly this failure, back when the bind happened inside Serve: time
 	// for a server a prior test recently stopped to really stop listening.
+	// Serve's port reservation (port_reservation.go) retries on the same
+	// interval, for the same budget while something is listening on the port.
 	serverBindRetryInterval = 500 * time.Millisecond
 	serverBindRetryBudget   = 5 * time.Second
 
@@ -1464,9 +1466,13 @@ type Server struct {
 	readersStarted bool
 	// boundPorts are the ports publication actually bound, the only ones
 	// shutdown waits to see closed. Guarded by ssmutex.
-	boundPorts  []string
-	racChecking bool
-	killRunners bool
+	boundPorts []string
+	// portReservations hold the manager's ports from Serve until publication
+	// binds them, so a client redialling the manager cannot self-connect on
+	// them in the meantime (see port_reservation.go).
+	portReservations *serverPortReservations
+	racChecking      bool
+	killRunners      bool
 	// deletesStopped is set, under krmutex, once shutdown is about to close
 	// the database, after which deleteJobIfRequested starts no more deletes.
 	deletesStopped bool
@@ -2004,6 +2010,7 @@ func (s *Server) persistTokenAndListen(ctx context.Context, config ServerConfig)
 	}
 
 	s.noteBound(config.Port)
+	s.portReservations.rpcHandedOver()
 
 	return true
 }
@@ -2028,6 +2035,9 @@ func (s *Server) startWebInterface(ctx context.Context, config ServerConfig) {
 
 // listenWithRetries binds the command socket to port, retrying every
 // serverBindRetryInterval for up to serverBindRetryBudget before giving up.
+//
+// Serve reserved the port, so no self-connect can have left it in TIME_WAIT;
+// what this waits out is a listener that bound beside the reservation.
 //
 // The retry is not belt and braces: the bind used to happen in Serve, where an
 // in-use port came back as a Serve error the caller could retry, and it now
@@ -4126,6 +4136,14 @@ func currentServerIP(config ServerConfig, serverLogger log15.Logger) (string, er
 // that gets ErrNoServer, exactly as it would against a manager that is simply
 // down.
 //
+// On Linux it does reserve the configured ports first (bound but not
+// listening, so a client's dial is still refused), so that a local client
+// redialling the manager in the meantime cannot self-connect on one and keep
+// the manager off it. If a port is still held from before, Serve waits: for up to 5s if
+// something is listening there, when it fails saying the port is in use by
+// another process, and for up to 90s if nothing is, which outlasts a
+// self-connect's 60s TIME_WAIT.
+//
 // It returns a *Server that you will typically call Block() on to block until
 // your executable receives a SIGINT or SIGTERM, or you call Stop(), at which
 // point the queues will be safely closed (you'd probably just exit at that
@@ -4192,6 +4210,21 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	if err != nil {
 		return s, msg, token, err
 	}
+
+	// hold our ports from now until publication binds them, so no client
+	// redialling us can self-connect on one and keep us off it.
+	reservations, err := reserveServerPorts(ctx, config)
+	if err != nil {
+		return s, certMsg, token, err
+	}
+
+	defer func() {
+		closeOnError(&err, "port reservations", func() error {
+			reservations.release()
+
+			return nil
+		})
+	}()
 
 	// we need to persist stuff to disk, and we do so using boltdb
 	db, msg, err := initDB(
@@ -4302,6 +4335,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		uploadDir:                 uploadDir,
 		sock:                      sock,
 		tlsConfig:                 tlsConfig,
+		portReservations:          reservations,
 		serving:                   make(chan struct{}),
 		stopping:                  make(chan struct{}),
 		startupStatus:             startupStatus,
@@ -4399,6 +4433,9 @@ func (s *Server) serveWebInterface(ctx context.Context, config ServerConfig, htt
 	// bound here rather than by ListenAndServeTLS, so shutdown only waits on the
 	// web port if this server really holds it.
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", httpAddr)
+
+	s.portReservations.webHandedOver()
+
 	if err != nil {
 		clog.Error(ctx, "server web interface had problems", "err", err)
 	} else {
@@ -7763,6 +7800,9 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 	// startup window (spec E4).
 	s.startupStatus.remove()
 
+	// and so publication can no longer need the reservations either.
+	s.portReservations.release()
+
 	s.waitForRunnersToDie(ctx, wait)
 
 	// stop the scheduler
@@ -7979,7 +8019,7 @@ func (s *Server) shutdownHTTPServer(ctx context.Context) {
 
 // waitForPortsClosed blocks until the command and web ports this server bound
 // are no longer being listened to (which is the best proxy we have for them
-// being free). portStillListening closes any open connection as a side effect.
+// being free). localPortListening closes any open connection as a side effect.
 //
 // Since publication moved the binds past Serve's return (spec E1), a manager
 // stopped inside the startup window, or whose publication could not bind, holds
@@ -7991,35 +8031,13 @@ func (s *Server) waitForPortsClosed(ctx context.Context) {
 
 	for {
 		stillUp := slices.ContainsFunc(ports, func(port string) bool {
-			return s.portStillListening(ctx, port)
+			return localPortListening(ctx, port, portCheckDialTimeout)
 		})
 
 		if !stillUp {
 			return
 		}
 	}
-}
-
-// portStillListening reports whether something is still listening on the given
-// port of this host. If a connection could be made it is immediately closed
-// (any close error is just logged). A dial failure is taken to mean the port is
-// no longer being listened to.
-func (s *Server) portStillListening(ctx context.Context, port string) bool {
-	dialCtx, cancel := context.WithTimeout(ctx, portCheckDialTimeout)
-	defer cancel()
-
-	var dialer net.Dialer
-
-	conn, err := dialer.DialContext(dialCtx, "tcp", net.JoinHostPort("", port))
-	if err != nil || conn == nil {
-		return false
-	}
-
-	if errc := conn.Close(); errc != nil {
-		clog.Warn(ctx, "server shutdown port close failed", "port", port, "err", errc)
-	}
-
-	return true
 }
 
 // subscribeToJobs adds the specified jobs to a status websocket subscription.
