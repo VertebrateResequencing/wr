@@ -3233,11 +3233,26 @@ func (s *Server) confirmServerDeadLater(ctx context.Context, serverID string, au
 
 // logClientRequestError logs the error handleRequest returned for a client
 // request: at debug level if it is only the routine outcome of normal client
-// behaviour, otherwise at error level.
+// behaviour, at warn level if the client presented the wrong token, otherwise at
+// error level.
+//
+// A wrong token is only a warning because every long-lived client's first request
+// after a clean manager restart presents the previous manager's token (the stop
+// deleted it, so the new manager made a new one); the client then re-reads its
+// token file and resends. The manager keeps no record of its previous token, so
+// cannot tell that case from a misconfigured client or an attacker, and each such
+// refusal stays visible at the default log level.
 func logClientRequestError(ctx context.Context, herr error) {
 	var routine routineClientRequestError
 	if errors.As(herr, &routine) {
 		clog.Debug(ctx, "Server refused a routine client request", "err", herr)
+
+		return
+	}
+
+	var jqerr Error
+	if errors.As(herr, &jqerr) && jqerr.Err == wrongTokenReason {
+		clog.Warn(ctx, "Server refused a client request with the wrong token", "err", herr)
 
 		return
 	}

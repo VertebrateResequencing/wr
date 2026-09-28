@@ -151,6 +151,12 @@ project adheres to [Semantic Versioning](http://semver.org/).
   already finished` or `No matching job found`, without naming any job. Those
   runners are now counted as already gone, where before they were counted as
   unaccounted.
+- After a clean manager restart, the manager no longer logs an error for each
+  long-lived client whose first request still carried the previous manager's
+  token. The client re-reads its token file and resends, so the request
+  succeeds. Every request refused for a wrong token is now logged at warn
+  instead, as "Server refused a client request with the wrong token", so a
+  misconfigured client is still visible.
 - The help for `wr manager start --max_cores` and `--max_ram` said that 0
   allows only 0-core commands, or stops commands running locally. That is only
   true of the openstack scheduler. With the local scheduler, 0 has always meant

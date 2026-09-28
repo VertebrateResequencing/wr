@@ -100,6 +100,10 @@ const slowRequestSelectorParts = 6
 //nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
 var slowRequestThreshold = slowRequestThresholdDefault
 
+// wrongTokenReason is the detailed reason logged for a request refused because
+// its client presented the wrong token.
+const wrongTokenReason = "Client presented the wrong token"
+
 type subscriptionCatchUpRecord struct {
 	job    *Job
 	state  JobState
@@ -659,7 +663,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 func (s *Server) validateRequest(cr *clientRequest, up, drain bool) (string, string) {
 	// check that the client making the request has the expected token
 	if (len(cr.Token) != tokenLength || !tokenMatches(cr.Token, s.token)) && cr.Method != requestMethodPing {
-		return ErrPermissionDenied, "Client presented the wrong token"
+		return ErrPermissionDenied, wrongTokenReason
 	}
 
 	if s.q == nil || (!up && !drain) {

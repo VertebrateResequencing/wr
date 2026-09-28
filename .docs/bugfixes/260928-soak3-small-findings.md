@@ -56,3 +56,24 @@ Branch `fix-soak3-small-findings`, based on `origin/develop` at `f2888015`
     extra line, an illegal id, a signalled bkill, per-element lines, and an
     accepted request.
   - CHANGELOG: Fixed entry.
+- [x] **Error-level log noise on clean restart.** After a clean manager
+  restart, each long-lived Go client's first request is rejected with "wrong
+  token" and then resent successfully by #640's token reload. The manager
+  still logs that rejection at error level: 36 `add` and 9 `getin` lines in
+  the soak.
+  - Red: `CGO_ENABLED=1 go test -tags netgo --count 1 ./jobqueue -run
+    TestClientRequestErrorLogLevel` exited 1: the wrong-token case logged
+    `lvl=eror msg="Server handle client request error" err="jobqueue add():
+    Client presented the wrong token"`.
+  - `jobqueue/server.go`: `logClientRequestError` logs a request refused for
+    a wrong token at warn, as "Server refused a client request with the wrong
+    token". Every other refusal keeps its level.
+  - `jobqueue/serverCLI.go`: the reason is now the `wrongTokenReason` const,
+    shared by `validateRequest` and the logger.
+  - Why not skip the log only for the restart case: a clean stop deletes the
+    token file, so the new manager has no record of the previous token and
+    cannot tell a client presenting it from a misconfigured client or an
+    attacker. At warn, each refusal stays visible at the default log level.
+  - `jobqueue/client_request_log_test.go`: a wrong-token add is refused with
+    `ErrPermissionDenied` and logged at warn, not error.
+  - CHANGELOG: Fixed entry.
