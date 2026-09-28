@@ -131,6 +131,26 @@ func TestLSFManagerQueueDefaults(t *testing.T) {
 				So(queue, ShouldEqual, lqdNormal)
 			})
 
+			Convey("but not a job's own single queue, which is always used", func() {
+				queue, err = determine(map[string]string{lqdQueueKey: lqdInteract})
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, lqdInteract)
+			})
+
+			Convey("nor a default single queue", func() {
+				s.config.Queue = lqdInteract
+
+				queue, err = determine(nil)
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, lqdInteract)
+			})
+
+			Convey("and they also filter a job's own queue list", func() {
+				queue, err = determine(map[string]string{lqdQueueKey: lqdInteract + "," + lqdNormal})
+				So(err, ShouldBeNil)
+				So(queue, ShouldEqual, lqdNormal)
+			})
+
 			Convey("and they also filter a default queue list", func() {
 				s.config.Queue = lqdInteract + "," + lqdLong
 
