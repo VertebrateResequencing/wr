@@ -26,7 +26,8 @@ project adheres to [Semantic Versioning](http://semver.org/).
   still avoids interactive queues. That default now also applies to commands
   added through the REST API or Go client without a `queues_avoid` of their
   own. Commands added before you upgrade keep the "interactive" list they were
-  given.
+  given. `wr add --queues_avoid ''` no longer lets a command use interactive
+  queues; name the queue with `--queue` instead.
 - A command that completes successfully no longer has its output kept. Its
   stdout and stderr are now empty everywhere a completed command is shown: the
   status web page, `wr status -o json` (however you choose the commands, with
