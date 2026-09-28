@@ -134,7 +134,7 @@ func TestOpenManagerBoltLimitChild(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bdb, err := openManagerBolt(path)
+	bdb, err := openManagerBolt(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
