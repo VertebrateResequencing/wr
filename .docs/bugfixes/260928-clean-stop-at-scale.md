@@ -301,3 +301,9 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
     `signalledAfterExit` and reports the job as it ended; only a report still
     unsent at LSF's final SIGKILL (10s later by default) is lost, and that job
     is then recovered as running by the next manager.
+
+## Gates
+
+On this branch at the item 4 commit, with all `OS_*` unset: `make lint` 0
+issues; `make test` PASSED (784 passed, 21 skipped, 1m31s); `CGO_ENABLED=1 make
+race` PASSED (784 passed, 20 skipped, 3m1s). Each on the first run.
