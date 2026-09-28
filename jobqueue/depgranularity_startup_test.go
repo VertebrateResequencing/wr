@@ -410,10 +410,13 @@ func dgsCleanup(ctx context.Context, server *Server, release func()) func() {
 func dgsStopWithForeignListener(ctx context.Context, port func(ServerConfig) string) {
 	_, serverConfig, _, _, _ := jobqueueTestInit(true) //nolint:dogsled
 
-	var listenConfig net.ListenConfig
+	defer publishexit.Set(func(int) {})()
 
-	listener, err := listenConfig.Listen(ctx, "tcp", "0.0.0.0:"+port(serverConfig))
-	So(err, ShouldBeNil)
+	server, _, release := pausedRecoveringFixtureServer(ctx, serverConfig)
+
+	defer release()
+
+	listener := dgsListenBesideReservation(ctx, port(serverConfig))
 
 	// accept like a real server would: a listener that never accepts fills
 	// its backlog, and dials to it then time out as if it were closed.
@@ -427,12 +430,6 @@ func dgsStopWithForeignListener(ctx context.Context, port func(ServerConfig) str
 			_ = conn.Close()
 		}
 	}()
-
-	defer publishexit.Set(func(int) {})()
-
-	server, _, release := pausedRecoveringFixtureServer(ctx, serverConfig)
-
-	defer release()
 
 	stopped := make(chan struct{})
 
@@ -465,6 +462,20 @@ func dgsStopWithForeignListener(ctx context.Context, port func(ServerConfig) str
 	}
 
 	So(returned, ShouldBeTrue)
+}
+
+// dgsListenBesideReservation listens on port while a recovering server holds
+// its reservation there. Serve reserves its ports before recovery, and would
+// wait out a listener already on one, but a listener with SO_REUSEADDR (as Go's
+// are) can still bind beside the reservation, so this is how another process
+// takes a port from a manager that has not yet published.
+func dgsListenBesideReservation(ctx context.Context, port string) net.Listener {
+	var listenConfig net.ListenConfig
+
+	listener, err := listenConfig.Listen(ctx, "tcp", "0.0.0.0:"+port)
+	So(err, ShouldBeNil)
+
+	return listener
 }
 
 // TestDepGranularityStartupWindowIsInvisible covers E1 acceptance test 1: while
@@ -1103,11 +1114,6 @@ func TestDepGranularityStartupExitsWhenPortUnavailable(t *testing.T) {
 	Convey("Publication exits the process when the manager port cannot be bound", t, func() {
 		config, serverConfig, addr, _, connectTime := jobqueueTestInit(true)
 
-		var listenConfig net.ListenConfig
-
-		listener, err := listenConfig.Listen(ctx, "tcp", "0.0.0.0:"+serverConfig.Port)
-		So(err, ShouldBeNil)
-
 		exits := make(chan int, 2)
 
 		defer publishexit.Set(func(code int) { exits <- code })()
@@ -1115,6 +1121,9 @@ func TestDepGranularityStartupExitsWhenPortUnavailable(t *testing.T) {
 		server, _, release := pausedRecoveringFixtureServer(ctx, serverConfig)
 
 		defer dgsCleanup(ctx, server, release)()
+
+		listener := dgsListenBesideReservation(ctx, serverConfig.Port)
+
 		defer func() { _ = listener.Close() }()
 
 		started := time.Now()
@@ -1178,11 +1187,6 @@ func TestDepGranularityStartupRetriesPortBind(t *testing.T) {
 	Convey("Publication retries a manager port that is briefly in use", t, func() {
 		_, serverConfig, _, _, _ := jobqueueTestInit(true)
 
-		var listenConfig net.ListenConfig
-
-		listener, err := listenConfig.Listen(ctx, "tcp", "0.0.0.0:"+serverConfig.Port)
-		So(err, ShouldBeNil)
-
 		exits := make(chan int, 2)
 
 		defer publishexit.Set(func(code int) { exits <- code })()
@@ -1190,6 +1194,9 @@ func TestDepGranularityStartupRetriesPortBind(t *testing.T) {
 		server, _, release := pausedRecoveringFixtureServer(ctx, serverConfig)
 
 		defer dgsCleanup(ctx, server, release)()
+
+		listener := dgsListenBesideReservation(ctx, serverConfig.Port)
+
 		defer func() { _ = listener.Close() }()
 
 		go func() {

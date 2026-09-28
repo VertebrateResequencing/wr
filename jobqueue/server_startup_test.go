@@ -52,9 +52,11 @@ var errTimedOutWaitingForServeTokenWrite = errors.New("timed out waiting for Ser
 const recoveryWaitTimeout = 10 * time.Second
 
 // TestServeFailsCleanlyWhenPortTaken covers the window between isolateTestConfig
-// picking a manager port and the server binding it after recovery: if another
-// process takes the port in that window, the serve helper must return an error
-// for the test to fail on, not let publication exit the whole test binary.
+// picking a manager port and the server binding it: if another process takes
+// the port in that window, the serve helper must return an error for the test
+// to fail on, not let publication exit the whole test binary. Serve reserves
+// its ports before recovery, so it is Serve that now finds the port taken, and
+// says so.
 func TestServeFailsCleanlyWhenPortTaken(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -62,7 +64,7 @@ func TestServeFailsCleanlyWhenPortTaken(t *testing.T) {
 
 	ctx := context.Background()
 
-	Convey("serve returns errServePublishGaveUp if the manager port is taken before the bind", t, func() {
+	Convey("serve returns Serve's port-in-use error if the manager port is taken before Serve", t, func() {
 		var squatter net.Listener
 
 		defer func() {
@@ -94,7 +96,8 @@ func TestServeFailsCleanlyWhenPortTaken(t *testing.T) {
 		}
 
 		So(squatter, ShouldNotBeNil)
-		So(errors.Is(err, errServePublishGaveUp), ShouldBeTrue)
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "manager port "+serverConfig.Port+" is in use by another process")
 	})
 }
 

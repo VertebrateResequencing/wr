@@ -85,6 +85,19 @@ project adheres to [Semantic Versioning](http://semver.org/).
   says `stopped` for such a stale pid file, instead of reporting a
   non-responsive manager, and `wr cloud teardown` no longer SIGKILLs an
   unrelated process named by a stale ssh forwarder pid file.
+- A restarted manager could exit with `bind: address already in use` on its own
+  port, or come up without its web interface. While the manager was down or
+  still recovering, local clients (runners, subscriptions, `wr manager start`)
+  kept redialling it, and one of those dials could be given the manager's port
+  as its own source port and connect to itself. That left the port blocked for
+  60s, longer than the manager's 5s retry. Even-numbered ports were the ones
+  exposed, because Linux gives dials even source ports first: that includes
+  the default web port, and any manager or web port you configured as an even
+  number. The manager now holds both ports from the moment it starts (clients
+  are still refused until it is ready), and if a port is still blocked when it
+  starts, it waits up to 90s for it, saying so in its log. A port that another
+  process is really listening on still stops the manager after about 5s, now
+  with an error saying the port is in use by another process.
 - The `cleanup` and `cleanup_all` behaviours (`cleanup` is the default
   `--on_exit`) of a lost command could leave empty directories behind in the
   command's `--cwd` and report a warning, when its runner and the manager both
