@@ -275,7 +275,7 @@ func TestLSF(t *testing.T) {
 
 	if err != nil {
 		SkipConvey("You can't get a new lsf scheduler without LSF being installed", t, func() {
-			_, err = New(ctx, "lsf", &ConfigLSF{"development", "bash", "~/.ssh/id_rsa"})
+			_, err = New(ctx, "lsf", &ConfigLSF{Deployment: "development", Shell: "bash", PrivateKeyPath: "~/.ssh/id_rsa"})
 			So(err, ShouldNotBeNil)
 		})
 
@@ -321,7 +321,7 @@ func TestLSF(t *testing.T) {
 			}()
 		}
 
-		s, err := New(ctx, "lsf", &ConfigLSF{"development", "bash", os.Getenv("WR_LSF_TEST_KEY")})
+		s, err := New(ctx, "lsf", &ConfigLSF{Deployment: "development", Shell: "bash", PrivateKeyPath: os.Getenv("WR_LSF_TEST_KEY")})
 		So(err, ShouldBeNil)
 		So(s, ShouldNotBeNil)
 
@@ -422,7 +422,7 @@ func TestLSF(t *testing.T) {
 					internal.CachedUsername = username
 				}()
 
-				ssys, err := New(ctx, "lsf", &ConfigLSF{"development", "bash", os.Getenv("WR_LSF_TEST_KEY")})
+				ssys, err := New(ctx, "lsf", &ConfigLSF{Deployment: "development", Shell: "bash", PrivateKeyPath: os.Getenv("WR_LSF_TEST_KEY")})
 				So(err, ShouldBeNil)
 				So(ssys, ShouldNotBeNil)
 

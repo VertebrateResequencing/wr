@@ -561,6 +561,7 @@ func registerModCloudFlags() {
 		"comma-separated list of key=value environment variables to set before running the commands")
 	modCmd.Flags().StringVar(&cmdQueue, "queue", "", "name of queue to submit to, for schedulers with queues")
 	modCmd.Flags().StringVar(&cmdQueuesAvoidMod, "queues_avoid", "",
-		"comma-separated list of substrings found in queues that should not be submitted to, for schedulers with queues")
+		"comma-separated list of substrings found in queues that should not be submitted to, "+
+			"for schedulers with queues; replaces the manager's --queues_avoid (default \"interactive\")")
 	// modCmd.Flags().BoolVar(&cmdBsubMode, "bsub", false, "enable bsub emulation mode")
 }

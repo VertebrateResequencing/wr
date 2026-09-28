@@ -891,3 +891,66 @@ func TestConfig(t *testing.T) {
 		})
 	})
 }
+
+func TestConfigManagerQueueDefaults(t *testing.T) {
+	ctx := context.Background()
+
+	const (
+		fileQueue = "normal,long"
+		fileAvoid = "yesterday"
+		envQueue  = "basement"
+		envAvoid  = "hugemem,,"
+	)
+
+	// other tests' ToEnv() calls leave these set; restore them afterwards
+	for _, name := range []string{"WR_MANAGERQUEUE", "WR_MANAGERQUEUESAVOID"} {
+		t.Setenv(name, "")
+		os.Unsetenv(name)
+	}
+
+	Convey("The manager queue defaults are empty and 'interactive'", t, func() {
+		config := loadDefaultConfig(ctx)
+		So(config.ManagerQueue, ShouldBeEmpty)
+		So(config.ManagerQueuesAvoid, ShouldEqual, "interactive")
+	})
+
+	Convey("Given a config file that sets the manager queue defaults", t, func() {
+		_, restoreHome := getTempHome(ctx, t)
+		defer restoreHome()
+
+		pwd := t.TempDir()
+		path := filepath.Join(pwd, ".wr_config.yml")
+		err := os.WriteFile(path, []byte("managerqueue: \""+fileQueue+"\"\nmanagerqueuesavoid: \""+fileAvoid+"\"\n"), 0o600)
+		So(err, ShouldBeNil)
+
+		Convey("they are loaded from the file", func() {
+			config := mergeAllConfigs(ctx, 1000, Development, pwd)
+			So(config.ManagerQueue, ShouldEqual, fileQueue)
+			So(config.Source("ManagerQueue"), ShouldEqual, path)
+			So(config.ManagerQueuesAvoid, ShouldEqual, fileAvoid)
+			So(config.Source("ManagerQueuesAvoid"), ShouldEqual, path)
+
+			shown := config.String()
+			So(shown, ShouldContainSubstring, "ManagerQueue ")
+			So(shown, ShouldContainSubstring, fileQueue)
+			So(shown, ShouldContainSubstring, "ManagerQueuesAvoid")
+			So(shown, ShouldContainSubstring, fileAvoid)
+		})
+
+		Convey("WR_MANAGERQUEUE and WR_MANAGERQUEUESAVOID override the file", func() {
+			os.Setenv("WR_MANAGERQUEUE", envQueue)
+			os.Setenv("WR_MANAGERQUEUESAVOID", envAvoid)
+
+			defer func() {
+				os.Unsetenv("WR_MANAGERQUEUE")
+				os.Unsetenv("WR_MANAGERQUEUESAVOID")
+			}()
+
+			config := mergeAllConfigs(ctx, 1000, Development, pwd)
+			So(config.ManagerQueue, ShouldEqual, envQueue)
+			So(config.Source("ManagerQueue"), ShouldEqual, ConfigSourceEnvVar)
+			So(config.ManagerQueuesAvoid, ShouldEqual, envAvoid)
+			So(config.Source("ManagerQueuesAvoid"), ShouldEqual, ConfigSourceEnvVar)
+		})
+	})
+}

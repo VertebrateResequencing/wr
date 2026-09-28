@@ -120,6 +120,8 @@ type Config struct {
 	ManagerUploadDir         string `default:"uploads"`
 	ManagerUmask             int    `default:"007"`
 	ManagerScheduler         string `default:"local"`
+	ManagerQueue             string `default:""`
+	ManagerQueuesAvoid       string `default:"interactive"`
 	ManagerCAFile            string `default:"ca.pem"`
 	ManagerCertFile          string `default:"cert.pem"`
 	ManagerKeyFile           string `default:"key.pem"`

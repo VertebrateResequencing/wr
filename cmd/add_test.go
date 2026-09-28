@@ -75,11 +75,43 @@ const (
 )
 
 func TestAddQueuesAvoidDefault(t *testing.T) {
-	Convey("add queues_avoid default is applied when unset", t, func() {
+	Convey("add queues_avoid defaults to the manager's --queues_avoid", t, func() {
 		flag := addCmd.Flags().Lookup("queues_avoid")
 		So(flag, ShouldNotBeNil)
-		So(flag.Value.String(), ShouldEqual, "interactive")
-		So(cmdQueuesAvoidAdd, ShouldEqual, "interactive")
+		So(flag.DefValue, ShouldBeEmpty)
+		So(flag.Usage, ShouldContainSubstring, "manager's --queues_avoid")
+		So(flag.Usage, ShouldContainSubstring, "interactive")
+
+		// the manager's default avoids interactive queues, as add's own
+		// default used to
+		So(managerStartCmd.Flags().Lookup("queues_avoid").DefValue, ShouldEqual,
+			internal.DefaultConfig(context.Background()).ManagerQueuesAvoid)
+	})
+
+	Convey("Given a cmd file", t, func() {
+		cmdPath := filepath.Join(t.TempDir(), "cmds.txt")
+		err := os.WriteFile(cmdPath, []byte("cmd one\n"), 0600)
+		So(err, ShouldBeNil)
+
+		configureAddParserTest(t, cmdPath)
+
+		jq := &jobqueue.Client{ServerInfo: &jobqueue.ServerInfo{Addr: remoteManagerAddr}}
+
+		Convey("an add without --queues_avoid leaves the choice to the manager", func() {
+			jobs, _, _ := parseCmdFile(jq, false, false)
+			So(jobs, ShouldHaveLength, 1)
+
+			_, set := jobs[0].Requirements.Other["scheduler_queues_avoid"]
+			So(set, ShouldBeFalse)
+		})
+
+		Convey("an add with --queues_avoid gives the job its own list", func() {
+			cmdQueuesAvoidAdd = "long"
+
+			jobs, _, _ := parseCmdFile(jq, false, false)
+			So(jobs, ShouldHaveLength, 1)
+			So(jobs[0].Requirements.Other["scheduler_queues_avoid"], ShouldEqual, "long")
+		})
 	})
 }
 
@@ -1289,7 +1321,7 @@ func configureAddParserTest(t *testing.T, cmdPath string) {
 	cmdCloudConfigs = ""
 	cmdCloudSharedDisk = false
 	cmdQueue = ""
-	cmdQueuesAvoidAdd = "interactive"
+	cmdQueuesAvoidAdd = ""
 	cmdMisc = ""
 	cmdEnv = ""
 	cmdRemoteSameAsLocal = false

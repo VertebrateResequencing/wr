@@ -12,8 +12,23 @@ project adheres to [Semantic Versioning](http://semver.org/).
   `--with_docker` command as the user the image specifies after all. You need it
   if your command writes to root-owned paths inside the image, and should expect
   anything it creates in your working directory to be owned by that user.
+- New `--queue` and `--queues_avoid` options for `wr manager start` (and the
+  `managerqueue` and `managerqueuesavoid` config options, or `WR_MANAGERQUEUE`
+  and `WR_MANAGERQUEUESAVOID`), which set the default queue, or queues to pick
+  amongst, and the queues to avoid, for commands you add without their own
+  `--queue` or `--queues_avoid`, with schedulers that have queues (currently
+  only lsf). A command's own
+  `--queues_avoid` replaces the default list rather than adding to it.
 
 ### Changed
+- `wr add` no longer gives each command `--queues_avoid interactive` itself.
+  A command added without `--queues_avoid` now uses the manager's new
+  `--queues_avoid` list, which defaults to "interactive", so by default it
+  still avoids interactive queues. That default now also applies to commands
+  added through the REST API or Go client without a `queues_avoid` of their
+  own. Commands added before you upgrade keep the "interactive" list they were
+  given. `wr add --queues_avoid ''` no longer lets a command use interactive
+  queues; name the queue with `--queue` instead.
 - A command that completes successfully no longer has its output kept. Its
   stdout and stderr are now empty everywhere a completed command is shown: the
   status web page, `wr status -o json` (however you choose the commands, with
