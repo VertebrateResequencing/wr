@@ -144,7 +144,7 @@ func TestReliable4ArchivesCoalesceIntoOneTransaction(t *testing.T) {
 
 	jobs := reliable4ACCompletableJobs(t, ctx, database, "coalesce", reliable4ACArchives)
 
-	latencies, errs := reliable4ACPacedArchives(ctx, database, jobs, reliable4ACInterval)
+	latencies, errs := reliable4ACPacedArchives(database, jobs, reliable4ACInterval)
 
 	txns, folded := rec.transactions()
 	mean, maxLat := reliable4ACLatencyStats(latencies)
@@ -208,7 +208,7 @@ func TestReliable4ArchiveErrorsStayPerJob(t *testing.T) {
 
 	// hold the first archive's transaction open, so everything submitted next
 	// queues up and is offered to the write path together.
-	blockerDone := reliable4ACArchiveAsync(ctx, database, blocker[0].Key(), blocker[0])
+	blockerDone := reliable4ACArchiveAsync(database, blocker[0].Key(), blocker[0])
 
 	rec.awaitTx(t)
 
@@ -223,7 +223,7 @@ func TestReliable4ArchiveErrorsStayPerJob(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		badErr = database.archiveJob(ctx, "", bad)
+		badErr = database.archiveJob("", bad)
 	}()
 
 	time.Sleep(reliable4ACQueueSettle)
@@ -234,7 +234,7 @@ func TestReliable4ArchiveErrorsStayPerJob(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			goodErr[i] = database.archiveJob(ctx, job.Key(), job)
+			goodErr[i] = database.archiveJob(job.Key(), job)
 		}()
 	}
 
@@ -314,7 +314,7 @@ func TestReliable4ArchivePanicStaysPerJob(t *testing.T) {
 
 	t.Cleanup(func() { archiveTxObserver = nil })
 
-	blockerDone := reliable4ACArchiveAsync(ctx, database, blocker[0].Key(), blocker[0])
+	blockerDone := reliable4ACArchiveAsync(database, blocker[0].Key(), blocker[0])
 
 	select {
 	case <-gated:
@@ -333,7 +333,7 @@ func TestReliable4ArchivePanicStaysPerJob(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		badErr = database.archiveJob(ctx, badKey, bad)
+		badErr = database.archiveJob(badKey, bad)
 	}()
 
 	time.Sleep(reliable4ACQueueSettle)
@@ -344,7 +344,7 @@ func TestReliable4ArchivePanicStaysPerJob(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			goodErr[i] = database.archiveJob(ctx, job.Key(), job)
+			goodErr[i] = database.archiveJob(job.Key(), job)
 		}()
 	}
 
@@ -397,7 +397,7 @@ func TestReliable4ArchiveCloseDrains(t *testing.T) {
 	blocker := reliable4ACCompletableJobs(t, ctx, database, "close-blocker", 1)
 	jobs := reliable4ACCompletableJobs(t, ctx, database, "close", reliable4ACBatchJobs)
 
-	blockerDone := reliable4ACArchiveAsync(ctx, database, blocker[0].Key(), blocker[0])
+	blockerDone := reliable4ACArchiveAsync(database, blocker[0].Key(), blocker[0])
 
 	rec.awaitTx(t)
 
@@ -412,7 +412,7 @@ func TestReliable4ArchiveCloseDrains(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			errs[i] = database.archiveJob(ctx, job.Key(), job)
+			errs[i] = database.archiveJob(job.Key(), job)
 		}()
 	}
 
@@ -482,11 +482,11 @@ func TestReliable4ArchiveBeatsResurrectingChange(t *testing.T) {
 	// are about to be archived.
 	archived := make(chan error, 2)
 
-	go func() { archived <- database.archiveJob(ctx, changed.Key(), changed) }()
+	go func() { archived <- database.archiveJob(changed.Key(), changed) }()
 
 	rec.awaitTx(t)
 
-	go func() { archived <- database.archiveJob(ctx, exited.Key(), exited) }()
+	go func() { archived <- database.archiveJob(exited.Key(), exited) }()
 
 	time.Sleep(reliable4ACQueueSettle)
 
@@ -515,7 +515,7 @@ func TestReliable4ArchiveBeatsResurrectingChange(t *testing.T) {
 // them interval apart on an ABSOLUTE schedule (so the submission window is fixed
 // even when a loaded host oversleeps: it catches up rather than stretching). It
 // returns each archive's latency and error, in job order.
-func reliable4ACPacedArchives(ctx context.Context, database *db, jobs []*Job,
+func reliable4ACPacedArchives(database *db, jobs []*Job,
 	interval time.Duration,
 ) ([]time.Duration, []error) {
 	var wg sync.WaitGroup
@@ -533,7 +533,7 @@ func reliable4ACPacedArchives(ctx context.Context, database *db, jobs []*Job,
 			defer wg.Done()
 
 			t0 := time.Now()
-			errs[i] = database.archiveJob(ctx, job.Key(), job)
+			errs[i] = database.archiveJob(job.Key(), job)
 			latencies[i] = time.Since(t0)
 		}()
 	}
@@ -545,10 +545,10 @@ func reliable4ACPacedArchives(ctx context.Context, database *db, jobs []*Job,
 
 // reliable4ACArchiveAsync archives one job in its own goroutine, returning a
 // channel that yields its error.
-func reliable4ACArchiveAsync(ctx context.Context, database *db, key string, job *Job) chan error {
+func reliable4ACArchiveAsync(database *db, key string, job *Job) chan error {
 	done := make(chan error, 1)
 
-	go func() { done <- database.archiveJob(ctx, key, job) }()
+	go func() { done <- database.archiveJob(key, job) }()
 
 	return done
 }

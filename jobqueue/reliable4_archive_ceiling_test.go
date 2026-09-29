@@ -358,7 +358,7 @@ func acArchiverLoop(ctx context.Context, database *db, stop <-chan struct{}, m *
 		m.inFlight.Add(1)
 
 		t0 := time.Now()
-		err := database.archiveJob(ctx, job.Key(), job)
+		err := database.archiveJob(job.Key(), job)
 
 		m.inFlight.Add(-1)
 		m.record(time.Since(t0), err)

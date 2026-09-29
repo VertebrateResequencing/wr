@@ -785,9 +785,11 @@ Two sites test `queue.items[dep]` and both break for group keys:
   with an unsatisfied group dependency would go straight to ready. The path is
   reachable: a job is buried, a new member is added to its dep group, and
   `updateJobDependencies` -> `q.Update` re-blocks it while
-  `detachForDependentMove` leaves buried items put. The change also makes `Kick`
-  agree with `kickJobs`' `readyCallbackExpected`, which already uses
-  `UnresolvedDependencies()` (`server.go:5721`).
+  `detachForDependentMove` leaves buried items put. (A job that was running
+  when the member was added and is then buried reaches the same state: see
+  D1.) The change also makes `Kick` agree with `kickJobs`'
+  `readyCallbackExpected`, which already uses `UnresolvedDependencies()`
+  (`server.go:5721`).
 - `pruneDependants` (`queue/queue.go:1126`, sole caller `updateDependencies` at
   `:1075`): drop the `queue.items[dep]` guard so a dropped group dependency's
   waiter entry is actually pruned. Today those entries leak for any non-existent
@@ -906,9 +908,23 @@ recovery `ctx` cancellation are unchanged.
 
 `AddMany` already ignores `StartQueue` for a deps-bearing item except when
 `StartQueue == SubQueueSuspended` (`queue/queue.go:890-907`), so a recovered
-**running** or **buried** job whose group has a live member lands in the
-dependent sub-queue while a recovered **suspended** one stays suspended with its
-deps set. That is pre-existing behaviour; recovery tests must not "fix" it.
+**buried** job whose group has a live member lands in the dependent sub-queue
+while a recovered **suspended** one stays suspended with its deps set. That is
+pre-existing behaviour; recovery tests must not "fix" it.
+
+A recovered **running** job no longer does:
+`.docs/bugfixes/260929-running-dependent-rerun.md` changed it, because in the
+dependent sub-queue its runner's touches and report were refused and it ran
+twice. `recoverRunningDependent` (`jobqueue/running_dependent.go`) gives a
+recovered running job with unresolved dependencies no dependencies on its item,
+so it recovers into Run. If any of them is a dep group dependency it also marks
+the job `RerunAfterRun`, so once its run ends it runs again, after those
+dependencies, as described under D1. That covers a crash before the add stored
+its mark, but it marks the job however its group gained the live member: a job
+modified into the group marks it too, although without a restart a modify
+reruns no waiter of the group. An unresolved command dependency (one added again
+with `--rerun` while the job ran) marks nothing, since adding a command
+dependency again reruns none of its dependents, running or complete.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/server.go`, `jobqueue/dependency.go`
@@ -1078,6 +1094,40 @@ the originally input jobs and is unchanged.
 transitive waiter scan and its resurrect-and-rerun of archived waiters. It is
 O(all-time waiters), not O(waiters x members), so it is not the OOM; it is
 recorded as a follow-up (G1).
+
+A live waiter that is **running** when the add applies its updates is re-run
+too, after its run ends (`.docs/bugfixes/260929-running-dependent-rerun.md`,
+`jobqueue/running_dependent.go`). Its queue item and in-memory job are not
+touched: `updateJobDependencies` applies each update, after the add's write, to
+the job in the queue (not the copy `retrieveDependentJobs` decoded) with
+`q.UpdateUnlessRunning`, which instead marks a running job `RerunAfterRun`, and
+the mark is stored in its live record before the add replies. That write
+encodes the job inside its own transaction and writes nothing once a successful
+archive of the run is under way, since the archive's transaction owns the live
+record from then on. When the run ends:
+
+- a successful archive whose transaction finds the mark records it complete
+  and, in the same transaction, keeps it in the live bucket, and `q.Requeue`
+  returns its item to dependent (or ready) with its dependencies as they are
+  then, as for an archived waiter the add resurrected;
+- a release (including a lost job confirmed dead) sends it to dependent rather
+  than delay while the dependencies are unresolved;
+- a bury leaves it buried with the new dependencies, as for a job that was
+  already buried (B2): a kick makes it dependent.
+
+The add reads its waiters before its write and applies their updates after it,
+so a waiter's run can end in between. A waiter whose successful archive was
+written before the mark reached it, while its item was still in the run queue,
+gets a live record of its own when the mark is stored, and its archive, which
+decides whether to remove the item under the queue's lock, leaves it there and
+returns it to dependent the same way, so jobs depending on the waiter itself
+keep waiting. A waiter that was archived and left
+the queue in between, whether it was running or still waiting when the add
+read it, is put back in the live bucket before the add replies and queued, as
+an archived waiter is. A manager crash after the add's write but before it has
+stored those records loses the re-run of a waiter whose successful archive was
+written after the add read it: that waiter is recovered complete. A waiter
+still running at the crash loses nothing, since recovery marks it again.
 
 `updateJobDependencies`' doc comment is stale - it names `storeNewJobs()` and
 `db.modifyLiveJobs()` as its sources, but `modifyLiveJobs` discards
@@ -2672,9 +2722,10 @@ to stay green, because this change touches all three.
 ### G1: The add path's all-time waiter scan
 
 `retrieveDependentJobs` decodes every all-time waiter of a new job's dep groups,
-live and archived, transitively, and resurrects archived ones for re-run. It is
-arguably DEVELOPERS.md rule 6's "no history scan on a control path", but it is
-O(all-time waiters) rather than O(waiters x members), so it is not the OOM.
+live and archived, transitively, and resurrects archived ones for re-run (the
+add then marks the running live ones to re-run once their runs end; see D1). It
+is arguably DEVELOPERS.md rule 6's "no history scan on a control path", but it
+is O(all-time waiters) rather than O(waiters x members), so it is not the OOM.
 Preserve it byte-for-byte here to protect the resurrect-and-rerun semantics.
 
 ### G2: No offline live-job-reduction tool

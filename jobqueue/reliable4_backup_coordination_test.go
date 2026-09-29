@@ -154,7 +154,7 @@ func TestReliable4BackupCoordination(t *testing.T) {
 				defer wg.Done()
 
 				job := coordCompletedJob(n)
-				if err := database.archiveJob(ctx, job.Key(), job); err != nil {
+				if err := database.archiveJob(job.Key(), job); err != nil {
 					errs.Add(1)
 				}
 			}(i)

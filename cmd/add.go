@@ -427,7 +427,9 @@ these refer to must complete before this command will start. The value for
 this way are 'live'. Dep-group dependencies from "deps" and --deps wait even
 when the dep-group has not appeared yet, and cause this command to be
 automatically re-run if any commands with any of the dep_grps it is dependent
-upon get added to the queue.
+upon get added to the queue. If this command is running when that happens, it
+is left to finish and is then run again once the added commands complete (if
+it fails instead, its retry waits for them too).
 The value for "cmd_deps" is an array of JSON objects with "cmd" and "cwd"
 name:value pairs (if cwd doesn't matter for a cmd, provide it as an empty
 string). Command dependencies from "cmd_deps" and --cmd_deps keep static

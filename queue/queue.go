@@ -121,6 +121,7 @@ const (
 	opBury      = "Bury"
 	opKick      = "Kick"
 	opRemove    = "Remove"
+	opRequeue   = "Requeue"
 	opSatisfy   = "SatisfyDependency"
 )
 
@@ -329,6 +330,102 @@ func (queue *Queue) SatisfyDependency(ctx context.Context, key string) error {
 	}
 
 	return nil
+}
+
+// UpdateUnlessRunning is Update, except that an item in the run sub-queue is
+// left exactly as it is: its data is not replaced and it is not moved, even if
+// deps are unresolved. Instead whileRunning is called, with the queue still
+// locked, and true is returned. Because the check and the change (or the call)
+// happen under one lock, the item cannot start or end a run in between, so a
+// caller can defer a change to a running item until its run ends without
+// racing the transitions that end it. whileRunning must not call the queue.
+func (queue *Queue) UpdateUnlessRunning(ctx context.Context, key string, reserveGroup string, data any,
+	priority uint8, delay time.Duration, ttr time.Duration, deps []string, whileRunning func(),
+) (bool, error) {
+	item, err := queue.lockExistingItem("Update", key)
+	if err != nil {
+		return false, err
+	}
+
+	if item.State() == ItemStateRun {
+		whileRunning()
+		queue.mutex.Unlock()
+
+		return true, nil
+	}
+
+	item.SetData(data)
+
+	changedFrom, addedReady := queue.updateDependencies(item, key, deps)
+
+	queue.applyItemPropertyChanges(item, reserveGroup, priority, delay, ttr, addedReady)
+
+	queue.notifyUpdate(ctx, item, changedFrom, addedReady)
+
+	return false, nil
+}
+
+// Requeue is a thread-safe way to switch an item in the run sub-queue back to
+// waiting to be run again, with the given dependencies replacing its old ones:
+// to the dependent sub-queue if there are any, otherwise straight to the ready
+// sub-queue. Unlike Remove, the dependants of the item are left waiting on it.
+func (queue *Queue) Requeue(ctx context.Context, key string, deps []string) error {
+	item, err := queue.lockItemInState(opRequeue, key, ItemStateRun, ErrNotRunning)
+	if err != nil {
+		return err
+	}
+
+	toRemove, _ := diffDependencies(item, deps)
+	queue.pruneDependants(key, toRemove)
+	item.setDependencies(deps)
+	queue.setQueueDeps(item)
+	queue.moveToDependentQueue(item, ItemStateRun)
+
+	if len(deps) > 0 {
+		queue.changed(SubQueueRun, SubQueueDependent, []*Item{item})
+		queue.mutex.Unlock()
+
+		return nil
+	}
+
+	queue.moveDependentToReady(item)
+	queue.changed(SubQueueRun, SubQueueReady, []*Item{item})
+	queue.mutex.Unlock()
+	queue.readyAdded(ctx, "requeued")
+
+	return nil
+}
+
+// RemoveUnless is Remove, except that keep is called with the item's data and the
+// queue locked, and if it returns true the item is left exactly as it is. It reports whether the
+// item was removed. Because the decision and the removal happen under one lock,
+// no other operation on the queue can come in between. keep must not call the
+// queue.
+func (queue *Queue) RemoveUnless(ctx context.Context, key string, keep func(data any) bool) (bool, error) {
+	item, err := queue.lockExistingItem(opRemove, key)
+	if err != nil {
+		return false, err
+	}
+
+	if keep(item.Data()) {
+		queue.mutex.Unlock()
+
+		return false, nil
+	}
+
+	addedReadyItems := queue.removeItem(item, key)
+
+	if len(addedReadyItems) > 0 {
+		queue.changed(SubQueueDependent, SubQueueReady, addedReadyItems)
+	}
+
+	queue.mutex.Unlock()
+
+	if len(addedReadyItems) > 0 {
+		queue.readyAdded(ctx, "dependent")
+	}
+
+	return true, nil
 }
 
 // Error records an error and the operation, item and queue that caused it.
@@ -1645,24 +1742,9 @@ func (queue *Queue) Kick(ctx context.Context, key string) error {
 
 // Remove is a thread-safe way to remove an item from the queue.
 func (queue *Queue) Remove(ctx context.Context, key string) error {
-	item, err := queue.lockExistingItem(opRemove, key)
-	if err != nil {
-		return err
-	}
+	_, err := queue.RemoveUnless(ctx, key, func(any) bool { return false })
 
-	addedReadyItems := queue.removeItem(item, key)
-
-	if len(addedReadyItems) > 0 {
-		queue.changed(SubQueueDependent, SubQueueReady, addedReadyItems)
-	}
-
-	queue.mutex.Unlock()
-
-	if len(addedReadyItems) > 0 {
-		queue.readyAdded(ctx, "dependent")
-	}
-
-	return nil
+	return err
 }
 
 // removeItem performs the core of Remove(): it resolves dependants, detaches

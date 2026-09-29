@@ -367,7 +367,6 @@ func BenchmarkArchiveSpacedArrivals(b *testing.B) {
 func archiveJobsSpaced(b *testing.B, testDB *db, jobs []*Job, interval time.Duration) {
 	b.Helper()
 
-	ctx := context.Background()
 	start := time.Now()
 
 	var wg sync.WaitGroup
@@ -380,7 +379,7 @@ func archiveJobsSpaced(b *testing.B, testDB *db, jobs []*Job, interval time.Dura
 		go func() {
 			defer wg.Done()
 
-			if err := testDB.archiveJob(ctx, job.Key(), job); err != nil {
+			if err := testDB.archiveJob(job.Key(), job); err != nil {
 				b.Error(err)
 			}
 		}()
@@ -585,7 +584,6 @@ func boltPages(testDB *db) int64 {
 func archiveJobsConcurrently(b *testing.B, testDB *db, jobs []*Job) {
 	b.Helper()
 
-	ctx := context.Background()
 	work := make(chan *Job)
 
 	var (
@@ -604,7 +602,7 @@ func archiveJobsConcurrently(b *testing.B, testDB *db, jobs []*Job) {
 					continue
 				}
 
-				if err := testDB.archiveJob(ctx, job.Key(), job); err != nil {
+				if err := testDB.archiveJob(job.Key(), job); err != nil {
 					b.Error(err)
 					failed.Store(true)
 				}

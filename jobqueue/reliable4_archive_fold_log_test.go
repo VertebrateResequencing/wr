@@ -292,7 +292,7 @@ func archiveFoldDriveHeldOpenBatch(t *testing.T, ctx context.Context, database *
 	queued := reliable4ACCompletableJobs(t, ctx, database, "foldlog", archiveFoldTestArchives)
 	solo := reliable4ACCompletableJobs(t, ctx, database, "foldlog-solo", archiveFoldTestSequential)
 
-	blockerDone := reliable4ACArchiveAsync(ctx, database, blocker[0].Key(), blocker[0])
+	blockerDone := reliable4ACArchiveAsync(database, blocker[0].Key(), blocker[0])
 
 	rec.awaitTx(t)
 
@@ -306,7 +306,7 @@ func archiveFoldDriveHeldOpenBatch(t *testing.T, ctx context.Context, database *
 		go func() {
 			defer wg.Done()
 
-			errs[i] = database.archiveJob(ctx, job.Key(), job)
+			errs[i] = database.archiveJob(job.Key(), job)
 		}()
 	}
 
@@ -323,7 +323,7 @@ func archiveFoldDriveHeldOpenBatch(t *testing.T, ctx context.Context, database *
 	}
 
 	for _, job := range solo {
-		So(database.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+		So(database.archiveJob(job.Key(), job), ShouldBeNil)
 	}
 
 	return len(queued) + len(solo) + 1

@@ -57,6 +57,7 @@ import (
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/limiter"
+	"github.com/gofrs/uuid/v5"
 	lru "github.com/hashicorp/golang-lru/arc/v2"
 	"github.com/sb10/waitgroup"
 	"github.com/ugorji/go/codec"
@@ -274,6 +275,13 @@ var (
 //nolint:gochecknoglobals // prod-inert test seam, like backupPaceHook above.
 var archiveTxObserver func(txID int, key []byte)
 
+// dependentsReadHook, when non-nil, is called by storeNewJobs once the add has
+// read its live and archived dependents and before it writes anything. It is
+// nil in production and exists so tests can have a dependent finish in between.
+//
+//nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
+var dependentsReadHook func()
+
 const (
 	// newJobsFoldMaxBytes bounds how many encoded key and value bytes the adds
 	// folded into ONE write transaction may carry. bbolt holds every page a write
@@ -352,6 +360,24 @@ const (
 	limitGroupWriteNone limitGroupWrite = iota
 	limitGroupWritePut
 	limitGroupWriteDelete
+)
+
+// archiveOutcome is what writing the archive of a job's successful completion
+// did.
+type archiveOutcome int
+
+const (
+	// archiveNotWritten failed to write anything.
+	archiveNotWritten archiveOutcome = iota
+	// archiveRemovedLive recorded the job complete and removed it from the live
+	// bucket.
+	archiveRemovedLive
+	// archiveKeptLive recorded the job complete but kept it in the live bucket, to
+	// run again (see archiveJobTx).
+	archiveKeptLive
+	// archiveAlreadyWritten wrote nothing, because another archive of the same
+	// completion already had (see Job.archivedEndTime).
+	archiveAlreadyWritten
 )
 
 // planLimitGroup decides what should happen to a single limit group: the
@@ -1667,12 +1693,47 @@ func endTimeSeekKey(cutoff time.Time) []byte {
 // time in the time-ordered per-job end-time index. updateEndTimeIndex runs
 // before the complete-record Put because it recovers the job's prior end time
 // from that record to drop any stale forward index entry.
-func (db *db) archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) error {
+//
+// A job marked, by the time this transaction runs, to run again once its run
+// ends (Job.RerunAfterRun; see running_dependent.go) is recorded complete but
+// also kept in the live bucket, waiting to run again, and keptLive is true.
+func (db *db) archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) (keptLive bool, err error) {
 	if archiveTxObserver != nil {
 		archiveTxObserver(tx.ID(), key)
 	}
 
-	for _, bucket := range [][]byte{bucketStdO, bucketStdE, bucketJobsLive} {
+	if job.rerunAfterRun() {
+		if encoded, err = db.keepLiveForRerunTx(tx, key, encoded); err != nil {
+			return false, err
+		}
+
+		keptLive = true
+	}
+
+	return keptLive, db.recordCompleteTx(tx, key, encoded, job, keptLive)
+}
+
+// keepLiveForRerunTx puts rerunRecords' live record of the encoded job in the
+// live bucket, returning its complete record.
+func (db *db) keepLiveForRerunTx(tx *bolt.Tx, key, encoded []byte) ([]byte, error) {
+	complete, live, err := db.rerunRecords(encoded)
+	if err != nil {
+		return nil, err
+	}
+
+	return complete, tx.Bucket(bucketJobsLive).Put(key, live)
+}
+
+// recordCompleteTx is archiveJobTx after its decision whether to keep the job
+// live: it removes the job's std buckets and, unless keptLive, its live record,
+// and records it complete.
+func (db *db) recordCompleteTx(tx *bolt.Tx, key, encoded []byte, job *Job, keptLive bool) error {
+	buckets := [][]byte{bucketStdO, bucketStdE}
+	if !keptLive {
+		buckets = append(buckets, bucketJobsLive)
+	}
+
+	for _, bucket := range buckets {
 		if err := tx.Bucket(bucket).Delete(key); err != nil {
 			return err
 		}
@@ -1691,6 +1752,121 @@ func (db *db) archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) error {
 	}
 
 	return updateRGEndTime(tx.Bucket(bucketRGEndTime), job)
+}
+
+// rerunRecords returns the complete-bucket and live-bucket records of an encoded
+// job that is to run again after the run it is being archived for: neither keeps
+// the mark that it must, and the live one is no longer reserved by that run's
+// runner.
+func (db *db) rerunRecords(encoded []byte) (complete, live []byte, err error) {
+	job, err := db.decodeJob(encoded)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	job.RerunAfterRun = false
+
+	if complete, err = db.encodeJob(job); err != nil {
+		return nil, nil, err
+	}
+
+	job.ReservedBy = uuid.UUID{}
+	live, err = db.encodeJob(job)
+
+	return complete, live, err
+}
+
+// encodeJob encodes the job, under its read lock.
+func (db *db) encodeJob(job *Job) ([]byte, error) {
+	var encoded []byte
+
+	enc := codec.NewEncoderBytes(&encoded, db.ch)
+
+	job.RLock()
+	defer job.RUnlock()
+
+	err := enc.Encode(job)
+
+	return encoded, err
+}
+
+// storeRunningRerunMarks durably rewrites the live record of each of the jobs,
+// marked to run again while they were running, with its mark. Each is encoded in
+// the transaction, under its lock, and skipped if it is no longer live, no
+// longer marked, or has a successful completion being archived: that archive's
+// transaction owns its live record (see archiveJobTx), and a record encoded
+// before it could otherwise be written after it.
+func (db *db) storeRunningRerunMarks(jobs []*Job) error {
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(bucketJobsLive)
+
+		for _, job := range jobs {
+			if err := db.putRunningRerunMark(bucket, job); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	db.backupDirty.Store(true)
+
+	return err
+}
+
+// putRunningRerunMark is storeRunningRerunMarks for one job.
+func (db *db) putRunningRerunMark(bucket *bolt.Bucket, job *Job) error {
+	key := []byte(job.Key())
+	if bucket.Get(key) == nil {
+		return nil
+	}
+
+	job.RLock()
+	defer job.RUnlock()
+
+	if !job.RerunAfterRun || job.archivePendingLocked() {
+		return nil
+	}
+
+	var encoded []byte
+	if err := codec.NewEncoderBytes(&encoded, db.ch).Encode(job); err != nil {
+		return err
+	}
+
+	return bucket.Put(key, encoded)
+}
+
+// storeLiveForRerun durably puts each of the jobs in the live bucket, as
+// rerunRecords' live record, whether or not it is there now: they are jobs
+// whose run has ended, or is ending, in an archive, but which must run again.
+func (db *db) storeLiveForRerun(jobs []*Job) error {
+	records := make(sobsd, 0, len(jobs))
+
+	for _, job := range jobs {
+		encoded, err := db.encodeJob(job)
+		if err != nil {
+			return err
+		}
+
+		_, live, err := db.rerunRecords(encoded)
+		if err != nil {
+			return err
+		}
+
+		records = append(records, [2][]byte{[]byte(job.Key()), live})
+	}
+
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		return db.putEncodedJobs(tx, bucketJobsLive, records)
+	})
+
+	db.backupDirty.Store(true)
+
+	return err
 }
 
 // updateEndTimeIndex records job's end time in the time-ordered per-job index,
@@ -1901,6 +2077,10 @@ type archiveOp struct {
 	encoded []byte
 	job     *Job
 	result  chan error // buffered(1): this caller's individual reply
+	// outcome is set by the writer to what it did, for the caller to read once
+	// it has its reply, and endTime to the EndTime of the completion it wrote.
+	outcome archiveOutcome
+	endTime time.Time
 	// queued is when the caller offered this archive to the writer, so the
 	// periodic fold summary can report how long it then waited to be picked up
 	// (see archivefold.go). Set by archiveJob before enqueuing, so the wait
@@ -2111,6 +2291,52 @@ func (db *db) storeRepGroupLookups(ctx context.Context, jobs []*Job) error {
 	return nil
 }
 
+// archiveCompletion is archiveJob, also reporting what the write did.
+func (db *db) archiveCompletion(key string, job *Job) (archiveOutcome, error) {
+	encoded, err := db.encodeJob(job)
+	if err != nil {
+		return archiveNotWritten, err
+	}
+
+	op := &archiveOp{
+		key:     []byte(key),
+		encoded: encoded,
+		job:     job,
+		result:  make(chan error, 1),
+		queued:  time.Now(),
+	}
+
+	if !db.enqueueArchive(op) {
+		return archiveNotWritten, errDBClosed
+	}
+
+	if err = <-op.result; err != nil {
+		return archiveNotWritten, err
+	}
+
+	return op.outcome, nil
+}
+
+// noteArchivesWritten records on each job that its ops' archives of it have
+// committed (see Job.archivedEndTime), unless err says they did not. The archive
+// writer calls it before it starts another transaction, so that transaction sees
+// it.
+func noteArchivesWritten(ops []*archiveOp, err error) {
+	if err != nil {
+		return
+	}
+
+	for _, op := range ops {
+		if op.outcome == archiveAlreadyWritten {
+			continue
+		}
+
+		op.job.Lock()
+		op.job.archivedEndTime = op.endTime
+		op.job.Unlock()
+	}
+}
+
 // foldedOp is one caller's pending write, waiting for a coalescing writer to
 // persist it and hand back that caller's own outcome. Both synchronous coalescing
 // writers' ops (archiveOp, newJobsOp) are one.
@@ -2192,6 +2418,8 @@ func (db *db) archiveTx(ops []*archiveOp, failed *int) error {
 	// (archivefold.go).
 	db.arFold.observeTx(len(ops), time.Since(started), begun.Sub(started))
 
+	noteArchivesWritten(ops, err)
+
 	return err
 }
 
@@ -2206,7 +2434,23 @@ func (db *db) applyArchiveOp(tx *bolt.Tx, op *archiveOp) (err error) {
 		}
 	}()
 
-	return db.archiveJobTx(tx, op.key, op.encoded, op.job)
+	var already bool
+
+	op.endTime, already = op.job.completionArchived()
+	if already {
+		op.outcome = archiveAlreadyWritten
+
+		return nil
+	}
+
+	keptLive, err := db.archiveJobTx(tx, op.key, op.encoded, op.job)
+
+	op.outcome = archiveRemovedLive
+	if keptLive {
+		op.outcome = archiveKeptLive
+	}
+
+	return err
 }
 
 // failPendingArchives latches the archive queue shut and fails anything still in
@@ -3212,6 +3456,10 @@ func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 		return jobsToQueue, jobsToUpdate, alreadyAdded, err
 	}
 
+	if dependentsReadHook != nil {
+		dependentsReadHook()
+	}
+
 	if len(encodedJobs) > 0 {
 		err = db.storeNewJobData(ctx, encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs)
 	}
@@ -3594,32 +3842,10 @@ func (db *db) checkIfComplete(key string) (bool, error) {
 // deep archive queue cost one commit rather than one commit per job; see the arMu
 // comment on the db struct. This call blocks until its own archive is persisted,
 // exactly as the previous db.bolt.Batch did.
-func (db *db) archiveJob(ctx context.Context, key string, job *Job) error {
-	var encoded []byte
+func (db *db) archiveJob(key string, job *Job) error {
+	_, err := db.archiveCompletion(key, job)
 
-	enc := codec.NewEncoderBytes(&encoded, db.ch)
-
-	job.RLock()
-	err := enc.Encode(job)
-	job.RUnlock()
-
-	if err != nil {
-		return err
-	}
-
-	op := &archiveOp{
-		key:     []byte(key),
-		encoded: encoded,
-		job:     job,
-		result:  make(chan error, 1),
-		queued:  time.Now(),
-	}
-
-	if !db.enqueueArchive(op) {
-		return errDBClosed
-	}
-
-	return <-op.result
+	return err
 }
 
 // putJobStats records a completed job's peak RAM, peak disk and runtime in

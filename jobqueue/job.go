@@ -984,6 +984,13 @@ type Job struct {
 	// permission to do other stuff to this Job; the server only ever sets this
 	// on Reserve(), so clients can't cheat by changing this on their end.
 	ReservedBy uuid.UUID
+	// the manager sets this on a job that was running when a dependency group
+	// it depends on gained a member: once that run ends, the job waits on the
+	// new member and then runs again (see running_dependent.go). It is exported
+	// only so that it is stored with the job and survives a restart: it is
+	// server side only, cleared on a job a client adds, never kept in a job's
+	// complete record, and not copied to the jobs clients are sent (itemToJob).
+	RerunAfterRun bool `codec:",omitempty"`
 	// on the server we don't store EnvC with the job, but look it up in db via
 	// this key.
 	EnvKey string
@@ -1043,6 +1050,13 @@ type Job struct {
 	// is on its way to disk, so the job must stay in the run queue however long
 	// that write takes: see Job.archivePendingLocked. It is server side only.
 	archivesPending int
+
+	// archivedEndTime is the EndTime of the successful completion of this job an
+	// archive last wrote, set by the archive writer once that write committed. Any
+	// other archive of that completion still in flight then writes nothing: the
+	// job may by then have been made to run again from that record, and a second
+	// write would take it out of the live bucket again. It is server side only.
+	archivedEndTime time.Time
 
 	// incrementedLimitGroups notes that we have incremented limit groups for
 	// this job, so they should be decremented when the job finishes running.
@@ -1936,16 +1950,6 @@ func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	j.EndTime = jes.EndTime
 	j.setActualCwd(jes.Cwd)
 	j.Unlock()
-}
-
-// archiveFinished releases the hold on the run queue that one accepted
-// successful completion took (see archivePendingLocked), once its archive has
-// finished, whether or not it succeeded.
-func (j *Job) archiveFinished() {
-	j.Lock()
-	defer j.Unlock()
-
-	j.archivesPending--
 }
 
 // decrementLimitGroups decrements any limit groups of this job that had been
