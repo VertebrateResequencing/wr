@@ -135,10 +135,13 @@ func TestReliable2Release(t *testing.T) {
 			releaseErr := jq.Release(reserved, &JobEndState{Exited: true, Exitcode: 1, EndTime: time.Now()}, "retry")
 			So(releaseErr, ShouldBeNil)
 
-			// the job went back to the queue for retry rather than being lost.
+			// the job went back to the queue for retry rather than being lost. The
+			// item is compared with nil rather than given to ShouldNotBeNil, which
+			// formats it, reading fields the queue's delay processing may be
+			// writing as it moves the item to ready.
 			item, errg := server.q.Get(key)
 			So(errg, ShouldBeNil)
-			So(item, ShouldNotBeNil)
+			So(item != nil, ShouldBeTrue)
 		})
 	})
 }

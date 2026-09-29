@@ -31,7 +31,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -315,18 +314,14 @@ func TestDaemonStillRunningUnreadableArgv(t *testing.T) {
 		So(cmd.Start(), ShouldBeNil)
 
 		pid := cmd.Process.Pid
-		want := []string{sleepCmd, "60"}
 
-		// Start returns once the child has forked, which can be before its exec
-		// of sleep has finished, while its argv reads as empty.
-		var identity []string
+		// Start returns once exec has closed the child's close-on-exec fds, but
+		// the kernel records where the new argv is only later in the exec, so
+		// until then the argv reads as empty.
+		So(pollUntilTrue(func() bool { return processArgs(pid) != nil }), ShouldBeTrue)
 
-		So(pollUntilTrue(func() bool {
-			identity = processArgs(pid)
-
-			return slices.Equal(identity, want)
-		}), ShouldBeTrue)
-		So(identity, ShouldResemble, want)
+		identity := processArgs(pid)
+		So(identity, ShouldResemble, []string{sleepCmd, "60"})
 		So(isZombie(pid), ShouldBeFalse)
 
 		So(syscall.Kill(pid, syscall.SIGKILL), ShouldBeNil)
