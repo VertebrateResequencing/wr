@@ -680,7 +680,13 @@ func TestRESTJobModificationValidation(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+
+	// the default TTR, so a reserved or running job the test has not touched
+	// stays that way however slowly it gets to its next check, and a release
+	// delay far longer than the test, so a delayed job cannot become ready while
+	// the test is checking that a PATCH left it delayed.
+	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(false)
+	serverConfig.Timings.ReleaseDelayMin = time.Hour
 
 	// the released job must still be delayed when it is checked, and a release
 	// returns only once it is on disk, which under load can outlast the default

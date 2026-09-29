@@ -233,3 +233,26 @@ quoted include it.
     with `Expected: true Actual: false`. `TestJobqueueSignal` shard a passed
     3 of 3 under `stress -c 8` on cores 0-3 both before and after, so the
     CI failure could not be reproduced in the test itself.
+- [x] TestRESTJobModificationValidation
+  - Not reproduced under the allowed load (lane 6, 10 runs with `stress -c 8`
+    and the test on one core), and the failing assertion was not captured.
+  - Cause (test): "PATCH modifies delayed jobs and preserves their state"
+    releases a job and then checks, three times over, that a PATCH left it
+    delayed. The test server's release delay is `ReleaseDelayMin` 100ms
+    (100-200ms with the backoff's jitter), after which the job is ready
+    whatever the PATCH did. The other Conveys also ran on the 1s short TTR,
+    so a reserved or running job the test never touches went lost if the
+    Convey took longer than that. A temporary 300ms sleep after the job was
+    seen delayed failed the old test 2 of 2 with `Expected
+    jobqueue.JobState("delayed") Actual: jobqueue.JobState("ready")`.
+  - Fix (test only), `jobqueue/rest_test.go`: the test's server uses the
+    default TTR (`jobqueueTestInit(false)`) and a 1h `ReleaseDelayMin`. No
+    Convey relies on either expiring: the lost-job Convey sets `Lost`
+    itself.
+  - After: the same 300ms sleep passes 2 of 2; `^TestREST` 3 runs of 11
+    tests passed.
+  - Mutation: making a REST modify end the delay of the delayed jobs it
+    modified (`SetDelay(key, 0)` in `modifyJobsByKeys`) fails with
+    `Expected jobqueue.JobState("delayed") Actual:
+    jobqueue.JobState("ready")`, which the old test could not tell apart
+    from its own delay expiring.
