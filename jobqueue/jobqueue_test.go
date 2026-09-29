@@ -5464,11 +5464,11 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				j2 := mkLCTJob("echo lct2", "lct-rg", base.Add(3*time.Second))
 				j3 := mkLCTJob("echo lct3", "lct-rg", base.Add(2*time.Second))
 
-				err = server.db.archiveJob(ctx, j1.Key(), j1)
+				err = server.db.archiveJob(j1.Key(), j1)
 				So(err, ShouldBeNil)
-				err = server.db.archiveJob(ctx, j2.Key(), j2)
+				err = server.db.archiveJob(j2.Key(), j2)
 				So(err, ShouldBeNil)
-				err = server.db.archiveJob(ctx, j3.Key(), j3)
+				err = server.db.archiveJob(j3.Key(), j3)
 				So(err, ShouldBeNil)
 
 				completionTimes, errf := server.db.retrieveLastCompletionTimeByRepGroup(
@@ -5492,11 +5492,11 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				})
 				So(err, ShouldBeNil)
 
-				err = server.db.archiveJob(ctx, jA.Key(), jA)
+				err = server.db.archiveJob(jA.Key(), jA)
 				So(err, ShouldBeNil)
-				err = server.db.archiveJob(ctx, jB1.Key(), jB1)
+				err = server.db.archiveJob(jB1.Key(), jB1)
 				So(err, ShouldBeNil)
-				err = server.db.archiveJob(ctx, jB2.Key(), jB2)
+				err = server.db.archiveJob(jB2.Key(), jB2)
 				So(err, ShouldBeNil)
 
 				completionTimes, err := jq.GetLastCompletionTimeByRepGroup("lct-rg",

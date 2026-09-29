@@ -347,7 +347,7 @@ func TestReliable4PreStartReleaseRetries(t *testing.T) {
 			sjob.StartTime = time.Now()
 			sjob.Unlock()
 
-			alreadyDone, errq := server.applyReleaseQueueChange(ctx, server.q, item, key, bury, currentState, sjob)
+			alreadyDone, errq := server.applyReleaseQueueChange(ctx, server.q, item, key, bury, currentState, sjob, nil)
 			So(errq, ShouldBeNil)
 			So(alreadyDone, ShouldBeFalse)
 

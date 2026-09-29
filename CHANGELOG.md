@@ -90,6 +90,18 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- A command that is running when a command is added to a dep group it depends
+  on (`--deps`) is now left to finish, and then run again once the added
+  command completes, as a command that had already completed would be. Before,
+  the manager stopped treating it as running as soon as the command was added,
+  so it refused the runner's reports and never recorded the run's success. If
+  the running command fails instead, its retry now waits for the added command,
+  and if it is buried, kicking it makes it wait. This holds even if the manager
+  is restarted before the command finishes.
+- A command whose success its runner reported twice, because the manager's
+  database was slow to record the first report, is no longer dropped from the
+  queue by the second report when a command added in between to a dep group it
+  depends on (`--deps`) has made it wait to run again.
 - A command that is still queued, for example one that is running, is no longer
   run a second time at once after a manager crash because it was added again
   with `wr add --rerun` (or through a Go client that adds without skipping

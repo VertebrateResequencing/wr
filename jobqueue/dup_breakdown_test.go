@@ -221,7 +221,7 @@ func seedCompletedJob(ctx context.Context, testDB *db, cmd, repGroup string, end
 	_, _, dups, err := testDB.storeNewJobs(ctx, []*Job{job}, true)
 	So(err, ShouldBeNil)
 	So(dups, ShouldResemble, DuplicateBreakdown{})
-	So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+	So(testDB.archiveJob(job.Key(), job), ShouldBeNil)
 }
 
 // dupRepGroupSummaries renders report groups in the order they would be reported

@@ -253,7 +253,7 @@ func reliable4StallArchiver(ctx context.Context, db *db, stats *reliable4StallSt
 
 		t0 := time.Now()
 		stats.inflight[id].Store(t0.UnixNano())
-		err := db.archiveJob(ctx, key, job)
+		err := db.archiveJob(key, job)
 		stats.inflight[id].Store(0)
 		stats.record(time.Since(t0), ttr, err)
 

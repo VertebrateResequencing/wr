@@ -601,8 +601,8 @@ func TestDBDepGroups(t *testing.T) {
 
 		_, _, _, err = testDB.storeNewJobs(ctx, []*Job{firstMember, dependent}, true)
 		So(err, ShouldBeNil)
-		So(testDB.archiveJob(ctx, firstMember.Key(), firstMember), ShouldBeNil)
-		So(testDB.archiveJob(ctx, dependent.Key(), dependent), ShouldBeNil)
+		So(testDB.archiveJob(firstMember.Key(), firstMember), ShouldBeNil)
+		So(testDB.archiveJob(dependent.Key(), dependent), ShouldBeNil)
 
 		secondMember := testDBJob("echo second member", "second-member")
 		secondMember.DepGroups = []string{growDepGroup}
@@ -748,7 +748,7 @@ func TestDBEndTimeIndex(t *testing.T) {
 			endTime := time.Now().Add(-30 * time.Minute).Truncate(time.Nanosecond)
 			job := testDBArchivedJob("echo recent", "rg-recent", endTime)
 
-			err = testDB.archiveJob(ctx, job.Key(), job)
+			err = testDB.archiveJob(job.Key(), job)
 			So(err, ShouldBeNil)
 
 			entries := endTimeIndexEntries(t, testDB)
@@ -765,13 +765,13 @@ func TestDBEndTimeIndex(t *testing.T) {
 			t1 := time.Now().Add(-2 * time.Hour).Truncate(time.Nanosecond)
 			job := testDBArchivedJob("echo rerun", "rg-rerun", t1)
 
-			err = testDB.archiveJob(ctx, job.Key(), job)
+			err = testDB.archiveJob(job.Key(), job)
 			So(err, ShouldBeNil)
 
 			t2 := time.Now().Add(-1 * time.Minute).Truncate(time.Nanosecond)
 			job.EndTime = t2
 
-			err = testDB.archiveJob(ctx, job.Key(), job)
+			err = testDB.archiveJob(job.Key(), job)
 			So(err, ShouldBeNil)
 
 			entries := endTimeIndexEntries(t, testDB)
@@ -787,10 +787,10 @@ func TestDBEndTimeIndex(t *testing.T) {
 			endTime := time.Now().Add(-15 * time.Minute).Truncate(time.Nanosecond)
 			job := testDBArchivedJob("echo same", "rg-same", endTime)
 
-			err = testDB.archiveJob(ctx, job.Key(), job)
+			err = testDB.archiveJob(job.Key(), job)
 			So(err, ShouldBeNil)
 
-			err = testDB.archiveJob(ctx, job.Key(), job)
+			err = testDB.archiveJob(job.Key(), job)
 			So(err, ShouldBeNil)
 
 			entries := endTimeIndexEntries(t, testDB)
@@ -818,7 +818,7 @@ func TestDBCheckIfComplete(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		job := testDBArchivedJob("echo complete", "rg-complete", time.Now().Truncate(time.Nanosecond))
-		So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+		So(testDB.archiveJob(job.Key(), job), ShouldBeNil)
 
 		Convey("checkIfComplete is true for the archived job's key", func() {
 			complete, errc := testDB.checkIfComplete(job.Key())
@@ -858,7 +858,7 @@ func TestDBRetrieveCompleteJobsRecent(t *testing.T) {
 			So(midJob.Key(), ShouldNotEqual, newJob.Key())
 
 			for _, job := range []*Job{oldJob, midJob, newJob} {
-				So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+				So(testDB.archiveJob(job.Key(), job), ShouldBeNil)
 			}
 
 			Convey("retrieveCompleteJobsRecent(now-1h) returns the in-window jobs in ascending end-time order", func() {
@@ -879,7 +879,7 @@ func TestDBRetrieveCompleteJobsRecent(t *testing.T) {
 			endTime := time.Now().Add(-30 * time.Minute).Truncate(time.Nanosecond)
 			job := testDBArchivedJob("echo rerunning", "rg-rerun", endTime)
 
-			So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+			So(testDB.archiveJob(job.Key(), job), ShouldBeNil)
 
 			Convey("It is returned before being made live again", func() {
 				jobs, errr := testDB.retrieveCompleteJobsRecent(endTime.Add(-time.Minute))
@@ -923,7 +923,7 @@ func TestDBRetrieveCompleteJobsRecent(t *testing.T) {
 			endTime := time.Now().Add(-time.Minute).Truncate(time.Nanosecond)
 			job := testDBArchivedJob("echo ancient", "rg-ancient", endTime)
 
-			So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+			So(testDB.archiveJob(job.Key(), job), ShouldBeNil)
 
 			Convey("retrieveCompleteJobsRecent(pre-1970) returns the job, not an empty slice", func() {
 				preEpoch := time.Date(1960, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -955,7 +955,7 @@ func TestDBEndTimeIndexDurability(t *testing.T) {
 			endTime := now.Add(-30 * time.Minute).Truncate(time.Nanosecond)
 			job := testDBArchivedJob("echo durable", "rg-durable", endTime)
 
-			So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+			So(testDB.archiveJob(job.Key(), job), ShouldBeNil)
 			So(testDB.close(ctx), ShouldBeNil)
 
 			testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
@@ -974,12 +974,12 @@ func TestDBEndTimeIndexDurability(t *testing.T) {
 			t1 := time.Now().Add(-2 * time.Hour).Truncate(time.Nanosecond)
 			job := testDBArchivedJob("echo rerun", "rg-rerun", t1)
 
-			So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+			So(testDB.archiveJob(job.Key(), job), ShouldBeNil)
 
 			t2 := time.Now().Add(-1 * time.Minute).Truncate(time.Nanosecond)
 			job.EndTime = t2
 
-			So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+			So(testDB.archiveJob(job.Key(), job), ShouldBeNil)
 			So(testDB.close(ctx), ShouldBeNil)
 
 			testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
@@ -1295,7 +1295,7 @@ func TestDBMapFreelistRoundTrip(t *testing.T) {
 
 		endTime := time.Now().Add(-30 * time.Minute).Truncate(time.Nanosecond)
 		archived := testDBArchivedJob("echo archived", "rg-archived", endTime)
-		So(testDB.archiveJob(ctx, archived.Key(), archived), ShouldBeNil)
+		So(testDB.archiveJob(archived.Key(), archived), ShouldBeNil)
 
 		So(testDB.close(ctx), ShouldBeNil)
 
@@ -1368,7 +1368,7 @@ func TestDBCompactRoundTrip(t *testing.T) {
 				switch i % 3 {
 				case 0:
 					aj := testDBArchivedJob(job.Cmd, rg, endTime)
-					So(testDB.archiveJob(ctx, aj.Key(), aj), ShouldBeNil)
+					So(testDB.archiveJob(aj.Key(), aj), ShouldBeNil)
 					archivedKeys = append(archivedKeys, aj.Key())
 				case 1:
 					deleteKeys = append(deleteKeys, job.Key())
@@ -1440,7 +1440,7 @@ func TestDBBackupCopy(t *testing.T) {
 
 		// real schema data, so the copy is compared against a non-trivial DB.
 		job := testDBArchivedJob("echo backup", "rg-backup", time.Now().Truncate(time.Nanosecond))
-		So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+		So(testDB.archiveJob(job.Key(), job), ShouldBeNil)
 
 		// bulk bytes, so the copy spans several pacing intervals.
 		payloadBucket := []byte("backupCopyTestPayload")

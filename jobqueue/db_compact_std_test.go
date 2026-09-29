@@ -317,13 +317,13 @@ func populateCompactStdDB(ctx context.Context, t *testing.T, dbFile string, unve
 		job := testDBArchivedJob(fmt.Sprintf("echo compact std %d", i), compactStdTestRepGroup, endTime)
 		job.StdOutC = compressStd([]byte(rand.Text()))
 		job.StdErrC = compressStd(randomTestBytes(compactStdTestRawBytes))
-		So(testDB.archiveJob(ctx, job.Key(), job), ShouldBeNil)
+		So(testDB.archiveJob(job.Key(), job), ShouldBeNil)
 
 		keys = append(keys, job.Key())
 	}
 
 	quiet := testDBArchivedJob("echo compact quiet", compactStdTestRepGroup, endTime)
-	So(testDB.archiveJob(ctx, quiet.Key(), quiet), ShouldBeNil)
+	So(testDB.archiveJob(quiet.Key(), quiet), ShouldBeNil)
 	So(testDB.close(ctx), ShouldBeNil)
 
 	So(putRawBolt(t, dbFile, bucketStdO, []byte(live[0].Key()), compressStd([]byte("live stdout"))), ShouldBeNil)

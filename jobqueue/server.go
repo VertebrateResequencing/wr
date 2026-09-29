@@ -367,6 +367,14 @@ var confirmServerDeadHook func()
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var startPersistedHook func(key string)
 
+// dependencyUpdatesHook, if non-nil, is called by an add once its write has
+// committed and before it applies its live dependents' new dependencies to the
+// queue, so a test can have a dependent finish in between. It is a test-only
+// seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var dependencyUpdatesHook func()
+
 // sgroup represents a scheduler group.
 const (
 	// persistentScheduleFailures is the number of consecutive scheduling
@@ -5063,6 +5071,8 @@ func (s *Server) recoveredItemDef(ctx context.Context, recovered resolvedJob, lo
 		Dependencies: recovered.deps,
 	}
 
+	s.recoverRerunMark(ctx, job, itemdef, intoRun)
+
 	switch {
 	case intoRun:
 		itemdef.StartQueue = queue.SubQueueRun
@@ -6069,6 +6079,8 @@ func (s *Server) prepareInputJobs(inputJobs []*Job, envkey string,
 	for _, job := range inputJobs {
 		job.Lock()
 		job.EnvKey = envkey
+		// only the manager may mark a job to run again (see running_dependent.go).
+		job.RerunAfterRun = false
 
 		job.dropImpossibleCleanups()
 
@@ -6193,11 +6205,12 @@ func (s *Server) itemDefsForNewJobs(jobsToQueue []*Job,
 // jobs added and duplicated plus any error.
 func (s *Server) queueNewJobItems(ctx context.Context, jobsToUpdate []*Job, itemdefs []*queue.ItemDef,
 	ignoreComplete bool, queuedDups int) (added, dups int, srerr string, qerr error) {
-	srerr, qerr = s.updateJobDependencies(ctx, jobsToUpdate)
+	resurrected, srerr, qerr := s.updateJobDependencies(ctx, jobsToUpdate)
 
 	var replaced int
 	if qerr == nil {
 		itemdefs, replaced, qerr = s.replaceLiveRerunItems(ctx, itemdefs, ignoreComplete)
+		itemdefs = append(itemdefs, resurrected...)
 	}
 
 	// if anything has gone wrong up to here, the error is an internal one and
@@ -6275,20 +6288,34 @@ func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) err
 // updateJobDependencies is used by queueNewJobItems to handle the jobsToUpdate
 // from storeNewJobs(). These are those jobs currently in the queue that need
 // their dependencies updated because they just changed when we stored the jobs.
+// It returns the item definitions of any that left the queue, archived, since
+// storeNewJobs read them, and so must be queued to run again (see
+// running_dependent.go).
 // The modify path does not come through here: db.modifyLiveJobs() discards
 // prepareNewJobs' jobsToQueue/jobsToUpdate, so it never refreshes a group's
 // waiters this way.
-func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (srerr string, qerr error) {
+func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (
+	resurrected []*queue.ItemDef, srerr string, qerr error,
+) {
+	if dependencyUpdatesHook != nil {
+		dependencyUpdatesHook()
+	}
+
 	updates, readyCallbackExpected, qerr := s.gatherDependencyUpdates(jobs)
 	if qerr != nil {
-		return ErrDBError, qerr
+		return nil, ErrDBError, qerr
 	}
 
 	if readyCallbackExpected {
 		s.setRACPending()
 	}
 
-	return "", s.applyDependencyUpdates(ctx, updates, readyCallbackExpected)
+	resurrected, qerr = s.updateLiveDependents(ctx, updates)
+	if qerr != nil && readyCallbackExpected {
+		s.clearRACPending()
+	}
+
+	return resurrected, "", qerr
 }
 
 // jobDependencyUpdate holds a job's freshly computed dependencies, ready to be
@@ -6321,29 +6348,6 @@ func (s *Server) gatherDependencyUpdates(jobs []*Job) ([]jobDependencyUpdate, bo
 	}
 
 	return updates, readyCallbackExpected, nil
-}
-
-// applyDependencyUpdates writes each gathered dependency update to the queue,
-// clearing the armed ready-added callback if an update fails.
-func (s *Server) applyDependencyUpdates(ctx context.Context, updates []jobDependencyUpdate,
-	readyCallbackExpected bool) error {
-	for _, update := range updates {
-		job := update.job
-		job.setWaitingForDepGroups(update.waitingForDepGroups)
-
-		err := s.q.Update(
-			ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority, 0*time.Second, s.itemTTRDuration(), update.deps,
-		)
-		if err != nil {
-			if readyCallbackExpected {
-				s.clearRACPending()
-			}
-
-			return err
-		}
-	}
-
-	return nil
 }
 
 // mintRunToken hands out the identity of one run of one job; see runToken.
@@ -6454,7 +6458,7 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, rep releaseReport) er
 		return err
 	}
 
-	alreadyDone, errq := s.applyReleaseQueueChange(ctx, q, item, key, bury, currentState, job)
+	alreadyDone, errq := s.applyReleaseQueueChangeForRerun(ctx, q, item, key, bury, currentState, job)
 	if errq != nil {
 		return errq
 	}
@@ -6503,8 +6507,13 @@ func releaseJobSnapshot(job *Job, rep *releaseReport) (bool, string, JobState) {
 // applyReleaseQueueChange moves the queue item for a job being released to its
 // bury or delay sub-queue as appropriate. It reports alreadyDone=true when the
 // item is already in the target state (so there is nothing more to do).
+//
+// A non-empty rerunDeps are dependencies the job must now wait on before it runs
+// again: a job being released waits on them in the dependent sub-queue instead of
+// the delay one, and a job being buried stays buried with them, so a kick makes
+// it dependent.
 func (s *Server) applyReleaseQueueChange(ctx context.Context, q *queue.Queue, item *queue.Item,
-	key string, bury bool, currentState JobState, job *Job) (bool, error) {
+	key string, bury bool, currentState JobState, job *Job, rerunDeps []string) (bool, error) {
 	switch {
 	case bury:
 		if item.Stats().State == queue.ItemStateBury {
@@ -6513,6 +6522,15 @@ func (s *Server) applyReleaseQueueChange(ctx context.Context, q *queue.Queue, it
 
 		if errq := q.Bury(key); errq != nil {
 			return false, errq
+		}
+
+		if len(rerunDeps) > 0 {
+			stats := item.Stats()
+
+			if errq := q.Update(ctx, key, job.getSchedulerGroup(), job, job.Priority,
+				stats.Delay, stats.TTR, rerunDeps); errq != nil {
+				clog.Warn(ctx, "failed to give a buried job its new dependencies", "key", key, "err", errq)
+			}
 		}
 
 		s.deleteJobIfRequested(ctx, job)
@@ -6530,6 +6548,10 @@ func (s *Server) applyReleaseQueueChange(ctx context.Context, q *queue.Queue, it
 		// before we get here; without this case the report would fall through to the
 		// default q.Release and error ErrNotRunning (looping the client's retry).
 		return currentState == JobStateDelayed, nil
+	case len(rerunDeps) > 0:
+		if errq := q.Requeue(ctx, key, rerunDeps); errq != nil {
+			return false, errq
+		}
 	default:
 		if errq := q.Release(ctx, key); errq != nil {
 			return false, errq

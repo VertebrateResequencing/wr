@@ -1531,25 +1531,48 @@ func (j *Job) applySuccessfulEndStateLocked(endState *JobEndState, lim *limiter.
 // TTR expiry releases it to be run again if none does.
 //
 // A runner whose archive request timed out on a stalled commit sends it again,
-// so two archives of one completion can be in flight at once. Whichever is second
-// to reach the queue finds the job already removed by the first; its own write
-// has committed the same completion, so it succeeds without repeating the first's
-// bookkeeping instead of handing the runner an internal error to retry.
+// so two archives of one completion can be in flight at once. Whichever is
+// written second writes nothing (see Job.archivedEndTime), and does nothing to
+// the queue, since by then an add may have made the job run again from the first
+// one's record; it succeeds, the first having committed the completion, instead
+// of handing the runner an internal error to retry.
+//
+// A job marked to run again once its run ends, because a dep group it depends on
+// gained a member while it ran (see running_dependent.go), is recorded complete
+// but stays live, and the last of its completion's archives to finish sends it
+// back to wait on its dependencies. It does so even if its own write failed:
+// the run is superseded by the one to come, so it is not left for a retry to
+// archive.
 func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup, sgroup string) (
 	*serverResponse, string, string,
 ) {
-	defer job.archiveFinished()
+	outcome, err := s.db.archiveCompletion(key, job)
 
-	if err := s.db.archiveJob(ctx, key, job); err != nil {
-		return nil, ErrDBError, err.Error()
+	return s.finishArchive(ctx, job, key, rgroup, sgroup, outcome, err)
+}
+
+// finishArchive is archiveCompletedJob once its write has returned: the job's
+// queue item, dep group memberships and rep group lookup are dealt with, as the
+// write's outcome requires. Only a write that removed the job from the live
+// bucket removes its item, and then only if the item is still this job's and the
+// job has not been marked to run again since the write (the mark keeps the item
+// in the run queue, so the mark and this decision cannot interleave): its
+// dependants then keep waiting on it, as they do when the write keeps it live.
+func (s *Server) finishArchive(ctx context.Context, job *Job, key, rgroup, sgroup string,
+	outcome archiveOutcome, err error) (*serverResponse, string, string) {
+	removed, errr := s.removeArchivedItem(ctx, job, key, outcome)
+
+	if job.endArchive() {
+		s.requeueRerun(ctx, job, key, sgroup)
 	}
 
-	if err := s.q.Remove(ctx, key); err != nil {
-		if queueErrorIs(err, queue.ErrNotFound) {
-			return nil, "", ""
-		}
-
-		return nil, ErrInternalError, err.Error()
+	switch {
+	case err != nil:
+		return nil, ErrDBError, err.Error()
+	case errr != nil:
+		return nil, ErrInternalError, errr.Error()
+	case !removed:
+		return nil, "", ""
 	}
 
 	// this job has left the live bucket, so it is no longer a live member of its
@@ -1566,6 +1589,25 @@ func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup,
 	s.decrementGroupCount(ctx, sgroup, 1)
 
 	return nil, "", ""
+}
+
+// removeArchivedItem is finishArchive's removal of the job's queue item, if the
+// outcome of its archive's write calls for it, which reports whether it removed
+// it. An item already gone is not an error: another archive of the same
+// completion, written in the same transaction, removed it.
+func (s *Server) removeArchivedItem(ctx context.Context, job *Job, key string, outcome archiveOutcome) (bool, error) {
+	if outcome != archiveRemovedLive {
+		return false, nil
+	}
+
+	removed, errr := s.q.RemoveUnless(ctx, key, func(data any) bool {
+		return data != job || job.rerunAfterRun()
+	})
+	if queueErrorIs(errr, queue.ErrNotFound) {
+		errr = nil
+	}
+
+	return removed, errr
 }
 
 // handleRelease moves a job from the run queue to the delay queue, or buries it

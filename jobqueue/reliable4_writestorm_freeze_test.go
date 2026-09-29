@@ -287,7 +287,7 @@ func wsfArchiverLoop(ctx context.Context, database *db, stop <-chan struct{}, co
 		}
 
 		t0 := time.Now()
-		_ = database.archiveJob(ctx, job.Key(), job)
+		_ = database.archiveJob(job.Key(), job)
 		lat := time.Since(t0)
 
 		archCount.Add(1)
