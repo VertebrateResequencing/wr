@@ -229,6 +229,36 @@ func TestManagerPortSelfConnect(t *testing.T) {
 		So(elapsed, ShouldBeGreaterThanOrEqualTo, pscBindRetryBudget)
 		So(elapsed, ShouldBeLessThan, serverBindRetryBudget)
 	})
+
+	Convey("A manager port an IPv6-only listener holds fails Serve fast and says so", t, func() {
+		// Go makes a "tcp6" listener IPv6-only, as rpc.statd's [::] listener
+		// is, while the manager listens dual-stack.
+		listener, errl := (&net.ListenConfig{}).Listen(ctx, "tcp6", "[::]:0")
+		if errl != nil {
+			SkipSo("this host has no IPv6", errl, ShouldBeNil)
+
+			return
+		}
+
+		defer func() { _ = listener.Close() }()
+
+		_, serverConfig, _, _, _ := jobqueueTestInit(true)
+		serverConfig.Port = strconv.Itoa(listener.Addr().(*net.TCPAddr).Port) //nolint:forcetypeassert,errcheck
+		serverConfig.WebPort = pscFreePort(-1)
+
+		defer publishexit.Set(func(int) {})()
+
+		started := time.Now()
+
+		server, _, _, err := Serve(ctx, serverConfig)
+		if server != nil {
+			server.Stop(ctx, true)
+		}
+
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "manager port "+serverConfig.Port+" is in use by another process")
+		So(time.Since(started), ShouldBeLessThan, serverBindRetryBudget+pscFastFailSlack)
+	})
 }
 
 func TestManagerPortReservationRelease(t *testing.T) {

@@ -28,35 +28,71 @@
 package jobqueue
 
 import (
+	"errors"
 	"os"
 	"syscall"
 )
 
-// bindPortReservation binds a socket to 0.0.0.0:port with SO_REUSEADDR, but
-// does not listen on it. SO_REUSEADDR lets it bind past the TIME_WAITs a
-// previous manager's own connections leave on the port, and lets our real
-// listener bind alongside it.
+// bindPortReservation binds a socket to port on every address with
+// SO_REUSEADDR, but does not listen on it. SO_REUSEADDR lets it bind past the
+// TIME_WAITs a previous manager's own connections leave on the port, and lets
+// our real listener bind alongside it.
+//
+// The socket is IPv6 with IPV6_V6ONLY off, bound to [::], so it covers both
+// IPv4 and IPv6, as the manager's own listener does: an IPv4 socket would
+// reserve a port that an IPv6-only listener already holds, and the manager's
+// listener would then fail to bind it. On a host without IPv6, it is IPv4 on
+// 0.0.0.0.
 //
 // The socket is created close-on-exec (SOCK_CLOEXEC), so no runner forked at
 // the same time can inherit it: one that did would hold the port for as long as
 // it lived.
 func bindPortReservation(port int) (*portReservation, error) {
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+	res, err := bindPortReservationOn(syscall.AF_INET6, &syscall.SockaddrInet6{Port: port})
+	if err == nil || errors.Is(err, syscall.EADDRINUSE) {
+		return res, err
+	}
+
+	return bindPortReservationOn(syscall.AF_INET, &syscall.SockaddrInet4{Port: port})
+}
+
+// bindPortReservationOn is bindPortReservation for one address family, with
+// addr the wildcard address of that family on the port.
+func bindPortReservationOn(family int, addr syscall.Sockaddr) (*portReservation, error) {
+	fd, err := syscall.Socket(family, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return nil, os.NewSyscallError("socket", err)
 	}
 
-	if err = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
+	if err = setReservationSockopts(fd, family); err != nil {
 		_ = syscall.Close(fd)
 
-		return nil, os.NewSyscallError("setsockopt", err)
+		return nil, err
 	}
 
-	if err = syscall.Bind(fd, &syscall.SockaddrInet4{Port: port}); err != nil {
+	if err = syscall.Bind(fd, addr); err != nil {
 		_ = syscall.Close(fd)
 
 		return nil, os.NewSyscallError("bind", err)
 	}
 
 	return &portReservation{fd: fd}, nil
+}
+
+// setReservationSockopts sets SO_REUSEADDR on fd, and for an IPv6 socket turns
+// IPV6_V6ONLY off, whatever the host's net.ipv6.bindv6only default.
+func setReservationSockopts(fd, family int) error {
+	if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
+		return os.NewSyscallError("setsockopt", err)
+	}
+
+	if family != syscall.AF_INET6 {
+		return nil
+	}
+
+	if err := syscall.SetsockoptInt(fd, syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY, 0); err != nil {
+		return os.NewSyscallError("setsockopt", err)
+	}
+
+	return nil
 }

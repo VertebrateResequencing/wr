@@ -26,6 +26,9 @@ project adheres to [Semantic Versioning](http://semver.org/).
   command in full, so it is several times faster, and uses about 1% of the
   memory, for a group with a long history of long commands. The output is
   unchanged.
+- A manager whose port is already taken by an IPv6-only listener (such as
+  rpc.statd's) now fails to start at once, saying the port is in use by another
+  process, instead of seeming to start and then exiting a few seconds later.
 - The manager uses less CPU deciding what to schedule when many commands are
   waiting in limit groups.
 - With the lsf scheduler, each bsub returns about 100ms sooner.
