@@ -382,21 +382,14 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
       `cmd.Start()` succeeds and `startedRequest` sends it as the request
       job's `StartTime`, so every retry of the report carries the same time.
       `Started`, the public API, reports the time it is called.
-    - Manager (`jobqueue/serverCLI.go`, `reportedStartTime`): a reported start
-      is clamped to the times the run can have started in, to guard against
-      the runner's clock being out: no later than now, and no earlier than the
-      new `Job.ReservedAt`, which `resetJobForReservation` sets. It is an
-      exported field so it is persisted with the reservation (#642) and
-      survives recovery, which is exactly when a retried start needs it. A zero
-      reported time, from a runner too old to send one, is taken as now, as
-      before.
-    - With no `ReservedAt` (a reservation recorded by a manager from before
-      this change, recovered after an upgrade), the lower bound is one TTR
-      before now. The reservation time is otherwise unknown; a start report is
-      normally only retried for longer than a TTR when the manager was down,
-      so this keeps nearly every real start time and bounds the error of a
-      skewed clock by the TTR, rather than trusting the runner's clock without
-      limit.
+    - Manager (`jobqueue/serverCLI.go`, `reportedStartTime`): the reported
+      start is recorded as given, at the owner's decision. A zero reported
+      time, from a runner too old to send one, is taken as the manager's
+      `time.Now()`, as before. The manager does not adjust the reported time,
+      and nothing new is stored per job: a job's walltime is the runner's end
+      time minus the runner's start time, both on the runner's clock, so a
+      difference between the runner's and the manager's clocks does not affect
+      it.
     - Walltime, the learnt time stats and `wr status` then use the command's
       real start.
 
@@ -423,9 +416,8 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
       another client's archive gets `ErrMustReserve`, the owner's archive
       before its start gets `ErrBadRequest` and the job stays reserved, and
       after `Started` the archive completes it with `Attempts` 1.
-    - `TestReportedStartTime` covers the clamping: a time within the bounds
-      is kept; zero, in the future, before the reservation, and with no
-      reservation time more than a TTR ago, each give the bound.
+    - `TestReportedStartTime` covers the two cases: a reported time is used
+      as given, and a zero one falls back to now.
     - `TestFinalStateWaitsForStartReport` is unchanged.
     - `jobqueue_test.go` (`TestJobqueueExecutionAndDependencyScenarios`)
       asserted that the manager's walltime for a job was no more than the
@@ -451,6 +443,11 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
     2m43s`, exit 0, no data races (after the `TestReliable2Release` race
     above failed one earlier run).
 - Redesign gates, all `OS_*` unset:
+  - `make lint`: `0 issues.`
+  - `make test`: `803 passed · 21 skipped · 32 packages · 1m31s`, exit 0.
+  - `CGO_ENABLED=1 make race`: `803 passed · 20 skipped · 32 packages ·
+    2m51s`, exit 0, no data races.
+- Gates after recording the runner's start time as given, all `OS_*` unset:
   - `make lint`: `0 issues.`
   - `make test`: `803 passed · 21 skipped · 32 packages · 1m31s`, exit 0.
   - `CGO_ENABLED=1 make race`: `803 passed · 20 skipped · 32 packages ·

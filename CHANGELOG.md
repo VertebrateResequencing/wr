@@ -102,9 +102,9 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - A command's start time, as shown by `wr status` and used for its walltime
   and for learning how long commands take, is now when the command really
   started. It used to be when the manager received the runner's report of the
-  start, which after a manager crash could be minutes later. The manager keeps
-  a reported time between when the command was handed to its runner and now,
-  so a runner whose clock is out cannot record an impossible time.
+  start, which after a manager crash could be minutes later. The start and end
+  times are now both the runner's, so a command's walltime is measured on the
+  clock of the node that ran it.
 - A command that wr is asked to kill, for example by a clean `wr manager stop`
   or `wr kill`, is now killed promptly on busy nodes. Before it kills a command,
   and every second while one runs, the runner looks up the command's child

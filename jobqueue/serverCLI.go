@@ -1135,7 +1135,6 @@ func (s *Server) resetJobForReservation(sjob *Job, cr *clientRequest) (string, u
 	sjob.resetRunLocked(JobStateReserved, -1)
 
 	sjob.ReservedBy = cr.ClientID // *** we should unset this on moving out of run state, to save space
-	sjob.ReservedAt = time.Now()
 
 	// record which runner holds this reservation (its own host+pid) before the
 	// command's own pid is reported at Started, so a reserved-not-started job's
@@ -1240,7 +1239,7 @@ func (s *Server) applyJobStart(job, crJob *Job) string {
 	job.HostIP = crJob.HostIP
 	job.Pid = crJob.Pid
 	job.RunnerPid = crJob.RunnerPid
-	job.StartTime = s.reportedStartTime(crJob.StartTime, job.ReservedAt, time.Now())
+	job.StartTime = reportedStartTime(crJob.StartTime, time.Now())
 	job.EndTime = time.Time{}
 	job.Attempts++
 	job.setActualCwd(crJob.ActualCwd)
@@ -1296,40 +1295,21 @@ func acceptDuplicateStartLocked(job, crJob *Job) bool {
 }
 
 // reportedStartTime returns the start time to record for a run whose runner
-// reported that its command started at reported, a run reserved at reservedAt,
-// now being now.
+// reported that its command started at reported, now being now.
 //
 // The runner records the time its command started and sends it with its start
 // report, so a report that was retried, for example after a manager crash, still
-// records when the command really started, not when the report got through. The
-// runner's clock is not the manager's, though, so the time is clamped to when
-// the run can have started: no earlier than its reservation, and no later than
-// now. A runner too old to report a start time sends none, and its report's
-// arrival is taken as the start, as it always was.
-//
-// A run reserved by a manager too old to record ReservedAt (recovered after an
-// upgrade) has no reservation time to bound it, so the bound is instead one TTR
-// before now. A start report that has been retried for longer than that is rare
-// (it needs the manager to have been down), and the error is then bounded by the
-// TTR rather than by how far the runner's clock is out.
-func (s *Server) reportedStartTime(reported, reservedAt, now time.Time) time.Time {
+// records when the command really started, not when the report got through. It
+// is recorded as given: with the end time the runner also reports, a job's
+// walltime is then measured on the runner's clock alone. A runner too old to
+// report a start time sends none, and its report's arrival is taken as the
+// start, as it always was.
+func reportedStartTime(reported, now time.Time) time.Time {
 	if reported.IsZero() {
 		return now
 	}
 
-	earliest := reservedAt
-	if earliest.IsZero() {
-		earliest = now.Add(-s.itemTTRDuration())
-	}
-
-	switch {
-	case reported.After(now):
-		return now
-	case reported.Before(earliest):
-		return earliest
-	default:
-		return reported
-	}
+	return reported
 }
 
 // handleTouch refreshes a running job's TTR, recovering it from lost state and

@@ -488,35 +488,19 @@ func TestArchiveWithoutStartIsRefused(t *testing.T) {
 	})
 }
 
-// TestReportedStartTime proves that the manager records the start time a
-// runner reports, bounded by when the run was reserved and by now.
+// TestReportedStartTime proves that the manager records the start time a runner
+// reports as given, and its own time when an older runner reports none.
 func TestReportedStartTime(t *testing.T) {
-	Convey("reportedStartTime keeps a reported start within what the manager knows", t, func() {
-		server := &Server{itemTTR: time.Minute}
+	Convey("reportedStartTime records the runner's start time", t, func() {
 		now := time.Now()
-		reservedAt := now.Add(-10 * time.Minute)
 
-		Convey("a start between the reservation and now is kept", func() {
-			reported := now.Add(-5 * time.Minute)
-			So(server.reportedStartTime(reported, reservedAt, now), ShouldEqual, reported)
+		Convey("a reported start is used as given", func() {
+			reported := now.Add(-time.Hour)
+			So(reportedStartTime(reported, now), ShouldEqual, reported)
 		})
 
 		Convey("no reported start, from an older runner, is taken to be now", func() {
-			So(server.reportedStartTime(time.Time{}, reservedAt, now), ShouldEqual, now)
-		})
-
-		Convey("a start in the future, from a runner whose clock is ahead, is now", func() {
-			So(server.reportedStartTime(now.Add(time.Hour), reservedAt, now), ShouldEqual, now)
-		})
-
-		Convey("a start before the reservation, from a runner whose clock is behind, is the reservation", func() {
-			So(server.reportedStartTime(reservedAt.Add(-time.Hour), reservedAt, now), ShouldEqual, reservedAt)
-		})
-
-		Convey("with no reservation time, a start is bounded by one TTR before now", func() {
-			So(server.reportedStartTime(now.Add(-30*time.Second), time.Time{}, now),
-				ShouldEqual, now.Add(-30*time.Second))
-			So(server.reportedStartTime(now.Add(-time.Hour), time.Time{}, now), ShouldEqual, now.Add(-time.Minute))
+			So(reportedStartTime(time.Time{}, now), ShouldEqual, now)
 		})
 	})
 }

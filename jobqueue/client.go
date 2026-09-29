@@ -4144,7 +4144,7 @@ func (c *Client) startedRequest(job *Job, pid int, startTime time.Time) (*client
 	requestJob.HostIP = job.HostIP
 	requestJob.Pid = job.Pid
 	requestJob.RunnerPid = os.Getpid() // this client IS the runner process; report it for liveness
-	requestJob.StartTime = startTime   // the manager records this, within the bounds it can check
+	requestJob.StartTime = startTime   // the manager records this as the run's start
 
 	// the working directory resolveWorkingDir already created. Reporting it HERE
 	// lets the manager clean up after a run that dies without ever touching, and
