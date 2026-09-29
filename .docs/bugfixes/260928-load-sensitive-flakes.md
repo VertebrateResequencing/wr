@@ -330,3 +330,28 @@ quoted include it.
   - Check: with the bound set to 1s the test fails with `Expected: nil
     Actual: 'signal: killed'`, so a harness that overruns it still fails.
     The assertions are unchanged.
+
+## Gate flakes seen while verifying the status summary fix (branch fix-status-summary-scaling)
+
+- [ ] `TestFuseMountReaping` (`jobqueue/testfusemount_test.go:491`) failed in
+  one `make test` run at 1-min load ~38: `Expected: true / Actual: false` for
+  `So(pidInFuseWait(child.pid), ShouldBeTrue)`, the premise that the wedged
+  child is blocked in a fuse request. It then passed `--count 3` alone. This
+  is the same failure `260927-client-token-reload.md` records as seen under
+  load, and it does not touch the status summary code. Recorded here, not
+  fixed.
+- [ ] `TestReliable4RacBoundedBySchedulable`
+  (`jobqueue/reliable4_rac_bound_test.go:117`) failed in one `make test` run
+  at load ~11-16: `Expected: 5 / Actual: 18` for `racScanWork`. It then passed
+  `--count 5` alone. The counter is server-wide, so a scheduling pass the
+  server ran by itself during the measured window would also add to it. It
+  does not touch the status summary code. Recorded here, not fixed.
+- [x] `make race` failed `TestCleanupKeepsMountCachesSpelledInAnotherCase`
+  with a data race on its `clog.ToBufferAtLevel` buffer
+  (`jobqueue/workspace_test.go:464`). The writer was an `archiveFoldReporter`
+  goroutine that `initDB` started for `TestDBCheckIfComplete`. That test,
+  `TestDBRetrieveCompleteJobsRecent` and `TestDBEndTimeIndex` never closed
+  their db, so each db's reporter kept running and logged its minutely
+  "archive fold" warning into whichever test had captured the global logger.
+  - Fix: `jobqueue/db_test.go` closes the db in those three tests with the
+    same `defer` the other db tests use, which stops the reporter.
