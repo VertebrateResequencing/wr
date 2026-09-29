@@ -92,12 +92,19 @@ project adheres to [Semantic Versioning](http://semver.org/).
 ### Fixed
 - A command that exited 0 while its manager was down after a crash is no
   longer run again when its runner's report that it had started the command
-  was lost to the crash. The runner now waits for its start report to be
-  accepted before reporting how the command ended, and the manager now
-  completes a job whose runner reports its success first, rather than
-  rejecting the report as a bad request, which made the runner give up on the
-  completed work. The runner's "will need to be rerun" message also now says
-  which error it gave up on, instead of `%!w(<nil>)`.
+  was lost to the crash. The manager refused the runner's report of success,
+  because it had no record of the start, and the runner gave up on the
+  completed work. The runner now waits for its start report to be accepted
+  before reporting how the command ended. Runners from an older release still
+  running during an upgrade do not have this fix, and can still have such a
+  command run again. The runner's "will need to be rerun" message also now
+  says which error it gave up on, instead of `%!w(<nil>)`.
+- A command's start time, as shown by `wr status` and used for its walltime
+  and for learning how long commands take, is now when the command really
+  started. It used to be when the manager received the runner's report of the
+  start, which after a manager crash could be minutes later. The manager keeps
+  a reported time between when the command was handed to its runner and now,
+  so a runner whose clock is out cannot record an impossible time.
 - A command that wr is asked to kill, for example by a clean `wr manager stop`
   or `wr kill`, is now killed promptly on busy nodes. Before it kills a command,
   and every second while one runs, the runner looks up the command's child

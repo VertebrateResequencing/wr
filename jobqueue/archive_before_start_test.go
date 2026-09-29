@@ -231,6 +231,10 @@ func TestArchiveBeforeRetriedStart(t *testing.T) {
 		defer func() { server.Stop(ctx, true) }()
 
 		So(waitUntilRecovered(server), ShouldBeTrue)
+
+		// the runner's start report can only get through from now on.
+		restarted := time.Now()
+
 		close(crashed)
 
 		// the runner's connection to the restarted manager is back, so its
@@ -246,6 +250,10 @@ func TestArchiveBeforeRetriedStart(t *testing.T) {
 		case <-time.After(2 * archiveBeforeStartWait):
 			errExec = errStartNeverReturned
 		}
+
+		reserved.RLock()
+		runnerStart := reserved.StartTime
+		reserved.RUnlock()
 
 		Convey("the runner's archive is accepted, and the job completes once and is not run again", func() {
 			// a runner that reported its job's end after trouble reaching the
@@ -265,7 +273,12 @@ func TestArchiveBeforeRetriedStart(t *testing.T) {
 			So(errg, ShouldBeNil)
 			So(len(done), ShouldEqual, 1)
 			So(done[0].State, ShouldEqual, JobStateComplete)
-			So(done[0].StartTime.IsZero(), ShouldBeFalse)
+
+			// the start recorded is when the command started, not when its
+			// retried report got through to the restarted manager.
+			So(runnerStart.IsZero(), ShouldBeFalse)
+			So(done[0].StartTime.Equal(runnerStart), ShouldBeTrue)
+			So(done[0].StartTime.Before(restarted), ShouldBeTrue)
 
 			second, errr := jq2.Reserve(time.Second)
 			So(errr, ShouldBeNil)
@@ -399,10 +412,10 @@ func TestFinalStateWaitsForStartReport(t *testing.T) {
 	})
 }
 
-// TestArchiveImpliesStart proves that the manager completes a job in the run
-// queue whose runner reports its successful end before its start, but only for
-// the runner that holds the reservation.
-func TestArchiveImpliesStart(t *testing.T) {
+// TestArchiveWithoutStartIsRefused proves that the manager does not complete a
+// job whose start it has not recorded, even for the runner that holds the
+// reservation, and completes it once that runner's start has been reported.
+func TestArchiveWithoutStartIsRefused(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
@@ -423,7 +436,7 @@ func TestArchiveImpliesStart(t *testing.T) {
 		defer disconnect(jq)
 
 		inserts, _, err := jq.Add([]*Job{{
-			Cmd: restFormTrue + " impliedstart", Cwd: testCwd, RepGroup: archiveBeforeStartRepGroup,
+			Cmd: restFormTrue + " nostart", Cwd: testCwd, RepGroup: archiveBeforeStartRepGroup,
 			ReqGroup: archiveBeforeStartRepGroup, Requirements: standardReqs,
 		}}, os.Environ(), true)
 		So(err, ShouldBeNil)
@@ -438,60 +451,89 @@ func TestArchiveImpliesStart(t *testing.T) {
 
 		defer disconnect(jq2)
 
-		endTime := time.Now()
 		endState := func() *JobEndState {
-			return &JobEndState{Exited: true, Exitcode: 0, EndTime: endTime}
+			return &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
+		}
+
+		reservedState := func() JobState {
+			jobs, errg := jq2.GetByRepGroup(archiveBeforeStartRepGroup, false, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 1)
+
+			return jobs[0].State
 		}
 
 		Convey("another client's archive is refused, and the job stays reserved", func() {
 			var jqErr Error
 			So(errors.As(jq2.Archive(reserved, endState()), &jqErr), ShouldBeTrue)
 			So(jqErr.Err, ShouldEqual, ErrMustReserve)
-
-			jobs, errg := jq2.GetByRepGroup(archiveBeforeStartRepGroup, false, 0, "", false, false)
-			So(errg, ShouldBeNil)
-			So(len(jobs), ShouldEqual, 1)
-			So(jobs[0].State, ShouldEqual, JobStateReserved)
+			So(reservedState(), ShouldEqual, JobStateReserved)
 		})
 
-		Convey("its runner's archive completes it, implying the start, and a late start is refused", func() {
+		Convey("its own runner's archive is refused too, until its start is reported", func() {
+			var jqErr Error
+			So(errors.As(jq.Archive(reserved, endState()), &jqErr), ShouldBeTrue)
+			So(jqErr.Err, ShouldEqual, ErrBadRequest)
+			So(reservedState(), ShouldEqual, JobStateReserved)
+
+			So(jq.Started(reserved, os.Getpid()), ShouldBeNil)
 			So(jq.Archive(reserved, endState()), ShouldBeNil)
 
 			jobs, errg := jq2.GetByRepGroup(archiveBeforeStartRepGroup, false, 0, "", true, false)
 			So(errg, ShouldBeNil)
 			So(len(jobs), ShouldEqual, 1)
 			So(jobs[0].State, ShouldEqual, JobStateComplete)
-			So(jobs[0].StartTime.Equal(endTime), ShouldBeTrue)
 			So(jobs[0].Attempts, ShouldEqual, 1)
-
-			var jqErr Error
-			So(errors.As(jq.Started(reserved, os.Getpid()), &jqErr), ShouldBeTrue)
-			So(jqErr.Err, ShouldEqual, ErrBadJob)
 		})
-	})
-
-	Convey("A job out of the run queue with no recorded start is not completed", t, func() {
-		job := &Job{Cmd: restFormTrue, Cwd: testCwd, State: JobStateDelayed}
-		endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
-
-		_, _, _, srerr := markJobComplete(job, endState, nil, false)
-		So(srerr, ShouldEqual, ErrBadRequest)
-		So(job.StartTime.IsZero(), ShouldBeTrue)
-		So(job.State, ShouldEqual, JobStateDelayed)
 	})
 }
 
-// TestLateStartDuringImpliedArchive proves that a start report that reaches the
-// manager while its runner's earlier archive, which implied the start, is still
-// waiting to commit is refused and leaves the completed job alone.
-func TestLateStartDuringImpliedArchive(t *testing.T) {
+// TestReportedStartTime proves that the manager records the start time a
+// runner reports, bounded by when the run was reserved and by now.
+func TestReportedStartTime(t *testing.T) {
+	Convey("reportedStartTime keeps a reported start within what the manager knows", t, func() {
+		server := &Server{itemTTR: time.Minute}
+		now := time.Now()
+		reservedAt := now.Add(-10 * time.Minute)
+
+		Convey("a start between the reservation and now is kept", func() {
+			reported := now.Add(-5 * time.Minute)
+			So(server.reportedStartTime(reported, reservedAt, now), ShouldEqual, reported)
+		})
+
+		Convey("no reported start, from an older runner, is taken to be now", func() {
+			So(server.reportedStartTime(time.Time{}, reservedAt, now), ShouldEqual, now)
+		})
+
+		Convey("a start in the future, from a runner whose clock is ahead, is now", func() {
+			So(server.reportedStartTime(now.Add(time.Hour), reservedAt, now), ShouldEqual, now)
+		})
+
+		Convey("a start before the reservation, from a runner whose clock is behind, is the reservation", func() {
+			So(server.reportedStartTime(reservedAt.Add(-time.Hour), reservedAt, now), ShouldEqual, reservedAt)
+		})
+
+		Convey("with no reservation time, a start is bounded by one TTR before now", func() {
+			So(server.reportedStartTime(now.Add(-30*time.Second), time.Time{}, now),
+				ShouldEqual, now.Add(-30*time.Second))
+			So(server.reportedStartTime(now.Add(-time.Hour), time.Time{}, now), ShouldEqual, now.Add(-time.Minute))
+		})
+	})
+}
+
+// TestLateStartDuringArchive proves that a start report that reaches the manager
+// while its runner's archive is still waiting to commit is refused and leaves
+// the completed job alone. A runner from before start reports were settled
+// ahead of the final report could send one then: a background retry of a start
+// already recorded, whose reply was lost.
+func TestLateStartDuringArchive(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
 
 	ctx := context.Background()
 
-	Convey("Given a runner's archive of a not-started job waiting on a stalled commit", t, func() {
+	Convey("Given a runner's archive of a started job waiting on a stalled commit", t, func() {
 		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
 
 		server, _, token, err := serve(ctx, serverConfig)
@@ -515,6 +557,10 @@ func TestLateStartDuringImpliedArchive(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(reserved, ShouldNotBeNil)
 
+		So(jq.Started(reserved, os.Getpid()), ShouldBeNil)
+
+		startTime := reserved.StartTime
+
 		holdTx, err := server.db.bolt.Begin(true)
 		So(err, ShouldBeNil)
 
@@ -537,8 +583,8 @@ func TestLateStartDuringImpliedArchive(t *testing.T) {
 			return job.archivesPending == 1
 		}), ShouldBeTrue)
 
-		// the runner's retried start, on a second connection since the first is
-		// still waiting on the archive's reply.
+		// a retry of the runner's start, on a second connection since the first
+		// is still waiting on the archive's reply.
 		late, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)
 
@@ -584,7 +630,7 @@ func TestLateStartDuringImpliedArchive(t *testing.T) {
 			So(len(done), ShouldEqual, 1)
 			So(done[0].State, ShouldEqual, JobStateComplete)
 			So(done[0].EndTime.Equal(endTime), ShouldBeTrue)
-			So(done[0].StartTime.Equal(endTime), ShouldBeTrue)
+			So(done[0].StartTime.Equal(startTime), ShouldBeTrue)
 			So(done[0].Attempts, ShouldEqual, 1)
 
 			again, errr := jq2.Reserve(time.Second)

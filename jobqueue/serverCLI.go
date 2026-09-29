@@ -1135,6 +1135,7 @@ func (s *Server) resetJobForReservation(sjob *Job, cr *clientRequest) (string, u
 	sjob.resetRunLocked(JobStateReserved, -1)
 
 	sjob.ReservedBy = cr.ClientID // *** we should unset this on moving out of run state, to save space
+	sjob.ReservedAt = time.Now()
 
 	// record which runner holds this reservation (its own host+pid) before the
 	// command's own pid is reported at Started, so a reserved-not-started job's
@@ -1239,7 +1240,7 @@ func (s *Server) applyJobStart(job, crJob *Job) string {
 	job.HostIP = crJob.HostIP
 	job.Pid = crJob.Pid
 	job.RunnerPid = crJob.RunnerPid
-	job.StartTime = time.Now()
+	job.StartTime = s.reportedStartTime(crJob.StartTime, job.ReservedAt, time.Now())
 	job.EndTime = time.Time{}
 	job.Attempts++
 	job.setActualCwd(crJob.ActualCwd)
@@ -1261,12 +1262,14 @@ func startRefusalLocked(job, crJob *Job) string {
 		return ErrBadRequest
 	}
 
-	// a start that arrives after its runner's archive, which implied it (see
-	// implyStartLocked), while that archive waits on its commit, finds the job
-	// still in the run queue. It is too late: recording it would make the
-	// completed job running again, with no end time, in memory and in the record
-	// being archived if that is yet to be encoded. It gets what it would once the
-	// archive had removed the job.
+	// a start that arrives while its runner's archive waits on its commit finds
+	// the job still in the run queue. A runner from before its start reports were
+	// settled ahead of its final report can send one then: a background retry of
+	// a start already recorded, whose reply was lost. The job is no longer
+	// running, so it is not taken for a duplicate, and recording it would make the
+	// completed job running again, with a new start and no end time, in memory
+	// and in the record being archived if that is yet to be encoded. It is too
+	// late, and gets what it would once the archive had removed the job.
 	if job.archivePendingLocked() {
 		return ErrBadJob
 	}
@@ -1290,6 +1293,43 @@ func acceptDuplicateStartLocked(job, crJob *Job) bool {
 	}
 
 	return true
+}
+
+// reportedStartTime returns the start time to record for a run whose runner
+// reported that its command started at reported, a run reserved at reservedAt,
+// now being now.
+//
+// The runner records the time its command started and sends it with its start
+// report, so a report that was retried, for example after a manager crash, still
+// records when the command really started, not when the report got through. The
+// runner's clock is not the manager's, though, so the time is clamped to when
+// the run can have started: no earlier than its reservation, and no later than
+// now. A runner too old to report a start time sends none, and its report's
+// arrival is taken as the start, as it always was.
+//
+// A run reserved by a manager too old to record ReservedAt (recovered after an
+// upgrade) has no reservation time to bound it, so the bound is instead one TTR
+// before now. A start report that has been retried for longer than that is rare
+// (it needs the manager to have been down), and the error is then bounded by the
+// TTR rather than by how far the runner's clock is out.
+func (s *Server) reportedStartTime(reported, reservedAt, now time.Time) time.Time {
+	if reported.IsZero() {
+		return now
+	}
+
+	earliest := reservedAt
+	if earliest.IsZero() {
+		earliest = now.Add(-s.itemTTRDuration())
+	}
+
+	switch {
+	case reported.After(now):
+		return now
+	case reported.Before(earliest):
+		return earliest
+	default:
+		return reported
+	}
 }
 
 // handleTouch refreshes a running job's TTR, recovering it from lost state and
@@ -1420,7 +1460,7 @@ func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverR
 	// not discarded and re-run. A job that is already gone-and-complete is handled
 	// idempotently (jobAlreadyComplete), a new owner yields ErrMustReserve
 	// (new-run-wins) and a missing item during recovery yields ErrRecovering.
-	item, job, srerr := s.getijForReport(cr)
+	job, srerr := s.getijForReport(cr)
 	if srerr != "" {
 		if srerr == ErrBadJob && s.jobAlreadyComplete(cr.key()) {
 			return nil, "", "" // idempotent: the job is already archived/complete
@@ -1429,9 +1469,7 @@ func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverR
 		return nil, srerr, ""
 	}
 
-	inRun := item.Stats().State == queue.ItemStateRun
-
-	key, rgroup, sgroup, srerr := markJobComplete(job, cr.JobEndState, s.limiter, inRun, cr.ClientID)
+	key, rgroup, sgroup, srerr := markJobComplete(job, cr.JobEndState, s.limiter, cr.ClientID)
 	if srerr != "" {
 		return nil, srerr, ""
 	}
@@ -1443,18 +1481,14 @@ func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverR
 // complete under lock, returning its key, rep group and scheduler group (or an
 // Err* string if it cannot be completed). It does NOT gate on the queue item
 // state or job.State - that item/ownership gating is done by getijForReport at
-// the call site (handleArchive), which says in inRun whether the item is in the
-// run queue. It validates the owner (job.ReservedBy must match the optional
-// expectedReservedBy, else ErrMustReserve) and the end state
+// the call site (handleArchive). It validates the owner (job.ReservedBy must
+// match the optional expectedReservedBy, else ErrMustReserve) and the end state
 // (canCompleteFromEndState, else ErrBadRequest); on success it applies the end
 // state, sets State to JobStateComplete and clears FailReason, but deliberately
 // does NOT clear job.Lost (see the inline comment) so a parked-lost job's later
 // removal is counted lost->complete.
-//
-// A job in the run queue whose start was never recorded is completed all the
-// same, the start being implied (see implyStartLocked).
 func markJobComplete(job *Job, endState *JobEndState,
-	lim *limiter.Limiter, inRun bool, expectedReservedBy ...uuid.UUID,
+	lim *limiter.Limiter, expectedReservedBy ...uuid.UUID,
 ) (key, rgroup, sgroup, srerr string) {
 	job.Lock()
 	defer job.Unlock()
@@ -1463,12 +1497,8 @@ func markJobComplete(job *Job, endState *JobEndState,
 		return "", "", "", ErrMustReserve
 	}
 
-	if !job.canCompleteFromEndState(endState, inRun) {
+	if !job.canCompleteFromEndState(endState) {
 		return "", "", "", ErrBadRequest
-	}
-
-	if job.StartTime.IsZero() {
-		job.implyStartLocked(endState)
 	}
 
 	job.applySuccessfulEndStateLocked(endState, lim)
@@ -1492,29 +1522,9 @@ func markJobComplete(job *Job, endState *JobEndState,
 	return job.Key(), job.RepGroup, job.schedulerGroup, ""
 }
 
-// canCompleteFromEndState reports whether endState is a successful exit that
-// can complete j, which has had its start recorded or, if inRun, will have it
-// implied.
-func (j *Job) canCompleteFromEndState(endState *JobEndState, inRun bool) bool {
+func (j *Job) canCompleteFromEndState(endState *JobEndState) bool {
 	return endState != nil && endState.Exited && endState.Exitcode == 0 &&
-		(inRun || !j.StartTime.IsZero()) && !endState.EndTime.IsZero()
-}
-
-// implyStartLocked records the start of a job whose runner reported its
-// successful end before its start. That happens when the runner's first start
-// report went unanswered, for example because the manager crashed, and its end
-// then reached the restarted manager before its retried start did. The owner
-// check has already passed, and the job is in the run queue, reserved to this
-// runner, so it cannot be anyone else's run. Refusing the end would make the
-// runner discard its completed work, and the job would run again once the
-// retried start landed and the job was found lost.
-//
-// The end state carries no start time. StartTime is set to the end time, which
-// records no walltime, so that none is learnt for the job's ReqGroup, rather
-// than a guessed one.
-func (j *Job) implyStartLocked(endState *JobEndState) {
-	j.StartTime = endState.EndTime
-	j.Attempts++
+		!j.StartTime.IsZero() && !endState.EndTime.IsZero()
 }
 
 func (j *Job) applySuccessfulEndStateLocked(endState *JobEndState, lim *limiter.Limiter) {
@@ -1593,7 +1603,7 @@ func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury
 	// set so the losing runner abandons the dead reservation promptly instead of
 	// looping for the full 24h retryTime (reliable2 D1); a missing item during
 	// recovery yields ErrRecovering.
-	_, job, srerr := s.getijForReport(cr)
+	job, srerr := s.getijForReport(cr)
 	if srerr != "" {
 		if srerr == ErrBadJob && s.jobAlreadyComplete(cr.key()) {
 			return nil, "", "" // idempotent: the job is already terminal
@@ -2188,19 +2198,19 @@ func (s *Server) dispatchMethod(ctx context.Context, cr *clientRequest, drain bo
 // ErrMustReserve (new-run-wins). A missing item is retryable during recovery
 // (ErrRecovering) and otherwise ErrBadJob (the caller may still treat an
 // already-completed job idempotently via jobAlreadyComplete).
-func (s *Server) getijForReport(cr *clientRequest) (*queue.Item, *Job, string) {
+func (s *Server) getijForReport(cr *clientRequest) (*Job, string) {
 	key := cr.key()
 	if key == "" {
-		return nil, nil, ErrBadRequest
+		return nil, ErrBadRequest
 	}
 
 	item, err := s.q.Get(key)
 	if err != nil {
 		if s.isRecovering() {
-			return nil, nil, ErrRecovering
+			return nil, ErrRecovering
 		}
 
-		return nil, nil, ErrBadJob
+		return nil, ErrBadJob
 	}
 
 	// accept a report only for an IN-FLIGHT item: Run (normal, or parked Lost),
@@ -2212,19 +2222,19 @@ func (s *Server) getijForReport(cr *clientRequest) (*queue.Item, *Job, string) {
 	switch item.Stats().State {
 	case queue.ItemStateRun, queue.ItemStateDelay, queue.ItemStateReady:
 	default:
-		return nil, nil, ErrBadJob
+		return nil, ErrBadJob
 	}
 
 	job, ok := item.Data().(*Job)
 	if !ok {
-		return nil, nil, ErrBadJob
+		return nil, ErrBadJob
 	}
 
 	if cr.ClientID != job.ReservedBy {
-		return item, job, ErrMustReserve
+		return job, ErrMustReserve
 	}
 
-	return item, job, ""
+	return job, ""
 }
 
 // jobAlreadyComplete reports whether the keyed job is already in the completed

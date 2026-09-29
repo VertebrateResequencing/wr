@@ -98,7 +98,10 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
     Line 255 is `errors.As(errExec, &jqErr)`: `Execute` returned "will need to
     be rerun", not success.
 
-  - Fix, both sides, each enough on its own for this test:
+  - Fix, both sides, each enough on its own for this test. The manager side
+    was later removed at the owner's request, and the start report now carries
+    the command's real start time: see the redesign item below. What follows
+    records the first version.
     - Runner (`jobqueue/client.go`). A start report whose first attempt failed
       transiently is now a `pendingStartReport`, which records when the
       manager accepts or definitively rejects it. `reportFinalState` stops its
@@ -355,6 +358,75 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
     ran out between the release and the PATCH's reply on a loaded machine,
     so the queue moved it to ready. A fix would give the test's job a delay
     it cannot outlast.
+
+- [x] **Redesign, at the owner's request: the manager must not accept
+      out-of-order or missing runner messages, and the runner must send its
+      start, with the correct start time, before its final report.**
+
+  - Removed, `jobqueue/serverCLI.go`: the implied start. `canCompleteFromEndState`
+    again requires a recorded `StartTime`, `markJobComplete` and
+    `getijForReport` are back to their develop signatures, and
+    `implyStartLocked` is gone. An archive of a job whose start the manager has
+    not recorded is refused with `ErrBadRequest`, as before this branch, even
+    from the runner that holds the reservation. The runner side of the first
+    item is what stops the crash re-run now. A runner from an older release,
+    still running across an upgrade, no longer has a manager-side safety net
+    for this case: that is the owner's explicit choice. Such a runner's
+    completed work is discarded, and the job re-run, exactly as in the soak.
+
+  - The start time. The runner used to set `job.StartTime` when it built the
+    start report, and the manager ignored it and recorded its own `time.Now()`
+    on receipt, so a start report retried after a crash recorded when the
+    report got through, not when the command started. Now:
+    - Runner (`jobqueue/client.go`): `Execute` takes the time as soon as
+      `cmd.Start()` succeeds and `startedRequest` sends it as the request
+      job's `StartTime`, so every retry of the report carries the same time.
+      `Started`, the public API, reports the time it is called.
+    - Manager (`jobqueue/serverCLI.go`, `reportedStartTime`): a reported start
+      is clamped to the times the run can have started in, to guard against
+      the runner's clock being out: no later than now, and no earlier than the
+      new `Job.ReservedAt`, which `resetJobForReservation` sets. It is an
+      exported field so it is persisted with the reservation (#642) and
+      survives recovery, which is exactly when a retried start needs it. A zero
+      reported time, from a runner too old to send one, is taken as now, as
+      before.
+    - With no `ReservedAt` (a reservation recorded by a manager from before
+      this change, recovered after an upgrade), the lower bound is one TTR
+      before now. The reservation time is otherwise unknown; a start report is
+      normally only retried for longer than a TTR when the manager was down,
+      so this keeps nearly every real start time and bounds the error of a
+      skewed clock by the TTR, rather than trusting the runner's clock without
+      limit.
+    - Walltime, the learnt time stats and `wr status` then use the command's
+      real start.
+
+  - The late-start guard (the review item above, `startRefusalLocked`) is
+    kept. Without the implied start, a job can only have an archive pending
+    after its start was recorded, but a runner from an older release can
+    still send a background retry of that same start, whose reply was lost,
+    while its archive commits. The job is `Complete` by then, so the retry is
+    not taken for a duplicate, and without the guard it would make the job
+    running again with a new start and no end time.
+    `TestLateStartDuringImpliedArchive` is now `TestLateStartDuringArchive`:
+    the job is started first, and the retried start arrives while the archive
+    waits on a held commit. Disabling the guard makes it fail at Line 610
+    (`errors.As(errStart, &jqErr)`).
+
+  - Tests, `jobqueue/archive_before_start_test.go`:
+    - `TestArchiveBeforeRetriedStart` now also asserts that the recorded
+      `StartTime` equals the runner's own start time and is before the
+      restarted manager came up. With the manager recording `time.Now()` on
+      receipt it fails at Line 280. With only the runner's settling disabled
+      it fails as before (`bad request`), so the runner fix alone covers the
+      crash.
+    - `TestArchiveImpliesStart` is now `TestArchiveWithoutStartIsRefused`:
+      another client's archive gets `ErrMustReserve`, the owner's archive
+      before its start gets `ErrBadRequest` and the job stays reserved, and
+      after `Started` the archive completes it with `Attempts` 1.
+    - `TestReportedStartTime` covers the clamping: a time within the bounds
+      is kept; zero, in the future, before the reservation, and with no
+      reservation time more than a TTR ago, each give the bound.
+    - `TestFinalStateWaitsForStartReport` is unchanged.
 
 - Gates, all `OS_*` unset:
   - `make lint`: `0 issues.`

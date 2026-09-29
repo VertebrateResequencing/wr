@@ -984,6 +984,11 @@ type Job struct {
 	// permission to do other stuff to this Job; the server only ever sets this
 	// on Reserve(), so clients can't cheat by changing this on their end.
 	ReservedBy uuid.UUID
+	// ReservedAt is when the manager last handed the job to ReservedBy.
+	// The manager only accepts a start time its runner reports if it is no
+	// earlier than this, so a runner's clock cannot put a run's start before
+	// the run began. Zero for a run reserved by a manager too old to record it.
+	ReservedAt time.Time
 	// on the server we don't store EnvC with the job, but look it up in db via
 	// this key.
 	EnvKey string

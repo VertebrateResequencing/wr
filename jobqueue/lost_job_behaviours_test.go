@@ -935,7 +935,7 @@ func TestLostJobRetryCheckFindsAReservedNotStartedRun(t *testing.T) {
 			//
 			// The manager is left parked at its dead-check until the retry
 			// check is done, so nothing but the archive moves the job.
-			_, _, _, srerr := markJobComplete(l.live, &JobEndState{Exited: true, EndTime: time.Now()}, nil, false)
+			_, _, _, srerr := markJobComplete(l.live, &JobEndState{Exited: true, EndTime: time.Now()}, nil)
 
 			exited, checked := l.server.lostJobRetryCheck(l.key)
 

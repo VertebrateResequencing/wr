@@ -1749,6 +1749,22 @@ func plainExitFailReason(job *Job, exitcode int) string {
 	return FailReasonExit
 }
 
+// runnerHostAndIP returns the name of this host (localhost if it cannot be
+// determined) and its IP address, to report as where a job started.
+func runnerHostAndIP() (string, string, error) {
+	host, err := os.Hostname()
+	if err != nil {
+		host = localhost
+	}
+
+	hostIP, err := internal.CurrentIP("")
+	if err != nil {
+		return "", "", err
+	}
+
+	return host, hostIP, nil
+}
+
 // dialClientSocket creates a req socket configured with TLS for the given
 // server and dials it, returning ErrNoServer if the dial fails. The dial,
 // including its TLS and SP handshakes, must complete within timeout, as must
@@ -3175,6 +3191,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		return c.reportStartFailure(job, jc, err)
 	}
 
+	// the start time reported to the manager, however late the report gets
+	// there.
+	cmdStartTime := time.Now()
+
 	// the run owns its workspace from here on: the c.Started failure path below
 	// and the normal exit path both trigger the job's behaviours.
 	cmdStarted = true
@@ -3226,7 +3246,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	}
 
 	//nolint:contextcheck // transitively calls internal.CurrentIP, a self-contained local-IP lookup with its own context
-	startReq, err := c.startedRequest(job, cmd.Process.Pid)
+	startReq, err := c.startedRequest(job, cmd.Process.Pid, cmdStartTime)
 	if err != nil {
 		// we couldn't even build the report (e.g. cannot determine our IP): a
 		// local failure, so bail out and kill as before.
@@ -4087,9 +4107,10 @@ func compressStd(data []byte) []byte {
 // something goes wrong the user can go to the host and investigate. Note that
 // HostID will not be set on job after this call; only the server will know
 // about it (use one of the Get methods afterwards to get a new object with the
-// HostID set if necessary).
+// HostID set if necessary). The time Started is called is reported as the time
+// the Cmd started, so call it as soon as the Cmd has started.
 func (c *Client) Started(job *Job, pid int) error {
-	req, err := c.startedRequest(job, pid)
+	req, err := c.startedRequest(job, pid, time.Now())
 	if err != nil {
 		return err
 	}
@@ -4101,18 +4122,13 @@ func (c *Client) Started(job *Job, pid int) error {
 
 // startedRequest records the job's host/pid/start-time (under lock, exactly as
 // Started() did before this was split out) and returns the jstart request to send
-// to the server. It is separated from the send so that the post-exec report can be
-// re-sent in the background after a transient failure without re-mutating job
-// (which would race the resource monitor's lock-free read of job.Pid): the caller
-// re-sends the SAME returned request.
-func (c *Client) startedRequest(job *Job, pid int) (*clientRequest, error) {
-	// host details
-	host, err := os.Hostname()
-	if err != nil {
-		host = localhost
-	}
-
-	hostIP, err := internal.CurrentIP("")
+// to the server, which reports startTime as the time the command started. It is
+// separated from the send so that the post-exec report can be re-sent in the
+// background after a transient failure without re-mutating job (which would race
+// the resource monitor's lock-free read of job.Pid): the caller re-sends the SAME
+// returned request.
+func (c *Client) startedRequest(job *Job, pid int, startTime time.Time) (*clientRequest, error) {
+	host, hostIP, err := runnerHostAndIP()
 	if err != nil {
 		return nil, err
 	}
@@ -4121,13 +4137,14 @@ func (c *Client) startedRequest(job *Job, pid int) (*clientRequest, error) {
 	job.Host = host
 	job.HostIP = hostIP
 	job.Pid = pid
-	job.Attempts++             // not considered by server, which does this itself - just for benefit of this process
-	job.StartTime = time.Now() // ditto
+	job.Attempts++ // not considered by server, which does this itself - just for benefit of this process
+	job.StartTime = startTime
 	requestJob := keyOnlyJob(job)
 	requestJob.Host = job.Host
 	requestJob.HostIP = job.HostIP
 	requestJob.Pid = job.Pid
 	requestJob.RunnerPid = os.Getpid() // this client IS the runner process; report it for liveness
+	requestJob.StartTime = startTime   // the manager records this, within the bounds it can check
 
 	// the working directory resolveWorkingDir already created. Reporting it HERE
 	// lets the manager clean up after a run that dies without ever touching, and
