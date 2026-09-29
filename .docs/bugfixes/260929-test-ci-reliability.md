@@ -76,7 +76,21 @@ commit was reviewed too: PASS.
     IPv6-only listener passes `Serve` and publication exits 5s later, instead
     of `Serve` failing at once. That is a small production fix for a separate
     branch.
-- [ ] `client/testing/server.go` `laneFreePort` falls back to
+- [x] `client/testing/server.go` `laneFreePort` falls back to
   `freeport.GetFreePort()` outside a lane (around :147, :152, :169), with no
   dual-stack check, so its test managers can be handed a port held by an
   IPv6-only listener, as in the item above.
+  - Red: the new `TestPrepareWrConfigSkipsPortWithIPv6OnlyListener`, with
+    only the `ephemeralFreePort` seam added, `CGO_ENABLED=0 go test -tags
+    netgo -count=1 -run '^TestPrepareWrConfigSkipsPortWithIPv6OnlyListener$'
+    ./client/testing/`, failed: `Expected '41593' to NOT equal '41593'`.
+    `PrepareWrConfig` handed out the port the `tcp6` listener held.
+  - Fix (test helper only), `client/testing/server.go`: all three
+    `laneFreePort` fallbacks use `freeEphemeralPort`, which bind-checks up to
+    20 candidates with `portCanListen` (renamed from `lanePortAvailable`, a
+    dual-stack listen on `0.0.0.0`). `PrepareWrConfig` picks both the manager
+    and web ports this way.
+  - Reviewer: PASS. Red and green confirmed. `portCanListen` was shown to
+    reject rpc.statd's port 45993, which freeport's `127.0.0.1` probe accepts.
+    `make lint` reports 0 issues, and `./client/testing/` passes with and
+    without `WR_TEST_LANE`.
