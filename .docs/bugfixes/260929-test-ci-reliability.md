@@ -94,10 +94,31 @@ commit was reviewed too: PASS.
     reject rpc.statd's port 45993, which freeport's `127.0.0.1` probe accepts.
     `make lint` reports 0 issues, and `./client/testing/` passes with and
     without `WR_TEST_LANE`.
-- [ ] `TestDepGranularitySidecarReportsElapsedTime`
+- [x] `TestDepGranularitySidecarReportsElapsedTime`
   (`jobqueue/depgranularity_startup_test.go:904`) was seen failing once under
   load, and was not reproduced in `260928-load-sensitive-flakes.md`. The
   candidate cause recorded there: the test samples the sidecar, waits a fixed
   `dgsHeartbeatInterval * dgsHeartbeatTicks` (200ms), and requires the second
   sample to have moved on, so a heartbeat goroutine starved for 200ms fails
   it.
+  - Cause (test): the first sample is usually Serve's own write (elapsed 0s).
+    After that, only the heartbeat's 50ms ticker goroutine rewrites the
+    sidecar (`startRecoveryHeartbeat` -> `reportStillRecovering` ->
+    `WriteDBUpgradeStatus`), so a heartbeat starved for over 200ms left the
+    same file for the second sample. It is not a timestamp granularity
+    problem: `UpdatedAt` is `time.Now()`, stored in JSON with nanoseconds.
+  - Red: with a temporary 300ms sleep before the heartbeat's ticker,
+    `CGO_ENABLED=0 go test -tags netgo -count=1 -run
+    '^TestDepGranularitySidecarReportsElapsedTime$' ./jobqueue/` failed at
+    line 935 (`So(second.UpdatedAt.After(first.UpdatedAt), ShouldBeTrue)`,
+    `Expected: true Actual: false`).
+  - Fix (test only), `jobqueue/depgranularity_startup_test.go`:
+    `dgsWaitForSidecarRewrite` waits, bounded by `dgsServingWait` (30s), for a
+    sample in the same state with a different `UpdatedAt`. Every assertion is
+    kept, and the unused `dgsHeartbeatTicks` is gone.
+  - After: with the same 300ms delay, 3 of 3 passed. Mutations: a sidecar that
+    is never refreshed fails `found` after 30s, and one that is rewritten but
+    whose elapsed never grows fails `Expected '0s' to be greater than '0s'`.
+  - Reviewer: PASS. Red and green confirmed. Torn reads are ruled out: the
+    file is written to a temp file and renamed. Samples from other phases are
+    ruled out too: the hook parks recovery. `make lint` reports 0 issues.
