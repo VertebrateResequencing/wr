@@ -197,3 +197,39 @@ quoted include it.
   - Mutation: `killLostRun` killing whatever run the job is on (passing no
     run to `killRunningJob`) fails `So(l.waitForKillDecision(),
     ShouldBeFalse)`.
+- [x] TestJobqueueSignal, jobqueue/jobqueue_test.go:1839, lane signal_a:
+  after `jq.Kick` of the time-limit-buried cmd2 and `reserveJobsByCmd`, the
+  reserved job2 read back as State "lost" instead of "reserved". Failed once
+  in CI (run 36550679514) on PR #647's branch; passed 6 of 6 locally on both
+  that branch and develop. (Added by the coordinator.)
+  - **PRODUCT BUG.** The job2 checked is the one `Reserve` returned, so the
+    manager itself answered the reservation with state lost.
+    `respondWithReservedJob` reserves the item (which starts its TTR), then
+    `persistReservation` waits up to `ReserveWriteWait` (10s) for the
+    reservation to reach disk, and only then builds the response. The signal
+    daemon's TTR is 200ms, so a write slower than that (a CI disk's fsync)
+    had `ttrCallback` mark the job lost and start confirming its runner dead
+    during the wait, and the runner was handed a job already lost. With the
+    default 60s TTR the 10s wait cannot outlast it, so production only hits
+    this with a short `ItemTTR`, but the TTR also ran down during the wait,
+    leaving the runner less than a TTR to its first touch.
+  - Red (deterministic): the new `TestReservationTTRStartsAtHandOut`
+    (`jobqueue/reserve_ttr_test.go`) runs a manager with a 200ms TTR, holds
+    a bolt write transaction for 1s so the reservation's write waits, and
+    reserves. `CGO_ENABLED=0 go test -tags netgo -count=1 -run
+    '^TestReservationTTRStartsAtHandOut$' ./jobqueue` failed:
+    `Expected: jobqueue.JobState("reserved") Actual:
+    jobqueue.JobState("lost")`.
+  - Fix: a server-side `Job.handingOut`, set in `resetJobForReservation`.
+    `ttrCallback` leaves such a job in the run sub-queue (the queue re-arms
+    its TTR) instead of marking it lost. After the write wait,
+    `handOutReservation` touches the item, so the TTR restarts when the
+    runner is given the job, and then clears the flag. Files:
+    `jobqueue/job.go`, `jobqueue/server.go`, `jobqueue/serverCLI.go`,
+    CHANGELOG.
+  - After: the new test passes 3 of 3 with `TestReserveDurability*` and
+    `TestStartDurability*`. It also checks that an untouched reservation
+    still goes lost after hand-out; never clearing `handingOut` fails that
+    with `Expected: true Actual: false`. `TestJobqueueSignal` shard a passed
+    3 of 3 under `stress -c 8` on cores 0-3 both before and after, so the
+    CI failure could not be reproduced in the test itself.

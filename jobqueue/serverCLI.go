@@ -1078,6 +1078,7 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 	sjob.Unlock()
 
 	s.persistReservation(ctx, sjob)
+	s.handOutReservation(ctx, sjob, item.Key)
 
 	// make a copy of the job with some extra stuff filled in (that we don't want
 	// taking up memory here) for the client
@@ -1124,6 +1125,23 @@ func (s *Server) persistReservation(ctx context.Context, job *Job) {
 	}
 }
 
+// handOutReservation ends the hand-out of a job's reservation, once the
+// manager has stopped waiting on it: it restarts the item's TTR, so the runner
+// gets a whole TTR from being handed the job to its first touch, and only then
+// lets the TTR make the job lost. The TTR of a reserved item runs from the
+// moment the queue reserves it, and persistReservation can wait for longer than
+// that; without this, a slow write had the job marked lost, and its runner
+// checked for death, before the runner was even given it.
+func (s *Server) handOutReservation(ctx context.Context, sjob *Job, key string) {
+	if err := s.q.Touch(key); err != nil {
+		clog.Debug(ctx, "reserved job left the run sub-queue before being handed out", "key", key, "err", err)
+	}
+
+	sjob.Lock()
+	sjob.handingOut = false
+	sjob.Unlock()
+}
+
 // resetJobForReservation clears a job's past run state ready for a fresh run by
 // the reserving client, returning its scheduler group, retries and
 // until-buried count (read under the same lock).
@@ -1153,6 +1171,9 @@ func (s *Server) resetJobForReservation(sjob *Job, cr *clientRequest) (string, u
 	// the identity of the run beginning now, which nothing pinned to an earlier
 	// run of this job answers to.
 	sjob.runID = s.mintRunToken()
+
+	// until the runner has been handed it; see handOutReservation.
+	sjob.handingOut = true
 
 	return sjob.schedulerGroup, sjob.Retries, sjob.UntilBuried
 }

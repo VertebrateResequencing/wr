@@ -1044,6 +1044,13 @@ type Job struct {
 	// manager at every reservation. It is server side only: see runToken.
 	runID runToken
 
+	// handingOut is set while the manager is still handing this job's new
+	// reservation to its runner (waiting for the reservation to reach disk).
+	// The runner cannot have touched a job it has not been given, so the
+	// item's TTR expiring meanwhile does not make the job lost. Server side
+	// only.
+	handingOut bool
+
 	// archivesPending counts the successful-completion reports the manager has
 	// accepted for this job whose archive has not yet been written and taken off
 	// the queue. While it is non-zero the command has exited 0 and its completion
