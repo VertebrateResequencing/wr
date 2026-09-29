@@ -98,6 +98,11 @@ project adheres to [Semantic Versioning](http://semver.org/).
   the running command fails instead, its retry now waits for the added command,
   and if it is buried, kicking it makes it wait. This holds even if the manager
   is restarted before the command finishes.
+- A buried command whose dep group (`--deps`) gained a command that has not
+  yet completed now stays buried after a manager restart, including after a
+  crash. Before, it came back as dependent, and would then have run by itself
+  once that command completed. It now waits for the dep group only after you
+  `wr retry` it.
 - A command whose success its runner reported twice, because the manager's
   database was slow to record the first report, is no longer dropped from the
   queue by the second report when a command added in between to a dep group it

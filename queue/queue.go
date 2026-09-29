@@ -428,6 +428,14 @@ func (queue *Queue) RemoveUnless(ctx context.Context, key string, keep func(data
 	return true, nil
 }
 
+// holdsDependencies says whether an item added with dependencies to startQueue
+// starts there with them recorded, rather than in the dependent sub-queue: a
+// buried or suspended item only waits on its dependencies once it is Kick()ed
+// or Resume()d, as it would had it gained them while buried or suspended.
+func holdsDependencies(startQueue SubQueue) bool {
+	return startQueue == SubQueueBury || startQueue == SubQueueSuspended
+}
+
 // Error records an error and the operation, item and queue that caused it.
 type Error struct {
 	Queue string // the queue's Name
@@ -508,7 +516,7 @@ type ItemDef struct {
 	Priority     uint8 // highest priority is 255
 	Delay        time.Duration
 	TTR          time.Duration
-	StartQueue   SubQueue // blank, or one of SubQueueRun or SubQueueBury
+	StartQueue   SubQueue // blank, or one of SubQueueRun, SubQueueBury or SubQueueSuspended
 	Dependencies []string
 }
 
@@ -743,7 +751,10 @@ func (queue *Queue) Stats() *Stats {
 // will start in the delay or ready sub-queue as described above. For the
 // purpose of recovering a queue following a crash, however, you can supply
 // either SubQueueRun or SubQueueBury to start the item in one of those
-// sub-queues. If the item has unmet dependencies, startQueue is ignored.
+// sub-queues. If the item has unmet dependencies, startQueue is ignored, unless
+// it is SubQueueBury or SubQueueSuspended: the item then starts there with its
+// dependencies recorded, and only waits on them in the dependency sub-queue once
+// Kick()ed or Resume()d.
 //
 // The final argument to Add() is an optional slice of opaque dependency keys on
 // which this item depends: this item will first enter the dependency sub-queue
@@ -797,11 +808,15 @@ func (queue *Queue) newItemForAdd(key string, reserveGroup string, data any, pri
 func (queue *Queue) handleItemForAdd(ctx context.Context, item *Item, startQueue SubQueue, delay time.Duration,
 	deps ...[]string,
 ) {
-	// check dependencies
 	if len(deps) == 1 && len(deps[0]) > 0 {
-		queue.addDependentItem(item, startQueue, deps[0])
+		if !holdsDependencies(startQueue) {
+			queue.addDependentItem(item, deps[0])
 
-		return
+			return
+		}
+
+		item.setDependencies(deps[0])
+		queue.setQueueDeps(item)
 	}
 
 	switch startQueue {
@@ -843,21 +858,10 @@ func (queue *Queue) addBuryItem(item *Item) {
 	queue.mutex.Unlock()
 }
 
-// addDependentItem places a newly-added item that has dependencies onto either
-// the suspended or dependent sub-queue. You must hold the mutex lock before
-// calling this; it will unlock.
-func (queue *Queue) addDependentItem(item *Item, startQueue SubQueue, deps []string) {
-	if startQueue == SubQueueSuspended {
-		item.setDependencies(deps)
-		queue.setQueueDeps(item)
-		item.switchDelaySuspended()
-		queue.suspendedQueue.push(item)
-		queue.changed(SubQueueNew, SubQueueSuspended, []*Item{item})
-		queue.mutex.Unlock()
-
-		return
-	}
-
+// addDependentItem places a newly-added item that has dependencies onto the
+// dependent sub-queue. You must hold the mutex lock before calling this; it
+// will unlock.
+func (queue *Queue) addDependentItem(item *Item, deps []string) {
 	queue.setItemDependencies(item, deps)
 	queue.changed(SubQueueNew, SubQueueDependent, []*Item{item})
 	queue.mutex.Unlock()
@@ -1020,24 +1024,28 @@ type manyBuckets struct {
 // sub-queue and records it in buckets. You must hold the mutex lock before
 // calling this.
 func (queue *Queue) addManyItem(def *ItemDef, item *Item, buckets *manyBuckets) {
-	switch {
-	case len(def.Dependencies) > 0 && def.StartQueue == SubQueueSuspended:
-		item.setDependencies(def.Dependencies)
-		queue.setQueueDeps(item)
-		item.switchDelaySuspended()
-		queue.suspendedQueue.push(item)
-		buckets.suspended = append(buckets.suspended, item)
-	case len(def.Dependencies) > 0:
+	if len(def.Dependencies) == 0 {
+		queue.addManyItemToStartQueue(def, item, buckets)
+
+		return
+	}
+
+	if !holdsDependencies(def.StartQueue) {
 		queue.setItemDependencies(item, def.Dependencies)
 		buckets.dep = append(buckets.dep, item)
-	default:
-		queue.addManyItemToStartQueue(def, item, buckets)
+
+		return
 	}
+
+	item.setDependencies(def.Dependencies)
+	queue.setQueueDeps(item)
+	queue.addManyItemToStartQueue(def, item, buckets)
 }
 
 // addManyItemToStartQueue handles the AddMany items that have no dependencies,
-// placing them according to their StartQueue (or delay/ready by default). You
-// must hold the mutex lock before calling this.
+// or that hold them in their StartQueue, placing them according to their
+// StartQueue (or delay/ready by default). You must hold the mutex lock before
+// calling this.
 func (queue *Queue) addManyItemToStartQueue(def *ItemDef, item *Item, buckets *manyBuckets) {
 	switch def.StartQueue {
 	case SubQueueRun:
