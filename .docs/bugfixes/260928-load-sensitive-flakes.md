@@ -94,3 +94,27 @@ quoted include it.
   - After, same conditions: 30 of 30 passed.
   - Mutation: starting that Convey's child without the wedge fails the
     premise with `Expected: true Actual: false`.
+- [x] TestDepGranularityAddTransactionCost (99 <= 53.75)
+  - Also recorded, unfixed, in 260927-client-token-reload.md.
+  - Not reproduced under the allowed load: lane 47, 20 runs with the test
+    and `stress -c 8` on one core (`GOMAXPROCS=1`), and 5 runs of
+    `^TestDepGranularityAdd` with `stress -c 8` on cores 0-3, all passed.
+  - Cause (test), found by measurement rather than a failing run: a
+    temporary print of each side's count gave 97-100 transactions for both
+    the 200- and 2000-member groups. With the server paused while the 20
+    adds were measured, both were exactly 40 (2 per add). So about 60 of
+    the ~100 come from the ready-added callback each add triggers (with no
+    RunnerCmd it runs prepareReadyJob, which reads recommended requirements
+    from the database), and how many callbacks run depends on how many adds
+    arrive while one is already running. The failure's figures fit that:
+    the small side's at most 43 is the 40 add-path reads plus 3, the big
+    side's 99 is the usual total.
+  - Fix (test only), `jobqueue/depgranularity_add_test.go`:
+    `dgaAddMemberTxCost` pauses the server (which stops the callbacks, not
+    adds) and waits for any running callback to finish before counting. The
+    1.25 ratio assertion is unchanged.
+  - After: `^TestDepGranularityAdd` 3 runs of 7 tests passed; both sides
+    count 40 every time.
+  - Mutation: one extra read per 100 live members of each dep group an added
+    job joins (in `registerDepGroupMembers`) fails with `Expected '440' to
+    be less than or equal to '100'`.
