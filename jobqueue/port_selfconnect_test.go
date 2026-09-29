@@ -242,8 +242,18 @@ func TestManagerPortSelfConnect(t *testing.T) {
 
 		defer func() { _ = listener.Close() }()
 
+		port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port) //nolint:forcetypeassert,errcheck
+
+		// With loopback IPv6 disabled, [::] still binds but ::1 cannot be
+		// dialled, so Serve could not see the holder.
+		if !hostPortListening(ctx, "::1", port, pscDialTimeout) {
+			SkipSo("this host cannot dial ::1", port, ShouldBeEmpty)
+
+			return
+		}
+
 		_, serverConfig, _, _, _ := jobqueueTestInit(true)
-		serverConfig.Port = strconv.Itoa(listener.Addr().(*net.TCPAddr).Port) //nolint:forcetypeassert,errcheck
+		serverConfig.Port = port
 		serverConfig.WebPort = pscFreePort(-1)
 
 		defer publishexit.Set(func(int) {})()

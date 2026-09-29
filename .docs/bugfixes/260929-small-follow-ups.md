@@ -78,7 +78,7 @@ Checked and already fixed on develop, so not on this branch:
     0 issues.
   - Noted, not new: `GOOS=darwin go vet ./jobqueue` fails at
     `jobqueue/utils_test.go:519` (`st.Dev` is int32 there).
-- [ ] Review suggestions on the dual-stack reservation:
+- [x] Review suggestions on the dual-stack reservation:
   (1) the new Convey (`jobqueue/port_selfconnect_test.go:210-215`) skips only
   when a `tcp6 [::]:0` listen fails. With loopback IPv6 disabled
   (`net.ipv6.conf.lo.disable_ipv6=1`, Docker's default), `[::]` still binds
@@ -87,3 +87,10 @@ Checked and already fixed on develop, so not on this branch:
   (2) The `port_reservation_linux.go` doc says it falls back to IPv4 "on a
   host without IPv6", but it falls back on any IPv6 socket or bind error
   except EADDRINUSE.
+  - (1) The Convey now dials `::1` on the held port with `hostPortListening`,
+    the same check Serve relies on, and skips if that fails. It still runs,
+    and passes, on this host. With the dial pointed at a refused port it
+    skipped rather than failing.
+  - (2) The doc comment now matches the code.
+  - These are the reviewer's own suggestions; the coordinator checked the diff.
+    `TestManagerPortSelfConnect` passes, and `make lint` reports 0 issues.

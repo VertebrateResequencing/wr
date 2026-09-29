@@ -41,8 +41,9 @@ import (
 // The socket is IPv6 with IPV6_V6ONLY off, bound to [::], so it covers both
 // IPv4 and IPv6, as the manager's own listener does: an IPv4 socket would
 // reserve a port that an IPv6-only listener already holds, and the manager's
-// listener would then fail to bind it. On a host without IPv6, it is IPv4 on
-// 0.0.0.0.
+// listener would then fail to bind it. If the IPv6 socket cannot be created or
+// bound for any reason other than the port being in use (as on a host without
+// IPv6), it is IPv4 on 0.0.0.0 instead.
 //
 // The socket is created close-on-exec (SOCK_CLOEXEC), so no runner forked at
 // the same time can inherit it: one that did would hold the port for as long as
