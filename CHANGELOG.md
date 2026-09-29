@@ -29,6 +29,8 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - The manager uses less CPU deciding what to schedule when many commands are
   waiting in limit groups.
 - With the lsf scheduler, each bsub returns about 100ms sooner.
+- When the manager or a runner logs an internal panic, the log now includes the
+  stack of where the panic happened (as `panic_stack`).
 
 ## [0.38.0] - 2026-09-30
 ### Added
