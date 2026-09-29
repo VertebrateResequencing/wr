@@ -3023,14 +3023,19 @@ func updateJobRequirementsForRetry(job *Job, jobOverride uint8, recommendedReq *
 func (s *Server) seedLimitGroupBudgets(ctx context.Context, schedulerGroup string,
 	limitBudgets map[string]int) []string {
 	limitGroups := s.schedGroupToLimitGroups(schedulerGroup)
+	s.seedBudgetsOf(ctx, limitGroups, limitBudgets)
 
+	return limitGroups
+}
+
+// seedBudgetsOf lazily seeds each of the given limit groups' remaining-capacity
+// budget into limitBudgets, as seedLimitGroupBudgets does.
+func (s *Server) seedBudgetsOf(ctx context.Context, limitGroups []string, limitBudgets map[string]int) {
 	for _, lg := range limitGroups {
 		if _, set := limitBudgets[lg]; !set {
 			limitBudgets[lg] = s.limiter.GetRemainingCapacity(ctx, []string{lg})
 		}
 	}
-
-	return limitGroups
 }
 
 // countReadyJobsByPriority counts the given ready-job snapshots against their
@@ -3223,8 +3228,12 @@ func (s *Server) scheduleReadyJobsByPriority(ctx context.Context, q *queue.Queue
 
 	limitBudgets := make(map[string]int)
 
+	// the ready backlog shares a handful of scheduler groups, so each one's limit
+	// groups are parsed once per cycle rather than once per job.
+	limitGroupsOf := make(map[string][]string)
+
 	for _, candidate := range candidates {
-		if s.readyJobLimitBlocked(ctx, limitBudgets, candidate.snapshot) {
+		if s.readyJobLimitBlocked(ctx, limitBudgets, limitGroupsOf, candidate.snapshot) {
 			s.recordSkippedReadyJob(ctx, q, groups, candidate)
 
 			continue
@@ -3293,9 +3302,16 @@ func (s *Server) ensureReserveGroup(ctx context.Context, q *queue.Queue, job *Jo
 // from the expensive prepareReadyJob work so only schedulable jobs incur it. A
 // job's limit groups come from its LimitGroups (fixed), so they are unaffected by
 // any requirement change prepareReadyJob later makes to a schedulable job.
+// limitGroupsOf caches, for the cycle, each scheduler group's limit groups.
 func (s *Server) readyJobLimitBlocked(ctx context.Context, limitBudgets map[string]int,
-	snapshot schedulerGroupSnapshot) bool {
-	limitGroups := s.seedLimitGroupBudgets(ctx, snapshot.group, limitBudgets)
+	limitGroupsOf map[string][]string, snapshot schedulerGroupSnapshot) bool {
+	limitGroups, parsed := limitGroupsOf[snapshot.group]
+	if !parsed {
+		limitGroups = s.schedGroupToLimitGroups(snapshot.group)
+		limitGroupsOf[snapshot.group] = limitGroups
+	}
+
+	s.seedBudgetsOf(ctx, limitGroups, limitBudgets)
 
 	// a budget of -1 means "no limit", so it never blocks and is never decremented.
 	for _, lg := range limitGroups {

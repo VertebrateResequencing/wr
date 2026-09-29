@@ -73,7 +73,7 @@ func TestLiveQueriesCopyOnlyReturnedJobs(t *testing.T) {
 		add := func(rg string, i int, sq queue.SubQueue, failReason string) {
 			job := &Job{
 				Cmd:          fmt.Sprintf("echo %s %d", rg, i),
-				Cwd:          "/tmp",
+				Cwd:          testCwd,
 				RepGroup:     rg,
 				ReqGroup:     "req",
 				Requirements: &jqs.Requirements{RAM: 1, Time: time.Minute, Cores: 1},

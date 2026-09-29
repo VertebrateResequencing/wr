@@ -76,6 +76,35 @@ in `/nfs/hgi/wr/sb10-bigdb/soak4/run/prodsim-1790629666/`.
   - `jobqueue/reliable4_slow_request_test.go`: calls pass a nil aggregator
     and keep their assertions.
   - CHANGELOG: Fixed entry.
-- [ ] **Optional, investigate only.** `buildSchedulerGroups` (via
+- [x] **Optional, investigate only.** `buildSchedulerGroups` (via
   readyAddedCallback) grew from 2.7s to 8.7s CPU per 30s as the backlog grew.
   Is it O(backlog) per ready-add?
+  - Yes, per ready-added callback cycle, not per job added. The queue
+    coalesces adds, so there is one cycle at a time. Each cycle is passed every
+    ready item, and `buildSchedulerGroups` snapshots each one under its read
+    lock, sorts them by priority when any has a limit group, and checks each
+    against its limit-group budget. Under steady adds the cycles run back to
+    back, so CPU grows with the backlog. In
+    `profiles/spike.009140.cpu.pprof` it had 7.13s of a 30s sample:
+    `snapshotReadyJobs` 4.43s (mostly the per-job RLock and reading the job,
+    which is memory-bound at this size), `scheduleReadyJobsByPriority` 2.70s,
+    of which `seedLimitGroupBudgets` was 1.52s, nearly all `strings.Split` in
+    `schedGroupToLimitGroups`, re-parsing the same few scheduler group
+    strings for every job. The sort was 0.33s.
+  - Red: `CGO_ENABLED=1 go test -tags netgo --count 1 ./jobqueue -run
+    TestRACParsesLimitGroupsOncePerGroup` exited 1. A cycle over 10,000
+    limit-blocked ready jobs in 10 scheduler groups made 20029 allocations
+    (bound 1000).
+  - Cheap, safe fix: `jobqueue/server.go` `scheduleReadyJobsByPriority`
+    keeps a per-cycle map from scheduler group to its parsed limit groups,
+    which `readyJobLimitBlocked` uses. The budgets and their order are
+    unchanged. After: 52 allocations. A throwaway benchmark over 200k
+    limit-blocked ready jobs went from 103ms, 24MB and 400k allocations per
+    cycle to 86ms, 14MB and 52 allocations. That removes the ~1.5s split cost
+    seen in production, about a fifth of the callback's CPU.
+  - Not fixed: the per-cycle O(backlog) snapshot and walk. Removing it would
+    mean keeping per-scheduler-group counts up to date on every queue
+    transition instead of recounting, which is not a cheap or safe change.
+  - Test files: `live_query_copy_test.go` now uses `testCwd`, because a third
+    `"/tmp"` literal tripped goconst.
+  - CHANGELOG: Fixed entry.
