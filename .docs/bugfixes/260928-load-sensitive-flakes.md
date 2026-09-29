@@ -161,3 +161,39 @@ quoted include it.
   - Before and after: the 2.5s slower-restart seam failed the old test 2 of
     2 and passed the new one 2 of 2; with the allowed load the new one
     passed 5 of 5. The resync-marker mutation above fails it too.
+- [ ] TestDepGranularitySidecarReportsElapsedTime
+  - Seen once, no repro, and the failing assertion was not captured. Lane
+    47, `-test.count=30` with no added stress (host load 18), 40 with
+    `stress -c 8` and the test on one core (`GOMAXPROCS=1`), and 30 of the
+    race build the same way: all passed.
+  - Candidate, unconfirmed: it samples the sidecar, waits a fixed 200ms
+    (4 of the shortened 50ms heartbeats) and requires the second sample to
+    have moved on, so a heartbeat goroutine starved for 200ms would fail it.
+    No change made.
+- [x] TestLostCwdMattersJobSparesItsSecondRun ("never declared lost and
+  confirmed dead")
+  - Not reproduced under the allowed load: lane 49, 20 runs with `stress -c
+    8` and the test on one core (`GOMAXPROCS=1`) passed.
+  - Cause (test): the lost-run fixture reported the run started with
+    `Started`, which tells the manager the runner pid is the live test
+    process, and only then replaced the manager's copy of that pid with a dead
+    one (`runnerExited`, which also started a `/bin/true` to get the pid).
+    The run's 1s TTR is running throughout. A run that expires in between is
+    declared lost holding a live runner pid, so its first dead-check cannot
+    confirm it, the retry is 30 minutes away, and `waitForDeadCheckWindow`
+    fails after 20s with this message. A temporary print put reserve to
+    `runnerExited` at 64-69ms under `stress -c 8`, against the 1s TTR, which
+    a full race run at high load can use up. A temporary 1.5s sleep before
+    `runnerExited` failed the Convey with exactly the reported message.
+  - Fix (test only), `jobqueue/lost_job_behaviours_test.go`: the fixture
+    forks both dead pids before the reservation, and
+    `startedByExitedRunner` sends the Started request with the dead runner
+    pid already in it, so the manager never holds the live one.
+    `TestKilledLostJobsReplacementIsStillWatched`, the other `runnerExited`
+    caller, does the same.
+  - After: the same 1.5s sleep placed after the Started passes; lane 49's
+    `^TestLost|^TestKilledLost` 2 runs of 15 tests passed; the two changed
+    tests passed 10 of 10 each under `stress -c 8` on one core.
+  - Mutation: `killLostRun` killing whatever run the job is on (passing no
+    run to `killRunningJob`) fails `So(l.waitForKillDecision(),
+    ShouldBeFalse)`.
