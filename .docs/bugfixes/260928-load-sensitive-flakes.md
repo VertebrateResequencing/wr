@@ -48,7 +48,7 @@ quoted include it.
     `^TestReliable4` lane at `stress -c 8` (load 31) passed; both
     `^TestReliable4SchedulerGroupSnapshot` tests `-test.count=10` at `stress
     -c 40` (load 61) passed 20 of 20; the race build at `stress -c 8` passed
-    5 of 5.
+    5 of 5; with the test and `stress -c 30` on one core it passed 4 of 4.
   - Checked and ruled out as the cause here: the derivation counts are per
     job and the server is paused, so a background cycle cannot perturb them
     (the fix recorded in the test's comment). The malloc bound is 8 per job;
@@ -78,6 +78,29 @@ quoted include it.
   - Mutation: `executeLiveState.updateResources` never raising `peakRAM`
     fails the Convey (after the 60s cap) with `Expected '0' to be greater
     than or equal to '1'`.
+- [ ] TestSubscriptionReconnectDuringManagerShutdown (it also takes 23-29s)
+  - Not reproduced: lane 9, 7 runs with `stress -c 8` and the test on one
+    core (`GOMAXPROCS=1`) passed, taking 37-42s each. Its earlier failures
+    (260928's speed doc, and 260927-client-token-reload.md) were in "Unsubscribe
+    against an unresponsive manager is bounded, even behind a reconnect step"
+    (the resubscribe not ending in `ErrRecvTimeout`) and
+    `clientLockTakenWithin` in the Convey after it.
+  - Why it takes 23s unloaded, from a temporary per-Convey timer: 2.6s, 0.1s,
+    0.3s, 8.8s, 0.2s, 3.3s, 0.2s, 3.2s, 4.2s. The 8.8s Convey ("A reconnect
+    whose budget is spent gives up ...") gives up in 51ms, and then `Stop`
+    takes 7s: with a 1ns budget the subscription sends nothing, so the one
+    RPC reader waits out its 5s `InterruptTime`, then the 2s
+    `ShutdownSocketWait`. The others are their configured
+    `ShutdownSocketWait`s of 2-4s. These are the test's designed windows, so
+    nothing was cut.
+  - Candidate, unconfirmed: in the last two Conveys the resubscribe that must
+    end in `ErrRecvTimeout` waits out a 2s floor that starts only after
+    `pingUntilUnread` returns, while the command socket closes
+    `ShutdownSocketWait` (3s, and 4s) after the readers exit. In the last
+    Convey the poll goroutine's own resubscribe can hold the client for up to
+    that 2s floor first, which leaves little or no margin; a resubscribe
+    still waiting when the socket closes ends in a different error. It needs
+    a dedicated heavy-load run to confirm. No change made.
 - [x] TestFuseMountReaping (pidInFuseWait premise false)
   - Also recorded, unfixed, in 260927-client-token-reload.md.
   - Red: lane 9, `-test.run '^TestFuseMountReaping$'`, no added stress (host
