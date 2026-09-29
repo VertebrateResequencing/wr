@@ -91,11 +91,14 @@ func TestServeFailsCleanlyWhenPortTaken(t *testing.T) {
 
 		_, serverConfig, _, _, _ := jobqueueTestInit(true)
 
-		// which error serve returns is what is tested, not how long Serve
-		// retried the port first.
+		// a short budget keeps the test fast, and on Linux proves Serve's port
+		// reservation honours the configured budget, not the shipped default.
 		serverConfig.Timings.BindRetryBudget = pscBindRetryBudget
 
+		started := time.Now()
 		server, _, _, err := serve(ctx, serverConfig)
+		elapsed := time.Since(started)
+
 		if server != nil {
 			defer server.Stop(ctx, true)
 		}
@@ -112,6 +115,7 @@ func TestServeFailsCleanlyWhenPortTaken(t *testing.T) {
 
 		So(err, ShouldNotBeNil)
 		So(err.Error(), ShouldContainSubstring, "manager port "+serverConfig.Port+" is in use by another process")
+		So(elapsed, ShouldBeLessThan, serverBindRetryBudget)
 	})
 }
 
