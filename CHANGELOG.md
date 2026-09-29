@@ -98,6 +98,15 @@ project adheres to [Semantic Versioning](http://semver.org/).
   rejecting the report as a bad request, which made the runner give up on the
   completed work. The runner's "will need to be rerun" message also now says
   which error it gave up on, instead of `%!w(<nil>)`.
+- A command that wr is asked to kill, for example by a clean `wr manager stop`
+  or `wr kill`, is now killed promptly on busy nodes. Before it kills a command,
+  and every second while one runs, the runner looks up the command's child
+  processes. It did that by reading the process table entry of every process on
+  the node, and on a busy node that could take longer than anyone waited. The
+  command then ran on until it finished, and was sometimes run a second time
+  after the manager restarted. The runner now reads only the command's own
+  process tree, and if the lookup still takes more than 5 seconds it kills the
+  command without it.
 - `wr manager stop` no longer says a manager "was gracefully shut down", and
   no longer deletes its token, when the manager is still running after the
   stop gives up waiting for it. It used to send the manager a second SIGTERM,

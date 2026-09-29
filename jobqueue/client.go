@@ -110,6 +110,11 @@ const localhost = "localhost"
 // we follow up with a kill signal.
 const terminateGrace = 500 * time.Millisecond
 
+// killChildLookupLimit is how long a kill waits for the list of the command's
+// child processes before killing the command without it: the command itself
+// must always be killed, however long looking for its children takes.
+const killChildLookupLimit = 5 * time.Second
+
 // clientFinalStateTokenRejections is how many consecutive bad token rejections
 // of a job's final state update make a runner give up on it; see
 // countTokenRejection.
@@ -235,6 +240,9 @@ var errClientBusy = errors.New("client busy with another request for the whole t
 // errNoFinalStateAttempt is what reportFinalState gives up with if its retry
 // budget left it no time to make any attempt.
 var errNoFinalStateAttempt = errors.New("no attempt was made to report the final state")
+// errChildLookupTimedOut is the error of a kill that stopped waiting for the
+// list of its command's child processes.
+var errChildLookupTimedOut = errors.New("timed out listing the child processes")
 
 // ErrNoTokenFile is returned by ConnectWithTokenFile when given no path.
 var ErrNoTokenFile = errors.New("no token file given")
@@ -1131,7 +1139,7 @@ func (c *Client) buryKilledBeforeStart(job *Job, jc string) error {
 func (c *Client) newKillCmd(ctx context.Context, job *Job, cmd *exec.Cmd, dm *dockerMonitor) func() error {
 	return func() error {
 		// get children first
-		children, errc := c.childProcesses(int32(cmd.Process.Pid)) //nolint:gosec // an OS pid always fits in an int32.
+		children, errc := c.childProcessesWithin(int32(cmd.Process.Pid)) //nolint:gosec // an OS pid always fits in an int32.
 
 		// then kill *** race condition if cmd spawns more children...
 		errk := cmd.Process.Kill()
@@ -1148,6 +1156,35 @@ func (c *Client) newKillCmd(ctx context.Context, job *Job, cmd *exec.Cmd, dm *do
 		}
 
 		return c.terminateChildren(ctx, job, children, errk)
+	}
+}
+
+// childProcessesWithin is childProcesses, but gives up with
+// errChildLookupTimedOut after killChildLookupLimit. A lookup given up on is
+// left to finish in the background.
+func (c *Client) childProcessesWithin(pid int32) ([]*process.Process, error) {
+	limit := c.childLookupLimit
+	if limit == 0 {
+		limit = killChildLookupLimit
+	}
+
+	type lookup struct {
+		children []*process.Process
+		err      error
+	}
+
+	done := make(chan lookup, 1)
+
+	go func() {
+		children, err := c.childProcesses(pid)
+		done <- lookup{children: children, err: err}
+	}()
+
+	select {
+	case l := <-done:
+		return l.children, l.err
+	case <-time.After(limit):
+		return nil, fmt.Errorf("%w after %s", errChildLookupTimedOut, limit)
 	}
 }
 
@@ -1465,6 +1502,10 @@ type Client struct {
 	// getChildProcesses when Execute kills a command, to see which processes
 	// the kill would sweep up.
 	childProcessesHook func(pid int32) ([]*process.Process, error)
+
+	// childLookupLimit, if set, is used by in-package tests in place of
+	// killChildLookupLimit.
+	childLookupLimit time.Duration
 
 	// afterWaitHook, if set, is called by Execute() right after it has waited
 	// for the command, so in-package tests can make something happen then.
