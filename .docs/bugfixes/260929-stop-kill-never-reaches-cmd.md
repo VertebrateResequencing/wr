@@ -90,3 +90,23 @@ Branch `fix-stop-kill-never-reaches-cmd`, based on `origin/develop` at
     files; a real child and grandchild tree), and
     `TestKillCmdDoesNotWaitForeverForChildren` in
     `jobqueue/kill_cmd_test.go`.
+
+- [x] **`TestDaemonStillRunningUnreadableArgv` failed once in
+  `CGO_ENABLED=1 make race` (cmd_default), unrelated to the fix above.**
+  - Evidence: `make race` exited 2 with
+    ```
+    Line 318:
+    Expected: []string{"sleep", "60"}
+    Actual:   []string(nil)
+    --- FAIL: TestDaemonStillRunningUnreadableArgv (0.00s)
+    ```
+    It passed 5 of 5 times when re-run alone, so it is a timing race.
+  - Cause: `exec.Cmd.Start` returns once the child's exec has closed its
+    close-on-exec fds, which the kernel does in `begin_new_exec`. The new
+    image's `arg_start`/`arg_end` are set only later, in `create_elf_tables`,
+    and until then `/proc/<pid>/cmdline` reads as empty, so `processArgs`
+    returns nil. `TestDaemonStillRunning` (cmd/manager_stop_test.go) reads
+    the argv of a just-started process in the same way.
+  - Fix: both tests wait with `pollUntilTrue` until the argv can be read
+    before they take it as the process's identity. Test-only; production
+    reads the argv of a manager that has been running for a while.
