@@ -427,6 +427,15 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
       is kept; zero, in the future, before the reservation, and with no
       reservation time more than a TTR ago, each give the bound.
     - `TestFinalStateWaitsForStartReport` is unchanged.
+    - `jobqueue_test.go` (`TestJobqueueExecutionAndDependencyScenarios`)
+      asserted that the manager's walltime for a job was no more than the
+      runner's, which held while the manager recorded the start later than
+      the runner did. Both gates failed there after the change, by about 30ns
+      (`Expected '106.872027ms' to be less than or equal to '106.871996ms'`):
+      the runner's times carry monotonic clock readings and the manager's
+      copies do not. The two assertions now check that the manager's
+      `StartTime` equals the runner's, and that the walltimes agree to within
+      1ms.
 
 - Gates, all `OS_*` unset:
   - `make lint`: `0 issues.`
