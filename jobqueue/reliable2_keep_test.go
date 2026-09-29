@@ -111,7 +111,7 @@ func TestReliable2KeepReconnectResync(t *testing.T) {
 
 	Convey("A subscriber reconnecting mid-run receives a resync marker then catches up", t, func() {
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionReconnectTimings(&serverConfig, 250*time.Millisecond, 2*time.Second)
+		applySubscriptionReconnectTimings(&serverConfig, 250*time.Millisecond, subscriptionRestartRetryTime)
 
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)

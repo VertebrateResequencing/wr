@@ -149,3 +149,15 @@ quoted include it.
     new one 2 of 2.
   - Mutation: not publishing the resync marker after a reconnect
     (`reconnectAfterPollError`) fails both restart Conveys.
+- [x] TestReliable2KeepReconnectResync (seen once)
+  - Its earlier record, in 260927-race-kill-bury-flakes.md, names the 2s
+    reconnect budget as an unconfirmed candidate. It is the same Convey
+    shape as the item above (Stop, break the socket, restart, archive,
+    collect 2 updates) with the same 2s budget, and the measurement there
+    confirms that a restart under load can outlast it.
+  - Fix (test only), `jobqueue/reliable2_keep_test.go`: it uses
+    `subscriptionRestartRetryTime`; its `collectSubscriptionUpdates` wait
+    comes from the item above.
+  - Before and after: the 2.5s slower-restart seam failed the old test 2 of
+    2 and passed the new one 2 of 2; with the allowed load the new one
+    passed 5 of 5. The resync-marker mutation above fails it too.
