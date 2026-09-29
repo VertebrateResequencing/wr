@@ -219,9 +219,11 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
     `processArgs` returns nil for that.
 
   - Fix, `cmd/manager_stop_shutdown_test.go`: poll (`pollUntilTrue`, up to
-    10s) until the child's argv reads as `sleep 60` before going on. What the
-    test proves, that an unreaped zombie counts as stopped, is unchanged.
-    `--count 20` of it passes.
+    10s) until the child's argv reads as non-empty before checking it. What
+    the test proves, that an unreaped zombie counts as stopped, is unchanged.
+    `--count 20` of it passes. Branch `fix-stop-kill-never-reaches-cmd` makes
+    the same fix, so this hunk is now byte-for-byte that branch's, and the two
+    merge without a conflict in that file.
 
 - [x] **`TestReliable2RecoveryMachineryRetained` greps for
       `return nil, ErrRecovering` in `serverCLI.go`**, which the first item's
@@ -284,9 +286,86 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
     would then take it with its own listener first. Same class as the item
     above: a free port picked and released under a parallel suite.
 
+- [x] **Review: a start that reached the manager while its runner's archive,
+      which had implied it, waited on its commit was accepted, and made the
+      completed job running again.** Found in review of the first item, which
+      makes an archive followed by a late start the expected order for a
+      runner from before that fix.
+
+  - Evidence: `TestLateStartDuringImpliedArchive` holds a bolt write
+    transaction so the archive of a reserved, not started job waits on its
+    commit (`archivesPending` 1), then sends the runner's start on a second
+    connection. Before this fix the start was not refused: it was answered
+    with success once the commit was released (`Line 564: Expected: true
+    Actual: false`, at `errors.As(errStart, &jqErr)`).
+
+  - Cause: `applyJobStart` only treats a start as a duplicate when the job is
+    `Running`, and `markJobComplete` had already set it `Complete`, so the
+    late start set it `Running` again, with a new `StartTime`, a zero
+    `EndTime` and another `Attempt`. The archived record was right in this
+    test, because `db.archiveJob` had encoded it already, but a start landing
+    between `markJobComplete` and that encode would archive a running job
+    with no end time. Either way, the removal from the queue was then counted
+    from running to running, not to complete.
+
+  - Fix, `jobqueue/serverCLI.go`: `applyJobStart` refuses a start with
+    `ErrBadJob`, changing nothing, while `archivePendingLocked` holds. That
+    is what the start gets once the archive has removed the job, and both
+    runners treat it as settled. `applyJobStart` now returns the `Err*`
+    string, so its test callers compare with blank.
+
+- [x] **Review: the background start retries in the rejected alternative
+      failed with "object closed".** Explained, not a separate bug:
+      `handleFinalStateError` closes the client's socket after every failed
+      final-state attempt and only `quickReconnect`, at the top of the next
+      loop, replaces it after a `retryWait` sleep. The background start
+      retries, on the same `retryWait` ticker, share that socket
+      (`c.request` uses the current `c.sock` under the client lock), so they
+      nearly always ran while it was closed. The fix stops those retries
+      before the first final-state attempt, and settles the start inside that
+      loop, after its reconnect, so nothing else uses the socket there.
+
+- [x] **Review gate: `CGO_ENABLED=1 make race` failed `TestReliable2Release`
+      (in `jobqueue`) once with a data race.** It does not touch the code the
+      first item changed.
+
+  - Evidence: `WARNING: DATA RACE`, a write by `queue.(*Queue).
+    moveReadyDelayedItems` (`subqueue.go:456`, `item.go:334`) against a read
+    by `fmt.Sprintf` inside `assertions.ShouldNotBeNil`, called at
+    `reliable2_release_test.go:141`, then `race detected during execution of
+    test`.
+
+  - Cause: `ShouldNotBeNil` formats a non-nil value, and the test gave it the
+    queue item of a job it had just released to the delay queue, which the
+    queue's delay processing moves to ready, writing the item's fields.
+
+  - Fix, `jobqueue/reliable2_release_test.go`: compare the item with nil
+    instead. `--count 10` of it under `-race` passes.
+
+- [ ] **Review gate: `make test` failed `TestRESTJobModificationValidation`
+      (in `jobqueue`) once: a released job read as `ready`, not `delayed`,
+      after a PATCH.** It does not touch the code the first item changed. Not
+      fixed here: it has no red command yet.
+
+  - Evidence (`rest_test.go` Line 781, `Expected: "delayed"`, `Actual:
+    "ready"`, in "PATCH modifies delayed jobs and preserves their state").
+    It passed 5 of 5 targeted runs afterwards, and the next `make test`.
+
+  - Likely cause, inferred rather than reproduced: the job's release delay
+    ran out between the release and the PATCH's reply on a loaded machine,
+    so the queue moved it to ready. A fix would give the test's job a delay
+    it cannot outlast.
+
 - Gates, all `OS_*` unset:
   - `make lint`: `0 issues.`
   - `make test`: `797 passed · 21 skipped · 32 packages · 1m32s`, exit 0
     (after the two flakes above had each failed one earlier run).
   - `CGO_ENABLED=1 make race`: `797 passed · 20 skipped · 32 packages ·
     2m34s`, exit 0, no data races.
+- Review gates, after the review fixes, all `OS_*` unset:
+  - `make lint`: `0 issues.`
+  - `make test`: `798 passed · 21 skipped · 32 packages · 1m31s`, exit 0
+    (after `TestRESTJobModificationValidation` failed one earlier run).
+  - `CGO_ENABLED=1 make race`: `798 passed · 20 skipped · 32 packages ·
+    2m43s`, exit 0, no data races (after the `TestReliable2Release` race
+    above failed one earlier run).

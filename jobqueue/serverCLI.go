@@ -1164,8 +1164,8 @@ func (s *Server) handleStart(_ context.Context, cr *clientRequest) (*serverRespo
 		return nil, srerr, ""
 	}
 
-	if !s.applyJobStart(job, cr.Job) {
-		return nil, ErrBadRequest, ""
+	if srerr = s.applyJobStart(job, cr.Job); srerr != "" {
+		return nil, srerr, ""
 	}
 
 	// we save-to-disk that we started running this job, so recovery is possible
@@ -1197,18 +1197,19 @@ func (s *Server) handleStart(_ context.Context, cr *clientRequest) (*serverRespo
 	return nil, "", ""
 }
 
-// applyJobStart records the host/pid/start-time of a started job under lock,
-// returning false (changing nothing) if the request lacked a pid or host.
+// applyJobStart records the host/pid/start-time of a started job under lock. It
+// changes nothing and returns ErrBadRequest if the request lacked a pid or host,
+// and ErrBadJob if a successful completion of the job is being archived.
 //
 // It is where the manager first learns the working directory the runner made for
 // this run, created before the runner calls Started. It does not mint the run's
 // identity: the run began at Reserve.
-func (s *Server) applyJobStart(job, crJob *Job) bool {
+func (s *Server) applyJobStart(job, crJob *Job) string {
 	job.Lock()
 	defer job.Unlock()
 
-	if crJob.Pid <= 0 || crJob.Host == "" {
-		return false
+	if srerr := startRefusalLocked(job, crJob); srerr != "" {
+		return srerr
 	}
 
 	// idempotent ack: a DUPLICATE report of the SAME start (e.g. retryStartReport
@@ -1226,14 +1227,8 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 	// the confirm-dead check keeps the both-pid liveness protection instead of falling
 	// back to the command-pid-only verdict; we only fill an unset RunnerPid and never
 	// overwrite or clobber an existing one.
-	if job.State == JobStateRunning && job.Pid == crJob.Pid && job.Host == crJob.Host {
-		job.Lost = false
-
-		if job.RunnerPid == 0 && crJob.RunnerPid > 0 {
-			job.RunnerPid = crJob.RunnerPid
-		}
-
-		return true
+	if acceptDuplicateStartLocked(job, crJob) {
+		return ""
 	}
 
 	job.Host = crJob.Host
@@ -1254,6 +1249,45 @@ func (s *Server) applyJobStart(job, crJob *Job) bool {
 	// lost here is all that stands between that confirmation and a live Cmd.
 	job.Lost = false
 	job.State = JobStateRunning
+
+	return ""
+}
+
+// startRefusalLocked returns the Err* string with which applyJobStart refuses
+// crJob's start report of job, or "" if it may be applied. The caller must hold
+// job's lock.
+func startRefusalLocked(job, crJob *Job) string {
+	if crJob.Pid <= 0 || crJob.Host == "" {
+		return ErrBadRequest
+	}
+
+	// a start that arrives after its runner's archive, which implied it (see
+	// implyStartLocked), while that archive waits on its commit, finds the job
+	// still in the run queue. It is too late: recording it would make the
+	// completed job running again, with no end time, in memory and in the record
+	// being archived if that is yet to be encoded. It gets what it would once the
+	// archive had removed the job.
+	if job.archivePendingLocked() {
+		return ErrBadJob
+	}
+
+	return ""
+}
+
+// acceptDuplicateStartLocked reports whether crJob's start report repeats the
+// start already recorded on job, and if so takes job off lost and adopts a
+// first-seen runner pid, as applyJobStart describes. The caller must hold job's
+// lock.
+func acceptDuplicateStartLocked(job, crJob *Job) bool {
+	if job.State != JobStateRunning || job.Pid != crJob.Pid || job.Host != crJob.Host {
+		return false
+	}
+
+	job.Lost = false
+
+	if job.RunnerPid == 0 && crJob.RunnerPid > 0 {
+		job.RunnerPid = crJob.RunnerPid
+	}
 
 	return true
 }
