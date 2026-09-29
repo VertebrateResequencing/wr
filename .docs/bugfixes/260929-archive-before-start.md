@@ -450,3 +450,8 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
   - `CGO_ENABLED=1 make race`: `798 passed · 20 skipped · 32 packages ·
     2m43s`, exit 0, no data races (after the `TestReliable2Release` race
     above failed one earlier run).
+- Redesign gates, all `OS_*` unset:
+  - `make lint`: `0 issues.`
+  - `make test`: `803 passed · 21 skipped · 32 packages · 1m31s`, exit 0.
+  - `CGO_ENABLED=1 make race`: `803 passed · 20 skipped · 32 packages ·
+    2m51s`, exit 0, no data races.
