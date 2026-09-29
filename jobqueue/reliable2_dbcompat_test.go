@@ -289,6 +289,10 @@ func copyFixtureToTempDB(t *testing.T, suggestedName string) string {
 	return dstPath
 }
 
+// recoveryPauseHookWait bounds pausedRecoveringFixtureServer's wait for
+// background recovery to reach its pause hook.
+const recoveryPauseHookWait = 30 * time.Second
+
 // pausedRecoveringFixtureServer opens a server against serverConfig's DB (for
 // this file, a copy of the committed fixture; the startup-window tests point it
 // at their own) with its background prior-state recovery blocked at the retained
@@ -323,9 +327,13 @@ func pausedRecoveringFixtureServer(ctx context.Context, serverConfig ServerConfi
 
 	releaseFn := func() { relOnce.Do(func() { close(release) }) }
 
+	// a hang detector, not a latency budget: the hook is normally reached
+	// within a millisecond of Serve returning, but only once the background
+	// recovery goroutine is scheduled, which a heavily loaded host can delay by
+	// seconds.
 	select {
 	case <-hookEntered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(recoveryPauseHookWait):
 		So("timed out waiting for recovery to reach the pause hook", ShouldBeBlank)
 	}
 

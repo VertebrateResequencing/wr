@@ -256,3 +256,21 @@ quoted include it.
     `Expected jobqueue.JobState("delayed") Actual:
     jobqueue.JobState("ready")`, which the old test could not tell apart
     from its own delay expiring.
+- [x] TestReliable4RecoveryDependencyState (timed out waiting for the
+  recovery pause hook)
+  - Not reproduced under the allowed load: lane 46, 10 runs with `stress -c
+    8` and the test on one core passed. A temporary print put Serve's return
+    to the hook at 60us-0.8ms in every run.
+  - Cause (test): `pausedRecoveringFixtureServer`, which 25 tests use, waits
+    only 2s for the background recovery goroutine to reach its pause hook.
+    That message has no other source, so the goroutine was not scheduled, or
+    not run as far as the hook, for 2s: nothing before the hook blocks on
+    anything but the scheduler (`recoverInBackground` starts the heartbeat,
+    then calls the hook).
+  - Fix (test only), `jobqueue/reliable2_dbcompat_test.go`: the wait is a
+    hang detector, `recoveryPauseHookWait`, of 30s. It ends as soon as the
+    hook is reached.
+  - Before and after: a temporary 2.5s sleep in the hook before it signals
+    failed the old test with this message and passes the new one.
+  - Mutation: a hook that never signals fails with the same message after
+    30s.
