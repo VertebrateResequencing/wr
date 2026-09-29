@@ -90,6 +90,30 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- A command that exited 0 while its manager was down after a crash is no
+  longer run again when its runner's report that it had started the command
+  was lost to the crash. The manager refused the runner's report of success,
+  because it had no record of the start, and the runner gave up on the
+  completed work. The runner now waits for its start report to be accepted
+  before reporting how the command ended. Runners from an older release still
+  running during an upgrade do not have this fix, and can still have such a
+  command run again. The runner's "will need to be rerun" message also now
+  says which error it gave up on, instead of `%!w(<nil>)`.
+- A command's start time, as shown by `wr status` and used for its walltime
+  and for learning how long commands take, is now when the command really
+  started. It used to be when the manager received the runner's report of the
+  start, which after a manager crash could be minutes later. The start and end
+  times are now both the runner's, so a command's walltime is measured on the
+  clock of the node that ran it.
+- A command that wr is asked to kill, for example by a clean `wr manager stop`
+  or `wr kill`, is now killed promptly on busy nodes. Before it kills a command,
+  and every second while one runs, the runner looks up the command's child
+  processes. It did that by reading the process table entry of every process on
+  the node, and on a busy node that could take longer than anyone waited. The
+  command then ran on until it finished, and was sometimes run a second time
+  after the manager restarted. The runner now reads only the command's own
+  process tree, and if the lookup still takes more than 5 seconds it kills the
+  command without it.
 - `wr manager stop` no longer says a manager "was gracefully shut down", and
   no longer deletes its token, when the manager is still running after the
   stop gives up waiting for it. It used to send the manager a second SIGTERM,

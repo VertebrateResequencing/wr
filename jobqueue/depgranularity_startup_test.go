@@ -291,9 +291,9 @@ func TestDepGranularityRunnerSurvivesLongAbsence(t *testing.T) {
 		archiveCtx, attemptFailed := dgsFinalStateFailures(ctx)
 
 		go func() {
-			worked, hadProblems := jq.reportFinalState(archiveCtx, reserved, dgsEndState(),
-				execAction{archive: true})
-			archived <- dgsArchiveOutcome{worked: worked, hadProblems: hadProblems}
+			hadProblems, errReport := jq.reportFinalState(archiveCtx, reserved, dgsEndState(),
+				execAction{archive: true}, nil)
+			archived <- dgsArchiveOutcome{worked: errReport == nil, hadProblems: hadProblems}
 		}()
 
 		// the manager stays down until that first attempt has provably failed,

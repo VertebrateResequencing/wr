@@ -314,6 +314,12 @@ func TestDaemonStillRunningUnreadableArgv(t *testing.T) {
 		So(cmd.Start(), ShouldBeNil)
 
 		pid := cmd.Process.Pid
+
+		// Start returns once exec has closed the child's close-on-exec fds, but
+		// the kernel records where the new argv is only later in the exec, so
+		// until then the argv reads as empty.
+		So(pollUntilTrue(func() bool { return processArgs(pid) != nil }), ShouldBeTrue)
+
 		identity := processArgs(pid)
 		So(identity, ShouldResemble, []string{sleepCmd, "60"})
 		So(isZombie(pid), ShouldBeFalse)

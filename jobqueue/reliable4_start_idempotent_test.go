@@ -157,7 +157,7 @@ func TestReliable4StartIdempotentRunnerPid(t *testing.T) {
 		}
 		crJob := &Job{Pid: pid, Host: host, RunnerPid: runnerPid}
 
-		So(server.applyJobStart(job, crJob), ShouldBeTrue)
+		So(server.applyJobStart(job, crJob), ShouldBeBlank)
 
 		// the newly-reported runner pid is recorded (restoring both-pid liveness)...
 		So(job.RunnerPid, ShouldEqual, runnerPid)
@@ -175,7 +175,7 @@ func TestReliable4StartIdempotentRunnerPid(t *testing.T) {
 		}
 		crJob := &Job{Pid: pid, Host: host, RunnerPid: 0}
 
-		So(server.applyJobStart(job, crJob), ShouldBeTrue)
+		So(server.applyJobStart(job, crJob), ShouldBeBlank)
 
 		So(job.RunnerPid, ShouldEqual, runnerPid)
 		So(job.Attempts, ShouldEqual, uint32(1))
@@ -188,7 +188,7 @@ func TestReliable4StartIdempotentRunnerPid(t *testing.T) {
 		}
 		crJob := &Job{Pid: pid, Host: host, RunnerPid: runnerPid + 1}
 
-		So(server.applyJobStart(job, crJob), ShouldBeTrue)
+		So(server.applyJobStart(job, crJob), ShouldBeBlank)
 
 		So(job.RunnerPid, ShouldEqual, runnerPid)
 	})

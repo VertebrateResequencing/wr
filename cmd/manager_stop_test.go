@@ -304,6 +304,11 @@ func TestDaemonStillRunning(t *testing.T) {
 	Convey("daemonStillRunning treats a pid whose argv changed as stopped", t, func() {
 		p := startManagerStopTestProcess(t, "sleep", "60")
 		pid := p.cmd.Process.Pid
+
+		// the argv reads as empty until the exec has got that far; see
+		// TestDaemonStillRunningUnreadableArgv
+		So(pollUntilTrue(func() bool { return processArgs(pid) != nil }), ShouldBeTrue)
+
 		identity := processArgs(pid)
 
 		So(identity, ShouldResemble, []string{"sleep", "60"})

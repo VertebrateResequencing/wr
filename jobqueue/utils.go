@@ -41,11 +41,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"math/rand"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -347,8 +349,8 @@ func sumChildrenMemory(pid int) (int, error) {
 		return 0, err
 	}
 
-	children, err := p.Children()
-	if err != nil && !errors.Is(err, process.ErrorNoChildren) {
+	children, err := processChildren(p)
+	if err != nil {
 		return 0, err
 	}
 
@@ -419,18 +421,16 @@ func diskForFile(dirPath string, file os.FileInfo, skip map[string]bool, ignore 
 
 // getChildProcesses gets the child processes of the given pid, recursively.
 func getChildProcesses(pid int32) ([]*process.Process, error) {
-	var children []*process.Process
-
 	p, err := process.NewProcess(pid)
 	if err != nil {
 		// we ignore errors, since we allow for working on processes that we're in
 		// the process of killing
 		//nolint:nilerr // deliberately ignore the error for processes being killed
-		return children, nil
+		return nil, nil
 	}
 
-	children, err = p.Children()
-	if err != nil && !errors.Is(err, process.ErrorNoChildren) {
+	children, err := processChildren(p)
+	if err != nil {
 		return children, err
 	}
 
@@ -440,12 +440,116 @@ func getChildProcesses(pid int32) ([]*process.Process, error) {
 			continue
 		}
 
-		if len(theseKids) > 0 {
-			children = append(children, theseKids...)
-		}
+		children = append(children, theseKids...)
 	}
 
 	return children, nil
+}
+
+// processChildren returns the direct children of p. Where the kernel lists each
+// thread's children in /proc, as Linux has since 3.5, only p's own entry is
+// read. Otherwise gopsutil finds them by reading the stat of every process on
+// the host, which on a busy node, for a runner short of CPU, can take longer
+// than a kill is waited for.
+func processChildren(p *process.Process) ([]*process.Process, error) {
+	pids, ok := threadListedChildren(hostProc(), p.Pid)
+	if !ok {
+		children, err := p.Children()
+		if errors.Is(err, process.ErrorNoChildren) {
+			return children, nil
+		}
+
+		return children, err
+	}
+
+	children := make([]*process.Process, 0, len(pids))
+
+	for _, pid := range pids {
+		child, err := process.NewProcess(pid)
+		if err != nil {
+			// it has already gone
+			continue
+		}
+
+		children = append(children, child)
+	}
+
+	return children, nil
+}
+
+// hostProc returns where /proc is, which is somewhere else if HOST_PROC says
+// so, as it does for gopsutil.
+func hostProc() string {
+	if dir := os.Getenv("HOST_PROC"); dir != "" {
+		return dir
+	}
+
+	return procRoot
+}
+
+// threadListedChildren returns the sorted pids of the children of pid, from the
+// children file under proc of each of its threads. ok is false if the kernel
+// does not keep those files, or they could not be read, and the children must
+// be found some other way. A pid with no entry has no children.
+func threadListedChildren(proc string, pid int32) ([]int32, bool) {
+	if _, err := os.Stat(filepath.Join(proc, "thread-self", "children")); err != nil {
+		return nil, false
+	}
+
+	tasks, err := os.OpenRoot(filepath.Join(proc, strconv.Itoa(int(pid)), "task"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, true
+	}
+
+	if err != nil {
+		return nil, false
+	}
+
+	defer tasks.Close()
+
+	pids, err := tasksChildren(tasks)
+	if err != nil {
+		return nil, false
+	}
+
+	slices.Sort(pids)
+
+	return slices.Compact(pids), true
+}
+
+// tasksChildren returns the pids in the children file of each thread in tasks,
+// a process's /proc task directory.
+func tasksChildren(tasks *os.Root) ([]int32, error) {
+	tids, err := fs.ReadDir(tasks.FS(), ".")
+	if err != nil {
+		return nil, err
+	}
+
+	var pids []int32
+
+	for _, tid := range tids {
+		// a thread that has exited since the ReadDir has no children file
+		data, errr := tasks.ReadFile(filepath.Join(tid.Name(), "children"))
+		if errr == nil {
+			pids = append(pids, parsePidList(data)...)
+		}
+	}
+
+	return pids, nil
+}
+
+// parsePidList returns the pids in data, a space-separated list such as a
+// thread's children file holds.
+func parsePidList(data []byte) []int32 {
+	var pids []int32
+
+	for field := range strings.FieldsSeq(string(data)) {
+		if pid, err := strconv.ParseInt(field, 10, 32); err == nil {
+			pids = append(pids, int32(pid))
+		}
+	}
+
+	return pids
 }
 
 // this prefixSuffixSaver-related code is taken from os/exec, since they are not

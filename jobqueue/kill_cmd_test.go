@@ -98,6 +98,61 @@ func TestChainKillErr(t *testing.T) {
 	})
 }
 
+// TestKillCmdDoesNotWaitForeverForChildren: a kill must reach the command even
+// when listing the command's children never finishes, as it did not for
+// runners on busy nodes during a manager's stop.
+func TestKillCmdDoesNotWaitForeverForChildren(t *testing.T) {
+	Convey("Given a started command whose children cannot be listed", t, func() {
+		cmd := exec.CommandContext(context.Background(), "sleep", "30")
+		So(cmd.Start(), ShouldBeNil)
+
+		exited := make(chan struct{})
+
+		go func() {
+			cmd.Wait() //nolint:errcheck
+			close(exited)
+		}()
+
+		stuck := make(chan struct{})
+
+		t.Cleanup(func() {
+			close(stuck)
+			cmd.Process.Kill() //nolint:errcheck
+			<-exited
+		})
+
+		c := &Client{
+			childProcessesHook: func(int32) ([]*process.Process, error) {
+				<-stuck
+
+				return nil, nil
+			},
+			childLookupLimit: 100 * time.Millisecond,
+		}
+
+		kill := c.newKillCmd(context.Background(), &Job{Cmd: "sleep 30"}, cmd, nil)
+
+		Convey("the kill still kills it, and says it could not list the children", func() {
+			killed := make(chan error, 1)
+
+			go func() {
+				killed <- kill()
+			}()
+
+			var errk error
+
+			select {
+			case errk = <-killed:
+			case <-time.After(5 * time.Second):
+				errk = errTestKillFailed
+			}
+
+			So(errors.Is(errk, errChildLookupTimedOut), ShouldBeTrue)
+			So(exitedSoon(exited), ShouldBeTrue)
+		})
+	})
+}
+
 func TestTerminateChildrenFollowUpKill(t *testing.T) {
 	Convey("Given a child of a killed cmd that ignores SIGTERM", t, func() {
 		child, done := startTermIgnorer(t)

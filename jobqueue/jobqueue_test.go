@@ -4165,7 +4165,11 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				So(job2.PeakRAM, ShouldEqual, job.PeakRAM)
 				So(job2.Pid, ShouldEqual, job.Pid)
 				So(job2.Host, ShouldEqual, host)
-				So(job2.WallTime(), ShouldBeLessThanOrEqualTo, job.WallTime())
+				// the manager records the start the runner reported. The runner's
+				// own times carry monotonic clock readings, which the manager's copies
+				// do not, so the two walltimes can differ by a few nanoseconds.
+				So(job2.StartTime.Equal(job.StartTime), ShouldBeTrue)
+				So(job2.WallTime(), ShouldAlmostEqual, job.WallTime(), time.Millisecond)
 				So(job2.WallTime(), ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
 				So(job2.CPUtime, ShouldEqual, job.CPUtime)
 				So(job2.Attempts, ShouldEqual, 1)
@@ -4220,7 +4224,11 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				So(job2.PeakRAM, ShouldEqual, job.PeakRAM)
 				So(job2.Pid, ShouldEqual, job.Pid)
 				So(job2.Host, ShouldEqual, host)
-				So(job2.WallTime(), ShouldBeLessThanOrEqualTo, job.WallTime())
+				// the manager records the start the runner reported. The runner's
+				// own times carry monotonic clock readings, which the manager's copies
+				// do not, so the two walltimes can differ by a few nanoseconds.
+				So(job2.StartTime.Equal(job.StartTime), ShouldBeTrue)
+				So(job2.WallTime(), ShouldAlmostEqual, job.WallTime(), time.Millisecond)
 				So(job2.WallTime(), ShouldBeGreaterThanOrEqualTo, 1*time.Millisecond)
 				So(job2.CPUtime, ShouldEqual, job.CPUtime)
 				So(job2.Attempts, ShouldEqual, 1)

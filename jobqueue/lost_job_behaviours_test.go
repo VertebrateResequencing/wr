@@ -531,7 +531,7 @@ func (l *lostRun) reserveRetry() {
 // run that lived long enough to touch.
 func (l *lostRun) startRetry(actualCwd string, touched bool) {
 	So(l.server.applyJobStart(l.live, &Job{Pid: os.Getpid(), Host: localhost, ActualCwd: actualCwd}),
-		ShouldBeTrue)
+		ShouldBeBlank)
 
 	if actualCwd != "" && touched && !l.opts.webless {
 		applyLiveSnapshot(l.live, &JobEndState{Cwd: actualCwd})
@@ -1426,7 +1426,7 @@ func TestKilledLostJobSparesItsSecondRun(t *testing.T) {
 		// once more, so what tells the two runs apart is what the manager minted
 		// for the second reservation.
 		r.reserveAgain()
-		So(r.server.applyJobStart(r.live, &Job{Pid: os.Getpid(), Host: localhost}), ShouldBeTrue)
+		So(r.server.applyJobStart(r.live, &Job{Pid: os.Getpid(), Host: localhost}), ShouldBeBlank)
 		r.markLost()
 
 		Convey("the release lands on neither run", func() {
@@ -1481,7 +1481,7 @@ func TestASlowStartedRunIsNotStillLost(t *testing.T) {
 		pin := r.live.pinBehaviours()
 
 		Convey("its Started recovers it, so the confirmation of that loss is refused", func() {
-			So(r.server.applyJobStart(r.live, &Job{Pid: os.Getpid(), Host: localhost}), ShouldBeTrue)
+			So(r.server.applyJobStart(r.live, &Job{Pid: os.Getpid(), Host: localhost}), ShouldBeBlank)
 
 			// the run this pin names is the very run that has just reported in:
 			// its reservation minted the token and its Started did not change it.
@@ -1531,7 +1531,7 @@ func TestReservedRunDoesNotInheritThePreviousRunsWorkingDir(t *testing.T) {
 			// and a Started that reports no directory of its own - an older
 			// runner, or a cwd_matters job carrying the ActualCwd that wr
 			// v0.37.0|1 stored on one - does not put the old one back either.
-			So(r.server.applyJobStart(r.live, &Job{Pid: os.Getpid(), Host: localhost}), ShouldBeTrue)
+			So(r.server.applyJobStart(r.live, &Job{Pid: os.Getpid(), Host: localhost}), ShouldBeBlank)
 			So(r.liveActualCwd(), ShouldBeBlank)
 		})
 	})
