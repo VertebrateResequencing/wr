@@ -104,10 +104,13 @@ func TestReservationTTRStartsAtHandOut(t *testing.T) {
 			So(reserved, ShouldNotBeNil)
 			So(reserved.State, ShouldEqual, JobStateReserved)
 
-			inRun, lost, _, ok := serverJobState(server, reserved.Key())
+			// reserved.State is the manager's own state at hand-out, so it shows
+			// the job was not lost before then. The TTR restarted at hand-out is
+			// already running, so asserting it has not yet expired would depend
+			// on how long this goroutine takes to get here.
+			inRun, _, _, ok := serverJobState(server, reserved.Key())
 			So(ok, ShouldBeTrue)
 			So(inRun, ShouldBeTrue)
-			So(lost, ShouldBeFalse)
 
 			// and a runner that then never touches it is still caught
 			So(waitForJobLost(server, reserved.Key(), 20*reserveTTR), ShouldBeTrue)

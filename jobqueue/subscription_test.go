@@ -2552,8 +2552,6 @@ func recvDeadlineUnderLock(jq *Client) (time.Duration, error) {
 	return jq.recvDeadline()
 }
 
-// applySubscriptionReconnectTimings sets the reconnect backoff/total-retry-time
-// the server will hand to its clients, for tests exercising reconnection.
 // subscriptionRestartRetryTime is the reconnect retry budget for tests whose
 // subscription must survive a manager restart. The budget starts when Stop
 // breaks the long poll, so it has to cover the rest of Stop and the whole of
@@ -2565,6 +2563,8 @@ const subscriptionRestartRetryTime = 30 * time.Second
 // missing update waits it out.
 const subscriptionUpdateWait = 10 * time.Second
 
+// applySubscriptionReconnectTimings sets the reconnect backoff/total-retry-time
+// the server will hand to its clients, for tests exercising reconnection.
 func applySubscriptionReconnectTimings(sc *ServerConfig, retryWait, retryTime time.Duration) {
 	sc.Timings.RetryWait = retryWait
 	sc.Timings.RetryTime = retryTime
