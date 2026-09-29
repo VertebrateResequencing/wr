@@ -70,6 +70,9 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
       (`TestJobqueueExecutionAndDependencyScenarios` "You can add dups and a new
       one under a new RepGroup"): `recordQueuedRepGroups` stores only its
       RepGroup lookup (`db.storeRepGroupLookups`) and records it in `s.rpl`.
+      A re-add under the queued job's own RepGroup, which is ibackup's
+      every-minute pattern, already has that lookup, so it writes nothing to
+      the database and does not mark it for backup (review follow-up).
     - Changed prior behaviour: `.docs/dep-granularity/spec.md` D1 acceptance
       tests 5 and 6 documented that a `--rerun` re-add of a live member without
       its dep group drops it from the group and releases the group's waiters,
@@ -121,5 +124,19 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
     shows two `run` pids, and the log has "jtouch ... you must Reserve()" and
     "jarchive ... you must Reserve()" errors); the fixed binary ran it once,
     Attempts 1, with no errors.
+  - Review (follow-up commit): `jobsNotAlreadyQueued` now passes on only the
+    duplicates added under a RepGroup other than their queued job's, so a
+    same-RepGroup re-add costs no bolt commit or backup;
+    `queuedCompleteRerunnable` reads `item.State()` rather than building
+    `item.Stats()`. `TestReaddQueuedKeepsRecord` gains a no-database-write case
+    (red on 31a59b6a: 7 bolt writes before, 9 after), and
+    `TestStoreNewJobsKeepsHandedOutRecord` also covers suspended and attempted
+    ready records. Checked and left as is: re-adding a buried or delayed job
+    with `--rerun` never reset or retried it in a running manager (the queue
+    add was always a no-op duplicate; only a restart read the fresh record), so
+    no workflow loses a retry mechanism; `wr retry` remains the way to do that.
+    D1 tests 5 and 6 changed only unreleased behaviour (dep-granularity, #555,
+    is in `[Unreleased]`), so the CHANGELOG's "Adding a command that is already
+    queued now changes nothing about it" covers it.
   - Gates: `make lint` 0 issues; `make test` 806 passed, 21 skipped;
     `CGO_ENABLED=1 make race` 806 passed, 20 skipped.

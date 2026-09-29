@@ -285,6 +285,18 @@ func TestReaddQueuedKeepsRecord(t *testing.T) {
 			readdKeepsRecord(job, job.Key(), JobStateReady)
 		})
 
+		Convey("a ready one, re-added under its own RepGroup, without writing to the database", func() {
+			server.db.wg.Wait(readdQueuedSettle)
+			writesBefore := boltWrites(server.db)
+
+			readded, existed := add(newJob(cmd), false)
+			So(readded, ShouldEqual, 0)
+			So(existed, ShouldEqual, 1)
+
+			server.db.wg.Wait(readdQueuedSettle)
+			So(boltWrites(server.db), ShouldEqual, writesBefore)
+		})
+
 		Convey("a reserved one", func() {
 			reserved, errr := jq.Reserve(2 * time.Second)
 			So(errr, ShouldBeNil)
@@ -405,6 +417,7 @@ func TestStoreNewJobsKeepsHandedOutRecord(t *testing.T) {
 
 		for _, state := range []JobState{
 			JobStateReserved, JobStateRunning, JobStateLost, JobStateDelayed, JobStateBuried,
+			JobStateSuspended, JobStateReady,
 		} {
 			Convey("an add does not replace it once it is "+string(state), func() {
 				before := progress(state)

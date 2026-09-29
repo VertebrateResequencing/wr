@@ -1713,19 +1713,26 @@ func (s *Server) triggerReadyAddedCallback(ctx context.Context) {
 	s.q.TriggerReadyAddedCallback(ctx)
 }
 
-// jobsNotAlreadyQueued splits the input jobs into those that are not already in
-// the queue and those that are. A queued job is a duplicate whatever
-// ignoreComplete says: ignoreComplete false only asks for jobs that COMPLETED to
-// be run again. Keeping it out of the add means its stored record is left alone,
-// so an add never writes a fresh copy of a job over the live record of one that
-// is, say, running, which a manager that crashed would recover as never started
-// and run a second time.
+// jobsNotAlreadyQueued returns the input jobs that are not already in the
+// queue, and counts those that are as duplicates. A queued job is a duplicate
+// whatever ignoreComplete says: ignoreComplete false only asks for jobs that
+// COMPLETED to be run again. Keeping it out of the add means its stored record
+// is left alone, so an add never writes a fresh copy of a job over the live
+// record of one that is, say, running, which a manager that crashed would
+// recover as never started and run a second time.
 //
 // The one queued job that is not a duplicate, when ignoreComplete is false, is a
 // complete one a dependency re-run put back in the queue and that has not been
 // handed out again (see queuedCompleteRerunnable): replaceLiveRerunItems re-runs
 // it.
-func (s *Server) jobsNotAlreadyQueued(inputJobs []*Job, ignoreComplete bool) (notQueued, queued []*Job) {
+//
+// With ignoreComplete false it also returns the duplicates that were added under
+// a RepGroup other than their queued job's, for recordQueuedRepGroups. A
+// duplicate under its queued job's own RepGroup already has that lookup, so a
+// client re-adding the same jobs over and over causes no database write.
+func (s *Server) jobsNotAlreadyQueued(inputJobs []*Job, ignoreComplete bool) (
+	notQueued []*Job, queuedDups int, newRepGroup []*Job,
+) {
 	notQueued = make([]*Job, 0, len(inputJobs))
 
 	for _, job := range inputJobs {
@@ -1736,10 +1743,32 @@ func (s *Server) jobsNotAlreadyQueued(inputJobs []*Job, ignoreComplete bool) (no
 			continue
 		}
 
-		queued = append(queued, job)
+		queuedDups++
+
+		if !ignoreComplete && repGroupDiffersFromQueued(job, item) {
+			newRepGroup = append(newRepGroup, job)
+		}
 	}
 
-	return notQueued, queued
+	return notQueued, queuedDups, newRepGroup
+}
+
+// repGroupDiffersFromQueued says whether job's RepGroup is not that of the job
+// item holds.
+func repGroupDiffersFromQueued(job *Job, item *queue.Item) bool {
+	queued, ok := item.Data().(*Job)
+	if !ok {
+		return true
+	}
+
+	queued.RLock()
+	queuedRepGroup := queued.RepGroup
+	queued.RUnlock()
+
+	job.RLock()
+	defer job.RUnlock()
+
+	return job.RepGroup != queuedRepGroup
 }
 
 // queuedCompleteRerunnable says whether item holds a complete job that an add
@@ -1748,7 +1777,7 @@ func (s *Server) jobsNotAlreadyQueued(inputJobs []*Job, ignoreComplete bool) (no
 // handed out again. A complete job still in the run sub-queue is one whose
 // archive is under way or failed; it has a runner, so it is not re-run.
 func queuedCompleteRerunnable(item *queue.Item) bool {
-	if item.Stats().State == queue.ItemStateRun {
+	if item.State() == queue.ItemStateRun {
 		return false
 	}
 
@@ -3361,20 +3390,20 @@ func recoversIntoRun(job *Job) bool {
 }
 
 // recordQueuedRepGroups is how an add with ignoreComplete false of jobs that
-// are already queued still lets them be found by the RepGroup they were added
-// with this time, as it always has: it stores that RepGroup's lookup for each
-// one, and nothing else about them, then records it in memory too. With
-// ignoreComplete true it does nothing, as before.
-func (s *Server) recordQueuedRepGroups(ctx context.Context, queuedJobs []*Job, ignoreComplete bool) error {
-	if ignoreComplete || len(queuedJobs) == 0 {
+// are already queued, under a RepGroup other than their queued job's, still lets
+// them be found by the RepGroup they were added with this time, as it always
+// has: it stores that RepGroup's lookup for each one, and nothing else about
+// them, then records it in memory too.
+func (s *Server) recordQueuedRepGroups(ctx context.Context, jobs []*Job) error {
+	if len(jobs) == 0 {
 		return nil
 	}
 
-	if err := s.db.storeRepGroupLookups(ctx, queuedJobs); err != nil {
+	if err := s.db.storeRepGroupLookups(ctx, jobs); err != nil {
 		return err
 	}
 
-	s.recordJobRepGroupKeys(queuedJobs)
+	s.recordJobRepGroupKeys(jobs)
 
 	return nil
 }
@@ -6077,7 +6106,7 @@ func (s *Server) createJobs(
 	rcSet := s.rc != ""
 	s.racmutex.RUnlock()
 
-	inputJobs, queuedJobs := s.jobsNotAlreadyQueued(inputJobs, ignoreComplete)
+	inputJobs, queuedDups, newRepGroupDups := s.jobsNotAlreadyQueued(inputJobs, ignoreComplete)
 
 	// create itemdefs for the jobs
 	limitGroups, inputJobKeys := s.prepareInputJobs(inputJobs, envkey, rcSet)
@@ -6103,7 +6132,7 @@ func (s *Server) createJobs(
 		return added, dups, warnings, ErrDBError, err
 	}
 
-	if err = s.recordQueuedRepGroups(ctx, queuedJobs, ignoreComplete); err != nil {
+	if err = s.recordQueuedRepGroups(ctx, newRepGroupDups); err != nil {
 		return added, dups, warnings, ErrDBError, err
 	}
 
@@ -6111,7 +6140,7 @@ func (s *Server) createJobs(
 
 	itemdefs := s.itemDefsForNewJobs(jobsToQueue, inputJobKeys, &warnings)
 
-	added, dups.Queued, srerr, qerr = s.queueNewJobItems(ctx, jobsToUpdate, itemdefs, ignoreComplete, len(queuedJobs))
+	added, dups.Queued, srerr, qerr = s.queueNewJobItems(ctx, jobsToUpdate, itemdefs, ignoreComplete, queuedDups)
 
 	return added, dups, warnings, srerr, qerr
 }
