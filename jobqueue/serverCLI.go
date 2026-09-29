@@ -88,6 +88,11 @@ const slowRequestLogMsg = "slow request"
 // request for minutes".
 const slowRequestDecodeLogMsg = slowRequestLogMsg + " decode"
 
+// reserveNotRecordedLogMsg is the warning that a reservation was handed out
+// before its write reached disk.
+const reserveNotRecordedLogMsg = "reservation not yet recorded on disk, handing the job out anyway; a manager " +
+	"crash before the job's start is recorded may run it twice"
+
 // slowRequestSelectorParts is the initial capacity for a rendered selector's
 // parts: how many clientRequest fields requestSelector can report.
 const slowRequestSelectorParts = 6
@@ -438,7 +443,7 @@ func applyLiveSnapshot(job *Job, jes *JobEndState) {
 // log entirely and silently restore the exact production silence it exists to
 // fix. This is Bug 5's lesson: an unexplained outcome must reach an operator at
 // the DEFAULT log level.
-func warnIfSlowRequest(ctx context.Context, cr *clientRequest, sr *serverResponse,
+func warnIfSlowRequest(ctx context.Context, warns *warnAggregator, cr *clientRequest, sr *serverResponse,
 	srerr string, replyBytes int, start time.Time,
 ) {
 	// the whole fast path: one duration comparison against a threshold the request
@@ -461,15 +466,17 @@ func warnIfSlowRequest(ctx context.Context, cr *clientRequest, sr *serverRespons
 		jobs = len(sr.Jobs)
 	}
 
+	selector := requestSelector(cr)
+
 	args := []any{
-		"method", cr.Method, "selector", requestSelector(cr), "duration", elapsed,
+		"method", cr.Method, "selector", selector, "duration", elapsed,
 		"clientWait", wait, "replyBytes", replyBytes, "replyJobs", jobs,
 	}
 	if srerr != "" {
 		args = append(args, "replyErr", srerr)
 	}
 
-	clog.Warn(ctx, slowRequestLogMsg, args...)
+	warns.warn(ctx, slowRequestLogMsg, slowRequestLogMsg+" "+cr.Method+" "+selector, elapsed, args...)
 }
 
 // requestWait is how long a request explicitly asked the server to HOLD it
@@ -653,7 +660,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 
 	replyBytes, err := s.replyToClient(ctx, m, cr, sr, srerr, qerr)
 
-	warnIfSlowRequest(ctx, cr, sr, srerr, replyBytes, start)
+	warnIfSlowRequest(ctx, s.warns, cr, sr, srerr, replyBytes, start)
 
 	return err
 }
@@ -1109,8 +1116,7 @@ func (s *Server) persistReservation(ctx context.Context, job *Job) {
 	switch {
 	case err == nil, errors.Is(err, errDBClosed):
 	case errors.Is(err, errDurableWriteWaitExpired):
-		clog.Warn(ctx, "reservation not yet recorded on disk, handing the job out anyway; a manager "+
-			"crash before the job's start is recorded may run it twice",
+		s.warns.warn(ctx, reserveNotRecordedLogMsg, reserveNotRecordedLogMsg, 0,
 			"key", job.Key(), "waited", s.timings.ReserveWriteWait)
 	default:
 		clog.Error(ctx, "could not record a reservation on disk; a manager crash before the job's "+

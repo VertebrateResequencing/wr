@@ -40,11 +40,42 @@ in `/nfs/hgi/wr/sb10-bigdb/soak4/run/prodsim-1790629666/`.
   - `jobqueue/live_query_copy_test.go` also checks every result against the
     old copy-everything-then-limit algorithm, including an offset.
   - CHANGELOG: Fixed entry.
-- [ ] **The warning storm during slow commits.** The mutex profile puts 57.8%
+- [x] **The warning storm during slow commits.** The mutex profile puts 57.8%
   of contention on the log15 handler lock, reached from the per-reservation
   "reservation not yet recorded on disk, handing the job out anyway" warning
   (jobqueue/serverCLI.go around :1112). There were 55k of these warnings,
   plus 175k slow-request warnings, in 16 minutes of slow commits.
+  - The slow-request warnings have the same shape: in the round 4 logs they
+    are 256k `jstart` and 229k `jarchive`, then 7.6k `reserve`, with fewer
+    than 1,000 of every other method.
+  - Red: `CGO_ENABLED=1 go test -tags netgo --count 1 ./jobqueue -run
+    TestWarningStormIsAggregated` exited 1. With the reservation write
+    stalled, 20 reservations logged 20 full reservation warnings, and with
+    the slow-request threshold at 1ns, 50 identical `getin` requests logged
+    50 slow-request warnings (expected 1 each).
+  - `jobqueue/warn_aggregator.go`: `warnAggregator` logs the first
+    occurrence per key in full at once, then only counts that key until its
+    interval (`warnAggregateInterval`, 1 minute) ends. A timer then logs one
+    `<msg> (repeated)` line with `repeats`, `since`, `interval`,
+    `maxDuration` where one was given, and the latest occurrence's fields
+    prefixed `sample_`, so a sample job key is kept. Shutdown logs any open
+    window's summary. A nil aggregator, as in bare test servers, logs every
+    occurrence.
+  - `jobqueue/serverCLI.go`: `persistReservation` warns through the
+    server's aggregator under one key. `warnIfSlowRequest` warns under a key
+    of method plus selector, so each distinct query shape (a rare `getbr`
+    for one report group, say) is still logged in full once a minute.
+    `jobqueue/server.go` builds the aggregator in `Serve` and stops it in
+    `shutdown`.
+  - After: the red test logs 1 full reservation warning plus a summary with
+    `repeats=19` and a `sample_key`, and 1 full `getin` warning plus a
+    summary with `repeats=49` and `maxDuration`. `TestWarnAggregator`: 50
+    goroutines x 200 occurrences give 1 line plus 1 summary with
+    `repeats=9999`. It also covers per-key windows, rollover, the timer
+    flush and the nil aggregator.
+  - `jobqueue/reliable4_slow_request_test.go`: calls pass a nil aggregator
+    and keep their assertions.
+  - CHANGELOG: Fixed entry.
 - [ ] **Optional, investigate only.** `buildSchedulerGroups` (via
   readyAddedCallback) grew from 2.7s to 8.7s CPU per 30s as the backlog grew.
   Is it O(backlog) per ready-add?

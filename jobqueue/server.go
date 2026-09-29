@@ -1659,6 +1659,10 @@ type Server struct {
 	// confirmDead groups lost jobs' confirm-dead ssh checks by host so all of a
 	// dead host's pid checks share one ssh connection (see confirmdead.go).
 	confirmDead *confirmDeadCoordinator
+
+	// warns rate-limits the warnings that can fire for every reservation or
+	// request, such as when commits are slow (see warn_aggregator.go).
+	warns *warnAggregator
 }
 
 // itemTTRDuration returns the current (runtime-adjustable) time-to-release given
@@ -4767,6 +4771,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		lostJobCheckTimeout:       timings.LostJobCheckTimeout,
 		lostJobCheckRetryTime:     timings.LostJobCheckRetryTime,
 		confirmDeadLimiter:        make(chan struct{}, timings.ConfirmDeadConcurrency),
+		warns:                     newWarnAggregator(warnAggregateInterval),
 	}
 
 	// the confirm-dead coordinator groups lost jobs' ssh checks by host; it needs
@@ -8203,6 +8208,9 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 
 	// wait for our goroutines to finish
 	s.wg.Wait(ServerShutdownWaitTime)
+
+	// with no requests left to warn about, log what the warnings still counted
+	s.warns.stop()
 
 	s.waitForPortsClosed(ctx)
 
