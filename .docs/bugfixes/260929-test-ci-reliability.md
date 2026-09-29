@@ -94,3 +94,10 @@ commit was reviewed too: PASS.
     reject rpc.statd's port 45993, which freeport's `127.0.0.1` probe accepts.
     `make lint` reports 0 issues, and `./client/testing/` passes with and
     without `WR_TEST_LANE`.
+- [ ] `TestDepGranularitySidecarReportsElapsedTime`
+  (`jobqueue/depgranularity_startup_test.go:904`) was seen failing once under
+  load, and was not reproduced in `260928-load-sensitive-flakes.md`. The
+  candidate cause recorded there: the test samples the sidecar, waits a fixed
+  `dgsHeartbeatInterval * dgsHeartbeatTicks` (200ms), and requires the second
+  sample to have moved on, so a heartbeat goroutine starved for 200ms fails
+  it.
