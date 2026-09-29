@@ -370,6 +370,10 @@ func TestReaddQueuedKeepsRecord(t *testing.T) {
 // job's live record, which only a dependency re-run leaves there, is still
 // replaced, since that is how the job is re-run.
 func TestStoreNewJobsKeepsHandedOutRecord(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
 	ctx := context.Background()
 
 	Convey("Given a database holding a job's live record", t, func() {
