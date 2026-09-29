@@ -3298,7 +3298,7 @@ func TestStatusCountReconcile(t *testing.T) {
 	Convey("The status page delta-application logic reconciles counts exactly and order-independently", t, func() {
 		repoRoot := repoRootForWebUITest(t)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), statusCountReconcileHangWait)
 		defer cancel()
 
 		outputs := make([]string, statusCountReconcileShards)
@@ -3333,6 +3333,13 @@ func TestStatusCountReconcile(t *testing.T) {
 // statusCountReconcileShards is how many node processes TestStatusCountReconcile
 // shares the reconcile harness's seeds between.
 const statusCountReconcileShards = 4
+
+// statusCountReconcileHangWait bounds TestStatusCountReconcile's node processes.
+// It is a hang detector, not a latency budget: each shard needs about 4s of CPU
+// and reports a failing scenario in its output, so only a harness that never
+// finishes needs it, and a starved one (it ran out 120s at host load 80+) must
+// not trip it.
+const statusCountReconcileHangWait = 10 * time.Minute
 
 func TestStatusPageLiveIntrospectionAssets(t *testing.T) {
 	if runnermode || servermode {

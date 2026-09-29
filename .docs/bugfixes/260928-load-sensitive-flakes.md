@@ -274,3 +274,36 @@ quoted include it.
     failed the old test with this message and passes the new one.
   - Mutation: a hook that never signals fails with the same message after
     30s.
+- [ ] TestStartDurability and TestReliable2ReserveConfirmedDeadReclaimed
+  ("could not reach the server" / "receive time out")
+  - Not reproduced: lane 45, `TestReliable2ReserveConfirmedDeadReclaimed`
+    15 runs with `stress -c 8` and the test on one core passed. The failing
+    lines were not captured.
+  - Analysis, unconfirmed: "could not reach the server" is `Connect`
+    failing, and both tests connect with the suite's 1.5s
+    `clientConnectTime`, which a heavily loaded host can outlast;
+    `TestReliable2ReserveConfirmedDeadReclaimed` makes a fresh Connect every
+    250ms while it polls. A request's own receive deadline has the 60s
+    `ClientMinRequestTimeout` floor, so "receive time out" after connecting
+    would need a 60s manager stall. Separately,
+    `TestReliable2ReserveConfirmedDeadReclaimed` sets the dead pid after
+    `Reserve` inside its 500ms TTR, the same shape as the lost-run fixture
+    item above, but that would fail as `reReserved` nil, not as either
+    message. No change made.
+- [x] TestStatusCountReconcile (a 120s node timeout at load 80+)
+  - Recorded, uninvestigated, in 260927-race-kill-bury-flakes.md.
+  - Cause (test): the 120s is the context bounding the 4 node harness
+    shards. Each shard is pure CPU work: run alone, 3.4-3.8s wall and user
+    time. With all 4 shards and `stress -c 8` on one core the test took
+    44s, so 120s means about 30 times less CPU than they need, which a host at
+    load 80+ with the suite at nice 19 can give them. A failing scenario is
+    reported in the harness's output, which the test asserts on; the bound
+    only has to catch a harness that never finishes.
+  - Fix (test only), `jobqueue/serverWebI_test.go`: the bound is
+    `statusCountReconcileHangWait`, 10 minutes, still well inside the
+    lane's 40m timeout.
+  - After: 1 of 1 passed pinned as above (44s). Not reproduced before: the
+    allowed load cannot starve it that far.
+  - Check: with the bound set to 1s the test fails with `Expected: nil
+    Actual: 'signal: killed'`, so a harness that overruns it still fails.
+    The assertions are unchanged.
