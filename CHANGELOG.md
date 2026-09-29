@@ -90,6 +90,15 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- A command that is still queued, for example one that is running, is no longer
+  run a second time at once after a manager crash because it was added again
+  with `wr add --rerun` (or through a Go client that adds without skipping
+  completed commands, such as `client.Scheduler.SubmitJobs`). The add counted
+  the command as already queued, but wrote a fresh copy of it over the
+  manager's record of it. After a crash the manager restored the command from
+  that copy as never started, ran it again, and refused the first run's reports.
+  Adding a command that is already queued now changes nothing about it. Adding
+  one that has completed still runs it again.
 - A command that exited 0 while its manager was down after a crash is no
   longer run again when its runner's report that it had started the command
   was lost to the crash. The manager refused the runner's report of success,
