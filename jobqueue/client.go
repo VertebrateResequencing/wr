@@ -240,6 +240,7 @@ var errClientBusy = errors.New("client busy with another request for the whole t
 // errNoFinalStateAttempt is what reportFinalState gives up with if its retry
 // budget left it no time to make any attempt.
 var errNoFinalStateAttempt = errors.New("no attempt was made to report the final state")
+
 // errChildLookupTimedOut is the error of a kill that stopped waiting for the
 // list of its command's child processes.
 var errChildLookupTimedOut = errors.New("timed out listing the child processes")
