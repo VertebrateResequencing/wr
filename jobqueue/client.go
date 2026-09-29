@@ -232,6 +232,10 @@ var errRecvDeadlineType = errors.New("socket receive deadline was not a duration
 // request held the client for the whole of its timeout.
 var errClientBusy = errors.New("client busy with another request for the whole timeout")
 
+// errNoFinalStateAttempt is what reportFinalState gives up with if its retry
+// budget left it no time to make any attempt.
+var errNoFinalStateAttempt = errors.New("no attempt was made to report the final state")
+
 // ErrNoTokenFile is returned by ConnectWithTokenFile when given no path.
 var ErrNoTokenFile = errors.New("no token file given")
 
@@ -549,6 +553,38 @@ func (state *executeLiveState) snapshot() *JobEndState {
 		Stdout:   stdout,
 		Stderr:   stderr,
 	}
+}
+
+// pendingStartReport is a post-exec Started() report whose first attempt failed
+// transiently, so the server may not yet know that the command is running.
+type pendingStartReport struct {
+	req           *clientRequest
+	serverContact *serverContactState
+	stop          chan struct{}
+	stopOnce      sync.Once
+	settled       atomic.Bool
+}
+
+// newPendingStartReport returns a pendingStartReport for req, whose outcomes are
+// recorded on serverContact.
+func newPendingStartReport(req *clientRequest, serverContact *serverContactState) *pendingStartReport {
+	return &pendingStartReport{req: req, serverContact: serverContact, stop: make(chan struct{})}
+}
+
+// stopRetrying stops any background retrying of the report. It is safe to call
+// more than once, and on a nil pendingStartReport.
+func (p *pendingStartReport) stopRetrying() {
+	if p == nil {
+		return
+	}
+
+	p.stopOnce.Do(func() { close(p.stop) })
+}
+
+// isSettled reports whether the server has accepted or definitively rejected
+// the report.
+func (p *pendingStartReport) isSettled() bool {
+	return p.settled.Load()
 }
 
 // adoptLabelledNewContainer adopts the new container that wr started for this
@@ -1196,6 +1232,53 @@ func (c *Client) processStart(pid int32) (int64, error) {
 	return p.CreateTime()
 }
 
+// sendFinalState makes one attempt to settle start, if it is not nil, and then
+// to update the server with the job's end state.
+func (c *Client) sendFinalState(ctx context.Context, job *Job, jes *JobEndState, action execAction,
+	start *pendingStartReport,
+) error {
+	// the background retries of start are over: from here on, only these
+	// attempts, one before each attempt to send the final state, report it.
+	start.stopRetrying()
+
+	if err := c.settleStartReport(ctx, start); err != nil {
+		return err
+	}
+
+	return c.applyFinalState(job, jes, action)
+}
+
+// settleStartReport makes one attempt to have the server acknowledge start, if
+// it is a Started() report not yet settled. It returns nil once start is
+// settled: the server accepted it, or definitively rejected it, in which case
+// the final state is still sent and the server judges that on its own.
+// Otherwise it returns the transient error.
+func (c *Client) settleStartReport(ctx context.Context, start *pendingStartReport) error {
+	if start == nil || start.isSettled() {
+		return nil
+	}
+
+	return c.reportStartAttempt(ctx, start)
+}
+
+// handleFinalStateFailure reacts to err, the failure of an attempt to report a
+// job's final state, which was the latest of tokenRejections consecutive bad
+// token rejections. It gives up, logging why, once there have been
+// clientFinalStateTokenRejections of those, and otherwise defers to
+// handleFinalStateError.
+func (c *Client) handleFinalStateFailure(ctx context.Context, err error,
+	tokenRejections int,
+) (disconnected, giveUp bool) {
+	if tokenRejections >= clientFinalStateTokenRejections {
+		clog.Error(ctx, "giving up trying to update server with cmd's final state, since it keeps "+
+			"rejecting our token and the token file has none it accepts", "err", err)
+
+		return false, true
+	}
+
+	return c.handleFinalStateError(ctx, err)
+}
+
 // stageBackup writes db to a uniquely named file in path's own directory,
 // returning that file's name for the caller to rename over path. The name is
 // unique because a fixed name is one the user may already have a file at, and
@@ -1520,21 +1603,19 @@ func appendExecProblems(stderr []byte, jobFailed bool, mountLogs string, berr, e
 	return stderr
 }
 
-// retryStartReportLoop re-sends startReq every retryWait until reportStartAttempt
-// says to stop (accepted or definitively rejected) or stop is closed. It is the
-// periodic fallback used by retryStartReport after its immediate first attempt.
-func (c *Client) retryStartReportLoop(ctx context.Context, startReq *clientRequest,
-	serverContact *serverContactState, stop <-chan struct{},
-) {
+// retryStartReportLoop re-sends start every retryWait until reportStartAttempt
+// settles it or start's retrying is stopped. It is the periodic fallback used
+// by retryStartReport after its immediate first attempt.
+func (c *Client) retryStartReportLoop(ctx context.Context, start *pendingStartReport) {
 	ticker := time.NewTicker(c.retryWait)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-stop:
+		case <-start.stop:
 			return
 		case <-ticker.C:
-			if c.reportStartAttempt(ctx, startReq, serverContact) {
+			if c.reportStartAttempt(ctx, start) == nil {
 				return
 			}
 		}
@@ -3110,6 +3191,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		return killAfterStartFailure(err)
 	}
 
+	// a start report the manager has not yet acknowledged, which must be settled
+	// before the final state is reported.
+	var unackedStart *pendingStartReport
+
 	if _, err = c.request(startReq); err != nil {
 		if isDefinitiveReject(err) {
 			return killAfterStartFailure(err)
@@ -3121,10 +3206,10 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		clog.Warn(ctx, "could not report command start to server; keeping the healthy "+
 			"command running and re-reporting in the background", "err", err)
 
-		stopReporting := make(chan struct{})
-		c.retryStartReport(ctx, startReq, serverContact, stopReporting)
+		unackedStart = newPendingStartReport(startReq, serverContact)
+		c.retryStartReport(ctx, unackedStart)
 
-		defer close(stopReporting)
+		defer unackedStart.stopRetrying()
 	}
 
 	// update peak mem and disk used by command, and check if we use too much
@@ -3486,11 +3571,11 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		Exited:   true,
 	}
 
-	worked, hadProblems := c.reportFinalState(ctx, job, jes, execAction{
+	hadProblems, errReport := c.reportFinalState(ctx, job, jes, execAction{
 		bury: outcome.dobury, release: outcome.dorelease, archive: outcome.doarchive,
 		failreason: outcome.failreason,
-	})
-	if !worked {
+	}, unackedStart)
+	if errReport != nil {
 		//nolint:contextcheck // behaviours run detached from the cancellable job context
 		errt := job.TriggerBehaviours(false)
 
@@ -3500,7 +3585,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		}
 
 		return fmt.Errorf("command [%s] finished running, but will need to be rerun due to a jobqueue server error: %w%s",
-			job.Cmd, err, extra)
+			job.Cmd, errReport, extra)
 	}
 
 	if hadProblems {
@@ -3529,45 +3614,46 @@ type execAction struct {
 
 // reportFinalState repeatedly tries to update the server with the job's final
 // state, reconnecting if the connection was lost, until it succeeds or
-// c.retryTime elapses. It returns whether it succeeded and whether it hit any
-// problems along the way (which the caller turns into ErrStopReserving).
-func (c *Client) reportFinalState(ctx context.Context, job *Job, jes *JobEndState, action execAction) (bool, bool) {
+// c.retryTime elapses. It returns whether it hit any problems along the way
+// (which the caller turns into ErrStopReserving), and the error that made it
+// give up, or nil if it succeeded.
+//
+// If start is not nil, it is a Started() report the server has not yet
+// acknowledged, and it is settled first, within the same retry budget: the
+// final state is not sent until the server has accepted the start, or has
+// definitively rejected it. A final state that reached the server first would
+// find no record of the start, as could happen when both were re-sent to a
+// manager that had crashed and restarted, and the server cannot complete such a
+// job.
+func (c *Client) reportFinalState(ctx context.Context, job *Job, jes *JobEndState, action execAction,
+	start *pendingStartReport,
+) (bool, error) {
 	retryEnd := time.Now().Add(c.retryTime)
-	disconnected := false
-	hadProblems := false
+	err := errNoFinalStateAttempt
 	tokenRejections := 0
+
+	var disconnected, hadProblems, giveUp bool
 
 	for !time.Now().After(retryEnd) {
 		if disconnected && !c.quickReconnect(ctx) {
 			continue
 		}
 
-		err := c.applyFinalState(job, jes, action)
-		if err == nil {
-			return true, hadProblems
+		if err = c.sendFinalState(ctx, job, jes, action, start); err == nil {
+			return hadProblems, nil
 		}
 
 		hadProblems = true
-
 		tokenRejections = countTokenRejection(tokenRejections, err)
-		if tokenRejections >= clientFinalStateTokenRejections {
-			clog.Error(ctx, "giving up trying to update server with cmd's final state, since it keeps "+
-				"rejecting our token and the token file has none it accepts", "err", err)
 
-			return false, hadProblems
-		}
-
-		var giveUp bool
-
-		disconnected, giveUp = c.handleFinalStateError(ctx, err)
-		if giveUp {
-			return false, hadProblems
+		if disconnected, giveUp = c.handleFinalStateFailure(ctx, err, tokenRejections); giveUp {
+			return hadProblems, err
 		}
 	}
 
 	clog.Warn(ctx, "giving up trying to connect to server")
 
-	return false, hadProblems
+	return hadProblems, fmt.Errorf("gave up after trying for %s: %w", c.retryTime, err)
 }
 
 // handleFinalStateError reacts to a failed state update: it logs the error,
@@ -4014,56 +4100,55 @@ func (c *Client) startedRequest(job *Job, pid int) (*clientRequest, error) {
 // its first attempt failed transiently, so a slow or briefly unreachable server
 // eventually learns the running command's pid without the healthy command being
 // killed. It re-sends the SAME pre-built request (never re-mutating job): once
-// IMMEDIATELY, then every retryWait, until the report is accepted, the server
-// definitively rejects it (the job is no longer ours - left to the touch loop and
+// IMMEDIATELY, then every retryWait, until the report is settled (accepted, or
+// definitively rejected: the job is no longer ours - left to the touch loop and
 // the archive-time owner check rather than killed here, exactly as the touch loop
-// tolerates a bad-job touch), or stop is closed (Execute has finished with the
-// command). The immediate first attempt matters for a command that finishes faster
-// than retryWait: the server only records StartTime on a successful Started(), and
-// completion is rejected while StartTime is zero, so waiting a full retryWait before
-// re-reporting could let a short command's Archive lose to the still-zero StartTime.
-// The concurrent touch loop keeps the job's TTR alive throughout.
-func (c *Client) retryStartReport(ctx context.Context, startReq *clientRequest,
-	serverContact *serverContactState, stop <-chan struct{},
-) {
+// tolerates a bad-job touch), or its retrying is stopped (Execute has finished
+// with the command). The immediate first attempt matters for a command that
+// finishes faster than retryWait: the server only records StartTime on a
+// successful Started(), and completion is refused while StartTime is zero.
+// reportFinalState settles any report still unsettled when the command ends
+// before it sends the final state. The concurrent touch loop keeps the job's TTR
+// alive throughout.
+func (c *Client) retryStartReport(ctx context.Context, start *pendingStartReport) {
 	go func() {
 		// try immediately so a short-lived command's start is recorded in time,
 		// only falling back to the periodic ticker if this still fails transiently.
-		if c.reportStartAttempt(ctx, startReq, serverContact) {
+		if c.reportStartAttempt(ctx, start) == nil {
 			return
 		}
 
-		c.retryStartReportLoop(ctx, startReq, serverContact, stop)
+		c.retryStartReportLoop(ctx, start)
 	}()
 }
 
-// reportStartAttempt makes one background attempt to re-send the post-exec
-// Started() report, recording the outcome on serverContact. It returns true when
-// no further attempts should be made: the report was accepted, or the server
-// definitively rejected it.
-func (c *Client) reportStartAttempt(ctx context.Context, startReq *clientRequest,
-	serverContact *serverContactState,
-) bool {
-	_, err := c.request(startReq)
+// reportStartAttempt makes one attempt to re-send the post-exec Started()
+// report, recording the outcome on start's serverContact. It returns nil, and
+// marks start settled, when no further attempts should be made: the report was
+// accepted, or the server definitively rejected it. Otherwise it returns the
+// transient error.
+func (c *Client) reportStartAttempt(ctx context.Context, start *pendingStartReport) error {
+	_, err := c.request(start.req)
+	start.serverContact.recordTouchResult(err)
+
 	if err == nil {
-		serverContact.recordTouchResult(nil)
+		start.settled.Store(true)
 		clog.Info(ctx, "reported command start to server after retrying")
 
-		return true
+		return nil
 	}
 
-	serverContact.recordTouchResult(err)
-
 	if isDefinitiveReject(err) {
+		start.settled.Store(true)
 		clog.Warn(ctx, "server rejected the delayed command-start report; "+
 			"leaving the job to the touch loop", "err", err)
 
-		return true
+		return nil
 	}
 
 	clog.Warn(ctx, "could not report command start to server; will keep retrying", "err", err)
 
-	return false
+	return err
 }
 
 func keyOnlyJob(job *Job) *Job {

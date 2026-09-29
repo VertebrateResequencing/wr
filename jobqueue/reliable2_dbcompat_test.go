@@ -428,7 +428,7 @@ func TestReliable2RecoveryMachineryRetained(t *testing.T) {
 		// was deleted".
 		So(dbcompatGrepCount(t, "server.go", "ErrRecovering", `= "server is recovering`), ShouldEqual, 1)
 		So(dbcompatGrepCount(t, "serverCLI.go", "return item, nil, ErrRecovering"), ShouldEqual, 1)
-		So(dbcompatGrepCount(t, "serverCLI.go", "return nil, ErrRecovering"), ShouldEqual, 1)
+		So(dbcompatGrepCount(t, "serverCLI.go", "return nil,", " nil, ErrRecovering"), ShouldEqual, 1)
 		So(dbcompatGrepCount(t, "server.go", "!s.isRecovering()"), ShouldBeGreaterThanOrEqualTo, 1)
 	})
 }

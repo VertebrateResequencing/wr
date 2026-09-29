@@ -80,7 +80,7 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 		// end-to-end by TestReliable2HoldingRunnerArchiveAccepted); a Lost job whose
 		// owner archives success is accepted.
 		endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
-		key, repGroup, schedulerGroup, srerr := markJobComplete(job, endState, nil)
+		key, repGroup, schedulerGroup, srerr := markJobComplete(job, endState, nil, false)
 
 		So(srerr, ShouldEqual, "")
 		So(key, ShouldEqual, job.Key())
@@ -118,7 +118,7 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 		endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
 
 		So(func() {
-			_, _, _, _ = markJobComplete(job, endState, nil)
+			_, _, _, _ = markJobComplete(job, endState, nil, false)
 		}, ShouldNotPanic)
 		So(job.State, ShouldEqual, JobStateComplete)
 	})
@@ -145,7 +145,7 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
-		_, _, _, srerr := markJobComplete(job, endState, nil, originalRunner)
+		_, _, _, srerr := markJobComplete(job, endState, nil, false, originalRunner)
 
 		So(srerr, ShouldEqual, ErrMustReserve)
 		So(job.State, ShouldEqual, JobStateRunning)
@@ -177,7 +177,7 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 		So(item.Stats().State, ShouldEqual, queue.ItemStateReady)
 
 		endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: lostTime.Add(500 * time.Millisecond)}
-		_, _, _, srerr := markJobComplete(job, endState, nil)
+		_, _, _, srerr := markJobComplete(job, endState, nil, false)
 
 		So(srerr, ShouldEqual, "")
 		So(job.Exited, ShouldBeTrue)
@@ -204,7 +204,7 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		endState := &JobEndState{Exited: true, Exitcode: 1, EndTime: time.Now()}
-		_, _, _, srerr := markJobComplete(job, endState, nil)
+		_, _, _, srerr := markJobComplete(job, endState, nil, false)
 
 		So(srerr, ShouldEqual, ErrBadRequest)
 		So(job.State, ShouldEqual, JobStateRunning)

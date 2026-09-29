@@ -90,6 +90,14 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- A command that exited 0 while its manager was down after a crash is no
+  longer run again when its runner's report that it had started the command
+  was lost to the crash. The runner now waits for its start report to be
+  accepted before reporting how the command ended, and the manager now
+  completes a job whose runner reports its success first, rather than
+  rejecting the report as a bad request, which made the runner give up on the
+  completed work. The runner's "will need to be rerun" message also now says
+  which error it gave up on, instead of `%!w(<nil>)`.
 - `wr manager stop` no longer says a manager "was gracefully shut down", and
   no longer deletes its token, when the manager is still running after the
   stop gives up waiting for it. It used to send the manager a second SIGTERM,
