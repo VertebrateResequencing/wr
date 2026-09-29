@@ -118,3 +118,34 @@ quoted include it.
   - Mutation: one extra read per 100 live members of each dep group an added
     job joins (in `registerDepGroupMembers`) fails with `Expected '440' to
     be less than or equal to '100'`.
+- [x] TestSubscriptionReconnectResync
+  - Red: lane 9, `-test.run '^TestSubscriptionReconnectResync$'
+    -test.count=4`, with the test and `stress -c 40` on one core (`taskset
+    -c 7`; before the host rules below were set). Before: 4 of 4 failed,
+    `Expected: true Actual: false` on `So(ok, ShouldBeTrue)` after
+    `collectSubscriptionUpdates`. A temporary print showed Stop taking
+    265-341ms and the break-to-restarted time 2.08-2.34s, so 2.3-2.6s of the
+    subscription's 2s reconnect budget was gone before the manager was back.
+    With `stress -c 20` on that core it was 1.08-1.44s plus 76-177ms of
+    Stop, and passed. With `stress -c 8` on one core it passed 6 of 6.
+  - Cause (test): the Conveys that restart the manager gave the
+    subscription a 2s reconnect budget, which starts when Stop breaks the
+    long poll and so has to cover the rest of Stop and the whole restart.
+    Past it the subscription gives up and closes, as it should. The updates
+    that follow were then also waited for with a fixed 2s.
+  - Fix (test only), `jobqueue/subscription_test.go`: a
+    `subscriptionRestartRetryTime` of 30s for the two Conveys that restart
+    the manager ("A restarted manager delivers ..." and "A successful
+    transient reconnect ..."), and a `subscriptionUpdateWait` of 10s for
+    `collectSubscriptionUpdates` and the transient Convey's resync receive.
+    Every caller of `collectSubscriptionUpdates` expects its updates to
+    arrive, so the wait only bounds a failure. The permanently stopped
+    manager Convey, which is what tests the budget running out, is
+    unchanged.
+  - After, with the allowed load (`stress -c 8` and the test on one core,
+    `GOMAXPROCS=1`): 5 of 5 passed. The failing load is no longer allowed on
+    this host, so a deterministic seam stands in for it: a temporary extra
+    2.5s sleep before the restart failed the old test 2 of 2 and passed the
+    new one 2 of 2.
+  - Mutation: not publishing the resync marker after a reconnect
+    (`reconnectAfterPollError`) fails both restart Conveys.
