@@ -5,6 +5,27 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [Unreleased]
+### Fixed
+- Asking the manager for incomplete commands by report group prefix or
+  substring, by state (such as `wr status -b`), or with a limit (such as a
+  limited `wr status -i`) no longer copies every queued command first. With
+  about 570k commands queued, such requests took up to 2 minutes and could hold
+  several GB each.
+- A manager whose database is slow to commit no longer slows itself further by
+  logging a warning for every reservation or request. The "not yet recorded
+  on disk" and "slow request" warnings are now logged in full once, then at
+  most once a minute as one "(repeated)" line with a count, the longest
+  duration and the latest details.
+- `wr status -i <group> -o summary` (and the Go client's
+  `GetStatusByRepGroupMatch` with details) no longer reads every completed
+  command in full, so it is several times faster, and uses about 1% of the
+  memory, for a group with a long history of long commands. The output is
+  unchanged.
+- The manager uses less CPU deciding what to schedule when many commands are
+  waiting in limit groups.
+- With the lsf scheduler, each bsub returns about 100ms sooner.
+
 ## [0.38.0] - 2026-09-30
 ### Added
 - New `--queue` and `--queues_avoid` options for `wr manager start` (and the
