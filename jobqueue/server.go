@@ -383,6 +383,11 @@ const (
 	scheduleRetryBackoffFactor = 2
 )
 
+// exitCodeInterruptedShutdown is the exit code of a manager interrupted while
+// shutting down (see shutdownIgnoringSignals): 128 plus SIGINT's number, as a
+// shell reports a process killed by SIGINT.
+const exitCodeInterruptedShutdown = 128 + int(syscall.SIGINT)
+
 const (
 	errMissingSubscriptionScope subscriptionRequestError = "missing subscription scope"
 	errSubscriptionClosed       subscriptionRequestError = "subscription closed"
@@ -1708,25 +1713,83 @@ func (s *Server) triggerReadyAddedCallback(ctx context.Context) {
 	s.q.TriggerReadyAddedCallback(ctx)
 }
 
-func (s *Server) jobsNotAlreadyQueued(inputJobs []*Job, ignoreComplete bool) ([]*Job, int) {
-	if !ignoreComplete {
-		return inputJobs, 0
-	}
-
-	filtered := make([]*Job, 0, len(inputJobs))
-	queuedDups := 0
+// jobsNotAlreadyQueued returns the input jobs that are not already in the
+// queue, and counts those that are as duplicates. A queued job is a duplicate
+// whatever ignoreComplete says: ignoreComplete false only asks for jobs that
+// COMPLETED to be run again. Keeping it out of the add means its stored record
+// is left alone, so an add never writes a fresh copy of a job over the live
+// record of one that is, say, running, which a manager that crashed would
+// recover as never started and run a second time.
+//
+// The one queued job that is not a duplicate, when ignoreComplete is false, is a
+// complete one a dependency re-run put back in the queue and that has not been
+// handed out again (see queuedCompleteRerunnable): replaceLiveRerunItems re-runs
+// it.
+//
+// With ignoreComplete false it also returns the duplicates that were added under
+// a RepGroup other than their queued job's, for recordQueuedRepGroups. A
+// duplicate under its queued job's own RepGroup already has that lookup, so a
+// client re-adding the same jobs over and over causes no database write.
+func (s *Server) jobsNotAlreadyQueued(inputJobs []*Job, ignoreComplete bool) (
+	notQueued []*Job, queuedDups int, newRepGroup []*Job,
+) {
+	notQueued = make([]*Job, 0, len(inputJobs))
 
 	for _, job := range inputJobs {
-		if _, err := s.q.Get(job.Key()); err == nil {
-			queuedDups++
+		item, err := s.q.Get(job.Key())
+		if err != nil || (!ignoreComplete && queuedCompleteRerunnable(item)) {
+			notQueued = append(notQueued, job)
 
 			continue
 		}
 
-		filtered = append(filtered, job)
+		queuedDups++
+
+		if !ignoreComplete && repGroupDiffersFromQueued(job, item) {
+			newRepGroup = append(newRepGroup, job)
+		}
 	}
 
-	return filtered, queuedDups
+	return notQueued, queuedDups, newRepGroup
+}
+
+// repGroupDiffersFromQueued says whether job's RepGroup is not that of the job
+// item holds.
+func repGroupDiffersFromQueued(job *Job, item *queue.Item) bool {
+	queued, ok := item.Data().(*Job)
+	if !ok {
+		return true
+	}
+
+	queued.RLock()
+	queuedRepGroup := queued.RepGroup
+	queued.RUnlock()
+
+	job.RLock()
+	defer job.RUnlock()
+
+	return job.RepGroup != queuedRepGroup
+}
+
+// queuedCompleteRerunnable says whether item holds a complete job that an add
+// with ignoreComplete false should re-run: one a dependency re-run put back in
+// the queue from the complete bucket, which is waiting there and has not been
+// handed out again. A complete job still in the run sub-queue is one whose
+// archive is under way or failed; it has a runner, so it is not re-run.
+func queuedCompleteRerunnable(item *queue.Item) bool {
+	if item.State() == queue.ItemStateRun {
+		return false
+	}
+
+	job, ok := item.Data().(*Job)
+	if !ok {
+		return false
+	}
+
+	job.RLock()
+	defer job.RUnlock()
+
+	return job.State == JobStateComplete && !job.archivePendingLocked()
 }
 
 // getJobsRecent returns archived jobs that finished within period of now,
@@ -2623,6 +2686,10 @@ func queueErrorIs(err error, target error) bool {
 }
 
 func resurrectedCompleteRepGroup(item *queue.Item) (string, bool) {
+	if !queuedCompleteRerunnable(item) {
+		return "", false
+	}
+
 	job, ok := item.Data().(*Job)
 	if !ok {
 		return "", false
@@ -2631,7 +2698,7 @@ func resurrectedCompleteRepGroup(item *queue.Item) (string, bool) {
 	job.RLock()
 	defer job.RUnlock()
 
-	return job.RepGroup, job.State == JobStateComplete
+	return job.RepGroup, true
 }
 
 func (s *Server) updateLiveRerunItem(ctx context.Context, itemdef *queue.ItemDef) error {
@@ -3260,11 +3327,6 @@ func logClientRequestError(ctx context.Context, herr error) {
 	clog.Error(ctx, "Server handle client request error", "err", herr)
 }
 
-// exitCodeInterruptedShutdown is the exit code of a manager interrupted while
-// shutting down (see shutdownIgnoringSignals): 128 plus SIGINT's number, as a
-// shell reports a process killed by SIGINT.
-const exitCodeInterruptedShutdown = 128 + int(syscall.SIGINT)
-
 // shutdownIgnoringSignals shuts the server down for reason, logging and ignoring
 // any SIGTERM that arrives before the shutdown is complete, and only then stops
 // handling signals. Were SIGTERM no longer handled, it would have its default
@@ -3324,6 +3386,49 @@ func recoversIntoRun(job *Job) bool {
 		return job.Pid > 0 && job.Host != ""
 	default:
 		return false
+	}
+}
+
+// recordQueuedRepGroups is how an add with ignoreComplete false of jobs that
+// are already queued, under a RepGroup other than their queued job's, still lets
+// them be found by the RepGroup they were added with this time, as it always
+// has: it stores that RepGroup's lookup for each one, and nothing else about
+// them, then records it in memory too.
+func (s *Server) recordQueuedRepGroups(ctx context.Context, jobs []*Job) error {
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	if err := s.db.storeRepGroupLookups(ctx, jobs); err != nil {
+		return err
+	}
+
+	s.recordJobRepGroupKeys(jobs)
+
+	return nil
+}
+
+// recordJobRepGroupKeys adds each job's RepGroup->key mapping to the lookup and
+// then remembers each as a subscription key.
+func (s *Server) recordJobRepGroupKeys(jobs []*Job) {
+	type repGroupKey struct {
+		repGroup string
+		key      string
+	}
+
+	repGroupKeys := make([]repGroupKey, 0, len(jobs))
+
+	s.rpl.Lock()
+	for _, job := range jobs {
+		rp := job.RepGroup
+		key := job.Key()
+		s.rpl.Add(rp, key)
+		repGroupKeys = append(repGroupKeys, repGroupKey{repGroup: rp, key: key})
+	}
+	s.rpl.Unlock()
+
+	for _, rgk := range repGroupKeys {
+		s.rememberRepGroupSubscriptionKey(rgk.repGroup, rgk.key)
 	}
 }
 
@@ -5937,29 +6042,15 @@ func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (a
 // recordRepGroupKeys adds each item's RepGroup->key mapping to the lookup and
 // then remembers each as a subscription key.
 func (s *Server) recordRepGroupKeys(itemdefs []*queue.ItemDef) {
-	type repGroupKey struct {
-		repGroup string
-		key      string
-	}
+	jobs := make([]*Job, 0, len(itemdefs))
 
-	repGroupKeys := make([]repGroupKey, 0, len(itemdefs))
-
-	s.rpl.Lock()
 	for _, itemdef := range itemdefs {
-		job, ok := itemdef.Data.(*Job)
-		if !ok {
-			continue
+		if job, ok := itemdef.Data.(*Job); ok {
+			jobs = append(jobs, job)
 		}
-
-		rp := job.RepGroup
-		s.rpl.Add(rp, itemdef.Key)
-		repGroupKeys = append(repGroupKeys, repGroupKey{repGroup: rp, key: itemdef.Key})
 	}
-	s.rpl.Unlock()
 
-	for _, rgk := range repGroupKeys {
-		s.rememberRepGroupSubscriptionKey(rgk.repGroup, rgk.key)
-	}
+	s.recordJobRepGroupKeys(jobs)
 }
 
 // prepareInputJobs locks and initialises each input job (env key, retry count,
@@ -6015,9 +6106,7 @@ func (s *Server) createJobs(
 	rcSet := s.rc != ""
 	s.racmutex.RUnlock()
 
-	var queuedDups int
-
-	inputJobs, queuedDups = s.jobsNotAlreadyQueued(inputJobs, ignoreComplete)
+	inputJobs, queuedDups, newRepGroupDups := s.jobsNotAlreadyQueued(inputJobs, ignoreComplete)
 
 	// create itemdefs for the jobs
 	limitGroups, inputJobKeys := s.prepareInputJobs(inputJobs, envkey, rcSet)
@@ -6040,6 +6129,10 @@ func (s *Server) createJobs(
 
 	jobsToQueue, jobsToUpdate, dups, err = s.db.storeNewJobs(ctx, inputJobs, ignoreComplete)
 	if err != nil {
+		return added, dups, warnings, ErrDBError, err
+	}
+
+	if err = s.recordQueuedRepGroups(ctx, newRepGroupDups); err != nil {
 		return added, dups, warnings, ErrDBError, err
 	}
 

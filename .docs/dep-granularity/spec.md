@@ -1131,6 +1131,10 @@ comment to name its one production caller, `queueNewJobItems`
    the decoded record would release those waiters at the next restart
    regardless. Matching it at add time keeps the running manager and its own
    restart in agreement.
+   *Superseded by `.docs/bugfixes/260929-readd-overwrites-running-job.md`:* a
+   `--rerun` add of a live job no longer writes its fresh copy over the stored
+   record, so the job keeps `G`, the waiter stays blocked, and a restart agrees.
+   Test 6 below correspondingly now has both J and the new job as members.
 6. Given live group `G` whose only member is job J, and a live waiter W on `G`,
    when one `Client.Add` call carries both J re-added with `--rerun` and no
    `DepGroups` (dropping `G`) and a new job declaring `DepGroups: ["G"]`, then W

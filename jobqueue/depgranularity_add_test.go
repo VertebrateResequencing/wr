@@ -280,14 +280,14 @@ func TestDepGranularityAddNeverSeenGroupMember(t *testing.T) {
 	})
 }
 
-// TestDepGranularityAddRerunDropsDepGroup covers D1 acceptance test 5: re-adding
-// a live job with --rerun and no DepGroups leaves its group with no live member,
-// which releases that group's waiters at add time. That is a documented
-// consequence, not a bug: the old lookups are never deleted on this path, so a
-// rebuild from the decoded record would release those waiters at the next restart
-// regardless, and matching it here keeps the running manager and its own restart
-// in agreement.
-func TestDepGranularityAddRerunDropsDepGroup(t *testing.T) {
+// TestDepGranularityAddRerunKeepsDepGroup covers D1 acceptance test 5, as
+// revised by .docs/bugfixes/260929-readd-overwrites-running-job.md: re-adding a
+// live job with --rerun and no DepGroups is a duplicate that changes nothing
+// about the queued job. It stays a member of its group, so that group's waiters
+// stay blocked, and its stored record keeps the group, so the manager's own
+// restart agrees. (It used to release the waiters, because the re-add wrote its
+// fresh copy over the live job's stored record.)
+func TestDepGranularityAddRerunKeepsDepGroup(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
@@ -295,28 +295,34 @@ func TestDepGranularityAddRerunDropsDepGroup(t *testing.T) {
 	ctx := context.Background()
 
 	Convey("Given a dep group whose only live member has a waiter", t, func() {
-		d, jq, _, waiter := dgaOneMemberFixture(ctx)
+		d, jq, member, waiter := dgaOneMemberFixture(ctx)
 
 		defer d.stop(ctx)
 
 		defer disconnect(jq)
 
-		Convey("Re-adding that member with --rerun and no dep groups releases the waiter at add time", func() {
+		Convey("Re-adding that member with --rerun and no dep groups leaves it a member and the waiter blocked", func() {
 			rerun := dgaMemberJob(d, dgaGroup, dgaSoleName)
 			rerun.DepGroups = nil
 
 			dgaAddRerun(jq, []*Job{rerun})
 
-			So(d.server.depGroups.hasMembers(dgaGroup), ShouldBeFalse)
-			So(dgaItemState(d.server, waiter.Key()), ShouldEqual, queue.ItemStateReady)
+			So(d.server.depGroups.hasMembers(dgaGroup), ShouldBeTrue)
+			So(dgaItemState(d.server, waiter.Key()), ShouldEqual, queue.ItemStateDependent)
+
+			stored, err := d.server.db.decodeJob(liveJobRecord(d.server, member.Key()))
+			So(err, ShouldBeNil)
+			So(stored.DepGroups, ShouldResemble, []string{dgaGroup})
 		})
 	})
 }
 
 // TestDepGranularityAddDropAndJoinInOneCall covers D1 acceptance test 6's
-// end-to-end outcome: one call that both drops a group from one job and adds
-// another member of it leaves that group's waiters blocked, and releases them
-// only once the new member completes.
+// end-to-end outcome: one call that both re-adds a member without its group and
+// adds another member of it leaves that group's waiters blocked. Since
+// .docs/bugfixes/260929-readd-overwrites-running-job.md the re-add of the queued
+// member is a duplicate that changes nothing, so it stays a member too, and the
+// waiters are released only once both members complete.
 //
 // It cannot discriminate the two-pass ordering, and not by timing accident:
 // joining the group puts it in prepareNewJobs' declared-depGroups set
@@ -333,13 +339,13 @@ func TestDepGranularityAddDropAndJoinInOneCall(t *testing.T) {
 	ctx := context.Background()
 
 	Convey("Given a dep group whose only live member has a waiter", t, func() {
-		d, jq, _, waiter := dgaOneMemberFixture(ctx)
+		d, jq, member, waiter := dgaOneMemberFixture(ctx)
 
 		defer d.stop(ctx)
 
 		defer disconnect(jq)
 
-		Convey("One call dropping the group from that member and adding a new one keeps the waiter blocked", func() {
+		Convey("One call re-adding that member without the group and adding a new one keeps the waiter blocked", func() {
 			rerun := dgaMemberJob(d, dgaGroup, dgaSoleName)
 			rerun.DepGroups = nil
 
@@ -350,11 +356,19 @@ func TestDepGranularityAddDropAndJoinInOneCall(t *testing.T) {
 
 			So(dgaItemState(d.server, waiter.Key()), ShouldEqual, queue.ItemStateDependent)
 			So(d.server.depGroups.hasMembers(dgaGroup), ShouldBeTrue)
-			So(d.server.depGroups.memberships(), ShouldEqual, 1)
-			So(dgaGroupMembers(d.server.depGroups, dgaGroup), ShouldResemble, []string{joiner.Key()})
+			So(d.server.depGroups.memberships(), ShouldEqual, 2)
 
-			Convey("And releases it once that new member completes", func() {
+			members := dgaGroupMembers(d.server.depGroups, dgaGroup)
+			So(members, ShouldHaveLength, 2)
+			So(members, ShouldContain, member.Key())
+			So(members, ShouldContain, joiner.Key())
+
+			Convey("And releases it once both members complete", func() {
 				dgaExecuteReserved(ctx, d, jq, joiner.Key())
+
+				So(dgaItemState(d.server, waiter.Key()), ShouldEqual, queue.ItemStateDependent)
+
+				dgaExecuteReserved(ctx, d, jq, member.Key())
 
 				So(dgaItemState(d.server, waiter.Key()), ShouldEqual, queue.ItemStateReady)
 			})

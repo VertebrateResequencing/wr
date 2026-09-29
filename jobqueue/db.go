@@ -2030,6 +2030,87 @@ func (db *db) enqueueChangeLocked(key string, encoded []byte, waiter chan error)
 	}
 }
 
+// putNewLiveJobs is putEncodedJobs for the jobs of an add, except that it
+// leaves alone the live record of any job that has been handed out to a runner
+// (see liveRecordHandedOut).
+//
+// The add path already leaves out every job the in-memory queue holds, so this
+// only matters when two adds of the same new job race: both find it absent from
+// the queue, the first queues it and it is reserved, and the second's fresh copy
+// is written after that reservation. The second add then finds the job queued
+// and counts it a duplicate, so keeping the stored record is what keeps the
+// database agreeing with memory; replacing it would have a manager that crashed
+// recover the job as never started and run it a second time.
+//
+// A live record that cannot be decoded is replaced, since the fresh copy is the
+// only readable one there is. You must be inside a bolt transaction when calling
+// this.
+func (db *db) putNewLiveJobs(tx *bolt.Tx, bucket []byte, encodes sobsd) error {
+	bjobs := tx.Bucket(bucket)
+	for _, doublet := range encodes {
+		if existing := bjobs.Get(doublet[0]); existing != nil {
+			if job, err := db.decodeJob(existing); err == nil && liveRecordHandedOut(job) {
+				continue
+			}
+		}
+
+		if err := bjobs.Put(doublet[0], doublet[1]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// liveRecordHandedOut says whether job, decoded from a live record, has been
+// handed out to a runner: it is reserved, running, lost, delayed, buried or
+// suspended, or has been attempted or started. A complete job's live record is
+// one a dependency re-run put there for it to run again, so it does not count.
+func liveRecordHandedOut(job *Job) bool {
+	switch job.State {
+	case JobStateComplete:
+		return false
+	case JobStateReserved, JobStateRunning, JobStateLost, JobStateDelayed,
+		JobStateBuried, JobStateSuspended:
+		return true
+	default:
+		return job.Attempts > 0 || !job.StartTime.IsZero()
+	}
+}
+
+// storeRepGroupLookups stores the RepGroup->key lookup of each of the given
+// jobs, and records their RepGroups, so they can be found by those RepGroups
+// once complete. It stores nothing else about them: it is for jobs that are
+// already queued and have been added again under another RepGroup.
+func (db *db) storeRepGroupLookups(ctx context.Context, jobs []*Job) error {
+	rgLookups := make(sobsd, 0, len(jobs))
+
+	var rgs sobsd
+
+	seen := make(map[string]bool)
+
+	for _, job := range jobs {
+		job.RLock()
+		repGroup := job.RepGroup
+		job.RUnlock()
+
+		rgLookups = append(rgLookups, [2][]byte{db.generateLookupKey(repGroup, []byte(job.Key())), nil})
+
+		if !seen[repGroup] {
+			seen[repGroup] = true
+			rgs = append(rgs, [2][]byte{[]byte(repGroup), nil})
+		}
+	}
+
+	if err := db.storeNewJobData(ctx, nil, rgLookups, nil, nil, rgs); err != nil {
+		return err
+	}
+
+	db.backupDirty.Store(true)
+
+	return nil
+}
+
 // foldedOp is one caller's pending write, waiting for a coalescing writer to
 // persist it and hand back that caller's own outcome. Both synchronous coalescing
 // writers' ops (archiveOp, newJobsOp) are one.
@@ -2582,7 +2663,7 @@ func (db *db) newJobStores(encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rg
 		}
 	}
 
-	return append(stores, newJobStore{bucketJobsLive, encodedJobs, db.putEncodedJobs})
+	return append(stores, newJobStore{bucketJobsLive, encodedJobs, db.putNewLiveJobs})
 }
 
 // storeNewJobDataChunked stores each bucket's data in storeBatched-sized write
