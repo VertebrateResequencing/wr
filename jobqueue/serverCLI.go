@@ -173,7 +173,7 @@ func (s *Server) subscriptionCatchUpRepGroupRecords(ctx context.Context,
 	repGroup string,
 ) (map[string]subscriptionCatchUpRecord, bool, error) {
 	records := make(map[string]subscriptionCatchUpRecord)
-	queueTerminal := addSubscriptionCatchUpRepGroupRecords(records, s.getQueueJobsByRepGroup(ctx, repGroup, false))
+	queueTerminal := addSubscriptionCatchUpRepGroupRecords(records, s.getQueueJobsByRepGroup(ctx, repGroup, false, nil))
 
 	complete, err := s.db.retrieveCompleteJobsByRepGroup(repGroup)
 	if err != nil {
@@ -2402,28 +2402,7 @@ func (s *Server) setItemDelay(ctx context.Context, key string, maxRetries, until
 // for the many get* methods in handleRequest, we do this common stuff to get
 // an item's job from the in-memory queue formulated for the client.
 func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, getEnv bool) *Job {
-	sjob := item.Data().(*Job) //nolint:errcheck,forcetypeassert // queue only ever stores *Job
-	sjob.RLock()
-
-	state := s.itemStateToJobState(item.Stats().State, sjob.Lost)
-	if state == JobStateReserved && !sjob.StartTime.IsZero() {
-		state = JobStateRunning
-	}
-
-	// we're going to fill in some properties of the Job and return it to client,
-	// but don't want those properties set here for us, so we make a new Job and
-	// fill stuff in that
-	job := copyJobForClient(sjob, state)
-
-	if getStd && (state == JobStateReserved || state == JobStateRunning || state == JobStateLost) {
-		job.StdErrC = sjob.StdErrC
-		job.StdOutC = sjob.StdOutC
-	}
-
-	sjob.RUnlock()
-	s.jobPopulateStdEnv(ctx, job, getStd, getEnv)
-
-	return job
+	return s.itemToJobIfAdmitted(ctx, item, getStd, getEnv, nil)
 }
 
 // copyJobForClient returns a copy of sjob (which must be read-locked) with the
@@ -2484,6 +2463,49 @@ func copyJobForClient(sjob *Job, state JobState) *Job {
 		BsubMode:              sjob.BsubMode,
 		BsubID:                sjob.BsubID,
 	}
+}
+
+// clientJobState is the state a client copy of item's job, sjob, which must be
+// read-locked, reports.
+func (s *Server) clientJobState(item *queue.Item, sjob *Job) JobState {
+	state := s.itemStateToJobState(item.State(), sjob.Lost)
+	if state == JobStateReserved && !sjob.StartTime.IsZero() {
+		state = JobStateRunning
+	}
+
+	return state
+}
+
+// itemToJobIfAdmitted is itemToJob, except that it returns nil without making
+// the (expensive) client copy if the given filter does not admit the job. A nil
+// filter admits every job.
+func (s *Server) itemToJobIfAdmitted(ctx context.Context, item *queue.Item, getStd bool, getEnv bool,
+	filter *liveJobFilter) *Job {
+	sjob := item.Data().(*Job) //nolint:errcheck,forcetypeassert // queue only ever stores *Job
+	sjob.RLock()
+
+	state := s.clientJobState(item, sjob)
+
+	if !filter.admits(sjob, state) {
+		sjob.RUnlock()
+
+		return nil
+	}
+
+	// we're going to fill in some properties of the Job and return it to client,
+	// but don't want those properties set here for us, so we make a new Job and
+	// fill stuff in that
+	job := copyJobForClient(sjob, state)
+
+	if getStd && (state == JobStateReserved || state == JobStateRunning || state == JobStateLost) {
+		job.StdErrC = sjob.StdErrC
+		job.StdOutC = sjob.StdOutC
+	}
+
+	sjob.RUnlock()
+	s.jobPopulateStdEnv(ctx, job, getStd, getEnv)
+
+	return job
 }
 
 // jobPopulateStdEnv fills in the StdOutC, StdErrC and EnvC values for a Job,
