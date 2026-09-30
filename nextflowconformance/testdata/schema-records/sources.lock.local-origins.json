@@ -1,0 +1,121 @@
+{
+  "schema": 1,
+  "id": "SOURCES_LOCK",
+  "origin": "https://example.org/pinned",
+  "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "tree": {
+    "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "origin": "https://example.org/tree",
+    "truncated": false,
+    "entries": [
+      {
+        "path": "input.txt",
+        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "mode": "100644",
+        "type": "blob"
+      }
+    ]
+  },
+  "files": [
+    {
+      "path": "input.txt",
+      "blob": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "mode": "100644",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bytes": 3,
+      "state": "selected",
+      "rationale": null,
+      "review_id": null
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "JAVA",
+      "role": "Java",
+      "origin": "local:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "file": {
+        "path": "java/release",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 3
+      },
+      "packaging": "file",
+      "coordinate": null,
+      "dependencies": []
+    },
+    {
+      "id": "POM",
+      "role": "dependency-metadata",
+      "origin": "https://example.org/example-1.0.pom",
+      "file": {
+        "path": "example-1.0.pom",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 3
+      },
+      "packaging": "file",
+      "coordinate": "org.example:example:1.0",
+      "dependencies": []
+    },
+    {
+      "id": "RUNTIME",
+      "role": "runtime",
+      "origin": "https://github.com/nextflow-io/nextflow/releases/download/v26.04.6/nextflow-26.04.6-dist",
+      "file": {
+        "path": "nextflow-26.04.6-dist",
+        "sha256": "182a63c74074e2dc7956ffa3c8cd59de952ed2c44394e21faf5e1736b945444c",
+        "bytes": 42355106
+      },
+      "packaging": "opaque-dist",
+      "coordinate": null,
+      "dependencies": [
+        "JAVA",
+        "TOOL"
+      ]
+    },
+    {
+      "id": "TOOL",
+      "role": "environment-tool",
+      "origin": "local:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "file": {
+        "path": "tools/bash",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 3
+      },
+      "packaging": "file",
+      "coordinate": null,
+      "dependencies": []
+    }
+  ],
+  "environment": {
+    "java_home": "java",
+    "java_version": "openjdk version \"21.0.12\"",
+    "os": "linux",
+    "arch": "amd64",
+    "java_files": [
+      {
+        "file": {
+          "path": "input.txt",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bytes": 3
+        },
+        "link": null,
+        "mode": 420
+      }
+    ],
+    "variables": [
+      {
+        "key": "NXF_OFFLINE",
+        "value": "true"
+      }
+    ],
+    "dependencies": [
+      {
+        "id": "DEP",
+        "group": "org.example",
+        "name": "example",
+        "version": "1.0",
+        "artifact_id": null,
+        "pom_id": "POM"
+      }
+    ]
+  }
+}

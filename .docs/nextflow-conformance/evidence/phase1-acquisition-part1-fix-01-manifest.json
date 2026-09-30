@@ -1,0 +1,610 @@
+{
+  "status": "IMPLEMENTED for corrected part1 only; pending independent review",
+  "date": "2026-09-28",
+  "head": "6121575cb42a3342f483618d71831cafe2e209a3",
+  "branch": "nextflowdsl",
+  "findings": [
+    "R1",
+    "R2"
+  ],
+  "results": {
+    "focused_tests": 27,
+    "schemas": 11,
+    "schema_mutations": 1190,
+    "reviewer_probe_violations": 0,
+    "expanded_public_cli_invocations": 23,
+    "owned_lint": 0,
+    "deferred_part2_lint": 14,
+    "actual_candidate": null
+  },
+  "report": {
+    "path": ".docs/nextflow-conformance/evidence/phase1-acquisition-part1-fix-01.md",
+    "bytes": 6104,
+    "sha256": "7c7b9062665c7565168f4948c766e30a8799f71e77e90a69deb7d6402f77c9f0"
+  },
+  "probe": {
+    "path": ".docs/nextflow-conformance/evidence/phase1-acquisition-part1-fix-01-probes.txt",
+    "bytes": 17495,
+    "sha256": "7a801a736277ee79a702244056b08ef3dee24692b96236f320e36d30d8a5e84d"
+  },
+  "changed_source": [
+    {
+      "path": "nextflowconformance/source.go",
+      "bytes": 38410,
+      "sha256": "9a7c2059721f24f51c8ff65f00818c90838dedcd4a679d2e12367f180927e0d0"
+    },
+    {
+      "path": "nextflowconformance/source_test.go",
+      "bytes": 27308,
+      "sha256": "eb2f234cc2521a35b5cf538189e4c5138349ec2942b33a4f764c39184d7c3f3b"
+    }
+  ],
+  "original_source": [
+    {
+      "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/original-source.go.txt",
+      "bytes": 37594,
+      "sha256": "b68501af312125bedda790765db66cf723fb737eee9fa9be9f440cddbe24aa9a"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/original-source_test.go.txt",
+      "bytes": 22117,
+      "sha256": "0bffe6a782246e5ada2c86104e2ea856bafcd7d2cd1a72c751a3480f4f359174"
+    }
+  ],
+  "binaries": [
+    {
+      "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/red/wr-nextflow-conformance",
+      "bytes": 11358376,
+      "sha256": "4af031bb6bb37745291dcc5344a5a60afd1c4f5062a5489af7c57424211d5c2b"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/green-review/wr-nextflow-conformance",
+      "bytes": 11363712,
+      "sha256": "fd3398f3d3990b3f9c5143f727772195b83dd3a9e441d4645476da340e2971f5"
+    }
+  ],
+  "commands": [
+    {
+      "name": "red-regressions",
+      "argv": [
+        "timeout",
+        "4m",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "CGO_ENABLED=1",
+        "go",
+        "test",
+        "-tags",
+        "netgo",
+        "-count=1",
+        "./nextflowconformance",
+        "-run",
+        "^TestNextflow(CandidateInputs|ArchiveRootSafety)$",
+        "-v"
+      ],
+      "exit": 1,
+      "log": {
+        "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/red-regressions.log",
+        "bytes": 143729,
+        "sha256": "37433cdb74c078071e3ba95f7d8429db334c1db33cef40078dda1ac5212c97dc"
+      }
+    },
+    {
+      "name": "red-root-regression",
+      "argv": [
+        "timeout",
+        "4m",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "CGO_ENABLED=1",
+        "go",
+        "test",
+        "-tags",
+        "netgo",
+        "-count=1",
+        "./nextflowconformance",
+        "-run",
+        "^TestNextflowArchiveRootSafety$",
+        "-v"
+      ],
+      "exit": 1,
+      "log": {
+        "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/red-root-regression.log",
+        "bytes": 4012,
+        "sha256": "577c789c3c71cbcaf0bc772a2215664ddcc9e586af77d75bb7da074412fb7302"
+      }
+    },
+    {
+      "name": "focused",
+      "argv": [
+        "timeout",
+        "10m",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "CGO_ENABLED=1",
+        "go",
+        "test",
+        "-tags",
+        "netgo",
+        "-count=1",
+        "./nextflowconformance",
+        "./cmd/wr-nextflow-conformance",
+        "-v"
+      ],
+      "exit": 0,
+      "log": {
+        "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/focused.log",
+        "bytes": 137759,
+        "sha256": "33a98e78d7e6198f045a5c10e324bb523e0231cb9af8a59e4844bf391bf7a86e"
+      }
+    },
+    {
+      "name": "schemas",
+      "argv": [
+        "timeout",
+        "30s",
+        "python3",
+        "nextflowconformance/testdata/check_schemas.py"
+      ],
+      "exit": 0,
+      "log": {
+        "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/schemas.log",
+        "bytes": 60377,
+        "sha256": "595955540ec9f5be7430ef338012f1aeddc89268e590fac51d0167267385e1ee"
+      }
+    },
+    {
+      "name": "lint-autofix",
+      "argv": [
+        "timeout",
+        "5m",
+        "env",
+        "GOTOOLCHAIN=go1.26.3",
+        ".tmp/agent/bin/golangci-lint",
+        "run",
+        "--fix",
+        "./nextflowconformance/...",
+        "./cmd/wr-nextflow-conformance/..."
+      ],
+      "exit": 1,
+      "log": {
+        "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/lint-autofix.log",
+        "bytes": 4384,
+        "sha256": "021e3f6f89d7238eafb9777d74be7ab5aff2f76d3d23258a3df9c57ed287ec7b"
+      }
+    },
+    {
+      "name": "lint",
+      "argv": [
+        "timeout",
+        "5m",
+        "env",
+        "GOTOOLCHAIN=go1.26.3",
+        ".tmp/agent/bin/golangci-lint",
+        "run",
+        "./nextflowconformance/...",
+        "./cmd/wr-nextflow-conformance/..."
+      ],
+      "exit": 1,
+      "log": {
+        "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/lint.log",
+        "bytes": 3891,
+        "sha256": "e5f03f2ef283e0aad96d07ee3be79ec153cb7a9ebf2245a75734950a5fc1b870"
+      }
+    },
+    {
+      "name": "red-review-probes",
+      "argv": [
+        "timeout",
+        "4m",
+        "python3",
+        ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/red-review-probes.txt"
+      ],
+      "exit": 1,
+      "log": {
+        "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/red-review-probes.log",
+        "bytes": 5512,
+        "sha256": "663c607edcd680141189d6a6c65e5254111e478ea13e4faf5456313aed1ac4ef"
+      }
+    },
+    {
+      "name": "green-review-probes",
+      "argv": [
+        "timeout",
+        "4m",
+        "python3",
+        ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/green-review-probes.txt"
+      ],
+      "exit": 0,
+      "log": {
+        "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/green-review-probes.log",
+        "bytes": 4970,
+        "sha256": "4aa712817dcd84978b55848000d9d9c3ed0b6b0548b7c15d55721afb1cefec2c"
+      }
+    },
+    {
+      "name": "build-green",
+      "argv": [
+        "timeout",
+        "2m",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "CGO_ENABLED=1",
+        "go",
+        "build",
+        "-tags",
+        "netgo",
+        "-o",
+        ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/green-review/wr-nextflow-conformance",
+        "./cmd/wr-nextflow-conformance"
+      ],
+      "exit": 0,
+      "log": {
+        "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/build-green.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "build-red",
+      "argv": [
+        "timeout",
+        "2m",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "CGO_ENABLED=1",
+        "go",
+        "build",
+        "-tags",
+        "netgo",
+        "-o",
+        ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/red/wr-nextflow-conformance",
+        "./cmd/wr-nextflow-conformance"
+      ],
+      "exit": 0,
+      "record": "tool execution before edits"
+    },
+    {
+      "name": "green-expanded-probes",
+      "argv": [
+        "timeout",
+        "4m",
+        "python3",
+        ".docs/nextflow-conformance/evidence/phase1-acquisition-part1-fix-01-probes.txt",
+        "--binary",
+        ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/green-review/wr-nextflow-conformance",
+        "--scratch",
+        ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/green-expanded"
+      ],
+      "exit": 0,
+      "log": {
+        "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/green-expanded-probes.log",
+        "bytes": 19879,
+        "sha256": "ba315634619ba7980172ce3807403e854b5b7046247364f0141e2d24db57dacb"
+      }
+    },
+    {
+      "name": "cleanorder-source",
+      "argv": [
+        "timeout",
+        "20s",
+        "cleanorder",
+        "-min-diff",
+        "nextflowconformance/source.go"
+      ],
+      "exit": 0,
+      "log": {
+        "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/cleanorder-source.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "cleanorder-tests",
+      "argv": [
+        "timeout",
+        "20s",
+        "cleanorder",
+        "-min-diff",
+        "nextflowconformance/source_test.go"
+      ],
+      "exit": 0,
+      "log": {
+        "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/cleanorder-tests.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "go-version",
+      "argv": [
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "go",
+        "version"
+      ],
+      "exit": 0,
+      "log": {
+        "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/go-version.log",
+        "bytes": 32,
+        "sha256": "f554cfdb85411c2bb1d503df3f53dfbad1f753eb8271938833166a5d26a7547c"
+      }
+    },
+    {
+      "name": "lint-version",
+      "argv": [
+        "env",
+        "GOTOOLCHAIN=go1.26.3",
+        ".tmp/agent/bin/golangci-lint",
+        "version"
+      ],
+      "exit": 0,
+      "log": {
+        "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/lint-version.log",
+        "bytes": 154,
+        "sha256": "c616f4e39cf583e0941c1dfc70cb43c8ca2057820091b7acdbc78cc396c418f3"
+      }
+    }
+  ],
+  "runs": [
+    {
+      "name": "red",
+      "run": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/fix-part1-01/red/nextflow-probes-q7et_m_y",
+      "results": {
+        "path": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/fix-part1-01/red/nextflow-probes-q7et_m_y/results.json",
+        "bytes": 4997,
+        "sha256": "b48d9363cca569983d34c029d185e3496c6affdc5ffa9da785d0286d81c9dc49"
+      },
+      "captures": {
+        "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/red-cli-captures.json",
+        "bytes": 6988,
+        "sha256": "bb6544c0a4f2af596eca27f42b125f3f89380234846ac1c453688075bc08b2c7"
+      },
+      "inventory": {
+        "path": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/fix-part1-01/red/nextflow-probes-q7et_m_y/artifact-tree.json",
+        "bytes": 2843536,
+        "sha256": "5972106a82d3eef8d26c7e0bea5673b41d1b7aaf191271a8db0f7872dffff38d"
+      },
+      "entries": 10868,
+      "regular_files": 8644,
+      "file_bytes": 260437893,
+      "inventory_rehash": "PASS",
+      "commands": 7,
+      "expected_failure_results": [
+        {
+          "label": "candidate-alias-acquire",
+          "exit": 0,
+          "diagnostics": [],
+          "input_overwritten": true,
+          "input_sha256_before": "032413f4266a50ef438a8a19fb5daefec7c52e0067daaab0086b4d780433e2e5",
+          "input_sha256_after": "d16c779bb1a1a24e9e5a46cf615f69309275f5763b83aaf4b81c2e6439d8a212",
+          "expected_exit": 2
+        },
+        {
+          "label": "unsafe-root-symlink-acquire",
+          "exit": 0,
+          "diagnostics": [],
+          "previous_candidate_replaced": true,
+          "outside_written": false,
+          "expected_exit": 2
+        }
+      ]
+    },
+    {
+      "name": "green-review",
+      "run": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/fix-part1-01/green-review/nextflow-probes-vqcwiizw",
+      "results": {
+        "path": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/fix-part1-01/green-review/nextflow-probes-vqcwiizw/results.json",
+        "bytes": 4538,
+        "sha256": "4b911ca16877a2e709e4722942d2fedc7edb9decfed50e51ee5d43b57a3251f6"
+      },
+      "captures": {
+        "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/green-review-cli-captures.json",
+        "bytes": 6181,
+        "sha256": "1f9a86accc9631b40502459126898e55fade15484b4d5b68bc334647091bf142"
+      },
+      "inventory": {
+        "path": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/fix-part1-01/green-review/nextflow-probes-vqcwiizw/artifact-tree.json",
+        "bytes": 935707,
+        "sha256": "234453f7bf741362fca4d6cd6223aa590c0d2b412ebc94c99f58c4520afec3e6"
+      },
+      "entries": 3678,
+      "regular_files": 2923,
+      "file_bytes": 96821043,
+      "inventory_rehash": "PASS",
+      "commands": 6,
+      "expected_failure_results": [
+        {
+          "label": "candidate-alias-acquire",
+          "exit": 2,
+          "diagnostics": [
+            "E_SOURCE_PATH"
+          ],
+          "input_overwritten": false,
+          "input_sha256_before": "032413f4266a50ef438a8a19fb5daefec7c52e0067daaab0086b4d780433e2e5",
+          "input_sha256_after": "032413f4266a50ef438a8a19fb5daefec7c52e0067daaab0086b4d780433e2e5",
+          "expected_exit": 2
+        },
+        {
+          "label": "unsafe-root-symlink-acquire",
+          "exit": 2,
+          "diagnostics": [
+            "E_SOURCE_PATH"
+          ],
+          "previous_candidate_replaced": false,
+          "outside_written": false,
+          "expected_exit": 2
+        }
+      ]
+    },
+    {
+      "name": "green-expanded",
+      "run": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/fix-part1-01/green-expanded/nextflow-probes-p7k3ltkb",
+      "results": {
+        "path": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/fix-part1-01/green-expanded/nextflow-probes-p7k3ltkb/results.json",
+        "bytes": 18731,
+        "sha256": "2a73f27076dae0e087fcc319d6b61116fcfde54fa83e28a736514795edca9d8e"
+      },
+      "captures": {
+        "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/green-expanded-cli-captures.json",
+        "bytes": 23810,
+        "sha256": "0324a003e4ca93aa5276d847c0881cb0cc97acca9f1a74c194633672d25f7ebd"
+      },
+      "inventory": {
+        "path": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/fix-part1-01/green-expanded/nextflow-probes-p7k3ltkb/artifact-tree.json",
+        "bytes": 5602790,
+        "sha256": "2e7a321ccf24bad96e1ce4c4d96edaca65ab6084a704f9ffcb5a4a67bc2d2190"
+      },
+      "entries": 21793,
+      "regular_files": 17335,
+      "file_bytes": 533319852,
+      "inventory_rehash": "PASS",
+      "commands": 23,
+      "expected_failure_results": [
+        {
+          "label": "candidate-alias-acquire",
+          "exit": 2,
+          "diagnostics": [
+            "E_SOURCE_PATH"
+          ],
+          "input_overwritten": false,
+          "input_sha256_before": "032413f4266a50ef438a8a19fb5daefec7c52e0067daaab0086b4d780433e2e5",
+          "input_sha256_after": "032413f4266a50ef438a8a19fb5daefec7c52e0067daaab0086b4d780433e2e5",
+          "expected_exit": 2,
+          "cache_preserved": true
+        },
+        {
+          "label": "unsafe-root-symlink-acquire",
+          "exit": 2,
+          "diagnostics": [
+            "E_SOURCE_PATH"
+          ],
+          "previous_candidate_replaced": false,
+          "outside_written": false,
+          "expected_exit": 2,
+          "cache_preserved": true
+        },
+        {
+          "label": "protected-java-existing",
+          "exit": 2,
+          "diagnostics": [
+            "E_SOURCE_PATH"
+          ],
+          "expected_exit": 2,
+          "cache_preserved": true,
+          "corpus_preserved": true
+        },
+        {
+          "label": "protected-java-new",
+          "exit": 2,
+          "diagnostics": [
+            "E_SOURCE_PATH"
+          ],
+          "expected_exit": 2,
+          "cache_preserved": true,
+          "corpus_preserved": true
+        },
+        {
+          "label": "protected-source-existing",
+          "exit": 2,
+          "diagnostics": [
+            "E_SOURCE_PATH"
+          ],
+          "expected_exit": 2,
+          "cache_preserved": true,
+          "corpus_preserved": true
+        },
+        {
+          "label": "protected-source-new",
+          "exit": 2,
+          "diagnostics": [
+            "E_SOURCE_PATH"
+          ],
+          "expected_exit": 2,
+          "cache_preserved": true,
+          "corpus_preserved": true
+        },
+        {
+          "label": "protected-artifact-POM",
+          "exit": 2,
+          "diagnostics": [
+            "E_SOURCE_PATH"
+          ],
+          "expected_exit": 2,
+          "cache_preserved": true,
+          "corpus_preserved": true
+        },
+        {
+          "label": "protected-artifact-RUNTIME",
+          "exit": 2,
+          "diagnostics": [
+            "E_SOURCE_PATH"
+          ],
+          "expected_exit": 2,
+          "cache_preserved": true,
+          "corpus_preserved": true
+        },
+        {
+          "label": "protected-artifact-SOURCE",
+          "exit": 2,
+          "diagnostics": [
+            "E_SOURCE_PATH"
+          ],
+          "expected_exit": 2,
+          "cache_preserved": true,
+          "corpus_preserved": true
+        }
+      ]
+    }
+  ],
+  "preservation_audit": {
+    "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/preservation-audit.json",
+    "bytes": 16121,
+    "sha256": "276f8fc10887a93a957ab1acf7e95cbdf6760ddb73e7f998442e5c3f280ffcb7"
+  },
+  "lint_ownership": {
+    "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/lint-ownership.json",
+    "bytes": 3491,
+    "sha256": "95f5158ca6b8755a00cf1551e5fbccfef773cadef80558d200ac8f4a1045450f"
+  },
+  "diffs": [
+    {
+      "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/source.go.diff.txt",
+      "bytes": 2836,
+      "sha256": "6747047f79d77212da1a816791b97a98b3f485fea7a8f144c928cb6366cfac93"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/acquisition/fix-part1-01/source_test.go.diff.txt",
+      "bytes": 7175,
+      "sha256": "4641eb43a6e56c316b0f8a7e23d0f2379f285b8821ea7d420a18d8903ef0dd17"
+    }
+  ],
+  "test_inputs": [
+    {
+      "path": ".tmp/nextflow-conformance/test-inputs/nextflow-26.04.6-dist",
+      "bytes": 42355106,
+      "sha256": "182a63c74074e2dc7956ffa3c8cd59de952ed2c44394e21faf5e1736b945444c"
+    },
+    {
+      "path": ".tmp/nextflow-conformance/test-inputs/nextflow-source.tar.gz",
+      "bytes": 8094680,
+      "sha256": "f1c889c683094cbba5eda8fab701dac48624253f39c41a8e5361729f14c6ba11"
+    },
+    {
+      "path": ".tmp/nextflow-conformance/test-inputs/nextflow-tree.json",
+      "bytes": 1138642,
+      "sha256": "b5c8fbd548c057b40c136eccc2dce8ab252129f0f2ca21e9a2385f7d61540ea4"
+    }
+  ],
+  "discarded_intermediate": [
+    "root-header fixture in red-regressions.log and green-regressions.log also changed a PAX header; final fixture and red-root-regression.log supersede these root results"
+  ],
+  "scope_limits": [
+    "A1_05-A1_07 and actual acquisition/Java/closure/selectors remain part2",
+    "No shared CLI/model/schema changes",
+    "No Java, Nextflow or wr execution claim",
+    "No commits or pushes",
+    "Parent owns concurrent progress.md update"
+  ],
+  "writes_stopped_after_final_manifest": true
+}

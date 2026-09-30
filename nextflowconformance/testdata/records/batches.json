@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "id": "BATCHES",
+  "assigned_ids": [
+    "REQ"
+  ],
+  "depends_on": [],
+  "source_spans": [
+    {
+      "file": "input.txt",
+      "start": 0,
+      "end": 3,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "input.txt",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bytes": 3
+    }
+  ],
+  "commands": [
+    {
+      "command": "validate",
+      "suite": null,
+      "check": false
+    }
+  ],
+  "completion": [
+    "Every assigned record has a review."
+  ]
+}

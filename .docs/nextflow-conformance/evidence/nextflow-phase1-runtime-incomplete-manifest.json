@@ -1,0 +1,203 @@
+{
+  "status": "INCOMPLETE",
+  "required_next_work": "fresh approved shared-library closure correction and independent runtime review",
+  "commands": {
+    "red": {
+      "command": "timeout 10m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go test -tags netgo -count=1 -v ./nextflowconformance -run '^TestUAT_A1_06$'",
+      "exit": 1,
+      "log": "nextflow-red.log"
+    },
+    "focused": {
+      "command": "timeout 10m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go test -tags netgo -count=1 -json ./nextflowconformance ./cmd/wr-nextflow-conformance",
+      "exit": 0,
+      "log": "nextflow-full.jsonl",
+      "stderr": "nextflow-full.stderr",
+      "tests_passed": 32,
+      "uat_passes": [
+        "A1_01",
+        "A1_02",
+        "A1_03",
+        "A1_04",
+        "A1_05",
+        "A1_06",
+        "A1_07"
+      ]
+    },
+    "stock": {
+      "command": "timeout 2m python3 nextflowconformance/testdata/check_schemas.py",
+      "exit": 0,
+      "log": "nextflow-stock.log",
+      "schemas": 11,
+      "cases": 1243
+    },
+    "lint": {
+      "command": "timeout 10m env GOTOOLCHAIN=go1.26.3 .tmp/agent/bin/golangci-lint run --fix ./nextflowconformance/... ./cmd/wr-nextflow-conformance/...",
+      "exit": 0,
+      "log": "nextflow-lint-04.log",
+      "findings": 0
+    },
+    "cleanorder": {
+      "command": "cleanorder -min-diff nextflowconformance/source.go nextflowconformance/source_test.go",
+      "exit": 0,
+      "log": "nextflow-cleanorder.log"
+    },
+    "exec_trace": {
+      "command": "timeout 10m env NEXTFLOW_RUNTIME_EVIDENCE=/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition-part2/nextflow-retained strace -f -e trace=execve -o /home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition-part2/nextflow-execve.log /home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition-part2/nextflow-runtime.test -test.v -test.count=1 -test.timeout=9m -test.run '^TestUAT_A1_0[567]$'",
+      "cwd": "/home/ubuntu/wr/nextflowconformance",
+      "exit": 0,
+      "log": "nextflow-traced.log",
+      "trace": "nextflow-execve.log",
+      "nextflow_processes": 0,
+      "java_version_probes": 5
+    },
+    "startup": {
+      "arguments_file": "nextflow-startup-command.json",
+      "exit": 1,
+      "stdout": "nextflow-startup.stdout",
+      "stderr": "nextflow-startup.stderr",
+      "scope": "startup only; failed on missing tool shared libraries"
+    }
+  },
+  "changed_original_files": [
+    "nextflowconformance/source.go",
+    "nextflowconformance/source_test.go"
+  ],
+  "current_source": {
+    "nextflowconformance/source.go": {
+      "bytes": 44497,
+      "sha256": "af44f785478bed7e1623ffe339be85801d6655cd1216c7c1cc58434c941fcd5a"
+    },
+    "nextflowconformance/source_test.go": {
+      "bytes": 35210,
+      "sha256": "abb9460e8497fd2c7cb863f1fb4478fc0a1efbd43223e851b3cface9e45d6f9e"
+    }
+  },
+  "evidence": {
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-stock.log": {
+      "bytes": 62580,
+      "sha256": "6e9f54f99edc00d36ebf10441c3d178236cb6c9b1dd310ad6659005b367f7811"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-measure.py": {
+      "bytes": 2303,
+      "sha256": "7c6fd22328ff23ca057df9f6e448ebbd396dacfec06c1a0c53e69787dd9ef2c2"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-fixture-audit.json": {
+      "bytes": 610,
+      "sha256": "e04f8960302f4bc4d44d72281c5f1601117a5224dd012c5554f077789d285188"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-lint-01.log": {
+      "bytes": 3835,
+      "sha256": "03cc0a7835b8c34464ef7729a76451dd79d54892bd6f2f21c81136575f1508f0"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-execve.log": {
+      "bytes": 727147,
+      "sha256": "eae904ec1f2f0b2a212565ed7c91a6882c5ff03d7ee41ddaa42f583603bd8a64"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-initial-source.go": {
+      "bytes": 38647,
+      "sha256": "c4cd37b7555a3516ef56ef05332d2b140cdd4ce3e75b84a7537d6d3fe5f2abe9"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-artifact-inventory.json": {
+      "bytes": 166192,
+      "sha256": "28b2d41e4b5b49a4bc193e1d3afbf9da6ff92694908abc7ced251f670206655d"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-startup.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-startup-command.json": {
+      "bytes": 873,
+      "sha256": "8adab34290be222e0c81d3f2650e13ab1a31d2b805c745a170ab26b3926c954c"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-cleanorder.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-full.jsonl": {
+      "bytes": 189101,
+      "sha256": "18f7a778201cfb5e9c54bcf41414608c01388b852179981fff2b7f102a15963e"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-startup.stderr": {
+      "bytes": 387,
+      "sha256": "046a3aaee8bea51ea6a534765accd9dcb118d8d78e3c0cd910f1cc8b8d313eb1"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-full.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-part2-scope-measurement.json": {
+      "bytes": 1207,
+      "sha256": "247cd5e4d72bf43c1428c124462c4fbbe405c32064e58bcef00f96a1ba55fecf"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-image-library-probe.json": {
+      "bytes": 3745,
+      "sha256": "5a48211b01b18092a60685d9759266513c0982051e1f1f4e0982cb507a1b700d"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-lint-04.log": {
+      "bytes": 10,
+      "sha256": "e92606b0bf483111dff0a120c315ea165821348f31365020e2468a0059095c47"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-lint-02.log": {
+      "bytes": 1555,
+      "sha256": "20b487c2b58320f929fc7f39f4ee3f963a1cda84f4552ce41ef5657cfb8659ea"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-refine-02.py": {
+      "bytes": 5972,
+      "sha256": "3b3763d9cf54cded094c3b6bf5de72d1a5c52c58205c79a7f93218732ca61093"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-red.log": {
+      "bytes": 1334,
+      "sha256": "f0c201bccfeaa6663e8d65f109b5fb743c8bc2069742a6e7daa5b2072c510669"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-initial-hashes.json": {
+      "bytes": 4620,
+      "sha256": "dc236a0ff3a6f117b8c1433ec04be6dbfe1260586ddc562afab2577bca6da8c3"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-tool-libraries.json": {
+      "bytes": 16197,
+      "sha256": "5f39fb174eddc8427aad8aeed022d56a943523c373f9a3c7a0f7835aeae5656a"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-lint-03.log": {
+      "bytes": 209,
+      "sha256": "d0f2e5eb1ca326109372aa1f9f9872fdb3a65b757c6a3430a130d54ac49142c0"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-runtime-spans.json": {
+      "bytes": 12122,
+      "sha256": "6d3fee6871d0aa9bb274c3f0fefe79c7e2840f8b78cec660aa504be5df68df40"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-initial-source_test.go": {
+      "bytes": 27713,
+      "sha256": "c9a53f1d0251a2588a72d52571a8c9f5041958113e9c27a8d45e9706bbad883c"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-startup.exit": {
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-refine.py": {
+      "bytes": 7162,
+      "sha256": "d4b47e5fe2ceaaa99a19cf468cc7e7e141d0e34ec72b4a68e601270e2e725513"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-edit.py": {
+      "bytes": 8543,
+      "sha256": "a56ea609d5cb1f4df596bc5fcad59cea117aab81cc4f14221d6038a1a988a707"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-runtime.diff": {
+      "bytes": 37413,
+      "sha256": "ad801b0b02775e56a9bef6da229a310c9155d372ed367b55d46925771c2c96e6"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-green-01.log": {
+      "bytes": 13369,
+      "sha256": "7ec07d668b8198d9569774493990adca8f75432a4e82042914842acd70cd8c29"
+    },
+    ".tmp/agent/nextflow-conformance/acquisition-part2/nextflow-traced.log": {
+      "bytes": 11682,
+      "sha256": "89832073711f7ea2d7ac6d49b8f6e35159b80d58f3c2544a2881240d0ecbb492"
+    }
+  },
+  "input_map": "nextflow-runtime-spans.json",
+  "complete_diff": "nextflow-runtime.diff",
+  "report": ".docs/nextflow-conformance/evidence/nextflow-phase1-runtime-incomplete.md",
+  "scope_interpretation": "Required shared-library companions are environment-tool components with actual file records and explicit dependency edges; no new role or schema.",
+  "source_writes_stopped": true,
+  "input_map_requires_fresh_approval": true
+}

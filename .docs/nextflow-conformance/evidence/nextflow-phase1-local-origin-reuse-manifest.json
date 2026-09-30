@@ -1,0 +1,99 @@
+{
+  "result": "IMPLEMENTED",
+  "scope": "locked local-origin snapshot reuse; inert fixtures, no Java/tool execution",
+  "counts": {
+    "changed_functions": 7,
+    "new_test_functions": 2,
+    "success_cases": 1,
+    "failure_cases": 24,
+    "focused_test_functions_passed": 30,
+    "stock_schemas": 11,
+    "stock_cases": 1243,
+    "lint_deferred": 14,
+    "lint_owned": 0
+  },
+  "evidence": {
+    ".tmp/agent/nextflow-conformance/local-origin-reuse/correction.diff": {
+      "bytes": 10464,
+      "sha256": "95e254672350ee42c1f03121600361e58fff909a35b61b8833b40e47f51b6b33"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse/changed-functions.json": {
+      "bytes": 915,
+      "sha256": "40e3b61ca4a7965d8aa6312a1eab3563d6dbef9d638139bf5677ad384d77621a"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse/changed-functions.txt": {
+      "bytes": 9174,
+      "sha256": "a01e256bc97743b3d1050644a9889ea58a998432bf51124011ccd9d90ae6fe28"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse/provenance.json": {
+      "bytes": 2031,
+      "sha256": "98d46daca608118ec5e455af1edf75075392c36e7374f29489d78192e6b69906"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse/audit.json": {
+      "bytes": 1129,
+      "sha256": "2df892e39d6884e9ed8e28d3c805e3520afd5ef044bc467a28903dd03953503e"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse/commands.json": {
+      "bytes": 5531,
+      "sha256": "d18f4008c3b8547cab6e62ddd2130416c1cb4ae53bea6c622ebbad0f4de3eb1e"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse/red-final-replay.log": {
+      "bytes": 30691,
+      "sha256": "7d9d8a15b17d368ef68b4949aacb5ddea2cc029f4de285721177a1d8d508ec17"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse/green-full.log": {
+      "bytes": 177916,
+      "sha256": "19f9a42ff171bfe8ee25898c5d191ed997636951545c131defeea2757fceb187"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse/stock.log": {
+      "bytes": 62580,
+      "sha256": "6e9f54f99edc00d36ebf10441c3d178236cb6c9b1dd310ad6659005b367f7811"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse/lint-final.log": {
+      "bytes": 3891,
+      "sha256": "e2decd67b655bd555909039a7e57f342ef712987650580eadae1d3132a08f1f6"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse/provenance-probe.log": {
+      "bytes": 2815,
+      "sha256": "f689f9e7d809f7053209e720b4fa84a1c10943bd56ecef183878b0d892d4edd1"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse/protected-hashes.txt": {
+      "bytes": 510,
+      "sha256": "7385c1a28c6e0bac343fdf6f8faf226c439113fa13f8608936d4699810ad648f"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse/audit.py": {
+      "bytes": 4403,
+      "sha256": "c774525dadbbf211ef57e01e25ecd5e6a157dd53ac8d353b2cc0afe6eac15360"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse/evidence-overlay.json": {
+      "bytes": 170,
+      "sha256": "8609ac6c36a86a85f464a1b469973251a1e02a90b3b889b56b52a669e4391de8"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse/red-overlay.json": {
+      "bytes": 162,
+      "sha256": "34a454155743307254d38198882ca097fcb2fed18845db4940ab627a0b7275bc"
+    }
+  },
+  "source": {
+    "nextflowconformance/source.go": {
+      "bytes": 38647,
+      "sha256": "c4cd37b7555a3516ef56ef05332d2b140cdd4ce3e75b84a7537d6d3fe5f2abe9"
+    },
+    "nextflowconformance/source_test.go": {
+      "bytes": 27713,
+      "sha256": "c9a53f1d0251a2588a72d52571a8c9f5041958113e9c27a8d45e9706bbad883c"
+    },
+    "nextflowconformance/source_local_test.go": {
+      "bytes": 9178,
+      "sha256": "00c79d659f8eceb044638668e69d2ea2f0f0019fee82cb9c50a974c0cb1a97de"
+    }
+  },
+  "notes": [
+    "red.log first found invalid fixture dependency ordering; red-valid.log reproduces HTTPS rejection with valid fixtures",
+    "green-targeted and green-full-initial fail only two candidate request-count assertions; existing guard rejects before any HTTPS request",
+    "red-final-replay uses the original source.go with final regression tests and fails the intended local fetch defect",
+    "lint-final exactly matches the accepted fourteen deferred baseline diagnostics",
+    "test helper overlay retains t.TempDir fixture roots under repository evidence; production code and public CLI are unchanged",
+    "initial audit parser rejected single-line functions; corrected audit passes and covers all complete functions"
+  ]
+}

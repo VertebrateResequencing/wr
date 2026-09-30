@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "OBLIGATIONS",
+  "block_ids": [
+    "BLOCK"
+  ],
+  "facet": "error",
+  "statement": "Reject an absent input file.",
+  "disposition": "pending",
+  "requirement_ids": [],
+  "rationale": null,
+  "review_id": null
+}

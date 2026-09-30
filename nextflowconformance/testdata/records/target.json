@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "id": "TARGET",
+  "version": "26.04.6",
+  "parser": "v2",
+  "tag": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "source_tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "profiles": {
+    "foundation-bootstrap": {
+      "required_ids": [
+        "REQ"
+      ],
+      "required_cases": [
+        "CASE"
+      ],
+      "required_reviews": [
+        "REVIEW"
+      ],
+      "required_gates": [
+        "records-valid"
+      ]
+    },
+    "target-inventory": {
+      "required_ids": [
+        "REQ"
+      ],
+      "required_cases": [
+        "CASE"
+      ],
+      "required_reviews": [
+        "REVIEW"
+      ],
+      "required_gates": [
+        "records-valid"
+      ]
+    },
+    "wr-runtime": {
+      "required_ids": [
+        "REQ"
+      ],
+      "required_cases": [
+        "CASE"
+      ],
+      "required_reviews": [
+        "REVIEW"
+      ],
+      "required_gates": [
+        "records-valid"
+      ]
+    }
+  },
+  "decisions": []
+}

@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+"""Independent public-CLI probes. Run from /home/ubuntu/wr; no downloads."""
+import copy
+import gzip
+import hashlib
+import http.server
+import io
+import json
+import os
+from pathlib import Path
+import shutil
+import ssl
+import stat
+import subprocess
+import tarfile
+import tempfile
+import threading
+
+REPO = Path.cwd()
+SCRATCH = REPO / '.tmp/agent/nextflow-conformance/acquisition/review-part1'
+RUN = Path(tempfile.mkdtemp(prefix='nextflow-probes-', dir=SCRATCH))
+BINARY = SCRATCH / 'wr-nextflow-conformance'
+INPUTS = REPO / '.tmp/nextflow-conformance/test-inputs'
+COMMIT = '232b60569865e9a4577e48c1955409238359d6ca'
+TREE = '1b9ece615807c1e8feef1d38ccac124eb2eab073'
+TAG = '38ce286fe70b44a5907cf1f5b0b8fb13bd836721'
+SELECTED = 'docs/reference/syntax.md'
+sha = lambda b: hashlib.sha256(b).hexdigest()
+
+def write_json(p, value):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(value, indent=2) + '\n')
+
+def digest_file(p):
+    with p.open('rb') as f:
+        return hashlib.file_digest(f, 'sha256').hexdigest()
+
+def snapshot(root):
+    rows = []
+    for p in sorted(root.rglob('*')):
+        s = p.lstat()
+        row = {'path': str(p.relative_to(root)), 'mode': s.st_mode}
+        if stat.S_ISREG(s.st_mode):
+            row.update(bytes=s.st_size, sha256=digest_file(p))
+        elif stat.S_ISLNK(s.st_mode):
+            row['link'] = os.readlink(p)
+        rows.append(row)
+    return rows
+
+source = (INPUTS / 'nextflow-source.tar.gz').read_bytes()
+dist = (INPUTS / 'nextflow-26.04.6-dist').read_bytes()
+tree = json.loads((INPUTS / 'nextflow-tree.json').read_text())
+assert sha(source) == 'f1c889c683094cbba5eda8fab701dac48624253f39c41a8e5361729f14c6ba11'
+assert len(dist) == 42355106 and sha(dist) == '182a63c74074e2dc7956ffa3c8cd59de952ed2c44394e21faf5e1736b945444c'
+assert tree['sha'] == TREE and not tree['truncated']
+contents = {}
+with tarfile.open(fileobj=io.BytesIO(source), mode='r:gz') as archive:
+    for member in archive:
+        if member.isdir():
+            continue
+        name = member.name.split('/', 1)[1]
+        assert name not in contents
+        contents[name] = (member.linkname.encode() if member.issym()
+                          else archive.extractfile(member).read())
+files = []
+for entry in tree['tree']:
+    if entry['type'] != 'blob':
+        continue
+    content = contents[entry['path']]
+    oid = hashlib.sha1(b'blob ' + str(len(content)).encode() + b'\x00' + content).hexdigest()
+    assert oid == entry['sha']
+    files.append({'path': entry['path'], 'blob': oid, 'mode': entry['mode'],
+                  'sha256': sha(content), 'bytes': len(content),
+                  'state': 'selected' if entry['path'] == SELECTED else 'unreviewed',
+                  'rationale': None, 'review_id': None})
+files.sort(key=lambda x:x['path'])
+assert len(files) == len(contents) == 2856 and len(tree['tree']) == 3584
+# Recompute every directory object independently, including the pinned root.
+for parent, expected in [('', TREE)] + [(e['path'],e['sha']) for e in tree['tree'] if e['type']=='tree']:
+    entries = [e for e in tree['tree'] if e['path'].rpartition('/')[0] == parent]
+    entries.sort(key=lambda e:(e['path'].rsplit('/',1)[-1] + ('/' if e['type']=='tree' else '')).encode())
+    raw = b''.join(e['mode'].lstrip('0').encode() + b' ' + e['path'].rsplit('/',1)[-1].encode()
+                   + b'\0' + bytes.fromhex(e['sha']) for e in entries)
+    actual = hashlib.sha1(b'tree ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+    assert actual == expected, parent
+
+cert, key = RUN/'nextflow-fixture.pem', RUN/'nextflow-fixture.key'
+cert_command = ['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(key),
+                '-out',str(cert),'-days','1','-subj','/CN=localhost',
+                '-addext','subjectAltName=IP:127.0.0.1']
+with (RUN/'certificate.log').open('wb') as log:
+    subprocess.run(cert_command, stdout=log, stderr=log, check=True)
+state = {'source': source, 'requests': [], 'failure': False}
+pom = b'<project><groupId>org.example</groupId><artifactId>nextflow-review</artifactId><version>1</version></project>\n'
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        state['requests'].append(self.path)
+        if state['failure']:
+            self.send_response(503); self.end_headers(); return
+        data = {'/SOURCE':state['source'], '/RUNTIME':dist, '/POM':pom}.get(self.path)
+        if data is None:
+            self.send_response(404); self.end_headers(); return
+        self.send_response(200); self.send_header('Content-Length',str(len(data))); self.end_headers()
+        self.wfile.write(data)
+    def log_message(self, *_):
+        pass
+server = http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain(cert,key)
+server.socket = context.wrap_socket(server.socket,server_side=True)
+thread = threading.Thread(target=server.serve_forever,daemon=True)
+thread.start()
+origin = f'https://127.0.0.1:{server.server_port}'
+env = os.environ | {'SSL_CERT_FILE':str(cert),'SSL_CERT_DIR':str(RUN/'no-extra-certs')}
+results = []
+
+def fixture(label):
+    root, cache = RUN/label/'corpus', RUN/label/'cache'
+    root.mkdir(parents=True); (cache/'java').mkdir(parents=True)
+    java = b'Independent inert Java fixture; no Java execution\n'
+    (cache/'java/release').write_bytes(java)
+    objects = [('POM','dependency-metadata','file','nextflow-review.pom',pom),
+               ('RUNTIME','runtime','opaque-dist','nextflow-26.04.6-dist',dist),
+               ('SOURCE','source','extracted-archive','source.tar.gz',state['source'])]
+    lock = {'schema':1, 'id':'NEXTFLOW_REVIEW_FIXTURE', 'origin':origin, 'revision':COMMIT,
+            'tree':{'sha':TREE,'origin':origin+'/tree','truncated':False,'entries':[{k:e[k] for k in ('path','sha','mode','type')} for e in tree['tree']]},
+            'files':files,'artifacts':[
+                {'id':i,'role':r,'origin':origin+'/'+i,
+                 'file':{'path':n,'sha256':sha(d),'bytes':len(d)},'packaging':p,
+                 'coordinate':'org.example:nextflow-review:1' if i=='POM' else None,'dependencies':[]}
+                for i,r,p,n,d in objects],
+            'environment':{'java_home':'java','java_version':'inert independent fixture; never executed',
+                'os':'linux','arch':'amd64','java_files':[{'file':{'path':'release','sha256':sha(java),'bytes':len(java)},
+                'link':None,'mode':420}], 'variables':[],
+                'dependencies':[{'id':'NEXTFLOW_REVIEW','group':'org.example','name':'nextflow-review',
+                'version':'1','artifact_id':None,'pom_id':'POM'}]}}
+    selected = next(f for f in files if f['path']==SELECTED)
+    span = {'file':SELECTED,'start':0,'end':selected['bytes'],'sha256':selected['sha256']}
+    replacements = {'BLOCKS':'BLOCK','OBLIGATIONS':'FACET','REQUIREMENTS':'REQ','UATS':'UAT',
+                    'REVIEWS':'REVIEW','DECISIONS':'DECISION','BINDINGS':'BINDING'}
+    for p in (REPO/'nextflowconformance/testdata/records').glob('*.json'):
+        if p.stem == 'sources.lock':
+            continue
+        raw = p.read_text()
+        for old,new in replacements.items():
+            raw = raw.replace('"'+old+'"','"'+new+'"')
+        value = json.loads(raw)
+        if p.stem=='target':
+            value.update(tag=TAG,commit=COMMIT,source_tree=TREE)
+        if p.stem=='blocks':
+            value['span'] = span
+        if p.stem=='reviews':
+            value['source_spans']=[span]
+            value['input_hashes']['source']=[{'path':SELECTED,'sha256':selected['sha256'],'bytes':selected['bytes']}]
+        if p.stem=='batches':
+            value['source_spans']=[span]
+        destination = root/p.name
+        if p.stem=='attempts':
+            destination = root/'attempts'/(value['id']+'.json')
+        elif p.stem!='target':
+            value=[value]
+        write_json(destination,value)
+    write_json(root/'sources.lock.json',lock)
+    return root,cache
+
+def invoke(label,root,cache,command='acquire',candidate=None):
+    args=[str(BINARY),command,'--root',str(root),'--cache',str(cache)]
+    if candidate:
+        args += ['--lock-candidate',str(candidate)]
+    before=len(state['requests'])
+    result=subprocess.run(args,env=env,capture_output=True,timeout=90,check=False)
+    evidence=RUN/label
+    evidence.mkdir(exist_ok=True)
+    (evidence/'stdout.json').write_bytes(result.stdout)
+    (evidence/'stderr.txt').write_bytes(result.stderr)
+    (evidence/'exit.txt').write_text(str(result.returncode)+'\n')
+    output=json.loads(result.stdout)
+    row={'label':label,'argv':args,'exit':result.returncode,'complete':output['complete'],
+         'diagnostics':[d['code'] for d in output['diagnostics']],
+         'verified_artifacts':output['counts']['verified_artifacts'],
+         'requests':state['requests'][before:]}
+    results.append(row)
+    return row
+
+try:
+    # Baseline: actual public Run through the built binary, using its default HTTP client.
+    root,cache=fixture('baseline')
+    row=invoke('baseline-acquire',root,cache)
+    assert row['exit']==0 and row['verified_artifacts']==3 and len(row['requests'])==3
+    shutil.copyfile(cache/'sources.lock.candidate.json',root/'sources.lock.json')
+    before=snapshot(cache)
+    write_json(RUN/'baseline-before.json',before)
+    state['failure']=True
+    row=invoke('warm-failure',root,cache)
+    assert row['exit']==2 and row['diagnostics']==['E_FETCH'] and row['verified_artifacts']==0
+    assert snapshot(cache)==before
+    state['failure']=False
+
+    # Candidate path aliases a reused Java input; successful publication must not destroy it.
+    alias_root,alias_cache=fixture('candidate-alias')
+    original=(alias_cache/'java/release').read_bytes()
+    row=invoke('candidate-alias-acquire',alias_root,alias_cache,candidate=alias_cache/'java/release')
+    row['input_overwritten']=(alias_cache/'java/release').read_bytes()!=original
+    row['input_sha256_before']=sha(original)
+    row['input_sha256_after']=digest_file(alias_cache/'java/release')
+    row['expected_exit']=2
+    if row['exit']==0:
+        shutil.copyfile(alias_cache/'java/release',alias_root/'sources.lock.json')
+        follow=invoke('candidate-alias-validate',alias_root,alias_cache,'validate')
+        assert follow['exit']==2 and follow['diagnostics']==['E_RUNTIME_HASH']
+
+    # Replace only the archive's ignored top-level directory entry with an escaping symlink.
+    changed=io.BytesIO()
+    mutated_headers=0
+    with tarfile.open(fileobj=io.BytesIO(source),mode='r:gz') as old, tarfile.open(fileobj=changed,mode='w:gz') as new:
+        for member in old:
+            if '/' not in member.name.rstrip('/'):
+                assert member.isdir()
+                member.type=tarfile.SYMTYPE; member.linkname='../../nextflow-review-outside'; member.size=0
+                mutated_headers+=1
+            new.addfile(member,old.extractfile(member) if member.isfile() else None)
+    assert mutated_headers==1
+    state['source']=changed.getvalue()
+    (RUN/'nextflow-unsafe-root-symlink.tar.gz').write_bytes(state['source'])
+    unsafe_root,unsafe_cache=fixture('unsafe-root-symlink')
+    previous=b'Previous Nextflow candidate; retain on failed acquisition\n'
+    (unsafe_cache/'sources.lock.candidate.json').write_bytes(previous)
+    write_json(RUN/'unsafe-root-before.json',snapshot(unsafe_cache))
+    row=invoke('unsafe-root-symlink-acquire',unsafe_root,unsafe_cache)
+    row['previous_candidate_replaced']=(unsafe_cache/'sources.lock.candidate.json').read_bytes()!=previous
+    row['outside_written']=(RUN/'nextflow-review-outside').exists()
+    row['expected_exit']=2
+    row['expected_diagnostic']='E_SOURCE_PATH'
+    state['source']=source
+
+    # Offline nonregular source and symlink ancestor checks on a fully acquired generation.
+    baseline_lock=json.loads((root/'sources.lock.json').read_text())
+    archive=next(a for a in baseline_lock['artifacts'] if a['role']=='source')
+    source_root=cache/(archive['file']['path']+'-tree')
+    selected_path=source_root/SELECTED
+    data=selected_path.read_bytes()
+    selected_path.unlink()
+    os.mkfifo(selected_path,0o644)
+    row=invoke('fifo-source-validate',root,cache,'validate')
+    assert row['exit']==2 and row['diagnostics']==['E_SOURCE_PATH']
+    selected_path.unlink(); selected_path.write_bytes(data); selected_path.chmod(0o644)
+
+    # Stop the server before the successful offline validation.
+    server.shutdown(); server.server_close(); thread.join()
+    row=invoke('baseline-offline-validate',root,cache,'validate')
+    assert row['exit']==0 and not row['requests']
+    write_json(RUN/'baseline-after.json',snapshot(cache))
+finally:
+    server.shutdown(); server.server_close()
+    write_json(RUN/'results.json',results)
+    write_json(RUN/'artifact-tree.json',snapshot(RUN))
+    write_json(SCRATCH/'latest-probes.json',{'run':str(RUN),'results':results})
+    print(json.dumps({'run':str(RUN),'results':results},indent=2))
+
+violations=[r['label'] for r in results if 'expected_exit' in r and r['exit']!=r['expected_exit']]
+print(json.dumps({'contract_violations':violations,'count':len(violations)}))
+raise SystemExit(1 if violations else 0)

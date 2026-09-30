@@ -1,0 +1,146 @@
+{
+  "verdict": "PASS",
+  "scope": "locked local-origin reuse; inert fixtures, no Java/tool execution",
+  "findings": [],
+  "commands": {
+    "full": {
+      "command": "timeout 10m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go test -tags netgo -count=1 -v ./nextflowconformance ./cmd/wr-nextflow-conformance",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/full.log",
+      "bytes": 177940,
+      "sha256": "e4c735f8908bf4415549c2122a354d3f1596810177e895a7462093c9d250b4da"
+    },
+    "stock": {
+      "command": "timeout 2m python3 nextflowconformance/testdata/check_schemas.py",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/stock.log",
+      "bytes": 62580,
+      "sha256": "6e9f54f99edc00d36ebf10441c3d178236cb6c9b1dd310ad6659005b367f7811"
+    },
+    "lint": {
+      "command": "timeout 10m env GOTOOLCHAIN=go1.26.3 .tmp/agent/bin/golangci-lint run ./nextflowconformance/... ./cmd/wr-nextflow-conformance/...",
+      "exit": 1,
+      "log": ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/lint.log",
+      "bytes": 3891,
+      "sha256": "e2decd67b655bd555909039a7e57f342ef712987650580eadae1d3132a08f1f6"
+    },
+    "red": {
+      "command": "timeout 10m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go test -tags netgo -count=1 -v -overlay .tmp/agent/nextflow-conformance/local-origin-reuse/red-overlay.json ./nextflowconformance -run '^TestNextflowLocalSnapshot'",
+      "exit": 1,
+      "log": ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/red.log",
+      "bytes": 30673,
+      "sha256": "3e4493f8e5f0d0cf5f2340de911cb668a7b6313aa508863ddb9e54f8e7bc1615"
+    },
+    "probes-initial": {
+      "command": "timeout 10m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go test -tags netgo -count=1 -v -overlay .tmp/agent/nextflow-conformance/local-origin-reuse-review-01/probe-overlay.json ./nextflowconformance -run '^TestReviewerLocal'",
+      "exit": 1,
+      "log": ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/probes-initial.log",
+      "bytes": 8020,
+      "sha256": "2b6ee235d1b8ff36ac9ae3133b38828fbe2234b07d843abeb3da7f0d33e3b910"
+    },
+    "probes": {
+      "command": "timeout 10m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go test -tags netgo -count=1 -v -overlay .tmp/agent/nextflow-conformance/local-origin-reuse-review-01/probe-overlay.json ./nextflowconformance -run '^TestReviewerLocal'",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/probes.log",
+      "bytes": 8500,
+      "sha256": "3073fd82ca624f92a72809138d597b5f6bec40aab34a28953de1904c3cd0694f"
+    },
+    "audit": {
+      "command": "timeout 30s python3 .tmp/agent/nextflow-conformance/local-origin-reuse-review-01/audit.py",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/audit.log",
+      "bytes": 145,
+      "sha256": "0f58cbb1edde654789e89b1f222e634489000ef643e5493046cf0bd81731be08"
+    }
+  },
+  "additional_checks": {
+    "reverse_apply_check": {
+      "command": "timeout 30s git apply --check --reverse .tmp/agent/nextflow-conformance/local-origin-reuse/correction.diff",
+      "exit": 0
+    },
+    "protected_hash_check": {
+      "command": "sha256sum -c .tmp/agent/nextflow-conformance/local-origin-reuse/protected-hashes.txt",
+      "exit": 0
+    }
+  },
+  "source": {
+    "nextflowconformance/source.go": {
+      "bytes": 38647,
+      "sha256": "c4cd37b7555a3516ef56ef05332d2b140cdd4ce3e75b84a7537d6d3fe5f2abe9"
+    },
+    "nextflowconformance/source_test.go": {
+      "bytes": 27713,
+      "sha256": "c9a53f1d0251a2588a72d52571a8c9f5041958113e9c27a8d45e9706bbad883c"
+    },
+    "nextflowconformance/source_local_test.go": {
+      "bytes": 9178,
+      "sha256": "00c79d659f8eceb044638668e69d2ea2f0f0019fee82cb9c50a974c0cb1a97de"
+    }
+  },
+  "evidence": {
+    ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/audit.log": {
+      "bytes": 145,
+      "sha256": "0f58cbb1edde654789e89b1f222e634489000ef643e5493046cf0bd81731be08"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/audit.py": {
+      "bytes": 4706,
+      "sha256": "aba430c41b2d50936f389588a04c2591d6b66a9d33381fdb203718c51a742d96"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/full.log": {
+      "bytes": 177940,
+      "sha256": "e4c735f8908bf4415549c2122a354d3f1596810177e895a7462093c9d250b4da"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/independent-audit.json": {
+      "bytes": 2679,
+      "sha256": "e059ecb9dddb416abd5b7f7252ccbfcbe05674c2fdf6f30841aeb1f020f14e8a"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/lint.log": {
+      "bytes": 3891,
+      "sha256": "e2decd67b655bd555909039a7e57f342ef712987650580eadae1d3132a08f1f6"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/probe-additions.txt": {
+      "bytes": 3015,
+      "sha256": "b7020ac08cafea5eecb075e9a32a22863672ee4ee98558f8f2dcddab03ccc696"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/probe-overlay.json": {
+      "bytes": 187,
+      "sha256": "ee37a3aeed08e3a3647e090b6bf5c955aa754ba7a2ce52b6921819faf831ef4b"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/probes-initial.log": {
+      "bytes": 8020,
+      "sha256": "2b6ee235d1b8ff36ac9ae3133b38828fbe2234b07d843abeb3da7f0d33e3b910"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/probes.log": {
+      "bytes": 8500,
+      "sha256": "3073fd82ca624f92a72809138d597b5f6bec40aab34a28953de1904c3cd0694f"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/red.log": {
+      "bytes": 30673,
+      "sha256": "3e4493f8e5f0d0cf5f2340de911cb668a7b6313aa508863ddb9e54f8e7bc1615"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/source-baseline.json": {
+      "bytes": 5782,
+      "sha256": "72f46b7f977c66ec174644e70c30cf75dcb043206ea5cd6ceeeba581b2e09fc8"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/source_local_test.go": {
+      "bytes": 12193,
+      "sha256": "98860743f4c2c13a36f57a4aaa9cb19478897ab14d6a72891b09c719dc377987"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-reuse-review-01/stock.log": {
+      "bytes": 62580,
+      "sha256": "6e9f54f99edc00d36ebf10441c3d178236cb6c9b1dd310ad6659005b367f7811"
+    }
+  },
+  "report": {
+    ".docs/nextflow-conformance/reviews/nextflow-phase1-local-origin-reuse-review-01.md": {
+      "bytes": 4866,
+      "sha256": "476d11a5bcffd7f5dd975487013443aba94c07477878f65a14d280257358a122"
+    }
+  },
+  "notes": [
+    "Initial reviewer probe had unsorted artifact IDs and failed E_INPUT; final overlay repairs fixture IDs and edges only.",
+    "Lint output exactly matches all fourteen approved deferred diagnostics; zero owned findings.",
+    "Audit independently rehashes actual retained snapshots and verifies inodes, modes, candidate entries, and runtime closure edges.",
+    "Model, all Nextflow source and fixtures, module, CLI, and lint settings remain unchanged."
+  ]
+}

@@ -1,0 +1,574 @@
+{
+  "$id": "urn:wr:nextflow-conformance:schema:1:uats.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "binding": {
+            "not": {
+              "type": "null"
+            }
+          },
+          "expected": {
+            "not": {
+              "type": "null"
+            }
+          },
+          "fixture": {
+            "not": {
+              "type": "null"
+            }
+          },
+          "review_id": {
+            "not": {
+              "type": "null"
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "readiness": {
+            "const": "draft"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "binding": {
+            "type": "null"
+          },
+          "expected": {
+            "type": "null"
+          },
+          "fixture": {
+            "type": "null"
+          },
+          "review_id": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "binding": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+          "type": "string",
+          "x-wr-field-rules": [
+            "id"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "x-wr-reference": "bindings"
+    },
+    "cases": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "expected": {
+            "items": {
+              "additionalProperties": false,
+              "allOf": [
+                {
+                  "else": {
+                    "properties": {
+                      "path": {
+                        "type": "null"
+                      }
+                    }
+                  },
+                  "if": {
+                    "properties": {
+                      "kind": {
+                        "enum": [
+                          "file",
+                          "json"
+                        ]
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "operator": {
+                        "const": "sha256"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "value": {
+                        "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+                      }
+                    }
+                  }
+                }
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "stdout",
+                    "stderr",
+                    "exit",
+                    "file",
+                    "json"
+                  ],
+                  "type": "string",
+                  "x-wr-field-rules": [
+                    "enum:stdout|stderr|exit|file|json"
+                  ]
+                },
+                "operator": {
+                  "enum": [
+                    "equals",
+                    "contains",
+                    "absent",
+                    "sha256"
+                  ],
+                  "type": "string",
+                  "x-wr-field-rules": [
+                    "enum:equals|contains|absent|sha256"
+                  ]
+                },
+                "path": {
+                  "anyOf": [
+                    {
+                      "minLength": 1,
+                      "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                      "type": "string",
+                      "x-wr-field-rules": [
+                        "path"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "path",
+                "operator",
+                "value"
+              ],
+              "type": "object"
+            },
+            "minItems": 1,
+            "type": "array",
+            "x-wr-field-rules": [
+              "nonempty"
+            ]
+          },
+          "facet_id": {
+            "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+            "type": "string",
+            "x-wr-field-rules": [
+              "id"
+            ],
+            "x-wr-reference": "obligations"
+          },
+          "id": {
+            "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+            "type": "string",
+            "x-wr-field-rules": [
+              "id"
+            ]
+          },
+          "inputs": {
+            "additionalProperties": false,
+            "properties": {
+              "arguments": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "files": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "bytes": {
+                      "maximum": 9223372036854775807,
+                      "minimum": 0,
+                      "type": "integer",
+                      "x-wr-field-rules": [
+                        "nonnegative"
+                      ]
+                    },
+                    "path": {
+                      "minLength": 1,
+                      "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                      "type": "string",
+                      "x-wr-field-rules": [
+                        "path"
+                      ]
+                    },
+                    "sha256": {
+                      "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+                      "type": "string",
+                      "x-wr-field-rules": [
+                        "hash"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "sha256",
+                    "bytes"
+                  ],
+                  "type": "object"
+                },
+                "minItems": 1,
+                "type": "array",
+                "x-wr-field-rules": [
+                  "nonempty"
+                ]
+              }
+            },
+            "required": [
+              "files",
+              "arguments"
+            ],
+            "type": "object"
+          },
+          "purpose": {
+            "enum": [
+              "happy",
+              "error",
+              "boundary",
+              "interaction"
+            ],
+            "type": "string",
+            "x-wr-field-rules": [
+              "enum:happy|error|boundary|interaction"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "purpose",
+          "inputs",
+          "expected",
+          "facet_id"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array",
+      "x-wr-field-rules": [
+        "nonempty"
+      ]
+    },
+    "expected": {
+      "anyOf": [
+        {
+          "items": {
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "else": {
+                  "properties": {
+                    "path": {
+                      "type": "null"
+                    }
+                  }
+                },
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "file",
+                        "json"
+                      ]
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "operator": {
+                      "const": "sha256"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "value": {
+                      "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+                    }
+                  }
+                }
+              }
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "stdout",
+                  "stderr",
+                  "exit",
+                  "file",
+                  "json"
+                ],
+                "type": "string",
+                "x-wr-field-rules": [
+                  "enum:stdout|stderr|exit|file|json"
+                ]
+              },
+              "operator": {
+                "enum": [
+                  "equals",
+                  "contains",
+                  "absent",
+                  "sha256"
+                ],
+                "type": "string",
+                "x-wr-field-rules": [
+                  "enum:equals|contains|absent|sha256"
+                ]
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "minLength": 1,
+                    "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                    "type": "string",
+                    "x-wr-field-rules": [
+                      "path"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "path",
+              "operator",
+              "value"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array",
+          "x-wr-field-rules": [
+            "nonempty"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "facet_ids": {
+      "items": {
+        "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true,
+      "x-wr-field-rules": [
+        "ids",
+        "nonempty"
+      ],
+      "x-wr-reference": "obligations"
+    },
+    "fixture": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "arguments": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "files": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "bytes": {
+                    "maximum": 9223372036854775807,
+                    "minimum": 0,
+                    "type": "integer",
+                    "x-wr-field-rules": [
+                      "nonnegative"
+                    ]
+                  },
+                  "path": {
+                    "minLength": 1,
+                    "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                    "type": "string",
+                    "x-wr-field-rules": [
+                      "path"
+                    ]
+                  },
+                  "sha256": {
+                    "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+                    "type": "string",
+                    "x-wr-field-rules": [
+                      "hash"
+                    ]
+                  }
+                },
+                "required": [
+                  "path",
+                  "sha256",
+                  "bytes"
+                ],
+                "type": "object"
+              },
+              "minItems": 1,
+              "type": "array",
+              "x-wr-field-rules": [
+                "nonempty"
+              ]
+            }
+          },
+          "required": [
+            "files",
+            "arguments"
+          ],
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "id": {
+      "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+      "type": "string",
+      "x-wr-field-rules": [
+        "id"
+      ]
+    },
+    "kind": {
+      "enum": [
+        "foundation",
+        "oracle",
+        "differential",
+        "wr-runtime"
+      ],
+      "type": "string",
+      "x-wr-field-rules": [
+        "uat-kind"
+      ]
+    },
+    "readiness": {
+      "enum": [
+        "draft",
+        "ready"
+      ],
+      "type": "string",
+      "x-wr-field-rules": [
+        "readiness"
+      ]
+    },
+    "requirement_ids": {
+      "items": {
+        "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true,
+      "x-wr-field-rules": [
+        "ids",
+        "nonempty"
+      ],
+      "x-wr-reference": "requirements"
+    },
+    "review_id": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+          "type": "string",
+          "x-wr-field-rules": [
+            "id"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "x-wr-reference": "reviews"
+    },
+    "schema": {
+      "const": 1,
+      "maximum": 9223372036854775807,
+      "minimum": -9223372036854775808,
+      "type": "integer",
+      "x-wr-field-rules": [
+        "one"
+      ]
+    },
+    "timeout_seconds": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer",
+      "x-wr-field-rules": [
+        "positive"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "requirement_ids",
+    "facet_ids",
+    "kind",
+    "readiness",
+    "fixture",
+    "expected",
+    "cases",
+    "binding",
+    "timeout_seconds",
+    "review_id"
+  ],
+  "title": "uats version 1",
+  "type": "object",
+  "x-wr-record-rules": [
+    "decodeRecord: UTF-8; final newline; no duplicate keys; no trailing value",
+    "loadRecordFile/checkNested: sorted unique IDs and unique paths, environment keys and result UAT IDs",
+    "checkRules: sorted unique identifier/text/index arrays; integer JSON lexical form",
+    "checkReferences: typed references resolve within the same target revision",
+    "checkSourceSpans: locked source file, matching hash, ordered span within byte bounds",
+    "checkUAT: cases use declared facets",
+    "checkUATRelations: ready binding matches UAT and evidence kind"
+  ]
+}

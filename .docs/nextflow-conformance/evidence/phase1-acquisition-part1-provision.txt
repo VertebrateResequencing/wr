@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Provision explicit, offline Nextflow A1 test inputs from the repository root."""
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+
+root = Path('.tmp/nextflow-conformance/test-inputs')
+root.mkdir(parents=True, exist_ok=True)
+objects = [
+    ('nextflow-source.tar.gz',
+     'https://codeload.github.com/nextflow-io/nextflow/tar.gz/232b60569865e9a4577e48c1955409238359d6ca',
+     8094680, 'f1c889c683094cbba5eda8fab701dac48624253f39c41a8e5361729f14c6ba11'),
+    ('nextflow-tree.json',
+     'https://api.github.com/repos/nextflow-io/nextflow/git/trees/1b9ece615807c1e8feef1d38ccac124eb2eab073?recursive=1',
+     1138642, 'b5c8fbd548c057b40c136eccc2dce8ab252129f0f2ca21e9a2385f7d61540ea4'),
+    ('nextflow-26.04.6-dist',
+     'https://github.com/nextflow-io/nextflow/releases/download/v26.04.6/nextflow-26.04.6-dist',
+     42355106, '182a63c74074e2dc7956ffa3c8cd59de952ed2c44394e21faf5e1736b945444c'),
+]
+
+def valid(file, size, digest):
+    return (file.is_file() and file.stat().st_size == size
+            and hashlib.sha256(file.read_bytes()).hexdigest() == digest)
+
+manifest = []
+for name, origin, size, digest in objects:
+    destination = root / name
+    command = ['timeout', '140s', 'curl', '--fail', '--location', '--proto', '=https',
+               '--proto-redir', '=https', '--connect-timeout', '10', '--max-time', '60',
+               '--retry', '1', '--retry-all-errors', '--retry-max-time', '120',
+               '--max-filesize', '268435456', origin, '-o', str(root / (name + '.nextflow-download'))]
+    reused = valid(destination, size, digest)
+    exit_code = None
+    if not reused:
+        temporary = root / (name + '.nextflow-download')
+        with (root / (name + '.nextflow-download.log')).open('wb') as log:
+            result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=False)
+        exit_code = result.returncode
+        if result.returncode or not valid(temporary, size, digest):
+            raise RuntimeError(f'Nextflow fixture download/hash failed: {name}; previous bytes retained')
+        temporary.replace(destination)
+    manifest.append({'path': str(destination), 'origin': origin, 'bytes': size,
+                     'sha256': digest, 'reused_verified_bytes': reused,
+                     'download_command': command, 'download_exit': exit_code})
+(root / 'nextflow-provisioning.json').write_text(json.dumps(manifest, indent=2) + '\n')
+print(json.dumps({'verified_nextflow_test_inputs': len(manifest), 'cache': str(root)}))

@@ -1,0 +1,204 @@
+{
+  "$id": "urn:wr:nextflow-conformance:schema:1:blocks.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "children": {
+      "items": {
+        "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true,
+      "x-wr-field-rules": [
+        "ids"
+      ],
+      "x-wr-reference": "blocks"
+    },
+    "id": {
+      "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+      "type": "string",
+      "x-wr-field-rules": [
+        "id"
+      ]
+    },
+    "include_refs": {
+      "items": {
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "oneOf": [
+              {
+                "properties": {
+                  "block_id": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "external_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "properties": {
+          "block_id": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "id"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-wr-reference": "blocks"
+          },
+          "external_id": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "id"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-wr-reference": "artefact"
+          },
+          "path": {
+            "minLength": 1,
+            "pattern": "^(?:\\.\\./)*(?:\\.\\.|(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*)(?![\\s\\S])",
+            "type": "string",
+            "x-wr-field-rules": [
+              "include-path"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "block_id",
+          "external_id"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "kind": {
+      "enum": [
+        "heading",
+        "paragraph",
+        "list-item",
+        "table-row",
+        "definition",
+        "code",
+        "directive",
+        "grammar-rule",
+        "declaration",
+        "test-case",
+        "trivia",
+        "unclassified"
+      ],
+      "type": "string",
+      "x-wr-field-rules": [
+        "block-kind"
+      ]
+    },
+    "parent": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+          "type": "string",
+          "x-wr-field-rules": [
+            "id"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "x-wr-reference": "blocks"
+    },
+    "schema": {
+      "const": 1,
+      "maximum": 9223372036854775807,
+      "minimum": -9223372036854775808,
+      "type": "integer",
+      "x-wr-field-rules": [
+        "one"
+      ]
+    },
+    "span": {
+      "additionalProperties": false,
+      "properties": {
+        "end": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer",
+          "x-wr-field-rules": [
+            "nonnegative"
+          ]
+        },
+        "file": {
+          "minLength": 1,
+          "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+          "type": "string",
+          "x-wr-field-rules": [
+            "path"
+          ]
+        },
+        "sha256": {
+          "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+          "type": "string",
+          "x-wr-field-rules": [
+            "hash"
+          ]
+        },
+        "start": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer",
+          "x-wr-field-rules": [
+            "nonnegative"
+          ]
+        }
+      },
+      "required": [
+        "file",
+        "start",
+        "end",
+        "sha256"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "span",
+    "kind",
+    "parent",
+    "children",
+    "include_refs"
+  ],
+  "title": "blocks version 1",
+  "type": "object",
+  "x-wr-record-rules": [
+    "decodeRecord: UTF-8; final newline; no duplicate keys; no trailing value",
+    "loadRecordFile/checkNested: sorted unique IDs and unique paths, environment keys and result UAT IDs",
+    "checkRules: sorted unique identifier/text/index arrays; integer JSON lexical form",
+    "checkReferences: typed references resolve within the same target revision",
+    "checkSourceSpans: locked source file, matching hash, ordered span within byte bounds",
+    "checkBlockIncludes: include resolves relative to source and matches locked destination"
+  ]
+}

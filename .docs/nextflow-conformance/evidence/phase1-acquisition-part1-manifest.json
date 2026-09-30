@@ -1,0 +1,426 @@
+{
+  "status": "IMPLEMENTED_A1_01_THROUGH_A1_04_AWAITING_INDEPENDENT_REVIEW",
+  "date": "2026-09-28",
+  "head": "6121575cb42a3342f483618d71831cafe2e209a3",
+  "scope": "Approved acquisition split part 1 only; Item 1.2 remains incomplete.",
+  "commands": [
+    {
+      "name": "fetch-baseline",
+      "argv": [
+        "timeout",
+        "10m",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "CGO_ENABLED=1",
+        "go",
+        "test",
+        "-tags",
+        "netgo",
+        "-count=1",
+        "./nextflowconformance",
+        "-run",
+        "^TestUAT_A1_02$",
+        "-v"
+      ],
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/part1/fetch-baseline.log",
+      "log_sha256": "fad019b8f630f98728dba4585838d1760dd1da44c7186e200213dfced53110de"
+    },
+    {
+      "name": "red-boundary",
+      "argv": [
+        "timeout",
+        "10m",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "CGO_ENABLED=1",
+        "go",
+        "test",
+        "-tags",
+        "netgo",
+        "-count=1",
+        "./nextflowconformance",
+        "-run",
+        "^Test(UAT_A1_0[134]|NextflowAcquisitionRequests)$",
+        "-v"
+      ],
+      "exit": 1,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/part1/red-boundary.log",
+      "log_sha256": "1e26c8afcc803e3dec65dc17611023d85c45c9a51e49bfdba7920fb316ab68fc"
+    },
+    {
+      "name": "red-mode",
+      "argv": [
+        "timeout",
+        "10m",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "CGO_ENABLED=1",
+        "go",
+        "test",
+        "-tags",
+        "netgo",
+        "-count=1",
+        "./nextflowconformance",
+        "-run",
+        "^TestUAT_A1_0[13]$",
+        "-v"
+      ],
+      "exit": 1,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/part1/red-mode.log",
+      "log_sha256": "70cc953b5ac20847f8b84b61fa40eda9ddc082596cc0087227549651a4ae6a2f"
+    },
+    {
+      "name": "green-boundary",
+      "argv": [
+        "timeout",
+        "10m",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "CGO_ENABLED=1",
+        "go",
+        "test",
+        "-tags",
+        "netgo",
+        "-count=1",
+        "./nextflowconformance",
+        "-run",
+        "^Test(UAT_A1_0[1-4]|NextflowAcquisitionRequests|AcquisitionOutputSafety)$",
+        "-v"
+      ],
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/part1/green-boundary.log",
+      "log_sha256": "eb511f32488f9f265fca1912ea690b178670785c6b15e420b7bc5cbe38dab32d"
+    },
+    {
+      "name": "production-limit",
+      "argv": [
+        "timeout",
+        "2m",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "CGO_ENABLED=1",
+        "go",
+        "test",
+        "-tags",
+        "netgo",
+        "-count=1",
+        "./nextflowconformance",
+        "-run",
+        "^TestNextflowAcquisitionObjectLimit$",
+        "-v"
+      ],
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/part1/production-limit.log",
+      "log_sha256": "4ed9a298057f7a10bd5380f8de2e47bd5b35e715b6278053b4276fad5d4358cb"
+    },
+    {
+      "name": "full-focused",
+      "argv": [
+        "timeout",
+        "10m",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "CGO_ENABLED=1",
+        "go",
+        "test",
+        "-tags",
+        "netgo",
+        "-count=1",
+        "./nextflowconformance",
+        "./cmd/wr-nextflow-conformance",
+        "-v"
+      ],
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/part1/full-focused.log",
+      "log_sha256": "9a6a7d47189a026841d73464f5af33b732e8b7a5ce234ab9e7c73b51d65446b3"
+    },
+    {
+      "name": "stock-schema",
+      "argv": [
+        "timeout",
+        "30s",
+        "python3",
+        "nextflowconformance/testdata/check_schemas.py"
+      ],
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/part1/stock-schema.log",
+      "log_sha256": "595955540ec9f5be7430ef338012f1aeddc89268e590fac51d0167267385e1ee"
+    },
+    {
+      "name": "lint",
+      "argv": [
+        "timeout",
+        "5m",
+        "env",
+        "GOTOOLCHAIN=go1.26.3",
+        ".tmp/agent/bin/golangci-lint",
+        "run",
+        "./nextflowconformance/...",
+        "./cmd/wr-nextflow-conformance/..."
+      ],
+      "exit": 1,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/part1/lint.log",
+      "log_sha256": "cbe57943f925c99b784ae633e6dace92400f7b48df2658aedd7ddc95473bb5f5"
+    },
+    {
+      "name": "cleanorder-source",
+      "argv": [
+        "timeout",
+        "20s",
+        "cleanorder",
+        "-min-diff",
+        "nextflowconformance/source.go"
+      ],
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/part1/cleanorder-source.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "cleanorder-tests",
+      "argv": [
+        "timeout",
+        "20s",
+        "cleanorder",
+        "-min-diff",
+        "nextflowconformance/source_test.go"
+      ],
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/part1/cleanorder-tests.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "go-version",
+      "argv": [
+        "timeout",
+        "20s",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "go",
+        "version"
+      ],
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/part1/go-version.log",
+      "log_sha256": "f554cfdb85411c2bb1d503df3f53dfbad1f753eb8271938833166a5d26a7547c"
+    },
+    {
+      "name": "lint-version",
+      "argv": [
+        "timeout",
+        "20s",
+        "env",
+        "GOTOOLCHAIN=go1.26.3",
+        ".tmp/agent/bin/golangci-lint",
+        "--version"
+      ],
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/part1/lint-version.log",
+      "log_sha256": "c616f4e39cf583e0941c1dfc70cb43c8ca2057820091b7acdbc78cc396c418f3"
+    },
+    {
+      "name": "provision",
+      "argv": [
+        "timeout",
+        "8m",
+        "python3",
+        ".docs/nextflow-conformance/evidence/phase1-acquisition-part1-provision.txt"
+      ],
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/part1/provision.log",
+      "log_sha256": "eed91d9e4d869a4c8f543d3cc1fd775f33aa95680f0077ffe77f50b89b87f315"
+    },
+    {
+      "name": "audit",
+      "argv": [
+        "timeout",
+        "30s",
+        "python3",
+        ".tmp/agent/nextflow-conformance/acquisition/part1/nextflow-audit.py"
+      ],
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/part1/audit.log",
+      "log_sha256": "75f4c24b2f1265595175b051a064f63c3ea863598c8e3ba0afd5dc1a92f8eb31"
+    },
+    {
+      "name": "red-tree-identity",
+      "argv": [
+        "timeout",
+        "2m",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "CGO_ENABLED=1",
+        "go",
+        "test",
+        "-tags",
+        "netgo",
+        "-count=1",
+        "./nextflowconformance",
+        "-run",
+        "^TestNextflowAcquisitionTreeIdentity$",
+        "-v"
+      ],
+      "exit": 1,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/part1/red-tree-identity.log",
+      "log_sha256": "84ce85dbc0fd6285c74e6d30153cf78a4f0c147f227cc2f58596936a0880e860"
+    },
+    {
+      "name": "green-tree-identity",
+      "argv": [
+        "timeout",
+        "2m",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "CGO_ENABLED=1",
+        "go",
+        "test",
+        "-tags",
+        "netgo",
+        "-count=1",
+        "./nextflowconformance",
+        "-run",
+        "^TestNextflowAcquisitionTreeIdentity$",
+        "-v"
+      ],
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/part1/green-tree-identity.log",
+      "log_sha256": "a52b25c1fe1266d3a0f249c128698c4f6df8df4cc5764df66773d71351ab2f99"
+    }
+  ],
+  "acquisition_fixture_inputs": [
+    {
+      "path": ".tmp/nextflow-conformance/test-inputs/nextflow-source.tar.gz",
+      "bytes": 8094680,
+      "sha256": "f1c889c683094cbba5eda8fab701dac48624253f39c41a8e5361729f14c6ba11"
+    },
+    {
+      "path": ".tmp/nextflow-conformance/test-inputs/nextflow-tree.json",
+      "bytes": 1138642,
+      "sha256": "b5c8fbd548c057b40c136eccc2dce8ab252129f0f2ca21e9a2385f7d61540ea4"
+    },
+    {
+      "path": ".tmp/nextflow-conformance/test-inputs/nextflow-26.04.6-dist",
+      "bytes": 42355106,
+      "sha256": "182a63c74074e2dc7956ffa3c8cd59de952ed2c44394e21faf5e1736b945444c"
+    }
+  ],
+  "source_provenance": {
+    "archive_url": "https://codeload.github.com/nextflow-io/nextflow/tar.gz/232b60569865e9a4577e48c1955409238359d6ca",
+    "tree_url": "https://api.github.com/repos/nextflow-io/nextflow/git/trees/1b9ece615807c1e8feef1d38ccac124eb2eab073?recursive=1",
+    "source_download_exit": 0,
+    "tree_download_exit": 0,
+    "tree_entries": 3584,
+    "blobs": 2856,
+    "distribution_reused_from": ".tmp/agent/runtime-packaging/nextflow-26.04.6-dist",
+    "distribution_rehashed": true,
+    "provisioning_record": ".tmp/nextflow-conformance/test-inputs/nextflow-provisioning.json",
+    "initial_downloads": [
+      {
+        "argv": [
+          "timeout",
+          "70s",
+          "curl",
+          "--fail",
+          "--location",
+          "--proto",
+          "=https",
+          "--connect-timeout",
+          "10",
+          "--max-time",
+          "60",
+          "--max-filesize",
+          "268435456",
+          "https://codeload.github.com/nextflow-io/nextflow/tar.gz/232b60569865e9a4577e48c1955409238359d6ca",
+          "-o",
+          ".tmp/agent/nextflow-conformance/acquisition/part1/inputs/nextflow-source.tar.gz"
+        ],
+        "exit": 0,
+        "log": ".tmp/agent/nextflow-conformance/acquisition/part1/source-download.log",
+        "log_sha256": "0b19234d0f0d05e0270c0fe640c86684efd880079b3899a3d47c82ce59eacba9"
+      },
+      {
+        "argv": [
+          "timeout",
+          "70s",
+          "curl",
+          "--fail",
+          "--location",
+          "--proto",
+          "=https",
+          "--connect-timeout",
+          "10",
+          "--max-time",
+          "60",
+          "--max-filesize",
+          "268435456",
+          "https://api.github.com/repos/nextflow-io/nextflow/git/trees/1b9ece615807c1e8feef1d38ccac124eb2eab073?recursive=1",
+          "-o",
+          ".tmp/agent/nextflow-conformance/acquisition/part1/inputs/nextflow-tree.json"
+        ],
+        "exit": 0,
+        "log": ".tmp/agent/nextflow-conformance/acquisition/part1/tree-download.log",
+        "log_sha256": "e59d56e140a66d46495ac951ea2af8ca5d1117417d81ee77ee94883e06442841"
+      }
+    ]
+  },
+  "results": {
+    "A1_01": "PASS",
+    "A1_02": "PASS",
+    "A1_03": "PASS",
+    "A1_04": "PASS",
+    "A1_05": "fixture pass; actual runtime proof part 2",
+    "A1_06": "not implemented",
+    "A1_07": "not implemented",
+    "focused_go_tests": 25,
+    "schemas": 11,
+    "schema_mutations": 1190,
+    "part1_lint_findings": 0,
+    "remaining_part2_lint_findings": 14,
+    "offline_fixture_validation": "PASS with HTTPS stopped",
+    "actual_candidate": null,
+    "nextflow_execution_claim": false,
+    "wr_execution_claim": false
+  },
+  "current_input_hashes": {
+    "nextflowconformance/source.go": "b68501af312125bedda790765db66cf723fb737eee9fa9be9f440cddbe24aa9a",
+    "nextflowconformance/source_test.go": "0bffe6a782246e5ada2c86104e2ea856bafcd7d2cd1a72c751a3480f4f359174",
+    "nextflowconformance/model.go": "a5384d68ee301a84e33177e3ac1ed661cc1413e5541be8b20b00c782348b04d0",
+    "nextflowconformance/schema.go": "ca97c1c56acbb0ccc4c9569fb4c60c02844ff750a03d55e424a70b3efe770fc6",
+    "nextflowconformance/cli.go": "558789283358b7b77b2946def9124cc53dc109947db7a10d6600b102b87ba784",
+    "nextflowconformance/model_test.go": "5bd20b2e82f6326021b9131fb8630baa731cf2f5bc4890ffd48edb205efad77f",
+    ".docs/nextflow-conformance/spec.md": "86a025b97dcd79ad67137a665ab3561b4f49fcd53fc83bb514e12fb66d534383",
+    ".docs/nextflow-conformance/reviews/phase-01-acquisition-bundle.md": "fa5aa9c9ebed2d4727deb231b0f1b42a0be262a853973f3351e02466dc4defe4"
+  },
+  "evidence": {
+    ".docs/nextflow-conformance/evidence/phase1-acquisition-part1.md": "6d9122f01304ff21d7670c221f930c5b350b9fe7a4d420fe5c4fad1679fc9b50",
+    ".docs/nextflow-conformance/evidence/phase1-acquisition-part1-provision.txt": "0d9ddd34529636ff11ac729a67b4f9ad25c2408c92cea9afd05e89d658728c13",
+    ".tmp/agent/nextflow-conformance/acquisition/part1/nextflow-audit.json": "cd4c5fc5f25a7e718c25aca88f28c82ec312893c4727fc86f791ff6ddb2c1fd2",
+    ".tmp/agent/nextflow-conformance/acquisition/part1/nextflow-lint-ownership.json": "85cfd41baba323b0447e1b4311138e5cfec95f236cfa5ca1e2a80fd3997b9426",
+    ".tmp/agent/nextflow-conformance/acquisition/part1/snapshot/source.go.txt": "63d4bf2e64d55aa14a59d7047c6238b5988da837a45e67ebbea3e9f0f598aaad",
+    ".tmp/agent/nextflow-conformance/acquisition/part1/snapshot/nextflow-red-source_test.go.txt": "d1d412da797db34c761f82f9973c16974a7643b45f9b306af271a73631496f5d"
+  },
+  "cli_results": {
+    "directory": ".tmp/agent/nextflow-conformance/acquisition/part1/nextflow-cli",
+    "invocations": 34,
+    "manifest": ".tmp/agent/nextflow-conformance/acquisition/part1/nextflow-cli-manifest.json",
+    "manifest_sha256": "53afbf7ea57f06922d855908b2db6c89e8f2f6fc0b678da92c92e1797311d669",
+    "artifact_count": 102
+  },
+  "review_input_growth": {
+    "initial_acquisition_source_bytes": 44392,
+    "final_acquisition_source_bytes": 59711,
+    "growth_bytes": 15319,
+    "note": "Use the approved split for the fresh review; final changed files replace the original versions."
+  },
+  "discarded_intermediate_assertions": [
+    "Six fetch requests are not required; fail-fast is valid.",
+    "A safe top-level archive member does not require E_SOURCE_PATH."
+  ],
+  "remaining_part2_functions": [
+    "acquirePinned",
+    "acquireJava",
+    "copyJavaFile",
+    "acquireRuntime",
+    "unpackRuntime",
+    "acquireDependencies"
+  ]
+}

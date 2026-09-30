@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "id": "UATS",
+  "requirement_ids": [
+    "REQ"
+  ],
+  "facet_ids": [
+    "FACET"
+  ],
+  "kind": "foundation",
+  "readiness": "draft",
+  "fixture": null,
+  "expected": null,
+  "cases": [
+    {
+      "id": "CASE",
+      "purpose": "error",
+      "inputs": {
+        "files": [
+          {
+            "path": "input.txt",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bytes": 3
+          }
+        ],
+        "arguments": [
+          "--input",
+          "input.txt"
+        ]
+      },
+      "expected": [
+        {
+          "kind": "exit",
+          "path": null,
+          "operator": "equals",
+          "value": "2"
+        }
+      ],
+      "facet_id": "FACET"
+    }
+  ],
+  "binding": null,
+  "timeout_seconds": 30,
+  "review_id": null
+}

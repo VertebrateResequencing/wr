@@ -1,0 +1,489 @@
+{
+  "verdict": "APPROVED for size/scope only",
+  "scope": "Three verified runtime-review01 findings; closed-record changes require separate boundary",
+  "byte_to_token_estimate": 4,
+  "group_bytes": {
+    "references": 34674,
+    "contract": 38609,
+    "skills": 40386,
+    "source": 94714,
+    "current_review": 25146
+  },
+  "initial_bytes_before_manifest_and_briefing": 233529,
+  "estimated_initial_tokens_before_manifest_and_briefing": 58382.25,
+  "allocation_tokens": {
+    "initial_with_manifest_briefing": 64000,
+    "source_growth_final_complete_diff_extra_reads": 16000,
+    "output": 3000,
+    "reasoning_edits_handoff": 15000,
+    "total": 98000
+  },
+  "entries": [
+    {
+      "path": "nextflowconformance/model.go",
+      "group": "references",
+      "spans": [
+        [
+          43,
+          106
+        ],
+        [
+          134,
+          463
+        ],
+        [
+          809,
+          857
+        ],
+        [
+          881,
+          913
+        ],
+        [
+          1275,
+          1285
+        ]
+      ],
+      "bytes": 15486,
+      "sha256": "9f8cd9db03f74a7081fea61aaec929b893e80e371eb6cdc52431f2f90607c82f",
+      "file_bytes": 40939
+    },
+    {
+      "path": "nextflowconformance/cli.go",
+      "group": "references",
+      "spans": [
+        [
+          61,
+          371
+        ],
+        [
+          799,
+          827
+        ],
+        [
+          865,
+          875
+        ],
+        [
+          1064,
+          1101
+        ]
+      ],
+      "bytes": 10312,
+      "sha256": "0f8a71b7d24e33521857e3ae7d6f452894b78c5400472589a665acb3607564f6",
+      "file_bytes": 28579
+    },
+    {
+      "path": "nextflowconformance/schema.go",
+      "group": "references",
+      "spans": [
+        [
+          324,
+          351
+        ],
+        [
+          434,
+          446
+        ]
+      ],
+      "bytes": 2044,
+      "sha256": "01090664e284be66e68f0df8b17e1caf517761c4672a8faa12aa6f0a4d883d4e",
+      "file_bytes": 16719
+    },
+    {
+      "path": "cmd/wr-nextflow-conformance/main.go",
+      "group": "references",
+      "spans": [
+        [
+          1,
+          44
+        ]
+      ],
+      "bytes": 1683,
+      "sha256": "13c7e4ca3d06ee4fddf0b3bac473ba65e241cca3c04e432e46bb41348d03e969",
+      "file_bytes": 1683
+    },
+    {
+      "path": ".golangci.yml",
+      "group": "references",
+      "spans": [
+        [
+          1,
+          169
+        ]
+      ],
+      "bytes": 3165,
+      "sha256": "36a2749675d2eb3ac55870ac5f8a208a2c525e50f8dcc3e26b7be8cfb9e0307d",
+      "file_bytes": 3165
+    },
+    {
+      "path": "go.mod",
+      "group": "references",
+      "spans": [
+        [
+          1,
+          50
+        ]
+      ],
+      "bytes": 1984,
+      "sha256": "9368738f059661591e1f69a6b1a3225ca313504770bba5648c1fb313e3482949",
+      "file_bytes": 5259
+    },
+    {
+      "path": ".docs/nextflow-conformance/spec.md",
+      "group": "contract",
+      "spans": [
+        [
+          23,
+          41
+        ],
+        [
+          70,
+          181
+        ],
+        [
+          192,
+          207
+        ],
+        [
+          261,
+          366
+        ],
+        [
+          1034,
+          1054
+        ]
+      ],
+      "bytes": 16463,
+      "sha256": "a13fcfcd554b7fb978f1fe236884fe495a536bd807ccd814ec3978b40ca30e1a",
+      "file_bytes": 64725
+    },
+    {
+      "path": ".docs/nextflow-conformance/phase1.md",
+      "group": "contract",
+      "spans": [
+        [
+          1,
+          148
+        ]
+      ],
+      "bytes": 7939,
+      "sha256": "7c712427e1cdf9f7d01df94618a7ec667724148be99983574b30f99b8412e57d",
+      "file_bytes": 7939
+    },
+    {
+      "path": ".docs/nextflow-conformance/evidence/nextflow-phase1-orchestration-handoff.md",
+      "group": "contract",
+      "spans": [
+        [
+          1,
+          125
+        ]
+      ],
+      "bytes": 7107,
+      "sha256": "0e6c11737213c38394ad728e880ae5ea7258bdea1aeb8bcc1a0a5c2657c91a1a",
+      "file_bytes": 7107
+    },
+    {
+      "path": ".docs/nextflow-conformance/evidence/nextflow-phase1-runtime-incomplete.md",
+      "group": "contract",
+      "spans": [
+        [
+          1,
+          82
+        ]
+      ],
+      "bytes": 4571,
+      "sha256": "7fc11c6690ac7feeccb9fd2fe9c21a715e6a961b00146b39154222e807009714",
+      "file_bytes": 4571
+    },
+    {
+      "path": ".docs/nextflow-conformance/evidence/phase1-acquisition-part1-provision.txt",
+      "group": "contract",
+      "spans": [
+        [
+          1,
+          47
+        ]
+      ],
+      "bytes": 2529,
+      "sha256": "0d9ddd34529636ff11ac729a67b4f9ad25c2408c92cea9afd05e89d658728c13",
+      "file_bytes": 2529
+    },
+    {
+      "path": "/home/ubuntu/.agents/skills/agent-conduct/SKILL.md",
+      "group": "skills",
+      "spans": [
+        [
+          1,
+          71
+        ]
+      ],
+      "bytes": 2736,
+      "sha256": "7c4a987023f23988b547613ca8230280516631a4b5a1ce9b2d400d584f5860b8",
+      "file_bytes": 2736
+    },
+    {
+      "path": "/home/ubuntu/.agents/skills/go-reviewer/SKILL.md",
+      "group": "skills",
+      "spans": [
+        [
+          1,
+          70
+        ]
+      ],
+      "bytes": 2221,
+      "sha256": "80b1fc833a0aa1d62f2705d5bb3c5ecc0e13e766191ab58acd2d3675e6d61738",
+      "file_bytes": 2221
+    },
+    {
+      "path": "/home/ubuntu/.agents/skills/go-conventions/SKILL.md",
+      "group": "skills",
+      "spans": [
+        [
+          1,
+          117
+        ]
+      ],
+      "bytes": 4412,
+      "sha256": "bb2de3e29307ff0bb2aeb9483a48d7302fe94d6111fbc969175d8038d16332f0",
+      "file_bytes": 4412
+    },
+    {
+      "path": "/home/ubuntu/.agents/skills/implementation-principles/SKILL.md",
+      "group": "skills",
+      "spans": [
+        [
+          1,
+          175
+        ]
+      ],
+      "bytes": 7526,
+      "sha256": "c8979d5f4608919cfe2d6a905f1a2cac7a1df386811d0bd961d931c43433db83",
+      "file_bytes": 7526
+    },
+    {
+      "path": "/home/ubuntu/.agents/skills/testing-principles/SKILL.md",
+      "group": "skills",
+      "spans": [
+        [
+          1,
+          64
+        ]
+      ],
+      "bytes": 3025,
+      "sha256": "b8830a4ad0b27a4e10aef3d6752c57b8b3c6608f391c30db0c32f7be84136f48",
+      "file_bytes": 3025
+    },
+    {
+      "path": "/home/ubuntu/.agents/skills/writing-for-agents/SKILL.md",
+      "group": "skills",
+      "spans": [
+        [
+          1,
+          159
+        ]
+      ],
+      "bytes": 7271,
+      "sha256": "5fad73d3b98756a61ba35629d4285639a24a3d396f1fa4b25330fc8099017a6a",
+      "file_bytes": 7271
+    },
+    {
+      "path": "/home/ubuntu/.agents/skills/unslop/SKILL.md",
+      "group": "skills",
+      "spans": [
+        [
+          1,
+          52
+        ]
+      ],
+      "bytes": 2365,
+      "sha256": "d9dc6e2b8968691dd34f7d7094d3fb8b59e2ad20d0907855db89247ca0615fc1",
+      "file_bytes": 2365
+    },
+    {
+      "path": "/home/ubuntu/.agents/skills/prose-principles/SKILL.md",
+      "group": "skills",
+      "spans": [
+        [
+          1,
+          62
+        ]
+      ],
+      "bytes": 2910,
+      "sha256": "7c40c6572eec6414b70f01a9ef4eb028a4e8e6904e614fdbb058cd4dfc24298b",
+      "file_bytes": 2910
+    },
+    {
+      "path": "/home/ubuntu/.agents/skills/final-response/SKILL.md",
+      "group": "skills",
+      "spans": [
+        [
+          1,
+          132
+        ]
+      ],
+      "bytes": 5085,
+      "sha256": "41cfa4194670c1bf2f7f66dd2a7af83a6586d885867c80963ef6215017e16fed",
+      "file_bytes": 5085
+    },
+    {
+      "path": "/home/ubuntu/.agents/skills/code-smells/SKILL.md",
+      "group": "skills",
+      "spans": [
+        [
+          1,
+          57
+        ]
+      ],
+      "bytes": 2835,
+      "sha256": "663ae4174301ce58052ed6e812a6d5c62f855dd9f33734a96e35eba86f36ce23",
+      "file_bytes": 2835
+    },
+    {
+      "path": "nextflowconformance/source.go",
+      "bytes": 45108,
+      "sha256": "9b2b2449276dc51ba9e965c7b340a559fc0e1efd2673a0b80c2383de193a1550",
+      "spans": [
+        [
+          1,
+          1727
+        ]
+      ],
+      "group": "source"
+    },
+    {
+      "path": "nextflowconformance/source_test.go",
+      "bytes": 39962,
+      "sha256": "4af977431a741b0bb06558dfaeab589a912c4092b0314cc2d52be2bd4d358e94",
+      "spans": [
+        [
+          1,
+          1249
+        ]
+      ],
+      "group": "source"
+    },
+    {
+      "path": "nextflowconformance/source_companions.go",
+      "bytes": 9644,
+      "sha256": "2d24c9269926cd2085a2c0d63a92a9a1a8cae2408b08e19c60bee9c0c16820e7",
+      "spans": [
+        [
+          1,
+          337
+        ]
+      ],
+      "group": "source"
+    },
+    {
+      "path": ".docs/nextflow-conformance/reviews/nextflow-phase1-runtime-review-01.md",
+      "group": "current_review",
+      "spans": [
+        [
+          1,
+          166
+        ]
+      ],
+      "bytes": 9641,
+      "sha256": "1c642411d13fc8755f6779247a009c0b4e862287b056f2b74845c9a920c4f411"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-01/probe.py",
+      "group": "current_review",
+      "spans": [
+        [
+          1,
+          57
+        ]
+      ],
+      "bytes": 3983,
+      "sha256": "79eef3c14a582e1d2fdd2896cf97f27a0ffa95ad990e8dead9735071f69bf656"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-01/trace.py",
+      "group": "current_review",
+      "spans": [
+        [
+          1,
+          40
+        ]
+      ],
+      "bytes": 2992,
+      "sha256": "274aef673e7c3471dfc8a354319c8f26bbe9ab1deac89f70f10d4e0424eb7844"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-01/mode-probe.py",
+      "group": "current_review",
+      "spans": [
+        [
+          1,
+          19
+        ]
+      ],
+      "bytes": 1262,
+      "sha256": "6ae679a262adcd09a75a8194a6b6a3e6573423c4363b74c3a414a844e66b63bf"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-01/correction-summary.json",
+      "group": "current_review",
+      "spans": [
+        [
+          1,
+          168
+        ]
+      ],
+      "bytes": 4111,
+      "sha256": "0811a64ff90a774b7c7aaff22f991a724818ca8389e2a49c8098c4dd6fe86bd2"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-01/artifact-audit.json",
+      "group": "current_review",
+      "spans": [
+        [
+          1,
+          50
+        ]
+      ],
+      "bytes": 1480,
+      "sha256": "b70c21958d46f488ccbb84e3277fe0020fcbe2de4a5a25002f73c20982f5e7f7"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-01/umask-test.log",
+      "group": "current_review",
+      "spans": [
+        [
+          1,
+          22
+        ]
+      ],
+      "bytes": 1294,
+      "sha256": "9b0487bff4ef20cf00adca2b91110bc3d3484a82e6a441dd0766d5f3e25f3219"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-01/lint.log",
+      "group": "current_review",
+      "spans": [
+        [
+          1,
+          8
+        ]
+      ],
+      "bytes": 225,
+      "sha256": "a5b7124a2f66c5ed5797efe5e7f9736e47611723d271716e5daf6784b1151951"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-01/independent-bindings.json",
+      "group": "current_review",
+      "spans": [
+        [
+          1,
+          7
+        ]
+      ],
+      "bytes": 158,
+      "sha256": "50a5f57db7bbbd702cd6b35a053f557595749f930ef5d44567bd28aab92971ff"
+    }
+  ],
+  "read_rule": "Current complete files once; correction implementor omits previous full diff. Fresh final reviewer reads whole final runtime and regenerated complete diff. Large evidence programmatic. Substitute go-implementor role skill; omit code-smells for implementor."
+}

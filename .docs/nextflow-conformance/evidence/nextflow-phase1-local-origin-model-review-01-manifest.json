@@ -1,0 +1,229 @@
+{
+  "verdict": "PASS",
+  "scope": "local-origin model/schema only; reuse and actual runtime deferred",
+  "source": {
+    "nextflowconformance/data/schema/sources.lock.v1.json": {
+      "bytes": 39014,
+      "sha256": "b995e6e9644a1d8287f2d035d979b54593a69abd3778b145c98084e23b18bb06"
+    },
+    "nextflowconformance/model.go": {
+      "bytes": 40939,
+      "sha256": "51f29c4937f0fee055bb8efe582df9ce45eb454d5d6d41f4046a6aaa8e8ad64c"
+    },
+    "nextflowconformance/model_test.go": {
+      "bytes": 24751,
+      "sha256": "9a0f4cf1c78799b43cf8eed1d4478eee82f1de36806a86a3ce530dbf2d42f42a"
+    },
+    "nextflowconformance/schema.go": {
+      "bytes": 16719,
+      "sha256": "13c76dd54612506f7f616820ceb341d7c92b8a3d4e4b531363e4602385412903"
+    },
+    "nextflowconformance/testdata/schema-cases.json": {
+      "bytes": 282459,
+      "sha256": "449df342a3c6524c6f68bf4a9a06af70235f22b75c1b3cf7bc00894a6d182e02"
+    },
+    "nextflowconformance/testdata/schema-records/sources.lock.local-origin-roles.json": {
+      "bytes": 4187,
+      "sha256": "bc85875f4f31503111add709c23af722697b5b53ab99256832651acb93861b54"
+    },
+    "nextflowconformance/testdata/schema-records/sources.lock.local-origins.json": {
+      "bytes": 3139,
+      "sha256": "d1cef2dad78daa57ae5ec95bcd5bf51cf7c522ce9034a14f4cfe63850402d420"
+    }
+  },
+  "counts": {
+    "baseline_cases": 1190,
+    "new_cases": 53,
+    "schemas": 11,
+    "unchanged_schemas": 10,
+    "changed_functions": 8,
+    "reviewer_probes": 112,
+    "relational_only_differences": 4
+  },
+  "commands": {
+    "go": {
+      "command": "timeout 10m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go test -tags netgo -count=1 -v ./nextflowconformance ./cmd/wr-nextflow-conformance -run \"Test(EmptyCorpus|MalformedRecords|ClosedSchemas|RecordConstraints|SchemaEmission|NestedRecordConstraints|AmendedArtefactContract|CLIInvocationContract|CorpusContract|IndependentSchemaCases|LocalOriginDigestEquality|RuntimeClosureMembership|TypedCorpusRelations|AttemptLoadingAndCounts|RelationalRecordConstraints|FailedCommandResultContract|ReviewSourceFileReferences)$\"",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/local-origin-model-review-01/go.log",
+      "bytes": 94956,
+      "sha256": "a5f980fb657f865d19b80350d517787088e604fe6f425c3f69c825fa047649b7"
+    },
+    "stock": {
+      "command": "timeout 2m python3 nextflowconformance/testdata/check_schemas.py",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/local-origin-model-review-01/stock.log",
+      "bytes": 62580,
+      "sha256": "6e9f54f99edc00d36ebf10441c3d178236cb6c9b1dd310ad6659005b367f7811"
+    },
+    "lint": {
+      "command": "timeout 10m env GOTOOLCHAIN=go1.26.3 .tmp/agent/bin/golangci-lint run ./nextflowconformance/... ./cmd/wr-nextflow-conformance/...",
+      "exit": 1,
+      "log": ".tmp/agent/nextflow-conformance/local-origin-model-review-01/lint.log",
+      "bytes": 3891,
+      "sha256": "e2decd67b655bd555909039a7e57f342ef712987650580eadae1d3132a08f1f6"
+    },
+    "probe-go": {
+      "command": [
+        "timeout",
+        "10m",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "CGO_ENABLED=1",
+        "go",
+        "test",
+        "-tags",
+        "netgo",
+        "-count=1",
+        "-v",
+        "-overlay",
+        "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/local-origin-model-review-01/overlay.json",
+        "./nextflowconformance",
+        "-run",
+        "^TestReviewLocalOriginAdversarial$"
+      ],
+      "exit": 0,
+      "log": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/local-origin-model-review-01/probe-go.log",
+      "bytes": 4981,
+      "sha256": "cdd053dbbe5f216c75bd0c39ec3a6288c70b4bc77831b7db7e04d0f34f37509e"
+    },
+    "red-replay": {
+      "command": [
+        "timeout",
+        "10m",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "CGO_ENABLED=1",
+        "go",
+        "test",
+        "-tags",
+        "netgo",
+        "-count=1",
+        "-v",
+        "-overlay",
+        "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/local-origin-model-review-01/red-overlay.json",
+        "./nextflowconformance",
+        "-run",
+        "^TestLocalOriginDigestEquality$"
+      ],
+      "exit": 1,
+      "log": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/local-origin-model-review-01/red-replay.log",
+      "bytes": 417,
+      "sha256": "c668e0f32c4ac71ef827c12cd1aea77c01ab784193c36d113f701638ffe5c36f"
+    }
+  },
+  "lint": {
+    "owned_findings": 0,
+    "deferred_source_findings": 14,
+    "matches_implementation_log": true
+  },
+  "evidence": {
+    ".tmp/agent/nextflow-conformance/local-origin-model-review-01/audit.json": {
+      "bytes": 2499,
+      "sha256": "c534647d310ddd045320bf5e7795663348a6947a97105c3d5afe4051d5697b63"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model-review-01/audit.log": {
+      "bytes": 190,
+      "sha256": "ba29bbefcec69e02b0dee2c4fd15adc9d439318836392469c23a4b465717bda9"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model-review-01/commands.json": {
+      "bytes": 2720,
+      "sha256": "655b419257229abaf3310065a0d773b01010a700b9e21d143072c734a9a47f26"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model-review-01/go.log": {
+      "bytes": 94956,
+      "sha256": "a5f980fb657f865d19b80350d517787088e604fe6f425c3f69c825fa047649b7"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model-review-01/lint.log": {
+      "bytes": 3891,
+      "sha256": "e2decd67b655bd555909039a7e57f342ef712987650580eadae1d3132a08f1f6"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model-review-01/overlay.json": {
+      "bytes": 164,
+      "sha256": "b4c06459a71f0a7a930679b8fa33a8d926e03d0858a25c0504b4f89772f4641e"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model-review-01/probe-cases.json": {
+      "bytes": 414781,
+      "sha256": "98ca989faac4d31027363c24748fad7a303fa6cdf811a4d8c76b570df4574703"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model-review-01/probe-go.log": {
+      "bytes": 4981,
+      "sha256": "cdd053dbbe5f216c75bd0c39ec3a6288c70b4bc77831b7db7e04d0f34f37509e"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model-review-01/probe-source.txt": {
+      "bytes": 25571,
+      "sha256": "f1065399c4a56798663ede077774ce55f37800630f9309d4f2958185101d386f"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model-review-01/probe.py": {
+      "bytes": 6449,
+      "sha256": "02bafe93f1a8866c741ae7241dd665403118c6eb0ba466b06ccd196b60776bfd"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model-review-01/red-overlay.json": {
+      "bytes": 477,
+      "sha256": "cb202a6e91011be43d4d40acee3083f20989ce6180897b1b9d9e021d49b6de6f"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model-review-01/red-replay.log": {
+      "bytes": 417,
+      "sha256": "c668e0f32c4ac71ef827c12cd1aea77c01ab784193c36d113f701638ffe5c36f"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model-review-01/red-stock-replay.log": {
+      "bytes": 124,
+      "sha256": "effb17c3939fa2384801978e34525cd13f279a0a324277cf693ee4ab54788b7b"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model-review-01/red-test-source.txt": {
+      "bytes": 24748,
+      "sha256": "2d726d6f61e344be7d9ba9802b52b9e931ae0da4fd76c45d10da35593bb8831c"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model-review-01/stock.log": {
+      "bytes": 62580,
+      "sha256": "6e9f54f99edc00d36ebf10441c3d178236cb6c9b1dd310ad6659005b367f7811"
+    }
+  },
+  "implementation_evidence": {
+    ".tmp/agent/nextflow-conformance/local-origin-model/source-correction.diff": {
+      "bytes": 35652,
+      "sha256": "d5bf72277da272840da458b3dd15ec043abf0f89db7181fa7e997e3006a2cb46"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model/correction.diff": {
+      "bytes": 38793,
+      "sha256": "39f3f241217cb988a1f4d683150339a47dbffd8b228d987e23f62c2516e192aa"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model/changed-functions.json": {
+      "bytes": 980,
+      "sha256": "028cd0af2f3a8de79b2f64fb94229f7703b3797043b544ca71717fa9b65934f9"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model/changed-functions.txt": {
+      "bytes": 7296,
+      "sha256": "5af198d9429f5df9ccdfc9383a779cb211f0eb25e96f4351194a742e9a789722"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model/new-cases.json": {
+      "bytes": 11728,
+      "sha256": "4d187db1b9fd1409fe8b6af623d5ca0ca1cb7334297d334e2a69933f58a0a678"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model/red-go.log": {
+      "bytes": 89537,
+      "sha256": "9777654759adcbc4b2ebefca96f4d450e548ab0c0569ec9d1f73ec39821df0a6"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model/red-stock.log": {
+      "bytes": 64415,
+      "sha256": "284bbfc91b8e3689daaa6c34f9b5ae2e6e394eee8832cc71ff22ecae383ef972"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model/green-final.log": {
+      "bytes": 94956,
+      "sha256": "5c40018be45e462f01a4232e305a95e0089ee52dbd3a363bb36dd5aee454a720"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model/green-stock.log": {
+      "bytes": 62580,
+      "sha256": "6e9f54f99edc00d36ebf10441c3d178236cb6c9b1dd310ad6659005b367f7811"
+    },
+    ".tmp/agent/nextflow-conformance/local-origin-model/lint-final.log": {
+      "bytes": 3891,
+      "sha256": "e2decd67b655bd555909039a7e57f342ef712987650580eadae1d3132a08f1f6"
+    }
+  },
+  "report": {
+    ".docs/nextflow-conformance/reviews/nextflow-phase1-local-origin-model-review-01.md": {
+      "bytes": 4253,
+      "sha256": "4b40506d6317cf36e11faad92de025df58a88e4f3bbfe0f902ee1a5d4763cf5c"
+    }
+  }
+}

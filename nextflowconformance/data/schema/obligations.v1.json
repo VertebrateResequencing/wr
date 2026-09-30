@@ -1,0 +1,181 @@
+{
+  "$id": "urn:wr:nextflow-conformance:schema:1:obligations.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "disposition": {
+            "const": "nonrequirement"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "rationale": {
+            "not": {
+              "type": "null"
+            }
+          },
+          "review_id": {
+            "not": {
+              "type": "null"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "block_ids": {
+      "items": {
+        "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true,
+      "x-wr-field-rules": [
+        "ids",
+        "nonempty"
+      ],
+      "x-wr-reference": "blocks"
+    },
+    "disposition": {
+      "enum": [
+        "behaviour",
+        "nonrequirement",
+        "pending"
+      ],
+      "type": "string",
+      "x-wr-field-rules": [
+        "enum:behaviour|nonrequirement|pending"
+      ]
+    },
+    "facet": {
+      "minLength": 1,
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+          },
+          {
+            "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+          }
+        ]
+      },
+      "pattern": "[^\t-\r    - \u2028\u2029  　]",
+      "type": "string",
+      "x-wr-field-rules": [
+        "text"
+      ]
+    },
+    "id": {
+      "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+      "type": "string",
+      "x-wr-field-rules": [
+        "id"
+      ]
+    },
+    "rationale": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "not": {
+            "anyOf": [
+              {
+                "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+              },
+              {
+                "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+              }
+            ]
+          },
+          "pattern": "[^\t-\r    - \u2028\u2029  　]",
+          "type": "string",
+          "x-wr-field-rules": [
+            "text"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "requirement_ids": {
+      "items": {
+        "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true,
+      "x-wr-field-rules": [
+        "ids"
+      ],
+      "x-wr-reference": "requirements"
+    },
+    "review_id": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+          "type": "string",
+          "x-wr-field-rules": [
+            "id"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "x-wr-reference": "reviews"
+    },
+    "schema": {
+      "const": 1,
+      "maximum": 9223372036854775807,
+      "minimum": -9223372036854775808,
+      "type": "integer",
+      "x-wr-field-rules": [
+        "one"
+      ]
+    },
+    "statement": {
+      "minLength": 1,
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+          },
+          {
+            "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+          }
+        ]
+      },
+      "pattern": "[^\t-\r    - \u2028\u2029  　]",
+      "type": "string",
+      "x-wr-field-rules": [
+        "text"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "block_ids",
+    "facet",
+    "statement",
+    "disposition",
+    "requirement_ids",
+    "rationale",
+    "review_id"
+  ],
+  "title": "obligations version 1",
+  "type": "object",
+  "x-wr-record-rules": [
+    "decodeRecord: UTF-8; final newline; no duplicate keys; no trailing value",
+    "loadRecordFile/checkNested: sorted unique IDs and unique paths, environment keys and result UAT IDs",
+    "checkRules: sorted unique identifier/text/index arrays; integer JSON lexical form",
+    "checkReferences: typed references resolve within the same target revision",
+    "checkSourceSpans: locked source file, matching hash, ordered span within byte bounds"
+  ]
+}

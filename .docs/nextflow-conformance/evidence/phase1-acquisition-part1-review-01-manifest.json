@@ -1,0 +1,338 @@
+{
+  "verdict": "FAIL",
+  "date": "2026-09-28",
+  "scope": "A1_01 through A1_04 acquisition split part 1 only",
+  "head": "6121575cb42a3342f483618d71831cafe2e209a3",
+  "findings": [
+    {
+      "id": "R1",
+      "location": "nextflowconformance/source.go:133",
+      "related_location": "nextflowconformance/cli.go:239",
+      "probe": "candidate-alias-acquire",
+      "observed_exit": 0,
+      "observed_complete": true,
+      "expected_exit": 2,
+      "followup_diagnostic": "E_RUNTIME_HASH"
+    },
+    {
+      "id": "R2",
+      "location": "nextflowconformance/source.go:1002",
+      "related_location": "nextflowconformance/source.go:1428",
+      "probe": "unsafe-root-symlink-acquire",
+      "observed_exit": 0,
+      "observed_complete": true,
+      "expected_exit": 2,
+      "expected_diagnostic": "E_SOURCE_PATH"
+    }
+  ],
+  "counts": {
+    "full_focused_tests": 25,
+    "stock_schemas": 11,
+    "independent_schema_mutations": 1190,
+    "owned_lint_findings": 0,
+    "deferred_part2_lint_findings": 14,
+    "fixture_blobs": 3,
+    "pinned_blobs": 2856,
+    "pinned_tree_entries": 3584,
+    "directory_objects_verified": 729,
+    "handoff_bindings_checked": 135,
+    "contract_violations": 2
+  },
+  "commands": [
+    {
+      "name": "focused",
+      "argv": [
+        "timeout",
+        "10m",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "CGO_ENABLED=1",
+        "go",
+        "test",
+        "-tags",
+        "netgo",
+        "-count=1",
+        "./nextflowconformance",
+        "./cmd/wr-nextflow-conformance",
+        "-v"
+      ],
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/review-part1/focused.log",
+      "log_sha256": "ca5a938a8941f1270f2229f1f46e878df6f8f4013634a7caf5e62edb60f9ee1b"
+    },
+    {
+      "name": "schemas",
+      "argv": [
+        "timeout",
+        "30s",
+        "python3",
+        "nextflowconformance/testdata/check_schemas.py"
+      ],
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/review-part1/schemas.log",
+      "log_sha256": "595955540ec9f5be7430ef338012f1aeddc89268e590fac51d0167267385e1ee"
+    },
+    {
+      "name": "lint",
+      "argv": [
+        "timeout",
+        "5m",
+        "env",
+        "GOTOOLCHAIN=go1.26.3",
+        ".tmp/agent/bin/golangci-lint",
+        "run",
+        "./nextflowconformance/...",
+        "./cmd/wr-nextflow-conformance/..."
+      ],
+      "exit": 1,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/review-part1/lint.log",
+      "log_sha256": "cbe57943f925c99b784ae633e6dace92400f7b48df2658aedd7ddc95473bb5f5"
+    },
+    {
+      "name": "probes-final",
+      "argv": [
+        "timeout",
+        "4m",
+        "python3",
+        ".docs/nextflow-conformance/evidence/phase1-acquisition-part1-review-01-probes.txt"
+      ],
+      "exit": 1,
+      "log": ".tmp/agent/nextflow-conformance/acquisition/review-part1/probes-final.log",
+      "log_sha256": "3c48dd62d1ce39a752691bb4fcfef31a648d55c33d95a0e7869f966aa22a5115"
+    },
+    {
+      "name": "build-public-cli",
+      "argv": [
+        "timeout",
+        "2m",
+        "env",
+        "GOTOOLCHAIN=go1.27.1",
+        "CGO_ENABLED=1",
+        "go",
+        "build",
+        "-tags",
+        "netgo",
+        "-o",
+        ".tmp/agent/nextflow-conformance/acquisition/review-part1/wr-nextflow-conformance",
+        "./cmd/wr-nextflow-conformance"
+      ],
+      "exit": 0,
+      "binary_sha256": "4af031bb6bb37745291dcc5344a5a60afd1c4f5062a5489af7c57424211d5c2b"
+    }
+  ],
+  "current_input_hashes": {
+    "cmd/wr-nextflow-conformance/main.go": "13c7e4ca3d06ee4fddf0b3bac473ba65e241cca3c04e432e46bb41348d03e969",
+    "nextflowconformance/cli.go": "558789283358b7b77b2946def9124cc53dc109947db7a10d6600b102b87ba784",
+    "nextflowconformance/data/schema/attempts.v1.json": "f197134762d871bad8a53ac1f4b7b0c6612018e197c738f3a6946ab4fee229f8",
+    "nextflowconformance/data/schema/batches.v1.json": "7c67fe99c474893f6ed7316269f953ff1a6b8eadfa19ecad0ebd349383c1e957",
+    "nextflowconformance/data/schema/bindings.v1.json": "699fe8bda94840ce2c1423e0f7258867c6e4d88736bd5ec931385fa12a584cb3",
+    "nextflowconformance/data/schema/blocks.v1.json": "550a1b385daad9e2ee995cb873c6fe1bb9f52849c9ed469bb6d9ecf73420f25a",
+    "nextflowconformance/data/schema/decisions.v1.json": "162e5ac9f44df3288eb672c61c4d1ba0241ee8f4632925db2651d5d515d2a916",
+    "nextflowconformance/data/schema/obligations.v1.json": "04beb7b84ef83137560187783a14312935fe26a20f91682660f0c9130a32b68a",
+    "nextflowconformance/data/schema/requirements.v1.json": "630e240d3f1af741c4437d8966574a8d3cca684b3b928e894dc4ef7e63b3d7a7",
+    "nextflowconformance/data/schema/reviews.v1.json": "3b44f2744411044d57eca7c04f95043449c7fe601a0ca2a24428f9c826ffc7a0",
+    "nextflowconformance/data/schema/sources.lock.v1.json": "2f744c448284fd481873e3c30c8f3de056ca600798cd2eb1b267a519152a6587",
+    "nextflowconformance/data/schema/target.v1.json": "4e697236c20f85749177f5a4ebbf6e3471900883058163b9e09d9cd0dce0b3eb",
+    "nextflowconformance/data/schema/uats.v1.json": "e65e59c795154a2aa2ea062e5a9b86575d275487d798756c7d877f74ef64a7e9",
+    "nextflowconformance/model.go": "a5384d68ee301a84e33177e3ac1ed661cc1413e5541be8b20b00c782348b04d0",
+    "nextflowconformance/model_test.go": "5bd20b2e82f6326021b9131fb8630baa731cf2f5bc4890ffd48edb205efad77f",
+    "nextflowconformance/schema.go": "ca97c1c56acbb0ccc4c9569fb4c60c02844ff750a03d55e424a70b3efe770fc6",
+    "nextflowconformance/source.go": "b68501af312125bedda790765db66cf723fb737eee9fa9be9f440cddbe24aa9a",
+    "nextflowconformance/source_test.go": "0bffe6a782246e5ada2c86104e2ea856bafcd7d2cd1a72c751a3480f4f359174",
+    "nextflowconformance/testdata/check_schemas.py": "34dfb3e7c0c875165b8a3d43f4aa73da5a24f623d5b4eecc01aa78d1c4188e58",
+    "nextflowconformance/testdata/records/attempts.json": "949b3614192ebd83edfc4f05a61ece2d2e3b82a430d4ce68ef10ae76d1fd69b1",
+    "nextflowconformance/testdata/records/batches.json": "1a21b364162da68dead86d092977aa27268d4daeeb0e7f232eda168c1dd59076",
+    "nextflowconformance/testdata/records/bindings.json": "51288d10c7fad24eb4fb01ecf5843881513397e0de70ca719860984c6bd2d90f",
+    "nextflowconformance/testdata/records/blocks.json": "e3549c6ac6b97237f6c0d26486bbb517437c84a9519f72a85c70a12089f49ee9",
+    "nextflowconformance/testdata/records/decisions.json": "9588b8c8eaee009b1df2606e852486790878828fa018d9ae40a142f59018360e",
+    "nextflowconformance/testdata/records/obligations.json": "0493691d6080d2d38c031229aa4eae5948b8b7c93484b71bac508b5bbebaf65b",
+    "nextflowconformance/testdata/records/requirements.json": "1e6a4404e936d5595245c8cd2fddd5e5ac0e9bcba807ebf99a7d9c148602dbe8",
+    "nextflowconformance/testdata/records/reviews.json": "471e1f75e93b5950870799a1909cd30c6457780542563283947d4c7ce242c02b",
+    "nextflowconformance/testdata/records/sources.lock.json": "7c4374e097bdc20510c141f2463b1fec4187857453c180d7f549ff1c3ef956c2",
+    "nextflowconformance/testdata/records/target.json": "7b2e4d95e205fc51703a7a409390a427c9ac71fd994f6fb21996948f1c31bcd8",
+    "nextflowconformance/testdata/records/uats.json": "7804c650cea47fcb1ee863b522909ade7100df51aa6db583d430a0f0c01c484f",
+    "nextflowconformance/testdata/schema-cases.json": "589192b0c14619358819f19fde328de0e145bab83ff86f9c72e30e21d227e8c7",
+    "nextflowconformance/testdata/schema-records/ready-uat.json": "2116ac6ffcdba284fd6208d267e0bc9635167cb0957b0fde284315d6955d1124",
+    "nextflowconformance/testdata/schema-records/resolved-decision.json": "51cf8d1d213a2c42b17b034768262a05c4d6d0dfa08ea0b1fec437771f554736",
+    ".docs/nextflow-conformance/spec.md": "86a025b97dcd79ad67137a665ab3561b4f49fcd53fc83bb514e12fb66d534383",
+    ".docs/nextflow-conformance/phase1.md": "7c712427e1cdf9f7d01df94618a7ec667724148be99983574b30f99b8412e57d",
+    ".docs/nextflow-conformance/reviews/phase-01-acquisition-bundle.md": "fa5aa9c9ebed2d4727deb231b0f1b42a0be262a853973f3351e02466dc4defe4",
+    ".docs/nextflow-conformance/evidence/phase1-acquisition-part1.md": "6d9122f01304ff21d7670c221f930c5b350b9fe7a4d420fe5c4fad1679fc9b50",
+    ".docs/nextflow-conformance/evidence/phase1-acquisition-part1-manifest.json": "66483687e5ea5de5f4d19a922d7824b5fb3e2b1eeee4c06c2a8765098e80a3fe",
+    ".docs/nextflow-conformance/evidence/phase1-acquisition-part1-provision.txt": "0d9ddd34529636ff11ac729a67b4f9ad25c2408c92cea9afd05e89d658728c13",
+    "go.mod": "2c8dc14c444c3e159c3795f406e766d3a4029236d91d0420906330c2b51507c7",
+    "go.sum": "ee0f56aca7017d15ff1998315bfd8579977e3a21ee46c2ce4f328eb91cb7834e",
+    ".golangci.yml": "36a2749675d2eb3ac55870ac5f8a208a2c525e50f8dcc3e26b7be8cfb9e0307d"
+  },
+  "report": {
+    "path": ".docs/nextflow-conformance/reviews/phase-01-acquisition-part1-review-01.md",
+    "sha256": "94df5b33a3dd3a36817ad079b8f792ddd4fde7bd82e4b00e4568b5e6069f51ad"
+  },
+  "probe": {
+    "path": ".docs/nextflow-conformance/evidence/phase1-acquisition-part1-review-01-probes.txt",
+    "sha256": "1d0ab33fb9a489bd108e690bb969db0b318cc944fd0b1c3b5416c4d8cad28578"
+  },
+  "retained_evidence_inventory": {
+    "path": ".tmp/agent/nextflow-conformance/acquisition/review-part1/final-evidence-inventory.json",
+    "sha256": "dcca3b066c288e4c7d0d9884919709f5a43ae5dacf7584c2f09346e89d42c72c",
+    "entries": 21781,
+    "regular_files": 17324,
+    "bytes": 540334505
+  },
+  "artifact_tree_digest_algorithm": "SHA-256 of UTF-8 json.dumps(rows, sort_keys=True, separators=(comma,colon)); rows in lexical path order; full rows retained in final-evidence-inventory.json",
+  "artifact_trees": [
+    {
+      "path": ".tmp/agent/nextflow-conformance/acquisition/review-part1/nextflow-probes-6kwpnkpj",
+      "entries": 10869,
+      "regular_files": 8645,
+      "regular_file_bytes": 263273845,
+      "inventory_rows_sha256": "b70bcc45b2e39b0f62094d2e9e5c5d35f1f17c7b2010dd4189d1557ee754eddb",
+      "final_defect_evidence": true
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/acquisition/review-part1/nextflow-probes-8p6ym9gm",
+      "entries": 10868,
+      "regular_files": 8644,
+      "regular_file_bytes": 263283985,
+      "inventory_rows_sha256": "f65093c3c4f59c196b630ae36ea100efc44da962c8ec40120108ecdf36ed2768",
+      "final_defect_evidence": false
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/acquisition/review-part1/nextflow-probes-zrqgbk2b",
+      "entries": 26,
+      "regular_files": 20,
+      "regular_file_bytes": 2218217,
+      "inventory_rows_sha256": "b935db6e881326fe09d6b6b3e772189efc1be94db96a0c9316b2b72ce63d515a",
+      "final_defect_evidence": false
+    }
+  ],
+  "final_probe_run": ".tmp/agent/nextflow-conformance/acquisition/review-part1/nextflow-probes-6kwpnkpj",
+  "probe_results": [
+    {
+      "label": "baseline-acquire",
+      "exit": 0,
+      "complete": true,
+      "diagnostics": [],
+      "verified_artifacts": 3,
+      "requests": [
+        "/POM",
+        "/RUNTIME",
+        "/SOURCE"
+      ]
+    },
+    {
+      "label": "warm-failure",
+      "exit": 2,
+      "complete": false,
+      "diagnostics": [
+        "E_FETCH"
+      ],
+      "verified_artifacts": 0,
+      "requests": [
+        "/POM",
+        "/POM"
+      ]
+    },
+    {
+      "label": "candidate-alias-acquire",
+      "exit": 0,
+      "complete": true,
+      "diagnostics": [],
+      "verified_artifacts": 3,
+      "requests": [
+        "/POM",
+        "/RUNTIME",
+        "/SOURCE"
+      ],
+      "input_overwritten": true,
+      "input_sha256_before": "032413f4266a50ef438a8a19fb5daefec7c52e0067daaab0086b4d780433e2e5",
+      "input_sha256_after": "ab37e980bf58492e080c81efad836282e7854f5f11135c475dd275a59bf6f861",
+      "expected_exit": 2
+    },
+    {
+      "label": "candidate-alias-validate",
+      "exit": 2,
+      "complete": false,
+      "diagnostics": [
+        "E_RUNTIME_HASH"
+      ],
+      "verified_artifacts": 0,
+      "requests": []
+    },
+    {
+      "label": "unsafe-root-symlink-acquire",
+      "exit": 0,
+      "complete": true,
+      "diagnostics": [],
+      "verified_artifacts": 3,
+      "requests": [
+        "/POM",
+        "/RUNTIME",
+        "/SOURCE"
+      ],
+      "previous_candidate_replaced": true,
+      "outside_written": false,
+      "expected_exit": 2,
+      "expected_diagnostic": "E_SOURCE_PATH"
+    },
+    {
+      "label": "fifo-source-validate",
+      "exit": 2,
+      "complete": false,
+      "diagnostics": [
+        "E_SOURCE_PATH"
+      ],
+      "verified_artifacts": 0,
+      "requests": []
+    },
+    {
+      "label": "baseline-offline-validate",
+      "exit": 0,
+      "complete": true,
+      "diagnostics": [],
+      "verified_artifacts": 3,
+      "requests": []
+    }
+  ],
+  "versions": {
+    "go": "go version go1.27.1 linux/amd64",
+    "lint": "golangci-lint has version 2.12.2 built with go1.27.1 from (unknown, modified: ?, mod sum: \"h1:7+d1uY0bq1MU2UV3R5pW5Q7QWdcoq4naMRXM+gsJKrs=\") on (unknown)"
+  },
+  "provenance": {
+    "fixture_inputs": [
+      {
+        "path": ".tmp/nextflow-conformance/test-inputs/nextflow-source.tar.gz",
+        "bytes": 8094680,
+        "sha256": "f1c889c683094cbba5eda8fab701dac48624253f39c41a8e5361729f14c6ba11"
+      },
+      {
+        "path": ".tmp/nextflow-conformance/test-inputs/nextflow-tree.json",
+        "bytes": 1138642,
+        "sha256": "b5c8fbd548c057b40c136eccc2dce8ab252129f0f2ca21e9a2385f7d61540ea4"
+      },
+      {
+        "path": ".tmp/nextflow-conformance/test-inputs/nextflow-26.04.6-dist",
+        "bytes": 42355106,
+        "sha256": "182a63c74074e2dc7956ffa3c8cd59de952ed2c44394e21faf5e1736b945444c"
+      }
+    ],
+    "origins": {
+      "archive_url": "https://codeload.github.com/nextflow-io/nextflow/tar.gz/232b60569865e9a4577e48c1955409238359d6ca",
+      "tree_url": "https://api.github.com/repos/nextflow-io/nextflow/git/trees/1b9ece615807c1e8feef1d38ccac124eb2eab073?recursive=1",
+      "distribution_reused_from": ".tmp/agent/runtime-packaging/nextflow-26.04.6-dist"
+    },
+    "java": "Explicitly inert fixture data; no Java or Nextflow process executed",
+    "public_cli": "Unmodified binary/default TLS client; certificate supplied using SSL_CERT_FILE; no decoder or target bypass"
+  },
+  "historical_red_evidence": "POM suffix, pinned root identity, and mode failures retained and checked. Fetch-all-failed baseline already passed. Discarded intermediate assertions were not treated as contracts.",
+  "excluded": [
+    "A1_05 through A1_07 completion",
+    "actual acquired candidate and reviewed lock",
+    "Java/runtime execution closure and real POMs",
+    "A2 selectors",
+    "Nextflow execution",
+    "phase completion",
+    "unrelated wr suite"
+  ],
+  "writes_stopped_after_final_manifest": true
+}

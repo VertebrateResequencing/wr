@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "id": "REQUIREMENTS",
+  "origin": "nextflow",
+  "text": "Missing inputs fail with an error.",
+  "facets": [
+    "error"
+  ],
+  "dependencies": [],
+  "interactions": [],
+  "scope": "required",
+  "decision_ids": [],
+  "uat_ids": [
+    "UAT"
+  ],
+  "review_id": null
+}

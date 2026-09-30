@@ -1,0 +1,116 @@
+{
+  "classification": "schema-representation-gap",
+  "implementation_changed": false,
+  "commands": [
+    {
+      "argv": [
+        "timeout",
+        "10s",
+        "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/review-part1-03/wr-nextflow-conformance",
+        "validate",
+        "--root",
+        "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/nextflow-part2-local-origin/nextflow-corpus",
+        "--cache",
+        "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/nextflow-part2-local-origin/nextflow-cache"
+      ],
+      "exit": 2,
+      "stdout": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/nextflow-part2-local-origin/nextflow-local-java-stdout.json",
+      "stderr": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/nextflow-part2-local-origin/nextflow-local-java-stderr.txt",
+      "input": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/nextflow-part2-local-origin/nextflow-local-java.json",
+      "input_sha256": "9466280334712235594253aa29f13ebcc75821fbd9ee9880a61efc26bef30d57",
+      "schema_errors": [
+        {
+          "path": [
+            "artifacts",
+            0,
+            "origin"
+          ],
+          "message": "'file:///home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin/java' does not match \"^https://(?:(?:[A-Za-z0-9._~-]|[!$&'()*+,;=]|%[0-9A-Fa-f]{2}|[^\\\\x00-\\\\x7F])+|\\\\[(?:(?:[0-9A-Fa-f]{1,4}:){6}(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|::(?:[0-9A-Fa-f]{1,4}:){5}(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:[0-9A-Fa-f]{1,4})?::(?:[0-9A-Fa-f]{1,4}:){4}(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:(?:[0-9A-Fa-f]{1,4}:){0,1}[0-9A-Fa-f]{1,4})?::(?:[0-9A-Fa-f]{1,4}:){3}(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:(?:[0-9A-Fa-f]{1,4}:){0,2}[0-9A-Fa-f]{1,4})?::(?:[0-9A-Fa-f]{1,4}:){2}(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:(?:[0-9A-Fa-f]{1,4}:){0,3}[0-9A-Fa-f]{1,4})?::(?:[0-9A-Fa-f]{1,4}:)(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:(?:[0-9A-Fa-f]{1,4}:){0,4}[0-9A-Fa-f]{1,4})?::(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:(?:[0-9A-Fa-f]{1,4}:){0,5}[0-9A-Fa-f]{1,4})?::[0-9A-Fa-f]{1,4}|(?:(?:[0-9A-Fa-f]{1,4}:){0,6}[0-9A-Fa-f]{1,4})?::)(?:%25(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+)?\\\\])(?::[0-9]*)?(?:/(?:(?:[A-Za-z0-9._~-]|[!$&'()*+,;=]|%[0-9A-Fa-f]{2}|[^\\\\x00-\\\\x7F])|[:@/])*)?(?:\\\\?(?:(?:[A-Za-z0-9._~-]|[!$&'()*+,;=]|%[0-9A-Fa-f]{2}|[^\\\\x00-\\\\x7F])|[:@/?])*)?(?![\\\\s\\\\S])\""
+        }
+      ],
+      "stdout_sha256": "a6ceae6ba398452bf99c0b66b623c1bca3d3c4d609115d01093e124da33ee41a",
+      "stderr_sha256": "91b032e348103ebd4884367e0a4c55488f602ac9c962a239aecf86c3885d3025"
+    },
+    {
+      "argv": [
+        "timeout",
+        "10s",
+        "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/review-part1-03/wr-nextflow-conformance",
+        "validate",
+        "--root",
+        "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/nextflow-part2-local-origin/nextflow-corpus",
+        "--cache",
+        "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/nextflow-part2-local-origin/nextflow-cache"
+      ],
+      "exit": 2,
+      "stdout": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/nextflow-part2-local-origin/nextflow-local-tool-stdout.json",
+      "stderr": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/nextflow-part2-local-origin/nextflow-local-tool-stderr.txt",
+      "input": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/nextflow-part2-local-origin/nextflow-local-tool.json",
+      "input_sha256": "2f4a476c053deae63f6a88f5f4616932c3546fa91849cd7392f8c7db48e6088d",
+      "schema_errors": [
+        {
+          "path": [
+            "artifacts",
+            0,
+            "origin"
+          ],
+          "message": "'file:///usr/bin/bash' does not match \"^https://(?:(?:[A-Za-z0-9._~-]|[!$&'()*+,;=]|%[0-9A-Fa-f]{2}|[^\\\\x00-\\\\x7F])+|\\\\[(?:(?:[0-9A-Fa-f]{1,4}:){6}(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|::(?:[0-9A-Fa-f]{1,4}:){5}(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:[0-9A-Fa-f]{1,4})?::(?:[0-9A-Fa-f]{1,4}:){4}(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:(?:[0-9A-Fa-f]{1,4}:){0,1}[0-9A-Fa-f]{1,4})?::(?:[0-9A-Fa-f]{1,4}:){3}(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:(?:[0-9A-Fa-f]{1,4}:){0,2}[0-9A-Fa-f]{1,4})?::(?:[0-9A-Fa-f]{1,4}:){2}(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:(?:[0-9A-Fa-f]{1,4}:){0,3}[0-9A-Fa-f]{1,4})?::(?:[0-9A-Fa-f]{1,4}:)(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:(?:[0-9A-Fa-f]{1,4}:){0,4}[0-9A-Fa-f]{1,4})?::(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:(?:[0-9A-Fa-f]{1,4}:){0,5}[0-9A-Fa-f]{1,4})?::[0-9A-Fa-f]{1,4}|(?:(?:[0-9A-Fa-f]{1,4}:){0,6}[0-9A-Fa-f]{1,4})?::)(?:%25(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+)?\\\\])(?::[0-9]*)?(?:/(?:(?:[A-Za-z0-9._~-]|[!$&'()*+,;=]|%[0-9A-Fa-f]{2}|[^\\\\x00-\\\\x7F])|[:@/])*)?(?:\\\\?(?:(?:[A-Za-z0-9._~-]|[!$&'()*+,;=]|%[0-9A-Fa-f]{2}|[^\\\\x00-\\\\x7F])|[:@/?])*)?(?![\\\\s\\\\S])\""
+        }
+      ],
+      "stdout_sha256": "a6ceae6ba398452bf99c0b66b623c1bca3d3c4d609115d01093e124da33ee41a",
+      "stderr_sha256": "91b032e348103ebd4884367e0a4c55488f602ac9c962a239aecf86c3885d3025"
+    }
+  ],
+  "binary": {
+    "path": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/acquisition/review-part1-03/wr-nextflow-conformance",
+    "sha256": "d49ec2f2d7e792da24342e26a42cc2abeed3c15d79c0f9e31938b0a0c9eb67e3"
+  },
+  "unchanged_implementation_inputs": [
+    {
+      "path": "/home/ubuntu/wr/nextflowconformance/source.go",
+      "bytes": 38470,
+      "sha256": "e0d814ae4014c3ac44030111e79ec0b184fff1b45ffcb8d851baf5f1a26393d2"
+    },
+    {
+      "path": "/home/ubuntu/wr/nextflowconformance/source_test.go",
+      "bytes": 27574,
+      "sha256": "48ced5cc0b33c605d6eef1015a147b6d78dbdb06747863cda410762a92e5b45d"
+    },
+    {
+      "path": "/home/ubuntu/wr/nextflowconformance/model.go",
+      "bytes": 39896,
+      "sha256": "a5384d68ee301a84e33177e3ac1ed661cc1413e5541be8b20b00c782348b04d0"
+    },
+    {
+      "path": "/home/ubuntu/wr/nextflowconformance/schema.go",
+      "bytes": 16039,
+      "sha256": "ca97c1c56acbb0ccc4c9569fb4c60c02844ff750a03d55e424a70b3efe770fc6"
+    },
+    {
+      "path": "/home/ubuntu/wr/nextflowconformance/cli.go",
+      "bytes": 28579,
+      "sha256": "558789283358b7b77b2946def9124cc53dc109947db7a10d6600b102b87ba784"
+    },
+    {
+      "path": "/home/ubuntu/wr/nextflowconformance/data/schema/sources.lock.v1.json",
+      "bytes": 38087,
+      "sha256": "2f744c448284fd481873e3c30c8f3de056ca600798cd2eb1b267a519152a6587"
+    },
+    {
+      "path": "/home/ubuntu/wr/go.mod",
+      "bytes": 5259,
+      "sha256": "2c8dc14c444c3e159c3795f406e766d3a4029236d91d0420906330c2b51507c7"
+    },
+    {
+      "path": "/home/ubuntu/wr/go.sum",
+      "bytes": 26919,
+      "sha256": "ee0f56aca7017d15ff1998315bfd8579977e3a21ee46c2ce4f328eb91cb7834e"
+    },
+    {
+      "path": "/home/ubuntu/wr/.golangci.yml",
+      "bytes": 3165,
+      "sha256": "36a2749675d2eb3ac55870ac5f8a208a2c525e50f8dcc3e26b7be8cfb9e0307d"
+    }
+  ],
+  "scope": "Diagnosis only. Existing reviewed binary rejects candidate local origins; stock schema agrees. No new UAT, acquisition, closure, selector, lint, or phase pass."
+}

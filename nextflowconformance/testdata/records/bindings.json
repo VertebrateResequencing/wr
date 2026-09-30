@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "id": "BINDINGS",
+  "uat_id": "UAT",
+  "package": "github.com/VertebrateResequencing/wr/nextflowconformance",
+  "test": "TestUAT_A1_01",
+  "source_files": [
+    {
+      "path": "input.txt",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bytes": 3
+    }
+  ],
+  "evidence_kind": "foundation"
+}

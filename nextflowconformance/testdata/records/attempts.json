@@ -1,0 +1,121 @@
+{
+  "schema": 1,
+  "id": "ATTEMPTS",
+  "suite": "foundation-bootstrap",
+  "inputs": {
+    "git_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "dirty_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "target": {
+      "path": "input.txt",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bytes": 3
+    },
+    "lock": {
+      "path": "input.txt",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bytes": 3
+    },
+    "semantic_records": [
+      {
+        "path": "input.txt",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 3
+      }
+    ],
+    "reviews": [
+      {
+        "path": "input.txt",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 3
+      }
+    ],
+    "workflows": [],
+    "inputs": [],
+    "expectations": [],
+    "normalization": [],
+    "executables": [
+      {
+        "path": "input.txt",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 3
+      }
+    ],
+    "go_sources": [
+      {
+        "path": "input.txt",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 3
+      }
+    ],
+    "go_mod": {
+      "path": "input.txt",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bytes": 3
+    },
+    "go_sum": {
+      "path": "input.txt",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bytes": 3
+    },
+    "go_compiler": {
+      "name": "go",
+      "file": {
+        "path": "input.txt",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 3
+      },
+      "version": "go1.27.1"
+    },
+    "build_tags": [
+      "netgo"
+    ],
+    "build_flags": [],
+    "os": "linux",
+    "arch": "amd64",
+    "locale": "C",
+    "timezone": "UTC",
+    "child_environment": [],
+    "normalized_environment": [],
+    "tools": [
+      {
+        "name": "sh",
+        "file": {
+          "path": "input.txt",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bytes": 3
+        },
+        "version": "dash"
+      }
+    ],
+    "executor": "local",
+    "java": [],
+    "runtime": [],
+    "dependencies": [],
+    "runner_version": "1",
+    "discovery_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "discovery": {
+    "path": "input.txt",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bytes": 3
+  },
+  "events": {
+    "path": "input.txt",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bytes": 3
+  },
+  "results": [
+    {
+      "uat_id": "UAT",
+      "state": "failed",
+      "event_indexes": [
+        0
+      ],
+      "artifacts": []
+    }
+  ],
+  "artifacts": [],
+  "exit": 1,
+  "started": "2026-09-28T00:00:00Z",
+  "ended": "2026-09-28T00:00:01Z"
+}

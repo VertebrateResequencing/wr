@@ -124,8 +124,8 @@ packaging label or replacement lock hash must instead fail the pinned
 identity check with `E_TARGET_IDENTITY`. Submit measured acquisition and
 all seven UAT results for independent review; E1 later proves execution.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ## Exit conditions
 

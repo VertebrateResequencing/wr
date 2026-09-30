@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "id": "REVIEWS",
+  "author": "implementor",
+  "reviewer": "independent reviewer",
+  "verdict": "accepted",
+  "input_hashes": {
+    "source": [
+      {
+        "path": "input.txt",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 3
+      }
+    ],
+    "obligations": [
+      {
+        "path": "input.txt",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 3
+      }
+    ],
+    "requirement": [
+      {
+        "path": "input.txt",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 3
+      }
+    ],
+    "uat": [
+      {
+        "path": "input.txt",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 3
+      }
+    ],
+    "normalization": [
+      {
+        "path": "input.txt",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 3
+      }
+    ],
+    "binding": [
+      {
+        "path": "input.txt",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 3
+      }
+    ]
+  },
+  "source_spans": [
+    {
+      "file": "input.txt",
+      "start": 0,
+      "end": 3,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "findings": []
+}

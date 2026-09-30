@@ -1,0 +1,178 @@
+{
+  "$id": "urn:wr:nextflow-conformance:schema:1:decisions.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "resolution": {
+            "not": {
+              "type": "null"
+            }
+          },
+          "review_id": {
+            "not": {
+              "type": "null"
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "state": {
+            "const": "unresolved"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "resolution": {
+            "type": "null"
+          },
+          "review_id": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "affected_ids": {
+      "items": {
+        "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true,
+      "x-wr-field-rules": [
+        "ids",
+        "nonempty"
+      ],
+      "x-wr-reference": "record"
+    },
+    "id": {
+      "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+      "type": "string",
+      "x-wr-field-rules": [
+        "id"
+      ]
+    },
+    "question": {
+      "minLength": 1,
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+          },
+          {
+            "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+          }
+        ]
+      },
+      "pattern": "[^\t-\r    - \u2028\u2029  　]",
+      "type": "string",
+      "x-wr-field-rules": [
+        "text"
+      ]
+    },
+    "rationale": {
+      "minLength": 1,
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+          },
+          {
+            "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+          }
+        ]
+      },
+      "pattern": "[^\t-\r    - \u2028\u2029  　]",
+      "type": "string",
+      "x-wr-field-rules": [
+        "text"
+      ]
+    },
+    "resolution": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "not": {
+            "anyOf": [
+              {
+                "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+              },
+              {
+                "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+              }
+            ]
+          },
+          "pattern": "[^\t-\r    - \u2028\u2029  　]",
+          "type": "string",
+          "x-wr-field-rules": [
+            "text"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "review_id": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+          "type": "string",
+          "x-wr-field-rules": [
+            "id"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "x-wr-reference": "reviews"
+    },
+    "schema": {
+      "const": 1,
+      "maximum": 9223372036854775807,
+      "minimum": -9223372036854775808,
+      "type": "integer",
+      "x-wr-field-rules": [
+        "one"
+      ]
+    },
+    "state": {
+      "enum": [
+        "unresolved",
+        "resolved"
+      ],
+      "type": "string",
+      "x-wr-field-rules": [
+        "enum:unresolved|resolved"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "question",
+    "state",
+    "affected_ids",
+    "rationale",
+    "resolution",
+    "review_id"
+  ],
+  "title": "decisions version 1",
+  "type": "object",
+  "x-wr-record-rules": [
+    "decodeRecord: UTF-8; final newline; no duplicate keys; no trailing value",
+    "loadRecordFile/checkNested: sorted unique IDs and unique paths, environment keys and result UAT IDs",
+    "checkRules: sorted unique identifier/text/index arrays; integer JSON lexical form",
+    "checkReferences: typed references resolve within the same target revision",
+    "checkSourceSpans: locked source file, matching hash, ordered span within byte bounds",
+    "checkRecordRelations: resolved decision requires accepted review"
+  ]
+}

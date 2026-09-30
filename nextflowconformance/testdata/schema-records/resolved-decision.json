@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "id": "DECISIONS",
+  "question": "Which executor is supported?",
+  "state": "resolved",
+  "affected_ids": [
+    "REQ"
+  ],
+  "rationale": "The executor contract needs product review.",
+  "resolution": "Use the local executor for the bootstrap cases.",
+  "review_id": "REVIEW"
+}

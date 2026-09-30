@@ -1,0 +1,1247 @@
+{
+  "$id": "urn:wr:nextflow-conformance:schema:1:attempts.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes": {
+            "maximum": 9223372036854775807,
+            "minimum": 0,
+            "type": "integer",
+            "x-wr-field-rules": [
+              "nonnegative"
+            ]
+          },
+          "path": {
+            "minLength": 1,
+            "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+            "type": "string",
+            "x-wr-field-rules": [
+              "path"
+            ]
+          },
+          "sha256": {
+            "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+            "type": "string",
+            "x-wr-field-rules": [
+              "hash"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "sha256",
+          "bytes"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "discovery": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer",
+          "x-wr-field-rules": [
+            "nonnegative"
+          ]
+        },
+        "path": {
+          "minLength": 1,
+          "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+          "type": "string",
+          "x-wr-field-rules": [
+            "path"
+          ]
+        },
+        "sha256": {
+          "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+          "type": "string",
+          "x-wr-field-rules": [
+            "hash"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "ended": {
+      "pattern": "^(?:[0-9]{4}-(?:(?:01|03|05|07|08|10|12)-(?:(?:0[1-9]|[12][0-9])|3[01])|(?:04|06|09|11)-(?:(?:0[1-9]|[12][0-9])|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?Z(?![\\s\\S])",
+      "type": "string",
+      "x-wr-field-rules": [
+        "time"
+      ]
+    },
+    "events": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer",
+          "x-wr-field-rules": [
+            "nonnegative"
+          ]
+        },
+        "path": {
+          "minLength": 1,
+          "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+          "type": "string",
+          "x-wr-field-rules": [
+            "path"
+          ]
+        },
+        "sha256": {
+          "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+          "type": "string",
+          "x-wr-field-rules": [
+            "hash"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "exit": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer",
+      "x-wr-field-rules": [
+        "nonnegative"
+      ]
+    },
+    "id": {
+      "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+      "type": "string",
+      "x-wr-field-rules": [
+        "id"
+      ]
+    },
+    "inputs": {
+      "additionalProperties": false,
+      "properties": {
+        "arch": {
+          "minLength": 1,
+          "not": {
+            "anyOf": [
+              {
+                "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+              },
+              {
+                "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+              }
+            ]
+          },
+          "pattern": "[^\t-\r    - \u2028\u2029  　]",
+          "type": "string",
+          "x-wr-field-rules": [
+            "text"
+          ]
+        },
+        "build_flags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "build_tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "child_environment": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "minLength": 1,
+                "not": {
+                  "anyOf": [
+                    {
+                      "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+                    },
+                    {
+                      "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+                    }
+                  ]
+                },
+                "pattern": "[^\t-\r    - \u2028\u2029  　]",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "text"
+                ]
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "dependencies": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer",
+                "x-wr-field-rules": [
+                  "nonnegative"
+                ]
+              },
+              "path": {
+                "minLength": 1,
+                "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "path"
+                ]
+              },
+              "sha256": {
+                "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "hash"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "sha256",
+              "bytes"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "dirty_digest": {
+          "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+          "type": "string",
+          "x-wr-field-rules": [
+            "hash"
+          ]
+        },
+        "discovery_hash": {
+          "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+          "type": "string",
+          "x-wr-field-rules": [
+            "hash"
+          ]
+        },
+        "executables": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer",
+                "x-wr-field-rules": [
+                  "nonnegative"
+                ]
+              },
+              "path": {
+                "minLength": 1,
+                "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "path"
+                ]
+              },
+              "sha256": {
+                "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "hash"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "sha256",
+              "bytes"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array",
+          "x-wr-field-rules": [
+            "nonempty"
+          ]
+        },
+        "executor": {
+          "minLength": 1,
+          "not": {
+            "anyOf": [
+              {
+                "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+              },
+              {
+                "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+              }
+            ]
+          },
+          "pattern": "[^\t-\r    - \u2028\u2029  　]",
+          "type": "string",
+          "x-wr-field-rules": [
+            "text"
+          ]
+        },
+        "expectations": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer",
+                "x-wr-field-rules": [
+                  "nonnegative"
+                ]
+              },
+              "path": {
+                "minLength": 1,
+                "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "path"
+                ]
+              },
+              "sha256": {
+                "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "hash"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "sha256",
+              "bytes"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "git_commit": {
+          "pattern": "^[a-f0-9]{40}(?![\\s\\S])",
+          "type": "string",
+          "x-wr-field-rules": [
+            "git"
+          ]
+        },
+        "go_compiler": {
+          "additionalProperties": false,
+          "properties": {
+            "file": {
+              "additionalProperties": false,
+              "properties": {
+                "bytes": {
+                  "maximum": 9223372036854775807,
+                  "minimum": 0,
+                  "type": "integer",
+                  "x-wr-field-rules": [
+                    "nonnegative"
+                  ]
+                },
+                "path": {
+                  "minLength": 1,
+                  "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                  "type": "string",
+                  "x-wr-field-rules": [
+                    "path"
+                  ]
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+                  "type": "string",
+                  "x-wr-field-rules": [
+                    "hash"
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "sha256",
+                "bytes"
+              ],
+              "type": "object"
+            },
+            "name": {
+              "minLength": 1,
+              "not": {
+                "anyOf": [
+                  {
+                    "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+                  },
+                  {
+                    "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+                  }
+                ]
+              },
+              "pattern": "[^\t-\r    - \u2028\u2029  　]",
+              "type": "string",
+              "x-wr-field-rules": [
+                "text"
+              ]
+            },
+            "version": {
+              "minLength": 1,
+              "not": {
+                "anyOf": [
+                  {
+                    "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+                  },
+                  {
+                    "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+                  }
+                ]
+              },
+              "pattern": "[^\t-\r    - \u2028\u2029  　]",
+              "type": "string",
+              "x-wr-field-rules": [
+                "text"
+              ]
+            }
+          },
+          "required": [
+            "name",
+            "file",
+            "version"
+          ],
+          "type": "object"
+        },
+        "go_mod": {
+          "additionalProperties": false,
+          "properties": {
+            "bytes": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer",
+              "x-wr-field-rules": [
+                "nonnegative"
+              ]
+            },
+            "path": {
+              "minLength": 1,
+              "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+              "type": "string",
+              "x-wr-field-rules": [
+                "path"
+              ]
+            },
+            "sha256": {
+              "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+              "type": "string",
+              "x-wr-field-rules": [
+                "hash"
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "bytes"
+          ],
+          "type": "object"
+        },
+        "go_sources": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer",
+                "x-wr-field-rules": [
+                  "nonnegative"
+                ]
+              },
+              "path": {
+                "minLength": 1,
+                "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "path"
+                ]
+              },
+              "sha256": {
+                "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "hash"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "sha256",
+              "bytes"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array",
+          "x-wr-field-rules": [
+            "nonempty"
+          ]
+        },
+        "go_sum": {
+          "additionalProperties": false,
+          "properties": {
+            "bytes": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer",
+              "x-wr-field-rules": [
+                "nonnegative"
+              ]
+            },
+            "path": {
+              "minLength": 1,
+              "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+              "type": "string",
+              "x-wr-field-rules": [
+                "path"
+              ]
+            },
+            "sha256": {
+              "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+              "type": "string",
+              "x-wr-field-rules": [
+                "hash"
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "bytes"
+          ],
+          "type": "object"
+        },
+        "inputs": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer",
+                "x-wr-field-rules": [
+                  "nonnegative"
+                ]
+              },
+              "path": {
+                "minLength": 1,
+                "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "path"
+                ]
+              },
+              "sha256": {
+                "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "hash"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "sha256",
+              "bytes"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "java": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer",
+                "x-wr-field-rules": [
+                  "nonnegative"
+                ]
+              },
+              "path": {
+                "minLength": 1,
+                "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "path"
+                ]
+              },
+              "sha256": {
+                "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "hash"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "sha256",
+              "bytes"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "locale": {
+          "minLength": 1,
+          "not": {
+            "anyOf": [
+              {
+                "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+              },
+              {
+                "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+              }
+            ]
+          },
+          "pattern": "[^\t-\r    - \u2028\u2029  　]",
+          "type": "string",
+          "x-wr-field-rules": [
+            "text"
+          ]
+        },
+        "lock": {
+          "additionalProperties": false,
+          "properties": {
+            "bytes": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer",
+              "x-wr-field-rules": [
+                "nonnegative"
+              ]
+            },
+            "path": {
+              "minLength": 1,
+              "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+              "type": "string",
+              "x-wr-field-rules": [
+                "path"
+              ]
+            },
+            "sha256": {
+              "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+              "type": "string",
+              "x-wr-field-rules": [
+                "hash"
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "bytes"
+          ],
+          "type": "object"
+        },
+        "normalization": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer",
+                "x-wr-field-rules": [
+                  "nonnegative"
+                ]
+              },
+              "path": {
+                "minLength": 1,
+                "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "path"
+                ]
+              },
+              "sha256": {
+                "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "hash"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "sha256",
+              "bytes"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "normalized_environment": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "minLength": 1,
+                "not": {
+                  "anyOf": [
+                    {
+                      "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+                    },
+                    {
+                      "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+                    }
+                  ]
+                },
+                "pattern": "[^\t-\r    - \u2028\u2029  　]",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "text"
+                ]
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "os": {
+          "minLength": 1,
+          "not": {
+            "anyOf": [
+              {
+                "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+              },
+              {
+                "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+              }
+            ]
+          },
+          "pattern": "[^\t-\r    - \u2028\u2029  　]",
+          "type": "string",
+          "x-wr-field-rules": [
+            "text"
+          ]
+        },
+        "reviews": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer",
+                "x-wr-field-rules": [
+                  "nonnegative"
+                ]
+              },
+              "path": {
+                "minLength": 1,
+                "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "path"
+                ]
+              },
+              "sha256": {
+                "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "hash"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "sha256",
+              "bytes"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array",
+          "x-wr-field-rules": [
+            "nonempty"
+          ]
+        },
+        "runner_version": {
+          "minLength": 1,
+          "not": {
+            "anyOf": [
+              {
+                "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+              },
+              {
+                "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+              }
+            ]
+          },
+          "pattern": "[^\t-\r    - \u2028\u2029  　]",
+          "type": "string",
+          "x-wr-field-rules": [
+            "text"
+          ]
+        },
+        "runtime": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer",
+                "x-wr-field-rules": [
+                  "nonnegative"
+                ]
+              },
+              "path": {
+                "minLength": 1,
+                "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "path"
+                ]
+              },
+              "sha256": {
+                "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "hash"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "sha256",
+              "bytes"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "semantic_records": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer",
+                "x-wr-field-rules": [
+                  "nonnegative"
+                ]
+              },
+              "path": {
+                "minLength": 1,
+                "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "path"
+                ]
+              },
+              "sha256": {
+                "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "hash"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "sha256",
+              "bytes"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array",
+          "x-wr-field-rules": [
+            "nonempty"
+          ]
+        },
+        "target": {
+          "additionalProperties": false,
+          "properties": {
+            "bytes": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer",
+              "x-wr-field-rules": [
+                "nonnegative"
+              ]
+            },
+            "path": {
+              "minLength": 1,
+              "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+              "type": "string",
+              "x-wr-field-rules": [
+                "path"
+              ]
+            },
+            "sha256": {
+              "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+              "type": "string",
+              "x-wr-field-rules": [
+                "hash"
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "bytes"
+          ],
+          "type": "object"
+        },
+        "timezone": {
+          "minLength": 1,
+          "not": {
+            "anyOf": [
+              {
+                "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+              },
+              {
+                "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+              }
+            ]
+          },
+          "pattern": "[^\t-\r    - \u2028\u2029  　]",
+          "type": "string",
+          "x-wr-field-rules": [
+            "text"
+          ]
+        },
+        "tools": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "file": {
+                "additionalProperties": false,
+                "properties": {
+                  "bytes": {
+                    "maximum": 9223372036854775807,
+                    "minimum": 0,
+                    "type": "integer",
+                    "x-wr-field-rules": [
+                      "nonnegative"
+                    ]
+                  },
+                  "path": {
+                    "minLength": 1,
+                    "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                    "type": "string",
+                    "x-wr-field-rules": [
+                      "path"
+                    ]
+                  },
+                  "sha256": {
+                    "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+                    "type": "string",
+                    "x-wr-field-rules": [
+                      "hash"
+                    ]
+                  }
+                },
+                "required": [
+                  "path",
+                  "sha256",
+                  "bytes"
+                ],
+                "type": "object"
+              },
+              "name": {
+                "minLength": 1,
+                "not": {
+                  "anyOf": [
+                    {
+                      "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+                    },
+                    {
+                      "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+                    }
+                  ]
+                },
+                "pattern": "[^\t-\r    - \u2028\u2029  　]",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "text"
+                ]
+              },
+              "version": {
+                "minLength": 1,
+                "not": {
+                  "anyOf": [
+                    {
+                      "pattern": "^[\t-\r    - \u2028\u2029  　]*(?:[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])[\t-\r    - \u2028\u2029  　]*$"
+                    },
+                    {
+                      "pattern": "^(?:[\t-\r    - \u2028\u2029  　]*|(?:(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*')|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))[\\s\\S])*(?:[.!?:][\t-\r    - \u2028\u2029  　]+|`(?:[^`\\\\]|\\\\[\\s\\S])*`[.!?:]?[\t-\r    - \u2028\u2029  　]*|(?!(?:\\\\[\\s\\S]|\"(?:[^\"\\\\]|\\\\[\\s\\S])*\"|`(?:[^`\\\\]|\\\\[\\s\\S])*`|(^|[\t-\r    - \u2028\u2029  　!#$%\u0026()*+,\\-./:;\u003c=\u003e?@\\[\\]^_{|}~])'(?:[^'\\\\]|\\\\[\\s\\S])*'))`[.!?:]?[\t-\r    - \u2028\u2029  　]*))[Tt][Oo][Dd][Oo]: [Dd][Ee][Ssſ][Cc][Rr][Ii][Bb][Ee] [Ee][Xx][Pp][Ee][Cc][Tt][Ee][Dd] [Bb][Ee][Hh][Aa][Vv][Ii][Oo][Uu][Rr]\\.([\t-\r    - \u2028\u2029  　]|$)"
+                    }
+                  ]
+                },
+                "pattern": "[^\t-\r    - \u2028\u2029  　]",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "text"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "file",
+              "version"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array",
+          "x-wr-field-rules": [
+            "nonempty"
+          ]
+        },
+        "workflows": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "maximum": 9223372036854775807,
+                "minimum": 0,
+                "type": "integer",
+                "x-wr-field-rules": [
+                  "nonnegative"
+                ]
+              },
+              "path": {
+                "minLength": 1,
+                "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "path"
+                ]
+              },
+              "sha256": {
+                "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+                "type": "string",
+                "x-wr-field-rules": [
+                  "hash"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "sha256",
+              "bytes"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "git_commit",
+        "dirty_digest",
+        "target",
+        "lock",
+        "semantic_records",
+        "reviews",
+        "workflows",
+        "inputs",
+        "expectations",
+        "normalization",
+        "executables",
+        "go_sources",
+        "go_mod",
+        "go_sum",
+        "go_compiler",
+        "build_tags",
+        "build_flags",
+        "os",
+        "arch",
+        "locale",
+        "timezone",
+        "child_environment",
+        "normalized_environment",
+        "tools",
+        "executor",
+        "java",
+        "runtime",
+        "dependencies",
+        "runner_version",
+        "discovery_hash"
+      ],
+      "type": "object"
+    },
+    "results": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "bytes": {
+                  "maximum": 9223372036854775807,
+                  "minimum": 0,
+                  "type": "integer",
+                  "x-wr-field-rules": [
+                    "nonnegative"
+                  ]
+                },
+                "path": {
+                  "minLength": 1,
+                  "pattern": "^(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+(?:/(?!\\.{1,2}(?:/|(?![\\s\\S])))[^/\\\\\\u0000]+)*(?![\\s\\S])",
+                  "type": "string",
+                  "x-wr-field-rules": [
+                    "path"
+                  ]
+                },
+                "sha256": {
+                  "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+                  "type": "string",
+                  "x-wr-field-rules": [
+                    "hash"
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "sha256",
+                "bytes"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "event_indexes": {
+            "items": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true,
+            "x-wr-field-rules": [
+              "indexes",
+              "nonempty"
+            ]
+          },
+          "state": {
+            "enum": [
+              "passed",
+              "failed",
+              "skipped",
+              "timed-out",
+              "blocked"
+            ],
+            "type": "string",
+            "x-wr-field-rules": [
+              "enum:passed|failed|skipped|timed-out|blocked"
+            ]
+          },
+          "uat_id": {
+            "pattern": "^[A-Z][A-Z0-9_]*(?![\\s\\S])",
+            "type": "string",
+            "x-wr-field-rules": [
+              "id"
+            ],
+            "x-wr-reference": "uats"
+          }
+        },
+        "required": [
+          "uat_id",
+          "state",
+          "event_indexes",
+          "artifacts"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema": {
+      "const": 1,
+      "maximum": 9223372036854775807,
+      "minimum": -9223372036854775808,
+      "type": "integer",
+      "x-wr-field-rules": [
+        "one"
+      ]
+    },
+    "started": {
+      "pattern": "^(?:[0-9]{4}-(?:(?:01|03|05|07|08|10|12)-(?:(?:0[1-9]|[12][0-9])|3[01])|(?:04|06|09|11)-(?:(?:0[1-9]|[12][0-9])|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?Z(?![\\s\\S])",
+      "type": "string",
+      "x-wr-field-rules": [
+        "time"
+      ]
+    },
+    "suite": {
+      "enum": [
+        "foundation-bootstrap",
+        "target-inventory",
+        "wr-runtime"
+      ],
+      "type": "string",
+      "x-wr-field-rules": [
+        "enum:foundation-bootstrap|target-inventory|wr-runtime"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "suite",
+    "inputs",
+    "discovery",
+    "events",
+    "results",
+    "artifacts",
+    "exit",
+    "started",
+    "ended"
+  ],
+  "title": "attempts version 1",
+  "type": "object",
+  "x-wr-record-rules": [
+    "decodeRecord: UTF-8; final newline; no duplicate keys; no trailing value",
+    "loadRecordFile/checkNested: sorted unique IDs and unique paths, environment keys and result UAT IDs",
+    "checkRules: sorted unique identifier/text/index arrays; integer JSON lexical form",
+    "checkReferences: typed references resolve within the same target revision",
+    "checkSourceSpans: locked source file, matching hash, ordered span within byte bounds",
+    "attemptRecord.validate: ended at or after started",
+    "loadAttempts: filename matches ID; D2 derives results later"
+  ]
+}

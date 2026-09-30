@@ -1,0 +1,597 @@
+{
+  "verdict": "PASS",
+  "date": "2026-09-30",
+  "scope": "Independent entire runtime split review; no production candidate, Item1.2, Phase1, E1 or wr acceptance",
+  "source_files": [
+    {
+      "path": "nextflowconformance/source.go",
+      "bytes": 45354,
+      "lines": 1732,
+      "sha256": "24bfd90e8fe671f3dc8be784f09cb9696c448ac5606eccb6485c7bfdaf5f9863"
+    },
+    {
+      "path": "nextflowconformance/source_test.go",
+      "bytes": 43116,
+      "lines": 1329,
+      "sha256": "eff912940767dbff61db74416123944364c7a77daa07eeeaba944dcc543230f6"
+    },
+    {
+      "path": "nextflowconformance/source_companions.go",
+      "bytes": 11554,
+      "lines": 419,
+      "sha256": "d7dafa433bb92ef75b2999c50fff2edadeb395c5a1fbcb68e0b0ab52a63c6a97"
+    }
+  ],
+  "full_diff": {
+    "path": ".tmp/agent/nextflow-conformance/runtime-correction-01/complete-runtime.diff",
+    "bytes": 58602,
+    "lines": 1853,
+    "sha256": "918fb1bc19b863b3bc0aa809db35a431e72ea0e0fefed32a801a50f1a5522feb"
+  },
+  "measurements": {
+    "whole_runtime_source_bytes": 100024,
+    "complete_diff_bytes": 58602,
+    "complete_changed_function_bytes": 45191,
+    "added_type_bytes": 482,
+    "growth_since_correction_input": 5310,
+    "growth_plus_complete_diff": 63912,
+    "approved_growth_and_diff_allocation_bytes": 64000
+  },
+  "input_manifest": {
+    "path": ".docs/nextflow-conformance/evidence/nextflow-phase1-runtime-correction-01-manifest.json",
+    "bytes": 27643,
+    "sha256": "4838f55e960eb568a26515bf2f77ff2935905853226f98e8cbbdd4c2cd902910"
+  },
+  "report": {
+    "path": ".docs/nextflow-conformance/reviews/nextflow-phase1-runtime-review-02.md",
+    "bytes": 6980,
+    "sha256": "09cde28f25cc02320842c6f373742fa6bf06bca1cee71fd81e7701cad3da1a74"
+  },
+  "fixture": {
+    "path": ".tmp/agent/nextflow-conformance/runtime-review-02/acquired/nextflow-fixture-cache/sources.lock.candidate.json",
+    "bytes": 2005170,
+    "sha256": "656790104861774594858c2a7ebf0bd8a685b10395d90bd42382088514998086"
+  },
+  "provenance": {
+    "path": ".tmp/agent/nextflow-conformance/runtime-review-02/acquired/nextflow-fixture-cache/nextflow-generation-2071982443/nextflow-local-provenance.json",
+    "bytes": 132573,
+    "sha256": "dff6feccfb6fad10ccbd1bd52d3e6b77ec83ba0a2f7f103bc41d8bedd4ab5386"
+  },
+  "commands": [
+    {
+      "command": "timeout 10m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 TMPDIR=/home/ubuntu/wr/.tmp/agent/nextflow-conformance/runtime-review-02 go test -tags netgo -count=1 -json ./nextflowconformance ./cmd/wr-nextflow-conformance",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/runtime-review-02/full-tests.jsonl"
+    },
+    {
+      "command": "timeout 5m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 TMPDIR=/home/ubuntu/wr/.tmp/agent/nextflow-conformance/runtime-review-02 go test -overlay .tmp/agent/nextflow-conformance/runtime-review-02/red-overlay.json -tags netgo -count=1 -v ./nextflowconformance -run '^TestNextflow(ExecutionPermissions|AcquisitionUmask)$'",
+      "exit": 1,
+      "log": ".tmp/agent/nextflow-conformance/runtime-review-02/old-red.log",
+      "expected": "Two behavioral failures against pre-correction production files, current tests"
+    },
+    {
+      "command": "umask 077\ntimeout 3m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 TMPDIR=/home/ubuntu/wr/.tmp/agent/nextflow-conformance/runtime-review-02 NEXTFLOW_RUNTIME_EVIDENCE=/home/ubuntu/wr/.tmp/agent/nextflow-conformance/runtime-review-02/acquired go test -tags netgo -count=1 -v ./nextflowconformance -run '^TestUAT_A1_06$'",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/runtime-review-02/umask.log"
+    },
+    {
+      "command": "timeout 5m env GOTOOLCHAIN=go1.26.3 .tmp/agent/bin/golangci-lint run ./nextflowconformance/... ./cmd/wr-nextflow-conformance/...",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/runtime-review-02/lint.log",
+      "autofix": false
+    },
+    {
+      "command": "timeout 2m python3 nextflowconformance/testdata/check_schemas.py",
+      "exit": 0,
+      "log": ".tmp/agent/nextflow-conformance/runtime-review-02/schemas.log"
+    },
+    {
+      "command": "timeout 2m env GOTOOLCHAIN=go1.27.1 CGO_ENABLED=1 go build -tags netgo -o /home/ubuntu/wr/.tmp/agent/nextflow-conformance/runtime-review-02/wr-nextflow-conformance ./cmd/wr-nextflow-conformance",
+      "exit": 0
+    },
+    {
+      "command": "timeout 90s python3 .tmp/agent/nextflow-conformance/runtime-review-02/probe.py",
+      "exit": 0
+    },
+    {
+      "command": "timeout 3m python3 .tmp/agent/nextflow-conformance/runtime-review-02/mode-probe.py",
+      "exit": 0
+    },
+    {
+      "command": "timeout 2m python3 .tmp/agent/nextflow-conformance/runtime-review-02/trace.py",
+      "exit": 0
+    },
+    {
+      "command": "timeout 2m python3 .tmp/agent/nextflow-conformance/runtime-review-02/edge-audit.py",
+      "exit": 0
+    }
+  ],
+  "results": {
+    "tests_passed": 36,
+    "tests_failed": 0,
+    "uat_passes": [
+      "TestUAT_A1_01",
+      "TestUAT_A1_02",
+      "TestUAT_A1_03",
+      "TestUAT_A1_04",
+      "TestUAT_A1_05",
+      "TestUAT_A1_06",
+      "TestUAT_A1_07"
+    ],
+    "regressions": [
+      "TestNextflowExecutionPermissions",
+      "TestNextflowAcquisitionUmask"
+    ],
+    "package_results": [
+      {
+        "Time": "2026-09-30T08:59:49.573041928Z",
+        "Action": "skip",
+        "Package": "github.com/VertebrateResequencing/wr/cmd/wr-nextflow-conformance",
+        "Elapsed": 0
+      },
+      {
+        "Time": "2026-09-30T09:04:46.088676693Z",
+        "Action": "pass",
+        "Package": "github.com/VertebrateResequencing/wr/nextflowconformance",
+        "Elapsed": 296.516
+      }
+    ],
+    "schema": "11 schemas / 1243 cases PASS",
+    "lint": "0 issues; no autofix",
+    "mode_results": [
+      {
+        "label": "mode-baseline",
+        "exit": 0,
+        "expected": 0
+      },
+      {
+        "label": "mode-bash",
+        "exit": 2,
+        "expected": 2
+      },
+      {
+        "label": "mode-startup-bash",
+        "exit": 126,
+        "expected": 126
+      },
+      {
+        "label": "mode-which",
+        "exit": 2,
+        "expected": 2
+      },
+      {
+        "label": "mode-sh",
+        "exit": 2,
+        "expected": 2
+      },
+      {
+        "label": "mode-ld-linux-x86-64.so.2",
+        "exit": 2,
+        "expected": 2
+      },
+      {
+        "label": "mode-libc.so.6",
+        "exit": 0,
+        "expected": 0
+      },
+      {
+        "label": "mode-startup-libc.so.6",
+        "exit": 0,
+        "expected": 0
+      },
+      {
+        "label": "mode-restored",
+        "exit": 0,
+        "expected": 0
+      }
+    ],
+    "artifact_roles": {
+      "launcher": 1,
+      "environment-tool": 27,
+      "Java": 249,
+      "dependency-metadata": 3,
+      "runtime": 1,
+      "source": 1
+    },
+    "java_entries": 454,
+    "provenance_observations": 277,
+    "source_audit": {
+      "stock_schema": "PASS",
+      "source_files": 2856,
+      "source_mode_hash_errors": [],
+      "inventory_exact": true
+    },
+    "trace": {
+      "exit": 0,
+      "loaded_libraries": 23,
+      "internet_connects": [],
+      "platform_files": [
+        "/dev/null",
+        "/etc/ld.so.cache",
+        "/etc/nsswitch.conf",
+        "/etc/passwd",
+        "/proc/cpuinfo",
+        "/proc/filesystems",
+        "/proc/meminfo",
+        "/proc/net/if_inet6",
+        "/proc/self/cgroup",
+        "/proc/self/coredump_filter",
+        "/proc/self/maps",
+        "/proc/self/mountinfo",
+        "/proc/stat",
+        "/sys/devices/system/cpu/online",
+        "/sys/devices/system/cpu/possible",
+        "/sys/fs/cgroup/cgroup.controllers",
+        "/sys/fs/cgroup/cpu.max",
+        "/sys/fs/cgroup/memory.max",
+        "/sys/kernel/mm/hugepages",
+        "/sys/kernel/mm/transparent_hugepage/enabled",
+        "/sys/kernel/mm/transparent_hugepage/hpage_pmd_size",
+        "/tmp/hsperfdata_root"
+      ]
+    },
+    "edge_probes": 15,
+    "old_red": {
+      "executable_mode_results": [
+        {
+          "input": "bash",
+          "old_validate_exit": 0,
+          "old_reuse_exit": 0
+        },
+        {
+          "input": "which",
+          "old_validate_exit": 0,
+          "old_reuse_exit": 0
+        },
+        {
+          "input": "interpreter",
+          "old_validate_exit": 0,
+          "old_reuse_exit": 0
+        },
+        {
+          "input": "ld-linux-x86-64.so.2",
+          "old_validate_exit": 0,
+          "old_reuse_exit": 0
+        },
+        {
+          "input": "libc.so.6",
+          "old_validate_exit": 0,
+          "old_reuse_exit": 0
+        }
+      ],
+      "umask_error": "E_SOURCE_HASH: source mode differs",
+      "expected_test_failures": 2
+    }
+  },
+  "preservation": {
+    "correction_manifest_entries_rehashed": 79,
+    "reference_contract_files_rehashed": 11,
+    "protected": [
+      {
+        "path": "go.mod",
+        "sha256": "2c8dc14c444c3e159c3795f406e766d3a4029236d91d0420906330c2b51507c7"
+      },
+      {
+        "path": "go.sum",
+        "sha256": "ee0f56aca7017d15ff1998315bfd8579977e3a21ee46c2ce4f328eb91cb7834e"
+      },
+      {
+        "path": ".golangci.yml",
+        "sha256": "36a2749675d2eb3ac55870ac5f8a208a2c525e50f8dcc3e26b7be8cfb9e0307d"
+      }
+    ],
+    "production_edits": false,
+    "phase_progress_edits": false,
+    "commits": false,
+    "pushes": false
+  },
+  "probe_origin": "Retained reviewer01 probe scripts as supplied by correction manifest, independently read and rerun on a fresh reviewer02 acquisition; source inventory additionally audited independently.",
+  "evidence": [
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/artifact-audit.json",
+      "bytes": 1480,
+      "sha256": "b70c21958d46f488ccbb84e3277fe0020fcbe2de4a5a25002f73c20982f5e7f7"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/artifact-hashes.json",
+      "bytes": 110250,
+      "sha256": "f9f52ab481f31d08ae6eaba5f441428703a48cba8638a8f9a2a1ee0c1b0091e9"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/bindings.json",
+      "bytes": 5197,
+      "sha256": "2eb6474d32e56643aad10d1bb4eb8cd10704973b60623cecbb0b2795027eebe3"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/edge-audit.json",
+      "bytes": 15630,
+      "sha256": "359a04f4430bb039c22bb6593b09bcad387e7b03eed1e18badeed58c8830c3cf"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/edge-audit.log",
+      "bytes": 29,
+      "sha256": "bc205a9f75bfa4d9652f989176afb6752784dff45238325e61516b9d0fbe46e0"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/edge-audit.py",
+      "bytes": 1832,
+      "sha256": "6963ade5d32562fc049127b3ac20fa85f4a148c8e35eacbabce451e38afd07c8"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/full-tests.jsonl",
+      "bytes": 230586,
+      "sha256": "5cdadeb55277c9c95c0692ffcaee22c47dc9f8480a461a7ae0321f97c6fff743"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/full-tests.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/lint.log",
+      "bytes": 10,
+      "sha256": "e92606b0bf483111dff0a120c315ea165821348f31365020e2468a0059095c47"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-audit.json",
+      "bytes": 36412,
+      "sha256": "9bbe86490a17e1e1945480bf901e2f066aa923efef186c2f4dd51f464427e6a7"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-baseline.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-baseline.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-baseline.stdout",
+      "bytes": 363,
+      "sha256": "fc025b4b730b9228ccdc91b1bbe1eaccf42676c8c38d75a3b6830509bcc6cf9a"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-bash.exit",
+      "bytes": 2,
+      "sha256": "53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-bash.stderr",
+      "bytes": 212,
+      "sha256": "58f9de7670f4775ce61f9abc577c9d5bd2730e07a0fa6c7821cabe2d0a2dc179"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-bash.stdout",
+      "bytes": 786,
+      "sha256": "0fab26bef0a939d88a00afb0e6f4c65d8ba87bafdfab2798ffdc95addae50313"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-ld-linux-x86-64.so.2.exit",
+      "bytes": 2,
+      "sha256": "53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-ld-linux-x86-64.so.2.stderr",
+      "bytes": 317,
+      "sha256": "f22e5f2c59bbc53471f72b05e4dd0282cdec34bfbd2574713321112fbbcc0439"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-ld-linux-x86-64.so.2.stdout",
+      "bytes": 996,
+      "sha256": "0fd18881f493b1e721aef2af7e0b0e2aa50647bd505987b41c7698ec134a5817"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-libc.so.6.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-libc.so.6.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-libc.so.6.stdout",
+      "bytes": 363,
+      "sha256": "fc025b4b730b9228ccdc91b1bbe1eaccf42676c8c38d75a3b6830509bcc6cf9a"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-probe.log",
+      "bytes": 668,
+      "sha256": "8a12bdf0ccb315e330fa0c701a4af43628430fdf535db3420552580686307340"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-probe.py",
+      "bytes": 1852,
+      "sha256": "bd2cfa9240fee64f497534f1963b0ab951eadcd612657e664aec51e32c68c737"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-restored.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-restored.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-restored.stdout",
+      "bytes": 363,
+      "sha256": "fc025b4b730b9228ccdc91b1bbe1eaccf42676c8c38d75a3b6830509bcc6cf9a"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-sh.exit",
+      "bytes": 2,
+      "sha256": "53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-sh.stderr",
+      "bytes": 210,
+      "sha256": "3a6bc85833d6a32af7933dba59231ce4fc960808319e18ae40b33b39fa228178"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-sh.stdout",
+      "bytes": 782,
+      "sha256": "abf11bd8cf98d92b0cb724113aadf27b1a7b92aa5a7171aefa3c0ac77df740f0"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-startup-bash.exit",
+      "bytes": 4,
+      "sha256": "703d2c10fa601276a4dd96193faed68902a642a44eb5b01b40d6fc8499e12822"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-startup-bash.stderr",
+      "bytes": 40,
+      "sha256": "cb9807cf65d04f5b10faf6c02c101fd2bed49b577d6d3296e0a76d58c4c65fe5"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-startup-bash.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-startup-libc.so.6.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-startup-libc.so.6.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-startup-libc.so.6.stdout",
+      "bytes": 162,
+      "sha256": "9c46a821a73a3859a6ee95bdf7497a58d983fd1b4e39fe6418bbacda560946da"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-which.exit",
+      "bytes": 2,
+      "sha256": "53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-which.stderr",
+      "bytes": 213,
+      "sha256": "77dc5f7a395ebff7a252e1993b9e37ae9673f18e87b6bbabfda875353ab69ddd"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/mode-which.stdout",
+      "bytes": 788,
+      "sha256": "92811e347496ba8f01dd65aad9bf10add103ad4eb8557a9c4086a676d1c1dd62"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/old-red.log",
+      "bytes": 9941,
+      "sha256": "da6624082d05d8606fb14d4386338477500312f74f487653b4b1e6a6a6c027d7"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/probe.log",
+      "bytes": 1480,
+      "sha256": "b70c21958d46f488ccbb84e3277fe0020fcbe2de4a5a25002f73c20982f5e7f7"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/probe.py",
+      "bytes": 3983,
+      "sha256": "79eef3c14a582e1d2fdd2896cf97f27a0ffa95ad990e8dead9735071f69bf656"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/red-audit.json",
+      "bytes": 613,
+      "sha256": "71ee66cbdd8d77d8d58c247af6b5276509a0973db349697fb9ee90021a5aa6e8"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/red-overlay.json",
+      "bytes": 330,
+      "sha256": "9fef6b2bf6d8e37757db036ebdf05646cdb0917507de354117114ba330d3016e"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/schemas.log",
+      "bytes": 62580,
+      "sha256": "6e9f54f99edc00d36ebf10441c3d178236cb6c9b1dd310ad6659005b367f7811"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/source-audit.json",
+      "bytes": 113,
+      "sha256": "4901073dece2c44af287b30b22c37790ae27c76df4e94b0b8f790640b0a8bea4"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/startup-command.json",
+      "bytes": 12786,
+      "sha256": "49bd868db4eebc7db299a7b6f28b334d9da129fd0e04b80621bc8f76b92e5a4e"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/startup.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/startup.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/startup.stdout",
+      "bytes": 162,
+      "sha256": "9c46a821a73a3859a6ee95bdf7497a58d983fd1b4e39fe6418bbacda560946da"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/startup.trace",
+      "bytes": 27723,
+      "sha256": "1a77eeeb79274aab50a28cfea57fddb18076db6d9a3f5411c4efd7d0cb782955"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/trace-audit.json",
+      "bytes": 26954,
+      "sha256": "4ccb153c37742a4995e4e60e740a8beb5a23b6b91bb39a100a5d2341ea8f7360"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/trace-command.json",
+      "bytes": 13494,
+      "sha256": "912d2ef0edb864253cf885f91bf77297ec4261d9f924675b00cc83a20d126e0b"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/trace-harness.json",
+      "bytes": 1610,
+      "sha256": "5516c2c9722ef49b7c688593b6edc6fe7cd5204ebba1e55fd5e3afe67e4d836a"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/trace.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/trace.log",
+      "bytes": 753,
+      "sha256": "c7bceb8fb3fcce27b1a85f2b5d1b7ac3c7f17719707526c9d4f6bf93ef1627c2"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/trace.py",
+      "bytes": 2992,
+      "sha256": "274aef673e7c3471dfc8a354319c8f26bbe9ab1deac89f70f10d4e0424eb7844"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/trace.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/trace.stdout",
+      "bytes": 162,
+      "sha256": "9c46a821a73a3859a6ee95bdf7497a58d983fd1b4e39fe6418bbacda560946da"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/umask.log",
+      "bytes": 1747,
+      "sha256": "a629a91f1f4b8ba13c95be34cc9cbbe9885b986cffa0b41d8698d9224e90d4b5"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/runtime-review-02/wr-nextflow-conformance",
+      "bytes": 11470880,
+      "sha256": "bfd3ce55c1f45831970bfea82568d6b86afd154710577ee4bec6adff1c5d73a4"
+    }
+  ],
+  "next_boundary": "Measure/approve production candidate and exact A2 selector bundle; minimal inputs listed in review report"
+}

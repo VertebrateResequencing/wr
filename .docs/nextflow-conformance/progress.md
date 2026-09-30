@@ -25,14 +25,25 @@
 
 ## Current handoff
 
-Spec-writer workflow was completed and committed as 3dd25b15. During phase 1,
-actual runtime acquisition exposed the archive contract conflict recorded
-in blocker-phase1-1.1.md. Agent phase1_implement returned an incomplete
-handoff in evidence/phase1.md. The corrected spec has passed two feature
-reviews, two proofreading reviews, and all affected phase reviews. Next
-action: complete acquisition in Item 1.2 using its approved bounded bundle.
-Item 1.1 passed independent review 05, including the quote-mask correction.
-No acquisition, oracle, or wr runtime completion is claimed.
+Phase 1 implementation and review are complete. Runtime review 02 passed
+after executable-mode, restrictive-umask and final lint corrections. Real
+candidate review 01 independently accepted the pinned source/runtime bytes,
+eighteen selections, sixteen grammar alternatives and 148 include edges.
+All 36 focused tests, seven A1 UATs, eleven schemas with 1,243 cases, and
+unchanged lint pass. Actual offline startup and traced startup pass.
+
+The accepted lock and batches select 160 files. Network-disabled public
+validation proves their bytes using explicitly temporary fixture records;
+production target/profile records remain for genuine ledger initialization.
+This proves neither semantic completion, E1 workflows nor wr execution.
+No project verify skill exists at .github/skills/verify-*/SKILL.md;
+verification is the skill that creates one.
+
+The parent is committing and pushing Phase 1, then continuing Phase 2.
+Start from reviews/nextflow-phase1-candidate-review-01.md and its Phase 2
+handoff, the accepted lock/batches, and phase2.md. delivery.md records the
+user's instruction to complete all six phases and commit and push each one.
+Continue through context handoffs without a user restart.
 
 ## Review evidence
 
@@ -113,7 +124,7 @@ No acquisition, oracle, or wr runtime completion is claimed.
 - [x] Two consecutive feature reviews pass on the amendment.
 - [x] Two consecutive proofreading reviews pass on the amendment.
 - [x] Affected phase files are updated and receive clean reviews.
-- [ ] Resume runtime acquisition under the reviewed corrected contract.
+- [x] Resume runtime acquisition under the reviewed corrected contract.
 
 The corrected spec has 49 acceptance IDs, adding A1_06 and A1_07. Source
 evidence is in reviews/runtime-packaging-author.md; the blocked acquisition
@@ -232,3 +243,110 @@ implementation bundles after amendment and phase review.
   fallback. See reviews/phase-01-acquisition-bundle.md. The retained runtime
   hashes and Java executable were rechecked as prerequisites; actual
   acquired-candidate and offline evidence remain implementation work.
+
+- Schema review evidence and the approved acquisition bundle are committed
+  as 6121575c. Implementation files remain pending the Phase 1 commit.
+- nextflow_acquisition_implement invoked the approved sequential split.
+  Part 1 covers A1_01 through A1_04 using genuine pinned bytes in HTTPS
+  fixtures; the previous synthetic tree conflicts with reviewed identity
+  checks. Part 2 will cover A1_05 through A1_07, actual runtime closure,
+  selectors, and the candidate lock. Item 1.2 remains unchecked until both
+  parts and independent candidate review pass.
+
+- Acquisition part 1 implementation is complete for A1_01 through A1_04
+  and awaits independent review. All 25 focused tests and 1,190 schema
+  mutations pass. Candidate decoding and pinned-tree identity precede
+  publication; failed warm-cache retries preserve the existing generation.
+  Exactly fourteen lint findings remain in six part 2 functions. See
+  evidence/phase1-acquisition-part1.md. Item 1.2 remains unchecked.
+
+- Acquisition part 1 review 01 returned FAIL for two public CLI defects.
+  Candidate output can overwrite a verified cached Java input after
+  preflight, and an escaping archive-root symlink bypasses validation.
+  Existing tests and schema checks pass, but neither defect was covered.
+  See reviews/phase-01-acquisition-part1-review-01.md. A fresh implementor
+  will correct both before a fresh part 1 review; Item 1.2 stays unchecked.
+
+- A runtime prerequisite probe now passes offline: a byte-identical,
+  executable copy of the pinned distribution reports Nextflow 26.04.6
+  in the existing Ubuntu image with networking disabled, read-only inputs,
+  the real Java tree, and temporary homes. The first probe was invalid: it
+  invoked the non-executable downloaded file through Bash, which broke
+  launcher self-location and entered the download path. It establishes no
+  curl/wget dependency. Both runs are retained under
+  .tmp/agent/nextflow-conformance/runtime-prerequisite/. This proves startup
+  only; E1 must still prove its recorded environment and seven oracle cases.
+
+- Acquisition part 1 fix 01 corrected both review findings. It rejects
+  candidate overlap with reused/acquired input files and trees, and checks
+  root symlinks before omission. All 27 focused tests, 1,190 schema cases,
+  original reviewer replay, and 23 expanded CLI invocations pass. The same
+  six part 2 functions retain fourteen lint findings. See
+  evidence/phase1-acquisition-part1-fix-01.md. Fresh review is pending.
+
+- Acquisition part 1 review 02 returned FAIL for a correction regression:
+  safe root symlink targets `.`, `./`, and `safe/..` are rejected. R1 input
+  overlap and the original unsafe-link cases pass. Existing tests, schemas,
+  and CLI replay pass with unchanged deferred lint. See
+  reviews/phase-01-acquisition-part1-review-02.md. A fresh correction must
+  allow in-root symlink targets without relaxing ordinary file references.
+
+- Acquisition part 1 fix 02 permits symlink targets resolving to the
+  extraction root while preserving escape and ordinary file-path checks.
+  The full 27-test suite and 1,190 schema cases pass; the unchanged public
+  probes pass 29 and 23 invocations. Fourteen deferred lint findings remain
+  in unchanged part 2 functions. See
+  evidence/phase1-acquisition-part1-fix-02.md. Fresh part 1 review is pending.
+
+- Acquisition part 1 review 03 returned PASS for A1_01 through A1_04. All
+  27 focused tests, schema checks, and both public CLI probes pass. Five
+  artifact inventories and 130 CLI captures were verified. See
+  reviews/phase-01-acquisition-part1-review-03.md. Part 2 still owns actual
+  runtime closure, A1_05 through A1_07, candidate acquisition, selectors,
+  and fourteen lint findings; Item 1.2 and Phase 1 remain incomplete.
+
+- The part 2 input bundle is approved with a 90k working budget, exact
+  source spans, candidate/selector gates, and a runtime/candidate split
+  fallback. See reviews/phase-01-acquisition-part2-bundle.md. A fresh
+  orchestration context will delegate implementation and independent review
+  through the remaining Phase 1 gates. No phase completion is claimed.
+
+- The fresh part 2 implementor found an implementation-only provenance gap.
+  Artifact origins require HTTPS, so existing local Java/tools cannot be
+  recorded truthfully. Public CLI and stock-schema probes reject both local
+  roles. See evidence/nextflow-phase1-part2-local-origin-handoff.md. No
+  production files changed. Item 1.1 is reopened for a bounded correction
+  and independent review; Item 1.2 remains incomplete. Parent authorization
+  covers this necessary correction without a new permission request.
+
+- Local-origin model correction passed fresh independent review 01. Both
+  allowed local roles have content-addressed origins and decoder hash
+  equality; network origins retain strict HTTPS. All eleven schemas and
+  1,243 cases pass, including the 1,190 unchanged baseline cases. The
+  reviewer passed 112 independent probes. See
+  reviews/nextflow-phase1-local-origin-model-review-01.md. The fourteen
+  deferred acquisition lint findings are unchanged. Item 1.1 stays open
+  until locked snapshot reuse and public failures receive independent PASS.
+- Narrow model and reuse bundles now use measured 55k working budgets.
+  The earlier 32,768-context claim was unsupported; no context overflow
+  occurred. The model split is complete. Fresh reuse implementation follows
+  reviews/nextflow-phase1-local-origin-reuse-bundle.md with model changes
+  inside its supplemental allowance. Part 2 remains deferred.
+
+- Locked local snapshot reuse received independent PASS. The reviewer
+  rehashed both retained fixtures, passed all 24 failure cases and six
+  additional atomicity/offline probes, and reproduced the original defect.
+  All 30 focused test functions and 1,243 schema cases pass. See
+  reviews/nextflow-phase1-local-origin-reuse-review-01.md. Item 1.1 is
+  implemented and reviewed again; the actual runtime and candidate work
+  remains with Item 1.2. The fixtures prove no Java execution.
+
+- Runtime implementation passes all 32 focused test functions and seven A1
+  UATs, eleven schemas with 1,243 cases, and zero lint findings. The acquired
+  tool environment fails offline startup on missing shared libraries. Twelve
+  companion files are inventoried; their acquisition remains unimplemented.
+  See evidence/nextflow-phase1-runtime-incomplete.md and
+  evidence/nextflow-phase1-orchestration-handoff.md. Item 1.2 stays unchecked;
+  the runtime change awaits closure correction and independent review.
+  The orchestrator verified retained source/evidence hashes and reran lint
+  without autofix successfully. Parent ownership resumes at this handoff.
