@@ -5,7 +5,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
-## [0.38.0] - 2026-09-29
+## [0.38.0] - 2026-09-30
 ### Added
 - New `--queue` and `--queues_avoid` options for `wr manager start` (and the
   `managerqueue` and `managerqueuesavoid` config options, or `WR_MANAGERQUEUE`
