@@ -5,640 +5,307 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
-## [Unreleased]
+## [0.38.0] - 2026-09-29
 ### Added
-- New `--container_image_user` option for `wr add` and `wr mod` (and
-  `container_image_user` for the JSON and REST interfaces), which runs a
-  `--with_docker` command as the user the image specifies after all. You need it
-  if your command writes to root-owned paths inside the image, and should expect
-  anything it creates in your working directory to be owned by that user.
 - New `--queue` and `--queues_avoid` options for `wr manager start` (and the
   `managerqueue` and `managerqueuesavoid` config options, or `WR_MANAGERQUEUE`
-  and `WR_MANAGERQUEUESAVOID`), which set the default queue, or queues to pick
-  amongst, and the queues to avoid, for commands you add without their own
+  and `WR_MANAGERQUEUESAVOID`) set the default queue (or queues to pick
+  amongst) and the queues to avoid for commands added without their own
   `--queue` or `--queues_avoid`, with schedulers that have queues (currently
-  only lsf). A command's own
-  `--queues_avoid` replaces the default list rather than adding to it.
+  only lsf). A command's own `--queues_avoid` replaces the default list rather
+  than adding to it.
+- Commands that wr runs in a directory of its own below their `--cwd` now get
+  that `--cwd` in `WR_JOB_CWD`, and `wr add` run from inside such a command
+  defaults `--cwd` to it. Commands added by a command therefore get a workspace
+  beside their parent's rather than inside it, so the parent's cleanup can no
+  longer delete their work.
+- New `--container_image_user` option for `wr add` and `wr mod` (and
+  `container_image_user` in JSON and REST jobs; unset it with
+  `wr mod --unset_container_image_user`), to run a `--with_docker` command as
+  the user the image specifies, as wr did before this release. Use it if your
+  command writes to root-owned paths inside the image; files it creates in your
+  working directory will then be owned by that user.
+- New Go client API: `jobqueue.ConnectWithTokenFile` (and `ErrNoTokenFile`),
+  for a client that reloads the manager's token file after the manager
+  restarts; `jobqueue.Client.AddWithDuplicates`, which explains duplicates; and
+  `WithDocker`, `WithSingularity`, `ContainerMounts` and `ContainerImageUser`
+  fields on `jobqueue.JobEssence`, so it can name containerised jobs. Also
+  `Queue` and `QueuesAvoid` fields on `scheduler.ConfigLSF`, for the manager's
+  default queues, and `jobqueue.ServerTimings.ShutdownRunnerWait`.
 
 ### Changed
+- The stdout and stderr of commands that complete successfully are no longer
+  stored, so they are now empty wherever a completed command is shown: the
+  status web page, `wr status -o json`, the REST API, `wr add --sync` and the
+  Go APIs. Failed and buried commands keep theirs. This stops the database
+  growing by up to 16KB for each successful command that prints something. Run
+  `wr manager compact` once, with the manager stopped, to reclaim the space
+  used by commands that completed before you upgraded.
+- `--with_docker` commands now run as you instead of as the user the image
+  specifies (normally root), so files they create in your working directory are
+  yours, and wr's cleanup can remove them. Use `--container_image_user` for the
+  old behaviour. Singularity already ran commands as you.
 - `wr add` no longer gives each command `--queues_avoid interactive` itself.
   A command added without `--queues_avoid` now uses the manager's new
-  `--queues_avoid` list, which defaults to "interactive", so by default it
-  still avoids interactive queues. That default now also applies to commands
-  added through the REST API or Go client without a `queues_avoid` of their
-  own. Commands added before you upgrade keep the "interactive" list they were
-  given. `wr add --queues_avoid ''` no longer lets a command use interactive
-  queues; name the queue with `--queue` instead.
-- A command that completes successfully no longer has its output kept. Its
-  stdout and stderr are now empty everywhere a completed command is shown: the
-  status web page, `wr status -o json` (however you choose the commands, with
-  `-i`, `-f`, `-l` or `--recent`), the REST API's
-  `/rest/v1/jobs/<key>?std=true` and `/rest/v1/jobs/<repgroup>?std=true`,
-  `wr add --sync` (which no longer prints a successful command's output, as its
-  help always said), and any Go API that returns a completed job, such as
-  `jobqueue.Client.GetByEssence` or the `client` package's `WaitForJobs`.
-  Before, a successful command's output came back from those Go APIs even when
-  you had not asked for std. `wr status -o d` is unchanged, since it never
-  showed a successful command's output. Failed (including released for retry)
-  and buried commands still keep theirs, and it is still shown as before. This
-  stops the database growing by up to about 16KB for every successful command
-  that prints something. Run `wr manager compact` once, with the manager
-  stopped, to remove the output stored for commands that completed before you
-  upgraded and recover that space; later compactions skip this step.
-- `--env` now refuses an element that defines no variable, naming the offending
-  element and saying what to write instead, where before it stored one that no
-  command could read. This covers `wr add --env`, `wr mod --env`, the `env`
-  array of a JSON job, and the same field in a REST `POST /rest/v1/jobs` or
-  `PATCH /rest/v1/jobs/<ids>`. Three things that used to be accepted are now
-  errors: a bare name such as `--env PATH`, which you might write hoping to
-  pass your own value through (write `--env PATH=$PATH` for that); an element
-  with no name before its `=`, such as `--env =value`; and an empty element, so
-  `--env "A=1,"` and `--env "A=1,,B=2"` now fail on the trailing or doubled
-  comma, and `--env "A=1,2"` fails on the bare `2`. Check any script that
-  builds an `--env` list by joining, because a trailing comma there used to be
-  accepted silently. Commands already in the queue with such an entry are not
-  rejected retrospectively; wr now skips the entry when it runs them, as
-  described below.
-- Commands you run with `--with_docker` now run as you instead of as the user
-  the image specifies, which is normally root. Files they create in your working
-  directory are therefore yours, so you can delete them and so can wr's own
-  `cleanup` behaviours; previously a root-owned file or directory left your
-  working directory littered and the command's workspace undeletable. Only
-  docker is affected: singularity already ran your commands as you.
-- wr now refuses a `--container_mounts` value in which any single mount has more
-  than one colon, naming the offending mount and the supported format:
-  `/outside/container`, or `/outside/container:/inside/container`. `wr add`
-  refuses it when you also give `--with_docker` or `--with_singularity`, since
-  without an image the mounts are unused; `wr mod` refuses it whenever you set
-  `--container_mounts`, and also refuses to add an image to a job whose existing
-  mounts have this problem. If you use `--with_singularity`, a mount option such
-  as the `:ro` in `/data/opt:/opt:ro` did reach `singularity -B` and really did
-  make the mount read-only; it is no longer accepted, so drop it from new
-  submissions and modifications. Commands already in the queue keep running with
-  the mounts they were added with.
-- Backwards incompatible change to the Go API: `jobqueue.Job.CmdLine` and
-  `container.PrepareCmdFile` now take the dir to make the command file in.
-
-- `wr add` now explains its duplicate count instead of just totalling it: how
-  many of your commands were already in the queue, how many had already
-  completed, and of those, how many completed under the identifier you are
-  adding with versus under other identifiers, naming those identifiers and when
-  they last completed. A job's identity does not include its identifier, so a
-  command that already completed under a different `-i` is a duplicate that
-  `wr status -i` cannot show you; this is what makes those two commands
-  reconcilable. The message is unchanged when there are no duplicates, and an
-  older manager (which sends no breakdown) still reports the total as before.
+  `--queues_avoid` default, which is "interactive", so commands added through
+  the REST API or Go client without a `queues_avoid` now avoid interactive
+  queues too. `wr add --queues_avoid ''` no longer lets a command use
+  interactive queues; name the queue with `--queue` instead. Commands queued
+  before you upgrade keep the list they were given.
+- `--container_mounts` now refuses a mount with more than one colon, such as
+  `/data/opt:/opt:ro`; the supported forms are `/outside` and
+  `/outside:/inside`. Docker silently mis-mounted such a spec, mounting
+  `/data/opt` at `/data/opt` and dropping the target and the option. With
+  `--with_singularity`, `:ro` did make the mount read-only, so if you relied on
+  it you will need to drop it. Queued commands keep the mounts they were added
+  with.
+- `--env` (for `wr add`, `wr mod`, and JSON and REST jobs) now refuses an
+  element that defines no variable: a bare name such as `--env PATH` (write
+  `--env PATH=$PATH`), an element with no name such as `--env =value`, and an
+  empty element, so a trailing or doubled comma (`--env "A=1,"`) is now an
+  error. Check any script that builds an `--env` list by joining. Commands
+  already queued with such an entry still run, with the entry ignored.
+- `wr manager stop` now waits longer for a manager with a large database, to
+  allow for its final backup (2 minutes plus a second for every 50MiB). If the
+  manager is still running when it gives up, it now exits 1 and keeps the
+  token, saying how to keep waiting or kill a hung manager, so check any script
+  that stops the manager. A stopping manager now ignores (and logs) further
+  SIGTERMs, so running `wr manager stop` again is safe, while a second Ctrl-C
+  makes a foreground manager exit at once.
+- `wr add --bsub` now implies `--cwd_matters`, so a `--bsub` command's outputs
+  stay in your working directory, it gets no wr-managed TMPDIR, and
+  `--change_home` has no effect on it. Give `--cwd_matters=false` to override.
+- Backwards incompatible changes to the Go API:
+  - `jobqueue.Job.CmdLine` and `container.PrepareCmdFile` now take the dir to
+    make the command file in.
+  - `container.DockerRunCmd` takes a new `imageUser` argument.
+  - The `jobqueue/scheduler.Host` interface has a new `Close` method, and
+    `scheduler.Scheduler.Reserved` is replaced by `ClaimForReserve`.
+  - Go APIs that return a completed job, such as
+    `jobqueue.Client.GetByEssence` and the `client` package's `WaitForJobs`,
+    no longer return a successful job's stdout and stderr, even if you ask for
+    them (see above).
+- A `--with_docker` command that docker could not start (for example, because
+  its image could not be pulled) is now reported with the fail reason
+  "container failed to start" instead of "command exited non-zero", and
+  likewise for `--with_singularity`. wr decides this from the runtime's own
+  start-failure exit code, 125 for docker and 255 for singularity, so a command
+  that itself exits with that code inside the container is reported the same
+  way. Retry and bury behaviour is unchanged.
+- Commands that can never execute are now buried instead of retried forever.
+- wr no longer creates a `.hold` file in your working directory for every
+  command. It could also occasionally make a command fail to start.
+- `wr add` now explains its duplicate count: how many of your commands were
+  already in the queue and how many had already completed, and of those, how
+  many completed under the identifier you gave and how many under others (named,
+  with when they last completed).
+- Updated dependencies and the Go toolchain (to 1.27.1) to address potential
+  security vulnerabilities.
+- The manager log now reports recovery and database-upgrade progress, warns
+  about slow requests, abbreviates long commands, and includes bsub and bjobs
+  stderr when they fail. Normal empty adds, closed `--sync` subscriptions and
+  a long-lived client's first request after a restart are no longer logged as
+  errors; requests refused for a wrong token are logged as warnings.
+- The help for `wr manager start --max_cores` and `--max_ram` now correctly
+  says that, with the local scheduler, 0 means the whole machine, the same as
+  -1.
 
 ### Fixed
-- A command that failed, or was buried, just before a manager crash no longer
-  comes back after the restart as "running" with nothing running it, never to
-  be retried. The manager told the runner the failure was recorded before it
-  had saved it, so the runner moved on to other commands. It now saves the
-  failure first.
-- A command whose runner buried it after the manager had already given up on
-  it as lost (for example after `wr kill` of a lost command, even if you then
-  resumed or kicked it) now ends buried. Before, the manager refused the bury,
-  and the runner kept re-sending it for a day while the command was left to be
-  retried. A resumed or kicked command also no longer loses a retry, or gets
-  stuck the same way, when that runner reports it failed.
-- A command that is running when a command is added to a dep group it depends
-  on (`--deps`) is now left to finish, and then run again once the added
-  command completes, as a command that had already completed would be. Before,
-  the manager stopped treating it as running as soon as the command was added,
-  so it refused the runner's reports and never recorded the run's success. If
-  the running command fails instead, its retry now waits for the added command,
-  and if it is buried, kicking it makes it wait. This holds even if the manager
-  is restarted before the command finishes.
-- A buried command whose dep group (`--deps`) gained a command that has not
-  yet completed now stays buried after a manager restart, including after a
-  crash. Before, it came back as dependent, and would then have run by itself
-  once that command completed. It now waits for the dep group only after you
-  `wr retry` it.
-- A command whose success its runner reported twice, because the manager's
-  database was slow to record the first report, is no longer dropped from the
-  queue by the second report when a command added in between to a dep group it
-  depends on (`--deps`) has made it wait to run again.
-- A command that is still queued, for example one that is running, is no longer
-  run a second time at once after a manager crash because it was added again
-  with `wr add --rerun` (or through a Go client that adds without skipping
-  completed commands, such as `client.Scheduler.SubmitJobs`). The add counted
-  the command as already queued, but wrote a fresh copy of it over the
-  manager's record of it. After a crash the manager restored the command from
-  that copy as never started, ran it again, and refused the first run's reports.
-  Adding a command that is already queued now changes nothing about it. Adding
-  one that has completed still runs it again.
-- A command that exited 0 while its manager was down after a crash is no
-  longer run again when its runner's report that it had started the command
-  was lost to the crash. The manager refused the runner's report of success,
-  because it had no record of the start, and the runner gave up on the
-  completed work. The runner now waits for its start report to be accepted
-  before reporting how the command ended. Runners from an older release still
-  running during an upgrade do not have this fix, and can still have such a
-  command run again. The runner's "will need to be rerun" message also now
-  says which error it gave up on, instead of `%!w(<nil>)`.
-- A command's start time, as shown by `wr status` and used for its walltime
-  and for learning how long commands take, is now when the command really
-  started. It used to be when the manager received the runner's report of the
-  start, which after a manager crash could be minutes later. The start and end
-  times are now both the runner's, so a command's walltime is measured on the
-  clock of the node that ran it.
-- A command that wr is asked to kill, for example by a clean `wr manager stop`
-  or `wr kill`, is now killed promptly on busy nodes. Before it kills a command,
-  and every second while one runs, the runner looks up the command's child
-  processes. It did that by reading the process table entry of every process on
-  the node, and on a busy node that could take longer than anyone waited. The
-  command then ran on until it finished, and was sometimes run a second time
-  after the manager restarted. The runner now reads only the command's own
-  process tree, and if the lookup still takes more than 5 seconds it kills the
-  command without it.
-- `wr manager stop` no longer says a manager "was gracefully shut down", and
-  no longer deletes its token, when the manager is still running after the
-  stop gives up waiting for it. It used to send the manager a second SIGTERM,
-  which killed it part-way through its shutdown, before it had saved its
-  database, and then reported the kill as a graceful stop. It now exits with an
-  error saying the manager is still stopping and its token was kept, and how to
-  keep waiting or kill a hung manager. It also waits longer for a manager with
-  a large database, to allow for its final backup: 2 minutes plus a second for
-  every 50MiB, and says after 10 seconds that the manager is still shutting
-  down. The manager itself now ignores (and logs) further SIGTERMs while it is
-  shutting down, so running `wr manager stop` again is safe, while a SIGINT
-  (such as a second Ctrl-C in the foreground) makes it exit at once.
-- A manager being stopped no longer waits for ever for its runners to exit. At
-  scale, a single runner still listed as running by LSF kept the manager
-  waiting until it was killed, so it never saved its database. It now waits at
-  most 60 seconds, then logs how many jobs were still running, has LSF kill any
-  runners that are left, and finishes stopping as normal.
-- A runner still running a command when its manager is cleanly stopped and
-  started again now reports that command to the new manager, as it already did
-  after a crash, instead of being rejected for its old token for up to a day
-  while holding its LSF slot. A command that exited 0 is then recorded as
-  complete, not run again. A runner that cannot read a token the new manager
-  accepts gives up after 3 attempts and exits.
-- `wr manager stop` no longer sends SIGTERM to an unrelated process when the
-  manager died without removing its pid file (for example after a crash or a
-  reboot) and its pid has since been given to another of your processes. It
-  now signals the pid only if it is a `wr manager start` for the same
-  deployment, and otherwise reports the pid file as stale (or, if it does not
-  hold a valid pid, as invalid). A manager that is
-  running but not responding can still be stopped. `wr manager status` also
-  says `stopped` for such a stale pid file, instead of reporting a
-  non-responsive manager, and `wr cloud teardown` no longer SIGKILLs an
-  unrelated process named by a stale ssh forwarder pid file.
-- A restarted manager could exit with `bind: address already in use` on its own
-  port, or come up without its web interface. While the manager was down or
-  still recovering, local clients (runners, subscriptions, `wr manager start`)
-  kept redialling it, and one of those dials could be given the manager's port
-  as its own source port and connect to itself. That left the port blocked for
-  60s, longer than the manager's 5s retry. Even-numbered ports were the ones
-  exposed, because Linux gives dials even source ports first: that includes
-  the default web port, and any manager or web port you configured as an even
-  number. On Linux, the manager now holds both ports from the moment it starts (clients
-  are still refused until it is ready), and if a port is still blocked when it
-  starts, it waits up to 90s for it, saying so in its log. A port that another
-  process is really listening on still stops the manager after about 5s, now
-  with an error saying the port is in use by another process. macOS does not
-  block the port this way, so its manager is unchanged.
-- The manager no longer rebuilds and hashes a command's whole text each time
-  it needs the command's key, which it does several times per command. With
-  20KB commands that cost 11.6-15.6GB of allocations every 20 minutes.
-- The manager no longer warns "checkCmd bkill did not reclaim all excess
-  runners" when LSF's `bkill` reports several consecutive array elements on
-  one line as a range, such as `Job <408347[1-2:1]>: Job has already
-  finished`. Those elements are now counted as already gone (or killed), where
-  before they were counted as unaccounted.
-- The manager no longer warns "checkCmd bkill did not reclaim all excess
-  runners" when every runner it asked LSF to kill had already finished. wr runs
-  `bkill -b`, which says so in one line for the whole request, such as `Job has
-  already finished` or `No matching job found`, without naming any job. Those
-  runners are now counted as already gone, where before they were counted as
-  unaccounted.
-- After a clean manager restart, the manager no longer logs an error for each
-  long-lived client whose first request still carried the previous manager's
-  token. The client re-reads its token file and resends, so the request
-  succeeds. Every request refused for a wrong token is now logged at warn
-  instead, as "Server refused a client request with the wrong token", so a
-  misconfigured client is still visible.
-- The help for `wr manager start --max_cores` and `--max_ram` said that 0
-  allows only 0-core commands, or stops commands running locally. That is only
-  true of the openstack scheduler. With the local scheduler, 0 has always meant
-  the whole machine, the same as -1, and it still does. The help now says so.
-  To keep commands off the machine, use the lsf scheduler, or the openstack
-  scheduler with `--max_ram 0`. To stop a manager starting new commands, use
-  `wr manager pause`.
-- A command no longer runs twice when the manager crashes just after handing
-  it to a runner. The runner starts the command as soon as it is given it, but
-  the manager did not record that anywhere until the runner reported the start.
-  A manager killed in between came back thinking nobody had the command, so it
-  gave it to a second runner, and refused the first runner's progress and
-  completion reports ("bad job" and "you must Reserve() a Job" in the manager's
-  log). The manager now records which runner has a command before handing it
-  over, so after a crash it waits for that runner to report. If that runner
-  died too, the command is run again once its runner is confirmed dead, as for
-  any other lost command.
-- A command that completed successfully no longer runs again when the manager's
-  database is slow to save its completion, as when the database's filesystem
-  fills up. The runner stops keeping the command alive once it has finished,
-  so if the save took longer than a minute, the manager treated the command as
-  released and gave it to another runner, which ran it a second time. A runner
-  whose report timed out and was sent again also got an "internal error"
-  (`Remove(...): not found` in the manager's log) even though its command's
-  completion had been saved. The manager now keeps a finished command until its
-  completion is saved, and accepts a repeated completion report.
-- The manager starts much faster when its database is on NFS. Opening the
-  database made NFS forget the parts of the file it had already read, so
-  recovering the jobs from before a restart then read it back a small piece at
-  a time: 121k jobs took about 3 minutes. The manager now reads the whole file
-  in one go as it opens it, which took a 7.4GB database with 120k jobs from
-  24-30s down to 10-14s. `wr manager compact` also reads the file this way,
-  which took compacting that database from over 6 minutes to 47s.
-- Writes to a large database no longer slow down as its free space grows.
-  Every write used to save a list of all the database's free space, which cost
-  about 50ms per write on a 7.4GB database with 3GB free. That list is now
-  saved only when the manager stops cleanly. After a crash, or a restore from
-  a backup, the manager works it out again as it starts, which can make that
-  start a few seconds slower when the database is on local disk.
-- The `cleanup` and `cleanup_all` behaviours (`cleanup` is the default
-  `--on_exit`) of a lost command could leave empty directories behind in the
-  command's `--cwd` and report a warning, when its runner and the manager both
-  cleaned up after it at the same time. A working directory that the other
-  cleanup has already removed is now treated as done, and the empty
-  directories above it are still removed.
-- The small file wr writes each `--with_docker` or `--with_singularity`
-  command to is now made in that command's own TMPDIR, instead of the system
-  tmp dir of the runner, so it is removed with the command's workspace. Before,
-  a runner that was killed, for example by the scheduler, left the file behind
-  in `/tmp`. (`--cwd_matters` commands have no TMPDIR of wr's, so theirs is
-  still made in the system tmp dir.)
-- A path you give wr that starts with `~/` followed by another `~`, such as a
-  `manager_dir` of `~/~wr` or a `--cloud_config_files` file of `~/~cfg/a`, now
-  means that path in your home directory. Before, wr dropped every `~` and `/`
-  after the first `~/`, so it used `<home>/wr` or `<home>/cfg/a` instead and
-  did not say so. A path of just `~` now also means your home directory.
-- A command added with `--change_home` can now run `wr` itself, for example to
-  `wr add` more commands. Before, that `wr` looked for the manager's token in
-  the command's working directory, because `--change_home` makes that HOME, so
-  it failed to connect.
-- `wr mount` given several mounts no longer leaves the earlier ones mounted
-  when a later one fails. Before, it exited with the error while the earlier
-  mounts stayed live with no process left to unmount them, and you had to find
-  and `fusermount -u` them yourself. It now unmounts them before it exits. The
-  same goes for a signal to stop that arrives while it is still mounting.
-- `wr add --cmd_deps`, `wr mod --cmd_deps` and a `cmd`/`cwd` dependency in a
-  REST `POST /rest/v1/jobs` did not wait for a command you had added with
-  `--with_docker`, `--with_singularity` or `--mounts`, so the dependent command
-  could start before that command had finished. A command dependency now waits
-  for every incomplete command with that command line (and working directory,
-  if that command was added with `--cwd_matters`), whatever container or mounts
-  it uses. If more than one such command is in the queue, it waits for all of
-  them.
-- An empty element in `--queues_avoid`, such as the trailing comma in
-  `wr add --queues_avoid "interactive,"`, made wr avoid every LSF queue, so the
-  command could never run. `wr add` and `wr mod` now drop empty and
-  whitespace-only elements from `--queues_avoid`, `--limit_grps` and
-  `--modules`, as does a REST `POST /rest/v1/jobs` from its `limit_grps`
-  parameter, and the LSF scheduler ignores an empty queue name to avoid or
-  choose from, however it reached it (including the `queues_avoid` field of a
-  REST or JSON job).
-- A `--with_docker` command that docker could not start, for example because
-  its image could not be pulled, was reported with the fail reason "command
-  exited non-zero", as if the command had run. It is now reported as
-  "container failed to start" when docker exits with its own start-failure
-  code, 125, and likewise for `--with_singularity` when singularity exits with
-  255. A command that itself exits with that code inside the container is
-  reported the same way, since wr cannot tell the two apart; `wr status` shows
-  the runtime's own explanation in the command's stderr. Whether the command is
-  retried or buried is unchanged.
-- If the manager's database grew past the size it had mapped into memory while
-  a backup was being written, every command that read or wrote the database
-  (adds, starts, completions, most status requests) waited until the backup
-  finished. For a multi-GB database that could be minutes, long enough for
-  clients to time out. The manager now maps its database with room to grow (the
-  larger of its size again and 4GB) each time it starts, so this no longer
-  happens unless the database grows by that much during one manager run. The
-  extra mapping uses address space, not memory; if `ulimit -v` stops the
-  manager mapping it, the manager opens the database as before.
-- The manager kept jobs in memory, command and all, after they were archived,
-  until it was restarted. Memory use stayed at the size of the biggest burst of
-  jobs, and grew without limit for workloads such as wrstat that use a new limit
-  group on every run. Archived jobs are now freed, and the manager forgets
-  reserve groups and rep groups once they have no jobs left.
-- `wr mod -p` on a job that was ready to run could crash the manager, or leave
-  the job in the wrong place in its queue, when the manager had last handled a
-  job with different resource requirements or limit groups. A changed priority
-  now always reorders the job among the other ready jobs like it.
-- On a busy manager, the status web page could open and miss a command
-  changing state, so its counts stayed wrong until you refreshed the page. The
-  manager now sends the page every change from the moment it opens.
-- `wr kill` of a command could leave it retried, or buried as lost
-  rather than killed, if the runner took longer than a minute to kill the
-  command and finish up (for example, a slow upload of its outputs).
-  The runner stopped telling the manager it was alive once it had carried out
-  the kill, and the manager ignored its messages from the moment kill was
-  asked for, so the manager decided the job was lost, released it, and then
-  refused the runner's own report. A runner now keeps the job alive until it
-  has reported, and that report buries the job as killed.
-- A long-lived Go client, such as one made by the `client` package's `New` or
-  by `jobqueue.ConnectUsingConfig`, had every request rejected with "bad token"
-  after `wr manager stop` and a new `wr manager start`, until the program using
-  it was restarted. A clean stop deletes the manager's token, so the next
-  manager makes a new one. Such a client now reads the new token from the
-  token file and sends the rejected request once more. A crash or kill of the
-  manager was not affected, since the token is kept then. New
-  `jobqueue.ConnectWithTokenFile` gives the same behaviour to a client that
-  connects with an address and a token file of its own. A client made with
-  `jobqueue.Connect` and a token is unchanged.
-- When you open the status web page, or it reconnects, the manager no longer
-  reads the full details of every completed command in each report group that
-  still has commands to run, just to count them. On a manager with a lot of
-  completed history this made page loads take seconds and used a noticeable
-  share of the manager's CPU. The page shows the same counts as before.
-- The manager no longer logs two normal client actions as errors. An add of no
-  jobs, which a client that polls for work sends when it has nothing new,
-  logged `jobqueue add(): bad request (missing arguments?)`, and every `wr add --sync`,
-  `client` package `SubmitJobsAndWait` or `WaitForJobs` that finished normally
-  logged `jobqueue waitForUpdates(): subscription closed`. Both are now logged
-  only at debug level. Clients see no change: an add of no jobs is still
-  refused with the same error. A wait on an unknown subscription, or an add
-  that is really missing its jobs' environment or requirements, is still
-  logged as an error.
-- A network blip on a `wr add --sync`, a `client` package `WaitForJobs` or any
-  other Go client job subscription left a copy of that subscription behind on
-  the manager each time the client reconnected, for as long as the manager ran.
-  Each copy kept a goroutine and a queue of updates nobody read, and made the
-  manager do extra work on every job state change. The manager now drops the
-  old copy when the client reconnects. Subscription ids also now differ between
-  manager runs, so a client reconnecting after a manager restart cannot remove
-  another client's subscription.
-- At LSF scale, wr's trimming of excess runners could kill a runner that had
-  just picked up a command, so that command was retried or went lost. A runner
-  wr has decided to kill is now given no command, and one that has picked up a
-  command is never killed as excess.
-- In the Go client, a job subscription's `Unsubscribe` could block for a
-  minute against a manager that had stopped responding, and for up to two
-  minutes if the subscription was reconnecting at the time. This happened
-  whether or not you had cancelled the subscription's context first. The same
-  wait could hold up `wr add --sync` and the `client` package's `WaitForJobs`
-  as they finished. It now gives up telling the manager after 5 seconds.
-- A manager stopping just after it buried a failed command with a
-  remove-on-failure behaviour (`wr add --on_failure '[{"remove":true}]'`) could
-  crash instead of shutting down cleanly. It now finishes removing the command
-  before it stops.
-- In the cloud, a manager stopping while it was waiting to confirm a bad server
-  dead (`--cloud_auto_confirm_dead`) could crash when that wait ran out after
-  the stop. The wait now ends when the manager stops.
-- `wr kill` of a command that hadn't started yet was reported as done, but the
-  command ran anyway and completed as normal. A kill that arrives while wr is
-  still getting ready to run a command, such as mounting its file systems, now
-  stops it being started at all: its failure behaviours run and it is buried as
-  killed, just as a running command that you kill is.
-- Killing a command could signal processes that had nothing to do with it. If
-  `wr kill` reached the runner after the command had already exited, the
-  runner could still kill whatever process had since been given the command's
-  pid, and that process's children. Separately, when it killed a command's
-  child processes, it sent each one a final SIGKILL half a second later, even
-  if that child had already exited and its pid had gone to another process.
-  wr now does nothing to a command that has exited, and only sends that final
-  SIGKILL to a child that is still the same process.
-- A command that exited with a non-zero code on its own could be reported as
-  killed by a signal, or as having run out of disk space, if the runner
-  received a signal, or found the disk full, just as the command exited. It is
-  now reported with its own exit code. A signal that arrives then still makes
-  the runner stop, as it should.
-- A `wr` command or runner no longer hangs forever connecting to a manager that
-  accepts connections but doesn't respond, as a frozen manager does (its
-  machine still accepts connections for it). The attempt now gives up after the
-  command's usual connect timeout and reports that it could not reach the
-  manager, the same as when no manager is running at all, and reconnection
-  attempts are bounded the same way. Likewise, the manager now drops a
-  connection that never completes its handshake after 30 seconds, where before
-  it kept it open forever.
-- Jobs whose runner died soon after starting no longer sit lost for 30 minutes
-  or more when several died on the same host. To confirm they were dead, the
-  manager ran one ssh command per job on that host, one after another, all
-  within a single 15 second limit, so on a node whose login shell is slow only
-  the first few were confirmed and the rest waited out the lost-job retry time
-  before being tried again. It now asks about all of a host's jobs in one ssh
-  command. If your `privatekeypath` key is restricted by a forced command, such
-  as the examples in the config file, that command answers for one job at a
-  time; the manager notices and still checks each one separately, but now gives
-  each check its own 15 seconds, so none of them are left waiting.
-- The manager could decide a lost job's process had died, and so rerun the job
-  while it was still running, if `ps` on the job's host failed without printing
-  anything, for example because it did not accept the options the manager
-  passed. The check now also asks `ps` about the remote shell running it, and
-  confirms nothing unless `ps` lists that shell. If your `privatekeypath` key is
-  restricted by a forced command, that command's output has no room for this
-  check, so make sure the `ps` it runs prints nothing only for a pid that does
-  not exist. The command the manager runs over ssh is now
+- Cleanup (the default `--on_exit` behaviour) could delete data it should not
+  have:
+  - A command's cleanup deleted the work of commands it had added, and data
+    behind live mounts in its working directory, including mounts the command
+    made itself (eg. with sshfs).
+  - A mount or its un-uploaded cache was deleted when named via a symlink, in a
+    different case or Unicode spelling, or with a `CacheDir` resolving to the
+    command's workspace.
+  - A command could redirect wr's removal of its TMPDIR outside its working
+    directory with a symlink.
+  - A lost command's cleanup could delete the working directory of its live
+    retry, which the manager could also kill.
+  - A lost command's cleanup could leave empty directories behind.
+- `wr manager start` could delete your database and restore an older backup
+  just because it failed to open the file (for example, it was read-only, on a
+  stale NFS handle, or there were too few file descriptors), losing every job
+  since the backup. wr now refuses to start and reports the error, and only
+  restores a backup for a database that is really damaged.
+- A command whose output failed to upload to its writable mount was reported as
+  a success and its output lost. It is now released for retry with an upload
+  fail reason (and updating muxfys to v5.1.x means the cache is no longer
+  deleted before the upload is known to have worked). Mount logs and failing
+  `cleanup` or `run` behaviours are now reported in the command's stderr.
+- A command no longer runs twice when the manager crashes just after starting
+  it or handing it to a runner, when it exits 0 while a crashed manager is
+  still down and its start report was never answered, or when the manager's
+  database is slow to save its completion (as when the database's filesystem
+  fills up), or when the manager crashes after it was added again with
+  `wr add --rerun` (or a Go client that adds without skipping completed
+  commands) while still queued or running; adding a command that is already
+  queued now changes nothing about it. Runners
+  from an older release still running during an upgrade can still run such a
+  command again.
+- A running command whose dep group (`--deps`) gains a new command is now left
+  to finish, then run again once the new command completes, as a completed one
+  would be. Before, the manager refused its runner's reports, so its success
+  was never recorded and it ran again. A retry of it, if it fails, now waits
+  for the new command too, this holds across a manager restart, and a runner
+  repeating its success report because the database was slow no longer drops
+  the command from the queue.
+- Stopping the manager fixes:
+  - `wr manager stop` could kill a manager part-way through its shutdown,
+    before it had saved its database, then report a graceful stop and delete
+    its token (see Changed).
+  - At LSF scale, a stopping manager could wait for ever for a runner LSF still
+    listed as running, so it never saved its database. It now waits at most 60
+    seconds, then has LSF kill any runners that are left.
+  - On a busy node, the kill sent by a clean stop (or `wr kill`) could fail to
+    reach the command, which ran on and, if it exited 0, could be run again
+    after the manager restarted. It is now killed promptly.
+  - A manager could crash while stopping, and a manager stopped while still
+    recovering could never exit.
+  - `wr manager stop` could SIGTERM an unrelated process that had reused a dead
+    manager's pid, and `wr cloud teardown` could SIGKILL one named by a stale
+    ssh forwarder pid file. `wr manager status` now reports such a manager as
+    stopped.
+- `wr kill` fixes: a kill of a command that had not yet started was reported
+  done but the command ran anyway; a kill could signal unrelated processes that
+  had reused the command's pid; and a command whose runner took over a minute
+  to finish up after a kill could be retried or buried as lost instead of
+  killed.
+- `~/.wr_<deployment>`, and the directories the manager makes for uploaded
+  files (such as the cloud credentials `wr add --cloud_config_files` copies to
+  your servers), could be made writable by other users, who could then replace
+  your database, token, keys or credentials. New directories are now 0700 and
+  uploaded files 0600. On start, wr takes group and other write permission off
+  an existing `~/.wr_<deployment>`, and makes its `uploads` tree 0700, logging
+  what it changed; check any upload directory you configured elsewhere
+  yourself.
+- `--monitor_docker` fixes: with a container name, and with `?` when more than
+  one container appeared, wr could adopt (and so kill with your job, and charge
+  its RAM to your job) a container it did not start. With `?` it now monitors
+  none of them and warns. A cidfile path no longer inflates the command's peak
+  RAM by reading large matching files, and a cidfile with more after the id is
+  now recognised.
+- `wr manager backup -p <path>` destroyed any file of yours at `<path>.tmp`.
+- An upload to a named path (the Go client's `UploadFile`, or REST
+  `PUT /rest/v1/upload?path=`) over a longer file left the end of the old file
+  in place.
+- Lost commands whose runner died could sit lost for 30 minutes or more when
+  several died on one host, because the manager confirmed them dead one ssh at
+  a time; it now checks all of a host's commands in one ssh. The manager also
+  no longer declares a command dead, and reruns it while it is still running,
+  when `ps` on its host fails. NB: the command run over ssh is now
   `echo wr-ps-batch $$; ps -o pid=,stat= -p <pid>,$$,<pid>,... 2>/dev/null || test $? -eq 1`,
-  so a forced command that only allows the old exact string,
-  `ps -o stat= -p <pid> 2>/dev/null || test $? -eq 1`, must be updated, or no
-  lost job on that host will ever be confirmed dead. The example forced
+  so if your `privatekeypath` key has a forced command that only allows the
+  old `ps -o stat= -p <pid> 2>/dev/null || test $? -eq 1`, update it, or no
+  lost command on that host will ever be confirmed dead. The example forced
   commands in the config file are unaffected.
-- A manager stopped while it was still recovering its prior jobs, when another
-  process was listening on its manager or web port, never exited. It kept
-  waiting for that port to close, even though it had never bound it. It now
-  only waits for the ports it actually bound, so it exits as normal.
-- A runner could occasionally hang forever, leaving its mount stuck, when it
-  started a command whose working directory was one of its own mounts. This is
-  the default for a command with mounts and no explicit `Mount`. Fixed by
-  updating muxfys to v5.1.1.
-- `wr manager start` could delete your database and copy an older backup over
-  it just because wr failed to open the file, losing every job recorded since
-  that backup was taken. Nearly every way of failing to open the file counted
-  as corruption, so making the database read-only before copying or inspecting
-  it sent wr down that path, as did a read-only mount, a directory sitting
-  where the database should be, a stale handle on a network filesystem, running
-  out of file descriptors, and too little memory to map the database. wr now
-  leaves the database untouched in those cases and refuses to start, reporting
-  the error it hit so you can resolve that problem and start wr again. A
-  database that really is damaged still restores from its backup as before, and
-  so does one that wr could not open for a reason it does not recognise.
-- `wr manager start` and `wr cloud deploy` made `~/.wr_<deployment>` with mode
-  0777 before your umask, so under a permissive umask any other user of the
-  machine could delete or replace the database, the client token, the TLS key
-  and, after a cloud deploy, the SSH private key inside it, however tightly
-  those files themselves were locked down: unlinking a file needs write
-  permission on the directory, not on the file. A directory wr creates from now
-  on is mode 0700. An existing one has only the other-user write bits taken off
-  it, and wr logs what it changed and why, so your directory is repaired
-  without you having to do anything and nothing else about its mode is touched:
-  if you set 0750 on purpose to let a colleague read the certificates, it stays
-  0750. Two things to know. A repaired directory is only closed to WRITING, so
-  a 0777 one becomes 0755 and other users on the machine can still list it and
-  read the 0644 `pid` file and the 0660 `ca.pem` and `cert.pem`; run
-  `chmod 700 ~/.wr_<deployment>` yourself if you want that shut too. And 0700
-  on a directory wr makes means group members can no longer read `ca.pem` and
-  `cert.pem` from it, so if you rely on that, chmod it after wr creates it - wr
-  leaves 0750 alone, though it will still take `g+w`/`o+w` off every start, so
-  a deliberate 0770 comes back 0750.
-- The directories the manager made for uploaded files, under `manageruploaddir`
-  and under any path you uploaded to, were mode 0777 before the umask. The
-  files themselves were already created 0600, but replacing a file only needs
-  write permission on its directory, and renaming a whole directory aside needs
-  it only on the directory above. What goes through there is
-  `wr add --cloud_config_files` when your manager is remote, which the manager
-  copies to every cloud server it spawns, and which defaults to your
-  `~/.s3cfg`, `~/.aws/credentials` and `~/.aws/config` - so another user of the
-  manager's machine could have chosen the cloud credentials your servers ran
-  with. Directories wr makes there are now 0700. And uploading to a path that
-  already held a file left that file at its old mode, so over a 0644 file the
-  uploaded credentials were readable by everyone; the file is now always made
-  0600.
-- An upload tree an older wr already made kept its old mode, because
-  `os.MkdirAll` never touches a directory that is already there, so the fix
-  above only protected directories wr made from then on. Your next
-  `wr manager start` or `wr cloud deploy` now makes every level of
-  `~/.wr_<deployment>/uploads` yours alone, the same 0700 a new one gets, and
-  logs how many it changed. Other users can no longer rename a level aside and
-  put their own `~/.aws/credentials` where wr looks for the config files it
-  copies to your cloud servers, nor list what you uploaded. Unlike the working
-  directory, read access is taken off as well as write: every file in there is
-  0600, so nobody else had a use for it. Only that tree is repaired, since wr
-  will not chmod a path you chose somewhere else: an upload directory you have
-  pointed outside your `~/.wr_<deployment>` with `manageruploaddir` is not
-  touched, and nor are the directories an older wr made under any other path
-  you uploaded to. Check those yourself. Closing the tree does not undo what
-  somebody may already have done to it, so if yours was open, check what is in
-  it too. wr warns about anything other than a directory where it only makes
-  directories, such as a symlink in place of a hashed level, but it cannot
-  check the uploaded files themselves.
-- One mistyped `--env` element could stop every command in a scheduler group.
-  An entry with no `=`, such as a bare `PATH`, crashed the runner as it
-  prepared the command. The command went back to the queue without using up a
-  retry, so it was never buried, and the manager kept starting runners that
-  died on it the same way, each of them also taking down the other commands it
-  would have gone on to run. An entry with no name before its `=` broke a
-  `--with_docker` command differently but as completely: docker was asked to
-  set a variable with no name, and refused to start the container at all. wr
-  now skips such an entry when it runs a command, so commands added before this
-  release run rather than failing, and `--env` refuses to store a new one.
-- A command could run with a different command's `PATH`. A runner runs many
-  commands in turn, and one that needed no `PATH` adjustment of its own,
-  because its `PATH` already included the directory wr's executable is in, was
-  handed the `PATH` of the previous command that runner ran, and so could
-  resolve binaries it never asked for. One command with an unusual `PATH`
-  affected every later command in that runner.
-- A `--with_docker` command ran with its `PATH` cut off at the first colon, so
-  it could not find binaries that were on its `PATH` outside the container, and
-  reported only that the command was not found. Any other overridden value
-  containing a colon, such as `LD_LIBRARY_PATH`, `MANPATH` or `PYTHONPATH`, was
-  truncated the same way. Overridden variables now reach the container whole.
-- When a command's environment named the same variable twice, the settings wr
-  makes for you could fail to take effect: `TMPDIR`, the `HOME` that
-  `--change_home` sets, the host and port a command uses to talk back to the
-  manager, and the `PATH` that `--bsub` prepends to. Only the first copy was
-  replaced, so which value the command saw came down to how the program it ran
-  reads its environment. Every copy is now replaced.
-- With `--with_docker`, a `--container_mounts` mount with more than one colon,
-  such as `/data/opt:/opt:ro`, silently mounted your local path at that same
-  path inside the container, dropping both the in-container path and the option
-  you asked for. Such a value is now rejected instead of quietly meaning
-  something else.
-- With `--monitor_docker '?'`, wr could charge another container's RAM to your
-  job as its peak, and SIGKILL a container it never started, whenever more than
-  one container appeared while the job ran; on a shared machine that other
-  container could even belong to another of your wr jobs. When it cannot tell
-  which of the new containers is the job's, wr now monitors none of them rather
-  than guess, and logs a warning saying that the job's usage will be
-  under-reported and that no container will be killed with it. A container wr
-  started for the job itself (`--with_docker`) is still recognised whatever
-  else appears alongside it.
-- `--with_singularity` now really does what it has always said it does: your
-  working directory is mounted at the same path inside the container, and is
-  the working directory your command runs in there. Previously wr asked
-  singularity for neither, so your command ran wherever your site's
-  `singularity.conf` put it, commonly `/` or your real home directory, with the
-  command's own working directory not visible inside the container at all and
-  `--change_home` having no effect there. If your site's `singularity.conf`
-  already bound your working directory, nothing changes.
-- A `--with_docker` command whose container outlived the run that started it -
-  the runner SIGKILLed, its host lost, or the docker daemon restarted mid-run -
-  could not be retried. Every attempt failed immediately with docker's "The
-  container name ... is already in use", naming only wr's own 32-character key
-  for the command, and the command stayed unrunnable until someone removed that
-  container by hand. wr now removes the leftover container itself before
-  starting the new one, and reports on the command's STDERR which container it
-  removed. It only ever removes a container that both holds the name it needs
-  and carries wr's own label naming that same command, so any other container of
-  that name is left alone and docker's conflict is reported as before.
-- A `--monitor_docker` cidfile path, with or without a glob in it (`*.cid`,
-  `out*`, or a plain path to a single file), no longer inflates the peak RAM wr
-  records for your command. Until wr found the container, it re-read the whole
-  of every file the path matched, once a second for the life of the command; if
-  the path also matched one of your command's large output files, the memory
-  that took was added to the command's peak, and so to the RAM wr reserved for
-  it next time. wr now reads no more than the first 4096 bytes of a match: far
-  more than a container id needs, and little enough that a large file the path
-  matched by accident is never read in. A match whose first line is longer than
-  that is skipped if the path had a glob in it, the remaining matches still
-  being checked; if the path named that one file, wr instead warns that it could
-  not read it, and after three such checks stops monitoring for the rest of the
-  command, so no container's RAM and CPU are added to what wr reports for it and
-  no container is killed if you kill the job. Either way your command itself is
-  unaffected: it runs on as normal, and none of its `on_failure` behaviours
-  fire.
-- A `--monitor_docker` cidfile with anything after the container id in it, such
-  as your command's own output appended to the same file, is now recognised. wr
-  took the id to be the whole file bar one trailing newline, so such a file
-  never matched a container and the command ran unmonitored without wr saying
-  so. wr now reads just the first line, so the container's peak RAM and total
-  CPU are added to the usage wr reports for the command - and, as for any
-  monitored container, wr kills that container too when you kill the job.
-- `wr manager backup -p <path>` no longer destroys a file of yours at
-  `<path>.tmp`. wr staged every backup at that exact name, overwriting what was
-  there without a word and then either renaming it away over `<path>` when the
-  backup succeeded or deleting it when it failed; making your own `<path>.tmp`
-  read-only did not save it, because deleting a file needs write permission on
-  its directory rather than on the file, so you were left with neither your file
-  nor a backup. A backup whose final rename failed also left a database-sized
-  staging file behind, and of two backups running to the same `<path>` at once
-  one usually failed, its rename finding the shared staging file already moved
-  away. wr now stages the backup under a unique name in `<path>`'s own
-  directory, so no file of yours is touched, anyone reading `<path>` still sees
-  either the old backup or the complete new one, and a backup that fails leaves
-  nothing behind. The manager's own automatic backups still stage under a fixed
-  `.tmp` name, deliberately: if you point `managerdbbkfile` at a path, don't
-  keep a file of your own at that path with `.tmp` on the end.
-- `wr status -f` now finds the commands in your file that were added with
-  `--cwd_matters`, given the same `-c` you gave `wr add`, or a file whose own
-  lines set `cwd_matters`. Before, `-f` silently found none of them, and since
-  `wr status` has no `--cwd_matters` flag of its own there was no way to ask
-  about such a file at all - which is the mode that matters for a file of
-  thousands of commands. The `-f` mode of `wr kill`, `wr remove`, `wr retry`,
-  `wr suspend` and `wr resume` gains the same. Each command is matched at the
-  working directory the file and your flags describe for it: its own line's
-  `cwd` where the line sets one, and the `-c` you gave otherwise. One narrowing
-  comes with that: a command taking its working directory from `-c` no longer
-  matches a job added in a different one, matching what `-l` has always done.
-  Leave `-c` off if you were relying on `-f` matching such a command whatever
-  working directory it was added with.
-- `wr limit -g <group>` reported 9223372036854775807 for a group with no limit,
-  though the command's own help says "Groups that are not known about will
-  report -1". It now reports -1 for a group nothing knows a limit for, for a
-  group whose limit you have just removed with `-g <group>:-1`, and for one
-  limited by time rather than by a count of jobs. A group with a count
-  limit still reports that count, including a limit of 0, and `wr limit` with no
-  options lists exactly the groups it listed before.
-- A manager that was killed or crashed just after one of its jobs started could,
-  once restarted, run that job a second time while the first run was still
-  going. The manager now records on disk that a job is running before it tells
-  the job's runner the start was recorded, so a restarted manager knows the job
-  is running and leaves it alone. Only a manager that dies in the brief moment
-  after a job starts but before it has acknowledged the start can still lose
-  track of it.
-- A job reserved to be retried no longer shows anything of the attempt that
-  failed before it. Until the retry actually started, `wr status` and the status
-  web page reported the new attempt with the previous attempt's host IP, CPU
-  time, failure reason (such as "command exited non-zero" or "lost contact with
-  runner") and output, alongside the new attempt's host. A reserved retry now
-  reports none of those until it produces its own.
-- `wr add --sync`, and Go code waiting on jobs with `jobqueue.Client.AddAndWait`
-  or the `client` package's `SubmitJobsAndWait`, could occasionally get back a
-  buried or failed command without its output, if they asked for it just as the
-  command was buried. The manager now makes that request wait until the output
-  has been recorded.
-
+- The manager is much faster at LSF scale and with large databases:
+  - Scheduling no longer slows as a backlog of limit-blocked commands grows,
+    which could stall completions and make the web UI and `wr status` time out.
+  - Memory use and startup time no longer grow with the size of the dependency
+    groups your commands depend on.
+  - Database backups no longer stall the manager.
+  - Writes to a large database no longer slow down as its free space grows. The
+    list of free space is now saved only when the manager stops cleanly, so
+    after a crash or a restore from backup the next start takes a few seconds
+    longer to work it out again. NB: once this version has opened your manager
+    database, only wr v0.11.0 or later can open it.
+  - The manager starts much faster when its database is on NFS (for example, a
+    7.4GB database with 120k jobs went from 24-30s to 10-14s), and
+    `wr manager compact` is similarly faster.
+  - Opening the status web page no longer reads every completed command in
+    report groups that still have commands to run.
+  - Archived jobs, and groups with no jobs left, are now freed from memory,
+    where before memory grew without limit for workloads that use a new limit
+    group on every run.
+- A lost command that had been reserved but never started was never
+  reconfirmed, and a command whose runner never reconnected after a manager
+  restart was never reclaimed.
+- A runner still running a command when the manager was cleanly stopped and
+  started again was rejected for its old token for up to a day, holding its
+  LSF slot. It now reports the command to the new manager, as after a crash, so
+  a command that exited 0 is recorded as complete, not run again.
+- A command's start time, as shown by `wr status` and used for its walltime
+  and for learning how long commands take, is now when the runner really
+  started it, not when the manager heard about it, which after a manager crash
+  could be minutes later.
+- A transient timeout while a runner reported that a command had started no
+  longer kills the healthy command.
+- At LSF scale, wr's trimming of excess runners could kill a runner that had
+  just picked up a command.
+- A command could run with a different command's `PATH`, a `--with_docker`
+  command's `PATH` (and any other overridden value with a colon) was cut off at
+  the first colon, and some of wr's own environment settings failed to apply
+  when a variable was named twice. An `--env` entry with no `=` could crash
+  runners over and over, blocking every command in its scheduler group.
+- `--cmd_deps` did not wait for commands added with `--with_docker`,
+  `--with_singularity` or `--mounts`.
+- Container fixes:
+  - `--with_docker` and `--with_singularity` commands broke if your working
+    directory, a mount path or the TMPDIR contained a space or shell
+    metacharacter, as these were not quoted.
+  - `--with_singularity` now mounts your working directory in the container and
+    runs your command there, as documented.
+  - A `--with_docker` command whose container outlived its run (eg. the runner
+    was killed) could never be retried, failing with "container name already in
+    use". wr now removes its own leftover container first.
+  - A wedged docker daemon could hang a finished `--with_docker` command
+    forever, holding its scheduler slot.
+- A runner could hang forever when a command's working directory was one of its
+  own mounts, or spin at 100% CPU forever when it could not create the
+  command's working directory (for example on a full disk); the latter now
+  buries the command with a useful reason.
+- A restarted manager could fail with `bind: address already in use` on its own
+  port, or come up without its web interface, because a reconnecting local
+  client could take the port. On Linux, the manager now holds its ports from
+  the moment it starts.
+- A manager could stall every request while writing a backup if its database
+  outgrew its memory map.
+- `wr` commands and runners no longer hang forever connecting to a frozen
+  manager, and the manager drops connections that never complete their
+  handshake.
+- An empty element in `--queues_avoid` (such as a trailing comma) made wr avoid
+  every LSF queue. Empty elements are now dropped from `--queues_avoid`,
+  `--limit_grps` and `--modules`.
+- `wr add --sync` and Go clients waiting on jobs could occasionally get back a
+  buried command without its output.
+- `wr mod -p` on a ready command could crash the manager or misorder its
+  queue.
+- `run` behaviours now get the command's own environment (including `--env`,
+  its TMPDIR and the HOME from `--change_home`) instead of the runner's or
+  manager's.
+- A command that exited non-zero could be reported as killed by a signal, or
+  as out of disk space, if the runner got a signal or found the disk full just
+  as it exited.
+- A long-lived Go client had every request rejected with "bad token" after the
+  manager was stopped and started again; it now reloads the token file.
+- In the Go client, reconnecting subscriptions (`wr add --sync`, `WaitForJobs`)
+  left a copy behind on the manager each time, and `Unsubscribe` could block for
+  minutes against an unresponsive manager.
+- `wr status -f` (and the `-f` mode of `wr kill`, `remove`, `retry`, `suspend`
+  and `resume`) now finds commands added with `--cwd_matters`.
+- `wr kill -l <cmd> -c <dir>` (and other `-l` selections) now find commands
+  added without `--cwd_matters`, and can match containerised commands.
+- A reserved retry no longer shows the previous attempt's host, CPU time, fail
+  reason and output.
+- On a busy manager, the status web page could miss a command changing state
+  when it opened, and a command that finished very quickly could be shown as
+  running forever.
+- `wr mount` now reports errors instead of exiting 0 silently when run as a
+  daemon, resolves relative paths against your directory instead of `/`, and
+  unmounts earlier mounts if a later one fails.
+- A command added with `--change_home` can now run `wr` itself.
+- The command file for a `--with_docker` or `--with_singularity` command is
+  now made in the command's own TMPDIR, so a killed runner no longer leaves it
+  in `/tmp`.
+- A path such as `~/~wr` now means that path in your home directory, and `~`
+  alone means your home directory.
+- `wr limit -g <group>` now reports -1 for a group with no limit, as documented,
+  instead of 9223372036854775807.
+- The manager no longer falsely warns that bkill did not reclaim all excess
+  runners when LSF reports a range of array elements on one line, or that the
+  runners had already finished.
 
 ## [0.37.2] - 2026-09-01
 ### Added
