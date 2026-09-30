@@ -141,9 +141,8 @@ project adheres to [Semantic Versioning](http://semver.org/).
   fills up), or when the manager crashes after it was added again with
   `wr add --rerun` (or a Go client that adds without skipping completed
   commands) while still queued or running; adding a command that is already
-  queued now changes nothing about it. Runners
-  from an older release still running during an upgrade can still run such a
-  command again.
+  queued now changes nothing about it. Runners from an older release still
+  running during an upgrade can still run such a command again.
 - A running command whose dep group (`--deps`) gains a new command is now left
   to finish, then run again once the new command completes, as a completed one
   would be. Before, the manager refused its runner's reports, so its success
@@ -151,6 +150,15 @@ project adheres to [Semantic Versioning](http://semver.org/).
   for the new command too, this holds across a manager restart, and a runner
   repeating its success report because the database was slow no longer drops
   the command from the queue.
+- A command that failed, or was buried, just before a manager crash no longer
+  comes back after the restart as "running" with nothing running it, never to
+  be retried. And a runner's bury of a command the manager had already given
+  up on as lost (for example after `wr kill`, even if you then resumed or
+  kicked it) now buries it, instead of being re-sent for a day.
+- A buried command whose dep group (`--deps`) gained a command that has not
+  yet completed now stays buried across a manager restart, instead of coming
+  back dependent and later running by itself. It waits for the dep group only
+  after you `wr retry` it.
 - Stopping the manager fixes:
   - `wr manager stop` could kill a manager part-way through its shutdown,
     before it had saved its database, then report a graceful stop and delete
