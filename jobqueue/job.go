@@ -665,6 +665,23 @@ func (j *Job) resetRunLocked(state JobState, exitcode int) {
 	j.StdErrC = nil
 }
 
+// runHeldByLocked reports whether the run that the job's queue item, with the
+// given stats, is on still belongs to the runner with client ID reporter: the
+// reporter holds the job's reservation and, if the item is in the run
+// sub-queue, it is there for the reservation the job was last reset for.
+//
+// A reservation moves the item to the run sub-queue before it resets the job
+// for its new runner (respondWithReservedJob), so in between ReservedBy still
+// names the previous runner, and only the item's Reserves count shows that the
+// run is no longer theirs. The caller must hold at least the Job's read lock.
+func (j *Job) runHeldByLocked(reporter uuid.UUID, stats *queue.ItemStats) bool {
+	if j.ReservedBy != reporter {
+		return false
+	}
+
+	return stats.State != queue.ItemStateRun || stats.Reserves == j.reservation
+}
+
 // nilEntryMessage returns a message naming the first nil entry in an explicitly
 // set pointer collection, or "" if there isn't one.
 func (j *JobModifier) nilEntryMessage() string {
@@ -1050,6 +1067,13 @@ type Job struct {
 	// item's TTR expiring meanwhile does not make the job lost. Server side
 	// only.
 	handingOut bool
+
+	// reservation is its queue item's Reserves count as of the reservation the
+	// job was last reset for (see resetJobForReservation). An item in the run
+	// sub-queue with a different count was reserved by a runner the job has not
+	// yet been given to. It is server side only; a job recovered into the run
+	// sub-queue starts at 0, as its item does.
+	reservation uint32
 
 	// archivesPending counts the successful-completion reports the manager has
 	// accepted for this job whose archive has not yet been written and taken off

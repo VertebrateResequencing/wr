@@ -1598,7 +1598,7 @@ func (queue *Queue) Reserve(reserveGroup string, wait time.Duration) (*Item, err
 
 	item.touch()
 	queue.runQueue.push(item)
-	item.switchReadyRun()
+	item.switchReadyRunReserved()
 
 	queue.changed(SubQueueReady, SubQueueRun, []*Item{item})
 	queue.mutex.Unlock()

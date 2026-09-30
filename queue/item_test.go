@@ -81,10 +81,17 @@ func testItemBody(t *testing.T) {
 			So(item.state, ShouldEqual, ItemStateReady)
 		})
 
+		Convey("Switching from ready to run by a reservation counts it", func() {
+			item.switchReadyRunReserved()
+			So(item.queueIndexes[1], ShouldEqual, -1)
+			So(item.reserves, ShouldEqual, 1)
+			So(item.state, ShouldEqual, ItemStateRun)
+		})
+
 		Convey("Switching from ready to run updates properties; without a touch it still doesn't release", func() {
 			item.switchReadyRun()
 			So(item.queueIndexes[1], ShouldEqual, -1)
-			So(item.reserves, ShouldEqual, 1)
+			So(item.reserves, ShouldEqual, 0)
 			So(item.state, ShouldEqual, ItemStateRun)
 			So(item.releasable(), ShouldBeFalse)
 			<-time.After(110 * time.Millisecond)

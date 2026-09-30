@@ -124,3 +124,104 @@ func TestOldOwnerReportAfterNewReservation(t *testing.T) {
 		})
 	})
 }
+
+// TestOldOwnerReportDuringNewReservation proves that an old owner's release,
+// bury or archive leaves alone a new run whose reservation has moved the job's
+// item to the run sub-queue but not yet given the job to its new runner.
+func TestOldOwnerReportDuringNewReservation(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a started job the manager released as lost, which the user suspended and resumed", t, func() {
+		f := newReleaseAfterLostFixture(ctx, t, 3, definitelyDeadPid(t), "")
+		defer f.stop(ctx)
+
+		setServerJobRunnerPid(f.server, f.job.Key(), definitelyDeadPid(t))
+		So(waitForJobLost(f.server, f.job.Key(), releaseAfterLostWait), ShouldBeTrue)
+		So(f.waitForManagerRelease(), ShouldBeTrue)
+
+		suspended, err := f.user.Suspend(f.essence())
+		So(err, ShouldBeNil)
+		So(suspended, ShouldEqual, 1)
+
+		resumed, err := f.user.Resume(f.essence())
+		So(err, ShouldBeNil)
+		So(resumed, ShouldEqual, 1)
+		So(f.itemState(), ShouldEqual, queue.ItemStateReady)
+
+		newRunner := f.connect()
+		defer disconnect(newRunner)
+
+		// the old owner reports while the new reservation is part way through.
+		assertNewRunLeftAlone := func(report func() error) {
+			var once sync.Once
+
+			var reportErr error
+
+			reported := false
+
+			reservationQueuedHook = func(key string) {
+				if key != f.job.Key() {
+					return
+				}
+
+				once.Do(func() {
+					reportErr = report()
+					reported = true
+				})
+			}
+			defer func() { reservationQueuedHook = nil }()
+
+			newReservation, errr := newRunner.ReserveScheduled(2*time.Second, "")
+			So(errr, ShouldBeNil)
+			So(newReservation, ShouldNotBeNil)
+			So(newReservation.Key(), ShouldEqual, f.job.Key())
+			So(reported, ShouldBeTrue)
+
+			So(f.itemState(), ShouldEqual, queue.ItemStateRun)
+
+			var jqerr Error
+
+			So(errors.As(reportErr, &jqerr), ShouldBeTrue)
+			So(jqerr.Err, ShouldEqual, ErrMustReserve)
+
+			item, errg := f.server.q.Get(f.job.Key())
+			So(errg, ShouldBeNil)
+
+			job, ok := item.Data().(*Job)
+			So(ok, ShouldBeTrue)
+
+			job.RLock()
+			defer job.RUnlock()
+
+			So(job.ReservedBy, ShouldEqual, newRunner.clientid)
+			So(job.State, ShouldEqual, JobStateReserved)
+			So(job.UntilBuried, ShouldEqual, f.retries)
+		}
+
+		Convey("the old owner's bury gets ErrMustReserve and the new run is not buried", func() {
+			assertNewRunLeftAlone(func() error {
+				return f.runner.Bury(f.job, releaseAfterLostEndState(), FailReasonExit)
+			})
+		})
+
+		Convey("the old owner's release gets ErrMustReserve and the new run is not released", func() {
+			assertNewRunLeftAlone(func() error {
+				return f.runner.releaseAfterAttempt(f.job, releaseAfterLostEndState(), FailReasonExit)
+			})
+		})
+
+		Convey("the old owner's archive gets ErrMustReserve and the new run is not archived", func() {
+			assertNewRunLeftAlone(func() error {
+				return f.runner.Archive(f.job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()})
+			})
+
+			complete, errc := f.server.db.checkIfComplete(f.job.Key())
+			So(errc, ShouldBeNil)
+			So(complete, ShouldBeFalse)
+		})
+	})
+}

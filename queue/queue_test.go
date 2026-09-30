@@ -2759,3 +2759,41 @@ func TestQueuePriorityUpdateInAnotherReserveGroup(t *testing.T) {
 		})
 	})
 }
+
+func TestQueueReservesCountsReservations(t *testing.T) {
+	ctx := context.Background()
+
+	synctestConvey(t, "Given items added straight to the run sub-queue", func() {
+		queue := New(ctx, "reserves count queue")
+		defer qdestroy(queue)
+
+		item, err := queue.Add(ctx, key1, "", testData, 0, 0, time.Minute, SubQueueRun)
+		So(err, ShouldBeNil)
+
+		_, _, err = queue.AddMany(ctx, []*ItemDef{{
+			Key: "key_2", Data: testData, TTR: time.Minute, StartQueue: SubQueueRun,
+		}})
+		So(err, ShouldBeNil)
+
+		many, err := queue.Get("key_2")
+		So(err, ShouldBeNil)
+
+		Convey("neither has been reserved", func() {
+			So(item.Stats().State, ShouldEqual, ItemStateRun)
+			So(item.Stats().Reserves, ShouldEqual, 0)
+			So(many.Stats().State, ShouldEqual, ItemStateRun)
+			So(many.Stats().Reserves, ShouldEqual, 0)
+		})
+
+		Convey("each Reserve() once released counts one reservation", func() {
+			for want := uint32(1); want <= 2; want++ {
+				So(queue.Release(ctx, key1), ShouldBeNil)
+
+				reserved, errr := queue.Reserve("", time.Second)
+				So(errr, ShouldBeNil)
+				So(reserved.Key, ShouldEqual, key1)
+				So(reserved.Stats().Reserves, ShouldEqual, want)
+			}
+		})
+	})
+}

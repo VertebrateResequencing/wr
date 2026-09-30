@@ -9,8 +9,10 @@ project adheres to [Semantic Versioning](http://semver.org/).
 ### Fixed
 - A runner's late report that its command failed, or should be buried, no
   longer buries or delays a new run of that command by another runner, which
-  could leave the command running twice. This could happen after the manager
-  gave up on the first runner as lost and the command started again elsewhere.
+  could leave the command running twice, and a late report that it succeeded no
+  longer marks complete a command another runner has just been given. This
+  could happen after the manager gave up on the first runner as lost and the
+  command started again elsewhere.
 - Asking the manager for incomplete commands by report group prefix or
   substring, by state (such as `wr status -b`), or with a limit (such as a
   limited `wr status -i`) no longer copies every queued command first. With

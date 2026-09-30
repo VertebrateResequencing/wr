@@ -377,6 +377,15 @@ var startPersistedHook func(key string)
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var releaseReportAcceptedHook func(key string)
 
+// reservationQueuedHook, if non-nil, is called with a job's key once a
+// reservation has moved the job's item to the run sub-queue, before the job is
+// reset for the new run and given to its new runner, so a test can have the
+// job's previous runner report in between. It is a test-only seam and is nil in
+// production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var reservationQueuedHook func(key string)
+
 // dependencyUpdatesHook, if non-nil, is called by an add once its write has
 // committed and before it applies its live dependents' new dependencies to the
 // queue, so a test can have a dependent finish in between. It is a test-only
@@ -6721,9 +6730,15 @@ func releaseJobSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseS
 	job.RLock()
 	defer job.RUnlock()
 
+	// read once, so the ownership check and waiting below see the same item
+	// state: an item seen waiting and then reserved must not be taken for this
+	// run's own.
+	stats := item.Stats()
+
 	// checked under the same lock as the rest of the snapshot, since a new
-	// reservation can have landed since getijForReport accepted the report.
-	if rep.reporter != (uuid.UUID{}) && job.ReservedBy != rep.reporter {
+	// reservation can have landed, or be part way through, since
+	// getijForReport accepted the report.
+	if rep.reporter != (uuid.UUID{}) && !job.runHeldByLocked(rep.reporter, stats) {
 		return releaseSnapshot{supplanted: true}
 	}
 
@@ -6738,7 +6753,7 @@ func releaseJobSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseS
 	// retry has been dealt with, so it must not be spent again, nor bury judged
 	// from the budget left behind: a release would otherwise bury a job its
 	// release had just left to run again, or one the user had kicked.
-	waiting := itemIsWaiting(item.Stats().State)
+	waiting := itemIsWaiting(stats.State)
 	rep.spendsRetry = !waiting && releaseSpendsARetry(job, *rep)
 
 	// bury the ITEM exactly when finalizeReleasedJob below will call the JOB

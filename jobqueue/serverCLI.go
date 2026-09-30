@@ -1069,7 +1069,11 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 	// clean up any past state to have a fresh job ready to run
 	sjob := item.Data().(*Job) //nolint:errcheck,forcetypeassert // queue only ever stores *Job
 
-	sgroup, retries, ub := s.resetJobForReservation(sjob, cr)
+	if reservationQueuedHook != nil {
+		reservationQueuedHook(item.Key)
+	}
+
+	sgroup, retries, ub := s.resetJobForReservation(sjob, cr, item.Stats().Reserves)
 
 	delay := s.setItemDelay(ctx, item.Key, retries, ub)
 
@@ -1144,13 +1148,15 @@ func (s *Server) handOutReservation(ctx context.Context, sjob *Job, key string) 
 
 // resetJobForReservation clears a job's past run state ready for a fresh run by
 // the reserving client, returning its scheduler group, retries and
-// until-buried count (read under the same lock).
+// until-buried count (read under the same lock). reserves is the job's queue
+// item's Reserves count after the reservation, which says the run the item is
+// on is this one (see Job.runHeldByLocked).
 //
 // A RUN of a job begins here, so this is where the manager mints the run's
 // identity (see runToken) and clears the fields that described the run before. The
 // runner makes its working directory, mounts filesystems and starts the Cmd on
 // the strength of the reservation alone, before its Started reaches us.
-func (s *Server) resetJobForReservation(sjob *Job, cr *clientRequest) (string, uint8, uint8) {
+func (s *Server) resetJobForReservation(sjob *Job, cr *clientRequest, reserves uint32) (string, uint8, uint8) {
 	sjob.Lock()
 	defer sjob.Unlock()
 
@@ -1159,6 +1165,7 @@ func (s *Server) resetJobForReservation(sjob *Job, cr *clientRequest) (string, u
 	sjob.resetRunLocked(JobStateReserved, -1)
 
 	sjob.ReservedBy = cr.ClientID // *** we should unset this on moving out of run state, to save space
+	sjob.reservation = reserves
 
 	// record which runner holds this reservation (its own host+pid) before the
 	// command's own pid is reported at Started, so a reserved-not-started job's
@@ -1467,7 +1474,7 @@ func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverR
 	// not discarded and re-run. A job that is already gone-and-complete is handled
 	// idempotently (jobAlreadyComplete), a new owner yields ErrMustReserve
 	// (new-run-wins) and a missing item during recovery yields ErrRecovering.
-	job, srerr := s.getijForReport(cr)
+	item, job, srerr := s.getijForReport(cr)
 	if srerr != "" {
 		if srerr == ErrBadJob && s.jobAlreadyComplete(cr.key()) {
 			return nil, "", "" // idempotent: the job is already archived/complete
@@ -1476,7 +1483,7 @@ func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverR
 		return nil, srerr, ""
 	}
 
-	key, rgroup, sgroup, srerr := markJobComplete(job, cr.JobEndState, s.limiter, cr.ClientID)
+	key, rgroup, sgroup, srerr := markJobComplete(job, item, cr.JobEndState, s.limiter, cr.ClientID)
 	if srerr != "" {
 		return nil, srerr, ""
 	}
@@ -1488,19 +1495,20 @@ func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverR
 // complete under lock, returning its key, rep group and scheduler group (or an
 // Err* string if it cannot be completed). It does NOT gate on the queue item
 // state or job.State - that item/ownership gating is done by getijForReport at
-// the call site (handleArchive). It validates the owner (job.ReservedBy must
-// match the optional expectedReservedBy, else ErrMustReserve) and the end state
+// the call site (handleArchive). It validates the owner (the optional
+// expectedReservedBy must still hold the run the job's queue item is on, see
+// Job.runHeldByLocked, else ErrMustReserve) and the end state
 // (canCompleteFromEndState, else ErrBadRequest); on success it applies the end
 // state, sets State to JobStateComplete and clears FailReason, but deliberately
 // does NOT clear job.Lost (see the inline comment) so a parked-lost job's later
 // removal is counted lost->complete.
-func markJobComplete(job *Job, endState *JobEndState,
+func markJobComplete(job *Job, item *queue.Item, endState *JobEndState,
 	lim *limiter.Limiter, expectedReservedBy ...uuid.UUID,
 ) (key, rgroup, sgroup, srerr string) {
 	job.Lock()
 	defer job.Unlock()
 
-	if len(expectedReservedBy) > 0 && job.ReservedBy != expectedReservedBy[0] {
+	if len(expectedReservedBy) > 0 && !job.runHeldByLocked(expectedReservedBy[0], item.Stats()) {
 		return "", "", "", ErrMustReserve
 	}
 
@@ -1667,7 +1675,7 @@ func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury
 	// set so the losing runner abandons the dead reservation promptly instead of
 	// looping for the full 24h retryTime (reliable2 D1); a missing item during
 	// recovery yields ErrRecovering.
-	job, srerr := s.getijForReport(cr)
+	_, job, srerr := s.getijForReport(cr)
 	if srerr != "" {
 		if srerr == ErrBadJob && s.jobAlreadyComplete(cr.key()) {
 			return nil, "", "" // idempotent: the job is already terminal
@@ -2315,19 +2323,19 @@ func (s *Server) dispatchMethod(ctx context.Context, cr *clientRequest, drain bo
 // ErrMustReserve (new-run-wins). A missing item is retryable during recovery
 // (ErrRecovering) and otherwise ErrBadJob (the caller may still treat an
 // already-completed job idempotently via jobAlreadyComplete).
-func (s *Server) getijForReport(cr *clientRequest) (*Job, string) {
+func (s *Server) getijForReport(cr *clientRequest) (*queue.Item, *Job, string) {
 	key := cr.key()
 	if key == "" {
-		return nil, ErrBadRequest
+		return nil, nil, ErrBadRequest
 	}
 
 	item, err := s.q.Get(key)
 	if err != nil {
 		if s.isRecovering() {
-			return nil, ErrRecovering
+			return nil, nil, ErrRecovering
 		}
 
-		return nil, ErrBadJob
+		return nil, nil, ErrBadJob
 	}
 
 	// accept a report only for an IN-FLIGHT item: Run (normal, or parked Lost),
@@ -2339,19 +2347,19 @@ func (s *Server) getijForReport(cr *clientRequest) (*Job, string) {
 	switch item.Stats().State {
 	case queue.ItemStateRun, queue.ItemStateDelay, queue.ItemStateReady:
 	default:
-		return nil, ErrBadJob
+		return nil, nil, ErrBadJob
 	}
 
 	job, ok := item.Data().(*Job)
 	if !ok {
-		return nil, ErrBadJob
+		return nil, nil, ErrBadJob
 	}
 
 	if cr.ClientID != job.ReservedBy {
-		return job, ErrMustReserve
+		return item, job, ErrMustReserve
 	}
 
-	return job, ""
+	return item, job, ""
 }
 
 // jobAlreadyComplete reports whether the keyed job is already in the completed
