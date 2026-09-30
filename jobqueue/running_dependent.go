@@ -442,7 +442,7 @@ func (j *Job) markRecoveredRerun() (stored bool) {
 // during this run: such a job waits on that member instead of being released
 // straight back.
 func (s *Server) applyReleaseQueueChangeForRerun(ctx context.Context, q *queue.Queue, item *queue.Item,
-	key string, bury bool, currentState JobState, job *Job) (bool, error) {
+	snap releaseSnapshot, job *Job) (releaseOutcome, error) {
 	var rerunDeps []string
 
 	rerun := job.takeRerunAfterRun()
@@ -450,13 +450,13 @@ func (s *Server) applyReleaseQueueChangeForRerun(ctx context.Context, q *queue.Q
 		rerunDeps = s.rerunDependencies(ctx, job)
 	}
 
-	alreadyDone, errq := s.applyReleaseQueueChange(ctx, q, item, key, bury, currentState, job, rerunDeps)
+	outcome, errq := s.applyReleaseQueueChange(ctx, q, item, snap, job, rerunDeps)
 
 	// a mark that was not applied above, or that arrived after it was taken but
 	// before the run ended, is applied now the job is no longer running.
-	if job.takeRerunAfterRun() || (rerun && (errq != nil || alreadyDone)) {
+	if job.takeRerunAfterRun() || (rerun && (errq != nil || outcome == releaseAlreadyDone)) {
 		s.applyRerunDependencies(ctx, job, s.rerunDependencies(ctx, job))
 	}
 
-	return alreadyDone, errq
+	return outcome, errq
 }

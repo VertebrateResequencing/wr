@@ -335,23 +335,24 @@ func TestReliable4PreStartReleaseRetries(t *testing.T) {
 			So(preStartServerStartTimeIsZero(server, job.Key()), ShouldBeTrue)
 
 			rep := lostJobReleaseReport()
-			bury, key, currentState := releaseJobSnapshot(sjob, &rep)
-			So(bury, ShouldBeFalse)
-			So(rep.spendsRetry, ShouldBeFalse)
-
+			key := sjob.Key()
 			item, errg := server.q.Get(key)
 			So(errg, ShouldBeNil)
+
+			snap := releaseJobSnapshot(sjob, item, &rep)
+			So(snap.bury, ShouldBeFalse)
+			So(rep.spendsRetry, ShouldBeFalse)
 
 			// the jstart lands HERE, in the window between the two lock windows.
 			sjob.Lock()
 			sjob.StartTime = time.Now()
 			sjob.Unlock()
 
-			alreadyDone, errq := server.applyReleaseQueueChange(ctx, server.q, item, key, bury, currentState, sjob, nil)
+			outcome, errq := server.applyReleaseQueueChange(ctx, server.q, item, snap, sjob, nil)
 			So(errq, ShouldBeNil)
-			So(alreadyDone, ShouldBeFalse)
+			So(outcome, ShouldEqual, releaseMoved)
 
-			server.finalizeReleasedJob(ctx, sjob, rep)
+			So(server.finalizeReleasedJob(ctx, sjob, rep, outcome), ShouldBeNil)
 
 			So(preStartUntilBuried(server, key), ShouldEqual, int(preStartRetries)+1)
 			So(preStartServerState(server, key), ShouldEqual, JobStateDelayed)

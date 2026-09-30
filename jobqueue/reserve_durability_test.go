@@ -32,6 +32,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -445,6 +446,81 @@ func TestBestEffortDrainKeepsArrivalOrder(t *testing.T) {
 	}
 }
 
+// TestBestEffortChangeKeepsEncodeOrder proves that of two concurrent live-record
+// writes of one job, the one that encoded the newer state is the one left on
+// disk. A kick that encoded the job as ready, and was then overtaken by the
+// job's reservation, used to queue after that reservation and win the
+// coalescing. The reservation's waiter was told its write had committed while
+// the ready record replaced it, so a crash before Started recovered the job to
+// run a second time.
+func TestBestEffortChangeKeepsEncodeOrder(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	database := openReliable4WriteStormDB(t, ctx)
+	defer func() { _ = database.close(ctx) }()
+
+	job := reliable4WSSeedLiveJobs(t, ctx, database, 1)[0]
+
+	var paused atomic.Bool
+
+	encoded, resume := make(chan struct{}), make(chan struct{})
+
+	jobChangeEncodedHook = func() {
+		if paused.CompareAndSwap(false, true) {
+			close(encoded)
+			<-resume
+		}
+	}
+	defer func() { jobChangeEncodedHook = nil }()
+
+	kickErr, reserveErr := make(chan error, 1), make(chan error, 1)
+
+	go func() { kickErr <- database.updateJobAfterChangeDurable(job) }()
+
+	<-encoded
+
+	go func() {
+		job.Lock()
+		job.State = JobStateReserved
+		job.Unlock()
+
+		reserveErr <- database.updateJobAfterChangeDurable(job)
+	}()
+
+	// if writes queue in the order they encoded, the reservation cannot finish
+	// while the kick is paused, so this only waits long enough for it to try.
+	var errs []error
+
+	select {
+	case err := <-reserveErr:
+		t.Log("the reservation committed while the older kick was still unqueued")
+
+		errs = append(errs, err)
+	case <-time.After(time.Second):
+	}
+
+	close(resume)
+
+	errs = append(errs, <-kickErr)
+	if len(errs) == 1 {
+		errs = append(errs, <-reserveErr)
+	}
+
+	for _, err := range errs {
+		if err != nil {
+			t.Fatalf("durable write failed: %v", err)
+		}
+	}
+
+	if got := storedLiveJobState(t, database, job.Key()); got != JobStateReserved {
+		t.Errorf("live record state is %q, want %q", got, JobStateReserved)
+	}
+}
+
 // storedStdE returns the stderr stored for key.
 func storedStdE(t *testing.T, database *db, key string) []byte {
 	t.Helper()
@@ -472,9 +548,9 @@ func queueUnkickedBestEffortExit(t *testing.T, database *db, job *Job, stde []by
 	database.Lock()
 	defer database.Unlock()
 
-	exit, ok := database.snapshotJobExit(context.Background(), job, nil, stde, false)
-	if !ok {
-		t.Fatal("could not snapshot the job's exit")
+	exit, err := database.snapshotJobExit(job, nil, stde, false)
+	if err != nil {
+		t.Fatalf("could not snapshot the job's exit: %s", err)
 	}
 
 	database.updatingAfterJobExit.Add(1)
@@ -485,7 +561,7 @@ func queueUnkickedBestEffortExit(t *testing.T, database *db, job *Job, stde []by
 	database.beMu.Lock()
 	defer database.beMu.Unlock()
 
-	database.enqueueExitLocked(exit)
+	database.enqueueExitLocked(exit, nil)
 }
 
 // storedLiveJobState decodes the job stored under key in the live bucket.

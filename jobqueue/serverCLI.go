@@ -1611,7 +1611,22 @@ func (s *Server) removeArchivedItem(ctx context.Context, job *Job, key string, o
 }
 
 // handleRelease moves a job from the run queue to the delay queue, or buries it
-// (if forceBury, or it has failed too many times).
+// (if forceBury, or it has failed too many times). It does not return until the
+// job's new state is on disk.
+//
+// The runner moves on to other jobs as soon as its release or bury is
+// acknowledged. A manager that acknowledged first and then died before the
+// queued write drained came back with the job's start record: recovery parked
+// it in Run as running, and since the runner's pid was still alive it was never
+// confirmed dead and never re-run (.docs/bugfixes/260930-release-durability.md).
+// As for handleStart, this costs one coalesced drain, not a transaction per
+// release, and a failed write is answered with ErrInternalError, which the
+// runner re-sends; after a restart that is accepted, since the reservation and
+// start it follows are durable.
+//
+// The wait is unbounded, as the start's is: the client's request timeout already
+// bounds how long the runner waits before it re-sends, and a bounded wait that
+// expired here could only answer with an error the runner would re-send anyway.
 func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury bool,
 	failMsg string) (*serverResponse, string, string) {
 	// getijForReport accepts the owner's release/bury report while the item is in
@@ -1631,6 +1646,10 @@ func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury
 			return nil, "", "" // idempotent: the job is already terminal
 		}
 
+		if srerr == ErrBadJob {
+			return s.handleReportOnOwnBuriedJob(ctx, cr, failMsg)
+		}
+
 		return nil, srerr, ""
 	}
 
@@ -1644,10 +1663,49 @@ func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury
 		attempted:    cr.Attempted,
 		forceStorage: true,
 		forceBury:    forceBury,
+		durable:      true,
 	}); errq != nil {
 		clog.Warn(ctx, failMsg, "err", errq)
 
 		return nil, ErrInternalError, errq.Error()
+	}
+
+	return nil, "", ""
+}
+
+// handleReportOnOwnBuriedJob answers a release or bury report that
+// getijForReport refused as ErrBadJob. If this client already buried the job,
+// the report is a re-send of the bury or of the release that buried it, such as
+// after the first request timed out on a slow commit or was answered with
+// ErrInternalError because its write failed. Rather than ErrBadJob, on which the
+// runner gives up at once, either is acknowledged once the job's buried state is
+// on disk, as releaseJob does for a redundant release; otherwise a crash could
+// still recover the job running with no runner behind it. Any other job gets
+// ErrBadJob as before.
+func (s *Server) handleReportOnOwnBuriedJob(ctx context.Context, cr *clientRequest,
+	failMsg string) (*serverResponse, string, string) {
+	item, err := s.q.Get(cr.key())
+	if err != nil || item.Stats().State != queue.ItemStateBury {
+		return nil, ErrBadJob, ""
+	}
+
+	job, ok := item.Data().(*Job)
+	if !ok {
+		return nil, ErrBadJob, ""
+	}
+
+	job.RLock()
+	ownBury := job.State == JobStateBuried && job.ReservedBy == cr.ClientID
+	job.RUnlock()
+
+	if !ownBury {
+		return nil, ErrBadJob, ""
+	}
+
+	if errw := s.db.updateJobAfterChangeDurable(job); errw != nil {
+		clog.Warn(ctx, failMsg, "err", errw)
+
+		return nil, ErrInternalError, errw.Error()
 	}
 
 	return nil, "", ""

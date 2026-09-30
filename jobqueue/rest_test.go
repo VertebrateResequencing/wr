@@ -682,6 +682,11 @@ func TestRESTJobModificationValidation(t *testing.T) {
 	ctx := context.Background()
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
+	// the released job must still be delayed when it is checked, and a release
+	// returns only once it is on disk, which under load can outlast the default
+	// 100ms test delay.
+	serverConfig.Timings.ReleaseDelayMin = time.Minute
+
 	const restA2ReqGroup = "rest-a2"
 
 	Convey("Once the REST modification server is up", t, func() {

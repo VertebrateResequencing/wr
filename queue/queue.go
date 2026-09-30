@@ -134,6 +134,7 @@ var (
 	ErrNotReady       = errors.New("not ready")
 	ErrNotRunning     = errors.New("not running")
 	ErrNotBuried      = errors.New("not buried")
+	ErrNotWaiting     = errors.New("not delayed or ready")
 	ErrNotSuspendable = errors.New("not suspendable")
 	ErrNotSuspended   = errors.New("not suspended")
 )
@@ -434,6 +435,43 @@ func (queue *Queue) RemoveUnless(ctx context.Context, key string, keep func(data
 // or Resume()d, as it would had it gained them while buried or suspended.
 func holdsDependencies(startQueue SubQueue) bool {
 	return startQueue == SubQueueBury || startQueue == SubQueueSuspended
+}
+
+// BuryWaiting is Bury for an item waiting in the delay or ready sub-queue
+// rather than running, for when an item that was released must be buried
+// instead. It returns the sub-queue the item was taken from. An item in any
+// other sub-queue, such as one reserved again since it was released, is left
+// alone and ErrNotWaiting returned.
+func (queue *Queue) BuryWaiting(key string) (SubQueue, error) {
+	item, err := queue.lockExistingItem(opBury, key)
+	if err != nil {
+		return "", err
+	}
+
+	var from SubQueue
+
+	switch item.state {
+	case ItemStateDelay:
+		queue.delayQueue.remove(item)
+		item.switchDelayBury()
+
+		from = SubQueueDelay
+	case ItemStateReady:
+		queue.readyQueue.remove(item)
+		item.switchReadyBury()
+
+		from = SubQueueReady
+	default:
+		queue.mutex.Unlock()
+
+		return "", Error{queue.Name, opBury, key, ErrNotWaiting}
+	}
+
+	queue.buryQueue.push(item)
+	queue.changed(from, SubQueueBury, []*Item{item})
+	queue.mutex.Unlock()
+
+	return from, nil
 }
 
 // Error records an error and the operation, item and queue that caused it.

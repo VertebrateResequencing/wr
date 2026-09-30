@@ -90,6 +90,17 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- A command that failed, or was buried, just before a manager crash no longer
+  comes back after the restart as "running" with nothing running it, never to
+  be retried. The manager told the runner the failure was recorded before it
+  had saved it, so the runner moved on to other commands. It now saves the
+  failure first.
+- A command whose runner buried it after the manager had already given up on
+  it as lost (for example after `wr kill` of a lost command, even if you then
+  resumed or kicked it) now ends buried. Before, the manager refused the bury,
+  and the runner kept re-sending it for a day while the command was left to be
+  retried. A resumed or kicked command also no longer loses a retry, or gets
+  stuck the same way, when that runner reports it failed.
 - A command that is running when a command is added to a dep group it depends
   on (`--deps`) is now left to finish, and then run again once the added
   command completes, as a command that had already completed would be. Before,

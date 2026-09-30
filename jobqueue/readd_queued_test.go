@@ -218,6 +218,9 @@ func TestReaddQueuedKeepsRecord(t *testing.T) {
 	Convey("Given a manager with a job in the queue", t, func() {
 		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
 		serverConfig.Timings.ItemTTR = time.Minute
+		// the released job must still be delayed when it is re-added, however long
+		// its release took to reach disk.
+		serverConfig.Timings.ReleaseDelayMin = time.Minute
 
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
