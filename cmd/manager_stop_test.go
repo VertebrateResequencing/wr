@@ -32,6 +32,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"syscall"
 	"testing"
@@ -98,7 +99,8 @@ type managerStopTestProcess struct {
 }
 
 // startManagerStopTestProcess starts name with args in its own process group
-// and arranges for the whole group to be killed when the test ends.
+// and arranges for the whole group to be killed when the test ends. It returns
+// only once the child's argv reads as name and args.
 func startManagerStopTestProcess(t *testing.T, name string, args ...string) *managerStopTestProcess {
 	t.Helper()
 
@@ -122,6 +124,11 @@ func startManagerStopTestProcess(t *testing.T, name string, args ...string) *man
 		}
 	})
 
+	// Start returns once exec has closed the child's close-on-exec fds, but the
+	// kernel records where the new argv is only later in the exec, so until
+	// then the argv reads as empty, which looks like a non-manager process.
+	So(pollUntilTrue(func() bool { return slices.Equal(processArgs(cmd.Process.Pid), cmd.Args) }), ShouldBeTrue)
+
 	return p
 }
 
@@ -142,6 +149,25 @@ func (p *managerStopTestProcess) exitedWithin(d time.Duration) (bool, syscall.Si
 	case <-time.After(d):
 		return false, 0
 	}
+}
+
+func TestManagerStopTestProcessArgv(t *testing.T) {
+	Convey("a started test process already shows the argv it was started with", t, func() {
+		// before the fix about 1 in 60 starts read an empty argv
+		const starts = 300
+
+		want := []string{"sh", "-c", "sleep 60 & wait", managerWord, startWord, deploymentFlag, managerStopTestDeployment}
+		mismatches := 0
+
+		for range starts {
+			p := startManagerStopTestProcess(t, want[0], want[1:]...)
+			if !slices.Equal(processArgs(p.cmd.Process.Pid), want) {
+				mismatches++
+			}
+		}
+
+		So(mismatches, ShouldEqual, 0)
+	})
 }
 
 func TestNonPositivePidsAreNeverSignalled(t *testing.T) {
@@ -304,11 +330,6 @@ func TestDaemonStillRunning(t *testing.T) {
 	Convey("daemonStillRunning treats a pid whose argv changed as stopped", t, func() {
 		p := startManagerStopTestProcess(t, "sleep", "60")
 		pid := p.cmd.Process.Pid
-
-		// the argv reads as empty until the exec has got that far; see
-		// TestDaemonStillRunningUnreadableArgv
-		So(pollUntilTrue(func() bool { return processArgs(pid) != nil }), ShouldBeTrue)
-
 		identity := processArgs(pid)
 
 		So(identity, ShouldResemble, []string{"sleep", "60"})

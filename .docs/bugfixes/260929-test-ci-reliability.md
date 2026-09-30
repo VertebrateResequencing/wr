@@ -122,3 +122,37 @@ commit was reviewed too: PASS.
   - Reviewer: PASS. Red and green confirmed. Torn reads are ruled out: the
     file is written to a temp file and renamed. Samples from other phases are
     ruled out too: the hook parks recovery. `make lint` reports 0 issues.
+- [x] `cmd/manager_stop_test.go` `TestManagerStopStalePidFile`'s second Convey
+  ("wr manager stop still terminates a non-responsive manager named by the pid
+  file", line ~273, `So(exited, ShouldBeTrue)`) failed under `make race` on
+  develop-era code. Likely cause: the test calls `runManagerStopForTest` before
+  the child's argv is readable as `sh ...`, so `wr manager stop` judges the pid
+  stale (not a wr manager) and sends no SIGTERM. `TestDaemonStillRunning`
+  already polls `processArgs(pid) != nil` for this reason. Check the first
+  Convey, `TestManagerStatusStalePidFile` and `TestManagerStopInvalidPidFile`
+  for the same pattern.
+  - Red: a temporary probe test that starts the second Convey's `sh` child 300
+    times with `startManagerStopTestProcess` and reads `processArgs(pid)`
+    straight after each start, `go test -run TestZZArgvProbe -count=1 -v
+    ./cmd`, saw an empty argv (`got []`) in 5, 3, 9 and 4 of 300 starts on 4
+    runs. `exec.Cmd.Start` returns once the exec's close-on-exec pipe has
+    closed, which is before the new image's argv is set up, so
+    `/proc/<pid>/cmdline` briefly reads empty, `processArgs` gives nil and
+    `isManagerProcess` is false.
+  - Fix (test only), `cmd/manager_stop_test.go`: `startManagerStopTestProcess`
+    now waits, bounded by `pollUntilTrue`, until `processArgs(pid)` equals the
+    child's `cmd.Args`, after registering the cleanup that kills its process
+    group. That covers every user of the helper: both
+    `TestManagerStopStalePidFile` Conveys, `TestManagerStatusStalePidFile`,
+    `TestNonPositivePidsAreNeverSignalled`, `TestDaemonStillRunning` (whose own
+    non-nil poll is now redundant and gone) and `startShuttingDownManager`.
+    `TestManagerStopInvalidPidFile` starts no process.
+    `TestDaemonStillRunningUnreadableArgv` uses a bare `exec.Command` with its
+    own poll.
+  - Regression test: `TestManagerStopTestProcessArgv` starts the second
+    Convey's `sh` child 300 times through the helper and asserts that none
+    reads back a different argv. With the poll removed it failed with 9, 5, 5,
+    8 and 3 mismatches; with it, it passed every run, and the probe showed
+    0/300 on 7 runs.
+  - Reviewer: PASS for this change. `make lint` 0 issues, `go test ./cmd/` and
+    the focused `-race` run pass.
