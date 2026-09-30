@@ -126,7 +126,7 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
     (serverWebI_test.go:309), the known flake in `260713-1.md`; a full re-run
     passed.
 
-- [ ] **A live-record change can be queued out of order with its encoding.**
+- [x] **A live-record change can be queued out of order with its encoding.**
       Found in review of the first item. `queueJobChange` (jobqueue/db.go)
       encodes the job under `job.RLock`, releases it, and only takes its
       arrival sequence later under `beMu`. A write that encoded an older state
@@ -135,3 +135,21 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
       Latest-wins coalescing then keeps the older image on disk, while the
       reservation's waiter is told it committed. A crash before Started would
       recover the job off the Run queue, and it could run twice.
+  - Red command: `nice -n 19 go test ./jobqueue -count=1 -run
+    'TestBestEffortChangeKeepsEncodeOrder' -v`, exit 1 before the fix:
+
+    ```text
+    reserve_durability_test.go:500: the reservation committed while the older kick was still unqueued
+    reserve_durability_test.go:520: live record state is "ready", want "reserved"
+    --- FAIL: TestBestEffortChangeKeepsEncodeOrder (0.01s)
+    ```
+
+  - Fixed: `queueJobChange` (jobqueue/db.go) holds `job.RLock` from the
+    encode through the enqueue, so writes of one job queue in the order they
+    encoded it, within and across drains. Lock order stays db.RLock, then
+    job.RLock, then wgMutex, then beMu; nothing takes a job lock under the
+    last two. The exit path was already ordered, because it holds the
+    exclusive db.Lock. `BenchmarkUpdateJobState` bolt_writes/job is unchanged
+    at about 0.84. A nil-in-production `jobChangeEncodedHook` lets the new test
+    in jobqueue/reserve_durability_test.go pause between encode and enqueue.
+    No CHANGELOG line: the durable reservation it protects is unreleased.

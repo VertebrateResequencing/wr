@@ -282,6 +282,13 @@ var archiveTxObserver func(txID int, key []byte)
 //nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
 var dependentsReadHook func()
 
+// jobChangeEncodedHook, when non-nil, is called by queueJobChange once it has
+// encoded the job and before it queues the write. It is nil in production and
+// exists so tests can change the job in between.
+//
+//nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
+var jobChangeEncodedHook func()
+
 const (
 	// newJobsFoldMaxBytes bounds how many encoded key and value bytes the adds
 	// folded into ONE write transaction may carry. bbolt holds every page a write
@@ -4757,6 +4764,12 @@ func (db *db) updateJobAfterChangeDurableWithin(job *Job, wait time.Duration) er
 // live-bucket value for the best-effort writer. A non-nil waiter is answered by
 // the drain that covers this write; on error nothing was queued and the waiter
 // will never be answered.
+//
+// job stays read-locked until the write is queued, so writes of one job queue
+// in the order they encoded it. Otherwise a write that encoded an older state
+// (a kick) could queue after one that encoded a newer state (a reservation),
+// and coalescing, which keeps the latest arrival, would put the older one on
+// disk while the newer one's waiter was told its write had committed.
 func (db *db) queueJobChange(job *Job, waiter chan error) error {
 	var encoded []byte
 
@@ -4771,11 +4784,14 @@ func (db *db) queueJobChange(job *Job, waiter chan error) error {
 
 	key := []byte(job.Key())
 	job.RLock()
-	err := enc.Encode(job)
-	job.RUnlock()
+	defer job.RUnlock()
 
-	if err != nil {
+	if err := enc.Encode(job); err != nil {
 		return err
+	}
+
+	if jobChangeEncodedHook != nil {
+		jobChangeEncodedHook()
 	}
 
 	db.wgMutex.Lock()
