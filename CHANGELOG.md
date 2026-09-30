@@ -12,7 +12,7 @@ project adheres to [Semantic Versioning](http://semver.org/).
   and `WR_MANAGERQUEUESAVOID`) set the default queue (or queues to pick
   amongst) and the queues to avoid for commands added without their own
   `--queue` or `--queues_avoid`, with schedulers that have queues (currently
-  only lsf). A command's own `--queues_avoid` replaces the default list rather
+  only LSF). A command's own `--queues_avoid` replaces the default list rather
   than adding to it.
 - Commands that wr runs in a directory of its own below their `--cwd` now get
   that `--cwd` in `WR_JOB_CWD`, and `wr add` run from inside such a command
@@ -163,7 +163,7 @@ project adheres to [Semantic Versioning](http://semver.org/).
   - `wr manager stop` could kill a manager part-way through its shutdown,
     before it had saved its database, then report a graceful stop and delete
     its token (see Changed).
-  - At LSF scale, a stopping manager could wait for ever for a runner LSF still
+  - At LSF scale, a stopping manager could wait forever for a runner LSF still
     listed as running, so it never saved its database. It now waits at most 60
     seconds, then has LSF kill any runners that are left.
   - On a busy node, the kill sent by a clean stop (or `wr kill`) could fail to
