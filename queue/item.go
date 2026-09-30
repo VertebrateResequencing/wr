@@ -355,6 +355,17 @@ func (item *Item) switchDelaySuspended() {
 	item.state = ItemStateSuspended
 }
 
+// update after we've switched from the delay to the bury sub-queue.
+func (item *Item) switchDelayBury() {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+
+	item.queueIndexes[0] = -1
+	item.readyAt = time.Time{}
+	item.buries++
+	item.state = ItemStateBury
+}
+
 // update after we've switched from the dependent to the ready sub-queue.
 func (item *Item) switchDependentReady() {
 	item.mutex.Lock()
@@ -390,6 +401,16 @@ func (item *Item) switchReadyDependent() {
 
 	item.queueIndexes[1] = -1
 	item.state = ItemStateDependent
+}
+
+// update after we've switched from the ready to the bury sub-queue.
+func (item *Item) switchReadyBury() {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+
+	item.queueIndexes[1] = -1
+	item.buries++
+	item.state = ItemStateBury
 }
 
 // update after we've switched from the ready to the suspended sub-queue.

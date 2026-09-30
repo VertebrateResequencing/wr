@@ -2472,6 +2472,87 @@ func countInState(items []*Item, state ItemState) int {
 	return count
 }
 
+func TestQueueBuryWaiting(t *testing.T) {
+	ctx := context.Background()
+
+	synctestConvey(t, "A delayed item can be buried, and is not promoted when its delay ends", func() {
+		queue := New(ctx, "bury delayed queue")
+		defer qdestroy(queue)
+
+		item, err := queue.Add(ctx, key1, "", testData, 0, 50*time.Millisecond, time.Minute, "")
+		So(err, ShouldBeNil)
+
+		recorder := &queueCallbackRecorder{}
+		queue.SetReadyAddedCallback(recorder.ready)
+		queue.SetChangedCallback(recorder.changed)
+
+		from, err := queue.BuryWaiting(item.Key)
+		So(err, ShouldBeNil)
+		So(from, ShouldEqual, SubQueueDelay)
+		synctest.Wait()
+
+		So(item.Stats().State, ShouldEqual, ItemStateBury)
+		So(queue.Stats().Delayed, ShouldEqual, 0)
+		So(queue.Stats().Buried, ShouldEqual, 1)
+		So(containsSingleItemChange(recorder.changeRecords(), SubQueueDelay, SubQueueBury), ShouldBeTrue)
+
+		<-time.After(60 * time.Millisecond)
+		synctest.Wait()
+
+		So(item.Stats().State, ShouldEqual, ItemStateBury)
+		So(recorder.readyCallCount(), ShouldEqual, 0)
+
+		err = queue.Kick(ctx, item.Key)
+		So(err, ShouldBeNil)
+		So(item.Stats().State, ShouldEqual, ItemStateReady)
+	})
+
+	synctestConvey(t, "A ready item can be buried, and can then not be reserved", func() {
+		queue := New(ctx, "bury ready queue")
+		defer qdestroy(queue)
+
+		item, err := queue.Add(ctx, key1, "", testData, 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+
+		recorder := &queueCallbackRecorder{}
+		queue.SetChangedCallback(recorder.changed)
+
+		from, err := queue.BuryWaiting(item.Key)
+		So(err, ShouldBeNil)
+		So(from, ShouldEqual, SubQueueReady)
+		synctest.Wait()
+
+		So(item.Stats().State, ShouldEqual, ItemStateBury)
+		So(queue.Stats().Ready, ShouldEqual, 0)
+		So(queue.Stats().Buried, ShouldEqual, 1)
+		So(containsSingleItemChange(recorder.changeRecords(), SubQueueReady, SubQueueBury), ShouldBeTrue)
+
+		reserved, err := queue.Reserve("", 10*time.Millisecond)
+		So(reserved, ShouldBeNil)
+		shouldBeQueueError(err, ErrNothingReady)
+	})
+
+	synctestConvey(t, "An item reserved again is left running", func() {
+		queue := New(ctx, "bury reserved queue")
+		defer qdestroy(queue)
+
+		item, err := queue.Add(ctx, key1, "", testData, 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+
+		_, err = queue.Reserve("", 0)
+		So(err, ShouldBeNil)
+
+		_, err = queue.BuryWaiting(item.Key)
+		shouldBeQueueError(err, ErrNotWaiting)
+		So(item.Stats().State, ShouldEqual, ItemStateRun)
+		So(queue.Stats().Running, ShouldEqual, 1)
+		So(queue.Stats().Buried, ShouldEqual, 0)
+
+		_, err = queue.BuryWaiting("missing")
+		shouldBeQueueError(err, ErrNotFound)
+	})
+}
+
 func TestQueueChangedCallbackDispatchesConcurrently(t *testing.T) {
 	ctx := context.Background()
 

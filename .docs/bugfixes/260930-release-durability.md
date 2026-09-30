@@ -153,3 +153,54 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
     at about 0.84. A nil-in-production `jobChangeEncodedHook` lets the new test
     in jobqueue/reserve_durability_test.go pause between encode and enqueue.
     No CHANGELOG line: the durable reservation it protects is unreleased.
+
+- [x] **An owner's jbury after the manager's own lost release loops on
+      ErrInternalError.** Coordinator's request: "an owner's jbury that
+      arrives after the manager's own lost release fails q.Bury on the
+      delay-queue entry and loops on ErrInternalError". First establish with
+      a test whether this loop exists on origin/develop (before #654) or
+      whether #654's ErrInternalError return introduced or worsened it. Either
+      way, fix it so the runner's bury is honoured (the job ends buried, as
+      the runner intended; owner policy is "stop means buried") or is cleanly
+      acknowledged, never an unbounded retry loop. Also check the sibling
+      case: a runner jrelease arriving after a manager-initiated lost release
+      or kill.
+  - Red command: `nice -n 19 go test ./jobqueue -run 'TestReleaseAfterLost$'
+    -count=1`, exit 1 on b3bb14b8. The manager releases the job itself,
+    either by confirm-dead or by a user's kill of the lost job, and then the
+    owner sends a bury:
+
+    ```text
+    Expected: nil
+    Actual:   'jobqueue jbury(ec544e27...): internal error'
+    releaseJob to bury failed err="queue(cmds) Bury(<key>): not running"
+    ```
+
+    The job stays delayed and is never buried. ErrInternalError is not a
+    definitive reject, so the runner re-sends for about 24h. The same test
+    gives the same result on 00be3401, so the bug pre-dates #654. The
+    sibling owner release is acknowledged at HEAD. On 00be3401, at the last
+    spare retry, it also looped; f64c70f0 fixed that.
+  - Fixed: a new `queue.BuryWaiting` moves a Delay or Ready item to Bury,
+    with its change callback. `releaseJobSnapshot` (jobqueue/server.go) now
+    notes whether the item was waiting, meaning it was already taken out of
+    Run by the manager's release, a resume or a kick. A waiting item never
+    spends a second retry. An owner's bury of it goes through `BuryWaiting`,
+    and taking it from Ready re-runs the ready-added callback, as
+    `suspendJobs` does. `applyReleaseQueueChange` returns an outcome
+    (`releaseMoved`, `releaseAlreadyDone`, `releaseBuriedWaiting`), and only a
+    move out of Run decrements the scheduler group count, including for a
+    duplicate bury racing the first. The job ends buried with UntilBuried 0
+    and the report's FailReason, on disk before the ack. A waiting item
+    reserved again since the snapshot is left alone: `BuryWaiting` returns
+    `ErrNotWaiting`, and the owner's re-send gets ErrMustReserve.
+    `TestReleaseAfterLost` covers confirm-dead, kill, resume and kick, the
+    release sibling, and the scheduler count. `TestQueueBuryWaiting` covers
+    the queue. Mutating either `releaseBuriedWaiting` return makes the test
+    fail.
+  - Not fixed, pre-existing and narrow: after `getijForReport` has accepted
+    the report, a new reservation can land before the snapshot is taken, and
+    the old owner's report then acts on the new run. Checking ReservedBy
+    inside the snapshot lock would close it. After a lost release, the
+    owner's exit code and peak RAM are dropped, because that release already
+    set Exited. An item the manager requeued as Dependent still gets ErrBadJob.
