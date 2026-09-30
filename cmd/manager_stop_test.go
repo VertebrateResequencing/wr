@@ -124,10 +124,7 @@ func startManagerStopTestProcess(t *testing.T, name string, args ...string) *man
 		}
 	})
 
-	// Start returns once exec has closed the child's close-on-exec fds, but the
-	// kernel records where the new argv is only later in the exec, so until
-	// then the argv reads as empty, which looks like a non-manager process.
-	So(pollUntilTrue(func() bool { return slices.Equal(processArgs(cmd.Process.Pid), cmd.Args) }), ShouldBeTrue)
+	waitForTestProcessArgv(cmd)
 
 	return p
 }
@@ -164,6 +161,9 @@ func TestManagerStopTestProcessArgv(t *testing.T) {
 			if !slices.Equal(processArgs(p.cmd.Process.Pid), want) {
 				mismatches++
 			}
+
+			_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL) //nolint:errcheck
+			p.exitedWithin(5 * time.Second)
 		}
 
 		So(mismatches, ShouldEqual, 0)
@@ -361,4 +361,12 @@ func TestManagerStopInvalidPidFile(t *testing.T) {
 	Convey("the config a stop test changed is restored before a sibling Convey runs", t, func() {
 		So(config == nil || config.Deployment != managerStopTestDeployment, ShouldBeTrue)
 	})
+}
+
+// waitForTestProcessArgv waits until the started cmd's argv reads as cmd.Args.
+// Start returns once exec has closed the child's close-on-exec fds, but the
+// kernel records where the new argv is only later in the exec, so until then
+// the argv reads as empty, which looks like neither a manager nor a forwarder.
+func waitForTestProcessArgv(cmd *exec.Cmd) {
+	So(pollUntilTrue(func() bool { return slices.Equal(processArgs(cmd.Process.Pid), cmd.Args) }), ShouldBeTrue)
 }

@@ -156,3 +156,29 @@ commit was reviewed too: PASS.
     0/300 on 7 runs.
   - Reviewer: PASS for this change. `make lint` 0 issues, `go test ./cmd/` and
     the focused `-race` run pass.
+- [x] Found by the reviewer of the item above: `cmd/cloud_test.go`'s
+  `startTestProcess` and `startTestForwarder` have the same race. The code
+  under test (`cleanupDeployForwardingProcesses` -> `checkProcess` ->
+  `isForwarderProcess` -> `processArgs`) judges a forwarder whose argv still
+  reads empty as not running and does not kill it, so
+  `So(processExited(managerDone/webDone), ShouldBeTrue)` in
+  `TestCleanupDeployForwardingProcesses` and `TestHandleManagerConnectFailure`
+  can flake. Also from that review: `TestManagerStopTestProcessArgv` keeps its
+  300 process groups alive until the test ends; kill each once checked.
+  - Red: a temporary probe test that calls `startTestForwarder` 1000 times and
+    checks `isForwarderProcess(pid)` straight after each start, `go test -run
+    TestZZForwarderProbe -count=1 -v ./cmd`, got 5, 6 and 10 of 1000 wrong on
+    3 runs.
+  - Fix (test only): the argv wait is now `waitForTestProcessArgv`
+    (`cmd/manager_stop_test.go`), called by both `startManagerStopTestProcess`
+    and `cmd/cloud_test.go`'s `startTestProcess`, so it covers
+    `startTestForwarder`'s users and `TestCheckProcessStalePid` too. No other
+    cmd test judges a child's argv without such a wait.
+    `TestManagerStopTestProcessArgv` now kills and reaps each child once
+    checked.
+  - Regression test: `TestStartTestForwarderArgv` starts 1000 forwarders and
+    asserts `isForwarderProcess` is true straight after each start. Without the
+    wait it failed 5 of 6 runs (1-3 mismatches); with it, the probe showed
+    0/1000 on 8 runs.
+  - Reviewer: PASS. `make lint` 0 issues, `go test ./cmd/` and the focused
+    `-race` run pass.
