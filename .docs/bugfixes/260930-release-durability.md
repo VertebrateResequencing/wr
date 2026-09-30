@@ -93,7 +93,7 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
     now use a longer delay (rest_test.go, readd_queued_test.go,
     suspend_resume_test.go, cmd/suspend_test.go).
 
-- [ ] **A re-sent release of a job whose first release spent its last spare
+- [x] **A re-sent release of a job whose first release spent its last spare
       retry is refused on every re-send.** Found while fixing the item above.
       With Retries=1 the first release leaves UntilBuried=1. On a re-send,
       `releaseJobSnapshot` treats the report as a fresh attempt, so remaining
@@ -102,6 +102,29 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
       ErrInternalError. The runner re-sends until its retry time (about 24h)
       while the job itself re-runs from delay. Reproduced on unfixed code with
       `TestReleaseDurabilityResend` at Retries=1.
+  - Red command: `nice -n 19 go test ./jobqueue -count=1 -run
+    'TestReleaseDurabilityResend$'`, exit 1 before the fix:
+
+    ```text
+    lvl=warn msg="releaseJob failed" err="queue(cmds) Bury(7bd6604c...): not running"
+    Expected: nil
+    Actual:   'jobqueue jrelease(7bd6604c...): internal error'
+    ```
+
+  - Fixed: `releaseJobSnapshot` (jobqueue/server.go) spends no retry for a
+    job already Delayed, since that release was already applied. Remaining
+    then stays above 0, so bury follows only forceBury, and the report takes
+    the existing already-done path with its durable rewrite. forceBury is
+    unchanged. The test is a Retries=1 case in
+    jobqueue/release_durability_resend_test.go. No CHANGELOG line: the loop
+    only exists in unreleased code.
+  - Seen in review, not fixed here (pre-existing, for follow-up): an owner's
+    jbury after the manager's own lost release finds the item in Delay and
+    `q.Bury` fails with ErrNotRunning, so the report loops on
+    ErrInternalError; a re-sent release after a kick spends a retry from the
+    kicked budget. The race gate once failed `TestServerWebISuspendedStatus`
+    (serverWebI_test.go:309), the known flake in `260713-1.md`; a full re-run
+    passed.
 
 - [ ] **A live-record change can be queued out of order with its encoding.**
       Found in review of the first item. `queueJobChange` (jobqueue/db.go)

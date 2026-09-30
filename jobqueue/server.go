@@ -6507,7 +6507,18 @@ func releaseJobSnapshot(job *Job, rep *releaseReport) (bool, string, JobState) {
 	job.RLock()
 	defer job.RUnlock()
 
-	rep.spendsRetry = releaseSpendsARetry(job, *rep)
+	// a job already Delayed has already been released, so this report changes
+	// nothing (applyReleaseQueueChange finds it done). Either it is a re-send, such
+	// as after the runner's first request timed out on a slow commit, and the first
+	// report already spent any retry; or it is the owner's first report after the
+	// manager's own lost/TTR release, which spent a retry only if the job had
+	// started, and which this report does not override. Either way it must not
+	// spend a retry, nor judge bury from the budget left behind: a release that
+	// took the last spare retry would otherwise make this a bury of an item in
+	// Delay/Ready, which cannot be buried, and every re-send would be refused.
+	// Not spending leaves remaining at the Delayed job's non-zero budget, so the
+	// item stays unburied exactly as the job does.
+	rep.spendsRetry = job.State != JobStateDelayed && releaseSpendsARetry(job, *rep)
 
 	// bury the ITEM exactly when finalizeReleasedJob below will call the JOB
 	// buried, so the two can never disagree. It calls it buried whenever the

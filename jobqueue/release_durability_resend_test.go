@@ -41,9 +41,10 @@ import (
 // applied in memory, and must still not acknowledge it before the job's state is
 // on disk, since that is when the runner moves on.
 
-// releaseResendRetries is the Retries of the job whose release is re-sent. It
-// leaves a retry to spare after the first release, so the re-send is judged a
-// release, not a bury, as it was when first sent.
+// releaseResendRetries is the Retries of a job whose release is re-sent with
+// retries still to spare after the first release, alongside the
+// releaseDurabilityRetries case where the first release spent the last spare
+// one.
 const releaseResendRetries = 3
 
 // startedJobForResend adds a job with the given retries, reserves it and reports
@@ -106,6 +107,25 @@ func TestReleaseDurabilityResend(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(len(jobs), ShouldEqual, 1)
 			So(jobs[0].UntilBuried, ShouldEqual, releaseResendRetries)
+		})
+	})
+
+	Convey("Given a job a runner has released after a failed attempt at its last spare retry", t, func() {
+		server, jq, job := startedJobForResend(ctx, t, releaseDurabilityRetries)
+
+		defer server.Stop(ctx, true)
+		defer disconnect(jq)
+
+		So(jq.releaseAfterAttempt(job, failedAttempt(), FailReasonExit), ShouldBeNil)
+
+		Convey("a re-sent release is acknowledged and leaves the job to be retried, its retry spent once", func() {
+			So(jq.releaseAfterAttempt(job, failedAttempt(), FailReasonExit), ShouldBeNil)
+
+			jobs, err := jq.GetByRepGroup(releaseDurabilityRepGroup, false, 0, "", false, false)
+			So(err, ShouldBeNil)
+			So(len(jobs), ShouldEqual, 1)
+			So(jobs[0].State, ShouldBeIn, []JobState{JobStateDelayed, JobStateReady})
+			So(jobs[0].UntilBuried, ShouldEqual, releaseDurabilityRetries)
 		})
 	})
 
