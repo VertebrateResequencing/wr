@@ -66,6 +66,7 @@ import (
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/gofrs/uuid/v5"
 	"github.com/gorilla/websocket"
 	"github.com/inconshreveable/log15/v3"
 	logext "github.com/inconshreveable/log15/v3/ext"
@@ -368,6 +369,14 @@ var confirmServerDeadHook func()
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var startPersistedHook func(key string)
 
+// releaseReportAcceptedHook, if non-nil, is called with a job's key once
+// handleRelease has accepted a runner's release or bury report as the owner's,
+// before the release acts on the job, so a test can have the job reserved again
+// in between. It is a test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var releaseReportAcceptedHook func(key string)
+
 // dependencyUpdatesHook, if non-nil, is called by an add once its write has
 // committed and before it applies its live dependents' new dependencies to the
 // queue, so a test can have a dependent finish in between. It is a test-only
@@ -396,6 +405,13 @@ const (
 // shutting down (see shutdownIgnoringSignals): 128 plus SIGINT's number, as a
 // shell reports a process killed by SIGINT.
 const exitCodeInterruptedShutdown = 128 + int(syscall.SIGINT)
+
+// errReleaseReporterSupplanted is returned by releaseJob, having changed
+// nothing, when a runner's release or bury report arrives for a job that has
+// since been reserved by another runner. getijForReport accepted the report as
+// the owner's, but a new reservation landed before releaseJob looked at the
+// job, and the old owner's report must not bury or release the new run.
+var errReleaseReporterSupplanted = errors.New("job reserved by another runner since the report was accepted")
 
 const (
 	errMissingSubscriptionScope subscriptionRequestError = "missing subscription scope"
@@ -1186,6 +1202,12 @@ type releaseReport struct {
 	endState   *JobEndState
 	failReason string
 
+	// reporter is the client ID of the runner whose own release or bury this
+	// is, or zero for a manager-initiated release (TTR/lost/kill). A runner's
+	// report is only applied while the job is still reserved by it; see
+	// errReleaseReporterSupplanted.
+	reporter uuid.UUID
+
 	// attempted is true when the job's OWNER reported this release having
 	// actually tried to run the job's Cmd (a cmd.Start() failure, or a command
 	// that ran and then ended badly). Such a release spends one of the job's
@@ -1303,6 +1325,10 @@ type releaseSnapshot struct {
 	// delay or ready to run again: another release of this run, such as the
 	// manager's own of a lost job, took it out of Run first.
 	waiting bool
+
+	// supplanted says the release is a runner's report and the job is now
+	// reserved by a different runner, so the release must change nothing.
+	supplanted bool
 }
 
 // completeJobsBudget tracks how many more archived jobs each of limitJobs' groups
@@ -6688,10 +6714,18 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, rep releaseReport) er
 // releaseJobSnapshot reads, under the job's read lock, the values releaseJob
 // needs: whether the job should be buried, its key, its current state, and
 // whether its item is already waiting to run again. It also records
-// rep.spendsRetry, which is the only place that gets decided.
+// rep.spendsRetry, which is the only place that gets decided. For a runner's
+// report on a job since reserved by another runner, it reads nothing else and
+// says the release is supplanted.
 func releaseJobSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseSnapshot {
 	job.RLock()
 	defer job.RUnlock()
+
+	// checked under the same lock as the rest of the snapshot, since a new
+	// reservation can have landed since getijForReport accepted the report.
+	if rep.reporter != (uuid.UUID{}) && job.ReservedBy != rep.reporter {
+		return releaseSnapshot{supplanted: true}
+	}
 
 	// an item already out of Run, in delay or ready, had this run released
 	// before this report arrived. Either this is a re-send, such as after the

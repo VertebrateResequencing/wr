@@ -1680,18 +1680,28 @@ func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury
 		return nil, srerr, ""
 	}
 
+	if releaseReportAcceptedHook != nil {
+		releaseReportAcceptedHook(job.Key())
+	}
+
 	if cr.JobEndState == nil {
 		cr.JobEndState = &JobEndState{}
 	}
 
-	if errq := s.releaseJob(ctx, job, releaseReport{
+	errq := s.releaseJob(ctx, job, releaseReport{
 		endState:     cr.JobEndState,
 		failReason:   cr.failReason(),
 		attempted:    cr.Attempted,
 		forceStorage: true,
 		forceBury:    forceBury,
 		durable:      true,
-	}); errq != nil {
+		reporter:     cr.ClientID,
+	})
+	if errors.Is(errq, errReleaseReporterSupplanted) {
+		return nil, ErrMustReserve, ""
+	}
+
+	if errq != nil {
 		clog.Warn(ctx, failMsg, "err", errq)
 
 		return nil, ErrInternalError, errq.Error()
