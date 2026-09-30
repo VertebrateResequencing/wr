@@ -43,7 +43,9 @@ package jobqueue
 //     could otherwise land after it;
 //   - one that has been archived and has left the queue since the add read it
 //     is put back in the live bucket, before the add replies, and queued again,
-//     as an archived dependent the add read would be.
+//     as an archived dependent the add read would be. Either way, the archive's
+//     dropping of its dep group memberships and rep group lookup is ordered
+//     against the add registering them again (see bringback.go).
 //
 // How a marked run ends decides what the mark does:
 //

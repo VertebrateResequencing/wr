@@ -2273,6 +2273,13 @@ func (s *Server) storeModifiedJobs(ctx context.Context, modified map[string]stri
 		return nil
 	}
 
+	// a new key may be that of a job whose archive is cleaning up (see
+	// bringback.go).
+	rekeyed := rekeyedKeys(modified)
+	s.holdBringBacks(rekeyed)
+
+	defer s.releaseBringBacks(ctx, rekeyed)
+
 	if err := s.changeModifiedQueueKeys(modified, jobs); err != nil {
 		return err
 	}

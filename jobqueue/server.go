@@ -375,6 +375,14 @@ var startPersistedHook func(key string)
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var dependencyUpdatesHook func()
 
+// archiveRemovedHook, if non-nil, is called with a job's key by an archive that
+// has removed that job's queue item, before it drops the job's dep group
+// memberships and rep group lookup, so a test can have an add bring the job back
+// in between. It is a test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var archiveRemovedHook func(key string)
+
 // sgroup represents a scheduler group.
 const (
 	// persistentScheduleFailures is the number of consecutive scheduling
@@ -1547,6 +1555,9 @@ type Server struct {
 	// of those members, so a dep-group dependency resolves to one opaque
 	// depgroup:G key instead of one key per member job.
 	depGroups                 *depGroupMembers
+	// bringBacks orders an archive's dropping of a job's memberships and rep
+	// group lookup against an add bringing it back (see bringback.go).
+	bringBacks                bringBacks
 	limiter                   *limiter.Limiter
 	scheduler                 *scheduler.Scheduler
 	previouslyScheduledGroups map[string]*sgroup
@@ -6309,6 +6320,13 @@ func (s *Server) createJobs(
 	if err = s.recordQueuedRepGroups(ctx, newRepGroupDups); err != nil {
 		return added, dups, warnings, ErrDBError, err
 	}
+
+	// any of these may be a job being brought back while its archive cleans up,
+	// jobsToUpdate through updateLiveDependents finding it archived.
+	broughtBack := jobKeys(jobsToQueue, jobsToUpdate)
+	s.holdBringBacks(broughtBack)
+
+	defer s.releaseBringBacks(ctx, broughtBack)
 
 	s.updateDepGroupMembershipForNewJobs(ctx, jobsToQueue)
 
