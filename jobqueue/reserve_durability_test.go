@@ -472,9 +472,9 @@ func queueUnkickedBestEffortExit(t *testing.T, database *db, job *Job, stde []by
 	database.Lock()
 	defer database.Unlock()
 
-	exit, ok := database.snapshotJobExit(context.Background(), job, nil, stde, false)
-	if !ok {
-		t.Fatal("could not snapshot the job's exit")
+	exit, err := database.snapshotJobExit(job, nil, stde, false)
+	if err != nil {
+		t.Fatalf("could not snapshot the job's exit: %s", err)
 	}
 
 	database.updatingAfterJobExit.Add(1)
@@ -485,7 +485,7 @@ func queueUnkickedBestEffortExit(t *testing.T, database *db, job *Job, stde []by
 	database.beMu.Lock()
 	defer database.beMu.Unlock()
 
-	database.enqueueExitLocked(exit)
+	database.enqueueExitLocked(exit, nil)
 }
 
 // storedLiveJobState decodes the job stored under key in the live bucket.

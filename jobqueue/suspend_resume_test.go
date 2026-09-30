@@ -44,6 +44,11 @@ func TestJobqueueSuspendResume(t *testing.T) {
 
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
+	// a released job is checked for being delayed straight after the release,
+	// which returns only once it is on disk and under load can outlast the
+	// default 100ms test delay.
+	serverConfig.Timings.ReleaseDelayMin = time.Second
+
 	start := func(keepDB bool) (*Server, *Client) {
 		serverConfig.dontWipeDevDB = keepDB
 		server, _, token, errs := serve(ctx, serverConfig)
@@ -451,6 +456,11 @@ func TestJobqueueSuspendResumeLimitGroups(t *testing.T) {
 	}
 
 	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+
+	// a released job is checked for being delayed straight after the release,
+	// which returns only once it is on disk and under load can outlast the
+	// default 100ms test delay.
+	serverConfig.Timings.ReleaseDelayMin = time.Second
 	baseGroup := "110:30:1:0"
 
 	start := func() (*Server, *Client) {

@@ -1166,6 +1166,12 @@ type releaseReport struct {
 	// forceBury buries the job regardless of its remaining retry budget.
 	forceBury bool
 
+	// durable makes releaseJob return only once the job's released or buried
+	// record has committed, returning that write's error. It is set for the
+	// runner's own report (handleRelease), which the runner moves on from; a
+	// manager-initiated release (TTR/lost/kill) has nobody waiting on it.
+	durable bool
+
 	// spendsRetry is the answer to releaseSpendsARetry for this release, decided
 	// ONCE by releaseJobSnapshot and then carried to finalizeReleasedJob. It is
 	// filled in by releaseJobSnapshot, never by a caller.
@@ -3600,6 +3606,18 @@ func (s *Server) archivedJobGrouper(opts repGroupOptions) func(*archivedJobFacet
 // produce the same key from an archived record's facets alone.
 func jobGroup(state JobState, exitCode int, failReason string) string {
 	return fmt.Sprintf("%s.%d.%s", state, exitCode, failReason)
+}
+
+// writeReleasedJob queues the write of a released job's new state and std. With
+// rep.durable it waits for, and returns the error of, that write.
+func (s *Server) writeReleasedJob(ctx context.Context, job *Job, rep releaseReport) error {
+	if rep.durable {
+		return s.db.updateJobAfterExitDurable(job, rep.endState.Stdout, rep.endState.Stderr, rep.forceStorage)
+	}
+
+	s.db.updateJobAfterExit(ctx, job, rep.endState.Stdout, rep.endState.Stderr, rep.forceStorage)
+
+	return nil
 }
 
 // jobHasDependents says whether anything still depends on this job, either on
@@ -6432,7 +6450,8 @@ func (s *Server) backstopKillWedgedRunner(ctx context.Context, d lostJobDetails)
 }
 
 // releaseJob either releases or buries a job as per its retries, and updates
-// our scheduling counts as appropriate.
+// our scheduling counts as appropriate. With rep.durable it returns only once
+// the job's new state is on disk.
 func (s *Server) releaseJob(ctx context.Context, job *Job, rep releaseReport) error {
 	// first check the job hasn't already been released/buried, only attempt
 	// queue changes if not. This also decides rep.spendsRetry, once, so that
@@ -6464,12 +6483,21 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, rep releaseReport) er
 	}
 
 	if alreadyDone {
+		// a redundant report, such as a runner re-sending after its first request
+		// timed out on a slow commit, must not be acknowledged before that first
+		// write is on disk, and if that write failed nothing else will retry it. So,
+		// as handleStart does for a duplicate start, the job's current state is
+		// written again. It is only written if the job is still live, and with a
+		// later arrival order than anything already queued for it, so this can
+		// neither resurrect a deleted or archived job nor overwrite a newer record.
+		if rep.durable {
+			return s.db.updateJobAfterChangeDurable(job)
+		}
+
 		return nil
 	}
 
-	s.finalizeReleasedJob(ctx, job, rep)
-
-	return nil
+	return s.finalizeReleasedJob(ctx, job, rep)
 }
 
 // releaseJobSnapshot reads, under the job's read lock, the values releaseJob
@@ -6563,8 +6591,8 @@ func (s *Server) applyReleaseQueueChange(ctx context.Context, q *queue.Queue, it
 
 // finalizeReleasedJob updates a released job's state (to buried or delayed,
 // obeying its Retries count), persists it, and decrements its scheduler group
-// count.
-func (s *Server) finalizeReleasedJob(ctx context.Context, job *Job, rep releaseReport) {
+// count. With rep.durable it returns only once that write has committed.
+func (s *Server) finalizeReleasedJob(ctx context.Context, job *Job, rep releaseReport) error {
 	job.updateAfterExit(rep.endState, s.limiter)
 
 	job.Lock()
@@ -6598,8 +6626,9 @@ func (s *Server) finalizeReleasedJob(ctx context.Context, job *Job, rep releaseR
 	job.Unlock()
 
 	s.decrementGroupCount(ctx, sgroup)
-	s.db.updateJobAfterExit(ctx, job, rep.endState.Stdout, rep.endState.Stderr, rep.forceStorage)
 	clog.Debug(ctx, msg, "key", job.Key(), "cmd", job.loggableCmd(), "schedGrp", sgroup)
+
+	return s.writeReleasedJob(ctx, job, rep)
 }
 
 // inputToQueuedJobs shows you which of the inputJobs are now actually in the

@@ -43,7 +43,10 @@ import (
 )
 
 const (
-	queueCommandDelay = 120 * time.Millisecond
+	// queueCommandDelay is long enough that a released job is still delayed
+	// when checked straight after the release, which returns only once it is on
+	// disk.
+	queueCommandDelay = time.Second
 	queueCommandCwd   = "/tmp"
 	queueCommandReq   = "queue-command"
 )

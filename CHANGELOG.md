@@ -90,6 +90,11 @@ project adheres to [Semantic Versioning](http://semver.org/).
   older manager (which sends no breakdown) still reports the total as before.
 
 ### Fixed
+- A command that failed, or was buried, just before a manager crash no longer
+  comes back after the restart as "running" with nothing running it, never to
+  be retried. The manager told the runner the failure was recorded before it
+  had saved it, so the runner moved on to other commands. It now saves the
+  failure first.
 - A command that is running when a command is added to a dep group it depends
   on (`--deps`) is now left to finish, and then run again once the added
   command completes, as a command that had already completed would be. Before,

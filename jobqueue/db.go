@@ -2188,13 +2188,17 @@ func (db *db) drainArchives(final bool) {
 	db.backupDirty.Store(true)
 }
 
-// enqueueExitLocked adds exit to the pending best-effort batch. Must be called
-// with db.RLock (or Lock), db.wgMutex and db.beMu held.
-func (db *db) enqueueExitLocked(exit jobExitData) {
+// enqueueExitLocked adds exit, and waiter if not nil, to the pending best-effort
+// batch. Must be called with db.RLock (or Lock), db.wgMutex and db.beMu held.
+func (db *db) enqueueExitLocked(exit jobExitData, waiter chan error) {
 	db.beSeq++
 	exit.seq = db.beSeq
 	db.beExits = append(db.beExits, exit)
 	db.beWGKeys = append(db.beWGKeys, db.wg.Add(1))
+
+	if waiter != nil {
+		db.beWaiters = append(db.beWaiters, waiter)
+	}
 }
 
 // enqueueChangeLocked adds key's latest encoded live value, and waiter if not
@@ -2335,6 +2339,46 @@ func noteArchivesWritten(ops []*archiveOp, err error) {
 		op.job.archivedEndTime = op.endTime
 		op.job.Unlock()
 	}
+}
+
+// updateJobAfterExitDurable is updateJobAfterExit, but it blocks until the drain
+// that covers this job's write has committed, and returns that write's outcome.
+// Like updateJobAfterChangeDurable it shares the best-effort writer's coalesced
+// drain rather than costing a transaction of its own (see handleRelease).
+func (db *db) updateJobAfterExitDurable(job *Job, stdo, stde []byte, forceStorage bool) error {
+	waiter := make(chan error, 1)
+
+	if err := db.queueJobExit(job, stdo, stde, forceStorage, waiter); err != nil {
+		return err
+	}
+
+	return <-waiter
+}
+
+// queueJobExit snapshots job and queues its exit op for the best-effort writer.
+// A non-nil waiter is answered by the drain that covers this write; on error
+// nothing was queued and the waiter will never be answered.
+func (db *db) queueJobExit(job *Job, stdo, stde []byte, forceStorage bool, waiter chan error) error {
+	db.Lock()
+	defer db.Unlock()
+
+	if db.closed {
+		return errDBClosed
+	}
+
+	exit, err := db.snapshotJobExit(job, stdo, stde, forceStorage)
+	if err != nil {
+		return err
+	}
+
+	db.updatingAfterJobExit.Add(1)
+
+	db.wgMutex.Lock()
+	defer db.wgMutex.Unlock()
+
+	db.launchJobExitUpdate(exit, waiter)
+
+	return nil
 }
 
 // foldedOp is one caller's pending write, waiting for a coalescing writer to
@@ -4520,31 +4564,19 @@ func (db *db) retrieveEnv(ctx context.Context, envkey string) []byte {
 // By doing the deletion upfront, we also ensure we have the latest std, which
 // may be nil even on cmd failure. Since it is not critical to the running of
 // jobs and workflows that this works 100% of the time, we ignore errors and
-// write to bolt in a goroutine, giving us a significant speed boost.
+// queue the write for the best-effort writer, giving us a significant speed
+// boost. A caller that must not acknowledge the exit before it is on disk uses
+// updateJobAfterExitDurable instead.
 func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo, stde []byte, forceStorage bool) {
-	db.Lock()
-	defer db.Unlock()
-
-	if db.closed {
-		return
+	err := db.queueJobExit(job, stdo, stde, forceStorage, nil)
+	if err != nil && !errors.Is(err, errDBClosed) {
+		clog.Error(ctx, "Database operation updateJobAfterExit failed due to Encode failure", "err", err)
 	}
-
-	exit, ok := db.snapshotJobExit(ctx, job, stdo, stde, forceStorage)
-	if !ok {
-		return
-	}
-
-	db.updatingAfterJobExit.Add(1)
-
-	db.wgMutex.Lock()
-	defer db.wgMutex.Unlock()
-
-	db.launchJobExitUpdate(exit)
 }
 
 // snapshotJobExit encodes the job and snapshots the fields needed to persist it
-// after exit. The bool is false (and nothing should be done) if encoding fails.
-func (db *db) snapshotJobExit(ctx context.Context, job *Job, stdo, stde []byte, forceStorage bool) (jobExitData, bool) {
+// after exit. On an encoding error nothing should be done.
+func (db *db) snapshotJobExit(job *Job, stdo, stde []byte, forceStorage bool) (jobExitData, error) {
 	var encoded []byte
 
 	enc := codec.NewEncoderBytes(&encoded, db.ch)
@@ -4555,24 +4587,23 @@ func (db *db) snapshotJobExit(ctx context.Context, job *Job, stdo, stde []byte, 
 	job.RUnlock()
 
 	if err != nil {
-		clog.Error(ctx, "Database operation updateJobAfterExit failed due to Encode failure", "err", err)
-
-		return jobExitData{}, false
+		return jobExitData{}, err
 	}
 
 	exit.encoded = encoded
 
-	return exit, true
+	return exit, nil
 }
 
-// launchJobExitUpdate queues an exit op for the best-effort writer. Exit ops are
-// not coalesced (their std/fail-stat side effects must each run), so the writer
-// applies them in order within its folded write tx. db.updatingAfterJobExit was
-// already incremented by updateJobAfterExit and is decremented by the writer once
-// the op is persisted. Must be called with db.Lock and db.wgMutex held.
-func (db *db) launchJobExitUpdate(exit jobExitData) {
+// launchJobExitUpdate queues an exit op, and waiter if not nil, for the
+// best-effort writer. Exit ops are not coalesced (their std/fail-stat side
+// effects must each run), so the writer applies them in order within its folded
+// write tx. db.updatingAfterJobExit was already incremented by queueJobExit and
+// is decremented by the writer once the op is persisted. Must be called with
+// db.Lock and db.wgMutex held.
+func (db *db) launchJobExitUpdate(exit jobExitData, waiter chan error) {
 	db.beMu.Lock()
-	db.enqueueExitLocked(exit)
+	db.enqueueExitLocked(exit, waiter)
 	db.beMu.Unlock()
 
 	db.kickBestEffortWriter()

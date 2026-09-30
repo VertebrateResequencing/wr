@@ -351,7 +351,7 @@ func TestReliable4PreStartReleaseRetries(t *testing.T) {
 			So(errq, ShouldBeNil)
 			So(alreadyDone, ShouldBeFalse)
 
-			server.finalizeReleasedJob(ctx, sjob, rep)
+			So(server.finalizeReleasedJob(ctx, sjob, rep), ShouldBeNil)
 
 			So(preStartUntilBuried(server, key), ShouldEqual, int(preStartRetries)+1)
 			So(preStartServerState(server, key), ShouldEqual, JobStateDelayed)
