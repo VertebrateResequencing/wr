@@ -78,6 +78,9 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - A manager whose port is already taken by an IPv6-only listener (such as
   rpc.statd's) now fails to start at once, saying the port is in use by another
   process, instead of seeming to start and then exiting a few seconds later.
+- On a host where some other service listens on a port for IPv6 only, wr no
+  longer suggests a manager port range containing that port, which the manager
+  then failed to start on.
 - The manager uses less CPU deciding what to schedule when many commands are
   waiting in limit groups.
 - With the lsf scheduler, each bsub returns about 100ms sooner.

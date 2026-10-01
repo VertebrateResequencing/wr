@@ -70,15 +70,21 @@ type Checker struct {
 	listen    listenFunc
 }
 
-// NewChecker returns a Checker that can check ports on the given host.
+// NewChecker returns a Checker that can check ports on the given host, which
+// must resolve.
+//
+// It checks ports on every address of this machine, not just host's: the
+// manager listens on all of them, IPv4 and IPv6 alike, so a port held on any
+// one of them, such as by a listener on IPv6 alone, is a port the manager could
+// not use. Go listens dual-stack on the unspecified address, or on IPv4 alone
+// on a host without IPv6.
 func NewChecker(host string) (*Checker, error) {
-	addr, err := net.ResolveTCPAddr("tcp", host+":0")
-	if err != nil {
+	if _, err := net.ResolveTCPAddr("tcp", host+":0"); err != nil {
 		return nil, err
 	}
 
 	return &Checker{
-		Addr:   addr,
+		Addr:   &net.TCPAddr{},
 		listen: listenTCP,
 	}, nil
 }
