@@ -50,7 +50,27 @@ Quality gates: `make lint`, `make test`, `make race`, run with
     reading the swapped `recoveryHeartbeatInterval` (Stop waits on `bgWG`
     without a timeout), a shared sidecar path (each init gets its own
     manager dir), and wall-clock `UpdatedAt` steps.
-- [ ] Flake: TestArchiveStallDoesNotRerunJob (jobqueue/archive_stall_test.go:191) failed once: the test's held bolt write caught the runner's jstart (a 30s slow request) instead of the archive, so the run never reached its archive. Make the hold target the archive write deterministically.
+- [x] Flake: TestArchiveStallDoesNotRerunJob (jobqueue/archive_stall_test.go:191) failed once: the test's held bolt write caught the runner's jstart (a 30s slow request) instead of the archive, so the run never reached its archive. Make the hold target the archive write deterministically.
+  - Red: a temporary `time.Sleep(300 * time.Millisecond)` in `handleStart`
+    (`jobqueue/serverCLI.go`) just before `s.db.updateJobAfterChangeDurable(job)`,
+    then `go test -count=1 -run '^TestArchiveStallDoesNotRerunJob$' ./jobqueue/`
+    failed: `slow request method=jstart duration=30.108928823s` and
+    `archive_stall_test.go Line 191: Expected: true Actual: false`.
+  - Cause (test): `handleStart` sets StartTime in memory before the start's
+    durable write, and the test began its bolt hold on seeing StartTime, so the
+    hold could block the start's write rather than the archive's.
+  - Fix (test only), `jobqueue/archive_stall_test.go`: arm the hold only after
+    the existing `startPersistedHook` reports the reserved job's start
+    committed. All assertions are kept; the held write is still shown to be the
+    archive (`archivesPending == 1`).
+  - After: with the same injection, 3 of 3 pass; without it, `-count=10` and a
+    `-race` run pass. `make lint` reports 0 issues.
+  - Superseded on rebase: #657 (`fc2460c2`, "Hold the archive stall test's
+    transaction only once the start is on disk") made the same fix on
+    develop, also waiting on `startPersistedHook`. This branch's version of
+    the test change was dropped when rebasing onto develop `8ee8c00d`, so
+    there is one implementation: develop's, which closes a channel through a
+    `sync.Once`. Only this checklist entry remains from this item.
 - [ ] Test env leak: jobqueue/behaviours_env_test.go:177 TestBehaviourRunEnv ("a CwdMatters Job's run behaviour gets its environment untouched") fails whenever the caller has TMPDIR set because it inherits it. Make it hermetic.
 - [ ] developers/wrdev.sh: asl_adder (~line 1625) seeds RANDOM from $(date +%N); a leading zero makes bash read it as octal (e.g. 08/09 invalid), killing adders. Fix (e.g. strip leading zeros / use 10#).
 - [ ] developers/wrdev.sh add-storm-fixture bakes the generating root's absolute wr binary path and WR_CONFIG_DIR into self-adding jobs, so fixtures only exercise jobs-adding-jobs when run from the root that built them (and could add to another root's manager if it ran). Make self-adding jobs call a wrapper script in the fixture's job cwd that add-storm-lsf (re)writes at the start of each run to point at the current root's binary and config; keep existing fixtures usable.
