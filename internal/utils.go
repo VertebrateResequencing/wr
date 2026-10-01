@@ -44,6 +44,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -261,11 +262,13 @@ func LogClose(ctx context.Context, obj io.Closer, msg string, extra ...any) {
 // LogPanic is for use in a go routines, deferred at the start of them, to
 // figure out what is causing runtime panics. If the die bool is true, the
 // program exits, otherwise it continues, after logging the error message and
-// stack trace. Desc string should be used to describe briefly what the
-// goroutine you call this in does.
+// the panicking goroutine's stack trace (as "panic_stack"; the logger's own
+// Crit "stack" ends at the runtime's panic frame, so never reaches the panic
+// site). Desc string should be used to describe briefly what the goroutine you
+// call this in does.
 func LogPanic(ctx context.Context, desc string, die bool) {
 	if err := recover(); err != nil {
-		clog.Crit(ctx, desc+" panic", "err", err)
+		clog.Crit(ctx, desc+" panic", "err", err, "panic_stack", string(debug.Stack()))
 
 		if die {
 			os.Exit(1)

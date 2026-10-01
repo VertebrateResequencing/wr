@@ -54,6 +54,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -290,14 +291,24 @@ func portHeldTooLong(ctx context.Context, port string, waited, busyBudget time.D
 }
 
 // localPortListening reports whether something on this host accepts
-// connections on port, closing any connection it makes.
+// connections on port, on either IPv4 or IPv6 loopback, closing any connection
+// it makes. It tries both because a listener can be IPv6-only (as rpc.statd's
+// is), and a dial to an empty host only tries IPv4.
 func localPortListening(ctx context.Context, port string, timeout time.Duration) bool {
+	return slices.ContainsFunc([]string{"127.0.0.1", "::1"}, func(host string) bool {
+		return hostPortListening(ctx, host, port, timeout)
+	})
+}
+
+// hostPortListening reports whether host accepts connections on port, closing
+// any connection it makes.
+func hostPortListening(ctx context.Context, host, port string, timeout time.Duration) bool {
 	dialCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	var dialer net.Dialer
 
-	conn, err := dialer.DialContext(dialCtx, "tcp", net.JoinHostPort("", port))
+	conn, err := dialer.DialContext(dialCtx, "tcp", net.JoinHostPort(host, port))
 	if err != nil || conn == nil {
 		return false
 	}

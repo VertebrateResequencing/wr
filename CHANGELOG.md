@@ -26,6 +26,9 @@ project adheres to [Semantic Versioning](http://semver.org/).
   command in full, so it is several times faster, and uses about 1% of the
   memory, for a group with a long history of long commands. The output is
   unchanged.
+- A manager whose port is already taken by an IPv6-only listener (such as
+  rpc.statd's) now fails to start at once, saying the port is in use by another
+  process, instead of seeming to start and then exiting a few seconds later.
 - The manager uses less CPU deciding what to schedule when many commands are
   waiting in limit groups.
 - With the lsf scheduler, each bsub returns about 100ms sooner.
@@ -35,6 +38,8 @@ project adheres to [Semantic Versioning](http://semver.org/).
   `wr status -o json`), and a command released after lost contact keeps the
   time contact was lost as its end time instead of having none, so its
   walltime no longer keeps growing.
+- When the manager or a runner logs an internal panic, the log now includes the
+  stack of where the panic happened (as `panic_stack`).
 
 ## [0.38.0] - 2026-09-30
 ### Added
