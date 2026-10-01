@@ -39,3 +39,20 @@
   `//go:build linux` file jobqueue/port_selfconnect_test.go (both last touched
   in bbeda258, #652).
   - Source: found by the item 1 implementor while vetting for darwin.
+  - Red: `nice -n 19 env GOFLAGS=-p=2 GOCACHE=/tmp/claude-11346/gocache-peakram
+    GOOS=darwin go test -c -o /dev/null ./jobqueue` fails (only package
+    affected):
+
+    ```text
+    jobqueue/depgranularity_startup_test.go:1135:42: undefined: pscBindRetryBudget
+    jobqueue/depgranularity_startup_test.go:1164:45: undefined: pscBindRetryBudget
+    jobqueue/server_startup_test.go:96:42: undefined: pscBindRetryBudget
+    jobqueue/utils_test.go:519:51: cannot use st.Dev (variable of type int32) as uint64 value in struct literal
+    jobqueue/utils_test.go:622:55: cannot use st.Mode (variable of type uint16) as uint32 value in struct literal
+    jobqueue/utils_test.go:700:51: cannot use st.Dev (variable of type int32) as uint64 value in struct literal
+    ```
+  - Fix (test-only): moved `pscBindRetryBudget` into
+    jobqueue/server_startup_test.go (`!windows`, like its other users);
+    explicit `uint64(st.Dev)`/`uint32(st.Mode)` conversions with
+    `//nolint:unconvert` in jobqueue/utils_test.go. Darwin test build and vet
+    now pass; linux behaviour unchanged.

@@ -71,11 +71,6 @@ const (
 	// same ports within the one process.
 	pscRestartCycles = 3
 
-	// pscBindRetryBudget is the busy-port retry budget tests use when what they
-	// test is how a budget is spent rather than the shipped length of it: two
-	// retry intervals, so a retry still happens, and a fifth of the shipped 5s.
-	pscBindRetryBudget = 2 * serverBindRetryInterval
-
 	// pscStopSettle is how long a Stop is given to cancel a paused recovery
 	// before the pause is released.
 	pscStopSettle = 100 * time.Millisecond
