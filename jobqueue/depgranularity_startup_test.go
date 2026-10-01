@@ -1114,6 +1114,9 @@ func TestDepGranularityStartupExitsWhenPortUnavailable(t *testing.T) {
 	Convey("Publication exits the process when the manager port cannot be bound", t, func() {
 		config, serverConfig, addr, _, connectTime := jobqueueTestInit(true)
 
+		// giving up after the budget is what is tested, not its shipped length.
+		serverConfig.Timings.BindRetryBudget = pscBindRetryBudget
+
 		exits := make(chan int, 2)
 
 		defer publishexit.Set(func(code int) { exits <- code })()
@@ -1141,7 +1144,8 @@ func TestDepGranularityStartupExitsWhenPortUnavailable(t *testing.T) {
 		elapsed := time.Since(started)
 
 		So(code, ShouldNotEqual, 0)
-		So(elapsed, ShouldBeGreaterThanOrEqualTo, serverBindRetryBudget)
+		So(elapsed, ShouldBeGreaterThanOrEqualTo, pscBindRetryBudget)
+		So(elapsed, ShouldBeLessThan, serverBindRetryBudget)
 
 		// publication returns straight after publishexit.Exit, so the server is left
 		// unpublished.

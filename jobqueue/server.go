@@ -125,13 +125,14 @@ const (
 	// start serving before declaring itself ready.
 	serverListenWait = 10 * time.Millisecond
 
-	// serverBindRetryInterval and serverBindRetryBudget are how often, and for
-	// how long, publication retries the RPC port bind before giving up and
-	// exiting (spec E1). They are the budget the serve test helper already used
-	// for exactly this failure, back when the bind happened inside Serve: time
-	// for a server a prior test recently stopped to really stop listening.
-	// Serve's port reservation (port_reservation.go) retries on the same
-	// interval, for the same budget while something is listening on the port.
+	// serverBindRetryInterval and serverBindRetryBudget are how often, and by
+	// default for how long (see ServerTimings.BindRetryBudget), publication
+	// retries the RPC port bind before giving up and exiting (spec E1). They are
+	// the budget the serve test helper already used for exactly this failure,
+	// back when the bind happened inside Serve: time for a server a prior test
+	// recently stopped to really stop listening. Serve's port reservation
+	// (port_reservation.go) retries on the same interval, for the same budget
+	// while something is listening on the port.
 	serverBindRetryInterval = 500 * time.Millisecond
 	serverBindRetryBudget   = 5 * time.Second
 
@@ -554,6 +555,12 @@ type ServerTimings struct {
 	// without them, logging how many jobs they were still running (default
 	// ServerShutdownRunnerWait).
 	ShutdownRunnerWait time.Duration
+
+	// BindRetryBudget is how long the server retries a port something else is
+	// listening on before giving up: Serve's reservation of its ports, and
+	// publication's bind of the manager port (default serverBindRetryBudget).
+	// Tests set it low.
+	BindRetryBudget time.Duration
 }
 
 // dfltDuration returns v, or def if v is not positive.
@@ -600,6 +607,7 @@ func (t ServerTimings) withDefaults() ServerTimings {
 
 	t.ShutdownSocketWait = dfltDuration(t.ShutdownSocketWait, serverSocketWait)
 	t.ShutdownRunnerWait = dfltDuration(t.ShutdownRunnerWait, ServerShutdownRunnerWait)
+	t.BindRetryBudget = dfltDuration(t.BindRetryBudget, serverBindRetryBudget)
 
 	return t
 }
@@ -1659,6 +1667,10 @@ type Server struct {
 	// confirmDead groups lost jobs' confirm-dead ssh checks by host so all of a
 	// dead host's pid checks share one ssh connection (see confirmdead.go).
 	confirmDead *confirmDeadCoordinator
+
+	// warns rate-limits the warnings that can fire for every reservation or
+	// request, such as when commits are slow (see warn_aggregator.go).
+	warns *warnAggregator
 }
 
 // itemTTRDuration returns the current (runtime-adjustable) time-to-release given
@@ -2225,7 +2237,8 @@ func (s *Server) startWebInterface(ctx context.Context, config ServerConfig) {
 }
 
 // listenWithRetries binds the command socket to port, retrying every
-// serverBindRetryInterval for up to serverBindRetryBudget before giving up.
+// serverBindRetryInterval for up to the server's BindRetryBudget before giving
+// up.
 //
 // Serve reserved the port, so no self-connect can have left it in TIME_WAIT;
 // what this waits out is a listener that bound beside the reservation.
@@ -2245,7 +2258,7 @@ func (s *Server) listenWithRetries(ctx context.Context, port string) error {
 
 	clog.Warn(ctx, "could not listen on the manager port yet, retrying", "port", port, "err", err)
 
-	limit := time.After(serverBindRetryBudget)
+	limit := time.After(s.timings.BindRetryBudget)
 	ticker := time.NewTicker(serverBindRetryInterval)
 
 	defer ticker.Stop()
@@ -3019,14 +3032,19 @@ func updateJobRequirementsForRetry(job *Job, jobOverride uint8, recommendedReq *
 func (s *Server) seedLimitGroupBudgets(ctx context.Context, schedulerGroup string,
 	limitBudgets map[string]int) []string {
 	limitGroups := s.schedGroupToLimitGroups(schedulerGroup)
+	s.seedBudgetsOf(ctx, limitGroups, limitBudgets)
 
+	return limitGroups
+}
+
+// seedBudgetsOf lazily seeds each of the given limit groups' remaining-capacity
+// budget into limitBudgets, as seedLimitGroupBudgets does.
+func (s *Server) seedBudgetsOf(ctx context.Context, limitGroups []string, limitBudgets map[string]int) {
 	for _, lg := range limitGroups {
 		if _, set := limitBudgets[lg]; !set {
 			limitBudgets[lg] = s.limiter.GetRemainingCapacity(ctx, []string{lg})
 		}
 	}
-
-	return limitGroups
 }
 
 // countReadyJobsByPriority counts the given ready-job snapshots against their
@@ -3219,8 +3237,12 @@ func (s *Server) scheduleReadyJobsByPriority(ctx context.Context, q *queue.Queue
 
 	limitBudgets := make(map[string]int)
 
+	// the ready backlog shares a handful of scheduler groups, so each one's limit
+	// groups are parsed once per cycle rather than once per job.
+	limitGroupsOf := make(map[string][]string)
+
 	for _, candidate := range candidates {
-		if s.readyJobLimitBlocked(ctx, limitBudgets, candidate.snapshot) {
+		if s.readyJobLimitBlocked(ctx, limitBudgets, limitGroupsOf, candidate.snapshot) {
 			s.recordSkippedReadyJob(ctx, q, groups, candidate)
 
 			continue
@@ -3289,9 +3311,16 @@ func (s *Server) ensureReserveGroup(ctx context.Context, q *queue.Queue, job *Jo
 // from the expensive prepareReadyJob work so only schedulable jobs incur it. A
 // job's limit groups come from its LimitGroups (fixed), so they are unaffected by
 // any requirement change prepareReadyJob later makes to a schedulable job.
+// limitGroupsOf caches, for the cycle, each scheduler group's limit groups.
 func (s *Server) readyJobLimitBlocked(ctx context.Context, limitBudgets map[string]int,
-	snapshot schedulerGroupSnapshot) bool {
-	limitGroups := s.seedLimitGroupBudgets(ctx, snapshot.group, limitBudgets)
+	limitGroupsOf map[string][]string, snapshot schedulerGroupSnapshot) bool {
+	limitGroups, parsed := limitGroupsOf[snapshot.group]
+	if !parsed {
+		limitGroups = s.schedGroupToLimitGroups(snapshot.group)
+		limitGroupsOf[snapshot.group] = limitGroups
+	}
+
+	s.seedBudgetsOf(ctx, limitGroups, limitBudgets)
 
 	// a budget of -1 means "no limit", so it never blocks and is never decremented.
 	for _, lg := range limitGroups {
@@ -4609,7 +4638,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	// hold our ports from now until publication binds them, so no client
 	// redialling us can self-connect on one and keep us off it.
-	reservations, err := reserveServerPorts(ctx, config)
+	reservations, err := reserveServerPorts(ctx, config, timings.BindRetryBudget)
 	if err != nil {
 		return s, certMsg, token, err
 	}
@@ -4767,6 +4796,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		lostJobCheckTimeout:       timings.LostJobCheckTimeout,
 		lostJobCheckRetryTime:     timings.LostJobCheckRetryTime,
 		confirmDeadLimiter:        make(chan struct{}, timings.ConfirmDeadConcurrency),
+		warns:                     newWarnAggregator(warnAggregateInterval),
 	}
 
 	// the confirm-dead coordinator groups lost jobs' ssh checks by host; it needs
@@ -7236,9 +7266,15 @@ func (s *Server) getJobsByRepGroup(ctx context.Context, opts repGroupOptions) (j
 		return nil, srerr, qerr
 	}
 
+	// live jobs are filtered before they are copied, with one filter across all
+	// the RepGroups because limitJobs' groups span them. The filter only skips a
+	// job once Offset+Limit earlier live jobs fill its group, so interleaving
+	// the archived jobs cannot make it skip one that limitJobs would keep.
+	filter := s.newLiveJobFilter("", RepGroupMatchExact, limitOpts)
+
 	for i := range rgs {
 		rg := rgs[i]
-		queueJobs := s.getQueueJobsByRepGroup(ctx, rg, opts.GetStd)
+		queueJobs := s.getQueueJobsByRepGroup(ctx, rg, opts.GetStd, filter)
 		jobs = append(jobs, queueJobs...)
 
 		complete, undecoded := s.getDBJobsByRepGroup(rg, opts, budget, &srerr, &qerr)
@@ -7249,6 +7285,7 @@ func (s *Server) getJobsByRepGroup(ctx context.Context, opts repGroupOptions) (j
 		}
 	}
 
+	limitOpts.undecodedComplete = filter.addUncopied(limitOpts.undecodedComplete)
 	jobs = s.limitJobs(ctx, jobs, limitOpts)
 
 	return jobs, srerr, qerr
@@ -7278,14 +7315,19 @@ func (s *Server) getRepGroupsList(repGroup string, match RepGroupMatch) ([]strin
 }
 
 // getQueueJobsByRepGroup gets jobs from the in-memory queue for a given
-// RepGroup.
-func (s *Server) getQueueJobsByRepGroup(ctx context.Context, repGroup string, getStd bool) []*Job {
+// RepGroup, copying only those the given filter admits (all of them if it is
+// nil).
+func (s *Server) getQueueJobsByRepGroup(ctx context.Context, repGroup string, getStd bool,
+	filter *liveJobFilter) []*Job {
 	var jobs []*Job
 
 	for _, key := range s.rpl.Values(repGroup) {
 		item, _ := s.q.Get(key) //nolint:errcheck
-		if item != nil {
-			job := s.itemToJob(ctx, item, getStd, false)
+		if item == nil {
+			continue
+		}
+
+		if job := s.itemToJobIfAdmitted(ctx, item, getStd, false, filter); job != nil {
 			jobs = append(jobs, job)
 		}
 	}
@@ -7349,59 +7391,40 @@ func (s *Server) getLastCompletionTimeByRepGroup(repGroup string,
 // returned.
 func (s *Server) getJobsCurrent(ctx context.Context, repGroup string, match RepGroupMatch,
 	limit int, state JobState, getStd bool, getEnv bool, waitingForDepGroups bool) []*Job {
-	jobs := s.getQueueJobsCurrent(ctx, repGroup, match, getStd)
-
-	jobs = s.limitJobs(ctx, jobs, limitJobsOptions{
+	opts := limitJobsOptions{
 		Limit:               limit,
 		State:               state,
 		GetStd:              getStd,
 		GetEnv:              getEnv,
 		WaitingForDepGroups: waitingForDepGroups,
-	})
-
-	return jobs
-}
-
-func (s *Server) getQueueJobsCurrent(ctx context.Context, repGroup string, match RepGroupMatch, getStd bool) []*Job {
-	if repGroup == "" {
-		return s.getAllQueueJobs(ctx, getStd)
 	}
 
-	if match == RepGroupMatchExact {
-		return s.getQueueJobsByRepGroup(ctx, repGroup, getStd)
-	}
+	filter := s.newLiveJobFilter(repGroup, match, opts)
+	jobs := s.getQueueJobsCurrent(ctx, repGroup, match, getStd, filter)
+	opts.undecodedComplete = filter.addUncopied(nil)
 
-	return s.getQueueJobsByRepGroupMatch(ctx, repGroup, match, getStd)
+	return s.limitJobs(ctx, jobs, opts)
 }
 
-func (s *Server) getAllQueueJobs(ctx context.Context, getStd bool) []*Job {
+// getQueueJobsCurrent gets the live jobs matching repGroup (all of them if it
+// is blank) that the given filter admits.
+func (s *Server) getQueueJobsCurrent(ctx context.Context, repGroup string, match RepGroupMatch, getStd bool,
+	filter *liveJobFilter) []*Job {
+	if repGroup != "" && match == RepGroupMatchExact {
+		return s.getQueueJobsByRepGroup(ctx, repGroup, getStd, filter)
+	}
+
 	q := s.queueIfPresent()
 	if q == nil {
 		return nil
 	}
 
-	allItems := q.AllItems()
-	jobs := make([]*Job, 0, len(allItems))
+	var jobs []*Job
 
-	for _, item := range allItems {
-		jobs = append(jobs, s.itemToJob(ctx, item, getStd, false))
-	}
-
-	return jobs
-}
-
-func (s *Server) getQueueJobsByRepGroupMatch(ctx context.Context, repGroup string,
-	match RepGroupMatch, getStd bool) []*Job {
-	allItems := s.q.AllItems()
-	jobs := make([]*Job, 0, len(allItems))
-
-	for _, item := range allItems {
-		job := s.itemToJob(ctx, item, getStd, false)
-		if job == nil || !RepGroupMatches(job.RepGroup, repGroup, match) {
-			continue
+	for _, item := range q.AllItems() {
+		if job := s.itemToJobIfAdmitted(ctx, item, getStd, false, filter); job != nil {
+			jobs = append(jobs, job)
 		}
-
-		jobs = append(jobs, job)
 	}
 
 	return jobs
@@ -8210,6 +8233,9 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 
 	// wait for our goroutines to finish
 	s.wg.Wait(ServerShutdownWaitTime)
+
+	// with no requests left to warn about, log what the warnings still counted
+	s.warns.stop()
 
 	s.waitForPortsClosed(ctx)
 

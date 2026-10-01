@@ -1173,15 +1173,21 @@ func (j *Job) containerEnv() ([]string, error) {
 // WallTime returns the time the job took to run if it ran to completion, or the
 // time taken so far if it is currently running.
 func (j *Job) WallTime() time.Duration {
-	if j.StartTime.IsZero() {
+	return wallTime(j.StartTime, j.EndTime, j.State)
+}
+
+// wallTime is Job.WallTime for a job with the given start and end times and
+// state, so that a caller holding only those fields computes the same value.
+func wallTime(start, end time.Time, state JobState) time.Duration {
+	if start.IsZero() {
 		return 0
 	}
 
-	if j.EndTime.IsZero() || j.State == JobStateReserved {
-		return time.Since(j.StartTime)
+	if end.IsZero() || state == JobStateReserved {
+		return time.Since(start)
 	}
 
-	return j.EndTime.Sub(j.StartTime)
+	return end.Sub(start)
 }
 
 // Env decompresses and decodes job.EnvC (the output of CompressEnv(), which are

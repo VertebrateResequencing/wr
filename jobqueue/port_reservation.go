@@ -94,15 +94,15 @@ type portReservation struct {
 }
 
 // reservePort reserves port. If the port is in use, it retries every
-// serverBindRetryInterval: for up to serverBindRetryBudget while something is
-// listening on it (a server we recently stopped may not quite have finished),
+// serverBindRetryInterval: for up to busyBudget while something is listening
+// on it (a server we recently stopped may not quite have finished),
 // and for up to serverBindLingerBudget while nothing is (a TIME_WAIT that will
 // expire).
 //
 // A port that cannot be reserved for any other reason, or that is not a
 // specific port number, gets an empty reservation and no error: publication's
 // own bind then reports any real problem, as it did before reservations.
-func reservePort(ctx context.Context, what, port string) (*portReservation, error) {
+func reservePort(ctx context.Context, what, port string, busyBudget time.Duration) (*portReservation, error) {
 	p, ok := reservablePort(port)
 	if !ok {
 		return unreserved(), nil
@@ -119,7 +119,7 @@ func reservePort(ctx context.Context, what, port string) (*portReservation, erro
 
 	clog.Warn(ctx, "could not reserve the "+what+" yet, retrying", "port", port, "err", err)
 
-	return retryPortReservation(ctx, what, port, p)
+	return retryPortReservation(ctx, what, port, p, busyBudget)
 }
 
 // unreserved returns an empty reservation, which holds no port.
@@ -142,7 +142,8 @@ func reservationOutcome(ctx context.Context, what, port string, res *portReserva
 
 // retryPortReservation is reservePort's retry loop, entered once reserving port
 // (p as a number) has failed with EADDRINUSE.
-func retryPortReservation(ctx context.Context, what, port string, p int) (*portReservation, error) {
+func retryPortReservation(ctx context.Context, what, port string, p int,
+	busyBudget time.Duration) (*portReservation, error) {
 	started := time.Now()
 	lastLog := started
 
@@ -166,7 +167,7 @@ func retryPortReservation(ctx context.Context, what, port string, p int) (*portR
 
 		waited := time.Since(started)
 
-		if errd := portHeldTooLong(ctx, port, waited, err); errd != nil {
+		if errd := portHeldTooLong(ctx, port, waited, busyBudget, err); errd != nil {
 			return nil, fmt.Errorf("%s %s is %w", what, port, errd)
 		}
 
@@ -199,16 +200,18 @@ type serverPortReservations struct {
 	web *portReservation
 }
 
-// reserveServerPorts reserves config's manager and web ports. It fails if the
-// manager port cannot be reserved, but only logs a web port it cannot reserve,
-// since a manager whose web interface cannot bind still runs.
-func reserveServerPorts(ctx context.Context, config ServerConfig) (*serverPortReservations, error) {
-	rpc, err := reservePort(ctx, "manager port", config.Port)
+// reserveServerPorts reserves config's manager and web ports, retrying either
+// for up to busyBudget while something listens on it. It fails if the manager
+// port cannot be reserved, but only logs a web port it cannot reserve, since a
+// manager whose web interface cannot bind still runs.
+func reserveServerPorts(ctx context.Context, config ServerConfig,
+	busyBudget time.Duration) (*serverPortReservations, error) {
+	rpc, err := reservePort(ctx, "manager port", config.Port, busyBudget)
 	if err != nil {
 		return nil, err
 	}
 
-	web, err := reservePort(ctx, "web interface port", config.WebPort)
+	web, err := reservePort(ctx, "web interface port", config.WebPort, busyBudget)
 	if err != nil {
 		clog.Error(ctx, "could not reserve the web interface port, so the web interface may not start",
 			"port", config.WebPort, "err", err)
@@ -269,10 +272,10 @@ func logPortStillHeld(ctx context.Context, what, port string, waited time.Durati
 
 // portHeldTooLong returns an error wrapping bindErr if port has been in use for
 // longer than it is worth waiting for, given whether something is listening on
-// it.
-func portHeldTooLong(ctx context.Context, port string, waited time.Duration, bindErr error) error {
+// it: busyBudget if something is, serverBindLingerBudget if not.
+func portHeldTooLong(ctx context.Context, port string, waited, busyBudget time.Duration, bindErr error) error {
 	if localPortListening(ctx, port, portListenerCheckTimeout) {
-		if waited >= serverBindRetryBudget {
+		if waited >= busyBudget {
 			return fmt.Errorf("%w: %w", errPortInUse, bindErr)
 		}
 

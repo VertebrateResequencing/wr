@@ -88,6 +88,11 @@ const slowRequestLogMsg = "slow request"
 // request for minutes".
 const slowRequestDecodeLogMsg = slowRequestLogMsg + " decode"
 
+// reserveNotRecordedLogMsg is the warning that a reservation was handed out
+// before its write reached disk.
+const reserveNotRecordedLogMsg = "reservation not yet recorded on disk, handing the job out anyway; a manager " +
+	"crash before the job's start is recorded may run it twice"
+
 // slowRequestSelectorParts is the initial capacity for a rendered selector's
 // parts: how many clientRequest fields requestSelector can report.
 const slowRequestSelectorParts = 6
@@ -173,7 +178,7 @@ func (s *Server) subscriptionCatchUpRepGroupRecords(ctx context.Context,
 	repGroup string,
 ) (map[string]subscriptionCatchUpRecord, bool, error) {
 	records := make(map[string]subscriptionCatchUpRecord)
-	queueTerminal := addSubscriptionCatchUpRepGroupRecords(records, s.getQueueJobsByRepGroup(ctx, repGroup, false))
+	queueTerminal := addSubscriptionCatchUpRepGroupRecords(records, s.getQueueJobsByRepGroup(ctx, repGroup, false, nil))
 
 	complete, err := s.db.retrieveCompleteJobsByRepGroup(repGroup)
 	if err != nil {
@@ -438,7 +443,7 @@ func applyLiveSnapshot(job *Job, jes *JobEndState) {
 // log entirely and silently restore the exact production silence it exists to
 // fix. This is Bug 5's lesson: an unexplained outcome must reach an operator at
 // the DEFAULT log level.
-func warnIfSlowRequest(ctx context.Context, cr *clientRequest, sr *serverResponse,
+func warnIfSlowRequest(ctx context.Context, warns *warnAggregator, cr *clientRequest, sr *serverResponse,
 	srerr string, replyBytes int, start time.Time,
 ) {
 	// the whole fast path: one duration comparison against a threshold the request
@@ -461,15 +466,17 @@ func warnIfSlowRequest(ctx context.Context, cr *clientRequest, sr *serverRespons
 		jobs = len(sr.Jobs)
 	}
 
+	selector := requestSelector(cr)
+
 	args := []any{
-		"method", cr.Method, "selector", requestSelector(cr), "duration", elapsed,
+		"method", cr.Method, "selector", selector, "duration", elapsed,
 		"clientWait", wait, "replyBytes", replyBytes, "replyJobs", jobs,
 	}
 	if srerr != "" {
 		args = append(args, "replyErr", srerr)
 	}
 
-	clog.Warn(ctx, slowRequestLogMsg, args...)
+	warns.warn(ctx, slowRequestLogMsg, slowRequestLogMsg+" "+cr.Method+" "+selector, elapsed, args...)
 }
 
 // requestWait is how long a request explicitly asked the server to HOLD it
@@ -653,7 +660,7 @@ func (s *Server) handleRequest(ctx context.Context, m *mangos.Message) error {
 
 	replyBytes, err := s.replyToClient(ctx, m, cr, sr, srerr, qerr)
 
-	warnIfSlowRequest(ctx, cr, sr, srerr, replyBytes, start)
+	warnIfSlowRequest(ctx, s.warns, cr, sr, srerr, replyBytes, start)
 
 	return err
 }
@@ -1109,8 +1116,7 @@ func (s *Server) persistReservation(ctx context.Context, job *Job) {
 	switch {
 	case err == nil, errors.Is(err, errDBClosed):
 	case errors.Is(err, errDurableWriteWaitExpired):
-		clog.Warn(ctx, "reservation not yet recorded on disk, handing the job out anyway; a manager "+
-			"crash before the job's start is recorded may run it twice",
+		s.warns.warn(ctx, reserveNotRecordedLogMsg, reserveNotRecordedLogMsg, 0,
 			"key", job.Key(), "waited", s.timings.ReserveWriteWait)
 	default:
 		clog.Error(ctx, "could not record a reservation on disk; a manager crash before the job's "+
@@ -2402,28 +2408,7 @@ func (s *Server) setItemDelay(ctx context.Context, key string, maxRetries, until
 // for the many get* methods in handleRequest, we do this common stuff to get
 // an item's job from the in-memory queue formulated for the client.
 func (s *Server) itemToJob(ctx context.Context, item *queue.Item, getStd bool, getEnv bool) *Job {
-	sjob := item.Data().(*Job) //nolint:errcheck,forcetypeassert // queue only ever stores *Job
-	sjob.RLock()
-
-	state := s.itemStateToJobState(item.Stats().State, sjob.Lost)
-	if state == JobStateReserved && !sjob.StartTime.IsZero() {
-		state = JobStateRunning
-	}
-
-	// we're going to fill in some properties of the Job and return it to client,
-	// but don't want those properties set here for us, so we make a new Job and
-	// fill stuff in that
-	job := copyJobForClient(sjob, state)
-
-	if getStd && (state == JobStateReserved || state == JobStateRunning || state == JobStateLost) {
-		job.StdErrC = sjob.StdErrC
-		job.StdOutC = sjob.StdOutC
-	}
-
-	sjob.RUnlock()
-	s.jobPopulateStdEnv(ctx, job, getStd, getEnv)
-
-	return job
+	return s.itemToJobIfAdmitted(ctx, item, getStd, getEnv, nil)
 }
 
 // copyJobForClient returns a copy of sjob (which must be read-locked) with the
@@ -2484,6 +2469,49 @@ func copyJobForClient(sjob *Job, state JobState) *Job {
 		BsubMode:              sjob.BsubMode,
 		BsubID:                sjob.BsubID,
 	}
+}
+
+// clientJobState is the state a client copy of item's job, sjob, which must be
+// read-locked, reports.
+func (s *Server) clientJobState(item *queue.Item, sjob *Job) JobState {
+	state := s.itemStateToJobState(item.State(), sjob.Lost)
+	if state == JobStateReserved && !sjob.StartTime.IsZero() {
+		state = JobStateRunning
+	}
+
+	return state
+}
+
+// itemToJobIfAdmitted is itemToJob, except that it returns nil without making
+// the (expensive) client copy if the given filter does not admit the job. A nil
+// filter admits every job.
+func (s *Server) itemToJobIfAdmitted(ctx context.Context, item *queue.Item, getStd bool, getEnv bool,
+	filter *liveJobFilter) *Job {
+	sjob := item.Data().(*Job) //nolint:errcheck,forcetypeassert // queue only ever stores *Job
+	sjob.RLock()
+
+	state := s.clientJobState(item, sjob)
+
+	if !filter.admits(sjob, state) {
+		sjob.RUnlock()
+
+		return nil
+	}
+
+	// we're going to fill in some properties of the Job and return it to client,
+	// but don't want those properties set here for us, so we make a new Job and
+	// fill stuff in that
+	job := copyJobForClient(sjob, state)
+
+	if getStd && (state == JobStateReserved || state == JobStateRunning || state == JobStateLost) {
+		job.StdErrC = sjob.StdErrC
+		job.StdOutC = sjob.StdOutC
+	}
+
+	sjob.RUnlock()
+	s.jobPopulateStdEnv(ctx, job, getStd, getEnv)
+
+	return job
 }
 
 // jobPopulateStdEnv fills in the StdOutC, StdErrC and EnvC values for a Job,
