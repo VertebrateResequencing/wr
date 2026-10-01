@@ -79,8 +79,23 @@ stored `EndTime` and what is derived from it are wrong.
     started (delayed and buried lines).
   - Tests: `jobqueue/delayed_ready_time_test.go`,
     `cmd/status_delayed_test.go`.
-- [ ] **Recovery after a restart skips a delayed job's remaining delay.**
+- [x] **Recovery after a restart skips a delayed job's remaining delay.**
       Raised by the coordinator: `recoveredItemDef` re-adds every non-run,
       non-buried, non-suspended job with `Delay: 0`, so a job delayed before a
       restart is ready at once afterwards. Decide whether to restore the
       remaining delay.
+  - Decision: no change; the long-standing behaviour is kept, so there is no
+    red test.
+    - The delay is a backoff courtesy, not a correctness guarantee: nothing
+      breaks if a job is retried early, and the next failure still backs off
+      again (`setItemDelay` at reservation).
+    - The stored fields cannot reproduce the queue's real ready time. The
+      queue's `readyAt` is not persisted; `EndTime` of a lost job is when
+      contact was lost, before the confirm-dead release started the delay;
+      and a runner release with no exit state stores no `EndTime` at all.
+      Restoring would be a guess for some jobs and impossible for others.
+    - Jobs delayed after "lost contact with runner" are often victims of the
+      manager's own trouble that the restart addresses, so retrying them
+      promptly after a restart is the useful outcome.
+    - After a restart a recovered delayed job is in the ready sub-queue and
+      `wr status` reports it as ready, so the display is consistent.

@@ -29,6 +29,12 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - The manager uses less CPU deciding what to schedule when many commands are
   waiting in limit groups.
 - With the lsf scheduler, each bsub returns about 100ms sooner.
+- `wr status` could say a delayed command would become ready in
+  -2562047h47m16.854775808s, typically after lost contact with its runner. It
+  now shows the real time until it becomes ready (also as `Ready` in
+  `wr status -o json`), and a command released after lost contact keeps the
+  time contact was lost as its end time instead of having none, so its
+  walltime no longer keeps growing.
 
 ## [0.38.0] - 2026-09-30
 ### Added
