@@ -1,0 +1,126 @@
+# 260929: small follow-ups
+
+Branch `small-follow-ups`, based on `origin/develop` at `00be340` (#649).
+
+Checked and already fixed on develop, so not on this branch:
+
+- A reconnect after a transient poll error left the old subscription id on
+  the manager. Fixed by #625 (`260927-subscription-reconnect-leak.md`).
+- `developers/wrdev.sh report-storm-lsf` always exited 1, because it ended
+  with `[ -n "${WRDEV_PROD_BKFILE:-}" ] && rm -f ...`. Now fixed:
+  `cmd_report_storm_lsf` ends with `return "$verdict"` (1c4a9415).
+- F3: the status web page decoded the whole history to count it. Fixed by
+  #640 (`260927-status-page-count-decoding.md`). `writeStatusCountSeed` uses
+  `retrieveCompleteJobStatusByRepGroup(rg, false)`.
+- F5: benign actions were logged as errors. Fixed by #640
+  (`260927-benign-actions-logged-as-errors.md`).
+
+- [x] `internal.LogPanic` (`internal/utils.go:266`) logs only the recovered
+  value (`clog.Crit(ctx, desc+" panic", "err", err)`), not the goroutine's
+  stack, so a panic's log says nothing about where it happened.
+  - The Crit handler's own `stack` field stops at the first `runtime.` frame,
+    which inside a deferred recover is `runtime.gopanic`, so it always ended
+    inside LogPanic: `stack="[clog.go:350 utils.go:268]"`.
+  - Red: `CGO_ENABLED=0 go test -tags netgo -count=1 ./internal/ -run
+    TestLogPanicLogsThePanicSite` failed: the log was only `msg="test
+    goroutine panic" err="deliberate test panic" stack="[clog.go:350
+    utils.go:268]"`, with no `internal.panicsUnderLogPanic(`.
+  - Fix: `internal/utils.go` LogPanic also logs `panic_stack`, which is
+    `debug.Stack()` taken in the deferred recover and includes the panic
+    site. It is a new key because the handler appends its own `stack`. The
+    message, `err` and the `die` exit are unchanged. Test in
+    `internal/utils_test.go`. CHANGELOG: a Fixed entry in a new Unreleased
+    section.
+  - Reviewer: PASS. A panic in another goroutine logged that goroutine's
+    stack down to the exact panic line. `make lint` reports 0 issues.
+- [x] The Linux manager port reservation (`jobqueue/port_reservation_linux.go`)
+  is an AF_INET socket on `0.0.0.0`, but the manager's listener is
+  dual-stack. A manager port held only by an IPv6-only listener (such as
+  rpc.statd's `[::]:45993` on this host) is reserved without complaint, so
+  `Serve` returns nil, and publication then retries its listen for the 5s
+  bind budget and exits ("could not listen on the manager port, so
+  exiting"). It should fail at once in `Serve` with "manager port P is in
+  use by another process". Found while fixing the test port pickers on
+  `test-ci-reliability`.
+  - Red: a new Convey in `TestManagerPortSelfConnect`, "A manager port an
+    IPv6-only listener holds fails Serve fast and says so",
+    `CGO_ENABLED=0 go test -tags netgo -count=1 ./jobqueue -run
+    'TestManagerPortSelfConnect$'`, failed at `port_selfconnect_test.go:232`:
+    `Expected '<nil>' to NOT be nil`. Serve returned nil.
+  - A second cause: with only a dual-stack reservation, the same test failed
+    after 103s with `manager port P is still held by a socket that is not
+    listening (such as a connection in TIME_WAIT) after 1m30s`.
+    `localPortListening` dialled only IPv4 loopback, so an IPv6-only listener
+    looked like a TIME_WAIT and got the 90s linger wait.
+  - Fix:
+    - `jobqueue/port_reservation_linux.go` reserves with an AF_INET6 socket
+      on `[::]`, with SO_REUSEADDR and IPV6_V6ONLY explicitly 0, matching
+      Go's dual-stack listener. If that fails for any reason other than
+      EADDRINUSE, such as no IPv6, it reserves on AF_INET `0.0.0.0` as
+      before.
+    - `jobqueue/port_reservation.go` `localPortListening` dials both
+      `127.0.0.1` and `::1`.
+    - CHANGELOG: a Fixed entry.
+  - Pinned behaviours were checked on this 5.15 kernel:
+    - The dual-stack reservation still conflicts with every kind of existing
+      listener.
+    - Dials to both loopbacks are refused fast while the reservation is
+      held.
+    - The manager's listener and SO_REUSEADDR binders such as
+      `dgsListenBesideReservation` can still bind beside it.
+    - 30000 dials never took the reserved port for an ephemeral source port,
+      whether over IPv4 or IPv6.
+    - The TIME_WAIT, release and IPv4 fast-fail tests pass unchanged.
+  - Reviewer: PASS. Red, the 90s intermediate failure and green were all
+    confirmed. There are no fd leaks, and the fallback on non-EADDRINUSE
+    errors is the old behaviour. `GOOS=darwin go build ./jobqueue` passes.
+    The focused tests pass with and without `-race`, and `make lint` reports
+    0 issues.
+  - Noted, not new: `GOOS=darwin go vet ./jobqueue` fails at
+    `jobqueue/utils_test.go:519` (`st.Dev` is int32 there).
+- [x] Review suggestions on the dual-stack reservation:
+  (1) the new Convey (`jobqueue/port_selfconnect_test.go:210-215`) skips only
+  when a `tcp6 [::]:0` listen fails. With loopback IPv6 disabled
+  (`net.ipv6.conf.lo.disable_ipv6=1`, Docker's default), `[::]` still binds
+  but `::1` cannot be dialled, so the test would wait 90s and fail with "still
+  held" instead of skipping.
+  (2) The `port_reservation_linux.go` doc says it falls back to IPv4 "on a
+  host without IPv6", but it falls back on any IPv6 socket or bind error
+  except EADDRINUSE.
+  - (1) The Convey now dials `::1` on the held port with `hostPortListening`,
+    the same check Serve relies on, and skips if that fails. It still runs,
+    and passes, on this host. With the dial pointed at a refused port it
+    skipped rather than failing.
+  - (2) The doc comment now matches the code.
+  - These are the reviewer's own suggestions; the coordinator checked the diff.
+    `TestManagerPortSelfConnect` passes, and `make lint` reports 0 issues.
+- [x] `make race` on this branch, rebased onto develop `95faf16` (#651),
+  failed `jobqueue/stop_exited_zero_test.go` `TestExitedZeroDuringStopIsComplete`
+  ("it is recorded as complete, and is still complete after a restart", line
+  149, `So(execErr, ShouldBeNil)`: `Actual: 'jobqueue Execute(...): killed by
+  user request; note: command used too much RAM'`). The test is from #646 and
+  untouched here. Candidate cause (test): the command is `touch <exited>;
+  (sleep 2 &); exit 0`, and the test starts the stop as soon as `<exited>`
+  appears, but that file appears before the shell has exited. A shell
+  descheduled between the `touch` and the `exit 0` gets the stop's kill while
+  still running, so the runner rightly reports it killed, and the test's
+  premise (a command that has already exited 0 when the stop starts) is never
+  set up.
+  - Red: with a temporary `sleep 0.5;` after the `touch` (standing in for a
+    descheduled shell), `CGO_ENABLED=1 go test -race -count=3 -run
+    '^TestExitedZeroDuringStopIsComplete$' ./jobqueue/` failed 3 of 3 with the
+    same `Line 149` / `killed by user request` failure. Without it, 20 of 20
+    passed on an idle host.
+  - Fix (test only), `jobqueue/stop_exited_zero_test.go`: the command's
+    backgrounded subshell now polls `ps -o stat= -p $$` (bounded to 1000 tries)
+    until the shell is a zombie, then writes the sentinel and sleeps 2s with
+    stdout still open. `Execute` reads stdout and stderr to EOF before
+    `cmd.Wait()`, so the zombie is exactly the premise: exited 0, not yet
+    waited for. The sentinel can no longer appear while the shell is running.
+    Assertions are unchanged.
+  - After: with a 0.5s pause before the new command's `exit 0`, the test
+    passed 5 of 5 under `-race` (and 3 of 3 again for the reviewer, 5 of 5);
+    unmodified, `-race -count=20` passes.
+  - Reviewer: PASS. Checked that the test's `/bin/sh` (dash on ubuntu-latest)
+    is run as `/bin/sh -c <cmd>` with no wrapper, that `$$` in the subshell is
+    the shell's pid, and that nothing else reaps it. `make lint` 0 issues.
