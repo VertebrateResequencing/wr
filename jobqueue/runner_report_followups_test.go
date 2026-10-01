@@ -32,6 +32,7 @@ package jobqueue
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -223,5 +224,82 @@ func TestOldOwnerReportDuringNewReservation(t *testing.T) {
 			So(errc, ShouldBeNil)
 			So(complete, ShouldBeFalse)
 		})
+	})
+}
+
+// TestOwnerEndStateAfterLostRelease proves that the owning runner's report of
+// how its command ended is recorded, in memory and on disk, for a job the
+// manager had already released as lost, which only recorded that it lost
+// contact.
+func TestOwnerEndStateAfterLostRelease(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a started job with 3 retries the manager confirmed dead and released itself", t, func() {
+		f := newReleaseAfterLostFixture(ctx, t, 3, definitelyDeadPid(t), "")
+		defer f.stop(ctx)
+
+		setServerJobRunnerPid(f.server, f.job.Key(), definitelyDeadPid(t))
+		So(waitForJobLost(f.server, f.job.Key(), releaseAfterLostWait), ShouldBeTrue)
+		So(f.waitForManagerRelease(), ShouldBeTrue)
+
+		assertOwnerEndStateAfterLostRelease(t, f)
+	})
+
+	Convey("Given a started lost job with 3 retries the user killed, so the manager released it", t, func() {
+		f := newReleaseAfterLostFixture(ctx, t, 3, os.Getpid(), "")
+		defer f.stop(ctx)
+
+		So(waitForJobLost(f.server, f.job.Key(), releaseAfterLostWait), ShouldBeTrue)
+
+		killed, err := f.user.Kill(f.essence())
+		So(err, ShouldBeNil)
+		So(killed, ShouldEqual, 1)
+		So(f.waitForManagerRelease(), ShouldBeTrue)
+
+		assertOwnerEndStateAfterLostRelease(t, f)
+	})
+}
+
+// assertOwnerEndStateAfterLostRelease asserts that the owner's release or bury
+// of f's job, which the manager has released as lost, records the owner's end
+// state and fail reason, and that a re-send of the owner's release is not taken
+// for a new one.
+func assertOwnerEndStateAfterLostRelease(t *testing.T, f *releaseAfterLostFixture) {
+	t.Helper()
+
+	lost := f.finalJob()
+	So(lost.Exitcode, ShouldEqual, -1)
+	So(lost.FailReason, ShouldEqual, FailReasonLost)
+
+	ownerEnd := &JobEndState{Exited: true, Exitcode: 3, PeakRAM: 1234, EndTime: time.Now()}
+
+	assertOwnerEndRecorded := func(state JobState, untilBuried uint8) {
+		for _, job := range []*Job{f.finalJob(), storedLiveJob(t, f.server.db, f.job.Key())} {
+			So(job.State, ShouldBeIn, []JobState{state, JobStateReady})
+			So(job.Exitcode, ShouldEqual, 3)
+			So(job.PeakRAM, ShouldEqual, 1234)
+			So(job.FailReason, ShouldEqual, FailReasonExit)
+			So(job.UntilBuried, ShouldEqual, untilBuried)
+		}
+	}
+
+	Convey("the owner's release records its exit code and peak RAM without spending another retry", func() {
+		So(f.runner.releaseAfterAttempt(f.job, ownerEnd, FailReasonExit), ShouldBeNil)
+		assertOwnerEndRecorded(JobStateDelayed, f.retries)
+
+		Convey("and a re-send of it changes nothing", func() {
+			resent := &JobEndState{Exited: true, Exitcode: 5, PeakRAM: 99, EndTime: time.Now()}
+			So(f.runner.releaseAfterAttempt(f.job, resent, FailReasonExit), ShouldBeNil)
+			assertOwnerEndRecorded(JobStateDelayed, f.retries)
+		})
+	})
+
+	Convey("the owner's bury records its exit code and peak RAM", func() {
+		So(f.runner.Bury(f.job, ownerEnd, FailReasonExit), ShouldBeNil)
+		assertOwnerEndRecorded(JobStateBuried, 0)
 	})
 }

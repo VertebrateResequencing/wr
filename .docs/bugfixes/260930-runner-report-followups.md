@@ -90,11 +90,44 @@ package passes `-timeout 40m`, as the suite runner does.
     a bury whose snapshot saw the owner's run in Run, if the manager releases
     that run and it is reserved again before the bury's queue change.
 
-- [ ] **2. After the manager's own lost release, the owner's exit code and
+- [x] **2. After the manager's own lost release, the owner's exit code and
       peak RAM are not recorded.** The release already marked the job exited.
       Record them when the owner's report arrives for a job still waiting from
       that lost release, without double-spending retries or double-decrementing
       counts.
+  - Red command: `nice -n 19 go test ./jobqueue -count=1 -run
+    'TestOwnerEndStateAfterLostRelease$'`, exit 1 on 4263cead plus the test.
+    The manager confirms a started job dead and releases it (Exitcode -1,
+    FailReasonLost); the owner then releases or buries it with exit code 3
+    and peak RAM 1234. Both reports are acknowledged, but the job keeps the
+    lost release's end state:
+
+    ```text
+    Line 256: Expected: 3 Actual: -1   (release)
+    Line 256: Expected: 3 Actual: -1   (bury)
+    --- FAIL: TestOwnerEndStateAfterLostRelease (1.33s)
+    ```
+
+    Cause: `Job.updateAfterExit` returns at once when `Exited` is already
+    set, and a release of an item already waiting is `releaseAlreadyDone`,
+    which skips `finalizeReleasedJob` altogether.
+  - Fixed: `Job.replaceLostEndState` (jobqueue/job.go) records the owner's
+    exited end state and fail reason, under the job lock, only while the job's
+    FailReason is still FailReasonLost, which on a waiting job only the
+    manager's lost release (confirm-dead or a kill of a lost job) leaves.
+    `releaseJob` calls it for a runner's report on the `releaseAlreadyDone`
+    path and then writes the job as a release does (durably before the ack),
+    and `finalizeReleasedJob` calls it on the `releaseBuriedWaiting` path.
+    No retry, scheduler group count or limit group is spent again, and a
+    re-send finds the owner's FailReason and changes nothing. The end-state
+    assignments are shared with `updateAfterExit` as `recordEndStateLocked`.
+    Test `TestOwnerEndStateAfterLostRelease` also checks the stored record, a
+    kill-released variant and a re-send. Files: jobqueue/job.go,
+    jobqueue/server.go, jobqueue/runner_report_followups_test.go,
+    jobqueue/reserve_durability_test.go (`storedLiveJob`), CHANGELOG.md.
+  - Review: PASS on the fix; `make lint` 0 issues. The package gate failed
+    once in `TestDepGranularityModifyChangesMemberKey` on a port bind,
+    unrelated; it is item 6 below.
 - [ ] **3. An owner's jbury of a job the manager requeued as dependent gets
       ErrBadJob.** A job the manager has put back in the dependent queue with
       rerun deps (#649's RerunAfterRun / dep-group re-block) answers the
@@ -104,3 +137,10 @@ package passes `-timeout 40m`, as the suite runner does.
 - [ ] **5. A re-sent release after a kick may spend a retry from the kicked
       budget.** Re-check after #654's last commit changed kick handling; fix if
       still real.
+- [ ] **6. A jobqueue test can fail to start its manager on a busy host.**
+      Found by item 2's review gate: `TestDepGranularityModifyChangesMemberKey`
+      failed with `could not listen on the manager port, so exiting port=45077
+      err="... bind: address already in use"` (depgranularity_recovery_test.go
+      line 114, `dgrStartServer`). `isolateTestConfig` (jobqueue_test.go)
+      picks a free port and the manager binds it later, so another process on
+      the shared host can take it in between.

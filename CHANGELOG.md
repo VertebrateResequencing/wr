@@ -27,6 +27,9 @@ project adheres to [Semantic Versioning](http://semver.org/).
   the runner had even been given it, when the manager's database took longer
   than the command's TTR to record the reservation. Its TTR now starts when
   the runner is given it.
+- A command whose runner the manager had given up on as lost now shows the exit
+  code and memory use that runner later reported, rather than "lost contact
+  with runner".
 - `wr status -i <group> -o summary` (and the Go client's
   `GetStatusByRepGroupMatch` with details) no longer reads every completed
   command in full, so it is several times faster, and uses about 1% of the

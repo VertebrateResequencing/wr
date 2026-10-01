@@ -6703,6 +6703,13 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, rep releaseReport) er
 	}
 
 	if outcome == releaseAlreadyDone {
+		// the owner's report of how its command ended, arriving after the
+		// manager's own lost release, is the job's first real end state. It is
+		// written as that release's was, std and fail stats included.
+		if rep.reporter != (uuid.UUID{}) && job.replaceLostEndState(rep.endState, rep.failReason) {
+			return s.writeReleasedJob(ctx, job, rep)
+		}
+
 		// a redundant report, such as a runner re-sending after its first request
 		// timed out on a slow commit, must not be acknowledged before that first
 		// write is on disk, and if that write failed nothing else will retry it. So,
@@ -6827,6 +6834,13 @@ func (s *Server) applyReleaseQueueChange(ctx context.Context, q *queue.Queue, it
 func (s *Server) finalizeReleasedJob(ctx context.Context, job *Job, rep releaseReport,
 	outcome releaseOutcome) error {
 	job.updateAfterExit(rep.endState, s.limiter)
+
+	// updateAfterExit keeps the end state of whichever release took the item
+	// out of Run first, but an owner's bury of an item the manager released as
+	// lost knows how its command really ended.
+	if outcome == releaseBuriedWaiting && rep.reporter != (uuid.UUID{}) {
+		job.replaceLostEndState(rep.endState, rep.failReason)
+	}
 
 	sgroup, msg := job.applyRelease(rep)
 

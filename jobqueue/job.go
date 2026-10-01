@@ -464,6 +464,39 @@ func (j *Job) commandKey(key string) string {
 	return byteKey(jobKeyConcat(j.CwdMatters, j.Cwd, j.Cmd, "", "", ""))
 }
 
+// recordEndStateLocked sets the job's end-of-run properties from an exited
+// JobEndState. Must be called with the Job locked.
+func (j *Job) recordEndStateLocked(jes *JobEndState) {
+	j.Exited = true
+	j.Exitcode = jes.Exitcode
+	j.PeakRAM = jes.PeakRAM
+	j.PeakDisk = jes.PeakDisk
+	j.CPUtime = jes.CPUtime
+
+	j.EndTime = jes.EndTime
+	j.setActualCwd(jes.Cwd)
+}
+
+// replaceLostEndState records the owner's report of how its command ended, and
+// its fail reason, over the end state the manager's own lost release recorded,
+// which is all FailReasonLost can come from on a job waiting to run again. It
+// reports whether it did: once done, FailReason is the owner's, so a re-send of
+// the same report, or a concurrent duplicate, changes nothing. Limit groups are
+// not touched, since the lost release already gave them back.
+func (j *Job) replaceLostEndState(jes *JobEndState, failReason string) bool {
+	j.Lock()
+	defer j.Unlock()
+
+	if j.FailReason != FailReasonLost || jes == nil || !jes.Exited {
+		return false
+	}
+
+	j.recordEndStateLocked(jes)
+	j.FailReason = failReason
+
+	return true
+}
+
 // cwdLeaf returns the part of cwd below cwdBase, prefixed with "/", for display
 // alongside cwdBase as a Job's working directory. It is the single projection
 // used for both a stored Job's JStatus and a live Job's JobUpdate, so that
@@ -1978,14 +2011,7 @@ func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	}
 
 	j.Lock()
-	j.Exited = true
-	j.Exitcode = jes.Exitcode
-	j.PeakRAM = jes.PeakRAM
-	j.PeakDisk = jes.PeakDisk
-	j.CPUtime = jes.CPUtime
-
-	j.EndTime = jes.EndTime
-	j.setActualCwd(jes.Cwd)
+	j.recordEndStateLocked(jes)
 	j.Unlock()
 }
 
