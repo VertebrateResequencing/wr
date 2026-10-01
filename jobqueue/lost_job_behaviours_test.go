@@ -87,6 +87,11 @@ const (
 // unable to reach the bound, and it then says so rather than passing.
 const lostCleanupDrivers = 64
 
+// lostRunBehavioursTimeout bounds awaitLostRunBehaviours. It is a hang
+// detector, not a latency budget: the behaviours are a shell command and a
+// directory deletion.
+const lostRunBehavioursTimeout = time.Minute
+
 // lostRunOpts says which ordinary manager and job the fixture is to be. Each
 // combination is a case in which the reported ActualCwd is blank or stale for
 // the whole of a run, so that pinning it identifies no run at all.
@@ -387,11 +392,6 @@ func awaitLostRunBehaviours(server *Server) {
 	}
 }
 
-// lostRunBehavioursTimeout bounds awaitLostRunBehaviours. It is a hang
-// detector, not a latency budget: the behaviours are a shell command and a
-// directory deletion.
-const lostRunBehavioursTimeout = time.Minute
-
 // liveJob is the manager's own *Job for the fixture's job.
 func (l *lostRun) liveJob() *Job {
 	item, err := l.server.q.Get(l.key)
@@ -531,7 +531,10 @@ func (l *lostRun) startRetryInWindow(touched bool) (actualCwd, tmpDir, output st
 // working directory, mounting, starting the Cmd - it does after this and before
 // its Started reaches the manager.
 func (l *lostRun) reserveRetry() {
-	l.server.resetJobForReservation(l.live, newTestReservation())
+	item, err := l.server.q.Get(l.key)
+	So(err, ShouldBeNil)
+
+	l.server.resetJobForReservation(l.live, newTestReservation(), item.Stats().Reserves)
 }
 
 // startRetry is the retry's own Started, carrying the working directory it has
@@ -943,7 +946,10 @@ func TestLostJobRetryCheckFindsAReservedNotStartedRun(t *testing.T) {
 			//
 			// The manager is left parked at its dead-check until the retry
 			// check is done, so nothing but the archive moves the job.
-			_, _, _, srerr := markJobComplete(l.live, &JobEndState{Exited: true, EndTime: time.Now()}, nil)
+			item, errg := l.server.q.Get(l.key)
+			So(errg, ShouldBeNil)
+
+			_, _, _, srerr := markJobComplete(l.live, item, &JobEndState{Exited: true, EndTime: time.Now()}, nil)
 
 			exited, checked := l.server.lostJobRetryCheck(l.key)
 
@@ -1451,7 +1457,7 @@ func (r *startedRun) markLost() {
 // is what a runner taking the job on again does to it - and where the run it is
 // taking on begins.
 func (r *startedRun) reserveAgain() {
-	r.server.resetJobForReservation(r.live, newTestReservation())
+	r.server.resetJobForReservation(r.live, newTestReservation(), r.item.Stats().Reserves)
 }
 
 // newTestReservation is the reserve request of a runner other than the one that
@@ -1630,7 +1636,7 @@ func TestMintedRunTokenIsNeverTheRecoveredOne(t *testing.T) {
 			pin := recovered.pinBehaviours()
 			So(recovered.isLostRunLocked(pin.run), ShouldBeTrue)
 
-			server.resetJobForReservation(recovered, newTestReservation())
+			server.resetJobForReservation(recovered, newTestReservation(), 0)
 
 			// and when that run is itself lost, so that the Lost half answers
 			// yes again, the token is the whole of what refuses the pin.

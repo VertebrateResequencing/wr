@@ -66,6 +66,7 @@ import (
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/gofrs/uuid/v5"
 	"github.com/gorilla/websocket"
 	"github.com/inconshreveable/log15/v3"
 	logext "github.com/inconshreveable/log15/v3/ext"
@@ -368,6 +369,23 @@ var confirmServerDeadHook func()
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var startPersistedHook func(key string)
 
+// releaseReportAcceptedHook, if non-nil, is called with a job's key once
+// handleRelease has accepted a runner's release or bury report as the owner's,
+// before the release acts on the job, so a test can have the job reserved again
+// in between. It is a test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var releaseReportAcceptedHook func(key string)
+
+// reservationQueuedHook, if non-nil, is called with a job's key once a
+// reservation has moved the job's item to the run sub-queue, before the job is
+// reset for the new run and given to its new runner, so a test can have the
+// job's previous runner report in between. It is a test-only seam and is nil in
+// production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var reservationQueuedHook func(key string)
+
 // dependencyUpdatesHook, if non-nil, is called by an add once its write has
 // committed and before it applies its live dependents' new dependencies to the
 // queue, so a test can have a dependent finish in between. It is a test-only
@@ -396,6 +414,13 @@ const (
 // shutting down (see shutdownIgnoringSignals): 128 plus SIGINT's number, as a
 // shell reports a process killed by SIGINT.
 const exitCodeInterruptedShutdown = 128 + int(syscall.SIGINT)
+
+// errReleaseReporterSupplanted is returned by releaseJob, having changed
+// nothing, when a runner's release or bury report arrives for a job that has
+// since been reserved by another runner. getijForReport accepted the report as
+// the owner's, but a new reservation landed before releaseJob looked at the
+// job, and the old owner's report must not bury or release the new run.
+var errReleaseReporterSupplanted = errors.New("job reserved by another runner since the report was accepted")
 
 const (
 	errMissingSubscriptionScope subscriptionRequestError = "missing subscription scope"
@@ -1186,6 +1211,12 @@ type releaseReport struct {
 	endState   *JobEndState
 	failReason string
 
+	// reporter is the client ID of the runner whose own release or bury this
+	// is, or zero for a manager-initiated release (TTR/lost/kill). A runner's
+	// report is only applied while the job is still reserved by it; see
+	// errReleaseReporterSupplanted.
+	reporter uuid.UUID
+
 	// attempted is true when the job's OWNER reported this release having
 	// actually tried to run the job's Cmd (a cmd.Start() failure, or a command
 	// that ran and then ended badly). Such a release spends one of the job's
@@ -1303,6 +1334,10 @@ type releaseSnapshot struct {
 	// delay or ready to run again: another release of this run, such as the
 	// manager's own of a lost job, took it out of Run first.
 	waiting bool
+
+	// supplanted says the release is a runner's report and the job is now
+	// reserved by a different runner, so the release must change nothing.
+	supplanted bool
 }
 
 // completeJobsBudget tracks how many more archived jobs each of limitJobs' groups
@@ -3450,8 +3485,9 @@ func (s *Server) buryReleasedItem(ctx context.Context, q *queue.Queue, item *que
 	return outcome, nil
 }
 
-// buryItemWhereItIs buries a job's item from the run sub-queue, or from delay
-// or ready if another release of the run already moved it there.
+// buryItemWhereItIs buries a job's item from the run sub-queue, or from delay,
+// ready or dependent if another release of the run already moved it there. A
+// dependent item keeps its dependencies, so a kick makes it dependent again.
 //
 // That is an owner's bury after the manager released a lost job itself, which
 // the user may since have resumed, or kicked after that release buried it.
@@ -3480,9 +3516,11 @@ func (s *Server) buryItemWhereItIs(ctx context.Context, q *queue.Queue, item *qu
 }
 
 // itemIsWaiting says whether an item in the given state is waiting to run
-// again, in the delay or ready sub-queue.
+// again, in the delay, ready or dependent sub-queue. A dependent item is one
+// the manager released to wait on new dependencies first.
 func itemIsWaiting(state queue.ItemState) bool {
-	return state == queue.ItemStateDelay || state == queue.ItemStateReady
+	return state == queue.ItemStateDelay || state == queue.ItemStateReady ||
+		state == queue.ItemStateDependent
 }
 
 // logClientRequestError logs the error handleRequest returned for a client
@@ -3996,6 +4034,20 @@ func newPprofMux() *http.ServeMux {
 func disablePprofProfiling() {
 	runtime.SetMutexProfileFraction(0)
 	runtime.SetBlockProfileRate(0)
+}
+
+// itemIsInFlight says whether an item in the given state can take its owner's
+// archive: it is running, or waiting in delay or ready after a busy manager
+// released it. A dependent item is not, since it must wait on new dependencies
+// and run again.
+func itemIsInFlight(state queue.ItemState) bool {
+	return state == queue.ItemStateRun || state == queue.ItemStateDelay || state == queue.ItemStateReady
+}
+
+// itemIsReleasable says whether an item in the given state can take its
+// owner's release or bury: it is running or waiting to run again.
+func itemIsReleasable(state queue.ItemState) bool {
+	return state == queue.ItemStateRun || itemIsWaiting(state)
 }
 
 func shouldIncreaseJobRAMAfterHighPeak(job *Job) bool {
@@ -6671,6 +6723,13 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, rep releaseReport) er
 	}
 
 	if outcome == releaseAlreadyDone {
+		// the owner's report of how its command ended, arriving after the
+		// manager's own lost release, is the job's first real end state. It is
+		// written as that release's was, std and fail stats included.
+		if rep.reporter != (uuid.UUID{}) && job.replaceLostEndState(rep.endState, rep.failReason) {
+			return s.writeReleasedJob(ctx, job, rep)
+		}
+
 		// a redundant report, such as a runner re-sending after its first request
 		// timed out on a slow commit, must not be acknowledged before that first
 		// write is on disk, and if that write failed nothing else will retry it. So,
@@ -6691,12 +6750,26 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, rep releaseReport) er
 // releaseJobSnapshot reads, under the job's read lock, the values releaseJob
 // needs: whether the job should be buried, its key, its current state, and
 // whether its item is already waiting to run again. It also records
-// rep.spendsRetry, which is the only place that gets decided.
+// rep.spendsRetry, which is the only place that gets decided. For a runner's
+// report on a job since reserved by another runner, it reads nothing else and
+// says the release is supplanted.
 func releaseJobSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseSnapshot {
 	job.RLock()
 	defer job.RUnlock()
 
-	// an item already out of Run, in delay or ready, had this run released
+	// read once, so the ownership check and waiting below see the same item
+	// state: an item seen waiting and then reserved must not be taken for this
+	// run's own.
+	stats := item.Stats()
+
+	// checked under the same lock as the rest of the snapshot, since a new
+	// reservation can have landed, or be part way through, since
+	// getijForReport accepted the report.
+	if rep.reporter != (uuid.UUID{}) && !job.runHeldByLocked(rep.reporter, stats) {
+		return releaseSnapshot{supplanted: true}
+	}
+
+	// an item already out of Run, in delay, ready or dependent, had this run released
 	// before this report arrived. Either this is a re-send, such as after the
 	// runner's first request timed out on a slow commit, and the first report
 	// already spent any retry; or it is the owner's first report after the
@@ -6707,7 +6780,7 @@ func releaseJobSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseS
 	// retry has been dealt with, so it must not be spent again, nor bury judged
 	// from the budget left behind: a release would otherwise bury a job its
 	// release had just left to run again, or one the user had kicked.
-	waiting := itemIsWaiting(item.Stats().State)
+	waiting := itemIsWaiting(stats.State)
 	rep.spendsRetry = !waiting && releaseSpendsARetry(job, *rep)
 
 	// bury the ITEM exactly when finalizeReleasedJob below will call the JOB
@@ -6781,6 +6854,13 @@ func (s *Server) applyReleaseQueueChange(ctx context.Context, q *queue.Queue, it
 func (s *Server) finalizeReleasedJob(ctx context.Context, job *Job, rep releaseReport,
 	outcome releaseOutcome) error {
 	job.updateAfterExit(rep.endState, s.limiter)
+
+	// updateAfterExit keeps the end state of whichever release took the item
+	// out of Run first, but an owner's bury of an item the manager released as
+	// lost knows how its command really ended.
+	if outcome == releaseBuriedWaiting && rep.reporter != (uuid.UUID{}) {
+		job.replaceLostEndState(rep.endState, rep.failReason)
+	}
 
 	sgroup, msg := job.applyRelease(rep)
 

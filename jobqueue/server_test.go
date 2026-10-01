@@ -72,7 +72,7 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 			Lost:       true,
 		}
 
-		_, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
+		item, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
 		So(err, ShouldBeNil)
 
 		// markJobComplete no longer gates on the queue sub-state (that guard was
@@ -80,7 +80,7 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 		// end-to-end by TestReliable2HoldingRunnerArchiveAccepted); a Lost job whose
 		// owner archives success is accepted.
 		endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
-		key, repGroup, schedulerGroup, srerr := markJobComplete(job, endState, nil)
+		key, repGroup, schedulerGroup, srerr := markJobComplete(job, item, endState, nil)
 
 		So(srerr, ShouldEqual, "")
 		So(key, ShouldEqual, job.Key())
@@ -112,13 +112,13 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 		}
 		job.noteIncrementedLimitGroups(job.LimitGroups)
 
-		_, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
+		item, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
 		So(err, ShouldBeNil)
 
 		endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
 
 		So(func() {
-			_, _, _, _ = markJobComplete(job, endState, nil)
+			_, _, _, _ = markJobComplete(job, item, endState, nil)
 		}, ShouldNotPanic)
 		So(job.State, ShouldEqual, JobStateComplete)
 	})
@@ -141,11 +141,11 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 			ReservedBy: rerunner,
 		}
 
-		_, err = q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
+		item, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
 		So(err, ShouldBeNil)
 
 		endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
-		_, _, _, srerr := markJobComplete(job, endState, nil, originalRunner)
+		_, _, _, srerr := markJobComplete(job, item, endState, nil, originalRunner)
 
 		So(srerr, ShouldEqual, ErrMustReserve)
 		So(job.State, ShouldEqual, JobStateRunning)
@@ -177,7 +177,7 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 		So(item.Stats().State, ShouldEqual, queue.ItemStateReady)
 
 		endState := &JobEndState{Exited: true, Exitcode: 0, EndTime: lostTime.Add(500 * time.Millisecond)}
-		_, _, _, srerr := markJobComplete(job, endState, nil)
+		_, _, _, srerr := markJobComplete(job, item, endState, nil)
 
 		So(srerr, ShouldEqual, "")
 		So(job.Exited, ShouldBeTrue)
@@ -200,11 +200,11 @@ func TestMarkJobCompleteUsesEndStateAtomically(t *testing.T) {
 			State:     JobStateRunning,
 		}
 
-		_, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
+		item, err := q.Add(ctx, job.Key(), "", job, 0, 0, time.Minute, queue.SubQueueRun)
 		So(err, ShouldBeNil)
 
 		endState := &JobEndState{Exited: true, Exitcode: 1, EndTime: time.Now()}
-		_, _, _, srerr := markJobComplete(job, endState, nil)
+		_, _, _, srerr := markJobComplete(job, item, endState, nil)
 
 		So(srerr, ShouldEqual, ErrBadRequest)
 		So(job.State, ShouldEqual, JobStateRunning)

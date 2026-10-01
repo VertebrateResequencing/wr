@@ -145,10 +145,10 @@ func TestRunningDependentRerun(t *testing.T) {
 
 			end := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
 
-			key, repGroup, schedGroup, srerr := markJobComplete(serverJob, end, d.server.limiter, jq.clientid)
+			key, repGroup, schedGroup, srerr := markJobComplete(serverJob, item, end, d.server.limiter, jq.clientid)
 			So(srerr, ShouldBeEmpty)
 
-			_, _, _, srerr = markJobComplete(serverJob, end, d.server.limiter, jq.clientid)
+			_, _, _, srerr = markJobComplete(serverJob, item, end, d.server.limiter, jq.clientid)
 			So(srerr, ShouldBeEmpty)
 
 			_, srerr, qerr := d.server.archiveCompletedJob(ctx, serverJob, key, repGroup, schedGroup)
@@ -239,7 +239,7 @@ func TestRunningDependentRerun(t *testing.T) {
 		serverJob, ok := item.Data().(*Job)
 		So(ok, ShouldBeTrue)
 
-		key, repGroup, schedGroup, srerr := markJobComplete(serverJob,
+		key, repGroup, schedGroup, srerr := markJobComplete(serverJob, item,
 			&JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}, d.server.limiter, jq.clientid)
 		So(srerr, ShouldBeEmpty)
 
@@ -350,7 +350,7 @@ func TestRunningDependentRerunRaces(t *testing.T) {
 			dependentsReadHook = func() {
 				dependentsReadHook = nil
 
-				_, _, _, srerr := markJobComplete(serverJob, success, d.server.limiter, jq.clientid)
+				_, _, _, srerr := markJobComplete(serverJob, item, success, d.server.limiter, jq.clientid)
 				if srerr == "" {
 					archiveErr = d.server.db.archiveJob(waiter.Key(), serverJob)
 				}
@@ -363,7 +363,7 @@ func TestRunningDependentRerunRaces(t *testing.T) {
 		})
 
 		Convey("if its archive is accepted before the add but written after it, that write keeps it live", func() {
-			_, _, _, srerr := markJobComplete(serverJob, success, d.server.limiter, jq.clientid)
+			_, _, _, srerr := markJobComplete(serverJob, item, success, d.server.limiter, jq.clientid)
 			So(srerr, ShouldBeEmpty)
 
 			dgrAddJobs(jq, []*Job{second})
