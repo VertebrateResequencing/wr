@@ -744,6 +744,8 @@ func TestDBEndTimeIndex(t *testing.T) {
 			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
 		So(err, ShouldBeNil)
 
+		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
 		Convey("Archiving a job records it in the end-time index with the correct bytes", func() {
 			endTime := time.Now().Add(-30 * time.Minute).Truncate(time.Nanosecond)
 			job := testDBArchivedJob("echo recent", "rg-recent", endTime)
@@ -817,6 +819,8 @@ func TestDBCheckIfComplete(t *testing.T) {
 			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
 		So(err, ShouldBeNil)
 
+		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
+
 		job := testDBArchivedJob("echo complete", "rg-complete", time.Now().Truncate(time.Nanosecond))
 		So(testDB.archiveJob(job.Key(), job), ShouldBeNil)
 
@@ -843,6 +847,8 @@ func TestDBRetrieveCompleteJobsRecent(t *testing.T) {
 		testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
 			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
 		So(err, ShouldBeNil)
+
+		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
 
 		Convey("With three archived jobs ending at now-3h, now-30m and now-1m", func() {
 			now := time.Now()

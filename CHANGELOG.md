@@ -17,6 +17,10 @@ project adheres to [Semantic Versioning](http://semver.org/).
   on disk" and "slow request" warnings are now logged in full once, then at
   most once a minute as one "(repeated)" line with a count, the longest
   duration and the latest details.
+- A command could be declared lost, and its runner checked for death, before
+  the runner had even been given it, when the manager's database took longer
+  than the command's TTR to record the reservation. Its TTR now starts when
+  the runner is given it.
 - `wr status -i <group> -o summary` (and the Go client's
   `GetStatusByRepGroupMatch` with details) no longer reads every completed
   command in full, so it is several times faster, and uses about 1% of the

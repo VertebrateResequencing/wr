@@ -5751,6 +5751,15 @@ func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
 		return queue.SubQueueDelay
 	}
 
+	// a job whose reservation is still being handed out has a runner that has
+	// not been given it yet, so it is not lost; handOutReservation restarts its
+	// TTR once it is handed out.
+	if job.handingOut {
+		job.Unlock()
+
+		return queue.SubQueueRun
+	}
+
 	// an already-lost job is left parked; its death is already being confirmed
 	// and a touch will recover it, so we neither re-mark nor re-confirm it.
 	if job.Lost {

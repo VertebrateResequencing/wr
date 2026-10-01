@@ -230,6 +230,28 @@ func TestCleanupDeployForwardingProcesses(t *testing.T) {
 	})
 }
 
+func TestStartTestForwarderArgv(t *testing.T) {
+	Convey("a started test forwarder already reads as a forwarder", t, func() {
+		// before the fix up to 1 in 100 starts read an empty argv
+		const starts = 1000
+
+		notForwarders := 0
+
+		for range starts {
+			forwarder, done := startTestForwarder(t)
+			if !isForwarderProcess(forwarder.Process.Pid) {
+				notForwarders++
+			}
+
+			_ = syscall.Kill(-forwarder.Process.Pid, syscall.SIGKILL) //nolint:errcheck
+
+			<-done
+		}
+
+		So(notForwarders, ShouldEqual, 0)
+	})
+}
+
 func TestCheckProcessStalePid(t *testing.T) {
 	Convey("a forwarder pid file naming an unrelated live process is not running, and cleanup spares it", t, func() {
 		dir := t.TempDir()
@@ -394,7 +416,7 @@ func startTestForwarder(t *testing.T) (*exec.Cmd, <-chan error) {
 
 // startTestProcess starts name with args in its own process group, returning a
 // channel that receives its Wait() result. The whole group is killed when the
-// test ends.
+// test ends. It returns only once the child's argv reads as name and args.
 func startTestProcess(t *testing.T, name string, args ...string) (*exec.Cmd, <-chan error) {
 	t.Helper()
 
@@ -415,6 +437,8 @@ func startTestProcess(t *testing.T, name string, args ...string) (*exec.Cmd, <-c
 	t.Cleanup(func() {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) //nolint:errcheck
 	})
+
+	waitForTestProcessArgv(cmd)
 
 	return cmd, done
 }

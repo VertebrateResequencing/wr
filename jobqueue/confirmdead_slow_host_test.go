@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,12 +39,19 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+// The per-command delays leave each remote command at least 2s of the check
+// timeout, which the sh and ps they start can use up under heavy load, while
+// the commands a round of per-pid checks needs add up to well past it. Only the
+// first round counts, as a job it leaves unconfirmed waits the retry time, so
+// the reclaim wait can be generous: it only bounds how long a failure takes.
 const (
 	slowHostTTR          = 300 * time.Millisecond
-	slowHostCheckTimeout = 1 * time.Second
+	slowHostCheckTimeout = 3 * time.Second
 	slowHostRetryTime    = time.Hour // never reached: only the first round counts
-	slowHostReclaimWait  = 5 * time.Second
+	slowHostReclaimWait  = 30 * time.Second
 	slowHostRunners      = 10
+	slowHostShellDelay   = 800 * time.Millisecond
+	slowHostForcedDelay  = 400 * time.Millisecond
 )
 
 // psOnlyForcedCommand is the ps-only forced command cmd/conf.go documents for a
@@ -67,14 +75,21 @@ func TestConfirmDeadSlowHost(t *testing.T) {
 
 	Convey("Lost jobs whose runners died on one slow host are all reclaimed in the first round", t, func() {
 		Convey("when the host runs the command sent, however many pids it must check", func() {
-			// a per-pid check of all 10 would take 8.8s, well past the reclaim wait
-			got := reclaimDeadRunnersOnSlowHost(t, "slowhost_shell", slowHost(800*time.Millisecond, false))
+			var calls atomic.Int64
+
+			got := reclaimDeadRunnersOnSlowHost(t, "slowhost_shell", slowHost(slowHostShellDelay, false, &calls))
 			So(got, ShouldEqual, slowHostRunners)
+
+			// one command per batch of the pids that went lost together; a
+			// per-pid check would need a command for each of them
+			So(calls.Load(), ShouldBeLessThan, slowHostRunners)
 		})
 
 		Convey("when a ps-only forced command answers one pid per command", func() {
-			// 11 commands of 0.2s: more than the check timeout, but each within it
-			got := reclaimDeadRunnersOnSlowHost(t, "slowhost_forced", slowHost(200*time.Millisecond, true))
+			var calls atomic.Int64
+
+			// 11 commands of 0.4s: more than the check timeout, but each within it
+			got := reclaimDeadRunnersOnSlowHost(t, "slowhost_forced", slowHost(slowHostForcedDelay, true, &calls))
 			So(got, ShouldEqual, slowHostRunners)
 		})
 	})
@@ -169,8 +184,13 @@ func reclaimDeadRunnersOnSlowHost(t *testing.T, rg string,
 // perCall (as ssh to a farm node whose login shell loads modules does) before
 // running on this machine. With forced false it runs the command as sent, as an
 // unrestricted key does; with forced true it runs psOnlyForcedCommand instead.
-func slowHost(perCall time.Duration, forced bool) func(context.Context, string, bool) (string, string, error) {
+// It counts the commands it is sent in calls.
+func slowHost(perCall time.Duration, forced bool,
+	calls *atomic.Int64,
+) func(context.Context, string, bool) (string, string, error) {
 	return func(ctx context.Context, cmd string, _ bool) (string, string, error) {
+		calls.Add(1)
+
 		select {
 		case <-time.After(perCall):
 		case <-ctx.Done():

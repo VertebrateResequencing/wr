@@ -488,7 +488,10 @@ func TestFuseMountReaping(t *testing.T) {
 		// a thread already blocked in a fuse request is what makes the kill
 		// below leave the process wedged rather than dead, so this is the
 		// premise of the whole case, and it holds only while the child lives.
-		So(pidInFuseWait(child.pid), ShouldBeTrue)
+		// It is waited for, not sampled: the blocked thread can briefly leave
+		// the wait (on a busy host it was seen running, then back in the wait
+		// 50ms later), and a single sample can land in that gap.
+		So(awaitTrue(processWaitTimeout, func() bool { return pidInFuseWait(child.pid) }), ShouldBeTrue)
 
 		child.killAndSettle()
 
