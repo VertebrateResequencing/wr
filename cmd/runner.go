@@ -182,6 +182,10 @@ complete.`,
 		// when not running under a recognised scheduler.
 		jq.SetReserveSchedulerID(reserveSchedulerID())
 
+		// tell the server we run one job at a time, so a job we gave up on is
+		// released as soon as we reserve, start or touch the next.
+		jq.SetReserveAsRunner(true)
+
 		// in case any job we execute has a Cmd that calls `wr add`, we will
 		// override their environment to make that call work
 		overrider, err := newJobEnvOverrider(rserver, rdomain)

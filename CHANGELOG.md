@@ -13,6 +13,11 @@ project adheres to [Semantic Versioning](http://semver.org/).
   longer marks complete a command another runner has just been given. This
   could happen after the manager gave up on the first runner as lost and the
   command started again elsewhere.
+- A job whose runner moved on to other work after its report of the job was
+  lost to a manager crash is now re-run as soon as that runner next contacts
+  the manager, instead of staying running for ever or, after an hour, having
+  its runner killed along with the job that runner was then running. This
+  applies to runners from this version on, under every scheduler.
 - Asking the manager for incomplete commands by report group prefix or
   substring, by state (such as `wr status -b`), or with a limit (such as a
   limited `wr status -i`) no longer copies every queued command first. With
@@ -33,6 +38,9 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - A runner's bury of a command the manager had sent back to wait on a new
   dependency now buries it, keeping that dependency for when it is kicked,
   instead of being refused.
+- The manager no longer under-counts the runners it needs when a command's
+  success is reported after the manager had already given up on it and
+  scheduled it to run again.
 - `wr status` could say a delayed command would become ready in
   -2562047h47m16.854775808s, typically after lost contact with its runner. It
   now shows the real time until it becomes ready (also as `Ready` in

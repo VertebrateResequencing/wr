@@ -403,12 +403,19 @@ func (queue *Queue) Requeue(ctx context.Context, key string, deps []string) erro
 // no other operation on the queue can come in between. keep must not call the
 // queue.
 func (queue *Queue) RemoveUnless(ctx context.Context, key string, keep func(data any) bool) (bool, error) {
+	return queue.RemoveUnlessState(ctx, key, func(data any, _ ItemState) bool { return keep(data) })
+}
+
+// RemoveUnlessState is RemoveUnless, except that keep is also given the state
+// the item is in, so the caller can know which sub-queue it was removed from.
+func (queue *Queue) RemoveUnlessState(ctx context.Context, key string,
+	keep func(data any, state ItemState) bool) (bool, error) {
 	item, err := queue.lockExistingItem(opRemove, key)
 	if err != nil {
 		return false, err
 	}
 
-	if keep(item.Data()) {
+	if keep(item.Data(), item.state) {
 		queue.mutex.Unlock()
 
 		return false, nil

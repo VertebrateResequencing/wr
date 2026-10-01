@@ -1079,10 +1079,14 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 
 	sjob.Lock()
 	sjob.DelayTime = delay
+	reservation := sjob.RunnerReservation
 	sjob.Unlock()
 
 	s.persistReservation(ctx, sjob)
 	s.handOutReservation(ctx, sjob, item.Key)
+
+	// a runner reserving this job has finished with any job it reserved before.
+	s.releaseRunsMovedOnFrom(ctx, cr.ClientID, item.Key, reservation)
 
 	// make a copy of the job with some extra stuff filled in (that we don't want
 	// taking up memory here) for the client
@@ -1150,15 +1154,24 @@ func (s *Server) handOutReservation(ctx context.Context, sjob *Job, key string) 
 // the reserving client, returning its scheduler group, retries and
 // until-buried count (read under the same lock). reserves is the job's queue
 // item's Reserves count after the reservation, which says the run the item is
-// on is this one (see Job.runHeldByLocked).
+// on is this one (see Job.runHeldByLocked). A wr runner's reservation gets a new
+// RunnerReservation, and any other's 0.
 //
 // A RUN of a job begins here, so this is where the manager mints the run's
 // identity (see runToken) and clears the fields that described the run before. The
 // runner makes its working directory, mounts filesystems and starts the Cmd on
 // the strength of the reservation alone, before its Started reaches us.
 func (s *Server) resetJobForReservation(sjob *Job, cr *clientRequest, reserves uint32) (string, uint8, uint8) {
+	reservation := s.runnerReservation(cr)
+
 	sjob.Lock()
 	defer sjob.Unlock()
+
+	// an earlier run that never left the index, such as one released by a user's
+	// kill, is over now.
+	s.runnerHolds.forget(sjob.ReservedBy, sjob.Key(), sjob.RunnerReservation)
+	sjob.RunnerReservation = reservation
+	s.runnerHolds.hold(cr.ClientID, sjob.Key(), reservation)
 
 	// Exitcode -1 says "has not exited" to anything that forgets to check Exited
 	// first.
@@ -1187,7 +1200,7 @@ func (s *Server) resetJobForReservation(sjob *Job, cr *clientRequest, reserves u
 
 // handleStart records that a reserved job's command has started running. It does
 // not return until that record is on disk; see the comment on the write below.
-func (s *Server) handleStart(_ context.Context, cr *clientRequest) (*serverResponse, string, string) {
+func (s *Server) handleStart(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
 	// update the job's cmd-started-related properties
 	if cr.Job == nil {
 		return nil, ErrBadRequest, ""
@@ -1227,6 +1240,8 @@ func (s *Server) handleStart(_ context.Context, cr *clientRequest) (*serverRespo
 	if startPersistedHook != nil {
 		startPersistedHook(job.Key())
 	}
+
+	s.releaseRunsMovedOnFromJob(ctx, cr.ClientID, job)
 
 	return nil, "", ""
 }
@@ -1372,6 +1387,8 @@ func (s *Server) handleTouch(ctx context.Context, cr *clientRequest) (*serverRes
 	// applied, though: that describes a command being killed.
 	srerr, qerr := s.touchJob(ctx, cr, item, job, lost, !killCalled)
 
+	s.releaseRunsMovedOnFromJob(ctx, cr.ClientID, job)
+
 	if killCalled {
 		// the runner goes on touching until it has finished, so a failed touch
 		// here is retried, but KillCalled must still reach it; log the failure
@@ -1488,6 +1505,8 @@ func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverR
 		return nil, srerr, ""
 	}
 
+	s.forgetCompletedRunnerHold(job)
+
 	return s.archiveCompletedJob(ctx, job, key, rgroup, sgroup)
 }
 
@@ -1595,7 +1614,7 @@ func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup,
 // dependants then keep waiting on it, as they do when the write keeps it live.
 func (s *Server) finishArchive(ctx context.Context, job *Job, key, rgroup, sgroup string,
 	outcome archiveOutcome, err error) (*serverResponse, string, string) {
-	removed, errr := s.removeArchivedItem(ctx, job, key, outcome)
+	removed, from, errr := s.removeArchivedItem(ctx, job, key, outcome)
 
 	if job.endArchive() {
 		s.requeueRerun(ctx, job, key, sgroup)
@@ -1621,28 +1640,53 @@ func (s *Server) finishArchive(ctx context.Context, job *Job, key, rgroup, sgrou
 	s.rpl.Delete(rgroup, key)
 	s.rpl.Unlock()
 	clog.Debug(ctx, "completed job", "key", key, "cmd", job.loggableCmd(), "schedGrp", sgroup)
-	s.decrementGroupCount(ctx, sgroup, 1)
+	s.giveBackArchivedItem(ctx, sgroup, from)
 
 	return nil, "", ""
 }
 
+// giveBackArchivedItem updates the scheduler group count for an archived job
+// whose item was removed from the given state. Only a run's own archive gives
+// back its runner. A late archive of a run the manager already released must not
+// give it back again, since the release did when it took the item out of run:
+// an item in delay was never counted again, while one in ready was counted by
+// the last scheduling pass, so it recounts at once rather than leave a runner to
+// be spawned for nothing.
+func (s *Server) giveBackArchivedItem(ctx context.Context, sgroup string, from queue.ItemState) {
+	switch from {
+	case queue.ItemStateRun:
+		s.decrementGroupCount(ctx, sgroup, 1)
+	case queue.ItemStateReady:
+		s.triggerReadyAddedCallback(ctx)
+	default:
+	}
+}
+
 // removeArchivedItem is finishArchive's removal of the job's queue item, if the
 // outcome of its archive's write calls for it, which reports whether it removed
-// it. An item already gone is not an error: another archive of the same
-// completion, written in the same transaction, removed it.
-func (s *Server) removeArchivedItem(ctx context.Context, job *Job, key string, outcome archiveOutcome) (bool, error) {
+// it, and the state it removed it from. An item already gone is not an error:
+// another archive of the same completion, written in the same transaction,
+// removed it.
+func (s *Server) removeArchivedItem(ctx context.Context, job *Job, key string,
+	outcome archiveOutcome) (removed bool, from queue.ItemState, err error) {
 	if outcome != archiveRemovedLive {
-		return false, nil
+		return false, "", nil
 	}
 
-	removed, errr := s.q.RemoveUnless(ctx, key, func(data any) bool {
+	removed, err = s.q.RemoveUnlessState(ctx, key, func(data any, state queue.ItemState) bool {
+		from = state
+
 		return data != job || job.rerunAfterRun()
 	})
-	if queueErrorIs(errr, queue.ErrNotFound) {
-		errr = nil
+	if queueErrorIs(err, queue.ErrNotFound) {
+		err = nil
 	}
 
-	return removed, errr
+	if !removed {
+		from = ""
+	}
+
+	return removed, from, err
 }
 
 // handleRelease moves a job from the run queue to the delay queue, or buries it
