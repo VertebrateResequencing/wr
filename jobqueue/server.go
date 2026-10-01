@@ -66,6 +66,7 @@ import (
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/gofrs/uuid/v5"
 	"github.com/gorilla/websocket"
 	"github.com/inconshreveable/log15/v3"
 	logext "github.com/inconshreveable/log15/v3/ext"
@@ -1295,6 +1296,11 @@ type releaseSnapshot struct {
 	// delay or ready to run again: another release of this run, such as the
 	// manager's own of a lost job, took it out of Run first.
 	waiting bool
+
+	// reservedBy and runnerReservation identify the run being released, if a wr
+	// runner reserved it (see moved_on_runner.go).
+	reservedBy        uuid.UUID
+	runnerReservation uint64
 }
 
 // completeJobsBudget tracks how many more archived jobs each of limitJobs' groups
@@ -1659,6 +1665,11 @@ type Server struct {
 	// confirmDead groups lost jobs' confirm-dead ssh checks by host so all of a
 	// dead host's pid checks share one ssh connection (see confirmdead.go).
 	confirmDead *confirmDeadCoordinator
+
+	// runnerHolds indexes the runs wr runners hold in the run sub-queue, so a
+	// job whose runner has moved on to another can be released (see
+	// moved_on_runner.go).
+	runnerHolds *runnerHolds
 }
 
 // itemTTRDuration returns the current (runtime-adjustable) time-to-release given
@@ -4767,6 +4778,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		lostJobCheckTimeout:       timings.LostJobCheckTimeout,
 		lostJobCheckRetryTime:     timings.LostJobCheckRetryTime,
 		confirmDeadLimiter:        make(chan struct{}, timings.ConfirmDeadConcurrency),
+		runnerHolds:               newRunnerHolds(),
 	}
 
 	// the confirm-dead coordinator groups lost jobs' ssh checks by host; it needs
@@ -5240,6 +5252,7 @@ func (s *Server) recoveredItemDef(ctx context.Context, recovered resolvedJob, lo
 		itemdef.StartQueue = queue.SubQueueRun
 
 		s.recoverRunningJob(ctx, job, loginUser, ttd)
+		s.recoverRunnerHold(job)
 	case job.State == JobStateBuried:
 		itemdef.StartQueue = queue.SubQueueBury
 	case job.State == JobStateSuspended:
@@ -6241,8 +6254,10 @@ func (s *Server) prepareInputJobs(inputJobs []*Job, envkey string,
 	for _, job := range inputJobs {
 		job.Lock()
 		job.EnvKey = envkey
-		// only the manager may mark a job to run again (see running_dependent.go).
+		// only the manager may mark a job to run again (see running_dependent.go),
+		// or say which runner reservation came first (see moved_on_runner.go).
 		job.RerunAfterRun = false
+		job.RunnerReservation = 0
 
 		job.dropImpossibleCleanups()
 
@@ -6628,6 +6643,8 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, rep releaseReport) er
 		return errq
 	}
 
+	s.runnerHolds.forget(snap.reservedBy, snap.key, snap.runnerReservation)
+
 	if outcome == releaseAlreadyDone {
 		// a redundant report, such as a runner re-sending after its first request
 		// timed out on a slow commit, must not be acknowledged before that first
@@ -6687,10 +6704,12 @@ func releaseJobSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseS
 	}
 
 	return releaseSnapshot{
-		key:     job.Key(),
-		state:   job.State,
-		bury:    rep.forceBury || remaining == 0,
-		waiting: waiting,
+		key:               job.Key(),
+		state:             job.State,
+		bury:              rep.forceBury || remaining == 0,
+		waiting:           waiting,
+		reservedBy:        job.ReservedBy,
+		runnerReservation: job.RunnerReservation,
 	}
 }
 

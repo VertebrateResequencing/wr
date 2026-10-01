@@ -1068,9 +1068,13 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 
 	sjob.Lock()
 	sjob.DelayTime = delay
+	reservation := sjob.RunnerReservation
 	sjob.Unlock()
 
 	s.persistReservation(ctx, sjob)
+
+	// a runner reserving this job has finished with any job it reserved before.
+	s.releaseRunsMovedOnFrom(ctx, cr.ClientID, item.Key, reservation)
 
 	// make a copy of the job with some extra stuff filled in (that we don't want
 	// taking up memory here) for the client
@@ -1120,15 +1124,24 @@ func (s *Server) persistReservation(ctx context.Context, job *Job) {
 
 // resetJobForReservation clears a job's past run state ready for a fresh run by
 // the reserving client, returning its scheduler group, retries and
-// until-buried count (read under the same lock).
+// until-buried count (read under the same lock). A wr runner's reservation gets
+// a new RunnerReservation, and any other's 0.
 //
 // A RUN of a job begins here, so this is where the manager mints the run's
 // identity (see runToken) and clears the fields that described the run before. The
 // runner makes its working directory, mounts filesystems and starts the Cmd on
 // the strength of the reservation alone, before its Started reaches us.
 func (s *Server) resetJobForReservation(sjob *Job, cr *clientRequest) (string, uint8, uint8) {
+	reservation := s.runnerReservation(cr)
+
 	sjob.Lock()
 	defer sjob.Unlock()
+
+	// an earlier run that never left the index, such as one released by a user's
+	// kill, is over now.
+	s.runnerHolds.forget(sjob.ReservedBy, sjob.Key(), sjob.RunnerReservation)
+	sjob.RunnerReservation = reservation
+	s.runnerHolds.hold(cr.ClientID, sjob.Key(), reservation)
 
 	// Exitcode -1 says "has not exited" to anything that forgets to check Exited
 	// first.
@@ -1153,7 +1166,7 @@ func (s *Server) resetJobForReservation(sjob *Job, cr *clientRequest) (string, u
 
 // handleStart records that a reserved job's command has started running. It does
 // not return until that record is on disk; see the comment on the write below.
-func (s *Server) handleStart(_ context.Context, cr *clientRequest) (*serverResponse, string, string) {
+func (s *Server) handleStart(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
 	// update the job's cmd-started-related properties
 	if cr.Job == nil {
 		return nil, ErrBadRequest, ""
@@ -1193,6 +1206,8 @@ func (s *Server) handleStart(_ context.Context, cr *clientRequest) (*serverRespo
 	if startPersistedHook != nil {
 		startPersistedHook(job.Key())
 	}
+
+	s.releaseRunsMovedOnFromJob(ctx, cr.ClientID, job)
 
 	return nil, "", ""
 }
@@ -1338,6 +1353,8 @@ func (s *Server) handleTouch(ctx context.Context, cr *clientRequest) (*serverRes
 	// applied, though: that describes a command being killed.
 	srerr, qerr := s.touchJob(ctx, cr, item, job, lost, !killCalled)
 
+	s.releaseRunsMovedOnFromJob(ctx, cr.ClientID, job)
+
 	if killCalled {
 		// the runner goes on touching until it has finished, so a failed touch
 		// here is retried, but KillCalled must still reach it; log the failure
@@ -1453,6 +1470,8 @@ func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverR
 	if srerr != "" {
 		return nil, srerr, ""
 	}
+
+	s.forgetCompletedRunnerHold(job)
 
 	return s.archiveCompletedJob(ctx, job, key, rgroup, sgroup)
 }

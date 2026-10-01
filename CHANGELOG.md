@@ -5,6 +5,14 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [Unreleased]
+### Fixed
+- Under LSF, a job whose runner moved on to other work after its report of
+  the job was lost to a manager crash is now re-run as soon as that runner next
+  contacts the manager, instead of staying running for ever or, after an hour,
+  having its runner killed along with the job that runner was then running.
+
+
 ## [0.38.0] - 2026-09-30
 ### Added
 - New `--queue` and `--queues_avoid` options for `wr manager start` (and the

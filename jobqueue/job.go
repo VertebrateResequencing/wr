@@ -991,6 +991,16 @@ type Job struct {
 	// server side only, cleared on a job a client adds, never kept in a job's
 	// complete record, and not copied to the jobs clients are sent (itemToJob).
 	RerunAfterRun bool `codec:",omitempty"`
+	// the manager sets this, at reservation, on a job reserved by a wr runner
+	// under LSF, to a number larger than that of any reservation it made
+	// before; it is 0 for a job any other client reserved. A runner holds one job at a time, so
+	// its newer job means it has moved on from an older one (see
+	// moved_on_runner.go). It is exported only so that it is stored with the
+	// reservation and survives a restart: it is server side only, cleared on a
+	// job a client adds and on a completed run, and not copied to the jobs
+	// clients are sent (itemToJob). It means nothing once the job has left the
+	// run sub-queue.
+	RunnerReservation uint64 `codec:",omitempty"`
 	// on the server we don't store EnvC with the job, but look it up in db via
 	// this key.
 	EnvKey string
