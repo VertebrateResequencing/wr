@@ -164,9 +164,17 @@ package passes `-timeout 40m`, as the suite runner does.
     hand-made request with a zero ClientID could release or bury a job that
     never ran (ReservedBy zero), as it already could for Delay and Ready; the
     real client always sends a random ID.
-- [ ] **5. A re-sent release after a kick may spend a retry from the kicked
+- [x] **5. A re-sent release after a kick may spend a retry from the kicked
       budget.** Re-check after #654's last commit changed kick handling; fix if
       still real.
+  - Not real since #654's last commits: `nice -n 19 go test ./jobqueue
+    -count=1 -run 'TestResentReleaseAfterKick$'` passes on 7f9f3537. A
+    runner releases a started job with no retries, which buries it; the user
+    kicks it; the runner re-sends the release. The item is in Ready, so
+    `releaseJobSnapshot` sees it waiting and spends no retry, and the report
+    is `releaseAlreadyDone`: the job stays ready with the kicked budget.
+    With the `!waiting &&` guard removed the test fails (`Expected "ready"
+    Actual "buried"`), so it is kept as a regression test.
 - [ ] **6. A jobqueue test can fail to start its manager on a busy host.**
       Found by item 2's review gate: `TestDepGranularityModifyChangesMemberKey`
       failed with `could not listen on the manager port, so exiting port=45077

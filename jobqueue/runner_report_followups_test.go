@@ -358,3 +358,38 @@ func TestOwnerBuryOfRequeuedDependent(t *testing.T) {
 		})
 	})
 }
+
+// TestResentReleaseAfterKick proves that a runner's re-sent release of a job
+// its first release buried, which the user has since kicked, does not spend a
+// retry from the kicked budget.
+func TestResentReleaseAfterKick(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a started job with no retries its runner released, so it was buried, and the user kicked", t, func() {
+		f := newReleaseAfterLostFixture(ctx, t, 0, os.Getpid(), "")
+		defer f.stop(ctx)
+
+		So(f.runner.releaseAfterAttempt(f.job, releaseAfterLostEndState(), FailReasonExit), ShouldBeNil)
+		So(f.itemState(), ShouldEqual, queue.ItemStateBury)
+
+		kicked, err := f.user.Kick(f.essence())
+		So(err, ShouldBeNil)
+		So(kicked, ShouldEqual, 1)
+		So(f.itemState(), ShouldEqual, queue.ItemStateReady)
+
+		budget := f.finalJob().UntilBuried
+		So(budget, ShouldEqual, initialUntilBuried(0))
+
+		Convey("a re-send of that release is acknowledged and leaves the kicked budget alone", func() {
+			So(f.runner.releaseAfterAttempt(f.job, releaseAfterLostEndState(), FailReasonExit), ShouldBeNil)
+
+			job := f.finalJob()
+			So(job.State, ShouldEqual, JobStateReady)
+			So(job.UntilBuried, ShouldEqual, budget)
+		})
+	})
+}
