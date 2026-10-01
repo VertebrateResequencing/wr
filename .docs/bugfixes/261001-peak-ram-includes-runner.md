@@ -33,7 +33,7 @@
     keeps it; a re-exec child runner under a 512MiB parent keeps a 256MB
     command peak (the getrusage threshold recorded 14MB there).
 
-- [ ] `GOOS=darwin go test -c ./jobqueue` (and `go vet`) fails:
+- [x] `GOOS=darwin go test -c ./jobqueue` (and `go vet`) fails:
   `jobqueue/depgranularity_startup_test.go:1135:42: undefined:
   pscBindRetryBudget` (also line 1164); the constant is defined in the
   `//go:build linux` file jobqueue/port_selfconnect_test.go (both last touched
