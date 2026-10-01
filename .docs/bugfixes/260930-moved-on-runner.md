@@ -207,3 +207,28 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
   - Red: `grep -n "under LSF" jobqueue/job.go` printed line 995. Fixed:
     the comment now says runners under any scheduler; the grep prints
     nothing.
+- [x] CI `make race` on `7cf2d043` (this branch merged with develop
+  `83efb248`, run 36894109586, job 110476656547) failed
+  `jobqueue/confirmdead_slow_host_test.go` `TestConfirmDeadSlowHost`, "when a
+  ps-only forced command answers one pid per command", line 159
+  (`So(lost, ShouldEqual, slowHostRunners)`): `Expected: 10 Actual: 9`, so one
+  of the ten reserved jobs was never seen `Lost` within `20*slowHostTTR` (6s).
+  Local `make race` on the same head passed.
+  - Not reproduced yet by: a 200ms or 700ms sleep after each key's
+    `waitForJobLost` (2 and 3 runs passed, so a job confirmed dead keeps
+    `Lost`); `taskset -c 0` on a `-race` test binary, `-count=5` twice; a
+    `reservationQueuedHook` sleeping 2 TTRs for the first reservation, `-count=2`.
+  - Cause (test): the setup loop made exactly 10 `Reserve` calls and kept
+    the keys in a set. Under load the loop can outlast the first job's 300ms
+    TTR, confirm-dead and release, so a later `Reserve` returns that job
+    again and only 9 distinct jobs are watched. `Lost` is cleared only by a
+    new reservation, so this is the only way to see fewer than 10 without a
+    6s wait timing out (the CI test took 4.16s in all).
+  - Red: a temporary 200ms sleep after `setServerJobPid` in the loop, `go
+    test -tags netgo -count=1 -run '^TestConfirmDeadSlowHost$' ./jobqueue/`,
+    failed both Conveys with `Expected: 10 Actual: 9` and `Actual: 8`.
+  - Fix (test only): the loop reserves until it has 10 distinct jobs, giving
+    each reservation a dead pid, bounded by `slowHostReclaimWait`. With the
+    same sleep it passes 3 of 3 (11-13 reservations per Convey); `-race
+    -count=5` passes. No assertion changed.
+  - Reviewer: PASS. `make lint` 0 issues.
