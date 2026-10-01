@@ -62,10 +62,10 @@ func TestRunningDependentRerunArchiveRaces(t *testing.T) {
 		second := dgaMemberJob(d, rdrGroup, rdrSecondName)
 		dgrAddJobs(jq, []*Job{second})
 
-		serverJob := rdaServerJob(d, waiter.Key())
+		serverItem, serverJob := rdaServerJob(d, waiter.Key())
 
 		Convey("a late store of the mark, while or after its archive is written, leaves the archive's record", func() {
-			key, repGroup, schedGroup, srerr := markJobComplete(serverJob, success(), d.server.limiter, jq.clientid)
+			key, repGroup, schedGroup, srerr := markJobComplete(serverJob, serverItem, success(), d.server.limiter, jq.clientid)
 			So(srerr, ShouldBeEmpty)
 
 			outcome, err := d.server.db.archiveCompletion(key, serverJob)
@@ -116,10 +116,10 @@ func TestRunningDependentRerunArchiveRaces(t *testing.T) {
 		dgrAddJobs(jq, []*Job{child})
 		So(dgaItemState(d.server, child.Key()), ShouldEqual, queue.ItemStateDependent)
 
-		serverJob := rdaServerJob(d, waiter.Key())
+		serverItem, serverJob := rdaServerJob(d, waiter.Key())
 
 		Convey("if it is marked to run again after its archive's write, the dependent waits for it to run again", func() {
-			key, repGroup, schedGroup, srerr := markJobComplete(serverJob, success(), d.server.limiter, jq.clientid)
+			key, repGroup, schedGroup, srerr := markJobComplete(serverJob, serverItem, success(), d.server.limiter, jq.clientid)
 			So(srerr, ShouldBeEmpty)
 
 			var (
@@ -158,13 +158,13 @@ func TestRunningDependentRerunArchiveRaces(t *testing.T) {
 		defer d.stop(ctx)
 		defer disconnect(jq)
 
-		serverJob := rdaServerJob(d, waiter.Key())
+		serverItem, serverJob := rdaServerJob(d, waiter.Key())
 		end := success()
 
-		key, repGroup, schedGroup, srerr := markJobComplete(serverJob, end, d.server.limiter, jq.clientid)
+		key, repGroup, schedGroup, srerr := markJobComplete(serverJob, serverItem, end, d.server.limiter, jq.clientid)
 		So(srerr, ShouldBeEmpty)
 
-		_, _, _, srerr = markJobComplete(serverJob, end, d.server.limiter, jq.clientid)
+		_, _, _, srerr = markJobComplete(serverJob, serverItem, end, d.server.limiter, jq.clientid)
 		So(srerr, ShouldBeEmpty)
 
 		_, srerr, qerr := d.server.archiveCompletedJob(ctx, serverJob, key, repGroup, schedGroup)
@@ -201,15 +201,16 @@ func TestRunningDependentRerunArchiveRaces(t *testing.T) {
 	})
 }
 
-// rdaServerJob returns the manager's in-memory job of the keyed queue item.
-func rdaServerJob(d *dgrServer, key string) *Job {
+// rdaServerJob returns the keyed queue item and the manager's in-memory job of
+// it.
+func rdaServerJob(d *dgrServer, key string) (*queue.Item, *Job) {
 	item, err := d.server.q.Get(key)
 	So(err, ShouldBeNil)
 
 	job, ok := item.Data().(*Job)
 	So(ok, ShouldBeTrue)
 
-	return job
+	return item, job
 }
 
 // rdaSoLiveRecordUnmarked asserts the job's live record has neither the mark

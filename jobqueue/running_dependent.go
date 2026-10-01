@@ -440,9 +440,15 @@ func (j *Job) markRecoveredRerun() (stored bool) {
 // applyReleaseQueueChangeForRerun is applyReleaseQueueChange for a job that may
 // be marked to run again because a dep group it depends on gained a member
 // during this run: such a job waits on that member instead of being released
-// straight back.
+// straight back. A release the snapshot found supplanted by a new reservation
+// changes nothing, not even the job's mark, and returns
+// errReleaseReporterSupplanted.
 func (s *Server) applyReleaseQueueChangeForRerun(ctx context.Context, q *queue.Queue, item *queue.Item,
 	snap releaseSnapshot, job *Job) (releaseOutcome, error) {
+	if snap.supplanted {
+		return releaseAlreadyDone, errReleaseReporterSupplanted
+	}
+
 	var rerunDeps []string
 
 	rerun := job.takeRerunAfterRun()

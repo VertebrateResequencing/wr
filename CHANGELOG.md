@@ -7,6 +7,12 @@ project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 ### Fixed
+- A runner's late report that its command failed, or should be buried, no
+  longer buries or delays a new run of that command by another runner, which
+  could leave the command running twice, and a late report that it succeeded no
+  longer marks complete a command another runner has just been given. This
+  could happen after the manager gave up on the first runner as lost and the
+  command started again elsewhere.
 - Asking the manager for incomplete commands by report group prefix or
   substring, by state (such as `wr status -b`), or with a limit (such as a
   limited `wr status -i`) no longer copies every queued command first. With
@@ -21,6 +27,12 @@ project adheres to [Semantic Versioning](http://semver.org/).
   the runner had even been given it, when the manager's database took longer
   than the command's TTR to record the reservation. Its TTR now starts when
   the runner is given it.
+- A command whose runner the manager had given up on as lost now shows the exit
+  code and memory use that runner later reported, rather than "lost contact
+  with runner".
+- A runner's bury of a command the manager had sent back to wait on a new
+  dependency now buries it, keeping that dependency for when it is kicked,
+  instead of being refused.
 - `wr status -i <group> -o summary` (and the Go client's
   `GetStatusByRepGroupMatch` with details) no longer reads every completed
   command in full, so it is several times faster, and uses about 1% of the
