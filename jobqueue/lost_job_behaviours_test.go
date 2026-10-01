@@ -242,6 +242,10 @@ func (l *lostRun) startLostRun(jq *Client, rg string, reqs *scheduler.Requiremen
 	_, _, err := jq.Add([]*Job{job}, os.Environ(), true)
 	So(err, ShouldBeNil)
 
+	// the pids the run is started with are made before the reservation starts
+	// its TTR, so no process start is inside it
+	cmdPid, runnerPid := exitedPid(), exitedPid()
+
 	reserved, err := jq.Reserve(2 * time.Second)
 	So(err, ShouldBeNil)
 	So(reserved, ShouldNotBeNil)
@@ -252,12 +256,10 @@ func (l *lostRun) startLostRun(jq *Client, rg string, reqs *scheduler.Requiremen
 	l.makeLostWorkSpace(reserved)
 
 	// started with a command pid that has already exited, so the manager's
-	// dead-check really does confirm this run dead, through the real scheduler.
-	So(jq.Started(reserved, exitedPid()), ShouldBeNil)
-
+	// dead-check really does confirm this run dead, through the real scheduler,
 	// and with a dead RUNNER pid too, which the manager equally requires - see
-	// runnerExited.
-	l.runnerExited()
+	// startedByExitedRunner.
+	l.startedByExitedRunner(reserved, cmdPid, runnerPid)
 
 	if !l.opts.cwdMatters && !l.opts.webless {
 		applyLiveSnapshot(l.live, &JobEndState{Cwd: l.lostCwd})
@@ -288,27 +290,33 @@ func (l *lostRun) makeLostWorkSpace(reserved *Job) {
 	reserved.Unlock()
 }
 
-// runnerExited replaces the RUNNER pid the manager recorded for the run that has
-// just reported its Started with the pid of a process that has already exited.
+// startedByExitedRunner reports the run started with command pid cmdPid, as a
+// runner with pid runnerPid would, where both are pids of processes that have
+// already exited.
 //
-// It is not optional, and it must not be "simplified" away: the manager confirms
-// a lost run dead only when BOTH the pids it holds for it are gone - the
-// command's, and the pid of the runner process that reported it (jobConfirmedDead
-// in confirmdead.go). That is deliberate, and it is what stops a slow runner whose
-// command has finished from having its success re-run underneath it; only when the
-// runner pid was never reported (0) does the manager fall back to the command pid
-// alone.
+// The runner pid is not optional, and it must not be "simplified" away: the
+// manager confirms a lost run dead only when BOTH the pids it holds for it are
+// gone - the command's, and the pid of the runner process that reported it
+// (jobConfirmedDead in confirmdead.go). That is deliberate, and it is what stops a
+// slow runner whose command has finished from having its success re-run
+// underneath it; only when the runner pid was never reported (0) does the manager
+// fall back to the command pid alone.
 //
 // Client.startedRequest reports os.Getpid() as the runner pid, because the client
-// process IS the runner - and in a test that is the live test process. So a
-// command pid that has exited is half of what this fixture needs: without the
-// runner dying too, the manager rightly refuses to declare the run dead, no test
-// here ever reaches lostJobDeadCheckedHook, and each waits out lostRunSettleTime
-// instead.
-func (l *lostRun) runnerExited() {
-	l.live.Lock()
-	l.live.RunnerPid = exitedPid()
-	l.live.Unlock()
+// process IS the runner - and in a test that is the live test process. So the
+// request's runner pid is replaced before it is sent, rather than the manager's
+// copy being changed after it: the run's TTR is running, and a run that expires
+// in between is declared lost holding the live test process as its runner, so is
+// never confirmed dead, no test here reaches lostJobDeadCheckedHook, and each
+// waits out lostRunSettleTime instead.
+func (l *lostRun) startedByExitedRunner(reserved *Job, cmdPid, runnerPid int) {
+	req, err := l.client.startedRequest(reserved, cmdPid, time.Now())
+	So(err, ShouldBeNil)
+
+	req.Job.RunnerPid = runnerPid
+
+	_, err = l.client.request(req)
+	So(err, ShouldBeNil)
 }
 
 // handOver parks the manager, telling the test it has reached one of its two
@@ -593,7 +601,7 @@ func (l *lostRun) reportItStarted(reserved *Job, pid int) {
 // it is enough: a reservation has no runner pid of its own until its Started
 // arrives, and resetJobForReservation cleared the one the run before it left. The
 // manager needs every pid it holds for a run to be gone before it will declare
-// it dead - see runnerExited.
+// it dead - see startedByExitedRunner.
 func (l *lostRun) runnerDied() {
 	pid := exitedPid()
 
@@ -1207,14 +1215,14 @@ func TestKilledLostJobsReplacementIsStillWatched(t *testing.T) {
 
 		l.waitForDeadCheckWindow()
 
-		// the retry is started with a command pid that has already exited, and
-		// its runner then exits too, so it goes silent the way a run killed by
-		// its node does - and the manager, which needs both pids gone, can
-		// confirm THIS run dead in its turn (see runnerExited).
+		// the retry is started with a command pid that has already exited, by
+		// a runner that has exited too, so it goes silent the way a run killed
+		// by its node does - and the manager, which needs both pids gone, can
+		// confirm THIS run dead in its turn (see startedByExitedRunner).
+		cmdPid, runnerPid := exitedPid(), exitedPid()
 		reserved := l.killAndReserveTheJob(ctx)
 		retryCwd, _, _ := l.getOnWithTheRun(reserved)
-		l.reportItStarted(reserved, exitedPid())
-		l.runnerExited()
+		l.startedByExitedRunner(reserved, cmdPid, runnerPid)
 
 		l.proceedManager()
 		So(l.waitForKillDecision(), ShouldBeFalse)

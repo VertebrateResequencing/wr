@@ -97,13 +97,10 @@ const (
 	// fails pre-fix.
 	dgsStopBound = 2 * time.Second
 
-	// dgsHeartbeatInterval is the recovery heartbeat the sidecar tests run with,
-	// well under their sampling window, and dgsHeartbeatTicks how many of them
-	// they wait between samples. The production interval is a minute, so without
-	// lowering it a paused recovery's sidecar would never be refreshed inside a
-	// test.
+	// dgsHeartbeatInterval is the recovery heartbeat the sidecar tests run with.
+	// The production interval is a minute, so without lowering it a paused
+	// recovery's sidecar would never be refreshed inside a test.
 	dgsHeartbeatInterval = 50 * time.Millisecond
-	dgsHeartbeatTicks    = 4
 
 	// dgsSidecarPollInterval is how often a sidecar poll re-reads the file.
 	dgsSidecarPollInterval = 5 * time.Millisecond
@@ -923,9 +920,7 @@ func TestDepGranularitySidecarReportsElapsedTime(t *testing.T) {
 		first, found := dgsWaitForSidecarState(serverConfig.DBFile, internal.DBStartupRecoveryState)
 		So(found, ShouldBeTrue)
 
-		<-time.After(dgsHeartbeatInterval * dgsHeartbeatTicks)
-
-		second, found := dgsWaitForSidecarState(serverConfig.DBFile, internal.DBStartupRecoveryState)
+		second, found := dgsWaitForSidecarRewrite(serverConfig.DBFile, first)
 		So(found, ShouldBeTrue)
 
 		So(first.Total, ShouldEqual, dgsIncompleteJobs)
@@ -1036,6 +1031,28 @@ func dgsWaitForSidecarState(dbFile, state string) (internal.DBUpgradeStatus, boo
 	return internal.DBUpgradeStatus{}, false
 }
 
+// dgsWaitForSidecarRewrite polls the sidecar until it has been rewritten since
+// first (its UpdatedAt differs) while still in first's state, returning that
+// sample and whether one was seen. It waits for the heartbeat's next write
+// rather than for a fixed number of ticks, because a heartbeat delayed by load
+// can miss any fixed window; the bound is a hang detector for a sidecar that is
+// never refreshed. It deliberately does not require the rewrite to have moved
+// forwards, leaving that for the caller to assert.
+func dgsWaitForSidecarRewrite(dbFile string, first internal.DBUpgradeStatus) (internal.DBUpgradeStatus, bool) {
+	deadline := time.Now().Add(dgsServingWait)
+
+	for time.Now().Before(deadline) {
+		status, _, err := internal.ReadDBUpgradeStatus(dbFile)
+		if err == nil && status.State == first.State && !status.UpdatedAt.Equal(first.UpdatedAt) {
+			return status, true
+		}
+
+		<-time.After(dgsSidecarPollInterval)
+	}
+
+	return internal.DBUpgradeStatus{}, false
+}
+
 // dgsSidecarElapsed parses the elapsed time out of a recovery-phase sidecar's
 // detail, reporting -1 when it does not carry one (so a test comparing two
 // samples fails rather than silently comparing zeroes).
@@ -1114,6 +1131,9 @@ func TestDepGranularityStartupExitsWhenPortUnavailable(t *testing.T) {
 	Convey("Publication exits the process when the manager port cannot be bound", t, func() {
 		config, serverConfig, addr, _, connectTime := jobqueueTestInit(true)
 
+		// giving up after the budget is what is tested, not its shipped length.
+		serverConfig.Timings.BindRetryBudget = pscBindRetryBudget
+
 		exits := make(chan int, 2)
 
 		defer publishexit.Set(func(code int) { exits <- code })()
@@ -1141,7 +1161,8 @@ func TestDepGranularityStartupExitsWhenPortUnavailable(t *testing.T) {
 		elapsed := time.Since(started)
 
 		So(code, ShouldNotEqual, 0)
-		So(elapsed, ShouldBeGreaterThanOrEqualTo, serverBindRetryBudget)
+		So(elapsed, ShouldBeGreaterThanOrEqualTo, pscBindRetryBudget)
+		So(elapsed, ShouldBeLessThan, serverBindRetryBudget)
 
 		// publication returns straight after publishexit.Exit, so the server is left
 		// unpublished.

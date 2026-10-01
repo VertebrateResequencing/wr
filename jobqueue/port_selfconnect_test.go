@@ -37,6 +37,7 @@ package jobqueue
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -69,6 +70,11 @@ const (
 	// pscRestartCycles is how many times a server is started and stopped on the
 	// same ports within the one process.
 	pscRestartCycles = 3
+
+	// pscBindRetryBudget is the busy-port retry budget tests use when what they
+	// test is how a budget is spent rather than the shipped length of it: two
+	// retry intervals, so a retry still happens, and a fifth of the shipped 5s.
+	pscBindRetryBudget = 2 * serverBindRetryInterval
 
 	// pscStopSettle is how long a Stop is given to cancel a paused recovery
 	// before the pause is released.
@@ -157,10 +163,14 @@ func TestManagerPortSelfConnect(t *testing.T) {
 		serverConfig.Port = pscFreePort(-1)
 		serverConfig.WebPort = pscFreePort(-1)
 
+		// what matters is that a port nothing listens on is waited for past the
+		// busy-port budget, not how long that budget is, so a short one does.
+		serverConfig.Timings.BindRetryBudget = pscBindRetryBudget
+
 		// a bound but unlistening socket without SO_REUSEADDR is refused to
 		// dials and blocks binds exactly as a self-connect's TIME_WAIT does,
 		// but for as long as we choose rather than a fixed 60s.
-		held := serverBindRetryBudget + 2*time.Second
+		held := pscBindRetryBudget + 2*time.Second
 		release := pscHoldLikeTimeWait(serverConfig.Port)
 
 		go func() {
@@ -203,6 +213,22 @@ func TestManagerPortSelfConnect(t *testing.T) {
 		So(err.Error(), ShouldContainSubstring, serverConfig.Port)
 		So(time.Since(started), ShouldBeLessThan, serverBindRetryBudget+pscFastFailSlack)
 	})
+
+	Convey("A port reservation gives up on a port another process listens on within the budget it is given", t, func() {
+		port := pscFreePort(-1)
+		listener := pscAcceptingListener(ctx, port)
+
+		defer func() { _ = listener.Close() }()
+
+		started := time.Now()
+
+		_, err := reservePort(ctx, "manager port", port, pscBindRetryBudget)
+		elapsed := time.Since(started)
+
+		So(errors.Is(err, errPortInUse), ShouldBeTrue)
+		So(elapsed, ShouldBeGreaterThanOrEqualTo, pscBindRetryBudget)
+		So(elapsed, ShouldBeLessThan, serverBindRetryBudget)
+	})
 }
 
 func TestManagerPortReservationRelease(t *testing.T) {
@@ -220,7 +246,7 @@ func TestManagerPortReservationRelease(t *testing.T) {
 		stillHeld := 0
 
 		for range pscReleaseCycles {
-			res, errr := reservePort(ctx, "manager port", port)
+			res, errr := reservePort(ctx, "manager port", port, serverBindRetryBudget)
 			So(errr, ShouldBeNil)
 
 			if pscBindable(p) {

@@ -91,7 +91,14 @@ func TestServeFailsCleanlyWhenPortTaken(t *testing.T) {
 
 		_, serverConfig, _, _, _ := jobqueueTestInit(true)
 
+		// a short budget keeps the test fast, and on Linux proves Serve's port
+		// reservation honours the configured budget, not the shipped default.
+		serverConfig.Timings.BindRetryBudget = pscBindRetryBudget
+
+		started := time.Now()
 		server, _, _, err := serve(ctx, serverConfig)
+		elapsed := time.Since(started)
+
 		if server != nil {
 			defer server.Stop(ctx, true)
 		}
@@ -108,6 +115,63 @@ func TestServeFailsCleanlyWhenPortTaken(t *testing.T) {
 
 		So(err, ShouldNotBeNil)
 		So(err.Error(), ShouldContainSubstring, "manager port "+serverConfig.Port+" is in use by another process")
+		So(elapsed, ShouldBeLessThan, serverBindRetryBudget)
+	})
+}
+
+// TestServeSkipsPortWithIPv6OnlyListener proves that a test manager outside a
+// suite lane still starts when the kernel's first free-looking port has an
+// IPv6-only listener on it, as rpc.statd has on some hosts. freeport only
+// checks 127.0.0.1, and the manager's listener is dual-stack, so that port
+// looks free but cannot be served.
+func TestServeSkipsPortWithIPv6OnlyListener(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	squatter, err := (&net.ListenConfig{}).Listen(ctx, "tcp6", "[::]:0")
+	if err != nil {
+		t.Skipf("no IPv6 on this host: %s", err)
+	}
+
+	defer func() {
+		if errc := squatter.Close(); errc != nil {
+			t.Errorf("closing the IPv6-only listener: %s", errc)
+		}
+	}()
+
+	squatted := squatter.Addr().(*net.TCPAddr).Port //nolint:forcetypeassert,errcheck
+
+	t.Setenv("WR_TEST_LANE", "")
+
+	originalEphemeral := ephemeralTestPort
+
+	defer func() { ephemeralTestPort = originalEphemeral }()
+
+	handedOut := false
+	ephemeralTestPort = func() (int, error) {
+		if handedOut {
+			return originalEphemeral()
+		}
+
+		handedOut = true
+
+		return squatted, nil
+	}
+
+	Convey("serve starts a manager on a port free for IPv4 and IPv6 alike", t, func() {
+		_, serverConfig, _, _, _ := jobqueueTestInit(true)
+
+		server, _, _, errs := serve(ctx, serverConfig)
+		if server != nil {
+			defer server.Stop(ctx, true)
+		}
+
+		So(handedOut, ShouldBeTrue)
+		So(errs, ShouldBeNil)
+		So(serverConfig.Port, ShouldNotEqual, strconv.Itoa(squatted))
 	})
 }
 

@@ -28,6 +28,7 @@ package testing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -67,9 +68,17 @@ const (
 	testPortBaseEnv     = "WR_TEST_PORT_BASE"
 )
 
+// errNoFreeEphemeralPort is returned when the ephemeral picker keeps handing
+// out ports a manager could not listen on.
+var errNoFreeEphemeralPort = errors.New("no ephemeral port a manager could listen on")
+
 // laneTestPortNext is the per-lane sequential offset used by laneFreePort. A
 // lane's tests run sequentially, so it needs no synchronisation.
 var laneTestPortNext int //nolint:gochecknoglobals
+
+// ephemeralFreePort is where laneFreePort gets a candidate port outside a lane.
+// It is a var so a test can hand out a port it has occupied.
+var ephemeralFreePort = freeport.GetFreePort //nolint:gochecknoglobals
 
 // PrepareWrConfig creates a temp directory, changes to that directory, creates
 // a wr config file with available ports set, then returns a ServerConfig with
@@ -140,16 +149,17 @@ func getPorts(t *testing.T) (int, int) {
 // so the two packages' lanes never overlap); within a lane the tests run
 // sequentially, so an incrementing counter never repeats a port before it would
 // wrap. WR_TEST_PORT_BASE lets the suite runner choose a fresh run-specific
-// base range. Falls back to the global picker when WR_TEST_LANE is unset.
+// base range. Falls back to the global picker when WR_TEST_LANE is unset,
+// bind-checking its ports the same way.
 func laneFreePort() (int, error) {
 	laneStr := os.Getenv("WR_TEST_LANE")
 	if laneStr == "" {
-		return freeport.GetFreePort()
+		return freeEphemeralPort()
 	}
 
 	lane, err := strconv.Atoi(laneStr)
 	if err != nil {
-		return freeport.GetFreePort()
+		return freeEphemeralPort()
 	}
 
 	laneBasePort := defaultLaneBasePort
@@ -161,15 +171,39 @@ func laneFreePort() (int, error) {
 		laneTestPortNext++
 
 		port := laneBasePort + lane*laneSpan + laneTestPortNext%laneSpan
-		if lanePortAvailable(port) {
+		if portCanListen(port) {
 			return port, nil
 		}
 	}
 
-	return freeport.GetFreePort()
+	return freeEphemeralPort()
 }
 
-func lanePortAvailable(port int) bool {
+// freeEphemeralPort returns a port from ephemeralFreePort that a manager can
+// listen on. freeport only binds 127.0.0.1, so it can hand out a port with an
+// IPv6-only listener on it (rpc.statd has one on some hosts), which the
+// manager's dual-stack listener cannot bind; portCanListen binds the way the
+// manager does.
+func freeEphemeralPort() (int, error) {
+	const attempts = 20
+
+	for range attempts {
+		port, err := ephemeralFreePort()
+		if err != nil {
+			return 0, err
+		}
+
+		if portCanListen(port) {
+			return port, nil
+		}
+	}
+
+	return 0, fmt.Errorf("%w after %d attempts", errNoFreeEphemeralPort, attempts)
+}
+
+// portCanListen reports whether port can be listened on for IPv4 and IPv6
+// alike: Go listens dual-stack on the "0.0.0.0" wildcard, as the manager does.
+func portCanListen(port int) bool {
 	var listenConfig net.ListenConfig
 
 	listener, err := listenConfig.Listen(

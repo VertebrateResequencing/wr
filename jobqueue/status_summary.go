@@ -133,12 +133,41 @@ func (s *RepGroupStatus) AddBuried(group string, key string) {
 
 // AddCompleteJob adds a completed job's compact status details.
 func (s *RepGroupStatus) AddCompleteJob(job *Job) {
+	s.addCompleteUsage(&completeJobUsage{
+		PeakRAM:   job.PeakRAM,
+		PeakDisk:  job.PeakDisk,
+		StartTime: job.StartTime,
+		EndTime:   job.EndTime,
+		CPUtime:   job.CPUtime,
+		State:     job.State,
+	})
+}
+
+// completeJobUsage holds the fields of a completed job that AddCompleteJob
+// summarises.
+//
+// Its field names are deliberately the same as Job's. The codec stores a Job as
+// a map of its exported field names, so an archived record decodes into this by
+// name and structurally SKIPS the rest, including the Cmd and Env that make a
+// full decode expensive (see archivedJobFacets).
+type completeJobUsage struct {
+	PeakRAM   int
+	PeakDisk  int64
+	StartTime time.Time
+	EndTime   time.Time
+	CPUtime   time.Duration
+	State     JobState
+}
+
+// addCompleteUsage adds one completed job's usage, exactly as AddCompleteJob
+// does for the job it came from.
+func (s *RepGroupStatus) addCompleteUsage(usage *completeJobUsage) {
 	s.AddState(JobStateComplete, 1)
-	s.Memory.Push(float64(job.PeakRAM))
-	s.Disk.Push(float64(job.PeakDisk))
-	s.Walltime.Push(float64(job.WallTime()))
-	s.CPUtime.Push(float64(job.CPUtime))
-	s.addStartEnd(job.StartTime, job.EndTime)
+	s.Memory.Push(float64(usage.PeakRAM))
+	s.Disk.Push(float64(usage.PeakDisk))
+	s.Walltime.Push(float64(wallTime(usage.StartTime, usage.EndTime, usage.State)))
+	s.CPUtime.Push(float64(usage.CPUtime))
+	s.addStartEnd(usage.StartTime, usage.EndTime)
 }
 
 // Merge folds another report-group status into this one.

@@ -145,7 +145,7 @@ func TestReliable4SlowRequestWarning(t *testing.T) {
 			}
 			sr := &serverResponse{Jobs: []*Job{{}, {}, {}}}
 
-			warnIfSlowRequest(ctx, cr, sr, "", 4096, time.Now().Add(-slowRequestTestElapsed))
+			warnIfSlowRequest(ctx, nil, cr, sr, "", 4096, time.Now().Add(-slowRequestTestElapsed))
 
 			out := buf.String()
 			So(strings.Count(out, slowRequestLogMsg), ShouldEqual, 1)
@@ -173,7 +173,7 @@ func TestReliable4SlowRequestWarning(t *testing.T) {
 
 			cr := &clientRequest{Method: slowRequestTestMethod, Job: &Job{RepGroup: "rg-fast"}}
 
-			warnIfSlowRequest(ctx, cr, &serverResponse{}, "", 4096, time.Now().Add(-slowRequestTestElapsed))
+			warnIfSlowRequest(ctx, nil, cr, &serverResponse{}, "", 4096, time.Now().Add(-slowRequestTestElapsed))
 
 			So(buf.String(), ShouldBeEmpty)
 		})
@@ -189,7 +189,7 @@ func TestReliable4SlowRequestWarning(t *testing.T) {
 			cr := &clientRequest{Method: slowRequestTestMethod, Job: &Job{RepGroup: "rg-err"}}
 			sr := &serverResponse{Jobs: []*Job{{}, {}, {}}}
 
-			warnIfSlowRequest(ctx, cr, sr, ErrDBError, 12, time.Now().Add(-slowRequestTestElapsed))
+			warnIfSlowRequest(ctx, nil, cr, sr, ErrDBError, 12, time.Now().Add(-slowRequestTestElapsed))
 
 			out := buf.String()
 			So(strings.Count(out, slowRequestLogMsg), ShouldEqual, 1)
@@ -207,12 +207,12 @@ func TestReliable4SlowRequestWarning(t *testing.T) {
 
 			cr := &clientRequest{Method: requestMethodWaitForUpdates, Timeout: serverSubscriptionHoldTime}
 
-			warnIfSlowRequest(ctx, cr, &serverResponse{}, "", 0, time.Now().Add(-serverSubscriptionHoldTime))
+			warnIfSlowRequest(ctx, nil, cr, &serverResponse{}, "", 0, time.Now().Add(-serverSubscriptionHoldTime))
 
 			So(buf.String(), ShouldBeEmpty)
 
 			Convey("but the same method held far longer than it asked for is", func() {
-				warnIfSlowRequest(ctx, cr, &serverResponse{}, "", 0,
+				warnIfSlowRequest(ctx, nil, cr, &serverResponse{}, "", 0,
 					time.Now().Add(-slowRequestTestElapsed))
 
 				out := buf.String()
@@ -236,7 +236,7 @@ func TestReliable4SlowRequestWarning(t *testing.T) {
 			cr := &clientRequest{Method: requestMethodWaitForUpdates}
 			So(cr.Timeout, ShouldEqual, 0)
 
-			warnIfSlowRequest(ctx, cr, &serverResponse{}, "", 0,
+			warnIfSlowRequest(ctx, nil, cr, &serverResponse{}, "", 0,
 				time.Now().Add(-serverSubscriptionHoldTime))
 
 			So(buf.String(), ShouldBeEmpty)
@@ -253,7 +253,7 @@ func TestReliable4SlowRequestWarning(t *testing.T) {
 
 			cr := &clientRequest{Method: requestMethodWaitForUpdates, Timeout: time.Hour}
 
-			warnIfSlowRequest(ctx, cr, &serverResponse{}, "", 0,
+			warnIfSlowRequest(ctx, nil, cr, &serverResponse{}, "", 0,
 				time.Now().Add(-slowRequestTestElapsed))
 
 			out := buf.String()
@@ -270,7 +270,7 @@ func TestReliable4SlowRequestWarning(t *testing.T) {
 
 			cr := &clientRequest{Method: slowRequestTestMethod, Timeout: time.Hour}
 
-			warnIfSlowRequest(ctx, cr, &serverResponse{}, "", 0, time.Now().Add(-slowRequestTestElapsed))
+			warnIfSlowRequest(ctx, nil, cr, &serverResponse{}, "", 0, time.Now().Add(-slowRequestTestElapsed))
 
 			out := buf.String()
 			So(strings.Count(out, slowRequestLogMsg), ShouldEqual, 1)
@@ -281,7 +281,7 @@ func TestReliable4SlowRequestWarning(t *testing.T) {
 			slowRequestThreshold = slowRequestTestThreshold
 			ctx, buf := captureLogCtx(context.Background())
 
-			warnIfSlowRequest(ctx, &clientRequest{Method: slowRequestTestNoReplyMeth}, nil, "", 0,
+			warnIfSlowRequest(ctx, nil, &clientRequest{Method: slowRequestTestNoReplyMeth}, nil, "", 0,
 				time.Now().Add(-slowRequestTestElapsed))
 
 			out := buf.String()

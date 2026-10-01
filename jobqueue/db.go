@@ -980,9 +980,9 @@ type db struct {
 	envcache             *lru.ARCCache[string, []byte]
 	updatingAfterJobExit atomic.Int64
 	// archivedDecodes counts how many archived jobs decodeArchivedJob has actually
-	// codec-decoded. It is INERT observability in the style of Job.derivations and
-	// archiveTxObserver: nothing but the reliable4 history-scan tests read it and it
-	// affects no behaviour. It lives on the db, rather than being a package global,
+	// codec-decoded in full. It is INERT observability in the style of
+	// Job.derivations and archiveTxObserver: nothing but the history-scan and
+	// status tests read it and it affects no behaviour. It lives on the db, rather than being a package global,
 	// so a test counts only the decodes of ITS OWN server; a process-wide counter
 	// would be perturbed by any other live server in the same test binary.
 	archivedDecodes atomic.Uint64
@@ -4325,6 +4325,9 @@ func (db *db) decodeArchivedJob(completeJobBucket, newJobBucket *bolt.Bucket, ke
 // retrieveCompleteJobStatusByRepGroup gets a compact status summary for
 // archived jobs in the given RepGroup. Count-only mode checks keys and does not
 // decode the archived jobs.
+//
+// Details mode decodes only each record's completeJobUsage, never the whole
+// job, so its cost does not include the records' Cmd, Env and other fields.
 func (db *db) retrieveCompleteJobStatusByRepGroup(repgroup string, includeDetails bool) (*RepGroupStatus, error) {
 	summary := NewRepGroupStatus()
 	err := db.bolt.View(func(tx *bolt.Tx) error {
@@ -4340,6 +4343,15 @@ func (db *db) addCompleteJobStatusByRepGroup(tx *bolt.Tx, summary *RepGroupStatu
 	completeJobBucket := tx.Bucket(bucketJobsComplete)
 	lookupBucket := tx.Bucket(bucketRTK).Cursor()
 
+	var (
+		decoder *codec.Decoder
+		usage   completeJobUsage
+	)
+
+	if includeDetails {
+		decoder = codec.NewDecoderBytes(nil, db.ch)
+	}
+
 	prefix := []byte(repgroup + dbDelimiter)
 	for k, _ := lookupBucket.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = lookupBucket.Next() {
 		key := bytes.TrimPrefix(k, prefix)
@@ -4349,29 +4361,24 @@ func (db *db) addCompleteJobStatusByRepGroup(tx *bolt.Tx, summary *RepGroupStatu
 			continue
 		}
 
-		if err := db.addCompleteJobStatus(summary, repgroup, encoded, includeDetails); err != nil {
+		if !includeDetails {
+			summary.AddState(JobStateComplete, 1)
+
+			continue
+		}
+
+		// a field left at its zero value is not stored, so reset before each
+		// decode rather than inherit the previous record's value
+		usage = completeJobUsage{}
+
+		decoder.ResetBytes(encoded)
+
+		if err := decoder.Decode(&usage); err != nil {
 			return err
 		}
+
+		summary.addCompleteUsage(&usage)
 	}
-
-	return nil
-}
-
-func (db *db) addCompleteJobStatus(summary *RepGroupStatus, repgroup string, encoded []byte,
-	includeDetails bool) error {
-	if !includeDetails {
-		summary.AddState(JobStateComplete, 1)
-
-		return nil
-	}
-
-	job, err := db.decodeJob(encoded)
-	if err != nil {
-		return err
-	}
-
-	job.RepGroup = repgroup
-	summary.AddCompleteJob(job)
 
 	return nil
 }

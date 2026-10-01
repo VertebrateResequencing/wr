@@ -41,14 +41,28 @@ jobs:
         go-version-file: go.mod
         cache: false
 
-    - name: Cache Go modules and build
-      uses: actions/cache@v6.1.0
+    # A cache entry can never be overwritten, so a key of go.mod and go.sum
+    # alone was saved once and then only ever restored: every later run compiled
+    # all of wr's own packages from scratch. The key now ends in the commit, so
+    # each run restores the newest entry for its target (preferring one with the
+    # same dependencies) and saves the build it has added to it.
+    #
+    # Only pushes to develop and master save. An entry a pull request saves can
+    # only be restored by that same pull request, so at a GB or more per target
+    # per push those would fill the repo's 10GB cache and evict the entries
+    # every pull request restores from its base branch. Go itself trims build
+    # cache objects unused for 5 days, so an entry does not grow without bound
+    # as packages change.
+    - name: Restore Go modules and build cache
+      id: go-cache
+      uses: actions/cache/restore@v6.1.0
       with:
         path: |
           ~/go/pkg/mod
           ~/.cache/go-build
-        key: go-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('go.mod', 'go.sum') }}
+        key: go-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('go.mod', 'go.sum') }}-${{ github.sha }}
         restore-keys: |
+          go-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('go.mod', 'go.sum') }}-
           go-${{ runner.os }}-${{ matrix.target }}-
 
     - name: Install container runtimes
@@ -75,7 +89,22 @@ jobs:
         cat /etc/fuse.conf
 
     - name: Run make ${{ matrix.target }}
+      id: suite
       run: make ${{ matrix.target }}
+
+    # saved even when tests fail, since the build is just as valid, but not
+    # when the run was cancelled part-way through building, or never got as far
+    # as building anything.
+    - name: Save Go modules and build cache
+      if: >-
+        ${{ !cancelled() && github.event_name == 'push' && steps.suite.outcome != 'skipped'
+        && steps.go-cache.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: ${{ steps.go-cache.outputs.cache-primary-key }}
 
   # Branch protection requires a check named "test", so this job reports the
   # combined result of both suite targets under that name. It must run even when

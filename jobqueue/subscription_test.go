@@ -1558,7 +1558,7 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 	Convey("A restarted manager delivers a resync marker and catch-up terminal update", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionReconnectTimings(&serverConfig, 250*time.Millisecond, 2*time.Second)
+		applySubscriptionReconnectTimings(&serverConfig, 250*time.Millisecond, subscriptionRestartRetryTime)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1718,7 +1718,7 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 	Convey("A successful transient reconnect never sets a fatal subscription error", t, func() {
 		ctx := context.Background()
 		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
-		applySubscriptionReconnectTimings(&serverConfig, 200*time.Millisecond, 2*time.Second)
+		applySubscriptionReconnectTimings(&serverConfig, 200*time.Millisecond, subscriptionRestartRetryTime)
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -1743,7 +1743,7 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 
 		server = restartSubscriptionTestServer(ctx, serverConfig)
 
-		update := receiveSubscriptionUpdate(sub, 2*time.Second)
+		update := receiveSubscriptionUpdate(sub, subscriptionUpdateWait)
 		So(update, ShouldNotBeNil)
 		So(update.Kind, ShouldEqual, JobUpdateResync)
 		So(sub.Err(), ShouldBeNil)
@@ -2551,6 +2551,17 @@ func recvDeadlineUnderLock(jq *Client) (time.Duration, error) {
 
 	return jq.recvDeadline()
 }
+
+// subscriptionRestartRetryTime is the reconnect retry budget for tests whose
+// subscription must survive a manager restart. The budget starts when Stop
+// breaks the long poll, so it has to cover the rest of Stop and the whole of
+// the restart: 1.3-1.6s of a 2s budget with the test pinned to a busy core, and
+// past it under more load. Only a failing reconnect ever waits it out.
+const subscriptionRestartRetryTime = 30 * time.Second
+
+// subscriptionUpdateWait bounds the wait for updates that must arrive. Only a
+// missing update waits it out.
+const subscriptionUpdateWait = 10 * time.Second
 
 // applySubscriptionReconnectTimings sets the reconnect backoff/total-retry-time
 // the server will hand to its clients, for tests exercising reconnection.
@@ -3994,7 +4005,7 @@ func subscriptionTestJobs(prefix string, standardReqs *jqs.Requirements, count i
 }
 
 func collectSubscriptionUpdates(sub *Subscription, count int) ([]*JobUpdate, bool) {
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(subscriptionUpdateWait)
 	updates := make([]*JobUpdate, 0, count)
 
 	for len(updates) < count {
