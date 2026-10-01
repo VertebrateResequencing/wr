@@ -94,3 +94,33 @@ Checked and already fixed on develop, so not on this branch:
   - (2) The doc comment now matches the code.
   - These are the reviewer's own suggestions; the coordinator checked the diff.
     `TestManagerPortSelfConnect` passes, and `make lint` reports 0 issues.
+- [x] `make race` on this branch, rebased onto develop `95faf16` (#651),
+  failed `jobqueue/stop_exited_zero_test.go` `TestExitedZeroDuringStopIsComplete`
+  ("it is recorded as complete, and is still complete after a restart", line
+  149, `So(execErr, ShouldBeNil)`: `Actual: 'jobqueue Execute(...): killed by
+  user request; note: command used too much RAM'`). The test is from #646 and
+  untouched here. Candidate cause (test): the command is `touch <exited>;
+  (sleep 2 &); exit 0`, and the test starts the stop as soon as `<exited>`
+  appears, but that file appears before the shell has exited. A shell
+  descheduled between the `touch` and the `exit 0` gets the stop's kill while
+  still running, so the runner rightly reports it killed, and the test's
+  premise (a command that has already exited 0 when the stop starts) is never
+  set up.
+  - Red: with a temporary `sleep 0.5;` after the `touch` (standing in for a
+    descheduled shell), `CGO_ENABLED=1 go test -race -count=3 -run
+    '^TestExitedZeroDuringStopIsComplete$' ./jobqueue/` failed 3 of 3 with the
+    same `Line 149` / `killed by user request` failure. Without it, 20 of 20
+    passed on an idle host.
+  - Fix (test only), `jobqueue/stop_exited_zero_test.go`: the command's
+    backgrounded subshell now polls `ps -o stat= -p $$` (bounded to 1000 tries)
+    until the shell is a zombie, then writes the sentinel and sleeps 2s with
+    stdout still open. `Execute` reads stdout and stderr to EOF before
+    `cmd.Wait()`, so the zombie is exactly the premise: exited 0, not yet
+    waited for. The sentinel can no longer appear while the shell is running.
+    Assertions are unchanged.
+  - After: with a 0.5s pause before the new command's `exit 0`, the test
+    passed 5 of 5 under `-race` (and 3 of 3 again for the reviewer, 5 of 5);
+    unmodified, `-race -count=20` passes.
+  - Reviewer: PASS. Checked that the test's `/bin/sh` (dash on ubuntu-latest)
+    is run as `/bin/sh -c <cmd>` with no wrapper, that `$$` in the subshell is
+    the shell's pid, and that nothing else reaps it. `make lint` 0 issues.
