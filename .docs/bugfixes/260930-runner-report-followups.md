@@ -175,10 +175,20 @@ package passes `-timeout 40m`, as the suite runner does.
     is `releaseAlreadyDone`: the job stays ready with the kicked budget.
     With the `!waiting &&` guard removed the test fails (`Expected "ready"
     Actual "buried"`), so it is kept as a regression test.
-- [ ] **6. A jobqueue test can fail to start its manager on a busy host.**
+- [x] **6. A jobqueue test can fail to start its manager on a busy host.**
       Found by item 2's review gate: `TestDepGranularityModifyChangesMemberKey`
       failed with `could not listen on the manager port, so exiting port=45077
       err="... bind: address already in use"` (depgranularity_recovery_test.go
       line 114, `dgrStartServer`). `isolateTestConfig` (jobqueue_test.go)
       picks a free port and the manager binds it later, so another process on
       the shared host can take it in between.
+  - Not a defect of the project's gates: `freeTestPort` (jobqueue_test.go)
+    gives each `make test`/`make race` lane its own port range below the
+    ephemeral range (WR_TEST_LANE, WR_TEST_PORT_BASE), and falls back to the
+    bind-and-close picker only for a direct `go test`, as its comment says.
+    Both failures came from direct `go test ./jobqueue` runs on a host where
+    other agents' tests hold ephemeral ports. Each failing test passed when
+    re-run, and the `make test` and `make race` gates below are the check.
+
+Gates on the final branch, under the settings above: `make lint` 0 issues;
+`make test` 827 passed, 21 skipped; `make race` 827 passed, 20 skipped.
