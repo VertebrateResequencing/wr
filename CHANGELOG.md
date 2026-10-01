@@ -5,6 +5,19 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [Unreleased]
+### Fixed
+- A manager crash while you added a command to a dep group (`--dep_grps`)
+  could stop a command depending on that group (`--deps`), whose run had just
+  finished, from running again after the new command. It now runs again after
+  the new command completes, whether or not the client retries the add.
+- Adding a command to a dep group (`--dep_grps`) while the completion of a
+  command depending on that group was being recorded could leave that command,
+  queued to run again, missing from `wr status -i` by its rep group and not
+  counted as a member of its own dep groups, until the manager restarted.
+  Commands depending on it could then start before it ran again.
+
+
 ## [0.38.0] - 2026-09-30
 ### Added
 - New `--queue` and `--queues_avoid` options for `wr manager start` (and the

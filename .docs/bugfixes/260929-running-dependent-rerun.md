@@ -82,9 +82,11 @@ directory: `make lint`, `make test`, `CGO_ENABLED=1 make race`.
     `releaseDepGroupMembership`/rep-group lookup delete loses the resurrected
     job's in-memory dep-group membership and rep-group lookup until the next
     restart. Closing it needs an ordering between those two paths.
+    - Fixed in `260930-dep-group-rerun-gaps.md` item 7.
   - Known, not fixed: a crash after an add's write but before its reply loses
     the rerun of a dependent whose archive was written after the add read it.
     The client saw no reply, so it retries the add.
+    - Fixed in `260930-dep-group-rerun-gaps.md` item 6.
   - Newly observed, pre-existing flake, not caused by this change: a test
     manager's first `serve` sometimes fails with `bind: address already in
     use` ("the server's publication gave up"), for example in
