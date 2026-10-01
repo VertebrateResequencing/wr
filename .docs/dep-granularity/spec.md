@@ -1139,8 +1139,11 @@ since recovery marks it again. The archive's drop of the waiter's dep group
 memberships and rep group lookup is ordered against the add registering them
 again (item 7 there), so a waiter brought back while its archive is cleaning
 up keeps them. An add that reads the waiter complete before the archive has
-removed its queue item can still leave it live but unqueued until a restart
-(item 7b there, not fixed).
+removed its queue item marks that item to run again rather than counting the
+waiter a duplicate (item 7b), and a waiter update that finds another add has
+since queued a different copy retries against that copy (item 7c). An add that
+fails after its write leaves the waiter live on disk, and a retry of the add
+queues it (item 9).
 
 `updateJobDependencies`' doc comment is stale - it names `storeNewJobs()` and
 `db.modifyLiveJobs()` as its sources, but `modifyLiveJobs` discards

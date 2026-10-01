@@ -62,12 +62,8 @@ func TestCrashMidAddRerun(t *testing.T) {
 		second := dgaMemberJob(d, rdrGroup, rdrSecondName)
 
 		for _, archivedAfterWrite := range []bool{false, true} {
-			when := "before"
-			if archivedAfterWrite {
-				when = "after"
-			}
-
-			Convey("if its run is archived "+when+" the add's write, and the manager crashes before the add replies", func() {
+			Convey("if its run is archived "+cmrWhen(archivedAfterWrite)+
+				" the add's write, and the manager crashes before the add replies", func() {
 				client := cmrAddArchivingAndCrash(ctx, d, jq, waiter, second, archivedAfterWrite)
 				defer disconnect(client)
 
@@ -89,6 +85,15 @@ func TestCrashMidAddRerun(t *testing.T) {
 	})
 }
 
+// cmrWhen describes when, relative to the add's write, the waiter is archived.
+func cmrWhen(archivedAfterWrite bool) string {
+	if archivedAfterWrite {
+		return "after"
+	}
+
+	return "before"
+}
+
 // cmrAddArchivingAndCrash has jq add second while the running waiter's runner
 // archives it, straight after the add read its dependents or, if
 // archivedAfterWrite, straight after the add's write. It then replaces the
@@ -98,13 +103,24 @@ func TestCrashMidAddRerun(t *testing.T) {
 // one the client never saw.
 func cmrAddArchivingAndCrash(ctx context.Context, d *dgrServer, jq *Client, waiter, second *Job,
 	archivedAfterWrite bool) *Client {
+	archive := func(runner *Client) error {
+		return runner.Archive(waiter, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()})
+	}
+
+	return cmrAddFinishingAndCrash(ctx, d, jq, second, archive, archivedAfterWrite)
+}
+
+// cmrAddFinishingAndCrash is cmrAddArchivingAndCrash with finish, given a
+// client that is jq's runner, taking the waiter from wherever it is to archived.
+func cmrAddFinishingAndCrash(ctx context.Context, d *dgrServer, jq *Client, second *Job,
+	finish func(runner *Client) error, archivedAfterWrite bool) *Client {
 	runner := rdrReconnect(d, jq)
 	defer disconnect(runner)
 
 	var archiveErr, backupErr error
 
 	archive := func() {
-		archiveErr = runner.Archive(waiter, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()})
+		archiveErr = finish(runner)
 	}
 
 	crashImage := &bytes.Buffer{}

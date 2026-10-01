@@ -103,15 +103,23 @@ home directory: `make lint`, `make test`, `CGO_ENABLED=1 make race`.
   - Test: `jobqueue/crash_mid_add_rerun_test.go` (`TestCrashMidAddRerun`): the
     archive before and after the add's write, with and without the client
     retrying; after restart the dependent is dependent on the new member,
-    becomes ready once it completes, and runs again.
+    becomes ready once it completes, and runs again. Its sibling
+    `jobqueue/crash_mid_add_queued_rerun_test.go`
+    (`TestCrashMidAddQueuedRerun`) does the same for a dependent that is ready,
+    or reserved and not started, when the add reads it, and is then reserved,
+    started and archived during the add. Disabling the add's in-write put-back
+    fails its "before" cases; disabling `rerunGuard.keeps` fails its "after"
+    cases.
   - Residuals (each needs an error after a committed write, or is an extra
     run rather than a lost one): an add that fails after its write but before
     it queues a put-back dependent leaves it live on disk and out of the queue
     until a restart, and a retry then does not queue it (before this fix the
     retry resurrected it); a guard key already live before the add, two adds
     guarding one dependent, or a chunked add crashing after its first chunk
-    can each run the dependent once more. Ready and reserved dependents, and
-    the chunked path, rely on the same ordering but have no test of their own.
+    can each run the dependent once more. The chunked path relies on the same
+    ordering but has no test of its own: it needs 1000 or more jobs in one
+    bucket of one add, and its batch size is a set of constants with no test
+    knob.
 - [x] 7b. Found while fixing item 7 (also the "Residual, not fixed" in
   `260929-readd-overwrites-running-job.md`): an add that reads a dependent W as
   complete after W's archive transaction committed but before `finishArchive`'s
