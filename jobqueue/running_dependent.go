@@ -117,6 +117,12 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+// maxDependentUpdateAttempts bounds how many times updateDependentUnlessRunning
+// finds the item it is updating holding a different job than it read. Each
+// retry needs the key's item to have been archived away and queued afresh again
+// in the meantime.
+const maxDependentUpdateAttempts = 3
+
 // isDepGroupDependencyKey reports whether a queue dependency key stands for a
 // dep group rather than a job.
 func isDepGroupDependencyKey(key string) bool {
@@ -226,6 +232,25 @@ func (s *Server) rerunArchivingItems(ctx context.Context, itemdefs []*queue.Item
 	return remaining, marked, nil
 }
 
+// updateHolderUnlessRunning is one attempt of updateDependentUnlessRunning,
+// returning a queue.ErrDataChanged error if the item no longer holds job.
+func (s *Server) updateHolderUnlessRunning(ctx context.Context, job *Job, deps []string, marks *rerunMarks) error {
+	var marked, archiving bool
+
+	if dependentReadHook != nil {
+		dependentReadHook(job.Key())
+	}
+
+	_, err := s.q.UpdateHolderUnlessRunning(ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority,
+		0*time.Second, s.itemTTRDuration(), deps, func() { marked, archiving = true, job.markRerunAfterRun() })
+
+	if marked {
+		marks.add(job, archiving)
+	}
+
+	return err
+}
+
 // rerunArchivingItem is rerunArchivingItems for one item definition, reporting
 // whether it marked the job its key is queued by.
 func (s *Server) rerunArchivingItem(ctx context.Context, itemdef *queue.ItemDef, marks *rerunMarks) (bool, error) {
@@ -245,15 +270,41 @@ func (s *Server) rerunArchivingItem(ctx context.Context, itemdef *queue.ItemDef,
 // updateDependentUnlessRunning gives the queue item holding job, an in-memory
 // job, deps to wait on, unless it is running, in which case the job is instead
 // marked to run again once its run ends, and added to marks.
+//
+// The item may have stopped holding job since it was read, its archive having
+// removed it and another add having queued a fresh copy of the job under the
+// key. Putting job on that item would lose the copy, and a mark made on job
+// would not reach its run, so the update is made to the copy instead, with its
+// dependencies as they are now: the copy may have been given dependencies worked
+// out before the member the caller is adding was registered.
 func (s *Server) updateDependentUnlessRunning(ctx context.Context, job *Job, deps []string,
 	marks *rerunMarks) error {
-	var marked, archiving bool
+	key := job.Key()
 
-	_, err := s.q.UpdateUnlessRunning(ctx, job.Key(), job.getSchedulerGroup(), job, job.Priority,
-		0*time.Second, s.itemTTRDuration(), deps, func() { marked, archiving = true, job.markRerunAfterRun() })
+	var err error
 
-	if marked {
-		marks.add(job, archiving)
+	for attempt := range maxDependentUpdateAttempts {
+		err = s.updateHolderUnlessRunning(ctx, job, deps, marks)
+		if !queueErrorIs(err, queue.ErrDataChanged) || attempt == maxDependentUpdateAttempts-1 {
+			break
+		}
+
+		job = s.queuedJob(key)
+		if job == nil {
+			return queue.Error{Queue: s.q.Name, Op: "Update", Item: key, Err: queue.ErrNotFound}
+		}
+
+		// unlike rerunDependencies, a failure to work out the holder's
+		// dependencies fails the update, as one when the add gathered its updates
+		// fails the add, rather than leaving the holder to run on none of them
+		var waitingForDepGroups []string
+
+		deps, waitingForDepGroups, err = job.Dependencies.dependencyKeys(s.db, s.depGroups)
+		if err != nil {
+			return err
+		}
+
+		job.setWaitingForDepGroups(waitingForDepGroups)
 	}
 
 	return err

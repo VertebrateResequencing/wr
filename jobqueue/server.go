@@ -390,6 +390,14 @@ var newJobsStoredErrHook func() error
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var archiveCommittedHook func(key string)
 
+// dependentReadHook, if non-nil, is called with a dependent's key once its
+// in-memory job has been read from the queue, before the job's queue item is
+// given new dependencies, so a test can have the item replaced in between. It is
+// a test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var dependentReadHook func(key string)
+
 // archiveRemovedHook, if non-nil, is called with a job's key by an archive that
 // has removed that job's queue item, before it drops the job's dep group
 // memberships and rep group lookup, so a test can have an add bring the job back

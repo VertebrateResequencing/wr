@@ -193,7 +193,7 @@ home directory: `make lint`, `make test`, `CGO_ENABLED=1 make race`.
   18): `TestDepGranularitySidecarReportsElapsedTime` failed at
   `depgranularity_startup_test.go:935` (`second.UpdatedAt.After(first.UpdatedAt)`
   was false). It passed on rerun and 5 of 5 alone.
-- [ ] 7c. Found reviewing 7b: `updateDependentUnlessRunning` reads the queued
+- [x] 7c. Found reviewing 7b: `updateDependentUnlessRunning` reads the queued
   job (`queuedJob`) and later calls `q.UpdateUnlessRunning` with it. If, in
   between, the archive removes the item and a second concurrent add queues its
   own copy under the key, the update puts the old job object on the new item
@@ -201,3 +201,26 @@ home directory: `make lint`, `make test`, `CGO_ENABLED=1 make race`.
   the old record is written over its live one). Shared by #649's
   `updateLiveDependents` and 7b's `rerunArchivingItems`. Needs two adds to the
   dependent's dep group as its archive commits.
+  - Red command (exit 1 before the fix; also red with the identity check
+    disabled): `CGO_ENABLED=1 go test -tags netgo --count 1 ./jobqueue -run TestDependentUpdateRace`
+
+    ```text
+    Line 169:
+    Expected: jobqueue.JobState("dependent")
+    Actual:   jobqueue.JobState("complete")
+    --- FAIL: TestDependentUpdateRace (0.77s)
+    ```
+
+    The scenario needs a dependent of two dep groups: one add reads the
+    archiving job, the archive removes it, a second add (whose member is in
+    the other group) queues a fresh copy, which is reserved and started, and
+    the first add then marks the old object, so the rerun is lost.
+  - Fix: `queue.UpdateHolderUnlessRunning` refuses under the queue lock, with
+    `queue.ErrDataChanged`, when the item no longer holds the given data.
+    `updateDependentUnlessRunning` then retries against the current holder
+    (at most 3 times) with dependencies computed for it, marking it if it is
+    running; a dependency lookup error fails the add as the first attempt's
+    does. `queue.UpdateUnlessRunning` is kept for compatibility.
+  - Tests: `jobqueue/dependent_update_race_test.go`
+    (`TestDependentUpdateRace`, via the `dependentReadHook` seam) and
+    `queue/holder_update_test.go`.
