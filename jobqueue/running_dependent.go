@@ -666,17 +666,19 @@ func (s *Server) requeueRerun(ctx context.Context, job *Job, key, sgroup string)
 	deps := s.rerunDependencies(ctx, job)
 
 	err := s.q.Requeue(ctx, key, deps)
-	if queueErrorIs(err, queue.ErrNotRunning) {
-		err = nil
+	clog.Debug(ctx, "completed job, which will run again", "key", key, "cmd", job.loggableCmd())
 
+	if queueErrorIs(err, queue.ErrNotRunning) {
+		// whatever moved it on from the run sub-queue gave back its runner.
 		s.applyRerunDependencies(ctx, job, deps)
+
+		return
 	}
 
 	if err != nil {
 		clog.Warn(ctx, "failed to requeue a completed job to run again", "key", key, "err", err)
 	}
 
-	clog.Debug(ctx, "completed job, which will run again", "key", key, "cmd", job.loggableCmd())
 	s.decrementGroupCount(ctx, sgroup, 1)
 }
 
@@ -745,9 +747,15 @@ func (j *Job) markRecoveredRerun() (stored bool) {
 // applyReleaseQueueChangeForRerun is applyReleaseQueueChange for a job that may
 // be marked to run again because a dep group it depends on gained a member
 // during this run: such a job waits on that member instead of being released
-// straight back.
+// straight back. A release the snapshot found supplanted by a new reservation
+// changes nothing, not even the job's mark, and returns
+// errReleaseReporterSupplanted.
 func (s *Server) applyReleaseQueueChangeForRerun(ctx context.Context, q *queue.Queue, item *queue.Item,
 	snap releaseSnapshot, job *Job) (releaseOutcome, error) {
+	if snap.supplanted {
+		return releaseAlreadyDone, errReleaseReporterSupplanted
+	}
+
 	var rerunDeps []string
 
 	rerun := job.takeRerunAfterRun()

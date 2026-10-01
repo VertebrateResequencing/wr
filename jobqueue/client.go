@@ -408,6 +408,7 @@ type clientRequest struct {
 	Period                  time.Duration
 	ClientID                uuid.UUID
 	FirstReserve            bool
+	Runner                  bool // ADDITIVE wire-only: reserving client is a one-job-at-a-time wr runner (old sends false)
 	GetEnv                  bool
 	GetStd                  bool
 	IgnoreComplete          bool
@@ -772,6 +773,15 @@ func (c *Client) GetRecent(period time.Duration, limit int, state JobState, getS
 // non-scheduler/non-LSF clients (the default).
 func (c *Client) SetReserveSchedulerID(schedulerID string) {
 	c.reserveSchedulerID = schedulerID
+}
+
+// SetReserveAsRunner records whether the client is a wr runner, which runs its
+// jobs strictly one at a time, so subsequent ReserveScheduled requests let the
+// server release a job of this client's at once when the client moves on to a
+// newer one. It is only for use by `wr runner`; other clients, which may hold
+// several jobs at once, should leave it false (the default).
+func (c *Client) SetReserveAsRunner(runner bool) {
+	c.reserveAsRunner = runner
 }
 
 // requestWithin is request(), but with this one request's receive deadline
@@ -1528,6 +1538,11 @@ type Client struct {
 	// the scheduler which element holds the reservation (it must not be killed as
 	// excess). Empty for non-scheduler/non-LSF clients.
 	reserveSchedulerID string
+
+	// reserveAsRunner is true for the client of a wr runner, set via
+	// SetReserveAsRunner and sent on reserve requests so the server knows the
+	// client runs one job at a time.
+	reserveAsRunner bool
 }
 
 // envStr holds the []string from os.Environ(), for codec compatibility.
@@ -2129,7 +2144,7 @@ func (c *Client) Reserve(timeout time.Duration) (*Job, error) {
 
 	resp, err := c.request(&clientRequest{
 		Method: requestMethodReserve, Timeout: timeout, FirstReserve: fr, Host: host, Pid: pid,
-		SchedulerID: c.reserveSchedulerID,
+		SchedulerID: c.reserveSchedulerID, Runner: c.reserveAsRunner,
 	})
 	if err != nil {
 		return nil, err
@@ -2160,7 +2175,7 @@ func (c *Client) ReserveScheduled(timeout time.Duration, schedulerGroup string) 
 
 	resp, err := c.request(&clientRequest{
 		Method: requestMethodReserve, Timeout: timeout, SchedulerGroup: schedulerGroup, FirstReserve: fr,
-		Host: host, Pid: pid, SchedulerID: c.reserveSchedulerID,
+		Host: host, Pid: pid, SchedulerID: c.reserveSchedulerID, Runner: c.reserveAsRunner,
 	})
 	if err != nil {
 		return nil, err

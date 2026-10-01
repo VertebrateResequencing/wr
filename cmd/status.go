@@ -543,9 +543,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 
 				switch job.State {
 				case jobqueue.JobStateDelayed:
-					ready := job.EndTime.Add(job.DelayTime)
-					fmt.Printf("Status: delayed following a problem, prior to retrying; will become ready in %s (attempted at %s)\n",
-						time.Until(ready).Round(time.Second), job.StartTime.Format(shortTimeFormat))
+					fmt.Println(statusDelayedLine(job, time.Now()))
 				case jobqueue.JobStateReady:
 					fmt.Println("Status: ready to be picked up by a `wr runner`")
 				case jobqueue.JobStateDependent:
@@ -558,8 +556,7 @@ with a normal shell redirect (eg. "mycmd > stdout.txt").
 				case jobqueue.JobStateSuspended:
 					fmt.Println("Status: suspended - use `wr resume` to make it schedulable again")
 				case jobqueue.JobStateBuried:
-					fmt.Printf("Status: buried - you need to fix the problem and then `wr retry` (attempted at %s)\n",
-						job.StartTime.Format(shortTimeFormat))
+					fmt.Println(statusBuriedLine(job))
 				case jobqueue.JobStateReserved, jobqueue.JobStateRunning:
 					fmt.Printf("Status: running (started %s)\n", job.StartTime.Format(shortTimeFormat))
 				case jobqueue.JobStateLost:
@@ -898,6 +895,49 @@ func statusStateFilterModeError() error {
 	}
 
 	return nil
+}
+
+// statusDelayedLine is the status line of the given delayed job, as of now.
+func statusDelayedLine(job *jobqueue.Job, now time.Time) string {
+	readyIn := "imminently"
+	if remaining := statusDelayRemaining(job, now); remaining > 0 {
+		readyIn = "in " + remaining.String()
+	}
+
+	return "Status: delayed following a problem, prior to retrying; will become ready " +
+		readyIn + statusAttemptedAt(job)
+}
+
+// statusDelayRemaining is how long, as of now, until the given delayed job
+// becomes ready, rounded to the second, or 0 if that is not known. It is the
+// manager's ReadyTime, or for a manager that predates that, the job's EndTime
+// plus its DelayTime.
+func statusDelayRemaining(job *jobqueue.Job, now time.Time) time.Duration {
+	ready := job.ReadyTime
+	if ready.IsZero() {
+		if job.EndTime.IsZero() {
+			return 0
+		}
+
+		ready = job.EndTime.Add(job.DelayTime)
+	}
+
+	return ready.Sub(now).Round(time.Second)
+}
+
+// statusBuriedLine is the status line of the given buried job.
+func statusBuriedLine(job *jobqueue.Job) string {
+	return "Status: buried - you need to fix the problem and then `wr retry`" + statusAttemptedAt(job)
+}
+
+// statusAttemptedAt is " (attempted at <StartTime>)" for a job that started,
+// or nothing for one that never did.
+func statusAttemptedAt(job *jobqueue.Job) string {
+	if job.StartTime.IsZero() {
+		return ""
+	}
+
+	return " (attempted at " + job.StartTime.Format(shortTimeFormat) + ")"
 }
 
 func statusPreviousProblem(job *jobqueue.Job) string {

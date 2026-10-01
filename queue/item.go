@@ -86,7 +86,8 @@ type Item struct {
 // remaining in the current sub-queue. This will be a duration of zero for all
 // but the delay and run states. In the delay state it tells you how long before
 // it can be reserved, and in the run state it tells you how long before it will
-// be released automatically.
+// be released automatically. Reserves counts the times Reserve() has returned the
+// item; an item added straight to the run sub-queue was not reserved.
 type ItemStats struct {
 	State     ItemState
 	Age       time.Duration
@@ -375,6 +376,16 @@ func (item *Item) switchDependentReady() {
 	item.state = ItemStateReady
 }
 
+// update after we've switched from the dependent to the bury sub-queue.
+func (item *Item) switchDependentBury() {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+
+	item.queueIndexes[4] = -1
+	item.buries++
+	item.state = ItemStateBury
+}
+
 // update after we've switched from the dependent to the suspended sub-queue.
 func (item *Item) switchDependentSuspended() {
 	item.mutex.Lock()
@@ -384,8 +395,21 @@ func (item *Item) switchDependentSuspended() {
 	item.state = ItemStateSuspended
 }
 
-// update after we've switched from the ready to the run sub-queue.
+// update after we've switched from the ready to the run sub-queue other than by
+// a Reserve(), such as when adding an item straight to the run sub-queue.
 func (item *Item) switchReadyRun() {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+
+	item.queueIndexes[1] = -1
+	item.state = ItemStateRun
+}
+
+// update after Reserve() has switched us from the ready to the run sub-queue.
+// The reservation is counted under the same lock as the state change, so Stats()
+// never shows the item in the run sub-queue without the reservation that put it
+// there.
+func (item *Item) switchReadyRunReserved() {
 	item.mutex.Lock()
 	defer item.mutex.Unlock()
 

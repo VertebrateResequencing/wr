@@ -95,8 +95,8 @@ func TestConfirmDeadSlowHost(t *testing.T) {
 	})
 }
 
-// reclaimDeadRunnersOnSlowHost reserves slowHostRunners first-attempt jobs as
-// that many runners on one host, gives each a pid that is not running here, never
+// reclaimDeadRunnersOnSlowHost reserves each of slowHostRunners jobs as that
+// many runners on one host, gives each a pid that is not running here, never
 // Starts or touches them, waits for all to go lost, then returns how many a fresh
 // runner can reserve within slowHostReclaimWait.
 func reclaimDeadRunnersOnSlowHost(t *testing.T, rg string,
@@ -139,7 +139,10 @@ func reclaimDeadRunnersOnSlowHost(t *testing.T, rg string,
 
 	keys := make(map[string]bool, slowHostRunners)
 
-	for range slowHostRunners {
+	// under load the first jobs can go lost, be confirmed dead and be released
+	// before the rest are reserved, so a Reserve can hand one back: reserve until
+	// every job has been, giving each reservation a dead pid
+	for deadline := time.Now().Add(slowHostReclaimWait); len(keys) < slowHostRunners && time.Now().Before(deadline); {
 		reserved, errr := jq.Reserve(2 * time.Second)
 		So(errr, ShouldBeNil)
 		So(reserved, ShouldNotBeNil)

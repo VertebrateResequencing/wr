@@ -464,6 +464,49 @@ func (j *Job) commandKey(key string) string {
 	return byteKey(jobKeyConcat(j.CwdMatters, j.Cwd, j.Cmd, "", "", ""))
 }
 
+// recordEndStateLocked sets the job's end-of-run properties from an exited
+// JobEndState. An end state with no EndTime keeps the job's own, or stamps now
+// if it has none. Must be called with the Job locked.
+func (j *Job) recordEndStateLocked(jes *JobEndState) {
+	j.Exited = true
+	j.Exitcode = jes.Exitcode
+	j.PeakRAM = jes.PeakRAM
+	j.PeakDisk = jes.PeakDisk
+	j.CPUtime = jes.CPUtime
+
+	// the manager's own release of a lost job knows no end time, and must keep
+	// the one ttrCallback stamped when contact was lost; the owner's later
+	// report of its real end replaces it.
+	switch {
+	case !jes.EndTime.IsZero():
+		j.EndTime = jes.EndTime
+	case j.EndTime.IsZero():
+		j.EndTime = time.Now()
+	}
+
+	j.setActualCwd(jes.Cwd)
+}
+
+// replaceLostEndState records the owner's report of how its command ended, and
+// its fail reason, over the end state the manager's own lost release recorded,
+// which is all FailReasonLost can come from on a job waiting to run again. It
+// reports whether it did: once done, FailReason is the owner's, so a re-send of
+// the same report, or a concurrent duplicate, changes nothing. Limit groups are
+// not touched, since the lost release already gave them back.
+func (j *Job) replaceLostEndState(jes *JobEndState, failReason string) bool {
+	j.Lock()
+	defer j.Unlock()
+
+	if j.FailReason != FailReasonLost || jes == nil || !jes.Exited {
+		return false
+	}
+
+	j.recordEndStateLocked(jes)
+	j.FailReason = failReason
+
+	return true
+}
+
 // cwdLeaf returns the part of cwd below cwdBase, prefixed with "/", for display
 // alongside cwdBase as a Job's working directory. It is the single projection
 // used for both a stored Job's JStatus and a live Job's JobUpdate, so that
@@ -663,6 +706,23 @@ func (j *Job) resetRunLocked(state JobState, exitcode int) {
 	j.CPUtime = 0
 	j.StdOutC = nil
 	j.StdErrC = nil
+}
+
+// runHeldByLocked reports whether the run that the job's queue item, with the
+// given stats, is on still belongs to the runner with client ID reporter: the
+// reporter holds the job's reservation and, if the item is in the run
+// sub-queue, it is there for the reservation the job was last reset for.
+//
+// A reservation moves the item to the run sub-queue before it resets the job
+// for its new runner (respondWithReservedJob), so in between ReservedBy still
+// names the previous runner, and only the item's Reserves count shows that the
+// run is no longer theirs. The caller must hold at least the Job's read lock.
+func (j *Job) runHeldByLocked(reporter uuid.UUID, stats *queue.ItemStats) bool {
+	if j.ReservedBy != reporter {
+		return false
+	}
+
+	return stats.State != queue.ItemStateRun || stats.Reserves == j.reservation
 }
 
 // nilEntryMessage returns a message naming the first nil entry in an explicitly
@@ -991,6 +1051,16 @@ type Job struct {
 	// server side only, cleared on a job a client adds, never kept in a job's
 	// complete record, and not copied to the jobs clients are sent (itemToJob).
 	RerunAfterRun bool `codec:",omitempty"`
+	// the manager sets this, at reservation, on a job reserved by a wr runner,
+	// under any scheduler, to a number larger than that of any reservation it
+	// made before; it is 0 for a job any other client reserved. A runner holds
+	// one job at a time, so its newer job means it has moved on from an older
+	// one (see moved_on_runner.go). It is exported only so that it is stored
+	// with the reservation and survives a restart: it is server side only,
+	// cleared on a job a client adds and on a completed run, and not copied to
+	// the jobs clients are sent (itemToJob). It means nothing once the job has
+	// left the run sub-queue.
+	RunnerReservation uint64 `codec:",omitempty"`
 	// on the server we don't store EnvC with the job, but look it up in db via
 	// this key.
 	EnvKey string
@@ -1004,6 +1074,12 @@ type Job struct {
 	BsubID uint64
 	// delay is the duration we would next spend in the delay queue
 	DelayTime time.Duration
+	// ReadyTime is when a delayed job will become ready again, as the
+	// manager's queue has it. It is only set on the jobs clients are sent
+	// (itemToJob) while the job is delayed, and is zero otherwise, including
+	// from managers that predate it. The manager's own jobs never carry it, so
+	// it is not stored in the database.
+	ReadyTime time.Time `codec:",omitempty"`
 
 	// we add this internally to match up runners we spawn via the scheduler to
 	// the Jobs they're allowed to ReserveFiltered().
@@ -1050,6 +1126,13 @@ type Job struct {
 	// item's TTR expiring meanwhile does not make the job lost. Server side
 	// only.
 	handingOut bool
+
+	// reservation is its queue item's Reserves count as of the reservation the
+	// job was last reset for (see resetJobForReservation). An item in the run
+	// sub-queue with a different count was reserved by a runner the job has not
+	// yet been given to. It is server side only; a job recovered into the run
+	// sub-queue starts at 0, as its item does.
+	reservation uint32
 
 	// archivesPending counts the successful-completion reports the manager has
 	// accepted for this job whose archive has not yet been written and taken off
@@ -1940,8 +2023,8 @@ func (j *Job) noteIncrementedLimitGroups(groups []string) {
 }
 
 // updateAfterExit sets some properties on the job, only if the supplied
-// JobEndState indicates the job exited, and if the job wasn't already exited.
-// It also calls decrementLimitGroups().
+// JobEndState indicates the job exited, and if the job wasn't already exited
+// (see recordEndStateLocked). It also calls decrementLimitGroups().
 func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	j.RLock()
 
@@ -1959,14 +2042,7 @@ func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	}
 
 	j.Lock()
-	j.Exited = true
-	j.Exitcode = jes.Exitcode
-	j.PeakRAM = jes.PeakRAM
-	j.PeakDisk = jes.PeakDisk
-	j.CPUtime = jes.CPUtime
-
-	j.EndTime = jes.EndTime
-	j.setActualCwd(jes.Cwd)
+	j.recordEndStateLocked(jes)
 	j.Unlock()
 }
 
@@ -2241,6 +2317,7 @@ func (j *Job) buildJStatus(streams jobStatusStreams, leaf string) JStatus {
 		Env:                 streams.env,
 		Started:             unixNanoPtr(j.StartTime),
 		Ended:               unixNanoPtr(j.EndTime),
+		Ready:               unixNanoPtr(j.ReadyTime),
 	}
 
 	return js

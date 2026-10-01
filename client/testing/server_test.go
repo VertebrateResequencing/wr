@@ -32,6 +32,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
 
@@ -221,6 +222,67 @@ func TestLaneFreePort(t *testing.T) {
 			So(probe.Close(), ShouldBeNil)
 		}()
 	})
+}
+
+// ipv6OnlyHolders is how many ports TestLaneFreePort holds with IPv6-only
+// listeners. Among the ~28000 ephemeral ports, a picker that ignores them would
+// pick one of them every ~30 picks.
+const ipv6OnlyHolders = 1000
+
+func TestLaneFreePortOutsideALane(t *testing.T) {
+	Convey("Outside a lane, laneFreePort skips ports held by IPv6-only listeners", t, func() {
+		setLaneForTest(t, "", 0)
+
+		holders := holdIPv6Only(t, ipv6OnlyHolders)
+		defer func() {
+			for _, l := range holders {
+				So(l.Close(), ShouldBeNil)
+			}
+		}()
+
+		for range ipv6OnlyHolders {
+			port, err := laneFreePort()
+			So(err, ShouldBeNil)
+			So(portCanListen(port), ShouldBeTrue)
+		}
+	})
+}
+
+// holdIPv6Only listens on n ports with IPv6-only sockets, as rpc.statd does on
+// one port. The manager listens on 0.0.0.0, which Go binds as a dual-stack [::]
+// socket, so it can't bind such a port, although an IPv4 socket can.
+func holdIPv6Only(t *testing.T, n int) []net.Listener {
+	t.Helper()
+
+	listenConfig := net.ListenConfig{Control: func(_, _ string, c syscall.RawConn) error {
+		var sockErr error
+
+		err := c.Control(func(fd uintptr) {
+			sockErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY, 1)
+		})
+		if err != nil {
+			return err
+		}
+
+		return sockErr
+	}}
+
+	holders := make([]net.Listener, 0, n)
+
+	for range n {
+		l, err := listenConfig.Listen(context.Background(), "tcp6", "[::]:0")
+		if err != nil {
+			for _, h := range holders {
+				_ = h.Close()
+			}
+
+			t.Skipf("this host cannot make IPv6-only listeners: %s", err)
+		}
+
+		holders = append(holders, l)
+	}
+
+	return holders
 }
 
 func reserveFirstLanePort(t *testing.T) (int, int, net.Listener) {

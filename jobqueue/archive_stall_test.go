@@ -87,6 +87,19 @@ func TestArchiveStallDoesNotRerunJob(t *testing.T) {
 		serverConfig.Timings.TouchInterval = archiveStallTTR / 5
 		serverConfig.Timings.ReserveWriteWait = 300 * time.Millisecond
 
+		// the write held below must not stall the job's start: the runner settles
+		// its start report before it sends its archive, so a start still waiting
+		// on its write would keep the archive from arriving at all. The start
+		// time is set in memory before that write, so only this hook says the
+		// start has reached disk.
+		startPersisted := make(chan struct{})
+
+		var startPersistedOnce sync.Once
+
+		startPersistedHook = func(string) { startPersistedOnce.Do(func() { close(startPersisted) }) }
+
+		defer func() { startPersistedHook = nil }()
+
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -122,9 +135,12 @@ func TestArchiveStallDoesNotRerunJob(t *testing.T) {
 		go func() { executed <- jq.Execute(ctx, reserved, config.RunnerExecShell) }()
 
 		So(waitForRuns(marker, 1, startDurabilityAckWait), ShouldBeTrue)
-		So(waitForServerJob(server, reserved.Key(), startDurabilityAckWait, func(job *Job) bool {
-			return !job.StartTime.IsZero()
-		}), ShouldBeTrue)
+
+		select {
+		case <-startPersisted:
+		case <-time.After(startDurabilityAckWait):
+			So("the job's start was not persisted", ShouldBeEmpty)
+		}
 
 		holdTx, err := server.db.bolt.Begin(true)
 		So(err, ShouldBeNil)

@@ -433,12 +433,19 @@ func (queue *Queue) Requeue(ctx context.Context, key string, deps []string) erro
 // no other operation on the queue can come in between. keep must not call the
 // queue.
 func (queue *Queue) RemoveUnless(ctx context.Context, key string, keep func(data any) bool) (bool, error) {
+	return queue.RemoveUnlessState(ctx, key, func(data any, _ ItemState) bool { return keep(data) })
+}
+
+// RemoveUnlessState is RemoveUnless, except that keep is also given the state
+// the item is in, so the caller can know which sub-queue it was removed from.
+func (queue *Queue) RemoveUnlessState(ctx context.Context, key string,
+	keep func(data any, state ItemState) bool) (bool, error) {
 	item, err := queue.lockExistingItem(opRemove, key)
 	if err != nil {
 		return false, err
 	}
 
-	if keep(item.Data()) {
+	if keep(item.Data(), item.state) {
 		queue.mutex.Unlock()
 
 		return false, nil
@@ -467,9 +474,11 @@ func holdsDependencies(startQueue SubQueue) bool {
 	return startQueue == SubQueueBury || startQueue == SubQueueSuspended
 }
 
-// BuryWaiting is Bury for an item waiting in the delay or ready sub-queue
-// rather than running, for when an item that was released must be buried
-// instead. It returns the sub-queue the item was taken from. An item in any
+// BuryWaiting is Bury for an item waiting in the delay, ready or dependent
+// sub-queue rather than running, for when an item that was released must be
+// buried instead. A dependent item keeps its dependencies, so a Kick() makes it
+// dependent again until they are resolved. It returns the sub-queue the item
+// was taken from. An item in any
 // other sub-queue, such as one reserved again since it was released, is left
 // alone and ErrNotWaiting returned.
 func (queue *Queue) BuryWaiting(key string) (SubQueue, error) {
@@ -491,6 +500,11 @@ func (queue *Queue) BuryWaiting(key string) (SubQueue, error) {
 		item.switchReadyBury()
 
 		from = SubQueueReady
+	case ItemStateDependent:
+		queue.depQueue.remove(item)
+		item.switchDependentBury()
+
+		from = SubQueueDependent
 	default:
 		queue.mutex.Unlock()
 
@@ -1628,7 +1642,7 @@ func (queue *Queue) Reserve(reserveGroup string, wait time.Duration) (*Item, err
 
 	item.touch()
 	queue.runQueue.push(item)
-	item.switchReadyRun()
+	item.switchReadyRunReserved()
 
 	queue.changed(SubQueueReady, SubQueueRun, []*Item{item})
 	queue.mutex.Unlock()

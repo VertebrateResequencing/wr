@@ -118,3 +118,27 @@ type legacyEOFCloser struct{}
 func (legacyEOFCloser) Close() error {
 	return errLegacyEOF
 }
+
+func TestLogPanicLogsThePanicSite(t *testing.T) {
+	Convey("LogPanic, deferred in a function that panics, logs where the panic happened", t, func() {
+		buff := clog.ToBufferAtLevel("crit")
+
+		defer clog.ToDefault()
+
+		panicsUnderLogPanic(context.Background())
+
+		logged := buff.String()
+		So(logged, ShouldContainSubstring, `msg="test goroutine panic"`)
+		So(logged, ShouldContainSubstring, `err="deliberate test panic"`)
+		So(logged, ShouldContainSubstring, "internal.panicsUnderLogPanic(")
+		So(logged, ShouldContainSubstring, "utils_test.go:")
+	})
+}
+
+// panicsUnderLogPanic panics with LogPanic deferred, as a goroutine in wr
+// would, so the test can look for this function in the logged stack.
+func panicsUnderLogPanic(ctx context.Context) {
+	defer LogPanic(ctx, "test goroutine", false)
+
+	panic("deliberate test panic")
+}

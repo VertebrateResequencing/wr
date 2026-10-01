@@ -229,6 +229,46 @@ func TestManagerPortSelfConnect(t *testing.T) {
 		So(elapsed, ShouldBeGreaterThanOrEqualTo, pscBindRetryBudget)
 		So(elapsed, ShouldBeLessThan, serverBindRetryBudget)
 	})
+
+	Convey("A manager port an IPv6-only listener holds fails Serve fast and says so", t, func() {
+		// Go makes a "tcp6" listener IPv6-only, as rpc.statd's [::] listener
+		// is, while the manager listens dual-stack.
+		listener, errl := (&net.ListenConfig{}).Listen(ctx, "tcp6", "[::]:0")
+		if errl != nil {
+			SkipSo("this host has no IPv6", errl, ShouldBeNil)
+
+			return
+		}
+
+		defer func() { _ = listener.Close() }()
+
+		port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port) //nolint:forcetypeassert,errcheck
+
+		// With loopback IPv6 disabled, [::] still binds but ::1 cannot be
+		// dialled, so Serve could not see the holder.
+		if !hostPortListening(ctx, "::1", port, pscDialTimeout) {
+			SkipSo("this host cannot dial ::1", port, ShouldBeEmpty)
+
+			return
+		}
+
+		_, serverConfig, _, _, _ := jobqueueTestInit(true)
+		serverConfig.Port = port
+		serverConfig.WebPort = pscFreePort(-1)
+
+		defer publishexit.Set(func(int) {})()
+
+		started := time.Now()
+
+		server, _, _, err := Serve(ctx, serverConfig)
+		if server != nil {
+			server.Stop(ctx, true)
+		}
+
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "manager port "+serverConfig.Port+" is in use by another process")
+		So(time.Since(started), ShouldBeLessThan, serverBindRetryBudget+pscFastFailSlack)
+	})
 }
 
 func TestManagerPortReservationRelease(t *testing.T) {
@@ -343,23 +383,18 @@ func TestManagerPortReservationRelease(t *testing.T) {
 }
 
 // pscFreePort returns a free port in the ephemeral range. If parity is 0 or 1,
-// the port has that parity (port%2).
+// the port has that parity (port%2). The port is one the manager can listen on
+// as well as one pscBindable can bind.
 func pscFreePort(parity int) string {
 	for range 100 {
-		var listenConfig net.ListenConfig
-
-		l, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
+		port, err := freeEphemeralTestPort()
 		So(err, ShouldBeNil)
-
-		port := l.Addr().(*net.TCPAddr).Port //nolint:forcetypeassert,errcheck
-
-		So(l.Close(), ShouldBeNil)
 
 		if parity >= 0 && port%2 != parity {
 			port++
 		}
 
-		if pscBindable(port) {
+		if pscBindable(port) && portCanListen(port) {
 			return strconv.Itoa(port)
 		}
 	}
