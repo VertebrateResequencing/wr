@@ -33,6 +33,12 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - A runner's bury of a command the manager had sent back to wait on a new
   dependency now buries it, keeping that dependency for when it is kicked,
   instead of being refused.
+- `wr status` could say a delayed command would become ready in
+  -2562047h47m16.854775808s, typically after lost contact with its runner. It
+  now shows the real time until it becomes ready (also as `Ready` in
+  `wr status -o json`), and a command released after lost contact keeps the
+  time contact was lost as its end time instead of having none, so its
+  walltime no longer keeps growing.
 - `wr status -i <group> -o summary` (and the Go client's
   `GetStatusByRepGroupMatch` with details) no longer reads every completed
   command in full, so it is several times faster, and uses about 1% of the

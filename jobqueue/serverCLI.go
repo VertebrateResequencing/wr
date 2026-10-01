@@ -2545,6 +2545,10 @@ func (s *Server) itemToJobIfAdmitted(ctx context.Context, item *queue.Item, getS
 	// fill stuff in that
 	job := copyJobForClient(sjob, state)
 
+	if state == JobStateDelayed {
+		job.ReadyTime = item.ReadyAt()
+	}
+
 	if getStd && (state == JobStateReserved || state == JobStateRunning || state == JobStateLost) {
 		job.StdErrC = sjob.StdErrC
 		job.StdOutC = sjob.StdOutC

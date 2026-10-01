@@ -465,7 +465,8 @@ func (j *Job) commandKey(key string) string {
 }
 
 // recordEndStateLocked sets the job's end-of-run properties from an exited
-// JobEndState. Must be called with the Job locked.
+// JobEndState. An end state with no EndTime keeps the job's own, or stamps now
+// if it has none. Must be called with the Job locked.
 func (j *Job) recordEndStateLocked(jes *JobEndState) {
 	j.Exited = true
 	j.Exitcode = jes.Exitcode
@@ -473,7 +474,16 @@ func (j *Job) recordEndStateLocked(jes *JobEndState) {
 	j.PeakDisk = jes.PeakDisk
 	j.CPUtime = jes.CPUtime
 
-	j.EndTime = jes.EndTime
+	// the manager's own release of a lost job knows no end time, and must keep
+	// the one ttrCallback stamped when contact was lost; the owner's later
+	// report of its real end replaces it.
+	switch {
+	case !jes.EndTime.IsZero():
+		j.EndTime = jes.EndTime
+	case j.EndTime.IsZero():
+		j.EndTime = time.Now()
+	}
+
 	j.setActualCwd(jes.Cwd)
 }
 
@@ -1054,6 +1064,12 @@ type Job struct {
 	BsubID uint64
 	// delay is the duration we would next spend in the delay queue
 	DelayTime time.Duration
+	// ReadyTime is when a delayed job will become ready again, as the
+	// manager's queue has it. It is only set on the jobs clients are sent
+	// (itemToJob) while the job is delayed, and is zero otherwise, including
+	// from managers that predate it. The manager's own jobs never carry it, so
+	// it is not stored in the database.
+	ReadyTime time.Time `codec:",omitempty"`
 
 	// we add this internally to match up runners we spawn via the scheduler to
 	// the Jobs they're allowed to ReserveFiltered().
@@ -1992,8 +2008,8 @@ func (j *Job) noteIncrementedLimitGroups(groups []string) {
 }
 
 // updateAfterExit sets some properties on the job, only if the supplied
-// JobEndState indicates the job exited, and if the job wasn't already exited.
-// It also calls decrementLimitGroups().
+// JobEndState indicates the job exited, and if the job wasn't already exited
+// (see recordEndStateLocked). It also calls decrementLimitGroups().
 func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	j.RLock()
 
@@ -2286,6 +2302,7 @@ func (j *Job) buildJStatus(streams jobStatusStreams, leaf string) JStatus {
 		Env:                 streams.env,
 		Started:             unixNanoPtr(j.StartTime),
 		Ended:               unixNanoPtr(j.EndTime),
+		Ready:               unixNanoPtr(j.ReadyTime),
 	}
 
 	return js

@@ -268,6 +268,7 @@ type JStatus struct {
 	CPUtime             float64
 	Started             *int64
 	Ended               *int64
+	Ready               *int64
 	Similar             int
 	Attempts            uint32
 	Override            uint8

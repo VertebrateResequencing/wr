@@ -1814,7 +1814,11 @@ func TestREST(t *testing.T) {
 					So(len(buried), ShouldEqual, 1)
 					So(buried[0].State, ShouldEqual, JobStateBuried)
 					So(buried[0].Started, ShouldNotBeNil)
-					So(buried[0].Ended, ShouldBeNil)
+
+					// the job was lost before it was released, so it ended when
+					// contact with it was lost
+					So(buried[0].Ended, ShouldNotBeNil)
+					So(*buried[0].Ended, ShouldBeGreaterThanOrEqualTo, *buried[0].Started)
 				})
 
 				Convey("You can DELETE lost jobs to bury them", func() {

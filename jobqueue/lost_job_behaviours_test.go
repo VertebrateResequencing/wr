@@ -1152,6 +1152,66 @@ func TestLostJobOnWeblessManagerCleansItsWorkSpace(t *testing.T) {
 	})
 }
 
+func TestReleasedLostJobKeepsTheTimeContactWasLost(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	// the manager's own release of a lost job reports no end time of its own, and
+	// that used to be copied over the time the job was marked lost, leaving the
+	// delayed job with a zero EndTime: wr status then said it would become ready
+	// in -2562047h47m16.854775808s, and its WallTime grew for ever.
+	Convey("Given a started job the manager has lost contact with", t, func() {
+		l := newLostRun(ctx, t, "lost_job_end_time")
+
+		defer l.stop(ctx)
+
+		l.waitForDeadCheckWindow()
+
+		lostBy := time.Now()
+
+		Convey("its release once confirmed dead keeps the time contact was lost", func() {
+			l.proceedManager()
+			So(l.waitForKillDecision(), ShouldBeTrue)
+			l.resumeManager()
+
+			soReleasedAtTheTimeContactWasLost(l, lostBy)
+		})
+
+		Convey("its release when the user kills it keeps the time contact was lost", func() {
+			n, err := l.client.Kill([]*JobEssence{{JobKey: l.key}})
+			So(err, ShouldBeNil)
+			So(n, ShouldEqual, 1)
+
+			soReleasedAtTheTimeContactWasLost(l, lostBy)
+
+			l.proceedManager()
+			So(l.waitForKillDecision(), ShouldBeFalse)
+			l.resumeManager()
+		})
+	})
+}
+
+// soReleasedAtTheTimeContactWasLost asserts that the fixture's job, as a client
+// sees it, has been released for a retry with an EndTime that is when the
+// manager lost contact with it: after it started, no later than lostBy, and so a
+// WallTime that has stopped growing.
+func soReleasedAtTheTimeContactWasLost(l *lostRun, lostBy time.Time) {
+	job, err := l.client.GetByEssence(&JobEssence{JobKey: l.key}, false, false)
+	So(err, ShouldBeNil)
+	So(job, ShouldNotBeNil)
+	So(job.State, ShouldEqual, JobStateDelayed)
+	So(job.FailReason, ShouldEqual, FailReasonLost)
+	So(job.StartTime.IsZero(), ShouldBeFalse)
+	So(job.EndTime.IsZero(), ShouldBeFalse)
+	So(job.EndTime, ShouldHappenOnOrAfter, job.StartTime)
+	So(job.EndTime, ShouldHappenOnOrBefore, lostBy)
+
+	So(job.WallTime(), ShouldEqual, job.EndTime.Sub(job.StartTime))
+}
+
 func TestKillingALostJobSparesTheRunThatReplacesIt(t *testing.T) {
 	if runnermode || servermode {
 		return
