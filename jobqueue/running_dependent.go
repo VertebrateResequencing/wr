@@ -47,6 +47,12 @@ package jobqueue
 //     archive's dropping of its dep group memberships and rep group lookup is
 //     ordered against the add registering them again (see bringback.go).
 //
+// A dependent the add reads complete, and puts back in the live bucket to run
+// again, may still have its item in the run queue, its archive having written
+// but not yet removed the item. Queueing it again would find that item and count
+// it a duplicate, and the archive would then remove the item, so it is marked
+// instead, the same way as a running one (rerunArchivingItems).
+//
 // What reaches disk must not depend on the add getting that far, since a
 // manager that crashes after the add's write, before it replies, would
 // otherwise recover such a dependent complete, never to run again, and the
@@ -177,6 +183,61 @@ func (s *Server) applyRerunDependencies(ctx context.Context, job *Job, deps []st
 	}
 
 	s.storeRerunMarks(ctx, marks)
+}
+
+// rerunArchivingItems marks to run again, as updateLiveDependents marks a
+// running dependent, the in-memory job of each item an add would queue whose key
+// is still queued by a successful completion being archived: the add read the
+// job complete after the archive's write, and its own write put the job back in
+// the live bucket, so the mark has the archive keep the item and send it back to
+// wait on its dependencies. It returns the item definitions of the others, and
+// how many it marked. A mark made while the job is still being archived is not
+// stored again, since the add's write already stored the job live.
+func (s *Server) rerunArchivingItems(ctx context.Context, itemdefs []*queue.ItemDef) ([]*queue.ItemDef,
+	int, error) {
+	var (
+		marks     rerunMarks
+		remaining []*queue.ItemDef
+		marked    int
+	)
+
+	defer func() {
+		marks.archiving = nil
+		s.storeRerunMarks(ctx, marks)
+	}()
+
+	for _, itemdef := range itemdefs {
+		ok, err := s.rerunArchivingItem(ctx, itemdef, &marks)
+		if err != nil {
+			return nil, marked, err
+		}
+
+		if !ok {
+			remaining = append(remaining, itemdef)
+
+			continue
+		}
+
+		marked++
+	}
+
+	return remaining, marked, nil
+}
+
+// rerunArchivingItem is rerunArchivingItems for one item definition, reporting
+// whether it marked the job its key is queued by.
+func (s *Server) rerunArchivingItem(ctx context.Context, itemdef *queue.ItemDef, marks *rerunMarks) (bool, error) {
+	job := s.queuedJob(itemdef.Key)
+	if job == nil || job == itemdef.Data || !job.archivePending() {
+		return false, nil
+	}
+
+	err := s.updateDependentUnlessRunning(ctx, job, s.rerunDependencies(ctx, job), marks)
+	if queueErrorIs(err, queue.ErrNotFound) {
+		return false, nil
+	}
+
+	return err == nil, err
 }
 
 // updateDependentUnlessRunning gives the queue item holding job, an in-memory
@@ -443,6 +504,14 @@ func (s *Server) resurrectArchivedDependents(ctx context.Context, keys []string,
 	}
 
 	return itemdefs, nil
+}
+
+// archivePending is archivePendingLocked, taking the job's read lock.
+func (j *Job) archivePending() bool {
+	j.RLock()
+	defer j.RUnlock()
+
+	return j.archivePendingLocked()
 }
 
 // storeLiveForRerunIfAny is db.storeLiveForRerun, unless there are no jobs.

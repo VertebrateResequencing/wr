@@ -375,6 +375,21 @@ var startPersistedHook func(key string)
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var dependencyUpdatesHook func()
 
+// newJobsStoredErrHook, if non-nil, is called by an add once its write has
+// committed, and an error it returns fails the add there, so a test can have an
+// add fail after its write. It is a test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var newJobsStoredErrHook func() error
+
+// archiveCommittedHook, if non-nil, is called with a job's key by an archive
+// whose write has returned, before it removes the job's queue item, so a test
+// can have an add read the job complete while its item is still queued. It is
+// a test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var archiveCommittedHook func(key string)
+
 // archiveRemovedHook, if non-nil, is called with a job's key by an archive that
 // has removed that job's queue item, before it drops the job's dep group
 // memberships and rep group lookup, so a test can have an add bring the job back
@@ -6325,6 +6340,12 @@ func (s *Server) createJobs(
 		return added, dups, warnings, ErrDBError, err
 	}
 
+	if newJobsStoredErrHook != nil {
+		if err = newJobsStoredErrHook(); err != nil {
+			return added, dups, warnings, ErrDBError, err
+		}
+	}
+
 	if err = s.recordQueuedRepGroups(ctx, newRepGroupDups); err != nil {
 		return added, dups, warnings, ErrDBError, err
 	}
@@ -6395,9 +6416,13 @@ func (s *Server) queueNewJobItems(ctx context.Context, dependents liveDependents
 	ignoreComplete bool, queuedDups int) (added, dups int, srerr string, qerr error) {
 	resurrected, srerr, qerr := s.updateJobDependencies(ctx, dependents)
 
-	var replaced int
+	var replaced, marked int
 	if qerr == nil {
 		itemdefs, replaced, qerr = s.replaceLiveRerunItems(ctx, itemdefs, ignoreComplete)
+	}
+
+	if qerr == nil {
+		itemdefs, marked, qerr = s.rerunArchivingItems(ctx, itemdefs)
 		itemdefs = append(itemdefs, resurrected...)
 	}
 
@@ -6410,7 +6435,7 @@ func (s *Server) queueNewJobItems(ctx context.Context, dependents liveDependents
 	// add the jobs to the in-memory job queue
 	added, dups, qerr = s.enqueueItems(ctx, itemdefs)
 	dups += queuedDups
-	added += replaced
+	added += replaced + marked
 
 	if qerr != nil {
 		srerr = ErrInternalError

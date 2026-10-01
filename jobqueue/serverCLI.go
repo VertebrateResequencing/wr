@@ -1563,6 +1563,10 @@ func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup,
 // registers (see bringback.go).
 func (s *Server) finishArchive(ctx context.Context, job *Job, key, rgroup, sgroup string,
 	outcome archiveOutcome, err error) (*serverResponse, string, string) {
+	if archiveCommittedHook != nil {
+		archiveCommittedHook(key)
+	}
+
 	removed, errr := s.removeArchivedItem(ctx, job, key, outcome)
 
 	if job.endArchive() {

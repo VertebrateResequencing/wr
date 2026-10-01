@@ -112,15 +112,74 @@ home directory: `make lint`, `make test`, `CGO_ENABLED=1 make race`.
     guarding one dependent, or a chunked add crashing after its first chunk
     can each run the dependent once more. Ready and reserved dependents, and
     the chunked path, rely on the same ordering but have no test of their own.
-- [ ] 7b. Found while fixing item 7 (also the "Residual, not fixed" in
+- [x] 7b. Found while fixing item 7 (also the "Residual, not fixed" in
   `260929-readd-overwrites-running-job.md`): an add that reads a dependent W as
   complete after W's archive transaction committed but before `finishArchive`'s
   `RemoveUnless` puts W back in the live bucket, but its queue add sees the old
   item and counts W a duplicate. The archive then removes the item, so W is
   live on disk but out of the queue, and is not re-run until a restart.
+  - Red command (exit 1 on 55f512ce plus the `archiveCommittedHook` seam):
+    `CGO_ENABLED=1 go test -tags netgo -count 1 ./jobqueue -run 'TestArchiveCommitWindow$'`
+
+    ```text
+    Line 87:
+    Expected: jobqueue.JobState("dependent")
+    Actual:   jobqueue.JobState("complete")
+    --- FAIL: TestArchiveCommitWindow (0.84s)
+    ```
+
+    The add returned 1 insert and 1 duplicate, and the dependent's item was
+    gone. After a crash and restart the same scenario passes.
+  - Root cause: the add read the dependent from the complete bucket, put it
+    back live in its own write, and returned a fresh copy to queue, but
+    `q.AddMany` found the old run item (archive pending) and counted a
+    duplicate; the archive's `RemoveUnless` then removed that item.
+  - Fix: `queueNewJobItems` calls `rerunArchivingItems`
+    (`jobqueue/running_dependent.go`). A resurrected job whose key still holds
+    a different in-memory job with an archive pending goes through the #649
+    "archiving" mark (`updateDependentUnlessRunning` -> `markRerunAfterRun`,
+    under the queue lock), so `RemoveUnless` keeps the item and `requeueRerun`
+    sends it back to dependent. It is counted as added and not passed to
+    `AddMany`; its live record is the add's own write, not stored again. If
+    the archive removed the item first, it is queued fresh as before.
+  - Test: `jobqueue/archive_commit_window_test.go` (`TestArchiveCommitWindow`,
+    with and without a restart). `archiveCommittedHook` is a test seam at the
+    start of `finishArchive`.
 - [ ] 8. Found by a gate run: `CGO_ENABLED=1 go test -race -tags netgo ./jobqueue
   -run 'DepGroup|DepGranularity|RunningDependent|Readd|Archive|Rerun|Modify|BringBacks'`
   fails `TestJobqueueModify` twice in a row on develop 499b350e too
   (`jobqueue_test.go:6599`, "schedgrp 200:30:1:0 not found, we have:
   800:30:1:0"): the RAM learned for `echo a` depends on which tests shared the
   process first. It passes alone and under `make race`'s split.
+- [ ] 9. Item 6 residual, a regression against develop: an add that fails
+  after its write committed (a DB error later in the add) but before it queues
+  a dependent its transaction put back live, or that its guard kept live,
+  leaves that dependent live on disk and out of the queue until a restart, and
+  a retried add no longer queues it (`archivedNotLive` skips a live job). On
+  develop the retry resurrected it.
+  - Red command (exit 1 on 55f512ce plus the `newJobsStoredErrHook` seam; exit
+    0 on 4b743a37 with the same seam):
+    `CGO_ENABLED=1 go test -tags netgo -count 1 ./jobqueue -run 'TestAddFailsAfterWrite$'`
+
+    ```text
+    Line 169:
+    Expected: jobqueue.JobState("dependent")
+    Actual:   jobqueue.JobState("complete")
+    (twice: archived before and after the add's write)
+    --- FAIL: TestAddFailsAfterWrite (0.72s)
+    ```
+
+    The failed add also leaves the new member live on disk but not queued; the
+    retry queues it, but not the dependent.
+- [ ] 10. Found by a gate run (`make test` while fixing 7b, host load about
+  18): `TestDepGranularitySidecarReportsElapsedTime` failed at
+  `depgranularity_startup_test.go:935` (`second.UpdatedAt.After(first.UpdatedAt)`
+  was false). It passed on rerun and 5 of 5 alone.
+- [ ] 7c. Found reviewing 7b: `updateDependentUnlessRunning` reads the queued
+  job (`queuedJob`) and later calls `q.UpdateUnlessRunning` with it. If, in
+  between, the archive removes the item and a second concurrent add queues its
+  own copy under the key, the update puts the old job object on the new item
+  (stale fields; if that copy is already running, its rerun mark is lost and
+  the old record is written over its live one). Shared by #649's
+  `updateLiveDependents` and 7b's `rerunArchivingItems`. Needs two adds to the
+  dependent's dep group as its archive commits.
