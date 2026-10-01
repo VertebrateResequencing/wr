@@ -126,3 +126,6 @@ Quality gates: `make lint`, `make test`, `make race`, run with
     `bash -n developers/wrdev.sh` passes. Not run: a real fixture build or
     LSF run.
 - [ ] .docs/reliable/harness/loadrunner.go (soak harness fake runner) should set the new runner marker that `wr runner` sets (Client.SetReserveAsRunner), only if PR #657 (fix-moved-on-runner) has merged into develop.
+  - Skipped: PR #657 (fix-moved-on-runner) was still open, not merged into
+    develop, on 26-10-01, so `Client.SetReserveAsRunner` is not on develop yet.
+    Do this once #657 merges.
