@@ -1936,7 +1936,8 @@ func (j *Job) noteIncrementedLimitGroups(groups []string) {
 
 // updateAfterExit sets some properties on the job, only if the supplied
 // JobEndState indicates the job exited, and if the job wasn't already exited.
-// It also calls decrementLimitGroups().
+// An end state with no EndTime keeps the job's own, or stamps now if it has
+// none. It also calls decrementLimitGroups().
 func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	j.RLock()
 
@@ -1960,7 +1961,15 @@ func (j *Job) updateAfterExit(jes *JobEndState, lim *limiter.Limiter) {
 	j.PeakDisk = jes.PeakDisk
 	j.CPUtime = jes.CPUtime
 
-	j.EndTime = jes.EndTime
+	// the manager's own release of a lost job knows no end time, and must keep
+	// the one ttrCallback stamped when contact was lost.
+	switch {
+	case !jes.EndTime.IsZero():
+		j.EndTime = jes.EndTime
+	case j.EndTime.IsZero():
+		j.EndTime = time.Now()
+	}
+
 	j.setActualCwd(jes.Cwd)
 	j.Unlock()
 }
