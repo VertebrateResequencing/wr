@@ -172,7 +172,7 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
     `TestMovedOnRunnerLeavesHeldJobs` also checks that a scheduler element
     alone releases nothing.
 
-- [ ] **Test managers sometimes fail to bind their port ("the server's
+- [x] **Test managers sometimes fail to bind their port ("the server's
       publication gave up").** Seen in this branch's gates in
       `TestLostJobBehavioursSpareARecoveredJob`
       (`lost_job_behaviours_test.go:192`), after `listen tcp 0.0.0.0:45993:
@@ -181,3 +181,20 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
       `260929-running-dependent-rerun.md` as needing a separate fix. It passes
       on rerun. Suspected cause: the pick-then-release port race in
       `pickTestPort` via `isolateTestConfig` (`jobqueue/jobqueue_test.go`).
+  - Real cause: rpc.statd holds an IPv6-only listener on `[::]:45993`
+    (`ss -ltn`). The manager listens on `0.0.0.0`, which Go binds dual-stack,
+    so that bind conflicts. The test pickers (`freeport.GetFreePort` on
+    `localhost:0`, `pscFreePort` on `127.0.0.1:0`) only probe IPv4, so they
+    could hand out 45993. It was not a pick-then-release race between tests.
+  - Red: `TestPickedPortsBindForTheManager` (jobqueue) and
+    `TestLaneFreePortOutsideALane` (client/testing) hold 1000 IPv6-only
+    listeners and check the manager can bind every picked port. Both failed
+    before the fix.
+  - Fixed: a new `freeManagerPort()` asks the OS for `":0"`, the address the
+    manager binds. `freeTestPort`, `laneFreePort` and `pscFreePort` use it, and
+    `pscFreePort` re-checks the port after its parity bump.
+  - Not fixed, outside this item: `cmd/status_test.go` `freeStatusTestPorts`
+    still picks on `127.0.0.1:0` (its bind is retried). The production port
+    finder `network/port/port.go`, used by `internal/config.go` to choose a
+    user's port range, probes the hostname or loopback while the manager
+    binds dual-stack.

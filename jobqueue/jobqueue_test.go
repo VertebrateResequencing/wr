@@ -67,7 +67,6 @@ import (
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid/v5"
 	log15 "github.com/inconshreveable/log15/v3"
-	"github.com/phayes/freeport"
 	"github.com/shirou/gopsutil/v4/process"
 	. "github.com/smartystreets/goconvey/convey"
 	bolt "go.etcd.io/bbolt"
@@ -10128,7 +10127,7 @@ var testPortNext int //nolint:gochecknoglobals
 // sequentially, an incrementing counter never repeats a port before it would
 // wrap. Each candidate is still bind-checked so a port already occupied by some
 // unrelated process on the same machine is skipped. When WR_TEST_LANE is unset
-// (e.g. a direct `go test` run) it falls back to the global picker, whose race
+// (e.g. a direct `go test` run) it falls back to freeManagerPort, whose race
 // only matters with many concurrent lanes. WR_TEST_PORT_BASE lets the suite
 // runner choose a fresh base range for each whole run, avoiding collisions with
 // stale servers from interrupted runs in the default range.
@@ -10141,12 +10140,12 @@ func freeTestPort() (int, error) {
 
 	laneStr := os.Getenv("WR_TEST_LANE")
 	if laneStr == "" {
-		return freeport.GetFreePort()
+		return freeManagerPort()
 	}
 
 	lane, err := strconv.Atoi(laneStr)
 	if err != nil {
-		return freeport.GetFreePort()
+		return freeManagerPort()
 	}
 
 	laneBasePort := defaultLaneBasePort
@@ -10172,6 +10171,26 @@ func freeTestPort() (int, error) {
 	)
 }
 
+// freeManagerPort returns a port the operating system says is free on the
+// manager's own listening address. It asks on that address, not on loopback
+// (as the freeport package does), because Go binds 0.0.0.0 as a dual-stack [::]
+// socket: a port another process holds with an IPv6-only listener, as rpc.statd
+// does, is free for an IPv4 socket, but the manager could not bind it.
+func freeManagerPort() (int, error) {
+	listenConfig := net.ListenConfig{}
+
+	listener, err := listenConfig.Listen(context.Background(), "tcp", ":0")
+	if err != nil {
+		return 0, err
+	}
+
+	port := listener.Addr().(*net.TCPAddr).Port //nolint:forcetypeassert,errcheck
+
+	return port, listener.Close()
+}
+
+// portCanListen reports whether a listener on the manager's address can bind
+// port now.
 func portCanListen(port int) bool {
 	listenConfig := net.ListenConfig{}
 

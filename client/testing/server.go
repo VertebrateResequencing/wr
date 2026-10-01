@@ -39,7 +39,6 @@ import (
 	"github.com/VertebrateResequencing/wr/internal/testcerts"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	"github.com/phayes/freeport"
 )
 
 const (
@@ -140,16 +139,16 @@ func getPorts(t *testing.T) (int, int) {
 // so the two packages' lanes never overlap); within a lane the tests run
 // sequentially, so an incrementing counter never repeats a port before it would
 // wrap. WR_TEST_PORT_BASE lets the suite runner choose a fresh run-specific
-// base range. Falls back to the global picker when WR_TEST_LANE is unset.
+// base range. Falls back to freeManagerPort when WR_TEST_LANE is unset.
 func laneFreePort() (int, error) {
 	laneStr := os.Getenv("WR_TEST_LANE")
 	if laneStr == "" {
-		return freeport.GetFreePort()
+		return freeManagerPort()
 	}
 
 	lane, err := strconv.Atoi(laneStr)
 	if err != nil {
-		return freeport.GetFreePort()
+		return freeManagerPort()
 	}
 
 	laneBasePort := defaultLaneBasePort
@@ -166,7 +165,25 @@ func laneFreePort() (int, error) {
 		}
 	}
 
-	return freeport.GetFreePort()
+	return freeManagerPort()
+}
+
+// freeManagerPort returns a port the operating system says is free on the
+// manager's own listening address. It asks on that address, not on loopback
+// (as the freeport package does), because Go binds 0.0.0.0 as a dual-stack [::]
+// socket: a port another process holds with an IPv6-only listener, as rpc.statd
+// does, is free for an IPv4 socket, but the manager could not bind it.
+func freeManagerPort() (int, error) {
+	var listenConfig net.ListenConfig
+
+	listener, err := listenConfig.Listen(context.Background(), "tcp", ":0")
+	if err != nil {
+		return 0, err
+	}
+
+	port := listener.Addr().(*net.TCPAddr).Port //nolint:forcetypeassert,errcheck
+
+	return port, listener.Close()
 }
 
 func lanePortAvailable(port int) bool {

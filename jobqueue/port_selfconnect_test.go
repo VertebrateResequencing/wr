@@ -317,23 +317,18 @@ func TestManagerPortReservationRelease(t *testing.T) {
 }
 
 // pscFreePort returns a free port in the ephemeral range. If parity is 0 or 1,
-// the port has that parity (port%2).
+// the port has that parity (port%2). The port is one the manager can listen on
+// as well as one pscBindable can bind.
 func pscFreePort(parity int) string {
 	for range 100 {
-		var listenConfig net.ListenConfig
-
-		l, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
+		port, err := freeManagerPort()
 		So(err, ShouldBeNil)
-
-		port := l.Addr().(*net.TCPAddr).Port //nolint:forcetypeassert,errcheck
-
-		So(l.Close(), ShouldBeNil)
 
 		if parity >= 0 && port%2 != parity {
 			port++
 		}
 
-		if pscBindable(port) {
+		if pscBindable(port) && portCanListen(port) {
 			return strconv.Itoa(port)
 		}
 	}
