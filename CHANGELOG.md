@@ -7,10 +7,11 @@ project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 ### Fixed
-- Under LSF, a job whose runner moved on to other work after its report of
-  the job was lost to a manager crash is now re-run as soon as that runner next
-  contacts the manager, instead of staying running for ever or, after an hour,
-  having its runner killed along with the job that runner was then running.
+- A job whose runner moved on to other work after its report of the job was
+  lost to a manager crash is now re-run as soon as that runner next contacts
+  the manager, instead of staying running for ever or, after an hour, having
+  its runner killed along with the job that runner was then running. This
+  applies to runners from this version on, under every scheduler.
 - The manager no longer under-counts the runners it needs when a command's
   success is reported after the manager had already given up on it and
   scheduled it to run again.

@@ -136,11 +136,23 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
     state; `RemoveUnless` keeps its v0.38.0 signature. Limit groups were
     already given back only once.
 
-- [ ] **Extend the moved-on release to runners on every scheduler, not only
+- [x] **Extend the moved-on release to runners on every scheduler, not only
       LSF.** Add an optional field to the reserve request that `wr runner` sets
       on every scheduler (local, OpenStack, LSF). It is backwards compatible:
       older runners do not send it and keep the ssh confirm-dead path.
       (Requested by the coordinator.)
+  - Red: with the fixture's runner marked and sending no SchedulerID, as a
+    local or OpenStack runner does, `go test -tags netgo -count=1 ./jobqueue
+    -run '^TestMovedOnRunner$'` failed before the server change: the first job
+    was still running.
+  - Fixed: a new wire field `clientRequest.Runner`, set through
+    `Client.SetReserveAsRunner` (meant for `wr runner` only), is called in
+    `cmd/runner.go` on every scheduler. A runner reservation now needs a
+    scheduler group, `cr.Runner` and a manager runner command. SchedulerID is
+    no longer part of the rule, which supersedes item 1's LSF-only marker.
+    Requests are binc maps keyed by field name and unknown fields are
+    skipped, so an old manager ignores the field and an old runner sends
+    false and keeps confirm-dead.
 
 - [ ] **Confirm-dead and the moved-on release can both trigger a lost run's
       behaviours.** `killRunningJob` (server.go) reports released=true

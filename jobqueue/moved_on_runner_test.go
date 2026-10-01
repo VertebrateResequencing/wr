@@ -66,9 +66,6 @@ const (
 
 	// movedOnReserveWait bounds each of the runner's reserves.
 	movedOnReserveWait = 5 * time.Second
-
-	// movedOnSchedulerID is the LSF element the runner says it runs in.
-	movedOnSchedulerID = "1234[5]"
 )
 
 // TestMovedOnRunnerHoldsConcurrently proves that the index of runner runs,
@@ -158,8 +155,8 @@ type movedOnFixture struct {
 
 // newMovedOnFixture starts a manager with the given runner command (none for a
 // manager whose clients are Go API users), and a runner client. With a runner
-// command the runner reserves as a wr runner under LSF does, by scheduler group
-// and naming its scheduler element.
+// command the runner reserves as a wr runner does, by scheduler group and
+// saying it is a runner.
 func newMovedOnFixture(ctx context.Context, t *testing.T, runnerCmd string) *movedOnFixture {
 	t.Helper()
 
@@ -215,8 +212,10 @@ func (f *movedOnFixture) serve(ctx context.Context) {
 	f.user = f.connect()
 	f.runner = f.connect()
 
+	// like `wr runner` under any scheduler, it says it is a runner, but names
+	// no scheduler element, as only one under LSF does.
 	if f.group != "" {
-		f.runner.SetReserveSchedulerID(movedOnSchedulerID)
+		f.runner.SetReserveAsRunner(true)
 	}
 }
 
@@ -482,9 +481,9 @@ func TestMovedOnRunnerLeavesHeldJobs(t *testing.T) {
 				f := newMovedOnFixture(ctx, t, runnerCmd)
 				defer f.stop(ctx)
 
-				// a Go client may reserve by scheduler group, but names no
-				// scheduler element.
-				f.runner.SetReserveSchedulerID("")
+				// a Go client may reserve by scheduler group, but does not
+				// say it is a runner.
+				f.runner.SetReserveAsRunner(false)
 
 				f.add(movedOnRetries, nil, "first", "second")
 				first := f.reserveAndStart()
@@ -926,7 +925,7 @@ func TestMovedOnRunnerConcurrentRelease(t *testing.T) {
 			other := f.connect()
 			defer disconnect(other)
 
-			other.SetReserveSchedulerID(movedOnSchedulerID)
+			other.SetReserveAsRunner(true)
 
 			var (
 				errWindow error

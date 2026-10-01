@@ -46,19 +46,19 @@ package jobqueue
 // stays as the fallback for a runner that really died.
 //
 // A Go API client may legitimately hold several jobs under one client id, so
-// only a reservation made by a wr runner counts. The request says so without
-// any change to the protocol: it asks for a scheduler group
-// (Client.ReserveScheduled) of a manager with a runner command, and it names
-// the scheduler element the runner runs in (Client.SetReserveSchedulerID),
-// which only `wr runner` sets, and only under LSF. The scheduler group alone is
+// only a reservation made by a wr runner counts. The request says so: it asks
+// for a scheduler group (Client.ReserveScheduled) of a manager with a runner
+// command, and it says it is from a runner (Client.SetReserveAsRunner), which
+// only `wr runner` does, under every scheduler. The scheduler group alone is
 // not enough: Go clients, this package's own tests among them, call
-// ReserveScheduled and hold several jobs. A runner outside LSF names no
-// element, so its dropped jobs are left to confirm-dead, as before.
+// ReserveScheduled and hold several jobs. A runner older than the Runner
+// request field sends no such thing, so its dropped jobs are left to
+// confirm-dead, as before.
 //
 // Such a reservation records a Job.RunnerReservation, a number larger than that
 // of any earlier one, stored with the reservation so the inference also works
 // on the first request a runner makes of a restarted manager: a touch carries
-// neither the scheduler group nor the element.
+// neither the scheduler group nor the runner marker.
 //
 // The number, not just being held by X, is what says J2 is newer: only jobs
 // with a smaller one are released. The one a request is about is never
@@ -299,7 +299,7 @@ func (h *runnerHolds) withClient(client uuid.UUID, change func(runs map[string]u
 // cr: a new one if cr is a wr runner's reservation (see the top of this file),
 // otherwise 0.
 func (s *Server) runnerReservation(cr *clientRequest) uint64 {
-	if cr.SchedulerGroup == "" || cr.SchedulerID == "" || s.runnerCommand() == "" {
+	if cr.SchedulerGroup == "" || !cr.Runner || s.runnerCommand() == "" {
 		return 0
 	}
 
