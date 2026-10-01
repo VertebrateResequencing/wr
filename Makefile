@@ -93,6 +93,24 @@ bench: export CGO_ENABLED = 0
 bench:
 	@go test -tags netgo -run='^$$' -bench='$(BENCH)' -benchmem -benchtime=$(BENCHTIME) ./jobqueue/
 
+# Hot-path performance gate (developers/speed.sh). NOT part of test, race or CI.
+# Run it, and summarise its verdict in the PR body, before opening or merging
+# any change to a hot path: add/createJobs, reserve, touch, start,
+# release/bury, archive, recovery, scheduler/rac, queue/, db.go write paths or
+# status queries. It benchmarks the add/reserve/touch/archive/status
+# benchmarks (benchstat, -count 6) and the local wrdev.sh speed
+# scenarios for this tree and for SPEED_BASE (default: the merge-base with
+# origin/develop, built in a temporary worktree; SPEED_BASE=none skips it), and
+# fails on a worsening over SPEED_THRESHOLD% (default 10) at p<0.05 or a
+# scenario over its own thresholds. speed takes ~10 minutes; speed-full adds
+# the big-DB scenarios (add-storm, archive-rate, archive-ceiling; set
+# SPEED_BIG_DB) and takes about an hour. See DEVELOPERS.md "Performance gate".
+speed:
+	@developers/speed.sh quick
+
+speed-full:
+	@developers/speed.sh full
+
 # The baseline is new-from-rev in .golangci.yml, unless GOLANGCI_LINT_ARGS
 # passes --new-from-rev=<rev>, which wins. golangci-lint lints the whole tree
 # with only a warning when the baseline does not resolve, so check it first.
@@ -163,4 +181,4 @@ dist: export WR_LDFLAGS = $(LDFLAGS)
 dist:
 	goreleaser release --clean
 
-.PHONY: browser-test build test race bench lint lintextra install clean dist webui-test
+.PHONY: browser-test build test race bench speed speed-full lint lintextra install clean dist webui-test
