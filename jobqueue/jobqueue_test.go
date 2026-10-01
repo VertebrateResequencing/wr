@@ -6505,9 +6505,6 @@ func TestJobqueueModify(t *testing.T) {
 	// reservable when the machine is under load (which was a source of flakiness).
 	reserveWait := 15 * time.Second
 	rgroup := "110:30:1:0"
-	learnedRgroup := "200:30:1:0"
-	learnedRAMNormal := 100
-	learnedRAMExtraRange := []int{200, 500}
 	tmp := testCwd
 	echoACmd := "echo a"
 
@@ -6565,19 +6562,6 @@ func TestJobqueueModify(t *testing.T) {
 			for deadline := time.Now().Add(reserveWait); ; {
 				job, errr = jq.ReserveScheduled(rtime, schedStr)
 				So(errr, ShouldBeNil)
-
-				if job == nil && schedStr == learnedRgroup {
-					// *** not sure why the memory is sometimes higher when
-					// running under Travis or race...
-					for _, alt := range []string{"300:30:1:0", "400:30:1:0", "500:30:1:0", "600:30:1:0"} {
-						if job != nil {
-							break
-						}
-
-						job, errr = jq.ReserveScheduled(rtime, alt)
-						So(errr, ShouldBeNil)
-					}
-				}
 
 				if job != nil || time.Now().After(deadline) {
 					break
@@ -6657,6 +6641,18 @@ func TestJobqueueModify(t *testing.T) {
 		release := func(job *Job) {
 			err := jq.Release(job, &JobEndState{}, "")
 			So(err, ShouldBeNil)
+		}
+
+		// learned returns the RAM the server has learned for the given 1-core
+		// reqGroup, and the scheduler group a job with that RAM is in. It is
+		// read rather than fixed because an in-process Execute's peak includes
+		// this test binary's own memory, which depends on what ran before it.
+		learned := func(reqGroup string) (string, int) {
+			ram, err := server.db.recommendedReqGroupMemory(reqGroup)
+			So(err, ShouldBeNil)
+			So(ram, ShouldBeGreaterThan, 0)
+
+			return schedulerGroupString(reqForScheduler(&jqs.Requirements{RAM: ram, Time: standardReqs.Time, Cores: 1}), nil), ram
 		}
 
 		groupsToDeps := func(groups string) (deps Dependencies) {
@@ -6867,14 +6863,11 @@ func TestJobqueueModify(t *testing.T) {
 			add(1)
 
 			// if the modify of initial didn't work, we'd have no learning of
-			// the modified reqgroup, so it would get 400:30:1:0 as its scheduler
-			// group. But due to learning, the RAM is 100
-			job = reserve(learnedRgroup, cmd)
-			if job.Requirements.RAM != learnedRAMNormal {
-				So(job.Requirements.RAM, ShouldBeBetweenOrEqual, learnedRAMExtraRange[0], learnedRAMExtraRange[1])
-			} else {
-				So(job.Requirements.RAM, ShouldEqual, learnedRAMNormal)
-			}
+			// the modified reqgroup, so it would get its requested 300 RAM. But
+			// due to learning, the RAM is the executed job's rounded peak
+			learnedGroup, learnedRAM := learned("modified")
+			job = reserve(learnedGroup, cmd)
+			So(job.Requirements.RAM, ShouldEqual, learnedRAM)
 		})
 
 		Convey("You can modify the requirements of a job", func() {
@@ -6947,7 +6940,11 @@ func TestJobqueueModify(t *testing.T) {
 
 			// by turning off override, we enable the learned values
 
-			job = kick("a", learnedRgroup, cmd, "a")
+			learnedGroup, learnedRAM := learned("rgroup")
+			So(learnedGroup, ShouldNotEqual, rgroup)
+			job = kick("a", learnedGroup, cmd, "a")
+			So(job.Requirements.RAM, ShouldEqual, learnedRAM)
+
 			if job.Requirements.Time != 1*time.Second {
 				// *** Travis consistently gets 30m, and I don't know why...
 				SkipSo(job.Requirements.Time, ShouldEqual, 30*time.Minute)
@@ -6961,7 +6958,9 @@ func TestJobqueueModify(t *testing.T) {
 			_, err := jq.Kick(jobsToJobEssenses([]*Job{job}))
 			So(err, ShouldBeNil)
 
-			job = reserve(learnedRgroup, cmd)
+			learnedGroup, learnedRAM = learned("rgroup")
+			job = reserve(learnedGroup, cmd)
+			So(job.Requirements.RAM, ShouldEqual, learnedRAM)
 			So(jq.Started(job, 1), ShouldBeNil)
 
 			item, err := server.q.Get(job.Key())
