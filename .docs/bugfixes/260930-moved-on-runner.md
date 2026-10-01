@@ -232,3 +232,25 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
     same sleep it passes 3 of 3 (11-13 reservations per Convey); `-race
     -count=5` passes. No assertion changed.
   - Reviewer: PASS. `make lint` 0 issues.
+- [x] Local `make race` on `180df1a5` failed
+  `jobqueue/archive_stall_test.go` `TestArchiveStallDoesNotRerunJob`, "a
+  repeat of the runner's archive during the stall also succeeds", line 191
+  (`So(pending(1), ShouldBeTrue)`), after a 30s wait; the log had `slow
+  request method=jstart duration=30.01s`. Cause (test): the test holds a
+  bolt write transaction once the job's `StartTime` is set in memory, but
+  `handleStart` sets it (`applyJobStart`) before its durable write, so a
+  start write still pending is stalled behind the held transaction. The
+  runner settles its start report before its archive, so no archive arrives.
+  - Red: a temporary 500ms sleep before `handleStart`'s
+    `updateJobAfterChangeDurable`, `go test -tags netgo -count=1 -run
+    '^TestArchiveStallDoesNotRerunJob$' ./jobqueue/`, failed at line 191.
+    Unmodified, `-race -count=4` passed.
+  - Fix (test only), `jobqueue/archive_stall_test.go`: the outer Convey sets
+    the `startPersistedHook` seam before `serve()` (reset after the server
+    stops) and waits, bounded by `startDurabilityAckWait`, for the start to be
+    on disk before holding the transaction, instead of for an in-memory
+    `StartTime`. The other tests that hold `bolt.Begin(true)` either call the
+    synchronous `Started` first or stall the write they test on purpose.
+  - After: with the same 500ms sleep it passes (2 of 2); `-race -count=3 -run
+    '^TestArchiveStall'` passes.
+  - Reviewer: PASS. `make lint` 0 issues.
