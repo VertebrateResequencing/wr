@@ -45,7 +45,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -3210,6 +3209,9 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// there.
 	cmdStartTime := time.Now()
 
+	// taken once the command has exec'd, see commandPeakRSSMB().
+	runnerPeakRSS := ownPeakRSS()
+
 	// the run owns its workspace from here on: the c.Started failure path below
 	// and the normal exit path both trigger the job's behaviours.
 	cmdStarted = true
@@ -3493,22 +3495,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// know if we use too much memory and kill during a run), our method might
 	// miss a peak that cmd.ProcessState can tell us about, so use that if
 	// higher
-	if rusage, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
-		peakRSS := rusage.Maxrss
-
-		var peakRSSMB int
-		if runtime.GOOS == "darwin" {
-			// Maxrss values are bytes
-			peakRSSMB = int((peakRSS / bytesPerKB) / kbPerMB)
-		} else {
-			// Maxrss values are kb
-			peakRSSMB = int(peakRSS / kbPerMB)
-		}
-
-		if peakRSSMB > peakmem {
-			peakmem = peakRSSMB
-		}
-	}
+	peakmem = max(peakmem, commandPeakRSSMB(cmd.ProcessState, runnerPeakRSS))
 
 	// include our OWN memory usage in the peakmem of the command, since the
 	// peak memory is used to schedule us in the job scheduler, which may

@@ -65,6 +65,11 @@ project adheres to [Semantic Versioning](http://semver.org/).
   `wr status -o json`), and a command released after lost contact keeps the
   time contact was lost as its end time instead of having none, so its
   walltime no longer keeps growing.
+- A command's recorded peak RAM no longer includes the runner's own memory
+  twice. On Linux the kernel credited each command with the runner's peak
+  memory, and the runner's memory was then added again, so small commands
+  could appear to use hundreds of MB. Learned memory and scheduler memory
+  reservations for small commands will drop.
 - `wr status -i <group> -o summary` (and the Go client's
   `GetStatusByRepGroupMatch` with details) no longer reads every completed
   command in full, so it is several times faster, and uses about 1% of the
