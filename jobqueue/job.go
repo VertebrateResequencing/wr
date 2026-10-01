@@ -1058,6 +1058,11 @@ type Job struct {
 	// write would take it out of the live bucket again. It is server side only.
 	archivedEndTime time.Time
 
+	// rerunGuards are the adds in flight that read this job as a live dependent
+	// and have yet to give it their dependencies (see rerunGuard). It is server
+	// side only.
+	rerunGuards []*rerunGuard
+
 	// incrementedLimitGroups notes that we have incremented limit groups for
 	// this job, so they should be decremented when the job finishes running.
 	incrementedLimitGroups []string

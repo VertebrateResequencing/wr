@@ -61,11 +61,57 @@ home directory: `make lint`, `make test`, `CGO_ENABLED=1 make race`.
     `jobqueue/bringback_test.go` (`TestBringBacksRetention`).
   - Not tested: the modify rekey hold, whose race needs a job with the new key
     to be added, run and archived during a paused modify.
-- [ ] 6. Crash mid-add: a crash after an add's DB write but before its reply
+- [x] 6. Crash mid-add: a crash after an add's DB write but before its reply
   loses the re-run of a dependent whose archive was written after the add read
   it. The client got no reply, so it retries the add, but on the retry the new
   job already exists, so it is filtered as already queued and the dep group
   does not "gain" a member again, so the dependent is never re-run.
+  - Red command (exit 1 on 4b743a37):
+    `CGO_ENABLED=1 go test -tags netgo -count 1 ./jobqueue -run 'TestCrashMidAddRerun$'`
+
+    ```text
+    Line 169:
+    Expected: jobqueue.JobState("dependent")
+    Actual:   jobqueue.JobState("complete")
+    (4 times: the dependent archived before or after the add's write of the
+    new member, times the client retrying the add or not)
+    --- FAIL: TestCrashMidAddRerun (1.23s)
+    ```
+
+    The crash image is taken after the add's write of the new member and
+    before `updateLiveDependents` stores its resurrection or mark. With the
+    image taken after the add returns, the test passes.
+  - Root cause: the add read its dependents in one bolt transaction, wrote the
+    new member in a second, and only in a third put back live a dependent
+    archived since the read (`resurrectArchivedDependents`) or stored the mark
+    of a running one. A dependent's archive committing anywhere between the
+    read and that third transaction deleted its live record, so a crash before
+    the third left it complete, with nothing linking it to the new member. A
+    retried add is filtered as already queued, so it re-derives nothing.
+  - Fix (`jobqueue/{db.go,running_dependent.go,job.go,server.go}`): whichever
+    of the add's write and the dependent's archive commits second keeps the
+    dependent live, so the add is atomic on disk. Before writing, the add
+    attaches an in-memory guard (`rerunGuard`) to each queued dependent it
+    read, naming the smallest key the add stores. In the add's own write
+    transaction (folded and chunked paths) any dependent it read that is no
+    longer live but complete is put back live. An archive of a guarded job
+    that finds the guard's key live (the add's write has committed) keeps the
+    live record. The in-memory side then queues such a job without writing it
+    again (`wasPutBack`). A durable mark on the dependent's own live record
+    was rejected: the start and reservation writes rewrite that record from the
+    unmarked in-memory job. Only adds that read dependents pay for it.
+  - Test: `jobqueue/crash_mid_add_rerun_test.go` (`TestCrashMidAddRerun`): the
+    archive before and after the add's write, with and without the client
+    retrying; after restart the dependent is dependent on the new member,
+    becomes ready once it completes, and runs again.
+  - Residuals (each needs an error after a committed write, or is an extra
+    run rather than a lost one): an add that fails after its write but before
+    it queues a put-back dependent leaves it live on disk and out of the queue
+    until a restart, and a retry then does not queue it (before this fix the
+    retry resurrected it); a guard key already live before the add, two adds
+    guarding one dependent, or a chunked add crashing after its first chunk
+    can each run the dependent once more. Ready and reserved dependents, and
+    the chunked path, rely on the same ordering but have no test of their own.
 - [ ] 7b. Found while fixing item 7 (also the "Residual, not fixed" in
   `260929-readd-overwrites-running-job.md`): an add that reads a dependent W as
   complete after W's archive transaction committed but before `finishArchive`'s

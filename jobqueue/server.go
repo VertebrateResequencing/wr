@@ -6310,9 +6310,17 @@ func (s *Server) createJobs(
 	// disk succeeding. (If we don't return success to the client, it won't
 	// Remove the job that created the new jobs from the queue and when we
 	// recover, at worst the creating job will be run again - no jobs get lost.)
-	var jobsToQueue, jobsToUpdate []*Job
+	//
+	// Until it has given the live dependents it reads their new dependencies, it
+	// guards them (see running_dependent.go).
+	guard := &rerunGuard{}
+	defer guard.release()
 
-	jobsToQueue, jobsToUpdate, dups, err = s.db.storeNewJobs(ctx, inputJobs, ignoreComplete)
+	stored, err := s.db.storeNewJobsGuarded(ctx, inputJobs, ignoreComplete, s.guardDependents(guard))
+
+	stored.dependents.guard = guard
+
+	jobsToQueue, jobsToUpdate, dups := stored.jobsToQueue, stored.dependents.jobs, stored.alreadyAdded
 	if err != nil {
 		return added, dups, warnings, ErrDBError, err
 	}
@@ -6332,7 +6340,7 @@ func (s *Server) createJobs(
 
 	itemdefs := s.itemDefsForNewJobs(jobsToQueue, inputJobKeys, &warnings)
 
-	added, dups.Queued, srerr, qerr = s.queueNewJobItems(ctx, jobsToUpdate, itemdefs, ignoreComplete, queuedDups)
+	added, dups.Queued, srerr, qerr = s.queueNewJobItems(ctx, stored.dependents, itemdefs, ignoreComplete, queuedDups)
 
 	return added, dups, warnings, srerr, qerr
 }
@@ -6383,9 +6391,9 @@ func (s *Server) itemDefsForNewJobs(jobsToQueue []*Job,
 // queueNewJobItems updates dependencies of existing jobs, replaces any live
 // rerun items, and enqueues the new item definitions, returning the counts of
 // jobs added and duplicated plus any error.
-func (s *Server) queueNewJobItems(ctx context.Context, jobsToUpdate []*Job, itemdefs []*queue.ItemDef,
+func (s *Server) queueNewJobItems(ctx context.Context, dependents liveDependents, itemdefs []*queue.ItemDef,
 	ignoreComplete bool, queuedDups int) (added, dups int, srerr string, qerr error) {
-	resurrected, srerr, qerr := s.updateJobDependencies(ctx, jobsToUpdate)
+	resurrected, srerr, qerr := s.updateJobDependencies(ctx, dependents)
 
 	var replaced int
 	if qerr == nil {
@@ -6474,14 +6482,14 @@ func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) err
 // The modify path does not come through here: db.modifyLiveJobs() discards
 // prepareNewJobs' jobsToQueue/jobsToUpdate, so it never refreshes a group's
 // waiters this way.
-func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (
+func (s *Server) updateJobDependencies(ctx context.Context, dependents liveDependents) (
 	resurrected []*queue.ItemDef, srerr string, qerr error,
 ) {
 	if dependencyUpdatesHook != nil {
 		dependencyUpdatesHook()
 	}
 
-	updates, readyCallbackExpected, qerr := s.gatherDependencyUpdates(jobs)
+	updates, readyCallbackExpected, qerr := s.gatherDependencyUpdates(dependents.jobs)
 	if qerr != nil {
 		return nil, ErrDBError, qerr
 	}
@@ -6490,7 +6498,7 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (
 		s.setRACPending()
 	}
 
-	resurrected, qerr = s.updateLiveDependents(ctx, updates)
+	resurrected, qerr = s.updateLiveDependents(ctx, updates, dependents.wasPutBack)
 	if qerr != nil && readyCallbackExpected {
 		s.clearRACPending()
 	}
