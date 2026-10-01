@@ -71,7 +71,17 @@ Quality gates: `make lint`, `make test`, `make race`, run with
     the test change was dropped when rebasing onto develop `8ee8c00d`, so
     there is one implementation: develop's, which closes a channel through a
     `sync.Once`. Only this checklist entry remains from this item.
-- [ ] Test env leak: jobqueue/behaviours_env_test.go:177 TestBehaviourRunEnv ("a CwdMatters Job's run behaviour gets its environment untouched") fails whenever the caller has TMPDIR set because it inherits it. Make it hermetic.
+- [x] Test env leak: jobqueue/behaviours_env_test.go:177 TestBehaviourRunEnv ("a CwdMatters Job's run behaviour gets its environment untouched") fails whenever the caller has TMPDIR set because it inherits it. Make it hermetic.
+  - Red: `TMPDIR=/tmp go test -count=1 -run '^TestBehaviourRunEnv$' ./jobqueue/`
+    failed: `Line 177: Expected '/tmp' to be blank (but it wasn't)!`.
+  - Cause (test): `storeTestEnv` builds the Job's stored environment from
+    `os.Environ()`. For a CwdMatters Job wr makes no directories, so
+    `envWithRunDirs` passes the stored environment through as intended,
+    including the caller's TMPDIR.
+  - Fix (test only), `jobqueue/behaviours_env_test.go`: store a sentinel
+    `TMPDIR=/nonexistent/stored-tmp` and assert the behaviour sees exactly it,
+    which also fails if wr injects a TMPDIR of its own (mutation-checked).
+  - After: passes with TMPDIR set and unset; `make lint` reports 0 issues.
 - [ ] developers/wrdev.sh: asl_adder (~line 1625) seeds RANDOM from $(date +%N); a leading zero makes bash read it as octal (e.g. 08/09 invalid), killing adders. Fix (e.g. strip leading zeros / use 10#).
 - [ ] developers/wrdev.sh add-storm-fixture bakes the generating root's absolute wr binary path and WR_CONFIG_DIR into self-adding jobs, so fixtures only exercise jobs-adding-jobs when run from the root that built them (and could add to another root's manager if it ran). Make self-adding jobs call a wrapper script in the fixture's job cwd that add-storm-lsf (re)writes at the start of each run to point at the current root's binary and config; keep existing fixtures usable.
 - [ ] .docs/reliable/harness/loadrunner.go (soak harness fake runner) should set the new runner marker that `wr runner` sets (Client.SetReserveAsRunner), only if PR #657 (fix-moved-on-runner) has merged into develop.
