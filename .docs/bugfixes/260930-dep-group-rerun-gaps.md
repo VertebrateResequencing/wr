@@ -232,3 +232,11 @@ home directory: `make lint`, `make test`, `CGO_ENABLED=1 make race`.
   - Tests: `jobqueue/dependent_update_race_test.go`
     (`TestDependentUpdateRace`, via the `dependentReadHook` seam) and
     `queue/holder_update_test.go`.
+- [ ] 11. Found by a gate run (`CGO_ENABLED=1 make race` after merging develop
+  95faf168): `TestArchiveStallDoesNotRerunJob` "a repeat of the runner's
+  archive during the stall also succeeds" failed at `archive_stall_test.go:191`
+  (`pending(1)` false after 30s). The log shows the runner's `jstart` was the
+  request held for 30s ("slow request method=jstart duration=30.009s"), so the
+  test's held write transaction caught the start's write, not the archive's,
+  and the run never reached its archive. It passed 3 of 3 alone under `-race`
+  and the next full `make race` passed (840 passed).
