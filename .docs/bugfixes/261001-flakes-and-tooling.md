@@ -91,5 +91,38 @@ Quality gates: `make lint`, `make test`, `make race`, run with
   - After: the red prints `seeded` for `089123456` and `000000001`;
     `bash -n developers/wrdev.sh` passes. Verified directly by the
     orchestrator given the one-token change.
-- [ ] developers/wrdev.sh add-storm-fixture bakes the generating root's absolute wr binary path and WR_CONFIG_DIR into self-adding jobs, so fixtures only exercise jobs-adding-jobs when run from the root that built them (and could add to another root's manager if it ran). Make self-adding jobs call a wrapper script in the fixture's job cwd that add-storm-lsf (re)writes at the start of each run to point at the current root's binary and config; keep existing fixtures usable.
+- [x] developers/wrdev.sh add-storm-fixture bakes the generating root's absolute wr binary path and WR_CONFIG_DIR into self-adding jobs, so fixtures only exercise jobs-adding-jobs when run from the root that built them (and could add to another root's manager if it ran). Make self-adding jobs call a wrapper script in the fixture's job cwd that add-storm-lsf (re)writes at the start of each run to point at the current root's binary and config; keep existing fixtures usable.
+  - Red: an offline harness (scratch, not committed) that sources `wrdev.sh`
+    under a scratch `WRDEV_ROOT`, drives the fixture job generator, the wrapper
+    writer and the incomplete-job audit with a stub `wr`. Before: 6 checks
+    failed, including `no command bakes WR_CONFIG_DIR`, `no command bakes the
+    generating root's binary`, `every self-adding command pipes into
+    <jobcwd>/wradd.sh`, and `audit rejects tampered/foreign commands` (the old
+    audit only checked the prefix, so `echo aslfix 4 plain; touch /tmp/x`
+    passed).
+  - Fix, `developers/wrdev.sh`:
+    - Self-adding jobs pipe their child into `<fixture>.jobcwd/wradd.sh`
+      (generator moved into `asl_fixture_jobs`); nothing root-specific is baked.
+    - `asl_write_wradd` writes the wrapper atomically (mktemp and mv, `%q`
+      quoting): `HOME=… WR_CONFIG_DIR=… exec <wr> add -f - --deployment
+      production "$@"`. `add-storm-lsf` writes it for its own root before any
+      manager starts.
+    - `add-storm-lsf` claims the fixture with an exclusive-create
+      `<jobcwd>/wradd.owner` before setting its traps, so a second concurrent
+      run (from any root) refuses without touching the first run's manager or
+      jobs; `asl_cleanup` removes the claim. A run killed with SIGKILL leaves
+      the claim behind, and the refusal names the file to delete.
+    - `asl_prefix_audit` accepts only the two exact generated forms, with the
+      self-add's flags pinned to the generated ones (the queue may differ, in a
+      safe charset). Its JSON regex no longer drops a command with an escaped
+      quote from the count.
+    - The manifest is `aslfixture 2`; a version 1 fixture is refused before
+      anything starts with a message to regenerate it.
+    - The fixture path is restricted to `[A-Za-z0-9._/-]`, since the generator
+      embeds it unquoted.
+  - After: the harness reports `fails=0`; the wrapper run against a stub `wr`
+    under `env -i` passed the right binary, config dir, HOME, args, stdin and
+    exit code; v1 manifests and a held claim are refused offline.
+    `bash -n developers/wrdev.sh` passes. Not run: a real fixture build or
+    LSF run.
 - [ ] .docs/reliable/harness/loadrunner.go (soak harness fake runner) should set the new runner marker that `wr runner` sets (Client.SetReserveAsRunner), only if PR #657 (fix-moved-on-runner) has merged into develop.

@@ -938,13 +938,15 @@ cmd_add_storm_fixture() {  # add-storm-fixture [jobs] [selfAddPct] [depGroups] -
   # production-sized freelist and per-commit cost - /nfs/hgi/wr/sb10-bigdb/pristine6), N jobs that
   # are:
   #  - HARMLESS by construction. Every command starts with the safe prefix "echo aslfix", which is
-  #    recorded in the manifest and which add-storm-lsf re-checks on every incomplete job before
-  #    it lets anything run.
-  #  - A MINORITY THAT ADD JOBS THEMSELVES: selfAddPct% run 'echo … && echo <child> | wr add …',
-  #    with the absolute isolated binary path and WR_CONFIG_DIR baked in so they work from an exec
-  #    node. Their children are `echo aslfix …` jobs in the same limit group. This is the
-  #    portal_builder shape that produced the production add storm, and the most valuable part of
-  #    the fixture.
+  #    recorded in the manifest. add-storm-lsf re-checks every incomplete job before it lets
+  #    anything run, and accepts only the exact command forms this generator writes.
+  #  - A MINORITY THAT ADD JOBS THEMSELVES: selfAddPct% run
+  #    'echo … && echo <child> | <fixture>.jobcwd/wradd.sh <add flags>'. No wr binary or config
+  #    dir is baked in: add-storm-lsf writes that wrapper at the start of each run, pointing at
+  #    ITS root's binary, WR_CONFIG_DIR and HOME, so the fixture's jobs add jobs to whichever
+  #    root's manager is running them. Their children are `echo aslfix …` jobs in the same limit
+  #    group. This is the portal_builder shape that produced the production add storm, and the
+  #    most valuable part of the fixture.
   #  - DEPENDENT: odd-numbered jobs join dep group aslfixa<i mod depGroups>; even-numbered ones
   #    DEPEND on the group holding job i-1 and join aslfixb<i mod depGroups>. So the recovered set
   #    is ~half ready and ~half dependent, with real dep-group membership and reverse-dependency
@@ -978,6 +980,8 @@ cmd_add_storm_fixture() {  # add-storm-fixture [jobs] [selfAddPct] [depGroups] -
   # fills with one wr_cwd subdirectory per job run and is safe to delete between runs.
   local jobcwd="$out.jobcwd"
   local pr="$PROD_RUN" plog="$PROD_RUN/log"
+  # the self-adding commands embed this path unquoted, and asl_prefix_audit matches it literally
+  case "$jobcwd" in (*[!A-Za-z0-9._/-]*) die "the fixture path '$out' may only contain letters, digits and ._/-" ;; esac
   { [ -n "$base" ] && [ -f "$base" ]; } \
     || die "set WRDEV_PRISTINE_DB to a big COMPLETE-ONLY base database (eg. /nfs/hgi/wr/sb10-bigdb/pristine6, or make one with '$0 backup-stall-check'); this command adds the incomplete jobs itself"
   case "$n$selfpct$dgroups" in (*[!0-9]*) die "jobs, selfAddPct and depGroups must be numbers" ;; esac
@@ -1030,28 +1034,8 @@ cmd_add_storm_fixture() {  # add-storm-fixture [jobs] [selfAddPct] [depGroups] -
 
   local jobsfile="$ASL_DIR/fixjobs.json"
   echo "generating $n job definitions -> $jobsfile"
-  ASL_P="$prefix" ASL_WR="$WR" ASL_CFG="$CONFIG_DIR" ASL_JCWD="$jobcwd" ASL_RG="$rg" \
-  ASL_KRG="$kidrg" ASL_BLK="$block" ASL_Q="$QUEUE" ASL_HOME="$HOME" perl -e '
-    my ($n, $selfpct, $g) = @ARGV;
-    my ($p, $wr, $cfg, $jcwd, $rg, $krg, $blk, $q, $home) =
-      @ENV{qw(ASL_P ASL_WR ASL_CFG ASL_JCWD ASL_RG ASL_KRG ASL_BLK ASL_Q ASL_HOME)};
-    my $sq = chr(39);
-    for my $i (1 .. $n) {
-      my $grp = $i % $g;
-      my $cmd = qq($p $i plain);
-      if ($selfpct > 0 && ($i % 100) < $selfpct) {
-        my $kid = qq($p $i kid);
-        $cmd = qq($p $i selfadd && echo $sq$kid$sq | HOME=$home WR_CONFIG_DIR=$cfg $wr add -f - ) .
-               qq(--deployment production -i $krg -l $blk --queue $q --memory 100M --time 5m ) .
-               qq(--retries 0 --cwd $jcwd --disable_relative_check);
-      }
-      my $extra = ($i % 2)
-        ? qq(,"dep_grps":["aslfixa$grp"])
-        : qq(,"deps":["aslfixa) . (($i - 1) % $g) . qq("],"dep_grps":["aslfixb$grp"]);
-      print qq({"cmd":"$cmd","rep_grp":"$rg","memory":"500M","time":"5m","retries":2,) .
-            qq("queue":"$q","limit_grps":["$blk:0"]$extra}\n);
-    }
-  ' "$n" "$selfpct" "$dgroups" > "$jobsfile" || die "could not generate the job definitions"
+  asl_fixture_jobs "$n" "$selfpct" "$dgroups" "$prefix" "$jobcwd" "$rg" "$kidrg" "$block" > "$jobsfile" \
+    || die "could not generate the job definitions"
   echo "  $(wc -l < "$jobsfile") definitions, $(stat -c %s "$jobsfile") bytes;" \
        "$(grep -c 'selfadd' "$jobsfile") of them self-adding"
 
@@ -1074,10 +1058,10 @@ cmd_add_storm_fixture() {  # add-storm-fixture [jobs] [selfAddPct] [depGroups] -
   [ "$inc" = "$n" ] || die "the manager reports $inc incomplete jobs, not the $n added; fixture NOT written"
   [ "${lim:-x}" = "0" ] || die "limit group $block is ${lim:-unset}, not 0, so the fixture's jobs would be dispatchable; fixture NOT written"
   local audited bad
-  read -r audited bad <<<"$(asl_prefix_audit "$prefix")"
-  echo "prefix audit: $audited incomplete commands read, $bad of them NOT starting with '$prefix'"
+  read -r audited bad <<<"$(asl_prefix_audit "$prefix" "$jobcwd" "$kidrg" "$block")"
+  echo "command audit: $audited incomplete commands read, $bad of them NOT a form this generator writes"
   { [ "$audited" = "$n" ] && [ "$bad" = "0" ]; } \
-    || die "the prefix audit read $audited of $n commands and found $bad unsafe; fixture NOT written"
+    || die "the command audit read $audited of $n commands and found $bad unsafe; fixture NOT written"
 
   echo "stopping the manager cleanly so the fixture closes consistent"
   osunset
@@ -1104,13 +1088,53 @@ cmd_add_storm_fixture() {  # add-storm-fixture [jobs] [selfAddPct] [depGroups] -
   return 0
 }
 
+asl_fixture_jobs() {  # <jobs> <selfPct> <depGroups> <prefix> <jobCwd> <repGrp> <kidRepGrp> <blockGroup> - the fixture's jobs as `wr add -f` JSON lines
+  # a self-adding job pipes its child into <jobCwd>/wradd.sh, never a wr binary or config dir:
+  # those belong to whichever root RUNS the fixture, and add-storm-lsf writes that wrapper for
+  # its own root at the start of each run (asl_write_wradd). asl_prefix_audit accepts exactly
+  # the two command forms made here, so a change to either must change it too.
+  ASL_P="$4" ASL_JCWD="$5" ASL_RG="$6" ASL_KRG="$7" ASL_BLK="$8" ASL_Q="$QUEUE" perl -e '
+    my ($n, $selfpct, $g) = @ARGV;
+    my ($p, $jcwd, $rg, $krg, $blk, $q) = @ENV{qw(ASL_P ASL_JCWD ASL_RG ASL_KRG ASL_BLK ASL_Q)};
+    my $sq = chr(39);
+    for my $i (1 .. $n) {
+      my $grp = $i % $g;
+      my $cmd = qq($p $i plain);
+      if ($selfpct > 0 && ($i % 100) < $selfpct) {
+        my $kid = qq($p $i kid);
+        $cmd = qq($p $i selfadd && echo $sq$kid$sq | $jcwd/wradd.sh ) .
+               qq(-i $krg -l $blk --queue $q --memory 100M --time 5m ) .
+               qq(--retries 0 --cwd $jcwd --disable_relative_check);
+      }
+      my $extra = ($i % 2)
+        ? qq(,"dep_grps":["aslfixa$grp"])
+        : qq(,"deps":["aslfixa) . (($i - 1) % $g) . qq("],"dep_grps":["aslfixb$grp"]);
+      print qq({"cmd":"$cmd","rep_grp":"$rg","memory":"500M","time":"5m","retries":2,) .
+            qq("queue":"$q","limit_grps":["$blk:0"]$extra}\n);
+    }
+  ' "$1" "$2" "$3"
+}
+
+asl_write_wradd() {  # <jobCwd> - (re)write <jobCwd>/wradd.sh so the fixture's self-adding jobs add to THIS root's manager
+  # the equivalent of the inline 'HOME=… WR_CONFIG_DIR=… <wr> add -f - --deployment production'
+  # older fixtures baked in, pointed at the current $WR, $CONFIG_DIR and $HOME. Written to a temp
+  # file and renamed, so a job never runs a half-written wrapper.
+  local w="$1/wradd.sh" tmp
+  tmp=$(mktemp "$1/.wradd.sh.XXXXXX") || return 1
+  { printf '#!/bin/bash\n# written by wrdev.sh add-storm-lsf for WRDEV_ROOT=%s\n' "$WRDEV_ROOT"
+    printf 'HOME=%q WR_CONFIG_DIR=%q exec %q add -f - --deployment production "$@"\n' \
+      "$HOME" "$CONFIG_DIR" "$WR"
+  } > "$tmp" && chmod 755 "$tmp" && mv -f "$tmp" "$w" || { rm -f "$tmp"; return 1; }
+}
+
 asl_manifest_write() {  # <fixture> <incomplete> <prefix> <blockGroup> <base> <jobs> <selfPct> <depGroups> <repGrp> <kidRepGrp> <jobCwd>
   # the sidecar that makes a fixture usable: add-storm-lsf refuses to open a database whose
   # manifest is missing, or whose size/mtime no longer match the file beside it, BEFORE it starts
-  # any manager - so an unstamped database can never reach a scheduler.
+  # any manager - so an unstamped database can never reach a scheduler. Version 2: self-adding
+  # jobs call <jobcwd>/wradd.sh; version 1 fixtures baked the generating root's wr and config dir.
   local f="$1"
   cat > "$f.aslmanifest" <<EOF
-aslfixture 1
+aslfixture 2
 db $f
 size $(stat -c %s "$f")
 mtime $(stat -c %Y "$f")
@@ -1133,22 +1157,31 @@ asl_manifest_field() {  # <manifest> <field> - the field's value (everything aft
   grep -m1 "^$2 " "$1" 2>/dev/null | cut -d' ' -f2-
 }
 
-asl_prefix_audit() {  # <safe prefix> - "commandsRead notStartingWithPrefix" over every INCOMPLETE job
+asl_prefix_audit() {  # <safe prefix> <jobCwd> <kidRepGrp> <blockGroup> - "commandsRead unsafe" over every INCOMPLETE job
   # the safety check that matters once a fixture HAS incomplete jobs: counting them says nothing
-  # about what they would run, so read every incomplete job's command and check the prefix. Done
-  # BEFORE the block group is raised, while nothing is dispatchable. The reply is large (~1.5KB a
-  # job), so this can itself log a slow request - of method getir, never add.
+  # about what they would run, so read every incomplete job's command. A command is safe only if
+  # it is exactly one of the two forms asl_fixture_jobs writes - '<prefix> N plain', or
+  # '<prefix> N selfadd && echo '<prefix> N kid' | <jobCwd>/wradd.sh <exactly its flags>' - so the
+  # prefix alone admits nothing, and a fixture whose self-adds still bake a wr binary and
+  # WR_CONFIG_DIR (made before the wrapper existed) counts as unsafe. Done BEFORE the block group
+  # is raised, while nothing is dispatchable. The reply is large (~1.5KB a job), so this can
+  # itself log a slow request - of method getir, never add.
   local out="$ASL_DIR/audit.json"
   osunset
   timeout 900 "$WR" status --deployment production -o json --limit 0 --timeout 600 \
     > "$out" 2>/dev/null
-  ASL_AUDIT_PREFIX="$1" perl -e '
-    my $p = $ENV{ASL_AUDIT_PREFIX};
+  ASL_AUDIT_PREFIX="$1" ASL_AUDIT_JCWD="$2" ASL_AUDIT_KRG="$3" ASL_AUDIT_BLK="$4" perl -e '
+    my ($p, $jcwd, $krg, $blk) = @ENV{qw(ASL_AUDIT_PREFIX ASL_AUDIT_JCWD ASL_AUDIT_KRG ASL_AUDIT_BLK)};
     my ($t, $b) = (0, 0);
     local $/;
     my $j = <STDIN>;
     $j = q() unless defined $j;
-    while ($j =~ /"Cmd":"((?:[^"\\\\]|\\\\.)*)"/g) { $t++; $b++ unless index($1, $p) == 0 }
+    while ($j =~ /"Cmd":"((?:[^"\\]|\\.)*)"/g) {
+      my $c = $1;
+      $t++;
+      $b++ unless $c =~ /\A\Q$p\E \d+ plain\z/
+        || ($jcwd ne q() && $krg ne q() && $blk ne q() && $c =~ m{\A\Q$p\E (\d+) selfadd && echo \x27\Q$p\E \1 kid\x27 \| \Q$jcwd\E/wradd\.sh -i \Q$krg\E -l \Q$blk\E --queue [A-Za-z0-9._-]+ --memory 100M --time 5m --retries 0 --cwd \Q$jcwd\E --disable_relative_check\z});
+    }
     print qq($t $b\n);
   ' < "$out"
 }
@@ -1212,8 +1245,13 @@ cmd_add_storm_lsf() {  # add-storm-lsf [adders] [preKillSec] [postRestartSec] [l
   #  2. The fixture's jobs are in a limit group set to 0, so recovery cannot make them
   #     dispatchable.
   #  3. After the manager starts and BEFORE that limit is raised, the incomplete count must equal
-  #     the manifest's, and EVERY incomplete job's command must start with the manifest's safe
-  #     prefix. Only then is the limit raised.
+  #     the manifest's, and EVERY incomplete job's command must be exactly one of the two forms
+  #     the generator writes (asl_prefix_audit): '<prefix> N plain', or a '<prefix> N selfadd'
+  #     piping its child into the fixture's <jobcwd>/wradd.sh. Only then is the limit raised.
+  #     That wrapper is (re)written at the start of every run to point at THIS root's $WR,
+  #     WR_CONFIG_DIR and HOME, under a <jobcwd>/wradd.owner claim that refuses a second
+  #     concurrent run of the same fixture; version 1 fixtures, which baked the generating
+  #     root's binary into their commands, are refused at layer 1 with "regenerate".
   #  4. The post-recovery count check remains as the last backstop.
   # Farm safety unchanged: an isolated PROD-mode manager (own config, ports and managerdir) whose
   # LSF jobs are namespaced ${PROD_JOB_PREFIX}* by WR_JOBNAME_TOKEN, so they can never be confused
@@ -1250,14 +1288,17 @@ cmd_add_storm_lsf() {  # add-storm-lsf [adders] [preKillSec] [postRestartSec] [l
 
   # LAYER 1, before any manager exists: the fixture must be stamped, and the stamp must still
   # describe the file it sits beside.
-  local mf="$db.aslmanifest" minc mprefix mblock mfixrg mkidrg msize mmtime asize amtime
+  local mf="$db.aslmanifest" minc mprefix mblock mfixrg mkidrg mjobcwd msize mmtime asize amtime mver
   [ -f "$mf" ] || die "REFUSING to open $db: no $mf sidecar. This command raises a limit group and lets a database's incomplete jobs RUN on real LSF, so it only opens a fixture stamped by '$0 add-storm-fixture'. An unstamped database can hold somebody else's live jobs - /nfs/hgi/wr/sb10-bigdb/prod.db holds 118,213 - whose commands would then run as you"
-  [ "$(asl_manifest_field "$mf" aslfixture)" = "1" ] || die "REFUSING to open $db: $mf is not an aslfixture version 1 manifest"
+  mver=$(asl_manifest_field "$mf" aslfixture)
+  [ "$mver" != "1" ] || die "REFUSING to open $db: it is a version 1 fixture, whose self-adding jobs bake in the wr binary and WR_CONFIG_DIR of the root that generated it, so they would add to that root's manager (or fail) instead of this run's. Regenerate it with '$0 add-storm-fixture'"
+  [ "$mver" = "2" ] || die "REFUSING to open $db: $mf is not an aslfixture version 2 manifest"
   minc=$(asl_manifest_field "$mf" incomplete)
   mprefix=$(asl_manifest_field "$mf" prefix)
   mblock=$(asl_manifest_field "$mf" blockgroup)
   mfixrg=$(asl_manifest_field "$mf" repgroup)
   mkidrg=$(asl_manifest_field "$mf" kidrepgroup)
+  mjobcwd=$(asl_manifest_field "$mf" jobcwd)
   msize=$(asl_manifest_field "$mf" size)
   mmtime=$(asl_manifest_field "$mf" mtime)
   asize=$(stat -c %s "$db" 2>/dev/null)
@@ -1266,8 +1307,8 @@ cmd_add_storm_lsf() {  # add-storm-lsf [adders] [preKillSec] [postRestartSec] [l
   [ "$mmtime" = "$amtime" ] || die "REFUSING to open $db: its manifest records mtime $mmtime but the file's is $amtime, so it has been written to since it was stamped. Regenerate the fixture"
   case "${minc:-}" in (''|*[!0-9]*) die "REFUSING to open $db: its manifest's incomplete count '${minc:-}' is not a number" ;; esac
   [ "$minc" -gt 0 ] || die "REFUSING to open $db: its manifest says it holds no incomplete jobs, so it is not the fixture this gate needs (use '$0 add-storm-fixture')"
-  { [ -n "$mprefix" ] && [ -n "$mblock" ] && [ -n "$mfixrg" ] && [ -n "$mkidrg" ]; } \
-    || die "REFUSING to open $db: its manifest is missing a prefix, blockgroup, repgroup or kidrepgroup"
+  { [ -n "$mprefix" ] && [ -n "$mblock" ] && [ -n "$mfixrg" ] && [ -n "$mkidrg" ] && [ -n "$mjobcwd" ]; } \
+    || die "REFUSING to open $db: its manifest is missing a prefix, blockgroup, repgroup, kidrepgroup or jobcwd"
   echo "fixture manifest OK: $minc incomplete jobs, safe prefix '$mprefix', blocked by $mblock,"
   echo "  rep groups $mfixrg (+ $mkidrg for jobs those jobs add), stamped $(asl_manifest_field "$mf" generated)"
   local bb="${WRDEV_ASL_BOLTBUCKETS:-}" bblive=""
@@ -1295,9 +1336,21 @@ cmd_add_storm_lsf() {  # add-storm-lsf [adders] [preKillSec] [postRestartSec] [l
   ASL_KIDRG="$mkidrg"
   ASL_FIX_COMPLETE=0
   ASL_T0=$(date +%s)
-  mkdir -p "$ASL_DIR/jobcwd" || die "could not create $ASL_DIR (is WRDEV_ROOT writable?)"
+  mkdir -p "$ASL_DIR/jobcwd" "$mjobcwd" || die "could not create $ASL_DIR and $mjobcwd (is WRDEV_ROOT writable?)"
+
+  # the fixture's self-adding jobs pipe into $mjobcwd/wradd.sh, one path shared by every root
+  # that runs this fixture. Two concurrent runs would each point it at their own manager and
+  # steal each other's self-adds, so claim the fixture with an O_EXCL owner file (removed by
+  # asl_cleanup) before rewriting the wrapper for this root. Claimed before the cleanup traps,
+  # so refusing here cannot stop or bkill anything belonging to the run that holds it.
+  local owner="$mjobcwd/wradd.owner"
+  ( set -C; echo "WRDEV_ROOT=$WRDEV_ROOT host=$(hostname) pid=$$ since=$(date -Is)" > "$owner" ) 2>/dev/null \
+    || die "REFUSING to run: another add-storm-lsf is using this fixture ($(cat "$owner" 2>/dev/null)). If that run is no longer alive, delete $owner"
+  ASL_WRADD_OWNER="$owner"
   trap 'asl_cleanup' EXIT
   trap 'asl_cleanup; exit 1' INT TERM
+  asl_write_wradd "$mjobcwd" || die "could not write $mjobcwd/wradd.sh"
+  echo "self-adding jobs will add via $mjobcwd/wradd.sh -> $WR (WR_CONFIG_DIR=$CONFIG_DIR)"
 
   echo "add-path REAL-LSF gate: $adders concurrent 'wr add' loops, each adding ONE sleep-$runsec"
   echo "  job per ~${thinkms}ms (jittered) to rep group $rg behind limit group asllimit:$limit,"
@@ -1340,15 +1393,16 @@ cmd_add_storm_lsf() {  # add-storm-lsf [adders] [preKillSec] [postRestartSec] [l
     echo "  stamped, so its jobs are not known to be safe. Nothing was unblocked; tearing down."
     return 1
   fi
-  read -r audited bad <<<"$(asl_prefix_audit "$mprefix")"
+  read -r audited bad <<<"$(asl_prefix_audit "$mprefix" "$mjobcwd" "$mkidrg" "$mblock")"
   if [ "$audited" != "$minc" ] || [ "$bad" != "0" ]; then
     echo "## VERDICT: recoveredIncomplete=$live commandsAudited=$audited unsafeCommands=$bad"
-    echo "FAIL (UNSAFE FIXTURE): the prefix audit read $audited of $minc incomplete commands and"
-    echo "  found $bad that do not start with '$mprefix'. Only commands this fixture generated may"
-    echo "  be allowed to run. Nothing was unblocked; tearing down."
+    echo "FAIL (UNSAFE FIXTURE): the command audit read $audited of $minc incomplete commands and"
+    echo "  found $bad that are not '$mprefix N plain' or a '$mprefix N selfadd' piping into"
+    echo "  $mjobcwd/wradd.sh. Only commands this fixture's generator writes may be allowed to run."
+    echo "  Nothing was unblocked; tearing down."
     return 1
   fi
-  echo "recovered-job audit: $audited/$minc incomplete commands read, all starting with '$mprefix'"
+  echo "recovered-job audit: $audited/$minc incomplete commands read, all of a form the generator writes"
   local newlim
   newlim=$(osunset; timeout 120 "$WR" limit -g "$mblock:$resume" --deployment production 2>&1 | tail -1)
   echo "raised $mblock to ${newlim:-?} (was 0), so the recovered population may now run on real LSF"
@@ -1578,6 +1632,10 @@ asl_cleanup() {  # idempotent add-storm-lsf/fixture teardown: adders, manager, O
   else
     rm -f "$PROD_RUN/db" "$PROD_RUN/db_bk"* 2>/dev/null
     echo "  removed the working DB copy; the per-add logs are kept in ${ASL_DIR:-?}"
+  fi
+  if [ -n "${ASL_WRADD_OWNER:-}" ]; then
+    rm -f "$ASL_WRADD_OWNER"
+    ASL_WRADD_OWNER=""
   fi
 }
 
@@ -4907,15 +4965,17 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         construction (every command starts "echo aslfix"), dependent (half join a
                         dep group, half DEPEND on one), and blocked at limit 0 so opening the
                         fixture makes nothing dispatchable; selfAddPct% of them are
-                        'echo … && echo <child> | wr add …' with the absolute binary path and
-                        WR_CONFIG_DIR baked in, which is production's own portal_builder
-                        shape - jobs adding jobs - and the reason the storm existed. Its manager
+                        'echo … && echo <child> | <fixture>.jobcwd/wradd.sh …', a wrapper
+                        add-storm-lsf rewrites each run to call ITS root's wr and config dir,
+                        which is production's own portal_builder shape - jobs adding jobs - and
+                        the reason the storm existed. Its manager
                         runs -s local --max_cores 1 --max_ram 1, so nothing can be dispatched and
                         no bsub is ever issued, and it refuses a base that already holds
                         incomplete jobs. Writes the DB to WRDEV_ASL_FIXTURE (default
                         \$WRDEV_ROOT/aslfixture.db) plus a <fixture>.aslmanifest recording size,
-                        mtime, incomplete count, safe prefix and block group - the stamp
-                        add-storm-lsf demands before it will open anything. ~3-4min for 20000
+                        mtime, incomplete count, safe prefix, block group and job cwd - the
+                        stamp add-storm-lsf demands before it will open anything (fixtures from
+                        before the wrapper are refused: regenerate them). ~3-4min for 20000
                         jobs; needs ~3x the base free under WRDEV_ROOT.
   add-storm-lsf [adders] [preKillSec] [postRestartSec] [limit] [thinkMs]
                         REAL-LSF (Tier B) validation of the add-path coalescing writer that
@@ -4940,7 +5000,9 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         which is what keeps an unstamped database out - prod.db is a copy of real
                         production with 118,213 live jobs whose commands a real bsub would RUN AS
                         YOU. It then re-checks the recovered count and audits EVERY incomplete
-                        job's command for the safe prefix before raising the limit.
+                        job's command (only the exact forms the generator writes pass) before
+                        raising the limit. It rewrites <fixture>.jobcwd/wradd.sh for its own
+                        root first, and refuses while another run holds wradd.owner.
                         WRDEV_ASL_BOLTBUCKETS=<boltbuckets binary> adds an offline jobslive
                         cross-check. Needs WRDEV_ROOT with room for ~2x the fixture, so NOT the
                         ~14GB default - use WRDEV_ROOT=/nfs/hgi/wr/sb10-bigdb/devroot. Safe: LSF
