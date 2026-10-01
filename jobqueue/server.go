@@ -3485,8 +3485,9 @@ func (s *Server) buryReleasedItem(ctx context.Context, q *queue.Queue, item *que
 	return outcome, nil
 }
 
-// buryItemWhereItIs buries a job's item from the run sub-queue, or from delay
-// or ready if another release of the run already moved it there.
+// buryItemWhereItIs buries a job's item from the run sub-queue, or from delay,
+// ready or dependent if another release of the run already moved it there. A
+// dependent item keeps its dependencies, so a kick makes it dependent again.
 //
 // That is an owner's bury after the manager released a lost job itself, which
 // the user may since have resumed, or kicked after that release buried it.
@@ -3515,9 +3516,11 @@ func (s *Server) buryItemWhereItIs(ctx context.Context, q *queue.Queue, item *qu
 }
 
 // itemIsWaiting says whether an item in the given state is waiting to run
-// again, in the delay or ready sub-queue.
+// again, in the delay, ready or dependent sub-queue. A dependent item is one
+// the manager released to wait on new dependencies first.
 func itemIsWaiting(state queue.ItemState) bool {
-	return state == queue.ItemStateDelay || state == queue.ItemStateReady
+	return state == queue.ItemStateDelay || state == queue.ItemStateReady ||
+		state == queue.ItemStateDependent
 }
 
 // logClientRequestError logs the error handleRequest returned for a client
@@ -4031,6 +4034,20 @@ func newPprofMux() *http.ServeMux {
 func disablePprofProfiling() {
 	runtime.SetMutexProfileFraction(0)
 	runtime.SetBlockProfileRate(0)
+}
+
+// itemIsInFlight says whether an item in the given state can take its owner's
+// archive: it is running, or waiting in delay or ready after a busy manager
+// released it. A dependent item is not, since it must wait on new dependencies
+// and run again.
+func itemIsInFlight(state queue.ItemState) bool {
+	return state == queue.ItemStateRun || state == queue.ItemStateDelay || state == queue.ItemStateReady
+}
+
+// itemIsReleasable says whether an item in the given state can take its
+// owner's release or bury: it is running or waiting to run again.
+func itemIsReleasable(state queue.ItemState) bool {
+	return state == queue.ItemStateRun || itemIsWaiting(state)
 }
 
 func shouldIncreaseJobRAMAfterHighPeak(job *Job) bool {
@@ -6749,7 +6766,7 @@ func releaseJobSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseS
 		return releaseSnapshot{supplanted: true}
 	}
 
-	// an item already out of Run, in delay or ready, had this run released
+	// an item already out of Run, in delay, ready or dependent, had this run released
 	// before this report arrived. Either this is a re-send, such as after the
 	// runner's first request timed out on a slow commit, and the first report
 	// already spent any retry; or it is the owner's first report after the

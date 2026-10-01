@@ -376,6 +376,16 @@ func (item *Item) switchDependentReady() {
 	item.state = ItemStateReady
 }
 
+// update after we've switched from the dependent to the bury sub-queue.
+func (item *Item) switchDependentBury() {
+	item.mutex.Lock()
+	defer item.mutex.Unlock()
+
+	item.queueIndexes[4] = -1
+	item.buries++
+	item.state = ItemStateBury
+}
+
 // update after we've switched from the dependent to the suspended sub-queue.
 func (item *Item) switchDependentSuspended() {
 	item.mutex.Lock()

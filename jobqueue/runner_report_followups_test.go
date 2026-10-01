@@ -303,3 +303,58 @@ func assertOwnerEndStateAfterLostRelease(t *testing.T, f *releaseAfterLostFixtur
 		assertOwnerEndRecorded(JobStateBuried, 0)
 	})
 }
+
+// TestOwnerBuryOfRequeuedDependent proves that the owning runner's bury of a
+// job the manager released as lost into the dependent sub-queue, to wait on a
+// new member of its dep group, leaves it buried: stop means buried.
+func TestOwnerBuryOfRequeuedDependent(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a lost running job the manager released to wait on a new member of its dep group", t, func() {
+		d, jq, waiter := rdrRunningWaiter(ctx)
+
+		defer d.stop(ctx)
+		defer disconnect(jq)
+
+		second := dgaMemberJob(d, rdrGroup, rdrSecondName)
+		dgrAddJobs(jq, []*Job{second})
+
+		item, err := d.server.q.Get(waiter.Key())
+		So(err, ShouldBeNil)
+
+		serverJob, ok := item.Data().(*Job)
+		So(ok, ShouldBeTrue)
+
+		serverJob.Lock()
+		serverJob.Lost = true
+		serverJob.Unlock()
+
+		killed, err := jq.Kill([]*JobEssence{waiter.ToEssense()})
+		So(err, ShouldBeNil)
+		So(killed, ShouldEqual, 1)
+		So(dgaItemState(d.server, waiter.Key()), ShouldEqual, queue.ItemStateDependent)
+
+		Convey("the owner's bury is acknowledged and buries it, and a kick makes it wait on the new member", func() {
+			So(jq.Bury(waiter, rdrFailedEnd(), FailReasonExit), ShouldBeNil)
+			So(dgaItemState(d.server, waiter.Key()), ShouldEqual, queue.ItemStateBury)
+			So(storedLiveJobState(t, d.server.db, waiter.Key()), ShouldEqual, JobStateBuried)
+
+			kicked, errk := jq.Kick([]*JobEssence{waiter.ToEssense()})
+			So(errk, ShouldBeNil)
+			So(kicked, ShouldEqual, 1)
+			So(dgaItemState(d.server, waiter.Key()), ShouldEqual, queue.ItemStateDependent)
+
+			dgaExecuteReserved(ctx, d, jq, second.Key())
+			So(dgaItemState(d.server, waiter.Key()), ShouldEqual, queue.ItemStateReady)
+		})
+
+		Convey("the owner's release is acknowledged and it still waits on the new member", func() {
+			So(jq.releaseAfterAttempt(waiter, rdrFailedEnd(), FailReasonExit), ShouldBeNil)
+			So(dgaItemState(d.server, waiter.Key()), ShouldEqual, queue.ItemStateDependent)
+		})
+	})
+}

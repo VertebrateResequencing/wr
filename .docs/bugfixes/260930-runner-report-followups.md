@@ -128,12 +128,42 @@ package passes `-timeout 40m`, as the suite runner does.
   - Review: PASS on the fix; `make lint` 0 issues. The package gate failed
     once in `TestDepGranularityModifyChangesMemberKey` on a port bind,
     unrelated; it is item 6 below.
-- [ ] **3. An owner's jbury of a job the manager requeued as dependent gets
+- [x] **3. An owner's jbury of a job the manager requeued as dependent gets
       ErrBadJob.** A job the manager has put back in the dependent queue with
       rerun deps (#649's RerunAfterRun / dep-group re-block) answers the
       owner's jbury with ErrBadJob, so the job is not buried. Owner policy:
       "stop means buried"; the owner's bury should leave it buried (a kick
       then makes it dependent, per spec B2 and #653).
+  - Red command: `nice -n 19 go test ./jobqueue -count=1 -run
+    'TestOwnerBuryOfRequeuedDependent$'`, exit 1 on 88e9104e plus the test.
+    A running dependent is marked to run again when its dep group gains a
+    member, is marked lost and killed, so the manager requeues it as
+    dependent; its owner then buries or releases it. Both get ErrBadJob,
+    since getijForReport only accepts Run, Delay and Ready:
+
+    ```text
+    Line 342: Actual: 'jobqueue jbury(cf81c78c...): bad job (not in queue or correct sub-queue)'
+    Line 356: Actual: 'jobqueue jrelease(cf81c78c...): bad job (not in queue or correct sub-queue)'
+    --- FAIL: TestOwnerBuryOfRequeuedDependent (0.46s)
+    ```
+
+  - Fixed: `getijForReport` takes the sub-queue states its report accepts:
+    a release or bury also accepts Dependent (`itemIsReleasable`), an archive
+    does not (`itemIsInFlight`, as before), since archiving such an item
+    would lose the run it still owes after its new dependencies.
+    `itemIsWaiting` includes Dependent, so the owner's report spends no retry
+    and gives back no count again; a release is `releaseAlreadyDone` (item 2's
+    end-state recording applies), and a bury goes through `queue.BuryWaiting`,
+    which now also buries a Dependent item with its dependencies recorded, so
+    a kick makes it dependent. Files: queue/queue.go, queue/item.go
+    (`switchDependentBury`), queue/queue_test.go, jobqueue/server.go,
+    jobqueue/serverCLI.go, CHANGELOG.md.
+  - Review: PASS; `make lint` 0 issues; `go test ./jobqueue ./queue` passed
+    but for `TestSubscriptionLongPollOverExistingPort` failing on "bind:
+    address already in use", item 6, which passed alone. Noted, not fixed: a
+    hand-made request with a zero ClientID could release or bury a job that
+    never ran (ReservedBy zero), as it already could for Delay and Ready; the
+    real client always sends a random ID.
 - [ ] **5. A re-sent release after a kick may spend a retry from the kicked
       budget.** Re-check after #654's last commit changed kick handling; fix if
       still real.

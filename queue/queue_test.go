@@ -2532,6 +2532,39 @@ func TestQueueBuryWaiting(t *testing.T) {
 		shouldBeQueueError(err, ErrNothingReady)
 	})
 
+	synctestConvey(t, "A dependent item can be buried, and keeps its dependencies", func() {
+		queue := New(ctx, "bury dependent queue")
+		defer qdestroy(queue)
+
+		_, err := queue.Add(ctx, key1, "", testData, 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+
+		item, err := queue.Add(ctx, key2, "", testData, 0, 0, time.Minute, "", []string{key1})
+		So(err, ShouldBeNil)
+		So(item.Stats().State, ShouldEqual, ItemStateDependent)
+
+		recorder := &queueCallbackRecorder{}
+		queue.SetChangedCallback(recorder.changed)
+
+		from, err := queue.BuryWaiting(item.Key)
+		So(err, ShouldBeNil)
+		So(from, ShouldEqual, SubQueueDependent)
+		synctest.Wait()
+
+		So(item.Stats().State, ShouldEqual, ItemStateBury)
+		So(queue.Stats().Dependant, ShouldEqual, 0)
+		So(queue.Stats().Buried, ShouldEqual, 1)
+		So(containsSingleItemChange(recorder.changeRecords(), SubQueueDependent, SubQueueBury), ShouldBeTrue)
+
+		err = queue.Kick(ctx, item.Key)
+		So(err, ShouldBeNil)
+		So(item.Stats().State, ShouldEqual, ItemStateDependent)
+
+		err = queue.Remove(ctx, key1)
+		So(err, ShouldBeNil)
+		So(item.Stats().State, ShouldEqual, ItemStateReady)
+	})
+
 	synctestConvey(t, "An item reserved again is left running", func() {
 		queue := New(ctx, "bury reserved queue")
 		defer qdestroy(queue)

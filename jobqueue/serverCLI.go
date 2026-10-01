@@ -1474,7 +1474,7 @@ func (s *Server) handleArchive(ctx context.Context, cr *clientRequest) (*serverR
 	// not discarded and re-run. A job that is already gone-and-complete is handled
 	// idempotently (jobAlreadyComplete), a new owner yields ErrMustReserve
 	// (new-run-wins) and a missing item during recovery yields ErrRecovering.
-	item, job, srerr := s.getijForReport(cr)
+	item, job, srerr := s.getijForReport(cr, itemIsInFlight)
 	if srerr != "" {
 		if srerr == ErrBadJob && s.jobAlreadyComplete(cr.key()) {
 			return nil, "", "" // idempotent: the job is already archived/complete
@@ -1665,8 +1665,8 @@ func (s *Server) removeArchivedItem(ctx context.Context, job *Job, key string, o
 func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury bool,
 	failMsg string) (*serverResponse, string, string) {
 	// getijForReport accepts the owner's release/bury report while the item is in
-	// ANY in-flight sub-queue (Run, or Delay/Ready after a busy manager
-	// speculatively released it) - not just Run - mirroring handleArchive, so a
+	// ANY in-flight sub-queue (Run, or Delay/Ready/Dependent after the manager
+	// released it) - not just Run - mirroring handleArchive, so a
 	// genuine failure report is applied rather than discarded and the job re-run.
 	// A job that is already gone-and-complete is handled idempotently
 	// (jobAlreadyComplete). A new owner yields ErrMustReserve (new-run-wins). A
@@ -1675,7 +1675,7 @@ func (s *Server) handleRelease(ctx context.Context, cr *clientRequest, forceBury
 	// set so the losing runner abandons the dead reservation promptly instead of
 	// looping for the full 24h retryTime (reliable2 D1); a missing item during
 	// recovery yields ErrRecovering.
-	_, job, srerr := s.getijForReport(cr)
+	_, job, srerr := s.getijForReport(cr, itemIsReleasable)
 	if srerr != "" {
 		if srerr == ErrBadJob && s.jobAlreadyComplete(cr.key()) {
 			return nil, "", "" // idempotent: the job is already terminal
@@ -2323,7 +2323,12 @@ func (s *Server) dispatchMethod(ctx context.Context, cr *clientRequest, drain bo
 // ErrMustReserve (new-run-wins). A missing item is retryable during recovery
 // (ErrRecovering) and otherwise ErrBadJob (the caller may still treat an
 // already-completed job idempotently via jobAlreadyComplete).
-func (s *Server) getijForReport(cr *clientRequest) (*queue.Item, *Job, string) {
+//
+// accepts says which item states are in flight for this report: itemIsInFlight
+// for an archive, and itemIsReleasable for a release or bury, which also takes
+// an item the manager put in the dependent sub-queue to wait on new
+// dependencies before it runs again.
+func (s *Server) getijForReport(cr *clientRequest, accepts func(queue.ItemState) bool) (*queue.Item, *Job, string) {
 	key := cr.key()
 	if key == "" {
 		return nil, nil, ErrBadRequest
@@ -2339,14 +2344,12 @@ func (s *Server) getijForReport(cr *clientRequest) (*queue.Item, *Job, string) {
 	}
 
 	// accept a report only for an IN-FLIGHT item: Run (normal, or parked Lost),
-	// or Delay/Ready after a busy manager speculatively released it. A TERMINAL
+	// or waiting to run again after a busy manager speculatively released it. A TERMINAL
 	// item (Bury) or any other state is authoritatively "gone/resolved", so we
 	// return ErrBadJob and the runner gives up cleanly (D1) instead of looping on
 	// an internal release error - and an already-completed job is handled
 	// idempotently by the caller via jobAlreadyComplete.
-	switch item.Stats().State {
-	case queue.ItemStateRun, queue.ItemStateDelay, queue.ItemStateReady:
-	default:
+	if !accepts(item.Stats().State) {
 		return nil, nil, ErrBadJob
 	}
 
