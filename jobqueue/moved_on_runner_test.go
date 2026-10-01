@@ -43,11 +43,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
+	"github.com/gofrs/uuid/v5"
 	. "github.com/smartystreets/goconvey/convey"
 	bolt "go.etcd.io/bbolt"
 )
@@ -65,6 +70,66 @@ const (
 	// movedOnSchedulerID is the LSF element the runner says it runs in.
 	movedOnSchedulerID = "1234[5]"
 )
+
+// TestMovedOnRunnerHoldsConcurrently proves that the index of runner runs,
+// which has no server-wide lock, neither loses a run held while another run of
+// the same client is dropped, nor hands out a reservation number twice.
+func TestMovedOnRunnerHoldsConcurrently(t *testing.T) {
+	const (
+		workers = 8
+		rounds  = 5000
+	)
+
+	Convey("Given runner holds used by many goroutines at once", t, func() {
+		h := newRunnerHolds()
+		client := uuid.Must(uuid.NewV4())
+
+		var (
+			wg           sync.WaitGroup
+			mu           sync.Mutex
+			seen         = make(map[uint64]bool, workers*rounds)
+			repeat, lost int
+		)
+
+		for w := range workers {
+			wg.Go(func() {
+				key := strconv.Itoa(w)
+
+				for range rounds {
+					reservation := h.next()
+
+					// each worker's run comes and goes, emptying the client's
+					// runs for the others to race with.
+					h.hold(client, key, reservation)
+
+					found := false
+
+					h.withClient(client, func(runs map[string]uint64) { found = runs[key] == reservation })
+					h.forget(client, key, reservation)
+
+					mu.Lock()
+					if seen[reservation] {
+						repeat++
+					}
+
+					seen[reservation] = true
+
+					if !found {
+						lost++
+					}
+					mu.Unlock()
+				}
+			})
+		}
+
+		wg.Wait()
+
+		Convey("every reservation was new, and no run held was lost", func() {
+			So(repeat, ShouldEqual, 0)
+			So(lost, ShouldEqual, 0)
+		})
+	})
+}
 
 // movedOnJob is what the tests check of the manager's job.
 type movedOnJob struct {
@@ -564,6 +629,60 @@ func TestMovedOnRunnerLateReport(t *testing.T) {
 	})
 }
 
+// TestReleaseConcurrentBuries proves that when two buries of one run both see
+// it running, and one lands after the other has taken its snapshot, only one of
+// them records the bury: the run gives back its runner once.
+func TestReleaseConcurrentBuries(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a runner's started job with no retries, and another job wanting a runner in its group", t, func() {
+		var inSnapshotWindow atomic.Pointer[func()]
+
+		releaseSnapshotTakenHook = func() { runOnce(&inSnapshotWindow) }
+
+		f := newMovedOnFixture(ctx, t, serverRC)
+
+		defer func() {
+			f.stop(ctx)
+
+			releaseSnapshotTakenHook = nil
+		}()
+
+		f.add(0, nil, "first", "second")
+
+		first := f.reserveAndStart()
+
+		So(pollUntil(func() bool { return f.scheduledCount() == 2 }), ShouldBeTrue)
+
+		Convey("a second bury landing after the first's snapshot leaves the other job's runner wanted", func() {
+			job := f.server.runSubQueueJob(first.Key())
+			So(job, ShouldNotBeNil)
+
+			var errSecond error
+
+			action := func() { errSecond = f.server.releaseJob(ctx, job, lostJobReleaseReport()) }
+			inSnapshotWindow.Store(&action)
+
+			So(f.server.releaseJob(ctx, job, lostJobReleaseReport()), ShouldBeNil)
+			So(errSecond, ShouldBeNil)
+
+			f.soReleasedAsLost(first.Key(), 0)
+			So(f.scheduledCount(), ShouldEqual, 1)
+		})
+	})
+}
+
+// runOnce runs, and clears, the action a test stored for a hook to run once.
+func runOnce(stored *atomic.Pointer[func()]) {
+	if action := stored.Swap(nil); action != nil {
+		(*action)()
+	}
+}
+
 // TestMovedOnRunnerRerunAfterRun proves that a released job marked to run again
 // once its run ends, because a dep group it depends on gained a member while it
 // ran, waits on that member as any other release of it would.
@@ -603,4 +722,141 @@ func TestMovedOnRunnerRerunAfterRun(t *testing.T) {
 			f.soCommandAlive()
 		})
 	})
+}
+
+// TestMovedOnRunnerConcurrentRelease proves that the release acts only on the
+// run its runner moved on from, and triggers that run's behaviours only if it
+// released that run itself, when another release of it lands first.
+func TestMovedOnRunnerConcurrentRelease(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a runner that started a job with a run behaviour, whose report of it never arrived", t, func() {
+		// the hook is set before the manager starts and cleared after it stops,
+		// so the manager's goroutines see it race free; what it does is stored
+		// once the test knows.
+		var inWindow, inSnapshotWindow atomic.Pointer[func()]
+
+		movedOnRunCheckedHook = func() { runOnce(&inWindow) }
+		releaseSnapshotTakenHook = func() { runOnce(&inSnapshotWindow) }
+
+		f := newMovedOnFixture(ctx, t, serverRC)
+
+		defer func() {
+			f.stop(ctx)
+
+			movedOnRunCheckedHook = nil
+			releaseSnapshotTakenHook = nil
+		}()
+
+		cwd := t.TempDir()
+		ran := filepath.Join(t.TempDir(), "ran")
+
+		f.add(0, func(job *Job) {
+			job.Cwd, job.CwdMatters = cwd, true
+			job.Behaviours = Behaviours{{When: OnFailure, Do: Run, Arg: "echo ran >> " + ran}}
+		}, "first", "second")
+
+		first := f.reserveAndStart()
+		runs := func() int {
+			out, err := os.ReadFile(ran)
+			if err != nil {
+				return 0
+			}
+
+			return strings.Count(string(out), "ran\n")
+		}
+
+		Convey("its reserving another job runs the first's behaviour once", func() {
+			f.reserve()
+
+			f.soReleasedAsLost(first.Key(), 0)
+			So(pollUntilFor(movedOnReserveWait, func() bool { return runs() == 1 }), ShouldBeTrue)
+		})
+
+		Convey("another release of the first just before its reserving another leaves the behaviour to that release", func() {
+			var errRelease error
+
+			action := func() {
+				errRelease = f.server.releaseJob(ctx, f.server.runSubQueueJob(first.Key()), lostJobReleaseReport())
+			}
+			inWindow.Store(&action)
+
+			f.reserve()
+
+			So(errRelease, ShouldBeNil)
+			f.soReleasedAsLost(first.Key(), 0)
+			So(pollUntilFor(time.Second, func() bool { return runs() > 0 }), ShouldBeFalse)
+		})
+
+		Convey("another release of the first that buries it after the moved-on release's snapshot "+
+			"leaves the behaviour to that release", func() {
+			var errRelease error
+
+			action := func() {
+				errRelease = releaseAndTriggerBehaviours(ctx, f.server, f.server.runSubQueueJob(first.Key()))
+			}
+			inSnapshotWindow.Store(&action)
+
+			f.reserve()
+
+			So(errRelease, ShouldBeNil)
+			f.soReleasedAsLost(first.Key(), 0)
+			So(pollUntilFor(movedOnReserveWait, func() bool { return runs() == 1 }), ShouldBeTrue)
+			So(pollUntilFor(time.Second, func() bool { return runs() > 1 }), ShouldBeFalse)
+		})
+
+		Convey("another runner's new run of the first, reserved just before its reserving another, keeps running", func() {
+			other := f.connect()
+			defer disconnect(other)
+
+			other.SetReserveSchedulerID(movedOnSchedulerID)
+
+			var (
+				errWindow error
+				otherJob  *Job
+			)
+
+			action := func() {
+				if errWindow = f.server.releaseJob(ctx, f.server.runSubQueueJob(first.Key()),
+					lostJobReleaseReport()); errWindow != nil {
+					return
+				}
+
+				if _, errWindow = f.user.Kick([]*JobEssence{{JobKey: first.Key()}}); errWindow != nil {
+					return
+				}
+
+				otherJob, errWindow = other.ReserveScheduled(movedOnReserveWait, f.group)
+			}
+			inWindow.Store(&action)
+
+			f.reserve()
+
+			So(errWindow, ShouldBeNil)
+			So(otherJob, ShouldNotBeNil)
+			So(otherJob.Key(), ShouldEqual, first.Key())
+			f.soStillRunning(first.Key())
+		})
+	})
+}
+
+// releaseAndTriggerBehaviours releases job as the manager releases a lost run
+// confirmed dead, triggering that run's behaviours itself, as
+// killLostJobAndTriggerBehaviours does.
+func releaseAndTriggerBehaviours(ctx context.Context, s *Server, job *Job) error {
+	job.RLock()
+	pin := job.pinBehavioursLocked()
+	job.RUnlock()
+
+	if err := s.releaseJob(ctx, job, lostJobReleaseReport()); err != nil {
+		return err
+	}
+
+	s.triggerLostRunBehaviours(ctx, lostJobDetails{key: job.Key(), pin: pin})
+
+	return nil
 }

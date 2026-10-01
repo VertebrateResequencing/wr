@@ -63,25 +63,41 @@ package jobqueue
 // The number, not just being held by X, is what says J2 is newer: only jobs
 // with a smaller one are released. The one a request is about is never
 // released, nor is anything by a request about an older job, such as a touch
-// or start report of J1 still in flight when the runner reserved J2.
+// or start report of J1 still in flight when the runner reserved J2. As the
+// number is unique to a run, the release checks it again, under the job's lock,
+// when it takes its snapshot, so a run released or reserved again before then is
+// left alone, and the pinned behaviours are triggered only by the release that
+// took the run out of Run. That check is not atomic with the queue change that
+// follows: another release and a new reservation both landing in the
+// microseconds between them is a window every release path shares.
 //
 // So that no touch has to look through every running job, runnerHolds indexes
 // each runner client's runs in the run sub-queue by job key. It is filled at
 // reservation and from the jobs recovery puts into Run, and a run leaves it
 // when it is released (releaseJob, which every release and bury goes through),
 // when its success is recorded (handleArchive), when its job is reserved again,
-// or when it is taken here to be released. Its mutex is a leaf: nothing else is
-// locked while it is held.
+// or when it is taken here to be released. Nothing server-wide is locked
+// (DEVELOPERS.md hard rule 2): each client's runs have their own mutex, a leaf
+// under which only the index's own map is touched, and the last number handed
+// out is atomic.
 
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid/v5"
 )
+
+// movedOnRunCheckedHook, when set, is called once releaseMovedOnRun has found a
+// job still on the run its runner moved on from, and before it releases it: the
+// window in which another release of that run can land. It is nil in production.
+//
+//nolint:gochecknoglobals // test hook into a moment that cannot be reached otherwise
+var movedOnRunCheckedHook func()
 
 // heldRun is one runner run of a job: the job's key and its RunnerReservation.
 type heldRun struct {
@@ -92,16 +108,32 @@ type heldRun struct {
 // releaseMovedOnRun releases the given run of a job, which its runner client
 // has moved on from, exactly as killLostJobAndTriggerBehaviours releases a lost
 // run confirmed dead, provided the job is still in the run sub-queue on that
-// run and its success is not being recorded.
+// run and its success is not being recorded. The release checks that again
+// when it takes its snapshot, under the job's lock, and the run's behaviours are
+// triggered only if this call released it: another release of the run, which
+// triggers its own, or a new run of the job reserved before that snapshot, is
+// left alone.
 func (s *Server) releaseMovedOnRun(ctx context.Context, client uuid.UUID, run heldRun) {
 	job, pin, ok := s.movedOnRunJob(client, run)
 	if !ok {
 		return
 	}
 
-	if err := s.releaseJob(ctx, job, lostJobReleaseReport()); err != nil {
+	if movedOnRunCheckedHook != nil {
+		movedOnRunCheckedHook()
+	}
+
+	rep := lostJobReleaseReport()
+	rep.isRun = func(j *Job) bool { return j.isUnfinishedRunnerRunLocked(client, run.reservation) }
+
+	released, err := s.releaseRun(ctx, job, rep)
+	if err != nil {
 		clog.Warn(ctx, "failed to release a job whose runner has moved on to another job", "key", run.key, "err", err)
 
+		return
+	}
+
+	if !released {
 		return
 	}
 
@@ -129,34 +161,52 @@ func (s *Server) movedOnRunJob(client uuid.UUID, run heldRun) (*Job, pinnedBehav
 	return job, job.pinBehavioursLocked(), true
 }
 
+// clientHolds is one runner client's runs, by job key, with their
+// reservations. Once emptied it is dropped from runnerHolds.byClient, and marked
+// dropped so that a hold that found it before that makes a new one instead.
+type clientHolds struct {
+	mu      sync.Mutex
+	runs    map[string]uint64
+	dropped bool
+}
+
 // runnerHolds indexes the runs that wr runner clients hold in the run
 // sub-queue, and hands out the RunnerReservation numbers that order them.
+//
+// Every reserve, start, touch, release and archive passes through it, so it has
+// no server-wide lock (see the top of this file).
 type runnerHolds struct {
-	mu       sync.Mutex
-	byClient map[uuid.UUID]map[string]uint64
-	last     uint64
+	byClient sync.Map // uuid.UUID -> *clientHolds
+	last     atomic.Uint64
 }
 
 // newRunnerHolds returns an empty runnerHolds.
 func newRunnerHolds() *runnerHolds {
-	return &runnerHolds{byClient: make(map[uuid.UUID]map[string]uint64)}
+	return &runnerHolds{}
 }
 
 // next returns a RunnerReservation larger than any this manager has handed out
 // or recovered. It is the time in nanoseconds when that is larger, so that it
 // is also larger than those of a manager that ran before this one.
 func (h *runnerHolds) next() uint64 {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	for {
+		last := h.last.Load()
+		n := max(uint64(time.Now().UnixNano()), last+1)
 
-	n := uint64(time.Now().UnixNano())
-	if n <= h.last {
-		n = h.last + 1
+		if h.last.CompareAndSwap(last, n) {
+			return n
+		}
 	}
+}
 
-	h.last = n
-
-	return n
+// noteHandedOut makes sure next never returns reservation or anything smaller.
+func (h *runnerHolds) noteHandedOut(reservation uint64) {
+	for {
+		last := h.last.Load()
+		if last >= reservation || h.last.CompareAndSwap(last, reservation) {
+			return
+		}
+	}
 }
 
 // hold records that client holds a run of the keyed job with the given
@@ -166,17 +216,26 @@ func (h *runnerHolds) hold(client uuid.UUID, key string, reservation uint64) {
 		return
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.noteHandedOut(reservation)
 
-	runs := h.byClient[client]
-	if runs == nil {
-		runs = make(map[string]uint64)
-		h.byClient[client] = runs
+	for {
+		ch, ok := h.byClient.Load(client)
+		if !ok {
+			ch, _ = h.byClient.LoadOrStore(client, &clientHolds{runs: make(map[string]uint64)})
+		}
+
+		holds := ch.(*clientHolds) //nolint:errcheck,forcetypeassert // byClient only ever stores *clientHolds
+		holds.mu.Lock()
+
+		if !holds.dropped {
+			holds.runs[key] = reservation
+			holds.mu.Unlock()
+
+			return
+		}
+
+		holds.mu.Unlock()
 	}
-
-	runs[key] = reservation
-	h.last = max(h.last, reservation)
 }
 
 // forget removes client's run of the keyed job, if it is the one with the given
@@ -186,45 +245,54 @@ func (h *runnerHolds) forget(client uuid.UUID, key string, reservation uint64) {
 		return
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	runs := h.byClient[client]
-	if runs[key] != reservation {
-		return
-	}
-
-	delete(runs, key)
-
-	if len(runs) == 0 {
-		delete(h.byClient, client)
-	}
+	h.withClient(client, func(runs map[string]uint64) {
+		if runs[key] == reservation {
+			delete(runs, key)
+		}
+	})
 }
 
 // takeOlder removes and returns client's runs of jobs other than the keyed one
 // that were reserved before the given reservation.
 func (h *runnerHolds) takeOlder(client uuid.UUID, key string, reservation uint64) []heldRun {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	runs := h.byClient[client]
-
 	var older []heldRun
 
-	for k, r := range runs {
-		if k == key || r >= reservation {
-			continue
+	h.withClient(client, func(runs map[string]uint64) {
+		for k, r := range runs {
+			if k == key || r >= reservation {
+				continue
+			}
+
+			older = append(older, heldRun{key: k, reservation: r})
+			delete(runs, k)
 		}
-
-		older = append(older, heldRun{key: k, reservation: r})
-		delete(runs, k)
-	}
-
-	if len(runs) == 0 {
-		delete(h.byClient, client)
-	}
+	})
 
 	return older
+}
+
+// withClient calls change with client's runs, if it has any, under their
+// mutex, and drops them if change leaves none.
+func (h *runnerHolds) withClient(client uuid.UUID, change func(runs map[string]uint64)) {
+	ch, ok := h.byClient.Load(client)
+	if !ok {
+		return
+	}
+
+	holds := ch.(*clientHolds) //nolint:errcheck,forcetypeassert // byClient only ever stores *clientHolds
+	holds.mu.Lock()
+	defer holds.mu.Unlock()
+
+	if holds.dropped {
+		return
+	}
+
+	change(holds.runs)
+
+	if len(holds.runs) == 0 {
+		holds.dropped = true
+		h.byClient.CompareAndDelete(client, holds)
+	}
 }
 
 // runnerReservation returns the RunnerReservation for a job being reserved by

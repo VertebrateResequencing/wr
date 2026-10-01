@@ -368,6 +368,14 @@ var confirmServerDeadHook func()
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var startPersistedHook func(key string)
 
+// releaseSnapshotTakenHook, if non-nil, is called once releaseRun has taken its
+// snapshot of a job and found it still on the run being released, and before it
+// changes the job's item: the window in which another release of the same run
+// can land. It is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var releaseSnapshotTakenHook func()
+
 // dependencyUpdatesHook, if non-nil, is called by an add once its write has
 // committed and before it applies its live dependents' new dependencies to the
 // queue, so a test can have a dependent finish in between. It is a test-only
@@ -422,21 +430,6 @@ const (
 	// Run already gave back its run's scheduler group count.
 	releaseBuriedWaiting
 )
-
-// buriedItemOutcome is buryReleasedItem's outcome for an item already buried,
-// by a concurrent bury of this run if the snapshot does not say buried. If the
-// item was waiting, whoever took it out of Run already gave back its run's
-// scheduler group count.
-func buriedItemOutcome(snap releaseSnapshot) releaseOutcome {
-	switch {
-	case snap.state == JobStateBuried:
-		return releaseAlreadyDone
-	case snap.waiting:
-		return releaseBuriedWaiting
-	default:
-		return releaseMoved
-	}
-}
 
 // ServerTimings holds the timing parameters a Server operates with. These were
 // previously package-level globals that tests mutated, which prevented running
@@ -1222,6 +1215,12 @@ type releaseReport struct {
 	// underflow the uint8 to 255, silently restoring the unbounded retrying this
 	// field exists to remove.
 	spendsRetry bool
+
+	// isRun, when set, says whether the job, which the caller has read-locked, is
+	// still on the run being released. If it is not, or its item has left the run
+	// sub-queue, the release changes nothing. releaseMovedOnRun sets it, so that a
+	// run released or reserved again since it looked is left alone.
+	isRun func(*Job) bool
 }
 
 // lostJobReleaseReport is the release report the manager makes on its own
@@ -1301,6 +1300,21 @@ type releaseSnapshot struct {
 	// runner reserved it (see moved_on_runner.go).
 	reservedBy        uuid.UUID
 	runnerReservation uint64
+
+	// notTheRun says the job is no longer on the run releaseReport.isRun names.
+	notTheRun bool
+}
+
+// takeReleaseSnapshot is releaseJobSnapshot, followed, for a job still on the
+// run being released, by releaseSnapshotTakenHook.
+func takeReleaseSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseSnapshot {
+	snap := releaseJobSnapshot(job, item, rep)
+
+	if !snap.notTheRun && releaseSnapshotTakenHook != nil {
+		releaseSnapshotTakenHook()
+	}
+
+	return snap
 }
 
 // completeJobsBudget tracks how many more archived jobs each of limitJobs' groups
@@ -3407,10 +3421,17 @@ func (s *Server) confirmServerDeadLater(ctx context.Context, serverID string, au
 }
 
 // buryReleasedItem is applyReleaseQueueChange for a job being buried.
+//
+// An item already buried was buried by another release of the run, perhaps one
+// that landed after this one's snapshot. That release records the bury and gives
+// back the run's scheduler group count, so this one changes nothing. Only a
+// release buries an item a client reserved: buryImpossibleItem buries only an
+// item the manager itself reserved from ready, whose last run, if any, was
+// already released.
 func (s *Server) buryReleasedItem(ctx context.Context, q *queue.Queue, item *queue.Item,
 	snap releaseSnapshot, job *Job, rerunDeps []string) (releaseOutcome, error) {
 	if item.Stats().State == queue.ItemStateBury {
-		return buriedItemOutcome(snap), nil
+		return releaseAlreadyDone, nil
 	}
 
 	outcome, errq := s.buryItemWhereItIs(ctx, q, item, snap)
@@ -3465,6 +3486,68 @@ func (s *Server) buryItemWhereItIs(ctx context.Context, q *queue.Queue, item *qu
 // again, in the delay or ready sub-queue.
 func itemIsWaiting(state queue.ItemState) bool {
 	return state == queue.ItemStateDelay || state == queue.ItemStateReady
+}
+
+// releaseRun is releaseJob, also reporting whether this call took the job's run
+// out of the run sub-queue itself, rather than finding another release had.
+func (s *Server) releaseRun(ctx context.Context, job *Job, rep releaseReport) (bool, error) {
+	// the queue change below is what a waiting client (AddAndWait, `wr add
+	// --sync`) is told about, and it happens before finalizeReleasedJob queues
+	// the write of the job's std. A client that then asked for the std found
+	// none, so retrieveJobStd is made to wait from here on: until the write is
+	// queued (after which it waits on that), or until it is clear there will be
+	// none.
+	defer s.db.expectJobExitUpdate()()
+
+	q := s.queueIfPresent()
+	if q == nil {
+		return false, queueClosedError("Get", job.Key())
+	}
+
+	item, err := q.Get(job.Key())
+	if err != nil {
+		return false, err
+	}
+
+	// check whether the job has already been released/buried, only attempting
+	// queue changes if not. This also decides rep.spendsRetry, once, so that
+	// finalizeReleasedJob below cannot reach a different verdict from a
+	// job.StartTime that changed in between (see releaseReport.spendsRetry).
+	snap := takeReleaseSnapshot(job, item, &rep)
+	if snap.notTheRun {
+		return false, nil
+	}
+
+	outcome, errq := s.applyReleaseQueueChangeForRerun(ctx, q, item, snap, job)
+	if errq != nil {
+		return false, errq
+	}
+
+	s.runnerHolds.forget(snap.reservedBy, snap.key, snap.runnerReservation)
+
+	if outcome == releaseAlreadyDone {
+		return false, s.ackAlreadyReleased(job, rep)
+	}
+
+	return outcome == releaseMoved, s.finalizeReleasedJob(ctx, job, rep, outcome)
+}
+
+// ackAlreadyReleased is releaseRun's answer to a release another release of the
+// run already made.
+//
+// A redundant report, such as a runner re-sending after its first request timed
+// out on a slow commit, must not be acknowledged before that first write is on
+// disk, and if that write failed nothing else will retry it. So, as handleStart
+// does for a duplicate start, a durable report writes the job's current state
+// again. It is only written if the job is still live, and with a later arrival
+// order than anything already queued for it, so this can neither resurrect a
+// deleted or archived job nor overwrite a newer record.
+func (s *Server) ackAlreadyReleased(job *Job, rep releaseReport) error {
+	if !rep.durable {
+		return nil
+	}
+
+	return s.db.updateJobAfterChangeDurable(job)
 }
 
 // logClientRequestError logs the error handleRequest returned for a client
@@ -6612,55 +6695,9 @@ func (s *Server) backstopKillWedgedRunner(ctx context.Context, d lostJobDetails)
 // our scheduling counts as appropriate. With rep.durable it returns only once
 // the job's new state is on disk.
 func (s *Server) releaseJob(ctx context.Context, job *Job, rep releaseReport) error {
-	// the queue change below is what a waiting client (AddAndWait, `wr add
-	// --sync`) is told about, and it happens before finalizeReleasedJob queues
-	// the write of the job's std. A client that then asked for the std found
-	// none, so retrieveJobStd is made to wait from here on: until the write is
-	// queued (after which it waits on that), or until it is clear there will be
-	// none.
-	defer s.db.expectJobExitUpdate()()
+	_, err := s.releaseRun(ctx, job, rep)
 
-	key := job.Key()
-
-	q := s.queueIfPresent()
-	if q == nil {
-		return queueClosedError("Get", key)
-	}
-
-	item, err := q.Get(key)
-	if err != nil {
-		return err
-	}
-
-	// check whether the job has already been released/buried, only attempting
-	// queue changes if not. This also decides rep.spendsRetry, once, so that
-	// finalizeReleasedJob below cannot reach a different verdict from a
-	// job.StartTime that changed in between (see releaseReport.spendsRetry).
-	snap := releaseJobSnapshot(job, item, &rep)
-
-	outcome, errq := s.applyReleaseQueueChangeForRerun(ctx, q, item, snap, job)
-	if errq != nil {
-		return errq
-	}
-
-	s.runnerHolds.forget(snap.reservedBy, snap.key, snap.runnerReservation)
-
-	if outcome == releaseAlreadyDone {
-		// a redundant report, such as a runner re-sending after its first request
-		// timed out on a slow commit, must not be acknowledged before that first
-		// write is on disk, and if that write failed nothing else will retry it. So,
-		// as handleStart does for a duplicate start, the job's current state is
-		// written again. It is only written if the job is still live, and with a
-		// later arrival order than anything already queued for it, so this can
-		// neither resurrect a deleted or archived job nor overwrite a newer record.
-		if rep.durable {
-			return s.db.updateJobAfterChangeDurable(job)
-		}
-
-		return nil
-	}
-
-	return s.finalizeReleasedJob(ctx, job, rep, outcome)
+	return err
 }
 
 // releaseJobSnapshot reads, under the job's read lock, the values releaseJob
@@ -6682,7 +6719,8 @@ func releaseJobSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseS
 	// retry has been dealt with, so it must not be spent again, nor bury judged
 	// from the budget left behind: a release would otherwise bury a job its
 	// release had just left to run again, or one the user had kicked.
-	waiting := itemIsWaiting(item.Stats().State)
+	itemState := item.Stats().State
+	waiting := itemIsWaiting(itemState)
 	rep.spendsRetry = !waiting && releaseSpendsARetry(job, *rep)
 
 	// bury the ITEM exactly when finalizeReleasedJob below will call the JOB
@@ -6710,6 +6748,7 @@ func releaseJobSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseS
 		waiting:           waiting,
 		reservedBy:        job.ReservedBy,
 		runnerReservation: job.RunnerReservation,
+		notTheRun:         rep.isRun != nil && (itemState != queue.ItemStateRun || !rep.isRun(job)),
 	}
 }
 

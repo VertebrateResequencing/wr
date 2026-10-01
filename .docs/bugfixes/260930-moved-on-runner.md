@@ -53,3 +53,86 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
     number. The scheduler group alone is not a safe marker: Go clients call
     `ReserveScheduled` and hold several jobs. So runners outside LSF still rely
     on confirm-dead.
+
+- [x] **Review hardening of the moved-on release** (reviewer findings on
+      5360ce20, verified by reading the code):
+  1. `releaseMovedOnRun` checks the run and then calls `releaseJob`
+     non-atomically. `releaseJob` returns nil on `releaseAlreadyDone`, so if
+     another path released J1 in between, the pinned lost-run behaviours fire
+     a second time. If J1 was also re-reserved in that window, the new run
+     could be released. Only release, and only trigger behaviours, when this
+     call really released that run.
+  2. `forgetCompletedRunnerHold` runs before `archiveCompletedJob`. If the
+     archive write fails, J1 stays in Run with RunnerReservation 0 and only
+     confirm-dead can catch it. Forget the hold and clear the field only after
+     a successful archive; clear it in the complete record's encoding, as
+     `db.rerunRecords` does for RerunAfterRun.
+  3. DEVELOPERS.md hard rule 2: `runnerHolds.mu` is a server-wide exclusive
+     mutex on every reserve, start, touch, release and archive. Make it
+     per-client (for example a `sync.Map` of client to `{mu, runs}`), with an
+     atomic CAS-max `next()`.
+  4. `jobqueue/job.go` ~995: rewrap the over-long comment line.
+  5. Recovery edge: `recoverRunnerHold` indexes J1 before `AddMany` puts it
+     in the queue. A reserve in that gap makes `takeOlder` drop J1's entry
+     while `runSubQueueJob` returns nil. Put the hold back when the job is
+     missing during recovery.
+  6. (Review of the hardening) A concurrent bury of the same run still
+     triggers the behaviours twice. With J1 at Retries 0, the moved-on release
+     and another `releaseJob` both snapshot J1 while it is in Run. The other
+     buries it. Ours finds the item in Bury and gets `buriedItemOutcome` ->
+     `releaseMoved` (default case), so `released` is true.
+  - Red: `go test -tags netgo -count=1 ./jobqueue -run
+    'TestReleaseConcurrentBuries|TestMovedOnRunnerConcurrentRelease'` failed
+    before the fix (behaviour ran a second time; another runner's new run was
+    released; group count 1 -> 0).
+  - Fixed 1, 3, 4, 6. `releaseJob` wraps `releaseRun`, which reports whether
+    it really released the run, and an optional `releaseReport.isRun`
+    re-checks the run under the job's lock in the snapshot. Behaviours fire
+    only when this release took the run out of Run. `runnerHolds` is now a
+    `sync.Map` of per-client leaf mutexes with an atomic CAS-max counter (hard
+    rule 2). Points 2 and 5 cannot happen: a job being archived is already
+    exited, and `ttrCallback` sends it to delay if the archive fails. Clients
+    are only served after recovery's `AddMany`. Tests:
+    `TestMovedOnRunnerConcurrentRelease`, `TestMovedOnRunnerHoldsConcurrently`.
+    It is in one commit with item 3, as both change the same lines of
+    `buryReleasedItem`.
+
+- [x] **Two concurrent buries of one run both finalize** (pre-existing since
+      #654, 3eb294a2; found by the reviewer of item 2). `buryReleasedItem`
+      returns `buriedItemOutcome(snap)` when the item is already in Bury, and
+      its default case (snapshot neither buried nor waiting) is
+      `releaseMoved`. So the second bury also runs `finalizeReleasedJob`,
+      decrementing the scheduler group count twice and writing twice.
+  - Fixed in `jobqueue/server.go`: an item already in Bury now always gets
+    `releaseAlreadyDone`, which still sends the durable acknowledgement. The
+    default case dates from 34129291. Of the other paths that bury an item,
+    `buryItemWhereItIs` finalizes its own bury, and `buryImpossibleItem` only
+    buries items the manager reserved from ready. So neither needs a second
+    finalize. Test: `TestReleaseConcurrentBuries` (hook
+    `releaseSnapshotTakenHook`). Remaining window: if another release has
+    buried the item but not yet queued its write, the redundant reporter's
+    durable acknowledgement writes the pre-bury state. That window is
+    microseconds long.
+
+- [ ] **A late archive of a job the manager already released decrements the
+      scheduler count a second time.** The archive takes the job out of Delay,
+      and `finishArchive` decrements the scheduler group count again (seen in
+      `TestMovedOnRunnerLateReport` as 1 -> 0). A runner that follows the
+      protocol cannot send it after reserving its next job. A resend after a
+      lost reply, or an older runner, might. Make the count change happen
+      exactly once. (Requested by the coordinator.)
+
+- [ ] **Extend the moved-on release to runners on every scheduler, not only
+      LSF.** Add an optional field to the reserve request that `wr runner` sets
+      on every scheduler (local, OpenStack, LSF). It is backwards compatible:
+      older runners do not send it and keep the ssh confirm-dead path.
+      (Requested by the coordinator.)
+
+- [ ] **Confirm-dead and the moved-on release can both trigger a lost run's
+      behaviours.** `killRunningJob` (server.go) reports released=true
+      whenever the run was killable, even when its `releaseJob` finds the run
+      already released, e.g. by the moved-on release. So
+      `killLostJobAndTriggerBehaviours` triggers the behaviours again, and an
+      OnFailure `Run` behaviour could run twice. Use `releaseRun`'s outcome
+      (keeping errors as released), and pass `isRun` for `onlyRun`. (Found by
+      the reviewer of items 2 and 3.)
