@@ -3420,6 +3420,27 @@ func (s *Server) confirmServerDeadLater(ctx context.Context, serverID string, au
 	}()
 }
 
+// decrementGroupCountLater runs decrementGroupCount in a goroutine on s.wg, for
+// a caller holding the queue's lock, which decrementGroupCount may take. As in
+// confirmServerDeadLater, nothing is given back once shutdown is under way.
+func (s *Server) decrementGroupCountLater(ctx context.Context, schedulerGroup string) {
+	s.krmutex.RLock()
+	defer s.krmutex.RUnlock()
+
+	if s.killRunners {
+		return
+	}
+
+	wgk := s.wg.Add(1)
+
+	go func() {
+		defer internal.LogPanic(ctx, "jobqueue give back runner", true)
+		defer s.wg.Done(wgk)
+
+		s.decrementGroupCount(ctx, schedulerGroup)
+	}()
+}
+
 // buryReleasedItem is applyReleaseQueueChange for a job being buried.
 //
 // An item already buried was buried by another release of the run, perhaps one
@@ -5811,8 +5832,13 @@ func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
 	// a released/finished item awaiting its delay is not a live reservation; let
 	// it proceed to the delay sub-queue as before.
 	if job.Exited {
+		sgroup := job.schedulerGroup
 		job.Unlock()
 		job.decrementLimitGroups(s.limiter)
+
+		// the run leaves the run sub-queue here, so this gives back its runner;
+		// a later archive of it finds it waiting and does not.
+		s.decrementGroupCountLater(ctx, sgroup)
 
 		return queue.SubQueueDelay
 	}

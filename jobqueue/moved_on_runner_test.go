@@ -379,6 +379,47 @@ func (f *movedOnFixture) crashOnto(ctx context.Context, image *bytes.Buffer) {
 	f.runner.hasReserved = true
 }
 
+// failArchive has the manager accept the runner's successful archive of job but
+// fail to write it, leaving the job exited in the run sub-queue.
+func (f *movedOnFixture) failArchive(ctx context.Context, job *Job, end *JobEndState) {
+	archiveTxObserver = func(_ int, _ []byte) { panic("archive retry write failure test") }
+
+	_, srerr, _ := f.server.handleArchive(ctx, &clientRequest{
+		Method: archiveBeforeStartMethod, Keys: []string{job.Key()}, ClientID: f.runner.clientid, JobEndState: end,
+	})
+
+	archiveTxObserver = nil
+
+	So(srerr, ShouldEqual, ErrDBError)
+
+	_, itemState := f.serverJob(job.Key())
+	So(itemState, ShouldEqual, queue.ItemStateRun)
+}
+
+// expireTTR has the TTR of the running item for key expire at once, keeping it
+// delayed for the rest of the test once it is moved on, and waits for that.
+func (f *movedOnFixture) expireTTR(ctx context.Context, key string) {
+	So(f.server.q.SetDelay(key, movedOnReleaseDelay), ShouldBeNil)
+
+	item, err := f.server.q.Get(key)
+	So(err, ShouldBeNil)
+
+	stats := item.Stats()
+	So(f.server.q.Update(ctx, key, item.ReserveGroup, item.Data(), stats.Priority,
+		stats.Delay, time.Millisecond), ShouldBeNil)
+
+	// the touch wakes the queue's TTR processing for the new TTR; should it have
+	// woken already, the item has moved on and is not running to be touched.
+	errt := f.server.q.Touch(key)
+	So(errt == nil || queueErrorIs(errt, queue.ErrNotRunning), ShouldBeTrue)
+
+	So(pollUntil(func() bool {
+		_, itemState := f.serverJob(key)
+
+		return itemState == queue.ItemStateDelay
+	}), ShouldBeTrue)
+}
+
 // TestMovedOnRunner proves that a job whose runner moved on to another job is
 // released at once, as a lost job confirmed dead would be, when that runner
 // reserves its next job.
@@ -607,15 +648,28 @@ func TestMovedOnRunnerLateReport(t *testing.T) {
 			So(f.scheduledCount(), ShouldEqual, counted)
 		})
 
-		// its scheduler group count is not checked: an archive of a job the
-		// manager has released, whatever released it, gives back a runner again
-		// (finishArchive), which is not this fix's to change.
 		Convey("the runner's late archive completes it", func() {
 			So(f.runner.Archive(first, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
 
 			_, live := busyExitState(f.server, first.Key())
 			So(live, ShouldBeFalse)
 			So(f.server.jobAlreadyComplete(first.Key()), ShouldBeTrue)
+			So(f.scheduledCount(), ShouldEqual, counted)
+		})
+
+		Convey("the runner's late archive once it is ready again leaves runners wanted only for the work left", func() {
+			So(f.server.q.SetDelay(first.Key(), time.Millisecond), ShouldBeNil)
+			So(pollUntil(func() bool {
+				_, itemState := f.serverJob(first.Key())
+
+				return itemState == queue.ItemStateReady
+			}), ShouldBeTrue)
+			So(pollUntil(func() bool { return f.scheduledCount() == counted+1 }), ShouldBeTrue)
+
+			So(f.runner.Archive(first, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+			So(f.server.jobAlreadyComplete(first.Key()), ShouldBeTrue)
+			So(pollUntilFor(5*time.Second, func() bool { return f.scheduledCount() == counted }), ShouldBeTrue)
 		})
 
 		Convey("the runner's late bury buries it", func() {
@@ -625,6 +679,65 @@ func TestMovedOnRunnerLateReport(t *testing.T) {
 			So(job.State, ShouldEqual, JobStateBuried)
 			So(itemState, ShouldEqual, queue.ItemStateBury)
 			So(f.scheduledCount(), ShouldEqual, counted)
+		})
+	})
+}
+
+// TestArchiveRetryAfterTTRGivesBackOnce proves that a run whose successful
+// archive failed to write, and which a TTR expiry then moved on to wait to run
+// again, gives back its runner once: when it leaves the run sub-queue, not again
+// when its runner's retried archive completes it.
+func TestArchiveRetryAfterTTRGivesBackOnce(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a runner's started job, and another job wanting a runner in its group", t, func() {
+		f := newMovedOnFixture(ctx, t, serverRC)
+		defer f.stop(ctx)
+
+		const depGroup = "archive_retry_dep_group"
+
+		inDepGroup := func(job *Job) { job.DepGroups = []string{depGroup} }
+
+		f.add(movedOnRetries, inDepGroup, "seed")
+		seed := f.reserveAndStart()
+		So(f.runner.Archive(seed, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+		f.add(movedOnRetries, func(job *Job) {
+			job.Dependencies = Dependencies{NewDepGroupDependency(depGroup)}
+		}, "first")
+		first := f.reserveAndStart()
+		f.add(movedOnRetries, nil, "second")
+
+		So(pollUntil(func() bool { return f.scheduledCount() == 2 }), ShouldBeTrue)
+
+		end := &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}
+		f.failArchive(ctx, first, end)
+
+		Convey("its retried archive after a TTR expiry leaves runners wanted only for the work left", func() {
+			f.expireTTR(ctx, first.Key())
+			So(pollUntil(func() bool { return f.scheduledCount() == 1 }), ShouldBeTrue)
+
+			So(f.runner.Archive(first, end), ShouldBeNil)
+			So(f.server.jobAlreadyComplete(first.Key()), ShouldBeTrue)
+			So(f.scheduledCount(), ShouldEqual, 1)
+		})
+
+		Convey("marked to run again, its retried archive after a TTR expiry gives back no second runner", func() {
+			f.add(movedOnRetries, inDepGroup, "member")
+			So(pollUntil(func() bool { return f.scheduledCount() == 3 }), ShouldBeTrue)
+
+			f.expireTTR(ctx, first.Key())
+			So(pollUntil(func() bool { return f.scheduledCount() == 2 }), ShouldBeTrue)
+
+			So(f.runner.Archive(first, end), ShouldBeNil)
+
+			_, itemState := f.serverJob(first.Key())
+			So(itemState, ShouldEqual, queue.ItemStateDependent)
+			So(f.scheduledCount(), ShouldEqual, 2)
 		})
 	})
 }

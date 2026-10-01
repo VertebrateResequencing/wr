@@ -160,6 +160,32 @@ func TestUpdateUnlessRunningAndRequeue(t *testing.T) {
 			So(qerr.Err, ShouldEqual, ErrNotFound)
 		})
 
+		Convey("RemoveUnlessState tells keep the state of the item it may remove", func() {
+			var seen []ItemState
+
+			keepRecording := func(_ any, state ItemState) bool {
+				seen = append(seen, state)
+
+				return true
+			}
+
+			removed, errr := q.RemoveUnlessState(ctx, key1, keepRecording)
+			So(errr, ShouldBeNil)
+			So(removed, ShouldBeFalse)
+
+			removed, errr = q.RemoveUnlessState(ctx, key2, keepRecording)
+			So(errr, ShouldBeNil)
+			So(removed, ShouldBeFalse)
+			So(seen, ShouldResemble, []ItemState{ItemStateRun, ItemStateReady})
+
+			removed, errr = q.RemoveUnlessState(ctx, key2, func(any, ItemState) bool { return false })
+			So(errr, ShouldBeNil)
+			So(removed, ShouldBeTrue)
+
+			_, errg := q.Get(key2)
+			So(errg, ShouldNotBeNil)
+		})
+
 		Convey("Requeue of an item that is not running is an ErrNotRunning", func() {
 			erru := q.Requeue(ctx, key2, nil)
 			So(erru, ShouldNotBeNil)

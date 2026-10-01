@@ -1579,7 +1579,7 @@ func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup,
 // dependants then keep waiting on it, as they do when the write keeps it live.
 func (s *Server) finishArchive(ctx context.Context, job *Job, key, rgroup, sgroup string,
 	outcome archiveOutcome, err error) (*serverResponse, string, string) {
-	removed, errr := s.removeArchivedItem(ctx, job, key, outcome)
+	removed, from, errr := s.removeArchivedItem(ctx, job, key, outcome)
 
 	if job.endArchive() {
 		s.requeueRerun(ctx, job, key, sgroup)
@@ -1605,28 +1605,53 @@ func (s *Server) finishArchive(ctx context.Context, job *Job, key, rgroup, sgrou
 	s.rpl.Delete(rgroup, key)
 	s.rpl.Unlock()
 	clog.Debug(ctx, "completed job", "key", key, "cmd", job.loggableCmd(), "schedGrp", sgroup)
-	s.decrementGroupCount(ctx, sgroup, 1)
+	s.giveBackArchivedItem(ctx, sgroup, from)
 
 	return nil, "", ""
 }
 
+// giveBackArchivedItem updates the scheduler group count for an archived job
+// whose item was removed from the given state. Only a run's own archive gives
+// back its runner. A late archive of a run the manager already released must not
+// give it back again, since the release did when it took the item out of run:
+// an item in delay was never counted again, while one in ready was counted by
+// the last scheduling pass, so it recounts at once rather than leave a runner to
+// be spawned for nothing.
+func (s *Server) giveBackArchivedItem(ctx context.Context, sgroup string, from queue.ItemState) {
+	switch from {
+	case queue.ItemStateRun:
+		s.decrementGroupCount(ctx, sgroup, 1)
+	case queue.ItemStateReady:
+		s.triggerReadyAddedCallback(ctx)
+	default:
+	}
+}
+
 // removeArchivedItem is finishArchive's removal of the job's queue item, if the
 // outcome of its archive's write calls for it, which reports whether it removed
-// it. An item already gone is not an error: another archive of the same
-// completion, written in the same transaction, removed it.
-func (s *Server) removeArchivedItem(ctx context.Context, job *Job, key string, outcome archiveOutcome) (bool, error) {
+// it, and the state it removed it from. An item already gone is not an error:
+// another archive of the same completion, written in the same transaction,
+// removed it.
+func (s *Server) removeArchivedItem(ctx context.Context, job *Job, key string,
+	outcome archiveOutcome) (removed bool, from queue.ItemState, err error) {
 	if outcome != archiveRemovedLive {
-		return false, nil
+		return false, "", nil
 	}
 
-	removed, errr := s.q.RemoveUnless(ctx, key, func(data any) bool {
+	removed, err = s.q.RemoveUnlessState(ctx, key, func(data any, state queue.ItemState) bool {
+		from = state
+
 		return data != job || job.rerunAfterRun()
 	})
-	if queueErrorIs(errr, queue.ErrNotFound) {
-		errr = nil
+	if queueErrorIs(err, queue.ErrNotFound) {
+		err = nil
 	}
 
-	return removed, errr
+	if !removed {
+		from = ""
+	}
+
+	return removed, from, err
 }
 
 // handleRelease moves a job from the run queue to the delay queue, or buries it

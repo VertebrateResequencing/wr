@@ -114,13 +114,27 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
     durable acknowledgement writes the pre-bury state. That window is
     microseconds long.
 
-- [ ] **A late archive of a job the manager already released decrements the
+- [x] **A late archive of a job the manager already released decrements the
       scheduler count a second time.** The archive takes the job out of Delay,
       and `finishArchive` decrements the scheduler group count again (seen in
       `TestMovedOnRunnerLateReport` as 1 -> 0). A runner that follows the
       protocol cannot send it after reserving its next job. A resend after a
       lost reply, or an older runner, might. Make the count change happen
       exactly once. (Requested by the coordinator.)
+  - Red: the count assertion added to the archive case of
+    `TestMovedOnRunnerLateReport` failed before the fix (`Expected: 1 /
+    Actual: 0`). `TestArchiveRetryAfterTTRGivesBackOnce` fails without the TTR
+    give-back.
+  - Fixed: whatever takes a run out of Run gives its count back, once.
+    `finishArchive` acts on the sub-queue the archive removed the item from:
+    from Run it decrements; from Ready it recounts
+    (`triggerReadyAddedCallback`), since a scheduling pass has counted it
+    again; from Delay it does nothing. `ttrCallback`'s Exited-to-Delay branch
+    (an archive whose write failed) now gives back the count off the queue lock
+    (`decrementGroupCountLater`). `requeueRerun` skips its decrement on
+    `ErrNotRunning`. The new `queue.RemoveUnlessState` reports the item's
+    state; `RemoveUnless` keeps its v0.38.0 signature. Limit groups were
+    already given back only once.
 
 - [ ] **Extend the moved-on release to runners on every scheduler, not only
       LSF.** Add an optional field to the reserve request that `wr runner` sets
