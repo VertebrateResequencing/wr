@@ -76,8 +76,10 @@ package jobqueue
 // key it stores, so an add big enough to be stored in several transactions
 // (storeBatched) stores it, and puts back its archived dependents, in its first
 // live bucket transaction. An add that fails after its write, before it queues
-// such a job again, leaves it live but out of the queue until a restart, which
-// runs it after the new member, as its write asks.
+// such a job again, leaves it live but out of the queue. A retry of the add then
+// reads it as a live dependent that has left the queue, and queues it without
+// storing it again (archivedToRerun); without a retry it stays out of the queue
+// until a restart, which runs it after the new member, as the write asks.
 //
 // How a marked run ends decides what the mark does:
 //
@@ -479,20 +481,22 @@ func (s *Server) queuedJob(key string) *Job {
 // dependents but that have since been archived and left the queue. Their runs
 // ended before the add could give them its new dependencies, so they run again,
 // like the archived dependents the add read. Those wasPutBack reports on have
-// already been put back in the live bucket because of this add. Any other live
-// again, or no longer complete, has been dealt with by something else.
+// already been put back in the live bucket because of this add, as have those
+// live but not queued, left so by an add that failed or has yet to queue them
+// (see archivedToRerun). Any other live again, or no longer complete, has been
+// dealt with by something else.
 func (s *Server) resurrectArchivedDependents(ctx context.Context, keys []string,
 	wasPutBack func(key string) bool) ([]*queue.ItemDef, error) {
 	if len(keys) == 0 {
 		return nil, nil
 	}
 
-	jobs, notPutBack, err := s.archivedNotLive(keys, wasPutBack)
+	jobs, notLive, err := s.archivedNotQueued(keys, wasPutBack)
 	if err != nil || len(jobs) == 0 {
 		return nil, err
 	}
 
-	if err = s.storeLiveForRerunIfAny(notPutBack); err != nil {
+	if err = s.storeLiveForRerunIfAny(notLive); err != nil {
 		return nil, err
 	}
 
@@ -523,10 +527,10 @@ func (s *Server) storeLiveForRerunIfAny(jobs []*Job) error {
 	return s.db.storeLiveForRerun(jobs)
 }
 
-// archivedNotLive returns the archived jobs with the given keys that are not
-// live, or that wasPutBack reports on, decoded from the complete bucket and no
-// longer reserved by anyone, and separately those of them it does not.
-func (s *Server) archivedNotLive(keys []string, wasPutBack func(key string) bool) (jobs, notPutBack []*Job,
+// archivedNotQueued returns the archived jobs with the given keys that are not
+// queued (see archivedToRerun), decoded from the complete bucket and no longer
+// reserved by anyone, and separately those of them not already live.
+func (s *Server) archivedNotQueued(keys []string, wasPutBack func(key string) bool) (jobs, notLive []*Job,
 	err error) {
 	archived, err := s.db.retrieveCompleteJobsByKeys(keys)
 	if err != nil {
@@ -536,7 +540,7 @@ func (s *Server) archivedNotLive(keys []string, wasPutBack func(key string) bool
 	jobs = make([]*Job, 0, len(archived))
 
 	for _, job := range archived {
-		rerun, putBack, errr := s.archivedToRerun(job, wasPutBack)
+		rerun, alreadyLive, errr := s.archivedToRerun(job, wasPutBack)
 		if errr != nil {
 			return nil, nil, errr
 		}
@@ -545,27 +549,35 @@ func (s *Server) archivedNotLive(keys []string, wasPutBack func(key string) bool
 			continue
 		}
 
-		if !putBack {
-			notPutBack = append(notPutBack, job)
+		if !alreadyLive {
+			notLive = append(notLive, job)
 		}
 
 		job.ReservedBy = uuid.UUID{}
 		jobs = append(jobs, job)
 	}
 
-	return jobs, notPutBack, nil
+	return jobs, notLive, nil
 }
 
-// archivedToRerun reports whether archivedNotLive returns the archived job, and
-// whether wasPutBack reports on it.
-func (s *Server) archivedToRerun(job *Job, wasPutBack func(key string) bool) (rerun, putBack bool, err error) {
-	if wasPutBack(job.Key()) {
+// archivedToRerun reports whether archivedNotQueued returns the archived job,
+// and whether it is already in the live bucket, so needs no storing: wasPutBack
+// reports on it, or it is live but not queued. The latter was put back live, or
+// kept live, by an add (maybe this one's earlier try) that failed before
+// queueing it, or that has yet to queue it, in which case queueing it here
+// finds a duplicate there or in the other add.
+func (s *Server) archivedToRerun(job *Job, wasPutBack func(key string) bool) (rerun, alreadyLive bool, err error) {
+	key := job.Key()
+	if wasPutBack(key) {
 		return true, true, nil
 	}
 
-	live, err := s.db.checkIfLive(job.Key())
+	live, err := s.db.checkIfLive(key)
+	if err != nil || !live {
+		return err == nil, false, err
+	}
 
-	return !live && err == nil, false, err
+	return s.queuedJob(key) == nil, true, nil
 }
 
 // rerunDependencies returns the dependencies a job about to run again must wait

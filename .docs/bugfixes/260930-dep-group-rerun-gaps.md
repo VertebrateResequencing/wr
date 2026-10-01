@@ -151,7 +151,7 @@ home directory: `make lint`, `make test`, `CGO_ENABLED=1 make race`.
   (`jobqueue_test.go:6599`, "schedgrp 200:30:1:0 not found, we have:
   800:30:1:0"): the RAM learned for `echo a` depends on which tests shared the
   process first. It passes alone and under `make race`'s split.
-- [ ] 9. Item 6 residual, a regression against develop: an add that fails
+- [x] 9. Item 6 residual, a regression against develop: an add that fails
   after its write committed (a DB error later in the add) but before it queues
   a dependent its transaction put back live, or that its guard kept live,
   leaves that dependent live on disk and out of the queue until a restart, and
@@ -171,6 +171,24 @@ home directory: `make lint`, `make test`, `CGO_ENABLED=1 make race`.
 
     The failed add also leaves the new member live on disk but not queued; the
     retry queues it, but not the dependent.
+  - Root cause: the retry reads the dependent as a live dependent that has left
+    the queue, so it reaches `archivedToRerun`, which skipped any job live on
+    disk as dealt with by something else.
+  - Fix (`jobqueue/running_dependent.go`): `archivedToRerun` treats a job that
+    is complete-recorded, live on disk and not queued as already live: it is
+    queued without being stored again. If the add that put it back is still
+    running, both queue it and one counts a duplicate. `archivedNotLive` is
+    renamed `archivedNotQueued`.
+  - Test: `jobqueue/add_fails_after_write_test.go` (`TestAddFailsAfterWrite`,
+    archived before and after the add's write). `newJobsStoredErrHook` is a
+    test seam in `createJobs`.
+  - Residuals: a failed add that is never retried still leaves the dependent
+    out of the queue until a restart (on develop it stayed complete for good).
+    A `wr remove` takes a job out of the queue before deleting its live record,
+    so an add checking in between queues it with no live record; the older
+    not-live branch already had the same race just after the delete. A modify
+    rekey writes the database before `ChangeKey`, so a concurrent add can
+    queue a dependent with the new key first, and `ChangeKey` then only logs.
 - [ ] 10. Found by a gate run (`make test` while fixing 7b, host load about
   18): `TestDepGranularitySidecarReportsElapsedTime` failed at
   `depgranularity_startup_test.go:935` (`second.UpdatedAt.After(first.UpdatedAt)`
