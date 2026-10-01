@@ -82,6 +82,14 @@ Quality gates: `make lint`, `make test`, `make race`, run with
     `TMPDIR=/nonexistent/stored-tmp` and assert the behaviour sees exactly it,
     which also fails if wr injects a TMPDIR of its own (mutation-checked).
   - After: passes with TMPDIR set and unset; `make lint` reports 0 issues.
-- [ ] developers/wrdev.sh: asl_adder (~line 1625) seeds RANDOM from $(date +%N); a leading zero makes bash read it as octal (e.g. 08/09 invalid), killing adders. Fix (e.g. strip leading zeros / use 10#).
+- [x] developers/wrdev.sh: asl_adder (~line 1625) seeds RANDOM from $(date +%N); a leading zero makes bash read it as octal (e.g. 08/09 invalid), killing adders. Fix (e.g. strip leading zeros / use 10#).
+  - Red: `bash -c 'date() { echo 089123456; }; id=1; eval "$(grep -m1 "RANDOM=.*date +%N" developers/wrdev.sh)"; echo seeded'`
+    failed: `value too great for base (error token is "089123456")`.
+  - Fix, `developers/wrdev.sh`: read the nanoseconds as `10#$(date +%N)`.
+    No other zero-padded date field reaches bash arithmetic in `developers/`
+    or `.docs/reliable/` (`%s%3N` starts with the epoch; `%s.%N` goes to `bc`).
+  - After: the red prints `seeded` for `089123456` and `000000001`;
+    `bash -n developers/wrdev.sh` passes. Verified directly by the
+    orchestrator given the one-token change.
 - [ ] developers/wrdev.sh add-storm-fixture bakes the generating root's absolute wr binary path and WR_CONFIG_DIR into self-adding jobs, so fixtures only exercise jobs-adding-jobs when run from the root that built them (and could add to another root's manager if it ran). Make self-adding jobs call a wrapper script in the fixture's job cwd that add-storm-lsf (re)writes at the start of each run to point at the current root's binary and config; keep existing fixtures usable.
 - [ ] .docs/reliable/harness/loadrunner.go (soak harness fake runner) should set the new runner marker that `wr runner` sets (Client.SetReserveAsRunner), only if PR #657 (fix-moved-on-runner) has merged into develop.

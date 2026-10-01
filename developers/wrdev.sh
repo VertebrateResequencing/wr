@@ -1624,7 +1624,7 @@ asl_adder() {  # <id> <deadlineEpoch> <repGroup> <limit> <runsec> <thinkMs> <add
   # in `timeout` so no adder can hang through the manager outage.
   local id="$1" deadline="$2" rg="$3" limit="$4" runsec="$5" thinkms="$6" ato="$7"
   local log="$ASL_DIR/adder_$id.log" i=0 s e rc out ack cmd think
-  RANDOM=$(( ($(date +%N) + id * 7919) % 32768 ))
+  RANDOM=$(( (10#$(date +%N) + id * 7919) % 32768 ))
   while [ ! -f "$ASL_STOP" ] && [ "$(date +%s)" -lt "$deadline" ]; do
     i=$((i+1))
     cmd="sleep $runsec # aslsf $id $i"
