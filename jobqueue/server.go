@@ -1218,8 +1218,9 @@ type releaseReport struct {
 
 	// isRun, when set, says whether the job, which the caller has read-locked, is
 	// still on the run being released. If it is not, or its item has left the run
-	// sub-queue, the release changes nothing. releaseMovedOnRun sets it, so that a
-	// run released or reserved again since it looked is left alone.
+	// sub-queue, the release changes nothing. releaseMovedOnRun and killLostRun set
+	// it, so that a run released or reserved again since they looked is left
+	// alone.
 	isRun func(*Job) bool
 }
 
@@ -6664,7 +6665,7 @@ func (s *Server) killLostJobAndTriggerBehaviours(ctx context.Context, d lostJobD
 
 	if !released {
 		clog.Info(ctx, "did not kill a job confirmed dead, because the job has moved on "+
-			"to another run or its success is being saved", "key", d.key)
+			"to another run, was released by another route, or its success is being saved", "key", d.key)
 
 		return
 	}
@@ -6922,10 +6923,22 @@ func (s *Server) killRunningJob(ctx context.Context, jobkey string,
 		return true, false, err
 	}
 
-	// released reports that this WAS the run to release, not that the queue change
-	// succeeded. ttrCallback does not re-mark an already-lost job, so no second
-	// confirmation is coming and withholding the behaviours would leak for ever.
-	return true, true, s.releaseJob(ctx, job, lostJobReleaseReport())
+	// released reports that this call took the run out of Run, or tried to and
+	// failed. A run another release took out first, such as the moved-on
+	// release, is not released here, since that release triggers its own
+	// behaviours. A failed queue change still counts: ttrCallback does not
+	// re-mark an already-lost job, so no second confirmation is coming and
+	// withholding the behaviours would leak for ever.
+	rep := lostJobReleaseReport()
+
+	if onlyRun != nil {
+		run := *onlyRun
+		rep.isRun = func(j *Job) bool { return j.isLostRunLocked(run) }
+	}
+
+	released, err := s.releaseRun(ctx, job, rep)
+
+	return true, released || err != nil, err
 }
 
 // deleteJobs deletes the given jobs from the bury/delay/dependent/ready queue

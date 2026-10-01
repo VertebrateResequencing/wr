@@ -154,7 +154,7 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
     skipped, so an old manager ignores the field and an old runner sends
     false and keeps confirm-dead.
 
-- [ ] **Confirm-dead and the moved-on release can both trigger a lost run's
+- [x] **Confirm-dead and the moved-on release can both trigger a lost run's
       behaviours.** `killRunningJob` (server.go) reports released=true
       whenever the run was killable, even when its `releaseJob` finds the run
       already released, e.g. by the moved-on release. So
@@ -162,3 +162,22 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
       OnFailure `Run` behaviour could run twice. Use `releaseRun`'s outcome
       (keeping errors as released), and pass `isRun` for `onlyRun`. (Found by
       the reviewer of items 2 and 3.)
+  - Red: `go test ./jobqueue -count=1 -run
+    'TestMovedOnRunnerConfirmDeadRace'` failed before the fix: the behaviour
+    ran twice, expected once.
+  - Fixed in `killRunningJob`: it releases through `releaseRun`, with
+    `isRun` checking the job is still that lost run when one is named. It
+    reports released only when it really released the run; errors still count
+    as released. `wr kill` is unchanged. Test: `TestMovedOnRunnerConfirmDeadRace`.
+    `TestMovedOnRunnerLeavesHeldJobs` also checks that a scheduler element
+    alone releases nothing.
+
+- [ ] **Test managers sometimes fail to bind their port ("the server's
+      publication gave up").** Seen in this branch's gates in
+      `TestLostJobBehavioursSpareARecoveredJob`
+      (`lost_job_behaviours_test.go:192`), after `listen tcp 0.0.0.0:45993:
+      bind: address already in use`. The same port, 45993, appears in the
+      `260929-archive-before-start.md` evidence. Also recorded in
+      `260929-running-dependent-rerun.md` as needing a separate fix. It passes
+      on rerun. Suspected cause: the pick-then-release port race in
+      `pickTestPort` via `isolateTestConfig` (`jobqueue/jobqueue_test.go`).

@@ -419,6 +419,29 @@ func (f *movedOnFixture) expireTTR(ctx context.Context, key string) {
 	}), ShouldBeTrue)
 }
 
+// addWithRunBehaviour adds jobs with no retries, each with an OnFailure Run
+// behaviour, and returns a function that counts how many times a behaviour ran.
+func (f *movedOnFixture) addWithRunBehaviour(t *testing.T, names ...string) func() int {
+	t.Helper()
+
+	cwd := t.TempDir()
+	ran := filepath.Join(t.TempDir(), "ran")
+
+	f.add(0, func(job *Job) {
+		job.Cwd, job.CwdMatters = cwd, true
+		job.Behaviours = Behaviours{{When: OnFailure, Do: Run, Arg: "echo ran >> " + ran}}
+	}, names...)
+
+	return func() int {
+		out, err := os.ReadFile(ran)
+		if err != nil {
+			return 0
+		}
+
+		return strings.Count(string(out), "ran\n")
+	}
+}
+
 // TestMovedOnRunner proves that a job whose runner moved on to another job is
 // released at once, as a lost job confirmed dead would be, when that runner
 // reserves its next job.
@@ -476,14 +499,17 @@ func TestMovedOnRunnerLeavesHeldJobs(t *testing.T) {
 	ctx := context.Background()
 
 	for _, runnerCmd := range []string{"", serverRC} {
-		Convey("Given a Go API client that reserved and started two jobs, with runner command "+runnerCmd,
-			t, func() {
+		// a scheduler element id alone does not make a client a runner.
+		for _, schedulerID := range []string{"", "1234[5]"} {
+			Convey("Given a Go API client that reserved and started two jobs, with runner command "+runnerCmd+
+				" and scheduler id "+schedulerID, t, func() {
 				f := newMovedOnFixture(ctx, t, runnerCmd)
 				defer f.stop(ctx)
 
 				// a Go client may reserve by scheduler group, but does not
 				// say it is a runner.
 				f.runner.SetReserveAsRunner(false)
+				f.runner.SetReserveSchedulerID(schedulerID)
 
 				f.add(movedOnRetries, nil, "first", "second")
 				first := f.reserveAndStart()
@@ -497,6 +523,7 @@ func TestMovedOnRunnerLeavesHeldJobs(t *testing.T) {
 					f.soStillRunning(second.Key())
 				})
 			})
+		}
 	}
 
 	Convey("Given a runner that reserved a job", t, func() {
@@ -864,23 +891,8 @@ func TestMovedOnRunnerConcurrentRelease(t *testing.T) {
 			releaseSnapshotTakenHook = nil
 		}()
 
-		cwd := t.TempDir()
-		ran := filepath.Join(t.TempDir(), "ran")
-
-		f.add(0, func(job *Job) {
-			job.Cwd, job.CwdMatters = cwd, true
-			job.Behaviours = Behaviours{{When: OnFailure, Do: Run, Arg: "echo ran >> " + ran}}
-		}, "first", "second")
-
+		runs := f.addWithRunBehaviour(t, "first", "second")
 		first := f.reserveAndStart()
-		runs := func() int {
-			out, err := os.ReadFile(ran)
-			if err != nil {
-				return 0
-			}
-
-			return strings.Count(string(out), "ran\n")
-		}
 
 		Convey("its reserving another job runs the first's behaviour once", func() {
 			f.reserve()
@@ -971,4 +983,53 @@ func releaseAndTriggerBehaviours(ctx context.Context, s *Server, job *Job) error
 	s.triggerLostRunBehaviours(ctx, lostJobDetails{key: job.Key(), pin: pin})
 
 	return nil
+}
+
+// TestMovedOnRunnerConfirmDeadRace proves that a lost run's behaviours run once
+// when the manager's kill of it, once confirmed dead, and the moved-on release
+// both try to release it.
+func TestMovedOnRunnerConfirmDeadRace(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a runner whose started job with a run behaviour the manager has marked lost", t, func() {
+		var inSnapshotWindow atomic.Pointer[func()]
+
+		releaseSnapshotTakenHook = func() { runOnce(&inSnapshotWindow) }
+
+		f := newMovedOnFixture(ctx, t, serverRC)
+
+		defer func() {
+			f.stop(ctx)
+
+			releaseSnapshotTakenHook = nil
+		}()
+
+		f.server.SetItemTTR(300 * time.Millisecond)
+		runs := f.addWithRunBehaviour(t, "first", "second")
+		first := f.reserveAndStart()
+		So(waitForJobLost(f.server, first.Key(), 10*time.Second), ShouldBeTrue)
+
+		Convey("the moved-on release winning the confirmed-dead kill's queue change runs the behaviour once", func() {
+			job := f.server.runSubQueueJob(first.Key())
+			So(job, ShouldNotBeNil)
+
+			job.RLock()
+			pin := job.pinBehavioursLocked()
+			job.RUnlock()
+
+			action := func() { f.reserve() }
+			inSnapshotWindow.Store(&action)
+
+			f.server.killLostJobAndTriggerBehaviours(ctx, lostJobDetails{key: first.Key(), pin: pin})
+
+			f.soReleasedAsLost(first.Key(), 0)
+			So(pollUntilFor(movedOnReserveWait, func() bool { return runs() > 0 }), ShouldBeTrue)
+			pollUntilFor(time.Second, func() bool { return runs() > 1 })
+			So(runs(), ShouldEqual, 1)
+		})
+	})
 }
