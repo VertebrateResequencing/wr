@@ -198,3 +198,12 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
     finder `network/port/port.go`, used by `internal/config.go` to choose a
     user's port range, probes the hostname or loopback while the manager
     binds dual-stack.
+
+- [x] **Stale "under LSF" in the RunnerReservation comment** (Copilot, PR
+      #657, thread PRRT_kwDOAKD33M6n24d5, comment 4153211853,
+      `jobqueue/job.go:995`). The comment says the field is set on a job
+      reserved by a wr runner "under LSF", but runners on every scheduler set
+      it now.
+  - Red: `grep -n "under LSF" jobqueue/job.go` printed line 995. Fixed:
+    the comment now says runners under any scheduler; the grep prints
+    nothing.
