@@ -67,6 +67,7 @@ import (
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid/v5"
 	log15 "github.com/inconshreveable/log15/v3"
+	"github.com/phayes/freeport"
 	"github.com/shirou/gopsutil/v4/process"
 	. "github.com/smartystreets/goconvey/convey"
 	bolt "go.etcd.io/bbolt"
@@ -181,6 +182,7 @@ var (
 	errUnexpectedLiveJobs    = errors.New("unexpected live job count")
 	errFileStillExists       = errors.New("file still exists")
 	errNoFreeLanePort        = errors.New("no free test port in lane range")
+	errNoFreeEphemeralPort   = errors.New("no ephemeral test port a server could listen on")
 	errNoDockerResultQuery   = errors.New("no-Docker result query failed")
 	errNoDockerResultState   = errors.New("unexpected OpenStack no-Docker job result")
 )
@@ -315,6 +317,7 @@ func TestServerTimingsWithDefaults(t *testing.T) {
 			DBBatchDelay:          -1 * time.Nanosecond,
 			DBBatchSize:           -1,
 			ShutdownSocketWait:    -1 * time.Nanosecond,
+			BindRetryBudget:       -1 * time.Nanosecond,
 		}.withDefaults()
 
 		So(timings.InterruptTime, ShouldEqual, ServerInterruptTime)
@@ -331,6 +334,7 @@ func TestServerTimingsWithDefaults(t *testing.T) {
 		So(timings.DBBatchDelay, ShouldEqual, ServerDBBatchDelay)
 		So(timings.DBBatchSize, ShouldEqual, ServerDBBatchSize)
 		So(timings.ShutdownSocketWait, ShouldEqual, serverSocketWait)
+		So(timings.BindRetryBudget, ShouldEqual, serverBindRetryBudget)
 	})
 
 	Convey("Positive server timing values are preserved", t, func() {
@@ -10113,6 +10117,10 @@ func setDomainIP(domain string) {
 // first. It is a var so a test can take a picked port before a server binds it.
 var pickTestPort = freeTestPort //nolint:gochecknoglobals
 
+// ephemeralTestPort is where freeTestPort gets a candidate port outside a
+// lane. It is a var so a test can hand out a port it has occupied.
+var ephemeralTestPort = freeport.GetFreePort //nolint:gochecknoglobals
+
 // testPortNext is the per-lane sequential offset used by freeTestPort. The
 // tests in a lane run sequentially, so it needs no synchronisation.
 var testPortNext int //nolint:gochecknoglobals
@@ -10127,10 +10135,11 @@ var testPortNext int //nolint:gochecknoglobals
 // sequentially, an incrementing counter never repeats a port before it would
 // wrap. Each candidate is still bind-checked so a port already occupied by some
 // unrelated process on the same machine is skipped. When WR_TEST_LANE is unset
-// (e.g. a direct `go test` run) it falls back to freeManagerPort, whose race
-// only matters with many concurrent lanes. WR_TEST_PORT_BASE lets the suite
-// runner choose a fresh base range for each whole run, avoiding collisions with
-// stale servers from interrupted runs in the default range.
+// (e.g. a direct `go test` run) it falls back to the global picker, whose race
+// only matters with many concurrent lanes, bind-checking its ports the same
+// way. WR_TEST_PORT_BASE lets the suite runner choose a fresh base range for
+// each whole run, avoiding collisions with stale servers from interrupted runs
+// in the default range.
 func freeTestPort() (int, error) {
 	const (
 		defaultLaneBasePort = 10000
@@ -10140,12 +10149,12 @@ func freeTestPort() (int, error) {
 
 	laneStr := os.Getenv("WR_TEST_LANE")
 	if laneStr == "" {
-		return freeManagerPort()
+		return freeEphemeralTestPort()
 	}
 
 	lane, err := strconv.Atoi(laneStr)
 	if err != nil {
-		return freeManagerPort()
+		return freeEphemeralTestPort()
 	}
 
 	laneBasePort := defaultLaneBasePort
@@ -10171,26 +10180,28 @@ func freeTestPort() (int, error) {
 	)
 }
 
-// freeManagerPort returns a port the operating system says is free on the
-// manager's own listening address. It asks on that address, not on loopback
-// (as the freeport package does), because Go binds 0.0.0.0 as a dual-stack [::]
-// socket: a port another process holds with an IPv6-only listener, as rpc.statd
-// does, is free for an IPv4 socket, but the manager could not bind it.
-func freeManagerPort() (int, error) {
-	listenConfig := net.ListenConfig{}
+// freeEphemeralTestPort returns a port from ephemeralTestPort that a manager
+// can listen on. freeport only binds 127.0.0.1, so it can hand out a port with
+// an IPv6-only listener on it (rpc.statd has one on some hosts), which the
+// manager's dual-stack listener cannot bind; portCanListen binds the way the
+// manager does.
+func freeEphemeralTestPort() (int, error) {
+	const attempts = 20
 
-	listener, err := listenConfig.Listen(context.Background(), "tcp", ":0")
-	if err != nil {
-		return 0, err
+	for range attempts {
+		port, err := ephemeralTestPort()
+		if err != nil {
+			return 0, err
+		}
+
+		if portCanListen(port) {
+			return port, nil
+		}
 	}
 
-	port := listener.Addr().(*net.TCPAddr).Port //nolint:forcetypeassert,errcheck
-
-	return port, listener.Close()
+	return 0, fmt.Errorf("%w after %d attempts", errNoFreeEphemeralPort, attempts)
 }
 
-// portCanListen reports whether a listener on the manager's address can bind
-// port now.
 func portCanListen(port int) bool {
 	listenConfig := net.ListenConfig{}
 

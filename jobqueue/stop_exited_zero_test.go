@@ -89,11 +89,20 @@ func TestExitedZeroDuringStopIsComplete(t *testing.T) {
 
 		const repGroup = "exited_zero_during_stop"
 
-		// the backgrounded sleep keeps the command's stdout open after the
-		// command itself has exited 0, so the runner has not yet waited for the
-		// command when the stop's kill arrives (the kill then ends the sleep).
+		// the backgrounded subshell keeps the command's stdout open after the
+		// command's shell has exited 0, so the runner has not yet waited for
+		// the shell when the stop's kill arrives (the kill then ends the
+		// subshell). The runner only waits for the shell once stdout closes, so
+		// until then the exited shell is a zombie, and the subshell writes
+		// exited only once ps shows that (a shell descheduled before its exit 0
+		// therefore cannot be mistaken for one that has exited). It gives up
+		// without writing exited if that does not happen in time.
+		cmd := "(i=0; until case $(ps -o stat= -p $$) in *Z*) true;; *) false;; esac; do " +
+			"i=$((i+1)); [ $i -gt 1000 ] && exit 1; sleep 0.01; done; " +
+			"touch " + exited + "; sleep 2) & exit 0"
+
 		job := &Job{
-			Cmd: "touch " + exited + "; (sleep 2 &); exit 0", Cwd: cwd, CwdMatters: true,
+			Cmd: cmd, Cwd: cwd, CwdMatters: true,
 			RepGroup: repGroup, ReqGroup: repGroup,
 			Requirements: &jqs.Requirements{RAM: 10, Time: time.Minute, Cores: 0, Other: make(map[string]string)},
 		}

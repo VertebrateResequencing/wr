@@ -243,7 +243,7 @@ func TestLaneFreePortOutsideALane(t *testing.T) {
 		for range ipv6OnlyHolders {
 			port, err := laneFreePort()
 			So(err, ShouldBeNil)
-			So(lanePortAvailable(port), ShouldBeTrue)
+			So(portCanListen(port), ShouldBeTrue)
 		}
 	})
 }
@@ -326,6 +326,57 @@ func setLaneForTest(t *testing.T, lane string, next int) {
 	So(os.Setenv("WR_TEST_LANE", lane), ShouldBeNil)
 
 	laneTestPortNext = next
+}
+
+// TestPrepareWrConfigSkipsPortWithIPv6OnlyListener proves that outside a suite
+// lane PrepareWrConfig does not hand out a port that has an IPv6-only listener
+// on it, as rpc.statd has on some hosts. freeport only checks 127.0.0.1, and
+// the manager's listener is dual-stack, so that port looks free but cannot be
+// served.
+func TestPrepareWrConfigSkipsPortWithIPv6OnlyListener(t *testing.T) {
+	squatter, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp6", "[::]:0")
+	if err != nil {
+		t.Skipf("no IPv6 on this host: %s", err)
+	}
+
+	defer func() {
+		if errc := squatter.Close(); errc != nil {
+			t.Errorf("closing the IPv6-only listener: %s", errc)
+		}
+	}()
+
+	squatted := squatter.Addr().(*net.TCPAddr).Port //nolint:forcetypeassert,errcheck
+
+	t.Setenv("WR_TEST_LANE", "")
+
+	originalEphemeral := ephemeralFreePort
+
+	defer func() { ephemeralFreePort = originalEphemeral }()
+
+	handedOut := false
+	ephemeralFreePort = func() (int, error) {
+		if handedOut {
+			return originalEphemeral()
+		}
+
+		handedOut = true
+
+		return squatted, nil
+	}
+
+	Convey("PrepareWrConfig picks a manager port free for IPv4 and IPv6 alike", t, func() {
+		config, d := PrepareWrConfig(t)
+		defer d()
+
+		So(handedOut, ShouldBeTrue)
+		So(config.Port, ShouldNotEqual, strconv.Itoa(squatted))
+
+		port, err := strconv.Atoi(config.Port)
+		So(err, ShouldBeNil)
+
+		probe := listenOnPort(t, port)
+		So(probe.Close(), ShouldBeNil)
+	})
 }
 
 func setPortBaseForTest(t *testing.T, base string) {

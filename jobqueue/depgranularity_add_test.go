@@ -67,9 +67,10 @@ const (
 	dgaTxRatio    = 1.25
 
 	// dgaTxAdds is how many one-member adds each side of that comparison
-	// measures. Stats().TxN counts every read transaction the process makes, and
-	// the server reads the database in the background too, so one add's couple of
-	// reads is noise-dominated while dgaTxAdds of them are not.
+	// measures. Stats().TxN counts every read transaction of the server's
+	// database, so the server is paused while they are measured: otherwise the
+	// ready-added callback each add triggers reads it too, and how many of those
+	// callbacks run depends on how many adds arrive while one is running.
 	dgaTxAdds = 20
 
 	dgaGroup          = "depgranularity-add-group"
@@ -172,6 +173,18 @@ func dgaAddMemberTxCost(ctx context.Context, members int) int {
 
 	So(dgrAddJobs(jq, dgaMemberJobs(d, dgaGroup, members)), ShouldHaveLength, members)
 	So(dgrAddJobs(jq, dgaWaiterJobs(d, dgaGroup, dgaWaiters)), ShouldHaveLength, dgaWaiters)
+
+	// pausing stops the ready-added callbacks, not adds, and waiting for any
+	// callback already running leaves only the adds reading the database
+	paused, err := d.server.Pause()
+	So(err, ShouldBeNil)
+	So(paused, ShouldBeTrue)
+	So(pollUntil(func() bool {
+		d.server.rpmutex.Lock()
+		defer d.server.rpmutex.Unlock()
+
+		return !d.server.racRunning
+	}), ShouldBeTrue)
 
 	before := d.server.db.bolt.Stats().TxN
 	added := 0

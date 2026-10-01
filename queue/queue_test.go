@@ -2532,6 +2532,39 @@ func TestQueueBuryWaiting(t *testing.T) {
 		shouldBeQueueError(err, ErrNothingReady)
 	})
 
+	synctestConvey(t, "A dependent item can be buried, and keeps its dependencies", func() {
+		queue := New(ctx, "bury dependent queue")
+		defer qdestroy(queue)
+
+		_, err := queue.Add(ctx, key1, "", testData, 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+
+		item, err := queue.Add(ctx, key2, "", testData, 0, 0, time.Minute, "", []string{key1})
+		So(err, ShouldBeNil)
+		So(item.Stats().State, ShouldEqual, ItemStateDependent)
+
+		recorder := &queueCallbackRecorder{}
+		queue.SetChangedCallback(recorder.changed)
+
+		from, err := queue.BuryWaiting(item.Key)
+		So(err, ShouldBeNil)
+		So(from, ShouldEqual, SubQueueDependent)
+		synctest.Wait()
+
+		So(item.Stats().State, ShouldEqual, ItemStateBury)
+		So(queue.Stats().Dependant, ShouldEqual, 0)
+		So(queue.Stats().Buried, ShouldEqual, 1)
+		So(containsSingleItemChange(recorder.changeRecords(), SubQueueDependent, SubQueueBury), ShouldBeTrue)
+
+		err = queue.Kick(ctx, item.Key)
+		So(err, ShouldBeNil)
+		So(item.Stats().State, ShouldEqual, ItemStateDependent)
+
+		err = queue.Remove(ctx, key1)
+		So(err, ShouldBeNil)
+		So(item.Stats().State, ShouldEqual, ItemStateReady)
+	})
+
 	synctestConvey(t, "An item reserved again is left running", func() {
 		queue := New(ctx, "bury reserved queue")
 		defer qdestroy(queue)
@@ -2756,6 +2789,44 @@ func TestQueuePriorityUpdateInAnotherReserveGroup(t *testing.T) {
 			item, errr = queue.Reserve("B", 0)
 			So(errr, ShouldBeNil)
 			So(item.Key, ShouldEqual, "b0")
+		})
+	})
+}
+
+func TestQueueReservesCountsReservations(t *testing.T) {
+	ctx := context.Background()
+
+	synctestConvey(t, "Given items added straight to the run sub-queue", func() {
+		queue := New(ctx, "reserves count queue")
+		defer qdestroy(queue)
+
+		item, err := queue.Add(ctx, key1, "", testData, 0, 0, time.Minute, SubQueueRun)
+		So(err, ShouldBeNil)
+
+		_, _, err = queue.AddMany(ctx, []*ItemDef{{
+			Key: "key_2", Data: testData, TTR: time.Minute, StartQueue: SubQueueRun,
+		}})
+		So(err, ShouldBeNil)
+
+		many, err := queue.Get("key_2")
+		So(err, ShouldBeNil)
+
+		Convey("neither has been reserved", func() {
+			So(item.Stats().State, ShouldEqual, ItemStateRun)
+			So(item.Stats().Reserves, ShouldEqual, 0)
+			So(many.Stats().State, ShouldEqual, ItemStateRun)
+			So(many.Stats().Reserves, ShouldEqual, 0)
+		})
+
+		Convey("each Reserve() once released counts one reservation", func() {
+			for want := uint32(1); want <= 2; want++ {
+				So(queue.Release(ctx, key1), ShouldBeNil)
+
+				reserved, errr := queue.Reserve("", time.Second)
+				So(errr, ShouldBeNil)
+				So(reserved.Key, ShouldEqual, key1)
+				So(reserved.Stats().Reserves, ShouldEqual, want)
+			}
 		})
 	})
 }

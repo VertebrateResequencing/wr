@@ -126,13 +126,14 @@ const (
 	// start serving before declaring itself ready.
 	serverListenWait = 10 * time.Millisecond
 
-	// serverBindRetryInterval and serverBindRetryBudget are how often, and for
-	// how long, publication retries the RPC port bind before giving up and
-	// exiting (spec E1). They are the budget the serve test helper already used
-	// for exactly this failure, back when the bind happened inside Serve: time
-	// for a server a prior test recently stopped to really stop listening.
-	// Serve's port reservation (port_reservation.go) retries on the same
-	// interval, for the same budget while something is listening on the port.
+	// serverBindRetryInterval and serverBindRetryBudget are how often, and by
+	// default for how long (see ServerTimings.BindRetryBudget), publication
+	// retries the RPC port bind before giving up and exiting (spec E1). They are
+	// the budget the serve test helper already used for exactly this failure,
+	// back when the bind happened inside Serve: time for a server a prior test
+	// recently stopped to really stop listening. Serve's port reservation
+	// (port_reservation.go) retries on the same interval, for the same budget
+	// while something is listening on the port.
 	serverBindRetryInterval = 500 * time.Millisecond
 	serverBindRetryBudget   = 5 * time.Second
 
@@ -376,6 +377,23 @@ var startPersistedHook func(key string)
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var releaseSnapshotTakenHook func()
 
+// releaseReportAcceptedHook, if non-nil, is called with a job's key once
+// handleRelease has accepted a runner's release or bury report as the owner's,
+// before the release acts on the job, so a test can have the job reserved again
+// in between. It is a test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var releaseReportAcceptedHook func(key string)
+
+// reservationQueuedHook, if non-nil, is called with a job's key once a
+// reservation has moved the job's item to the run sub-queue, before the job is
+// reset for the new run and given to its new runner, so a test can have the
+// job's previous runner report in between. It is a test-only seam and is nil in
+// production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var reservationQueuedHook func(key string)
+
 // dependencyUpdatesHook, if non-nil, is called by an add once its write has
 // committed and before it applies its live dependents' new dependencies to the
 // queue, so a test can have a dependent finish in between. It is a test-only
@@ -404,6 +422,13 @@ const (
 // shutting down (see shutdownIgnoringSignals): 128 plus SIGINT's number, as a
 // shell reports a process killed by SIGINT.
 const exitCodeInterruptedShutdown = 128 + int(syscall.SIGINT)
+
+// errReleaseReporterSupplanted is returned by releaseJob, having changed
+// nothing, when a runner's release or bury report arrives for a job that has
+// since been reserved by another runner. getijForReport accepted the report as
+// the owner's, but a new reservation landed before releaseJob looked at the
+// job, and the old owner's report must not bury or release the new run.
+var errReleaseReporterSupplanted = errors.New("job reserved by another runner since the report was accepted")
 
 const (
 	errMissingSubscriptionScope subscriptionRequestError = "missing subscription scope"
@@ -548,6 +573,12 @@ type ServerTimings struct {
 	// without them, logging how many jobs they were still running (default
 	// ServerShutdownRunnerWait).
 	ShutdownRunnerWait time.Duration
+
+	// BindRetryBudget is how long the server retries a port something else is
+	// listening on before giving up: Serve's reservation of its ports, and
+	// publication's bind of the manager port (default serverBindRetryBudget).
+	// Tests set it low.
+	BindRetryBudget time.Duration
 }
 
 // dfltDuration returns v, or def if v is not positive.
@@ -594,6 +625,7 @@ func (t ServerTimings) withDefaults() ServerTimings {
 
 	t.ShutdownSocketWait = dfltDuration(t.ShutdownSocketWait, serverSocketWait)
 	t.ShutdownRunnerWait = dfltDuration(t.ShutdownRunnerWait, ServerShutdownRunnerWait)
+	t.BindRetryBudget = dfltDuration(t.BindRetryBudget, serverBindRetryBudget)
 
 	return t
 }
@@ -1172,6 +1204,12 @@ type releaseReport struct {
 	endState   *JobEndState
 	failReason string
 
+	// reporter is the client ID of the runner whose own release or bury this
+	// is, or zero for a manager-initiated release (TTR/lost/kill). A runner's
+	// report is only applied while the job is still reserved by it; see
+	// errReleaseReporterSupplanted.
+	reporter uuid.UUID
+
 	// attempted is true when the job's OWNER reported this release having
 	// actually tried to run the job's Cmd (a cmd.Start() failure, or a command
 	// that ran and then ended badly). Such a release spends one of the job's
@@ -1304,6 +1342,10 @@ type releaseSnapshot struct {
 
 	// notTheRun says the job is no longer on the run releaseReport.isRun names.
 	notTheRun bool
+
+	// supplanted says the release is a runner's report and the job is now
+	// reserved by a different runner, so the release must change nothing.
+	supplanted bool
 }
 
 // takeReleaseSnapshot is releaseJobSnapshot, followed, for a job still on the
@@ -1311,7 +1353,7 @@ type releaseSnapshot struct {
 func takeReleaseSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseSnapshot {
 	snap := releaseJobSnapshot(job, item, rep)
 
-	if !snap.notTheRun && releaseSnapshotTakenHook != nil {
+	if !snap.notTheRun && !snap.supplanted && releaseSnapshotTakenHook != nil {
 		releaseSnapshotTakenHook()
 	}
 
@@ -1685,6 +1727,10 @@ type Server struct {
 	// job whose runner has moved on to another can be released (see
 	// moved_on_runner.go).
 	runnerHolds *runnerHolds
+
+	// warns rate-limits the warnings that can fire for every reservation or
+	// request, such as when commits are slow (see warn_aggregator.go).
+	warns *warnAggregator
 }
 
 // itemTTRDuration returns the current (runtime-adjustable) time-to-release given
@@ -2251,7 +2297,8 @@ func (s *Server) startWebInterface(ctx context.Context, config ServerConfig) {
 }
 
 // listenWithRetries binds the command socket to port, retrying every
-// serverBindRetryInterval for up to serverBindRetryBudget before giving up.
+// serverBindRetryInterval for up to the server's BindRetryBudget before giving
+// up.
 //
 // Serve reserved the port, so no self-connect can have left it in TIME_WAIT;
 // what this waits out is a listener that bound beside the reservation.
@@ -2271,7 +2318,7 @@ func (s *Server) listenWithRetries(ctx context.Context, port string) error {
 
 	clog.Warn(ctx, "could not listen on the manager port yet, retrying", "port", port, "err", err)
 
-	limit := time.After(serverBindRetryBudget)
+	limit := time.After(s.timings.BindRetryBudget)
 	ticker := time.NewTicker(serverBindRetryInterval)
 
 	defer ticker.Stop()
@@ -3045,14 +3092,19 @@ func updateJobRequirementsForRetry(job *Job, jobOverride uint8, recommendedReq *
 func (s *Server) seedLimitGroupBudgets(ctx context.Context, schedulerGroup string,
 	limitBudgets map[string]int) []string {
 	limitGroups := s.schedGroupToLimitGroups(schedulerGroup)
+	s.seedBudgetsOf(ctx, limitGroups, limitBudgets)
 
+	return limitGroups
+}
+
+// seedBudgetsOf lazily seeds each of the given limit groups' remaining-capacity
+// budget into limitBudgets, as seedLimitGroupBudgets does.
+func (s *Server) seedBudgetsOf(ctx context.Context, limitGroups []string, limitBudgets map[string]int) {
 	for _, lg := range limitGroups {
 		if _, set := limitBudgets[lg]; !set {
 			limitBudgets[lg] = s.limiter.GetRemainingCapacity(ctx, []string{lg})
 		}
 	}
-
-	return limitGroups
 }
 
 // countReadyJobsByPriority counts the given ready-job snapshots against their
@@ -3245,8 +3297,12 @@ func (s *Server) scheduleReadyJobsByPriority(ctx context.Context, q *queue.Queue
 
 	limitBudgets := make(map[string]int)
 
+	// the ready backlog shares a handful of scheduler groups, so each one's limit
+	// groups are parsed once per cycle rather than once per job.
+	limitGroupsOf := make(map[string][]string)
+
 	for _, candidate := range candidates {
-		if s.readyJobLimitBlocked(ctx, limitBudgets, candidate.snapshot) {
+		if s.readyJobLimitBlocked(ctx, limitBudgets, limitGroupsOf, candidate.snapshot) {
 			s.recordSkippedReadyJob(ctx, q, groups, candidate)
 
 			continue
@@ -3315,9 +3371,16 @@ func (s *Server) ensureReserveGroup(ctx context.Context, q *queue.Queue, job *Jo
 // from the expensive prepareReadyJob work so only schedulable jobs incur it. A
 // job's limit groups come from its LimitGroups (fixed), so they are unaffected by
 // any requirement change prepareReadyJob later makes to a schedulable job.
+// limitGroupsOf caches, for the cycle, each scheduler group's limit groups.
 func (s *Server) readyJobLimitBlocked(ctx context.Context, limitBudgets map[string]int,
-	snapshot schedulerGroupSnapshot) bool {
-	limitGroups := s.seedLimitGroupBudgets(ctx, snapshot.group, limitBudgets)
+	limitGroupsOf map[string][]string, snapshot schedulerGroupSnapshot) bool {
+	limitGroups, parsed := limitGroupsOf[snapshot.group]
+	if !parsed {
+		limitGroups = s.schedGroupToLimitGroups(snapshot.group)
+		limitGroupsOf[snapshot.group] = limitGroups
+	}
+
+	s.seedBudgetsOf(ctx, limitGroups, limitBudgets)
 
 	// a budget of -1 means "no limit", so it never blocks and is never decremented.
 	for _, lg := range limitGroups {
@@ -3475,8 +3538,9 @@ func (s *Server) buryReleasedItem(ctx context.Context, q *queue.Queue, item *que
 	return outcome, nil
 }
 
-// buryItemWhereItIs buries a job's item from the run sub-queue, or from delay
-// or ready if another release of the run already moved it there.
+// buryItemWhereItIs buries a job's item from the run sub-queue, or from delay,
+// ready or dependent if another release of the run already moved it there. A
+// dependent item keeps its dependencies, so a kick makes it dependent again.
 //
 // That is an owner's bury after the manager released a lost job itself, which
 // the user may since have resumed, or kicked after that release buried it.
@@ -3505,9 +3569,11 @@ func (s *Server) buryItemWhereItIs(ctx context.Context, q *queue.Queue, item *qu
 }
 
 // itemIsWaiting says whether an item in the given state is waiting to run
-// again, in the delay or ready sub-queue.
+// again, in the delay, ready or dependent sub-queue. A dependent item is one
+// the manager released to wait on new dependencies first.
 func itemIsWaiting(state queue.ItemState) bool {
-	return state == queue.ItemStateDelay || state == queue.ItemStateReady
+	return state == queue.ItemStateDelay || state == queue.ItemStateReady ||
+		state == queue.ItemStateDependent
 }
 
 // releaseRun is releaseJob, also reporting whether this call took the job's run
@@ -3548,7 +3614,7 @@ func (s *Server) releaseRun(ctx context.Context, job *Job, rep releaseReport) (b
 	s.runnerHolds.forget(snap.reservedBy, snap.key, snap.runnerReservation)
 
 	if outcome == releaseAlreadyDone {
-		return false, s.ackAlreadyReleased(job, rep)
+		return false, s.ackAlreadyReleased(ctx, job, rep)
 	}
 
 	return outcome == releaseMoved, s.finalizeReleasedJob(ctx, job, rep, outcome)
@@ -3557,6 +3623,10 @@ func (s *Server) releaseRun(ctx context.Context, job *Job, rep releaseReport) (b
 // ackAlreadyReleased is releaseRun's answer to a release another release of the
 // run already made.
 //
+// The owner's report of how its command ended, arriving after the manager's own
+// lost release, is the job's first real end state. It is written as that
+// release's was, std and fail stats included.
+//
 // A redundant report, such as a runner re-sending after its first request timed
 // out on a slow commit, must not be acknowledged before that first write is on
 // disk, and if that write failed nothing else will retry it. So, as handleStart
@@ -3564,7 +3634,11 @@ func (s *Server) releaseRun(ctx context.Context, job *Job, rep releaseReport) (b
 // again. It is only written if the job is still live, and with a later arrival
 // order than anything already queued for it, so this can neither resurrect a
 // deleted or archived job nor overwrite a newer record.
-func (s *Server) ackAlreadyReleased(job *Job, rep releaseReport) error {
+func (s *Server) ackAlreadyReleased(ctx context.Context, job *Job, rep releaseReport) error {
+	if rep.reporter != (uuid.UUID{}) && job.replaceLostEndState(rep.endState, rep.failReason) {
+		return s.writeReleasedJob(ctx, job, rep)
+	}
+
 	if !rep.durable {
 		return nil
 	}
@@ -4083,6 +4157,20 @@ func newPprofMux() *http.ServeMux {
 func disablePprofProfiling() {
 	runtime.SetMutexProfileFraction(0)
 	runtime.SetBlockProfileRate(0)
+}
+
+// itemIsInFlight says whether an item in the given state can take its owner's
+// archive: it is running, or waiting in delay or ready after a busy manager
+// released it. A dependent item is not, since it must wait on new dependencies
+// and run again.
+func itemIsInFlight(state queue.ItemState) bool {
+	return state == queue.ItemStateRun || state == queue.ItemStateDelay || state == queue.ItemStateReady
+}
+
+// itemIsReleasable says whether an item in the given state can take its
+// owner's release or bury: it is running or waiting to run again.
+func itemIsReleasable(state queue.ItemState) bool {
+	return state == queue.ItemStateRun || itemIsWaiting(state)
 }
 
 func shouldIncreaseJobRAMAfterHighPeak(job *Job) bool {
@@ -4725,7 +4813,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 
 	// hold our ports from now until publication binds them, so no client
 	// redialling us can self-connect on one and keep us off it.
-	reservations, err := reserveServerPorts(ctx, config)
+	reservations, err := reserveServerPorts(ctx, config, timings.BindRetryBudget)
 	if err != nil {
 		return s, certMsg, token, err
 	}
@@ -4884,6 +4972,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		lostJobCheckRetryTime:     timings.LostJobCheckRetryTime,
 		confirmDeadLimiter:        make(chan struct{}, timings.ConfirmDeadConcurrency),
 		runnerHolds:               newRunnerHolds(),
+		warns:                     newWarnAggregator(warnAggregateInterval),
 	}
 
 	// the confirm-dead coordinator groups lost jobs' ssh checks by host; it needs
@@ -5844,6 +5933,15 @@ func (s *Server) ttrCallback(ctx context.Context, job *Job) queue.SubQueue {
 		return queue.SubQueueDelay
 	}
 
+	// a job whose reservation is still being handed out has a runner that has
+	// not been given it yet, so it is not lost; handOutReservation restarts its
+	// TTR once it is handed out.
+	if job.handingOut {
+		job.Unlock()
+
+		return queue.SubQueueRun
+	}
+
 	// an already-lost job is left parked; its death is already being confirmed
 	// and a touch will recover it, so we neither re-mark nor re-confirm it.
 	if job.Lost {
@@ -6368,6 +6466,9 @@ func (s *Server) prepareInputJobs(inputJobs []*Job, envkey string,
 		// or say which runner reservation came first (see moved_on_runner.go).
 		job.RerunAfterRun = false
 		job.RunnerReservation = 0
+		// nor say when it will be ready, which is only for the jobs clients are
+		// sent, never stored.
+		job.ReadyTime = time.Time{}
 
 		job.dropImpossibleCleanups()
 
@@ -6730,12 +6831,26 @@ func (s *Server) releaseJob(ctx context.Context, job *Job, rep releaseReport) er
 // releaseJobSnapshot reads, under the job's read lock, the values releaseJob
 // needs: whether the job should be buried, its key, its current state, and
 // whether its item is already waiting to run again. It also records
-// rep.spendsRetry, which is the only place that gets decided.
+// rep.spendsRetry, which is the only place that gets decided. For a runner's
+// report on a job since reserved by another runner, it reads nothing else and
+// says the release is supplanted.
 func releaseJobSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseSnapshot {
 	job.RLock()
 	defer job.RUnlock()
 
-	// an item already out of Run, in delay or ready, had this run released
+	// read once, so the ownership check and waiting below see the same item
+	// state: an item seen waiting and then reserved must not be taken for this
+	// run's own.
+	stats := item.Stats()
+
+	// checked under the same lock as the rest of the snapshot, since a new
+	// reservation can have landed, or be part way through, since
+	// getijForReport accepted the report.
+	if rep.reporter != (uuid.UUID{}) && !job.runHeldByLocked(rep.reporter, stats) {
+		return releaseSnapshot{supplanted: true}
+	}
+
+	// an item already out of Run, in delay, ready or dependent, had this run released
 	// before this report arrived. Either this is a re-send, such as after the
 	// runner's first request timed out on a slow commit, and the first report
 	// already spent any retry; or it is the owner's first report after the
@@ -6746,8 +6861,7 @@ func releaseJobSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseS
 	// retry has been dealt with, so it must not be spent again, nor bury judged
 	// from the budget left behind: a release would otherwise bury a job its
 	// release had just left to run again, or one the user had kicked.
-	itemState := item.Stats().State
-	waiting := itemIsWaiting(itemState)
+	waiting := itemIsWaiting(stats.State)
 	rep.spendsRetry = !waiting && releaseSpendsARetry(job, *rep)
 
 	// bury the ITEM exactly when finalizeReleasedJob below will call the JOB
@@ -6775,7 +6889,7 @@ func releaseJobSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseS
 		waiting:           waiting,
 		reservedBy:        job.ReservedBy,
 		runnerReservation: job.RunnerReservation,
-		notTheRun:         rep.isRun != nil && (itemState != queue.ItemStateRun || !rep.isRun(job)),
+		notTheRun:         rep.isRun != nil && (stats.State != queue.ItemStateRun || !rep.isRun(job)),
 	}
 }
 
@@ -6824,6 +6938,13 @@ func (s *Server) applyReleaseQueueChange(ctx context.Context, q *queue.Queue, it
 func (s *Server) finalizeReleasedJob(ctx context.Context, job *Job, rep releaseReport,
 	outcome releaseOutcome) error {
 	job.updateAfterExit(rep.endState, s.limiter)
+
+	// updateAfterExit keeps the end state of whichever release took the item
+	// out of Run first, but an owner's bury of an item the manager released as
+	// lost knows how its command really ended.
+	if outcome == releaseBuriedWaiting && rep.reporter != (uuid.UUID{}) {
+		job.replaceLostEndState(rep.endState, rep.failReason)
+	}
 
 	sgroup, msg := job.applyRelease(rep)
 
@@ -7333,9 +7454,15 @@ func (s *Server) getJobsByRepGroup(ctx context.Context, opts repGroupOptions) (j
 		return nil, srerr, qerr
 	}
 
+	// live jobs are filtered before they are copied, with one filter across all
+	// the RepGroups because limitJobs' groups span them. The filter only skips a
+	// job once Offset+Limit earlier live jobs fill its group, so interleaving
+	// the archived jobs cannot make it skip one that limitJobs would keep.
+	filter := s.newLiveJobFilter("", RepGroupMatchExact, limitOpts)
+
 	for i := range rgs {
 		rg := rgs[i]
-		queueJobs := s.getQueueJobsByRepGroup(ctx, rg, opts.GetStd)
+		queueJobs := s.getQueueJobsByRepGroup(ctx, rg, opts.GetStd, filter)
 		jobs = append(jobs, queueJobs...)
 
 		complete, undecoded := s.getDBJobsByRepGroup(rg, opts, budget, &srerr, &qerr)
@@ -7346,6 +7473,7 @@ func (s *Server) getJobsByRepGroup(ctx context.Context, opts repGroupOptions) (j
 		}
 	}
 
+	limitOpts.undecodedComplete = filter.addUncopied(limitOpts.undecodedComplete)
 	jobs = s.limitJobs(ctx, jobs, limitOpts)
 
 	return jobs, srerr, qerr
@@ -7375,14 +7503,19 @@ func (s *Server) getRepGroupsList(repGroup string, match RepGroupMatch) ([]strin
 }
 
 // getQueueJobsByRepGroup gets jobs from the in-memory queue for a given
-// RepGroup.
-func (s *Server) getQueueJobsByRepGroup(ctx context.Context, repGroup string, getStd bool) []*Job {
+// RepGroup, copying only those the given filter admits (all of them if it is
+// nil).
+func (s *Server) getQueueJobsByRepGroup(ctx context.Context, repGroup string, getStd bool,
+	filter *liveJobFilter) []*Job {
 	var jobs []*Job
 
 	for _, key := range s.rpl.Values(repGroup) {
 		item, _ := s.q.Get(key) //nolint:errcheck
-		if item != nil {
-			job := s.itemToJob(ctx, item, getStd, false)
+		if item == nil {
+			continue
+		}
+
+		if job := s.itemToJobIfAdmitted(ctx, item, getStd, false, filter); job != nil {
 			jobs = append(jobs, job)
 		}
 	}
@@ -7446,59 +7579,40 @@ func (s *Server) getLastCompletionTimeByRepGroup(repGroup string,
 // returned.
 func (s *Server) getJobsCurrent(ctx context.Context, repGroup string, match RepGroupMatch,
 	limit int, state JobState, getStd bool, getEnv bool, waitingForDepGroups bool) []*Job {
-	jobs := s.getQueueJobsCurrent(ctx, repGroup, match, getStd)
-
-	jobs = s.limitJobs(ctx, jobs, limitJobsOptions{
+	opts := limitJobsOptions{
 		Limit:               limit,
 		State:               state,
 		GetStd:              getStd,
 		GetEnv:              getEnv,
 		WaitingForDepGroups: waitingForDepGroups,
-	})
-
-	return jobs
-}
-
-func (s *Server) getQueueJobsCurrent(ctx context.Context, repGroup string, match RepGroupMatch, getStd bool) []*Job {
-	if repGroup == "" {
-		return s.getAllQueueJobs(ctx, getStd)
 	}
 
-	if match == RepGroupMatchExact {
-		return s.getQueueJobsByRepGroup(ctx, repGroup, getStd)
-	}
+	filter := s.newLiveJobFilter(repGroup, match, opts)
+	jobs := s.getQueueJobsCurrent(ctx, repGroup, match, getStd, filter)
+	opts.undecodedComplete = filter.addUncopied(nil)
 
-	return s.getQueueJobsByRepGroupMatch(ctx, repGroup, match, getStd)
+	return s.limitJobs(ctx, jobs, opts)
 }
 
-func (s *Server) getAllQueueJobs(ctx context.Context, getStd bool) []*Job {
+// getQueueJobsCurrent gets the live jobs matching repGroup (all of them if it
+// is blank) that the given filter admits.
+func (s *Server) getQueueJobsCurrent(ctx context.Context, repGroup string, match RepGroupMatch, getStd bool,
+	filter *liveJobFilter) []*Job {
+	if repGroup != "" && match == RepGroupMatchExact {
+		return s.getQueueJobsByRepGroup(ctx, repGroup, getStd, filter)
+	}
+
 	q := s.queueIfPresent()
 	if q == nil {
 		return nil
 	}
 
-	allItems := q.AllItems()
-	jobs := make([]*Job, 0, len(allItems))
+	var jobs []*Job
 
-	for _, item := range allItems {
-		jobs = append(jobs, s.itemToJob(ctx, item, getStd, false))
-	}
-
-	return jobs
-}
-
-func (s *Server) getQueueJobsByRepGroupMatch(ctx context.Context, repGroup string,
-	match RepGroupMatch, getStd bool) []*Job {
-	allItems := s.q.AllItems()
-	jobs := make([]*Job, 0, len(allItems))
-
-	for _, item := range allItems {
-		job := s.itemToJob(ctx, item, getStd, false)
-		if job == nil || !RepGroupMatches(job.RepGroup, repGroup, match) {
-			continue
+	for _, item := range q.AllItems() {
+		if job := s.itemToJobIfAdmitted(ctx, item, getStd, false, filter); job != nil {
+			jobs = append(jobs, job)
 		}
-
-		jobs = append(jobs, job)
 	}
 
 	return jobs
@@ -8307,6 +8421,9 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 
 	// wait for our goroutines to finish
 	s.wg.Wait(ServerShutdownWaitTime)
+
+	// with no requests left to warn about, log what the warnings still counted
+	s.warns.stop()
 
 	s.waitForPortsClosed(ctx)
 

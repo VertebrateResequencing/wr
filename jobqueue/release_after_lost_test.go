@@ -67,6 +67,9 @@ type releaseAfterLostFixture struct {
 	user    *Client
 	job     *Job
 	retries uint8
+
+	// connect connects another client to the manager.
+	connect func() *Client
 }
 
 // newReleaseAfterLostFixture starts a manager with a short TTR, prompt lost
@@ -113,7 +116,16 @@ func newReleaseAfterLostFixture(ctx context.Context, t *testing.T, retries uint8
 	So(reserved, ShouldNotBeNil)
 	So(runner.Started(reserved, commandPid), ShouldBeNil)
 
-	return &releaseAfterLostFixture{t: t, server: server, runner: runner, user: user, job: reserved, retries: retries}
+	connect := func() *Client {
+		client, errc := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(errc, ShouldBeNil)
+
+		return client
+	}
+
+	return &releaseAfterLostFixture{
+		t: t, server: server, runner: runner, user: user, job: reserved, retries: retries, connect: connect,
+	}
 }
 
 // stop disconnects the clients and stops the manager.

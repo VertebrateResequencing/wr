@@ -7,15 +7,59 @@ project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 ### Fixed
+- A runner's late report that its command failed, or should be buried, no
+  longer buries or delays a new run of that command by another runner, which
+  could leave the command running twice, and a late report that it succeeded no
+  longer marks complete a command another runner has just been given. This
+  could happen after the manager gave up on the first runner as lost and the
+  command started again elsewhere.
 - A job whose runner moved on to other work after its report of the job was
   lost to a manager crash is now re-run as soon as that runner next contacts
   the manager, instead of staying running for ever or, after an hour, having
   its runner killed along with the job that runner was then running. This
   applies to runners from this version on, under every scheduler.
+- Asking the manager for incomplete commands by report group prefix or
+  substring, by state (such as `wr status -b`), or with a limit (such as a
+  limited `wr status -i`) no longer copies every queued command first. With
+  about 570k commands queued, such requests took up to 2 minutes and could hold
+  several GB each.
+- A manager whose database is slow to commit no longer slows itself further by
+  logging a warning for every reservation or request. The "not yet recorded
+  on disk" and "slow request" warnings are now logged in full once, then at
+  most once a minute as one "(repeated)" line with a count, the longest
+  duration and the latest details.
+- A command could be declared lost, and its runner checked for death, before
+  the runner had even been given it, when the manager's database took longer
+  than the command's TTR to record the reservation. Its TTR now starts when
+  the runner is given it.
+- A command whose runner the manager had given up on as lost now shows the exit
+  code and memory use that runner later reported, rather than "lost contact
+  with runner".
+- A runner's bury of a command the manager had sent back to wait on a new
+  dependency now buries it, keeping that dependency for when it is kicked,
+  instead of being refused.
 - The manager no longer under-counts the runners it needs when a command's
   success is reported after the manager had already given up on it and
   scheduled it to run again.
-
+- `wr status` could say a delayed command would become ready in
+  -2562047h47m16.854775808s, typically after lost contact with its runner. It
+  now shows the real time until it becomes ready (also as `Ready` in
+  `wr status -o json`), and a command released after lost contact keeps the
+  time contact was lost as its end time instead of having none, so its
+  walltime no longer keeps growing.
+- `wr status -i <group> -o summary` (and the Go client's
+  `GetStatusByRepGroupMatch` with details) no longer reads every completed
+  command in full, so it is several times faster, and uses about 1% of the
+  memory, for a group with a long history of long commands. The output is
+  unchanged.
+- A manager whose port is already taken by an IPv6-only listener (such as
+  rpc.statd's) now fails to start at once, saying the port is in use by another
+  process, instead of seeming to start and then exiting a few seconds later.
+- The manager uses less CPU deciding what to schedule when many commands are
+  waiting in limit groups.
+- With the lsf scheduler, each bsub returns about 100ms sooner.
+- When the manager or a runner logs an internal panic, the log now includes the
+  stack of where the panic happened (as `panic_stack`).
 
 ## [0.38.0] - 2026-09-30
 ### Added

@@ -149,6 +149,29 @@ type fakeLSFDelays struct {
 	bjobsListJobs int
 }
 
+// fakeBjobsAppearChecks returns how many `bjobs -w <id>` appearance checks the
+// fake bjobs newFakeLSFScheduler wrote into dir has answered.
+func fakeBjobsAppearChecks(t *testing.T, dir string) int {
+	t.Helper()
+
+	data, err := os.ReadFile(fakeBjobsAppearChecksFile(dir))
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return strings.Count(string(data), "\n")
+}
+
+// fakeBjobsAppearChecksFile is where the fake bjobs newFakeLSFScheduler writes
+// into dir records each `bjobs -w <id>` appearance check it answers.
+func fakeBjobsAppearChecksFile(dir string) string {
+	return filepath.Join(dir, "bjobs-appear-checks")
+}
+
 // setPipeCloseGraces lowers the bsub and bkill pipe-close graces for the duration
 // of the test, restoring them afterwards.
 func setPipeCloseGraces(t *testing.T, grace time.Duration) {
@@ -159,6 +182,40 @@ func setPipeCloseGraces(t *testing.T, grace time.Duration) {
 
 	t.Cleanup(func() {
 		bsubPipeCloseGrace, bkillPipeCloseGrace = origBsub, origBkill
+	})
+}
+
+// TestLSFBjobAppearPollsAtOnce pins that the post-bsub appearance wait checks
+// bjobs as soon as it starts, rather than first sitting out a whole
+// bjobsAppearPollFreq: every submission, including each chunk of a large array
+// count, used to pay that interval before its first check.
+func TestLSFBjobAppearPollsAtOnce(t *testing.T) {
+	Convey("Given an lsf whose bjobs reports a submitted job at once, polled far less often than the appearance window", t, func() {
+		dir := t.TempDir()
+		s := newFakeLSFScheduler(t, dir, filepath.Join(dir, "jargs"), fakeLSFDelays{})
+
+		// a poll interval longer than the whole window means the only check a
+		// wait can make in time is one made before the first tick.
+		setBjobsAppearPollFreq(time.Hour)
+
+		ctx, _ := captureLogCtx()
+
+		Convey("waitForBjob sees the job with a single, immediate check", func() {
+			So(s.waitForBjob(ctx, "321"), ShouldBeTrue)
+			So(fakeBjobsAppearChecks(t, dir), ShouldEqual, 1)
+		})
+	})
+}
+
+// setBjobsAppearPollFreq sets how often waitForBjob re-polls bjobs, for the rest
+// of the calling Convey, restoring it afterwards. It must be called inside a
+// Convey (see setBjobsAppearTimeout for why the restore is a Reset).
+func setBjobsAppearPollFreq(freq time.Duration) {
+	orig := bjobsAppearPollFreq
+	bjobsAppearPollFreq = freq
+
+	Reset(func() {
+		bjobsAppearPollFreq = orig
 	})
 }
 
@@ -954,6 +1011,11 @@ func TestLSFArrayChunking(t *testing.T) {
 			So(nonUnique, ShouldEqual, 0)
 			So(badPrefix, ShouldEqual, 0)
 			So(len(seen), ShouldEqual, len(sizes))
+
+			// (d) each submission is confirmed with a single `bjobs -w <id>`
+			// when LSF reports the job at once, so chunking cannot multiply
+			// the appearance checks beyond one per bsub.
+			So(fakeBjobsAppearChecks(t, dir), ShouldEqual, len(sizes))
 		})
 	})
 
@@ -1020,10 +1082,12 @@ echo "Job <321>"
 	// bjobs is called both as `bjobs -w` (list, reporting delays.bjobsListJobs
 	// jobs of the "false" cmd, so by default the scheduler thinks 0 are already
 	// scheduled) and as `bjobs -w <id>` (the post-submit appearance check, which
-	// must report a long-enough line).
+	// must report a long-enough line, and is recorded one line per call; see
+	// fakeBjobsAppearChecks).
 	bjobsExe := filepath.Join(dir, "bjobs")
 	writeFakeExe(t, bjobsExe, `#!/bin/bash
 if [ -n "$2" ]; then
+  echo "$2" >> `+fmt.Sprintf("%q", fakeBjobsAppearChecksFile(dir))+`
 `+appearSleep+`  echo "$2 sb10 RUN normal host1 host2 fakejobname000000000000000 Jul 22 12:00"
   exit 0
 fi

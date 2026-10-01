@@ -680,7 +680,13 @@ func TestRESTJobModificationValidation(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+
+	// the default TTR, so a reserved or running job the test has not touched
+	// stays that way however slowly it gets to its next check, and a release
+	// delay far longer than the test, so a delayed job cannot become ready while
+	// the test is checking that a PATCH left it delayed.
+	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(false)
+	serverConfig.Timings.ReleaseDelayMin = time.Hour
 
 	// the released job must still be delayed when it is checked, and a release
 	// returns only once it is on disk, which under load can outlast the default
@@ -1808,7 +1814,11 @@ func TestREST(t *testing.T) {
 					So(len(buried), ShouldEqual, 1)
 					So(buried[0].State, ShouldEqual, JobStateBuried)
 					So(buried[0].Started, ShouldNotBeNil)
-					So(buried[0].Ended, ShouldBeNil)
+
+					// the job was lost before it was released, so it ended when
+					// contact with it was lost
+					So(buried[0].Ended, ShouldNotBeNil)
+					So(*buried[0].Ended, ShouldBeGreaterThanOrEqualTo, *buried[0].Started)
 				})
 
 				Convey("You can DELETE lost jobs to bury them", func() {

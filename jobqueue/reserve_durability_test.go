@@ -564,25 +564,26 @@ func queueUnkickedBestEffortExit(t *testing.T, database *db, job *Job, stde []by
 	database.enqueueExitLocked(exit, nil)
 }
 
-// storedLiveJobState decodes the job stored under key in the live bucket.
+// storedLiveJobState decodes the state of the job stored under key in the live
+// bucket.
 func storedLiveJobState(t *testing.T, database *db, key string) JobState {
 	t.Helper()
 
-	var state JobState
+	return storedLiveJob(t, database, key).State
+}
+
+// storedLiveJob decodes the job stored under key in the live bucket.
+func storedLiveJob(t *testing.T, database *db, key string) *Job {
+	t.Helper()
+
+	job := &Job{}
 
 	err := database.bolt.View(func(tx *bolt.Tx) error {
-		job := &Job{}
-		if errd := codec.NewDecoderBytes(tx.Bucket(bucketJobsLive).Get([]byte(key)), database.ch).Decode(job); errd != nil {
-			return errd
-		}
-
-		state = job.State
-
-		return nil
+		return codec.NewDecoderBytes(tx.Bucket(bucketJobsLive).Get([]byte(key)), database.ch).Decode(job)
 	})
 	if err != nil {
 		t.Fatalf("could not read the live job: %v", err)
 	}
 
-	return state
+	return job
 }
