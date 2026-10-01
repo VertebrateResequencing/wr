@@ -46,7 +46,7 @@ stored `EndTime` and what is derived from it are wrong.
     `jobqueue/lost_job_behaviours_test.go` (confirm-dead release and kill of a
     lost job); `TestREST` in `jobqueue/rest_test.go` asserted the bug (a
     lost-then-buried job's `Ended` was nil) and now expects it set.
-- [ ] **`wr status` derives the ready time from EndTime+DelayTime instead of
+- [x] **`wr status` derives the ready time from EndTime+DelayTime instead of
       the queue.** A delayed job whose `EndTime` is zero for any other reason
       (a runner release with no exit state, such as "not enough time to run",
       leaves the reservation's zeroed `EndTime`; or a job stored by an older
@@ -54,3 +54,33 @@ stored `EndTime` and what is derived from it are wrong.
       never started prints "attempted at" the zero time. The client copy of a
       delayed job should carry the queue item's real ready time, and the
       display should never print a negative or saturated duration.
+  - Red commands (field and helpers added, behaviour unchanged), exit 1:
+    `go test -count=1 ./jobqueue -run TestDelayedJobReportsWhenItWillBeReady`
+    and `go test -count=1 ./cmd/ -run 'TestStatusDelayedLine|TestStatusDetailsOfAJobReleasedWithNoExitState'`
+
+    ```text
+    delayed_ready_time_test.go Line 94 (now 96):
+    Expected '0001-01-01 00:00:00 +0000 UTC' to happen between [release+DelayTime] (it happened '2562047h47m16.854775807s' outside threshold)!
+    status_delayed_test.go:
+    Expected: "...will become ready imminently"
+    Actual:   "...will become ready in -2562047h47m16.854775808s (attempted at 01/1/1-00:00:00)"
+    Expected: "Status: buried - you need to fix the problem and then `wr retry`"
+    Actual:   "Status: buried - you need to fix the problem and then `wr retry` (attempted at 01/1/1-00:00:00)"
+    --- FAIL: TestStatusDelayedLine
+    --- FAIL: TestStatusDetailsOfAJobReleasedWithNoExitState
+    ```
+  - Fixed: new `Job.ReadyTime` (codec omitempty), set only on client copies
+    from the queue item's `ReadyAt()` in `itemToJobIfAdmitted` and cleared on
+    jobs clients add (`prepareInputJobs`), so nothing new is persisted; new
+    `JStatus.Ready` for `wr status -o json` and REST; `cmd/status.go` prints
+    the remaining time from `ReadyTime`, falls back to `EndTime+DelayTime`
+    only when `EndTime` is set (older manager), says "imminently" when the
+    time is past or unknown, and omits "attempted at" for a job that never
+    started (delayed and buried lines).
+  - Tests: `jobqueue/delayed_ready_time_test.go`,
+    `cmd/status_delayed_test.go`.
+- [ ] **Recovery after a restart skips a delayed job's remaining delay.**
+      Raised by the coordinator: `recoveredItemDef` re-adds every non-run,
+      non-buried, non-suspended job with `Delay: 0`, so a job delayed before a
+      restart is ready at once afterwards. Decide whether to restore the
+      remaining delay.

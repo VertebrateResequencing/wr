@@ -1004,6 +1004,12 @@ type Job struct {
 	BsubID uint64
 	// delay is the duration we would next spend in the delay queue
 	DelayTime time.Duration
+	// ReadyTime is when a delayed job will become ready again, as the
+	// manager's queue has it. It is only set on the jobs clients are sent
+	// (itemToJob) while the job is delayed, and is zero otherwise, including
+	// from managers that predate it. The manager's own jobs never carry it, so
+	// it is not stored in the database.
+	ReadyTime time.Time `codec:",omitempty"`
 
 	// we add this internally to match up runners we spawn via the scheduler to
 	// the Jobs they're allowed to ReserveFiltered().
@@ -2245,6 +2251,7 @@ func (j *Job) buildJStatus(streams jobStatusStreams, leaf string) JStatus {
 		Env:                 streams.env,
 		Started:             unixNanoPtr(j.StartTime),
 		Ended:               unixNanoPtr(j.EndTime),
+		Ready:               unixNanoPtr(j.ReadyTime),
 	}
 
 	return js

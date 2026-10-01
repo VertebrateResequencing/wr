@@ -6282,6 +6282,9 @@ func (s *Server) prepareInputJobs(inputJobs []*Job, envkey string,
 		job.EnvKey = envkey
 		// only the manager may mark a job to run again (see running_dependent.go).
 		job.RerunAfterRun = false
+		// nor say when it will be ready, which is only for the jobs clients are
+		// sent, never stored.
+		job.ReadyTime = time.Time{}
 
 		job.dropImpossibleCleanups()
 

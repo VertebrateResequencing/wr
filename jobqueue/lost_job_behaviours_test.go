@@ -1203,12 +1203,7 @@ func soReleasedAtTheTimeContactWasLost(l *lostRun, lostBy time.Time) {
 	So(job.EndTime, ShouldHappenOnOrAfter, job.StartTime)
 	So(job.EndTime, ShouldHappenOnOrBefore, lostBy)
 
-	wall := job.WallTime()
-
-	time.Sleep(10 * time.Millisecond)
-
-	So(job.WallTime(), ShouldEqual, wall)
-	So(wall, ShouldEqual, job.EndTime.Sub(job.StartTime))
+	So(job.WallTime(), ShouldEqual, job.EndTime.Sub(job.StartTime))
 }
 
 func TestKillingALostJobSparesTheRunThatReplacesIt(t *testing.T) {
