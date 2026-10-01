@@ -28,7 +28,28 @@ Quality gates: `make lint`, `make test`, `make race`, run with
     inherited `Maxrss`, every job's recorded PeakRAM is at least the `wr runner`
     process's RSS high-water mark, and `ownMemoryMB` adds the runner's Pss again,
     so small jobs are over-learned by about twice the runner's footprint.
-- [ ] Flake: TestDepGranularitySidecarReportsElapsedTime failed once under load (a prior fix made it wait for the next heartbeat instead of 200ms; check it's on develop and why it can still fail).
+- [x] Flake: TestDepGranularitySidecarReportsElapsedTime failed once under load (a prior fix made it wait for the next heartbeat instead of 200ms; check it's on develop and why it can still fail).
+  - The prior fix (`dgsWaitForSidecarRewrite`) is on develop in 95faf168.
+  - Red: temporary injected delays, since removed. In the heartbeat goroutine,
+    tick 1 sleeps until 200us before the second tick boundary and tick 2 sleeps
+    30ms after computing elapsed; the test sleeps 110ms before
+    `dgsWaitForSidecarState`. Then
+    `go test -count=3 -run '^TestDepGranularitySidecarReportsElapsedTime$' ./jobqueue/`
+    failed 3 of 3: `Expected '101ms' to be greater than '101ms' (but it wasn't)!`.
+  - Cause (test): the detail's elapsed time is rounded to the millisecond. A
+    heartbeat goroutine starved past a tick handles the late tick and then the
+    next one within a millisecond, writing the same elapsed twice with
+    different `UpdatedAt`s. If the test's first sample was the first of those,
+    the wait accepted the second and the strictly-growing assertion failed.
+  - Fix (test only), `jobqueue/depgranularity_startup_test.go`:
+    `dgsWaitForSidecarRewrite` waits for a sample in the same state with a
+    different detail. Every assertion is kept.
+  - After: the red passes 5 of 5 with the same injections; `-count=20` and a
+    `-race` run pass. A sidecar never refreshed, or one whose elapsed never
+    changes, fails at `found` after the 30s bound. Ruled out: a leaked server
+    reading the swapped `recoveryHeartbeatInterval` (Stop waits on `bgWG`
+    without a timeout), a shared sidecar path (each init gets its own
+    manager dir), and wall-clock `UpdatedAt` steps.
 - [ ] Flake: TestArchiveStallDoesNotRerunJob (jobqueue/archive_stall_test.go:191) failed once: the test's held bolt write caught the runner's jstart (a 30s slow request) instead of the archive, so the run never reached its archive. Make the hold target the archive write deterministically.
 - [ ] Test env leak: jobqueue/behaviours_env_test.go:177 TestBehaviourRunEnv ("a CwdMatters Job's run behaviour gets its environment untouched") fails whenever the caller has TMPDIR set because it inherits it. Make it hermetic.
 - [ ] developers/wrdev.sh: asl_adder (~line 1625) seeds RANDOM from $(date +%N); a leading zero makes bash read it as octal (e.g. 08/09 invalid), killing adders. Fix (e.g. strip leading zeros / use 10#).
