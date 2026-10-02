@@ -11,6 +11,8 @@ n=$2 wait=$3
 soak_enter "$d"
 until [ "$(grep -c '	start	' "$d/restarts.tsv")" -ge "$n" ]; do soak_alive "$d" || exit 0; sleep 5; done
 sleep "$wait"
+# never collide with a scheduled restart part-way through
+while soak_wr_running "(start|stop)" >/dev/null; do sleep 2; done
 soak_isolated || die "wr does not resolve --deployment production to our manager on :$PROD_PORT"
 pid=$(soak_manager_pid) || die "the pid file does not name a process running $SOAK_WR"
 t0=$(date +%s%3N); kill -9 "$pid"
