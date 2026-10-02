@@ -393,7 +393,7 @@ func (s *Subscription) reconnectAfterPollError(ctx context.Context) bool {
 }
 
 func (s *Subscription) reconnect(ctx context.Context) ([]*JobUpdate, bool) {
-	retryEnd := time.Now().Add(s.client.retryTime)
+	retryEnd := time.Now().Add(s.client.currentRetryTime())
 
 	for {
 		if s.isStopping() {
@@ -552,7 +552,7 @@ func (s *Subscription) subscribeRequest() *clientRequest {
 }
 
 func (s *Subscription) waitBeforeReconnect(ctx context.Context) bool {
-	timer := time.NewTimer(subscriptionReconnectWait(s.client.retryWait))
+	timer := time.NewTimer(subscriptionReconnectWait(s.client.currentRetryWait()))
 	defer timer.Stop()
 
 	select {
@@ -984,6 +984,7 @@ func (c *Client) reconnect(timeout time.Duration) error {
 	c.Lock()
 	oldSock := c.sock
 	c.sock = newClient.sock
+	c.adoptServerTimings(c.ServerInfo, newClient.ServerInfo)
 	c.ServerInfo = newClient.ServerInfo
 	c.Unlock()
 

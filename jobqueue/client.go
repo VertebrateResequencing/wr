@@ -1062,6 +1062,66 @@ func (c *Client) currentToken() []byte {
 	return c.token
 }
 
+// currentTouchInterval returns how often this client touches its running jobs.
+func (c *Client) currentTouchInterval() time.Duration {
+	c.timingsMu.Lock()
+	defer c.timingsMu.Unlock()
+
+	return c.touchInterval
+}
+
+// currentRetryWait returns how long this client waits between attempts to
+// reach the manager.
+func (c *Client) currentRetryWait() time.Duration {
+	c.timingsMu.Lock()
+	defer c.timingsMu.Unlock()
+
+	return c.retryWait
+}
+
+// currentRetryTime returns how long this client keeps trying to reach the
+// manager before giving up.
+func (c *Client) currentRetryTime() time.Duration {
+	c.timingsMu.Lock()
+	defer c.timingsMu.Unlock()
+
+	return c.retryTime
+}
+
+// adoptServerTimings replaces the timings this client derived from oldSI with
+// those derived the same way from newSI. A timing that no longer matches what
+// oldSI gave was overridden on this client, so it is kept.
+func (c *Client) adoptServerTimings(oldSI, newSI *ServerInfo) {
+	var oldTimings, newTimings ServerInfo
+
+	if oldSI != nil {
+		oldTimings = *oldSI
+	}
+
+	if newSI != nil {
+		newTimings = *newSI
+	}
+
+	c.timingsMu.Lock()
+	defer c.timingsMu.Unlock()
+
+	c.touchInterval = refreshDerivedTiming(c.touchInterval,
+		oldTimings.TouchInterval, newTimings.TouchInterval, ClientTouchInterval)
+	c.retryWait = refreshDerivedTiming(c.retryWait, oldTimings.RetryWait, newTimings.RetryWait, ClientRetryWait)
+	c.retryTime = refreshDerivedTiming(c.retryTime, oldTimings.RetryTime, newTimings.RetryTime, ClientRetryTime)
+}
+
+// refreshDerivedTiming returns current unchanged if it is not what
+// dfltDuration derives from oldServer and def, meaning it was overridden;
+// otherwise it returns what dfltDuration derives from newServer and def.
+func refreshDerivedTiming(current, oldServer, newServer, def time.Duration) time.Duration {
+	if current != dfltDuration(oldServer, def) {
+		return current
+	}
+
+	return dfltDuration(newServer, def)
+}
+
 // requestOnceLocked sends cr and returns the manager's reply, and must be
 // called with the client's lock held.
 func (c *Client) requestOnceLocked(cr *clientRequest) (*serverResponse, error) {
@@ -1567,6 +1627,11 @@ type Client struct {
 	// timing parameters this client uses; defaulted from the server's
 	// ServerInfo at Connect() (falling back to the Client* package defaults for
 	// older servers), but may be overridden by in-package code or tests before use.
+	// A subscription reconnect refreshes the ones not overridden from the new
+	// manager's ServerInfo, so they are guarded by timingsMu, not the client's
+	// main lock, which requests hold for their whole round trip. Read them with
+	// currentTouchInterval(), currentRetryWait() and currentRetryTime().
+	timingsMu     sync.Mutex
 	touchInterval time.Duration
 	retryWait     time.Duration
 	retryTime     time.Duration
@@ -1733,7 +1798,7 @@ func appendExecProblems(stderr []byte, jobFailed bool, mountLogs string, berr, e
 // settles it or start's retrying is stopped. It is the periodic fallback used
 // by retryStartReport after its immediate first attempt.
 func (c *Client) retryStartReportLoop(ctx context.Context, start *pendingStartReport) {
-	ticker := time.NewTicker(c.retryWait)
+	ticker := time.NewTicker(c.currentRetryWait())
 	defer ticker.Stop()
 
 	for {
@@ -3030,7 +3095,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// touching the job, and keep doing so until after we've run the job and
 	// carried out post-exit tasks
 	liveState := newExecuteLiveState(actualCwd, liveStdout, liveStderr)
-	touchTicker := time.NewTicker(c.touchInterval) // server-provided default (< its ItemTTR), overridable per client
+	// server-provided default (< its ItemTTR), overridable per client
+	touchTicker := time.NewTicker(c.currentTouchInterval())
 
 	serverContact := &serverContactState{}
 	stopTouching := make(chan bool, executeStopChannelBuffer)
@@ -3783,7 +3849,8 @@ type execAction struct {
 func (c *Client) reportFinalState(ctx context.Context, job *Job, jes *JobEndState, action execAction,
 	start *pendingStartReport,
 ) (bool, error) {
-	retryEnd := time.Now().Add(c.retryTime)
+	retryTime := c.currentRetryTime()
+	retryEnd := time.Now().Add(retryTime)
 	err := errNoFinalStateAttempt
 	tokenRejections := 0
 
@@ -3808,7 +3875,7 @@ func (c *Client) reportFinalState(ctx context.Context, job *Job, jes *JobEndStat
 
 	clog.Warn(ctx, "giving up trying to connect to server")
 
-	return hadProblems, fmt.Errorf("gave up after trying for %s: %w", c.retryTime, err)
+	return hadProblems, fmt.Errorf("gave up after trying for %s: %w", retryTime, err)
 }
 
 // handleFinalStateError reacts to a failed state update: it logs the error,
@@ -3831,7 +3898,7 @@ func (c *Client) handleFinalStateError(ctx context.Context, err error) (disconne
 		return disconnected, true
 	}
 
-	<-time.After(c.retryWait)
+	<-time.After(c.currentRetryWait())
 
 	return disconnected, false
 }
@@ -3845,7 +3912,8 @@ func (c *Client) quickReconnect(ctx context.Context) bool {
 		clog.Warn(ctx, "tried to reconnect to server but failed", "err", errc)
 
 		// keep retrying after a jittered sleep (weak random is fine here)
-		wait := c.retryWait + time.Duration(rand.Float64()*0.5*float64(c.retryWait)) //nolint:gosec
+		retryWait := c.currentRetryWait()
+		wait := retryWait + time.Duration(rand.Float64()*0.5*float64(retryWait)) //nolint:gosec
 		<-time.After(wait)
 
 		return false

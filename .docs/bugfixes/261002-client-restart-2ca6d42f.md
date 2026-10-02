@@ -186,11 +186,29 @@ request a live but slow manager is still handling.
     client/client.go; Connect and ConnectWithTokenFile docs in
     jobqueue/client.go; jobqueue/doc.go examples use ConnectUsingConfig and
     the real Add and Serve signatures; CHANGELOG entries under Fixed.
-- [ ] A subscription reconnect adopts the new manager's ServerInfo but keeps
+- [x] A subscription reconnect adopts the new manager's ServerInfo but keeps
   the retryWait, retryTime and touchInterval derived from the old one
   (Client.reconnect in jobqueue/subscription.go), so a manager restarted
   with different timings leaves the client using stale ones.
   - Source: coordinator, from the PR's "for the owner" list.
+  - Red command: `timeout 600 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    go test -tags netgo -count 1 ./jobqueue/ -run
+    '^TestSubscriptionReconnectAdoptsManagerTimings$'`, exit 1:
+
+    ```
+    Line 1842:
+    Expected: time.Duration(3000000000)
+    Actual:   time.Duration(2000000000)
+    --- FAIL: TestSubscriptionReconnectAdoptsManagerTimings (1.65s)
+    ```
+  - Fixed: Client.reconnect calls adoptServerTimings under the client lock,
+    deriving each timing from the new ServerInfo by establishServerInfo's
+    rule and keeping a field that differs from the old manager's derived
+    value (a test override). The fields are guarded by a new timingsMu and
+    read through currentTouchInterval/currentRetryWait/currentRetryTime.
+  - Noted, not a bug: quickReconnect (Execute's final-state retry) swaps only
+    the socket, which handleFinalStateError has already closed, and keeps the
+    old ServerInfo; Execute reads touchInterval once at start.
 - [ ] With SchedulerSettings.Timeout over 60s, mangos's req socket may resend
   a request to a live but slow manager after its default 1-minute resend
   time (wr never sets OptionRetryTime), so the manager could get the same

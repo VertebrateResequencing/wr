@@ -1762,6 +1762,101 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 	})
 }
 
+func TestSubscriptionReconnectAdoptsManagerTimings(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	const (
+		oldTouchInterval = 2 * time.Second
+		oldRetryWait     = 250 * time.Millisecond
+		oldRetryTime     = subscriptionRestartRetryTime
+		newTouchInterval = 3 * time.Second
+		newRetryWait     = 300 * time.Millisecond
+		newRetryTime     = subscriptionRestartRetryTime + time.Second
+	)
+
+	// subscribeAcrossTimingChange connects a client to a manager using the old
+	// timings, lets override adjust the client before it subscribes, then
+	// restarts the manager with the new timings and waits for the subscription
+	// to resync with it.
+	subscribeAcrossTimingChange := func(override func(jq *Client)) *Client {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		serverConfig.Timings.TouchInterval = oldTouchInterval
+		applySubscriptionReconnectTimings(&serverConfig, oldRetryWait, oldRetryTime)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		// unsubscribe before stopping the manager, or the subscription spends
+		// its whole retry time trying to reconnect to it.
+		var sub *Subscription
+
+		Reset(func() {
+			if sub != nil {
+				sub.Unsubscribe()
+			}
+
+			server.Stop(ctx, true)
+		})
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		Reset(func() {
+			disconnect(jq)
+		})
+
+		So(jq.touchInterval, ShouldEqual, oldTouchInterval)
+		So(jq.retryWait, ShouldEqual, oldRetryWait)
+		So(jq.retryTime, ShouldEqual, oldRetryTime)
+
+		override(jq)
+
+		ids, err := jq.AddAndReturnIDs(subscriptionTestJobs("subscription-timings", standardReqs, 1), envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 1)
+
+		sub, err = jq.SubscribeToJobKeys(ctx, ids)
+		So(err, ShouldBeNil)
+
+		server.Stop(ctx, true)
+		sub.closeSock()
+		time.Sleep(100 * time.Millisecond)
+
+		serverConfig.Timings.TouchInterval = newTouchInterval
+		applySubscriptionReconnectTimings(&serverConfig, newRetryWait, newRetryTime)
+		server = restartSubscriptionTestServer(ctx, serverConfig)
+
+		updates, ok := collectSubscriptionUpdates(sub, 1)
+		So(ok, ShouldBeTrue)
+		So(updates[0].Kind, ShouldEqual, JobUpdateResync)
+		So(jq.ServerInfo.RetryTime, ShouldEqual, newRetryTime)
+
+		return jq
+	}
+
+	Convey("A subscription reconnect adopts the restarted manager's timings", t, func() {
+		jq := subscribeAcrossTimingChange(func(*Client) {})
+
+		So(jq.touchInterval, ShouldEqual, newTouchInterval)
+		So(jq.retryWait, ShouldEqual, newRetryWait)
+		So(jq.retryTime, ShouldEqual, newRetryTime)
+	})
+
+	Convey("A subscription reconnect keeps timings overridden on the client", t, func() {
+		const overriddenRetryWait = 400 * time.Millisecond
+
+		jq := subscribeAcrossTimingChange(func(jq *Client) {
+			jq.retryWait = overriddenRetryWait
+		})
+
+		So(jq.retryWait, ShouldEqual, overriddenRetryWait)
+		So(jq.touchInterval, ShouldEqual, newTouchInterval)
+		So(jq.retryTime, ShouldEqual, newRetryTime)
+	})
+}
+
 func TestSubscriptionReconnectReleasesOldRegistration(t *testing.T) {
 	if runnermode || servermode {
 		return
