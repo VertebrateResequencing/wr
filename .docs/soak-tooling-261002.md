@@ -176,7 +176,20 @@ versions. Beyond the moves, the landed version differs from A in these ways:
 
 The landed tooling was run end to end at `876018a5`, with each run's
 `SOAK_ROOT` under `/nfs/hgi/wr/sb10-bigdb/soak8/`. Stops and crashes are
-listed in the order they happened.
+listed in the order they happened. Runs 1-3 were launched from
+`soak8/bin/launch{1,2,3}.sh`, all with `RUNNER_FILELOG=1` and
+`WRDEV_PRODSIM_KEEP_DB=1`:
+
+| run | key settings | injectors |
+| --- | --- | --- |
+| 1 local1 | `SCHED=local USE_FUSE=0 HOURS=0.3 SIMMIN=6 SCALE=0.2 RESTART_MIN=4 RESTART_KINDS=crash,clean RAMP="0:40 8:80"`, `PRESTART_HOOK=loghook.sh` | `crashafter.sh 3 30`, `stopstate.sh`, `crashon.sh 2 stall 5` |
+| 2 lsf2 | `SCHED=lsf QUEUE=normal USE_FUSE=0 HOURS=0.35 SIMMIN=6 SCALE=0.3 RESTART_MIN=6 RESTART_KINDS=crash,clean RAMP="0:100 8:300"` | `stopstate.sh`, `crashon.sh 2 burst 30` |
+| 3 fuse3 | `SCHED=local USE_FUSE=1 FUSE_ON_AT=1 FUSE_OFF_AT=3 STALL_AFTER_MIN=2 STALL_SECS=60 HOURS=0.2 SIMMIN=6 SCALE=0.2 RESTART_MIN=3 RESTART_KINDS=clean,crash,clean RAMP="0:40"` | `stopstate.sh`, `crashon.sh 2 stall 30` |
+
+With `RUNNER_FILELOG=1`, `$SOAK_WR` is a wrapper that runs `wr.real`, so the
+daemonised manager's command line did not start with `$SOAK_WR`. That hid the
+defect fixed in 31261f05, which only shows without runner logs, so the
+injectors were checked again without `RUNNER_FILELOG` (last row).
 
 | run | check | result |
 | --- | --- | --- |
@@ -203,13 +216,17 @@ listed in the order they happened.
 | 4 repros | On current develop: `readdcrash.sh` 0 and 1 (one run, Attempts 1); `rundepcrash.sh` 0, 1 and `1 70 40` (D runs=2, 0 bad job); `rundepkill.sh` 0-3 (D stays buried, per the spec); `relburyiso.sh 500 2000` (`relburycheck.py` 0 problems, all buried, 0 LSF jobs left) | PASS |
 | 5 wrdev | `freelist-check` (66s; manager median commit 2.37ms vs 32ms plain at 262144 free pages); `selfconnect-check` (80s); `RESTART_KINDS`, `PRESTART_HOOK`, `DBDIR`, `FINAL_STOP` (columns, `hook.log`, DB symlink, final stop line, 5 poststart and prestop profile sets) | PASS |
 | 6 round 7 | The analysers on round-7 data match the saved round-7 outputs byte for byte: markers, doubles 202 (198+1+3), anyway 8436, rundep OK 25 CHECK 2, latency archive p50 1.69s p99 41.71s, StartTime p50 21ms (n=527473), relbury all buried with 0 stuck running, dbstart 933838 rows, `bboltexp` 0 errors. `rl.final.txt` and `unacked.tsv` differ only by the relative runner-log path. The original soak4 scripts give identical output | PASS |
+| 7 | injectors without `RUNNER_FILELOG` | pending |
 
 The fixes:
 
-- 99a7f8c6: `config.sh`'s `soak_wr_running` matches only a command line that
-  starts with `$SOAK_WR manager <subcommand>`, or `timeout N` running one.
-  `stopwatch.sh`, `stopstate.sh`, `crashon.sh`, `relbury.sh` and `watcher.sh`
-  use it in place of an unanchored `pgrep -f`.
+- 99a7f8c6 and 31261f05: `config.sh`'s `soak_wr_running` matches only a
+  command line that starts with `timeout N $SOAK_WR manager <subcommand>`.
+  Every start and stop of our manager runs under `timeout`, while the
+  daemonised manager keeps its start's argv for life, so the first version,
+  which also matched a bare `$SOAK_WR manager start`, took the running manager
+  for a start in progress. `stopwatch.sh`, `stopstate.sh`, `crashon.sh`,
+  `relbury.sh` and `watcher.sh` use it in place of an unanchored `pgrep -f`.
 - 6f9effed: `mon.sh` groups its `wc -l < file` so the redirection's own error
   is discarded.
 - edb2bf20: `crashon.sh` keeps `grep -c`'s single count, where `|| echo 0`
@@ -225,4 +242,6 @@ The fixes:
 - 6dec8b1f: `repro/rundepkill.sh` and `repro/relburyiso.sh` run
   `soak_isolated` before their clean `wr manager stop`, and kill their own
   verified pid instead if it fails. The README now says the repros start
-  through `wrdev.sh prod-start`, which does not ask `wr conf`.
+  through `wrdev.sh prod-start`, which does not ask `wr conf`. 94ce84b6 makes
+  the failure message say only that the isolation check failed, since
+  `config.sh` itself can fail it.
