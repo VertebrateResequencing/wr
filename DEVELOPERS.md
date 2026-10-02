@@ -14,6 +14,10 @@ scheduling, the RPC server, the status web feed, or the LSF scheduler.
 Helper: `developers/wrdev.sh` (run `developers/wrdev.sh help`). It encodes the
 safe-testing rules below so you don't have to remember them.
 
+Gates: `make test`, `make race` and `make lint` run in CI. `make speed` does
+not, but a change to a hot path must pass it before its PR is opened or merged
+(see §5).
+
 ---
 
 ## 1. The critical path — keep jobs running
@@ -189,7 +193,85 @@ For churn/responsiveness the authoritative evidence is a **real-LSF** run; the
 
 ---
 
-## 5. When you need the full history
+## 5. Performance gate — `make speed`
+
+`make speed` (`developers/speed.sh`) checks that the hot paths have not got
+slower. It is **not** part of `make test`, `make race` or CI: it needs a quiet
+host and about 10 minutes, and its numbers depend on that host.
+
+**When to run it.** Run it before you open a PR, and again before it merges if
+the hot-path code changed since, when the change touches any of:
+
+- add (`createJobs`), reserve, touch, start, release/bury or archive
+- recovery or the scheduler/rac
+- `queue/`
+- the write paths in `jobqueue/db.go`
+- status queries
+
+Summarise its verdict in the PR body: PASS or FAIL, the baseline it compared
+against, and every row benchstat marks as changed. The PR body must explain
+any regression the change accepts.
+
+**What it measures.** For the tree under test and for a baseline, it runs:
+
+- the hot-path Go benchmarks, 6 rounds each, interleaved so that drift in
+  host load hits both trees alike:
+  - `jobqueue`: `BenchmarkAddJobs`, `BenchmarkUpdateJobState`,
+    `BenchmarkArchiveJobs`, `BenchmarkArchiveSpacedArrivals`,
+    `BenchmarkReadyBacklogSnapshot`, `BenchmarkRepGroupStatusDetails`,
+    `BenchmarkJobKey`, `BenchmarkModifyLiveJobsReverseLookup`,
+    `BenchmarkJobCleanup*` and `BenchmarkAddDepGroupMember` (a tree without
+    a benchmark, such as an older release, just reports nothing for it)
+  - `queue`: `BenchmarkQueueLifecycle`
+  - `limiter`: its benchmarks
+- the local, farm-safe `wrdev.sh` scenarios `report-storm` and
+  `dep-granularity-check`, recorded as benchmark lines.
+
+benchstat compares the two trees. The gate fails when any time, allocation,
+bolt write/transaction count or scenario figure gets more than 10% worse at
+p < 0.05. It also fails when a scenario misses its own thresholds on the tree
+under test. With about 30 comparisons per run, a lone benchmark can cross the
+line by chance: confirm a failure with a re-run of just that one
+(`SPEED_BENCH='^BenchmarkName$' SPEED_COUNT=10 make speed`) before acting on it.
+The baseline defaults to the merge-base with `origin/develop`,
+built in a temporary worktree. Knobs:
+
+- `SPEED_BASE=<ref>` picks another baseline, and `SPEED_BASE=none` skips the
+  comparison.
+- `SPEED_THRESHOLD` and `SPEED_COUNT` change the threshold and the number of
+  rounds.
+- `SPEED_DIR` moves the work directory (default
+  `${TMPDIR:-/tmp}/wr-speed-$USER`).
+
+The header of `developers/speed.sh` lists the rest. Every run keeps its raw
+results and `benchstat.txt` under `$SPEED_DIR/run-<epoch>/`.
+
+`make speed-full` adds the in-process big-DB scenarios: `add-storm`,
+`archive-rate` and `archive-ceiling`. They need copies of production-shaped
+databases (`SPEED_BIG_DB`, or `WR_AS_DB`/`WR_ARCHRATE_DB`/`WR_AC_DB` for each
+one) and take about an hour with a baseline. Run it as well for a change to
+the bolt write path or to commit coalescing.
+
+**What `make test` already guards.** Structural cost tests fail `make test`
+outright, whatever the host's speed, for example:
+
+- `TestDepGranularityAddTransactionCost`: an add's bolt transactions do not
+  grow with dep-group size.
+- `TestReliable4DependencyFreeTxCost`
+- `TestManagerDBCommitFreelistCost`
+- `TestDBStartProbeCommitCost`
+
+A change that alters a hot path's transaction or decode count should come with
+a test like these. `make speed` is for the costs that can only be timed.
+
+**Bigger changes.** A change to scheduling, the RPC server's concurrency or the
+LSF scheduler also needs the real-LSF scenarios (§3, §4): `add-storm-lsf`,
+`report-storm-lsf`, `limit-drain`, and the `prodsim` soak at production
+concurrency.
+
+---
+
+## 6. When you need the full history
 
 This doc is the distilled version. The primary sources, if you need the deep
 context of a specific past problem:

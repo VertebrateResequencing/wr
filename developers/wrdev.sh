@@ -34,7 +34,9 @@ DEV_RUN="$WRDEV_ROOT/.wr_development"
 PROD_RUN="$WRDEV_ROOT/.wr-prod_production"
 export WR_CONFIG_DIR="$CONFIG_DIR"
 
-REPO="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel 2>/dev/null)"
+# WRDEV_REPO points the go-test-driven modes and build at another checkout (eg.
+# an older release in a worktree), so developers/speed.sh can compare trees.
+REPO="${WRDEV_REPO:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel 2>/dev/null)}"
 
 die() { echo "wrdev: $*" >&2; exit 1; }
 osunset() { unset $(compgen -v | grep '^OS_' 2>/dev/null) 2>/dev/null; true; }  # OS_* unset
@@ -5064,7 +5066,7 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   clean                 stop all our managers + bkill wrd_ (production untouched)
   status                show what is running
 
-Env: WRDEV_ROOT (=$WRDEV_ROOT) DEV_PORT/DEV_WEB PROD_PORT/PROD_WEB QUEUE MEM_GROUPS
+Env: WRDEV_ROOT (=$WRDEV_ROOT) WRDEV_REPO (checkout to build/test; default this one) DEV_PORT/DEV_WEB PROD_PORT/PROD_WEB QUEUE MEM_GROUPS
 Safety: only kills processes running \$WRDEV_ROOT/wr; only pattern-bkills wrd_ (dev) and our
 isolated prod-mode manager's ${PROD_JOB_PREFIX}*. Never touches a real --deployment production
 manager or its wrp_* jobs.

@@ -16,6 +16,14 @@ and `wrd_*` job names) so it can never disturb a real `--deployment production`
 manager. It refuses to kill any process that is not its own isolated binary.
 Everything it creates lives under `$WRDEV_ROOT` (default `$HOME/wr-devtest`).
 
+## The performance gate
+
+`speed.sh` is what `make speed` and `make speed-full` run. It benchmarks the
+hot paths and runs the local speed scenarios for this tree and a baseline, then
+compares them with benchstat. See
+[`../DEVELOPERS.md`](../DEVELOPERS.md) §5 for when it is required, and the
+script's header for its knobs.
+
 ## The production-shaped soak
 
 Every other `wrdev.sh` mode isolates one production ingredient for minutes.
