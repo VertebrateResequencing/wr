@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -246,6 +247,27 @@ var errChildLookupTimedOut = errors.New("timed out listing the child processes")
 
 // ErrNoTokenFile is returned by ConnectWithTokenFile when given no path.
 var ErrNoTokenFile = errors.New("no token file given")
+
+// clientRequestResendTime is the req socket's resend time, long enough that it
+// never comes round. mangos resends a request still unanswered after this long
+// on the same live connection, and the manager acts on every copy it gets. With
+// mangos's one-minute default, a request the manager took over a minute to
+// answer was carried out twice whenever the receive deadline was over a minute,
+// as it is for a connect timeout over ClientMinRequestTimeout, like the CLI's
+// 120s. A request not answered in time fails on its receive deadline instead.
+// It is not 0 because mangos reads 0 as also dropping, rather than resending
+// once redialled, a request whose connection closed before it was answered,
+// which is what lets a request in flight across a manager restart complete.
+//
+// It is the largest duration rather than a long finite one such as 24h because
+// any finite value is a receive deadline (connect timeout) beyond which the
+// double execution comes back, and mangos's "wait forever" deadline of 0 is
+// beyond all of them. The cost is that mangos replaces a request's resend timer
+// without stopping it when it resends after a dropped connection, so that timer
+// stays pending for the life of the process instead of firing as a no-op: one
+// small timer per request in flight when a connection drops, referencing a
+// socket that is either still the Client's or closed, with its messages freed.
+const clientRequestResendTime = time.Duration(math.MaxInt64)
 
 const (
 	RepGroupMatchExact  RepGroupMatch = "exact"
@@ -1963,10 +1985,14 @@ func dialClientSocket(addr, caFile, certDomain string, timeout time.Duration) (m
 	return sock, nil
 }
 
-// setConnectSocketOptions applies the message size and connect-time send/recv
-// deadlines used while establishing a connection.
+// setConnectSocketOptions applies the message size, resend time and
+// connect-time send/recv deadlines used while establishing a connection.
 func setConnectSocketOptions(sock mangos.Socket, timeout time.Duration) error {
 	if err := sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
+		return err
+	}
+
+	if err := sock.SetOption(mangos.OptionRetryTime, clientRequestResendTime); err != nil {
 		return err
 	}
 

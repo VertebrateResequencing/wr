@@ -209,12 +209,31 @@ request a live but slow manager is still handling.
   - Noted, not a bug: quickReconnect (Execute's final-state retry) swaps only
     the socket, which handleFinalStateError has already closed, and keeps the
     old ServerInfo; Execute reads touchInterval once at start.
-- [ ] With SchedulerSettings.Timeout over 60s, mangos's req socket may resend
+- [x] With SchedulerSettings.Timeout over 60s, mangos's req socket may resend
   a request to a live but slow manager after its default 1-minute resend
   time (wr never sets OptionRetryTime), so the manager could get the same
   request twice. Prove with a test whether it can; if so, prevent it,
   keeping adds idempotent.
   - Source: coordinator, from the PR's "for the owner" list.
+  - Proof (scratch run, real Connect/Add against a TLS rep-socket stand-in
+    that counts copies and holds its reply, not committed): mangos v3.4.2
+    arms a 1-minute resend timer per send and resends on the live pipe.
+
+    ```
+    timeout1s: hold=1m2s Add took 1m0.099s added=0 err=receive time out; manager received 1 add copies
+    timeout120s: hold=1m5s Add took 1m5.015s added=1 err=<nil>; manager received 2 add copies
+    ```
+  - Red command: `timeout 900 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    go test -tags netgo -count 1 ./jobqueue/ -run
+    '^TestClientDoesNotResendSlowRequests$'`, exit 1: `Expected '1m0s' to
+    be greater than '2m0s'`.
+  - Fixed: jobqueue/client.go setConnectSocketOptions sets
+    mangos.OptionRetryTime to clientRequestResendTime (MaxInt64), turning off
+    timer resends while keeping the resend after a dropped connection (0
+    would cancel those). After the fix the scratch run saw 1 copy. Test
+    jobqueue/client_resend_test.go checks resend time exceeds the receive
+    deadline for 120s and 10h timeouts and that a pipe-loss add still
+    succeeds; the 0 and 3-minute mutants fail it.
 - [ ] A SubmitJobs whose add was in flight when the manager stopped, partly
   persisted and then resent to the restarted manager returns
   ErrDuplicateJobs for jobs only that call added. Its outcome should look
