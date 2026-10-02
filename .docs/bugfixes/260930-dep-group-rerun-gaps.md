@@ -287,3 +287,9 @@ home directory: `make lint`, `make test`, `CGO_ENABLED=1 make race`.
     before the dependents are known fails `ArchivedBeforeGuard`. `keeps`
     always false fails the two item 6 tests. Dropping the dependent check in
     `keeps` fails `KeepsOnlyDependentsLive`.
+- [ ] 13. Recurrence, reported per the owner's "leave it and watch" ruling, not
+  fixed: `TestReliable4RacBoundedBySchedulable`
+  (`jobqueue/reliable4_rac_bound_test.go:117`) failed in one `make test` run
+  on 33e9786f (`Expected: 5 / Actual: 19` for `racScanWork`). The next
+  `make test` passed (866 passed), and `CGO_ENABLED=1 make race` passed.
+  The same failure is recorded in `260928-load-sensitive-flakes.md`.
