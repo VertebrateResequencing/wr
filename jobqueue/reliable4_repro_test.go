@@ -75,12 +75,12 @@ import (
 // the ready backlog size. It is observed via the inert Server.racScanWork
 // counter (reset + incremented inside buildSchedulerGroups).
 //
-// Deterministic: we add backlog ready jobs sharing ONE limit group (limit L), so
-// exactly L are schedulable and backlog-L are permanently limit-blocked, wait for
-// the automatic rac to go idle, then drive ONE real buildSchedulerGroups cycle
-// synchronously and read racScanWork. No runner command is configured, so nothing
-// re-triggers rac while we measure. Scale knobs: WR_OP_LIMIT (default 2000) and
-// WR_BR_BACKLOG (default 50000).
+// Deterministic: we pause the server, add backlog ready jobs sharing ONE limit
+// group (limit L), so exactly L are schedulable and backlog-L are permanently
+// limit-blocked, then drive ONE real buildSchedulerGroups cycle synchronously and
+// read racScanWork. The pause makes the server's own racs return before touching
+// racScanWork, so none of them lands in the measurement. Scale knobs: WR_OP_LIMIT
+// (default 2000) and WR_BR_BACKLOG (default 50000).
 func TestReliable4BacklogRescan(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -104,7 +104,14 @@ func TestReliable4BacklogRescan(t *testing.T) {
 
 		// NB: we deliberately do NOT configure a runner command (server.rc stays
 		// ""), so scheduleGroupRunners never runs and nothing re-triggers rac once
-		// the backlog is added: our measurement below then has no concurrent cycle.
+		// the backlog is added. That alone does not keep the server's own rac out of
+		// our measurement (see TestReliable4RacBoundedBySchedulable), so pause the
+		// server before adding, as memoBacklogServer does: its own racs then return
+		// before touching racScanWork, while Add and our direct
+		// buildSchedulerGroups call are unaffected.
+		paused, err := server.Pause()
+		So(err, ShouldBeNil)
+		So(paused, ShouldBeTrue)
 
 		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)
@@ -133,9 +140,7 @@ func TestReliable4BacklogRescan(t *testing.T) {
 		So(added, ShouldEqual, backlog)
 		So(existed, ShouldEqual, 0)
 
-		// wait for every job to be ready and the automatic rac (fired by Add) to
-		// go idle, so our direct buildSchedulerGroups measurement runs with no
-		// concurrent cycle mutating racScanWork.
+		// wait for every job to be queued and the rac fired by Add to be idle.
 		So(pollUntil(func() bool {
 			server.rpmutex.Lock()
 			running := server.racRunning
