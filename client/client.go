@@ -44,6 +44,7 @@ import (
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/inconshreveable/log15/v3"
 	"github.com/rs/xid"
+	"go.nanomsg.org/mangos/v3"
 )
 
 // ErrDuplicateJobs is returned by SubmitJobs when any submitted jobs already
@@ -85,17 +86,48 @@ const (
 	waitForRunningDefaultPollInterval = 5 * time.Second
 )
 
+// Error is a string usable as a constant error.
 type Error string
 
 func (e Error) Error() string { return string(e) }
 
+// SchedulerSettings configures the Scheduler that New returns.
 type SchedulerSettings struct {
-	Deployment  string
-	Cwd         string
-	Queue       string
+	// Deployment picks the wr config to find the manager with: "production"
+	// or "development", whichever the manager was started with. Any other
+	// value, including blank, means WR_DEPLOYMENT if that is one of those,
+	// else "development" when run from the root of a wr source checkout,
+	// else "production".
+	Deployment string
+
+	// Cwd, which must exist, is the working directory of jobs made by NewJob,
+	// and of jobs made by NewJobFromJSON whose spec names no cwd. Blank means
+	// the current working directory.
+	Cwd string
+
+	// Queue, if not blank, is the scheduler queue (such as an LSF queue) set
+	// in the requirements of jobs made by NewJob, of jobs made by
+	// NewJobFromJSON whose spec names no queue, and of submitted jobs that
+	// have no requirements.
+	Queue string
+
+	// QueuesAvoid, if not blank, is a comma-separated list of substrings of
+	// scheduler queue names to avoid. It is set in the requirements of jobs
+	// made by NewJob, of jobs made by NewJobFromJSON whose spec has no
+	// queues_avoid (whatever its queue), and of submitted jobs that have no
+	// requirements.
 	QueuesAvoid string
-	Timeout     time.Duration
-	Logger      log15.Logger
+
+	// Timeout bounds connecting to the manager, and how long sending each
+	// later request may take. A request already sent waits for its reply for
+	// up to the larger of Timeout and a minute. See the package doc for what
+	// this means while the manager is down.
+	Timeout time.Duration
+
+	// Logger receives what New logs while loading wr's config. A problem with
+	// that config is logged as critical and ends the program. It must not be
+	// nil unless PretendSubmissions is set.
+	Logger log15.Logger
 }
 
 // SubmitJobsOptions controls how Scheduler job submission handles environment
@@ -386,6 +418,55 @@ func (p *pretendJobqueue) Disconnect() error {
 	return output.Close()
 }
 
+// unreachableSpell tracks an unbroken run of WaitForRunning polls that failed
+// because the manager could not be reached.
+type unreachableSpell struct {
+	since time.Time
+	limit time.Duration
+}
+
+// end records a poll the manager answered.
+func (u *unreachableSpell) end() {
+	u.since = time.Time{}
+}
+
+// giveUp records a poll that began at pollStart and failed with err, reporting
+// whether the wait should end with err: because err is not the manager being
+// unreachable, or because the manager has now been unreachable for longer than
+// the limit.
+func (u *unreachableSpell) giveUp(err error, pollStart time.Time) bool {
+	if !isManagerUnreachable(err) {
+		return true
+	}
+
+	if u.since.IsZero() {
+		u.since = pollStart
+	}
+
+	return time.Since(u.since) > u.limit
+}
+
+// isManagerUnreachable reports whether err from a request to the manager means
+// it could not be reached for now, rather than being its answer to the request.
+// A request times out sending when the manager has gone (there is no pipe to
+// send on), and receiving when it went after taking the request. A manager that
+// is stopping answers ErrClosedStop, and one recovering its prior state may
+// answer ErrRecovering; subscriptions retry both too. mangos.ErrClosed is not
+// included: the client holds its lock for a whole request, so it only means
+// this client was disconnected.
+func isManagerUnreachable(err error) bool {
+	if errors.Is(err, mangos.ErrSendTimeout) || errors.Is(err, mangos.ErrRecvTimeout) {
+		return true
+	}
+
+	var jqErr jobqueue.Error
+	if !errors.As(err, &jqErr) {
+		return false
+	}
+
+	return jqErr.Err == jobqueue.ErrClosedStop || jqErr.Err == jobqueue.ErrRecovering
+}
+
 // Scheduler can be used to schedule commands to be executed by adding them to
 // wr's queue.
 type Scheduler struct {
@@ -397,11 +478,8 @@ type Scheduler struct {
 	queuesAvoid string
 }
 
-// New returns a Scheduler that is connected to wr manager using the given
-// deployment, timeout and logger. Added jobs will have the given cwd, which
-// matters. If cwd is blank, the current working dir is used. If queue is not
-// blank, that queue will be used during NewJob(). If queuesAvoid is not blank,
-// queues including a substring from the list will be avoided during NewJob().
+// New returns a Scheduler connected to the wr manager, configured by settings
+// as described for SchedulerSettings.
 //
 // When PretendSubmissions is set, a fake server will be used and no real
 // interactions will take place. Methods SubmitJobs, SubmittedJobs, and
@@ -530,7 +608,23 @@ func (s *Scheduler) GetJobByKey(key string, getStd bool,
 }
 
 // WaitForRunning waits until the job identified by key has started running or
-// has already reached a state that means it will not start in this wait.
+// has already reached a state that means it will not start in this wait,
+// polling the manager every pollInterval (a default if it is not positive).
+//
+// The first poll fails at once if the manager cannot be reached, as
+// WaitForJobs does. After that the wait rides out the manager being
+// unreachable, such as across a restart, including one that gives the manager a
+// new token, which the Scheduler reads from the manager's token file. Polls that
+// fail because a request to the manager timed out (a send times out after
+// SchedulerSettings.Timeout, a reply after the larger of that and a minute), or
+// because it is stopping or still recovering, are retried until the manager
+// answers again. If it stays unreachable for longer than the manager's
+// RetryTime (the same budget a WaitForJobs subscription has to reconnect; 24h
+// by default), the last poll's error is returned. Any other error, such as the
+// job not existing, is returned at once.
+//
+// Cancelling ctx ends the wait with ctx's error once the poll in progress, if
+// any, has finished, which can take as long as one of those timeouts.
 func (s *Scheduler) WaitForRunning(ctx context.Context, key string,
 	pollInterval time.Duration) (*jobqueue.Job, error) {
 	if err := validateWaitForRunningKey(key); err != nil {
@@ -561,14 +655,25 @@ func waitForRunningPollInterval(pollInterval time.Duration) time.Duration {
 
 func (s *Scheduler) waitForRunning(ctx context.Context, key string,
 	ticker *time.Ticker) (*jobqueue.Job, error) {
+	spell := unreachableSpell{limit: s.managerRetryTime()}
+	polled := false
+
 	for ctx.Err() == nil {
+		pollStart := time.Now()
+
 		job, done, err := s.pollWaitForRunning(key)
 		switch {
-		case err != nil:
+		case err != nil && (!polled || spell.giveUp(err, pollStart)):
 			return nil, err
+		case err != nil:
+			// the manager is unreachable, but not for too long yet: poll again.
 		case done:
 			return job, nil
+		default:
+			spell.end()
 		}
+
+		polled = true
 
 		if err = waitForRunningTick(ctx, ticker); err != nil {
 			return nil, err
@@ -585,6 +690,28 @@ func waitForRunningTick(ctx context.Context, ticker *time.Ticker) error {
 	case <-ticker.C:
 		return nil
 	}
+}
+
+// managerRetryTime returns how long the manager tells its clients to keep
+// trying to reach it, which is also how long a subscription keeps trying to
+// reconnect.
+func (s *Scheduler) managerRetryTime() time.Duration {
+	jq, ok := s.jq.(*jobqueue.Client)
+	if !ok {
+		return jobqueue.ClientRetryTime
+	}
+
+	// a subscription reconnect on another goroutine replaces ServerInfo under
+	// the client's lock.
+	jq.Lock()
+	si := jq.ServerInfo
+	jq.Unlock()
+
+	if si == nil || si.RetryTime <= 0 {
+		return jobqueue.ClientRetryTime
+	}
+
+	return si.RetryTime
 }
 
 func (s *Scheduler) pollWaitForRunning(key string) (*jobqueue.Job, bool, error) {
@@ -1099,7 +1226,11 @@ func (s *Scheduler) determineOverrideAndReq(req *jqs.Requirements) (*jqs.Require
 // Previously added identical jobs that have since been archived will get added
 // again.
 //
-// If any duplicate jobs were added, an error will be returned.
+// If any duplicate jobs were added, ErrDuplicateJobs will be returned. This
+// can also follow this call's own add, if the manager stopped while it was in
+// progress and it was resent. SubmitJobsAndReturnIDs with the same jobs and
+// default options then adds only those neither queued nor complete, and
+// returns the keys of the queued ones (see the package doc).
 //
 // If this scheduler was created with PretendSubmissions set none of the above
 // happens; the jobs are merely recorded for later retrieval with
@@ -1179,7 +1310,7 @@ func (s *Scheduler) GetLastCompletionTimeByRepGroup(repgroup string,
 	return s.jq.GetLastCompletionTimeByRepGroup(repgroup, match)
 }
 
-// Kill asks the server to kill the provided jobs.
+// KillJobs asks the server to kill the provided jobs.
 func (s *Scheduler) KillJobs(jobs ...*jobqueue.Job) error {
 	jq, ok := s.jq.(*jobqueue.Client)
 	if !ok {

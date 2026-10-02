@@ -228,9 +228,9 @@ var errGetRecentState = errors.New(
 	"GetRecent (--recent) only returns complete jobs and does not support a state filter",
 )
 
-// errRecvDeadlineType is returned if mangos ever stops reporting the socket's
-// receive deadline as a time.Duration.
-var errRecvDeadlineType = errors.New("socket receive deadline was not a duration")
+// errDeadlineType is returned if mangos ever stops reporting one of the
+// socket's send or receive deadlines as a time.Duration.
+var errDeadlineType = errors.New("socket deadline was not a duration")
 
 // errClientBusy is returned by requestWithinIncludingLockWait when another
 // request held the client for the whole of its timeout.
@@ -596,6 +596,13 @@ func (p *pendingStartReport) isSettled() bool {
 	return p.settled.Load()
 }
 
+// socketDeadline is one of the socket's deadlines, and the value it had before
+// requestWithin narrowed it.
+type socketDeadline struct {
+	option   string
+	original time.Duration
+}
+
 // adoptLabelledNewContainer adopts the new container that wr started for this
 // job, recognised by it carrying container.JobKeyLabel with this job's key,
 // and says if it adopted one.
@@ -708,12 +715,22 @@ func combineExecOutcomes(unmount, cmd execOutcome) execOutcome {
 //
 // Prefer this over Connect() for a long-lived client. A cleanly stopped manager
 // deletes its token file, and the next manager started writes a new token to
-// it, so a client holding the old token has every request rejected with
-// ErrPermissionDenied. A client made with this function, on such a rejection,
-// re-reads tokenFile and, only if it now holds a different token, adopts it and
-// sends the rejected request once more. It never retries more than once per
-// request, and never if the file is unchanged or unreadable. An empty tokenFile
-// path (as opposed to a file with no token in it) returns ErrNoTokenFile.
+// it, so a client holding the old token has every request except Ping rejected
+// with ErrPermissionDenied. A client made with this function, on such a
+// rejection, re-reads tokenFile and, only if it now holds a different token,
+// adopts it and sends the rejected request once more. It never retries more
+// than once per request, and never if the file is unchanged or unreadable. An
+// empty tokenFile path (as opposed to a file with no token in it) returns
+// ErrNoTokenFile.
+//
+// While the manager is down, requests fail as described for Connect(): after
+// timeout if they could not be sent, or after the larger of timeout and
+// ClientMinRequestTimeout if the manager went after taking them. An Add in
+// progress when the manager stops can be partly applied, and is resent when
+// the client reconnects, so it can then report its own jobs as existing. A
+// subscription (as used by AddAndWait) keeps trying to reconnect for the
+// manager's RetryTime. The client package doc describes the same behaviour for
+// its Scheduler.
 func ConnectWithTokenFile(addr, caFile, certDomain, tokenFile string, timeout time.Duration) (*Client, error) {
 	if tokenFile == "" {
 		return nil, ErrNoTokenFile
@@ -783,21 +800,27 @@ func (c *Client) SetReserveAsRunner(runner bool) {
 	c.reserveAsRunner = runner
 }
 
-// requestWithin is request(), but with this one request's receive deadline
-// narrowed to timeout, restoring the socket's own deadline afterwards. A failed
-// restore is joined on to whatever the request itself returned rather than
-// replacing it or being dropped: the socket is then stuck on the narrow
-// deadline, so the caller needs to be told, and errors.Is still finds the
-// request's own error for callers that discriminate on it.
+// requestWithin is request(), but with this one request's send and receive
+// deadlines each narrowed to timeout, restoring the socket's own deadlines
+// afterwards. Both need narrowing: with no pipe to write to, as when the manager
+// has gone, the req socket's Send blocks until one appears or the send deadline
+// (the connect timeout) fires, and an unanswered request waits on the receive
+// deadline. A failed restore is joined on to whatever the request itself
+// returned rather than replacing it or being dropped: the socket is then stuck
+// on the narrow deadline, so the caller needs to be told, and errors.Is still
+// finds the request's own error for callers that discriminate on it.
 //
-// It can only ever narrow. The deadline it narrows from and restores to is read
-// off the socket rather than recomputed from c.timeout, because c.timeout is
-// the connect timeout the Client was made with and reconnect() does not update
-// it: recomputing would widen a reconnected socket's deadline (60s to
-// requestTimeout(c.timeout)) in the name of capping it. A timeout that is not
-// positive asks for no bound at all, so it narrows nothing; any other timeout
-// narrows whenever the socket's deadline is wider, which includes the socket's
-// deadline being non-positive, since mangos reads that as "wait forever".
+// It can only ever narrow. The deadlines it narrows from and restores to are
+// read off the socket rather than recomputed from c.timeout, so it puts back
+// exactly what the socket had, whatever set it. Connect and reconnect() both
+// give it c.timeout to send and requestTimeout(c.timeout) to receive, c.timeout
+// being the connect timeout the Client was made with; a reconnect's own shorter
+// dial budget does not replace them. A timeout that is not positive asks for no
+// bound at all, so it narrows nothing; any other timeout narrows each deadline
+// that is wider, which includes a deadline being non-positive, since mangos
+// reads that as "wait forever". The send and the receive are bounded
+// separately, so a request whose send waits most of timeout for a pipe can then
+// wait up to timeout again for its reply.
 //
 // The subscription reconnect path uses it because it has a retry budget to
 // honour: a manager part-way through shutdown can still accept a connection and
@@ -866,55 +889,104 @@ func (c *Client) lockWithin(timeout time.Duration) bool {
 // requestWithinLocked does the work of requestWithin, and must be called with
 // the client's lock held.
 func (c *Client) requestWithinLocked(cr *clientRequest, timeout time.Duration) (sr *serverResponse, err error) {
-	socketTimeout, err := c.recvDeadline()
+	wider, err := c.deadlinesWiderThan(timeout)
 	if err != nil {
 		return nil, err
 	}
 
-	if timeout <= 0 || (socketTimeout > 0 && timeout >= socketTimeout) {
+	if timeout <= 0 || len(wider) == 0 {
 		return c.requestLocked(cr)
 	}
 
-	if err = c.sock.SetOption(mangos.OptionRecvDeadline, timeout); err != nil {
-		return nil, err
-	}
-
 	defer func() {
-		if restoreErr := c.sock.SetOption(mangos.OptionRecvDeadline, socketTimeout); restoreErr != nil {
+		if restoreErr := c.restoreDeadlines(wider); restoreErr != nil {
 			err = errors.Join(err, restoreErr)
 		}
 	}()
 
+	if err = c.setDeadlines(wider, timeout); err != nil {
+		return nil, err
+	}
+
 	deadline := time.Now().Add(timeout)
 
 	return c.requestResendingLocked(cr, func() bool {
-		return c.narrowToDeadline(deadline)
+		return c.narrowToDeadline(wider, deadline)
 	})
 }
 
-// narrowToDeadline narrows the socket's receive deadline to what is left until
-// deadline, reporting false, and leaving it unchanged, if nothing is left or it
-// could not be set. It must be called with the client's lock held.
-func (c *Client) narrowToDeadline(deadline time.Time) bool {
+// deadlinesWiderThan returns those of the socket's send and receive deadlines
+// that are wider than timeout, a non-positive deadline counting as wider, since
+// mangos reads it as "wait forever". A request can wait on either: Send blocks
+// until the req socket has a pipe to write to, and Recv until the reply
+// arrives. It must be called with the client's lock held.
+func (c *Client) deadlinesWiderThan(timeout time.Duration) ([]socketDeadline, error) {
+	var wider []socketDeadline
+
+	for _, option := range [...]string{mangos.OptionSendDeadline, mangos.OptionRecvDeadline} {
+		original, err := c.deadline(option)
+		if err != nil {
+			return nil, err
+		}
+
+		if original <= 0 || original > timeout {
+			wider = append(wider, socketDeadline{option: option, original: original})
+		}
+	}
+
+	return wider, nil
+}
+
+// setDeadlines sets each of deadlines on the socket to timeout, stopping at the
+// first that fails. It must be called with the client's lock held.
+func (c *Client) setDeadlines(deadlines []socketDeadline, timeout time.Duration) error {
+	for _, d := range deadlines {
+		if err := c.sock.SetOption(d.option, timeout); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// restoreDeadlines puts each of deadlines back to its original value on the
+// socket, attempting every one and joining the errors of those that fail. It
+// must be called with the client's lock held.
+func (c *Client) restoreDeadlines(deadlines []socketDeadline) error {
+	var errs error
+
+	for _, d := range deadlines {
+		errs = errors.Join(errs, c.sock.SetOption(d.option, d.original))
+	}
+
+	return errs
+}
+
+// narrowToDeadline narrows each of deadlines on the socket to what is left
+// until deadline. It reports false, leaving them unchanged, if nothing is left,
+// and false if one could not be set. It must be called with the client's lock
+// held.
+func (c *Client) narrowToDeadline(deadlines []socketDeadline, deadline time.Time) bool {
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
 		return false
 	}
 
-	return c.sock.SetOption(mangos.OptionRecvDeadline, remaining) == nil
+	return c.setDeadlines(deadlines, remaining) == nil
 }
 
-// recvDeadline returns the receive deadline the client's socket currently
-// has. It reads c.sock, so callers must hold the client's lock.
-func (c *Client) recvDeadline() (time.Duration, error) {
-	val, err := c.sock.GetOption(mangos.OptionRecvDeadline)
+// deadline returns the value the client's socket currently has for option, one
+// of its send or receive deadlines. It reads c.sock, so callers must hold the
+// client's lock.
+func (c *Client) deadline(option string) (time.Duration, error) {
+	val, err := c.sock.GetOption(option)
 	if err != nil {
 		return 0, err
 	}
 
 	timeout, ok := val.(time.Duration)
 	if !ok {
-		return 0, errRecvDeadlineType
+		return 0, errDeadlineType
 	}
 
 	return timeout, nil
@@ -1563,11 +1635,17 @@ type envStr struct {
 // for.
 //
 // token is the authentication token that Serve() returned when the server was
-// started.
+// started. The returned Client cannot pick up a new one: after the manager is
+// cleanly stopped and started again with a new token, every request it makes
+// except Ping fails with ErrPermissionDenied. A long-lived client should use
+// ConnectWithTokenFile() or ConnectUsingConfig() instead, which reload the
+// token.
 //
-// Timeout determines how long to wait for a response from the server, not only
-// while connecting, but for all subsequent interactions with it using the
-// returned Client.
+// timeout bounds connecting, including any later redial after the connection
+// drops, and is the send deadline of every request made with the returned
+// Client: a request made while the server is unreachable fails after timeout.
+// A request already sent waits for the reply for up to the larger of timeout
+// and ClientMinRequestTimeout.
 func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duration) (*Client, error) {
 	expiry, err := internal.CertExpiry(caFile)
 	if err != nil {
@@ -1592,15 +1670,7 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		return clientOnErr, errp
 	}
 
-	// now that connect-readiness has been confirmed, decouple the per-request
-	// RECEIVE deadline from the (possibly short) connect timeout, giving it a
-	// generous floor so that a slow-but-alive server reply is not mistaken for a
-	// timeout (the cause of the spurious 'receive time out' flake). We do NOT
-	// widen the SEND deadline: the req socket blocks Send until it has a live
-	// pipe to write to, so a short send deadline is what makes a NEW request to a
-	// gone-away server fail fast (with 'send time out'), which is how unreachable
-	// servers are detected promptly.
-	if err = sock.SetOption(mangos.OptionRecvDeadline, requestTimeout(timeout)); err != nil {
+	if err = setRequestDeadlines(sock, timeout); err != nil {
 		return nil, err
 	}
 
@@ -1779,6 +1849,25 @@ func runnerHostAndIP() (string, string, error) {
 	return host, hostIP, nil
 }
 
+// setRequestDeadlines gives a connected client socket the send and receive
+// deadlines its requests use, derived from the client's connect timeout.
+//
+// Once connect-readiness has been confirmed, the per-request RECEIVE deadline
+// is decoupled from the (possibly short) connect timeout, given a generous
+// floor so that a slow-but-alive server reply is not mistaken for a timeout
+// (the cause of the spurious 'receive time out' flake). The SEND deadline is
+// NOT widened: the req socket blocks Send until it has a live pipe to write to,
+// so a short send deadline is what makes a NEW request to a gone-away server
+// fail fast (with 'send time out'), which is how unreachable servers are
+// detected promptly.
+func setRequestDeadlines(sock mangos.Socket, timeout time.Duration) error {
+	if err := sock.SetOption(mangos.OptionSendDeadline, timeout); err != nil {
+		return err
+	}
+
+	return sock.SetOption(mangos.OptionRecvDeadline, requestTimeout(timeout))
+}
+
 // dialClientSocket creates a req socket configured with TLS for the given
 // server and dials it, returning ErrNoServer if the dial fails. The dial,
 // including its TLS and SP handshakes, must complete within timeout, as must
@@ -1914,12 +2003,14 @@ func (c *Client) Disconnect() error {
 // command that interacts with the server that works if a blank or invalid
 // token had been supplied to Connect().
 //
-// timeout bounds how long we wait for the server's reply, so that a ping into a
-// manager that still listens but no longer reads (the window during shutdown
-// between its RPC readers stopping and its command socket closing) fails within
-// the caller's own budget instead of on the socket's ClientMinRequestTimeout
-// floor. requestWithin can only narrow, so a ping on a socket whose deadline is
-// already shorter (Connect's readiness ping) is unaffected.
+// timeout bounds how long we wait to send the ping and how long we wait for the
+// server's reply, so that a ping into a manager that has gone (no pipe to send
+// on until the socket's connect-timeout send deadline) or that still listens but
+// no longer reads (the window during shutdown between its RPC readers stopping
+// and its command socket closing) fails within the caller's own budget instead
+// of on the socket's own deadlines. requestWithin can only narrow, so a ping on
+// a socket whose deadlines are already shorter (Connect's readiness ping) is
+// unaffected.
 func (c *Client) Ping(timeout time.Duration) (*ServerInfo, error) {
 	resp, err := c.requestWithin(&clientRequest{Method: "ping", Timeout: timeout}, timeout)
 	if err != nil {

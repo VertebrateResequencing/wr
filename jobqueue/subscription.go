@@ -972,6 +972,15 @@ func (c *Client) reconnect(timeout time.Duration) error {
 		return err
 	}
 
+	// timeout bounds only this reconnect step; the socket we adopt must carry
+	// the deadlines Connect gave this client from its own timeout, or every
+	// later request fails or waits on the reconnect step's budget instead.
+	if err = setRequestDeadlines(newClient.sock, c.timeout); err != nil {
+		_ = newClient.sock.Close()
+
+		return err
+	}
+
 	c.Lock()
 	oldSock := c.sock
 	c.sock = newClient.sock

@@ -49,40 +49,43 @@ or might exit if there are no more left.
 As a user you can query the status of the system using client methods or by
 viewing the real-time updated status web interface.
 
-Server
+# Server
 
-	    import "github.com/VertebrateResequencing/wr/jobqueue"
-	    server, msg, token, err := jobqueue.Serve(jobqueue.ServerConfig{
-	        Port:            "12345",
-	        WebPort:         "12346",
-	        SchedulerName:   "local",
-	        SchedulerConfig: &jqs.ConfigLocal{Shell: "bash"},
-	        RunnerCmd:       selfExe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d",
-	        DBFile:          "/home/username/.wr_production/boltdb",
-	        DBFileBackup:    "/home/username/.wr_production/boltdb.backup",
-			TokenFile:       "/home/username/.wr_production/client.token",
-			CAFile:          "/home/username/.wr_production/ca.pem",
-	        CertFile:        "/home/username/.wr_production/cert.pem",
-	        CertDomain:      "my.internal.domain.com",
-	        KeyFile:         "/home/username/.wr_production/key.pem",
-	        Deployment:      "production",
-	        CIDR:            "",
-	    })
+	import "github.com/VertebrateResequencing/wr/jobqueue"
+	server, msg, token, err := jobqueue.Serve(ctx, jobqueue.ServerConfig{
+	    Port:            "12345",
+	    WebPort:         "12346",
+	    SchedulerName:   "local",
+	    SchedulerConfig: &jqs.ConfigLocal{Shell: "bash"},
+	    RunnerCmd:       selfExe + " runner -s '%s' --deployment %s --server '%s' --domain %s -r %d -m %d",
+	    DBFile:          "/home/username/.wr_production/boltdb",
+	    DBFileBackup:    "/home/username/.wr_production/boltdb.backup",
+	    TokenFile:       "/home/username/.wr_production/client.token",
+	    CAFile:          "/home/username/.wr_production/ca.pem",
+	    CertFile:        "/home/username/.wr_production/cert.pem",
+	    CertDomain:      "my.internal.domain.com",
+	    KeyFile:         "/home/username/.wr_production/key.pem",
+	    Deployment:      "production",
+	    CIDR:            "",
+	})
 
-	    // Serve() returns while prior-state recovery is still running, so the
-	    // server is not reachable yet; wait for it to publish before using it.
-	    <-server.Serving()
+	// Serve() returns while prior-state recovery is still running, so the
+	// server is not reachable yet; wait for it to publish before using it.
+	<-server.Serving()
 
-	    err = server.Block()
+	err = server.Block()
 
 # Client
 
-An example client, one for adding commands to the job queue:
+An example client, one for adding commands to the job queue. It connects with
+ConnectUsingConfig(), which finds the manager from wr's config and reads the
+manager's token file, so it keeps working after the manager is stopped and
+started again with a new token:
 
-	import {
+	import (
 	    "github.com/VertebrateResequencing/wr/jobqueue"
 	    jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
-	}
+	)
 
 	var jobs []*jobqueue.Job
 	other := make(map[string]string)
@@ -101,13 +104,7 @@ An example client, one for adding commands to the job queue:
 	    Dependencies: deps,
 	})
 
-	jq, err := jobqueue.Connect(
-	    "localhost:12345",
-	    "/home/username/.wr_production/ca.pem",
-	    "my.internal.domain.com",
-	    token,
-	    30 * time.Second
-	)
-	inserts, dups, err := jq.Add(jobs, os.Environ())
+	jq, err := jobqueue.ConnectUsingConfig(ctx, "production", 30*time.Second)
+	inserts, dups, err := jq.Add(jobs, os.Environ(), true)
 */
 package jobqueue
