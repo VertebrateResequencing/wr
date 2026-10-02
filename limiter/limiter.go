@@ -36,6 +36,10 @@ import (
 	"time"
 )
 
+// resolutionBufSize is how many groups a call can resolve using a buffer on
+// its own stack; calls with more groups than this allocate one.
+const resolutionBufSize = 8
+
 // SetLimitCallback is provided to New(). Your function should take the name of
 // a group and return the current limit for that group. If the group doesn't
 // exist or has no limit, return -1. The idea is that you retrieve the limit for
@@ -47,6 +51,16 @@ import (
 // allowed to be slow (which a database read can be), but it can therefore be
 // called concurrently, and more than once for the same group.
 type SetLimitCallback func(context.Context, string) *GroupData
+
+// resolution is what lockWithResolvedGroups() learnt about one of the groups
+// it was given: the group itself if it was in memory when the lock was taken,
+// otherwise (if done) what the SetLimitCallback said its limit is.
+type resolution struct {
+	group  *group
+	data   *GroupData
+	wanted bool
+	done   bool
+}
 
 // Limiter struct is used to limit usage of groups.
 type Limiter struct {
@@ -78,15 +92,16 @@ func (l *Limiter) SetLimit(name string, data GroupData) {
 // GetLimit tells you the limit currently set for the given group. If the group
 // doesn't exist, returns -1.
 func (l *Limiter) GetLimit(ctx context.Context, name string) *GroupData {
-	data := NewCountGroupData(-1)
+	var buf [resolutionBufSize]resolution
 
-	l.withResolvedGroups(ctx, []string{name}, func(resolved map[string]*GroupData) {
-		if group := l.vivifyGroup(name, resolved); group != nil {
-			data = &group.GroupData
-		}
-	})
+	resolved := l.lockWithResolvedGroups(ctx, []string{name}, buf[:])
+	defer l.mu.Unlock()
 
-	return data
+	if group := l.vivifyGroup(name, &resolved[0]); group != nil {
+		return &group.GroupData
+	}
+
+	return NewCountGroupData(-1)
 }
 
 // GetLimits tells you the current limit of all currently set groups.
@@ -163,35 +178,38 @@ func (l *Limiter) Increment(ctx context.Context, groups []string, wait ...time.D
 // check) and returns it so the caller can wait on it; otherwise it returns a
 // nil channel.
 func (l *Limiter) attemptIncrement(ctx context.Context, groups []string, registerOnFail bool) (bool, chan bool) {
-	var (
-		incremented bool
-		ch          chan bool
-	)
+	var buf [resolutionBufSize]resolution
 
-	l.withResolvedGroups(ctx, groups, func(resolved map[string]*GroupData) {
-		if l.checkGroups(groups, resolved) {
-			l.incrementGroups(groups, resolved)
+	resolved := l.lockWithResolvedGroups(ctx, groups, buf[:])
+	defer l.mu.Unlock()
 
-			incremented = true
+	if l.checkGroups(groups, resolved) {
+		l.incrementGroups(groups, resolved)
 
-			return
-		}
+		return true, nil
+	}
 
-		if registerOnFail {
-			ch = make(chan bool, len(groups))
-			l.registerGroupNotifications(groups, ch, resolved)
-		}
-	})
+	if !registerOnFail {
+		return false, nil
+	}
 
-	return incremented, ch
+	ch := make(chan bool, len(groups))
+	l.registerGroupNotifications(groups, ch, resolved)
+
+	return false, ch
 }
 
-// withResolvedGroups calls fn while holding mu, having first made sure that
-// every name in groups is either already in memory or has had its limit
-// resolved by the SetLimitCallback, passing fn those resolutions for
-// vivifyGroup() to use. fn can therefore do everything it needs to under a
+// lockWithResolvedGroups takes mu and returns still holding it (so you must
+// unlock it), having first made sure that every name in groups is either
+// already in memory or has had its limit resolved by the SetLimitCallback. The
+// returned slice holds those resolutions in the same order as groups, for
+// vivifyGroup() to use. You can therefore do everything you need to under a
 // single uninterrupted lock hold, without anything under that lock calling the
 // callback.
+//
+// buf, which must be zeroed, is used to hold the resolutions if it is long
+// enough, so that callers can pass a fresh array on their own stack and the
+// common case of a few groups does not allocate.
 //
 // The callback is only ever called with mu released, because it typically reads
 // an on-disk database, which can stall (see DEVELOPERS.md rule 1): mu is on the
@@ -201,76 +219,67 @@ func (l *Limiter) attemptIncrement(ctx context.Context, groups []string, registe
 // Since a group can be forgotten (by Decrement() reaching 0, or RemoveLimit())
 // while mu is released, this loops until it gets the lock with nothing left to
 // resolve; a name that has gone missing again is resolved rather than treated
-// as unlimited. It terminates because each iteration resolves at least one name
-// that has not been resolved before, and never resolves a name twice.
-func (l *Limiter) withResolvedGroups(ctx context.Context, groups []string, fn func(map[string]*GroupData)) {
-	var resolved map[string]*GroupData
-
-	for {
-		unresolved := l.runWithGroups(groups, resolved, fn)
-		if unresolved == nil {
-			return
-		}
-
-		resolved = l.resolveGroups(ctx, unresolved, resolved)
+// as unlimited. It terminates because each iteration resolves at least one
+// entry of groups that has not been resolved before, and never resolves an
+// entry twice.
+func (l *Limiter) lockWithResolvedGroups(ctx context.Context, groups []string,
+	buf []resolution,
+) []resolution {
+	resolved := buf
+	if len(groups) > len(buf) {
+		resolved = make([]resolution, len(groups))
 	}
-}
 
-// runWithGroups takes mu and, if every name in groups is either in memory or
-// already resolved, calls fn and returns nil. Otherwise it calls nothing and
-// returns the names that still need to be resolved with mu released.
-func (l *Limiter) runWithGroups(groups []string, resolved map[string]*GroupData,
-	fn func(map[string]*GroupData),
-) []string {
+	resolved = resolved[:len(groups)]
+
 	l.mu.Lock()
-	defer l.mu.Unlock()
 
-	var unresolved []string
-
-	for _, name := range groups {
-		if _, exists := l.groups[name]; exists {
-			continue
-		}
-
-		if _, done := resolved[name]; !done {
-			unresolved = append(unresolved, name)
-		}
-	}
-
-	if unresolved != nil {
-		return unresolved
-	}
-
-	fn(resolved)
-
-	return nil
-}
-
-// resolveGroups calls the SetLimitCallback for each unresolved name, adding
-// what it learns to resolved (creating it if nil) and returning it. You must
-// NOT hold mu when calling this.
-func (l *Limiter) resolveGroups(ctx context.Context, unresolved []string,
-	resolved map[string]*GroupData,
-) map[string]*GroupData {
-	if resolved == nil {
-		resolved = make(map[string]*GroupData, len(unresolved))
-	}
-
-	for _, name := range unresolved {
-		if _, done := resolved[name]; !done {
-			resolved[name] = l.cb(ctx, name)
-		}
+	for l.markUnresolved(groups, resolved) {
+		l.mu.Unlock()
+		l.resolveGroups(ctx, groups, resolved)
+		l.mu.Lock()
 	}
 
 	return resolved
 }
 
+// markUnresolved notes each name in groups that is in memory, and marks as
+// wanted the resolution of each that is neither in memory nor already
+// resolved, returning true if there were any of the latter. You must hold mu
+// when calling this.
+func (l *Limiter) markUnresolved(groups []string, resolved []resolution) bool {
+	missing := false
+
+	for i, name := range groups {
+		resolved[i].group = l.groups[name]
+
+		if resolved[i].group != nil || resolved[i].done {
+			continue
+		}
+
+		resolved[i].wanted = true
+		missing = true
+	}
+
+	return missing
+}
+
+// resolveGroups calls the SetLimitCallback for each wanted resolution. You must
+// NOT hold mu when calling this.
+func (l *Limiter) resolveGroups(ctx context.Context, groups []string, resolved []resolution) {
+	for i := range resolved {
+		if resolved[i].wanted {
+			resolved[i] = resolution{data: l.cb(ctx, groups[i]), done: true}
+		}
+	}
+}
+
 // checkGroups checks all the groups to see if they can be incremented. You must
 // hold the mu.lock before calling this, and until after calling
 // incrementGroups() if this returns true.
-func (l *Limiter) checkGroups(groups []string, resolved map[string]*GroupData) bool {
-	for _, name := range groups {
-		group := l.vivifyGroup(name, resolved)
+func (l *Limiter) checkGroups(groups []string, resolved []resolution) bool {
+	for i, name := range groups {
+		group := l.vivifyGroup(name, &resolved[i])
 		if group != nil {
 			if !group.canIncrement() {
 				return false
@@ -283,9 +292,9 @@ func (l *Limiter) checkGroups(groups []string, resolved map[string]*GroupData) b
 
 // incrementGroups increments all the groups without checking them. You must
 // hold the mu.lock before calling this (and check first).
-func (l *Limiter) incrementGroups(groups []string, resolved map[string]*GroupData) {
-	for _, name := range groups {
-		group := l.vivifyGroup(name, resolved)
+func (l *Limiter) incrementGroups(groups []string, resolved []resolution) {
+	for i, name := range groups {
+		group := l.vivifyGroup(name, &resolved[i])
 		if group != nil {
 			group.increment()
 		}
@@ -293,32 +302,37 @@ func (l *Limiter) incrementGroups(groups []string, resolved map[string]*GroupDat
 }
 
 // vivifyGroup either returns a stored group or creates a new one based on the
-// limit that withResolvedGroups() has already got from the SetLimitCallback.
-// You must have the mu.Lock() before calling this. Can return nil if the
-// callback didn't know about this group and returned a -1 limit.
+// limit that lockWithResolvedGroups() has already got from the
+// SetLimitCallback, noting it in r for subsequent calls under the same lock
+// hold. You must have held mu since the lockWithResolvedGroups() call that
+// returned r. Can return nil if the callback didn't know about this group and
+// returned a -1 limit.
 //
 // A group that is already in memory is returned as-is and never replaced with
 // the resolved data: overwriting it would reset its current count to 0 and so
-// break the limit it exists to enforce.
-func (l *Limiter) vivifyGroup(name string, resolved map[string]*GroupData) *group {
-	group, exists := l.groups[name]
-	if exists {
-		return group
+// break the limit it exists to enforce. (It can be in memory without r knowing
+// if groups named it more than once.)
+func (l *Limiter) vivifyGroup(name string, r *resolution) *group {
+	if r.group != nil {
+		return r.group
 	}
 
-	if limit := resolved[name]; limit.IsValid() {
-		group = newGroup(name, *limit)
+	group, exists := l.groups[name]
+	if !exists && r.data.IsValid() {
+		group = newGroup(name, *r.data)
 		l.groups[name] = group
 	}
+
+	r.group = group
 
 	return group
 }
 
 // registerGroupNotifications passes the channel to each group to be notified of
 // decrement() calls on them.
-func (l *Limiter) registerGroupNotifications(groups []string, ch chan bool, resolved map[string]*GroupData) {
-	for _, name := range groups {
-		group := l.vivifyGroup(name, resolved)
+func (l *Limiter) registerGroupNotifications(groups []string, ch chan bool, resolved []resolution) {
+	for i, name := range groups {
+		group := l.vivifyGroup(name, &resolved[i])
 		if group != nil {
 			group.notifyDecrement(ch)
 		}
@@ -348,16 +362,19 @@ func (l *Limiter) Decrement(groups []string) {
 // GetLowestLimit tells you the lowest limit currently set amongst the given
 // groups. If none have a limit set, returns -1.
 func (l *Limiter) GetLowestLimit(ctx context.Context, groups []string) int {
+	var buf [resolutionBufSize]resolution
+
+	resolved := l.lockWithResolvedGroups(ctx, groups, buf[:])
+	defer l.mu.Unlock()
+
 	lowest := -1
 
-	l.withResolvedGroups(ctx, groups, func(resolved map[string]*GroupData) {
-		for _, name := range groups {
-			group := l.vivifyGroup(name, resolved)
-			if group != nil && (lowest == -1 || int(group.limit) < lowest) {
-				lowest = int(group.limit)
-			}
+	for i, name := range groups {
+		group := l.vivifyGroup(name, &resolved[i])
+		if group != nil && (lowest == -1 || int(group.limit) < lowest) {
+			lowest = int(group.limit)
 		}
-	})
+	}
 
 	return lowest
 }
@@ -365,20 +382,23 @@ func (l *Limiter) GetLowestLimit(ctx context.Context, groups []string) int {
 // GetRemainingCapacity tells you how many times you could Increment() the given
 // groups. If none have a limit set, returns -1.
 func (l *Limiter) GetRemainingCapacity(ctx context.Context, groups []string) int {
+	var buf [resolutionBufSize]resolution
+
+	resolved := l.lockWithResolvedGroups(ctx, groups, buf[:])
+	defer l.mu.Unlock()
+
 	lowest := -1
 
-	l.withResolvedGroups(ctx, groups, func(resolved map[string]*GroupData) {
-		for _, name := range groups {
-			group := l.vivifyGroup(name, resolved)
-			if group == nil {
-				continue
-			}
-
-			if capacity := group.capacity(); lowest == -1 || capacity < lowest {
-				lowest = capacity
-			}
+	for i, name := range groups {
+		group := l.vivifyGroup(name, &resolved[i])
+		if group == nil {
+			continue
 		}
-	})
+
+		if capacity := group.capacity(); lowest == -1 || capacity < lowest {
+			lowest = capacity
+		}
+	}
 
 	return lowest
 }

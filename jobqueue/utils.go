@@ -62,6 +62,7 @@ import (
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/jpillora/backoff"
 	"github.com/shirou/gopsutil/v4/process"
+	"golang.org/x/sys/unix"
 )
 
 // AppName gets used in certain places like naming the base directory of created
@@ -2039,16 +2040,21 @@ func (k sweepKeep) keeps(keepRel string, info os.FileInfo) bool {
 // has below the swept root would cost an openat per component per entry, which
 // is the same O(depth^2) the dirChain type describes and avoids the same way, by
 // keeping the handle the descent already opened.
+//
+// The entries are taken in two passes. The first deletes, through
+// sweepNonDirsIn, every entry that turns out to be neither a directory nor
+// across the mount boundary, which is nearly all of them; the second hands what
+// is left to removeEntryWithExceptions, the one place that decides a directory.
+// The descriptor the first pass needs is closed before the second descends, so
+// a deep descent still holds one handle per level of the path it is on.
 func removeWithExceptions(dirRoot *os.Root, keepDir string, dirInfo os.FileInfo,
 	keep sweepKeep) error {
-	entries, err := readDirIn(dirRoot)
+	names, err := sweepNonDirsIn(dirRoot, dirInfo)
 	if err != nil {
 		return err
 	}
 
-	for _, entry := range entries {
-		name := entry.Name()
-
+	for _, name := range names {
 		err = removeEntryWithExceptions(dirRoot, name, filepath.Join(keepDir, name), dirInfo, keep)
 		if err != nil {
 			return err
@@ -2056,6 +2062,73 @@ func removeWithExceptions(dirRoot *os.Root, keepDir string, dirInfo os.FileInfo,
 	}
 
 	return nil
+}
+
+// sweepNonDirsIn reads the names in dirRoot's own directory, deletes each one
+// that is neither a directory nor across the mount boundary from dirInfo (the
+// lstat of that directory), and returns the names it did not settle, which the
+// caller must decide through removeEntryWithExceptions.
+//
+// It is that function's own answer for those entries, made with the same lstat
+// and the same unlink, but by fstatat and unlinkat on the directory's descriptor
+// rather than through os.Root, which for every call splits and copies the path
+// it is given and allocates a FileInfo. For an entry that is not a directory the
+// answer needs only the lstat's mode and device. A name from readdir is a single
+// component that is never "." or "..", and neither call follows a final
+// symlink, so naming it to the descriptor reaches the same entry the root would.
+//
+// Anything it cannot settle on its first attempt - an lstat or unlink that
+// fails, a directory - is left to the caller, which lstats it afresh and decides
+// it exactly as it always has, so this can never delete or keep anything that
+// path would not: a race that swaps a file for a directory is caught there.
+func sweepNonDirsIn(dirRoot *os.Root, dirInfo os.FileInfo) ([]string, error) {
+	f, err := dirRoot.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	names, err := f.Readdirnames(-1)
+	if err != nil {
+		return nil, err
+	}
+
+	var dirStat *syscall.Stat_t
+	if st, ok := dirInfo.Sys().(*syscall.Stat_t); ok {
+		dirStat = st
+	}
+
+	fd := int(f.Fd())
+	unsettled := names[:0]
+
+	for _, name := range names {
+		if !removedNonDirAt(fd, name, dirStat) {
+			unsettled = append(unsettled, name)
+		}
+	}
+
+	return unsettled, nil
+}
+
+// removedNonDirAt lstats the entry of directory fd called name and, if it is not
+// a directory, deletes it unless it is across the mount boundary from dirStat
+// (nil where the host gave no device, as crossesMountBoundary treats it). It
+// says whether name is settled: deleted, or left alone at a boundary.
+func removedNonDirAt(fd int, name string, dirStat *syscall.Stat_t) bool {
+	var st unix.Stat_t
+	if unix.Fstatat(fd, name, &st, unix.AT_SYMLINK_NOFOLLOW) != nil {
+		return false
+	}
+
+	if dirStat != nil && dirStat.Dev != st.Dev {
+		return true
+	}
+
+	if st.Mode&unix.S_IFMT == unix.S_IFDIR {
+		return false
+	}
+
+	return unix.Unlinkat(fd, name, 0) == nil
 }
 
 // removeEntryWithExceptions deletes the entry of dirRoot called name, and
