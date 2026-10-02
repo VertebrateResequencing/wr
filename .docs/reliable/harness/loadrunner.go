@@ -141,6 +141,12 @@ func main() {
 		}
 		defer c.Disconnect()
 
+		// like `wr runner`, tell the server we run one job at a time, so a job
+		// we gave up on is released as soon as we reserve, start or touch the
+		// next. Not when holding several jobs at once, since each would then be
+		// released as soon as we reserved the next.
+		c.SetReserveAsRunner(*mode != "hold" || *holdPer == 1)
+
 		reserveOne := func() *jobqueue.Job {
 			for attempt := 0; attempt < 3; attempt++ {
 				s := time.Now()

@@ -125,7 +125,37 @@ Quality gates: `make lint`, `make test`, `make race`, run with
     exit code; v1 manifests and a held claim are refused offline.
     `bash -n developers/wrdev.sh` passes. Not run: a real fixture build or
     LSF run.
-- [ ] .docs/reliable/harness/loadrunner.go (soak harness fake runner) should set the new runner marker that `wr runner` sets (Client.SetReserveAsRunner), only if PR #657 (fix-moved-on-runner) has merged into develop.
+- [x] .docs/reliable/harness/loadrunner.go (soak harness fake runner) should set the new runner marker that `wr runner` sets (Client.SetReserveAsRunner), only if PR #657 (fix-moved-on-runner) has merged into develop.
   - Skipped: PR #657 (fix-moved-on-runner) was still open, not merged into
     develop, on 26-10-01, so `Client.SetReserveAsRunner` is not on develop yet.
     Do this once #657 merges.
+  - Resumed on 26-10-02: #657 merged into develop (`e8751718`), and this
+    branch is rebased onto develop `8ee8c00d`, so `Client.SetReserveAsRunner`
+    exists (`jobqueue/client.go`; `cmd/runner.go` calls it after
+    `SetReserveSchedulerID`). The harness is not in a Go package the gates
+    build (it lives under `.docs/`), so there is no test seam.
+  - Red (check): `grep -q SetReserveAsRunner .docs/reliable/harness/loadrunner.go`
+    exits 1. Note `-mode hold` reserves `-hold-per` jobs on one client, which
+    a runner-marked client must not do (the manager would release each earlier
+    job as soon as it reserves the next), so the marker belongs only on
+    clients that hold one job at a time.
+  - Fix, `.docs/reliable/harness/loadrunner.go`: each worker client calls
+    `c.SetReserveAsRunner(*mode != "hold" || *holdPer == 1)`, with a comment
+    like `cmd/runner.go`'s. drive (and an unknown mode, which falls through to
+    it) and hold with the default `-holdper 1` get the marker; hold with more
+    than one held job does not; churn and ping reserve nothing.
+  - After: the grep check passes; the README build of the harness and `go vet`
+    on it are clean; `make lint` reports 0 issues. A drive run (4 workers)
+    against an isolated local manager under /tmp reserved, started and
+    archived 199 of 200 jobs (the manager's own local runner ran the other).
+  - Reviewer: PASS. In drive mode a worker reserves again before settling its
+    job only after `Started` or `Archive` failed, when the job is already
+    abandoned, so releasing it then is intended.
+- [ ] Deferred (found while doing the loadrunner item, independent, low
+  impact): loadrunner's `-group ""` fallback builds the group from
+  `-ram/-time/-cores/-disk` as `100:1:1:0`, which does not match the group
+  the manager gives jobs added with those requirements (for example
+  `200:30:1:0:<hash>`), so drive mode without `-group` silently reserves
+  nothing. The README and `exp_drive_ab.sh` pass the group from the manager's
+  log, so only ad-hoc use is affected. Also, the README's mode list
+  (line ~40) leaves out churn.
