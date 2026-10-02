@@ -86,17 +86,48 @@ const (
 	waitForRunningDefaultPollInterval = 5 * time.Second
 )
 
+// Error is a string usable as a constant error.
 type Error string
 
 func (e Error) Error() string { return string(e) }
 
+// SchedulerSettings configures the Scheduler that New returns.
 type SchedulerSettings struct {
-	Deployment  string
-	Cwd         string
-	Queue       string
+	// Deployment picks the wr config to find the manager with: "production"
+	// or "development", whichever the manager was started with. Any other
+	// value, including blank, means WR_DEPLOYMENT if that is one of those,
+	// else "development" when run from the root of a wr source checkout,
+	// else "production".
+	Deployment string
+
+	// Cwd, which must exist, is the working directory of jobs made by NewJob,
+	// and of jobs made by NewJobFromJSON whose spec names no cwd. Blank means
+	// the current working directory.
+	Cwd string
+
+	// Queue, if not blank, is the scheduler queue (such as an LSF queue) set
+	// in the requirements of jobs made by NewJob, of jobs made by
+	// NewJobFromJSON whose spec names no queue, and of submitted jobs that
+	// have no requirements.
+	Queue string
+
+	// QueuesAvoid, if not blank, is a comma-separated list of substrings of
+	// scheduler queue names to avoid. It is set in the requirements of jobs
+	// made by NewJob, of jobs made by NewJobFromJSON whose spec has no
+	// queues_avoid (whatever its queue), and of submitted jobs that have no
+	// requirements.
 	QueuesAvoid string
-	Timeout     time.Duration
-	Logger      log15.Logger
+
+	// Timeout bounds connecting to the manager, and how long sending each
+	// later request may take. A request already sent waits for its reply for
+	// up to the larger of Timeout and a minute. See the package doc for what
+	// this means while the manager is down.
+	Timeout time.Duration
+
+	// Logger receives what New logs while loading wr's config. A problem with
+	// that config is logged as critical and ends the program. It must not be
+	// nil unless PretendSubmissions is set.
+	Logger log15.Logger
 }
 
 // SubmitJobsOptions controls how Scheduler job submission handles environment
@@ -447,11 +478,8 @@ type Scheduler struct {
 	queuesAvoid string
 }
 
-// New returns a Scheduler that is connected to wr manager using the given
-// deployment, timeout and logger. Added jobs will have the given cwd, which
-// matters. If cwd is blank, the current working dir is used. If queue is not
-// blank, that queue will be used during NewJob(). If queuesAvoid is not blank,
-// queues including a substring from the list will be avoided during NewJob().
+// New returns a Scheduler connected to the wr manager, configured by settings
+// as described for SchedulerSettings.
 //
 // When PretendSubmissions is set, a fake server will be used and no real
 // interactions will take place. Methods SubmitJobs, SubmittedJobs, and
@@ -1198,7 +1226,11 @@ func (s *Scheduler) determineOverrideAndReq(req *jqs.Requirements) (*jqs.Require
 // Previously added identical jobs that have since been archived will get added
 // again.
 //
-// If any duplicate jobs were added, an error will be returned.
+// If any duplicate jobs were added, ErrDuplicateJobs will be returned. This
+// can also follow this call's own add, if the manager stopped while it was in
+// progress and it was resent. SubmitJobsAndReturnIDs with the same jobs and
+// default options then adds only those neither queued nor complete, and
+// returns the keys of the queued ones (see the package doc).
 //
 // If this scheduler was created with PretendSubmissions set none of the above
 // happens; the jobs are merely recorded for later retrieval with
@@ -1278,7 +1310,7 @@ func (s *Scheduler) GetLastCompletionTimeByRepGroup(repgroup string,
 	return s.jq.GetLastCompletionTimeByRepGroup(repgroup, match)
 }
 
-// Kill asks the server to kill the provided jobs.
+// KillJobs asks the server to kill the provided jobs.
 func (s *Scheduler) KillJobs(jobs ...*jobqueue.Job) error {
 	jq, ok := s.jq.(*jobqueue.Client)
 	if !ok {

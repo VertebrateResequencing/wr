@@ -715,12 +715,22 @@ func combineExecOutcomes(unmount, cmd execOutcome) execOutcome {
 //
 // Prefer this over Connect() for a long-lived client. A cleanly stopped manager
 // deletes its token file, and the next manager started writes a new token to
-// it, so a client holding the old token has every request rejected with
-// ErrPermissionDenied. A client made with this function, on such a rejection,
-// re-reads tokenFile and, only if it now holds a different token, adopts it and
-// sends the rejected request once more. It never retries more than once per
-// request, and never if the file is unchanged or unreadable. An empty tokenFile
-// path (as opposed to a file with no token in it) returns ErrNoTokenFile.
+// it, so a client holding the old token has every request except Ping rejected
+// with ErrPermissionDenied. A client made with this function, on such a
+// rejection, re-reads tokenFile and, only if it now holds a different token,
+// adopts it and sends the rejected request once more. It never retries more
+// than once per request, and never if the file is unchanged or unreadable. An
+// empty tokenFile path (as opposed to a file with no token in it) returns
+// ErrNoTokenFile.
+//
+// While the manager is down, requests fail as described for Connect(): after
+// timeout if they could not be sent, or after the larger of timeout and
+// ClientMinRequestTimeout if the manager went after taking them. An Add in
+// progress when the manager stops can be partly applied, and is resent when
+// the client reconnects, so it can then report its own jobs as existing. A
+// subscription (as used by AddAndWait) keeps trying to reconnect for the
+// manager's RetryTime. The client package doc describes the same behaviour for
+// its Scheduler.
 func ConnectWithTokenFile(addr, caFile, certDomain, tokenFile string, timeout time.Duration) (*Client, error) {
 	if tokenFile == "" {
 		return nil, ErrNoTokenFile
@@ -1625,11 +1635,17 @@ type envStr struct {
 // for.
 //
 // token is the authentication token that Serve() returned when the server was
-// started.
+// started. The returned Client cannot pick up a new one: after the manager is
+// cleanly stopped and started again with a new token, every request it makes
+// except Ping fails with ErrPermissionDenied. A long-lived client should use
+// ConnectWithTokenFile() or ConnectUsingConfig() instead, which reload the
+// token.
 //
-// Timeout determines how long to wait for a response from the server, not only
-// while connecting, but for all subsequent interactions with it using the
-// returned Client.
+// timeout bounds connecting, including any later redial after the connection
+// drops, and is the send deadline of every request made with the returned
+// Client: a request made while the server is unreachable fails after timeout.
+// A request already sent waits for the reply for up to the larger of timeout
+// and ClientMinRequestTimeout.
 func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duration) (*Client, error) {
 	expiry, err := internal.CertExpiry(caFile)
 	if err != nil {

@@ -60,7 +60,9 @@ server RetryWait 200ms, RetryTime 30s.
    ErrDuplicateJobs for the app's own single add. If the outage outlasts the
    receive deadline (max(Timeout, 60s)) the app gets `receive time out` and
    cannot tell whether none, some or all were added. SubmitJobsAndReturnIDs
-   with the same jobs is idempotent and recovers in every case.
+   with the same jobs (default options) recovers the jobs not yet complete,
+   adding only those neither queued nor complete and returning the queued
+   ones' keys; jobs already complete are neither re-added nor returned.
 
    ```
    attempt 3 stop after 790ms: SubmitJobs err=some of the added jobs were duplicates; manager has 20000/20000
@@ -82,7 +84,8 @@ WaitForRunning aborts on a transient outage that WaitForJobs rides out.
 
 Acceptable, documented below: calls fail after Timeout while down; a batch
 interrupted by a stop may be partly added and SubmitJobs then reports
-ErrDuplicateJobs; SubmitJobsAndReturnIDs is the idempotent recovery.
+ErrDuplicateJobs; SubmitJobsAndReturnIDs recovers the jobs not yet complete,
+neither re-adding nor returning those already complete.
 
 Unverified, by reading only: with Timeout over 60s, mangos's default
 1-minute resend timer (wr never sets OptionRetryTime) could resend a
@@ -90,7 +93,7 @@ request a live but slow manager is still handling.
 
 ## Bugs
 
-- [ ] A WaitForJobs, SubmitJobsAndWait or AddAndWait that survives a
+- [x] A WaitForJobs, SubmitJobsAndWait or AddAndWait that survives a
   manager restart leaves its jobqueue Client with a socket whose send
   deadline is the subscription reconnect step's (up to 1s) instead of the
   connect Timeout, so every later request fails fast or waits differently
@@ -169,9 +172,17 @@ request a live but slow manager is still handling.
     outages, stays-down and ctx-cancel cases in
     TestSchedulerWaitForRunningAcrossManagerRestart, error-table cases in
     TestSchedulerWaitForRunning.
-- [ ] The client package and jobqueue.Connect docs do not state the
+- [x] The client package and jobqueue.Connect docs do not state the
   restart/downtime contract (fail after Timeout while down, token reload
   only via the token-file route, interrupted batches may be partly added
   and then reported as ErrDuplicateJobs, SubmitJobsAndReturnIDs as the
   idempotent recovery, waits survive within RetryTime); jobqueue/doc.go's
   client example uses Connect(token) and a two-argument Add.
+  - Fixed: client/doc.go package doc states the restart contract (token-file
+    reload, calls fail after Timeout while down, waits ride out RetryTime,
+    interrupted batches and ErrDuplicateJobs, recovery with
+    SubmitJobsAndReturnIDs and its limits for completed jobs);
+    SchedulerSettings fields, New, SubmitJobs, Error and KillJobs docs in
+    client/client.go; Connect and ConnectWithTokenFile docs in
+    jobqueue/client.go; jobqueue/doc.go examples use ConnectUsingConfig and
+    the real Add and Serve signatures; CHANGELOG entries under Fixed.
