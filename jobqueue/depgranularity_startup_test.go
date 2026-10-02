@@ -1032,18 +1032,23 @@ func dgsWaitForSidecarState(dbFile, state string) (internal.DBUpgradeStatus, boo
 }
 
 // dgsWaitForSidecarRewrite polls the sidecar until it has been rewritten since
-// first (its UpdatedAt differs) while still in first's state, returning that
-// sample and whether one was seen. It waits for the heartbeat's next write
-// rather than for a fixed number of ticks, because a heartbeat delayed by load
-// can miss any fixed window; the bound is a hang detector for a sidecar that is
-// never refreshed. It deliberately does not require the rewrite to have moved
-// forwards, leaving that for the caller to assert.
+// first with a different detail while still in first's state, returning that
+// sample and whether one was seen. It waits for a later write rather than for a
+// fixed number of ticks, because a heartbeat delayed by load can miss any fixed
+// window; the bound is a hang detector for a sidecar that is never refreshed,
+// or whose elapsed time never changes.
+//
+// It skips rewrites with the same detail because the elapsed time is rounded
+// to the millisecond: a heartbeat goroutine starved past a tick receives the
+// late tick and then the next one within a millisecond, writing the same
+// elapsed time twice. It deliberately does not require the rewrite to have
+// moved forwards, leaving that for the caller to assert.
 func dgsWaitForSidecarRewrite(dbFile string, first internal.DBUpgradeStatus) (internal.DBUpgradeStatus, bool) {
 	deadline := time.Now().Add(dgsServingWait)
 
 	for time.Now().Before(deadline) {
 		status, _, err := internal.ReadDBUpgradeStatus(dbFile)
-		if err == nil && status.State == first.State && !status.UpdatedAt.Equal(first.UpdatedAt) {
+		if err == nil && status.State == first.State && status.Detail != first.Detail {
 			return status, true
 		}
 

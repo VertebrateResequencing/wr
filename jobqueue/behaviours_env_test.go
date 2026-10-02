@@ -165,16 +165,18 @@ func TestBehaviourRunEnv(t *testing.T) {
 
 		Convey("a CwdMatters Job's run behaviour gets its environment untouched", func() {
 			// wr creates no working directory for such a Job, so Execute gives
-			// its Cmd no TMPDIR and no HOME of wr's, whatever --change_home says.
+			// its Cmd no TMPDIR and no HOME of wr's, whatever --change_home says:
+			// the TMPDIR the Job was added with, if any, passes through as is.
+			storedTmp := filepath.Join("/", "nonexistent", "stored-tmp")
 			job := &Job{Cwd: cwd, Cmd: testWSCmd, CwdMatters: true, ChangeHome: true}
-			storeTestEnv(job)
+			storeTestEnv(job, "TMPDIR="+storedTmp)
 
 			So(probe.Trigger(OnExit, job), ShouldBeNil)
 
 			got := readProbedEnv(out)
 			So(got.testVar, ShouldEqual, "from_job_env")
 			So(got.home, ShouldEqual, testStoredHome)
-			So(got.tmpDir, ShouldBeBlank)
+			So(got.tmpDir, ShouldEqual, storedTmp)
 		})
 
 		// a `run` behaviour's command adds jobs as readily as the Cmd does -
