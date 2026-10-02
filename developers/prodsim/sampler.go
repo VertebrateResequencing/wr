@@ -56,6 +56,9 @@ const (
 // and saves pprof profiles every -profile-every, until the run ends.
 func (s *sim) sampler(ctx context.Context) {
 	pp := &pprofClient{addr: s.cfg.pprofAddr, http: &http.Client{Timeout: pprofTimeout}}
+	s.spk.mu.Lock()
+	s.spk.pp = pp
+	s.spk.mu.Unlock()
 	jq := s.newJQ(ctx, "sampler")
 	nextProfile := time.Now().Add(s.cfg.profileEvery / firstProfileFrac)
 
@@ -85,6 +88,30 @@ func (s *sim) sampler(ctx context.Context) {
 	}
 }
 
+// captureProfilesTagged is captureProfiles with tag prefixed to each file name.
+func (s *sim) captureProfilesTagged(ctx context.Context, pp *pprofClient, tag string) {
+	stamp := tag + fmt.Sprintf("%06.0f", s.since())
+	dir := filepath.Join(s.cfg.outDir, "profiles")
+
+	for _, prof := range []struct{ file, path string }{
+		{"heap.pprof", "/debug/pprof/heap"},
+		{"goroutine.pprof", "/debug/pprof/goroutine"},
+		{"mutex.pprof", "/debug/pprof/mutex"},
+		{"block.pprof", "/debug/pprof/block"},
+		{"cpu.pprof", "/debug/pprof/profile?seconds=30"},
+		{"goroutine.txt", "/debug/pprof/goroutine?debug=1"},
+	} {
+		b, err := pp.get(ctx, prof.path)
+		if err == nil {
+			err = os.WriteFile(filepath.Join(dir, stamp+"."+prof.file), b, filePerm)
+		}
+
+		if err != nil {
+			s.event("sampler", "profile "+prof.file+" failed: "+err.Error())
+		}
+	}
+}
+
 // ping times a ping over jq, returning -1 when it fails. A failed client is
 // dropped and a new one tried at the next sample, so a restart is survived.
 func (s *sim) ping(ctx context.Context, jq *jobqueue.Client) (*jobqueue.Client, int64) {
@@ -98,8 +125,13 @@ func (s *sim) ping(ctx context.Context, jq *jobqueue.Client) (*jobqueue.Client, 
 	}
 
 	t0 := time.Now()
+	stop := s.armSpike("ping", s.cfg.soak.spikeCall/pingSpikeFraction) //nolint:contextcheck // capture outlives the ping
 
-	if _, err := jq.Ping(pingTimeout); err != nil {
+	_, err := jq.Ping(pingTimeout)
+
+	stop()
+
+	if err != nil {
 		disconnect(jq)
 
 		return nil, unknown
@@ -271,24 +303,5 @@ func (p *pprofClient) heapStat(ctx context.Context, prefix string) int {
 // captureProfiles saves the manager's heap, goroutine, mutex, block and 30s
 // CPU profiles, and a readable goroutine dump, under profiles/.
 func (s *sim) captureProfiles(ctx context.Context, pp *pprofClient) {
-	stamp := fmt.Sprintf("%06.0f", s.since())
-	dir := filepath.Join(s.cfg.outDir, "profiles")
-
-	for _, prof := range []struct{ file, path string }{
-		{"heap.pprof", "/debug/pprof/heap"},
-		{"goroutine.pprof", "/debug/pprof/goroutine"},
-		{"mutex.pprof", "/debug/pprof/mutex"},
-		{"block.pprof", "/debug/pprof/block"},
-		{"cpu.pprof", "/debug/pprof/profile?seconds=30"},
-		{"goroutine.txt", "/debug/pprof/goroutine?debug=1"},
-	} {
-		b, err := pp.get(ctx, prof.path)
-		if err == nil {
-			err = os.WriteFile(filepath.Join(dir, stamp+"."+prof.file), b, filePerm)
-		}
-
-		if err != nil {
-			s.event("sampler", "profile "+prof.file+" failed: "+err.Error())
-		}
-	}
+	s.captureProfilesTagged(ctx, pp, "")
 }

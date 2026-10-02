@@ -138,6 +138,7 @@ func actors() []actor {
 		{statusCmd, (*sim).statusPollers},
 		{"operator", (*sim).operator},
 		{"sampler", (*sim).sampler},
+		{"containers", (*sim).containers},
 	}
 }
 
@@ -439,6 +440,12 @@ func (s *sim) wrstatUI(ctx context.Context) {
 func (s *sim) portal(ctx context.Context) {
 	const actor = actorPortal
 
+	if s.cfg.soak.portalTargetFile != "" {
+		s.portalDynamic(ctx)
+
+		return
+	}
+
 	sch := s.newScheduler(ctx, actor)
 	if sch == nil {
 		return
@@ -482,7 +489,7 @@ func (s *sim) portalPhase(ctx context.Context, actor string, sch *client.Schedul
 			depGroups[0], depGroups[1] = depGroups[1], depGroups[0]
 		}
 
-		cmd := s.jobCmd("portal_"+name, fmt.Sprintf("%s.%d", ts, i), s.simMinutes(portalMedianMins, portalSigma),
+		cmd := s.jobCmd("portal_"+name, fmt.Sprintf("%s.%d", ts, i), s.simMinutes(s.cfg.soak.portalMedianMins, portalSigma),
 			ram/portalMemFraction, 1, s.cfg.portalCmdKB*kb)
 		jobs = append(jobs, portalJob(sch.NewJob(cmd, rg, "portal_builder_"+name, depGroups[0], depGroups[1], req)))
 
@@ -594,6 +601,10 @@ func (s *sim) operator(ctx context.Context) {
 			{"kill_fofn", []string{"kill", "-i", "ibackup_fofn_dir001", "-z"}},
 			{"status_plain", []string{statusCmd, "-i", "wrstat", "-z", limitFlag, "5", "-o", "plain"}},
 			{"limit_list", []string{"limit"}},
+		}
+
+		if !s.cfg.soak.operatorLimits {
+			chores = chores[1:]
 		}
 
 		c := chores[s.intn(len(chores))]
