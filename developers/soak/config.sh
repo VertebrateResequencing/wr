@@ -123,12 +123,15 @@ soak_manager_pid() {
   [ -n "$pid" ] && ps -ww -o cmd= -p "$pid" 2>/dev/null | grep -qF "$SOAK_WR" && echo "$pid"
 }
 
-# soak_wr_running <subcommand ERE> prints the pids of our `wr manager
-# <subcommand>` processes (and of a `timeout N` running one), and succeeds if
-# there are any. The match is anchored at the start of the command line, so a
-# pgrep for the same command in another of these scripts never counts as one.
+# soak_wr_running <subcommand ERE> prints the pids of the `timeout N` wrapping
+# each of our `wr manager <subcommand>` runs, and succeeds if there are any.
+# Every start and stop of our manager (here and in wrdev.sh prodsim) runs under
+# timeout, while the daemonised manager itself keeps its start's argv
+# (`$SOAK_WR manager start ...`) for life, so only the timeout marks a start or
+# stop in progress. Anchoring at the start of the command line also keeps
+# another of these scripts' pgreps for the same command from counting.
 soak_wr_running() {
-  pgrep -u "$(id -u)" -f "^(timeout [0-9]+ )?${SOAK_WR//./\\.} manager $1( |\$)"
+  pgrep -u "$(id -u)" -f "^timeout [0-9]+ ${SOAK_WR//./\\.} manager $1( |\$)"
 }
 
 # soak_wait_gone <pid> <outdir> <who> waits up to 10 min for killed pid to be
