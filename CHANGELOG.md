@@ -75,6 +75,16 @@ project adheres to [Semantic Versioning](http://semver.org/).
   command in full, so it is several times faster, and uses about 1% of the
   memory, for a group with a long history of long commands. The output is
   unchanged.
+- The Go client's `Scheduler.WaitForRunning` now keeps waiting while the
+  manager restarts, as `WaitForJobs` does, for up to the manager's retry time
+  (24h by default), instead of failing as soon as the manager goes down. It
+  still fails at once if the manager is down when it is called.
+- A Go client whose `WaitForJobs`, `SubmitJobsAndWait` or `AddAndWait` waited
+  through a manager restart no longer has its later requests fail after 1s,
+  instead of after its own timeout, while the manager cannot be reached.
+- A Go client's `Ping` with a timeout, and `Unsubscribe`, now give up on their
+  own shorter bound when the manager has gone, instead of waiting out the
+  client's whole timeout.
 - A manager whose port is already taken by an IPv6-only listener (such as
   rpc.statd's) now fails to start at once, saying the port is in use by another
   process, instead of seeming to start and then exiting a few seconds later.
