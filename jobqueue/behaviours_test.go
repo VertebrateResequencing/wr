@@ -41,6 +41,10 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+// testRunMarker is the file a `run` behaviour's command creates in whatever
+// directory it is given, so the tests can say where it actually ran.
+const testRunMarker = "ran_here"
+
 func TestBehaviours(t *testing.T) {
 	Convey("You can create individual Behaviour", t, func() {
 		b1 := &Behaviour{When: OnExit, Do: CleanupAll}
@@ -287,6 +291,77 @@ func TestBehaviours(t *testing.T) {
 			//nolint:lll // exact JSON fixture asserted verbatim
 			So(bs.String(), ShouldEqual, `{"on_failure":[{"run":"tar -czf my.tar.bz '--include=*.err'"},{"copy_to_manager":["my.tar.bz"]},{"cleanup_all":true},{"remove":true}],"on_success":[{"cleanup":true}],"on_exit":[{"run":"true"}]}`)
 		})
+	})
+}
+
+// TestCleanupUnlinksASymlinkToAnotherDevice pins that the sweep judges a symlink
+// by the link itself and never by what it points at: a link inside the Job's
+// working directory to something on another device is the Job's own entry, on
+// the working directory's device, so cleanup must unlink it, and unlinking it
+// must leave its target alone. Judging it through the link would see the
+// target's device, mistake the link for a mount boundary and leave it behind.
+func TestCleanupUnlinksASymlinkToAnotherDevice(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Cleanup unlinks a symlink to another device and leaves its target", t, func() {
+		const target = "/dev/null"
+
+		job := benchCleanupJob(t, t.TempDir(), 0)
+		link := filepath.Join(job.ActualCwd, "devnull")
+		So(os.Symlink(target, link), ShouldBeNil)
+
+		targetInfo, err := os.Stat(target)
+		So(err, ShouldBeNil)
+
+		cwdInfo, err := os.Stat(job.ActualCwd)
+		So(err, ShouldBeNil)
+		So(crossesMountBoundary(cwdInfo, targetInfo), ShouldBeTrue)
+
+		err = (&Behaviour{When: OnExit, Do: Cleanup}).Trigger(OnExit, job)
+		So(err, ShouldBeNil)
+
+		_, err = os.Lstat(link)
+		So(os.IsNotExist(err), ShouldBeTrue)
+
+		_, err = os.Stat(target)
+		So(err, ShouldBeNil)
+	})
+}
+
+// TestCleanupReportsAFileItCannotDelete pins that a file the sweep fails to
+// unlink fails the cleanup, rather than being counted as swept and leaving the
+// Job's output behind with nothing reported.
+func TestCleanupReportsAFileItCannotDelete(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory modes, so an undeletable file cannot be made")
+	}
+
+	Convey("Cleanup fails when a file in the working dir cannot be deleted", t, func() {
+		job := benchCleanupJob(t, t.TempDir(), 0)
+		locked := filepath.Join(job.ActualCwd, "locked")
+		So(os.Mkdir(locked, 0o700), ShouldBeNil)
+
+		kept := filepath.Join(locked, "kept.txt")
+		So(os.WriteFile(kept, []byte("x\n"), 0o600), ShouldBeNil)
+		So(os.Chmod(locked, 0o500), ShouldBeNil)
+
+		t.Cleanup(func() {
+			if err := os.Chmod(locked, 0o700); err != nil && !os.IsNotExist(err) {
+				t.Errorf("restoring permissions on %s: %s", locked, err)
+			}
+		})
+
+		err := (&Behaviour{When: OnExit, Do: Cleanup}).Trigger(OnExit, job)
+		So(err, ShouldNotBeNil)
+
+		_, err = os.Lstat(kept)
+		So(err, ShouldBeNil)
 	})
 }
 
@@ -1435,10 +1510,6 @@ func TestBehaviourCleanupSafety(t *testing.T) {
 		})
 	})
 }
-
-// testRunMarker is the file a `run` behaviour's command creates in whatever
-// directory it is given, so the tests can say where it actually ran.
-const testRunMarker = "ran_here"
 
 // runBehaviour is a Run Behaviour whose command drops testRunMarker in its
 // working directory.

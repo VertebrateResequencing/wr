@@ -112,7 +112,7 @@ on this host under `nice -n 19`, compared with benchstat.
     Increment/Decrement of known groups is about 10% faster than v0.37.2, and
     a lookup costs about 50ns more, mostly the second lock round trip that
     keeps the callback outside the lock.
-- [ ] JobCleanup (#575, commit db108fa8): JobCleanup* +17-33% sec/op, 4x
+- [x] JobCleanup (#575, commit db108fa8): JobCleanup* +17-33% sec/op, 4x
   allocs (Depth1 540→2190). Find and cut the extra allocations while keeping
   #575's safety behaviour (it made cleanup prove the directory is wr's own
   before deleting).
@@ -141,3 +141,45 @@ on this host under `nice -n 19`, compared with benchstat.
     in `jobqueue/server.go` and `jobqueue/modify_validation_test.go`; the
     darwin test-compile failure is already fixed on develop by #660), entry
     commit `40bdea47`.
+  - Cause: since #575, cleanup deletes through a guarded sweep instead of
+    `os.Root.RemoveAll`. For every entry it called `File.ReadDir` (a DirEntry
+    each, plus an lstat that was thrown away where the filesystem reports no
+    d_type), `filepath.Join` (only directories use it) and `os.Root`'s `Lstat`
+    and `Remove` (a path split, a copy and a FileInfo per call): about 10
+    allocations an entry against v0.37.2's 2.
+  - Fix: `jobqueue/utils.go` sweeps each verified directory in two passes.
+    Pass 1 opens `.` through the verified root, reads names with
+    `Readdirnames`, `Fstatat`s each with `AT_SYMLINK_NOFOLLOW` on that
+    descriptor, leaves anything across the mount boundary alone, and
+    `Unlinkat`s non-directories. Pass 2 sends everything else (directories,
+    any stat or unlink error, races) to the unchanged
+    `removeEntryWithExceptions`, which re-checks and decides it as before. The
+    directory identity proofs, keep sets and nested `_cwd` bases are
+    untouched.
+  - Tests: `TestCleanupSweepAllocatesLittlePerEntry` in
+    `jobqueue/behaviours_bench_test.go` allows at most 4 allocations an entry
+    (develop: 10). `jobqueue/behaviours_test.go` adds
+    `TestCleanupUnlinksASymlinkToAnotherDevice` and
+    `TestCleanupReportsAFileItCannotDelete`, which pin the symlink and
+    unlink-error behaviour of the new pass.
+  - After (reviewer's rerun, same command):
+
+    ```
+                       │    v0372     │                 dev                 │               after               │
+                       │    sec/op    │    sec/op     vs base               │   sec/op     vs base              │
+    JobCleanup-8         334.8µ ± 17%   377.5µ ±  6%        ~ (p=0.065 n=6)   353.4µ ± 7%       ~ (p=0.180 n=6)
+    JobCleanupDepth1-8   3.458m ±  9%   4.542m ± 16%  +31.36% (p=0.002 n=6)   3.438m ± 3%       ~ (p=0.485 n=6)
+    JobCleanupDepth8-8   3.460m ±  7%   5.987m ± 33%  +73.04% (p=0.002 n=6)   3.695m ± 5%  +6.80% (p=0.002 n=6)
+                       │     B/op     │     B/op       vs base                │     B/op      vs base               │
+    JobCleanup-8         6.470Ki ± 0%   11.153Ki ± 0%   +72.38% (p=0.002 n=6)   9.044Ki ± 0%  +39.79% (p=0.002 n=6)
+    JobCleanupDepth1-8   17.78Ki ± 1%   127.18Ki ± 0%  +615.44% (p=0.002 n=6)   21.94Ki ± 0%  +23.45% (p=0.002 n=6)
+    JobCleanupDepth8-8   18.77Ki ± 1%   139.66Ki ± 0%  +644.20% (p=0.002 n=6)   29.25Ki ± 1%  +55.87% (p=0.002 n=6)
+                       │  allocs/op  │  allocs/op   vs base                │ allocs/op   vs base               │
+    JobCleanup-8          135.0 ± 0%    203.0 ± 0%   +50.37% (p=0.002 n=6)   175.0 ± 0%  +29.63% (p=0.002 n=6)
+    JobCleanupDepth1-8    540.0 ± 0%   2194.0 ± 0%  +306.30% (p=0.002 n=6)   792.0 ± 0%  +46.67% (p=0.002 n=6)
+    JobCleanupDepth8-8    596.0 ± 0%   2376.0 ± 0%  +298.66% (p=0.002 n=6)   960.0 ± 0%  +61.07% (p=0.002 n=6)
+    ```
+
+    What is left over v0.37.2 is what #575's checks need: one `Fstatat` per
+    entry, to see each entry's device for the mount-boundary check, and the
+    verified open and identity proof of each directory level.

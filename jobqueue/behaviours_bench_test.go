@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -147,10 +148,10 @@ func TestBenchCleanupJobIsCleanable(t *testing.T) {
 //
 // allocs/op is the deterministic half of the verdict, because each re-resolved
 // path component allocates; ns/op corroborates it. Reference figures on the
-// fixed tree, at -benchtime=50x:
+// fixed tree, medians at -benchtime=1s -count=6:
 //
-//	Depth1   2,848,995 ns/op   2,190 allocs/op
-//	Depth8   3,048,264 ns/op   2,372 allocs/op    ratio 1.07x
+//	Depth1   4,187,000 ns/op     792 allocs/op
+//	Depth8   4,343,000 ns/op     960 allocs/op    ratio 1.04x
 //
 // and the same pair before the fix, when the sweep named every entry by its
 // accumulated path against one os.Root:
@@ -158,6 +159,7 @@ func TestBenchCleanupJobIsCleanable(t *testing.T) {
 //	Depth1   4,238,179 ns/op   3,772 allocs/op
 //	Depth8   8,604,540 ns/op   7,663 allocs/op    ratio 2.03x
 func BenchmarkJobCleanupDepth1(b *testing.B) { benchJobCleanupDepth(b, 1, 200) }
+
 func BenchmarkJobCleanupDepth8(b *testing.B) { benchJobCleanupDepth(b, 8, 200) }
 
 // benchJobCleanupDepth triggers the default on_exit cleanup on nFiles files
@@ -178,6 +180,56 @@ func benchJobCleanupDepth(b *testing.B, depth, nFiles int) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// TestCleanupSweepAllocatesLittlePerEntry bounds what the cleanup sweep
+// allocates for each entry it deletes. Cleanup runs once per Job, over every
+// file the Job left, so per-entry overhead multiplies by both; the bound is
+// taken from the DIFFERENCE between sweeping 400 files and sweeping 200, so the
+// fixed cost of proving the workspace is wr's own is excluded and only the
+// per-entry cost is judged.
+//
+// The sweep must still lstat each entry, to judge it against the mount boundary
+// and tell a directory from anything else, and must name it to readdir and to
+// the unlink; what it must not do is pay for each entry a second stat behind
+// readdir, a path join or os.Root's per-call path handling. Those cost about 10
+// allocations an entry; what the sweep needs costs about 3.
+func TestCleanupSweepAllocatesLittlePerEntry(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Cleaning up a job's files allocates only a few objects per file", t, func() {
+		cwd := t.TempDir()
+		behaviour := &Behaviour{When: OnExit, Do: Cleanup}
+
+		minMallocs := func(nFiles int) uint64 {
+			var least uint64
+
+			for i := range 3 {
+				job := benchDepthJob(t, cwd, nFiles*10+i, 1, nFiles)
+
+				var before, after runtime.MemStats
+
+				runtime.ReadMemStats(&before)
+
+				err := behaviour.Trigger(OnExit, job)
+
+				runtime.ReadMemStats(&after)
+				So(err, ShouldBeNil)
+
+				if n := after.Mallocs - before.Mallocs; i == 0 || n < least {
+					least = n
+				}
+			}
+
+			return least
+		}
+
+		small, large := minMallocs(200), minMallocs(400)
+		So(large, ShouldBeGreaterThan, small)
+		So(large-small, ShouldBeLessThanOrEqualTo, 4*200)
+	})
 }
 
 // benchDepthJob creates the hashed working dir that wr would have made for a
