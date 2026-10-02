@@ -123,6 +123,14 @@ soak_manager_pid() {
   [ -n "$pid" ] && ps -ww -o cmd= -p "$pid" 2>/dev/null | grep -qF "$SOAK_WR" && echo "$pid"
 }
 
+# soak_wr_running <subcommand ERE> prints the pids of our `wr manager
+# <subcommand>` processes (and of a `timeout N` running one), and succeeds if
+# there are any. The match is anchored at the start of the command line, so a
+# pgrep for the same command in another of these scripts never counts as one.
+soak_wr_running() {
+  pgrep -u "$(id -u)" -f "^(timeout [0-9]+ )?${SOAK_WR//./\\.} manager $1( |\$)"
+}
+
 # soak_start_manager starts our manager on its existing DB, as wrdev.sh
 # prodsim's restarts do, appending to manager-start.out in output dir $1
 soak_start_manager() {

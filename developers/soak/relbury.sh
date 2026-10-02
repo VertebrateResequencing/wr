@@ -23,7 +23,7 @@ soak_enter "$d"
 R=$d/relbury; mkdir -p "$R"
 alive() { soak_alive "$d"; }
 log() { echo "$(date +%s%3N) $tag $*" >> "$R/driver.log"; }
-busy() { pgrep -f "$SOAK_WR manager (start|stop)" >/dev/null; }
+busy() { soak_wr_running "(start|stop)" >/dev/null; }
 until [ "$(grep -c '	start	' "$d/restarts.tsv")" -ge "$n" ]; do alive || exit 0; sleep 5; done
 sleep 90; while busy; do sleep 5; done
 dms=$(( ($(date +%s) + lead) * 1000 ))

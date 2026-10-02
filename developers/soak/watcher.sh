@@ -18,7 +18,7 @@ while soak_alive "$d"; do
         echo "$(date +%s) watcher: scheduled start failed: $last; bind errors: $(grep -c 'address already in use' "$d/manager-start.out")" >> "$d/watcher.log"
         ss -tan | grep -E ":$PROD_PORT |:$PROD_WEB " >> "$d/watcher.log"
         sleep 65
-        if soak_isolated && ! pgrep -f "$SOAK_WR manager start" >/dev/null; then
+        if soak_isolated && ! soak_wr_running start >/dev/null; then
           t0=$(date +%s%3N)
           soak_start_manager "$d"
           rc=$?

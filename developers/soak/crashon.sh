@@ -24,7 +24,7 @@ until [ "$(grep -c "$pat" "$f" 2>/dev/null || echo 0)" -gt "$c0" ]; do soak_aliv
 echo "$(date +%s) crashon: $trig seen: $(grep "$pat" "$f" | tail -1); crashing in ${wait}s" >> "$d/watcher.log"
 sleep "$wait"
 # never collide with a scheduled restart part-way through
-while pgrep -f "$SOAK_WR manager (start|stop)" >/dev/null; do sleep 2; done
+while soak_wr_running "(start|stop)" >/dev/null; do sleep 2; done
 soak_isolated || die "wr does not resolve --deployment production to our manager on :$PROD_PORT"
 pid=$(soak_manager_pid) || die "the pid file does not name a process running $SOAK_WR"
 lsfrun=$(our_running_jobs)

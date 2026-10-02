@@ -9,7 +9,7 @@
 d=$(soak_outdir "$1") || exit 1
 st() { awk '{print $3}' "/proc/$1/stat" 2>/dev/null || echo gone; }
 while soak_alive "$d"; do
-  sp=$(pgrep -f "$SOAK_WR manager stop" | head -1)
+  sp=$(soak_wr_running stop | head -1)
   if [ -n "$sp" ]; then
     pid=$(cat "$SOAK_RUN/pid" 2>/dev/null); last=""
     while [ -e "/proc/$sp" ]; do
