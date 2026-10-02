@@ -791,13 +791,14 @@ func (c *Client) SetReserveAsRunner(runner bool) {
 // request's own error for callers that discriminate on it.
 //
 // It can only ever narrow. The deadline it narrows from and restores to is read
-// off the socket rather than recomputed from c.timeout, because c.timeout is
-// the connect timeout the Client was made with and reconnect() does not update
-// it: recomputing would widen a reconnected socket's deadline (60s to
-// requestTimeout(c.timeout)) in the name of capping it. A timeout that is not
-// positive asks for no bound at all, so it narrows nothing; any other timeout
-// narrows whenever the socket's deadline is wider, which includes the socket's
-// deadline being non-positive, since mangos reads that as "wait forever".
+// off the socket rather than recomputed from c.timeout, so it puts back exactly
+// what the socket had, whatever set it. Connect and reconnect() both give it
+// requestTimeout(c.timeout), c.timeout being the connect timeout the Client was
+// made with; a reconnect's own shorter dial budget does not replace it. A
+// timeout that is not positive asks for no bound at all, so it narrows nothing;
+// any other timeout narrows whenever the socket's deadline is wider, which
+// includes the socket's deadline being non-positive, since mangos reads that as
+// "wait forever".
 //
 // The subscription reconnect path uses it because it has a retry budget to
 // honour: a manager part-way through shutdown can still accept a connection and
@@ -1592,15 +1593,7 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		return clientOnErr, errp
 	}
 
-	// now that connect-readiness has been confirmed, decouple the per-request
-	// RECEIVE deadline from the (possibly short) connect timeout, giving it a
-	// generous floor so that a slow-but-alive server reply is not mistaken for a
-	// timeout (the cause of the spurious 'receive time out' flake). We do NOT
-	// widen the SEND deadline: the req socket blocks Send until it has a live
-	// pipe to write to, so a short send deadline is what makes a NEW request to a
-	// gone-away server fail fast (with 'send time out'), which is how unreachable
-	// servers are detected promptly.
-	if err = sock.SetOption(mangos.OptionRecvDeadline, requestTimeout(timeout)); err != nil {
+	if err = setRequestDeadlines(sock, timeout); err != nil {
 		return nil, err
 	}
 
@@ -1777,6 +1770,25 @@ func runnerHostAndIP() (string, string, error) {
 	}
 
 	return host, hostIP, nil
+}
+
+// setRequestDeadlines gives a connected client socket the send and receive
+// deadlines its requests use, derived from the client's connect timeout.
+//
+// Once connect-readiness has been confirmed, the per-request RECEIVE deadline
+// is decoupled from the (possibly short) connect timeout, given a generous
+// floor so that a slow-but-alive server reply is not mistaken for a timeout
+// (the cause of the spurious 'receive time out' flake). The SEND deadline is
+// NOT widened: the req socket blocks Send until it has a live pipe to write to,
+// so a short send deadline is what makes a NEW request to a gone-away server
+// fail fast (with 'send time out'), which is how unreachable servers are
+// detected promptly.
+func setRequestDeadlines(sock mangos.Socket, timeout time.Duration) error {
+	if err := sock.SetOption(mangos.OptionSendDeadline, timeout); err != nil {
+		return err
+	}
+
+	return sock.SetOption(mangos.OptionRecvDeadline, requestTimeout(timeout))
 }
 
 // dialClientSocket creates a req socket configured with TLS for the given

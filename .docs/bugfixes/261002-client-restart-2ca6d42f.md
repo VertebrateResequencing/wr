@@ -96,6 +96,33 @@ request a live but slow manager is still handling.
   connect Timeout, so every later request fails fast or waits differently
   from what the app configured (Client.reconnect in
   jobqueue/subscription.go dials with min(remaining, 1s)).
+  - Red command: `timeout 900 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    CGO_ENABLED=1 go test -tags netgo -count 1 ./jobqueue/ -run
+    TestClientTokenReload`, exit 1:
+
+    ```
+    Line 173:
+    Expected: time.Duration(3000000000)
+    Actual:   time.Duration(1000000000)
+    --- FAIL: TestClientTokenReload (6.39s)
+    ```
+  - Fixed: jobqueue/client.go `setRequestDeadlines` sets send = timeout and
+    receive = requestTimeout(timeout); Connect and Client.reconnect
+    (jobqueue/subscription.go) both use it, reconnect applying the client's
+    own timeout to the adopted socket while its dial stays bounded by the
+    step budget. Regression test in jobqueue/client_token_reload_test.go
+    reads both deadlines after a real restart for a 3s and a 75s client.
+  - Not fixed, separate: reconnect copies ServerInfo but not the retryWait,
+    retryTime and touchInterval derived from it, which only drift if the
+    restarted manager has different timing settings.
+- [ ] Budget-bounded requests (requestWithinLocked in jobqueue/client.go:
+  the reconnect resubscribe, the rejected-replacement unsubscribe, and
+  Unsubscribe via requestWithinIncludingLockWait) narrow only the receive
+  deadline, so on a dropped pipe their Send can block for the client's full
+  connect timeout, overrunning the budget. Before the item above the
+  reconnect path was accidentally capped near 1s; now it can overrun by up
+  to the client's timeout, so this is fixed here.
+  - Source: reviewer of the item above.
 - [ ] Scheduler.WaitForRunning returns the first poll error when the manager
   goes down, while WaitForJobs rides out a restart for the server's
   RetryTime; a long-running app waiting for a job to start has to restart

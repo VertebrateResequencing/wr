@@ -115,6 +115,17 @@ var (
 
 var errNoRandomness = errors.New("no randomness")
 
+// subscriptionRestartRetryTime is the reconnect retry budget for tests whose
+// subscription must survive a manager restart. The budget starts when Stop
+// breaks the long poll, so it has to cover the rest of Stop and the whole of
+// the restart: 1.3-1.6s of a 2s budget with the test pinned to a busy core, and
+// past it under more load. Only a failing reconnect ever waits it out.
+const subscriptionRestartRetryTime = 30 * time.Second
+
+// subscriptionUpdateWait bounds the wait for updates that must arrive. Only a
+// missing update waits it out.
+const subscriptionUpdateWait = 10 * time.Second
+
 func TestLiveJobUpdateCwd(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -1939,10 +1950,10 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 
 		defer disconnect(jq)
 
-		// a subscription reconnect re-Connect()s with at most
-		// subscriptionReconnectTimeout, so the socket it resubscribes on sits on
-		// the ClientMinRequestTimeout floor, not on the client's original
-		// connect timeout
+		// give the socket a deadline narrower than the client's own
+		// requestTimeout(wrAddWaitConnectTimeout), so a requestWithin that
+		// recomputed the deadline from the client's timeout, rather than
+		// restoring what the socket had, would be caught widening it
 		reconnected := requestTimeout(subscriptionReconnectTimeout)
 		So(reconnected, ShouldEqual, ClientMinRequestTimeout)
 		So(setRecvDeadlineUnderLock(jq, reconnected), ShouldBeNil)
@@ -2551,17 +2562,6 @@ func recvDeadlineUnderLock(jq *Client) (time.Duration, error) {
 
 	return jq.recvDeadline()
 }
-
-// subscriptionRestartRetryTime is the reconnect retry budget for tests whose
-// subscription must survive a manager restart. The budget starts when Stop
-// breaks the long poll, so it has to cover the rest of Stop and the whole of
-// the restart: 1.3-1.6s of a 2s budget with the test pinned to a busy core, and
-// past it under more load. Only a failing reconnect ever waits it out.
-const subscriptionRestartRetryTime = 30 * time.Second
-
-// subscriptionUpdateWait bounds the wait for updates that must arrive. Only a
-// missing update waits it out.
-const subscriptionUpdateWait = 10 * time.Second
 
 // applySubscriptionReconnectTimings sets the reconnect backoff/total-retry-time
 // the server will hand to its clients, for tests exercising reconnection.
