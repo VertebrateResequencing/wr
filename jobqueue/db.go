@@ -986,6 +986,7 @@ type db struct {
 	backupPath           string
 	backupPathTmp        string
 	ch                   codec.Handle
+	encoders             sync.Pool // of the *codec.Encoder encode() reuses
 	backupStopWait       chan bool
 	backupMount          *muxfys.MuxFys
 	backupNotification   chan bool
@@ -1833,16 +1834,38 @@ func (db *db) rerunRecords(encoded []byte) (complete, live []byte, err error) {
 
 // encodeJob encodes the job, under its read lock.
 func (db *db) encodeJob(job *Job) ([]byte, error) {
-	var encoded []byte
-
-	enc := codec.NewEncoderBytes(&encoded, db.ch)
-
 	job.RLock()
 	defer job.RUnlock()
 
-	err := enc.Encode(job)
+	return db.encode(job)
+}
 
-	return encoded, err
+// encode returns v encoded with db.ch, as codec.NewEncoderBytes would, so the
+// caller must hold whatever lock stops v changing meanwhile.
+//
+// It reuses a pooled Encoder instead of making a new one each time because an
+// Encoder keeps the scratch slice it gathers a struct's fields in when the
+// struct has omitempty fields, as Job does: a new Encoder allocates that afresh,
+// 2 KiB for a Job, on every add, state change and archive. A pooled Encoder
+// keeps a reference to the last value it encoded until it is next used, or the
+// pool drops it.
+func (db *db) encode(v any) ([]byte, error) {
+	var encoded []byte
+
+	enc, ok := db.encoders.Get().(*codec.Encoder)
+	if ok {
+		enc.ResetBytes(&encoded)
+	} else {
+		enc = codec.NewEncoderBytes(&encoded, db.ch)
+	}
+
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+
+	db.encoders.Put(enc)
+
+	return encoded, nil
 }
 
 // storeRunningRerunMarks durably rewrites the live record of each of the jobs,
@@ -1887,8 +1910,8 @@ func (db *db) putRunningRerunMark(bucket *bolt.Bucket, job *Job) error {
 		return nil
 	}
 
-	var encoded []byte
-	if err := codec.NewEncoderBytes(&encoded, db.ch).Encode(job); err != nil {
+	encoded, err := db.encode(job)
+	if err != nil {
 		return err
 	}
 
@@ -3810,10 +3833,8 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 
 		var encoded []byte
 
-		enc := codec.NewEncoderBytes(&encoded, db.ch)
-
 		job.RLock()
-		err = enc.Encode(job)
+		encoded, err = db.encode(job)
 		job.RUnlock()
 
 		if err != nil {
@@ -3843,10 +3864,8 @@ func (db *db) prepareNewJobs(jobs []*Job, ignoreAdded bool) (encodedJobs, rgLook
 
 				var encoded []byte
 
-				enc := codec.NewEncoderBytes(&encoded, db.ch)
-
 				job.RLock()
-				err = enc.Encode(job)
+				encoded, err = db.encode(job)
 				job.RUnlock()
 
 				if err != nil {
@@ -4760,13 +4779,9 @@ func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo, stde []byt
 // snapshotJobExit encodes the job and snapshots the fields needed to persist it
 // after exit. On an encoding error nothing should be done.
 func (db *db) snapshotJobExit(job *Job, stdo, stde []byte, forceStorage bool) (jobExitData, error) {
-	var encoded []byte
-
-	enc := codec.NewEncoderBytes(&encoded, db.ch)
-
 	job.RLock()
 	exit := newJobExitData(job, stdo, stde, forceStorage)
-	err := enc.Encode(job)
+	encoded, err := db.encode(job)
 	job.RUnlock()
 
 	if err != nil {
@@ -4947,10 +4962,6 @@ func (db *db) updateJobAfterChangeDurableWithin(job *Job, wait time.Duration) er
 // and coalescing, which keeps the latest arrival, would put the older one on
 // disk while the newer one's waiter was told its write had committed.
 func (db *db) queueJobChange(job *Job, waiter chan error) error {
-	var encoded []byte
-
-	enc := codec.NewEncoderBytes(&encoded, db.ch)
-
 	db.RLock()
 	defer db.RUnlock()
 
@@ -4962,7 +4973,8 @@ func (db *db) queueJobChange(job *Job, waiter chan error) error {
 	job.RLock()
 	defer job.RUnlock()
 
-	if err := enc.Encode(job); err != nil {
+	encoded, err := db.encode(job)
+	if err != nil {
 		return err
 	}
 
