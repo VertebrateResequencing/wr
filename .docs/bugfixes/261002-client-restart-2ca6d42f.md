@@ -210,3 +210,27 @@ request a live but slow manager is still handling.
   docs assume a non-zero Timeout. Test Timeout 0, then document the
   zero-value behaviour or give it a backwards-compatible default.
   - Source: coordinator (owner asked what Timeout defaults to).
+  - Superseded by the owner decision below: Timeout gets a documented
+    default when zero (item below), rather than only documenting it.
+
+### Owner decision (via coordinator, 261002)
+
+Make the client consistent with runners and waits: (1) client.New and
+Connect* stay bounded by Timeout so a down or wrong manager fails fast at
+startup, and a zero Timeout gets a sensible documented default rather than
+blocking for ever; (2) once connected, requests ride out manager outages by
+retrying with backoff up to the manager's RetryTime, reusing the token reload
+and a safe resubmit of an interrupted add (no ErrDuplicateJobs for the app's
+own jobs), logging warnings while retrying; (3) calls that take a context
+honour it, and context-taking variants are added for those that do not,
+keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
+
+- [ ] A zero SchedulerSettings.Timeout (and a zero Connect timeout) leaves the
+  socket with no send deadline, so client.New with the manager down can block
+  instead of failing fast; give zero a documented default.
+- [ ] Once connected, Scheduler requests (SubmitJobs, SubmitJobsAndReturnIDs,
+  GetJobByKey, Find*, KillJobs, RemoveJobs, GetSchedulerAlerts, ...) fail
+  after Timeout while the manager is down instead of retrying with backoff up
+  to the manager's RetryTime, logging warnings, as runners and waits do.
+- [ ] Scheduler calls without a context cannot be given up early once they
+  retry; add context-taking variants, keeping the existing signatures.
