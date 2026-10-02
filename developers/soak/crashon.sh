@@ -31,7 +31,7 @@ lsfrun=$(our_running_jobs)
 t0=$(date +%s%3N); kill -9 "$pid"
 echo "$(date +%s)	stop	rc=crash	pid=$pid	ms=$(( $(date +%s%3N) - t0 ))	kind=crash	manual=crashon-$trig	lsfRUN=$lsfrun	load=$(cut -d' ' -f1 /proc/loadavg)" >> "$d/restarts.tsv"
 cp -f "$SOAK_RUN/log" "$d/manager.log.$(date +%s)" 2>/dev/null
-sleep 3; t0=$(date +%s%3N)
+soak_wait_gone "$pid" "$d" crashon; sleep 3; t0=$(date +%s%3N)
 soak_start_manager "$d"
 rc=$?
 echo "$(date +%s)	start	rc=$rc	pid=$(cat "$SOAK_RUN/pid")	ms=$(( $(date +%s%3N) - t0 ))	manual=crashon-$trig	load=$(cut -d' ' -f1 /proc/loadavg)" >> "$d/restarts.tsv"

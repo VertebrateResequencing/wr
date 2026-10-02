@@ -15,7 +15,7 @@ soak_isolated || die "wr does not resolve --deployment production to our manager
 pid=$(soak_manager_pid) || die "the pid file does not name a process running $SOAK_WR"
 t0=$(date +%s%3N); kill -9 "$pid"
 echo "$(date +%s)	stop	rc=crash	pid=$pid	ms=$(( $(date +%s%3N) - t0 ))	kind=crash	manual=crashafter	load=$(cut -d' ' -f1 /proc/loadavg)" >> "$d/restarts.tsv"
-sleep 3; t0=$(date +%s%3N)
+soak_wait_gone "$pid" "$d" crashafter; sleep 3; t0=$(date +%s%3N)
 soak_start_manager "$d"
 rc=$?
 echo "$(date +%s)	start	rc=$rc	pid=$(cat "$SOAK_RUN/pid")	ms=$(( $(date +%s%3N) - t0 ))	manual=crashafter	load=$(cut -d' ' -f1 /proc/loadavg)" >> "$d/restarts.tsv"

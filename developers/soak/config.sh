@@ -131,6 +131,21 @@ soak_wr_running() {
   pgrep -u "$(id -u)" -f "^(timeout [0-9]+ )?${SOAK_WR//./\\.} manager $1( |\$)"
 }
 
+# soak_wait_gone <pid> <outdir> <who> waits up to 10 min for killed pid to be
+# gone. A manager killed -9 during a held fsync stays, in D state and holding
+# its port, until the fsync returns, so a start before then fails with the port
+# in use. If it is still there at the bound, notes so in watcher.log and fails.
+soak_wait_gone() {
+  local t0=$SECONDS
+  while kill -0 "$1" 2>/dev/null; do
+    if [ $(( SECONDS - t0 )) -ge 600 ]; then
+      echo "$(date +%s) $3: killed manager pid $1 still exists after 600s; starting anyway" >> "$2/watcher.log"
+      return 1
+    fi
+    sleep 1
+  done
+}
+
 # soak_start_manager starts our manager on its existing DB, as wrdev.sh
 # prodsim's restarts do, appending to manager-start.out in output dir $1
 soak_start_manager() {
