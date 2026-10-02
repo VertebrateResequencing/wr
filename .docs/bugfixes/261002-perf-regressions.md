@@ -135,3 +135,9 @@ on this host under `nice -n 19`, compared with benchstat.
     JobCleanupDepth1-8    540.0 ± 0%   2194.0 ± 0%  +306.30% (p=0.002 n=6)
     JobCleanupDepth8-8    596.0 ± 0%   2376.0 ± 0%  +298.66% (p=0.002 n=6)
     ```
+  - Deferred incidental issues found during this item: branch
+    `fix-incidental-darwin-gofmt-95822cb8`, checklist
+    `.docs/bugfixes/261002-incidental-darwin-gofmt-95822cb8.md` (gofmt drift
+    in `jobqueue/server.go` and `jobqueue/modify_validation_test.go`; the
+    darwin test-compile failure is already fixed on develop by #660), entry
+    commit `40bdea47`.
