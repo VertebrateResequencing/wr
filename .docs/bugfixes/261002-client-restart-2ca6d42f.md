@@ -186,3 +186,20 @@ request a live but slow manager is still handling.
     client/client.go; Connect and ConnectWithTokenFile docs in
     jobqueue/client.go; jobqueue/doc.go examples use ConnectUsingConfig and
     the real Add and Serve signatures; CHANGELOG entries under Fixed.
+- [ ] A subscription reconnect adopts the new manager's ServerInfo but keeps
+  the retryWait, retryTime and touchInterval derived from the old one
+  (Client.reconnect in jobqueue/subscription.go), so a manager restarted
+  with different timings leaves the client using stale ones.
+  - Source: coordinator, from the PR's "for the owner" list.
+- [ ] With SchedulerSettings.Timeout over 60s, mangos's req socket may resend
+  a request to a live but slow manager after its default 1-minute resend
+  time (wr never sets OptionRetryTime), so the manager could get the same
+  request twice. Prove with a test whether it can; if so, prevent it,
+  keeping adds idempotent.
+  - Source: coordinator, from the PR's "for the owner" list.
+- [ ] A SubmitJobs whose add was in flight when the manager stopped, partly
+  persisted and then resent to the restarted manager returns
+  ErrDuplicateJobs for jobs only that call added. Its outcome should look
+  like success, or be a clear typed error saying which jobs were added if
+  success is not safe, and be documented.
+  - Source: coordinator, from the PR's "for the owner" list.
