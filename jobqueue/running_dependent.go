@@ -57,29 +57,33 @@ package jobqueue
 // manager that crashes after the add's write, before it replies, would
 // otherwise recover such a dependent complete, never to run again, and the
 // client's retry of the add finds the new jobs already there. So from before it
-// writes anything until it has done the above, the add guards the live
-// dependents it read that are still queued (rerunGuard), and between them the
-// add's write and a dependent's archive, whichever of their transactions comes
-// second, keep it live:
+// reads its dependents until it has done the above, the add holds a rerunGuard,
+// and between them the add's write and a dependent's archive, whichever of their
+// transactions comes second, keep it live:
 //
-//   - the add's write, in the transaction that stores its jobs in the live
-//     bucket, puts back there, as a job to run again, any of them it finds
-//     archived (db.putBackArchivedDependentsTx);
-//   - an archive, in its own transaction, keeps a guarded job live to run again
-//     if the add's first job is already in the live bucket (Job.archiveOutcome),
-//     the job's item leaving the queue as normal for the add to queue it again.
+//   - every archive while the guard is held notes its job's key on the guard,
+//     and the add's write, in the transaction that stores its jobs in the live
+//     bucket, puts back there, as a job to run again, any of those that is a
+//     live dependent it read and is no longer live
+//     (db.putBackArchivedDependentsTx);
+//   - an archive, in its own transaction, keeps a live dependent the add read
+//     live to run again if the add's first job is already in the live bucket
+//     (rerunGuards.archiving), the job's item leaving the queue as normal for the
+//     add to queue it again.
 //
 // Neither needs the job's live record to carry anything, so no later rewrite of
 // that record from memory, such as its start, can undo it, and a dependent that
 // was queued rather than running when the add read it, but ran and completed
-// before the add got to it, is covered too. The add's first job is the smallest
-// key it stores, so an add big enough to be stored in several transactions
-// (storeBatched) stores it, and puts back its archived dependents, in its first
-// live bucket transaction. An add that fails after its write, before it queues
-// such a job again, leaves it live but out of the queue. A retry of the add then
-// reads it as a live dependent that has left the queue, and queues it without
-// storing it again (archivedToRerun); without a retry it stays out of the queue
-// until a restart, which runs it after the new member, as the write asks.
+// before the add got to it, is covered too. Neither does any database lookup
+// per dependent: the add's write looks up only the dependents archived while
+// it was in flight. The add's first job is the smallest key it stores, so an
+// add big enough to be stored in several transactions (storeBatched) stores it,
+// and puts back its archived dependents, in its first live bucket transaction.
+// An add that fails after its write, before it queues such a job again, leaves
+// it live but out of the queue. A retry of the add then reads it as a live
+// dependent that has left the queue, and queues it without storing it again
+// (archivedToRerun); without a retry it stays out of the queue until a restart,
+// which runs it after the new member, as the write asks.
 //
 // How a marked run ends decides what the mark does:
 //
@@ -332,43 +336,61 @@ func (s *Server) storeRerunMarks(ctx context.Context, marks rerunMarks) {
 	}
 }
 
-// rerunGuard is an add's hold on the live dependents it read, from before it
-// writes anything until it has given them its dependencies (see
+// rerunGuard is an add's hold on the live dependents it reads, from before it
+// reads them until it has given them its dependencies (see
 // running_dependent.go). An archive of one of them in that time keeps it live to
 // run again if the add's write has committed, which the archive's transaction
 // tells by member, the first job the add stores in the live bucket, being there.
+// Otherwise the archive notes it, for the add's write to put back.
 type rerunGuard struct {
+	mu sync.Mutex
+
+	// member and keys, the keys of the live dependents the add read, are set
+	// once it has read them and before it writes (setDependents).
 	member []byte
-	jobs   []*Job
+	keys   []string
+	known  bool
 
-	mu   sync.Mutex
-	kept map[string]bool
+	// dependents is keys as a set, made only once an archive needs it.
+	dependents map[string]bool
+
+	archived map[string]bool
+	kept     map[string]bool
 }
 
-// release takes g off the jobs guardDependents put it on.
-func (g *rerunGuard) release() {
-	for _, job := range g.jobs {
-		job.Lock()
-
-		job.rerunGuards = slices.DeleteFunc(job.rerunGuards, func(h *rerunGuard) bool { return h == g })
-		if len(job.rerunGuards) == 0 {
-			job.rerunGuards = nil
-		}
-
-		job.Unlock()
-	}
-}
-
-// keeps reports whether g's add has stored its jobs, as seen in a transaction
-// whose live bucket is live, and if so notes that the keyed job's archive keeps
-// it live for the add to queue again.
-func (g *rerunGuard) keeps(live *bolt.Bucket, key string) bool {
-	if live.Get(g.member) == nil {
-		return false
-	}
-
+// setDependents records the keys of the live dependents g's add read, and the
+// key of the first job it will store in the live bucket.
+func (g *rerunGuard) setDependents(keys []string, member []byte) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
+	g.keys, g.member, g.known = keys, member, true
+}
+
+// isDependentLocked reports whether the key is one of g's dependents. g.mu must
+// be held.
+func (g *rerunGuard) isDependentLocked(key string) bool {
+	if g.dependents == nil {
+		g.dependents = make(map[string]bool, len(g.keys))
+		for _, k := range g.keys {
+			g.dependents[k] = true
+		}
+	}
+
+	return g.dependents[key]
+}
+
+// keeps reports whether the keyed job is one of g's dependents and g's add has
+// stored its jobs, as seen in a transaction whose live bucket is live, and if
+// so notes that the job's archive keeps it live for the add to queue again. An
+// archive before setDependents is never kept: the add has yet to write.
+func (g *rerunGuard) keeps(live *bolt.Bucket, key string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if !g.known || live.Get(g.member) == nil || !g.isDependentLocked(key) {
+		return false
+	}
 
 	if g.kept == nil {
 		g.kept = make(map[string]bool)
@@ -377,6 +399,38 @@ func (g *rerunGuard) keeps(live *bolt.Bucket, key string) bool {
 	g.kept[key] = true
 
 	return true
+}
+
+// noteArchived notes that the keyed job's archive took it out of the live
+// bucket while g was held, if it may be one of g's dependents.
+func (g *rerunGuard) noteArchived(key string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.known && !g.isDependentLocked(key) {
+		return
+	}
+
+	g.archived[key] = true
+}
+
+// atRiskKeys returns the keys of g's dependents archived while g was held, the
+// only ones the add's write may find gone from the live bucket. Called in that
+// write's transaction, it misses none: any archive whose transaction bolt
+// commits first has noted its key by then.
+func (g *rerunGuard) atRiskKeys() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	var keys []string
+
+	for key := range g.archived {
+		if g.isDependentLocked(key) {
+			keys = append(keys, key)
+		}
+	}
+
+	return keys
 }
 
 // keptLive reports whether an archive kept the keyed job live because of g.
@@ -391,25 +445,77 @@ func (g *rerunGuard) keptLive(key string) bool {
 	return g.kept[key]
 }
 
-// guardDependents returns the storeNewJobsGuarded callback that puts g on the
-// in-memory jobs of the dependents it is given that are still queued.
-func (s *Server) guardDependents(g *rerunGuard) func(dependents []*Job, member []byte) {
-	return func(dependents []*Job, member []byte) {
-		g.member = member
+// rerunGuards are the rerunGuards of the adds in flight. An archive's
+// transaction looks at them (archiving) with mu held, so a guard registered
+// before an add reads its dependents misses no archive the read did not see:
+// an archive that looked before the registration is either the one whose
+// transaction was still open then, whose keys are scanKeys, or one that had
+// committed, which bolt orders before the read.
+type rerunGuards struct {
+	mu     sync.Mutex
+	guards map[*rerunGuard]struct{}
 
-		for _, dependent := range dependents {
-			job := s.queuedJob(dependent.Key())
-			if job == nil {
-				continue
-			}
+	// scanTx is the write transaction of the last archive that looked, and
+	// scanKeys the keys archived in it.
+	scanTx   int
+	scanKeys []string
+}
 
-			job.Lock()
-			job.rerunGuards = append(job.rerunGuards, g)
-			job.Unlock()
+// register returns a new guard, held until release, for an add about to read
+// its dependents.
+func (r *rerunGuards) register() *rerunGuard {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-			g.jobs = append(g.jobs, job)
+	g := &rerunGuard{archived: make(map[string]bool, len(r.scanKeys))}
+	for _, key := range r.scanKeys {
+		g.archived[key] = true
+	}
+
+	if r.guards == nil {
+		r.guards = make(map[*rerunGuard]struct{})
+	}
+
+	r.guards[g] = struct{}{}
+
+	return g
+}
+
+// release stops g seeing archives, once its add has given its dependents their
+// dependencies.
+func (r *rerunGuards) release(g *rerunGuard) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.guards, g)
+}
+
+// archiving is called by the archive of the keyed job, in write transaction
+// txID whose live bucket is live. It reports whether a guard keeps the job live
+// for its add to run again (see rerunGuard.keeps); if none does, each notes the
+// key for its add's write.
+func (r *rerunGuards) archiving(txID int, live *bolt.Bucket, key string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if txID != r.scanTx {
+		r.scanTx = txID
+		r.scanKeys = r.scanKeys[:0]
+	}
+
+	r.scanKeys = append(r.scanKeys, key)
+
+	for g := range r.guards {
+		if g.keeps(live, key) {
+			return true
 		}
 	}
+
+	for g := range r.guards {
+		g.noteArchived(key)
+	}
+
+	return false
 }
 
 // markRerunAfterRun marks the job to run again once its run ends. The caller
@@ -480,15 +586,17 @@ func (j *Job) endArchive() bool {
 }
 
 // archiveOutcome returns what the archive of the job's successful completion,
-// in a transaction whose live bucket is live, must do with its live record. A
-// job marked to run again is kept live, and its item stays in the queue
-// (archiveKeptLive). So is a job an add guarding it has stored its jobs for,
-// making it a dependent whose run ended before the add could give it its
+// in write transaction txID whose live bucket is live, must do with its live
+// record. A job marked to run again is kept live, and its item stays in the
+// queue (archiveKeptLive). So is a job an add guarding it has stored its jobs
+// for, making it a dependent whose run ended before the add could give it its
 // dependencies; but its item is removed like that of any archived job
 // (archiveRemovedLive), since the add, which will find it gone, queues it again,
 // as it would one whose archive came before its write (see rerunGuard.keeps).
-// Any other job leaves the live bucket, and keepLive is false.
-func (j *Job) archiveOutcome(live *bolt.Bucket) (outcome archiveOutcome, keepLive bool) {
+// Any other job leaves the live bucket, and keepLive is false, the adds in
+// flight noting that their writes may have to put the job back (see
+// rerunGuards.archiving).
+func (j *Job) archiveOutcome(txID int, live *bolt.Bucket, guards *rerunGuards) (outcome archiveOutcome, keepLive bool) {
 	j.RLock()
 	defer j.RUnlock()
 
@@ -496,19 +604,7 @@ func (j *Job) archiveOutcome(live *bolt.Bucket) (outcome archiveOutcome, keepLiv
 		return archiveKeptLive, true
 	}
 
-	if len(j.rerunGuards) == 0 {
-		return archiveRemovedLive, false
-	}
-
-	key := j.Key()
-
-	for _, g := range j.rerunGuards {
-		if g.keeps(live, key) {
-			return archiveRemovedLive, true
-		}
-	}
-
-	return archiveRemovedLive, false
+	return archiveRemovedLive, guards.archiving(txID, live, j.Key())
 }
 
 // queuedJob returns the in-memory job of the keyed queue item, or nil if there is

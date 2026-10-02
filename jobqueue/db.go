@@ -282,6 +282,21 @@ var archiveTxObserver func(txID int, key []byte)
 //nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
 var dependentsReadHook func()
 
+// archiveGuardsSeenHook, when non-nil, is called with the key of the job an
+// archive's transaction is writing once it has looked at the adds in flight
+// (rerunGuards.archiving), before the transaction commits. It is nil in
+// production and exists so tests can have an add start in between.
+//
+//nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
+var archiveGuardsSeenHook func(key []byte)
+
+// dependentsGuardHook, when non-nil, is called by storeNewJobs once the add has
+// read its live and archived dependents and before it guards them. It is nil in
+// production and exists so tests can have a dependent finish in between.
+//
+//nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
+var dependentsGuardHook func()
+
 // jobChangeEncodedHook, when non-nil, is called by queueJobChange once it has
 // encoded the job and before it queues the write. It is nil in production and
 // exists so tests can change the job in between.
@@ -977,6 +992,7 @@ type db struct {
 	backupWait           time.Duration
 	backupTickerStop     chan struct{} // closed by close() to stop the backup ticker
 	bolt                 *bolt.DB
+	rerunGuards          rerunGuards
 	envcache             *lru.ARCCache[string, []byte]
 	updatingAfterJobExit atomic.Int64
 	// archivedDecodes counts how many archived jobs decodeArchivedJob has actually
@@ -1736,7 +1752,12 @@ func (db *db) archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) (archiveO
 		archiveTxObserver(tx.ID(), key)
 	}
 
-	outcome, keepLive := job.archiveOutcome(tx.Bucket(bucketJobsLive))
+	outcome, keepLive := job.archiveOutcome(tx.ID(), tx.Bucket(bucketJobsLive), &db.rerunGuards)
+
+	if archiveGuardsSeenHook != nil {
+		archiveGuardsSeenHook(key)
+	}
+
 	if keepLive {
 		var err error
 		if encoded, err = db.keepLiveForRerunTx(tx, key, encoded); err != nil {
@@ -2356,12 +2377,13 @@ func (db *db) archiveCompletion(key string, job *Job) (archiveOutcome, error) {
 }
 
 // storeNewJobsGuarded is storeNewJobs, but if the add read any live dependents,
-// guard is first called with them and the key of the first job the
-// add will store in the live bucket, before anything is written. The write then
-// puts back in the live bucket, in the same transaction as that job, any of them
-// whose run has since been archived (see running_dependent.go).
+// guard, registered before the add reads them (rerunGuards.register), is given
+// their keys and the key of the first job the add will store in the live
+// bucket, before anything is written. The write then puts back in the live
+// bucket, in the same transaction as that job, any of them whose run guard saw
+// archived (see running_dependent.go). With no guard, it looks at all of them.
 func (db *db) storeNewJobsGuarded(ctx context.Context, jobs []*Job, ignoreAdded bool,
-	guard func(dependents []*Job, member []byte)) (storedNewJobs, error) {
+	guard *rerunGuard) (storedNewJobs, error) {
 	var stored storedNewJobs
 
 	encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs,
@@ -2372,17 +2394,11 @@ func (db *db) storeNewJobsGuarded(ctx context.Context, jobs []*Job, ignoreAdded 
 		return stored, err
 	}
 
-	if len(jobsToUpdate) > 0 {
-		guard(jobsToUpdate, firstKey(encodedJobs))
-	}
-
-	if dependentsReadHook != nil {
-		dependentsReadHook()
-	}
+	atRisk := guardDependentsRead(guard, jobsToUpdate, firstKey(encodedJobs))
 
 	if len(encodedJobs) > 0 {
 		stores := db.newJobStores(encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs)
-		stored.dependents.putBack = db.putBackArchivedDependentsWith(stores, jobsToUpdate)
+		stored.dependents.putBack = db.putBackArchivedDependentsWith(stores, atRisk)
 		err = db.storeNewJobStores(ctx, stores)
 	}
 
@@ -2391,6 +2407,37 @@ func (db *db) storeNewJobsGuarded(ctx context.Context, jobs []*Job, ignoreAdded 
 	}
 
 	return stored, err
+}
+
+// guardDependentsRead gives guard the keys of the dependents an add read, and
+// returns what reports, in the add's write transaction, the keys of those that
+// may have left the live bucket: nil if it read none, or all of them if there is
+// no guard. The test hooks around it let a dependent finish either side of it.
+func guardDependentsRead(guard *rerunGuard, dependents []*Job, member []byte) func() []string {
+	if dependentsGuardHook != nil {
+		dependentsGuardHook()
+	}
+
+	var atRisk func() []string
+
+	keys := jobKeys(dependents)
+
+	switch {
+	case guard != nil:
+		guard.setDependents(keys, member)
+
+		if len(keys) > 0 {
+			atRisk = guard.atRiskKeys
+		}
+	case len(keys) > 0:
+		atRisk = func() []string { return keys }
+	}
+
+	if dependentsReadHook != nil {
+		dependentsReadHook()
+	}
+
+	return atRisk
 }
 
 // firstKey returns the smallest of the keys of encodes, which is the first
@@ -2408,11 +2455,11 @@ func firstKey(encodes sobsd) []byte {
 }
 
 // putBackArchivedDependentsWith makes the live bucket store of stores also, in
-// each transaction it writes in, put back the archived dependents (see
-// putBackArchivedDependentsTx), returning the set it will record their keys in.
-// It returns nil if there are no dependents.
-func (db *db) putBackArchivedDependentsWith(stores []newJobStore, dependents []*Job) map[string]bool {
-	if len(dependents) == 0 {
+// each transaction it writes in, put back the archived dependents atRisk reports
+// (see putBackArchivedDependentsTx), returning the set it will record their keys
+// in. It returns nil if there is no atRisk.
+func (db *db) putBackArchivedDependentsWith(stores []newJobStore, atRisk func() []string) map[string]bool {
+	if atRisk == nil {
 		return nil
 	}
 
@@ -2425,25 +2472,25 @@ func (db *db) putBackArchivedDependentsWith(stores []newJobStore, dependents []*
 			return err
 		}
 
-		return db.putBackArchivedDependentsTx(tx, dependents, putBack)
+		return db.putBackArchivedDependentsTx(tx, atRisk(), putBack)
 	}
 
 	return putBack
 }
 
 // putBackArchivedDependentsTx puts back in the live bucket, as rerunRecords' live
-// record of its complete record, each of the dependents an add read live whose
-// run has since been archived, recording its key in putBack. It runs in the
-// transaction that stores the add's jobs, so a crash cannot store them without
-// also doing this: their dep groups gained a member after these runs started,
-// so they must run again. Doing it again in a later transaction of the same add
-// finds them live and does nothing.
-func (db *db) putBackArchivedDependentsTx(tx *bolt.Tx, dependents []*Job, putBack map[string]bool) error {
+// record of its complete record, each of the keyed dependents an add read live
+// whose run has since been archived, recording its key in putBack. It runs in
+// the transaction that stores the add's jobs, so a crash cannot store them
+// without also doing this: their dep groups gained a member after these runs
+// started, so they must run again. Doing it again in a later transaction of the
+// same add finds them live and does nothing.
+func (db *db) putBackArchivedDependentsTx(tx *bolt.Tx, keys []string, putBack map[string]bool) error {
 	live := tx.Bucket(bucketJobsLive)
 	complete := tx.Bucket(bucketJobsComplete)
 
-	for _, job := range dependents {
-		key := []byte(job.Key())
+	for _, k := range keys {
+		key := []byte(k)
 		if live.Get(key) != nil {
 			continue
 		}
@@ -2462,7 +2509,7 @@ func (db *db) putBackArchivedDependentsTx(tx *bolt.Tx, dependents []*Job, putBac
 			return err
 		}
 
-		putBack[string(key)] = true
+		putBack[k] = true
 	}
 
 	return nil
@@ -3669,7 +3716,7 @@ func (db *db) retrieveLimitGroup(ctx context.Context, group string) *limiter.Gro
 func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 	jobsToQueue, jobsToUpdate []*Job, alreadyAdded DuplicateBreakdown, err error,
 ) {
-	stored, err := db.storeNewJobsGuarded(ctx, jobs, ignoreAdded, func([]*Job, []byte) {})
+	stored, err := db.storeNewJobsGuarded(ctx, jobs, ignoreAdded, nil)
 
 	return stored.jobsToQueue, stored.dependents.jobs, stored.alreadyAdded, err
 }

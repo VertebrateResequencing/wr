@@ -6562,10 +6562,10 @@ func (s *Server) createJobs(
 	//
 	// Until it has given the live dependents it reads their new dependencies, it
 	// guards them (see running_dependent.go).
-	guard := &rerunGuard{}
-	defer guard.release()
+	guard := s.db.rerunGuards.register()
+	defer s.db.rerunGuards.release(guard)
 
-	stored, err := s.db.storeNewJobsGuarded(ctx, inputJobs, ignoreComplete, s.guardDependents(guard))
+	stored, err := s.db.storeNewJobsGuarded(ctx, inputJobs, ignoreComplete, guard)
 
 	stored.dependents.guard = guard
 

@@ -240,3 +240,50 @@ home directory: `make lint`, `make test`, `CGO_ENABLED=1 make race`.
   test's held write transaction caught the start's write, not the archive's,
   and the run never reached its archive. It passed 3 of 3 alone under `-race`
   and the next full `make race` passed (840 passed).
+- [x] 12. Speed regression from item 6 (f4eb134a), measured in PR #662
+  (`.docs/perf/261001-version-comparison.md` on branch `add-make-speed`):
+  `dep-granularity-check`'s single `wr add` of a member into a 3000-member dep
+  group with 30000 waiters is +12% at 12 rounds against develop (479 -> 537 ms,
+  p<0.001), and +18.7% against f4eb134a's parent (470 -> 558 ms, p=0.002).
+  The add's write transaction looks up every dependent it read
+  (`putBackArchivedDependentsWith`/`putBackArchivedDependentsTx`), not only
+  those whose archive could have committed since the read.
+  - Red command (8 interleaved rounds of each build, compared by benchstat):
+    `CGO_ENABLED=1 go test -tags netgo ./jobqueue -run '^$' -bench 'BenchmarkAddDepGroupMember$' -benchtime 10x`
+
+    ```text
+    4b743a37 (base)  334.3m ± 7%
+    31d5ad10 (HEAD)  410.4m ± 6%  +22.79% (p=0.000 n=8)
+    fix              340.1m ± 3%  ~ (p=0.382 n=8)
+    ```
+
+  - Root cause: item 6 cost the add work for every dependent it read, about
+    40 ms per add for the put-back's bolt Gets and 50 ms for guarding:
+    `guardDependents` looked up each dependent's queue item and locked the job
+    to attach a guard, and `rerunGuard.release` locked each job again.
+  - Fix (`jobqueue/{running_dependent.go,db.go,server.go,job.go}`): the add
+    registers its guard on the db (`rerunGuards.register`) before it reads its
+    dependents, and releases it once it has given them their dependencies.
+    Every archive transaction notes its key on each registered guard under the
+    registry lock (`rerunGuards.archiving`), or keeps the job live if it is one
+    of a guard's dependents and that guard's first job is already live. The
+    add's write puts back only the noted keys that are its dependents
+    (`rerunGuard.atRiskKeys`). A guard registered while an archive's
+    transaction is open takes that transaction's keys (`scanKeys`), since
+    bolt's serial write transactions make it the only archive that both looked
+    before the registration and can commit after the read. `Job.rerunGuards`
+    and the per-job attach and release are gone.
+  - Tests: `jobqueue/crash_mid_add_guard_test.go`:
+    `TestCrashMidAddArchivedBeforeGuard` (the archive commits between the read
+    and the guard learning the dependents, with or without its item removed),
+    `TestCrashMidAddArchiveOpenAtStart` (the archive's transaction is open when
+    the add registers), and `TestRerunGuardKeepsOnlyDependentsLive` (an
+    unrelated job archived after the add's write leaves the live bucket).
+    Benchmark: `BenchmarkAddDepGroupMember`
+    (`jobqueue/dep_group_add_bench_test.go`).
+  - Mutation evidence: `atRiskKeys` returning nothing fails
+    `TestCrashMidAddRerun`, `TestCrashMidAddQueuedRerun` and both new crash
+    tests. Dropping the `scanKeys` seed fails `ArchiveOpenAtStart`. Not noting
+    before the dependents are known fails `ArchivedBeforeGuard`. `keeps`
+    always false fails the two item 6 tests. Dropping the dependent check in
+    `keeps` fails `KeepsOnlyDependentsLive`.
