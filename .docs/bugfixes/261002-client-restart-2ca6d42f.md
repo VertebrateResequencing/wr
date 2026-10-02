@@ -115,7 +115,7 @@ request a live but slow manager is still handling.
   - Not fixed, separate: reconnect copies ServerInfo but not the retryWait,
     retryTime and touchInterval derived from it, which only drift if the
     restarted manager has different timing settings.
-- [ ] Budget-bounded requests (requestWithinLocked in jobqueue/client.go:
+- [x] Budget-bounded requests (requestWithinLocked in jobqueue/client.go:
   the reconnect resubscribe, the rejected-replacement unsubscribe, and
   Unsubscribe via requestWithinIncludingLockWait) narrow only the receive
   deadline, so on a dropped pipe their Send can block for the client's full
@@ -123,6 +123,28 @@ request a live but slow manager is still handling.
   reconnect path was accidentally capped near 1s; now it can overrun by up
   to the client's timeout, so this is fixed here.
   - Source: reviewer of the item above.
+  - Red command: `timeout 300 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    go test -tags netgo -count 1 ./jobqueue/ -run
+    '^TestRequestWithinBoundsSendToGoneManager$'`, exit 1 (a 300ms-bounded
+    ping, 20s connect timeout, pipe detached after Stop):
+
+    ```
+    Line 348:            So(returned, ShouldBeTrue)
+    Expected: true
+    Actual:   false
+    --- FAIL: TestRequestWithinBoundsSendToGoneManager (5.31s)
+    ```
+  - Fixed: jobqueue/client.go requestWithinLocked narrows each of the send
+    and receive deadlines that is wider than the bound (never widening),
+    re-narrows both to the remainder for the token-reload resend, and
+    restores every narrowed one, registering the restore before narrowing.
+    A bounded request can still take up to about twice its bound (send and
+    receive each get it); the requestWithin doc says so. Ping now fails on
+    its own timeout against a gone manager; its callers were checked.
+    Tests: TestRequestWithinBoundsSendToGoneManager (client_connect_test.go),
+    send-deadline checks in TestClientTokenReload's bounded-resend case, and
+    part-way and send-only restore-failure cases in
+    TestRequestWithinReportsRestoreFailure; nine mutants checked killed.
 - [ ] Scheduler.WaitForRunning returns the first poll error when the manager
   goes down, while WaitForJobs rides out a restart for the server's
   RetryTime; a long-running app waiting for a job to start has to restart

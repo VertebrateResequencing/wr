@@ -53,6 +53,15 @@ const (
 	tokenReloadSlowRejection = 600 * time.Millisecond
 )
 
+// deadlinesSet returns, in order, every value set on the socket for option, one
+// of its send or receive deadlines.
+func (s *slowFirstReplySocket) deadlinesSet(option string) []time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return append([]time.Duration(nil), s.deadlines[option]...)
+}
+
 func TestClientTokenReload(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -203,10 +212,14 @@ func TestClientTokenReload(t *testing.T) {
 			So(errors.Is(err, mangos.ErrRecvTimeout), ShouldBeTrue)
 			So(jq.tokenReloads, ShouldEqual, 1)
 
-			deadlines := slowSock.recvDeadlines()
-			So(len(deadlines), ShouldEqual, 3)
-			So(deadlines[0], ShouldEqual, tokenReloadBoundedBudget)
-			So(deadlines[1], ShouldBeLessThanOrEqualTo, tokenReloadBoundedBudget-tokenReloadSlowRejection)
+			// each deadline is narrowed to the bound, narrowed again for the
+			// resend to what is left of it, then restored
+			for _, option := range []string{mangos.OptionRecvDeadline, mangos.OptionSendDeadline} {
+				deadlines := slowSock.deadlinesSet(option)
+				So(len(deadlines), ShouldEqual, 3)
+				So(deadlines[0], ShouldEqual, tokenReloadBoundedBudget)
+				So(deadlines[1], ShouldBeLessThanOrEqualTo, tokenReloadBoundedBudget-tokenReloadSlowRejection)
+			}
 		})
 
 		Convey("a client given a raw token does not look for a new one", func() {
@@ -280,15 +293,15 @@ func waitForPing(jq *Client) bool {
 }
 
 // slowFirstReplySocket is the socket it wraps, except that the first reply it
-// receives is handed over only after delay, and it records every receive
-// deadline set on it.
+// receives is handed over only after delay, and it records every send and
+// receive deadline set on it.
 type slowFirstReplySocket struct {
 	mangos.Socket
 	delay time.Duration
 
 	mu        sync.Mutex
 	received  bool
-	deadlines []time.Duration
+	deadlines map[string][]time.Duration
 }
 
 func (s *slowFirstReplySocket) Recv() ([]byte, error) {
@@ -307,20 +320,17 @@ func (s *slowFirstReplySocket) Recv() ([]byte, error) {
 }
 
 func (s *slowFirstReplySocket) SetOption(name string, value any) error {
-	if d, ok := value.(time.Duration); ok && name == mangos.OptionRecvDeadline {
+	if d, ok := value.(time.Duration); ok {
 		s.mu.Lock()
-		s.deadlines = append(s.deadlines, d)
+		if s.deadlines == nil {
+			s.deadlines = make(map[string][]time.Duration)
+		}
+
+		s.deadlines[name] = append(s.deadlines[name], d)
 		s.mu.Unlock()
 	}
 
 	return s.Socket.SetOption(name, value)
-}
-
-func (s *slowFirstReplySocket) recvDeadlines() []time.Duration {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return append([]time.Duration(nil), s.deadlines...)
 }
 
 // subscribedTokenFileClient connects to the manager at addr with its token file
@@ -355,4 +365,10 @@ func socketDeadlines(jq *Client) (time.Duration, time.Duration) {
 	So(ok, ShouldBeTrue)
 
 	return sendDeadline, recv
+}
+
+// recvDeadline returns the receive deadline the client's socket currently
+// has. It reads c.sock, so callers must hold the client's lock.
+func (c *Client) recvDeadline() (time.Duration, error) {
+	return c.deadline(mangos.OptionRecvDeadline)
 }
