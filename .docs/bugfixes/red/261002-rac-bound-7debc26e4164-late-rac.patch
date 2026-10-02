@@ -1,0 +1,12 @@
+diff --git a/jobqueue/reliable4_rac_bound_test.go b/jobqueue/reliable4_rac_bound_test.go
+index 82acac74..5a06243f 100644
+--- a/jobqueue/reliable4_rac_bound_test.go
++++ b/jobqueue/reliable4_rac_bound_test.go
+@@ -100,6 +100,7 @@ func TestReliable4RacBoundedBySchedulable(t *testing.T) {
+ 		allitemdata := itemData(server.q.AllItems())
+ 
+ 		groups := server.buildSchedulerGroups(ctx, server.q, allitemdata, "true")
++		server.readyAddedCallback(ctx, server.q, allitemdata) // RED HOOK: a late server-initiated rac (e.g. rescheduleReadyAfterRecovery) landing in the measured window
+ 		scanWork := int(server.racScanWork.Load())
+ 
+ 		var scheduled, blocked *sgroup

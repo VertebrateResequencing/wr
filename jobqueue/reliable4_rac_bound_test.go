@@ -71,6 +71,20 @@ func TestReliable4RacBoundedBySchedulable(t *testing.T) {
 
 		defer server.Stop(ctx, true)
 
+		// pause the server before adding anything, as memoBacklogServer does and
+		// for the same reason. racScanWork is one counter per server, and this
+		// server has no runner command, so a rac of its own takes
+		// buildSchedulerGroups' rc == "" path and counts every ready job (14). Such
+		// a rac can start after the wait below: the one Add triggers may not have
+		// set racRunning yet, and recovery's rescheduleReadyAfterRecovery can fire
+		// after Serving() has closed. Pausing makes the server's own racs return
+		// before they touch the counter; it does not gate Add, and the
+		// buildSchedulerGroups calls measured below never consult it, so every
+		// unit counted is one this test caused.
+		paused, err := server.Pause()
+		So(err, ShouldBeNil)
+		So(paused, ShouldBeTrue)
+
 		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)
 
@@ -115,6 +129,13 @@ func TestReliable4RacBoundedBySchedulable(t *testing.T) {
 		Convey("only the schedulable (limit) jobs incur the expensive prepareReadyJob work", func() {
 			// pre-fix this would be highCount+lowCount (the whole backlog).
 			So(scanWork, ShouldEqual, limit)
+		})
+
+		Convey("a rac the server starts itself does not add to the measured work", func() {
+			// a late server-initiated rac, as rescheduleReadyAfterRecovery would
+			// start, landing after the measured cycle.
+			server.readyAddedCallback(ctx, server.q, allitemdata)
+			So(int(server.racScanWork.Load()), ShouldEqual, limit)
 		})
 
 		Convey("exactly the limit is scheduled and it is the highest-priority group", func() {
