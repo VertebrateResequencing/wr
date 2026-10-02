@@ -10,6 +10,9 @@ import collections, glob, os, re, sys
 
 d = sys.argv[1]
 R = os.path.join(d, 'rundep')
+if not os.path.isdir(R):
+    print(f'no rundep run in {d}')
+    sys.exit(0)
 runs = collections.defaultdict(list)  # name -> [ {s,e,rc,host,pid} ]
 open_ = {}
 rows = []
