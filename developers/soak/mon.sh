@@ -7,8 +7,8 @@
 [ $# -eq 1 ] || die "usage: mon.sh <outdir>"
 d=$(soak_outdir "$1") || exit 1
 declare -A seen
-emit_new() { local f=$1 tag=$2 n; n=$(wc -l < "$f" 2>/dev/null || echo 0); if [ "$n" -gt "${seen[$f]:-0}" ]; then tail -n $(( n - ${seen[$f]:-0} )) "$f" | sed "s/^/$tag /" | cut -c1-400; seen[$f]=$n; fi; }
-for f in "$d/restarts.tsv" "$d/ramp.log" "$d/watcher.log" "$d/stall.log" "$d/hook.log"; do seen[$f]=$(wc -l < "$f" 2>/dev/null || echo 0); done
+emit_new() { local f=$1 tag=$2 n; n=$({ wc -l < "$f"; } 2>/dev/null || echo 0); if [ "$n" -gt "${seen[$f]:-0}" ]; then tail -n $(( n - ${seen[$f]:-0} )) "$f" | sed "s/^/$tag /" | cut -c1-400; seen[$f]=$n; fi; }
+for f in "$d/restarts.tsv" "$d/ramp.log" "$d/watcher.log" "$d/stall.log" "$d/hook.log"; do seen[$f]=$({ wc -l < "$f"; } 2>/dev/null || echo 0); done
 i=0
 while soak_alive "$d" || pgrep -f 'wrdev.sh prodsim' >/dev/null; do
   emit_new "$d/restarts.tsv" RESTART; emit_new "$d/ramp.log" RAMP; emit_new "$d/watcher.log" WATCH; emit_new "$d/stall.log" STALL; emit_new "$d/hook.log" HOOK
