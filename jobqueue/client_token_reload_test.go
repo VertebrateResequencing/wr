@@ -149,6 +149,35 @@ func TestClientTokenReload(t *testing.T) {
 			So(update.Kind, ShouldEqual, JobUpdateResync)
 		})
 
+		Convey("clients whose subscriptions ride out a clean restart keep their own request deadlines", func() {
+			shortTimeout := 3 * subscriptionReconnectTimeout
+			longTimeout := ClientMinRequestTimeout + 15*time.Second
+
+			shortJQ, sub := subscribedTokenFileClient(ctx, addr, serverConfig, shortTimeout)
+			defer disconnect(shortJQ)
+			defer sub.Unsubscribe()
+
+			longJQ, longSub := subscribedTokenFileClient(ctx, addr, serverConfig, longTimeout)
+			defer disconnect(longJQ)
+			defer longSub.Unsubscribe()
+
+			server, _ = cleanlyRestartManager(ctx, server, serverConfig)
+
+			for _, s := range []*Subscription{sub, longSub} {
+				update := receiveSubscriptionUpdate(s, tokenReloadPingWait)
+				So(update, ShouldNotBeNil)
+				So(update.Kind, ShouldEqual, JobUpdateResync)
+			}
+
+			send, recv := socketDeadlines(shortJQ)
+			So(send, ShouldEqual, shortTimeout)
+			So(recv, ShouldEqual, ClientMinRequestTimeout)
+
+			send, recv = socketDeadlines(longJQ)
+			So(send, ShouldEqual, longTimeout)
+			So(recv, ShouldEqual, longTimeout)
+		})
+
 		Convey("a bounded request resent after a reload gets only what is left of its bound", func() {
 			So(os.WriteFile(serverConfig.TokenFile, mismatchedToken(token), ownerReadWrite), ShouldBeNil)
 
@@ -292,4 +321,38 @@ func (s *slowFirstReplySocket) recvDeadlines() []time.Duration {
 	defer s.mu.Unlock()
 
 	return append([]time.Duration(nil), s.deadlines...)
+}
+
+// subscribedTokenFileClient connects to the manager at addr with its token file
+// and the given timeout, and subscribes to a job key, so the subscription's
+// reconnect is what brings the client back after a restart.
+func subscribedTokenFileClient(ctx context.Context, addr string, serverConfig ServerConfig,
+	timeout time.Duration,
+) (*Client, *Subscription) {
+	jq, err := ConnectWithTokenFile(addr, serverConfig.CAFile, serverConfig.CertDomain,
+		serverConfig.TokenFile, timeout)
+	So(err, ShouldBeNil)
+
+	sub, err := jq.SubscribeToJobKeys(ctx, []string{"token-reload-deadlines"})
+	So(err, ShouldBeNil)
+
+	return jq, sub
+}
+
+// socketDeadlines returns the send and receive deadlines jq's request socket
+// currently has.
+func socketDeadlines(jq *Client) (time.Duration, time.Duration) {
+	jq.Lock()
+	defer jq.Unlock()
+
+	send, err := jq.sock.GetOption(mangos.OptionSendDeadline)
+	So(err, ShouldBeNil)
+
+	recv, err := jq.recvDeadline()
+	So(err, ShouldBeNil)
+
+	sendDeadline, ok := send.(time.Duration)
+	So(ok, ShouldBeTrue)
+
+	return sendDeadline, recv
 }
