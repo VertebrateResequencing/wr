@@ -47,6 +47,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -310,6 +311,68 @@ func ownMemoryMB() (int, error) {
 
 	// convert kB to MB
 	return int(kb / bytesPerKB), nil //nolint:gosec // a process's memory in MB comfortably fits in an int
+}
+
+// ownPeakRSS returns the high-water RSS of this process's memory in kB, as
+// /proc/self/status VmHWM reports it, or 0 if it can't be read (eg. not on
+// Linux), which leaves commandPeakRSSMB() trusting a command's Maxrss.
+//
+// getrusage(RUSAGE_SELF) is no substitute: its Maxrss also includes the peak
+// our own parent (eg. a large manager) had when it started us, which our
+// command does not inherit.
+func ownPeakRSS() int64 {
+	status, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return 0
+	}
+
+	for line := range strings.Lines(string(status)) {
+		value, found := strings.CutPrefix(line, "VmHWM:")
+		if !found {
+			continue
+		}
+
+		kb, errp := strconv.ParseInt(strings.TrimSuffix(strings.TrimSpace(value), " kB"), 10, 64)
+		if errp != nil {
+			return 0
+		}
+
+		return kb
+	}
+
+	return 0
+}
+
+// commandPeakRSSMB returns the peak RSS in MB that the kernel recorded for an
+// exited command, or 0 if that may be the runner's peak instead of the
+// command's. runnerPeakRSS is ownPeakRSS() taken after the command started.
+// Both are in kB on Linux.
+//
+// On exec, Linux records the high-water RSS of the memory the process ran with
+// before the exec into its Maxrss. Go starts commands with vfork, sharing the
+// runner's memory until the exec (and a plain fork would copy the runner's
+// resident pages), so a command's Maxrss is never below the runner's peak at
+// that moment. A Maxrss no higher than that could be wholly the runner's, so
+// it is ignored in favour of the periodic samples, and the runner's own memory
+// is counted once, separately, by ownMemoryMB().
+func commandPeakRSSMB(state *os.ProcessState, runnerPeakRSS int64) int {
+	rusage, ok := state.SysUsage().(*syscall.Rusage)
+	if !ok {
+		return 0
+	}
+
+	switch runtime.GOOS {
+	case "darwin":
+		// Maxrss values are bytes
+		return int((rusage.Maxrss / bytesPerKB) / kbPerMB)
+	case "linux":
+		if rusage.Maxrss <= runnerPeakRSS {
+			return 0
+		}
+	}
+
+	// Maxrss values are kb
+	return int(rusage.Maxrss / kbPerMB)
 }
 
 // scanSmapsPss reads /proc/<pid>/smaps and sums the Pss (proportional set size)

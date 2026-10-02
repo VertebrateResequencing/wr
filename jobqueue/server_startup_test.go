@@ -50,7 +50,14 @@ var errTimedOutWaitingForServeTokenRead = errors.New("timed out waiting for Serv
 
 var errTimedOutWaitingForServeTokenWrite = errors.New("timed out waiting for Serve to write the startup token")
 
-const recoveryWaitTimeout = 10 * time.Second
+const (
+	recoveryWaitTimeout = 10 * time.Second
+
+	// pscBindRetryBudget is the busy-port retry budget tests use when what they
+	// test is how a budget is spent rather than the shipped length of it: two
+	// retry intervals, so a retry still happens, and a fifth of the shipped 5s.
+	pscBindRetryBudget = 2 * serverBindRetryInterval
+)
 
 // TestServeFailsCleanlyWhenPortTaken covers the window between isolateTestConfig
 // picking a manager port and the server binding it: if another process takes

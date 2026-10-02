@@ -516,7 +516,7 @@ func mountStaleRmdir(t *testing.T, mountPoint, backing string) (*staleRmdirFS, b
 	So(syscall.Stat(backing, &st), ShouldBeNil)
 
 	sfs := &staleRmdirFS{}
-	root := &gofuse.LoopbackRoot{Path: backing, Dev: st.Dev}
+	root := &gofuse.LoopbackRoot{Path: backing, Dev: uint64(st.Dev)} //nolint:unconvert // Dev is int32 on darwin
 	rootNode := &staleRmdirNode{LoopbackNode: &gofuse.LoopbackNode{RootData: root}, fs: sfs}
 	root.RootNode = rootNode
 
@@ -619,7 +619,9 @@ func (n *caseFoldNode) childAt(ctx context.Context, backing string,
 	node := &caseFoldNode{LoopbackNode: &gofuse.LoopbackNode{RootData: sub}}
 	sub.RootNode = node
 
-	return n.NewInode(ctx, node, gofuse.StableAttr{Mode: st.Mode, Gen: 1, Ino: st.Ino}), 0
+	mode := uint32(st.Mode) //nolint:unconvert // Mode is uint16 on darwin
+
+	return n.NewInode(ctx, node, gofuse.StableAttr{Mode: mode, Gen: 1, Ino: st.Ino}), 0
 }
 
 // Lookup finds an entry under any spelling of its name, which is the whole of
@@ -697,7 +699,7 @@ func mountCaseFold(t *testing.T) (string, bool) {
 
 	So(syscall.Stat(backing, &st), ShouldBeNil)
 
-	root := &gofuse.LoopbackRoot{Path: backing, Dev: st.Dev}
+	root := &gofuse.LoopbackRoot{Path: backing, Dev: uint64(st.Dev)} //nolint:unconvert // Dev is int32 on darwin
 	rootNode := &caseFoldNode{LoopbackNode: &gofuse.LoopbackNode{RootData: root}}
 	root.RootNode = rootNode
 
