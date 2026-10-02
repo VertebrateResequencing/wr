@@ -183,3 +183,28 @@ on this host under `nice -n 19`, compared with benchstat.
     What is left over v0.37.2 is what #575's checks need: one `Fstatat` per
     entry, to see each entry's device for the mount-boundary check, and the
     verified open and identity proof of each directory level.
+
+## make speed, all three fixes against develop
+
+`SPEED_BASE=origin/develop make speed` (`e70906e6` as base, 6 interleaved
+rounds, report-storm and dep-granularity-check once each) printed `PASS: no
+benchmark or scenario worsened by more than 10% at p<0.05, and every scenario
+met its thresholds`. Exit 0. No benchmark got significantly worse in any unit.
+The significant changes:
+
+```
+JobCleanupDepth1-8   sec/op   4.024m → 3.453m    -14.19% (p=0.002 n=6)
+JobCleanupDepth8-8   sec/op   4.418m → 3.709m    -16.04% (p=0.002 n=6)
+UpdateJobState-8     sec/op   61.07m → 54.24m    -11.18% (p=0.009 n=6)
+LimiterIncDec-8      sec/op   3.292µ → 2.158µ    -34.45% (p=0.002 n=6)
+LimiterCapacity-8    sec/op   3.107µ → 1.898µ    -38.93% (p=0.002 n=6)
+AddJobs-8            B/op     30.24Mi → 22.90Mi  -24.27% (p=0.002 n=6)
+UpdateJobState-8     B/op     21.99Mi → 13.31Mi  -39.49% (p=0.002 n=6)
+ArchiveJobs-8        B/op     42.47Mi → 34.89Mi  -17.85% (p=0.002 n=6)
+ArchiveSpacedArr.-8  B/op     2.735Mi → 2.276Mi  -16.81% (p=0.002 n=6)
+JobCleanupDepth1-8   B/op     126.91Ki → 22.01Ki -82.66% (p=0.002 n=6)
+LimiterIncDec-8      B/op     1120 → 544         -51.43% (p=0.002 n=6)
+UpdateJobState-8     allocs   129.3k → 117.1k    -9.46% (p=0.002 n=6)
+JobCleanupDepth1-8   allocs   2194 → 792         -63.90% (p=0.002 n=6)
+LimiterIncDec-8      allocs   16 → 9             -43.75% (p=0.002 n=6)
+```
