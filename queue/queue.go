@@ -137,6 +137,7 @@ var (
 	ErrNotWaiting     = errors.New("not delayed or ready")
 	ErrNotSuspendable = errors.New("not suspendable")
 	ErrNotSuspended   = errors.New("not suspended")
+	ErrDataChanged    = errors.New("data changed")
 )
 
 // SubQueue is how we name the sub-queues of a Queue.
@@ -340,12 +341,41 @@ func (queue *Queue) SatisfyDependency(ctx context.Context, key string) error {
 // happen under one lock, the item cannot start or end a run in between, so a
 // caller can defer a change to a running item until its run ends without
 // racing the transitions that end it. whileRunning must not call the queue.
+//
+// It is kept for compatibility, being exported API released in v0.38.0;
+// jobqueue now uses UpdateHolderUnlessRunning.
 func (queue *Queue) UpdateUnlessRunning(ctx context.Context, key string, reserveGroup string, data any,
 	priority uint8, delay time.Duration, ttr time.Duration, deps []string, whileRunning func(),
+) (bool, error) {
+	return queue.updateUnlessRunning(ctx, key, reserveGroup, data, false, priority, delay, ttr, deps, whileRunning)
+}
+
+// UpdateHolderUnlessRunning is UpdateUnlessRunning for a caller that read the
+// item's data earlier and must change only the item that holds it: if the item
+// no longer holds data (compared with ==, so data must be comparable), because
+// it has been removed and another item added under the key since, nothing is
+// changed, whileRunning is not called, and an Error wrapping ErrDataChanged is
+// returned. The check is made under the same lock as the change.
+func (queue *Queue) UpdateHolderUnlessRunning(ctx context.Context, key string, reserveGroup string, data any,
+	priority uint8, delay time.Duration, ttr time.Duration, deps []string, whileRunning func(),
+) (bool, error) {
+	return queue.updateUnlessRunning(ctx, key, reserveGroup, data, true, priority, delay, ttr, deps, whileRunning)
+}
+
+// updateUnlessRunning is UpdateUnlessRunning, also refusing, if mustHold, an
+// item whose data is not data.
+func (queue *Queue) updateUnlessRunning(ctx context.Context, key string, reserveGroup string, data any,
+	mustHold bool, priority uint8, delay time.Duration, ttr time.Duration, deps []string, whileRunning func(),
 ) (bool, error) {
 	item, err := queue.lockExistingItem("Update", key)
 	if err != nil {
 		return false, err
+	}
+
+	if mustHold && item.Data() != data {
+		queue.mutex.Unlock()
+
+		return false, Error{queue.Name, "Update", key, ErrDataChanged}
 	}
 
 	if item.State() == ItemStateRun {

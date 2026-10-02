@@ -1612,8 +1612,15 @@ func (s *Server) archiveCompletedJob(ctx context.Context, job *Job, key, rgroup,
 // job has not been marked to run again since the write (the mark keeps the item
 // in the run queue, so the mark and this decision cannot interleave): its
 // dependants then keep waiting on it, as they do when the write keeps it live.
+// Once the item is removed, an add can bring the job back before its memberships
+// and rep group lookup are dropped; cleanUpArchived keeps what that add
+// registers (see bringback.go).
 func (s *Server) finishArchive(ctx context.Context, job *Job, key, rgroup, sgroup string,
 	outcome archiveOutcome, err error) (*serverResponse, string, string) {
+	if archiveCommittedHook != nil {
+		archiveCommittedHook(key)
+	}
+
 	removed, from, errr := s.removeArchivedItem(ctx, job, key, outcome)
 
 	if job.endArchive() {
@@ -1629,16 +1636,17 @@ func (s *Server) finishArchive(ctx context.Context, job *Job, key, rgroup, sgrou
 		return nil, "", ""
 	}
 
+	if archiveRemovedHook != nil {
+		archiveRemovedHook(key)
+	}
+
 	// this job has left the live bucket, so it is no longer a live member of its
 	// dep groups; any group it was the last live member of now has nothing left
 	// to wait for. It is after the archive and the q.Remove, not before, because a
 	// group's waiters must not be promoted until the job they waited for has
-	// really completed and left the queue.
-	s.releaseDepGroupMembership(ctx, key)
-
-	s.rpl.Lock()
-	s.rpl.Delete(rgroup, key)
-	s.rpl.Unlock()
+	// really completed and left the queue. An add may bring it back in the
+	// meantime, so this is ordered against that (see bringback.go).
+	s.cleanUpArchived(ctx, key, rgroup)
 	clog.Debug(ctx, "completed job", "key", key, "cmd", job.loggableCmd(), "schedGrp", sgroup)
 	s.giveBackArchivedItem(ctx, sgroup, from)
 
@@ -2013,6 +2021,13 @@ func (s *Server) persistModifiedJobs(ctx context.Context, cr *clientRequest,
 			clog.Error(ctx, "failed to store limit groups", "err", err)
 		}
 	}
+
+	// a new key may be that of a job whose archive is cleaning up (see
+	// bringback.go).
+	rekeyed := rekeyedKeys(modified)
+	s.holdBringBacks(rekeyed)
+
+	defer s.releaseBringBacks(ctx, rekeyed)
 
 	s.changeModifiedJobKeys(ctx, modified, toModify)
 

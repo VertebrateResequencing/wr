@@ -402,6 +402,37 @@ var reservationQueuedHook func(key string)
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var dependencyUpdatesHook func()
 
+// newJobsStoredErrHook, if non-nil, is called by an add once its write has
+// committed, and an error it returns fails the add there, so a test can have an
+// add fail after its write. It is a test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var newJobsStoredErrHook func() error
+
+// archiveCommittedHook, if non-nil, is called with a job's key by an archive
+// whose write has returned, before it removes the job's queue item, so a test
+// can have an add read the job complete while its item is still queued. It is
+// a test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var archiveCommittedHook func(key string)
+
+// dependentReadHook, if non-nil, is called with a dependent's key once its
+// in-memory job has been read from the queue, before the job's queue item is
+// given new dependencies, so a test can have the item replaced in between. It is
+// a test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var dependentReadHook func(key string)
+
+// archiveRemovedHook, if non-nil, is called with a job's key by an archive that
+// has removed that job's queue item, before it drops the job's dep group
+// memberships and rep group lookup, so a test can have an add bring the job back
+// in between. It is a test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var archiveRemovedHook func(key string)
+
 // sgroup represents a scheduler group.
 const (
 	// persistentScheduleFailures is the number of consecutive scheduling
@@ -1610,6 +1641,9 @@ type Server struct {
 	// of those members, so a dep-group dependency resolves to one opaque
 	// depgroup:G key instead of one key per member job.
 	depGroups                 *depGroupMembers
+	// bringBacks orders an archive's dropping of a job's memberships and rep
+	// group lookup against an add bringing it back (see bringback.go).
+	bringBacks                bringBacks
 	limiter                   *limiter.Limiter
 	scheduler                 *scheduler.Scheduler
 	previouslyScheduledGroups map[string]*sgroup
@@ -6525,22 +6559,43 @@ func (s *Server) createJobs(
 	// disk succeeding. (If we don't return success to the client, it won't
 	// Remove the job that created the new jobs from the queue and when we
 	// recover, at worst the creating job will be run again - no jobs get lost.)
-	var jobsToQueue, jobsToUpdate []*Job
+	//
+	// Until it has given the live dependents it reads their new dependencies, it
+	// guards them (see running_dependent.go).
+	guard := s.db.rerunGuards.register()
+	defer s.db.rerunGuards.release(guard)
 
-	jobsToQueue, jobsToUpdate, dups, err = s.db.storeNewJobs(ctx, inputJobs, ignoreComplete)
+	stored, err := s.db.storeNewJobsGuarded(ctx, inputJobs, ignoreComplete, guard)
+
+	stored.dependents.guard = guard
+
+	jobsToQueue, jobsToUpdate, dups := stored.jobsToQueue, stored.dependents.jobs, stored.alreadyAdded
 	if err != nil {
 		return added, dups, warnings, ErrDBError, err
+	}
+
+	if newJobsStoredErrHook != nil {
+		if err = newJobsStoredErrHook(); err != nil {
+			return added, dups, warnings, ErrDBError, err
+		}
 	}
 
 	if err = s.recordQueuedRepGroups(ctx, newRepGroupDups); err != nil {
 		return added, dups, warnings, ErrDBError, err
 	}
 
+	// any of these may be a job being brought back while its archive cleans up,
+	// jobsToUpdate through updateLiveDependents finding it archived.
+	broughtBack := jobKeys(jobsToQueue, jobsToUpdate)
+	s.holdBringBacks(broughtBack)
+
+	defer s.releaseBringBacks(ctx, broughtBack)
+
 	s.updateDepGroupMembershipForNewJobs(ctx, jobsToQueue)
 
 	itemdefs := s.itemDefsForNewJobs(jobsToQueue, inputJobKeys, &warnings)
 
-	added, dups.Queued, srerr, qerr = s.queueNewJobItems(ctx, jobsToUpdate, itemdefs, ignoreComplete, queuedDups)
+	added, dups.Queued, srerr, qerr = s.queueNewJobItems(ctx, stored.dependents, itemdefs, ignoreComplete, queuedDups)
 
 	return added, dups, warnings, srerr, qerr
 }
@@ -6591,13 +6646,17 @@ func (s *Server) itemDefsForNewJobs(jobsToQueue []*Job,
 // queueNewJobItems updates dependencies of existing jobs, replaces any live
 // rerun items, and enqueues the new item definitions, returning the counts of
 // jobs added and duplicated plus any error.
-func (s *Server) queueNewJobItems(ctx context.Context, jobsToUpdate []*Job, itemdefs []*queue.ItemDef,
+func (s *Server) queueNewJobItems(ctx context.Context, dependents liveDependents, itemdefs []*queue.ItemDef,
 	ignoreComplete bool, queuedDups int) (added, dups int, srerr string, qerr error) {
-	resurrected, srerr, qerr := s.updateJobDependencies(ctx, jobsToUpdate)
+	resurrected, srerr, qerr := s.updateJobDependencies(ctx, dependents)
 
-	var replaced int
+	var replaced, marked int
 	if qerr == nil {
 		itemdefs, replaced, qerr = s.replaceLiveRerunItems(ctx, itemdefs, ignoreComplete)
+	}
+
+	if qerr == nil {
+		itemdefs, marked, qerr = s.rerunArchivingItems(ctx, itemdefs)
 		itemdefs = append(itemdefs, resurrected...)
 	}
 
@@ -6610,7 +6669,7 @@ func (s *Server) queueNewJobItems(ctx context.Context, jobsToUpdate []*Job, item
 	// add the jobs to the in-memory job queue
 	added, dups, qerr = s.enqueueItems(ctx, itemdefs)
 	dups += queuedDups
-	added += replaced
+	added += replaced + marked
 
 	if qerr != nil {
 		srerr = ErrInternalError
@@ -6682,14 +6741,14 @@ func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) err
 // The modify path does not come through here: db.modifyLiveJobs() discards
 // prepareNewJobs' jobsToQueue/jobsToUpdate, so it never refreshes a group's
 // waiters this way.
-func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (
+func (s *Server) updateJobDependencies(ctx context.Context, dependents liveDependents) (
 	resurrected []*queue.ItemDef, srerr string, qerr error,
 ) {
 	if dependencyUpdatesHook != nil {
 		dependencyUpdatesHook()
 	}
 
-	updates, readyCallbackExpected, qerr := s.gatherDependencyUpdates(jobs)
+	updates, readyCallbackExpected, qerr := s.gatherDependencyUpdates(dependents.jobs)
 	if qerr != nil {
 		return nil, ErrDBError, qerr
 	}
@@ -6698,7 +6757,7 @@ func (s *Server) updateJobDependencies(ctx context.Context, jobs []*Job) (
 		s.setRACPending()
 	}
 
-	resurrected, qerr = s.updateLiveDependents(ctx, updates)
+	resurrected, qerr = s.updateLiveDependents(ctx, updates, dependents.wasPutBack)
 	if qerr != nil && readyCallbackExpected {
 		s.clearRACPending()
 	}

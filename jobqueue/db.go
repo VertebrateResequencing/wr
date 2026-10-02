@@ -282,6 +282,21 @@ var archiveTxObserver func(txID int, key []byte)
 //nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
 var dependentsReadHook func()
 
+// archiveGuardsSeenHook, when non-nil, is called with the key of the job an
+// archive's transaction is writing once it has looked at the adds in flight
+// (rerunGuards.archiving), before the transaction commits. It is nil in
+// production and exists so tests can have an add start in between.
+//
+//nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
+var archiveGuardsSeenHook func(key []byte)
+
+// dependentsGuardHook, when non-nil, is called by storeNewJobs once the add has
+// read its live and archived dependents and before it guards them. It is nil in
+// production and exists so tests can have a dependent finish in between.
+//
+//nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
+var dependentsGuardHook func()
+
 // jobChangeEncodedHook, when non-nil, is called by queueJobChange once it has
 // encoded the job and before it queues the write. It is nil in production and
 // exists so tests can change the job in between.
@@ -754,6 +769,32 @@ func (b beBatch) lastExitSeqs() map[string]uint64 {
 	return last
 }
 
+// liveDependents are the jobs an add read as live dependents (storeNewJobs'
+// jobsToUpdate), and the keys of those among them whose run the add's write
+// found had been archived since, and so put back in the live bucket to run again
+// (see putBackArchivedDependentsTx).
+type liveDependents struct {
+	jobs    []*Job
+	putBack map[string]bool
+
+	// guard is the add's rerunGuard, if it has one.
+	guard *rerunGuard
+}
+
+// wasPutBack reports whether the keyed dependent was put back in the live
+// bucket to run again, by the add's write or, because of the add's guard, by its
+// archive.
+func (d liveDependents) wasPutBack(key string) bool {
+	return d.putBack[key] || d.guard.keptLive(key)
+}
+
+// storedNewJobs is what storeNewJobsGuarded did.
+type storedNewJobs struct {
+	jobsToQueue  []*Job
+	dependents   liveDependents
+	alreadyAdded DuplicateBreakdown
+}
+
 // pace bounds the backup copy's dirty-page backlog for the bytes written since the
 // last pace. On Linux it starts asynchronous writeback of the just-written range
 // and waits on the previous one (cheap, pipelined, no full-file round-trip);
@@ -951,6 +992,7 @@ type db struct {
 	backupWait           time.Duration
 	backupTickerStop     chan struct{} // closed by close() to stop the backup ticker
 	bolt                 *bolt.DB
+	rerunGuards          rerunGuards
 	envcache             *lru.ARCCache[string, []byte]
 	updatingAfterJobExit atomic.Int64
 	// archivedDecodes counts how many archived jobs decodeArchivedJob has actually
@@ -1701,23 +1743,29 @@ func endTimeSeekKey(cutoff time.Time) []byte {
 // before the complete-record Put because it recovers the job's prior end time
 // from that record to drop any stale forward index entry.
 //
-// A job marked, by the time this transaction runs, to run again once its run
-// ends (Job.RerunAfterRun; see running_dependent.go) is recorded complete but
-// also kept in the live bucket, waiting to run again, and keptLive is true.
-func (db *db) archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) (keptLive bool, err error) {
+// A job that must, by the time this transaction runs, run again once its run
+// ends (see Job.archiveOutcome and running_dependent.go) is recorded complete
+// but also kept in the live bucket, waiting to run again. The returned outcome
+// says what is to be done with its queue item.
+func (db *db) archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) (archiveOutcome, error) {
 	if archiveTxObserver != nil {
 		archiveTxObserver(tx.ID(), key)
 	}
 
-	if job.rerunAfterRun() {
-		if encoded, err = db.keepLiveForRerunTx(tx, key, encoded); err != nil {
-			return false, err
-		}
+	outcome, keepLive := job.archiveOutcome(tx.ID(), tx.Bucket(bucketJobsLive), &db.rerunGuards)
 
-		keptLive = true
+	if archiveGuardsSeenHook != nil {
+		archiveGuardsSeenHook(key)
 	}
 
-	return keptLive, db.recordCompleteTx(tx, key, encoded, job, keptLive)
+	if keepLive {
+		var err error
+		if encoded, err = db.keepLiveForRerunTx(tx, key, encoded); err != nil {
+			return outcome, err
+		}
+	}
+
+	return outcome, db.recordCompleteTx(tx, key, encoded, job, keepLive)
 }
 
 // keepLiveForRerunTx puts rerunRecords' live record of the encoded job in the
@@ -2328,6 +2376,178 @@ func (db *db) archiveCompletion(key string, job *Job) (archiveOutcome, error) {
 	return op.outcome, nil
 }
 
+// storeNewJobsGuarded is storeNewJobs, but if the add read any live dependents,
+// guard, registered before the add reads them (rerunGuards.register), is given
+// their keys and the key of the first job the add will store in the live
+// bucket, before anything is written. The write then puts back in the live
+// bucket, in the same transaction as that job, any of them whose run guard saw
+// archived (see running_dependent.go). With no guard, it looks at all of them.
+func (db *db) storeNewJobsGuarded(ctx context.Context, jobs []*Job, ignoreAdded bool,
+	guard *rerunGuard) (storedNewJobs, error) {
+	var stored storedNewJobs
+
+	encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs,
+		jobsToQueue, jobsToUpdate, alreadyAdded, err := db.prepareNewJobs(jobs, ignoreAdded)
+
+	stored.jobsToQueue, stored.dependents.jobs, stored.alreadyAdded = jobsToQueue, jobsToUpdate, alreadyAdded
+	if err != nil {
+		return stored, err
+	}
+
+	atRisk := guardDependentsRead(guard, jobsToUpdate, firstKey(encodedJobs))
+
+	if len(encodedJobs) > 0 {
+		stores := db.newJobStores(encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs)
+		stored.dependents.putBack = db.putBackArchivedDependentsWith(stores, atRisk)
+		err = db.storeNewJobStores(ctx, stores)
+	}
+
+	if err == nil && alreadyAdded.Complete != len(jobs) {
+		db.backupDirty.Store(true)
+	}
+
+	return stored, err
+}
+
+// guardDependentsRead gives guard the keys of the dependents an add read, and
+// returns what reports, in the add's write transaction, the keys of those that
+// may have left the live bucket: nil if it read none, or all of them if there is
+// no guard. The test hooks around it let a dependent finish either side of it.
+func guardDependentsRead(guard *rerunGuard, dependents []*Job, member []byte) func() []string {
+	if dependentsGuardHook != nil {
+		dependentsGuardHook()
+	}
+
+	var atRisk func() []string
+
+	keys := jobKeys(dependents)
+
+	switch {
+	case guard != nil:
+		guard.setDependents(keys, member)
+
+		if len(keys) > 0 {
+			atRisk = guard.atRiskKeys
+		}
+	case len(keys) > 0:
+		atRisk = func() []string { return keys }
+	}
+
+	if dependentsReadHook != nil {
+		dependentsReadHook()
+	}
+
+	return atRisk
+}
+
+// firstKey returns the smallest of the keys of encodes, which is the first
+// stored, however the store is split into transactions (see storeBatched).
+func firstKey(encodes sobsd) []byte {
+	var first []byte
+
+	for _, doublet := range encodes {
+		if first == nil || bytes.Compare(doublet[0], first) < 0 {
+			first = doublet[0]
+		}
+	}
+
+	return first
+}
+
+// putBackArchivedDependentsWith makes the live bucket store of stores also, in
+// each transaction it writes in, put back the archived dependents atRisk reports
+// (see putBackArchivedDependentsTx), returning the set it will record their keys
+// in. It returns nil if there is no atRisk.
+func (db *db) putBackArchivedDependentsWith(stores []newJobStore, atRisk func() []string) map[string]bool {
+	if atRisk == nil {
+		return nil
+	}
+
+	putBack := make(map[string]bool)
+	live := &stores[len(stores)-1]
+	put := live.put
+
+	live.put = func(tx *bolt.Tx, bucket []byte, encodes sobsd) error {
+		if err := put(tx, bucket, encodes); err != nil {
+			return err
+		}
+
+		return db.putBackArchivedDependentsTx(tx, atRisk(), putBack)
+	}
+
+	return putBack
+}
+
+// putBackArchivedDependentsTx puts back in the live bucket, as rerunRecords' live
+// record of its complete record, each of the keyed dependents an add read live
+// whose run has since been archived, recording its key in putBack. It runs in
+// the transaction that stores the add's jobs, so a crash cannot store them
+// without also doing this: their dep groups gained a member after these runs
+// started, so they must run again. Doing it again in a later transaction of the
+// same add finds them live and does nothing.
+func (db *db) putBackArchivedDependentsTx(tx *bolt.Tx, keys []string, putBack map[string]bool) error {
+	live := tx.Bucket(bucketJobsLive)
+	complete := tx.Bucket(bucketJobsComplete)
+
+	for _, k := range keys {
+		key := []byte(k)
+		if live.Get(key) != nil {
+			continue
+		}
+
+		encoded := complete.Get(key)
+		if encoded == nil {
+			continue
+		}
+
+		_, record, err := db.rerunRecords(encoded)
+		if err != nil {
+			return err
+		}
+
+		if err = live.Put(key, record); err != nil {
+			return err
+		}
+
+		putBack[k] = true
+	}
+
+	return nil
+}
+
+// storeNewJobStores is storeNewJobData for the stores newJobStores returned.
+func (db *db) storeNewJobStores(ctx context.Context, stores []newJobStore) error {
+	// the sorting below used to happen in per-bucket goroutines, which is where
+	// a panic in it was logged and exited on.
+	defer internal.LogPanic(ctx, "jobqueue database storeNewJobs", true)
+
+	for _, s := range stores {
+		sort.Sort(s.encodes)
+	}
+
+	// an add too big for one transaction keeps its own chunked path: those are
+	// rare and each of their chunks is already a full transaction's worth, so
+	// there is nothing for folding to win.
+	if storesNeedChunking(stores) {
+		return db.storeNewJobDataChunked(stores)
+	}
+
+	foldBytes, foldPuts := newJobsFoldCost(stores)
+
+	op := &newJobsOp{
+		stores:    stores,
+		result:    make(chan error, 1),
+		foldBytes: foldBytes,
+		foldPuts:  foldPuts,
+	}
+
+	if !db.enqueueNewJobs(op) {
+		return errDBClosed
+	}
+
+	return <-op.result
+}
+
 // noteArchivesWritten records on each job that its ops' archives of it have
 // committed (see Job.archivedEndTime), unless err says they did not. The archive
 // writer calls it before it starts another transaction, so that transaction sees
@@ -2494,12 +2714,7 @@ func (db *db) applyArchiveOp(tx *bolt.Tx, op *archiveOp) (err error) {
 		return nil
 	}
 
-	keptLive, err := db.archiveJobTx(tx, op.key, op.encoded, op.job)
-
-	op.outcome = archiveRemovedLive
-	if keptLive {
-		op.outcome = archiveKeptLive
-	}
+	op.outcome, err = db.archiveJobTx(tx, op.key, op.encoded, op.job)
 
 	return err
 }
@@ -3501,25 +3716,9 @@ func (db *db) retrieveLimitGroup(ctx context.Context, group string) *limiter.Gro
 func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 	jobsToQueue, jobsToUpdate []*Job, alreadyAdded DuplicateBreakdown, err error,
 ) {
-	encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs,
-		jobsToQueue, jobsToUpdate, alreadyAdded, err := db.prepareNewJobs(jobs, ignoreAdded)
-	if err != nil {
-		return jobsToQueue, jobsToUpdate, alreadyAdded, err
-	}
+	stored, err := db.storeNewJobsGuarded(ctx, jobs, ignoreAdded, nil)
 
-	if dependentsReadHook != nil {
-		dependentsReadHook()
-	}
-
-	if len(encodedJobs) > 0 {
-		err = db.storeNewJobData(ctx, encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs)
-	}
-
-	if err == nil && alreadyAdded.Complete != len(jobs) {
-		db.backupDirty.Store(true)
-	}
-
-	return jobsToQueue, jobsToUpdate, alreadyAdded, err
+	return stored.jobsToQueue, stored.dependents.jobs, stored.alreadyAdded, err
 }
 
 // storeNewJobData stores the job and lookup data prepared by prepareNewJobs.
@@ -3550,37 +3749,7 @@ func (db *db) storeNewJobs(ctx context.Context, jobs []*Job, ignoreAdded bool) (
 // commit already in flight.
 func (db *db) storeNewJobData(ctx context.Context, encodedJobs, rgLookups,
 	depGroupsSeen, rdgLookups, rgs sobsd) error {
-	// the sorting below used to happen in per-bucket goroutines, which is where
-	// a panic in it was logged and exited on.
-	defer internal.LogPanic(ctx, "jobqueue database storeNewJobs", true)
-
-	stores := db.newJobStores(encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs)
-
-	for _, s := range stores {
-		sort.Sort(s.encodes)
-	}
-
-	// an add too big for one transaction keeps its own chunked path: those are
-	// rare and each of their chunks is already a full transaction's worth, so
-	// there is nothing for folding to win.
-	if storesNeedChunking(stores) {
-		return db.storeNewJobDataChunked(stores)
-	}
-
-	foldBytes, foldPuts := newJobsFoldCost(stores)
-
-	op := &newJobsOp{
-		stores:    stores,
-		result:    make(chan error, 1),
-		foldBytes: foldBytes,
-		foldPuts:  foldPuts,
-	}
-
-	if !db.enqueueNewJobs(op) {
-		return errDBClosed
-	}
-
-	return <-op.result
+	return db.storeNewJobStores(ctx, db.newJobStores(encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rgs))
 }
 
 //nolint:gocognit,gocyclo,cyclop,funlen,lll,nestif // Legacy persistence path coordinates several lookup buckets.

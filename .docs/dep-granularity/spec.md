@@ -380,7 +380,10 @@ per-group membership are bounded to these five:
   a group's waiters early whenever one job in the batch drops a group that
   another job in the same batch joins (D1).
 - **archive**, in `archiveCompletedJob` (`serverCLI.go:1379`) after
-  `s.q.Remove`: `releaseDepGroupMembership(ctx, job.Key())`.
+  `s.q.Remove`: `releaseDepGroupMembership(ctx, job.Key())`. An add that brings
+  the job back before that release would lose its memberships, so the release
+  is ordered against the add (`cleanUpArchived`, `jobqueue/bringback.go`;
+  `.docs/bugfixes/260930-dep-group-rerun-gaps.md` item 7).
 - **delete**, in `finalizeDeletedJobs` (`server.go:5613`) after
   `db.deleteLiveJobs`: `releaseDepGroupMembership` per deleted key.
 - **modify**, `rekeyDepGroupMembership(ctx, oldKey, job.Key(), job.DepGroups)`
@@ -920,11 +923,15 @@ recovered running job with unresolved dependencies no dependencies on its item,
 so it recovers into Run. If any of them is a dep group dependency it also marks
 the job `RerunAfterRun`, so once its run ends it runs again, after those
 dependencies, as described under D1. That covers a crash before the add stored
-its mark, but it marks the job however its group gained the live member: a job
-modified into the group marks it too, although without a restart a modify
-reruns no waiter of the group. An unresolved command dependency (one added again
-with `--rerun` while the job ran) marks nothing, since adding a command
-dependency again reruns none of its dependents, running or complete.
+its mark. A waiter whose run was archived in that window is not running at
+recovery: it was kept live by the add's write or by its archive, whichever
+committed second (`.docs/bugfixes/260930-dep-group-rerun-gaps.md` item 6), so
+it recovers waiting on the new member. Recovery marks a running job however its
+group gained the live member: a job modified into the group marks it too,
+although without a restart a modify reruns no waiter of the group. An
+unresolved command dependency (one added again with `--rerun` while the job
+ran) marks nothing, since adding a command dependency again reruns none of its
+dependents, running or complete.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/server.go`, `jobqueue/dependency.go`
@@ -1123,11 +1130,20 @@ decides whether to remove the item under the queue's lock, leaves it there and
 returns it to dependent the same way, so jobs depending on the waiter itself
 keep waiting. A waiter that was archived and left
 the queue in between, whether it was running or still waiting when the add
-read it, is put back in the live bucket before the add replies and queued, as
-an archived waiter is. A manager crash after the add's write but before it has
-stored those records loses the re-run of a waiter whose successful archive was
-written after the add read it: that waiter is recovered complete. A waiter
-still running at the crash loses nothing, since recovery marks it again.
+read it, is queued again, as an archived waiter is. On disk, the add's write
+and the waiter's archive, whichever commits second, keep the waiter live, so a
+manager crash after the add's write recovers it waiting on the new member
+rather than complete (`.docs/bugfixes/260930-dep-group-rerun-gaps.md` item 6,
+which lists the residuals). A waiter still running at the crash loses nothing,
+since recovery marks it again. The archive's drop of the waiter's dep group
+memberships and rep group lookup is ordered against the add registering them
+again (item 7 there), so a waiter brought back while its archive is cleaning
+up keeps them. An add that reads the waiter complete before the archive has
+removed its queue item marks that item to run again rather than counting the
+waiter a duplicate (item 7b), and a waiter update that finds another add has
+since queued a different copy retries against that copy (item 7c). An add that
+fails after its write leaves the waiter live on disk, and a retry of the add
+queues it (item 9).
 
 `updateJobDependencies`' doc comment is stale - it names `storeNewJobs()` and
 `db.modifyLiveJobs()` as its sources, but `modifyLiveJobs` discards

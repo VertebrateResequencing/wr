@@ -38,6 +38,24 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - A runner's bury of a command the manager had sent back to wait on a new
   dependency now buries it, keeping that dependency for when it is kicked,
   instead of being refused.
+- A manager crash while you added a command to a dep group (`--dep_grps`)
+  could stop a command depending on that group (`--deps`), whose run had just
+  finished, from running again after the new command. It now runs again after
+  the new command completes, whether or not the client retries the add.
+- Adding a command to a dep group (`--dep_grps`) while the completion of a
+  command depending on that group was being recorded could leave that command,
+  queued to run again, missing from `wr status -i` by its rep group and not
+  counted as a member of its own dep groups, until the manager restarted.
+  Commands depending on it could then start before it ran again.
+- Adding a command to a dep group (`--dep_grps`) just as the completion of a
+  command depending on that group was being saved could leave that command not
+  queued to run again until the manager restarted, and two such adds to its dep
+  groups could stop it running again at all. It now runs again after the new
+  command.
+- If an add to a dep group (`--dep_grps`) failed with an error after saving
+  its commands, a command depending on that group whose run had just finished
+  is now run again after the new command, whether the add is retried or the
+  manager restarts.
 - The manager no longer under-counts the runners it needs when a command's
   success is reported after the manager had already given up on it and
   scheduled it to run again.
