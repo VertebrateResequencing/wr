@@ -84,7 +84,7 @@ const (
 
 	// defaultCloudServersTimeout is the default value (in seconds) for the cloud
 	// servers command's --timeout flag.
-	defaultCloudServersTimeout = 120
+	defaultCloudServersTimeout = int(jobqueue.ClientDefaultConnectTimeout / time.Second)
 
 	// defaultDBBackupName is the db backup location configured on the remote
 	// manager when no S3 backup location is in use.

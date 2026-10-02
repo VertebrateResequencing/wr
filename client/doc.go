@@ -36,11 +36,13 @@ file. When the manager rejects a request because its token has changed, the
 Scheduler re-reads that file and sends the request again, so the program does
 not need to call New again.
 
-A call made while the manager is down fails after SchedulerSettings.Timeout
-with mangos.ErrSendTimeout, unless the manager is back within that time. A
-request that was already sent waits for its reply for up to the larger of
-Timeout and a minute. A submission made while the manager was down that failed
-this way added nothing.
+New fails if it cannot reach the manager within SchedulerSettings.Timeout. A
+call made while the manager is down fails after Timeout with
+mangos.ErrSendTimeout, unless the manager is back within that time. A request
+that was already sent waits for its reply for up to the larger of Timeout and a
+minute. A submission made while the manager was down that failed this way added
+nothing. A Timeout that is not positive means
+jobqueue.ClientDefaultConnectTimeout (2 minutes) rather than no limit.
 
 A wait already in progress rides out the outage: WaitForJobs, the wait in
 SubmitJobsAndWait, and WaitForRunning after its first poll keep trying to reach

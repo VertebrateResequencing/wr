@@ -262,9 +262,28 @@ own jobs), logging warnings while retrying; (3) calls that take a context
 honour it, and context-taking variants are added for those that do not,
 keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
 
-- [ ] A zero SchedulerSettings.Timeout (and a zero Connect timeout) leaves the
+- [x] A zero SchedulerSettings.Timeout (and a zero Connect timeout) leaves the
   socket with no send deadline, so client.New with the manager down can block
   instead of failing fast; give zero a documented default.
+  - Red command: `timeout 900 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    go test -tags netgo -count 1 -timeout 20m ./jobqueue/ -run
+    '^TestConnectWithoutTimeoutUsesDefault$'`, exit 1:
+
+    ```
+    client_connect_test.go Line 558: Expected: true  Actual: false   <- timeout 0, listener that never answers: Connect had not returned after 5s
+    client_connect_test.go Line 604: Expected: time.Duration(120000000000)  Actual: time.Duration(0)   <- send deadline 0
+    client_connect_test.go Line 625: Expected: true  Actual: false   <- request during an outage had not returned after 5s
+    --- FAIL: TestConnectWithoutTimeoutUsesDefault (16.22s)
+    ```
+    client.New with Timeout 0 against a listener that never answers also
+    blocked (10s scratch probe).
+  - Fixed: new jobqueue.ClientDefaultConnectTimeout (120s, the CLI's
+    default); Connect replaces a timeout <= 0 with it before dialling and
+    stores it, so dial, readiness ping, request deadlines and reconnects all
+    use it. cmd defaults of 120 now derive from it (unchanged values).
+    Documented on Connect, SchedulerSettings.Timeout and the client package
+    doc. `wr limit`, which passes an unset global 0, now gets 120s instead of
+    no deadline.
 - [ ] Once connected, Scheduler requests (SubmitJobs, SubmitJobsAndReturnIDs,
   GetJobByKey, Find*, KillJobs, RemoveJobs, GetSchedulerAlerts, ...) fail
   after Timeout while the manager is down instead of retrying with backoff up

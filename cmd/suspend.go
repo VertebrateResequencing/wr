@@ -34,7 +34,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const selectedJobsDefaultTimeout = 120
+const selectedJobsDefaultTimeout = int(jobqueue.ClientDefaultConnectTimeout / time.Second)
 
 var (
 	errSelectedJobsNeedSelector = errors.New("1 of -f, -i, -l or -a is required")

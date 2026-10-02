@@ -115,6 +115,20 @@ const terminateGrace = 500 * time.Millisecond
 // must always be killed, however long looking for its children takes.
 const killChildLookupLimit = 5 * time.Second
 
+// ClientDefaultConnectTimeout is the timeout Connect() (and so
+// ConnectWithTokenFile(), ConnectUsingConfig() and client.New()) uses when given
+// a timeout that is not positive. It is also the default --timeout of the wr
+// add, mod, kill, retry, remove, status, suspend, resume and cloud servers
+// commands.
+const ClientDefaultConnectTimeout = 120 * time.Second
+
+// defaultConnectTimeout is what Connect() uses for a timeout that is not
+// positive: always ClientDefaultConnectTimeout, except in tests that need a
+// non-responding manager to time out sooner.
+//
+//nolint:gochecknoglobals // a test seam; see comment above.
+var defaultConnectTimeout = ClientDefaultConnectTimeout
+
 // clientFinalStateTokenRejections is how many consecutive bad token rejections
 // of a job's final state update make a runner give up on it; see
 // countTokenRejection.
@@ -1732,8 +1746,14 @@ type envStr struct {
 // drops, and is the send deadline of every request made with the returned
 // Client: a request made while the server is unreachable fails after timeout.
 // A request already sent waits for the reply for up to the larger of timeout
-// and ClientMinRequestTimeout.
+// and ClientMinRequestTimeout. A timeout that is not positive means
+// ClientDefaultConnectTimeout, not "no deadline", so that a manager that is down
+// or does not answer always makes Connect, and later requests, fail.
 func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duration) (*Client, error) {
+	if timeout <= 0 {
+		timeout = defaultConnectTimeout
+	}
+
 	expiry, err := internal.CertExpiry(caFile)
 	if err != nil {
 		return nil, err

@@ -29,6 +29,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -86,6 +87,11 @@ const (
 	stalledConnectTimeout = 1 * time.Second
 	stalledConnectLimit   = stalledConnectTimeout + 4*time.Second
 )
+
+// reconnectStepTimeout is the budget given to a reconnect step: distinct from
+// both ClientDefaultConnectTimeout and requestTimeout of it, so deadlines that
+// came from the step rather than the client's own timeout would show.
+const reconnectStepTimeout = 5 * time.Second
 
 // errDeadlineRestoreFailed stands in for whatever a socket might fail a
 // deadline restore with, so a test can tell that failure apart from the
@@ -357,28 +363,7 @@ func TestRequestWithinBoundsSendToGoneManager(t *testing.T) {
 
 		sendDeadline, recvDeadline := socketDeadlines(jq)
 		So(sendDeadline, ShouldEqual, goneManagerConnectTimeout)
-
-		detached := make(chan struct{})
-
-		var detachOnce sync.Once
-
-		jq.sock.SetPipeEventHook(func(ev mangos.PipeEvent, _ mangos.Pipe) {
-			if ev == mangos.PipeEventDetached {
-				detachOnce.Do(func() { close(detached) })
-			}
-		})
-
-		server.Stop(ctx, true)
-
-		pipeGone := false
-
-		select {
-		case <-detached:
-			pipeGone = true
-		case <-time.After(goneManagerLimit):
-		}
-
-		So(pipeGone, ShouldBeTrue)
+		So(stopManagerAndAwaitDetach(ctx, jq, server), ShouldBeTrue)
 
 		Convey("A bounded request gives up on its send within its own budget", func() {
 			took, returned, err := requestWithinLimited(jq,
@@ -394,6 +379,169 @@ func TestRequestWithinBoundsSendToGoneManager(t *testing.T) {
 			So(recv, ShouldEqual, recvDeadline)
 		})
 	})
+}
+
+// TestConnectWithoutTimeoutUsesDefault proves that a timeout that is not
+// positive gets ClientDefaultConnectTimeout, rather than leaving connecting and
+// every later request unbounded: mangos reads a deadline of 0 as "wait for
+// ever", so before the fix Connect to a manager that accepted connections but
+// never answered blocked for ever, as did a request made by such a client while
+// its manager was down.
+func TestConnectWithoutTimeoutUsesDefault(t *testing.T) {
+	Convey("Given a CA certificate and a default connect timeout shortened for the test", t, func() {
+		caFile := generateTestCerts(t)
+
+		defer setDefaultConnectTimeout(stalledConnectTimeout)()
+
+		for _, timeout := range []time.Duration{0, -time.Second} {
+			Convey(fmt.Sprintf("Connect with timeout %s to a server that never responds fails within about the default",
+				timeout), func() {
+				addr := stalledListener(t)
+
+				took, returned, err := connectWithin(addr, caFile, timeout, stalledConnectLimit)
+				So(returned, ShouldBeTrue)
+				So(took, ShouldBeGreaterThanOrEqualTo, stalledConnectTimeout)
+
+				var jqerr Error
+
+				So(errors.As(err, &jqerr), ShouldBeTrue)
+				So(jqerr.Err, ShouldEqual, ErrNoServer)
+			})
+		}
+
+		Convey("Connect with no timeout to an address nothing listens on fails at once", func() {
+			var lc net.ListenConfig
+
+			ln, err := lc.Listen(context.Background(), "tcp", "localhost:0")
+			So(err, ShouldBeNil)
+
+			addr := ln.Addr().String()
+			So(ln.Close(), ShouldBeNil)
+
+			took, returned, err := connectWithin(addr, caFile, 0, stalledConnectLimit)
+			So(returned, ShouldBeTrue)
+			So(took, ShouldBeLessThan, stalledConnectTimeout)
+
+			var jqerr Error
+
+			So(errors.As(err, &jqerr), ShouldBeTrue)
+			So(jqerr.Err, ShouldEqual, ErrNoServer)
+		})
+	})
+
+	Convey("Given a running manager", t, func() {
+		ctx := context.Background()
+		_, serverConfig, addr, _, _ := jobqueueTestInit(false)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		Convey("A client connected with no timeout has the default's request deadlines", func() {
+			jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 0)
+			So(err, ShouldBeNil)
+
+			defer disconnect(jq)
+
+			send, recv := socketDeadlines(jq)
+			So(send, ShouldEqual, ClientDefaultConnectTimeout)
+			So(recv, ShouldEqual, requestTimeout(ClientDefaultConnectTimeout))
+		})
+
+		Convey("A client connected with no timeout keeps the default's request deadlines after a reconnect", func() {
+			jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 0)
+			So(err, ShouldBeNil)
+
+			defer disconnect(jq)
+
+			So(jq.reconnect(reconnectStepTimeout), ShouldBeNil)
+
+			send, recv := socketDeadlines(jq)
+			So(send, ShouldEqual, ClientDefaultConnectTimeout)
+			So(recv, ShouldEqual, requestTimeout(ClientDefaultConnectTimeout))
+		})
+
+		Convey("A request from a client connected with no timeout fails within about the default while the manager is down",
+			func() {
+				defer setDefaultConnectTimeout(stalledConnectTimeout)()
+
+				jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 0)
+				So(err, ShouldBeNil)
+
+				defer disconnect(jq)
+
+				So(stopManagerAndAwaitDetach(ctx, jq, server), ShouldBeTrue)
+
+				took, returned, err := callWithin(stalledConnectLimit, func() { _ = jq.sock.Close() }, func() error {
+					_, errg := jq.GetIncomplete(0, "", false, false)
+
+					return errg
+				})
+
+				So(returned, ShouldBeTrue)
+				So(took, ShouldBeGreaterThanOrEqualTo, stalledConnectTimeout)
+				So(errors.Is(err, mangos.ErrSendTimeout), ShouldBeTrue)
+			})
+	})
+}
+
+// setDefaultConnectTimeout makes d the timeout Connect uses for a timeout that is
+// not positive, returning a func that restores the real default.
+func setDefaultConnectTimeout(d time.Duration) func() {
+	defaultConnectTimeout = d
+
+	return func() { defaultConnectTimeout = ClientDefaultConnectTimeout }
+}
+
+// stopManagerAndAwaitDetach stops server and waits for jq's connection to it to
+// go, so that jq's next request has no pipe to send on. It reports whether the
+// connection went within goneManagerLimit.
+func stopManagerAndAwaitDetach(ctx context.Context, jq *Client, server *Server) bool {
+	detached := make(chan struct{})
+
+	var detachOnce sync.Once
+
+	jq.sock.SetPipeEventHook(func(ev mangos.PipeEvent, _ mangos.Pipe) {
+		if ev == mangos.PipeEventDetached {
+			detachOnce.Do(func() { close(detached) })
+		}
+	})
+
+	server.Stop(ctx, true)
+
+	select {
+	case <-detached:
+		return true
+	case <-time.After(goneManagerLimit):
+		return false
+	}
+}
+
+// callWithin calls f, reporting how long it took and its error, and whether it
+// returned at all within limit. If it did not, abandon is called to unblock it.
+func callWithin(limit time.Duration, abandon func(), f func() error) (time.Duration, bool, error) {
+	type outcome struct {
+		took time.Duration
+		err  error
+	}
+
+	done := make(chan outcome, 1)
+	start := time.Now()
+
+	go func() {
+		err := f()
+		done <- outcome{took: time.Since(start), err: err}
+	}()
+
+	select {
+	case o := <-done:
+		return o.took, true, o.err
+	case <-time.After(limit):
+		abandon()
+
+		return limit, false, nil
+	}
 }
 
 // TestPingBoundedDuringManagerShutdown proves that a client talking to a

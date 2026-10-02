@@ -120,8 +120,10 @@ type SchedulerSettings struct {
 
 	// Timeout bounds connecting to the manager, and how long sending each
 	// later request may take. A request already sent waits for its reply for
-	// up to the larger of Timeout and a minute. See the package doc for what
-	// this means while the manager is down.
+	// up to the larger of Timeout and a minute. A Timeout that is not
+	// positive means jobqueue.ClientDefaultConnectTimeout (2 minutes) rather
+	// than no limit. See the package doc for what this means while the
+	// manager is down.
 	Timeout time.Duration
 
 	// Logger receives what New logs while loading wr's config. A problem with
