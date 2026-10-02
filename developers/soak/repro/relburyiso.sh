@@ -70,6 +70,6 @@ cp -f $D/.wr-prod_production/log $D/manager.log
 # a clean stop kills and buries anything left, and bkills our runners; it
 # stops whichever manager wr conf resolves, so check it is ours
 (SOAK_ROOT=$WRDEV_ROOT; . "$here/../config.sh"; soak_isolated) \
-  || { echo "wr does not resolve --deployment production to our manager; not stopping it" >&2; $W prod-stop | head -1; exit 1; }
+  || { echo "the isolation check failed (see above, or wr conf); not stopping the manager with wr manager stop" >&2; $W prod-stop | head -1; exit 1; }
 timeout 900 $WR manager stop --deployment production 2>&1 | tail -1
 left=$(bjobs -J "${JOBP}*" -o jobid -noheader 2>/dev/null | wc -l); echo "LSF jobs left: $left"
