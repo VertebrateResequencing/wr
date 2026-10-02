@@ -171,3 +171,58 @@ versions. Beyond the moves, the landed version differs from A in these ways:
 | 78363ebb | #654 release/bury-before-crash injector and check, ack latency and throughput, round-7 launcher | landed, except `launch7.sh`: dropped, as `launch6.sh` |
 | 503efd1b | sweep another checkout's wrdev.sh, with monitor and prodsim, on chosen ports | landed (`SWEEP_WRDEV`, `SWEEP_PORTS`) |
 | eaa9794e | #654 batches on a quiet isolated manager, latency per 10 minutes | landed; the batches are `repro/relburyiso.sh` |
+
+## Runtime verification (2026-10-03)
+
+The landed tooling was run end to end at `876018a5`, with each run's
+`SOAK_ROOT` under `/nfs/hgi/wr/sb10-bigdb/soak8/`. Stops and crashes are
+listed in the order they happened.
+
+| run | check | result |
+| --- | --- | --- |
+| 1 local | `run.sh` `SCHED=local`, no FUSE, 18 min: crash, clean, crashafter crash, crash, clean, final clean. Clean stops `aliveAtReturn=n token=deleted freelist=synced`; 0 LSF jobs left | PASS |
+| 1 local | `stall.sh` and `crashon.sh` stall refuse without `USE_FUSE=1`, as designed | PASS |
+| 1 local | `diskguard.sh` | PASS |
+| 1 local | `crashafter.sh` | PASS |
+| 1 local | `markers.py`: 263 runs, 0 doubles | PASS |
+| 1 local | `doubles.py`: 0 | PASS |
+| 1 local | `runnerlogs.py`: 118 logs, 0 problems | PASS |
+| 1 local | `anyway.py`: 0 | PASS |
+| 1 local | `latency.py`: 236 archives, p99 0.83s | PASS |
+| 1 local | `dbstart` and `starttimes.py`: 5705 rows, StartTime p50 21ms, p99 94ms | PASS |
+| 1 local | `bboltexp` check: 0 errors | PASS |
+| 1 local | `stopcheck.sh`: local 8 in flight; LSF 214 with no end and 95 rc 0, all complete; 0 `EXIT0-NOT-COMPLETE`. Run 6 min after the stop, so the killed-must-be-buried check was not exercised | PASS |
+| 1 local | `stopwatch.sh`, `stopstate.sh`: two of them running at once each took the other's `pgrep` for a stop (soak8/local1: 6 of 10 entries false, with empty `phase=` and `token=present`, and stray `profiles/stop.*.goroutine2.txt`) | FAIL, fixed in 99a7f8c6 |
+| 1 local | `psinspect` | PASS |
+| 1 local | `mon.sh`: "No such file or directory" every 10s for a missing `watcher.log`, `stall.log` or `hook.log` | FAIL, fixed in 6f9effed |
+| 1 local | `rundepcheck.py` on an output dir with no `rundep/`: `FileNotFoundError` | FAIL (minor), fixed in 76e66194 |
+| 2 LSF | 21 min, ramp 100->300, LSF RUN peak about 346. The up-front LSF check refuses without `bjobs`; `lsfprobe.sh` 11 rows. Crash, crashon-burst crash, clean 28.3s, crash, final clean 62.7s. Orphans: after a crash 159 at the stop and 101 still RUN at +300s, after a clean stop 0. Analysers: 11647 runs, 0 doubles, 1317 runner logs with 0 problems, archive p99 0.79s, StartTime p50 18ms. 0 LSF jobs left | PASS |
+| 3 FUSE | `USE_FUSE=1`, 13 min: the hook moved the DB behind `fusestall` at restart 1 and back at restart 3; the stall held fsync for 1m8.7s; the crash restart reopened through the `/tmp` mount; unmounted with no process left; 0 doubles; `bboltexp` 0 errors | PASS |
+| 3 FUSE | `crashon.sh` stall: `[: 0 0: integer expression expected` every second while waiting for the trigger | FAIL, fixed in edb2bf20 |
+| 3 FUSE | `crashon.sh` stall: the manager killed during the held fsync kept its port, so the start 3s later failed with the port in use (soak8/fuse3 `restarts.tsv` `start rc=1 manual=crashon-stall`, also seen in round 7), and `watcher.sh` then ran a redundant start | FAIL, fixed in 46a2e46d |
+| 4 repros | On current develop: `readdcrash.sh` 0 and 1 (one run, Attempts 1); `rundepcrash.sh` 0, 1 and `1 70 40` (D runs=2, 0 bad job); `rundepkill.sh` 0-3 (D stays buried, per the spec); `relburyiso.sh 500 2000` (`relburycheck.py` 0 problems, all buried, 0 LSF jobs left) | PASS |
+| 5 wrdev | `freelist-check` (66s; manager median commit 2.37ms vs 32ms plain at 262144 free pages); `selfconnect-check` (80s); `RESTART_KINDS`, `PRESTART_HOOK`, `DBDIR`, `FINAL_STOP` (columns, `hook.log`, DB symlink, final stop line, 5 poststart and prestop profile sets) | PASS |
+| 6 round 7 | The analysers on round-7 data match the saved round-7 outputs byte for byte: markers, doubles 202 (198+1+3), anyway 8436, rundep OK 25 CHECK 2, latency archive p50 1.69s p99 41.71s, StartTime p50 21ms (n=527473), relbury all buried with 0 stuck running, dbstart 933838 rows, `bboltexp` 0 errors. `rl.final.txt` and `unacked.tsv` differ only by the relative runner-log path. The original soak4 scripts give identical output | PASS |
+
+The fixes:
+
+- 99a7f8c6: `config.sh`'s `soak_wr_running` matches only a command line that
+  starts with `$SOAK_WR manager <subcommand>`, or `timeout N` running one.
+  `stopwatch.sh`, `stopstate.sh`, `crashon.sh`, `relbury.sh` and `watcher.sh`
+  use it in place of an unanchored `pgrep -f`.
+- 6f9effed: `mon.sh` groups its `wc -l < file` so the redirection's own error
+  is discarded.
+- edb2bf20: `crashon.sh` keeps `grep -c`'s single count, where `|| echo 0`
+  appended a second 0 when nothing matched.
+- 46a2e46d: after the kill, `crashon.sh` and `crashafter.sh` wait up to 10 min
+  for the pid to be gone (`soak_wait_gone`) before starting the manager, and
+  note in `watcher.log` if it is still there. `watcher.sh` does not start a
+  manager after a failed start if a different one of ours is up.
+- 76e66194: `rundepcheck.py` prints "no rundep run in <outdir>" and exits 0,
+  as the other analysers do when there is nothing to check.
+- 408f2a3e: `crashafter.sh` waits out a scheduled restart in progress, as
+  `crashon.sh` does.
+- 6dec8b1f: `repro/rundepkill.sh` and `repro/relburyiso.sh` run
+  `soak_isolated` before their clean `wr manager stop`, and kill their own
+  verified pid instead if it fails. The README now says the repros start
+  through `wrdev.sh prod-start`, which does not ask `wr conf`.
