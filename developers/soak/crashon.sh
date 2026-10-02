@@ -20,7 +20,7 @@ esac
 soak_enter "$d"
 until [ "$(grep -c '	start	' "$d/restarts.tsv")" -ge "$n" ]; do soak_alive "$d" || exit 0; sleep 5; done
 c0=$(grep -c "$pat" "$f" 2>/dev/null); c0=${c0:-0}
-until [ "$(grep -c "$pat" "$f" 2>/dev/null || echo 0)" -gt "$c0" ]; do soak_alive "$d" || exit 0; sleep 1; done
+until c=$(grep -c "$pat" "$f" 2>/dev/null); [ "${c:-0}" -gt "$c0" ]; do soak_alive "$d" || exit 0; sleep 1; done
 echo "$(date +%s) crashon: $trig seen: $(grep "$pat" "$f" | tail -1); crashing in ${wait}s" >> "$d/watcher.log"
 sleep "$wait"
 # never collide with a scheduled restart part-way through
