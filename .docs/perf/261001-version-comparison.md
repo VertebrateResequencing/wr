@@ -10,7 +10,8 @@ These are `make speed` measurements of four trees:
 | #655 head | `31d5ad10` (`fix-dep-group-rerun-gaps`) |
 
 This report lists the regressions and does not fix them. Each one needs its
-own bugfix item.
+own bugfix item. The one develop → #655 regression was fixed in #655 before it
+merged (see below).
 
 ## Method
 
@@ -221,6 +222,13 @@ None confirmed.
      looks up and puts back archived dependents inside the add transaction
      (`putBackArchivedDependentsWith`, `putBackArchivedDependentsTx`).
    - Peak RSS +5.5% (p=0.032) is under the 10% line.
+   - **Fixed in #655 before it merged** (item 12 of
+     `.docs/bugfixes/260930-dep-group-rerun-gaps.md`): the add now puts back
+     only the dependents an archive noted on its guard since the add read
+     them. `BenchmarkAddDepGroupMember`, added for this and now part of
+     `make speed`, was 334 ms on `f4eb134a`'s parent `4b743a37`, 410 ms on
+     `31d5ad10` (+22.8%, p<0.001) and 340 ms with the fix (p=0.38, not
+     significant), 8 interleaved rounds each at `-benchtime 10x`.
 
 ## Improvements
 

@@ -219,8 +219,9 @@ any regression the change accepts.
   - `jobqueue`: `BenchmarkAddJobs`, `BenchmarkUpdateJobState`,
     `BenchmarkArchiveJobs`, `BenchmarkArchiveSpacedArrivals`,
     `BenchmarkReadyBacklogSnapshot`, `BenchmarkRepGroupStatusDetails`,
-    `BenchmarkJobKey`, `BenchmarkModifyLiveJobsReverseLookup` and
-    `BenchmarkJobCleanup*`
+    `BenchmarkJobKey`, `BenchmarkModifyLiveJobsReverseLookup`,
+    `BenchmarkJobCleanup*` and `BenchmarkAddDepGroupMember` (a tree without
+    a benchmark, such as an older release, just reports nothing for it)
   - `queue`: `BenchmarkQueueLifecycle`
   - `limiter`: its benchmarks
 - the local, farm-safe `wrdev.sh` scenarios `report-storm` and
