@@ -83,6 +83,10 @@ project adheres to [Semantic Versioning](http://semver.org/).
   then failed to start on.
 - The manager uses less CPU deciding what to schedule when many commands are
   waiting in limit groups.
+- The manager allocates about 2 KiB less memory each time it saves a command,
+  which it does when the command is added, changes state and is archived. A
+  command's "cleanup" behaviour allocates about 80% less, and checking a limit
+  group the manager has not yet loaded allocates half as much.
 - With the lsf scheduler, each bsub returns about 100ms sooner.
 - When the manager or a runner logs an internal panic, the log now includes the
   stack of where the panic happened (as `panic_stack`).
