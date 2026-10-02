@@ -52,7 +52,7 @@ on this host under `nice -n 19`, compared with benchstat.
     Against v0.37.2, B/op is now -12.4% for AddJobs and -4.4% for
     UpdateJobState. ArchiveJobs stays +27.6%, the part #555 added with its
     single archive writer (bolt pages/job 2.66 to 3.23). No sec/op got worse.
-- [ ] Limiter (#555, commit 4e5739fc, withResolvedGroups which keeps the DB
+- [x] Limiter (#555, commit 4e5739fc, withResolvedGroups which keeps the DB
   read outside the lock): limiter Inc/Dec and Capacity +58-68% sec/op, ~2x
   B/op, +75% allocs (~+1.1µs/call). Remove the overhead on the common path
   (e.g. avoid allocating when all groups are already resolved/cached; fast path
@@ -75,6 +75,43 @@ on this host under `nice -n 19`, compared with benchstat.
     LimiterIncDec-8     9.000 ± 0%   16.000 ± 0%  +77.78% (p=0.002 n=6)
     LimiterCapacity-8   11.00 ± 0%    19.00 ± 0%  +72.73% (p=0.002 n=6)
     ```
+  - Cause: the benchmarks, like a job's first run against a limit group,
+    take the path where a group is not yet in memory. There
+    `withResolvedGroups` built a slice of unresolved names, a map of resolved
+    groups and a closure on every call: 7 extra allocations. Known groups
+    already allocated nothing.
+  - Fix: `limiter/limiter.go` replaces it with `lockWithResolvedGroups`, which
+    returns with the mutex held. It records each group's resolution in a
+    slice ordered like the groups, backed by an 8-entry array on the caller's
+    stack, and reuses the in-memory group it found, so vivifying needs no
+    second map lookup. The callback still runs only with the mutex released
+    (lock, mark unresolved, unlock, callback, relock, until none is left).
+  - Tests: `limiter/limiter_test.go` adds `TestLimiterAllocs` (no allocations
+    on known groups; exactly one per new group on lookup, which develop failed
+    with 6 for 2), `TestLimiterManyGroups` (more than 8 groups) and
+    `TestLimiterDuplicateGroups` (a name repeated in one call). The existing
+    `TestReliable4LimiterSlowLookup` still proves the callback runs unlocked.
+  - After (reviewer's rerun, same command):
+
+    ```
+                      │    v0372     │                dev                 │               after                │
+                      │    sec/op    │   sec/op     vs base               │   sec/op     vs base               │
+    LimiterIncDec-8     2.343µ ± 90%   3.293µ ± 3%        ~ (p=0.065 n=6)   2.499µ ± 6%        ~ (p=0.180 n=6)
+    LimiterCapacity-8   1.797µ ±  7%   3.129µ ± 3%  +74.12% (p=0.002 n=6)   2.345µ ± 7%  +30.52% (p=0.002 n=6)
+                      │    B/op    │     B/op      vs base                │    B/op     vs base                │
+    LimiterIncDec-8     544.0 ± 0%    1120.0 ± 0%  +105.88% (p=0.002 n=6)   544.0 ± 0%       ~ (p=1.000 n=6)
+    LimiterCapacity-8   632.0 ± 0%    1240.0 ± 0%   +96.20% (p=0.002 n=6)   632.0 ± 0%       ~ (p=1.000 n=6)
+                      │ allocs/op  │  allocs/op   vs base               │ allocs/op   vs base                │
+    LimiterIncDec-8     9.000 ± 0%   16.000 ± 0%  +77.78% (p=0.002 n=6)   9.000 ± 0%       ~ (p=1.000 n=6)
+    LimiterCapacity-8   11.00 ± 0%    19.00 ± 0%  +72.73% (p=0.002 n=6)   11.00 ± 0%       ~ (p=1.000 n=6)
+    ```
+
+    The v0.37.2 numbers came from an earlier, quieter session. Run
+    interleaved with v0.37.2 on the loaded host, the fix showed no
+    significant difference (IncDec p=0.937, Capacity p=0.310). Split by path:
+    Increment/Decrement of known groups is about 10% faster than v0.37.2, and
+    a lookup costs about 50ns more, mostly the second lock round trip that
+    keeps the callback outside the lock.
 - [ ] JobCleanup (#575, commit db108fa8): JobCleanup* +17-33% sec/op, 4x
   allocs (Depth1 540→2190). Find and cut the extra allocations while keeping
   #575's safety behaviour (it made cleanup prove the directory is wr's own

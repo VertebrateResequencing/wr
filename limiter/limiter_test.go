@@ -29,6 +29,7 @@ package limiter
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -37,6 +38,98 @@ import (
 
 	. "github.com/smartystreets/goconvey/convey"
 )
+
+func TestLimiterAllocs(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a Limiter whose callback allocates nothing", t, func() {
+		limit := NewCountGroupData(2)
+		l := New(func(context.Context, string) *GroupData { return limit })
+		groups := []string{"l1", "l2"}
+
+		Convey("Increment, Decrement and capacity checks of groups in memory allocate nothing", func() {
+			So(l.Increment(ctx, groups), ShouldBeTrue)
+
+			allocs := testing.AllocsPerRun(100, func() {
+				l.Increment(ctx, groups)
+				l.GetRemainingCapacity(ctx, groups)
+				l.Decrement(groups)
+			})
+			So(allocs, ShouldEqual, 0)
+		})
+
+		Convey("Increment of groups it must look up allocates only the new groups", func() {
+			allocs := testing.AllocsPerRun(100, func() {
+				l.Increment(ctx, groups)
+				l.Decrement(groups)
+			})
+			So(allocs, ShouldEqual, float64(len(groups)))
+		})
+	})
+}
+
+func TestLimiterManyGroups(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a Limiter that must look up the limits of more than 8 groups", t, func() {
+		groups := make([]string, 10)
+		limits := make(map[string]int64, len(groups))
+
+		for i := range groups {
+			groups[i] = fmt.Sprintf("g%d", i)
+			limits[groups[i]] = int64(3 + i)
+		}
+
+		l := New(func(_ context.Context, name string) *GroupData {
+			return NewCountGroupData(limits[name])
+		})
+
+		So(l.Increment(ctx, groups[:5]), ShouldBeTrue)
+
+		Convey("Increment, capacity and Decrement work across all of them", func() {
+			So(l.Increment(ctx, groups), ShouldBeTrue)
+			So(l.GetLowestLimit(ctx, groups), ShouldEqual, 3)
+			So(l.GetRemainingCapacity(ctx, groups), ShouldEqual, 1)
+
+			So(l.Increment(ctx, groups), ShouldBeTrue)
+			So(l.GetRemainingCapacity(ctx, groups), ShouldEqual, 0)
+			So(l.Increment(ctx, groups), ShouldBeFalse)
+
+			l.Decrement(groups)
+			So(l.GetRemainingCapacity(ctx, groups), ShouldEqual, 1)
+			So(l.GetRemainingCapacity(ctx, groups[5:]), ShouldEqual, 7)
+		})
+	})
+}
+
+func TestLimiterDuplicateGroups(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a Limiter with a group limit of 5", t, func() {
+		l := New(func(context.Context, string) *GroupData { return NewCountGroupData(5) })
+		twice := []string{"a", "a"}
+
+		test := func() {
+			So(l.Increment(ctx, twice), ShouldBeTrue)
+			So(l.GetRemainingCapacity(ctx, []string{"a"}), ShouldEqual, 3)
+
+			l.Decrement(twice)
+			So(l.GetLimits(), ShouldBeEmpty)
+			So(l.GetRemainingCapacity(ctx, []string{"a"}), ShouldEqual, 5)
+		}
+
+		Convey("Incrementing a group named twice that must be looked up counts it twice", test)
+
+		Convey("Incrementing a group named twice that is in memory counts it twice", func() {
+			So(l.Increment(ctx, []string{"a"}), ShouldBeTrue)
+			So(l.Increment(ctx, twice), ShouldBeTrue)
+			So(l.GetRemainingCapacity(ctx, []string{"a"}), ShouldEqual, 2)
+
+			l.Decrement(twice)
+			So(l.GetRemainingCapacity(ctx, []string{"a"}), ShouldEqual, 4)
+		})
+	})
+}
 
 // synctestConvey runs a single top-level Convey block inside its own synctest
 // bubble, so the wait-time windows in the block resolve on a synthetic clock
