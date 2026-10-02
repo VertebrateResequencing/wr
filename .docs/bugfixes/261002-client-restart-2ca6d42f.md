@@ -298,3 +298,17 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
   after a restart under load, so one unreachable spell spans both 3.5s
   outages and exceeds the 6s RetryTime.
   - Source: reviewer of the mangos resend item.
+- [ ] After a manager restart, a subscription's first poll can reach the new
+  manager with the old manager's subscription id, which the new manager
+  logs at error level. Check whether the client then resubscribes without
+  losing updates, and whether the log is noise for an expected event.
+  - Source: coordinator, from #666's soak runtime checks.
+  - Evidence (soak8 local1 manager log, one per restart, within a second of
+    "wr manager started"):
+
+    ```
+    t=2026-10-02T20:09:08+0100 lvl=info msg="wr manager  started on [host]:51962, pid 2607562"
+    t=2026-10-02T20:09:09+0100 lvl=eror msg="Server handle client request error" err="jobqueue waitForUpdates(): unknown subscription" caller=clog.go:344
+    t=2026-10-02T20:14:02+0100 lvl=info msg="wr manager  started on [host]:51962, pid 2655220"
+    t=2026-10-02T20:14:02+0100 lvl=eror msg="Server handle client request error" err="jobqueue waitForUpdates(): unknown subscription" caller=clog.go:344
+    ```
