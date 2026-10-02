@@ -145,10 +145,30 @@ request a live but slow manager is still handling.
     send-deadline checks in TestClientTokenReload's bounded-resend case, and
     part-way and send-only restore-failure cases in
     TestRequestWithinReportsRestoreFailure; nine mutants checked killed.
-- [ ] Scheduler.WaitForRunning returns the first poll error when the manager
+- [x] Scheduler.WaitForRunning returns the first poll error when the manager
   goes down, while WaitForJobs rides out a restart for the server's
   RetryTime; a long-running app waiting for a job to start has to restart
   its wait by hand.
+  - Red command: `timeout 900 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    go test -tags netgo -count 1 ./client/ -run
+    TestSchedulerWaitForRunningAcrossManagerRestart`, exit 1:
+
+    ```
+    Line 981:   (restart test: the wait must still be running while the manager is down)
+    Expected: (*errors.errorString){s:"timed out waiting for WaitForJobs"}
+    Actual:   errors.err("send time out")
+    --- FAIL: TestSchedulerWaitForRunningAcrossManagerRestart (94.48s)
+    ```
+  - Fixed: client/client.go waitForRunning keeps its first poll failing fast
+    (as WaitForJobs does), then polls through errors meaning the manager is
+    unreachable (mangos send/receive timeouts, ErrClosedStop, ErrRecovering)
+    until that spell outlasts the manager's ServerInfo.RetryTime (default
+    jobqueue.ClientRetryTime); an answered poll resets the spell and other
+    errors still return at once. ErrClosed is excluded: it only follows
+    Disconnect. Doc comment states the contract. Tests: restart, repeated
+    outages, stays-down and ctx-cancel cases in
+    TestSchedulerWaitForRunningAcrossManagerRestart, error-table cases in
+    TestSchedulerWaitForRunning.
 - [ ] The client package and jobqueue.Connect docs do not state the
   restart/downtime contract (fail after Timeout while down, token reload
   only via the token-file route, interrupted batches may be partly added
