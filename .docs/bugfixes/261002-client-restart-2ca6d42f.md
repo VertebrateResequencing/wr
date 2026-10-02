@@ -312,3 +312,10 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
     t=2026-10-02T20:14:02+0100 lvl=info msg="wr manager  started on [host]:51962, pid 2655220"
     t=2026-10-02T20:14:02+0100 lvl=eror msg="Server handle client request error" err="jobqueue waitForUpdates(): unknown subscription" caller=clog.go:344
     ```
+- [ ] Scheduler.GetSchedulerAlerts goes over REST (jobqueue/client_rest.go),
+  so it neither rides out an outage nor reloads the token: after a restart
+  with a new token it likely fails with HTTP 401 until a mangos request
+  reloads the token (restGet sends currentToken() and never reloads on 401;
+  inferred from the code). Reading alerts dismisses issues, so it is not
+  safe to resend after a response timeout.
+  - Source: implementor of the outage-retry item.
