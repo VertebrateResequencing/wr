@@ -244,5 +244,8 @@ acknowledged release that was lost is a defect to reproduce in `repro/` or a
   job token, and never point any of them at a production manager. `wrdev.sh`
   writes the run's own config dir, and every manager start, stop or kill here
   first checks that `wr conf` resolves `--deployment production` to our port
-  and that the pid runs our binary. Two soaks at once need different ports.
+  and that the pid runs our binary. The `repro/` scripts check `wr conf` only
+  before a clean stop: they start through `wrdev.sh prod-start`, which does not
+  ask `wr conf`, and kill only a pid that runs their own binary. Two soaks at
+  once need different ports.
 - Do not edit `wrdev.sh` or these scripts while a soak is running from them.

@@ -38,6 +38,9 @@ if [ "$rs" -lt 2 ]; then
   echo "after B ended:"; st
 fi
 if [ "$rs" != 0 ]; then
+  # wr manager stop stops whichever manager wr conf resolves, so check it is ours
+  (SOAK_ROOT=$WRDEV_ROOT; . "$here/../config.sh"; soak_isolated) \
+    || { echo "wr does not resolve --deployment production to our manager; not stopping it" >&2; $W prod-stop | head -1; exit 1; }
   timeout 300 $WR manager stop --deployment production 2>&1 | tail -1; sleep 2; $W prod-start local | tail -1; sleep 5
   echo "after a clean restart:"; st
 fi
