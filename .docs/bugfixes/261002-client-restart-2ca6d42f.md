@@ -203,3 +203,10 @@ request a live but slow manager is still handling.
   like success, or be a clear typed error saying which jobs were added if
   success is not safe, and be documented.
   - Source: coordinator, from the PR's "for the owner" list.
+- [ ] SchedulerSettings.Timeout has no default: with the zero value, Connect
+  gives the socket a send deadline of 0 (no deadline in mangos), so
+  client.New with the manager down, and requests during an outage, may block
+  until the manager returns instead of failing with ErrSendTimeout; the
+  docs assume a non-zero Timeout. Test Timeout 0, then document the
+  zero-value behaviour or give it a backwards-compatible default.
+  - Source: coordinator (owner asked what Timeout defaults to).
