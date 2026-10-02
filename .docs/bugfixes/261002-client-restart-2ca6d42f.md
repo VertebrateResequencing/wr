@@ -252,3 +252,11 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
   to the manager's RetryTime, logging warnings, as runners and waits do.
 - [ ] Scheduler calls without a context cannot be given up early once they
   retry; add context-taking variants, keeping the existing signatures.
+- [ ] TestSchedulerWaitForRunningAcrossManagerRestart ("rides out repeated
+  outages", client/client_test.go ~315, added by this branch's WaitForRunning
+  commit) fails intermittently under `CGO_ENABLED=1 -race` on the full
+  client package: `Expected "timed out waiting for WaitForJobs", Actual
+  "send time out"` (2 of 9 runs); likely no poll answered in the 1s window
+  after a restart under load, so one unreachable spell spans both 3.5s
+  outages and exceeds the 6s RetryTime.
+  - Source: reviewer of the mangos resend item.
