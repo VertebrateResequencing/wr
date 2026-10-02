@@ -1356,20 +1356,22 @@ func statusTestServerConfig(t *testing.T) (*internal.Config, jobqueue.ServerConf
 // approach closed the first listener before opening the second, letting the OS
 // hand out the same port twice, which made the web listener fail to bind the
 // manager's port). Ephemeral ports also avoid the collisions a fixed per-lane
-// scheme would cause when test runs overlap on a shared machine.
+// scheme would cause when test runs overlap on a shared machine. It listens
+// dual-stack on every address, as the manager does, so it never picks a port
+// that something holds for IPv6 alone, which the manager could not bind.
 func freeStatusTestPorts(t *testing.T) (string, string) {
 	t.Helper()
 
 	listenConfig := net.ListenConfig{}
 
-	l1, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	l1, err := listenConfig.Listen(context.Background(), "tcp", "0.0.0.0:0")
 	So(err, ShouldBeNil)
 
 	defer func() {
 		So(l1.Close(), ShouldBeNil)
 	}()
 
-	l2, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	l2, err := listenConfig.Listen(context.Background(), "tcp", "0.0.0.0:0")
 	So(err, ShouldBeNil)
 
 	defer func() {

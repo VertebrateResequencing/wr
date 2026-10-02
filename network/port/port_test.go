@@ -26,6 +26,7 @@
 package port
 
 import (
+	"context"
 	"errors"
 	"net"
 	"syscall"
@@ -179,6 +180,31 @@ func checkRejectedRangeSize(checker *Checker, size int) {
 	So(errors.Is(err, errInvalidRangeSize), ShouldBeTrue)
 }
 
+// offeredPortListener stands in for the operating system offering port.
+type offeredPortListener struct {
+	port int
+}
+
+func (o offeredPortListener) Addr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv6loopback, Port: o.port}
+}
+
+func (o offeredPortListener) Close() error {
+	return nil
+}
+
+// offerPort listens like listenTCP, except that the port the operating system
+// would pick is always offered, so the sweep starts at offered.
+func offerPort(offered int) listenFunc {
+	return func(addr *net.TCPAddr) (listener, error) {
+		if addr.Port == 0 {
+			return offeredPortListener{port: offered}, nil
+		}
+
+		return listenTCP(addr)
+	}
+}
+
 type countedListener struct {
 	*net.TCPListener
 
@@ -281,4 +307,43 @@ func (u unclosableListener) Addr() net.Addr {
 
 func (u unclosableListener) Close() error {
 	return syscall.EINVAL
+}
+
+// TestPortIPv6OnlyListener covers a port that something else listens on for
+// IPv6 only (as rpc.statd does on some hosts). The manager listens dual-stack,
+// so it cannot bind such a port, and the checker must not offer it.
+func TestPortIPv6OnlyListener(t *testing.T) {
+	ipv6Only, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("this host has no IPv6 loopback: %s", err)
+	}
+
+	defer ipv6Only.Close()
+
+	heldAddr, ok := ipv6Only.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("IPv6 listener address was %T", ipv6Only.Addr())
+	}
+
+	heldPort := heldAddr.Port
+
+	Convey("Given a Checker, and a port held by an IPv6-only listener", t, func() {
+		checker, err := NewChecker("localhost")
+		So(err, ShouldBeNil)
+
+		Convey("The checker cannot claim that port", func() {
+			claimed := checker.claimRange(heldPort, 1)
+			So(checker.release(nil), ShouldBeNil)
+			So(claimed, ShouldBeFalse)
+		})
+
+		Convey("AvailableRange starting its search at that port returns a range without it", func() {
+			checker.listen = offerPort(heldPort)
+
+			first, last, err := checker.AvailableRange(4)
+			So(err, ShouldBeNil)
+			So(last, ShouldEqual, first+3)
+			So(heldPort >= first && heldPort <= last, ShouldBeFalse)
+		})
+	})
 }
