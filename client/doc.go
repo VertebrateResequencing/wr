@@ -73,14 +73,17 @@ been sent. A Context variant does not otherwise check ctx: a call made with a
 ctx already done still makes one attempt.
 
 A submission in progress when the manager stops can be partly or wholly added,
-and is sent again once the manager is back, so SubmitJobs can then return
-ErrDuplicateJobs for jobs that only this one call added. To recover from that,
-or from a submission that failed because the manager stayed down, call
-SubmitJobsAndReturnIDs with the same jobs and the default SubmitJobsOptions. It
-adds only the jobs that are neither queued nor complete, and returns the keys
-of the jobs now queued. A job that has already completed is neither added again
-nor in the result; Job.Key gives any job's key without asking the manager. Do
-not set RerunCompleted for this: it adds completed jobs again, so they run
-twice.
+and is sent again once the manager is back. The manager then reports the jobs
+the first copy added as already existing. SubmitJobs detects when its
+submission may have been sent more than once, and then returns nil rather than
+ErrDuplicateJobs, since every job is queued. It cannot tell those jobs apart
+from identical jobs queued before it was called, so in that case it returns nil
+for them too. A submission that failed because the manager stayed down may
+also have been partly added. To recover from that, call SubmitJobsAndReturnIDs
+with the same jobs and the default SubmitJobsOptions. It adds only the jobs
+that are neither queued nor complete, and returns the keys of the jobs now
+queued. A job that has already completed is neither added again nor in the
+result; Job.Key gives any job's key without asking the manager. Do not set
+RerunCompleted for this: it adds completed jobs again, so they run twice.
 */
 package client

@@ -234,12 +234,33 @@ request a live but slow manager is still handling.
     jobqueue/client_resend_test.go checks resend time exceeds the receive
     deadline for 120s and 10h timeouts and that a pipe-loss add still
     succeeds; the 0 and 3-minute mutants fail it.
-- [ ] A SubmitJobs whose add was in flight when the manager stopped, partly
+- [x] A SubmitJobs whose add was in flight when the manager stopped, partly
   persisted and then resent to the restarted manager returns
   ErrDuplicateJobs for jobs only that call added. Its outcome should look
   like success, or be a clear typed error saying which jobs were added if
   success is not safe, and be documented.
   - Source: coordinator, from the PR's "for the owner" list.
+  - Red command: `timeout 900 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    go test -tags netgo -count 1 -timeout 20m ./client/ -run
+    '^TestSchedulerSubmitJobsResentAfterItsReplyWasLost$'` (a TCP proxy
+    drops the manager's add reply, so mangos redials and resends), exit 1:
+
+    ```
+    Line 180:
+    Expected: nil
+    Actual:   'some of the added jobs were duplicates'
+    --- FAIL: TestSchedulerSubmitJobsResentAfterItsReplyWasLost (0.54s)
+    ```
+  - Fixed: requestOnceLocked watches add attempts with a chained pipe event
+    hook (jobqueue/client_resend.go) and marks the request resent if a new
+    pipe attaches after Send returned (mangos's pipe-loss resend);
+    requestRidingOutOutages marks it after a receive-timeout retry; a
+    token-reload resend alone does not count. New AddDuplicates.Resent and
+    Client.AddWithDuplicatesContext; SubmitJobs returns nil when every job
+    was added or the add was resent (with ignoreComplete false every
+    duplicate is a queued job). Residual, documented: after a resend,
+    identical jobs someone else queued earlier also count as success; rare
+    false positives when a pipe breaks without the first copy arriving.
 - [ ] SchedulerSettings.Timeout has no default: with the zero value, Connect
   gives the socket a send deadline of 0 (no deadline in mangos), so
   client.New with the manager down, and requests during an outage, may block

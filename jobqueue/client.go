@@ -352,6 +352,7 @@ func (d DuplicateBreakdown) CompleteOtherRepGroups() int {
 type AddDuplicates struct {
 	total     int
 	breakdown *DuplicateBreakdown
+	resent    bool
 }
 
 // Total is how many of the Add's input jobs were not added because a job with
@@ -390,6 +391,19 @@ func NewAddDuplicates(existed int, breakdown DuplicateBreakdown) AddDuplicates {
 	}
 
 	return dups
+}
+
+// Resent reports whether the Add may have reached the manager more than once,
+// so an earlier copy of this same Add may have added some of the jobs Total()
+// counts. That happens when the connection the Add went out on was lost before
+// its reply arrived, as when the manager stops mid-Add (the socket sends it
+// again once it reconnects), or when a client that rides out outages sent it
+// again after its reply did not arrive in time. Those jobs cannot be told apart
+// from identical jobs added by anyone before this Add: they are queued (or, for
+// an Add that skips complete jobs, may have completed) either way. Resent can
+// also be true when only one copy was acted on.
+func (a AddDuplicates) Resent() bool {
+	return a.resent
 }
 
 func touchEndState(job *Job) *JobEndState {
@@ -460,6 +474,10 @@ type clientRequest struct {
 	// retries even though no start was ever reported (an old client sends false,
 	// keeping its pre-existing unbounded-retry behaviour).
 	Attempted bool
+
+	// resent is client-side only, never encoded: the request may have reached
+	// the manager more than once (see AddDuplicates.Resent).
+	resent bool
 }
 
 // RepGroupMatch controls how RepGroup filters are applied by repgroup-based
@@ -764,10 +782,11 @@ func combineExecOutcomes(unmount, cmd execOutcome) execOutcome {
 // ClientMinRequestTimeout if the manager went after taking them, unless
 // RetryWhileManagerUnreachable() was called. An Add in progress when the
 // manager stops can be partly applied, and is resent when the client
-// reconnects, so it can then report its own jobs as existing. A subscription
-// (as used by AddAndWait) keeps trying to reconnect for the manager's
-// RetryTime. The client package's Scheduler uses such a client and rides out
-// outages; its package doc describes how.
+// reconnects, so it can then report its own jobs as existing;
+// AddDuplicates.Resent, from AddWithDuplicates, says when that may have
+// happened. A subscription (as used by AddAndWait) keeps trying to reconnect
+// for the manager's RetryTime. The client package's Scheduler uses such a
+// client and rides out outages; its package doc describes how.
 func ConnectWithTokenFile(addr, caFile, certDomain, tokenFile string, timeout time.Duration) (*Client, error) {
 	if tokenFile == "" {
 		return nil, ErrNoTokenFile
@@ -1161,9 +1180,29 @@ func refreshDerivedTiming(current, oldServer, newServer, def time.Duration) time
 
 // requestOnceLocked sends cr and returns the manager's reply, and must be
 // called with the client's lock held.
+//
+// An add is watched for mangos sending it again on a new connection, which marks
+// it resent: an add is the request whose caller is told what that means (see
+// AddDuplicates.Resent).
 func (c *Client) requestOnceLocked(cr *clientRequest) (*serverResponse, error) {
+	var watch *resendWatch
+
+	if cr.Method == requestMethodAdd {
+		watch = watchForResend(c.sock)
+
+		defer func() {
+			if watch.stop() {
+				cr.resent = true
+			}
+		}()
+	}
+
 	if err := c.encodeAndSend(cr); err != nil {
 		return nil, err
+	}
+
+	if watch != nil {
+		watch.markSent()
 	}
 
 	sr, err := c.recvAndDecode()
@@ -1530,9 +1569,10 @@ func (c *Client) requestContext(ctx context.Context, cr *clientRequest) (*server
 	return c.requestOnce(cr)
 }
 
-// addWithDuplicates is AddWithDuplicates, except that a client riding out an
-// outage stops retrying once ctx is done.
-func (c *Client) addWithDuplicates(
+// AddWithDuplicatesContext is AddWithDuplicates, except that on a client that
+// rides out outages it stops retrying once ctx is done, as GetByEssenceContext
+// does.
+func (c *Client) AddWithDuplicatesContext(
 	ctx context.Context,
 	jobs []*Job,
 	envVars []string,
@@ -1547,14 +1587,17 @@ func (c *Client) addWithDuplicates(
 		return 0, AddDuplicates{}, AddWarnings{}, err
 	}
 
-	resp, err := c.requestContext(ctx, &clientRequest{
-		Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete,
-	})
+	cr := &clientRequest{Method: requestMethodAdd, Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete}
+
+	resp, err := c.requestContext(ctx, cr)
 	if err != nil {
 		return 0, AddDuplicates{}, AddWarnings{}, err
 	}
 
-	return resp.Added, NewAddDuplicates(resp.Existed, resp.Duplicates), resp.AddWarnings, err
+	dups = NewAddDuplicates(resp.Existed, resp.Duplicates)
+	dups.resent = cr.resent
+
+	return resp.Added, dups, resp.AddWarnings, err
 }
 
 // stageBackup writes db to a uniquely named file in path's own directory,
@@ -1595,7 +1638,7 @@ func (c *Client) AddWithDuplicates(
 	envVars []string,
 	ignoreComplete bool,
 ) (added int, dups AddDuplicates, warnings AddWarnings, err error) {
-	return c.addWithDuplicates(context.Background(), jobs, envVars, ignoreComplete)
+	return c.AddWithDuplicatesContext(context.Background(), jobs, envVars, ignoreComplete)
 }
 
 // addAndReturnIDsWithWarnings is AddAndReturnIDsWithWarnings, except that a
@@ -1630,7 +1673,7 @@ func (c *Client) addAndReturnIDsWithWarnings(
 func (c *Client) AddContext(ctx context.Context, jobs []*Job, envVars []string,
 	ignoreComplete bool,
 ) (added, existed int, err error) {
-	added, dups, _, err := c.addWithDuplicates(ctx, jobs, envVars, ignoreComplete)
+	added, dups, _, err := c.AddWithDuplicatesContext(ctx, jobs, envVars, ignoreComplete)
 
 	return added, dups.Total(), err
 }

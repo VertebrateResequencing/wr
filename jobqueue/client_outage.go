@@ -118,6 +118,11 @@ func (c *Client) requestRidingOutOutages(ctx context.Context, retry *outageRetry
 			return sr, err
 		}
 
+		// the manager may have acted on the copy whose reply did not arrive
+		if errors.Is(err, mangos.ErrRecvTimeout) {
+			cr.resent = true
+		}
+
 		retryTime := c.currentRetryTime()
 		outage.warn(err, retryTime)
 
@@ -210,8 +215,9 @@ func managerDidNotTakeRequest(err error) bool {
 // may have been acted on, so it is sent again only for requests that have the
 // same effect if applied twice: adds that skip complete jobs (ignoreComplete
 // true; their jobs are identified by key, and a resent add can report the jobs
-// the first copy added as existing), the job getters, Kill and Delete (whose
-// counts can then be lower than the jobs they acted on). Other requests, such
+// the first copy added as existing, when AddDuplicates.Resent reports true),
+// the job getters, Kill and Delete (whose counts can then be lower than the
+// jobs they acted on). Other requests, such
 // as an add that re-adds complete jobs, Reserve, Archive or Modify, return the
 // receive timeout at once.
 //

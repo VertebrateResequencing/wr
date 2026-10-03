@@ -26,6 +26,7 @@
 package jobqueue
 
 import (
+	"context"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -48,6 +49,10 @@ const cliConnectTimeout = 120 * time.Second
 // might pick as merely generous, so only one that never comes round passes.
 const longConnectTimeout = 10 * time.Hour
 
+// resendTestSendWait is the send deadline of a Client whose next connection is
+// held up for longer than it.
+const resendTestSendWait = 200 * time.Millisecond
+
 // heldAddWait is how long a copyCountingManager holds its reply to an add in
 // the scaled-down tests below: within the receive deadline they give the
 // socket, and past the connect timeout.
@@ -65,18 +70,22 @@ const copyCountingManagerWorkers = 4
 // arrived on without answering it, as a manager that goes away mid-request
 // does. It counts every other request too, answering at once with the error in
 // answers for its method if there is one, and otherwise holding its reply for
-// hold as well.
+// hold as well. A manager made by startRememberingManager also acts on adds as
+// the real manager does.
 type copyCountingManager struct {
-	addr      string
-	caFile    string
-	hold      time.Duration
-	dropFirst bool
-	adds      atomic.Int32
-	stop      chan struct{}
-	answers   map[string]string
+	addr          string
+	caFile        string
+	hold          time.Duration
+	dropFirst     bool
+	holdOnlyFirst bool
+	adds          atomic.Int32
+	stop          chan struct{}
+	answers       map[string]string
 
 	mu       sync.Mutex
 	received map[string]int
+	known    map[string]bool
+	pipes    []mangos.Pipe
 }
 
 // startCopyCountingManager starts a copyCountingManager, stopping it when the
@@ -94,6 +103,27 @@ func startAnsweringManager(t *testing.T, hold time.Duration, dropFirst bool,
 ) *copyCountingManager {
 	t.Helper()
 
+	return startManager(t, &copyCountingManager{hold: hold, dropFirst: dropFirst, answers: answers})
+}
+
+// startRememberingManager is startCopyCountingManager for a manager that acts on
+// each add as it arrives, before holding or dropping its reply, remembering
+// the keys of the jobs it added and answering as the real manager does: jobs it
+// already has are reported as existing and queued. If holdOnlyFirst, only the
+// first add's reply is held.
+func startRememberingManager(t *testing.T, hold time.Duration, dropFirst, holdOnlyFirst bool) *copyCountingManager {
+	t.Helper()
+
+	return startManager(t, &copyCountingManager{
+		hold: hold, dropFirst: dropFirst, holdOnlyFirst: holdOnlyFirst, known: make(map[string]bool),
+	})
+}
+
+// startManager starts m, which has its behaviour set, stopping it when the
+// test ends.
+func startManager(t *testing.T, m *copyCountingManager) *copyCountingManager {
+	t.Helper()
+
 	caFile := generateTestCerts(t)
 	dir := filepath.Dir(caFile)
 
@@ -104,19 +134,16 @@ func startAnsweringManager(t *testing.T, hold time.Duration, dropFirst bool,
 	So(err, ShouldBeNil)
 	So(sock.SetOption(mangos.OptionMaxRecvSize, 0), ShouldBeNil)
 
+	sock.SetPipeEventHook(m.trackPipe)
+
 	port, err := freeEphemeralTestPort()
 	So(err, ShouldBeNil)
 	So(listenTLS(sock, tlsConfig, strconv.Itoa(port)), ShouldBeNil)
 
-	m := &copyCountingManager{
-		addr:      "localhost:" + strconv.Itoa(port),
-		caFile:    caFile,
-		hold:      hold,
-		dropFirst: dropFirst,
-		stop:      make(chan struct{}),
-		answers:   answers,
-		received:  make(map[string]int),
-	}
+	m.addr = "localhost:" + strconv.Itoa(port)
+	m.caFile = caFile
+	m.stop = make(chan struct{})
+	m.received = make(map[string]int)
 
 	var wg sync.WaitGroup
 
@@ -154,6 +181,7 @@ func (m *copyCountingManager) serve(sctx mangos.Context) {
 		}
 
 		sr := &serverResponse{SInfo: &ServerInfo{}}
+		m.actOnAdd(cr, sr)
 
 		if cr.Method == requestMethodAdd && m.adds.Add(1) == 1 && m.dropFirst {
 			_ = msg.Pipe.Close()
@@ -197,15 +225,68 @@ func (m *copyCountingManager) answer(cr *clientRequest, sr *serverResponse) bool
 		return true
 	}
 
-	select {
-	case <-time.After(m.hold):
-	case <-m.stop:
-		return false
+	if !m.holdOnlyFirst || cr.Method != requestMethodAdd || m.adds.Load() == 1 {
+		select {
+		case <-time.After(m.hold):
+		case <-m.stop:
+			return false
+		}
 	}
 
-	sr.Added = len(cr.Jobs)
+	if m.known == nil {
+		sr.Added = len(cr.Jobs)
+	}
 
 	return true
+}
+
+// actOnAdd fills in sr for cr if it is an add and m remembers jobs, adding
+// those m does not already have and reporting the rest as existing and queued.
+func (m *copyCountingManager) actOnAdd(cr *clientRequest, sr *serverResponse) {
+	if cr.Method != requestMethodAdd || m.known == nil {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, job := range cr.Jobs {
+		if m.known[job.Key()] {
+			sr.Existed++
+
+			continue
+		}
+
+		m.known[job.Key()] = true
+		sr.Added++
+	}
+
+	sr.Duplicates.Queued = sr.Existed
+}
+
+// trackPipe records each connection to m as it attaches.
+func (m *copyCountingManager) trackPipe(event mangos.PipeEvent, pipe mangos.Pipe) {
+	if event != mangos.PipeEventAttached {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.pipes = append(m.pipes, pipe)
+}
+
+// closeConnections closes every connection to m, as a manager whose connection
+// drops does, with nothing in progress.
+func (m *copyCountingManager) closeConnections() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, pipe := range m.pipes {
+		_ = pipe.Close()
+	}
+
+	m.pipes = nil
 }
 
 // receivedCopies returns how many requests of method m has received.
@@ -325,13 +406,190 @@ func addOne(jq *Client) (int, error) {
 // addOneJob adds a single job with jq, skipping it if complete only if
 // ignoreComplete, returning what Add returns.
 func addOneJob(jq *Client, ignoreComplete bool) (int, error) {
-	added, _, err := jq.Add([]*Job{{Cmd: "echo resend", Cwd: "/tmp", RepGroup: "resend"}}, nil, ignoreComplete)
+	added, _, err := jq.Add(resendTestJobs(), nil, ignoreComplete)
 
 	return added, err
+}
+
+// resendTestJobs returns the single job the tests here add.
+func resendTestJobs() []*Job {
+	return []*Job{{Cmd: "echo resend", Cwd: "/tmp", RepGroup: "resend"}}
 }
 
 // requestWithinHeldAdd sends an add with requestWithin, asking for budget, and
 // reports what requestWithinLimited does, with a limit past budget.
 func requestWithinHeldAdd(jq *Client, budget time.Duration) (time.Duration, bool, error) {
 	return requestWithinLimited(jq, &clientRequest{Method: requestMethodAdd}, budget, budget+time.Second)
+}
+
+// TestClientReportsResentAdds checks that an Add tells its caller when it may
+// have reached the manager more than once, so that jobs an earlier copy of it
+// added, which the manager then reports as existing, can be told apart from
+// jobs reported as existing by an Add sent once
+// (.docs/bugfixes/261002-client-restart-2ca6d42f.md).
+func TestClientReportsResentAdds(t *testing.T) {
+	Convey("Given a manager that acts on each add as it arrives", t, func() {
+		Convey("an Add whose connection drops after the manager acted on it is reported resent", func() {
+			m := startRememberingManager(t, 0, true, false)
+
+			jq := m.connect(cliConnectTimeout)
+			defer disconnect(jq)
+
+			added, dups, _, err := addResendJob(jq, false)
+			So(err, ShouldBeNil)
+			So(m.adds.Load(), ShouldEqual, 2)
+			So(added, ShouldEqual, 0)
+			So(dups.Total(), ShouldEqual, 1)
+			So(dups.Resent(), ShouldBeTrue)
+
+			Convey("while adding the same job again, sent once, is not", func() {
+				added, dups, _, err = addResendJob(jq, false)
+				So(err, ShouldBeNil)
+				So(m.adds.Load(), ShouldEqual, 3)
+				So(added, ShouldEqual, 0)
+				So(dups.Total(), ShouldEqual, 1)
+				So(dups.Resent(), ShouldBeFalse)
+			})
+		})
+
+		Convey("an Add sent once is not reported resent, whether or not its job existed", func() {
+			m := startRememberingManager(t, 0, false, false)
+
+			jq := m.connect(cliConnectTimeout)
+			defer disconnect(jq)
+
+			added, dups, _, err := addResendJob(jq, false)
+			So(err, ShouldBeNil)
+			So(added, ShouldEqual, 1)
+			So(dups.Resent(), ShouldBeFalse)
+
+			added, dups, _, err = addResendJob(jq, false)
+			So(err, ShouldBeNil)
+			So(added, ShouldEqual, 0)
+			So(dups.Total(), ShouldEqual, 1)
+			So(dups.Resent(), ShouldBeFalse)
+			So(m.adds.Load(), ShouldEqual, 2)
+		})
+
+		Convey("an Add sent while the Client reconnects, of a job that already existed, is not reported resent", func() {
+			m := startRememberingManager(t, 0, false, false)
+
+			jq := m.connect(cliConnectTimeout)
+			defer disconnect(jq)
+
+			_, _, _, err := addResendJob(jq, false)
+			So(err, ShouldBeNil)
+
+			detached := awaitDetach(jq)
+
+			m.closeConnections()
+
+			select {
+			case <-detached:
+			case <-time.After(goneManagerLimit):
+				So("connection did not drop", ShouldBeEmpty)
+			}
+
+			// the Client redials a tenth of a second after the drop, so this
+			// add waits in Send for the new connection
+			added, dups, _, err := addResendJob(jq, false)
+			So(err, ShouldBeNil)
+			So(m.adds.Load(), ShouldEqual, 2)
+			So(added, ShouldEqual, 0)
+			So(dups.Total(), ShouldEqual, 1)
+			So(dups.Resent(), ShouldBeFalse)
+		})
+
+		Convey("an Add a Client riding out outages sent again after it could not be sent is not reported resent", func() {
+			m := startRememberingManager(t, 0, false, false)
+
+			jq := m.connect(cliConnectTimeout)
+			defer disconnect(jq)
+
+			_, _, _, err := addResendJob(jq, false)
+			So(err, ShouldBeNil)
+
+			setOutageTimings(jq, outageTestRetryWait, cliConnectTimeout)
+			jq.RetryWhileManagerUnreachable(context.Background())
+
+			jq.Lock()
+			So(jq.sock.SetOption(mangos.OptionSendDeadline, resendTestSendWait), ShouldBeNil)
+			jq.Unlock()
+
+			detached := awaitDetachDelayingAttach(jq, 2*resendTestSendWait)
+
+			m.closeConnections()
+
+			select {
+			case <-detached:
+			case <-time.After(goneManagerLimit):
+				So("connection did not drop", ShouldBeEmpty)
+			}
+
+			// the new connection attaches during the first attempt, but is
+			// held up until that attempt has timed out sending, so only a later
+			// attempt is sent, once
+			added, dups, _, err := addResendJob(jq, false)
+			So(err, ShouldBeNil)
+			So(m.adds.Load(), ShouldEqual, 2)
+			So(added, ShouldEqual, 0)
+			So(dups.Total(), ShouldEqual, 1)
+			So(dups.Resent(), ShouldBeFalse)
+		})
+
+		Convey("an Add a Client riding out outages sent again after its reply timed out is reported resent", func() {
+			m := startRememberingManager(t, outageTestHold, false, true)
+
+			jq := m.connect(10 * time.Second)
+			defer disconnect(jq)
+
+			jq.Lock()
+			So(jq.sock.SetOption(mangos.OptionRecvDeadline, outageTestReplyWait), ShouldBeNil)
+			jq.Unlock()
+
+			setOutageTimings(jq, outageTestRetryWait, outageTestRetryTime)
+			jq.RetryWhileManagerUnreachable(context.Background())
+
+			added, dups, _, err := addResendJob(jq, true)
+			So(err, ShouldBeNil)
+			So(m.adds.Load(), ShouldEqual, 2)
+			So(added, ShouldEqual, 0)
+			So(dups.Total(), ShouldEqual, 1)
+			So(dups.Resent(), ShouldBeTrue)
+		})
+	})
+}
+
+// addResendJob adds a single job with jq's AddWithDuplicates, returning what
+// that returns.
+func addResendJob(jq *Client, ignoreComplete bool) (int, AddDuplicates, AddWarnings, error) {
+	return jq.AddWithDuplicates(resendTestJobs(), nil, ignoreComplete)
+}
+
+// awaitDetach returns a channel closed when jq's connection next drops.
+func awaitDetach(jq *Client) <-chan struct{} {
+	return awaitDetachDelayingAttach(jq, 0)
+}
+
+// awaitDetachDelayingAttach is awaitDetach, also holding up the next connection
+// jq makes for delay before mangos can send anything on it.
+func awaitDetachDelayingAttach(jq *Client, delay time.Duration) <-chan struct{} {
+	detached := make(chan struct{})
+
+	var detachOnce, attachOnce sync.Once
+
+	jq.Lock()
+	defer jq.Unlock()
+
+	jq.sock.SetPipeEventHook(func(event mangos.PipeEvent, _ mangos.Pipe) {
+		switch event {
+		case mangos.PipeEventDetached:
+			detachOnce.Do(func() { close(detached) })
+		case mangos.PipeEventAttaching:
+			attachOnce.Do(func() { time.Sleep(delay) })
+		case mangos.PipeEventAttached:
+		}
+	})
+
+	return detached
 }

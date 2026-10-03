@@ -86,6 +86,13 @@ project adheres to [Semantic Versioning](http://semver.org/).
   once. Other Go programs can get the same with the new
   `jobqueue.Client.RetryWhileManagerUnreachable`; wr's own commands still fail
   fast.
+- The Go client's `SubmitJobs` no longer returns `ErrDuplicateJobs` for jobs
+  that only it added, when the manager stopped, or the connection dropped,
+  after acting on its add but before replying, and the client sent the add
+  again on reconnecting. Go programs using `jobqueue.Client` can see when an
+  add may have reached the manager more than once with the new
+  `AddDuplicates.Resent`, from `AddWithDuplicates` or the new
+  `AddWithDuplicatesContext`.
 - A Go client whose `WaitForJobs`, `SubmitJobsAndWait` or `AddAndWait` waited
   through a manager restart no longer has its later requests fail after 1s,
   instead of after its own timeout, while the manager cannot be reached.

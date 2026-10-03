@@ -47,7 +47,7 @@ import (
 )
 
 // ErrDuplicateJobs is returned by SubmitJobs when any submitted jobs already
-// exist in the queue.
+// exist in the queue, unless its add was sent more than once (see SubmitJobs).
 var ErrDuplicateJobs = errors.New("some of the added jobs were duplicates")
 
 var errWaitForJobsJobqueueClient = errors.New("WaitForJobs requires a jobqueue client")
@@ -159,8 +159,8 @@ func (opts SubmitJobsOptions) ignoreComplete() bool {
 
 //nolint:interfacebloat // mirrors the subset of the jobqueue client API this package uses
 type jobqueueClient interface {
-	AddContext(ctx context.Context, jobs []*jobqueue.Job, envVars []string,
-		ignoreComplete bool) (added int, existed int, err error)
+	AddWithDuplicatesContext(ctx context.Context, jobs []*jobqueue.Job, envVars []string,
+		ignoreComplete bool) (added int, dups jobqueue.AddDuplicates, warnings jobqueue.AddWarnings, err error)
 	AddAndReturnIDsContext(ctx context.Context, jobs []*jobqueue.Job, envVars []string,
 		ignoreComplete bool) ([]string, error)
 	AddAndWait(ctx context.Context, jobs []*jobqueue.Job, envVars []string,
@@ -222,8 +222,15 @@ func newPretendJobqueue() *pretendJobqueue {
 	return &pretendJobqueue{output: w}
 }
 
-func (p *pretendJobqueue) AddContext(_ context.Context, jobs []*jobqueue.Job, _ []string,
-	_ bool) (int, int, error) {
+func (p *pretendJobqueue) AddWithDuplicatesContext(_ context.Context, jobs []*jobqueue.Job, _ []string,
+	_ bool) (int, jobqueue.AddDuplicates, jobqueue.AddWarnings, error) {
+	p.record(jobs)
+
+	return len(jobs), jobqueue.AddDuplicates{}, jobqueue.AddWarnings{}, nil
+}
+
+// record records jobs as submitted.
+func (p *pretendJobqueue) record(jobs []*jobqueue.Job) {
 	for _, job := range jobs {
 		job.State = jobqueue.JobStateDelayed
 	}
@@ -233,16 +240,11 @@ func (p *pretendJobqueue) AddContext(_ context.Context, jobs []*jobqueue.Job, _ 
 	if p.output != nil {
 		json.NewEncoder(p.output).Encode(jobs) //nolint:errcheck,errchkjson
 	}
-
-	return len(jobs), 0, nil
 }
 
-func (p *pretendJobqueue) AddAndReturnIDsContext(ctx context.Context, jobs []*jobqueue.Job,
-	envVars []string, ignoreComplete bool) ([]string, error) {
-	_, _, err := p.AddContext(ctx, jobs, envVars, ignoreComplete)
-	if err != nil {
-		return nil, err
-	}
+func (p *pretendJobqueue) AddAndReturnIDsContext(_ context.Context, jobs []*jobqueue.Job,
+	_ []string, _ bool) ([]string, error) {
+	p.record(jobs)
 
 	keys := make([]string, len(jobs))
 	for n, job := range jobs {
@@ -1036,16 +1038,19 @@ func (s *Scheduler) SubmitJobsContext(ctx context.Context, jobs []*jobqueue.Job)
 
 	s.defaultMissingRequirements(jobs)
 
-	inserts, _, err := s.jq.AddContext(ctx, jobs, os.Environ(), false)
+	inserts, dups, _, err := s.jq.AddWithDuplicatesContext(ctx, jobs, os.Environ(), false)
 	if err != nil {
 		return err
 	}
 
-	if inserts != len(jobs) {
-		return ErrDuplicateJobs
+	// a resent add's duplicates may be the jobs its own earlier copy queued
+	// (see jobqueue.AddDuplicates.Resent). It re-adds complete jobs, so every
+	// job it did not add is queued, whoever queued it.
+	if inserts == len(jobs) || dups.Resent() {
+		return nil
 	}
 
-	return nil
+	return ErrDuplicateJobs
 }
 
 // FindJobsByRepGroupSuffixContext is FindJobsByRepGroupSuffix, except that
@@ -1269,12 +1274,15 @@ func (s *Scheduler) determineOverrideAndReq(req *jqs.Requirements) (*jqs.Require
 // Previously added identical jobs that have since been archived will get added
 // again.
 //
-// If any duplicate jobs were added, ErrDuplicateJobs will be returned. This
-// can also follow this call's own add, if the manager stopped while it was in
-// progress and it was resent. While the manager is down, this waits for it for
-// up to its RetryTime (see the package doc). SubmitJobsAndReturnIDs with the same jobs and
-// default options then adds only those neither queued nor complete, and
-// returns the keys of the queued ones (see the package doc).
+// If any duplicate jobs were added, ErrDuplicateJobs will be returned, except
+// when this call's add may have reached the manager more than once, as when the
+// manager stopped while it was in progress and the add was sent again once it
+// was back: the duplicates may then be the jobs its own first copy added, so
+// nil is returned, since every one of the jobs is queued (see the package doc).
+// While the manager is down, this waits for it for up to its RetryTime (see the
+// package doc). If that fails, SubmitJobsAndReturnIDs with the same jobs and
+// default options adds only those neither queued nor complete, and returns the
+// keys of the queued ones (see the package doc).
 //
 // If this scheduler was created with PretendSubmissions set none of the above
 // happens; the jobs are merely recorded for later retrieval with
