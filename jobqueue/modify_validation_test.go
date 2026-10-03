@@ -418,7 +418,7 @@ func validationJobsWithMounts(containerMounts ...string) []*Job {
 		jobs = append(jobs, &Job{
 			Cmd: fmt.Sprintf("echo original %d", i), Cwd: "/original", CwdMatters: true,
 			ContainerMounts: mounts,
-			RepGroup: modifierValidationRepGroup, ReqGroup: modifierValidationRepGroup,
+			RepGroup:        modifierValidationRepGroup, ReqGroup: modifierValidationRepGroup,
 			Requirements: &scheduler.Requirements{
 				RAM: 100 + i, Time: 10 * time.Second, Cores: 1, Disk: 1,
 				Other: map[string]string{"original": strconv.Itoa(i)},

@@ -53,6 +53,11 @@ const (
 	serveTestCertDomain = "localhost"
 )
 
+// ipv6OnlyHolders is how many ports TestLaneFreePort holds with IPv6-only
+// listeners. Among the ~28000 ephemeral ports, a picker that ignores them would
+// pick one of them every ~30 picks.
+const ipv6OnlyHolders = 1000
+
 func TestTestingServer(t *testing.T) {
 	Convey("You can generate a server config", t, func() {
 		cwd, err := os.Getwd()
@@ -194,7 +199,7 @@ func TestLaneFreePort(t *testing.T) {
 
 		setLaneForTest(t, strconv.Itoa(lane), 0)
 
-		port, err := laneFreePort()
+		port, err := LaneFreePort()
 		So(err, ShouldBeNil)
 		So(port, ShouldNotEqual, occupiedPort)
 
@@ -213,7 +218,7 @@ func TestLaneFreePort(t *testing.T) {
 		setLaneForTest(t, strconv.Itoa(lane), 0)
 		setPortBaseForTest(t, strconv.Itoa(base))
 
-		port, err := laneFreePort()
+		port, err := LaneFreePort()
 		So(err, ShouldBeNil)
 		So(port, ShouldBeBetweenOrEqual, base+lane*laneSpan, base+(lane+1)*laneSpan-1)
 
@@ -224,13 +229,8 @@ func TestLaneFreePort(t *testing.T) {
 	})
 }
 
-// ipv6OnlyHolders is how many ports TestLaneFreePort holds with IPv6-only
-// listeners. Among the ~28000 ephemeral ports, a picker that ignores them would
-// pick one of them every ~30 picks.
-const ipv6OnlyHolders = 1000
-
 func TestLaneFreePortOutsideALane(t *testing.T) {
-	Convey("Outside a lane, laneFreePort skips ports held by IPv6-only listeners", t, func() {
+	Convey("Outside a lane, LaneFreePort skips ports held by IPv6-only listeners", t, func() {
 		setLaneForTest(t, "", 0)
 
 		holders := holdIPv6Only(t, ipv6OnlyHolders)
@@ -241,7 +241,7 @@ func TestLaneFreePortOutsideALane(t *testing.T) {
 		}()
 
 		for range ipv6OnlyHolders {
-			port, err := laneFreePort()
+			port, err := LaneFreePort()
 			So(err, ShouldBeNil)
 			So(portCanListen(port), ShouldBeTrue)
 		}

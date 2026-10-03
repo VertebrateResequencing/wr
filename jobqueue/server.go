@@ -1640,7 +1640,7 @@ type Server struct {
 	// depGroups holds, per dep group with at least one live member job, the keys
 	// of those members, so a dep-group dependency resolves to one opaque
 	// depgroup:G key instead of one key per member job.
-	depGroups                 *depGroupMembers
+	depGroups *depGroupMembers
 	// bringBacks orders an archive's dropping of a job's memberships and rep
 	// group lookup against an add bringing it back (see bringback.go).
 	bringBacks                bringBacks
