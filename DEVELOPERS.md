@@ -267,7 +267,9 @@ a test like these. `make speed` is for the costs that can only be timed.
 **Bigger changes.** A change to scheduling, the RPC server's concurrency or the
 LSF scheduler also needs the real-LSF scenarios (§3, §4): `add-storm-lsf`,
 `report-storm-lsf`, `limit-drain`, and the `prodsim` soak at production
-concurrency.
+concurrency. [`developers/soak/README.md`](developers/soak/README.md) says how
+to run that soak with crashes and commit stalls injected, and how to check the
+result for double runs.
 
 ---
 

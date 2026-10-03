@@ -4399,9 +4399,15 @@ cmd_prodsim() {  # prodsim [hours] [simMinuteSecs] [scale] - PRODUCTION-SHAPED S
   #      production's DB size, freelist and backup cost; its live jobs stay blocked);
   #      WRDEV_PRODSIM_SCHED=lsf|local (default lsf); WRDEV_PRODSIM_PPROF (default 6072);
   #      WRDEV_PRODSIM_RESTART_MIN=<real minutes> restarts the manager that often (0 = never);
+  #      WRDEV_PRODSIM_RESTART_KINDS=clean,crash,... cycles through those restart kinds (default
+  #      clean: a bounded `wr manager stop`; crash: kill -9);
+  #      WRDEV_PRODSIM_PRESTART_HOOK=<script> runs between each restart's stop and start with
+  #      <kind> <outdir> <manager dir> (output to hook.log);
+  #      WRDEV_PRODSIM_DBDIR=<dir> keeps the working DB there, $PROD_RUN/db a symlink to it;
+  #      WRDEV_PRODSIM_FINAL_STOP=1 ends the run with a measured clean stop;
   #      WRDEV_PRODSIM_ARGS extra prodsim flags (eg. "-portal-jobs 20000 -portal-limit 150");
   #      WRDEV_PRODSIM_KEEP_DB=1 keeps the working DB afterwards.
-  # Output: $WRDEV_ROOT/prodsim-<epoch>/{calls,samples,events,restarts}.tsv, profiles/,
+  # Output: $WRDEV_ROOT/prodsim-<epoch>/{calls,samples,events,restarts,lsf,orphans}.tsv, profiles/,
   # manager.log copy and report.txt (prodsim -report). Exit 0 unless the run could not be started
   # or measured; the verdict is the report, read by a person: this soak FINDS problems, it is not
   # a gate.
@@ -4426,9 +4432,17 @@ cmd_prodsim() {  # prodsim [hours] [simMinuteSecs] [scale] - PRODUCTION-SHAPED S
   safe_kill "$(mgr_pid "$PROD_RUN")" >/dev/null 2>&1; sleep 2
   port_free "$pp"
   rm -rf "$PROD_RUN" 2>/dev/null; mkdir -p "$PROD_RUN"
+  # WRDEV_PRODSIM_DBDIR keeps the working DB in a directory of its own (eg. local disk), with
+  # $PROD_RUN/db a symlink to it; pair it with WRDEV_PROD_BKFILE for the backup
+  local dbpath="$PROD_RUN/db"
+  if [ -n "${WRDEV_PRODSIM_DBDIR:-}" ]; then
+    mkdir -p "$WRDEV_PRODSIM_DBDIR" || die "could not make $WRDEV_PRODSIM_DBDIR"
+    dbpath="$WRDEV_PRODSIM_DBDIR/db"; rm -f "$dbpath"
+    ln -s "$dbpath" "$PROD_RUN/db" || die "could not link $PROD_RUN/db"
+  fi
   if [ -n "${WRDEV_PRODSIM_DB:-}" ]; then
-    echo "copying ${WRDEV_PRODSIM_DB} -> $PROD_RUN/db"
-    cp -f "$WRDEV_PRODSIM_DB" "$PROD_RUN/db" || die "could not copy $WRDEV_PRODSIM_DB"
+    echo "copying ${WRDEV_PRODSIM_DB} -> $dbpath"
+    cp -f "$WRDEV_PRODSIM_DB" "$dbpath" || die "could not copy $WRDEV_PRODSIM_DB"
   fi
   echo "prodsim: ${hours}h real, 1 sim minute = ${simmin}s, scale $scale, scheduler $sched, pprof :$pp"
   echo "  isolated prod-mode manager :$PROD_PORT web :$PROD_WEB, LSF jobs ${PROD_JOB_PREFIX}*, output $out"
@@ -4440,15 +4454,21 @@ cmd_prodsim() {  # prodsim [hours] [simMinuteSecs] [scale] - PRODUCTION-SHAPED S
   PS_SIMPID=$!
   if [ "$restartmin" -gt 0 ]; then
     ( trap - EXIT INT TERM
+      local kinds i=0; IFS=, read -r -a kinds <<< "${WRDEV_PRODSIM_RESTART_KINDS:-clean}"
       while sleep $(( restartmin * 60 )); do
         kill -0 "$PS_SIMPID" 2>/dev/null || exit 0
-        prodsim_restart
+        prodsim_restart "${kinds[$(( i % ${#kinds[@]} ))]}"
+        i=$(( i + 1 ))
       done ) &
     PS_RESTARTER=$!
   fi
   local t0 n=0 rc; t0=$(date +%s)
   while kill -0 "$PS_SIMPID" 2>/dev/null; do
-    sleep 10; n=$(( n + 1 )); [ $(( n % 30 )) -eq 0 ] || continue
+    sleep 10; n=$(( n + 1 ))
+    # our namespace's LSF job states once a minute, with host load, so peak concurrency is on record
+    [ "$sched" = lsf ] && [ $(( n % 6 )) -eq 0 ] && echo "$(date +%s)	$(timeout 60 bjobs -J "${PROD_JOB_PREFIX}*" -o stat -noheader 2>/dev/null \
+      | sort | uniq -c | awk '{printf "%s=%s ", $2, $1}')	load=$(cut -d' ' -f1 /proc/loadavg)" >> "$out/lsf.tsv"
+    [ $(( n % 30 )) -eq 0 ] || continue
     echo "t+$(( ($(date +%s)-t0)/60 ))m $(tail -1 "$out/samples.tsv" 2>/dev/null | awk -F'\t' '{print "rss="$3"MB goroutines="$7" heap="$8"MB fds="$6" db="$10"MB ping="$13"ms submitted="$14}')"
   done
   wait "$PS_SIMPID"; rc=$?
@@ -4464,29 +4484,95 @@ cmd_prodsim() {  # prodsim [hours] [simMinuteSecs] [scale] - PRODUCTION-SHAPED S
 prodsim_start_manager() {  # (re)start the isolated prod-mode manager for prodsim with pprof on
   assert_isolated production "$PROD_PORT" "$PROD_WEB" "$PROD_RUN"
   local dbg=""; [ "${WRDEV_DEBUG:-0}" = "1" ] && dbg="--debug"
-  local t0 rc pid; t0=$(date +%s%3N)
+  local t0 rc pid fl; fl=$(prodsim_freelist_state "$PROD_RUN/db"); t0=$(date +%s%3N)
   # shellcheck disable=SC2086 # deliberate word-splitting of the optional --debug flag
   osunset; env WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" WR_PPROF_ADDR="localhost:$PS_PP" timeout 1800 "$WR" manager start \
     --deployment production -s "$PS_SCHED" $dbg >> "$PS_OUT/manager-start.out" 2>&1
   rc=$?; pid=$(mgr_pid "$PROD_RUN")
-  echo "$(date +%s)	start	rc=$rc	pid=$pid	ms=$(( $(date +%s%3N) - t0 ))" >> "$PS_OUT/restarts.tsv"
+  echo "$(date +%s)	start	rc=$rc	pid=$pid	ms=$(( $(date +%s%3N) - t0 ))	db_mb=$(( $(stat -L -c %s "$PROD_RUN/db" 2>/dev/null || echo 0) >> 20 ))	load=$(cut -d' ' -f1 /proc/loadavg)	freelistAtOpen=$fl	db=$(readlink -f "$PROD_RUN/db")" >> "$PS_OUT/restarts.tsv"
+  # a CPU profile and goroutine dumps of the manager's first minute (post-recovery reconnect storm)
+  mkdir -p "$PS_OUT/profiles"
+  ( local ts; ts=$(date +%s); curl -s -m 45 "http://localhost:$PS_PP/debug/pprof/profile?seconds=30" \
+      > "$PS_OUT/profiles/poststart.$ts.cpu.pprof" 2>/dev/null &
+    for i in 1 2 3 4 5 6; do curl -s -m 10 "http://localhost:$PS_PP/debug/pprof/goroutine?debug=1" \
+      > "$PS_OUT/profiles/poststart.$ts.$i.goroutine.txt" 2>/dev/null; sleep 5; done; wait ) >/dev/null 2>&1 &
   [ "$rc" -eq 0 ] && [ -n "$pid" ] && is_ours "$pid"
 }
 
-prodsim_restart() {  # graceful stop (bounded), falling back to a kill, then start again on the same DB
+prodsim_prestop_profiles() {  # cumulative block/mutex profiles, heap and goroutines of the manager about to stop
+  local ts p; ts=$(date +%s); mkdir -p "$PS_OUT/profiles"
+  for p in block mutex goroutine "heap?gc=1"; do
+    curl -s -m 60 "http://localhost:$PS_PP/debug/pprof/$p" > "$PS_OUT/profiles/prestop.$ts.${p%%\?*}.pprof" 2>/dev/null
+  done
+  curl -s -m 60 "http://localhost:$PS_PP/debug/pprof/goroutine?debug=2" > "$PS_OUT/profiles/prestop.$ts.goroutine2.txt" 2>/dev/null
+}
+
+prodsim_restart() {  # [clean|crash] clean: graceful stop (bounded), falling back to a kill; crash: kill -9;
+  # then start again on the same DB
+  prodsim_stop "${1:-clean}"
+  if [ -n "${WRDEV_PRODSIM_PRESTART_HOOK:-}" ]; then
+    "$WRDEV_PRODSIM_PRESTART_HOOK" "${1:-clean}" "$PS_OUT" "$PROD_RUN" >> "$PS_OUT/hook.log" 2>&1
+  fi
+  prodsim_start_manager
+}
+
+prodsim_stop() {  # [clean|crash] the stop half of prodsim_restart, measured into restarts.tsv
   # wr manager stop stops whichever manager the config names, so check it is ours first
   assert_isolated production "$PROD_PORT" "$PROD_WEB" "$PROD_RUN"
-  local pid t0 rc="skipped"; pid=$(mgr_pid "$PROD_RUN"); t0=$(date +%s%3N)
-  # wr manager stop SIGTERMs whatever pid the pid file names, unverified; if our manager died
-  # and its pid was reused, that could be anyone's process, so only stop a pid running our binary
-  if [ -n "$pid" ] && is_ours "$pid"; then
-    osunset; timeout 600 "$WR" manager stop --deployment production > /dev/null 2>&1
-    rc=$?
+  local kind="${1:-clean}" pid t0 rc="skipped" extra=""; pid=$(mgr_pid "$PROD_RUN")
+  prodsim_prestop_profiles
+  t0=$(date +%s%3N)
+  if [ "$kind" = "crash" ]; then
+    [ -n "$pid" ] && is_ours "$pid" && { safe_kill "$pid" >/dev/null; rc="crash"; }
+  else
+    # wr manager stop SIGTERMs whatever pid the pid file names, unverified; if our manager died
+    # and its pid was reused, that could be anyone's process, so only stop a pid running our binary
+    local alive="-" tok="-" bkm0 bkm1 fl="-"
+    bkm0=$(stat -L -c %Y "$PROD_RUN/db_bk" 2>/dev/null)
+    if [ -n "$pid" ] && is_ours "$pid"; then
+      # wr manager stop waits 120s plus 1s per 50MiB of database for the final backup; a
+      # timeout here must never be the thing that ends a stop
+      osunset; timeout 2400 "$WR" manager stop --deployment production > "$PS_OUT/manager-stop.$(date +%s).out" 2>&1
+      rc=$?
+      # a clean stop may only report success once the manager has gone, and only then may
+      # the token be gone: record both, so a soak can count stops that broke that rule
+      if ps -p "$pid" >/dev/null 2>&1; then alive=y; else alive=n; fi
+      if [ -e "$PROD_RUN/client.token" ]; then tok=kept; else tok=deleted; fi
+      fl=$(prodsim_freelist_state "$PROD_RUN/db")
+    fi
+    bkm1=$(stat -L -c %Y "$PROD_RUN/db_bk" 2>/dev/null)
+    if [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1; then safe_kill "$pid" >/dev/null; rc="killed"; fi
+    extra="	aliveAtReturn=$alive	token=$tok	freelist=$fl	bkMtime=${bkm0:-none}->${bkm1:-none}"
   fi
-  if [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1; then safe_kill "$pid" >/dev/null; rc="killed"; fi
+  prodsim_orphan_snapshot "$kind"
   cp -f "$PROD_RUN/log" "$PS_OUT/manager.log.$(date +%s)" 2>/dev/null
-  echo "$(date +%s)	stop	rc=$rc	pid=$pid	ms=$(( $(date +%s%3N) - t0 ))" >> "$PS_OUT/restarts.tsv"
-  prodsim_start_manager
+  echo "$(date +%s)	stop	rc=$rc	pid=$pid	ms=$(( $(date +%s%3N) - t0 ))	kind=$kind	db_mb=$(( $(stat -L -c %s "$PROD_RUN/db" 2>/dev/null || echo 0) >> 20 ))	load=$(cut -d' ' -f1 /proc/loadavg)${extra:-}" >> "$PS_OUT/restarts.tsv"
+}
+
+# prodsim_freelist_state prints whether the bbolt file's newest meta page records a synced
+# freelist ("synced"), none ("unsynced": the next open must walk the file), or "unreadable"
+prodsim_freelist_state() {
+  python3 - "$1" <<'PY' 2>/dev/null || echo unreadable
+import struct, sys
+f = open(sys.argv[1], 'rb'); m0 = f.read(80); ps = struct.unpack_from('<I', m0, 24)[0]; f.seek(ps); m1 = f.read(80)
+best = max((m for m in (m0, m1) if struct.unpack_from('<I', m, 16)[0] == 0xED0CDAED), key=lambda m: struct.unpack_from('<Q', m, 64)[0])
+print('unsynced' if struct.unpack_from('<Q', best, 48)[0] == 0xFFFFFFFFFFFFFFFF else 'synced')
+PY
+}
+
+# prodsim_orphan_snapshot records which of our LSF jobs are in RUN as a manager stops or dies,
+# then (in the background) how many of those same jobids are still in RUN 30s, 60s, 120s and
+# 300s later, in orphans.tsv: runners that outlive their manager must report to the next one
+# and exit, or be killed by the stop's scheduler cleanup, not linger
+prodsim_orphan_snapshot() {
+  [ "$PS_SCHED" = lsf ] || return 0
+  local ts f; ts=$(date +%s); f="$PS_OUT/orphans.$ts.jobids"
+  timeout 60 bjobs -J "${PROD_JOB_PREFIX}*" -r -o "jobid jobindex" -noheader 2>/dev/null | awk "{print \$1\"[\"\$2\"]\"}" | sort -u > "$f"
+  ( for d in 30 60 120 300; do
+      sleep $(( d - ($(date +%s) - ts) > 0 ? d - ($(date +%s) - ts) : 0 ))
+      local still; still=$(timeout 60 bjobs -J "${PROD_JOB_PREFIX}*" -r -o "jobid jobindex" -noheader 2>/dev/null | awk "{print \$1\"[\"\$2\"]\"}" | sort -u | comm -12 - "$f" | wc -l)
+      echo "$ts	$1	+${d}s	atStop=$(wc -l < "$f")	stillRun=$still" >> "$PS_OUT/orphans.tsv"
+    done ) >/dev/null 2>&1 &
 }
 
 prodsim_cleanup() {  # idempotent: stop the restarter, prodsim, our manager, and OUR LSF namespace only
@@ -4505,6 +4591,10 @@ prodsim_cleanup() {  # idempotent: stop the restarter, prodsim, our manager, and
   if our_child "${PS_SIMPID:-}" && kill -TERM "$PS_SIMPID" 2>/dev/null; then
     local i; for i in $(seq 1 30); do kill -0 "$PS_SIMPID" 2>/dev/null || break; sleep 1; done
     our_child "$PS_SIMPID" && kill -KILL "$PS_SIMPID" 2>/dev/null
+  fi
+  # WRDEV_PRODSIM_FINAL_STOP=1 ends the run with a measured clean stop of the (biggest) DB
+  if [ "${WRDEV_PRODSIM_FINAL_STOP:-0}" = "1" ] && [ -n "$(mgr_pid "$PROD_RUN")" ] && is_ours "$(mgr_pid "$PROD_RUN")"; then
+    echo "  final clean stop"; prodsim_stop clean
   fi
   cp -f "$PROD_RUN/log" "$PS_OUT/manager.log" 2>/dev/null
   # a restart the restarter was part-way through may still bring a manager up
@@ -4531,6 +4621,8 @@ prodsim_cleanup() {  # idempotent: stop the restarter, prodsim, our manager, and
   echo "  our manager stopped; ${PROD_JOB_PREFIX}* jobs left in LSF: ${left:-0}"
   if [ "${WRDEV_PRODSIM_KEEP_DB:-0}" != "1" ]; then
     rm -f "$PROD_RUN/db" "$PROD_RUN/db_bk"* 2>/dev/null
+    [ -n "${WRDEV_PRODSIM_DBDIR:-}" ] && rm -f "$WRDEV_PRODSIM_DBDIR/db" 2>/dev/null
+    [ -n "${WRDEV_PROD_BKFILE:-}" ] && rm -f "$WRDEV_PROD_BKFILE"* 2>/dev/null
     echo "  removed the working DB; outputs kept in ${PS_OUT:-?}"
   fi
 }
@@ -4551,6 +4643,8 @@ prodsim_reap_local() {
 
 cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (preserves DB across restart); WRDEV_DEBUG=1 adds --debug
   need_bin; ensure_config
+  # in a subshell, so a refusal is a failed return and callers' abort paths run
+  ( assert_isolated production "$PROD_PORT" "$PROD_WEB" "$PROD_RUN" ) || return 1
   local sched="${1:-local}"
   local dbg=""; [ "${WRDEV_DEBUG:-0}" = "1" ] && dbg="--debug"
   echo "starting ISOLATED prod-mode manager (-s $sched${dbg:+ $dbg}) on :$PROD_PORT / web :$PROD_WEB"
@@ -4641,6 +4735,43 @@ cmd_remap_stall_check() {  # remap-stall-check [backupSecs] - prodsim FINDING 2:
   if ! grep -aq 'PRODSIM-REMAP crossesMmap=true' "$out"; then echo "FAIL: nothing measured; see $out"; return 1; fi
   [ "$rc" -eq 0 ] && { echo "PASS"; return 0; }
   echo "FAIL: reads waited for the backup copy once a write crossed the mmap size"; return 1
+}
+
+cmd_freelist_check() {  # freelist-check [maxFreePages] - prodsim FINDING: every commit rewrote the whole freelist
+  # The reliability_repro freelist probe (jobqueue/prodsim_freelist_test.go), pointed at the
+  # manager's own open (openManagerBolt), so it gates #642's NoFreelistSync fix: a one-key commit
+  # on a manager-opened DB must not cost more as the freelist grows. Runs on $WRDEV_ROOT (NFS, as
+  # production), plus the fix's own untagged tests in jobqueue/db_coldstart_test.go.
+  need_repo
+  local maxp="${1:-262144}" out="$WRDEV_ROOT/freelist-check.out"
+  # the probe measures these steps only, and the verdict needs the largest one asked for
+  case "$maxp" in (65536|262144|1048576) ;; (*) die "freelist-check: maxFreePages must be 65536, 262144 or 1048576" ;; esac
+  mkdir -p "$WRDEV_ROOT/flcheck"
+  WR_PRODSIM_FREELIST_DIR="$WRDEV_ROOT/flcheck" WR_PRODSIM_FREELIST_MAX_PAGES="$maxp" \
+    go -C "$REPO" test -tags netgo,reliability_repro ./jobqueue/ \
+    -run 'TestProdsimFreelistCommitCost|TestManagerDBCommitFreelistCost|TestManagerDBFreelistCrashSafety|TestManagerDBStaleFreelist' \
+    -count=1 -v -timeout 30m > "$out" 2>&1
+  local rc=$?
+  grep -aE 'PRODSIM-FREELIST-COST|^(--- |ok|FAIL)' "$out"
+  rm -rf "$WRDEV_ROOT/flcheck"
+  if ! grep -aq "PRODSIM-FREELIST-COST manager free_pages=$maxp" "$out"; then echo "FAIL: nothing measured; see $out"; return 1; fi
+  [ "$rc" -eq 0 ] && { echo "PASS"; return 0; }
+  echo "FAIL: see $out"; return 1
+}
+
+cmd_selfconnect_check() {  # selfconnect-check - prodsim FINDING: a redialling client blocked the manager's rebind
+  # develop's gates for #641's port reservation: the untagged TestManagerPortSelfConnect and
+  # TestManagerPortReservationRelease, and the slow reliability_repro
+  # TestManagerStartsOverSelfConnectTimeWait (a real 60s TIME_WAIT made before the manager starts).
+  need_repo
+  local out="$WRDEV_ROOT/selfconnect-check.out"
+  go -C "$REPO" test -tags netgo,reliability_repro ./jobqueue/ \
+    -run 'TestManagerPortSelfConnect|TestManagerPortReservationRelease|TestManagerStartsOverSelfConnectTimeWait' \
+    -count=1 -v -timeout 15m > "$out" 2>&1
+  local rc=$?
+  grep -aE 'published after|^(--- |ok|FAIL)' "$out"
+  [ "$rc" -eq 0 ] && grep -aq -- '--- PASS: TestManagerStartsOverSelfConnectTimeWait' "$out" && { echo "PASS"; return 0; }
+  echo "FAIL: see $out"; return 1
 }
 
 cmd_retention_check() {  # retention-check [rounds] [jobs] [cmdKB] [pprofPort] - archived jobs must be garbage
@@ -5106,6 +5237,19 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         +24MB per 1000 20KB jobs, linear) or nothing was measured. FAILS on
                         develop until #633 merges
                         (defaults 6 1000 20 6074; bound WRDEV_RC_MAX_GROWTH_MB=32)
+  freelist-check [maxFreePages]
+                        prodsim FINDING (in-process, farm-safe): every bbolt commit rewrote the
+                        whole freelist, so a one-key commit cost grew with the free pages. Times
+                        one-key commits on a DB opened as the manager opens it, with 0 up to
+                        maxFreePages (65536, 262144 or 1048576; default 262144) free pages, on
+                        \$WRDEV_ROOT, plus #642's untagged freelist tests. FAIL = a commit at
+                        256Ki+ free pages costs over 10x the empty-freelist one, a test failed,
+                        or nothing was measured
+  selfconnect-check     prodsim FINDING (in-process, farm-safe): a client redialling the manager's
+                        port could self-connect and block the manager's rebind on restart. Runs
+                        #641's port reservation tests and the slow reliability_repro
+                        TestManagerStartsOverSelfConnectTimeWait (a real 60s TIME_WAIT); PASS
+                        needs that last one to have run and passed
   prodsim [hours] [simMinuteSecs] [scale]
                         PRODUCTION-SHAPED SOAK (real LSF by default, harmless commands only): an
                         isolated PROD-mode manager with pprof on, driven for hours by every kind of
@@ -5118,8 +5262,9 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         --deployment production to :\$PROD_PORT in \$WRDEV_ROOT/.wr-prod_production;
                         cleanup bkills only ${PROD_JOB_PREFIX}* jobs.
                         A soak for FINDING problems (read report.txt), not a gate: exits 0
-                        unless it could not run. Env: WRDEV_PRODSIM_DB, _SCHED, _PPROF,
-                        _RESTART_MIN, _ARGS, _KEEP_DB (defaults 2 6 1)
+                        unless it could not run. Env: WRDEV_PRODSIM_DB, _DBDIR, _SCHED, _PPROF,
+                        _RESTART_MIN, _RESTART_KINDS, _PRESTART_HOOK, _FINAL_STOP, _ARGS,
+                        _KEEP_DB (defaults 2 6 1); developers/soak/ drives it
   prod-start [lsf|local] start an isolated PROD-mode manager (DB survives restart); WRDEV_DEBUG=1
                         adds --debug, which modes counting confirmed_dead need
   prod-stop             stop the isolated prod-mode manager (verified pid)
@@ -5175,6 +5320,8 @@ main() {
     backup-stall-fast) cmd_backup_stall_fast "${2:-50}" "${3:-180}" "${4:-100}" ;;
     runner-log-bytes) cmd_runner_log_bytes "${2:-30}" "${3:-180}" "${4:-2}" "${5:-20}" ;;
     remap-stall-check) cmd_remap_stall_check "${2:-8}" ;;
+    freelist-check) cmd_freelist_check "${2:-262144}" ;;
+    selfconnect-check) cmd_selfconnect_check ;;
     retention-check) cmd_retention_check "${2:-6}" "${3:-1000}" "${4:-20}" "${5:-6074}" ;;
     prodsim) cmd_prodsim "${2:-2}" "${3:-6}" "${4:-1}" ;;
     prod-start) cmd_prod_start "${2:-local}" ;;

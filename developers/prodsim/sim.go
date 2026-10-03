@@ -64,6 +64,7 @@ type sim struct {
 	samples   *tsvWriter
 	start     time.Time
 	submitted atomic.Int64
+	spk       spiker
 }
 
 // newRand returns the run's deterministic, non-cryptographic random source.
@@ -143,7 +144,15 @@ func (s *sim) callLine(actor, op string, ms int64, n int, errStr string) {
 // reports) and its error.
 func (s *sim) measure(actor, op string, fn func() (int, error)) {
 	t0 := time.Now()
+
+	stop := func() bool { return true }
+	if !spikeExempt(op) {
+		stop = s.armSpike(actor+"/"+op, s.cfg.soak.spikeCall)
+	}
+
 	n, err := fn()
+
+	stop()
 
 	s.callLine(actor, op, time.Since(t0).Milliseconds(), n, loggedErr(err))
 }

@@ -1,9 +1,9 @@
 # developers/
 
 Developer tooling for reliability work on wr. **Not part of the shipped binary
-or the test suite.** Apart from shell scripts it holds one Go command,
-`prodsim/`. `make lint` lints it and `go build ./...` compiles it, but it has no
-tests, so `make test` runs nothing from it.
+or the test suite.** Apart from shell scripts it holds the Go commands
+`prodsim/` and `soak/*/`. `make lint` lints them and `go build ./...` compiles
+them, but they have no tests, so `make test` runs nothing from them.
 
 Start with [`../DEVELOPERS.md`](../DEVELOPERS.md), then use `wrdev.sh`:
 
@@ -50,14 +50,17 @@ developers/wrdev.sh prodsim 4 6 1   # hours, real seconds per simulated minute, 
 
 It defaults to real LSF. `WRDEV_PRODSIM_SCHED=local` runs it on the local
 scheduler. `WRDEV_PRODSIM_DB=<file>` starts from a copy of a big DB, and
-`WRDEV_PRODSIM_RESTART_MIN=<n>` restarts the manager every n minutes.
-`developers/wrdev.sh help` lists the rest.
+`WRDEV_PRODSIM_RESTART_MIN=<n>` restarts the manager every n minutes, and
+`WRDEV_PRODSIM_RESTART_KINDS=clean,crash` alternates clean stops with
+`kill -9`. `developers/wrdev.sh help` lists the rest.
 
 Each run writes `$WRDEV_ROOT/prodsim-<epoch>/`:
 
 - `calls.tsv`: every client call's latency and error
 - `samples.tsv`: manager RSS, goroutines, heap, fds, DB size, ping and host load
 - `events.tsv`, `restarts.tsv`, `profiles/` and a copy of the manager log
+- `markers/<host>.tsv`: a start and an end line, with the real exit code, for
+  every run of every job, so a job that ran twice can be counted
 - `report.txt`: the output of `prodsim -report`
 
 The soak is for finding problems, not a gate. It exits non-zero only if it
@@ -88,3 +91,18 @@ What the soak found is recorded in
 - `wrdev.sh remap-stall-check` fails while a write that grows the DB past
   bbolt's mapping stalls reads behind a backup copy. It fails on develop
   until #632 merges.
+
+Two later prodsim findings have gates too:
+
+- `wrdev.sh freelist-check` fails while a one-key commit costs more as the
+  freelist grows (fixed by #642).
+- `wrdev.sh selfconnect-check` runs the tests for #641's port reservation,
+  including the slow real-TIME_WAIT one.
+
+## Long soaks with injected crashes
+
+[`soak/`](soak/README.md) drives `prodsim` for hours at production concurrency
+and adds crash, stall and #649/#654 injectors, monitors, analysis of double
+runs and lost updates, DB helpers and short isolated repros. Its README says
+how to configure, run and analyse a soak, and the rules that keep one away
+from production.

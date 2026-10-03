@@ -125,6 +125,7 @@ type config struct {
 	profileEvery time.Duration
 	seed         uint64
 	actors       string
+	soak         soakConfig
 }
 
 func main() {
@@ -188,6 +189,7 @@ func parseFlags() (config, string) {
 	flag.StringVar(&cfg.pprofAddr, "pprof", "", "manager WR_PPROF_ADDR host:port (empty = no profiles)")
 	flag.StringVar(&cfg.actors, "actors", strings.Join(actorNames(), ","), "comma-separated actors to run")
 	workloadFlags(&cfg)
+	soakFlags(&cfg.soak)
 
 	reportDir := flag.String("report", "", "summarise an existing run directory and exit")
 
