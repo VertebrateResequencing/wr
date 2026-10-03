@@ -80,9 +80,10 @@ project adheres to [Semantic Versioning](http://semver.org/).
   `GetJobByKey`, `WaitForRunning`, the `Find*` methods, `KillJobs`,
   `RemoveJobs` and the rest keep trying, logging warnings, and return normally
   once the manager is back, instead of failing after `Timeout`. They give up
-  after the manager's retry time (24h by default). `GetSchedulerAlerts`, which
-  reads the manager's web interface, still fails at once. Other Go programs
-  can get the same with the new
+  after the manager's retry time (24h by default), or sooner if the context
+  given to a new `Context` variant, such as `SubmitJobsContext`, is cancelled.
+  `GetSchedulerAlerts`, which reads the manager's web interface, still fails at
+  once. Other Go programs can get the same with the new
   `jobqueue.Client.RetryWhileManagerUnreachable`; wr's own commands still fail
   fast.
 - A Go client whose `WaitForJobs`, `SubmitJobsAndWait` or `AddAndWait` waited

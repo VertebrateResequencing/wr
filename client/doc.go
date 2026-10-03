@@ -56,10 +56,21 @@ with mangos.ErrRecvTimeout. A call keeps trying for up to the manager's
 RetryTime (jobqueue.ServerTimings.RetryTime, 24h by default), so it can now
 take that long, and then returns the last error, such as mangos.ErrSendTimeout.
 An error that is the manager's answer, such as a bad request, is returned at
-once. WaitForRunning, WaitForJobs and SubmitJobsAndWait stop trying once their
-ctx is done, and WaitForJobs and the wait in SubmitJobsAndWait end with an
-error matching jobqueue.ErrSubscriptionClosed if they cannot reconnect within
-the manager's RetryTime.
+once. WaitForJobs and the wait in SubmitJobsAndWait end with an error matching
+jobqueue.ErrSubscriptionClosed if they cannot reconnect within the manager's
+RetryTime.
+
+To give up sooner, use a call that takes a context: WaitForRunning,
+WaitForJobs, SubmitJobsAndWait, or the Context variant of any other call that
+talks to the manager, such as SubmitJobsContext for SubmitJobs
+(GetSchedulerAlerts has none). The call a Context variant is named after is
+that variant with context.Background(). Cancelling ctx, or its deadline
+passing, ends the ride-out with an error matching ctx's (errors.Is(err,
+context.Canceled), for example). An attempt to reach the manager in progress is
+not interrupted, so the call can return up to Timeout after ctx is done, or up
+to the reply deadline (the larger of Timeout and a minute) if the request had
+been sent. A Context variant does not otherwise check ctx: a call made with a
+ctx already done still makes one attempt.
 
 A submission in progress when the manager stops can be partly or wholly added,
 and is sent again once the manager is back, so SubmitJobs can then return

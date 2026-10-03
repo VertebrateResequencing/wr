@@ -314,8 +314,20 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
     through, so cancelling ends the ride-out. This supersedes the
     WaitForRunning item's fail-fast first poll and its unreachableSpell, and
     Findings item 1 (calls no longer fail after Timeout once connected).
-- [ ] Scheduler calls without a context cannot be given up early once they
+- [x] Scheduler calls without a context cannot be given up early once they
   retry; add context-taking variants, keeping the existing signatures.
+  - Red command: `timeout 900 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    go test -tags netgo -count 1 -timeout 20m ./client/ -run
+    '^TestSchedulerRequestsAcrossManagerRestart$'`: first a compile failure
+    (`s.SubmitJobsContext undefined`), then with ctx-ignoring stubs exit 1:
+    every variant false in the "ended with context.Canceled" map.
+  - Fixed: Scheduler SubmitJobsContext, SubmitJobsAndReturnIDsContext,
+    GetJobByKeyContext, the four Find*Context, GetLastCompletionTimeByRepGroupContext,
+    KillJobsContext and RemoveJobsContext, with jobqueue.Client AddContext,
+    AddAndReturnIDsContext, GetByRepGroupMatchContext,
+    GetIncompleteByRepGroupMatchContext, GetLastCompletionTimeByRepGroupContext,
+    KillContext and DeleteContext; the plain methods wrap them with
+    context.Background(). GetSchedulerAlerts (REST) has none yet.
 - [ ] TestSchedulerWaitForRunningAcrossManagerRestart ("rides out repeated
   outages", client/client_test.go ~315, added by this branch's WaitForRunning
   commit) fails intermittently under `CGO_ENABLED=1 -race` on the full

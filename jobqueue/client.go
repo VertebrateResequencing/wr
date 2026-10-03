@@ -1496,9 +1496,10 @@ func (c *Client) handleFinalStateFailure(ctx context.Context, err error,
 }
 
 // GetByEssenceContext is GetByEssence, except that on a client that rides out
-// outages (see RetryWhileManagerUnreachable) it stops retrying, returning ctx's
-// error, once ctx is done. An attempt already in progress is not interrupted,
-// so that can take as long as the connect timeout.
+// outages (see RetryWhileManagerUnreachable) it stops retrying, returning an
+// error matching ctx's, once ctx is done. An attempt already in progress is not
+// interrupted, so that can take as long as the connect timeout, or the reply
+// deadline (the larger of that and a minute) if the request was sent.
 func (c *Client) GetByEssenceContext(ctx context.Context, je *JobEssence, getstd bool, getenv bool) (*Job, error) {
 	keys := je.candidateKeys()
 
@@ -1527,6 +1528,33 @@ func (c *Client) requestContext(ctx context.Context, cr *clientRequest) (*server
 	}
 
 	return c.requestOnce(cr)
+}
+
+// addWithDuplicates is AddWithDuplicates, except that a client riding out an
+// outage stops retrying once ctx is done.
+func (c *Client) addWithDuplicates(
+	ctx context.Context,
+	jobs []*Job,
+	envVars []string,
+	ignoreComplete bool,
+) (added int, dups AddDuplicates, warnings AddWarnings, err error) {
+	if validationErr, invalid := addValidationError(jobs); invalid {
+		return 0, AddDuplicates{}, AddWarnings{}, validationErr
+	}
+
+	compressed, err := c.CompressEnv(envVars)
+	if err != nil {
+		return 0, AddDuplicates{}, AddWarnings{}, err
+	}
+
+	resp, err := c.requestContext(ctx, &clientRequest{
+		Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete,
+	})
+	if err != nil {
+		return 0, AddDuplicates{}, AddWarnings{}, err
+	}
+
+	return resp.Added, NewAddDuplicates(resp.Existed, resp.Duplicates), resp.AddWarnings, err
 }
 
 // stageBackup writes db to a uniquely named file in path's own directory,
@@ -1567,21 +1595,7 @@ func (c *Client) AddWithDuplicates(
 	envVars []string,
 	ignoreComplete bool,
 ) (added int, dups AddDuplicates, warnings AddWarnings, err error) {
-	if validationErr, invalid := addValidationError(jobs); invalid {
-		return 0, AddDuplicates{}, AddWarnings{}, validationErr
-	}
-
-	compressed, err := c.CompressEnv(envVars)
-	if err != nil {
-		return 0, AddDuplicates{}, AddWarnings{}, err
-	}
-
-	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete})
-	if err != nil {
-		return 0, AddDuplicates{}, AddWarnings{}, err
-	}
-
-	return resp.Added, NewAddDuplicates(resp.Existed, resp.Duplicates), resp.AddWarnings, err
+	return c.addWithDuplicates(context.Background(), jobs, envVars, ignoreComplete)
 }
 
 // addAndReturnIDsWithWarnings is AddAndReturnIDsWithWarnings, except that a
@@ -1609,6 +1623,26 @@ func (c *Client) addAndReturnIDsWithWarnings(
 	}
 
 	return resp.AddedIDs, resp.AddWarnings, err
+}
+
+// AddContext is Add, except that on a client that rides out outages it stops
+// retrying once ctx is done, as GetByEssenceContext does.
+func (c *Client) AddContext(ctx context.Context, jobs []*Job, envVars []string,
+	ignoreComplete bool,
+) (added, existed int, err error) {
+	added, dups, _, err := c.addWithDuplicates(ctx, jobs, envVars, ignoreComplete)
+
+	return added, dups.Total(), err
+}
+
+// AddAndReturnIDsContext is AddAndReturnIDs, except that on a client that rides
+// out outages it stops retrying once ctx is done, as GetByEssenceContext does.
+func (c *Client) AddAndReturnIDsContext(ctx context.Context, jobs []*Job, envVars []string,
+	ignoreComplete bool,
+) ([]string, error) {
+	ids, _, err := c.addAndReturnIDsWithWarnings(ctx, jobs, envVars, ignoreComplete)
+
+	return ids, err
 }
 
 // reserveHostAndPid returns this runner's hostname (falling back to localhost if
@@ -2025,6 +2059,78 @@ func runnerHostAndIP() (string, string, error) {
 	return host, hostIP, nil
 }
 
+// DeleteContext is Delete, except that on a client that rides out outages it
+// stops retrying once ctx is done, as GetByEssenceContext does.
+func (c *Client) DeleteContext(ctx context.Context, jes []*JobEssence) (int, error) {
+	keys := c.jesToKeys(jes)
+
+	resp, err := c.requestContext(ctx, &clientRequest{Method: requestMethodDelete, Keys: keys})
+	if err != nil {
+		return 0, err
+	}
+
+	return resp.Existed, err
+}
+
+// KillContext is Kill, except that on a client that rides out outages it stops
+// retrying once ctx is done, as GetByEssenceContext does.
+func (c *Client) KillContext(ctx context.Context, jes []*JobEssence) (int, error) {
+	keys := c.jesToKeys(jes)
+
+	resp, err := c.requestContext(ctx, &clientRequest{Method: requestMethodKill, Keys: keys})
+	if err != nil {
+		return 0, err
+	}
+
+	return resp.Existed, err
+}
+
+// GetByRepGroupMatchContext is GetByRepGroupMatch, except that on a client that
+// rides out outages it stops retrying once ctx is done, as GetByEssenceContext
+// does.
+func (c *Client) GetByRepGroupMatchContext(ctx context.Context, repgroup string, match RepGroupMatch,
+	limit int, state JobState, getStd bool, getEnv bool) ([]*Job, error) {
+	resp, err := c.requestContext(ctx, &clientRequest{Method: requestMethodGetByRepGroup, Job: &Job{RepGroup: repgroup},
+		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
+		State: state, GetStd: getStd, GetEnv: getEnv})
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Jobs, err
+}
+
+// GetIncompleteByRepGroupMatchContext is GetIncompleteByRepGroupMatch, except
+// that on a client that rides out outages it stops retrying once ctx is done,
+// as GetByEssenceContext does.
+func (c *Client) GetIncompleteByRepGroupMatchContext(ctx context.Context, repgroup string,
+	match RepGroupMatch, limit int, state JobState, getStd bool, getEnv bool) ([]*Job, error) {
+	resp, err := c.requestContext(ctx, &clientRequest{Method: requestMethodGetIncomplete, Job: &Job{RepGroup: repgroup},
+		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
+		State: state, GetStd: getStd, GetEnv: getEnv})
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Jobs, err
+}
+
+// GetLastCompletionTimeByRepGroupContext is GetLastCompletionTimeByRepGroup,
+// except that on a client that rides out outages it stops retrying once ctx is
+// done, as GetByEssenceContext does.
+func (c *Client) GetLastCompletionTimeByRepGroupContext(ctx context.Context, repgroup string,
+	match RepGroupMatch) (map[string]time.Time, error) {
+	resp, err := c.requestContext(ctx, &clientRequest{
+		Method: requestMethodGetLastCompletion, Job: &Job{RepGroup: repgroup},
+		Search: match != RepGroupMatchExact, RepGroupMatch: match,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.CompletionTimes, nil
+}
+
 // setRequestDeadlines gives a connected client socket the send and receive
 // deadlines its requests use, derived from the client's connect timeout.
 //
@@ -2311,9 +2417,7 @@ func (c *Client) BackupDB(path string) error {
 // variables you want to be set when the job's Cmd actually runs. Typically you
 // would pass in os.Environ().
 func (c *Client) Add(jobs []*Job, envVars []string, ignoreComplete bool) (added, existed int, err error) {
-	added, existed, _, err = c.AddWithWarnings(jobs, envVars, ignoreComplete)
-
-	return added, existed, err
+	return c.AddContext(context.Background(), jobs, envVars, ignoreComplete)
 }
 
 // AddWithWarnings is like Add, and also returns non-fatal warnings about the
@@ -2332,9 +2436,7 @@ func (c *Client) AddWithWarnings(
 // now in the queue are returned (including dups, excluding complete jobs). This
 // is potentially expensive, so use Add() if you don't need these.
 func (c *Client) AddAndReturnIDs(jobs []*Job, envVars []string, ignoreComplete bool) ([]string, error) {
-	ids, _, err := c.AddAndReturnIDsWithWarnings(jobs, envVars, ignoreComplete)
-
-	return ids, err
+	return c.AddAndReturnIDsContext(context.Background(), jobs, envVars, ignoreComplete)
 }
 
 // AddAndReturnIDsWithWarnings is like AddAndReturnIDs, and also returns
@@ -4736,14 +4838,7 @@ func (c *Client) Resume(jes []*JobEssence) (int, error) {
 // can never be fixed. It returns a count of jobs that it actually removed.
 // Errors will only be related to not being able to contact the server.
 func (c *Client) Delete(jes []*JobEssence) (int, error) {
-	keys := c.jesToKeys(jes)
-
-	resp, err := c.request(&clientRequest{Method: requestMethodDelete, Keys: keys})
-	if err != nil {
-		return 0, err
-	}
-
-	return resp.Existed, err
+	return c.DeleteContext(context.Background(), jes)
 }
 
 // Kill will cause the next Touch() call for the job(s) described by the input
@@ -4757,14 +4852,7 @@ func (c *Client) Delete(jes []*JobEssence) (int, error) {
 // running state). Errors will only be related to not being able to contact the
 // server.
 func (c *Client) Kill(jes []*JobEssence) (int, error) {
-	keys := c.jesToKeys(jes)
-
-	resp, err := c.request(&clientRequest{Method: requestMethodKill, Keys: keys})
-	if err != nil {
-		return 0, err
-	}
-
-	return resp.Existed, err
+	return c.KillContext(context.Background(), jes)
 }
 
 // GetByEssence gets a Job given a JobEssence to describe it. With the boolean
@@ -4844,14 +4932,7 @@ func (c *Client) GetByRepGroup(repgroup string, subStr bool, limit int, state Jo
 // desired match mode.
 func (c *Client) GetByRepGroupMatch(repgroup string, match RepGroupMatch, limit int,
 	state JobState, getStd bool, getEnv bool) ([]*Job, error) {
-	resp, err := c.request(&clientRequest{Method: requestMethodGetByRepGroup, Job: &Job{RepGroup: repgroup},
-		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
-		State: state, GetStd: getStd, GetEnv: getEnv})
-	if err != nil {
-		return nil, err
-	}
-
-	return resp.Jobs, err
+	return c.GetByRepGroupMatchContext(context.Background(), repgroup, match, limit, state, getStd, getEnv)
 }
 
 // GetStatusByRepGroupMatch gets compact per-state job counts, optionally with
@@ -4893,14 +4974,7 @@ func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bo
 // remaining args are as in GetByRepGroup().
 func (c *Client) GetIncompleteByRepGroupMatch(repgroup string, match RepGroupMatch,
 	limit int, state JobState, getStd bool, getEnv bool) ([]*Job, error) {
-	resp, err := c.request(&clientRequest{Method: requestMethodGetIncomplete, Job: &Job{RepGroup: repgroup},
-		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
-		State: state, GetStd: getStd, GetEnv: getEnv})
-	if err != nil {
-		return nil, err
-	}
-
-	return resp.Jobs, err
+	return c.GetIncompleteByRepGroupMatchContext(context.Background(), repgroup, match, limit, state, getStd, getEnv)
 }
 
 // GetIncompleteWaitingForDepGroups gets all non-archived jobs currently in the
@@ -4922,13 +4996,7 @@ func (c *Client) GetIncompleteWaitingForDepGroups(repgroup string, match RepGrou
 // each matched RepGroup.
 func (c *Client) GetLastCompletionTimeByRepGroup(repgroup string,
 	match RepGroupMatch) (map[string]time.Time, error) {
-	resp, err := c.request(&clientRequest{Method: requestMethodGetLastCompletion, Job: &Job{RepGroup: repgroup},
-		Search: match != RepGroupMatchExact, RepGroupMatch: match})
-	if err != nil {
-		return nil, err
-	}
-
-	return resp.CompletionTimes, nil
+	return c.GetLastCompletionTimeByRepGroupContext(context.Background(), repgroup, match)
 }
 
 // GetOrSetLimitGroup takes the name of a limit group and returns the current

@@ -536,6 +536,73 @@ func TestSchedulerRequestsAcrossManagerRestart(t *testing.T) {
 			So(time.Since(cancelledAt), ShouldBeLessThan, restartWaitTimeout+time.Second)
 		})
 
+		Convey("each context-taking call made while it is down keeps trying until its ctx is cancelled, "+
+			"while a plain call keeps trying", func() {
+			m, cleanup := newRestartableManager(t, restartLongRetry)
+			defer cleanup()
+
+			calls := contextSchedulerCalls()
+			schedulers := make(map[string]*Scheduler, len(calls))
+
+			for name := range calls {
+				schedulers[name] = newRestartScheduler()
+				defer schedulers[name].Disconnect() //nolint:errcheck
+			}
+
+			plainScheduler := newRestartScheduler()
+			defer plainScheduler.Disconnect() //nolint:errcheck
+
+			m.stop()
+
+			callCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
+			results := make(map[string]<-chan waitForRunningResult, len(calls))
+			for name, call := range calls {
+				results[name] = callAsync(func() (*jobqueue.Job, error) { return nil, call(callCtx, schedulers[name]) })
+			}
+
+			plain := callAsync(func() (*jobqueue.Job, error) {
+				_, err := plainScheduler.FindJobsByRepGroupSuffix("ctx")
+
+				return nil, err
+			})
+
+			time.Sleep(restartWaitTimeout + restartWaitTimeout/2)
+
+			stillTrying := make(map[string]bool, len(calls))
+			for name, result := range results {
+				stillTrying[name] = errors.Is(receiveWaitForRunningResult(result, 0).err, errSchedulerJobTimeout)
+			}
+
+			cancelledAt := time.Now()
+
+			cancel()
+
+			endedWithCtxErr := make(map[string]bool, len(calls))
+			for name, result := range results {
+				endedWithCtxErr[name] = errors.Is(receiveWaitForRunningResult(result, restartResultWait).err,
+					context.Canceled)
+			}
+
+			cancelTook := time.Since(cancelledAt)
+
+			allTrue := make(map[string]bool, len(calls))
+			for name := range calls {
+				allTrue[name] = true
+			}
+
+			So(stillTrying, ShouldResemble, allTrue)
+			So(endedWithCtxErr, ShouldResemble, allTrue)
+			So(cancelTook, ShouldBeLessThan, restartWaitTimeout+time.Second)
+
+			So(receiveWaitForRunningResult(plain, 0).err, ShouldEqual, errSchedulerJobTimeout)
+
+			m.start()
+
+			So(receiveWaitForRunningResult(plain, restartResultWait).err, ShouldBeNil)
+		})
+
 		Convey("an error that is the manager's answer is returned at once", func() {
 			_, cleanup := newRestartableManager(t, restartLongRetry)
 			defer cleanup()
@@ -604,6 +671,62 @@ func newRestartScheduler() *Scheduler {
 	return s
 }
 
+// contextSchedulerCalls returns, by name, a call of each Scheduler method that
+// takes a ctx and makes a single request of the manager.
+func contextSchedulerCalls() map[string]func(context.Context, *Scheduler) error {
+	newJob := func(s *Scheduler) *jobqueue.Job {
+		return s.NewJob("echo ctx call", "rg-requests-ctx", "req-requests-ctx", "", "", nil)
+	}
+
+	return map[string]func(context.Context, *Scheduler) error{
+		"SubmitJobsContext": func(ctx context.Context, s *Scheduler) error {
+			return s.SubmitJobsContext(ctx, []*jobqueue.Job{newJob(s)})
+		},
+		"SubmitJobsAndReturnIDsContext": func(ctx context.Context, s *Scheduler) error {
+			_, err := s.SubmitJobsAndReturnIDsContext(ctx, []*jobqueue.Job{newJob(s)}, SubmitJobsOptions{})
+
+			return err
+		},
+		"GetJobByKeyContext": func(ctx context.Context, s *Scheduler) error {
+			_, err := s.GetJobByKeyContext(ctx, newJob(s).Key(), false, false)
+
+			return err
+		},
+		"FindJobsByRepGroupSuffixContext": func(ctx context.Context, s *Scheduler) error {
+			_, err := s.FindJobsByRepGroupSuffixContext(ctx, "ctx")
+
+			return err
+		},
+		"FindJobsByRepGroupPrefixAndStateContext": func(ctx context.Context, s *Scheduler) error {
+			_, err := s.FindJobsByRepGroupPrefixAndStateContext(ctx, "rg-", jobqueue.JobStateReady)
+
+			return err
+		},
+		"FindIncompleteJobsByRepGroupContext": func(ctx context.Context, s *Scheduler) error {
+			_, err := s.FindIncompleteJobsByRepGroupContext(ctx, "rg-requests-ctx", jobqueue.RepGroupMatchExact)
+
+			return err
+		},
+		"FindIncompleteJobsByRepGroupAndStateContext": func(ctx context.Context, s *Scheduler) error {
+			_, err := s.FindIncompleteJobsByRepGroupAndStateContext(ctx, "rg-requests-ctx",
+				jobqueue.RepGroupMatchExact, jobqueue.JobStateReady)
+
+			return err
+		},
+		"GetLastCompletionTimeByRepGroupContext": func(ctx context.Context, s *Scheduler) error {
+			_, err := s.GetLastCompletionTimeByRepGroupContext(ctx, "rg-requests-ctx", jobqueue.RepGroupMatchExact)
+
+			return err
+		},
+		"KillJobsContext": func(ctx context.Context, s *Scheduler) error {
+			return s.KillJobsContext(ctx, newJob(s))
+		},
+		"RemoveJobsContext": func(ctx context.Context, s *Scheduler) error {
+			return s.RemoveJobsContext(ctx, newJob(s))
+		},
+	}
+}
+
 // restartedWait is a WaitForRunning in progress against a restartableManager.
 type restartedWait struct {
 	manager   *restartableManager
@@ -643,6 +766,31 @@ func (r *recordedLogs) count(lvl log15.Lvl, msg string) int {
 	}
 
 	return n
+}
+
+func (w *waitForRunningSequenceJobqueue) GetByEssenceContext(_ context.Context, je *jobqueue.JobEssence,
+	_ bool, _ bool) (*jobqueue.Job, error) {
+	if je == nil || je.Key() == "" {
+		return nil, jobqueue.Error{Op: getByEssenceOp, Err: jobqueue.ErrBadRequest}
+	}
+
+	key := je.Key()
+	if key != w.job.Key() {
+		return nil, jobqueue.Error{Op: getByEssenceOp, Item: key, Err: jobqueue.ErrBadJob}
+	}
+
+	call := int(w.calls.Add(1)) - 1
+	if call < len(w.errs) && w.errs[call] != nil {
+		return nil, w.errs[call]
+	}
+
+	if call >= len(w.states) {
+		call = len(w.states) - 1
+	}
+
+	w.job.State = w.states[call]
+
+	return w.job, nil
 }
 
 func mapPointer(m map[string]string) uintptr {
@@ -1030,31 +1178,6 @@ func newWaitForRunningSequenceScheduler(key string,
 	s.jq = jq
 
 	return s, jq
-}
-
-func (w *waitForRunningSequenceJobqueue) GetByEssence(je *jobqueue.JobEssence,
-	_ bool, _ bool) (*jobqueue.Job, error) {
-	if je == nil || je.Key() == "" {
-		return nil, jobqueue.Error{Op: getByEssenceOp, Err: jobqueue.ErrBadRequest}
-	}
-
-	key := je.Key()
-	if key != w.job.Key() {
-		return nil, jobqueue.Error{Op: getByEssenceOp, Item: key, Err: jobqueue.ErrBadJob}
-	}
-
-	call := int(w.calls.Add(1)) - 1
-	if call < len(w.errs) && w.errs[call] != nil {
-		return nil, w.errs[call]
-	}
-
-	if call >= len(w.states) {
-		call = len(w.states) - 1
-	}
-
-	w.job.State = w.states[call]
-
-	return w.job, nil
 }
 
 func TestSchedulerWaitForRunning(t *testing.T) {
@@ -2566,7 +2689,7 @@ func TestPretendGetIncompleteByRepGroupEmptyRepGroup(t *testing.T) {
 		}
 
 		Convey("GetIncompleteByRepGroupMatch with empty repgroup returns all incomplete jobs", func() {
-			jobs, err := p.GetIncompleteByRepGroupMatch("", jobqueue.RepGroupMatchExact,
+			jobs, err := p.GetIncompleteByRepGroupMatchContext(context.Background(), "", jobqueue.RepGroupMatchExact,
 				0, "", false, false)
 			So(err, ShouldBeNil)
 			So(jobs, ShouldResemble, []*jobqueue.Job{p.jobBuffer[0], p.jobBuffer[1]})
@@ -2579,7 +2702,7 @@ func TestPretendGetByRepGroupEmptyRepGroup(t *testing.T) {
 		p := newPretendJobqueue()
 
 		Convey("GetByRepGroupMatch with empty repgroup returns ErrBadRequest", func() {
-			jobs, err := p.GetByRepGroupMatch("", jobqueue.RepGroupMatchExact,
+			jobs, err := p.GetByRepGroupMatchContext(context.Background(), "", jobqueue.RepGroupMatchExact,
 				0, "", false, false)
 			So(jobs, ShouldBeNil)
 			So(err, ShouldResemble, jobqueue.Error{Op: getByRepGroupMatchOp, Err: jobqueue.ErrBadRequest})
