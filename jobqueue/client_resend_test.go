@@ -63,7 +63,9 @@ const copyCountingManagerWorkers = 4
 // answers pings at once, and counts every add it receives, holding its reply to
 // each for hold. If dropFirst is set it closes the connection the first add
 // arrived on without answering it, as a manager that goes away mid-request
-// does.
+// does. It counts every other request too, answering at once with the error in
+// answers for its method if there is one, and otherwise holding its reply for
+// hold as well.
 type copyCountingManager struct {
 	addr      string
 	caFile    string
@@ -71,11 +73,25 @@ type copyCountingManager struct {
 	dropFirst bool
 	adds      atomic.Int32
 	stop      chan struct{}
+	answers   map[string]string
+
+	mu       sync.Mutex
+	received map[string]int
 }
 
 // startCopyCountingManager starts a copyCountingManager, stopping it when the
 // test ends.
 func startCopyCountingManager(t *testing.T, hold time.Duration, dropFirst bool) *copyCountingManager {
+	t.Helper()
+
+	return startAnsweringManager(t, hold, dropFirst, nil)
+}
+
+// startAnsweringManager is startCopyCountingManager, also giving it the answers
+// to give at once, by method.
+func startAnsweringManager(t *testing.T, hold time.Duration, dropFirst bool,
+	answers map[string]string,
+) *copyCountingManager {
 	t.Helper()
 
 	caFile := generateTestCerts(t)
@@ -98,6 +114,8 @@ func startCopyCountingManager(t *testing.T, hold time.Duration, dropFirst bool) 
 		hold:      hold,
 		dropFirst: dropFirst,
 		stop:      make(chan struct{}),
+		answers:   answers,
+		received:  make(map[string]int),
 	}
 
 	var wg sync.WaitGroup
@@ -137,22 +155,16 @@ func (m *copyCountingManager) serve(sctx mangos.Context) {
 
 		sr := &serverResponse{SInfo: &ServerInfo{}}
 
-		if cr.Method == requestMethodAdd {
-			if m.adds.Add(1) == 1 && m.dropFirst {
-				_ = msg.Pipe.Close()
+		if cr.Method == requestMethodAdd && m.adds.Add(1) == 1 && m.dropFirst {
+			_ = msg.Pipe.Close()
 
-				msg.Free()
+			msg.Free()
 
-				continue
-			}
+			continue
+		}
 
-			select {
-			case <-time.After(m.hold):
-			case <-m.stop:
-				return
-			}
-
-			sr.Added = len(cr.Jobs)
+		if !m.answer(cr, sr) {
+			return
 		}
 
 		var encoded []byte
@@ -165,6 +177,43 @@ func (m *copyCountingManager) serve(sctx mangos.Context) {
 			msg.Free()
 		}
 	}
+}
+
+// answer fills in sr, the reply to cr, after holding it if cr is not a ping or a
+// request with an answer in m.answers. It reports false if m was stopped
+// first.
+func (m *copyCountingManager) answer(cr *clientRequest, sr *serverResponse) bool {
+	if cr.Method == requestMethodPing {
+		return true
+	}
+
+	m.mu.Lock()
+	m.received[cr.Method]++
+	m.mu.Unlock()
+
+	if answer, ok := m.answers[cr.Method]; ok {
+		sr.Err = answer
+
+		return true
+	}
+
+	select {
+	case <-time.After(m.hold):
+	case <-m.stop:
+		return false
+	}
+
+	sr.Added = len(cr.Jobs)
+
+	return true
+}
+
+// receivedCopies returns how many requests of method m has received.
+func (m *copyCountingManager) receivedCopies(method string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.received[method]
 }
 
 // connect connects a Client to the manager with the given connect timeout.
@@ -270,7 +319,13 @@ func recvDeadline(jq *Client) time.Duration {
 
 // addOne adds a single job with jq, returning what Add returns.
 func addOne(jq *Client) (int, error) {
-	added, _, err := jq.Add([]*Job{{Cmd: "echo resend", Cwd: "/tmp", RepGroup: "resend"}}, nil, true)
+	return addOneJob(jq, true)
+}
+
+// addOneJob adds a single job with jq, skipping it if complete only if
+// ignoreComplete, returning what Add returns.
+func addOneJob(jq *Client, ignoreComplete bool) (int, error) {
+	added, _, err := jq.Add([]*Job{{Cmd: "echo resend", Cwd: "/tmp", RepGroup: "resend"}}, nil, ignoreComplete)
 
 	return added, err
 }

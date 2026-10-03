@@ -75,10 +75,16 @@ project adheres to [Semantic Versioning](http://semver.org/).
   command in full, so it is several times faster, and uses about 1% of the
   memory, for a group with a long history of long commands. The output is
   unchanged.
-- The Go client's `Scheduler.WaitForRunning` now keeps waiting while the
-  manager restarts, as `WaitForJobs` does, for up to the manager's retry time
-  (24h by default), instead of failing as soon as the manager goes down. It
-  still fails at once if the manager is down when it is called.
+- The Go client's `Scheduler` now rides out the manager being down, such as
+  across a restart, as runners and `WaitForJobs` do: `SubmitJobs`,
+  `GetJobByKey`, `WaitForRunning`, the `Find*` methods, `KillJobs`,
+  `RemoveJobs` and the rest keep trying, logging warnings, and return normally
+  once the manager is back, instead of failing after `Timeout`. They give up
+  after the manager's retry time (24h by default). `GetSchedulerAlerts`, which
+  reads the manager's web interface, still fails at once. Other Go programs
+  can get the same with the new
+  `jobqueue.Client.RetryWhileManagerUnreachable`; wr's own commands still fail
+  fast.
 - A Go client whose `WaitForJobs`, `SubmitJobsAndWait` or `AddAndWait` waited
   through a manager restart no longer has its later requests fail after 1s,
   instead of after its own timeout, while the manager cannot be reached.

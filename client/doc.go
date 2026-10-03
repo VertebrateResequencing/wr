@@ -37,32 +37,39 @@ Scheduler re-reads that file and sends the request again, so the program does
 not need to call New again.
 
 New fails if it cannot reach the manager within SchedulerSettings.Timeout. A
-call made while the manager is down fails after Timeout with
-mangos.ErrSendTimeout, unless the manager is back within that time. A request
-that was already sent waits for its reply for up to the larger of Timeout and a
-minute. A submission made while the manager was down that failed this way added
-nothing. A Timeout that is not positive means
-jobqueue.ClientDefaultConnectTimeout (2 minutes) rather than no limit.
+Timeout that is not positive means jobqueue.ClientDefaultConnectTimeout (2
+minutes) rather than no limit.
 
-A wait already in progress rides out the outage: WaitForJobs, the wait in
-SubmitJobsAndWait, and WaitForRunning after its first poll keep trying to reach
-the manager, and return normally once the jobs reach the state waited for,
-without the program calling again. They keep trying for up to the manager's
-RetryTime (jobqueue.ServerTimings.RetryTime, 24h by default). If the manager
-stays down for longer, WaitForJobs and SubmitJobsAndWait return an error
-matching jobqueue.ErrSubscriptionClosed, and WaitForRunning returns its last
-poll's error. Cancel the wait's ctx to give up sooner.
+Once connected, every call except GetSchedulerAlerts (which reads the manager's
+web interface) rides out the manager being down, as runners and waits do, and
+returns normally once the manager is back, without the program calling again. A
+request that cannot be sent within Timeout, or that the manager refuses because
+it is stopping or still recovering, is sent again after a wait that grows to
+the manager's RetryWait, logging warnings to SchedulerSettings.Logger while the
+manager stays unreachable. A request whose reply does not arrive within the
+larger of Timeout and a minute may have been acted on, so it is sent again only
+if that is safe: lookups, KillJobs, RemoveJobs, and submissions that skip
+complete jobs (SubmitJobsAndReturnIDs and SubmitJobsAndWait without
+RerunCompleted). Others, including SubmitJobs, which re-adds complete jobs, and
+the subscription WaitForJobs and SubmitJobsAndWait start their wait with, fail
+with mangos.ErrRecvTimeout. A call keeps trying for up to the manager's
+RetryTime (jobqueue.ServerTimings.RetryTime, 24h by default), so it can now
+take that long, and then returns the last error, such as mangos.ErrSendTimeout.
+An error that is the manager's answer, such as a bad request, is returned at
+once. WaitForRunning, WaitForJobs and SubmitJobsAndWait stop trying once their
+ctx is done, and WaitForJobs and the wait in SubmitJobsAndWait end with an
+error matching jobqueue.ErrSubscriptionClosed if they cannot reconnect within
+the manager's RetryTime.
 
-A submission in progress when the manager stops can be partly or wholly added.
-The client resends it when it reconnects, so SubmitJobs can then return
-ErrDuplicateJobs for jobs that only this one call added. If the outage outlasts
-the wait for the reply, the call fails with mangos.ErrRecvTimeout, and the
-program cannot tell how many of the jobs were added. To recover from either,
-call SubmitJobsAndReturnIDs with the same jobs and the default
-SubmitJobsOptions. It adds only the jobs that are neither queued nor complete,
-and returns the keys of the jobs now queued. A job that has already completed
-is neither added again nor in the result; Job.Key gives any job's key without
-asking the manager. Do not set RerunCompleted for this: it adds completed jobs
-again, so they run twice.
+A submission in progress when the manager stops can be partly or wholly added,
+and is sent again once the manager is back, so SubmitJobs can then return
+ErrDuplicateJobs for jobs that only this one call added. To recover from that,
+or from a submission that failed because the manager stayed down, call
+SubmitJobsAndReturnIDs with the same jobs and the default SubmitJobsOptions. It
+adds only the jobs that are neither queued nor complete, and returns the keys
+of the jobs now queued. A job that has already completed is neither added again
+nor in the result; Job.Key gives any job's key without asking the manager. Do
+not set RerunCompleted for this: it adds completed jobs again, so they run
+twice.
 */
 package client

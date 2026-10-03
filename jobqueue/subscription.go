@@ -697,7 +697,7 @@ func (c *Client) SubscribeToRepGroup(ctx context.Context, repGroup string) (*Sub
 }
 
 func (c *Client) subscribe(ctx context.Context, cr *clientRequest) (*Subscription, error) {
-	resp, err := c.request(cr)
+	resp, err := c.requestContext(ctx, cr)
 	if err != nil {
 		return nil, err
 	}
@@ -892,7 +892,7 @@ func (c *Client) AddAndWaitWithWarnings(
 		return nil, AddWarnings{}, ctxErr
 	}
 
-	keys, warnings, err := c.AddAndReturnIDsWithWarnings(jobs, envVars, ignoreComplete)
+	keys, warnings, err := c.addAndReturnIDsWithWarnings(ctx, jobs, envVars, ignoreComplete)
 	if err != nil {
 		return nil, AddWarnings{}, err
 	}

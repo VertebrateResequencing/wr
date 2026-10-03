@@ -761,12 +761,13 @@ func combineExecOutcomes(unmount, cmd execOutcome) execOutcome {
 //
 // While the manager is down, requests fail as described for Connect(): after
 // timeout if they could not be sent, or after the larger of timeout and
-// ClientMinRequestTimeout if the manager went after taking them. An Add in
-// progress when the manager stops can be partly applied, and is resent when
-// the client reconnects, so it can then report its own jobs as existing. A
-// subscription (as used by AddAndWait) keeps trying to reconnect for the
-// manager's RetryTime. The client package doc describes the same behaviour for
-// its Scheduler.
+// ClientMinRequestTimeout if the manager went after taking them, unless
+// RetryWhileManagerUnreachable() was called. An Add in progress when the
+// manager stops can be partly applied, and is resent when the client
+// reconnects, so it can then report its own jobs as existing. A subscription
+// (as used by AddAndWait) keeps trying to reconnect for the manager's
+// RetryTime. The client package's Scheduler uses such a client and rides out
+// outages; its package doc describes how.
 func ConnectWithTokenFile(addr, caFile, certDomain, tokenFile string, timeout time.Duration) (*Client, error) {
 	if tokenFile == "" {
 		return nil, ErrNoTokenFile
@@ -1494,6 +1495,40 @@ func (c *Client) handleFinalStateFailure(ctx context.Context, err error,
 	return c.handleFinalStateError(ctx, err)
 }
 
+// GetByEssenceContext is GetByEssence, except that on a client that rides out
+// outages (see RetryWhileManagerUnreachable) it stops retrying, returning ctx's
+// error, once ctx is done. An attempt already in progress is not interrupted,
+// so that can take as long as the connect timeout.
+func (c *Client) GetByEssenceContext(ctx context.Context, je *JobEssence, getstd bool, getenv bool) (*Job, error) {
+	keys := je.candidateKeys()
+
+	resp, err := c.requestContext(ctx, &clientRequest{Method: "getbc", Keys: keys, GetStd: getstd, GetEnv: getenv})
+	if err != nil {
+		return nil, err
+	}
+
+	jobs := resp.Jobs
+	if len(jobs) == 0 {
+		return nil, err
+	}
+
+	if len(keys) == 1 {
+		return jobs[0], err
+	}
+
+	return je.pickCandidateJob(jobs), err
+}
+
+// requestContext is request(), except that a client riding out an outage stops
+// retrying once ctx is done.
+func (c *Client) requestContext(ctx context.Context, cr *clientRequest) (*serverResponse, error) {
+	if retry := c.outageRetry.Load(); retry != nil {
+		return c.requestRidingOutOutages(ctx, retry, cr)
+	}
+
+	return c.requestOnce(cr)
+}
+
 // stageBackup writes db to a uniquely named file in path's own directory,
 // returning that file's name for the caller to rename over path. The name is
 // unique because a fixed name is one the user may already have a file at, and
@@ -1547,6 +1582,33 @@ func (c *Client) AddWithDuplicates(
 	}
 
 	return resp.Added, NewAddDuplicates(resp.Existed, resp.Duplicates), resp.AddWarnings, err
+}
+
+// addAndReturnIDsWithWarnings is AddAndReturnIDsWithWarnings, except that a
+// client riding out an outage stops retrying once ctx is done.
+func (c *Client) addAndReturnIDsWithWarnings(
+	ctx context.Context,
+	jobs []*Job,
+	envVars []string,
+	ignoreComplete bool,
+) (ids []string, warnings AddWarnings, err error) {
+	if validationErr, invalid := addValidationError(jobs); invalid {
+		return nil, AddWarnings{}, validationErr
+	}
+
+	compressed, err := c.CompressEnv(envVars)
+	if err != nil {
+		return nil, AddWarnings{}, err
+	}
+
+	resp, err := c.requestContext(ctx, &clientRequest{
+		Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete, ReturnIDs: true,
+	})
+	if err != nil {
+		return nil, AddWarnings{}, err
+	}
+
+	return resp.AddedIDs, resp.AddWarnings, err
 }
 
 // reserveHostAndPid returns this runner's hostname (falling back to localhost if
@@ -1715,6 +1777,11 @@ type Client struct {
 	// SetReserveAsRunner and sent on reserve requests so the server knows the
 	// client runs one job at a time.
 	reserveAsRunner bool
+
+	// outageRetry, set by RetryWhileManagerUnreachable, makes requests ride out
+	// the manager being unreachable. It is nil for clients that fail fast,
+	// such as wr's commands and runners.
+	outageRetry atomic.Pointer[outageRetry]
 }
 
 // envStr holds the []string from os.Environ(), for codec compatibility.
@@ -1748,7 +1815,9 @@ type envStr struct {
 // A request already sent waits for the reply for up to the larger of timeout
 // and ClientMinRequestTimeout. A timeout that is not positive means
 // ClientDefaultConnectTimeout, not "no deadline", so that a manager that is down
-// or does not answer always makes Connect, and later requests, fail.
+// or does not answer always makes Connect, and later requests, fail. To have
+// later requests keep trying instead, call RetryWhileManagerUnreachable() on
+// the returned Client.
 func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duration) (*Client, error) {
 	if timeout <= 0 {
 		timeout = defaultConnectTimeout
@@ -2275,23 +2344,7 @@ func (c *Client) AddAndReturnIDsWithWarnings(
 	envVars []string,
 	ignoreComplete bool,
 ) (ids []string, warnings AddWarnings, err error) {
-	if validationErr, invalid := addValidationError(jobs); invalid {
-		return nil, AddWarnings{}, validationErr
-	}
-
-	compressed, err := c.CompressEnv(envVars)
-	if err != nil {
-		return nil, AddWarnings{}, err
-	}
-
-	resp, err := c.request(&clientRequest{
-		Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete, ReturnIDs: true,
-	})
-	if err != nil {
-		return nil, AddWarnings{}, err
-	}
-
-	return resp.AddedIDs, resp.AddWarnings, err
+	return c.addAndReturnIDsWithWarnings(context.Background(), jobs, envVars, ignoreComplete)
 }
 
 // Modify modifies previously Add()ed jobs that are incomplete and not currently
@@ -4685,7 +4738,7 @@ func (c *Client) Resume(jes []*JobEssence) (int, error) {
 func (c *Client) Delete(jes []*JobEssence) (int, error) {
 	keys := c.jesToKeys(jes)
 
-	resp, err := c.request(&clientRequest{Method: "jdel", Keys: keys})
+	resp, err := c.request(&clientRequest{Method: requestMethodDelete, Keys: keys})
 	if err != nil {
 		return 0, err
 	}
@@ -4706,7 +4759,7 @@ func (c *Client) Delete(jes []*JobEssence) (int, error) {
 func (c *Client) Kill(jes []*JobEssence) (int, error) {
 	keys := c.jesToKeys(jes)
 
-	resp, err := c.request(&clientRequest{Method: "jkill", Keys: keys})
+	resp, err := c.request(&clientRequest{Method: requestMethodKill, Keys: keys})
 	if err != nil {
 		return 0, err
 	}
@@ -4727,23 +4780,7 @@ func (c *Client) Kill(jes []*JobEssence) (int, error) {
 // non-CwdMatters one only if its Cwd really is the requested Cwd, so that a
 // different Job that merely shares the Cmd is never returned.
 func (c *Client) GetByEssence(je *JobEssence, getstd bool, getenv bool) (*Job, error) {
-	keys := je.candidateKeys()
-
-	resp, err := c.request(&clientRequest{Method: "getbc", Keys: keys, GetStd: getstd, GetEnv: getenv})
-	if err != nil {
-		return nil, err
-	}
-
-	jobs := resp.Jobs
-	if len(jobs) == 0 {
-		return nil, err
-	}
-
-	if len(keys) == 1 {
-		return jobs[0], err
-	}
-
-	return je.pickCandidateJob(jobs), err
+	return c.GetByEssenceContext(context.Background(), je, getstd, getenv)
 }
 
 // GetByEssences gets multiple Jobs at once given JobEssences that describe
@@ -4807,7 +4844,7 @@ func (c *Client) GetByRepGroup(repgroup string, subStr bool, limit int, state Jo
 // desired match mode.
 func (c *Client) GetByRepGroupMatch(repgroup string, match RepGroupMatch, limit int,
 	state JobState, getStd bool, getEnv bool) ([]*Job, error) {
-	resp, err := c.request(&clientRequest{Method: "getbr", Job: &Job{RepGroup: repgroup},
+	resp, err := c.request(&clientRequest{Method: requestMethodGetByRepGroup, Job: &Job{RepGroup: repgroup},
 		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
 		State: state, GetStd: getStd, GetEnv: getEnv})
 	if err != nil {
@@ -4822,7 +4859,7 @@ func (c *Client) GetByRepGroupMatch(repgroup string, match RepGroupMatch, limit 
 func (c *Client) GetStatusByRepGroupMatch(repgroup string, match RepGroupMatch,
 	states []JobState, includeComplete bool, includeStatusDetails bool) (map[string]*RepGroupStatus, error) {
 	resp, err := c.request(&clientRequest{
-		Method:               "getrs",
+		Method:               requestMethodGetRepGroupStatus,
 		Job:                  &Job{RepGroup: repgroup},
 		Search:               match != RepGroupMatchExact,
 		RepGroupMatch:        match,
@@ -4885,7 +4922,7 @@ func (c *Client) GetIncompleteWaitingForDepGroups(repgroup string, match RepGrou
 // each matched RepGroup.
 func (c *Client) GetLastCompletionTimeByRepGroup(repgroup string,
 	match RepGroupMatch) (map[string]time.Time, error) {
-	resp, err := c.request(&clientRequest{Method: "getlct", Job: &Job{RepGroup: repgroup},
+	resp, err := c.request(&clientRequest{Method: requestMethodGetLastCompletion, Job: &Job{RepGroup: repgroup},
 		Search: match != RepGroupMatchExact, RepGroupMatch: match})
 	if err != nil {
 		return nil, err
@@ -4912,7 +4949,7 @@ func (c *Client) GetOrSetLimitGroup(group string) (int, error) {
 // GetLimitGroups returns all currently known about limit groups, and the limit
 // they are set to.
 func (c *Client) GetLimitGroups() (map[string]int, error) {
-	resp, err := c.request(&clientRequest{Method: "getlgs"})
+	resp, err := c.request(&clientRequest{Method: requestMethodGetLimitGroups})
 	if err != nil {
 		return nil, err
 	}
@@ -5001,11 +5038,11 @@ func (c *Client) DestroyCloudHost(hostName string) ([]*BadServer, []*Job, error)
 // request the server do something and get back its response. We can only cope
 // with one request at a time per client, or we'll get replies back in the
 // wrong order, hence we lock.
+//
+// A client that rides out outages (see RetryWhileManagerUnreachable) can wait
+// for up to the manager's RetryTime.
 func (c *Client) request(cr *clientRequest) (*serverResponse, error) {
-	c.Lock()
-	defer c.Unlock()
-
-	return c.requestLocked(cr)
+	return c.requestContext(context.Background(), cr)
 }
 
 // encodeAndSend encodes cr (stamping it with this client's token and id) and

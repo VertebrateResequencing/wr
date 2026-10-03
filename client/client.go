@@ -44,7 +44,6 @@ import (
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/inconshreveable/log15/v3"
 	"github.com/rs/xid"
-	"go.nanomsg.org/mangos/v3"
 )
 
 // ErrDuplicateJobs is returned by SubmitJobs when any submitted jobs already
@@ -118,17 +117,19 @@ type SchedulerSettings struct {
 	// requirements.
 	QueuesAvoid string
 
-	// Timeout bounds connecting to the manager, and how long sending each
-	// later request may take. A request already sent waits for its reply for
-	// up to the larger of Timeout and a minute. A Timeout that is not
-	// positive means jobqueue.ClientDefaultConnectTimeout (2 minutes) rather
-	// than no limit. See the package doc for what this means while the
-	// manager is down.
+	// Timeout bounds connecting to the manager, and how long each attempt to
+	// send a later request may take. A request already sent waits for its
+	// reply for up to the larger of Timeout and a minute. A Timeout that is
+	// not positive means jobqueue.ClientDefaultConnectTimeout (2 minutes)
+	// rather than no limit. Once connected, requests keep being attempted
+	// while the manager is down, for up to the manager's RetryTime; see the
+	// package doc.
 	Timeout time.Duration
 
-	// Logger receives what New logs while loading wr's config. A problem with
-	// that config is logged as critical and ends the program. It must not be
-	// nil unless PretendSubmissions is set.
+	// Logger receives what New logs while loading wr's config, and the
+	// warnings logged while a request waits for the manager to be reachable.
+	// A problem with that config is logged as critical and ends the program.
+	// It must not be nil unless PretendSubmissions is set.
 	Logger log15.Logger
 }
 
@@ -174,6 +175,28 @@ type jobqueueClient interface {
 	GetSchedulerAlerts() (*jobqueue.SchedulerAlerts, error)
 	Delete(jes []*jobqueue.JobEssence) (int, error)
 	Disconnect() error
+}
+
+// connect returns the jobqueue client New uses: a pretend one if
+// PretendSubmissions is set, otherwise one connected to the manager that rides
+// out the manager being unreachable, logging to settings.Logger.
+//
+//nolint:ireturn // the Scheduler holds either a real or a pretend client
+func connect(settings SchedulerSettings) (jobqueueClient, error) {
+	if PretendSubmissions != "" {
+		return newPretendJobqueue(), nil
+	}
+
+	logCtx := clog.ContextWithLogHandler(context.Background(), settings.Logger.GetHandler())
+
+	jq, err := jobqueue.ConnectUsingConfig(logCtx, settings.Deployment, settings.Timeout)
+	if err != nil {
+		return nil, err
+	}
+
+	jq.RetryWhileManagerUnreachable(logCtx)
+
+	return jq, nil
 }
 
 type pretendJobqueue struct {
@@ -420,55 +443,6 @@ func (p *pretendJobqueue) Disconnect() error {
 	return output.Close()
 }
 
-// unreachableSpell tracks an unbroken run of WaitForRunning polls that failed
-// because the manager could not be reached.
-type unreachableSpell struct {
-	since time.Time
-	limit time.Duration
-}
-
-// end records a poll the manager answered.
-func (u *unreachableSpell) end() {
-	u.since = time.Time{}
-}
-
-// giveUp records a poll that began at pollStart and failed with err, reporting
-// whether the wait should end with err: because err is not the manager being
-// unreachable, or because the manager has now been unreachable for longer than
-// the limit.
-func (u *unreachableSpell) giveUp(err error, pollStart time.Time) bool {
-	if !isManagerUnreachable(err) {
-		return true
-	}
-
-	if u.since.IsZero() {
-		u.since = pollStart
-	}
-
-	return time.Since(u.since) > u.limit
-}
-
-// isManagerUnreachable reports whether err from a request to the manager means
-// it could not be reached for now, rather than being its answer to the request.
-// A request times out sending when the manager has gone (there is no pipe to
-// send on), and receiving when it went after taking the request. A manager that
-// is stopping answers ErrClosedStop, and one recovering its prior state may
-// answer ErrRecovering; subscriptions retry both too. mangos.ErrClosed is not
-// included: the client holds its lock for a whole request, so it only means
-// this client was disconnected.
-func isManagerUnreachable(err error) bool {
-	if errors.Is(err, mangos.ErrSendTimeout) || errors.Is(err, mangos.ErrRecvTimeout) {
-		return true
-	}
-
-	var jqErr jobqueue.Error
-	if !errors.As(err, &jqErr) {
-		return false
-	}
-
-	return jqErr.Err == jobqueue.ErrClosedStop || jqErr.Err == jobqueue.ErrRecovering
-}
-
 // Scheduler can be used to schedule commands to be executed by adding them to
 // wr's queue.
 type Scheduler struct {
@@ -492,12 +466,8 @@ func New(settings SchedulerSettings) (*Scheduler, error) {
 		return nil, err
 	}
 
-	var jq jobqueueClient
-
-	if PretendSubmissions != "" {
-		jq = newPretendJobqueue()
-	} else if jq, err = jobqueue.ConnectUsingConfig(clog.ContextWithLogHandler(context.Background(),
-		settings.Logger.GetHandler()), settings.Deployment, settings.Timeout); err != nil {
+	jq, err := connect(settings)
+	if err != nil {
 		return nil, err
 	}
 
@@ -586,11 +556,18 @@ func (s *Scheduler) SubmitJobsAndWait(ctx context.Context, jobs []*jobqueue.Job,
 // stdout/stderr and environment data.
 func (s *Scheduler) GetJobByKey(key string, getStd bool,
 	getEnv bool) (*jobqueue.Job, error) {
+	return s.getJobByKey(context.Background(), key, getStd, getEnv)
+}
+
+// getJobByKey is GetJobByKey, except that it stops riding out an outage once
+// ctx is done.
+func (s *Scheduler) getJobByKey(ctx context.Context, key string, getStd bool,
+	getEnv bool) (*jobqueue.Job, error) {
 	if key == "" {
 		return nil, jobqueue.Error{Op: getJobByKeyOp, Err: jobqueue.ErrBadRequest}
 	}
 
-	job, err := s.jq.GetByEssence(&jobqueue.JobEssence{JobKey: key}, getStd, getEnv)
+	job, err := s.getByEssence(ctx, &jobqueue.JobEssence{JobKey: key}, getStd, getEnv)
 	if err != nil {
 		var jqErr jobqueue.Error
 
@@ -609,24 +586,30 @@ func (s *Scheduler) GetJobByKey(key string, getStd bool,
 	return job, nil
 }
 
+// getByEssence is the jobqueue client's GetByEssence, stopping riding out an
+// outage once ctx is done if it is a real client.
+func (s *Scheduler) getByEssence(ctx context.Context, je *jobqueue.JobEssence, getStd bool,
+	getEnv bool) (*jobqueue.Job, error) {
+	if jq, ok := s.jq.(*jobqueue.Client); ok {
+		return jq.GetByEssenceContext(ctx, je, getStd, getEnv)
+	}
+
+	return s.jq.GetByEssence(je, getStd, getEnv)
+}
+
 // WaitForRunning waits until the job identified by key has started running or
 // has already reached a state that means it will not start in this wait,
 // polling the manager every pollInterval (a default if it is not positive).
 //
-// The first poll fails at once if the manager cannot be reached, as
-// WaitForJobs does. After that the wait rides out the manager being
-// unreachable, such as across a restart, including one that gives the manager a
-// new token, which the Scheduler reads from the manager's token file. Polls that
-// fail because a request to the manager timed out (a send times out after
-// SchedulerSettings.Timeout, a reply after the larger of that and a minute), or
-// because it is stopping or still recovering, are retried until the manager
-// answers again. If it stays unreachable for longer than the manager's
-// RetryTime (the same budget a WaitForJobs subscription has to reconnect; 24h
-// by default), the last poll's error is returned. Any other error, such as the
-// job not existing, is returned at once.
+// Each poll rides out the manager being unreachable, such as across a restart,
+// as every Scheduler request does (see the package doc): if the manager stays
+// unreachable for longer than its RetryTime (24h by default), the poll's last
+// error is returned. Any other error, such as the job not existing, is returned
+// at once.
 //
-// Cancelling ctx ends the wait with ctx's error once the poll in progress, if
-// any, has finished, which can take as long as one of those timeouts.
+// Cancelling ctx ends the wait with ctx's error, once the attempt to reach the
+// manager in progress, if any, has finished, which can take as long as
+// SchedulerSettings.Timeout while the manager is down.
 func (s *Scheduler) WaitForRunning(ctx context.Context, key string,
 	pollInterval time.Duration) (*jobqueue.Job, error) {
 	if err := validateWaitForRunningKey(key); err != nil {
@@ -657,25 +640,15 @@ func waitForRunningPollInterval(pollInterval time.Duration) time.Duration {
 
 func (s *Scheduler) waitForRunning(ctx context.Context, key string,
 	ticker *time.Ticker) (*jobqueue.Job, error) {
-	spell := unreachableSpell{limit: s.managerRetryTime()}
-	polled := false
-
 	for ctx.Err() == nil {
-		pollStart := time.Now()
-
-		job, done, err := s.pollWaitForRunning(key)
-		switch {
-		case err != nil && (!polled || spell.giveUp(err, pollStart)):
+		job, done, err := s.pollWaitForRunning(ctx, key)
+		if err != nil {
 			return nil, err
-		case err != nil:
-			// the manager is unreachable, but not for too long yet: poll again.
-		case done:
-			return job, nil
-		default:
-			spell.end()
 		}
 
-		polled = true
+		if done {
+			return job, nil
+		}
 
 		if err = waitForRunningTick(ctx, ticker); err != nil {
 			return nil, err
@@ -694,30 +667,8 @@ func waitForRunningTick(ctx context.Context, ticker *time.Ticker) error {
 	}
 }
 
-// managerRetryTime returns how long the manager tells its clients to keep
-// trying to reach it, which is also how long a subscription keeps trying to
-// reconnect.
-func (s *Scheduler) managerRetryTime() time.Duration {
-	jq, ok := s.jq.(*jobqueue.Client)
-	if !ok {
-		return jobqueue.ClientRetryTime
-	}
-
-	// a subscription reconnect on another goroutine replaces ServerInfo under
-	// the client's lock.
-	jq.Lock()
-	si := jq.ServerInfo
-	jq.Unlock()
-
-	if si == nil || si.RetryTime <= 0 {
-		return jobqueue.ClientRetryTime
-	}
-
-	return si.RetryTime
-}
-
-func (s *Scheduler) pollWaitForRunning(key string) (*jobqueue.Job, bool, error) {
-	job, err := s.GetJobByKey(key, false, false)
+func (s *Scheduler) pollWaitForRunning(ctx context.Context, key string) (*jobqueue.Job, bool, error) {
+	job, err := s.getJobByKey(ctx, key, false, false)
 	if err != nil {
 		return nil, false, waitForRunningError(key, err)
 	}
@@ -789,8 +740,13 @@ func (s *Scheduler) WaitForJobs(ctx context.Context,
 			waitForJobsContextError(err, distinct, terminal)
 	}
 
-	waitKeys, err := s.currentTerminalAndWaitKeys(distinct, terminal)
+	waitKeys, err := s.currentTerminalAndWaitKeys(ctx, distinct, terminal)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return jobsInWaitKeyOrder(distinct, terminal),
+				waitForJobsContextError(ctxErr, distinct, terminal)
+		}
+
 		return nil, err
 	}
 
@@ -862,12 +818,12 @@ func waitForJobsContextError(ctxErr error, keys []string,
 		strings.Join(unfinishedWaitForJobKeys(keys, terminal), ", "))
 }
 
-func (s *Scheduler) currentTerminalAndWaitKeys(keys []string,
+func (s *Scheduler) currentTerminalAndWaitKeys(ctx context.Context, keys []string,
 	terminal map[string]*jobqueue.Job) ([]string, error) {
 	waitKeys := make([]string, 0, len(keys))
 
 	for _, key := range keys {
-		job, err := s.GetJobByKey(key, true, false)
+		job, err := s.getJobByKey(ctx, key, true, false)
 		if err != nil {
 			return nil, err
 		}
@@ -1230,7 +1186,8 @@ func (s *Scheduler) determineOverrideAndReq(req *jqs.Requirements) (*jqs.Require
 //
 // If any duplicate jobs were added, ErrDuplicateJobs will be returned. This
 // can also follow this call's own add, if the manager stopped while it was in
-// progress and it was resent. SubmitJobsAndReturnIDs with the same jobs and
+// progress and it was resent. While the manager is down, this waits for it for
+// up to its RetryTime (see the package doc). SubmitJobsAndReturnIDs with the same jobs and
 // default options then adds only those neither queued nor complete, and
 // returns the keys of the queued ones (see the package doc).
 //

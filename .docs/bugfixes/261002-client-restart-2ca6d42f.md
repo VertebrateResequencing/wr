@@ -284,10 +284,36 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
     Documented on Connect, SchedulerSettings.Timeout and the client package
     doc. `wr limit`, which passes an unset global 0, now gets 120s instead of
     no deadline.
-- [ ] Once connected, Scheduler requests (SubmitJobs, SubmitJobsAndReturnIDs,
+- [x] Once connected, Scheduler requests (SubmitJobs, SubmitJobsAndReturnIDs,
   GetJobByKey, Find*, KillJobs, RemoveJobs, GetSchedulerAlerts, ...) fail
   after Timeout while the manager is down instead of retrying with backoff up
   to the manager's RetryTime, logging warnings, as runners and waits do.
+  - Red command: `timeout 900 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    go test -tags netgo -count 1 -timeout 20m ./client/ -run
+    '^TestSchedulerRequestsAcrossManagerRestart$'`, exit 1:
+
+    ```
+    Line 456:
+    Expected: (*errors.errorString){s:"timed out waiting for WaitForJobs"}
+    Actual:   errors.err("send time out")
+    Line 495:
+    Expected '1.002568609s' to be greater than or equal to '3s' (but it wasn't)!
+    --- FAIL: TestSchedulerRequestsAcrossManagerRestart (4.51s)
+    ```
+  - Fixed: opt-in jobqueue.Client.RetryWhileManagerUnreachable, enabled only
+    by client.New (CLI, runners and manager connections unchanged). request()
+    goes through requestContext, which for an opted-in client retries with
+    jittered backoff (from min(250ms, RetryWait), capped at RetryWait,
+    floored at 10ms) until the outage outlasts RetryTime or ctx is done,
+    taking the client lock per attempt only, warning on the first failure and
+    then once a minute, and logging when the manager answers again
+    (jobqueue/client_outage.go). Send timeouts, ErrClosedStop and
+    ErrRecovering are always retried; a receive timeout only for requests
+    safe to apply twice (reads, kill, delete, and adds that skip complete
+    jobs). WaitForJobs, SubmitJobsAndWait and WaitForRunning pass their ctx
+    through, so cancelling ends the ride-out. This supersedes the
+    WaitForRunning item's fail-fast first poll and its unreachableSpell, and
+    Findings item 1 (calls no longer fail after Timeout once connected).
 - [ ] Scheduler calls without a context cannot be given up early once they
   retry; add context-taking variants, keeping the existing signatures.
 - [ ] TestSchedulerWaitForRunningAcrossManagerRestart ("rides out repeated

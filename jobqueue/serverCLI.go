@@ -61,6 +61,13 @@ const (
 	requestMethodGetRecent     = "getrec"
 	requestMethodGetBadServers = "getbcs"
 
+	requestMethodGetByRepGroup     = "getbr"
+	requestMethodGetRepGroupStatus = "getrs"
+	requestMethodGetLastCompletion = "getlct"
+	requestMethodGetLimitGroups    = "getlgs"
+	requestMethodKill              = "jkill"
+	requestMethodDelete            = "jdel"
+
 	// schedGroupWithLimitParts is the number of parts a scheduler group splits
 	// into when it carries a limit-groups suffix (the group name and the limit
 	// groups).
@@ -2340,23 +2347,23 @@ func (s *Server) dispatchMethod(ctx context.Context, cr *clientRequest, drain bo
 		clog.Debug(ctx, "resumed suspended jobs", "count", resumed)
 
 		return &serverResponse{Existed: resumed}, "", ""
-	case "jdel":
+	case requestMethodDelete:
 		return s.handleDelete(ctx, cr)
 	case requestMethodModify:
 		return s.handleModify(ctx, cr)
-	case "jkill":
+	case requestMethodKill:
 		return s.handleKill(ctx, cr)
 	case requestMethodGetByCmd:
 		return s.handleGetByKeys(ctx, cr)
-	case "getbr":
+	case requestMethodGetByRepGroup:
 		return s.handleGetByRepGroup(ctx, cr)
-	case "getrs":
+	case requestMethodGetRepGroupStatus:
 		return s.handleGetRepGroupStatus(cr)
 	case requestMethodGetIncomplete:
 		return s.handleGetIncomplete(ctx, cr), "", ""
 	case requestMethodGetRecent:
 		return s.handleGetRecent(ctx, cr)
-	case "getlct":
+	case requestMethodGetLastCompletion:
 		return s.handleGetLastCompletionTime(cr)
 	case requestMethodGetBadServers:
 		return s.handleGetBadServers(ctx, cr), "", ""
@@ -2364,7 +2371,7 @@ func (s *Server) dispatchMethod(ctx context.Context, cr *clientRequest, drain bo
 		return s.handleDestroyCloudHost(ctx, cr)
 	case "getsetlg":
 		return s.handleGetSetLimitGroup(ctx, cr)
-	case "getlgs":
+	case requestMethodGetLimitGroups:
 		return &serverResponse{LimitGroups: s.limiter.GetLimits()}, "", ""
 	default:
 		return nil, ErrUnknownCommand, ""
