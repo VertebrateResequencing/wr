@@ -6,6 +6,20 @@ project adheres to [Semantic Versioning](http://semver.org/).
 
 
 ## [Unreleased]
+### Changed
+- The Go client's `Scheduler` now rides out the manager being down, such as
+  across a restart, as runners and `WaitForJobs` do. `SubmitJobs`,
+  `GetJobByKey`, `WaitForRunning`, the `Find*` methods, `KillJobs`,
+  `RemoveJobs` and the rest keep trying, logging warnings, and return normally
+  once the manager is back, instead of failing after `Timeout`. So a call can
+  now take up to the manager's retry time (24h by default); to give up sooner,
+  cancel the context given to a new `Context` variant, such as
+  `SubmitJobsContext`. `GetSchedulerAlerts` keeps trying only while its
+  request cannot have reached the manager, since reading alerts dismisses
+  them, and now also works after a restart that gave the manager a new token.
+  Other Go programs can get the same with the new
+  `jobqueue.Client.RetryWhileManagerUnreachable`; wr's own commands still fail
+  fast.
 ### Fixed
 - A runner's late report that its command failed, or should be buried, no
   longer buries or delays a new run of that command by another runner, which
@@ -82,18 +96,15 @@ project adheres to [Semantic Versioning](http://semver.org/).
   completed meanwhile is not queued again. If any of its commands were then
   complete, it returns `jobqueue.ErrResentAddSkippedComplete`, since they may
   not have been rerun.
-- The Go client's `Scheduler` now rides out the manager being down, such as
-  across a restart, as runners and `WaitForJobs` do: `SubmitJobs`,
-  `GetJobByKey`, `WaitForRunning`, the `Find*` methods, `KillJobs`,
-  `RemoveJobs` and the rest keep trying, logging warnings, and return normally
-  once the manager is back, instead of failing after `Timeout`. They give up
-  after the manager's retry time (24h by default), or sooner if the context
-  given to a new `Context` variant, such as `SubmitJobsContext`, is cancelled.
-  `GetSchedulerAlerts` keeps trying only while its request cannot have reached
-  the manager, since reading alerts dismisses them, and now also works after a
-  restart that gave the manager a new token. Other Go programs can get the
-  same with the new `jobqueue.Client.RetryWhileManagerUnreachable`; wr's own
-  commands still fail fast.
+- A Go client with a `Timeout` over 60s no longer sends a request a second
+  time to a manager that is slow to answer it, which could apply the request
+  twice.
+- A Go client's `Scheduler` or `Connect` with a zero `Timeout` now uses a 2
+  minute default, as the `wr` commands do, instead of blocking for ever when
+  the manager cannot be reached.
+- `wr lsf bsub` no longer says "Duplicate command specified" and fails for a
+  job it did submit, when its connection to the manager dropped and the add
+  was sent again.
 - The Go client's `SubmitJobs` no longer returns `ErrDuplicateJobs` for jobs
   that only it added, when the manager stopped, or the connection dropped,
   after acting on its add but before replying, and the client sent the add
@@ -122,6 +133,8 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - With the lsf scheduler, each bsub returns about 100ms sooner.
 - When the manager or a runner logs an internal panic, the log now includes the
   stack of where the panic happened (as `panic_stack`).
+- After a restart, the manager no longer logs an "unknown subscription" error
+  for each client still waiting on a subscription from before the restart.
 
 ## [0.38.0] - 2026-09-30
 ### Added
