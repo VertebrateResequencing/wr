@@ -224,6 +224,7 @@ injectors were checked again without `RUNNER_FILELOG` (run 7, in
 | 7 local7 | `mon.sh` writes nothing to stderr; `crashon.sh` no integer-expression noise | PASS |
 | 7 local7 | `watcher.sh` ran no redundant start. Vacuous here, since no start failed; the `f4w.sh` stand-in harness covers that path | PASS |
 | 7 local7 | 289 runs, 0 doubles; `rundepcheck.py` on a dir without `rundep/`; 0 left after cleanup | PASS |
+| 8 prodstart8 | Live `wrdev.sh prod-start` after 27e0984c: `repro/readdcrash.sh 1` with `REPRO_WR` built from f5a98fa5 and `REPRO_PORTS="51936 51937 51938 51939"`, rc=0. prod-start passed the `wr conf` check; the re-added running job ran once (one run/end mark pair), Attempts 1, complete; the managers were killed after, 0 processes left (`soak8/prodstart8/readdcrash.1.out`) | PASS |
 
 The fixes:
 
@@ -253,3 +254,7 @@ The fixes:
 - 27e0984c: `wrdev.sh prod-start`, which the repros start through, runs
   `assert_isolated` before starting, as prodsim's start does, so a
   `.wr_config` override or `WR_` variable cannot point it at another manager.
+- 45d4a51a: that check runs in a subshell, so a refusal is a failed return and
+  each caller's abort path runs (crash-recovery's bkill and `safe_kill`).
+- 5df4420c: each repro stops with exit 1 when `wrdev.sh prod-start` fails,
+  where it piped the start through `tail` and carried on.
