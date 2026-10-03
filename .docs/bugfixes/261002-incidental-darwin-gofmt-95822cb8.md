@@ -40,7 +40,7 @@
     longer const added to the block in `queue/queue.go` (misaligning its
     unchanged neighbours), `golangci-lint run ./queue/...` still reported
     0 issues while `make lint` failed at the format step (exit 2).
-- [ ] Recurring flake TestManagerStopWhileShuttingDown in cmd: "helper
+- [x] Recurring flake TestManagerStopWhileShuttingDown in cmd: "helper
   manager did not become ready" after 5.06s (helper exited early), seen
   2026-10-02 in `make test`. Earlier record in
   `.docs/bugfixes/260929-archive-before-start.md` (64s timeout; suspected
@@ -70,3 +70,18 @@
     25 unpinned runs while another process held 2000 rotating `:0`
     listeners all passed, so the natural collision is rare; the red command
     for the fix pins the property that prevents it instead.
+  - Red (fix): `go test ./cmd -run '^TestManagerStopTestPortAvoidsEphemeralRange$'`
+    failed before the fix with `Expected '46377' to be less than '32768'`.
+  - Fixed: `closedLocalPort()` now takes its port from client/testing's lane
+    picker, exported as `LaneFreePort`. Under `make test`/`make race`
+    (`WR_TEST_LANE` set) the port is in the lane's range, below the
+    ephemeral range, so no other process can be given it; outside a lane it
+    falls back to a bind-checked ephemeral port as before. Regression test
+    `TestManagerStopTestPortAvoidsEphemeralRange`. This also covers the 64s
+    variant left unchecked in `.docs/bugfixes/260929-archive-before-start.md`.
+    Files: `cmd/manager_stop_test.go`, `client/testing/server.go`,
+    `client/testing/server_test.go`.
+  - Green: the regression test passes, and fails again with the old picker
+    restored; the stop tests passed 5 of 5 with `WR_TEST_LANE=31`;
+    `make lint`, `make test` (877 passed) and `CGO_ENABLED=1 make race`
+    (877 passed) exit 0.

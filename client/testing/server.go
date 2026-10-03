@@ -72,11 +72,11 @@ const (
 // out ports a manager could not listen on.
 var errNoFreeEphemeralPort = errors.New("no ephemeral port a manager could listen on")
 
-// laneTestPortNext is the per-lane sequential offset used by laneFreePort. A
+// laneTestPortNext is the per-lane sequential offset used by LaneFreePort. A
 // lane's tests run sequentially, so it needs no synchronisation.
 var laneTestPortNext int //nolint:gochecknoglobals
 
-// ephemeralFreePort is where laneFreePort gets a candidate port outside a lane.
+// ephemeralFreePort is where LaneFreePort gets a candidate port outside a lane.
 // It is a var so a test can hand out a port it has occupied.
 var ephemeralFreePort = freeport.GetFreePort //nolint:gochecknoglobals
 
@@ -127,12 +127,12 @@ func PrepareWrConfig(t *testing.T) (jobqueue.ServerConfig, func()) {
 func getPorts(t *testing.T) (int, int) {
 	t.Helper()
 
-	clientPort, err := laneFreePort()
+	clientPort, err := LaneFreePort()
 	if err != nil {
 		t.Fatalf("getting free port failed: %s", err)
 	}
 
-	webPort, err := laneFreePort()
+	webPort, err := LaneFreePort()
 	if err != nil {
 		t.Fatalf("getting free port failed: %s", err)
 	}
@@ -140,18 +140,20 @@ func getPorts(t *testing.T) (int, int) {
 	return clientPort, webPort
 }
 
-// laneFreePort returns a port to bind. A global free-port picker (bind :0, note
-// the port, close it, hand it back) has a time-of-check to time-of-use race:
-// when many `go test` lanes run at once, two lanes can be handed the same
-// "free" port before either binds it, and one then fails to start ("address
-// already in use"). So when the Makefile runs a lane it sets WR_TEST_LANE, and
-// each lane draws from its own disjoint range (matching jobqueue's freeTestPort
-// so the two packages' lanes never overlap); within a lane the tests run
-// sequentially, so an incrementing counter never repeats a port before it would
-// wrap. WR_TEST_PORT_BASE lets the suite runner choose a fresh run-specific
-// base range. Falls back to the global picker when WR_TEST_LANE is unset,
-// bind-checking its ports the same way.
-func laneFreePort() (int, error) {
+// LaneFreePort returns a port nothing is listening on, for a test manager to
+// bind. A global free-port picker (bind :0, note the port, close it, hand it
+// back) has a time-of-check to time-of-use race: when many `go test` lanes run
+// at once, two lanes can be handed the same "free" port before either binds it,
+// and one then fails to start ("address already in use"); and since the port is
+// in the kernel's ephemeral range, any other process's :0 listener or outgoing
+// connection can be given it too. So when the Makefile runs a lane it sets
+// WR_TEST_LANE, and each lane draws from its own disjoint range below the
+// ephemeral range (matching jobqueue's freeTestPort so the two packages' lanes
+// never overlap); within a lane the tests run sequentially, so an incrementing
+// counter never repeats a port before it would wrap. WR_TEST_PORT_BASE lets the
+// suite runner choose a fresh run-specific base range. Falls back to the global
+// picker when WR_TEST_LANE is unset, bind-checking its ports the same way.
+func LaneFreePort() (int, error) {
 	laneStr := os.Getenv("WR_TEST_LANE")
 	if laneStr == "" {
 		return freeEphemeralPort()

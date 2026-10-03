@@ -26,18 +26,18 @@
 package cmd
 
 import (
-	"context"
 	"errors"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	clienttesting "github.com/VertebrateResequencing/wr/client/testing"
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
 	. "github.com/smartystreets/goconvey/convey"
@@ -260,16 +260,14 @@ func setManagerStopTestConfigPidFile(t *testing.T, content string) {
 	So(os.WriteFile(config.ManagerPidFile, []byte(content), 0o600), ShouldBeNil)
 }
 
-// closedLocalPort returns a localhost port nothing is listening on.
+// closedLocalPort returns a localhost port nothing is listening on. In a suite
+// lane it comes from the lane's port range, so no other process can take it
+// before a test's manager binds it.
 func closedLocalPort() string {
-	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "localhost:0")
+	port, err := clienttesting.LaneFreePort()
 	So(err, ShouldBeNil)
 
-	addr, ok := l.Addr().(*net.TCPAddr)
-	So(ok, ShouldBeTrue)
-	So(l.Close(), ShouldBeNil)
-
-	return strconv.Itoa(addr.Port)
+	return strconv.Itoa(port)
 }
 
 func TestManagerStopStalePidFile(t *testing.T) {
@@ -343,6 +341,53 @@ func TestDaemonStillRunning(t *testing.T) {
 		So(exited, ShouldBeTrue)
 		So(daemonStillRunning(pid, identity), ShouldBeFalse)
 	})
+}
+
+func TestManagerStopTestPortAvoidsEphemeralRange(t *testing.T) {
+	const (
+		lane     = 31
+		laneSpan = 200
+		portBase = 10000
+	)
+
+	t.Setenv("WR_TEST_LANE", strconv.Itoa(lane))
+	t.Setenv("WR_TEST_PORT_BASE", strconv.Itoa(portBase))
+
+	Convey("In a suite lane the stop tests' manager port is in the lane's range, below the ephemeral range", t, func() {
+		ephemeralStart := managerStopTestEphemeralStart()
+		laneStart := portBase + lane*laneSpan
+
+		for range 3 {
+			port, err := strconv.Atoi(closedLocalPort())
+			So(err, ShouldBeNil)
+			So(port, ShouldBeLessThan, ephemeralStart)
+			So(port, ShouldBeGreaterThanOrEqualTo, laneStart)
+			So(port, ShouldBeLessThan, laneStart+laneSpan)
+		}
+	})
+}
+
+// managerStopTestEphemeralStart returns the first port of the kernel's
+// ephemeral range, or the Linux default when it cannot be read.
+func managerStopTestEphemeralStart() int {
+	const linuxDefault = 32768
+
+	data, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range")
+	if err != nil {
+		return linuxDefault
+	}
+
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return linuxDefault
+	}
+
+	start, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return linuxDefault
+	}
+
+	return start
 }
 
 func TestManagerStopInvalidPidFile(t *testing.T) {
