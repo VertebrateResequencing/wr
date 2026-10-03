@@ -1850,6 +1850,11 @@ type Client struct {
 	teMutex    sync.Mutex // to protect Touch() from other methods during Execute()
 	timeout    time.Duration
 	restClient *http.Client
+
+	// restClientNoReuse is restClient with keep-alives disabled; see
+	// restHTTPClientNoReuse.
+	restClientNoReuse *http.Client
+
 	ServerInfo *ServerInfo
 	host       string
 	port       string

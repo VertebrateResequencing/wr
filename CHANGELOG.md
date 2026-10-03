@@ -89,10 +89,11 @@ project adheres to [Semantic Versioning](http://semver.org/).
   once the manager is back, instead of failing after `Timeout`. They give up
   after the manager's retry time (24h by default), or sooner if the context
   given to a new `Context` variant, such as `SubmitJobsContext`, is cancelled.
-  `GetSchedulerAlerts`, which reads the manager's web interface, still fails at
-  once. Other Go programs can get the same with the new
-  `jobqueue.Client.RetryWhileManagerUnreachable`; wr's own commands still fail
-  fast.
+  `GetSchedulerAlerts` keeps trying only while its request cannot have reached
+  the manager, since reading alerts dismisses them, and now also works after a
+  restart that gave the manager a new token. Other Go programs can get the
+  same with the new `jobqueue.Client.RetryWhileManagerUnreachable`; wr's own
+  commands still fail fast.
 - The Go client's `SubmitJobs` no longer returns `ErrDuplicateJobs` for jobs
   that only it added, when the manager stopped, or the connection dropped,
   after acting on its add but before replying, and the client sent the add

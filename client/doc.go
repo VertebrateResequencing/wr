@@ -40,37 +40,43 @@ New fails if it cannot reach the manager within SchedulerSettings.Timeout. A
 Timeout that is not positive means jobqueue.ClientDefaultConnectTimeout (2
 minutes) rather than no limit.
 
-Once connected, every call except GetSchedulerAlerts (which reads the manager's
-web interface) rides out the manager being down, as runners and waits do, and
-returns normally once the manager is back, without the program calling again. A
-request that cannot be sent within Timeout, or that the manager refuses because
-it is stopping or still recovering, is sent again after a wait that grows to
-the manager's RetryWait, logging warnings to SchedulerSettings.Logger while the
-manager stays unreachable. A request whose reply does not arrive within the
-larger of Timeout and a minute may have been acted on, so it is sent again only
-if that is safe: lookups, KillJobs, RemoveJobs, and submissions that skip
-complete jobs (SubmitJobsAndReturnIDs and SubmitJobsAndWait without
-RerunCompleted). Others, including SubmitJobs, which re-adds complete jobs, and
-the subscription WaitForJobs and SubmitJobsAndWait start their wait with, fail
-with mangos.ErrRecvTimeout. A call keeps trying for up to the manager's
-RetryTime (jobqueue.ServerTimings.RetryTime, 24h by default), so it can now
-take that long, and then returns the last error, such as mangos.ErrSendTimeout.
-An error that is the manager's answer, such as a bad request, is returned at
-once. WaitForJobs and the wait in SubmitJobsAndWait end with an error matching
-jobqueue.ErrSubscriptionClosed if they cannot reconnect within the manager's
-RetryTime.
+Once connected, every call rides out the manager being down, as runners and
+waits do, and returns normally once the manager is back, without the program
+calling again. A request that cannot be sent within Timeout, or that the
+manager refuses because it is stopping or still recovering, is sent again after
+a wait that grows to the manager's RetryWait, logging warnings to
+SchedulerSettings.Logger while the manager stays unreachable. A request whose
+reply does not arrive within the larger of Timeout and a minute may have been
+acted on, so it is sent again only if that is safe: lookups, KillJobs,
+RemoveJobs, and submissions that skip complete jobs (SubmitJobsAndReturnIDs and
+SubmitJobsAndWait without RerunCompleted). Others, including SubmitJobs, which
+re-adds complete jobs, and the subscription WaitForJobs and SubmitJobsAndWait
+start their wait with, fail with mangos.ErrRecvTimeout. A call keeps trying
+for up to the manager's RetryTime (jobqueue.ServerTimings.RetryTime, 24h by
+default), so it can now take that long, and then returns the last error, such
+as mangos.ErrSendTimeout. An error that is the manager's answer, such as a bad
+request, is returned at once. WaitForJobs and the wait in SubmitJobsAndWait end
+with an error matching jobqueue.ErrSubscriptionClosed if they cannot reconnect
+within the manager's RetryTime.
+
+GetSchedulerAlerts reads the manager's web interface instead, and reading the
+alerts dismisses them, so it is sent again only if none of it reached the
+manager, as when it could not connect, or if the manager rejected it while
+starting again, before writing its new token file. Any other failure, such as a
+dropped connection or a reply that does not arrive within the smaller of
+Timeout and 30 seconds, is returned at once.
 
 To give up sooner, use a call that takes a context: WaitForRunning,
 WaitForJobs, SubmitJobsAndWait, or the Context variant of any other call that
-talks to the manager, such as SubmitJobsContext for SubmitJobs
-(GetSchedulerAlerts has none). The call a Context variant is named after is
-that variant with context.Background(). Cancelling ctx, or its deadline
-passing, ends the ride-out with an error matching ctx's (errors.Is(err,
-context.Canceled), for example). An attempt to reach the manager in progress is
-not interrupted, so the call can return up to Timeout after ctx is done, or up
-to the reply deadline (the larger of Timeout and a minute) if the request had
-been sent. A Context variant does not otherwise check ctx: a call made with a
-ctx already done still makes one attempt.
+talks to the manager, such as SubmitJobsContext for SubmitJobs. The call a
+Context variant is named after is that variant with context.Background().
+Cancelling ctx, or its deadline passing, ends the ride-out with an error
+matching ctx's (errors.Is(err, context.Canceled), for example). An attempt to
+reach the manager in progress is not interrupted, so the call can return up to
+Timeout after ctx is done, or up to the reply deadline (the larger of Timeout
+and a minute) if the request had been sent. A Context variant does not
+otherwise check ctx: a call made with a ctx already done still makes one
+attempt.
 
 A submission in progress when the manager stops can be partly or wholly added,
 and is sent again once the manager is back. The manager then reports the jobs

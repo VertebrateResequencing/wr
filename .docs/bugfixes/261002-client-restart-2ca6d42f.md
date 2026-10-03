@@ -396,13 +396,31 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
     unknown or missing subscription id is still a failure": every way a
     subscription id becomes unknown (restart, unsubscribe, replacement on
     resubscribe, status websocket close, shutdown) is routine.
-- [ ] Scheduler.GetSchedulerAlerts goes over REST (jobqueue/client_rest.go),
+- [x] Scheduler.GetSchedulerAlerts goes over REST (jobqueue/client_rest.go),
   so it neither rides out an outage nor reloads the token: after a restart
   with a new token it likely fails with HTTP 401 until a mangos request
   reloads the token (restGet sends currentToken() and never reloads on 401;
   inferred from the code). Reading alerts dismisses issues, so it is not
   safe to resend after a response timeout.
   - Source: implementor of the outage-retry item.
+  - Red command: `timeout 900 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    go test -tags netgo -count 1 -timeout 20m ./client/ -run
+    '^TestSchedulerGetSchedulerAlertsAcrossManagerRestart$'`, exit 1:
+
+    ```
+    Line 661: Expected: nil
+    Actual: 'REST request returned unexpected status: GET /rest/v1/servers/ returned 401 Unauthorized: Invalid token'
+    Line 712: Expected '313.416µs' to be greater than or equal to '3s'
+    ```
+  - Fixed: on a 401 a client with a token file reloads it and resends once
+    (the manager rejects before acting); an opted-in client rides out an
+    outage through the shared rideOutOutage loop, but only for attempts
+    that net/http never wrote (httptrace GetConn without WroteHeaders,
+    sticky across net/http's own retries), and keeps retrying a 401 only
+    while the restarting manager has not yet written its token file (its
+    web interface starts first). The request ignores ctx cancellation once
+    sent. New GetSchedulerAlertsContext on Client and Scheduler. `wr status`
+    uses plain Connect and is unchanged.
 - [ ] developers/prodsim uses client.New, so since 90913194 its actors wait
   through manager outages (up to RetryTime) instead of erroring after
   Timeout; check prodsim (and #666's developers/soak analysers, if merged)
@@ -478,9 +496,17 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
   GetSchedulerAlerts (or other reader) running alongside a reconnecting
   WaitForJobs is a data race; this branch added more such writes.
   - Source: implementor of the REST alerts item.
-- [ ] net/http resends a GET on a reused kept-alive connection after a read
+- [x] net/http resends a GET on a reused kept-alive connection after a read
   error before the first response byte, so a warnings read the manager
   acted on (dismissing issues) and then lost could be resent inside
   net/http, dismissing issues the caller never saw.
   - Source: implementor of the REST alerts item (from net/http source;
     not reproduced).
+  - Reproduced in review: a kept-alive client whose second warnings request
+    was dropped got 3 warnings hits and no error (net/http resent it).
+  - Fixed with the item above: the warnings GET uses a client with
+    keep-alives off, so it never goes out on a reused connection and
+    net/http never resends it (shouldRetryRequest requires a reused
+    connection); the servers GET, which only reads, keeps keep-alive. Test:
+    two calls on one client, second warnings request dropped, exactly 2
+    hits and an error.

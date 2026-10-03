@@ -175,7 +175,7 @@ type jobqueueClient interface {
 		limit int, state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
 	GetLastCompletionTimeByRepGroupContext(ctx context.Context, repgroup string,
 		match jobqueue.RepGroupMatch) (map[string]time.Time, error)
-	GetSchedulerAlerts() (*jobqueue.SchedulerAlerts, error)
+	GetSchedulerAlertsContext(ctx context.Context) (*jobqueue.SchedulerAlerts, error)
 	DeleteContext(ctx context.Context, jes []*jobqueue.JobEssence) (int, error)
 	Disconnect() error
 }
@@ -324,7 +324,7 @@ func (p *pretendJobqueue) SubmittedJobs() []*jobqueue.Job {
 	return sj
 }
 
-func (p *pretendJobqueue) GetSchedulerAlerts() (*jobqueue.SchedulerAlerts, error) {
+func (p *pretendJobqueue) GetSchedulerAlertsContext(_ context.Context) (*jobqueue.SchedulerAlerts, error) {
 	return &jobqueue.SchedulerAlerts{}, nil
 }
 
@@ -1010,9 +1010,11 @@ func (s *Scheduler) NewJobFromJSON(spec *jobqueue.JobViaJSON) (*jobqueue.Job, er
 }
 
 // GetSchedulerAlerts returns the scheduler alerts currently shown by wr's web
-// UI, including dismissible scheduler issues and bad cloud servers.
+// UI, including dismissible scheduler issues and bad cloud servers. Reading the
+// issues dismisses them, so a request that may have reached the manager is not
+// sent again (see the package doc).
 func (s *Scheduler) GetSchedulerAlerts() (*jobqueue.SchedulerAlerts, error) {
-	return s.jq.GetSchedulerAlerts()
+	return s.GetSchedulerAlertsContext(context.Background())
 }
 
 func (s *Scheduler) defaultMissingRequirements(jobs []*jobqueue.Job) {
@@ -1094,6 +1096,12 @@ func (s *Scheduler) FindIncompleteJobsByRepGroupAndStateContext(ctx context.Cont
 func (s *Scheduler) GetLastCompletionTimeByRepGroupContext(ctx context.Context, repgroup string,
 	match jobqueue.RepGroupMatch) (map[string]time.Time, error) {
 	return s.jq.GetLastCompletionTimeByRepGroupContext(ctx, repgroup, match)
+}
+
+// GetSchedulerAlertsContext is GetSchedulerAlerts, except that cancelling ctx
+// stops it riding out the manager being unreachable (see the package doc).
+func (s *Scheduler) GetSchedulerAlertsContext(ctx context.Context) (*jobqueue.SchedulerAlerts, error) {
+	return s.jq.GetSchedulerAlertsContext(ctx)
 }
 
 // KillJobsContext is KillJobs, except that cancelling ctx stops it riding out

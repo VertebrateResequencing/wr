@@ -43,6 +43,7 @@ import (
 	"time"
 
 	clienttesting "github.com/VertebrateResequencing/wr/client/testing"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/inconshreveable/log15/v3"
@@ -718,6 +719,11 @@ func contextSchedulerCalls() map[string]func(context.Context, *Scheduler) error 
 
 			return err
 		},
+		"GetSchedulerAlertsContext": func(ctx context.Context, s *Scheduler) error {
+			_, err := s.GetSchedulerAlertsContext(ctx)
+
+			return err
+		},
 		"KillJobsContext": func(ctx context.Context, s *Scheduler) error {
 			return s.KillJobsContext(ctx, newJob(s))
 		},
@@ -725,6 +731,109 @@ func contextSchedulerCalls() map[string]func(context.Context, *Scheduler) error 
 			return s.RemoveJobsContext(ctx, newJob(s))
 		},
 	}
+}
+
+func TestSchedulerGetSchedulerAlertsAcrossManagerRestart(t *testing.T) {
+	Convey("Given a Scheduler connected to a manager that can be restarted", t, func() {
+		Convey("GetSchedulerAlerts works after a clean restart with a new token, with no other call between", func() {
+			m, cleanup := newRestartableManager(t, restartLongRetry)
+			defer cleanup()
+
+			s := newRestartScheduler()
+			defer s.Disconnect() //nolint:errcheck
+
+			_, err := s.GetSchedulerAlerts()
+			So(err, ShouldBeNil)
+
+			oldToken := m.token()
+
+			m.stop()
+			m.start()
+			So(m.token(), ShouldNotResemble, oldToken)
+
+			alerts, err := s.GetSchedulerAlerts()
+			So(err, ShouldBeNil)
+			So(alerts, ShouldNotBeNil)
+		})
+
+		Convey("a GetSchedulerAlerts made while it is down returns once it restarts with a new token", func() {
+			m, cleanup := newRestartableManager(t, restartLongRetry)
+			defer cleanup()
+
+			logged := &recordedLogs{}
+			logger := log15.New()
+			logger.SetHandler(logged)
+
+			s, err := New(SchedulerSettings{Deployment: testDeployment, Timeout: restartWaitTimeout, Logger: logger})
+			So(err, ShouldBeNil)
+
+			defer s.Disconnect() //nolint:errcheck
+
+			_, err = s.GetSchedulerAlerts()
+			So(err, ShouldBeNil)
+
+			m.stop()
+
+			got := callAsync(func() (*jobqueue.Job, error) {
+				_, errg := s.GetSchedulerAlerts()
+
+				return nil, errg
+			})
+
+			So(receiveWaitForRunningResult(got, restartDownTime).err, ShouldEqual, errSchedulerJobTimeout)
+
+			m.start()
+
+			So(receiveWaitForRunningResult(got, restartResultWait).err, ShouldBeNil)
+			So(logged.count(log15.LvlWarn, "manager unreachable; retrying request"), ShouldBeGreaterThanOrEqualTo, 1)
+			So(logged.count(log15.LvlInfo, "manager reachable again; retried request answered"), ShouldEqual, 1)
+		})
+
+		Convey("a GetSchedulerAlerts made while it stays down fails after about the manager's RetryTime", func() {
+			m, cleanup := newRestartableManager(t, restartShortRetry)
+			defer cleanup()
+
+			s := newRestartScheduler()
+			defer s.Disconnect() //nolint:errcheck
+
+			m.stop()
+
+			calledAt := time.Now()
+			_, err := s.GetSchedulerAlerts()
+			elapsed := time.Since(calledAt)
+
+			So(errors.Is(err, syscall.ECONNREFUSED), ShouldBeTrue)
+			So(elapsed, ShouldBeGreaterThanOrEqualTo, restartShortRetry)
+			So(elapsed, ShouldBeLessThan, restartShortRetry+3*restartWaitTimeout)
+		})
+
+		Convey("a plain jobqueue client, as wr status uses, fails at once while it is down, "+
+			"and is refused after it restarts with a new token", func() {
+			m, cleanup := newRestartableManager(t, restartLongRetry)
+			defer cleanup()
+
+			cfg := internal.ConfigLoadFromCurrentDir(context.Background(), testDeployment)
+			jq, err := jobqueue.Connect(cfg.ManagerHost+":"+cfg.ManagerPort, cfg.ManagerCAFile,
+				cfg.ManagerCertDomain, m.token(), restartWaitTimeout)
+			So(err, ShouldBeNil)
+
+			defer jq.Disconnect() //nolint:errcheck
+
+			m.stop()
+
+			calledAt := time.Now()
+			_, err = jq.GetSchedulerAlerts()
+
+			So(errors.Is(err, syscall.ECONNREFUSED), ShouldBeTrue)
+			So(time.Since(calledAt), ShouldBeLessThan, restartWaitTimeout)
+
+			m.start()
+
+			_, err = jq.GetSchedulerAlerts()
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "401")
+		})
+	})
 }
 
 // restartedWait is a WaitForRunning in progress against a restartableManager.

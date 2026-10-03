@@ -99,6 +99,42 @@ type outageRetry struct {
 	logCtx context.Context //nolint:containedctx // only its log handler is used, for warnings about outages
 }
 
+// rideOutOutage calls attempt, and while it reports that it failed only because
+// the manager could not be reached, calls it again after a backoff, logging
+// warnings about method as it goes. It returns the last attempt's error once
+// an attempt reports otherwise, or once the manager has been unreachable for
+// longer than its RetryTime. It gives up early, returning ctx's error joined to
+// the last attempt's, if ctx is done; an attempt in progress is not
+// interrupted.
+func (c *Client) rideOutOutage(ctx context.Context, retry *outageRetry, method string,
+	attempt func() (retryable bool, err error),
+) error {
+	outage := requestOutage{start: time.Now(), method: method, logCtx: retry.logCtx}
+	wait := outageBackoff(c.currentRetryWait())
+
+	for {
+		retryable, err := attempt()
+		if !retryable {
+			outage.recovered(err)
+
+			return err
+		}
+
+		retryTime := c.currentRetryTime()
+		outage.warn(err, retryTime)
+
+		if time.Since(outage.start) > retryTime {
+			return err
+		}
+
+		wait.Sleep(ctx)
+
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return errors.Join(ctxErr, err)
+		}
+	}
+}
+
 // requestRidingOutOutages is request() for a client that rides out outages
 // (see RetryWhileManagerUnreachable). It holds the client's lock only for each
 // attempt, not while waiting between them, so other requests are not held up
@@ -107,15 +143,14 @@ type outageRetry struct {
 func (c *Client) requestRidingOutOutages(ctx context.Context, retry *outageRetry,
 	cr *clientRequest,
 ) (*serverResponse, error) {
-	outage := requestOutage{start: time.Now(), method: cr.Method, logCtx: retry.logCtx}
-	wait := outageBackoff(c.currentRetryWait())
+	var sr *serverResponse
 
-	for {
-		sr, err := c.requestOnce(cr)
+	err := c.rideOutOutage(ctx, retry, cr.Method, func() (bool, error) {
+		var err error
+
+		sr, err = c.requestOnce(cr)
 		if !mayRetryDuringOutage(cr, err) {
-			outage.recovered(err)
-
-			return sr, err
+			return false, err
 		}
 
 		// the manager may have acted on the copy whose reply did not arrive
@@ -123,19 +158,14 @@ func (c *Client) requestRidingOutOutages(ctx context.Context, retry *outageRetry
 			cr.resent = true
 		}
 
-		retryTime := c.currentRetryTime()
-		outage.warn(err, retryTime)
+		return true, err
+	})
 
-		if time.Since(outage.start) > retryTime {
-			return sr, err
-		}
-
-		wait.Sleep(ctx)
-
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, errors.Join(ctxErr, err)
-		}
+	if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+		return nil, err
 	}
+
+	return sr, err
 }
 
 // outageBackoff returns the backoff between attempts at a request during an
@@ -219,7 +249,9 @@ func managerDidNotTakeRequest(err error) bool {
 // the job getters, Kill and Delete (whose counts can then be lower than the
 // jobs they acted on). Other requests, such
 // as an add that re-adds complete jobs, Reserve, Archive or Modify, return the
-// receive timeout at once.
+// receive timeout at once. GetSchedulerAlerts, which uses the manager's web
+// interface, is sent again only if it cannot have reached the manager, or the
+// manager was not yet ready for it (see its doc).
 //
 // The request keeps being retried until the manager has been unreachable for
 // longer than its RetryTime (ServerInfo.RetryTime, 24h by default), and then
