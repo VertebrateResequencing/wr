@@ -369,3 +369,11 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
   time.Duration(30000000000)`); either the resync can arrive before the
   reconnect adopts the new ServerInfo, or the test's read is unsynchronised.
   - Source: implementor of the context-variants item.
+- [ ] An add mangos resends after its pipe drops can re-add a job the first
+  copy queued and that has since completed, so it runs twice: SubmitJobs
+  (ignoreComplete false) re-adds complete jobs, and the pipe-loss resend
+  bypasses wr's own rule of not resending such adds after a receive
+  timeout. Implausible after a stop and restart (mangos redials every
+  100ms), more plausible when a live manager's reply is slow and the
+  connection loss is noticed tens of seconds later.
+  - Source: implementor and reviewer of the resent-add item.
