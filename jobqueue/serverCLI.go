@@ -605,14 +605,18 @@ func warnIfSlowDecode(ctx context.Context, requestBytes int, start time.Time, de
 //     also missing.
 //   - a waitForUpdates whose subscription was closed while the long poll was
 //     held, which is how every finished wait ends once the client unsubscribes
-//     (or a reconnect replaces the subscription). An unknown or missing
-//     subscription id is still a failure.
+//     (or a reconnect replaces the subscription).
+//   - a waitForUpdates naming a subscription this manager does not have, which
+//     is how a long-lived client's first poll after a manager restart arrives:
+//     it carries the previous manager's id, and the refusal makes the client
+//     resubscribe and catch up. Ids are random, so it cannot name another
+//     client's subscription. A missing subscription id is still a failure.
 func isRoutineClientRefusal(cr *clientRequest, srerr, qerr string) bool {
 	switch cr.Method {
 	case requestMethodAdd:
 		return srerr == ErrBadRequest && len(cr.Jobs) == 0 && cr.Env != nil
 	case requestMethodWaitForUpdates:
-		return qerr == errSubscriptionClosed.Error()
+		return qerr == errSubscriptionClosed.Error() || qerr == errUnknownSubscription.Error()
 	default:
 		return false
 	}

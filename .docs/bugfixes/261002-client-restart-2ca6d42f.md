@@ -363,7 +363,7 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
     one request goes unanswered through the at least 1s the manager is up
     between them; measured, in-flight requests were answered 93-140ms after
     each restart. No change made.
-- [ ] After a manager restart, a subscription's first poll can reach the new
+- [x] After a manager restart, a subscription's first poll can reach the new
   manager with the old manager's subscription id, which the new manager
   logs at error level. Check whether the client then resubscribes without
   losing updates, and whether the log is noise for an expected event.
@@ -377,6 +377,24 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
     t=2026-10-02T20:14:02+0100 lvl=info msg="wr manager  started on [host]:51962, pid 2655220"
     t=2026-10-02T20:14:02+0100 lvl=eror msg="Server handle client request error" err="jobqueue waitForUpdates(): unknown subscription" caller=clog.go:344
     ```
+  - Red command: `timeout 900 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    go test -tags netgo -count 1 -timeout 20m ./jobqueue/ -run
+    '^(TestClientRequestErrorLogLevel|TestSubscriptionStaleIDResync)$'`,
+    exit 1: `Expected '... lvl=eror msg="Server handle client request
+    error" err="jobqueue waitForUpdates(): unknown subscription"' NOT to
+    contain substring 'lvl=eror'`.
+  - Client recovery was already correct: the poll error leads to a
+    resubscribe, a resync marker and the catch-up updates; new
+    TestSubscriptionStaleIDResync covers a stale id against a restarted
+    manager (it fails if the client gives up on that reply).
+  - Fixed: isRoutineClientRefusal (jobqueue/serverCLI.go) logs a
+    waitForUpdates refused for an unknown subscription id at debug; the
+    client still gets ErrBadRequest, and a missing id stays an error. This
+    reverses, for unknown ids only, the ruling in
+    `.docs/bugfixes/260927-benign-actions-logged-as-errors.md` that "an
+    unknown or missing subscription id is still a failure": every way a
+    subscription id becomes unknown (restart, unsubscribe, replacement on
+    resubscribe, status websocket close, shutdown) is routine.
 - [ ] Scheduler.GetSchedulerAlerts goes over REST (jobqueue/client_rest.go),
   so it neither rides out an outage nor reloads the token: after a restart
   with a new token it likely fails with HTTP 401 until a mangos request

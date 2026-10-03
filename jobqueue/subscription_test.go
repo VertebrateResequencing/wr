@@ -1762,6 +1762,81 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 	})
 }
 
+// TestSubscriptionStaleIDResync covers a subscription whose poll reaches a
+// restarted manager still carrying the previous manager's subscription id, as
+// when mangos resends an in-flight poll over the socket it redialled: the new
+// manager answers "unknown subscription", and the client must resubscribe and
+// deliver the catch-up for what changed while it was not subscribed.
+func TestSubscriptionStaleIDResync(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A poll answered with unknown subscription by a restarted manager resyncs with a catch-up update", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionReconnectTimings(&serverConfig, 250*time.Millisecond, subscriptionRestartRetryTime)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			server.Stop(ctx, true)
+		}()
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		ids, err := jq.AddAndReturnIDs(subscriptionTestJobs("subscription-stale-id", standardReqs, 1), envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 1)
+
+		job, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(job.Key(), ShouldEqual, ids[0])
+		So(jq.Started(job, os.Getpid()), ShouldBeNil)
+
+		resp, err := jq.request(&clientRequest{Method: requestMethodSubscribe, Keys: ids})
+		So(err, ShouldBeNil)
+
+		staleID := resp.SubscriptionID
+
+		server.Stop(ctx, true)
+		server = restartSubscriptionTestServer(ctx, serverConfig)
+		So(waitUntilRecovered(server), ShouldBeTrue)
+
+		_, known := server.clientSubscription(staleID)
+		So(known, ShouldBeFalse)
+
+		So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+		// a Subscription built on the old id stands in for one whose poll
+		// mangos resent to the restarted manager: its first poll carries that
+		// id, which only the stopped manager knew.
+		dialAddr := jq.subscriptionDialAddr()
+		sock, err := dialSubscriptionSocket(dialAddr, jq.args[1], jq.args[2],
+			serverSubscriptionHoldTime+subscriptionSocketRecvMargin)
+		So(err, ShouldBeNil)
+
+		sub := newSubscription(jq, sock, staleID, dialAddr, ids, "")
+
+		go sub.poll(ctx, nil)
+
+		defer sub.Unsubscribe()
+
+		updates, ok := collectSubscriptionUpdates(sub, 2)
+		So(ok, ShouldBeTrue)
+		So(updates, ShouldHaveLength, 2)
+		So(updates[0].Kind, ShouldEqual, JobUpdateResync)
+		So(updates[1].Kind, ShouldEqual, JobUpdateTerminal)
+		So(updates[1].Key, ShouldEqual, ids[0])
+		So(updates[1].State, ShouldEqual, JobStateComplete)
+		So(sub.Err(), ShouldBeNil)
+		So(subscriptionUpdatesStillOpen(sub, 150*time.Millisecond), ShouldBeTrue)
+	})
+}
+
 func TestSubscriptionReconnectAdoptsManagerTimings(t *testing.T) {
 	if runnermode || servermode {
 		return

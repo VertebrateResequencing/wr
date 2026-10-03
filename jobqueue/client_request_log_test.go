@@ -165,7 +165,10 @@ func TestClientRequestErrorLogLevel(t *testing.T) {
 			So(out, ShouldContainSubstring, errSubscriptionClosed.Error())
 		})
 
-		Convey("a wait on an unknown subscription is still logged as an error", func() {
+		Convey("a wait on an unknown subscription is still refused, but not logged as an error", func() {
+			// a long-lived client's first poll after a manager restart carries
+			// the previous manager's subscription id; the refusal makes the
+			// client resubscribe.
 			out, herr := handle(&clientRequest{
 				Method:         requestMethodWaitForUpdates,
 				SubscriptionID: "sub-unknown",
@@ -173,7 +176,11 @@ func TestClientRequestErrorLogLevel(t *testing.T) {
 			})
 
 			So(herr.Error(), ShouldContainSubstring, errUnknownSubscription.Error())
-			So(out, ShouldContainSubstring, clientRequestLogErrorLvl)
+			So(sock.response().Err, ShouldEqual, ErrBadRequest)
+
+			So(out, ShouldNotContainSubstring, clientRequestLogErrorLvl)
+			So(out, ShouldContainSubstring, clientRequestLogDebugLvl)
+			So(out, ShouldContainSubstring, errUnknownSubscription.Error())
 		})
 
 		Convey("a wait without a subscription id is still logged as an error", func() {
