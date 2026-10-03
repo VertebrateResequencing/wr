@@ -4643,7 +4643,8 @@ prodsim_reap_local() {
 
 cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (preserves DB across restart); WRDEV_DEBUG=1 adds --debug
   need_bin; ensure_config
-  assert_isolated production "$PROD_PORT" "$PROD_WEB" "$PROD_RUN"
+  # in a subshell, so a refusal is a failed return and callers' abort paths run
+  ( assert_isolated production "$PROD_PORT" "$PROD_WEB" "$PROD_RUN" ) || return 1
   local sched="${1:-local}"
   local dbg=""; [ "${WRDEV_DEBUG:-0}" = "1" ] && dbg="--debug"
   echo "starting ISOLATED prod-mode manager (-s $sched${dbg:+ $dbg}) on :$PROD_PORT / web :$PROD_WEB"
