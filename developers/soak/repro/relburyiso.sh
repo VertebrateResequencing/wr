@@ -14,6 +14,9 @@ set -u
 [ $# -ge 1 ] || { echo "usage: relburyiso.sh <killDelayMs>..." >&2; exit 2; }
 here=$(cd "$(dirname "$0")" && pwd)
 W=${WRDEV:-$(git -C "$here" rev-parse --show-toplevel)/developers/wrdev.sh}
+# pstart <sched> <lines> runs wrdev.sh prod-start, showing its last lines, and
+# stops the repro if it failed (such as a refused isolation check)
+pstart() { $W prod-start "$1" | tail -"$2"; [ "${PIPESTATUS[0]}" = 0 ] || { echo "wrdev.sh prod-start failed; stopping" "(LSF may still have ${JOBP}* jobs)" >&2; exit 1; }; }
 read -r DEV_PORT DEV_WEB PROD_PORT PROD_WEB <<< "${REPRO_PORTS:-51876 51877 51878 51879}"
 export WRDEV_ROOT=${REPRO_ROOT:?set REPRO_ROOT to a scratch directory}/relburyiso DEV_PORT DEV_WEB PROD_PORT PROD_WEB
 command -v bjobs >/dev/null || { echo "relburyiso.sh needs LSF (bjobs) on PATH" >&2; exit 1; }
@@ -37,7 +40,7 @@ chmod 755 "$WRDEV_ROOT/wr"
 cd "$WRDEV_ROOT/work" || exit 1; export WR_CONFIG_DIR=$WRDEV_ROOT/config
 WR=$WRDEV_ROOT/wr R=$WRDEV_ROOT/relbury D=$WRDEV_ROOT
 log() { echo "$(date +%s%3N) $tag $*" >> $R/driver.log; }
-start() { local t0; t0=$(date +%s%3N); $W prod-start lsf | tail -1
+start() { local t0; t0=$(date +%s%3N); pstart lsf 1
   echo "$(date +%s)	start	rc=0	pid=$(cat $D/.wr-prod_production/pid)	ms=$(( $(date +%s%3N) - t0 ))	$1" >> $D/restarts.tsv; }
 start initial
 for kd in "$@"; do

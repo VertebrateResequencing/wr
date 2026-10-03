@@ -11,6 +11,9 @@ set -u
 rs=${1:?usage: rundepkill.sh <restart:0|1|2|3>}
 here=$(cd "$(dirname "$0")" && pwd)
 W=${WRDEV:-$(git -C "$here" rev-parse --show-toplevel)/developers/wrdev.sh}
+# pstart <sched> <lines> runs wrdev.sh prod-start, showing its last lines, and
+# stops the repro if it failed (such as a refused isolation check)
+pstart() { $W prod-start "$1" | tail -"$2"; [ "${PIPESTATUS[0]}" = 0 ] || { echo "wrdev.sh prod-start failed; stopping" >&2; exit 1; }; }
 read -r DEV_PORT DEV_WEB PROD_PORT PROD_WEB <<< "${REPRO_PORTS:-51876 51877 51878 51879}"
 export WRDEV_ROOT=${REPRO_ROOT:?set REPRO_ROOT to a scratch directory}/rundepkill$rs DEV_PORT DEV_WEB PROD_PORT PROD_WEB
 # the root is wiped below: never while a manager or runner still runs its binary
@@ -18,7 +21,7 @@ pgrep -f "$WRDEV_ROOT/wr" >/dev/null && { echo "a process is running $WRDEV_ROOT
 unset $(compgen -v | grep '^OS_')
 rm -rf "$WRDEV_ROOT"; mkdir -p "$WRDEV_ROOT/work"; cp "${REPRO_WR:?set REPRO_WR to a wr binary}" "$WRDEV_ROOT/wr"
 cd "$WRDEV_ROOT/work" || exit 1; export WR_CONFIG_DIR=$WRDEV_ROOT/config
-$W prod-start local | tail -1
+pstart local 1
 WR=$WRDEV_ROOT/wr M=$WRDEV_ROOT/marks G=rdg$$
 job() { echo "echo S $1 \$(date +%s%3N) \$\$ >> $M; sleep $2; echo E $1 \$(date +%s%3N) \$\$ >> $M"; }
 add() { timeout 60 $WR add --deployment production --retries 0 -m 100M -t 2m "$@" 2>&1 | tail -1; }
@@ -41,7 +44,7 @@ if [ "$rs" != 0 ]; then
   # wr manager stop stops whichever manager wr conf resolves, so check it is ours
   (SOAK_ROOT=$WRDEV_ROOT; . "$here/../config.sh"; soak_isolated) \
     || { echo "the isolation check failed (see above, or wr conf); not stopping the manager with wr manager stop" >&2; $W prod-stop | head -1; exit 1; }
-  timeout 300 $WR manager stop --deployment production 2>&1 | tail -1; sleep 2; $W prod-start local | tail -1; sleep 5
+  timeout 300 $WR manager stop --deployment production 2>&1 | tail -1; sleep 2; pstart local 1; sleep 5
   echo "after a clean restart:"; st
 fi
 sleep 30; echo "marks:"; cat $M
