@@ -418,3 +418,8 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
   100ms), more plausible when a live manager's reply is slow and the
   connection loss is noticed tens of seconds later.
   - Source: implementor and reviewer of the resent-add item.
+- [ ] `wr lsf bsub` (cmd/lsf.go ~239-246) prints "Duplicate command
+  specified. Job not submitted." and exits non-zero when its add was resent
+  after a dropped connection and the first copy had queued the job
+  (inserts 0), ignoring AddDuplicates.Resent().
+  - Source: reviewer of the rerun-add resend item.
