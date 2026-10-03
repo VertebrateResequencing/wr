@@ -115,7 +115,9 @@ speed-full:
 # passes --new-from-rev=<rev>, which wins. golangci-lint lints the whole tree
 # with only a warning when the baseline does not resolve, so check it first.
 # The space-separated --new-from-rev <rev> form is refused, because the check
-# could not tell which rev golangci-lint will use.
+# could not tell which rev golangci-lint will use. Formatting is checked over
+# the whole tree first, because new-from-rev hides formatter drift on unchanged
+# lines, such as a new struct field misaligning its untouched neighbours.
 LINT_BASE_REV = $(lastword $(shell sed -n 's/^[[:space:]]*new-from-rev:[[:space:]]*//p' .golangci.yml) \
 	$(patsubst --new-from-rev=%,%,$(filter --new-from-rev=%,${GOLANGCI_LINT_ARGS})))
 
@@ -125,6 +127,9 @@ lint:
 	@git rev-parse --verify --quiet '$(LINT_BASE_REV)^{commit}' >/dev/null || { \
 		echo "make lint: lint baseline '$(LINT_BASE_REV)' is not a commit in this clone." >&2; \
 		echo "Run 'git fetch origin', or choose a baseline with GOLANGCI_LINT_ARGS=--new-from-rev=<rev>." >&2; \
+		exit 1; }
+	@golangci-lint fmt --diff || { \
+		echo "make lint: the files above are not formatted; run 'golangci-lint fmt' to fix them." >&2; \
 		exit 1; }
 	@golangci-lint run ${GOLANGCI_LINT_ARGS}
 

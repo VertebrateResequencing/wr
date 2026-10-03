@@ -17,7 +17,7 @@
   - Seen on `c9d9c5fa`. Already fixed on this branch's base `6ec427cd`
     (#660), which defines it in `jobqueue/server_startup_test.go`:
     `GOOS=darwin go vet ./jobqueue/` exits 0. Nothing to do here.
-- [ ] `gofmt -l jobqueue/` lists `jobqueue/modify_validation_test.go` and
+- [x] `gofmt -l jobqueue/` lists `jobqueue/modify_validation_test.go` and
   `jobqueue/server.go` as not gofmt-formatted (a struct field alignment in
   server.go's depGroups and a composite literal in the test). `make lint` does
   not flag them.
@@ -30,6 +30,16 @@
     issues on changed lines. The drifted lines (server.go `depGroups`,
     from `4e5739fc`, already on master) were unchanged; a neighbouring field
     added in `c9d9c5fa` broke their alignment.
+  - Fixed: formatted both files with `golangci-lint fmt`, and the `make lint`
+    target now runs a whole-tree `golangci-lint fmt --diff` (the configured
+    gci and goimports formatters, not baseline-scoped) before
+    `golangci-lint run`, failing with a pointer to `golangci-lint fmt`. CI
+    runs `make lint`, so it gets the check too. Files: `Makefile`,
+    `jobqueue/server.go`, `jobqueue/modify_validation_test.go`.
+  - Green: `golangci-lint fmt --diff` exits 0; `make lint` exits 0. With a
+    longer const added to the block in `queue/queue.go` (misaligning its
+    unchanged neighbours), `golangci-lint run ./queue/...` still reported
+    0 issues while `make lint` failed at the format step (exit 2).
 - [ ] Recurring flake TestManagerStopWhileShuttingDown in cmd: "helper
   manager did not become ready" after 5.06s (helper exited early), seen
   2026-10-02 in `make test`. Earlier record in
