@@ -351,3 +351,9 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
   still report outages meaningfully, e.g. as time blocked rather than
   errors, and adjust here if needed.
   - Source: coordinator.
+- [ ] TestSubscriptionReconnectAdoptsManagerTimings (added by e89991b8) is
+  flaky: 2 of 6 runs fail reading jq.ServerInfo.RetryTime right after the
+  resync update (`Line 1834: Expected: time.Duration(31000000000) Actual:
+  time.Duration(30000000000)`); either the resync can arrive before the
+  reconnect adopts the new ServerInfo, or the test's read is unsynchronised.
+  - Source: implementor of the context-variants item.
