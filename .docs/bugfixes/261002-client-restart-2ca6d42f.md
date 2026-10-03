@@ -490,12 +490,24 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
     submitted" line. ErrResentAddSkippedComplete still dies. The client
     tests' reply-dropping proxy moved to internal/replyproxy (test support,
     not imported by the wr binary) so cmd tests can use it.
-- [ ] Client.ServerInfo is read without the client lock (restURL in
+- [x] Client.ServerInfo is read without the client lock (restURL in
   jobqueue/client_rest.go, subscriptionDialAddr, the client package) while a
   subscription reconnect or resubscribe replaces it under the lock, so a
   GetSchedulerAlerts (or other reader) running alongside a reconnecting
   WaitForJobs is a data race; this branch added more such writes.
   - Source: implementor of the REST alerts item.
+  - Red command: `timeout 1500 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    CGO_ENABLED=1 go test -race -tags netgo -count 1 -timeout 20m
+    ./jobqueue/ -run '^TestClientServerInfoAcrossReconnect$'`, exit 1:
+    `WARNING: DATA RACE` between restURL (client_rest.go, from
+    GetSchedulerAlerts) and the ServerInfo Client.reconnect installs.
+  - Fixed: a leaf serverInfoMu guards replacing ServerInfo after Connect;
+    new exported Client.CurrentServerInfo returns a copy under it; restURL,
+    subscriptionDialAddr and schedulerName use it; adoptServerInfo swaps it
+    and refreshes the timings under that lock. The field stays, documented.
+    cmd readers run before any subscription and are unchanged. The test's
+    many-readers case kills the unlocked-restURL mutant in 10 of 10 separate
+    -race processes.
 - [x] net/http resends a GET on a reused kept-alive connection after a read
   error before the first response byte, so a warnings read the manager
   acted on (dismissing issues) and then lost could be resent inside

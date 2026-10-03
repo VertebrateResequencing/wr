@@ -231,16 +231,17 @@ func (c *Client) reloadTokenUnlocked(rejected []byte) bool {
 }
 
 func (c *Client) restURL(endpoint string) (string, error) {
-	if c.ServerInfo == nil || c.ServerInfo.WebPort == "" {
+	si := c.CurrentServerInfo()
+	if si == nil || si.WebPort == "" {
 		return "", errSchedulerAlertsNoServerInfo
 	}
 
 	host := c.host
 	if host == "" {
-		host = c.ServerInfo.Host
+		host = si.Host
 	}
 
-	return "https://" + net.JoinHostPort(host, c.ServerInfo.WebPort) + endpoint, nil
+	return "https://" + net.JoinHostPort(host, si.WebPort) + endpoint, nil
 }
 
 func (c *Client) restHTTPClient() *http.Client {

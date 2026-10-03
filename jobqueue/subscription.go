@@ -967,8 +967,8 @@ func (c *Client) fetchSeenTerminalJobs(keys []string, seen map[string]JobState) 
 func (c *Client) subscriptionDialAddr() string {
 	dialAddr := c.args[0]
 
-	if c.ServerInfo != nil && c.ServerInfo.Addr != "" {
-		dialAddr = c.ServerInfo.Addr
+	if si := c.CurrentServerInfo(); si != nil && si.Addr != "" {
+		dialAddr = si.Addr
 	}
 
 	return dialAddr
@@ -1003,7 +1003,7 @@ func (c *Client) reconnect(timeout time.Duration) error {
 	c.Lock()
 	oldSock := c.sock
 	c.sock = newClient.sock
-	c.adoptServerInfoLocked(newClient.ServerInfo)
+	c.adoptServerInfo(newClient.ServerInfo)
 	c.Unlock()
 
 	if oldSock != nil {

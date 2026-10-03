@@ -1906,7 +1906,7 @@ func TestSubscriptionReconnectAdoptsManagerTimings(t *testing.T) {
 		updates, ok := collectSubscriptionUpdates(sub, 1)
 		So(ok, ShouldBeTrue)
 		So(updates[0].Kind, ShouldEqual, JobUpdateResync)
-		So(jq.ServerInfo.RetryTime, ShouldEqual, newRetryTime)
+		So(jq.CurrentServerInfo().RetryTime, ShouldEqual, newRetryTime)
 
 		return jq
 	}
@@ -2007,7 +2007,7 @@ func TestSubscriptionReconnectAdoptsManagerTimings(t *testing.T) {
 		update := receiveSubscriptionUpdate(sub, subscriptionUpdateWait)
 		So(update, ShouldNotBeNil)
 		So(update.Kind, ShouldEqual, JobUpdateResync)
-		So(jq.ServerInfo.RetryTime, ShouldEqual, newRetryTime)
+		So(jq.CurrentServerInfo().RetryTime, ShouldEqual, newRetryTime)
 		So(jq.currentTouchInterval(), ShouldEqual, newTouchInterval)
 		So(jq.currentRetryWait(), ShouldEqual, newRetryWait)
 		So(jq.currentRetryTime(), ShouldEqual, newRetryTime)

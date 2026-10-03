@@ -1165,19 +1165,30 @@ func (c *Client) currentRetryTime() time.Duration {
 }
 
 // adoptServerInfo makes si, from the manager this client now talks to, this
-// client's ServerInfo, refreshing the timings derived from it.
+// client's ServerInfo, refreshing the timings derived from it. It may be called
+// with or without the client's lock held.
 func (c *Client) adoptServerInfo(si *ServerInfo) {
-	c.Lock()
-	defer c.Unlock()
+	c.serverInfoMu.Lock()
+	defer c.serverInfoMu.Unlock()
 
-	c.adoptServerInfoLocked(si)
-}
-
-// adoptServerInfoLocked is adoptServerInfo for a caller holding the client's
-// lock.
-func (c *Client) adoptServerInfoLocked(si *ServerInfo) {
 	c.adoptServerTimings(c.ServerInfo, si)
 	c.ServerInfo = si
+}
+
+// CurrentServerInfo returns a copy of what this client knows of the manager it
+// talks to, or nil if it knows nothing. Unlike reading ServerInfo, it is safe to
+// call while a subscription is reconnecting to a restarted manager.
+func (c *Client) CurrentServerInfo() *ServerInfo {
+	c.serverInfoMu.Lock()
+	defer c.serverInfoMu.Unlock()
+
+	if c.ServerInfo == nil {
+		return nil
+	}
+
+	si := *c.ServerInfo
+
+	return &si
 }
 
 // adoptServerTimings replaces the timings this client derived from oldSI with
@@ -1855,10 +1866,18 @@ type Client struct {
 	// restHTTPClientNoReuse.
 	restClientNoReuse *http.Client
 
-	ServerInfo *ServerInfo
-	host       string
-	port       string
-	args       []string // allowing internal reconnects
+	// ServerInfo describes the manager this client connected to. A
+	// subscription that rides out a manager restart (as AddAndWait's does)
+	// replaces it with the restarted manager's, so code that reads it while
+	// such a subscription may be reconnecting must call CurrentServerInfo()
+	// instead. Replacing it after Connect() is guarded by serverInfoMu, not the
+	// client's main lock, since requests hold that for their whole round trip
+	// and a reader such as GetSchedulerAlerts must not wait behind them.
+	ServerInfo   *ServerInfo
+	serverInfoMu sync.Mutex
+	host         string
+	port         string
+	args         []string // allowing internal reconnects
 
 	// token is what the client authenticates with. It is guarded by tokenMu,
 	// not the client's main lock, because reconnects and subscription polls
@@ -4529,8 +4548,8 @@ func noRetriesTimeExceeded(job *Job) bool {
 
 // schedulerName returns the configured scheduler name, or "" if unknown.
 func (c *Client) schedulerName() string {
-	if c.ServerInfo != nil {
-		return c.ServerInfo.Scheduler
+	if si := c.CurrentServerInfo(); si != nil {
+		return si.Scheduler
 	}
 
 	return ""
