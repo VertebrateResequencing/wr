@@ -1,9 +1,9 @@
 # developers/
 
-Developer tooling for reliability work on wr. **Not part of the shipped binary
-or the test suite.** Apart from shell scripts it holds the Go commands
+Developer tooling for reliability work on wr. **Not part of the shipped
+binary.** Apart from shell scripts it holds the Go commands
 `prodsim/` and `soak/*/`. `make lint` lints them and `go build ./...` compiles
-them, but they have no tests, so `make test` runs nothing from them.
+them. Only `prodsim/` has tests, which `make test` runs.
 
 Start with [`../DEVELOPERS.md`](../DEVELOPERS.md), then use `wrdev.sh`:
 
@@ -61,7 +61,15 @@ Each run writes `$WRDEV_ROOT/prodsim-<epoch>/`:
 - `events.tsv`, `restarts.tsv`, `profiles/` and a copy of the manager log
 - `markers/<host>.tsv`: a start and an end line, with the real exit code, for
   every run of every job, so a job that ran twice can be counted
-- `report.txt`: the output of `prodsim -report`
+- `report.txt`: the output of `prodsim -report`: per client call, its count,
+  errors, latency percentiles, and how many calls took at least the Go
+  clients' 2 minute Timeout and the time spent in them
+
+prodsim's Go client calls (the `client` package's Scheduler) wait through a
+manager restart, as `wr runner` does, so an outage shows in `report.txt` as
+their slow calls rather than as errors. They stop waiting when the run ends,
+at most a Timeout later. The `wr` commands it runs do not wait like that, so
+their calls still fail during an outage.
 
 The soak is for finding problems, not a gate. It exits non-zero only if it
 could not start or measured nothing; a person reads `report.txt`.

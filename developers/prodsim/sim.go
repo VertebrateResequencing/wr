@@ -285,7 +285,7 @@ func (s *sim) newScheduler(ctx context.Context, actor string) *client.Scheduler 
 			Deployment: s.cfg.deployment,
 			Cwd:        s.cfg.workDir,
 			Queue:      s.cfg.queue,
-			Timeout:    clientTimeout,
+			Timeout:    s.cfg.clientTimeout,
 			Logger:     log15.New(),
 		})
 	})
@@ -295,7 +295,7 @@ func (s *sim) newScheduler(ctx context.Context, actor string) *client.Scheduler 
 // ends (nil).
 func (s *sim) newJQ(ctx context.Context, actor string) *jobqueue.Client {
 	return retryConnect(ctx, s, actor, "connect", func() (*jobqueue.Client, error) {
-		return jobqueue.ConnectUsingConfig(ctx, s.cfg.deployment, clientTimeout)
+		return jobqueue.ConnectUsingConfig(ctx, s.cfg.deployment, s.cfg.clientTimeout)
 	})
 }
 
@@ -333,10 +333,12 @@ func (s *sim) jobCmd(kind, id string, secs float64, memMB, failPct, padBytes int
 }
 
 // submit adds jobs, timed as actor's op; duplicates are not an error, since
-// re-adding live jobs is what several production clients do.
-func (s *sim) submit(actor, op string, sch *client.Scheduler, jobs []*jobqueue.Job) error {
+// re-adding live jobs is what several production clients do. Like every
+// Scheduler call an actor makes, it waits through a manager outage, but only
+// until ctx, the run, ends.
+func (s *sim) submit(ctx context.Context, actor, op string, sch *client.Scheduler, jobs []*jobqueue.Job) error {
 	err := s.timed(actor, op, func() (int, error) {
-		err := sch.SubmitJobs(jobs)
+		err := sch.SubmitJobsContext(ctx, jobs)
 		if errors.Is(err, client.ErrDuplicateJobs) {
 			err = nil
 		}

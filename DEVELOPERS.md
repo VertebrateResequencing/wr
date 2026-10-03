@@ -6,10 +6,10 @@ whole history to know what to (not) do. Read this before changing job
 scheduling, the RPC server, the status web feed, or the LSF scheduler.
 
 > This file and the `developers/` directory are **developer tooling and
-> guidance, not part of the shipped binary or the test suite**. `developers/`
-> holds shell scripts and one Go command, `developers/prodsim`. `make lint`
-> lints prodsim and `go build ./...` compiles it, but it has no tests, so
-> `make test` runs nothing from it.
+> guidance, not part of the shipped binary**. `developers/` holds scripts,
+> the Go command `developers/prodsim` and the Go soak helpers. `make lint`
+> lints them and `go build ./...` compiles them; `make test` runs prodsim's
+> tests, the only ones there.
 
 Helper: `developers/wrdev.sh` (run `developers/wrdev.sh help`). It encodes the
 safe-testing rules below so you don't have to remember them.

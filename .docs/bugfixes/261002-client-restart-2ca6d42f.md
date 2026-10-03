@@ -4,6 +4,14 @@
 - Base: origin/develop at 6ec427cd
 - Queue owner: client-restart-950a7a96, this checklist
 
+## Delivery queue
+
+- PR #665 (client-restart-950a7a96 -> develop), no dependencies. Remote head
+  25ff030c; local 30 commits ahead, 0 behind origin/develop (261004).
+  Status: all checklist items done; prodsim outage reporting committed.
+  Waits on: full lint/test/race, CHANGELOG, push, pr-resolver. Next: run
+  the branch's quality gates.
+
 ## Investigation
 
 Owner question: `wr runner` survives the manager going down and coming back
@@ -421,12 +429,46 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
     web interface starts first). The request ignores ctx cancellation once
     sent. New GetSchedulerAlertsContext on Client and Scheduler. `wr status`
     uses plain Connect and is unchanged.
-- [ ] developers/prodsim uses client.New, so since 90913194 its actors wait
+- [x] developers/prodsim uses client.New, so since 90913194 its actors wait
   through manager outages (up to RetryTime) instead of erroring after
   Timeout; check prodsim (and #666's developers/soak analysers, if merged)
   still report outages meaningfully, e.g. as time blocked rather than
   errors, and adjust here if needed.
   - Source: coordinator.
+  - Red commands: `timeout 900 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    go test -tags netgo -count 1 ./developers/prodsim/ -run
+    '^TestActorEndsWithTheRunWhileTheManagerIsDown$'` with submit calling
+    plain SubmitJobs, exit 1: `Expected '1m1.20277354s' to be less than
+    '4s'` (the add rode out the outage until RetryTime, ignoring the run's
+    end); `-run '^TestReportShowsCallsBlockedByAnOutage$'` against the old
+    report.go, exit 1: `Expected: "slow" Actual: "p50"`.
+  - Fixed: every Scheduler call an actor makes takes the run's ctx
+    (SubmitJobsContext via submit, the Find*, GetLastCompletionTime and
+    RemoveJobs Context variants; SubmitJobsAndWait already took one), so
+    actors end with the run. Connecting (client.New, jobqueue
+    ConnectUsingConfig) and the raw jobqueue client (setlimit, sampler pings)
+    do not ride out outages and are unchanged; the `wr` CLI actors still
+    fail during one. report.txt gains slow and slow_s columns: calls, failed
+    or not, that took at least the 2 minute Timeout (what failed before,
+    and what a call blocked through an outage now takes), and the seconds
+    in them; ops slow by design (spikeExempt: submit_and_wait,
+    status_portal_summary) count 0. `prodsim -report` on soak7 and soak8
+    runs renders them (soak7: the add_put, add_fofn, add_ctr and
+    add_portal_dedupe Timeout failures each show as slow, 120s).
+  - The new sim test was flaky under -race (1 of ~55): an add the stop cut
+    off mid-request waits for its reply for the 60s ClientMinRequestTimeout
+    floor, not the 1s test Timeout (reproduced 2 of 3 with a 1ms sim
+    minute). prodsim's real 2 minute Timeout is above the floor, so the test
+    lowers the floor to its Timeout; then 10 of 10 with a 1ms sim minute,
+    and -count 20 plain and race green (about 1.2s a run).
+  - Checked developers/soak: no analyser reads calls.tsv, report.txt or
+    client call errors. Outage windows come from restarts.tsv (latency.py,
+    markers.py, doubles.py, rundepcheck.py, starttimes.py); runnerlogs.py
+    reads `wr runner` logs and the shell helpers run the `wr` CLI, neither
+    of which uses client.New. None needed changing.
+  - Docs: developers/README.md describes the new columns and that Go client
+    calls wait through an outage; it and DEVELOPERS.md now say `make test`
+    runs prodsim's tests (wr-testsuite tests every `go list ./...` package).
 - [x] TestSubscriptionReconnectAdoptsManagerTimings (added by e89991b8) is
   flaky: 2 of 6 runs fail reading jq.ServerInfo.RetryTime right after the
   resync update (`Line 1834: Expected: time.Duration(31000000000) Actual:
