@@ -261,7 +261,7 @@ request a live but slow manager is still handling.
     duplicate is a queued job). Residual, documented: after a resend,
     identical jobs someone else queued earlier also count as success; rare
     false positives when a pipe breaks without the first copy arriving.
-- [ ] SchedulerSettings.Timeout has no default: with the zero value, Connect
+- [x] SchedulerSettings.Timeout has no default: with the zero value, Connect
   gives the socket a send deadline of 0 (no deadline in mangos), so
   client.New with the manager down, and requests during an outage, may block
   until the manager returns instead of failing with ErrSendTimeout; the
@@ -270,6 +270,7 @@ request a live but slow manager is still handling.
   - Source: coordinator (owner asked what Timeout defaults to).
   - Superseded by the owner decision below: Timeout gets a documented
     default when zero (item below), rather than only documenting it.
+    Done in the owner-decision item (bb2ec0c6).
 
 ### Owner decision (via coordinator, 261002)
 
