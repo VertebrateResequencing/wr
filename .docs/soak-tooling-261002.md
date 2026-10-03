@@ -189,7 +189,8 @@ listed in the order they happened. Runs 1-3 were launched from
 With `RUNNER_FILELOG=1`, `$SOAK_WR` is a wrapper that runs `wr.real`, so the
 daemonised manager's command line did not start with `$SOAK_WR`. That hid the
 defect fixed in 31261f05, which only shows without runner logs, so the
-injectors were checked again without `RUNNER_FILELOG` (last row).
+injectors were checked again without `RUNNER_FILELOG` (run 7, in
+`soak8/local7`).
 
 | run | check | result |
 | --- | --- | --- |
@@ -216,7 +217,13 @@ injectors were checked again without `RUNNER_FILELOG` (last row).
 | 4 repros | On current develop: `readdcrash.sh` 0 and 1 (one run, Attempts 1); `rundepcrash.sh` 0, 1 and `1 70 40` (D runs=2, 0 bad job); `rundepkill.sh` 0-3 (D stays buried, per the spec); `relburyiso.sh 500 2000` (`relburycheck.py` 0 problems, all buried, 0 LSF jobs left) | PASS |
 | 5 wrdev | `freelist-check` (66s; manager median commit 2.37ms vs 32ms plain at 262144 free pages); `selfconnect-check` (80s); `RESTART_KINDS`, `PRESTART_HOOK`, `DBDIR`, `FINAL_STOP` (columns, `hook.log`, DB symlink, final stop line, 5 poststart and prestop profile sets) | PASS |
 | 6 round 7 | The analysers on round-7 data match the saved round-7 outputs byte for byte: markers, doubles 202 (198+1+3), anyway 8436, rundep OK 25 CHECK 2, latency archive p50 1.69s p99 41.71s, StartTime p50 21ms (n=527473), relbury all buried with 0 stuck running, dbstart 933838 rows, `bboltexp` 0 errors. `rl.final.txt` and `unacked.tsv` differ only by the relative runner-log path. The original soak4 scripts give identical output | PASS |
-| 7 | injectors without `RUNNER_FILELOG` | pending |
+| 7 local7 | Injectors without `RUNNER_FILELOG`: local soak on the binary from 7893f426, output `prodsim-1790984180`. `crashafter.sh` waited out a scheduled clean stop, then `stop rc=crash manual=crashafter` and `start rc=0`; `crashon.sh` burst `stop rc=crash manual=crashon-burst`, `start rc=0` | PASS |
+| 7 local7 | `relbury.sh` and `relburycheck.py`: 0 problems. The #654 case was weak here: on a busy local host the jobs had not started by the deadline. Runs 4 (`relburyiso.sh`) and 6 (round-7 data) exercise it | PASS (tooling) |
+| 7 local7 | `rundep.sh` and `rundepcheck.py`. The #649 case was not exercised: D never started for 2 of 3 instances. Runs 4 (`rundepcrash.sh`, `rundepkill.sh`) and 6 exercise it | PASS (tooling) |
+| 7 local7 | `stopwatch.sh`, `stopstate.sh`: only the two real mid-run clean stops, `phase=waitForRunnersToDie`, `state=gone token=absent`, exactly 4 stop profiles. Both exit when prodsim does, so the final cleanup stop is not recorded, by design (now in the README) | PASS |
+| 7 local7 | `mon.sh` writes nothing to stderr; `crashon.sh` no integer-expression noise | PASS |
+| 7 local7 | `watcher.sh` ran no redundant start. Vacuous here, since no start failed; the `f4w.sh` stand-in harness covers that path | PASS |
+| 7 local7 | 289 runs, 0 doubles; `rundepcheck.py` on a dir without `rundep/`; 0 left after cleanup | PASS |
 
 The fixes:
 
@@ -241,7 +248,8 @@ The fixes:
   `crashon.sh` does.
 - 6dec8b1f: `repro/rundepkill.sh` and `repro/relburyiso.sh` run
   `soak_isolated` before their clean `wr manager stop`, and kill their own
-  verified pid instead if it fails. The README now says the repros start
-  through `wrdev.sh prod-start`, which does not ask `wr conf`. 94ce84b6 makes
-  the failure message say only that the isolation check failed, since
-  `config.sh` itself can fail it.
+  verified pid instead if it fails. 94ce84b6 makes the failure message say
+  only that the isolation check failed, since `config.sh` itself can fail it.
+- 27e0984c: `wrdev.sh prod-start`, which the repros start through, runs
+  `assert_isolated` before starting, as prodsim's start does, so a
+  `.wr_config` override or `WR_` variable cannot point it at another manager.

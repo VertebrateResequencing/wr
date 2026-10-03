@@ -45,6 +45,8 @@ when `USE_FUSE=1`.
 
 `run.sh` starts the first four, and `lsfprobe.sh` too under `SCHED=lsf`. Run
 `mon.sh` in a terminal and `stopstate.sh` from a launcher when you want them.
+`stopwatch.sh` and `stopstate.sh` exit when prodsim does, so they do not
+record the final stop that `wrdev.sh prodsim` makes as it ends.
 
 | file | output in `<outdir>` |
 | --- | --- |
