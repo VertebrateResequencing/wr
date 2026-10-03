@@ -472,3 +472,15 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
     submitted" line. ErrResentAddSkippedComplete still dies. The client
     tests' reply-dropping proxy moved to internal/replyproxy (test support,
     not imported by the wr binary) so cmd tests can use it.
+- [ ] Client.ServerInfo is read without the client lock (restURL in
+  jobqueue/client_rest.go, subscriptionDialAddr, the client package) while a
+  subscription reconnect or resubscribe replaces it under the lock, so a
+  GetSchedulerAlerts (or other reader) running alongside a reconnecting
+  WaitForJobs is a data race; this branch added more such writes.
+  - Source: implementor of the REST alerts item.
+- [ ] net/http resends a GET on a reused kept-alive connection after a read
+  error before the first response byte, so a warnings read the manager
+  acted on (dismissing issues) and then lost could be resent inside
+  net/http, dismissing issues the caller never saw.
+  - Source: implementor of the REST alerts item (from net/http source;
+    not reproduced).
