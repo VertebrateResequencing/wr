@@ -27,7 +27,9 @@ package jobqueue
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -53,6 +55,10 @@ const longConnectTimeout = 10 * time.Hour
 // held up for longer than it.
 const resendTestSendWait = 200 * time.Millisecond
 
+// resendTestReconnectDelay is how long a test holds up a Client's new
+// connection after its first is lost.
+const resendTestReconnectDelay = 1500 * time.Millisecond
+
 // heldAddWait is how long a copyCountingManager holds its reply to an add in
 // the scaled-down tests below: within the receive deadline they give the
 // socket, and past the connect timeout.
@@ -71,21 +77,26 @@ const copyCountingManagerWorkers = 4
 // does. It counts every other request too, answering at once with the error in
 // answers for its method if there is one, and otherwise holding its reply for
 // hold as well. A manager made by startRememberingManager also acts on adds as
-// the real manager does.
+// the real manager does; with dropUnactioned it does not act on the first add
+// it drops, as when a connection breaks before the add arrives.
 type copyCountingManager struct {
-	addr          string
-	caFile        string
-	hold          time.Duration
-	dropFirst     bool
-	holdOnlyFirst bool
-	adds          atomic.Int32
-	stop          chan struct{}
-	answers       map[string]string
+	addr           string
+	caFile         string
+	hold           time.Duration
+	dropFirst      bool
+	dropUnactioned bool
+	holdOnlyFirst  bool
+	noBreakdown    bool
+	adds           atomic.Int32
+	stop           chan struct{}
+	answers        map[string]string
 
-	mu       sync.Mutex
-	received map[string]int
-	known    map[string]bool
-	pipes    []mangos.Pipe
+	mu              sync.Mutex
+	received        map[string]int
+	known           map[string]bool
+	complete        map[string]bool
+	ignoreCompletes []bool
+	pipes           []mangos.Pipe
 }
 
 // startCopyCountingManager starts a copyCountingManager, stopping it when the
@@ -181,9 +192,15 @@ func (m *copyCountingManager) serve(sctx mangos.Context) {
 		}
 
 		sr := &serverResponse{SInfo: &ServerInfo{}}
-		m.actOnAdd(cr, sr)
+		dropping := cr.Method == requestMethodAdd && m.adds.Add(1) == 1 && m.dropFirst
 
-		if cr.Method == requestMethodAdd && m.adds.Add(1) == 1 && m.dropFirst {
+		m.recordAdd(cr)
+
+		if !dropping || !m.dropUnactioned {
+			m.actOnAdd(cr, sr)
+		}
+
+		if dropping {
 			_ = msg.Pipe.Close()
 
 			msg.Free()
@@ -240,8 +257,23 @@ func (m *copyCountingManager) answer(cr *clientRequest, sr *serverResponse) bool
 	return true
 }
 
-// actOnAdd fills in sr for cr if it is an add and m remembers jobs, adding
-// those m does not already have and reporting the rest as existing and queued.
+// recordAdd records cr's IgnoreComplete if it is an add.
+func (m *copyCountingManager) recordAdd(cr *clientRequest) {
+	if cr.Method != requestMethodAdd {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.ignoreCompletes = append(m.ignoreCompletes, cr.IgnoreComplete)
+}
+
+// actOnAdd fills in sr for cr if it is an add and m remembers jobs: jobs m has
+// queued are reported as existing and queued, jobs in m.complete as existing
+// and complete if cr skips complete jobs, and the rest are added. A manager
+// with noBreakdown reports only how many existed, as one predating the
+// breakdown does.
 func (m *copyCountingManager) actOnAdd(cr *clientRequest, sr *serverResponse) {
 	if cr.Method != requestMethodAdd || m.known == nil {
 		return
@@ -251,17 +283,33 @@ func (m *copyCountingManager) actOnAdd(cr *clientRequest, sr *serverResponse) {
 	defer m.mu.Unlock()
 
 	for _, job := range cr.Jobs {
-		if m.known[job.Key()] {
-			sr.Existed++
-
-			continue
+		switch {
+		case m.known[job.Key()]:
+			sr.Duplicates.Queued++
+			sr.AddedIDs = append(sr.AddedIDs, job.Key())
+		case cr.IgnoreComplete && m.complete[job.Key()]:
+			sr.Duplicates.Complete++
+		default:
+			m.known[job.Key()] = true
+			sr.Added++
+			sr.AddedIDs = append(sr.AddedIDs, job.Key())
 		}
-
-		m.known[job.Key()] = true
-		sr.Added++
 	}
 
-	sr.Duplicates.Queued = sr.Existed
+	sr.Existed = sr.Duplicates.Total()
+
+	if m.noBreakdown {
+		sr.Duplicates = DuplicateBreakdown{}
+	}
+}
+
+// addIgnoreCompletes returns the IgnoreComplete of each add m has received, in
+// order.
+func (m *copyCountingManager) addIgnoreCompletes() []bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return slices.Clone(m.ignoreCompletes)
 }
 
 // trackPipe records each connection to m as it attaches.
@@ -438,6 +486,7 @@ func TestClientReportsResentAdds(t *testing.T) {
 			added, dups, _, err := addResendJob(jq, false)
 			So(err, ShouldBeNil)
 			So(m.adds.Load(), ShouldEqual, 2)
+			So(m.addIgnoreCompletes(), ShouldResemble, []bool{false, true})
 			So(added, ShouldEqual, 0)
 			So(dups.Total(), ShouldEqual, 1)
 			So(dups.Resent(), ShouldBeTrue)
@@ -592,4 +641,129 @@ func awaitDetachDelayingAttach(jq *Client, delay time.Duration) <-chan struct{} 
 	})
 
 	return detached
+}
+
+// TestClientResendsInterruptedRerunAddSkippingComplete checks that an add asked
+// to re-add complete jobs, whose connection is lost before its reply arrives,
+// is not sent again as it was, since a job its first copy added may have
+// completed since and would run again; it is sent again skipping complete
+// jobs, and its caller is told if any were complete
+// (.docs/bugfixes/261002-client-restart-2ca6d42f.md).
+func TestClientResendsInterruptedRerunAddSkippingComplete(t *testing.T) {
+	Convey("Given a manager that has a job complete and drops the first add before acting on it", t, func() {
+		m := startManager(t, &copyCountingManager{
+			dropFirst: true, dropUnactioned: true,
+			known: make(map[string]bool), complete: map[string]bool{resendTestJobs()[0].Key(): true},
+		})
+
+		jq := m.connect(cliConnectTimeout)
+		defer disconnect(jq)
+
+		Convey("an Add re-adding it is sent again skipping it, and says the job may not have been rerun", func() {
+			added, dups, _, err := addResendJob(jq, false)
+			So(errors.Is(err, ErrResentAddSkippedComplete), ShouldBeTrue)
+			So(m.addIgnoreCompletes(), ShouldResemble, []bool{false, true})
+			So(added, ShouldEqual, 0)
+			So(dups.Resent(), ShouldBeTrue)
+
+			breakdown, ok := dups.Breakdown()
+			So(ok, ShouldBeTrue)
+			So(breakdown.Complete, ShouldEqual, 1)
+		})
+
+		Convey("AddAndReturnIDs re-adding it says the same", func() {
+			ids, err := jq.AddAndReturnIDs(resendTestJobs(), nil, false)
+			So(errors.Is(err, ErrResentAddSkippedComplete), ShouldBeTrue)
+			So(ids, ShouldBeEmpty)
+			So(m.addIgnoreCompletes(), ShouldResemble, []bool{false, true})
+		})
+
+		Convey("an Add that skips complete jobs is resent by the socket as it was, and succeeds", func() {
+			added, existed, err := jq.Add(resendTestJobs(), nil, true)
+			So(err, ShouldBeNil)
+			So(added, ShouldEqual, 0)
+			So(existed, ShouldEqual, 1)
+			So(m.addIgnoreCompletes(), ShouldResemble, []bool{true, true})
+		})
+	})
+
+	Convey("Given a manager that does not break duplicates down and drops the first add before acting on it", t, func() {
+		Convey("an Add re-adding a job it has complete is reported as maybe not rerun", func() {
+			m := startManager(t, &copyCountingManager{
+				dropFirst: true, dropUnactioned: true, noBreakdown: true,
+				known: make(map[string]bool), complete: map[string]bool{resendTestJobs()[0].Key(): true},
+			})
+
+			jq := m.connect(cliConnectTimeout)
+			defer disconnect(jq)
+
+			_, existed, err := jq.Add(resendTestJobs(), nil, false)
+			So(errors.Is(err, ErrResentAddSkippedComplete), ShouldBeTrue)
+			So(existed, ShouldEqual, 1)
+		})
+
+		Convey("an Add re-adding a job it does not have is not, as nothing existed", func() {
+			m := startManager(t, &copyCountingManager{
+				dropFirst: true, dropUnactioned: true, noBreakdown: true, known: make(map[string]bool),
+			})
+
+			jq := m.connect(cliConnectTimeout)
+			defer disconnect(jq)
+
+			added, dups, _, err := addResendJob(jq, false)
+			So(err, ShouldBeNil)
+			So(added, ShouldEqual, 1)
+			So(dups.Resent(), ShouldBeTrue)
+			So(m.addIgnoreCompletes(), ShouldResemble, []bool{false, true})
+		})
+	})
+}
+
+// TestClientResendsRerunAddLostBeforeItsReplyWasAwaited checks the two less
+// common ways a re-adding add's connection can be lost: before the client has
+// started waiting for the reply, and for longer than the connect timeout
+// (.docs/bugfixes/261002-client-restart-2ca6d42f.md).
+func TestClientResendsRerunAddLostBeforeItsReplyWasAwaited(t *testing.T) {
+	Convey("Given a manager that drops the first add before acting on it", t, func() {
+		m := startManager(t, &copyCountingManager{
+			dropFirst: true, dropUnactioned: true, known: make(map[string]bool),
+		})
+
+		Convey("an Add re-adding jobs whose connection is lost before it awaits the reply is sent again", func() {
+			jq := m.connect(cliConnectTimeout)
+			defer disconnect(jq)
+
+			detached := awaitDetach(jq)
+
+			droppingAddSentHook = func() {
+				select {
+				case <-detached:
+				case <-time.After(goneManagerLimit):
+				}
+			}
+
+			defer func() { droppingAddSentHook = nil }()
+
+			added, dups, _, err := addResendJob(jq, false)
+			So(err, ShouldBeNil)
+			So(added, ShouldEqual, 1)
+			So(dups.Resent(), ShouldBeTrue)
+			So(m.addIgnoreCompletes(), ShouldResemble, []bool{false, true})
+		})
+
+		Convey("an Add re-adding jobs waits past a short connect timeout for the new connection to send it again", func() {
+			defer setClientMinRequestTimeout(3 * resendTestReconnectDelay)()
+
+			jq := m.connect(resendTestReconnectDelay / 3)
+			defer disconnect(jq)
+
+			awaitDetachDelayingAttach(jq, resendTestReconnectDelay)
+
+			added, _, _, err := addResendJob(jq, false)
+			So(err, ShouldBeNil)
+			So(added, ShouldEqual, 1)
+			So(m.addIgnoreCompletes(), ShouldResemble, []bool{false, true})
+			So(socketDuration(jq, mangos.OptionSendDeadline), ShouldEqual, resendTestReconnectDelay/3)
+		})
+	})
 }

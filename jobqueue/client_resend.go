@@ -26,13 +26,40 @@
 package jobqueue
 
 // This file contains how a Client notices that mangos may have sent a request
-// to the manager more than once.
+// to the manager more than once, and stops it doing so for an add that re-adds
+// complete jobs.
 
 import (
+	"errors"
 	"sync/atomic"
+	"time"
 
 	"go.nanomsg.org/mangos/v3"
 )
+
+// droppingAddSentHook, if set, runs in sendDroppingOnConnectionLossLocked
+// between sending the add and waiting for its reply. Tests use it to lose the
+// connection in that window.
+//
+//nolint:gochecknoglobals // test seam; nil in production.
+var droppingAddSentHook func()
+
+// completeSkippedErr returns ErrResentAddSkippedComplete if cr, an add asked to
+// re-add complete jobs, was sent again skipping them and dups, from the reply,
+// says some of its jobs were complete, or has duplicates without saying why (a
+// manager too old to break them down). Otherwise it returns nil: every job is
+// queued or was added, whichever copy of cr did it.
+func completeSkippedErr(cr *clientRequest, dups AddDuplicates) error {
+	if !cr.resentSkippingComplete || dups.Total() == 0 {
+		return nil
+	}
+
+	if breakdown, ok := dups.Breakdown(); ok && breakdown.Complete == 0 {
+		return nil
+	}
+
+	return ErrResentAddSkippedComplete
+}
 
 // resendWatch notices mangos resending a request on a new connection. A req
 // socket that loses the connection a request went out on sends that request
@@ -91,4 +118,70 @@ func (w *resendWatch) stop() bool {
 	w.sock.SetPipeEventHook(w.previous)
 
 	return w.sent && w.attaches.Load() > w.sentAt
+}
+
+// requestWithSendDeadlineAtLeastLocked is requestWatchingForResendLocked with
+// the socket's send deadline widened to at least sendWait for this request
+// only, never narrowed; one that is not positive already waits for ever. It
+// must be called with the client's lock held.
+func (c *Client) requestWithSendDeadlineAtLeastLocked(cr *clientRequest,
+	sendWait time.Duration,
+) (sr *serverResponse, err error) {
+	original, err := c.deadline(mangos.OptionSendDeadline)
+	if err != nil {
+		return nil, err
+	}
+
+	if original <= 0 || original >= sendWait {
+		return c.requestWatchingForResendLocked(cr)
+	}
+
+	if err = c.sock.SetOption(mangos.OptionSendDeadline, sendWait); err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		if errr := c.sock.SetOption(mangos.OptionSendDeadline, original); errr != nil {
+			sr, err = nil, errors.Join(err, errr)
+		}
+	}()
+
+	return c.requestWatchingForResendLocked(cr)
+}
+
+// sendDroppingOnConnectionLossLocked sends cr and receives the reply, with the
+// socket's resend time 0 for this request only, which makes mangos drop the
+// request instead of sending it again if the connection it went out on is lost
+// before its reply arrives. It reports lost true, and no error, if that
+// happened: the manager may or may not have acted on cr. It must be called with
+// the client's lock held, which keeps every other request off the socket until
+// the resend time is put back.
+func (c *Client) sendDroppingOnConnectionLossLocked(cr *clientRequest) (sr *serverResponse, lost bool, err error) {
+	if err = c.sock.SetOption(mangos.OptionRetryTime, time.Duration(0)); err != nil {
+		return nil, false, err
+	}
+
+	defer func() {
+		if errr := c.sock.SetOption(mangos.OptionRetryTime, clientRequestResendTime); errr != nil {
+			sr, lost, err = nil, false, errors.Join(err, errr)
+		}
+	}()
+
+	if err = c.encodeAndSend(cr); err != nil {
+		return nil, false, err
+	}
+
+	if droppingAddSentHook != nil {
+		droppingAddSentHook()
+	}
+
+	sr, err = c.recvAndDecode()
+
+	// a dropped request wakes a waiting Recv with ErrCanceled; one dropped
+	// before Recv began leaves no request to wait for, so ErrProtoState
+	if errors.Is(err, mangos.ErrCanceled) || errors.Is(err, mangos.ErrProtoState) {
+		return nil, true, nil
+	}
+
+	return sr, false, err
 }

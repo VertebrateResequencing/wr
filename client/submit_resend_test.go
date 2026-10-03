@@ -55,15 +55,19 @@ var errResendTestPending = errors.New("SubmitJobs did not return")
 // forwarding it, as happens when a manager stops after acting on a request but
 // before its reply reaches the client.
 //
-// While paused, it refuses new connections, counting them.
+// While paused, it refuses new connections, counting them. While swallowing,
+// it discards what the manager sends, counting each read, but keeps the
+// connection open, as when a reply is slow to arrive.
 type replyDroppingProxy struct {
-	listener net.Listener
-	target   string
-	armed    atomic.Bool
-	dropped  atomic.Int32
-	paused   atomic.Bool
-	refused  atomic.Int32
-	wg       sync.WaitGroup
+	listener  net.Listener
+	target    string
+	armed     atomic.Bool
+	dropped   atomic.Int32
+	swallow   atomic.Bool
+	swallowed atomic.Int32
+	paused    atomic.Bool
+	refused   atomic.Int32
+	wg        sync.WaitGroup
 
 	mu    sync.Mutex
 	conns []net.Conn
@@ -163,6 +167,12 @@ func (p *replyDroppingProxy) forward(from, to net.Conn, fromManager bool) {
 			return
 		}
 
+		if n > 0 && fromManager && p.swallow.Load() {
+			p.swallowed.Add(1)
+
+			continue
+		}
+
 		if n > 0 {
 			if _, werr := to.Write(buf[:n]); werr != nil {
 				return
@@ -221,6 +231,50 @@ func TestSchedulerSubmitJobsResentAfterItsReplyWasLost(t *testing.T) {
 				So(errors.Is(err, ErrDuplicateJobs), ShouldBeTrue)
 				So(server.GetServerStats().Ready, ShouldEqual, resendTestJobs)
 			})
+		})
+
+		Convey("SubmitJobs does not re-add a job its add queued and that completed before the connection dropped", func() {
+			runner, errc := jobqueue.ConnectWithTokenFile(net.JoinHostPort("localhost", config.Port), config.CAFile,
+				config.CertDomain, config.TokenFile, resendTestTimeout)
+			So(errc, ShouldBeNil)
+
+			defer func() {
+				So(runner.Disconnect(), ShouldBeNil)
+			}()
+
+			job := jobs[0]
+
+			proxy.swallow.Store(true)
+
+			done := make(chan error, 1)
+
+			go func() { done <- s.SubmitJobs([]*jobqueue.Job{job}) }()
+
+			// the manager has answered the add, so it has queued the job, but
+			// the client has not had the reply
+			deadline := time.Now().Add(resendTestTimeout)
+			for proxy.swallowed.Load() == 0 && time.Now().Before(deadline) {
+				time.Sleep(resendTestPoll)
+			}
+
+			So(proxy.swallowed.Load(), ShouldBeGreaterThan, 0)
+			So(archiveNextSchedulerJob(runner), ShouldBeNil)
+
+			proxy.swallow.Store(false)
+			proxy.cut()
+
+			select {
+			case err = <-done:
+			case <-time.After(resendTestTimeout):
+				err = errResendTestPending
+			}
+
+			So(server.GetServerStats().Ready, ShouldEqual, 0)
+
+			stored, errg := s.GetJobByKey(job.Key(), false, false)
+			So(errg, ShouldBeNil)
+			So(stored.State, ShouldEqual, jobqueue.JobStateComplete)
+			So(errors.Is(err, jobqueue.ErrResentAddSkippedComplete), ShouldBeTrue)
 		})
 
 		Convey("SubmitJobs of jobs already queued, sent while the client reconnects, returns ErrDuplicateJobs", func() {

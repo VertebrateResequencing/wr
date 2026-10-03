@@ -262,6 +262,13 @@ var errChildLookupTimedOut = errors.New("timed out listing the child processes")
 // ErrNoTokenFile is returned by ConnectWithTokenFile when given no path.
 var ErrNoTokenFile = errors.New("no token file given")
 
+// ErrResentAddSkippedComplete is returned by an add that was asked to re-add
+// complete jobs (ignoreComplete false) when it had to be sent again skipping
+// them, and some of its jobs were then complete, so may not have been run
+// again (see Add).
+var ErrResentAddSkippedComplete = errors.New("add was interrupted and sent again skipping complete jobs; " +
+	"some of its jobs are complete and may not have been rerun")
+
 // clientRequestResendTime is the req socket's resend time, long enough that it
 // never comes round. mangos resends a request still unanswered after this long
 // on the same live connection, and the manager acts on every copy it gets. With
@@ -272,6 +279,9 @@ var ErrNoTokenFile = errors.New("no token file given")
 // It is not 0 because mangos reads 0 as also dropping, rather than resending
 // once redialled, a request whose connection closed before it was answered,
 // which is what lets a request in flight across a manager restart complete.
+// An add that re-adds complete jobs is the exception: it is sent with 0 (see
+// sendDroppingOnConnectionLossLocked), as sending it again could run a job
+// twice.
 //
 // It is the largest duration rather than a long finite one such as 24h because
 // any finite value is a receive deadline (connect timeout) beyond which the
@@ -396,8 +406,9 @@ func NewAddDuplicates(existed int, breakdown DuplicateBreakdown) AddDuplicates {
 // Resent reports whether the Add may have reached the manager more than once,
 // so an earlier copy of this same Add may have added some of the jobs Total()
 // counts. That happens when the connection the Add went out on was lost before
-// its reply arrived, as when the manager stops mid-Add (the socket sends it
-// again once it reconnects), or when a client that rides out outages sent it
+// its reply arrived, as when the manager stops mid-Add (it is sent again once
+// the client reconnects, skipping complete jobs if it was to re-add them; see
+// Add), or when a client that rides out outages sent it
 // again after its reply did not arrive in time. Those jobs cannot be told apart
 // from identical jobs added by anyone before this Add: they are queued (or, for
 // an Add that skips complete jobs, may have completed) either way. Resent can
@@ -478,6 +489,11 @@ type clientRequest struct {
 	// resent is client-side only, never encoded: the request may have reached
 	// the manager more than once (see AddDuplicates.Resent).
 	resent bool
+
+	// resentSkippingComplete is client-side only, never encoded: an add asked
+	// to re-add complete jobs was sent again skipping them (see
+	// requestOnceLocked).
+	resentSkippingComplete bool
 }
 
 // RepGroupMatch controls how RepGroup filters are applied by repgroup-based
@@ -782,7 +798,11 @@ func combineExecOutcomes(unmount, cmd execOutcome) execOutcome {
 // ClientMinRequestTimeout if the manager went after taking them, unless
 // RetryWhileManagerUnreachable() was called. An Add in progress when the
 // manager stops can be partly applied, and is resent when the client
-// reconnects, so it can then report its own jobs as existing;
+// reconnects (skipping complete jobs; see Add), so it can then report its own
+// jobs as existing. An Add that re-adds complete jobs (ignoreComplete false)
+// whose connection is lost is sent again by the client itself, which waits up
+// to that larger time for a new connection and then up to it again for the
+// reply, so it can take up to twice as long before failing;
 // AddDuplicates.Resent, from AddWithDuplicates, says when that may have
 // happened. A subscription (as used by AddAndWait) keeps trying to reconnect
 // for the manager's RetryTime. The client package's Scheduler uses such a
@@ -1200,7 +1220,50 @@ func refreshDerivedTiming(current, oldServer, newServer, def time.Duration) time
 // An add is watched for mangos sending it again on a new connection, which marks
 // it resent: an add is the request whose caller is told what that means (see
 // AddDuplicates.Resent).
+//
+// An add that re-adds complete jobs must not be sent again as it is, since a
+// job its first copy added may have completed since. So mangos is told to drop
+// it, rather than send it again, if its connection is lost before the reply
+// arrives; it is then sent again skipping complete jobs, which adds what the
+// first copy did not and nothing that has completed since. That marks it
+// resent and resentSkippingComplete, cr keeping IgnoreComplete true for any
+// later attempt. Sending it again waits for a new connection for up to the
+// reply deadline, as long as mangos would have waited to send it again itself.
 func (c *Client) requestOnceLocked(cr *clientRequest) (*serverResponse, error) {
+	if cr.Method == requestMethodAdd && !cr.IgnoreComplete {
+		sr, lost, err := c.sendDroppingOnConnectionLossLocked(cr)
+		if !lost {
+			return replyOrError(cr, sr, err)
+		}
+
+		cr.IgnoreComplete = true
+		cr.resent = true
+		cr.resentSkippingComplete = true
+
+		return c.requestWithSendDeadlineAtLeastLocked(cr, requestTimeout(c.timeout))
+	}
+
+	return c.requestWatchingForResendLocked(cr)
+}
+
+// replyOrError returns sr, the manager's reply to cr, or err if receiving it
+// failed, or sr and an Error if the manager answered with one.
+func replyOrError(cr *clientRequest, sr *serverResponse, err error) (*serverResponse, error) {
+	if err != nil {
+		return nil, err
+	}
+
+	if sr.Err != "" {
+		return sr, Error{cr.Method, cr.key(), sr.Err}
+	}
+
+	return sr, nil
+}
+
+// requestWatchingForResendLocked sends cr and returns the manager's reply,
+// watching an add for mangos sending it again (see requestOnceLocked). It must
+// be called with the client's lock held.
+func (c *Client) requestWatchingForResendLocked(cr *clientRequest) (*serverResponse, error) {
 	var watch *resendWatch
 
 	if cr.Method == requestMethodAdd {
@@ -1222,16 +1285,8 @@ func (c *Client) requestOnceLocked(cr *clientRequest) (*serverResponse, error) {
 	}
 
 	sr, err := c.recvAndDecode()
-	if err != nil {
-		return nil, err
-	}
 
-	// pull the error out of sr
-	if sr.Err != "" {
-		return sr, Error{cr.Method, cr.key(), sr.Err}
-	}
-
-	return sr, nil
+	return replyOrError(cr, sr, err)
 }
 
 // reportStartFailure reports a cmd.Start() failure to the server and returns the
@@ -1613,7 +1668,7 @@ func (c *Client) AddWithDuplicatesContext(
 	dups = NewAddDuplicates(resp.Existed, resp.Duplicates)
 	dups.resent = cr.resent
 
-	return resp.Added, dups, resp.AddWarnings, err
+	return resp.Added, dups, resp.AddWarnings, completeSkippedErr(cr, dups)
 }
 
 // stageBackup writes db to a uniquely named file in path's own directory,
@@ -1674,14 +1729,16 @@ func (c *Client) addAndReturnIDsWithWarnings(
 		return nil, AddWarnings{}, err
 	}
 
-	resp, err := c.requestContext(ctx, &clientRequest{
-		Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete, ReturnIDs: true,
-	})
+	cr := &clientRequest{
+		Method: requestMethodAdd, Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete, ReturnIDs: true,
+	}
+
+	resp, err := c.requestContext(ctx, cr)
 	if err != nil {
 		return nil, AddWarnings{}, err
 	}
 
-	return resp.AddedIDs, resp.AddWarnings, err
+	return resp.AddedIDs, resp.AddWarnings, completeSkippedErr(cr, NewAddDuplicates(resp.Existed, resp.Duplicates))
 }
 
 // AddContext is Add, except that on a client that rides out outages it stops
@@ -2471,6 +2528,22 @@ func (c *Client) BackupDB(path string) error {
 // will be treated like new ones, though when Archive()d again, the new Job will
 // replace the old one in the database. To have such jobs skipped as "existed"
 // instead, supply ignoreComplete as true.
+//
+// If the connection to the manager is lost after an add was sent but before
+// its reply arrived, as when the manager stops, the manager may have added some
+// or all of the jobs. An add with ignoreComplete true is then sent again as it
+// was. One with ignoreComplete false is not, because a job its first copy added
+// may have run and completed since, and would be added and run again; it is
+// sent again with ignoreComplete true instead. Either way the jobs the first
+// copy added are then counted as existing (see AddDuplicates.Resent). If, after
+// sending it again with ignoreComplete true, any of the jobs was complete, it
+// either completed after the first copy added it or was complete before and so
+// was not added again, which cannot be told apart: the counts are returned with
+// ErrResentAddSkippedComplete, and you can add those jobs again to rerun them.
+// A manager too old to say which existing jobs were complete (see
+// AddDuplicates.Breakdown) gives that error if any job existed. The same holds
+// for AddAndReturnIDs, whose IDs then exclude the complete jobs, and for
+// AddAndWait, which then returns the error without waiting.
 //
 // The envVars argument is a slice of ("key=value") strings with the environment
 // variables you want to be set when the job's Cmd actually runs. Typically you

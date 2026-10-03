@@ -1044,8 +1044,9 @@ func (s *Scheduler) SubmitJobsContext(ctx context.Context, jobs []*jobqueue.Job)
 	}
 
 	// a resent add's duplicates may be the jobs its own earlier copy queued
-	// (see jobqueue.AddDuplicates.Resent). It re-adds complete jobs, so every
-	// job it did not add is queued, whoever queued it.
+	// (see jobqueue.AddDuplicates.Resent). If any were complete, the add has
+	// already returned ErrResentAddSkippedComplete, so every job it did not
+	// add is queued, whoever queued it.
 	if inserts == len(jobs) || dups.Resent() {
 		return nil
 	}
@@ -1279,6 +1280,10 @@ func (s *Scheduler) determineOverrideAndReq(req *jqs.Requirements) (*jqs.Require
 // manager stopped while it was in progress and the add was sent again once it
 // was back: the duplicates may then be the jobs its own first copy added, so
 // nil is returned, since every one of the jobs is queued (see the package doc).
+// Such an add is sent again skipping complete jobs, so that a job its first copy
+// added and that has completed since does not run again; if any of the jobs was
+// then complete, an error matching jobqueue.ErrResentAddSkippedComplete is
+// returned, since it may not have been rerun (see the package doc).
 // While the manager is down, this waits for it for up to its RetryTime (see the
 // package doc). If that fails, SubmitJobsAndReturnIDs with the same jobs and
 // default options adds only those neither queued nor complete, and returns the

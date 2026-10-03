@@ -410,7 +410,7 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
     holds the info of the manager that registered it. New deterministic case
     restarts the manager between the reconnect's connect and resubscribe
     (red 5 of 5 before). Original test green at -count 30, plain and race.
-- [ ] An add mangos resends after its pipe drops can re-add a job the first
+- [x] An add mangos resends after its pipe drops can re-add a job the first
   copy queued and that has since completed, so it runs twice: SubmitJobs
   (ignoreComplete false) re-adds complete jobs, and the pipe-loss resend
   bypasses wr's own rule of not resending such adds after a receive
@@ -418,6 +418,26 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
   100ms), more plausible when a live manager's reply is slow and the
   connection loss is noticed tens of seconds later.
   - Source: implementor and reviewer of the resent-add item.
+  - Red command: `timeout 900 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    go test -tags netgo -count 1 -timeout 20m ./client/ -run
+    '^TestSchedulerSubmitJobsResentAfterItsReplyWasLost$'` (proxy swallows
+    the add's reply while a second client completes and archives the job,
+    then cuts the connection), exit 1: `Line 272: Expected: 0 Actual: 1`
+    (the completed job queued again).
+  - Fixed: an add with IgnoreComplete false is sent with the socket's resend
+    time set to 0 for that request, so a lost connection cancels it instead
+    of mangos resending it; wr then sends it again with IgnoreComplete true
+    (adding only what the first copy did not, nothing completed since), with
+    the send deadline widened to the reply deadline so a short-timeout client
+    still waits as long for the manager as before. If that copy finds
+    complete jobs the call returns new jobqueue.ErrResentAddSkippedComplete
+    (they may have completed after the first copy, or been complete before
+    and not rerun). Plain `wr add` (IgnoreComplete true) is unchanged; `wr
+    add --rerun` and `wr lsf bsub` get the new error in that case.
+  - Noted (reviewer, not a bug): mangos still resends reserve, archive,
+    release, bury and modify after a lost connection; all but reserve are
+    idempotent, and a twice-sent reserve only orphans a reservation until the
+    manager's lost/TTR release, a delay rather than a double run.
 - [ ] `wr lsf bsub` (cmd/lsf.go ~239-246) prints "Duplicate command
   specified. Job not submitted." and exits non-zero when its add was resent
   after a dropped connection and the first copy had queued the job

@@ -78,12 +78,21 @@ the first copy added as already existing. SubmitJobs detects when its
 submission may have been sent more than once, and then returns nil rather than
 ErrDuplicateJobs, since every job is queued. It cannot tell those jobs apart
 from identical jobs queued before it was called, so in that case it returns nil
-for them too. A submission that failed because the manager stayed down may
-also have been partly added. To recover from that, call SubmitJobsAndReturnIDs
-with the same jobs and the default SubmitJobsOptions. It adds only the jobs
-that are neither queued nor complete, and returns the keys of the jobs now
-queued. A job that has already completed is neither added again nor in the
-result; Job.Key gives any job's key without asking the manager. Do not set
-RerunCompleted for this: it adds completed jobs again, so they run twice.
+for them too. The same happens if the connection drops while the manager is
+up. A submission that re-adds complete jobs (SubmitJobs, or RerunCompleted) is
+sent again skipping complete jobs, since a job its first copy added may have
+completed since and must not run again. If any of its jobs was then complete,
+the call returns an error matching jobqueue.ErrResentAddSkippedComplete: each
+such job either completed after this call added it, or had completed before and
+was not run again, and the two cannot be told apart. GetJobByKey shows which
+jobs are complete; submit any you meant to rerun again.
+
+A submission that failed because the manager stayed down may also have been
+partly added. To recover from that, call SubmitJobsAndReturnIDs with the same
+jobs and the default SubmitJobsOptions. It adds only the jobs that are neither
+queued nor complete, and returns the keys of the jobs now queued. A job that
+has already completed is neither added again nor in the result; Job.Key gives
+any job's key without asking the manager. Do not set RerunCompleted for this:
+it adds completed jobs again, so they run twice.
 */
 package client

@@ -75,6 +75,13 @@ project adheres to [Semantic Versioning](http://semver.org/).
   command in full, so it is several times faster, and uses about 1% of the
   memory, for a group with a long history of long commands. The output is
   unchanged.
+- A Go client's `SubmitJobs`, `wr add --rerun` and other adds that re-add
+  completed commands no longer risk running a command twice when the
+  connection to the manager drops before the add's reply arrives: the add is
+  sent again skipping completed commands, so a command it queued that has
+  completed meanwhile is not queued again. If any of its commands were then
+  complete, it returns `jobqueue.ErrResentAddSkippedComplete`, since they may
+  not have been rerun.
 - The Go client's `Scheduler` now rides out the manager being down, such as
   across a restart, as runners and `WaitForJobs` do: `SubmitJobs`,
   `GetJobByKey`, `WaitForRunning`, the `Find*` methods, `KillJobs`,
