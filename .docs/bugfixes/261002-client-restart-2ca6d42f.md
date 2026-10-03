@@ -345,3 +345,9 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
   inferred from the code). Reading alerts dismisses issues, so it is not
   safe to resend after a response timeout.
   - Source: implementor of the outage-retry item.
+- [ ] developers/prodsim uses client.New, so since 90913194 its actors wait
+  through manager outages (up to RetryTime) instead of erroring after
+  Timeout; check prodsim (and #666's developers/soak analysers, if merged)
+  still report outages meaningfully, e.g. as time blocked rather than
+  errors, and adjust here if needed.
+  - Source: coordinator.
