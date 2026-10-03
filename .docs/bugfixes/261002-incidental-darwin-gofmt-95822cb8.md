@@ -46,3 +46,27 @@
   `.docs/bugfixes/260929-archive-before-start.md` (64s timeout; suspected
   cause: the helper's port taken as another connection's source port).
   - Source: caller-assigned incidental item.
+  - Mechanism: the helper's port comes from `closedLocalPort()` in
+    `cmd/manager_stop_test.go`, which binds `localhost:0` and closes it, so
+    the port is in the kernel's ephemeral range (32768-60999 here). Any other
+    process's `:0` listener or outgoing connection can then be given it
+    before the helper binds. `reservePort` retries a port with a listener
+    for `serverBindRetryBudget` (5s), then Serve fails and the helper exits
+    2, matching the 5.06s report; a port taken as a connection's source port
+    is retried for `serverBindLingerBudget` (90s), matching the earlier 64s
+    report.
+  - Red (mechanism, diagnostic build only): holding a dual-stack listener on
+    the chosen port before the helper starts reproduces the report exactly.
+    `TestManagerStopWhileShuttingDown` failed after 5.23s; helper exit status
+    2, helper log:
+
+    ```text
+    lvl=warn msg="could not reserve the manager port yet, retrying" port=46363 err="bind: address already in use"
+    lvl=eror msg="helper manager failed to start" err="manager port 46363 is in use by another process: bind: address already in use"
+    Actual:   'helper manager did not become ready'
+    --- FAIL: TestManagerStopWhileShuttingDown (5.23s)
+    ```
+
+    25 unpinned runs while another process held 2000 rotating `:0`
+    listeners all passed, so the natural collision is rare; the red command
+    for the fix pins the property that prevents it instead.
