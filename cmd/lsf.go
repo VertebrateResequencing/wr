@@ -227,32 +227,13 @@ var lsfBsubCmd = &cobra.Command{
 		// connect to the server
 		jq := connect(lsfConnectTimeoutSeconds * time.Second)
 
-		var err error
 		defer func() {
-			err = jq.Disconnect()
-			if err != nil {
+			if err := jq.Disconnect(); err != nil {
 				warn("Disconnecting from the server failed: %s", err)
 			}
 		}()
 
-		// add the job to the queue
-		inserts, _, err := jq.Add([]*jobqueue.Job{job}, os.Environ(), false)
-		if err != nil {
-			die("%s", err.Error())
-		}
-
-		if inserts != 1 {
-			fmt.Println("Duplicate command specified. Job not submitted.")
-			os.Exit(lsfNoCommandExitCode)
-		}
-
-		j, err := jq.GetByEssence(
-			&jobqueue.JobEssence{Cmd: job.Cmd, Cwd: job.Cwd, MountConfigs: job.MountConfigs}, false, false)
-		if err != nil {
-			die("%s", err.Error())
-		}
-
-		fmt.Printf("Job <%d> is submitted to default queue <wr>.\n", j.BsubID)
+		submitBsubJob(jq, job)
 	},
 }
 
@@ -505,6 +486,40 @@ that the job has already finished, even if an invalid jobId was supplied.`,
 			fmt.Printf("Job <%d>: Job has already finished\n", jid)
 		}
 	},
+}
+
+// submitBsubJob adds job to the queue and prints its bsub id as bsub would, or
+// says the job was not submitted and exits non-zero if an identical job was
+// already queued.
+//
+// An add that was sent again after its connection dropped is reported as
+// submitted even if it added nothing: the first copy may have queued the job,
+// and the job is queued either way (were it complete instead, the add would
+// have returned an error).
+func submitBsubJob(jq *jobqueue.Client, job *jobqueue.Job) {
+	inserts, dups, _, err := jq.AddWithDuplicates([]*jobqueue.Job{job}, os.Environ(), false)
+	if err != nil {
+		die("%s", err.Error())
+
+		return
+	}
+
+	if inserts != 1 && !dups.Resent() {
+		fmt.Println("Duplicate command specified. Job not submitted.")
+		cmdExit(lsfNoCommandExitCode)
+
+		return
+	}
+
+	j, err := jq.GetByEssence(
+		&jobqueue.JobEssence{Cmd: job.Cmd, Cwd: job.Cwd, MountConfigs: job.MountConfigs}, false, false)
+	if err != nil {
+		die("%s", err.Error())
+
+		return
+	}
+
+	fmt.Printf("Job <%d> is submitted to default queue <wr>.\n", j.BsubID)
 }
 
 type lsfFieldDisplay func(*jobqueue.Job) string

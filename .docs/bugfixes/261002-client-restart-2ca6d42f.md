@@ -456,8 +456,18 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
     release, bury and modify after a lost connection; all but reserve are
     idempotent, and a twice-sent reserve only orphans a reservation until the
     manager's lost/TTR release, a delay rather than a double run.
-- [ ] `wr lsf bsub` (cmd/lsf.go ~239-246) prints "Duplicate command
+- [x] `wr lsf bsub` (cmd/lsf.go ~239-246) prints "Duplicate command
   specified. Job not submitted." and exits non-zero when its add was resent
   after a dropped connection and the first copy had queued the job
   (inserts 0), ignoring AddDuplicates.Resent().
   - Source: reviewer of the rerun-add resend item.
+  - Red command: `timeout 900 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    go test -tags netgo -count 1 -timeout 20m ./cmd/ -run
+    '^TestLSFBsubResentAdd$'`, exit 1: `cmd/lsf_test.go Line 68: Expected:
+    0 Actual: 255`.
+  - Fixed: bsub's add moved into submitBsubJob, which uses
+    AddWithDuplicates and only reports a duplicate when nothing was added
+    and the add was not resent; a resent add prints the normal "Job <id> is
+    submitted" line. ErrResentAddSkippedComplete still dies. The client
+    tests' reply-dropping proxy moved to internal/replyproxy (test support,
+    not imported by the wr binary) so cmd tests can use it.
