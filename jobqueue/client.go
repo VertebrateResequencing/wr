@@ -1144,6 +1144,22 @@ func (c *Client) currentRetryTime() time.Duration {
 	return c.retryTime
 }
 
+// adoptServerInfo makes si, from the manager this client now talks to, this
+// client's ServerInfo, refreshing the timings derived from it.
+func (c *Client) adoptServerInfo(si *ServerInfo) {
+	c.Lock()
+	defer c.Unlock()
+
+	c.adoptServerInfoLocked(si)
+}
+
+// adoptServerInfoLocked is adoptServerInfo for a caller holding the client's
+// lock.
+func (c *Client) adoptServerInfoLocked(si *ServerInfo) {
+	c.adoptServerTimings(c.ServerInfo, si)
+	c.ServerInfo = si
+}
+
 // adoptServerTimings replaces the timings this client derived from oldSI with
 // those derived the same way from newSI. A timing that no longer matches what
 // oldSI gave was overridden on this client, so it is kept.

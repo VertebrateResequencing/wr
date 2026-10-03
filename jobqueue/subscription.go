@@ -74,6 +74,13 @@ var errRetryBudgetSpent = errors.New("jobqueue subscription reconnect: retry bud
 //nolint:gochecknoglobals // test seam; nil in production.
 var replaceSockDecidedHook func()
 
+// reconnectConnectedHook, if set, runs in each reconnect attempt once the client
+// has connected to the manager, before the resubscribe. Tests use it to restart
+// the manager in that window.
+//
+//nolint:gochecknoglobals // test seam; nil in production.
+var reconnectConnectedHook func()
+
 // JobUpdateKind discriminates the events on a Subscription channel.
 type JobUpdateKind int
 
@@ -429,6 +436,10 @@ func (s *Subscription) reconnectOnce(retryEnd time.Time) ([]*JobUpdate, error) {
 		return nil, err
 	}
 
+	if reconnectConnectedHook != nil {
+		reconnectConnectedHook()
+	}
+
 	dialAddr := s.client.subscriptionDialAddr()
 
 	sock, err := dialSubscriptionSocket(dialAddr, s.client.args[1], s.client.args[2],
@@ -446,6 +457,14 @@ func (s *Subscription) reconnectOnce(retryEnd time.Time) ([]*JobUpdate, error) {
 
 	if !s.replaceSock(sock, resp.SubscriptionID, dialAddr) {
 		return nil, s.unsubscribeRejectedReplacement(resp.SubscriptionID, retryEnd)
+	}
+
+	// the manager that answered the connect above may have been replaced by a
+	// restarted one before the resubscribe, which mangos then sent to the new
+	// manager; the resubscribe reply says which manager now holds us. A manager
+	// too old to include its info leaves what the connect adopted.
+	if resp.SInfo != nil {
+		s.client.adoptServerInfo(resp.SInfo)
 	}
 
 	return resp.JobUpdates, nil
@@ -984,8 +1003,7 @@ func (c *Client) reconnect(timeout time.Duration) error {
 	c.Lock()
 	oldSock := c.sock
 	c.sock = newClient.sock
-	c.adoptServerTimings(c.ServerInfo, newClient.ServerInfo)
-	c.ServerInfo = newClient.ServerInfo
+	c.adoptServerInfoLocked(newClient.ServerInfo)
 	c.Unlock()
 
 	if oldSock != nil {

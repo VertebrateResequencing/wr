@@ -349,7 +349,7 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
     GetIncompleteByRepGroupMatchContext, GetLastCompletionTimeByRepGroupContext,
     KillContext and DeleteContext; the plain methods wrap them with
     context.Background(). GetSchedulerAlerts (REST) has none yet.
-- [ ] TestSchedulerWaitForRunningAcrossManagerRestart ("rides out repeated
+- [x] TestSchedulerWaitForRunningAcrossManagerRestart ("rides out repeated
   outages", client/client_test.go ~315, added by this branch's WaitForRunning
   commit) fails intermittently under `CGO_ENABLED=1 -race` on the full
   client package: `Expected "timed out waiting for WaitForJobs", Actual
@@ -357,6 +357,12 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
   after a restart under load, so one unreachable spell spans both 3.5s
   outages and exceeds the 6s RetryTime.
   - Source: reviewer of the mangos resend item.
+  - Not reproduced after 90913194: 60 targeted -race iterations and 8 full
+    client race runs, two at a time, all passed. Each poll is now its own
+    request with its own outage clock, so the two 3.5s outages only add up if
+    one request goes unanswered through the at least 1s the manager is up
+    between them; measured, in-flight requests were answered 93-140ms after
+    each restart. No change made.
 - [ ] After a manager restart, a subscription's first poll can reach the new
   manager with the old manager's subscription id, which the new manager
   logs at error level. Check whether the client then resubscribes without
@@ -384,12 +390,26 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
   still report outages meaningfully, e.g. as time blocked rather than
   errors, and adjust here if needed.
   - Source: coordinator.
-- [ ] TestSubscriptionReconnectAdoptsManagerTimings (added by e89991b8) is
+- [x] TestSubscriptionReconnectAdoptsManagerTimings (added by e89991b8) is
   flaky: 2 of 6 runs fail reading jq.ServerInfo.RetryTime right after the
   resync update (`Line 1834: Expected: time.Duration(31000000000) Actual:
   time.Duration(30000000000)`); either the resync can arrive before the
   reconnect adopts the new ServerInfo, or the test's read is unsynchronised.
   - Source: implementor of the context-variants item.
+  - Red command: `timeout 1500 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    go test -tags netgo -count 20 -timeout 20m ./jobqueue/ -run
+    '^TestSubscriptionReconnectAdoptsManagerTimings$'`, exit 1, 1 of 20
+    (2 of 40 instrumented): `Line 1834: Expected 31s, Actual 30s`.
+  - Cause (product bug): a stopping manager still answers Ping while it
+    drains, so the reconnect adopted the old manager's ServerInfo; its
+    resubscribe was refused, resent by mangos to the restarted manager and
+    accepted, and the resync was published with stale info and timings.
+  - Fixed: the subscribe reply carries the manager's ServerInfo
+    (serverInfoCopy, shared with handlePing); reconnectOnce adopts it via
+    Client.adoptServerInfo after replaceSock, so a resync means the client
+    holds the info of the manager that registered it. New deterministic case
+    restarts the manager between the reconnect's connect and resubscribe
+    (red 5 of 5 before). Original test green at -count 30, plain and race.
 - [ ] An add mangos resends after its pipe drops can re-add a job the first
   copy queued and that has since completed, so it runs twice: SubmitJobs
   (ignoreComplete false) re-adds complete jobs, and the pipe-loss resend

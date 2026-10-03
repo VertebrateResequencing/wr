@@ -1855,6 +1855,88 @@ func TestSubscriptionReconnectAdoptsManagerTimings(t *testing.T) {
 		So(jq.touchInterval, ShouldEqual, newTouchInterval)
 		So(jq.retryTime, ShouldEqual, newRetryTime)
 	})
+
+	Convey("A reconnect adopts the timings of the manager that answers its resubscribe", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		serverConfig.Timings.TouchInterval = oldTouchInterval
+		applySubscriptionReconnectTimings(&serverConfig, oldRetryWait, oldRetryTime)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		var sub *Subscription
+
+		Reset(func() {
+			reconnectConnectedHook = nil
+
+			if sub != nil {
+				sub.Unsubscribe()
+			}
+
+			server.Stop(ctx, true)
+		})
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		Reset(func() {
+			disconnect(jq)
+		})
+
+		sub, err = jq.SubscribeToJobKeys(ctx, []string{"subscription-timings-resubscribe"})
+		So(err, ShouldBeNil)
+
+		// the manager restarts with new timings after the reconnect has
+		// connected to it and before the resubscribe, so the old manager
+		// answers the connect and the restarted one the resubscribe
+		type restart struct {
+			server *Server
+			err    error
+		}
+
+		restarted := make(chan restart, 1)
+
+		var restartOnce sync.Once
+
+		reconnectConnectedHook = func() {
+			restartOnce.Do(func() {
+				server.Stop(ctx, true)
+
+				restartConfig := serverConfig
+				restartConfig.dontWipeDevDB = true
+				restartConfig.Timings.TouchInterval = newTouchInterval
+				applySubscriptionReconnectTimings(&restartConfig, newRetryWait, newRetryTime)
+
+				newServer, _, _, errs := serve(ctx, restartConfig)
+				restarted <- restart{server: newServer, err: errs}
+			})
+		}
+
+		sub.closeSock()
+
+		var r restart
+
+		reconnected := false
+
+		select {
+		case r = <-restarted:
+			reconnected = true
+		case <-time.After(subscriptionUpdateWait):
+		}
+
+		So(reconnected, ShouldBeTrue)
+		So(r.err, ShouldBeNil)
+
+		server = r.server
+
+		update := receiveSubscriptionUpdate(sub, subscriptionUpdateWait)
+		So(update, ShouldNotBeNil)
+		So(update.Kind, ShouldEqual, JobUpdateResync)
+		So(jq.ServerInfo.RetryTime, ShouldEqual, newRetryTime)
+		So(jq.currentTouchInterval(), ShouldEqual, newTouchInterval)
+		So(jq.currentRetryWait(), ShouldEqual, newRetryWait)
+		So(jq.currentRetryTime(), ShouldEqual, newRetryTime)
+	})
 }
 
 func TestSubscriptionReconnectReleasesOldRegistration(t *testing.T) {

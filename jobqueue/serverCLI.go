@@ -747,15 +747,19 @@ func (s *Server) replyError(ctx context.Context, m *mangos.Message, cr *clientRe
 
 // handlePing returns server info for a ping request.
 func (s *Server) handlePing() *serverResponse {
-	// avoid a later race condition when we try to encode ServerInfo by doing
-	// the read here, copying it under read lock
+	return &serverResponse{SInfo: s.serverInfoCopy()}
+}
+
+// serverInfoCopy returns a copy of the server's info, made under read lock to
+// avoid a later race condition when the reply encodes it.
+func (s *Server) serverInfoCopy() *ServerInfo {
 	s.ssmutex.RLock()
 	defer s.ssmutex.RUnlock()
 
 	si := &ServerInfo{}
 	*si = *s.ServerInfo
 
-	return &serverResponse{SInfo: si}
+	return si
 }
 
 // handleBackup backs the database up into the response.
@@ -945,7 +949,9 @@ func (s *Server) handleSubscribe(ctx context.Context, cr *clientRequest) (*serve
 		s.unregisterClientSubscription(cr.SubscriptionID)
 	}
 
-	return &serverResponse{SubscriptionID: id, JobUpdates: catchUp}, "", ""
+	// the info lets a reconnecting client adopt the timings of the manager
+	// that registered it, which need not be the one its connect reached
+	return &serverResponse{SubscriptionID: id, JobUpdates: catchUp, SInfo: s.serverInfoCopy()}, "", ""
 }
 
 // handleUnsubscribe unregisters the request's client subscription.
