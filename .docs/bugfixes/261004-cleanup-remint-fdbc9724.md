@@ -69,3 +69,20 @@ plain and `-race`. The caller runs `make test` and `make race`.
     30 at `-count 30`; `golangci-lint` 0 issues; `cleanorder -min-diff` clean.
   - Files: `jobqueue/utils.go`, `jobqueue/workspace_test.go`,
     `jobqueue/deletion_probes_test.go`, `CHANGELOG.md`.
+
+## Review (261004)
+
+PASS on safety, error wrapping, tests and mutants (4 more killed in review:
+levelRemade accepting a symlink, skipping its Lstat, accepting any error, and
+proveSameDir not wrapping errNotBelowBaseDir). Findings addressed:
+
+- The CHANGELOG entry said the empty directories were no longer left. They
+  never were this run's to remove: before and after the fix nothing at or
+  above the changed level is deleted; the run that re-made them removes them
+  when it finishes. The user-visible fix is that the spurious cleanup failure
+  ("Behaviour problems" in the job's stderr) is gone. Entry reworded. The
+  Source note above ("are left") describes the pre-fix report and stays.
+- Also affected, and still safe: `rmEmptyMountDirs` (via `rmEmptyDirsIn`)
+  now stops silently, rather than refusing, when a level above a mount point
+  is a different real directory; it deletes nothing in that case either.
+
