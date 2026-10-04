@@ -303,7 +303,7 @@ quoted include it.
     failed the old test with this message and passes the new one.
   - Mutation: a hook that never signals fails with the same message after
     30s.
-- [ ] TestStartDurability and TestReliable2ReserveConfirmedDeadReclaimed
+- [x] TestStartDurability and TestReliable2ReserveConfirmedDeadReclaimed
   ("could not reach the server" / "receive time out")
   - Not reproduced: lane 45, `TestReliable2ReserveConfirmedDeadReclaimed`
     15 runs with `stress -c 8` and the test on one core passed. The failing
@@ -319,6 +319,8 @@ quoted include it.
     `Reserve` inside its 500ms TTR, the same shape as the lost-run fixture
     item above, but that would fail as `reReserved` nil, not as either
     message. No change made.
+  - The reclaim test now connects once; `TestStartDurability` is closed,
+    watch. See `261004-checklist-tidy-8e94211c.md` item E.
 - [x] TestStatusCountReconcile (a 120s node timeout at load 80+)
   - Recorded, uninvestigated, in 260927-race-kill-bury-flakes.md.
   - Cause (test): the 120s is the context bounding the 4 node harness

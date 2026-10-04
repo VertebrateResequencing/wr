@@ -376,17 +376,20 @@ func TestReliable2ReserveConfirmedDeadReclaimed(t *testing.T) {
 
 		// deliberately never call Started; the TTR marks it Lost, death is
 		// confirmed, and it is killed and requeued. Poll a fresh client until it
-		// can reserve the requeued job again (no stuck-in-Run hole).
+		// can reserve the requeued job again (no stuck-in-Run hole). It connects
+		// once, so a loaded host's slow connect can fail the test only there,
+		// not on every poll.
+		jq2, errc := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(errc, ShouldBeNil)
+
+		defer disconnect(jq2)
+
 		var reReserved *Job
 
 		deadline := time.Now().Add(30 * ttr)
 		for time.Now().Before(deadline) {
-			jq2, errc := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
-			So(errc, ShouldBeNil)
-
 			j, errr2 := jq2.Reserve(200 * time.Millisecond)
 			So(errr2, ShouldBeNil)
-			disconnect(jq2)
 
 			if j != nil {
 				reReserved = j

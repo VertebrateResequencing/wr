@@ -91,10 +91,27 @@ files.
   - Green, unchanged test: `CGO_ENABLED=1 go test -race -tags netgo -count
     10 ./jobqueue -run '^TestSubscriptionReconnectDuringManagerShutdown$'`
     exit 0 (254s), plus the pinned plain run above.
-- [ ] E. `260928-load-sensitive-flakes.md` item: `TestStartDurability` and
+- [x] E. `260928-load-sensitive-flakes.md` item: `TestStartDurability` and
   `TestReliable2ReserveConfirmedDeadReclaimed` fail with "could not reach the
   server". Act only on a concrete, verifiable weakness; otherwise close and
   watch.
+  - Weakness found in `TestReliable2ReserveConfirmedDeadReclaimed` only: its
+    poll loop made a new `Connect` (1.5s `clientConnectTime`) on every poll,
+    each a separate chance to fail with "could not reach the server". A
+    temporary count gave 10 Connects in 3 runs unloaded, and 40 in 10 runs
+    with the test and `stress -c 8` pinned to one core (`GOMAXPROCS=1`).
+    Each took 3-51ms, so this is a smaller exposure than the audit implied,
+    and the observed failure was still not reproduced (10 of 10 passed).
+  - Fix (test only), `jobqueue/reliable2_reserve_test.go`: the second
+    client, which shows a client other than the reserving one can reserve
+    the requeued job, connects once before the loop and polls `Reserve` on
+    it.
+  - Green: `go test -tags netgo -count 10` and `-race -count 10` of the test
+    exit 0. Mutation: leaving the owner's pid alive (no
+    `setServerJobPid`), so nothing is reclaimed, fails at
+    `So(reReserved, ShouldNotBeNil)` after the 15s deadline.
+  - `TestStartDurability`: closed, watch. It connects once before and once
+    after its restart, as other tests do; nothing in it adds exposure.
 
 ## Backlog (not scheduled)
 
