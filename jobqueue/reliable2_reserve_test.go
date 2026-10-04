@@ -375,7 +375,7 @@ func TestReliable2ReserveConfirmedDeadReclaimed(t *testing.T) {
 		So(setServerJobPid(server, key, definitelyDeadPid(t)), ShouldBeTrue)
 
 		// deliberately never call Started; the TTR marks it Lost, death is
-		// confirmed, and it is killed and requeued. Poll a fresh client until it
+		// confirmed, and it is killed and requeued. Poll a second client until it
 		// can reserve the requeued job again (no stuck-in-Run hole). It connects
 		// once, so a loaded host's slow connect can fail the test only there,
 		// not on every poll.

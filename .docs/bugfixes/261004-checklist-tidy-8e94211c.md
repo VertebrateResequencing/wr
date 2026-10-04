@@ -1,7 +1,7 @@
 # Tidy unticked bugfix checklist items (2026-10-04)
 
 - Branch: `checklist-tidy-8e94211c`
-- Base: `origin/develop` at `fc3f8a5d`
+- Base: `origin/develop` at `55cc2565` (#668; first written on `fc3f8a5d`)
 - Queue owner: this branch and this checklist
 - Source: an audit of the unticked items in `.docs/bugfixes/*.md` on
   `fc3f8a5d`. Each claim was checked against the code and the cited
