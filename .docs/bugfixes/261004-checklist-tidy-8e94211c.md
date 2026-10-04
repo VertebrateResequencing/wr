@@ -118,22 +118,56 @@ files.
 Unfinished work recorded only as prose in other checklists, some of it inside
 ticked items. Listed here so a scan for unticked items finds it.
 
-- [ ] `260904-4.md`, "A production finding for a separate PR": ext4 hands a
+Owner decisions (261004) are noted on each item.
+
+- [ ] QUEUED (branch 1 below). `260904-4.md`, "A production finding for a separate PR": ext4 hands a
   freed inode to the next `mkdir`, so at scale `openChain` refuses a hashed
   level re-made by another run (`errNotBelowBaseDir`). Cleanup then reports a
   failure and leaves the empty hashed levels and the `<AppName>_cwd` base.
-- [ ] `260927-queue-heap-retention.md`, "Not fixed, recorded for follow-up":
+- [ ] QUEUED, LSF part only, measure first (branch 2 below); the limiter
+  and OpenStack parts are accepted as negligible (kilobytes a year; the
+  buffered `toNotify` channels are freed at the next decrement).
+  `260927-queue-heap-retention.md`, "Not fixed, recorded for follow-up":
   the limiter never forgets time or datetime groups and keeps `toNotify`
   channels until a decrement; LSF `reservedElements` and `doomedElements`
   are not pruned; OpenStack `spawnCanceller` can keep an empty inner map per
   cmd.
-- [ ] `260929-query-copies-and-warning-storm.md`, "Not fixed": each
+- [ ] MEASURE IN THE CRASH SOAK: record the scheduling cycle's share of CPU
+  and the ready-to-runner-requested latency against backlog size, then decide.
+  `260929-query-copies-and-warning-storm.md`, "Not fixed": each
   scheduling cycle still snapshots and walks the whole ready backlog
   (O(backlog)).
-- [ ] `260927-subscription-reconnect-leak.md`, "Residual, not fixed": a
+- [ ] QUEUED (branch 3 below), simpler design: record each subscription's
+  last poll and sweep any not polled for a generous interval (e.g. 30 min); a
+  live client polling a swept id resubscribes and catches up (#665).
+  `260927-subscription-reconnect-leak.md`, "Residual, not fixed": a
   resubscribe that registers but whose reply is lost strands that
   replacement subscription; only a manager-side reaper keyed on client
   liveness would cover it.
-- [ ] `260930-runner-report-followups.md` item 3, "Noted, not fixed": a
+- [ ] QUEUED (branch 4 below): reject ClientID 0 on release, bury, delay
+  and ready. `260930-runner-report-followups.md` item 3, "Noted, not fixed": a
   hand-made request with a zero ClientID can release or bury a job that never
   ran (ReservedBy zero).
+
+## Delivery queue
+
+Queue owner: this branch. Worktrees are beside the main clone.
+
+- checklist-tidy-8e94211c (`../wr-tidy`) -> develop: rebased onto 55cc2565
+  (#668 merged, 261004). Status: implemented; next review, gates, PR,
+  pr-resolver. Merge first.
+- Then, one at a time, each from the latest develop after the previous one
+  is ready:
+  1. Cleanup refuses when a hashed level was re-made with a new inode (any
+     non-ext4-quiet filesystem; NFS gives a new inode every time). Fix:
+     `openChain` treats a changed intermediate level like a gone one: stop,
+     delete nothing, no error (owner: silent stop acceptable).
+  2. LSF per-runner retention: measure retained heap per runner first; prune
+     only if real, without breaking `killExcessCmds`.
+  3. Idle-subscription sweep (design above).
+  4. Reject ClientID 0 on release, bury, delay and ready.
+- Crash soak at production scale (owner-scheduled 261004): develop build,
+  `/nfs/hgi/wr/sb10-bigdb/soak9`, ramp to ~3000 LSF jobs with crash and clean
+  restarts, `RUNNER_FILELOG=1`, `WRDEV_PRODSIM_KEEP_DB=1`, never replace the
+  binary mid-run. Confirms or refutes the crash-1 double runs
+  (260929-archive-before-start.md) and measures the scheduling cycle.
