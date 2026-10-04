@@ -1694,12 +1694,14 @@ type Server struct {
 	clientSubscriptions map[string]*serverSubscription
 	badServers          map[string]*cloud.Server
 	schedIssues         map[string]*schedulerIssue
-	racmutex            sync.RWMutex // to protect the readyaddedcallback
+	scheduleRetries     map[string]bool // groups with a schedule retry loop running (see retryScheduleRunnersLater)
+	racmutex            sync.RWMutex    // to protect the readyaddedcallback
 	bsmutex             sync.RWMutex
 	simutex             sync.RWMutex
 	krmutex             sync.RWMutex
 	ssmutex             sync.RWMutex // up, drain, blocking, Mode, shutdown's q-nil, recovering state
 	psgmutex            sync.RWMutex // to protect previouslyScheduledGroups
+	srmutex             sync.Mutex   // to protect scheduleRetries
 	csmutex             sync.RWMutex // to protect clientSubscriptions and subsClosed
 	rpmutex             sync.Mutex   // to protect racPending, racRunning and waitingReserves
 	sync.Mutex
@@ -3702,6 +3704,101 @@ func (s *Server) ackAlreadyReleased(ctx context.Context, job *Job, rep releaseRe
 	}
 
 	return s.db.updateJobAfterChangeDurable(job)
+}
+
+// attemptScheduleRunners asks the scheduler once for group.count runners for
+// the group, logging any failure, and returns true if the attempt failed and
+// should be retried.
+func (s *Server) attemptScheduleRunners(ctx context.Context, group *sgroup) bool {
+	rc := s.runnerCommand()
+	if rc == "" {
+		return false
+	}
+
+	scheduleCmd := s.groupToScheduleCmd(ctx, rc, group.name, group.req)
+
+	err := s.scheduler.Schedule(ctx, scheduleCmd, group.req, group.priority, group.count)
+	if err == nil {
+		group.resetRetryState()
+
+		return false
+	}
+
+	problem := true
+
+	var serr scheduler.Error
+	if errors.As(err, &serr) && serr.Err == scheduler.ErrImpossible {
+		// the requirements are impossible, so bury all jobs in this group
+		problem = s.buryImpossibleGroupJobs(ctx, group)
+		s.triggerReadyAddedCallback(ctx)
+	}
+
+	if problem {
+		logScheduleFailure(ctx, group, err)
+	}
+
+	return problem
+}
+
+// logScheduleFailure counts a failed schedule attempt for the group and logs
+// it, escalating to Error once the failure is persistent so a
+// permanently-failing submit is visible (not swallowed by an endless stream of
+// identical warnings) *** and inform (by email) the user about this problem if
+// it's persistent, once per hour (day?)
+func logScheduleFailure(ctx context.Context, group *sgroup, err error) {
+	group.failures++
+
+	if group.failures >= persistentScheduleFailures {
+		clog.Error(ctx, "Server scheduling runners persistently failing",
+			"err", err, "group", group.name, "consecutiveFailures", group.failures)
+
+		return
+	}
+
+	clog.Warn(ctx, "Server scheduling runners error",
+		"err", err, "group", group.name, "consecutiveFailures", group.failures)
+}
+
+// claimScheduleRetry records that a retry loop is running for the named
+// scheduler group, returning false if one already was.
+func (s *Server) claimScheduleRetry(name string) bool {
+	s.srmutex.Lock()
+	defer s.srmutex.Unlock()
+
+	if s.scheduleRetries == nil {
+		s.scheduleRetries = make(map[string]bool)
+	}
+
+	if s.scheduleRetries[name] {
+		return false
+	}
+
+	s.scheduleRetries[name] = true
+
+	return true
+}
+
+// releaseScheduleRetry records that the retry loop for the named scheduler group
+// has ended.
+func (s *Server) releaseScheduleRetry(name string) {
+	s.srmutex.Lock()
+	defer s.srmutex.Unlock()
+
+	delete(s.scheduleRetries, name)
+}
+
+// currentGroupCount returns how many runners the named scheduler group currently
+// needs: its count if it is still scheduled, otherwise 0.
+func (s *Server) currentGroupCount(name string) int {
+	s.psgmutex.RLock()
+	group, existed := s.previouslyScheduledGroups[name]
+	s.psgmutex.RUnlock()
+
+	if !existed {
+		return 0
+	}
+
+	return group.getCount()
 }
 
 // logClientRequestError logs the error handleRequest returned for a client
@@ -8053,45 +8150,10 @@ func (s *Server) runnerCommand() string {
 	return s.rc
 }
 
+// scheduleRunners asks the scheduler for group.count runners for the group,
+// retrying later if that fails.
 func (s *Server) scheduleRunners(ctx context.Context, group *sgroup) {
-	rc := s.runnerCommand()
-	if rc == "" {
-		return
-	}
-
-	scheduleCmd := s.groupToScheduleCmd(ctx, rc, group.name, group.req)
-
-	err := s.scheduler.Schedule(ctx, scheduleCmd, group.req, group.priority, group.count)
-	if err == nil {
-		group.resetRetryState()
-
-		return
-	}
-
-	problem := true
-
-	var serr scheduler.Error
-	if errors.As(err, &serr) && serr.Err == scheduler.ErrImpossible {
-		// the requirements are impossible, so bury all jobs in this group
-		problem = s.buryImpossibleGroupJobs(ctx, group)
-		s.triggerReadyAddedCallback(ctx)
-	}
-
-	if problem {
-		group.failures++
-
-		// log the error, escalating to Error once the failure is persistent so a
-		// permanently-failing submit is visible (not swallowed by an endless
-		// stream of identical warnings) *** and inform (by email) the user about
-		// this problem if it's persistent, once per hour (day?)
-		if group.failures >= persistentScheduleFailures {
-			clog.Error(ctx, "Server scheduling runners persistently failing",
-				"err", err, "group", group.name, "consecutiveFailures", group.failures)
-		} else {
-			clog.Warn(ctx, "Server scheduling runners error",
-				"err", err, "group", group.name, "consecutiveFailures", group.failures)
-		}
-
+	if s.attemptScheduleRunners(ctx, group) {
 		s.retryScheduleRunnersLater(ctx, group)
 	}
 }
@@ -8148,11 +8210,21 @@ func (s *Server) buryImpossibleItem(ctx context.Context, item *queue.Item) {
 
 // retryScheduleRunnersLater re-attempts scheduling runners for group after a
 // delay drawn from the group's per-group backoff (a jittered exponential that
-// starts at CheckRunnerTime and is capped at scheduleRetryBackoffMax), unless
-// the server is shutting down. This stops a persistently-failing submit (eg. a
-// queue that always rejects) from re-running with the same count forever at a
-// fixed interval, while the jitter avoids many groups retrying in lockstep.
+// starts at CheckRunnerTime and is capped at scheduleRetryBackoffMax), until an
+// attempt succeeds or the server shuts down. This stops a persistently-failing
+// submit (eg. a queue that always rejects) from re-running at a fixed interval,
+// while the jitter avoids many groups retrying in lockstep.
+//
+// Each retry asks for the group's current count, not the count of the attempt
+// that failed: 0 once the group's jobs are gone, so a retry neither keeps
+// submitting runners nobody needs nor keeps failing to. Only one retry loop runs
+// per group name; a failure while one is pending leaves the retrying to it,
+// since it will ask for the then-current count anyway.
 func (s *Server) retryScheduleRunnersLater(ctx context.Context, group *sgroup) {
+	if !s.claimScheduleRetry(group.name) {
+		return
+	}
+
 	b := group.ensureRetryBackoff(s.timings.CheckRunnerTime)
 
 	wgk := s.wg.Add(1)
@@ -8160,12 +8232,13 @@ func (s *Server) retryScheduleRunnersLater(ctx context.Context, group *sgroup) {
 	go func() {
 		defer internal.LogPanic(ctx, "jobqueue schedule runners retry", true)
 		defer s.wg.Done(wgk)
+		defer s.releaseScheduleRetry(group.name)
 
 		// Bridge s.stopClientHandling (closed on shutdown) to a cancellable
 		// context so the jittered backoff sleep aborts promptly: a pending sleep
 		// (up to scheduleRetryBackoffMax) must not block s.wg and hang manager
-		// shutdown. The bridge goroutine also exits when the sleep completes
-		// normally (cancel via defer closes sleepCtx.Done()).
+		// shutdown. The bridge goroutine also exits when the retries end (cancel
+		// via defer closes sleepCtx.Done()).
 		sleepCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
@@ -8177,15 +8250,24 @@ func (s *Server) retryScheduleRunnersLater(ctx context.Context, group *sgroup) {
 			}
 		}()
 
-		b.Sleep(sleepCtx)
+		for {
+			b.Sleep(sleepCtx)
 
-		if sleepCtx.Err() != nil {
-			return
+			if sleepCtx.Err() != nil {
+				return
+			}
+
+			count := s.currentGroupCount(group.name)
+
+			group.Lock()
+			group.count = count
+			failed := s.attemptScheduleRunners(ctx, group)
+			group.Unlock()
+
+			if !failed {
+				return
+			}
 		}
-
-		group.Lock()
-		s.scheduleRunners(ctx, group)
-		group.Unlock()
 	}()
 }
 

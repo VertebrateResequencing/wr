@@ -71,12 +71,13 @@ type ConfigMock struct {
 	ScheduleBlock <-chan struct{}
 
 	// ScheduleError, if non-nil, is called near the start of every schedule()
-	// call (after ScheduleBlock); if it returns a non-nil error, schedule()
-	// returns that error immediately without running any runners. This lets a
-	// test drive the server's scheduling-failure and retry paths (eg. by
-	// returning an error for the first N calls, then nil). Leave nil for normal
-	// behaviour.
-	ScheduleError func() error
+	// call (after ScheduleBlock) with the count asked for; if it returns a
+	// non-nil error, schedule() returns that error immediately without running
+	// any runners. This lets a test drive the server's scheduling-failure and
+	// retry paths (eg. by returning an error for the first N calls, then nil,
+	// or, like a queue whose bsub always fails, for every count above 0). Leave
+	// nil for normal behaviour.
+	ScheduleError func(count int) error
 
 	// RunCmdFunc, if non-nil, makes getHost return a stub Host (for any host
 	// name) whose RunCmd calls this. This lets a test observe and drive the
@@ -157,7 +158,7 @@ func (s *mock) schedule(ctx context.Context, cmd string, _ *Requirements, _ uint
 	}
 
 	if s.config.ScheduleError != nil {
-		if err := s.config.ScheduleError(); err != nil {
+		if err := s.config.ScheduleError(count); err != nil {
 			return err
 		}
 	}

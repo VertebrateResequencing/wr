@@ -35,7 +35,9 @@ package jobqueue
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -142,7 +144,7 @@ func TestScheduleRetryBackoff(t *testing.T) {
 		// retry chain terminates deterministically.
 		sched, err := scheduler.New(ctx, "mock", &scheduler.ConfigMock{
 			RunnerFunc: func(context.Context, string) {},
-			ScheduleError: func() error {
+			ScheduleError: func(int) error {
 				if atomic.AddInt32(&calls, 1) <= persistentScheduleFailures {
 					return errTestScheduleFail
 				}
@@ -217,7 +219,7 @@ func TestScheduleRetryBackoff(t *testing.T) {
 	Convey("A pending retry sleep is aborted promptly when client handling stops", t, func() {
 		sched, err := scheduler.New(ctx, "mock", &scheduler.ConfigMock{
 			RunnerFunc:    func(context.Context, string) {},
-			ScheduleError: func() error { return errTestScheduleFail },
+			ScheduleError: func(int) error { return errTestScheduleFail },
 		})
 		So(err, ShouldBeNil)
 
@@ -258,5 +260,215 @@ func TestScheduleRetryBackoff(t *testing.T) {
 		}()
 
 		So(closedWithin(drained, 2*time.Second), ShouldBeTrue)
+	})
+}
+
+// scheduleCall is one Schedule() the mock scheduler was asked to make.
+type scheduleCall struct {
+	count int
+	at    time.Time
+}
+
+// scheduleCallLog records the counts a mock scheduler is asked for.
+type scheduleCallLog struct {
+	mu    sync.Mutex
+	calls []scheduleCall
+}
+
+// record notes a Schedule() for count, and fails it if count is above 0, like a
+// queue whose bsub is always refused.
+func (l *scheduleCallLog) record(count int) error {
+	l.mu.Lock()
+	l.calls = append(l.calls, scheduleCall{count: count, at: time.Now()})
+	l.mu.Unlock()
+
+	if count > 0 {
+		return errTestScheduleFail
+	}
+
+	return nil
+}
+
+// failedSince returns how many Schedule() calls asked for runners at or after
+// the given time.
+func (l *scheduleCallLog) failedSince(since time.Time) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	n := 0
+
+	for _, c := range l.calls {
+		if c.count > 0 && !c.at.Before(since) {
+			n++
+		}
+	}
+
+	return n
+}
+
+// lastCount returns the count of the latest Schedule() call, or -1 if none.
+func (l *scheduleCallLog) lastCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if len(l.calls) == 0 {
+		return -1
+	}
+
+	return l.calls[len(l.calls)-1].count
+}
+
+// TestScheduleRetryStopsWhenGroupEmptied proves that once a scheduler group's
+// only job is removed, the manager stops asking the scheduler for runners for
+// it, even though every earlier attempt failed and is being retried. In soak9 a
+// job sent to a queue whose esub refused every bsub was removed, and the manager
+// kept retrying the bsub for its empty group for 16 minutes.
+func TestScheduleRetryStopsWhenGroupEmptied(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	const (
+		rg          = "emptied_retry_rg"
+		checkRunner = 50 * time.Millisecond
+		settle      = 500 * time.Millisecond
+		quiet       = 3 * time.Second
+	)
+
+	ctx := context.Background()
+	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+
+	calls := &scheduleCallLog{}
+
+	serverConfig.Timings.CheckRunnerTime = checkRunner
+	serverConfig.SchedulerName = schedulerNameMock
+	serverConfig.RunnerCmd = mockRunnerCmd
+	serverConfig.SchedulerConfig = &scheduler.ConfigMock{
+		RunnerFunc:    func(context.Context, string) {},
+		ScheduleError: calls.record,
+	}
+
+	Convey("Given a server whose scheduler fails every request for runners", t, func() {
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		job := &Job{
+			Cmd: "echo emptied retry", Cwd: testCwdPath, RepGroup: rg, ReqGroup: rg,
+			Requirements: standardReqs,
+		}
+
+		_, _, err = jq.Add([]*Job{job}, os.Environ(), true)
+		So(err, ShouldBeNil)
+
+		start := time.Now()
+
+		for calls.failedSince(start) < 10 && time.Since(start) < 10*time.Second {
+			<-time.After(checkRunner)
+		}
+
+		So(calls.failedSince(start), ShouldBeGreaterThanOrEqualTo, 10)
+
+		Convey("removing the group's only job stops the failing requests and leaves the count at 0", func() {
+			deleted, errd := jq.Delete([]*JobEssence{{JobKey: job.Key()}})
+			So(errd, ShouldBeNil)
+			So(deleted, ShouldEqual, 1)
+
+			<-time.After(settle)
+
+			quietFrom := time.Now()
+
+			<-time.After(quiet)
+
+			So(calls.failedSince(quietFrom), ShouldEqual, 0)
+			So(calls.lastCount(), ShouldEqual, 0)
+		})
+	})
+}
+
+// TestScheduleRetryFollowsGroupCount proves that a failing schedule keeps being
+// retried while its group still has jobs, by one retry loop however many
+// attempts failed, and that the retry asks for the group's current count, so it
+// ends once that count is 0.
+func TestScheduleRetryFollowsGroupCount(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	const (
+		minSleep = 50 * time.Millisecond
+		attempts = 20
+		window   = time.Second
+	)
+
+	ctx := context.Background()
+
+	Convey("Given a scheduled group whose schedule attempts all fail", t, func() {
+		calls := &scheduleCallLog{}
+
+		sched, err := scheduler.New(ctx, "mock", &scheduler.ConfigMock{
+			RunnerFunc:    func(context.Context, string) {},
+			ScheduleError: calls.record,
+		})
+		So(err, ShouldBeNil)
+
+		live := &sgroup{
+			name:  "follow_rg",
+			count: 1,
+			req:   &scheduler.Requirements{RAM: 1, Cores: 1, Disk: 1, Time: time.Second},
+		}
+
+		s := &Server{
+			previouslyScheduledGroups: map[string]*sgroup{live.name: live},
+			wg:                        waitgroup.New(),
+			scheduler:                 sched,
+			rc:                        "schedule-retry-runner %s %s %s %s %d %d",
+			ServerInfo:                &ServerInfo{},
+			stopClientHandling:        make(chan bool),
+		}
+		s.timings.CheckRunnerTime = minSleep
+
+		defer close(s.stopClientHandling)
+
+		start := time.Now()
+
+		for range attempts {
+			s.scheduleRunners(ctx, live.snapshot())
+		}
+
+		<-time.After(window)
+
+		retries := calls.failedSince(start) - attempts
+
+		Convey("it is retried, by one retry loop, while the group has jobs", func() {
+			So(retries, ShouldBeGreaterThanOrEqualTo, 2)
+			So(retries, ShouldBeLessThanOrEqualTo, 10)
+		})
+
+		Convey("and once the group's count drops to 0 the retry asks for 0 and stops", func() {
+			So(live.decrement(1), ShouldEqual, 0)
+
+			emptied := time.Now()
+
+			drained := make(chan struct{})
+
+			go func() {
+				s.wg.Wait(5 * time.Second)
+				close(drained)
+			}()
+
+			So(closedWithin(drained, 4*time.Second), ShouldBeTrue)
+
+			// a retry that read the count just before the decrement may still
+			// ask for 1 once
+			So(calls.failedSince(emptied), ShouldBeLessThanOrEqualTo, 1)
+			So(calls.lastCount(), ShouldEqual, 0)
+		})
 	})
 }
