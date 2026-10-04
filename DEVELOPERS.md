@@ -218,10 +218,11 @@ any regression the change accepts.
   host load hits both trees alike:
   - `jobqueue`: `BenchmarkAddJobs`, `BenchmarkUpdateJobState`,
     `BenchmarkArchiveJobs`, `BenchmarkArchiveSpacedArrivals`,
-    `BenchmarkReadyBacklogSnapshot`, `BenchmarkRepGroupStatusDetails`,
-    `BenchmarkJobKey`, `BenchmarkModifyLiveJobsReverseLookup`,
-    `BenchmarkJobCleanup*` and `BenchmarkAddDepGroupMember` (a tree without
-    a benchmark, such as an older release, just reports nothing for it)
+    `BenchmarkReadyBacklogSnapshot`, `BenchmarkBuildSchedulerGroupsBacklog`,
+    `BenchmarkRepGroupStatusDetails`, `BenchmarkJobKey`,
+    `BenchmarkModifyLiveJobsReverseLookup`, `BenchmarkJobCleanup*` and
+    `BenchmarkAddDepGroupMember` (a tree without a benchmark, such as an
+    older release, just reports nothing for it)
   - `queue`: `BenchmarkQueueLifecycle`
   - `limiter`: its benchmarks
 - the local, farm-safe `wrdev.sh` scenarios `report-storm` and

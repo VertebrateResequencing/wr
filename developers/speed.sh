@@ -83,7 +83,7 @@ done
 # all run.
 BENCH_PKGS=(jobqueue queue limiter)
 declare -A BENCH_RE=(
-  [jobqueue]='^Benchmark(AddJobs|UpdateJobState|ArchiveJobs|ArchiveSpacedArrivals|ReadyBacklogSnapshot|RepGroupStatusDetails|JobKey|ModifyLiveJobsReverseLookup|JobCleanup|JobCleanupDepth1|JobCleanupDepth8|AddDepGroupMember)$'
+  [jobqueue]='^Benchmark(AddJobs|UpdateJobState|ArchiveJobs|ArchiveSpacedArrivals|ReadyBacklogSnapshot|BuildSchedulerGroupsBacklog|RepGroupStatusDetails|JobKey|ModifyLiveJobsReverseLookup|JobCleanup|JobCleanupDepth1|JobCleanupDepth8|AddDepGroupMember)$'
   [queue]='^BenchmarkQueueLifecycle$'
   [limiter]='^BenchmarkLimiter'
 )
