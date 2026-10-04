@@ -6,12 +6,12 @@
 
 ## Delivery queue
 
-- PR #665 (client-restart-950a7a96 -> develop), no dependencies. Remote head
-  25ff030c; local 36 commits ahead, 0 behind origin/develop (261004).
-  Status: all checklist items done, including the review fix for calls
-  made with a ctx already done.
-  Waits on: full lint/test/race, CHANGELOG, push, pr-resolver. Next: run
-  the branch's quality gates.
+- PR #665 (client-restart-950a7a96 -> develop), no dependencies. 0 behind
+  origin/develop (261004). Status: all items done; make lint/test/race and
+  make speed PASS; pushed for pr-resolver. Waits on: CI and a Copilot review
+  of the pushed head. Next: pr-resolver, then ask the owner to merge.
+- Deferred: TestDBEncodeJob race flake (see Deferred incidentals), its own
+  branch after #665 merges.
 
 ## Investigation
 
