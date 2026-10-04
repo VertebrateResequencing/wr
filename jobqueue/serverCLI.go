@@ -622,6 +622,22 @@ func isRoutineClientRefusal(cr *clientRequest, srerr, qerr string) bool {
 	}
 }
 
+// reservedJob returns the item's job, and "" if the request's client holds its
+// reservation, else ErrMustReserve. It returns ErrBadJob if the item holds no
+// job.
+func reservedJob(cr *clientRequest, item *queue.Item) (*Job, string) {
+	job, ok := item.Data().(*Job)
+	if !ok {
+		return nil, ErrBadJob
+	}
+
+	if cr.ClientID != job.ReservedBy {
+		return job, ErrMustReserve
+	}
+
+	return job, ""
+}
+
 func (s *Server) subscriptionCatchUpByRepGroup(ctx context.Context, repGroup string) ([]*JobUpdate, error) {
 	records, allTerminal, err := s.subscriptionCatchUpRepGroupRecords(ctx, repGroup)
 	if err != nil {
@@ -2398,7 +2414,8 @@ func (s *Server) dispatchMethod(ctx context.Context, cr *clientRequest, drain bo
 // reservation - a genuinely new runner took the job over - is rejected with
 // ErrMustReserve (new-run-wins). A missing item is retryable during recovery
 // (ErrRecovering) and otherwise ErrBadJob (the caller may still treat an
-// already-completed job idempotently via jobAlreadyComplete).
+// already-completed job idempotently via jobAlreadyComplete). A report with no
+// client ID is ErrBadRequest, see getij.
 //
 // accepts says which item states are in flight for this report: itemIsInFlight
 // for an archive, and itemIsReleasable for a release or bury, which also takes
@@ -2406,7 +2423,7 @@ func (s *Server) dispatchMethod(ctx context.Context, cr *clientRequest, drain bo
 // dependencies before it runs again.
 func (s *Server) getijForReport(cr *clientRequest, accepts func(queue.ItemState) bool) (*queue.Item, *Job, string) {
 	key := cr.key()
-	if key == "" {
+	if key == "" || cr.ClientID == uuid.Nil {
 		return nil, nil, ErrBadRequest
 	}
 
@@ -2429,16 +2446,9 @@ func (s *Server) getijForReport(cr *clientRequest, accepts func(queue.ItemState)
 		return nil, nil, ErrBadJob
 	}
 
-	job, ok := item.Data().(*Job)
-	if !ok {
-		return nil, nil, ErrBadJob
-	}
+	job, srerr := reservedJob(cr, item)
 
-	if cr.ClientID != job.ReservedBy {
-		return item, job, ErrMustReserve
-	}
-
-	return item, job, ""
+	return item, job, srerr
 }
 
 // jobAlreadyComplete reports whether the keyed job is already in the completed
@@ -2455,6 +2465,10 @@ func (s *Server) jobAlreadyComplete(key string) bool {
 
 // for the many j* methods in handleRequest, we do this common stuff to get
 // the desired item and job. The returned string is one of our Err* constants.
+//
+// A request with the zero client ID is ErrBadRequest: a job no one has reserved
+// has the zero ReservedBy, so such a request would otherwise pass as that job's
+// reserver. wr's own clients always send a random one.
 func (s *Server) getij(cr *clientRequest, checkRunning bool) (*queue.Item, *Job, string) {
 	key := cr.key()
 	if key == "" {
@@ -2474,22 +2488,19 @@ func (s *Server) getij(cr *clientRequest, checkRunning bool) (*queue.Item, *Job,
 		return item, nil, ErrBadJob
 	}
 
+	if cr.ClientID == uuid.Nil {
+		return item, nil, ErrBadRequest
+	}
+
 	if checkRunning && item.Stats().State != queue.ItemStateRun {
 		// the item exists but is in the wrong sub-queue: a real state error, not
 		// a recovery-timing miss, so it stays ErrBadJob even while recovering.
 		return item, nil, ErrBadJob
 	}
 
-	job, ok := item.Data().(*Job)
-	if !ok {
-		return item, nil, ErrBadJob
-	}
+	job, srerr := reservedJob(cr, item)
 
-	if cr.ClientID != job.ReservedBy {
-		return item, job, ErrMustReserve
-	}
-
-	return item, job, ""
+	return item, job, srerr
 }
 
 func (s *Server) liveJTouchEnabled() bool {
