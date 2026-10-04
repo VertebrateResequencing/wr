@@ -319,9 +319,9 @@ func (db *heldLookupDB) store(limit int64) {
 }
 
 // changeDuringLookup runs op in its own goroutine, and once op's first lookup
-// of the named group has read the stored limit, stores the new limit and calls change, as the
-// manager does for `wr limit`, before letting the lookup return. It returns
-// once op has.
+// of the named group has read the stored limit, stores the new limit and calls
+// change, as the manager does for `wr limit`, before letting the lookup
+// return. It returns once op has.
 func (db *heldLookupDB) changeDuringLookup(op func(), limit int64, change func()) {
 	done := make(chan struct{})
 
