@@ -153,12 +153,13 @@ home directory: `make lint`, `make test`, `CGO_ENABLED=1 make race`.
   - Test: `jobqueue/archive_commit_window_test.go` (`TestArchiveCommitWindow`,
     with and without a restart). `archiveCommittedHook` is a test seam at the
     start of `finishArchive`.
-- [ ] 8. Found by a gate run: `CGO_ENABLED=1 go test -race -tags netgo ./jobqueue
+- [x] 8. Found by a gate run: `CGO_ENABLED=1 go test -race -tags netgo ./jobqueue
   -run 'DepGroup|DepGranularity|RunningDependent|Readd|Archive|Rerun|Modify|BringBacks'`
   fails `TestJobqueueModify` twice in a row on develop 499b350e too
   (`jobqueue_test.go:6599`, "schedgrp 200:30:1:0 not found, we have:
   800:30:1:0"): the RAM learned for `echo a` depends on which tests shared the
   process first. It passes alone and under `make race`'s split.
+  - Fixed by #659, `261001-flakes-and-tooling.md`: TestJobqueueModify.
 - [x] 9. Item 6 residual, a regression against develop: an add that fails
   after its write committed (a DB error later in the add) but before it queues
   a dependent its transaction put back live, or that its guard kept live,
@@ -197,10 +198,12 @@ home directory: `make lint`, `make test`, `CGO_ENABLED=1 make race`.
     not-live branch already had the same race just after the delete. A modify
     rekey writes the database before `ChangeKey`, so a concurrent add can
     queue a dependent with the new key first, and `ChangeKey` then only logs.
-- [ ] 10. Found by a gate run (`make test` while fixing 7b, host load about
+- [x] 10. Found by a gate run (`make test` while fixing 7b, host load about
   18): `TestDepGranularitySidecarReportsElapsedTime` failed at
   `depgranularity_startup_test.go:935` (`second.UpdatedAt.After(first.UpdatedAt)`
   was false). It passed on rerun and 5 of 5 alone.
+  - Fixed by #651, `260929-test-ci-reliability.md`, and #659,
+    `261001-flakes-and-tooling.md`: TestDepGranularitySidecarReportsElapsedTime.
 - [x] 7c. Found reviewing 7b: `updateDependentUnlessRunning` reads the queued
   job (`queuedJob`) and later calls `q.UpdateUnlessRunning` with it. If, in
   between, the archive removes the item and a second concurrent add queues its
@@ -232,7 +235,7 @@ home directory: `make lint`, `make test`, `CGO_ENABLED=1 make race`.
   - Tests: `jobqueue/dependent_update_race_test.go`
     (`TestDependentUpdateRace`, via the `dependentReadHook` seam) and
     `queue/holder_update_test.go`.
-- [ ] 11. Found by a gate run (`CGO_ENABLED=1 make race` after merging develop
+- [x] 11. Found by a gate run (`CGO_ENABLED=1 make race` after merging develop
   95faf168): `TestArchiveStallDoesNotRerunJob` "a repeat of the runner's
   archive during the stall also succeeds" failed at `archive_stall_test.go:191`
   (`pending(1)` false after 30s). The log shows the runner's `jstart` was the
@@ -240,6 +243,7 @@ home directory: `make lint`, `make test`, `CGO_ENABLED=1 make race`.
   test's held write transaction caught the start's write, not the archive's,
   and the run never reached its archive. It passed 3 of 3 alone under `-race`
   and the next full `make race` passed (840 passed).
+  - Fixed by #657, `260930-moved-on-runner.md`: TestArchiveStallDoesNotRerunJob.
 - [x] 12. Speed regression from item 6 (f4eb134a), measured in PR #662
   (`.docs/perf/261001-version-comparison.md` on branch `add-make-speed`):
   `dep-granularity-check`'s single `wr add` of a member into a 3000-member dep
@@ -287,9 +291,10 @@ home directory: `make lint`, `make test`, `CGO_ENABLED=1 make race`.
     before the dependents are known fails `ArchivedBeforeGuard`. `keeps`
     always false fails the two item 6 tests. Dropping the dependent check in
     `keeps` fails `KeepsOnlyDependentsLive`.
-- [ ] 13. Recurrence, reported per the owner's "leave it and watch" ruling, not
+- [x] 13. Recurrence, reported per the owner's "leave it and watch" ruling, not
   fixed: `TestReliable4RacBoundedBySchedulable`
   (`jobqueue/reliable4_rac_bound_test.go:117`) failed in one `make test` run
   on 33e9786f (`Expected: 5 / Actual: 19` for `racScanWork`). The next
   `make test` passed (866 passed), and `CGO_ENABLED=1 make race` passed.
   The same failure is recorded in `260928-load-sensitive-flakes.md`.
+  - Fixed by #663, `261002-rac-bound-7debc26e4164.md`.

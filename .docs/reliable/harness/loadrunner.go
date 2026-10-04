@@ -16,18 +16,13 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/jobqueue"
-	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 )
 
 func main() {
-	mode := flag.String("mode", "drive", "drive|hold")
+	mode := flag.String("mode", "drive", "drive|hold|churn|ping")
 	workers := flag.Int("workers", 100, "concurrent worker connections")
 	holdPer := flag.Int("holdper", 1, "hold mode: jobs held per worker")
-	group := flag.String("group", "", "scheduler group; if empty, computed from reqs")
-	ram := flag.Int("ram", 100, "RAM MB (for group calc)")
-	tmin := flag.Float64("time", 1, "time minutes (for group calc)")
-	cores := flag.Float64("cores", 1, "cores (for group calc)")
-	disk := flag.Int("disk", 0, "disk GB (for group calc)")
+	group := flag.String("group", "", "scheduler group to reserve from, as the manager logs it (required for drive and hold)")
 	touches := flag.Int("touches", 0, "drive mode: touches per job before archive")
 	touchGap := flag.Duration("touchgap", 2*time.Second, "gap between touches")
 	dur := flag.Duration("duration", 0, "hold mode: how long to hold before exit (0=until killed)")
@@ -36,9 +31,13 @@ func main() {
 	reserveTO := flag.Duration("reserveto", 3*time.Second, "reserve timeout")
 	flag.Parse()
 
-	if *group == "" {
-		req := &scheduler.Requirements{RAM: *ram, Time: time.Duration(*tmin * float64(time.Minute)), Cores: *cores, Disk: *disk}
-		*group = req.Stringify()
+	// drive and hold reserve from -group. It cannot be derived from job
+	// requirements here: the manager's group carries its own rounding and a
+	// hash of other fields (eg. 200:30:1:0:<hash>), so a guessed one reserves
+	// nothing.
+	if *group == "" && *mode != "churn" && *mode != "ping" {
+		fmt.Fprintf(os.Stderr, "loadrunner: -group is required for -mode %s; pass the scheduler group from the manager's log\n", *mode)
+		os.Exit(2)
 	}
 	fmt.Printf("loadrunner mode=%s workers=%d group=%q\n", *mode, *workers, *group)
 

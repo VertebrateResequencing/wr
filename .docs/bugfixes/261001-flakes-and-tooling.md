@@ -28,6 +28,7 @@ Quality gates: `make lint`, `make test`, `make race`, run with
     inherited `Maxrss`, every job's recorded PeakRAM is at least the `wr runner`
     process's RSS high-water mark, and `ownMemoryMB` adds the runner's Pss again,
     so small jobs are over-learned by about twice the runner's footprint.
+    - Since fixed by #660, `261001-peak-ram-includes-runner.md`.
 - [x] Flake: TestDepGranularitySidecarReportsElapsedTime failed once under load (a prior fix made it wait for the next heartbeat instead of 200ms; check it's on develop and why it can still fail).
   - The prior fix (`dgsWaitForSidecarRewrite`) is on develop in 95faf168.
   - Red: temporary injected delays, since removed. In the heartbeat goroutine,
@@ -151,7 +152,7 @@ Quality gates: `make lint`, `make test`, `make race`, run with
   - Reviewer: PASS. In drive mode a worker reserves again before settling its
     job only after `Started` or `Archive` failed, when the job is already
     abandoned, so releasing it then is intended.
-- [ ] Deferred (found while doing the loadrunner item, independent, low
+- [x] Deferred (found while doing the loadrunner item, independent, low
   impact): loadrunner's `-group ""` fallback builds the group from
   `-ram/-time/-cores/-disk` as `100:1:1:0`, which does not match the group
   the manager gives jobs added with those requirements (for example
@@ -159,3 +160,5 @@ Quality gates: `make lint`, `make test`, `make race`, run with
   nothing. The README and `exp_drive_ab.sh` pass the group from the manager's
   log, so only ad-hoc use is affected. Also, the README's mode list
   (line ~40) leaves out churn.
+  - Fixed on branch `checklist-tidy-8e94211c`,
+    `261004-checklist-tidy-8e94211c.md` item C: `-group` is required.

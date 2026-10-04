@@ -6792,8 +6792,9 @@ func TestJobqueueModify(t *testing.T) {
 				return
 			}
 
-			dir, err := os.Getwd()
-			So(err, ShouldBeNil)
+			// a dir of its own, not the package dir: wr makes the first run's
+			// workspace under it, and the cwd modify means nothing sweeps it
+			dir := t.TempDir()
 
 			cmd := "pwd && false"
 			addJobs = append(addJobs, &Job{Cmd: cmd, Cwd: dir, ReqGroup: "rgroup", Requirements: standardReqs, Override: uint8(2), Retries: uint8(0), RepGroup: "a"})

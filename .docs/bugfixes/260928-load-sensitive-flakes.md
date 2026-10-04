@@ -41,7 +41,7 @@ quoted include it.
     `Expected: 10 Actual: 7`. Checking each pid in its own command
     (`checkEachProcess` for each chunk in `ProcessesNotRunningOnHost`) fails
     the real-shell variant with `Expected '10' to be less than '10'`.
-- [ ] TestReliable4SchedulerGroupSnapshotMemoised
+- [x] TestReliable4SchedulerGroupSnapshotMemoised
   - Seen once, no repro. The failing assertion was not captured. Lane 46:
     `-test.run '^TestReliable4SchedulerGroupSnapshotMemoised$'
     -test.count=10` at `stress -c 8` (load 23) passed 10 of 10; the whole
@@ -56,6 +56,7 @@ quoted include it.
     (2 per job) every time under load, so another goroutine would have to
     allocate about 120,000 objects during one cycle to trip it. No change
     made.
+  - Closed, watch: not reproduced.
 - [x] TestClientExecuteLiveTouchPayloads (a peak-RAM sample of 0)
   - Red: lane 48, `-test.run '^TestClientExecuteLiveTouchPayloads$'
     -test.count=3`, with the test binary and `stress -c 30` both pinned to
@@ -78,7 +79,7 @@ quoted include it.
   - Mutation: `executeLiveState.updateResources` never raising `peakRAM`
     fails the Convey (after the 60s cap) with `Expected '0' to be greater
     than or equal to '1'`.
-- [ ] TestSubscriptionReconnectDuringManagerShutdown (it also takes 23-29s)
+- [x] TestSubscriptionReconnectDuringManagerShutdown (it also takes 23-29s)
   - Not reproduced: lane 9, 7 runs with `stress -c 8` and the test on one
     core (`GOMAXPROCS=1`) passed, taking 37-42s each. Its earlier failures
     (260928's speed doc, and 260927-client-token-reload.md) were in "Unsubscribe
@@ -101,6 +102,9 @@ quoted include it.
     that 2s floor first, which leaves little or no margin; a resubscribe
     still waiting when the socket closes ends in a different error. It needs
     a dedicated heavy-load run to confirm. No change made.
+  - Closed, watch: every failure predates #634's `pingUntilUnread` fix, and
+    the candidate above is refuted; see `261004-checklist-tidy-8e94211c.md`
+    item D.
 - [x] TestFuseMountReaping (pidInFuseWait premise false)
   - Also recorded, unfixed, in 260927-client-token-reload.md.
   - Red: lane 9, `-test.run '^TestFuseMountReaping$'`, no added stress (host
@@ -184,7 +188,7 @@ quoted include it.
   - Before and after: the 2.5s slower-restart seam failed the old test 2 of
     2 and passed the new one 2 of 2; with the allowed load the new one
     passed 5 of 5. The resync-marker mutation above fails it too.
-- [ ] TestDepGranularitySidecarReportsElapsedTime
+- [x] TestDepGranularitySidecarReportsElapsedTime
   - Seen once, no repro, and the failing assertion was not captured. Lane
     47, `-test.count=30` with no added stress (host load 18), 40 with
     `stress -c 8` and the test on one core (`GOMAXPROCS=1`), and 30 of the
@@ -193,6 +197,8 @@ quoted include it.
     (4 of the shortened 50ms heartbeats) and requires the second sample to
     have moved on, so a heartbeat goroutine starved for 200ms would fail it.
     No change made.
+  - Fixed by #651, `260929-test-ci-reliability.md`, and #659,
+    `261001-flakes-and-tooling.md`: TestDepGranularitySidecarReportsElapsedTime.
 - [x] TestLostCwdMattersJobSparesItsSecondRun ("never declared lost and
   confirmed dead")
   - Not reproduced under the allowed load: lane 49, 20 runs with `stress -c
@@ -297,7 +303,7 @@ quoted include it.
     failed the old test with this message and passes the new one.
   - Mutation: a hook that never signals fails with the same message after
     30s.
-- [ ] TestStartDurability and TestReliable2ReserveConfirmedDeadReclaimed
+- [x] TestStartDurability and TestReliable2ReserveConfirmedDeadReclaimed
   ("could not reach the server" / "receive time out")
   - Not reproduced: lane 45, `TestReliable2ReserveConfirmedDeadReclaimed`
     15 runs with `stress -c 8` and the test on one core passed. The failing
@@ -313,6 +319,8 @@ quoted include it.
     `Reserve` inside its 500ms TTR, the same shape as the lost-run fixture
     item above, but that would fail as `reReserved` nil, not as either
     message. No change made.
+  - The reclaim test now connects once; `TestStartDurability` is closed,
+    watch. See `261004-checklist-tidy-8e94211c.md` item E.
 - [x] TestStatusCountReconcile (a 120s node timeout at load 80+)
   - Recorded, uninvestigated, in 260927-race-kill-bury-flakes.md.
   - Cause (test): the 120s is the context bounding the 4 node harness
@@ -333,19 +341,21 @@ quoted include it.
 
 ## Gate flakes seen while verifying the status summary fix (branch fix-status-summary-scaling)
 
-- [ ] `TestFuseMountReaping` (`jobqueue/testfusemount_test.go:491`) failed in
+- [x] `TestFuseMountReaping` (`jobqueue/testfusemount_test.go:491`) failed in
   one `make test` run at 1-min load ~38: `Expected: true / Actual: false` for
   `So(pidInFuseWait(child.pid), ShouldBeTrue)`, the premise that the wedged
   child is blocked in a fuse request. It then passed `--count 3` alone. This
   is the same failure `260927-client-token-reload.md` records as seen under
   load, and it does not touch the status summary code. Recorded here, not
   fixed.
-- [ ] `TestReliable4RacBoundedBySchedulable`
+  - Fixed by #651, this file: TestFuseMountReaping.
+- [x] `TestReliable4RacBoundedBySchedulable`
   (`jobqueue/reliable4_rac_bound_test.go:117`) failed in one `make test` run
   at load ~11-16: `Expected: 5 / Actual: 18` for `racScanWork`. It then passed
   `--count 5` alone. The counter is server-wide, so a scheduling pass the
   server ran by itself during the measured window would also add to it. It
   does not touch the status summary code. Recorded here, not fixed.
+  - Fixed by #663, `261002-rac-bound-7debc26e4164.md`.
 - [x] `make race` failed `TestCleanupKeepsMountCachesSpelledInAnotherCase`
   with a data race on its `clog.ToBufferAtLevel` buffer
   (`jobqueue/workspace_test.go:464`). The writer was an `archiveFoldReporter`
