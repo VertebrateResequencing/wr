@@ -611,12 +611,18 @@ func warnIfSlowDecode(ctx context.Context, requestBytes int, start time.Time, de
 //     it carries the previous manager's id, and the refusal makes the client
 //     resubscribe and catch up. Ids are random, so it cannot name another
 //     client's subscription. A missing subscription id is still a failure.
+//   - a touch from a runner that has already reported how its run of the job
+//     ended (see touchAfterOwnRunEnded), which hundreds of runners send just
+//     after a manager restart. A touch of a job that never existed, or that
+//     another runner ran, is still a failure.
 func isRoutineClientRefusal(cr *clientRequest, srerr, qerr string) bool {
 	switch cr.Method {
 	case requestMethodAdd:
 		return srerr == ErrBadRequest && len(cr.Jobs) == 0 && cr.Env != nil
 	case requestMethodWaitForUpdates:
 		return qerr == errSubscriptionClosed.Error() || qerr == errUnknownSubscription.Error()
+	case requestMethodTouch:
+		return qerr == touchAfterRunEnded
 	default:
 		return false
 	}
@@ -1398,6 +1404,10 @@ func reportedStartTime(reported, now time.Time) time.Time {
 // applying any live status snapshot, or reports that kill has been called.
 func (s *Server) handleTouch(ctx context.Context, cr *clientRequest) (*serverResponse, string, string) {
 	item, job, srerr := s.getij(cr, true)
+	if srerr == ErrBadJob && s.touchAfterOwnRunEnded(cr, item) {
+		return nil, srerr, touchAfterRunEnded
+	}
+
 	if srerr != "" {
 		return nil, srerr, ""
 	}
@@ -1434,6 +1444,31 @@ func (s *Server) handleTouch(ctx context.Context, cr *clientRequest) (*serverRes
 	}
 
 	return &serverResponse{KillCalled: false}, srerr, qerr
+}
+
+// touchAfterOwnRunEnded reports whether a touch refused as a bad job came from
+// the runner that last ran the job, after that runner had reported how the run
+// ended: the job is complete and was last run by it, or is still queued but no
+// longer running and was last reserved by it, without the manager having given
+// up on it as lost. A runner's touches carry on until its report is done, and a
+// touch held up while the manager was down, or sent alongside the report, can
+// arrive after it. item is what getij found for the touch, nil if nothing.
+func (s *Server) touchAfterOwnRunEnded(cr *clientRequest, item *queue.Item) bool {
+	if item == nil {
+		jobs, err := s.db.retrieveCompleteJobsByKeys([]string{cr.key()})
+
+		return err == nil && len(jobs) == 1 && jobs[0].ReservedBy == cr.ClientID
+	}
+
+	job, ok := item.Data().(*Job)
+	if !ok {
+		return false
+	}
+
+	job.RLock()
+	defer job.RUnlock()
+
+	return job.ReservedBy == cr.ClientID && job.FailReason != FailReasonLost
 }
 
 // touchJob updates the job's TTR and routes its lost->running count and, when

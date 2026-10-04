@@ -77,11 +77,65 @@ packages, and `cleanorder -min-diff` on the edited Go files. The caller runs
     `scheduleRunners` succeeding on a mock scheduler, `-count 6`: base median
     648 ns/op, fixed 651 ns/op, within noise.
 
-- [ ] 2. After each crash restart, ~370–770 error-level "jtouch: bad job (not
+- [x] 2. After each crash restart, ~370–770 error-level "jtouch: bad job (not
   in queue...)" lines in the minute after. One traced example (key
   afec1f37…, runner log
   `/nfs/hgi/wr/sb10-bigdb/soak9/run/runnerlogs/26.10.04/11-03-41.node-14-27.3071079`):
   a touch arriving just after its job's successful archive.
+  - Evidence: `$O/manager.log` has 2,660 such lines, all in the minute after a
+    crash restart (10:10 68, 10:14 164, 11:03 367, 11:11 591, 11:29 774,
+    11:35 685), and the runner logs have the same 2,660 as "could not touch"
+    warnings. Every one was checked, not a sample: in its runner's log, each
+    comes after that runner's own end of the run, 2,633 after "command ran OK"
+    (it then archived) and 27 after "exited with code 3 ... will be tried
+    again" (it then released). None came while the command was running. Most
+    runners also logged a "send time out" touch while the manager was down:
+    the touch was held up and arrived with, or after, the report. Of the 2,078
+    keys, 5 were reserved twice: 3 were those released runs, re-run as
+    expected, and in the other 2 the refused touch came from the second run,
+    after its archive.
+  - Red: `env -u WR_LSF_TEST_KEY go test -tags netgo -count=1 -run
+    TestTouchAfterRunEndedLogLevel ./jobqueue/` exits 1 before the fix: a
+    runner's touch just after it archived, and just after it released, are
+    each logged at Error (`Expected: log15.Lvl(4) / Actual: log15.Lvl(1)`).
+  - Cause: a runner keeps touching until its final report is done, and stops
+    without waiting for a touch already in flight, so a touch held up while
+    the manager was down arrives after the archive or release. The manager
+    then finds the job gone from the queue, or no longer running, and refuses
+    it as `ErrBadJob`, which it logged at Error like any other refusal.
+  - Fix (`jobqueue/serverCLI.go`, `jobqueue/server.go`): when a touch is
+    refused as a bad job, `touchAfterOwnRunEnded` checks whether it came from
+    the runner that last ran the job, after that runner ended the run: the job
+    is complete and its complete record's `ReservedBy` is the touching client,
+    or the job is still queued but not running, its `ReservedBy` is the
+    touching client and its `FailReason` is not `FailReasonLost` (the manager
+    gave up on it). Then the logged detail is `touchAfterRunEnded`, and
+    `isRoutineClientRefusal` treats that as routine, so it is logged at Debug,
+    as #665 did for "unknown subscription". The runner's reply is unchanged
+    (`ErrBadJob`). A touch of a job that does not exist, of one another runner
+    ran, or of one the manager released as lost is still an Error. The check
+    runs only on the refusal path, so successful touches cost nothing more.
+  - Tests (`jobqueue/client_request_log_test.go`,
+    `TestTouchAfterRunEndedLogLevel`, through a real server): after archive
+    and after release, Debug; after a lost release, another runner's touch
+    after an archive or a release, and a touch of a never-added job, Error.
+    Passes with `-race -count=2`, as do `TestClientRequestErrorLogLevel` and
+    the other touch tests (`TestClientTouchSendsLiveEndState`,
+    `TestLiveTouchCaptureReleaseOnMarkersRetry`,
+    `TestClientExecuteLiveTouchPayloads`,
+    `TestLostJobSparesASecondRunThatNeverTouched`,
+    `TestKillAfterCmdExitKeepsTouching`, `TestKillRacingCmdExitKeepsTouching`,
+    `TestManagerLiveJTouch`, `TestReliable2OnTimeTouchedJobNeverLost`,
+    `TestReliable2LostJobRecoversOnTouch`).
+  - Mutants, each killed: no lost check (the lost-release case logs Debug);
+    the complete check ignoring `ReservedBy` (another runner's touch after an
+    archive logs Debug); the queued check ignoring `ReservedBy` (another
+    runner's touch after a release logs Debug); touches never routine (the two
+    red cases log Error).
+  - Not done: making the runner wait for an in-flight touch before its final
+    report would stop it sending these, but runners already deployed would
+    still send them, and the report would wait for a touch that is retrying
+    against a manager that is down.
 
 - [ ] 3. `wr manager stop` returned rc 0 while the pid still existed (zombie
   for a few ms, aliveAtReturn=y on all 3 clean stops).

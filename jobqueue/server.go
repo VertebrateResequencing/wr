@@ -471,6 +471,10 @@ const exitCodeInterruptedShutdown = 128 + int(syscall.SIGINT)
 // job, and the old owner's report must not bury or release the new run.
 var errReleaseReporterSupplanted = errors.New("job reserved by another runner since the report was accepted")
 
+// touchAfterRunEnded is the detail logged for a touch refused as a bad job
+// because its runner has already reported how its run of the job ended.
+const touchAfterRunEnded = ErrBadJob + "; its runner already reported how its run ended"
+
 const (
 	errMissingSubscriptionScope subscriptionRequestError = "missing subscription scope"
 	errSubscriptionClosed       subscriptionRequestError = "subscription closed"

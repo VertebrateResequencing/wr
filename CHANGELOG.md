@@ -154,6 +154,9 @@ project adheres to [Semantic Versioning](http://semver.org/).
   stack of where the panic happened (as `panic_stack`).
 - After a restart, the manager no longer logs an "unknown subscription" error
   for each client still waiting on a subscription from before the restart.
+- After a restart, the manager no longer logs a "jtouch ... bad job" error for
+  each runner whose last touch of a command arrived just after the runner
+  reported the command finished.
 
 ## [0.38.0] - 2026-09-30
 ### Added
