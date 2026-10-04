@@ -26,19 +26,34 @@
 package jobqueue
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/gofrs/uuid/v5"
 )
+
+// subscriptionSweepsPerIdleTimeout is how many times per
+// ServerTimings.SubscriptionIdleTimeout the server looks for idle client
+// subscriptions, so one is dropped at most a sixth of the timeout late.
+const subscriptionSweepsPerIdleTimeout = 6
+
+// defaultSubscriptionIdleTimeoutMin is subscriptionIdleTimeoutMin outside
+// tests: twice the longest a live client's poll is held.
+const defaultSubscriptionIdleTimeoutMin = 2 * serverSubscriptionHoldTime
 
 // subscriptionIDGen mints subscription ids; tests replace it to make minting
 // fail.
 var subscriptionIDGen uuid.Generator = uuid.DefaultGenerator //nolint:gochecknoglobals // test seam
 
 type serverSubscription struct {
+	// lastActive is when, in Unix nanoseconds, the subscription was registered
+	// or last polled; see sweepIdleClientSubscriptions.
+	lastActive     atomic.Int64
 	keys           map[string]struct{}
 	repGroupStates map[string]JobState
 	queue          chan *JobUpdate
@@ -71,6 +86,8 @@ func newServerSubscription(keys []string, repGroup string, repGroupKeys []string
 		repGroup:       repGroup,
 	}
 
+	sub.touch()
+
 	go sub.deliverQueuedUpdates()
 
 	return sub
@@ -93,6 +110,18 @@ func subscriptionKeyUpdateRecipient(
 	}
 
 	return nil
+}
+
+// touch records that the subscription is in use now.
+func (s *serverSubscription) touch() {
+	s.lastActive.Store(time.Now().UnixNano())
+}
+
+// idleSince reports whether the subscription is a client one that has not been
+// used since cutoff. Status websocket subscriptions are never idle: the server
+// polls them itself and drops each when its websocket closes.
+func (s *serverSubscription) idleSince(cutoff int64) bool {
+	return !s.stateChanges && s.lastActive.Load() < cutoff
 }
 
 func (s *serverSubscription) addKeys(keys []string) {
@@ -385,6 +414,10 @@ func (s *Server) closeClientSubscriptions() {
 
 	s.subsClosed = true
 
+	if s.subSweepTimer != nil {
+		s.subSweepTimer.Stop()
+	}
+
 	subs := make([]*serverSubscription, 0, len(s.clientSubscriptions))
 	for id, sub := range s.clientSubscriptions {
 		subs = append(subs, sub)
@@ -397,6 +430,29 @@ func (s *Server) closeClientSubscriptions() {
 	for _, sub := range subs {
 		sub.close()
 	}
+}
+
+// takeIdleClientSubscriptions unregisters and returns the client subscriptions
+// not used since cutoff, or returns false if shutdown has closed them all.
+func (s *Server) takeIdleClientSubscriptions(cutoff int64) ([]*serverSubscription, bool) {
+	s.csmutex.Lock()
+	defer s.csmutex.Unlock()
+
+	if s.subsClosed {
+		return nil, false
+	}
+
+	var idle []*serverSubscription
+
+	for id, sub := range s.clientSubscriptions {
+		if sub.idleSince(cutoff) {
+			idle = append(idle, sub)
+
+			delete(s.clientSubscriptions, id)
+		}
+	}
+
+	return idle, true
 }
 
 func (s *Server) clientSubscription(id string) (*serverSubscription, bool) {
@@ -476,6 +532,57 @@ func sortedRepGroupStateKeys(states map[string]JobState) []string {
 	return keys
 }
 
+// sweepIdleClientSubscriptions drops, as an unsubscribe would, every client
+// subscription not polled for SubscriptionIdleTimeout, then schedules itself
+// to run again after interval.
+//
+// Without it, a subscription whose client is gone without unsubscribing would
+// keep its delivery goroutine, key maps and queues until the server stops: a
+// resubscribe whose reply was lost leaves the client naming the id it
+// replaced, never the new one, and an Unsubscribe gives up after
+// subscriptionUnsubscribeTimeout.
+//
+// Dropping a live client's subscription is safe. A live client holds a poll at
+// most serverSubscriptionHoldTime, far less than the timeout, so it is only
+// idle if it could not reach the server, or did not take its updates, for that
+// long. Its next poll then fails, as one after a server restart does, and it
+// resubscribes and catches up on the current state of what it waits for.
+func (s *Server) sweepIdleClientSubscriptions(ctx context.Context, interval time.Duration) {
+	idle, ok := s.takeIdleClientSubscriptions(time.Now().Add(-s.timings.SubscriptionIdleTimeout).UnixNano())
+	if !ok {
+		return
+	}
+
+	for _, sub := range idle {
+		sub.close()
+	}
+
+	if len(idle) > 0 {
+		clog.Info(ctx, "dropped idle client subscriptions", "count", len(idle),
+			"idleTimeout", s.timings.SubscriptionIdleTimeout)
+	}
+
+	s.csmutex.Lock()
+	defer s.csmutex.Unlock()
+
+	if !s.subsClosed {
+		s.subSweepTimer.Reset(interval)
+	}
+}
+
+// startIdleSubscriptionSweep starts the periodic sweepIdleClientSubscriptions
+// that closeClientSubscriptions stops.
+func (s *Server) startIdleSubscriptionSweep(ctx context.Context) {
+	interval := s.timings.SubscriptionIdleTimeout / subscriptionSweepsPerIdleTimeout
+
+	s.csmutex.Lock()
+	defer s.csmutex.Unlock()
+
+	s.subSweepTimer = time.AfterFunc(interval, func() {
+		s.sweepIdleClientSubscriptions(ctx, interval)
+	})
+}
+
 func (s *Server) registerClientSubscription(keys []string, repGroup string) (string, error) {
 	if len(keys) == 0 && repGroup == "" {
 		return "", errMissingSubscriptionScope
@@ -518,6 +625,8 @@ func (s *Server) waitForSubscriptionUpdates(id string, timeout time.Duration) ([
 	if !exists {
 		return nil, errUnknownSubscription
 	}
+
+	sub.touch()
 
 	if timeout <= 0 || timeout > serverSubscriptionHoldTime {
 		timeout = serverSubscriptionHoldTime

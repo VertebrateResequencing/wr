@@ -140,13 +140,14 @@ Owner decisions (261004) are noted on each item.
   `260929-query-copies-and-warning-storm.md`, "Not fixed": each
   scheduling cycle still snapshots and walks the whole ready backlog
   (O(backlog)).
-- [ ] QUEUED (branch 3 below), simpler design: record each subscription's
+- [x] QUEUED (branch 3 below), simpler design: record each subscription's
   last poll and sweep any not polled for a generous interval (e.g. 30 min); a
   live client polling a swept id resubscribes and catches up (#665).
   `260927-subscription-reconnect-leak.md`, "Residual, not fixed": a
   resubscribe that registers but whose reply is lost strands that
   replacement subscription; only a manager-side reaper keyed on client
   liveness would cover it.
+  - Fixed on `sub-sweep-c5087329`; see `261004-sub-sweep-c5087329.md`.
 - [ ] QUEUED (branch 4 below): reject ClientID 0 on release, bury, delay
   and ready. `260930-runner-report-followups.md` item 3, "Noted, not fixed": a
   hand-made request with a zero ClientID can release or bury a job that never
