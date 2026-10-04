@@ -25,9 +25,12 @@ packages, and `cleanorder -min-diff` on the edited Go files. The caller runs
   - Evidence (`$O/manager.log.1791104981`, group
     `2001:30:1:0:6a9df116ae2cb47fa4adcb70142346f2`): 689 lines, all from
     `scheduleRunners`. The Warn "scheduling runners error" lines run from
-    09:44:45 to 09:53 at about 500-680 a minute; the Error "persistently
-    failing" lines start at 09:47 and carry on to 10:08:43, 15 minutes after
-    the job went. By `consecutiveFailures`: 411 at 1, 146 at 2, 57 at 3, 40
+    09:44:45 to 09:53:48 at about 500-680 a minute; the Error "persistently
+    failing" lines start at 09:47:14 and carry on to 10:08:43. The manager
+    log has no line for the removal (the 09:52:47 above comes from the
+    report); the last Warn for the group, at 09:53:48, is the last attempt
+    that rac or a decrement made, so the Errors after it, for 15 minutes, are
+    the retry chains alone. By `consecutiveFailures`: 411 at 1, 146 at 2, 57 at 3, 40
     at 4, 32 at 5 and 3 at 6. So each rac pass's first attempt failed, and
     hundreds of separate retry chains each counted their own failures.
   - Red: `env -u WR_LSF_TEST_KEY go test -tags netgo -count=1 -run
@@ -116,10 +119,14 @@ packages, and `cleanorder -min-diff` on the edited Go files. The caller runs
   afec1f37…, runner log
   `/nfs/hgi/wr/sb10-bigdb/soak9/run/runnerlogs/26.10.04/11-03-41.node-14-27.3071079`):
   a touch arriving just after its job's successful archive.
-  - Evidence: `$O/manager.log` has 2,660 such lines, all in the minute after a
-    crash restart (10:10 68, 10:14 164, 11:03 367, 11:11 591, 11:29 774,
-    11:35 685), and the runner logs have the same 2,660 as "could not touch"
-    warnings. Every one was checked, not a sample: in its runner's log, each
+  - Evidence: `$O/manager.log` has 2,660 such lines: 2,649 in the minute
+    after a crash restart (10:10 68, 10:14 164, 11:03 367, 11:11 591, 11:29
+    774, 11:35 685, counting each whole clock minute) and 11 at other times
+    (10:03, 10:04, 10:18, 10:20, 10:32, 10:38, 10:40, 10:53, 10:56, 11:50,
+    11:51). Each of those 11 came in the same second as its runner's
+    "command ran OK", with no earlier failed touch: a ticker touch in flight
+    as the runner archived, the same race without a restart. The runner logs
+    have the same 2,660 as "could not touch" warnings. Every one was checked, not a sample: in its runner's log, each
     comes after that runner's own end of the run, 2,633 after "command ran OK"
     (it then archived) and 27 after "exited with code 3 ... will be tried
     again" (it then released). None came while the command was running. Most

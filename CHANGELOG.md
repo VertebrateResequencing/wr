@@ -24,8 +24,8 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - When every attempt to submit runners for some commands fails, such as when
   the LSF queue chosen for them refuses every `bsub`, the manager now stops
   trying once those commands are removed, instead of retrying the `bsub` and
-  logging errors for up to 30 minutes more, and makes one retry at a time for
-  them instead of one more per failed attempt.
+  logging errors until it restarts, and makes one retry at a time for them
+  instead of one more per failed attempt.
 - A runner's late report that its command failed, or should be buried, no
   longer buries or delays a new run of that command by another runner, which
   could leave the command running twice, and a late report that it succeeded no
