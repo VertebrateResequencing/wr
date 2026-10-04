@@ -28,9 +28,11 @@ package jobqueue
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/limiter"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -151,6 +153,68 @@ func TestLimitSetOnRunningGroup(t *testing.T) {
 
 			setLimit(luLimit)
 			limitHolds()
+		})
+	})
+}
+
+// TestLimitAddKeepsNewerLimit covers an add that carries a group's limit
+// unaltered, racing a `wr limit` that changes or removes it after the add's
+// database read: the add must leave the newer limit in place, in memory as on
+// disk, rather than bring its own back.
+func TestLimitAddKeepsNewerLimit(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a server with a limit group whose limit is set", t, func() {
+		d := dgrStartServer(ctx)
+
+		defer d.stop(ctx)
+
+		jq := d.connect()
+
+		defer disconnect(jq)
+
+		const oldLimit, newLimit = 5, 3
+
+		_, err := jq.GetOrSetLimitGroup(fmt.Sprintf("%s:%d", luGroup, oldLimit))
+		So(err, ShouldBeNil)
+
+		t.Cleanup(func() { limitGroupsStoredHook = nil })
+
+		addRacing := func(newer *limiter.GroupData) {
+			var once sync.Once
+
+			raced := make(chan error, 1)
+			limitGroupsStoredHook = func() {
+				once.Do(func() {
+					raced <- d.server.setLimitGroup(ctx, luGroup, newer)
+				})
+			}
+
+			job := d.job("echo lu racing", "lu")
+			job.LimitGroups = []string{fmt.Sprintf("%s:%d", luGroup, oldLimit)}
+			dgrAddJobs(jq, []*Job{job})
+
+			limitGroupsStoredHook = nil
+
+			So(<-raced, ShouldBeNil)
+		}
+
+		Convey("an add with that limit, racing wr limit changing it, keeps the new limit", func() {
+			addRacing(limiter.NewCountGroupData(newLimit))
+
+			So(lgrLimitCmd(jq, luGroup), ShouldEqual, newLimit)
+			So(limitGroupStored(ctx, d, luGroup), ShouldEqual, newLimit)
+		})
+
+		Convey("an add with that limit, racing wr limit removing it, keeps it removed", func() {
+			addRacing(limiter.NewCountGroupData(-1))
+
+			So(lgrLimitCmd(jq, luGroup), ShouldEqual, lgrNoLimit)
+			So(limitGroupRecorded(d, luGroup), ShouldBeFalse)
 		})
 	})
 }

@@ -81,7 +81,8 @@ speed`.
     `GetLimits`, `GetLowestLimit` and `GetRemainingCapacity` treat an unlimited
     group as before (-1, absent from `GetLimits`, skipped).
     `jobqueue/server.go`: `storeLimitGroups` gives the limiter every count
-    limit it stored, not only the changed ones. `limiter/doc.go` describes
+    limit it stored, not only the changed ones (narrowed by item 2 below to
+    first stores, which are now reported as changed). `limiter/doc.go` describes
     this, and its example now uses the real callback signature.
     Tests: `limiter/limiter_test.go` (`TestLimiterCountsGroupsWithoutALimit`,
     `BenchmarkLimiterIncDecUnlimited`), `jobqueue/limit_uncounted_test.go`
@@ -98,7 +99,8 @@ speed`.
     which still report an unlimited group as -1 or absent. `getsetlg` and
     `wr limit` output go through `GetLimit`/`GetLimits` and are unchanged.
     DB persistence (`db.storeLimitGroups`, `retrieveLimitGroup`) is
-    unchanged. Time-based groups are never unlimited and keep their behaviour.
+    unchanged here (item 2 changes what it reports). Time-based groups are
+    never unlimited and keep their behaviour.
   - Mutants, each run against the fixed code in a scratch copy, each failing
     a test (limiter package unless noted):
     `RemoveLimit` always deletes (line 183; jobqueue line 116);
@@ -128,3 +130,47 @@ speed`.
     keeps a map entry while in use instead of calling the callback on every
     `Increment`; the benchmark's callback is free, but the manager's is a
     bolt read, which a group in use no longer needs.
+- [x] Review of `9a383ba1` (low): `Server.storeLimitGroups` calls `SetLimit`
+  for every count group in an add, including ones the database reported
+  unchanged, outside any lock covering the database read. With `g:5` stored,
+  `wr add -l g:5` reads "unchanged"; meanwhile `wr limit -g g:3` (database 3,
+  `SetLimit` 3) or `g:-1` (record deleted, `RemoveLimit`) lands; then the
+  add's `SetLimit(5)` brings back the stale limit in memory until the group is
+  forgotten. Before `9a383ba1` only changed groups were applied.
+  - Source: the caller's review of `9a383ba1`.
+  - Red: `go test -tags netgo -count 1 ./jobqueue -run
+    TestLimitAddKeepsNewerLimit` exits 1 on `9a383ba1`'s `storeLimitGroups`
+    (applied as a mutant in a scratch copy), plain and `-race`:
+
+    ```text
+      Line 209:
+      Expected: 3
+      Actual:   5
+      Line 216:
+      Expected: -1
+      Actual:   5
+    --- FAIL: TestLimitAddKeepsNewerLimit
+    ```
+
+    The test races the add with `wr limit` through a new test-only hook,
+    `limitGroupsStoredHook`, which `storeLimitGroups` calls between the
+    database store and the limiter update (nil in production, like the
+    package's other `*Hook` seams), and runs `setLimitGroup` there.
+  - Fix: `jobqueue/db.go`: `planLimitGroupStore` reports a limit stored for
+    the first time as changed (the group had no limit before), so
+    `storeLimitGroups` returns it in `changed`. `jobqueue/server.go`:
+    `Server.storeLimitGroups` is back to calling `SetLimit` only for changed
+    groups. `TestReliable4LimitGroupsNoWrite`
+    (`jobqueue/reliable4_add_tx_test.go`) asserted that a first store is not a
+    change; it now asserts both new groups are reported changed. Its write
+    transaction counts are unchanged.
+  - Mutants: `SetLimit` for every count group again fails
+    `TestLimitAddKeepsNewerLimit` at lines 209 and 216, plain and `-race`.
+    A first store reported unchanged again fails `TestLimitSetOnRunningGroup`
+    ("when set by adding a job with the limit", line 118) and
+    `TestReliable4LimitGroupsNoWrite` (line 176), plain and `-race`.
+  - Green: the red command exits 0 (and `-count 5`); the 19 limit-related
+    jobqueue tests of item 1 plus `TestLimitAddKeepsNewerLimit` and
+    `TestReliable4AddStorm` exit 0 plain and `-race`. `golangci-lint run
+    ./limiter/ ./jobqueue/` 0 issues; `cleanorder -min-diff` on the edited
+    files.

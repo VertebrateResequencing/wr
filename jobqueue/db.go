@@ -406,8 +406,8 @@ const (
 // outcome to report, and the bucket write (if any) that achieving it needs. The
 // outcome does not imply a write, and vice versa: a group whose limit is being
 // forgotten is reported removed whether or not it had a record to delete, while
-// a group stored for the first time is reported unchanged, having had no
-// previous value to change.
+// a group whose limit is stored again unaltered is reported unchanged without a
+// write.
 //
 // It only reads b, so it can also be called in a read transaction, to find out
 // whether a write transaction is needed at all.
@@ -434,9 +434,13 @@ func planLimitGroup(b *bolt.Bucket, group string, limitG *limiter.GroupData) (li
 // planLimitGroupStore decides the outcome and write for a limit group with a
 // non-negative limit, given the value currently stored for it (nil if it has
 // none).
+//
+// A limit stored for the first time is a change: until then the group had no
+// limit, and the limiter may already be counting its jobs without one, so the
+// caller must give the new limit to the limiter.
 func planLimitGroupStore(existing []byte, limit int64) (limitGroupOutcome, limitGroupWrite) {
 	if existing == nil {
-		return limitGroupUnchanged, limitGroupWritePut
+		return limitGroupChanged, limitGroupWritePut
 	}
 
 	//nolint:gosec // limit is >= 0 here, so fits in a uint64
@@ -1567,7 +1571,7 @@ func (db *db) setBatchTuning(delay time.Duration, size int) {
 }
 
 // storeLimitGroups stores a mapping of group names to unsigned ints in a
-// dedicated bucket. If a group was already in the database, and it had a
+// dedicated bucket. If a group was not already in the database, or had a
 // different value, that group name will be returned in the changed slice. If
 // the group is given with a value less than 0, it is not stored in the
 // database; any existing entry is removed and the name is returned in the
