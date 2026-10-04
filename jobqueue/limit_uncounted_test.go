@@ -219,6 +219,15 @@ func TestLimitAddKeepsNewerLimit(t *testing.T) {
 			So(limitGroupRecorded(d, luGroup), ShouldBeFalse)
 		})
 
+		Convey("wr limit setting the limit it already has repairs a limiter that disagrees", func() {
+			d.server.limiter.SetLimit(luGroup, *limiter.NewCountGroupData(newLimit))
+			So(lgrLimitCmd(jq, luGroup), ShouldEqual, newLimit)
+
+			So(lgrLimitCmd(jq, fmt.Sprintf("%s:%d", luGroup, oldLimit)), ShouldEqual, oldLimit)
+			So(lgrLimitCmd(jq, luGroup), ShouldEqual, oldLimit)
+			So(limitGroupStored(ctx, d, luGroup), ShouldEqual, oldLimit)
+		})
+
 		Convey("an add with the group at -1 removes its limit", func() {
 			lruAdd(jq, d, luGroup+":-1")
 

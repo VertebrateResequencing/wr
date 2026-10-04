@@ -4156,6 +4156,9 @@ func (s *Server) applyStoredLimitGroups(groups []string) error {
 	s.lgmutex.Lock()
 	defer s.lgmutex.Unlock()
 
+	// the read must be under the lock too: read before it, A could read 5, B
+	// store, read and apply 3, then A apply 5, leaving 5 in memory against 3
+	// on disk.
 	limits, err := s.db.retrieveStoredLimits(groups)
 	if err != nil {
 		return err
@@ -8515,8 +8518,16 @@ func (s *Server) getSetLimitGroup(ctx context.Context, group string) (*limiter.G
 
 // setLimitGroup persists a limit group and gives the limiter the change, as an
 // add does, then re-triggers scheduling.
+//
+// Unlike an add, it then gives the limiter the group's stored limit even if the
+// database reports it unchanged, so that setting a limit again repairs a limiter
+// that disagrees with the database.
 func (s *Server) setLimitGroup(ctx context.Context, name string, limit *limiter.GroupData) error {
 	if err := s.storeLimitGroups(map[string]*limiter.GroupData{name: limit}); err != nil {
+		return err
+	}
+
+	if err := s.applyStoredLimitGroups([]string{name}); err != nil {
 		return err
 	}
 
