@@ -200,6 +200,13 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
   - Next step: repeat a crash with runner logs enabled from the start, and keep
     the database, to see what the first runners of these jobs did.
 
+  - Likely explained (owner memory, 260929): soak round 4 replaced `run/wr` in
+    place at 22:45; the `kill -9` at crash 1 dropped the old inode's last
+    reference and ~1,000 runners still executing it died paging in code, so
+    they never archived. Fits the host dependence and missing archives. A
+    production-scale crash soak with runner logs from the start is scheduled
+    to confirm (261004).
+
 - [x] **`make test` failed `TestDaemonStillRunningUnreadableArgv` (in `cmd`)
       once, under load.** Found by the gate run for the first item; it does
       not touch the code that item changed.

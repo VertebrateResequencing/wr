@@ -41,3 +41,28 @@ files.
   `TestReliable2ReserveConfirmedDeadReclaimed` fail with "could not reach the
   server". Act only on a concrete, verifiable weakness; otherwise close and
   watch.
+
+## Backlog (not scheduled)
+
+Unfinished work recorded only as prose in other checklists, some of it inside
+ticked items. Listed here so a scan for unticked items finds it.
+
+- [ ] `260904-4.md`, "A production finding for a separate PR": ext4 hands a
+  freed inode to the next `mkdir`, so at scale `openChain` refuses a hashed
+  level re-made by another run (`errNotBelowBaseDir`). Cleanup then reports a
+  failure and leaves the empty hashed levels and the `<AppName>_cwd` base.
+- [ ] `260927-queue-heap-retention.md`, "Not fixed, recorded for follow-up":
+  the limiter never forgets time or datetime groups and keeps `toNotify`
+  channels until a decrement; LSF `reservedElements` and `doomedElements`
+  are not pruned; OpenStack `spawnCanceller` can keep an empty inner map per
+  cmd.
+- [ ] `260929-query-copies-and-warning-storm.md`, "Not fixed": each
+  scheduling cycle still snapshots and walks the whole ready backlog
+  (O(backlog)).
+- [ ] `260927-subscription-reconnect-leak.md`, "Residual, not fixed": a
+  resubscribe that registers but whose reply is lost strands that
+  replacement subscription; only a manager-side reaper keyed on client
+  liveness would cover it.
+- [ ] `260930-runner-report-followups.md` item 3, "Noted, not fixed": a
+  hand-made request with a zero ClientID can release or bury a job that never
+  ran (ReservedBy zero).
