@@ -40,5 +40,9 @@ edited files, and the red command below in race and plain modes.
 
 ## Delivery queue
 
-- encodejob-race-2a0b91ec -> develop, no dependencies. Status: fix reviewed
-  (PASS); running make lint/test/race, then PR and pr-resolver.
+- encodejob-race-2a0b91ec -> develop, no dependencies. Status: reviewed
+  (PASS); make lint/test/race PASS (261004); pushed, in pr-resolver. Next:
+  ask the owner to merge. Merge first.
+- checklist-tidy-8e94211c (worktree wr-tidy) -> develop: checklist ticks and
+  test/tooling hygiene from the 261004 audit. Rebase onto develop after this
+  merges; merge second.
