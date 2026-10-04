@@ -79,7 +79,7 @@ quoted include it.
   - Mutation: `executeLiveState.updateResources` never raising `peakRAM`
     fails the Convey (after the 60s cap) with `Expected '0' to be greater
     than or equal to '1'`.
-- [ ] TestSubscriptionReconnectDuringManagerShutdown (it also takes 23-29s)
+- [x] TestSubscriptionReconnectDuringManagerShutdown (it also takes 23-29s)
   - Not reproduced: lane 9, 7 runs with `stress -c 8` and the test on one
     core (`GOMAXPROCS=1`) passed, taking 37-42s each. Its earlier failures
     (260928's speed doc, and 260927-client-token-reload.md) were in "Unsubscribe
@@ -102,6 +102,9 @@ quoted include it.
     that 2s floor first, which leaves little or no margin; a resubscribe
     still waiting when the socket closes ends in a different error. It needs
     a dedicated heavy-load run to confirm. No change made.
+  - Closed, watch: every failure predates #634's `pingUntilUnread` fix, and
+    the candidate above is refuted; see `261004-checklist-tidy-8e94211c.md`
+    item D.
 - [x] TestFuseMountReaping (pidInFuseWait premise false)
   - Also recorded, unfixed, in 260927-client-token-reload.md.
   - Red: lane 9, `-test.run '^TestFuseMountReaping$'`, no added stress (host

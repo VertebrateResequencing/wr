@@ -60,10 +60,37 @@ files.
     with that message; `-mode drive -group 200:30:1:0`, `-mode ping` and
     `-mode churn` get past the check to the connect. `go vet` and `gofmt -l`
     are clean. No manager was started.
-- [ ] D. `260928-load-sensitive-flakes.md` item:
+- [x] D. `260928-load-sensitive-flakes.md` item:
   `TestSubscriptionReconnectDuringManagerShutdown` fails under load (3 or
   more sightings). The 3s `ShutdownSocketWait` leaves too small a margin over
   the 2s resubscribe floor, which starts only after `pingUntilUnread`.
+  - Not reproduced: the test binary (`go test -tags netgo -c`) and `stress
+    -c 8` both pinned to one core (`taskset -c 7`), `GOMAXPROCS=1`,
+    `-test.count 10`: exit 0, 10 of 10 passed (about 39s each).
+  - The stated mechanism is wrong. The floor does not have to fit inside
+    `ShutdownSocketWait`: a resubscribe sent before the command socket closes
+    still ends in `ErrRecvTimeout` after it closes. A temporary 1.2s sleep
+    after `pingUntilUnread` in both Conveys that use the floor (resubscribe
+    sent about 1.23s after the readers exit, floor ending at 3.23s against
+    the 3s close) passed. Only a request sent after the socket has closed
+    fails: a 3.5s sleep failed "Unsubscribe against an unresponsive manager
+    is bounded, even behind a reconnect step" at
+    `So(errors.Is(<-resubscribed, mangos.ErrRecvTimeout), ShouldBeTrue)`,
+    the reported symptom.
+  - Measured margin: a temporary print of the time from
+    `clientHandlingDone` (when the socket's wait starts) to the resubscribe
+    being sent gave 21ms unloaded and 24-49ms under the pinned load above,
+    in both Conveys, against windows of 3s and 4s.
+  - Every recorded failure predates #634 (`cb9bb03`, `8cb5ff5f`). #634,
+    `260927-race-kill-bury-flakes.md`, made `pingUntilUnread` wait for the
+    readers to exit instead of taking a 10ms ping timeout as proof, which
+    caused exactly these two symptoms (`clientLockTakenWithin` false, and a
+    resubscribe not ending in `ErrRecvTimeout`). No sighting since.
+  - No change made: widening `ShutdownSocketWait` would only lengthen the
+    test, since the margin is already about 60 times the measured gap.
+  - Green, unchanged test: `CGO_ENABLED=1 go test -race -tags netgo -count
+    10 ./jobqueue -run '^TestSubscriptionReconnectDuringManagerShutdown$'`
+    exit 0 (254s), plus the pinned plain run above.
 - [ ] E. `260928-load-sensitive-flakes.md` item: `TestStartDurability` and
   `TestReliable2ReserveConfirmedDeadReclaimed` fail with "could not reach the
   server". Act only on a concrete, verifiable weakness; otherwise close and
