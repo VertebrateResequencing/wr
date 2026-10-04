@@ -67,10 +67,14 @@ func TestReliable4ReservedPruneOnlyWhenComplete(t *testing.T) {
 
 		ctx, _ := captureLogCtx()
 
-		Convey("a full scan whose `bjobs -w` failed leaves the reservations intact", func() {
+		Convey("full scans whose `bjobs -w` failed leave the reservations intact", func() {
 			// a list call that exits non-zero: whatever LSF holds, this snapshot
-			// is not a picture of it.
+			// is not a picture of it. Two, since a reservation is only forgotten
+			// once two complete scans in a row have not reported it.
 			writeFakeExe(t, s.bjobsExe, "#!/bin/bash\nexit 1\n")
+
+			_, err := s.countCmds(ctx, jobNamePrefix(s.config.Deployment), true)
+			So(err, ShouldNotBeNil)
 
 			count, err := s.countCmds(ctx, jobNamePrefix(s.config.Deployment), true)
 
@@ -82,7 +86,11 @@ func TestReliable4ReservedPruneOnlyWhenComplete(t *testing.T) {
 			})
 		})
 
-		Convey("a full scan whose `bjobs -w` succeeded still prunes what LSF no longer reports", func() {
+		Convey("two full scans whose `bjobs -w` succeeded still prune what LSF no longer reports", func() {
+			_, err := s.countCmds(ctx, jobNamePrefix(s.config.Deployment), true)
+			So(err, ShouldBeNil)
+			So(s.snapshotReserved(), ShouldContainKey, reservedGoneElement)
+
 			count, err := s.countCmds(ctx, jobNamePrefix(s.config.Deployment), true)
 
 			So(err, ShouldBeNil)

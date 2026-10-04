@@ -124,7 +124,10 @@ Owner decisions (261004) are noted on each item.
   freed inode to the next `mkdir`, so at scale `openChain` refuses a hashed
   level re-made by another run (`errNotBelowBaseDir`). Cleanup then reports a
   failure and leaves the empty hashed levels and the `<AppName>_cwd` base.
-- [ ] QUEUED, LSF part only, measure first (branch 2 below); the limiter
+- [x] DONE on `lsf-retention-e5a127bd`, see
+  `261004-lsf-retention-e5a127bd.md`: measured about 75B per finished runner
+  (reserved) and 220B per killed excess element (doomed), now pruned. Was:
+  QUEUED, LSF part only, measure first (branch 2 below); the limiter
   and OpenStack parts are accepted as negligible (kilobytes a year; the
   buffered `toNotify` channels are freed at the next decrement).
   `260927-queue-heap-retention.md`, "Not fixed, recorded for follow-up":

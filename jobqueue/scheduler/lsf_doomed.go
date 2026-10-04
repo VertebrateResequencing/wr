@@ -82,14 +82,21 @@ func (d *doomedSet) forgetUnseen(prefix string, seen map[string]bool) {
 	}
 }
 
-// forgetAbsent drops every id not in present, a full snapshot of the elements
-// LSF knows about.
-func (d *doomedSet) forgetAbsent(present map[string]bool) {
-	for id, prefix := range d.prefixOf {
-		if !present[id] {
-			d.removeFrom(prefix, id)
-		}
+// forget drops id, if it is doomed.
+func (d *doomedSet) forget(id string) {
+	if prefix, ok := d.prefixOf[id]; ok {
+		d.removeFrom(prefix, id)
 	}
+}
+
+// ids returns a copy of every doomed id.
+func (d *doomedSet) ids() map[string]bool {
+	ids := make(map[string]bool, len(d.prefixOf))
+	for id := range d.prefixOf {
+		ids[id] = true
+	}
+
+	return ids
 }
 
 // len returns how many ids are doomed.
