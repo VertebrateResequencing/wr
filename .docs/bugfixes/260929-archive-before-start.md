@@ -160,7 +160,7 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
 
   - Gates: see the end of this file.
 
-- [ ] **Crash 1 of the same soak (at 23:10:23) produced 624 of the 1,091
+- [x] **Crash 1 of the same soak (at 23:10:23) produced 624 of the 1,091
       double runs by another mechanism, which this fix does not cover.** Found
       while investigating the item above. Not fixed, and its cause is not
       proven; recorded here for a follow-up.
@@ -206,6 +206,14 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
     they never archived. Fits the host dependence and missing archives. A
     production-scale crash soak with runner logs from the start is scheduled
     to confirm (261004).
+
+  - Closed by soak9 (261004, develop `55cc2565`, runner logs from the start,
+    no binary swap): 0 double runs in 741,508 runs over six `kill -9` crashes
+    at 2,300-3,600 running jobs (peak 3,872), and no runner died without
+    reporting. So this does not reproduce without the binary swap. Evidence
+    under `/nfs/hgi/wr/sb10-bigdb/soak9/`:
+    `run/prodsim-1791103425/markers-analysis.txt`, `analysis/doubles.txt` and
+    `analysis/runnerlogs.txt`; see `261004-soak9-followups-906fadf9.md`.
 
 - [x] **`make test` failed `TestDaemonStillRunningUnreadableArgv` (in `cmd`)
       once, under load.** Found by the gate run for the first item; it does

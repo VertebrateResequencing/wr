@@ -140,6 +140,13 @@ Owner decisions (261004) are noted on each item.
   `260929-query-copies-and-warning-storm.md`, "Not fixed": each
   scheduling cycle still snapshots and walks the whole ready backlog
   (O(backlog)).
+  - Measured in soak9 (261004, develop `55cc2565`): the scheduling cycle
+    (rac) used about 3.4s of CPU per 100k ready jobs per 30s, about 11% of a
+    core per 100k ready, growing linearly with the backlog. The
+    ready-to-runner-requested latency stayed flat at about 2-3s up to 243k
+    ready, apart from two probes: 10,921 ms at 10:56 (167k ready) and
+    5,751 ms at 11:26 (221k ready). Evidence: `/nfs/hgi/wr/sb10-bigdb/soak9/analysis/goal2-table.txt`.
+    Owner decision pending; see `261004-soak9-followups-906fadf9.md`.
 - [x] QUEUED (branch 3 below), simpler design: record each subscription's
   last poll and sweep any not polled for a generous interval (e.g. 30 min); a
   live client polling a swept id resubscribes and catches up (#665).

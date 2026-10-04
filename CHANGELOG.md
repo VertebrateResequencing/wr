@@ -21,6 +21,11 @@ project adheres to [Semantic Versioning](http://semver.org/).
   `jobqueue.Client.RetryWhileManagerUnreachable`; wr's own commands still fail
   fast.
 ### Fixed
+- When every attempt to submit runners for some commands fails, such as when
+  the LSF queue chosen for them refuses every `bsub`, the manager now stops
+  trying once those commands are removed, instead of retrying the `bsub` and
+  logging errors until it restarts, and makes one retry at a time for them
+  instead of one more per failed attempt.
 - A runner's late report that its command failed, or should be buried, no
   longer buries or delays a new run of that command by another runner, which
   could leave the command running twice, and a late report that it succeeded no
@@ -149,6 +154,9 @@ project adheres to [Semantic Versioning](http://semver.org/).
   stack of where the panic happened (as `panic_stack`).
 - After a restart, the manager no longer logs an "unknown subscription" error
   for each client still waiting on a subscription from before the restart.
+- After a restart, the manager no longer logs a "jtouch ... bad job" error for
+  each runner whose last touch of a command arrived just after the runner
+  reported the command finished.
 
 ## [0.38.0] - 2026-09-30
 ### Added
