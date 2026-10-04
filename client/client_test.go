@@ -318,7 +318,7 @@ func TestSchedulerWaitForRunningAcrossManagerRestart(t *testing.T) {
 
 			oldToken := w.manager.token()
 
-			w.manager.stop()
+			w.stopManager()
 			So(receiveWaitForRunningResult(w.done, restartDownTime).err, ShouldEqual, errSchedulerJobTimeout)
 
 			w.manager.start()
@@ -346,7 +346,7 @@ func TestSchedulerWaitForRunningAcrossManagerRestart(t *testing.T) {
 			defer cleanup()
 
 			for range 2 {
-				w.manager.stop()
+				w.stopManager()
 				So(receiveWaitForRunningResult(w.done, restartOutage).err, ShouldEqual, errSchedulerJobTimeout)
 
 				w.manager.start()
@@ -375,7 +375,7 @@ func TestSchedulerWaitForRunningAcrossManagerRestart(t *testing.T) {
 
 			stoppedAt := time.Now()
 
-			w.manager.stop()
+			w.stopManager()
 
 			result := receiveWaitForRunningResult(w.done, restartResultWait)
 			elapsed := time.Since(stoppedAt)
@@ -390,7 +390,7 @@ func TestSchedulerWaitForRunningAcrossManagerRestart(t *testing.T) {
 			w, cleanup := startRestartedWait(t, restartLongRetry)
 			defer cleanup()
 
-			w.manager.stop()
+			w.stopManager()
 			So(receiveWaitForRunningResult(w.done, restartDownTime).err, ShouldEqual, errSchedulerJobTimeout)
 
 			cancelledAt := time.Now()
@@ -424,7 +424,8 @@ func TestSchedulerWaitForRunningAcrossManagerRestart(t *testing.T) {
 
 // startRestartedWait starts a manager with the given RetryTime, submits a job
 // and starts a WaitForRunning on it with a Scheduler whose Timeout is
-// restartWaitTimeout, confirming the wait is polling before returning it.
+// restartWaitTimeout and whose polls stopManager can hold off, confirming the
+// wait is polling before returning it.
 func startRestartedWait(t *testing.T, retryTime time.Duration) (*restartedWait, func()) {
 	t.Helper()
 
@@ -437,6 +438,9 @@ func startRestartedWait(t *testing.T, retryTime time.Duration) (*restartedWait, 
 		s.NewJob("echo restart", "rg-restart", "req-restart", "", "", nil),
 	}, SubmitJobsOptions{})
 	So(err, ShouldBeNil)
+
+	gated := &pollGatedJobqueue{Client: jobqueueClients(s)[0]}
+	s.jq = gated
 
 	waitCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan waitForRunningResult, 1)
@@ -451,7 +455,7 @@ func startRestartedWait(t *testing.T, retryTime time.Duration) (*restartedWait, 
 
 	So(receiveWaitForRunningResult(done, 3*restartWaitPoll).err, ShouldEqual, errSchedulerJobTimeout)
 
-	return &restartedWait{manager: m, scheduler: s, key: keys[0], cancel: cancel, done: done}, func() {
+	return &restartedWait{manager: m, scheduler: s, jq: gated, key: keys[0], cancel: cancel, done: done}, func() {
 		cancel()
 
 		select {
@@ -888,13 +892,42 @@ func TestSchedulerGetSchedulerAlertsAcrossManagerRestart(t *testing.T) {
 	})
 }
 
+// pollGatedJobqueue is a Scheduler's real jobqueue client whose job lookups,
+// the requests WaitForRunning polls with, can be held off by locking polls.
+type pollGatedJobqueue struct {
+	*jobqueue.Client
+
+	polls sync.RWMutex
+}
+
+func (g *pollGatedJobqueue) GetByEssenceContext(ctx context.Context, je *jobqueue.JobEssence, getStd bool,
+	getEnv bool) (*jobqueue.Job, error) {
+	g.polls.RLock()
+	defer g.polls.RUnlock()
+
+	return g.Client.GetByEssenceContext(ctx, je, getStd, getEnv)
+}
+
 // restartedWait is a WaitForRunning in progress against a restartableManager.
 type restartedWait struct {
 	manager   *restartableManager
 	scheduler *Scheduler
+	jq        *pollGatedJobqueue
 	key       string
 	cancel    context.CancelFunc
 	done      <-chan waitForRunningResult
+}
+
+// stopManager stops the manager between two of the wait's polls, and lets the
+// wait poll again only once its client has seen its connection drop. A poll
+// sent before then, or in flight as the manager stops, waits for its reply
+// until the reply deadline (see the package doc) instead of finding the manager
+// down.
+func (w *restartedWait) stopManager() {
+	w.jq.polls.Lock()
+	defer w.jq.polls.Unlock()
+
+	w.manager.stopSeenBy(w.jq.Client)
 }
 
 // recordedLogs is a log15.Handler that keeps the level and message of every

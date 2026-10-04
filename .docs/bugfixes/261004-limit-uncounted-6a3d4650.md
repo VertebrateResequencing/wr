@@ -249,7 +249,7 @@ speed`.
   `setLimitGroup`). Source: review of 74134b6f (261004). Queued as its own
   branch after this one.
 
-- [ ] Pre-existing on develop (not caused by this branch): the same dropped
+- [x] Pre-existing on develop (not caused by this branch): the same dropped
   connection window breaks `TestSchedulerWaitForRunningAcrossManagerRestart`
   ("returns the last error after about the manager's RetryTime" and
   "cancelling its context while the manager is down", lines 368 and 386 in
@@ -258,3 +258,5 @@ speed`.
   does not fix it: its ping waits behind the stuck poll. Source: widened-
   window run of `go test -run 'AcrossManagerRestart$' ./client/` (261004).
   Needs its own fix, such as holding polls off while stopping.
+  - Fixed on branch `wfr-restart-30d649e5`; see
+    `.docs/bugfixes/261004-wfr-restart-30d649e5.md`.
