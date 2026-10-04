@@ -245,6 +245,11 @@ const (
 	// includes as a sample. The whole id list is never logged: at prod scale that
 	// was ~26KB per warn line and 75KB/min of manager log.
 	bkillSummarySampleIDs = 3
+
+	// defaultReservedPruneInterval is the default least time between
+	// killExcessCmds' prunes of finished runners' element ids. See
+	// reservedPruneInterval.
+	defaultReservedPruneInterval = time.Minute
 )
 
 // maxBsubArraySize caps the number of elements wr places in a single bsub job
@@ -363,6 +368,14 @@ var (
 	killBackoffMin = defaultKillBackoffMin //nolint:gochecknoglobals
 	killBackoffMax = defaultKillBackoffMax //nolint:gochecknoglobals
 )
+
+// reservedPruneInterval is the least time between killExcessCmds' prunes of the
+// reserved and doomed element ids of runners that have finished (see pruneDue).
+// A prune widens that cycle's bjobs scan from one cmd's jobs to all of this
+// deployment's, so it is rate-limited; the sets then hold at most the live
+// runners plus those that finished within about this interval. It is a package
+// var so tests can lower it.
+var reservedPruneInterval = defaultReservedPruneInterval //nolint:gochecknoglobals
 
 // The whole-invocation reports bkill -b gives when none of the ids it was given
 // could be killed (see bkillFoundNothingToKill).
@@ -820,6 +833,15 @@ func (b *bjobsStderr) errSuffix() string {
 	return fmt.Sprintf(" (bjobs stderr: %q)", kept)
 }
 
+// pruneSnapshot holds the reserved and doomed element ids recorded before a full
+// bjobs scan began. Only those may be pruned for that scan not reporting them:
+// an element claimed or doomed while bjobs ran may postdate the snapshot LSF
+// gave bjobs.
+type pruneSnapshot struct {
+	reserved map[string]bool
+	doomed   map[string]bool
+}
+
 // lsf is our implementer of scheduleri.
 type lsf struct {
 	config             *ConfigLSF
@@ -842,7 +864,10 @@ type lsf struct {
 	// claimForReserve, so the decision to kill and the hand-off of a job can
 	// never both win. Guarded by reservedMu.
 	doomedElements doomedSet
-	reservedMu     sync.Mutex
+	// prunedAt is when killExcessCmds last pruned reservedElements and
+	// doomedElements (see pruneDue). Guarded by reservedMu.
+	prunedAt   time.Time
+	reservedMu sync.Mutex
 	// killDeferred holds, per element id wr has asked bkill to kill, the earliest
 	// time wr may ask LSF to kill it again, so an identical failing kill is not
 	// re-issued every scheduling cycle. killBackoff (with killSleeper) is the
@@ -1035,20 +1060,61 @@ func (s *lsf) snapshotDoomed(jobPrefix string) map[string]bool {
 	return s.doomedElements.ofPrefix(jobPrefix)
 }
 
-// pruneReserved drops any reserved or doomed element ids not present in the
-// given full snapshot of currently-known LSF element ids (parseBjobs excludes
-// exited elements), bounding both sets over a long-lived manager.
-func (s *lsf) pruneReserved(present map[string]bool) {
+// snapshotForPrune returns the reserved and doomed element ids, to be taken
+// before a full bjobs scan whose result is given to pruneReserved.
+func (s *lsf) snapshotForPrune() pruneSnapshot {
 	s.reservedMu.Lock()
 	defer s.reservedMu.Unlock()
 
+	return s.snapshotForPruneLocked()
+}
+
+func (s *lsf) snapshotForPruneLocked() pruneSnapshot {
+	reserved := make(map[string]bool, len(s.reservedElements))
 	for id := range s.reservedElements {
+		reserved[id] = true
+	}
+
+	return pruneSnapshot{reserved: reserved, doomed: s.doomedElements.ids()}
+}
+
+// pruneDue reports whether a killExcessCmds scan starting now should also prune
+// the element ids of finished runners, which it does at most once per
+// reservedPruneInterval, starting one interval after the first scan. If so, it
+// returns the snapshot to prune from.
+func (s *lsf) pruneDue(now time.Time) (pruneSnapshot, bool) {
+	s.reservedMu.Lock()
+	defer s.reservedMu.Unlock()
+
+	if s.prunedAt.IsZero() {
+		s.prunedAt = now
+	}
+
+	if now.Sub(s.prunedAt) < reservedPruneInterval {
+		return pruneSnapshot{}, false
+	}
+
+	s.prunedAt = now
+
+	return s.snapshotForPruneLocked(), true
+}
+
+// pruneReserved forgets the reserved and doomed element ids in before (taken
+// before a complete full bjobs scan began) that are not in present (the
+// elements of this deployment that scan reported; parseBjobs excludes exited
+// ones): their runners have finished or LSF has killed them. This bounds both
+// sets over a long-lived manager.
+func (s *lsf) pruneReserved(present map[string]bool, before pruneSnapshot) {
+	s.reservedMu.Lock()
+	defer s.reservedMu.Unlock()
+
+	for id := range before.reserved {
 		if !present[id] {
 			delete(s.reservedElements, id)
 		}
 	}
 
-	s.doomedElements.forgetAbsent(present)
+	s.doomedElements.forgetAbsent(present, before.doomed)
 }
 
 // doomUnreserved is called once killExcessCmds' bjobs scan of jobPrefix has
@@ -1372,6 +1438,38 @@ func (s *lsf) pollForBjob(jobID string, window, pollFreq, execTimeout, pipeGrace
 			return false
 		}
 	}
+}
+
+// scanForExcess runs killExcessCmds' bjobs scan of jobPrefix through kc. When a
+// prune is due (see pruneDue), the scan instead covers all of this deployment's
+// jobs, handing kc only those of jobPrefix, and a complete scan then prunes the
+// reserved and doomed ids of elements it did not report. A scan of one cmd
+// cannot do that on its own: once a scheduler group finishes, its prefix is
+// never scanned again, and reservedElements is not grouped by prefix at all.
+// bjobs -w lists all the user's jobs either way, so the wider scan costs only
+// the extra parsing of this deployment's other jobs.
+func (s *lsf) scanForExcess(ctx context.Context, jobPrefix string, kc *killCollector) error {
+	before, prune := s.pruneDue(time.Now())
+	if !prune {
+		return s.parseBjobs(ctx, jobPrefix, kc.consider)
+	}
+
+	present := make(map[string]bool)
+
+	err := s.parseBjobs(ctx, jobNamePrefix(s.config.Deployment), func(jobID, stat, jobName string) {
+		if id := killableID(jobID, jobName, kc.reAid); id != "" {
+			present[id] = true
+		}
+
+		if strings.HasPrefix(jobName, jobPrefix) {
+			kc.consider(jobID, stat, jobName)
+		}
+	})
+	if err == nil {
+		s.pruneReserved(present, before)
+	}
+
+	return err
 }
 
 // bqueuesParser holds the mutable state used while parsing the output of
@@ -2362,11 +2460,13 @@ func (s *lsf) countCmds(ctx context.Context, jobPrefix string, full bool) (count
 	var (
 		present map[string]bool
 		reAid   *regexp.Regexp
+		before  pruneSnapshot
 	)
 
 	if full {
 		present = make(map[string]bool)
 		reAid = regexp.MustCompile(`\[(\d+)\]$`)
+		before = s.snapshotForPrune()
 	}
 
 	cb := func(jobID, _, jobName string) {
@@ -2384,10 +2484,9 @@ func (s *lsf) countCmds(ctx context.Context, jobPrefix string, full bool) (count
 	// missing from a bjobs that failed, or that bjobsExecTimeout cut short
 	// mid-list, is not an element LSF no longer has. Forgetting it would let
 	// killExcessCmds bkill an element wr has handed a job reservation to, which
-	// DEVELOPERS.md rule 5 forbids. Only shutdown asks for a full snapshot today,
-	// so this is narrow, but it is the same set the kill path reads.
+	// DEVELOPERS.md rule 5 forbids.
 	if full && err == nil {
-		s.pruneReserved(present)
+		s.pruneReserved(present, before)
 	}
 
 	return count, err
@@ -2472,7 +2571,7 @@ func (s *lsf) killExcessCmds(ctx context.Context, jobPrefix string, maxAllowed i
 		maxAllowed: maxAllowed,
 	}
 
-	err = s.parseBjobs(ctx, jobPrefix, kc.consider)
+	err = s.scanForExcess(ctx, jobPrefix, kc)
 
 	toKill, spared := s.doomUnreserved(jobPrefix, kc.toKill, kc.seen, err == nil)
 	if len(toKill) > 0 {

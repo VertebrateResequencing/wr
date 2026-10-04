@@ -848,7 +848,7 @@ func TestLSFReservedElements(t *testing.T) {
 		Convey("pruneReserved drops ids absent from a subsequent full bjobs snapshot", func() {
 			// 12345[7] has exited so parseBjobs no longer reports it.
 			present := map[string]bool{"12345[8]": true, "99999[1]": true}
-			s.pruneReserved(present)
+			s.pruneReserved(present, s.snapshotForPrune())
 
 			So(s.reservedElements, ShouldNotContainKey, "12345[7]")
 			So(s.reservedElements, ShouldContainKey, "12345[8]")
@@ -859,7 +859,7 @@ func TestLSFReservedElements(t *testing.T) {
 		Convey("pruneReserved also drops doomed ids absent from the snapshot", func() {
 			s.doomedElements.add("wrp_a", "12345[9]")
 			s.doomedElements.add("wrp_b", "99999[2]")
-			s.pruneReserved(map[string]bool{"99999[2]": true})
+			s.pruneReserved(map[string]bool{"99999[2]": true}, s.snapshotForPrune())
 
 			So(s.doomedElements.contains("12345[9]"), ShouldBeFalse)
 			So(s.doomedElements.contains("99999[2]"), ShouldBeTrue)
