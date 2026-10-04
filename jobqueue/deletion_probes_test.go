@@ -94,6 +94,17 @@ const (
 	probeRelativeDir = "relative/cwd"
 )
 
+// procSelfCwd is where Linux names a process's own working directory. A Job's
+// ActualCwd spelled through it names a directory only the kernel can resolve.
+const procSelfCwd = "/proc/self/cwd"
+
+// probe counts for the concurrency probes below. They are the smallest that
+// still fail when the upward walk stops removing one empty dir at a time.
+const (
+	probeCleaners = 8
+	probeRounds   = 5
+)
+
 // probeWorld is the filesystem a (Cwd, ActualCwd) probe runs against: the
 // workspace mkHashedDir really built for a Job, a file of the user's own in
 // every directory a deletion aimed at the wrong place could land in, and another
@@ -414,10 +425,6 @@ func probeCwdRows() []probeCwdRow {
 		},
 	}
 }
-
-// procSelfCwd is where Linux names a process's own working directory. A Job's
-// ActualCwd spelled through it names a directory only the kernel can resolve.
-const procSelfCwd = "/proc/self/cwd"
 
 func TestProbeReportedDirectories(t *testing.T) {
 	if runnermode || servermode {
@@ -1208,13 +1215,6 @@ func probeMountRemote(t *testing.T, mountPoint string) (string, bool) {
 	return remote, true
 }
 
-// probe counts for the concurrency probes below. They are the smallest that
-// still fail when the upward walk stops removing one empty dir at a time.
-const (
-	probeCleaners = 8
-	probeRounds   = 5
-)
-
 // probeRun is one run of a Job: the working directory mkHashedDir made for it,
 // and the output file only that run may delete.
 type probeRun struct {
@@ -1366,19 +1366,20 @@ func probeWindowRows() []probeWindowRow {
 		// next run's mkHashedDir creates them again. The handles this cleanup
 		// still holds are on the levels it descended through, not on the ones
 		// that replaced them, and openChain proves every level it reopens by
-		// inode (proveSameDir), so a level that is there but is not the one
-		// that was checked is not absence: cleanup returns before it empties
-		// anything or walks up anything.
+		// inode (proveSameDir). A level that is there but is not the one that
+		// was checked ends the descent as though it had gone (levelRemade), so
+		// cleanup empties nothing and walks up nothing, and returns nil: the
+		// re-made level is for the run that made it to tidy.
 		//
 		// Both rows below therefore give the replacement level an inode of its
-		// own, and pin that refusal, which is the one of production's three
-		// answers here they can hold it to:
+		// own, and pin that quiet stop with the replacement and everything in
+		// it surviving. Production has three answers here:
 		//   - the level removed and NOT recreated is absence, so the chain is
-		//     incomplete and cleanup returns nil. That is the quiet case, and
-		//     it is a different window from the one these rows arrange.
-		//   - the level recreated with a DIFFERENT inode is refused, with
-		//     errNotBelowBaseDir. That is what these rows arrange, and the
-		//     survivors are asserted first, so a refusal costs nothing.
+		//     incomplete and cleanup returns nil.
+		//   - the level recreated with a DIFFERENT inode, which is what these
+		//     rows arrange, is treated the same way, so a directory of the
+		//     user's renamed onto the level's name is left alone just as
+		//     another run's is. The survivors are asserted first.
 		//   - the level recreated with the SAME inode satisfies the proof, and
 		//     the sweep proceeds as though nothing had changed. ext4 hands a
 		//     freed directory inode straight back to the next mkdir, so that
@@ -1397,7 +1398,6 @@ func probeWindowRows() []probeWindowRow {
 
 				return []string{other.output, other.actualCwd, other.tmpDir, hashed}
 			},
-			wantErr: errNotBelowBaseDir,
 		},
 		{
 			name: "the hashed level above the workspace is recreated holding a tree of the user's",
@@ -1406,7 +1406,6 @@ func probeWindowRows() []probeWindowRow {
 
 				return []string{writeFileIn(filepath.Join(hashed, "someone_elses"), probeMineName), hashed}
 			},
-			wantErr: errNotBelowBaseDir,
 		},
 	}
 }

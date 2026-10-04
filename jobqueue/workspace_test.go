@@ -732,6 +732,141 @@ func TestCleanupWorkSpaceGoneAfterItWasOpened(t *testing.T) {
 	})
 }
 
+func TestCleanupLevelRemintedByAnotherRun(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	// two runs of one key share every level above their workspaces: one run's
+	// cleanup walks up removing those levels once they are empty, and the other
+	// run's mkHashedDir makes them again, almost always with a new inode on a
+	// shared filesystem. A cleanup that proved the old level then finds a
+	// different directory there, which is the other run's to tidy, not a reason
+	// to report a failure.
+	Convey("Given a cleanup that has proven its workspace, whose level above is then re-made by another run", t, func() {
+		cwd := t.TempDir()
+		precious := writeFileIn(filepath.Join(cwd, "user_scripts"), probeMineName)
+		base := filepath.Join(cwd, AppName+createdCwdBaseSuffix)
+
+		job := &Job{Cwd: cwd, Cmd: testWSCmd}
+		actualCwd, workSpace, _ := realWorkSpace(job)
+		mine := writeFileIn(actualCwd, "mine.txt")
+
+		// remint moves level aside, so its inode is still held when the other
+		// run's mkHashedDir makes the level again, which therefore cannot be
+		// the dir the proof checked. It returns the other run, and the
+		// re-made level's identity.
+		remint := func(level string) (probeRun, os.FileInfo) {
+			checked, err := os.Lstat(level)
+			So(err, ShouldBeNil)
+
+			So(os.Rename(level, level+".aside"), ShouldBeNil)
+
+			other, err := startProbeRun(cwd, job.Key(), "other")
+			So(err, ShouldBeNil)
+
+			now, err := os.Lstat(level)
+			So(err, ShouldBeNil)
+			So(os.SameFile(now, checked), ShouldBeFalse)
+
+			return other, now
+		}
+
+		soRemadeLevelIntact := func(other probeRun, level string, remade os.FileInfo) {
+			soPathsExist(other.output, other.actualCwd, other.tmpDir, base, precious, cwd)
+
+			now, err := os.Lstat(level)
+			So(err, ShouldBeNil)
+			So(os.SameFile(now, remade), ShouldBeTrue)
+		}
+
+		for _, which := range []struct {
+			name  string
+			level func() string
+		}{
+			{"the hashed level just above the workspace", func() string { return filepath.Dir(workSpace) }},
+			{"the base every hashed level is under", func() string { return base }},
+		} {
+			Convey("when it is "+which.name, func() {
+				level := which.level()
+
+				var (
+					other  probeRun
+					remade os.FileInfo
+				)
+
+				Reset(func() { cleanupProvenHook = nil })
+
+				Convey("after this run's workspace had gone, cleanup succeeds and deletes nothing of the other run's", func() {
+					cleanupProvenHook = func() {
+						cleanupProvenHook = nil
+
+						So(os.RemoveAll(workSpace), ShouldBeNil)
+
+						other, remade = remint(level)
+
+						So(os.RemoveAll(level+".aside"), ShouldBeNil)
+					}
+
+					err := (&Behaviour{When: OnExit, Do: CleanupAll}).Trigger(OnExit, job)
+
+					soRemadeLevelIntact(other, level, remade)
+					soPathsGone(workSpace)
+
+					So(err, ShouldBeNil)
+				})
+
+				Convey("with this run's workspace moved aside with it, cleanup succeeds and touches neither", func() {
+					cleanupProvenHook = func() {
+						cleanupProvenHook = nil
+
+						other, remade = remint(level)
+					}
+
+					err := (&Behaviour{When: OnExit, Do: CleanupAll}).Trigger(OnExit, job)
+
+					soRemadeLevelIntact(other, level, remade)
+
+					rel, rerr := filepath.Rel(level, mine)
+					So(rerr, ShouldBeNil)
+					soPathsExist(filepath.Join(level+".aside", rel))
+					soPathsGone(workSpace)
+
+					So(err, ShouldBeNil)
+				})
+
+				Convey("with an empty directory of the user's renamed onto it, cleanup succeeds and leaves that alone", func() {
+					// nothing about an empty directory says whose it is, and an
+					// upward walk carried on through it would remove it.
+					userDir := filepath.Join(cwd, "user_empty")
+					So(os.Mkdir(userDir, os.ModePerm), ShouldBeNil)
+
+					users, err := os.Lstat(userDir)
+					So(err, ShouldBeNil)
+
+					cleanupProvenHook = func() {
+						cleanupProvenHook = nil
+
+						So(os.RemoveAll(workSpace), ShouldBeNil)
+						So(os.Rename(level, level+".aside"), ShouldBeNil)
+						So(os.Rename(userDir, level), ShouldBeNil)
+						So(os.RemoveAll(level+".aside"), ShouldBeNil)
+					}
+
+					err = (&Behaviour{When: OnExit, Do: CleanupAll}).Trigger(OnExit, job)
+
+					now, lerr := os.Lstat(level)
+					So(lerr, ShouldBeNil)
+					So(os.SameFile(now, users), ShouldBeTrue)
+					soPathsExist(base, precious, cwd)
+
+					So(err, ShouldBeNil)
+				})
+			})
+		}
+	})
+}
+
 // realWorkSpace gives job the working directory mkHashedDir really creates for it
 // below job.Cwd, and returns that dir, the workspace holding it, and the tmp dir
 // wr makes beside it. The path wr builds is what proves a workspace is wr's own,

@@ -124,6 +124,10 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - On a host where some other service listens on a port for IPv6 only, wr no
   longer suggests a manager port range containing that port, which the manager
   then failed to start on.
+- A command's cleanup behaviour no longer reports a failure, and leaves empty
+  working directories under `<cwd>/<AppName>_cwd`, when another run of the
+  same command re-created those directories while it was cleaning up, which on
+  shared filesystems happened routinely.
 - The manager uses less CPU deciding what to schedule when many commands are
   waiting in limit groups.
 - The manager allocates about 2 KiB less memory each time it saves a command,
