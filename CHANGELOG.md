@@ -29,9 +29,6 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - Removing a limit with `wr limit -g name:-1` at the moment a command in that
   group was being scheduled could leave the old limit enforced until the limit
   was next changed.
-- Setting a limit with `wr limit` at the same moment as adding commands that
-  set the same limit group could leave the manager enforcing a different limit
-  from the one it saved, until the limit was next changed.
 - When every attempt to submit runners for some commands fails, such as when
   the LSF queue chosen for them refuses every `bsub`, the manager now stops
   trying once those commands are removed, instead of retrying the `bsub` and
