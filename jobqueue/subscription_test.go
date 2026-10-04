@@ -115,6 +115,17 @@ var (
 
 var errNoRandomness = errors.New("no randomness")
 
+// subscriptionRestartRetryTime is the reconnect retry budget for tests whose
+// subscription must survive a manager restart. The budget starts when Stop
+// breaks the long poll, so it has to cover the rest of Stop and the whole of
+// the restart: 1.3-1.6s of a 2s budget with the test pinned to a busy core, and
+// past it under more load. Only a failing reconnect ever waits it out.
+const subscriptionRestartRetryTime = 30 * time.Second
+
+// subscriptionUpdateWait bounds the wait for updates that must arrive. Only a
+// missing update waits it out.
+const subscriptionUpdateWait = 10 * time.Second
+
 func TestLiveJobUpdateCwd(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -153,6 +164,98 @@ func receiveAddAndWaitResult(resultCh <-chan addAndWaitResult, timeout time.Dura
 	case <-time.After(timeout):
 		return addAndWaitResult{err: errAddAndWaitTimeout}
 	}
+}
+
+// TestClientAddAndWaitCancelledDuringOutage checks that an AddAndWait ended by
+// its ctx while the manager is down returns within about the client timeout,
+// instead of riding out the outage to fetch the jobs it saw finish.
+func TestClientAddAndWaitCancelledDuringOutage(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given an AddAndWait that saw one of its two jobs finish, on a client that rides out outages", t, func() {
+		const (
+			unsubscribeWait = 500 * time.Millisecond
+			// closeWait is how long Unsubscribe waits for the subscription's
+			// poll goroutine, which may be resubscribing through the outage.
+			closeWait = time.Second
+		)
+
+		defer setSubscriptionUnsubscribeTimeout(unsubscribeWait)()
+
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionReconnectTimings(&serverConfig, 250*time.Millisecond, subscriptionRestartRetryTime)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		jq.RetryWhileManagerUnreachable(ctx)
+
+		runner, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		waitCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		resultCh := addAndWaitAsync(waitCtx, jq, subscriptionTestJobs("subscription-outage-cancel", standardReqs, 2))
+
+		archiveNextAddAndWaitJob(runner)
+		disconnect(runner)
+
+		// let the archive's update reach the subscription
+		time.Sleep(time.Second)
+
+		Convey("cancelling it after the manager stops returns within about the client timeout", func() {
+			server.Stop(ctx, true)
+
+			cancelledAt := time.Now()
+
+			cancel()
+
+			result := receiveAddAndWaitResult(resultCh, 2*subscriptionRestartRetryTime)
+
+			So(time.Since(cancelledAt), ShouldBeLessThan,
+				clientConnectTime+unsubscribeWait+closeWait+2*schedulingSlack)
+			So(errors.Is(result.err, context.Canceled), ShouldBeTrue)
+			So(result.jobs, ShouldBeEmpty)
+
+			_, unfinished, found := strings.Cut(strings.SplitN(result.err.Error(), "\n", 2)[0],
+				"unfinished job keys: ")
+			So(found, ShouldBeTrue)
+			So(strings.Split(unfinished, ", "), ShouldHaveLength, 1)
+		})
+
+		Convey("cancelling it while another request holds the client's lock returns within about the client "+
+			"timeout", func() {
+			server.Stop(ctx, true)
+
+			// stands in for the subscription's resubscribe, which can hold
+			// the lock through the outage
+			jq.Lock()
+
+			cancelledAt := time.Now()
+
+			cancel()
+
+			result := receiveAddAndWaitResult(resultCh, 2*subscriptionRestartRetryTime)
+			took := time.Since(cancelledAt)
+
+			jq.Unlock()
+
+			So(took, ShouldBeLessThan, clientConnectTime+unsubscribeWait+closeWait+2*schedulingSlack)
+			So(errors.Is(result.err, context.Canceled), ShouldBeTrue)
+			So(errors.Is(result.err, errClientBusy), ShouldBeTrue)
+			So(result.jobs, ShouldBeEmpty)
+		})
+	})
 }
 
 func TestClientAddAndWait(t *testing.T) {
@@ -1751,6 +1854,258 @@ func TestSubscriptionReconnectResync(t *testing.T) {
 	})
 }
 
+// TestSubscriptionStaleIDResync covers a subscription whose poll reaches a
+// restarted manager still carrying the previous manager's subscription id, as
+// when mangos resends an in-flight poll over the socket it redialled: the new
+// manager answers "unknown subscription", and the client must resubscribe and
+// deliver the catch-up for what changed while it was not subscribed.
+func TestSubscriptionStaleIDResync(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("A poll answered with unknown subscription by a restarted manager resyncs with a catch-up update", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionReconnectTimings(&serverConfig, 250*time.Millisecond, subscriptionRestartRetryTime)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer func() {
+			server.Stop(ctx, true)
+		}()
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		ids, err := jq.AddAndReturnIDs(subscriptionTestJobs("subscription-stale-id", standardReqs, 1), envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 1)
+
+		job, err := jq.Reserve(50 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(job.Key(), ShouldEqual, ids[0])
+		So(jq.Started(job, os.Getpid()), ShouldBeNil)
+
+		resp, err := jq.request(&clientRequest{Method: requestMethodSubscribe, Keys: ids})
+		So(err, ShouldBeNil)
+
+		staleID := resp.SubscriptionID
+
+		server.Stop(ctx, true)
+		server = restartSubscriptionTestServer(ctx, serverConfig)
+		So(waitUntilRecovered(server), ShouldBeTrue)
+
+		_, known := server.clientSubscription(staleID)
+		So(known, ShouldBeFalse)
+
+		So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+		// a Subscription built on the old id stands in for one whose poll
+		// mangos resent to the restarted manager: its first poll carries that
+		// id, which only the stopped manager knew.
+		dialAddr := jq.subscriptionDialAddr()
+		sock, err := dialSubscriptionSocket(dialAddr, jq.args[1], jq.args[2],
+			serverSubscriptionHoldTime+subscriptionSocketRecvMargin)
+		So(err, ShouldBeNil)
+
+		sub := newSubscription(jq, sock, staleID, dialAddr, ids, "")
+
+		go sub.poll(ctx, nil)
+
+		defer sub.Unsubscribe()
+
+		updates, ok := collectSubscriptionUpdates(sub, 2)
+		So(ok, ShouldBeTrue)
+		So(updates, ShouldHaveLength, 2)
+		So(updates[0].Kind, ShouldEqual, JobUpdateResync)
+		So(updates[1].Kind, ShouldEqual, JobUpdateTerminal)
+		So(updates[1].Key, ShouldEqual, ids[0])
+		So(updates[1].State, ShouldEqual, JobStateComplete)
+		So(sub.Err(), ShouldBeNil)
+		So(subscriptionUpdatesStillOpen(sub, 150*time.Millisecond), ShouldBeTrue)
+	})
+}
+
+func TestSubscriptionReconnectAdoptsManagerTimings(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	const (
+		oldTouchInterval = 2 * time.Second
+		oldRetryWait     = 250 * time.Millisecond
+		oldRetryTime     = subscriptionRestartRetryTime
+		newTouchInterval = 3 * time.Second
+		newRetryWait     = 300 * time.Millisecond
+		newRetryTime     = subscriptionRestartRetryTime + time.Second
+	)
+
+	// subscribeAcrossTimingChange connects a client to a manager using the old
+	// timings, lets override adjust the client before it subscribes, then
+	// restarts the manager with the new timings and waits for the subscription
+	// to resync with it.
+	subscribeAcrossTimingChange := func(override func(jq *Client)) *Client {
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		serverConfig.Timings.TouchInterval = oldTouchInterval
+		applySubscriptionReconnectTimings(&serverConfig, oldRetryWait, oldRetryTime)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		// unsubscribe before stopping the manager, or the subscription spends
+		// its whole retry time trying to reconnect to it.
+		var sub *Subscription
+
+		Reset(func() {
+			if sub != nil {
+				sub.Unsubscribe()
+			}
+
+			server.Stop(ctx, true)
+		})
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		Reset(func() {
+			disconnect(jq)
+		})
+
+		So(jq.touchInterval, ShouldEqual, oldTouchInterval)
+		So(jq.retryWait, ShouldEqual, oldRetryWait)
+		So(jq.retryTime, ShouldEqual, oldRetryTime)
+
+		override(jq)
+
+		ids, err := jq.AddAndReturnIDs(subscriptionTestJobs("subscription-timings", standardReqs, 1), envVars, true)
+		So(err, ShouldBeNil)
+		So(ids, ShouldHaveLength, 1)
+
+		sub, err = jq.SubscribeToJobKeys(ctx, ids)
+		So(err, ShouldBeNil)
+
+		server.Stop(ctx, true)
+		sub.closeSock()
+		time.Sleep(100 * time.Millisecond)
+
+		serverConfig.Timings.TouchInterval = newTouchInterval
+		applySubscriptionReconnectTimings(&serverConfig, newRetryWait, newRetryTime)
+		server = restartSubscriptionTestServer(ctx, serverConfig)
+
+		updates, ok := collectSubscriptionUpdates(sub, 1)
+		So(ok, ShouldBeTrue)
+		So(updates[0].Kind, ShouldEqual, JobUpdateResync)
+		So(jq.CurrentServerInfo().RetryTime, ShouldEqual, newRetryTime)
+
+		return jq
+	}
+
+	Convey("A subscription reconnect adopts the restarted manager's timings", t, func() {
+		jq := subscribeAcrossTimingChange(func(*Client) {})
+
+		So(jq.touchInterval, ShouldEqual, newTouchInterval)
+		So(jq.retryWait, ShouldEqual, newRetryWait)
+		So(jq.retryTime, ShouldEqual, newRetryTime)
+	})
+
+	Convey("A subscription reconnect keeps timings overridden on the client", t, func() {
+		const overriddenRetryWait = 400 * time.Millisecond
+
+		jq := subscribeAcrossTimingChange(func(jq *Client) {
+			jq.retryWait = overriddenRetryWait
+		})
+
+		So(jq.retryWait, ShouldEqual, overriddenRetryWait)
+		So(jq.touchInterval, ShouldEqual, newTouchInterval)
+		So(jq.retryTime, ShouldEqual, newRetryTime)
+	})
+
+	Convey("A reconnect adopts the timings of the manager that answers its resubscribe", t, func() {
+		ctx := context.Background()
+		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		serverConfig.Timings.TouchInterval = oldTouchInterval
+		applySubscriptionReconnectTimings(&serverConfig, oldRetryWait, oldRetryTime)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		var sub *Subscription
+
+		Reset(func() {
+			reconnectConnectedHook = nil
+
+			if sub != nil {
+				sub.Unsubscribe()
+			}
+
+			server.Stop(ctx, true)
+		})
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		Reset(func() {
+			disconnect(jq)
+		})
+
+		sub, err = jq.SubscribeToJobKeys(ctx, []string{"subscription-timings-resubscribe"})
+		So(err, ShouldBeNil)
+
+		// the manager restarts with new timings after the reconnect has
+		// connected to it and before the resubscribe, so the old manager
+		// answers the connect and the restarted one the resubscribe
+		type restart struct {
+			server *Server
+			err    error
+		}
+
+		restarted := make(chan restart, 1)
+
+		var restartOnce sync.Once
+
+		reconnectConnectedHook = func() {
+			restartOnce.Do(func() {
+				server.Stop(ctx, true)
+
+				restartConfig := serverConfig
+				restartConfig.dontWipeDevDB = true
+				restartConfig.Timings.TouchInterval = newTouchInterval
+				applySubscriptionReconnectTimings(&restartConfig, newRetryWait, newRetryTime)
+
+				newServer, _, _, errs := serve(ctx, restartConfig)
+				restarted <- restart{server: newServer, err: errs}
+			})
+		}
+
+		sub.closeSock()
+
+		var r restart
+
+		reconnected := false
+
+		select {
+		case r = <-restarted:
+			reconnected = true
+		case <-time.After(subscriptionUpdateWait):
+		}
+
+		So(reconnected, ShouldBeTrue)
+		So(r.err, ShouldBeNil)
+
+		server = r.server
+
+		update := receiveSubscriptionUpdate(sub, subscriptionUpdateWait)
+		So(update, ShouldNotBeNil)
+		So(update.Kind, ShouldEqual, JobUpdateResync)
+		So(jq.CurrentServerInfo().RetryTime, ShouldEqual, newRetryTime)
+		So(jq.currentTouchInterval(), ShouldEqual, newTouchInterval)
+		So(jq.currentRetryWait(), ShouldEqual, newRetryWait)
+		So(jq.currentRetryTime(), ShouldEqual, newRetryTime)
+	})
+}
+
 func TestSubscriptionReconnectReleasesOldRegistration(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -1939,10 +2294,10 @@ func TestSubscriptionReconnectDuringManagerShutdown(t *testing.T) {
 
 		defer disconnect(jq)
 
-		// a subscription reconnect re-Connect()s with at most
-		// subscriptionReconnectTimeout, so the socket it resubscribes on sits on
-		// the ClientMinRequestTimeout floor, not on the client's original
-		// connect timeout
+		// give the socket a deadline narrower than the client's own
+		// requestTimeout(wrAddWaitConnectTimeout), so a requestWithin that
+		// recomputed the deadline from the client's timeout, rather than
+		// restoring what the socket had, would be caught widening it
 		reconnected := requestTimeout(subscriptionReconnectTimeout)
 		So(reconnected, ShouldEqual, ClientMinRequestTimeout)
 		So(setRecvDeadlineUnderLock(jq, reconnected), ShouldBeNil)
@@ -2551,17 +2906,6 @@ func recvDeadlineUnderLock(jq *Client) (time.Duration, error) {
 
 	return jq.recvDeadline()
 }
-
-// subscriptionRestartRetryTime is the reconnect retry budget for tests whose
-// subscription must survive a manager restart. The budget starts when Stop
-// breaks the long poll, so it has to cover the rest of Stop and the whole of
-// the restart: 1.3-1.6s of a 2s budget with the test pinned to a busy core, and
-// past it under more load. Only a failing reconnect ever waits it out.
-const subscriptionRestartRetryTime = 30 * time.Second
-
-// subscriptionUpdateWait bounds the wait for updates that must arrive. Only a
-// missing update waits it out.
-const subscriptionUpdateWait = 10 * time.Second
 
 // applySubscriptionReconnectTimings sets the reconnect backoff/total-retry-time
 // the server will hand to its clients, for tests exercising reconnection.

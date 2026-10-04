@@ -47,7 +47,7 @@ import (
 )
 
 // ErrDuplicateJobs is returned by SubmitJobs when any submitted jobs already
-// exist in the queue.
+// exist in the queue, unless its add was sent more than once (see SubmitJobs).
 var ErrDuplicateJobs = errors.New("some of the added jobs were duplicates")
 
 var errWaitForJobsJobqueueClient = errors.New("WaitForJobs requires a jobqueue client")
@@ -85,17 +85,52 @@ const (
 	waitForRunningDefaultPollInterval = 5 * time.Second
 )
 
+// Error is a string usable as a constant error.
 type Error string
 
 func (e Error) Error() string { return string(e) }
 
+// SchedulerSettings configures the Scheduler that New returns.
 type SchedulerSettings struct {
-	Deployment  string
-	Cwd         string
-	Queue       string
+	// Deployment picks the wr config to find the manager with: "production"
+	// or "development", whichever the manager was started with. Any other
+	// value, including blank, means WR_DEPLOYMENT if that is one of those,
+	// else "development" when run from the root of a wr source checkout,
+	// else "production".
+	Deployment string
+
+	// Cwd, which must exist, is the working directory of jobs made by NewJob,
+	// and of jobs made by NewJobFromJSON whose spec names no cwd. Blank means
+	// the current working directory.
+	Cwd string
+
+	// Queue, if not blank, is the scheduler queue (such as an LSF queue) set
+	// in the requirements of jobs made by NewJob, of jobs made by
+	// NewJobFromJSON whose spec names no queue, and of submitted jobs that
+	// have no requirements.
+	Queue string
+
+	// QueuesAvoid, if not blank, is a comma-separated list of substrings of
+	// scheduler queue names to avoid. It is set in the requirements of jobs
+	// made by NewJob, of jobs made by NewJobFromJSON whose spec has no
+	// queues_avoid (whatever its queue), and of submitted jobs that have no
+	// requirements.
 	QueuesAvoid string
-	Timeout     time.Duration
-	Logger      log15.Logger
+
+	// Timeout bounds connecting to the manager, and how long each attempt to
+	// send a later request may take. A request already sent waits for its
+	// reply for up to the larger of Timeout and a minute. A Timeout that is
+	// not positive means jobqueue.ClientDefaultConnectTimeout (2 minutes)
+	// rather than no limit. Once connected, requests keep being attempted
+	// while the manager is down, for up to the manager's RetryTime; see the
+	// package doc.
+	Timeout time.Duration
+
+	// Logger receives what New logs while loading wr's config, and the
+	// warnings logged while a request waits for the manager to be reachable.
+	// A problem with that config is logged as critical and ends the program.
+	// It must not be nil unless PretendSubmissions is set.
+	Logger log15.Logger
 }
 
 // SubmitJobsOptions controls how Scheduler job submission handles environment
@@ -124,22 +159,47 @@ func (opts SubmitJobsOptions) ignoreComplete() bool {
 
 //nolint:interfacebloat // mirrors the subset of the jobqueue client API this package uses
 type jobqueueClient interface {
-	Add(jobs []*jobqueue.Job, envVars []string, ignoreComplete bool) (added int, existed int, err error)
-	AddAndReturnIDs(jobs []*jobqueue.Job, envVars []string, ignoreComplete bool) ([]string, error)
+	AddWithDuplicatesContext(ctx context.Context, jobs []*jobqueue.Job, envVars []string,
+		ignoreComplete bool) (added int, dups jobqueue.AddDuplicates, warnings jobqueue.AddWarnings, err error)
+	AddAndReturnIDsContext(ctx context.Context, jobs []*jobqueue.Job, envVars []string,
+		ignoreComplete bool) ([]string, error)
 	AddAndWait(ctx context.Context, jobs []*jobqueue.Job, envVars []string,
 		ignoreComplete bool) ([]*jobqueue.Job, error)
-	GetByEssence(je *jobqueue.JobEssence, getStd bool, getEnv bool) (*jobqueue.Job, error)
+	GetByEssenceContext(ctx context.Context, je *jobqueue.JobEssence, getStd bool,
+		getEnv bool) (*jobqueue.Job, error)
 	GetByRepGroup(repgroup string, subStr bool, limit int,
 		state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
-	GetByRepGroupMatch(repgroup string, match jobqueue.RepGroupMatch, limit int,
-		state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
-	GetIncompleteByRepGroupMatch(repgroup string, match jobqueue.RepGroupMatch,
+	GetByRepGroupMatchContext(ctx context.Context, repgroup string, match jobqueue.RepGroupMatch,
 		limit int, state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
-	GetLastCompletionTimeByRepGroup(repgroup string,
+	GetIncompleteByRepGroupMatchContext(ctx context.Context, repgroup string, match jobqueue.RepGroupMatch,
+		limit int, state jobqueue.JobState, getStd bool, getEnv bool) ([]*jobqueue.Job, error)
+	GetLastCompletionTimeByRepGroupContext(ctx context.Context, repgroup string,
 		match jobqueue.RepGroupMatch) (map[string]time.Time, error)
-	GetSchedulerAlerts() (*jobqueue.SchedulerAlerts, error)
-	Delete(jes []*jobqueue.JobEssence) (int, error)
+	GetSchedulerAlertsContext(ctx context.Context) (*jobqueue.SchedulerAlerts, error)
+	DeleteContext(ctx context.Context, jes []*jobqueue.JobEssence) (int, error)
 	Disconnect() error
+}
+
+// connect returns the jobqueue client New uses: a pretend one if
+// PretendSubmissions is set, otherwise one connected to the manager that rides
+// out the manager being unreachable, logging to settings.Logger.
+//
+//nolint:ireturn // the Scheduler holds either a real or a pretend client
+func connect(settings SchedulerSettings) (jobqueueClient, error) {
+	if PretendSubmissions != "" {
+		return newPretendJobqueue(), nil
+	}
+
+	logCtx := clog.ContextWithLogHandler(context.Background(), settings.Logger.GetHandler())
+
+	jq, err := jobqueue.ConnectUsingConfig(logCtx, settings.Deployment, settings.Timeout)
+	if err != nil {
+		return nil, err
+	}
+
+	jq.RetryWhileManagerUnreachable(logCtx)
+
+	return jq, nil
 }
 
 type pretendJobqueue struct {
@@ -162,7 +222,15 @@ func newPretendJobqueue() *pretendJobqueue {
 	return &pretendJobqueue{output: w}
 }
 
-func (p *pretendJobqueue) Add(jobs []*jobqueue.Job, _ []string, _ bool) (int, int, error) {
+func (p *pretendJobqueue) AddWithDuplicatesContext(_ context.Context, jobs []*jobqueue.Job, _ []string,
+	_ bool) (int, jobqueue.AddDuplicates, jobqueue.AddWarnings, error) {
+	p.record(jobs)
+
+	return len(jobs), jobqueue.AddDuplicates{}, jobqueue.AddWarnings{}, nil
+}
+
+// record records jobs as submitted.
+func (p *pretendJobqueue) record(jobs []*jobqueue.Job) {
 	for _, job := range jobs {
 		job.State = jobqueue.JobStateDelayed
 	}
@@ -172,16 +240,11 @@ func (p *pretendJobqueue) Add(jobs []*jobqueue.Job, _ []string, _ bool) (int, in
 	if p.output != nil {
 		json.NewEncoder(p.output).Encode(jobs) //nolint:errcheck,errchkjson
 	}
-
-	return len(jobs), 0, nil
 }
 
-func (p *pretendJobqueue) AddAndReturnIDs(jobs []*jobqueue.Job,
-	envVars []string, ignoreComplete bool) ([]string, error) {
-	_, _, err := p.Add(jobs, envVars, ignoreComplete)
-	if err != nil {
-		return nil, err
-	}
+func (p *pretendJobqueue) AddAndReturnIDsContext(_ context.Context, jobs []*jobqueue.Job,
+	_ []string, _ bool) ([]string, error) {
+	p.record(jobs)
 
 	keys := make([]string, len(jobs))
 	for n, job := range jobs {
@@ -239,7 +302,7 @@ func distinctJobsInKeyOrder(jobs []*jobqueue.Job) []*jobqueue.Job {
 	return distinct
 }
 
-func (p *pretendJobqueue) GetByEssence(je *jobqueue.JobEssence, _ bool,
+func (p *pretendJobqueue) GetByEssenceContext(_ context.Context, je *jobqueue.JobEssence, _ bool,
 	_ bool) (*jobqueue.Job, error) {
 	if je == nil || je.Key() == "" {
 		return nil, jobqueue.Error{Op: getByEssenceOp, Err: jobqueue.ErrBadRequest}
@@ -261,7 +324,7 @@ func (p *pretendJobqueue) SubmittedJobs() []*jobqueue.Job {
 	return sj
 }
 
-func (p *pretendJobqueue) GetSchedulerAlerts() (*jobqueue.SchedulerAlerts, error) {
+func (p *pretendJobqueue) GetSchedulerAlertsContext(_ context.Context) (*jobqueue.SchedulerAlerts, error) {
 	return &jobqueue.SchedulerAlerts{}, nil
 }
 
@@ -269,13 +332,13 @@ func (p *pretendJobqueue) GetSchedulerAlerts() (*jobqueue.SchedulerAlerts, error
 // considered (as a substring).
 func (p *pretendJobqueue) GetByRepGroup(repgroup string, _ bool, _ int,
 	state jobqueue.JobState, _ bool, _ bool) ([]*jobqueue.Job, error) {
-	return p.GetByRepGroupMatch(repgroup, jobqueue.RepGroupMatchSubStr, 0,
+	return p.GetByRepGroupMatchContext(context.Background(), repgroup, jobqueue.RepGroupMatchSubStr, 0,
 		state, false, false)
 }
 
-// GetByRepGroupMatch behaves like jobqueue.GetByRepGroupMatch, but only
+// GetByRepGroupMatchContext behaves like jobqueue.GetByRepGroupMatch, but only
 // repgroup, match mode and state are considered.
-func (p *pretendJobqueue) GetByRepGroupMatch(repgroup string,
+func (p *pretendJobqueue) GetByRepGroupMatchContext(_ context.Context, repgroup string,
 	match jobqueue.RepGroupMatch, _ int, state jobqueue.JobState, _ bool,
 	_ bool) ([]*jobqueue.Job, error) {
 	if repgroup == "" {
@@ -293,11 +356,11 @@ func (p *pretendJobqueue) GetByRepGroupMatch(repgroup string,
 	return jobs, nil
 }
 
-// GetIncompleteByRepGroupMatch behaves like
+// GetIncompleteByRepGroupMatchContext behaves like
 // jobqueue.GetIncompleteByRepGroupMatch, but only repgroup/match and state are
 // considered; the limit and final boolean arguments (eg. getStd/getEnv) are
 // ignored in this pretend implementation.
-func (p *pretendJobqueue) GetIncompleteByRepGroupMatch(repgroup string,
+func (p *pretendJobqueue) GetIncompleteByRepGroupMatchContext(_ context.Context, repgroup string,
 	match jobqueue.RepGroupMatch, _ int, state jobqueue.JobState, _ bool,
 	_ bool) ([]*jobqueue.Job, error) {
 	jobs := make([]*jobqueue.Job, 0, len(p.jobBuffer))
@@ -317,10 +380,27 @@ func (p *pretendJobqueue) GetIncompleteByRepGroupMatch(repgroup string,
 	return jobs, nil
 }
 
-// GetLastCompletionTimeByRepGroup behaves like
+func matchesIncompleteRepGroup(jobRepGroup, repgroup string,
+	match jobqueue.RepGroupMatch) bool {
+	if repgroup == "" {
+		return true
+	}
+
+	return jobqueue.RepGroupMatches(jobRepGroup, repgroup, match)
+}
+
+func isIncompleteStateMatch(jobState, state jobqueue.JobState) bool {
+	if jobState == jobqueue.JobStateComplete {
+		return false
+	}
+
+	return state == "" || jobState == state
+}
+
+// GetLastCompletionTimeByRepGroupContext behaves like
 // jobqueue.GetLastCompletionTimeByRepGroup, but only complete jobs currently
 // in memory are considered.
-func (p *pretendJobqueue) GetLastCompletionTimeByRepGroup(repgroup string,
+func (p *pretendJobqueue) GetLastCompletionTimeByRepGroupContext(_ context.Context, repgroup string,
 	match jobqueue.RepGroupMatch) (map[string]time.Time, error) {
 	completionTimes := make(map[string]time.Time)
 
@@ -342,24 +422,7 @@ func (p *pretendJobqueue) GetLastCompletionTimeByRepGroup(repgroup string,
 	return completionTimes, nil
 }
 
-func matchesIncompleteRepGroup(jobRepGroup, repgroup string,
-	match jobqueue.RepGroupMatch) bool {
-	if repgroup == "" {
-		return true
-	}
-
-	return jobqueue.RepGroupMatches(jobRepGroup, repgroup, match)
-}
-
-func isIncompleteStateMatch(jobState, state jobqueue.JobState) bool {
-	if jobState == jobqueue.JobStateComplete {
-		return false
-	}
-
-	return state == "" || jobState == state
-}
-
-func (p *pretendJobqueue) Delete(jeses []*jobqueue.JobEssence) (int, error) {
+func (p *pretendJobqueue) DeleteContext(_ context.Context, jeses []*jobqueue.JobEssence) (int, error) {
 	origLen := len(p.jobBuffer)
 
 	p.jobBuffer = slices.DeleteFunc(p.jobBuffer, func(job *jobqueue.Job) bool {
@@ -397,11 +460,8 @@ type Scheduler struct {
 	queuesAvoid string
 }
 
-// New returns a Scheduler that is connected to wr manager using the given
-// deployment, timeout and logger. Added jobs will have the given cwd, which
-// matters. If cwd is blank, the current working dir is used. If queue is not
-// blank, that queue will be used during NewJob(). If queuesAvoid is not blank,
-// queues including a substring from the list will be avoided during NewJob().
+// New returns a Scheduler connected to the wr manager, configured by settings
+// as described for SchedulerSettings.
 //
 // When PretendSubmissions is set, a fake server will be used and no real
 // interactions will take place. Methods SubmitJobs, SubmittedJobs, and
@@ -412,12 +472,8 @@ func New(settings SchedulerSettings) (*Scheduler, error) {
 		return nil, err
 	}
 
-	var jq jobqueueClient
-
-	if PretendSubmissions != "" {
-		jq = newPretendJobqueue()
-	} else if jq, err = jobqueue.ConnectUsingConfig(clog.ContextWithLogHandler(context.Background(),
-		settings.Logger.GetHandler()), settings.Deployment, settings.Timeout); err != nil {
+	jq, err := connect(settings)
+	if err != nil {
 		return nil, err
 	}
 
@@ -447,13 +503,21 @@ func (s *Scheduler) EnableSudo() {
 // are returned.
 func (s *Scheduler) SubmitJobsAndReturnIDs(jobs []*jobqueue.Job,
 	opts SubmitJobsOptions) ([]string, error) {
+	return s.SubmitJobsAndReturnIDsContext(context.Background(), jobs, opts)
+}
+
+// SubmitJobsAndReturnIDsContext is SubmitJobsAndReturnIDs, except that
+// cancelling ctx stops it riding out the manager being unreachable (see the
+// package doc).
+func (s *Scheduler) SubmitJobsAndReturnIDsContext(ctx context.Context, jobs []*jobqueue.Job,
+	opts SubmitJobsOptions) ([]string, error) {
 	if err := validateSubmissionJobs(submitJobsAndReturnIDsOp, jobs); err != nil {
 		return nil, err
 	}
 
 	s.defaultMissingRequirements(jobs)
 
-	return s.jq.AddAndReturnIDs(jobs, opts.envVars(), opts.ignoreComplete())
+	return s.jq.AddAndReturnIDsContext(ctx, jobs, opts.envVars(), opts.ignoreComplete())
 }
 
 func validateSubmissionJobs(op string, jobs []*jobqueue.Job) error {
@@ -506,11 +570,18 @@ func (s *Scheduler) SubmitJobsAndWait(ctx context.Context, jobs []*jobqueue.Job,
 // stdout/stderr and environment data.
 func (s *Scheduler) GetJobByKey(key string, getStd bool,
 	getEnv bool) (*jobqueue.Job, error) {
+	return s.GetJobByKeyContext(context.Background(), key, getStd, getEnv)
+}
+
+// GetJobByKeyContext is GetJobByKey, except that cancelling ctx stops it
+// riding out the manager being unreachable (see the package doc).
+func (s *Scheduler) GetJobByKeyContext(ctx context.Context, key string, getStd bool,
+	getEnv bool) (*jobqueue.Job, error) {
 	if key == "" {
 		return nil, jobqueue.Error{Op: getJobByKeyOp, Err: jobqueue.ErrBadRequest}
 	}
 
-	job, err := s.jq.GetByEssence(&jobqueue.JobEssence{JobKey: key}, getStd, getEnv)
+	job, err := s.jq.GetByEssenceContext(ctx, &jobqueue.JobEssence{JobKey: key}, getStd, getEnv)
 	if err != nil {
 		var jqErr jobqueue.Error
 
@@ -530,7 +601,18 @@ func (s *Scheduler) GetJobByKey(key string, getStd bool,
 }
 
 // WaitForRunning waits until the job identified by key has started running or
-// has already reached a state that means it will not start in this wait.
+// has already reached a state that means it will not start in this wait,
+// polling the manager every pollInterval (a default if it is not positive).
+//
+// Each poll rides out the manager being unreachable, such as across a restart,
+// as every Scheduler request does (see the package doc): if the manager stays
+// unreachable for longer than its RetryTime (24h by default), the poll's last
+// error is returned. Any other error, such as the job not existing, is returned
+// at once.
+//
+// Cancelling ctx ends the wait with ctx's error, once the attempt to reach the
+// manager in progress, if any, has finished, which can take as long as
+// SchedulerSettings.Timeout while the manager is down.
 func (s *Scheduler) WaitForRunning(ctx context.Context, key string,
 	pollInterval time.Duration) (*jobqueue.Job, error) {
 	if err := validateWaitForRunningKey(key); err != nil {
@@ -562,11 +644,12 @@ func waitForRunningPollInterval(pollInterval time.Duration) time.Duration {
 func (s *Scheduler) waitForRunning(ctx context.Context, key string,
 	ticker *time.Ticker) (*jobqueue.Job, error) {
 	for ctx.Err() == nil {
-		job, done, err := s.pollWaitForRunning(key)
-		switch {
-		case err != nil:
+		job, done, err := s.pollWaitForRunning(ctx, key)
+		if err != nil {
 			return nil, err
-		case done:
+		}
+
+		if done {
 			return job, nil
 		}
 
@@ -587,8 +670,8 @@ func waitForRunningTick(ctx context.Context, ticker *time.Ticker) error {
 	}
 }
 
-func (s *Scheduler) pollWaitForRunning(key string) (*jobqueue.Job, bool, error) {
-	job, err := s.GetJobByKey(key, false, false)
+func (s *Scheduler) pollWaitForRunning(ctx context.Context, key string) (*jobqueue.Job, bool, error) {
+	job, err := s.GetJobByKeyContext(ctx, key, false, false)
 	if err != nil {
 		return nil, false, waitForRunningError(key, err)
 	}
@@ -660,8 +743,13 @@ func (s *Scheduler) WaitForJobs(ctx context.Context,
 			waitForJobsContextError(err, distinct, terminal)
 	}
 
-	waitKeys, err := s.currentTerminalAndWaitKeys(distinct, terminal)
+	waitKeys, err := s.currentTerminalAndWaitKeys(ctx, distinct, terminal)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return jobsInWaitKeyOrder(distinct, terminal),
+				waitForJobsContextError(ctxErr, distinct, terminal)
+		}
+
 		return nil, err
 	}
 
@@ -733,12 +821,12 @@ func waitForJobsContextError(ctxErr error, keys []string,
 		strings.Join(unfinishedWaitForJobKeys(keys, terminal), ", "))
 }
 
-func (s *Scheduler) currentTerminalAndWaitKeys(keys []string,
+func (s *Scheduler) currentTerminalAndWaitKeys(ctx context.Context, keys []string,
 	terminal map[string]*jobqueue.Job) ([]string, error) {
 	waitKeys := make([]string, 0, len(keys))
 
 	for _, key := range keys {
-		job, err := s.GetJobByKey(key, true, false)
+		job, err := s.GetJobByKeyContext(ctx, key, true, false)
 		if err != nil {
 			return nil, err
 		}
@@ -922,9 +1010,11 @@ func (s *Scheduler) NewJobFromJSON(spec *jobqueue.JobViaJSON) (*jobqueue.Job, er
 }
 
 // GetSchedulerAlerts returns the scheduler alerts currently shown by wr's web
-// UI, including dismissible scheduler issues and bad cloud servers.
+// UI, including dismissible scheduler issues and bad cloud servers. Reading the
+// issues dismisses them, so a request that may have reached the manager is not
+// sent again (see the package doc).
 func (s *Scheduler) GetSchedulerAlerts() (*jobqueue.SchedulerAlerts, error) {
-	return s.jq.GetSchedulerAlerts()
+	return s.GetSchedulerAlertsContext(context.Background())
 }
 
 func (s *Scheduler) defaultMissingRequirements(jobs []*jobqueue.Job) {
@@ -939,6 +1029,100 @@ func (s *Scheduler) defaultMissingRequirements(jobs []*jobqueue.Job) {
 		}
 		job.Unlock()
 	}
+}
+
+// SubmitJobsContext is SubmitJobs, except that cancelling ctx stops it riding
+// out the manager being unreachable (see the package doc).
+func (s *Scheduler) SubmitJobsContext(ctx context.Context, jobs []*jobqueue.Job) error {
+	if err := validateSubmissionJobs(submitJobsOp, jobs); err != nil {
+		return err
+	}
+
+	s.defaultMissingRequirements(jobs)
+
+	inserts, dups, _, err := s.jq.AddWithDuplicatesContext(ctx, jobs, os.Environ(), false)
+	if err != nil {
+		return err
+	}
+
+	// a resent add's duplicates may be the jobs its own earlier copy queued
+	// (see jobqueue.AddDuplicates.Resent). If any were complete, the add has
+	// already returned ErrResentAddSkippedComplete, so every job it did not
+	// add is queued, whoever queued it.
+	if inserts == len(jobs) || dups.Resent() {
+		return nil
+	}
+
+	return ErrDuplicateJobs
+}
+
+// FindJobsByRepGroupSuffixContext is FindJobsByRepGroupSuffix, except that
+// cancelling ctx stops it riding out the manager being unreachable (see the
+// package doc).
+func (s *Scheduler) FindJobsByRepGroupSuffixContext(ctx context.Context, suffix string) ([]*jobqueue.Job, error) {
+	return s.jq.GetByRepGroupMatchContext(ctx, suffix, jobqueue.RepGroupMatchSuffix, 0, "",
+		true, false)
+}
+
+// FindJobsByRepGroupPrefixAndStateContext is FindJobsByRepGroupPrefixAndState,
+// except that cancelling ctx stops it riding out the manager being unreachable
+// (see the package doc).
+func (s *Scheduler) FindJobsByRepGroupPrefixAndStateContext(ctx context.Context, prefix string,
+	state jobqueue.JobState) ([]*jobqueue.Job, error) {
+	return s.jq.GetByRepGroupMatchContext(ctx, prefix, jobqueue.RepGroupMatchPrefix, 0,
+		state, true, false)
+}
+
+// FindIncompleteJobsByRepGroupContext is FindIncompleteJobsByRepGroup, except
+// that cancelling ctx stops it riding out the manager being unreachable (see
+// the package doc).
+func (s *Scheduler) FindIncompleteJobsByRepGroupContext(ctx context.Context, repgroup string,
+	match jobqueue.RepGroupMatch) ([]*jobqueue.Job, error) {
+	return s.FindIncompleteJobsByRepGroupAndStateContext(ctx, repgroup, match, "")
+}
+
+// FindIncompleteJobsByRepGroupAndStateContext is
+// FindIncompleteJobsByRepGroupAndState, except that cancelling ctx stops it
+// riding out the manager being unreachable (see the package doc).
+func (s *Scheduler) FindIncompleteJobsByRepGroupAndStateContext(ctx context.Context, repgroup string,
+	match jobqueue.RepGroupMatch, state jobqueue.JobState) ([]*jobqueue.Job, error) {
+	return s.jq.GetIncompleteByRepGroupMatchContext(ctx, repgroup, match, 0, state, false,
+		false)
+}
+
+// GetLastCompletionTimeByRepGroupContext is GetLastCompletionTimeByRepGroup,
+// except that cancelling ctx stops it riding out the manager being unreachable
+// (see the package doc).
+func (s *Scheduler) GetLastCompletionTimeByRepGroupContext(ctx context.Context, repgroup string,
+	match jobqueue.RepGroupMatch) (map[string]time.Time, error) {
+	return s.jq.GetLastCompletionTimeByRepGroupContext(ctx, repgroup, match)
+}
+
+// GetSchedulerAlertsContext is GetSchedulerAlerts, except that cancelling ctx
+// stops it riding out the manager being unreachable (see the package doc).
+func (s *Scheduler) GetSchedulerAlertsContext(ctx context.Context) (*jobqueue.SchedulerAlerts, error) {
+	return s.jq.GetSchedulerAlertsContext(ctx)
+}
+
+// KillJobsContext is KillJobs, except that cancelling ctx stops it riding out
+// the manager being unreachable (see the package doc).
+func (s *Scheduler) KillJobsContext(ctx context.Context, jobs ...*jobqueue.Job) error {
+	jq, ok := s.jq.(*jobqueue.Client)
+	if !ok {
+		return nil
+	}
+
+	_, err := jq.KillContext(ctx, jobsToEssences(jobs))
+
+	return err
+}
+
+// RemoveJobsContext is RemoveJobs, except that cancelling ctx stops it riding
+// out the manager being unreachable (see the package doc).
+func (s *Scheduler) RemoveJobsContext(ctx context.Context, jobs ...*jobqueue.Job) error {
+	_, err := s.jq.DeleteContext(ctx, jobsToEssences(jobs))
+
+	return err
 }
 
 func unfinishedWaitForJobKeys(keys []string,
@@ -1099,28 +1283,25 @@ func (s *Scheduler) determineOverrideAndReq(req *jqs.Requirements) (*jqs.Require
 // Previously added identical jobs that have since been archived will get added
 // again.
 //
-// If any duplicate jobs were added, an error will be returned.
+// If any duplicate jobs were added, ErrDuplicateJobs will be returned, except
+// when this call's add may have reached the manager more than once, as when the
+// manager stopped while it was in progress and the add was sent again once it
+// was back: the duplicates may then be the jobs its own first copy added, so
+// nil is returned, since every one of the jobs is queued (see the package doc).
+// Such an add is sent again skipping complete jobs, so that a job its first copy
+// added and that has completed since does not run again; if any of the jobs was
+// then complete, an error matching jobqueue.ErrResentAddSkippedComplete is
+// returned, since it may not have been rerun (see the package doc).
+// While the manager is down, this waits for it for up to its RetryTime (see the
+// package doc). If that fails, SubmitJobsAndReturnIDs with the same jobs and
+// default options adds only those neither queued nor complete, and returns the
+// keys of the queued ones (see the package doc).
 //
 // If this scheduler was created with PretendSubmissions set none of the above
 // happens; the jobs are merely recorded for later retrieval with
 // SubmittedJobs().
 func (s *Scheduler) SubmitJobs(jobs []*jobqueue.Job) error {
-	if err := validateSubmissionJobs(submitJobsOp, jobs); err != nil {
-		return err
-	}
-
-	s.defaultMissingRequirements(jobs)
-
-	inserts, _, err := s.jq.Add(jobs, os.Environ(), false)
-	if err != nil {
-		return err
-	}
-
-	if inserts != len(jobs) {
-		return ErrDuplicateJobs
-	}
-
-	return nil
+	return s.SubmitJobsContext(context.Background(), jobs)
 }
 
 // SubmittedJobs returns jobs sent to SubmitJobs() if this Scheduler was created
@@ -1137,15 +1318,13 @@ func (s *Scheduler) SubmittedJobs() []*jobqueue.Job {
 // FindJobsByRepGroupSuffix finds all of the jobs in wr whose rep group has the
 // supplied suffix.
 func (s *Scheduler) FindJobsByRepGroupSuffix(suffix string) ([]*jobqueue.Job, error) {
-	return s.jq.GetByRepGroupMatch(suffix, jobqueue.RepGroupMatchSuffix, 0, "",
-		true, false)
+	return s.FindJobsByRepGroupSuffixContext(context.Background(), suffix)
 }
 
 // FindJobsByRepGroupPrefixAndState finds all jobs in wr whose RepGroup starts
 // with the supplied prefix, optionally limited to the supplied state.
 func (s *Scheduler) FindJobsByRepGroupPrefixAndState(prefix string, state jobqueue.JobState) ([]*jobqueue.Job, error) {
-	return s.jq.GetByRepGroupMatch(prefix, jobqueue.RepGroupMatchPrefix, 0,
-		state, true, false)
+	return s.FindJobsByRepGroupPrefixAndStateContext(context.Background(), prefix, state)
 }
 
 // FindIncompleteJobsByRepGroup finds incomplete jobs in wr whose RepGroup
@@ -1155,8 +1334,7 @@ func (s *Scheduler) FindJobsByRepGroupPrefixAndState(prefix string, state jobque
 // stdout, stderr, or env from the server.
 func (s *Scheduler) FindIncompleteJobsByRepGroup(repgroup string,
 	match jobqueue.RepGroupMatch) ([]*jobqueue.Job, error) {
-	return s.jq.GetIncompleteByRepGroupMatch(repgroup, match, 0, "", false,
-		false)
+	return s.FindIncompleteJobsByRepGroupContext(context.Background(), repgroup, match)
 }
 
 // FindIncompleteJobsByRepGroupAndState finds incomplete jobs in wr whose
@@ -1168,27 +1346,19 @@ func (s *Scheduler) FindIncompleteJobsByRepGroup(repgroup string,
 func (s *Scheduler) FindIncompleteJobsByRepGroupAndState(repgroup string,
 	match jobqueue.RepGroupMatch,
 	state jobqueue.JobState) ([]*jobqueue.Job, error) {
-	return s.jq.GetIncompleteByRepGroupMatch(repgroup, match, 0, state, false,
-		false)
+	return s.FindIncompleteJobsByRepGroupAndStateContext(context.Background(), repgroup, match, state)
 }
 
 // GetLastCompletionTimeByRepGroup finds the latest completion time among
 // complete jobs in each RepGroup that matches repgroup according to match.
 func (s *Scheduler) GetLastCompletionTimeByRepGroup(repgroup string,
 	match jobqueue.RepGroupMatch) (map[string]time.Time, error) {
-	return s.jq.GetLastCompletionTimeByRepGroup(repgroup, match)
+	return s.GetLastCompletionTimeByRepGroupContext(context.Background(), repgroup, match)
 }
 
-// Kill asks the server to kill the provided jobs.
+// KillJobs asks the server to kill the provided jobs.
 func (s *Scheduler) KillJobs(jobs ...*jobqueue.Job) error {
-	jq, ok := s.jq.(*jobqueue.Client)
-	if !ok {
-		return nil
-	}
-
-	_, err := jq.Kill(jobsToEssences(jobs))
-
-	return err
+	return s.KillJobsContext(context.Background(), jobs...)
 }
 
 func jobsToEssences(jobs []*jobqueue.Job) []*jobqueue.JobEssence {
@@ -1205,9 +1375,7 @@ func jobsToEssences(jobs []*jobqueue.Job) []*jobqueue.JobEssence {
 //
 // NB: Running jobs will not be removed.
 func (s *Scheduler) RemoveJobs(jobs ...*jobqueue.Job) error {
-	_, err := s.jq.Delete(jobsToEssences(jobs))
-
-	return err
+	return s.RemoveJobsContext(context.Background(), jobs...)
 }
 
 // Disconnect disconnects from the manager. You should defer this after New().

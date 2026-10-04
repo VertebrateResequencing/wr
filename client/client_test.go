@@ -43,10 +43,12 @@ import (
 	"time"
 
 	clienttesting "github.com/VertebrateResequencing/wr/client/testing"
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/inconshreveable/log15/v3"
 	. "github.com/smartystreets/goconvey/convey"
+	"go.nanomsg.org/mangos/v3"
 )
 
 const (
@@ -62,6 +64,18 @@ var (
 	errSchedulerJobTimeout     = errors.New("timed out waiting for WaitForJobs")
 	errSchedulerNoReservedJob  = errors.New("reserve returned no job")
 	errSchedulerNotLocalConfig = errors.New("test scheduler config is not local")
+)
+
+const (
+	restartWaitTimeout = time.Second
+	restartWaitPoll    = 100 * time.Millisecond
+	restartRetryWait   = 200 * time.Millisecond
+	restartLongRetry   = 30 * time.Second
+	restartShortRetry  = 3 * time.Second
+	restartMediumRetry = 6 * time.Second
+	restartOutage      = 3500 * time.Millisecond
+	restartDownTime    = 3 * restartWaitTimeout
+	restartResultWait  = 30 * time.Second
 )
 
 func TestSchedulerGetJobByKey(t *testing.T) {
@@ -205,6 +219,687 @@ func TestSchedulerSubmitJobsDefaultsMissingRequirements(t *testing.T) {
 		So(job.Override, ShouldEqual, 0)
 		So(server.GetServerStats().Ready, ShouldEqual, 1)
 	})
+}
+
+// restartableManager is a test manager that can be stopped the way `wr manager
+// stop` does and started again from the same config, which writes a new token.
+type restartableManager struct {
+	t      *testing.T
+	config jobqueue.ServerConfig
+	server *jobqueue.Server
+}
+
+// newRestartableManager starts a manager that tells its clients to keep trying
+// to reach it for retryTime. Its deployment is production so that a restart
+// keeps its database (development wipes it on start); the client side still
+// finds it through the development wr config PrepareWrConfig wrote.
+func newRestartableManager(t *testing.T, retryTime time.Duration) (*restartableManager, func()) {
+	t.Helper()
+
+	config, d := clienttesting.PrepareWrConfig(t)
+	config.Deployment = "production"
+	config.Timings.RetryWait = restartRetryWait
+	config.Timings.RetryTime = retryTime
+
+	m := &restartableManager{t: t, config: config, server: clienttesting.Serve(t, config)}
+
+	return m, func() {
+		if m.server != nil {
+			m.server.Stop(context.Background(), true)
+		}
+
+		d()
+	}
+}
+
+func (m *restartableManager) token() []byte {
+	token, err := os.ReadFile(m.config.TokenFile)
+	So(err, ShouldBeNil)
+
+	return token
+}
+
+// stop stops the manager cleanly and deletes its token file.
+func (m *restartableManager) stop() {
+	m.server.Stop(context.Background(), true)
+	m.server = nil
+
+	So(os.Remove(m.config.TokenFile), ShouldBeNil)
+}
+
+func (m *restartableManager) start() {
+	m.server = clienttesting.Serve(m.t, m.config)
+}
+
+func TestSchedulerWaitForRunningAcrossManagerRestart(t *testing.T) {
+	Convey("Given a WaitForRunning in progress on a job that has not started", t, func() {
+		ctx := context.Background()
+
+		Convey("it returns the job once it starts after a clean restart with a new token", func() {
+			w, cleanup := startRestartedWait(t, restartLongRetry)
+			defer cleanup()
+
+			oldToken := w.manager.token()
+
+			w.manager.stop()
+			So(receiveWaitForRunningResult(w.done, restartDownTime).err, ShouldEqual, errSchedulerJobTimeout)
+
+			w.manager.start()
+			So(w.manager.token(), ShouldNotResemble, oldToken)
+
+			driver, err := jobqueue.ConnectUsingConfig(ctx, testDeployment, 10*time.Second)
+			So(err, ShouldBeNil)
+
+			defer driver.Disconnect() //nolint:errcheck
+
+			started, err := reserveAndStartSchedulerJob(driver)
+			So(err, ShouldBeNil)
+
+			result := receiveWaitForRunningResult(w.done, restartResultWait)
+			So(result.err, ShouldBeNil)
+			So(result.job, ShouldNotBeNil)
+			So(result.job.Key(), ShouldEqual, w.key)
+			So(result.job.State, ShouldEqual, jobqueue.JobStateRunning)
+
+			So(driver.Archive(started, &jobqueue.JobEndState{Exited: true, EndTime: time.Now()}), ShouldBeNil)
+		})
+
+		Convey("it rides out repeated outages that together, but not each, last longer than RetryTime", func() {
+			w, cleanup := startRestartedWait(t, restartMediumRetry)
+			defer cleanup()
+
+			for range 2 {
+				w.manager.stop()
+				So(receiveWaitForRunningResult(w.done, restartOutage).err, ShouldEqual, errSchedulerJobTimeout)
+
+				w.manager.start()
+				So(receiveWaitForRunningResult(w.done, restartWaitTimeout).err, ShouldEqual, errSchedulerJobTimeout)
+			}
+
+			driver, err := jobqueue.ConnectUsingConfig(ctx, testDeployment, 10*time.Second)
+			So(err, ShouldBeNil)
+
+			defer driver.Disconnect() //nolint:errcheck
+
+			started, err := reserveAndStartSchedulerJob(driver)
+			So(err, ShouldBeNil)
+
+			result := receiveWaitForRunningResult(w.done, restartResultWait)
+			So(result.err, ShouldBeNil)
+			So(result.job, ShouldNotBeNil)
+			So(result.job.State, ShouldEqual, jobqueue.JobStateRunning)
+
+			So(driver.Archive(started, &jobqueue.JobEndState{Exited: true, EndTime: time.Now()}), ShouldBeNil)
+		})
+
+		Convey("it returns the last error after about the manager's RetryTime if the manager stays down", func() {
+			w, cleanup := startRestartedWait(t, restartShortRetry)
+			defer cleanup()
+
+			stoppedAt := time.Now()
+
+			w.manager.stop()
+
+			result := receiveWaitForRunningResult(w.done, restartResultWait)
+			elapsed := time.Since(stoppedAt)
+
+			So(result.job, ShouldBeNil)
+			So(errors.Is(result.err, mangos.ErrSendTimeout), ShouldBeTrue)
+			So(elapsed, ShouldBeGreaterThanOrEqualTo, restartShortRetry)
+			So(elapsed, ShouldBeLessThan, restartShortRetry+3*restartWaitTimeout)
+		})
+
+		Convey("cancelling its context while the manager is down returns the context's error promptly", func() {
+			w, cleanup := startRestartedWait(t, restartLongRetry)
+			defer cleanup()
+
+			w.manager.stop()
+			So(receiveWaitForRunningResult(w.done, restartDownTime).err, ShouldEqual, errSchedulerJobTimeout)
+
+			cancelledAt := time.Now()
+
+			w.cancel()
+
+			result := receiveWaitForRunningResult(w.done, restartResultWait)
+			So(result.job, ShouldBeNil)
+			So(errors.Is(result.err, context.Canceled), ShouldBeTrue)
+			So(time.Since(cancelledAt), ShouldBeLessThan, restartWaitTimeout+time.Second)
+
+			Convey("and a WaitForRunning called while it is down rides it out too, until its context is cancelled", func() {
+				calledCtx, cancelCalled := context.WithCancel(ctx)
+				defer cancelCalled()
+
+				called := waitForRunningAsync(calledCtx, w.scheduler, w.key, restartWaitPoll)
+				So(receiveWaitForRunningResult(called, restartDownTime).err, ShouldEqual, errSchedulerJobTimeout)
+
+				cancelledAt = time.Now()
+
+				cancelCalled()
+
+				result = receiveWaitForRunningResult(called, restartResultWait)
+				So(result.job, ShouldBeNil)
+				So(errors.Is(result.err, context.Canceled), ShouldBeTrue)
+				So(time.Since(cancelledAt), ShouldBeLessThan, restartWaitTimeout+time.Second)
+			})
+		})
+	})
+}
+
+// startRestartedWait starts a manager with the given RetryTime, submits a job
+// and starts a WaitForRunning on it with a Scheduler whose Timeout is
+// restartWaitTimeout, confirming the wait is polling before returning it.
+func startRestartedWait(t *testing.T, retryTime time.Duration) (*restartedWait, func()) {
+	t.Helper()
+
+	m, cleanupManager := newRestartableManager(t, retryTime)
+
+	s, err := New(SchedulerSettings{Deployment: testDeployment, Timeout: restartWaitTimeout, Logger: log15.New()})
+	So(err, ShouldBeNil)
+
+	keys, err := s.SubmitJobsAndReturnIDs([]*jobqueue.Job{
+		s.NewJob("echo restart", "rg-restart", "req-restart", "", "", nil),
+	}, SubmitJobsOptions{})
+	So(err, ShouldBeNil)
+
+	waitCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan waitForRunningResult, 1)
+	returned := make(chan struct{})
+
+	go func() {
+		job, errw := s.WaitForRunning(waitCtx, keys[0], restartWaitPoll)
+		done <- waitForRunningResult{job: job, err: errw}
+
+		close(returned)
+	}()
+
+	So(receiveWaitForRunningResult(done, 3*restartWaitPoll).err, ShouldEqual, errSchedulerJobTimeout)
+
+	return &restartedWait{manager: m, scheduler: s, key: keys[0], cancel: cancel, done: done}, func() {
+		cancel()
+
+		select {
+		case <-returned:
+		case <-time.After(restartResultWait):
+		}
+
+		s.Disconnect() //nolint:errcheck
+		cleanupManager()
+	}
+}
+
+func TestSchedulerRequestsAcrossManagerRestart(t *testing.T) {
+	Convey("Given a Scheduler connected to a manager that can be restarted", t, func() {
+		ctx := context.Background()
+
+		Convey("a SubmitJobs and a GetJobByKey made while it is down return once it restarts with a new token", func() {
+			m, cleanup := newRestartableManager(t, restartLongRetry)
+			defer cleanup()
+
+			logged := &recordedLogs{}
+			logger := log15.New()
+			logger.SetHandler(logged)
+
+			s, err := New(SchedulerSettings{Deployment: testDeployment, Timeout: restartWaitTimeout, Logger: logger})
+			So(err, ShouldBeNil)
+
+			defer s.Disconnect() //nolint:errcheck
+
+			queued := s.NewJob("echo queued before the outage", "rg-requests-restart", "req-requests-restart", "", "", nil)
+			So(s.SubmitJobs([]*jobqueue.Job{queued}), ShouldBeNil)
+
+			oldToken := m.token()
+
+			m.stop()
+
+			added := s.NewJob("echo added during the outage", "rg-requests-restart", "req-requests-restart", "", "", nil)
+			submitted := callAsync(func() (*jobqueue.Job, error) {
+				return nil, s.SubmitJobs([]*jobqueue.Job{added})
+			})
+			got := callAsync(func() (*jobqueue.Job, error) {
+				return s.GetJobByKey(queued.Key(), false, false)
+			})
+
+			So(receiveWaitForRunningResult(submitted, restartDownTime).err, ShouldEqual, errSchedulerJobTimeout)
+			So(receiveWaitForRunningResult(got, 0).err, ShouldEqual, errSchedulerJobTimeout)
+
+			m.start()
+			So(m.token(), ShouldNotResemble, oldToken)
+
+			So(receiveWaitForRunningResult(submitted, restartResultWait).err, ShouldBeNil)
+
+			result := receiveWaitForRunningResult(got, restartResultWait)
+			So(result.err, ShouldBeNil)
+			So(result.job, ShouldNotBeNil)
+			So(result.job.Key(), ShouldEqual, queued.Key())
+
+			So(logged.count(log15.LvlWarn, "manager unreachable; retrying request"), ShouldBeGreaterThanOrEqualTo, 2)
+			So(logged.count(log15.LvlInfo, "manager reachable again; retried request answered"), ShouldEqual, 2)
+
+			driver, err := jobqueue.ConnectUsingConfig(ctx, testDeployment, 10*time.Second)
+			So(err, ShouldBeNil)
+
+			defer driver.Disconnect() //nolint:errcheck
+
+			jobs, err := driver.GetByRepGroup("rg-requests-restart", false, 0, "", false, false)
+			So(err, ShouldBeNil)
+			So(jobKeys(jobs), ShouldResemble, map[string]int{queued.Key(): 1, added.Key(): 1})
+		})
+
+		Convey("a SubmitJobs made while it stays down fails after about the manager's RetryTime", func() {
+			m, cleanup := newRestartableManager(t, restartShortRetry)
+			defer cleanup()
+
+			s := newRestartScheduler()
+			defer s.Disconnect() //nolint:errcheck
+
+			m.stop()
+
+			calledAt := time.Now()
+			err := s.SubmitJobs([]*jobqueue.Job{
+				s.NewJob("echo never added", "rg-requests-down", "req-requests-down", "", "", nil),
+			})
+			elapsed := time.Since(calledAt)
+
+			So(errors.Is(err, mangos.ErrSendTimeout), ShouldBeTrue)
+			So(elapsed, ShouldBeGreaterThanOrEqualTo, restartShortRetry)
+			So(elapsed, ShouldBeLessThan, restartShortRetry+3*restartWaitTimeout)
+		})
+
+		Convey("a WaitForJobs and a SubmitJobsAndWait made while it is down end soon after their ctx is cancelled", func() {
+			m, cleanup := newRestartableManager(t, restartLongRetry)
+			defer cleanup()
+
+			s := newRestartScheduler()
+			defer s.Disconnect() //nolint:errcheck
+
+			queued := s.NewJob("echo queued before the outage", "rg-requests-cancel", "req-requests-cancel", "", "", nil)
+			So(s.SubmitJobs([]*jobqueue.Job{queued}), ShouldBeNil)
+
+			m.stop()
+
+			waitCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
+			waited := waitForJobsAsync(waitCtx, s, queued.Key())
+			added := submitJobsAndWaitAsync(waitCtx, s, []*jobqueue.Job{
+				s.NewJob("echo added during the outage", "rg-requests-cancel", "req-requests-cancel", "", "", nil),
+			}, SubmitJobsOptions{})
+
+			So(receiveWaitForJobsResult(waited, restartDownTime).err, ShouldEqual, errSchedulerJobTimeout)
+			So(receiveWaitForJobsResult(added, 0).err, ShouldEqual, errSchedulerJobTimeout)
+
+			cancelledAt := time.Now()
+
+			cancel()
+
+			So(errors.Is(receiveWaitForJobsResult(waited, restartResultWait).err, context.Canceled), ShouldBeTrue)
+			So(errors.Is(receiveWaitForJobsResult(added, restartResultWait).err, context.Canceled), ShouldBeTrue)
+			So(time.Since(cancelledAt), ShouldBeLessThan, restartWaitTimeout+time.Second)
+		})
+
+		Convey("each context-taking call made while it is down keeps trying until its ctx is cancelled, "+
+			"while a plain call keeps trying", func() {
+			m, cleanup := newRestartableManager(t, restartLongRetry)
+			defer cleanup()
+
+			calls := contextSchedulerCalls()
+			schedulers := make(map[string]*Scheduler, len(calls))
+
+			for name := range calls {
+				schedulers[name] = newRestartScheduler()
+				defer schedulers[name].Disconnect() //nolint:errcheck
+			}
+
+			plainScheduler := newRestartScheduler()
+			defer plainScheduler.Disconnect() //nolint:errcheck
+
+			m.stop()
+
+			callCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
+			results := make(map[string]<-chan waitForRunningResult, len(calls))
+			for name, call := range calls {
+				results[name] = callAsync(func() (*jobqueue.Job, error) { return nil, call(callCtx, schedulers[name]) })
+			}
+
+			plain := callAsync(func() (*jobqueue.Job, error) {
+				_, err := plainScheduler.FindJobsByRepGroupSuffix("ctx")
+
+				return nil, err
+			})
+
+			time.Sleep(restartWaitTimeout + restartWaitTimeout/2)
+
+			stillTrying := make(map[string]bool, len(calls))
+			for name, result := range results {
+				stillTrying[name] = errors.Is(receiveWaitForRunningResult(result, 0).err, errSchedulerJobTimeout)
+			}
+
+			cancelledAt := time.Now()
+
+			cancel()
+
+			endedWithCtxErr := make(map[string]bool, len(calls))
+			for name, result := range results {
+				endedWithCtxErr[name] = errors.Is(receiveWaitForRunningResult(result, restartResultWait).err,
+					context.Canceled)
+			}
+
+			cancelTook := time.Since(cancelledAt)
+
+			allTrue := make(map[string]bool, len(calls))
+			for name := range calls {
+				allTrue[name] = true
+			}
+
+			So(stillTrying, ShouldResemble, allTrue)
+			So(endedWithCtxErr, ShouldResemble, allTrue)
+			So(cancelTook, ShouldBeLessThan, restartWaitTimeout+time.Second)
+
+			So(receiveWaitForRunningResult(plain, 0).err, ShouldEqual, errSchedulerJobTimeout)
+
+			m.start()
+
+			So(receiveWaitForRunningResult(plain, restartResultWait).err, ShouldBeNil)
+		})
+
+		Convey("an error that is the manager's answer is returned at once", func() {
+			_, cleanup := newRestartableManager(t, restartLongRetry)
+			defer cleanup()
+
+			s := newRestartScheduler()
+			defer s.Disconnect() //nolint:errcheck
+
+			calledAt := time.Now()
+			job, err := s.GetJobByKey(missingSchedulerJobKey, false, false)
+
+			So(job, ShouldBeNil)
+			So(err, ShouldResemble, jobqueue.Error{Op: getJobByKeyOp, Item: missingSchedulerJobKey, Err: jobqueue.ErrBadJob})
+			So(time.Since(calledAt), ShouldBeLessThan, restartWaitTimeout)
+		})
+
+		Convey("a plain jobqueue client, as wr's commands use, still fails after its timeout", func() {
+			m, cleanup := newRestartableManager(t, restartLongRetry)
+			defer cleanup()
+
+			jq, err := jobqueue.ConnectUsingConfig(ctx, testDeployment, restartWaitTimeout)
+			So(err, ShouldBeNil)
+
+			defer jq.Disconnect() //nolint:errcheck
+
+			m.stop()
+
+			calledAt := time.Now()
+			_, _, err = jq.Add([]*jobqueue.Job{{Cmd: "echo plain", Cwd: "/tmp", RepGroup: "rg-plain"}}, nil, true)
+
+			So(errors.Is(err, mangos.ErrSendTimeout), ShouldBeTrue)
+			So(time.Since(calledAt), ShouldBeLessThan, restartWaitTimeout+time.Second)
+		})
+	})
+}
+
+// callAsync runs call in the background, returning a channel that gets what it
+// returns.
+func callAsync(call func() (*jobqueue.Job, error)) <-chan waitForRunningResult {
+	done := make(chan waitForRunningResult, 1)
+
+	go func() {
+		job, err := call()
+		done <- waitForRunningResult{job: job, err: err}
+	}()
+
+	return done
+}
+
+// jobKeys counts how many of jobs have each key.
+func jobKeys(jobs []*jobqueue.Job) map[string]int {
+	counts := make(map[string]int, len(jobs))
+
+	for _, job := range jobs {
+		counts[job.Key()]++
+	}
+
+	return counts
+}
+
+// newRestartScheduler returns a Scheduler for a restartableManager, with a
+// Timeout of restartWaitTimeout.
+func newRestartScheduler() *Scheduler {
+	s, err := New(SchedulerSettings{Deployment: testDeployment, Timeout: restartWaitTimeout, Logger: log15.New()})
+	So(err, ShouldBeNil)
+
+	return s
+}
+
+// contextSchedulerCalls returns, by name, a call of each Scheduler method that
+// takes a ctx and makes a single request of the manager.
+func contextSchedulerCalls() map[string]func(context.Context, *Scheduler) error {
+	newJob := func(s *Scheduler) *jobqueue.Job {
+		return s.NewJob("echo ctx call", "rg-requests-ctx", "req-requests-ctx", "", "", nil)
+	}
+
+	return map[string]func(context.Context, *Scheduler) error{
+		"SubmitJobsContext": func(ctx context.Context, s *Scheduler) error {
+			return s.SubmitJobsContext(ctx, []*jobqueue.Job{newJob(s)})
+		},
+		"SubmitJobsAndReturnIDsContext": func(ctx context.Context, s *Scheduler) error {
+			_, err := s.SubmitJobsAndReturnIDsContext(ctx, []*jobqueue.Job{newJob(s)}, SubmitJobsOptions{})
+
+			return err
+		},
+		"GetJobByKeyContext": func(ctx context.Context, s *Scheduler) error {
+			_, err := s.GetJobByKeyContext(ctx, newJob(s).Key(), false, false)
+
+			return err
+		},
+		"FindJobsByRepGroupSuffixContext": func(ctx context.Context, s *Scheduler) error {
+			_, err := s.FindJobsByRepGroupSuffixContext(ctx, "ctx")
+
+			return err
+		},
+		"FindJobsByRepGroupPrefixAndStateContext": func(ctx context.Context, s *Scheduler) error {
+			_, err := s.FindJobsByRepGroupPrefixAndStateContext(ctx, "rg-", jobqueue.JobStateReady)
+
+			return err
+		},
+		"FindIncompleteJobsByRepGroupContext": func(ctx context.Context, s *Scheduler) error {
+			_, err := s.FindIncompleteJobsByRepGroupContext(ctx, "rg-requests-ctx", jobqueue.RepGroupMatchExact)
+
+			return err
+		},
+		"FindIncompleteJobsByRepGroupAndStateContext": func(ctx context.Context, s *Scheduler) error {
+			_, err := s.FindIncompleteJobsByRepGroupAndStateContext(ctx, "rg-requests-ctx",
+				jobqueue.RepGroupMatchExact, jobqueue.JobStateReady)
+
+			return err
+		},
+		"GetLastCompletionTimeByRepGroupContext": func(ctx context.Context, s *Scheduler) error {
+			_, err := s.GetLastCompletionTimeByRepGroupContext(ctx, "rg-requests-ctx", jobqueue.RepGroupMatchExact)
+
+			return err
+		},
+		"GetSchedulerAlertsContext": func(ctx context.Context, s *Scheduler) error {
+			_, err := s.GetSchedulerAlertsContext(ctx)
+
+			return err
+		},
+		"KillJobsContext": func(ctx context.Context, s *Scheduler) error {
+			return s.KillJobsContext(ctx, newJob(s))
+		},
+		"RemoveJobsContext": func(ctx context.Context, s *Scheduler) error {
+			return s.RemoveJobsContext(ctx, newJob(s))
+		},
+	}
+}
+
+func TestSchedulerGetSchedulerAlertsAcrossManagerRestart(t *testing.T) {
+	Convey("Given a Scheduler connected to a manager that can be restarted", t, func() {
+		Convey("GetSchedulerAlerts works after a clean restart with a new token, with no other call between", func() {
+			m, cleanup := newRestartableManager(t, restartLongRetry)
+			defer cleanup()
+
+			s := newRestartScheduler()
+			defer s.Disconnect() //nolint:errcheck
+
+			_, err := s.GetSchedulerAlerts()
+			So(err, ShouldBeNil)
+
+			oldToken := m.token()
+
+			m.stop()
+			m.start()
+			So(m.token(), ShouldNotResemble, oldToken)
+
+			alerts, err := s.GetSchedulerAlerts()
+			So(err, ShouldBeNil)
+			So(alerts, ShouldNotBeNil)
+		})
+
+		Convey("a GetSchedulerAlerts made while it is down returns once it restarts with a new token", func() {
+			m, cleanup := newRestartableManager(t, restartLongRetry)
+			defer cleanup()
+
+			logged := &recordedLogs{}
+			logger := log15.New()
+			logger.SetHandler(logged)
+
+			s, err := New(SchedulerSettings{Deployment: testDeployment, Timeout: restartWaitTimeout, Logger: logger})
+			So(err, ShouldBeNil)
+
+			defer s.Disconnect() //nolint:errcheck
+
+			_, err = s.GetSchedulerAlerts()
+			So(err, ShouldBeNil)
+
+			m.stop()
+
+			got := callAsync(func() (*jobqueue.Job, error) {
+				_, errg := s.GetSchedulerAlerts()
+
+				return nil, errg
+			})
+
+			So(receiveWaitForRunningResult(got, restartDownTime).err, ShouldEqual, errSchedulerJobTimeout)
+
+			m.start()
+
+			So(receiveWaitForRunningResult(got, restartResultWait).err, ShouldBeNil)
+			So(logged.count(log15.LvlWarn, "manager unreachable; retrying request"), ShouldBeGreaterThanOrEqualTo, 1)
+			So(logged.count(log15.LvlInfo, "manager reachable again; retried request answered"), ShouldEqual, 1)
+		})
+
+		Convey("a GetSchedulerAlerts made while it stays down fails after about the manager's RetryTime", func() {
+			m, cleanup := newRestartableManager(t, restartShortRetry)
+			defer cleanup()
+
+			s := newRestartScheduler()
+			defer s.Disconnect() //nolint:errcheck
+
+			m.stop()
+
+			calledAt := time.Now()
+			_, err := s.GetSchedulerAlerts()
+			elapsed := time.Since(calledAt)
+
+			So(errors.Is(err, syscall.ECONNREFUSED), ShouldBeTrue)
+			So(elapsed, ShouldBeGreaterThanOrEqualTo, restartShortRetry)
+			So(elapsed, ShouldBeLessThan, restartShortRetry+3*restartWaitTimeout)
+		})
+
+		Convey("a plain jobqueue client, as wr status uses, fails at once while it is down, "+
+			"and is refused after it restarts with a new token", func() {
+			m, cleanup := newRestartableManager(t, restartLongRetry)
+			defer cleanup()
+
+			cfg := internal.ConfigLoadFromCurrentDir(context.Background(), testDeployment)
+			jq, err := jobqueue.Connect(cfg.ManagerHost+":"+cfg.ManagerPort, cfg.ManagerCAFile,
+				cfg.ManagerCertDomain, m.token(), restartWaitTimeout)
+			So(err, ShouldBeNil)
+
+			defer jq.Disconnect() //nolint:errcheck
+
+			m.stop()
+
+			calledAt := time.Now()
+			_, err = jq.GetSchedulerAlerts()
+
+			So(errors.Is(err, syscall.ECONNREFUSED), ShouldBeTrue)
+			So(time.Since(calledAt), ShouldBeLessThan, restartWaitTimeout)
+
+			m.start()
+
+			_, err = jq.GetSchedulerAlerts()
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "401")
+		})
+	})
+}
+
+// restartedWait is a WaitForRunning in progress against a restartableManager.
+type restartedWait struct {
+	manager   *restartableManager
+	scheduler *Scheduler
+	key       string
+	cancel    context.CancelFunc
+	done      <-chan waitForRunningResult
+}
+
+// recordedLogs is a log15.Handler that keeps the level and message of every
+// record it is given.
+type recordedLogs struct {
+	mu      sync.Mutex
+	records []log15.Record
+}
+
+func (r *recordedLogs) Log(record log15.Record) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.records = append(r.records, record)
+
+	return nil
+}
+
+// count returns how many records at lvl had msg.
+func (r *recordedLogs) count(lvl log15.Lvl, msg string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	n := 0
+
+	for _, record := range r.records {
+		if record.Lvl == lvl && record.Msg == msg {
+			n++
+		}
+	}
+
+	return n
+}
+
+func (w *waitForRunningSequenceJobqueue) GetByEssenceContext(_ context.Context, je *jobqueue.JobEssence,
+	_ bool, _ bool) (*jobqueue.Job, error) {
+	if je == nil || je.Key() == "" {
+		return nil, jobqueue.Error{Op: getByEssenceOp, Err: jobqueue.ErrBadRequest}
+	}
+
+	key := je.Key()
+	if key != w.job.Key() {
+		return nil, jobqueue.Error{Op: getByEssenceOp, Item: key, Err: jobqueue.ErrBadJob}
+	}
+
+	call := int(w.calls.Add(1)) - 1
+	if call < len(w.errs) && w.errs[call] != nil {
+		return nil, w.errs[call]
+	}
+
+	if call >= len(w.states) {
+		call = len(w.states) - 1
+	}
+
+	w.job.State = w.states[call]
+
+	return w.job, nil
 }
 
 func mapPointer(m map[string]string) uintptr {
@@ -569,7 +1264,10 @@ type waitForRunningSequenceJobqueue struct {
 	*pretendJobqueue
 	job    *jobqueue.Job
 	states []jobqueue.JobState
-	calls  atomic.Int64
+	// errs, if set, are returned instead of the job by the calls at the same
+	// index that have a non-nil one.
+	errs  []error
+	calls atomic.Int64
 }
 
 func newWaitForRunningSequenceScheduler(key string,
@@ -589,27 +1287,6 @@ func newWaitForRunningSequenceScheduler(key string,
 	s.jq = jq
 
 	return s, jq
-}
-
-func (w *waitForRunningSequenceJobqueue) GetByEssence(je *jobqueue.JobEssence,
-	_ bool, _ bool) (*jobqueue.Job, error) {
-	if je == nil || je.Key() == "" {
-		return nil, jobqueue.Error{Op: getByEssenceOp, Err: jobqueue.ErrBadRequest}
-	}
-
-	key := je.Key()
-	if key != w.job.Key() {
-		return nil, jobqueue.Error{Op: getByEssenceOp, Item: key, Err: jobqueue.ErrBadJob}
-	}
-
-	call := int(w.calls.Add(1)) - 1
-	if call >= len(w.states) {
-		call = len(w.states) - 1
-	}
-
-	w.job.State = w.states[call]
-
-	return w.job, nil
 }
 
 func TestSchedulerWaitForRunning(t *testing.T) {
@@ -716,6 +1393,29 @@ func TestSchedulerWaitForRunning(t *testing.T) {
 			result := receiveWaitForRunningResult(done, time.Second)
 			So(result.job, ShouldBeNil)
 			So(errors.Is(result.err, context.Canceled), ShouldBeTrue)
+		})
+
+		Convey("WaitForRunning returns a poll's error at once, its jobqueue client having ridden out any outage", func() {
+			pollErrs := map[string]error{
+				mangos.ErrSendTimeout.Error(): mangos.ErrSendTimeout,
+				mangos.ErrRecvTimeout.Error(): mangos.ErrRecvTimeout,
+				jobqueue.ErrClosedStop:        jobqueue.Error{Op: getByEssenceOp, Err: jobqueue.ErrClosedStop},
+				jobqueue.ErrPermissionDenied:  jobqueue.Error{Op: getByEssenceOp, Err: jobqueue.ErrPermissionDenied},
+				jobqueue.ErrBadRequest:        jobqueue.Error{Op: getByEssenceOp, Err: jobqueue.ErrBadRequest},
+				mangos.ErrClosed.Error():      mangos.ErrClosed,
+			}
+
+			for want, pollErr := range pollErrs {
+				s, jq := newWaitForRunningSequenceScheduler("c1-poll-error",
+					jobqueue.JobStateReady, jobqueue.JobStateRunning)
+				jq.errs = []error{nil, pollErr}
+
+				got, err := s.WaitForRunning(ctx, jq.job.Key(), time.Millisecond)
+				So(got, ShouldBeNil)
+				So(err, ShouldNotBeNil)
+				So(err.Error(), ShouldContainSubstring, want)
+				So(jq.calls.Load(), ShouldEqual, 2)
+			}
 		})
 
 		Convey("WaitForRunning returns lost before running", func() {
@@ -1429,6 +2129,9 @@ func TestScheduler(t *testing.T) {
 			config, d := clienttesting.PrepareWrConfig(t)
 			defer d()
 
+			// a Scheduler rides out the manager being down for this long
+			config.Timings.RetryTime = restartShortRetry
+
 			server := clienttesting.Serve(t, config)
 			defer server.Stop(ctx, true)
 
@@ -1498,7 +2201,7 @@ func TestScheduler(t *testing.T) {
 						})
 					})
 
-					Convey("which you can't add to the queue if the server is down", func() {
+					Convey("which you can't add to the queue if the server stays down", func() {
 						server.Stop(ctx, true)
 
 						err = s.SubmitJobs([]*jobqueue.Job{job, job2})
@@ -2095,7 +2798,7 @@ func TestPretendGetIncompleteByRepGroupEmptyRepGroup(t *testing.T) {
 		}
 
 		Convey("GetIncompleteByRepGroupMatch with empty repgroup returns all incomplete jobs", func() {
-			jobs, err := p.GetIncompleteByRepGroupMatch("", jobqueue.RepGroupMatchExact,
+			jobs, err := p.GetIncompleteByRepGroupMatchContext(context.Background(), "", jobqueue.RepGroupMatchExact,
 				0, "", false, false)
 			So(err, ShouldBeNil)
 			So(jobs, ShouldResemble, []*jobqueue.Job{p.jobBuffer[0], p.jobBuffer[1]})
@@ -2108,7 +2811,7 @@ func TestPretendGetByRepGroupEmptyRepGroup(t *testing.T) {
 		p := newPretendJobqueue()
 
 		Convey("GetByRepGroupMatch with empty repgroup returns ErrBadRequest", func() {
-			jobs, err := p.GetByRepGroupMatch("", jobqueue.RepGroupMatchExact,
+			jobs, err := p.GetByRepGroupMatchContext(context.Background(), "", jobqueue.RepGroupMatchExact,
 				0, "", false, false)
 			So(jobs, ShouldBeNil)
 			So(err, ShouldResemble, jobqueue.Error{Op: getByRepGroupMatchOp, Err: jobqueue.ErrBadRequest})

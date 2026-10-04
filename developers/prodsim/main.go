@@ -126,6 +126,10 @@ type config struct {
 	seed         uint64
 	actors       string
 	soak         soakConfig
+
+	// clientTimeout is the Go clients' Timeout: clientTimeout, which a test
+	// shortens.
+	clientTimeout time.Duration
 }
 
 func main() {
@@ -176,7 +180,7 @@ func exitCode(err error, code int) int {
 }
 
 func parseFlags() (config, string) {
-	var cfg config
+	cfg := config{clientTimeout: clientTimeout}
 
 	flag.StringVar(&cfg.deployment, "deployment", internal.Production, "wr deployment of the isolated manager")
 	flag.StringVar(&cfg.wrBin, "wr", "", "isolated wr binary (used by nested adds and CLI pollers)")

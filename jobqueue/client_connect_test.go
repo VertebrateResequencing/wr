@@ -29,6 +29,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -68,6 +69,17 @@ const heldReplyLimit = heldReplyWait + time.Second
 // the manager's held reply.
 const narrowedRequestBudget = 200 * time.Millisecond
 
+// goneManagerConnectTimeout is the connect timeout, and so the send deadline, of
+// a client whose manager then goes away; goneManagerRequestBudget is the bound
+// a request on it asks for; and goneManagerLimit is how long that request is
+// given to come back: many times its budget, so a loaded host does not fail it,
+// and far shorter than the send deadline it must not wait for.
+const (
+	goneManagerConnectTimeout = 20 * time.Second
+	goneManagerRequestBudget  = 300 * time.Millisecond
+	goneManagerLimit          = 5 * time.Second
+)
+
 // stalledConnectTimeout is the timeout given to Connect against a server that
 // never responds, and stalledConnectLimit how long Connect is given to return:
 // comfortably longer than the timeout, and far shorter than forever.
@@ -75,6 +87,11 @@ const (
 	stalledConnectTimeout = 1 * time.Second
 	stalledConnectLimit   = stalledConnectTimeout + 4*time.Second
 )
+
+// reconnectStepTimeout is the budget given to a reconnect step: distinct from
+// both ClientDefaultConnectTimeout and requestTimeout of it, so deadlines that
+// came from the step rather than the client's own timeout would show.
+const reconnectStepTimeout = 5 * time.Second
 
 // errDeadlineRestoreFailed stands in for whatever a socket might fail a
 // deadline restore with, so a test can tell that failure apart from the
@@ -130,15 +147,22 @@ func TestClientRequestTimeoutDecoupledFromConnect(t *testing.T) {
 
 // restoreFailingSocket is the socket it wraps in every respect except that it
 // fails SetOption once setOptionsBeforeFail of them have passed through, which
-// lets a test fail the deadline restore requestWithin makes after its request.
-// requestWithin narrows with one SetOption and restores with the next, so 1
-// fails the restore alone.
+// lets a test fail the deadline restores requestWithin makes after its request.
+// requestWithin narrows the send and receive deadlines with one SetOption each
+// and restores them with the next two, so 2 fails the restores alone. If
+// option is set, only SetOptions of that option count and fail, so 1 fails
+// that option's restore alone.
 type restoreFailingSocket struct {
 	mangos.Socket
 	setOptionsBeforeFail int
+	option               string
 }
 
 func (s *restoreFailingSocket) SetOption(name string, value any) error {
+	if s.option != "" && name != s.option {
+		return s.Socket.SetOption(name, value)
+	}
+
 	if s.setOptionsBeforeFail <= 0 {
 		return errDeadlineRestoreFailed
 	}
@@ -200,12 +224,19 @@ func TestRequestBoundedOnDeadlinelessSocket(t *testing.T) {
 
 // requestWithinHeldReply reserves against an empty queue, which the manager
 // holds open for heldReplyWait before replying "nothing ready", asking for
-// budget as the request's receive deadline. It reports how long the request
-// took and whether it came back at all within heldReplyLimit. It closes the
-// client's socket if it did not: an unbounded receive holds the client lock, so
-// nothing else on that client (Disconnect included) could proceed while it
-// waits.
+// budget as the request's bound. It reports what
+// requestWithinLimited does, with heldReplyLimit as the limit.
 func requestWithinHeldReply(c *Client, budget time.Duration) (time.Duration, bool, error) {
+	return requestWithinLimited(c, &clientRequest{Method: requestMethodReserve, Timeout: heldReplyWait},
+		budget, heldReplyLimit)
+}
+
+// requestWithinLimited sends cr with requestWithin, asking for budget. It
+// reports how long the request took and whether it came back at all within
+// limit. It closes the client's socket if it did not: a request that was never
+// bounded holds the client lock, so nothing else on that client (Disconnect
+// included) could proceed while it waits.
+func requestWithinLimited(c *Client, cr *clientRequest, budget, limit time.Duration) (time.Duration, bool, error) {
 	type outcome struct {
 		took time.Duration
 		err  error
@@ -215,27 +246,30 @@ func requestWithinHeldReply(c *Client, budget time.Duration) (time.Duration, boo
 	start := time.Now()
 
 	go func() {
-		_, err := c.requestWithin(&clientRequest{Method: requestMethodReserve, Timeout: heldReplyWait}, budget)
+		_, err := c.requestWithin(cr, budget)
 		done <- outcome{took: time.Since(start), err: err}
 	}()
 
 	select {
 	case o := <-done:
 		return o.took, true, o.err
-	case <-time.After(heldReplyLimit):
+	case <-time.After(limit):
 		_ = c.sock.Close()
 
-		return heldReplyLimit, false, nil
+		return limit, false, nil
 	}
 }
 
 // TestRequestWithinReportsRestoreFailure proves that when a narrowed request
-// fails AND restoring the socket's own receive deadline afterwards also fails,
-// the caller is told about both. Dropping the restore error leaves the socket
-// stuck on the narrow deadline while the caller has been given no reason at
-// all for the later requests that start timing out because of it, and a caller
-// that discriminates on the request's own error (as Ping and the subscription
-// reconnect do on mangos.ErrRecvTimeout) must still be able to.
+// fails AND restoring the socket's own send and receive deadlines afterwards
+// also fails, the caller is told about both. Dropping the restore error leaves
+// the socket stuck on the narrow deadlines while the caller has been given no
+// reason at all for the later requests that start timing out because of them,
+// and a caller that discriminates on the request's own error (as Ping and the
+// subscription reconnect do on mangos.ErrRecvTimeout) must still be able to.
+// It also proves that one deadline failing to restore does not stop the other
+// being restored, and that a narrowing that fails part-way still restores the
+// deadlines it did narrow.
 func TestRequestWithinReportsRestoreFailure(t *testing.T) {
 	Convey("Given a manager that holds a reply open longer than a request's budget", t, func() {
 		ctx := context.Background()
@@ -251,19 +285,19 @@ func TestRequestWithinReportsRestoreFailure(t *testing.T) {
 
 		defer disconnect(jq)
 
+		realSock := jq.sock
+		sendDeadline, recvDeadline := socketDeadlines(jq)
+		So(sendDeadline, ShouldBeGreaterThan, narrowedRequestBudget)
+		So(recvDeadline, ShouldBeGreaterThan, narrowedRequestBudget)
+
 		Convey("A failed request on a socket that then fails its deadline restore reports both", func() {
-			realSock := jq.sock
-
-			socketDeadline, deadlineErr := jq.recvDeadline()
-			So(deadlineErr, ShouldBeNil)
-			So(socketDeadline, ShouldBeGreaterThan, narrowedRequestBudget)
-
-			jq.sock = &restoreFailingSocket{Socket: realSock, setOptionsBeforeFail: 1}
+			jq.sock = &restoreFailingSocket{Socket: realSock, setOptionsBeforeFail: 2}
 
 			took, returned, err := requestWithinHeldReply(jq, narrowedRequestBudget)
 
 			jq.sock = realSock
-			So(realSock.SetOption(mangos.OptionRecvDeadline, socketDeadline), ShouldBeNil)
+			So(realSock.SetOption(mangos.OptionSendDeadline, sendDeadline), ShouldBeNil)
+			So(realSock.SetOption(mangos.OptionRecvDeadline, recvDeadline), ShouldBeNil)
 
 			So(returned, ShouldBeTrue)
 			So(took, ShouldBeLessThan, time.Second)
@@ -272,7 +306,242 @@ func TestRequestWithinReportsRestoreFailure(t *testing.T) {
 			So(errors.Is(err, mangos.ErrRecvTimeout), ShouldBeTrue)
 			So(errors.Is(err, errDeadlineRestoreFailed), ShouldBeTrue)
 		})
+
+		Convey("A socket that fails only its send deadline restore still gets its receive deadline back", func() {
+			jq.sock = &restoreFailingSocket{Socket: realSock, setOptionsBeforeFail: 1, option: mangos.OptionSendDeadline}
+
+			_, returned, err := requestWithinHeldReply(jq, narrowedRequestBudget)
+
+			jq.sock = realSock
+
+			So(returned, ShouldBeTrue)
+			So(errors.Is(err, errDeadlineRestoreFailed), ShouldBeTrue)
+
+			_, recv := socketDeadlines(jq)
+			So(recv, ShouldEqual, recvDeadline)
+
+			So(realSock.SetOption(mangos.OptionSendDeadline, sendDeadline), ShouldBeNil)
+		})
+
+		Convey("A narrowing that fails part-way restores the deadlines it did narrow", func() {
+			jq.sock = &restoreFailingSocket{Socket: realSock, setOptionsBeforeFail: 0, option: mangos.OptionRecvDeadline}
+
+			_, err := jq.requestWithin(&clientRequest{Method: requestMethodPing}, narrowedRequestBudget)
+
+			jq.sock = realSock
+
+			So(errors.Is(err, errDeadlineRestoreFailed), ShouldBeTrue)
+
+			send, recv := socketDeadlines(jq)
+			So(send, ShouldEqual, sendDeadline)
+			So(recv, ShouldEqual, recvDeadline)
+		})
 	})
+}
+
+// TestRequestWithinBoundsSendToGoneManager proves that a request narrowed by
+// requestWithin comes back on its own budget when the manager has gone, and not
+// on the socket's send deadline. With no pipe to write to, a mangos req socket
+// blocks Send until a pipe appears or the send deadline fires, and that deadline
+// is the client's connect timeout, so a bounded resubscribe, unsubscribe or Ping
+// sent after the manager went would otherwise wait out the whole connect timeout
+// however small its own bound.
+func TestRequestWithinBoundsSendToGoneManager(t *testing.T) {
+	Convey("Given a client with a long connect timeout whose manager has gone", t, func() {
+		ctx := context.Background()
+		_, serverConfig, addr, _, _ := jobqueueTestInit(false)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, goneManagerConnectTimeout)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		sendDeadline, recvDeadline := socketDeadlines(jq)
+		So(sendDeadline, ShouldEqual, goneManagerConnectTimeout)
+		So(stopManagerAndAwaitDetach(ctx, jq, server), ShouldBeTrue)
+
+		Convey("A bounded request gives up on its send within its own budget", func() {
+			took, returned, err := requestWithinLimited(jq,
+				&clientRequest{Method: requestMethodPing, Timeout: goneManagerRequestBudget},
+				goneManagerRequestBudget, goneManagerLimit)
+
+			So(returned, ShouldBeTrue)
+			So(took, ShouldBeLessThan, goneManagerConnectTimeout/2)
+			So(errors.Is(err, mangos.ErrSendTimeout), ShouldBeTrue)
+
+			send, recv := socketDeadlines(jq)
+			So(send, ShouldEqual, sendDeadline)
+			So(recv, ShouldEqual, recvDeadline)
+		})
+	})
+}
+
+// TestConnectWithoutTimeoutUsesDefault proves that a timeout that is not
+// positive gets ClientDefaultConnectTimeout, rather than leaving connecting and
+// every later request unbounded: mangos reads a deadline of 0 as "wait for
+// ever", so before the fix Connect to a manager that accepted connections but
+// never answered blocked for ever, as did a request made by such a client while
+// its manager was down.
+func TestConnectWithoutTimeoutUsesDefault(t *testing.T) {
+	Convey("Given a CA certificate and a default connect timeout shortened for the test", t, func() {
+		caFile := generateTestCerts(t)
+
+		defer setDefaultConnectTimeout(stalledConnectTimeout)()
+
+		for _, timeout := range []time.Duration{0, -time.Second} {
+			Convey(fmt.Sprintf("Connect with timeout %s to a server that never responds fails within about the default",
+				timeout), func() {
+				addr := stalledListener(t)
+
+				took, returned, err := connectWithin(addr, caFile, timeout, stalledConnectLimit)
+				So(returned, ShouldBeTrue)
+				So(took, ShouldBeGreaterThanOrEqualTo, stalledConnectTimeout)
+
+				var jqerr Error
+
+				So(errors.As(err, &jqerr), ShouldBeTrue)
+				So(jqerr.Err, ShouldEqual, ErrNoServer)
+			})
+		}
+
+		Convey("Connect with no timeout to an address nothing listens on fails at once", func() {
+			var lc net.ListenConfig
+
+			ln, err := lc.Listen(context.Background(), "tcp", "localhost:0")
+			So(err, ShouldBeNil)
+
+			addr := ln.Addr().String()
+			So(ln.Close(), ShouldBeNil)
+
+			took, returned, err := connectWithin(addr, caFile, 0, stalledConnectLimit)
+			So(returned, ShouldBeTrue)
+			So(took, ShouldBeLessThan, stalledConnectTimeout)
+
+			var jqerr Error
+
+			So(errors.As(err, &jqerr), ShouldBeTrue)
+			So(jqerr.Err, ShouldEqual, ErrNoServer)
+		})
+	})
+
+	Convey("Given a running manager", t, func() {
+		ctx := context.Background()
+		_, serverConfig, addr, _, _ := jobqueueTestInit(false)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		Convey("A client connected with no timeout has the default's request deadlines", func() {
+			jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 0)
+			So(err, ShouldBeNil)
+
+			defer disconnect(jq)
+
+			send, recv := socketDeadlines(jq)
+			So(send, ShouldEqual, ClientDefaultConnectTimeout)
+			So(recv, ShouldEqual, requestTimeout(ClientDefaultConnectTimeout))
+		})
+
+		Convey("A client connected with no timeout keeps the default's request deadlines after a reconnect", func() {
+			jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 0)
+			So(err, ShouldBeNil)
+
+			defer disconnect(jq)
+
+			So(jq.reconnect(reconnectStepTimeout), ShouldBeNil)
+
+			send, recv := socketDeadlines(jq)
+			So(send, ShouldEqual, ClientDefaultConnectTimeout)
+			So(recv, ShouldEqual, requestTimeout(ClientDefaultConnectTimeout))
+		})
+
+		Convey("A request from a client connected with no timeout fails within about the default while the manager is down",
+			func() {
+				defer setDefaultConnectTimeout(stalledConnectTimeout)()
+
+				jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, 0)
+				So(err, ShouldBeNil)
+
+				defer disconnect(jq)
+
+				So(stopManagerAndAwaitDetach(ctx, jq, server), ShouldBeTrue)
+
+				took, returned, err := callWithin(stalledConnectLimit, func() { _ = jq.sock.Close() }, func() error {
+					_, errg := jq.GetIncomplete(0, "", false, false)
+
+					return errg
+				})
+
+				So(returned, ShouldBeTrue)
+				So(took, ShouldBeGreaterThanOrEqualTo, stalledConnectTimeout)
+				So(errors.Is(err, mangos.ErrSendTimeout), ShouldBeTrue)
+			})
+	})
+}
+
+// setDefaultConnectTimeout makes d the timeout Connect uses for a timeout that is
+// not positive, returning a func that restores the real default.
+func setDefaultConnectTimeout(d time.Duration) func() {
+	defaultConnectTimeout = d
+
+	return func() { defaultConnectTimeout = ClientDefaultConnectTimeout }
+}
+
+// stopManagerAndAwaitDetach stops server and waits for jq's connection to it to
+// go, so that jq's next request has no pipe to send on. It reports whether the
+// connection went within goneManagerLimit.
+func stopManagerAndAwaitDetach(ctx context.Context, jq *Client, server *Server) bool {
+	detached := make(chan struct{})
+
+	var detachOnce sync.Once
+
+	jq.sock.SetPipeEventHook(func(ev mangos.PipeEvent, _ mangos.Pipe) {
+		if ev == mangos.PipeEventDetached {
+			detachOnce.Do(func() { close(detached) })
+		}
+	})
+
+	server.Stop(ctx, true)
+
+	select {
+	case <-detached:
+		return true
+	case <-time.After(goneManagerLimit):
+		return false
+	}
+}
+
+// callWithin calls f, reporting how long it took and its error, and whether it
+// returned at all within limit. If it did not, abandon is called to unblock it.
+func callWithin(limit time.Duration, abandon func(), f func() error) (time.Duration, bool, error) {
+	type outcome struct {
+		took time.Duration
+		err  error
+	}
+
+	done := make(chan outcome, 1)
+	start := time.Now()
+
+	go func() {
+		err := f()
+		done <- outcome{took: time.Since(start), err: err}
+	}()
+
+	select {
+	case o := <-done:
+		return o.took, true, o.err
+	case <-time.After(limit):
+		abandon()
+
+		return limit, false, nil
+	}
 }
 
 // TestPingBoundedDuringManagerShutdown proves that a client talking to a

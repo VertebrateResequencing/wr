@@ -26,17 +26,89 @@
 package cmd
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/VertebrateResequencing/wr/internal/replyproxy"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
 const lsfPendingState = "PEND"
+
+// TestLSFBsubResentAdd checks that wr lsf bsub reports a job as submitted when
+// its add was sent again after the connection dropped and the first copy had
+// already queued the job, while a genuine duplicate is still not submitted.
+func TestLSFBsubResentAdd(t *testing.T) {
+	Convey("wr lsf bsub's submission", t, func() {
+		withQueueCommandTestServer(t, func(_ *jobqueue.Client, reqs *jqs.Requirements, serverConfig jobqueue.ServerConfig) {
+			proxy := replyproxy.Start(t, "localhost:"+serverConfig.Port)
+
+			jq, err := jobqueue.ConnectWithTokenFile(proxy.Addr(), serverConfig.CAFile,
+				serverConfig.CertDomain, serverConfig.TokenFile, testConnectTimeout)
+			So(err, ShouldBeNil)
+
+			defer func() {
+				So(jq.Disconnect(), ShouldBeNil)
+			}()
+
+			job := newQueueCommandJob("echo lsf bsub resent", "bsub", reqs)
+			job.BsubMode = "development"
+
+			Convey("is reported submitted when its add is resent after the manager queued it", func() {
+				proxy.Armed.Store(true)
+
+				code, output := runSubmitBsubJobForTest(jq, job)
+
+				So(proxy.Dropped.Load(), ShouldEqual, 1)
+				So(code, ShouldEqual, 0)
+
+				stored, errg := jq.GetByEssence(job.ToEssense(), false, false)
+				So(errg, ShouldBeNil)
+				So(stored, ShouldNotBeNil)
+				So(stored.BsubID, ShouldBeGreaterThan, 0)
+				So(output, ShouldEqual,
+					fmt.Sprintf("Job <%d> is submitted to default queue <wr>.\n", stored.BsubID))
+			})
+
+			Convey("of a job already queued, without a resend, is refused as a duplicate", func() {
+				code, _ := runSubmitBsubJobForTest(jq, job)
+				So(code, ShouldEqual, 0)
+
+				code, output := runSubmitBsubJobForTest(jq, job)
+
+				So(proxy.Dropped.Load(), ShouldEqual, 0)
+				So(code, ShouldEqual, lsfNoCommandExitCode)
+				So(output, ShouldEqual, "Duplicate command specified. Job not submitted.\n")
+			})
+		})
+	})
+}
+
+// runSubmitBsubJobForTest runs submitBsubJob, returning the exit code it asked
+// for (0 if none) and what it printed.
+func runSubmitBsubJobForTest(jq *jobqueue.Client, job *jobqueue.Job) (int, string) {
+	originalCmdExit := cmdExit
+	cmdExit = func(code int) {
+		panic(commandExitPanic{code: code})
+	}
+
+	defer func() {
+		cmdExit = originalCmdExit
+	}()
+
+	var code int
+
+	output := captureStdout(func() {
+		code = recoverCommandExit(func() { submitBsubJob(jq, job) })
+	})
+
+	return code, output
+}
 
 func TestLSFBjobsShowsSuspendedAsPending(t *testing.T) {
 	Convey("wr lsf bjobs shows suspended bsub-mode jobs as pending", t, func() {

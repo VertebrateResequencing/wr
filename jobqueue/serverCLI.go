@@ -61,6 +61,13 @@ const (
 	requestMethodGetRecent     = "getrec"
 	requestMethodGetBadServers = "getbcs"
 
+	requestMethodGetByRepGroup     = "getbr"
+	requestMethodGetRepGroupStatus = "getrs"
+	requestMethodGetLastCompletion = "getlct"
+	requestMethodGetLimitGroups    = "getlgs"
+	requestMethodKill              = "jkill"
+	requestMethodDelete            = "jdel"
+
 	// schedGroupWithLimitParts is the number of parts a scheduler group splits
 	// into when it carries a limit-groups suffix (the group name and the limit
 	// groups).
@@ -598,14 +605,18 @@ func warnIfSlowDecode(ctx context.Context, requestBytes int, start time.Time, de
 //     also missing.
 //   - a waitForUpdates whose subscription was closed while the long poll was
 //     held, which is how every finished wait ends once the client unsubscribes
-//     (or a reconnect replaces the subscription). An unknown or missing
-//     subscription id is still a failure.
+//     (or a reconnect replaces the subscription).
+//   - a waitForUpdates naming a subscription this manager does not have, which
+//     is how a long-lived client's first poll after a manager restart arrives:
+//     it carries the previous manager's id, and the refusal makes the client
+//     resubscribe and catch up. Ids are random, so it cannot name another
+//     client's subscription. A missing subscription id is still a failure.
 func isRoutineClientRefusal(cr *clientRequest, srerr, qerr string) bool {
 	switch cr.Method {
 	case requestMethodAdd:
 		return srerr == ErrBadRequest && len(cr.Jobs) == 0 && cr.Env != nil
 	case requestMethodWaitForUpdates:
-		return qerr == errSubscriptionClosed.Error()
+		return qerr == errSubscriptionClosed.Error() || qerr == errUnknownSubscription.Error()
 	default:
 		return false
 	}
@@ -740,15 +751,19 @@ func (s *Server) replyError(ctx context.Context, m *mangos.Message, cr *clientRe
 
 // handlePing returns server info for a ping request.
 func (s *Server) handlePing() *serverResponse {
-	// avoid a later race condition when we try to encode ServerInfo by doing
-	// the read here, copying it under read lock
+	return &serverResponse{SInfo: s.serverInfoCopy()}
+}
+
+// serverInfoCopy returns a copy of the server's info, made under read lock to
+// avoid a later race condition when the reply encodes it.
+func (s *Server) serverInfoCopy() *ServerInfo {
 	s.ssmutex.RLock()
 	defer s.ssmutex.RUnlock()
 
 	si := &ServerInfo{}
 	*si = *s.ServerInfo
 
-	return &serverResponse{SInfo: si}
+	return si
 }
 
 // handleBackup backs the database up into the response.
@@ -938,7 +953,9 @@ func (s *Server) handleSubscribe(ctx context.Context, cr *clientRequest) (*serve
 		s.unregisterClientSubscription(cr.SubscriptionID)
 	}
 
-	return &serverResponse{SubscriptionID: id, JobUpdates: catchUp}, "", ""
+	// the info lets a reconnecting client adopt the timings of the manager
+	// that registered it, which need not be the one its connect reached
+	return &serverResponse{SubscriptionID: id, JobUpdates: catchUp, SInfo: s.serverInfoCopy()}, "", ""
 }
 
 // handleUnsubscribe unregisters the request's client subscription.
@@ -2340,23 +2357,23 @@ func (s *Server) dispatchMethod(ctx context.Context, cr *clientRequest, drain bo
 		clog.Debug(ctx, "resumed suspended jobs", "count", resumed)
 
 		return &serverResponse{Existed: resumed}, "", ""
-	case "jdel":
+	case requestMethodDelete:
 		return s.handleDelete(ctx, cr)
 	case requestMethodModify:
 		return s.handleModify(ctx, cr)
-	case "jkill":
+	case requestMethodKill:
 		return s.handleKill(ctx, cr)
 	case requestMethodGetByCmd:
 		return s.handleGetByKeys(ctx, cr)
-	case "getbr":
+	case requestMethodGetByRepGroup:
 		return s.handleGetByRepGroup(ctx, cr)
-	case "getrs":
+	case requestMethodGetRepGroupStatus:
 		return s.handleGetRepGroupStatus(cr)
 	case requestMethodGetIncomplete:
 		return s.handleGetIncomplete(ctx, cr), "", ""
 	case requestMethodGetRecent:
 		return s.handleGetRecent(ctx, cr)
-	case "getlct":
+	case requestMethodGetLastCompletion:
 		return s.handleGetLastCompletionTime(cr)
 	case requestMethodGetBadServers:
 		return s.handleGetBadServers(ctx, cr), "", ""
@@ -2364,7 +2381,7 @@ func (s *Server) dispatchMethod(ctx context.Context, cr *clientRequest, drain bo
 		return s.handleDestroyCloudHost(ctx, cr)
 	case "getsetlg":
 		return s.handleGetSetLimitGroup(ctx, cr)
-	case "getlgs":
+	case requestMethodGetLimitGroups:
 		return &serverResponse{LimitGroups: s.limiter.GetLimits()}, "", ""
 	default:
 		return nil, ErrUnknownCommand, ""

@@ -39,6 +39,7 @@ import (
 const (
 	callCols        = 6
 	secsPerHour     = 3600
+	msPerSec        = 1000
 	quarters        = 4
 	lastQuarter     = 3
 	halves          = 2
@@ -51,12 +52,15 @@ const (
 )
 
 // opStat is one actor/op's latencies (ms) over the run and in its first and
-// last quarters, and its errors.
+// last quarters, its errors, and its calls that took at least clientTimeout
+// and the ms spent in them (none for ops slow by design).
 type opStat struct {
 	all, first, last []float64
 	errs             int
 	lastErr          string
 	n                float64
+	slow             int
+	slowMS           float64
 }
 
 // report writes a summary of a run directory to w: per-call latency (whole
@@ -117,6 +121,12 @@ func callStats(calls [][]string, end float64) map[string]*opStat {
 func (st *opStat) add(r []string, end float64) {
 	st.n += num(r[4])
 
+	ms := num(r[3])
+	if ms >= float64(clientTimeout.Milliseconds()) && !spikeExempt(r[2]) {
+		st.slow++
+		st.slowMS += ms
+	}
+
 	if r[5] != "" {
 		st.errs++
 		st.lastErr = r[5]
@@ -124,7 +134,7 @@ func (st *opStat) add(r []string, end float64) {
 		return
 	}
 
-	ms, t := num(r[3]), num(r[0])
+	t := num(r[0])
 	st.all = append(st.all, ms)
 
 	switch {
@@ -144,14 +154,18 @@ func reportCalls(w io.Writer, ops map[string]*opStat, end float64) {
 	sort.Strings(keys)
 
 	fmt.Fprintf(w, "== client calls over %.1f h (ms; q1 = first quarter of the run, q4 = last)\n", end/secsPerHour)
-	fmt.Fprintf(w, "%-38s %6s %5s %8s %8s %9s %9s %9s %9s\n", "actor/op", "n", "errs", "p50", "p95", "max",
-		"q1p95", "q4p95", "meanN")
+	fmt.Fprintf(w, "(slow = calls, failed or not, that took at least the Go clients' Timeout of %s, as one waiting "+
+		"through a manager outage does; slow_s = seconds spent in them; 0 for ops slow by design, such as "+
+		"submit_and_wait)\n", clientTimeout)
+	fmt.Fprintf(w, "%-38s %6s %5s %5s %7s %8s %8s %9s %9s %9s %9s\n", "actor/op", "n", "errs", "slow", "slow_s",
+		"p50", "p95", "max", "q1p95", "q4p95", "meanN")
 
 	for _, k := range keys {
 		st := ops[k]
 		cnt := len(st.all) + st.errs
-		fmt.Fprintf(w, "%-38s %6d %5d %8.0f %8.0f %9.0f %9.0f %9.0f %9.0f\n", k, cnt, st.errs, pct(st.all, p50),
-			pct(st.all, p95), pct(st.all, p100), pct(st.first, p95), pct(st.last, p95), st.n/float64(max(cnt, 1)))
+		fmt.Fprintf(w, "%-38s %6d %5d %5d %7.0f %8.0f %8.0f %9.0f %9.0f %9.0f %9.0f\n", k, cnt, st.errs, st.slow,
+			st.slowMS/msPerSec, pct(st.all, p50), pct(st.all, p95), pct(st.all, p100), pct(st.first, p95),
+			pct(st.last, p95), st.n/float64(max(cnt, 1)))
 	}
 
 	fmt.Fprintln(w, "\n== last error per op")

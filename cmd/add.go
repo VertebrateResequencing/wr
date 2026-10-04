@@ -68,7 +68,7 @@ const (
 
 	// defaultAddTimeout is the default value (in seconds) for the add command's
 	// --timeout flag.
-	defaultAddTimeout = 120
+	defaultAddTimeout = int(jobqueue.ClientDefaultConnectTimeout / time.Second)
 
 	// maxCmdFileColumns is the maximum number of tab-separated columns a line in
 	// a commands file may have (the command, then an optional JSON object).

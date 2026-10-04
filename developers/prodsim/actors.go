@@ -220,7 +220,7 @@ func (s *sim) ibackupServer(ctx context.Context) {
 			jobs[i] = job
 		}
 
-		s.submit(actor, "add_put", sch, jobs) //nolint:errcheck // logged by submit
+		s.submit(ctx, actor, "add_put", sch, jobs) //nolint:errcheck // logged by submit
 	})
 }
 
@@ -232,17 +232,17 @@ func (s *sim) fofnWatcher(ctx context.Context) {
 	fofnN := 0
 
 	s.everySim(ctx, actor, fofnEvery, func(sch *client.Scheduler) {
-		s.fofnPoll(actor, sch)
+		s.fofnPoll(ctx, actor, sch)
 
 		if s.float() < fofnNewChance {
 			fofnN++
-			s.fofnSubmit(actor, sch, fofnN)
+			s.fofnSubmit(ctx, actor, sch, fofnN)
 		}
 	})
 }
 
 // fofnPoll makes the watcher's two prefix queries and removes buried jobs.
-func (s *sim) fofnPoll(actor string, sch *client.Scheduler) {
+func (s *sim) fofnPoll(ctx context.Context, actor string, sch *client.Scheduler) {
 	const prefix = "ibackup_fofn_"
 
 	var incomplete []*jobqueue.Job
@@ -250,13 +250,13 @@ func (s *sim) fofnPoll(actor string, sch *client.Scheduler) {
 	s.measure(actor, "find_incomplete_prefix", func() (int, error) {
 		var err error
 
-		incomplete, err = sch.FindIncompleteJobsByRepGroup(prefix, jobqueue.RepGroupMatchPrefix)
+		incomplete, err = sch.FindIncompleteJobsByRepGroupContext(ctx, prefix, jobqueue.RepGroupMatchPrefix)
 
 		return len(incomplete), err
 	})
 
 	s.measure(actor, "getlct_prefix", func() (int, error) {
-		m, err := sch.GetLastCompletionTimeByRepGroup(prefix, jobqueue.RepGroupMatchPrefix)
+		m, err := sch.GetLastCompletionTimeByRepGroupContext(ctx, prefix, jobqueue.RepGroupMatchPrefix)
 
 		return len(m), err
 	})
@@ -270,12 +270,13 @@ func (s *sim) fofnPoll(actor string, sch *client.Scheduler) {
 	}
 
 	if len(buried) > 0 {
-		s.measure(actor, "remove_buried", func() (int, error) { return len(buried), sch.RemoveJobs(buried...) })
+		//nolint:contextcheck // a spike capture outlives the call
+		s.measure(actor, "remove_buried", func() (int, error) { return len(buried), sch.RemoveJobsContext(ctx, buried...) })
 	}
 }
 
 // fofnSubmit submits the chunk jobs of the fofnN-th new fofn.
-func (s *sim) fofnSubmit(actor string, sch *client.Scheduler, fofnN int) {
+func (s *sim) fofnSubmit(ctx context.Context, actor string, sch *client.Scheduler, fofnN int) {
 	n := int(s.lognormal(float64(s.scaled(fofnMedianJobs)), 1.0))
 	n = max(fofnMinJobs, min(n, s.scaled(fofnMaxJobs)))
 	rg := fmt.Sprintf("ibackup_fofn_dir%03d_%d", fofnN%fofnDirs, time.Now().Unix())
@@ -292,7 +293,7 @@ func (s *sim) fofnSubmit(actor string, sch *client.Scheduler, fofnN int) {
 		jobs[i] = job
 	}
 
-	if err := s.submit(actor, "add_fofn", sch, jobs); err == nil {
+	if err := s.submit(ctx, actor, "add_fofn", sch, jobs); err == nil {
 		s.event(actor, fmt.Sprintf("fofn %s jobs=%d", rg, n))
 	}
 }
@@ -323,7 +324,7 @@ func (s *sim) wrstatMulti(ctx context.Context) {
 			limit: "datetime<" + time.Now().Add(s.sim(wrstatLimitFor)).Format(time.DateTime),
 		}
 
-		s.wrstatSubmit(actor, sch, r)
+		s.wrstatSubmit(ctx, actor, sch, r)
 		s.event(actor, fmt.Sprintf("run %d unique=%s paths=%d", run, r.unique, s.scaled(wrstatPaths)))
 
 		if !sleep(ctx, s.jitter(s.sim(wrstatEvery))) {
@@ -333,27 +334,27 @@ func (s *sim) wrstatMulti(ctx context.Context) {
 }
 
 // wrstatSubmit submits run r's walk, combine and tidy jobs for every path.
-func (s *sim) wrstatSubmit(actor string, sch *client.Scheduler, r wrstatRun) {
+func (s *sim) wrstatSubmit(ctx context.Context, actor string, sch *client.Scheduler, r wrstatRun) {
 	paths := s.scaled(wrstatPaths)
 	walks := make([]*jobqueue.Job, 0, paths)
 	combines := make([]*jobqueue.Job, 0, paths)
 	tidies := make([]*jobqueue.Job, 0, paths)
 
 	for p := range paths {
-		walk, comb, tidy := s.wrstatPathJobs(actor, sch, r, p)
+		walk, comb, tidy := s.wrstatPathJobs(ctx, actor, sch, r, p)
 		walks = append(walks, walk)
 		combines = append(combines, comb)
 		tidies = append(tidies, tidy)
 	}
 
-	s.submit(actor, "add_walk", sch, walks)       //nolint:errcheck // logged by submit
-	s.submit(actor, "add_combine", sch, combines) //nolint:errcheck // logged by submit
-	s.submit(actor, "add_tidy", sch, tidies)      //nolint:errcheck // logged by submit
+	s.submit(ctx, actor, "add_walk", sch, walks)       //nolint:errcheck // logged by submit
+	s.submit(ctx, actor, "add_combine", sch, combines) //nolint:errcheck // logged by submit
+	s.submit(ctx, actor, "add_tidy", sch, tidies)      //nolint:errcheck // logged by submit
 }
 
 // wrstatPathJobs returns run r's walk, combine and tidy jobs for path p, after
 // looking for an earlier run's tidy as wrstat does.
-func (s *sim) wrstatPathJobs(actor string, sch *client.Scheduler, r wrstatRun,
+func (s *sim) wrstatPathJobs(ctx context.Context, actor string, sch *client.Scheduler, r wrstatRun,
 	p int,
 ) (walk, comb, tidy *jobqueue.Job) {
 	path := fmt.Sprintf("/lustre/scratch%d/team%03d", wrstatScratchBase+p%wrstatScratchVolumes, p)
@@ -362,7 +363,7 @@ func (s *sim) wrstatPathJobs(actor string, sch *client.Scheduler, r wrstatRun,
 	}
 
 	s.measure(actor, "find_dependent_prefix", func() (int, error) {
-		jobs, err := sch.FindJobsByRepGroupPrefixAndState("wrstat-tidy-"+strings.ReplaceAll(path, "/", "_"),
+		jobs, err := sch.FindJobsByRepGroupPrefixAndStateContext(ctx, "wrstat-tidy-"+strings.ReplaceAll(path, "/", "_"),
 			jobqueue.JobStateDependent)
 
 		return len(jobs), err
@@ -431,7 +432,7 @@ func (s *sim) wrstatUI(ctx context.Context) {
 			jobs = []*jobqueue.Job{build, publish}
 		}
 
-		s.submit(actor, fmt.Sprintf("add_%d", len(jobs)), sch, jobs) //nolint:errcheck // logged by submit
+		s.submit(ctx, actor, fmt.Sprintf("add_%d", len(jobs)), sch, jobs) //nolint:errcheck // logged by submit
 	})
 }
 
@@ -497,7 +498,7 @@ func (s *sim) portalPhase(ctx context.Context, actor string, sch *client.Schedul
 			continue
 		}
 
-		s.submit(actor, "add_portal_"+name, sch, jobs) //nolint:errcheck // logged by submit
+		s.submit(ctx, actor, "add_portal_"+name, sch, jobs) //nolint:errcheck // logged by submit
 		jobs = make([]*jobqueue.Job, 0, portalBatch)
 
 		if ctx.Err() != nil {

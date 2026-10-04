@@ -57,7 +57,7 @@ const maxCloudResourceUsernameLength = 18
 
 // defaultManagerConnectTimeout is the default number of seconds the client
 // waits for a reply from 'wr manager'.
-const defaultManagerConnectTimeout = 120
+const defaultManagerConnectTimeout = int(jobqueue.ClientDefaultConnectTimeout / time.Second)
 
 // defaultJobRetries is the default number of automatic retries for a failed
 // command.

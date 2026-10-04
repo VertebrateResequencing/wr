@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -113,6 +114,20 @@ const terminateGrace = 500 * time.Millisecond
 // child processes before killing the command without it: the command itself
 // must always be killed, however long looking for its children takes.
 const killChildLookupLimit = 5 * time.Second
+
+// ClientDefaultConnectTimeout is the timeout Connect() (and so
+// ConnectWithTokenFile(), ConnectUsingConfig() and client.New()) uses when given
+// a timeout that is not positive. It is also the default --timeout of the wr
+// add, mod, kill, retry, remove, status, suspend, resume and cloud servers
+// commands.
+const ClientDefaultConnectTimeout = 120 * time.Second
+
+// defaultConnectTimeout is what Connect() uses for a timeout that is not
+// positive: always ClientDefaultConnectTimeout, except in tests that need a
+// non-responding manager to time out sooner.
+//
+//nolint:gochecknoglobals // a test seam; see comment above.
+var defaultConnectTimeout = ClientDefaultConnectTimeout
 
 // clientFinalStateTokenRejections is how many consecutive bad token rejections
 // of a job's final state update make a runner give up on it; see
@@ -228,9 +243,9 @@ var errGetRecentState = errors.New(
 	"GetRecent (--recent) only returns complete jobs and does not support a state filter",
 )
 
-// errRecvDeadlineType is returned if mangos ever stops reporting the socket's
-// receive deadline as a time.Duration.
-var errRecvDeadlineType = errors.New("socket receive deadline was not a duration")
+// errDeadlineType is returned if mangos ever stops reporting one of the
+// socket's send or receive deadlines as a time.Duration.
+var errDeadlineType = errors.New("socket deadline was not a duration")
 
 // errClientBusy is returned by requestWithinIncludingLockWait when another
 // request held the client for the whole of its timeout.
@@ -246,6 +261,37 @@ var errChildLookupTimedOut = errors.New("timed out listing the child processes")
 
 // ErrNoTokenFile is returned by ConnectWithTokenFile when given no path.
 var ErrNoTokenFile = errors.New("no token file given")
+
+// ErrResentAddSkippedComplete is returned by an add that was asked to re-add
+// complete jobs (ignoreComplete false) when it had to be sent again skipping
+// them, and some of its jobs were then complete, so may not have been run
+// again (see Add).
+var ErrResentAddSkippedComplete = errors.New("add was interrupted and sent again skipping complete jobs; " +
+	"some of its jobs are complete and may not have been rerun")
+
+// clientRequestResendTime is the req socket's resend time, long enough that it
+// never comes round. mangos resends a request still unanswered after this long
+// on the same live connection, and the manager acts on every copy it gets. With
+// mangos's one-minute default, a request the manager took over a minute to
+// answer was carried out twice whenever the receive deadline was over a minute,
+// as it is for a connect timeout over ClientMinRequestTimeout, like the CLI's
+// 120s. A request not answered in time fails on its receive deadline instead.
+// It is not 0 because mangos reads 0 as also dropping, rather than resending
+// once redialled, a request whose connection closed before it was answered,
+// which is what lets a request in flight across a manager restart complete.
+// An add that re-adds complete jobs is the exception: it is sent with 0 (see
+// sendDroppingOnConnectionLossLocked), as sending it again could run a job
+// twice.
+//
+// It is the largest duration rather than a long finite one such as 24h because
+// any finite value is a receive deadline (connect timeout) beyond which the
+// double execution comes back, and mangos's "wait forever" deadline of 0 is
+// beyond all of them. The cost is that mangos replaces a request's resend timer
+// without stopping it when it resends after a dropped connection, so that timer
+// stays pending for the life of the process instead of firing as a no-op: one
+// small timer per request in flight when a connection drops, referencing a
+// socket that is either still the Client's or closed, with its messages freed.
+const clientRequestResendTime = time.Duration(math.MaxInt64)
 
 const (
 	RepGroupMatchExact  RepGroupMatch = "exact"
@@ -316,6 +362,7 @@ func (d DuplicateBreakdown) CompleteOtherRepGroups() int {
 type AddDuplicates struct {
 	total     int
 	breakdown *DuplicateBreakdown
+	resent    bool
 }
 
 // Total is how many of the Add's input jobs were not added because a job with
@@ -354,6 +401,20 @@ func NewAddDuplicates(existed int, breakdown DuplicateBreakdown) AddDuplicates {
 	}
 
 	return dups
+}
+
+// Resent reports whether the Add may have reached the manager more than once,
+// so an earlier copy of this same Add may have added some of the jobs Total()
+// counts. That happens when the connection the Add went out on was lost before
+// its reply arrived, as when the manager stops mid-Add (it is sent again once
+// the client reconnects, skipping complete jobs if it was to re-add them; see
+// Add), or when a client that rides out outages sent it
+// again after its reply did not arrive in time. Those jobs cannot be told apart
+// from identical jobs added by anyone before this Add: they are queued (or, for
+// an Add that skips complete jobs, may have completed) either way. Resent can
+// also be true when only one copy was acted on.
+func (a AddDuplicates) Resent() bool {
+	return a.resent
 }
 
 func touchEndState(job *Job) *JobEndState {
@@ -424,6 +485,15 @@ type clientRequest struct {
 	// retries even though no start was ever reported (an old client sends false,
 	// keeping its pre-existing unbounded-retry behaviour).
 	Attempted bool
+
+	// resent is client-side only, never encoded: the request may have reached
+	// the manager more than once (see AddDuplicates.Resent).
+	resent bool
+
+	// resentSkippingComplete is client-side only, never encoded: an add asked
+	// to re-add complete jobs was sent again skipping them (see
+	// requestOnceLocked).
+	resentSkippingComplete bool
 }
 
 // RepGroupMatch controls how RepGroup filters are applied by repgroup-based
@@ -596,6 +666,13 @@ func (p *pendingStartReport) isSettled() bool {
 	return p.settled.Load()
 }
 
+// socketDeadline is one of the socket's deadlines, and the value it had before
+// requestWithin narrowed it.
+type socketDeadline struct {
+	option   string
+	original time.Duration
+}
+
 // adoptLabelledNewContainer adopts the new container that wr started for this
 // job, recognised by it carrying container.JobKeyLabel with this job's key,
 // and says if it adopted one.
@@ -708,12 +785,28 @@ func combineExecOutcomes(unmount, cmd execOutcome) execOutcome {
 //
 // Prefer this over Connect() for a long-lived client. A cleanly stopped manager
 // deletes its token file, and the next manager started writes a new token to
-// it, so a client holding the old token has every request rejected with
-// ErrPermissionDenied. A client made with this function, on such a rejection,
-// re-reads tokenFile and, only if it now holds a different token, adopts it and
-// sends the rejected request once more. It never retries more than once per
-// request, and never if the file is unchanged or unreadable. An empty tokenFile
-// path (as opposed to a file with no token in it) returns ErrNoTokenFile.
+// it, so a client holding the old token has every request except Ping rejected
+// with ErrPermissionDenied. A client made with this function, on such a
+// rejection, re-reads tokenFile and, only if it now holds a different token,
+// adopts it and sends the rejected request once more. It never retries more
+// than once per request, and never if the file is unchanged or unreadable. An
+// empty tokenFile path (as opposed to a file with no token in it) returns
+// ErrNoTokenFile.
+//
+// While the manager is down, requests fail as described for Connect(): after
+// timeout if they could not be sent, or after the larger of timeout and
+// ClientMinRequestTimeout if the manager went after taking them, unless
+// RetryWhileManagerUnreachable() was called. An Add in progress when the
+// manager stops can be partly applied, and is resent when the client
+// reconnects (skipping complete jobs; see Add), so it can then report its own
+// jobs as existing. An Add that re-adds complete jobs (ignoreComplete false)
+// whose connection is lost is sent again by the client itself, which waits up
+// to that larger time for a new connection and then up to it again for the
+// reply, so it can take up to twice as long before failing;
+// AddDuplicates.Resent, from AddWithDuplicates, says when that may have
+// happened. A subscription (as used by AddAndWait) keeps trying to reconnect
+// for the manager's RetryTime. The client package's Scheduler uses such a
+// client and rides out outages; its package doc describes how.
 func ConnectWithTokenFile(addr, caFile, certDomain, tokenFile string, timeout time.Duration) (*Client, error) {
 	if tokenFile == "" {
 		return nil, ErrNoTokenFile
@@ -783,21 +876,27 @@ func (c *Client) SetReserveAsRunner(runner bool) {
 	c.reserveAsRunner = runner
 }
 
-// requestWithin is request(), but with this one request's receive deadline
-// narrowed to timeout, restoring the socket's own deadline afterwards. A failed
-// restore is joined on to whatever the request itself returned rather than
-// replacing it or being dropped: the socket is then stuck on the narrow
-// deadline, so the caller needs to be told, and errors.Is still finds the
-// request's own error for callers that discriminate on it.
+// requestWithin is request(), but with this one request's send and receive
+// deadlines each narrowed to timeout, restoring the socket's own deadlines
+// afterwards. Both need narrowing: with no pipe to write to, as when the manager
+// has gone, the req socket's Send blocks until one appears or the send deadline
+// (the connect timeout) fires, and an unanswered request waits on the receive
+// deadline. A failed restore is joined on to whatever the request itself
+// returned rather than replacing it or being dropped: the socket is then stuck
+// on the narrow deadline, so the caller needs to be told, and errors.Is still
+// finds the request's own error for callers that discriminate on it.
 //
-// It can only ever narrow. The deadline it narrows from and restores to is read
-// off the socket rather than recomputed from c.timeout, because c.timeout is
-// the connect timeout the Client was made with and reconnect() does not update
-// it: recomputing would widen a reconnected socket's deadline (60s to
-// requestTimeout(c.timeout)) in the name of capping it. A timeout that is not
-// positive asks for no bound at all, so it narrows nothing; any other timeout
-// narrows whenever the socket's deadline is wider, which includes the socket's
-// deadline being non-positive, since mangos reads that as "wait forever".
+// It can only ever narrow. The deadlines it narrows from and restores to are
+// read off the socket rather than recomputed from c.timeout, so it puts back
+// exactly what the socket had, whatever set it. Connect and reconnect() both
+// give it c.timeout to send and requestTimeout(c.timeout) to receive, c.timeout
+// being the connect timeout the Client was made with; a reconnect's own shorter
+// dial budget does not replace them. A timeout that is not positive asks for no
+// bound at all, so it narrows nothing; any other timeout narrows each deadline
+// that is wider, which includes a deadline being non-positive, since mangos
+// reads that as "wait forever". The send and the receive are bounded
+// separately, so a request whose send waits most of timeout for a pipe can then
+// wait up to timeout again for its reply.
 //
 // The subscription reconnect path uses it because it has a retry budget to
 // honour: a manager part-way through shutdown can still accept a connection and
@@ -866,55 +965,104 @@ func (c *Client) lockWithin(timeout time.Duration) bool {
 // requestWithinLocked does the work of requestWithin, and must be called with
 // the client's lock held.
 func (c *Client) requestWithinLocked(cr *clientRequest, timeout time.Duration) (sr *serverResponse, err error) {
-	socketTimeout, err := c.recvDeadline()
+	wider, err := c.deadlinesWiderThan(timeout)
 	if err != nil {
 		return nil, err
 	}
 
-	if timeout <= 0 || (socketTimeout > 0 && timeout >= socketTimeout) {
+	if timeout <= 0 || len(wider) == 0 {
 		return c.requestLocked(cr)
 	}
 
-	if err = c.sock.SetOption(mangos.OptionRecvDeadline, timeout); err != nil {
-		return nil, err
-	}
-
 	defer func() {
-		if restoreErr := c.sock.SetOption(mangos.OptionRecvDeadline, socketTimeout); restoreErr != nil {
+		if restoreErr := c.restoreDeadlines(wider); restoreErr != nil {
 			err = errors.Join(err, restoreErr)
 		}
 	}()
 
+	if err = c.setDeadlines(wider, timeout); err != nil {
+		return nil, err
+	}
+
 	deadline := time.Now().Add(timeout)
 
 	return c.requestResendingLocked(cr, func() bool {
-		return c.narrowToDeadline(deadline)
+		return c.narrowToDeadline(wider, deadline)
 	})
 }
 
-// narrowToDeadline narrows the socket's receive deadline to what is left until
-// deadline, reporting false, and leaving it unchanged, if nothing is left or it
-// could not be set. It must be called with the client's lock held.
-func (c *Client) narrowToDeadline(deadline time.Time) bool {
+// deadlinesWiderThan returns those of the socket's send and receive deadlines
+// that are wider than timeout, a non-positive deadline counting as wider, since
+// mangos reads it as "wait forever". A request can wait on either: Send blocks
+// until the req socket has a pipe to write to, and Recv until the reply
+// arrives. It must be called with the client's lock held.
+func (c *Client) deadlinesWiderThan(timeout time.Duration) ([]socketDeadline, error) {
+	var wider []socketDeadline
+
+	for _, option := range [...]string{mangos.OptionSendDeadline, mangos.OptionRecvDeadline} {
+		original, err := c.deadline(option)
+		if err != nil {
+			return nil, err
+		}
+
+		if original <= 0 || original > timeout {
+			wider = append(wider, socketDeadline{option: option, original: original})
+		}
+	}
+
+	return wider, nil
+}
+
+// setDeadlines sets each of deadlines on the socket to timeout, stopping at the
+// first that fails. It must be called with the client's lock held.
+func (c *Client) setDeadlines(deadlines []socketDeadline, timeout time.Duration) error {
+	for _, d := range deadlines {
+		if err := c.sock.SetOption(d.option, timeout); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// restoreDeadlines puts each of deadlines back to its original value on the
+// socket, attempting every one and joining the errors of those that fail. It
+// must be called with the client's lock held.
+func (c *Client) restoreDeadlines(deadlines []socketDeadline) error {
+	var errs error
+
+	for _, d := range deadlines {
+		errs = errors.Join(errs, c.sock.SetOption(d.option, d.original))
+	}
+
+	return errs
+}
+
+// narrowToDeadline narrows each of deadlines on the socket to what is left
+// until deadline. It reports false, leaving them unchanged, if nothing is left,
+// and false if one could not be set. It must be called with the client's lock
+// held.
+func (c *Client) narrowToDeadline(deadlines []socketDeadline, deadline time.Time) bool {
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
 		return false
 	}
 
-	return c.sock.SetOption(mangos.OptionRecvDeadline, remaining) == nil
+	return c.setDeadlines(deadlines, remaining) == nil
 }
 
-// recvDeadline returns the receive deadline the client's socket currently
-// has. It reads c.sock, so callers must hold the client's lock.
-func (c *Client) recvDeadline() (time.Duration, error) {
-	val, err := c.sock.GetOption(mangos.OptionRecvDeadline)
+// deadline returns the value the client's socket currently has for option, one
+// of its send or receive deadlines. It reads c.sock, so callers must hold the
+// client's lock.
+func (c *Client) deadline(option string) (time.Duration, error) {
+	val, err := c.sock.GetOption(option)
 	if err != nil {
 		return 0, err
 	}
 
 	timeout, ok := val.(time.Duration)
 	if !ok {
-		return 0, errRecvDeadlineType
+		return 0, errDeadlineType
 	}
 
 	return timeout, nil
@@ -990,24 +1138,166 @@ func (c *Client) currentToken() []byte {
 	return c.token
 }
 
-// requestOnceLocked sends cr and returns the manager's reply, and must be
-// called with the client's lock held.
-func (c *Client) requestOnceLocked(cr *clientRequest) (*serverResponse, error) {
-	if err := c.encodeAndSend(cr); err != nil {
-		return nil, err
+// currentTouchInterval returns how often this client touches its running jobs.
+func (c *Client) currentTouchInterval() time.Duration {
+	c.timingsMu.Lock()
+	defer c.timingsMu.Unlock()
+
+	return c.touchInterval
+}
+
+// currentRetryWait returns how long this client waits between attempts to
+// reach the manager.
+func (c *Client) currentRetryWait() time.Duration {
+	c.timingsMu.Lock()
+	defer c.timingsMu.Unlock()
+
+	return c.retryWait
+}
+
+// currentRetryTime returns how long this client keeps trying to reach the
+// manager before giving up.
+func (c *Client) currentRetryTime() time.Duration {
+	c.timingsMu.Lock()
+	defer c.timingsMu.Unlock()
+
+	return c.retryTime
+}
+
+// adoptServerInfo makes si, from the manager this client now talks to, this
+// client's ServerInfo, refreshing the timings derived from it. It may be called
+// with or without the client's lock held.
+func (c *Client) adoptServerInfo(si *ServerInfo) {
+	c.serverInfoMu.Lock()
+	defer c.serverInfoMu.Unlock()
+
+	c.adoptServerTimings(c.ServerInfo, si)
+	c.ServerInfo = si
+}
+
+// CurrentServerInfo returns a copy of what this client knows of the manager it
+// talks to, or nil if it knows nothing. Unlike reading ServerInfo, it is safe to
+// call while a subscription is reconnecting to a restarted manager.
+func (c *Client) CurrentServerInfo() *ServerInfo {
+	c.serverInfoMu.Lock()
+	defer c.serverInfoMu.Unlock()
+
+	if c.ServerInfo == nil {
+		return nil
 	}
 
-	sr, err := c.recvAndDecode()
+	si := *c.ServerInfo
+
+	return &si
+}
+
+// adoptServerTimings replaces the timings this client derived from oldSI with
+// those derived the same way from newSI. A timing that no longer matches what
+// oldSI gave was overridden on this client, so it is kept.
+func (c *Client) adoptServerTimings(oldSI, newSI *ServerInfo) {
+	var oldTimings, newTimings ServerInfo
+
+	if oldSI != nil {
+		oldTimings = *oldSI
+	}
+
+	if newSI != nil {
+		newTimings = *newSI
+	}
+
+	c.timingsMu.Lock()
+	defer c.timingsMu.Unlock()
+
+	c.touchInterval = refreshDerivedTiming(c.touchInterval,
+		oldTimings.TouchInterval, newTimings.TouchInterval, ClientTouchInterval)
+	c.retryWait = refreshDerivedTiming(c.retryWait, oldTimings.RetryWait, newTimings.RetryWait, ClientRetryWait)
+	c.retryTime = refreshDerivedTiming(c.retryTime, oldTimings.RetryTime, newTimings.RetryTime, ClientRetryTime)
+}
+
+// refreshDerivedTiming returns current unchanged if it is not what
+// dfltDuration derives from oldServer and def, meaning it was overridden;
+// otherwise it returns what dfltDuration derives from newServer and def.
+func refreshDerivedTiming(current, oldServer, newServer, def time.Duration) time.Duration {
+	if current != dfltDuration(oldServer, def) {
+		return current
+	}
+
+	return dfltDuration(newServer, def)
+}
+
+// requestOnceLocked sends cr and returns the manager's reply, and must be
+// called with the client's lock held.
+//
+// An add is watched for mangos sending it again on a new connection, which marks
+// it resent: an add is the request whose caller is told what that means (see
+// AddDuplicates.Resent).
+//
+// An add that re-adds complete jobs must not be sent again as it is, since a
+// job its first copy added may have completed since. So mangos is told to drop
+// it, rather than send it again, if its connection is lost before the reply
+// arrives; it is then sent again skipping complete jobs, which adds what the
+// first copy did not and nothing that has completed since. That marks it
+// resent and resentSkippingComplete, cr keeping IgnoreComplete true for any
+// later attempt. Sending it again waits for a new connection for up to the
+// reply deadline, as long as mangos would have waited to send it again itself.
+func (c *Client) requestOnceLocked(cr *clientRequest) (*serverResponse, error) {
+	if cr.Method == requestMethodAdd && !cr.IgnoreComplete {
+		sr, lost, err := c.sendDroppingOnConnectionLossLocked(cr)
+		if !lost {
+			return replyOrError(cr, sr, err)
+		}
+
+		cr.IgnoreComplete = true
+		cr.resent = true
+		cr.resentSkippingComplete = true
+
+		return c.requestWithSendDeadlineAtLeastLocked(cr, requestTimeout(c.timeout))
+	}
+
+	return c.requestWatchingForResendLocked(cr)
+}
+
+// replyOrError returns sr, the manager's reply to cr, or err if receiving it
+// failed, or sr and an Error if the manager answered with one.
+func replyOrError(cr *clientRequest, sr *serverResponse, err error) (*serverResponse, error) {
 	if err != nil {
 		return nil, err
 	}
 
-	// pull the error out of sr
 	if sr.Err != "" {
 		return sr, Error{cr.Method, cr.key(), sr.Err}
 	}
 
 	return sr, nil
+}
+
+// requestWatchingForResendLocked sends cr and returns the manager's reply,
+// watching an add for mangos sending it again (see requestOnceLocked). It must
+// be called with the client's lock held.
+func (c *Client) requestWatchingForResendLocked(cr *clientRequest) (*serverResponse, error) {
+	var watch *resendWatch
+
+	if cr.Method == requestMethodAdd {
+		watch = watchForResend(c.sock)
+
+		defer func() {
+			if watch.stop() {
+				cr.resent = true
+			}
+		}()
+	}
+
+	if err := c.encodeAndSend(cr); err != nil {
+		return nil, err
+	}
+
+	if watch != nil {
+		watch.markSent()
+	}
+
+	sr, err := c.recvAndDecode()
+
+	return replyOrError(cr, sr, err)
 }
 
 // reportStartFailure reports a cmd.Start() failure to the server and returns the
@@ -1326,6 +1616,84 @@ func (c *Client) handleFinalStateFailure(ctx context.Context, err error,
 	return c.handleFinalStateError(ctx, err)
 }
 
+// GetByEssenceContext is GetByEssence, except that on a client that rides out
+// outages (see RetryWhileManagerUnreachable) it stops retrying, returning an
+// error matching ctx's, once ctx is done. An attempt already in progress is not
+// interrupted, so that can take as long as the connect timeout, or the reply
+// deadline (the larger of that and a minute) if the request was sent. On such
+// a client, if ctx is already done, nothing is sent and ctx's error is
+// returned; any other client ignores ctx.
+func (c *Client) GetByEssenceContext(ctx context.Context, je *JobEssence, getstd bool, getenv bool) (*Job, error) {
+	return c.getByEssence(je, getstd, getenv, func(cr *clientRequest) (*serverResponse, error) {
+		return c.requestContext(ctx, cr)
+	})
+}
+
+// getByEssence does the work of GetByEssenceContext, sending its request with
+// send.
+func (c *Client) getByEssence(je *JobEssence, getstd bool, getenv bool,
+	send func(*clientRequest) (*serverResponse, error),
+) (*Job, error) {
+	keys := je.candidateKeys()
+
+	resp, err := send(&clientRequest{Method: "getbc", Keys: keys, GetStd: getstd, GetEnv: getenv})
+	if err != nil {
+		return nil, err
+	}
+
+	jobs := resp.Jobs
+	if len(jobs) == 0 {
+		return nil, err
+	}
+
+	if len(keys) == 1 {
+		return jobs[0], err
+	}
+
+	return je.pickCandidateJob(jobs), err
+}
+
+// requestContext is request(), except that a client riding out an outage stops
+// retrying once ctx is done.
+func (c *Client) requestContext(ctx context.Context, cr *clientRequest) (*serverResponse, error) {
+	if retry := c.outageRetry.Load(); retry != nil {
+		return c.requestRidingOutOutages(ctx, retry, cr)
+	}
+
+	return c.requestOnce(cr)
+}
+
+// AddWithDuplicatesContext is AddWithDuplicates, except that on a client that
+// rides out outages it stops retrying once ctx is done, as GetByEssenceContext
+// does.
+func (c *Client) AddWithDuplicatesContext(
+	ctx context.Context,
+	jobs []*Job,
+	envVars []string,
+	ignoreComplete bool,
+) (added int, dups AddDuplicates, warnings AddWarnings, err error) {
+	if validationErr, invalid := addValidationError(jobs); invalid {
+		return 0, AddDuplicates{}, AddWarnings{}, validationErr
+	}
+
+	compressed, err := c.CompressEnv(envVars)
+	if err != nil {
+		return 0, AddDuplicates{}, AddWarnings{}, err
+	}
+
+	cr := &clientRequest{Method: requestMethodAdd, Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete}
+
+	resp, err := c.requestContext(ctx, cr)
+	if err != nil {
+		return 0, AddDuplicates{}, AddWarnings{}, err
+	}
+
+	dups = NewAddDuplicates(resp.Existed, resp.Duplicates)
+	dups.resent = cr.resent
+
+	return resp.Added, dups, resp.AddWarnings, completeSkippedErr(cr, dups)
+}
+
 // stageBackup writes db to a uniquely named file in path's own directory,
 // returning that file's name for the caller to rename over path. The name is
 // unique because a fixed name is one the user may already have a file at, and
@@ -1364,21 +1732,56 @@ func (c *Client) AddWithDuplicates(
 	envVars []string,
 	ignoreComplete bool,
 ) (added int, dups AddDuplicates, warnings AddWarnings, err error) {
+	return c.AddWithDuplicatesContext(context.Background(), jobs, envVars, ignoreComplete)
+}
+
+// addAndReturnIDsWithWarnings is AddAndReturnIDsWithWarnings, except that a
+// client riding out an outage stops retrying once ctx is done.
+func (c *Client) addAndReturnIDsWithWarnings(
+	ctx context.Context,
+	jobs []*Job,
+	envVars []string,
+	ignoreComplete bool,
+) (ids []string, warnings AddWarnings, err error) {
 	if validationErr, invalid := addValidationError(jobs); invalid {
-		return 0, AddDuplicates{}, AddWarnings{}, validationErr
+		return nil, AddWarnings{}, validationErr
 	}
 
 	compressed, err := c.CompressEnv(envVars)
 	if err != nil {
-		return 0, AddDuplicates{}, AddWarnings{}, err
+		return nil, AddWarnings{}, err
 	}
 
-	resp, err := c.request(&clientRequest{Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete})
+	cr := &clientRequest{
+		Method: requestMethodAdd, Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete, ReturnIDs: true,
+	}
+
+	resp, err := c.requestContext(ctx, cr)
 	if err != nil {
-		return 0, AddDuplicates{}, AddWarnings{}, err
+		return nil, AddWarnings{}, err
 	}
 
-	return resp.Added, NewAddDuplicates(resp.Existed, resp.Duplicates), resp.AddWarnings, err
+	return resp.AddedIDs, resp.AddWarnings, completeSkippedErr(cr, NewAddDuplicates(resp.Existed, resp.Duplicates))
+}
+
+// AddContext is Add, except that on a client that rides out outages it stops
+// retrying once ctx is done, as GetByEssenceContext does.
+func (c *Client) AddContext(ctx context.Context, jobs []*Job, envVars []string,
+	ignoreComplete bool,
+) (added, existed int, err error) {
+	added, dups, _, err := c.AddWithDuplicatesContext(ctx, jobs, envVars, ignoreComplete)
+
+	return added, dups.Total(), err
+}
+
+// AddAndReturnIDsContext is AddAndReturnIDs, except that on a client that rides
+// out outages it stops retrying once ctx is done, as GetByEssenceContext does.
+func (c *Client) AddAndReturnIDsContext(ctx context.Context, jobs []*Job, envVars []string,
+	ignoreComplete bool,
+) ([]string, error) {
+	ids, _, err := c.addAndReturnIDsWithWarnings(ctx, jobs, envVars, ignoreComplete)
+
+	return ids, err
 }
 
 // reserveHostAndPid returns this runner's hostname (falling back to localhost if
@@ -1470,10 +1873,23 @@ type Client struct {
 	teMutex    sync.Mutex // to protect Touch() from other methods during Execute()
 	timeout    time.Duration
 	restClient *http.Client
-	ServerInfo *ServerInfo
-	host       string
-	port       string
-	args       []string // allowing internal reconnects
+
+	// restClientNoReuse is restClient with keep-alives disabled; see
+	// restHTTPClientNoReuse.
+	restClientNoReuse *http.Client
+
+	// ServerInfo describes the manager this client connected to. A
+	// subscription that rides out a manager restart (as AddAndWait's does)
+	// replaces it with the restarted manager's, so code that reads it while
+	// such a subscription may be reconnecting must call CurrentServerInfo()
+	// instead. Replacing it after Connect() is guarded by serverInfoMu, not the
+	// client's main lock, since requests hold that for their whole round trip
+	// and a reader such as GetSchedulerAlerts must not wait behind them.
+	ServerInfo   *ServerInfo
+	serverInfoMu sync.Mutex
+	host         string
+	port         string
+	args         []string // allowing internal reconnects
 
 	// token is what the client authenticates with. It is guarded by tokenMu,
 	// not the client's main lock, because reconnects and subscription polls
@@ -1495,6 +1911,11 @@ type Client struct {
 	// timing parameters this client uses; defaulted from the server's
 	// ServerInfo at Connect() (falling back to the Client* package defaults for
 	// older servers), but may be overridden by in-package code or tests before use.
+	// A subscription reconnect refreshes the ones not overridden from the new
+	// manager's ServerInfo, so they are guarded by timingsMu, not the client's
+	// main lock, which requests hold for their whole round trip. Read them with
+	// currentTouchInterval(), currentRetryWait() and currentRetryTime().
+	timingsMu     sync.Mutex
 	touchInterval time.Duration
 	retryWait     time.Duration
 	retryTime     time.Duration
@@ -1542,6 +1963,11 @@ type Client struct {
 	// SetReserveAsRunner and sent on reserve requests so the server knows the
 	// client runs one job at a time.
 	reserveAsRunner bool
+
+	// outageRetry, set by RetryWhileManagerUnreachable, makes requests ride out
+	// the manager being unreachable. It is nil for clients that fail fast,
+	// such as wr's commands and runners.
+	outageRetry atomic.Pointer[outageRetry]
 }
 
 // envStr holds the []string from os.Environ(), for codec compatibility.
@@ -1563,12 +1989,26 @@ type envStr struct {
 // for.
 //
 // token is the authentication token that Serve() returned when the server was
-// started.
+// started. The returned Client cannot pick up a new one: after the manager is
+// cleanly stopped and started again with a new token, every request it makes
+// except Ping fails with ErrPermissionDenied. A long-lived client should use
+// ConnectWithTokenFile() or ConnectUsingConfig() instead, which reload the
+// token.
 //
-// Timeout determines how long to wait for a response from the server, not only
-// while connecting, but for all subsequent interactions with it using the
-// returned Client.
+// timeout bounds connecting, including any later redial after the connection
+// drops, and is the send deadline of every request made with the returned
+// Client: a request made while the server is unreachable fails after timeout.
+// A request already sent waits for the reply for up to the larger of timeout
+// and ClientMinRequestTimeout. A timeout that is not positive means
+// ClientDefaultConnectTimeout, not "no deadline", so that a manager that is down
+// or does not answer always makes Connect, and later requests, fail. To have
+// later requests keep trying instead, call RetryWhileManagerUnreachable() on
+// the returned Client.
 func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duration) (*Client, error) {
+	if timeout <= 0 {
+		timeout = defaultConnectTimeout
+	}
+
 	expiry, err := internal.CertExpiry(caFile)
 	if err != nil {
 		return nil, err
@@ -1592,15 +2032,7 @@ func Connect(addr, caFile, certDomain string, token []byte, timeout time.Duratio
 		return clientOnErr, errp
 	}
 
-	// now that connect-readiness has been confirmed, decouple the per-request
-	// RECEIVE deadline from the (possibly short) connect timeout, giving it a
-	// generous floor so that a slow-but-alive server reply is not mistaken for a
-	// timeout (the cause of the spurious 'receive time out' flake). We do NOT
-	// widen the SEND deadline: the req socket blocks Send until it has a live
-	// pipe to write to, so a short send deadline is what makes a NEW request to a
-	// gone-away server fail fast (with 'send time out'), which is how unreachable
-	// servers are detected promptly.
-	if err = sock.SetOption(mangos.OptionRecvDeadline, requestTimeout(timeout)); err != nil {
+	if err = setRequestDeadlines(sock, timeout); err != nil {
 		return nil, err
 	}
 
@@ -1663,7 +2095,7 @@ func appendExecProblems(stderr []byte, jobFailed bool, mountLogs string, berr, e
 // settles it or start's retrying is stopped. It is the periodic fallback used
 // by retryStartReport after its immediate first attempt.
 func (c *Client) retryStartReportLoop(ctx context.Context, start *pendingStartReport) {
-	ticker := time.NewTicker(c.retryWait)
+	ticker := time.NewTicker(c.currentRetryWait())
 	defer ticker.Stop()
 
 	for {
@@ -1779,6 +2211,97 @@ func runnerHostAndIP() (string, string, error) {
 	return host, hostIP, nil
 }
 
+// DeleteContext is Delete, except that on a client that rides out outages it
+// stops retrying once ctx is done, as GetByEssenceContext does.
+func (c *Client) DeleteContext(ctx context.Context, jes []*JobEssence) (int, error) {
+	keys := c.jesToKeys(jes)
+
+	resp, err := c.requestContext(ctx, &clientRequest{Method: requestMethodDelete, Keys: keys})
+	if err != nil {
+		return 0, err
+	}
+
+	return resp.Existed, err
+}
+
+// KillContext is Kill, except that on a client that rides out outages it stops
+// retrying once ctx is done, as GetByEssenceContext does.
+func (c *Client) KillContext(ctx context.Context, jes []*JobEssence) (int, error) {
+	keys := c.jesToKeys(jes)
+
+	resp, err := c.requestContext(ctx, &clientRequest{Method: requestMethodKill, Keys: keys})
+	if err != nil {
+		return 0, err
+	}
+
+	return resp.Existed, err
+}
+
+// GetByRepGroupMatchContext is GetByRepGroupMatch, except that on a client that
+// rides out outages it stops retrying once ctx is done, as GetByEssenceContext
+// does.
+func (c *Client) GetByRepGroupMatchContext(ctx context.Context, repgroup string, match RepGroupMatch,
+	limit int, state JobState, getStd bool, getEnv bool) ([]*Job, error) {
+	resp, err := c.requestContext(ctx, &clientRequest{Method: requestMethodGetByRepGroup, Job: &Job{RepGroup: repgroup},
+		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
+		State: state, GetStd: getStd, GetEnv: getEnv})
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Jobs, err
+}
+
+// GetIncompleteByRepGroupMatchContext is GetIncompleteByRepGroupMatch, except
+// that on a client that rides out outages it stops retrying once ctx is done,
+// as GetByEssenceContext does.
+func (c *Client) GetIncompleteByRepGroupMatchContext(ctx context.Context, repgroup string,
+	match RepGroupMatch, limit int, state JobState, getStd bool, getEnv bool) ([]*Job, error) {
+	resp, err := c.requestContext(ctx, &clientRequest{Method: requestMethodGetIncomplete, Job: &Job{RepGroup: repgroup},
+		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
+		State: state, GetStd: getStd, GetEnv: getEnv})
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Jobs, err
+}
+
+// GetLastCompletionTimeByRepGroupContext is GetLastCompletionTimeByRepGroup,
+// except that on a client that rides out outages it stops retrying once ctx is
+// done, as GetByEssenceContext does.
+func (c *Client) GetLastCompletionTimeByRepGroupContext(ctx context.Context, repgroup string,
+	match RepGroupMatch) (map[string]time.Time, error) {
+	resp, err := c.requestContext(ctx, &clientRequest{
+		Method: requestMethodGetLastCompletion, Job: &Job{RepGroup: repgroup},
+		Search: match != RepGroupMatchExact, RepGroupMatch: match,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.CompletionTimes, nil
+}
+
+// setRequestDeadlines gives a connected client socket the send and receive
+// deadlines its requests use, derived from the client's connect timeout.
+//
+// Once connect-readiness has been confirmed, the per-request RECEIVE deadline
+// is decoupled from the (possibly short) connect timeout, given a generous
+// floor so that a slow-but-alive server reply is not mistaken for a timeout
+// (the cause of the spurious 'receive time out' flake). The SEND deadline is
+// NOT widened: the req socket blocks Send until it has a live pipe to write to,
+// so a short send deadline is what makes a NEW request to a gone-away server
+// fail fast (with 'send time out'), which is how unreachable servers are
+// detected promptly.
+func setRequestDeadlines(sock mangos.Socket, timeout time.Duration) error {
+	if err := sock.SetOption(mangos.OptionSendDeadline, timeout); err != nil {
+		return err
+	}
+
+	return sock.SetOption(mangos.OptionRecvDeadline, requestTimeout(timeout))
+}
+
 // dialClientSocket creates a req socket configured with TLS for the given
 // server and dials it, returning ErrNoServer if the dial fails. The dial,
 // including its TLS and SP handshakes, must complete within timeout, as must
@@ -1809,10 +2332,14 @@ func dialClientSocket(addr, caFile, certDomain string, timeout time.Duration) (m
 	return sock, nil
 }
 
-// setConnectSocketOptions applies the message size and connect-time send/recv
-// deadlines used while establishing a connection.
+// setConnectSocketOptions applies the message size, resend time and
+// connect-time send/recv deadlines used while establishing a connection.
 func setConnectSocketOptions(sock mangos.Socket, timeout time.Duration) error {
 	if err := sock.SetOption(mangos.OptionMaxRecvSize, 0); err != nil {
+		return err
+	}
+
+	if err := sock.SetOption(mangos.OptionRetryTime, clientRequestResendTime); err != nil {
 		return err
 	}
 
@@ -1914,12 +2441,14 @@ func (c *Client) Disconnect() error {
 // command that interacts with the server that works if a blank or invalid
 // token had been supplied to Connect().
 //
-// timeout bounds how long we wait for the server's reply, so that a ping into a
-// manager that still listens but no longer reads (the window during shutdown
-// between its RPC readers stopping and its command socket closing) fails within
-// the caller's own budget instead of on the socket's ClientMinRequestTimeout
-// floor. requestWithin can only narrow, so a ping on a socket whose deadline is
-// already shorter (Connect's readiness ping) is unaffected.
+// timeout bounds how long we wait to send the ping and how long we wait for the
+// server's reply, so that a ping into a manager that has gone (no pipe to send
+// on until the socket's connect-timeout send deadline) or that still listens but
+// no longer reads (the window during shutdown between its RPC readers stopping
+// and its command socket closing) fails within the caller's own budget instead
+// of on the socket's own deadlines. requestWithin can only narrow, so a ping on
+// a socket whose deadlines are already shorter (Connect's readiness ping) is
+// unaffected.
 func (c *Client) Ping(timeout time.Duration) (*ServerInfo, error) {
 	resp, err := c.requestWithin(&clientRequest{Method: "ping", Timeout: timeout}, timeout)
 	if err != nil {
@@ -2036,13 +2565,27 @@ func (c *Client) BackupDB(path string) error {
 // replace the old one in the database. To have such jobs skipped as "existed"
 // instead, supply ignoreComplete as true.
 //
+// If the connection to the manager is lost after an add was sent but before
+// its reply arrived, as when the manager stops, the manager may have added some
+// or all of the jobs. An add with ignoreComplete true is then sent again as it
+// was. One with ignoreComplete false is not, because a job its first copy added
+// may have run and completed since, and would be added and run again; it is
+// sent again with ignoreComplete true instead. Either way the jobs the first
+// copy added are then counted as existing (see AddDuplicates.Resent). If, after
+// sending it again with ignoreComplete true, any of the jobs was complete, it
+// either completed after the first copy added it or was complete before and so
+// was not added again, which cannot be told apart: the counts are returned with
+// ErrResentAddSkippedComplete, and you can add those jobs again to rerun them.
+// A manager too old to say which existing jobs were complete (see
+// AddDuplicates.Breakdown) gives that error if any job existed. The same holds
+// for AddAndReturnIDs, whose IDs then exclude the complete jobs, and for
+// AddAndWait, which then returns the error without waiting.
+//
 // The envVars argument is a slice of ("key=value") strings with the environment
 // variables you want to be set when the job's Cmd actually runs. Typically you
 // would pass in os.Environ().
 func (c *Client) Add(jobs []*Job, envVars []string, ignoreComplete bool) (added, existed int, err error) {
-	added, existed, _, err = c.AddWithWarnings(jobs, envVars, ignoreComplete)
-
-	return added, existed, err
+	return c.AddContext(context.Background(), jobs, envVars, ignoreComplete)
 }
 
 // AddWithWarnings is like Add, and also returns non-fatal warnings about the
@@ -2061,9 +2604,7 @@ func (c *Client) AddWithWarnings(
 // now in the queue are returned (including dups, excluding complete jobs). This
 // is potentially expensive, so use Add() if you don't need these.
 func (c *Client) AddAndReturnIDs(jobs []*Job, envVars []string, ignoreComplete bool) ([]string, error) {
-	ids, _, err := c.AddAndReturnIDsWithWarnings(jobs, envVars, ignoreComplete)
-
-	return ids, err
+	return c.AddAndReturnIDsContext(context.Background(), jobs, envVars, ignoreComplete)
 }
 
 // AddAndReturnIDsWithWarnings is like AddAndReturnIDs, and also returns
@@ -2073,23 +2614,7 @@ func (c *Client) AddAndReturnIDsWithWarnings(
 	envVars []string,
 	ignoreComplete bool,
 ) (ids []string, warnings AddWarnings, err error) {
-	if validationErr, invalid := addValidationError(jobs); invalid {
-		return nil, AddWarnings{}, validationErr
-	}
-
-	compressed, err := c.CompressEnv(envVars)
-	if err != nil {
-		return nil, AddWarnings{}, err
-	}
-
-	resp, err := c.request(&clientRequest{
-		Method: "add", Jobs: jobs, Env: compressed, IgnoreComplete: ignoreComplete, ReturnIDs: true,
-	})
-	if err != nil {
-		return nil, AddWarnings{}, err
-	}
-
-	return resp.AddedIDs, resp.AddWarnings, err
+	return c.addAndReturnIDsWithWarnings(context.Background(), jobs, envVars, ignoreComplete)
 }
 
 // Modify modifies previously Add()ed jobs that are incomplete and not currently
@@ -2939,7 +3464,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// touching the job, and keep doing so until after we've run the job and
 	// carried out post-exit tasks
 	liveState := newExecuteLiveState(actualCwd, liveStdout, liveStderr)
-	touchTicker := time.NewTicker(c.touchInterval) // server-provided default (< its ItemTTR), overridable per client
+	// server-provided default (< its ItemTTR), overridable per client
+	touchTicker := time.NewTicker(c.currentTouchInterval())
 
 	serverContact := &serverContactState{}
 	stopTouching := make(chan bool, executeStopChannelBuffer)
@@ -3692,7 +4218,8 @@ type execAction struct {
 func (c *Client) reportFinalState(ctx context.Context, job *Job, jes *JobEndState, action execAction,
 	start *pendingStartReport,
 ) (bool, error) {
-	retryEnd := time.Now().Add(c.retryTime)
+	retryTime := c.currentRetryTime()
+	retryEnd := time.Now().Add(retryTime)
 	err := errNoFinalStateAttempt
 	tokenRejections := 0
 
@@ -3717,7 +4244,7 @@ func (c *Client) reportFinalState(ctx context.Context, job *Job, jes *JobEndStat
 
 	clog.Warn(ctx, "giving up trying to connect to server")
 
-	return hadProblems, fmt.Errorf("gave up after trying for %s: %w", c.retryTime, err)
+	return hadProblems, fmt.Errorf("gave up after trying for %s: %w", retryTime, err)
 }
 
 // handleFinalStateError reacts to a failed state update: it logs the error,
@@ -3740,7 +4267,7 @@ func (c *Client) handleFinalStateError(ctx context.Context, err error) (disconne
 		return disconnected, true
 	}
 
-	<-time.After(c.retryWait)
+	<-time.After(c.currentRetryWait())
 
 	return disconnected, false
 }
@@ -3754,7 +4281,8 @@ func (c *Client) quickReconnect(ctx context.Context) bool {
 		clog.Warn(ctx, "tried to reconnect to server but failed", "err", errc)
 
 		// keep retrying after a jittered sleep (weak random is fine here)
-		wait := c.retryWait + time.Duration(rand.Float64()*0.5*float64(c.retryWait)) //nolint:gosec
+		retryWait := c.currentRetryWait()
+		wait := retryWait + time.Duration(rand.Float64()*0.5*float64(retryWait)) //nolint:gosec
 		<-time.After(wait)
 
 		return false
@@ -4032,8 +4560,8 @@ func noRetriesTimeExceeded(job *Job) bool {
 
 // schedulerName returns the configured scheduler name, or "" if unknown.
 func (c *Client) schedulerName() string {
-	if c.ServerInfo != nil {
-		return c.ServerInfo.Scheduler
+	if si := c.CurrentServerInfo(); si != nil {
+		return si.Scheduler
 	}
 
 	return ""
@@ -4478,14 +5006,7 @@ func (c *Client) Resume(jes []*JobEssence) (int, error) {
 // can never be fixed. It returns a count of jobs that it actually removed.
 // Errors will only be related to not being able to contact the server.
 func (c *Client) Delete(jes []*JobEssence) (int, error) {
-	keys := c.jesToKeys(jes)
-
-	resp, err := c.request(&clientRequest{Method: "jdel", Keys: keys})
-	if err != nil {
-		return 0, err
-	}
-
-	return resp.Existed, err
+	return c.DeleteContext(context.Background(), jes)
 }
 
 // Kill will cause the next Touch() call for the job(s) described by the input
@@ -4499,14 +5020,7 @@ func (c *Client) Delete(jes []*JobEssence) (int, error) {
 // running state). Errors will only be related to not being able to contact the
 // server.
 func (c *Client) Kill(jes []*JobEssence) (int, error) {
-	keys := c.jesToKeys(jes)
-
-	resp, err := c.request(&clientRequest{Method: "jkill", Keys: keys})
-	if err != nil {
-		return 0, err
-	}
-
-	return resp.Existed, err
+	return c.KillContext(context.Background(), jes)
 }
 
 // GetByEssence gets a Job given a JobEssence to describe it. With the boolean
@@ -4522,23 +5036,7 @@ func (c *Client) Kill(jes []*JobEssence) (int, error) {
 // non-CwdMatters one only if its Cwd really is the requested Cwd, so that a
 // different Job that merely shares the Cmd is never returned.
 func (c *Client) GetByEssence(je *JobEssence, getstd bool, getenv bool) (*Job, error) {
-	keys := je.candidateKeys()
-
-	resp, err := c.request(&clientRequest{Method: "getbc", Keys: keys, GetStd: getstd, GetEnv: getenv})
-	if err != nil {
-		return nil, err
-	}
-
-	jobs := resp.Jobs
-	if len(jobs) == 0 {
-		return nil, err
-	}
-
-	if len(keys) == 1 {
-		return jobs[0], err
-	}
-
-	return je.pickCandidateJob(jobs), err
+	return c.GetByEssenceContext(context.Background(), je, getstd, getenv)
 }
 
 // GetByEssences gets multiple Jobs at once given JobEssences that describe
@@ -4602,14 +5100,7 @@ func (c *Client) GetByRepGroup(repgroup string, subStr bool, limit int, state Jo
 // desired match mode.
 func (c *Client) GetByRepGroupMatch(repgroup string, match RepGroupMatch, limit int,
 	state JobState, getStd bool, getEnv bool) ([]*Job, error) {
-	resp, err := c.request(&clientRequest{Method: "getbr", Job: &Job{RepGroup: repgroup},
-		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
-		State: state, GetStd: getStd, GetEnv: getEnv})
-	if err != nil {
-		return nil, err
-	}
-
-	return resp.Jobs, err
+	return c.GetByRepGroupMatchContext(context.Background(), repgroup, match, limit, state, getStd, getEnv)
 }
 
 // GetStatusByRepGroupMatch gets compact per-state job counts, optionally with
@@ -4617,7 +5108,7 @@ func (c *Client) GetByRepGroupMatch(repgroup string, match RepGroupMatch, limit 
 func (c *Client) GetStatusByRepGroupMatch(repgroup string, match RepGroupMatch,
 	states []JobState, includeComplete bool, includeStatusDetails bool) (map[string]*RepGroupStatus, error) {
 	resp, err := c.request(&clientRequest{
-		Method:               "getrs",
+		Method:               requestMethodGetRepGroupStatus,
 		Job:                  &Job{RepGroup: repgroup},
 		Search:               match != RepGroupMatchExact,
 		RepGroupMatch:        match,
@@ -4651,14 +5142,7 @@ func (c *Client) GetIncomplete(limit int, state JobState, getStd bool, getEnv bo
 // remaining args are as in GetByRepGroup().
 func (c *Client) GetIncompleteByRepGroupMatch(repgroup string, match RepGroupMatch,
 	limit int, state JobState, getStd bool, getEnv bool) ([]*Job, error) {
-	resp, err := c.request(&clientRequest{Method: requestMethodGetIncomplete, Job: &Job{RepGroup: repgroup},
-		Search: match != RepGroupMatchExact, RepGroupMatch: match, Limit: limit,
-		State: state, GetStd: getStd, GetEnv: getEnv})
-	if err != nil {
-		return nil, err
-	}
-
-	return resp.Jobs, err
+	return c.GetIncompleteByRepGroupMatchContext(context.Background(), repgroup, match, limit, state, getStd, getEnv)
 }
 
 // GetIncompleteWaitingForDepGroups gets all non-archived jobs currently in the
@@ -4680,13 +5164,7 @@ func (c *Client) GetIncompleteWaitingForDepGroups(repgroup string, match RepGrou
 // each matched RepGroup.
 func (c *Client) GetLastCompletionTimeByRepGroup(repgroup string,
 	match RepGroupMatch) (map[string]time.Time, error) {
-	resp, err := c.request(&clientRequest{Method: "getlct", Job: &Job{RepGroup: repgroup},
-		Search: match != RepGroupMatchExact, RepGroupMatch: match})
-	if err != nil {
-		return nil, err
-	}
-
-	return resp.CompletionTimes, nil
+	return c.GetLastCompletionTimeByRepGroupContext(context.Background(), repgroup, match)
 }
 
 // GetOrSetLimitGroup takes the name of a limit group and returns the current
@@ -4707,7 +5185,7 @@ func (c *Client) GetOrSetLimitGroup(group string) (int, error) {
 // GetLimitGroups returns all currently known about limit groups, and the limit
 // they are set to.
 func (c *Client) GetLimitGroups() (map[string]int, error) {
-	resp, err := c.request(&clientRequest{Method: "getlgs"})
+	resp, err := c.request(&clientRequest{Method: requestMethodGetLimitGroups})
 	if err != nil {
 		return nil, err
 	}
@@ -4796,11 +5274,11 @@ func (c *Client) DestroyCloudHost(hostName string) ([]*BadServer, []*Job, error)
 // request the server do something and get back its response. We can only cope
 // with one request at a time per client, or we'll get replies back in the
 // wrong order, hence we lock.
+//
+// A client that rides out outages (see RetryWhileManagerUnreachable) can wait
+// for up to the manager's RetryTime.
 func (c *Client) request(cr *clientRequest) (*serverResponse, error) {
-	c.Lock()
-	defer c.Unlock()
-
-	return c.requestLocked(cr)
+	return c.requestContext(context.Background(), cr)
 }
 
 // encodeAndSend encodes cr (stamping it with this client's token and id) and

@@ -74,6 +74,13 @@ var errRetryBudgetSpent = errors.New("jobqueue subscription reconnect: retry bud
 //nolint:gochecknoglobals // test seam; nil in production.
 var replaceSockDecidedHook func()
 
+// reconnectConnectedHook, if set, runs in each reconnect attempt once the client
+// has connected to the manager, before the resubscribe. Tests use it to restart
+// the manager in that window.
+//
+//nolint:gochecknoglobals // test seam; nil in production.
+var reconnectConnectedHook func()
+
 // JobUpdateKind discriminates the events on a Subscription channel.
 type JobUpdateKind int
 
@@ -393,7 +400,7 @@ func (s *Subscription) reconnectAfterPollError(ctx context.Context) bool {
 }
 
 func (s *Subscription) reconnect(ctx context.Context) ([]*JobUpdate, bool) {
-	retryEnd := time.Now().Add(s.client.retryTime)
+	retryEnd := time.Now().Add(s.client.currentRetryTime())
 
 	for {
 		if s.isStopping() {
@@ -429,6 +436,10 @@ func (s *Subscription) reconnectOnce(retryEnd time.Time) ([]*JobUpdate, error) {
 		return nil, err
 	}
 
+	if reconnectConnectedHook != nil {
+		reconnectConnectedHook()
+	}
+
 	dialAddr := s.client.subscriptionDialAddr()
 
 	sock, err := dialSubscriptionSocket(dialAddr, s.client.args[1], s.client.args[2],
@@ -446,6 +457,14 @@ func (s *Subscription) reconnectOnce(retryEnd time.Time) ([]*JobUpdate, error) {
 
 	if !s.replaceSock(sock, resp.SubscriptionID, dialAddr) {
 		return nil, s.unsubscribeRejectedReplacement(resp.SubscriptionID, retryEnd)
+	}
+
+	// the manager that answered the connect above may have been replaced by a
+	// restarted one before the resubscribe, which mangos then sent to the new
+	// manager; the resubscribe reply says which manager now holds us. A manager
+	// too old to include its info leaves what the connect adopted.
+	if resp.SInfo != nil {
+		s.client.adoptServerInfo(resp.SInfo)
 	}
 
 	return resp.JobUpdates, nil
@@ -552,7 +571,7 @@ func (s *Subscription) subscribeRequest() *clientRequest {
 }
 
 func (s *Subscription) waitBeforeReconnect(ctx context.Context) bool {
-	timer := time.NewTimer(subscriptionReconnectWait(s.client.retryWait))
+	timer := time.NewTimer(subscriptionReconnectWait(s.client.currentRetryWait()))
 	defer timer.Stop()
 
 	select {
@@ -697,7 +716,7 @@ func (c *Client) SubscribeToRepGroup(ctx context.Context, repGroup string) (*Sub
 }
 
 func (c *Client) subscribe(ctx context.Context, cr *clientRequest) (*Subscription, error) {
-	resp, err := c.request(cr)
+	resp, err := c.requestContext(ctx, cr)
 	if err != nil {
 		return nil, err
 	}
@@ -873,7 +892,10 @@ func distinctKeysInOrder(keys []string) []string {
 // terminal state. Returned jobs are re-fetched with stdout/stderr populated
 // where wr stores them. Complete and buried jobs are both successful returns;
 // ctx cancellation returns the terminal jobs gathered so far plus an error
-// naming the unfinished keys.
+// naming the unfinished keys. After cancellation each of those jobs is fetched
+// with a single attempt bounded by the connect timeout, even on a client that
+// rides out outages, so if the manager cannot then be reached, the jobs fetched
+// before it failed are returned, with that failure joined to the error.
 func (c *Client) AddAndWait(ctx context.Context, jobs []*Job, envVars []string, ignoreComplete bool) ([]*Job, error) {
 	jobsDone, _, err := c.AddAndWaitWithWarnings(ctx, jobs, envVars, ignoreComplete)
 
@@ -892,7 +914,7 @@ func (c *Client) AddAndWaitWithWarnings(
 		return nil, AddWarnings{}, ctxErr
 	}
 
-	keys, warnings, err := c.AddAndReturnIDsWithWarnings(jobs, envVars, ignoreComplete)
+	keys, warnings, err := c.addAndReturnIDsWithWarnings(ctx, jobs, envVars, ignoreComplete)
 	if err != nil {
 		return nil, AddWarnings{}, err
 	}
@@ -916,15 +938,29 @@ func (c *Client) waitForAddedJobKeys(ctx context.Context, keys []string) ([]*Job
 
 	seen, err := collectDistinctTerminalKeys(ctx, sub.Updates(), keys)
 	if err != nil {
-		terminalJobs, fetchErr := c.fetchSeenTerminalJobs(keys, seen)
+		terminalJobs, fetchErr := c.fetchSeenTerminalJobs(ctx, keys, seen)
 
 		return terminalJobs, addAndWaitError(ctx, err, keys, seen, fetchErr)
 	}
 
-	return c.fetchSeenTerminalJobs(keys, seen)
+	return c.fetchSeenTerminalJobs(ctx, keys, seen)
 }
 
-func (c *Client) fetchSeenTerminalJobs(keys []string, seen map[string]JobState) ([]*Job, error) {
+// fetchSeenTerminalJobs gets the jobs of keys that are in seen, stopping at the
+// first that cannot be got. Once ctx is done each is a single attempt bounded
+// by the client's timeout, including any wait for the client's lock, which the
+// subscription's own resubscribe can hold through an outage; so a cancelled
+// wait returns within about that timeout even if the manager is down.
+func (c *Client) fetchSeenTerminalJobs(ctx context.Context, keys []string,
+	seen map[string]JobState,
+) ([]*Job, error) {
+	send := c.request
+	if ctx.Err() != nil {
+		send = func(cr *clientRequest) (*serverResponse, error) {
+			return c.requestWithinIncludingLockWait(cr, c.timeout)
+		}
+	}
+
 	jobs := make([]*Job, 0, len(seen))
 
 	for _, key := range keys {
@@ -932,7 +968,7 @@ func (c *Client) fetchSeenTerminalJobs(keys []string, seen map[string]JobState) 
 			continue
 		}
 
-		job, err := c.GetByEssence(&JobEssence{JobKey: key}, true, false)
+		job, err := c.getByEssence(&JobEssence{JobKey: key}, true, false, send)
 		if err != nil {
 			return jobs, err
 		}
@@ -948,8 +984,8 @@ func (c *Client) fetchSeenTerminalJobs(keys []string, seen map[string]JobState) 
 func (c *Client) subscriptionDialAddr() string {
 	dialAddr := c.args[0]
 
-	if c.ServerInfo != nil && c.ServerInfo.Addr != "" {
-		dialAddr = c.ServerInfo.Addr
+	if si := c.CurrentServerInfo(); si != nil && si.Addr != "" {
+		dialAddr = si.Addr
 	}
 
 	return dialAddr
@@ -972,10 +1008,19 @@ func (c *Client) reconnect(timeout time.Duration) error {
 		return err
 	}
 
+	// timeout bounds only this reconnect step; the socket we adopt must carry
+	// the deadlines Connect gave this client from its own timeout, or every
+	// later request fails or waits on the reconnect step's budget instead.
+	if err = setRequestDeadlines(newClient.sock, c.timeout); err != nil {
+		_ = newClient.sock.Close()
+
+		return err
+	}
+
 	c.Lock()
 	oldSock := c.sock
 	c.sock = newClient.sock
-	c.ServerInfo = newClient.ServerInfo
+	c.adoptServerInfo(newClient.ServerInfo)
 	c.Unlock()
 
 	if oldSock != nil {
