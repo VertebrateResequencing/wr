@@ -35,6 +35,7 @@ import (
 	"context"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
 
@@ -51,7 +52,7 @@ import (
 // 4.8 KiB in all.
 const jobEncodeMaxBytes = 3 * 1024
 
-// jobEncodeRuns is how many encodes jobEncodeBytesPerRun averages over.
+// jobEncodeRuns is how many encodes jobEncodeMedianBytes measures.
 const jobEncodeRuns = 200
 
 func TestDBEncodeJob(t *testing.T) {
@@ -80,7 +81,7 @@ func TestDBEncodeJob(t *testing.T) {
 		Convey("encoding a job does not allocate a new encoder's field scratch", func() {
 			job := testDBJob("echo encode alloc", "encode")
 
-			So(jobEncodeBytesPerRun(testDB, job), ShouldBeLessThan, jobEncodeMaxBytes)
+			So(jobEncodeMedianBytes(testDB, job), ShouldBeLessThan, jobEncodeMaxBytes)
 		})
 
 		Convey("encoding jobs one after another stores what a new encoder would", func() {
@@ -116,9 +117,15 @@ func TestDBEncodeJob(t *testing.T) {
 	})
 }
 
-// jobEncodeBytesPerRun returns the average bytes allocated by encoding job for
-// storage, measured like testing.AllocsPerRun: on 1 P, after a warm-up encode.
-func jobEncodeBytesPerRun(testDB *db, job *Job) uint64 {
+// jobEncodeMedianBytes returns the median bytes allocated by one of
+// jobEncodeRuns encodes of job for storage, on 1 P, after a warm-up encode.
+//
+// It takes the median, not the mean, because under -race sync.Pool.Put drops a
+// quarter of what it is given, so about one encode in four makes a new Encoder:
+// that pushes the mean towards jobEncodeMaxBytes and, by chance, over it. The
+// median stays at the cost of a reused Encoder unless at least half the encodes
+// make a new one, which is what happens every time if encode stops reusing them.
+func jobEncodeMedianBytes(testDB *db, job *Job) uint64 {
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 
 	encode := func() {
@@ -131,13 +138,17 @@ func jobEncodeBytesPerRun(testDB *db, job *Job) uint64 {
 
 	var before, after runtime.MemStats
 
-	runtime.ReadMemStats(&before)
+	allocated := make([]uint64, jobEncodeRuns)
 
-	for range jobEncodeRuns {
+	for i := range allocated {
+		runtime.ReadMemStats(&before)
 		encode()
+		runtime.ReadMemStats(&after)
+
+		allocated[i] = after.TotalAlloc - before.TotalAlloc
 	}
 
-	runtime.ReadMemStats(&after)
+	slices.Sort(allocated)
 
-	return (after.TotalAlloc - before.TotalAlloc) / jobEncodeRuns
+	return allocated[jobEncodeRuns/2]
 }

@@ -6,12 +6,9 @@
 
 ## Delivery queue
 
-- PR #665 (client-restart-950a7a96 -> develop), no dependencies. 0 behind
-  origin/develop (261004). Status: all items done; make lint/test/race and
-  make speed PASS; pushed for pr-resolver. Waits on: CI and a Copilot review
-  of the pushed head. Next: pr-resolver, then ask the owner to merge.
-- Deferred: TestDBEncodeJob race flake (see Deferred incidentals), its own
-  branch after #665 merges.
+- PR #665 (client-restart-950a7a96 -> develop): merged as fc3f8a5d (261004).
+- Deferred TestDBEncodeJob race flake: fixed on encodejob-race-2a0b91ec; see
+  261004-encodejob-race-c9aa48da.md, which owns its delivery.
 
 ## Investigation
 
@@ -650,8 +647,10 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
 
 ## Deferred incidentals
 
-- [ ] TestDBEncodeJob (jobqueue, line 83) allocation bound flakes under
+- [x] TestDBEncodeJob (jobqueue, line 83) allocation bound flakes under
   `-race`: `Expected '3128' to be less than '3072'`. Fails 2 of 40 under
   `-race` on origin/develop too, so independent of this branch; `make race`
   passed on this branch (261004). Fix on its own branch after #665 merges.
   - Source: implementor of the AddAndWait item (full jobqueue `-race` run).
+  - Fixed on branch `encodejob-race-2a0b91ec`; see
+    `261004-encodejob-race-c9aa48da.md`.
