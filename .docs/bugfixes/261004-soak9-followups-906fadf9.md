@@ -137,9 +137,44 @@ packages, and `cleanorder -min-diff` on the edited Go files. The caller runs
     still send them, and the report would wait for a touch that is retrying
     against a manager that is down.
 
-- [ ] 3. `wr manager stop` returned rc 0 while the pid still existed (zombie
+- [x] 3. `wr manager stop` returned rc 0 while the pid still existed (zombie
   for a few ms, aliveAtReturn=y on all 3 clean stops).
+  - Owner ruling 261004: harmless; recorded, no action.
 
-- [ ] 4. StartTime drift on 186 jobs.
+- [x] 4. StartTime drift on 186 jobs.
+  - Explained, no action. 186 jobs had a recorded StartTime more than 2s
+    (at most 11.9s) before their marker's start. StartTime is the runner's own
+    clock, taken just after `cmd.Start()` (`jobqueue/client.go` about line
+    3736 at `55cc2565`) and recorded as given (`serverCLI.go`
+    `reportedStartTime`, about line 1308), so manager lag cannot shift it.
+    Every gap is positive (database earlier than marker): it is
+    `psimjob.sh`'s own startup work on NFS before it writes its marker, on a
+    few loaded hosts (node-14-11 50, node-13-10 38, node-13-24 27). Worst
+    case, node-14-18 pid 1839413: the runner logged "started executing" at
+    10:46:26, the database has 10:46:26.122 and the marker 10:46:37.977.
+    Walltime and resource learning use EndTime minus StartTime, both from the
+    runner's clock; lost and TTR use touches; nothing depends on the gap.
+    Evidence: `/nfs/hgi/wr/sb10-bigdb/soak9/analysis/items45/starttimes-gt2s.tsv`.
 
-- [ ] 5. Clean-stop re-run accounting.
+- [x] 5. Clean-stop re-run accounting.
+  - Explained, no action. The re-runs after clean-stop kills come from
+    prodsim's operator chore `retry_portal` (`wr retry -i portal -z`,
+    `developers/prodsim/actors.go` about line 601), which succeeded at
+    10:46:45: all 2,205 portal re-runs started after it, none between the
+    10:37 restart and the retry. One more was a build job killed by an LSF
+    SIGINT at 10:21. Every run in flight at a clean stop (4,209 at the two
+    mid-run stops) was buried and then re-run only by that retry, left
+    buried, removed by the fofn watcher, or had exited 0 and was recorded
+    complete. None was re-run by the manager itself, which fits the owner's
+    ruling that a stop buries the jobs it kills. Evidence:
+    `/nfs/hgi/wr/sb10-bigdb/soak9/analysis/items45/killed-at-clean-stops.tsv`.
+
+## Soak9 results for earlier items
+
+- `260929-archive-before-start.md`, "Crash 1 ... 624 double runs": does not
+  reproduce without the binary swap; ticked there. Soak9 had 0 double runs in
+  741,508 runs over six `kill -9` crashes at 2,300-3,600 running jobs (peak
+  3,872), and no runner died without reporting.
+- `261004-checklist-tidy-8e94211c.md`, Backlog item on the O(backlog)
+  scheduling cycle: measured; numbers recorded there; owner decision pending,
+  left unticked.
