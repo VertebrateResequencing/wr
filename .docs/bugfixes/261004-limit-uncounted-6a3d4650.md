@@ -182,9 +182,9 @@ speed`.
   false in a map of calls (the others true). `make race` had passed on
   develop several times the same day.
   - Source: the caller's `make race` run, `client_default` lane.
-  - Diagnosis: GoConvey reports the line after the failing `So` here (the
-    widened-window runs below show the same offset), so line 597 is the
-    `endedWithCtxErr` assertion, not `stillTrying`: `GetJobByKeyContext` kept
+  - Diagnosis: line 597 is the `endedWithCtxErr` assertion (line 596 is
+    `stillTrying`), so the map that failed records whether each call ended
+    with its ctx error within 30s of cancel: `GetJobByKeyContext` kept
     trying, but did not end within 30s of its ctx being cancelled. The log
     shows its `getbc` warned only after `receive time out` with
     `unreachable_for=1m0s`, 60s after the other calls' `send time out`
