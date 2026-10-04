@@ -2428,7 +2428,7 @@ cmd_overprovision_check() {  # overprovision-check [limit] [siblings] [ready] - 
 cmd_overcount_check() {  # overcount-check [limit] [initialRunning] [windowReserves] - reliable3 2b over-count GATE
   # Deterministic, in-process REGRESSION GATE (build-tagged reliability_repro, NOT part of
   # make test) for reliable3 ISSUE 2b: a scheduler group's final scheduling count must NEVER
-  # exceed its limit group's limit. countJobInGroup caps the READY count against an EARLY
+  # exceed its limit group's limit. scheduleReadyJobsByPriority caps the READY count against an EARLY
   # capacity read, and accountForRunningJobs then adds ALL running jobs on top, so reserves
   # landing in that non-atomic window inflate the count (production saw 3313 for a 2000
   # limit); capGroupCountsToLimits trims the summed sibling counts back to the limit.
@@ -2680,6 +2680,9 @@ cmd_priority_fairness_check() {  # priority-fairness-check [limit] [readyExtra] 
   return 0
 }
 
+# pf_num prints the integer value of a `<key>=<int>` field in the priority-fairness
+# reproducer line, printing nothing when the key is absent (which its caller must treat as an
+# unmeasured FAIL). The keys contain regex metacharacters, so they are passed pre-escaped.
 pf_num() {  # <line> <escapedKey>
   printf '%s\n' "$1" | grep -aoE "$2=[0-9]+" | tail -1 | cut -d= -f2
 }

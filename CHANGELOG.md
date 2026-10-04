@@ -142,7 +142,7 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - The manager uses less CPU deciding what to schedule when many commands are
   waiting in limit groups.
 - The manager uses less CPU working out how many runners to request when many
-  commands are queued: about 15-25% less per check with 200k commands waiting.
+  commands are queued: about 14-24% less per check with 200k commands waiting.
 - A long-running manager using the lsf scheduler no longer keeps a little
   memory for every runner that has run a job (about 75 bytes each) and every
   excess runner it has killed, and no longer slows each scheduling check by
