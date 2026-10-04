@@ -6809,14 +6809,21 @@ func (s *Server) handleUserSpecifiedJobLimitGroups(job *Job, limitGroups map[str
 
 // storeLimitGroups calls db.storeLimitGroups() and handles updating the
 // in-memory representation of the groups.
+//
+// Every count limit is given to the limiter, not just those the database
+// reports as changed: a limit stored for the first time is not reported as
+// changed, but the limiter can already be counting jobs of that group without a
+// limit, and those must be counted against the new one.
 func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) error {
-	changed, removed, err := s.db.storeLimitGroups(limitGroups)
+	_, removed, err := s.db.storeLimitGroups(limitGroups)
 	if err != nil {
 		return err
 	}
 
-	for _, group := range changed {
-		s.limiter.SetLimit(group, *limitGroups[group])
+	for group, data := range limitGroups {
+		if data.IsCount() {
+			s.limiter.SetLimit(group, *data)
+		}
 	}
 
 	for _, group := range removed {

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2019, 2025 Genome Research Ltd.
+ * Copyright (c) 2019, 2025-2026 Genome Research Ltd.
  *
  * Author: Sendu Bala <sb10@sanger.ac.uk>
  * Author: Michael Woolnough <mw31@sanger.ac.uk>
@@ -255,7 +255,17 @@ func (g *GroupData) LimitForDisplay() int64 {
 	return -1
 }
 
+// noLimit is the limit of a simple run limit group that has none. A group only
+// has it in memory, as GroupData from outside never holds a negative count
+// limit (see NewCountGroupData). It is a sentinel rather than a field of group so
+// that a group stays within its allocation size class.
+const noLimit = -1
+
 // group struct describes an individual limit group.
+//
+// A simple run limit group is counted whether or not it has a limit: one with
+// no limit still counts its increments, so that a limit set on it later starts
+// from the number already in use, rather than letting that many more in.
 type group struct {
 	name string
 	GroupData
@@ -270,6 +280,14 @@ func newGroup(name string, data GroupData) *group {
 	}
 }
 
+// newUnlimitedGroup creates a new simple run limit group that has no limit.
+func newUnlimitedGroup(name string) *group {
+	return &group{
+		name:      name,
+		GroupData: GroupData{mode: groupModeCount, limit: noLimit},
+	}
+}
+
 // setLimit updates the group's limit.
 func (g *group) setLimit(limit int64) {
 	if g.IsCount() {
@@ -277,12 +295,23 @@ func (g *group) setLimit(limit int64) {
 	}
 }
 
+// removeLimit makes a simple run limit group unlimited, keeping its count.
+func (g *group) removeLimit() {
+	g.setLimit(noLimit)
+}
+
+// hasLimit tells you if this group has a limit to report: it is false only for
+// a simple run limit group that has no limit.
+func (g *group) hasLimit() bool {
+	return !g.IsCount() || g.limit != noLimit
+}
+
 // canIncrement tells you if the current count of this group is less than the
 // limit.
 func (g *group) canIncrement() bool {
 	switch g.mode {
 	case groupModeCount:
-		return g.current < g.limit
+		return g.current < g.limit || g.limit == noLimit
 	case groupModeBeforeTime:
 		return secondsInDay() < g.limit
 	case groupModeAfterTime:
@@ -381,7 +410,7 @@ func (g *group) decrement() bool {
 // breaching the limit.
 func (g *group) capacity() int {
 	if g.canIncrement() {
-		if g.IsCount() {
+		if g.IsCount() && g.limit != noLimit {
 			return int(g.limit - g.current)
 		}
 
