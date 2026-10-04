@@ -28,8 +28,20 @@ files.
   - The `make lint` item in `260903-14.md` is closed on evidence rather than
     a fix: CI's golangci-lint workflow runs `make lint` and passed on
     `fc3f8a5d`, and #603 moved its baseline to `origin/master`.
-- [ ] B. `260903-14.md` item: a `jobqueue_test.go` Convey uses `os.Getwd()`
+- [x] B. `260903-14.md` item: a `jobqueue_test.go` Convey uses `os.Getwd()`
   and leaves `jobqueue/jobqueue_cwd/` debris in the tree. Use a temp dir.
+  - Red, on a tree with no `jobqueue/jobqueue_cwd`:
+    `WR_TEST_SHARD=b CGO_ENABLED=1 go test -tags netgo -count 1 ./jobqueue
+    -run '^TestJobqueueModify$'` (exit 0), then
+    `test ! -e jobqueue/jobqueue_cwd` exited 1: the test left
+    `jobqueue/jobqueue_cwd/4/f/0/<key>-<uuid>/cwd`, two empty workspaces.
+    `git status --ignored` does not show it, because the tree holds only
+    empty directories.
+  - Fix (test only), `jobqueue/jobqueue_test.go`: "You can modify the cwd of
+    a job, with and without cwd_matters" gives the job `t.TempDir()` instead
+    of the package directory. Its assertions are unchanged.
+  - Green: the same commands exit 0 and 0, sharded and unsharded.
+  - Ticked in `260903-14.md` too.
 - [ ] C. `261001-flakes-and-tooling.md` item: `loadrunner` with no `-group`
   falls back to `req.Stringify()` (`100:1:1:0`), which reserves nothing in
   drive and hold modes. The README mode list omits churn.
