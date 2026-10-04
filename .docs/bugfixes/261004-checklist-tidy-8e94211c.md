@@ -154,7 +154,7 @@ Owner decisions (261004) are noted on each item.
 Queue owner: this branch. Worktrees are beside the main clone.
 
 - checklist-tidy-8e94211c (`../wr-tidy`) -> develop: rebased onto 55cc2565
-  (#668 merged, 261004). Status: implemented; next review, gates, PR,
+  (#668 merged, 261004). Status: reviewed (PASS), make lint/test/race PASS; pushed, in
   pr-resolver. Merge first.
 - Then, one at a time, each from the latest develop after the previous one
   is ready:
