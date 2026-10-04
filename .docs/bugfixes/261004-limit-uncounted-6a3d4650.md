@@ -174,3 +174,17 @@ speed`.
     `TestReliable4AddStorm` exit 0 plain and `-race`. `golangci-lint run
     ./limiter/ ./jobqueue/` 0 issues; `cleanorder -min-diff` on the edited
     files.
+
+## Deferred incidentals
+
+- [ ] Pre-existing on develop (not caused by this branch): a limit that
+  really changed, or is stored for the first time, is applied to the limiter
+  after its DB transaction and outside any lock, so two requests that both
+  change a group (two adds first-storing different values, or an add storing
+  `g:5` racing `wr limit -g g:3` or `g:-1`) can apply their limits in the
+  opposite order to their DB commits, leaving memory and the DB disagreeing
+  until the group is next set. Likely fix: serialise the DB store with the
+  limiter update for limit groups (e.g. one mutex held across
+  `storeLimitGroups`' DB write and SetLimit/RemoveLimit, and in
+  `setLimitGroup`). Source: review of 74134b6f (261004). Queued as its own
+  branch after this one.
