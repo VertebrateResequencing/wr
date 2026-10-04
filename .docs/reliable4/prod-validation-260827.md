@@ -1209,7 +1209,12 @@ accurate as a record of what was completed.
    leaves a manager that `stop`/`clean` cannot kill (no pid file under `-f`), and
    `parseBmgroups` never `Wait()`s its `bmgroup -w` child, so every manager leaves
    a defunct process.
-7. **Reliable3 issue 2a: priority-unfair limit-group budget allocation. OPEN, and
+7. **Reliable3 issue 2a: priority-unfair limit-group budget allocation.** Closed
+   261004 (`.docs/bugfixes/261004-rac-cycle-88799784.md`, item 0): the rac
+   cycle (`scheduleReadyJobsByPriority`) already handed the budget out
+   highest-priority-first; the reproducer below drove a test-only copy of the
+   accounting that did not. `priority-fairness-check` is now a regression gate on
+   the live path. The original text follows. **OPEN, and
    reproducible on demand.** The shared per-limit-group budget is handed out
    first-come across sibling scheduler groups, in map order rather than priority
    order, so a low-priority sibling scanned first takes the whole budget and a
