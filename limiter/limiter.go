@@ -77,7 +77,8 @@ func New(cb SetLimitCallback) *Limiter {
 	}
 }
 
-// SetLimit creates or updates a group with the given limit.
+// SetLimit creates or updates a group with the given limit. A group that is
+// already counted, with or without a limit, keeps its count.
 func (l *Limiter) SetLimit(name string, data GroupData) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -97,7 +98,7 @@ func (l *Limiter) GetLimit(ctx context.Context, name string) *GroupData {
 	resolved := l.lockWithResolvedGroups(ctx, []string{name}, buf[:])
 	defer l.mu.Unlock()
 
-	if group := l.vivifyGroup(name, &resolved[0]); group != nil {
+	if group := l.vivifyGroup(name, &resolved[0]); group != nil && group.hasLimit() {
 		return &group.GroupData
 	}
 
@@ -112,7 +113,7 @@ func (l *Limiter) GetLimits() map[string]int {
 	limits := make(map[string]int, len(l.groups))
 
 	for name, group := range l.groups {
-		if group.IsCount() {
+		if group.IsCount() && group.hasLimit() {
 			limits[name] = int(group.limit)
 		}
 	}
@@ -120,11 +121,21 @@ func (l *Limiter) GetLimits() map[string]int {
 	return limits
 }
 
-// RemoveLimit removes the given group from memory. If your callback also begins
-// returning -1 for this group, the group effectively becomes unlimited.
+// RemoveLimit removes the limit of the given group. If your callback also
+// begins returning -1 for this group, the group becomes unlimited.
+//
+// A simple run limit group that is in use stays in memory without a limit,
+// still counting its use, so that a limit set again with SetLimit() applies to
+// the use already counted. Otherwise the group is removed from memory.
 func (l *Limiter) RemoveLimit(name string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	if g, set := l.groups[name]; set && g.IsCount() && g.current > 0 {
+		g.removeLimit()
+
+		return
+	}
 
 	delete(l.groups, name)
 }
@@ -137,6 +148,9 @@ func (l *Limiter) RemoveLimit(name string) {
 // called with the name, and the returned value will be used to create a new
 // group with that limit and initial count of 0 (which will become 1 if this
 // returns true). Groups with a limit of 0 will not be able to be Increment()ed.
+// A group the callback knows no limit for can always be Increment()ed, but is
+// still counted, so that a limit later given to it with SetLimit() applies to
+// the count it already has.
 //
 // If possible, the group counts are actually incremented and this returns
 // true. If not possible, no group counts are altered and this returns false.
@@ -290,14 +304,23 @@ func (l *Limiter) checkGroups(groups []string, resolved []resolution) bool {
 	return true
 }
 
-// incrementGroups increments all the groups without checking them. You must
-// hold the mu.lock before calling this (and check first).
+// incrementGroups increments all the groups without checking them, creating
+// an unlimited group for each that has no limit. You must hold the mu.lock
+// before calling this (and check first).
+//
+// Unlimited groups are only created here, never by vivifyGroup(), so that only
+// groups something is counted against stay in memory: Decrement() forgets them
+// again when their count returns to 0.
 func (l *Limiter) incrementGroups(groups []string, resolved []resolution) {
 	for i, name := range groups {
 		group := l.vivifyGroup(name, &resolved[i])
-		if group != nil {
-			group.increment()
+		if group == nil {
+			group = newUnlimitedGroup(name)
+			l.groups[name] = group
+			resolved[i].group = group
 		}
+
+		group.increment()
 	}
 }
 
@@ -306,7 +329,7 @@ func (l *Limiter) incrementGroups(groups []string, resolved []resolution) {
 // SetLimitCallback, noting it in r for subsequent calls under the same lock
 // hold. You must have held mu since the lockWithResolvedGroups() call that
 // returned r. Can return nil if the callback didn't know about this group and
-// returned a -1 limit.
+// returned a -1 limit, and the group is not already counted in memory.
 //
 // A group that is already in memory is returned as-is and never replaced with
 // the resolved data: overwriting it would reset its current count to 0 and so
@@ -345,7 +368,7 @@ func (l *Limiter) registerGroupNotifications(groups []string, ch chan bool, reso
 //
 // If a group isn't known about (because it was never previously Increment()ed,
 // or was previously Decrement()ed to 0 and forgotten about), it is silently
-// ignored.
+// ignored. A group without a limit is counted like any other.
 func (l *Limiter) Decrement(groups []string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -371,7 +394,7 @@ func (l *Limiter) GetLowestLimit(ctx context.Context, groups []string) int {
 
 	for i, name := range groups {
 		group := l.vivifyGroup(name, &resolved[i])
-		if group != nil && (lowest == -1 || int(group.limit) < lowest) {
+		if group != nil && group.hasLimit() && (lowest == -1 || int(group.limit) < lowest) {
 			lowest = int(group.limit)
 		}
 	}
@@ -391,7 +414,7 @@ func (l *Limiter) GetRemainingCapacity(ctx context.Context, groups []string) int
 
 	for i, name := range groups {
 		group := l.vivifyGroup(name, &resolved[i])
-		if group == nil {
+		if group == nil || !group.hasLimit() {
 			continue
 		}
 

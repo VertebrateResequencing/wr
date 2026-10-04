@@ -33,45 +33,47 @@ call Increment(). If limits have not been reached, it returns true. When your
 "something" is done, Decrement().
 
 The limit your callback provides is stored in memory, so a group already in use
-usually needs no call at all. But Decrement() removes groups from memory when
-the count becomes zero, so that unused groups don't fill up memory. If a
-subsequent Increment() uses a group that was removed from memory, your callback
-will be called again to find out the limit. It is intended that you don't store
-all your limits in memory yourself, but retrieve them from disk. Because the
-callback is never called while the Limiter holds its own lock, it is allowed to
-be slow, but it can therefore be called concurrently, and more than once for the
-same group.
+usually needs no call at all. A group your callback knows no limit for is
+counted in memory too, so that a limit you later set on it applies to its
+current use. But Decrement() removes groups from memory when the count becomes
+zero, so that unused groups don't fill up memory. If a subsequent Increment()
+uses a group that was removed from memory, your callback will be called again to
+find out the limit. It is intended that you don't store all your limits in
+memory yourself, but retrieve them from disk. Because the callback is never
+called while the Limiter holds its own lock, it is allowed to be slow, but it
+can therefore be called concurrently, and more than once for the same group.
 If you need to change the limit of a group, your callback should start returning
 the new limit, and you should call SetLimit() to change the memorised limit, if
-any.
+any. To remove a limit, your callback should start returning no limit, and you
+should call RemoveLimit().
 
 	import "github.com/VertebrateResequencing/wr/limiter"
 
-	cb := func(name string) int {
+	cb := func(ctx context.Context, name string) *limiter.GroupData {
 	    if name == "l1" {
-	        return 3
+	        return limiter.NewCountGroupData(3)
 	    } else if name == "l2" {
-	        return 2
+	        return limiter.NewCountGroupData(2)
 	    }
-	    return 0
+	    return limiter.NewCountGroupData(-1)
 	}
 
 	l := limiter.New(cb)
 
-	if l.Increment([]string{"l1", "l2"}) { // true
+	if l.Increment(ctx, []string{"l1", "l2"}) { // true
 	    // do something that can only be done if neither l1 nor l2 have reached
 	    // their limit, then afterwards:
 	    l.Decrement([]string{"l1", "l2"})
 	}
 
-	l.Increment([]string{"l2"}) // true
-	l.Increment([]string{"l2"}) // true
-	l.Increment([]string{"l2"}) // false
-	l.Increment([]string{"l1", "l2"}) // false
+	l.Increment(ctx, []string{"l2"}) // true
+	l.Increment(ctx, []string{"l2"}) // true
+	l.Increment(ctx, []string{"l2"}) // false
+	l.Increment(ctx, []string{"l1", "l2"}) // false
 	l.Decrement([]string{"l1", "l2"}) // l1 ignored since never incremented
-	l.Increment([]string{"l1", "l2"}) // true
+	l.Increment(ctx, []string{"l1", "l2"}) // true
 
-	l.Increment([]string{"l3"}) // true since callback returns 0
-	l.Decrement([]string{"l3"}) // ignored
+	l.Increment(ctx, []string{"l3"}) // true since callback returns no limit
+	l.Decrement([]string{"l3"}) // l3 forgotten, its count back to 0
 */
 package limiter

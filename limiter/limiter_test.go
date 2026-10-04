@@ -131,6 +131,136 @@ func TestLimiterDuplicateGroups(t *testing.T) {
 	})
 }
 
+func TestLimiterCountsGroupsWithoutALimit(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a Limiter whose callback knows a limit only for groups it has been told about", t, func() {
+		const limited = "limited"
+
+		limits := map[string]int64{limited: 3, "closed": 0}
+		lookups := 0
+		l := New(func(_ context.Context, name string) *GroupData {
+			lookups++
+
+			if limit, exists := limits[name]; exists {
+				return NewCountGroupData(limit)
+			}
+
+			return NewCountGroupData(-1)
+		})
+		g := []string{"g"}
+
+		Convey("A limit set while more than it are counted lets no more in until fewer than it remain", func() {
+			for range 3 {
+				So(l.Increment(ctx, g), ShouldBeTrue)
+			}
+
+			l.SetLimit("g", *NewCountGroupData(2))
+			So(l.Increment(ctx, g), ShouldBeFalse)
+			So(l.GetRemainingCapacity(ctx, g), ShouldEqual, 0)
+
+			l.Decrement(g)
+			So(l.Increment(ctx, g), ShouldBeFalse)
+
+			l.Decrement(g)
+			So(l.GetRemainingCapacity(ctx, g), ShouldEqual, 1)
+			So(l.Increment(ctx, g), ShouldBeTrue)
+			So(l.Increment(ctx, g), ShouldBeFalse)
+		})
+
+		Convey("Removing a limit and setting it again keeps the count", func() {
+			l.SetLimit("g", *NewCountGroupData(2))
+			So(l.Increment(ctx, g), ShouldBeTrue)
+			So(l.Increment(ctx, g), ShouldBeTrue)
+
+			l.RemoveLimit("g")
+			So(l.GetLimits(), ShouldBeEmpty)
+			So(l.GetLimit(ctx, "g"), ShouldResemble, NewCountGroupData(-1))
+			So(l.GetLowestLimit(ctx, g), ShouldEqual, -1)
+			So(l.GetRemainingCapacity(ctx, g), ShouldEqual, -1)
+
+			l.SetLimit("g", *NewCountGroupData(2))
+			So(l.Increment(ctx, g), ShouldBeFalse)
+
+			Convey("and while it has no limit, more can be counted against the limit set later", func() {
+				l.RemoveLimit("g")
+				So(l.Increment(ctx, g), ShouldBeTrue)
+
+				l.SetLimit("g", *NewCountGroupData(2))
+				l.Decrement(g)
+				So(l.Increment(ctx, g), ShouldBeFalse)
+
+				l.Decrement(g)
+				So(l.Increment(ctx, g), ShouldBeTrue)
+			})
+		})
+
+		Convey("A counted group without a limit is reported as having none", func() {
+			both := []string{limited, "g"}
+			So(l.Increment(ctx, both), ShouldBeTrue)
+
+			So(l.GetLimits(), ShouldResemble, map[string]int{limited: 3})
+			So(l.GetLimit(ctx, "g"), ShouldResemble, NewCountGroupData(-1))
+			So(l.GetLowestLimit(ctx, g), ShouldEqual, -1)
+			So(l.GetLowestLimit(ctx, both), ShouldEqual, 3)
+			So(l.GetRemainingCapacity(ctx, g), ShouldEqual, -1)
+			So(l.GetRemainingCapacity(ctx, both), ShouldEqual, 2)
+		})
+
+		Convey("A group without a limit is forgotten once nothing is counted against it", func() {
+			for i := range 100 {
+				fresh := []string{fmt.Sprintf("run%d", i)}
+				So(l.Increment(ctx, fresh), ShouldBeTrue)
+				l.Decrement(fresh)
+			}
+
+			So(l.groups, ShouldBeEmpty)
+
+			So(l.Increment(ctx, g), ShouldBeTrue)
+			l.Decrement(g)
+
+			limits["g"] = 1
+
+			So(l.Increment(ctx, g), ShouldBeTrue)
+			So(l.Increment(ctx, g), ShouldBeFalse)
+		})
+
+		Convey("An Increment that fails does not remember a group without a limit", func() {
+			So(l.Increment(ctx, []string{"g", "closed"}), ShouldBeFalse)
+
+			before := lookups
+			limits["g"] = 1
+
+			So(l.Increment(ctx, g), ShouldBeTrue)
+			So(lookups, ShouldEqual, before+1)
+			So(l.Increment(ctx, g), ShouldBeFalse)
+		})
+	})
+}
+
+// BenchmarkLimiterIncDecUnlimited is BenchmarkLimiterIncDec for groups that
+// have no limit.
+func BenchmarkLimiterIncDecUnlimited(b *testing.B) {
+	ctx := context.Background()
+	cb := func(context.Context, string) *GroupData { return NewCountGroupData(-1) }
+	both := []string{"u1", "u2"}
+
+	for b.Loop() {
+		l := New(cb)
+
+		for range 10 {
+			l.Increment(ctx, both)
+		}
+
+		for range 10 {
+			l.Decrement(both)
+		}
+
+		l.Increment(ctx, both)
+		l.Decrement(both)
+	}
+}
+
 // synctestConvey runs a single top-level Convey block inside its own synctest
 // bubble, so the wait-time windows in the block resolve on a synthetic clock
 // (instantly and deterministically) instead of depending on real wall-clock

@@ -21,6 +21,11 @@ project adheres to [Semantic Versioning](http://semver.org/).
   `jobqueue.Client.RetryWhileManagerUnreachable`; wr's own commands still fail
   fast.
 ### Fixed
+- Setting a limit on a limit group whose commands were already running, with
+  `wr limit` or by adding a command with `--limit_grps name:n`, now counts those
+  commands against it, instead of letting up to the limit more start at once.
+  Removing a group's limit and setting it again no longer forgets its running
+  commands either.
 - When every attempt to submit runners for some commands fails, such as when
   the LSF queue chosen for them refuses every `bsub`, the manager now stops
   trying once those commands are removed, instead of retrying the `bsub` and

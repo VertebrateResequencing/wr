@@ -171,7 +171,9 @@ func TestReliable4LimitGroupsNoWrite(t *testing.T) {
 		Convey("Storing new limit groups costs a write transaction and stores them", func() {
 			changed, removed, cost := limitGroupsStoreCost(d, limitGroupsAB(3, 0))
 			So(cost, ShouldEqual, 1)
-			So(changed, ShouldBeEmpty) // a group stored for the first time is not a change
+			// a group stored for the first time is a change, from having no limit
+			sort.Strings(changed)
+			So(changed, ShouldResemble, []string{addTxLimitGroupA, addTxLimitGroupB})
 			So(removed, ShouldBeEmpty)
 			So(limitGroupStored(ctx, d, addTxLimitGroupA), ShouldEqual, 3)
 			So(limitGroupStored(ctx, d, addTxLimitGroupB), ShouldEqual, 0)

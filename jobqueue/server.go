@@ -347,6 +347,13 @@ const envPprofAddr = "WR_PPROF_ADDR"
 //nolint:gochecknoglobals // deliberate test seam, mirroring statusWSDetailsHook
 var recoveryPauseHookForTest func()
 
+// limitGroupsStoredHook, if non-nil, is called by Server.storeLimitGroups once
+// the database has stored an add's or modify's limit groups, before the limiter
+// is updated. It is a test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var limitGroupsStoredHook func()
+
 // deleteOnFailureHook, if non-nil, is called by the goroutine that removes a
 // buried job with a remove-on-failure behaviour, just before it removes it, so a
 // test can hold that goroutine while the server stops. It is a test-only seam
@@ -6809,10 +6816,20 @@ func (s *Server) handleUserSpecifiedJobLimitGroups(job *Job, limitGroups map[str
 
 // storeLimitGroups calls db.storeLimitGroups() and handles updating the
 // in-memory representation of the groups.
+//
+// Only the limits the database reports as changed (which includes those stored
+// for the first time) are given to the limiter. A limit the database already
+// held must not be: another request, such as `wr limit`, may have changed it
+// since the database was read, and giving it again would bring back the old
+// limit in memory.
 func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) error {
 	changed, removed, err := s.db.storeLimitGroups(limitGroups)
 	if err != nil {
 		return err
+	}
+
+	if limitGroupsStoredHook != nil {
+		limitGroupsStoredHook()
 	}
 
 	for _, group := range changed {
