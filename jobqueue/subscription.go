@@ -532,12 +532,13 @@ func (s *Subscription) unsubscribeRejectedReplacement(subscriptionID string, ret
 // production ClientRetryTime budget leaves the step exactly as it was.
 //
 // A spent budget still sends it, bounded by subscriptionReconnectTimeout,
-// rather than skipping it. Nothing else can remove that replacement: its id is
-// known only here (Unsubscribe sends the id the subscription is still holding),
-// and the manager has no reaper for a registration. Skipping would strand a
-// serverSubscription, its delivery goroutine and its queues for the manager's
-// lifetime, and leave hasAnyClientSubscriptions permanently true, which costs
-// every job transition the zero-subscriber early-out it depends on.
+// rather than skipping it. Nothing else here can remove that replacement: its
+// id is known only here (Unsubscribe sends the id the subscription is still
+// holding). Skipping would leave the manager a serverSubscription, its delivery
+// goroutine and its queues until its idle sweep drops them (see
+// ServerTimings.SubscriptionIdleTimeout), and hasAnyClientSubscriptions true
+// meanwhile, which costs every job transition the zero-subscriber early-out it
+// depends on.
 func rejectedReplacementUnsubscribeTimeout(retryEnd time.Time) time.Duration {
 	remaining, err := subscriptionBudgetRemaining(retryEnd)
 	if err != nil {
@@ -550,7 +551,7 @@ func rejectedReplacementUnsubscribeTimeout(retryEnd time.Time) time.Duration {
 // subscribeRequest builds a reconnect's resubscribe. It names the id being
 // replaced so the manager drops that registration once the replacement is in
 // place: a reconnect after a poll error with the manager still up would
-// otherwise strand it, since the manager never drops a subscription on its own.
+// otherwise leave it registered until the manager's idle sweep drops it.
 // A restarted manager doesn't know the id and ignores it.
 func (s *Subscription) subscribeRequest() *clientRequest {
 	s.sockMu.RLock()

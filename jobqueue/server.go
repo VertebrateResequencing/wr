@@ -289,6 +289,10 @@ var (
 	// WR_MANAGERDBBATCHSIZE).
 	ServerDBBatchSize = 10000
 
+	// serverSubscriptionIdleTimeout is the default
+	// ServerTimings.SubscriptionIdleTimeout.
+	serverSubscriptionIdleTimeout = 30 * time.Minute
+
 	// httpServerShutdownTime is the time we'll wait before forcing
 	// http.Server{}.Shutdown() to complete, otherwise it takes 500ms if there
 	// were listeners.
@@ -610,6 +614,15 @@ type ServerTimings struct {
 	// publication's bind of the manager port (default serverBindRetryBudget).
 	// Tests set it low.
 	BindRetryBudget time.Duration
+
+	// SubscriptionIdleTimeout is how long a client subscription (the one behind
+	// WaitForJobs, SubmitJobsAndWait or AddAndWait) may go without being polled
+	// before the server drops it, as a lost unsubscribe would otherwise strand
+	// it until the server stops. A live client polls every
+	// serverSubscriptionHoldTime at most, and one whose subscription was dropped
+	// anyway resubscribes and catches up on its next poll (default
+	// serverSubscriptionIdleTimeout). Tests set it low.
+	SubscriptionIdleTimeout time.Duration
 }
 
 // dfltDuration returns v, or def if v is not positive.
@@ -657,6 +670,7 @@ func (t ServerTimings) withDefaults() ServerTimings {
 	t.ShutdownSocketWait = dfltDuration(t.ShutdownSocketWait, serverSocketWait)
 	t.ShutdownRunnerWait = dfltDuration(t.ShutdownRunnerWait, ServerShutdownRunnerWait)
 	t.BindRetryBudget = dfltDuration(t.BindRetryBudget, serverBindRetryBudget)
+	t.SubscriptionIdleTimeout = dfltDuration(t.SubscriptionIdleTimeout, serverSubscriptionIdleTimeout)
 
 	return t
 }
@@ -1709,7 +1723,8 @@ type Server struct {
 	// deletesWG counts deleteJobIfRequested's goroutines (as well as s.wg), so
 	// shutdown can let them finish before it closes the database they write to.
 	deletesWG       sync.WaitGroup
-	subsClosed      bool // shutdown swept the subscriptions; see storeClientSubscription
+	subsClosed      bool        // shutdown swept the subscriptions; see storeClientSubscription
+	subSweepTimer   *time.Timer // runs sweepIdleClientSubscriptions; guarded by csmutex
 	racPending      bool
 	racRunning      bool
 	waitingReserves []chan struct{}
@@ -5012,6 +5027,8 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// the confirm-dead coordinator groups lost jobs' ssh checks by host; it needs
 	// the fully-built Server, so it is wired up after the literal above.
 	s.confirmDead = newConfirmDeadCoordinator(s)
+
+	s.startIdleSubscriptionSweep(ctx)
 
 	// create the queue now (its ready-added callback, which recovery's enqueue
 	// relies on, is registered here rather than in serveWebInterface, so it is
