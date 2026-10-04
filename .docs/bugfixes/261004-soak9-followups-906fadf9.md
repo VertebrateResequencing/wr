@@ -170,6 +170,16 @@ packages, and `cleanorder -min-diff` on the edited Go files. The caller runs
     report would stop it sending these, but runners already deployed would
     still send them, and the report would wait for a touch that is retrying
     against a manager that is down.
+  - Accepted residual (review): runner X runs a job, releases it and
+    reserves it again, but the write that persists the new reservation fails
+    or times out (logged, and the job handed out anyway; `serverCLI.go`
+    about line 1145), and the manager then crashes. Recovery puts the older
+    record back on the ready queue, with `ReservedBy` X and a FailReason that
+    is not `FailReasonLost`, so X's touches of the run it is really doing are
+    logged at Debug by `touchAfterOwnRunEnded`, where the job running twice
+    deserves an Error. It needs a failed or slow reservation write, a crash,
+    and the same runner reserving the job twice, and the failed write was
+    already logged as a warning, so it is left as is.
 
 - [x] 3. `wr manager stop` returned rc 0 while the pid still existed (zombie
   for a few ms, aliveAtReturn=y on all 3 clean stops).
