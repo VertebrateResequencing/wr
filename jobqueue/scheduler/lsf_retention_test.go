@@ -163,7 +163,8 @@ func TestLSFRetentionFinishedRunners(t *testing.T) {
 		r := newRetentionLifecycle(t, 50, 5)
 		r.runGroups(20)
 
-		Convey("a later scheduling pass forgets all their reserved and doomed element ids", func() {
+		Convey("two later scheduling passes forget all their reserved and doomed element ids", func() {
+			r.scanIdle()
 			r.scanIdle()
 
 			reserved, doomed := r.retainedElements()
@@ -180,7 +181,9 @@ func TestLSFRetentionFinishedRunners(t *testing.T) {
 		r := newRetentionLifecycle(t, 50, 5)
 		r.runGroups(5)
 
-		Convey("a scheduling pass once that interval has passed forgets the finished runners", func() {
+		Convey("two scheduling passes each once that interval has passed forget the finished runners", func() {
+			time.Sleep(interval + 50*time.Millisecond)
+			r.scanIdle()
 			time.Sleep(interval + 50*time.Millisecond)
 			r.scanIdle()
 
@@ -218,7 +221,8 @@ func TestLSFRetentionPruneSparesLiveElements(t *testing.T) {
 
 		r.writeList(r.elementLines(0, 1, 1, "PEND"))
 
-		Convey("a pruning pass of another group keeps it, so its own group's excess kill spares it", func() {
+		Convey("pruning passes of another group keep it, so its own group's excess kill spares it", func() {
+			r.scanIdle()
 			r.scanIdle()
 
 			So(r.s.schedule(r.ctx, "retention-cmd-0", r.req, 0, 0), ShouldBeNil)
@@ -237,8 +241,67 @@ func TestLSFRetentionPruneSparesLiveElements(t *testing.T) {
 
 		writeFakeExe(t, r.s.bjobsExe, "#!/bin/bash\nexit 1\n")
 
-		Convey("the reservation is kept, since that scan is no picture of LSF", func() {
+		Convey("the reservation is kept, since those scans are no picture of LSF", func() {
 			So(r.s.schedule(r.ctx, "retention-idle-cmd", r.req, 0, 0), ShouldNotBeNil)
+			So(r.s.schedule(r.ctx, "retention-idle-cmd", r.req, 0, 0), ShouldNotBeNil)
+			So(r.s.snapshotReserved(), ShouldContainKey, reservedID)
+		})
+	})
+
+	Convey("Given an lsf with reserved elements that LSF has suspended or lost touch with", t, func() {
+		setReservedPruneInterval(0)
+
+		for _, stat := range []string{"SSUSP", "USUSP", "PSUSP", "UNKWN"} {
+			r := newRetentionLifecycle(t, 1, 0)
+			argvFile := recordBkills(t, r.s, t.TempDir())
+
+			reservedID := fmt.Sprintf("%d[1]", retentionJobID(0))
+			So(r.s.claimForReserve(reservedID), ShouldBeTrue)
+
+			r.writeList(r.elementLines(0, 1, 1, stat))
+
+			r.scanIdle()
+			r.scanIdle()
+
+			So(r.s.schedule(r.ctx, "retention-cmd-0", r.req, 0, 0), ShouldBeNil)
+			So(r.s.snapshotReserved(), ShouldContainKey, reservedID)
+			So(bkilledIDs(t, argvFile), ShouldNotContain, reservedID)
+		}
+	})
+
+	Convey("Given a live reserved element that one complete pruning scan did not report", t, func() {
+		setReservedPruneInterval(0)
+
+		r := newRetentionLifecycle(t, 1, 0)
+		argvFile := recordBkills(t, r.s, t.TempDir())
+
+		reservedID := fmt.Sprintf("%d[1]", retentionJobID(0))
+		So(r.s.claimForReserve(reservedID), ShouldBeTrue)
+
+		r.scanIdle()
+		So(r.s.snapshotReserved(), ShouldContainKey, reservedID)
+
+		listed := r.elementLines(0, 1, 1, "PEND")
+
+		Convey("a scan that lists it clears the miss, so a later single omission keeps it too", func() {
+			r.writeList(listed)
+			r.scanIdle()
+
+			r.writeList(nil)
+			r.scanIdle()
+			So(r.s.snapshotReserved(), ShouldContainKey, reservedID)
+
+			r.writeList(listed)
+			So(r.s.schedule(r.ctx, "retention-cmd-0", r.req, 0, 0), ShouldBeNil)
+			So(bkilledIDs(t, argvFile), ShouldNotContain, reservedID)
+		})
+
+		Convey("a failed scan clears the miss, so a later single omission keeps it too", func() {
+			writeFakeExe(t, r.s.bjobsExe, "#!/bin/bash\nexit 1\n")
+			So(r.s.schedule(r.ctx, "retention-idle-cmd", r.req, 0, 0), ShouldNotBeNil)
+
+			writeFakeExe(t, r.s.bjobsExe, "#!/bin/bash\ncat "+r.listFile+"\n")
+			r.scanIdle()
 			So(r.s.snapshotReserved(), ShouldContainKey, reservedID)
 		})
 	})
@@ -285,8 +348,12 @@ func TestLSFRetentionPruneSparesLiveElements(t *testing.T) {
 		r.scanIdle()
 		So(<-done, ShouldBeTrue)
 
+		// a second scan that also misses them is their first miss, as the first
+		// scan began before they were recorded.
+		writeFakeExe(t, r.s.bjobsExe, "#!/bin/bash\ncat "+r.listFile+"\n")
+		r.scanIdle()
+
 		Convey("the element reserved during the scan is not bkilled by its group's next excess kill", func() {
-			writeFakeExe(t, r.s.bjobsExe, "#!/bin/bash\ncat "+r.listFile+"\n")
 			r.writeList(r.elementLines(0, 1, 1, "PEND"))
 
 			So(r.s.schedule(r.ctx, "retention-cmd-0", r.req, 0, 0), ShouldBeNil)

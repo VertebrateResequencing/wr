@@ -372,9 +372,12 @@ var (
 // reservedPruneInterval is the least time between killExcessCmds' prunes of the
 // reserved and doomed element ids of runners that have finished (see pruneDue).
 // A prune widens that cycle's bjobs scan from one cmd's jobs to all of this
-// deployment's, so it is rate-limited; the sets then hold at most the live
-// runners plus those that finished within about this interval. It is a package
-// var so tests can lower it.
+// deployment's, so it is rate-limited. An id goes only once two consecutive
+// pruning scans have not reported it (see pruneReserved), so while scheduling
+// passes keep calling killExcessCmds the sets hold the live runners plus those
+// that finished within about two intervals. Scans only happen in scheduling
+// passes, so the ids of the last group's final pass stay until the next
+// scheduling passes after it. It is a package var so tests can lower it.
 var reservedPruneInterval = defaultReservedPruneInterval //nolint:gochecknoglobals
 
 // The whole-invocation reports bkill -b gives when none of the ids it was given
@@ -866,8 +869,12 @@ type lsf struct {
 	doomedElements doomedSet
 	// prunedAt is when killExcessCmds last pruned reservedElements and
 	// doomedElements (see pruneDue). Guarded by reservedMu.
-	prunedAt   time.Time
-	reservedMu sync.Mutex
+	prunedAt time.Time
+	// pruneMisses holds the ids the last complete full bjobs scan did not report
+	// though they were recorded before it began (see pruneReserved). Guarded by
+	// reservedMu.
+	pruneMisses map[string]bool
+	reservedMu  sync.Mutex
 	// killDeferred holds, per element id wr has asked bkill to kill, the earliest
 	// time wr may ask LSF to kill it again, so an identical failing kill is not
 	// re-issued every scheduling cycle. killBackoff (with killSleeper) is the
@@ -1099,22 +1106,60 @@ func (s *lsf) pruneDue(now time.Time) (pruneSnapshot, bool) {
 	return s.snapshotForPruneLocked(), true
 }
 
-// pruneReserved forgets the reserved and doomed element ids in before (taken
-// before a complete full bjobs scan began) that are not in present (the
-// elements of this deployment that scan reported; parseBjobs excludes exited
-// ones): their runners have finished or LSF has killed them. This bounds both
-// sets over a long-lived manager.
+// pruneReserved is given the result of a complete full bjobs scan: present
+// holds the elements of this deployment it reported (parseBjobs excludes exited
+// ones), and before the reserved and doomed element ids recorded before it
+// began. It forgets the ids in before that neither this scan nor the previous
+// complete one reported: their runners have finished or LSF has killed them.
+// Requiring two misses in a row means one empty or lagging bjobs answer that
+// still exited 0 cannot have wr forget, and then bkill, a runner holding a job.
+// This bounds both sets over a long-lived manager.
 func (s *lsf) pruneReserved(present map[string]bool, before pruneSnapshot) {
 	s.reservedMu.Lock()
 	defer s.reservedMu.Unlock()
 
+	misses := make(map[string]bool)
+
 	for id := range before.reserved {
-		if !present[id] {
+		if s.missedTwice(id, present, misses) {
 			delete(s.reservedElements, id)
 		}
 	}
 
-	s.doomedElements.forgetAbsent(present, before.doomed)
+	for id := range before.doomed {
+		if s.missedTwice(id, present, misses) {
+			s.doomedElements.forget(id)
+		}
+	}
+
+	s.pruneMisses = misses
+}
+
+// missedTwice reports whether id, absent from present, was also missed by the
+// previous complete scan; if this is its first miss it is added to misses.
+// reservedMu must be held.
+func (s *lsf) missedTwice(id string, present, misses map[string]bool) bool {
+	if present[id] {
+		return false
+	}
+
+	if s.pruneMisses[id] {
+		return true
+	}
+
+	misses[id] = true
+
+	return false
+}
+
+// forgetPruneMisses is called when a full bjobs scan fails: that is no picture
+// of LSF, so the next complete scan cannot count as a second miss of anything
+// the last complete one did not report.
+func (s *lsf) forgetPruneMisses() {
+	s.reservedMu.Lock()
+	defer s.reservedMu.Unlock()
+
+	s.pruneMisses = nil
 }
 
 // doomUnreserved is called once killExcessCmds' bjobs scan of jobPrefix has
@@ -1442,8 +1487,9 @@ func (s *lsf) pollForBjob(jobID string, window, pollFreq, execTimeout, pipeGrace
 
 // scanForExcess runs killExcessCmds' bjobs scan of jobPrefix through kc. When a
 // prune is due (see pruneDue), the scan instead covers all of this deployment's
-// jobs, handing kc only those of jobPrefix, and a complete scan then prunes the
-// reserved and doomed ids of elements it did not report. A scan of one cmd
+// jobs, handing kc only those of jobPrefix, and a complete scan is then used to
+// prune the reserved and doomed ids of elements it did not report (see
+// pruneReserved), while a failed one prunes nothing. A scan of one cmd
 // cannot do that on its own: once a scheduler group finishes, its prefix is
 // never scanned again, and reservedElements is not grouped by prefix at all.
 // bjobs -w lists all the user's jobs either way, so the wider scan costs only
@@ -1465,11 +1511,15 @@ func (s *lsf) scanForExcess(ctx context.Context, jobPrefix string, kc *killColle
 			kc.consider(jobID, stat, jobName)
 		}
 	})
-	if err == nil {
-		s.pruneReserved(present, before)
+	if err != nil {
+		s.forgetPruneMisses()
+
+		return err
 	}
 
-	return err
+	s.pruneReserved(present, before)
+
+	return nil
 }
 
 // bqueuesParser holds the mutable state used while parsing the output of
@@ -2485,8 +2535,11 @@ func (s *lsf) countCmds(ctx context.Context, jobPrefix string, full bool) (count
 	// mid-list, is not an element LSF no longer has. Forgetting it would let
 	// killExcessCmds bkill an element wr has handed a job reservation to, which
 	// DEVELOPERS.md rule 5 forbids.
-	if full && err == nil {
+	switch {
+	case full && err == nil:
 		s.pruneReserved(present, before)
+	case full:
+		s.forgetPruneMisses()
 	}
 
 	return count, err

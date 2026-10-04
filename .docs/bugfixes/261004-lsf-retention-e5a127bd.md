@@ -95,3 +95,52 @@ Go files. The caller runs `make test`, `make race` and `make speed`.
     scan.
   - Gates: scheduler package tests pass (exit 0); `golangci-lint run
     ./jobqueue/scheduler/...` 0 issues; `cleanorder -min-diff` applied.
+- [x] Review of `542e0569` (PASS on kill-safety), follow-ups:
+  1. Test gap: the mutant that recorded an id in `present` only when its
+     stat was RUN or PEND survived every test, so a reserved runner LSF had
+     suspended (SSUSP, USUSP, PSUSP) or lost touch with (UNKWN) could have
+     been pruned and bkilled mid-job.
+  2. Hardening: prune a reserved or doomed id only after two consecutive
+     complete pruning scans missed it, so one empty or lagging bjobs answer
+     that exited 0 cannot cause a prune.
+  3. CHANGELOG: "every runner it has ever started" should be "every runner
+     that has run a job".
+  4. The `reservedPruneInterval` comment should say the bound holds only
+     while scheduling passes keep calling `killExcessCmds`.
+  - Red: the new tests in `lsf_retention_test.go`, run against the `542e0569`
+    code, exit 1: a live reserved element that one complete scan omitted was
+    forgotten (`Expected the map[string]bool to contain the key: [1000000[1]]`)
+    and then bkilled (`Expected the container ([]string) NOT to contain:
+    '1000000[1]'`).
+  - Fix: `pruneReserved` keeps `pruneMisses`, the snapshotted ids the last
+    complete scan did not report, and forgets an id only when it is missed
+    again; an id a scan reports leaves the set. A failed full scan (either
+    path) clears `pruneMisses`: it is no picture of LSF, so the next complete
+    scan cannot be a second miss. `doomedSet.forgetAbsent` became `forget`.
+    The interval comment and CHANGELOG were reworded as asked. The sets now
+    hold the live runners plus those that finished within about two
+    intervals, while scheduling passes keep scanning.
+  - Tests: `TestLSFRetentionPruneSparesLiveElements` gained a case over
+    SSUSP, USUSP, PSUSP and UNKWN (claimed, two pruning passes of another
+    group, then its own group's excess kill: still reserved, not bkilled),
+    and a case where one complete scan omits a live reserved element: it is
+    kept; a scan that lists it clears the miss, so a later single omission
+    keeps it and its group's excess kill spares it; a failed scan likewise
+    clears the miss. Existing cases now run two pruning scans where a prune
+    is expected, and the two failed-scan cases run two failed scans.
+    `TestLSFRetentionFinishedRunners` needs two passes to reach 0 and 0.
+    `TestReliable4ReservedPruneOnlyWhenComplete` and `TestLSFReservedElements`
+    were updated on purpose for the two-scan rule (one complete scan keeps
+    the id, the second forgets it); their failed-scan and snapshot checks are
+    unchanged.
+  - Mutants (scratch copy, against the new and existing reserved/doomed
+    tests), all killed: present only for RUN/PEND (fails the suspended-states
+    case); prune on a single miss; misses never cleared by a scan that lists
+    the id; a failed scan keeping the misses; no prune; pruning from current
+    `reservedElements`; `present` from the cmd's prefix only; doomed ids
+    outside the snapshot; prune never due; pruning after a failed scan.
+  - Gates: scheduler package tests pass (exit 0, same skips);
+    `golangci-lint run ./jobqueue/scheduler/...` 0 issues; `cleanorder
+    -min-diff` applied. The path with no prune due is unchanged, so the
+    speed numbers above stand; a pruning scan adds only a map of first
+    misses.

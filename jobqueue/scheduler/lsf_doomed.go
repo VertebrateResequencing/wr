@@ -82,17 +82,10 @@ func (d *doomedSet) forgetUnseen(prefix string, seen map[string]bool) {
 	}
 }
 
-// forgetAbsent drops the ids of candidates not in present, a full snapshot of
-// the elements LSF knows about taken after the candidates were doomed.
-func (d *doomedSet) forgetAbsent(present, candidates map[string]bool) {
-	for id := range candidates {
-		if present[id] {
-			continue
-		}
-
-		if prefix, ok := d.prefixOf[id]; ok {
-			d.removeFrom(prefix, id)
-		}
+// forget drops id, if it is doomed.
+func (d *doomedSet) forget(id string) {
+	if prefix, ok := d.prefixOf[id]; ok {
+		d.removeFrom(prefix, id)
 	}
 }
 
