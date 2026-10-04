@@ -28,7 +28,8 @@ package jobqueue
 // Tests that a rac cycle's per-scheduler-group bookkeeping, which it keeps for
 // the cycle so that the ready backlog's jobs need not each look up their limit
 // groups' budgets, hands out each limit group's shared budget exactly as
-// counting job by job would.
+// counting job by job would, and that the cycle considers jobs in
+// highest-priority-first order, keeping the order they came in within a priority.
 
 import (
 	"context"
@@ -227,4 +228,66 @@ func racTakeLimits(limitGroups []string, remaining map[string]int) bool {
 	}
 
 	return true
+}
+
+func TestRACPriorityOrder(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("A rac cycle over ready jobs carrying limit groups", t, func() {
+		s := newRACLimitsServer(map[string]int{"lgP": 100})
+
+		jobs := make([]*Job, 0, 12)
+		for g := range 3 {
+			jobs = append(jobs, racReadyJobs(fmt.Sprintf("p%d", g), 100*(g+1), 0, []string{"lgP"}, 4)...)
+		}
+
+		rng := rand.New(rand.NewPCG(3, 5)) //nolint:gosec
+		rng.Shuffle(len(jobs), func(i, j int) { jobs[i], jobs[j] = jobs[j], jobs[i] })
+
+		Convey("considers them in the order they came when all have the same priority", func() {
+			for _, job := range jobs {
+				job.Priority = 7
+			}
+
+			candidates := racCountReadyJobs(ctx, s, make(map[string]*sgroup), jobs)
+
+			So(racCandidateCmds(candidates), ShouldResemble, racJobCmds(jobs))
+		})
+
+		Convey("considers them highest-priority-first, in the order they came within a priority", func() {
+			// the first few share a priority, so a check that stopped early would
+			// take them all to share one.
+			for i, job := range jobs {
+				job.Priority = []uint8{5, 5, 5, 0, 9, 5}[i%6]
+			}
+
+			want := slices.Clone(jobs)
+			slices.SortStableFunc(want, func(a, b *Job) int { return int(b.Priority) - int(a.Priority) })
+
+			candidates := racCountReadyJobs(ctx, s, make(map[string]*sgroup), jobs)
+
+			So(racCandidateCmds(candidates), ShouldResemble, racJobCmds(want))
+			So(want[0].Priority, ShouldEqual, 9)
+		})
+	})
+}
+
+// racCandidateCmds returns the commands of the jobs of candidates, in order.
+func racCandidateCmds(candidates []readyJobCandidate) []string {
+	cmds := make([]string, len(candidates))
+	for i, candidate := range candidates {
+		cmds[i] = candidate.job.Cmd
+	}
+
+	return cmds
+}
+
+// racJobCmds returns the commands of jobs, in order.
+func racJobCmds(jobs []*Job) []string {
+	cmds := make([]string, len(jobs))
+	for i, job := range jobs {
+		cmds[i] = job.Cmd
+	}
+
+	return cmds
 }

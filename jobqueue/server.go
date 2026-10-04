@@ -3317,8 +3317,9 @@ func (s *Server) scheduleReadyJobsByPriority(ctx context.Context, q *queue.Queue
 	// can be blocked, so the sort would not change the outcome and is skipped (the
 	// gate is on limit-group presence, not GetLimits(), because a limit is enforced
 	// via GetRemainingCapacity's callback even before the group is first vivified,
-	// so GetLimits() can still be empty here).
-	if candidatesCarryLimitGroup(candidates) {
+	// so GetLimits() can still be empty here). It is skipped too when every job has
+	// the same priority, since a stable sort would leave them as they are.
+	if candidatesNeedPrioritySort(candidates) {
 		slices.SortStableFunc(candidates, func(a, b readyJobCandidate) int {
 			return cmp.Compare(b.snapshot.priority, a.snapshot.priority)
 		})
@@ -3349,13 +3350,24 @@ func (s *Server) scheduleReadyJobsByPriority(ctx context.Context, q *queue.Queue
 	}
 }
 
-// candidatesCarryLimitGroup reports whether any ready-job candidate carries a limit
-// group (its scheduler group string contains jobSchedLimitGroupSeparator), i.e.
-// whether a shared per-limit-group budget could be contended this cycle and so
-// scheduleReadyJobsByPriority must sort the candidates highest-priority-first.
-func candidatesCarryLimitGroup(candidates []readyJobCandidate) bool {
+// candidatesNeedPrioritySort reports whether scheduleReadyJobsByPriority must
+// stably sort the ready-job candidates highest-priority-first: only when some
+// candidate carries a limit group (its scheduler group string contains
+// jobSchedLimitGroupSeparator), so a shared per-limit-group budget could be
+// contended this cycle, AND the candidates do not all have the same priority.
+func candidatesNeedPrioritySort(candidates []readyJobCandidate) bool {
+	if len(candidates) == 0 {
+		return false
+	}
+
+	first := candidates[0].snapshot.priority
+	carry, mixed := false, false
+
 	for _, candidate := range candidates {
-		if strings.Contains(candidate.snapshot.group, jobSchedLimitGroupSeparator) {
+		mixed = mixed || candidate.snapshot.priority != first
+		carry = carry || strings.Contains(candidate.snapshot.group, jobSchedLimitGroupSeparator)
+
+		if carry && mixed {
 			return true
 		}
 	}
