@@ -175,6 +175,66 @@ speed`.
     ./limiter/ ./jobqueue/` 0 issues; `cleanorder -min-diff` on the edited
     files.
 
+- [x] Gate blocker found by `make race` on this branch (not caused by it):
+  `client_default` failed once in `TestSchedulerRequestsAcrossManagerRestart`,
+  "each context-taking call made while it is down keeps trying until its ctx
+  is cancelled, while a plain call keeps trying", with `GetJobByKeyContext`
+  false in a map of calls (the others true). `make race` had passed on
+  develop several times the same day.
+  - Source: the caller's `make race` run, `client_default` lane.
+  - Diagnosis: GoConvey reports the line after the failing `So` here (the
+    widened-window runs below show the same offset), so line 597 is the
+    `endedWithCtxErr` assertion, not `stillTrying`: `GetJobByKeyContext` kept
+    trying, but did not end within 30s of its ctx being cancelled. The log
+    shows its `getbc` warned only after `receive time out` with
+    `unreachable_for=1m0s`, 60s after the other calls' `send time out`
+    warnings. The call was sent after `m.stop()` returned but before that
+    Scheduler's mangos socket had noticed the manager closing its connection,
+    so it went out on the dropped connection and waited the reply deadline
+    (the larger of Timeout and a minute). `client/doc.go` documents that bound
+    for a request that had been sent, so the product behaves as documented;
+    the test assumed every call made after `m.stop()` finds no connection.
+    The same window breaks the function's other subtests that call after
+    `m.stop()` with a tight bound.
+  - Red: natural rate 1 failure in the caller's `make race`; 0/20 for `go
+    test -race -count 20 -run 'TestSchedulerRequestsAcrossManagerRestart$'
+    ./client/` under `stress -c 8`. Widening the window deterministically, by
+    a scratch-copy `replace` of mangos v3.4.2 whose req `RemovePipe` sleeps
+    300ms first, `go test -count 1 -run
+    'TestSchedulerRequestsAcrossManagerRestart$' ./client/` exits 1 on develop
+    `6c4b3d25` (1/1) and on this branch (2/2), failing the same assertion as
+    the gate and four sibling subtests:
+
+    ```text
+      Line 475:
+      Expected '0' to be greater than or equal to '2' (but it wasn't)!
+      Line 505:
+      Expected '1m0.300624827s' to be less than '6s' (but it wasn't)!
+      Line 535:
+      Expected: true
+      Line 597:
+      Expected: map[string]bool{"FindIncompleteJobsByRepGroupAndStateContext":true, ...
+      Line 636:
+      Expected: true
+    --- FAIL: TestSchedulerRequestsAcrossManagerRestart (245.79s)
+    ```
+
+  - Fix (test only): `client/client_test.go`: `restartableManager.stopSeenBy`
+    stops the manager, then pings through each given client with a short
+    timeout until a ping cannot be sent (`mangos.ErrSendTimeout`), meaning the
+    client has seen its connection drop, so the calls that follow are made
+    while the manager is down from the client's side too. The five subtests
+    of `TestSchedulerRequestsAcrossManagerRestart` that call after stopping
+    use it; their assertions are unchanged. `jobqueueClients` gets a
+    Scheduler's `*jobqueue.Client`.
+  - Green: with the widened window, the fixed test exits 0 (3/3). Without it,
+    `go test -race -count 30 -run 'TestSchedulerRequestsAcrossManagerRestart$'
+    ./client/` and the same plain both exit 0 (30/30 each), run with
+    `WR_TEST_LANE` set as `make race` does (without it, an ephemeral manager
+    port was once taken by another process across a restart, an unrelated
+    port clash). `golangci-lint run ./client/...` 0 issues; `cleanorder
+    -min-diff` on `client/client_test.go`.
+
 ## Deferred incidentals
 
 - [ ] Pre-existing on develop (not caused by this branch): a limit that
@@ -188,3 +248,13 @@ speed`.
   `storeLimitGroups`' DB write and SetLimit/RemoveLimit, and in
   `setLimitGroup`). Source: review of 74134b6f (261004). Queued as its own
   branch after this one.
+
+- [ ] Pre-existing on develop (not caused by this branch): the same dropped
+  connection window breaks `TestSchedulerWaitForRunningAcrossManagerRestart`
+  ("returns the last error after about the manager's RetryTime" and
+  "cancelling its context while the manager is down", lines 368 and 386 in
+  the widened-window repro of the item above). There a WaitForRunning poll
+  can be sent, or be in flight, as the manager stops, so `stopSeenBy` alone
+  does not fix it: its ping waits behind the stuck poll. Source: widened-
+  window run of `go test -run 'AcrossManagerRestart$' ./client/` (261004).
+  Needs its own fix, such as holding polls off while stopping.

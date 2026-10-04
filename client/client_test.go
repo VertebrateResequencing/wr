@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"reflect"
 	"slices"
@@ -267,6 +268,42 @@ func (m *restartableManager) stop() {
 	So(os.Remove(m.config.TokenFile), ShouldBeNil)
 }
 
+// stopSeenBy stops the manager like stop, then waits until each of clients has
+// seen its connection to the manager drop. A request a client sends before
+// then goes out on that dropped connection, so it waits for its reply until
+// the reply deadline (see the package doc) instead of finding the manager
+// down.
+func (m *restartableManager) stopSeenBy(clients ...*jobqueue.Client) {
+	m.stop()
+
+	seen := make([]bool, len(clients))
+
+	var wg sync.WaitGroup
+
+	for i, jq := range clients {
+		wg.Go(func() { seen[i] = waitUntilConnectionDropped(jq) })
+	}
+
+	wg.Wait()
+
+	So(seen, ShouldNotContain, false)
+}
+
+// waitUntilConnectionDropped pings the stopped manager through jq until a ping
+// cannot be sent because jq has no connection left, reporting false if that
+// does not happen within restartResultWait.
+func waitUntilConnectionDropped(jq *jobqueue.Client) bool {
+	limit := time.Now().Add(restartResultWait)
+
+	for time.Now().Before(limit) {
+		if _, err := jq.Ping(restartWaitPoll); errors.Is(err, mangos.ErrSendTimeout) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (m *restartableManager) start() {
 	m.server = clienttesting.Serve(m.t, m.config)
 }
@@ -449,7 +486,7 @@ func TestSchedulerRequestsAcrossManagerRestart(t *testing.T) {
 
 			oldToken := m.token()
 
-			m.stop()
+			m.stopSeenBy(jobqueueClients(s)...)
 
 			added := s.NewJob("echo added during the outage", "rg-requests-restart", "req-requests-restart", "", "", nil)
 			submitted := callAsync(func() (*jobqueue.Job, error) {
@@ -492,7 +529,7 @@ func TestSchedulerRequestsAcrossManagerRestart(t *testing.T) {
 			s := newRestartScheduler()
 			defer s.Disconnect() //nolint:errcheck
 
-			m.stop()
+			m.stopSeenBy(jobqueueClients(s)...)
 
 			calledAt := time.Now()
 			err := s.SubmitJobs([]*jobqueue.Job{
@@ -515,7 +552,7 @@ func TestSchedulerRequestsAcrossManagerRestart(t *testing.T) {
 			queued := s.NewJob("echo queued before the outage", "rg-requests-cancel", "req-requests-cancel", "", "", nil)
 			So(s.SubmitJobs([]*jobqueue.Job{queued}), ShouldBeNil)
 
-			m.stop()
+			m.stopSeenBy(jobqueueClients(s)...)
 
 			waitCtx, cancel := context.WithCancel(ctx)
 			defer cancel()
@@ -553,7 +590,7 @@ func TestSchedulerRequestsAcrossManagerRestart(t *testing.T) {
 			plainScheduler := newRestartScheduler()
 			defer plainScheduler.Disconnect() //nolint:errcheck
 
-			m.stop()
+			m.stopSeenBy(jobqueueClients(append(slices.Collect(maps.Values(schedulers)), plainScheduler)...)...)
 
 			callCtx, cancel := context.WithCancel(ctx)
 			defer cancel()
@@ -628,7 +665,7 @@ func TestSchedulerRequestsAcrossManagerRestart(t *testing.T) {
 
 			defer jq.Disconnect() //nolint:errcheck
 
-			m.stop()
+			m.stopSeenBy(jq)
 
 			calledAt := time.Now()
 			_, _, err = jq.Add([]*jobqueue.Job{{Cmd: "echo plain", Cwd: "/tmp", RepGroup: "rg-plain"}}, nil, true)
@@ -637,6 +674,21 @@ func TestSchedulerRequestsAcrossManagerRestart(t *testing.T) {
 			So(time.Since(calledAt), ShouldBeLessThan, restartWaitTimeout+time.Second)
 		})
 	})
+}
+
+// jobqueueClients returns the jobqueue clients schedulers talk to the manager
+// with.
+func jobqueueClients(schedulers ...*Scheduler) []*jobqueue.Client {
+	clients := make([]*jobqueue.Client, 0, len(schedulers))
+
+	for _, s := range schedulers {
+		jq, ok := s.jq.(*jobqueue.Client)
+		So(ok, ShouldBeTrue)
+
+		clients = append(clients, jq)
+	}
+
+	return clients
 }
 
 // callAsync runs call in the background, returning a channel that gets what it
