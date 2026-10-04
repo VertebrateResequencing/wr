@@ -81,6 +81,32 @@ packages, and `cleanorder -min-diff` on the edited Go files. The caller runs
     (at least 3 calls in 1s). Green, and `-race -count=3` of all
     `TestScheduleRetry*` passes; with the deferred release deleted it fails
     (`Expected '1' to be greater than or equal to '3'`), exit 1.
+  - Review follow-up, a failure dropped as a loop ends: a retry loop could
+    succeed while another attempt for the group failed after the loop's
+    attempt; that attempt found the claim still held and left the retrying to
+    a loop that then ended, so its failure was not retried until the next
+    decrement or rac pass. Now `claimScheduleRetry` marks a running loop as
+    wanted again when it refuses a claim, and the loop ends through
+    `endScheduleRetry`, which under `srmutex` either ends it or, if marked,
+    clears the mark and goes round again (one more attempt at the current
+    count, after the reset backoff's Min). A loop stopped by shutdown
+    releases its claim. Red: `TestScheduleRetryFailureAsLoopEnds`, which
+    fails an attempt between the loop's successful attempt and its end
+    through a test hook (`scheduleRetryEndingHook`, nil in production), fails
+    before this change with `Expected: 4 / Actual: 3` (no retry of the
+    dropped failure), exit 1; green after, and `-race -count=3` of all
+    `TestScheduleRetry*` passes, as do the related scheduling tests listed
+    above. Mutants: the claim not marking the loop, or `endScheduleRetry`
+    ignoring the mark, fail that test; `endScheduleRetry` not releasing the
+    claim fails `TestScheduleRetryAgainAfterRecovery`. Not killed, and
+    accepted: dropping the release on the shutdown return, as no retry is
+    ever claimed again once client handling has stopped.
+  - Accepted, not fixed: a retry reads `currentGroupCount` and then calls
+    Schedule, so a decrement's own asynchronous Schedule can land between the
+    two and the retry's older, higher count reaches the scheduler last. It
+    stands until the next decrement or rac pass. This is the same race
+    `decrementGroupCount`'s comment already accepts for concurrent decrements,
+    and is no worse than before, when the retry always sent its stale count.
   - Speed: the success path only gains a call. A throwaway benchmark of
     `scheduleRunners` succeeding on a mock scheduler, `-count 6`: base median
     648 ns/op, fixed 651 ns/op, within noise.

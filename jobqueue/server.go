@@ -475,6 +475,13 @@ var errReleaseReporterSupplanted = errors.New("job reserved by another runner si
 // because its runner has already reported how its run of the job ended.
 const touchAfterRunEnded = ErrBadJob + "; its runner already reported how its run ended"
 
+// scheduleRetryEndingHook, if non-nil, is called by a schedule retry loop after
+// an attempt has succeeded and before the loop decides whether to end, so a
+// test can fail another attempt in between. nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring archiveCommittedHook
+var scheduleRetryEndingHook func()
+
 const (
 	errMissingSubscriptionScope subscriptionRequestError = "missing subscription scope"
 	errSubscriptionClosed       subscriptionRequestError = "subscription closed"
@@ -1698,7 +1705,7 @@ type Server struct {
 	clientSubscriptions map[string]*serverSubscription
 	badServers          map[string]*cloud.Server
 	schedIssues         map[string]*schedulerIssue
-	scheduleRetries     map[string]bool // groups with a schedule retry loop running (see retryScheduleRunnersLater)
+	scheduleRetries     map[string]bool // groups with a retry loop running; true if wanted again
 	racmutex            sync.RWMutex    // to protect the readyaddedcallback
 	bsmutex             sync.RWMutex
 	simutex             sync.RWMutex
@@ -3764,7 +3771,9 @@ func logScheduleFailure(ctx context.Context, group *sgroup, err error) {
 }
 
 // claimScheduleRetry records that a retry loop is running for the named
-// scheduler group, returning false if one already was.
+// scheduler group, returning false if one already was. In that case it marks
+// that loop as wanted again, so it does not end on an attempt that began before
+// this caller's failure.
 func (s *Server) claimScheduleRetry(name string) bool {
 	s.srmutex.Lock()
 	defer s.srmutex.Unlock()
@@ -3773,17 +3782,38 @@ func (s *Server) claimScheduleRetry(name string) bool {
 		s.scheduleRetries = make(map[string]bool)
 	}
 
-	if s.scheduleRetries[name] {
+	if _, running := s.scheduleRetries[name]; running {
+		s.scheduleRetries[name] = true
+
 		return false
 	}
 
-	s.scheduleRetries[name] = true
+	s.scheduleRetries[name] = false
+
+	return true
+}
+
+// endScheduleRetry ends the named group's retry loop after a successful attempt
+// and returns true, unless another attempt has failed since the loop's claim or
+// its last call here, in which case it clears that mark and returns false so the
+// loop retries again.
+func (s *Server) endScheduleRetry(name string) bool {
+	s.srmutex.Lock()
+	defer s.srmutex.Unlock()
+
+	if s.scheduleRetries[name] {
+		s.scheduleRetries[name] = false
+
+		return false
+	}
+
+	delete(s.scheduleRetries, name)
 
 	return true
 }
 
 // releaseScheduleRetry records that the retry loop for the named scheduler group
-// has ended.
+// has ended without a successful attempt, as it does when the server stops.
 func (s *Server) releaseScheduleRetry(name string) {
 	s.srmutex.Lock()
 	defer s.srmutex.Unlock()
@@ -8223,7 +8253,8 @@ func (s *Server) buryImpossibleItem(ctx context.Context, item *queue.Item) {
 // that failed: 0 once the group's jobs are gone, so a retry neither keeps
 // submitting runners nobody needs nor keeps failing to. Only one retry loop runs
 // per group name; a failure while one is pending leaves the retrying to it,
-// since it will ask for the then-current count anyway.
+// since it will ask for the then-current count anyway, and keeps it from ending
+// on an attempt that began before that failure.
 func (s *Server) retryScheduleRunnersLater(ctx context.Context, group *sgroup) {
 	if !s.claimScheduleRetry(group.name) {
 		return
@@ -8236,7 +8267,6 @@ func (s *Server) retryScheduleRunnersLater(ctx context.Context, group *sgroup) {
 	go func() {
 		defer internal.LogPanic(ctx, "jobqueue schedule runners retry", true)
 		defer s.wg.Done(wgk)
-		defer s.releaseScheduleRetry(group.name)
 
 		// Bridge s.stopClientHandling (closed on shutdown) to a cancellable
 		// context so the jittered backoff sleep aborts promptly: a pending sleep
@@ -8258,6 +8288,8 @@ func (s *Server) retryScheduleRunnersLater(ctx context.Context, group *sgroup) {
 			b.Sleep(sleepCtx)
 
 			if sleepCtx.Err() != nil {
+				s.releaseScheduleRetry(group.name)
+
 				return
 			}
 
@@ -8268,7 +8300,15 @@ func (s *Server) retryScheduleRunnersLater(ctx context.Context, group *sgroup) {
 			failed := s.attemptScheduleRunners(ctx, group)
 			group.Unlock()
 
-			if !failed {
+			if failed {
+				continue
+			}
+
+			if scheduleRetryEndingHook != nil {
+				scheduleRetryEndingHook()
+			}
+
+			if s.endScheduleRetry(group.name) {
 				return
 			}
 		}

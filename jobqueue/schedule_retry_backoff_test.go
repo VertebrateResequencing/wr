@@ -263,6 +263,75 @@ func TestScheduleRetryBackoff(t *testing.T) {
 	})
 }
 
+// TestScheduleRetryFailureAsLoopEnds proves that a schedule that fails just as
+// its group's retry loop succeeds, too late for that loop's attempt, is still
+// retried.
+func TestScheduleRetryFailureAsLoopEnds(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	const minSleep = 50 * time.Millisecond
+
+	ctx := context.Background()
+
+	Convey("Given a retry loop that succeeds while another attempt fails", t, func() {
+		var n atomic.Int32
+
+		// calls 1 and 3 fail: the first attempt, and one made after the retry
+		// loop's attempt (call 2) succeeded but before the loop ended
+		sched, err := scheduler.New(ctx, "mock", &scheduler.ConfigMock{
+			RunnerFunc: func(context.Context, string) {},
+			ScheduleError: func(int) error {
+				if c := n.Add(1); c == 1 || c == 3 {
+					return errTestScheduleFail
+				}
+
+				return nil
+			},
+		})
+		So(err, ShouldBeNil)
+
+		live := &sgroup{
+			name:  "ending_rg",
+			count: 1,
+			req:   &scheduler.Requirements{RAM: 1, Cores: 1, Disk: 1, Time: time.Second},
+		}
+
+		s := &Server{
+			previouslyScheduledGroups: map[string]*sgroup{live.name: live},
+			wg:                        waitgroup.New(),
+			scheduler:                 sched,
+			rc:                        "schedule-retry-runner %s %s %s %s %d %d",
+			ServerInfo:                &ServerInfo{},
+			stopClientHandling:        make(chan bool),
+		}
+		s.timings.CheckRunnerTime = minSleep
+
+		defer close(s.stopClientHandling)
+
+		var once sync.Once
+
+		scheduleRetryEndingHook = func() {
+			once.Do(func() { s.scheduleRunners(ctx, live.snapshot()) })
+		}
+
+		defer func() { scheduleRetryEndingHook = nil }()
+
+		s.scheduleRunners(ctx, live.snapshot())
+
+		drained := make(chan struct{})
+
+		go func() {
+			s.wg.Wait(5 * time.Second)
+			close(drained)
+		}()
+
+		So(closedWithin(drained, 4*time.Second), ShouldBeTrue)
+		So(n.Load(), ShouldEqual, 4)
+	})
+}
+
 // scheduleCall is one Schedule() the mock scheduler was asked to make.
 type scheduleCall struct {
 	count int
