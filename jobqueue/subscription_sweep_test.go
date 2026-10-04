@@ -45,10 +45,21 @@ const subscriptionSweepIdleTimeout = 300 * time.Millisecond
 // wait is held, well inside subscriptionSweepIdleTimeout.
 const subscriptionSweepPollTimeout = 20 * time.Millisecond
 
+// subscriptionSweepYoungTimeout is the SubscriptionIdleTimeout of the server
+// that checks a young unpolled subscription survives several sweeps, and
+// subscriptionSweepYoungAge is how long after registering it the check is made:
+// three sweeps in, and a whole second before the subscription may go.
+const (
+	subscriptionSweepYoungTimeout = 2 * time.Second
+	subscriptionSweepYoungAge     = time.Second
+)
+
 func TestSubscriptionIdleSweepLiveClient(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
+
+	allowShortSubscriptionIdleTimeouts(t)
 
 	Convey("AddAndWait whose subscription is swept resubscribes and sees a completion from while it had none", t, func() {
 		ctx := context.Background()
@@ -119,6 +130,8 @@ func TestSubscriptionIdleSweep(t *testing.T) {
 		return
 	}
 
+	allowShortSubscriptionIdleTimeouts(t)
+
 	Convey("A subscription nobody polls is swept, while polled and status ones are kept", t, func() {
 		ctx := context.Background()
 		serverConfig, _, _, _ := subscriptionTestConfig(t)
@@ -161,6 +174,60 @@ func TestSubscriptionIdleSweep(t *testing.T) {
 
 		_, statusKnown := server.clientSubscription(statusID)
 		So(statusKnown, ShouldBeTrue)
+	})
+
+	Convey("A subscription nobody has polled yet survives sweeps until it has been idle for the timeout", t, func() {
+		ctx := context.Background()
+		serverConfig, _, _, _ := subscriptionTestConfig(t)
+		serverConfig.Timings.SubscriptionIdleTimeout = subscriptionSweepYoungTimeout
+		server, _, _, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		youngID, err := server.registerClientSubscription([]string{"subscription-sweep-young"}, "")
+		registered := time.Now()
+
+		So(err, ShouldBeNil)
+
+		defer server.unregisterClientSubscription(youngID)
+
+		time.Sleep(time.Until(registered.Add(subscriptionSweepYoungAge)))
+
+		_, known := server.clientSubscription(youngID)
+		So(known, ShouldBeTrue)
+	})
+
+	Convey("A configured idle timeout shorter than a long poll is raised so live polls are never swept", t, func() {
+		So(subscriptionIdleTimeoutMin, ShouldEqual, time.Millisecond)
+
+		subscriptionIdleTimeoutMin = defaultSubscriptionIdleTimeoutMin
+
+		defer func() {
+			subscriptionIdleTimeoutMin = time.Millisecond
+		}()
+
+		for _, configured := range []time.Duration{time.Nanosecond, time.Second, serverSubscriptionHoldTime} {
+			got := ServerTimings{SubscriptionIdleTimeout: configured}.withDefaults().SubscriptionIdleTimeout
+			So(got, ShouldEqual, 2*serverSubscriptionHoldTime)
+		}
+
+		So(ServerTimings{}.withDefaults().SubscriptionIdleTimeout, ShouldEqual, serverSubscriptionIdleTimeout)
+		So(ServerTimings{SubscriptionIdleTimeout: time.Hour}.withDefaults().SubscriptionIdleTimeout,
+			ShouldEqual, time.Hour)
+	})
+}
+
+// allowShortSubscriptionIdleTimeouts lowers the floor on
+// ServerTimings.SubscriptionIdleTimeout for the rest of the test, so its
+// servers can sweep in milliseconds.
+func allowShortSubscriptionIdleTimeouts(t *testing.T) {
+	t.Helper()
+
+	subscriptionIdleTimeoutMin = time.Millisecond
+
+	t.Cleanup(func() {
+		subscriptionIdleTimeoutMin = defaultSubscriptionIdleTimeoutMin
 	})
 }
 

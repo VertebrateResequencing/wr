@@ -293,6 +293,12 @@ var (
 	// ServerTimings.SubscriptionIdleTimeout.
 	serverSubscriptionIdleTimeout = 30 * time.Minute
 
+	// subscriptionIdleTimeoutMin is the shortest
+	// ServerTimings.SubscriptionIdleTimeout a server uses. A shorter one would
+	// drop live clients' subscriptions during their long polls, which last up
+	// to serverSubscriptionHoldTime. It is a var only so tests can lower it.
+	subscriptionIdleTimeoutMin = defaultSubscriptionIdleTimeoutMin
+
 	// httpServerShutdownTime is the time we'll wait before forcing
 	// http.Server{}.Shutdown() to complete, otherwise it takes 500ms if there
 	// were listeners.
@@ -621,7 +627,9 @@ type ServerTimings struct {
 	// it until the server stops. A live client polls every
 	// serverSubscriptionHoldTime at most, and one whose subscription was dropped
 	// anyway resubscribes and catches up on its next poll (default
-	// serverSubscriptionIdleTimeout). Tests set it low.
+	// serverSubscriptionIdleTimeout). A value under twice
+	// serverSubscriptionHoldTime (50s) is raised to that, since it would drop
+	// the subscriptions of clients in the middle of a poll.
 	SubscriptionIdleTimeout time.Duration
 }
 
@@ -670,7 +678,8 @@ func (t ServerTimings) withDefaults() ServerTimings {
 	t.ShutdownSocketWait = dfltDuration(t.ShutdownSocketWait, serverSocketWait)
 	t.ShutdownRunnerWait = dfltDuration(t.ShutdownRunnerWait, ServerShutdownRunnerWait)
 	t.BindRetryBudget = dfltDuration(t.BindRetryBudget, serverBindRetryBudget)
-	t.SubscriptionIdleTimeout = dfltDuration(t.SubscriptionIdleTimeout, serverSubscriptionIdleTimeout)
+	t.SubscriptionIdleTimeout = max(dfltDuration(t.SubscriptionIdleTimeout, serverSubscriptionIdleTimeout),
+		subscriptionIdleTimeoutMin)
 
 	return t
 }

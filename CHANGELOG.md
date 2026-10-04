@@ -129,11 +129,11 @@ project adheres to [Semantic Versioning](http://semver.org/).
   the directories under `<cwd>/<AppName>_cwd` while it was cleaning up, which
   on shared filesystems happened routinely. That other run tidies them away
   when it finishes.
-- The manager no longer keeps, until it restarts, the subscription of a Go
-  client's `WaitForJobs`, `SubmitJobsAndWait` or `AddAndWait` whose unsubscribe,
-  or reply to a resubscribe, was lost. It now drops any such subscription not
-  polled for 30 minutes; a client still waiting on one resubscribes and catches
-  up.
+- The manager no longer keeps, until it restarts, the subscription of a client
+  (`wr add --sync`, or a Go `WaitForJobs`, `SubmitJobsAndWait` or
+  `AddAndWait`) that exited while waiting, or whose unsubscribe or resubscribe
+  reply was lost. It now drops any subscription not polled for 30 minutes; a
+  client still waiting resubscribes and catches up.
 - The manager uses less CPU deciding what to schedule when many commands are
   waiting in limit groups.
 - A long-running manager using the lsf scheduler no longer keeps a little

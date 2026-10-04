@@ -42,6 +42,10 @@ import (
 // subscriptions, so one is dropped at most a sixth of the timeout late.
 const subscriptionSweepsPerIdleTimeout = 6
 
+// defaultSubscriptionIdleTimeoutMin is subscriptionIdleTimeoutMin outside
+// tests: twice the longest a live client's poll is held.
+const defaultSubscriptionIdleTimeoutMin = 2 * serverSubscriptionHoldTime
+
 // subscriptionIDGen mints subscription ids; tests replace it to make minting
 // fail.
 var subscriptionIDGen uuid.Generator = uuid.DefaultGenerator //nolint:gochecknoglobals // test seam
