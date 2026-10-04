@@ -1588,6 +1588,41 @@ func (r *startupStatusReporter) remove() {
 	}
 }
 
+// racCycleGroup is one scheduler group's view of a rac cycle: a pointer to the
+// shared remaining-capacity budget of each of its limit groups, and, once one of
+// its jobs has been skipped, its sgroup.
+type racCycleGroup struct {
+	name    string
+	budgets []*int
+	sgroup  *sgroup
+}
+
+// limitBlocked reports whether a ready job of this scheduler group is
+// limit-blocked this cycle. If it is NOT blocked it consumes one unit of each of
+// its limited limit groups' shared budget (so the summed schedulable count for a
+// limit group never exceeds its remaining capacity) and returns false; if some
+// limit group's budget is already exhausted it consumes nothing and returns true.
+// A budget of -1 means "no limit", so it never blocks and is never decremented.
+// It is decoupled from the expensive prepareReadyJob work so only schedulable
+// jobs incur that. A job's limit groups come from its LimitGroups (fixed), so they
+// are unaffected by any requirement change prepareReadyJob later makes to a
+// schedulable job.
+func (g *racCycleGroup) limitBlocked() bool {
+	for _, budget := range g.budgets {
+		if *budget == 0 {
+			return true
+		}
+	}
+
+	for _, budget := range g.budgets {
+		if *budget > 0 {
+			*budget--
+		}
+	}
+
+	return false
+}
+
 // remove removes a job with no dependents from the queue, recording it in the
 // pass if that worked.
 func (p *deletePass) remove(ctx context.Context, q *queue.Queue, job *Job, jobkey string) {
@@ -3156,18 +3191,6 @@ func updateJobRequirementsForRetry(job *Job, jobOverride uint8, recommendedReq *
 	}
 }
 
-// seedBudgetsOf lazily seeds each of the given limit groups' remaining-capacity
-// budget into limitBudgets, which is shared across the sibling scheduler groups of
-// a rac cycle. A budget of -1 means the group has no limit, so it never blocks and
-// is never decremented.
-func (s *Server) seedBudgetsOf(ctx context.Context, limitGroups []string, limitBudgets map[string]int) {
-	for _, lg := range limitGroups {
-		if _, set := limitBudgets[lg]; !set {
-			limitBudgets[lg] = s.limiter.GetRemainingCapacity(ctx, []string{lg})
-		}
-	}
-}
-
 // capGroupCountsToLimits ensures that, for every limit group, the summed runner
 // request across its sibling scheduler groups does not exceed that limit group's
 // limit. The ready count was capped against the limit group's remaining capacity
@@ -3301,15 +3324,23 @@ func (s *Server) scheduleReadyJobsByPriority(ctx context.Context, q *queue.Queue
 		})
 	}
 
-	limitBudgets := make(map[string]int)
+	limitBudgets := make(map[string]*int)
 
 	// the ready backlog shares a handful of scheduler groups, so each one's limit
-	// groups are parsed once per cycle rather than once per job.
-	limitGroupsOf := make(map[string][]string)
+	// groups are parsed, and their budgets found, once per cycle rather than once
+	// per job. The queue hands over its ready jobs grouped by scheduler group, so
+	// consecutive jobs usually share one and need no lookup at all.
+	cycleGroups := make(map[string]*racCycleGroup)
+
+	var current *racCycleGroup
 
 	for _, candidate := range candidates {
-		if s.readyJobLimitBlocked(ctx, limitBudgets, limitGroupsOf, candidate.snapshot) {
-			s.recordSkippedReadyJob(ctx, q, groups, candidate)
+		if current == nil || current.name != candidate.snapshot.group {
+			current = s.racCycleGroupFor(ctx, cycleGroups, limitBudgets, candidate.snapshot.group)
+		}
+
+		if current.limitBlocked() {
+			s.recordSkippedReadyJob(ctx, q, groups, current, candidate)
 
 			continue
 		}
@@ -3332,6 +3363,37 @@ func candidatesCarryLimitGroup(candidates []readyJobCandidate) bool {
 	return false
 }
 
+// racCycleGroupFor returns the racCycleGroup of the scheduler group called name,
+// creating it on first use. Its limit groups are then parsed from name, and each
+// one's remaining-capacity budget is read into limitBudgets, which is shared
+// across the sibling scheduler groups of the cycle, unless a sibling already read
+// it. So each limit group's capacity is read once per cycle, when the first job
+// carrying it is reached.
+func (s *Server) racCycleGroupFor(ctx context.Context, cycleGroups map[string]*racCycleGroup,
+	limitBudgets map[string]*int, name string) *racCycleGroup {
+	if cycleGroup, found := cycleGroups[name]; found {
+		return cycleGroup
+	}
+
+	limitGroups := s.schedGroupToLimitGroups(name)
+	cycleGroup := &racCycleGroup{name: name, budgets: make([]*int, len(limitGroups))}
+
+	for i, lg := range limitGroups {
+		budget, set := limitBudgets[lg]
+		if !set {
+			budget = new(int)
+			*budget = s.limiter.GetRemainingCapacity(ctx, []string{lg})
+			limitBudgets[lg] = budget
+		}
+
+		cycleGroup.budgets[i] = budget
+	}
+
+	cycleGroups[name] = cycleGroup
+
+	return cycleGroup
+}
+
 // recordSkippedReadyJob records one limit-blocked ready job against its scheduler
 // group's skipped count and keeps it reservable, WITHOUT the expensive
 // prepareReadyJob requirement recompute. The skipped count keeps the deferred job
@@ -3340,10 +3402,15 @@ func candidatesCarryLimitGroup(candidates []readyJobCandidate) bool {
 // Meanwhile it must still be reservable so a runner scheduled for its group can pick
 // it up the moment capacity frees, so we establish its scheduler/queue reserve group
 // from the cheap snapshot (a one-time write, a no-op on later cycles once the group
-// is set), which does not count towards racScanWork.
+// is set), which does not count towards racScanWork. The job's sgroup is found
+// once per cycle, then kept in its cycleGroup.
 func (s *Server) recordSkippedReadyJob(ctx context.Context, q *queue.Queue,
-	groups map[string]*sgroup, candidate readyJobCandidate) {
-	ensureGroup(groups, candidate.snapshot).skipped++
+	groups map[string]*sgroup, cycleGroup *racCycleGroup, candidate readyJobCandidate) {
+	if cycleGroup.sgroup == nil {
+		cycleGroup.sgroup = ensureGroup(groups, candidate.snapshot)
+	}
+
+	cycleGroup.sgroup.skipped++
 
 	s.ensureReserveGroup(ctx, q, candidate.job, candidate.snapshot)
 }
@@ -3366,42 +3433,6 @@ func (s *Server) ensureReserveGroup(ctx context.Context, q *queue.Queue, job *Jo
 	job.setSchedulerGroup(snapshot.group)
 
 	warnUnexpectedSetReserveGroupError(ctx, q.SetReserveGroup(snapshot.key, snapshot.group))
-}
-
-// readyJobLimitBlocked reports whether the snapshot's ready job is limit-blocked
-// this cycle. If it is NOT blocked it consumes one unit of each of its limited
-// limit groups' shared budget (so the summed schedulable count for a limit group
-// never exceeds its remaining capacity) and returns false; if some limit group's
-// budget is already exhausted it consumes nothing and returns true. It is
-// decoupled from the expensive prepareReadyJob work so only schedulable jobs incur
-// that. A
-// job's limit groups come from its LimitGroups (fixed), so they are unaffected by
-// any requirement change prepareReadyJob later makes to a schedulable job.
-// limitGroupsOf caches, for the cycle, each scheduler group's limit groups.
-func (s *Server) readyJobLimitBlocked(ctx context.Context, limitBudgets map[string]int,
-	limitGroupsOf map[string][]string, snapshot schedulerGroupSnapshot) bool {
-	limitGroups, parsed := limitGroupsOf[snapshot.group]
-	if !parsed {
-		limitGroups = s.schedGroupToLimitGroups(snapshot.group)
-		limitGroupsOf[snapshot.group] = limitGroups
-	}
-
-	s.seedBudgetsOf(ctx, limitGroups, limitBudgets)
-
-	// a budget of -1 means "no limit", so it never blocks and is never decremented.
-	for _, lg := range limitGroups {
-		if limitBudgets[lg] == 0 {
-			return true
-		}
-	}
-
-	for _, lg := range limitGroups {
-		if limitBudgets[lg] > 0 {
-			limitBudgets[lg]--
-		}
-	}
-
-	return false
 }
 
 // prepareAndCountReadyJob runs the expensive prepareReadyJob path for one
