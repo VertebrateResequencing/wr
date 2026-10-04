@@ -67,6 +67,11 @@ type Limiter struct {
 	cb     SetLimitCallback
 	groups map[string]*group
 	mu     sync.Mutex
+
+	// limitChanges counts SetLimit() and RemoveLimit() calls, so that
+	// lockWithResolvedGroups() can tell if a limit changed while it was looking
+	// limits up.
+	limitChanges uint64
 }
 
 // New creates a new Limiter.
@@ -82,6 +87,8 @@ func New(cb SetLimitCallback) *Limiter {
 func (l *Limiter) SetLimit(name string, data GroupData) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	l.limitChanges++
 
 	if g, set := l.groups[name]; set {
 		g.setLimit(data.limit)
@@ -130,6 +137,8 @@ func (l *Limiter) GetLimits() map[string]int {
 func (l *Limiter) RemoveLimit(name string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	l.limitChanges++
 
 	if g, set := l.groups[name]; set && g.IsCount() && g.current > 0 {
 		g.removeLimit()
@@ -233,9 +242,20 @@ func (l *Limiter) attemptIncrement(ctx context.Context, groups []string, registe
 // Since a group can be forgotten (by Decrement() reaching 0, or RemoveLimit())
 // while mu is released, this loops until it gets the lock with nothing left to
 // resolve; a name that has gone missing again is resolved rather than treated
-// as unlimited. It terminates because each iteration resolves at least one
-// entry of groups that has not been resolved before, and never resolves an
-// entry twice.
+// as unlimited.
+//
+// A limit can also be changed while mu is released, after the callback has read
+// the old one: a RemoveLimit() of a group not in memory has nothing to remove,
+// so creating the group from the old limit would enforce it until the limit was
+// next changed. So if any limit changed while the callback was being called,
+// every resolution is discarded and done again. (Any change counts, not only one
+// of these groups, so that nothing is kept per group name; limits change
+// rarely, so the extra lookups are rare.)
+//
+// It terminates because, unless a limit changed, each iteration resolves at
+// least one entry of groups that has not been resolved before, and never
+// resolves an entry twice; it only repeats lookups while limits keep changing
+// during them.
 func (l *Limiter) lockWithResolvedGroups(ctx context.Context, groups []string,
 	buf []resolution,
 ) []resolution {
@@ -249,9 +269,15 @@ func (l *Limiter) lockWithResolvedGroups(ctx context.Context, groups []string,
 	l.mu.Lock()
 
 	for l.markUnresolved(groups, resolved) {
+		changes := l.limitChanges
+
 		l.mu.Unlock()
 		l.resolveGroups(ctx, groups, resolved)
 		l.mu.Lock()
+
+		if l.limitChanges != changes {
+			clear(resolved)
+		}
 	}
 
 	return resolved
