@@ -894,6 +894,8 @@ func TestSchedulerGetSchedulerAlertsAcrossManagerRestart(t *testing.T) {
 
 // pollGatedJobqueue is a Scheduler's real jobqueue client whose job lookups,
 // the requests WaitForRunning polls with, can be held off by locking polls.
+// Scheduler methods that need the concrete *jobqueue.Client, such as
+// WaitForJobs and Kill, don't work on a Scheduler using it.
 type pollGatedJobqueue struct {
 	*jobqueue.Client
 
