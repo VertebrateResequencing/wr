@@ -73,6 +73,14 @@ packages, and `cleanorder -min-diff` on the edited Go files. The caller runs
     (both fail); no one-loop-per-group (`TestScheduleRetryFollowsGroupCount`
     fails, 49 retries); a single retry instead of a loop
     (`TestScheduleRetryBackoff` and `TestScheduleRetryFollowsGroupCount` fail).
+  - Review follow-up, test gap: deleting the loop's deferred
+    `releaseScheduleRetry` survived every `TestScheduleRetry*` test, though a
+    leaked claim would stop retries for that group name for the manager's
+    life. `TestScheduleRetryAgainAfterRecovery` now covers it: a retry loop
+    ends on success, then a new failure for the same group must be retried
+    (at least 3 calls in 1s). Green, and `-race -count=3` of all
+    `TestScheduleRetry*` passes; with the deferred release deleted it fails
+    (`Expected '1' to be greater than or equal to '3'`), exit 1.
   - Speed: the success path only gains a call. A throwaway benchmark of
     `scheduleRunners` succeeding on a mock scheduler, `-count 6`: base median
     648 ns/op, fixed 651 ns/op, within noise.

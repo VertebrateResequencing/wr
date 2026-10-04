@@ -278,15 +278,20 @@ type scheduleCallLog struct {
 // record notes a Schedule() for count, and fails it if count is above 0, like a
 // queue whose bsub is always refused.
 func (l *scheduleCallLog) record(count int) error {
-	l.mu.Lock()
-	l.calls = append(l.calls, scheduleCall{count: count, at: time.Now()})
-	l.mu.Unlock()
+	l.note(count)
 
 	if count > 0 {
 		return errTestScheduleFail
 	}
 
 	return nil
+}
+
+// note notes a Schedule() for count.
+func (l *scheduleCallLog) note(count int) {
+	l.mu.Lock()
+	l.calls = append(l.calls, scheduleCall{count: count, at: time.Now()})
+	l.mu.Unlock()
 }
 
 // failedSince returns how many Schedule() calls asked for runners at or after
@@ -304,6 +309,14 @@ func (l *scheduleCallLog) failedSince(since time.Time) int {
 	}
 
 	return n
+}
+
+// total returns how many Schedule() calls there have been.
+func (l *scheduleCallLog) total() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return len(l.calls)
 }
 
 // lastCount returns the count of the latest Schedule() call, or -1 if none.
@@ -469,6 +482,83 @@ func TestScheduleRetryFollowsGroupCount(t *testing.T) {
 			// ask for 1 once
 			So(calls.failedSince(emptied), ShouldBeLessThanOrEqualTo, 1)
 			So(calls.lastCount(), ShouldEqual, 0)
+		})
+	})
+}
+
+// TestScheduleRetryAgainAfterRecovery proves that once a group's retry loop has
+// ended on a successful schedule, a later failing schedule for the same group is
+// retried again.
+func TestScheduleRetryAgainAfterRecovery(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	const minSleep = 50 * time.Millisecond
+
+	ctx := context.Background()
+
+	Convey("Given a group whose schedule failed and was then retried successfully", t, func() {
+		var failing atomic.Bool
+
+		failing.Store(true)
+
+		calls := &scheduleCallLog{}
+
+		sched, err := scheduler.New(ctx, "mock", &scheduler.ConfigMock{
+			RunnerFunc: func(context.Context, string) {},
+			ScheduleError: func(count int) error {
+				calls.note(count)
+
+				if failing.Load() {
+					return errTestScheduleFail
+				}
+
+				return nil
+			},
+		})
+		So(err, ShouldBeNil)
+
+		live := &sgroup{
+			name:  "recover_rg",
+			count: 1,
+			req:   &scheduler.Requirements{RAM: 1, Cores: 1, Disk: 1, Time: time.Second},
+		}
+
+		s := &Server{
+			previouslyScheduledGroups: map[string]*sgroup{live.name: live},
+			wg:                        waitgroup.New(),
+			scheduler:                 sched,
+			rc:                        "schedule-retry-runner %s %s %s %s %d %d",
+			ServerInfo:                &ServerInfo{},
+			stopClientHandling:        make(chan bool),
+		}
+		s.timings.CheckRunnerTime = minSleep
+
+		defer close(s.stopClientHandling)
+
+		s.scheduleRunners(ctx, live.snapshot())
+		failing.Store(false)
+
+		drained := make(chan struct{})
+
+		go func() {
+			s.wg.Wait(5 * time.Second)
+			close(drained)
+		}()
+
+		So(closedWithin(drained, 4*time.Second), ShouldBeTrue)
+
+		Convey("a later failure for the same group is retried", func() {
+			failing.Store(true)
+
+			before := calls.total()
+
+			s.scheduleRunners(ctx, live.snapshot())
+
+			<-time.After(time.Second)
+
+			So(calls.total()-before, ShouldBeGreaterThanOrEqualTo, 3)
 		})
 	})
 }
