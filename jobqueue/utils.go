@@ -1205,6 +1205,11 @@ func mkCwdAndTmp(dir string) (cwd, tmpDir string, err error) {
 // not inside the base directory that bounds the deletion.
 var errNotBelowBaseDir = errors.New("dir is not below the base dir")
 
+// errDirChanged is wrapped, along with errNotBelowBaseDir, by proveSameDir's
+// refusal, so that openChain can tell a level that was re-made apart from its
+// other refusals.
+var errDirChanged = errors.New("no longer the dir that was checked")
+
 // openBaseRoot opens baseDir as an os.Root: a handle on the directory itself,
 // through which every deletion below it is done with a path relative to the
 // handle. That is what closes the gap between proving a path may be deleted and
@@ -1289,8 +1294,9 @@ type provenDirs struct {
 // directory on the way down; see dirChain.
 //
 // A component that has gone since the proof ends the descent, which is not a
-// failure in itself; the chain then knows it is incomplete. Any other failure to
-// open a component is returned, having closed whatever had been opened.
+// failure in itself; the chain then knows it is incomplete. So does one that is
+// now a different real directory; see levelRemade. Any other failure to open a
+// component is returned, having closed whatever had been opened.
 //
 // The caller must closeAll the returned chain.
 func (dirs provenDirs) openChain() (dirChain, error) {
@@ -1314,7 +1320,7 @@ func (dirs provenDirs) openChain() (dirChain, error) {
 
 		dirRoot, err := openVerifiedDir(chain.deepest(), name, dirs.infos[i])
 		if err != nil {
-			if os.IsNotExist(err) {
+			if os.IsNotExist(err) || levelRemade(chain.deepest(), name, err) {
 				return chain, nil
 			}
 
@@ -1327,6 +1333,37 @@ func (dirs provenDirs) openChain() (dirChain, error) {
 	}
 
 	return chain, nil
+}
+
+// levelRemade says if err is openVerifiedDir finding that the directory at name
+// in parent is a real directory, but not the one the proof checked. For a level
+// above a workspace that is the ordinary result of two runs of one key: one
+// run's cleanup removes the levels they share once they are empty, the other
+// run's mkHashedDir makes them again, and the new directory gets a new inode
+// whenever anything else on the filesystem made a directory in between, which on
+// a shared filesystem is nearly always.
+//
+// openChain treats that as the level having gone, which deletes nothing: an
+// incomplete chain opens no workspace and walks up nothing, so neither the
+// changed level nor anything above it is touched, and a directory of the user's
+// renamed onto the level's name is left alone as surely as another run's. Nor is
+// anything of this run's left behind that the descent could have reached: the
+// old level was either removed, which only succeeds once it is empty, or renamed
+// away with whatever was in it, which is then no longer at the path it was
+// proven at, and is not this cleanup's to chase. The re-made level belongs to
+// the run that made it, whose own cleanup tidies it.
+//
+// A symlink at name is not a remade level, and stays a refusal: os.Root follows
+// one that stays inside it, so it is what an attempt to redirect the deletion
+// looks like.
+func levelRemade(parent *os.Root, name string, err error) bool {
+	if !errors.Is(err, errDirChanged) {
+		return false
+	}
+
+	info, lerr := parent.Lstat(name)
+
+	return lerr == nil && info.IsDir()
 }
 
 // dirChain is an open handle on the directory that each component of a proven
@@ -1495,7 +1532,7 @@ func (c dirChain) removeEmptyParents() {
 // refuses everything rather than accepting anything.
 func proveSameDir(now, checked os.FileInfo, name string) error {
 	if !os.SameFile(now, checked) {
-		return fmt.Errorf("%w: %s is no longer the dir that was checked", errNotBelowBaseDir, name)
+		return fmt.Errorf("%w: %s is %w", errNotBelowBaseDir, name, errDirChanged)
 	}
 
 	return nil
