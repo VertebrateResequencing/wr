@@ -496,6 +496,24 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
       dismissed); its doc says so. TestClientGetSchedulerAlertsOutage's
       "does not interrupt a request in progress" case now holds the warnings
       GET, the one that dismisses issues, so it still proves that.
+- [x] Since fbc2d251, 7 jobqueue tests (TestServerRejectsAddWithNilDependency,
+  ...WithCommaInContainerMountPath, ...WithNilBehaviour,
+  TestClientAddErrorNamesTheProblem, TestServerAddDropsImpossibleCleanups,
+  TestServerRejectsModifyWithNilNestedEntriesAtomically,
+  TestServerRejectsModifyThatMakesContainerMountsLive) fail with
+  `unsupported capture socket operation`.
+  - Source: implementor of the already-done ctx item (full jobqueue run);
+    bisected to fbc2d251 (they pass on origin/develop).
+  - Red command: `timeout 3000 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    go test -tags netgo -count 1 -timeout 45m ./jobqueue/`, exit 1, those 7.
+  - Cause (test fake): an add that re-adds complete jobs now sets the req
+    socket's OptionRetryTime around its send (sendDroppingOnConnectionLossLocked);
+    a real mangos req socket always supports it, but client_payload_test.go's
+    captureSocket refused every SetOption. Failing the add when the option
+    cannot be set is right, since it could otherwise be resent onto jobs
+    that completed, so the product code is unchanged.
+  - Fixed: captureSocket.SetOption accepts OptionRetryTime. Full
+    `go test ./jobqueue/` passes plain (615s) and -race (789s).
 - [x] TestSubscriptionReconnectAdoptsManagerTimings (added by e89991b8) is
   flaky: 2 of 6 runs fail reading jq.ServerInfo.RetryTime right after the
   resync update (`Line 1834: Expected: time.Duration(31000000000) Actual:

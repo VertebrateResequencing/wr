@@ -392,7 +392,13 @@ func (s *captureSocket) GetOption(_ string) (any, error) {
 	return nil, errCaptureSocketUnsupported
 }
 
-func (s *captureSocket) SetOption(_ string, _ any) error {
+// SetOption accepts the resend time an add that re-adds complete jobs sets
+// around its send, as a real req socket does; the socket never resends anyway.
+func (s *captureSocket) SetOption(name string, value any) error {
+	if _, ok := value.(time.Duration); ok && name == mangos.OptionRetryTime {
+		return nil
+	}
+
 	return errCaptureSocketUnsupported
 }
 
