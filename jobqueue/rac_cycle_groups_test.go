@@ -28,8 +28,9 @@ package jobqueue
 // Tests that a rac cycle's per-scheduler-group bookkeeping, which it keeps for
 // the cycle so that the ready backlog's jobs need not each look up their limit
 // groups' budgets, hands out each limit group's shared budget exactly as
-// counting job by job would, and that the cycle considers jobs in
-// highest-priority-first order, keeping the order they came in within a priority.
+// counting job by job would; that the cycle considers jobs in
+// highest-priority-first order, keeping the order they came in within a priority;
+// and that jobs of one scheduler group share one copy of its name.
 
 import (
 	"context"
@@ -39,6 +40,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/VertebrateResequencing/wr/limiter"
 	. "github.com/smartystreets/goconvey/convey"
@@ -228,6 +230,53 @@ func racTakeLimits(limitGroups []string, remaining map[string]int) bool {
 	}
 
 	return true
+}
+
+func TestRACSchedulerGroupNamesInterned(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Jobs with the same requirements and limit groups, made separately", t, func() {
+		lg := []string{"lgI"}
+		s := newRACLimitsServer(map[string]int{lg[0]: 1})
+		a := racReadyJobs("interned", 100, 0, lg, 3)
+		b := racReadyJobs("interned-other", 100, 0, lg, 3)
+		other := racReadyJobs("interned-ram", 900, 0, lg, 1)[0]
+
+		Convey("have equal scheduler group names, sharing one copy, unlike a different group", func() {
+			So(racGroupOf(b[2]), ShouldEqual, racGroupOf(a[0]))
+			So(racNameStorage(racGroupOf(b[2])), ShouldEqual, racNameStorage(racGroupOf(a[0])))
+			So(racGroupOf(other), ShouldNotEqual, racGroupOf(a[0]))
+		})
+
+		Convey("are counted in one scheduler group, sharing its limit", func() {
+			groups := make(map[string]*sgroup)
+			racCountReadyJobs(ctx, s, groups, append(append(a, b...), other))
+
+			So(len(groups), ShouldEqual, 2)
+			So(racCountsOf(groups, a[0]), ShouldResemble, racGroupCounts{count: 1, skipped: 5})
+			So(racCountsOf(groups, other), ShouldResemble, racGroupCounts{count: 0, skipped: 1})
+		})
+
+		Convey("move to the other group's shared name when their requirements change to its", func() {
+			job := a[1]
+			before := racGroupOf(job)
+
+			job.Lock()
+			job.Requirements.RAM = 900
+			job.invalidateDerivedLocked()
+			job.Unlock()
+
+			So(racGroupOf(job), ShouldNotEqual, before)
+			So(racGroupOf(job), ShouldEqual, racGroupOf(other))
+			So(racNameStorage(racGroupOf(job)), ShouldEqual, racNameStorage(racGroupOf(other)))
+		})
+	})
+}
+
+// racNameStorage returns the address of the bytes of name, so that two names
+// can be seen to share one copy.
+func racNameStorage(name string) uintptr {
+	return uintptr(unsafe.Pointer(unsafe.StringData(name)))
 }
 
 func TestRACPriorityOrder(t *testing.T) {
