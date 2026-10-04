@@ -148,10 +148,13 @@ Owner decisions (261004) are noted on each item.
   replacement subscription; only a manager-side reaper keyed on client
   liveness would cover it.
   - Fixed on `sub-sweep-c5087329`; see `261004-sub-sweep-c5087329.md`.
-- [ ] QUEUED (branch 4 below): reject ClientID 0 on release, bury, delay
+- [x] Reject ClientID 0 on release, bury, delay
   and ready. `260930-runner-report-followups.md` item 3, "Noted, not fixed": a
   hand-made request with a zero ClientID can release or bury a job that never
   ran (ReservedBy zero).
+  - Fixed on branch `reject-clientid0-f6121ca8`: the manager refuses a zero
+    client ID on `jstart`, `jtouch`, `jarchive`, `jrelease` and `jbury` with
+    ErrBadRequest; see `261004-reject-clientid0-f6121ca8.md`.
 
 ## Delivery queue
 
