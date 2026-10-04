@@ -2428,7 +2428,7 @@ cmd_overprovision_check() {  # overprovision-check [limit] [siblings] [ready] - 
 cmd_overcount_check() {  # overcount-check [limit] [initialRunning] [windowReserves] - reliable3 2b over-count GATE
   # Deterministic, in-process REGRESSION GATE (build-tagged reliability_repro, NOT part of
   # make test) for reliable3 ISSUE 2b: a scheduler group's final scheduling count must NEVER
-  # exceed its limit group's limit. countJobInGroup caps the READY count against an EARLY
+  # exceed its limit group's limit. scheduleReadyJobsByPriority caps the READY count against an EARLY
   # capacity read, and accountForRunningJobs then adds ALL running jobs on top, so reserves
   # landing in that non-atomic window inflate the count (production saw 3313 for a 2000
   # limit); capGroupCountsToLimits trims the summed sibling counts back to the limit.
@@ -2619,38 +2619,34 @@ ls_flag() {  # <line> <key>
   case "$v" in (true|false) echo "$v" ;; (*) echo "unmeasured" ;; esac
 }
 
-cmd_priority_fairness_check() {  # priority-fairness-check [limit] [readyExtra] - reliable3 2a fairness (INVERTED)
-  # Deterministic, in-process reproducer (build-tagged reliability_repro, NOT part of make
-  # test) for reliable3 ISSUE 2a's refinement, which is STILL AN OPEN DEFECT: the shared
-  # per-limit-group budget is allocated FIRST-COME across sibling scheduler groups, so a
-  # low-priority sibling scanned first consumes the whole budget and starves a higher-priority
-  # sibling (which then gets count=0 and its whole ready backlog skipped).
+cmd_priority_fairness_check() {  # priority-fairness-check [limit] [readyExtra] - reliable3 2a fairness GATE
+  # Deterministic, in-process REGRESSION GATE (build-tagged reliability_repro, NOT part of
+  # make test) for reliable3 ISSUE 2a's refinement: siblings sharing a limit group must get its
+  # budget highest-priority-first. Before the fix the shared per-limit-group budget was handed
+  # out FIRST-COME, so a low-priority sibling scanned first consumed the whole budget and
+  # starved a higher-priority sibling (count=0, its whole ready backlog skipped).
   #
-  # THIS MODE IS INVERTED, DELIBERATELY: it asserts the BUGGY behaviour, so exit 0 means THE
-  # BUG REPRODUCED, not that an invariant holds. It is the dangerous shape of gate, so it
-  # prints a banner saying so - a reader scanning exit codes across a sweep would otherwise
-  # read its zero as good news, which is exactly what happened in the 2026-08-27 sweep. It was
-  # NOT flipped to permanently red: the defect is real and outstanding, and a gate that can
-  # only ever fail stops being read. The outstanding item is recorded in
-  # .docs/reliable4/prod-validation-260827.md.
+  # It USED TO BE INVERTED - it asserted the starvation, so exit 0 meant the bug reproduced.
+  # It drove a copy of the budget accounting that only tests called, which still allocated
+  # first-come, so it kept reporting the defect as open after the rac cycle itself had been
+  # fixed. It now drives the rac cycle's live ready-job selection and asserts the invariant.
   #
-  # Exit status means "was anything measured", not "is the invariant held": exit 1 only when
-  # the reproducer produced no measurement. Both measured outcomes exit 0 and are told apart by
-  # their banner - BUG STILL PRESENT (the starvation reproduced), or NO LONGER REPRODUCES, in
-  # which case the banner asks for this mode to be converted into a proper regression gate
-  # (the higher-priority sibling must get its share of the budget).
+  # Gate: high(pri250).count == limit AND low(pri0).count == 0. FAIL = the low-priority sibling
+  # took budget the higher-priority one was waiting for. Removing the highest-priority-first
+  # sort from scheduleReadyJobsByPriority turns it red.
+  # A MISSING measurement (no PRIORITY-FAIRNESS-REPRO line) is a hard FAIL, never a cheap PASS.
   need_repo
   local limit="${1:-2000}" extra="${2:-500}"
-  echo "reliable3 2a priority fairness (deterministic, in-process): a low-priority sibling"
-  echo "scanned first starves a higher-priority sibling of the shared limit-group budget."
+  echo "reliable3 2a priority fairness gate (deterministic, in-process): a low-priority sibling"
+  echo "scanned first must not starve a higher-priority sibling of the shared limit-group budget."
   echo "scale: limit=$limit readyPerGroup=$((limit + extra))"
-  echo "INVERTED MODE: it asserts the BUG, so exit 0 means the bug reproduced. Exit 1 means"
-  echo "nothing was measured. Read the banner below, never the exit code alone."
+  echo "Gate: high(pri250).count == $limit AND low(pri0).count == 0."
+  echo "pre-fix: low(pri0).count=$limit high(pri250).count=0. A MISSING measurement is a FAIL."
   osunset
   local out rc=0
   out=$(WR_OP_LIMIT="$limit" WR_PF_READY="$extra" \
     timeout 180 go -C "$REPO" test -tags reliability_repro ./jobqueue/ \
-    -run TestReliable3PriorityFairnessStarvation -count=1 -v 2>&1) || rc=$?
+    -run TestReliable3PriorityFairness -count=1 -v 2>&1) || rc=$?
   printf '%s\n' "$out" | grep -aE 'PRIORITY-FAIRNESS-REPRO|Expected|--- (PASS|FAIL)|^(ok|FAIL)'
 
   local repro low high skipped
@@ -2665,36 +2661,22 @@ cmd_priority_fairness_check() {  # priority-fairness-check [limit] [readyExtra] 
   echo "## VERDICT: limit=$limit low(pri0).count=$low high(pri250).count=$high high.skipped=$skipped"
   if [ -z "$repro" ] || [ "$low" -lt 0 ] || [ "$high" -lt 0 ] || [ "$skipped" -lt 0 ]; then
     echo "FAIL (NOT MEASURED): no usable PRIORITY-FAIRNESS-REPRO line, so neither sibling's count"
-    echo "  was measured; this is the ONLY outcome this mode exits non-zero for. See the output above"
+    echo "  was measured; this gate only reports PASS on a real measurement. See the output above"
     return 1
   fi
-
-  if [ "$high" -eq 0 ] && [ "$low" -eq "$limit" ] && [ "$skipped" -gt 0 ]; then
-    echo "==============================================================================="
-    echo "!! EXIT 0 HERE MEANS THE BUG IS STILL PRESENT, NOT THAT AN INVARIANT HOLDS. !!"
-    echo "==============================================================================="
-    echo "The reliable3 2a starvation REPRODUCED: the low-priority sibling took the whole"
-    echo "$limit-slot budget and the priority-250 sibling got 0, with $skipped of its ready jobs"
-    echo "skipped. This is an OPEN DEFECT, recorded in .docs/reliable4/prod-validation-260827.md."
-    echo "Do not read this mode's zero exit as a passing invariant anywhere it is swept."
-    echo "==============================================================================="
-    if [ "$rc" -ne 0 ]; then
-      echo "FAIL: the numbers say the starvation reproduced but the reproducer's own assertions"
-      echo "  failed (rc=$rc), so one of them no longer matches the line above; see the output"
-      return "$rc"
-    fi
-    return 0
+  if [ "$high" -ne "$limit" ] || [ "$low" -ne 0 ]; then
+    echo "FAIL: the priority-250 sibling got $high of the $limit-slot budget and the priority-0"
+    echo "  sibling got $low: the budget is no longer handed out highest-priority-first"
+    echo "  => scheduleReadyJobsByPriority must consider ready jobs highest-priority-first"
+    return 1
   fi
-
-  echo "==============================================================================="
-  echo "!! THE 2a STARVATION NO LONGER REPRODUCES - good news, and this mode is now  !!"
-  echo "!! OBSOLETE AS WRITTEN.                                                      !!"
-  echo "==============================================================================="
-  echo "It asserts the BUG, so from here on it will keep reporting failing assertions."
-  echo "CONVERT IT into a regression gate: the higher-priority sibling must get its share"
-  echo "of the shared limit-group budget (high(pri250).count > 0), then remove the open"
-  echo "item from .docs/reliable4/prod-validation-260827.md."
-  echo "==============================================================================="
+  if [ "$rc" -ne 0 ]; then
+    echo "FAIL: the reproducer's own assertions failed (rc=$rc) even though the counts are as"
+    echo "  expected; see the output above"
+    return "$rc"
+  fi
+  echo "PASS: the priority-250 sibling got the whole $limit-slot budget although the priority-0"
+  echo "      sibling was scanned first"
   return 0
 }
 
@@ -4944,16 +4926,13 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         measured. The key facet needs a usable LSF and is reported as UNMEASURED
                         where there is none, never counted as coverage (defaults 2000 5000)
   priority-fairness-check [limit] [readyExtra]
-                        reliable3 2a reproducer, still INVERTED ON PURPOSE because the defect is
-                        OPEN: first-come budget allocation starves a higher-priority sibling
-                        scanned after a low-priority one (no manager). It asserts the BUG, so
-                        EXIT 0 MEANS THE BUG IS STILL PRESENT, not that an invariant holds - it
-                        prints a banner saying so, since a zero exit read as good news in the
-                        2026-08-27 sweep. Exit status here means "was anything measured": exit 1
-                        ONLY when no measurement was produced. If the starvation ever stops
-                        reproducing, the banner says so and asks for this mode to be converted
-                        into a regression gate. Open item recorded in
-                        .docs/reliable4/prod-validation-260827.md (defaults 2000 500)
+                        reliable3 2a GATE (deterministic, in-process, no manager): a
+                        low-priority sibling scanned first must not starve a higher-priority
+                        sibling of their shared limit-group budget - high(pri250).count ==
+                        limit and low(pri0).count == 0. It was INVERTED (it asserted the
+                        starvation, on a test-only copy of the budget accounting); converted to
+                        drive the live rac selection. FAIL = the budget is not handed out
+                        highest-priority-first, OR nothing was measured (defaults 2000 500)
   backlog-rescan-check [limit] [backlog]
                         reliable4 #1 reproducer: a rac cycle scans the whole ready backlog
                         (racScanWork == backlog); fails until the scan is bounded to ~limit

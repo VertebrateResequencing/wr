@@ -43,6 +43,11 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+const (
+	queuesAvoidTestValue = "interactive,inference"
+	queuesAvoidTestKey   = "scheduler_queues_avoid"
+)
+
 // TestJobCodecPreservesQueuesAvoid checks that a Job carrying a
 // scheduler_queues_avoid requirement (with OtherSet left false, as
 // client.determineOverrideAndReq produces) survives the BincHandle codec
@@ -81,11 +86,6 @@ func TestJobCodecPreservesQueuesAvoid(t *testing.T) {
 		So(decoded.Requirements.Other[queuesAvoidTestKey], ShouldEqual, queuesAvoidTestValue)
 	})
 }
-
-const (
-	queuesAvoidTestValue = "interactive,inference"
-	queuesAvoidTestKey   = "scheduler_queues_avoid"
-)
 
 // seedReqGroupRAMRecommendation writes a spread of peak-RAM stat values for the
 // given reqGroup directly into the db's stat bucket, so that
@@ -269,8 +269,8 @@ func TestServerSchedulerQueuesAvoidEndToEnd(t *testing.T) {
 }
 
 // TestServerSchedulerQueuesAvoidPreserved drives the real server-side scheduler
-// grouping (buildSchedulerGroups -> processReadyJob -> recommendedReqForGroup ->
-// updateJobRequirementsForRetry -> schedulerGroupSnapshot -> countJobInGroup)
+// grouping (buildSchedulerGroups -> scheduleReadyJobsByPriority -> prepareReadyJob ->
+// recommendedReqForGroup -> updateJobRequirementsForRetry -> schedulerGroupSnapshot)
 // and asserts that the scheduler_queues_avoid requirement survives into the
 // *scheduler.Requirements of every scheduled group, both on a fresh db and once
 // resource recommendations have been learned for the reqGroup.

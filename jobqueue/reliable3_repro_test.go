@@ -34,10 +34,10 @@
 // priority-fairness-check commands).
 //
 // They began as reproducers that ASSERTED THE BUGGY BEHAVIOUR, so each PASSed on
-// PRE-fix code. Three of the four defects have since been fixed on this branch, so
-// those three now assert the FIXED INVARIANT instead - a reproducer whose exit
-// code says "the bug is present" is worse than useless once the bug is gone,
-// because a zero exit then means the opposite of what a reader assumes:
+// PRE-fix code. All four defects have since been fixed, so they now assert the
+// FIXED INVARIANT instead - a reproducer whose exit code says "the bug is
+// present" is worse than useless once the bug is gone, because a zero exit then
+// means the opposite of what a reader assumes:
 //
 //   - TestReliable3OverCountRunningSnapshot builds the 2b over-count arrangement
 //     and asserts the summed count is capped at the limit group's limit
@@ -49,20 +49,20 @@
 //   - TestReliable3ConfirmFailureIsLoud (was TestReliable3SilentConfirmFailure)
 //     asserts that a death-confirmation that cannot succeed, and an unreadable
 //     ssh private key, each WARN, naming the host and pid / the key path.
+//   - TestReliable3PriorityFairness (was the inverted
+//     TestReliable3PriorityFairnessStarvation) asserts that a low-priority
+//     sibling scanned first does not starve a higher-priority one of their
+//     shared limit-group budget. It used to drive a copy of the budget
+//     accounting that only tests called, which still allocated first-come;
+//     the rac cycle itself has handed the budget out highest-priority-first
+//     since the reliable3 2a-priority fix.
 //
-// TestReliable3PriorityFairnessStarvation is the exception and stays INVERTED,
-// because reliable3 issue 2a's priority-fairness defect is STILL PRESENT: the
-// shared per-limit-group budget is handed out first-come, so a low-priority
-// sibling scanned first starves a higher-priority one. Its PASS therefore means
-// "the bug reproduced", which is why its wrdev.sh mode prints a banner saying so
-// rather than letting a zero exit read as an invariant holding. See
-// .docs/reliable4/prod-validation-260827.md for that outstanding item.
-//
-// They deliberately exercise the real accounting primitives (countJobInGroup,
-// accountForRunningJobs, seedLimitGroupBudgets, the limiter, and
+// They deliberately exercise the real accounting (the rac cycle's live ready-job
+// selection via racCountReadyJobs, accountForRunningJobs, the limiter, and
 // scheduler.ProcessNotRunningOnHost) rather than a full manager, so each defect
-// is shown at the smallest faithful level. Helpers newOverProvisionServer and
-// opEnvInt are shared with reliable3_overprovision_test.go.
+// is shown at the smallest faithful level. Helpers newOverProvisionServer,
+// racReadyJobs, racGroupOf, racCountReadyJobs and opEnvInt are shared with
+// reliable3_overprovision_test.go.
 
 package jobqueue
 
@@ -81,6 +81,58 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+// TestReliable3PriorityFairness asserts the FIXED invariant for reliable3 ISSUE
+// 2a's refinement: siblings sharing a limit group get its budget
+// highest-priority-first. Before the fix the shared per-limit-group budget was
+// allocated FIRST-COME across sibling scheduler groups, so a low-priority sibling
+// scanned first consumed the whole budget and a higher-priority sibling got
+// nothing.
+//
+// This was an INVERTED reproducer (TestReliable3PriorityFairnessStarvation) that
+// asserted the starvation. It drove a copy of the budget accounting that only
+// tests called, which still allocated first-come, so it kept reporting the defect
+// as open after the rac cycle itself had been fixed. It now drives the rac cycle's
+// live ready-job selection. Removing the highest-priority-first sort from
+// scheduleReadyJobsByPriority turns it red.
+//
+// Deterministic: feed the low-priority sibling's ready jobs first, then the
+// high-priority sibling's. Scale knobs: WR_OP_LIMIT and WR_PF_READY (extra ready
+// per group beyond the limit).
+func TestReliable3PriorityFairness(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("A low-priority sibling scanned first does not starve a higher-priority one of the shared budget", t, func() {
+		limit := opEnvInt("WR_OP_LIMIT", 2000)
+		readyPerGroup := limit + opEnvInt("WR_PF_READY", 500)
+
+		low := racReadyJobs("fairness-low", 100, 0, []string{"lg"}, readyPerGroup)
+		high := racReadyJobs("fairness-high", 200, 250, []string{"lg"}, readyPerGroup)
+		lowGrp, highGrp := racGroupOf(low[0]), racGroupOf(high[0])
+
+		s := newOverProvisionServer(limit)
+		groups := make(map[string]*sgroup)
+
+		// low-priority sibling scanned first (arbitrary order in production), then
+		// the high-priority sibling.
+		racCountReadyJobs(ctx, s, groups, append(low, high...))
+
+		t.Logf("PRIORITY-FAIRNESS-REPRO: limit=%d readyPerGroup=%d low(pri0).count=%d "+
+			"high(pri250).count=%d high.skipped=%d",
+			limit, readyPerGroup, groups[lowGrp].count, groups[highGrp].count, groups[highGrp].skipped)
+
+		Convey("the higher-priority sibling gets the whole budget, and the low-priority one waits", func() {
+			So(groups[highGrp].count, ShouldEqual, limit)
+			So(groups[highGrp].skipped, ShouldEqual, readyPerGroup-limit)
+			So(groups[lowGrp].count, ShouldEqual, 0)
+			So(groups[lowGrp].skipped, ShouldEqual, readyPerGroup)
+		})
+	})
+}
+
 // reproCaptureCtx returns a context whose clog output is captured into the
 // returned buffer, so a test can assert whether a code path logged anything.
 func reproCaptureCtx(ctx context.Context) (context.Context, *bytes.Buffer) {
@@ -94,8 +146,8 @@ func reproCaptureCtx(ctx context.Context) (context.Context, *bytes.Buffer) {
 // ISSUE 2b and asserts the FIXED invariant: a scheduler group's final scheduling
 // count never exceeds its limit group's limit.
 //
-// The arrangement: countJobInGroup caps the READY count against remaining capacity
-// read EARLY (when seedLimitGroupBudgets first reads GetRemainingCapacity), and
+// The arrangement: the rac cycle caps the READY count against remaining capacity
+// read EARLY (when it first reads the limit group's GetRemainingCapacity), and
 // accountForRunningJobs then adds ALL run-sub-queue jobs of the group on top.
 // Reserves that land between those two reads make the running snapshot larger than
 // the early capacity read reflected, so the count BEFORE any cap is
@@ -122,7 +174,6 @@ func TestReliable3OverCountRunningSnapshot(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	req := &scheduler.Requirements{RAM: 100, Cores: 1, Disk: 1, Time: time.Minute}
 
 	Convey("A group's count stays within its limit when reserves land between the capacity read and the running snapshot", t, func() {
 		limit := opEnvInt("WR_OP_LIMIT", 2000)
@@ -134,7 +185,8 @@ func TestReliable3OverCountRunningSnapshot(t *testing.T) {
 		readyBacklog := limit + windowReserves + 100
 
 		s := newOverProvisionServer(limit)
-		grpName := "200:30:1:1:samehash" + jobSchedLimitGroupSeparator + "lg"
+		jobs := racReadyJobs("overcount", 200, 0, []string{"lg"}, readyBacklog)
+		grpName := racGroupOf(jobs[0])
 
 		// (1) initialRunning jobs are already reserved (holding limit slots) at the
 		// instant buildSchedulerGroups first reads this limit group's capacity.
@@ -143,19 +195,11 @@ func TestReliable3OverCountRunningSnapshot(t *testing.T) {
 		}
 		So(s.limiter.GetRemainingCapacity(ctx, []string{"lg"}), ShouldEqual, limit-initialRunning)
 
-		// (2) buildSchedulerGroups counts the ready backlog. seedLimitGroupBudgets
-		// reads GetRemainingCapacity NOW (= limit - initialRunning) and caps the
-		// ready count there.
+		// (2) the rac cycle counts the ready backlog. It reads
+		// GetRemainingCapacity NOW (= limit - initialRunning) and caps the ready
+		// count there.
 		groups := make(map[string]*sgroup)
-		groupLimits := make(map[string]int)
-
-		for range readyBacklog {
-			s.countJobInGroup(ctx, groups, groupLimits, schedulerGroupSnapshot{
-				group:        grpName,
-				requirements: req,
-				priority:     0,
-			})
-		}
+		racCountReadyJobs(ctx, s, groups, jobs)
 
 		cappedReady := groups[grpName].count
 
@@ -232,7 +276,7 @@ func TestReliable3OverCountRunningSnapshot(t *testing.T) {
 // TestReliable3ConfirmFailureIsLoud here, and by the reliable4 runner-pid liveness
 // and lost-runner-backstop tests in the main suite.
 //
-// Modelled at the limiter + countJobInGroup level, faithful to the mechanism: the
+// Modelled at the limiter + rac cycle level, faithful to the mechanism: the
 // limiter is the single source of truth for slot occupancy. Scale knobs:
 // WR_OP_LIMIT (held slots) and WR_STALL_READY (new ready jobs).
 func TestReliable3LimitSlotStall(t *testing.T) {
@@ -241,14 +285,14 @@ func TestReliable3LimitSlotStall(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	req := &scheduler.Requirements{RAM: 100, Cores: 1, Disk: 1, Time: time.Minute}
 
 	Convey("A limit group whose slots are all held skips every new ready job", t, func() {
 		limit := opEnvInt("WR_OP_LIMIT", 2000)
 		newReady := opEnvInt("WR_STALL_READY", 5000)
 
 		s := newOverProvisionServer(limit)
-		grpName := "200:30:1:1:samehash" + jobSchedLimitGroupSeparator + "lg"
+		jobs := racReadyJobs("stall", 200, 0, []string{"lg"}, newReady)
+		grpName := racGroupOf(jobs[0])
 
 		// hold every one of the limit group's slots, as production's phantom slots
 		// did: reserved-then-lost jobs whose slots were never released.
@@ -261,15 +305,7 @@ func TestReliable3LimitSlotStall(t *testing.T) {
 		So(s.limiter.GetRemainingCapacity(ctx, []string{"lg"}), ShouldEqual, 0)
 
 		groups := make(map[string]*sgroup)
-		groupLimits := make(map[string]int)
-
-		for range newReady {
-			s.countJobInGroup(ctx, groups, groupLimits, schedulerGroupSnapshot{
-				group:        grpName,
-				requirements: req,
-				priority:     0,
-			})
-		}
+		racCountReadyJobs(ctx, s, groups, jobs)
 
 		g := groups[grpName]
 
@@ -368,79 +404,6 @@ func TestReliable3ConfirmFailureIsLoud(t *testing.T) {
 		Convey("the unreadable key path produces a warning that names it", func() {
 			So(strings.ToLower(logged), ShouldContainSubstring, "private key")
 			So(logged, ShouldContainSubstring, badKey)
-		})
-	})
-}
-
-// TestReliable3PriorityFairnessStarvation reproduces reliable3 ISSUE 2a's
-// remaining refinement, which is STILL PRESENT: the shared per-limit-group budget
-// is allocated FIRST-COME across sibling scheduler groups. buildSchedulerGroups
-// scans ready jobs in scheduler-group (map) order, not priority order, so if a
-// low-priority sibling is scanned first it consumes the whole shared budget and a
-// higher-priority sibling gets nothing.
-//
-// THIS TEST IS INVERTED and deliberately stays that way: it asserts the BUGGY
-// behaviour, so it PASSES while the defect exists. A zero exit here does NOT mean
-// an invariant holds - it means the starvation reproduced. developers/wrdev.sh
-// priority-fairness-check prints a banner saying exactly that, because the one
-// thing worse than an inverted reproducer is one whose exit code is mistaken for a
-// green invariant. Flipping it to permanently red was considered and rejected: a
-// gate that can only ever fail stops being read.
-//
-// When the defect IS fixed, this test goes red and the wrdev.sh mode says so and
-// asks for it to be converted into a regression gate (high-priority sibling gets
-// its share of the budget). The outstanding item is recorded in
-// .docs/reliable4/prod-validation-260827.md.
-//
-// Deterministic: feed the low-priority sibling's ready jobs first, then the
-// high-priority sibling's. Scale knobs: WR_OP_LIMIT and WR_PF_READY (extra ready
-// per group beyond the limit).
-func TestReliable3PriorityFairnessStarvation(t *testing.T) {
-	if runnermode || servermode {
-		return
-	}
-
-	ctx := context.Background()
-	req := &scheduler.Requirements{RAM: 100, Cores: 1, Disk: 1, Time: time.Minute}
-
-	Convey("A low-priority sibling scanned first starves a higher-priority sibling of the shared budget", t, func() {
-		limit := opEnvInt("WR_OP_LIMIT", 2000)
-		readyPerGroup := limit + opEnvInt("WR_PF_READY", 500)
-
-		lowGrp := "100:30:1:1:samehash" + jobSchedLimitGroupSeparator + "lg"  // priority 0
-		highGrp := "200:30:1:1:samehash" + jobSchedLimitGroupSeparator + "lg" // priority 250
-
-		s := newOverProvisionServer(limit)
-
-		groups := make(map[string]*sgroup)
-		groupLimits := make(map[string]int)
-
-		// low-priority sibling scanned first (arbitrary map order in production)...
-		for range readyPerGroup {
-			s.countJobInGroup(ctx, groups, groupLimits, schedulerGroupSnapshot{
-				group:        lowGrp,
-				requirements: req,
-				priority:     0,
-			})
-		}
-
-		// ...then the high-priority sibling, by which point the budget is gone.
-		for range readyPerGroup {
-			s.countJobInGroup(ctx, groups, groupLimits, schedulerGroupSnapshot{
-				group:        highGrp,
-				requirements: req,
-				priority:     250,
-			})
-		}
-
-		t.Logf("PRIORITY-FAIRNESS-REPRO: limit=%d readyPerGroup=%d low(pri0).count=%d "+
-			"high(pri250).count=%d high.skipped=%d",
-			limit, readyPerGroup, groups[lowGrp].count, groups[highGrp].count, groups[highGrp].skipped)
-
-		Convey("the higher-priority sibling is starved (the first-come allocation bug is STILL present)", func() {
-			So(groups[lowGrp].count, ShouldEqual, limit)
-			So(groups[highGrp].count, ShouldEqual, 0)
-			So(groups[highGrp].skipped, ShouldBeGreaterThan, 0)
 		})
 	})
 }

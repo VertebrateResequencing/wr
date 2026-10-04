@@ -77,8 +77,8 @@ const (
 	// memoMaxMallocsPerJob bounds the heap allocations a steady-state rac cycle
 	// may make per ready job. The memoised pre-pass allocates nothing per job (it
 	// reads cached strings under the job's read lock); what remains is the
-	// candidates slice and the limit-group bookkeeping of readyJobLimitBlocked
-	// (schedGroupToLimitGroups splits the group name), a handful per job. The
+	// candidates slice and the per-cycle limit-group bookkeeping of
+	// scheduleReadyJobsByPriority, well under one per job. The
 	// un-memoised pre-pass adds reqForScheduler, Key()'s buffer+MD5+hex and
 	// Stringify's key slice+builder+MD5+two Sprintfs on top, which measured 18
 	// allocations per job, comfortably over this bound.

@@ -135,7 +135,9 @@ Owner decisions (261004) are noted on each item.
   channels until a decrement; LSF `reservedElements` and `doomedElements`
   are not pruned; OpenStack `spawnCanceller` can keep an empty inner map per
   cmd.
-- [ ] MEASURE IN THE CRASH SOAK: record the scheduling cycle's share of CPU
+- [x] Per-job cost cut on `rac-cycle-88799784`, see
+  `261004-rac-cycle-88799784.md` (only the no-downside options; the cycle is
+  still O(backlog)). Was: MEASURE IN THE CRASH SOAK: record the scheduling cycle's share of CPU
   and the ready-to-runner-requested latency against backlog size, then decide.
   `260929-query-copies-and-warning-storm.md`, "Not fixed": each
   scheduling cycle still snapshots and walks the whole ready backlog

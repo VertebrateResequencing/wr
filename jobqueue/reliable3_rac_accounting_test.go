@@ -34,8 +34,9 @@ package jobqueue
 // snapshot; and that (§2a-priority) the shared budget is allocated to
 // higher-priority sibling scheduler groups first, so a low-priority sibling
 // scanned first cannot starve a higher-priority one. These assert the FIXED
-// behaviour (they fail on the pre-fix accounting and pass after the fix); the
-// build-tagged reliable3_repro_test.go reproducers assert the old buggy behaviour.
+// behaviour (they fail on the pre-fix accounting and pass after the fix), driving
+// the rac cycle's live ready-job selection (racCountReadyJobs); the build-tagged
+// reliable3_repro_test.go checks run the same arrangements at production scale.
 
 import (
 	"context"
@@ -48,21 +49,6 @@ import (
 	"github.com/VertebrateResequencing/wr/queue"
 	. "github.com/smartystreets/goconvey/convey"
 )
-
-// countReadySnapshots feeds n copies of a ready-job snapshot for the given
-// scheduler group and priority into the slice, for driving countReadyJobsByPriority.
-func readySnapshots(snapshots []schedulerGroupSnapshot, group string, priority uint8,
-	req *scheduler.Requirements, n int) []schedulerGroupSnapshot {
-	for range n {
-		snapshots = append(snapshots, schedulerGroupSnapshot{
-			group:        group,
-			requirements: req,
-			priority:     priority,
-		})
-	}
-
-	return snapshots
-}
 
 // addRunningJobs adds n jobs to the queue's run sub-queue, all in the given
 // scheduler group and with the given job priority, so accountForRunningJobs counts
@@ -97,8 +83,7 @@ func TestReliable3RacAccountingCaps(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	req := &scheduler.Requirements{RAM: 100, Cores: 1, Disk: 1, Time: time.Minute}
-	lgSuffix := jobSchedLimitGroupSeparator + "lg"
+	lg := []string{"lg"}
 
 	Convey("A single group's count never exceeds its limit once running jobs are added (§2b)", t, func() {
 		limit := opEnvInt("WR_OP_LIMIT", 2000)
@@ -110,7 +95,8 @@ func TestReliable3RacAccountingCaps(t *testing.T) {
 		}
 
 		s := newOverProvisionServer(limit)
-		grpName := "200:30:1:1:samehash" + lgSuffix
+		jobs := racReadyJobs("rc", 200, 0, lg, limit+windowReserves+100)
+		grpName := racGroupOf(jobs[0])
 
 		// initialRunning jobs hold slots when the ready budget is read...
 		for range initialRunning {
@@ -118,8 +104,7 @@ func TestReliable3RacAccountingCaps(t *testing.T) {
 		}
 
 		groups := make(map[string]*sgroup)
-		snapshots := readySnapshots(nil, grpName, 0, req, limit+windowReserves+100)
-		s.countReadyJobsByPriority(ctx, groups, snapshots)
+		racCountReadyJobs(ctx, s, groups, jobs)
 
 		// ...then windowReserves more reserve AFTER that read (the non-atomic window)
 		// and land in the run queue.
@@ -151,16 +136,17 @@ func TestReliable3RacAccountingCaps(t *testing.T) {
 		s := newOverProvisionServer(limit)
 
 		grpNames := make([]string, siblings)
-		snapshots := []schedulerGroupSnapshot(nil)
+		jobs := []*Job(nil)
 
 		for i := range siblings {
-			grpNames[i] = fmt.Sprintf("%d:30:1:1:samehash", 100+i*100) + lgSuffix
-			snapshots = readySnapshots(snapshots, grpNames[i], 0, req, limit)
+			sibling := racReadyJobs(fmt.Sprintf("rc%d", i), 100+i*100, 0, lg, limit)
+			grpNames[i] = racGroupOf(sibling[0])
+			jobs = append(jobs, sibling...)
 		}
 
 		// ready budget is read now (nothing running yet) => summed ready == limit.
 		groups := make(map[string]*sgroup)
-		s.countReadyJobsByPriority(ctx, groups, snapshots)
+		racCountReadyJobs(ctx, s, groups, jobs)
 
 		q := queue.New(ctx, "reliable3-overcount-siblings")
 		defer func() { So(q.Destroy(), ShouldBeNil) }()
@@ -192,10 +178,11 @@ func TestReliable3RacAccountingCaps(t *testing.T) {
 		running := 60
 
 		s := newOverProvisionServer(limit)
-		grpName := "200:30:1:1:samehash" // no ~lg suffix
+		jobs := racReadyJobs("rc", 200, 0, nil, readyJobs) // no limit group
+		grpName := racGroupOf(jobs[0])
 
 		groups := make(map[string]*sgroup)
-		s.countReadyJobsByPriority(ctx, groups, readySnapshots(nil, grpName, 0, req, readyJobs))
+		racCountReadyJobs(ctx, s, groups, jobs)
 
 		q := queue.New(ctx, "reliable3-nolimit")
 		defer func() { So(q.Destroy(), ShouldBeNil) }()
@@ -215,17 +202,15 @@ func TestReliable3RacAccountingCaps(t *testing.T) {
 		limit := opEnvInt("WR_OP_LIMIT", 2000)
 		readyPerGroup := limit + opEnvInt("WR_PF_READY", 500)
 
-		lowGrp := "100:30:1:1:samehash" + lgSuffix  // priority 0
-		highGrp := "200:30:1:1:samehash" + lgSuffix // priority 250
+		low := racReadyJobs("low", 100, 0, lg, readyPerGroup)     // priority 0
+		high := racReadyJobs("high", 200, 250, lg, readyPerGroup) // priority 250
+		lowGrp, highGrp := racGroupOf(low[0]), racGroupOf(high[0])
 
 		s := newOverProvisionServer(limit)
 		groups := make(map[string]*sgroup)
 
 		// low-priority sibling's ready jobs are scanned FIRST, high-priority LAST.
-		snapshots := readySnapshots(nil, lowGrp, 0, req, readyPerGroup)
-		snapshots = readySnapshots(snapshots, highGrp, 250, req, readyPerGroup)
-
-		s.countReadyJobsByPriority(ctx, groups, snapshots)
+		racCountReadyJobs(ctx, s, groups, append(low, high...))
 
 		Convey("the high-priority sibling gets the budget, the low-priority one is starved", func() {
 			So(groups[highGrp].count, ShouldEqual, limit)
@@ -242,13 +227,14 @@ func TestReliable3RacAccountingCaps(t *testing.T) {
 		runCount := limit / 2
 
 		s := newOverProvisionServer(limit)
-		readyLowGrp := "100:30:1:1:samehash" + lgSuffix // priority 10 (ready)
-		runHighGrp := "200:30:1:1:samehash" + lgSuffix  // priority 250 (running-only)
+		readyLow := racReadyJobs("readylow", 100, 10, lg, limit) // priority 10 (ready)
+		readyLowGrp := racGroupOf(readyLow[0])
+		runHighGrp := racGroupOf(racReadyJobs("runhigh", 200, 250, lg, 1)[0]) // running-only
 
 		// the low-priority ready sibling fills the whole limit first (held=0 =>
 		// budget=limit), so nothing is skipped and there is no ready backlog.
 		groups := make(map[string]*sgroup)
-		s.countReadyJobsByPriority(ctx, groups, readySnapshots(nil, readyLowGrp, 10, req, limit))
+		racCountReadyJobs(ctx, s, groups, readyLow)
 		So(groups[readyLowGrp].count, ShouldEqual, limit)
 
 		// the high-priority sibling then appears purely via running jobs (reserves
@@ -277,64 +263,66 @@ func TestReliable3RacAccountingCaps(t *testing.T) {
 	})
 
 	Convey("The priority sort is gated to when a limit-group budget can be contended (§2a-priority)", t, func() {
-		// countReadyJobsByPriority must sort highest-priority-first only when the
-		// shared per-limit-group budget can actually be contended (a count limit is
-		// configured AND a ready job carries a limit group); otherwise the sort is
-		// pure waste and must be skipped, leaving the snapshot order untouched.
-		Convey("with a count limit carried by ready jobs it sorts, preserving priority-fairness", func() {
+		// a rac cycle must consider ready jobs highest-priority-first when the
+		// shared per-limit-group budget can be contended (a ready job carries a
+		// limit group); otherwise the sort could not change the outcome, so it is
+		// skipped, leaving the ready jobs in the order they came.
+		Convey("with ready jobs carrying a limit group it sorts, preserving priority-fairness", func() {
 			limit := 5
 			readyPerGroup := limit + 3
 
 			s := newOverProvisionServer(limit)
-			lowGrp := "100:30:1:1:samehash" + lgSuffix  // priority 0, scanned first
-			highGrp := "200:30:1:1:samehash" + lgSuffix // priority 250, scanned last
-
-			snapshots := readySnapshots(nil, lowGrp, 0, req, readyPerGroup)
-			snapshots = readySnapshots(snapshots, highGrp, 250, req, readyPerGroup)
-
-			So(s.readyJobsCanContendLimitBudget(snapshots), ShouldBeTrue)
+			low := racReadyJobs("low", 100, 0, lg, readyPerGroup)     // scanned first
+			high := racReadyJobs("high", 200, 250, lg, readyPerGroup) // scanned last
+			lowGrp, highGrp := racGroupOf(low[0]), racGroupOf(high[0])
 
 			groups := make(map[string]*sgroup)
-			s.countReadyJobsByPriority(ctx, groups, snapshots)
+			candidates := racCountReadyJobs(ctx, s, groups, append(low, high...))
+
+			So(candidates[0].snapshot.group, ShouldEqual, highGrp)
+			So(candidates[len(candidates)-1].snapshot.group, ShouldEqual, lowGrp)
 
 			So(groups[highGrp].count, ShouldEqual, limit)
 			So(groups[lowGrp].count, ShouldEqual, 0)
 		})
 
 		Convey("with no ready job carrying a limit group the sort is skipped (order untouched)", func() {
-			s := newOverProvisionServer(100) // a count limit IS configured...
-			lowGrp := "100:30:1:1:samehash"  // ...but these carry no limit group
-			highGrp := "200:30:1:1:samehash"
-
-			snapshots := readySnapshots(nil, lowGrp, 0, req, 3)
-			snapshots = readySnapshots(snapshots, highGrp, 250, req, 3)
-
-			So(s.readyJobsCanContendLimitBudget(snapshots), ShouldBeFalse)
+			s := newOverProvisionServer(100)           // a count limit IS configured...
+			low := racReadyJobs("low", 100, 0, nil, 3) // ...but these carry no limit group
+			high := racReadyJobs("high", 200, 250, nil, 3)
+			lowGrp, highGrp := racGroupOf(low[0]), racGroupOf(high[0])
 
 			groups := make(map[string]*sgroup)
-			s.countReadyJobsByPriority(ctx, groups, snapshots)
+			candidates := racCountReadyJobs(ctx, s, groups, append(low, high...))
 
-			// a sort would have moved the priority-250 snapshots to the front; the
+			// a sort would have moved the priority-250 jobs to the front; the
 			// original low-then-high order surviving proves the sort was skipped.
-			So(snapshots[0].group, ShouldEqual, lowGrp)
-			So(snapshots[0].priority, ShouldEqual, uint8(0))
-			So(snapshots[len(snapshots)-1].group, ShouldEqual, highGrp)
+			So(candidates[0].snapshot.group, ShouldEqual, lowGrp)
+			So(candidates[0].snapshot.priority, ShouldEqual, uint8(0))
+			So(candidates[len(candidates)-1].snapshot.group, ShouldEqual, highGrp)
 
 			// and with no limit group nothing is capped: every ready job is counted.
 			So(groups[lowGrp].count, ShouldEqual, 3)
 			So(groups[highGrp].count, ShouldEqual, 3)
 		})
 
-		Convey("with no count limit configured at all the sort is skipped", func() {
+		Convey("with no count limit configured at all nothing is capped, whatever the order", func() {
+			// the cycle still sorts here, deliberately: it gates on limit-group
+			// presence, not on GetLimits(), because a limit is enforced via
+			// GetRemainingCapacity's callback even before its group is first
+			// vivified. The sort then cannot change the outcome.
 			lim := limiter.New(func(_ context.Context, _ string) *limiter.GroupData { return nil })
 			s := &Server{limiter: lim, previouslyScheduledGroups: make(map[string]*sgroup)}
 
-			// even snapshots that DO carry a limit-group suffix cannot contend a
-			// budget when no count limit exists.
-			snapshots := readySnapshots(nil, "100:30:1:1:samehash"+lgSuffix, 0, req, 4)
+			low := racReadyJobs("low", 100, 0, lg, 4)
+			high := racReadyJobs("high", 200, 250, lg, 4)
+
+			groups := make(map[string]*sgroup)
+			racCountReadyJobs(ctx, s, groups, append(low, high...))
 
 			So(s.limiter.GetLimits(), ShouldBeEmpty)
-			So(s.readyJobsCanContendLimitBudget(snapshots), ShouldBeFalse)
+			So(groups[racGroupOf(low[0])].count, ShouldEqual, 4)
+			So(groups[racGroupOf(high[0])].count, ShouldEqual, 4)
 		})
 	})
 
@@ -342,7 +330,7 @@ func TestReliable3RacAccountingCaps(t *testing.T) {
 		// COMMENT A: the shared budget guarantees summed READY count <= remaining
 		// capacity, so the amount the cap trims is exactly the running over-count
 		// (drift). That is NOT deferred ready work, so it must not be added to
-		// skipped: the genuine ready backlog is already recorded by countJobInGroup,
+		// skipped: the genuine ready backlog is already recorded by the rac cycle,
 		// and inflating skipped with running units would pin the target at the limit
 		// with no ready work to backfill (re-over-provisioning).
 		limit := 100
@@ -351,7 +339,8 @@ func TestReliable3RacAccountingCaps(t *testing.T) {
 		drift := 30
 
 		s := newOverProvisionServer(limit)
-		grpName := "200:30:1:1:samehash" + lgSuffix
+		jobs := racReadyJobs("rc", 200, 0, lg, readyBacklog)
+		grpName := racGroupOf(jobs[0])
 
 		// initialHeld slots are held when the ready budget is read => remaining = 80.
 		for range initialHeld {
@@ -359,7 +348,7 @@ func TestReliable3RacAccountingCaps(t *testing.T) {
 		}
 
 		groups := make(map[string]*sgroup)
-		s.countReadyJobsByPriority(ctx, groups, readySnapshots(nil, grpName, 0, req, readyBacklog))
+		racCountReadyJobs(ctx, s, groups, jobs)
 
 		readyCount := groups[grpName].count
 		readySkipped := groups[grpName].skipped

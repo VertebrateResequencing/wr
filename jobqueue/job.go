@@ -42,6 +42,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unique"
 
 	"github.com/VertebrateResequencing/muxfys/v5"
 	"github.com/VertebrateResequencing/wr/container"
@@ -183,6 +184,13 @@ type jobDerived struct {
 	key          string
 	requirements *scheduler.Requirements
 	group        string
+
+	// groupHandle keeps group interned: every job of a scheduler group shares
+	// one copy of its name, so a rac cycle comparing or hashing the names of a
+	// large backlog's jobs reads the same few bytes rather than one copy per job,
+	// and the backlog holds one copy rather than one per job. The interned copy
+	// lives only while some handle to it does.
+	groupHandle unique.Handle[string]
 }
 
 // candidateKeys returns every Job key this JobEssence could be describing, most
@@ -581,11 +589,13 @@ func (j *Job) derivedLocked() *jobDerived {
 	}
 
 	req := reqForScheduler(j.Requirements)
+	groupHandle := unique.Make(schedulerGroupString(req, j.LimitGroups))
 
 	derived := &jobDerived{
 		key:          j.Key(),
 		requirements: req,
-		group:        schedulerGroupString(req, j.LimitGroups),
+		group:        groupHandle.Value(),
+		groupHandle:  groupHandle,
 	}
 
 	j.derived = derived
