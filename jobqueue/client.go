@@ -1620,7 +1620,8 @@ func (c *Client) handleFinalStateFailure(ctx context.Context, err error,
 // outages (see RetryWhileManagerUnreachable) it stops retrying, returning an
 // error matching ctx's, once ctx is done. An attempt already in progress is not
 // interrupted, so that can take as long as the connect timeout, or the reply
-// deadline (the larger of that and a minute) if the request was sent.
+// deadline (the larger of that and a minute) if the request was sent. If ctx is
+// already done, nothing is sent and ctx's error is returned.
 func (c *Client) GetByEssenceContext(ctx context.Context, je *JobEssence, getstd bool, getenv bool) (*Job, error) {
 	keys := je.candidateKeys()
 

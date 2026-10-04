@@ -74,9 +74,8 @@ Cancelling ctx, or its deadline passing, ends the ride-out with an error
 matching ctx's (errors.Is(err, context.Canceled), for example). An attempt to
 reach the manager in progress is not interrupted, so the call can return up to
 Timeout after ctx is done, or up to the reply deadline (the larger of Timeout
-and a minute) if the request had been sent. A Context variant does not
-otherwise check ctx: a call made with a ctx already done still makes one
-attempt.
+and a minute) if the request had been sent. A call made with a ctx already
+done sends nothing and returns ctx's error.
 
 A submission in progress when the manager stops can be partly or wholly added,
 and is sent again once the manager is back. The manager then reports the jobs

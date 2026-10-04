@@ -314,8 +314,10 @@ func TestClientGetSchedulerAlertsOutage(t *testing.T) {
 			arrived := make(chan struct{}, 1)
 			release := make(chan struct{})
 
+			// the warnings request, which dismisses the issues it reads, is the
+			// one in progress
 			m := newAlertsTestManager(t, func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == restBadServersEndpoint {
+				if r.URL.Path == restWarningsEndpoint {
 					arrived <- struct{}{}
 
 					<-release

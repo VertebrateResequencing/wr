@@ -105,10 +105,15 @@ type outageRetry struct {
 // an attempt reports otherwise, or once the manager has been unreachable for
 // longer than its RetryTime. It gives up early, returning ctx's error joined to
 // the last attempt's, if ctx is done; an attempt in progress is not
-// interrupted.
+// interrupted. If ctx is done before the first attempt, it makes none and
+// returns ctx's error, since that attempt could take a whole timeout.
 func (c *Client) rideOutOutage(ctx context.Context, retry *outageRetry, method string,
 	attempt func() (retryable bool, err error),
 ) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	outage := requestOutage{start: time.Now(), method: method, logCtx: retry.logCtx}
 	wait := outageBackoff(c.currentRetryWait())
 
@@ -139,7 +144,8 @@ func (c *Client) rideOutOutage(ctx context.Context, retry *outageRetry, method s
 // (see RetryWhileManagerUnreachable). It holds the client's lock only for each
 // attempt, not while waiting between them, so other requests are not held up
 // for the whole outage. It gives up early, returning ctx's error joined to the
-// last attempt's, if ctx is done.
+// last attempt's, if ctx is done, or ctx's error without sending anything if
+// ctx was done before it started.
 func (c *Client) requestRidingOutOutages(ctx context.Context, retry *outageRetry,
 	cr *clientRequest,
 ) (*serverResponse, error) {

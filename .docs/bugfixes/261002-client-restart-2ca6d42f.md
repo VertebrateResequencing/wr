@@ -7,8 +7,9 @@
 ## Delivery queue
 
 - PR #665 (client-restart-950a7a96 -> develop), no dependencies. Remote head
-  25ff030c; local 30 commits ahead, 0 behind origin/develop (261004).
-  Status: all checklist items done; prodsim outage reporting committed.
+  25ff030c; local 32 commits ahead, 0 behind origin/develop (261004).
+  Status: all checklist items done, including the review fix for calls
+  made with a ctx already done.
   Waits on: full lint/test/race, CHANGELOG, push, pr-resolver. Next: run
   the branch's quality gates.
 
@@ -469,6 +470,32 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
   - Docs: developers/README.md describes the new columns and that Go client
     calls wait through an outage; it and DEVELOPERS.md now say `make test`
     runs prodsim's tests (wr-testsuite tests every `go list ./...` package).
+  - Review of cadecbb3: a Context call made with a ctx already done still
+    made one attempt (rideOutOutage checked ctx only after it), which during
+    an outage takes a whole Timeout, so wrstat's 12 finds and 3 adds after
+    the run ended took 12 to 15 Timeouts (about 30 minutes at 2 minutes) and
+    padded slow/slow_s; the README's "at most a Timeout later" was false.
+    - Red commands: `timeout 900 nice -n 19 env GOFLAGS=-p=2
+      GOCACHE=[cache] go test -tags netgo -count 1 -timeout 20m ./jobqueue/
+      -run '^TestClientRetryWhileManagerUnreachable$'`, exit 1: `Expected
+      context canceled, Actual joinError{context canceled, receive time
+      out}` (the request was sent); `go test -tags netgo -count 1
+      ./developers/prodsim/ -run TestActorEndsWithTheRunWhileTheManagerIsDown`,
+      exit 1: `Expected '14.019340113s' to be less than '4s'` (wrstat).
+    - Fixed: rideOutOutage returns ctx's error without an attempt if ctx is
+      already done, for every mangos and REST call that rides out outages
+      (GetSchedulerAlertsContext included); WaitForRunning, WaitForJobs and
+      SubmitJobsAndWait already checked ctx first. client/doc.go no longer
+      says such a call makes one attempt, and GetByEssenceContext's doc says
+      it sends nothing. New cases: a cancelled GetByEssenceContext and
+      AddContext send nothing (jobqueue), and wrstat ends within 4s of the
+      run's end while the manager is down (prodsim). Green at -count 20
+      plain and race (prodsim) and -count 5 plain and race (jobqueue test).
+    - GetSchedulerAlertsContext cancelled during its bad-servers GET now
+      returns ctx's error without starting the warnings GET (nothing
+      dismissed); its doc says so. TestClientGetSchedulerAlertsOutage's
+      "does not interrupt a request in progress" case now holds the warnings
+      GET, the one that dismisses issues, so it still proves that.
 - [x] TestSubscriptionReconnectAdoptsManagerTimings (added by e89991b8) is
   flaky: 2 of 6 runs fail reading jq.ServerInfo.RetryTime right after the
   resync update (`Line 1834: Expected: time.Duration(31000000000) Actual:

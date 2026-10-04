@@ -200,6 +200,23 @@ func TestClientRetryWhileManagerUnreachable(t *testing.T) {
 				So(time.Since(calledAt), ShouldBeLessThan, 4*outageTestReplyWait+outageTestRetryWait)
 				So(m.receivedCopies(requestMethodGetByCmd), ShouldBeGreaterThan, 1)
 			})
+
+			Convey("sends nothing, returning the error of the context of the call, if it is already done", func() {
+				setOutageTimings(jq, outageTestRetryWait, time.Hour)
+
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+
+				calledAt := time.Now()
+				_, getErr := jq.GetByEssenceContext(ctx, &JobEssence{JobKey: outageTestKey}, false, false)
+				_, _, addErr := jq.AddContext(ctx, resendTestJobs(), nil, true)
+
+				So(getErr, ShouldEqual, context.Canceled)
+				So(addErr, ShouldEqual, context.Canceled)
+				So(time.Since(calledAt), ShouldBeLessThan, outageTestReplyWait)
+				So(m.receivedCopies(requestMethodGetByCmd), ShouldEqual, 0)
+				So(m.adds.Load(), ShouldEqual, 0)
+			})
 		})
 	})
 }

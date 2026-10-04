@@ -29,6 +29,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -41,70 +42,134 @@ import (
 const (
 	testClientTimeout = time.Second
 	testSimMinute     = 100 * time.Millisecond
+	// testWrstatSimMinute makes wrstat's 8 hour gap between runs under a
+	// second.
+	testWrstatSimMinute = time.Millisecond
 	// testRetryTime is how long the manager tells clients to keep trying to
 	// reach it: far longer than an actor may take to end once the run has.
-	testRetryTime = time.Minute
-	testCallWait  = 30 * time.Second
-	testEndWait   = 4 * testClientTimeout
-	testPoll      = 50 * time.Millisecond
+	testRetryTime  = time.Minute
+	testCallWait   = 30 * time.Second
+	testEndWait    = 4 * testClientTimeout
+	testPoll       = 50 * time.Millisecond
+	maxJitterTimes = 1.5
 )
+
+// outageRun is a prodsim run of one actor against a test manager the test can
+// stop.
+type outageRun struct {
+	s      *sim
+	out    string
+	server *jobqueue.Server
+	cancel context.CancelFunc
+	ended  chan struct{}
+	undo   []func()
+}
+
+// startOutageRun starts actor at the given simulated minute and scale against
+// a new test manager that keeps its DB across a stop, as production does.
+func startOutageRun(t *testing.T, simMinute time.Duration, scale float64,
+	actor func(*sim, context.Context),
+) *outageRun {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &outageRun{out: t.TempDir(), cancel: cancel, ended: make(chan struct{})}
+
+	config, d := clienttesting.PrepareWrConfig(t)
+	r.undo = append(r.undo, d)
+
+	// a request the stop cuts off waits for its reply for the longer of the
+	// Timeout and this floor (60s); prodsim's real 2 minute Timeout is the
+	// longer, so make the shortened test Timeout the longer too
+	minRequest := jobqueue.ClientMinRequestTimeout
+	jobqueue.ClientMinRequestTimeout = testClientTimeout
+
+	r.undo = append(r.undo, func() { jobqueue.ClientMinRequestTimeout = minRequest })
+
+	config.Deployment = "production"
+	config.Timings.RetryTime = testRetryTime
+	r.server = clienttesting.Serve(t, config)
+
+	cfg := simTestConfig(r.out)
+	cfg.simMinute = simMinute
+	cfg.scale = scale
+
+	var err error
+
+	r.s, err = newSim(cfg)
+	So(err, ShouldBeNil)
+
+	r.undo = append(r.undo, r.s.close)
+
+	go func() {
+		actor(r.s, ctx)
+		close(r.ended)
+	}()
+
+	return r
+}
+
+// end ends the run and returns how long the actor took to end.
+func (r *outageRun) end() time.Duration {
+	endedAt := time.Now()
+
+	r.cancel()
+
+	select {
+	case <-r.ended:
+	case <-time.After(testRetryTime + testCallWait):
+	}
+
+	return time.Since(endedAt)
+}
+
+// cleanup ends the run, if the test did not, and undoes startOutageRun's setup.
+func (r *outageRun) cleanup() {
+	r.cancel()
+
+	for _, undo := range slices.Backward(r.undo) {
+		undo()
+	}
+}
 
 func TestActorEndsWithTheRunWhileTheManagerIsDown(t *testing.T) {
 	Convey("Given an actor adding jobs to a manager that then stops and stays down", t, func() {
-		config, d := clienttesting.PrepareWrConfig(t)
-		defer d()
+		r := startOutageRun(t, testSimMinute, 0.1, (*sim).ibackupServer)
+		defer r.cleanup()
 
-		// an add the stop cuts off waits for its reply for the longer of the
-		// Timeout and this floor (60s); prodsim's real 2 minute Timeout is the
-		// longer, so make the shortened test Timeout the longer too
-		minRequest := jobqueue.ClientMinRequestTimeout
-		jobqueue.ClientMinRequestTimeout = testClientTimeout
+		So(waitForCalls(r.out, "add_put", 1), ShouldBeTrue)
 
-		defer func() { jobqueue.ClientMinRequestTimeout = minRequest }()
-
-		// production keeps the DB across the stop, and RetryTime is what the
-		// manager tells clients to keep trying for
-		config.Deployment = "production"
-		config.Timings.RetryTime = testRetryTime
-		server := clienttesting.Serve(t, config)
-
-		out := t.TempDir()
-		s, err := newSim(simTestConfig(out))
-		So(err, ShouldBeNil)
-
-		defer s.close()
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		ended := make(chan struct{})
-
-		go func() {
-			s.ibackupServer(ctx)
-			close(ended)
-		}()
-
-		So(waitForCalls(out, "add_put", 1), ShouldBeTrue)
-
-		server.Stop(context.Background(), true)
+		r.server.Stop(context.Background(), true)
 
 		// the next add, a simulated minute later, now waits for the manager
 		time.Sleep(testSimMinute + testClientTimeout)
 
 		Convey("ending the run ends the actor within about the client Timeout, recording the cut-short add", func() {
-			endedAt := time.Now()
+			So(r.end(), ShouldBeLessThan, testEndWait)
 
-			cancel()
-
-			select {
-			case <-ended:
-			case <-time.After(testRetryTime + testCallWait):
-			}
-
-			So(time.Since(endedAt), ShouldBeLessThan, testEndWait)
-
-			rows := callRows(out, "add_put")
+			rows := callRows(r.out, "add_put")
 			So(len(rows), ShouldBeGreaterThanOrEqualTo, 2)
+			So(rows[len(rows)-1][5], ShouldContainSubstring, context.Canceled.Error())
+		})
+	})
+
+	Convey("Given wrstat, whose run is many calls, and a manager that stops and stays down between runs", t, func() {
+		r := startOutageRun(t, testWrstatSimMinute, 1, (*sim).wrstatMulti)
+		defer r.cleanup()
+
+		So(waitForCalls(r.out, "add_tidy", 1), ShouldBeTrue)
+
+		r.server.Stop(context.Background(), true)
+
+		// by then the next run has started, and its first find waits for the
+		// manager
+		time.Sleep(time.Duration(float64(r.s.sim(wrstatEvery))*maxJitterTimes) + testClientTimeout)
+
+		Convey("ending the run ends wrstat within about the client Timeout, without trying its later calls", func() {
+			So(r.end(), ShouldBeLessThan, testEndWait)
+
+			rows := callRows(r.out, "find_dependent_prefix")
+			So(len(rows), ShouldEqual, 2*wrstatPaths)
 			So(rows[len(rows)-1][5], ShouldContainSubstring, context.Canceled.Error())
 		})
 	})
