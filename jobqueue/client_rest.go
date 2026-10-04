@@ -105,8 +105,8 @@ func (c *Client) GetSchedulerAlerts() (*SchedulerAlerts, error) {
 // GetSchedulerAlertsContext is GetSchedulerAlerts, except that on a client that
 // rides out outages it stops retrying once ctx is done, as GetByEssenceContext
 // does. A request in progress is not interrupted, since the manager may then
-// have dismissed issues whose reply never arrives, but once ctx is done no
-// further request is started.
+// have dismissed issues whose reply never arrives, but on such a client no
+// further request is started once ctx is done.
 func (c *Client) GetSchedulerAlertsContext(ctx context.Context) (*SchedulerAlerts, error) {
 	alerts := &SchedulerAlerts{}
 	if err := c.restGet(ctx, restBadServersEndpoint, false, &alerts.BadServers); err != nil {

@@ -232,6 +232,29 @@ func TestClientAddAndWaitCancelledDuringOutage(t *testing.T) {
 			So(found, ShouldBeTrue)
 			So(strings.Split(unfinished, ", "), ShouldHaveLength, 1)
 		})
+
+		Convey("cancelling it while another request holds the client's lock returns within about the client "+
+			"timeout", func() {
+			server.Stop(ctx, true)
+
+			// stands in for the subscription's resubscribe, which can hold
+			// the lock through the outage
+			jq.Lock()
+
+			cancelledAt := time.Now()
+
+			cancel()
+
+			result := receiveAddAndWaitResult(resultCh, 2*subscriptionRestartRetryTime)
+			took := time.Since(cancelledAt)
+
+			jq.Unlock()
+
+			So(took, ShouldBeLessThan, clientConnectTime+unsubscribeWait+closeWait+2*schedulingSlack)
+			So(errors.Is(result.err, context.Canceled), ShouldBeTrue)
+			So(errors.Is(result.err, errClientBusy), ShouldBeTrue)
+			So(result.jobs, ShouldBeEmpty)
+		})
 	})
 }
 

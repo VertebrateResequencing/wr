@@ -7,7 +7,7 @@
 ## Delivery queue
 
 - PR #665 (client-restart-950a7a96 -> develop), no dependencies. Remote head
-  25ff030c; local 35 commits ahead, 0 behind origin/develop (261004).
+  25ff030c; local 36 commits ahead, 0 behind origin/develop (261004).
   Status: all checklist items done, including the review fix for calls
   made with a ctx already done.
   Waits on: full lint/test/race, CHANGELOG, push, pr-resolver. Next: run
@@ -535,6 +535,15 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
     jobs finished and the manager stopped: it returns within the timeout
     plus Unsubscribe's 0.5s (test) and 1s waits, naming one unfinished key.
     Green 30 of 30 plain and 10 of 10 -race.
+  - Re-review: the lock-wait bound was untested (a mutant using
+    requestWithin survived). A second case holds the client's lock, as a
+    resubscribe can, while the cancelled AddAndWait fetches: it returns
+    within the same bound with errClientBusy joined. The mutant now fails
+    it (`Expected '1m0.000113775s' to be less than '3.8s'`). Green -count 5
+    plain and -race with TestClientRetryWhileManagerUnreachable and
+    TestClientGetSchedulerAlertsOutage. GetByEssenceContext's and
+    GetSchedulerAlertsContext's docs now limit "nothing is sent once ctx is
+    done" to clients that ride out outages (others ignore ctx).
   - Gate after both items (594e4b48): `go test -tags netgo -count 1
     ./jobqueue/ ./client/... ./developers/prodsim/ ./cmd/` all ok plain.
     Under -race client, prodsim and cmd were ok; jobqueue failed
