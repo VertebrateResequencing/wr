@@ -134,7 +134,7 @@
     until it holds the one live job; it no longer downloads into the path
     the manager uses for its own temporary backup file.
   - After: the concurrent pair passed 2 runs of 2.
-- [ ] TestReliable2KeepReconnectResync failed once in a plain `make test` run
+- [x] TestReliable2KeepReconnectResync failed once in a plain `make test` run
   at load around 90; it passed on rerun.
   - Seen once, no repro. `stress -c 40` alongside `GOMAXPROCS=2
     WR_TEST_LANE=45 jobqueue.test -test.run
@@ -144,6 +144,8 @@
     test gives the subscription a 2s reconnect budget
     (`applySubscriptionReconnectTimings(..., 250ms, 2s)`), which a manager
     restart plus recovery at load 90 could outlast.
+  - Fixed by #651, `260928-load-sensitive-flakes.md`:
+    TestReliable2KeepReconnectResync.
 - [x] TestKillRacingCmdExitKeepsTouching failed at
   jobqueue/kill_after_exit_test.go:422 with "not started: killed by user
   request" in a full race run at load 15-32. It passed 10 of 10 alone on
@@ -170,8 +172,9 @@
     helper (`reliable4_cmd_log_test.go` and the first item's
     `kill_wind_down_test.go`) now kill a started command, as they meant to.
   - After, same load: 20 of 20 passed.
-- [ ] TestStatusCountReconcile hit its 120s timeout at load 80+ on develop.
+- [x] TestStatusCountReconcile hit its 120s timeout at load 80+ on develop.
   - Recorded only, as asked (low priority). Not investigated.
+  - Fixed by #651, `260928-load-sensitive-flakes.md`: TestStatusCountReconcile.
 - [x] `make test` after the first item: TestManagerLiveJTouch failed at
   jobqueue/live_jtouch_test.go:503 in the two KillCalled Conveys,
   `Expected '999958368' to be less than or equal to '978465193'`: a touch of

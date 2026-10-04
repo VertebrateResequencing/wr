@@ -234,7 +234,7 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
       ErrRecovering`. The test now matches the new line (as two substrings,
       since `dupword` rejects the literal); the branch it guards is unchanged.
 
-- [ ] **`make test` failed `TestManagerStopWhileShuttingDown` (in `cmd`) once,
+- [x] **`make test` failed `TestManagerStopWhileShuttingDown` (in `cmd`) once,
       with `helper manager did not become ready` after 60s.** Found by a gate
       run for the first item; it does not touch the code that item changed.
       Not fixed here: it has no red command yet.
@@ -261,8 +261,10 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
     test's 60s readiness wait. A fix would pick the helper's port outside the
     ephemeral range, with a red command that holds the chosen port as a
     connection's source port.
+  - Fixed by #667, `261002-incidental-darwin-gofmt-95822cb8.md`:
+    TestManagerStopWhileShuttingDown.
 
-- [ ] **`CGO_ENABLED=1 make race` failed `TestManagerPortSelfConnect` (in
+- [x] **`CGO_ENABLED=1 make race` failed `TestManagerPortSelfConnect` (in
       `jobqueue`) once: the manager exited through `publishexit` instead of
       publishing.** Found by a gate run for the first item; it does not touch
       the code that item changed. Not fixed here: it has no red command yet.
@@ -288,6 +290,9 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
     the port, and a concurrent test process that picked the same free port
     would then take it with its own listener first. Same class as the item
     above: a free port picked and released under a parallel suite.
+  - Fixed by #651, `260929-test-ci-reliability.md` (port 45993 is held by an
+    IPv6-only listener), and #657, `260930-moved-on-runner.md` (`pscFreePort`
+    checks `portCanListen`).
 
 - [x] **Review: a start that reached the manager while its runner's archive,
       which had implied it, waited on its commit was accepted, and made the
@@ -345,7 +350,7 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
   - Fix, `jobqueue/reliable2_release_test.go`: compare the item with nil
     instead. `--count 10` of it under `-race` passes.
 
-- [ ] **Review gate: `make test` failed `TestRESTJobModificationValidation`
+- [x] **Review gate: `make test` failed `TestRESTJobModificationValidation`
       (in `jobqueue`) once: a released job read as `ready`, not `delayed`,
       after a PATCH.** It does not touch the code the first item changed. Not
       fixed here: it has no red command yet.
@@ -358,6 +363,8 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
     ran out between the release and the PATCH's reply on a loaded machine,
     so the queue moved it to ready. A fix would give the test's job a delay
     it cannot outlast.
+  - Fixed by #651, `260928-load-sensitive-flakes.md`:
+    TestRESTJobModificationValidation.
 
 - [x] **Redesign, at the owner's request: the manager must not accept
       out-of-order or missing runner messages, and the runner must send its

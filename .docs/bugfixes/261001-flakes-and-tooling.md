@@ -28,6 +28,7 @@ Quality gates: `make lint`, `make test`, `make race`, run with
     inherited `Maxrss`, every job's recorded PeakRAM is at least the `wr runner`
     process's RSS high-water mark, and `ownMemoryMB` adds the runner's Pss again,
     so small jobs are over-learned by about twice the runner's footprint.
+    - Since fixed by #660, `261001-peak-ram-includes-runner.md`.
 - [x] Flake: TestDepGranularitySidecarReportsElapsedTime failed once under load (a prior fix made it wait for the next heartbeat instead of 200ms; check it's on develop and why it can still fail).
   - The prior fix (`dgsWaitForSidecarRewrite`) is on develop in 95faf168.
   - Red: temporary injected delays, since removed. In the heartbeat goroutine,

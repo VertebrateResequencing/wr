@@ -125,6 +125,8 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
     kicked budget. The race gate once failed `TestServerWebISuspendedStatus`
     (serverWebI_test.go:309), the known flake in `260713-1.md`; a full re-run
     passed.
+    - Since fixed: the jbury loop by this file's last item, and the kick re-send
+      was not real (#656, `260930-runner-report-followups.md` item 5).
 
 - [x] **A live-record change can be queued out of order with its encoding.**
       Found in review of the first item. `queueJobChange` (jobqueue/db.go)
@@ -204,3 +206,5 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
     inside the snapshot lock would close it. After a lost release, the
     owner's exit code and peak RAM are dropped, because that release already
     set Exited. An item the manager requeued as Dependent still gets ErrBadJob.
+    - Since fixed by #656, `260930-runner-report-followups.md` items 1, 1b, 2
+      and 3.

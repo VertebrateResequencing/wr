@@ -55,7 +55,9 @@ Branch `fix-small-soak-findings`, based on `origin/develop` at `8cb5ff5`
     decoding (including over a job with a memo) gives the right key;
     concurrent callers agree; a repeat `Key()` allocates nothing; plus
     `BenchmarkJobKey`.
-- [ ] ~~Reload log noise from #640's token reload.~~ Skipped: `origin/develop`
+- [x] ~~Reload log noise from #640's token reload.~~ Skipped: `origin/develop`
   (`8cb5ff5`) does not contain #640 (`origin/fix-soak-findings` is not an
   ancestor of it) and has no client token reload, so there is no retry to
   quieten.
+  - Fixed by #646, `260928-soak3-small-findings.md`: "Error-level log noise on
+    clean restart".

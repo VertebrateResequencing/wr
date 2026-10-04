@@ -198,6 +198,8 @@ and `GOFLAGS=-p=2` under `nice -n 19`: `make lint`, `make test`,
     finder `network/port/port.go`, used by `internal/config.go` to choose a
     user's port range, probes the hostname or loopback while the manager
     binds dual-stack.
+    - Since fixed: `freeStatusTestPorts` picks on `0.0.0.0:0`, and #661
+      (`261001-port-finder-dual-stack.md`) fixed the port finder.
 
 - [x] **Stale "under LSF" in the RunnerReservation comment** (Copilot, PR
       #657, thread PRRT_kwDOAKD33M6n24d5, comment 4153211853,

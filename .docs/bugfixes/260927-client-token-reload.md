@@ -99,18 +99,23 @@ The host was shared and heavily loaded (1-min load often 30 to 65). These
 failed in a gate run, then passed when run alone on this branch. None touch
 the token code. They are recorded here, not fixed.
 
-- [ ] `TestFuseMountReaping` (jobqueue/testfusemount_test.go:491) failed in
+- [x] `TestFuseMountReaping` (jobqueue/testfusemount_test.go:491) failed in
   one `make test` run and in one isolated run with `--count 5`: `Expected:
   true / Actual: false` for `So(pidInFuseWait(child.pid), ShouldBeTrue)`, the
   premise that the wedged child is blocked in a fuse request. It passed
   twice on this branch and 5 times on develop at `cb9bb03` right after.
-- [ ] `TestDepGranularityAddTransactionCost`
+  - Fixed by #651, `260928-load-sensitive-flakes.md`: TestFuseMountReaping.
+- [x] `TestDepGranularityAddTransactionCost`
   (jobqueue/depgranularity_add_test.go:156) failed in one `make test` run:
   `Expected '99' to be less than or equal to '53.75'`. It passed 3 times
   alone.
-- [ ] One `make test` run failed the `jq_default` and `jq_reliable4` lanes
+  - Fixed by #651, `260928-load-sensitive-flakes.md`:
+    TestDepGranularityAddTransactionCost.
+- [x] One `make test` run failed the `jq_default` and `jq_reliable4` lanes
   with no failure text in either lane's summary. `go test -run
   '^TestReliable4'` on this branch then passed.
+  - Closed, watch: not reproduced, and with no failure text there is nothing to
+    investigate.
 - Known develop flake: `TestSubscriptionReconnectDuringManagerShutdown` failed
   in one `make race` run (subscription_test.go:2206,
   `clientLockTakenWithin`) and in one targeted race run. It also failed on

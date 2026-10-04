@@ -113,11 +113,13 @@ Quality gates, with all `OS_*` unset: `make lint`, `make test`,
       still going. The right behaviour for a running dependent (leave it, kill
       and re-block it, or re-queue it after it finishes) is a design choice,
       so it is left for a decision.
+      - Since fixed by #649, `260929-running-dependent-rerun.md`.
     - Residual, not fixed: a dependency re-run that resurrects an archived job
       in the moment between `archiveCompletedJob`'s database archive and its
       `q.Remove` writes a live record for it while the queue add counts it a
       duplicate and the remove then drops it, so it re-runs only after a
       restart. Narrow, and not a double run.
+      - Since fixed by #655, `260930-dep-group-rerun-gaps.md` item 7b.
   - Real-artifact check, `REPRO_ROOT=... REPRO_WR=<binary> bash readdcrash.sh 1`
     (local scheduler, kill -9 of the manager after two `wr add --rerun`s of the
     running job): the develop 7a74da59 binary ran the command twice (`marks`
