@@ -29,13 +29,16 @@ caller runs `make test`, `make race` and `make speed`.
     test, plain and `-race`:
 
     ```text
-      Line 357:
+      Line 365:
       Expected: (*limiter.GroupData){mode:limiter.groupMode(0), limit:0, current:0}
       Actual:   (*limiter.GroupData){mode:limiter.groupMode(1), limit:5, current:0}
-      Line 378:
+      Line 386:
       Expected: -1
       Actual:   5
-      Line 410:
+      Line 407:
+      Expected: -1
+      Actual:   5
+      Line 430:
       Expected: (*limiter.GroupData){mode:limiter.groupMode(1), limit:3, current:0}
       Actual:   (*limiter.GroupData){mode:limiter.groupMode(1), limit:5, current:0}
     --- FAIL: TestLimiterLimitChangedDuringLookup (0.00s)
@@ -43,9 +46,11 @@ caller runs `make test`, `make race` and `make speed`.
 
     Each case holds the callback's first lookup of `g` after it has read the
     stored limit of 5, stores the new limit, tells the limiter as `wr limit`
-    does, then lets the lookup return. Line 357: `RemoveLimit` during a
-    `GetLimit`, which returned 5. Line 378: `RemoveLimit` during an
-    `Increment`, after which `g` reported limit 5. Line 410: `SetLimit(3)`
+    does, then lets the lookup return. Line 365: `RemoveLimit` during a
+    `GetLimit`, which returned 5. Line 386: `RemoveLimit` during an
+    `Increment`, after which `g` reported limit 5. Line 407: the same during
+    an `Increment` of `other` and `g`, so `g` is not the first group looked
+    up. Line 430: `SetLimit(3)`
     and a `Decrement` of `g` (forgetting it at count 0) during a `GetLimit`,
     which rebuilt `g` from the stale 5.
   - Verified: both reported cases are real. `SetLimit` alone during a lookup
@@ -63,16 +68,20 @@ caller runs `make test`, `make race` and `make speed`.
     rarely, so the extra lookups are rare. The loop repeats only while limits
     keep changing during its lookups.
   - Tests: `limiter/limiter_test.go`: new `TestLimiterLimitChangedDuringLookup`
-    (remove during `GetLimit`, remove during `Increment`, set during
-    `GetLimit`, set during `Increment`, set then forgotten during
-    `GetLimit`), using a `heldLookupDB` callback that blocks its first lookup
-    on a channel, so the test is deterministic.
+    (remove during `GetLimit`, remove during `Increment`, remove during an
+    `Increment` naming another group first, set during `GetLimit`, set during
+    `Increment`, set then forgotten during `GetLimit`), using a
+    `heldLookupDB` callback that blocks its first lookup of `g` on a
+    channel, so the test is deterministic.
   - Mutants, each in a scratch copy, each failing the new test plain: no
-    discard after a change (357, 378, 410); `RemoveLimit` not bumping the
-    counter (357, 378); `SetLimit` not bumping it (410); snapshot taken after
+    discard after a change (all four lines on the base); discarding only the
+    first group's lookup, `resolved[0] = resolution{}` (407; added after
+    review, when it survived the single-group cases); `RemoveLimit` not
+    bumping the counter and `SetLimit` not bumping it (the remove cases and
+    the set-then-forgotten case respectively); snapshot taken after
     re-locking, and discarding only the in-memory group pointers, not the
-    looked-up data (each failing both remove cases; run before the third set
-    case was added).
+    looked-up data (each failing the single-group remove cases; run before
+    the later cases were added).
   - Green: the red command exits 0 plain and `-race` (`-count 20`); the
     whole `./limiter` package exits 0 plain and `-race`;
     `TestJobqueueLimitGroups`, `TestLimitGroupReport`,

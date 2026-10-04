@@ -261,21 +261,25 @@ func BenchmarkLimiterIncDecUnlimited(b *testing.B) {
 	}
 }
 
-// heldLookupDB stands in for the database a SetLimitCallback reads. Its first
-// lookup reads the limit stored at the time and then waits until released
-// before returning it, so a test can change the stored limit, and tell the
-// Limiter, while that lookup is in progress.
+// heldLookupDB stands in for the database a SetLimitCallback reads, storing a
+// limit for one group and none for any other. Its first lookup of that group
+// reads the limit stored at the time and then waits until released before
+// returning it, so a test can change the stored limit, and tell the Limiter,
+// while that lookup is in progress.
 type heldLookupDB struct {
 	mu      sync.Mutex
+	name    string
 	limit   int64
 	once    sync.Once
 	entered chan struct{}
 	release chan struct{}
 }
 
-// newHeldLookupDB returns a heldLookupDB storing the given limit.
-func newHeldLookupDB(limit int64) *heldLookupDB {
+// newHeldLookupDB returns a heldLookupDB storing the given limit for the named
+// group.
+func newHeldLookupDB(name string, limit int64) *heldLookupDB {
 	return &heldLookupDB{
+		name:    name,
 		limit:   limit,
 		entered: make(chan struct{}),
 		release: make(chan struct{}),
@@ -283,7 +287,11 @@ func newHeldLookupDB(limit int64) *heldLookupDB {
 }
 
 // lookup is a SetLimitCallback that reads the stored limit.
-func (db *heldLookupDB) lookup(context.Context, string) *GroupData {
+func (db *heldLookupDB) lookup(_ context.Context, name string) *GroupData {
+	if name != db.name {
+		return NewCountGroupData(-1)
+	}
+
 	data := NewCountGroupData(db.stored())
 
 	db.once.Do(func() {
@@ -311,7 +319,7 @@ func (db *heldLookupDB) store(limit int64) {
 }
 
 // changeDuringLookup runs op in its own goroutine, and once op's first lookup
-// has read the stored limit, stores the new limit and calls change, as the
+// of the named group has read the stored limit, stores the new limit and calls change, as the
 // manager does for `wr limit`, before letting the lookup return. It returns
 // once op has.
 func (db *heldLookupDB) changeDuringLookup(op func(), limit int64, change func()) {
@@ -343,7 +351,7 @@ func TestLimiterLimitChangedDuringLookup(t *testing.T) {
 		)
 
 		g := []string{name}
-		db := newHeldLookupDB(oldLimit)
+		db := newHeldLookupDB(name, oldLimit)
 		l := New(db.lookup)
 
 		remove := func() { l.RemoveLimit(name) }
@@ -386,6 +394,18 @@ func TestLimiterLimitChangedDuringLookup(t *testing.T) {
 			}
 
 			So(incremented, ShouldEqual, increments)
+		})
+
+		Convey("removing the limit during an Increment that names it after another group leaves it without a limit", func() {
+			both := []string{"other", name}
+
+			var first bool
+
+			db.changeDuringLookup(func() { first = l.Increment(ctx, both) }, noLimit, remove)
+
+			So(first, ShouldBeTrue)
+			So(l.GetLimit(ctx, name).LimitForDisplay(), ShouldEqual, noLimit)
+			So(l.GetRemainingCapacity(ctx, both), ShouldEqual, noLimit)
 		})
 
 		Convey("setting a limit during a GetLimit leaves the group with that limit", func() {
