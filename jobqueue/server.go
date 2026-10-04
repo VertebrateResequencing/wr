@@ -1757,6 +1757,11 @@ type Server struct {
 	srmutex             sync.Mutex   // to protect scheduleRetries
 	csmutex             sync.RWMutex // to protect clientSubscriptions and subsClosed
 	rpmutex             sync.Mutex   // to protect racPending, racRunning and waitingReserves
+	// lgmutex is held across storing limit groups in the database and giving
+	// the stored limits to the limiter, so that the limiter gets them in the
+	// order the database stored them. Under it only the database and the
+	// limiter's own locks are taken, and nothing holding either takes it.
+	lgmutex sync.Mutex
 	sync.Mutex
 	wsmutex  sync.RWMutex
 	up       bool
@@ -4194,6 +4199,28 @@ func countUndecodedJobs(groups map[string][]*Job, undecoded map[string]int) {
 
 		members[len(members)-1].Similar += count
 	}
+}
+
+// storeAndApplyLimitGroup stores a limit group in the database and applies it
+// to the limiter, under lgmutex.
+func (s *Server) storeAndApplyLimitGroup(name string, limit *limiter.GroupData) error {
+	s.lgmutex.Lock()
+	defer s.lgmutex.Unlock()
+
+	_, removed, err := s.db.storeLimitGroups(map[string]*limiter.GroupData{name: limit})
+	if err != nil {
+		return err
+	}
+
+	if limit.IsValid() {
+		s.limiter.SetLimit(name, *limit)
+	}
+
+	for _, g := range removed {
+		s.limiter.RemoveLimit(g)
+	}
+
+	return nil
 }
 
 // shutdownPprofServer gracefully shuts down the pprof endpoint started by
@@ -6822,7 +6849,19 @@ func (s *Server) handleUserSpecifiedJobLimitGroups(job *Job, limitGroups map[str
 // held must not be: another request, such as `wr limit`, may have changed it
 // since the database was read, and giving it again would bring back the old
 // limit in memory.
+//
+// Both are done under lgmutex, so that a racing request that changes the same
+// group cannot apply its limit to the limiter before this one does when it
+// stored it in the database after this one did. An add without limit groups
+// does not take it.
 func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) error {
+	if len(limitGroups) == 0 {
+		return nil
+	}
+
+	s.lgmutex.Lock()
+	defer s.lgmutex.Unlock()
+
 	changed, removed, err := s.db.storeLimitGroups(limitGroups)
 	if err != nil {
 		return err
@@ -8467,18 +8506,10 @@ func (s *Server) getSetLimitGroup(ctx context.Context, group string) (*limiter.G
 
 // setLimitGroup persists a limit group, applies the new limit (if valid),
 // removes any limits the store reported as removed, and re-triggers scheduling.
+// Like storeLimitGroups, it persists and applies under lgmutex.
 func (s *Server) setLimitGroup(ctx context.Context, name string, limit *limiter.GroupData) error {
-	_, removed, err := s.db.storeLimitGroups(map[string]*limiter.GroupData{name: limit})
-	if err != nil {
+	if err := s.storeAndApplyLimitGroup(name, limit); err != nil {
 		return err
-	}
-
-	if limit.IsValid() {
-		s.limiter.SetLimit(name, *limit)
-	}
-
-	for _, g := range removed {
-		s.limiter.RemoveLimit(g)
 	}
 
 	s.triggerReadyAddedCallback(ctx)

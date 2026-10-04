@@ -58,6 +58,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/limiter"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -173,6 +174,50 @@ func BenchmarkAddJobs(b *testing.B) {
 
 	b.StopTimer()
 	reportBoltWriteMetrics(b, testDB, writesBefore, pagesBefore, benchJobCount*b.N)
+}
+
+// BenchmarkServerStoreLimitGroups measures Server.storeLimitGroups, which every
+// add (and modify of limit groups) calls: with no limit groups, with a limit
+// group whose limit is already stored (the usual case when adding to a limited
+// group), and with that from many adds at once.
+func BenchmarkServerStoreLimitGroups(b *testing.B) {
+	testDB := newBenchDB(b)
+	s := &Server{db: testDB, limiter: limiter.New(testDB.retrieveLimitGroup)}
+	stored := map[string]*limiter.GroupData{"bench-lg": limiter.NewCountGroupData(5)}
+
+	if err := s.storeLimitGroups(stored); err != nil {
+		b.Fatal(err)
+	}
+
+	b.Run("none", func(b *testing.B) {
+		none := map[string]*limiter.GroupData{}
+
+		for range b.N {
+			if err := s.storeLimitGroups(none); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("unchanged", func(b *testing.B) {
+		for range b.N {
+			if err := s.storeLimitGroups(stored); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("unchanged-parallel", func(b *testing.B) {
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				if err := s.storeLimitGroups(stored); err != nil {
+					b.Error(err)
+
+					return
+				}
+			}
+		})
+	})
 }
 
 // BenchmarkUpdateJobState measures the per-job state-change persistence path:

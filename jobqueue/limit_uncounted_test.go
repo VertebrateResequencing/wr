@@ -28,7 +28,7 @@ package jobqueue
 import (
 	"context"
 	"fmt"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,6 +46,12 @@ const (
 	// should succeed is given dgrReserveWait instead.
 	luBlockedWait = 250 * time.Millisecond
 )
+
+// limitRaceHold is how long addRacingLimitChange holds an add, after it has
+// stored its limit groups, for the racing change to complete. A change that is
+// correctly made to wait for the add cannot complete in it, while one that is
+// not completes in a fraction of it.
+const limitRaceHold = time.Second
 
 // TestLimitSetOnRunningGroup covers GitHub issue #448: a limit set on a limit
 // group whose jobs were already running (with `wr limit -g name:n` or by adding
@@ -185,22 +191,9 @@ func TestLimitAddKeepsNewerLimit(t *testing.T) {
 		t.Cleanup(func() { limitGroupsStoredHook = nil })
 
 		addRacing := func(newer *limiter.GroupData) {
-			var once sync.Once
-
-			raced := make(chan error, 1)
-			limitGroupsStoredHook = func() {
-				once.Do(func() {
-					raced <- d.server.setLimitGroup(ctx, luGroup, newer)
-				})
-			}
-
-			job := d.job("echo lu racing", "lu")
-			job.LimitGroups = []string{fmt.Sprintf("%s:%d", luGroup, oldLimit)}
-			dgrAddJobs(jq, []*Job{job})
-
-			limitGroupsStoredHook = nil
-
-			So(<-raced, ShouldBeNil)
+			_ = addRacingLimitChange(jq, d, fmt.Sprintf("%s:%d", luGroup, oldLimit), func() error {
+				return d.server.setLimitGroup(ctx, luGroup, newer)
+			})
 		}
 
 		Convey("an add with that limit, racing wr limit changing it, keeps the new limit", func() {
@@ -217,4 +210,110 @@ func TestLimitAddKeepsNewerLimit(t *testing.T) {
 			So(limitGroupRecorded(d, luGroup), ShouldBeFalse)
 		})
 	})
+}
+
+// TestLimitStoreAppliedInCommitOrder covers an add that stores a group's limit
+// for the first time, racing another request that stores a different limit for
+// the group after the add's database write: whichever is stored last in the
+// database must also be the limit the manager enforces.
+func TestLimitStoreAppliedInCommitOrder(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a server with a limit group that has no limit", t, func() {
+		d := dgrStartServer(ctx)
+
+		defer d.stop(ctx)
+
+		jq := d.connect()
+
+		defer disconnect(jq)
+
+		const addedLimit, newLimit = 5, 3
+
+		t.Cleanup(func() { limitGroupsStoredHook = nil })
+
+		added := fmt.Sprintf("%s:%d", luGroup, addedLimit)
+
+		Convey("an add setting a limit, racing wr limit changing it, ends with the same limit in memory as on disk", func() {
+			early := addRacingLimitChange(jq, d, added, func() error {
+				return d.server.setLimitGroup(ctx, luGroup, limiter.NewCountGroupData(newLimit))
+			})
+
+			So(lgrLimitCmd(jq, luGroup), ShouldEqual, limitGroupStored(ctx, d, luGroup))
+			So(lgrLimitCmd(jq, luGroup), ShouldEqual, newLimit)
+			So(early, ShouldBeFalse)
+		})
+
+		Convey("an add setting a limit, racing wr limit removing it, ends with it removed in memory as on disk", func() {
+			early := addRacingLimitChange(jq, d, added, func() error {
+				return d.server.setLimitGroup(ctx, luGroup, limiter.NewCountGroupData(-1))
+			})
+
+			So(lgrLimitCmd(jq, luGroup), ShouldEqual, lgrNoLimit)
+			So(limitGroupRecorded(d, luGroup), ShouldBeFalse)
+			So(early, ShouldBeFalse)
+		})
+
+		Convey("an add setting a limit, racing another add setting another, ends with memory agreeing with disk", func() {
+			early := addRacingLimitChange(jq, d, added, func() error {
+				return d.server.storeLimitGroups(map[string]*limiter.GroupData{
+					luGroup: limiter.NewCountGroupData(newLimit),
+				})
+			})
+
+			So(lgrLimitCmd(jq, luGroup), ShouldEqual, limitGroupStored(ctx, d, luGroup))
+			So(lgrLimitCmd(jq, luGroup), ShouldEqual, newLimit)
+			So(early, ShouldBeFalse)
+		})
+	})
+}
+
+// addRacingLimitChange adds a job in limitGroup (eg. "name:5"), and once the add
+// has stored its limit groups in the database, before it gives them to the
+// limiter, starts change in another goroutine and holds the add for up to
+// limitRaceHold while change runs. It asserts that change completes without
+// error once the add has, and returns whether change completed while the add
+// was held.
+func addRacingLimitChange(jq *Client, d *dgrServer, limitGroup string, change func() error) bool {
+	var fired atomic.Bool
+
+	done := make(chan error, 1)
+	completedWhileHeld := make(chan bool, 1)
+
+	limitGroupsStoredHook = func() {
+		if !fired.CompareAndSwap(false, true) {
+			return
+		}
+
+		go func() { done <- change() }()
+
+		select {
+		case err := <-done:
+			done <- err
+
+			completedWhileHeld <- true
+		case <-time.After(limitRaceHold):
+			completedWhileHeld <- false
+		}
+	}
+
+	job := d.job("echo lu racing", "lu")
+	job.LimitGroups = []string{limitGroup}
+	dgrAddJobs(jq, []*Job{job})
+
+	select {
+	case err := <-done:
+		So(err, ShouldBeNil)
+	case <-time.After(dgrReserveWait):
+		So("the racing change did not complete after the add", ShouldBeEmpty)
+	}
+
+	// only now, as change itself may call the hook
+	limitGroupsStoredHook = nil
+
+	return <-completedWhileHeld
 }

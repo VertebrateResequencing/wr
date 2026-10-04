@@ -237,7 +237,7 @@ speed`.
 
 ## Deferred incidentals
 
-- [ ] Pre-existing on develop (not caused by this branch): a limit that
+- [x] Pre-existing on develop (not caused by this branch): a limit that
   really changed, or is stored for the first time, is applied to the limiter
   after its DB transaction and outside any lock, so two requests that both
   change a group (two adds first-storing different values, or an add storing
@@ -248,6 +248,8 @@ speed`.
   `storeLimitGroups`' DB write and SetLimit/RemoveLimit, and in
   `setLimitGroup`). Source: review of 74134b6f (261004). Queued as its own
   branch after this one.
+  - Fixed on branch `limit-order-7d84a298`; see
+    `.docs/bugfixes/261004-limit-order-7d84a298.md`.
 
 - [x] Pre-existing on develop (not caused by this branch): the same dropped
   connection window breaks `TestSchedulerWaitForRunningAcrossManagerRestart`
