@@ -65,6 +65,10 @@ import (
 // benchJobCount is the number of jobs each benchmark iteration operates on.
 const benchJobCount = 3000
 
+// benchLimitStoreParallelism is the RunParallel parallelism (goroutines per
+// GOMAXPROCS) of BenchmarkServerStoreLimitGroups' concurrent cases.
+const benchLimitStoreParallelism = 16
+
 // benchDBWaitTimeout bounds how long we wait for the database's background
 // update goroutines to drain before measuring; it only affects a (logged)
 // warning, never correctness, since the underlying wait blocks until all
@@ -177,13 +181,18 @@ func BenchmarkAddJobs(b *testing.B) {
 }
 
 // BenchmarkServerStoreLimitGroups measures Server.storeLimitGroups, which every
-// add (and modify of limit groups) calls: with no limit groups, with a limit
-// group whose limit is already stored (the usual case when adding to a limited
-// group), and with that from many adds at once.
+// add, modify of limit groups and `wr limit` calls: with no limit groups, with a
+// limit group whose limit is already stored (the usual case when adding to a
+// limited group), with that from many adds at once, and with many adds at once
+// each storing a new limit, which must still share bolt commits.
 func BenchmarkServerStoreLimitGroups(b *testing.B) {
 	testDB := newBenchDB(b)
 	s := &Server{db: testDB, limiter: limiter.New(testDB.retrieveLimitGroup)}
 	stored := map[string]*limiter.GroupData{"bench-lg": limiter.NewCountGroupData(5)}
+
+	// changed-parallel's round-up runs share this database, so its group names
+	// come from here, to be new to it on every call.
+	var next atomic.Int64
 
 	if err := s.storeLimitGroups(stored); err != nil {
 		b.Fatal(err)
@@ -208,9 +217,26 @@ func BenchmarkServerStoreLimitGroups(b *testing.B) {
 	})
 
 	b.Run("unchanged-parallel", func(b *testing.B) {
+		b.SetParallelism(benchLimitStoreParallelism)
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
 				if err := s.storeLimitGroups(stored); err != nil {
+					b.Error(err)
+
+					return
+				}
+			}
+		})
+	})
+
+	b.Run("changed-parallel", func(b *testing.B) {
+		b.SetParallelism(benchLimitStoreParallelism)
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				group := fmt.Sprintf("bench-new-%d", next.Add(1))
+
+				err := s.storeLimitGroups(map[string]*limiter.GroupData{group: limiter.NewCountGroupData(5)})
+				if err != nil {
 					b.Error(err)
 
 					return

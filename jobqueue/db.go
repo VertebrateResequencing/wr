@@ -2635,6 +2635,29 @@ func (db *db) queueJobExit(job *Job, stdo, stde []byte, forceStorage bool, waite
 	return nil
 }
 
+// retrieveStoredLimits returns the limit stored for each of the given groups,
+// in the same order, or -1 for a group with none stored, all read in one
+// transaction.
+func (db *db) retrieveStoredLimits(groups []string) ([]int64, error) {
+	limits := make([]int64, len(groups))
+
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketLGs)
+
+		for i, group := range groups {
+			limits[i] = -1
+
+			if v := b.Get([]byte(group)); v != nil {
+				limits[i] = int64(binary.BigEndian.Uint64(v)) //nolint:gosec // stored from a non-negative int64
+			}
+		}
+
+		return nil
+	})
+
+	return limits, err
+}
+
 // foldedOp is one caller's pending write, waiting for a coalescing writer to
 // persist it and hand back that caller's own outcome. Both synchronous coalescing
 // writers' ops (archiveOp, newJobsOp) are one.

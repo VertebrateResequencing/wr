@@ -348,11 +348,19 @@ const envPprofAddr = "WR_PPROF_ADDR"
 var recoveryPauseHookForTest func()
 
 // limitGroupsStoredHook, if non-nil, is called by Server.storeLimitGroups once
-// the database has stored an add's or modify's limit groups, before the limiter
-// is updated. It is a test-only seam and is nil in production.
+// the database has stored an add's, modify's or `wr limit`'s limit groups,
+// before the limiter is updated. It is a test-only seam and is nil in production.
 //
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var limitGroupsStoredHook func()
+
+// limitGroupsAppliedHook, if non-nil, is called by
+// Server.applyStoredLimitGroups once it has read the limits back from the
+// database, before it gives them to the limiter, with lgmutex held. It is a
+// test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring limitGroupsStoredHook
+var limitGroupsAppliedHook func()
 
 // deleteOnFailureHook, if non-nil, is called by the goroutine that removes a
 // buried job with a remove-on-failure behaviour, just before it removes it, so a
@@ -1757,10 +1765,10 @@ type Server struct {
 	srmutex             sync.Mutex   // to protect scheduleRetries
 	csmutex             sync.RWMutex // to protect clientSubscriptions and subsClosed
 	rpmutex             sync.Mutex   // to protect racPending, racRunning and waitingReserves
-	// lgmutex is held across storing limit groups in the database and giving
-	// the stored limits to the limiter, so that the limiter gets them in the
-	// order the database stored them. Under it only the database and the
-	// limiter's own locks are taken, and nothing holding either takes it.
+	// lgmutex is held across reading stored limit groups back from the
+	// database and giving them to the limiter (see applyStoredLimitGroups).
+	// Under it only a bolt read transaction and the limiter's own lock are
+	// taken, and nothing holding either takes it.
 	lgmutex sync.Mutex
 	sync.Mutex
 	wsmutex  sync.RWMutex
@@ -4133,6 +4141,43 @@ func (s *Server) writeReleasedJob(ctx context.Context, job *Job, rep releaseRepo
 	return nil
 }
 
+// applyStoredLimitGroups gives the limiter the limits the database now holds
+// for the given groups, removing the limit of any it holds none for.
+//
+// It reads the database again, under lgmutex, rather than applying the limits
+// its caller stored: another request may have stored a newer limit for the
+// same group since, and applied it already, and a request that stored first
+// must not apply last. Every database change to a group is followed by an
+// apply of that group whose read comes after it, so the last apply of a group
+// leaves the limiter with what the database last stored. Holding lgmutex only
+// across this read and the limiter update, not across the database write,
+// keeps concurrent stores coalescing into shared bolt commits.
+func (s *Server) applyStoredLimitGroups(groups []string) error {
+	s.lgmutex.Lock()
+	defer s.lgmutex.Unlock()
+
+	limits, err := s.db.retrieveStoredLimits(groups)
+	if err != nil {
+		return err
+	}
+
+	if limitGroupsAppliedHook != nil {
+		limitGroupsAppliedHook()
+	}
+
+	for i, group := range groups {
+		if limits[i] < 0 {
+			s.limiter.RemoveLimit(group)
+
+			continue
+		}
+
+		s.limiter.SetLimit(group, *limiter.NewCountGroupData(limits[i]))
+	}
+
+	return nil
+}
+
 // jobHasDependents says whether anything still depends on this job, either on
 // its own key (an essence dependency) or through one of its dep groups. Both
 // have to be asked: a dep-group dependency is an edge on the group's own key, so
@@ -4199,28 +4244,6 @@ func countUndecodedJobs(groups map[string][]*Job, undecoded map[string]int) {
 
 		members[len(members)-1].Similar += count
 	}
-}
-
-// storeAndApplyLimitGroup stores a limit group in the database and applies it
-// to the limiter, under lgmutex.
-func (s *Server) storeAndApplyLimitGroup(name string, limit *limiter.GroupData) error {
-	s.lgmutex.Lock()
-	defer s.lgmutex.Unlock()
-
-	_, removed, err := s.db.storeLimitGroups(map[string]*limiter.GroupData{name: limit})
-	if err != nil {
-		return err
-	}
-
-	if limit.IsValid() {
-		s.limiter.SetLimit(name, *limit)
-	}
-
-	for _, g := range removed {
-		s.limiter.RemoveLimit(g)
-	}
-
-	return nil
 }
 
 // shutdownPprofServer gracefully shuts down the pprof endpoint started by
@@ -6844,23 +6867,13 @@ func (s *Server) handleUserSpecifiedJobLimitGroups(job *Job, limitGroups map[str
 // storeLimitGroups calls db.storeLimitGroups() and handles updating the
 // in-memory representation of the groups.
 //
-// Only the limits the database reports as changed (which includes those stored
-// for the first time) are given to the limiter. A limit the database already
-// held must not be: another request, such as `wr limit`, may have changed it
-// since the database was read, and giving it again would bring back the old
-// limit in memory.
-//
-// Both are done under lgmutex, so that a racing request that changes the same
-// group cannot apply its limit to the limiter before this one does when it
-// stored it in the database after this one did. An add without limit groups
-// does not take it.
+// Only the groups the database reports as changed (which includes those stored
+// for the first time) or removed are given to the limiter, by
+// applyStoredLimitGroups. A limit the database already held needs no update.
 func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) error {
 	if len(limitGroups) == 0 {
 		return nil
 	}
-
-	s.lgmutex.Lock()
-	defer s.lgmutex.Unlock()
 
 	changed, removed, err := s.db.storeLimitGroups(limitGroups)
 	if err != nil {
@@ -6871,15 +6884,11 @@ func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) err
 		limitGroupsStoredHook()
 	}
 
-	for _, group := range changed {
-		s.limiter.SetLimit(group, *limitGroups[group])
+	if len(changed) == 0 && len(removed) == 0 {
+		return nil
 	}
 
-	for _, group := range removed {
-		s.limiter.RemoveLimit(group)
-	}
-
-	return nil
+	return s.applyStoredLimitGroups(append(changed, removed...))
 }
 
 // updateJobDependencies is used by queueNewJobItems to handle the jobsToUpdate
@@ -8504,11 +8513,10 @@ func (s *Server) getSetLimitGroup(ctx context.Context, group string) (*limiter.G
 	return limit, "", nil
 }
 
-// setLimitGroup persists a limit group, applies the new limit (if valid),
-// removes any limits the store reported as removed, and re-triggers scheduling.
-// Like storeLimitGroups, it persists and applies under lgmutex.
+// setLimitGroup persists a limit group and gives the limiter the change, as an
+// add does, then re-triggers scheduling.
 func (s *Server) setLimitGroup(ctx context.Context, name string, limit *limiter.GroupData) error {
-	if err := s.storeAndApplyLimitGroup(name, limit); err != nil {
+	if err := s.storeLimitGroups(map[string]*limiter.GroupData{name: limit}); err != nil {
 		return err
 	}
 

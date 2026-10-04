@@ -43,6 +43,9 @@ project adheres to [Semantic Versioning](http://semver.org/).
   longer marks complete a command another runner has just been given. This
   could happen after the manager gave up on the first runner as lost and the
   command started again elsewhere.
+- Two adds, `wr mod` or `wr limit` changing the same limit group at the same
+  moment could leave the manager enforcing a different limit from the one it
+  saved, until the limit was next changed.
 - A job whose runner moved on to other work after its report of the job was
   lost to a manager crash is now re-run as soon as that runner next contacts
   the manager, instead of staying running for ever or, after an hour, having
