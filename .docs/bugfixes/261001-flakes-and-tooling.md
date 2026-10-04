@@ -152,7 +152,7 @@ Quality gates: `make lint`, `make test`, `make race`, run with
   - Reviewer: PASS. In drive mode a worker reserves again before settling its
     job only after `Started` or `Archive` failed, when the job is already
     abandoned, so releasing it then is intended.
-- [ ] Deferred (found while doing the loadrunner item, independent, low
+- [x] Deferred (found while doing the loadrunner item, independent, low
   impact): loadrunner's `-group ""` fallback builds the group from
   `-ram/-time/-cores/-disk` as `100:1:1:0`, which does not match the group
   the manager gives jobs added with those requirements (for example
@@ -160,3 +160,5 @@ Quality gates: `make lint`, `make test`, `make race`, run with
   nothing. The README and `exp_drive_ab.sh` pass the group from the manager's
   log, so only ad-hoc use is affected. Also, the README's mode list
   (line ~40) leaves out churn.
+  - Fixed on branch `checklist-tidy-8e94211c`,
+    `261004-checklist-tidy-8e94211c.md` item C: `-group` is required.

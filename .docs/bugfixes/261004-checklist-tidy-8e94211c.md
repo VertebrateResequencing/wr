@@ -42,9 +42,24 @@ files.
     of the package directory. Its assertions are unchanged.
   - Green: the same commands exit 0 and 0, sharded and unsharded.
   - Ticked in `260903-14.md` too.
-- [ ] C. `261001-flakes-and-tooling.md` item: `loadrunner` with no `-group`
+- [x] C. `261001-flakes-and-tooling.md` item: `loadrunner` with no `-group`
   falls back to `req.Stringify()` (`100:1:1:0`), which reserves nothing in
   drive and hold modes. The README mode list omits churn.
+  - Red: the tool built with `go build -tags netgo
+    .docs/reliable/harness/loadrunner.go`, run against an isolated config
+    (scratch `HOME`, `WR_CONFIG_DIR` and `WR_MANAGERDIR`, `WR_MANAGERPORT=1`,
+    so it reaches no manager): `loadrunner -mode drive -workers 1` printed
+    `group="100:1:1:0"` and exited 0.
+  - Fix, `.docs/reliable/harness/loadrunner.go`: drive and hold (and the
+    default and unknown modes, which run as drive) exit 2 with "-group is
+    required for -mode drive" when `-group` is empty. Deriving the group is
+    not trivial (the manager's rounding and hash suffix), so the fallback and
+    its `-ram/-time/-cores/-disk` flags are gone; no script passed them.
+    `README.md` lists churn and says drive and hold need `-group`.
+  - Green, same isolation: `-mode drive`, `-mode hold` and no `-mode` exit 2
+    with that message; `-mode drive -group 200:30:1:0`, `-mode ping` and
+    `-mode churn` get past the check to the connect. `go vet` and `gofmt -l`
+    are clean. No manager was started.
 - [ ] D. `260928-load-sensitive-flakes.md` item:
   `TestSubscriptionReconnectDuringManagerShutdown` fails under load (3 or
   more sightings). The 3s `ShutdownSocketWait` leaves too small a margin over

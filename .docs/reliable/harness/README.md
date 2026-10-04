@@ -38,7 +38,8 @@ go build -o /tmp/wr-reliable/bin/loadrunner-head ./.tmp/reliable-tools/loadrunne
 - `exp_realdb_seed.sh` — S3 the real-DB add-time + restart seeding cost (LSF, safe).
 - `exp_drive_ab.sh` — S5 high-concurrency archive-throughput decay.
 - `loadrunner.go` — N concurrent "runners" driving reserve→start→touch→archive
-  without executing anything (modes: drive/hold/ping).
+  without executing anything (modes: drive/hold/churn/ping; drive and hold
+  need `-group`).
 - `inspect*.go` — read-only bbolt bucket/key/top-repgroup counts.
 
 ## Safety
