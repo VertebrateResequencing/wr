@@ -37,3 +37,8 @@ edited files, and the red command below in race and plain modes.
   - Green: the red command at `-count 300` exits 0; `-race -count 100` exits
     0; plain `-count 50` exits 0. `golangci-lint run ./jobqueue/`: 0 issues.
   - Files: `jobqueue/db_encode_test.go`.
+
+## Delivery queue
+
+- encodejob-race-2a0b91ec -> develop, no dependencies. Status: fix reviewed
+  (PASS); running make lint/test/race, then PR and pr-resolver.
