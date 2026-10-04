@@ -7,7 +7,7 @@
 ## Delivery queue
 
 - PR #665 (client-restart-950a7a96 -> develop), no dependencies. Remote head
-  25ff030c; local 32 commits ahead, 0 behind origin/develop (261004).
+  25ff030c; local 35 commits ahead, 0 behind origin/develop (261004).
   Status: all checklist items done, including the review fix for calls
   made with a ctx already done.
   Waits on: full lint/test/race, CHANGELOG, push, pr-resolver. Next: run
@@ -535,6 +535,14 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
     jobs finished and the manager stopped: it returns within the timeout
     plus Unsubscribe's 0.5s (test) and 1s waits, naming one unfinished key.
     Green 30 of 30 plain and 10 of 10 -race.
+  - Gate after both items (594e4b48): `go test -tags netgo -count 1
+    ./jobqueue/ ./client/... ./developers/prodsim/ ./cmd/` all ok plain.
+    Under -race client, prodsim and cmd were ok; jobqueue failed
+    TestDBEncodeJob (allocation bound, `3128 < 3072`; also fails 2 of 40
+    -race on origin/develop, so not this branch) and
+    TestSubscriptionReconnectAdoptsManagerTimings at setup (`bind: address
+    already in use` on the manager port; 20 of 20 on rerun). A second full
+    jobqueue -race run passed (788s).
 - [x] TestSubscriptionReconnectAdoptsManagerTimings (added by e89991b8) is
   flaky: 2 of 6 runs fail reading jq.ServerInfo.RetryTime right after the
   resync update (`Line 1834: Expected: time.Duration(31000000000) Actual:
