@@ -514,6 +514,27 @@ keeping existing signatures; (4) a CHANGELOG entry for the behaviour change.
     that completed, so the product code is unchanged.
   - Fixed: captureSocket.SetOption accepts OptionRetryTime. Full
     `go test ./jobqueue/` passes plain (615s) and -race (789s).
+- [x] AddAndWait (so SubmitJobsAndWait) ended by its ctx fetches the jobs it
+  saw finish with plain GetByEssence, which on a client that rides out
+  outages waits up to RetryTime if the manager is down.
+  - Source: implementor of the already-done ctx item (from the code).
+  - Red command: `timeout 900 nice -n 19 env GOFLAGS=-p=2 GOCACHE=[cache]
+    go test -tags netgo -count 1 ./jobqueue/ -run
+    '^TestClientAddAndWaitCancelledDuringOutage$'`, exit 1: `Expected
+    '31.273584019s' to be less than '3.8s'` (the 30s test RetryTime).
+  - A single unretried attempt (requestOnce) still failed 1 of 5: the
+    subscription's own resubscribe held the shared client's lock through
+    the outage with the rest of its RetryTime budget (goroutine dump:
+    resubscribeWithinBudget in requestWithin), so the fetch waited for it.
+  - Fixed: once ctx is done, fetchSeenTerminalJobs gets each seen job with
+    requestWithinIncludingLockWait bounded by the client's connect timeout
+    (getByEssence takes the send function; GetByEssenceContext is
+    unchanged), stopping at the first failure as before, so the call
+    returns the jobs fetched so far with the failure joined to the ctx
+    error. AddAndWait's doc says so. The new test cancels after one of two
+    jobs finished and the manager stopped: it returns within the timeout
+    plus Unsubscribe's 0.5s (test) and 1s waits, naming one unfinished key.
+    Green 30 of 30 plain and 10 of 10 -race.
 - [x] TestSubscriptionReconnectAdoptsManagerTimings (added by e89991b8) is
   flaky: 2 of 6 runs fail reading jq.ServerInfo.RetryTime right after the
   resync update (`Line 1834: Expected: time.Duration(31000000000) Actual:

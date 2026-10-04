@@ -892,7 +892,10 @@ func distinctKeysInOrder(keys []string) []string {
 // terminal state. Returned jobs are re-fetched with stdout/stderr populated
 // where wr stores them. Complete and buried jobs are both successful returns;
 // ctx cancellation returns the terminal jobs gathered so far plus an error
-// naming the unfinished keys.
+// naming the unfinished keys. After cancellation each of those jobs is fetched
+// with a single attempt bounded by the connect timeout, even on a client that
+// rides out outages, so if the manager cannot then be reached, the jobs fetched
+// before it failed are returned, with that failure joined to the error.
 func (c *Client) AddAndWait(ctx context.Context, jobs []*Job, envVars []string, ignoreComplete bool) ([]*Job, error) {
 	jobsDone, _, err := c.AddAndWaitWithWarnings(ctx, jobs, envVars, ignoreComplete)
 
@@ -935,15 +938,29 @@ func (c *Client) waitForAddedJobKeys(ctx context.Context, keys []string) ([]*Job
 
 	seen, err := collectDistinctTerminalKeys(ctx, sub.Updates(), keys)
 	if err != nil {
-		terminalJobs, fetchErr := c.fetchSeenTerminalJobs(keys, seen)
+		terminalJobs, fetchErr := c.fetchSeenTerminalJobs(ctx, keys, seen)
 
 		return terminalJobs, addAndWaitError(ctx, err, keys, seen, fetchErr)
 	}
 
-	return c.fetchSeenTerminalJobs(keys, seen)
+	return c.fetchSeenTerminalJobs(ctx, keys, seen)
 }
 
-func (c *Client) fetchSeenTerminalJobs(keys []string, seen map[string]JobState) ([]*Job, error) {
+// fetchSeenTerminalJobs gets the jobs of keys that are in seen, stopping at the
+// first that cannot be got. Once ctx is done each is a single attempt bounded
+// by the client's timeout, including any wait for the client's lock, which the
+// subscription's own resubscribe can hold through an outage; so a cancelled
+// wait returns within about that timeout even if the manager is down.
+func (c *Client) fetchSeenTerminalJobs(ctx context.Context, keys []string,
+	seen map[string]JobState,
+) ([]*Job, error) {
+	send := c.request
+	if ctx.Err() != nil {
+		send = func(cr *clientRequest) (*serverResponse, error) {
+			return c.requestWithinIncludingLockWait(cr, c.timeout)
+		}
+	}
+
 	jobs := make([]*Job, 0, len(seen))
 
 	for _, key := range keys {
@@ -951,7 +968,7 @@ func (c *Client) fetchSeenTerminalJobs(keys []string, seen map[string]JobState) 
 			continue
 		}
 
-		job, err := c.GetByEssence(&JobEssence{JobKey: key}, true, false)
+		job, err := c.getByEssence(&JobEssence{JobKey: key}, true, false, send)
 		if err != nil {
 			return jobs, err
 		}

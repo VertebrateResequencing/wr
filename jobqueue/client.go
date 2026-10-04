@@ -1623,9 +1623,19 @@ func (c *Client) handleFinalStateFailure(ctx context.Context, err error,
 // deadline (the larger of that and a minute) if the request was sent. If ctx is
 // already done, nothing is sent and ctx's error is returned.
 func (c *Client) GetByEssenceContext(ctx context.Context, je *JobEssence, getstd bool, getenv bool) (*Job, error) {
+	return c.getByEssence(je, getstd, getenv, func(cr *clientRequest) (*serverResponse, error) {
+		return c.requestContext(ctx, cr)
+	})
+}
+
+// getByEssence does the work of GetByEssenceContext, sending its request with
+// send.
+func (c *Client) getByEssence(je *JobEssence, getstd bool, getenv bool,
+	send func(*clientRequest) (*serverResponse, error),
+) (*Job, error) {
 	keys := je.candidateKeys()
 
-	resp, err := c.requestContext(ctx, &clientRequest{Method: "getbc", Keys: keys, GetStd: getstd, GetEnv: getenv})
+	resp, err := send(&clientRequest{Method: "getbc", Keys: keys, GetStd: getstd, GetEnv: getenv})
 	if err != nil {
 		return nil, err
 	}

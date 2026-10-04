@@ -166,6 +166,75 @@ func receiveAddAndWaitResult(resultCh <-chan addAndWaitResult, timeout time.Dura
 	}
 }
 
+// TestClientAddAndWaitCancelledDuringOutage checks that an AddAndWait ended by
+// its ctx while the manager is down returns within about the client timeout,
+// instead of riding out the outage to fetch the jobs it saw finish.
+func TestClientAddAndWaitCancelledDuringOutage(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given an AddAndWait that saw one of its two jobs finish, on a client that rides out outages", t, func() {
+		const (
+			unsubscribeWait = 500 * time.Millisecond
+			// closeWait is how long Unsubscribe waits for the subscription's
+			// poll goroutine, which may be resubscribing through the outage.
+			closeWait = time.Second
+		)
+
+		defer setSubscriptionUnsubscribeTimeout(unsubscribeWait)()
+
+		ctx := context.Background()
+		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
+		applySubscriptionReconnectTimings(&serverConfig, 250*time.Millisecond, subscriptionRestartRetryTime)
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		jq.RetryWhileManagerUnreachable(ctx)
+
+		runner, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		waitCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		resultCh := addAndWaitAsync(waitCtx, jq, subscriptionTestJobs("subscription-outage-cancel", standardReqs, 2))
+
+		archiveNextAddAndWaitJob(runner)
+		disconnect(runner)
+
+		// let the archive's update reach the subscription
+		time.Sleep(time.Second)
+
+		Convey("cancelling it after the manager stops returns within about the client timeout", func() {
+			server.Stop(ctx, true)
+
+			cancelledAt := time.Now()
+
+			cancel()
+
+			result := receiveAddAndWaitResult(resultCh, 2*subscriptionRestartRetryTime)
+
+			So(time.Since(cancelledAt), ShouldBeLessThan,
+				clientConnectTime+unsubscribeWait+closeWait+2*schedulingSlack)
+			So(errors.Is(result.err, context.Canceled), ShouldBeTrue)
+			So(result.jobs, ShouldBeEmpty)
+
+			_, unfinished, found := strings.Cut(strings.SplitN(result.err.Error(), "\n", 2)[0],
+				"unfinished job keys: ")
+			So(found, ShouldBeTrue)
+			So(strings.Split(unfinished, ", "), ShouldHaveLength, 1)
+		})
+	})
+}
+
 func TestClientAddAndWait(t *testing.T) {
 	if runnermode || servermode {
 		return
