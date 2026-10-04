@@ -8521,14 +8521,17 @@ func (s *Server) getSetLimitGroup(ctx context.Context, group string) (*limiter.G
 //
 // Unlike an add, it then gives the limiter the group's stored limit even if the
 // database reports it unchanged, so that setting a limit again repairs a limiter
-// that disagrees with the database.
+// that disagrees with the database. A time-based group, whose limit comes from
+// its name and is never stored, is left alone.
 func (s *Server) setLimitGroup(ctx context.Context, name string, limit *limiter.GroupData) error {
 	if err := s.storeLimitGroups(map[string]*limiter.GroupData{name: limit}); err != nil {
 		return err
 	}
 
-	if err := s.applyStoredLimitGroups([]string{name}); err != nil {
-		return err
+	if limit.IsCount() || !limit.IsValid() {
+		if err := s.applyStoredLimitGroups([]string{name}); err != nil {
+			return err
+		}
 	}
 
 	s.triggerReadyAddedCallback(ctx)

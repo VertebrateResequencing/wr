@@ -330,6 +330,39 @@ func TestLimitStoreAppliedInCommitOrder(t *testing.T) {
 	})
 }
 
+// TestLimitAddKeepsTimeGroup covers an add naming a time-based limit group,
+// whose limit comes from its name: it changes nothing, so must leave the
+// limiter's group for it in place rather than drop it.
+func TestLimitAddKeepsTimeGroup(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a server whose limiter has a time-based limit group", t, func() {
+		d := dgrStartServer(ctx)
+
+		defer d.stop(ctx)
+
+		jq := d.connect()
+
+		defer disconnect(jq)
+
+		const timeGroup = "datetime<2099-01-01 00:00:00"
+
+		before := d.server.limiter.GetLimit(ctx, timeGroup)
+		So(before.IsCount(), ShouldBeFalse)
+		So(before.IsValid(), ShouldBeTrue)
+
+		Convey("an add naming it keeps that group", func() {
+			lruAdd(jq, d, timeGroup)
+
+			So(d.server.limiter.GetLimit(ctx, timeGroup), ShouldPointTo, before)
+		})
+	})
+}
+
 // lruAdd adds a job in the given limit group (eg. "name:5").
 func lruAdd(jq *Client, d *dgrServer, limitGroup string) {
 	job := d.job("echo lu racing", "lu")
