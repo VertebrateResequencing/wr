@@ -261,6 +261,168 @@ func BenchmarkLimiterIncDecUnlimited(b *testing.B) {
 	}
 }
 
+// heldLookupDB stands in for the database a SetLimitCallback reads. Its first
+// lookup reads the limit stored at the time and then waits until released
+// before returning it, so a test can change the stored limit, and tell the
+// Limiter, while that lookup is in progress.
+type heldLookupDB struct {
+	mu      sync.Mutex
+	limit   int64
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+// newHeldLookupDB returns a heldLookupDB storing the given limit.
+func newHeldLookupDB(limit int64) *heldLookupDB {
+	return &heldLookupDB{
+		limit:   limit,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+// lookup is a SetLimitCallback that reads the stored limit.
+func (db *heldLookupDB) lookup(context.Context, string) *GroupData {
+	data := NewCountGroupData(db.stored())
+
+	db.once.Do(func() {
+		close(db.entered)
+		<-db.release
+	})
+
+	return data
+}
+
+// stored returns the stored limit.
+func (db *heldLookupDB) stored() int64 {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	return db.limit
+}
+
+// store changes the stored limit.
+func (db *heldLookupDB) store(limit int64) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	db.limit = limit
+}
+
+// changeDuringLookup runs op in its own goroutine, and once op's first lookup
+// has read the stored limit, stores the new limit and calls change, as the
+// manager does for `wr limit`, before letting the lookup return. It returns
+// once op has.
+func (db *heldLookupDB) changeDuringLookup(op func(), limit int64, change func()) {
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		op()
+	}()
+
+	<-db.entered
+	db.store(limit)
+	change()
+	close(db.release)
+	<-done
+}
+
+func TestLimiterLimitChangedDuringLookup(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a Limiter whose lookup of a group's limit of 5 is in progress", t, func() {
+		const (
+			name       = "g"
+			oldLimit   = 5
+			setLimit   = 3
+			noLimit    = -1
+			increments = oldLimit + 1
+		)
+
+		g := []string{name}
+		db := newHeldLookupDB(oldLimit)
+		l := New(db.lookup)
+
+		remove := func() { l.RemoveLimit(name) }
+		set := func() { l.SetLimit(name, *NewCountGroupData(setLimit)) }
+
+		Convey("removing the limit during a GetLimit leaves the group without a limit", func() {
+			var got *GroupData
+
+			db.changeDuringLookup(func() { got = l.GetLimit(ctx, name) }, noLimit, remove)
+
+			So(got, ShouldResemble, NewCountGroupData(noLimit))
+			So(l.GetLimit(ctx, name), ShouldResemble, NewCountGroupData(noLimit))
+			So(l.GetLimits(), ShouldBeEmpty)
+
+			incremented := 0
+
+			for range increments {
+				if l.Increment(ctx, g) {
+					incremented++
+				}
+			}
+
+			So(incremented, ShouldEqual, increments)
+		})
+
+		Convey("removing the limit during an Increment leaves the group without a limit", func() {
+			var first bool
+
+			db.changeDuringLookup(func() { first = l.Increment(ctx, g) }, noLimit, remove)
+
+			So(first, ShouldBeTrue)
+			So(l.GetLimit(ctx, name).LimitForDisplay(), ShouldEqual, noLimit)
+
+			incremented := 1
+
+			for range increments - 1 {
+				if l.Increment(ctx, g) {
+					incremented++
+				}
+			}
+
+			So(incremented, ShouldEqual, increments)
+		})
+
+		Convey("setting a limit during a GetLimit leaves the group with that limit", func() {
+			var got *GroupData
+
+			db.changeDuringLookup(func() { got = l.GetLimit(ctx, name) }, setLimit, set)
+
+			So(got, ShouldResemble, NewCountGroupData(setLimit))
+			So(l.GetLimits(), ShouldResemble, map[string]int{name: setLimit})
+		})
+
+		Convey("setting a limit that is forgotten again during a GetLimit leaves the group with that limit", func() {
+			var got *GroupData
+
+			setAndForget := func() {
+				set()
+				l.Decrement(g)
+			}
+
+			db.changeDuringLookup(func() { got = l.GetLimit(ctx, name) }, setLimit, setAndForget)
+
+			So(got, ShouldResemble, NewCountGroupData(setLimit))
+			So(l.GetLimits(), ShouldResemble, map[string]int{name: setLimit})
+		})
+
+		Convey("setting a limit during an Increment counts it against that limit", func() {
+			var first bool
+
+			db.changeDuringLookup(func() { first = l.Increment(ctx, g) }, setLimit, set)
+
+			So(first, ShouldBeTrue)
+			So(l.GetLimit(ctx, name).LimitForDisplay(), ShouldEqual, setLimit)
+			So(l.GetRemainingCapacity(ctx, g), ShouldEqual, setLimit-1)
+		})
+	})
+}
+
 // synctestConvey runs a single top-level Convey block inside its own synctest
 // bubble, so the wait-time windows in the block resolve on a synthetic clock
 // (instantly and deterministically) instead of depending on real wall-clock

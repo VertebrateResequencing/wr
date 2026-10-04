@@ -26,6 +26,9 @@ project adheres to [Semantic Versioning](http://semver.org/).
   commands against it, instead of letting up to the limit more start at once.
   Removing a group's limit and setting it again no longer forgets its running
   commands either.
+- Removing a limit with `wr limit -g name:-1` at the moment a command in that
+  group was being scheduled could leave the old limit enforced until the limit
+  was next changed.
 - When every attempt to submit runners for some commands fails, such as when
   the LSF queue chosen for them refuses every `bsub`, the manager now stops
   trying once those commands are removed, instead of retrying the `bsub` and
