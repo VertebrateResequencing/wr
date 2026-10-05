@@ -139,7 +139,13 @@ port_free() {
 
 # only ever kills a PID whose cmdline runs OUR isolated binary; never a real
 # production manager or anything else.
-is_ours() { ps -ww -o cmd= -p "$1" 2>/dev/null | grep -qF "$WR"; }
+# Its argv[0] must be exactly $WR, or $WR.real, which developers/soak/run.sh's RUNNER_FILELOG=1
+# wrapper execs (a substring match would also accept a process whose path merely contains ours).
+is_ours() {
+  local a0
+  a0=$(tr '\0' '\n' 2>/dev/null < "/proc/${1:-none}/cmdline" | head -n 1)
+  [ -n "$a0" ] && { [ "$a0" = "${WR:?}" ] || [ "$a0" = "$WR.real" ]; }
+}
 safe_kill() {
   local pid="$1"
   [ -n "$pid" ] || return 0

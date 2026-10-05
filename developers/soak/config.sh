@@ -120,11 +120,14 @@ soak_isolated() {
 }
 
 # soak_manager_pid prints our manager's pid, if the pid file names a process
-# running our isolated binary
+# whose argv[0] is exactly our isolated binary ($SOAK_WR, or $SOAK_WR.real when
+# run.sh's RUNNER_FILELOG=1 wrapper execs it)
 soak_manager_pid() {
-  local pid
+  local pid a0
   pid=$(cat "$SOAK_RUN/pid" 2>/dev/null) || return 1
-  [ -n "$pid" ] && ps -ww -o cmd= -p "$pid" 2>/dev/null | grep -qF "$SOAK_WR" && echo "$pid"
+  [ -n "$pid" ] || return 1
+  a0=$(tr '\0' '\n' 2>/dev/null < "/proc/$pid/cmdline" | head -n 1)
+  { [ "$a0" = "${SOAK_WR:?}" ] || [ "$a0" = "$SOAK_WR.real" ]; } && echo "$pid"
 }
 
 # soak_wr_running <subcommand ERE> prints the pids of the `timeout N` wrapping

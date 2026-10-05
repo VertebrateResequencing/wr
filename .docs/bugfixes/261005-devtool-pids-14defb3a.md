@@ -385,3 +385,33 @@ since `wrdev.sh start` and `stop` bkill every `wrd_*` job of this user. Gates:
   shell functions without re-entering each script through a new internal
   subcommand, which is more machinery than a bounded delay warrants.
   - Files: `developers/wrdev.sh`, `developers/soak/config.sh` (comments).
+- [x] R9 (low). `is_ours` matched `$WR` as a substring of the command
+  line, so a process whose path merely contains ours counted as ours.
+  - Fix: `is_ours` reads argv[0] from `/proc/<pid>/cmdline` and accepts
+    only `$WR` or `$WR.real` exactly; soak `config.sh`'s
+    `soak_manager_pid`, which the injectors and watcher use before a kill,
+    does the same with `$SOAK_WR`.
+  - Verified (processes with argv[0] set by `exec -a`): `$WR` and
+    `$WR.real` are ours; `<scratch>/pre$WR`, `${WR}x`, `timeout` and
+    `/bin/sleep` are not, nor is an empty pid.
+  - Files: `developers/wrdev.sh`, `developers/soak/config.sh`.
+
+Re-verification after R1-R9, every harness with `set -u` and `${var:?}`
+guards, LSF stubbed or faked on `PATH`, kills only of `$!` pids or of pids
+whose argv[0] is a file in the scratch root:
+
+- F2 harness: PASS (printed and actual foreground pid 1548652, none left
+  after `stop`). `sweep.sh` on `prod-start prod-stop dump clean`: all
+  `rc=0`, 38 goroutines dumped, nothing of its root left. `sweep.sh` with a
+  base-wrdev.sh dump and a stale pid file naming an unrelated `sleep`: both
+  `SWEEP ERROR` lines, `rc=0,nodump,leftover`, exit 1, nothing left, the
+  `sleep` untouched. (`sweep.sh` now needs a wrdev.sh with `job-token`; the
+  base one alone makes it exit 1 before running anything.)
+- F3 harness, twice: the scheduled restart's stop line came after
+  crashafter's start line, every start `rc=0`, `killed 4 leftover local
+  runner/job processes`, nothing of the root left.
+- `soak/repro/readdcrash.sh 1` run end to end in a scratch `REPRO_ROOT`
+  with the local scheduler: it completed, ended with `wrdev.sh
+  reap-runners`, and left nothing of its root running.
+- Token, reaper, disk-guard and watcher checks as recorded under R1-R4 and
+  R6.
