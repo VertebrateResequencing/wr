@@ -43,6 +43,20 @@ export WR_CONFIG_DIR="$CONFIG_DIR"
 REPO="${WRDEV_REPO:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel 2>/dev/null)}"
 
 die() { echo "wrdev: $*" >&2; exit 1; }
+
+# job_token_ok <token> succeeds only for a non-empty token of ASCII letters and digits: the only
+# characters wr keeps of WR_JOBNAME_TOKEN (jobNameToken in jobqueue/scheduler/scheduler.go), so
+# wr<initial><token>_ is exactly the prefix of that manager's jobs, and no glob character can
+# widen a `bkill -J <prefix>*` to other managers' jobs
+job_token_ok() { case "$1" in (''|*[!A-Za-z0-9]*) return 1 ;; esac; }
+job_token_ok "$PROD_JOBTOKEN" || die "PROD_JOBTOKEN '$PROD_JOBTOKEN' must be letters and digits only"
+job_token_ok "$DEV_JOBTOKEN" || die "DEV_JOBTOKEN '$DEV_JOBTOKEN' must be letters and digits only"
+# prod_bkill_ok dies before a `bkill -J "${PROD_JOB_PREFIX}*"` unless the prefix is wrp<token>_
+# for a valid token, however PROD_JOBTOKEN has changed since startup
+prod_bkill_ok() {
+  job_token_ok "$PROD_JOBTOKEN" && [ "$PROD_JOB_PREFIX" = "wrp${PROD_JOBTOKEN}_" ] \
+    || die "refusing to bkill by pattern '$PROD_JOB_PREFIX*' (PROD_JOBTOKEN must be letters and digits)"
+}
 osunset() { unset $(compgen -v | grep '^OS_' 2>/dev/null) 2>/dev/null; true; }  # OS_* unset
 
 ensure_config() {
@@ -168,10 +182,9 @@ ensure_dev_manager() {
 # is started with WR_JOBNAME_TOKEN=$DEV_JOBTOKEN, so its jobs are $DEV_JOB_PREFIX*, which no other
 # dev manager's (plain wrd_*, or another port's token) or prod-mode manager's jobs can match.
 bkill_dev() {
-  case "$DEV_JOB_PREFIX" in
-    (wrd[A-Za-z0-9]*_) ;;
-    (*) echo "refusing to bkill by pattern '$DEV_JOB_PREFIX*' (DEV_JOBTOKEN must be letters and digits)"; return 1 ;;
-  esac
+  if ! job_token_ok "$DEV_JOBTOKEN" || [ "$DEV_JOB_PREFIX" != "wrd${DEV_JOBTOKEN}_" ]; then
+    echo "refusing to bkill by pattern '$DEV_JOB_PREFIX*' (DEV_JOBTOKEN must be letters and digits)"; return 1
+  fi
   for _ in 1 2 3; do
     timeout 120 bkill -J "${DEV_JOB_PREFIX}*" 0 >/dev/null 2>&1
     sleep 4
@@ -415,6 +428,7 @@ cmd_backup_stall_check() {  # backup-stall-check [dbGB] [N] [limit] [runsec] - r
   fi
   echo "## CLEANUP"; cmd_prod_stop 2>&1 | tail -1
   # SAFE: our isolated manager's jobs are namespaced ${PROD_JOB_PREFIX}* (never a real wrp_*)
+  prod_bkill_ok
   timeout 60 bkill -J "${PROD_JOB_PREFIX}*" 0 >/dev/null 2>&1
   bjobs -o 'jobid job_name' -noheader 2>/dev/null | awk -v p="$PROD_JOB_PREFIX" 'index($2,p)==1{print $1}' | sort -u | while read -r j; do timeout 30 bkill "$j" >/dev/null 2>&1; done
   rm -f "$WRDEV_ROOT/bkjobs.json" "$pr/db" "$pr/db_bk"* 2>/dev/null
@@ -1638,6 +1652,7 @@ asl_cleanup() {  # idempotent add-storm-lsf/fixture teardown: adders, manager, O
   done
   cmd_prod_stop >/dev/null 2>&1
   # SAFE: only the namespaced jobs of our own isolated manager; NEVER a real production wrp_*
+  prod_bkill_ok
   timeout 60 bkill -J "${PROD_JOB_PREFIX}*" 0 >/dev/null 2>&1
   sleep 5
   timeout 60 bjobs -J "${PROD_JOB_PREFIX}*" -o jobid -noheader 2>/dev/null | sort -u \
@@ -1995,6 +2010,7 @@ cmd_report_storm_lsf() {  # report-storm-lsf [jobs] [limit] [runsec] - LSF-scale
   fi
   echo "## CLEANUP"; cmd_prod_stop >/dev/null 2>&1
   # SAFE: only our namespaced isolated-manager jobs; NEVER a real wrp_*
+  prod_bkill_ok
   timeout 60 bkill -J "${PROD_JOB_PREFIX}*" 0 >/dev/null 2>&1
   bjobs -o 'jobid job_name' -noheader 2>/dev/null | awk -v p="$PROD_JOB_PREFIX" 'index($2,p)==1{print $1}' | sort -u | while read -r j; do timeout 30 bkill "$j" >/dev/null 2>&1; done
   rm -f "$WRDEV_ROOT/rsjobs.json" "$pr/db" "$pr/db_bk"* 2>/dev/null
@@ -4615,10 +4631,9 @@ prodsim_cleanup() {  # idempotent: stop the restarter, prodsim, our manager, and
   prodsim_restart_locked prodsim_final_stop
   prodsim_reap_local
   # SAFE: only the namespaced jobs of our own isolated manager; NEVER a real production wrp_*
-  case "$PROD_JOB_PREFIX" in
-    (wrp[A-Za-z0-9]*_) ;;
-    (*) echo "  refusing to bkill by pattern '$PROD_JOB_PREFIX*'; kill this run's LSF jobs by jobid"; return 1 ;;
-  esac
+  if ! job_token_ok "$PROD_JOBTOKEN" || [ "$PROD_JOB_PREFIX" != "wrp${PROD_JOBTOKEN}_" ]; then
+    echo "  refusing to bkill by pattern '$PROD_JOB_PREFIX*'; kill this run's LSF jobs by jobid"; return 1
+  fi
   timeout 60 bkill -J "${PROD_JOB_PREFIX}*" 0 >/dev/null 2>&1
   sleep 5
   timeout 60 bjobs -J "${PROD_JOB_PREFIX}*" -o jobid -noheader 2>/dev/null | sort -u \

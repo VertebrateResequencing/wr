@@ -244,3 +244,32 @@ since `wrdev.sh start` and `stop` bkill every `wrd_*` job of this user. Gates:
   base `wrdev.sh` with a stale pid file exits 1 with both `SWEEP ERROR`
   lines, leaves nothing running and does not signal the unrelated `sleep`;
   the F3 harness PASSes both verdicts (above).
+
+## Safety review of 545e67d4..471cec3a
+
+- [x] R1 (high, introduced by f57ae4d1). `bkill_dev`'s check `case
+  "$DEV_JOB_PREFIX" in (wrd[A-Za-z0-9]*_)` is a glob, so it accepts
+  `wrdi*_` or `wrda-b_`: `DEV_JOBTOKEN='i*'` would bkill every session's
+  `wrdiso*` jobs. wr's `jobNameToken()` strips non-alphanumerics, so
+  `DEV_JOBTOKEN=iso-1` names jobs `wrdiso1_` while `bkill_dev` targets
+  `wrdiso-1_*`, a silent leak. Validate the tokens once where they are
+  defined, fix the `wrp` guard in prodsim's cleanup the same way, and
+  validate before the older `bkill -J "${PROD_JOB_PREFIX}*" 0` calls.
+  - Red: with a fake `bjobs` (a fixed job list, filtered by `-J` as LSF
+    does) and a fake `bkill` that only logs, `wrdev.sh stop` at `471cec3a`
+    with `DEV_JOBTOKEN='i*'` ran `bkill -J wrdi*_* 0`, and with
+    `DEV_JOBTOKEN=iso-1` ran `bkill -J wrdiso-1_* 0`. `PROD_JOBTOKEN='i*'`
+    was accepted too.
+  - Fix: `job_token_ok` accepts only a non-empty token of ASCII letters and
+    digits (`case` with `''|*[!A-Za-z0-9]*`; bash's `globasciiranges` is on,
+    and `isö` is rejected). wrdev.sh dies at startup unless both
+    `PROD_JOBTOKEN` and `DEV_JOBTOKEN` pass. `bkill_dev` and prodsim's
+    cleanup require the token to pass and the prefix to equal exactly
+    `wrd<token>_` or `wrp<token>_`. The three older prod bkills (the
+    backup-stall, add-storm and report-storm cleanups) call
+    `prod_bkill_ok` first, which dies on the same test.
+  - After: `DEV_JOBTOKEN='i*'` and `iso-1` make `wrdev.sh stop` die with
+    `DEV_JOBTOKEN '...' must be letters and digits only` and 0 bkill calls;
+    `PROD_JOBTOKEN='i*'` and `iso-1` make any mode die the same way; the
+    default token still bkills only `wrdiso51970_*` and job 101.
+  - Files: `developers/wrdev.sh`.
