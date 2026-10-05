@@ -306,7 +306,8 @@ and so relied on the reservation's or start's full write. Each is added to
 `jobqueue/server.go`), added above. `DelayTime` is set in
 `respondWithReservedJob`, so it is included. Candidate: `WaitingForDepGroups`
 (`setWaitingForDepGroups`, called from `dependency.go`,
-`running_dependent.go`, `server.go` and `serverCLI.go`); a job is reservable
+`running_dependent.go`, `server.go`, `serverCLI.go` and `serverREST.go`); a
+job is reservable
 only once its dependencies resolve, and recovery re-derives the field for
 every recovered job through `dependency.go`'s `setWaitingForDepGroups` call.
 The audit confirms that re-derivation with a test (A2 test 7); if recovery
@@ -491,7 +492,9 @@ on it.
 `recoverIncompleteJobs` applies each matching run-state record to its decoded
 job before returning, so every later recovery step sees the overlaid job. It
 walks `bucketJobRunState` alongside `bucketJobsLive`, both sorted by key, not
-one `Get` per live job. `decodePriorJobs`' `recovering: decoded live jobs`
+one `Get` per live job. A missing `bucketJobRunState` (a raw copied database,
+as `dbstart_probe_test.go` opens) counts as empty, here and in every helper
+that reads it. `decodePriorJobs`' `recovering: decoded live jobs`
 line gains `runStates=<applied>`.
 
 ```go
@@ -622,7 +625,14 @@ E4's compacted copies.
    copies `db.golden` to a temp dir and compacts the copy before starting a
    server on it, and passes. Any other test that builds an unversioned
    database with a `jobslive` bucket and opens it with `initDB` stamps it
-   first.
+   first. The exception is `populateCompactStdDB(..., unversioned=true)`
+   (`db_compact_std_test.go`), which C2 test 1 and the existing strip tests
+   need: it populates the database through a stamped `initDB` handle and
+   calls `unstampDB` only after that handle's last close, never opening the
+   unversioned file with `initDB`. The existing assertions there that a
+   database's version is `dbSchemaVersionNoCompleteStd` after a new open or
+   a compaction (around lines 106, 191, 226, 496 and 582) become
+   `currentDBSchemaVersion` (2).
 9. Given a database whose stamp is 3 bytes long, when `initDB` runs, then
    the error satisfies `errors.Is(err, errBadDBSchemaVersion)` and the
    file's SHA-256 is unchanged.
@@ -806,7 +816,9 @@ io.Writer) error`.
 3. Given no `jobRunState` bucket (a version-1 database), then the line shows
    the live record's values.
 4. Cross-check against the real format: given a server started with the
-   exported `jobqueue.Serve` on a temp database, a job with Cmd
+   exported `jobqueue.Serve` on a temp database (a `jobqueue.ServerConfig`
+   with free ports found by listening on `:0`, and certificates generated
+   into a temp dir, as jobqueue's tests do), a job with Cmd
    `/x/psimjob.sh portal 13` added and reserved through `jobqueue.Connect`
    (no `Started`), and a crash image written with the exported
    `Server.BackupDB` to a file before `Stop`, when `run` reads that file,
@@ -949,7 +961,8 @@ the home directory's Go cache.
 As a soak analyst, I want one step that computes F3's criteria from a soak's
 output, so that they are counted, not judged.
 
-"Injected stall" and "commit stall" both mean an injected FUSE commit stall:
+"Injected stall" and "commit stall" both mean only a deliberately injected
+FUSE commit stall; natural NFS commit slowdowns are not excused.
 `stall.sh` writes `<epoch> STALL START ...` and `<epoch> STALL END ...` to
 `<outdir>/stall.log`. A stall window runs from a START to its END plus
 `ReserveWriteWait` (10s); a START with no END ends at START plus
@@ -976,8 +989,9 @@ New `developers/soak/soakgate.py --source d1|warning <outdir>
   it was recorded on disk`), whose `total` values within each segment must
   be exactly the set {1..max}, each once (D1 logs them in order under one
   mutex; the check does not rely on order); with `warning`, the
-  rate-limited `reservation not yet recorded on disk` warning's lines plus
-  their `repeats=` values. Each is inside or outside a window by its
+  rate-limited `reservation not yet recorded on disk` warning, where a full
+  warning line counts 1 and a `(repeated)` line counts its `repeats=`
+  value. Each is inside or outside a window by its
   timestamp.
 - Runs: the `runs=` value on the first line of `<outdir>/markers-analysis.txt`
   (markers.py's output).
@@ -1162,14 +1176,13 @@ Each tree is an export, as battery10 did: `git archive <sha> | tar -x -C
 This tree's soak passes only if all hold:
 
 1. `soakgate.py`'s `peakRUN=` is at least 5,500 in both soaks, and the two
-   are within 10% of each other.
-2. `soakgate.py --source d1` prints `totals ok`, an `outsidePct` of at most
-   0.0340, and an `outside` count below that of the baseline's
-   `soakgate.py --source warning`, or both 0. The baseline's warning-based
-   count is approximate: it counts only expired waits, loses a pending
-   summary at a crash, and stamps a summary when it is emitted, which can
-   move repeats outside a stall window and make the comparison more
-   lenient. The absolute 0.034% bar decides.
+   values a and b satisfy |a - b| <= 0.10 x max(a, b).
+2. `soakgate.py --source d1` prints `totals ok` and an `outsidePct` of at
+   most 0.0340. This absolute bar decides. The comparison with the
+   baseline's `soakgate.py --source warning` `outside` count is
+   informational only and is recorded in the PR body. The baseline's count
+   is approximate: it counts only expired waits, loses a pending summary at
+   a crash, and stamps a summary when it is emitted.
 3. `soakgate.py` prints `doubles` with `outside=0` and `acknowledged=0`.
 4. `soakgate.py` prints `missing` with `absent=0`, and `relburycheck.py`
    reports problems 0.
