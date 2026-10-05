@@ -73,8 +73,9 @@ type jobRunState struct {
 	RequirementsOrig  *scheduler.Requirements
 }
 
-// newJobRunState returns j's run state, deep-copying the Requirements
-// pointers. The caller holds j's read lock.
+// newJobRunState returns j's run state, with deep copies of Requirements
+// and RequirementsOrig (their Other maps included). The caller holds j's
+// read lock.
 func newJobRunState(j *Job) jobRunState
 
 // applyTo sets every field of r on j and invalidates j's derived state
@@ -137,6 +138,11 @@ carry or read through the run-state record (A2 test 6):
 - `recordOf`, `liveJobRecord` and `liveJobRecordInImage`
   (`readd_queued_test.go`) return the live record followed by the key's
   `jobRunState` value (empty if none), so their byte comparisons cover both.
+- Helpers that read, change and write back a live record, such as
+  `rdrSetStoredMark` (`running_dependent_rerun_test.go`) and
+  `hideLiveSubscriptionJobInDB` (`subscription_test.go`), decode through the
+  overlay, change the job, write the full record back and delete the key's
+  run-state record in the same transaction, as `putLiveRecord` does.
 - Any other test that reads `bucketJobsLive` values to check a job's state
   reads through the overlay the same way.
 
@@ -269,8 +275,8 @@ day earlier, PeakRAM 900, PeakDisk 9, CPUtime 1s, StdOutC `o`, StdErrC
    of the same name and type. Given a Job with every such field set to a
    distinct non-zero value by reflection, when `newJobRunState` of it is
    applied to a zero Job, then each field is equal (`reflect.DeepEqual`), and
-   changing the source Job's Requirements afterwards does not change the
-   copy.
+   changing the source Job's `Requirements.RAM` and adding a key to its
+   `Requirements.Other` map afterwards changes neither in the copy.
 
 ### A2: Reserve and start write run-state records
 
@@ -484,9 +490,12 @@ As the manager, I want records that no longer apply to be ignored and
 deleted at recovery, so that a later add of the same job cannot pick them up.
 
 After its read, `recoverIncompleteJobs` deletes every stale or orphaned
-run-state record in one write transaction. If it deleted any, it logs
-`clog.Warn(ctx, "recovering: dropped stale job run-state records",
-"count", n)`.
+run-state record in one write transaction. Inside that transaction each
+candidate is checked again against the live bucket as it is then, and only
+deleted if it is still stale or orphaned: on a running server (A2 test 1) a
+drain may rewrite either record between the read and the write. If it
+deleted any, it logs `clog.Warn(ctx, "recovering: dropped stale job
+run-state records", "count", n)`.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/db.go`
@@ -500,7 +509,10 @@ run-state record in one write transaction. If it deleted any, it logs
    for it.
 2. Given a run-state record with no live record, when `recoverIncompleteJobs`
    runs, then `dropped` is 1 and the record is gone.
-3. Given no stale or orphaned records, when `recoverIncompleteJobs` runs, then
+3. Given a stale record found by the read, when a test hook between the read
+   and the write transaction rewrites it as a matching record, then the
+   write keeps it and `dropped` is 0.
+4. Given no stale or orphaned records, when `recoverIncompleteJobs` runs, then
    it commits nothing (bolt's `Stats().TxStats.GetWrite()` is unchanged)
    and logs no `dropped stale` line.
 
@@ -598,7 +610,8 @@ As an operator, I want `wr manager start` and `wr manager compact` to show me
 the refusal, not just fail.
 
 The manager child dies through `die("wr manager failed to start : %s",
-err)` when `Serve` fails, which logs at crit; the daemon parent prints
+err)` when `Serve` fails, which logs at error level (`lvl=eror`,
+`cmd/root.go`); the daemon parent prints
 `getBadLogLines()` and `startupErr`. No code change is expected unless a
 test below fails.
 
@@ -615,6 +628,12 @@ test below fails.
    stderr contains `wr manager compact`, and `getBadLogLines()` on its log
    returns a line containing `wr manager compact`. The same with a database
    stamped 3 shows `schema version 3` in both.
+3. `TestManagerStartDaemonShowsRefusal`: the same two databases with the
+   default daemon `wr manager start` as a subprocess: the parent exits
+   non-zero and its output contains the `getBadLogLines()` line and `wr
+   manager failed to start on port <port>:` followed by the startup error,
+   with `wr manager compact` (version 0) or `schema version 3` (version 3)
+   in that output.
 2. `TestManagerCompactRefusesNewerDB`: given `managerCompactExit` replaced
    as in `TestManagerCompactRefusesWhileRunning` and `ManagerDBFile` a
    database stamped 3, when the compact command's `Run` executes, then the
@@ -636,13 +655,20 @@ exact per-key count up to any crash.
   stop), logs before the job is handed out:
 
   ```go
-  clog.Info(ctx, reserveNotDurableLogMsg, "key", job.Key(),
+  clog.Info(context.Background(), reserveNotDurableLogMsg, "key", job.Key(),
   	"total", s.db.noteReserveNotDurable())
   ```
 
   with `const reserveNotDurableLogMsg = "reservation handed out before it was
   recorded on disk"`. The total counts from 0 in each manager process. The
   existing rate-limited warning and error line stay.
+- The context is `context.Background()`, not the request's.
+  `setupManagerLogging` (`cmd/manager.go`) adds the info-level file handler
+  to clog's root logger and gives `Serve` a context carrying a warn-level
+  file handler (debug with `--debug`). clog uses a context's handler in place
+  of the root's, so `clog.Info` on a request context never reaches the file.
+  A context with no handler goes to the root logger, whose file handler is at
+  info.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/serverCLI.go`, `jobqueue/db.go`
@@ -650,9 +676,13 @@ exact per-key count up to any crash.
 
 **Acceptance tests:**
 
-1. Given `ReserveWriteWait` 300ms and bolt's write transaction held for 5s
-   (as in `TestReserveDurabilityStalledWrite`) and logs captured at info,
-   when jobs A then B are reserved, then there are exactly 2
+1. Given logging set up as `setupManagerLogging` does it (handlers from
+   `clog.CreateFileHandlersAtLevels(<tmp>/log, "info", "warn")`, the first
+   added with `clog.AddHandler`, the second put on the context passed to
+   `serve` with `clog.ContextWithLogHandler`), `ReserveWriteWait` 300ms and
+   bolt's write transaction held for 5s (as in
+   `TestReserveDurabilityStalledWrite`), when jobs A then B are reserved,
+   then `<tmp>/log` holds exactly 2
    `reservation handed out before it was recorded on disk` lines, A's with
    `key=<A's key> total=1` and B's with `key=<B's key> total=2`, and
    `reservation not yet recorded on disk` is still logged.
@@ -693,9 +723,10 @@ io.Writer) error`.
 4. Cross-check against the real format: given a server started with the
    exported `jobqueue.Serve` on a temp database, a job with Cmd
    `/x/psimjob.sh portal 13` added and reserved through `jobqueue.Connect`
-   (client host `h2`, no `Started`), and a crash image written with the
-   exported `Server.BackupDB` to a file before `Stop`, when `run` reads that
-   file, then the job's line shows state `reserved` and host `h2`.
+   (no `Started`), and a crash image written with the exported
+   `Server.BackupDB` to a file before `Stop`, when `run` reads that file,
+   then the job's line shows state `reserved` and host `os.Hostname()` (the
+   client sends its own hostname).
 
 ### E2: statinspect clearlive empties run-state records
 
@@ -777,30 +808,36 @@ tree and on develop alike.
 Sources, all version 0 and read-only to the gate:
 `/nfs/hgi/wr/sb10-bigdb/pristine6`, `/nfs/hgi/wr/sb10-bigdb/pristine10` and
 `/nfs/hgi/wr/sb10-bigdb/prod.db`. The gate directory is
-`G=/nfs/hgi/wr/sb10-bigdb/runstate-gate`, new.
+`G=/nfs/hgi/wr/sb10-bigdb/runstate-gate`, new. Every `wrdev.sh` run in E4
+and F sets `WRDEV_ROOT` under `$G` (never the `$HOME/wr-devtest` default:
+the home quota is 50G and `add-storm-fixture` needs about 3x its 7.4GB
+base) and sets `DEV_PORT DEV_WEB PROD_PORT PROD_WEB` explicitly, checked
+free with `ss -ltn`, then runs `wrdev.sh build` first.
 
 - New `wrdev.sh compact-fixture <src> <dst>`:
-  - Refuses if `dst` exists, if `src` and `dst` are the same file, or if
+  - Refuses if `dst` exists, if `src` and `dst` are the same file, if
     `src.aslmanifest` exists (an add-storm fixture embeds its
     `<src>.jobcwd` path in its commands, so it is regenerated with
-    `add-storm-fixture`, never copied).
-  - `cp -p src dst`, then runs `$WR manager compact` on `dst` with an
-    isolated config (its `ManagerDBFile` is `dst`, its manager port unused).
-    On failure it removes `dst` and exits non-zero. It never opens `src`
-    for writing.
+    `add-storm-fixture`, never copied), or if the dev manager is up.
+  - `cp -p src dst`, then runs `$WR manager compact` on `dst` with the dev
+    manager's isolated config pointed at `dst`. On failure it removes `dst`
+    and exits non-zero. It never opens `src` for writing.
   - Listed in `usage` and `main`.
 - The texts that point at version-0 fixtures name compacted copies made with
   `compact-fixture` instead: the `die`/`echo` texts of `add-storm` (`WR_AS_DB`),
   `add-storm-fixture` (two), the `WR_RS_DB` header comment, and the
   `WRDEV_PRISTINE_DB` `die` that names `pristine10`/`prod.db`; and
   `TestReliable4AddStorm`'s skip message.
-- The gate's fixtures:
-  1. `compact-fixture` each source to `$G/fixtures/pristine6.db`,
-     `$G/fixtures/pristine10.db` and `$G/fixtures/prod.db`.
-  2. `WRDEV_PRISTINE_DB=$G/fixtures/pristine6.db
+- The gate's fixtures, built with this tree's `wrdev.sh` and
+  `WRDEV_ROOT=$G/fixbuild/root DEV_PORT=51970 DEV_WEB=51971 PROD_PORT=51972
+  PROD_WEB=51973`. Names match what `soak/sweep.sh` expects under
+  `SWEEP_DB_DIR=$G/fixtures`:
+  1. `compact-fixture` each source to `$G/fixtures/pristine6`,
+     `$G/fixtures/pristine10` and `$G/fixtures/prod.db`.
+  2. `WRDEV_PRISTINE_DB=$G/fixtures/pristine6
      WRDEV_ASL_FIXTURE=$G/fixtures/fix120k.db wrdev.sh add-storm-fixture
-     120000`, which writes `fix120k.db`, its `.aslmanifest` and its own
-     `fix120k.db.jobcwd` in `$G/fixtures`.
+     120000 5 200`, which writes `fix120k.db`, its `.aslmanifest` and its
+     own `fix120k.db.jobcwd` in `$G/fixtures`.
 
 **File:** `developers/wrdev.sh`, `jobqueue/reliable4_addstorm_test.go`
 **Test file:** none; each is run end to end before the PR is ready.
@@ -815,63 +852,80 @@ Sources, all version 0 and read-only to the gate:
 3. Given step 2's fixture, when `WRDEV_PRISTINE_DB=$G/fixtures/fix120k.db
    wrdev.sh add-storm-lsf` starts, then it prints `fixture manifest OK`.
 
-### E5: Soak classification by stall window
+### E5: Soak gate classification
 
-As a soak analyst, I want one step that splits non-durable hand-outs and
-double runs by the injected commit stalls, so that F3's criteria are
-computed, not judged.
+As a soak analyst, I want one step that computes F3's criteria from a soak's
+output, so that they are counted, not judged.
 
-"Injected stall" and "commit stall" here both mean an injected FUSE commit
-stall: `stall.sh` writes `<epoch> STALL START ...` and `<epoch> STALL END
-...` to `<outdir>/stall.log`. A stall window runs from a START to its END
-plus `ReserveWriteWait` (10s); a START with no END ends at START plus
+"Injected stall" and "commit stall" both mean an injected FUSE commit stall:
+`stall.sh` writes `<epoch> STALL START ...` and `<epoch> STALL END ...` to
+`<outdir>/stall.log`. A stall window runs from a START to its END plus
+`ReserveWriteWait` (10s); a START with no END ends at START plus
 `STALL_SECS` (180) plus 10s. `crashon.sh stall` only triggers a crash during
 a stall and adds no window.
 
-New `developers/soak/stallsplit.py <outdir> <runnerlogdir> <doubles.tsv>
-<runs>`:
+New `developers/soak/soakgate.py <outdir> <runnerlogdir> <doubles.tsv>
+<dbstart.tsv>`:
 
-- Reads the windows from `stall.log`, and every manager log of the run:
-  `<outdir>/manager.log` and `<outdir>/manager.log.<epoch>`.
+- Manager log: only `<outdir>/manager.log`. The `manager.log.<epoch>` files
+  are `cp -f` copies of the whole growing log taken at each stop, so they
+  are ignored. The log is split into one segment per manager process at
+  each line matching `lvl=info msg="wr manager \S+ started on` (cmd's
+  `managerStartedLogRegex`); lines before the first are ignored, since no
+  reservation is handed out before a manager has started.
 - Non-durable hand-outs: D1 lines (`reservation handed out before it was
   recorded on disk`), or, for a tree without them, the rate-limited
   `reservation not yet recorded on disk` warning's lines plus their
-  `repeats=` values. Each counted inside or outside a window by timestamp.
-  For D1 lines it checks per log file that `total` runs 1, 2, ... with no
-  gap.
-- Double runs: for each `doubles.tsv` row (doubles.py's output), the first
-  run's reservation time is its runner log's `reserved a job` line for that
-  psimjob kind and id at or before the first run's start, as `anyway.py`
-  maps them. It is inside or outside a window by that time.
-- Prints exactly, then one line per outside double run:
+  `repeats=` values. Each is inside or outside a window by its timestamp.
+  For D1 lines, `total` must run 1, 2, ... with no gap within each segment.
+- Runs: the `runs=` value on the first line of `<outdir>/markers-analysis.txt`
+  (markers.py's output).
+- Double runs: for each `doubles.tsv` row, the first run's reservation is
+  its runner log's `reserved a job` line for that psimjob kind and id at or
+  before the first run's start, as `anyway.py` maps them. The double is
+  inside or outside a window by that line's time. It is "acknowledged" if
+  that runner log has a `command ran OK` line for the same key after the
+  first run's start and before the second run's start.
+- Missing jobs: every psimjob (kind, id) with an `S` line in
+  `<outdir>/markers/*.tsv` must have a row in `dbstart.tsv`.
+- Prints exactly, then one line per outside or acknowledged double and per
+  missing job:
 
   ```text
   nondurable source=<d1|warning> inside=<n> outside=<n> runs=<runs> outsidePct=<x.xxxx>
-  totals <ok|GAP <file> after <n>>
-  doubles inside=<n> outside=<n>
+  totals <ok|GAP segment <i> after <n>>
+  doubles inside=<n> outside=<n> acknowledged=<n>
+  missing ran=<n> absent=<n>
   ```
 
-**File:** `developers/soak/stallsplit.py`, `developers/soak/README.md`
+**File:** `developers/soak/soakgate.py`, `developers/soak/README.md`
 (analysis steps)
-**Test file:** `developers/soak/testdata/stallsplit/` (input dir and
-`expected.txt`), run as `stallsplit.py` on it and diffed.
+**Test file:** `developers/soak/testdata/soakgate/` (an input outdir,
+runner logs, `doubles.tsv`, `dbstart.tsv` and `expected.txt`), run as
+`soakgate.py` on it and diffed.
 
 **Acceptance tests:**
 
-1. Given `testdata/stallsplit` with a `stall.log` holding one window
-   1000-1180, `manager.log.1` with D1 lines at 1005 (`total=1`) and 1300
-   (`total=2`), `manager.log` with one at 1400 (`total=1`), runner logs and
-   a `doubles.tsv` with two double runs whose first reservations are at
-   1010 and 1500, and `<runs>` 10000, when `stallsplit.py` runs, then its
-   output equals `expected.txt`: `nondurable source=d1 inside=1 outside=2
-   runs=10000 outsidePct=0.0200`, `totals ok`, `doubles inside=1
-   outside=1`, and the 1500 double's line.
-2. Given the same input with `manager.log`'s line changed to `total=2`, then
-   the totals line is `totals GAP manager.log after 0`.
+1. Given `testdata/soakgate` with `stall.log` holding one window 1000-1180;
+   one cumulative `manager.log` with two start lines, a D1 line at 1005
+   (`total=1`) and one at 1300 (`total=2`) after the first, and one at 1400
+   (`total=1`) after the second; a stale `manager.log.1350` holding a copy
+   of the log up to 1350; `markers-analysis.txt` with `runs=10000`; runner
+   logs and a `doubles.tsv` with two double runs whose first reservations
+   are at 1010 and 1500, the 1500 one with `command ran OK` before its
+   second run; and markers for 3 jobs, all in `dbstart.tsv`; when
+   `soakgate.py` runs, then its output equals `expected.txt`:
+   `nondurable source=d1 inside=1 outside=2 runs=10000 outsidePct=0.0200`,
+   `totals ok`, `doubles inside=1 outside=1 acknowledged=1`, the 1500
+   double's line, and `missing ran=3 absent=0`.
+2. Given the same input with the 1400 line's `total=2`, then the totals line
+   is `totals GAP segment 2 after 0`.
 3. Given a warning-only log with one warning line inside the window and a
    `(repeated) repeats=3` line outside it, then the first line reads
    `nondurable source=warning inside=1 outside=3 runs=10000
    outsidePct=0.0300`.
+4. Given one marker job removed from `dbstart.tsv`, then the last summary
+   line is `missing ran=3 absent=1`, followed by that job's line.
 
 ## F: Gates
 
@@ -883,13 +937,15 @@ With all `OS_*` unset and `GOCACHE` off the home directory:
 2. `make speed` against `SPEED_BASE` = the develop merge-base reports no
    worsening over its threshold. The PR body summarises its verdict and A2
    test 5's two `bolt_pages/job` figures.
-3. `make speed-full` with `SPEED_BIG_DB=$G/fixtures/pristine6.db` reports no
-   worsening; both trees run on copies of that one file.
+3. `make speed-full` with `SPEED_BIG_DB=$G/fixtures/pristine6` and
+   `WRDEV_ROOT=$G/speed/root` reports no worsening; both trees run on copies
+   of that one file.
 
 ### F2: wrdev crash, recovery and big-DB modes
 
-Fixtures are E4's, never the originals. Each passes on this tree, in
-sequence on an isolated manager:
+Fixtures are E4's, never the originals. With `WRDEV_ROOT=$G/f2/root
+DEV_PORT=51980 DEV_WEB=51981 PROD_PORT=51982 PROD_WEB=51983` and this tree's
+`wrdev.sh build`, each passes, in sequence:
 
 1. `wrdev.sh crash-recovery` prints `PASS: re-sent archive accepted
    (complete=1), command ran exactly once` and exits 0.
@@ -910,12 +966,15 @@ Two soaks, one after the other, never concurrently: a baseline of develop
 at the PR's merge-base, then this tree. Each uses its own tree's binary for
 the whole run (never replaced mid-run).
 
-Each soak's launcher is battery10's `soak-go.sh` with only these values
-changed (ports checked free with `ss -ltn` first):
+Each tree is an export, as battery10 did: `git archive <sha> | tar -x -C
+<dir>`, then `git init <dir>`, so `soak/config.sh`'s `git rev-parse
+--show-toplevel` finds it. Each soak's launcher is battery10's
+`soak-go.sh` with only these values changed (ports checked free with
+`ss -ltn` first):
 
 | Value | Baseline | Change |
 | --- | --- | --- |
-| tree | `$G/src-base` (export of the merge-base) | `$G/src-change` (export of the PR head) |
+| tree | `$G/src-base` (merge-base) | `$G/src-change` (PR head) |
 | `H` | `$G/src-base/developers/soak` | `$G/src-change/developers/soak` |
 | `SOAK_ROOT` | `$G/soak-base/run` | `$G/soak-change/run` |
 | `FIXTURE` | `$G/soak-base/fix120k.db` | `$G/soak-change/fix120k.db` |
@@ -930,23 +989,25 @@ changed (ports checked free with `ss -ltn` first):
   `crashon.sh` (stall and two burst), `crashafter.sh`, `relbury.sh` (r1,
   r2), `rundep.sh` and `stopstate.sh` injectors.
 - Both soaks are analysed with the change tree's analysis tools (README
-  steps, `dbstart`, E5's `stallsplit.py`).
+  steps, `dbstart`, E5's `soakgate.py`).
 
 This tree's soak passes only if all hold:
 
 1. Peak LSF RUN (`lsf.tsv`) is at least 5,500 in both soaks, and within 10%
    of each other.
-2. `stallsplit.py`'s `totals ok`, and its `outsidePct` at most 0.034% of
-   `markers.py`'s run count; its `outside` count below the baseline's.
-3. `stallsplit.py`'s `doubles outside=0`.
-4. No lost jobs: `relburycheck.py` problems 0, `runnerlogs.py` finds no run
-   whose final report was acknowledged and that then ran again, and every
-   key the soak added is in `dbstart` output as complete, buried or live.
+2. `soakgate.py` prints `totals ok`, an `outsidePct` of at most 0.0340, and
+   an `outside` count below the baseline's. The baseline's warning-based
+   count undercounts (it counts only expired waits, a summary is stamped
+   when emitted, and a pending summary is lost at a crash), which only makes
+   this comparison stricter.
+3. `soakgate.py` prints `doubles` with `outside=0` and `acknowledged=0`.
+4. `soakgate.py` prints `missing` with `absent=0`, and `relburycheck.py`
+   reports problems 0.
 5. `rundepcheck.py` has no CHECK outside the owner-ruled "stop means buried"
    cases.
 
-The PR body records both run directories, peak RUN, run counts, both
-soaks' `stallsplit.py` output, and the verdict.
+The PR body records both run directories, peak RUN, both soaks'
+`soakgate.py` output, and the verdict.
 
 ## Implementation Order
 
@@ -1009,11 +1070,14 @@ soaks' `stallsplit.py` output, and the verdict.
   a refused database is left unchanged for `wr manager compact`. Only files
   with a `jobslive` bucket are refused, so an empty file from a crashed first
   start is not mislabelled.
-- **Per-hand-out info lines, warning kept.** The manager's file log is at
-  info, so the lines reach it, and each is written before the hand-out, so
-  the count is exact up to a crash. battery10 would have produced about 23k
-  lines in 3h, at most about 4k a minute. The rate-limited warning stays so
-  existing log watchers and `TestReserveDurabilityStalledWrite` keep working.
+- **Per-hand-out info lines, warning kept.** The lines are logged on a
+  context with no handler, so they reach the root logger's info-level file
+  handler; the server's own context carries a warn-level handler that would
+  drop them (D1 test 1 uses the real configuration). Each is written before
+  the hand-out, so the count is exact up to a crash. battery10 would have
+  produced about 23k lines in 3h, at most about 4k a minute. The rate-limited
+  warning stays so existing log watchers and
+  `TestReserveDurabilityStalledWrite` keep working.
 - **Baseline soak.** The fixtures had to be compacted for this tree, which
   changes their freelist, so battery10's figures are not like for like. The
   baseline soak on the same compacted fixture is. `fix120k` is regenerated
