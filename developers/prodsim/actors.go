@@ -59,8 +59,10 @@ const (
 	fofnMedianMinutes = 6
 	fofnSigma         = 0.8
 	fofnMinMemMB      = 300
-	fofnMemSpreadMB   = 700
-	fofnFailPct       = 2
+	// A chunk holds at most 899 of its 1024MB, leaving room for bash and
+	// perl, as every job must.
+	fofnMemSpreadMB = 600
+	fofnFailPct     = 2
 
 	// wrstat multi.
 	wrstatPaths          = 12
@@ -88,6 +90,9 @@ const (
 	wrstatUIBuildEvery = 6
 	wrstatUIBuildTime  = 30 * time.Minute
 	wrstatUIBuildRAM   = 1500
+	// A build holds two thirds of its RAM, so LSF's memory limit, which is
+	// its RAM, never kills it.
+	wrstatUIBuildMemMB = wrstatUIBuildRAM * 2 / 3
 	wrstatUIBuildLimit = 3 * time.Hour
 
 	// The portal, the Go-client waiter, the operator and the status pollers.
@@ -423,7 +428,7 @@ func (s *sim) wrstatUI(ctx context.Context) {
 
 		if n%wrstatUIBuildEvery == 1 {
 			rg := fmt.Sprintf("wrstat-ui-summarise-%d", time.Now().Unix())
-			build := sch.NewJob(s.jobCmd("build", rg, s.simSecs(wrstatUIBuildTime), wrstatUIBuildRAM, 0, 0), rg,
+			build := sch.NewJob(s.jobCmd("build", rg, s.simSecs(wrstatUIBuildTime), wrstatUIBuildMemMB, 0, 0), rg,
 				"wrstat-ui-summarise", "", "", &jqs.Requirements{RAM: wrstatUIBuildRAM, Cores: 1,
 					Time: wrstatUIBuildLimit})
 			publish := sch.NewJob(s.jobCmd("publish", rg, s.simSecs(time.Minute), 0, 0, 0), rg,

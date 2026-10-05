@@ -68,7 +68,7 @@ record the final stop that `wrdev.sh prodsim` makes as it ends.
 | --- | --- |
 | `markers.py <outdir>` | Runs per kind, runs with no end marker, double runs (a key run again after an exit 0), overlaps, re-runs by nearest restart or stall, and `--cmd_deps` ordering. |
 | `doubles.py <outdir> [doubles.tsv]` | Each double run classified by the outage its first run straddled. |
-| `anyway.py <outdir> <runnerlogdir> <doubles.tsv> <managerlog>` | Which double runs had their first reservation handed out before it was on disk. |
+| `anyway.py <outdir> <runnerlogdir> <doubles.tsv> <managerlog>...` | Which double runs had their first reservation handed out before it was on disk, judged from the first run's own runner log (its reports rejected as "bad job" or "you must Reserve()" after a crash, and no "command ran OK" for it) or the manager's rate-limited warning, with a reserve reply 10s or more after the request as supporting evidence; how often each signal fires on all other reservations; and the first run's own outcome lines. |
 | `runnerlogs.py <runnerlogdir> [unacked.tsv]` | Unacknowledged start reports and how they settled, final-state failures, kills with no kill line. |
 | `starttimes.py <outdir> <dbstart.tsv> <unacked.tsv>` | Recorded StartTime against the real start, for all, pre-crash and unacknowledged runs. |
 | `latency.py <outdir> <runnerlogdir>` | End-to-acknowledgement latency per outcome and per 10 minutes, and ends per minute. |
@@ -207,7 +207,7 @@ With `out=$SOAK_ROOT/prodsim-<epoch>` and `rl=$SOAK_ROOT/runnerlogs`:
 ```bash
 python3 developers/soak/markers.py "$out"            # double runs first
 python3 developers/soak/doubles.py "$out" "$out/doubles.tsv"
-python3 developers/soak/anyway.py "$out" "$rl" "$out/doubles.tsv" "$out/manager.log"
+python3 developers/soak/anyway.py "$out" "$rl" "$out/doubles.tsv" "$out"/manager.log*
 python3 developers/soak/runnerlogs.py "$rl" "$out/unacked.tsv"
 python3 developers/soak/latency.py "$out" "$rl"
 python3 developers/soak/rundepcheck.py "$out"
