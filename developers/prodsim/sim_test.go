@@ -89,6 +89,7 @@ func startOutageRun(t *testing.T, simMinute time.Duration, scale float64,
 	config.Deployment = "production"
 	config.Timings.RetryTime = testRetryTime
 	r.server = clienttesting.Serve(t, config)
+	r.undo = append(r.undo, func() { r.server.Stop(context.Background(), true) })
 
 	cfg := simTestConfig(r.out)
 	cfg.simMinute = simMinute
@@ -123,9 +124,10 @@ func (r *outageRun) end() time.Duration {
 	return time.Since(endedAt)
 }
 
-// cleanup ends the run, if the test did not, and undoes startOutageRun's setup.
+// cleanup ends the run and waits for its actor, if the test did not, then
+// undoes startOutageRun's setup, stopping the manager.
 func (r *outageRun) cleanup() {
-	r.cancel()
+	r.end()
 
 	for _, undo := range slices.Backward(r.undo) {
 		undo()

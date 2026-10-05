@@ -143,3 +143,20 @@
     under 1s. Six more exit-0 E markers have no outcome line (15934 before),
     being the runs that had borrowed a reused pid's outcome. The fixture
     gives max 2.0.
+
+- [x] F4 test leaks its manager: startOutageRun's undo list never stops
+  r.server for TestEveryJobHoldsLessMemoryThanItRequests (port still
+  accepting 3s after, goroutines 2→26), and cleanup() doesn't wait on
+  r.ended.
+  - Source: review of the F4 commit.
+  - Red command: a throwaway probe test in a scratch copy that runs the F4
+    test's setup and `r.cleanup()`, waits 3s, then dials the manager's
+    address and counts goroutines:
+    `PROBE accepting=true goroutines before=2 after=23`.
+  - Files: `developers/prodsim/sim_test.go`.
+  - Approach: startOutageRun's undo list stops the manager (Stop is a no-op
+    on a manager the test already stopped), and cleanup() calls end(), so it
+    waits for the actor as end() does before undoing the setup.
+  - Green: the same probe gives
+    `PROBE accepting=false goroutines before=2 after=3`; the package tests
+    pass plain and `-race`.
