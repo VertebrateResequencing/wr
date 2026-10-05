@@ -346,7 +346,9 @@ change in memory, and how each is persisted.
    when a client reserves it and `Started` returns, then the job's live
    record is still byte-equal to L, a run-state record exists for its key,
    and `server.db.recoverIncompleteJobs()` returns the job with `db.encode`
-   equal to `server.db.encodeJob` of the in-memory job.
+   equal to `server.db.encodeJob` of the in-memory job. The comparison is
+   deliberately strict: it fails on any persisted field changed in memory
+   after the add that neither the record nor another write carries.
 2. Given the same setup, when the job is reserved but `Started` is not sent,
    then its recovered job has State reserved, ReservedBy the client's ID,
    Host and Pid the client's, and RunnerReservation the in-memory value.
@@ -390,6 +392,13 @@ change in memory, and how each is persisted.
    recovers that, then the recovered job is running with `RerunAfterRun`
    false, its runner's reports are accepted, and its command's run marker
    shows exactly one run after the first recovery.
+9. Given a running job whose `RunnerPid` is 0 (recovered from a record
+   written without it), when its runner re-sends the same start with
+   RunnerPid 4242 (an accepted duplicate) and a crash image is taken and
+   recovered, then the recovered job's `RunnerPid` is 4242.
+10. `TestManagerQueueDefaultsAreNotStored` (`cmd/manager_queue_db_test.go`)
+    also checks every `jobRunState` record's `Requirements.Other` (decoded
+    through the overlay) holds neither the queue nor the avoid key.
 
 ### A3: Drain ordering
 
@@ -412,6 +421,11 @@ with a new test helper `queueUnkickedBestEffortRunState`, which calls
 `enqueueRunStateLocked` under the same locks without kicking the writer, as
 `queueUnkickedBestEffortChange` and `queueUnkickedBestEffortExit` do, so
 every op lands in the one `drainBestEffort` the test calls.
+
+The existing three cases of `TestBestEffortDrainKeepsArrivalOrder`, with the
+reservation queued as a full change (`queueUnkickedBestEffortChange`), stay
+alongside the run-state versions: they are the only cases that put a full
+change and an exit op in one drain (tests 12 and 13 add more).
 
 **Acceptance tests:**
 
@@ -438,7 +452,16 @@ every op lands in the one `drainBestEffort` the test calls.
     sees.
 11. `TestStartDurabilityAbortedWriteIsNotCommitted`, extended with a
     run-state waiter on the rolled-back drain, sees that waiter get
-    `errBestEffortWriteAborted`.
+    `errBestEffortWriteAborted`. Drain step 1's live-record check must keep
+    dereferencing the live bucket, so that test's panic-based rollback (it
+    removes the bucket) still happens.
+12. kick, release (both full: the kick a full change, the release an exit
+    op): recovered State delayed, stored stderr `failed run's stderr`.
+13. release, kick: recovered State ready, UntilBuried 3, no run-state
+    record.
+14. The three existing cases with full-change reservations (release,
+    reservation / reservation, release / release, reservation, release)
+    still recover reserved, delayed and delayed.
 
 ### A4: Full writes and deletes supersede the run-state record
 
@@ -520,6 +543,21 @@ type runStateRecovery struct {
 
 func (db *db) recoverIncompleteJobs() ([]*Job, runStateRecovery, error)
 ```
+
+A matching record whose body fails to decode is treated as stale: it is not
+applied, counts in `dropped` and is deleted by B2, and `decodePriorJobs`
+warns `recovering: undecodable job run-state record` with its key. The full
+record is the durable fallback, and failing recovery would stop the manager
+for one bad record; a full record that fails to decode still fails
+recovery as today.
+
+Callers of `recoverIncompleteJobs` that change with the signature:
+`db_test.go` (around lines 1045, 1111, 1274, 1314, 1608),
+`db_coldstart_test.go`, `delete_after_stop_test.go`,
+`depgranularity_recovery_test.go`, `depgranularity_dblock_test.go`,
+`reliable4_writestorm_test.go`, `modify_validation_test.go`,
+`db_unreadable_test.go`, and the `reliability_repro`-tagged
+`dbstart_probe_test.go`.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/db.go`, `jobqueue/server.go`
@@ -718,6 +756,15 @@ err)` when `Serve` fails, which logs at error level (`lvl=eror`,
 `getBadLogLines()` and `startupErr`. No code change is expected unless a
 test below fails.
 
+Tests 1 and 2 re-execute the test binary into a new helper,
+`TestManagerStartHelperProcess`, which does nothing unless its env var is
+set and otherwise runs `RootCmd` with the arguments after `--`. It is
+modelled on `TestManagerStopHelperProcess`
+(`cmd/manager_stop_shutdown_test.go`), which calls `jobqueue.Serve`
+directly and so cannot cover `wr manager start`. `daemonArgs`
+(`cmd/root.go`) clones `os.Args`, so the daemonised child of test 2
+re-enters the same helper.
+
 **Package:** `cmd/`
 **File:** `cmd/manager.go`
 **Test file:** `cmd/manager_test.go`
@@ -726,8 +773,7 @@ test below fails.
 
 1. `TestManagerStartRefusesUnsupportedDB`: given an isolated config whose
    `ManagerDBFile` is an unversioned database with a `jobslive` bucket, when
-   `wr manager start --foreground` runs as a subprocess (the test binary
-   re-executed, as `manager_stop_test.go` does) with `--deployment
+   `wr manager start --foreground` runs as a subprocess with `--deployment
    production` (a development manager deletes its database before the check,
    since `Serve` passes `!config.dontWipeDevDB`), then it exits non-zero, its
    stderr contains `wr manager compact`, and `getBadLogLinesFromFile(<its
@@ -947,9 +993,10 @@ and F sets `WRDEV_ROOT` under `$G` (never the `$HOME/wr-devtest` default:
 the home quota is 50G and `add-storm-fixture` needs about 3x its 7.4GB
 base) and sets `DEV_PORT DEV_WEB PROD_PORT PROD_WEB` explicitly, checked
 free with `ss -ltn`, then runs `wrdev.sh build` first. Every command in E4
-and F2, including `wrdev.sh build` and F2.5's `go test`, runs with all
-`OS_*` unset and `GOCACHE=/tmp/claude-11346/gocache-runstate-gate`, never
-the home directory's Go cache.
+and F2, including `wrdev.sh build` and the `go test` runs inside wrdev
+modes, runs with all `OS_*` unset and
+`GOCACHE=/tmp/claude-11346/gocache-runstate-gate`, never the home
+directory's Go cache.
 
 - New `wrdev.sh compact-fixture <src> <dst>`:
   - Refuses if `dst` exists, if `src` and `dst` are the same file, if
@@ -1058,8 +1105,9 @@ New `developers/soak/soakgate.py --source d1|warning <outdir>
   `<outdir>/markers/*.tsv` must have a row in `dbstart.tsv`, except that
   one prodsim may have removed is excused: kind `put` (added with
   `OnFailure Remove`) or `fofnput` (removed by `fofnPoll`'s
-  `remove_buried`), whose last run's `E` marker has a non-zero exit code or
-  which has no `E` marker.
+  `remove_buried`), whose last run's `E` marker has any status other than
+  `0` (a non-zero exit code, or `sig<NAME>` when a signal ended the run, as
+  `psimjob.sh` writes it) or which has no `E` marker.
 - Prints exactly, then one line per outside or acknowledged double (inside
   or outside a window) and per absent job:
 
@@ -1074,6 +1122,14 @@ New `developers/soak/soakgate.py --source d1|warning <outdir>
   (`totals n/a` with `warning`. In `GAP`, `<pid>` is the first segment
   whose totals are not exactly {1..max}, and `<n>` the largest k such that
   each of 1..k appears in it exactly once.)
+
+  After `peakRUN=`, one line per listed double, in `doubles.tsv` order, then
+  one per absent job, sorted by kind then id:
+
+  ```text
+  double <kind> <id> <inside|outside|unmapped> reserved=<epoch|-> acknowledged=<yes|no>
+  absent <kind> <id> last=<E status|none>
+  ```
 
 **File:** `developers/soak/soakgate.py`, `developers/soak/README.md`
 (analysis steps)
@@ -1127,6 +1183,9 @@ which runs every case and diffs.
 10. Given a file in the case's `../.wr-prod_production` named as a rotated
     backup of its `log` (a name `rotatedManagerLogFiles` recognises), then
     soakgate prints `ROTATED` naming it and exits 1.
+11. Given test 5's input plus an absent `fofnput` whose last `E` status is
+    `sigTERM`, then the missing line is `missing ran=6 absent=1
+    excused=2`.
 
 ## F: Gates
 
@@ -1190,9 +1249,9 @@ DEV_PORT=51980 DEV_WEB=51981 PROD_PORT=51982 PROD_WEB=51983` and this tree's
      add-storm`
    - `WR_WSFREEZE_DB=$G/fixtures/pristine10 wrdev.sh writestorm-freeze`
    - `WRDEV_PRISTINE_DB=$G/fixtures/pristine10 wrdev.sh backup-stall-check`
-5. `WR_AS_DB=$G/fixtures/prod.db CGO_ENABLED=1 go test -tags
-   netgo,reliability_repro --count 1 -run TestReliable4AddStorm ./jobqueue/`
-   passes.
+   F2.4's `add-storm` runs `TestReliable4AddStorm` (`reliability_repro`
+   tag) with `WR_AS_DB` and a timeout sized for it, so it needs no separate
+   command.
 
 ### F3: Production-scale LSF crash soaks
 
@@ -1264,7 +1323,8 @@ The PR body records both run directories, peak RUN, both soaks'
 4. **Phase 4: logging (D1).** After phase 3.
 5. **Phase 5: tools and docs (E1, E2, E3, E4, E5).** E1 and E2 depend on
    phase 2's format, E1 test 4 on phase 3, E3 on phases 1 and 3, E5 on D1.
-   E4 needs phase 1's compact.
+   E4 needs phase 1's compact and comes after E1 (its test 1 uses `dbstart
+   -schema`).
 6. **Phase 6: gates (F1, F2, F3).** Sequential: F1, then F2, then F3. F3 is
    the last step before the PR is ready.
 
