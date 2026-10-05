@@ -13,6 +13,12 @@ export WR_JOBNAME_TOKEN=$TOKEN
 LSF_PREFIX="wrd${TOKEN}_"
 # kill_our_manager kill -9s the manager our pid file names, only if that pid runs
 # "$WR ... manager start" (never a pattern match)
+# our_jobs prints "jobid name" of this run's unfinished LSF jobs, PEND ones included: fixed-format output
+# (a PEND job has no EXEC_HOST, so bjobs -w's columns shift), kept only on an exact name prefix
+our_jobs() {
+  timeout "${1:-60}" bjobs -J "${LSF_PREFIX:?}*" -o 'jobid job_name' -noheader 2>/dev/null \
+    | awk -v p="$LSF_PREFIX" 'NF >= 2 && index($2, p) == 1 {print $1, $2}'
+}
 kill_our_manager() {
   local p; p=$(cat "${BASE:?}/manager_development/pid" 2>/dev/null) || return 0
   case "$(ps -ww -o args= -p "$p" 2>/dev/null)" in ("${WR:?} "*"manager start"*) kill -9 "$p" ;; (*) return 1 ;; esac
@@ -25,13 +31,13 @@ log(){ printf '%s %s\n' "$(date -Is)" "$*" | tee -a "$EV"; }
 CLEANED=0
 cleanup(){ [ "$CLEANED" = 1 ] && return; CLEANED=1; set +e
   log "cleanup: manager stop"; timeout 120 "$WR" --deployment development manager stop >>"$EV" 2>&1
-  local ids; ids=$(timeout 60 bjobs -w 2>/dev/null | awk -v p="$LSF_PREFIX" 'NF>6 && index($7,p)==1{id=$1; sub(/\[.*/,"",id); print id}' | sort -u)
+  local ids; ids=$(our_jobs | awk '{id=$1; sub(/\[.*/,"",id); print id}' | sort -u)
   [ -n "$ids" ] && { log "bkill leftover runners"; echo "$ids" | xargs -r -n 500 bkill -b >>"$EV" 2>&1; }
-  log "final bjobs $LSF_PREFIX: $(timeout 60 bjobs -w 2>/dev/null | awk -v p="$LSF_PREFIX" 'NF>6 && index($7,p)==1' | wc -l)"
+  log "final bjobs $LSF_PREFIX: $(our_jobs | wc -l)"
 }
 trap cleanup EXIT
 
-pre=$(timeout 30 bjobs -w 2>/dev/null | awk -v p="$LSF_PREFIX" 'NF>6 && index($7,p)==1' | wc -l)
+pre=$(our_jobs 30 | wc -l)
 [ "${pre:-0}" != "0" ] && { log "ABORT: $pre existing $LSF_PREFIX jobs"; exit 75; }
 
 log "=== $(basename "$WR"): manager start -s lsf (FRESH db, safe jobs), NFS dir ==="
@@ -52,7 +58,7 @@ for i in $(seq 1 300); do
   if [ $rc -ne 0 ]; then log "poll $i: STATUS TIMEOUT/FAIL after ${lat}s (rc=$rc) <-- NON-RESPONSIVE"; ANOM=1; sleep 5; continue; fi
   g(){ echo "$ST"|awk -F': *' -v k="$1" '$1==k{print $2}'; }
   comp=$(g complete); run=$(g running); rdy=$(g ready); dep=$(g dependent); del=$(g delayed); bur=$(g buried); lost=$(g "lost contact")
-  bjc=$(timeout 60 bjobs -w 2>/dev/null | awk -v p="$LSF_PREFIX" 'NF>6 && index($7,p)==1' | wc -l)
+  bjc=$(our_jobs | wc -l)
   tot=$(( ${comp:-0}+${run:-0}+${rdy:-0}+${dep:-0}+${del:-0}+${bur:-0}+${lost:-0} ))
   log "poll $i: comp=$comp run=$run rdy=$rdy dep=$dep del=$del bur=$bur lost=$lost | acct=$tot/$NJOBS bjobs=$bjc statuslat=${lat}s"
   [ "${run:-0}" -gt "$MAXRUN" ] && MAXRUN=${run:-0}

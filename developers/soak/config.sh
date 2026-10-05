@@ -128,9 +128,14 @@ soak_manager_pid() {
   [ -n "$pid" ] || return 1
   a0=$(tr '\0' '\n' 2>/dev/null < "/proc/$pid/cmdline" | head -n 1)
   [ -n "$a0" ] || return 1
-  # symlinks resolved too, as wr names the daemon and runners it re-executes
-  { [ "$a0" = "${SOAK_WR:?}" ] || [ "$a0" = "$SOAK_WR.real" ] || [ "$a0" = "$(readlink -f -- "$SOAK_WR")" ] \
-    || [ "$a0" = "$(readlink -f -- "$SOAK_WR.real")" ]; } && echo "$pid"
+  [ "$a0" = "${SOAK_WR:?}" ] || [ "$a0" = "$SOAK_WR.real" ] && { echo "$pid"; return 0; }
+  # symlinks resolved too, as wr names the daemon and runners it re-executes, but
+  # only while the result is still this root's own binary: a SOAK_WR that is a
+  # symlink to another (eg. a shared or production) install must not make that
+  # install's manager ours
+  local r; r=$(realpath -m -- "${SOAK_ROOT:?}")
+  case "$a0" in ("$r/wr"|"$r/wr.real") ;; (*) return 1 ;; esac
+  [ "$a0" = "$(readlink -f -- "$SOAK_WR")" ] || [ "$a0" = "$(readlink -f -- "$SOAK_WR.real")" ] && echo "$pid"
 }
 
 # soak_wr_running <subcommand ERE> prints the pids of the `timeout N` wrapping

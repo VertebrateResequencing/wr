@@ -142,9 +142,18 @@ port_free() {
 # production manager or anything else.
 # Its argv[0] must be exactly one of our_bins: $WR, or $WR.real, which developers/soak/run.sh's
 # RUNNER_FILELOG=1 wrapper execs, or either with symlinks resolved, as the manager names the
-# runners it starts (osext.Executable). A substring match would also accept a process whose path
-# merely contains ours.
-our_bins() { printf '%s\n' "${WR:?}" "$WR.real" "$(readlink -f -- "$WR")" "$(readlink -f -- "$WR.real")" | awk 'NF && !seen[$0]++'; }
+# runners it starts (osext.Executable). A resolved form counts only if it is still this root's
+# own wr or wr.real (the root reached through a symlink): if $WR is itself a symlink to some other
+# install, such as a shared or production wr, that install's processes are never ours. A
+# substring match would also accept a process whose path merely contains ours.
+our_bins() {
+  local r b x; r=$(realpath -m -- "${WRDEV_ROOT:?}")
+  printf '%s\n' "${WR:?}" "$WR.real"
+  for b in "$WR" "$WR.real"; do
+    x=$(readlink -f -- "$b") || continue
+    case "$x" in ("$r/wr"|"$r/wr.real") printf '%s\n' "$x" ;; esac
+  done
+}
 is_ours() {
   local a0
   a0=$(tr '\0' '\n' 2>/dev/null < "/proc/${1:-none}/cmdline" | head -n 1)
@@ -4698,24 +4707,24 @@ prodsim_reap_local() {
   echo "  killed $n leftover local runner/job processes"
 }
 
-# our_runner_pids [port] prints the pids of this user's wr runners whose argv[0] is exactly our
-# isolated binary (one of our_bins: $WR, $WR.real under developers/soak/run.sh's RUNNER_FILELOG=1
-# wrapper, or either with symlinks resolved), and, given a port, whose --server is on that port.
-# The ps output is captured before it is filtered, so the filter cannot match itself.
+# our_runner_pids <port> prints the pids of this user's wr runners whose argv[0] is exactly our
+# isolated binary (one of our_bins) and whose --server is on <port>, one of this root's manager
+# ports. The ps output is captured before it is filtered, so the filter cannot match itself.
 our_runner_pids() {
-  : "${WR:?}"
+  : "${WR:?}" "${1:?our_runner_pids needs the manager port}"
   local list; list=$(ps -ww -u "$(id -un)" -o pid=,args= 2>/dev/null)
-  printf '%s\n' "$list" | awk -v bins="$(our_bins | tr '\n' '\001')" -v port="${1:+:$1}" '
+  printf '%s\n' "$list" | awk -v bins="$(our_bins | tr '\n' '\001')" -v port=":$1" '
     BEGIN { n = split(bins, b, "\001"); for (i = 1; i <= n; i++) if (b[i] != "") ours[b[i]] = 1 }
     ($2 in ours) && $3 == "runner" {
-      if (port == "") { print $1; next }
       for (i = 4; i < NF; i++) if ($i == "--server" && substr($(i+1), length($(i+1)) - length(port) + 1) == port) { print $1; next } }'
 }
 
 cmd_reap_runners() {  # reap-runners [port] - kill -9 our leftover local runners (exact binary path)
-  local p n=0
-  for p in $(our_runner_pids "${1:-}"); do kill -9 "$p" 2>/dev/null && n=$(( n + 1 )); done
-  echo "killed $n leftover local runners of $WR${1:+ for port $1}"
+  # only runners of one of this root's managers: the given port, by default the prod-mode one
+  local port="${1:-$PROD_PORT}" p n=0
+  case "$port" in (''|*[!0-9]*) die "usage: $0 reap-runners [manager port, default \$PROD_PORT]" ;; esac
+  for p in $(our_runner_pids "$port"); do kill -9 "$p" 2>/dev/null && n=$(( n + 1 )); done
+  echo "killed $n leftover local runners of $WR for port $port"
 }
 
 cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (preserves DB across restart); WRDEV_DEBUG=1 adds --debug
@@ -5352,7 +5361,8 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   dump [lsf|local]      run dev manager foreground for a SIGQUIT goroutine dump
   clean                 stop all our managers + bkill ${DEV_JOB_PREFIX}* (production untouched)
   status                show what is running
-  reap-runners [port]   kill -9 this root's leftover local runners ($WR or $WR.real, --server on port)
+  reap-runners [port]   kill -9 this root's leftover local runners ($WR or $WR.real, --server on port,
+                        default \$PROD_PORT)
   job-token dev|prod    print the token this root's dev or prod-mode manager names its LSF jobs with
 
 Env: WRDEV_ROOT (=$WRDEV_ROOT) WRDEV_REPO (checkout to build/test; default this one) DEV_PORT/DEV_WEB PROD_PORT/PROD_WEB

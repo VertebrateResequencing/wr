@@ -471,3 +471,33 @@ whose argv[0] is a file in the scratch root:
   points to `wrdev.sh stop` and the tokened prefix.
 - Files: `.docs/reliable/harness/exp_lsf_repro.sh`,
   `developers/soak/sweep.sh`, `.docs/reliable2/phase2/validation.md`.
+- [x] S5 (low). If `$WR`, `$WR.real` or `$SOAK_WR` is itself a symlink,
+  `readlink -f` widened the match to its target, such as a shared or
+  production wr install: `is_ours` and `soak_manager_pid` could accept
+  that install's manager, and `wrdev.sh reap-runners` with no port killed
+  every local runner of it. Also `exp_lsf_repro.sh` parsed `bjobs -w` by
+  column, so PEND jobs (no EXEC_HOST, columns shift) were missed by its
+  abort check, counts and cleanup bkill.
+  - Red (09e6113e), with fake processes (argv set by `exec -a`): with
+    `$WR` a symlink to `shared/wr` outside the root, `reap-runners` killed a
+    runner named `shared/wr` and `soak_manager_pid` accepted a `shared/wr`
+    manager; with `WRDEV_ROOT` a symlink, `reap-runners` also killed a
+    runner of the root's binary on another manager's port. With a fake
+    `bjobs` holding one RUN and one PEND job of the run, the
+    `exp_lsf_repro.sh` pre-run count was 1 and its cleanup ran `bkill -b
+    401`, leaking PEND job 405.
+  - Fix: `our_bins` and `soak_manager_pid` add a resolved form only when it
+    is this root's own `wr` or `wr.real` under `realpath -m` of the root.
+    `our_runner_pids` requires a port; `reap-runners` takes one, by default
+    `$PROD_PORT` (the repros' manager), and rejects a non-number.
+    `exp_lsf_repro.sh` lists its jobs with `bjobs -J "${LSF_PREFIX}*" -o
+    'jobid job_name' -noheader`, keeping the exact name-prefix check.
+  - After: with `$WR` symlinked outside, only the runner named `$WR` is
+    killed, and the `shared/wr` runner and manager are not ours; with a
+    symlinked root, the runners named `$WR` and `real/wr` on `$PROD_PORT`
+    are killed, the one on another port is left, and `is_ours` and
+    `soak_manager_pid` accept the `real/wr` manager. `exp_lsf_repro.sh`
+    counts 2 and runs `bkill -b 401 405`. `soak/repro/readdcrash.sh 1` ran
+    end to end in a scratch root and left nothing running.
+  - Files: `developers/wrdev.sh`, `developers/soak/config.sh`,
+    `.docs/reliable/harness/exp_lsf_repro.sh`.
