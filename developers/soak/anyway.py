@@ -14,10 +14,11 @@ such reservations are not named in the log, and this classifies each double run 
 row, from doubles.py) from the runner log of its first run instead, found through that run's
 marker (host, pid) and the runner's "started executing ... pid=" line. The first run's
 reservation counts as handed out anyway on either of:
-  lost    after a crash (a kind=crash stop in restarts.tsv) that followed the reservation, and
-          before the run's own "command ran OK", the manager rejected that run's start, touch or
-          final report as "bad job" or "you must Reserve()": a reservation that was on disk is
-          returned to its runner by recovery, and a clean stop drains its writes first;
+  lost    after a crash (a kind=crash stop in restarts.tsv) that followed the reservation, the
+          manager rejected that run's start, touch or final report as "bad job" or "you must
+          Reserve()", and the run never got its own "command ran OK" (an accepted archive means
+          the manager still knew the reservation): a reservation that was on disk is returned
+          to its runner by recovery, and a clean stop drains its writes first;
   warned  the manager's warning names the key (key= or sample_key=) within 60s of it.
 A third signal is shown as supporting evidence only:
   slow    the runner's "reserved a job" line is at least ReserveWriteWait after the line before
@@ -114,7 +115,7 @@ nres = 0
 
 def signals(seg):
     return [n for n, on in (
-        ('lost', seg['lost']),
+        ('lost', seg['lost'] and not seg['ok']),
         ('warned', any(abs(t - seg['res']) <= WARN_NEAR_MS for t in warned.get(seg['key'], ()))),
         ('slow', seg['req'] is not None and seg['res'] - seg['req'] >= RESERVE_WRITE_WAIT_MS),
     ) if on]
@@ -138,7 +139,7 @@ for p in glob.glob(os.path.join(rl, '*', '*')):
             if seg['pid'] is None and 'msg="started executing"' in l:
                 m = PID.search(l)
                 seg['pid'] = m.group(1) if m else None
-            if not seg['ok'] and REJ.search(l) and any(seg['res'] < s <= t for s in crashes):
+            if REJ.search(l) and any(seg['res'] < s <= t for s in crashes):
                 seg['lost'] = True
             o = outcome(l)
             seg['ok'] = seg['ok'] or o == 'ran OK'

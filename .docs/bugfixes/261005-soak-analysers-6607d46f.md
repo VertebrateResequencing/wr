@@ -209,3 +209,21 @@
     a crash: in 57 the runner log ends there or the release was refused and
     the job retried, so no exit-0 run was repeated, and in 2 the archive was
     then accepted ("ran OK"), so the job did not run again.
+
+- [x] Make the `lost` signal require that the run's segment never reaches its
+  own "command ran OK" at all (not just that the rejection came before it).
+  The reviewer found 2 false positives among the 59 lost non-doubles
+  (portal_compress 20261005T070234.7081 on node-13-14 and
+  20261005T053505.43275 on node-14-14: a touch rejected "bad job" after the
+  crash, then the same run's archive accepted and no re-run).
+  - Source: re-review of the F5 signal fix.
+  - Red command: `anyway.py` on battery10 (as above) printed
+    `lost 59, warned 61, slow 40446` for the other reservations, 2 of them
+    those runs.
+  - Files: `developers/soak/anyway.py`, `developers/soak/README.md`.
+  - Approach: `lost` fires only when a rejection after a crash was seen and
+    the segment has no "command ran OK"; an accepted archive means the
+    manager still knew the reservation.
+  - Green: the 374 verdicts are unchanged (3 + 59 + 311 `lost+slow`, 1
+    `lost+warned+slow`), and of the other 971841 reservations `lost` now
+    fires on 57, `warned` on 61 and `slow` on 40446.
