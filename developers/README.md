@@ -12,7 +12,8 @@ developers/wrdev.sh help
 ```
 
 `wrdev.sh` runs an **isolated** wr manager (its own config, ports, managerdir,
-and `wrd<token>_*` job names, `DEV_JOBTOKEN` defaulting to `iso$DEV_PORT`) so
+and `wrd<token>_*` job names, `DEV_JOBTOKEN` defaulting to `iso$DEV_PORT`
+plus a checksum of the host and `$WRDEV_ROOT`) so
 it can never disturb a real `--deployment production` manager, nor another dev
 manager's LSF jobs. It refuses to kill any process that is not its own isolated
 binary. Everything it creates lives under `$WRDEV_ROOT` (default
@@ -89,7 +90,9 @@ The soak cannot touch a real deployment:
 - `prodsim` itself refuses to run unless `WR_CONFIG_DIR` is set and the
   config names its `-rundir`.
 - Its LSF jobs are named `wrp<PROD_JOBTOKEN>_*`, and cleanup bkills only
-  those. Cleanup runs on any exit, including Ctrl-C.
+  those. The default token is unique to the host and `$WRDEV_ROOT` (`wrdev.sh
+  job-token prod` prints it), so run a root's modes on one host. Cleanup runs
+  on any exit, including Ctrl-C.
 
 Do not edit `wrdev.sh` while a mode is running from it.
 

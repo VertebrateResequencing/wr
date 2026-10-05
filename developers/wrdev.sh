@@ -24,11 +24,14 @@ MEM_GROUPS="${MEM_GROUPS:-100}"     # spread jobs across this many memory groups
 # wrp<token>_* instead of wrp_*, so they can NEVER be confused with (or bkilled
 # alongside) a REAL --deployment production manager's wrp_* jobs. See the naming
 # hack in jobqueue/scheduler/{scheduler,lsf}.go and .docs/bugfixes/260727-1.md.
-PROD_JOBTOKEN="${PROD_JOBTOKEN:-iso$PROD_PORT}"
+# The same for our isolated dev manager, whose LSF jobs are wrd<token>_*. LSF job names are
+# seen cluster-wide, so the default token, iso<port>h<hash>, includes a checksum of this host
+# and WRDEV_ROOT: another session (here or on another host) or a later root reusing the port
+# gets another token. So run every mode for a root, including its cleanup, on the same host.
+ROOT_HASH=$(printf '%s:%s' "$(hostname)" "$WRDEV_ROOT" | cksum | cut -d' ' -f1)
+PROD_JOBTOKEN="${PROD_JOBTOKEN:-iso${PROD_PORT}h$ROOT_HASH}"
 PROD_JOB_PREFIX="wrp${PROD_JOBTOKEN}_"   # LSF job-name prefix of our isolated prod manager
-# and the same for our isolated dev manager, whose LSF jobs are wrd<token>_*, so bkill_dev can
-# never match another dev manager's (eg. another session's, or another WRDEV_ROOT's) wrd*_ jobs
-DEV_JOBTOKEN="${DEV_JOBTOKEN:-iso$DEV_PORT}"
+DEV_JOBTOKEN="${DEV_JOBTOKEN:-iso${DEV_PORT}h$ROOT_HASH}"
 DEV_JOB_PREFIX="wrd${DEV_JOBTOKEN}_"
 
 WR="$WRDEV_ROOT/wr"                 # isolated binary (all our managers use this)
@@ -5317,9 +5320,10 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   dump [lsf|local]      run dev manager foreground for a SIGQUIT goroutine dump
   clean                 stop all our managers + bkill ${DEV_JOB_PREFIX}* (production untouched)
   status                show what is running
+  job-token dev|prod    print the token this root's dev or prod-mode manager names its LSF jobs with
 
 Env: WRDEV_ROOT (=$WRDEV_ROOT) WRDEV_REPO (checkout to build/test; default this one) DEV_PORT/DEV_WEB PROD_PORT/PROD_WEB
-     DEV_JOBTOKEN/PROD_JOBTOKEN (iso<port>) QUEUE MEM_GROUPS
+     DEV_JOBTOKEN/PROD_JOBTOKEN (iso<port>h<checksum of host and WRDEV_ROOT>) QUEUE MEM_GROUPS
 Safety: only kills processes running \$WRDEV_ROOT/wr; only pattern-bkills our isolated dev
 manager's ${DEV_JOB_PREFIX}* and our isolated prod-mode manager's ${PROD_JOB_PREFIX}*. Never touches a real --deployment production
 manager or its wrp_* jobs.
@@ -5376,6 +5380,8 @@ main() {
     dump) cmd_dump "${2:-lsf}" ;;
     clean) cmd_clean ;;
     status) cmd_status ;;
+    job-token)  # job-token dev|prod: print the token this root's managers name their LSF jobs with
+      case "${2:-}" in (dev) echo "$DEV_JOBTOKEN" ;; (prod) echo "$PROD_JOBTOKEN" ;; (*) die "usage: $0 job-token dev|prod" ;; esac ;;
     help|-h|--help) usage ;;
     *) usage; exit 1 ;;
   esac

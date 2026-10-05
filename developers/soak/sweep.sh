@@ -35,6 +35,11 @@ BB=${SWEEP_BOLTBUCKETS:+WRDEV_ASL_BOLTBUCKETS=$SWEEP_BOLTBUCKETS}
 GUARD_GB=${GUARD_GB:-40}
 read -r DEV_PORT DEV_WEB PROD_PORT PROD_WEB <<< "${SWEEP_PORTS:-51850 51851 51852 51853}"
 export WRDEV_ROOT="$SW/root" DEV_PORT DEV_WEB PROD_PORT PROD_WEB
+# the job tokens wrdev.sh's managers for this root will use (by default unique to
+# this host and root), so the preflight below checks the jobs those would name
+DEV_JOBTOKEN=$("$W" job-token dev) && PROD_JOBTOKEN=$("$W" job-token prod) \
+  || { echo "sweep: could not get the job tokens from $W" >&2; exit 1; }
+export DEV_JOBTOKEN PROD_JOBTOKEN
 mkdir -p "$WRDEV_ROOT" "$SW/logs" "$SW/work"
 # shellcheck disable=SC2046 # one name per word
 unset $(compgen -v | grep '^OS_') 2>/dev/null
@@ -62,7 +67,7 @@ fi
 # bjobs exits 0 with "Job <...> is not found" on stderr when nothing matches,
 # and non-zero (124 on timeout) when it could not ask LSF: fail closed then
 if command -v bjobs >/dev/null; then
-  for p in "wrp${PROD_JOBTOKEN:-iso$PROD_PORT}_" "wrd${DEV_JOBTOKEN:-iso$DEV_PORT}_" wrd_; do
+  for p in "wrp${PROD_JOBTOKEN:?}_" "wrd${DEV_JOBTOKEN:?}_" wrd_; do
     out=$(timeout 60 bjobs -J "${p}*" -o jobid -noheader 2>/dev/null); rc=$?
     if [ "$rc" -ne 0 ]; then
       echo "sweep: could not ask LSF for ${p}* jobs (bjobs exit $rc); refusing to start" >&2; exit 1

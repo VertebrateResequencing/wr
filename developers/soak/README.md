@@ -113,7 +113,7 @@ The first three use the local scheduler.
 | `SOAK_ROOT` | none, required | The soak's `WRDEV_ROOT`: binary, manager dir, DB and every output. An absolute path of letters, digits and `._/-`. |
 | `DEV_PORT DEV_WEB PROD_PORT PROD_WEB` | `51860`-`51863` | The isolated managers' ports. |
 | `PPROF_PORT` | `6112` | The soak manager's `WR_PPROF_ADDR` port. |
-| `PROD_JOBTOKEN` | `iso$PROD_PORT` | LSF jobs are named `wrp<token>_*`; the scripts only count or kill those. |
+| `PROD_JOBTOKEN` | `wrdev.sh job-token prod`: `iso$PROD_PORT` plus a checksum of the host and `SOAK_ROOT` | LSF jobs are named `wrp<token>_*`; the scripts only count or kill those. Letters and digits only. Run every script for a soak on the same host. |
 | `SCHED` | `lsf` | `lsf` or `local`. |
 | `QUEUE` | `normal` | LSF queue for the soak's jobs. |
 | `WRSRC` | this checkout | The checkout wr is built from. |

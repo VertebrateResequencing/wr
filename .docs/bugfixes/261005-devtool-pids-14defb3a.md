@@ -273,3 +273,36 @@ since `wrdev.sh start` and `stop` bkill every `wrd_*` job of this user. Gates:
     `PROD_JOBTOKEN='i*'` and `iso-1` make any mode die the same way; the
     default token still bkills only `wrdiso51970_*` and job 101.
   - Files: `developers/wrdev.sh`.
+
+- [x] R6 (medium). The token is not unique per WRDEV_ROOT: the default
+  `iso$DEV_PORT` collides across same-user sessions on different hosts (LSF
+  job names are seen cluster-wide) and with a later root reusing the port.
+  PROD_JOBTOKEN has the same flaw. R7: DEVELOPERS.md still said wrdev.sh
+  uses `wrd_*` and told readers to `bkill -J 'wrd_*' 0`.
+  - Fix: the default `DEV_JOBTOKEN` and `PROD_JOBTOKEN` are
+    `iso<port>h<cksum of "hostname:WRDEV_ROOT">`, letters and digits only.
+    `wrdev.sh job-token dev|prod` prints them, and the tools that need the
+    prod or dev prefix ask it rather than repeating the formula: soak
+    `config.sh` (its `JOB_PREFIX`, validated the same way), `sweep.sh`
+    (which exports both, and whose preflight checks this root's `wrd<token>_`
+    and `wrp<token>_` jobs) and `repro/relburyiso.sh`. A root's modes and its
+    cleanup must run on one host; the help, developers/README.md, the soak
+    README and DEVELOPERS.md say so. DEVELOPERS.md now describes the tokened
+    names and says never to `bkill -J 'wrd_*'`.
+  - Verified (LSF stubbed): two roots give `iso51970h780126228` and
+    `iso51970h2971687645`; the same root with `hostname` faked to
+    `otherhost` gives `iso51970h679774962`; soak `config.sh` for that root
+    gives `JOB_PREFIX=wrpiso51972h780126228_`, matching `wrdev.sh job-token
+    prod`; dev (`start local`) and prod-mode (`prod-start local`) managers
+    ran with `WR_JOBNAME_TOKEN` set to those tokens, and stopped. `sweep.sh`
+    with a fake `bjobs` listing a job of its root's dev token refused to
+    start (`LSF still has wrdiso51974h491614040_* jobs`), and with only other
+    tokens' jobs ran its mode.
+  - Files: `developers/wrdev.sh`, `developers/soak/config.sh`,
+    `developers/soak/sweep.sh`, `developers/soak/repro/relburyiso.sh`,
+    `developers/README.md`, `developers/soak/README.md`, `DEVELOPERS.md`.
+- [x] R8 (note, no code). Managers started by an older wrdev.sh named their
+  LSF jobs `wrd_*` (or `wrpiso<port>_*` for prod-mode) without the new
+  token. `stop`, `clean` and prodsim's cleanup no longer bkill those; kill
+  them by exact job id. `sweep.sh`'s preflight still refuses to start while
+  any `wrd_*` job of this user exists, which is safe.
