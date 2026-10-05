@@ -52,4 +52,4 @@ echo "bad job in manager log: $(grep -ac 'bad job' $WRDEV_ROOT/.wr-prod_producti
 echo "bad job in runner logs: $(grep -rac 'bad job' $WRDEV_ROOT/runnerlogs | awk -F: '{s+=$NF} END{print s+0}')"
 grep -a 'lvl=eror\|lvl=crit' $WRDEV_ROOT/.wr-prod_production/log | cut -c1-200 | tail -5
 $W prod-stop | head -1
-pkill -9 -f "$WRDEV_ROOT/wr.real runner"; true
+$W reap-runners; true

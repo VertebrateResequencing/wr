@@ -3,6 +3,13 @@
 # Real runners (local scheduler), no code hacks -> identical CLI for HEAD and v0.36.5.
 # Usage: exp1.sh <wr-binary> <label> <base-dir> <njobs> <runners> <jobtype:true|sleepN> <port>
 set -uo pipefail
+# kill_our_manager kill -9s the manager our pid file names, only if that pid runs
+# "$WR ... manager start" (never a pattern match, which could hit anything whose
+# command line contains the port)
+kill_our_manager() {
+  local p; p=$(cat "${BASE:?}/manager_development/pid" 2>/dev/null) || return 0
+  case "$(ps -ww -o args= -p "$p" 2>/dev/null)" in ("${WR:?} "*"manager start"*) kill -9 "$p" ;; esac
+}
 WR="$1"; LABEL="$2"; BASE="$3"; NJOBS="$4"; RUNNERS="$5"; JOBTYPE="$6"; PORT="$7"
 WEB=$((PORT+1))
 LR=/tmp/wr-reliable/bin/loadrunner-head
@@ -53,5 +60,5 @@ echo "--- ping samples (p50/p95/max under load) ---"
 grep -o 'p50=[^ ]* p95=[^ ]* p99=[^ ]* max=[^ ]*' "$PINGLOG" | tail -8
 echo "--- worst ping p95 across run ---"
 grep -o 'p95=[^ ]*' "$PINGLOG" | sed 's/p95=//;s/ms/*1000/;s/µs//;s/s$/*1000000/' 2>/dev/null | head
-"$WR" --deployment development manager stop >/dev/null 2>&1 || pkill -9 -f "$PORT"
+"$WR" --deployment development manager stop >/dev/null 2>&1 || kill_our_manager
 echo "### done $LABEL"

@@ -327,3 +327,33 @@ since `wrdev.sh start` and `stop` bkill every `wrd_*` job of this user. Gates:
   - After: the same check stopped the mode, its child and its grandchild
     (the TERM trap ran) and left the decoy running.
   - Files: `developers/soak/sweep.sh`.
+- [x] R3 (medium, older). `soak/repro/readdcrash.sh`, `rundepkill.sh` and
+  `rundepcrash.sh` ran `pkill -9 -f "$WRDEV_ROOT/wr[.real] runner"`, which
+  is unanchored, so a process whose path merely ends with this root's
+  matches. `.docs/reliable/harness/exp_realdb_seed.sh` ran `pkill -9 -f
+  "$PORT"`, as do exp1.sh, exp_churn.sh, exp_drive_ab.sh,
+  exp_reconnect.sh, exp_startup_ab.sh and exp_status_load2.sh.
+  - Red: fake runners (`exec -a` to set argv, the process is `sleep`) for
+    `$WRDEV_ROOT/wr runner`, `$WRDEV_ROOT/wr.real runner`, a decoy
+    `<scratch>/pre$WRDEV_ROOT/wr runner`, another root's runner and a
+    non-runner of this root: the old pattern, listed with `pgrep -f` (never
+    used to kill), matched the decoy whose path ends with this root's, and
+    missed `$WR.real`.
+  - Fix: `wrdev.sh reap-runners [port]` kills this user's processes whose
+    argv[0] is exactly `$WR` or `$WR.real` and argv[1] is `runner` (and,
+    given a port, whose `--server` is on it), through `our_runner_pids`,
+    which `prodsim_reap_local` now uses too. The three repros call it. The
+    seven harness scripts' fallback is `kill_our_manager`: kill -9 the pid
+    in `$BASE/manager_development/pid` only if its command line is `$WR
+    ... manager start ...`.
+  - After: `reap-runners` killed exactly the two runners of this root and
+    left the three decoys. `kill_our_manager` left an unrelated pid named by
+    the pid file alone and killed a fake `$WR --deployment development
+    manager start` pid. The F3 harness's leftover check (which runs
+    `prodsim_reap_local`) passes again below. The repros and the harness
+    scripts were not run end to end: the harness scripts need
+    `/tmp/wr-reliable` binaries, a real DB and LSF, and the repros run
+    under battery10, which is not to be touched.
+  - Files: `developers/wrdev.sh`, `developers/soak/repro/readdcrash.sh`,
+    `developers/soak/repro/rundepcrash.sh`,
+    `developers/soak/repro/rundepkill.sh`, `.docs/reliable/harness/exp*.sh`.

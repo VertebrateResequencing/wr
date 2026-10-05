@@ -2,6 +2,13 @@
 # A/B scale drive: many workers archive many jobs; measure throughput decay + latency.
 # Usage: exp_drive_ab.sh <wr-safe-bin> <loadrunner-bin> <base> <njobs> <workers> <port>
 set -uo pipefail
+# kill_our_manager kill -9s the manager our pid file names, only if that pid runs
+# "$WR ... manager start" (never a pattern match, which could hit anything whose
+# command line contains the port)
+kill_our_manager() {
+  local p; p=$(cat "${BASE:?}/manager_development/pid" 2>/dev/null) || return 0
+  case "$(ps -ww -o args= -p "$p" 2>/dev/null)" in ("${WR:?} "*"manager start"*) kill -9 "$p" ;; esac
+}
 WR="$1"; LR="$2"; BASE="$3"; NJOBS="$4"; WORKERS="$5"; PORT="$6"; WEB=$((PORT+1))
 rm -rf "$BASE"; mkdir -p "$BASE/manager_development" "$BASE/cwd"
 export WR_MANAGERDIR="$BASE/manager" WR_MANAGERPORT="$PORT" WR_MANAGERWEB="$WEB" WR_MANAGERHOST=localhost
@@ -17,5 +24,5 @@ sleep 4
 GRP=$(grep RELNOSCHED "$BASE/manager_development/log" | sed -E 's/.*group=([^ ]+).*/\1/' | sort -u | head -1)
 echo "group=[$GRP]"
 timeout 600 "$LR" -mode drive -workers "$WORKERS" -touches 0 -group "$GRP" -deployment development 2>&1 | grep -E '^\[|throughput|latency|PING|RESULTS|elapsed'
-"$WR" --deployment development manager stop >/dev/null 2>&1 || pkill -9 -f "$PORT"
+"$WR" --deployment development manager stop >/dev/null 2>&1 || kill_our_manager
 echo "### done"

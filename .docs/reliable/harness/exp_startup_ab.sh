@@ -2,6 +2,13 @@
 # A/B startup: kill-9 with N running jobs, one restart, measure recovery time.
 # Usage: exp_startup_ab.sh <wr-safe-bin> <loadrunner-bin> <base> <nadd> <nrun> <port> [sched]
 set -uo pipefail
+# kill_our_manager kill -9s the manager our pid file names, only if that pid runs
+# "$WR ... manager start" (never a pattern match, which could hit anything whose
+# command line contains the port)
+kill_our_manager() {
+  local p; p=$(cat "${BASE:?}/manager_development/pid" 2>/dev/null) || return 0
+  case "$(ps -ww -o args= -p "$p" 2>/dev/null)" in ("${WR:?} "*"manager start"*) kill -9 "$p" ;; esac
+}
 WR="$1"; LR="$2"; BASE="$3"; NADD="$4"; NRUN="$5"; PORT="$6"; SCHED="${7:-local}"; WEB=$((PORT+1))
 rm -rf "$BASE"; mkdir -p "$BASE/manager_development" "$BASE/cwd"
 export WR_MANAGERDIR="$BASE/manager" WR_MANAGERPORT="$PORT" WR_MANAGERWEB="$WEB" WR_MANAGERHOST=localhost
@@ -29,5 +36,5 @@ echo "=== RESTART: time to responsive ==="
 /usr/bin/time -f "WALL_TO_RESPONSIVE=%e s" "$WR" --deployment development manager start -s "$SCHED" --max_cores 1 --timeout 1800 2>&1 | grep -E "WALL_TO_RESPONSIVE|EROR" | head -2
 echo "--- sub-phase timing (HEAD only) ---"
 grep -E "RELSTARTUP|RELPRIOR|RELEQ" "$BASE/manager_development/log" 2>/dev/null | sed -E 's/.*msg=//; s/caller=.*//'
-"$WR" --deployment development manager stop >/dev/null 2>&1 || pkill -9 -f "$PORT"
+"$WR" --deployment development manager stop >/dev/null 2>&1 || kill_our_manager
 echo "### done"

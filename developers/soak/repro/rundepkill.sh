@@ -48,4 +48,4 @@ if [ "$rs" != 0 ]; then
   echo "after a clean restart:"; st
 fi
 sleep 30; echo "marks:"; cat $M
-$W prod-stop | head -1; pkill -9 -f "$WRDEV_ROOT/wr runner"; true
+$W prod-stop | head -1; $W reap-runners; true

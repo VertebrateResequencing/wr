@@ -4678,12 +4678,30 @@ prodsim_final_stop() {  # prodsim_cleanup's stop of our manager
 prodsim_reap_local() {
   : "${WR:?}" "${PROD_PORT:?}"
   local list p n=0; list=$(ps -ww -u "$(id -un)" -o pid=,args= 2>/dev/null)
-  for p in $(printf '%s\n' "$list" | awk -v wr="$WR" -v port=":$PROD_PORT" -v job="${PS_OUT:-/nonexistent}/psimjob.sh" '
-      ($2 == wr || $2 == wr ".real") && $3 == "runner" { for (i = 4; i < NF; i++) if ($i == "--server" && substr($(i+1), length($(i+1)) - length(port) + 1) == port) { print $1; next } }
+  for p in $(our_runner_pids "$PROD_PORT") $(printf '%s\n' "$list" | awk -v job="${PS_OUT:-/nonexistent}/psimjob.sh" '
       $2 == "bash" && $3 == job { print $1 }'); do
     kill -9 "$p" 2>/dev/null && n=$(( n + 1 ))
   done
   echo "  killed $n leftover local runner/job processes"
+}
+
+# our_runner_pids [port] prints the pids of this user's wr runners whose argv[0] is exactly our
+# isolated binary, $WR or (under developers/soak/run.sh's RUNNER_FILELOG=1 wrapper) $WR.real, and,
+# given a port, whose --server is on that port. The ps output is captured before it is filtered,
+# so the filter cannot match itself.
+our_runner_pids() {
+  : "${WR:?}"
+  local list; list=$(ps -ww -u "$(id -un)" -o pid=,args= 2>/dev/null)
+  printf '%s\n' "$list" | awk -v wr="$WR" -v port="${1:+:$1}" '
+    ($2 == wr || $2 == wr ".real") && $3 == "runner" {
+      if (port == "") { print $1; next }
+      for (i = 4; i < NF; i++) if ($i == "--server" && substr($(i+1), length($(i+1)) - length(port) + 1) == port) { print $1; next } }'
+}
+
+cmd_reap_runners() {  # reap-runners [port] - kill -9 our leftover local runners (exact binary path)
+  local p n=0
+  for p in $(our_runner_pids "${1:-}"); do kill -9 "$p" 2>/dev/null && n=$(( n + 1 )); done
+  echo "killed $n leftover local runners of $WR${1:+ for port $1}"
 }
 
 cmd_prod_start() {  # prod-start [lsf|local] - isolated PROD-mode manager (preserves DB across restart); WRDEV_DEBUG=1 adds --debug
@@ -5320,6 +5338,7 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   dump [lsf|local]      run dev manager foreground for a SIGQUIT goroutine dump
   clean                 stop all our managers + bkill ${DEV_JOB_PREFIX}* (production untouched)
   status                show what is running
+  reap-runners [port]   kill -9 this root's leftover local runners ($WR or $WR.real, --server on port)
   job-token dev|prod    print the token this root's dev or prod-mode manager names its LSF jobs with
 
 Env: WRDEV_ROOT (=$WRDEV_ROOT) WRDEV_REPO (checkout to build/test; default this one) DEV_PORT/DEV_WEB PROD_PORT/PROD_WEB
@@ -5380,6 +5399,7 @@ main() {
     dump) cmd_dump "${2:-lsf}" ;;
     clean) cmd_clean ;;
     status) cmd_status ;;
+    reap-runners) cmd_reap_runners "${2:-}" ;;
     job-token)  # job-token dev|prod: print the token this root's managers name their LSF jobs with
       case "${2:-}" in (dev) echo "$DEV_JOBTOKEN" ;; (prod) echo "$PROD_JOBTOKEN" ;; (*) die "usage: $0 job-token dev|prod" ;; esac ;;
     help|-h|--help) usage ;;

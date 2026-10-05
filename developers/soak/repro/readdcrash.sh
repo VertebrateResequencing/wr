@@ -38,4 +38,4 @@ echo "marks:"; cat $WRDEV_ROOT/marks
 timeout 30 $WR status --deployment production -i rgrepro 2>&1 | grep -E 'Status|Attempts|# ' | head -10
 grep -a 'lvl=eror' $WRDEV_ROOT/.wr-prod_production/log | cut -c1-200 | tail -3
 $W prod-stop | head -1
-pkill -9 -f "$WRDEV_ROOT/wr runner" ; true
+$W reap-runners; true
