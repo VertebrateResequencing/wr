@@ -18,13 +18,14 @@ run-state record in the same transaction, so a run-state record is always
 newer than the full record beneath it. Existing durability and ordering
 guarantees are unchanged: release-before-reservation and change-versus-exit
 ordering by `beSeq`, the 260917 start durability and the 260928 reserve
-durability.
+durability. Requirements learned before a reservation stay durable at
+reservation.
 
 The database schema version becomes 2. The manager refuses a database newer
 than it understands, and refuses a version-0 database until it has been
-compacted. A cumulative count of reservations handed out before they were
-durable goes into the `archive fold` log line. Downgrading after this version
-has opened a database is not supported.
+compacted. Each reservation handed out before it was durable is logged at
+info with its key and a running total. Downgrading after this version has
+opened a database is not supported.
 
 ## Architecture
 
@@ -41,8 +42,10 @@ var bucketJobRunState = []byte("jobRunState")
 
 // jobRunState is every persisted Job field that a reservation
 // (resetJobForReservation, respondWithReservedJob) or a start
-// (applyJobStart, acceptDuplicateStartLocked) sets. Field names and types
-// match Job's, with no omitempty, so every field, zero or not, is encoded.
+// (applyJobStart, acceptDuplicateStartLocked) sets, plus the requirements
+// prepareReadyJob may learn in memory before the reservation. Field names
+// and types match Job's, with no omitempty, so every field, zero or not, is
+// encoded.
 type jobRunState struct {
 	State             JobState
 	Exited            bool
@@ -66,13 +69,17 @@ type jobRunState struct {
 	RunnerReservation uint64
 	Attempts          uint32
 	DelayTime         time.Duration
+	Requirements      *scheduler.Requirements
+	RequirementsOrig  *scheduler.Requirements
 }
 
-// newJobRunState returns j's run state. The caller holds j's read lock.
+// newJobRunState returns j's run state, deep-copying the Requirements
+// pointers. The caller holds j's read lock.
 func newJobRunState(j *Job) jobRunState
 
-// applyTo sets every field of r on j. The caller holds j's lock, or j is
-// not yet shared.
+// applyTo sets every field of r on j and invalidates j's derived state
+// (invalidateDerivedLocked), since Requirements feed it. The caller holds
+// j's lock, or j is not yet shared.
 func (r *jobRunState) applyTo(j *Job)
 
 // runStateRecord returns the bucketJobRunState value for encodedRunState
@@ -92,7 +99,8 @@ func runStateOver(live, record []byte) ([]byte, bool)
 - A record "matches" when its CRC equals the CRC-32C of the current live
   value. Only a matching record is applied. A record whose live record is
   absent is "orphaned"; one that does not match is "stale".
-- Size: at most 768 bytes for the A1 example job, whatever its Cmd size.
+- Size: at most 1,024 bytes for the A1 example job, whatever its Cmd size.
+- The bucket is created by the bucket-creation `Update` in `initDB` (A1).
 
 ### Live-record helpers
 
@@ -177,6 +185,11 @@ var (
 // with dbFile, version and currentDBSchemaVersion, if version is newer than
 // currentDBSchemaVersion; otherwise nil.
 func checkDBSchemaVersion(dbFile string, version uint64) error
+
+// readOnlyDBFileSchemaVersion opens path read-only (bolt ReadOnly, so the
+// open writes nothing, even to a file whose freelist was never synced),
+// returns its schema version and closes it.
+func readOnlyDBFileSchemaVersion(path string) (uint64, error)
 ```
 
 The version-0 error wraps `errDBNeedsCompact` with `dbFile` as:
@@ -196,32 +209,50 @@ then start the manager again
 As the manager, I want a reservation's or start's state in a few hundred
 bytes, so that writing it costs a fraction of re-encoding a 10KB job.
 
+`initDB`'s bucket-creation `Update` creates `bucketJobRunState`.
+
 **Package:** `jobqueue/`
-**File:** `jobqueue/db_runstate.go`
+**File:** `jobqueue/db_runstate.go`, `jobqueue/db.go`
 **Test file:** `jobqueue/db_runstate_test.go`
 
 Example job: Cmd of 10,000 `x`, State running, Host
 `node-1-2-3.internal.sanger.ac.uk`, HostIP `172.27.71.182`, HostID a 36-char
 UUID string, ActualCwd 100 bytes, Pid 7, RunnerPid 6, Attempts 1,
-RunnerReservation 5, ReservedBy a fixed UUID, StartTime set, std nil.
+RunnerReservation 5, ReservedBy a fixed UUID, StartTime set, std nil,
+Requirements `{RAM: 2000, Time: 2h, Cores: 1, Disk: 10, DiskSet: true}`,
+RequirementsOrig `{RAM: 1000, Time: 1h, Disk: 10, DiskSet: true}`.
+
+Older record: a full encoding of the same Cmd whose value differs from the
+example job's in every `jobRunState` field (State reserved, Exited true,
+Exitcode 3, FailReason `ram`, Lost true, Pid 1, RunnerPid 2, Host `old`,
+HostID `oldid`, HostIP `10.0.0.1`, ActualCwd `/old`, StartTime and EndTime a
+day earlier, PeakRAM 900, PeakDisk 9, CPUtime 1s, StdOutC `o`, StdErrC
+`old`, ReservedBy another UUID, RunnerReservation 4, Attempts 0, DelayTime
+5s, Requirements RAM 100, RequirementsOrig nil).
 
 **Acceptance tests:**
 
 1. Given the example job, when `runStateRecord(live, db.encode(newJobRunState
    (job)))` is built over its full encoding `live`, then the record is at most
-   768 bytes and `len(live)` is at least 10,000.
+   1,024 bytes and `len(live)` is at least 10,000.
 2. Given that record, when `runStateOver(live, record)` is called, then it
    returns true, and decoding its bytes into a `jobRunState` and calling
-   `applyTo` on a Job decoded from an older full record (State reserved, Pid
-   0, Attempts 0, PeakRAM 900, StdErrC `old`) gives a Job whose `db.encode`
-   equals `db.encode` of the example job.
+   `applyTo` on a Job decoded from the older record gives a Job whose
+   `db.encode` equals `db.encode` of the example job.
 3. Given that record, when `runStateOver` is called with `live` changed in
    one byte, then it returns nil, false.
 4. Given a record shorter than 4 bytes, when `runStateOver` is called, then
    it returns nil, false.
 5. Given a `jobRunState` with every field zero, when it is applied to the
-   example job, then the job's Host is "", Pid 0, Attempts 0, StartTime zero
-   and ReservedBy the zero UUID. Zero values are encoded and applied.
+   example job, then every one of the job's `jobRunState` fields is its zero
+   value, compared field by field by reflection: Lost is false, Requirements
+   and RequirementsOrig are nil.
+6. Reflection: for every field of `jobRunState`, `Job` has an exported field
+   of the same name and type. Given a Job with every such field set to a
+   distinct non-zero value by reflection, when `newJobRunState` of it is
+   applied to a zero Job, then each field is equal (`reflect.DeepEqual`), and
+   changing the source Job's Requirements afterwards does not change the
+   copy.
 
 ### A2: Reserve and start write run-state records
 
@@ -231,7 +262,17 @@ run-state record instead of the full job, keeping their existing waits.
 `persistReservation` calls `updateJobRunStateDurableWithin(job,
 ReserveWriteWait)`. `handleStart` calls `updateJobRunStateDurable(job)`,
 including for an accepted duplicate start. Error handling, warnings and
-replies are unchanged.
+replies are unchanged, except for D1's info line.
+
+**Audit.** Before this phase is done, the implementor lists in the PR body
+every persisted `Job` field that any path changes in memory without its own
+durable write, between a job's last full write and its reservation or start,
+and so relied on the reservation's or start's full write. Each is added to
+`jobRunState` or given its own write. Known: `Requirements` and
+`RequirementsOrig` (`prepareReadyJob` -> `updateJobRequirementsForRetry`,
+`jobqueue/server.go`), added above. `DelayTime` is set in
+`respondWithReservedJob`, so it is included. Unexported fields
+(`schedulerGroup`, `runID`, ...) were never persisted.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/serverCLI.go`, `jobqueue/db.go`
@@ -248,10 +289,18 @@ replies are unchanged.
 2. Given the same setup, when the job is reserved but `Started` is not sent,
    then its recovered job has State reserved, ReservedBy the client's ID,
    Host and Pid the client's, and RunnerReservation the in-memory value.
-3. `TestReserveDurability`, `TestReserveDurabilityDeadRunner`,
+3. Learned requirements: given a server where 10 jobs of ReqGroup `lr`
+   requesting 100MB completed with PeakRAM 1500, so that the ReqGroup's
+   recommendation is above 100MB, when an 11th `lr` job requesting 100MB
+   (no override) is added, reserved, a crash image taken with
+   `server.BackupDB` as `reserveDurabilityCrashAndRecover` does, and a new
+   server started on that image, then the recovered job's
+   `Requirements.RAM` equals the in-memory job's at reservation (above 100)
+   and its `RequirementsOrig.RAM` is 100.
+4. `TestReserveDurability`, `TestReserveDurabilityDeadRunner`,
    `TestReserveDurabilityStalledWrite`, `TestStartDurability` and
    `TestStartDurabilityAbortedWriteIsNotCommitted` pass unchanged.
-4. Given `BenchmarkUpdateJobRunState` (new, in `jobqueue/db_bench_test.go`:
+5. Given `BenchmarkUpdateJobRunState` (new, in `jobqueue/db_bench_test.go`:
    `BenchmarkUpdateJobState`'s shape, jobs with 10,000-byte Cmds, alternating
    reserved and running through `queueJobRunState`) and
    `BenchmarkUpdateJobState` run on the same 10,000-byte-Cmd jobs, when both
@@ -278,8 +327,8 @@ seeded live job. "Recovered" means the job from `recoverIncompleteJobs`.
 
 **Acceptance tests:**
 
-1. release, reservation: recovered State reserved, run-state record present,
-   stored stderr `failed run's stderr`.
+1. release, reservation: recovered State reserved and Exitcode -1, run-state
+   record present, stored stderr `failed run's stderr`.
 2. reservation, release: recovered State delayed, no run-state record.
 3. release, reservation, release: recovered State delayed, no run-state
    record.
@@ -430,16 +479,18 @@ As an operator, I want the manager to refuse a database it cannot read
 correctly, without changing it, and to tell me what to do.
 
 In `initDB`, once an open has succeeded (including after a restore from
-backup) and before any write transaction:
+backup) and before any write transaction (`openManagerBolt` sets
+`NoFreelistSync`, so the open itself writes nothing):
 
 1. Read the version with `dbFileSchemaVersion`.
 2. If `checkDBSchemaVersion` fails, close the bolt handle and return its
    error.
-3. If the file existed before this open (`openedExistingDB`) and the version
-   is 0, close and return the version-0 error.
-4. In the existing bucket-creation `Update`, create `bucketJobRunState` and
-   stamp `currentDBSchemaVersion` if the database is new or its version is
-   below it.
+3. If the file existed before this open (`openedExistingDB`), the version is
+   0 and the file has a `jobslive` bucket, close and return the version-0
+   error. A file with no `jobslive` bucket (left by a first start that
+   crashed before its first commit) is treated as new.
+4. In the existing bucket-creation `Update`, stamp `currentDBSchemaVersion`
+   if the database is new or its version is below it.
 
 Nothing else reads the schema version, so `wr manager start` reports the
 error as it reports any `initDB` failure.
@@ -462,29 +513,36 @@ error as it reports any `initDB` failure.
    `initDB` runs, then the error satisfies `errors.Is(err,
    errDBNeedsCompact)`, its text contains `wr manager compact`, and the
    file's SHA-256 is unchanged.
-6. Given a missing database file and an unversioned backup, when `initDB`
-   runs, then it returns the version-0 error, the database file now exists,
-   and after `CompactDBFileStats(dbFile)` a second `initDB` succeeds at
-   version 2.
-7. `TestDBSchemaVersionOnOpen`'s "leaves an existing unversioned database
+6. Given an existing bbolt file with no buckets, when `initDB` runs, then it
+   succeeds and the version is 2.
+7. Given a missing database file and an unversioned backup with a `jobslive`
+   bucket, when `initDB` runs, then it returns the version-0 error, the
+   database file now exists, and after `CompactDBFileStats(dbFile)` a second
+   `initDB` succeeds at version 2.
+8. `TestDBSchemaVersionOnOpen`'s "leaves an existing unversioned database
    unstamped" case is replaced by test 5. `reliable2_dbcompat_test.go`
    copies `db.golden` to a temp dir and compacts the copy before starting a
    server on it, and passes. Any other test that builds an unversioned
-   database and opens it with `initDB` stamps it first.
+   database with a `jobslive` bucket and opens it with `initDB` stamps it
+   first.
 
 ### C2: Compact stamps the current version
 
 As an operator, I want `wr manager compact` to bring any supported database
-to the current version, stripping output only once.
+to the current version, stripping output only once, and to leave a database
+it refuses untouched.
 
-`compactBolt`: run `checkDBSchemaVersion` on the source and return its error
-before creating anything. At version 1 or above, `bolt.Compact` as now, then
-stamp `currentDBSchemaVersion` in the destination. Below version 1,
-`compactStrippingStd`, whose `copyAll` stamps `currentDBSchemaVersion`.
-`CompactDBFileStats` removes its temp file on that error, as on any other.
+- `CompactDBFileStats` first calls `readOnlyDBFileSchemaVersion(dbFile)` and
+  `checkDBSchemaVersion`, returning any error before `compactToTempFile`
+  creates the temp file. `compactBoltInto` opens the source without
+  `NoFreelistSync`, which writes a never-synced freelist on open, so the
+  check must come before it.
+- `compactBolt`: at version 1 or above, `bolt.Compact` as now, then stamp
+  `currentDBSchemaVersion` in the destination. Below version 1,
+  `compactStrippingStd`, whose `copyAll` stamps `currentDBSchemaVersion`.
 
 **Package:** `jobqueue/`
-**File:** `jobqueue/db.go`, `jobqueue/db_compact.go`
+**File:** `jobqueue/db.go`, `jobqueue/db_compact.go`, `jobqueue/db_schema.go`
 **Test file:** `jobqueue/db_compact_std_test.go`
 
 **Acceptance tests:**
@@ -496,44 +554,47 @@ stamp `currentDBSchemaVersion` in the destination. Below version 1,
    2, and the run-state record is byte-equal to before.
 3. Given a version-2 database, when compacted, then the observer is never
    called and the version is 2.
-4. Given a database stamped 3, when compacted, then the error satisfies
-   `errors.Is(err, errDBSchemaTooNew)`, the file's SHA-256 is unchanged, and
-   no `*.compact-*` file is left in its directory.
+4. Given a database stamped 3 and last written with `NoFreelistSync` (its
+   freelist never synced, as a crashed manager leaves it), when compacted,
+   then the error satisfies `errors.Is(err, errDBSchemaTooNew)`, the file's
+   SHA-256 is unchanged, and no `*.compact-*` file is in its directory.
 
 ## D: Observability
 
-### D1: Cumulative non-durable hand-out count
+### D1: Each non-durable hand-out is logged
 
-As an operator, I want the log to hold how many reservations were handed out
-before they were durable, so that a soak or incident can measure exposure
-exactly, not from a rate-limited warning.
+As an operator, I want one log line per reservation handed out before it was
+durable, with its key and a running total, so that a soak or incident has an
+exact per-key count up to any crash.
 
-- `db.reservesNotDurable atomic.Uint64`, incremented by
-  `func (db *db) noteReserveNotDurable()`.
-- `persistReservation` calls it on `errDurableWriteWaitExpired` and on any
-  other error except `errDBClosed`. The rate-limited warning and error log
-  stay.
-- `reportArchiveFold` adds `"reservesNotDurable", <cumulative since this
-  manager started>` to the `archive fold` line. It also logs the line when no
-  archive transaction happened in the interval, if the count changed since
-  the last line. Such a line has `txs=0` and zero means, never NaN.
-  `stopArchiveFoldReporter`'s final line carries the count too.
+- `db.reservesNotDurable atomic.Uint64`. `func (db *db)
+  noteReserveNotDurable() uint64` increments it and returns the new total.
+- `persistReservation`, on `errDurableWriteWaitExpired` and on any other
+  error except `errDBClosed`, logs before the job is handed out:
+
+  ```go
+  clog.Info(ctx, reserveNotDurableLogMsg, "key", job.Key(),
+  	"total", s.db.noteReserveNotDurable())
+  ```
+
+  with `const reserveNotDurableLogMsg = "reservation handed out before it was
+  recorded on disk"`. The total counts from 0 in each manager process. The
+  existing rate-limited warning and error line stay.
 
 **Package:** `jobqueue/`
-**File:** `jobqueue/archivefold.go`, `jobqueue/serverCLI.go`, `jobqueue/db.go`
-**Test file:** `jobqueue/reliable4_archive_fold_log_test.go`
+**File:** `jobqueue/serverCLI.go`, `jobqueue/db.go`
+**Test file:** `jobqueue/reserve_durability_test.go`
 
 **Acceptance tests:**
 
-1. Given `arFoldInterval` 100ms, `ReserveWriteWait` 300ms and bolt's write
-   transaction held for 5s (as in `TestReserveDurabilityStalledWrite`), when
-   2 jobs are reserved and no archive runs, then an `archive fold` line with
-   `txs=0` and `reservesNotDurable=2` is logged within 1s of the second
-   hand-out, and `reservation not yet recorded on disk` is still logged.
-2. Given writes that commit promptly, when 3 jobs are reserved and 1 is
-   archived, then the next `archive fold` line has `reservesNotDurable=0`.
-3. Given no archives and no non-durable hand-outs in an interval, then no
-   `archive fold` line is logged for it.
+1. Given `ReserveWriteWait` 300ms and bolt's write transaction held for 5s
+   (as in `TestReserveDurabilityStalledWrite`) and logs captured at info,
+   when jobs A then B are reserved, then there are exactly 2
+   `reservation handed out before it was recorded on disk` lines, A's with
+   `key=<A's key> total=1` and B's with `key=<B's key> total=2`, and
+   `reservation not yet recorded on disk` is still logged.
+2. Given writes that commit promptly, when 3 jobs are reserved, then no such
+   line is logged and the counter is 0.
 
 ## E: Tooling and documentation
 
@@ -563,28 +624,39 @@ io.Writer) error`.
    `ready`, `0`, empty host and pid `0`.
 3. Given no `jobRunState` bucket (a version-1 database), then the line shows
    the live record's values.
+4. Cross-check against the real format: given a server started with the
+   exported `jobqueue.Serve` on a temp database, a job with Cmd
+   `/x/psimjob.sh portal 13` added and reserved through `jobqueue.Connect`
+   (client host `h2`, no `Started`), and a crash image written with the
+   exported `Server.BackupDB` to a file before `Stop`, when `run` reads that
+   file, then the job's line shows state `reserved` and host `h2`.
 
 ### E2: statinspect clearlive empties run-state records
 
 `clearLive` also deletes every key of `jobRunState`, if that bucket exists,
 in the same transaction, and prints `jobRunState keys: before=%d after=%d`
-after the `jobslive` line.
+after the `jobslive` line. It becomes `clearLive(path string, out
+io.Writer) error`; `main` prints the error and exits 1 as now.
 
 **Package:** `main` (module `statinspect`)
 **File:** `.docs/reliable2/harness/statinspect/main.go`
-**Test file:** none; manual check.
+**Test file:** `.docs/reliable2/harness/statinspect/main_test.go` (GoConvey,
+added to that module's `go.mod` at wr's version)
 
 **Acceptance tests:**
 
-1. Given a copy of a stopped soak database with N > 0 run-state records,
-   when `statinspect clearlive <copy>` runs, then it prints `jobRunState
-   keys: before=N after=0`.
-2. Given a version-1 database copy, when it runs, then it prints only the
-   `jobslive` line and exits 0.
+1. Given a bbolt file with 2 `jobslive` keys and 3 `jobRunState` keys, when
+   `clearLive` runs, then its output contains `jobslive keys: before=2
+   after=0` and `jobRunState keys: before=3 after=0`, and both buckets are
+   empty.
+2. Given a bbolt file with 2 `jobslive` keys and no `jobRunState` bucket,
+   when `clearLive` runs, then it returns nil and its output has no
+   `jobRunState` line.
 
 ### E3: CHANGELOG and compact help
 
 **File:** `CHANGELOG.md`, `cmd/manager.go`
+**Test file:** `cmd/manager_test.go`
 
 Under `## [Unreleased]`, first in `### Changed`:
 
@@ -605,9 +677,9 @@ First in `### Fixed`:
 - With thousands of runners, the manager now records each reservation and
   start with a small write instead of rewriting the whole command, so far
   fewer commands are handed out before their reservation is on disk, and far
-  fewer run twice if the manager crashes. The manager's `archive fold` log
-  line now includes `reservesNotDurable`, how many commands have been handed
-  out before their reservation was on disk since the manager started.
+  fewer run twice if the manager crashes. Each command that is still handed
+  out before its reservation is on disk is now logged at info with its key
+  and a running total.
 ```
 
 In `managerCompactCmd.Long`, the last paragraph becomes:
@@ -624,8 +696,53 @@ version of wr.
 
 **Acceptance tests:**
 
-1. `wr manager compact --help` prints the paragraph above.
-2. `CHANGELOG.md` has the three entries in the positions given.
+1. In `cmd/manager_test.go`, `managerCompactCmd.Long` ends with the paragraph
+   above, compared as an exact string.
+
+Review check (not a test): `CHANGELOG.md` has the three entries in the
+positions given.
+
+### E4: Fixture compaction and soak analysis
+
+As a gate runner, I want compacted copies of the version-0 fixtures under
+`/nfs/hgi/wr/sb10-bigdb` (`fix120k.db`, `pristine6`, `pristine10`,
+`prod.db`), with valid manifests, so that every big-DB scenario runs on this
+tree and on develop alike.
+
+- New `wrdev.sh compact-fixture <src> <dst>`:
+  - Refuses if `dst` exists, or `src` and `dst` are the same file. Never
+    opens `src` for writing.
+  - `cp -p src dst`, then runs this tree's `wr manager compact` on `dst`
+    with an isolated config (its `ManagerDBFile` is `dst`, its manager port
+    unused), and exits non-zero on failure, removing `dst`.
+  - If `src.aslmanifest` exists, first checks that its `size` and `mtime`
+    match `src` (refusing otherwise), then writes `dst.aslmanifest`: the
+    same fields, `size` and `mtime` of the compacted `dst`, and a
+    `compactedfrom=<src>` field.
+  - Listed in `usage` and `main`.
+- `developers/soak/anyway.py` also reads the per-key D1 lines, so a double
+  run whose first reservation has one is classified as handed out
+  non-durably.
+
+**File:** `developers/wrdev.sh`, `developers/soak/anyway.py`
+**Test file:** none; run end to end before ready.
+
+**Acceptance tests:**
+
+1. Given a copy of `jobqueue/testdata/dbcompat/db.golden` with a
+   hand-written manifest matching it, when `compact-fixture` runs, then this
+   tree's manager starts on `dst`, and `dst.aslmanifest`'s `size` and
+   `mtime` match `dst`.
+2. Given `dst` already present, when it runs, then it exits non-zero and
+   neither file changes.
+3. Given `fix120k.db`'s compacted copy, when `WRDEV_PRISTINE_DB=<copy>
+   wrdev.sh add-storm-lsf` starts, then it prints `fixture manifest OK`.
+4. Given `pristine6`'s compacted copy as `WRDEV_PRISTINE_DB`, when
+   `wrdev.sh add-storm-fixture 20000` runs, then it prints its `PASS: use
+   it with` line.
+5. Given a soak output dir with the D1 lines, when `anyway.py` runs, then
+   each double run whose first reservation's key has a D1 line is reported
+   as handed out non-durably.
 
 ## F: Gates
 
@@ -636,42 +753,59 @@ With all `OS_*` unset and `GOCACHE` off the home directory:
 1. `make lint`, `make test` and `CGO_ENABLED=1 make race` pass.
 2. `make speed` against `SPEED_BASE` = the develop merge-base reports no
    worsening over its threshold. The PR body summarises its verdict and A2
-   test 4's two `bolt_pages/job` figures.
+   test 5's two `bolt_pages/job` figures.
+3. `make speed-full` with `SPEED_BIG_DB` set to `pristine6`'s compacted copy
+   reports no worsening; both trees run on copies of that one file.
 
-### F2: wrdev crash and recovery modes
+### F2: wrdev crash, recovery and big-DB modes
 
-Each passes on this tree, run in sequence on an isolated manager:
+Fixtures are E4's compacted copies, never the originals. Each passes on this
+tree, in sequence on an isolated manager:
 
 1. `wrdev.sh crash-recovery` prints `PASS: re-sent archive accepted
    (complete=1), command ran exactly once` and exits 0.
-2. `wrdev.sh add-storm-lsf` (defaults, on a copy of an `add-storm-fixture`
-   fixture) exits 0. Its `## VERDICT` lines show `recoveredIncomplete` equal
-   to `manifestIncomplete` and `unsafeCommands=0`.
+2. `wrdev.sh add-storm-lsf` (defaults, `WRDEV_PRISTINE_DB` = compacted
+   `fix120k.db`) exits 0. Its `## VERDICT` lines show `recoveredIncomplete`
+   equal to `manifestIncomplete` and `unsafeCommands=0`.
 3. `wrdev.sh dep-granularity-check` (defaults) exits 0.
+4. `wrdev.sh archive-rate`, `archive-ceiling`, `add-storm`,
+   `writestorm-freeze` and `backup-stall-check` exit 0 with their DB
+   variables (`WR_ARCHRATE_DB`, `WR_AC_DB`, `WR_AS_DB`, `WR_WSFREEZE_DB`,
+   `WRDEV_PRISTINE_DB`) set to compacted `pristine10`, `pristine6` or
+   `prod.db` copies as each mode's header names.
+5. `TestReliable4AddStorm` passes with `WR_AS_DB` = compacted `prod.db`.
 
-### F3: Production-scale LSF crash soak
+### F3: Production-scale LSF crash soaks
 
-Run `developers/soak/run.sh` with battery10's `soak-go.sh` settings and
-injectors (`HOURS=3`, `SCALE=1`, `RESTART_KINDS` with 6 or more crashes,
-`USE_FUSE=1` with the 180s FUSE commit stall, `RAMP0=600
-RAMP="0:600 8:1200 16:2100 25:3000 40:3600 60:4000"`, fixture `fix120k`, the
-`crashon.sh`, `relbury.sh`, `rundep.sh` and `stopstate.sh` injectors), with
-this tree's binary for the whole run (never replaced mid-run). Analyse with
-the README's analysis steps, `dbstart` built from this tree.
+Two soaks, run one after the other with identical settings: a baseline of
+develop at the PR's merge-base, then this tree. Each uses its own tree's
+binary for the whole run (never replaced mid-run) and a fresh copy of the
+compacted `fix120k.db`.
+
+Settings: `developers/soak/run.sh` with battery10's `soak-go.sh`: `HOURS=3`,
+`SCALE=1`, `RESTART_KINDS` with 6 or more crashes, `USE_FUSE=1` with the
+180s FUSE commit stall, `RAMP0=600 RAMP="0:600 8:1200 16:2100 25:3000
+40:3600 60:4000"`, and the `crashon.sh`, `crashafter.sh`, `relbury.sh`,
+`rundep.sh` and `stopstate.sh` injectors. Analyse each with the README's
+steps and `dbstart` built from this tree.
 
 Definitions:
 
 - Stall window: each injected FUSE commit stall or `crashon.sh stall`, from
   its start to its end plus `ReserveWriteWait`.
-- Non-durable outside stalls: summed over manager runs, the increase in
-  `reservesNotDurable` across `archive fold` lines, leaving out each line
-  whose interval overlaps a stall window. Each manager run is counted from 0,
-  up to its last line before it stopped.
+- Non-durable outside stalls (this tree): D1 lines in every manager log of
+  the run whose timestamp is outside every stall window. In each manager
+  process the lines' `total` values run 1, 2, ... with no gap, and the
+  number of lines equals the last `total`; if not, the run is invalid.
+- Non-durable (baseline): the rate-limited warning's lines plus their
+  `repeats=` sums, as battery10 counted, also outside stall windows.
 
-Pass only if all hold:
+This tree's soak passes only if all hold:
 
-1. Peak LSF RUN (`lsf.tsv`) is at least 5,500.
-2. Non-durable outside stalls is at most 0.034% of `markers.py`'s run count.
+1. Peak LSF RUN (`lsf.tsv`) is at least 5,500 in both soaks, and within 10%
+   of each other.
+2. Non-durable outside stalls is at most 0.034% of `markers.py`'s run count,
+   and below the baseline's.
 3. Every double run in `markers.py` is classified by `doubles.py` and
    `anyway.py` as having its first reservation inside a stall window; any
    other is a failure.
@@ -681,23 +815,22 @@ Pass only if all hold:
 5. `rundepcheck.py` has no CHECK outside the owner-ruled "stop means buried"
    cases.
 
-The PR body records the run directory, peak RUN, run count, the non-durable
-counts inside and outside stalls (against battery10's 23,586), double runs by
-class, and the pass verdict.
+The PR body records both run directories, peak RUN, run counts, non-durable
+counts inside and outside stalls, double runs by class, and the verdict.
 
 ## Implementation Order
 
-1. **Phase 1: schema (C1, C2).** Independent. Can run in parallel with
-   phase 2.
-2. **Phase 2: record and cleanup (A1, A4, A5).** Adds the bucket, record,
-   helpers and every full-write and delete path. Reserve and start still
+1. **Phase 1: schema (C1, C2).** First.
+2. **Phase 2: record and cleanup (A1, A4, A5).** Depends on phase 1, whose
+   `initDB` changes A1's bucket creation sits beside. Reserve and start still
    write full records, so behaviour is unchanged.
-3. **Phase 3: switch the writes and overlay (A2, A3, B1, B2).** Depends on
-   phases 1 and 2. A2 must not land without B1: without the overlay a crash
-   would recover pre-reservation state.
-4. **Phase 4: counter (D1).** After phase 3.
-5. **Phase 5: tools and docs (E1, E2, E3).** E1 and E2 depend on phase 2's
-   format. E3 after phases 1 and 3.
+3. **Phase 3: switch the writes and overlay (A2, A3, B1, B2), with the A2
+   audit.** Depends on phase 2. A2 must not land without B1: without the
+   overlay a crash would recover pre-reservation state.
+4. **Phase 4: logging (D1).** After phase 3.
+5. **Phase 5: tools and docs (E1, E2, E3, E4).** E1 and E2 depend on phase
+   2's format, E1 test 4 on phase 3, E4's `anyway.py` part on D1, E3 on
+   phases 1 and 3.
 6. **Phase 6: gates (F1, F2, F3).** Sequential: F1, then F2, then F3. F3 is
    the last step before the PR is ready.
 
@@ -713,10 +846,16 @@ class, and the pass verdict.
   defect harmless. Hashing about 10KB with CRC-32C costs about 1us.
 - **Field set.** The record holds every persisted field that a reservation
   or start sets, including the ones `resetRunLocked` clears, so the overlay
-  of an older full record reproduces the reserved or started job (A1 test 2,
-  A2 test 1). A field changed by any other path is persisted by that path's
-  own full write, as today. `runID` and other unexported fields were never
-  persisted.
+  of an older full record reproduces the reserved or started job (A1 tests 2
+  and 6, A2 test 1). The A2 audit covers fields changed elsewhere that relied
+  on the reservation's full write.
+- **Learned requirements go in the record, not a full write in
+  `prepareReadyJob`.** `prepareReadyJob` runs for every schedulable job in
+  each rac cycle; a full write there would put 10KB records back on the hot
+  path this change removes, and in a transaction of their own. The two
+  `Requirements` structs add about 200 bytes, keeping the record within
+  1,024 bytes. A reservation without `Started` is all a crash needs to lose
+  them, which A2 test 3 covers.
 - **Coalescing keeps both slots.** A reservation queued after a kick in the
   same drain must not discard the kick's full record, since the run-state
   record does not carry `UntilBuried` and other fields. A later full change
@@ -728,23 +867,28 @@ class, and the pass verdict.
 - **Recovery deletes stale and orphaned records.** Recovery runs once, before
   any writer is busy. Deleting there stops an orphan from matching a later
   re-add with byte-identical add-time encoding. `dbstart` and `statinspect`
-  open databases read-only (or only clear the live bucket), so they skip
-  non-matching records and delete nothing.
+  skip non-matching records and delete nothing of them.
 - **No fold-back at stop, no downgrade.** As the owner decided. The CHANGELOG
   says so. The schema-version check protects later downgrades to this version
   or newer. It cannot protect a downgrade to v0.38.0, which does not check.
-- **Compact refuses a newer database.** Stamping 2 onto a version-3 database
-  would make it claim less than it holds.
+- **Compact refuses a newer database, checked read-only first.** Stamping 2
+  onto a version-3 database would make it claim less than it holds. The
+  read-only open is what keeps the refused file byte-identical.
 - **Version-0 refusal is in `initDB`, before any write.** All opens,
   including restore from backup, go through it, so one check covers them, and
-  a refused database is left unchanged for `wr manager compact`.
-- **Counter on the `archive fold` line.** That line is already the
-  per-minute summary operators grep. Logging it when only the counter
-  changed covers a commit stall, when no archive commits. Hand-outs in the
-  last interval before a crash are not in the log. The rate-limited warning
-  still marks them.
+  a refused database is left unchanged for `wr manager compact`. Only files
+  with a `jobslive` bucket are refused, so an empty file from a crashed first
+  start is not mislabelled.
+- **Per-hand-out info lines, warning kept.** The manager's file log is at
+  info, so the lines reach it, and each is written before the hand-out, so
+  the count is exact up to a crash. battery10 would have produced about 23k
+  lines in 3h, at most about 4k a minute. The rate-limited warning stays so
+  existing log watchers and `TestReserveDurabilityStalledWrite` keep working.
+- **Baseline soak.** The fixtures had to be compacted for this tree, which
+  changes their freelist, so battery10's figures are not like for like. The
+  baseline soak on the same compacted fixture is.
 - **Testing.** GoConvey for new tests, following go-implementor and
-  go-reviewer. Crash behaviour is tested by killing a server without a clean
-  stop and starting another on the same file, as the existing durability
-  tests do. Existing ordering and durability tests stay and must pass
-  unchanged except where a story says they are extended.
+  go-reviewer. Crash behaviour is tested with a crash image (`BackupDB`)
+  restored under a new server, as the existing durability tests do. Existing
+  ordering and durability tests stay and must pass unchanged except where a
+  story says they are extended.
