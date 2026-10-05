@@ -573,9 +573,22 @@ backup) and before any write transaction (`openManagerBolt` sets
 Nothing else reads the schema version, so `wr manager start` reports the
 error as it reports any `initDB` failure.
 
+The big-DB generator `TestReliable4InflateDB`
+(`jobqueue/reliable4_backup_repro_test.go`, `reliability_repro` tag) builds
+an unversioned database with a `jobslive` bucket, which this refuses; it is
+what `backup-stall-check` uses when `WRDEV_PRISTINE_DB` is unset, and what
+the "big freelist DB" texts point to. `createReliable4Buckets` stamps it
+with `currentDBSchemaVersion` (its complete records hold no stdout or
+stderr, so version 2 is true), and `reliable4AllBuckets` gains
+`bucketJobRunState`. Once stamped, it can recreate freelist-bloated
+databases for the archive and write-storm modes, but the gate's inputs stay
+E4's compacted copies.
+
 **Package:** `jobqueue/`
-**File:** `jobqueue/db.go`, `jobqueue/db_schema.go`
-**Test file:** `jobqueue/db_schema_test.go`
+**File:** `jobqueue/db.go`, `jobqueue/db_schema.go`,
+`jobqueue/reliable4_backup_repro_test.go`
+**Test file:** `jobqueue/db_schema_test.go` (test 10:
+`jobqueue/reliable4_backup_repro_test.go`)
 
 **Acceptance tests:**
 
@@ -606,6 +619,12 @@ error as it reports any `initDB` failure.
 9. Given a database whose stamp is 3 bytes long, when `initDB` runs, then
    the error satisfies `errors.Is(err, errBadDBSchemaVersion)` and the
    file's SHA-256 is unchanged.
+10. Given a database built by `createReliable4Buckets` with a few complete
+    records written as `TestReliable4InflateDB` writes them (a new test in
+    `reliable4_backup_repro_test.go`, `reliability_repro` tag, run by F1.1's
+    tagged `go test -tags netgo,reliability_repro -run
+    TestReliable4InflateDBOpens ./jobqueue/`), when `initDB` opens it, then
+    it succeeds and the version is 2.
 
 ### C2: Compact stamps the current version
 
@@ -613,7 +632,9 @@ As an operator, I want `wr manager compact` to bring any supported database
 to the current version, stripping output only once, and to leave a database
 it refuses untouched.
 
-- `CompactDBFileStats` first calls `readOnlyDBFileSchemaVersion(dbFile)` and
+- `CompactDBFileStats` keeps its `os.Stat` first (so `BeforeSize` is set
+  even when the stamp is malformed, as `TestDBCompactFileSizes` expects),
+  then calls `readOnlyDBFileSchemaVersion(dbFile)` and
   `checkDBSchemaVersion`, returning any error (including
   `errBadDBSchemaVersion`) before `compactToTempFile` creates the temp
   file. `compactBoltInto` opens the source without
@@ -664,12 +685,15 @@ test below fails.
 1. `TestManagerStartRefusesUnsupportedDB`: given an isolated config whose
    `ManagerDBFile` is an unversioned database with a `jobslive` bucket, when
    `wr manager start --foreground` runs as a subprocess (the test binary
-   re-executed, as `manager_stop_test.go` does), then it exits non-zero, its
+   re-executed, as `manager_stop_test.go` does) with `--deployment
+   production` (a development manager deletes its database before the check,
+   since `Serve` passes `!config.dontWipeDevDB`), then it exits non-zero, its
    stderr contains `wr manager compact`, and `getBadLogLines()` on its log
    returns a line containing `wr manager compact`. The same with a database
    stamped 3 shows `schema version 3` in both.
 2. `TestManagerStartDaemonShowsRefusal`: the same two databases with the
-   default daemon `wr manager start` as a subprocess: the parent exits
+   default daemon `wr manager start --deployment production` as a
+   subprocess: the parent exits
    non-zero and its output contains the `getBadLogLines()` line and `wr
    manager failed to start on port <port>:` followed by the startup error,
    with `wr manager compact` (version 0) or `schema version 3` (version 3)
@@ -688,15 +712,21 @@ As an operator, I want one log line per reservation handed out before it was
 durable, with its key and a running total, so that a soak or incident has an
 exact per-key count up to any crash.
 
-- `db.reservesNotDurable atomic.Uint64`. `func (db *db)
-  noteReserveNotDurable() uint64` increments it and returns the new total.
+- `db.reservesNotDurable uint64` guarded by a new `db.rndMu sync.Mutex`.
+  `func (db *db) logReserveNotDurable(key string)` takes `rndMu`, increments
+  the counter and writes the line below, then releases it. Bumping and
+  logging under one mutex means a crash always leaves a log whose totals are
+  exactly {1..k}: no goroutine can hold a bumped total it has not yet
+  logged. The mutex is taken only on the non-durable path (about 70 lines/s
+  at battery10's peak), never on a durable reservation.
 - `persistReservation`, on any non-nil error, including `errDBClosed`
   (`respondWithReservedJob` still hands the job out then, as around a clean
-  stop), logs before the job is handed out:
+  stop), calls `s.db.logReserveNotDurable(job.Key())` before the job is
+  handed out. The line is:
 
   ```go
-  clog.Info(context.Background(), reserveNotDurableLogMsg, "key", job.Key(),
-  	"total", s.db.noteReserveNotDurable())
+  clog.Info(context.Background(), reserveNotDurableLogMsg, "key", key,
+  	"total", db.reservesNotDurable)
   ```
 
   with `const reserveNotDurableLogMsg = "reservation handed out before it was
@@ -732,6 +762,10 @@ exact per-key count up to any crash.
 3. Given a server whose `db.closed` is set under the db's lock (as `close`
    sets it), when `persistReservation` runs for job A, then one D1 line with
    `key=<A's key> total=1` is logged.
+4. Given logs captured at info, when 50 goroutines each call
+   `logReserveNotDurable` with a distinct key 20 times concurrently, then the
+   log has 1,000 D1 lines whose `total` values, in log order, are exactly 1,
+   2, ..., 1000.
 
 ## E: Tooling and documentation
 
@@ -929,11 +963,11 @@ New `developers/soak/soakgate.py --source d1|warning <outdir>
   started.
 - Non-durable hand-outs: with `d1`, D1 lines (`reservation handed out before
   it was recorded on disk`), whose `total` values within each segment must
-  be exactly the set {1..max}, each once, in any order (the total is taken
-  from an atomic increment and logged without a lock, so concurrent lines
-  can be out of order); with `warning`, the rate-limited `reservation not
-  yet recorded on disk` warning's lines plus their `repeats=` values. Each
-  is inside or outside a window by its timestamp.
+  be exactly the set {1..max}, each once (D1 logs them in order under one
+  mutex; the check does not rely on order); with `warning`, the
+  rate-limited `reservation not yet recorded on disk` warning's lines plus
+  their `repeats=` values. Each is inside or outside a window by its
+  timestamp.
 - Runs: the `runs=` value on the first line of `<outdir>/markers-analysis.txt`
   (markers.py's output).
 - Peak RUN: the largest `RUN=<n>` in `<outdir>/lsf.tsv`.
@@ -1014,18 +1048,12 @@ which runs every case and diffs.
 
 With all `OS_*` unset and `GOCACHE` off the home directory:
 
-1. `make lint`, `make test` and `CGO_ENABLED=1 make race` pass, and `go vet
+1. `make lint`, `make test` and `CGO_ENABLED=1 make race` pass; `go vet
    -tags netgo,reliability_repro ./jobqueue/` passes (B1 changes
    `recoverIncompleteJobs`' signature, which the `reliability_repro`-tagged
-   `dbstart_probe_test.go` calls).
-5. `cd .docs/reliable2/harness/statinspect && GOFLAGS=-mod=mod GOPROXY=off
-   go mod tidy && go test ./...` passes. goconvey v1.8.1 (wr's version) and
-   its dependencies resolve offline from the local module cache, where wr's
-   own build put them; the updated `go.mod` and `go.sum` are committed.
-6. `developers/soak/testdata/soakgate/run.sh` (new) passes: for each case
-   directory under `developers/soak/testdata/soakgate/`, it runs
-   `soakgate.py` with that case's `args` file and `diff`s the output against
-   the case's `expected.txt`, exiting non-zero on any difference.
+   `dbstart_probe_test.go` calls); and `go test -tags
+   netgo,reliability_repro --count 1 -run TestReliable4InflateDBOpens
+   ./jobqueue/` passes.
 2. `make speed` against `SPEED_BASE` = the develop merge-base, with
    `SPEED_DIR=$G/speed-quick DEV_PORT=51990 DEV_WEB=51991 PROD_PORT=51992
    PROD_WEB=51993`, reports no worsening over its threshold. The PR body
@@ -1041,6 +1069,17 @@ With all `OS_*` unset and `GOCACHE` off the home directory:
    copied into `$SPEED_DIR/tools/` first, as battery10's `speed-go.sh` did
    (no network).
 
+5. In `.docs/reliable2/harness/statinspect`, add `require
+   github.com/smartystreets/goconvey v1.8.1` (wr's version) to `go.mod` by
+   hand, not with `go get`, which fails offline because goconvey's root
+   module imports `golang.org/x/tools` v0.7.0, absent from the module cache.
+   Then `GOFLAGS=-mod=mod GOPROXY=off go mod tidy && go test ./...` passes,
+   resolving from the local module cache; the updated `go.mod` and `go.sum`
+   are committed.
+6. `developers/soak/testdata/soakgate/run.sh` (new) passes: for each case
+   directory under `developers/soak/testdata/soakgate/`, it runs
+   `soakgate.py` with that case's `args` file and `diff`s the output against
+   the case's `expected.txt`, exiting non-zero on any difference.
 ### F2: wrdev crash, recovery and big-DB modes
 
 Fixtures are E4's, never the originals. With `WRDEV_ROOT=$G/f2/root
@@ -1191,7 +1230,8 @@ The PR body records both run directories, peak RUN, both soaks'
   context with no handler, so they reach the root logger's info-level file
   handler; the server's own context carries a warn-level handler that would
   drop them (D1 test 1 uses the real configuration). Each is written before
-  the hand-out, so the count is exact up to a crash. battery10 would have
+  the hand-out, under the same mutex as the counter bump, so the count is
+  exact and gap-free up to a crash. battery10 would have
   produced about 23k lines in 3h, at most about 4k a minute. The rate-limited
   warning stays so existing log watchers and
   `TestReserveDurabilityStalledWrite` keep working.
