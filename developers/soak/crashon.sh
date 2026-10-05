@@ -23,15 +23,17 @@ c0=$(grep -c "$pat" "$f" 2>/dev/null); c0=${c0:-0}
 until c=$(grep -c "$pat" "$f" 2>/dev/null); [ "${c:-0}" -gt "$c0" ]; do soak_alive "$d" || exit 0; sleep 1; done
 echo "$(date +%s) crashon: $trig seen: $(grep "$pat" "$f" | tail -1); crashing in ${wait}s" >> "$d/watcher.log"
 sleep "$wait"
-# never collide with a scheduled restart part-way through
-while soak_wr_running "(start|stop)" >/dev/null; do sleep 2; done
-soak_isolated || die "wr does not resolve --deployment production to our manager on :$PROD_PORT"
-pid=$(soak_manager_pid) || die "the pid file does not name a process running $SOAK_WR"
-lsfrun=$(our_running_jobs)
-t0=$(date +%s%3N); kill -9 "$pid"
-echo "$(date +%s)	stop	rc=crash	pid=$pid	ms=$(( $(date +%s%3N) - t0 ))	kind=crash	manual=crashon-$trig	lsfRUN=$lsfrun	load=$(cut -d' ' -f1 /proc/loadavg)" >> "$d/restarts.tsv"
-cp -f "$SOAK_RUN/log" "$d/manager.log.$(date +%s)" 2>/dev/null
-soak_wait_gone "$pid" "$d" crashon; sleep 3; t0=$(date +%s%3N)
-soak_start_manager "$d"
-rc=$?
-echo "$(date +%s)	start	rc=$rc	pid=$(cat "$SOAK_RUN/pid")	ms=$(( $(date +%s%3N) - t0 ))	manual=crashon-$trig	load=$(cut -d' ' -f1 /proc/loadavg)" >> "$d/restarts.tsv"
+crash() {
+  soak_isolated || die "wr does not resolve --deployment production to our manager on :$PROD_PORT"
+  pid=$(soak_manager_pid) || die "the pid file does not name a process running $SOAK_WR"
+  lsfrun=$(our_running_jobs)
+  t0=$(date +%s%3N); kill -9 "$pid"
+  echo "$(date +%s)	stop	rc=crash	pid=$pid	ms=$(( $(date +%s%3N) - t0 ))	kind=crash	manual=crashon-$trig	lsfRUN=$lsfrun	load=$(cut -d' ' -f1 /proc/loadavg)" >> "$d/restarts.tsv"
+  cp -f "$SOAK_RUN/log" "$d/manager.log.$(date +%s)" 2>/dev/null
+  soak_wait_gone "$pid" "$d" crashon; sleep 3; t0=$(date +%s%3N)
+  soak_start_manager "$d"
+  rc=$?
+  echo "$(date +%s)	start	rc=$rc	pid=$(cat "$SOAK_RUN/pid")	ms=$(( $(date +%s%3N) - t0 ))	manual=crashon-$trig	load=$(cut -d' ' -f1 /proc/loadavg)" >> "$d/restarts.tsv"
+}
+# never collide with a scheduled restart part-way through, or it with this one
+soak_restart_locked "$d" crash

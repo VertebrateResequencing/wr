@@ -28,9 +28,13 @@ has a given number of manager starts, then crash and restart the manager,
 recording both in `restarts.tsv` with a `manual=` tag. Each kills only the pid
 that our manager's pid file names, and only after `wr conf` confirms that
 `--deployment production` resolves to our manager and `ps` confirms that the
-pid runs our binary. `rundep.sh` adds jobs and kills nothing. `stall.sh` waits
-for `hook.sh` to put the DB behind `fusestall`, the daemon that `run.sh` starts
-when `USE_FUSE=1`.
+pid runs our binary. Each holds `<outdir>/restart.lock` (`flock`) from the kill
+until the restarted manager is up, as `wrdev.sh prodsim`'s scheduled restarts
+and `watcher.sh`'s restart do, so no two restarts overlap: `crashafter.sh` and
+`crashon.sh` wait for the lock, and `relbury.sh`, whose kill must land on time,
+skips its crash if another restart holds it. `rundep.sh` adds jobs and kills
+nothing. `stall.sh` waits for `hook.sh` to put the DB behind `fusestall`, the
+daemon that `run.sh` starts when `USE_FUSE=1`.
 
 | file | what it does |
 | --- | --- |

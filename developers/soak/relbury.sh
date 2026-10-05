@@ -44,19 +44,25 @@ add() { # kind retries
 add rel 1; add bur 0
 log "deadline D=$dms; kill at D+${kdms}ms"
 until [ "$(date +%s%3N)" -ge $(( dms + kdms )) ]; do sleep 0.05; done
-if busy; then log "a manager stop/start is in progress at D+${kdms}ms; no relbury crash"; exit 0; fi
-soak_isolated || { log "not our manager config"; exit 1; }
-pid=$(soak_manager_pid) || { log "pid $(cat "$SOAK_RUN/pid" 2>/dev/null) is not ours"; exit 1; }
-t0=$(date +%s%3N); kill -9 "$pid"
-started=$(cat "$R"/*.tsv 2>/dev/null | awk -F'\t' -v p="relb.$tag." '$1=="S" && index($2,p)==1' | wc -l)
-ended=$(cat "$R"/*.tsv 2>/dev/null | awk -F'\t' -v p="relb.$tag." '$1=="E" && index($2,p)==1' | wc -l)
-log "killed pid $pid at $t0 (D+$(( t0 - dms ))ms); marks so far S=$started E=$ended"
-echo "$(date +%s)	stop	rc=crash	pid=$pid	ms=$(( $(date +%s%3N) - t0 ))	kind=crash	manual=relbury-$tag	killms=$t0	load=$(cut -d' ' -f1 /proc/loadavg)" >> "$d/restarts.tsv"
-cp -f "$SOAK_RUN/log" "$d/manager.log.$(date +%s)" 2>/dev/null
-sleep 3; t0=$(date +%s%3N)
-soak_start_manager "$d"
-rc=$?
-echo "$(date +%s)	start	rc=$rc	pid=$(cat "$SOAK_RUN/pid")	ms=$(( $(date +%s%3N) - t0 ))	manual=relbury-$tag	load=$(cut -d' ' -f1 /proc/loadavg)" >> "$d/restarts.tsv"
+crash() {
+  if busy; then log "a manager stop/start is in progress at D+${kdms}ms; no relbury crash"; exit 0; fi
+  soak_isolated || { log "not our manager config"; exit 1; }
+  pid=$(soak_manager_pid) || { log "pid $(cat "$SOAK_RUN/pid" 2>/dev/null) is not ours"; exit 1; }
+  t0=$(date +%s%3N); kill -9 "$pid"
+  started=$(cat "$R"/*.tsv 2>/dev/null | awk -F'\t' -v p="relb.$tag." '$1=="S" && index($2,p)==1' | wc -l)
+  ended=$(cat "$R"/*.tsv 2>/dev/null | awk -F'\t' -v p="relb.$tag." '$1=="E" && index($2,p)==1' | wc -l)
+  log "killed pid $pid at $t0 (D+$(( t0 - dms ))ms); marks so far S=$started E=$ended"
+  echo "$(date +%s)	stop	rc=crash	pid=$pid	ms=$(( $(date +%s%3N) - t0 ))	kind=crash	manual=relbury-$tag	killms=$t0	load=$(cut -d' ' -f1 /proc/loadavg)" >> "$d/restarts.tsv"
+  cp -f "$SOAK_RUN/log" "$d/manager.log.$(date +%s)" 2>/dev/null
+  sleep 3; t0=$(date +%s%3N)
+  soak_start_manager "$d"
+  rc=$?
+  echo "$(date +%s)	start	rc=$rc	pid=$(cat "$SOAK_RUN/pid")	ms=$(( $(date +%s%3N) - t0 ))	manual=relbury-$tag	load=$(cut -d' ' -f1 /proc/loadavg)" >> "$d/restarts.tsv"
+}
+# the kill must land at D+killDelayMs, so skip it rather than wait if another
+# restart holds the lock; holding it keeps any other restart off this one
+soak_restart_locked -n "$d" crash
+if [ $? -eq 75 ]; then log "another restart holds the restart lock at D+${kdms}ms; no relbury crash"; exit 0; fi
 up=$(date +%s)
 snap() { # label
   local g

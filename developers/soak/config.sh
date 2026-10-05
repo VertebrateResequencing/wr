@@ -156,6 +156,24 @@ soak_start_manager() {
     "$SOAK_WR" manager start --deployment production -s "$SCHED" >> "$1/manager-start.out" 2>&1
 }
 
+# soak_restart_locked [-n] <outdir> <command...> runs command holding
+# <outdir>/restart.lock, as wrdev.sh prodsim's scheduled restarts do
+# (prodsim_restart_locked), so no two restarts of our manager overlap. Without
+# -n it waits for the lock; with -n it returns 75 at once, without running
+# command, if a restart holds it. The command runs with the lock's fd closed, so
+# the manager it starts never inherits it.
+soak_restart_locked() {
+  local nb="" lockfd rc
+  [ "$1" = -n ] && { nb=-n; shift; }
+  exec {lockfd}>>"$1/restart.lock" || return 1
+  shift
+  if ! flock $nb "$lockfd"; then exec {lockfd}>&-; return 75; fi
+  "$@" {lockfd}>&-
+  rc=$?
+  flock -u "$lockfd"; exec {lockfd}>&-
+  return "$rc"
+}
+
 # soak_enter puts the caller in output dir $1's private config and work dir
 soak_enter() {
   export WR_CONFIG_DIR=$1/config

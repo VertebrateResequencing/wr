@@ -8,6 +8,20 @@
 d=$(soak_outdir "$1") || exit 1
 soak_enter "$d"
 seen=$(wc -l < "$d/restarts.tsv")
+# restart_if_down <failedPid> starts our manager unless one other than
+# failedPid is up; run under the restart lock, so never during another restart
+restart_if_down() {
+  local up t0 rc
+  if up=$(soak_manager_pid) && [ "$up" != "$1" ]; then
+    echo "$(date +%s) watcher: our manager is already up (pid $up); not starting it" >> "$d/watcher.log"
+  elif soak_isolated && ! soak_wr_running start >/dev/null; then
+    t0=$(date +%s%3N)
+    soak_start_manager "$d"
+    rc=$?
+    echo "$(date +%s)	start	rc=$rc	pid=$(cat "$SOAK_RUN/pid")	ms=$(( $(date +%s%3N) - t0 ))	watcher-after-failure	load=$(cut -d' ' -f1 /proc/loadavg)" >> "$d/restarts.tsv"
+    seen=$(wc -l < "$d/restarts.tsv")
+  fi
+}
 while soak_alive "$d"; do
   n=$(wc -l < "$d/restarts.tsv")
   if [ "$n" -gt "$seen" ]; then
@@ -21,15 +35,7 @@ while soak_alive "$d"; do
         # the failed start's pid is the manager it could not replace (a killed
         # one can linger); a different live one was started since: leave it
         failed=$(printf '%s\n' "$last" | grep -oE 'pid=[0-9]+' | cut -d= -f2)
-        if up=$(soak_manager_pid) && [ "$up" != "$failed" ]; then
-          echo "$(date +%s) watcher: our manager is already up (pid $up); not starting it" >> "$d/watcher.log"
-        elif soak_isolated && ! soak_wr_running start >/dev/null; then
-          t0=$(date +%s%3N)
-          soak_start_manager "$d"
-          rc=$?
-          echo "$(date +%s)	start	rc=$rc	pid=$(cat "$SOAK_RUN/pid")	ms=$(( $(date +%s%3N) - t0 ))	watcher-after-failure	load=$(cut -d' ' -f1 /proc/loadavg)" >> "$d/restarts.tsv"
-          seen=$(wc -l < "$d/restarts.tsv")
-        fi ;;
+        soak_restart_locked "$d" restart_if_down "$failed" ;;
     esac
   fi
   sleep 10

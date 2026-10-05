@@ -4380,7 +4380,8 @@ cmd_prodsim() {  # prodsim [hours] [simMinuteSecs] [scale] - PRODUCTION-SHAPED S
   # Env: WRDEV_PRODSIM_DB=<file> starts from a COPY of that DB (eg. the 7.4GB aslfixture.db, for
   #      production's DB size, freelist and backup cost; its live jobs stay blocked);
   #      WRDEV_PRODSIM_SCHED=lsf|local (default lsf); WRDEV_PRODSIM_PPROF (default 6072);
-  #      WRDEV_PRODSIM_RESTART_MIN=<real minutes> restarts the manager that often (0 = never);
+  #      WRDEV_PRODSIM_RESTART_MIN=<real minutes> restarts the manager that often (0 = never),
+  #      each restart holding $out/restart.lock, as anything else restarting it must;
   #      WRDEV_PRODSIM_RESTART_KINDS=clean,crash,... cycles through those restart kinds (default
   #      clean: a bounded `wr manager stop`; crash: kill -9);
   #      WRDEV_PRODSIM_PRESTART_HOOK=<script> runs between each restart's stop and start with
@@ -4399,6 +4400,7 @@ cmd_prodsim() {  # prodsim [hours] [simMinuteSecs] [scale] - PRODUCTION-SHAPED S
   local restartmin="${WRDEV_PRODSIM_RESTART_MIN:-0}"
   case "$PROD_JOBTOKEN" in (*[!A-Za-z0-9]*|'') die "PROD_JOBTOKEN must be letters and digits only" ;; esac
   case "$restartmin" in (*[!0-9]*|'') die "WRDEV_PRODSIM_RESTART_MIN must be a whole number" ;; esac
+  command -v flock >/dev/null || die "prodsim needs flock (util-linux) for its restart lock"
   local out; out="$WRDEV_ROOT/prodsim-$(date +%s)"
   local work="$out/work" bin="$out/prodsim" job="$out/psimjob.sh"
   mkdir -p "$work" || die "could not make $work"
@@ -4439,7 +4441,7 @@ cmd_prodsim() {  # prodsim [hours] [simMinuteSecs] [scale] - PRODUCTION-SHAPED S
       local kinds i=0; IFS=, read -r -a kinds <<< "${WRDEV_PRODSIM_RESTART_KINDS:-clean}"
       while sleep $(( restartmin * 60 )); do
         kill -0 "$PS_SIMPID" 2>/dev/null || exit 0
-        prodsim_restart "${kinds[$(( i % ${#kinds[@]} ))]}"
+        prodsim_restart_locked prodsim_restart "${kinds[$(( i % ${#kinds[@]} ))]}"
         i=$(( i + 1 ))
       done ) &
     PS_RESTARTER=$!
@@ -4487,6 +4489,22 @@ prodsim_prestop_profiles() {  # cumulative block/mutex profiles, heap and gorout
     curl -s -m 60 "http://localhost:$PS_PP/debug/pprof/$p" > "$PS_OUT/profiles/prestop.$ts.${p%%\?*}.pprof" 2>/dev/null
   done
   curl -s -m 60 "http://localhost:$PS_PP/debug/pprof/goroutine?debug=2" > "$PS_OUT/profiles/prestop.$ts.goroutine2.txt" 2>/dev/null
+}
+
+# prodsim_restart_locked <command...> runs command holding $PS_OUT/restart.lock. Every restart of
+# the prodsim manager takes it (the scheduled ones here, and developers/soak's injectors and
+# watcher through soak_restart_locked), so one can never hit a manager another has just killed or
+# is still starting. The command runs with the lock's fd closed, so the manager it starts never
+# inherits it, and the lock is released explicitly because a subshell the command forks (eg. the
+# post-start profiler) still holds a copy of it.
+prodsim_restart_locked() {
+  local lockfd rc
+  exec {lockfd}>>"$PS_OUT/restart.lock" || return 1
+  flock "$lockfd"
+  "$@" {lockfd}>&-
+  rc=$?
+  flock -u "$lockfd"; exec {lockfd}>&-
+  return "$rc"
 }
 
 prodsim_restart() {  # [clean|crash] clean: graceful stop (bounded), falling back to a kill; crash: kill -9;
@@ -4574,16 +4592,9 @@ prodsim_cleanup() {  # idempotent: stop the restarter, prodsim, our manager, and
     local i; for i in $(seq 1 30); do kill -0 "$PS_SIMPID" 2>/dev/null || break; sleep 1; done
     our_child "$PS_SIMPID" && kill -KILL "$PS_SIMPID" 2>/dev/null
   fi
-  # WRDEV_PRODSIM_FINAL_STOP=1 ends the run with a measured clean stop of the (biggest) DB
-  if [ "${WRDEV_PRODSIM_FINAL_STOP:-0}" = "1" ] && [ -n "$(mgr_pid "$PROD_RUN")" ] && is_ours "$(mgr_pid "$PROD_RUN")"; then
-    echo "  final clean stop"; prodsim_stop clean
-  fi
-  cp -f "$PROD_RUN/log" "$PS_OUT/manager.log" 2>/dev/null
-  # a restart the restarter was part-way through may still bring a manager up
-  local pid; for _ in 1 2 3; do
-    pid=$(mgr_pid "$PROD_RUN"); [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1 && safe_kill "$pid" >/dev/null 2>&1
-    sleep 2
-  done
+  # under the restart lock, so a restart an injector is part-way through finishes first rather
+  # than bring a manager up after this has stopped it
+  prodsim_restart_locked prodsim_final_stop
   prodsim_reap_local
   # SAFE: only the namespaced jobs of our own isolated manager; NEVER a real production wrp_*
   case "$PROD_JOB_PREFIX" in
@@ -4607,6 +4618,19 @@ prodsim_cleanup() {  # idempotent: stop the restarter, prodsim, our manager, and
     [ -n "${WRDEV_PROD_BKFILE:-}" ] && rm -f "$WRDEV_PROD_BKFILE"* 2>/dev/null
     echo "  removed the working DB; outputs kept in ${PS_OUT:-?}"
   fi
+}
+
+prodsim_final_stop() {  # prodsim_cleanup's stop of our manager
+  # WRDEV_PRODSIM_FINAL_STOP=1 ends the run with a measured clean stop of the (biggest) DB
+  if [ "${WRDEV_PRODSIM_FINAL_STOP:-0}" = "1" ] && [ -n "$(mgr_pid "$PROD_RUN")" ] && is_ours "$(mgr_pid "$PROD_RUN")"; then
+    echo "  final clean stop"; prodsim_stop clean
+  fi
+  cp -f "$PROD_RUN/log" "$PS_OUT/manager.log" 2>/dev/null
+  # a restart the restarter was part-way through may still bring a manager up
+  local pid; for _ in 1 2 3; do
+    pid=$(mgr_pid "$PROD_RUN"); [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1 && safe_kill "$pid" >/dev/null 2>&1
+    sleep 2
+  done
 }
 
 # prodsim_reap_local kills what the local scheduler left running for this run once its manager
