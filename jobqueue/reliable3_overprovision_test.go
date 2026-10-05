@@ -64,10 +64,13 @@ func TestReliable3LimitGroupOverProvision(t *testing.T) {
 		s := newOverProvisionServer(limit)
 
 		// sibling scheduler groups (distinct RAM, same "lg" limit group), with
-		// their ready jobs interleaved as a real rac cycle would see them.
+		// their ready jobs interleaved as a real rac cycle would see them. The
+		// RAMs start at reqSchedSpecialRAM so reqForScheduler leaves them as
+		// they are: below it, it adds reqSchedExtraRAM, which would put two
+		// siblings 100MB apart in the same scheduler group.
 		siblings := make([][]*Job, siblingGroups)
 		for g := range siblingGroups {
-			siblings[g] = racReadyJobs(fmt.Sprintf("op%d", g), 100+g*100, 0, []string{"lg"}, readyPerGroup)
+			siblings[g] = racReadyJobs(fmt.Sprintf("op%d", g), reqSchedSpecialRAM+g*100, 0, []string{"lg"}, readyPerGroup)
 		}
 
 		jobs := make([]*Job, 0, siblingGroups*readyPerGroup)
