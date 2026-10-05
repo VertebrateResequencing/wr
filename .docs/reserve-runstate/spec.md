@@ -122,14 +122,16 @@ deleted only by these helpers and the B2 purge. This covers `beBatch` full
 changes and exit ops, `archiveJobTx` (`recordCompleteTx`,
 `keepLiveForRerunTx`), `putRunningRerunMark`, `storeLiveForRerun`,
 `putBackArchivedDependentsTx`, `putNewLiveJobs`, `modifyLiveJobsTx`
-(`deleteOldLiveJobs` and the put of the new keys) and `deleteLiveJobs`. A
-review check is that `grep -n 'bucketJobsLive' jobqueue/*.go | grep -v
-_test.go` shows no other `Put` or `Delete` on that bucket, including indirect
-writes: `putEncodedJobs(tx, bucketJobsLive, ...)` (`storeLiveForRerun`,
+(`deleteOldLiveJobs` and the put of the new keys) and `deleteLiveJobs`.
+
+For review, `grep -n 'bucketJobsLive' jobqueue/*.go | grep -v _test.go`
+lists the sites to inspect (it shows where the bucket is fetched, not the
+`Put` and `Delete` lines themselves). At each, every write or delete of the
+bucket, direct or indirect, must go through the helpers: indirect ones
+include `putEncodedJobs(tx, bucketJobsLive, ...)` (`storeLiveForRerun`,
 `modifyLiveJobsTx`) and `putRunningRerunMark`, which takes the live bucket
-as a parameter, must also go through the helpers. Test files may
-write the bucket directly (for example `moved_on_runner_test.go`,
-`jobqueue_test.go`) to build fixtures.
+as a parameter. Test files may write the bucket directly (for example
+`moved_on_runner_test.go`, `jobqueue_test.go`) to build fixtures.
 
 Existing test helpers that read or compose raw live records are changed to
 carry or read through the run-state record (A2 test 6):
@@ -350,7 +352,8 @@ change in memory, and how each is persisted.
    and its `RequirementsOrig.RAM` is 100.
 4. `TestReserveDurability`, `TestReserveDurabilityDeadRunner`,
    `TestReserveDurabilityStalledWrite`, `TestStartDurability` and
-   `TestStartDurabilityAbortedWriteIsNotCommitted` pass unchanged.
+   `TestStartDurabilityAbortedWriteIsNotCommitted` pass; the last gains A3
+   test 11's run-state case, and its existing cases are unchanged.
 5. Given two new benchmarks in `jobqueue/db_bench_test.go`, both
    `BenchmarkUpdateJobState`'s shape on jobs with 10,000-byte Cmds,
    alternating reserved and running: `BenchmarkUpdateJobRunState10KB`
@@ -364,11 +367,14 @@ change in memory, and how each is persisted.
    (`moved_on_runner_test.go`, `runner_report_followups_test.go`,
    `readd_queued_test.go`, `reserve_durability_test.go`) pass after the
    switch.
-7. Given a job added with a dependency on dep group `g` that no job has yet
-   (so `WaitingForDepGroups` is `[g]` in its add-time record), then a job in
-   `g` added and completed, and the first job reserved, when a crash image
-   is taken and a new server started on it, then the recovered job's
-   `WaitingForDepGroups` is empty, as it is in memory.
+7. The add-time record never holds `WaitingForDepGroups` (it is encoded
+   before `setWaitingForDepGroups` runs), so the test plants it: given a
+   job J with no dependencies added, its live record rewritten directly
+   (decode through the overlay, set `WaitingForDepGroups` to `[g]`, write
+   back, delete any run-state record, as `rdrSetStoredMark` does), and the
+   stored record asserted to hold `[g]`; when J is reserved, a crash image
+   taken and a new server started on it, then the recovered job's
+   `WaitingForDepGroups` is what recovery derives for J (empty), not `[g]`.
 8. Given a crash image in which a job is lost with a stored
    `RerunAfterRun` true (its run marked to rerun, then its runner gone),
    when a server recovers it (clearing the mark in memory), a runner
@@ -536,7 +542,8 @@ deleted if it is still stale or orphaned: on a running server (A2 test 1) a
 drain may rewrite either record between the read and the write.
 `decodePriorJobs`, which has the context, logs `clog.Warn(ctx, "recovering:
 dropped stale job run-state records", "count", dropped)` if `dropped` is
-above 0.
+above 0. On a read-only bolt handle (`db.bolt.IsReadOnly()`) it skips the
+delete transaction and returns `dropped` 0, rather than failing.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/db.go`
@@ -757,8 +764,10 @@ exact per-key count up to any crash.
   A context with no handler goes to the root logger, whose file handler is at
   info. `logStarted` (`cmd/manager.go`) briefly swaps the root handler, so a
   line logged in that instant could miss the file; that is negligible, since
-  a D1 line needs a 10s wait first. D1 lines also go to the manager's
-  stderr.
+  a D1 line needs a 10s wait first. `logStarted` leaves the root logger with
+  a stderr handler at info (`clog.ToDefaultAtLevel("info")`) before the file
+  handler is re-added, so once the manager has started D1 lines also go to
+  its stderr.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/serverCLI.go`, `jobqueue/db.go`
@@ -798,7 +807,9 @@ For each `jobslive` record, if `jobRunState` has a record for the key whose
 first 4 bytes are the big-endian CRC-32C of the live value, decode the rest
 over the same `rec` (fields match by name). Otherwise print the live record
 as now. Output columns are unchanged. `run` becomes `run(path string, out
-io.Writer) error`.
+io.Writer) error`. A new form `dbstart -schema <db>` prints
+`schemaVersion=<n>` (the `meta` bucket's `schemaVersion`, 0 if absent) and
+exits 0.
 
 **Package:** `main`
 **File:** `developers/soak/dbstart/main.go`
@@ -824,6 +835,8 @@ io.Writer) error`.
    `Server.BackupDB` to a file before `Stop`, when `run` reads that file,
    then the job's line shows state `reserved` and host `os.Hostname()` (the
    client sends its own hostname).
+5. Given databases stamped 2 and unstamped, when `dbstart -schema` runs on
+   each, then it prints `schemaVersion=2` and `schemaVersion=0`.
 
 ### E2: statinspect clearlive empties run-state records
 
@@ -949,8 +962,15 @@ the home directory's Go cache.
 **Acceptance tests:**
 
 1. Given a copy of `jobqueue/testdata/dbcompat/db.golden` as `src`, when
-   `compact-fixture` runs, then this tree's manager starts on `dst` and
-   `src`'s SHA-256 is unchanged.
+   `compact-fixture` runs, then `src`'s SHA-256 is unchanged and `dbstart
+   -schema dst` prints `schemaVersion=2`. Then, with
+   `WRDEV_ROOT=$G/e4test/root` and its own ports, `dst` is copied to that
+   root's production manager DB (`$WRDEV_ROOT/.wr-prod_production/db`, as
+   `wrdev.sh` copies `WRDEV_PRISTINE_DB`), `wrdev.sh prod-start local`
+   succeeds (a production manager, which does not wipe its DB), `wr status
+   --deployment production -i reliable2-dbcompat-complete -o counts` with
+   that root's config shows `complete: 2`, and `wrdev.sh prod-stop`
+   stops it.
 2. Given `dst` already present, or `src.aslmanifest` present, when it runs,
    then it exits non-zero and no file changes.
 3. Given step 2's fixture, when `WRDEV_PRISTINE_DB=$G/fixtures/fix120k.db
