@@ -40,3 +40,62 @@
   - Green: the red command passes; `go test ./developers/prodsim/` plain and
     `-race` pass, the new test passes `--count 5`, and
     `golangci-lint run ./developers/...` reports 0 issues.
+
+- [x] developers/soak/anyway.py only counts per-job "handing the job out
+  anyway" warnings, but the manager rate-limits that warning (one full line
+  per minute per key + a "(repeated) repeats=N ... sample_key=..." summary),
+  and a crash loses the pending summary; it also takes the runner's next
+  outcome line rather than the run's own. So it labelled 373/374 doubles
+  "NOT-anyway".
+  - Source: battery10 F5 (RESULTS.md, Phase 4; old output
+    `soak/analysis/anyway.txt`).
+  - Red command (battery10 soak data, read only; `B=battery10/soak`,
+    `O=$B/run/prodsim-1791171218`):
+    `anyway.py $O $B/run/runnerlogs $B/analysis/doubles.tsv $O/manager.log`,
+    exit 0 with the wrong verdicts:
+
+    ```text
+    "handing the job out anyway" warnings: 38; mapped to a psimjob: 38
+         3  first run near crash@1791174584             reservation NOT-anyway
+        59  first run near crash@1791179326             reservation NOT-anyway
+       311  first run near no-outage                    reservation NOT-anyway
+         1  first run near no-outage                    reservation anyway
+    runner outcome lines after the first run, for doubles NOT preceded by the warning:
+        59  command ran OK
+    ```
+
+    A synthetic fixture (one double whose first reservation came 10s after
+    the runner asked and whose reports were rejected after a crash, one whose
+    reservation was prompt) gave NOT-anyway for both, and listed the second
+    run's "command ran OK" as the first run's outcome.
+  - Cause: the warning is aggregated under one key for every job
+    (`persistReservation` calls `s.warns.warn` with the message as the key),
+    so one minute's thousands of non-durable reservations name one key in
+    full and one in the summary's `sample_key`; the script also matched only
+    `key=`, ignored summaries, and gathered outcome lines for every run of
+    the job's key within 15 minutes of the first run.
+  - Files: `developers/soak/anyway.py`, `developers/soak/README.md`.
+  - Approach: find the first run's own runner log segment through its S
+    marker's (host, pid) and the runner's `started executing ... pid=` line,
+    and call the reservation handed out anyway when the `reserved a job` line
+    is at least ReserveWriteWait (10s) after the runner's previous line
+    (`slow`), when a later report of that run was rejected as "bad job" or
+    "you must Reserve()" after a stop in `restarts.tsv` (`lost`), or when a
+    full or summary warning names its key within 60s (`warned`). Outcome
+    lines come only from that segment. Summaries' `repeats=` are totalled,
+    and any number of overlapping manager log copies are read once each line.
+  - Green: on the same data, with `$O/manager.log $O/manager.log.17*`:
+
+    ```text
+    "handing the job out anyway" warnings: 38 full lines + 32 summaries of 23548 repeats = 23586 reservations handed out before they were on disk (less any summary a crash lost)
+         3  first run near crash@1791174584             reservation anyway     (slow+lost)
+        59  first run near crash@1791179326             reservation anyway     (slow+lost)
+       311  first run near no-outage                    reservation anyway     (slow+lost)
+         1  first run near no-outage                    reservation anyway     (slow+lost+warned)
+    ```
+
+    All 374 are anyway, matching RESULTS.md's manual analysis (314 in the
+    FUSE stall, 59 at the 06:48:46 crash). No first run's own outcome is
+    "ran OK" any more; 59 are "killed for server error: jstart(K): bad job",
+    the line RESULTS.md found by hand. The fixture gives
+    `anyway (slow+lost)` and `NOT-anyway (-)`.
