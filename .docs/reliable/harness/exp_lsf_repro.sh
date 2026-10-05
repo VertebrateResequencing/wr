@@ -11,14 +11,14 @@ TOKEN=${WR_JOBNAME_TOKEN:-lsfrepro${PORT}h$(printf '%s:%s' "$(hostname)" "$(real
 case "$TOKEN" in (''|*[!A-Za-z0-9]*) echo "WR_JOBNAME_TOKEN '$TOKEN' must be letters and digits only" >&2; exit 2 ;; esac
 export WR_JOBNAME_TOKEN=$TOKEN
 LSF_PREFIX="wrd${TOKEN}_"
-# kill_our_manager kill -9s the manager our pid file names, only if that pid runs
-# "$WR ... manager start" (never a pattern match)
 # our_jobs prints "jobid name" of this run's unfinished LSF jobs, PEND ones included: fixed-format output
 # (a PEND job has no EXEC_HOST, so bjobs -w's columns shift), kept only on an exact name prefix
 our_jobs() {
   timeout "${1:-60}" bjobs -J "${LSF_PREFIX:?}*" -o 'jobid job_name' -noheader 2>/dev/null \
     | awk -v p="$LSF_PREFIX" 'NF >= 2 && index($2, p) == 1 {print $1, $2}'
 }
+# kill_our_manager kill -9s the manager our pid file names, only if that pid runs
+# "$WR ... manager start" (never a pattern match)
 kill_our_manager() {
   local p; p=$(cat "${BASE:?}/manager_development/pid" 2>/dev/null) || return 0
   case "$(ps -ww -o args= -p "$p" 2>/dev/null)" in ("${WR:?} "*"manager start"*) kill -9 "$p" ;; (*) return 1 ;; esac
