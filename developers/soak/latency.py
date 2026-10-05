@@ -6,12 +6,14 @@ usage: latency.py <outdir> <runnerlogdir>
 For every psimjob.sh run with an E marker (its real exit code, written just before the exit), the
 runner's outcome line for that run ("command ran OK": the archive was acknowledged; "command [..]
 exited with code N": the release or bury was acknowledged, "so it will be tried again" telling a
-release from a bury) is found by (host, command pid) in the runner logs. Latency is the outcome
-line's time (whole seconds, rounded down) minus the E marker's (ms), so a figure can read up to 1s
-low, and a negative one means under a second; compare rounds with this same script. Runs whose end falls in a manager outage (from a
-stop's start to the next start in restarts.tsv) or up to 60s before a stop are left out of the
-"steady" figures. Throughput: E markers per minute by outcome, and the manager log's "archive
-fold" archives per minute.
+release from a bury) is found in the runner logs by (host, command pid, kind, id): the first
+outcome line for that job and pid from a second before the end on. The job's identity is needed
+because hosts reuse pids, so (host, pid) alone paired some runs with a much later run's outcome.
+Latency is the outcome line's time (whole seconds, rounded down) minus the E marker's (ms), so a
+figure can read up to 1s low, and a negative one means under a second; compare rounds with this
+same script. Runs whose end falls in a manager outage (from a stop's start to the next start in
+restarts.tsv) or up to 60s before a stop are left out of the "steady" figures. Throughput: E
+markers per minute by outcome, and the manager log's "archive fold" archives per minute.
 """
 import collections
 import datetime
@@ -44,14 +46,14 @@ def steady(t):
     return not any(a <= t <= b for a, b in outs)
 
 
-ack = {}  # (host, pid) -> (outcome, ts)
+ack = collections.defaultdict(list)  # (host, pid, kind, id) -> [(ts, outcome)]
 for p in glob.glob(os.path.join(rl, '*', '*')):
     host = os.path.basename(p).split('.')[1]
     cur = None
     for l in open(p, errors='replace'):
         m = START.search(l)
         if m:
-            cur = (host, m.group(3))
+            cur = (host, m.group(3), m.group(1), m.group(2))
             continue
         if cur is None:
             continue
@@ -59,11 +61,11 @@ for p in glob.glob(os.path.join(rl, '*', '*')):
         if not t:
             continue
         if OK.search(l):
-            ack[cur] = ('archive', ts(t.group(1))); cur = None
+            ack[cur].append((ts(t.group(1)), 'archive')); cur = None
         else:
             m = EXIT.search(l)
             if m:
-                ack[cur] = ('release' if m.group(4) else 'bury', ts(t.group(1))); cur = None
+                ack[cur].append((ts(t.group(1)), 'release' if m.group(4) else 'bury')); cur = None
 
 lat = collections.defaultdict(list)
 bucket = collections.defaultdict(list)  # (outcome, 10-min slot) -> latencies
@@ -77,14 +79,15 @@ for p in glob.glob(os.path.join(d, 'markers', '*.tsv')):
         e = int(f[1]) / 1000
         rc = f[7]
         per_min[int(e // 60)]['rc0' if rc == '0' else ('rc' + rc)] += 1
-        a = ack.get((f[4], f[5]))
+        # outcome lines are whole seconds, so one can read up to 1s before its E marker
+        a = min((x for x in ack.get((f[4], f[5], f[2], f[3]), ()) if x[0] >= e - 1), default=None)
         if a is None:
             unmatched[rc] += 1
             continue
-        lat[(a[0], 'all')].append(a[1] - e)
-        bucket[(a[0] if a[0] == 'archive' else 'rel/bury', int(e // 600))].append(a[1] - e)
+        lat[(a[1], 'all')].append(a[0] - e)
+        bucket[(a[1] if a[1] == 'archive' else 'rel/bury', int(e // 600))].append(a[0] - e)
         if steady(e):
-            lat[(a[0], 'steady')].append(a[1] - e)
+            lat[(a[1], 'steady')].append(a[0] - e)
 
 
 def q(v, p):

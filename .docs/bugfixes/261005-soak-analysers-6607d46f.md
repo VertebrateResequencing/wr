@@ -99,3 +99,47 @@
     "ran OK" any more; 59 are "killed for server error: jstart(K): bad job",
     the line RESULTS.md found by hand. The fixture gives
     `anyway (slow+lost)` and `NOT-anyway (-)`.
+
+- [x] developers/soak/latency.py joins runner outcome lines to E markers by
+  (host, pid), but pids are reused (144 host+pid pairs had >1 run), giving
+  bogus 7740s maxima.
+  - Source: battery10 F6 (RESULTS.md, Phase 4; old output
+    `soak/analysis/latency.txt`).
+  - Red command (battery10 soak data, read only):
+    `latency.py $O $B/run/runnerlogs`, exit 0 with the bogus maxima:
+
+    ```text
+    outcome    set            n    p50    p90    p99      max    >5s   >30s
+    archive    all       936012   3.30   8.03  38.96   7740.8 257345  14358
+    archive    steady    833641   3.27   7.35  13.68   7740.8 218951   1385
+    release    all         9544   3.33   8.90  86.58   7717.5   2757    317
+    release    steady      8407   3.24   7.59  17.76   7717.5   2237     54
+    ```
+
+    A synthetic fixture (one host's pid 100 runs job X, ending 05:00:00 and
+    acknowledged 2s later, then job Y at 07:09) gave `archive all 2 ... max
+    7741.0`.
+  - Cause: the runner-log index was a dict keyed by (host, pid) holding one
+    outcome, so a later run with a reused pid overwrote the earlier run's,
+    and the earlier run's E marker was paired with it.
+  - Files: `developers/soak/latency.py`.
+  - Approach: key outcomes by (host, pid, kind, id) from the `started
+    executing` line, keep every outcome, and pair an E marker with the first
+    one from a second before its time (outcome lines are whole seconds).
+  - Green: on the same data:
+
+    ```text
+    archive    all       936008   3.30   8.03  38.84    215.7 257318  14295
+    archive    steady    833643   3.27   7.35  13.65    215.7 218933   1332
+    bury       all          133   3.15   7.94 519.44    553.6     36      4
+    bury       steady       111   2.86   6.91  12.53     16.9     27      0
+    release    all         9542   3.33   8.90  85.89    581.8   2757    316
+    release    steady      8405   3.24   7.58  17.60    253.6   2237     53
+    E markers without an outcome line: {'0': 15940, 'sigINT': 15, '3': 4, 'sigTERM': 4}
+    ```
+
+    The 7740s and 7717s maxima are gone and the per-10-minute maxima are at
+    most 582s (were up to 7741s); p50/p90 are unchanged and p99 moved by
+    under 1s. Six more exit-0 E markers have no outcome line (15934 before),
+    being the runs that had borrowed a reused pid's outcome. The fixture
+    gives max 2.0.
