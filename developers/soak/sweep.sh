@@ -42,6 +42,7 @@ sw_free() { df -B1G --output=avail "$SW" | tail -1 | tr -d ' '; }
 # our_fg_manager <pid> succeeds only if pid runs this root's foreground dev
 # manager, as wrdev.sh dump starts it, so a stale or reused pid is never signalled
 our_fg_manager() {
+  : "${WRDEV_ROOT:?}"
   case "$(ps -ww -o args= -p "$1" 2>/dev/null)" in
     ("$WRDEV_ROOT/wr manager start --deployment development "*" -f") return 0 ;;
   esac
@@ -53,15 +54,15 @@ sweep_error() { echo "SWEEP ERROR: $*" | tee -a "$SW/sweep.log" "$log" >&2; swee
 # The build mode rewrites $WRDEV_ROOT/wr in place. A runner still executing it
 # (here, or on an exec node over NFS) dies when it is rewritten, so refuse while
 # anything may be using it: a local process, or an LSF job named as this
-# root's prod manager names them (wrp<token>_*) or as any wrdev.sh dev manager
-# does (wrd_*, which wrdev.sh's clean mode bkills anyway).
+# root's prod and dev managers name them (wrp<token>_*, wrd<token>_*), or as a
+# dev manager from before wrdev.sh namespaced them did (wrd_*).
 if pgrep -f "$WRDEV_ROOT/wr" >/dev/null; then
   echo "sweep: a process is running $WRDEV_ROOT/wr*; let it finish or use another sweepdir" >&2; exit 1
 fi
 # bjobs exits 0 with "Job <...> is not found" on stderr when nothing matches,
 # and non-zero (124 on timeout) when it could not ask LSF: fail closed then
 if command -v bjobs >/dev/null; then
-  for p in "wrp${PROD_JOBTOKEN:-iso$PROD_PORT}_" wrd_; do
+  for p in "wrp${PROD_JOBTOKEN:-iso$PROD_PORT}_" "wrd${DEV_JOBTOKEN:-iso$DEV_PORT}_" wrd_; do
     out=$(timeout 60 bjobs -J "${p}*" -o jobid -noheader 2>/dev/null); rc=$?
     if [ "$rc" -ne 0 ]; then
       echo "sweep: could not ask LSF for ${p}* jobs (bjobs exit $rc); refusing to start" >&2; exit 1
@@ -166,9 +167,10 @@ for spec in "${MODES[@]}"; do
       rc="$rc,nodump"
     fi
     echo "goroutines in SIGQUIT dump: $(grep -ac '^goroutine ' "$WRDEV_ROOT/fg.out")" >> "$log"
-    # none may outlive the sweep: kill any still up, verified by command line
+    # none may outlive the sweep: kill any still up, each pid verified by its
+    # whole command line (this root's binary path), never matched by pattern
     sleep 1
-    for q in $(pgrep -u "$(id -u)" -f -- "manager start --deployment development"); do
+    for q in $(ps -u "$(id -u)" -o pid=); do
       our_fg_manager "$q" || continue
       sweep_error "this root's foreground manager pid $q was still running after dump; killing it"
       kill -9 "$q"; rc="$rc,leftover"

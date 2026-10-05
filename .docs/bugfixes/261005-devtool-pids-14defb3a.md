@@ -148,3 +148,45 @@ since `wrdev.sh start` and `stop` bkill every `wrd_*` job of this user. Gates:
     `developers/soak/crashafter.sh`, `developers/soak/crashon.sh`,
     `developers/soak/relbury.sh`, `developers/soak/watcher.sh`,
     `developers/soak/README.md`.
+
+- [x] wrdev.sh's bkill_dev runs `bkill -J 'wrd_*' 0` for every dev job of
+  this user, whichever dev manager owns it, even with `-s local`, so it can
+  kill other sessions' jobs. Scope it to jobs belonging to this WRDEV_ROOT's
+  manager, and skip it entirely when the manager was started with the local
+  scheduler.
+  - Source: incidental, found while verifying F2 (every `wrdev.sh start`,
+    `stop`, `dump` and `clean` in those checks reached `bkill -J wrd_* 0`,
+    absorbed by the LSF stubs).
+  - Cause: dev managers were started without `WR_JOBNAME_TOKEN`, so every
+    dev manager of every session names its LSF jobs `wrd_<hash>_<rand>`
+    (`jobNamePrefix` in jobqueue/scheduler/scheduler.go), and `bkill_dev`
+    could only pattern-kill all of them.
+  - Red: with fake `bjobs` (a fixed list of jobs 101 `wrdiso51970_...`, 102
+    `wrd_...`, 103 `wrdiso51780_...`, 104 `wrpiso51972_...`, 105 `wrp_...`,
+    filtered by `-J` as LSF does) and a fake `bkill` that only logs, the base
+    `wrdev.sh stop` (DEV_PORT=51970) logged `bkill -J wrd_* 0` and `bkill -r
+    102`, another dev manager's job; a dev manager from `wrdev.sh start local`
+    had no `WR_JOBNAME_TOKEN`, and stopping it still made 6 bkill calls.
+  - Fix: `DEV_JOBTOKEN` (default `iso$DEV_PORT`, like `PROD_JOBTOKEN`) and
+    `DEV_JOB_PREFIX=wrd<token>_`. Every dev manager start in wrdev.sh
+    (`start`, `dump`, idle-backlog-cpu, exec-impossible-retries,
+    transient-start-retries, runner-log-bytes, retention-check) sets
+    `WR_JOBNAME_TOKEN=$DEV_JOBTOKEN`, so its jobs are `$DEV_JOB_PREFIX*`.
+    `bkill_dev` refuses a prefix that is not `wrd<letters/digits>_`, and
+    kills, counts and force-removes only `$DEV_JOB_PREFIX*` jobs, the last
+    by exact job id after an exact prefix match. `stop` and `clean` skip
+    `bkill_dev` when the dev manager they stop runs `-s local` (`dev_local`,
+    from its verified command line), and `clean` counts only this root's
+    dev jobs. `sweep.sh`'s preflight also refuses while this root's
+    `wrd<token>_*` jobs exist (it still refuses on plain `wrd_*`, which
+    managers from before this change may have left). Help text and
+    developers/README.md updated.
+  - After: the same check logged only `bkill -J wrdiso51970_* 0` and `bkill
+    -r 101`; the `start local` manager's environment had
+    `WR_JOBNAME_TOKEN=iso51970`, and stopping it made 0 bkill calls (the
+    manager was stopped). Real `bkill` was never run.
+  - Not changed: the churn, limit-drain and similar monitors still count
+    every RUN job of this user (`bjobs -o stat`) for their progress lines;
+    that only skews a reading and kills nothing.
+  - Files: `developers/wrdev.sh`, `developers/soak/sweep.sh`,
+    `developers/README.md`.

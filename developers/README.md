@@ -12,9 +12,11 @@ developers/wrdev.sh help
 ```
 
 `wrdev.sh` runs an **isolated** wr manager (its own config, ports, managerdir,
-and `wrd_*` job names) so it can never disturb a real `--deployment production`
-manager. It refuses to kill any process that is not its own isolated binary.
-Everything it creates lives under `$WRDEV_ROOT` (default `$HOME/wr-devtest`).
+and `wrd<token>_*` job names, `DEV_JOBTOKEN` defaulting to `iso$DEV_PORT`) so
+it can never disturb a real `--deployment production` manager, nor another dev
+manager's LSF jobs. It refuses to kill any process that is not its own isolated
+binary. Everything it creates lives under `$WRDEV_ROOT` (default
+`$HOME/wr-devtest`).
 
 ## The performance gate
 

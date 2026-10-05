@@ -2,7 +2,7 @@
 #
 # wrdev.sh - safe helper for wr reliability testing. See ../DEVELOPERS.md.
 #
-# Runs an ISOLATED wr manager (own config, ports, managerdir, wrd_* job names)
+# Runs an ISOLATED wr manager (own config, ports, managerdir, wrd<token>_* job names)
 # that can never disturb a real --deployment production manager. Refuses to
 # kill anything that is not its own isolated binary. Everything lives under
 # $WRDEV_ROOT (default $HOME/wr-devtest).
@@ -26,6 +26,10 @@ MEM_GROUPS="${MEM_GROUPS:-100}"     # spread jobs across this many memory groups
 # hack in jobqueue/scheduler/{scheduler,lsf}.go and .docs/bugfixes/260727-1.md.
 PROD_JOBTOKEN="${PROD_JOBTOKEN:-iso$PROD_PORT}"
 PROD_JOB_PREFIX="wrp${PROD_JOBTOKEN}_"   # LSF job-name prefix of our isolated prod manager
+# and the same for our isolated dev manager, whose LSF jobs are wrd<token>_*, so bkill_dev can
+# never match another dev manager's (eg. another session's, or another WRDEV_ROOT's) wrd*_ jobs
+DEV_JOBTOKEN="${DEV_JOBTOKEN:-iso$DEV_PORT}"
+DEV_JOB_PREFIX="wrd${DEV_JOBTOKEN}_"
 
 WR="$WRDEV_ROOT/wr"                 # isolated binary (all our managers use this)
 WSPROBE="$WRDEV_ROOT/wsprobe"
@@ -160,14 +164,22 @@ ensure_dev_manager() {
   { [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1; } || die "could not start dev manager"
 }
 
-bkill_dev() {  # dev jobs are wrd_* only; safe. (prod-mode wrp_* is NEVER pattern-killed here)
+# bkill_dev kills this WRDEV_ROOT's dev manager's LSF jobs, and only those: every dev manager here
+# is started with WR_JOBNAME_TOKEN=$DEV_JOBTOKEN, so its jobs are $DEV_JOB_PREFIX*, which no other
+# dev manager's (plain wrd_*, or another port's token) or prod-mode manager's jobs can match.
+bkill_dev() {
+  case "$DEV_JOB_PREFIX" in
+    (wrd[A-Za-z0-9]*_) ;;
+    (*) echo "refusing to bkill by pattern '$DEV_JOB_PREFIX*' (DEV_JOBTOKEN must be letters and digits)"; return 1 ;;
+  esac
   for _ in 1 2 3; do
-    timeout 120 bkill -J 'wrd_*' 0 >/dev/null 2>&1
+    timeout 120 bkill -J "${DEV_JOB_PREFIX}*" 0 >/dev/null 2>&1
     sleep 4
-    local n; n=$(timeout 60 bjobs -o stat -noheader 2>/dev/null | grep -c RUN)
+    local n; n=$(timeout 60 bjobs -J "${DEV_JOB_PREFIX}*" -o stat -noheader 2>/dev/null | grep -c RUN)
     [ "${n:-0}" -eq 0 ] && break
     # stuck RUN array elements: force-remove by exact jobid
-    timeout 60 bjobs -o 'jobid job_name' -noheader 2>/dev/null | awk '$2 ~ /^wrd_/{print $1}' \
+    timeout 60 bjobs -J "${DEV_JOB_PREFIX}*" -o 'jobid job_name' -noheader 2>/dev/null \
+      | awk -v p="$DEV_JOB_PREFIX" 'index($2, p) == 1 {print $1}' \
       | sort -u | while read -r j; do timeout 30 bkill -r "$j" >/dev/null 2>&1; done
   done
 }
@@ -192,14 +204,20 @@ cmd_start() {  # start [lsf|local]   (set WRDEV_DEBUG=1 to run the manager with 
   cmd_stop >/dev/null 2>&1 || true
   rm -rf "$DEV_RUN.bak" 2>/dev/null; [ -d "$DEV_RUN" ] && mv "$DEV_RUN" "$DEV_RUN.bak"
   echo "starting isolated dev manager (-s $sched${dbg:+ $dbg}) on :$DEV_PORT / web :$DEV_WEB"
-  osunset ; timeout 90 "$WR" manager start --deployment development -s "$sched" $dbg 2>&1 \
+  osunset ; WR_JOBNAME_TOKEN="$DEV_JOBTOKEN" timeout 90 "$WR" manager start --deployment development -s "$sched" $dbg 2>&1 \
     | grep -aE 'started on|token=' | head -2
   echo "pid $(mgr_pid "$DEV_RUN")   token $(cat "$DEV_RUN/client.token" 2>/dev/null)"
 }
 
-cmd_stop() {  # wr manager stop hangs under load; kill our verified pid + bkill wrd_
-  safe_kill "$(mgr_pid "$DEV_RUN")"
-  bkill_dev
+# dev_local <pid> succeeds if pid is our dev manager running the local scheduler, which has no
+# LSF jobs to bkill
+dev_local() { [ -n "$1" ] && is_ours "$1" && ps -ww -o args= -p "$1" 2>/dev/null | grep -qE -- '(^| )-s local( |$)'; }
+
+cmd_stop() {  # wr manager stop hangs under load; kill our verified pid + bkill our dev jobs (not for -s local)
+  local pid local=n; pid=$(mgr_pid "$DEV_RUN")
+  dev_local "$pid" && local=y
+  safe_kill "$pid"
+  [ "$local" = y ] || bkill_dev
 }
 
 cmd_churn() {  # churn [N]  (default 40000; ~half true half false, across memory groups)
@@ -2867,7 +2885,7 @@ cmd_idle_backlog_cpu() {  # idle-backlog-cpu [jobs] [seconds] [pprofPort] - reli
   cmd_stop >/dev/null 2>&1 || true
   rm -rf "$DEV_RUN.bak" 2>/dev/null; [ -d "$DEV_RUN" ] && mv "$DEV_RUN" "$DEV_RUN.bak"
   echo "starting isolated dev manager (-s local, pprof localhost:$pprof); dev mode wipes the DB"
-  osunset ; env WR_PPROF_ADDR="localhost:$pprof" timeout 90 "$WR" manager start \
+  osunset ; env WR_JOBNAME_TOKEN="$DEV_JOBTOKEN" WR_PPROF_ADDR="localhost:$pprof" timeout 90 "$WR" manager start \
     --deployment development -s local 2>&1 | grep -aE 'started on|token=' | head -2
   local mpid; mpid=$(mgr_pid "$DEV_RUN")
   { [ -n "$mpid" ] && ps -p "$mpid" >/dev/null 2>&1; } || die "could not start dev manager"
@@ -3876,7 +3894,7 @@ cmd_exec_impossible_retries() {  # exec-impossible-retries [jobs] [seconds] [cor
   cmd_stop >/dev/null 2>&1 || true
   rm -rf "$DEV_RUN.bak" 2>/dev/null; [ -d "$DEV_RUN" ] && mv "$DEV_RUN" "$DEV_RUN.bak"
   echo "starting isolated dev manager (-s local); dev mode wipes the DB"
-  osunset ; timeout 90 "$WR" manager start --deployment development -s local \
+  osunset ; WR_JOBNAME_TOKEN="$DEV_JOBTOKEN" timeout 90 "$WR" manager start --deployment development -s local \
     --max_cores "$cores" --runner_filelog "$logdir" 2>&1 | grep -aE 'started on|token=' | head -2
   local mpid; mpid=$(mgr_pid "$DEV_RUN")
   { [ -n "$mpid" ] && ps -p "$mpid" >/dev/null 2>&1; } || die "could not start dev manager"
@@ -4073,7 +4091,7 @@ cmd_transient_start_retries() {  # transient-start-retries [jobs] [seconds] [cor
   cmd_stop >/dev/null 2>&1 || true
   rm -rf "$DEV_RUN.bak" 2>/dev/null; [ -d "$DEV_RUN" ] && mv "$DEV_RUN" "$DEV_RUN.bak"
   echo "starting isolated dev manager (-s local) with $badpath prepended to PATH; dev mode wipes the DB"
-  osunset ; PATH="$badpath:$PATH" timeout 90 "$WR" manager start --deployment development -s local \
+  osunset ; WR_JOBNAME_TOKEN="$DEV_JOBTOKEN" PATH="$badpath:$PATH" timeout 90 "$WR" manager start --deployment development -s local \
     --max_cores "$cores" --runner_filelog "$logdir" 2>&1 | grep -aE 'started on|token=' | head -2
   local mpid; mpid=$(mgr_pid "$DEV_RUN")
   { [ -n "$mpid" ] && ps -p "$mpid" >/dev/null 2>&1; } || die "could not start dev manager"
@@ -4231,7 +4249,7 @@ cmd_runner_log_bytes() {  # runner-log-bytes [jobs] [seconds] [cores] [padKB] - 
   cmd_stop >/dev/null 2>&1 || true
   rm -rf "$DEV_RUN.bak" 2>/dev/null; [ -d "$DEV_RUN" ] && mv "$DEV_RUN" "$DEV_RUN.bak"
   echo "starting isolated dev manager (-s local, --debug); dev mode wipes the DB"
-  osunset ; timeout 90 "$WR" manager start --deployment development -s local --debug \
+  osunset ; WR_JOBNAME_TOKEN="$DEV_JOBTOKEN" timeout 90 "$WR" manager start --deployment development -s local --debug \
     --max_cores "$cores" --runner_filelog "$logdir" 2>&1 | grep -aE 'started on|token=' | head -2
   local mpid; mpid=$(mgr_pid "$DEV_RUN")
   { [ -n "$mpid" ] && ps -p "$mpid" >/dev/null 2>&1; } || die "could not start dev manager"
@@ -4813,7 +4831,7 @@ cmd_retention_check() {  # retention-check [rounds] [jobs] [cmdKB] [pprofPort] -
   rm -rf "$DEV_RUN" 2>/dev/null
   trap 'safe_kill "$(mgr_pid "$DEV_RUN")" >/dev/null 2>&1' EXIT
   trap 'exit 130' INT TERM
-  osunset; WR_PPROF_ADDR="localhost:$pp" timeout 90 "$WR" manager start --deployment development -s local >/dev/null 2>&1
+  osunset; WR_JOBNAME_TOKEN="$DEV_JOBTOKEN" WR_PPROF_ADDR="localhost:$pp" timeout 90 "$WR" manager start --deployment development -s local >/dev/null 2>&1
   local pid; pid=$(mgr_pid "$DEV_RUN")
   { [ -n "$pid" ] && is_ours "$pid"; } || die "could not start the dev manager"
   local pad; pad=$(head -c $(( kb * 1024 )) /dev/zero | tr '\0' 'x')
@@ -4851,7 +4869,7 @@ cmd_dump() {  # dump - start dev manager FOREGROUND, so you can SIGQUIT it for a
   cmd_stop >/dev/null 2>&1 || true
   local out="$WRDEV_ROOT/fg.out"
   echo "starting dev manager foreground (-f, pprof enabled), output -> $out"
-  nohup "$WR" manager start --deployment development -s "${1:-lsf}" -f > "$out" 2>&1 &
+  WR_JOBNAME_TOKEN="$DEV_JOBTOKEN" nohup "$WR" manager start --deployment development -s "${1:-lsf}" -f > "$out" 2>&1 &
   local pid=$!
   # only a daemonised manager writes the pid file, so a foreground one would leave a previous
   # daemon's stale pid there: record this one's, so stop, clean and sweep.sh signal it
@@ -4868,12 +4886,14 @@ goroutines in os/exec (bsub/bjobs) holding a lock.
 EOF
 }
 
-cmd_clean() {  # clean - stop everything of ours + bkill wrd_; verify production untouched
-  safe_kill "$(mgr_pid "$DEV_RUN")"
+cmd_clean() {  # clean - stop everything of ours + bkill our dev jobs; verify production untouched
+  local pid local=n; pid=$(mgr_pid "$DEV_RUN")
+  dev_local "$pid" && local=y
+  safe_kill "$pid"
   safe_kill "$(mgr_pid "$PROD_RUN")"
-  bkill_dev
+  [ "$local" = y ] || bkill_dev
   echo "our managers: $(pgrep -af "$WR" | grep -c 'manager start' || echo 0)"
-  echo "active wrd_ jobs: $(timeout 40 bjobs -o stat -noheader 2>/dev/null | grep -cE 'RUN|PEND' || echo 0)"
+  echo "active ${DEV_JOB_PREFIX}* jobs: $(timeout 40 bjobs -J "${DEV_JOB_PREFIX}*" -o stat -noheader 2>/dev/null | grep -cE 'RUN|PEND' || echo 0)"
   echo "(any real --deployment production managers are left untouched)"
 }
 
@@ -4890,7 +4910,7 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
 
   build                 build wr + wsprobe from the current checkout into \$WRDEV_ROOT
   start [lsf|local]     start the isolated dev manager (default lsf)
-  stop                  kill the (verified) dev manager + bkill wrd_ jobs
+  stop                  kill the (verified) dev manager + bkill its ${DEV_JOB_PREFIX}* jobs (none with -s local)
   churn [N]             ensure dev manager up, submit N true/false jobs (default 40000) then monitor;
                         exits 1 unless they fully drain
   limit-drain [N] [limit] [runsec] [padKB]
@@ -5277,12 +5297,13 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
   prod-stop             stop the isolated prod-mode manager (verified pid)
   crash-recovery        end-to-end Idea-1 crash-recovery test (isolated prod-mode LSF); exits 1 on FAIL
   dump [lsf|local]      run dev manager foreground for a SIGQUIT goroutine dump
-  clean                 stop all our managers + bkill wrd_ (production untouched)
+  clean                 stop all our managers + bkill ${DEV_JOB_PREFIX}* (production untouched)
   status                show what is running
 
-Env: WRDEV_ROOT (=$WRDEV_ROOT) WRDEV_REPO (checkout to build/test; default this one) DEV_PORT/DEV_WEB PROD_PORT/PROD_WEB QUEUE MEM_GROUPS
-Safety: only kills processes running \$WRDEV_ROOT/wr; only pattern-bkills wrd_ (dev) and our
-isolated prod-mode manager's ${PROD_JOB_PREFIX}*. Never touches a real --deployment production
+Env: WRDEV_ROOT (=$WRDEV_ROOT) WRDEV_REPO (checkout to build/test; default this one) DEV_PORT/DEV_WEB PROD_PORT/PROD_WEB
+     DEV_JOBTOKEN/PROD_JOBTOKEN (iso<port>) QUEUE MEM_GROUPS
+Safety: only kills processes running \$WRDEV_ROOT/wr; only pattern-bkills our isolated dev
+manager's ${DEV_JOB_PREFIX}* and our isolated prod-mode manager's ${PROD_JOB_PREFIX}*. Never touches a real --deployment production
 manager or its wrp_* jobs.
 EOF
 }
