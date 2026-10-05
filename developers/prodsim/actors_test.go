@@ -47,6 +47,11 @@ const (
 	cmdKindField     = 1
 	cmdMemField      = 4
 	kindsPollTimeout = 30 * time.Second
+	// psimjobOverheadMB is the headroom a job needs above the memory it
+	// holds: bash, perl and the held string's allocation slack. LSF kills a
+	// job whose whole process tree passes its RAM, as it did every wrstat-ui
+	// build holding 1500 of 1500MB.
+	psimjobOverheadMB = 100
 )
 
 // runJobAdders runs every actor that adds psimjob.sh jobs until the run ends,
@@ -78,7 +83,8 @@ func TestEveryJobHoldsLessMemoryThanItRequests(t *testing.T) {
 
 		jobs := waitForKinds(jq)
 
-		Convey("each kind's command holds less memory than the job's RAM requirement, so LSF never kills it", func() {
+		Convey("each kind's command holds its memory plus psimjob's overhead within the job's RAM, so LSF never "+
+			"kills it", func() {
 			seen := make(map[string]bool)
 
 			for _, job := range jobs {
@@ -87,7 +93,7 @@ func TestEveryJobHoldsLessMemoryThanItRequests(t *testing.T) {
 
 				held, err := strconv.Atoi(f[cmdMemField])
 				So(err, ShouldBeNil)
-				So(held, ShouldBeLessThan, job.Requirements.RAM)
+				So(held+psimjobOverheadMB, ShouldBeLessThanOrEqualTo, job.Requirements.RAM)
 
 				seen[f[cmdKindField]] = true
 			}

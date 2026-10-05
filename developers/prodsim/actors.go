@@ -59,8 +59,10 @@ const (
 	fofnMedianMinutes = 6
 	fofnSigma         = 0.8
 	fofnMinMemMB      = 300
-	fofnMemSpreadMB   = 700
-	fofnFailPct       = 2
+	// A chunk holds at most 899 of its 1024MB, leaving room for bash and
+	// perl, as every job must.
+	fofnMemSpreadMB = 600
+	fofnFailPct     = 2
 
 	// wrstat multi.
 	wrstatPaths          = 12

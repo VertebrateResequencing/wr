@@ -160,3 +160,23 @@
   - Green: the same probe gives
     `PROBE accepting=false goroutines before=2 after=3`; the package tests
     pass plain and `-race`.
+
+- [x] F4 assertion is weaker than the bug: held < RAM lets
+  `wrstatUIBuildMemMB = wrstatUIBuildRAM - 1` pass, but perl's overhead on
+  1499MB still crosses LSF's MEMLIMIT. fofnput (up to 999 of 1024MB) is the
+  same risk class.
+  - Source: review of the F4 commit.
+  - Red command: the F4 test with `held+psimjobOverheadMB <= RAM`
+    (`psimjobOverheadMB = 100`), exit 1 on fofnput:
+    `Expected '1086' to be less than or equal to '1024' (but it wasn't)!`
+  - Files: `developers/prodsim/actors.go`, `developers/prodsim/actors_test.go`.
+  - Approach: the test asserts each job's held memory plus a named 100MB
+    overhead (bash, perl, the held string's allocation slack) fits in its
+    RAM. `fofnMemSpreadMB` drops from 700 to 600, so a chunk holds 300-899 of
+    its 1024MB. Every other kind already fits: put 200, walk 800 of 1000,
+    build 1000 of 1500, combine 1500 of 2000, portal 100 of 300 and 341 of
+    1024, pipeline 100 of 200, and psimjob.sh's stat jobs 400 of 500 (not
+    in the Go test).
+  - Green: the test passes (3 runs); the package passes plain and `-race`;
+    lint 0 issues. The `wrstatUIBuildRAM - 1` mutant, in a scratch copy,
+    fails: `Expected '1599' to be less than or equal to '1500'`.
