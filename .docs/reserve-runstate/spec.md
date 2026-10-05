@@ -124,7 +124,10 @@ changes and exit ops, `archiveJobTx` (`recordCompleteTx`,
 `putBackArchivedDependentsTx`, `putNewLiveJobs`, `modifyLiveJobsTx`
 (`deleteOldLiveJobs` and the put of the new keys) and `deleteLiveJobs`. A
 review check is that `grep -n 'bucketJobsLive' jobqueue/*.go | grep -v
-_test.go` shows no other `Put` or `Delete` on that bucket. Test files may
+_test.go` shows no other `Put` or `Delete` on that bucket, including indirect
+writes: `putEncodedJobs(tx, bucketJobsLive, ...)` (`storeLiveForRerun`,
+`modifyLiveJobsTx`) and `putRunningRerunMark`, which takes the live bucket
+as a parameter, must also go through the helpers. Test files may
 write the bucket directly (for example `moved_on_runner_test.go`,
 `jobqueue_test.go`) to build fixtures.
 
@@ -164,7 +167,11 @@ type beChange struct {
 - `enqueueChangeLocked` (full) sets `encoded`/`seq` and clears
   `runState`/`rsSeq`.
 - A new `enqueueRunStateLocked(key string, encoded []byte, waiter chan
-  error)` sets `runState`/`rsSeq` from `db.beSeq++` and keeps `encoded`.
+  error)` sets `runState`/`rsSeq` from `db.beSeq++` and keeps `encoded`. It
+  adds a `db.wg` key and appends the waiter (if any) as `enqueueChangeLocked`
+  does, and `queueJobRunState` then kicks the writer as
+  `launchJobChangeUpdate` does (A2 test 5's benchmark relies on
+  `db.wg.Wait`).
 - `beBatch.apply` for each key K, with F = `seq` (0 if `encoded` is nil),
   R = `rsSeq` (0 if none) and X = K's last exit seq in the batch (0 if
   none):
@@ -738,7 +745,10 @@ exact per-key count up to any crash.
   file handler (debug with `--debug`). clog uses a context's handler in place
   of the root's, so `clog.Info` on a request context never reaches the file.
   A context with no handler goes to the root logger, whose file handler is at
-  info.
+  info. `logStarted` (`cmd/manager.go`) briefly swaps the root handler, so a
+  line logged in that instant could miss the file; that is negligible, since
+  a D1 line needs a 10s wait first. D1 lines also go to the manager's
+  stderr.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/serverCLI.go`, `jobqueue/db.go`
@@ -943,8 +953,9 @@ output, so that they are counted, not judged.
 `stall.sh` writes `<epoch> STALL START ...` and `<epoch> STALL END ...` to
 `<outdir>/stall.log`. A stall window runs from a START to its END plus
 `ReserveWriteWait` (10s); a START with no END ends at START plus
-`STALL_SECS` (180) plus 10s. `crashon.sh stall` only triggers a crash during
-a stall and adds no window.
+`STALL_SECS` (180) plus 10s. Both ends are inclusive, in whole seconds.
+`crashon.sh stall` only triggers a crash during a stall and adds no
+window.
 
 New `developers/soak/soakgate.py --source d1|warning <outdir>
 <runnerlogdir> <doubles.tsv> <dbstart.tsv>`:
@@ -1041,6 +1052,10 @@ which runs every case and diffs.
    `total=2` line first), then the totals line is `totals ok`.
 7. Given the first segment with a second `total=1` line, then the totals
    line is `totals GAP pid 11 after 0`.
+8. Given `stall.log` with `STALL START` at 1000 and `STALL END` at 1170
+   (window 1000-1180 inclusive) and one segment with D1 lines at 1000
+   (`total=1`), 1180 (`total=2`) and 1181 (`total=3`), then the first line
+   has `inside=2 outside=1`.
 
 ## F: Gates
 
@@ -1150,7 +1165,7 @@ This tree's soak passes only if all hold:
    are within 10% of each other.
 2. `soakgate.py --source d1` prints `totals ok`, an `outsidePct` of at most
    0.0340, and an `outside` count below that of the baseline's
-   `soakgate.py --source warning`. The baseline's warning-based
+   `soakgate.py --source warning`, or both 0. The baseline's warning-based
    count is approximate: it counts only expired waits, loses a pending
    summary at a crash, and stamps a summary when it is emitted, which can
    move repeats outside a stall window and make the comparison more
@@ -1188,9 +1203,11 @@ The PR body records both run directories, peak RUN, both soaks'
   record in the same transaction, and a drain writes the run state after the
   job's full writes. So an existing run-state record is always newer than
   the full record beneath it. The CRC of the live record it was written over
-  defines "stale" without trusting every path, and it makes a record left by
-  an earlier wr (after an unsupported downgrade and re-upgrade) or by a
-  defect harmless. Hashing about 10KB with CRC-32C costs about 1us.
+  defines "stale" without trusting every path, so a record a defect leaves
+  behind under a rewritten live record is ignored. It does not make an
+  unsupported downgrade and re-upgrade safe: if the earlier wr never
+  rewrote a job's live record, the CRC still matches and the old run state
+  applies. Hashing about 10KB with CRC-32C costs about 1us.
 - **Field set.** The record holds every persisted field that a reservation
   or start sets, including the ones `resetRunLocked` clears, so the overlay
   of an older full record reproduces the reserved or started job (A1 tests 2
@@ -1210,7 +1227,10 @@ The PR body records both run directories, peak RUN, both soaks'
   state.
 - **A stale queued change racing an archive's keep-live put** behaves as a
   stale full change does today: the drain writes onto whatever live record
-  exists. This change neither widens nor closes that window.
+  exists. This change neither widens nor closes that window. Likewise a
+  queued run state that drains after `storeRunningRerunMarks` wrote a mark
+  overlays a run state taken before the mark, losing it exactly as a queued
+  full record does today (`RerunAfterRun` is in the record).
 - **Recovery deletes stale and orphaned records.** Recovery runs once, before
   any writer is busy. Deleting there stops an orphan from matching a later
   re-add with byte-identical add-time encoding. `dbstart` and `statinspect`
