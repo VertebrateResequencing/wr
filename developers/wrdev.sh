@@ -28,7 +28,8 @@ MEM_GROUPS="${MEM_GROUPS:-100}"     # spread jobs across this many memory groups
 # seen cluster-wide, so the default token, iso<port>h<hash>, includes a checksum of this host
 # and WRDEV_ROOT: another session (here or on another host) or a later root reusing the port
 # gets another token. So run every mode for a root, including its cleanup, on the same host.
-ROOT_HASH=$(printf '%s:%s' "$(hostname)" "$WRDEV_ROOT" | cksum | cut -d' ' -f1)
+# The root is normalised (realpath -m), so a trailing slash or a symlinked path gives the same token.
+ROOT_HASH=$(printf '%s:%s' "$(hostname)" "$(realpath -m -- "$WRDEV_ROOT")" | cksum | cut -d' ' -f1)
 PROD_JOBTOKEN="${PROD_JOBTOKEN:-iso${PROD_PORT}h$ROOT_HASH}"
 PROD_JOB_PREFIX="wrp${PROD_JOBTOKEN}_"   # LSF job-name prefix of our isolated prod manager
 DEV_JOBTOKEN="${DEV_JOBTOKEN:-iso${DEV_PORT}h$ROOT_HASH}"
@@ -139,12 +140,15 @@ port_free() {
 
 # only ever kills a PID whose cmdline runs OUR isolated binary; never a real
 # production manager or anything else.
-# Its argv[0] must be exactly $WR, or $WR.real, which developers/soak/run.sh's RUNNER_FILELOG=1
-# wrapper execs (a substring match would also accept a process whose path merely contains ours).
+# Its argv[0] must be exactly one of our_bins: $WR, or $WR.real, which developers/soak/run.sh's
+# RUNNER_FILELOG=1 wrapper execs, or either with symlinks resolved, as the manager names the
+# runners it starts (osext.Executable). A substring match would also accept a process whose path
+# merely contains ours.
+our_bins() { printf '%s\n' "${WR:?}" "$WR.real" "$(readlink -f -- "$WR")" "$(readlink -f -- "$WR.real")" | awk 'NF && !seen[$0]++'; }
 is_ours() {
   local a0
   a0=$(tr '\0' '\n' 2>/dev/null < "/proc/${1:-none}/cmdline" | head -n 1)
-  [ -n "$a0" ] && { [ "$a0" = "${WR:?}" ] || [ "$a0" = "$WR.real" ]; }
+  [ -n "$a0" ] && our_bins | grep -qxF -- "$a0"
 }
 safe_kill() {
   local pid="$1"
@@ -4695,14 +4699,15 @@ prodsim_reap_local() {
 }
 
 # our_runner_pids [port] prints the pids of this user's wr runners whose argv[0] is exactly our
-# isolated binary, $WR or (under developers/soak/run.sh's RUNNER_FILELOG=1 wrapper) $WR.real, and,
-# given a port, whose --server is on that port. The ps output is captured before it is filtered,
-# so the filter cannot match itself.
+# isolated binary (one of our_bins: $WR, $WR.real under developers/soak/run.sh's RUNNER_FILELOG=1
+# wrapper, or either with symlinks resolved), and, given a port, whose --server is on that port.
+# The ps output is captured before it is filtered, so the filter cannot match itself.
 our_runner_pids() {
   : "${WR:?}"
   local list; list=$(ps -ww -u "$(id -un)" -o pid=,args= 2>/dev/null)
-  printf '%s\n' "$list" | awk -v wr="$WR" -v port="${1:+:$1}" '
-    ($2 == wr || $2 == wr ".real") && $3 == "runner" {
+  printf '%s\n' "$list" | awk -v bins="$(our_bins | tr '\n' '\001')" -v port="${1:+:$1}" '
+    BEGIN { n = split(bins, b, "\001"); for (i = 1; i <= n; i++) if (b[i] != "") ours[b[i]] = 1 }
+    ($2 in ours) && $3 == "runner" {
       if (port == "") { print $1; next }
       for (i = 4; i < NF; i++) if ($i == "--server" && substr($(i+1), length($(i+1)) - length(port) + 1) == port) { print $1; next } }'
 }

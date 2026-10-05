@@ -415,3 +415,27 @@ whose argv[0] is a file in the scratch root:
   reap-runners`, and left nothing of its root running.
 - Token, reaper, disk-guard and watcher checks as recorded under R1-R4 and
   R6.
+
+## Second re-review follow-ups
+
+- [x] F1. The default token hashed `$WRDEV_ROOT` as given, so a trailing
+  slash or a symlinked path gave a different token for the same root; and
+  `our_runner_pids`, `prodsim_reap_local`, `ef_reap_runners` (through
+  `is_ours`) and soak's `soak_manager_pid` compared argv[0] with `$WR` and
+  `$WR.real` only, while the manager starts runners through
+  `osext.Executable()`, which resolves symlinks.
+  - Red (8de5f1d6), with `link` a symlink to `real`: `WRDEV_ROOT=link`,
+    `link/`, `real` and `real//` gave four different dev tokens. With
+    `WRDEV_ROOT=link`, `reap-runners` killed only the fake runner named
+    `link/wr`, leaving `real/wr` and `real/wr.real`, and `soak_manager_pid`
+    did not accept a manager whose argv[0] was `real/wr`.
+  - Fix: the token hashes `realpath -m "$WRDEV_ROOT"`. `our_bins` lists
+    `$WR`, `$WR.real` and both with `readlink -f`; `is_ours` and
+    `our_runner_pids` accept exactly those, and `soak_manager_pid` does the
+    same with `$SOAK_WR`.
+  - After: all four roots give `iso51970h333785708`; `reap-runners` killed
+    the three runners of the root (as given, resolved, resolved `.real`) and
+    left another root's and a suffix-path decoy; `is_ours` accepts
+    `link/wr` and `real/wr` and rejects `real/wrx`; `soak_manager_pid`
+    accepts the resolved-path manager.
+  - Files: `developers/wrdev.sh`, `developers/soak/config.sh`.

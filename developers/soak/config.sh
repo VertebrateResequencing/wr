@@ -127,7 +127,10 @@ soak_manager_pid() {
   pid=$(cat "$SOAK_RUN/pid" 2>/dev/null) || return 1
   [ -n "$pid" ] || return 1
   a0=$(tr '\0' '\n' 2>/dev/null < "/proc/$pid/cmdline" | head -n 1)
-  { [ "$a0" = "${SOAK_WR:?}" ] || [ "$a0" = "$SOAK_WR.real" ]; } && echo "$pid"
+  [ -n "$a0" ] || return 1
+  # symlinks resolved too, as wr names the daemon and runners it re-executes
+  { [ "$a0" = "${SOAK_WR:?}" ] || [ "$a0" = "$SOAK_WR.real" ] || [ "$a0" = "$(readlink -f -- "$SOAK_WR")" ] \
+    || [ "$a0" = "$(readlink -f -- "$SOAK_WR.real")" ]; } && echo "$pid"
 }
 
 # soak_wr_running <subcommand ERE> prints the pids of the `timeout N` wrapping
