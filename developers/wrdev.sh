@@ -4653,12 +4653,15 @@ prodsim_final_stop() {  # prodsim_cleanup's stop of our manager
 
 # prodsim_reap_local kills what the local scheduler left running for this run once its manager
 # is gone: this user's runners of OUR isolated binary whose --server is our isolated port, and
-# the psimjob.sh commands of this run (its own copy in $PS_OUT, so no other run's). LSF runs
-# have none; their runners go with the bkill.
+# the psimjob.sh commands of this run (its own copy in $PS_OUT, so no other run's). The binary is
+# $WR, or $WR.real when developers/soak/run.sh's RUNNER_FILELOG=1 wraps $WR in a script, since the
+# manager then runs (and starts its runners as) $WR.real. Both are exact paths. LSF runs have
+# none; their runners go with the bkill.
 prodsim_reap_local() {
+  : "${WR:?}" "${PROD_PORT:?}"
   local list p n=0; list=$(ps -ww -u "$(id -un)" -o pid=,args= 2>/dev/null)
   for p in $(printf '%s\n' "$list" | awk -v wr="$WR" -v port=":$PROD_PORT" -v job="${PS_OUT:-/nonexistent}/psimjob.sh" '
-      $2 == wr && $3 == "runner" { for (i = 4; i < NF; i++) if ($i == "--server" && substr($(i+1), length($(i+1)) - length(port) + 1) == port) { print $1; next } }
+      ($2 == wr || $2 == wr ".real") && $3 == "runner" { for (i = 4; i < NF; i++) if ($i == "--server" && substr($(i+1), length($(i+1)) - length(port) + 1) == port) { print $1; next } }
       $2 == "bash" && $3 == job { print $1 }'); do
     kill -9 "$p" 2>/dev/null && n=$(( n + 1 ))
   done

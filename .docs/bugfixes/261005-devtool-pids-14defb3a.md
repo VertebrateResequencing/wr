@@ -190,3 +190,57 @@ since `wrdev.sh start` and `stop` bkill every `wrd_*` job of this user. Gates:
     that only skews a reading and kills nothing.
   - Files: `developers/wrdev.sh`, `developers/soak/sweep.sh`,
     `developers/README.md`.
+
+- [x] prodsim_reap_local only matches runners whose path is exactly $WR, so
+  runners started through run.sh's RUNNER_FILELOG wrapper as $WR.real are
+  left behind under SCHED=local. Make it match both (by exact path, verified,
+  not a broad pattern).
+  - Source: incidental, found while verifying F3 (its harness wraps the
+    binary the way `run.sh` does).
+  - Cause: with `RUNNER_FILELOG=1`, `$WR` is a script that execs
+    `$WR.real`, so the manager, and every runner the local scheduler starts,
+    runs as `$WR.real`; `prodsim_reap_local` compared argv[0] with `$WR`
+    only.
+  - Red: the F3 harness (now also failing if any process whose argv[0] is a
+    file in its root is left after prodsim's cleanup), run at `f57ae4d1`:
+    `killed 2 leftover local runner/job processes`, then `FAIL: processes of
+    the root still running after prodsim's cleanup`, two `ROOT/wr.real
+    runner ... --deployment production` processes.
+  - Fix: argv[0] must equal `$WR` or `$WR.real` exactly, with the existing
+    `runner` and `--server ...:$PROD_PORT` checks; `${WR:?}` and
+    `${PROD_PORT:?}` guard against an empty value.
+  - After: `killed 18 leftover local runner/job processes`, `PASS: nothing
+    of the root left running`, and the F3 verdict still `PASS: no restart
+    began or ended inside another`.
+  - Files: `developers/wrdev.sh`.
+
+## Incident: a verification harness killed another run's processes
+
+- What happened: at about 08:43, while checking F3, I re-ran the tail of my
+  scratch harness (its verdict and leftover cleanup) by piping it into a new
+  `bash`, outside the script that set its variables. `$root` was empty, so
+  its cleanup, `pgrep -u <me> -f -- "$root/wr"` and then `kill -9` of each
+  pid whose command line contained `$root/wr`, matched every process of mine
+  with `/wr` in its command line: about 10.
+- Impact: the battery10 phase 5 driver
+  (`/nfs/hgi/wr/sb10-bigdb/battery10/p5/go.sh`) and its `rundepcrash-0`
+  repro (manager on ports 51940-51943) were killed. No LSF jobs or ports
+  were left; the battery agent re-ran phase 5. Other processes of mine with
+  `/wr` in their command line at that moment may also have been killed; I
+  could not list them afterwards.
+- Guard, from then on: no killing by pattern (`pkill -f`, `pgrep -f | kill`,
+  `killall`). Only pids recorded from `$!`, or pids whose whole command line
+  is verified and whose argv[0] is a file inside the scratch dir. Every
+  harness starts with `set -u` and uses `${var:?}` guards, the scratch
+  helper `ours_under <root>` refuses a root outside the scratch dir, and no
+  fragment of a script is run outside the script. The same applied to the
+  tooling here: `sweep.sh`'s leftover loop walks `ps -u` pids and checks each
+  with `our_fg_manager` (which needs `${WRDEV_ROOT:?}`) instead of `pgrep -f`,
+  and `prodsim_reap_local` matches exact paths with `${WR:?}` guards.
+- Re-run with the guarded harnesses after all four items: F2's harness
+  PASSes (printed and actual foreground pid 1270415, none left after
+  `stop`); `sweep.sh` on `prod-start prod-stop dump` exits 0 with 38
+  goroutines dumped and nothing of its root left; `sweep.sh` driving the
+  base `wrdev.sh` with a stale pid file exits 1 with both `SWEEP ERROR`
+  lines, leaves nothing running and does not signal the unrelated `sleep`;
+  the F3 harness PASSes both verdicts (above).
