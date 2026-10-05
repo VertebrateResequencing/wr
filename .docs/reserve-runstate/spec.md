@@ -43,7 +43,8 @@ var bucketJobRunState = []byte("jobRunState")
 // jobRunState is every persisted Job field that a reservation
 // (resetJobForReservation, respondWithReservedJob) or a start
 // (applyJobStart, acceptDuplicateStartLocked) sets, plus the requirements
-// prepareReadyJob may learn in memory before the reservation. Field names
+// prepareReadyJob may learn in memory before the reservation, and
+// RerunAfterRun, which recovery may clear in memory only. Field names
 // and types match Job's, with no omitempty, so every field, zero or not, is
 // encoded.
 type jobRunState struct {
@@ -71,6 +72,7 @@ type jobRunState struct {
 	DelayTime         time.Duration
 	Requirements      *scheduler.Requirements
 	RequirementsOrig  *scheduler.Requirements
+	RerunAfterRun     bool
 }
 
 // newJobRunState returns j's run state, with deep copies of Requirements
@@ -304,6 +306,17 @@ The audit confirms that re-derivation with a test (A2 test 7); if recovery
 does not re-derive it, it is added to `jobRunState`. Unexported fields
 (`schedulerGroup`, `runID`, ...) were never persisted.
 
+The audit also covers in-memory-only changes made at recovery, which today
+the next reservation's full write stores. Known: `RerunAfterRun`.
+`recoverRerunMark` (`running_dependent.go`) clears it in memory only when a
+job recovers outside the run sub-queue (lost, or reserved with Pid 0; see
+`recoversIntoRun`). Without the full write the stored `true` would survive,
+and a later crash while the job runs would recover it running with a stale
+mark, so `recoverRunningDependent` would return early and the job would run
+again. It is added to `jobRunState`, so the reservation stores the cleared
+value (A2 test 8). The audit lists every other field `recover*` functions
+change in memory, and how each is persisted.
+
 **Package:** `jobqueue/`
 **File:** `jobqueue/serverCLI.go`, `jobqueue/db.go`
 **Test file:** `jobqueue/db_runstate_test.go`
@@ -330,12 +343,15 @@ does not re-derive it, it is added to `jobRunState`. Unexported fields
 4. `TestReserveDurability`, `TestReserveDurabilityDeadRunner`,
    `TestReserveDurabilityStalledWrite`, `TestStartDurability` and
    `TestStartDurabilityAbortedWriteIsNotCommitted` pass unchanged.
-5. Given `BenchmarkUpdateJobRunState` (new, in `jobqueue/db_bench_test.go`:
-   `BenchmarkUpdateJobState`'s shape, jobs with 10,000-byte Cmds, alternating
-   reserved and running through `queueJobRunState`) and
-   `BenchmarkUpdateJobState` run on the same 10,000-byte-Cmd jobs, when both
-   run with `make bench BENCH=UpdateJob`, then the run-state benchmark's
-   `bolt_pages/job` is at most half the full-change benchmark's.
+5. Given two new benchmarks in `jobqueue/db_bench_test.go`, both
+   `BenchmarkUpdateJobState`'s shape on jobs with 10,000-byte Cmds,
+   alternating reserved and running: `BenchmarkUpdateJobRunState10KB`
+   through `queueJobRunState` and `BenchmarkUpdateJobFull10KB` through
+   `updateJobAfterChange`; when both run with `make bench
+   BENCH='UpdateJob(RunState|Full)10KB'`, then the run-state benchmark's
+   `bolt_pages/job` is at most half the full one's.
+   `BenchmarkUpdateJobState` itself is unchanged (it is in `speed.sh`'s
+   compared set).
 6. The tests that use the helpers listed under "Live-record helpers"
    (`moved_on_runner_test.go`, `runner_report_followups_test.go`,
    `readd_queued_test.go`, `reserve_durability_test.go`) pass after the
@@ -345,6 +361,13 @@ does not re-derive it, it is added to `jobRunState`. Unexported fields
    `g` added and completed, and the first job reserved, when a crash image
    is taken and a new server started on it, then the recovered job's
    `WaitingForDepGroups` is empty, as it is in memory.
+8. Given a crash image in which a job is lost with a stored
+   `RerunAfterRun` true (its run marked to rerun, then its runner gone),
+   when a server recovers it (clearing the mark in memory), a runner
+   reserves and starts it, a second crash image is taken and a new server
+   recovers that, then the recovered job is running with `RerunAfterRun`
+   false, its runner's reports are accepted, and its command's run marker
+   shows exactly one run after the first recovery.
 
 ### A3: Drain ordering
 
@@ -362,7 +385,11 @@ op (state delayed, Exitcode 1, stderr `failed run's stderr`); "kick" queues
 a full change (state ready, UntilBuried 3); "start" queues via
 `queueJobRunState` (state running, Pid 7). Each case is one drain over one
 seeded live job. "Recovered" means the job from `recoverIncompleteJobs`.
-`storedLiveJobState` reads through the overlay.
+`storedLiveJobState` reads through the overlay. Tests 1-9 queue run states
+with a new test helper `queueUnkickedBestEffortRunState`, which calls
+`enqueueRunStateLocked` under the same locks without kicking the writer, as
+`queueUnkickedBestEffortChange` and `queueUnkickedBestEffortExit` do, so
+every op lands in the one `drainBestEffort` the test calls.
 
 **Acceptance tests:**
 
@@ -387,6 +414,9 @@ seeded live job. "Recovered" means the job from `recoverIncompleteJobs`.
 10. `TestBestEffortChangeKeepsEncodeOrder`, repeated with the reservation
     queued by `queueJobRunState`, passes: the reservation is what recovery
     sees.
+11. `TestStartDurabilityAbortedWriteIsNotCommitted`, extended with a
+    run-state waiter on the rolled-back drain, sees that waiter get
+    `errBestEffortWriteAborted`.
 
 ### A4: Full writes and deletes supersede the run-state record
 
@@ -527,7 +557,9 @@ In `initDB`, once an open has succeeded (including after a restore from
 backup) and before any write transaction (`openManagerBolt` sets
 `NoFreelistSync`, so the open itself writes nothing):
 
-1. Read the version with `dbFileSchemaVersion`.
+1. Read the version with `dbFileSchemaVersion`. On an error (including
+   `errBadDBSchemaVersion`, a malformed stamp), close the bolt handle and
+   return it, before any write.
 2. If `checkDBSchemaVersion` fails, close the bolt handle and return its
    error.
 3. If the file existed before this open (`openedExistingDB`), the version is
@@ -570,6 +602,9 @@ error as it reports any `initDB` failure.
    server on it, and passes. Any other test that builds an unversioned
    database with a `jobslive` bucket and opens it with `initDB` stamps it
    first.
+9. Given a database whose stamp is 3 bytes long, when `initDB` runs, then
+   the error satisfies `errors.Is(err, errBadDBSchemaVersion)` and the
+   file's SHA-256 is unchanged.
 
 ### C2: Compact stamps the current version
 
@@ -578,8 +613,9 @@ to the current version, stripping output only once, and to leave a database
 it refuses untouched.
 
 - `CompactDBFileStats` first calls `readOnlyDBFileSchemaVersion(dbFile)` and
-  `checkDBSchemaVersion`, returning any error before `compactToTempFile`
-  creates the temp file. `compactBoltInto` opens the source without
+  `checkDBSchemaVersion`, returning any error (including
+  `errBadDBSchemaVersion`) before `compactToTempFile` creates the temp
+  file. `compactBoltInto` opens the source without
   `NoFreelistSync`, which writes a never-synced freelist on open, so the
   check must come before it.
 - `compactBolt`: at version 1 or above, `bolt.Compact` as now, then stamp
@@ -602,6 +638,9 @@ it refuses untouched.
 4. Given a database stamped 3 and last written with `NoFreelistSync` (its
    freelist never synced, as a crashed manager leaves it), when compacted,
    then the error satisfies `errors.Is(err, errDBSchemaTooNew)`, the file's
+   SHA-256 is unchanged, and no `*.compact-*` file is in its directory.
+5. Given a database whose stamp is 3 bytes long, when compacted, then the
+   error satisfies `errors.Is(err, errBadDBSchemaVersion)`, the file's
    SHA-256 is unchanged, and no `*.compact-*` file is in its directory.
 
 ### C3: The user sees the refusals
@@ -628,13 +667,13 @@ test below fails.
    stderr contains `wr manager compact`, and `getBadLogLines()` on its log
    returns a line containing `wr manager compact`. The same with a database
    stamped 3 shows `schema version 3` in both.
-3. `TestManagerStartDaemonShowsRefusal`: the same two databases with the
+2. `TestManagerStartDaemonShowsRefusal`: the same two databases with the
    default daemon `wr manager start` as a subprocess: the parent exits
    non-zero and its output contains the `getBadLogLines()` line and `wr
    manager failed to start on port <port>:` followed by the startup error,
    with `wr manager compact` (version 0) or `schema version 3` (version 3)
    in that output.
-2. `TestManagerCompactRefusesNewerDB`: given `managerCompactExit` replaced
+3. `TestManagerCompactRefusesNewerDB`: given `managerCompactExit` replaced
    as in `TestManagerCompactRefusesWhileRunning` and `ManagerDBFile` a
    database stamped 3, when the compact command's `Run` executes, then the
    exit code is 1, the logged error contains `schema version 3`, and the
@@ -685,7 +724,8 @@ exact per-key count up to any crash.
    then `<tmp>/log` holds exactly 2
    `reservation handed out before it was recorded on disk` lines, A's with
    `key=<A's key> total=1` and B's with `key=<B's key> total=2`, and
-   `reservation not yet recorded on disk` is still logged.
+   `reservation not yet recorded on disk` is still logged. The test restores
+   clog's root handler afterwards (deferred `clog.ToDefault()`).
 2. Given writes that commit promptly, when 3 jobs are reserved, then no such
    line is logged and the counter is 0.
 3. Given a server whose `db.closed` is set under the db's lock (as `close`
@@ -823,11 +863,15 @@ free with `ss -ltn`, then runs `wrdev.sh build` first.
     manager's isolated config pointed at `dst`. On failure it removes `dst`
     and exits non-zero. It never opens `src` for writing.
   - Listed in `usage` and `main`.
-- The texts that point at version-0 fixtures name compacted copies made with
-  `compact-fixture` instead: the `die`/`echo` texts of `add-storm` (`WR_AS_DB`),
-  `add-storm-fixture` (two), the `WR_RS_DB` header comment, and the
-  `WRDEV_PRISTINE_DB` `die` that names `pristine10`/`prod.db`; and
-  `TestReliable4AddStorm`'s skip message.
+- All texts that point at the version-0 originals point at compacted copies
+  made with `compact-fixture` instead: every help, comment, `die` and `echo`
+  text found by `grep -n 'pristine\|prod\.db\|fix120k'
+  developers/wrdev.sh developers/speed.sh` (after the rebase onto 021f734a
+  these include the `writestorm-freeze`, `add-storm`, `add-storm-fixture`,
+  `add-storm-lsf`, report-storm `WR_RS_DB` and `backup-stall-check` texts and
+  the `usage` text), and the skip messages and header comments of
+  `reliable4_addstorm_test.go`, `reliable4_reportstorm_test.go` and
+  `reliable4_writestorm_freeze_test.go`.
 - The gate's fixtures, built with this tree's `wrdev.sh` and
   `WRDEV_ROOT=$G/fixbuild/root DEV_PORT=51970 DEV_WEB=51971 PROD_PORT=51972
   PROD_WEB=51973`. Names match what `soak/sweep.sh` expects under
@@ -864,68 +908,92 @@ output, so that they are counted, not judged.
 `STALL_SECS` (180) plus 10s. `crashon.sh stall` only triggers a crash during
 a stall and adds no window.
 
-New `developers/soak/soakgate.py <outdir> <runnerlogdir> <doubles.tsv>
-<dbstart.tsv>`:
+New `developers/soak/soakgate.py --source d1|warning <outdir>
+<runnerlogdir> <doubles.tsv> <dbstart.tsv>`:
 
+- `--source` is required: `d1` for a tree with D1 lines (this change),
+  `warning` for one without (the baseline). With `d1`, a log with no D1
+  line counts 0, which is a valid result, not a fallback to warnings.
 - Manager log: only `<outdir>/manager.log`. The `manager.log.<epoch>` files
   are `cp -f` copies of the whole growing log taken at each stop, so they
   are ignored. The log is split into one segment per manager process at
-  each line matching `lvl=info msg="wr manager \S+ started on` (cmd's
-  `managerStartedLogRegex`); lines before the first are ignored, since no
-  reservation is handed out before a manager has started.
-- Non-durable hand-outs: D1 lines (`reservation handed out before it was
-  recorded on disk`), or, for a tree without them, the rate-limited
-  `reservation not yet recorded on disk` warning's lines plus their
-  `repeats=` values. Each is inside or outside a window by its timestamp.
-  For D1 lines, `total` must run 1, 2, ... with no gap within each segment.
+  each line matching `msg="wr manager \S* started on \S+, pid (\d+)"`, and a
+  segment is named by that pid. The version may be empty (soak builds use
+  `-buildvcs=false`, giving `wr manager  started on`, two spaces), which
+  cmd's `managerStartedLogRegex` does not match. Lines before the first
+  start are ignored, since no reservation is handed out before a manager has
+  started.
+- Non-durable hand-outs: with `d1`, D1 lines (`reservation handed out before
+  it was recorded on disk`), whose `total` must run 1, 2, ... with no gap
+  within each segment; with `warning`, the rate-limited `reservation not
+  yet recorded on disk` warning's lines plus their `repeats=` values. Each
+  is inside or outside a window by its timestamp.
 - Runs: the `runs=` value on the first line of `<outdir>/markers-analysis.txt`
   (markers.py's output).
-- Double runs: for each `doubles.tsv` row, the first run's reservation is
-  its runner log's `reserved a job` line for that psimjob kind and id at or
-  before the first run's start, as `anyway.py` maps them. The double is
-  inside or outside a window by that line's time. It is "acknowledged" if
-  that runner log has a `command ran OK` line for the same key after the
-  first run's start and before the second run's start.
+- Peak RUN: the largest `RUN=<n>` in `<outdir>/lsf.tsv`.
+- Double runs: for each `doubles.tsv` row, the first run is mapped to its
+  runner log and that log's `reserved a job` line as `anyway.py` does (the
+  run's marker host and pid, then the runner's `started executing ... pid=`
+  line). The double is inside or outside a window by that line's time; one
+  whose runner log or `reserved a job` line cannot be found counts as
+  outside and is printed with `unmapped`. It is "acknowledged" if that
+  runner log has a `command ran OK` line for the same key between the first
+  run's start and the second run's start.
 - Missing jobs: every psimjob (kind, id) with an `S` line in
-  `<outdir>/markers/*.tsv` must have a row in `dbstart.tsv`.
+  `<outdir>/markers/*.tsv` must have a row in `dbstart.tsv`, except that
+  one prodsim may have removed is excused: kind `put` (added with
+  `OnFailure Remove`) or `fofnput` (removed by `fofnPoll`'s
+  `remove_buried`), whose last run's `E` marker has a non-zero exit code or
+  which has no `E` marker.
 - Prints exactly, then one line per outside or acknowledged double and per
-  missing job:
+  absent job:
 
   ```text
   nondurable source=<d1|warning> inside=<n> outside=<n> runs=<runs> outsidePct=<x.xxxx>
-  totals <ok|GAP segment <i> after <n>>
+  totals <ok|GAP pid <pid> after <n>|n/a>
   doubles inside=<n> outside=<n> acknowledged=<n>
-  missing ran=<n> absent=<n>
+  missing ran=<n> absent=<n> excused=<n>
+  peakRUN=<n>
   ```
+
+  (`totals n/a` with `warning`.)
 
 **File:** `developers/soak/soakgate.py`, `developers/soak/README.md`
 (analysis steps)
 **Test file:** `developers/soak/testdata/soakgate/` (an input outdir,
-runner logs, `doubles.tsv`, `dbstart.tsv` and `expected.txt`), run as
+runner logs, `doubles.tsv`, `dbstart.tsv` and `expected*.txt`), run as
 `soakgate.py` on it and diffed.
 
 **Acceptance tests:**
 
 1. Given `testdata/soakgate` with `stall.log` holding one window 1000-1180;
-   one cumulative `manager.log` with two start lines, a D1 line at 1005
-   (`total=1`) and one at 1300 (`total=2`) after the first, and one at 1400
-   (`total=1`) after the second; a stale `manager.log.1350` holding a copy
-   of the log up to 1350; `markers-analysis.txt` with `runs=10000`; runner
-   logs and a `doubles.tsv` with two double runs whose first reservations
-   are at 1010 and 1500, the 1500 one with `command ran OK` before its
-   second run; and markers for 3 jobs, all in `dbstart.tsv`; when
-   `soakgate.py` runs, then its output equals `expected.txt`:
+   one cumulative `manager.log` with two empty-version start lines
+   (`msg="wr manager  started on 10.0.0.1:1, pid 11"` and `... pid 22"`), a
+   D1 line at 1005 (`total=1`) and one at 1300 (`total=2`) after the first,
+   and one at 1400 (`total=1`) after the second; a stale `manager.log.1350`
+   holding a copy of the log up to 1350; `markers-analysis.txt` with
+   `runs=10000`; `lsf.tsv` rows with `RUN=700` and `RUN=6100`; runner logs
+   and a `doubles.tsv` with three double runs whose first reservations are
+   at 1010, 1500 (with `command ran OK` before its second run) and one with
+   no runner log; and markers for 3 jobs, all in `dbstart.tsv`; when
+   `soakgate.py --source d1` runs, then its output equals `expected.txt`:
    `nondurable source=d1 inside=1 outside=2 runs=10000 outsidePct=0.0200`,
-   `totals ok`, `doubles inside=1 outside=1 acknowledged=1`, the 1500
-   double's line, and `missing ran=3 absent=0`.
+   `totals ok`, `doubles inside=1 outside=2 acknowledged=1`, `missing ran=3
+   absent=0 excused=0`, `peakRUN=6100`, then the 1500 double's line and the
+   unmapped double's line.
 2. Given the same input with the 1400 line's `total=2`, then the totals line
-   is `totals GAP segment 2 after 0`.
+   is `totals GAP pid 22 after 0`.
 3. Given a warning-only log with one warning line inside the window and a
-   `(repeated) repeats=3` line outside it, then the first line reads
-   `nondurable source=warning inside=1 outside=3 runs=10000
-   outsidePct=0.0300`.
-4. Given one marker job removed from `dbstart.tsv`, then the last summary
-   line is `missing ran=3 absent=1`, followed by that job's line.
+   `(repeated) repeats=3` line outside it, when run with `--source warning`,
+   then the first two lines read `nondurable source=warning inside=1
+   outside=3 runs=10000 outsidePct=0.0300` and `totals n/a`.
+4. Given one ordinary marker job removed from `dbstart.tsv`, then the
+   missing line is `missing ran=3 absent=1 excused=0`, followed by that
+   job's line.
+5. Given two more marker jobs absent from `dbstart.tsv`, a `fofnput` whose
+   last `E` marker has exit 3 and a `fofnput` whose last exit is 0, then the
+   missing line is `missing ran=5 absent=1 excused=1` and the exit-0 job is
+   the one printed.
 
 ## F: Gates
 
@@ -933,13 +1001,24 @@ runner logs, `doubles.tsv`, `dbstart.tsv` and `expected.txt`), run as
 
 With all `OS_*` unset and `GOCACHE` off the home directory:
 
-1. `make lint`, `make test` and `CGO_ENABLED=1 make race` pass.
-2. `make speed` against `SPEED_BASE` = the develop merge-base reports no
-   worsening over its threshold. The PR body summarises its verdict and A2
-   test 5's two `bolt_pages/job` figures.
-3. `make speed-full` with `SPEED_BIG_DB=$G/fixtures/pristine6` and
-   `WRDEV_ROOT=$G/speed/root` reports no worsening; both trees run on copies
-   of that one file.
+1. `make lint`, `make test` and `CGO_ENABLED=1 make race` pass, and `go vet
+   -tags netgo,reliability_repro ./jobqueue/` passes (B1 changes
+   `recoverIncompleteJobs`' signature, which the `reliability_repro`-tagged
+   `dbstart_probe_test.go` calls).
+2. `make speed` against `SPEED_BASE` = the develop merge-base, with
+   `SPEED_DIR=$G/speed-quick DEV_PORT=51990 DEV_WEB=51991 PROD_PORT=51992
+   PROD_WEB=51993`, reports no worsening over its threshold. The PR body
+   summarises its verdict and A2 test 5's two `bolt_pages/job` figures.
+3. `make speed-full` with `SPEED_DIR=$G/speed-full
+   SPEED_BIG_DB=$G/fixtures/pristine6 WR_AS_DB=$G/fixtures/prod.db
+   WR_ARCHRATE_DB=$G/fixtures/pristine10 WR_AC_DB=$G/fixtures/pristine6
+   DEV_PORT=51994 DEV_WEB=51995 PROD_PORT=51996 PROD_WEB=51997` reports no
+   worsening. `speed.sh` puts its wrdev roots under `SPEED_DIR` and ignores
+   `WRDEV_ROOT`.
+4. For both, benchstat is the installed
+   `/nfs/hgi/wr/sb10-bigdb/speed/tools/benchstat-v0.0.0-20260929162123-406019bb8b68`
+   copied into `$SPEED_DIR/tools/` first, as battery10's `speed-go.sh` did
+   (no network).
 
 ### F2: wrdev crash, recovery and big-DB modes
 
@@ -958,7 +1037,9 @@ DEV_PORT=51980 DEV_WEB=51981 PROD_PORT=51982 PROD_WEB=51983` and this tree's
    variables (`WR_ARCHRATE_DB`, `WR_AC_DB`, `WR_AS_DB`, `WR_WSFREEZE_DB`,
    `WRDEV_PRISTINE_DB`) set to the `$G/fixtures` copy of the database each
    mode's header names.
-5. `TestReliable4AddStorm` passes with `WR_AS_DB=$G/fixtures/prod.db`.
+5. `WR_AS_DB=$G/fixtures/prod.db CGO_ENABLED=1 go test -tags
+   netgo,reliability_repro --count 1 -run TestReliable4AddStorm ./jobqueue/`
+   passes.
 
 ### F3: Production-scale LSF crash soaks
 
@@ -981,6 +1062,11 @@ Each tree is an export, as battery10 did: `git archive <sha> | tar -x -C
 | ports `DEV_PORT DEV_WEB PROD_PORT PROD_WEB PPROF_PORT` | `51950 51951 51952 51953 6250` | `51960 51961 51962 51963 6260` |
 | `GOCACHE` | `/tmp/claude-11346/gocache-runstate-base` | `/tmp/claude-11346/gocache-runstate-change` |
 
+- `PROD_JOBTOKEN` is left at its default, which `wrdev.sh` derives from
+  `PROD_PORT`, the host and the wrdev root, so the two soaks' LSF job names
+  differ and each tool kills or bkills only its own soak's jobs. Each soak
+  runs all its commands on one host. Restarts are serialised by the
+  `restart.lock` in each soak's own output dir.
 - Each `FIXTURE` is a `cp -p` of `$G/fixtures/fix120k.db` made just before
   that soak; `wrdev.sh prodsim` copies it again into the soak's DB dir.
 - Unchanged from `soak-go.sh`: `HOURS=3`, `SCALE=1`, its `RESTART_KINDS`
@@ -993,18 +1079,20 @@ Each tree is an export, as battery10 did: `git archive <sha> | tar -x -C
 
 This tree's soak passes only if all hold:
 
-1. Peak LSF RUN (`lsf.tsv`) is at least 5,500 in both soaks, and within 10%
-   of each other.
-2. `soakgate.py` prints `totals ok`, an `outsidePct` of at most 0.0340, and
-   an `outside` count below the baseline's. The baseline's warning-based
+1. `soakgate.py`'s `peakRUN=` is at least 5,500 in both soaks, and the two
+   are within 10% of each other.
+2. `soakgate.py --source d1` prints `totals ok`, an `outsidePct` of at most
+   0.0340, and an `outside` count below that of the baseline's
+   `soakgate.py --source warning`. The baseline's warning-based
    count undercounts (it counts only expired waits, a summary is stamped
    when emitted, and a pending summary is lost at a crash), which only makes
    this comparison stricter.
 3. `soakgate.py` prints `doubles` with `outside=0` and `acknowledged=0`.
 4. `soakgate.py` prints `missing` with `absent=0`, and `relburycheck.py`
    reports problems 0.
-5. `rundepcheck.py` has no CHECK outside the owner-ruled "stop means buried"
-   cases.
+5. Every `instance <n>: CHECK ...` line `rundepcheck.py` prints ends with
+   `-noend-then-stop-clean` (a B or D run killed by a clean stop, which the
+   owner ruled "stop means buried"); any other CHECK fails.
 
 The PR body records both run directories, peak RUN, both soaks'
 `soakgate.py` output, and the verdict.
