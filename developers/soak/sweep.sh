@@ -53,6 +53,25 @@ our_fg_manager() {
   esac
   return 1
 }
+# stop_mode <pid> stops the mode whose launch this sweep recorded as <pid> ($!),
+# never by pattern, which could match another sweep's or session's wrdev.sh. The
+# launch execs env, setsid and timeout in turn, so <pid> is timeout, which setsid
+# made the leader of a process group of its own (a background job of this
+# non-interactive shell leads none, so setsid does not fork). A TERM to timeout
+# reaches wrdev.sh (whose cleanup trap then runs) and the rest of that group; if
+# the mode is still there 150s later, the group is killed.
+stop_mode() {
+  local mp=${1:?pid}
+  case "$(ps -ww -o args= -p "$mp" 2>/dev/null)" in
+    ("timeout --signal=TERM "*" $W $wmode"*) ;;
+    (*) sweep_error "mode $mode's recorded pid $mp is not its timeout; not signalling it"; return 1 ;;
+  esac
+  [ "$(ps -o pgid= -p "$mp" | tr -d ' ')" = "$mp" ] \
+    || { sweep_error "mode $mode's pid $mp leads no process group; not signalling it"; return 1; }
+  kill -TERM "$mp"
+  local i; for i in $(seq 1 150); do kill -0 "$mp" 2>/dev/null || return 0; sleep 1; done
+  kill -KILL -- "-$mp" 2>/dev/null
+}
 # sweep_error logs a problem the sweep must exit non-zero for
 sweep_rc=0
 sweep_error() { echo "SWEEP ERROR: $*" | tee -a "$SW/sweep.log" "$log" >&2; sweep_rc=1; }
@@ -159,7 +178,9 @@ for spec in "${MODES[@]}"; do
     f=$(sw_free); [ "$f" -lt "$minf" ] && minf=$f
     if [ "$f" -lt "$GUARD_GB" ]; then
       echo "$(date +%T) DISK GUARD: $SW has ${f}G < ${GUARD_GB}G, stopping $mode" | tee -a "$SW/sweep.log" "$log"
-      pkill -TERM -f "$W $wmode" ; guard=1; sleep 150; pkill -KILL -f "$W $wmode"
+      guard=1
+      stop_mode "$mp"
+      break
     fi
   done
   wait $mp; rc=$?

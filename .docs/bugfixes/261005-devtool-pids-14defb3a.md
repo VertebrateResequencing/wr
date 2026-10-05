@@ -306,3 +306,24 @@ since `wrdev.sh start` and `stop` bkill every `wrd_*` job of this user. Gates:
   token. `stop`, `clean` and prodsim's cleanup no longer bkill those; kill
   them by exact job id. `sweep.sh`'s preflight still refuses to start while
   any `wrd_*` job of this user exists, which is safe.
+- [x] R2 (medium, older). `sweep.sh`'s disk guard ran `pkill -TERM/-KILL
+  -f "$W $wmode"`, which matches other sessions running the same wrdev.sh
+  and longer mode names (`add-storm` matches `add-storm-lsf`). Stop the
+  mode by its own pid or process group.
+  - Red: with a fake `df` (200G free on the first call, then 1G) and
+    `SWEEP_WRDEV` set to a fake wrdev.sh that starts a child and a
+    grandchild and logs its TERM trap, plus a decoy running the same
+    `<fake wrdev.sh> status` command line outside the sweep, the guard at
+    `471cec3a` stopped the mode and also killed the decoy.
+  - Fix: `stop_mode` signals only the pid the sweep recorded with `$!`.
+    The launch execs env, setsid and timeout in turn, so that pid is
+    timeout, and setsid made it a process group leader (a background job of
+    a non-interactive shell leads no group, so setsid does not fork); it is
+    checked by its command line (`timeout --signal=TERM ... $W $wmode`) and
+    its pgid before anything is sent. A TERM to timeout reaches wrdev.sh,
+    whose cleanup trap runs, and the rest of its group; if the mode is still
+    there 150s later its group is killed. The loop then stops instead of
+    firing the guard again.
+  - After: the same check stopped the mode, its child and its grandchild
+    (the TERM trap ran) and left the decoy running.
+  - Files: `developers/soak/sweep.sh`.
