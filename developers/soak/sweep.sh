@@ -39,6 +39,17 @@ mkdir -p "$WRDEV_ROOT" "$SW/logs" "$SW/work"
 # shellcheck disable=SC2046 # one name per word
 unset $(compgen -v | grep '^OS_') 2>/dev/null
 sw_free() { df -B1G --output=avail "$SW" | tail -1 | tr -d ' '; }
+# our_fg_manager <pid> succeeds only if pid runs this root's foreground dev
+# manager, as wrdev.sh dump starts it, so a stale or reused pid is never signalled
+our_fg_manager() {
+  case "$(ps -ww -o args= -p "$1" 2>/dev/null)" in
+    ("$WRDEV_ROOT/wr manager start --deployment development "*" -f") return 0 ;;
+  esac
+  return 1
+}
+# sweep_error logs a problem the sweep must exit non-zero for
+sweep_rc=0
+sweep_error() { echo "SWEEP ERROR: $*" | tee -a "$SW/sweep.log" "$log" >&2; sweep_rc=1; }
 # The build mode rewrites $WRDEV_ROOT/wr in place. A runner still executing it
 # (here, or on an exec node over NFS) dies when it is rewritten, so refuse while
 # anything may be using it: a local process, or an LSF job named as this
@@ -148,8 +159,20 @@ for spec in "${MODES[@]}"; do
   wait $mp; rc=$?
   if [ "$mode" = dump ]; then  # dump leaves a foreground dev manager behind by design; take a dump and stop it
     p=$(cat "$WRDEV_ROOT/.wr_development/pid" 2>/dev/null)
-    [ -n "$p" ] && ps -ww -o cmd= -p "$p" | grep -qF "$WRDEV_ROOT/wr" && { kill -3 "$p"; sleep 3; kill -9 "$p" 2>/dev/null; }
+    if [ -n "$p" ] && our_fg_manager "$p"; then
+      kill -3 "$p"; sleep 3; kill -9 "$p" 2>/dev/null
+    else
+      sweep_error "dump's pid file names '${p:-nothing}', not this root's foreground manager; no dump taken"
+      rc="$rc,nodump"
+    fi
     echo "goroutines in SIGQUIT dump: $(grep -ac '^goroutine ' "$WRDEV_ROOT/fg.out")" >> "$log"
+    # none may outlive the sweep: kill any still up, verified by command line
+    sleep 1
+    for q in $(pgrep -u "$(id -u)" -f -- "manager start --deployment development"); do
+      our_fg_manager "$q" || continue
+      sweep_error "this root's foreground manager pid $q was still running after dump; killing it"
+      kill -9 "$q"; rc="$rc,leftover"
+    done
   fi
   t1=$(date +%s)
   echo -e "$t0\t$mode\trc=$rc\tsecs=$(( t1 - t0 ))\tload0=$l0\tload1=$(cut -d' ' -f1 /proc/loadavg)\tminfree=${minf}G\tguard=$guard" >> "$SW/results.tsv"
@@ -157,3 +180,5 @@ for spec in "${MODES[@]}"; do
   [ "$guard" = 1 ] && { echo "stopping the sweep after the disk guard fired"; break; }
 done
 echo "sweep done $(date +%T)" | tee -a "$SW/sweep.log"
+[ "$sweep_rc" = 0 ] || echo "sweep had errors; see SWEEP ERROR lines in $SW/sweep.log" >&2
+exit "$sweep_rc"

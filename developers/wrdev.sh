@@ -4828,8 +4828,12 @@ cmd_dump() {  # dump - start dev manager FOREGROUND, so you can SIGQUIT it for a
   local out="$WRDEV_ROOT/fg.out"
   echo "starting dev manager foreground (-f, pprof enabled), output -> $out"
   nohup "$WR" manager start --deployment development -s "${1:-lsf}" -f > "$out" 2>&1 &
+  local pid=$!
+  # only a daemonised manager writes the pid file, so a foreground one would leave a previous
+  # daemon's stale pid there: record this one's, so stop, clean and sweep.sh signal it
+  mkdir -p "$DEV_RUN" && echo "$pid" > "$DEV_RUN/pid" || die "could not record pid $pid in $DEV_RUN/pid"
   sleep 8
-  local pid; pid=$(mgr_pid "$DEV_RUN")
+  { ps -p "$pid" >/dev/null 2>&1 && is_ours "$pid"; } || die "the foreground manager (pid $pid) is not running; see $out"
   cat <<EOF
 foreground manager pid: $pid
 Reproduce the stall (e.g. '$0 churn'), then dump goroutines with:
