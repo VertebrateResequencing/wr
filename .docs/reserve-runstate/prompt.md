@@ -1,0 +1,47 @@
+# Small durable run-state records for reserve and start
+
+At production scale (about 6,000 concurrent LSF runners), the manager hands
+out tens of thousands of reservations before they are durable: it waits
+`ReserveWriteWait` (10s) for the reservation write to commit, then hands the
+job out anyway, and a crash in that window can make the job run twice. In the
+battery10 soak (commit be432093, 2026-10-05) 23,586 reservations were handed
+out non-durably (2.43% of 972k runs, against 0.034% in soak9 at about 3,900
+runners), and 59 double runs followed a crash outside any injected stall.
+
+The investigation (evidence and scripts in
+`/nfs/hgi/wr/sb10-bigdb/battery10/a3/`, summarised in
+`/nfs/hgi/wr/sb10-bigdb/battery10/RESULTS.md` anomaly A3) found that bbolt's
+single write lock is saturated by four writers with no priority (the archive
+writer, the best-effort writer that carries every reserve and start durable
+write plus exit ops, chunked adds through `bolt.Batch`, and deleteLiveJobs),
+that about 85% of the lock hold time is NFS `fdatasync`, and that each
+reservation and start re-writes the whole encoded job (about 10KB for portal
+commands), so commit time grows with batch size and the system collapses into
+queueing above about 5,000 runners. A bbolt-only model of the write path
+(`a3/a3model_test.go`) showed that writing a small (about 200 byte) run-state
+record for reserve and start, instead of re-encoding the whole job, took
+reservations over 10s from 16.9% to 0% at 5,000 runners, median wait from 7.4s
+to 1.0s, and raised throughput by about 30%.
+
+The owner chose this option ("A"): make the durable write for a reservation
+and a start a small run-state record (for example state, ReservedBy, host,
+pid, token and the times needed), stored separately from the full job
+encoding, which recovery overlays onto the job it belongs to. It must keep the
+existing durability and ordering guarantees (including a job's
+release-before-reservation and change-versus-exit ordering through the
+best-effort writer's sequence, and the 260928 reserve-durability behaviour),
+drop stale run-state records when a job is archived, removed or re-run, and
+handle upgrade from and downgrade to databases without these records. The
+change must be gated by `make test`, `make race`, `make speed`, the
+`wrdev.sh` crash and recovery modes, and a production-scale LSF crash soak
+comparable to battery10, showing far fewer reservations handed out
+non-durably and no new double runs or lost jobs.
+
+Repository: wr (github.com/VertebrateResequencing/wr), develop at 6ed23588.
+
+## Notes
+
+- Today's write path (findings): a reservation is persisted by `persistReservation` (jobqueue/serverCLI.go ~1161) via `updateJobAfterChangeDurableWithin(job, ReserveWriteWait)`, and a start by `handleStart` via `updateJobAfterChangeDurable`; both re-encode the whole Job under `job.RLock` and queue it on the best-effort writer (db.go `queueJobChange`), which orders changes and exit ops by an in-memory `beSeq` and skips a change older than the same job's last exit op in a batch. No per-job counter is persisted, so a run-state record's precedence over the full record must come from transaction structure (a full-record write of a live job supersedes or deletes its run-state record in the same transaction). Full live-record writes outside the best-effort writer (add path `putNewLiveJobs` and its `liveRecordHandedOut` check, rerun marks, archive keep-live and putBack paths, modify and delete paths) each need an explicit rule for the run-state record. Recovery (`recoverIncompleteJobs`, `recoveredItemDef`, `recoverRunnerHold`, `recoverRunningJob`) needs State, Pid, Host, ReservedBy, RunnerReservation and LimitGroups, so the overlay is applied before they run. A new bucket needs no migration and survives `wr manager compact`.
+- Reservations handed out before their write was durable are counted by a cumulative counter, printed in an existing periodic manager log line (for example the "archive fold" summary), so the log holds an exact count up to any crash; the existing rate-limited warning stays.
+- The gating production-scale LSF crash soak passes only if reservations handed out non-durably outside injected stalls are at or below soak9's rate (0.034% of runs), and there are zero double runs and zero lost jobs not attributable to an injected stall or commit stall.
+- The soak database inspection tools that decode live job records directly (`developers/soak/dbstart` and `.docs/reliable2/harness/statinspect`) learn the run-state overlay in the same PR, since the soak gate depends on them.
