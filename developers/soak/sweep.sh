@@ -172,18 +172,23 @@ for spec in "${MODES[@]}"; do
   # shellcheck disable=SC2086 # envs and args are word lists
   ( cd "$SW/work" && exec env $envs setsid timeout --signal=TERM --kill-after=120 $(( tmo * 60 )) "$W" $wmode $args ) > "$log" 2>&1 &
   mp=$!
-  guard=0 minf=$f
+  guard=0 minf=$f unverified=0
   while kill -0 $mp 2>/dev/null; do
     sleep 15
     f=$(sw_free); [ "$f" -lt "$minf" ] && minf=$f
     if [ "$f" -lt "$GUARD_GB" ]; then
       echo "$(date +%T) DISK GUARD: $SW has ${f}G < ${GUARD_GB}G, stopping $mode" | tee -a "$SW/sweep.log" "$log"
       guard=1
-      stop_mode "$mp"
+      # an unverified pid is never signalled, nor waited for until its own timeout
+      stop_mode "$mp" || unverified=1
       break
     fi
   done
-  wait $mp; rc=$?
+  if [ "$unverified" = 1 ]; then
+    rc=unverified; sweep_error "not waiting for mode $mode (pid $mp), which the disk guard could not verify"
+  else
+    wait $mp; rc=$?
+  fi
   if [ "$mode" = dump ]; then  # dump leaves a foreground dev manager behind by design; take a dump and stop it
     p=$(cat "$WRDEV_ROOT/.wr_development/pid" 2>/dev/null)
     if [ -n "$p" ] && our_fg_manager "$p"; then

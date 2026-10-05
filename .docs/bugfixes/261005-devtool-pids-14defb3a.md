@@ -418,7 +418,7 @@ whose argv[0] is a file in the scratch root:
 
 ## Second re-review follow-ups
 
-- [x] F1. The default token hashed `$WRDEV_ROOT` as given, so a trailing
+- [x] S1. The default token hashed `$WRDEV_ROOT` as given, so a trailing
   slash or a symlinked path gave a different token for the same root; and
   `our_runner_pids`, `prodsim_reap_local`, `ef_reap_runners` (through
   `is_ours`) and soak's `soak_manager_pid` compared argv[0] with `$WR` and
@@ -439,3 +439,35 @@ whose argv[0] is a file in the scratch root:
     `link/wr` and `real/wr` and rejects `real/wrx`; `soak_manager_pid`
     accepts the resolved-path manager.
   - Files: `developers/wrdev.sh`, `developers/soak/config.sh`.
+- [x] S2. `.docs/reliable/harness/exp_lsf_repro.sh`'s cleanup `bkill -b`'d
+  every job id `bjobs -w` listed with a name starting `wrd_`, whichever
+  manager owned it.
+  - Red (8de5f1d6): its setup lines and `cleanup()` run with a no-op `WR`,
+    a fake `bjobs -w` listing jobs of four managers and a logging fake
+    `bkill`: `bkill -b 402`, another, untokened dev manager's job.
+  - Fix: the harness gives its manager `WR_JOBNAME_TOKEN` (default
+    `lsfrepro<port>h<cksum of host and realpath of its base dir>`, letters
+    and digits only or it exits 2), so its jobs are `wrd<token>_*`; its
+    cleanup, pre-run check and job counts match only that prefix (exact
+    prefix of the job name column), and its kill -9 test goes through
+    `kill_our_manager`. A wr binary older than `WR_JOBNAME_TOKEN` would name
+    its jobs `wrd_*`, which this cleanup then leaves alone: a leak, never a
+    kill of another manager's jobs.
+  - After: `bkill -b 401` only, this run's own job.
+  - Not run against LSF.
+- [x] S3. When `sweep.sh`'s `stop_mode` could not verify the mode's pid, the
+  sweep still blocked in `wait $mp` until the mode's own timeout.
+  - Red (8de5f1d6): with a fake `df` firing the guard and a fake `ps` that
+    cannot report command lines, the sweep logged the `SWEEP ERROR` and
+    then waited the status mode's full 120s (`status rc=124 in 120s`).
+  - Fix: an unverified mode is neither signalled nor waited for: the mode
+    gets `rc=unverified`, a second `SWEEP ERROR` says so, and the sweep stops
+    as it does after any guard.
+  - After: exit 1 after 15s, `status rc=unverified`; the fake mode and its
+    child were still running (never signalled) and the check then stopped
+    them by their recorded pids.
+- [x] S4. `.docs/reliable2/phase2/validation.md` records a historical
+  teardown with `bkill -J 'wrd_*' 0`; a note now says not to repeat it and
+  points to `wrdev.sh stop` and the tokened prefix.
+- Files: `.docs/reliable/harness/exp_lsf_repro.sh`,
+  `developers/soak/sweep.sh`, `.docs/reliable2/phase2/validation.md`.
