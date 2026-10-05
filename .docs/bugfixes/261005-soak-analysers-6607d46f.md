@@ -180,3 +180,32 @@
   - Green: the test passes (3 runs); the package passes plain and `-race`;
     lint 0 issues. The `wrstatUIBuildRAM - 1` mutant, in a scratch copy,
     fails: `Expected '1599' to be less than or equal to '1500'`.
+
+- [x] F5 signals are not specific: "slow" fires on 40,818 of 972,213
+  reservations (server reply delay; the LSF runner reserve timeout is 1s, so
+  the docstring's "waited for a job to become ready" isn't the real
+  confounder), and "lost" fires on 2,492 runs, 2,061 of them only a trailing
+  jtouch "bad job" after the run's own "command ran OK".
+  - Source: review of the F5 commit.
+  - Red command: the F5 `anyway.py` on a synthetic fixture whose double's
+    first run was reserved 12s after the runner asked, ran OK, and then had
+    only a trailing jtouch "bad job" after a crash: verdict
+    `anyway (slow+lost)`, where neither signal shows a lost reservation.
+  - Files: `developers/soak/anyway.py`, `developers/soak/README.md`.
+  - Approach: `lost` ignores rejections after the segment's "command ran OK"
+    and counts only stops with `kind=crash`, since a clean stop drains its
+    writes. The verdict is `lost` or `warned`; `slow` is listed as
+    supporting evidence only, and the docstring now says it is mostly a slow
+    manager reply. The script prints how many of all the runner logs' other
+    reservations each signal fires on.
+  - Green: the fixture gives `NOT-anyway (slow)` for that run, `anyway
+    (lost+slow)` for one whose start report was rejected after the crash,
+    and `NOT-anyway (-)` for a prompt one. On battery10 the 374 verdicts are
+    unchanged (3 + 59 + 311 `lost+slow`, 1 `lost+warned+slow`), and of the
+    other 971841 reservations `lost` fires on 59, `warned` on 61 and `slow`
+    on 40446. Two doubles.tsv rows share a first run (a run repeated twice),
+    so the "other" count takes each first run once. A throwaway probe shows
+    the 59 are runs, mostly portal, whose touch or start was rejected after
+    a crash: in 57 the runner log ends there or the release was refused and
+    the job retried, so no exit-0 run was repeated, and in 2 the archive was
+    then accepted ("ran OK"), so the job did not run again.
