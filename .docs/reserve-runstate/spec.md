@@ -523,9 +523,10 @@ After its read, `recoverIncompleteJobs` deletes every stale or orphaned
 run-state record in one write transaction. Inside that transaction each
 candidate is checked again against the live bucket as it is then, and only
 deleted if it is still stale or orphaned: on a running server (A2 test 1) a
-drain may rewrite either record between the read and the write. If it
-deleted any, it logs `clog.Warn(ctx, "recovering: dropped stale job
-run-state records", "count", n)`.
+drain may rewrite either record between the read and the write.
+`decodePriorJobs`, which has the context, logs `clog.Warn(ctx, "recovering:
+dropped stale job run-state records", "count", dropped)` if `dropped` is
+above 0.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/db.go`
@@ -852,7 +853,10 @@ Sources, all version 0 and read-only to the gate:
 and F sets `WRDEV_ROOT` under `$G` (never the `$HOME/wr-devtest` default:
 the home quota is 50G and `add-storm-fixture` needs about 3x its 7.4GB
 base) and sets `DEV_PORT DEV_WEB PROD_PORT PROD_WEB` explicitly, checked
-free with `ss -ltn`, then runs `wrdev.sh build` first.
+free with `ss -ltn`, then runs `wrdev.sh build` first. Every command in E4
+and F2, including `wrdev.sh build` and F2.5's `go test`, runs with all
+`OS_*` unset and `GOCACHE=/tmp/claude-11346/gocache-runstate-gate`, never
+the home directory's Go cache.
 
 - New `wrdev.sh compact-fixture <src> <dst>`:
   - Refuses if `dst` exists, if `src` and `dst` are the same file, if
@@ -924,8 +928,10 @@ New `developers/soak/soakgate.py --source d1|warning <outdir>
   start are ignored, since no reservation is handed out before a manager has
   started.
 - Non-durable hand-outs: with `d1`, D1 lines (`reservation handed out before
-  it was recorded on disk`), whose `total` must run 1, 2, ... with no gap
-  within each segment; with `warning`, the rate-limited `reservation not
+  it was recorded on disk`), whose `total` values within each segment must
+  be exactly the set {1..max}, each once, in any order (the total is taken
+  from an atomic increment and logged without a lock, so concurrent lines
+  can be out of order); with `warning`, the rate-limited `reservation not
   yet recorded on disk` warning's lines plus their `repeats=` values. Each
   is inside or outside a window by its timestamp.
 - Runs: the `runs=` value on the first line of `<outdir>/markers-analysis.txt`
@@ -956,13 +962,16 @@ New `developers/soak/soakgate.py --source d1|warning <outdir>
   peakRUN=<n>
   ```
 
-  (`totals n/a` with `warning`.)
+  (`totals n/a` with `warning`. In `GAP`, `<pid>` is the first segment
+  whose totals are not exactly {1..max}, and `<n>` the largest k such that
+  each of 1..k appears in it exactly once.)
 
 **File:** `developers/soak/soakgate.py`, `developers/soak/README.md`
 (analysis steps)
-**Test file:** `developers/soak/testdata/soakgate/` (an input outdir,
-runner logs, `doubles.tsv`, `dbstart.tsv` and `expected*.txt`), run as
-`soakgate.py` on it and diffed.
+**Test file:** `developers/soak/testdata/soakgate/`: one directory per
+case below, each with an input outdir, runner logs, `doubles.tsv`,
+`dbstart.tsv`, an `args` file and `expected.txt`, plus `run.sh` (F1.6),
+which runs every case and diffs.
 
 **Acceptance tests:**
 
@@ -994,6 +1003,10 @@ runner logs, `doubles.tsv`, `dbstart.tsv` and `expected*.txt`), run as
    last `E` marker has exit 3 and a `fofnput` whose last exit is 0, then the
    missing line is `missing ran=5 absent=1 excused=1` and the exit-0 job is
    the one printed.
+6. Given the same input with the first segment's two D1 lines swapped (the
+   `total=2` line first), then the totals line is `totals ok`.
+7. Given the first segment with a second `total=1` line, then the totals
+   line is `totals GAP pid 11 after 0`.
 
 ## F: Gates
 
@@ -1005,6 +1018,14 @@ With all `OS_*` unset and `GOCACHE` off the home directory:
    -tags netgo,reliability_repro ./jobqueue/` passes (B1 changes
    `recoverIncompleteJobs`' signature, which the `reliability_repro`-tagged
    `dbstart_probe_test.go` calls).
+5. `cd .docs/reliable2/harness/statinspect && GOFLAGS=-mod=mod GOPROXY=off
+   go mod tidy && go test ./...` passes. goconvey v1.8.1 (wr's version) and
+   its dependencies resolve offline from the local module cache, where wr's
+   own build put them; the updated `go.mod` and `go.sum` are committed.
+6. `developers/soak/testdata/soakgate/run.sh` (new) passes: for each case
+   directory under `developers/soak/testdata/soakgate/`, it runs
+   `soakgate.py` with that case's `args` file and `diff`s the output against
+   the case's `expected.txt`, exiting non-zero on any difference.
 2. `make speed` against `SPEED_BASE` = the develop merge-base, with
    `SPEED_DIR=$G/speed-quick DEV_PORT=51990 DEV_WEB=51991 PROD_PORT=51992
    PROD_WEB=51993`, reports no worsening over its threshold. The PR body
@@ -1029,14 +1050,21 @@ DEV_PORT=51980 DEV_WEB=51981 PROD_PORT=51982 PROD_WEB=51983` and this tree's
 1. `wrdev.sh crash-recovery` prints `PASS: re-sent archive accepted
    (complete=1), command ran exactly once` and exits 0.
 2. `WRDEV_PRISTINE_DB=$G/fixtures/fix120k.db wrdev.sh add-storm-lsf`
-   (defaults) exits 0. Its `## VERDICT` lines show `recoveredIncomplete`
-   equal to `manifestIncomplete` and `unsafeCommands=0`.
+   (defaults) exits 0, prints `recovered-job audit: <n>/<n> incomplete
+   commands read` with both numbers equal to the manifest's incomplete
+   count, its final `## VERDICT:` line has `missingAcked=0`, and it prints
+   its `PASS: all <n> acknowledged adds` line. (Its `recoveredIncomplete`
+   and `unsafeCommands` VERDICT lines appear only on its failure paths.)
 3. `wrdev.sh dep-granularity-check` (defaults) exits 0.
-4. `wrdev.sh archive-rate`, `archive-ceiling`, `add-storm`,
-   `writestorm-freeze` and `backup-stall-check` exit 0 with their DB
-   variables (`WR_ARCHRATE_DB`, `WR_AC_DB`, `WR_AS_DB`, `WR_WSFREEZE_DB`,
-   `WRDEV_PRISTINE_DB`) set to the `$G/fixtures` copy of the database each
-   mode's header names.
+4. Each of these exits 0, with the fixtures `soak/sweep.sh` and battery10's
+   `speed-go.sh` use, all `$G/fixtures` compacted copies:
+   - `WR_ARCHRATE_DB=$G/fixtures/pristine10 wrdev.sh archive-rate`
+   - `WR_AC_DB=$G/fixtures/pristine6 WRDEV_AC_WORK=$G/f2/root wrdev.sh
+     archive-ceiling`
+   - `WR_AS_DB=$G/fixtures/prod.db WRDEV_AS_WORK=$G/f2/root wrdev.sh
+     add-storm`
+   - `WR_WSFREEZE_DB=$G/fixtures/pristine10 wrdev.sh writestorm-freeze`
+   - `WRDEV_PRISTINE_DB=$G/fixtures/pristine10 wrdev.sh backup-stall-check`
 5. `WR_AS_DB=$G/fixtures/prod.db CGO_ENABLED=1 go test -tags
    netgo,reliability_repro --count 1 -run TestReliable4AddStorm ./jobqueue/`
    passes.
@@ -1084,9 +1112,10 @@ This tree's soak passes only if all hold:
 2. `soakgate.py --source d1` prints `totals ok`, an `outsidePct` of at most
    0.0340, and an `outside` count below that of the baseline's
    `soakgate.py --source warning`. The baseline's warning-based
-   count undercounts (it counts only expired waits, a summary is stamped
-   when emitted, and a pending summary is lost at a crash), which only makes
-   this comparison stricter.
+   count is approximate: it counts only expired waits, loses a pending
+   summary at a crash, and stamps a summary when it is emitted, which can
+   move repeats outside a stall window and make the comparison more
+   lenient. The absolute 0.034% bar decides.
 3. `soakgate.py` prints `doubles` with `outside=0` and `acknowledged=0`.
 4. `soakgate.py` prints `missing` with `absent=0`, and `relburycheck.py`
    reports problems 0.
