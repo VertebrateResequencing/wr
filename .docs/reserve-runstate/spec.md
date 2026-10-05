@@ -120,8 +120,25 @@ changes and exit ops, `archiveJobTx` (`recordCompleteTx`,
 `keepLiveForRerunTx`), `putRunningRerunMark`, `storeLiveForRerun`,
 `putBackArchivedDependentsTx`, `putNewLiveJobs`, `modifyLiveJobsTx`
 (`deleteOldLiveJobs` and the put of the new keys) and `deleteLiveJobs`. A
-review check is that `grep -n 'bucketJobsLive' jobqueue/*.go` shows no other
-`Put` or `Delete` on that bucket.
+review check is that `grep -n 'bucketJobsLive' jobqueue/*.go | grep -v
+_test.go` shows no other `Put` or `Delete` on that bucket. Test files may
+write the bucket directly (for example `moved_on_runner_test.go`,
+`jobqueue_test.go`) to build fixtures.
+
+Existing test helpers that read or compose raw live records are changed to
+carry or read through the run-state record (A2 test 6):
+
+- `withLiveRecord` (`moved_on_runner_test.go`) copies the key's
+  `jobRunState` value from `from` along with its live record, and deletes the
+  base's `jobRunState` value for the key if `from` has none.
+- `storedLiveJob` and `storedLiveJobState` (`reserve_durability_test.go`,
+  also used by `runner_report_followups_test.go`) decode the live record and
+  apply a matching run-state record.
+- `recordOf`, `liveJobRecord` and `liveJobRecordInImage`
+  (`readd_queued_test.go`) return the live record followed by the key's
+  `jobRunState` value (empty if none), so their byte comparisons cover both.
+- Any other test that reads `bucketJobsLive` values to check a job's state
+  reads through the overlay the same way.
 
 ### Best-effort writer
 
@@ -187,8 +204,9 @@ var (
 func checkDBSchemaVersion(dbFile string, version uint64) error
 
 // readOnlyDBFileSchemaVersion opens path read-only (bolt ReadOnly, so the
-// open writes nothing, even to a file whose freelist was never synced),
-// returns its schema version and closes it.
+// open writes nothing, even to a file whose freelist was never synced) with
+// Timeout offlineDBOpenTimeout, so it fails rather than blocks on a file a
+// running manager holds, returns its schema version and closes it.
 func readOnlyDBFileSchemaVersion(path string) (uint64, error)
 ```
 
@@ -271,7 +289,13 @@ and so relied on the reservation's or start's full write. Each is added to
 `jobRunState` or given its own write. Known: `Requirements` and
 `RequirementsOrig` (`prepareReadyJob` -> `updateJobRequirementsForRetry`,
 `jobqueue/server.go`), added above. `DelayTime` is set in
-`respondWithReservedJob`, so it is included. Unexported fields
+`respondWithReservedJob`, so it is included. Candidate: `WaitingForDepGroups`
+(`setWaitingForDepGroups`, called from `dependency.go`,
+`running_dependent.go`, `server.go` and `serverCLI.go`); a job is reservable
+only once its dependencies resolve, and recovery re-derives the field for
+every recovered job through `dependency.go`'s `setWaitingForDepGroups` call.
+The audit confirms that re-derivation with a test (A2 test 7); if recovery
+does not re-derive it, it is added to `jobRunState`. Unexported fields
 (`schedulerGroup`, `runID`, ...) were never persisted.
 
 **Package:** `jobqueue/`
@@ -306,6 +330,15 @@ and so relied on the reservation's or start's full write. Each is added to
    `BenchmarkUpdateJobState` run on the same 10,000-byte-Cmd jobs, when both
    run with `make bench BENCH=UpdateJob`, then the run-state benchmark's
    `bolt_pages/job` is at most half the full-change benchmark's.
+6. The tests that use the helpers listed under "Live-record helpers"
+   (`moved_on_runner_test.go`, `runner_report_followups_test.go`,
+   `readd_queued_test.go`, `reserve_durability_test.go`) pass after the
+   switch.
+7. Given a job added with a dependency on dep group `g` that no job has yet
+   (so `WaitingForDepGroups` is `[g]` in its add-time record), then a job in
+   `g` added and completed, and the first job reserved, when a crash image
+   is taken and a new server started on it, then the recovered job's
+   `WaitingForDepGroups` is empty, as it is in memory.
 
 ### A3: Drain ordering
 
@@ -559,6 +592,35 @@ it refuses untouched.
    then the error satisfies `errors.Is(err, errDBSchemaTooNew)`, the file's
    SHA-256 is unchanged, and no `*.compact-*` file is in its directory.
 
+### C3: The user sees the refusals
+
+As an operator, I want `wr manager start` and `wr manager compact` to show me
+the refusal, not just fail.
+
+The manager child dies through `die("wr manager failed to start : %s",
+err)` when `Serve` fails, which logs at crit; the daemon parent prints
+`getBadLogLines()` and `startupErr`. No code change is expected unless a
+test below fails.
+
+**Package:** `cmd/`
+**File:** `cmd/manager.go`
+**Test file:** `cmd/manager_test.go`
+
+**Acceptance tests:**
+
+1. `TestManagerStartRefusesUnsupportedDB`: given an isolated config whose
+   `ManagerDBFile` is an unversioned database with a `jobslive` bucket, when
+   `wr manager start --foreground` runs as a subprocess (the test binary
+   re-executed, as `manager_stop_test.go` does), then it exits non-zero, its
+   stderr contains `wr manager compact`, and `getBadLogLines()` on its log
+   returns a line containing `wr manager compact`. The same with a database
+   stamped 3 shows `schema version 3` in both.
+2. `TestManagerCompactRefusesNewerDB`: given `managerCompactExit` replaced
+   as in `TestManagerCompactRefusesWhileRunning` and `ManagerDBFile` a
+   database stamped 3, when the compact command's `Run` executes, then the
+   exit code is 1, the logged error contains `schema version 3`, and the
+   file's SHA-256 is unchanged.
+
 ## D: Observability
 
 ### D1: Each non-durable hand-out is logged
@@ -569,8 +631,9 @@ exact per-key count up to any crash.
 
 - `db.reservesNotDurable atomic.Uint64`. `func (db *db)
   noteReserveNotDurable() uint64` increments it and returns the new total.
-- `persistReservation`, on `errDurableWriteWaitExpired` and on any other
-  error except `errDBClosed`, logs before the job is handed out:
+- `persistReservation`, on any non-nil error, including `errDBClosed`
+  (`respondWithReservedJob` still hands the job out then, as around a clean
+  stop), logs before the job is handed out:
 
   ```go
   clog.Info(ctx, reserveNotDurableLogMsg, "key", job.Key(),
@@ -595,6 +658,9 @@ exact per-key count up to any crash.
    `reservation not yet recorded on disk` is still logged.
 2. Given writes that commit promptly, when 3 jobs are reserved, then no such
    line is logged and the counter is 0.
+3. Given a server whose `db.closed` is set under the db's lock (as `close`
+   sets it), when `persistReservation` runs for job A, then one D1 line with
+   `key=<A's key> total=1` is logged.
 
 ## E: Tooling and documentation
 
@@ -702,47 +768,110 @@ version of wr.
 Review check (not a test): `CHANGELOG.md` has the three entries in the
 positions given.
 
-### E4: Fixture compaction and soak analysis
+### E4: Fixture compaction
 
-As a gate runner, I want compacted copies of the version-0 fixtures under
-`/nfs/hgi/wr/sb10-bigdb` (`fix120k.db`, `pristine6`, `pristine10`,
-`prod.db`), with valid manifests, so that every big-DB scenario runs on this
+As a gate runner, I want compacted copies of the version-0 fixtures, made
+without touching the originals, so that every big-DB scenario runs on this
 tree and on develop alike.
 
-- New `wrdev.sh compact-fixture <src> <dst>`:
-  - Refuses if `dst` exists, or `src` and `dst` are the same file. Never
-    opens `src` for writing.
-  - `cp -p src dst`, then runs this tree's `wr manager compact` on `dst`
-    with an isolated config (its `ManagerDBFile` is `dst`, its manager port
-    unused), and exits non-zero on failure, removing `dst`.
-  - If `src.aslmanifest` exists, first checks that its `size` and `mtime`
-    match `src` (refusing otherwise), then writes `dst.aslmanifest`: the
-    same fields, `size` and `mtime` of the compacted `dst`, and a
-    `compactedfrom=<src>` field.
-  - Listed in `usage` and `main`.
-- `developers/soak/anyway.py` also reads the per-key D1 lines, so a double
-  run whose first reservation has one is classified as handed out
-  non-durably.
+Sources, all version 0 and read-only to the gate:
+`/nfs/hgi/wr/sb10-bigdb/pristine6`, `/nfs/hgi/wr/sb10-bigdb/pristine10` and
+`/nfs/hgi/wr/sb10-bigdb/prod.db`. The gate directory is
+`G=/nfs/hgi/wr/sb10-bigdb/runstate-gate`, new.
 
-**File:** `developers/wrdev.sh`, `developers/soak/anyway.py`
-**Test file:** none; run end to end before ready.
+- New `wrdev.sh compact-fixture <src> <dst>`:
+  - Refuses if `dst` exists, if `src` and `dst` are the same file, or if
+    `src.aslmanifest` exists (an add-storm fixture embeds its
+    `<src>.jobcwd` path in its commands, so it is regenerated with
+    `add-storm-fixture`, never copied).
+  - `cp -p src dst`, then runs `$WR manager compact` on `dst` with an
+    isolated config (its `ManagerDBFile` is `dst`, its manager port unused).
+    On failure it removes `dst` and exits non-zero. It never opens `src`
+    for writing.
+  - Listed in `usage` and `main`.
+- The texts that point at version-0 fixtures name compacted copies made with
+  `compact-fixture` instead: the `die`/`echo` texts of `add-storm` (`WR_AS_DB`),
+  `add-storm-fixture` (two), the `WR_RS_DB` header comment, and the
+  `WRDEV_PRISTINE_DB` `die` that names `pristine10`/`prod.db`; and
+  `TestReliable4AddStorm`'s skip message.
+- The gate's fixtures:
+  1. `compact-fixture` each source to `$G/fixtures/pristine6.db`,
+     `$G/fixtures/pristine10.db` and `$G/fixtures/prod.db`.
+  2. `WRDEV_PRISTINE_DB=$G/fixtures/pristine6.db
+     WRDEV_ASL_FIXTURE=$G/fixtures/fix120k.db wrdev.sh add-storm-fixture
+     120000`, which writes `fix120k.db`, its `.aslmanifest` and its own
+     `fix120k.db.jobcwd` in `$G/fixtures`.
+
+**File:** `developers/wrdev.sh`, `jobqueue/reliable4_addstorm_test.go`
+**Test file:** none; each is run end to end before the PR is ready.
 
 **Acceptance tests:**
 
-1. Given a copy of `jobqueue/testdata/dbcompat/db.golden` with a
-   hand-written manifest matching it, when `compact-fixture` runs, then this
-   tree's manager starts on `dst`, and `dst.aslmanifest`'s `size` and
-   `mtime` match `dst`.
-2. Given `dst` already present, when it runs, then it exits non-zero and
-   neither file changes.
-3. Given `fix120k.db`'s compacted copy, when `WRDEV_PRISTINE_DB=<copy>
+1. Given a copy of `jobqueue/testdata/dbcompat/db.golden` as `src`, when
+   `compact-fixture` runs, then this tree's manager starts on `dst` and
+   `src`'s SHA-256 is unchanged.
+2. Given `dst` already present, or `src.aslmanifest` present, when it runs,
+   then it exits non-zero and no file changes.
+3. Given step 2's fixture, when `WRDEV_PRISTINE_DB=$G/fixtures/fix120k.db
    wrdev.sh add-storm-lsf` starts, then it prints `fixture manifest OK`.
-4. Given `pristine6`'s compacted copy as `WRDEV_PRISTINE_DB`, when
-   `wrdev.sh add-storm-fixture 20000` runs, then it prints its `PASS: use
-   it with` line.
-5. Given a soak output dir with the D1 lines, when `anyway.py` runs, then
-   each double run whose first reservation's key has a D1 line is reported
-   as handed out non-durably.
+
+### E5: Soak classification by stall window
+
+As a soak analyst, I want one step that splits non-durable hand-outs and
+double runs by the injected commit stalls, so that F3's criteria are
+computed, not judged.
+
+"Injected stall" and "commit stall" here both mean an injected FUSE commit
+stall: `stall.sh` writes `<epoch> STALL START ...` and `<epoch> STALL END
+...` to `<outdir>/stall.log`. A stall window runs from a START to its END
+plus `ReserveWriteWait` (10s); a START with no END ends at START plus
+`STALL_SECS` (180) plus 10s. `crashon.sh stall` only triggers a crash during
+a stall and adds no window.
+
+New `developers/soak/stallsplit.py <outdir> <runnerlogdir> <doubles.tsv>
+<runs>`:
+
+- Reads the windows from `stall.log`, and every manager log of the run:
+  `<outdir>/manager.log` and `<outdir>/manager.log.<epoch>`.
+- Non-durable hand-outs: D1 lines (`reservation handed out before it was
+  recorded on disk`), or, for a tree without them, the rate-limited
+  `reservation not yet recorded on disk` warning's lines plus their
+  `repeats=` values. Each counted inside or outside a window by timestamp.
+  For D1 lines it checks per log file that `total` runs 1, 2, ... with no
+  gap.
+- Double runs: for each `doubles.tsv` row (doubles.py's output), the first
+  run's reservation time is its runner log's `reserved a job` line for that
+  psimjob kind and id at or before the first run's start, as `anyway.py`
+  maps them. It is inside or outside a window by that time.
+- Prints exactly, then one line per outside double run:
+
+  ```text
+  nondurable source=<d1|warning> inside=<n> outside=<n> runs=<runs> outsidePct=<x.xxxx>
+  totals <ok|GAP <file> after <n>>
+  doubles inside=<n> outside=<n>
+  ```
+
+**File:** `developers/soak/stallsplit.py`, `developers/soak/README.md`
+(analysis steps)
+**Test file:** `developers/soak/testdata/stallsplit/` (input dir and
+`expected.txt`), run as `stallsplit.py` on it and diffed.
+
+**Acceptance tests:**
+
+1. Given `testdata/stallsplit` with a `stall.log` holding one window
+   1000-1180, `manager.log.1` with D1 lines at 1005 (`total=1`) and 1300
+   (`total=2`), `manager.log` with one at 1400 (`total=1`), runner logs and
+   a `doubles.tsv` with two double runs whose first reservations are at
+   1010 and 1500, and `<runs>` 10000, when `stallsplit.py` runs, then its
+   output equals `expected.txt`: `nondurable source=d1 inside=1 outside=2
+   runs=10000 outsidePct=0.0200`, `totals ok`, `doubles inside=1
+   outside=1`, and the 1500 double's line.
+2. Given the same input with `manager.log`'s line changed to `total=2`, then
+   the totals line is `totals GAP manager.log after 0`.
+3. Given a warning-only log with one warning line inside the window and a
+   `(repeated) repeats=3` line outside it, then the first line reads
+   `nondurable source=warning inside=1 outside=3 runs=10000
+   outsidePct=0.0300`.
 
 ## F: Gates
 
@@ -754,73 +883,74 @@ With all `OS_*` unset and `GOCACHE` off the home directory:
 2. `make speed` against `SPEED_BASE` = the develop merge-base reports no
    worsening over its threshold. The PR body summarises its verdict and A2
    test 5's two `bolt_pages/job` figures.
-3. `make speed-full` with `SPEED_BIG_DB` set to `pristine6`'s compacted copy
-   reports no worsening; both trees run on copies of that one file.
+3. `make speed-full` with `SPEED_BIG_DB=$G/fixtures/pristine6.db` reports no
+   worsening; both trees run on copies of that one file.
 
 ### F2: wrdev crash, recovery and big-DB modes
 
-Fixtures are E4's compacted copies, never the originals. Each passes on this
-tree, in sequence on an isolated manager:
+Fixtures are E4's, never the originals. Each passes on this tree, in
+sequence on an isolated manager:
 
 1. `wrdev.sh crash-recovery` prints `PASS: re-sent archive accepted
    (complete=1), command ran exactly once` and exits 0.
-2. `wrdev.sh add-storm-lsf` (defaults, `WRDEV_PRISTINE_DB` = compacted
-   `fix120k.db`) exits 0. Its `## VERDICT` lines show `recoveredIncomplete`
+2. `WRDEV_PRISTINE_DB=$G/fixtures/fix120k.db wrdev.sh add-storm-lsf`
+   (defaults) exits 0. Its `## VERDICT` lines show `recoveredIncomplete`
    equal to `manifestIncomplete` and `unsafeCommands=0`.
 3. `wrdev.sh dep-granularity-check` (defaults) exits 0.
 4. `wrdev.sh archive-rate`, `archive-ceiling`, `add-storm`,
    `writestorm-freeze` and `backup-stall-check` exit 0 with their DB
    variables (`WR_ARCHRATE_DB`, `WR_AC_DB`, `WR_AS_DB`, `WR_WSFREEZE_DB`,
-   `WRDEV_PRISTINE_DB`) set to compacted `pristine10`, `pristine6` or
-   `prod.db` copies as each mode's header names.
-5. `TestReliable4AddStorm` passes with `WR_AS_DB` = compacted `prod.db`.
+   `WRDEV_PRISTINE_DB`) set to the `$G/fixtures` copy of the database each
+   mode's header names.
+5. `TestReliable4AddStorm` passes with `WR_AS_DB=$G/fixtures/prod.db`.
 
 ### F3: Production-scale LSF crash soaks
 
-Two soaks, run one after the other with identical settings: a baseline of
-develop at the PR's merge-base, then this tree. Each uses its own tree's
-binary for the whole run (never replaced mid-run) and a fresh copy of the
-compacted `fix120k.db`.
+Two soaks, one after the other, never concurrently: a baseline of develop
+at the PR's merge-base, then this tree. Each uses its own tree's binary for
+the whole run (never replaced mid-run).
 
-Settings: `developers/soak/run.sh` with battery10's `soak-go.sh`: `HOURS=3`,
-`SCALE=1`, `RESTART_KINDS` with 6 or more crashes, `USE_FUSE=1` with the
-180s FUSE commit stall, `RAMP0=600 RAMP="0:600 8:1200 16:2100 25:3000
-40:3600 60:4000"`, and the `crashon.sh`, `crashafter.sh`, `relbury.sh`,
-`rundep.sh` and `stopstate.sh` injectors. Analyse each with the README's
-steps and `dbstart` built from this tree.
+Each soak's launcher is battery10's `soak-go.sh` with only these values
+changed (ports checked free with `ss -ltn` first):
 
-Definitions:
+| Value | Baseline | Change |
+| --- | --- | --- |
+| tree | `$G/src-base` (export of the merge-base) | `$G/src-change` (export of the PR head) |
+| `H` | `$G/src-base/developers/soak` | `$G/src-change/developers/soak` |
+| `SOAK_ROOT` | `$G/soak-base/run` | `$G/soak-change/run` |
+| `FIXTURE` | `$G/soak-base/fix120k.db` | `$G/soak-change/fix120k.db` |
+| ports `DEV_PORT DEV_WEB PROD_PORT PROD_WEB PPROF_PORT` | `51950 51951 51952 51953 6250` | `51960 51961 51962 51963 6260` |
+| `GOCACHE` | `/tmp/claude-11346/gocache-runstate-base` | `/tmp/claude-11346/gocache-runstate-change` |
 
-- Stall window: each injected FUSE commit stall or `crashon.sh stall`, from
-  its start to its end plus `ReserveWriteWait`.
-- Non-durable outside stalls (this tree): D1 lines in every manager log of
-  the run whose timestamp is outside every stall window. In each manager
-  process the lines' `total` values run 1, 2, ... with no gap, and the
-  number of lines equals the last `total`; if not, the run is invalid.
-- Non-durable (baseline): the rate-limited warning's lines plus their
-  `repeats=` sums, as battery10 counted, also outside stall windows.
+- Each `FIXTURE` is a `cp -p` of `$G/fixtures/fix120k.db` made just before
+  that soak; `wrdev.sh prodsim` copies it again into the soak's DB dir.
+- Unchanged from `soak-go.sh`: `HOURS=3`, `SCALE=1`, its `RESTART_KINDS`
+  (6 or more crashes), `USE_FUSE=1` with `STALL_SECS=180`, `RAMP0=600
+  RAMP="0:600 8:1200 16:2100 25:3000 40:3600 60:4000"`, and the
+  `crashon.sh` (stall and two burst), `crashafter.sh`, `relbury.sh` (r1,
+  r2), `rundep.sh` and `stopstate.sh` injectors.
+- Both soaks are analysed with the change tree's analysis tools (README
+  steps, `dbstart`, E5's `stallsplit.py`).
 
 This tree's soak passes only if all hold:
 
 1. Peak LSF RUN (`lsf.tsv`) is at least 5,500 in both soaks, and within 10%
    of each other.
-2. Non-durable outside stalls is at most 0.034% of `markers.py`'s run count,
-   and below the baseline's.
-3. Every double run in `markers.py` is classified by `doubles.py` and
-   `anyway.py` as having its first reservation inside a stall window; any
-   other is a failure.
+2. `stallsplit.py`'s `totals ok`, and its `outsidePct` at most 0.034% of
+   `markers.py`'s run count; its `outside` count below the baseline's.
+3. `stallsplit.py`'s `doubles outside=0`.
 4. No lost jobs: `relburycheck.py` problems 0, `runnerlogs.py` finds no run
    whose final report was acknowledged and that then ran again, and every
    key the soak added is in `dbstart` output as complete, buried or live.
 5. `rundepcheck.py` has no CHECK outside the owner-ruled "stop means buried"
    cases.
 
-The PR body records both run directories, peak RUN, run counts, non-durable
-counts inside and outside stalls, double runs by class, and the verdict.
+The PR body records both run directories, peak RUN, run counts, both
+soaks' `stallsplit.py` output, and the verdict.
 
 ## Implementation Order
 
-1. **Phase 1: schema (C1, C2).** First.
+1. **Phase 1: schema (C1, C2, C3).** First.
 2. **Phase 2: record and cleanup (A1, A4, A5).** Depends on phase 1, whose
    `initDB` changes A1's bucket creation sits beside. Reserve and start still
    write full records, so behaviour is unchanged.
@@ -828,9 +958,9 @@ counts inside and outside stalls, double runs by class, and the verdict.
    audit.** Depends on phase 2. A2 must not land without B1: without the
    overlay a crash would recover pre-reservation state.
 4. **Phase 4: logging (D1).** After phase 3.
-5. **Phase 5: tools and docs (E1, E2, E3, E4).** E1 and E2 depend on phase
-   2's format, E1 test 4 on phase 3, E4's `anyway.py` part on D1, E3 on
-   phases 1 and 3.
+5. **Phase 5: tools and docs (E1, E2, E3, E4, E5).** E1 and E2 depend on
+   phase 2's format, E1 test 4 on phase 3, E3 on phases 1 and 3, E5 on D1.
+   E4 needs phase 1's compact.
 6. **Phase 6: gates (F1, F2, F3).** Sequential: F1, then F2, then F3. F3 is
    the last step before the PR is ready.
 
@@ -886,7 +1016,13 @@ counts inside and outside stalls, double runs by class, and the verdict.
   existing log watchers and `TestReserveDurabilityStalledWrite` keep working.
 - **Baseline soak.** The fixtures had to be compacted for this tree, which
   changes their freelist, so battery10's figures are not like for like. The
-  baseline soak on the same compacted fixture is.
+  baseline soak on the same compacted fixture is. `fix120k` is regenerated
+  from compacted `pristine6`, not compacted itself, because its commands
+  embed its source's `.jobcwd` and `add-storm-lsf` writes there, which would
+  touch the original.
+- **`errDBClosed` hand-outs are logged.** `respondWithReservedJob` hands the
+  job out whatever `persistReservation` returns, so a hand-out during a
+  clean stop is exposed like any other and must be in the exact count.
 - **Testing.** GoConvey for new tests, following go-implementor and
   go-reviewer. Crash behaviour is tested with a crash image (`BackupDB`)
   restored under a new server, as the existing durability tests do. Existing
