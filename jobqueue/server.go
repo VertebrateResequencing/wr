@@ -348,11 +348,19 @@ const envPprofAddr = "WR_PPROF_ADDR"
 var recoveryPauseHookForTest func()
 
 // limitGroupsStoredHook, if non-nil, is called by Server.storeLimitGroups once
-// the database has stored an add's or modify's limit groups, before the limiter
-// is updated. It is a test-only seam and is nil in production.
+// the database has stored an add's, modify's or `wr limit`'s limit groups,
+// before the limiter is updated. It is a test-only seam and is nil in production.
 //
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var limitGroupsStoredHook func()
+
+// limitGroupsAppliedHook, if non-nil, is called by
+// Server.applyStoredLimitGroups once it has read the limits back from the
+// database, before it gives them to the limiter, with lgmutex held. It is a
+// test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring limitGroupsStoredHook
+var limitGroupsAppliedHook func()
 
 // deleteOnFailureHook, if non-nil, is called by the goroutine that removes a
 // buried job with a remove-on-failure behaviour, just before it removes it, so a
@@ -1757,6 +1765,11 @@ type Server struct {
 	srmutex             sync.Mutex   // to protect scheduleRetries
 	csmutex             sync.RWMutex // to protect clientSubscriptions and subsClosed
 	rpmutex             sync.Mutex   // to protect racPending, racRunning and waitingReserves
+	// lgmutex is held across reading stored limit groups back from the
+	// database and giving them to the limiter (see applyStoredLimitGroups).
+	// Under it only a bolt read transaction and the limiter's own lock are
+	// taken, and nothing holding either takes it.
+	lgmutex sync.Mutex
 	sync.Mutex
 	wsmutex  sync.RWMutex
 	up       bool
@@ -4124,6 +4137,46 @@ func (s *Server) writeReleasedJob(ctx context.Context, job *Job, rep releaseRepo
 	}
 
 	s.db.updateJobAfterExit(ctx, job, rep.endState.Stdout, rep.endState.Stderr, rep.forceStorage)
+
+	return nil
+}
+
+// applyStoredLimitGroups gives the limiter the limits the database now holds
+// for the given groups, removing the limit of any it holds none for.
+//
+// It reads the database again, under lgmutex, rather than applying the limits
+// its caller stored: another request may have stored a newer limit for the
+// same group since, and applied it already, and a request that stored first
+// must not apply last. Every database change to a group is followed by an
+// apply of that group whose read comes after it, so the last apply of a group
+// leaves the limiter with what the database last stored. Holding lgmutex only
+// across this read and the limiter update, not across the database write,
+// keeps concurrent stores coalescing into shared bolt commits.
+func (s *Server) applyStoredLimitGroups(groups []string) error {
+	s.lgmutex.Lock()
+	defer s.lgmutex.Unlock()
+
+	// the read must be under the lock too: read before it, A could read 5, B
+	// store, read and apply 3, then A apply 5, leaving 5 in memory against 3
+	// on disk.
+	limits, err := s.db.retrieveStoredLimits(groups)
+	if err != nil {
+		return err
+	}
+
+	if limitGroupsAppliedHook != nil {
+		limitGroupsAppliedHook()
+	}
+
+	for i, group := range groups {
+		if limits[i] < 0 {
+			s.limiter.RemoveLimit(group)
+
+			continue
+		}
+
+		s.limiter.SetLimit(group, *limiter.NewCountGroupData(limits[i]))
+	}
 
 	return nil
 }
@@ -6817,12 +6870,14 @@ func (s *Server) handleUserSpecifiedJobLimitGroups(job *Job, limitGroups map[str
 // storeLimitGroups calls db.storeLimitGroups() and handles updating the
 // in-memory representation of the groups.
 //
-// Only the limits the database reports as changed (which includes those stored
-// for the first time) are given to the limiter. A limit the database already
-// held must not be: another request, such as `wr limit`, may have changed it
-// since the database was read, and giving it again would bring back the old
-// limit in memory.
+// Only the groups the database reports as changed (which includes those stored
+// for the first time) or removed are given to the limiter, by
+// applyStoredLimitGroups. A limit the database already held needs no update.
 func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) error {
+	if len(limitGroups) == 0 {
+		return nil
+	}
+
 	changed, removed, err := s.db.storeLimitGroups(limitGroups)
 	if err != nil {
 		return err
@@ -6832,15 +6887,11 @@ func (s *Server) storeLimitGroups(limitGroups map[string]*limiter.GroupData) err
 		limitGroupsStoredHook()
 	}
 
-	for _, group := range changed {
-		s.limiter.SetLimit(group, *limitGroups[group])
+	if len(changed) == 0 && len(removed) == 0 {
+		return nil
 	}
 
-	for _, group := range removed {
-		s.limiter.RemoveLimit(group)
-	}
-
-	return nil
+	return s.applyStoredLimitGroups(append(changed, removed...))
 }
 
 // updateJobDependencies is used by queueNewJobItems to handle the jobsToUpdate
@@ -8465,20 +8516,22 @@ func (s *Server) getSetLimitGroup(ctx context.Context, group string) (*limiter.G
 	return limit, "", nil
 }
 
-// setLimitGroup persists a limit group, applies the new limit (if valid),
-// removes any limits the store reported as removed, and re-triggers scheduling.
+// setLimitGroup persists a limit group and gives the limiter the change, as an
+// add does, then re-triggers scheduling.
+//
+// Unlike an add, it then gives the limiter the group's stored limit even if the
+// database reports it unchanged, so that setting a limit again repairs a limiter
+// that disagrees with the database. A time-based group, whose limit comes from
+// its name and is never stored, is left alone.
 func (s *Server) setLimitGroup(ctx context.Context, name string, limit *limiter.GroupData) error {
-	_, removed, err := s.db.storeLimitGroups(map[string]*limiter.GroupData{name: limit})
-	if err != nil {
+	if err := s.storeLimitGroups(map[string]*limiter.GroupData{name: limit}); err != nil {
 		return err
 	}
 
-	if limit.IsValid() {
-		s.limiter.SetLimit(name, *limit)
-	}
-
-	for _, g := range removed {
-		s.limiter.RemoveLimit(g)
+	if limit.IsCount() || !limit.IsValid() {
+		if err := s.applyStoredLimitGroups([]string{name}); err != nil {
+			return err
+		}
 	}
 
 	s.triggerReadyAddedCallback(ctx)

@@ -418,13 +418,20 @@ func planLimitGroup(b *bolt.Bucket, group string, limitG *limiter.GroupData) (li
 		return planLimitGroupStore(existing, limitG.Limit())
 	}
 
-	// what is left is either a time-based group, which derives its limit from
-	// its own name and so is never stored, or the invalid GroupData that
-	// limiter.NewCountGroupData() makes of the negative limit a user gives
-	// (name:-1) to forget a group's limit entirely. That one has to take any
-	// record with it: the limiter vivifies groups from this bucket on demand, so
-	// a surviving record brings the removed limit straight back.
-	if limitG.IsValid() || existing == nil {
+	// a time-based group derives its limit from its own name, so is never
+	// stored, and naming it changes nothing: the limiter's group for it must be
+	// left alone.
+	if limitG.IsValid() {
+		return limitGroupUnchanged, limitGroupWriteNone
+	}
+
+	// what is left is the invalid GroupData that limiter.NewCountGroupData()
+	// makes of the negative limit a user gives (name:-1) to forget a group's
+	// limit entirely. That has to take any record with it: the limiter vivifies
+	// groups from this bucket on demand, so a surviving record brings the
+	// removed limit straight back. With no record it is still reported removed,
+	// so the limiter forgets any limit it has for the group.
+	if existing == nil {
 		return limitGroupRemoved, limitGroupWriteNone
 	}
 
@@ -2633,6 +2640,29 @@ func (db *db) queueJobExit(job *Job, stdo, stde []byte, forceStorage bool, waite
 	db.launchJobExitUpdate(exit, waiter)
 
 	return nil
+}
+
+// retrieveStoredLimits returns the limit stored for each of the given groups,
+// in the same order, or -1 for a group with none stored, all read in one
+// transaction.
+func (db *db) retrieveStoredLimits(groups []string) ([]int64, error) {
+	limits := make([]int64, len(groups))
+
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketLGs)
+
+		for i, group := range groups {
+			limits[i] = -1
+
+			if v := b.Get([]byte(group)); v != nil {
+				limits[i] = int64(binary.BigEndian.Uint64(v)) //nolint:gosec // stored from a non-negative int64
+			}
+		}
+
+		return nil
+	})
+
+	return limits, err
 }
 
 // foldedOp is one caller's pending write, waiting for a coalescing writer to

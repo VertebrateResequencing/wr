@@ -58,11 +58,16 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/limiter"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
 // benchJobCount is the number of jobs each benchmark iteration operates on.
 const benchJobCount = 3000
+
+// benchLimitStoreParallelism is the RunParallel parallelism (goroutines per
+// GOMAXPROCS) of BenchmarkServerStoreLimitGroups' concurrent cases.
+const benchLimitStoreParallelism = 16
 
 // benchDBWaitTimeout bounds how long we wait for the database's background
 // update goroutines to drain before measuring; it only affects a (logged)
@@ -173,6 +178,72 @@ func BenchmarkAddJobs(b *testing.B) {
 
 	b.StopTimer()
 	reportBoltWriteMetrics(b, testDB, writesBefore, pagesBefore, benchJobCount*b.N)
+}
+
+// BenchmarkServerStoreLimitGroups measures Server.storeLimitGroups, which every
+// add, modify of limit groups and `wr limit` calls: with no limit groups, with a
+// limit group whose limit is already stored (the usual case when adding to a
+// limited group), with that from many adds at once, and with many adds at once
+// each storing a new limit, which must still share bolt commits.
+func BenchmarkServerStoreLimitGroups(b *testing.B) {
+	testDB := newBenchDB(b)
+	s := &Server{db: testDB, limiter: limiter.New(testDB.retrieveLimitGroup)}
+	stored := map[string]*limiter.GroupData{"bench-lg": limiter.NewCountGroupData(5)}
+
+	// changed-parallel's round-up runs share this database, so its group names
+	// come from here, to be new to it on every call.
+	var next atomic.Int64
+
+	if err := s.storeLimitGroups(stored); err != nil {
+		b.Fatal(err)
+	}
+
+	b.Run("none", func(b *testing.B) {
+		none := map[string]*limiter.GroupData{}
+
+		for range b.N {
+			if err := s.storeLimitGroups(none); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("unchanged", func(b *testing.B) {
+		for range b.N {
+			if err := s.storeLimitGroups(stored); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("unchanged-parallel", func(b *testing.B) {
+		b.SetParallelism(benchLimitStoreParallelism)
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				if err := s.storeLimitGroups(stored); err != nil {
+					b.Error(err)
+
+					return
+				}
+			}
+		})
+	})
+
+	b.Run("changed-parallel", func(b *testing.B) {
+		b.SetParallelism(benchLimitStoreParallelism)
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				group := fmt.Sprintf("bench-new-%d", next.Add(1))
+
+				err := s.storeLimitGroups(map[string]*limiter.GroupData{group: limiter.NewCountGroupData(5)})
+				if err != nil {
+					b.Error(err)
+
+					return
+				}
+			}
+		})
+	})
 }
 
 // BenchmarkUpdateJobState measures the per-job state-change persistence path:
