@@ -7,7 +7,7 @@ For every psimjob.sh run with an E marker (its real exit code, written just befo
 runner's outcome line for that run ("command ran OK": the archive was acknowledged; "command [..]
 exited with code N": the release or bury was acknowledged, "so it will be tried again" telling a
 release from a bury) is found in the runner logs by (host, command pid, kind, id): the first
-outcome line for that job and pid from a second before the end on. The job's identity is needed
+outcome line for that job and pid at or after one second before the end. The job's identity is needed
 because hosts reuse pids, so (host, pid) alone paired some runs with a much later run's outcome.
 Latency is the outcome line's time (whole seconds, rounded down) minus the E marker's (ms), so a
 figure can read up to 1s low, and a negative one means under a second; compare rounds with this
