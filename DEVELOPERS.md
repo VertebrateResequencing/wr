@@ -139,13 +139,17 @@ in-process tests have repeatedly passed while real LSF failed. Do it safely:
   Always verify a PID's cmdline (deployment + your isolated managerdir + not a
   production PID) before `kill`.
 - **Use an isolated deployment**: your own config dir, your own ports, your own
-  managerdir, `wrd_*` job names (development) — `developers/wrdev.sh` sets this
-  up. Force jobs to an appropriate queue and expect fair-share to cap
+  managerdir, and job names of your own (`WR_JOBNAME_TOKEN=<token>` gives
+  `wrd<token>_*` and `wrp<token>_*`) — `developers/wrdev.sh` sets this up, with
+  a token unique to the host and its `$WRDEV_ROOT` (`wrdev.sh job-token dev`). Force jobs to an appropriate queue and expect fair-share to cap
   concurrency; be a good farm citizen.
 - **`wr manager stop` hangs under load.** Tear down by killing the *verified*
   dev PID (`kill -9 $(cat <managerdir>/pid)` after confirming it is your dev
-  binary), then `bkill -J 'wrd_*' 0` (stuck RUN array elements:
-  `bkill -r <jobid>`).
+  binary), then bkill only your own manager's jobs, `bkill -J
+  'wrd<token>_*' 0` for a token of letters and digits (stuck RUN array
+  elements: `bkill -r <jobid>`); `wrdev.sh stop` does both. **Never** `bkill
+  -J 'wrd_*'`: every untokened dev manager of yours, in any session, names its
+  jobs that way.
 - **Development ALWAYS wipes the DB on `wr manager start`** (`dontWipeDevDB` is
   test-only; there is no CLI/env switch — `WR_RELIABILITY_KEEPDB` does not
   exist). To test a **DB-preserving restart** (web-vs-CLI-after-restart,

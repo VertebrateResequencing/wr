@@ -28,9 +28,13 @@ has a given number of manager starts, then crash and restart the manager,
 recording both in `restarts.tsv` with a `manual=` tag. Each kills only the pid
 that our manager's pid file names, and only after `wr conf` confirms that
 `--deployment production` resolves to our manager and `ps` confirms that the
-pid runs our binary. `rundep.sh` adds jobs and kills nothing. `stall.sh` waits
-for `hook.sh` to put the DB behind `fusestall`, the daemon that `run.sh` starts
-when `USE_FUSE=1`.
+pid runs our binary. Each holds `<outdir>/restart.lock` (`flock`) from the kill
+until the restarted manager is up, as `wrdev.sh prodsim`'s scheduled restarts
+and `watcher.sh`'s restart do, so no two restarts overlap: `crashafter.sh` and
+`crashon.sh` wait for the lock, and `relbury.sh`, whose kill must land on time,
+skips its crash if another restart holds it. `rundep.sh` adds jobs and kills
+nothing. `stall.sh` waits for `hook.sh` to put the DB behind `fusestall`, the
+daemon that `run.sh` starts when `USE_FUSE=1`.
 
 | file | what it does |
 | --- | --- |
@@ -109,7 +113,7 @@ The first three use the local scheduler.
 | `SOAK_ROOT` | none, required | The soak's `WRDEV_ROOT`: binary, manager dir, DB and every output. An absolute path of letters, digits and `._/-`. |
 | `DEV_PORT DEV_WEB PROD_PORT PROD_WEB` | `51860`-`51863` | The isolated managers' ports. |
 | `PPROF_PORT` | `6112` | The soak manager's `WR_PPROF_ADDR` port. |
-| `PROD_JOBTOKEN` | `iso$PROD_PORT` | LSF jobs are named `wrp<token>_*`; the scripts only count or kill those. |
+| `PROD_JOBTOKEN` | `wrdev.sh job-token prod`: `iso$PROD_PORT` plus a checksum of the host and `SOAK_ROOT` | LSF jobs are named `wrp<token>_*`; the scripts only count or kill those. Letters and digits only. Run every script for a soak on the same host. |
 | `SCHED` | `lsf` | `lsf` or `local`. |
 | `QUEUE` | `normal` | LSF queue for the soak's jobs. |
 | `WRSRC` | this checkout | The checkout wr is built from. |

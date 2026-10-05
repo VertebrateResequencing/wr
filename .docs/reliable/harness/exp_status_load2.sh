@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 set -uo pipefail
+# kill_our_manager kill -9s the manager our pid file names, only if that pid runs
+# "$WR ... manager start" (never a pattern match, which could hit anything whose
+# command line contains the port)
+kill_our_manager() {
+  local p; p=$(cat "${BASE:?}/manager_development/pid" 2>/dev/null) || return 0
+  case "$(ps -ww -o args= -p "$p" 2>/dev/null)" in ("${WR:?} "*"manager start"*) kill -9 "$p" ;; esac
+}
 WR="$1"; LR="$2"; BASE="$3"; NADD="$4"; NRUN="$5"; PORT="$6"; SCHED="${7:-local}"; WEB=$((PORT+1))
 rm -rf "$BASE"; mkdir -p "$BASE/manager_development" "$BASE/cwd"
 export WR_MANAGERDIR="$BASE/manager" WR_MANAGERPORT="$PORT" WR_MANAGERWEB="$WEB" WR_MANAGERHOST=localhost
@@ -24,5 +31,5 @@ echo "== under touch load (running=$R) =="; lat "load-counts" counts; lat "load-
 MPID=$(cat "$BASE/manager_development/pid"); echo "manager CPU%: $(ps -o %cpu= -p "$MPID" 2>/dev/null)"
 kill -9 "$LRPID" 2>/dev/null; sleep 5
 echo "== after kill =="; lat "kill-counts" counts; lat "kill-full" full
-"$WR" --deployment development manager stop >/dev/null 2>&1 || pkill -9 -f "$PORT"
+"$WR" --deployment development manager stop >/dev/null 2>&1 || kill_our_manager
 echo done

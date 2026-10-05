@@ -29,6 +29,9 @@ anchors) is green under `-race`/`make test`/`make race`/`make lint`.
   across 100 memory groups to avoid the uncapped-array hang (260722-1).
   `true` = fast success (rep group `rgtrue`); `false` = fast failure → buried
   (`rgfalse`). Teardown: `bkill -J 'wrd_*' 0` + `kill -9` the verified dev PID.
+  (Historical. Do not repeat it: `wrd_*` matches every untokened dev manager's
+  jobs, in any session. `developers/wrdev.sh stop` now bkills only its own
+  manager's `wrd<token>_*`; see `wrdev.sh job-token dev`.)
 
 ## Results
 

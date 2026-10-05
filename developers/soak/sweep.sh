@@ -35,22 +35,58 @@ BB=${SWEEP_BOLTBUCKETS:+WRDEV_ASL_BOLTBUCKETS=$SWEEP_BOLTBUCKETS}
 GUARD_GB=${GUARD_GB:-40}
 read -r DEV_PORT DEV_WEB PROD_PORT PROD_WEB <<< "${SWEEP_PORTS:-51850 51851 51852 51853}"
 export WRDEV_ROOT="$SW/root" DEV_PORT DEV_WEB PROD_PORT PROD_WEB
+# the job tokens wrdev.sh's managers for this root will use (by default unique to
+# this host and root), so the preflight below checks the jobs those would name
+DEV_JOBTOKEN=$("$W" job-token dev) && PROD_JOBTOKEN=$("$W" job-token prod) \
+  || { echo "sweep: could not get the job tokens from $W" >&2; exit 1; }
+export DEV_JOBTOKEN PROD_JOBTOKEN
 mkdir -p "$WRDEV_ROOT" "$SW/logs" "$SW/work"
 # shellcheck disable=SC2046 # one name per word
 unset $(compgen -v | grep '^OS_') 2>/dev/null
 sw_free() { df -B1G --output=avail "$SW" | tail -1 | tr -d ' '; }
+# our_fg_manager <pid> succeeds only if pid runs this root's foreground dev
+# manager, as wrdev.sh dump starts it, so a stale or reused pid is never signalled
+our_fg_manager() {
+  : "${WRDEV_ROOT:?}"
+  case "$(ps -ww -o args= -p "$1" 2>/dev/null)" in
+    ("$WRDEV_ROOT/wr manager start --deployment development "*" -f") return 0 ;;
+  esac
+  return 1
+}
+# stop_mode <pid> stops the mode whose launch this sweep recorded as <pid> ($!),
+# never by pattern, which could match another sweep's or session's wrdev.sh. The
+# launch execs env, setsid and timeout in turn, so <pid> is timeout, which setsid
+# made the leader of a process group of its own (a background job of this
+# non-interactive shell leads none, so setsid does not fork). A TERM to timeout
+# reaches wrdev.sh (whose cleanup trap then runs) and the rest of that group; if
+# the mode is still there 150s later, the group is killed.
+stop_mode() {
+  local mp=${1:?pid}
+  case "$(ps -ww -o args= -p "$mp" 2>/dev/null)" in
+    ("timeout --signal=TERM "*" $W $wmode"*) ;;
+    (*) sweep_error "mode $mode's recorded pid $mp is not its timeout; not signalling it"; return 1 ;;
+  esac
+  [ "$(ps -o pgid= -p "$mp" | tr -d ' ')" = "$mp" ] \
+    || { sweep_error "mode $mode's pid $mp leads no process group; not signalling it"; return 1; }
+  kill -TERM "$mp"
+  local i; for i in $(seq 1 150); do kill -0 "$mp" 2>/dev/null || return 0; sleep 1; done
+  kill -KILL -- "-$mp" 2>/dev/null
+}
+# sweep_error logs a problem the sweep must exit non-zero for
+sweep_rc=0
+sweep_error() { echo "SWEEP ERROR: $*" | tee -a "$SW/sweep.log" "$log" >&2; sweep_rc=1; }
 # The build mode rewrites $WRDEV_ROOT/wr in place. A runner still executing it
 # (here, or on an exec node over NFS) dies when it is rewritten, so refuse while
 # anything may be using it: a local process, or an LSF job named as this
-# root's prod manager names them (wrp<token>_*) or as any wrdev.sh dev manager
-# does (wrd_*, which wrdev.sh's clean mode bkills anyway).
+# root's prod and dev managers name them (wrp<token>_*, wrd<token>_*), or as a
+# dev manager from before wrdev.sh namespaced them did (wrd_*).
 if pgrep -f "$WRDEV_ROOT/wr" >/dev/null; then
   echo "sweep: a process is running $WRDEV_ROOT/wr*; let it finish or use another sweepdir" >&2; exit 1
 fi
 # bjobs exits 0 with "Job <...> is not found" on stderr when nothing matches,
 # and non-zero (124 on timeout) when it could not ask LSF: fail closed then
 if command -v bjobs >/dev/null; then
-  for p in "wrp${PROD_JOBTOKEN:-iso$PROD_PORT}_" wrd_; do
+  for p in "wrp${PROD_JOBTOKEN:?}_" "wrd${DEV_JOBTOKEN:?}_" wrd_; do
     out=$(timeout 60 bjobs -J "${p}*" -o jobid -noheader 2>/dev/null); rc=$?
     if [ "$rc" -ne 0 ]; then
       echo "sweep: could not ask LSF for ${p}* jobs (bjobs exit $rc); refusing to start" >&2; exit 1
@@ -136,20 +172,40 @@ for spec in "${MODES[@]}"; do
   # shellcheck disable=SC2086 # envs and args are word lists
   ( cd "$SW/work" && exec env $envs setsid timeout --signal=TERM --kill-after=120 $(( tmo * 60 )) "$W" $wmode $args ) > "$log" 2>&1 &
   mp=$!
-  guard=0 minf=$f
+  guard=0 minf=$f unverified=0
   while kill -0 $mp 2>/dev/null; do
     sleep 15
     f=$(sw_free); [ "$f" -lt "$minf" ] && minf=$f
     if [ "$f" -lt "$GUARD_GB" ]; then
       echo "$(date +%T) DISK GUARD: $SW has ${f}G < ${GUARD_GB}G, stopping $mode" | tee -a "$SW/sweep.log" "$log"
-      pkill -TERM -f "$W $wmode" ; guard=1; sleep 150; pkill -KILL -f "$W $wmode"
+      guard=1
+      # an unverified pid is never signalled, nor waited for until its own timeout
+      stop_mode "$mp" || unverified=1
+      break
     fi
   done
-  wait $mp; rc=$?
+  if [ "$unverified" = 1 ]; then
+    rc=unverified; sweep_error "not waiting for mode $mode (pid $mp), which the disk guard could not verify"
+  else
+    wait $mp; rc=$?
+  fi
   if [ "$mode" = dump ]; then  # dump leaves a foreground dev manager behind by design; take a dump and stop it
     p=$(cat "$WRDEV_ROOT/.wr_development/pid" 2>/dev/null)
-    [ -n "$p" ] && ps -ww -o cmd= -p "$p" | grep -qF "$WRDEV_ROOT/wr" && { kill -3 "$p"; sleep 3; kill -9 "$p" 2>/dev/null; }
+    if [ -n "$p" ] && our_fg_manager "$p"; then
+      kill -3 "$p"; sleep 3; kill -9 "$p" 2>/dev/null
+    else
+      sweep_error "dump's pid file names '${p:-nothing}', not this root's foreground manager; no dump taken"
+      rc="$rc,nodump"
+    fi
     echo "goroutines in SIGQUIT dump: $(grep -ac '^goroutine ' "$WRDEV_ROOT/fg.out")" >> "$log"
+    # none may outlive the sweep: kill any still up, each pid verified by its
+    # whole command line (this root's binary path), never matched by pattern
+    sleep 1
+    for q in $(ps -u "$(id -u)" -o pid=); do
+      our_fg_manager "$q" || continue
+      sweep_error "this root's foreground manager pid $q was still running after dump; killing it"
+      kill -9 "$q"; rc="$rc,leftover"
+    done
   fi
   t1=$(date +%s)
   echo -e "$t0\t$mode\trc=$rc\tsecs=$(( t1 - t0 ))\tload0=$l0\tload1=$(cut -d' ' -f1 /proc/loadavg)\tminfree=${minf}G\tguard=$guard" >> "$SW/results.tsv"
@@ -157,3 +213,5 @@ for spec in "${MODES[@]}"; do
   [ "$guard" = 1 ] && { echo "stopping the sweep after the disk guard fired"; break; }
 done
 echo "sweep done $(date +%T)" | tee -a "$SW/sweep.log"
+[ "$sweep_rc" = 0 ] || echo "sweep had errors; see SWEEP ERROR lines in $SW/sweep.log" >&2
+exit "$sweep_rc"

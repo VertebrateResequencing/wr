@@ -11,7 +11,9 @@
 # Optional:
 #   DEV_PORT DEV_WEB PROD_PORT PROD_WEB   isolated manager ports (51860-51863)
 #   PPROF_PORT     the soak manager's WR_PPROF_ADDR port (6112)
-#   PROD_JOBTOKEN  job name token (iso$PROD_PORT); LSF jobs are wrp<token>_*
+#   PROD_JOBTOKEN  job name token (wrdev.sh's default for SOAK_ROOT on this host,
+#                  iso<port>h<checksum>; see `wrdev.sh job-token prod`); LSF
+#                  jobs are wrp<token>_*
 #   SCHED          lsf|local, the soak manager's scheduler (lsf)
 #   QUEUE          LSF queue for the soak's jobs (normal)
 #   WRSRC          checkout wr is built from (this checkout)
@@ -39,10 +41,6 @@ export WRDEV_ROOT=$SOAK_ROOT
 export DEV_PORT=${DEV_PORT:-51860} DEV_WEB=${DEV_WEB:-51861}
 export PROD_PORT=${PROD_PORT:-51862} PROD_WEB=${PROD_WEB:-51863}
 export PPROF_PORT=${PPROF_PORT:-6112}
-# wrdev.sh names the isolated manager's LSF jobs wrp<PROD_JOBTOKEN>_*; the
-# scripts here only ever count or kill jobs with this prefix
-export PROD_JOBTOKEN=${PROD_JOBTOKEN:-iso$PROD_PORT}
-export JOB_PREFIX=wrp${PROD_JOBTOKEN}_
 export SCHED=${SCHED:-lsf} QUEUE=${QUEUE:-normal}
 case "$SCHED" in (lsf|local) ;; (*) die "SCHED must be lsf or local, not '$SCHED'" ;; esac
 
@@ -50,6 +48,12 @@ SOAK_REPO=$(git -C "$SOAK_DIR" rev-parse --show-toplevel 2>/dev/null) || die "$S
 export SOAK_REPO
 export WRSRC=${WRSRC:-$SOAK_REPO}
 export WRDEV=${WRDEV:-$SOAK_REPO/developers/wrdev.sh}
+# wrdev.sh names the isolated manager's LSF jobs wrp<PROD_JOBTOKEN>_*, by default
+# with a token unique to this host and SOAK_ROOT; the scripts here only ever
+# count or kill jobs with this prefix
+PROD_JOBTOKEN=${PROD_JOBTOKEN:-$("$WRDEV" job-token prod)} || die "could not get the job token from $WRDEV"
+case "$PROD_JOBTOKEN" in (''|*[!A-Za-z0-9]*) die "PROD_JOBTOKEN '$PROD_JOBTOKEN' must be letters and digits only" ;; esac
+export PROD_JOBTOKEN JOB_PREFIX=wrp${PROD_JOBTOKEN}_
 
 # the isolated binary wrdev.sh builds, and the manager dir it runs from
 export SOAK_WR=$SOAK_ROOT/wr
@@ -116,11 +120,22 @@ soak_isolated() {
 }
 
 # soak_manager_pid prints our manager's pid, if the pid file names a process
-# running our isolated binary
+# whose argv[0] is exactly our isolated binary ($SOAK_WR, or $SOAK_WR.real when
+# run.sh's RUNNER_FILELOG=1 wrapper execs it)
 soak_manager_pid() {
-  local pid
+  local pid a0
   pid=$(cat "$SOAK_RUN/pid" 2>/dev/null) || return 1
-  [ -n "$pid" ] && ps -ww -o cmd= -p "$pid" 2>/dev/null | grep -qF "$SOAK_WR" && echo "$pid"
+  [ -n "$pid" ] || return 1
+  a0=$(tr '\0' '\n' 2>/dev/null < "/proc/$pid/cmdline" | head -n 1)
+  [ -n "$a0" ] || return 1
+  [ "$a0" = "${SOAK_WR:?}" ] || [ "$a0" = "$SOAK_WR.real" ] && { echo "$pid"; return 0; }
+  # symlinks resolved too, as wr names the daemon and runners it re-executes, but
+  # only while the result is still this root's own binary: a SOAK_WR that is a
+  # symlink to another (eg. a shared or production) install must not make that
+  # install's manager ours
+  local r; r=$(realpath -m -- "${SOAK_ROOT:?}")
+  case "$a0" in ("$r/wr"|"$r/wr.real") ;; (*) return 1 ;; esac
+  [ "$a0" = "$(readlink -f -- "$SOAK_WR")" ] || [ "$a0" = "$(readlink -f -- "$SOAK_WR.real")" ] && echo "$pid"
 }
 
 # soak_wr_running <subcommand ERE> prints the pids of the `timeout N` wrapping
@@ -154,6 +169,26 @@ soak_wait_gone() {
 soak_start_manager() {
   env WR_JOBNAME_TOKEN="$PROD_JOBTOKEN" WR_PPROF_ADDR="localhost:$PPROF_PORT" timeout 1800 \
     "$SOAK_WR" manager start --deployment production -s "$SCHED" >> "$1/manager-start.out" 2>&1
+}
+
+# soak_restart_locked [-n] <outdir> <command...> runs command holding
+# <outdir>/restart.lock, as wrdev.sh prodsim's scheduled restarts do
+# (prodsim_restart_locked), so no two restarts of our manager overlap. Without
+# -n it waits for the lock; with -n it returns 75 at once, without running
+# command, if a restart holds it. The command runs with the lock's fd closed, so
+# the manager it starts never inherits it. A subshell the command forks would
+# share the lock, so it is released explicitly; the commands here fork none
+# that outlive them.
+soak_restart_locked() {
+  local nb="" lockfd rc
+  [ "$1" = -n ] && { nb=-n; shift; }
+  exec {lockfd}>>"$1/restart.lock" || return 1
+  shift
+  if ! flock $nb "$lockfd"; then exec {lockfd}>&-; return 75; fi
+  "$@" {lockfd}>&-
+  rc=$?
+  flock -u "$lockfd"; exec {lockfd}>&-
+  return "$rc"
 }
 
 # soak_enter puts the caller in output dir $1's private config and work dir

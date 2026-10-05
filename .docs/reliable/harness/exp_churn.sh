@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 set -uo pipefail
+# kill_our_manager kill -9s the manager our pid file names, only if that pid runs
+# "$WR ... manager start" (never a pattern match, which could hit anything whose
+# command line contains the port)
+kill_our_manager() {
+  local p; p=$(cat "${BASE:?}/manager_development/pid" 2>/dev/null) || return 0
+  case "$(ps -ww -o args= -p "$p" 2>/dev/null)" in ("${WR:?} "*"manager start"*) kill -9 "$p" ;; esac
+}
 WR=/tmp/wr-reliable/bin/wr-head-safe; LR=/tmp/wr-reliable/bin/loadrunner-head
 BASE=/tmp/wr-reliable/churn; PORT=51829; WEB=$((PORT+1))
 rm -rf "$BASE"; mkdir -p "$BASE/manager_development" "$BASE/cwd"
@@ -14,5 +21,5 @@ echo "=== 1500 workers CHURNING (connect/ping/disconnect loop) for 45s ==="
 LRPID=$!
 for i in $(seq 1 20); do t0=$(date +%s.%N); if timeout 60 "$WR" --deployment development status -i wrk -o counts >/dev/null 2>&1; then st=ok; else st=TIMEOUT; fi; echo "  status #$i: $(echo "$(date +%s.%N)-$t0"|bc)s [$st]"; done
 wait "$LRPID" 2>/dev/null
-"$WR" --deployment development manager stop >/dev/null 2>&1 || pkill -9 -f "$PORT"
+"$WR" --deployment development manager stop >/dev/null 2>&1 || kill_our_manager
 echo done

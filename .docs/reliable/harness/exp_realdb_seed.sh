@@ -3,6 +3,13 @@
 # Measures (a) add-time seeding cost, (b) restart loadPriorState (re-seed) cost.
 # Usage: exp_realdb_seed.sh <base-dir> <port> <ntopgroups>
 set -uo pipefail
+# kill_our_manager kill -9s the manager our pid file names, only if that pid runs
+# "$WR ... manager start" (never a pattern match, which could hit anything whose
+# command line contains the port)
+kill_our_manager() {
+  local p; p=$(cat "${BASE:?}/manager_development/pid" 2>/dev/null) || return 0
+  case "$(ps -ww -o args= -p "$p" 2>/dev/null)" in ("${WR:?} "*"manager start"*) kill -9 "$p" ;; esac
+}
 WR=/tmp/wr-reliable/bin/wr-head-safe
 BASE="$1"; PORT="$2"; NGRP="${3:-15}"; WEB=$((PORT+1))
 rm -rf "$BASE"; mkdir -p "$BASE/manager_development" "$BASE/cwd"
@@ -32,6 +39,6 @@ echo "=== RESTART on real DB with live jobs in big repgroups: time to responsive
 /usr/bin/time -f "RESTART_to_responsive=%e s" "$WR" --deployment development manager start -s lsf --max_cores 1 --timeout 3600 2>&1 | grep -E "RESTART_to_responsive|EROR" | head -2
 echo "--- sub-phase timing ---"
 grep -E "RELSTARTUP|RELPRIOR|RELEQ" "$BASE/manager_development/log" | sed -E 's/.*msg=//;s/caller=.*//'
-"$WR" --deployment development manager stop >/dev/null 2>&1 || pkill -9 -f "$PORT"
+"$WR" --deployment development manager stop >/dev/null 2>&1 || kill_our_manager
 echo "=== leaked wrd_ jobs? ==="; timeout 30 bjobs -w 2>/dev/null | grep -c wrd_ || echo 0
 echo "### done"

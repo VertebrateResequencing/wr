@@ -23,7 +23,8 @@ command -v bjobs >/dev/null || { echo "relburyiso.sh needs LSF (bjobs) on PATH" 
 # the root is wiped below: never while a manager or runner, here or on an LSF
 # exec node, still runs its binary
 pgrep -f "$WRDEV_ROOT/wr" >/dev/null && { echo "a process is running $WRDEV_ROOT/wr*; not wiping it" >&2; exit 1; }
-JOBP="wrp${PROD_JOBTOKEN:-iso$PROD_PORT}_"
+PROD_JOBTOKEN=$($W job-token prod) || { echo "could not get the job token from $W" >&2; exit 1; }
+export PROD_JOBTOKEN; JOBP="wrp${PROD_JOBTOKEN:?}_"
 # bjobs exits 0 with "Job <...> is not found" on stderr when nothing matches,
 # and non-zero (124 on timeout) when it could not ask LSF: fail closed then
 out=$(timeout 60 bjobs -J "${JOBP}*" -o jobid -noheader 2>/dev/null); rc=$?
