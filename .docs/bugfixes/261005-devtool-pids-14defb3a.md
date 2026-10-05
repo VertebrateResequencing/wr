@@ -357,3 +357,15 @@ since `wrdev.sh start` and `stop` bkill every `wrd_*` job of this user. Gates:
   - Files: `developers/wrdev.sh`, `developers/soak/repro/readdcrash.sh`,
     `developers/soak/repro/rundepcrash.sh`,
     `developers/soak/repro/rundepkill.sh`, `.docs/reliable/harness/exp*.sh`.
+- [x] R4 (medium). `watcher.sh` checked `soak_alive` only at its loop's
+  top, so after its 65s wait and a wait on the restart lock it could start
+  a manager after prodsim and its cleanup had ended, leaving it running.
+  - Red: a fake prodsim (argv set with `exec -a`, ending at +80s), a failed
+    start line, and the lock held from +30s to +95s: at `471cec3a` the
+    watcher started a manager at about +95s (`start rc=0 ...
+    watcher-after-failure`) after prodsim had gone; the check killed that
+    manager by its verified pid.
+  - Fix: the watcher checks `soak_alive` before taking the lock, and
+    `restart_if_down` checks it again first thing once the lock is held.
+  - After: no start line, no manager running, `prodsim gone, exiting`.
+  - Files: `developers/soak/watcher.sh`.

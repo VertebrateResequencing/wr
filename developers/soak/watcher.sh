@@ -9,9 +9,12 @@ d=$(soak_outdir "$1") || exit 1
 soak_enter "$d"
 seen=$(wc -l < "$d/restarts.tsv")
 # restart_if_down <failedPid> starts our manager unless one other than
-# failedPid is up; run under the restart lock, so never during another restart
+# failedPid is up; run under the restart lock, so never during another restart.
+# The lock may have been waited for, so prodsim (and its cleanup, which a start
+# now would outlive) may have ended meanwhile: then it starts nothing.
 restart_if_down() {
   local up t0 rc
+  soak_alive "$d" || return 0
   if up=$(soak_manager_pid) && [ "$up" != "$1" ]; then
     echo "$(date +%s) watcher: our manager is already up (pid $up); not starting it" >> "$d/watcher.log"
   elif soak_isolated && ! soak_wr_running start >/dev/null; then
@@ -35,7 +38,7 @@ while soak_alive "$d"; do
         # the failed start's pid is the manager it could not replace (a killed
         # one can linger); a different live one was started since: leave it
         failed=$(printf '%s\n' "$last" | grep -oE 'pid=[0-9]+' | cut -d= -f2)
-        soak_restart_locked "$d" restart_if_down "$failed" ;;
+        soak_alive "$d" && soak_restart_locked "$d" restart_if_down "$failed" ;;
     esac
   fi
   sleep 10
