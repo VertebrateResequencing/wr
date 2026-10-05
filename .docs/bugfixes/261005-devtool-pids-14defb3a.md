@@ -369,3 +369,19 @@ since `wrdev.sh start` and `stop` bkill every `wrd_*` job of this user. Gates:
     `restart_if_down` checks it again first thing once the lock is held.
   - After: no start line, no manager running, `prodsim gone, exiting`.
   - Files: `developers/soak/watcher.sh`.
+- [x] R5 (low). The restart lock's fd is inherited by bash subshells the
+  locked command forks, so if the holder is SIGKILLed before its explicit
+  `flock -u`, such a subshell keeps the lock until it exits. Decision:
+  document it rather than change the mechanism. A test showed a background
+  `( ... ) &` subshell of the locked command holds the lock fd, a command
+  substitution's subshell did not, and exec'd programs never do (the fd is
+  closed for the command and bash's saved copy is close-on-exec). The
+  explicit release makes this matter only when the holder is killed: the
+  injectors' commands fork no lasting subshells, and in prodsim the only
+  ones are the post-start profiler (~35s) and `prodsim_orphan_snapshot`
+  (~300s), both direct children of the restarter, which `prodsim_cleanup`
+  TERMs before it takes the lock itself. The alternative, holding the lock
+  in a separate `flock <file> <command>` process, cannot run the scripts'
+  shell functions without re-entering each script through a new internal
+  subcommand, which is more machinery than a bounded delay warrants.
+  - Files: `developers/wrdev.sh`, `developers/soak/config.sh` (comments).

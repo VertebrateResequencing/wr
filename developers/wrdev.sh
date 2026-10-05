@@ -4533,7 +4533,10 @@ prodsim_prestop_profiles() {  # cumulative block/mutex profiles, heap and gorout
 # watcher through soak_restart_locked), so one can never hit a manager another has just killed or
 # is still starting. The command runs with the lock's fd closed, so the manager it starts never
 # inherits it, and the lock is released explicitly because a subshell the command forks (eg. the
-# post-start profiler) still holds a copy of it.
+# post-start profiler) still holds a copy of it. Only if this shell is killed before that release
+# does such a subshell keep the lock, until it exits: the post-start profiler's within ~35s and
+# prodsim_orphan_snapshot's within ~300s, and prodsim_cleanup TERMs the restarter's children
+# before taking the lock itself. Programs a subshell execs never get it.
 prodsim_restart_locked() {
   local lockfd rc
   exec {lockfd}>>"$PS_OUT/restart.lock" || return 1

@@ -165,7 +165,9 @@ soak_start_manager() {
 # (prodsim_restart_locked), so no two restarts of our manager overlap. Without
 # -n it waits for the lock; with -n it returns 75 at once, without running
 # command, if a restart holds it. The command runs with the lock's fd closed, so
-# the manager it starts never inherits it.
+# the manager it starts never inherits it. A subshell the command forks would
+# share the lock, so it is released explicitly; the commands here fork none
+# that outlive them.
 soak_restart_locked() {
   local nb="" lockfd rc
   [ "$1" = -n ] && { nb=-n; shift; }
