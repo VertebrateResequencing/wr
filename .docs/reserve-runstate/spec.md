@@ -37,6 +37,8 @@ helpers and the overlay. New tests go in `jobqueue/db_runstate_test.go` and
 ### Run-state record
 
 ```go
+// declared in db_schema.go (C1).
+//
 //nolint:gochecknoglobals // bucket names are shared BoltDB keys.
 var bucketJobRunState = []byte("jobRunState")
 
@@ -103,7 +105,8 @@ func runStateOver(live, record []byte) ([]byte, bool)
   value. Only a matching record is applied. A record whose live record is
   absent is "orphaned"; one that does not match is "stale".
 - Size: at most 1,024 bytes for the A1 example job, whatever its Cmd size.
-- The bucket is created by the bucket-creation `Update` in `initDB` (A1).
+- The bucket name and its creation in `initDB`'s bucket-creation `Update`
+  are part of C1 (phase 1), so C1 and C2 tests can use the bucket.
 
 ### Live-record helpers
 
@@ -115,6 +118,13 @@ func putLiveRecord(tx *bolt.Tx, key, encoded []byte) error
 // deleteLiveRecord deletes key's live record and run-state record, in tx.
 func deleteLiveRecord(tx *bolt.Tx, key []byte) error
 ```
+
+Both helpers, and `putNewLiveJobs`' matching check (A5), treat a missing
+`bucketJobRunState` as empty: the delete is a no-op and nothing matches.
+Some tests build bare databases with only a few buckets (for example
+`reliable4ACAddOpenBareDB` in `reliable4_add_coalesce_test.go`, used by
+`TestReliable4AddFinalDrainLoops` and the `reliable4_add_foldcap_test.go`
+tests), and must not panic.
 
 Every `Put` or `Delete` of a `bucketJobsLive` key in the package goes through
 these two helpers. A run-state record is put only by drain step 3 below and
@@ -243,8 +253,6 @@ then start the manager again
 
 As the manager, I want a reservation's or start's state in a few hundred
 bytes, so that writing it costs a fraction of re-encoding a 10KB job.
-
-`initDB`'s bucket-creation `Update` creates `bucketJobRunState`.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/db_runstate.go`, `jobqueue/db.go`
@@ -584,8 +592,10 @@ backup) and before any write transaction (`openManagerBolt` sets
    0 and the file has a `jobslive` bucket, close and return the version-0
    error. A file with no `jobslive` bucket (left by a first start that
    crashed before its first commit) is treated as new.
-4. In the existing bucket-creation `Update`, stamp `currentDBSchemaVersion`
-   if the database is new or its version is below it.
+4. In the existing bucket-creation `Update`, create `bucketJobRunState`
+   (declared in `db_schema.go` beside the version constants) and stamp
+   `currentDBSchemaVersion` if the database is new or its version is below
+   it.
 
 Nothing else reads the schema version, so `wr manager start` reports the
 error as it reports any `initDB` failure.
@@ -630,9 +640,17 @@ E4's compacted copies.
 8. `TestDBSchemaVersionOnOpen`'s "leaves an existing unversioned database
    unstamped" case is replaced by test 5. `reliable2_dbcompat_test.go`
    copies `db.golden` to a temp dir and compacts the copy before starting a
-   server on it, and passes. Any other test that builds an unversioned
-   database with a `jobslive` bucket and opens it with `initDB` stamps it
-   first. The exception is `populateCompactStdDB(..., unversioned=true)`
+   server on it, and passes. `reliable4_recovery_log_test.go`'s
+   `recoveryLogFixtureConfig` (used by its two tests) starts a server on a
+   raw copy of `db.golden` from `copyFixtureToTempDB`; it compacts that copy
+   first through a new helper, `compactedFixtureCopy`, while
+   `copyFixtureToTempDB` stays raw for `TestDBCompactGoldenFixture`, which
+   needs it unversioned. More generally, any test that builds or copies an
+   unversioned database with a `jobslive` bucket and then starts a server
+   or calls `initDB` on it stamps or compacts it first; the implementor
+   greps the tests for every such caller (`db.golden`,
+   `copyFixtureToTempDB`, `unstampDB`, raw `bolt.Open` fixtures). The
+   exception is `populateCompactStdDB(..., unversioned=true)`
    (`db_compact_std_test.go`), which C2 test 1 and the existing strip tests
    need: it populates the database through a stamped `initDB` handle and
    calls `unstampDB` only after that handle's last close, never opening the
@@ -712,9 +730,9 @@ test below fails.
    re-executed, as `manager_stop_test.go` does) with `--deployment
    production` (a development manager deletes its database before the check,
    since `Serve` passes `!config.dontWipeDevDB`), then it exits non-zero, its
-   stderr contains `wr manager compact`, and `getBadLogLines()` on its log
-   returns a line containing `wr manager compact`. The same with a database
-   stamped 3 shows `schema version 3` in both.
+   stderr contains `wr manager compact`, and `getBadLogLinesFromFile(<its
+   log path>, false, nil)` returns a line containing `wr manager compact`.
+   The same with a database stamped 3 shows `schema version 3` in both.
 2. `TestManagerStartDaemonShowsRefusal`: the same two databases with the
    default daemon `wr manager start --deployment production` as a
    subprocess: the parent exits
@@ -809,7 +827,8 @@ over the same `rec` (fields match by name). Otherwise print the live record
 as now. Output columns are unchanged. `run` becomes `run(path string, out
 io.Writer) error`. A new form `dbstart -schema <db>` prints
 `schemaVersion=<n>` (the `meta` bucket's `schemaVersion`, 0 if absent) and
-exits 0.
+exits 0; a stamp that is not 8 bytes prints `dbstart: malformed schema
+version (<n> bytes)` to stderr and exits 1.
 
 **Package:** `main`
 **File:** `developers/soak/dbstart/main.go`
@@ -836,13 +855,18 @@ exits 0.
    then the job's line shows state `reserved` and host `os.Hostname()` (the
    client sends its own hostname).
 5. Given databases stamped 2 and unstamped, when `dbstart -schema` runs on
-   each, then it prints `schemaVersion=2` and `schemaVersion=0`.
+   each, then it prints `schemaVersion=2` and `schemaVersion=0`; given a
+   3-byte stamp, it prints the malformed error and exits 1.
 
 ### E2: statinspect clearlive empties run-state records
 
 `clearLive` also deletes every key of `jobRunState`, if that bucket exists,
 in the same transaction, and prints `jobRunState keys: before=%d after=%d`
-after the `jobslive` line. It becomes `clearLive(path string, out
+after the `jobslive` line. Both after-counts must see the deletes: today
+`after` is `b.Stats().KeyN` read inside the same write transaction, which
+does not see them (2 deleted keys still print `after=2`). Count with a
+cursor after the deletes, or in a `View` after the commit; this also fixes
+the existing `jobslive` line. It becomes `clearLive(path string, out
 io.Writer) error`; `main` prints the error and exits 1 as now.
 
 **Package:** `main` (module `statinspect`)
@@ -998,7 +1022,11 @@ New `developers/soak/soakgate.py --source d1|warning <outdir>
   line counts 0, which is a valid result, not a fallback to warnings.
 - Manager log: only `<outdir>/manager.log`. The `manager.log.<epoch>` files
   are `cp -f` copies of the whole growing log taken at each stop, so they
-  are ignored. The log is split into one segment per manager process at
+  are ignored. The manager's log rotates at `LogsMaxSizeMB` (500), and
+  `manager.log` is a copy of the current file only, so if the soak manager's
+  directory (`<outdir>/../.wr-prod_production`) holds a rotated manager log
+  (as cmd's `rotatedManagerLogFiles` finds them), soakgate prints `ROTATED
+  <files>` and exits 1. The log is split into one segment per manager process at
   each line matching `msg="wr manager \S* started on \S+, pid (\d+)"`, and a
   segment is named by that pid. The version may be empty (soak builds use
   `-buildvcs=false`, giving `wr manager  started on`, two spaces), which
@@ -1021,17 +1049,19 @@ New `developers/soak/soakgate.py --source d1|warning <outdir>
   run's marker host and pid, then the runner's `started executing ... pid=`
   line). The double is inside or outside a window by that line's time; one
   whose runner log or `reserved a job` line cannot be found counts as
-  outside and is printed with `unmapped`. It is "acknowledged" if that
-  runner log has a `command ran OK` line for the same key between the first
-  run's start and the second run's start.
+  outside and is printed with `unmapped`. A double, inside or outside a
+  window, is "acknowledged" if that runner log has a `command ran OK` line
+  for the same key between the first run's start and the second run's
+  start; `acknowledged` counts both, since a run whose completion was
+  acknowledged must never run again.
 - Missing jobs: every psimjob (kind, id) with an `S` line in
   `<outdir>/markers/*.tsv` must have a row in `dbstart.tsv`, except that
   one prodsim may have removed is excused: kind `put` (added with
   `OnFailure Remove`) or `fofnput` (removed by `fofnPoll`'s
   `remove_buried`), whose last run's `E` marker has a non-zero exit code or
   which has no `E` marker.
-- Prints exactly, then one line per outside or acknowledged double and per
-  absent job:
+- Prints exactly, then one line per outside or acknowledged double (inside
+  or outside a window) and per absent job:
 
   ```text
   nondurable source=<d1|warning> inside=<n> outside=<n> runs=<runs> outsidePct=<x.xxxx>
@@ -1090,6 +1120,13 @@ which runs every case and diffs.
    (window 1000-1180 inclusive) and one segment with D1 lines at 1000
    (`total=1`), 1180 (`total=2`) and 1181 (`total=3`), then the first line
    has `inside=2 outside=1`.
+9. Given test 1's input plus a double whose first reservation is at 1050
+   (inside the window) with `command ran OK` before its second run, then the
+   doubles line is `doubles inside=2 outside=2 acknowledged=2` and that
+   double is printed too.
+10. Given a file in the case's `../.wr-prod_production` named as a rotated
+    backup of its `log` (a name `rotatedManagerLogFiles` recognises), then
+    soakgate prints `ROTATED` naming it and exits 1.
 
 ## F: Gates
 
@@ -1196,7 +1233,9 @@ Each tree is an export, as battery10 did: `git archive <sha> | tar -x -C
 This tree's soak passes only if all hold:
 
 1. `soakgate.py`'s `peakRUN=` is at least 5,500 in both soaks, and the two
-   values a and b satisfy |a - b| <= 0.10 x max(a, b).
+   values a and b satisfy |a - b| <= 0.10 x max(a, b). A soak that misses
+   this did not reach the scale under test: it is re-run, not counted as a
+   failure of the change.
 2. `soakgate.py --source d1` prints `totals ok` and an `outsidePct` of at
    most 0.0340. This absolute bar decides. The comparison with the
    baseline's `soakgate.py --source warning` `outside` count is
@@ -1216,8 +1255,8 @@ The PR body records both run directories, peak RUN, both soaks'
 ## Implementation Order
 
 1. **Phase 1: schema (C1, C2, C3).** First.
-2. **Phase 2: record and cleanup (A1, A4, A5).** Depends on phase 1, whose
-   `initDB` changes A1's bucket creation sits beside. Reserve and start still
+2. **Phase 2: record and cleanup (A1, A4, A5).** Depends on phase 1, which
+   declares and creates `bucketJobRunState`. Reserve and start still
    write full records, so behaviour is unchanged.
 3. **Phase 3: switch the writes and overlay (A2, A3, B1, B2), with the A2
    audit.** Depends on phase 2. A2 must not land without B1: without the
