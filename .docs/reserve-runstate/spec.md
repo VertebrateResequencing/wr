@@ -179,12 +179,11 @@ type beChange struct {
 
 - `enqueueChangeLocked` (full) sets `encoded`/`seq` and clears
   `runState`/`rsSeq`.
-- A new `enqueueRunStateLocked(key string, encoded []byte, waiter chan
-  error)` sets `runState`/`rsSeq` from `db.beSeq++` and keeps `encoded`. It
-  adds a `db.wg` key and appends the waiter (if any) as `enqueueChangeLocked`
-  does, and `queueJobRunState` then kicks the writer as
-  `launchJobChangeUpdate` does (A2 test 5's benchmark relies on
-  `db.wg.Wait`).
+- A new `enqueueRunStateLocked(key string, encoded []byte, waiter chan error)`
+  sets `runState`/`rsSeq` from `db.beSeq++` and keeps `encoded`. It adds a
+  `db.wg` key and appends the waiter (if any) as `enqueueChangeLocked` does, and
+  `queueJobRunState` then kicks the writer as `launchJobChangeUpdate` does (A2
+  test 5's benchmark relies on `db.wg.Wait`).
 - `beBatch.apply` for each key K, with F = `seq` (0 if `encoded` is nil),
   R = `rsSeq` (0 if none) and X = K's last exit seq in the batch (0 if
   none):
@@ -276,9 +275,10 @@ day earlier, PeakRAM 900, PeakDisk 9, CPUtime 1s, StdOutC `o`, StdErrC
 
 **Acceptance tests:**
 
-1. Given the example job, when `runStateRecord(live,
-   db.encode(newJobRunState(job)))` is built over its full encoding `live`,
-   then the record is at most 1,024 bytes and `len(live)` is at least 10,000.
+1. Given the example job, when
+   `runStateRecord(live, db.encode(newJobRunState(job)))` is built over its full
+   encoding `live`, then the record is at most 1,024 bytes and `len(live)` is at
+   least 10,000.
 2. Given that record, when `runStateOver(live, record)` is called, then it
    returns true, and decoding its bytes into a `jobRunState` and calling
    `applyTo` on a Job decoded from the older record gives a Job whose
@@ -303,10 +303,10 @@ day earlier, PeakRAM 900, PeakDisk 9, CPUtime 1s, StdOutC `o`, StdErrC
 As the manager, I want `persistReservation` and `handleStart` to queue the
 run-state record instead of the full job, keeping their existing waits.
 
-`persistReservation` calls `updateJobRunStateDurableWithin(job,
-ReserveWriteWait)`. `handleStart` calls `updateJobRunStateDurable(job)`,
-including for an accepted duplicate start. Error handling, warnings and
-replies are unchanged, except for D1's info line.
+`persistReservation` calls
+`updateJobRunStateDurableWithin(job, ReserveWriteWait)`. `handleStart` calls
+`updateJobRunStateDurable(job)`, including for an accepted duplicate start.
+Error handling, warnings and replies are unchanged, except for D1's info line.
 
 **Audit.** Before this phase is done, the implementor lists in the PR body
 every persisted `Job` field that any path changes in memory without its own
@@ -366,14 +366,14 @@ change in memory, and how each is persisted.
    `TestStartDurabilityAbortedWriteIsNotCommitted` pass; the last gains A3
    test 11's run-state case, and its existing cases are unchanged.
 5. Given two new benchmarks in `jobqueue/db_bench_test.go`, both
-   `BenchmarkUpdateJobState`'s shape on jobs with 10,000-byte Cmds,
-   alternating reserved and running: `BenchmarkUpdateJobRunState10KB`
-   through `queueJobRunState` and `BenchmarkUpdateJobFull10KB` through
-   `updateJobAfterChange`; when both run with `make bench
-   BENCH='UpdateJob(RunState|Full)10KB'`, then the run-state benchmark's
-   `bolt_pages/job` is at most half the full one's.
-   `BenchmarkUpdateJobState` itself is unchanged (it is in `speed.sh`'s
-   compared set).
+   `BenchmarkUpdateJobState`'s shape on jobs with 10,000-byte Cmds, alternating
+   reserved and running: `BenchmarkUpdateJobRunState10KB` through
+   `queueJobRunState` and `BenchmarkUpdateJobFull10KB` through
+   `updateJobAfterChange`; when both run with
+   `make bench BENCH='UpdateJob(RunState|Full)10KB'`, then the run-state
+   benchmark's `bolt_pages/job` is at most half the full one's.
+   `BenchmarkUpdateJobState` itself is unchanged (it is in `speed.sh`'s compared
+   set).
 6. The tests that use the helpers listed under "Live-record helpers"
    (`moved_on_runner_test.go`, `runner_report_followups_test.go`,
    `readd_queued_test.go`, `reserve_durability_test.go`) pass after the
@@ -587,11 +587,11 @@ run-state record in one write transaction. Inside that transaction each
 candidate is checked again against the live bucket as it is then, and only
 deleted if it is still stale or orphaned: on a running server (A2 test 1) a
 drain may rewrite either record between the read and the write.
-`decodePriorJobs`, which has the context, logs `clog.Warn(ctx, "recovering:
-dropped stale job run-state records", "count", dropped)` if `dropped` is
-above 0. On a read-only bolt handle (`db.bolt.IsReadOnly()`)
-`recoverIncompleteJobs` skips the delete transaction and returns `dropped`
-0, rather than failing.
+`decodePriorJobs`, which has the context, logs
+`clog.Warn(ctx, "recovering: dropped stale job run-state records", "count", dropped)`
+if `dropped` is above 0. On a read-only bolt handle (`db.bolt.IsReadOnly()`)
+`recoverIncompleteJobs` skips the delete transaction and returns `dropped` 0,
+rather than failing.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/db.go`
@@ -668,9 +668,8 @@ E4's compacted copies.
    `errors.Is(err, errDBSchemaTooNew)`, its text contains `schema version 3`
    and `supports up to 2`, and the file's SHA-256 is unchanged.
 5. Given an existing unversioned database with a `jobslive` bucket, when
-   `initDB` runs, then the error satisfies `errors.Is(err,
-   errDBNeedsCompact)`, its text contains `wr manager compact`, and the
-   file's SHA-256 is unchanged.
+   `initDB` runs, then the error satisfies `errors.Is(err, errDBNeedsCompact)`,
+   its text contains `wr manager compact`, and the file's SHA-256 is unchanged.
 6. Given an existing bbolt file with no buckets, when `initDB` runs, then it
    succeeds and the version is 2.
 7. Given a missing database file and an unversioned backup with a `jobslive`
@@ -704,9 +703,9 @@ E4's compacted copies.
 10. Given a database built by `createReliable4Buckets` with a few complete
     records written as `TestReliable4InflateDB` writes them (a new test in
     `reliable4_backup_repro_test.go`, `reliability_repro` tag, run by F1.1's
-    tagged `go test -tags netgo,reliability_repro -run
-    TestReliable4InflateDBOpens ./jobqueue/`), when `initDB` opens it, then
-    it succeeds and the version is 2.
+    tagged
+    `go test -tags netgo,reliability_repro -run TestReliable4InflateDBOpens ./jobqueue/`),
+    when `initDB` opens it, then it succeeds and the version is 2.
 
 ### C2: Compact stamps the current version
 
@@ -751,10 +750,10 @@ it refuses untouched.
 As an operator, I want `wr manager start` and `wr manager compact` to show me
 the refusal, not just fail.
 
-The manager child dies through `die("wr manager failed to start : %s",
-err)` when `Serve` fails, which logs at error level (`lvl=eror`,
-`cmd/root.go`); the daemon parent prints `getBadLogLines()` and
-`startupErr`. No code change is expected unless a test below fails.
+The manager child dies through `die("wr manager failed to start : %s", err)`
+when `Serve` fails, which logs at error level (`lvl=eror`, `cmd/root.go`); the
+daemon parent prints `getBadLogLines()` and `startupErr`. No code change is
+expected unless a test below fails.
 
 Tests 1 and 2 re-execute the test binary into a new helper,
 `TestManagerStartHelperProcess`, which does nothing unless its env var is
@@ -773,12 +772,13 @@ re-enters the same helper.
 
 1. `TestManagerStartRefusesUnsupportedDB`: given an isolated config whose
    `ManagerDBFile` is an unversioned database with a `jobslive` bucket, when
-   `wr manager start --foreground` runs as a subprocess with `--deployment
-   production` (a development manager deletes its database before the check,
-   since `Serve` passes `!config.dontWipeDevDB`), then it exits non-zero, its
-   stderr contains `wr manager compact`, and `getBadLogLinesFromFile(<its
-   log path>, false, nil)` returns a line containing `wr manager compact`.
-   The same with a database stamped 3 shows `schema version 3` in both.
+   `wr manager start --foreground` runs as a subprocess with
+   `--deployment production` (a development manager deletes its database before
+   the check, since `Serve` passes `!config.dontWipeDevDB`), then it exits
+   non-zero, its stderr contains `wr manager compact`, and
+   `getBadLogLinesFromFile(<its log path>, false, nil)` returns a line
+   containing `wr manager compact`. The same with a database stamped 3 shows
+   `schema version 3` in both.
 2. `TestManagerStartDaemonShowsRefusal`: the same two databases with the
    default daemon `wr manager start --deployment production` as a
    subprocess: the parent exits non-zero and its output contains the
@@ -816,9 +816,10 @@ exact per-key count up to any crash.
   	"total", db.reservesNotDurable)
   ```
 
-  with `const reserveNotDurableLogMsg = "reservation handed out before it was
-  recorded on disk"`. The total counts from 0 in each manager process. The
-  existing rate-limited warning and error line stay.
+  with
+  `const reserveNotDurableLogMsg = "reservation handed out before it was recorded on disk"`.
+  The total counts from 0 in each manager process. The existing rate-limited
+  warning and error line stay.
 - The context is `context.Background()`, not the request's.
   `setupManagerLogging` (`cmd/manager.go`) adds the info-level file handler
   to clog's root logger and gives `Serve` a context carrying a warn-level
@@ -867,13 +868,13 @@ As a soak analyst, I want `dbstart` to print a live job's latest durable run
 state, so that `starttimes.py` and `relburycheck.py` stay correct.
 
 For each `jobslive` record, if `jobRunState` has a record for the key whose
-first 4 bytes are the big-endian CRC-32C of the live value, decode the rest
-over the same `rec` (fields match by name). Otherwise print the live record
-as now. Output columns are unchanged. `run` becomes `run(path string, out
-io.Writer) error`. A new form `dbstart -schema <db>` prints
-`schemaVersion=<n>` (the `meta` bucket's `schemaVersion`, 0 if absent) and
-exits 0; a stamp that is not 8 bytes prints `dbstart: malformed schema
-version (<n> bytes)` to stderr and exits 1.
+first 4 bytes are the big-endian CRC-32C of the live value, decode the rest over
+the same `rec` (fields match by name). Otherwise print the live record as now.
+Output columns are unchanged. `run` becomes
+`run(path string, out io.Writer) error`. A new form `dbstart -schema <db>`
+prints `schemaVersion=<n>` (the `meta` bucket's `schemaVersion`, 0 if absent)
+and exits 0; a stamp that is not 8 bytes prints
+`dbstart: malformed schema version (<n> bytes)` to stderr and exits 1.
 
 **Package:** `main`
 **File:** `developers/soak/dbstart/main.go`
@@ -905,14 +906,14 @@ version (<n> bytes)` to stderr and exits 1.
 
 ### E2: statinspect clearlive empties run-state records
 
-`clearLive` also deletes every key of `jobRunState`, if that bucket exists,
-in the same transaction, and prints `jobRunState keys: before=%d after=%d`
-after the `jobslive` line. Both after-counts must see the deletes: today
-`after` is `b.Stats().KeyN` read inside the same write transaction, which
-does not see them (2 deleted keys still print `after=2`). Count with a
-cursor after the deletes, or in a `View` after the commit; this also fixes
-the existing `jobslive` line. It becomes `clearLive(path string, out
-io.Writer) error`; `main` prints the error and exits 1 as now.
+`clearLive` also deletes every key of `jobRunState`, if that bucket exists, in
+the same transaction, and prints `jobRunState keys: before=%d after=%d` after
+the `jobslive` line. Both after-counts must see the deletes: today `after` is
+`b.Stats().KeyN` read inside the same write transaction, which does not see them
+(2 deleted keys still print `after=2`). Count with a cursor after the deletes,
+or in a `View` after the commit; this also fixes the existing `jobslive` line.
+It becomes `clearLive(path string, out io.Writer) error`; `main` prints the
+error and exits 1 as now.
 
 **Package:** `main` (module `statinspect`)
 **File:** `.docs/reliable2/harness/statinspect/main.go`
@@ -922,9 +923,8 @@ added to that module's `go.mod` at wr's version)
 **Acceptance tests:**
 
 1. Given a bbolt file with 2 `jobslive` keys and 3 `jobRunState` keys, when
-   `clearLive` runs, then its output contains `jobslive keys: before=2
-   after=0` and `jobRunState keys: before=3 after=0`, and both buckets are
-   empty.
+   `clearLive` runs, then its output contains `jobslive keys: before=2 after=0`
+   and `jobRunState keys: before=3 after=0`, and both buckets are empty.
 2. Given a bbolt file with 2 `jobslive` keys and no `jobRunState` bucket,
    when `clearLive` runs, then it returns nil and its output has no
    `jobRunState` line.
@@ -1006,25 +1006,23 @@ directory's Go cache.
     manager's isolated config pointed at `dst`. On failure it removes `dst`
     and exits non-zero. It never opens `src` for writing.
   - Listed in `usage` and `main`.
-- All texts that point at the version-0 originals point at compacted copies
-  made with `compact-fixture` instead: every help, comment, `die` and `echo`
-  text found by `grep -n 'pristine\|prod\.db\|fix120k'
-  developers/wrdev.sh developers/speed.sh` (after the rebase onto 021f734a
-  these include the `writestorm-freeze`, `add-storm`, `add-storm-fixture`,
-  `add-storm-lsf`, report-storm `WR_RS_DB` and `backup-stall-check` texts and
-  the `usage` text), and the skip messages and header comments of
-  `reliable4_addstorm_test.go`, `reliable4_reportstorm_test.go` and
-  `reliable4_writestorm_freeze_test.go`.
+- All texts that point at the version-0 originals point at compacted copies made
+  with `compact-fixture` instead: every help, comment, `die` and `echo` text
+  found by
+  `grep -n 'pristine\|prod\.db\|fix120k' developers/wrdev.sh developers/speed.sh`
+  (after the rebase onto 021f734a these include the `writestorm-freeze`,
+  `add-storm`, `add-storm-fixture`, `add-storm-lsf`, report-storm `WR_RS_DB` and
+  `backup-stall-check` texts and the `usage` text), and the skip messages and
+  header comments of `reliable4_addstorm_test.go`,
+  `reliable4_reportstorm_test.go` and `reliable4_writestorm_freeze_test.go`.
 - The gate's fixtures, built with this tree's `wrdev.sh` and
-  `WRDEV_ROOT=$G/fixbuild/root DEV_PORT=51970 DEV_WEB=51971 PROD_PORT=51972
-  PROD_WEB=51973`. Names match what `soak/sweep.sh` expects under
-  `SWEEP_DB_DIR=$G/fixtures`:
+  `WRDEV_ROOT=$G/fixbuild/root DEV_PORT=51970 DEV_WEB=51971 PROD_PORT=51972 PROD_WEB=51973`.
+  Names match what `soak/sweep.sh` expects under `SWEEP_DB_DIR=$G/fixtures`:
   1. `compact-fixture` each source to `$G/fixtures/pristine6`,
      `$G/fixtures/pristine10` and `$G/fixtures/prod.db`.
-  2. `WRDEV_PRISTINE_DB=$G/fixtures/pristine6
-     WRDEV_ASL_FIXTURE=$G/fixtures/fix120k.db wrdev.sh add-storm-fixture
-     120000 5 200`, which writes `fix120k.db`, its `.aslmanifest` and its
-     own `fix120k.db.jobcwd` in `$G/fixtures`.
+  2. `WRDEV_PRISTINE_DB=$G/fixtures/pristine6 WRDEV_ASL_FIXTURE=$G/fixtures/fix120k.db wrdev.sh add-storm-fixture 120000 5 200`,
+     which writes `fix120k.db`, its `.aslmanifest` and its own
+     `fix120k.db.jobcwd` in `$G/fixtures`.
 
 **File:** `developers/wrdev.sh`, `developers/speed.sh`,
 `jobqueue/reliable4_addstorm_test.go`, `jobqueue/reliable4_reportstorm_test.go`,
@@ -1034,19 +1032,20 @@ directory's Go cache.
 **Acceptance tests:**
 
 1. Given a copy of `jobqueue/testdata/dbcompat/db.golden` as `src`, when
-   `compact-fixture` runs, then `src`'s SHA-256 is unchanged and `dbstart
-   -schema dst` prints `schemaVersion=2`. Then, with
-   `WRDEV_ROOT=$G/e4test/root` and its own ports, `dst` is copied to that
-   root's production manager DB (`$WRDEV_ROOT/.wr-prod_production/db`, as
-   `wrdev.sh` copies `WRDEV_PRISTINE_DB`), `wrdev.sh prod-start local`
-   succeeds (a production manager, which does not wipe its DB), `wr status
-   --deployment production -i reliable2-dbcompat-complete -o counts` with
-   that root's config shows `complete: 2`, and `wrdev.sh prod-stop`
-   stops it.
+   `compact-fixture` runs, then `src`'s SHA-256 is unchanged and
+   `dbstart -schema dst` prints `schemaVersion=2`. Then, with
+   `WRDEV_ROOT=$G/e4test/root` and its own ports, `dst` is copied to that root's
+   production manager DB (`$WRDEV_ROOT/.wr-prod_production/db`, as `wrdev.sh`
+   copies `WRDEV_PRISTINE_DB`), `wrdev.sh prod-start local` succeeds (a
+   production manager, which does not wipe its DB),
+   `wr status --deployment production -i reliable2-dbcompat-complete -o counts`
+   with that root's config shows `complete: 2`, and `wrdev.sh prod-stop` stops
+   it.
 2. Given `dst` already present, or `src.aslmanifest` present, when it runs,
    then it exits non-zero and no file changes.
-3. Given step 2's fixture, when `WRDEV_PRISTINE_DB=$G/fixtures/fix120k.db
-   wrdev.sh add-storm-lsf` starts, then it prints `fixture manifest OK`.
+3. Given step 2's fixture, when
+   `WRDEV_PRISTINE_DB=$G/fixtures/fix120k.db wrdev.sh add-storm-lsf` starts,
+   then it prints `fixture manifest OK`.
 
 ### E5: Soak gate classification
 
@@ -1062,32 +1061,31 @@ FUSE commit stall; natural NFS commit slowdowns are not excused.
 `crashon.sh stall` only triggers a crash during a stall and adds no
 window.
 
-New `developers/soak/soakgate.py --source d1|warning <outdir>
-<runnerlogdir> <doubles.tsv> <dbstart.tsv>`:
+New
+`developers/soak/soakgate.py --source d1|warning <outdir> <runnerlogdir> <doubles.tsv> <dbstart.tsv>`:
 
 - `--source` is required: `d1` for a tree with D1 lines (this change),
   `warning` for one without (the baseline). With `d1`, a log with no D1
   line counts 0, which is a valid result, not a fallback to warnings.
-- Manager log: only `<outdir>/manager.log`. The `manager.log.<epoch>` files
-  are `cp -f` copies of the whole growing log taken at each stop, so they
-  are ignored. The manager's log rotates at `LogsMaxSizeMB` (500), and
-  `manager.log` is a copy of the current file only, so if the soak manager's
-  directory (`<outdir>/../.wr-prod_production`) holds a rotated manager log
-  (as cmd's `rotatedManagerLogFiles` finds them), soakgate prints `ROTATED
-  <files>` and exits 1. The log is split into one segment per manager process at
-  each line matching `msg="wr manager \S* started on \S+, pid (\d+)"`, and a
-  segment is named by that pid. The version may be empty (soak builds use
-  `-buildvcs=false`, giving `wr manager  started on`, two spaces), which
-  cmd's `managerStartedLogRegex` does not match. Lines before the first
-  start are ignored, since no reservation is handed out before a manager has
-  started.
-- Non-durable hand-outs: with `d1`, D1 lines (`reservation handed out before
-  it was recorded on disk`), whose `total` values within each segment must
-  be exactly the set {1..max}, each once (D1 logs them in order under one
-  mutex; the check does not rely on order); with `warning`, the
-  rate-limited `reservation not yet recorded on disk` warning, where a full
-  warning line counts 1 and a `(repeated)` line counts its `repeats=`
-  value. Each is inside or outside a window by its timestamp.
+- Manager log: only `<outdir>/manager.log`. The `manager.log.<epoch>` files are
+  `cp -f` copies of the whole growing log taken at each stop, so they are
+  ignored. The manager's log rotates at `LogsMaxSizeMB` (500), and `manager.log`
+  is a copy of the current file only, so if the soak manager's directory
+  (`<outdir>/../.wr-prod_production`) holds a rotated manager log (as cmd's
+  `rotatedManagerLogFiles` finds them), soakgate prints `ROTATED <files>` and
+  exits 1. The log is split into one segment per manager process at each line
+  matching `msg="wr manager \S* started on \S+, pid (\d+)"`, and a segment is
+  named by that pid. The version may be empty (soak builds use
+  `-buildvcs=false`, giving `wr manager  started on`, two spaces), which cmd's
+  `managerStartedLogRegex` does not match. Lines before the first start are
+  ignored, since no reservation is handed out before a manager has started.
+- Non-durable hand-outs: with `d1`, D1 lines
+  (`reservation handed out before it was recorded on disk`), whose `total`
+  values within each segment must be exactly the set {1..max}, each once (D1
+  logs them in order under one mutex; the check does not rely on order); with
+  `warning`, the rate-limited `reservation not yet recorded on disk` warning,
+  where a full warning line counts 1 and a `(repeated)` line counts its
+  `repeats=` value. Each is inside or outside a window by its timestamp.
 - Runs: the `runs=` value on the first line of `<outdir>/markers-analysis.txt`
   (markers.py's output).
 - Peak RUN: the largest `RUN=<n>` in `<outdir>/lsf.tsv`.
@@ -1140,27 +1138,28 @@ which runs every case and diffs.
 
 **Acceptance tests:**
 
-1. Given `testdata/soakgate` with `stall.log` holding one window 1000-1180;
-   one cumulative `manager.log` with two empty-version start lines
-   (`msg="wr manager  started on 10.0.0.1:1, pid 11"` and `... pid 22"`), a
-   D1 line at 1005 (`total=1`) and one at 1300 (`total=2`) after the first,
-   and one at 1400 (`total=1`) after the second; a stale `manager.log.1350`
-   holding a copy of the log up to 1350; `markers-analysis.txt` with
-   `runs=10000`; `lsf.tsv` rows with `RUN=700` and `RUN=6100`; runner logs
-   and a `doubles.tsv` with three double runs whose first reservations are
-   at 1010, 1500 (with `command ran OK` before its second run) and one with
-   no runner log; and markers for 3 jobs, all in `dbstart.tsv`; when
-   `soakgate.py --source d1` runs, then its output equals `expected.txt`:
+1. Given `testdata/soakgate` with `stall.log` holding one window 1000-1180; one
+   cumulative `manager.log` with two empty-version start lines
+   (`msg="wr manager  started on 10.0.0.1:1, pid 11"` and `... pid 22"`), a D1
+   line at 1005 (`total=1`) and one at 1300 (`total=2`) after the first, and one
+   at 1400 (`total=1`) after the second; a stale `manager.log.1350` holding a
+   copy of the log up to 1350; `markers-analysis.txt` with `runs=10000`;
+   `lsf.tsv` rows with `RUN=700` and `RUN=6100`; runner logs and a `doubles.tsv`
+   with three double runs whose first reservations are at 1010, 1500 (with
+   `command ran OK` before its second run) and one with no runner log; and
+   markers for 3 jobs, all in `dbstart.tsv`; when `soakgate.py --source d1`
+   runs, then its output equals `expected.txt`:
    `nondurable source=d1 inside=1 outside=2 runs=10000 outsidePct=0.0200`,
-   `totals ok`, `doubles inside=1 outside=2 acknowledged=1`, `missing ran=3
-   absent=0 excused=0`, `peakRUN=6100`, then the 1500 double's line and the
-   unmapped double's line.
+   `totals ok`, `doubles inside=1 outside=2 acknowledged=1`,
+   `missing ran=3 absent=0 excused=0`, `peakRUN=6100`, then the 1500 double's
+   line and the unmapped double's line.
 2. Given the same input with the 1400 line's `total=2`, then the totals line
    is `totals GAP pid 22 after 0`.
 3. Given a warning-only log with one warning line inside the window and a
    `(repeated) repeats=3` line outside it, when run with `--source warning`,
-   then the first two lines read `nondurable source=warning inside=1
-   outside=3 runs=10000 outsidePct=0.0300` and `totals n/a`.
+   then the first two lines read
+   `nondurable source=warning inside=1 outside=3 runs=10000 outsidePct=0.0300`
+   and `totals n/a`.
 4. Given one ordinary marker job removed from `dbstart.tsv`, then the
    missing line is `missing ran=3 absent=1 excused=0`, followed by that
    job's line.
@@ -1184,8 +1183,7 @@ which runs every case and diffs.
     backup of its `log` (a name `rotatedManagerLogFiles` recognises), then
     soakgate prints `ROTATED` naming it and exits 1.
 11. Given test 5's input plus an absent `fofnput` whose last `E` status is
-    `sigTERM`, then the missing line is `missing ran=6 absent=1
-    excused=2`.
+    `sigTERM`, then the missing line is `missing ran=6 absent=1 excused=2`.
 
 ## Section F: Gates
 
@@ -1193,33 +1191,31 @@ which runs every case and diffs.
 
 With all `OS_*` unset and `GOCACHE` off the home directory:
 
-1. `make lint`, `make test` and `CGO_ENABLED=1 make race` pass; `go vet
-   -tags netgo,reliability_repro ./jobqueue/` passes (B1 changes
+1. `make lint`, `make test` and `CGO_ENABLED=1 make race` pass;
+   `go vet -tags netgo,reliability_repro ./jobqueue/` passes (B1 changes
    `recoverIncompleteJobs`' signature, which the `reliability_repro`-tagged
-   `dbstart_probe_test.go` calls); and `go test -tags
-   netgo,reliability_repro --count 1 -run TestReliable4InflateDBOpens
-   ./jobqueue/` passes.
+   `dbstart_probe_test.go` calls); and
+   `go test -tags netgo,reliability_repro --count 1 -run TestReliable4InflateDBOpens ./jobqueue/`
+   passes.
 2. `make speed` against `SPEED_BASE` = the develop merge-base, with
-   `SPEED_DIR=$G/speed-quick DEV_PORT=51990 DEV_WEB=51991 PROD_PORT=51992
-   PROD_WEB=51993`, reports no worsening over its threshold. The PR body
-   summarises its verdict and A2 test 5's two `bolt_pages/job` figures.
-3. `make speed-full` with `SPEED_DIR=$G/speed-full
-   SPEED_BIG_DB=$G/fixtures/pristine6 WR_AS_DB=$G/fixtures/prod.db
-   WR_ARCHRATE_DB=$G/fixtures/pristine10 WR_AC_DB=$G/fixtures/pristine6
-   DEV_PORT=51994 DEV_WEB=51995 PROD_PORT=51996 PROD_WEB=51997` reports no
-   worsening. `speed.sh` puts its wrdev roots under `SPEED_DIR` and ignores
-   `WRDEV_ROOT`.
+   `SPEED_DIR=$G/speed-quick DEV_PORT=51990 DEV_WEB=51991 PROD_PORT=51992 PROD_WEB=51993`,
+   reports no worsening over its threshold. The PR body summarises its verdict
+   and A2 test 5's two `bolt_pages/job` figures.
+3. `make speed-full` with
+   `SPEED_DIR=$G/speed-full SPEED_BIG_DB=$G/fixtures/pristine6 WR_AS_DB=$G/fixtures/prod.db WR_ARCHRATE_DB=$G/fixtures/pristine10 WR_AC_DB=$G/fixtures/pristine6 DEV_PORT=51994 DEV_WEB=51995 PROD_PORT=51996 PROD_WEB=51997`
+   reports no worsening. `speed.sh` puts its wrdev roots under `SPEED_DIR` and
+   ignores `WRDEV_ROOT`.
 4. For both, benchstat is the installed
    `/nfs/hgi/wr/sb10-bigdb/speed/tools/benchstat-v0.0.0-20260929162123-406019bb8b68`
    copied into `$SPEED_DIR/tools/` first, as battery10's `speed-go.sh` did
    (no network).
-5. In `.docs/reliable2/harness/statinspect`, add `require
-   github.com/smartystreets/goconvey v1.8.1` (wr's version) to `go.mod` by
-   hand, not with `go get`, which fails offline because goconvey's root
+5. In `.docs/reliable2/harness/statinspect`, add
+   `require github.com/smartystreets/goconvey v1.8.1` (wr's version) to `go.mod`
+   by hand, not with `go get`, which fails offline because goconvey's root
    module imports `golang.org/x/tools` v0.7.0, absent from the module cache.
    Then `GOFLAGS=-mod=mod GOPROXY=off go mod tidy && go test ./...` passes,
-   resolving from the local module cache; the updated `go.mod` and `go.sum`
-   are committed.
+   resolving from the local module cache; the updated `go.mod` and `go.sum` are
+   committed.
 6. `developers/soak/testdata/soakgate/run.sh` (new) passes: for each case
    directory under `developers/soak/testdata/soakgate/`, it runs
    `soakgate.py` with that case's `args` file and `diff`s the output against
@@ -1227,26 +1223,25 @@ With all `OS_*` unset and `GOCACHE` off the home directory:
 
 ### F2: wrdev crash, recovery and big-DB modes
 
-Fixtures are E4's, never the originals. With `WRDEV_ROOT=$G/f2/root
-DEV_PORT=51980 DEV_WEB=51981 PROD_PORT=51982 PROD_WEB=51983` and this tree's
-`wrdev.sh build`, each passes, in sequence:
+Fixtures are E4's, never the originals. With
+`WRDEV_ROOT=$G/f2/root DEV_PORT=51980 DEV_WEB=51981 PROD_PORT=51982 PROD_WEB=51983`
+and this tree's `wrdev.sh build`, each passes, in sequence:
 
-1. `wrdev.sh crash-recovery` prints `PASS: re-sent archive accepted
-   (complete=1), command ran exactly once` and exits 0.
-2. `WRDEV_PRISTINE_DB=$G/fixtures/fix120k.db wrdev.sh add-storm-lsf`
-   (defaults) exits 0, prints `recovered-job audit: <n>/<n> incomplete
-   commands read` with both numbers equal to the manifest's incomplete
-   count, its final `## VERDICT:` line has `missingAcked=0`, and it prints
-   its `PASS: all <n> acknowledged adds` line. (Its `recoveredIncomplete`
-   and `unsafeCommands` VERDICT lines appear only on its failure paths.)
+1. `wrdev.sh crash-recovery` prints
+   `PASS: re-sent archive accepted (complete=1), command ran exactly once` and
+   exits 0.
+2. `WRDEV_PRISTINE_DB=$G/fixtures/fix120k.db wrdev.sh add-storm-lsf` (defaults)
+   exits 0, prints `recovered-job audit: <n>/<n> incomplete commands read` with
+   both numbers equal to the manifest's incomplete count, its final
+   `## VERDICT:` line has `missingAcked=0`, and it prints its
+   `PASS: all <n> acknowledged adds` line. (Its `recoveredIncomplete` and
+   `unsafeCommands` VERDICT lines appear only on its failure paths.)
 3. `wrdev.sh dep-granularity-check` (defaults) exits 0.
 4. Each of these exits 0, with the fixtures `soak/sweep.sh` and battery10's
    `speed-go.sh` use, all `$G/fixtures` compacted copies:
    - `WR_ARCHRATE_DB=$G/fixtures/pristine10 wrdev.sh archive-rate`
-   - `WR_AC_DB=$G/fixtures/pristine6 WRDEV_AC_WORK=$G/f2/root wrdev.sh
-     archive-ceiling`
-   - `WR_AS_DB=$G/fixtures/prod.db WRDEV_AS_WORK=$G/f2/root wrdev.sh
-     add-storm`
+   - `WR_AC_DB=$G/fixtures/pristine6 WRDEV_AC_WORK=$G/f2/root wrdev.sh archive-ceiling`
+   - `WR_AS_DB=$G/fixtures/prod.db WRDEV_AS_WORK=$G/f2/root wrdev.sh add-storm`
    - `WR_WSFREEZE_DB=$G/fixtures/pristine10 wrdev.sh writestorm-freeze`
    - `WRDEV_PRISTINE_DB=$G/fixtures/pristine10 wrdev.sh backup-stall-check`
 
@@ -1260,11 +1255,10 @@ Two soaks, one after the other, never concurrently: a baseline of develop
 at the PR's merge-base, then this tree. Each uses its own tree's binary for
 the whole run (never replaced mid-run).
 
-Each tree is an export, as battery10 did: `git archive <sha> | tar -x -C
-<dir>`, then `git init <dir>`, so `soak/config.sh`'s `git rev-parse
---show-toplevel` finds it. Each soak's launcher is battery10's
-`soak-go.sh` with only these values changed (ports checked free with
-`ss -ltn` first):
+Each tree is an export, as battery10 did: `git archive <sha> | tar -x -C <dir>`,
+then `git init <dir>`, so `soak/config.sh`'s `git rev-parse --show-toplevel`
+finds it. Each soak's launcher is battery10's `soak-go.sh` with only these
+values changed (ports checked free with `ss -ltn` first):
 
 | Value | Baseline | Change |
 | --- | --- | --- |
@@ -1282,11 +1276,11 @@ Each tree is an export, as battery10 did: `git archive <sha> | tar -x -C
   `restart.lock` in each soak's own output dir.
 - Each `FIXTURE` is a `cp -p` of `$G/fixtures/fix120k.db` made just before
   that soak; `wrdev.sh prodsim` copies it again into the soak's DB dir.
-- Unchanged from `soak-go.sh`: `HOURS=3`, `SCALE=1`, its `RESTART_KINDS`
-  (6 or more crashes), `USE_FUSE=1` with `STALL_SECS=180`, `RAMP0=600
-  RAMP="0:600 8:1200 16:2100 25:3000 40:3600 60:4000"`, and the
-  `crashon.sh` (stall and two burst), `crashafter.sh`, `relbury.sh` (r1,
-  r2), `rundep.sh` and `stopstate.sh` injectors.
+- Unchanged from `soak-go.sh`: `HOURS=3`, `SCALE=1`, its `RESTART_KINDS` (6 or
+  more crashes), `USE_FUSE=1` with `STALL_SECS=180`,
+  `RAMP0=600 RAMP="0:600 8:1200 16:2100 25:3000 40:3600 60:4000"`, and the
+  `crashon.sh` (stall and two burst), `crashafter.sh`, `relbury.sh` (r1, r2),
+  `rundep.sh` and `stopstate.sh` injectors.
 - Both soaks are analysed with the change tree's analysis tools (README
   steps, `dbstart`, E5's `soakgate.py`).
 
@@ -1322,10 +1316,9 @@ The PR body records both run directories, peak RUN, both soaks'
    audit.** Depends on phase 2. A2 must not land without B1: without the
    overlay a crash would recover pre-reservation state.
 4. **Phase 4: logging (D1).** After phase 3.
-5. **Phase 5: tools and docs (E1, E2, E3, E4, E5).** E1 and E2 depend on
-   phase 2's format, E1 test 4 on phase 3, E3 on phases 1 and 3, E5 on D1.
-   E4 needs phase 1's compact and comes after E1 (its test 1 uses `dbstart
-   -schema`).
+5. **Phase 5: tools and docs (E1, E2, E3, E4, E5).** E1 and E2 depend on phase
+   2's format, E1 test 4 on phase 3, E3 on phases 1 and 3, E5 on D1. E4 needs
+   phase 1's compact and comes after E1 (its test 1 uses `dbstart -schema`).
 6. **Phase 6: gates (F1, F2, F3).** Sequential: F1, then F2, then F3. F3 is
    the last step before the PR is ready.
 
