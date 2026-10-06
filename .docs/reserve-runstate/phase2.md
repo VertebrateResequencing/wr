@@ -43,11 +43,13 @@ as empty, and route every non-test `Put` or `Delete` of a `bucketJobsLive`
 key through them: `beBatch` full changes and exit ops, `archiveJobTx`
 (`recordCompleteTx`, `keepLiveForRerunTx`), `putRunningRerunMark`,
 `storeLiveForRerun`, `putBackArchivedDependentsTx`, `putNewLiveJobs`,
-`modifyLiveJobsTx` (`deleteOldLiveJobs` and the new keys' put, including
-through `putEncodedJobs`) and `deleteLiveJobs`. Use
+`modifyLiveJobsTx` (`deleteOldLiveJobs` and the new keys' put) and
+`deleteLiveJobs`, including indirect writes through
+`putEncodedJobs(tx, bucketJobsLive, ...)`. Use
 `grep -n 'bucketJobsLive' jobqueue/*.go | grep -v _test.go` to find every
-site. The bare-bucket tests (`reliable4ACAddOpenBareDB`,
-`TestReliable4AddFinalDrainLoops`, `reliable4_add_foldcap_test.go`) must
+site; it shows where the bucket is fetched, not the `Put` and `Delete`
+lines. Tests on bare databases (`reliable4ACAddOpenBareDB`, used by
+`TestReliable4AddFinalDrainLoops` and `reliable4_add_foldcap_test.go`) must
 not panic. Covering all 7 acceptance tests from A4, in
 `jobqueue/db_runstate_test.go`. Depends on item 2.1.
 
@@ -70,11 +72,14 @@ same new job, where the second add's fresh copy is put after an undrained
 reservation's run state was queued. The run-state record then lands over
 the second add's live record, so the overlay sits on that copy's non-run
 fields until the job's next full write. This is no wider than today's
-stale full change. Do not change the A5 behaviour for it. Cover it with a
-deterministic test pinning the outcome (recovered run state is the
-reservation's, non-run fields the second add's) if one can be built
-without sleeps; otherwise document the window in a comment on
-`putNewLiveJobs`. Either way, describe it in the PR body.
+stale full change. Do not change the A5 behaviour for it. The run-state
+drain (A3) and recovery overlay (B1) arrive in phase 3, so a test here
+stands in for the drain by putting `runStateRecord` over the second add's
+live record, and reads it back with `runStateOver` and `applyTo`. Cover the
+race with such a deterministic test pinning the outcome (run state is the
+reservation's, non-run fields the second add's) if one can be built without
+sleeps; otherwise document the window in a comment on `putNewLiveJobs`.
+Either way, describe it in the PR body.
 
 - [ ] implemented
 - [ ] reviewed
