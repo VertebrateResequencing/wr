@@ -29,6 +29,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -103,7 +104,7 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 			So(info.Size(), ShouldEqual, stats.AfterSize)
 
 			version, _ := testDBSchemaVersion(t, dbFile)
-			So(version, ShouldEqual, dbSchemaVersionNoCompleteStd)
+			So(version, ShouldEqual, currentDBSchemaVersion)
 
 			after := readBoltData(t, dbFile)
 			So(after.sequences, ShouldContainKey, "meta/")
@@ -188,7 +189,7 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 			So(len(withoutPrefixes(after.values, "meta/")), ShouldEqual, len(before.values))
 
 			version, _ := testDBSchemaVersion(t, dstFile)
-			So(version, ShouldEqual, dbSchemaVersionNoCompleteStd)
+			So(version, ShouldEqual, currentDBSchemaVersion)
 		})
 
 		Convey("CompactDBFileStats copies undecodable complete records unchanged, reports them and still stamps", func() {
@@ -223,11 +224,15 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 			So(identical, ShouldEqual, badRecords)
 
 			version, _ := testDBSchemaVersion(t, dbFile)
-			So(version, ShouldEqual, dbSchemaVersionNoCompleteStd)
+			So(version, ShouldEqual, currentDBSchemaVersion)
 		})
 
-		Convey("CompactDBFileStats leaves the original untouched when it fails", func() {
-			So(updateRawBolt(t, dbFile, func(tx *bolt.Tx) error {
+		Convey("CompactDBFileStats leaves the original untouched when it fails on a malformed stamp "+
+			"whose freelist was never synced", func() {
+			bdb, err := bolt.Open(dbFile, dbFilePermission,
+				&bolt.Options{FreelistType: bolt.FreelistMapType, NoFreelistSync: true, Timeout: time.Second})
+			So(err, ShouldBeNil)
+			So(bdb.Update(func(tx *bolt.Tx) error {
 				b, errc := tx.CreateBucket(bucketMeta)
 				if errc != nil {
 					return errc
@@ -235,40 +240,30 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 
 				return b.Put(metaKeySchemaVersion, []byte("bad"))
 			}), ShouldBeNil)
+			So(bdb.Close(), ShouldBeNil)
 
-			original, errr := os.ReadFile(dbFile)
-			So(errr, ShouldBeNil)
+			original := fileSHA256(t, dbFile)
 
 			stats, err := CompactDBFileStats(dbFile)
-			So(err, ShouldWrap, errBadDBSchemaVersion)
+			So(errors.Is(err, errBadDBSchemaVersion), ShouldBeTrue)
 			So(stats.OutputStripped, ShouldBeFalse)
-
-			now, errr := os.ReadFile(dbFile)
-			So(errr, ShouldBeNil)
-			So(bytes.Equal(now, original), ShouldBeTrue)
-
-			entries, errr := os.ReadDir(filepath.Dir(dbFile))
-			So(errr, ShouldBeNil)
-
-			var leftovers int
-
-			for _, entry := range entries {
-				if strings.Contains(entry.Name(), ".compact-") {
-					leftovers++
-				}
-			}
-
-			So(leftovers, ShouldEqual, 0)
+			So(fileSHA256(t, dbFile), ShouldEqual, original)
+			So(compactLeftovers(t, dbFile), ShouldEqual, 0)
 		})
 	})
 
-	Convey("Given a v1 db whose complete records hold output, as a downgraded wr could write them", t, func() {
+	Convey("Given a v1 db with a run-state record, whose complete records hold output as a downgraded wr "+
+		"could write them", t, func() {
 		dbFile := filepath.Join(t.TempDir(), "queue.db")
 		populateCompactStdDB(ctx, t, dbFile, false)
+		stampTestDB(t, dbFile, dbSchemaVersionNoCompleteStd)
+
+		runStateKey, runState := []byte("runStateKey"), []byte{0x00, 0x01, 0xfe, 0xff}
+		So(putRawBolt(t, dbFile, bucketJobRunState, runStateKey, runState), ShouldBeNil)
 
 		before := readBoltData(t, dbFile)
 
-		Convey("CompactDBFileStats copies it verbatim without decoding any record", func() {
+		Convey("CompactDBFileStats copies it verbatim without decoding any record, and stamps it current", func() {
 			decodes := observeCompactStdDecodes(t)
 
 			stats, err := CompactDBFileStats(dbFile)
@@ -277,9 +272,59 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 			So(stats.JobsStripped, ShouldEqual, 0)
 			So(*decodes, ShouldEqual, 0)
 
+			version, _ := testDBSchemaVersion(t, dbFile)
+			So(version, ShouldEqual, currentDBSchemaVersion)
+
 			after := readBoltData(t, dbFile)
-			So(after.values, ShouldResemble, before.values)
+			So(after.values[string(bucketJobRunState)+"/"+string(runStateKey)], ShouldEqual, string(runState))
+			So(withoutPrefixes(after.values, "meta/"), ShouldResemble, withoutPrefixes(before.values, "meta/"))
 			So(after.sequences, ShouldResemble, before.sequences)
+		})
+	})
+
+	Convey("Given a v2 db, as this wr creates", t, func() {
+		dbFile := filepath.Join(t.TempDir(), "queue.db")
+		populateCompactStdDB(ctx, t, dbFile, false)
+
+		version, _ := testDBSchemaVersion(t, dbFile)
+		So(version, ShouldEqual, dbSchemaVersionRunState)
+
+		Convey("CompactDBFileStats does no strip pass and leaves it at the current version", func() {
+			decodes := observeCompactStdDecodes(t)
+
+			stats, err := CompactDBFileStats(dbFile)
+			So(err, ShouldBeNil)
+			So(stats.OutputStripped, ShouldBeFalse)
+			So(*decodes, ShouldEqual, 0)
+
+			version, _ = testDBSchemaVersion(t, dbFile)
+			So(version, ShouldEqual, currentDBSchemaVersion)
+		})
+	})
+
+	Convey("Given a db stamped newer than this wr (3) whose freelist was never synced, "+
+		"as a crashed newer manager leaves it", t, func() {
+		dbFile := filepath.Join(t.TempDir(), "queue.db")
+
+		bdb, err := bolt.Open(dbFile, dbFilePermission,
+			&bolt.Options{FreelistType: bolt.FreelistMapType, NoFreelistSync: true, Timeout: time.Second})
+		So(err, ShouldBeNil)
+		So(bdb.Update(func(tx *bolt.Tx) error {
+			if _, errc := tx.CreateBucket(bucketJobsLive); errc != nil {
+				return errc
+			}
+
+			return putDBSchemaVersion(tx, currentDBSchemaVersion+1)
+		}), ShouldBeNil)
+		So(bdb.Close(), ShouldBeNil)
+
+		original := fileSHA256(t, dbFile)
+
+		Convey("CompactDBFileStats refuses it without changing it or leaving a temp file", func() {
+			_, err = CompactDBFileStats(dbFile)
+			So(errors.Is(err, errDBSchemaTooNew), ShouldBeTrue)
+			So(fileSHA256(t, dbFile), ShouldEqual, original)
+			So(compactLeftovers(t, dbFile), ShouldEqual, 0)
 		})
 	})
 }
@@ -287,22 +332,15 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 // populateCompactStdDB creates a db at dbFile holding live jobs with std bucket
 // entries, compactStdTestJobs complete jobs archived with output, one complete
 // job archived without output, and a nested bucket with a sequence. With
-// unversioned, the db is unstamped before the jobs are written, as a db from an
-// older wr would be. It returns the keys of the jobs archived with output and
-// the key of the one without.
+// unversioned, the db is unstamped once it is written and closed, as a db from
+// an older wr would be; initDB refuses such a db, so it never opens it. It
+// returns the keys of the jobs archived with output and the key of the one
+// without.
 func populateCompactStdDB(ctx context.Context, t *testing.T, dbFile string, unversioned bool) ([]string, string) {
 	t.Helper()
 
 	testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
 	So(err, ShouldBeNil)
-
-	if unversioned {
-		So(testDB.close(ctx), ShouldBeNil)
-		unstampDB(t, dbFile)
-
-		testDB, _, err = initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
-		So(err, ShouldBeNil)
-	}
 
 	live := []*Job{testDBJob("echo compact live 1", compactStdTestRepGroup),
 		testDBJob("echo compact live 2", compactStdTestRepGroup)}
@@ -345,6 +383,10 @@ func populateCompactStdDB(ctx context.Context, t *testing.T, dbFile string, unve
 
 		return child.Put([]byte("k"), []byte("v"))
 	}), ShouldBeNil)
+
+	if unversioned {
+		unstampDB(t, dbFile)
+	}
 
 	return keys, quiet.Key()
 }
@@ -474,6 +516,25 @@ func boltTxID(bdb *bolt.DB) int {
 	return id
 }
 
+// compactLeftovers returns how many compaction temp files are in dbFile's
+// directory.
+func compactLeftovers(t *testing.T, dbFile string) int {
+	t.Helper()
+
+	entries, err := os.ReadDir(filepath.Dir(dbFile))
+	So(err, ShouldBeNil)
+
+	var leftovers int
+
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".compact-") {
+			leftovers++
+		}
+	}
+
+	return leftovers
+}
+
 func TestDBCompactGoldenFixture(t *testing.T) {
 	Convey("The unversioned db-compat golden db compacts and is stamped", t, func() {
 		golden, err := os.ReadFile(dbcompatFixture)
@@ -493,7 +554,7 @@ func TestDBCompactGoldenFixture(t *testing.T) {
 		So(stats.JobsStripped, ShouldEqual, 0)
 
 		version, _ = testDBSchemaVersion(t, dbFile)
-		So(version, ShouldEqual, dbSchemaVersionNoCompleteStd)
+		So(version, ShouldEqual, currentDBSchemaVersion)
 
 		after := readBoltData(t, dbFile)
 		So(withoutPrefixes(after.values, "meta/"), ShouldResemble, before.values)
@@ -579,18 +640,6 @@ func TestDBSchemaVersionOnOpen(t *testing.T) {
 
 		version, hasMeta := testDBSchemaVersion(t, dbFile)
 		So(hasMeta, ShouldBeTrue)
-		So(version, ShouldEqual, dbSchemaVersionNoCompleteStd)
-
-		Convey("and leaves an existing unversioned database unstamped", func() {
-			unstampDB(t, dbFile)
-
-			reDB, _, errr := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
-			So(errr, ShouldBeNil)
-			So(reDB.close(ctx), ShouldBeNil)
-
-			version, hasMeta = testDBSchemaVersion(t, dbFile)
-			So(hasMeta, ShouldBeFalse)
-			So(version, ShouldEqual, 0)
-		})
+		So(version, ShouldEqual, currentDBSchemaVersion)
 	})
 }

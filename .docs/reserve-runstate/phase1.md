@@ -45,8 +45,8 @@ need code changes:
   compact it first; add `compactedFixtureCopy` for
   `reliable4_recovery_log_test.go`'s `recoveryLogFixtureConfig`.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.2: C2 - Compact stamps the current version
 
@@ -61,8 +61,8 @@ Covering all 5 acceptance tests from C2, in
 `jobqueue/db_compact_std_test.go`. Depends on item 1.1's constants, bucket
 and read-only version reader.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.3: C3 - The user sees the refusals
 
@@ -76,5 +76,5 @@ in `cmd/manager_test.go`. Change `cmd/manager.go` only if a test fails.
 Covering all 3 acceptance tests from C3. Depends on items 1.1 (start
 refusal) and 1.2 (compact refusal).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

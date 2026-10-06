@@ -173,13 +173,13 @@ func TestReliable4LongRecoveryReportsStillWorking(t *testing.T) {
 	})
 }
 
-// recoveryLogFixtureConfig points the given config at a fresh copy of the
-// committed golden DB, whose jobslive bucket holds dbcompatIncompleteCount
+// recoveryLogFixtureConfig points the given config at a fresh, compacted copy
+// of the committed golden DB, whose jobslive bucket holds dbcompatIncompleteCount
 // prior incomplete jobs for recovery to restore.
 func recoveryLogFixtureConfig(t *testing.T, serverConfig ServerConfig) ServerConfig {
 	t.Helper()
 
-	dbPath := copyFixtureToTempDB(t, serverConfig.DBFile)
+	dbPath := compactedFixtureCopy(t, serverConfig.DBFile)
 	serverConfig.DBFile = dbPath
 	serverConfig.DBFileBackup = dbPath + "_bk"
 	serverConfig.dontWipeDevDB = true

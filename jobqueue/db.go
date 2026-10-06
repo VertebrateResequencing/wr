@@ -1431,6 +1431,13 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		return nil, msg, err
 	}
 
+	// openManagerBolt sets NoFreelistSync, so nothing has been written yet; a
+	// database this wr must not use is closed unchanged.
+	schemaVersion, err := checkOpenedDBSchemaVersion(boltdb, dbFile, openedExistingDB)
+	if err != nil {
+		return nil, msg, errors.Join(err, boltdb.Close())
+	}
+
 	upgrade := newDBUpgradeReporter(ctx, dbFile)
 
 	// ensure our buckets are in place
@@ -1542,9 +1549,15 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 			return fmt.Errorf("create bucket %s: %w", bucketEndTimeToKey, errf)
 		}
 
-		// an existing database with no version may hold what older wr versions
-		// wrote, so only `wr manager compact` stamps it, once it has cleaned it.
-		if !openedExistingDB {
+		_, errf = tx.CreateBucketIfNotExists(bucketJobRunState)
+		if errf != nil {
+			return fmt.Errorf("create bucket %s: %w", bucketJobRunState, errf)
+		}
+
+		// checkOpenedDBSchemaVersion refused an existing unversioned database
+		// that holds jobs, so this one is new, empty or at an older version
+		// whose contents this one still reads.
+		if schemaVersion < currentDBSchemaVersion {
 			if errf = putDBSchemaVersion(tx, currentDBSchemaVersion); errf != nil {
 				return errf
 			}
@@ -3758,9 +3771,10 @@ func CompactDBFile(dbFile string) (beforeSize, afterSize int64, err error) {
 
 // CompactDBFileStats is the entry point for the offline `wr manager compact`
 // subcommand (spec D2). It compacts the BoltDB at dbFile, reclaiming the free
-// pages left by churn. A database below dbSchemaVersionNoCompleteStd also has
-// its completed jobs' stored output removed during the copy, and is then
-// stamped with that version.
+// pages left by churn, and stamps it with currentDBSchemaVersion. A database
+// below dbSchemaVersionNoCompleteStd also has its completed jobs' stored output
+// removed during the copy. A database newer than this wr supports, or with a
+// malformed stamp, is refused unchanged.
 //
 // It opens the source with the map freelist, compacts into a temporary file in
 // the SAME directory as dbFile, then atomically replaces the original with
@@ -3778,6 +3792,17 @@ func CompactDBFileStats(dbFile string) (CompactStats, error) {
 	}
 
 	stats.BeforeSize = beforeInfo.Size()
+
+	// compactBoltInto's read-write open of dbFile writes a never-synced
+	// freelist, so a database this wr must not compact is refused before it.
+	version, err := readOnlyDBFileSchemaVersion(dbFile)
+	if err != nil {
+		return stats, err
+	}
+
+	if err = checkDBSchemaVersion(dbFile, version); err != nil {
+		return stats, err
+	}
 
 	tmpPath, err := compactToTempFile(dbFile, &stats)
 	if err != nil {
@@ -3866,9 +3891,10 @@ func compactBoltInto(dstPath, srcPath string, stats *CompactStats) (err error) {
 	return compactBolt(dst, src, stats)
 }
 
-// compactBolt copies a compacted image of src into the empty dst: verbatim with
-// bolt.Compact if src is at dbSchemaVersionNoCompleteStd or later, else with
-// compactStrippingStd, recording the stripping in stats.
+// compactBolt copies a compacted image of src into the empty dst, stamped with
+// currentDBSchemaVersion: verbatim with bolt.Compact if src is at
+// dbSchemaVersionNoCompleteStd or later, else with compactStrippingStd,
+// recording the stripping in stats.
 func compactBolt(dst, src *bolt.DB, stats *CompactStats) error {
 	version, err := dbFileSchemaVersion(src)
 	if err != nil {
@@ -3876,7 +3902,13 @@ func compactBolt(dst, src *bolt.DB, stats *CompactStats) error {
 	}
 
 	if version >= dbSchemaVersionNoCompleteStd {
-		return bolt.Compact(dst, src, compactTxMaxSize)
+		if err = bolt.Compact(dst, src, compactTxMaxSize); err != nil {
+			return err
+		}
+
+		return dst.Update(func(tx *bolt.Tx) error {
+			return putDBSchemaVersion(tx, currentDBSchemaVersion)
+		})
 	}
 
 	result, err := compactStrippingStd(dst, src, compactTxMaxSize)

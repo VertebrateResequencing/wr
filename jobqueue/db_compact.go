@@ -214,7 +214,7 @@ func (c *stdStrippingCopier) stripStd(key, encoded []byte) ([]byte, error) {
 }
 
 // compactStrippingStd copies src into the empty dst, removing the output of
-// every completed job, then stamps dst with dbSchemaVersionNoCompleteStd. Every
+// every completed job, then stamps dst with currentDBSchemaVersion. Every
 // other value, nested bucket and bucket sequence is copied unchanged, as is a
 // complete record that holds no output or cannot be decoded. It returns what it
 // did to the complete records.
@@ -245,7 +245,7 @@ func compactStrippingStd(dst, src *bolt.DB, txMaxSize int64) (result stdStripRes
 }
 
 // copyAll copies every bucket of src, then stamps the destination with
-// dbSchemaVersionNoCompleteStd and commits.
+// currentDBSchemaVersion and commits.
 func (c *stdStrippingCopier) copyAll(src *bolt.DB) error {
 	err := src.View(func(stx *bolt.Tx) error {
 		return stx.ForEach(func(name []byte, b *bolt.Bucket) error {
@@ -256,7 +256,7 @@ func (c *stdStrippingCopier) copyAll(src *bolt.DB) error {
 		return err
 	}
 
-	if err = putDBSchemaVersion(c.tx, dbSchemaVersionNoCompleteStd); err != nil {
+	if err = putDBSchemaVersion(c.tx, currentDBSchemaVersion); err != nil {
 		return err
 	}
 
