@@ -1,0 +1,7 @@
+nondurable source=d1 inside=0 outside=0 runs=10000 outsidePct=0.0000
+totals ok
+doubles inside=0 outside=0 acknowledged=0
+missing ran=2 absent=2 excused=0
+peakRUN=6100
+absent fofnput F.1 last=0
+absent stat T.1 last=none

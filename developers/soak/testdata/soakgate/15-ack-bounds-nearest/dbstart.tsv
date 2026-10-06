@@ -1,0 +1,5 @@
+jobscomplete	a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1	portal_compress	20261005T000000.1	complete	0	2	node-2	201	1600000	1630000
+jobscomplete	b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2	portal_dedupe	20261005T000000.2	complete	0	2	node-3	301	1700000	1710000
+jobscomplete	c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3	stat	20261005T000000.3	complete	1	2	node-5	501	1800000	1810000
+jobscomplete	d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4	portal_split	20261005T000000.4	complete	0	2	node-7	701	2100000	2150000
+jobscomplete	e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5	portal_merge	20261005T000000.5	complete	0	2	node-7	705	2700000	2710000

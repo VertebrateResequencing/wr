@@ -1,0 +1,5 @@
+900 db behind fusestall since 890; stall due at 1000
+1000 STALL START pid=11 lsfRUN=700 load=1.00
+1001 stalled 1s goroutines=total 10 held=1 lsfRUN=700
+2000 STALL START pid=11 lsfRUN=700 load=1.00
+2100 STALL END after 100s

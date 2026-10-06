@@ -1,0 +1,4 @@
+t=1969-12-31T19:33:20-0500 lvl=info msg="reserved a job" key=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1 cmd="/soak/prodsim-1/psimjob.sh portal_compress J.1 1.0 100 2" attempts=0
+t=1969-12-31T19:33:20-0500 lvl=info msg="will start executing" key=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1 cmd="/soak/prodsim-1/psimjob.sh portal_compress J.1 1.0 100 2"
+t=1969-12-31T19:33:20-0500 lvl=info msg="started executing" jobkey=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1 cmd="/soak/prodsim-1/psimjob.sh portal_compress J.1 1.0 100 2" pid=101
+t=1969-12-31T19:34:10-0500 lvl=info msg="command ran OK" key=f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6 cmd="/soak/prodsim-1/psimjob.sh portal_dedupe X.9 1.0 100 2" exitcode=0

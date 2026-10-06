@@ -1,0 +1,9 @@
+nondurable source=d1 inside=0 outside=0 runs=10000 outsidePct=0.0000
+totals ok
+doubles inside=0 outside=4 acknowledged=2
+missing ran=4 absent=0 excused=0
+peakRUN=6100
+double portal_compress A.1 outside reserved=3000 acknowledged=yes
+double portal_dedupe B.1 outside reserved=3200 acknowledged=yes
+double portal_split C.1 outside reserved=3400 acknowledged=no
+double portal_merge D.1 outside reserved=3700 acknowledged=no

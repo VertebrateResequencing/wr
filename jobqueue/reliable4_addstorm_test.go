@@ -235,7 +235,8 @@ func TestReliable4AddStorm(t *testing.T) {
 
 	dbFile := os.Getenv("WR_AS_DB")
 	if dbFile == "" {
-		t.Skip("set WR_AS_DB to a big production-shaped DB (eg. /nfs/hgi/wr/sb10-bigdb/prod.db)")
+		t.Skip("set WR_AS_DB to a big production-shaped DB (eg. a copy of " +
+			"/nfs/hgi/wr/sb10-bigdb/prod.db made with 'developers/wrdev.sh compact-fixture')")
 
 		return
 	}

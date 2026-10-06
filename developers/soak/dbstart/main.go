@@ -27,13 +27,22 @@
 // manager's bolt DB read-only and prints one line per psimjob.sh job in the
 // complete and live buckets (and each relbury.sh job, as kind relb): bucket,
 // key, kind, id, state, exit code, attempts, host, pid, and start and end
-// times in unix ms.
+// times in unix ms. A live job's run-state record, if it was written over that
+// live record, is applied first, so the line shows the job's latest durable run
+// state.
 //
-// usage: dbstart <db file>
+// With -schema, it instead prints the database's schema version, as
+// schemaVersion=<n> (0 if the database has none).
+//
+// usage: dbstart [-schema] <db file>
 package main
 
 import (
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"hash/crc32"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -47,7 +56,22 @@ const (
 	dbPerm      = 0o400
 	openTimeout = 10 * time.Second
 	minFields   = 3
+	crcBytes    = 4
+	stampBytes  = 8
+	schemaFlag  = "-schema"
 )
+
+//nolint:gochecknoglobals // shared bolt keys and the CRC table.
+var (
+	bucketComplete       = []byte("jobscomplete")
+	bucketLive           = []byte("jobslive")
+	bucketRunState       = []byte("jobRunState")
+	bucketMeta           = []byte("meta")
+	metaKeySchemaVersion = []byte("schemaVersion")
+	crcTable             = crc32.MakeTable(crc32.Castagnoli)
+)
+
+var errMalformedStamp = errors.New("malformed schema version")
 
 // rec decodes only the fields it names, by name, from an encoded Job.
 type rec struct {
@@ -61,15 +85,23 @@ type rec struct {
 	Attempts  uint32
 }
 
-// printJob prints the job encoded in v, if it is a psimjob.sh or relbury.sh
-// job.
-func printJob(ch *codec.BincHandle, bucket string, k, v []byte) {
+// printJob prints the job encoded in v, with the encoded run state in runState
+// (if not nil) decoded over it, if it is a psimjob.sh or relbury.sh job.
+func printJob(out io.Writer, ch *codec.BincHandle, bucket string, k, v, runState []byte) {
 	var r rec
 
 	if err := codec.NewDecoderBytes(v, ch).Decode(&r); err != nil {
 		fmt.Fprintln(os.Stderr, "dbstart: decode", string(k), err)
 
 		return
+	}
+
+	if runState != nil {
+		if err := codec.NewDecoderBytes(runState, ch).Decode(&r); err != nil {
+			fmt.Fprintln(os.Stderr, "dbstart: decode run state", string(k), err)
+
+			return
+		}
 	}
 
 	f := strings.Fields(r.Cmd)
@@ -79,7 +111,7 @@ func printJob(ch *codec.BincHandle, bucket string, k, v []byte) {
 
 	// relbury.sh's jobs start ": relb <name>;"
 	f[2] = strings.TrimSuffix(f[2], ";")
-	fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%d\t%d\t%d\n", bucket, k, f[1], f[2], r.State,
+	fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%d\t%d\t%d\n", bucket, k, f[1], f[2], r.State,
 		r.Exitcode, r.Attempts, r.Host, r.Pid, ms(r.StartTime), ms(r.EndTime))
 }
 
@@ -92,19 +124,75 @@ func ms(t time.Time) int64 {
 }
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == schemaFlag {
+		os.Exit(runSchema(os.Args[2], os.Stdout, os.Stderr))
+	}
+
 	if len(os.Args) != 2 { //nolint:mnd // the program name and the db
-		fmt.Fprintln(os.Stderr, "usage: dbstart <db file>")
+		fmt.Fprintln(os.Stderr, "usage: dbstart [-schema] <db file>")
 		os.Exit(exitUsage)
 	}
 
-	if err := run(os.Args[1]); err != nil {
+	if err := run(os.Args[1], os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "dbstart:", err)
 		os.Exit(1)
 	}
 }
 
-func run(path string) error {
-	bdb, err := bolt.Open(path, dbPerm, &bolt.Options{ReadOnly: true, Timeout: openTimeout})
+// runSchema prints the schema version of the database at path to out, as
+// schemaVersion=<n>, and returns 0, or prints an error to errOut and returns 1.
+func runSchema(path string, out, errOut io.Writer) int {
+	version, err := schemaVersion(path)
+	if err != nil {
+		fmt.Fprintln(errOut, "dbstart:", err)
+
+		return 1
+	}
+
+	fmt.Fprintf(out, "schemaVersion=%d\n", version)
+
+	return 0
+}
+
+// schemaVersion returns the meta bucket's schemaVersion in the database at
+// path, or 0 if it has none.
+func schemaVersion(path string) (uint64, error) {
+	bdb, err := openDB(path)
+	if err != nil {
+		return 0, err
+	}
+
+	defer bdb.Close()
+
+	var version uint64
+
+	err = bdb.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketMeta)
+		if b == nil {
+			return nil
+		}
+
+		stamp := b.Get(metaKeySchemaVersion)
+		if stamp == nil {
+			return nil
+		}
+
+		if len(stamp) != stampBytes {
+			return fmt.Errorf("%w (%d bytes)", errMalformedStamp, len(stamp))
+		}
+
+		version = binary.BigEndian.Uint64(stamp)
+
+		return nil
+	})
+
+	return version, err
+}
+
+// run prints a line to out for each psimjob.sh and relbury.sh job in the
+// database at path.
+func run(path string, out io.Writer) error {
+	bdb, err := openDB(path)
 	if err != nil {
 		return err
 	}
@@ -114,21 +202,46 @@ func run(path string) error {
 	ch := new(codec.BincHandle)
 
 	return bdb.View(func(tx *bolt.Tx) error {
-		for _, bn := range []string{"jobscomplete", "jobslive"} {
-			b := tx.Bucket([]byte(bn))
-			if b == nil {
-				continue
-			}
-
-			if err := b.ForEach(func(k, v []byte) error {
-				printJob(ch, bn, k, v)
-
-				return nil
-			}); err != nil {
-				return err
-			}
+		if err := printBucket(out, ch, tx, bucketComplete, nil); err != nil {
+			return err
 		}
+
+		return printBucket(out, ch, tx, bucketLive, tx.Bucket(bucketRunState))
+	})
+}
+
+func openDB(path string) (*bolt.DB, error) {
+	return bolt.Open(path, dbPerm, &bolt.Options{ReadOnly: true, Timeout: openTimeout})
+}
+
+// printBucket prints the jobs in tx's bucket named bn, if it exists, each with
+// its matching record in runStates (if not nil) applied.
+func printBucket(out io.Writer, ch *codec.BincHandle, tx *bolt.Tx, bn []byte, runStates *bolt.Bucket) error {
+	b := tx.Bucket(bn)
+	if b == nil {
+		return nil
+	}
+
+	return b.ForEach(func(k, v []byte) error {
+		var runState []byte
+
+		if runStates != nil {
+			runState = runStateOver(v, runStates.Get(k))
+		}
+
+		printJob(out, ch, string(bn), k, v, runState)
 
 		return nil
 	})
+}
+
+// runStateOver returns the encoded run state in record if record was written
+// over exactly the live record live (it starts with live's big-endian CRC-32C);
+// otherwise nil.
+func runStateOver(live, record []byte) []byte {
+	if len(record) < crcBytes || binary.BigEndian.Uint32(record) != crc32.Checksum(live, crcTable) {
+		return nil
+	}
+
+	return record[crcBytes:]
 }

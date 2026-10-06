@@ -7,6 +7,14 @@ project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 ### Changed
+- The manager now refuses to start on a database created by wr 0.37.2 or
+  earlier that has never been compacted. Stop the manager, run
+  `wr manager compact` once, then start it again. The manager and
+  `wr manager compact` also refuse a database written by a newer wr, naming
+  both versions, and leave it unchanged.
+- Once this version's manager has opened a database, going back to an
+  earlier wr is not supported: an earlier version may run again commands
+  that were reserved or running when this version stopped.
 - The Go client's `Scheduler` now rides out the manager being down, such as
   across a restart, as runners and `WaitForJobs` do. `SubmitJobs`,
   `GetJobByKey`, `WaitForRunning`, the `Find*` methods, `KillJobs`,
@@ -21,6 +29,12 @@ project adheres to [Semantic Versioning](http://semver.org/).
   `jobqueue.Client.RetryWhileManagerUnreachable`; wr's own commands still fail
   fast.
 ### Fixed
+- With thousands of runners, the manager now records each reservation and
+  start with a small write instead of rewriting the whole command, so far
+  fewer commands are handed out before their reservation is on disk, and far
+  fewer run twice if the manager crashes. Each command that is still handed
+  out before its reservation is on disk is now logged at info with its key
+  and a running total.
 - Setting a limit on a limit group whose commands were already running, with
   `wr limit` or by adding a command with `--limit_grps name:n`, now counts those
   commands against it, instead of letting up to the limit more start at once.

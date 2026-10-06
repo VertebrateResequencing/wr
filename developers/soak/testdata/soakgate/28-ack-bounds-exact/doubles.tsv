@@ -1,0 +1,4 @@
+portal_compress	A.1	no-outage	node-1	3000700	3005700	node-9	3100000	3105000	0
+portal_dedupe	B.1	no-outage	node-2	3200000	3205000	node-9	3300900	3305900	0
+portal_split	C.1	no-outage	node-3	3400000	3405000	node-9	3500600	3505600	0
+portal_merge	D.1	no-outage	node-4	3701500	3706500	node-9	3800000	3805000	0

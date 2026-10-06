@@ -34,8 +34,8 @@ exit code, which `main` passes to `os.Exit`, and test that function
 directly. A subprocess test is acceptable only if the function approach
 cannot cover the malformed-stamp exit.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 5.2: E2 - statinspect clearlive empties run-state records [parallel with 5.1, 5.3, 5.4]
 
@@ -50,8 +50,8 @@ module's `go.mod` by hand as F1.5 describes (offline, no `go get`).
 Covering both acceptance tests from E2, in
 `.docs/reliable2/harness/statinspect/main_test.go`.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 5.3: E3 - CHANGELOG and compact help [parallel with 5.1, 5.2, 5.4]
 
@@ -64,8 +64,8 @@ E3, and replace the last paragraph of `managerCompactCmd.Long` in
 `cmd/manager_test.go`, plus E3's review check of the CHANGELOG positions.
 Depends on phases 1 and 3, whose behaviour the entries describe.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 5.4: E5 - Soak gate classification [parallel with 5.1, 5.2, 5.3]
 
@@ -94,8 +94,8 @@ Review notes:
   `unmapped` double must be investigated by hand (find its runner log and
   reservation) before it is reported as a failure of the change.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item under the
 `subagents` skill's shared concurrency limits.
@@ -126,5 +126,5 @@ to completion here rather than stopping it once `fixture manifest OK` is
 printed, record that line, and leave the full gate verdict to F2.2, which
 runs it again.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

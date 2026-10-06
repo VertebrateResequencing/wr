@@ -1,0 +1,7 @@
+t=1969-12-31T20:01:30-0500 lvl=info msg="reserved a job" key=d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4 cmd="/soak/prodsim-1/psimjob.sh portal_merge D.1 1.0 100 2" attempts=0
+t=1969-12-31T20:01:30-0500 lvl=info msg="will start executing" key=d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4 cmd="/soak/prodsim-1/psimjob.sh portal_merge D.1 1.0 100 2"
+t=1969-12-31T20:01:30-0500 lvl=info msg="started executing" jobkey=d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4 cmd="/soak/prodsim-1/psimjob.sh portal_merge D.1 1.0 100 2" pid=400
+t=1969-12-31T20:01:40-0500 lvl=info msg="command ran OK" key=d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4 cmd="/soak/prodsim-1/psimjob.sh portal_merge D.1 1.0 100 2" exitcode=0
+t=1969-12-31T20:01:40-0500 lvl=info msg="reserved a job" key=d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4 cmd="/soak/prodsim-1/psimjob.sh portal_merge D.1 1.0 100 2" attempts=0
+t=1969-12-31T20:01:40-0500 lvl=info msg="will start executing" key=d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4 cmd="/soak/prodsim-1/psimjob.sh portal_merge D.1 1.0 100 2"
+t=1969-12-31T20:01:40-0500 lvl=info msg="started executing" jobkey=d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4 cmd="/soak/prodsim-1/psimjob.sh portal_merge D.1 1.0 100 2" pid=401

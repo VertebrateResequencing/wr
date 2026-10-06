@@ -1,0 +1,1 @@
+t=1969-12-31T19:34:10-0500 lvl=info msg="command ran OK" key=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1 cmd="/soak/prodsim-1/psimjob.sh portal_compress J.1 1.0 100 2" exitcode=0

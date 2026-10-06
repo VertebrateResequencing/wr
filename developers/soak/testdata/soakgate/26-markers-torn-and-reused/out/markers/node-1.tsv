@@ -1,0 +1,9 @@
+S	1000000	stat	T.1	node-1	101			/soak/work
+D	1000500	stat	T.1	node-1	101		MISSING	/soak/work
+S	1001
+S	S	1002000	stat	T.2	node-1	102			/soak/work
+E	1003000	stat	T.3	node-1	103		0	/soak/work
+S	1100000	fofnput	F.1	node-1	104			/soak/work
+E	1110000	fofnput	F.1	node-1	104		3	/soak/work
+S	1300000	fofnput	F.1	node-1	104			/soak/work
+E	1310000	fofnput	F.1	node-1	104		0	/soak/work

@@ -1,0 +1,6 @@
+S	2900000	portal_compress	P.1	node-9	901			/soak/work
+E	2905000	portal_compress	P.1	node-9	901		0	/soak/work
+S	2910000	portal_split	R.1	node-9	902			/soak/work
+E	2915000	portal_split	R.1	node-9	902		0	/soak/work
+S	2920000	stat	Z.1	node-9	903			/soak/work
+E	2925000	stat	Z.1	node-9	903		0	/soak/work

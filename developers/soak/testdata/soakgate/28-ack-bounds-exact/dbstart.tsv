@@ -1,0 +1,4 @@
+jobscomplete	a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1	portal_compress	A.1	complete	0	2	node-9	901	1	2
+jobscomplete	b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2	portal_dedupe	B.1	complete	0	2	node-9	901	1	2
+jobscomplete	c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3	portal_split	C.1	complete	0	2	node-9	901	1	2
+jobscomplete	d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4	portal_merge	D.1	complete	0	2	node-9	901	1	2

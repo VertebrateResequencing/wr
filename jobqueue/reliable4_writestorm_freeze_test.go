@@ -39,8 +39,9 @@ package jobqueue
 // freelist.Free/spill on the churn-bloated 7.9GB freelist, serialized on the one
 // write lock; the SYNCHRONOUS archiveJob queues behind them and blocks >60s ->
 // the job is falsely lost -> churn. That per-commit cost is freelist work (CPU),
-// so it reproduces in-process on a big-freelist DB (see TestReliable4InflateDB /
-// pristine6 ~3.2GB freelist / pristine10 ~4.6GB).
+// so it reproduces in-process on a big-freelist DB (see TestReliable4InflateDB;
+// the version-0 originals pristine6 and pristine10 had ~3.2GB and ~4.6GB
+// freelists, which the compact-fixture copies wr can open no longer have).
 //
 // This opens such a DB (WR_WSFREEZE_DB), seeds N live jobs, times db.archiveJob
 // from a few "archiver" goroutines (the prod victim), then fires the N-job
@@ -50,14 +51,15 @@ package jobqueue
 //   POST-FIX (single coalescing writer): goroutines bounded AND archive latency
 //            stays well under the TTR -> PASS.
 //
-// CONFIRMED A/B (pristine10, ~4.6GB freelist, N=100000, identical DB both sides):
+// CONFIRMED A/B (version-0 original pristine10, ~4.6GB freelist, N=100000, identical DB both sides):
 //   PRE-FIX (7373697):  +99,106 goroutines, max archive latency 1m13.5s (8 over the
 //                       60s floor), storm drain 1m27s -> FAIL (freeze reproduced).
 //   POST-FIX (fix):     +1 goroutine, max archive latency 6.9s (0 over the floor),
 //                       storm drain 9s -> PASS.
 //
 // Run on a farm node (needs the big DB + RAM for N goroutines):
-//   WR_WSFREEZE_DB=/nfs/hgi/wr/sb10-bigdb/pristine10 WR_WSFREEZE_N=100000 \
+//   WR_WSFREEZE_DB=<copy of /nfs/hgi/wr/sb10-bigdb/pristine10 made with
+//   'developers/wrdev.sh compact-fixture'> WR_WSFREEZE_N=100000 \
 //     go test -tags reliability_repro ./jobqueue/ -run TestReliable4WriteStormFreeze -v -timeout 30m
 
 import (
@@ -94,7 +96,8 @@ func TestReliable4WriteStormFreeze(t *testing.T) {
 
 	dbFile := os.Getenv("WR_WSFREEZE_DB")
 	if dbFile == "" {
-		t.Skip("set WR_WSFREEZE_DB to a big freelist-bloated DB (see TestReliable4InflateDB; e.g. pristine10)")
+		t.Skip("set WR_WSFREEZE_DB to a big DB (see TestReliable4InflateDB; e.g. a copy of " +
+			"/nfs/hgi/wr/sb10-bigdb/pristine10 made with 'developers/wrdev.sh compact-fixture')")
 
 		return
 	}

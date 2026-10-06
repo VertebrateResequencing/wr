@@ -344,6 +344,20 @@ func TestManagerCompactReportsStrippedOutput(t *testing.T) {
 	})
 }
 
+func TestManagerCompactHelpSaysCompactIsRequired(t *testing.T) {
+	Convey("E3.1: compact's help ends by saying an old database must be compacted once", t, func() {
+		lastParagraph := `A database created by wr 0.37.2 or earlier must be compacted once before
+the manager will start on it. wr versions 0.37.0 to 0.37.2 kept the output
+of every successfully completed command in the database, up to about 16KB
+each; compact removes it and reports how many completed commands it was
+removed from. Later compactions skip this. compact refuses (exiting
+non-zero, leaving the database untouched) a database written by a newer
+version of wr.`
+
+		So(managerCompactCmd.Long, ShouldEndWith, "\n\n"+lastParagraph)
+	})
+}
+
 // TestManagerStartHelperProcess is not a test: it is the body of the `wr`
 // process the start tests run, and of the daemon that process forks, since
 // daemonArgs clones os.Args. It does nothing unless managerStartHelperEnv is

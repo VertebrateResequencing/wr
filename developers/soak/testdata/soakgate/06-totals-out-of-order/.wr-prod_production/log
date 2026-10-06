@@ -1,0 +1,11 @@
+t=1970-01-01T01:15:30+0100 lvl=info msg="reservation handed out before it was recorded on disk" key=00000000000000000000000000000001 total=5 caller=clog.go:338
+t=1970-01-01T01:15:31+0100 lvl=warn msg="reservation not yet recorded on disk, handing the job out anyway; a manager crash before the job's start is recorded may run it twice" key=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa waited=10s caller=clog.go:338
+t=1970-01-01T01:15:40+0100 lvl=info msg="opening database"
+t=1970-01-01T01:15:50+0100 lvl=info msg="wr manager  started on 10.0.0.1:1, pid 11"
+t=1970-01-01T01:16:45+0100 lvl=info msg="reservation handed out before it was recorded on disk" key=00000000000000000000000000000001 total=2 caller=clog.go:338
+t=1970-01-01T01:16:46+0100 lvl=warn msg="reservation not yet recorded on disk, handing the job out anyway; a manager crash before the job's start is recorded may run it twice" key=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa waited=10s caller=clog.go:338
+t=1970-01-01T01:17:50+0100 lvl=warn msg="reservation not yet recorded on disk, handing the job out anyway; a manager crash before the job's start is recorded may run it twice (repeated)" repeats=40 since=1970-01-01T01:16:50+0100 interval=1m0s sample_key=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb sample_waited=10s caller=clog.go:338
+t=1970-01-01T01:21:40+0100 lvl=info msg="reservation handed out before it was recorded on disk" key=00000000000000000000000000000001 total=1 caller=clog.go:338
+t=1970-01-01T01:22:20+0100 lvl=info msg="crash"
+t=1970-01-01T01:22:40+0100 lvl=info msg="wr manager  started on 10.0.0.1:1, pid 22"
+t=1970-01-01T01:23:20+0100 lvl=info msg="reservation handed out before it was recorded on disk" key=00000000000000000000000000000001 total=1 caller=clog.go:338

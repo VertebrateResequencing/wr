@@ -74,6 +74,7 @@ record the final stop that `wrdev.sh prodsim` makes as it ends.
 | `latency.py <outdir> <runnerlogdir>` | End-to-acknowledgement latency per outcome and per 10 minutes, and ends per minute. |
 | `rundepcheck.py <outdir>` | A verdict per `rundep.sh` instance. |
 | `relburycheck.py <outdir> <runnerlogdir> [dbstart.tsv]` | A verdict per `relbury.sh` batch: acknowledged-then-lost, stuck and extra runs. |
+| `soakgate.py --source d1\|warning <outdir> <runnerlogdir> <doubles.tsv> <dbstart.tsv>` | A crash soak's gate counts: non-durable hand-outs inside and outside injected commit stalls (from the per-reservation D1 lines with `d1`, or the rate-limited warning with `warning` for a tree without them) and whether each manager process's D1 totals are complete, double runs inside and outside those stalls and which were acknowledged, jobs that ran but are missing from the DB, and peak LSF RUN. Refuses (`ROTATED`, exit 1) if the manager's log rotated. Its fixtures are in `testdata/soakgate/`; `testdata/soakgate/run.sh` checks it. |
 | `stopcheck.sh <outdir> <stopBegin> <stopEnd> [<prevStart>]` | Joins the portal runs in flight at a clean stop to the manager's state for them: an exit 0 must be complete, a killed run buried. Needs the manager up. |
 
 ### DB helpers
@@ -216,9 +217,18 @@ go build -o "$SOAK_ROOT/dbstart" ./developers/soak/dbstart
 "$SOAK_ROOT/dbstart" "$SOAK_DBDIR/db" > "$out/dbstart.tsv"
 python3 developers/soak/starttimes.py "$out" "$out/dbstart.tsv" "$out/unacked.tsv"
 python3 developers/soak/relburycheck.py "$out" "$rl" "$out/dbstart.tsv"
+# the gate's counts; --source warning for a tree without the D1 log line
+python3 developers/soak/soakgate.py --source d1 "$out" "$rl" "$out/doubles.tsv" "$out/dbstart.tsv"
 ```
 
-The soak finds problems; it is not a gate. A double run, a stuck job or an
+`soakgate.py` counts an `unmapped` double (one whose first run's runner log
+or `reserved a job` line it could not find) as outside a stall window, which
+is conservative. Investigate each one by hand before reporting it as a
+failure of the change under test: find its first run's runner log from its
+marker host and pid, and the reservation that run was handed.
+
+The soak finds problems; it is not a gate unless a spec makes
+`soakgate.py`'s counts one. A double run, a stuck job or an
 acknowledged release that was lost is a defect to reproduce in `repro/` or a
 `jobqueue` test.
 

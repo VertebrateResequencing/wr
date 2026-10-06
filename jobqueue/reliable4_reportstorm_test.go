@@ -51,8 +51,9 @@
 //   - an OPTIONAL big-DB confound (WR_RS_DB): serve() opens a mutable COPY of a
 //     pre-generated big DB with backups on, so archive commits have realistic
 //     latency and the periodic full-file backup can stall them (as in
-//     TestReliable4BackupStall). The pre-generated DB is at e.g.
-//     /nfs/hgi/wr/sb10-bigdb/pristine10.
+//     TestReliable4BackupStall). Use e.g. a copy of the version-0
+//     /nfs/hgi/wr/sb10-bigdb/pristine10 made with
+//     'developers/wrdev.sh compact-fixture', which wr can open.
 //
 // The server is configured like prod as far as in-process allows (real ItemTTR,
 // a 15s-style touch loop) and is given the "mock" scheduler with a non-empty
@@ -63,7 +64,7 @@
 // Run via developers/wrdev.sh report-storm, or directly:
 //
 //	WR_RS_JOBS=5000 WR_RS_RUNNERS=1000 WR_RS_LIMIT=2000 WR_RS_SECONDS=120 \
-//	  [WR_RS_DB=/nfs/hgi/wr/sb10-bigdb/pristine10] \
+//	  [WR_RS_DB=<compact-fixture copy of /nfs/hgi/wr/sb10-bigdb/pristine10>] \
 //	  go test -tags reliability_repro ./jobqueue/ -run TestReliable4ReportStorm -v
 
 package jobqueue

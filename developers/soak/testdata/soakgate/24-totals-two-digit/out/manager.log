@@ -1,0 +1,13 @@
+t=1970-01-01T01:15:50+0100 lvl=info msg="wr manager  started on 10.0.0.1:1, pid 11"
+t=1970-01-01T01:20:01+0100 lvl=info msg="reservation handed out before it was recorded on disk" key=00000000000000000000000000000001 total=1 caller=clog.go:338
+t=1970-01-01T01:20:02+0100 lvl=info msg="reservation handed out before it was recorded on disk" key=00000000000000000000000000000001 total=2 caller=clog.go:338
+t=1970-01-01T01:20:03+0100 lvl=info msg="reservation handed out before it was recorded on disk" key=00000000000000000000000000000001 total=3 caller=clog.go:338
+t=1970-01-01T01:20:04+0100 lvl=info msg="reservation handed out before it was recorded on disk" key=00000000000000000000000000000001 total=4 caller=clog.go:338
+t=1970-01-01T01:20:05+0100 lvl=info msg="reservation handed out before it was recorded on disk" key=00000000000000000000000000000001 total=5 caller=clog.go:338
+t=1970-01-01T01:20:06+0100 lvl=info msg="reservation handed out before it was recorded on disk" key=00000000000000000000000000000001 total=6 caller=clog.go:338
+t=1970-01-01T01:20:07+0100 lvl=info msg="reservation handed out before it was recorded on disk" key=00000000000000000000000000000001 total=7 caller=clog.go:338
+t=1970-01-01T01:20:08+0100 lvl=info msg="reservation handed out before it was recorded on disk" key=00000000000000000000000000000001 total=8 caller=clog.go:338
+t=1970-01-01T01:20:09+0100 lvl=info msg="reservation handed out before it was recorded on disk" key=00000000000000000000000000000001 total=9 caller=clog.go:338
+t=1970-01-01T01:20:10+0100 lvl=info msg="reservation handed out before it was recorded on disk" key=00000000000000000000000000000001 total=10 caller=clog.go:338
+t=1970-01-01T01:20:11+0100 lvl=info msg="reservation handed out before it was recorded on disk" key=00000000000000000000000000000001 total=11 caller=clog.go:338
+t=1970-01-01T01:20:12+0100 lvl=info msg="reservation handed out before it was recorded on disk" key=00000000000000000000000000000001 total=12 caller=clog.go:338
