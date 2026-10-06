@@ -72,9 +72,9 @@ Depends on phases 1 and 3, whose behaviour the entries describe.
 spec.md section: E5
 
 Write `developers/soak/soakgate.py` with the `--source d1|warning` CLI,
-segmenting, window, doubles, missing-job and peak-RUN rules and the exact
-output lines E5 gives, and add its analysis step to
-`developers/soak/README.md`. Add one case directory per acceptance test
+rotated-log refusal, segmenting, window, totals, doubles, missing-job and
+peak-RUN rules and the exact output lines E5 gives, and add its analysis
+step to `developers/soak/README.md`. Add one case directory per acceptance test
 under `developers/soak/testdata/soakgate/` (input outdir, runner logs,
 `doubles.tsv`, `dbstart.tsv`, `args`, `expected.txt`) and `run.sh`, which
 runs every case and diffs (F1.6). Covering all 11 acceptance tests from
@@ -108,9 +108,10 @@ pass).
 spec.md section: E4
 
 Add `wrdev.sh compact-fixture <src> <dst>` with its refusals, list it in
-`usage` and `main`, and repoint every text the E4 grep finds in
-`developers/wrdev.sh`, `developers/speed.sh` and the three `reliable4_*`
-test files at compacted copies. Then build the gate's fixtures in
+`usage` and `main`, and repoint at compacted copies every text the E4
+grep finds in `developers/wrdev.sh` and `developers/speed.sh`, plus the
+skip messages and header comments of the three `reliable4_*` test files
+E4 names. Then build the gate's fixtures in
 `$G/fixtures` (`pristine6`, `pristine10`, `prod.db` with `compact-fixture`,
 and `fix120k.db` with `add-storm-fixture`), following E4's rules for
 `WRDEV_ROOT`, explicit free ports, `wrdev.sh build` first, unset `OS_*`
