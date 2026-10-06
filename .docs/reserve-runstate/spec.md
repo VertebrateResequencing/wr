@@ -637,8 +637,8 @@ backup) and before any write transaction (`openManagerBolt` sets
    `currentDBSchemaVersion` if the database is new or its version is below
    it.
 
-Nothing else reads the schema version, so `wr manager start` reports the
-error as it reports any `initDB` failure.
+Nothing else in `wr manager start` reads the schema version, so it reports
+the error as it reports any `initDB` failure.
 
 The big-DB generator `TestReliable4InflateDB`
 (`jobqueue/reliable4_backup_repro_test.go`, `reliability_repro` tag) builds
@@ -1107,8 +1107,7 @@ New `developers/soak/soakgate.py --source d1|warning <outdir>
   `remove_buried`), whose last run's `E` marker has any status other than
   `0` (a non-zero exit code, or `sig<NAME>` when a signal ended the run, as
   `psimjob.sh` writes it) or which has no `E` marker.
-- Prints exactly, then one line per outside or acknowledged double (inside
-  or outside a window) and per absent job:
+- Prints exactly these five lines:
 
   ```text
   nondurable source=<d1|warning> inside=<n> outside=<n> runs=<runs> outsidePct=<x.xxxx>
@@ -1122,8 +1121,9 @@ New `developers/soak/soakgate.py --source d1|warning <outdir>
   whose totals are not exactly {1..max}, and `<n>` the largest k such that
   each of 1..k appears in it exactly once.)
 
-  After `peakRUN=`, one line per listed double, in `doubles.tsv` order, then
-  one per absent job, sorted by kind then id:
+  After `peakRUN=`, one line per outside or acknowledged double (inside or
+  outside a window), in `doubles.tsv` order, then one per absent job, sorted
+  by kind then id:
 
   ```text
   double <kind> <id> <inside|outside|unmapped> reserved=<epoch|-> acknowledged=<yes|no>
