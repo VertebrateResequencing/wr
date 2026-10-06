@@ -933,6 +933,122 @@ func TestKickRacingReservation(t *testing.T) {
 	})
 }
 
+// TestKickQueuedBeforeReservable proves that a kick queues its write before it
+// makes the job reservable. A reservation records only the job's run state, over
+// whatever full record precedes it, so if the kick's write were queued after a
+// reservation that followed it, a crash in between would recover the reserved
+// job with its buried, spent UntilBuried, not the kicked one.
+func TestKickQueuedBeforeReservable(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a buried job reserved as soon as its kick makes it reservable", t, func() {
+		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+		serverConfig.Timings.ItemTTR = time.Minute
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		serverStopped := false
+
+		defer func() {
+			if !serverStopped {
+				server.Stop(ctx, true)
+			}
+		}()
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		runner, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(runner)
+
+		target := &Job{
+			Cmd: restFormTrue + " kickqueued", Cwd: testCwd, RepGroup: kickOrderRepGroup,
+			ReqGroup: kickOrderRepGroup, Requirements: standardReqs, Retries: 3, Priority: 1,
+		}
+		other := &Job{
+			Cmd: restFormTrue + " kickqueued other", Cwd: testCwd, RepGroup: kickOrderRepGroup + "_other",
+			ReqGroup: kickOrderRepGroup, Requirements: standardReqs, Retries: 3,
+		}
+		inserts, _, err := jq.Add([]*Job{target, other}, os.Environ(), true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 2)
+
+		key := target.Key()
+
+		first, err := jq.Reserve(2 * time.Second)
+		So(err, ShouldBeNil)
+		So(first, ShouldNotBeNil)
+		So(first.Key(), ShouldEqual, key)
+		So(jq.Bury(first, nil, "failed"), ShouldBeNil)
+
+		otherItem, err := server.q.Get(other.Key())
+		So(err, ShouldBeNil)
+
+		otherJob, ok := otherItem.Data().(*Job)
+		So(ok, ShouldBeTrue)
+
+		// park the other job out of the way so only the kicked job is ready.
+		_, err = jq.Suspend([]*JobEssence{{JobKey: other.Key()}})
+		So(err, ShouldBeNil)
+
+		var (
+			reserved   *Job
+			reserveErr error
+			imageErr   error
+		)
+
+		// the image a crash just after the reservation leaves: a durable write
+		// queued now commits no earlier than any write queued before it.
+		crashImage := &bytes.Buffer{}
+
+		kickQueuedHook = func(hooked string) {
+			if hooked != key {
+				return
+			}
+
+			reserved, reserveErr = runner.Reserve(2 * time.Second)
+
+			imageErr = server.db.updateJobAfterChangeDurable(otherJob)
+			if imageErr == nil {
+				imageErr = server.BackupDB(crashImage)
+			}
+		}
+		defer func() { kickQueuedHook = nil }()
+
+		n, err := jq.Kick([]*JobEssence{{JobKey: key}})
+		kickQueuedHook = nil
+
+		So(err, ShouldBeNil)
+		So(n, ShouldEqual, 1)
+		So(reserveErr, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+		So(reserved.Key(), ShouldEqual, key)
+		So(imageErr, ShouldBeNil)
+
+		Convey("a crash then recovers it reserved with the kicked UntilBuried", func() {
+			serverStopped = true
+
+			jq2, stop := kickOrderRestartOn(ctx, server, serverConfig, addr, crashImage, clientConnectTime)
+			defer stop()
+
+			recovered, errg := jq2.GetByRepGroup(kickOrderRepGroup, false, 0, "", false, false)
+			So(errg, ShouldBeNil)
+			So(len(recovered), ShouldEqual, 1)
+			So(recovered[0].State, ShouldEqual, JobStateReserved)
+			So(recovered[0].UntilBuried, ShouldEqual, initialUntilBuried(target.Retries))
+		})
+	})
+}
+
 // kickOrderRestartOn stops server, restarts the manager on image as its
 // database, as a crash leaving that image would, and returns a client of the
 // recovered manager and a function that disconnects it and stops that manager.
