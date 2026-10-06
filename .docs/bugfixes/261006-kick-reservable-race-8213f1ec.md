@@ -96,6 +96,10 @@ files.
     `make lint`, `make test`, `make race` pass. Speed gate (`make speed` plus
     a kick-under-reserve-load comparison) is owed before PR-ready, since
     `queue/` changed.
+  - Deferred, pre-existing (no change here): `kickJobs` changes the `*Job`
+    its caller passed, not the item's data. If a modify replaced the item's
+    `*Job` between the caller's lookup and the kick, the kick would change
+    the old object while the item keeps the new one. Present on develop.
 
 - [x] resumeJob / resumeQueueItem race (jobqueue/server.go ~3130-3155):
       s.q.Resume makes a suspended item reservable before the resume sets
@@ -235,3 +239,296 @@ files.
     callback runs. Ordering only. A counter is not a drop-in fix because the
     queue merges `readyAdded` calls into one callback and `finishRAC` resets
     everything when it ends.
+
+## Speed gate
+
+Run on 2026-10-06 against head `a04b6dc9` (plus the uncommitted benchmark
+file below) and base `021f734a`, on an 8-core host with no LSF, with
+`nice -n 19`, `GOFLAGS=-p=2` and `GOCACHE` under `/tmp`.
+
+### make speed
+
+`make speed` (quick mode, `-count 6`, base built from the merge-base in a
+temporary worktree). Verdict: PASS, "no benchmark or scenario worsened by more
+than 10% at p<0.05, and every scenario met its thresholds". Nothing changed
+significantly. `QueueLifecycle` geomean was -4.9% (n.s.) and the jobqueue
+sec/op geomean was +3.7% (n.s.). The `report-storm` scenario ran at 749 vs
+748 jobs/s. Results: `/tmp/wr-speed-sb10/run-1791299536/benchstat.txt`.
+
+None of those benchmarks kicks or resumes a job, so the gate does not cover
+the changed path. A focused benchmark was added for it.
+
+### Kick and resume under reserve load
+
+`jobqueue/kick_resume_bench_test.go` adds `BenchmarkKickUnderReserveLoad` and
+`BenchmarkResumeUnderReserveLoad`. Each round starts a real server and adds
+1000 target jobs, each with a distinct 130 KB path-like command. The kick
+benchmark buries the targets and the resume benchmark suspends them. Each
+round then adds 20000 small ready fillers. Eight goroutines call
+`reserveItem` with a 50 µs pause between calls while `kickJobs` or
+`resumeJobs` handles all 1000 targets. It reports the op's time (ns/op) and
+the p50, p99 and max latency of reserves that began during the op and got a
+job.
+
+Command: test binaries built from each tree with `go test -c -tags netgo`
+(`CGO_ENABLED=0`), run as `-test.bench UnderReserveLoad -test.benchtime=1x`
+for 6 interleaved base/head rounds, then compared with benchstat
+(`v0.0.0-20260929162123-406019bb8b68`):
+
+```text
+                         │    base     │     head     │ vs base
+sec/op  Kick                 109.2m      111.3m          ~ (p=0.937)
+sec/op  Resume               107.6m       80.7m          ~ (p=0.132)
+reserve-p50-us  Kick          6.38      1167.5      +18208% (p=0.002)
+reserve-p50-us  Resume        6.07      1123.0      +18399% (p=0.002)
+reserve-p99-us  Kick         752.1      5653.5        +652% (p=0.002)
+reserve-p99-us  Resume       818.8      6622.5        +709% (p=0.002)
+reserves/op  Kick            4294        600.5         -86% (p=0.002)
+reserves/op  Resume          3572        336.5         -91% (p=0.002)
+```
+
+Verdict: FAIL, a material regression in reserve latency. Kick and resume
+take as long as before, but a reserve that runs alongside them now waits a
+median of about 1.1 ms instead of about 6 µs (roughly 180 times longer). p99
+is about 8 times longer, and reservers complete 86-91% fewer reserves in the
+window. Each item now encodes its whole job (about 100 µs for a 130 KB
+command) and queues the write while holding the queue mutex. The op loop
+takes that mutex again straight away, so waiting reservers get it only when
+Go's `sync.Mutex` switches to starvation mode after a 1 ms wait. That
+explains a p50 just over 1 ms. `queueJobChange` also takes `db.RLock`, and
+`queueJobExit` holds `db.Lock` while it encodes an exiting job. Under load, a
+kick under the queue mutex can therefore also wait on concurrent job exits.
+
+The fix is unchanged. Options, for the owner:
+
+1. Encode before the queue lock and enqueue under it: snapshot-encode the job
+   with the kicked or resumed fields applied before `KickWith`/`ResumeWith`.
+   The callback then sets the fields under `job.Lock` and enqueues the
+   pre-encoded bytes, which is cheap. Ordering and the crash-image leaf still
+   hold because the write is queued before the item is reservable. The cost
+   is a change detector (such as a per-job change counter) so the callback
+   re-encodes in the rare case that the job changed after the snapshot, and
+   a discarded encode when the kick or resume fails.
+2. Queue the write by key in the callback and encode it at drain time under
+   `job.RLock`. Latest-wins coalescing makes a later encode safe, and the
+   queue position is still taken before the item is reservable. This changes
+   the best-effort writer's contract and its archive guard, so the change is
+   wider.
+3. Set only the fields in the callback and queue the write after
+   `KickWith` returns. This is the cheapest option, but it reopens the
+   on-disk ordering gap. `TestKickRacingReservation`'s crash-image leaf would
+   fail, and it matters to `reserve-runstate-2f00c336`.
+
+Batching all keys under one lock hold would cut the hand-offs but hold the
+mutex for the whole op (about 100 ms here), which is worse for p99.
+
+### Rework (option 1)
+
+The owner chose option 1. Uncommitted on top of `a04b6dc9`:
+
+- `db.prepareJobChange` encodes the job's live record with the kick's or
+  resume's fields applied, before the queue lock. It applies them under
+  `job.Lock`, encodes, and puts them back, so nobody sees them early. It also
+  takes the write's `db.wg` slot (under `db.RLock`, still before the queue
+  lock). `kickJobs` prepares before it sets RAC-pending, so reserves are not
+  held up for the encode.
+- The `KickWith`/`ResumeWith` callback calls `db.queueJobChangeAhead`. It sets
+  the fields under `job.Lock` and queues the prepared bytes under `beMu`
+  alone, with no db lock and no encode. A failed kick or resume releases the
+  slot (`discardJobChangeAhead`), so nothing is set or queued. The kick's
+  debug log moved out of the callback.
+- Change detection: while a prepared change is outstanding on a job
+  (`changesAhead` > 0), `Job.Lock` also counts write locks (`writeLocks`). If
+  the count moved between the prepare and the callback, beyond the callback's
+  own lock, the callback encodes the job afresh under its lock. That case is
+  rare, for example a modify of the buried or suspended job in between. Both
+  fields return to 0 when no prepared change is outstanding. A counter that
+  only grew failed `client`'s `TestFakeScheduler`, whose `ShouldResemble`
+  compares whole `Job` structs.
+- Resume: `suspendedJob` predicts the target state from the item's unresolved
+  dependencies, and the prepare encodes that one state. If the callback's `to`
+  differs (a dependency resolved in between), the prepared write is outdated
+  and re-encoded. Encoding both states would double the op's encode cost to
+  cover a rare case.
+- The best-effort writer latches `beStopped` before its final drain. A
+  callback that arrives later releases its slot rather than queueing a write
+  that would never drain, as `errDBClosed` does for `queueJobChange`.
+- Taking the db lock out of the callback exposed an ordering gap with exits.
+  `queueJobExit` released the job's read lock between its encode and its
+  enqueue and relied on `db.Lock` alone. So a kick could queue between a
+  bury's encode and its enqueue, and the older buried record won on disk while
+  the job was ready in memory. `queueJobExit` now holds `job.RLock` from encode
+  through enqueue, as `queueJobChange` does. Red test
+  `TestKickDuringBuryWriteStoresKicked`: 3 of 3 failures (stored `buried`,
+  want `ready`) before that change, green after.
+- The gate's second note is resolved: nothing under the queue mutex takes the
+  db lock now. The callback can still wait on `job.Lock` for an encode of the
+  same job (an exit or change of that job in flight), never of another job.
+
+New tests: `TestKickAfterModifyKeepsModification` (a modify landing between
+prepare and callback keeps its `Retries`/`Priority` in the kick's write, and
+`UntilBuried` follows the new `Retries`), `TestResumeAfterChangeWritesResumedJob`
+(the same for a resume, plus a dependency resolved in between, stored `ready`),
+and `TestKickDuringBuryWriteStoresKicked`. Removing the write-lock comparison
+in `endChangeAheadLocked` failed the two modify leaves (stored Retries 3 and
+Priority 1). Removing the counting in `Job.Lock` instead is equivalent for
+correctness, since every changed job is then re-encoded, so only the benchmark
+catches it. Removing the resume `outdate` failed the dependency leaf (stored
+`dependent`).
+
+`TestFailedKickLeavesJobAndStops` and `TestFailedResumeLeavesJobAndStops`
+cover the failed kick or resume. A kick of a reserved job, and a resume whose
+item was resumed by another path after the prepare, must return 0, leave the
+job's in-memory `State` and `UntilBuried` unchanged, and let `server.Stop`
+finish within 20 s. Dropping `db.wg.Done` from `discardJobChangeAhead` failed
+both on the stop (it hung until the 20 s bound). Dropping the field restore
+in `encodeChanged` failed both on the state (`ready`, want `reserved` or
+`suspended`).
+
+`TestResumeWritesResumedState` checks what a plain resume stores, with
+nothing changing in between: a job with no unresolved dependencies is stored
+`ready`, and one with an unresolved dependency `dependent`. It failed both
+leaves (stored `suspended`) with `resumeJob` preparing an empty change, and
+with `encodeChanged` skipping `change(job)`; no other resume test caught
+either. `TestResumeAfterWriterStopsStops` starts `Stop` from
+`jobChangeAheadHook`, waits for `beStopped`, then lets the resume finish: the
+resume counts 1 and `Stop` returns within 20 s. Dropping `db.wg.Done` from the
+`beStopped` branch, or the `beStopped` check itself, failed it on the stop.
+
+Benchmark rerun the same way, on the final code: a detached scratch worktree
+of `021f734a` with `kick_resume_bench_test.go` copied in, `CGO_ENABLED=0`
+binaries, 6 interleaved base/head rounds of `-test.bench UnderReserveLoad
+-test.benchtime=1x`, and benchstat `v0.0.0-20260929162123-406019bb8b68`. One
+base kick round printed no result (its stderr was discarded), so base kick
+has n=5. Host load average rose from 3.2 to 8.0 during the run (other users),
+so variance is high:
+
+```text
+                         │    base     │     head     │ vs base
+sec/op  Kick                 112.7m      132.8m          ~ (p=0.429)
+sec/op  Resume               100.0m       91.4m          ~ (p=0.818)
+reserve-p50-us  Kick          4.86        5.36           ~ (p=0.978)
+reserve-p50-us  Resume        6.17        5.46           ~ (p=0.394)
+reserve-p99-us  Kick         802.7      1099.0           ~ (p=0.126)
+reserve-p99-us  Resume      1104        1137             ~ (p=0.818)
+reserves/op  Kick            3967        4171            ~ (p=0.931)
+reserves/op  Resume          3047        2714            ~ (p=0.240)
+```
+
+Verdict: PASS. The roughly 1.1 ms p50 and 6 ms p99 are gone, and no metric
+differs significantly from base. Two earlier runs during the rework agree.
+With the kick's debug log still inside the callback, kick p50 was 11.8 vs
+5.5 µs (p=0.015) and nothing else was significant. With the log moved out
+and the counter not yet scoped, nothing was significant.
+
+`make speed`, run before the counter scoping (which adds only a branch to
+`Job.Lock` and a job lock to a failed kick or resume): PASS, "no benchmark or
+scenario worsened by more than 10% at p<0.05, and every scenario met its
+thresholds". Results: `/tmp/wr-speed-sb10/run-1791302448/benchstat.txt`.
+
+#### Wake-up and mutation sweep (review 4)
+
+The best-effort writer has no ticker, so a write queued without
+`kickBestEffortWriter` waits for some later write. Every earlier test made a
+durable write before reading the store, so deleting the wake-up at the end of
+`queueJobChangeAhead` passed. `TestKickStoredWithoutLaterWrite` (bury, wait
+until stored `buried`, kick) and `TestResumeStoredWithoutLaterWrite` (suspend,
+wait until stored `suspended`, resume) make no later write and poll the store
+for up to 5 s for `ready`. With the wake-up removed both failed 3 of 3 (stored
+`buried` and `suspended`); restored (`cmp` against a scratchpad copy), both
+pass.
+
+A sweep then applied 46 mutants, one at a time, to every production line the
+rework changed against `a04b6dc9`, in a scratch worktree. Each ran the tests
+matching `Kick|Resume|Failed|BestEffort|Suspend` plus `TestJobqueueModify`,
+`TestJobqueueSignal`, `TestBuriedDependentRestart` and `TestReleaseAfterLost`.
+None was INVALID. Two new tests and one new seam came out of it:
+
+- `bestEffortSwappedHook` in `drainBestEffort`, called after it takes the
+  pending writes, nil in production. `TestResumeDuringFinalDrainStops` makes a
+  resume's change from inside the final drain's hook and requires `Stop` within
+  20 s. Latching `beStopped` after the final drain (the reviewer's survivor)
+  failed it 4 of 4.
+- `TestKickAfterDBClosedStillKicks` closes the db, then kicks a buried job. It
+  must not panic, and must leave the job `ready` with the kicked `UntilBuried`.
+
+| Mutant | Result | Test or reason |
+| --- | --- | --- |
+| D01 drop the `beStopped` latch | KILLED | `TestResumeAfterWriterStopsStops` |
+| D02 latch after the final drain | KILLED (new) | `TestResumeDuringFinalDrainStops` |
+| D03 drop `beSeq++` in `enqueueChangeInSlotLocked` | equivalent | Moved, not new. A change then shares the last exit's seq, and both comparisons (`<`, `>`) are strict, so it still counts as after that exit |
+| D04 drop the `wgKey` append; D05 drop the change | KILLED | stop and store tests |
+| D06 `prepareJobChange` ignores a closed db | KILLED (new) | `TestKickAfterDBClosedStillKicks`: `wg.Done` of a slot never taken panics, negative counter |
+| D07 release the slot in prepare | KILLED | stop tests |
+| D08 skip `change`; D09 skip the restore | KILLED | `TestResumeWritesResumedState`, failed-change tests |
+| D10 skip `beginChangeAheadLocked`; J03 no increment | speed-only | `changesAhead` wraps on the first end, so the first change re-encodes and every later lock counts. Writes stay correct |
+| D11 unlock and relock before the change | speed-only | The relock goes through `Job.Lock` while the change is outstanding, so it is counted and forces a re-encode. Writes stay correct |
+| D12 `addOpenWG` skips the closed check | equivalent | The slot is still released, by the `beStopped` branch or the discard. Only an encode is wasted, after close |
+| D13 skip the change in the callback | KILLED | kick and resume tests |
+| D14 nil ahead skips the change too | KILLED (new) | `TestKickAfterDBClosedStillKicks`: job left `buried` |
+| D15 no wake-up | KILLED (new) | `Test{Kick,Resume}StoredWithoutLaterWrite` |
+| D16 no `beStopped` check; D17 no `wg.Done` there | KILLED | `TestResumeAfterWriterStopsStops` |
+| D18 unlock and relock the job between change and enqueue | KILLED (new, review 7) | `TestKickQueuesBeforeLaterChange`: a change in the gap queues its write before the kick's stale bytes, stored `Priority` 1, not 9 |
+| D19 `&&` to `\|\|`; D20 ignore `outdate` | KILLED | modify and dependency leaves |
+| D21 always re-encode; J01 never count; J04 compare to `began` | speed-only | Every callback re-encodes. The reserve-load benchmark covers it |
+| D22 discard skips the end; J06 no reset; J07 no decrement | speed-only | Counting stays on for that job (one increment per lock), and comparisons stay relative, so writes stay correct |
+| D23 discard skips `wg.Done` | KILLED | failed-change stop tests |
+| D24 `queueJobExit` drops the job lock before enqueue | KILLED | `TestKickDuringBuryWriteStoresKicked`, but only for a release before `jobExitSnapshotHook`. A release after the hook, between encode and enqueue, is the same class as D18 and has no deterministic test, as `queueJobExit` has no seam in that gap |
+| J02 always count | KILLED | `client` `TestFakeScheduler` (non-zero fields), outside the sweep's selection |
+| J05 always unchanged | KILLED | modify leaves |
+| J08 reset `writeLocks` on every end, not only the last | KILLED (new, review 5) | `TestJobChangeAheadOverlapping`, `TestOverlappingChangesAheadKeepModification`: with two changes outstanding, ending the first forgets a later modify, so the second queues stale bytes and the modify is lost on disk |
+| S01 no `outdate`; S02 flipped; S03 no discard; S04 nil ahead; S07 ignore `to` | KILLED | resume tests |
+| S05 always predict ready; S06 always dependent | speed-only | A wrong prediction is outdated and re-encoded |
+| S08 no prepare; S10 no discard; S11 discard on success; S13 nil ahead; S14, S15 `kickChange` fields | KILLED | kick tests |
+| S09 prepare after RAC-pending | speed-only | Reserves wait out the encode. The benchmark covers it |
+| S12 drop the debug log | equivalent | Logging only |
+| K1 discard only when a ready callback was expected | KILLED (new, review 6) | `TestFailedKickOfDependentJobStops`: a failed kick of a dependent job leaks its write slot, and `Stop` misses 20 s |
+| S16 outdate only when predicted dependent and resumed ready | KILLED (new, review 6) | `TestResumeAfterChangeWritesResumedJob`, "a dependency gained in between": stored `ready`, not `dependent`, 3 of 3 |
+| `<= began+1` for the change comparison | equivalent | Review 6 |
+| `changesAhead > 1` or `== 0` | speed-only | Review 6 |
+| swapped `&&` operands in `currentJobChange` | speed-only | Review 6 |
+| no nil guard in `outdate` or the discard | untested | Review 6: unreachable after client handling stops |
+| encode-error paths in `prepareJobChange` and `queueJobChangeAhead` skip `wg.Done` | untested | Review 7: both release the slot, but a codec encode of a `Job` cannot realistically fail, so no test reaches them |
+| `Job.Lock` counts before `j.RWMutex.Lock()` | race-only | Review 7: the counter is then written outside the lock; only `make race` could catch it, and only when two lockers overlap |
+
+Of 47 valid mutants, 32 were killed: 25 by the existing `jobqueue` tests,
+J02 by `client`, and 6 only by the new tests (D02, D06, D14, D15, D18, J08).
+Three are equivalent (D03, D12, S12) and 12 speed-only.
+
+Review 5 found J08 surviving outside the sweep. Two tests now cover two
+overlapping changes ahead of one job. `TestJobChangeAheadOverlapping` drives
+the `Job` counters directly: begin A, begin B, end A, a locked change, then B
+must report the job changed. `TestOverlappingChangesAheadKeepModification`
+prepares two kicks of a job stored `buried`, discards the first, modifies
+`Priority` and queues the second, then requires the stored job to have the new
+`Priority`. Both pass, and both failed under J08 (stored `Priority` 1, not 9);
+`job.go` was restored and matched its scratchpad copy under `cmp`.
+
+Review 6 found K1 surviving: `TestFailedKickLeavesJobAndStops` covers only a
+failed kick that expected a ready callback. `TestFailedKickOfDependentJobStops`
+kicks a job whose item depends on an incomplete parent, so no callback is
+expected and the kick fails; it requires no kick and `Stop` within 20 s. It
+passes, and failed under K1 (`Stop` still running at 20 s). Review 6 also
+noted no test for a resume predicted ready that resumes dependent.
+`TestResumeAfterChangeWritesResumedJob` gained a leaf whose
+`jobChangeAheadHook` gives the suspended item an unresolved dependency through
+`q.Update`, without write-locking the job; the job must be stored
+`dependent`. It passes, and failed under S16. Both mutants ran in a scratch
+copy; its `server.go` matched the worktree's under `cmp` after each restore.
+`db.snapshotJobExit` had no production caller, so it is gone, and
+`queueUnkickedBestEffortExit` calls `snapshotJobExitLocked` under
+`job.RLock`.
+
+Review 7 found D18 surviving and its reason wrong: a seam inside the gap
+proves that a change made there is kept, which is behaviour, not shape.
+`jobChangeAheadQueueingHook`, nil in production, is called by
+`queueJobChangeAhead` after `currentJobChange` returns and before it takes
+`beMu`, with the job still write-locked. `TestKickQueuesBeforeLaterChange`
+buries a job and waits until it is stored `buried`, then kicks it. From the
+hook, a goroutine sets `Priority` 9 under `sjob.Lock()` and calls
+`updateJobAfterChange`; the hook waits up to 1 s for it, which in correct code
+blocks on the job lock until the kick's write is queued. After a durable write
+of another job, the job must be stored `ready` with `Priority` 9. It passed 3
+of 3, and failed 3 of 3 with the job lock released right after
+`currentJobChange` (stored `Priority` 1). `db.go` was restored and matched its
+scratchpad copy under `cmp`.

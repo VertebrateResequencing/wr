@@ -447,6 +447,41 @@ func (j *Job) containerMountsMessage() string {
 	return containerMountsMessage(j.ContainerMounts)
 }
 
+// Lock write-locks the job, as its embedded RWMutex does. While a change
+// prepared ahead is outstanding it also counts the lock in writeLocks: every
+// change to a job is made under this lock, so a job whose count has not moved
+// has not changed.
+func (j *Job) Lock() {
+	j.RWMutex.Lock()
+
+	if j.changesAhead > 0 {
+		j.writeLocks++
+	}
+}
+
+// beginChangeAheadLocked notes that a live record of the job has been encoded
+// ahead of a change, and returns the write-lock count to pass to
+// endChangeAheadLocked. The caller must hold the write lock.
+func (j *Job) beginChangeAheadLocked() uint64 {
+	j.changesAhead++
+
+	return j.writeLocks
+}
+
+// endChangeAheadLocked ends a change begun at the given write-lock count, and
+// says whether the job is unchanged since then. The caller must hold the write
+// lock, which it took after beginChangeAheadLocked and which is counted.
+func (j *Job) endChangeAheadLocked(began uint64) bool {
+	unchanged := j.writeLocks == began+1
+
+	j.changesAhead--
+	if j.changesAhead == 0 {
+		j.writeLocks = 0
+	}
+
+	return unchanged
+}
+
 // runsAsImageUser tells you if the Cmd's processes of a job with the given
 // ContainerImageUser and WithDocker will really run as the user the container
 // image specifies instead of as the calling user. That needs both, since
@@ -1161,6 +1196,16 @@ type Job struct {
 	// incrementedLimitGroups notes that we have incremented limit groups for
 	// this job, so they should be decremented when the job finishes running.
 	incrementedLimitGroups []string
+
+	// changesAhead counts the live records encoded ahead of a change that has
+	// not yet been made or abandoned (see db.prepareJobChange), and writeLocks
+	// counts the write locks taken on this job while there are any (see Lock),
+	// so that such a record can tell whether the job may have changed since it
+	// was encoded. Both are back to 0 once none is outstanding, so they do not
+	// tell otherwise identical jobs apart. They are server side only, and read
+	// and written only under the write lock.
+	changesAhead uint32
+	writeLocks   uint64
 
 	sync.RWMutex
 }
