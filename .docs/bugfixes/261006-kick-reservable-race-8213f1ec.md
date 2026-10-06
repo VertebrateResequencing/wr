@@ -161,7 +161,7 @@ files.
     `jobqueue/resume_order_test.go`. Red command green 4 of 4; `make lint`,
     `make test`, `make race` pass. Speed gate owed (shared with the kick fix).
 
-- [ ] resumeQueueItem decides whether to call clearRACPending from the live
+- [x] resumeQueueItem decides whether to call clearRACPending from the live
       item state read after ResumeWith returns; if a runner reserves the item
       in between, the state reads run and RAC-pending is cleared although
       readyAdded("resumed") was queued, releasing waiting reserves before the
@@ -169,3 +169,69 @@ files.
       nothing lost or run twice; also present on develop).
   - Source: resume-race reviewer, incidental finding. Suggested fix: decide
     from the callback's `to` instead of live state.
+  - Verdict: real, with a narrow effect. `resumeQueueItem` calls
+    `setRACPending` before `ResumeWith`, so a reserve that takes the item
+    between `ResumeWith` returning and the state read is one that was already
+    past `waitForPendingReserves`, such as a runner waiting inside the queue's
+    `Reserve` for something to become ready. The state read then sees Run and
+    calls `clearRACPending`, although `ResumeWith` already queued
+    `readyAdded("resumed")`. That closes every waiting reserve and clears
+    `racPending` before the callback sets `racRunning`. So a reserve that
+    arrives in the gap runs before or alongside the callback, which breaks
+    the contract `waitForPendingReserves` documents. No job is lost or run
+    twice. The resumed item is already reserved, so in this scenario the
+    early reserve sees the same ready set and reserve groups the callback
+    would leave. The effect is ordering only, except where a concurrent
+    add or modify shares the `racPending` flag, which is a bool and not a
+    count.
+  - Test seam: `resumeItemReadyHook` in `jobqueue/server.go`, nil in
+    production, called in `resumeQueueItem` after `ResumeWith` succeeds and
+    before the `resumedTo` check (it ran before `item.Stats()` when the bug was reproduced).
+  - Red test: `TestResumeRacingReserveKeepsRACPending` in
+    `jobqueue/resume_order_test.go`. The test suspends a job, then lets
+    pending callbacks drain (a reserve that finds nothing, then
+    `racPending` and `racRunning` are checked false). It gates the queue's
+    ready-added callback in front of the real `readyAddedCallback`. It then
+    calls `resumeJobs` with the hook reserving the item through
+    `reserveItem`, which stands in for a runner already past
+    `waitForPendingReserves`. Once the gated callback has been called, a
+    second client's `Reserve(50ms)` must not return within 1s while the gate
+    is shut. After the gate opens it returns no job.
+  - Red command: `nice -n 19 go test ./jobqueue -count=1 -run
+    'TestResumeRacingReserveKeepsRACPending$' -v`, exit 1 on `aa37f59b` plus
+    the hook, 3 of 3 runs, and exit 1 under `-race` with no race report (log
+    lines filtered):
+
+    ```text
+    === RUN   TestResumeRacingReserveKeepsRACPending
+    ✔✔✔✔✔✔✔✔✔✔✔✔✔
+        another reserve waits until the ready-added callback has run ✘
+    Failures:
+      * jobqueue/resume_order_test.go
+      Line 278:
+      Expected: false
+      Actual:   true
+    14 total assertions
+    --- FAIL: TestResumeRacingReserveKeepsRACPending (0.36s)
+    ```
+
+    Line 278 is the second reserve returning while the callback the resume
+    queued is still gated. A throwaway change made the test pass 3 of 3, with
+    `TestResumeRacingStart` still passing. The change had `resumeQueueItem`
+    record `to` from the `ResumeWith` callback and clear RAC-pending only
+    when `to` is not ready, as the reviewer suggested. That shows the test
+    fails because of this race and not because of the setup. The change
+    was reverted.
+  - Fixed: `resumeQueueItem` records the `to` its `ResumeWith` callback
+    receives and calls `clearRACPending` only when `to` is not ready, which
+    matches exactly whether `ResumeWith` queued `readyAdded`. The unused item
+    parameter is gone (`suspendedItem` became `suspendedJob`). File:
+    `jobqueue/server.go`; test `TestResumeRacingReserveKeepsRACPending`. Red
+    command green 5 of 5; `make lint`, `make test`, `make race` pass.
+  - Deferred, separate (needs design; for the owner): `racPending` is one
+    shared bool, so a clear by one operation (a resume to Dependent, a failed
+    kick or resume, an add of nothing, an error path in a live-rerun or
+    dependent update) drops another operation's hold before its ready-added
+    callback runs. Ordering only. A counter is not a drop-in fix because the
+    queue merges `readyAdded` calls into one callback and `finishRAC` resets
+    everything when it ends.

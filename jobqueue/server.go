@@ -434,6 +434,15 @@ var kickQueuedHook func(key string)
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var resumeQueuedHook func(key string)
 
+// resumeItemReadyHook, if non-nil, is called with a job's key once
+// resumeQueueItem's ResumeWith has returned and before it decides whether a
+// ready-added callback is still pending, so a test can have the item reserved
+// in between. It is a test-only seam and is nil in
+// production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var resumeItemReadyHook func(key string)
+
 // dependencyUpdatesHook, if non-nil, is called by an add once its write has
 // committed and before it applies its live dependents' new dependencies to the
 // queue, so a test can have a dependent finish in between. It is a test-only
@@ -3121,12 +3130,12 @@ func (s *Server) resumeJobs(ctx context.Context, keys []string) (resumed int) {
 }
 
 func (s *Server) resumeJob(ctx context.Context, key string) bool {
-	item, job, ok := s.suspendedItem(key)
+	job, ok := s.suspendedJob(key)
 	if !ok {
 		return false
 	}
 
-	if !s.resumeQueueItem(ctx, item, key, func(_ any, to queue.ItemState) { s.markResumed(ctx, job, to) }) {
+	if !s.resumeQueueItem(ctx, key, func(_ any, to queue.ItemState) { s.markResumed(ctx, job, to) }) {
 		return false
 	}
 
@@ -3150,33 +3159,47 @@ func (s *Server) markResumed(ctx context.Context, job *Job, to queue.ItemState) 
 	s.db.updateJobAfterChange(ctx, job)
 }
 
-func (s *Server) suspendedItem(key string) (*queue.Item, *Job, bool) {
+func (s *Server) suspendedJob(key string) (*Job, bool) {
 	item, err := s.q.Get(key)
 	if err != nil || item == nil || item.Stats().State != queue.ItemStateSuspended {
-		return nil, nil, false
+		return nil, false
 	}
 
 	job, ok := item.Data().(*Job)
-	if !ok {
-		return nil, nil, false
-	}
 
-	return item, job, true
+	return job, ok
 }
 
-func (s *Server) resumeQueueItem(ctx context.Context, item *queue.Item, key string,
+// resumeQueueItem resumes the suspended item with the given key, calling
+// resuming as ResumeWith does. RAC-pending is held from before the item can
+// become ready until the ready-added callback the resume queues has run. The
+// decision to release it early uses the state ResumeWith resumed the item to,
+// not the item's live state: a reserve already past waitForPendingReserves can
+// take the item as soon as ResumeWith returns, and the callback is still
+// queued then.
+func (s *Server) resumeQueueItem(ctx context.Context, key string,
 	resuming func(data any, to queue.ItemState),
 ) bool {
 	s.setRACPending()
 
-	err := s.q.ResumeWith(ctx, key, resuming)
+	var resumedTo queue.ItemState
+
+	err := s.q.ResumeWith(ctx, key, func(data any, to queue.ItemState) {
+		resumedTo = to
+
+		resuming(data, to)
+	})
 	if err != nil {
 		s.clearRACPending()
 
 		return false
 	}
 
-	if item.Stats().State != queue.ItemStateReady {
+	if resumeItemReadyHook != nil {
+		resumeItemReadyHook(key)
+	}
+
+	if resumedTo != queue.ItemStateReady {
 		s.clearRACPending()
 	}
 

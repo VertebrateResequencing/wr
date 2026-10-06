@@ -29,11 +29,13 @@ package jobqueue
 // resume makes the job's item reservable before it updates the job, so a runner
 // can reserve and start the job in between. The resume must not then reset that
 // running job to reserved, or the runner's re-sent start report is taken for a
-// new attempt.
+// new attempt. Nor may a reservation that overtakes the resume make it release
+// other reserves before the ready-added callback it queued has run.
 
 import (
 	"context"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -151,6 +153,135 @@ func TestResumeRacingStart(t *testing.T) {
 			sjob.RUnlock()
 
 			So(attempts, ShouldEqual, 1)
+		})
+	})
+}
+
+// TestResumeRacingReserveKeepsRACPending proves that a resume whose item is
+// reserved before the resume checks its state still holds back other reserves
+// until the ready-added callback it queued has run.
+func TestResumeRacingReserveKeepsRACPending(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a suspended job reserved between its resume making it ready and the resume checking it", t, func() {
+		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+		serverConfig.Timings.ItemTTR = time.Minute
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		target := &Job{
+			Cmd: restFormTrue + " resumerac", Cwd: testCwd, RepGroup: resumeOrderRepGroup,
+			ReqGroup: resumeOrderRepGroup, Requirements: standardReqs, Retries: 3,
+		}
+		inserts, _, err := jq.Add([]*Job{target}, os.Environ(), true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 1)
+
+		key := target.Key()
+
+		suspended, err := jq.Suspend([]*JobEssence{{JobKey: key}})
+		So(err, ShouldBeNil)
+		So(suspended, ShouldEqual, 1)
+
+		// a reserve waits out every ready-added callback the add and suspend
+		// queued, and finds nothing, since the job is suspended
+		idle, err := jq.Reserve(10 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(idle, ShouldBeNil)
+
+		server.rpmutex.Lock()
+		racIdle := !server.racPending && !server.racRunning
+		server.rpmutex.Unlock()
+		So(racIdle, ShouldBeTrue)
+
+		// gate the ready-added callback, so the test decides when it runs
+		racCalled, racGate := make(chan struct{}), make(chan struct{})
+
+		var calledOnce, gateOnce sync.Once
+
+		openGate := func() { gateOnce.Do(func() { close(racGate) }) }
+		defer openGate()
+
+		server.q.SetReadyAddedCallback(func(_ string, allitemdata []any) {
+			calledOnce.Do(func() { close(racCalled) })
+			<-racGate
+			server.readyAddedCallback(ctx, server.q, allitemdata)
+		})
+
+		// stands in for a runner whose reserve was already past
+		// waitForPendingReserves when the resume began: it takes the item as
+		// soon as it is ready
+		var (
+			hookReserved bool
+			hookSrerr    string
+		)
+
+		resumeItemReadyHook = func(hooked string) {
+			if hooked != key {
+				return
+			}
+
+			item, srerr := server.reserveItem(ctx, &clientRequest{})
+			hookReserved = item != nil && item.Key == key
+			hookSrerr = srerr
+		}
+		defer func() { resumeItemReadyHook = nil }()
+
+		So(server.resumeJobs(ctx, []string{key}), ShouldEqual, 1)
+		So(hookSrerr, ShouldBeBlank)
+		So(hookReserved, ShouldBeTrue)
+
+		select {
+		case <-racCalled:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the resume did not call the ready-added callback")
+		}
+
+		runner, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(runner)
+
+		type reserveOutcome struct {
+			job *Job
+			err error
+		}
+
+		reserveResult := make(chan reserveOutcome, 1)
+
+		go func() {
+			job, errr := runner.Reserve(50 * time.Millisecond)
+			reserveResult <- reserveOutcome{job, errr}
+		}()
+
+		Convey("another reserve waits until the ready-added callback has run", func() {
+			returnedEarly := false
+
+			select {
+			case <-reserveResult:
+				returnedEarly = true
+			case <-time.After(time.Second):
+			}
+
+			So(returnedEarly, ShouldBeFalse)
+
+			openGate()
+
+			outcome := <-reserveResult
+			So(outcome.err, ShouldBeNil)
+			So(outcome.job, ShouldBeNil)
 		})
 	})
 }
