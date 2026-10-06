@@ -322,8 +322,8 @@ job is reservable only once its dependencies resolve, and recovery
 re-derives the field for every recovered job through `dependency.go`'s
 `setWaitingForDepGroups` call. The audit confirms that re-derivation with a
 test (A2 test 7); if recovery does not re-derive it, it is added to
-`jobRunState`. Unexported fields
-(`schedulerGroup`, `runID`, ...) were never persisted.
+`jobRunState`. Unexported fields (`schedulerGroup`, `runID`, ...) were never
+persisted.
 
 The audit also covers in-memory-only changes made at recovery, which today
 the next reservation's full write stores. Known: `RerunAfterRun`.
@@ -532,8 +532,8 @@ job before returning, so every later recovery step sees the overlaid job. It
 walks `bucketJobRunState` alongside `bucketJobsLive`, both sorted by key, not
 one `Get` per live job. A missing `bucketJobRunState` (a raw copied database,
 as `dbstart_probe_test.go` opens) counts as empty, here and in every helper
-that reads it. `decodePriorJobs`' `recovering: decoded live jobs`
-line gains `runStates=<applied>`.
+that reads it. `decodePriorJobs`' `recovering: decoded live jobs` line gains
+`runStates=<applied>`.
 
 ```go
 // runStateRecovery is what recoverIncompleteJobs did with run-state records.
@@ -719,9 +719,8 @@ it refuses untouched.
   then calls `readOnlyDBFileSchemaVersion(dbFile)` and
   `checkDBSchemaVersion`, returning any error (including
   `errBadDBSchemaVersion`) before `compactToTempFile` creates the temp
-  file. `compactBoltInto` opens the source without
-  `NoFreelistSync`, which writes a never-synced freelist on open, so the
-  check must come before it.
+  file. `compactBoltInto` opens the source without `NoFreelistSync`, which
+  writes a never-synced freelist on open, so the check must come before it.
 - `compactBolt`: at version 1 or above, `bolt.Compact` as now, then stamp
   `currentDBSchemaVersion` in the destination. Below version 1,
   `compactStrippingStd`, whose `copyAll` stamps `currentDBSchemaVersion`.
@@ -1107,7 +1106,7 @@ New `developers/soak/soakgate.py --source d1|warning <outdir>
   `remove_buried`), whose last run's `E` marker has any status other than
   `0` (a non-zero exit code, or `sig<NAME>` when a signal ended the run, as
   `psimjob.sh` writes it) or which has no `E` marker.
-- Prints exactly these five lines:
+- Prints exactly these five lines first:
 
   ```text
   nondurable source=<d1|warning> inside=<n> outside=<n> runs=<runs> outsidePct=<x.xxxx>
