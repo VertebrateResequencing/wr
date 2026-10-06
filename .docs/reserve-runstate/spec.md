@@ -588,8 +588,9 @@ deleted if it is still stale or orphaned: on a running server (A2 test 1) a
 drain may rewrite either record between the read and the write.
 `decodePriorJobs`, which has the context, logs `clog.Warn(ctx, "recovering:
 dropped stale job run-state records", "count", dropped)` if `dropped` is
-above 0. On a read-only bolt handle (`db.bolt.IsReadOnly()`) it skips the
-delete transaction and returns `dropped` 0, rather than failing.
+above 0. On a read-only bolt handle (`db.bolt.IsReadOnly()`)
+`recoverIncompleteJobs` skips the delete transaction and returns `dropped`
+0, rather than failing.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/db.go`
@@ -1162,10 +1163,10 @@ which runs every case and diffs.
 4. Given one ordinary marker job removed from `dbstart.tsv`, then the
    missing line is `missing ran=3 absent=1 excused=0`, followed by that
    job's line.
-5. Given two more marker jobs absent from `dbstart.tsv`, a `fofnput` whose
-   last `E` marker has exit 3 and a `fofnput` whose last exit is 0, then the
-   missing line is `missing ran=5 absent=1 excused=1` and the exit-0 job is
-   the one printed.
+5. Given test 1's input plus two marker jobs absent from `dbstart.tsv`, a
+   `fofnput` whose last `E` marker has exit 3 and a `fofnput` whose last exit
+   is 0, then the missing line is `missing ran=5 absent=1 excused=1` and the
+   exit-0 job is the one printed.
 6. Given the same input with the first segment's two D1 lines swapped (the
    `total=2` line first), then the totals line is `totals ok`.
 7. Given the first segment with a second `total=1` line, then the totals
