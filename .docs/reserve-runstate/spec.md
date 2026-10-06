@@ -755,8 +755,7 @@ the refusal, not just fail.
 The manager child dies through `die("wr manager failed to start : %s",
 err)` when `Serve` fails, which logs at error level (`lvl=eror`,
 `cmd/root.go`); the daemon parent prints `getBadLogLines()` and
-`startupErr`. No code change is expected unless a
-test below fails.
+`startupErr`. No code change is expected unless a test below fails.
 
 Tests 1 and 2 re-execute the test binary into a new helper,
 `TestManagerStartHelperProcess`, which does nothing unless its env var is
