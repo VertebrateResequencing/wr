@@ -320,9 +320,9 @@ and so relied on the reservation's or start's full write. Each is added to
 `running_dependent.go`, `server.go`, `serverCLI.go` and `serverREST.go`); a
 job is reservable only once its dependencies resolve, and recovery
 re-derives the field for every recovered job through `dependency.go`'s
-`setWaitingForDepGroups` call.
-The audit confirms that re-derivation with a test (A2 test 7); if recovery
-does not re-derive it, it is added to `jobRunState`. Unexported fields
+`setWaitingForDepGroups` call. The audit confirms that re-derivation with a
+test (A2 test 7); if recovery does not re-derive it, it is added to
+`jobRunState`. Unexported fields
 (`schedulerGroup`, `runID`, ...) were never persisted.
 
 The audit also covers in-memory-only changes made at recovery, which today
@@ -425,8 +425,8 @@ every op lands in the one `drainBestEffort` the test calls.
 
 The existing three cases of `TestBestEffortDrainKeepsArrivalOrder`, with the
 reservation queued as a full change (`queueUnkickedBestEffortChange`), stay
-alongside the run-state versions: they are the only cases that put a full
-change and an exit op in one drain (tests 12 and 13 add more).
+alongside the run-state versions. They are the only existing cases that put
+a full change and an exit op in one drain; tests 12 and 13 add more.
 
 **Acceptance tests:**
 
