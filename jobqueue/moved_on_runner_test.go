@@ -610,7 +610,8 @@ func TestMovedOnRunnerAfterRestart(t *testing.T) {
 }
 
 // withLiveRecord returns base with the live record of key replaced by the one
-// in from.
+// in from, along with from's run-state record of key; base's run-state record
+// of key is deleted if from has none.
 func withLiveRecord(t *testing.T, base, from *bytes.Buffer, key string) *bytes.Buffer {
 	t.Helper()
 
@@ -622,10 +623,11 @@ func withLiveRecord(t *testing.T, base, from *bytes.Buffer, key string) *bytes.B
 	fromDB, err := bolt.Open(fromPath, 0o600, nil)
 	So(err, ShouldBeNil)
 
-	var record []byte
+	var record, runState []byte
 
 	So(fromDB.View(func(tx *bolt.Tx) error {
 		record = bytes.Clone(tx.Bucket(bucketJobsLive).Get([]byte(key)))
+		runState = bytes.Clone(tx.Bucket(bucketJobRunState).Get([]byte(key)))
 
 		return nil
 	}), ShouldBeNil)
@@ -635,7 +637,11 @@ func withLiveRecord(t *testing.T, base, from *bytes.Buffer, key string) *bytes.B
 	baseDB, err := bolt.Open(basePath, 0o600, nil)
 	So(err, ShouldBeNil)
 	So(baseDB.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketJobsLive).Put([]byte(key), record)
+		if errp := putLiveRecord(tx, []byte(key), record); errp != nil || runState == nil {
+			return errp
+		}
+
+		return tx.Bucket(bucketJobRunState).Put([]byte(key), runState)
 	}), ShouldBeNil)
 	So(baseDB.Close(), ShouldBeNil)
 

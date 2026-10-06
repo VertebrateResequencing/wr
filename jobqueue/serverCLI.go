@@ -1135,9 +1135,11 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 	return &serverResponse{Job: job}
 }
 
-// persistReservation writes a just-reserved job to the live bucket and does not
-// return until that write has committed, so the reservation is on disk before
-// the runner is told about it.
+// persistReservation writes a just-reserved job's run-state record, which
+// recovery overlays on its live record, and does not return until that write
+// has committed, so the reservation is on disk before the runner is told about
+// it. The record carries the requirements the job may have learned in memory
+// since its last full write (see jobRunState), so those stay durable too.
 //
 // The runner starts the command on the strength of the reservation alone, before
 // its Started reaches us. With nothing written here, a manager that crashed
@@ -1159,7 +1161,7 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 // refusing the reservation would leave the item reserved to a runner that was
 // never given it. A slow write stays queued and may still commit.
 func (s *Server) persistReservation(ctx context.Context, job *Job) {
-	err := s.db.updateJobAfterChangeDurableWithin(job, s.timings.ReserveWriteWait)
+	err := s.db.updateJobRunStateDurableWithin(job, s.timings.ReserveWriteWait)
 
 	switch {
 	case err == nil, errors.Is(err, errDBClosed):
@@ -1268,7 +1270,11 @@ func (s *Server) handleStart(ctx context.Context, cr *clientRequest) (*serverRes
 	// the write-storm amplification PR #555 removed (.docs/reliable4/) stays
 	// removed. The other updateJobAfterChange callers (suspend, resume, kick)
 	// acknowledge nothing a crash could act on, so they stay async.
-	if err := s.db.updateJobAfterChangeDurable(job); err != nil {
+	//
+	// The write is the job's small run-state record, which recovery overlays on
+	// its live record, not the whole job: an accepted duplicate start writes it
+	// too, so a first-seen runner pid it adopted is recorded.
+	if err := s.db.updateJobRunStateDurable(job); err != nil {
 		// ErrInternalError is not a definitive rejection, so the runner keeps its
 		// healthy command running, lets its touch loop hold the job's TTR, and
 		// re-sends the start until it persists (retryStartReport) - rather than

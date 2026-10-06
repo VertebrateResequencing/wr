@@ -4117,21 +4117,27 @@ func buriedSubscriptionItemDefs(
 	return itemdefs, ids
 }
 
+// hideLiveSubscriptionJobInDB deletes the job's live and run-state records, and
+// returns a func that puts both back as they were.
 func hideLiveSubscriptionJobInDB(server *Server, key string) func() {
-	var encoded []byte
+	var live, runState []byte
 
 	err := server.db.bolt.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(bucketJobsLive)
-		encoded = append([]byte(nil), bucket.Get([]byte(key))...)
+		live = bytes.Clone(tx.Bucket(bucketJobsLive).Get([]byte(key)))
+		runState = bytes.Clone(tx.Bucket(bucketJobRunState).Get([]byte(key)))
 
-		return bucket.Delete([]byte(key))
+		return deleteLiveRecord(tx, []byte(key))
 	})
 	So(err, ShouldBeNil)
-	So(encoded, ShouldNotBeNil)
+	So(live, ShouldNotBeNil)
 
 	return func() {
 		err := server.db.bolt.Update(func(tx *bolt.Tx) error {
-			return tx.Bucket(bucketJobsLive).Put([]byte(key), encoded)
+			if errp := tx.Bucket(bucketJobsLive).Put([]byte(key), live); errp != nil || runState == nil {
+				return errp
+			}
+
+			return tx.Bucket(bucketJobRunState).Put([]byte(key), runState)
 		})
 		So(err, ShouldBeNil)
 	}

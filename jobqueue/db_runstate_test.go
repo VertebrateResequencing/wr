@@ -31,13 +31,19 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid/v5"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
@@ -45,6 +51,131 @@ import (
 )
 
 const runStateTestRepGroup = "runstate_supersede"
+
+// runStateBigCmdBytes is how long A2's tests make a job's Cmd, so its full
+// record is at least that long.
+const runStateBigCmdBytes = 10000
+
+// runStateDuplicateRunnerPid is the runner pid a re-sent start reports.
+const runStateDuplicateRunnerPid = 4242
+
+// TestReservationLeavesWaitingForDepGroupsToRecovery covers A2 test 7: the
+// reservation does not store WaitingForDepGroups, and recovery re-derives it,
+// so a stale stored value is not what a recovered job waits on.
+func TestReservationLeavesWaitingForDepGroupsToRecovery(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a job with no dependencies whose stored record says it waits on dep group g", t, func() {
+		f := newMovedOnFixture(ctx, t, "")
+		defer f.stop(ctx)
+
+		f.add(movedOnRetries, nil, "waits")
+
+		key := (&Job{Cmd: restFormTrue + " movedon waits", Cwd: testCwd}).Key()
+
+		So(rewriteStoredLiveJob(f.server.db, key, func(job *Job) {
+			job.WaitingForDepGroups = []string{"g"}
+		}), ShouldBeNil)
+		So(storedLiveJob(t, f.server.db, key).WaitingForDepGroups, ShouldResemble, []string{"g"})
+
+		Convey("once it is reserved and the manager crashes, it is recovered waiting on nothing", func() {
+			So(f.reserve().Key(), ShouldEqual, key)
+
+			f.crashOnto(ctx, f.backup())
+
+			recovered := preStartServerJob(f.server, key)
+			So(recovered, ShouldNotBeNil)
+
+			recovered.RLock()
+			defer recovered.RUnlock()
+
+			So(recovered.WaitingForDepGroups, ShouldBeEmpty)
+		})
+	})
+}
+
+// TestReservationStoresClearedRerunMark covers A2 test 8: a job recovered out of
+// the run sub-queue has its stale mark to run again cleared in memory, and its
+// next reservation stores that, so a crash while it then runs does not recover
+// it marked, and it runs only once.
+func TestReservationStoresClearedRerunMark(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a crash image in which a job is lost with its stored mark to run again", t, func() {
+		f := newMovedOnFixture(ctx, t, "")
+		defer f.stop(ctx)
+
+		dir := t.TempDir()
+		marker := filepath.Join(dir, "runs")
+		stopFile := filepath.Join(dir, "stop")
+		cmd := startDurabilityCmd(marker, stopFile)
+
+		f.add(movedOnRetries, func(job *Job) { job.Cmd = cmd }, "rerun")
+
+		key := (&Job{Cmd: cmd, Cwd: testCwd}).Key()
+
+		So(rewriteStoredLiveJob(f.server.db, key, func(job *Job) {
+			job.State = JobStateLost
+			job.Lost = true
+			job.RerunAfterRun = true
+		}), ShouldBeNil)
+
+		f.crashOnto(ctx, f.backup())
+
+		Convey("once recovered, reserved, started and recovered again, it is running unmarked and runs once", func() {
+			reserved := f.reserve()
+			So(reserved.Key(), ShouldEqual, key)
+
+			run := exec.CommandContext(ctx, "sh", "-c", cmd)
+			So(run.Start(), ShouldBeNil)
+
+			defer func() {
+				_ = os.WriteFile(stopFile, nil, 0o600) //nolint:errcheck // best-effort test cleanup
+				_ = run.Wait()                         //nolint:errcheck // best-effort test cleanup
+			}()
+
+			So(waitForRuns(marker, 1, reserveDurabilityFirstRunWait), ShouldBeTrue)
+			So(f.runner.Started(reserved, run.Process.Pid), ShouldBeNil)
+
+			f.crashOnto(ctx, f.backup())
+
+			recovered := preStartServerJob(f.server, key)
+			So(recovered, ShouldNotBeNil)
+
+			recovered.RLock()
+			state, mark := recovered.State, recovered.RerunAfterRun
+			recovered.RUnlock()
+
+			So(state, ShouldEqual, JobStateRunning)
+			So(mark, ShouldBeFalse)
+
+			killCalled, err := f.runner.Touch(reserved)
+			So(err, ShouldBeNil)
+			So(killCalled, ShouldBeFalse)
+
+			So(os.WriteFile(stopFile, nil, 0o600), ShouldBeNil)
+			So(run.Wait(), ShouldBeNil)
+
+			So(f.runner.Archive(reserved, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+
+			_, err = f.server.q.Get(key)
+			So(err, ShouldNotBeNil)
+
+			again, err := f.user.Reserve(time.Second)
+			So(err, ShouldBeNil)
+			So(again, ShouldBeNil)
+			So(runCount(marker), ShouldEqual, 1)
+		})
+	})
+}
 
 func TestRunStateRecord(t *testing.T) {
 	Convey("Given the example job and its full encoding", t, func() {
@@ -593,6 +724,550 @@ func runStateReservedCopy(job *Job) *Job {
 	}
 }
 
+func TestRecoveryOverlaysRunState(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given 3 live jobs, 2 with matching run-state records of them running and 1 without", t, func() {
+		database, jobs := runStateRecoveryDB(t, ctx)
+		defer func() { _ = database.close(ctx) }()
+
+		for _, job := range jobs[:2] {
+			putRunStateFixture(t, database, job.Key(), runStateRunningRecord(t, database, job))
+		}
+
+		Convey("recoverIncompleteJobs returns the 2 overlaid and the third as its live record says", func() {
+			recovered, rsr, err := database.recoverIncompleteJobs()
+			So(err, ShouldBeNil)
+			So(rsr.applied, ShouldEqual, 2)
+			So(rsr.dropped, ShouldEqual, 0)
+			So(len(recovered), ShouldEqual, 3)
+
+			byKey := runStateJobsByKey(recovered)
+
+			for _, job := range jobs[:2] {
+				got := byKey[job.Key()]
+				So(got, ShouldNotBeNil)
+				So(got.State, ShouldEqual, JobStateRunning)
+				So(got.Host, ShouldEqual, "h1")
+				So(got.Pid, ShouldEqual, 7)
+				So(got.Attempts, ShouldEqual, 1)
+				So(got.Cmd, ShouldEqual, job.Cmd)
+				So(got.LimitGroups, ShouldResemble, job.LimitGroups)
+			}
+
+			third := byKey[jobs[2].Key()]
+			So(third, ShouldNotBeNil)
+			So(third.State, ShouldEqual, JobStateReady)
+			So(third.Host, ShouldBeEmpty)
+			So(third.Pid, ShouldEqual, 0)
+			So(third.Attempts, ShouldEqual, 0)
+			So(third.Cmd, ShouldEqual, jobs[2].Cmd)
+			So(third.LimitGroups, ShouldResemble, jobs[2].LimitGroups)
+		})
+
+		Convey("decodePriorJobs logs runStates=2 on its decoded live jobs line", func() {
+			logs := clog.ToBufferAtLevel("warn")
+
+			defer clog.ToDefault()
+
+			_, err := (&Server{}).decodePriorJobs(ctx, database)
+			So(err, ShouldBeNil)
+			So(logs.String(), ShouldContainSubstring, "recovering: decoded live jobs")
+			So(logs.String(), ShouldContainSubstring, "runStates=2")
+			So(logs.String(), ShouldNotContainSubstring, "undecodable")
+		})
+
+		Convey("a matching record whose body does not decode is not applied, and decodePriorJobs warns with its key",
+			func() {
+				key := jobs[2].Key()
+				whole := runStateRunningRecord(t, database, jobs[2])
+				putRunStateFixture(t, database, key, whole[:len(whole)/2])
+
+				recovered, rsr, err := database.recoverIncompleteJobs()
+				So(err, ShouldBeNil)
+				So(rsr.applied, ShouldEqual, 2)
+				So(rsr.undecodable, ShouldResemble, []string{key})
+				So(rsr.dropped, ShouldEqual, 1)
+				So(runStateBucketValue(t, database, bucketJobRunState, key), ShouldBeNil)
+
+				third := runStateJobsByKey(recovered)[key]
+				So(third, ShouldNotBeNil)
+				So(third.State, ShouldEqual, JobStateReady)
+				So(third.Host, ShouldBeEmpty)
+
+				putRunStateFixture(t, database, key, whole[:len(whole)/2])
+
+				logs := clog.ToBufferAtLevel("warn")
+
+				defer clog.ToDefault()
+
+				_, err = (&Server{}).decodePriorJobs(ctx, database)
+				So(err, ShouldBeNil)
+				So(logs.String(), ShouldContainSubstring, "recovering: undecodable job run-state record")
+				So(logs.String(), ShouldContainSubstring, key)
+				So(logs.String(), ShouldContainSubstring, "runStates=2")
+			})
+
+		Convey("orphans sorting before, between and after live keys, and a stale record, leave the others applied",
+			func() {
+				sorted := slices.Clone(jobs)
+				slices.SortFunc(sorted, func(a, b *Job) int { return strings.Compare(a.Key(), b.Key()) })
+
+				first, second, third := sorted[0], sorted[1], sorted[2]
+
+				putRunStateFixture(t, database, first.Key(), runStateRunningRecord(t, database, first))
+				putRunStateFixture(t, database, second.Key(), runStateRunningRecord(t, database, first))
+				putRunStateFixture(t, database, third.Key(), runStateRunningRecord(t, database, third))
+
+				orphan := runStateRunningRecord(t, database, first)
+				for _, key := range []string{"\x00orphan", first.Key() + "\x00", second.Key() + "\x00", "\xff\xff\xff"} {
+					putRunStateFixture(t, database, key, orphan)
+				}
+
+				recovered, rsr, err := database.recoverIncompleteJobs()
+				So(err, ShouldBeNil)
+				So(rsr.applied, ShouldEqual, 2)
+				So(rsr.dropped, ShouldEqual, 5)
+				So(len(recovered), ShouldEqual, 3)
+				So(runStateBucketKeys(t, database), ShouldResemble, []string{first.Key(), third.Key()})
+
+				byKey := runStateJobsByKey(recovered)
+
+				for _, job := range []*Job{first, third} {
+					got := byKey[job.Key()]
+					So(got, ShouldNotBeNil)
+					So(got.State, ShouldEqual, JobStateRunning)
+					So(got.Host, ShouldEqual, "h1")
+				}
+
+				got := byKey[second.Key()]
+				So(got, ShouldNotBeNil)
+				So(got.State, ShouldEqual, JobStateReady)
+				So(got.Host, ShouldBeEmpty)
+			})
+
+		Convey("an orphan matching the live record of a job without its own run-state record is not applied to it",
+			func() {
+				putRunStateFixture(t, database, jobs[2].Key()+"\x00", runStateRunningRecord(t, database, jobs[2]))
+
+				recovered, rsr, err := database.recoverIncompleteJobs()
+				So(err, ShouldBeNil)
+				So(rsr.applied, ShouldEqual, 2)
+
+				third := runStateJobsByKey(recovered)[jobs[2].Key()]
+				So(third, ShouldNotBeNil)
+				So(third.State, ShouldEqual, JobStateReady)
+				So(third.Host, ShouldBeEmpty)
+			})
+
+		Convey("a live record that does not decode fails recovery", func() {
+			key := jobs[2].Key()
+			live := runStateBucketValue(t, database, bucketJobsLive, key)
+
+			err := database.bolt.Update(func(tx *bolt.Tx) error {
+				return tx.Bucket(bucketJobsLive).Put([]byte(key), live[:len(live)/2])
+			})
+			So(err, ShouldBeNil)
+
+			_, _, err = database.recoverIncompleteJobs()
+			So(err, ShouldNotBeNil)
+		})
+
+		Convey("with no run-state bucket at all, every job is returned as its live record says", func() {
+			err := database.bolt.Update(func(tx *bolt.Tx) error {
+				return tx.DeleteBucket(bucketJobRunState)
+			})
+			So(err, ShouldBeNil)
+
+			recovered, rsr, err := database.recoverIncompleteJobs()
+			So(err, ShouldBeNil)
+			So(rsr.applied, ShouldEqual, 0)
+			So(len(recovered), ShouldEqual, 3)
+
+			for _, job := range recovered {
+				So(job.State, ShouldEqual, JobStateReady)
+			}
+		})
+	})
+}
+
+func TestRecoveryDropsStaleRunState(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given 3 live jobs, the first with a matching run-state record of it running", t, func() {
+		database, jobs := runStateRecoveryDB(t, ctx)
+		defer func() { _ = database.close(ctx) }()
+
+		matching := runStateRunningRecord(t, database, jobs[0])
+		putRunStateFixture(t, database, jobs[0].Key(), matching)
+
+		staleKey := jobs[1].Key()
+		staleRecord := runStateRunningRecord(t, database, jobs[0])
+
+		Convey("a record whose CRC does not match its live record is ignored and dropped", func() {
+			putRunStateFixture(t, database, staleKey, staleRecord)
+
+			recovered, rsr, err := database.recoverIncompleteJobs()
+			So(err, ShouldBeNil)
+			So(rsr.applied, ShouldEqual, 1)
+			So(rsr.dropped, ShouldEqual, 1)
+
+			stale := runStateJobsByKey(recovered)[staleKey]
+			So(stale, ShouldNotBeNil)
+			So(stale.State, ShouldEqual, JobStateReady)
+			So(stale.Host, ShouldBeEmpty)
+			So(runStateBucketValue(t, database, bucketJobRunState, staleKey), ShouldBeNil)
+			So(runStateBucketValue(t, database, bucketJobRunState, jobs[0].Key()), ShouldResemble, matching)
+		})
+
+		Convey("a record with no live record is dropped", func() {
+			putRunStateFixture(t, database, "orphan", matching)
+
+			_, rsr, err := database.recoverIncompleteJobs()
+			So(err, ShouldBeNil)
+			So(rsr.dropped, ShouldEqual, 1)
+			So(runStateBucketKeys(t, database), ShouldResemble, []string{jobs[0].Key()})
+		})
+
+		Convey("a stale record rewritten as a matching one between the read and the write is kept", func() {
+			putRunStateFixture(t, database, staleKey, staleRecord)
+
+			rewritten := runStateRunningRecord(t, database, jobs[1])
+
+			defer setRunStateDropHook(func() { putRunStateFixture(t, database, staleKey, rewritten) })()
+
+			_, rsr, err := database.recoverIncompleteJobs()
+			So(err, ShouldBeNil)
+			So(rsr.dropped, ShouldEqual, 0)
+			So(runStateBucketValue(t, database, bucketJobRunState, staleKey), ShouldResemble, rewritten)
+		})
+
+		Convey("an orphan whose job is added between the read and the write is kept", func() {
+			orphan := testDBJob("echo runstate recovery late add", runStateTestRepGroup)
+			orphan.State = JobStateReady
+			orphanKey := orphan.Key()
+			putRunStateFixture(t, database, orphanKey, []byte{0, 0, 0, 0})
+
+			var kept []byte
+
+			defer setRunStateDropHook(func() {
+				_, _, _, errs := database.storeNewJobs(ctx, []*Job{orphan}, false)
+				So(errs, ShouldBeNil)
+
+				kept = runStateRunningRecord(t, database, orphan)
+				putRunStateFixture(t, database, orphanKey, kept)
+			})()
+
+			_, rsr, err := database.recoverIncompleteJobs()
+			So(err, ShouldBeNil)
+			So(rsr.dropped, ShouldEqual, 0)
+			So(runStateBucketValue(t, database, bucketJobRunState, orphanKey), ShouldResemble, kept)
+		})
+
+		Convey("an undecodable record rewritten as a decodable one between the read and the write is kept", func() {
+			undecodable := runStateRunningRecord(t, database, jobs[1])
+			putRunStateFixture(t, database, staleKey, undecodable[:len(undecodable)/2])
+
+			defer setRunStateDropHook(func() { putRunStateFixture(t, database, staleKey, undecodable) })()
+
+			_, rsr, err := database.recoverIncompleteJobs()
+			So(err, ShouldBeNil)
+			So(rsr.undecodable, ShouldResemble, []string{staleKey})
+			So(rsr.dropped, ShouldEqual, 0)
+			So(runStateBucketValue(t, database, bucketJobRunState, staleKey), ShouldResemble, undecodable)
+		})
+
+		Convey("a run-state bucket removed between the read and the write counts as empty", func() {
+			putRunStateFixture(t, database, staleKey, staleRecord)
+
+			defer setRunStateDropHook(func() {
+				So(database.bolt.Update(func(tx *bolt.Tx) error {
+					return tx.DeleteBucket(bucketJobRunState)
+				}), ShouldBeNil)
+			})()
+
+			recovered, rsr, err := database.recoverIncompleteJobs()
+			So(err, ShouldBeNil)
+			So(rsr.dropErr, ShouldBeNil)
+			So(rsr.dropped, ShouldEqual, 0)
+			So(len(recovered), ShouldEqual, len(jobs))
+		})
+
+		Convey("with no stale or orphaned records, nothing is committed and no dropped line is logged", func() {
+			hookCalled := false
+
+			defer setRunStateDropHook(func() { hookCalled = true })()
+
+			before := database.bolt.Stats()
+
+			_, rsr, err := database.recoverIncompleteJobs()
+			So(err, ShouldBeNil)
+			So(rsr.applied, ShouldEqual, 1)
+			So(rsr.dropped, ShouldEqual, 0)
+
+			after := database.bolt.Stats()
+			So(after.TxStats.GetWrite(), ShouldEqual, before.TxStats.GetWrite())
+			So(hookCalled, ShouldBeFalse)
+
+			logs := clog.ToBufferAtLevel("warn")
+
+			defer clog.ToDefault()
+
+			_, err = (&Server{}).decodePriorJobs(ctx, database)
+			So(err, ShouldBeNil)
+			So(logs.String(), ShouldContainSubstring, "recovering: decoded live jobs")
+			So(logs.String(), ShouldNotContainSubstring, "dropped stale")
+		})
+
+		Convey("decodePriorJobs logs how many records it dropped", func() {
+			putRunStateFixture(t, database, staleKey, staleRecord)
+			putRunStateFixture(t, database, "orphan", matching)
+
+			logs := clog.ToBufferAtLevel("warn")
+
+			defer clog.ToDefault()
+
+			_, err := (&Server{}).decodePriorJobs(ctx, database)
+			So(err, ShouldBeNil)
+			So(logs.String(), ShouldContainSubstring, "recovering: dropped stale job run-state records")
+			So(logs.String(), ShouldContainSubstring, "count=2")
+		})
+
+		Convey("a failed drop transaction still recovers every job, with dropped 0 and no error", func() {
+			putRunStateFixture(t, database, staleKey, staleRecord)
+
+			defer setRunStateDropHook(func() { So(database.close(ctx), ShouldBeNil) })()
+
+			recovered, rsr, err := database.recoverIncompleteJobs()
+			So(err, ShouldBeNil)
+			So(rsr.dropErr, ShouldNotBeNil)
+			So(rsr.applied, ShouldEqual, 1)
+			So(rsr.dropped, ShouldEqual, 0)
+			So(len(recovered), ShouldEqual, len(jobs))
+			So(runStateJobsByKey(recovered)[jobs[0].Key()].State, ShouldEqual, JobStateRunning)
+		})
+
+		Convey("decodePriorJobs warns about a failed drop transaction and returns the jobs", func() {
+			putRunStateFixture(t, database, staleKey, staleRecord)
+
+			defer setRunStateDropHook(func() { So(database.close(ctx), ShouldBeNil) })()
+
+			logs := clog.ToBufferAtLevel("warn")
+
+			defer clog.ToDefault()
+
+			recovered, err := (&Server{}).decodePriorJobs(ctx, database)
+			So(err, ShouldBeNil)
+			So(len(recovered), ShouldEqual, len(jobs))
+			So(logs.String(), ShouldContainSubstring, "recovering: failed to drop stale job run-state records")
+			So(logs.String(), ShouldNotContainSubstring, "recovering: dropped stale")
+		})
+
+		Convey("on a read-only handle, stale and orphaned records are ignored and kept, with dropped 0", func() {
+			putRunStateFixture(t, database, staleKey, staleRecord)
+			putRunStateFixture(t, database, "orphan", matching)
+
+			path := database.bolt.Path()
+			So(database.close(ctx), ShouldBeNil)
+
+			rdb, err := bolt.Open(path, dbFilePermission, &bolt.Options{ReadOnly: true, Timeout: time.Second})
+			So(err, ShouldBeNil)
+
+			readOnly := &db{bolt: rdb, ch: new(codec.BincHandle)}
+
+			before := rdb.Stats()
+
+			recovered, rsr, err := readOnly.recoverIncompleteJobs()
+			So(err, ShouldBeNil)
+			So(rsr.dropErr, ShouldBeNil)
+			So(rsr.applied, ShouldEqual, 1)
+			So(rsr.dropped, ShouldEqual, 0)
+
+			after := rdb.Stats()
+			So(after.TxStats.GetWrite(), ShouldEqual, before.TxStats.GetWrite())
+			So(runStateJobsByKey(recovered)[staleKey].State, ShouldEqual, JobStateReady)
+			So(runStateBucketKeys(t, readOnly), ShouldResemble,
+				slices.Sorted(slices.Values([]string{jobs[0].Key(), staleKey, "orphan"})))
+			So(rdb.Close(), ShouldBeNil)
+		})
+	})
+}
+
+// runStateRecoveryDB returns a database holding the add-time live records
+// (State ready) of 3 jobs with distinct Cmds and LimitGroups, along with those
+// jobs.
+func runStateRecoveryDB(t *testing.T, ctx context.Context) (*db, []*Job) {
+	t.Helper()
+
+	database := openReliable4WriteStormDB(t, ctx)
+
+	jobs := make([]*Job, 3)
+	for i := range jobs {
+		jobs[i] = testDBJob("echo runstate recovery "+strconv.Itoa(i), runStateTestRepGroup)
+		jobs[i].State = JobStateReady
+		jobs[i].LimitGroups = []string{"rsrlg" + strconv.Itoa(i)}
+	}
+
+	if _, _, _, err := database.storeNewJobs(ctx, jobs, false); err != nil {
+		t.Fatalf("storeNewJobs failed: %v", err)
+	}
+
+	return database, jobs
+}
+
+// TestReserveAndStartWriteRunState covers A2 tests 1, 2 and 9 and B1 test 2: a
+// reservation and a start, a duplicate start included, leave the job's add-time
+// live record as it was and write its run state over it, which recovery
+// overlays.
+func TestReserveAndStartWriteRunState(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a runner's manager with a job whose Cmd is 10,000 bytes, added and its add committed", t, func() {
+		f := newMovedOnFixture(ctx, t, serverRC)
+		defer f.stop(ctx)
+
+		cmd := restFormTrue + " " + strings.Repeat("x", runStateBigCmdBytes)
+
+		f.add(movedOnRetries, func(job *Job) { job.Cmd = cmd }, "big")
+
+		key := (&Job{Cmd: cmd, Cwd: testCwd}).Key()
+		added := runStateBucketValue(t, f.server.db, bucketJobsLive, key)
+		So(len(added), ShouldBeGreaterThanOrEqualTo, runStateBigCmdBytes)
+
+		Convey("once it is reserved and started, its live record is unchanged and recovery reads the in-memory job", func() {
+			So(f.reserveAndStart().Key(), ShouldEqual, key)
+
+			So(bytes.Equal(runStateBucketValue(t, f.server.db, bucketJobsLive, key), added), ShouldBeTrue)
+			So(runStateBucketValue(t, f.server.db, bucketJobRunState, key), ShouldNotBeEmpty)
+
+			want, err := f.server.db.encodeJob(preStartServerJob(f.server, key))
+			So(err, ShouldBeNil)
+
+			got, err := f.server.db.encode(runStateRecoveredJob(t, f.server.db, key))
+			So(err, ShouldBeNil)
+			So(bytes.Equal(got, want), ShouldBeTrue)
+		})
+
+		Convey("once it is reserved, recovery reads it reserved by the runner, with the runner's host and pid", func() {
+			So(f.reserve().Key(), ShouldEqual, key)
+
+			So(bytes.Equal(runStateBucketValue(t, f.server.db, bucketJobsLive, key), added), ShouldBeTrue)
+
+			inMemory := preStartServerJob(f.server, key)
+			inMemory.RLock()
+			reservation := inMemory.RunnerReservation
+			inMemory.RUnlock()
+
+			So(reservation, ShouldBeGreaterThan, 0)
+
+			recovered := runStateRecoveredJob(t, f.server.db, key)
+			host, pid := reserveHostAndPid()
+
+			So(recovered.State, ShouldEqual, JobStateReserved)
+			So(recovered.ReservedBy, ShouldEqual, f.runner.clientid)
+			So(recovered.Host, ShouldEqual, host)
+			So(recovered.Pid, ShouldEqual, pid)
+			So(recovered.RunnerReservation, ShouldEqual, reservation)
+		})
+
+		Convey("a manager killed after the reservation and before Started recovers its run state, "+
+			"holding the job in Run for the runner", func() {
+			So(f.reserve().Key(), ShouldEqual, key)
+
+			image := f.backup()
+
+			logs := captureLogsAtLevel("warn")
+
+			defer clog.ToDefault()
+
+			f.crashOnto(ctx, image)
+
+			So(logs.String(), ShouldContainSubstring, "recovering: decoded live jobs")
+			So(logs.String(), ShouldContainSubstring, "runStates=1 ")
+
+			item, err := f.server.q.Get(key)
+			So(err, ShouldBeNil)
+			So(item.Stats().State, ShouldEqual, queue.ItemStateRun)
+
+			recovered := preStartServerJob(f.server, key)
+			recovered.RLock()
+			reservedBy := recovered.ReservedBy
+			recovered.RUnlock()
+
+			So(reservedBy, ShouldEqual, f.runner.clientid)
+		})
+
+		Convey("a duplicate start giving the runner pid of a job recovered without one is recovered with it", func() {
+			reserved := f.reserveAndStart()
+
+			// what a job recovered from a record written without a runner pid is.
+			inMemory := preStartServerJob(f.server, key)
+			inMemory.Lock()
+			inMemory.RunnerPid = 0
+			inMemory.Unlock()
+
+			So(f.server.db.updateJobRunStateDurable(inMemory), ShouldBeNil)
+			So(runStateRecoveredJob(t, f.server.db, key).RunnerPid, ShouldEqual, 0)
+
+			req, err := f.runner.startedRequest(reserved, f.cmdPid, time.Now())
+			So(err, ShouldBeNil)
+
+			req.Job.RunnerPid = runStateDuplicateRunnerPid
+
+			_, err = f.runner.request(req)
+			So(err, ShouldBeNil)
+
+			So(bytes.Equal(runStateBucketValue(t, f.server.db, bucketJobsLive, key), added), ShouldBeTrue)
+
+			f.crashOnto(ctx, f.backup())
+
+			recovered := preStartServerJob(f.server, key)
+			So(recovered, ShouldNotBeNil)
+
+			recovered.RLock()
+			runnerPid, state := recovered.RunnerPid, recovered.State
+			recovered.RUnlock()
+
+			So(state, ShouldEqual, JobStateRunning)
+			So(runnerPid, ShouldEqual, runStateDuplicateRunnerPid)
+		})
+	})
+}
+
+// runStateRunningRecord returns a run-state record, matching job's stored live
+// record, of job running on host h1 with Pid 7 and Attempts 1.
+func runStateRunningRecord(t *testing.T, database *db, job *Job) []byte {
+	t.Helper()
+
+	running := &Job{
+		State:        JobStateRunning,
+		Host:         "h1",
+		Pid:          7,
+		Attempts:     1,
+		StartTime:    time.Now(),
+		Requirements: job.Requirements,
+	}
+
+	encodedRunState, err := database.encode(newJobRunState(running))
+	if err != nil {
+		t.Fatalf("encoding the run state failed: %v", err)
+	}
+
+	return runStateRecord(runStateBucketValue(t, database, bucketJobsLive, job.Key()), encodedRunState)
+}
+
 // putRunStateFixture puts record as key's run-state record directly.
 func putRunStateFixture(t *testing.T, database *db, key string, record []byte) {
 	t.Helper()
@@ -630,4 +1305,148 @@ func runStateBucketValue(t *testing.T, database *db, bucket []byte, key string) 
 	}
 
 	return value
+}
+
+// runStateRecoveredJob returns the job recoverIncompleteJobs reads for key.
+func runStateRecoveredJob(t *testing.T, database *db, key string) *Job {
+	t.Helper()
+
+	recovered, _, err := database.recoverIncompleteJobs()
+	if err != nil {
+		t.Fatalf("recoverIncompleteJobs failed: %v", err)
+	}
+
+	job := runStateJobsByKey(recovered)[key]
+	if job == nil {
+		t.Fatalf("recoverIncompleteJobs did not return %s", key)
+	}
+
+	return job
+}
+
+// runStateJobsByKey returns jobs keyed by their keys.
+func runStateJobsByKey(jobs []*Job) map[string]*Job {
+	byKey := make(map[string]*Job, len(jobs))
+	for _, job := range jobs {
+		byKey[job.Key()] = job
+	}
+
+	return byKey
+}
+
+// runStateBucketKeys returns the keys of every run-state record, in key order.
+func runStateBucketKeys(t *testing.T, database *db) []string {
+	t.Helper()
+
+	var keys []string
+
+	err := database.bolt.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketJobRunState).ForEach(func(key, _ []byte) error {
+			keys = append(keys, string(key))
+
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("reading the run-state bucket failed: %v", err)
+	}
+
+	return keys
+}
+
+// setRunStateDropHook sets recoverRunStateDropHook to hook, and returns a func
+// that unsets it.
+func setRunStateDropHook(hook func()) func() {
+	recoverRunStateDropHook = hook
+
+	return func() { recoverRunStateDropHook = nil }
+}
+
+// TestReservationKeepsLearnedRequirements covers A2 test 3: requirements a job
+// learned from its ReqGroup in memory before its reservation are what recovery
+// reads after a crash, though its live record was written before it learned
+// them.
+func TestReservationKeepsLearnedRequirements(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	const (
+		reqGroup  = "lr"
+		requested = 100
+		peak      = 1500
+		completed = 10
+	)
+
+	ctx := context.Background()
+
+	Convey("Given a manager whose ReqGroup learned from 10 completed 100MB jobs that peaked at 1500MB", t, func() {
+		f := newMovedOnFixture(ctx, t, "")
+		defer f.stop(ctx)
+
+		learning := func(job *Job) {
+			job.ReqGroup = reqGroup
+			job.Requirements.RAM = requested
+		}
+
+		names := make([]string, completed)
+		for i := range names {
+			names[i] = "done" + strconv.Itoa(i)
+		}
+
+		f.add(movedOnRetries, learning, names...)
+
+		for range completed {
+			done := f.reserveAndStart()
+			So(f.runner.Archive(done, &JobEndState{
+				Exited: true, Exitcode: 0, PeakRAM: peak, EndTime: time.Now(),
+			}), ShouldBeNil)
+		}
+
+		So(pollUntil(func() bool {
+			ram, err := f.server.db.recommendedReqGroupMemory(reqGroup)
+
+			return err == nil && ram > requested
+		}), ShouldBeTrue)
+
+		Convey("an 11th job reserved after learning them is recovered after a crash with them", func() {
+			f.add(movedOnRetries, learning, "learner")
+
+			key := (&Job{Cmd: restFormTrue + " movedon learner", Cwd: testCwd}).Key()
+
+			// the reservation's write is what has to carry them, so the job must
+			// have learned them before it.
+			So(pollUntil(func() bool { return runStateJobRAM(preStartServerJob(f.server, key)) > requested }),
+				ShouldBeTrue)
+
+			So(f.reserve().Key(), ShouldEqual, key)
+
+			learned := runStateJobRAM(preStartServerJob(f.server, key))
+
+			f.crashOnto(ctx, f.backup())
+
+			recovered := preStartServerJob(f.server, key)
+			So(recovered, ShouldNotBeNil)
+
+			recovered.RLock()
+			defer recovered.RUnlock()
+
+			So(recovered.Requirements.RAM, ShouldEqual, learned)
+			So(recovered.RequirementsOrig, ShouldNotBeNil)
+			So(recovered.RequirementsOrig.RAM, ShouldEqual, requested)
+		})
+	})
+}
+
+// runStateJobRAM returns job's Requirements.RAM, read under its lock, or 0 for
+// a nil job.
+func runStateJobRAM(job *Job) int {
+	if job == nil {
+		return 0
+	}
+
+	job.RLock()
+	defer job.RUnlock()
+
+	return job.Requirements.RAM
 }

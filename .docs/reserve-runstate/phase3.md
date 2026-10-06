@@ -35,8 +35,8 @@ Covering B1 acceptance test 1 in `jobqueue/db_runstate_test.go`. B1 test 2
 needs a reservation to write a run-state record, so it is implemented and
 reviewed with item 3.4; together the two items cover both B1 tests.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 3.2: B2 - Stale and orphaned records are dropped
 
@@ -51,8 +51,8 @@ transaction. Skip the delete on a read-only bolt handle and return
 above 0. Covering all 4 acceptance tests from B2, in
 `jobqueue/db_runstate_test.go`. Depends on item 3.1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 3.3: A3 - Drain ordering
 
@@ -80,8 +80,8 @@ but `TestStartDurabilityAbortedWriteIsNotCommitted` (test 11) and
 Extend each test where it already lives; do not move it. Put
 `queueUnkickedBestEffortRunState` beside `queueUnkickedBestEffortChange`.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 3.4: A2 - Reserve and start write run-state records
 
@@ -128,5 +128,5 @@ Review notes:
   new server's `runStates=1` log line and that the job is in the run
   sub-queue reserved by the original client.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

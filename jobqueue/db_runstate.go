@@ -26,12 +26,14 @@
 package jobqueue
 
 import (
+	"bytes"
 	"encoding/binary"
 	"hash/crc32"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/gofrs/uuid/v5"
+	"github.com/ugorji/go/codec"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -49,6 +51,23 @@ func runStateRecord(live, encodedRunState []byte) []byte {
 	binary.BigEndian.PutUint32(record, crc32.Checksum(live, runStateCRCTable))
 
 	return append(record, encodedRunState...)
+}
+
+// decodeMatchingRunState returns the jobRunState in record, and true, if record
+// was written over exactly the live record live, with an error if its body fails
+// to decode; otherwise false. It is the one test of whether recovery applies
+// record, shared by recovery's read and its drop's re-check.
+func (db *db) decodeMatchingRunState(live, record []byte) (jobRunState, bool, error) {
+	var runState jobRunState
+
+	encodedRunState, matches := runStateOver(live, record)
+	if !matches {
+		return runState, false, nil
+	}
+
+	err := codec.NewDecoderBytes(encodedRunState, db.ch).Decode(&runState)
+
+	return runState, true, err
 }
 
 // runStateOver returns the encoded jobRunState in record, and true, if record
@@ -166,6 +185,54 @@ func (r *jobRunState) applyTo(j *Job) {
 	j.invalidateDerivedLocked()
 }
 
+// runStateWalk steps through bucketJobRunState in key order alongside a walk of
+// bucketJobsLive, so recovery reads each run-state record without a Get per
+// live job. A database without the bucket (a raw copied one) walks as empty.
+type runStateWalk struct {
+	cursor  *bolt.Cursor
+	key     []byte
+	value   []byte
+	orphans []string
+}
+
+// newRunStateWalk returns a runStateWalk positioned at the first run-state
+// record in tx.
+func newRunStateWalk(tx *bolt.Tx) *runStateWalk {
+	w := &runStateWalk{}
+
+	if bucket := tx.Bucket(bucketJobRunState); bucket != nil {
+		w.cursor = bucket.Cursor()
+		w.key, w.value = w.cursor.First()
+	}
+
+	return w
+}
+
+// recordFor returns liveKey's run-state record, or nil if it has none. Calls
+// must be in ascending liveKey order; the keys of records skipped over, which
+// have no live record, go in orphans.
+func (w *runStateWalk) recordFor(liveKey []byte) []byte {
+	w.skipBefore(liveKey)
+
+	if w.key == nil || !bytes.Equal(w.key, liveKey) {
+		return nil
+	}
+
+	value := w.value
+	w.key, w.value = w.cursor.Next()
+
+	return value
+}
+
+// skipBefore steps past every record whose key sorts before liveKey, or every
+// remaining record for a nil liveKey, putting their keys in orphans.
+func (w *runStateWalk) skipBefore(liveKey []byte) {
+	for w.key != nil && (liveKey == nil || bytes.Compare(w.key, liveKey) < 0) {
+		w.orphans = append(w.orphans, string(w.key))
+		w.key, w.value = w.cursor.Next()
+	}
+}
+
 // putLiveRecord puts encoded as key's live record and deletes key's run-state
 // record, in tx: a full write of the job is newer than any run state written
 // over the live record it replaces.
@@ -204,4 +271,102 @@ func cloneRequirements(req *scheduler.Requirements) *scheduler.Requirements {
 	}
 
 	return req.Clone()
+}
+
+// runStateRecovery is what recoverIncompleteJobs did with run-state records.
+type runStateRecovery struct {
+	applied     int      // matching records overlaid
+	dropped     int      // stale, orphaned or undecodable records deleted
+	undecodable []string // keys of matching records whose body failed to decode
+	dropErr     error    // why the drop transaction failed, leaving every record
+}
+
+// overlayRunState applies record to job, decoded from its live record live, if
+// record matches live, counting it in rsr. It returns true if record is present
+// but not applied, so recovery drops it: a stale record, or a matching one whose
+// body fails to decode, whose key also goes in rsr.undecodable, since the full
+// record is the durable fallback.
+func (db *db) overlayRunState(job *Job, key, live, record []byte, rsr *runStateRecovery) bool {
+	if record == nil {
+		return false
+	}
+
+	runState, matches, err := db.decodeMatchingRunState(live, record)
+	if !matches {
+		return true
+	}
+
+	if err != nil {
+		rsr.undecodable = append(rsr.undecodable, string(key))
+
+		return true
+	}
+
+	runState.applyTo(job)
+
+	rsr.applied++
+
+	return false
+}
+
+// runStateDroppable returns true if record is a run-state record that recovery
+// does not apply over the live record live: orphaned (live is nil), stale, or
+// matching but with a body that fails to decode.
+func (db *db) runStateDroppable(live, record []byte) bool {
+	if record == nil {
+		return false
+	}
+
+	if live == nil {
+		return true
+	}
+
+	_, matches, err := db.decodeMatchingRunState(live, record)
+
+	return !matches || err != nil
+}
+
+// dropRunStates deletes, in one write transaction, each of keys' run-state
+// records that is still droppable against the live bucket as it is then,
+// returning how many it deleted. A drain on a running server may have rewritten
+// either record since recovery's read. A database without bucketJobRunState has
+// none to delete.
+func (db *db) dropRunStates(keys []string) (int, error) {
+	dropped := 0
+
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		var err error
+
+		dropped, err = db.dropRunStatesTx(tx, keys)
+
+		return err
+	})
+
+	return dropped, err
+}
+
+// dropRunStatesTx is dropRunStates' delete, in tx.
+func (db *db) dropRunStatesTx(tx *bolt.Tx, keys []string) (int, error) {
+	bucket := tx.Bucket(bucketJobRunState)
+	if bucket == nil {
+		return 0, nil
+	}
+
+	live := tx.Bucket(bucketJobsLive)
+	dropped := 0
+
+	for _, key := range keys {
+		k := []byte(key)
+		if !db.runStateDroppable(live.Get(k), bucket.Get(k)) {
+			continue
+		}
+
+		if err := bucket.Delete(k); err != nil {
+			return 0, err
+		}
+
+		dropped++
+	}
+
+	return dropped, nil
 }

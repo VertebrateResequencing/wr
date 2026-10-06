@@ -381,7 +381,7 @@ func dbStartProbeRecoveryRun(t *testing.T, path, mode string) (time.Duration, ti
 	if mode == "parallel16" {
 		jobs = dbStartProbeParallelDecode(t, d, 16)
 	} else {
-		jobs, err = d.recoverIncompleteJobs()
+		jobs, _, err = d.recoverIncompleteJobs()
 		if err != nil {
 			t.Fatal(err)
 		}

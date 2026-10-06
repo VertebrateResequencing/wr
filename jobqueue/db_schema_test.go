@@ -70,7 +70,7 @@ func TestDBSchemaVersionCheckOnOpen(t *testing.T) {
 			reDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
 			So(err, ShouldBeNil)
 
-			jobs, err := reDB.recoverIncompleteJobs()
+			jobs, _, err := reDB.recoverIncompleteJobs()
 			So(err, ShouldBeNil)
 			So(reDB.close(ctx), ShouldBeNil)
 			So(len(jobs), ShouldEqual, len(live))

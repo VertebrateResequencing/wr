@@ -177,6 +177,10 @@ var errNewJobsPanic = errors.New("panic while storing new jobs")
 // recover - can never be reported to a waiter as a write that reached disk.
 var errBestEffortWriteAborted = errors.New("best-effort write transaction aborted")
 
+// errNoRunStateBucket is what a best-effort drain returns if it has a run state
+// to write to a database without bucketJobRunState, which initDB creates.
+var errNoRunStateBucket = errors.New("database has no job run-state bucket")
+
 // errDurableWriteWaitExpired is what updateJobAfterChangeDurableWithin returns
 // when its write had not committed by the deadline. The write is still queued
 // and may commit later.
@@ -297,9 +301,18 @@ var archiveGuardsSeenHook func(key []byte)
 //nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
 var dependentsGuardHook func()
 
-// jobChangeEncodedHook, when non-nil, is called by queueJobChange once it has
-// encoded the job and before it queues the write. It is nil in production and
-// exists so tests can change the job in between.
+// recoverRunStateDropHook, when non-nil, is called by recoverIncompleteJobs
+// once its read has found stale, orphaned or undecodable run-state records and
+// before the write transaction that drops them. It is nil in production and
+// exists so tests can rewrite a record in between.
+//
+//nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
+var recoverRunStateDropHook func()
+
+// jobChangeEncodedHook, when non-nil, is called by queueJobChange and
+// queueJobRunState once they have encoded the job and before they queue the
+// write. It is nil in production and exists so tests can change the job in
+// between.
 //
 //nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
 var jobChangeEncodedHook func()
@@ -785,10 +798,23 @@ type newJobStore struct {
 }
 
 // beChange is a job's latest queued live-bucket value, with the arrival order
-// (db.beSeq) of the change that queued it.
+// (db.beSeq) of the change that queued it, and the latest run state queued
+// after that value, with its arrival order.
 type beChange struct {
-	encoded []byte
-	seq     uint64
+	encoded  []byte // latest full live record queued, nil if none
+	seq      uint64
+	runState []byte // latest encoded jobRunState queued after encoded
+	rsSeq    uint64
+}
+
+// fullSeq returns the arrival order of the change's full live record, or 0 if
+// it has none.
+func (c beChange) fullSeq() uint64 {
+	if c.encoded == nil {
+		return 0
+	}
+
+	return c.seq
 }
 
 // jobChangeAhead is a job's live-record write, encoded by prepareJobChange
@@ -854,6 +880,42 @@ type storedNewJobs struct {
 	jobsToQueue  []*Job
 	dependents   liveDependents
 	alreadyAdded DuplicateBreakdown
+}
+
+// applyRunStates puts each job's queued run state as its run-state record over
+// its live record as this transaction leaves it, unless one of the job's exit
+// ops in this batch arrived after it (that exit op's full record is newer) or
+// the job is no longer live (archiveJob removed it).
+func (b beBatch) applyRunStates(tx *bolt.Tx, lastExits map[string]uint64) error {
+	bjl := tx.Bucket(bucketJobsLive)
+	brs := tx.Bucket(bucketJobRunState)
+
+	for key, change := range b.changes {
+		if change.rsSeq == 0 || change.rsSeq < lastExits[key] {
+			continue
+		}
+
+		if err := putRunState(bjl, brs, []byte(key), change.runState); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// putRunState puts encodedRunState as key's run-state record in brs, over key's
+// live record in bjl as it is now, if key is still live.
+func putRunState(bjl, brs *bolt.Bucket, key, encodedRunState []byte) error {
+	live := bjl.Get(key)
+	if live == nil {
+		return nil
+	}
+
+	if brs == nil {
+		return errNoRunStateBucket
+	}
+
+	return brs.Put(key, runStateRecord(live, encodedRunState))
 }
 
 // pace bounds the backup copy's dirty-page backlog for the bytes written since the
@@ -937,13 +999,17 @@ type beBatch struct {
 	waiters []chan error
 }
 
-// apply writes the batch's coalesced live-bucket changes and its ordered exit ops
-// within tx. A job's live record ends up as whichever of its change and its exit
-// ops arrived last: a change that arrived before one of the job's exit ops is
-// not written, and an exit op that arrived before the job's change keeps its
-// std and fail-stat effects but does not rewrite the live record. Without this a
-// release queued before the job's next reservation, in the same drain, was
-// written over the reservation, and the job recovered to the ready queue.
+// apply writes the batch's coalesced live-bucket changes, its ordered exit ops
+// and then its run states within tx. A job's stored state ends up as whichever
+// of its full change, its exit ops and its run state arrived last: a change or
+// run state that arrived before one of the job's exit ops is not written, and an
+// exit op that arrived before the job's full change keeps its std and fail-stat
+// effects but does not rewrite the live record. A run state is written last,
+// over the live record as this transaction leaves it, since it arrived after the
+// job's full change (enqueueChangeLocked clears it) and is written only if it
+// arrived after every exit op too. Without this a release queued before the
+// job's next reservation, in the same drain, was written over the reservation,
+// and the job recovered to the ready queue.
 func (b beBatch) apply(tx *bolt.Tx) error {
 	lastExits := b.lastExitSeqs()
 
@@ -951,7 +1017,11 @@ func (b beBatch) apply(tx *bolt.Tx) error {
 		return err
 	}
 
-	return b.applyExits(tx)
+	if err := b.applyExits(tx); err != nil {
+		return err
+	}
+
+	return b.applyRunStates(tx, lastExits)
 }
 
 // applyChanges rewrites each coalesced live job, but only if it is still present,
@@ -963,7 +1033,7 @@ func (b beBatch) applyChanges(tx *bolt.Tx, lastExits map[string]uint64) error {
 	bjl := tx.Bucket(bucketJobsLive)
 
 	for key, change := range b.changes {
-		if change.seq < lastExits[key] {
+		if change.fullSeq() == 0 || change.seq < lastExits[key] {
 			continue
 		}
 
@@ -981,12 +1051,12 @@ func (b beBatch) applyChanges(tx *bolt.Tx, lastExits map[string]uint64) error {
 
 // applyExits runs each exit op's transactional update (live-bucket rewrite, std
 // refresh and fail-stat) in order, preserving every per-op side effect. An exit
-// op older than the job's change in this batch leaves the live record to that
-// change.
+// op older than the job's full change in this batch leaves the live record to
+// that change.
 func (b beBatch) applyExits(tx *bolt.Tx) error {
 	for i := range b.exits {
-		change, changed := b.changes[b.exits[i].key]
-		writeLive := !changed || b.exits[i].seq > change.seq
+		fullSeq := b.changes[b.exits[i].key].fullSeq()
+		writeLive := fullSeq == 0 || b.exits[i].seq > fullSeq
 
 		if err := b.exits[i].update(tx, writeLive); err != nil {
 			return err
@@ -2376,8 +2446,9 @@ func (db *db) enqueueExitLocked(exit jobExitData, waiter chan error) {
 }
 
 // enqueueChangeLocked adds key's latest encoded live value, and waiter if not
-// nil, to the pending best-effort batch. Must be called with db.RLock (or Lock),
-// db.wgMutex and db.beMu held.
+// nil, to the pending best-effort batch, replacing any run state queued for key
+// before it, which the full value is newer than. Must be called with db.RLock
+// (or Lock), db.wgMutex and db.beMu held.
 func (db *db) enqueueChangeLocked(key string, encoded []byte, waiter chan error) {
 	db.enqueueChangeInSlotLocked(key, encoded, db.wg.Add(1))
 
@@ -2386,9 +2457,27 @@ func (db *db) enqueueChangeLocked(key string, encoded []byte, waiter chan error)
 	}
 }
 
+// enqueueRunStateLocked adds key's latest encoded run state (db.encode of a
+// jobRunState), and waiter if not nil, to the pending best-effort batch,
+// keeping any full live value queued for key before it. Must be called with
+// db.RLock (or Lock), db.wgMutex and db.beMu held.
+func (db *db) enqueueRunStateLocked(key string, encoded []byte, waiter chan error) {
+	db.beSeq++
+	change := db.beChanges[key]
+	change.runState = encoded
+	change.rsSeq = db.beSeq
+	db.beChanges[key] = change
+	db.beWGKeys = append(db.beWGKeys, db.wg.Add(1))
+
+	if waiter != nil {
+		db.beWaiters = append(db.beWaiters, waiter)
+	}
+}
+
 // enqueueChangeInSlotLocked adds key's latest encoded live value to the pending
-// best-effort batch, to release the db.wg slot wgKey once it is written. Must be
-// called with db.beMu held.
+// best-effort batch, to release the db.wg slot wgKey once it is written,
+// replacing any run state queued for key before it, which the full value is
+// newer than. Must be called with db.beMu held.
 func (db *db) enqueueChangeInSlotLocked(key string, encoded []byte, wgKey string) {
 	db.beSeq++
 	db.beChanges[key] = beChange{encoded: encoded, seq: db.beSeq}
@@ -2856,6 +2945,131 @@ func (db *db) snapshotJobExitLocked(job *Job, stdo, stde []byte, forceStorage bo
 	exit.encoded = encoded
 
 	return exit, nil
+}
+
+// readLiveJobsTx returns every job in the live bucket, overlaid with its
+// matching run-state record (counted in rsr), and the keys of the run-state
+// records it did not apply: stale, orphaned or undecodable.
+func (db *db) readLiveJobsTx(tx *bolt.Tx, rsr *runStateRecovery) ([]*Job, []string, error) {
+	var (
+		jobs []*Job
+		drop []string
+	)
+
+	runStates := newRunStateWalk(tx)
+
+	err := tx.Bucket(bucketJobsLive).ForEach(func(key, encoded []byte) error {
+		if encoded == nil {
+			return nil
+		}
+
+		job, errd := db.decodeJob(encoded)
+		if errd != nil {
+			return errd
+		}
+
+		if db.overlayRunState(job, key, encoded, runStates.recordFor(key), rsr) {
+			drop = append(drop, string(key))
+		}
+
+		jobs = append(jobs, job)
+
+		return nil
+	})
+
+	runStates.skipBefore(nil)
+
+	return jobs, append(drop, runStates.orphans...), err
+}
+
+// updateJobRunStateDurable is updateJobAfterChangeDurable for the run state: it
+// queues job's run-state record, which recovery overlays on its live record,
+// and blocks until the drain that covers it has committed.
+func (db *db) updateJobRunStateDurable(job *Job) error {
+	return awaitQueuedWrite(db.queueJobRunState, job)
+}
+
+// awaitQueuedWrite queues job's write with queue and returns the outcome of the
+// drain that covers it.
+func awaitQueuedWrite(queue func(*Job, chan error) error, job *Job) error {
+	waiter := make(chan error, 1)
+
+	if err := queue(job, waiter); err != nil {
+		return err
+	}
+
+	return <-waiter
+}
+
+// updateJobRunStateDurableWithin is updateJobAfterChangeDurableWithin for the
+// run state.
+func (db *db) updateJobRunStateDurableWithin(job *Job, wait time.Duration) error {
+	return awaitQueuedWriteWithin(db.queueJobRunState, job, wait)
+}
+
+// awaitQueuedWriteWithin is awaitQueuedWrite, but gives up waiting after wait,
+// returning errDurableWriteWaitExpired.
+func awaitQueuedWriteWithin(queue func(*Job, chan error) error, job *Job, wait time.Duration) error {
+	waiter := make(chan error, 1)
+
+	if err := queue(job, waiter); err != nil {
+		return err
+	}
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+
+	select {
+	case err := <-waiter:
+		return err
+	case <-timer.C:
+		return errDurableWriteWaitExpired
+	}
+}
+
+// queueJobRunState encodes job's run state outside any transaction and queues
+// it for the best-effort writer, which puts it as job's run-state record over
+// its live record. Like queueJobChange it holds db.RLock and job.RLock until the
+// write is queued, so writes of one job queue in the order they encoded it, and
+// a non-nil waiter is answered by the drain that covers this write; on error
+// nothing was queued and the waiter will never be answered.
+func (db *db) queueJobRunState(job *Job, waiter chan error) error {
+	db.RLock()
+	defer db.RUnlock()
+
+	if db.closed {
+		return errDBClosed
+	}
+
+	key := job.Key()
+
+	job.RLock()
+	defer job.RUnlock()
+
+	encoded, err := db.encode(newJobRunState(job))
+	if err != nil {
+		return err
+	}
+
+	callJobChangeEncodedHook()
+
+	db.wgMutex.Lock()
+	defer db.wgMutex.Unlock()
+
+	db.beMu.Lock()
+	db.enqueueRunStateLocked(key, encoded, waiter)
+	db.beMu.Unlock()
+
+	db.kickBestEffortWriter()
+
+	return nil
+}
+
+// callJobChangeEncodedHook calls jobChangeEncodedHook if a test has set it.
+func callJobChangeEncodedHook() {
+	if jobChangeEncodedHook != nil {
+		jobChangeEncodedHook()
+	}
 }
 
 // noteArchivesWritten records on each job that its ops' archives of it have
@@ -4504,30 +4718,41 @@ func (db *db) deleteLiveJobs(ctx context.Context, keys []string) error {
 // restarting the server, allowing you start working on any jobs that were
 // stored with storeNewJobs() but not yet archived with archiveJob().
 //
-// Note that you will get back the job as it was in its last recorded state.
-// The state is recorded when a job starts to run, when it exits, and when it
-// is kicked.
-func (db *db) recoverIncompleteJobs() ([]*Job, error) {
-	var jobs []*Job
+// Note that you will get back the job as it was in its last recorded state:
+// its live record, overlaid with its run-state record if that matches it. The
+// state is recorded when a job is reserved, starts to run, exits, and when it
+// is kicked. Run-state records that are not applied (stale, orphaned or
+// undecodable) are then deleted, unless the database is read-only. A failed
+// delete does not fail recovery: it leaves the records, which every reader
+// re-checks and the next recovery retries, and goes in the returned dropErr.
+func (db *db) recoverIncompleteJobs() ([]*Job, runStateRecovery, error) {
+	var (
+		jobs []*Job
+		rsr  runStateRecovery
+		drop []string
+	)
 
 	err := db.bolt.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketJobsLive)
+		var errr error
 
-		return b.ForEach(func(_, encoded []byte) error {
-			if encoded != nil {
-				job, errf := db.decodeJob(encoded)
-				if errf != nil {
-					return errf
-				}
+		jobs, drop, errr = db.readLiveJobsTx(tx, &rsr)
 
-				jobs = append(jobs, job)
-			}
-
-			return nil
-		})
+		return errr
 	})
+	if err != nil || len(drop) == 0 || db.bolt.IsReadOnly() {
+		return jobs, rsr, err
+	}
 
-	return jobs, err
+	if recoverRunStateDropHook != nil {
+		recoverRunStateDropHook()
+	}
+
+	rsr.dropped, rsr.dropErr = db.dropRunStates(drop)
+	if rsr.dropErr != nil {
+		rsr.dropped = 0
+	}
+
+	return jobs, rsr, nil
 }
 
 // retrieveCompleteJobsByKeys gets jobs with the given keys from the completed
@@ -5243,13 +5468,7 @@ func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
 // a single fsync and the write-storm amplification PR #555 removed
 // (.docs/reliable4/) is not reintroduced.
 func (db *db) updateJobAfterChangeDurable(job *Job) error {
-	waiter := make(chan error, 1)
-
-	if err := db.queueJobChange(job, waiter); err != nil {
-		return err
-	}
-
-	return <-waiter
+	return awaitQueuedWrite(db.queueJobChange, job)
 }
 
 // updateJobAfterChangeDurableWithin is updateJobAfterChangeDurable, but gives up
@@ -5257,21 +5476,7 @@ func (db *db) updateJobAfterChangeDurable(job *Job) error {
 // queued and may still commit; the waiter channel is buffered, so the drain's
 // reply to it never blocks the writer.
 func (db *db) updateJobAfterChangeDurableWithin(job *Job, wait time.Duration) error {
-	waiter := make(chan error, 1)
-
-	if err := db.queueJobChange(job, waiter); err != nil {
-		return err
-	}
-
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-
-	select {
-	case err := <-waiter:
-		return err
-	case <-timer.C:
-		return errDurableWriteWaitExpired
-	}
+	return awaitQueuedWriteWithin(db.queueJobChange, job, wait)
 }
 
 // queueJobChange encodes job outside any transaction and queues its latest
@@ -5301,9 +5506,7 @@ func (db *db) queueJobChange(job *Job, waiter chan error) error {
 		return err
 	}
 
-	if jobChangeEncodedHook != nil {
-		jobChangeEncodedHook()
-	}
+	callJobChangeEncodedHook()
 
 	db.wgMutex.Lock()
 	defer db.wgMutex.Unlock()

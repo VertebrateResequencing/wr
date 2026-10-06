@@ -2274,13 +2274,25 @@ func startupRecoveryDetail(elapsed time.Duration) string {
 func (s *Server) decodePriorJobs(ctx context.Context, db *db) ([]*Job, error) {
 	started := time.Now()
 
-	priorJobs, err := db.recoverIncompleteJobs()
+	priorJobs, rsr, err := db.recoverIncompleteJobs()
 	if err != nil {
 		return nil, err
 	}
 
-	clog.Warn(ctx, "recovering: decoded live jobs", "jobs", len(priorJobs),
+	if rsr.dropErr != nil {
+		clog.Warn(ctx, "recovering: failed to drop stale job run-state records", "err", rsr.dropErr)
+	}
+
+	for _, key := range rsr.undecodable {
+		clog.Warn(ctx, "recovering: undecodable job run-state record", "key", key)
+	}
+
+	clog.Warn(ctx, "recovering: decoded live jobs", "jobs", len(priorJobs), "runStates", rsr.applied,
 		"elapsed", time.Since(started).Round(time.Millisecond))
+
+	if rsr.dropped > 0 {
+		clog.Warn(ctx, "recovering: dropped stale job run-state records", "count", rsr.dropped)
+	}
 
 	return priorJobs, nil
 }

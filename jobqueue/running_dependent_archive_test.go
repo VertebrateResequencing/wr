@@ -73,14 +73,14 @@ func TestRunningDependentRerunArchiveRaces(t *testing.T) {
 			So(outcome, ShouldEqual, archiveKeptLive)
 
 			d.server.storeRerunMarks(ctx, rerunMarks{running: []*Job{serverJob}})
-			rdaSoLiveRecordUnmarked(d, key)
+			rdaSoLiveRecordUnmarked(t, d, key)
 
 			_, srerr, qerr := d.server.finishArchive(ctx, serverJob, key, repGroup, schedGroup, outcome, err)
 			So(srerr, ShouldBeEmpty)
 			So(qerr, ShouldBeEmpty)
 
 			d.server.storeRerunMarks(ctx, rerunMarks{running: []*Job{serverJob}})
-			rdaSoLiveRecordUnmarked(d, key)
+			rdaSoLiveRecordUnmarked(t, d, key)
 
 			d.restart(ctx)
 
@@ -213,14 +213,13 @@ func rdaServerJob(d *dgrServer, key string) (*queue.Item, *Job) {
 	return item, job
 }
 
-// rdaSoLiveRecordUnmarked asserts the job's live record has neither the mark
-// that it must run again nor a reservation.
-func rdaSoLiveRecordUnmarked(d *dgrServer, key string) {
-	encoded := d.server.db.retrieve(context.Background(), bucketJobsLive, key)
-	So(encoded, ShouldNotBeEmpty)
+// rdaSoLiveRecordUnmarked asserts the job's stored record, read through its
+// run-state record as recovery would, has neither the mark that it must run
+// again nor a reservation.
+func rdaSoLiveRecordUnmarked(t *testing.T, d *dgrServer, key string) {
+	t.Helper()
 
-	live, err := d.server.db.decodeJob(encoded)
-	So(err, ShouldBeNil)
+	live := storedLiveJob(t, d.server.db, key)
 	So(live.RerunAfterRun, ShouldBeFalse)
 	So(live.ReservedBy, ShouldEqual, uuid.UUID{})
 }

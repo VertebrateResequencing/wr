@@ -579,7 +579,7 @@ func dgrResolutionFixture(t *testing.T, ctx context.Context, jobs []*Job) (*db, 
 	So(err, ShouldBeNil)
 	So(queued, ShouldHaveLength, len(jobs))
 
-	priorJobs, err := testDB.recoverIncompleteJobs()
+	priorJobs, _, err := testDB.recoverIncompleteJobs()
 	So(err, ShouldBeNil)
 
 	server := &Server{depGroups: newDepGroupMembers()}

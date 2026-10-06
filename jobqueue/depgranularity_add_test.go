@@ -323,8 +323,7 @@ func TestDepGranularityAddRerunKeepsDepGroup(t *testing.T) {
 			So(d.server.depGroups.hasMembers(dgaGroup), ShouldBeTrue)
 			So(dgaItemState(d.server, waiter.Key()), ShouldEqual, queue.ItemStateDependent)
 
-			stored, err := d.server.db.decodeJob(liveJobRecord(d.server, member.Key()))
-			So(err, ShouldBeNil)
+			stored := storedLiveJob(t, d.server.db, member.Key())
 			So(stored.DepGroups, ShouldResemble, []string{dgaGroup})
 		})
 	})
