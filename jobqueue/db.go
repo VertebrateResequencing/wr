@@ -406,6 +406,10 @@ const maxArchivedBytesDefault = 256 * 1024 * 1024
 //nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
 var maxArchivedBytes = maxArchivedBytesDefault
 
+// reserveNotDurableLogMsg is the info line logged once per reservation handed
+// out before it was recorded on disk.
+const reserveNotDurableLogMsg = "reservation handed out before it was recorded on disk"
+
 const (
 	limitGroupUnchanged limitGroupOutcome = iota
 	limitGroupChanged
@@ -1234,6 +1238,12 @@ type db struct {
 	upgradedOnOpen bool
 	recSecRound    int // rounding (secs) for recommended reserve times; from the server's timings
 	recMBRound     int // rounding (MBs) for recommended memory/disk; from the server's timings
+	// rndMu guards reservesNotDurable, and is held while each hand-out of a
+	// reservation that was not yet durable is counted and logged, so the
+	// logged totals are always exactly 1..n, even up to a crash. It is taken
+	// only on that non-durable path.
+	rndMu              sync.Mutex
+	reservesNotDurable uint64
 }
 
 // backupCopyWriter streams a consistent DB backup copy to f, forcing writeback of
@@ -1277,6 +1287,19 @@ func (w *backupCopyWriter) Write(p []byte) (int, error) {
 	}
 
 	return total, nil
+}
+
+// logReserveNotDurable counts a reservation of the job with the given key being
+// handed out before it was durable, and logs it with the running total. It logs
+// on a context with no handler, so the line reaches the root logger's
+// info-level manager log file, not the server context's warn-level handler.
+func (db *db) logReserveNotDurable(key string) {
+	db.rndMu.Lock()
+	defer db.rndMu.Unlock()
+
+	db.reservesNotDurable++
+
+	clog.Info(context.Background(), reserveNotDurableLogMsg, "key", key, "total", db.reservesNotDurable)
 }
 
 // copyBackup writes a consistent copy of the DB (via a read tx) to path. It always

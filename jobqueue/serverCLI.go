@@ -1159,9 +1159,15 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 // LostRunnerBackstop. So a failed or slow write is logged and the job still
 // handed out, which is how reservations behaved before this write existed:
 // refusing the reservation would leave the item reserved to a runner that was
-// never given it. A slow write stays queued and may still commit.
+// never given it. A slow write stays queued and may still commit. Every such
+// hand-out, including one while the database is closing, is also logged with a
+// running total (see logReserveNotDurable), for an exact count up to a crash.
 func (s *Server) persistReservation(ctx context.Context, job *Job) {
 	err := s.db.updateJobRunStateDurableWithin(job, s.timings.ReserveWriteWait)
+	if err != nil {
+		//nolint:contextcheck // logged on a handler-less context so it reaches the info-level log file
+		s.db.logReserveNotDurable(job.Key())
+	}
 
 	switch {
 	case err == nil, errors.Is(err, errDBClosed):

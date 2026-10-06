@@ -72,3 +72,8 @@ Changed in memory by recovery:
 A2 test 1 checks this audit end to end for a reserved and started job: after
 reserve and start its live record is byte-equal to the add-time record, and
 recovery reads a job whose encoding equals the in-memory job's.
+- Kick ordering dependency: after rebasing onto the kick-ordering fix
+  (branch kickorder-5e1122fd), add a test here pinning that the kick's write
+  is queued before the item becomes reservable (its reviewer's mutant M3,
+  queueing the write after KickWith returns, survives on develop but would
+  lose the kicked UntilBuried with run-state reservations).

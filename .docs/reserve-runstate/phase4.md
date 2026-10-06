@@ -23,5 +23,5 @@ tests from D1, in `jobqueue/reserve_durability_test.go` (test 1 with real
 `clog.CreateFileHandlersAtLevels` handlers and a deferred
 `clog.ToDefault()`). Depends on phase 3's `persistReservation` switch.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

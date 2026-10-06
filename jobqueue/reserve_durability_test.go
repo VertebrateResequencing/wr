@@ -28,11 +28,15 @@ package jobqueue
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -952,5 +956,241 @@ func rewriteStoredLiveJob(database *db, key string, change func(*Job)) error {
 		}
 
 		return putLiveRecord(tx, []byte(key), encoded)
+	})
+}
+
+// reserveNotDurableLine is one logged reserveNotDurableLogMsg line's key and
+// total.
+type reserveNotDurableLine struct {
+	key   string
+	total string
+}
+
+// reserveNotDurableLines returns, in log order, the key and total of every
+// reserveNotDurableLogMsg line in a logfmt log.
+func reserveNotDurableLines(log string) []reserveNotDurableLine {
+	var lines []reserveNotDurableLine
+
+	for line := range strings.Lines(log) {
+		if !strings.Contains(line, `msg="`+reserveNotDurableLogMsg+`"`) {
+			continue
+		}
+
+		var found reserveNotDurableLine
+
+		for field := range strings.FieldsSeq(line) {
+			if v, ok := strings.CutPrefix(field, "key="); ok {
+				found.key = v
+			} else if v, ok := strings.CutPrefix(field, "total="); ok {
+				found.total = v
+			}
+		}
+
+		lines = append(lines, found)
+	}
+
+	return lines
+}
+
+// reservesNotDurable is database's count of non-durable hand-outs.
+func reservesNotDurable(database *db) uint64 {
+	database.rndMu.Lock()
+	defer database.rndMu.Unlock()
+
+	return database.reservesNotDurable
+}
+
+// TestReserveNotDurableLogged proves every reservation handed out before it was
+// durable is logged once, with its key and a gap-free running total, to the
+// manager's info-level log file, and that durable ones are not.
+func TestReserveNotDurableLogged(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a manager logging as setupManagerLogging sets it up, with reservation writes stalled", t, func() {
+		const stall = 5 * time.Second
+
+		logPath := filepath.Join(t.TempDir(), "log")
+		handlers, err := clog.CreateFileHandlersAtLevels(logPath, "info", "warn")
+		So(err, ShouldBeNil)
+
+		clog.AddHandler(handlers[0])
+
+		defer clog.ToDefault()
+
+		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+		serverConfig.Timings.ReserveWriteWait = 300 * time.Millisecond
+
+		server, _, token, err := serve(clog.ContextWithLogHandler(ctx, handlers[1]), serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		inserts, _, err := jq.Add([]*Job{
+			{Cmd: "true A", Cwd: testCwd, RepGroup: reserveDurabilityRepGroup,
+				ReqGroup: reserveDurabilityRepGroup, Requirements: standardReqs},
+			{Cmd: "true B", Cwd: testCwd, RepGroup: reserveDurabilityRepGroup,
+				ReqGroup: reserveDurabilityRepGroup, Requirements: standardReqs},
+		}, os.Environ(), true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 2)
+
+		holdTx, err := server.db.bolt.Begin(true)
+		So(err, ShouldBeNil)
+
+		released := make(chan struct{})
+		timer := time.AfterFunc(stall, func() {
+			_ = holdTx.Rollback() //nolint:errcheck // releasing the stall
+
+			close(released)
+		})
+
+		jobA, errA := jq.Reserve(2 * time.Second)
+		jobB, errB := jq.Reserve(2 * time.Second)
+
+		if timer.Stop() {
+			So(holdTx.Rollback(), ShouldBeNil)
+		} else {
+			<-released
+		}
+
+		So(errA, ShouldBeNil)
+		So(jobA, ShouldNotBeNil)
+		So(errB, ShouldBeNil)
+		So(jobB, ShouldNotBeNil)
+
+		content, err := os.ReadFile(logPath)
+		So(err, ShouldBeNil)
+
+		So(reserveNotDurableLines(string(content)), ShouldResemble, []reserveNotDurableLine{
+			{key: jobA.Key(), total: "1"},
+			{key: jobB.Key(), total: "2"},
+		})
+		So(string(content), ShouldContainSubstring, "reservation not yet recorded on disk")
+	})
+
+	Convey("Given a manager whose reservation writes commit promptly", t, func() {
+		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		jobs := make([]*Job, 3)
+		for i := range jobs {
+			jobs[i] = &Job{
+				Cmd: fmt.Sprintf("true %d", i), Cwd: testCwd, RepGroup: reserveDurabilityRepGroup,
+				ReqGroup: reserveDurabilityRepGroup, Requirements: standardReqs,
+			}
+		}
+
+		inserts, _, err := jq.Add(jobs, os.Environ(), true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 3)
+
+		logs := clog.ToBufferAtLevel("info")
+
+		defer clog.ToDefault()
+
+		reserved := 0
+
+		for range jobs {
+			job, errr := jq.Reserve(2 * time.Second)
+			if errr == nil && job != nil {
+				reserved++
+			}
+		}
+
+		So(reserved, ShouldEqual, 3)
+		So(reserveNotDurableLines(logs.String()), ShouldBeEmpty)
+		So(reservesNotDurable(server.db), ShouldEqual, 0)
+	})
+
+	Convey("Given a manager whose database is closed", t, func() {
+		_, serverConfig, _, _, _ := startDurabilityConfig(t)
+
+		server, _, _, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		logs := clog.ToBufferAtLevel("info")
+
+		defer clog.ToDefault()
+
+		setClosed := func(closed bool) {
+			server.db.Lock()
+			server.db.closed = closed
+			server.db.Unlock()
+		}
+
+		setClosed(true)
+
+		job := &Job{Cmd: "true A", Cwd: testCwd, RepGroup: reserveDurabilityRepGroup}
+		server.persistReservation(ctx, job)
+
+		setClosed(false)
+
+		So(reserveNotDurableLines(logs.String()), ShouldResemble, []reserveNotDurableLine{
+			{key: job.Key(), total: "1"},
+		})
+	})
+
+	Convey("Given logs captured at info, concurrent non-durable hand-outs log a gap-free total in order", t, func() {
+		const (
+			goroutines = 50
+			perKey     = 20
+		)
+
+		logs := clog.ToBufferAtLevel("info")
+
+		defer clog.ToDefault()
+
+		database := &db{}
+
+		var wg sync.WaitGroup
+
+		for g := range goroutines {
+			wg.Go(func() {
+				for range perKey {
+					database.logReserveNotDurable(fmt.Sprintf("key%d", g))
+				}
+			})
+		}
+
+		wg.Wait()
+
+		lines := reserveNotDurableLines(logs.String())
+		So(len(lines), ShouldEqual, goroutines*perKey)
+
+		outOfOrder := 0
+		perKeySeen := make(map[string]int)
+
+		for i, line := range lines {
+			if line.total != strconv.Itoa(i+1) {
+				outOfOrder++
+			}
+
+			perKeySeen[line.key]++
+		}
+
+		So(outOfOrder, ShouldEqual, 0)
+		So(len(perKeySeen), ShouldEqual, goroutines)
+		So(slices.Max(slices.Collect(maps.Values(perKeySeen))), ShouldEqual, perKey)
+		So(slices.Min(slices.Collect(maps.Values(perKeySeen))), ShouldEqual, perKey)
 	})
 }
