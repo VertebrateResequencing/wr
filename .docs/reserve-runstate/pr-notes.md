@@ -72,11 +72,13 @@ Changed in memory by recovery:
 A2 test 1 checks this audit end to end for a reserved and started job: after
 reserve and start its live record is byte-equal to the add-time record, and
 recovery reads a job whose encoding equals the in-memory job's.
-- Kick ordering dependency: after rebasing onto the kick-ordering fix
-  (branch kickorder-5e1122fd), add a test here pinning that the kick's write
-  is queued before the item becomes reservable (its reviewer's mutant M3,
-  queueing the write after KickWith returns, survives on develop but would
-  lose the kicked UntilBuried with run-state reservations).
+- Kick ordering dependency: done after the rebase onto 72384e4c.
+  `TestKickQueuedBeforeReservable` reserves the kicked job from
+  `kickQueuedHook`, crash-images, and requires recovery to give the job
+  reserved with the kicked `UntilBuried`. It fails (`UntilBuried` 0, want 4)
+  with the write queued after that hook. With the write queued after
+  `KickWith` returns but before the hook, every test passes: no seam exists
+  between `KickWith` returning and that write.
 - Follow-up from item 4.1's review (non-blocking): reserveNotDurableLines in
   reserve_durability_test.go could also require `lvl=info`, so a line logged
   at warn level would fail the test.
