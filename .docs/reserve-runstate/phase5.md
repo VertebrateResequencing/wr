@@ -112,12 +112,13 @@ Add `wrdev.sh compact-fixture <src> <dst>` with its refusals, list it in
 grep finds in `developers/wrdev.sh` and `developers/speed.sh`, plus the
 skip messages and header comments of the three `reliable4_*` test files
 E4 names. Then build the gate's fixtures in `$G/fixtures`, where
-`G=/nfs/hgi/wr/sb10-bigdb/runstate-gate` (`pristine6`, `pristine10`, `prod.db` with `compact-fixture`,
-and `fix120k.db` with `add-storm-fixture`), following E4's rules for
-`WRDEV_ROOT`, explicit free ports, `wrdev.sh build` first, unset `OS_*`
-and the `/tmp/claude-11346/gocache-runstate-gate` Go cache. There is no
-test file: run all 3 acceptance tests from E4 end to end and record their
-output. Depends on item 5.1's `dbstart -schema` and phase 1's compact.
+`G=/nfs/hgi/wr/sb10-bigdb/runstate-gate` (`pristine6`, `pristine10` and
+`prod.db` with `compact-fixture`, and `fix120k.db` with
+`add-storm-fixture`), following E4's rules for `WRDEV_ROOT`, explicit free
+ports, `wrdev.sh build` first, unset `OS_*` and the
+`/tmp/claude-11346/gocache-runstate-gate` Go cache. There is no test file:
+run all 3 acceptance tests from E4 end to end and record their output.
+Depends on item 5.1's `dbstart -schema` and phase 1's compact.
 
 Review note on test 3 versus F2.2: both run
 `WRDEV_PRISTINE_DB=$G/fixtures/fix120k.db wrdev.sh add-storm-lsf`. Run it
