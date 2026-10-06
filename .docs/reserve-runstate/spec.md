@@ -1359,8 +1359,8 @@ The PR body records both run directories, peak RUN, both soaks'
   full record does today (`RerunAfterRun` is in the record).
 - **Recovery deletes stale and orphaned records.** Recovery runs once, before
   any writer is busy. Deleting there stops an orphan from matching a later
-  re-add with byte-identical add-time encoding. `dbstart` and `statinspect`
-  skip non-matching records and delete nothing of them.
+  re-add with byte-identical add-time encoding. `dbstart` skips
+  non-matching records and deletes none of them.
 - **No fold-back at stop, no downgrade.** As the owner decided. The CHANGELOG
   says so. The schema-version check protects later downgrades to this version
   or newer. It cannot protect a downgrade to v0.38.0, which does not check.
