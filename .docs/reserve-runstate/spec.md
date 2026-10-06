@@ -7,9 +7,10 @@ reservations before they are on disk (battery10: 23,586, 2.43% of 972k runs;
 soak9 at about 3,900 runners: 0.034%), and a crash then runs those jobs twice.
 Each reservation and start re-encodes the whole job (about 10KB for portal
 commands) into the best-effort writer's transaction, whose commit time grows
-with its size. The A3 model showed that writing a small run-state record
-instead cut reserve p50 from 7.39s to 1.04s and best-effort transaction time
-from 1.45s to 60ms at 5,000 runners, and raised runs/s from 126 to 164.
+with its size. The earlier A3 model (not story A3 below) showed that writing
+a small run-state record instead cut reserve p50 from 7.39s to 1.04s and
+best-effort transaction time from 1.45s to 60ms at 5,000 runners, and raised
+runs/s from 126 to 164.
 
 This change makes the durable write of a reservation and of a start a small
 run-state record in its own bucket. Recovery overlays it onto the job's full
@@ -1248,6 +1249,7 @@ DEV_PORT=51980 DEV_WEB=51981 PROD_PORT=51982 PROD_WEB=51983` and this tree's
      add-storm`
    - `WR_WSFREEZE_DB=$G/fixtures/pristine10 wrdev.sh writestorm-freeze`
    - `WRDEV_PRISTINE_DB=$G/fixtures/pristine10 wrdev.sh backup-stall-check`
+
    F2.4's `add-storm` runs `TestReliable4AddStorm` (`reliability_repro`
    tag) with `WR_AS_DB` and a timeout sized for it, so it needs no separate
    command.
