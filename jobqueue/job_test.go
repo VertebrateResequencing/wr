@@ -457,6 +457,54 @@ func TestKeyCwdDistinctness(t *testing.T) {
 	})
 }
 
+// TestJobChangeAheadOverlapping proves that a change prepared ahead still sees
+// a job changed while it was outstanding when another change prepared ahead of
+// the job ends first: ending one change must not forget the write locks the
+// other still counts.
+func TestJobChangeAheadOverlapping(t *testing.T) {
+	Convey("Given a job with two overlapping changes prepared ahead", t, func() {
+		job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath}
+
+		job.Lock()
+		beganA := job.beginChangeAheadLocked()
+		job.Unlock()
+
+		job.Lock()
+		beganB := job.beginChangeAheadLocked()
+		job.Unlock()
+
+		job.Lock()
+		So(job.endChangeAheadLocked(beganA), ShouldBeFalse)
+		job.Unlock()
+
+		Convey("a change made after the first ends is seen by the second", func() {
+			job.Lock()
+			job.Priority = 9
+			job.Unlock()
+
+			job.Lock()
+			unchanged := job.endChangeAheadLocked(beganB)
+			job.Unlock()
+
+			So(unchanged, ShouldBeFalse)
+		})
+	})
+
+	Convey("A job with one change prepared ahead and no other lock is unchanged when it ends", t, func() {
+		job := &Job{Cmd: testTrueCmd, Cwd: testCwdPath}
+
+		job.Lock()
+		began := job.beginChangeAheadLocked()
+		job.Unlock()
+
+		job.Lock()
+		unchanged := job.endChangeAheadLocked(began)
+		job.Unlock()
+
+		So(unchanged, ShouldBeTrue)
+	})
+}
+
 func TestJob(t *testing.T) {
 	if runnermode || servermode {
 		return

@@ -548,7 +548,10 @@ func queueUnkickedBestEffortExit(t *testing.T, database *db, job *Job, stde []by
 	database.Lock()
 	defer database.Unlock()
 
-	exit, err := database.snapshotJobExit(job, nil, stde, false)
+	job.RLock()
+	exit, err := database.snapshotJobExitLocked(job, nil, stde, false)
+	job.RUnlock()
+
 	if err != nil {
 		t.Fatalf("could not snapshot the job's exit: %s", err)
 	}

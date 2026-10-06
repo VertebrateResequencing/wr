@@ -419,6 +419,30 @@ var releaseReportAcceptedHook func(key string)
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var reservationQueuedHook func(key string)
 
+// kickQueuedHook, if non-nil, is called with a job's key once kickJobs has moved
+// the job's item out of the bury sub-queue, so a test can have the job reserved
+// before the kick returns. It is a test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var kickQueuedHook func(key string)
+
+// resumeQueuedHook, if non-nil, is called with a job's key once resumeJob has
+// moved the job's item out of the suspended sub-queue, so a test can have the
+// job reserved and started before the resume returns. It is a test-only seam
+// and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var resumeQueuedHook func(key string)
+
+// resumeItemReadyHook, if non-nil, is called with a job's key once
+// resumeQueueItem's ResumeWith has returned and before it decides whether a
+// ready-added callback is still pending, so a test can have the item reserved
+// in between. It is a test-only seam and is nil in
+// production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var resumeItemReadyHook func(key string)
+
 // dependencyUpdatesHook, if non-nil, is called by an add once its write has
 // committed and before it applies its live dependents' new dependencies to the
 // queue, so a test can have a dependent finish in between. It is a test-only
@@ -3095,6 +3119,10 @@ func (s *Server) suspendJob(ctx context.Context, key string) (bool, bool) {
 }
 
 // resumeJobs resumes matching suspended jobs and returns the number affected.
+//
+// It encodes each job's write before it tries to resume it, holding the job's
+// write lock for that encode, but only for a key whose item is suspended, so
+// callers may pass any keys.
 func (s *Server) resumeJobs(ctx context.Context, keys []string) (resumed int) {
 	for _, key := range keys {
 		if s.resumeJob(ctx, key) {
@@ -3106,49 +3134,101 @@ func (s *Server) resumeJobs(ctx context.Context, keys []string) (resumed int) {
 }
 
 func (s *Server) resumeJob(ctx context.Context, key string) bool {
-	item, job, ok := s.suspendedItem(key)
+	job, likelyTo, ok := s.suspendedJob(key)
 	if !ok {
 		return false
 	}
 
-	if !s.resumeQueueItem(ctx, item, key) {
+	ahead := s.db.prepareJobChange(ctx, job, s.resumeChange(likelyTo))
+
+	resuming := func(_ any, to queue.ItemState) {
+		if to != likelyTo {
+			ahead.outdate()
+		}
+
+		s.markResumed(ctx, job, to, ahead)
+	}
+
+	if !s.resumeQueueItem(ctx, key, resuming) {
+		s.db.discardJobChangeAhead(job, ahead)
+
 		return false
 	}
 
-	job.Lock()
-	job.State = s.itemStateToJobState(item.Stats().State, job.Lost)
-	job.Unlock()
-
-	s.db.updateJobAfterChange(ctx, job)
+	if resumeQueuedHook != nil {
+		resumeQueuedHook(key)
+	}
 
 	return true
 }
 
-func (s *Server) suspendedItem(key string) (*queue.Item, *Job, bool) {
+// markResumed updates a job whose suspended item is being resumed to the given
+// item state, and queues its write, prepared ahead for the state resumeJob
+// expected. resumeJob calls it while the queue holds the item, so it happens
+// only for an item that really is being resumed, and before the item can be
+// reserved: a reservation, and the runner's start report, then come after it, so
+// the resume's State cannot overwrite theirs.
+func (s *Server) markResumed(ctx context.Context, job *Job, to queue.ItemState, ahead *jobChangeAhead) {
+	s.db.queueJobChangeAhead(ctx, job, ahead, s.resumeChange(to))
+}
+
+// resumeChange returns the change a resume of a job to the given item state
+// makes to it.
+func (s *Server) resumeChange(to queue.ItemState) func(*Job) {
+	return func(job *Job) {
+		job.State = s.itemStateToJobState(to, job.Lost)
+	}
+}
+
+// suspendedJob returns the job of the suspended item with the given key, and the
+// state a resume would move the item to as things stand: dependent if it has
+// unresolved dependencies, otherwise ready.
+func (s *Server) suspendedJob(key string) (*Job, queue.ItemState, bool) {
 	item, err := s.q.Get(key)
 	if err != nil || item == nil || item.Stats().State != queue.ItemStateSuspended {
-		return nil, nil, false
+		return nil, "", false
 	}
 
 	job, ok := item.Data().(*Job)
-	if !ok {
-		return nil, nil, false
+
+	to := queue.ItemStateReady
+	if len(item.UnresolvedDependencies()) > 0 {
+		to = queue.ItemStateDependent
 	}
 
-	return item, job, true
+	return job, to, ok
 }
 
-func (s *Server) resumeQueueItem(ctx context.Context, item *queue.Item, key string) bool {
+// resumeQueueItem resumes the suspended item with the given key, calling
+// resuming as ResumeWith does. RAC-pending is held from before the item can
+// become ready until the ready-added callback the resume queues has run. The
+// decision to release it early uses the state ResumeWith resumed the item to,
+// not the item's live state: a reserve already past waitForPendingReserves can
+// take the item as soon as ResumeWith returns, and the callback is still
+// queued then.
+func (s *Server) resumeQueueItem(ctx context.Context, key string,
+	resuming func(data any, to queue.ItemState),
+) bool {
 	s.setRACPending()
 
-	err := s.q.Resume(ctx, key)
+	var resumedTo queue.ItemState
+
+	err := s.q.ResumeWith(ctx, key, func(data any, to queue.ItemState) {
+		resumedTo = to
+
+		resuming(data, to)
+	})
 	if err != nil {
 		s.clearRACPending()
 
 		return false
 	}
 
-	if item.Stats().State != queue.ItemStateReady {
+	if resumeItemReadyHook != nil {
+		resumeItemReadyHook(key)
+	}
+
+	if resumedTo != queue.ItemStateReady {
 		s.clearRACPending()
 	}
 
@@ -3833,6 +3913,16 @@ func (s *Server) currentGroupCount(name string) int {
 	return group.getCount()
 }
 
+// markKicked updates a job whose buried item is being kicked, and queues its
+// write, prepared ahead. kickJobs calls it while the queue holds the item, so it
+// happens only for an item that really is being kicked, and before the item can
+// be reserved: a reservation then starts from the kicked job, and its write
+// queues after this one, so neither the kick's State nor its write can supersede
+// the reservation's.
+func (s *Server) markKicked(ctx context.Context, job *Job, ahead *jobChangeAhead) {
+	s.db.queueJobChangeAhead(ctx, job, ahead, kickChange)
+}
+
 // logClientRequestError logs the error handleRequest returned for a client
 // request: at debug level if it is only the routine outcome of normal client
 // behaviour, at warn level if the client presented the wrong token, otherwise at
@@ -4384,6 +4474,12 @@ func newPprofMux() *http.ServeMux {
 func disablePprofProfiling() {
 	runtime.SetMutexProfileFraction(0)
 	runtime.SetBlockProfileRate(0)
+}
+
+// kickChange is the change a kick makes to a job.
+func kickChange(job *Job) {
+	job.UntilBuried = initialUntilBuried(job.Retries)
+	job.State = JobStateReady
 }
 
 // itemIsInFlight says whether an item in the given state can take its owner's
@@ -7495,6 +7591,11 @@ func refreshJobFromLiveItem(job *Job, item *queue.Item) {
 }
 
 // kickJobs unburies the given jobs and returns the number affected.
+//
+// It encodes each job's write before it tries to kick it, holding the job's
+// write lock for that encode, so callers should pass only buried jobs, as
+// handleKick and the web UI do: a job that is not buried costs that encode for
+// nothing.
 func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 	for _, job := range jobs {
 		readyCallbackExpected := false
@@ -7503,6 +7604,10 @@ func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 		// command line paid for that once per call site.
 		key := job.Key()
 
+		// prepared before RAC-pending is set, so reserves are not held up for
+		// the encode.
+		ahead := s.db.prepareJobChange(ctx, job, kickChange)
+
 		item, errg := s.q.Get(key)
 		if errg == nil && item != nil && len(item.UnresolvedDependencies()) == 0 {
 			readyCallbackExpected = true
@@ -7510,19 +7615,27 @@ func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 			s.setRACPending()
 		}
 
-		err := s.q.Kick(ctx, key)
+		err := s.q.KickWith(ctx, key, func(any) { s.markKicked(ctx, job, ahead) })
 		if err == nil {
-			job.Lock()
-			job.UntilBuried = initialUntilBuried(job.Retries)
+			if kickQueuedHook != nil {
+				kickQueuedHook(key)
+			}
+
+			// logged here rather than in markKicked, to keep it out of the
+			// queue's lock.
+			job.RLock()
 			clog.Debug(ctx, "unburied job", "key", key, "cmd", job.loggableCmd(),
 				"schedGrp", job.schedulerGroup)
-			job.State = JobStateReady
-			job.Unlock()
+			job.RUnlock()
 
 			kicked++
 
-			s.db.updateJobAfterChange(ctx, job)
-		} else if readyCallbackExpected {
+			continue
+		}
+
+		s.db.discardJobChangeAhead(job, ahead)
+
+		if readyCallbackExpected {
 			s.clearRACPending()
 		}
 	}

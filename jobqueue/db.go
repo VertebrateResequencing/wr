@@ -304,6 +304,35 @@ var dependentsGuardHook func()
 //nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
 var jobChangeEncodedHook func()
 
+// jobExitSnapshotHook, when non-nil, is called with a job's key by queueJobExit
+// once it has encoded the job and before it queues the write. It is nil in
+// production and exists so tests can change the job in between.
+//
+//nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
+var jobExitSnapshotHook func(key string)
+
+// jobChangeAheadHook, when non-nil, is called with a job's key by
+// prepareJobChange once it has encoded the job's change ahead of it. It is nil
+// in production and exists so tests can change the job before the change is made.
+//
+//nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
+var jobChangeAheadHook func(key string)
+
+// jobChangeAheadQueueingHook, when non-nil, is called with a job's key by
+// queueJobChangeAhead once it has the job's current encoding and before it
+// queues the write, with the job still write-locked. It is nil in production
+// and exists so tests can try to change the job in between.
+//
+//nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
+var jobChangeAheadQueueingHook func(key string)
+
+// bestEffortSwappedHook, when non-nil, is called by drainBestEffort once it has
+// taken the pending writes and before it writes them. It is nil in production
+// and exists so tests can queue a write in between.
+//
+//nolint:gochecknoglobals // prod-inert test seam, like archiveTxObserver above.
+var bestEffortSwappedHook func()
+
 const (
 	// newJobsFoldMaxBytes bounds how many encoded key and value bytes the adds
 	// folded into ONE write transaction may carry. bbolt holds every page a write
@@ -762,6 +791,27 @@ type beChange struct {
 	seq     uint64
 }
 
+// jobChangeAhead is a job's live-record write, encoded by prepareJobChange
+// ahead of the change it records, for queueJobChangeAhead to queue once the
+// change is made.
+type jobChangeAhead struct {
+	key     string
+	encoded []byte
+	// writeLocks is the job's write-lock count once encoded was made.
+	writeLocks uint64
+	// wgKey is the db.wg slot taken for the write, so that queueing it needs no
+	// db lock.
+	wgKey string
+}
+
+// outdate makes queueJobChangeAhead encode the job afresh, for a change that
+// turned out not to be the one prepared.
+func (a *jobChangeAhead) outdate() {
+	if a != nil {
+		a.encoded = nil
+	}
+}
+
 // lastExitSeqs returns, for each job with an exit op in the batch that also has a
 // change in it, the arrival order of its last exit op.
 func (b beBatch) lastExitSeqs() map[string]uint64 {
@@ -1040,6 +1090,7 @@ type db struct {
 	beSignal     chan struct{}       // buffered(1) kick: work is pending
 	beStop       chan struct{}       // closed by close() to stop the writer after a final drain
 	beWriterDone chan struct{}       // closed by the writer when it has fully stopped
+	beStopped    bool                // set before the writer's final drain; nothing queued after it is written
 	// Archives are SYNCHRONOUS - the client's archive RPC blocks on the outcome -
 	// but they too are persisted by a single long-lived coalescing writer
 	// (archiveWriter), which folds every currently-pending archive into ONE
@@ -2060,6 +2111,10 @@ func (db *db) bestEffortWriter(ctx context.Context) {
 	for {
 		select {
 		case <-db.beStop:
+			db.beMu.Lock()
+			db.beStopped = true
+			db.beMu.Unlock()
+
 			db.drainBestEffort(ctx)
 
 			return
@@ -2085,6 +2140,11 @@ func (db *db) kickBestEffortWriter() {
 // write error is logged, not returned.
 func (db *db) drainBestEffort(ctx context.Context) {
 	batch := db.swapBestEffort()
+
+	if bestEffortSwappedHook != nil {
+		bestEffortSwappedHook()
+	}
+
 	if len(batch.wgkeys) == 0 {
 		return
 	}
@@ -2294,13 +2354,20 @@ func (db *db) enqueueExitLocked(exit jobExitData, waiter chan error) {
 // nil, to the pending best-effort batch. Must be called with db.RLock (or Lock),
 // db.wgMutex and db.beMu held.
 func (db *db) enqueueChangeLocked(key string, encoded []byte, waiter chan error) {
-	db.beSeq++
-	db.beChanges[key] = beChange{encoded: encoded, seq: db.beSeq}
-	db.beWGKeys = append(db.beWGKeys, db.wg.Add(1))
+	db.enqueueChangeInSlotLocked(key, encoded, db.wg.Add(1))
 
 	if waiter != nil {
 		db.beWaiters = append(db.beWaiters, waiter)
 	}
+}
+
+// enqueueChangeInSlotLocked adds key's latest encoded live value to the pending
+// best-effort batch, to release the db.wg slot wgKey once it is written. Must be
+// called with db.beMu held.
+func (db *db) enqueueChangeInSlotLocked(key string, encoded []byte, wgKey string) {
+	db.beSeq++
+	db.beChanges[key] = beChange{encoded: encoded, seq: db.beSeq}
+	db.beWGKeys = append(db.beWGKeys, wgKey)
 }
 
 // putNewLiveJobs is putEncodedJobs for the jobs of an add, except that it
@@ -2582,6 +2649,167 @@ func (db *db) storeNewJobStores(ctx context.Context, stores []newJobStore) error
 	return <-op.result
 }
 
+// prepareJobChange encodes job's live record as it will be once change has been
+// made, without making it, and takes a db.wg slot for the write. change may set
+// only the job's State and UntilBuried, which are put back after the encode; the
+// job is write-locked meanwhile, so nobody sees them changed.
+//
+// It is for a change made while holding a lock others wait on, such as a kick or
+// resume under the queue's lock, so that the whole-job encode, and any wait for
+// the db lock behind a job exit's encode, happen before that lock is taken. Pass
+// the result to queueJobChangeAhead once the change is being made, or to
+// discardJobChangeAhead if it will not be. It returns nil, having logged any
+// error but errDBClosed, if the write cannot be queued; the change is then made
+// without one, as updateJobAfterChange would.
+func (db *db) prepareJobChange(ctx context.Context, job *Job, change func(*Job)) *jobChangeAhead {
+	key := job.Key()
+
+	wgKey, ok := db.addOpenWG()
+	if !ok {
+		return nil
+	}
+
+	encoded, writeLocks, err := db.encodeChanged(job, change)
+	if err != nil {
+		db.wg.Done(wgKey)
+		clog.Error(ctx, "Database operation updateJobAfterChange failed due to Encode failure", "err", err)
+
+		return nil
+	}
+
+	if jobChangeAheadHook != nil {
+		jobChangeAheadHook(key)
+	}
+
+	return &jobChangeAhead{key: key, encoded: encoded, writeLocks: writeLocks, wgKey: wgKey}
+}
+
+// encodeChanged is prepareJobChange's encode: it encodes job with change made,
+// puts the State and UntilBuried change set back, and begins the job's change
+// ahead, returning the count beginChangeAheadLocked gave.
+func (db *db) encodeChanged(job *Job, change func(*Job)) ([]byte, uint64, error) {
+	job.Lock()
+	defer job.Unlock()
+
+	state, untilBuried := job.State, job.UntilBuried
+	change(job)
+	encoded, err := db.encode(job)
+	job.State, job.UntilBuried = state, untilBuried
+
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return encoded, job.beginChangeAheadLocked(), nil
+}
+
+// addOpenWG takes a db.wg slot and returns its key, unless the db is closed.
+func (db *db) addOpenWG() (string, bool) {
+	db.RLock()
+	defer db.RUnlock()
+
+	if db.closed {
+		return "", false
+	}
+
+	db.wgMutex.Lock()
+	defer db.wgMutex.Unlock()
+
+	return db.wg.Add(1), true
+}
+
+// queueJobChangeAhead makes change to job under its write lock and queues the
+// write ahead prepared. If job has been write-locked since ahead was encoded, or
+// ahead was outdated, job may differ from that encoding, so it is encoded afresh
+// instead, which is rare. A nil ahead only makes the change.
+//
+// It takes no db lock, so a caller holding the queue's lock never waits on
+// another goroutine's encode. Writes of one job still queue in the order they
+// encoded it, as queueJobChange's do: the job stays write-locked until its
+// write is queued, and an unchanged job's encoding is its current one.
+//
+//nolint:funlen // the prod-inert test seam takes it over; the job lock must span it all.
+func (db *db) queueJobChangeAhead(ctx context.Context, job *Job, ahead *jobChangeAhead, change func(*Job)) {
+	job.Lock()
+	defer job.Unlock()
+
+	change(job)
+
+	if ahead == nil {
+		return
+	}
+
+	key, encoded, err := db.currentJobChange(job, ahead)
+	if err != nil {
+		db.wg.Done(ahead.wgKey)
+		clog.Error(ctx, "Database operation updateJobAfterChange failed due to Encode failure", "err", err)
+
+		return
+	}
+
+	if jobChangeAheadQueueingHook != nil {
+		jobChangeAheadQueueingHook(key)
+	}
+
+	db.beMu.Lock()
+
+	if db.beStopped {
+		db.beMu.Unlock()
+		db.wg.Done(ahead.wgKey)
+
+		return
+	}
+
+	db.enqueueChangeInSlotLocked(key, encoded, ahead.wgKey)
+	db.beMu.Unlock()
+
+	db.kickBestEffortWriter()
+}
+
+// currentJobChange ends ahead's change and returns the key and live record of
+// job, which the caller has just write-locked and changed: ahead's, unless job
+// may have changed since ahead was encoded or ahead was outdated, when it
+// encodes job afresh.
+func (db *db) currentJobChange(job *Job, ahead *jobChangeAhead) (string, []byte, error) {
+	if job.endChangeAheadLocked(ahead.writeLocks) && ahead.encoded != nil {
+		return ahead.key, ahead.encoded, nil
+	}
+
+	encoded, err := db.encode(job)
+
+	return job.Key(), encoded, err
+}
+
+// discardJobChangeAhead abandons a write prepareJobChange prepared for job, for
+// a change that will not be made. ahead may be nil.
+func (db *db) discardJobChangeAhead(job *Job, ahead *jobChangeAhead) {
+	if ahead == nil {
+		return
+	}
+
+	job.Lock()
+	job.endChangeAheadLocked(ahead.writeLocks)
+	job.Unlock()
+
+	db.wg.Done(ahead.wgKey)
+}
+
+// snapshotJobExitLocked encodes the job and snapshots the fields needed to
+// persist it after exit. On an encoding error nothing should be done. The caller
+// must hold job's lock, read or write.
+func (db *db) snapshotJobExitLocked(job *Job, stdo, stde []byte, forceStorage bool) (jobExitData, error) {
+	exit := newJobExitData(job, stdo, stde, forceStorage)
+
+	encoded, err := db.encode(job)
+	if err != nil {
+		return jobExitData{}, err
+	}
+
+	exit.encoded = encoded
+
+	return exit, nil
+}
+
 // noteArchivesWritten records on each job that its ops' archives of it have
 // committed (see Job.archivedEndTime), unless err says they did not. The archive
 // writer calls it before it starts another transaction, so that transaction sees
@@ -2619,6 +2847,11 @@ func (db *db) updateJobAfterExitDurable(job *Job, stdo, stde []byte, forceStorag
 // queueJobExit snapshots job and queues its exit op for the best-effort writer.
 // A non-nil waiter is answered by the drain that covers this write; on error
 // nothing was queued and the waiter will never be answered.
+//
+// job stays read-locked until the op is queued, as in queueJobChange, so writes
+// of one job queue in the order they encoded it. A kick's write, which
+// queueJobChangeAhead queues without a db lock, then cannot queue between this
+// encode and its op, and leave the job stored as buried while it is ready.
 func (db *db) queueJobExit(job *Job, stdo, stde []byte, forceStorage bool, waiter chan error) error {
 	db.Lock()
 	defer db.Unlock()
@@ -2627,9 +2860,16 @@ func (db *db) queueJobExit(job *Job, stdo, stde []byte, forceStorage bool, waite
 		return errDBClosed
 	}
 
-	exit, err := db.snapshotJobExit(job, stdo, stde, forceStorage)
+	job.RLock()
+	defer job.RUnlock()
+
+	exit, err := db.snapshotJobExitLocked(job, stdo, stde, forceStorage)
 	if err != nil {
 		return err
+	}
+
+	if jobExitSnapshotHook != nil {
+		jobExitSnapshotHook(exit.key)
 	}
 
 	db.updatingAfterJobExit.Add(1)
@@ -4808,23 +5048,6 @@ func (db *db) updateJobAfterExit(ctx context.Context, job *Job, stdo, stde []byt
 	if err != nil && !errors.Is(err, errDBClosed) {
 		clog.Error(ctx, "Database operation updateJobAfterExit failed due to Encode failure", "err", err)
 	}
-}
-
-// snapshotJobExit encodes the job and snapshots the fields needed to persist it
-// after exit. On an encoding error nothing should be done.
-func (db *db) snapshotJobExit(job *Job, stdo, stde []byte, forceStorage bool) (jobExitData, error) {
-	job.RLock()
-	exit := newJobExitData(job, stdo, stde, forceStorage)
-	encoded, err := db.encode(job)
-	job.RUnlock()
-
-	if err != nil {
-		return jobExitData{}, err
-	}
-
-	exit.encoded = encoded
-
-	return exit, nil
 }
 
 // launchJobExitUpdate queues an exit op, and waiter if not nil, for the
