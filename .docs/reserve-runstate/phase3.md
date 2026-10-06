@@ -7,11 +7,13 @@ Ref: [spec.md](spec.md) sections B1, B2, A3, A2
 Use the `orchestrator` skill to complete this phase, coordinating
 subagents with the `go-implementor` and `go-reviewer` skills.
 
-The items run in sequence, all in `jobqueue/db.go` and its tests. The
-overlay (B1) comes first because A3's and A2's tests read recovered jobs
-through it. A2 must not land without B1: without the overlay a crash would
-recover pre-reservation state. The phase is done only when item 3.4 is
-reviewed, including the A2 audit in the PR body.
+The items run in sequence, mostly in `jobqueue/db.go` and its tests;
+`decodePriorJobs` is in `jobqueue/server.go`, and `persistReservation` and
+`handleStart` are in `jobqueue/serverCLI.go`. The overlay (B1) comes first
+because A3's and A2's tests read recovered jobs through it. A2 must not
+land without B1: without the overlay a crash would recover pre-reservation
+state. The phase is done only when item 3.4 is reviewed, including the A2
+audit in the PR body.
 
 ## Items
 
@@ -70,10 +72,11 @@ cases. Covering all 14 acceptance tests from A3. Depends on items 3.1 and
 
 Review note on test files: A3 names `jobqueue/reserve_durability_test.go`,
 which holds `TestBestEffortDrainKeepsArrivalOrder`,
-`TestBestEffortChangeKeepsEncodeOrder` and the `queueUnkicked*` helpers,
-but `TestStartDurabilityAbortedWriteIsNotCommitted` (test 11) lives in
-`jobqueue/start_durability_test.go`. Extend each test where it already
-lives; do not move it.
+`TestBestEffortChangeKeepsEncodeOrder` and `queueUnkickedBestEffortExit`,
+but `TestStartDurabilityAbortedWriteIsNotCommitted` (test 11) and
+`queueUnkickedBestEffortChange` live in `jobqueue/start_durability_test.go`.
+Extend each test where it already lives; do not move it. Put
+`queueUnkickedBestEffortRunState` beside `queueUnkickedBestEffortChange`.
 
 - [ ] implemented
 - [ ] reviewed
@@ -105,10 +108,12 @@ Review notes:
   test job's maps to at most one key each, or confirm the encoding is
   deterministic for the job used, so the strict comparison stays strict and
   does not flake. Do not weaken it to a decoded comparison.
-- Test 6: `storedLiveJobState` and `storedLiveJob` are also used by
-  `jobqueue/release_after_lost_test.go` and
-  `jobqueue/running_dependent_archive_test.go`. Those tests must pass after
-  the helper change too.
+- Test 6: `storedLiveJobState` is also used by
+  `jobqueue/release_after_lost_test.go`, which must pass after the helper
+  change too. `rdaSoLiveRecordUnmarked`
+  (`jobqueue/running_dependent_archive_test.go`) reads the live record
+  directly and checks `ReservedBy`, a run-state field, so it must read
+  through the overlay as well.
 - Test 10: `TestManagerQueueDefaultsAreNotStored`
   (`cmd/manager_queue_db_test.go`) is vacuous if no `jobRunState` record
   exists when it checks. Reserve a live job (one that stays live) before
