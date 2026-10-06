@@ -40,6 +40,9 @@ project adheres to [Semantic Versioning](http://semver.org/).
   longer marks complete a command another runner has just been given. This
   could happen after the manager gave up on the first runner as lost and the
   command started again elsewhere.
+- A command a runner picked up the moment `wr kick` made it ready could be
+  treated by the manager as ready while it ran, and if the manager then
+  crashed, it could run a second time after the restart.
 - Two adds, `wr mod` or `wr limit` changing the same limit group at the same
   moment could leave the manager enforcing a different limit from the one it
   saved, until the limit was next changed.
@@ -89,6 +92,9 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - The manager no longer under-counts the runners it needs when a command's
   success is reported after the manager had already given up on it and
   scheduled it to run again.
+- `wr resume` of a command at the moment a runner started it could make
+  `wr status` show the running command as reserved, and count it as having
+  started twice if the runner had to resend its start.
 - `wr status` could say a delayed command would become ready in
   -2562047h47m16.854775808s, typically after lost contact with its runner. It
   now shows the real time until it becomes ready (also as `Ready` in
