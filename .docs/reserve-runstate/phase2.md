@@ -30,8 +30,8 @@ Review note: the spec's "older record" lists a differing value for every
 `RerunAfterRun` to true (the example job's is false), so test 2 really
 covers every field.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.2: A4 - Full writes and deletes supersede the run-state record
 
@@ -53,8 +53,8 @@ lines. Tests on bare databases (`reliable4ACAddOpenBareDB`, used by
 not panic. Covering all 7 acceptance tests from A4, in
 `jobqueue/db_runstate_test.go`. Depends on item 2.1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.3: A5 - The add path keeps a handed-out job's records
 
@@ -81,5 +81,5 @@ reservation's, non-run fields the second add's) if one can be built without
 sleeps; otherwise document the window in a comment on `putNewLiveJobs`.
 Either way, describe it in the PR body.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

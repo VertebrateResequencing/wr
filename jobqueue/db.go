@@ -971,7 +971,7 @@ func (b beBatch) applyChanges(tx *bolt.Tx, lastExits map[string]uint64) error {
 			continue
 		}
 
-		if err := bjl.Put([]byte(key), change.encoded); err != nil {
+		if err := putLiveRecord(tx, []byte(key), change.encoded); err != nil {
 			return err
 		}
 	}
@@ -1852,20 +1852,21 @@ func (db *db) keepLiveForRerunTx(tx *bolt.Tx, key, encoded []byte) ([]byte, erro
 		return nil, err
 	}
 
-	return complete, tx.Bucket(bucketJobsLive).Put(key, live)
+	return complete, putLiveRecord(tx, key, live)
 }
 
 // recordCompleteTx is archiveJobTx after its decision whether to keep the job
 // live: it removes the job's std buckets and, unless keptLive, its live record,
 // and records it complete.
 func (db *db) recordCompleteTx(tx *bolt.Tx, key, encoded []byte, job *Job, keptLive bool) error {
-	buckets := [][]byte{bucketStdO, bucketStdE}
-	if !keptLive {
-		buckets = append(buckets, bucketJobsLive)
+	for _, bucket := range [][]byte{bucketStdO, bucketStdE} {
+		if err := tx.Bucket(bucket).Delete(key); err != nil {
+			return err
+		}
 	}
 
-	for _, bucket := range buckets {
-		if err := tx.Bucket(bucket).Delete(key); err != nil {
+	if !keptLive {
+		if err := deleteLiveRecord(tx, key); err != nil {
 			return err
 		}
 	}
@@ -1955,10 +1956,8 @@ func (db *db) storeRunningRerunMarks(jobs []*Job) error {
 	}
 
 	err := db.bolt.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(bucketJobsLive)
-
 		for _, job := range jobs {
-			if err := db.putRunningRerunMark(bucket, job); err != nil {
+			if err := db.putRunningRerunMark(tx, job); err != nil {
 				return err
 			}
 		}
@@ -1972,9 +1971,9 @@ func (db *db) storeRunningRerunMarks(jobs []*Job) error {
 }
 
 // putRunningRerunMark is storeRunningRerunMarks for one job.
-func (db *db) putRunningRerunMark(bucket *bolt.Bucket, job *Job) error {
+func (db *db) putRunningRerunMark(tx *bolt.Tx, job *Job) error {
 	key := []byte(job.Key())
-	if bucket.Get(key) == nil {
+	if tx.Bucket(bucketJobsLive).Get(key) == nil {
 		return nil
 	}
 
@@ -1990,7 +1989,7 @@ func (db *db) putRunningRerunMark(bucket *bolt.Bucket, job *Job) error {
 		return err
 	}
 
-	return bucket.Put(key, encoded)
+	return putLiveRecord(tx, key, encoded)
 }
 
 // storeLiveForRerun durably puts each of the jobs in the live bucket, as
@@ -2014,12 +2013,25 @@ func (db *db) storeLiveForRerun(jobs []*Job) error {
 	}
 
 	err := db.bolt.Update(func(tx *bolt.Tx) error {
-		return db.putEncodedJobs(tx, bucketJobsLive, records)
+		return putLiveRecords(tx, records)
 	})
 
 	db.backupDirty.Store(true)
 
 	return err
+}
+
+// putLiveRecords puts each of the encoded jobs as its key's live record with
+// putLiveRecord. You must be inside a bolt transaction when calling this.
+func putLiveRecords(tx *bolt.Tx, encodes sobsd) error {
+	for _, doublet := range encodes {
+		err := putLiveRecord(tx, doublet[0], doublet[1])
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // updateEndTimeIndex records job's end time in the time-ordered per-job index,
@@ -2383,36 +2395,59 @@ func (db *db) enqueueChangeInSlotLocked(key string, encoded []byte, wgKey string
 	db.beWGKeys = append(db.beWGKeys, wgKey)
 }
 
-// putNewLiveJobs is putEncodedJobs for the jobs of an add, except that it
-// leaves alone the live record of any job that has been handed out to a runner
-// (see liveRecordHandedOut).
+// putNewLiveJobs is putLiveRecords for the jobs of an add, except that it
+// leaves alone the live record, and run-state record, of any job that has been
+// handed out to a runner (see liveRecordKept).
 //
 // The add path already leaves out every job the in-memory queue holds, so this
 // only matters when two adds of the same new job race: both find it absent from
 // the queue, the first queues it and it is reserved, and the second's fresh copy
 // is written after that reservation. The second add then finds the job queued
-// and counts it a duplicate, so keeping the stored record is what keeps the
-// database agreeing with memory; replacing it would have a manager that crashed
-// recover the job as never started and run it a second time.
+// and counts it a duplicate, so keeping the stored records is what keeps the
+// database agreeing with memory; replacing them would have a manager that
+// crashed recover the job as never started and run it a second time.
 //
-// A live record that cannot be decoded is replaced, since the fresh copy is the
-// only readable one there is. You must be inside a bolt transaction when calling
-// this.
-func (db *db) putNewLiveJobs(tx *bolt.Tx, bucket []byte, encodes sobsd) error {
-	bjobs := tx.Bucket(bucket)
+// If instead the second add's fresh copy is written after the reservation's run
+// state is queued but before it is drained, the drain puts that run state over
+// the fresh copy, so until the job's next full write its stored non-run fields
+// are the second add's. That window is no wider than that of a stale queued
+// full change.
+//
+// A live record that cannot be decoded, without a matching run-state record, is
+// replaced, since the fresh copy is the only readable one there is. It ignores
+// its bucket argument (always bucketJobsLive), which the sobsdPutter signature
+// requires. You must be inside a bolt transaction when calling this.
+func (db *db) putNewLiveJobs(tx *bolt.Tx, _ []byte, encodes sobsd) error {
+	bjobs := tx.Bucket(bucketJobsLive)
+	runStates := tx.Bucket(bucketJobRunState)
+
 	for _, doublet := range encodes {
-		if existing := bjobs.Get(doublet[0]); existing != nil {
-			if job, err := db.decodeJob(existing); err == nil && liveRecordHandedOut(job) {
-				continue
-			}
+		existing := bjobs.Get(doublet[0])
+		if existing != nil && db.liveRecordKept(runStates, doublet[0], existing) {
+			continue
 		}
 
-		if err := bjobs.Put(doublet[0], doublet[1]); err != nil {
+		if err := putLiveRecord(tx, doublet[0], doublet[1]); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// liveRecordKept says whether an add must keep key's existing live record:
+// a run-state record in runStates (nil for a database without that bucket)
+// matches it, or liveRecordHandedOut says so of the job it decodes to.
+func (db *db) liveRecordKept(runStates *bolt.Bucket, key, existing []byte) bool {
+	if runStates != nil {
+		if _, matches := runStateOver(existing, runStates.Get(key)); matches {
+			return true
+		}
+	}
+
+	job, err := db.decodeJob(existing)
+
+	return err == nil && liveRecordHandedOut(job)
 }
 
 // liveRecordHandedOut says whether job, decoded from a live record, has been
@@ -2619,7 +2654,7 @@ func (db *db) putBackArchivedDependentsTx(tx *bolt.Tx, keys []string, putBack ma
 			return err
 		}
 
-		if err = live.Put(key, record); err != nil {
+		if err = putLiveRecord(tx, key, record); err != nil {
 			return err
 		}
 
@@ -4445,9 +4480,8 @@ func updateRGEndTime(b *bolt.Bucket, job *Job) error {
 // deleteLiveJobs remove multiple jobs from the live bucket.
 func (db *db) deleteLiveJobs(ctx context.Context, keys []string) error {
 	err := db.bolt.Batch(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketJobsLive)
 		for _, key := range keys {
-			errd := b.Delete([]byte(key))
+			errd := deleteLiveRecord(tx, []byte(key))
 			if errd != nil {
 				return errd
 			}
@@ -5123,7 +5157,7 @@ func (e jobExitData) update(tx *bolt.Tx, writeLive bool) error {
 
 	bjl := tx.Bucket(bucketJobsLive)
 	if writeLive && bjl.Get(key) != nil {
-		if errf := bjl.Put(key, e.encoded); errf != nil {
+		if errf := putLiveRecord(tx, key, e.encoded); errf != nil {
 			return errf
 		}
 	}
@@ -5372,7 +5406,7 @@ func (db *db) modifyLiveJobsTx(tx *bolt.Tx, oldKeys []string, jobs []*Job, encod
 		return err
 	}
 
-	return db.putEncodedJobs(tx, bucketJobsLive, encodedJobs)
+	return putLiveRecords(tx, encodedJobs)
 }
 
 // jobStd holds the stdout/stderr captured from the old jobs during
@@ -5387,7 +5421,6 @@ type jobStd struct {
 // live bucket, returning their captured stdout/stderr for re-association with
 // the new jobs.
 func deleteOldLiveJobs(tx *bolt.Tx, oldKeys []string) (jobStd, error) {
-	newJobBucket := tx.Bucket(bucketJobsLive)
 	bo := tx.Bucket(bucketStdO)
 	be := tx.Bucket(bucketStdE)
 
@@ -5400,7 +5433,7 @@ func deleteOldLiveJobs(tx *bolt.Tx, oldKeys []string) (jobStd, error) {
 			return std, err
 		}
 
-		if err := newJobBucket.Delete(key); err != nil {
+		if err := deleteLiveRecord(tx, key); err != nil {
 			return std, err
 		}
 
@@ -5833,20 +5866,6 @@ func putReverseLookupEntry(tx *bolt.Tx, lookupBucket, lookupKey []byte) error {
 	}
 
 	return b.Put(reverseLookupEntryKey(jobKey, lookupBucket, lookupKey), nil)
-}
-
-// putEncodedJobs does the work of storeEncodedJobs(). You nust be inside a bolt
-// transaction when calling this.
-func (db *db) putEncodedJobs(tx *bolt.Tx, bucket []byte, encodes sobsd) error {
-	bjobs := tx.Bucket(bucket)
-	for _, doublet := range encodes {
-		err := bjobs.Put(doublet[0], doublet[1])
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 // close shuts down the db, should be used prior to exiting. It stops the
