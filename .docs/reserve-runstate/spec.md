@@ -247,7 +247,7 @@ then start the manager again
 
 (one line; wrapped here for width).
 
-## A: Run-state records
+## Section A: Run-state records
 
 ### A1: Record encoding and overlay
 
@@ -317,9 +317,9 @@ and so relied on the reservation's or start's full write. Each is added to
 `respondWithReservedJob`, so it is included. Candidate: `WaitingForDepGroups`
 (`setWaitingForDepGroups`, called from `dependency.go`,
 `running_dependent.go`, `server.go`, `serverCLI.go` and `serverREST.go`); a
-job is reservable
-only once its dependencies resolve, and recovery re-derives the field for
-every recovered job through `dependency.go`'s `setWaitingForDepGroups` call.
+job is reservable only once its dependencies resolve, and recovery
+re-derives the field for every recovered job through `dependency.go`'s
+`setWaitingForDepGroups` call.
 The audit confirms that re-derivation with a test (A2 test 7); if recovery
 does not re-derive it, it is added to `jobRunState`. Unexported fields
 (`schedulerGroup`, `runID`, ...) were never persisted.
@@ -518,7 +518,7 @@ writes with `putLiveRecord`.
    `putNewLiveJobs` stores the job, then the live record exists and no
    run-state record does.
 
-## B: Recovery
+## Section B: Recovery
 
 ### B1: Overlay at recovery
 
@@ -610,7 +610,7 @@ delete transaction and returns `dropped` 0, rather than failing.
    it commits nothing (bolt's `Stats().TxStats.GetWrite()` is unchanged)
    and logs no `dropped stale` line.
 
-## C: Schema version
+## Section C: Schema version
 
 ### C1: Open refuses unsupported databases and stamps version 2
 
@@ -752,8 +752,8 @@ the refusal, not just fail.
 
 The manager child dies through `die("wr manager failed to start : %s",
 err)` when `Serve` fails, which logs at error level (`lvl=eror`,
-`cmd/root.go`); the daemon parent prints
-`getBadLogLines()` and `startupErr`. No code change is expected unless a
+`cmd/root.go`); the daemon parent prints `getBadLogLines()` and
+`startupErr`. No code change is expected unless a
 test below fails.
 
 Tests 1 and 2 re-execute the test binary into a new helper,
@@ -781,18 +781,17 @@ re-enters the same helper.
    The same with a database stamped 3 shows `schema version 3` in both.
 2. `TestManagerStartDaemonShowsRefusal`: the same two databases with the
    default daemon `wr manager start --deployment production` as a
-   subprocess: the parent exits
-   non-zero and its output contains the `getBadLogLines()` line and `wr
-   manager failed to start on port <port>:` followed by the startup error,
-   with `wr manager compact` (version 0) or `schema version 3` (version 3)
-   in that output.
+   subprocess: the parent exits non-zero and its output contains the
+   `getBadLogLines()` line and `wr manager failed to start on port <port>:`
+   followed by the startup error, with `wr manager compact` (version 0) or
+   `schema version 3` (version 3) in that output.
 3. `TestManagerCompactRefusesNewerDB`: given `managerCompactExit` replaced
    as in `TestManagerCompactRefusesWhileRunning` and `ManagerDBFile` a
    database stamped 3, when the compact command's `Run` executes, then the
    exit code is 1, the logged error contains `schema version 3`, and the
    file's SHA-256 is unchanged.
 
-## D: Observability
+## Section D: Observability
 
 ### D1: Each non-durable hand-out is logged
 
@@ -860,7 +859,7 @@ exact per-key count up to any crash.
    log has 1,000 D1 lines whose `total` values, in log order, are exactly 1,
    2, ..., 1000.
 
-## E: Tooling and documentation
+## Section E: Tooling and documentation
 
 ### E1: dbstart overlays run-state records
 
@@ -1086,8 +1085,7 @@ New `developers/soak/soakgate.py --source d1|warning <outdir>
   mutex; the check does not rely on order); with `warning`, the
   rate-limited `reservation not yet recorded on disk` warning, where a full
   warning line counts 1 and a `(repeated)` line counts its `repeats=`
-  value. Each is inside or outside a window by its
-  timestamp.
+  value. Each is inside or outside a window by its timestamp.
 - Runs: the `runs=` value on the first line of `<outdir>/markers-analysis.txt`
   (markers.py's output).
 - Peak RUN: the largest `RUN=<n>` in `<outdir>/lsf.tsv`.
@@ -1187,7 +1185,7 @@ which runs every case and diffs.
     `sigTERM`, then the missing line is `missing ran=6 absent=1
     excused=2`.
 
-## F: Gates
+## Section F: Gates
 
 ### F1: Local gates
 
@@ -1213,7 +1211,6 @@ With all `OS_*` unset and `GOCACHE` off the home directory:
    `/nfs/hgi/wr/sb10-bigdb/speed/tools/benchstat-v0.0.0-20260929162123-406019bb8b68`
    copied into `$SPEED_DIR/tools/` first, as battery10's `speed-go.sh` did
    (no network).
-
 5. In `.docs/reliable2/harness/statinspect`, add `require
    github.com/smartystreets/goconvey v1.8.1` (wr's version) to `go.mod` by
    hand, not with `go get`, which fails offline because goconvey's root
@@ -1225,6 +1222,7 @@ With all `OS_*` unset and `GOCACHE` off the home directory:
    directory under `developers/soak/testdata/soakgate/`, it runs
    `soakgate.py` with that case's `args` file and `diff`s the output against
    the case's `expected.txt`, exiting non-zero on any difference.
+
 ### F2: wrdev crash, recovery and big-DB modes
 
 Fixtures are E4's, never the originals. With `WRDEV_ROOT=$G/f2/root
@@ -1383,10 +1381,9 @@ The PR body records both run directories, peak RUN, both soaks'
   handler; the server's own context carries a warn-level handler that would
   drop them (D1 test 1 uses the real configuration). Each is written before
   the hand-out, under the same mutex as the counter bump, so the count is
-  exact and gap-free up to a crash. battery10 would have
-  produced about 23k lines in 3h, at most about 4k a minute. The rate-limited
-  warning stays so existing log watchers and
-  `TestReserveDurabilityStalledWrite` keep working.
+  exact and gap-free up to a crash. battery10 would have produced about 23k
+  lines in 3h, at most about 4k a minute. The rate-limited warning stays so
+  existing log watchers and `TestReserveDurabilityStalledWrite` keep working.
 - **Baseline soak.** The fixtures had to be compacted for this tree, which
   changes their freelist, so battery10's figures are not like for like. The
   baseline soak on the same compacted fixture is. `fix120k` is regenerated
