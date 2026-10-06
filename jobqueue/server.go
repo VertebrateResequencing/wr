@@ -419,6 +419,13 @@ var releaseReportAcceptedHook func(key string)
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var reservationQueuedHook func(key string)
 
+// kickQueuedHook, if non-nil, is called with a job's key once kickJobs has moved
+// the job's item out of the bury sub-queue, so a test can have the job reserved
+// before the kick returns. It is a test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var kickQueuedHook func(key string)
+
 // dependencyUpdatesHook, if non-nil, is called by an add once its write has
 // committed and before it applies its live dependents' new dependencies to the
 // queue, so a test can have a dependent finish in between. It is a test-only
@@ -3831,6 +3838,22 @@ func (s *Server) currentGroupCount(name string) int {
 	}
 
 	return group.getCount()
+}
+
+// markKicked updates a job whose buried item is being kicked, and queues its
+// write. kickJobs calls it while the queue holds the item, so it happens only
+// for an item that really is being kicked, and before the item can be reserved:
+// a reservation then starts from the kicked job, and its write queues after this
+// one, so neither the kick's State nor its write can supersede the reservation's.
+func (s *Server) markKicked(ctx context.Context, job *Job, key string) {
+	job.Lock()
+	job.UntilBuried = initialUntilBuried(job.Retries)
+	clog.Debug(ctx, "unburied job", "key", key, "cmd", job.loggableCmd(),
+		"schedGrp", job.schedulerGroup)
+	job.State = JobStateReady
+	job.Unlock()
+
+	s.db.updateJobAfterChange(ctx, job)
 }
 
 // logClientRequestError logs the error handleRequest returned for a client
@@ -7510,18 +7533,13 @@ func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 			s.setRACPending()
 		}
 
-		err := s.q.Kick(ctx, key)
+		err := s.q.KickWith(ctx, key, func(any) { s.markKicked(ctx, job, key) })
 		if err == nil {
-			job.Lock()
-			job.UntilBuried = initialUntilBuried(job.Retries)
-			clog.Debug(ctx, "unburied job", "key", key, "cmd", job.loggableCmd(),
-				"schedGrp", job.schedulerGroup)
-			job.State = JobStateReady
-			job.Unlock()
+			if kickQueuedHook != nil {
+				kickQueuedHook(key)
+			}
 
 			kicked++
-
-			s.db.updateJobAfterChange(ctx, job)
 		} else if readyCallbackExpected {
 			s.clearRACPending()
 		}

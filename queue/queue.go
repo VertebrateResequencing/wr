@@ -466,6 +466,40 @@ func (queue *Queue) RemoveUnlessState(ctx context.Context, key string,
 	return true, nil
 }
 
+// KickWith is Kick, except that kicking, if not nil, is called with the item's
+// data and the queue locked, once the item is known to be buried and before it
+// leaves the bury sub-queue. Whatever kicking does therefore happens before the
+// item can be reserved, and it is not called at all if the kick fails. kicking
+// must not call the queue.
+func (queue *Queue) KickWith(ctx context.Context, key string, kicking func(data any)) error {
+	item, err := queue.lockItemInState(opKick, key, ItemStateBury, ErrNotBuried)
+	if err != nil {
+		return err
+	}
+
+	if kicking != nil {
+		kicking(item.Data())
+	}
+
+	// switch from bury to ready or dependent queue
+	queue.buryQueue.remove(item)
+
+	if queue.itemHasDeps(item) {
+		queue.depQueue.push(item)
+		item.switchBuryDependent()
+		queue.changed(SubQueueBury, SubQueueDependent, []*Item{item})
+		queue.mutex.Unlock()
+	} else {
+		queue.readyQueue.push(item)
+		item.switchBuryReady()
+		queue.changed(SubQueueBury, SubQueueReady, []*Item{item})
+		queue.mutex.Unlock()
+		queue.readyAdded(ctx, "kicked")
+	}
+
+	return nil
+}
+
 // holdsDependencies says whether an item added with dependencies to startQueue
 // starts there with them recorded, rather than in the dependent sub-queue: a
 // buried or suspended item only waits on its dependencies once it is Kick()ed
@@ -1806,28 +1840,7 @@ func (queue *Queue) Bury(key string) error {
 // Kick is a thread-safe way to switch an item in the bury sub-queue to the
 // ready sub-queue, for when a previously buried item can now be handled.
 func (queue *Queue) Kick(ctx context.Context, key string) error {
-	item, err := queue.lockItemInState(opKick, key, ItemStateBury, ErrNotBuried)
-	if err != nil {
-		return err
-	}
-
-	// switch from bury to ready or dependent queue
-	queue.buryQueue.remove(item)
-
-	if queue.itemHasDeps(item) {
-		queue.depQueue.push(item)
-		item.switchBuryDependent()
-		queue.changed(SubQueueBury, SubQueueDependent, []*Item{item})
-		queue.mutex.Unlock()
-	} else {
-		queue.readyQueue.push(item)
-		item.switchBuryReady()
-		queue.changed(SubQueueBury, SubQueueReady, []*Item{item})
-		queue.mutex.Unlock()
-		queue.readyAdded(ctx, "kicked")
-	}
-
-	return nil
+	return queue.KickWith(ctx, key, nil)
 }
 
 // Remove is a thread-safe way to remove an item from the queue.
