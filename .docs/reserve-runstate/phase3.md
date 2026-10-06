@@ -64,7 +64,9 @@ spec.md's Architecture: `beChange`'s `runState`/`rsSeq` slot,
 `queueJobRunState`, `updateJobRunStateDurable`,
 `updateJobRunStateDurableWithin`, and `beBatch.apply`'s three steps (drain
 step 1 still dereferencing the live bucket). Add the test helper
-`queueUnkickedBestEffortRunState`. Extend
+`queueUnkickedBestEffortRunState`, and change `storedLiveJob` and
+`storedLiveJobState` (`jobqueue/reserve_durability_test.go`) to apply a
+matching run-state record, since A3's tests read through them. Extend
 `TestBestEffortDrainKeepsArrivalOrder` and
 `TestBestEffortChangeKeepsEncodeOrder`, keeping the existing full-change
 cases. Covering all 14 acceptance tests from A3. Depends on items 3.1 and
@@ -89,8 +91,9 @@ Switch `persistReservation` (`jobqueue/serverCLI.go`) to
 `updateJobRunStateDurableWithin(job, ReserveWriteWait)` and `handleStart`,
 including an accepted duplicate start, to
 `updateJobRunStateDurable(job)`, with error handling, warnings and replies
-unchanged. Change the existing test helpers listed under "Live-record
-helpers" in spec.md's Architecture to read or carry the run-state record.
+unchanged. Change the remaining test helpers listed under "Live-record
+helpers" in spec.md's Architecture (item 3.3 changed `storedLiveJob` and
+`storedLiveJobState`) to read or carry the run-state record.
 Add `BenchmarkUpdateJobRunState10KB` and `BenchmarkUpdateJobFull10KB` to
 `jobqueue/db_bench_test.go`, leaving `BenchmarkUpdateJobState` unchanged.
 Do the audit A2 describes and write it in the PR body: every persisted
@@ -109,8 +112,8 @@ Review notes:
   deterministic for the job used, so the strict comparison stays strict and
   does not flake. Do not weaken it to a decoded comparison.
 - Test 6: `storedLiveJobState` is also used by
-  `jobqueue/release_after_lost_test.go`, which must pass after the helper
-  change too. `rdaSoLiveRecordUnmarked`
+  `jobqueue/release_after_lost_test.go`, which must pass after item 3.3's
+  helper change too. `rdaSoLiveRecordUnmarked`
   (`jobqueue/running_dependent_archive_test.go`) reads the live record
   directly and checks `ReservedBy`, a run-state field, so it must read
   through the overlay as well.
