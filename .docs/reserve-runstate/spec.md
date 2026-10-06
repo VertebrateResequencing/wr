@@ -276,9 +276,9 @@ day earlier, PeakRAM 900, PeakDisk 9, CPUtime 1s, StdOutC `o`, StdErrC
 
 **Acceptance tests:**
 
-1. Given the example job, when `runStateRecord(live, db.encode(newJobRunState
-   (job)))` is built over its full encoding `live`, then the record is at most
-   1,024 bytes and `len(live)` is at least 10,000.
+1. Given the example job, when `runStateRecord(live,
+   db.encode(newJobRunState(job)))` is built over its full encoding `live`,
+   then the record is at most 1,024 bytes and `len(live)` is at least 10,000.
 2. Given that record, when `runStateOver(live, record)` is called, then it
    returns true, and decoding its bytes into a `jobRunState` and calling
    `applyTo` on a Job decoded from the older record gives a Job whose
@@ -1026,7 +1026,9 @@ directory's Go cache.
      120000 5 200`, which writes `fix120k.db`, its `.aslmanifest` and its
      own `fix120k.db.jobcwd` in `$G/fixtures`.
 
-**File:** `developers/wrdev.sh`, `jobqueue/reliable4_addstorm_test.go`
+**File:** `developers/wrdev.sh`, `developers/speed.sh`,
+`jobqueue/reliable4_addstorm_test.go`, `jobqueue/reliable4_reportstorm_test.go`,
+`jobqueue/reliable4_writestorm_freeze_test.go`
 **Test file:** none; each is run end to end before the PR is ready.
 
 **Acceptance tests:**
