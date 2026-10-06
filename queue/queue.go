@@ -219,6 +219,16 @@ func (queue *Queue) suspendItem(item *Item) (SubQueue, bool) {
 // Resume moves a suspended item back to ready, or dependent if dependencies
 // remain unresolved.
 func (queue *Queue) Resume(ctx context.Context, key string) error {
+	return queue.ResumeWith(ctx, key, nil)
+}
+
+// ResumeWith is Resume, except that resuming, if not nil, is called with the
+// item's data, and the state it is moving to (ItemStateReady or
+// ItemStateDependent), with the queue locked, once the item is known to be
+// suspended and before it leaves the suspended sub-queue. Whatever resuming does
+// therefore happens before the item can be reserved, and it is not called at all
+// if the resume fails. resuming must not call the queue.
+func (queue *Queue) ResumeWith(ctx context.Context, key string, resuming func(data any, to ItemState)) error {
 	queue.mutex.Lock()
 
 	if queue.closed {
@@ -234,15 +244,26 @@ func (queue *Queue) Resume(ctx context.Context, key string) error {
 		return Error{queue.Name, "Resume", key, ErrNotSuspended}
 	}
 
-	queue.resumeSuspendedItem(ctx, item)
+	queue.resumeSuspendedItem(ctx, item, resuming)
 
 	return nil
 }
 
-func (queue *Queue) resumeSuspendedItem(ctx context.Context, item *Item) {
+func (queue *Queue) resumeSuspendedItem(ctx context.Context, item *Item, resuming func(data any, to ItemState)) {
+	hasDeps := len(item.UnresolvedDependencies()) > 0
+
+	if resuming != nil {
+		to := ItemStateReady
+		if hasDeps {
+			to = ItemStateDependent
+		}
+
+		resuming(item.Data(), to)
+	}
+
 	queue.suspendedQueue.remove(item)
 
-	if len(item.UnresolvedDependencies()) > 0 {
+	if hasDeps {
 		queue.depQueue.push(item)
 		item.switchSuspendedDependent()
 		queue.changed(SubQueueSuspended, SubQueueDependent, []*Item{item})

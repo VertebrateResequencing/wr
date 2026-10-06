@@ -97,9 +97,75 @@ files.
     a kick-under-reserve-load comparison) is owed before PR-ready, since
     `queue/` changed.
 
-- [ ] resumeJob / resumeQueueItem race (jobqueue/server.go ~3130-3155):
+- [x] resumeJob / resumeQueueItem race (jobqueue/server.go ~3130-3155):
       s.q.Resume makes a suspended item reservable before the resume sets
       job.State and queues updateJobAfterChange; a reservation in that window
       could have its State overwritten or its write superseded by the
       resume's (same class as the kick race above). Not yet reproduced.
   - Source: kick-race implementor, incidental finding.
+  - Verdict: real, though not as a lost reservation. `resumeJob` reads the
+    item's state under `job.Lock` after `s.q.Resume`, so a reservation in the
+    window is mapped to `reserved` and its write is not superseded with stale
+    fields (`queueJobChange` encodes the current job). But if the runner also
+    reports Started in the window, the resume maps the run item back to
+    `reserved` and overwrites `running`. A re-sent start report (the runner's
+    retry after a lost reply) then fails `acceptDuplicateStartLocked` and
+    counts a second attempt. A crash does not double-run it: the record keeps
+    `Pid`/`Host`, so `recoversIntoRun` still puts it in Run.
+  - Test seam: `resumeQueuedHook` in `jobqueue/server.go`, nil in production,
+    called in `resumeJob` after `resumeQueueItem` succeeds and before
+    `job.Lock`.
+  - Red test: `TestResumeRacingStart` in `jobqueue/resume_order_test.go`. It
+    suspends a ready job, pauses its resume in the hook, has a runner reserve
+    and start the job, then lets the resume finish. One leaf asserts the
+    server's job is still running; the other re-sends the same start report
+    and asserts the job counts one attempt.
+  - Red command: `nice -n 19 go test ./jobqueue -count=1 -run
+    'TestResumeRacingStart$' -v`, exit 1 on `90a413bd` plus the hook, 3 of 3
+    runs (log lines filtered):
+
+    ```text
+    === RUN   TestResumeRacingStart
+    ✔✔✔✔✔✔✔✔✔✔✔✔✔✔
+        the job stays running in memory ✘
+    ✔✔✔✔✔✔✔✔✔✔✔✔✔✔
+        its runner's re-sent start report is not counted as another attempt ✔✘
+    Failures:
+      * jobqueue/resume_order_test.go
+      Line 143:
+      Expected: jobqueue.JobState("running")
+      Actual:   jobqueue.JobState("reserved")
+      (Should equal)!
+      * jobqueue/resume_order_test.go
+      Line 153:
+      Expected: 1
+      Actual:   2
+      (Should equal)!
+    31 total assertions
+    --- FAIL: TestResumeRacingStart (0.44s)
+    ```
+
+    A throwaway guard in `resumeJob` that left `State` alone when the item was
+    in Run made the test pass, so both leaves fail because of this race and
+    not because of the setup. The guard was reverted and is not proposed as
+    the fix; the kick fix's `KickWith` pattern (a callback under the queue
+    lock) is the analogue to consider.
+  - Fixed: `queue.Queue.ResumeWith` runs a callback `func(data any, to
+    ItemState)` under the queue lock once the item is confirmed suspended and
+    before it leaves the suspended sub-queue (`Resume` delegates to it).
+    `resumeJob` passes `markResumed`, which sets `State` from `to` under
+    `job.Lock` and queues the async `updateJobAfterChange`, so the resume's
+    state and write precede any reservation or start. A failed resume sets
+    nothing and queues nothing. Files: `queue/queue.go`,
+    `queue/resume_with_test.go`, `jobqueue/server.go`,
+    `jobqueue/resume_order_test.go`. Red command green 4 of 4; `make lint`,
+    `make test`, `make race` pass. Speed gate owed (shared with the kick fix).
+
+- [ ] resumeQueueItem decides whether to call clearRACPending from the live
+      item state read after ResumeWith returns; if a runner reserves the item
+      in between, the state reads run and RAC-pending is cleared although
+      readyAdded("resumed") was queued, releasing waiting reserves before the
+      ready-added callback has set racRunning (reserve/scheduling ordering;
+      nothing lost or run twice; also present on develop).
+  - Source: resume-race reviewer, incidental finding. Suggested fix: decide
+    from the callback's `to` instead of live state.

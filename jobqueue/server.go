@@ -426,6 +426,14 @@ var reservationQueuedHook func(key string)
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var kickQueuedHook func(key string)
 
+// resumeQueuedHook, if non-nil, is called with a job's key once resumeJob has
+// moved the job's item out of the suspended sub-queue, so a test can have the
+// job reserved and started before the resume returns. It is a test-only seam
+// and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var resumeQueuedHook func(key string)
+
 // dependencyUpdatesHook, if non-nil, is called by an add once its write has
 // committed and before it applies its live dependents' new dependencies to the
 // queue, so a test can have a dependent finish in between. It is a test-only
@@ -3118,17 +3126,28 @@ func (s *Server) resumeJob(ctx context.Context, key string) bool {
 		return false
 	}
 
-	if !s.resumeQueueItem(ctx, item, key) {
+	if !s.resumeQueueItem(ctx, item, key, func(_ any, to queue.ItemState) { s.markResumed(ctx, job, to) }) {
 		return false
 	}
 
+	if resumeQueuedHook != nil {
+		resumeQueuedHook(key)
+	}
+
+	return true
+}
+
+// markResumed updates a job whose suspended item is being resumed to the given
+// item state, and queues its write. resumeJob calls it while the queue holds the
+// item, so it happens only for an item that really is being resumed, and before
+// the item can be reserved: a reservation, and the runner's start report, then
+// come after it, so the resume's State cannot overwrite theirs.
+func (s *Server) markResumed(ctx context.Context, job *Job, to queue.ItemState) {
 	job.Lock()
-	job.State = s.itemStateToJobState(item.Stats().State, job.Lost)
+	job.State = s.itemStateToJobState(to, job.Lost)
 	job.Unlock()
 
 	s.db.updateJobAfterChange(ctx, job)
-
-	return true
 }
 
 func (s *Server) suspendedItem(key string) (*queue.Item, *Job, bool) {
@@ -3145,10 +3164,12 @@ func (s *Server) suspendedItem(key string) (*queue.Item, *Job, bool) {
 	return item, job, true
 }
 
-func (s *Server) resumeQueueItem(ctx context.Context, item *queue.Item, key string) bool {
+func (s *Server) resumeQueueItem(ctx context.Context, item *queue.Item, key string,
+	resuming func(data any, to queue.ItemState),
+) bool {
 	s.setRACPending()
 
-	err := s.q.Resume(ctx, key)
+	err := s.q.ResumeWith(ctx, key, resuming)
 	if err != nil {
 		s.clearRACPending()
 
