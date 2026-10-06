@@ -96,3 +96,10 @@ files.
     `make lint`, `make test`, `make race` pass. Speed gate (`make speed` plus
     a kick-under-reserve-load comparison) is owed before PR-ready, since
     `queue/` changed.
+
+- [ ] resumeJob / resumeQueueItem race (jobqueue/server.go ~3130-3155):
+      s.q.Resume makes a suspended item reservable before the resume sets
+      job.State and queues updateJobAfterChange; a reservation in that window
+      could have its State overwritten or its write superseded by the
+      resume's (same class as the kick race above). Not yet reproduced.
+  - Source: kick-race implementor, incidental finding.
