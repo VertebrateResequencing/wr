@@ -317,7 +317,7 @@ func afcEnqueueOps(t *testing.T, database *db, label string, n int) []*newJobsOp
 
 		stores := []newJobStore{
 			{bucketRTK, lookups, database.putLookups},
-			{bucketJobsLive, encodes, database.putEncodedJobs},
+			{bucketJobsLive, encodes, putLiveRecordsInBucket},
 		}
 
 		foldBytes, foldPuts := newJobsFoldCost(stores)

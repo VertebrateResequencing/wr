@@ -28,10 +28,15 @@ package jobqueue
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -384,11 +389,14 @@ func TestReserveDurabilityStalledWrite(t *testing.T) {
 	})
 }
 
-// TestBestEffortDrainKeepsArrivalOrder proves that when one drain holds both
-// exit ops and a change for the same job, the job's live record is whichever
-// arrived last, and that an exit op whose live write is superseded still stores
-// its std. Before, changes were always written first, so a release queued before
-// the next reservation overwrote it, and the job recovered to ready.
+// TestBestEffortDrainKeepsArrivalOrder proves that when one drain holds a job's
+// exit ops, full change and run state, recovery sees whichever arrived last, as
+// it did when every write was a full record, and that an exit op whose live
+// write is superseded still stores its std. Before, changes were always written
+// first, so a release queued before the next reservation overwrote it, and the
+// job recovered to ready. A reservation or start is queued either as a full
+// change or as a run state; a release is an exit op; a kick and a suspend are
+// full changes.
 func TestBestEffortDrainKeepsArrivalOrder(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -396,67 +404,370 @@ func TestBestEffortDrainKeepsArrivalOrder(t *testing.T) {
 
 	ctx := context.Background()
 
-	const (
-		release     = "release"
-		reservation = "reservation"
-	)
-
-	for _, tc := range []struct {
-		name      string
-		order     []string
-		wantState JobState
-	}{
-		{"a release then a reservation leaves the reservation", []string{release, reservation}, JobStateReserved},
-		{"a reservation then a release leaves the release", []string{reservation, release}, JobStateDelayed},
-		{"a release, a reservation and a release leaves the last release",
-			[]string{release, reservation, release}, JobStateDelayed},
-	} {
+	for _, tc := range drainOrderCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			database := openReliable4WriteStormDB(t, ctx)
 			defer func() { _ = database.close(ctx) }()
 
 			job := reliable4WSSeedLiveJobs(t, ctx, database, 1)[0]
-			stde := []byte("failed run's stderr")
+			key := job.Key()
+			ops := newDrainOrderOps(database, job)
 
-			// each queue call encodes the job as it is at that moment. A failed
-			// release's std is stored whether or not its live write is superseded.
-			for _, op := range tc.order {
-				switch op {
-				case release:
-					job.State = JobStateDelayed
-					job.Exitcode = 1
-					queueUnkickedBestEffortExit(t, database, job, stde)
-				case reservation:
-					job.State = JobStateReserved
-					job.Exitcode = -1
-					queueUnkickedBestEffortChange(t, database, job)
+			if len(tc.prior) > 0 {
+				ops.queue(t, tc.prior)
+				database.drainBestEffort(ctx)
+
+				if runStateBucketValue(t, database, bucketJobRunState, key) == nil {
+					t.Fatal("the earlier drain committed no run-state record")
 				}
 			}
 
+			if tc.archived {
+				deleteDrainOrderLiveRecord(t, database, key)
+			}
+
+			ops.queue(t, tc.order)
 			database.drainBestEffort(ctx)
 
-			if got := storedLiveJobState(t, database, job.Key()); got != tc.wantState {
-				t.Errorf("live record state is %q, want %q", got, tc.wantState)
-			}
-
-			if got := storedStdE(t, database, job.Key()); !bytes.Equal(got, stde) {
-				t.Errorf("stored stderr is %q, want %q", got, stde)
-			}
+			tc.check(t, database, ops, job)
 		})
 	}
 }
 
-// TestBestEffortChangeKeepsEncodeOrder proves that of two concurrent live-record
-// writes of one job, the one that encoded the newer state is the one left on
-// disk. A kick that encoded the job as ready, and was then overtaken by the
-// job's reservation, used to queue after that reservation and win the
-// coalescing. The reservation's waiter was told its write had committed while
-// the ready record replaced it, so a crash before Started recovered the job to
-// run a second time.
+// drainOrderCase is one TestBestEffortDrainKeepsArrivalOrder case: ops
+// committed by an earlier drain, whether the job's live record is then deleted,
+// and the ops queued for the one drain under test, in arrival order.
+type drainOrderCase struct {
+	name     string
+	prior    []string
+	archived bool
+	order    []string
+	want     drainOrderWant
+}
+
+// drainOrderWant is what a drainOrderCase must leave: the recovered job's State,
+// whether a run-state record exists, and any further check of the recovered job.
+type drainOrderWant struct {
+	state    JobState
+	runState bool
+	more     func(t *testing.T, ops *drainOrderOps, recovered *Job)
+}
+
+// The ops of TestBestEffortDrainKeepsArrivalOrder.
+const (
+	drainRelease         = "release"
+	drainReservation     = "reservation"
+	drainFullReservation = "full reservation"
+	drainKick            = "kick"
+	drainStart           = "start"
+	drainSuspend         = "suspend"
+)
+
+// drainOrderStdE is the stderr a drainRelease stores.
+const drainOrderStdE = "failed run's stderr"
+
+// drainOrderCases returns the cases of TestBestEffortDrainKeepsArrivalOrder:
+// each is a sequence of releases, reservations, kicks, starts or full changes
+// of one job, with what recovery must read after a crash.
+func drainOrderCases() []drainOrderCase {
+	reservedExitcode := func(t *testing.T, _ *drainOrderOps, recovered *Job) {
+		t.Helper()
+
+		if recovered.Exitcode != -1 {
+			t.Errorf("recovered Exitcode is %d, want -1", recovered.Exitcode)
+		}
+	}
+
+	kicked := func(t *testing.T, _ *drainOrderOps, recovered *Job) {
+		t.Helper()
+
+		if recovered.UntilBuried != 3 {
+			t.Errorf("recovered UntilBuried is %d, want 3", recovered.UntilBuried)
+		}
+	}
+
+	return []drainOrderCase{
+		{name: "a release then a reservation leaves the reservation",
+			order: []string{drainRelease, drainReservation},
+			want: drainOrderWant{state: JobStateReserved, runState: true,
+				more: func(t *testing.T, ops *drainOrderOps, recovered *Job) {
+					t.Helper()
+					reservedExitcode(t, ops, recovered)
+
+					live := runStateBucketValue(t, ops.database, bucketJobsLive, recovered.Key())
+					if !bytes.Equal(live, ops.releaseEncoded) {
+						t.Error("the live record is not the release's encoding")
+					}
+				}}},
+		{name: "a reservation then a release leaves the release",
+			order: []string{drainReservation, drainRelease},
+			want:  drainOrderWant{state: JobStateDelayed}},
+		{name: "a release, a reservation and a release leaves the last release",
+			order: []string{drainRelease, drainReservation, drainRelease},
+			want:  drainOrderWant{state: JobStateDelayed}},
+		{name: "a kick then a reservation leaves the reservation over the kick",
+			order: []string{drainKick, drainReservation},
+			want: drainOrderWant{state: JobStateReserved, runState: true,
+				more: func(t *testing.T, ops *drainOrderOps, recovered *Job) {
+					t.Helper()
+					kicked(t, ops, recovered)
+
+					live := runStateBucketValue(t, ops.database, bucketJobsLive, recovered.Key())
+					if !bytes.Equal(live, ops.kickEncoded) {
+						t.Error("the live record is not the kick's encoding")
+					}
+				}}},
+		{name: "a reservation then a kick leaves the kick",
+			order: []string{drainReservation, drainKick},
+			want:  drainOrderWant{state: JobStateReady, more: kicked}},
+		{name: "a reservation then a start leaves the start",
+			order: []string{drainReservation, drainStart},
+			want: drainOrderWant{state: JobStateRunning, runState: true,
+				more: func(t *testing.T, _ *drainOrderOps, recovered *Job) {
+					t.Helper()
+
+					if recovered.Pid != 7 {
+						t.Errorf("recovered Pid is %d, want 7", recovered.Pid)
+					}
+				}}},
+		{name: "a full change after a committed run state supersedes it",
+			prior: []string{drainReservation}, order: []string{drainSuspend},
+			want: drainOrderWant{state: JobStateSuspended}},
+		{name: "a release after a committed run state supersedes it",
+			prior: []string{drainReservation}, order: []string{drainRelease},
+			want: drainOrderWant{state: JobStateDelayed}},
+		{name: "a reservation of an archived job writes nothing",
+			archived: true, order: []string{drainReservation}},
+		{name: "a kick then a release leaves the release",
+			order: []string{drainKick, drainRelease},
+			want:  drainOrderWant{state: JobStateDelayed}},
+		{name: "a release then a kick leaves the kick",
+			order: []string{drainRelease, drainKick},
+			want:  drainOrderWant{state: JobStateReady, more: kicked}},
+		{name: "a release then a full reservation leaves the reservation",
+			order: []string{drainRelease, drainFullReservation},
+			want:  drainOrderWant{state: JobStateReserved}},
+		{name: "a full reservation then a release leaves the release",
+			order: []string{drainFullReservation, drainRelease},
+			want:  drainOrderWant{state: JobStateDelayed}},
+		{name: "a release, a full reservation and a release leaves the last release",
+			order: []string{drainRelease, drainFullReservation, drainRelease},
+			want:  drainOrderWant{state: JobStateDelayed}},
+	}
+}
+
+// check asserts what the drains of tc left for job: its run-state record,
+// stored stderr and recovered state, or for an archived job that neither of its
+// records exists. The run-state record is checked before recovery, which drops
+// a stale one.
+func (tc drainOrderCase) check(t *testing.T, database *db, ops *drainOrderOps, job *Job) {
+	t.Helper()
+
+	key := job.Key()
+	runState := runStateBucketValue(t, database, bucketJobRunState, key)
+
+	if tc.archived {
+		if live := runStateBucketValue(t, database, bucketJobsLive, key); live != nil || runState != nil {
+			t.Errorf("an archived job has a live record (%t) or a run-state record (%t)", live != nil, runState != nil)
+		}
+
+		return
+	}
+
+	if got := runState != nil; got != tc.want.runState {
+		t.Errorf("run-state record present is %t, want %t", got, tc.want.runState)
+	}
+
+	if slices.Contains(tc.order, drainRelease) {
+		if got := storedStdE(t, database, key); string(got) != drainOrderStdE {
+			t.Errorf("stored stderr is %q, want %q", got, drainOrderStdE)
+		}
+	}
+
+	if got := storedLiveJobState(t, database, key); got != tc.want.state {
+		t.Errorf("stored live state is %q, want %q", got, tc.want.state)
+	}
+
+	recovered := recoveredJob(t, database, key)
+	if recovered.State != tc.want.state {
+		t.Errorf("recovered state is %q, want %q", recovered.State, tc.want.state)
+	}
+
+	if tc.want.more != nil {
+		tc.want.more(t, ops, recovered)
+	}
+}
+
+// deleteDrainOrderLiveRecord deletes key's live record, as an archive does.
+func deleteDrainOrderLiveRecord(t *testing.T, database *db, key string) {
+	t.Helper()
+
+	if err := database.bolt.Update(func(tx *bolt.Tx) error {
+		return deleteLiveRecord(tx, []byte(key))
+	}); err != nil {
+		t.Fatalf("could not delete the live record: %v", err)
+	}
+}
+
+// recoveredJob returns the job with key that recoverIncompleteJobs recovers.
+func recoveredJob(t *testing.T, database *db, key string) *Job {
+	t.Helper()
+
+	recovered, _, err := database.recoverIncompleteJobs()
+	if err != nil {
+		t.Fatalf("recoverIncompleteJobs failed: %v", err)
+	}
+
+	for _, job := range recovered {
+		if job.Key() == key {
+			return job
+		}
+	}
+
+	t.Fatalf("job %s was not recovered", key)
+
+	return nil
+}
+
+// drainOrderOps queues TestBestEffortDrainKeepsArrivalOrder's ops of one job,
+// each encoding the job as it is at that moment, without kicking the writer.
+type drainOrderOps struct {
+	database       *db
+	job            *Job
+	kickEncoded    []byte
+	releaseEncoded []byte
+}
+
+// newDrainOrderOps returns a drainOrderOps for job in database.
+func newDrainOrderOps(database *db, job *Job) *drainOrderOps {
+	return &drainOrderOps{database: database, job: job}
+}
+
+// queue queues each of order's ops in turn.
+func (o *drainOrderOps) queue(t *testing.T, order []string) {
+	t.Helper()
+
+	job := o.job
+
+	for _, op := range order {
+		switch op {
+		case drainRelease:
+			job.State = JobStateDelayed
+			job.Exitcode = 1
+			queueUnkickedBestEffortExit(t, o.database, job, []byte(drainOrderStdE))
+			o.releaseEncoded = o.encode(t)
+		case drainReservation, drainFullReservation:
+			job.State = JobStateReserved
+			job.Exitcode = -1
+
+			o.queueReservation(t, op == drainFullReservation)
+		case drainKick:
+			job.State = JobStateReady
+			job.UntilBuried = 3
+			queueUnkickedBestEffortChange(t, o.database, job)
+			o.kickEncoded = o.encode(t)
+		case drainStart:
+			job.State = JobStateRunning
+			job.Pid = 7
+			queueUnkickedBestEffortRunState(t, o.database, job)
+		case drainSuspend:
+			job.State = JobStateSuspended
+			queueUnkickedBestEffortChange(t, o.database, job)
+		default:
+			t.Fatalf("unknown op %q", op)
+		}
+	}
+}
+
+// queueReservation queues the job's reservation as a full change if full, or
+// else as a run state.
+func (o *drainOrderOps) queueReservation(t *testing.T, full bool) {
+	t.Helper()
+
+	if full {
+		queueUnkickedBestEffortChange(t, o.database, o.job)
+
+		return
+	}
+
+	queueUnkickedBestEffortRunState(t, o.database, o.job)
+}
+
+// encode returns the job encoded as queueUnkickedBestEffortChange encodes it.
+func (o *drainOrderOps) encode(t *testing.T) []byte {
+	t.Helper()
+
+	var encoded []byte
+
+	if err := codec.NewEncoderBytes(&encoded, o.database.ch).Encode(o.job); err != nil {
+		t.Fatalf("could not encode the job: %v", err)
+	}
+
+	return encoded
+}
+
+// TestBestEffortChangeKeepsEncodeOrder proves that of two concurrent writes of
+// one job, the one that encoded the newer state is what recovery sees, whether
+// the newer write, the reservation, is a full record or a run state, and when
+// the older write is the run state and a full change overtakes it. A kick that
+// encoded the job as ready, and was then overtaken by the job's reservation,
+// used to queue after that reservation and win the coalescing. The
+// reservation's waiter was told its write had committed while the ready record
+// replaced it, so a crash before Started recovered the job to run a second time.
 func TestBestEffortChangeKeepsEncodeOrder(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
+
+	kick := encodeOrderWrite{write: (*db).updateJobAfterChangeDurable}
+	reserve := func(write func(database *db, job *Job) error) encodeOrderWrite {
+		return encodeOrderWrite{change: func(job *Job) { job.State = JobStateReserved }, write: write}
+	}
+
+	for _, tc := range []struct {
+		name         string
+		older, newer encodeOrderWrite
+	}{
+		{"a full reservation", kick, reserve((*db).updateJobAfterChangeDurable)},
+		{"a run-state reservation", kick, reserve((*db).updateJobRunStateDurable)},
+		{"a run-state reservation with a bounded wait", kick, reserve(func(database *db, job *Job) error {
+			return database.updateJobRunStateDurableWithin(job, serverReserveWriteWait())
+		})},
+		{"a full change overtaking a run-state reservation", reserve((*db).updateJobRunStateDurable),
+			encodeOrderWrite{change: func(job *Job) {
+				job.State = JobStateReady
+				job.UntilBuried = 3
+			}, write: (*db).updateJobAfterChangeDurable}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testBestEffortChangeKeepsEncodeOrder(t, tc.older, tc.newer)
+		})
+	}
+}
+
+// encodeOrderWrite is one of TestBestEffortChangeKeepsEncodeOrder's writes: a
+// change made to the job under its lock, if any, then the write of it.
+type encodeOrderWrite struct {
+	change func(job *Job)
+	write  func(database *db, job *Job) error
+}
+
+// apply makes w's change to job, then writes it.
+func (w encodeOrderWrite) apply(database *db, job *Job) error {
+	if w.change != nil {
+		job.Lock()
+		w.change(job)
+		job.Unlock()
+	}
+
+	return w.write(database, job)
+}
+
+// testBestEffortChangeKeepsEncodeOrder is TestBestEffortChangeKeepsEncodeOrder
+// with older paused between encoding the job and queueing its write while newer
+// changes and writes the job.
+func testBestEffortChangeKeepsEncodeOrder(t *testing.T, older, newer encodeOrderWrite) {
+	t.Helper()
 
 	ctx := context.Background()
 
@@ -477,27 +788,21 @@ func TestBestEffortChangeKeepsEncodeOrder(t *testing.T) {
 	}
 	defer func() { jobChangeEncodedHook = nil }()
 
-	kickErr, reserveErr := make(chan error, 1), make(chan error, 1)
+	olderErr, newerErr := make(chan error, 1), make(chan error, 1)
 
-	go func() { kickErr <- database.updateJobAfterChangeDurable(job) }()
+	go func() { olderErr <- older.apply(database, job) }()
 
 	<-encoded
 
-	go func() {
-		job.Lock()
-		job.State = JobStateReserved
-		job.Unlock()
+	go func() { newerErr <- newer.apply(database, job) }()
 
-		reserveErr <- database.updateJobAfterChangeDurable(job)
-	}()
-
-	// if writes queue in the order they encoded, the reservation cannot finish
-	// while the kick is paused, so this only waits long enough for it to try.
+	// if writes queue in the order they encoded, the newer write cannot finish
+	// while the older is paused, so this only waits long enough for it to try.
 	var errs []error
 
 	select {
-	case err := <-reserveErr:
-		t.Log("the reservation committed while the older kick was still unqueued")
+	case err := <-newerErr:
+		t.Log("the newer write committed while the older was still unqueued")
 
 		errs = append(errs, err)
 	case <-time.After(time.Second):
@@ -505,9 +810,9 @@ func TestBestEffortChangeKeepsEncodeOrder(t *testing.T) {
 
 	close(resume)
 
-	errs = append(errs, <-kickErr)
+	errs = append(errs, <-olderErr)
 	if len(errs) == 1 {
-		errs = append(errs, <-reserveErr)
+		errs = append(errs, <-newerErr)
 	}
 
 	for _, err := range errs {
@@ -516,8 +821,21 @@ func TestBestEffortChangeKeepsEncodeOrder(t *testing.T) {
 		}
 	}
 
-	if got := storedLiveJobState(t, database, job.Key()); got != JobStateReserved {
-		t.Errorf("live record state is %q, want %q", got, JobStateReserved)
+	job.RLock()
+	wantState, wantUntilBuried := job.State, job.UntilBuried
+	job.RUnlock()
+
+	if got := storedLiveJobState(t, database, job.Key()); got != wantState {
+		t.Errorf("live record state is %q, want %q", got, wantState)
+	}
+
+	recovered := recoveredJob(t, database, job.Key())
+	if recovered.State != wantState {
+		t.Errorf("recovered state is %q, want %q", recovered.State, wantState)
+	}
+
+	if recovered.UntilBuried != wantUntilBuried {
+		t.Errorf("recovered UntilBuried is %d, want %d", recovered.UntilBuried, wantUntilBuried)
 	}
 }
 
@@ -568,25 +886,312 @@ func queueUnkickedBestEffortExit(t *testing.T, database *db, job *Job, stde []by
 }
 
 // storedLiveJobState decodes the state of the job stored under key in the live
-// bucket.
+// bucket, with a matching run-state record applied, as recovery would.
 func storedLiveJobState(t *testing.T, database *db, key string) JobState {
 	t.Helper()
 
 	return storedLiveJob(t, database, key).State
 }
 
-// storedLiveJob decodes the job stored under key in the live bucket.
+// storedLiveJob decodes the job stored under key in the live bucket and applies
+// key's run-state record if it matches, as recovery would.
 func storedLiveJob(t *testing.T, database *db, key string) *Job {
 	t.Helper()
 
-	job := &Job{}
+	var job *Job
 
 	err := database.bolt.View(func(tx *bolt.Tx) error {
-		return codec.NewDecoderBytes(tx.Bucket(bucketJobsLive).Get([]byte(key)), database.ch).Decode(job)
+		var errs error
+
+		job, errs = storedLiveJobTx(tx, database, key)
+
+		return errs
 	})
 	if err != nil {
 		t.Fatalf("could not read the live job: %v", err)
 	}
 
 	return job
+}
+
+// storedLiveJobTx is storedLiveJob in tx: the job stored under key in the live
+// bucket, with key's run-state record applied if it matches. A database without
+// a run-state bucket has no record to apply.
+func storedLiveJobTx(tx *bolt.Tx, database *db, key string) (*Job, error) {
+	live := tx.Bucket(bucketJobsLive).Get([]byte(key))
+
+	job := &Job{}
+	if err := codec.NewDecoderBytes(live, database.ch).Decode(job); err != nil {
+		return nil, err
+	}
+
+	var record []byte
+	if bucket := tx.Bucket(bucketJobRunState); bucket != nil {
+		record = bucket.Get([]byte(key))
+	}
+
+	runState, matches, err := database.decodeMatchingRunState(live, record)
+	if matches && err == nil {
+		runState.applyTo(job)
+	}
+
+	return job, err
+}
+
+// rewriteStoredLiveJob decodes the job stored under key through its run-state
+// record, lets change alter it, and writes it back as key's full live record,
+// deleting the run-state record in the same transaction, as putLiveRecord does
+// for every full write.
+func rewriteStoredLiveJob(database *db, key string, change func(*Job)) error {
+	return database.bolt.Update(func(tx *bolt.Tx) error {
+		job, err := storedLiveJobTx(tx, database, key)
+		if err != nil {
+			return err
+		}
+
+		change(job)
+
+		encoded, err := database.encode(job)
+		if err != nil {
+			return err
+		}
+
+		return putLiveRecord(tx, []byte(key), encoded)
+	})
+}
+
+// reserveNotDurableLine is one logged reserveNotDurableLogMsg line's key and
+// total.
+type reserveNotDurableLine struct {
+	key   string
+	total string
+}
+
+// reserveNotDurableLines returns, in log order, the key and total of every
+// reserveNotDurableLogMsg line logged at info level in a logfmt log.
+func reserveNotDurableLines(log string) []reserveNotDurableLine {
+	var lines []reserveNotDurableLine
+
+	for line := range strings.Lines(log) {
+		if !strings.Contains(line, `msg="`+reserveNotDurableLogMsg+`"`) || !strings.Contains(line, "lvl=info ") {
+			continue
+		}
+
+		var found reserveNotDurableLine
+
+		for field := range strings.FieldsSeq(line) {
+			if v, ok := strings.CutPrefix(field, "key="); ok {
+				found.key = v
+			} else if v, ok := strings.CutPrefix(field, "total="); ok {
+				found.total = v
+			}
+		}
+
+		lines = append(lines, found)
+	}
+
+	return lines
+}
+
+// reservesNotDurable is database's count of non-durable hand-outs.
+func reservesNotDurable(database *db) uint64 {
+	database.rndMu.Lock()
+	defer database.rndMu.Unlock()
+
+	return database.reservesNotDurable
+}
+
+// TestReserveNotDurableLogged proves every reservation handed out before it was
+// durable is logged once, with its key and a gap-free running total, to the
+// manager's info-level log file, and that durable ones are not.
+func TestReserveNotDurableLogged(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a manager logging as setupManagerLogging sets it up, with reservation writes stalled", t, func() {
+		const stall = 5 * time.Second
+
+		logPath := filepath.Join(t.TempDir(), "log")
+		handlers, err := clog.CreateFileHandlersAtLevels(logPath, "info", "warn")
+		So(err, ShouldBeNil)
+
+		clog.AddHandler(handlers[0])
+
+		defer clog.ToDefault()
+
+		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+		serverConfig.Timings.ReserveWriteWait = 300 * time.Millisecond
+
+		server, _, token, err := serve(clog.ContextWithLogHandler(ctx, handlers[1]), serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		inserts, _, err := jq.Add([]*Job{
+			{Cmd: "true A", Cwd: testCwd, RepGroup: reserveDurabilityRepGroup,
+				ReqGroup: reserveDurabilityRepGroup, Requirements: standardReqs},
+			{Cmd: "true B", Cwd: testCwd, RepGroup: reserveDurabilityRepGroup,
+				ReqGroup: reserveDurabilityRepGroup, Requirements: standardReqs},
+		}, os.Environ(), true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 2)
+
+		holdTx, err := server.db.bolt.Begin(true)
+		So(err, ShouldBeNil)
+
+		released := make(chan struct{})
+		timer := time.AfterFunc(stall, func() {
+			_ = holdTx.Rollback() //nolint:errcheck // releasing the stall
+
+			close(released)
+		})
+
+		jobA, errA := jq.Reserve(2 * time.Second)
+		jobB, errB := jq.Reserve(2 * time.Second)
+
+		if timer.Stop() {
+			So(holdTx.Rollback(), ShouldBeNil)
+		} else {
+			<-released
+		}
+
+		So(errA, ShouldBeNil)
+		So(jobA, ShouldNotBeNil)
+		So(errB, ShouldBeNil)
+		So(jobB, ShouldNotBeNil)
+
+		content, err := os.ReadFile(logPath)
+		So(err, ShouldBeNil)
+
+		So(reserveNotDurableLines(string(content)), ShouldResemble, []reserveNotDurableLine{
+			{key: jobA.Key(), total: "1"},
+			{key: jobB.Key(), total: "2"},
+		})
+		So(string(content), ShouldContainSubstring, "reservation not yet recorded on disk")
+	})
+
+	Convey("Given a manager whose reservation writes commit promptly", t, func() {
+		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		jobs := make([]*Job, 3)
+		for i := range jobs {
+			jobs[i] = &Job{
+				Cmd: fmt.Sprintf("true %d", i), Cwd: testCwd, RepGroup: reserveDurabilityRepGroup,
+				ReqGroup: reserveDurabilityRepGroup, Requirements: standardReqs,
+			}
+		}
+
+		inserts, _, err := jq.Add(jobs, os.Environ(), true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 3)
+
+		logs := clog.ToBufferAtLevel("info")
+
+		defer clog.ToDefault()
+
+		reserved := 0
+
+		for range jobs {
+			job, errr := jq.Reserve(2 * time.Second)
+			if errr == nil && job != nil {
+				reserved++
+			}
+		}
+
+		So(reserved, ShouldEqual, 3)
+		So(reserveNotDurableLines(logs.String()), ShouldBeEmpty)
+		So(reservesNotDurable(server.db), ShouldEqual, 0)
+	})
+
+	Convey("Given a manager whose database is closed", t, func() {
+		_, serverConfig, _, _, _ := startDurabilityConfig(t)
+
+		server, _, _, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		logs := clog.ToBufferAtLevel("info")
+
+		defer clog.ToDefault()
+
+		setClosed := func(closed bool) {
+			server.db.Lock()
+			server.db.closed = closed
+			server.db.Unlock()
+		}
+
+		setClosed(true)
+
+		job := &Job{Cmd: "true A", Cwd: testCwd, RepGroup: reserveDurabilityRepGroup}
+		server.persistReservation(ctx, job)
+
+		setClosed(false)
+
+		So(reserveNotDurableLines(logs.String()), ShouldResemble, []reserveNotDurableLine{
+			{key: job.Key(), total: "1"},
+		})
+	})
+
+	Convey("Given logs captured at info, concurrent non-durable hand-outs log a gap-free total in order", t, func() {
+		const (
+			goroutines = 50
+			perKey     = 20
+		)
+
+		logs := clog.ToBufferAtLevel("info")
+
+		defer clog.ToDefault()
+
+		database := &db{}
+
+		var wg sync.WaitGroup
+
+		for g := range goroutines {
+			wg.Go(func() {
+				for range perKey {
+					database.logReserveNotDurable(fmt.Sprintf("key%d", g))
+				}
+			})
+		}
+
+		wg.Wait()
+
+		lines := reserveNotDurableLines(logs.String())
+		So(len(lines), ShouldEqual, goroutines*perKey)
+
+		outOfOrder := 0
+		perKeySeen := make(map[string]int)
+
+		for i, line := range lines {
+			if line.total != strconv.Itoa(i+1) {
+				outOfOrder++
+			}
+
+			perKeySeen[line.key]++
+		}
+
+		So(outOfOrder, ShouldEqual, 0)
+		So(len(perKeySeen), ShouldEqual, goroutines)
+		So(slices.Max(slices.Collect(maps.Values(perKeySeen))), ShouldEqual, perKey)
+		So(slices.Min(slices.Collect(maps.Values(perKeySeen))), ShouldEqual, perKey)
+	})
 }

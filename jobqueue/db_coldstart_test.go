@@ -153,7 +153,7 @@ func TestManagerDBFreelistCrashSafety(t *testing.T) {
 			So(reDB.bolt.Stats().FreePageN, ShouldEqual, free)
 			So(boltCheckErrors(reDB.bolt), ShouldBeEmpty)
 
-			recovered, errr := reDB.recoverIncompleteJobs()
+			recovered, _, errr := reDB.recoverIncompleteJobs()
 			So(errr, ShouldBeNil)
 			So(len(recovered), ShouldEqual, len(jobs))
 
@@ -161,7 +161,7 @@ func TestManagerDBFreelistCrashSafety(t *testing.T) {
 				makeFreePages(reDB.bolt)
 				So(boltCheckErrors(reDB.bolt), ShouldBeEmpty)
 
-				recovered, errr = reDB.recoverIncompleteJobs()
+				recovered, _, errr = reDB.recoverIncompleteJobs()
 				So(errr, ShouldBeNil)
 				So(len(recovered), ShouldEqual, len(jobs))
 			})
@@ -333,7 +333,7 @@ func TestManagerDBStaleFreelist(t *testing.T) {
 
 			So(boltCheckErrors(reDB.bolt), ShouldBeEmpty)
 
-			recovered, errr := reDB.recoverIncompleteJobs()
+			recovered, _, errr := reDB.recoverIncompleteJobs()
 			So(errr, ShouldBeNil)
 			So(len(recovered), ShouldEqual, len(jobs))
 
@@ -341,7 +341,7 @@ func TestManagerDBStaleFreelist(t *testing.T) {
 			makeFreePages(reDB.bolt)
 			So(boltCheckErrors(reDB.bolt), ShouldBeEmpty)
 
-			recovered, errr = reDB.recoverIncompleteJobs()
+			recovered, _, errr = reDB.recoverIncompleteJobs()
 			So(errr, ShouldBeNil)
 			So(len(recovered), ShouldEqual, len(jobs))
 		}

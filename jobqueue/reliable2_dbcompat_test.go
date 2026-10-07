@@ -35,7 +35,8 @@ package jobqueue
 // jobslive, the incomplete ones carrying non-empty WaitingForDepGroups and
 // LimitGroupsForDisplay - plus populated index buckets, so opening it exercises
 // the decode of the two post-v0.36.5 Job fields and the one-time index-rebuild
-// guards.
+// guards. The fixture is unversioned, so each test compacts its copy first, as
+// an operator must before a manager will open it.
 //
 // Item 4.3 (spec.md section H2, the retained recovery window) adds further tests
 // to this file that reuse the same fixture helpers below.
@@ -78,6 +79,10 @@ const (
 	dbcompatIncompleteCmd1 = "true 3"
 )
 
+// recoveryPauseHookWait bounds pausedRecoveringFixtureServer's wait for
+// background recovery to reach its pause hook.
+const recoveryPauseHookWait = 30 * time.Second
+
 // TestReliable2DBCompatOpen covers all four F1 acceptance tests against the
 // committed fixture opened with the reworked build.
 func TestReliable2DBCompatOpen(t *testing.T) {
@@ -90,7 +95,7 @@ func TestReliable2DBCompatOpen(t *testing.T) {
 	Convey("The reworked build opens a current-code-upgraded DB fixture without error or data loss", t, func() {
 		config, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(true)
 
-		dbPath := copyFixtureToTempDB(t, serverConfig.DBFile)
+		dbPath := compactedFixtureCopy(t, serverConfig.DBFile)
 		serverConfig.DBFile = dbPath
 		serverConfig.DBFileBackup = dbPath + "_bk"
 		serverConfig.dontWipeDevDB = true
@@ -176,7 +181,7 @@ func TestReliable2RecoveryWindowReturnsRecovering(t *testing.T) {
 	Convey("A recovery-window j* call for a not-yet-restored key returns ErrRecovering not ErrBadJob", t, func() {
 		_, serverConfig, _, _, _ := jobqueueTestInit(true)
 
-		dbPath := copyFixtureToTempDB(t, serverConfig.DBFile)
+		dbPath := compactedFixtureCopy(t, serverConfig.DBFile)
 		serverConfig.DBFile = dbPath
 		serverConfig.DBFileBackup = dbPath + "_bk"
 		serverConfig.dontWipeDevDB = true
@@ -223,7 +228,7 @@ func TestReliable2RecoveryRestoresIncompleteJobs(t *testing.T) {
 	Convey("Prior incomplete jobs are recovered and become reservable once the recovery window finishes", t, func() {
 		config, serverConfig, addr, _, clientConnectTime := jobqueueTestInit(true)
 
-		dbPath := copyFixtureToTempDB(t, serverConfig.DBFile)
+		dbPath := compactedFixtureCopy(t, serverConfig.DBFile)
 		serverConfig.DBFile = dbPath
 		serverConfig.DBFileBackup = dbPath + "_bk"
 		serverConfig.dontWipeDevDB = true
@@ -265,6 +270,20 @@ func TestReliable2RecoveryRestoresIncompleteJobs(t *testing.T) {
 	})
 }
 
+// compactedFixtureCopy is copyFixtureToTempDB followed by CompactDBFileStats,
+// as an operator must compact an unversioned database before a manager will
+// open it.
+func compactedFixtureCopy(t *testing.T, suggestedName string) string {
+	t.Helper()
+
+	dbPath := copyFixtureToTempDB(t, suggestedName)
+
+	_, err := CompactDBFileStats(dbPath)
+	So(err, ShouldBeNil)
+
+	return dbPath
+}
+
 // copyFixtureToTempDB copies the committed golden fixture into a fresh file in
 // t.TempDir() (BoltDB needs an exclusive read-write open, so tests never open
 // the committed file in place) and returns the copy's path. The suggestedName's
@@ -288,10 +307,6 @@ func copyFixtureToTempDB(t *testing.T, suggestedName string) string {
 
 	return dstPath
 }
-
-// recoveryPauseHookWait bounds pausedRecoveringFixtureServer's wait for
-// background recovery to reach its pause hook.
-const recoveryPauseHookWait = 30 * time.Second
 
 // pausedRecoveringFixtureServer opens a server against serverConfig's DB (for
 // this file, a copy of the committed fixture; the startup-window tests point it

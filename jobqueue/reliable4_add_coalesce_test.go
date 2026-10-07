@@ -136,6 +136,12 @@ func reliable4ACAddPanickingPut(*bolt.Tx, []byte, sobsd) error {
 	panic("reliable4 add panic test")
 }
 
+// putLiveRecordsInBucket is putLiveRecords as a sobsdPutter for the live
+// bucket, so a test can store raw values through the add path.
+func putLiveRecordsInBucket(tx *bolt.Tx, _ []byte, encodes sobsd) error {
+	return putLiveRecords(tx, encodes)
+}
+
 // TestReliable4AddsCoalesceIntoOneTransaction proves the add path costs O(1)
 // write transactions per commit rather than O(1) per add, and that no single add
 // is starved anywhere near the client timeout floor.
@@ -430,7 +436,7 @@ func TestReliable4AddFinalDrainLoops(t *testing.T) {
 	ops := make([]*newJobsOp, reliable4ACAddDrainOps)
 
 	for i := range ops {
-		ops[i] = reliable4ACAddCostedOp(database, fmt.Sprintf("reliable4-drain-%d", i))
+		ops[i] = reliable4ACAddCostedOp(fmt.Sprintf("reliable4-drain-%d", i))
 
 		if !database.enqueueNewJobs(ops[i]) {
 			t.Fatalf("add %d was refused by the add queue", i)
@@ -535,7 +541,7 @@ func reliable4ACAddHoldWriteLock(t *testing.T, database *db) func() {
 func reliable4ACAddBlockWriter(t *testing.T, database *db) *newJobsOp {
 	t.Helper()
 
-	op := reliable4ACAddCostedOp(database, "reliable4-add-blocker")
+	op := reliable4ACAddCostedOp("reliable4-add-blocker")
 
 	if !database.enqueueNewJobs(op) {
 		t.Fatal("the blocking add was refused by the add queue")
@@ -550,11 +556,11 @@ func reliable4ACAddBlockWriter(t *testing.T, database *db) *newJobsOp {
 // declaring a whole fold budget's worth of puts so that no two of them can share a
 // write transaction. Its cost is set rather than measured because engaging the real
 // budget with real data costs ~100MB of writes (see reliable4_add_foldcap_test.go).
-func reliable4ACAddCostedOp(database *db, key string) *newJobsOp {
+func reliable4ACAddCostedOp(key string) *newJobsOp {
 	stores := []newJobStore{{
 		bucketJobsLive,
 		sobsd{{[]byte(key), []byte("reliable4 add coalesce")}},
-		database.putEncodedJobs,
+		putLiveRecordsInBucket,
 	}}
 
 	return &newJobsOp{

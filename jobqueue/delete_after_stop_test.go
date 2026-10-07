@@ -255,7 +255,7 @@ func TestStopStillRemovesAJobBuriedWhileRunnersDie(t *testing.T) {
 					return false
 				}
 
-				live, errr := server.db.recoverIncompleteJobs()
+				live, _, errr := server.db.recoverIncompleteJobs()
 				if errr != nil {
 					return false
 				}

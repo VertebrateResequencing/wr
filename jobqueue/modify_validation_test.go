@@ -534,7 +534,7 @@ func (h *modifierValidationHarness) queueSnapshot() modifierQueueSnapshot {
 func (h *modifierValidationHarness) dbSnapshot() map[string]map[string]string {
 	buckets := [][]byte{
 		bucketJobsLive, bucketRTK, bucketRGs, bucketDTK, bucketDepGroups,
-		bucketRDTK, bucketJobLookupEntries, bucketEnvs, bucketLGs,
+		bucketRDTK, bucketJobLookupEntries, bucketEnvs, bucketLGs, bucketJobRunState,
 	}
 	snapshot := make(map[string]map[string]string, len(buckets))
 
@@ -610,7 +610,7 @@ func (h *modifierValidationHarness) assertSubsequentValidModifications() {
 		So(job.TriggerBehaviours(true), ShouldBeNil)
 	}
 
-	persisted, err := h.db.recoverIncompleteJobs()
+	persisted, _, err := h.db.recoverIncompleteJobs()
 	So(err, ShouldBeNil)
 	So(persisted, ShouldHaveLength, len(h.jobs))
 

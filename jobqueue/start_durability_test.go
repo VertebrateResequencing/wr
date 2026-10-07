@@ -348,6 +348,32 @@ func TestStartDurabilityAbortedWriteIsNotCommitted(t *testing.T) {
 	default:
 		t.Error("a waiter on a rolled-back drain was never answered")
 	}
+
+	// a second drain, with a run state queued after a full change so the job's
+	// slot holds both, each with its own waiter, rolls back the same way.
+	waiter = queueUnkickedBestEffortChange(t, database, job)
+	runStateWaiter := queueUnkickedBestEffortRunState(t, database, job)
+
+	func() {
+		defer func() {
+			if p := recover(); p == nil {
+				t.Error("the run-state drain did not panic, so it proves nothing")
+			}
+		}()
+
+		database.drainBestEffort(ctx)
+	}()
+
+	for name, w := range map[string]chan error{"full change": waiter, "run state": runStateWaiter} {
+		select {
+		case err := <-w:
+			if !errors.Is(err, errBestEffortWriteAborted) {
+				t.Errorf("a %s waiter on a rolled-back drain was told %v, want errBestEffortWriteAborted", name, err)
+			}
+		default:
+			t.Errorf("a %s waiter on a rolled-back drain was never answered", name)
+		}
+	}
 }
 
 // queueUnkickedBestEffortChange queues job's encoded live-bucket value and a
@@ -375,6 +401,34 @@ func queueUnkickedBestEffortChange(t *testing.T, database *db, job *Job) chan er
 	defer database.beMu.Unlock()
 
 	database.enqueueChangeLocked(job.Key(), encoded, waiter)
+
+	return waiter
+}
+
+// queueUnkickedBestEffortRunState queues job's encoded run state and a waiter
+// for it exactly as queueJobRunState does, but WITHOUT kicking the writer
+// goroutine, so the caller's own drainBestEffort is certain to be what picks the
+// batch up.
+func queueUnkickedBestEffortRunState(t *testing.T, database *db, job *Job) chan error {
+	t.Helper()
+
+	encoded, err := database.encode(newJobRunState(job))
+	if err != nil {
+		t.Fatalf("could not encode the job's run state: %v", err)
+	}
+
+	waiter := make(chan error, 1)
+
+	database.RLock()
+	defer database.RUnlock()
+
+	database.wgMutex.Lock()
+	defer database.wgMutex.Unlock()
+
+	database.beMu.Lock()
+	defer database.beMu.Unlock()
+
+	database.enqueueRunStateLocked(job.Key(), encoded, waiter)
 
 	return waiter
 }

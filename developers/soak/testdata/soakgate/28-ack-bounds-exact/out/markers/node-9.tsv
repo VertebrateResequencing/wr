@@ -1,0 +1,8 @@
+S	3100000	portal_compress	A.1	node-9	901			/soak/work
+E	3105000	portal_compress	A.1	node-9	901		0	/soak/work
+S	3300900	portal_dedupe	B.1	node-9	902			/soak/work
+E	3305900	portal_dedupe	B.1	node-9	902		0	/soak/work
+S	3500600	portal_split	C.1	node-9	903			/soak/work
+E	3505600	portal_split	C.1	node-9	903		0	/soak/work
+S	3800000	portal_merge	D.1	node-9	904			/soak/work
+E	3805000	portal_merge	D.1	node-9	904		0	/soak/work

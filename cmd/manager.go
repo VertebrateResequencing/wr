@@ -652,11 +652,13 @@ this command opens the database file directly, and BoltDB permits only one
 process to open it at a time. It refuses to run (exiting non-zero, leaving the
 database untouched) if a manager is currently running.
 
-wr versions 0.37.0 to 0.37.2 kept the output of every successfully completed
-command in the database, up to about 16KB each. The first time you compact a
-database created by wr 0.37.2 or earlier, compact also removes that stored
-output and reports how many completed commands it was removed from. Later
-compactions skip this.`,
+A database created by wr 0.37.2 or earlier must be compacted once before
+the manager will start on it. wr versions 0.37.0 to 0.37.2 kept the output
+of every successfully completed command in the database, up to about 16KB
+each; compact removes it and reports how many completed commands it was
+removed from. Later compactions skip this. compact refuses (exiting
+non-zero, leaving the database untouched) a database with a newer schema
+version than this wr supports, or with a malformed schema stamp.`,
 	Run: func(_ *cobra.Command, _ []string) {
 		// refuse to run while a manager is up (pid file / port check): it holds
 		// the database file open, so compaction cannot open it and must not run.

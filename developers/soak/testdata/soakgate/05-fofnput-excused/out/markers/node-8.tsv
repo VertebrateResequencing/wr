@@ -1,0 +1,8 @@
+S	1100000	fofnput	F.4	node-8	801			/soak/work
+E	1110000	fofnput	F.4	node-8	801		sigKILL	/soak/work
+S	1200000	fofnput	F.4	node-8	802			/soak/work
+E	1210000	fofnput	F.4	node-8	802		3	/soak/work
+S	1120000	fofnput	F.5	node-8	803			/soak/work
+E	1130000	fofnput	F.5	node-8	803		3	/soak/work
+S	1220000	fofnput	F.5	node-8	804			/soak/work
+E	1230000	fofnput	F.5	node-8	804		0	/soak/work

@@ -70,14 +70,18 @@
 package jobqueue
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
+	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
 	bolt "go.etcd.io/bbolt"
 )
@@ -136,7 +140,7 @@ var reliable4AllBuckets = [][]byte{
 	bucketJobsLive, bucketJobsComplete, bucketRTK, bucketRGs, bucketLGs,
 	bucketDTK, bucketDepGroups, bucketRDTK, bucketJobLookupEntries, bucketEnvs,
 	bucketStdO, bucketStdE, bucketJobRAM, bucketJobDisk, bucketJobSecs,
-	bucketRGEndTime, bucketEndTimeToKey,
+	bucketRGEndTime, bucketEndTimeToKey, bucketJobRunState,
 }
 
 // reliable4InflateParams holds the parsed generation knobs.
@@ -221,6 +225,41 @@ func parseReliable4InflateParams(t *testing.T) (reliable4InflateParams, bool) {
 	return p, true
 }
 
+// TestReliable4InflateDBOpens proves the generator's database is one the
+// manager opens: stamped at the current schema version, not refused as an
+// unversioned one.
+func TestReliable4InflateDBOpens(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a database built as TestReliable4InflateDB builds one, initDB opens it at version 2", t, func() {
+		const records = 3
+
+		path := filepath.Join(t.TempDir(), "inflate.db")
+
+		bdb, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: time.Second, FreelistType: bolt.FreelistMapType})
+		So(err, ShouldBeNil)
+
+		createReliable4Buckets(t, bdb)
+		So(bdb.Update(func(tx *bolt.Tx) error {
+			return writeReliable4Batch(tx, new(codec.BincHandle), reliable4Pad(reliable4MinCmdPad),
+				time.Now().Add(-time.Hour), time.Minute, 0, records)
+		}), ShouldBeNil)
+		So(bdb.Close(), ShouldBeNil)
+
+		testDB, _, err := initDB(ctx, path, path+".bak", internal.Development, false, false)
+		So(err, ShouldBeNil)
+		So(testDB.close(ctx), ShouldBeNil)
+
+		version, _ := testDBSchemaVersion(t, path)
+		So(version, ShouldEqual, uint64(2))
+		So(countBucketKeys(t, path, bucketJobsComplete), ShouldEqual, records)
+	})
+}
+
 // reliable4CmdPad derives the Cmd padding (bytes) so that `records` records take
 // roughly recordDataGB on disk. Each record contributes its Cmd bytes roughly
 // reliable4KeyCopies times (jobscomplete key + encoded value + end-time index
@@ -255,7 +294,9 @@ func envIntDefault(name string, def int) int {
 }
 
 // createReliable4Buckets creates every bucket the real initDB creates, so a later
-// production open sees a complete schema and skips the upgrade/rebuild path.
+// production open sees a complete schema and skips the upgrade/rebuild path, and
+// stamps currentDBSchemaVersion, which the generated complete records (holding
+// no stdout or stderr) satisfy, so initDB does not refuse it as unversioned.
 func createReliable4Buckets(t *testing.T, db *bolt.DB) {
 	if err := db.Update(func(tx *bolt.Tx) error {
 		for _, b := range reliable4AllBuckets {
@@ -264,7 +305,7 @@ func createReliable4Buckets(t *testing.T, db *bolt.DB) {
 			}
 		}
 
-		return nil
+		return putDBSchemaVersion(tx, currentDBSchemaVersion)
 	}); err != nil {
 		t.Fatalf("creating buckets failed: %v", err)
 	}

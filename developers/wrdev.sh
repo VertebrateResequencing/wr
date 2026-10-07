@@ -496,11 +496,14 @@ cmd_writestorm_freeze() {  # writestorm-freeze [N] [archivers] - reliable4 FULL 
   # (no LSF, no manager, no real commands run - SAFE). PRE-FIX: goroutines explode
   # ~=N AND a synchronous archive is starved past the 60s client floor (freeze ->
   # falsely-lost -> churn) => the test FAILS. POST-FIX (single coalescing writer):
-  # goroutines bounded AND archive stays well under 60s => PASS. Confirmed A/B on
-  # pristine10 (~4.6GB freelist, N=100k): pre-fix maxArchiveLat 1m13s / 99k
-  # goroutines; post-fix under the floor. Needs a big DB (WR_WSFREEZE_DB or
-  # WRDEV_PRISTINE_DB) + RAM for N goroutines; each run COPIES it into $WRDEV_ROOT (which
-  # needs room for it) and mutates only that copy, removed again below.
+  # goroutines bounded AND archive stays well under 60s => PASS. Confirmed A/B on the
+  # version-0 original pristine10 (~4.6GB freelist, N=100k): pre-fix maxArchiveLat 1m13s /
+  # 99k goroutines; post-fix under the floor. Needs a big DB (WR_WSFREEZE_DB or
+  # WRDEV_PRISTINE_DB) + RAM for N goroutines; each run COPIES it into $WRDEV_ROOT (which needs
+  # room for it) and mutates only that copy, removed again below. wr no longer opens that
+  # version-0 original, and its compact-fixture copy has no freelist, so it cannot show a
+  # freelist-bound freeze: for a freelist A/B, generate a freelist-bloated DB with
+  # TestReliable4InflateDB (WR_INFLATE_FREELIST_GB sets the freelist; see backup-stall-check).
   # To A/B the fix itself, run this in a pre-fix `git worktree` vs the fixed tree.
   need_repo
   local n="${1:-100000}" archivers="${2:-8}"
@@ -530,11 +533,13 @@ cmd_archive_rate() {  # archive-rate [archivers] [seconds] [thinkMs] - reliable4
   # real job command ever executes): ARCHIVERS concurrent "runners", each doing think-then-
   # synchronously-archive on a COPY of a big freelist-bloated DB opened through the real
   # initDB, so every commit pays production's real freelist/page cost - measured at ~109ms
-  # per single-archive transaction on pristine10, ie. ~9 archives/s if each archive commits
-  # its own (production drained at ~12/s). The think time is JITTERED so the archivers do
-  # not run in lockstep: 660 archives arriving in the same microsecond all land in ONE of
-  # bbolt's 10ms batching windows and coalesce even WITHOUT the fix, which would make this
-  # gate pass vacuously. Jittered arrivals reproduce production spacing, where bbolt's Batch
+  # per single-archive transaction on the version-0 original pristine10, ie. ~9 archives/s if
+  # each archive commits its own (production drained at ~12/s). Its compact-fixture copy has no
+  # freelist, so for a freelist A/B generate a freelist-bloated DB with TestReliable4InflateDB
+  # (WR_INFLATE_FREELIST_GB sets the freelist; see backup-stall-check). The think time is
+  # JITTERED so the archivers do not run in lockstep: 660 archives arriving in the same
+  # microsecond all land in ONE of bbolt's 10ms batching windows and coalesce even WITHOUT the
+  # fix, which would make this gate pass vacuously. Jittered arrivals reproduce production spacing, where bbolt's Batch
   # stops coalescing at all (it detaches its batch the instant one starts, so arrivals
   # further apart than MaxBatchDelay each get a transaction of their own).
   #
@@ -640,10 +645,12 @@ cmd_archive_ceiling() {  # archive-ceiling [lowArchivers] [highArchivers] [secon
   # arrivals are not in lockstep (see archive-rate's header for why that is load-bearing).
   #
   # WHAT IT MEASURED, AND WHAT THAT SETTLED (2026-08-27, this host, load ~122). Production's
-  # ingredients were reproduced as closely as an in-process run can: the 6.89GiB pristine6 DB
-  # with its 3202MiB freelist, ON NFS (/nfs/hgi, the filesystem production's own DB lives on),
-  # with the periodic full-file backup FORCED ON and MEASURED streaming 27,347MB at 75.8MB/s,
-  # which is production's own ~80MB/s continuous copy.
+  # ingredients were reproduced as closely as an in-process run can: the 6.89GiB version-0
+  # original pristine6 DB with its 3202MiB freelist (its compact-fixture copy has no freelist,
+  # so for a freelist A/B generate a freelist-bloated DB with TestReliable4InflateDB, whose
+  # WR_INFLATE_FREELIST_GB sets the freelist; see backup-stall-check), ON NFS (/nfs/hgi, the
+  # filesystem production's own DB lives on), with the periodic full-file backup FORCED ON and
+  # MEASURED streaming 27,347MB at 75.8MB/s, which is production's own ~80MB/s continuous copy.
   #
   #   at HEAD:              low 8.37/s (mean 102ms, max 270ms), high 363.88/s (mean 851ms,
   #                         max 1620ms) => 43.5x for 57.1x the concurrency, 0 over the floor
@@ -844,11 +851,12 @@ cmd_add_storm() {  # add-storm [lowClients] [highClients] [seconds] [thinkMs] - 
   # transactions queued at once. A MISSING or NON-DISCRIMINATING measurement is a FAIL, never
   # a PASS.
   #
-  # WR_AS_DB (or WRDEV_PRISTINE_DB) must be a big production-shaped DB; /nfs/hgi/wr/sb10-bigdb/
-  # prod.db is the closest available (7.38GiB, 476,531 free pages = 24.6%, so 3.6MiB of freelist
-  # per commit, against production's own 9.10GiB / 99,443 pages / 0.8MiB after its 2026-08-25
-  # compaction - so this fixture OVERSTATES the per-transaction fixed cost, which the run
-  # reports so it can be read for what it is). Each run COPIES it into WRDEV_AS_WORK (default
+  # WR_AS_DB (or WRDEV_PRISTINE_DB) must be a big production-shaped DB; a copy of
+  # /nfs/hgi/wr/sb10-bigdb/prod.db made with 'wrdev.sh compact-fixture' is the closest available. The
+  # version-0 original (7.38GiB, 476,531 free pages = 24.6%, so 3.6MiB of freelist per commit,
+  # against production's own 9.10GiB / 99,443 pages / 0.8MiB after its 2026-08-25 compaction)
+  # OVERSTATED the per-transaction fixed cost; the compacted copy drops that freelist, and the
+  # run reports the cost so it can be read for what it is. Each run COPIES it into WRDEV_AS_WORK (default
   # $WRDEV_ROOT, which needs room for it plus its backup) and removes the copy again. PUT THAT
   # ON NFS: on local disk the run says nothing about production's filesystem.
   #
@@ -864,7 +872,7 @@ cmd_add_storm() {  # add-storm [lowClients] [highClients] [seconds] [thinkMs] - 
   local cmdbytes="${WRDEV_AS_CMD_BYTES:-256}"
   local db="${WR_AS_DB:-${WRDEV_PRISTINE_DB:-}}" gorc=0
   { [ -n "$db" ] && [ -f "$db" ]; } \
-    || die "set WR_AS_DB (or WRDEV_PRISTINE_DB) to a big production-shaped DB (eg. /nfs/hgi/wr/sb10-bigdb/prod.db)"
+    || die "set WR_AS_DB (or WRDEV_PRISTINE_DB) to a big production-shaped DB (eg. a copy of /nfs/hgi/wr/sb10-bigdb/prod.db made with '$0 compact-fixture')"
   local out="$WRDEV_ROOT/add-storm.out"
   mkdir -p "$WRDEV_ROOT" "$work"
   echo "add-path latency gate: ${low} then ${high} clients each adding ONE job per ${thinkms}ms,"
@@ -980,6 +988,119 @@ cmd_add_storm() {  # add-storm [lowClients] [highClients] [seconds] [thinkMs] - 
   return "$verdict"
 }
 
+cmd_compact_fixture() {  # compact-fixture <src> <dst> - a compacted, current-schema COPY of a big fixture
+  # wr refuses to open a database written before its schema version was stamped (version 0,
+  # such as the originals /nfs/hgi/wr/sb10-bigdb/pristine6, pristine10 and prod.db) until
+  # `wr manager compact` has rewritten it. This copies <src> to <dst> (cp -p) and compacts only
+  # the copy, so <src> is never opened for writing and stays usable by older trees. Compaction
+  # drops the original's freelist, so figures measured on a copy are not like for like with
+  # figures measured on its original.
+  #
+  # Refuses, before writing anything, if <dst> exists, if <src> and <dst> are the same file, if
+  # <src>.aslmanifest exists, or the manifest beside <src>'s symlink target does (an
+  # add-storm-fixture fixture embeds its own <src>.jobcwd path in its commands, so it is
+  # regenerated with add-storm-fixture from a compacted base, never copied), or if the dev
+  # manager is up. compact runs under a private copy of the dev manager's isolated config,
+  # pointed at <dst>, and refuses unless wr resolves that to <dst> on localhost and our dev
+  # port. On any exit it removes that config; on a refusal after it, a failed compaction, an
+  # interrupt (SIGINT, SIGTERM, or an outer timeout's SIGTERM) or any other early exit it also
+  # stops the cp or compaction it started, removes <dst> and compact's <dst>.compact-* temp, and
+  # removes any directories it created for <dst> that are left empty.
+  need_bin
+  local src="${1:-}" dst="${2:-}" manifest
+  { [ -n "$src" ] && [ -n "$dst" ]; } || die "usage: $0 compact-fixture <src> <dst>"
+  [ -f "$src" ] || die "compact-fixture: $src is not a file"
+  for manifest in "$src.aslmanifest" "$(realpath -e -- "$src").aslmanifest"; do
+    { [ ! -e "$manifest" ] && [ ! -L "$manifest" ]; } \
+      || die "REFUSING: $manifest exists, so $src is an add-storm-fixture fixture whose commands embed its .jobcwd path; regenerate it with '$0 add-storm-fixture' on a compacted base instead of copying it"
+  done
+  [ ! "$src" -ef "$dst" ] || die "REFUSING: $src and $dst are the same file"
+  { [ ! -e "$dst" ] && [ ! -L "$dst" ]; } || die "REFUSING: $dst already exists"
+  local pid; pid=$(mgr_pid "$DEV_RUN")
+  if [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1 && is_ours "$pid"; then
+    die "REFUSING: the dev manager (pid $pid) is up; stop it with '$0 stop' first"
+  fi
+  port_free "$DEV_PORT"
+
+  local adst d; adst=$(realpath -m -- "$dst")
+  # cf_cleanup reads these globals: the exit trap can run after this function's locals are gone.
+  # CF_MADE_DIR is the outermost directory of <dst> that this run creates, if any.
+  CF_CONFIG="" CF_DST="" CF_PID="" CF_DONE=0 CF_MADE_DIR="" CF_DST_DIR=$(dirname "$adst")
+  CF_TEMPS_BEFORE=$(compgen -G "$adst.compact-*" || true)
+  d="$CF_DST_DIR"
+  while [ ! -e "$d" ] && [ ! -L "$d" ]; do CF_MADE_DIR="$d" d=$(dirname "$d"); done
+  trap 'cf_cleanup' EXIT
+  trap 'exit 130' INT TERM
+  mkdir -p "$CF_DST_DIR" || die "could not create the directory of $adst"
+  # the compaction's own config: the dev manager's isolated one, with its database at the copy.
+  # Kept apart from $CONFIG_DIR, which every other mode rewrites without that line, and private
+  # to this run, so concurrent compactions into different <dst>s cannot rewrite each other's.
+  mkdir -p "$WRDEV_ROOT" || die "could not create $WRDEV_ROOT"
+  CF_CONFIG=$(mktemp -d "$WRDEV_ROOT/compact-fixture-config.XXXXXX") \
+    || die "could not make a private config directory under $WRDEV_ROOT"
+  private_config "$CF_CONFIG"
+  printf 'managerdbfile: "%s"\n' "$adst" >> "$CONFIG_DIR/.wr_config.development.yml"
+  # wr lets ~/.wr_config*.yml, ./.wr_config*.yml and env vars override WR_CONFIG_DIR, so ask wr
+  # itself where the database is before copying anything
+  local conf v
+  conf=$(cd "$CONFIG_DIR" && osunset && timeout 60 "$WR" conf --deployment development 2>&1) \
+    || die "wr conf --deployment development failed"
+  v=$(conf_value "$conf" ManagerDBFile)
+  [ "$v" = "$adst" ] || die "REFUSING: development resolves ManagerDBFile to '$v', not $adst (see wr conf)"
+  v=$(conf_value "$conf" ManagerHost)
+  [ "$v" = "localhost" ] || die "REFUSING: development resolves ManagerHost to '$v', not localhost (see wr conf)"
+  v=$(conf_value "$conf" ManagerPort)
+  [ "$v" = "$DEV_PORT" ] || die "REFUSING: development resolves to port '$v', not our isolated $DEV_PORT (see wr conf)"
+
+  # cp and compact run in the background and are waited for, so a signal runs the traps at
+  # once instead of after a copy or compaction that can take minutes
+  echo "copying $src ($(stat -c %s "$src") bytes) -> $adst"
+  CF_DST="$adst"
+  local rc=0
+  cp -p -- "$src" "$adst" &
+  CF_PID=$!
+  wait "$CF_PID" || rc=$?
+  CF_PID=""
+  [ "$rc" -eq 0 ] || die "could not copy $src to $adst (room for ~2x its size beside $adst?); removed it"
+  echo "compacting $adst"
+  ( cd "$CONFIG_DIR" && osunset && exec timeout 7200 "$WR" manager compact --deployment development ) 2>&1 &
+  CF_PID=$!
+  wait "$CF_PID" || rc=$?
+  CF_PID=""
+  [ "$rc" -eq 0 ] || die "compact-fixture: wr manager compact failed (exit $rc); removed $adst"
+  CF_DONE=1
+  echo "compact-fixture: $adst is a compacted copy of $src ($(stat -c %s "$adst") bytes)"
+}
+
+# cf_cleanup is compact-fixture's exit trap. It stops the cp or compaction (timeout, which passes
+# the signal on to wr) still running as our background job, by the pid we recorded when starting
+# it. Unless the compaction finished, it removes the copy and every <dst>.compact-* temp that was
+# not there before we started, and then every directory of the copy this run created that is
+# now empty. It always removes the private config.
+cf_cleanup() {
+  local t d
+  if [ -n "${CF_PID:-}" ] && jobs -p | grep -qxF -- "$CF_PID"; then
+    kill -TERM "$CF_PID" 2>/dev/null
+    wait "$CF_PID" 2>/dev/null
+  fi
+  if [ "${CF_DONE:-0}" != 1 ] && [ -n "${CF_DST:-}" ]; then
+    rm -f -- "$CF_DST"
+    while IFS= read -r t; do
+      [ -n "$t" ] || continue
+      printf '%s\n' "${CF_TEMPS_BEFORE:-}" | grep -qxF -- "$t" || rm -f -- "$t"
+    done < <(compgen -G "$CF_DST.compact-*")
+  fi
+  if [ "${CF_DONE:-0}" != 1 ] && [ -n "${CF_MADE_DIR:-}" ]; then
+    d="$CF_DST_DIR"
+    while rmdir -- "$d" 2>/dev/null && [ "$d" != "$CF_MADE_DIR" ]; do d=$(dirname "$d"); done
+  fi
+  if [ -n "${CF_CONFIG:-}" ]; then
+    rm -f -- "$CF_CONFIG/.wr_config.development.yml" "$CF_CONFIG/.wr_config.production.yml"
+    rmdir -- "$CF_CONFIG" 2>/dev/null
+  fi
+  return 0
+}
+
 cmd_add_storm_fixture() {  # add-storm-fixture [jobs] [selfAddPct] [depGroups] - BUILD the safe incomplete-job fixture add-storm-lsf needs
   # add-storm-lsf needs a database that looks like production's did when the add storm happened:
   # production had 118,213 INCOMPLETE jobs with dependencies, dep groups and limit groups, and
@@ -988,8 +1109,8 @@ cmd_add_storm_fixture() {  # add-storm-fixture [jobs] [selfAddPct] [depGroups] -
   # actual shape) some of them ADD MORE JOBS as they run. A complete-only fixture removes every
   # one of those conditions, so this command manufactures them, harmlessly.
   #
-  # WHAT IT PRODUCES. On top of WRDEV_PRISTINE_DB (a complete-only base, so the file keeps a
-  # production-sized freelist and per-commit cost - /nfs/hgi/wr/sb10-bigdb/pristine6), N jobs that
+  # WHAT IT PRODUCES. On top of WRDEV_PRISTINE_DB (a complete-only base of production size - a
+  # copy of /nfs/hgi/wr/sb10-bigdb/pristine6 made with 'wrdev.sh compact-fixture'), N jobs that
   # are:
   #  - HARMLESS by construction. Every command starts with the safe prefix "echo aslfix", which is
   #    recorded in the manifest. add-storm-lsf re-checks every incomplete job before it lets
@@ -1019,7 +1140,8 @@ cmd_add_storm_fixture() {  # add-storm-fixture [jobs] [selfAddPct] [depGroups] -
   # group and job cwd. That cwd is <fixture>.jobcwd - it belongs to the FIXTURE, not to the
   # generation run, so deleting this run's work dir cannot break the fixture's jobs. It gathers one
   # wr_cwd subdirectory per job run, and is safe to delete between runs. add-storm-lsf REFUSES any fixture without a matching manifest, before it starts a
-  # manager, which is what stops an unstamped database (prod.db and its 118,213 real live jobs)
+  # manager, which is what stops an unstamped database (prod.db, or a compact-fixture copy of it,
+  # and its 118,213 real live jobs)
   # from ever reaching a scheduler.
   #
   # COST: dominated by two 7.4GB NFS copies of the base (~50s each) and one big add; 20,000 jobs
@@ -1037,7 +1159,7 @@ cmd_add_storm_fixture() {  # add-storm-fixture [jobs] [selfAddPct] [depGroups] -
   # the self-adding commands embed this path unquoted, and asl_prefix_audit matches it literally
   case "$jobcwd" in (*[!A-Za-z0-9._/-]*) die "the fixture path '$out' may only contain letters, digits and ._/-" ;; esac
   { [ -n "$base" ] && [ -f "$base" ]; } \
-    || die "set WRDEV_PRISTINE_DB to a big COMPLETE-ONLY base database (eg. /nfs/hgi/wr/sb10-bigdb/pristine6, or make one with '$0 backup-stall-check'); this command adds the incomplete jobs itself"
+    || die "set WRDEV_PRISTINE_DB to a big COMPLETE-ONLY base database (eg. a copy of /nfs/hgi/wr/sb10-bigdb/pristine6 made with '$0 compact-fixture', or make one with '$0 backup-stall-check'); this command adds the incomplete jobs itself"
   case "$n$selfpct$dgroups" in (*[!0-9]*) die "jobs, selfAddPct and depGroups must be numbers" ;; esac
   { [ "$n" -gt 0 ] && [ "$dgroups" -gt 0 ] && [ "$selfpct" -ge 0 ] && [ "$selfpct" -le 100 ]; } \
     || die "need jobs > 0, depGroups > 0 and 0 <= selfAddPct <= 100"
@@ -1080,8 +1202,8 @@ cmd_add_storm_fixture() {  # add-storm-fixture [jobs] [selfAddPct] [depGroups] -
   pre=$(asl_incomplete_total)
   if [ "$pre" != "0" ]; then
     echo "FAIL (UNSAFE BASE): $base carries $pre incomplete job(s) (-1 means unreadable), so it is"
-    echo "  not a complete-only base. Nothing was added. Use /nfs/hgi/wr/sb10-bigdb/pristine6 or"
-    echo "  generate a base with '$0 backup-stall-check'."
+    echo "  not a complete-only base. Nothing was added. Use a copy of /nfs/hgi/wr/sb10-bigdb/pristine6"
+    echo "  made with '$0 compact-fixture', or generate a base with '$0 backup-stall-check'."
     return 1
   fi
   echo "base check: 0 incomplete jobs, so every incomplete job in the fixture is one this command made"
@@ -1292,8 +1414,8 @@ cmd_add_storm_lsf() {  # add-storm-lsf [adders] [preKillSec] [postRestartSec] [l
   #  1. WRDEV_PRISTINE_DB must have a <db>.aslmanifest written by `add-storm-fixture`, whose size
   #     and mtime still match the file. No manifest, or a mismatch, and this command REFUSES
   #     BEFORE STARTING ANY MANAGER. That is what keeps an unstamped database out - notably
-  #     /nfs/hgi/wr/sb10-bigdb/prod.db, a copy of real production with 118,213 live jobs (measured
-  #     2026-08-28) whose commands a real bsub would RUN AS YOU. Set WRDEV_ASL_BOLTBUCKETS to a
+  #     /nfs/hgi/wr/sb10-bigdb/prod.db and its compact-fixture copies, copies of real production
+  #     with 118,213 live jobs (measured 2026-08-28) whose commands a real bsub would RUN AS YOU. Set WRDEV_ASL_BOLTBUCKETS to a
   #     boltbuckets binary (eg. /nfs/hgi/wr/sb10-pprof/boltbuckets/boltbuckets) for an additional
   #     OFFLINE jobslive count against the manifest; it is a cross-check, not a dependency.
   #  2. The fixture's jobs are in a limit group set to 0, so recovery cannot make them
@@ -1343,7 +1465,7 @@ cmd_add_storm_lsf() {  # add-storm-lsf [adders] [preKillSec] [postRestartSec] [l
   # LAYER 1, before any manager exists: the fixture must be stamped, and the stamp must still
   # describe the file it sits beside.
   local mf="$db.aslmanifest" minc mprefix mblock mfixrg mkidrg mjobcwd msize mmtime asize amtime mver
-  [ -f "$mf" ] || die "REFUSING to open $db: no $mf sidecar. This command raises a limit group and lets a database's incomplete jobs RUN on real LSF, so it only opens a fixture stamped by '$0 add-storm-fixture'. An unstamped database can hold somebody else's live jobs - /nfs/hgi/wr/sb10-bigdb/prod.db holds 118,213 - whose commands would then run as you"
+  [ -f "$mf" ] || die "REFUSING to open $db: no $mf sidecar. This command raises a limit group and lets a database's incomplete jobs RUN on real LSF, so it only opens a fixture stamped by '$0 add-storm-fixture'. An unstamped database can hold somebody else's live jobs - /nfs/hgi/wr/sb10-bigdb/prod.db and its compact-fixture copies hold 118,213 - whose commands would then run as you"
   mver=$(asl_manifest_field "$mf" aslfixture)
   [ "$mver" != "1" ] || die "REFUSING to open $db: it is a version 1 fixture, whose self-adding jobs bake in the wr binary and WR_CONFIG_DIR of the root that generated it, so they would add to that root's manager (or fail) instead of this run's. Regenerate it with '$0 add-storm-fixture'"
   [ "$mver" = "2" ] || die "REFUSING to open $db: $mf is not an aslfixture version 2 manifest"
@@ -1903,8 +2025,9 @@ cmd_report_storm() {  # report-storm [jobs] [runners] [limit] [seconds] - reliab
   # job / must-reserve / receive-time-out / other) for started+touch+archive, archive latency
   # max/p50/p99, reserves, reconnects, and the live queue breakdown; final VERDICT = drained or churned.
   # Optional big-DB confound (adds realistic archive-commit latency + periodic backups):
-  #   WR_RS_DB=/nfs/hgi/wr/sb10-bigdb/pristine10  (serve() opens a mutable COPY under WRDEV_ROOT,
-  #                                                 removed again below; needs ~2x its size there)
+  #   WR_RS_DB=<a copy of /nfs/hgi/wr/sb10-bigdb/pristine10 made with 'wrdev.sh compact-fixture'>
+  #   (serve() opens a mutable COPY of it under WRDEV_ROOT, removed again below; needs ~2x its
+  #   size there)
   # Other env knobs: WR_RS_TTR_MS (server ItemTTR, default 60000 = real), WR_RS_CMD_MS (simulated
   # command runtime, default 0 = pure storm), WR_RS_STATUS=N (N concurrent `wr status`-style pollers
   # that drive the O(backlog) s.q.AllItems() scan + complete-jobs DB read - the prime-suspect
@@ -2098,18 +2221,19 @@ cmd_unsuspend_burst() {  # unsuspend-burst [jobs] [pprofPort] - reliable4 PROD F
   # stays low and drains fast, no bwmax growth, status stays responsive => NO FREEZE.
   # This is the authoritative gate a /bugfix reviewer must re-run post-fix.
   #
-  # REQUIRES WRDEV_PRISTINE_DB = a big freelist-bloated DB to copy: the real prod.db
-  # copy (/nfs/hgi/wr/sb10-bigdb/prod.db - most faithful for the SUSTAINED >60s freeze,
-  # but NB it recovers its own live jobs; use only with -s local) or a record-dense
-  # pristine* DB (see backup-stall-check; all-complete, no live recovery - the clean
-  # choice for the bw-explosion signature). WRDEV_ROOT needs room for ~2x the DB (copy
+  # REQUIRES WRDEV_PRISTINE_DB = a big DB to copy: a copy of the real production copy
+  # /nfs/hgi/wr/sb10-bigdb/prod.db made with 'wrdev.sh compact-fixture' (its version-0 original,
+  # whose freelist compaction drops, was the most faithful for the SUSTAINED >60s freeze;
+  # NB it recovers its own live jobs, so use only with -s local) or a compact-fixture copy
+  # of a record-dense pristine* DB (see backup-stall-check; all-complete, no live recovery -
+  # the clean choice for the bw-explosion signature). WRDEV_ROOT needs room for ~2x the DB (copy
   # + backup); point it at a roomy filesystem (e.g. /nfs/hgi/wr/...), NOT a small home.
   # Goroutine dumps are classified then deleted so they cannot fill the disk.
   need_bin; ensure_config
   local n="${1:-100000}" pprof="${2:-6062}"
   local pr="$PROD_RUN" plog="$PROD_RUN/log"
   [ -n "${WRDEV_PRISTINE_DB:-}" ] && [ -f "${WRDEV_PRISTINE_DB}" ] \
-    || die "set WRDEV_PRISTINE_DB to a big freelist-bloated DB (e.g. /nfs/hgi/wr/sb10-bigdb/pristine10 or .../prod.db)"
+    || die "set WRDEV_PRISTINE_DB to a big DB (e.g. a copy of /nfs/hgi/wr/sb10-bigdb/pristine10 or .../prod.db made with '$0 compact-fixture')"
   cmd_prod_stop >/dev/null 2>&1; sleep 2
   mkdir -p "$pr"; rm -f "$pr/db" "$pr/db_bk"* "$pr/log" 2>/dev/null
   echo "copying pristine DB ${WRDEV_PRISTINE_DB} -> $pr/db (mutated by this run)"
@@ -2174,8 +2298,9 @@ cmd_unsuspend_burst() {  # unsuspend-burst [jobs] [pprofPort] - reliable4 PROD F
       echo "  + SUSTAINED FREEZE: a committer stayed blocked >=${peakbwmax}min (crosses the 60s client floor => churn)."
     else
       echo "  NB the storm here drained without any single committer blocking >=1min (this synthetic freelist"
-      echo "  commits faster than prod's). For the sustained >60s freeze use the real freelist-bloated"
-      echo "  WRDEV_PRISTINE_DB=/nfs/hgi/wr/sb10-bigdb/prod.db and/or a bigger burst; the bw explosion above"
+      echo "  commits faster than prod's). For the sustained >60s freeze use a bigger burst and/or"
+      echo "  WRDEV_PRISTINE_DB=<a copy of /nfs/hgi/wr/sb10-bigdb/prod.db made with '$0 compact-fixture'>;"
+      echo "  the bw explosion above"
       echo "  IS the DB-size-independent primary signature and the clean pre/post-fix A/B gate."
     fi
   else
@@ -5103,7 +5228,8 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         updateJobAfterChange storm on a big freelist DB (WR_WSFREEZE_DB / WRDEV_PRISTINE_DB)
                         and times db.archiveJob. Pre-fix a synchronous archive is starved past the 60s
                         client floor (freeze->churn) + goroutines explode ~=N; post-fix bounded + under
-                        the floor (defaults 100000 8). Confirmed pre-fix 1m13s @ N=100k on pristine10.
+                        the floor (defaults 100000 8). Confirmed pre-fix 1m13s @ N=100k on the
+                        version-0 original pristine10; use a compact-fixture copy of it now.
   archive-rate [archivers] [seconds] [thinkMs]
                         reliable4 FINDING 2 SCALE GATE (in-process, SAFE - no LSF/manager/commands):
                         N concurrent "runners" think-then-synchronously-archive on a COPY of a big
@@ -5175,12 +5301,23 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         db.setBatchTuning; not a fix) - RED without it and GREEN with it is the
                         proof the gate measures the fragmentation. WRDEV_AS_BACKUP=0 A/Bs the
                         backup ingredient away, WRDEV_AS_CMD_BYTES the record size.
+  compact-fixture <src> <dst>
+                        cp -p <src> to <dst> and run 'wr manager compact' on <dst> only, under the
+                        dev manager's isolated config pointed at <dst>: the way to get a copy of a
+                        version-0 original (/nfs/hgi/wr/sb10-bigdb/pristine6, pristine10, prod.db),
+                        which wr refuses to open, that it will open. <src> is never opened for
+                        writing. Compaction drops the original's freelist. Refuses if <dst>
+                        exists, if <src> and <dst> are the same file, if <src>.aslmanifest or its
+                        symlink target's manifest exists (regenerate such a fixture with
+                        add-storm-fixture on a compacted base), if the dev manager is up, or if wr
+                        does not resolve the config to <dst> on localhost; removes <dst> and
+                        compact's temp file if the compaction fails or is interrupted.
   add-storm-fixture [jobs] [selfAddPct] [depGroups]
                         BUILDS the fixture add-storm-lsf needs, because a complete-only database
                         removes the condition the add path interacts with: production had 118,213
                         INCOMPLETE jobs with dependencies, dep groups and limit groups while the
-                        add storm happened. On top of WRDEV_PRISTINE_DB (a COMPLETE-ONLY base, so
-                        the file keeps a production-sized freelist - /nfs/hgi/wr/sb10-bigdb/
+                        add storm happened. On top of WRDEV_PRISTINE_DB (a COMPLETE-ONLY base of
+                        production size - a compact-fixture copy of /nfs/hgi/wr/sb10-bigdb/
                         pristine6) it adds N jobs (defaults 20000 5 200) that are harmless by
                         construction (every command starts "echo aslfix"), dependent (half join a
                         dep group, half DEPEND on one), and blocked at limit 0 so opening the
@@ -5217,9 +5354,9 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         over the manager's 10s slow-request threshold, while real runners archive.
                         REQUIRES WRDEV_PRISTINE_DB to carry a matching <db>.aslmanifest: without
                         one, or on a size/mtime mismatch, it REFUSES BEFORE STARTING A MANAGER,
-                        which is what keeps an unstamped database out - prod.db is a copy of real
-                        production with 118,213 live jobs whose commands a real bsub would RUN AS
-                        YOU. It then re-checks the recovered count and audits EVERY incomplete
+                        which is what keeps an unstamped database out - prod.db and its
+                        compact-fixture copies are copies of real production with 118,213 live
+                        jobs whose commands a real bsub would RUN AS YOU. It then re-checks the recovered count and audits EVERY incomplete
                         job's command (only the exact forms the generator writes pass) before
                         raising the limit. It rewrites <fixture>.jobcwd/wradd.sh for its own
                         root first, and refuses while another run holds wradd.owner.
@@ -5264,7 +5401,8 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         the unbounded per-change 'go db.bolt.Batch' storm. An embedded goroutine
                         classifier reports the freeze signature (bw Batch-blocked / bwmax / in_commit /
                         total) + control-RPC latency (defaults 100000 6062). REQUIRES
-                        WRDEV_PRISTINE_DB=<big DB> (pristine10, or .../prod.db). Post-fix gate: bw stays
+                        WRDEV_PRISTINE_DB=<big DB> (a compact-fixture copy of pristine10 or
+                        prod.db). Post-fix gate: bw stays
                         low, no bwmax growth, status stays responsive.
   exec-impossible-retries [jobs] [seconds] [cores]
                         reliable4 FINDING 5 SCALE GATE (real binary, farm-safe - -s local, no LSF job
@@ -5401,6 +5539,7 @@ main() {
     archive-ceiling) cmd_archive_ceiling "${2:-20}" "${3:-1143}" "${4:-180}" "${5:-2300}" ;;
     add-storm) cmd_add_storm "${2:-20}" "${3:-700}" "${4:-120}" "${5:-2000}" ;;
     add-storm-lsf) cmd_add_storm_lsf "${2:-24}" "${3:-120}" "${4:-120}" "${5:-30}" "${6:-1000}" ;;
+    compact-fixture) cmd_compact_fixture "${2:-}" "${3:-}" ;;
     add-storm-fixture) cmd_add_storm_fixture "${2:-20000}" "${3:-5}" "${4:-200}" ;;
     confirm-dead-leak) cmd_confirm_dead_leak "${2:-40}" "${3:-localhost}" ;;
     writestorm-freeze) cmd_writestorm_freeze "${2:-100000}" "${3:-8}" ;;

@@ -1042,7 +1042,7 @@ func TestDBLoadDropsImpossibleCleanups(t *testing.T) {
 
 			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
 
-			jobs, errr := testDB.recoverIncompleteJobs()
+			jobs, _, errr := testDB.recoverIncompleteJobs()
 			So(errr, ShouldBeNil)
 			So(jobs, ShouldHaveLength, 2)
 
@@ -1108,7 +1108,7 @@ func TestDBContainerImageUser(t *testing.T) {
 
 			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
 
-			jobs, errr := testDB.recoverIncompleteJobs()
+			jobs, _, errr := testDB.recoverIncompleteJobs()
 			So(errr, ShouldBeNil)
 			So(jobs, ShouldHaveLength, 2)
 
@@ -1271,7 +1271,7 @@ func TestDBMapFreelistOpen(t *testing.T) {
 
 			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
 
-			jobs, errr := testDB.recoverIncompleteJobs()
+			jobs, _, errr := testDB.recoverIncompleteJobs()
 			So(errr, ShouldBeNil)
 			So(len(jobs), ShouldEqual, 1)
 			So(jobs[0].Cmd, ShouldEqual, "echo freelist")
@@ -1311,7 +1311,7 @@ func TestDBMapFreelistRoundTrip(t *testing.T) {
 
 			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
 
-			live, errr := testDB.recoverIncompleteJobs()
+			live, _, errr := testDB.recoverIncompleteJobs()
 			So(errr, ShouldBeNil)
 			So(len(live), ShouldEqual, 2)
 
@@ -1605,7 +1605,7 @@ func dbTopLevelBuckets(t *testing.T, testDB *db) []string {
 func liveJobCmdsByKey(t *testing.T, testDB *db) map[string]string {
 	t.Helper()
 
-	jobs, err := testDB.recoverIncompleteJobs()
+	jobs, _, err := testDB.recoverIncompleteJobs()
 	So(err, ShouldBeNil)
 
 	byKey := make(map[string]string, len(jobs))

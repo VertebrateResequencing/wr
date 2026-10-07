@@ -30,7 +30,9 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/json"
+	"hash/crc32"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -58,14 +60,65 @@ const (
 	mqdbWaitTimeout    = 20 * time.Second
 	mqdbFakeExeMode    = 0o700
 	mqdbShell          = "bash"
+
+	// mqdbCRCBytes is the length of the CRC of the live record that starts a
+	// job run-state record.
+	mqdbCRCBytes = 4
 )
+
+// readStoredRunStates decodes every job run-state record in the (closed)
+// manager database whose CRC matches its job's live record, through that live
+// record as recovery overlays it: the live record decoded, then the run state
+// decoded over it, which sets every run-state field since none is omitted when
+// empty. raw is the run-state record.
+func readStoredRunStates(dbFile string) []mqdbStoredJob {
+	db, err := bolt.Open(dbFile, 0o600, &bolt.Options{ReadOnly: true, Timeout: 5 * time.Second})
+	So(err, ShouldBeNil)
+
+	defer db.Close()
+
+	var stored []mqdbStoredJob
+
+	castagnoli := crc32.MakeTable(crc32.Castagnoli)
+
+	err = db.View(func(tx *bolt.Tx) error {
+		runStates, live := tx.Bucket([]byte("jobRunState")), tx.Bucket([]byte("jobslive"))
+		So(runStates, ShouldNotBeNil)
+
+		return runStates.ForEach(func(key, record []byte) error {
+			liveRecord := live.Get(key)
+
+			matches := liveRecord != nil && len(record) >= mqdbCRCBytes &&
+				binary.BigEndian.Uint32(record) == crc32.Checksum(liveRecord, castagnoli)
+			if !matches {
+				return nil
+			}
+
+			job := &jobqueue.Job{}
+			if errd := codec.NewDecoderBytes(liveRecord, new(codec.BincHandle)).Decode(job); errd != nil {
+				return errd
+			}
+
+			if errd := codec.NewDecoderBytes(record[mqdbCRCBytes:], new(codec.BincHandle)).Decode(job); errd != nil {
+				return errd
+			}
+
+			stored = append(stored, mqdbStoredJob{raw: string(record), job: job})
+
+			return nil
+		})
+	})
+	So(err, ShouldBeNil)
+
+	return stored
+}
 
 // TestManagerQueueDefaultsAreNotStored checks that the manager's --queue and
 // --queues_avoid defaults are only applied when the lsf scheduler submits, and
 // are never stored in a job: jobs added via the wr add parsing path, the Go
 // client and the REST API have no scheduler_queue or scheduler_queues_avoid in
-// their stored Requirements.Other, live or archived, yet bsub is given the
-// default queue.
+// their stored Requirements.Other, live, archived or in a reserved job's
+// run-state record, yet bsub is given the default queue.
 func TestManagerQueueDefaultsAreNotStored(t *testing.T) {
 	ctx := context.Background()
 
@@ -148,6 +201,10 @@ func TestManagerQueueDefaultsAreNotStored(t *testing.T) {
 
 		liveCmds := addBatch("live")
 
+		// a job that stays live with its run-state record, which also holds its
+		// requirements.
+		So(reserveViaRunnerGroups(jq, bsubCallsDir, 1, func(*jobqueue.Job) {}), ShouldEqual, 1)
+
 		bsubCalls := waitForBsubCalls(bsubCallsDir)
 
 		So(jq.Disconnect(), ShouldBeNil)
@@ -169,14 +226,17 @@ func TestManagerQueueDefaultsAreNotStored(t *testing.T) {
 			}
 		})
 
-		Convey("no stored job, live or archived, has a scheduler queue setting", func() {
+		Convey("no stored job, live, archived or in a run-state record, has a scheduler queue setting", func() {
 			live := readStoredJobs(serverConfig.DBFile, "jobslive")
 			complete := readStoredJobs(serverConfig.DBFile, "jobscomplete")
 
 			So(storedCmds(live), ShouldResemble, sortedCopy(liveCmds))
 			So(storedCmds(complete), ShouldResemble, sortedCopy(archivedCmds))
 
-			for _, stored := range append(live, complete...) {
+			runStates := readStoredRunStates(serverConfig.DBFile)
+			So(runStates, ShouldNotBeEmpty)
+
+			for _, stored := range slices.Concat(live, complete, runStates) {
 				So(strings.Contains(stored.raw, mqdbKeyQueue), ShouldBeFalse)
 				So(strings.Contains(stored.raw, mqdbQueueMarker), ShouldBeFalse)
 
@@ -268,6 +328,45 @@ func postRESTJob(t *testing.T, testConfig *internal.Config, token []byte, cmd, r
 	So(resp.StatusCode, ShouldEqual, http.StatusCreated)
 }
 
+// reserveViaRunnerGroups reserves and starts up to n jobs, using the scheduler
+// groups of the runners fake bsub was asked to submit, calls finish with each,
+// and returns how many it reserved.
+func reserveViaRunnerGroups(jq *jobqueue.Client, callsDir string, n int, finish func(*jobqueue.Job)) int {
+	groupRe := regexp.MustCompile(`--group '([^']+)'`)
+	deadline := time.Now().Add(mqdbWaitTimeout)
+	reserved := 0
+
+	for reserved < n && time.Now().Before(deadline) {
+		groups := make(map[string]bool)
+
+		for _, call := range waitForBsubCalls(callsDir) {
+			for _, arg := range call {
+				if m := groupRe.FindStringSubmatch(arg); m != nil {
+					groups[m[1]] = true
+				}
+			}
+		}
+
+		for group := range groups {
+			if reserved == n {
+				break
+			}
+
+			job, err := jq.ReserveScheduled(100*time.Millisecond, group)
+			if err != nil || job == nil {
+				continue
+			}
+
+			So(jq.Started(job, os.Getpid()), ShouldBeNil)
+			finish(job)
+
+			reserved++
+		}
+	}
+
+	return reserved
+}
+
 // waitForBsubCalls waits until fake bsub has been called at least once, and
 // returns the args of each completed call.
 func waitForBsubCalls(callsDir string) [][]string {
@@ -302,35 +401,9 @@ func waitForBsubCalls(callsDir string) [][]string {
 // scheduler groups of the runners fake bsub was asked to submit, and returns
 // how many it archived.
 func archiveViaRunnerGroups(jq *jobqueue.Client, callsDir string, n int) int {
-	groupRe := regexp.MustCompile(`--group '([^']+)'`)
-	deadline := time.Now().Add(mqdbWaitTimeout)
-	archived := 0
-
-	for archived < n && time.Now().Before(deadline) {
-		groups := make(map[string]bool)
-
-		for _, call := range waitForBsubCalls(callsDir) {
-			for _, arg := range call {
-				if m := groupRe.FindStringSubmatch(arg); m != nil {
-					groups[m[1]] = true
-				}
-			}
-		}
-
-		for group := range groups {
-			job, err := jq.ReserveScheduled(100*time.Millisecond, group)
-			if err != nil || job == nil {
-				continue
-			}
-
-			So(jq.Started(job, os.Getpid()), ShouldBeNil)
-			So(jq.Archive(job, &jobqueue.JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
-
-			archived++
-		}
-	}
-
-	return archived
+	return reserveViaRunnerGroups(jq, callsDir, n, func(job *jobqueue.Job) {
+		So(jq.Archive(job, &jobqueue.JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
+	})
 }
 
 // splitBsubQueueArgs returns the values given to -q in args, and all the other

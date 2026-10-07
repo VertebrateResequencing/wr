@@ -328,7 +328,7 @@ func reliable4WSSamplePeak(baseline int) int {
 func reliable4WSAssertPersisted(t *testing.T, database *db, jobs []*Job) {
 	t.Helper()
 
-	recovered, err := database.recoverIncompleteJobs()
+	recovered, _, err := database.recoverIncompleteJobs()
 	if err != nil {
 		t.Fatalf("recoverIncompleteJobs failed: %v", err)
 	}

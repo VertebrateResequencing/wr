@@ -28,11 +28,18 @@ package cmd
 import (
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -40,6 +47,7 @@ import (
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	. "github.com/smartystreets/goconvey/convey"
+	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -52,6 +60,26 @@ const (
 	managerStatusTestTotal     = 150472
 	managerStatusTestProcessed = 9000
 )
+
+// managerStartHelperEnv, when set, makes TestManagerStartHelperProcess run
+// RootCmd with the arguments after "--".
+const managerStartHelperEnv = "WR_STARTTEST_HELPER"
+
+// managerStartHelperName is the helper test, as it appears in the argv of every
+// process the start tests run.
+const managerStartHelperName = "TestManagerStartHelperProcess"
+
+// managerStartTestDBs are the databases a manager must refuse to start on: an
+// unversioned one with a jobslive bucket, which must be compacted first, and
+// one stamped newer than this wr supports. want is what the refusal says.
+var managerStartTestDBs = []struct {
+	name    string
+	version uint64
+	want    string
+}{
+	{name: "an unversioned database with a jobslive bucket", version: 0, want: "wr manager compact"},
+	{name: "a database stamped 3", version: 3, want: "schema version 3"},
+}
 
 // TestManagerDBUpgradeStatusLogMessage covers every state the startup sidecar
 // can hold, because the manager now writes that sidecar on every start and not
@@ -314,6 +342,182 @@ func TestManagerCompactReportsStrippedOutput(t *testing.T) {
 			So(logged.String(), ShouldNotContainSubstring, "could not read")
 		})
 	})
+}
+
+func TestManagerCompactHelpSaysCompactIsRequired(t *testing.T) {
+	Convey("E3.1: compact's help ends by saying an old database must be compacted once", t, func() {
+		lastParagraph := `A database created by wr 0.37.2 or earlier must be compacted once before
+the manager will start on it. wr versions 0.37.0 to 0.37.2 kept the output
+of every successfully completed command in the database, up to about 16KB
+each; compact removes it and reports how many completed commands it was
+removed from. Later compactions skip this. compact refuses (exiting
+non-zero, leaving the database untouched) a database with a newer schema
+version than this wr supports, or with a malformed schema stamp.`
+
+		So(managerCompactCmd.Long, ShouldEndWith, "\n\n"+lastParagraph)
+	})
+}
+
+// TestManagerStartHelperProcess is not a test: it is the body of the `wr`
+// process the start tests run, and of the daemon that process forks, since
+// daemonArgs clones os.Args. It does nothing unless managerStartHelperEnv is
+// set.
+func TestManagerStartHelperProcess(t *testing.T) {
+	if os.Getenv(managerStartHelperEnv) == "" {
+		return
+	}
+
+	sep := slices.Index(os.Args, "--")
+	if sep < 0 {
+		os.Exit(2)
+	}
+
+	RootCmd.SetArgs(os.Args[sep+1:])
+
+	if err := RootCmd.Execute(); err != nil {
+		os.Exit(2)
+	}
+
+	os.Exit(0)
+}
+
+// managerStartTestEnv is an isolated production config for a `wr manager start`
+// subprocess: its own HOME, working directory, manager directory and free
+// ports, so neither the user's config nor their manager is involved.
+type managerStartTestEnv struct {
+	dir, port, managerDir, dbFile, logFile, pidFile string
+	env                                             []string
+}
+
+// newManagerStartTestEnv makes a managerStartTestEnv whose database is
+// writeManagerStartTestDB(version), and arranges for any manager daemon it
+// leaves running to be killed when the test ends.
+func newManagerStartTestEnv(t *testing.T, version uint64) *managerStartTestEnv {
+	t.Helper()
+
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	So(os.Mkdir(home, 0o700), ShouldBeNil)
+
+	port, webPort := freeStatusTestPorts(t)
+	managerDir := filepath.Join(dir, "wr_"+internal.Production)
+
+	e := &managerStartTestEnv{
+		dir: dir, port: port, managerDir: managerDir,
+		dbFile:  filepath.Join(managerDir, "db"),
+		logFile: filepath.Join(managerDir, "log"),
+		pidFile: filepath.Join(managerDir, "pid"),
+	}
+
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "WR_") && !strings.HasPrefix(kv, "HOME=") {
+			e.env = append(e.env, kv)
+		}
+	}
+
+	e.env = append(e.env, "HOME="+home, managerStartHelperEnv+"=1", "WR_MANAGERDIR="+filepath.Join(dir, "wr"),
+		"WR_MANAGERPORT="+port, "WR_MANAGERWEB="+webPort)
+
+	writeManagerStartTestDB(e.dbFile, version)
+
+	t.Cleanup(e.killDaemon)
+
+	return e
+}
+
+// run runs `wr` with args in the helper process, from e.dir, and returns its
+// exit code and its stdout and stderr. A process still running after a minute
+// is killed.
+func (e *managerStartTestEnv) run(args ...string) (int, string, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, os.Args[0], //nolint:gosec // re-executes this test binary
+		append([]string{"-test.run=^" + managerStartHelperName + "$", "--"}, args...)...)
+	cmd.Dir = e.dir
+	cmd.Env = e.env
+
+	var stdout, stderr strings.Builder
+
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	So(ctx.Err(), ShouldBeNil)
+
+	if err != nil {
+		var exitErr *exec.ExitError
+		So(errors.As(err, &exitErr), ShouldBeTrue)
+
+		return exitErr.ExitCode(), stdout.String(), stderr.String()
+	}
+
+	return 0, stdout.String(), stderr.String()
+}
+
+// killDaemon kills the manager daemon in e's pid file, if it is still running
+// and its argv shows it is this test's helper.
+func (e *managerStartTestEnv) killDaemon() {
+	content, err := os.ReadFile(e.pidFile)
+	if err != nil {
+		return
+	}
+
+	pid, err := strconv.Atoi(strings.TrimSpace(string(content)))
+	if err != nil || !internal.ValidPid(pid) {
+		return
+	}
+
+	if !slices.Contains(processArgs(pid), "-test.run=^"+managerStartHelperName+"$") {
+		return
+	}
+
+	_ = syscall.Kill(pid, syscall.SIGKILL) //nolint:errcheck
+}
+
+// badLogLines returns the error and critical lines in e's manager log since
+// the manager last started.
+func (e *managerStartTestEnv) badLogLines() []string {
+	return getBadLogLinesFromFile(e.logFile, false, nil)
+}
+
+func TestManagerStartRefusesUnsupportedDB(t *testing.T) {
+	for _, db := range managerStartTestDBs {
+		Convey("wr manager start --foreground on "+db.name+" shows the refusal", t, func() {
+			e := newManagerStartTestEnv(t, db.version)
+
+			code, _, stderr := e.run(managerWord, startWord, "--foreground", deploymentFlag, internal.Production)
+
+			So(code, ShouldNotEqual, 0)
+			So(stderr, ShouldContainSubstring, db.want)
+			So(anyContains(e.badLogLines(), db.want), ShouldBeTrue)
+		})
+	}
+}
+
+func TestManagerStartDaemonShowsRefusal(t *testing.T) {
+	for _, db := range managerStartTestDBs {
+		Convey("wr manager start daemonised on "+db.name+" shows the refusal", t, func() {
+			e := newManagerStartTestEnv(t, db.version)
+
+			code, stdout, stderr := e.run(managerWord, startWord, deploymentFlag, internal.Production)
+			output := stdout + stderr
+
+			So(code, ShouldNotEqual, 0)
+
+			badLines := e.badLogLines()
+			So(badLines, ShouldNotBeEmpty)
+
+			for _, line := range badLines {
+				So(output, ShouldContainSubstring, line)
+			}
+
+			So(output, ShouldContainSubstring,
+				"wr manager failed to start on port "+e.port+": manager process exited before becoming ready")
+			So(output, ShouldContainSubstring, db.want)
+		})
+	}
 }
 
 func TestWaitForManagerStartupDuringDBUpgrade(t *testing.T) {
@@ -1193,4 +1397,84 @@ func TestManagerStartLocalLimitHelp(t *testing.T) {
 		So(managerStartCmd.Flags().Lookup("max_ram").Usage, ShouldNotContainSubstring,
 			"0 prevents jobs running locally")
 	})
+}
+
+func TestManagerCompactRefusesNewerDB(t *testing.T) {
+	Convey("compact refuses a database stamped newer than this wr supports, leaving it unchanged", t, func() {
+		oldConfig := config
+		oldCAFile := caFile
+		oldExit := managerCompactExit
+
+		t.Cleanup(func() {
+			config = oldConfig
+			caFile = oldCAFile
+			managerCompactExit = oldExit
+
+			clog.ToDefault()
+		})
+
+		dir := t.TempDir()
+		config = &internal.Config{
+			ManagerDBFile:    filepath.Join(dir, "db"),
+			ManagerTokenFile: filepath.Join(dir, "client.token"),
+		}
+		caFile = filepath.Join(dir, "ca.pem")
+
+		writeManagerStartTestDB(config.ManagerDBFile, 3)
+
+		before := fileSHA256(config.ManagerDBFile)
+
+		exitCode := -1
+		managerCompactExit = func(code int) { exitCode = code }
+
+		logged := clog.ToBufferAtLevel("info")
+
+		managerCompactCmd.Run(managerCompactCmd, nil)
+
+		So(exitCode, ShouldEqual, 1)
+		So(logged.String(), ShouldContainSubstring, "lvl=eror")
+		So(logged.String(), ShouldContainSubstring, "schema version 3")
+		So(fileSHA256(config.ManagerDBFile), ShouldEqual, before)
+	})
+}
+
+// writeManagerStartTestDB creates a bolt database at path: stamped with
+// version, or for version 0 unstamped and holding an empty jobslive bucket.
+func writeManagerStartTestDB(path string, version uint64) {
+	So(os.MkdirAll(filepath.Dir(path), 0o700), ShouldBeNil)
+
+	bdb, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 5 * time.Second})
+	So(err, ShouldBeNil)
+
+	err = bdb.Update(func(tx *bolt.Tx) error {
+		if version == 0 {
+			_, errc := tx.CreateBucket([]byte("jobslive"))
+
+			return errc
+		}
+
+		b, errc := tx.CreateBucket([]byte("meta"))
+		if errc != nil {
+			return errc
+		}
+
+		return b.Put([]byte("schemaVersion"), binary.BigEndian.AppendUint64(nil, version))
+	})
+	So(err, ShouldBeNil)
+	So(bdb.Close(), ShouldBeNil)
+}
+
+// fileSHA256 returns the hex SHA-256 of the file at path.
+func fileSHA256(path string) string {
+	content, err := os.ReadFile(path)
+	So(err, ShouldBeNil)
+
+	sum := sha256.Sum256(content)
+
+	return hex.EncodeToString(sum[:])
+}
+
+// anyContains reports whether any of lines contains substr.
+func anyContains(lines []string, substr string) bool {
+	return slices.ContainsFunc(lines, func(line string) bool { return strings.Contains(line, substr) })
 }

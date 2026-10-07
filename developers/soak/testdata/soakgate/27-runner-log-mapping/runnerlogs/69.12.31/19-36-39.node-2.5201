@@ -1,0 +1,4 @@
+t=1969-12-31T19:36:40-0500 lvl=info msg="reserved a job" key=b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2 cmd="/soak/prodsim-1/psimjob.sh portal_split R.1 1.0 100 2" attempts=0
+t=1969-12-31T19:36:40-0500 lvl=info msg="will start executing" key=b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2 cmd="/soak/prodsim-1/psimjob.sh portal_split R.1 1.0 100 2"
+t=1969-12-31T19:36:40-0500 lvl=info msg="started executing" jobkey=b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2 cmd="/soak/prodsim-1/psimjob.sh portal_split R.1 1.0 100 2" pid=201
+t=1969-12-31T19:36:40-0500 lvl=info msg="started executing" jobkey=b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2 cmd="/soak/prodsim-1/psimjob.sh portal_split R.1 1.0 100 2" pid=202

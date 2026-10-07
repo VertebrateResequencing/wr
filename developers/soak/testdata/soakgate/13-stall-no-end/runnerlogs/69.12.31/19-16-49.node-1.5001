@@ -1,0 +1,5 @@
+t=1969-12-31T19:16:49-0500 lvl=info msg="wr runner started for scheduler group 'g'; pid: 5001"
+t=1969-12-31T19:16:50-0500 lvl=info msg="reserved a job" key=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1 cmd="/soak/prodsim-1/psimjob.sh portal_compress 20261005T000000.1 1.0 100 2" attempts=0
+t=1969-12-31T19:16:50-0500 lvl=info msg="will start executing" key=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1 cmd="/soak/prodsim-1/psimjob.sh portal_compress 20261005T000000.1 1.0 100 2"
+t=1969-12-31T19:16:50-0500 lvl=info msg="started executing" jobkey=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1 cmd="/soak/prodsim-1/psimjob.sh portal_compress 20261005T000000.1 1.0 100 2" pid=101
+t=1969-12-31T19:26:50-0500 lvl=info msg="command ran OK" key=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1 cmd="/soak/prodsim-1/psimjob.sh portal_compress 20261005T000000.1 1.0 100 2" exitcode=0

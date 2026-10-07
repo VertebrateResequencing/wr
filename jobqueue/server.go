@@ -2274,13 +2274,25 @@ func startupRecoveryDetail(elapsed time.Duration) string {
 func (s *Server) decodePriorJobs(ctx context.Context, db *db) ([]*Job, error) {
 	started := time.Now()
 
-	priorJobs, err := db.recoverIncompleteJobs()
+	priorJobs, rsr, err := db.recoverIncompleteJobs()
 	if err != nil {
 		return nil, err
 	}
 
-	clog.Warn(ctx, "recovering: decoded live jobs", "jobs", len(priorJobs),
+	if rsr.dropErr != nil {
+		clog.Warn(ctx, "recovering: failed to drop stale job run-state records", "err", rsr.dropErr)
+	}
+
+	for _, key := range rsr.undecodable {
+		clog.Warn(ctx, "recovering: undecodable job run-state record", "key", key)
+	}
+
+	clog.Warn(ctx, "recovering: decoded live jobs", "jobs", len(priorJobs), "runStates", rsr.applied,
 		"elapsed", time.Since(started).Round(time.Millisecond))
+
+	if rsr.dropped > 0 {
+		clog.Warn(ctx, "recovering: dropped stale job run-state records", "count", rsr.dropped)
+	}
 
 	return priorJobs, nil
 }
@@ -3779,10 +3791,10 @@ func (s *Server) releaseRun(ctx context.Context, job *Job, rep releaseReport) (b
 // A redundant report, such as a runner re-sending after its first request timed
 // out on a slow commit, must not be acknowledged before that first write is on
 // disk, and if that write failed nothing else will retry it. So, as handleStart
-// does for a duplicate start, a durable report writes the job's current state
-// again. It is only written if the job is still live, and with a later arrival
-// order than anything already queued for it, so this can neither resurrect a
-// deleted or archived job nor overwrite a newer record.
+// writes a duplicate start's run state again, a durable report writes the job's
+// current state again. It is only written if the job is still live, and with a
+// later arrival order than anything already queued for it, so this can neither
+// resurrect a deleted or archived job nor overwrite a newer record.
 func (s *Server) ackAlreadyReleased(ctx context.Context, job *Job, rep releaseReport) error {
 	if rep.reporter != (uuid.UUID{}) && job.replaceLostEndState(rep.endState, rep.failReason) {
 		return s.writeReleasedJob(ctx, job, rep)

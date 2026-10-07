@@ -40,8 +40,6 @@ import (
 
 	"github.com/VertebrateResequencing/wr/queue"
 	. "github.com/smartystreets/goconvey/convey"
-	"github.com/ugorji/go/codec"
-	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -546,28 +544,14 @@ func rdrSoRerunsAfterCrash(ctx context.Context, d *dgrServer, waiterKey, secondK
 	So(errg, ShouldNotBeNil)
 }
 
-// rdrSetStoredMark rewrites the job's live record with or without the mark that
-// it must run again, asserting it had the other. Without it is what a crash
+// rdrSetStoredMark rewrites the job's stored record with or without the mark
+// that it must run again, asserting it had the other. Without it is what a crash
 // between an add's commit and its storing the mark would leave.
 func rdrSetStoredMark(d *dgrServer, key string, mark bool) {
-	err := d.server.db.bolt.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(bucketJobsLive)
-
-		job, errd := d.server.db.decodeJob(bucket.Get([]byte(key)))
-		if errd != nil {
-			return errd
-		}
-
+	err := rewriteStoredLiveJob(d.server.db, key, func(job *Job) {
 		So(job.RerunAfterRun, ShouldEqual, !mark)
 
 		job.RerunAfterRun = mark
-
-		var encoded []byte
-		if erre := codec.NewEncoderBytes(&encoded, d.server.db.ch).Encode(job); erre != nil {
-			return erre
-		}
-
-		return bucket.Put([]byte(key), encoded)
 	})
 	So(err, ShouldBeNil)
 }

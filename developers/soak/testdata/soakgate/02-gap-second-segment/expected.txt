@@ -1,0 +1,7 @@
+nondurable source=d1 inside=1 outside=2 runs=10000 outsidePct=0.0200
+totals GAP pid 22 after 0
+doubles inside=1 outside=2 acknowledged=1
+missing ran=3 absent=0 excused=0
+peakRUN=6100
+double portal_dedupe 20261005T000000.2 outside reserved=1500 acknowledged=yes
+double stat 20261005T000000.3 unmapped reserved=- acknowledged=no

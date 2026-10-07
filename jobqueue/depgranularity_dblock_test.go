@@ -317,7 +317,7 @@ func TestDepGranularityCorruptDBStillRestores(t *testing.T) {
 		So(result.db != nil, ShouldBeTrue)
 		So(result.msg, ShouldContainSubstring, "recreated corrupt (?) db file")
 
-		jobs, err := result.db.recoverIncompleteJobs()
+		jobs, _, err := result.db.recoverIncompleteJobs()
 		So(err, ShouldBeNil)
 		So(jobs, ShouldHaveLength, 1)
 		So(jobs[0].RepGroup, ShouldEqual, dgbRepGroup)

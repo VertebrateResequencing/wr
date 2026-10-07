@@ -14,9 +14,11 @@
 #   SWEEP_WRDEV    wrdev.sh to run (this checkout's); another checkout's builds
 #                  from that checkout
 #   SWEEP_PORTS    "devPort devWeb prodPort prodWeb" (51850 51851 51852 51853)
-#   SWEEP_DB_DIR   directory of the big fixture DBs pristine10, pristine6 and
-#                  prod.db (see wrdev.sh help); modes whose fixture is missing
-#                  are recorded as SKIPPED-NOFIXTURE
+#   SWEEP_DB_DIR   directory holding compact-fixture copies of the big fixture
+#                  DBs pristine10, pristine6 and prod.db, under those names
+#                  (`wrdev.sh compact-fixture <src> <dst>`; wr refuses the
+#                  version-0 originals); modes whose fixture is missing are
+#                  recorded as SKIPPED-NOFIXTURE
 #   SWEEP_ASL_FIXTURE  an add-storm-fixture DB for add-storm-lsf (the one the
 #                  sweep's own add-storm-fixture mode writes)
 #   FIX120K        a 120k-job add-storm-fixture DB for add-storm-lsf-fix120k

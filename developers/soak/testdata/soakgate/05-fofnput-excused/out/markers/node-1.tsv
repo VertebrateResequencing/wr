@@ -1,0 +1,4 @@
+S	1010400	portal_compress	20261005T000000.1	node-1	101			/soak/work
+E	1040000	portal_compress	20261005T000000.1	node-1	101		0	/soak/work
+S	1500500	portal_dedupe	20261005T000000.2	node-1	102			/soak/work
+E	1530000	portal_dedupe	20261005T000000.2	node-1	102		0	/soak/work

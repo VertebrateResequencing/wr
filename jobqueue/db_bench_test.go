@@ -52,6 +52,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -64,6 +65,10 @@ import (
 
 // benchJobCount is the number of jobs each benchmark iteration operates on.
 const benchJobCount = 3000
+
+// benchBigCmdBytes is the Cmd length of the 10KB benchmarks' jobs, the size of
+// a portal command.
+const benchBigCmdBytes = 10000
 
 // benchLimitStoreParallelism is the RunParallel parallelism (goroutines per
 // GOMAXPROCS) of BenchmarkServerStoreLimitGroups' concurrent cases.
@@ -296,6 +301,71 @@ func BenchmarkUpdateJobState(b *testing.B) {
 		// Wait for the queued live-bucket writes of this batch to complete
 		// so the next iteration (and the final metric capture) sees a quiescent
 		// db, and so the timer covers the full persistence of the batch.
+		testDB.wg.Wait(benchDBWaitTimeout)
+	}
+
+	b.StopTimer()
+	reportBoltWriteMetrics(b, testDB, writesBefore, pagesBefore, benchJobCount*b.N)
+}
+
+// BenchmarkUpdateJobRunState10KB is BenchmarkUpdateJobState's shape on jobs
+// with 10,000-byte Cmds, alternating reserved and running, but writing each
+// change as the small run-state record a reservation or start writes, through
+// queueJobRunState. Its bolt_pages/job against BenchmarkUpdateJobFull10KB's is
+// what the run-state record saves over re-encoding the whole job.
+func BenchmarkUpdateJobRunState10KB(b *testing.B) {
+	benchmarkUpdateJob10KB(b, func(_ context.Context, testDB *db, job *Job) {
+		if err := testDB.queueJobRunState(job, nil); err != nil {
+			b.Fatal(err)
+		}
+	})
+}
+
+// BenchmarkUpdateJobFull10KB is BenchmarkUpdateJobRunState10KB writing the
+// whole job through updateJobAfterChange, as a reservation or start did before
+// run-state records.
+func BenchmarkUpdateJobFull10KB(b *testing.B) {
+	benchmarkUpdateJob10KB(b, func(ctx context.Context, testDB *db, job *Job) {
+		testDB.updateJobAfterChange(ctx, job)
+	})
+}
+
+// benchmarkUpdateJob10KB runs BenchmarkUpdateJobState's loop on benchJobCount
+// jobs with 10,000-byte Cmds, writing each change with write.
+func benchmarkUpdateJob10KB(b *testing.B, write func(context.Context, *db, *Job)) {
+	b.Helper()
+
+	ctx := context.Background()
+	testDB := newBenchDB(b)
+
+	jobs := makeBenchJobs(strings.Repeat("x", benchBigCmdBytes), benchJobCount)
+	if _, _, _, err := testDB.storeNewJobs(ctx, jobs, false); err != nil {
+		b.Fatal(err)
+	}
+
+	testDB.wg.Wait(benchDBWaitTimeout)
+
+	writesBefore := boltWrites(testDB)
+	pagesBefore := boltPages(testDB)
+
+	b.ResetTimer()
+
+	for range b.N {
+		now := time.Now()
+
+		for _, job := range jobs {
+			job.Lock()
+			if job.State == JobStateRunning {
+				job.State = JobStateReserved
+			} else {
+				job.State = JobStateRunning
+				job.StartTime = now
+			}
+			job.Unlock()
+
+			write(ctx, testDB, job)
+		}
+
 		testDB.wg.Wait(benchDBWaitTimeout)
 	}
 

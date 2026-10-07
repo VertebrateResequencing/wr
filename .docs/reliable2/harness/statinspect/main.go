@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"strconv"
@@ -12,20 +14,114 @@ import (
 )
 
 const (
-	dbDelimiter            = "_::_"
-	jobStatWindowPercent   = float32(5)
+	dbDelimiter                 = "_::_"
+	jobStatWindowPercent        = float32(5)
 	jobStatWindowScaleThreshold = 100
-	recMBRound             = 100
-	recSecRound            = 1
+	recMBRound                  = 100
+	recSecRound                 = 1
 )
 
 var (
-	bucketJobRAM  = []byte("jobRAM")
-	bucketJobDisk = []byte("jobDisk")
-	bucketJobSecs = []byte("jobSecs")
-	bucketJobsLive = []byte("jobslive")
-	bucketRTK      = []byte("repgroupToKey")
+	bucketJobRAM      = []byte("jobRAM")
+	bucketJobDisk     = []byte("jobDisk")
+	bucketJobSecs     = []byte("jobSecs")
+	bucketJobsLive    = []byte("jobslive")
+	bucketJobRunState = []byte("jobRunState")
+	bucketRTK         = []byte("repgroupToKey")
+
+	errNoJobsLive = errors.New("no jobslive bucket")
 )
+
+// clearCounts holds the key counts clearBuckets found before deleting.
+type clearCounts struct {
+	liveBefore  int
+	rsBefore    int
+	hasRunState bool
+}
+
+// clearBuckets deletes every jobslive key and, if that bucket exists, every
+// jobRunState key, returning how many of each there were.
+func clearBuckets(tx *bolt.Tx) (clearCounts, error) {
+	var counts clearCounts
+
+	b := tx.Bucket(bucketJobsLive)
+	if b == nil {
+		return counts, errNoJobsLive
+	}
+
+	var err error
+	if counts.liveBefore, err = deleteAllKeys(b); err != nil {
+		return counts, err
+	}
+
+	rs := tx.Bucket(bucketJobRunState)
+	if rs == nil {
+		return counts, nil
+	}
+
+	counts.hasRunState = true
+	counts.rsBefore, err = deleteAllKeys(rs)
+
+	return counts, err
+}
+
+// reportCounts prints the before counts in c next to after counts read in a
+// fresh transaction, so they reflect the committed deletes.
+func reportCounts(db *bolt.DB, out io.Writer, c clearCounts) error {
+	var liveAfter, rsAfter int
+
+	err := db.View(func(tx *bolt.Tx) error {
+		liveAfter = countKeys(tx.Bucket(bucketJobsLive))
+		rsAfter = countKeys(tx.Bucket(bucketJobRunState))
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("clearlive count: %w", err)
+	}
+
+	fmt.Fprintf(out, "jobslive keys: before=%d after=%d\n", c.liveBefore, liveAfter)
+
+	if c.hasRunState {
+		fmt.Fprintf(out, "jobRunState keys: before=%d after=%d\n", c.rsBefore, rsAfter)
+	}
+
+	return nil
+}
+
+// countKeys counts b's keys with a cursor; a nil bucket has none.
+func countKeys(b *bolt.Bucket) int {
+	if b == nil {
+		return 0
+	}
+
+	n := 0
+
+	c := b.Cursor()
+	for k, _ := c.First(); k != nil; k, _ = c.Next() {
+		n++
+	}
+
+	return n
+}
+
+// deleteAllKeys deletes every key in b, returning how many there were.
+func deleteAllKeys(b *bolt.Bucket) (int, error) {
+	c := b.Cursor()
+
+	keys := make([][]byte, 0, countKeys(b))
+	for k, _ := c.First(); k != nil; k, _ = c.Next() {
+		keys = append(keys, bytes.Clone(k))
+	}
+
+	for _, k := range keys {
+		if err := b.Delete(k); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(keys), nil
+}
 
 // replicate scanReqGroupStat
 func scanReqGroupStat(c *bolt.Cursor, prefix []byte) (maxVal, recommendation, count int) {
@@ -69,42 +165,31 @@ func roundRecommendation(recommendation, maxVal, roundAmount int) int {
 }
 
 // clearLive empties the jobslive bucket so no incomplete/production jobs are
-// recovered/run when the manager starts on this DB copy. Stat buckets and the
-// complete bucket/counters are left intact so recommendations still work.
-func clearLive(path string) {
+// recovered/run when the manager starts on this DB copy, and the jobRunState
+// bucket (if present) so no stale run-state records survive either. Stat
+// buckets and the complete bucket/counters are left intact so recommendations
+// still work.
+func clearLive(path string, out io.Writer) error {
 	db, err := bolt.Open(path, 0600, &bolt.Options{Timeout: 30 * time.Second})
 	if err != nil {
-		fmt.Println("open err:", err)
-		os.Exit(1)
+		return fmt.Errorf("open: %w", err)
 	}
 	defer db.Close()
-	var before, after int
+
+	var counts clearCounts
+
 	err = db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketJobsLive)
-		if b == nil {
-			return fmt.Errorf("no jobslive bucket")
-		}
-		before = b.Stats().KeyN
-		c := b.Cursor()
-		var keys [][]byte
-		for k, _ := c.First(); k != nil; k, _ = c.Next() {
-			kk := make([]byte, len(k))
-			copy(kk, k)
-			keys = append(keys, kk)
-		}
-		for _, k := range keys {
-			if e := b.Delete(k); e != nil {
-				return e
-			}
-		}
-		after = b.Stats().KeyN
-		return nil
+		var errc error
+
+		counts, errc = clearBuckets(tx)
+
+		return errc
 	})
 	if err != nil {
-		fmt.Println("clearlive err:", err)
-		os.Exit(1)
+		return err // main prefixes "clearlive err:"
 	}
-	fmt.Printf("jobslive keys: before=%d after=%d\n", before, after)
+
+	return reportCounts(db, out, counts)
 }
 
 func stat(db *bolt.DB, bucket []byte, reqGroup string, round int) (max, rec, count int) {
@@ -121,7 +206,10 @@ func stat(db *bolt.DB, bucket []byte, reqGroup string, round int) (max, rec, cou
 
 func main() {
 	if len(os.Args) >= 3 && os.Args[1] == "clearlive" {
-		clearLive(os.Args[2])
+		if err := clearLive(os.Args[2], os.Stdout); err != nil {
+			fmt.Println("clearlive err:", err)
+			os.Exit(1)
+		}
 		return
 	}
 	path := os.Args[1]

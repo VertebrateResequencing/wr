@@ -399,7 +399,7 @@ func TestStoreNewJobsKeepsHandedOutRecord(t *testing.T) {
 			var record []byte
 
 			errv := database.bolt.View(func(tx *bolt.Tx) error {
-				record = bytes.Clone(tx.Bucket(bucketJobsLive).Get([]byte(key)))
+				record = liveAndRunStateRecord(tx, key)
 
 				return nil
 			})
@@ -453,14 +453,14 @@ func TestStoreNewJobsKeepsHandedOutRecord(t *testing.T) {
 }
 
 // liveJobRecord returns a copy of the given job's encoded record in server's
-// live bucket, or nil if it has none.
+// live bucket followed by its run-state record (if any), so that comparing two
+// of them compares everything recovery would read of the job, or nil if it has
+// no live record.
 func liveJobRecord(server *Server, key string) []byte {
 	var record []byte
 
 	err := server.db.bolt.View(func(tx *bolt.Tx) error {
-		if v := tx.Bucket(bucketJobsLive).Get([]byte(key)); v != nil {
-			record = bytes.Clone(v)
-		}
+		record = liveAndRunStateRecord(tx, key)
 
 		return nil
 	})
@@ -469,8 +469,7 @@ func liveJobRecord(server *Server, key string) []byte {
 	return record
 }
 
-// liveJobRecordInImage returns a copy of the given job's encoded record in the
-// live bucket of the given database image, or nil if it has none.
+// liveJobRecordInImage is liveJobRecord for the given database image.
 func liveJobRecordInImage(t *testing.T, image []byte, key string) []byte {
 	t.Helper()
 
@@ -485,13 +484,28 @@ func liveJobRecordInImage(t *testing.T, image []byte, key string) []byte {
 	var record []byte
 
 	err = boltdb.View(func(tx *bolt.Tx) error {
-		if v := tx.Bucket(bucketJobsLive).Get([]byte(key)); v != nil {
-			record = bytes.Clone(v)
-		}
+		record = liveAndRunStateRecord(tx, key)
 
 		return nil
 	})
 	So(err, ShouldBeNil)
+
+	return record
+}
+
+// liveAndRunStateRecord returns a copy of key's live record followed by its
+// run-state record (empty if it has none), or nil if it has no live record.
+func liveAndRunStateRecord(tx *bolt.Tx, key string) []byte {
+	live := tx.Bucket(bucketJobsLive).Get([]byte(key))
+	if live == nil {
+		return nil
+	}
+
+	record := bytes.Clone(live)
+
+	if bucket := tx.Bucket(bucketJobRunState); bucket != nil {
+		record = append(record, bucket.Get([]byte(key))...)
+	}
 
 	return record
 }

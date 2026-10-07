@@ -237,7 +237,7 @@ func dbUnreadableRepGroups(ctx context.Context, t *testing.T, dbFile, dbBkFile s
 
 	defer func() { So(opened.close(ctx), ShouldBeNil) }()
 
-	jobs, err := opened.recoverIncompleteJobs()
+	jobs, _, err := opened.recoverIncompleteJobs()
 	So(err, ShouldBeNil)
 
 	groups := make([]string, len(jobs))

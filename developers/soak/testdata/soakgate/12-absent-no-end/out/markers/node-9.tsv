@@ -1,0 +1,9 @@
+S	1100000	put	P.1	node-9	901			/soak/work
+E	1110000	put	P.1	node-9	901		0	/soak/work
+S	1300000	put	P.1	node-9	902			/soak/work
+S	1310000	fofnput	F.7	node-9	903			/soak/work
+S	1320000	stat	S.9	node-9	904			/soak/work
+S	1330000	stat	S.10	node-9	905			/soak/work
+E	1340000	stat	S.10	node-9	905		1	/soak/work
+S	1350000	bam	B.1	node-9	906			/soak/work
+E	1360000	bam	B.1	node-9	906		2	/soak/work

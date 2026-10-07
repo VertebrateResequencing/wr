@@ -29,3 +29,5 @@ testjobs*
 dist/
 
 .tmp/
+# Python bytecode (eg. py_compile of developers/soak/*.py)
+__pycache__/
