@@ -159,6 +159,25 @@ E4 acceptance tests:
   the aslmanifest refusal doesn't follow symlinks; freelist-bound repro texts
   could point at TestReliable4InflateDB. Done in 0b35a4a8.
 
+E4 acceptance tests 1 and 2 re-run after 0b35a4a8, at 8151d31d, with
+`S` a scratchpad directory, `WRDEV_ROOT=$S/root DEV_PORT=51990 DEV_WEB=51991
+PROD_PORT=51992 PROD_WEB=51993` (ports checked free with `ss -ltn`), all
+`OS_*` unset, `wrdev.sh build` first, and `dbstart` built from this tree:
+
+1. `cp jobqueue/testdata/dbcompat/db.golden $S/src.db` (`dbstart -schema`:
+   `schemaVersion=0`), then `wrdev.sh compact-fixture $S/src.db $S/dst.db`:
+   exit 0. `src.db`'s SHA-256 stayed
+   `cff1df83216f0ec63fdc080fec698d96bae19e1da7ea2e6a296a7783efd550b9`, and
+   `dbstart -schema $S/dst.db` printed `schemaVersion=2`.
+2. Run again with `dst.db` present: `wrdev: REFUSING: $S/dst.db already
+   exists`, exit 1. A listing of `src.db` and `dst.db` (sizes, mtimes,
+   SHA-256) was identical before and after.
+3. A 64KB random file as the source: `failed to compact the database:
+   invalid database`, then `wrdev: compact-fixture: wr manager compact
+   failed (exit 1); removed $S/dst2.db`, exit 1. Neither `dst2.db` nor a
+   `dst2.db.compact-*` temp remained, and the private
+   `compact-fixture-config` was removed in all three runs.
+
 ## Local gates (item 6.1)
 
 Run on cadeae73 (rebased on develop 72384e4c), all `OS_*` unset,
