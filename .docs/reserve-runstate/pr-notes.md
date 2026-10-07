@@ -320,3 +320,111 @@ prod-stop	rc=0	secs=15
 dump	rc=0	secs=23
 clean	rc=0	secs=15
 ```
+
+## Production-scale soaks (item 6.3)
+
+Two LSF crash soaks, run one after the other on farm22-wrstat01, each from
+battery10's `soak-go.sh` with only F3's values changed (copies in
+`$G/soak-base/soak-go.sh` and `$G/soak-change/soak-go.sh`). Each tree is a
+`git archive | tar -x` export plus `git init`, and each soak's `run.sh` built
+its own wr into its own `SOAK_ROOT`, which nothing replaced during the run.
+Each `FIXTURE` was a fresh `cp -p` of `$G/fixtures/fix120k.db` made just
+before its soak. Ports were checked free with `ss -ltn` and all `OS_*`
+variables were unset. Both soaks were analysed with this tree's tools (the
+README steps, `dbstart` built from `$G/src-change`, and `soakgate.py`);
+outputs are in `$G/analysis/{base,change}/`.
+
+| | Baseline | Change |
+| --- | --- | --- |
+| tree | develop 72384e4c, `$G/src-base` | a7ebb498, `$G/src-change` |
+| run directory | `$G/soak-base/run/prodsim-1791354279` | `$G/soak-change/run/prodsim-1791365645` |
+| ran | 07:24-10:27 | 10:34-13:38 |
+| ports | 51950-51953, pprof 6250 | 51960-51963, pprof 6260 |
+| peak RUN | 4511 | 3920 |
+| mean RUN / mean PEND | 3106 / 659 | 2468 / 1340 |
+| runs (keys) | 841,581 (824,825) | 731,234 (721,094) |
+| stops | 17: 12 crashes (6 injected), 5 clean | 17: 12 crashes (6 injected), 5 clean |
+| injected stall | 1791357563 to 1791357770 (207s) | 1791368940 to 1791369146 (206s) |
+| manager peak RSS / heap in use | 27,991MB / 9,089MB | 41,591MB / 18,042MB |
+| live jobs in the DB at the end | 319,998 | 717,597 |
+
+`soakgate.py --source warning` (baseline):
+
+```text
+nondurable source=warning inside=1 outside=31885 runs=841581 outsidePct=3.7887
+totals n/a
+doubles inside=665 outside=2 acknowledged=0
+missing ran=824825 absent=0 excused=251
+peakRUN=4511
+double portal_dedupe 20261007T074510.6291 outside reserved=1791356052 acknowledged=no
+double portal_dedupe 20261007T074510.20444 outside reserved=1791356057 acknowledged=no
+```
+
+`soakgate.py --source d1` (change):
+
+```text
+nondurable source=d1 inside=612 outside=10159 runs=731234 outsidePct=1.3893
+totals ok
+doubles inside=606 outside=1 acknowledged=0
+missing ran=721094 absent=0 excused=243
+peakRUN=3920
+double portal_dedupe 20261007T115143.17261 outside reserved=1791372335 acknowledged=no
+```
+
+Criteria for the change soak:
+
+1. Scale: FAIL. Both peaks are below 5,500 (4,511 and 3,920), and
+   |4511 - 3920| = 591 > 0.10 x 4511 = 451. F3 says such a soak is re-run,
+   not counted against the change. The ramp tops out at a portal target of
+   4,000, and battery10's 6,104 was a one-sample spike at the end of its
+   518s start (A2), with 3 other samples above 5,500. The longest start
+   here was 49s in the baseline and 90s in the change soak (the failed
+   start below). In the change soak LSF held more of its runners pending
+   (mean PEND 1,340 against 659), and `lsfprobe.tsv` reported "not enough
+   processor units" in 37 of 91 probes, against 19 of 90 in the baseline,
+   so the farm was busier. The two soaks therefore did not run at
+   comparable scale.
+2. Non-durable hand-outs: FAIL. `totals ok`, but `outsidePct` is 1.3893
+   against a bar of 0.0340 (10,159 outside hand-outs in 731,234 runs).
+   Informational: the baseline's approximate warning count is 31,885 outside
+   (3.7887%). Of the 10,771 D1 lines, 612 fall in the stall window. Most
+   of the rest come in bursts under load: 1,436 in the 3 minutes after the
+   start that followed the stall crash (11:32:48), 2,235 in the process
+   started at 11:55:41, and 6,223 in the one started at 12:11:36, of which 3,640 came
+   in its first 3 minutes. Meanwhile the manager logged requests taking more
+   than 10s (for example 2,015 slow `jstart` and 738 slow `jarchive` calls
+   in the minute to 12:16:47) and archive-fold transactions of up to 7.9s.
+   These slowdowns are natural, not injected, so F3 does not excuse them.
+   The rate was 40 times the bar at about soak9's peak RUN (3,920 against
+   3,872).
+3. Double runs: FAIL. `outside=1 acknowledged=0`. The double is not a
+   non-durable hand-out: no D1 line names its key (d1582bc1...). Its first
+   run (node-13-08 pid 2170469, runner log
+   `runnerlogs/26.10.07/12-12-10.node-13-08.2081262`) was reserved and
+   started at 12:25:35 and exited 0 at 12:26:28. Its runner never reported
+   the completion: it logged "gave up waiting for the resource checking
+   goroutine to stop" at 12:27:29 and "aborting due to signal" (interrupt)
+   at 12:27:47. Meanwhile the scheduled clean stop that began at 12:26:38
+   logged "gave up waiting for runners to exit" at 12:27:39. The job was
+   not complete in the DB, so a later manager ran it again at 12:44:11 on
+   node-11-2-2. The baseline's 2 outside doubles are also at a
+   clean stop: each run exited 0 just as the stop's "kill requested
+   externally" reached its runner (07:55:33).
+4. Missing jobs: PASS. `absent=0`, and `relburycheck.py` reports problems 0
+   in both soaks.
+5. `rundepcheck.py`: PASS. Summary `{'OK': 36, 'CHECK': 4}`. All 4 CHECK
+   lines (instances 8, 16, 28 and 37) end with `-noend-then-stop-clean`.
+   The baseline's 4 CHECK lines (instances 16, 28, 36 and 37) do too.
+
+Other observations: one scheduled start in the change soak (12:31:30) failed
+because the manager port was still held by a socket that was not listening
+after 1m30s. `watcher.sh` restarted the manager at 12:33:23. Both DBs end at
+`schemaVersion=2`. Afterwards no manager, runner, fusestall mount or LSF job
+of either soak remained.
+
+Verdict: the change soak does not pass F3. Criteria 2 and 3 fail as
+specified, and criterion 1 was not met by either soak. The change's outside
+count is about a third of the baseline's approximate warning count, but it
+is still about 40 times over the 0.034% bar at production load. A re-run
+at higher scale is unlikely to bring criterion 2 under the bar, because the
+bursts come from commit latency under load.
