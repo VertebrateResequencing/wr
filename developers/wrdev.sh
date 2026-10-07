@@ -1004,7 +1004,8 @@ cmd_compact_fixture() {  # compact-fixture <src> <dst> - a compacted, current-sc
   # pointed at <dst>, and refuses unless wr resolves that to <dst> on localhost and our dev
   # port. On any exit it removes that config; on a refusal after it, a failed compaction, an
   # interrupt (SIGINT, SIGTERM, or an outer timeout's SIGTERM) or any other early exit it also
-  # stops the cp or compaction it started and removes <dst> and compact's <dst>.compact-* temp.
+  # stops the cp or compaction it started, removes <dst> and compact's <dst>.compact-* temp, and
+  # removes any directories it created for <dst> that are left empty.
   need_bin
   local src="${1:-}" dst="${2:-}" manifest
   { [ -n "$src" ] && [ -n "$dst" ]; } || die "usage: $0 compact-fixture <src> <dst>"
@@ -1021,15 +1022,22 @@ cmd_compact_fixture() {  # compact-fixture <src> <dst> - a compacted, current-sc
   fi
   port_free "$DEV_PORT"
 
-  local adst; adst=$(realpath -m -- "$dst")
-  mkdir -p "$(dirname "$adst")" || die "could not create the directory of $adst"
-  # cf_cleanup reads these globals: the exit trap can run after this function's locals are gone
-  CF_CONFIG="$WRDEV_ROOT/compact-fixture-config" CF_DST="" CF_PID="" CF_DONE=0
+  local adst d; adst=$(realpath -m -- "$dst")
+  # cf_cleanup reads these globals: the exit trap can run after this function's locals are gone.
+  # CF_MADE_DIR is the outermost directory of <dst> that this run creates, if any.
+  CF_CONFIG="" CF_DST="" CF_PID="" CF_DONE=0 CF_MADE_DIR="" CF_DST_DIR=$(dirname "$adst")
   CF_TEMPS_BEFORE=$(compgen -G "$adst.compact-*" || true)
+  d="$CF_DST_DIR"
+  while [ ! -e "$d" ] && [ ! -L "$d" ]; do CF_MADE_DIR="$d" d=$(dirname "$d"); done
   trap 'cf_cleanup' EXIT
   trap 'exit 130' INT TERM
+  mkdir -p "$CF_DST_DIR" || die "could not create the directory of $adst"
   # the compaction's own config: the dev manager's isolated one, with its database at the copy.
-  # Kept apart from $CONFIG_DIR, which every other mode rewrites without that line.
+  # Kept apart from $CONFIG_DIR, which every other mode rewrites without that line, and private
+  # to this run, so concurrent compactions into different <dst>s cannot rewrite each other's.
+  mkdir -p "$WRDEV_ROOT" || die "could not create $WRDEV_ROOT"
+  CF_CONFIG=$(mktemp -d "$WRDEV_ROOT/compact-fixture-config.XXXXXX") \
+    || die "could not make a private config directory under $WRDEV_ROOT"
   private_config "$CF_CONFIG"
   printf 'managerdbfile: "%s"\n' "$adst" >> "$CONFIG_DIR/.wr_config.development.yml"
   # wr lets ~/.wr_config*.yml, ./.wr_config*.yml and env vars override WR_CONFIG_DIR, so ask wr
@@ -1067,9 +1075,10 @@ cmd_compact_fixture() {  # compact-fixture <src> <dst> - a compacted, current-sc
 # cf_cleanup is compact-fixture's exit trap. It stops the cp or compaction (timeout, which passes
 # the signal on to wr) still running as our background job, by the pid we recorded when starting
 # it. Unless the compaction finished, it removes the copy and every <dst>.compact-* temp that was
-# not there before we started. It always removes the private config.
+# not there before we started, and then every directory of the copy this run created that is
+# now empty. It always removes the private config.
 cf_cleanup() {
-  local t
+  local t d
   if [ -n "${CF_PID:-}" ] && jobs -p | grep -qxF -- "$CF_PID"; then
     kill -TERM "$CF_PID" 2>/dev/null
     wait "$CF_PID" 2>/dev/null
@@ -1080,6 +1089,10 @@ cf_cleanup() {
       [ -n "$t" ] || continue
       printf '%s\n' "${CF_TEMPS_BEFORE:-}" | grep -qxF -- "$t" || rm -f -- "$t"
     done < <(compgen -G "$CF_DST.compact-*")
+  fi
+  if [ "${CF_DONE:-0}" != 1 ] && [ -n "${CF_MADE_DIR:-}" ]; then
+    d="$CF_DST_DIR"
+    while rmdir -- "$d" 2>/dev/null && [ "$d" != "$CF_MADE_DIR" ]; do d=$(dirname "$d"); done
   fi
   if [ -n "${CF_CONFIG:-}" ]; then
     rm -f -- "$CF_CONFIG/.wr_config.development.yml" "$CF_CONFIG/.wr_config.production.yml"
