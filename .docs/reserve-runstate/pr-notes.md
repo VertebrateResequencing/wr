@@ -215,3 +215,108 @@ Run on cadeae73 (rebased on develop 72384e4c), all `OS_*` unset,
    `go test -count=1 ./...`: `ok statinspect`. PASS.
 6. `developers/soak/testdata/soakgate/run.sh`: `PASS: 28 soakgate cases`,
    exit 0.
+
+## wrdev modes and sweep (item 6.2)
+
+Run on f9380b6c (rebased on develop 72384e4c), all `OS_*` unset,
+`GOCACHE=/tmp/claude-11346/gocache-runstate-gate`, `nice -n 19`, after
+`wrdev.sh build` into the root below. F2 modes ran in sequence with
+`WRDEV_ROOT=$G/f2/root DEV_PORT=51980 DEV_WEB=51981 PROD_PORT=51982
+PROD_WEB=51983` (ports checked free with `ss -ltn`).
+
+1. `wrdev.sh crash-recovery`: exit 0, `PASS: re-sent archive accepted
+   (complete=1), command ran exactly once`. PASS. (Its `job running;
+   marker=...` line also logs a harmless shell error, `cr_count: No such file
+   or directory`, when the job has not yet written its marker file; the
+   line then reports `marker=0`.)
+2. `WRDEV_PRISTINE_DB=$G/fixtures/fix120k.db wrdev.sh add-storm-lsf`: exit
+   0, PASS. Manifest `incomplete 120000`; `recovered-job audit:
+   120000/120000 incomplete commands read, all of a form the generator
+   writes`; `## VERDICT: adders=24 adds=5034 acked=4694 ... missingAcked=0
+   neverAddedFound=0 unackedInDb=0 ... killProven=yes ... outage=22s ...
+   p50=202ms p99=1283ms ... fixIncomplete=120000 ... fixBuried=0`; `PASS: all
+   4694 acknowledged adds (2406 of them before the kill, 8 in flight ...`.
+3. `wrdev.sh dep-granularity-check`: exit 0, `PASS: peakRssMb=315, recovery
+   in 197ms, 'wr manager status' answered 'starting' inside the window, and
+   one more member added in 525ms`. PASS.
+4. F2.4, each exit 0, PASS:
+   - `WR_ARCHRATE_DB=$G/fixtures/pristine10 wrdev.sh archive-rate`: `PASS: a
+     sustained 660-archiver rate on a 4GB-class DB stays at 160ms mean /
+     1212ms p99 with the queue never deeper than 285` (30023 archives, 0
+     errors, overFloor=0).
+   - `WR_AC_DB=$G/fixtures/pristine6 WRDEV_AC_WORK=$G/f2/root wrdev.sh
+     archive-ceiling`: `## VERDICT: low=20@8.72/s high=1143@382.97/s
+     throughputFactor=43.94x (min 10x) ... overClientFloor=0
+     archiveErrors=0 goExit=0`; `PASS: 1143 archivers reached 382.97/s
+     against 20 archivers' 8.72/s`.
+   - `WR_AS_DB=$G/fixtures/prod.db WRDEV_AS_WORK=$G/f2/root wrdev.sh
+     add-storm`: `## VERDICT: low=20@10.18/s high=700@247.65/s
+     throughputFactor=24.34x (min 10x) ... highP99=3256ms ... overSlow=0
+     overClientFloor=0 clientTimedOut=0 txnsPerAdd=0.16 ... addErrors=0
+     goExit=0`; `PASS: 700 clients reached 247.65/s against 20 clients'
+     10.18/s`.
+   - `WR_WSFREEZE_DB=$G/fixtures/pristine10 wrdev.sh writestorm-freeze`:
+     `WSFREEZE: N=100000 archivers=8 ... peakGoroutines(added)=1
+     archives=105 maxArchiveLat=2.057s overTTR(1m0s)=0`, `--- PASS`, `ok`.
+   - `WRDEV_PRISTINE_DB=$G/fixtures/pristine10 wrdev.sh backup-stall-check`:
+     `## VERDICT: maxDelayed=0 badjobDelta=0 maxStatusRPC=260ms`, `NO STALL:
+     jobs drained cleanly despite backups (the fix works)`.
+
+Sweep: `SWEEP_DB_DIR=$G/fixtures FIX120K=$G/fixtures/fix120k.db
+SWEEP_PORTS="51984 51985 51986 51987" developers/soak/sweep.sh $G/sweep`
+(ports checked free with `ss -ltn`), exit 0, no `SWEEP ERROR` lines, no
+`SKIPPED-NOFIXTURE` or `SKIPPED-DISK` rows, and no `FAIL`, `--- FAIL` or
+`panic:` line in any mode log. All 49 modes rc=0 (mode, rc, seconds from
+`$G/sweep/results.tsv`):
+
+```text
+build	rc=0	secs=15
+status	rc=0	secs=15
+flicker-check	rc=0	secs=45
+status-seed-overlap	rc=0	secs=30
+overprovision-check	rc=0	secs=15
+overcount-check	rc=0	secs=15
+limit-stall-check	rc=0	secs=15
+priority-fairness-check	rc=0	secs=15
+backlog-rescan-check	rc=0	secs=15
+bkill-hygiene	rc=0	secs=90
+runner-started-timeout-check	rc=0	secs=15
+ttrmiss-check	rc=0	secs=15
+confirm-dead-leak	rc=0	secs=45
+report-storm	rc=0	secs=15
+report-storm-profile	rc=0	secs=45
+remap-stall-check	rc=0	secs=30
+freelist-check	rc=0	secs=46
+selfconnect-check	rc=0	secs=90
+idle-backlog-cpu	rc=0	secs=60
+control-rpc-history	rc=0	secs=30
+dep-granularity-check	rc=0	secs=45
+exec-impossible-retries	rc=0	secs=15
+transient-start-retries	rc=0	secs=165
+runner-log-bytes	rc=0	secs=15
+retention-check	rc=0	secs=135
+web-burst	rc=0	secs=181
+backup-stall-fast	rc=0	secs=240
+writestorm-freeze	rc=0	secs=45
+archive-rate	rc=0	secs=210
+archive-ceiling	rc=0	secs=406
+add-storm	rc=0	secs=345
+add-storm-fixture	rc=0	secs=60
+add-storm-lsf	rc=0	secs=315
+add-storm-lsf-fix120k	rc=0	secs=330
+unsuspend-burst	rc=0	secs=211
+start	rc=0	secs=15
+probe	rc=0	secs=15
+churn	rc=0	secs=305
+monitor	rc=0	secs=15
+stop	rc=0	secs=15
+limit-drain	rc=0	secs=1792
+backup-stall-check	rc=0	secs=556
+report-storm-lsf	rc=0	secs=526
+crash-recovery	rc=0	secs=45
+prodsim	rc=0	secs=7284
+prod-start	rc=0	secs=30
+prod-stop	rc=0	secs=15
+dump	rc=0	secs=23
+clean	rc=0	secs=15
+```
