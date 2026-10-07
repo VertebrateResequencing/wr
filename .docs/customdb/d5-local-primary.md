@@ -52,3 +52,9 @@ As D2, twice (primary and replica).
 D2 plus a shipper (about 300 lines) and restore logic that quarantines live
 jobs. The new risk is operational: a local disk to provision, and a second
 copy that is by design slightly stale.
+
+## Measured (see benchmarks.md)
+
+D2 on local disk with the shipper running: reserve p50 0.97ms, p99 3.3ms;
+the NFS replica was at most 10MB (one 1000-job add) and 217ms behind, plus up
+to 1s until its fdatasync.

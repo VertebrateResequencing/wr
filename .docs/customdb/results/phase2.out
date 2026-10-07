@@ -1,0 +1,133 @@
+### saturation 23:05:31
+=== sat wal 23:05:31
+preloaded 60000 in 5.186s
+RESULT design=wal dir=/nfs/hgi/wr/sb10-bigdb/customdb-proto/sat runners=6000 cmd=10000 nosync=false lease=false runs=71000 runs/s=1183.3
+  reserve p50=1.59ms    p99=8.26ms    max=70.18ms   >10s=0.00%
+  start   p50=1.58ms    p99=8.31ms    max=70.05ms  
+  archive p50=1.38ms    p99=10.03ms   max=70.04ms  
+  add     p50=62.68ms   p99=69.89ms   max=106.61ms  (n=12)
+  store   batches=18503 syncs=18503 MB=783.3 meanBatchFlush=948µs leases=0
+=== sat keyfiles 23:06:36
+preloaded 60000 in 4.921s
+RESULT design=keyfiles dir=/nfs/hgi/wr/sb10-bigdb/customdb-proto/sat runners=6000 cmd=10000 nosync=false lease=false runs=71000 runs/s=1183.3
+  reserve p50=16.66ms   p99=31.61ms   max=71.97ms   >10s=0.00%
+  start   p50=16.34ms   p99=31.41ms   max=70.62ms  
+  archive p50=10.85ms   p99=27.94ms   max=71.98ms  
+  add     p50=53.29ms   p99=70.44ms   max=85.74ms   (n=12)
+  store   batches=8791 syncs=73905 MB=783.3 meanBatchFlush=2.103ms leases=0
+=== sat slots 23:07:42
+preloaded 60000 in 5.145s
+RESULT design=slots dir=/nfs/hgi/wr/sb10-bigdb/customdb-proto/sat runners=6000 cmd=10000 nosync=false lease=false runs=71000 runs/s=1183.3
+  reserve p50=56.63ms   p99=92.8ms    max=103.76ms  >10s=0.00%
+  start   p50=55.65ms   p99=93.23ms   max=103.6ms  
+  archive p50=38ms      p99=83.2ms    max=102.95ms 
+  add     p50=94.35ms   p99=113.1ms   max=116.25ms  (n=12)
+  store   batches=7234 syncs=14013 MB=806.0 meanBatchFlush=3.078ms leases=0
+=== sat boltsmall 23:08:47
+preloaded 60000 in 1m1.64s
+RESULT design=boltsmall dir=/nfs/hgi/wr/sb10-bigdb/customdb-proto/sat runners=6000 cmd=10000 nosync=false lease=false runs=24328 runs/s=405.5
+  reserve p50=3.839s    p99=7.615s    max=7.616s    >10s=0.00%
+  start   p50=3.525s    p99=7.264s    max=7.617s   
+  archive p50=5.267s    p99=7.464s    max=7.615s   
+  add     p50=2.412s    p99=3.929s    max=3.943s    (n=12)
+  store   txs=78 ops=88585 meanTx=830.575ms maxTx=3.878s leases=0
+=== sat sqlite 23:10:55
+preloaded 60000 in 48.777s
+RESULT design=sqlite dir=/nfs/hgi/wr/sb10-bigdb/customdb-proto/sat runners=6000 cmd=10000 nosync=false lease=false runs=23948 runs/s=399.1
+  reserve p50=4.467s    p99=7.185s    max=7.185s    >10s=0.00%
+  start   p50=3.273s    p99=6.592s    max=7.184s   
+  archive p50=4.421s    p99=7.06s     max=7.185s   
+  add     p50=4.855s    p99=6.543s    max=6.648s    (n=11)
+  store   txs=142 ops=156369 meanTx=781.302ms leases=0
+### crash 23:12:49
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+CRASHTEST design=wal rounds=10 failed=0
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=190 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+CRASHTEST design=wal rounds=6 failed=0
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=208 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+CRASHTEST design=keyfiles rounds=10 failed=0
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+CRASHTEST design=keyfiles rounds=6 failed=0
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=136 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+CRASHTEST design=slots rounds=10 failed=0
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+CRASHTEST design=slots rounds=6 failed=0
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 
+CRASHTEST design=sqlite rounds=10 failed=0
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 
+CRASHTEST design=sqlite rounds=6 failed=0
+### recovery 23:20:06
+built wal n=120000 in 5.714s
+RECOVER design=wal fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=120000 cmd=10000 files=1 sizeMB=1230 cold live=120000 complete=0 records=126000 readMB=1230 took=5.804s 
+RECOVER design=wal fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=120000 cmd=10000 files=1 sizeMB=1230 warm live=120000 complete=0 records=126000 readMB=1230 took=1.051s 
+built keyfiles n=120000 in 4.449s
+RECOVER design=keyfiles fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=120000 cmd=10000 files=64 sizeMB=1230 cold live=120000 complete=0 records=126000 readMB=1230 took=1.929s 
+RECOVER design=keyfiles fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=120000 cmd=10000 files=64 sizeMB=1230 warm live=120000 complete=0 records=126000 readMB=1230 took=527ms 
+built slots n=120000 in 4.352s
+readat /nfs/hgi/wr/sb10-bigdb/customdb-proto/rec/slots-120k/specs.log: negative offset
+built boltsmall n=120000 in 2m57.927s
+RECOVER design=boltsmall fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=120000 cmd=10000 files=1 sizeMB=1469 cold live=120000 complete=0 records=120000 readMB=1303 took=2m9.027s 
+RECOVER design=boltsmall fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=120000 cmd=10000 files=1 sizeMB=1469 warm live=120000 complete=0 records=120000 readMB=1303 took=2m6.472s 
+built sqlite n=120000 in 2m14.222s
+RECOVER design=sqlite fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=120000 cmd=10000 files=1 sizeMB=1552 cold live=120000 complete=0 records=0 readMB=1227 took=43.856s 
+RECOVER design=sqlite fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=120000 cmd=10000 files=1 sizeMB=1552 warm live=120000 complete=0 records=0 readMB=1227 took=42.766s 
+built wal n=800000 in 36.515s
+RECOVER design=wal fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=800000 cmd=10000 files=1 sizeMB=8199 cold live=800000 complete=0 records=840000 readMB=8199 took=37.571s 
+RECOVER design=wal fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=800000 cmd=10000 files=1 sizeMB=8199 warm live=800000 complete=0 records=840000 readMB=8199 took=7.121s 
+731M	/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec/wal-800k

@@ -100,3 +100,14 @@ history segments.
 - Biggest payoff only if the queue stops holding whole Jobs (lazy specs),
   which is a large change to `queue` and `server` (every `job.Cmd` user).
 - Same `db` API possible for the rest.
+
+## Measured (NFS, see benchmarks.md)
+
+- Production shape: reserve p50 0.77ms, p99 5.1ms; archive p99 24ms.
+- Saturation: p50 57ms at 1,183 runs/s and 38ms at 5,150 runs/s: scattered
+  192-byte pwrites cost more on NFS than appends.
+- Recovery, 800k 10KB jobs: with every spec read, 12.4s cold / 2.7s warm;
+  lazy (slot table only), 567ms cold / 133ms warm, reading 154MB.
+- Crash tests: 32 kill -9 rounds (16 before and 16 after fixing the
+  prototype's lost spec offsets), no acknowledged write lost; 640
+  truncations and byte flips of the history log recovered to a prefix.
