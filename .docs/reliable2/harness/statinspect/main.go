@@ -186,7 +186,7 @@ func clearLive(path string, out io.Writer) error {
 		return errc
 	})
 	if err != nil {
-		return fmt.Errorf("clearlive: %w", err)
+		return err // main prefixes "clearlive err:"
 	}
 
 	return reportCounts(db, out, counts)

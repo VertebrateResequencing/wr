@@ -117,4 +117,15 @@ func TestClearLive(t *testing.T) {
 			So(n, ShouldEqual, 0)
 		})
 	})
+
+	Convey("Given a bbolt file with no jobslive bucket, clearLive's error is just that", t, func() {
+		path := filepath.Join(t.TempDir(), "db")
+		db, err := bolt.Open(path, 0600, &bolt.Options{Timeout: 10 * time.Second})
+		So(err, ShouldBeNil)
+		So(db.Close(), ShouldBeNil)
+
+		err = clearLive(path, &bytes.Buffer{})
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldEqual, "no jobslive bucket")
+	})
 }
