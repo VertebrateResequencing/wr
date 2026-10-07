@@ -59,7 +59,21 @@ const (
 	testLiveDBName       = "live.db"
 	testCertDomain       = "localhost"
 	testServerInterrupts = 10 * time.Millisecond
+	testLiveLine         = "jobslive\tk1\tportal\t12\tready\t0\t0\t\t0\t0\t0"
 )
+
+func TestUsage(t *testing.T) {
+	Convey("dbstart prints usage and exits 2", t, func() {
+		var out, errOut bytes.Buffer
+
+		for _, args := range [][]string{{}, {"-schema"}, {"a", "b"}, {"-schema", "a", "b"}} {
+			So(runArgs(args, &out, &errOut), ShouldEqual, exitUsage)
+		}
+
+		So(out.String(), ShouldBeEmpty)
+		So(errOut.String(), ShouldEqual, strings.Repeat("usage: dbstart [-schema] <db file>\n", 4))
+	})
+}
 
 // testRunState holds the jobRunState fields dbstart prints, named as in
 // jobqueue's jobRunState, which binc encodes as a map by field name.
@@ -97,13 +111,19 @@ func TestRunOverlaysRunState(t *testing.T) {
 
 			writeTestDB(path, live, record)
 
-			So(runLines(path), ShouldResemble, []string{"jobslive\tk1\tportal\t12\tready\t0\t0\t\t0\t0\t0"})
+			So(runLines(path), ShouldResemble, []string{testLiveLine})
+		})
+
+		Convey("and a CRC-matching jobRunState record whose body does not decode, run prints the live record", func() {
+			writeTestDB(path, live, runStateRecordFor(live, runState[:len(runState)/2]))
+
+			So(runLines(path), ShouldResemble, []string{testLiveLine})
 		})
 
 		Convey("and no jobRunState bucket, run prints the live record", func() {
 			writeTestDB(path, live, nil)
 
-			So(runLines(path), ShouldResemble, []string{"jobslive\tk1\tportal\t12\tready\t0\t0\t\t0\t0\t0"})
+			So(runLines(path), ShouldResemble, []string{testLiveLine})
 		})
 	})
 }

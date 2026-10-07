@@ -85,8 +85,25 @@ type rec struct {
 	Attempts  uint32
 }
 
+// overlayRunState returns live with the encoded run state in runState decoded
+// over it, or live unchanged (with a warning on stderr) if runState does not
+// decode.
+func overlayRunState(ch *codec.BincHandle, k []byte, live rec, runState []byte) rec {
+	overlaid := live
+
+	if err := codec.NewDecoderBytes(runState, ch).Decode(&overlaid); err != nil {
+		fmt.Fprintln(os.Stderr, "dbstart: decode run state", string(k), err, "(printing the live record)")
+
+		return live
+	}
+
+	return overlaid
+}
+
 // printJob prints the job encoded in v, with the encoded run state in runState
-// (if not nil) decoded over it, if it is a psimjob.sh or relbury.sh job.
+// (if not nil) decoded over it, if it is a psimjob.sh or relbury.sh job. If
+// runState does not decode, it prints the job's values from v alone, as
+// jobqueue's recovery falls back to the live record.
 func printJob(out io.Writer, ch *codec.BincHandle, bucket string, k, v, runState []byte) {
 	var r rec
 
@@ -97,11 +114,7 @@ func printJob(out io.Writer, ch *codec.BincHandle, bucket string, k, v, runState
 	}
 
 	if runState != nil {
-		if err := codec.NewDecoderBytes(runState, ch).Decode(&r); err != nil {
-			fmt.Fprintln(os.Stderr, "dbstart: decode run state", string(k), err)
-
-			return
-		}
+		r = overlayRunState(ch, k, r, runState)
 	}
 
 	f := strings.Fields(r.Cmd)
@@ -124,19 +137,29 @@ func ms(t time.Time) int64 {
 }
 
 func main() {
-	if len(os.Args) == 3 && os.Args[1] == schemaFlag {
-		os.Exit(runSchema(os.Args[2], os.Stdout, os.Stderr))
+	os.Exit(runArgs(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// runArgs runs dbstart with the command-line arguments args (without the
+// program name), writing to out and errOut, and returns the exit code.
+func runArgs(args []string, out, errOut io.Writer) int {
+	if len(args) == 2 && args[0] == schemaFlag {
+		return runSchema(args[1], out, errOut)
 	}
 
-	if len(os.Args) != 2 { //nolint:mnd // the program name and the db
-		fmt.Fprintln(os.Stderr, "usage: dbstart [-schema] <db file>")
-		os.Exit(exitUsage)
+	if len(args) != 1 || args[0] == schemaFlag {
+		fmt.Fprintln(errOut, "usage: dbstart [-schema] <db file>")
+
+		return exitUsage
 	}
 
-	if err := run(os.Args[1], os.Stdout); err != nil {
-		fmt.Fprintln(os.Stderr, "dbstart:", err)
-		os.Exit(1)
+	if err := run(args[0], out); err != nil {
+		fmt.Fprintln(errOut, "dbstart:", err)
+
+		return 1
 	}
+
+	return 0
 }
 
 // runSchema prints the schema version of the database at path to out, as
