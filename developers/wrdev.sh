@@ -499,10 +499,11 @@ cmd_writestorm_freeze() {  # writestorm-freeze [N] [archivers] - reliable4 FULL 
   # goroutines bounded AND archive stays well under 60s => PASS. Confirmed A/B on the
   # version-0 original pristine10 (~4.6GB freelist, N=100k): pre-fix maxArchiveLat 1m13s /
   # 99k goroutines; post-fix under the floor. Needs a big DB (WR_WSFREEZE_DB or
-  # WRDEV_PRISTINE_DB: a copy of /nfs/hgi/wr/sb10-bigdb/pristine10 made with
-  # 'wrdev.sh compact-fixture', which drops that freelist) + RAM for N goroutines; each run
-  # COPIES it into $WRDEV_ROOT (which needs room for it) and mutates only that copy, removed
-  # again below.
+  # WRDEV_PRISTINE_DB) + RAM for N goroutines; each run COPIES it into $WRDEV_ROOT (which needs
+  # room for it) and mutates only that copy, removed again below. wr no longer opens that
+  # version-0 original, and its compact-fixture copy has no freelist, so it cannot show a
+  # freelist-bound freeze: for a freelist A/B, generate a freelist-bloated DB with
+  # TestReliable4InflateDB (WR_INFLATE_FREELIST_GB sets the freelist; see backup-stall-check).
   # To A/B the fix itself, run this in a pre-fix `git worktree` vs the fixed tree.
   need_repo
   local n="${1:-100000}" archivers="${2:-8}"
@@ -532,12 +533,13 @@ cmd_archive_rate() {  # archive-rate [archivers] [seconds] [thinkMs] - reliable4
   # real job command ever executes): ARCHIVERS concurrent "runners", each doing think-then-
   # synchronously-archive on a COPY of a big freelist-bloated DB opened through the real
   # initDB, so every commit pays production's real freelist/page cost - measured at ~109ms
-  # per single-archive transaction on the version-0 original pristine10 (use a
-  # compact-fixture copy of it now; compaction drops its freelist), ie. ~9 archives/s if each archive commits
-  # its own (production drained at ~12/s). The think time is JITTERED so the archivers do
-  # not run in lockstep: 660 archives arriving in the same microsecond all land in ONE of
-  # bbolt's 10ms batching windows and coalesce even WITHOUT the fix, which would make this
-  # gate pass vacuously. Jittered arrivals reproduce production spacing, where bbolt's Batch
+  # per single-archive transaction on the version-0 original pristine10, ie. ~9 archives/s if
+  # each archive commits its own (production drained at ~12/s). Its compact-fixture copy has no
+  # freelist, so for a freelist A/B generate a freelist-bloated DB with TestReliable4InflateDB
+  # (WR_INFLATE_FREELIST_GB sets the freelist; see backup-stall-check). The think time is
+  # JITTERED so the archivers do not run in lockstep: 660 archives arriving in the same
+  # microsecond all land in ONE of bbolt's 10ms batching windows and coalesce even WITHOUT the
+  # fix, which would make this gate pass vacuously. Jittered arrivals reproduce production spacing, where bbolt's Batch
   # stops coalescing at all (it detaches its batch the instant one starts, so arrivals
   # further apart than MaxBatchDelay each get a transaction of their own).
   #
@@ -644,10 +646,11 @@ cmd_archive_ceiling() {  # archive-ceiling [lowArchivers] [highArchivers] [secon
   #
   # WHAT IT MEASURED, AND WHAT THAT SETTLED (2026-08-27, this host, load ~122). Production's
   # ingredients were reproduced as closely as an in-process run can: the 6.89GiB version-0
-  # original pristine6 DB with its 3202MiB freelist (use a compact-fixture copy of it now;
-  # compaction drops that freelist), ON NFS (/nfs/hgi, the filesystem production's own DB lives on),
-  # with the periodic full-file backup FORCED ON and MEASURED streaming 27,347MB at 75.8MB/s,
-  # which is production's own ~80MB/s continuous copy.
+  # original pristine6 DB with its 3202MiB freelist (its compact-fixture copy has no freelist,
+  # so for a freelist A/B generate a freelist-bloated DB with TestReliable4InflateDB, whose
+  # WR_INFLATE_FREELIST_GB sets the freelist; see backup-stall-check), ON NFS (/nfs/hgi, the
+  # filesystem production's own DB lives on), with the periodic full-file backup FORCED ON and
+  # MEASURED streaming 27,347MB at 75.8MB/s, which is production's own ~80MB/s continuous copy.
   #
   #   at HEAD:              low 8.37/s (mean 102ms, max 270ms), high 363.88/s (mean 851ms,
   #                         max 1620ms) => 43.5x for 57.1x the concurrency, 0 over the floor
@@ -994,16 +997,22 @@ cmd_compact_fixture() {  # compact-fixture <src> <dst> - a compacted, current-sc
   # figures measured on its original.
   #
   # Refuses, before writing anything, if <dst> exists, if <src> and <dst> are the same file, if
-  # <src>.aslmanifest exists (an add-storm-fixture fixture embeds its own <src>.jobcwd path in
-  # its commands, so it is regenerated with add-storm-fixture from a compacted base, never
-  # copied), or if the dev manager is up (compact runs under the dev manager's isolated config,
-  # pointed at <dst>). On a failed compaction it removes <dst> and exits non-zero.
+  # <src>.aslmanifest exists, or the manifest beside <src>'s symlink target does (an
+  # add-storm-fixture fixture embeds its own <src>.jobcwd path in its commands, so it is
+  # regenerated with add-storm-fixture from a compacted base, never copied), or if the dev
+  # manager is up. compact runs under a private copy of the dev manager's isolated config,
+  # pointed at <dst>, and refuses unless wr resolves that to <dst> on localhost and our dev
+  # port. On any exit it removes that config; on a refusal after it, a failed compaction, an
+  # interrupt (SIGINT, SIGTERM, or an outer timeout's SIGTERM) or any other early exit it also
+  # stops the cp or compaction it started and removes <dst> and compact's <dst>.compact-* temp.
   need_bin
-  local src="${1:-}" dst="${2:-}"
+  local src="${1:-}" dst="${2:-}" manifest
   { [ -n "$src" ] && [ -n "$dst" ]; } || die "usage: $0 compact-fixture <src> <dst>"
   [ -f "$src" ] || die "compact-fixture: $src is not a file"
-  [ ! -e "$src.aslmanifest" ] \
-    || die "REFUSING: $src.aslmanifest exists, so $src is an add-storm-fixture fixture whose commands embed $src.jobcwd; regenerate it with '$0 add-storm-fixture' on a compacted base instead of copying it"
+  for manifest in "$src.aslmanifest" "$(realpath -e -- "$src").aslmanifest"; do
+    { [ ! -e "$manifest" ] && [ ! -L "$manifest" ]; } \
+      || die "REFUSING: $manifest exists, so $src is an add-storm-fixture fixture whose commands embed its .jobcwd path; regenerate it with '$0 add-storm-fixture' on a compacted base instead of copying it"
+  done
   [ ! "$src" -ef "$dst" ] || die "REFUSING: $src and $dst are the same file"
   { [ ! -e "$dst" ] && [ ! -L "$dst" ]; } || die "REFUSING: $dst already exists"
   local pid; pid=$(mgr_pid "$DEV_RUN")
@@ -1014,9 +1023,14 @@ cmd_compact_fixture() {  # compact-fixture <src> <dst> - a compacted, current-sc
 
   local adst; adst=$(realpath -m -- "$dst")
   mkdir -p "$(dirname "$adst")" || die "could not create the directory of $adst"
+  # cf_cleanup reads these globals: the exit trap can run after this function's locals are gone
+  CF_CONFIG="$WRDEV_ROOT/compact-fixture-config" CF_DST="" CF_PID="" CF_DONE=0
+  CF_TEMPS_BEFORE=$(compgen -G "$adst.compact-*" || true)
+  trap 'cf_cleanup' EXIT
+  trap 'exit 130' INT TERM
   # the compaction's own config: the dev manager's isolated one, with its database at the copy.
   # Kept apart from $CONFIG_DIR, which every other mode rewrites without that line.
-  private_config "$WRDEV_ROOT/compact-fixture-config"
+  private_config "$CF_CONFIG"
   printf 'managerdbfile: "%s"\n' "$adst" >> "$CONFIG_DIR/.wr_config.development.yml"
   # wr lets ~/.wr_config*.yml, ./.wr_config*.yml and env vars override WR_CONFIG_DIR, so ask wr
   # itself where the database is before copying anything
@@ -1025,23 +1039,53 @@ cmd_compact_fixture() {  # compact-fixture <src> <dst> - a compacted, current-sc
     || die "wr conf --deployment development failed"
   v=$(conf_value "$conf" ManagerDBFile)
   [ "$v" = "$adst" ] || die "REFUSING: development resolves ManagerDBFile to '$v', not $adst (see wr conf)"
+  v=$(conf_value "$conf" ManagerHost)
+  [ "$v" = "localhost" ] || die "REFUSING: development resolves ManagerHost to '$v', not localhost (see wr conf)"
   v=$(conf_value "$conf" ManagerPort)
   [ "$v" = "$DEV_PORT" ] || die "REFUSING: development resolves to port '$v', not our isolated $DEV_PORT (see wr conf)"
 
+  # cp and compact run in the background and are waited for, so a signal runs the traps at
+  # once instead of after a copy or compaction that can take minutes
   echo "copying $src ($(stat -c %s "$src") bytes) -> $adst"
-  if ! cp -p -- "$src" "$adst"; then
-    rm -f -- "$adst"
-    die "could not copy $src to $adst (room for ~2x its size beside $adst?)"
-  fi
+  CF_DST="$adst"
+  local rc=0
+  cp -p -- "$src" "$adst" &
+  CF_PID=$!
+  wait "$CF_PID" || rc=$?
+  CF_PID=""
+  [ "$rc" -eq 0 ] || die "could not copy $src to $adst (room for ~2x its size beside $adst?); removed it"
   echo "compacting $adst"
-  local out rc=0
-  out=$(cd "$CONFIG_DIR" && osunset && timeout 7200 "$WR" manager compact --deployment development 2>&1) || rc=$?
-  printf '%s\n' "$out"
-  if [ "$rc" -ne 0 ]; then
-    rm -f -- "$adst"
-    die "compact-fixture: wr manager compact failed (exit $rc); removed $adst"
-  fi
+  ( cd "$CONFIG_DIR" && osunset && exec timeout 7200 "$WR" manager compact --deployment development ) 2>&1 &
+  CF_PID=$!
+  wait "$CF_PID" || rc=$?
+  CF_PID=""
+  [ "$rc" -eq 0 ] || die "compact-fixture: wr manager compact failed (exit $rc); removed $adst"
+  CF_DONE=1
   echo "compact-fixture: $adst is a compacted copy of $src ($(stat -c %s "$adst") bytes)"
+}
+
+# cf_cleanup is compact-fixture's exit trap. It stops the cp or compaction (timeout, which passes
+# the signal on to wr) still running as our background job, by the pid we recorded when starting
+# it. Unless the compaction finished, it removes the copy and every <dst>.compact-* temp that was
+# not there before we started. It always removes the private config.
+cf_cleanup() {
+  local t
+  if [ -n "${CF_PID:-}" ] && jobs -p | grep -qxF -- "$CF_PID"; then
+    kill -TERM "$CF_PID" 2>/dev/null
+    wait "$CF_PID" 2>/dev/null
+  fi
+  if [ "${CF_DONE:-0}" != 1 ] && [ -n "${CF_DST:-}" ]; then
+    rm -f -- "$CF_DST"
+    while IFS= read -r t; do
+      [ -n "$t" ] || continue
+      printf '%s\n' "${CF_TEMPS_BEFORE:-}" | grep -qxF -- "$t" || rm -f -- "$t"
+    done < <(compgen -G "$CF_DST.compact-*")
+  fi
+  if [ -n "${CF_CONFIG:-}" ]; then
+    rm -f -- "$CF_CONFIG/.wr_config.development.yml" "$CF_CONFIG/.wr_config.production.yml"
+    rmdir -- "$CF_CONFIG" 2>/dev/null
+  fi
+  return 0
 }
 
 cmd_add_storm_fixture() {  # add-storm-fixture [jobs] [selfAddPct] [depGroups] - BUILD the safe incomplete-job fixture add-storm-lsf needs
@@ -5250,9 +5294,11 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         version-0 original (/nfs/hgi/wr/sb10-bigdb/pristine6, pristine10, prod.db),
                         which wr refuses to open, that it will open. <src> is never opened for
                         writing. Compaction drops the original's freelist. Refuses if <dst>
-                        exists, if <src> and <dst> are the same file, if <src>.aslmanifest exists
-                        (regenerate such a fixture with add-storm-fixture on a compacted base), or
-                        if the dev manager is up; removes <dst> if the compaction fails.
+                        exists, if <src> and <dst> are the same file, if <src>.aslmanifest or its
+                        symlink target's manifest exists (regenerate such a fixture with
+                        add-storm-fixture on a compacted base), if the dev manager is up, or if wr
+                        does not resolve the config to <dst> on localhost; removes <dst> and
+                        compact's temp file if the compaction fails or is interrupted.
   add-storm-fixture [jobs] [selfAddPct] [depGroups]
                         BUILDS the fixture add-storm-lsf needs, because a complete-only database
                         removes the condition the add path interacts with: production had 118,213
