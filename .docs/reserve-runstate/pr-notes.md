@@ -428,3 +428,30 @@ count is about a third of the baseline's approximate warning count, but it
 is still about 40 times over the 0.034% bar at production load. A re-run
 at higher scale is unlikely to bring criterion 2 under the bar, because the
 bursts come from commit latency under load.
+
+Verdict under the revised criteria: the change soak passes. The owner
+revised F3 on 2026-10-07 (prompt.md Notes), and the verdict above is under
+the original criteria.
+
+1. Scale (reported, not gated): not reached. Peaks were 4,511 (baseline)
+   and 3,920 (change) against the 5,500 target, on a busier farm (mean PEND
+   1,340 against 659).
+2. Non-durable hand-outs: PASS. The change's `outsidePct` is 1.3893 against
+   the baseline's approximate 3.7887, a ratio of about 0.37, under the
+   0.5 allowed.
+3. Double runs: PASS. Outside stalls the change soak had one double run and
+   the baseline two. All three were at a scheduled clean stop, and the
+   traces above show none was caused by the change. The clean-stop double run is queued
+   separately as item 5 in `delivery-queue.md`.
+4. Missing jobs: PASS. `absent=0` in both soaks, and `relburycheck.py`
+   reports problems 0.
+5. `rundepcheck.py`: PASS, as above.
+
+The bursts investigation
+(`/nfs/hgi/wr/sb10-bigdb/runstate-gate/analysis/bursts-findings.md`) found
+that the change cut what it targeted. The best-effort writer's share of
+bbolt's write lock fell from 32% to 4% of lock-holding samples, slow
+`jstart` calls fell by 72% and slow `jarchive` calls by 73%. The remaining
+hand-outs come from the archive writer and chunked portal adds, which now
+saturate the lock between them, so a reservation still waits for whole
+rounds of those writers.
