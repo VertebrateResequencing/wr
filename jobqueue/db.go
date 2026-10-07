@@ -2043,6 +2043,11 @@ func (db *db) encode(v any) ([]byte, error) {
 // longer marked, or has a successful completion being archived: that archive's
 // transaction owns its live record (see archiveJobTx), and a record encoded
 // before it could otherwise be written after it.
+//
+// A reservation's or start's run state encoded just before this direct write
+// and drained just after it carries RerunAfterRun false over the new record,
+// until the job's next full write. That is the window a stale queued full
+// change had here before run states existed, so it is not new.
 func (db *db) storeRunningRerunMarks(jobs []*Job) error {
 	if len(jobs) == 0 {
 		return nil
