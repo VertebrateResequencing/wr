@@ -438,6 +438,15 @@ and kicked the buried jobs, while in the change soak it ran only once, at
 12:09:28, so the jobs killed at the 12:26, 13:02 and 13:35 stops stayed
 buried. Details: `$G/analysis/stop-bury-findings.md`.
 
+Manager memory: the change soak's peak RSS and heap in use (41.6GB and
+18.0GB, against 28.0GB and 9.1GB) follow from its larger backlog at the
+end: 717,597 live jobs against 319,998, of which 586,018 against 246,185
+were `portal_compress` jobs not yet run. That backlog grew from 287k more
+adds and 109k fewer archives on the busier farm, not from slower
+completions. Heap per live job was 25KB in the change soak against 28KB in
+the baseline, so memory per job did not regress
+(`$G/analysis/bursts-findings.md` section 3).
+
 The bursts investigation (`$G/analysis/bursts-findings.md`) found that the
 change cut what it targeted. The best-effort writer's share of bbolt's
 write lock fell from 32% to 4% of lock-holding samples, slow `jstart` calls
