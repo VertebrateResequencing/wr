@@ -81,20 +81,21 @@ recovery reads a job whose encoding equals the in-memory job's.
   between `KickWith` returning and that write.
 - Follow-up from item 4.1's review (non-blocking): reserveNotDurableLines in
   reserve_durability_test.go could also require `lvl=info`, so a line logged
-  at warn level would fail the test.
+  at warn level would fail the test. Done in fa1deb3b.
 - Follow-ups from item 5.1's review (non-blocking): dbstart drops a job's
   line if a CRC-matching run-state body fails to decode (jobqueue falls back
   to the live record; dbstart could too); `dbstart -schema` with no path
-  prints an open error (exit 1) rather than usage (exit 2).
+  prints an open error (exit 1) rather than usage (exit 2). Done in 17cc1d66.
 - Follow-up from item 5.2's review (non-blocking): statinspect prints a
   doubled prefix for a missing jobslive bucket ("clearlive err: clearlive: no
-  jobslive bucket"); drop the inner wrap.
+  jobslive bucket"); drop the inner wrap. Done in 5fb8060d.
 - Follow-up from item 5.3's review (non-blocking): CHANGELOG "naming both
   versions" and the compact help's "newer version of wr" mean schema
-  versions; consider "naming both schema versions".
+  versions; consider "naming both schema versions". Done in 7c7c3518.
 - Follow-ups from item 5.4's review (non-blocking): add a d1 case with only
   warning lines (expect inside=0 outside=0) to pin "no fallback to
-  warnings"; consider printing a failing outsidePct when runs=0.
+  warnings"; consider printing a failing outsidePct when runs=0. Done in
+  288fa2a8 (`outsidePct=nan` when runs=0; case 22's expected output changed).
 
 ## Fixtures (item 5.5)
 
@@ -156,7 +157,7 @@ E4 acceptance tests:
   its private config before the `wr conf` refusals; doesn't assert
   ManagerHost is localhost; has no trap for SIGINT/timeout cleanup of dst;
   the aslmanifest refusal doesn't follow symlinks; freelist-bound repro texts
-  could point at TestReliable4InflateDB.
+  could point at TestReliable4InflateDB. Done in 0b35a4a8.
 
 ## Local gates (item 6.1)
 
