@@ -181,9 +181,9 @@ var errBestEffortWriteAborted = errors.New("best-effort write transaction aborte
 // to write to a database without bucketJobRunState, which initDB creates.
 var errNoRunStateBucket = errors.New("database has no job run-state bucket")
 
-// errDurableWriteWaitExpired is what updateJobAfterChangeDurableWithin returns
-// when its write had not committed by the deadline. The write is still queued
-// and may commit later.
+// errDurableWriteWaitExpired is what awaitQueuedWriteWithin returns when its
+// write had not committed by the deadline. The write is still queued and may
+// commit later.
 var errDurableWriteWaitExpired = errors.New("gave up waiting for the write to commit")
 
 // jobExitUpdatePollInterval is how often retrieveJobStd polls for in-progress
@@ -3024,14 +3024,16 @@ func awaitQueuedWrite(queue func(*Job, chan error) error, job *Job) error {
 	return <-waiter
 }
 
-// updateJobRunStateDurableWithin is updateJobAfterChangeDurableWithin for the
-// run state.
+// updateJobRunStateDurableWithin is updateJobRunStateDurable, but gives up
+// waiting after wait, returning errDurableWriteWaitExpired.
 func (db *db) updateJobRunStateDurableWithin(job *Job, wait time.Duration) error {
 	return awaitQueuedWriteWithin(db.queueJobRunState, job, wait)
 }
 
 // awaitQueuedWriteWithin is awaitQueuedWrite, but gives up waiting after wait,
-// returning errDurableWriteWaitExpired.
+// returning errDurableWriteWaitExpired. The write stays queued and may still
+// commit; the waiter channel is buffered, so the drain's reply to it never
+// blocks the writer.
 func awaitQueuedWriteWithin(queue func(*Job, chan error) error, job *Job, wait time.Duration) error {
 	waiter := make(chan error, 1)
 
@@ -5492,14 +5494,6 @@ func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
 // (.docs/reliable4/) is not reintroduced.
 func (db *db) updateJobAfterChangeDurable(job *Job) error {
 	return awaitQueuedWrite(db.queueJobChange, job)
-}
-
-// updateJobAfterChangeDurableWithin is updateJobAfterChangeDurable, but gives up
-// waiting after wait, returning errDurableWriteWaitExpired. The write stays
-// queued and may still commit; the waiter channel is buffered, so the drain's
-// reply to it never blocks the writer.
-func (db *db) updateJobAfterChangeDurableWithin(job *Job, wait time.Duration) error {
-	return awaitQueuedWriteWithin(db.queueJobChange, job, wait)
 }
 
 // queueJobChange encodes job outside any transaction and queues its latest
