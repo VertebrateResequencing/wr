@@ -967,12 +967,13 @@ type reserveNotDurableLine struct {
 }
 
 // reserveNotDurableLines returns, in log order, the key and total of every
-// reserveNotDurableLogMsg line in a logfmt log.
+// reserveNotDurableLogMsg line logged at info level in a logfmt log.
 func reserveNotDurableLines(log string) []reserveNotDurableLine {
 	var lines []reserveNotDurableLine
 
 	for line := range strings.Lines(log) {
-		if !strings.Contains(line, `msg="`+reserveNotDurableLogMsg+`"`) {
+		if !strings.Contains(line, `msg="`+reserveNotDurableLogMsg+`"`) ||
+			!strings.Contains(line, "lvl=info ") {
 			continue
 		}
 
