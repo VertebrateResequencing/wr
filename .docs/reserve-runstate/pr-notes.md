@@ -372,47 +372,51 @@ peakRUN=3920
 double portal_dedupe 20261007T115143.17261 outside reserved=1791372335 acknowledged=no
 ```
 
-Criteria for the change soak:
+### Verdict under the current F3
 
-1. Scale: FAIL. Both peaks are below 5,500 (4,511 and 3,920), and
-   |4511 - 3920| = 591 > 0.10 x 4511 = 451. F3 says such a soak is re-run,
-   not counted against the change. The ramp tops out at a portal target of
-   4,000, and battery10's 6,104 was a one-sample spike at the end of its
-   518s start (A2), with 3 other samples above 5,500. The longest start
-   here was 49s in the baseline and 90s in the change soak (the failed
-   start below). In the change soak LSF held more of its runners pending
-   (mean PEND 1,340 against 659), and `lsfprobe.tsv` reported "not enough
-   processor units" in 37 of 91 probes, against 19 of 90 in the baseline,
-   so the farm was busier. The two soaks therefore did not run at
+The change soak passes F3 as the owner revised it on 2026-10-07 (prompt.md
+Notes; spec F3). The verdict under the original criteria is kept as history
+below.
+
+1. Scale (reported, not gated): not reached. Peaks were 4,511 (baseline)
+   and 3,920 (change) against the 5,500 target. The ramp tops out at a
+   portal target of 4,000, and battery10's 6,104 was a one-sample spike at
+   the end of its 518s start (A2), with 3 other samples above 5,500. The
+   longest start here was 49s in the baseline and 90s in the change soak
+   (the failed start below). The farm was busier during the change soak:
+   LSF held more of its runners pending (mean PEND 1,340 against 659), and
+   `lsfprobe.tsv` reported "not enough processor units" in 37 of 91 probes,
+   against 19 of 90 in the baseline. The two soaks therefore did not run at
    comparable scale.
-2. Non-durable hand-outs: FAIL. `totals ok`, but `outsidePct` is 1.3893
-   against a bar of 0.0340 (10,159 outside hand-outs in 731,234 runs).
-   Informational: the baseline's approximate warning count is 31,885 outside
-   (3.7887%). Of the 10,771 D1 lines, 612 fall in the stall window. Most
-   of the rest come in bursts under load: 1,436 in the 3 minutes after the
-   start that followed the stall crash (11:32:48), 2,235 in the process
-   started at 11:55:41, and 6,223 in the one started at 12:11:36, of which 3,640 came
-   in its first 3 minutes. Meanwhile the manager logged requests taking more
-   than 10s (for example 2,015 slow `jstart` and 738 slow `jarchive` calls
-   in the minute to 12:16:47) and archive-fold transactions of up to 7.9s.
-   These slowdowns are natural, not injected, so F3 does not excuse them.
-   The rate was 40 times the bar at about soak9's peak RUN (3,920 against
-   3,872).
-3. Double runs: FAIL. `outside=1 acknowledged=0`. The double is not a
-   non-durable hand-out: no D1 line names its key (d1582bc1...). Its first
-   run (node-13-08 pid 2170469, runner log
-   `runnerlogs/26.10.07/12-12-10.node-13-08.2081262`) was reserved and
-   started at 12:25:35 and exited 0 at 12:26:28. Its runner never reported
-   the completion: it logged "gave up waiting for the resource checking
-   goroutine to stop" at 12:27:29 and "aborting due to signal" (interrupt)
-   at 12:27:47. Meanwhile the scheduled clean stop that began at 12:26:38
-   logged "gave up waiting for runners to exit" at 12:27:39. The job was
-   not complete in the DB, so a later manager ran it again at 12:44:11 on
-   node-11-2-2. The baseline's 2 outside doubles are also at a
-   clean stop: each run exited 0 just as the stop's "kill requested
-   externally" reached its runner (07:55:33).
-4. Missing jobs: PASS. `absent=0`, and `relburycheck.py` reports problems 0
-   in both soaks.
+2. Non-durable hand-outs: PASS. `totals ok`, and the change's `outsidePct`
+   is 1.3893 against the baseline's approximate 3.7887, a ratio of about
+   0.37, under the 0.5 allowed. Of the 10,771 D1 lines, 612 fall in the
+   stall window. Most of the rest come in bursts under load: 1,436 in the 3
+   minutes after the start that followed the stall crash (11:32:48), 2,235
+   in the process started at 11:55:41, and 6,223 in the one started at
+   12:11:36, of which 3,640 came in its first 3 minutes. Meanwhile the
+   manager logged requests taking more than 10s (for example 2,015 slow
+   `jstart` and 738 slow `jarchive` calls in the minute to 12:16:47) and
+   archive-fold transactions of up to 7.9s.
+3. Double runs: PASS. Outside stalls the change soak had one double run and
+   the baseline two. All three were at a scheduled clean stop, and none was
+   caused by the change. The clean-stop double run is queued separately as
+   item 5 in `delivery-queue.md`.
+   - Change soak: the double is not a non-durable hand-out, since no D1 line
+     names its key (d1582bc1...). Its first run (node-13-08 pid 2170469,
+     runner log `runnerlogs/26.10.07/12-12-10.node-13-08.2081262`) was
+     reserved and started at 12:25:35 and exited 0 at 12:26:28. Its runner
+     never reported the completion: it logged "gave up waiting for the
+     resource checking goroutine to stop" at 12:27:29 and "aborting due to
+     signal" (interrupt) at 12:27:47. Meanwhile the scheduled clean stop that
+     began at 12:26:38 logged "gave up waiting for runners to exit" at
+     12:27:39. The job was not complete in the DB, so a later manager ran it
+     again at 12:44:11 on node-11-2-2.
+   - Baseline: the 2 outside doubles are also at a clean stop: each run
+     exited 0 just as the stop's "kill requested externally" reached its
+     runner (07:55:33).
+4. Missing jobs: PASS. `absent=0` in both soaks, and `relburycheck.py`
+   reports problems 0 in both.
 5. `rundepcheck.py`: PASS. Summary `{'OK': 36, 'CHECK': 4}`. All 4 CHECK
    lines (instances 8, 16, 28 and 37) end with `-noend-then-stop-clean`.
    The baseline's 4 CHECK lines (instances 16, 28, 36 and 37) do too.
@@ -423,36 +427,33 @@ after 1m30s. `watcher.sh` restarted the manager at 12:33:23. Both DBs end at
 `schemaVersion=2`. Afterwards no manager, runner, fusestall mount or LSF job
 of either soak remained.
 
-Verdict: the change soak does not pass F3. Criteria 2 and 3 fail as
-specified, and criterion 1 was not met by either soak. The change's outside
-count is about a third of the baseline's approximate warning count, but it
-is still about 40 times over the 0.034% bar at production load. A re-run
-at higher scale is unlikely to bring criterion 2 under the bar, because the
-bursts come from commit latency under load.
+The bursts investigation (`$G/analysis/bursts-findings.md`) found that the
+change cut what it targeted. The best-effort writer's share of bbolt's
+write lock fell from 32% to 4% of lock-holding samples, slow `jstart` calls
+fell by 72% and slow `jarchive` calls by 73%. The remaining hand-outs come
+from the archive writer and chunked portal adds, which now saturate the
+lock between them, so a reservation still waits for whole rounds of those
+writers.
 
-Verdict under the revised criteria: the change soak passes. The owner
-revised F3 on 2026-10-07 (prompt.md Notes), and the verdict above is under
-the original criteria.
+### History: verdict under the original F3
 
-1. Scale (reported, not gated): not reached. Peaks were 4,511 (baseline)
-   and 3,920 (change) against the 5,500 target, on a busier farm (mean PEND
-   1,340 against 659).
-2. Non-durable hand-outs: PASS. The change's `outsidePct` is 1.3893 against
-   the baseline's approximate 3.7887, a ratio of about 0.37, under the
-   0.5 allowed.
-3. Double runs: PASS. Outside stalls the change soak had one double run and
-   the baseline two. All three were at a scheduled clean stop, and the
-   traces above show none was caused by the change. The clean-stop double run is queued
-   separately as item 5 in `delivery-queue.md`.
-4. Missing jobs: PASS. `absent=0` in both soaks, and `relburycheck.py`
-   reports problems 0.
-5. `rundepcheck.py`: PASS, as above.
+Before the owner's 2026-10-07 revision, F3 gated on scale and on an
+absolute non-durable bar, and allowed no double run outside stalls. Under
+those criteria the change soak failed:
 
-The bursts investigation
-(`/nfs/hgi/wr/sb10-bigdb/runstate-gate/analysis/bursts-findings.md`) found
-that the change cut what it targeted. The best-effort writer's share of
-bbolt's write lock fell from 32% to 4% of lock-holding samples, slow
-`jstart` calls fell by 72% and slow `jarchive` calls by 73%. The remaining
-hand-outs come from the archive writer and chunked portal adds, which now
-saturate the lock between them, so a reservation still waits for whole
-rounds of those writers.
+1. Scale: FAIL. Both peaks are below 5,500 (4,511 and 3,920), and
+   |4511 - 3920| = 591 > 0.10 x 4511 = 451. The original F3 said such a soak
+   is re-run, not counted against the change; the current spec has no such
+   rule.
+2. Non-durable hand-outs: FAIL. `outsidePct` is 1.3893 against a bar of
+   0.0340 (10,159 outside hand-outs in 731,234 runs), about 40 times the
+   bar at about soak9's peak RUN (3,920 against 3,872). The slowdowns
+   behind the bursts are natural, not injected, so F3 did not excuse them.
+3. Double runs: FAIL. `outside=1 acknowledged=0`, traced above.
+4. Missing jobs: PASS.
+5. `rundepcheck.py`: PASS.
+
+The original verdict judged a re-run at higher scale unlikely to bring
+criterion 2 under the bar, because the bursts come from commit latency
+under load. The change's outside count was about a third of the baseline's
+approximate warning count.
