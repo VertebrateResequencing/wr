@@ -413,10 +413,12 @@ below.
    stall window. Most of the rest come in bursts under load: 1,436 in the 3
    minutes after the start that followed the stall crash (11:32:48), 2,235
    in the process started at 11:55:41, and 6,223 in the one started at
-   12:11:36, of which 3,640 came in its first 3 minutes. Meanwhile the
+   12:11:35, of which 3,640 came in its first 3 minutes. Meanwhile the
    manager logged requests taking more than 10s (for example 2,015 slow
-   `jstart` and 738 slow `jarchive` calls in the minute to 12:16:47) and
-   archive-fold transactions of up to 7.9s.
+   `jstart` and 738 slow `jarchive` calls in the minute to 12:16:47). Its
+   longest archive-fold transaction was 12.8s in the minute to 12:12:17
+   (1,625 archives in one transaction) and 10.9s in the minute to 12:13:17;
+   in the minute to 12:16:17 it was 7.9s.
 3. Double runs: PASS. Outside stalls the change soak had one double run and
    the baseline two. All three were at a scheduled clean stop, and none was
    caused by the change. The clean-stop double run is queued separately as
@@ -457,22 +459,32 @@ and kicked the buried jobs, while in the change soak it ran only once, at
 12:09:28, so the jobs killed at the 12:26, 13:02 and 13:35 stops stayed
 buried. Details: `$G/analysis/stop-bury-findings.md`.
 
-Manager memory: the change soak's peak RSS and heap in use (41.6GB and
-18.0GB, against 28.0GB and 9.1GB) follow from its larger backlog at the
-end: 717,597 live jobs against 319,998, of which 586,018 against 246,185
-were `portal_compress` jobs not yet run. That backlog grew from 287k more
-adds and 109k fewer archives on the busier farm, not from slower
-completions. Heap per live job was 25KB in the change soak against 28KB in
-the baseline, so memory per job did not regress
+Manager memory: the change soak's higher peak RSS and heap in use (41.6GB
+and 18.0GB, against 28.0GB and 9.1GB) follow its larger backlog. At the
+end it held 717,597 live jobs against 319,998, of which 586,018 against
+246,185 were `portal_compress` jobs not yet run. That backlog grew from
+287k more adds and 109k fewer archives on the busier farm, not from slower
+completions. Heap per live job at the heap peaks is similar in the two
+soaks, not lower in the change soak. The baseline's peak heap sample
+(9,089MB at 09:58:23 in `samples.tsv`) falls between the recoveries at
+09:53:38 (418,730 live jobs) and 10:09:32 (437,995), which gives
+20.8-21.7KB per live job. The change soak's (18,042MB at 13:30:26) falls
+between the recovery at 13:22:14 (793,702) and the end of the soak
+(717,597), which gives 22.7-25.1KB. Heap in use moves by up to about 37%
+between consecutive 30s samples (16,034 to 10,152MB from 13:23:50 to
+13:24:20 in the change soak), so the gap is within sampling noise
 (`$G/analysis/bursts-findings.md` section 3).
 
 The bursts investigation (`$G/analysis/bursts-findings.md`) found that the
-change cut what it targeted. The best-effort writer's share of bbolt's
-write lock fell from 32% to 4% of lock-holding samples, slow `jstart` calls
-fell by 72% and slow `jarchive` calls by 73%. The remaining hand-outs come
-from the archive writer and chunked portal adds, which now saturate the
-lock between them, so a reservation still waits for whole rounds of those
-writers.
+change cut what it targeted. The best-effort writer held bbolt's write
+lock in 30 of the baseline's 93 goroutine dumps that showed a holder
+(32%), and in 3 of the change soak's 80 (4%). Slow `jstart` calls fell by
+72% (93,271 to 25,968) and slow `jarchive` calls by 73% (64,408 to
+17,373). The soaks differed in size, though: mean RUN was 21% lower in the
+change soak and runs 13% fewer. Per run, slow `jstart` fell by 68% and
+slow `jarchive` by 69%. The remaining hand-outs come from the archive
+writer and chunked portal adds, which now saturate the lock between them,
+so a reservation still waits for whole rounds of those writers.
 
 ### History: verdict under the original F3
 
