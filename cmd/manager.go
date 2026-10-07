@@ -657,8 +657,8 @@ the manager will start on it. wr versions 0.37.0 to 0.37.2 kept the output
 of every successfully completed command in the database, up to about 16KB
 each; compact removes it and reports how many completed commands it was
 removed from. Later compactions skip this. compact refuses (exiting
-non-zero, leaving the database untouched) a database written by a newer
-version of wr.`,
+non-zero, leaving the database untouched) a database with a newer schema
+version than this wr supports.`,
 	Run: func(_ *cobra.Command, _ []string) {
 		// refuse to run while a manager is up (pid file / port check): it holds
 		// the database file open, so compaction cannot open it and must not run.

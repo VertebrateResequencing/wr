@@ -940,8 +940,9 @@ Under `## [Unreleased]`, first in `### Changed`:
 - The manager now refuses to start on a database created by wr 0.37.2 or
   earlier that has never been compacted. Stop the manager, run
   `wr manager compact` once, then start it again. The manager and
-  `wr manager compact` also refuse a database written by a newer wr, naming
-  both versions, and leave it unchanged.
+  `wr manager compact` also refuse a database with a newer schema version
+  than this wr supports, naming both schema versions, and leave it
+  unchanged.
 - Once this version's manager has opened a database, going back to an
   earlier wr is not supported: an earlier version may run again commands
   that were reserved or running when this version stopped.
@@ -966,8 +967,8 @@ the manager will start on it. wr versions 0.37.0 to 0.37.2 kept the output
 of every successfully completed command in the database, up to about 16KB
 each; compact removes it and reports how many completed commands it was
 removed from. Later compactions skip this. compact refuses (exiting
-non-zero, leaving the database untouched) a database written by a newer
-version of wr.
+non-zero, leaving the database untouched) a database with a newer schema
+version than this wr supports.
 ```
 
 **Acceptance tests:**

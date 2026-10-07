@@ -351,8 +351,8 @@ the manager will start on it. wr versions 0.37.0 to 0.37.2 kept the output
 of every successfully completed command in the database, up to about 16KB
 each; compact removes it and reports how many completed commands it was
 removed from. Later compactions skip this. compact refuses (exiting
-non-zero, leaving the database untouched) a database written by a newer
-version of wr.`
+non-zero, leaving the database untouched) a database with a newer schema
+version than this wr supports.`
 
 		So(managerCompactCmd.Long, ShouldEndWith, "\n\n"+lastParagraph)
 	})
