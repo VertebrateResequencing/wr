@@ -428,6 +428,16 @@ after 1m30s. `watcher.sh` restarted the manager at 12:33:23. Both DBs end at
 `schemaVersion=2`. Afterwards no manager, runner, fusestall mount or LSF job
 of either soak remained.
 
+Buried jobs at the end: the change soak ends with 4,699 `portal_dedupe`
+jobs buried, the baseline with 1,290. The code does not cause the
+difference; prodsim's random operator does. Both trees bury a job killed by
+a clean stop identically, and the bury is on disk before the runner's
+report is answered. In the baseline the operator's `retry_portal` chore
+(`wr retry -i portal -z`) happened to run after each non-final clean stop
+and kicked the buried jobs, while in the change soak it ran only once, at
+12:09:28, so the jobs killed at the 12:26, 13:02 and 13:35 stops stayed
+buried. Details: `$G/analysis/stop-bury-findings.md`.
+
 The bursts investigation (`$G/analysis/bursts-findings.md`) found that the
 change cut what it targeted. The best-effort writer's share of bbolt's
 write lock fell from 32% to 4% of lock-holding samples, slow `jstart` calls
