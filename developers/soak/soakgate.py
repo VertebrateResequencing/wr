@@ -35,6 +35,7 @@ copies of it), split into one segment per manager process at each "wr manager ..
 ..., pid N" line; lines before the first start are ignored. With --source d1 each "reservation
 handed out before it was recorded on disk" line counts 1, and each segment's total= values must
 be exactly 1..max, each once; a D1 line with no total= still counts, and makes the totals GAP.
+It never counts warnings, even in a log with no D1 line.
 With --source warning (a tree without D1 lines) the rate-limited "reservation not yet recorded
 on disk" warning counts 1, or its repeats= for a "(repeated)" line.
 If the soak manager's directory (<outdir>/../.wr-prod_production) holds a rotated manager log,
@@ -53,13 +54,15 @@ Every psimjob (kind, id) with an S marker must be in dbstart.tsv, except a put o
 last run's E status is not 0 or which has no E marker (prodsim may have removed it).
 
 It prints:
-  nondurable source=<d1|warning> inside=<n> outside=<n> runs=<runs> outsidePct=<x.xxxx>
+  nondurable source=<d1|warning> inside=<n> outside=<n> runs=<runs> outsidePct=<x.xxxx|nan>
   totals <ok|GAP pid <pid> after <n>|n/a>
   doubles inside=<n> outside=<n> acknowledged=<n>
   missing ran=<n> absent=<n> excused=<n>
   peakRUN=<n>
 then a "double" line per outside or acknowledged double, in doubles.tsv order, and an "absent"
-line per absent job, sorted by kind then id.
+line per absent job, sorted by kind then id. outsidePct is nan when runs is 0: such a soak
+measured nothing, and nan compares false with any bound, so it fails a gate on outsidePct
+instead of passing as 0.
 """
 import argparse
 import collections
@@ -328,8 +331,8 @@ def main() -> None:
     n_in = sum(n if a.source == 'warning' else 1 for t, n in handouts if inside(t, windows))
     n_out = sum(n if a.source == 'warning' else 1 for t, n in handouts if not inside(t, windows))
     runs_total = first_line_runs(a.outdir)
-    pct = 100 * n_out / runs_total if runs_total else 0.0
-    print(f'nondurable source={a.source} inside={n_in} outside={n_out} runs={runs_total} outsidePct={pct:.4f}')
+    pct = f'{100 * n_out / runs_total:.4f}' if runs_total else 'nan'
+    print(f'nondurable source={a.source} inside={n_in} outside={n_out} runs={runs_total} outsidePct={pct}')
     print('totals ' + (totals_verdict(segments) if a.source == 'd1' else 'n/a'))
 
     runs = marker_runs(a.outdir)

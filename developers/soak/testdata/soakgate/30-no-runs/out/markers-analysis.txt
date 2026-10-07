@@ -1,0 +1,2 @@
+runs=0 keys=9990 by kind: {'portal_compress': 10000}
+runs with no end marker (SIGKILLed, lost, or still running at the end): 0

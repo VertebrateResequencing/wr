@@ -1,4 +1,4 @@
-nondurable source=d1 inside=0 outside=1 runs=0 outsidePct=nan
+nondurable source=d1 inside=0 outside=0 runs=0 outsidePct=nan
 totals ok
 doubles inside=0 outside=0 acknowledged=0
 missing ran=0 absent=0 excused=0

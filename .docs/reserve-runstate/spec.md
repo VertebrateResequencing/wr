@@ -1110,14 +1110,15 @@ New
 - Prints exactly these five lines first:
 
   ```text
-  nondurable source=<d1|warning> inside=<n> outside=<n> runs=<runs> outsidePct=<x.xxxx>
+  nondurable source=<d1|warning> inside=<n> outside=<n> runs=<runs> outsidePct=<x.xxxx|nan>
   totals <ok|GAP pid <pid> after <n>|n/a>
   doubles inside=<n> outside=<n> acknowledged=<n>
   missing ran=<n> absent=<n> excused=<n>
   peakRUN=<n>
   ```
 
-  (`totals n/a` with `warning`. In `GAP`, `<pid>` is the first segment
+  (`outsidePct=nan` when `runs=0`, so a soak that recorded no runs fails a
+  bound on it. `totals n/a` with `warning`. In `GAP`, `<pid>` is the first segment
   whose totals are not exactly {1..max}, and `<n>` the largest k such that
   each of 1..k appears in it exactly once.)
 
