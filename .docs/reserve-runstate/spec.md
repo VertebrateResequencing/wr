@@ -968,7 +968,7 @@ of every successfully completed command in the database, up to about 16KB
 each; compact removes it and reports how many completed commands it was
 removed from. Later compactions skip this. compact refuses (exiting
 non-zero, leaving the database untouched) a database with a newer schema
-version than this wr supports.
+version than this wr supports, or with a malformed schema stamp.
 ```
 
 **Acceptance tests:**

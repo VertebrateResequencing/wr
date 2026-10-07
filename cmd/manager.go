@@ -658,7 +658,7 @@ of every successfully completed command in the database, up to about 16KB
 each; compact removes it and reports how many completed commands it was
 removed from. Later compactions skip this. compact refuses (exiting
 non-zero, leaving the database untouched) a database with a newer schema
-version than this wr supports.`,
+version than this wr supports, or with a malformed schema stamp.`,
 	Run: func(_ *cobra.Command, _ []string) {
 		// refuse to run while a manager is up (pid file / port check): it holds
 		// the database file open, so compaction cannot open it and must not run.

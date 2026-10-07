@@ -72,6 +72,8 @@ func (db *db) decodeMatchingRunState(live, record []byte) (jobRunState, bool, er
 
 // runStateOver returns the encoded jobRunState in record, and true, if record
 // was written over exactly the live record live; otherwise nil and false.
+// The match is by CRC-32C, so a stale record matches a changed live record by
+// chance with odds of about 1 in 2^32.
 func runStateOver(live, record []byte) ([]byte, bool) {
 	if len(record) < runStateCRCBytes {
 		return nil, false

@@ -1156,7 +1156,7 @@ type db struct {
 	// guards the pending structures below; the writer never takes db.Lock or
 	// db.wgMutex, so enqueuing under those locks can never deadlock against it.
 	beMu         sync.Mutex
-	beChanges    map[string]beChange // key -> latest encoded live value (coalescing, latest-wins)
+	beChanges    map[string]beChange // key -> latest queued live value, run state or both (latest-wins)
 	beExits      []jobExitData       // exit ops, applied in order (std/fail-stat side effects, not coalesced)
 	beSeq        uint64              // arrival order of queued changes and exits, across drains
 	beWGKeys     []string            // db.wg keys to Done once the pending batch is persisted

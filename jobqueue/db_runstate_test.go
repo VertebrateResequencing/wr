@@ -52,14 +52,14 @@ import (
 
 const runStateTestRepGroup = "runstate_supersede"
 
-// runStateBigCmdBytes is how long A2's tests make a job's Cmd, so its full
-// record is at least that long.
+// runStateBigCmdBytes is how long the reservation tests make a job's Cmd, so
+// its full record is at least that long.
 const runStateBigCmdBytes = 10000
 
 // runStateDuplicateRunnerPid is the runner pid a re-sent start reports.
 const runStateDuplicateRunnerPid = 4242
 
-// TestReservationLeavesWaitingForDepGroupsToRecovery covers A2 test 7: the
+// TestReservationLeavesWaitingForDepGroupsToRecovery checks that a
 // reservation does not store WaitingForDepGroups, and recovery re-derives it,
 // so a stale stored value is not what a recovered job waits on.
 func TestReservationLeavesWaitingForDepGroupsToRecovery(t *testing.T) {
@@ -98,8 +98,8 @@ func TestReservationLeavesWaitingForDepGroupsToRecovery(t *testing.T) {
 	})
 }
 
-// TestReservationStoresClearedRerunMark covers A2 test 8: a job recovered out of
-// the run sub-queue has its stale mark to run again cleared in memory, and its
+// TestReservationStoresClearedRerunMark checks that a job recovered out of the
+// run sub-queue has its stale mark to run again cleared in memory, and its
 // next reservation stores that, so a crash while it then runs does not recover
 // it marked, and it runs only once.
 func TestReservationStoresClearedRerunMark(t *testing.T) {
@@ -177,6 +177,10 @@ func TestReservationStoresClearedRerunMark(t *testing.T) {
 	})
 }
 
+// TestRunStateRecord checks a run-state record's size and layout, that it
+// matches only the live record it was written over, that applying a run state
+// sets every run-state field of a job, Requirements included, and that
+// jobRunState's fields mirror Job's.
 func TestRunStateRecord(t *testing.T) {
 	Convey("Given the example job and its full encoding", t, func() {
 		d := &db{ch: new(codec.BincHandle)}
@@ -332,8 +336,8 @@ func TestRunStateRecord(t *testing.T) {
 	})
 }
 
-// runStateOlderJob returns spec A1's older record of the example job: the same
-// Cmd, with a different value in every jobRunState field.
+// runStateOlderJob returns an older record of the example job: the same Cmd,
+// with a different value in every jobRunState field.
 func runStateOlderJob() *Job {
 	example := runStateExampleJob()
 	dayEarlier := example.StartTime.Add(-24 * time.Hour)
@@ -368,7 +372,8 @@ func runStateOlderJob() *Job {
 	}
 }
 
-// runStateExampleJob returns spec A1's example job.
+// runStateExampleJob returns the running job, with a 10,000-byte Cmd, whose
+// run-state record the record tests build.
 func runStateExampleJob() *Job {
 	return &Job{
 		Cmd:               strings.Repeat("x", 10000),
@@ -1123,10 +1128,9 @@ func runStateRecoveryDB(t *testing.T, ctx context.Context) (*db, []*Job) {
 	return database, jobs
 }
 
-// TestReserveAndStartWriteRunState covers A2 tests 1, 2 and 9 and B1 test 2: a
-// reservation and a start, a duplicate start included, leave the job's add-time
-// live record as it was and write its run state over it, which recovery
-// overlays.
+// TestReserveAndStartWriteRunState checks that a reservation and a start, a
+// duplicate start included, leave the job's add-time live record as it was and
+// write its run state over it, which recovery overlays.
 func TestReserveAndStartWriteRunState(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -1362,7 +1366,7 @@ func setRunStateDropHook(hook func()) func() {
 	return func() { recoverRunStateDropHook = nil }
 }
 
-// TestReservationKeepsLearnedRequirements covers A2 test 3: requirements a job
+// TestReservationKeepsLearnedRequirements checks that requirements a job
 // learned from its ReqGroup in memory before its reservation are what recovery
 // reads after a crash, though its live record was written before it learned
 // them.

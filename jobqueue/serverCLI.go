@@ -1136,9 +1136,9 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 }
 
 // persistReservation writes a just-reserved job's run-state record, which
-// recovery overlays on its live record, and does not return until that write
-// has committed, so the reservation is on disk before the runner is told about
-// it. The record carries the requirements the job may have learned in memory
+// recovery overlays on its live record, and does not return until the write
+// commits or ReserveWriteWait passes, so the reservation is normally on disk
+// before the runner is told about it. The record carries the requirements the job may have learned in memory
 // since its last full write (see jobRunState), so those stay durable too.
 //
 // The runner starts the command on the strength of the reservation alone, before

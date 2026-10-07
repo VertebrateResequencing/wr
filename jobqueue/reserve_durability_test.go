@@ -466,8 +466,9 @@ const (
 // drainOrderStdE is the stderr a drainRelease stores.
 const drainOrderStdE = "failed run's stderr"
 
-// drainOrderCases returns the cases of TestBestEffortDrainKeepsArrivalOrder,
-// spec.md A3 tests 1-9 and 12-14.
+// drainOrderCases returns the cases of TestBestEffortDrainKeepsArrivalOrder:
+// each is a sequence of releases, reservations, kicks, starts or full changes
+// of one job, with what recovery must read after a crash.
 func drainOrderCases() []drainOrderCase {
 	reservedExitcode := func(t *testing.T, _ *drainOrderOps, recovered *Job) {
 		t.Helper()

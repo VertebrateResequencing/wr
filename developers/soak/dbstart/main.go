@@ -233,6 +233,8 @@ func run(path string, out io.Writer) error {
 	})
 }
 
+// openDB opens the bolt database at path read-only, waiting at most openTimeout
+// for another process's lock on it.
 func openDB(path string) (*bolt.DB, error) {
 	return bolt.Open(path, dbPerm, &bolt.Options{ReadOnly: true, Timeout: openTimeout})
 }
