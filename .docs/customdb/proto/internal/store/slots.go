@@ -24,10 +24,15 @@ const (
 // slot per live job that every transition overwrites in place. A finished
 // job's slot gets its final state, its completion goes to the history log in
 // the same batch, and the slot is reused.
+// slotRef is where a live job's slot and spec are.
+type slotRef struct {
+	slot, specOff int64
+}
+
 type slotStore struct {
 	w     *gc.Writer
 	mu    sync.Mutex
-	slot  map[flat.Key]int64
+	slot  map[flat.Key]slotRef
 	free  []int64
 	next  int64
 	bufMu sync.Mutex
@@ -48,15 +53,17 @@ func openSlots(dir string, noSync bool) (*slotStore, error) {
 		return nil, err
 	}
 
-	return &slotStore{w: w, slot: make(map[flat.Key]int64), next: st.Size() / flat.StateSize}, nil
+	return &slotStore{w: w, slot: make(map[flat.Key]slotRef), next: st.Size() / flat.StateSize}, nil
 }
 
-func (s *slotStore) slotFor(k flat.Key) int64 {
+// slotFor returns k's slot and spec offset, allocating a slot (recording
+// specOff) if k has none.
+func (s *slotStore) slotFor(k flat.Key, specOff int64) slotRef {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if n, ok := s.slot[k]; ok {
-		return n
+	if r, ok := s.slot[k]; ok {
+		return r
 	}
 
 	var n int64
@@ -67,9 +74,10 @@ func (s *slotStore) slotFor(k flat.Key) int64 {
 		s.next++
 	}
 
-	s.slot[k] = n
+	r := slotRef{slot: n, specOff: specOff}
+	s.slot[k] = r
 
-	return n
+	return r
 }
 
 func (s *slotStore) Add(jobs []*jobqueue.Job, keys []flat.Key) error {
@@ -88,7 +96,7 @@ func (s *slotStore) Add(jobs []*jobqueue.Job, keys []flat.Key) error {
 
 		st := flat.State{Key: keys[i], State: flat.SReady, SpecOff: uint64(off)}
 		flat.PutState(state, &st)
-		done, errf = s.w.WriteAt(slotTable, s.slotFor(keys[i])*flat.StateSize, state)
+		done, errf = s.w.WriteAt(slotTable, s.slotFor(keys[i], off).slot*flat.StateSize, state)
 	}
 
 	return gc.Wait(done, errf)
@@ -100,8 +108,10 @@ func (s *slotStore) Put(kind Kind, st *flat.State, _ *jobqueue.Job) (<-chan stru
 		s.buf = make([]byte, flat.StateSize)
 	}
 
+	ref := s.slotFor(st.Key, 0)
+	n := ref.slot
+	st.SpecOff = uint64(ref.specOff)
 	flat.PutState(s.buf, st)
-	n := s.slotFor(st.Key)
 
 	if kind == Archive {
 		s.w.Append(slotHistory, s.buf)

@@ -117,3 +117,19 @@ for rollback until the new store has run.
 - Risks: checkpoint correctness (the snapshot must be a consistent cut; take
   it from a copy-on-write view or by noting the LSN and replaying), history
   index bugs, and an unbounded log if checkpoints fail.
+
+## Measured (NFS, see benchmarks.md)
+
+- Production shape: reserve p50 0.80ms, p99 4.0ms, max 57ms; start 0.74 /
+  2.5ms; archive 0.83 / 12ms; 1000-job add 58 / 74ms. Local disk: within
+  20% of these.
+- Saturation: out of jobs at 1,183 runs/s (p99 8.3ms), and again at 5,150
+  runs/s (15,450 transitions/s + 1,000 adds/s) with p99 57ms; one fdatasync
+  per batch.
+- Recovery (one file, one read stream): 120k 10KB jobs 5.8s cold / 1.05s
+  warm; 800k 37.6s / 7.1s. Segmenting the log and reading segments in
+  parallel gives D1's 12.4s.
+- Crash tests: 16 kill -9 rounds, no acknowledged write lost; torn tails cut;
+  320 truncations and byte flips recovered to a prefix.
+- `-nosync` (process-crash durability only) is not smoother on NFS: p99 1.3s
+  from writeback throttling.

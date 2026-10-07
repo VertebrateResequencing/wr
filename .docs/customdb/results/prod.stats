@@ -1,0 +1,28 @@
+bucket depgroupToKey          keys=884142    keyB=57262654    valB=0            val p50=0 p90=0 p99=0 max=0
+bucket depgroups              keys=5636      keyB=332582      valB=0            val p50=0 p90=0 p99=0 max=0
+bucket endTimeToKey           keys=373827    keyB=16448388    valB=0            val p50=0 p90=0 p99=0 max=0
+bucket envs                   keys=549       keyB=17568       valB=1282901      val p50=2488 p90=2733 p99=2817 max=2869
+bucket jobDisk                keys=181       keyB=5938        valB=288          val p50=1 p90=3 p99=4 max=4
+bucket jobLookupEntries       keys=5072063   keyB=565270318   valB=0            val p50=0 p90=0 p99=0 max=0
+bucket jobRAM                 keys=21709     keyB=807761      valB=75930        val p50=4 p90=4 p99=5 max=16
+bucket jobSecs                keys=95745     keyB=3310405     valB=372820       val p50=4 p90=5 p99=5 max=11
+bucket jobscomplete           keys=2155154   keyB=68964928    valB=2954311374   val p50=1283 p90=1484 p99=2376 max=102971
+  decoded 300000 jobs in 2.084441738s (6.9us/job)
+  cmd p50=293 p90=549 p99=1317 max=75535; nonCmd bytes p50=961 p99=1173; cwd p50=55; repgroup len p50=18
+  deps p50=0 max=1; depgroups p50=0 max=1; limitgroups p50=1 max=1; mounts max=0; distinct repgroups=6851
+  jobs per repgroup p50=1 p99=802 max=48903; states=map[complete:300000]
+bucket jobslive               keys=118213    keyB=3782816     valB=186709874    val p50=1304 p90=1368 p99=2172 max=1204490
+  decoded 118213 jobs in 760.296346ms (6.4us/job)
+  cmd p50=354 p90=452 p99=1256 max=1203572; nonCmd bytes p50=950 p99=1025; cwd p50=52; repgroup len p50=31
+  deps p50=0 max=1; depgroups p50=1 max=1; limitgroups p50=1 max=1; mounts max=0; distinct repgroups=14
+  jobs per repgroup p50=1 p99=38649 max=79531; states=map[:116696 buried:14 delayed:416 running:7 suspended:1080]
+bucket limitgroups            keys=39        keyB=384         valB=312          val p50=8 p90=8 p99=8 max=8
+bucket meta                   keys=1         keyB=13          valB=8            val p50=8 p90=8 p99=8 max=8
+bucket repGroupCompleteBackfilled keys=24708     keyB=989293      valB=0            val p50=0 p90=0 p99=0 max=0
+bucket repGroupCompleteCount  keys=24854     keyB=994499      valB=198832       val p50=8 p90=8 p99=8 max=8
+bucket repgroupEndTime        keys=13670     keyB=589097      valB=109360       val p50=8 p90=8 p99=8 max=8
+bucket repgroupToKey          keys=4167762   keyB=237624795   valB=0            val p50=0 p90=0 p99=0 max=0
+bucket repgroups              keys=25854     keyB=1030738     valB=0            val p50=0 p90=0 p99=0 max=0
+bucket reverseDepgroupToKey   keys=20159     keyB=1422417     valB=0            val p50=0 p90=0 p99=0 max=0
+bucket stde                   keys=322455    keyB=10318560    valB=71071023     val p50=175 p90=481 p99=706 max=8224
+bucket stdo                   keys=27858     keyB=891456      valB=14535834     val p50=158 p90=1329 p99=1329 max=8225

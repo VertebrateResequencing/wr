@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/binary"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -260,6 +261,12 @@ func recoverBolt(dir string, decode bool) (Recovered, error) {
 	}
 	defer db.Close()
 
+	// as develop's openBoltPrefetched: on NFS the flock drops the client's
+	// cache, so read the whole file with 8 streams before decoding.
+	t := time.Now()
+	pre, _ := prefetch(filepath.Join(dir, "bolt.db"))
+	r.Phases = fmt.Sprintf("prefetch=%s(%dMB)", time.Since(t).Round(time.Millisecond), pre>>20)
+
 	ch := new(codec.BincHandle)
 
 	err = db.View(func(tx *bolt.Tx) error {
@@ -292,4 +299,50 @@ func recoverBolt(dir string, decode bool) (Recovered, error) {
 	})
 
 	return r, err
+}
+
+func prefetch(path string) (int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	st, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+
+	var (
+		wg    sync.WaitGroup
+		total atomic.Int64
+	)
+
+	const streams = 8
+
+	part := st.Size()/streams + 1
+
+	for i := range streams {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			buf := make([]byte, 4<<20)
+
+			for off := int64(i) * part; off < min(int64(i+1)*part, st.Size()); {
+				n, err := f.ReadAt(buf, off)
+				total.Add(int64(n))
+				off += int64(n)
+
+				if err != nil || n == 0 {
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	return total.Load(), nil
 }

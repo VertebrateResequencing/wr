@@ -1,0 +1,137 @@
+=== 22:07:13 /tmp/claude-11346/customdb/hp wal wal 
+preloaded 120000 in 8.911s
+RESULT design=wal dir=/tmp/claude-11346/customdb/hp runners=6000 cmd=10000 nosync=false lease=false runs=21955 runs/s=122.0
+  reserve p50=955µs     p99=3.92ms    max=66.01ms   >10s=0.00%
+  start   p50=857µs     p99=3.55ms    max=38.83ms  
+  archive p50=987µs     p99=8.08ms    max=66.35ms  
+  add     p50=41.91ms   p99=53.91ms   max=55.64ms   (n=36)
+  store   batches=73592 syncs=73592 MB=1614.0 meanBatchFlush=921µs leases=0
+1.6G	/tmp/claude-11346/customdb/hp/wal
+=== 22:10:23 /tmp/claude-11346/customdb/hp slots slots 
+preloaded 120000 in 7.898s
+RESULT design=slots dir=/tmp/claude-11346/customdb/hp runners=6000 cmd=10000 nosync=false lease=false runs=21971 runs/s=122.1
+  reserve p50=504µs     p99=5.86ms    max=49.17ms   >10s=0.00%
+  start   p50=465µs     p99=3.94ms    max=49.18ms  
+  archive p50=929µs     p99=9.98ms    max=48.97ms  
+  add     p50=39.88ms   p99=51.51ms   max=51.79ms   (n=36)
+  store   batches=74497 syncs=96217 MB=1646.3 meanBatchFlush=675µs leases=0
+1.6G	/tmp/claude-11346/customdb/hp/slots
+=== 22:13:31 /tmp/claude-11346/customdb/hp boltsmall boltsmall 
+preloaded 120000 in 29.858s
+RESULT design=boltsmall dir=/tmp/claude-11346/customdb/hp runners=6000 cmd=10000 nosync=false lease=false runs=22030 runs/s=122.4
+  reserve p50=806µs     p99=12.6ms    max=310.06ms  >10s=0.00%
+  start   p50=738µs     p99=4.07ms    max=278.6ms  
+  archive p50=1.52ms    p99=219.78ms  max=325.56ms 
+  add     p50=240.78ms  p99=305.5ms   max=308.93ms  (n=36)
+  store   txs=69186 ops=78090 meanTx=986µs maxTx=314ms leases=0
+1.8G	/tmp/claude-11346/customdb/hp/boltsmall
+=== 22:17:02 /tmp/claude-11346/customdb/hp boltfull boltfull 
+preloaded 120000 in 29.156s
+RESULT design=boltfull dir=/tmp/claude-11346/customdb/hp runners=6000 cmd=10000 nosync=false lease=false runs=21915 runs/s=121.8
+  reserve p50=906µs     p99=14.44ms   max=325.45ms  >10s=0.00%
+  start   p50=831µs     p99=9.29ms    max=294.61ms 
+  archive p50=1.43ms    p99=218.04ms  max=360.51ms 
+  add     p50=239.94ms  p99=303.98ms  max=343.91ms  (n=36)
+  store   txs=68526 ops=77745 meanTx=1.028ms maxTx=348ms leases=0
+1.8G	/tmp/claude-11346/customdb/hp/boltfull
+=== 22:20:32 /tmp/claude-11346/customdb/hp sqlite sqlite 
+preloaded 120000 in 45.238s
+RESULT design=sqlite dir=/tmp/claude-11346/customdb/hp runners=6000 cmd=10000 nosync=false lease=false runs=21977 runs/s=122.1
+  reserve p50=1.64ms    p99=276.01ms  max=586.85ms  >10s=0.00%
+  start   p50=1.34ms    p99=20.93ms   max=613.88ms 
+  archive p50=1.87ms    p99=465.08ms  max=612.68ms 
+  add     p50=508.53ms  p99=562.43ms  max=586.78ms  (n=36)
+  store   txs=62948 ops=234088 meanTx=2.179ms leases=0
+1.9G	/tmp/claude-11346/customdb/hp/sqlite
+=== 22:24:18 /nfs/hgi/wr/sb10-bigdb/customdb-proto/hp wal wal 
+preloaded 120000 in 10.153s
+RESULT design=wal dir=/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp runners=6000 cmd=10000 nosync=false lease=false runs=22093 runs/s=122.7
+  reserve p50=795µs     p99=3.97ms    max=57.3ms    >10s=0.00%
+  start   p50=743µs     p99=2.54ms    max=54.81ms  
+  archive p50=830µs     p99=12.08ms   max=92.79ms  
+  add     p50=57.97ms   p99=73.61ms   max=96.66ms   (n=36)
+  store   batches=74445 syncs=74445 MB=1614.1 meanBatchFlush=861µs leases=0
+152M	/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp/wal
+=== 22:27:29 /nfs/hgi/wr/sb10-bigdb/customdb-proto/hp keyfiles keyfiles 
+preloaded 120000 in 9.272s
+RESULT design=keyfiles dir=/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp runners=6000 cmd=10000 nosync=false lease=false runs=21980 runs/s=122.1
+  reserve p50=812µs     p99=5.33ms    max=76.21ms   >10s=0.00%
+  start   p50=745µs     p99=4ms       max=49.54ms  
+  archive p50=875µs     p99=8.27ms    max=58.31ms  
+  add     p50=51.72ms   p99=62.81ms   max=79.22ms   (n=36)
+  store   batches=73666 syncs=87821 MB=1614.0 meanBatchFlush=896µs leases=0
+147M	/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp/keyfiles
+=== 22:30:39 /nfs/hgi/wr/sb10-bigdb/customdb-proto/hp slots slots 
+preloaded 120000 in 9.977s
+RESULT design=slots dir=/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp runners=6000 cmd=10000 nosync=false lease=false runs=22008 runs/s=122.3
+  reserve p50=766µs     p99=5.13ms    max=75.32ms   >10s=0.00%
+  start   p50=734µs     p99=2.71ms    max=67.72ms  
+  archive p50=909µs     p99=23.64ms   max=96.51ms  
+  add     p50=64.23ms   p99=98.08ms   max=107.42ms  (n=36)
+  store   batches=73707 syncs=95200 MB=1646.3 meanBatchFlush=895µs leases=0
+152M	/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp/slots
+=== 22:33:49 /nfs/hgi/wr/sb10-bigdb/customdb-proto/hp boltsmall boltsmall 
+preloaded 120000 in 2m50.357s
+RESULT design=boltsmall dir=/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp runners=6000 cmd=10000 nosync=false lease=false runs=19099 runs/s=106.1
+  reserve p50=1.598s    p99=4.837s    max=4.939s    >10s=0.00%
+  start   p50=1.404s    p99=4.553s    max=4.939s   
+  archive p50=1.986s    p99=4.336s    max=4.932s   
+  add     p50=2.168s    p99=3.551s    max=3.582s    (n=36)
+  store   txs=5423 ops=69753 meanTx=33.41ms maxTx=3.416s leases=0
+214M	/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp/boltsmall
+=== 22:39:44 /nfs/hgi/wr/sb10-bigdb/customdb-proto/hp boltfull boltfull 
+preloaded 120000 in 2m48.292s
+RESULT design=boltfull dir=/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp runners=6000 cmd=10000 nosync=false lease=false runs=16869 runs/s=93.7
+  reserve p50=4.369s    p99=7.76s     max=7.765s    >10s=0.00%
+  start   p50=3.507s    p99=7.761s    max=7.762s   
+  archive p50=3.43s     p99=6.892s    max=7.762s   
+  add     p50=2.681s    p99=3.953s    max=4.524s    (n=35)
+  store   txs=135 ops=62935 meanTx=1.351227s maxTx=4.056s leases=0
+206M	/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp/boltfull
+=== 22:45:36 /nfs/hgi/wr/sb10-bigdb/customdb-proto/hp sqlite sqlite 
+preloaded 120000 in 2m17.047s
+RESULT design=sqlite dir=/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp runners=6000 cmd=10000 nosync=false lease=false runs=21574 runs/s=119.9
+  reserve p50=22.39ms   p99=2.127s    max=3.032s    >10s=0.00%
+  start   p50=12.85ms   p99=175.58ms  max=3.032s   
+  archive p50=56.72ms   p99=2.769s    max=3.116s   
+  add     p50=2.459s    p99=2.915s    max=2.932s    (n=36)
+  store   txs=26803 ops=232878 meanTx=10.754ms leases=0
+185M	/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp/sqlite
+=== 22:50:56 /nfs/hgi/wr/sb10-bigdb/customdb-proto/hp wal-nosync wal -nosync
+preloaded 120000 in 5.573s
+RESULT design=wal dir=/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp runners=6000 cmd=10000 nosync=true lease=false runs=21994 runs/s=122.2
+  reserve p50=8µs       p99=1.306s    max=2.702s    >10s=0.00%
+  start   p50=4µs       p99=290µs     max=1.48ms   
+  archive p50=19µs      p99=6.53ms    max=2.673s   
+  add     p50=16.05ms   p99=27.38ms   max=29ms      (n=36)
+  store   batches=76391 syncs=0 MB=1614.0 meanBatchFlush=68µs leases=0
+153M	/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp/wal-nosync
+=== 22:54:02 /nfs/hgi/wr/sb10-bigdb/customdb-proto/hp boltsmall-nosync boltsmall -nosync
+preloaded 120000 in 1m55.695s
+RESULT design=boltsmall dir=/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp runners=6000 cmd=10000 nosync=true lease=false runs=21608 runs/s=120.0
+  reserve p50=254µs     p99=1.935s    max=2.474s    >10s=0.00%
+  start   p50=127µs     p99=21.89ms   max=1.186s   
+  archive p50=2.37ms    p99=2.651s    max=3.336s   
+  add     p50=1.622s    p99=3.021s    max=3.747s    (n=36)
+  store   txs=40031 ops=76824 meanTx=2.309ms maxTx=3.02s leases=0
+215M	/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp/boltsmall-nosync
+=== 22:59:05 /nfs/hgi/wr/sb10-bigdb/customdb-proto/hp wal-lease wal -lease
+preloaded 120000 in 10.609s
+RESULT design=wal dir=/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp runners=6000 cmd=10000 nosync=false lease=true runs=21986 runs/s=122.1
+  reserve p50=737µs     p99=2.41ms    max=4.04ms    >10s=0.00%
+  start   p50=0s        p99=0s        max=0s       
+  archive p50=836µs     p99=15.96ms   max=106.57ms 
+  add     p50=58.69ms   p99=109.62ms  max=116.38ms  (n=36)
+  store   batches=21578 syncs=21578 MB=1601.9 meanBatchFlush=1.289ms leases=27986
+148M	/nfs/hgi/wr/sb10-bigdb/customdb-proto/hp/wal-lease
+=== 23:02:16 /tmp/claude-11346/customdb/hp wal-ship wal -ship /nfs/hgi/wr/sb10-bigdb/customdb-proto/hp/wal-ship-copy
+preloaded 120000 in 8.889s
+  ship    maxLagBytes=1228565794
+RESULT design=wal dir=/tmp/claude-11346/customdb/hp runners=6000 cmd=10000 nosync=false lease=false runs=21917 runs/s=121.8
+  reserve p50=911µs     p99=3.76ms    max=38.9ms    >10s=0.00%
+  start   p50=862µs     p99=3.02ms    max=48.26ms  
+  archive p50=1.01ms    p99=6.23ms    max=48.16ms  
+  add     p50=42.15ms   p99=51.08ms   max=52.53ms   (n=36)
+  store   batches=73489 syncs=73489 MB=1614.0 meanBatchFlush=925µs leases=0
+1.6G	/tmp/claude-11346/customdb/hp/wal-ship
+=== done 23:05:25

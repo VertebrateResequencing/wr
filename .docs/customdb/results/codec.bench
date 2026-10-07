@@ -1,0 +1,33 @@
+    flat_test.go:65: spec bytes: 10212 (cmd 10000)
+--- PASS: TestSpecRoundTrip (0.00s)
+--- PASS: TestStateRoundTrip (0.00s)
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/customdbproto/internal/flat
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkBincEncode1K
+BenchmarkBincEncode1K-8          	  968908	      2494 ns/op	      2154 bytes	      16 B/op	       1 allocs/op
+BenchmarkBincEncode10K
+BenchmarkBincEncode10K-8         	  901375	      2705 ns/op	     10854 bytes	      16 B/op	       1 allocs/op
+BenchmarkBincDecode1K
+BenchmarkBincDecode1K-8          	  381380	      6639 ns/op	    3312 B/op	      13 allocs/op
+BenchmarkBincDecode10K
+BenchmarkBincDecode10K-8         	  220826	     11439 ns/op	   12144 B/op	      13 allocs/op
+BenchmarkFlatEncode1K
+BenchmarkFlatEncode1K-8          	20186212	       118.7 ns/op	      1512 bytes	       0 B/op	       0 allocs/op
+BenchmarkFlatEncode10K
+BenchmarkFlatEncode10K-8         	11781330	       205.0 ns/op	     10212 bytes	       0 B/op	       0 allocs/op
+BenchmarkFlatDecode1K
+BenchmarkFlatDecode1K-8          	14995560	       163.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFlatDecode10K
+BenchmarkFlatDecode10K-8         	15109712	       158.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFlatDecodeNewJob10K
+BenchmarkFlatDecodeNewJob10K-8   	  501250	      5371 ns/op	   10320 B/op	       4 allocs/op
+BenchmarkStatePut
+BenchmarkStatePut-8              	72207463	        32.03 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStateGet
+BenchmarkStateGet-8              	74726392	        31.60 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBincRunState
+BenchmarkBincRunState-8          	 2034694	      1181 ns/op	       381.0 bytes	      32 B/op	       2 allocs/op
+PASS
+ok  	github.com/VertebrateResequencing/wr/customdbproto/internal/flat	29.373s

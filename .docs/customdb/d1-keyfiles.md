@@ -130,3 +130,17 @@ and writes buckets and indexes; the bbolt file is kept for rollback.
   touched file per batch. Key layout matters for a store that must find
   records on disk without an index in memory; wr already holds every live job
   in memory and can hold a compact index of history.
+
+## Measured (NFS, see benchmarks.md)
+
+- Production shape (6,000 runners, 122 runs/s, 200 adds/s): reserve p50
+  0.81ms, p99 5.3ms; 1000-job add p50 52ms. Indistinguishable from D2.
+- Saturation: 1,183 runs/s (out of jobs) at reserve p50 17ms against D2's
+  1.6ms, with 8.4 fdatasyncs per batch; at 5,150 runs/s, p50 21ms against
+  10ms, with 59 syncs per batch.
+- Recovery, 800k 10KB jobs: 12.4s cold, 3.0s warm (64 files read by 8
+  streams), against 37.6s / 7.1s for D2's single file read by one stream.
+- Crash tests: 16 kill -9 rounds, no acknowledged write lost; 320 truncations
+  and byte flips recovered to a prefix.
+- Files: 64 + 6 regardless of job count until buckets are segmented; see the
+  table above.

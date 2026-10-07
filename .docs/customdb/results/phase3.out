@@ -1,0 +1,56 @@
+### crash slots (fixed) 23:33:45
+CRASHTEST design=slots rounds=10 failed=0
+CRASHTEST design=slots rounds=6 failed=0
+### D5 ship 23:34:57
+preloaded 120000 in 9.294s
+  ship    steady-state maxLagBytes=10263072 maxCopyLag=217ms (+ up to 1s until the replica's fdatasync)
+RESULT design=wal dir=/tmp/claude-11346/customdb/hp runners=6000 cmd=10000 nosync=false lease=false runs=22011 runs/s=122.3
+  reserve p50=968µs     p99=3.3ms     max=41.45ms   >10s=0.00%
+  start   p50=903µs     p99=3.16ms    max=41.73ms  
+  archive p50=1.07ms    p99=4.91ms    max=40.85ms  
+  add     p50=46.69ms   p99=55.55ms   max=58.77ms   (n=36)
+  store   batches=73703 syncs=73703 MB=1614.0 meanBatchFlush=956µs leases=0
+### ceiling 23:38:07
+=== ceiling wal 23:38:07
+preloaded 250000 in 21.552s
+RESULT design=wal dir=/nfs/hgi/wr/sb10-bigdb/customdb-proto/sat runners=6000 cmd=10000 nosync=false lease=false runs=309000 runs/s=5150.0
+  reserve p50=10.12ms   p99=57.37ms   max=87.15ms   >10s=0.00%
+  start   p50=10.22ms   p99=54.79ms   max=86.96ms  
+  archive p50=10.16ms   p99=55.1ms    max=87.19ms  
+  add     p50=53.24ms   p99=79.26ms   max=94.92ms   (n=60)
+  store   batches=1651 syncs=1651 MB=3374.9 meanBatchFlush=11.484ms leases=0
+=== ceiling keyfiles 23:39:30
+preloaded 250000 in 19.475s
+RESULT design=keyfiles dir=/nfs/hgi/wr/sb10-bigdb/customdb-proto/sat runners=6000 cmd=10000 nosync=false lease=false runs=309000 runs/s=5150.0
+  reserve p50=20.87ms   p99=88.99ms   max=110.2ms   >10s=0.00%
+  start   p50=20.88ms   p99=88.47ms   max=110.19ms 
+  archive p50=20.88ms   p99=88.17ms   max=110.21ms 
+  add     p50=54.99ms   p99=93.86ms   max=100.86ms  (n=60)
+  store   batches=1220 syncs=72525 MB=3374.9 meanBatchFlush=16.814ms leases=0
+=== ceiling slots 23:40:50
+preloaded 250000 in 20.905s
+RESULT design=slots dir=/nfs/hgi/wr/sb10-bigdb/customdb-proto/sat runners=6000 cmd=10000 nosync=false lease=false runs=309000 runs/s=5150.0
+  reserve p50=38.03ms   p99=94.66ms   max=177.22ms  >10s=0.00%
+  start   p50=38.83ms   p99=99.19ms   max=174.12ms 
+  archive p50=38.49ms   p99=98.28ms   max=177.8ms  
+  add     p50=101.78ms  p99=128.92ms  max=130.49ms  (n=60)
+  store   batches=1892 syncs=3622 MB=3472.7 meanBatchFlush=18.766ms leases=0
+### recovery 23:42:12
+built slots n=120000 in 4.245s
+RECOVER design=slots fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=120000 cmd=10000 files=3 sizeMB=1251 cold live=120000 complete=0 records=120000 readMB=1251 took=1.968s 
+RECOVER design=slots fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=120000 cmd=10000 files=3 sizeMB=1251 warm live=120000 complete=0 records=120000 readMB=1251 took=498ms 
+RECOVER design=slotslazy fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=120000 cmd=10000 files=3 sizeMB=1251 cold live=120000 complete=0 records=120000 readMB=23 took=84ms 
+RECOVER design=slotslazy fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=120000 cmd=10000 files=3 sizeMB=1251 warm live=120000 complete=0 records=120000 readMB=23 took=21ms 
+built boltsmall n=120000 in 3m0.002s
+RECOVER design=boltsmall fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=120000 cmd=10000 files=1 sizeMB=1475 cold live=120000 complete=0 records=120000 readMB=1303 took=54.859s prefetch=5.959s(1407MB)
+RECOVER design=boltsmall fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=120000 cmd=10000 files=1 sizeMB=1475 warm live=120000 complete=0 records=120000 readMB=1303 took=1m0.152s prefetch=6.038s(1407MB)
+built keyfiles n=800000 in 46.155s
+RECOVER design=keyfiles fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=800000 cmd=10000 files=64 sizeMB=8199 cold live=800000 complete=0 records=840000 readMB=8199 took=12.441s 
+RECOVER design=keyfiles fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=800000 cmd=10000 files=64 sizeMB=8199 warm live=800000 complete=0 records=840000 readMB=8199 took=3s 
+built slots n=800000 in 26.723s
+RECOVER design=slots fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=800000 cmd=10000 files=3 sizeMB=8343 cold live=800000 complete=0 records=800000 readMB=8337 took=12.421s 
+RECOVER design=slots fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=800000 cmd=10000 files=3 sizeMB=8343 warm live=800000 complete=0 records=800000 readMB=8337 took=2.666s 
+RECOVER design=slotslazy fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=800000 cmd=10000 files=3 sizeMB=8343 cold live=800000 complete=0 records=800000 readMB=154 took=567ms 
+RECOVER design=slotslazy fs=/nfs/hgi/wr/sb10-bigdb/customdb-proto/rec n=800000 cmd=10000 files=3 sizeMB=8343 warm live=800000 complete=0 records=800000 readMB=154 took=133ms 
+Terminated
+### phase3 done 00:27:57

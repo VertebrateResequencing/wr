@@ -70,3 +70,13 @@ Offline converter from bbolt; straightforward.
 - It keeps the problems that come from being a general store: page rewrites
   for 200-byte changes, a whole-file backup, and opaque performance cliffs
   (checkpoint stalls, overflow pages for 10KB rows).
+
+## Measured (see benchmarks.md)
+
+- NFS, production shape: reserve p50 22ms, p99 2.1s, max 3.0s; archive p99
+  2.8s; 1000-job add p50 2.5s (it shares the one writer, so transitions wait
+  behind it). Local disk: reserve p50 1.6ms, p99 276ms.
+- Saturation on NFS: 399 runs/s, reserve p50 4.5s.
+- Recovery of 120k 10KB jobs on NFS: 44s cold and warm (row-at-a-time reads
+  through `database/sql`).
+- Crash tests: 16 kill -9 rounds, no acknowledged write lost.

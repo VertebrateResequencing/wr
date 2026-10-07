@@ -68,3 +68,8 @@ As the storage design it sits on.
 
 `proto/cmd/hotpath -lease` on the D2 log: reserve and start make no durable
 write; one lease write per 1000 reservations. See `benchmarks.md`.
+
+Production shape on NFS: hand-outs and starts make no write; the 28 lease
+writes (one per 1000 reservations) took p50 0.74ms; archives p50 0.84ms, p99
+16ms; batches fell from 74k to 22k over the run, so archives and adds share
+fewer, larger batches.

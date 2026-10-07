@@ -298,7 +298,11 @@ func ship(src, dst string, stop chan struct{}) {
 	offs := map[string]int64{}
 	outs := map[string]*os.File{}
 
-	var maxLag int64
+	var (
+		maxLag     int64
+		maxLagTime time.Duration
+		caughtUp   bool
+	)
 
 	lastSync := time.Now()
 	tick := time.NewTicker(200 * time.Millisecond)
@@ -308,13 +312,16 @@ func ship(src, dst string, stop chan struct{}) {
 	for {
 		select {
 		case <-stop:
-			fmt.Printf("  ship    maxLagBytes=%d\n", maxLag)
+			fmt.Printf("  ship    steady-state maxLagBytes=%d maxCopyLag=%s (+ up to 1s until the replica's fdatasync)\n",
+				maxLag, maxLagTime.Round(time.Millisecond))
 
 			return
 		case <-tick.C:
 		}
 
+		tickStart := time.Now()
 		ents, _ := os.ReadDir(src)
+
 		for _, e := range ents {
 			name := e.Name()
 
@@ -324,7 +331,9 @@ func ship(src, dst string, stop chan struct{}) {
 			}
 
 			st, _ := in.Stat()
-			maxLag = max(maxLag, st.Size()-offs[name])
+			if caughtUp {
+				maxLag = max(maxLag, st.Size()-offs[name])
+			}
 
 			out := outs[name]
 			if out == nil {
@@ -336,6 +345,14 @@ func ship(src, dst string, stop chan struct{}) {
 			offs[name] += n
 			in.Close()
 		}
+
+		// a byte written just after the previous tick's stat waits the tick
+		// interval plus this copy; it is synced within a further second.
+		if caughtUp {
+			maxLagTime = max(maxLagTime, 200*time.Millisecond+time.Since(tickStart))
+		}
+
+		caughtUp = true
 
 		if time.Since(lastSync) > time.Second {
 			for _, out := range outs {
