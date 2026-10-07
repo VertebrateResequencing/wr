@@ -405,16 +405,17 @@ below.
    - Change soak: the double is not a non-durable hand-out, since no D1 line
      names its key (d1582bc1...). Its first run (node-13-08 pid 2170469,
      runner log `runnerlogs/26.10.07/12-12-10.node-13-08.2081262`) was
-     reserved and started at 12:25:35 and exited 0 at 12:26:28. Its runner
-     never reported the completion: it logged "gave up waiting for the
-     resource checking goroutine to stop" at 12:27:29 and "aborting due to
-     signal" (interrupt) at 12:27:47. Meanwhile the scheduled clean stop that
-     began at 12:26:38 logged "gave up waiting for runners to exit" at
-     12:27:39. The job was not complete in the DB, so a later manager ran it
-     again at 12:44:11 on node-11-2-2.
-   - Baseline: the 2 outside doubles are also at a clean stop: each run
-     exited 0 just as the stop's "kill requested externally" reached its
-     runner (07:55:33).
+     reserved and started at 12:25:35 and exited 0 at 12:26:28, 10s before
+     the scheduled clean stop began at 12:26:38. The runner then waited 61s
+     for its resource-checking goroutine to stop (`jobqueue/client.go`
+     about 3880-4004, `checkingFinishTimeout` 60s), logging "gave up waiting
+     for the resource checking goroutine to stop" at 12:27:29, and logged
+     "aborting due to signal" (interrupt) at 12:27:47. So it never reported
+     the completion. The stop logged "gave up waiting for runners to exit"
+     at 12:27:39. The job was not complete in the DB, so a later manager ran
+     it again at 12:44:11 on node-11-2-2.
+   - Baseline: each of the 2 outside doubles exited 0 just as the stop's
+     "kill requested externally" reached its runner (07:55:33).
 4. Missing jobs: PASS. `absent=0` in both soaks, and `relburycheck.py`
    reports problems 0 in both.
 5. `rundepcheck.py`: PASS. Summary `{'OK': 36, 'CHECK': 4}`. All 4 CHECK
