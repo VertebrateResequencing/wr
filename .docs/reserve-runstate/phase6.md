@@ -72,5 +72,5 @@ each unmapped double by hand (find its runner log and reservation time)
 and report what it was alongside the soakgate output; the criterion itself
 is not relaxed.
 
-- [ ] implemented
+- [x] implemented
 - [ ] reviewed
