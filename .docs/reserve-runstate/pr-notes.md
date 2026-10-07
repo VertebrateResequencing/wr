@@ -157,3 +157,59 @@ E4 acceptance tests:
   ManagerHost is localhost; has no trap for SIGINT/timeout cleanup of dst;
   the aslmanifest refusal doesn't follow symlinks; freelist-bound repro texts
   could point at TestReliable4InflateDB.
+
+## Local gates (item 6.1)
+
+Run on cadeae73 (rebased on develop 72384e4c), all `OS_*` unset,
+`GOCACHE=/tmp/claude-11346/gocache-runstate` (speed runs:
+`/tmp/claude-11346/gocache-runstate-gate`), `GOFLAGS=-p=2`, `nice -n 19`.
+
+1. `make lint`: `0 issues.` PASS. `make test`: 959 passed, 22 skipped, 34
+   packages, PASSED. `CGO_ENABLED=1 make race`: 959 passed, 21 skipped, 34
+   packages, PASSED. `go vet -tags netgo,reliability_repro ./jobqueue/`: exit
+   0, PASS. `go test -tags netgo,reliability_repro --count 1 -run
+   TestReliable4InflateDBOpens ./jobqueue/`: 14 assertions, `ok`, PASS.
+2. `SPEED_BASE=72384e4c SPEED_DIR=$G/speed-quick DEV_PORT=51990 DEV_WEB=51991
+   PROD_PORT=51992 PROD_WEB=51993 make speed` (benchstat copied into
+   `$G/speed-quick/tools/` first; ports checked free with `ss -ltn`): `PASS:
+   no benchmark or scenario worsened by more than 10% at p<0.05, and every
+   scenario met its thresholds` (`$G/speed-quick/run-1791326361`). No time
+   or bolt-I/O metric moved significantly except
+   `BuildSchedulerGroupsBacklog/priorities=1` sec/op +3.98% (p=0.041), which
+   this branch does not touch. Small significant allocation rises from the
+   run-state write: `UpdateJobState` B/op +4.09% (p=0.004) and allocs/op
+   +2.96% (p=0.002); allocs/op `AddJobs` +2.21%, `ArchiveSpacedArrivals`
+   +1.85%, `ModifyLiveJobsReverseLookup` +2.28% (all p=0.002). bolt_pages/job
+   and bolt_writes/job: no significant change (`UpdateJobState` 0.8149 to
+   0.8199, p=0.310). Scenarios (one round each, so threshold-gated only):
+   report-storm 743.8 to 746.8 jobs/s; dep-granularity peak RSS 299.5 to
+   286.1 MiB.
+3. A2 test 5, `make bench BENCH='UpdateJob(RunState|Full)10KB'`:
+   `BenchmarkUpdateJobRunState10KB` 0.3030 bolt_pages/job,
+   `BenchmarkUpdateJobFull10KB` 4.629 bolt_pages/job (ratio 0.065, bar is
+   at most 0.5). PASS.
+4. `SPEED_BASE=72384e4c SPEED_DIR=$G/speed-full
+   SPEED_BIG_DB=$G/fixtures/pristine6 WR_AS_DB=$G/fixtures/prod.db
+   WR_ARCHRATE_DB=$G/fixtures/pristine10 WR_AC_DB=$G/fixtures/pristine6
+   DEV_PORT=51994 DEV_WEB=51995 PROD_PORT=51996 PROD_WEB=51997 make
+   speed-full` (benchstat already in `$G/speed-full/tools/`; ports checked
+   free with `ss -ltn`; head reported `-dirty` only for this uncommitted
+   pr-notes.md): `PASS: no benchmark or scenario worsened by more than 10% at
+   p<0.05, and every scenario met its thresholds`
+   (`$G/speed-full/run-1791333741`). An earlier interrupted run,
+   `$G/speed-full/run-1791327200`, is abandoned and left in place; no process
+   referenced it. Significant moves: sec/op `ArchiveSpacedArrivals` +0.29%
+   (p=0.026); `UpdateJobState` B/op +4.44% and allocs/op +2.97% (both
+   p=0.002), the run-state write as in the quick run;
+   `ModifyLiveJobsReverseLookup` B/op +0.67% and allocs/op +2.53% (both
+   p=0.002). No bolt-I/O metric moved significantly. Scenarios (one round
+   each, so threshold-gated only), base to head: report-storm 747.9 to 923.4
+   jobs/s; dep-granularity peak RSS 300 to 309 MiB; add-storm 220.40 to
+   242.87 adds/s, p99 6585 to 3141 ms; archive-rate 166.6 to 167.5
+   archives/s; archive-ceiling 384.63 to 382.99 archives/s
+   (throughput-factor 44.18 to 43.91).
+5. `.docs/reliable2/harness/statinspect`: `GOPROXY=off GOFLAGS=-mod=mod go mod
+   tidy` exit 0, `go.mod` and `go.sum` unchanged (md5 identical);
+   `go test -count=1 ./...`: `ok statinspect`. PASS.
+6. `developers/soak/testdata/soakgate/run.sh`: `PASS: 28 soakgate cases`,
+   exit 0.
