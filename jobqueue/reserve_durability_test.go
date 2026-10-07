@@ -972,8 +972,7 @@ func reserveNotDurableLines(log string) []reserveNotDurableLine {
 	var lines []reserveNotDurableLine
 
 	for line := range strings.Lines(log) {
-		if !strings.Contains(line, `msg="`+reserveNotDurableLogMsg+`"`) ||
-			!strings.Contains(line, "lvl=info ") {
+		if !strings.Contains(line, `msg="`+reserveNotDurableLogMsg+`"`) || !strings.Contains(line, "lvl=info ") {
 			continue
 		}
 
