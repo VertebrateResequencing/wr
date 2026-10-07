@@ -179,11 +179,13 @@ Run on cadeae73 (rebased on develop 72384e4c), all `OS_*` unset,
    this branch does not touch. Small significant allocation rises from the
    run-state write: `UpdateJobState` B/op +4.09% (p=0.004) and allocs/op
    +2.96% (p=0.002); allocs/op `AddJobs` +2.21%, `ArchiveSpacedArrivals`
-   +1.85%, `ModifyLiveJobsReverseLookup` +2.28% (all p=0.002). bolt_pages/job
+   +1.85%, `ModifyLiveJobsReverseLookup` +2.28% (all p=0.002); B/op
+   `ModifyLiveJobsReverseLookup` +0.53% (p=0.009). bolt_pages/job
    and bolt_writes/job: no significant change (`UpdateJobState` 0.8149 to
    0.8199, p=0.310). Scenarios (one round each, so threshold-gated only):
-   report-storm 743.8 to 746.8 jobs/s; dep-granularity peak RSS 299.5 to
-   286.1 MiB.
+   report-storm 743.8 to 746.8 jobs/s; dep-granularity peak RSS 314 to
+   300 MiB (raw `peakRssMb`; benchstat's table rescales this unit, showing
+   299.5Mi to 286.1Mi).
 3. A2 test 5, `make bench BENCH='UpdateJob(RunState|Full)10KB'`:
    `BenchmarkUpdateJobRunState10KB` 0.3030 bolt_pages/job,
    `BenchmarkUpdateJobFull10KB` 4.629 bolt_pages/job (ratio 0.065, bar is

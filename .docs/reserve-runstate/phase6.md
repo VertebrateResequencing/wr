@@ -28,8 +28,8 @@ installed benchstat copied in; in statinspect, the hand-added goconvey
 Record in the PR body the speed verdicts and A2 test 5's two
 `bolt_pages/job` figures. Fix any failure in the story it belongs to.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 6.2: F2 - wrdev crash, recovery and big-DB modes
 
