@@ -948,15 +948,15 @@ Under `## [Unreleased]`, first in `### Changed`:
   that were reserved or running when this version stopped.
 ```
 
-First in `### Fixed`:
+First in `### Fixed` (wording approved by the owner on 2026-10-07):
 
 ```markdown
 - With thousands of runners, the manager now records each reservation and
-  start with a small write instead of rewriting the whole command, so far
-  fewer commands are handed out before their reservation is on disk, and far
-  fewer run twice if the manager crashes. Each command that is still handed
-  out before its reservation is on disk is now logged at info with its key
-  and a running total.
+  start with a small write instead of rewriting the whole command, so fewer
+  commands are handed out before their reservation is on disk, and so fewer
+  can run twice if the manager crashes. Each command still handed out before
+  its reservation is on disk is logged at info with its key and a running
+  total.
 ```
 
 In `managerCompactCmd.Long`, the last paragraph becomes:
