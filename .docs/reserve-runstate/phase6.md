@@ -49,8 +49,8 @@ fixtures to match it. After F2.4, also run
 `results.tsv` in the PR body. Any mode that fails or reports
 `SKIPPED-NOFIXTURE` is investigated before F3.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 6.3: F3 - Production-scale LSF crash soaks
 
