@@ -5486,7 +5486,9 @@ func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
 // updateJobAfterChangeDurable is updateJobAfterChange, but it blocks until the
 // drain that covers this job's write has committed, and returns that write's
 // outcome. It is what lets a caller acknowledge a change only once recovery
-// would see it (see handleStart).
+// would see it (see handleReportOnOwnBuriedJob and ackAlreadyReleased).
+// Reservations and starts write only the run state, with
+// updateJobRunStateDurable.
 //
 // It does NOT cost a transaction per call: the best-effort writer folds every
 // write pending when it next wakes into one commit, so concurrent waiters share

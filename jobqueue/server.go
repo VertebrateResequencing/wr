@@ -3791,10 +3791,10 @@ func (s *Server) releaseRun(ctx context.Context, job *Job, rep releaseReport) (b
 // A redundant report, such as a runner re-sending after its first request timed
 // out on a slow commit, must not be acknowledged before that first write is on
 // disk, and if that write failed nothing else will retry it. So, as handleStart
-// does for a duplicate start, a durable report writes the job's current state
-// again. It is only written if the job is still live, and with a later arrival
-// order than anything already queued for it, so this can neither resurrect a
-// deleted or archived job nor overwrite a newer record.
+// writes a duplicate start's run state again, a durable report writes the job's
+// current state again. It is only written if the job is still live, and with a
+// later arrival order than anything already queued for it, so this can neither
+// resurrect a deleted or archived job nor overwrite a newer record.
 func (s *Server) ackAlreadyReleased(ctx context.Context, job *Job, rep releaseReport) error {
 	if rep.reporter != (uuid.UUID{}) && job.replaceLostEndState(rep.endState, rep.failReason) {
 		return s.writeReleasedJob(ctx, job, rep)

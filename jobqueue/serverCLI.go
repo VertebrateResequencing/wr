@@ -1274,12 +1274,12 @@ func (s *Server) handleStart(ctx context.Context, cr *clientRequest) (*serverRes
 	// It costs one coalesced drain, NOT one transaction per start: every write
 	// pending when the best-effort writer next wakes lands in the same commit, so
 	// the write-storm amplification PR #555 removed (.docs/reliable4/) stays
-	// removed. The other updateJobAfterChange callers (suspend, resume, kick)
-	// acknowledge nothing a crash could act on, so they stay async.
+	// removed. Suspend, resume and kick write the whole job without waiting:
+	// they acknowledge nothing a crash could act on, so they stay async.
 	//
-	// The write is the job's small run-state record, which recovery overlays on
-	// its live record, not the whole job: an accepted duplicate start writes it
-	// too, so a first-seen runner pid it adopted is recorded.
+	// The write here is not the whole job but its small run-state record, which
+	// recovery overlays on its live record: an accepted duplicate start writes
+	// it too, so a first-seen runner pid it adopted is recorded.
 	if err := s.db.updateJobRunStateDurable(job); err != nil {
 		// ErrInternalError is not a definitive rejection, so the runner keeps its
 		// healthy command running, lets its touch loop hold the job's TTR, and
