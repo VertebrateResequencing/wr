@@ -1,0 +1,417 @@
+{
+  "role": "Bounded PREREQ-F1 supervisor correction; prerequisite resource/launch history preserved",
+  "finding": "PREREQ-F1",
+  "status": "implemented and regression-tested; independent correction review pending",
+  "authored_start": "2026-10-08T13:37:33+00:00",
+  "decision_clock": "2026-10-08T13:47:42.497255+00:00",
+  "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+  "history_bindings": {
+    "old_working_manifest": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/working-manifest-before.json",
+      "sha256": "cb4ce476a157d79c87333a8441afb5c1941fe3edd969117928cde7eb8baa1886",
+      "bytes": 456542,
+      "mode": "0o664"
+    },
+    "prerequisites": {
+      "path": ".docs/nextflow-conformance/research-pilot/prerequisites.json",
+      "sha256": "0811af15f92f19bfc416ac6f8bfdadccc8517c3fa4a82d05c2c382ecdee61f7e",
+      "bytes": 48665,
+      "mode": "0o664"
+    },
+    "original_supervisor": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/capture.py",
+      "sha256": "607c69469aa4a46bc784190b123666911936b94a65f435fd1e98889dfb686071",
+      "bytes": 4914,
+      "mode": "0o664"
+    },
+    "original_author_report": {
+      "path": ".docs/nextflow-conformance/research-pilot/item2.1-author-01.md",
+      "sha256": "ec77d6e3cd851feda75b3a8903d9801d32861e357eb68f893e7d931c9d6e590d",
+      "bytes": 7846,
+      "mode": "0o664"
+    },
+    "review_report": {
+      "path": ".docs/nextflow-conformance/research-pilot/prerequisites-review-01.md",
+      "sha256": "fa80755d9725a2f9d341c5d90399572b4edb8211835f39cab49d9f977de38a21",
+      "bytes": 9033,
+      "mode": "0o664"
+    },
+    "review_supervisor_proof": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-review01/supervision/results.json",
+      "sha256": "b8e21c8f0d01953a5ba00e472cc0244d0ce18a1177e64c1bb959d7376e046e5a",
+      "bytes": 1374,
+      "mode": "0o664"
+    },
+    "launch_plan": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-plan.json",
+      "sha256": "77fe9aced1b3a1e72bff2f70dd53f895396bddbbb66ab68771d3742c695ce586",
+      "bytes": 4253,
+      "mode": "0o664"
+    },
+    "launch_init": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch.init.gradle",
+      "sha256": "71b77ecefdbf5a0484534487d623edbe819dc5c2209e56491864e9d5bba4488e",
+      "bytes": 1061,
+      "mode": "0o664"
+    }
+  },
+  "history_boundary": "The original supervisor remains declined for runtime use. Its 15 successful historical command captures remain genuine unchanged history; no retrospective timeout validation is claimed. Native launch-plan/init route remains separately accepted.",
+  "current_route": {
+    "supervisor": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/capture.py",
+    "version": "PREREQ-F1-correction-01",
+    "argv_template": [
+      "python3",
+      ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/capture.py",
+      "<capture-id>",
+      "<cwd>",
+      "<timeout-seconds>",
+      "<command-argv...>"
+    ],
+    "capture_directory": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1",
+    "environment": "Retains original JAVA_HOME, original prerequisites01/gradle-home and v2; records actual inherited launch environment",
+    "command_limit": "Minimum of requested command deadline and existing stage deadline; bounded TERM 0.5s then KILL 1.0s cleanup",
+    "signals": "Stable pidfd signals only after current birth identity check; all tracked groups included",
+    "ownership": "Dedicated Linux child subreaper adopts orphaned owned descendants; current ancestry and birth identities verified before retaining handles",
+    "completion": "Actual direct-parent status and zero owned live survivors; zombies explicitly stopped, never fabricated absent",
+    "cleanup_failure": "remaining_live and failure retained; completed=false and wrapper exit 2 when cleanup incomplete",
+    "use_gate": "Fresh independent correction review before Item2.2 genuine originals"
+  },
+  "red_proof": {
+    "result": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/red-results.json",
+    "supervisor_copy_change": "Only BASE relocated from original; original supervisor bytes/hash unchanged",
+    "detached_ignoring_TERM": "completed=true and live tracked descendant reproduced; stable-handle test cleanup stopped it and records final zombie state",
+    "paired_honoring_TERM": "Timed out and child stopped without reviewer rescue",
+    "red_command_exit": 1
+  },
+  "green_proof": {
+    "result": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-results.json",
+    "subjects": [
+      "detached-ignores-term",
+      "detached-honors-term",
+      "normal-completion",
+      "parent-exit-owned-child"
+    ],
+    "additional_guards": [
+      "stale birth identity receives no signal",
+      "unowned ancestor fails ownership check"
+    ],
+    "command_metadata": "Exact commands/cwd/environment/deadlines/exit/signal/log bytes and process identities retained in each capture"
+  },
+  "passive_gate": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/verify_correction.py",
+  "passive_gate_boundary": "Preserves all 17 frozen fields, 249 sealed artifacts and existing phase2_prerequisites exact canonical values; allows one correction field. Binds actual accepted source/resource/generated closure and old/new captures. Changes no file. Historical author gate remains unchanged.",
+  "correction_artifacts": [
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/before.json",
+      "sha256": "980231ad07eb28de37333ff56948522c33785f74916096af33f4daec28d3f40a",
+      "bytes": 274463,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/capture.py",
+      "sha256": "de625c1996b536afe6ca381d0978326f8e94690c7957923a4590f638430b3894",
+      "bytes": 11045,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-detached-honors-term-command.json",
+      "sha256": "9bbe4042d71045b413162f348298209b5b86a3f4764e8227e420e0d91aa6b491",
+      "bytes": 643,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-detached-honors-term-wrapper.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-detached-honors-term-wrapper.stdout",
+      "sha256": "db99d27ef9c7cdcc1fb5180cccf3bc24f6455eede2e755e3ab6de1efaf68fe22",
+      "bytes": 3418,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-detached-honors-term.json",
+      "sha256": "25e2d41a3880624cbd3509fa49f484e2be20ce797ac0830157c88175239d4012",
+      "bytes": 3992,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-detached-honors-term.pid",
+      "sha256": "c61978b421c64ea225b12b87d1972244dea9ac16fba2af13b3a2a59ec8298fc4",
+      "bytes": 7,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-detached-honors-term.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-detached-honors-term.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-detached-ignores-term-command.json",
+      "sha256": "b339c18141efdd27699fbc72edfc6ad5e76b99a0685567db9a8c922095fd64cc",
+      "bytes": 692,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-detached-ignores-term-wrapper.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-detached-ignores-term-wrapper.stdout",
+      "sha256": "3ea1ce4e7d0333f7b42347cd7b9402b4cc3eaf508affa1c8fa4bc0ddba7162e2",
+      "bytes": 3650,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-detached-ignores-term.json",
+      "sha256": "f696b30e6ec1c1f0b4c83d641e7cc01f52a2c887eea71a5a94464943cf8605fc",
+      "bytes": 4294,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-detached-ignores-term.pid",
+      "sha256": "7c7c70579c01efdd89e787ea97f39726d91f05a0423c74c484f8717d402470b6",
+      "bytes": 7,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-detached-ignores-term.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-detached-ignores-term.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-normal-completion-command.json",
+      "sha256": "9aeb94f257393ba78f349f8136a6d66795004c26ca4c7489b9d76176b46f8aad",
+      "bytes": 311,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-normal-completion-wrapper.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-normal-completion-wrapper.stdout",
+      "sha256": "652e09494c2d4e9d340a29b0ae87dbbde9e1c005e2b997a26b078b1dd76a4ba9",
+      "bytes": 2486,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-normal-completion.json",
+      "sha256": "2eafa1af937d22e9921ec89ae3a8a02cbd5a2b759bafa68a1eca9ce5a5808103",
+      "bytes": 2782,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-normal-completion.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-normal-completion.stdout",
+      "sha256": "e37a062a322b4e34886ba0c9e0310b9249f8a615c596027ef0fc833478698d72",
+      "bytes": 17,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-parent-exit-owned-child-command.json",
+      "sha256": "129e9f6274802048b8edbbf2e3f85c6c05de089f6bf2d267760a294c6c1c47fa",
+      "bytes": 684,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-parent-exit-owned-child-wrapper.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-parent-exit-owned-child-wrapper.stdout",
+      "sha256": "4fa9abd6b55cc28e9cad63e9eebe276209039fb82cdf3b9f8aec942c057c41f5",
+      "bytes": 3464,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-parent-exit-owned-child.json",
+      "sha256": "e756de3a2a53ef01ce4da6efe33feb6d32ed36b58f2fdb62dad5d3522591f3ed",
+      "bytes": 4038,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-parent-exit-owned-child.pid",
+      "sha256": "9df40ed3b5b27c82b84a841f7e9002af6f0e685a45b293a770850832febf3ee2",
+      "bytes": 7,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-parent-exit-owned-child.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-parent-exit-owned-child.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green-results.json",
+      "sha256": "f4918cfa86ce63f25d1b8551d2e5b98ff5862b30f35f33d376e0c878654fc79f",
+      "bytes": 5379,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/green.stdout",
+      "sha256": "5815912c9c1394f7a16834ed0e22cf93ef1cc202a38b337571aa4748cf188b88",
+      "bytes": 112,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/historical-capture-base-only.py",
+      "sha256": "829df4da4af767d1a24e64f7599d162e62bf374fb1e57c0fc41ddf2594c2e5f8",
+      "bytes": 4919,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/red-detached-honors-term-command.json",
+      "sha256": "8bbeb0fb7ac42d290db7ea281e6b63b4a30aacef2e9a149214fb08fbbffdc737",
+      "bytes": 660,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/red-detached-honors-term-wrapper.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/red-detached-honors-term-wrapper.stdout",
+      "sha256": "be49fca972e764de3583e35e361c52aab95ff330a153913882c202ec27d53b28",
+      "bytes": 2201,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/red-detached-honors-term.json",
+      "sha256": "5a2e77d332caf39925d9a42e7997da64ea9f91e8762e518f9d832415e3d4105c",
+      "bytes": 2361,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/red-detached-honors-term.pid",
+      "sha256": "5fdda345669f55cf68642a524ca115f08acddc96306b4e86f05bfe5e544e3a2c",
+      "bytes": 7,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/red-detached-honors-term.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/red-detached-honors-term.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/red-detached-ignores-term-command.json",
+      "sha256": "1c16f71aa9eeca6c78457e4fcc8300774bb178e17999e4da2a0237f4d60e4ca1",
+      "bytes": 709,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/red-detached-ignores-term-wrapper.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/red-detached-ignores-term-wrapper.stdout",
+      "sha256": "f89fcc457b8484824116559bc031e0bea8132c664a4f57adf98c8d7fcca71852",
+      "bytes": 2252,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/red-detached-ignores-term.json",
+      "sha256": "944dc1d8e8b59c45d5d0fefc0137b2ac0f8765ef997e51fd89846008cb84a748",
+      "bytes": 2412,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/red-detached-ignores-term.pid",
+      "sha256": "ed9bacca33b6789eed7b84116b8a644d5487a65ee5302c69aa07edb4f1501f51",
+      "bytes": 7,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/red-detached-ignores-term.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/red-detached-ignores-term.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/red-results.json",
+      "sha256": "7c7676cf52726228f04f05240dde90a91784ab20500e9b4c6f5218e9ed773578",
+      "bytes": 3235,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/red.stdout",
+      "sha256": "53bdb38fed4988b5d85983692caf08cd3b4ec692132bc3d4c4b409a52711d428",
+      "bytes": 113,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/test_supervision.py",
+      "sha256": "ac8e0521b39ef9d3d882f7e5c9a39793d9e6e8a1d4040ff2b3480fbb148ffdb6",
+      "bytes": 8196,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/verify_correction.py",
+      "sha256": "81c95139620407a7cdba5e1d4663c984c2ecdc5aa61c12fd2c8b29313116ebd1",
+      "bytes": 7732,
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/working-manifest-before.json",
+      "sha256": "cb4ce476a157d79c87333a8441afb5c1941fe3edd969117928cde7eb8baa1886",
+      "bytes": 456542,
+      "mode": "0o664"
+    }
+  ],
+  "execution_boundary": "Synthetic Python supervisor subjects only. No DSL, selected Spock/CLI, observer/gap, F1 Bash control, rebuild, acquisition or R-UAT-02 pass.",
+  "live_work": {
+    "children": [],
+    "processes": [],
+    "tool_waits": [],
+    "jobs": []
+  }
+}

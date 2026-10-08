@@ -43,8 +43,11 @@ remains unverified. The sourced report and independent review 02 are accepted.
 The bounded pilot charter and all four execution plans passed their reviews.
 The Phase 1 source-derived handoff passed review, accepting R-UAT-01 only.
 Pilot execution is tracked in `research-pilot/execution-status.md`; genuine
-prerequisite resolution and original attempts come next. No pilot DSL execution
-or translation pass has yet been awarded. Permission portability finding P01
+prerequisite closure and original attempts passed independent review, accepting
+R-UAT-02 for the finite group. Six Spock features and four original CLI checks
+passed. Successful raw Spock values remain unobserved; no observer equivalence,
+translation, full-language or wr pass is awarded. Manual mappings and controls
+come next. Permission portability finding P01
 is owned by root and must be resolved before fresh-checkout reuse.
 
 ## Candidate under investigation

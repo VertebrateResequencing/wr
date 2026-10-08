@@ -1,0 +1,1009 @@
+{
+  "role": "Phase2 Item2.1 actual bounded prerequisite closure, no original execution pass",
+  "revision": "232b60569865e9a4577e48c1955409238359d6ca",
+  "author_observed_start": "2026-10-08T12:59:36+00:00",
+  "decision_clock": "2026-10-08T13:16:19.680886+00:00",
+  "stage_start": "2026-10-08T12:58:40.671383+00:00",
+  "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+  "status": "closure-available-pending-independent-review",
+  "frozen_handoff": {
+    "manifest": {
+      "path": ".docs/nextflow-conformance/research-pilot/phase1-frozen-research-manifest.json",
+      "sha256": "2ac04fa4c27a17753afe39d9dcbf6489bafd5027475799099b0359787f0052d0",
+      "bytes": 449567
+    },
+    "seal": {
+      "path": ".docs/nextflow-conformance/research-pilot/phase1-handoff-seal.json",
+      "sha256": "fd14d9c7c7b8c8ab7f37f99b9c406434b13b21c534bc24c563f0aff1c9356957",
+      "bytes": 68490
+    },
+    "review": {
+      "path": ".docs/nextflow-conformance/research-pilot/contracts-review.md",
+      "sha256": "da0049c8c085b5bd5e9822fa626badaa77bd09552adf7e7892c6de48d8a5b45c",
+      "bytes": 11351
+    }
+  },
+  "build": {
+    "capture": "full-gradle-build",
+    "result": "BUILD SUCCESSFUL in1m32s;21tasks executed; no Test task",
+    "elapsed_seconds": 93.19554,
+    "source_files_verified": 2856,
+    "generated_required_classes": 11,
+    "build_scope": "Original upstream multi-project source/build, full compileTestGroovy for nf-lang and nextflow, including genuine fixtures and ANTLR-generated parser classes",
+    "isolation": "Only owned copied source, Gradle cache and outputs; one worker, no daemon retained; no source/assertion edits"
+  },
+  "versions": {
+    "java": "Temurin21.0.12.1+1",
+    "java_compile_target": "17",
+    "gradle": "9.3.1",
+    "gradle_embedded_groovy": "4.0.29",
+    "project_groovy": "4.0.31",
+    "spock": "2.4-groovy-4.0",
+    "requested_junit_launcher": "1.10.5",
+    "resolved_junit_launcher_engine_commons": "1.14.1",
+    "alignment": "Spock2.4/JUnit5.14.1 BOM and Gradle conflict/constraint resolution, not assumed starting launcher pin",
+    "byte_buddy": "1.14.17",
+    "objenesis": "3.4",
+    "jimfs": "1.2",
+    "antlr": "me.sunlan4.13.2.6",
+    "jacoco": "0.8.14",
+    "jacoco_asm": "9.9"
+  },
+  "resource_counts": {
+    "new_unique_acquired_paths": 578,
+    "distinct_acquired_sha256": 578,
+    "copied_or_generated_files_are_not_new_acquisitions": true,
+    "reused_jdk_files": 454,
+    "reused_production_resources": [
+      "SOURCE",
+      "RUNTIME",
+      "LAUNCHER"
+    ],
+    "new_system_packages": 0
+  },
+  "dependencies": {
+    "nf_lang_test_runtime_components": 97,
+    "nextflow_test_runtime_components": 136,
+    "nf_lang_test_runtime_edges": 212,
+    "nextflow_test_runtime_edges": 365,
+    "actual_full_graph_and_jacoco_graphs": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/resolution.json",
+      "sha256": "dbdfedf4475656ccb7e90cfe2a0cae2b3ed8a4ae9dd7317af068d5c7cdb19f11",
+      "bytes": 387272
+    }
+  },
+  "selection": {
+    "methods": 6,
+    "spock_units": 11,
+    "cli_invocations": 4,
+    "parser_feature_ordinals": [
+      0,
+      1,
+      2
+    ],
+    "mix_feature_ordinals": [
+      0,
+      1,
+      2
+    ],
+    "shared_parser": "Compiled original @Shared field plus setupSpec; select all3 parser features in one class launch, preserving source-order subcases inside each unchanged method",
+    "mix_timeout_seconds": 5,
+    "spock_order": "Compiled FeatureMetadata ordinal plus genuine SpecInfoBuilder declaration/execution sorting; default optimizeRunOrder=false and parallel=false. Launch isolation explicitly keeps parallel=false and excludes external home config",
+    "execution_discovery": "No test discovery, selected Test task or launch ran; actual discovered names/order/completion still require Item2.2 capture",
+    "launch_plan": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-plan.json",
+      "sha256": "77fe9aced1b3a1e72bff2f70dd53f895396bddbbb66ab68771d3742c695ce586",
+      "bytes": 4253
+    }
+  },
+  "affected_units": [
+    {
+      "id": "P1",
+      "availability": "available-for-genuine-attempt",
+      "cause": "Unchanged selected Spock source compiled with genuine original fixture classes and fully resolved test/launch classpath",
+      "original_execution": "not-attempted-in-item2.1"
+    },
+    {
+      "id": "P2",
+      "availability": "available-for-genuine-attempt",
+      "cause": "Unchanged selected Spock source compiled with genuine original fixture classes and fully resolved test/launch classpath",
+      "original_execution": "not-attempted-in-item2.1"
+    },
+    {
+      "id": "P3",
+      "availability": "available-for-genuine-attempt",
+      "cause": "Unchanged selected Spock source compiled with genuine original fixture classes and fully resolved test/launch classpath",
+      "original_execution": "not-attempted-in-item2.1"
+    },
+    {
+      "id": "P4",
+      "availability": "available-for-genuine-attempt",
+      "cause": "Unchanged selected Spock source compiled with genuine original fixture classes and fully resolved test/launch classpath",
+      "original_execution": "not-attempted-in-item2.1"
+    },
+    {
+      "id": "P5",
+      "availability": "available-for-genuine-attempt",
+      "cause": "Unchanged selected Spock source compiled with genuine original fixture classes and fully resolved test/launch classpath",
+      "original_execution": "not-attempted-in-item2.1"
+    },
+    {
+      "id": "P6",
+      "availability": "available-for-genuine-attempt",
+      "cause": "Unchanged selected Spock source compiled with genuine original fixture classes and fully resolved test/launch classpath",
+      "original_execution": "not-attempted-in-item2.1"
+    },
+    {
+      "id": "P7",
+      "availability": "available-for-genuine-attempt",
+      "cause": "Unchanged selected Spock source compiled with genuine original fixture classes and fully resolved test/launch classpath",
+      "original_execution": "not-attempted-in-item2.1"
+    },
+    {
+      "id": "P8",
+      "availability": "available-for-genuine-attempt",
+      "cause": "Unchanged selected Spock source compiled with genuine original fixture classes and fully resolved test/launch classpath",
+      "original_execution": "not-attempted-in-item2.1"
+    },
+    {
+      "id": "M1",
+      "availability": "available-for-genuine-attempt",
+      "cause": "Unchanged selected Spock source compiled with genuine original fixture classes and fully resolved test/launch classpath",
+      "original_execution": "not-attempted-in-item2.1"
+    },
+    {
+      "id": "M2",
+      "availability": "available-for-genuine-attempt",
+      "cause": "Unchanged selected Spock source compiled with genuine original fixture classes and fully resolved test/launch classpath",
+      "original_execution": "not-attempted-in-item2.1"
+    },
+    {
+      "id": "M3",
+      "availability": "available-for-genuine-attempt",
+      "cause": "Unchanged selected Spock source compiled with genuine original fixture classes and fully resolved test/launch classpath",
+      "original_execution": "not-attempted-in-item2.1"
+    },
+    {
+      "id": "ARITY-FRESH",
+      "availability": "available-for-genuine-attempt",
+      "cause": "Hash-verified original launcher and opaque distribution/JDK; selected workflow, hidden checks, expected bytes, config and ignore files copied unchanged; required CLI tools exist",
+      "original_execution": "not-attempted-in-item2.1",
+      "effective_executor_container": "pending-original-observation"
+    },
+    {
+      "id": "ARITY-RESUME",
+      "availability": "available-for-genuine-attempt",
+      "cause": "Hash-verified original launcher and opaque distribution/JDK; selected workflow, hidden checks, expected bytes, config and ignore files copied unchanged; required CLI tools exist",
+      "original_execution": "not-attempted-in-item2.1",
+      "effective_executor_container": "pending-original-observation"
+    },
+    {
+      "id": "TOPIC-FRESH",
+      "availability": "available-for-genuine-attempt",
+      "cause": "Hash-verified original launcher and opaque distribution/JDK; selected workflow, hidden checks, expected bytes, config and ignore files copied unchanged; required CLI tools exist",
+      "original_execution": "not-attempted-in-item2.1",
+      "effective_executor_container": "pending-original-observation"
+    },
+    {
+      "id": "TOPIC-RESUME",
+      "availability": "available-for-genuine-attempt",
+      "cause": "Hash-verified original launcher and opaque distribution/JDK; selected workflow, hidden checks, expected bytes, config and ignore files copied unchanged; required CLI tools exist",
+      "original_execution": "not-attempted-in-item2.1",
+      "effective_executor_container": "pending-original-observation"
+    }
+  ],
+  "unavailable_affected_units": [],
+  "pending_execution_obligations": [
+    "Independent review of prerequisite closure and unexecuted native Gradle launch isolation/reporting",
+    "Original method/subcase completion and every original predicate outcome",
+    "Genuine Groovy/JDK stripIndent/input dispatch",
+    "Review any additional per-unit/value instrumentation before execution; standard XML alone does not observe successful internal values",
+    "Actual CLI config discovery/effective executor/container and per-invocation captures",
+    "No R-UAT02 original execution, oracle, translation or wr pass yet"
+  ],
+  "tool_notes": {
+    "unzip": "Absent, not used or required; Gradle ZIP extracted with Python standard library",
+    "terminal": "TERM=xterm tput sgr0 command completed; original CLI runner not executed"
+  },
+  "references": {
+    "resource-closure.json": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/resource-closure.json",
+      "sha256": "1e32c26ca1723e59e67eca9ba73f3074ca31ef252663e6ebed96ed00f99dbf63",
+      "bytes": 602185
+    },
+    "resolution.json": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/resolution.json",
+      "sha256": "dbdfedf4475656ccb7e90cfe2a0cae2b3ed8a4ae9dd7317af068d5c7cdb19f11",
+      "bytes": 387272
+    },
+    "generated-closure.json": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/generated-closure.json",
+      "sha256": "ea0ddd44d0d99ffec1f7d9d3047cffe44006dfdd5d344c32c5bcc63deaf45f73",
+      "bytes": 790083
+    },
+    "source-copy.json": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/source-copy.json",
+      "sha256": "7e135a0eebfe7d1b196c4bf6cb16cafb909329f78fced8ce03437cf97ff57a0a",
+      "bytes": 609944
+    },
+    "cli-fixture-closure.json": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/cli-fixture-closure.json",
+      "sha256": "7f1680cfc563c0602d61ba3e27919540cad39a74b2132375ad7f2b7b7102e4a4",
+      "bytes": 4972
+    },
+    "launch-plan.json": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-plan.json",
+      "sha256": "77fe9aced1b3a1e72bff2f70dd53f895396bddbbb66ab68771d3742c695ce586",
+      "bytes": 4253
+    },
+    "environment-tools.json": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/environment-tools.json",
+      "sha256": "0dd34d0994fa53b3ce60a3b89b970f42912ab7a5353c8aa0e00e40ef366a5682",
+      "bytes": 4806
+    },
+    "gradle-resource-origin.bin": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-resource-origin.bin",
+      "sha256": "09d895d7b22018193e4e9ebe92050ecb85be8decee3b72cbb7e51a290a0d83a5",
+      "bytes": 251254
+    },
+    "inspection-corrections.json": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/inspection-corrections.json",
+      "sha256": "fe4bb92a3feb0e40e03014577eda56e257091612a74054bb133119b7860cd28b",
+      "bytes": 1248
+    },
+    "capture.py": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/capture.py",
+      "sha256": "607c69469aa4a46bc784190b123666911936b94a65f435fd1e98889dfb686071",
+      "bytes": 4914
+    },
+    "record_closure.py": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/record_closure.py",
+      "sha256": "94aff83dd8583825eb1f1bc8dbe31207547b00d9c8859f04d684d685bab7ac0a",
+      "bytes": 4905
+    },
+    "generated_closure.py": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/generated_closure.py",
+      "sha256": "2322cfe10d33135af86557bdc2316da28745348cb5a9d0d8fdfc18179cea91ba",
+      "bytes": 4932
+    },
+    "closure.init.gradle": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/closure.init.gradle",
+      "sha256": "53c0a1aaea942f871a66abc8c33a5f78dc9e67768b0b66ff28209b78b0d950f9",
+      "bytes": 3452
+    },
+    "launch.init.gradle": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch.init.gradle",
+      "sha256": "71b77ecefdbf5a0484534487d623edbe819dc5c2209e56491864e9d5bba4488e",
+      "bytes": 1061
+    },
+    "verify_prerequisites.py": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/verify_prerequisites.py",
+      "sha256": "d1f2e511c3f9a1b2654da017c3578913e84b4faaa668a1d01c4b054ca09b4ac9",
+      "bytes": 5022
+    },
+    "review-read-plan.md": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/review-read-plan.md",
+      "sha256": "81d9fd9f8e3f9964b279837992a631fe3017f3109e20cea5499da30cee2b9fea",
+      "bytes": 4042
+    },
+    "protected-baseline.json": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/protected-baseline.json",
+      "sha256": "df6904f32f1b8031130d3338ff5758df5cbd820e675815c98c4868807eba5eff",
+      "bytes": 337
+    }
+  },
+  "captures": [
+    {
+      "id": "gradle-download",
+      "command": [
+        "curl",
+        "--fail",
+        "--location",
+        "--connect-timeout",
+        "20",
+        "--max-time",
+        "290",
+        "--dump-header",
+        ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle.headers",
+        "--output",
+        ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-9.3.1-bin.zip",
+        "https://services.gradle.org/distributions/gradle-9.3.1-bin.zip"
+      ],
+      "cwd": "/home/ubuntu/wr",
+      "environment": {
+        "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+        "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+        "NXF_SYNTAX_PARSER": "v2",
+        "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+        "CI_GROOVY_VERSION": null,
+        "BUILD_PACK": null,
+        "TEST_JDK": null,
+        "WITH_DOCKER": null,
+        "TERM": "dumb"
+      },
+      "start": "2026-10-08T13:00:41.329648+00:00",
+      "timeout_seconds": 300,
+      "deadline": "2026-10-08T13:05:41.329648+00:00",
+      "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+      "pid": 1621139,
+      "process_group": 1621139,
+      "timed_out": false,
+      "end": "2026-10-08T13:00:42.046177+00:00",
+      "exit_code": 0,
+      "signal": null,
+      "completed": true,
+      "logs": [
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-download.stdout",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-download.stderr",
+          "sha256": "f8d88b465acb17c8e327d95e652704e8b98f4222e903d802e94c91a795eaa01b",
+          "bytes": 477
+        }
+      ]
+    },
+    {
+      "id": "gradle-checksum",
+      "command": [
+        "curl",
+        "--fail",
+        "--location",
+        "--connect-timeout",
+        "20",
+        "--max-time",
+        "290",
+        "--dump-header",
+        ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-checksum.headers",
+        "--output",
+        ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-9.3.1-bin.zip.sha256",
+        "https://services.gradle.org/distributions/gradle-9.3.1-bin.zip.sha256"
+      ],
+      "cwd": "/home/ubuntu/wr",
+      "environment": {
+        "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+        "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+        "NXF_SYNTAX_PARSER": "v2",
+        "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+        "CI_GROOVY_VERSION": null,
+        "BUILD_PACK": null,
+        "TEST_JDK": null,
+        "WITH_DOCKER": null,
+        "TERM": "dumb"
+      },
+      "start": "2026-10-08T13:01:00.849297+00:00",
+      "timeout_seconds": 300,
+      "deadline": "2026-10-08T13:06:00.849297+00:00",
+      "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+      "pid": 1621152,
+      "process_group": 1621152,
+      "timed_out": false,
+      "end": "2026-10-08T13:01:01.014930+00:00",
+      "exit_code": 0,
+      "signal": null,
+      "completed": true,
+      "logs": [
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-checksum.stdout",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-checksum.stderr",
+          "sha256": "d021fe701fceef03233adbab24df9a2b3d4169b729e0649549237d34492816d3",
+          "bytes": 397
+        }
+      ]
+    },
+    {
+      "id": "java-version",
+      "command": [
+        ".tmp/agent/java21/jdk-21.0.12.1+1/bin/java",
+        "-version"
+      ],
+      "cwd": "/home/ubuntu/wr",
+      "environment": {
+        "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+        "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+        "NXF_SYNTAX_PARSER": "v2",
+        "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+        "CI_GROOVY_VERSION": null,
+        "BUILD_PACK": null,
+        "TEST_JDK": null,
+        "WITH_DOCKER": null,
+        "TERM": "dumb"
+      },
+      "start": "2026-10-08T13:01:03.059471+00:00",
+      "timeout_seconds": 30,
+      "deadline": "2026-10-08T13:01:33.059471+00:00",
+      "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+      "pid": 1621161,
+      "process_group": 1621161,
+      "timed_out": false,
+      "end": "2026-10-08T13:01:03.123890+00:00",
+      "exit_code": 0,
+      "signal": null,
+      "completed": true,
+      "logs": [
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/java-version.stdout",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/java-version.stderr",
+          "sha256": "5b4412738541184e84f6b2d7520d4f4a7c2a455f60650491464c61adcbbbdeb0",
+          "bytes": 205
+        }
+      ]
+    },
+    {
+      "id": "gradle-version",
+      "command": [
+        ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/tools/gradle-9.3.1/bin/gradle",
+        "--version"
+      ],
+      "cwd": "/home/ubuntu/wr",
+      "environment": {
+        "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+        "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+        "NXF_SYNTAX_PARSER": "v2",
+        "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+        "CI_GROOVY_VERSION": null,
+        "BUILD_PACK": null,
+        "TEST_JDK": null,
+        "WITH_DOCKER": null,
+        "TERM": "dumb"
+      },
+      "start": "2026-10-08T13:01:03.163210+00:00",
+      "timeout_seconds": 60,
+      "deadline": "2026-10-08T13:02:03.163210+00:00",
+      "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+      "pid": 1621178,
+      "process_group": 1621178,
+      "timed_out": false,
+      "end": "2026-10-08T13:01:03.731385+00:00",
+      "exit_code": 0,
+      "signal": null,
+      "completed": true,
+      "logs": [
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-version.stdout",
+          "sha256": "af8d21fb709d6596abbcf69d4521f88d681bd3caf8acdd2043ef0d9c6da23a2b",
+          "bytes": 808
+        },
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-version.stderr",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      ]
+    },
+    {
+      "id": "full-gradle-build",
+      "command": [
+        "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/tools/gradle-9.3.1/bin/gradle",
+        "--no-daemon",
+        "--max-workers=1",
+        "-Dorg.gradle.parallel=false",
+        "-Dorg.gradle.jvmargs=-Xmx2g",
+        "-Dorg.gradle.java.installations.auto-download=false",
+        ":nf-lang:compileTestGroovy",
+        ":nextflow:compileTestGroovy",
+        "--stacktrace"
+      ],
+      "cwd": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/source",
+      "environment": {
+        "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+        "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+        "NXF_SYNTAX_PARSER": "v2",
+        "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+        "CI_GROOVY_VERSION": null,
+        "BUILD_PACK": null,
+        "TEST_JDK": null,
+        "WITH_DOCKER": null,
+        "TERM": "dumb"
+      },
+      "start": "2026-10-08T13:01:18.775458+00:00",
+      "timeout_seconds": 1800,
+      "deadline": "2026-10-08T13:31:18.775458+00:00",
+      "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+      "pid": 1621225,
+      "process_group": 1621225,
+      "timed_out": false,
+      "end": "2026-10-08T13:02:51.970998+00:00",
+      "exit_code": 0,
+      "signal": null,
+      "completed": true,
+      "logs": [
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/full-gradle-build.stdout",
+          "sha256": "f0badce2c43b28d29691f490a6cf53993394a6b6ca90a62d7b58789539586b41",
+          "bytes": 2440
+        },
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/full-gradle-build.stderr",
+          "sha256": "8eec234d29e18f3001a6f28a7da229a3b13faf96c2b7068827356f47d87ca0e9",
+          "bytes": 713
+        }
+      ]
+    },
+    {
+      "id": "phase1-before",
+      "command": [
+        "python3",
+        ".tmp/agent/nextflow-conformance/research-pilot/handoff-author01/verify-handoff.py"
+      ],
+      "cwd": "/home/ubuntu/wr",
+      "environment": {
+        "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+        "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+        "NXF_SYNTAX_PARSER": "v2",
+        "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+        "CI_GROOVY_VERSION": null,
+        "BUILD_PACK": null,
+        "TEST_JDK": null,
+        "WITH_DOCKER": null,
+        "TERM": "dumb"
+      },
+      "start": "2026-10-08T13:01:33.906785+00:00",
+      "timeout_seconds": 120,
+      "deadline": "2026-10-08T13:03:33.906785+00:00",
+      "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+      "pid": 1621340,
+      "process_group": 1621340,
+      "timed_out": false,
+      "end": "2026-10-08T13:01:34.424871+00:00",
+      "exit_code": 0,
+      "signal": null,
+      "completed": true,
+      "logs": [
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/phase1-before.stdout",
+          "sha256": "3a7bbbf688da1e0515c37ab7ae9da22a9ec7388140c8292ea4a1df92b338de76",
+          "bytes": 1107
+        },
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/phase1-before.stderr",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      ]
+    },
+    {
+      "id": "spock-sources",
+      "command": [
+        "curl",
+        "--fail",
+        "--location",
+        "--connect-timeout",
+        "20",
+        "--max-time",
+        "290",
+        "--dump-header",
+        ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/spock-sources.headers",
+        "--output",
+        ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/spock-core-2.4-groovy-4.0-sources.jar",
+        "https://repo.maven.apache.org/maven2/org/spockframework/spock-core/2.4-groovy-4.0/spock-core-2.4-groovy-4.0-sources.jar"
+      ],
+      "cwd": "/home/ubuntu/wr",
+      "environment": {
+        "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+        "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+        "NXF_SYNTAX_PARSER": "v2",
+        "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+        "CI_GROOVY_VERSION": null,
+        "BUILD_PACK": null,
+        "TEST_JDK": null,
+        "WITH_DOCKER": null,
+        "TERM": "dumb"
+      },
+      "start": "2026-10-08T13:02:34.310674+00:00",
+      "timeout_seconds": 300,
+      "deadline": "2026-10-08T13:07:34.310674+00:00",
+      "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+      "pid": 1621488,
+      "process_group": 1621488,
+      "timed_out": false,
+      "end": "2026-10-08T13:02:34.425628+00:00",
+      "exit_code": 0,
+      "signal": null,
+      "completed": true,
+      "logs": [
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/spock-sources.stdout",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        },
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/spock-sources.stderr",
+          "sha256": "e1b00c2c0f125b6fa511f4fde8542293d25558a1aa24fc2f9adea73f1fc4d6ea",
+          "bytes": 317
+        }
+      ]
+    },
+    {
+      "id": "closure-export",
+      "command": [
+        "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/tools/gradle-9.3.1/bin/gradle",
+        "--no-daemon",
+        "--max-workers=1",
+        "-Dorg.gradle.parallel=false",
+        "-Dorg.gradle.jvmargs=-Xmx2g",
+        "-Dorg.gradle.java.installations.auto-download=false",
+        "--init-script",
+        "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/closure.init.gradle",
+        "pilotPrerequisiteCapture",
+        "--info"
+      ],
+      "cwd": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/source",
+      "environment": {
+        "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+        "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+        "NXF_SYNTAX_PARSER": "v2",
+        "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+        "CI_GROOVY_VERSION": null,
+        "BUILD_PACK": null,
+        "TEST_JDK": null,
+        "WITH_DOCKER": null,
+        "TERM": "dumb"
+      },
+      "start": "2026-10-08T13:03:39.219147+00:00",
+      "timeout_seconds": 300,
+      "deadline": "2026-10-08T13:08:39.219147+00:00",
+      "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+      "pid": 1621573,
+      "process_group": 1621573,
+      "timed_out": false,
+      "descendant_pids": [
+        1621609
+      ],
+      "end": "2026-10-08T13:03:52.770459+00:00",
+      "exit_code": 0,
+      "signal": null,
+      "completed": true,
+      "logs": [
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/closure-export.stdout",
+          "sha256": "5bae7bac72f2036d8c9621c61294c27f0ea684e8c67edb79700ebdea99623d7b",
+          "bytes": 44921
+        },
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/closure-export.stderr",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      ]
+    },
+    {
+      "id": "parser-bytecode",
+      "command": [
+        ".tmp/agent/java21/jdk-21.0.12.1+1/bin/javap",
+        "-p",
+        "-v",
+        ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/source/modules/nf-lang/build/classes/groovy/test/nextflow/script/parser/ScriptAstBuilderTest.class"
+      ],
+      "cwd": "/home/ubuntu/wr",
+      "environment": {
+        "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+        "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+        "NXF_SYNTAX_PARSER": "v2",
+        "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+        "CI_GROOVY_VERSION": null,
+        "BUILD_PACK": null,
+        "TEST_JDK": null,
+        "WITH_DOCKER": null,
+        "TERM": "dumb"
+      },
+      "start": "2026-10-08T13:04:16.848103+00:00",
+      "timeout_seconds": 60,
+      "deadline": "2026-10-08T13:05:16.848103+00:00",
+      "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+      "pid": 1621708,
+      "process_group": 1621708,
+      "timed_out": false,
+      "descendant_pids": [],
+      "end": "2026-10-08T13:04:17.510904+00:00",
+      "exit_code": 0,
+      "signal": null,
+      "completed": true,
+      "logs": [
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/parser-bytecode.stdout",
+          "sha256": "1ab43e3fc729ecde46ef250db7d3138f7d39dd9846d42321e071955d3343ee9d",
+          "bytes": 585701
+        },
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/parser-bytecode.stderr",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      ]
+    },
+    {
+      "id": "mix-bytecode",
+      "command": [
+        ".tmp/agent/java21/jdk-21.0.12.1+1/bin/javap",
+        "-p",
+        "-v",
+        ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/source/modules/nextflow/build/classes/groovy/test/nextflow/extension/MixOpTest.class"
+      ],
+      "cwd": "/home/ubuntu/wr",
+      "environment": {
+        "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+        "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+        "NXF_SYNTAX_PARSER": "v2",
+        "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+        "CI_GROOVY_VERSION": null,
+        "BUILD_PACK": null,
+        "TEST_JDK": null,
+        "WITH_DOCKER": null,
+        "TERM": "dumb"
+      },
+      "start": "2026-10-08T13:04:17.553407+00:00",
+      "timeout_seconds": 60,
+      "deadline": "2026-10-08T13:05:17.553407+00:00",
+      "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+      "pid": 1621731,
+      "process_group": 1621731,
+      "timed_out": false,
+      "descendant_pids": [],
+      "end": "2026-10-08T13:04:17.994267+00:00",
+      "exit_code": 0,
+      "signal": null,
+      "completed": true,
+      "logs": [
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/mix-bytecode.stdout",
+          "sha256": "091a0f0da2e3903eaf3418f613c6417c6c46b964c4163ddc4f3e212abef80753",
+          "bytes": 75432
+        },
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/mix-bytecode.stderr",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      ]
+    },
+    {
+      "id": "resource-record",
+      "command": [
+        "python3",
+        ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/record_closure.py"
+      ],
+      "cwd": "/home/ubuntu/wr",
+      "environment": {
+        "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+        "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+        "NXF_SYNTAX_PARSER": "v2",
+        "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+        "CI_GROOVY_VERSION": null,
+        "BUILD_PACK": null,
+        "TEST_JDK": null,
+        "WITH_DOCKER": null,
+        "TERM": "dumb"
+      },
+      "start": "2026-10-08T13:07:36.702081+00:00",
+      "timeout_seconds": 120,
+      "deadline": "2026-10-08T13:09:36.702081+00:00",
+      "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+      "pid": 1621875,
+      "process_group": 1621875,
+      "timed_out": false,
+      "descendant_pids": [],
+      "end": "2026-10-08T13:07:38.880290+00:00",
+      "exit_code": 0,
+      "signal": null,
+      "completed": true,
+      "logs": [
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/resource-record.stdout",
+          "sha256": "ce4d710f7b100933590f48d6dd5a2c99b36e9bb3987537b0acd4816a082ce9fb",
+          "bytes": 88
+        },
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/resource-record.stderr",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      ]
+    },
+    {
+      "id": "launch-closure-export",
+      "command": [
+        "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/tools/gradle-9.3.1/bin/gradle",
+        "--no-daemon",
+        "--max-workers=1",
+        "-Dorg.gradle.parallel=false",
+        "-Dorg.gradle.jvmargs=-Xmx2g",
+        "-Dorg.gradle.java.installations.auto-download=false",
+        "--init-script",
+        "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/closure.init.gradle",
+        "pilotPrerequisiteCapture",
+        "--info"
+      ],
+      "cwd": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/source",
+      "environment": {
+        "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+        "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+        "NXF_SYNTAX_PARSER": "v2",
+        "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+        "CI_GROOVY_VERSION": null,
+        "BUILD_PACK": null,
+        "TEST_JDK": null,
+        "WITH_DOCKER": null,
+        "TERM": "dumb"
+      },
+      "start": "2026-10-08T13:08:31.109558+00:00",
+      "timeout_seconds": 300,
+      "deadline": "2026-10-08T13:13:31.109558+00:00",
+      "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+      "pid": 1621904,
+      "process_group": 1621904,
+      "timed_out": false,
+      "descendant_pids": [
+        1621940
+      ],
+      "end": "2026-10-08T13:08:43.218088+00:00",
+      "exit_code": 0,
+      "signal": null,
+      "completed": true,
+      "logs": [
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-closure-export.stdout",
+          "sha256": "51b84397deb8cd3226dd4a2424d8f528c52099d8e5f06baf3b0a9b9585c9fa60",
+          "bytes": 32638
+        },
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-closure-export.stderr",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      ]
+    },
+    {
+      "id": "terminal-prerequisite",
+      "command": [
+        "env",
+        "TERM=xterm",
+        "tput",
+        "sgr0"
+      ],
+      "cwd": "/home/ubuntu/wr",
+      "environment": {
+        "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+        "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+        "NXF_SYNTAX_PARSER": "v2",
+        "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+        "CI_GROOVY_VERSION": null,
+        "BUILD_PACK": null,
+        "TEST_JDK": null,
+        "WITH_DOCKER": null,
+        "TERM": "dumb"
+      },
+      "start": "2026-10-08T13:09:32.253507+00:00",
+      "timeout_seconds": 10,
+      "deadline": "2026-10-08T13:09:42.253507+00:00",
+      "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+      "pid": 1622046,
+      "process_group": 1622046,
+      "timed_out": false,
+      "descendant_pids": [],
+      "end": "2026-10-08T13:09:32.472467+00:00",
+      "exit_code": 0,
+      "signal": null,
+      "completed": true,
+      "logs": [
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/terminal-prerequisite.stdout",
+          "sha256": "4ec4e904b2aa77d61b527d4f83b9e2530196080ac0d5aab786db42d7c4dfceb1",
+          "bytes": 6
+        },
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/terminal-prerequisite.stderr",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      ]
+    },
+    {
+      "id": "resource-record-final",
+      "command": [
+        "python3",
+        ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/record_closure.py"
+      ],
+      "cwd": "/home/ubuntu/wr",
+      "environment": {
+        "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+        "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+        "NXF_SYNTAX_PARSER": "v2",
+        "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+        "CI_GROOVY_VERSION": null,
+        "BUILD_PACK": null,
+        "TEST_JDK": null,
+        "WITH_DOCKER": null,
+        "TERM": "dumb"
+      },
+      "start": "2026-10-08T13:10:28.075900+00:00",
+      "timeout_seconds": 120,
+      "deadline": "2026-10-08T13:12:28.075900+00:00",
+      "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+      "pid": 1622073,
+      "process_group": 1622073,
+      "timed_out": false,
+      "descendant_pids": [],
+      "end": "2026-10-08T13:10:30.255453+00:00",
+      "exit_code": 0,
+      "signal": null,
+      "completed": true,
+      "logs": [
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/resource-record-final.stdout",
+          "sha256": "4b62d5516ee18440f5d9945172fc7369685f7248175d75ced5dea5030385fd09",
+          "bytes": 88
+        },
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/resource-record-final.stderr",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      ]
+    },
+    {
+      "id": "generated-record",
+      "command": [
+        "python3",
+        ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/generated_closure.py"
+      ],
+      "cwd": "/home/ubuntu/wr",
+      "environment": {
+        "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+        "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+        "NXF_SYNTAX_PARSER": "v2",
+        "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+        "CI_GROOVY_VERSION": null,
+        "BUILD_PACK": null,
+        "TEST_JDK": null,
+        "WITH_DOCKER": null,
+        "TERM": "dumb"
+      },
+      "start": "2026-10-08T13:12:27.743265+00:00",
+      "timeout_seconds": 120,
+      "deadline": "2026-10-08T13:14:27.743265+00:00",
+      "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+      "pid": 1622132,
+      "process_group": 1622132,
+      "timed_out": false,
+      "descendant_pids": [],
+      "end": "2026-10-08T13:12:28.839866+00:00",
+      "exit_code": 0,
+      "signal": null,
+      "completed": true,
+      "logs": [
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/generated-record.stdout",
+          "sha256": "dae2b39d5b1938bd51c540e288e541d8aba8f1f5c7348a0e5c1d14d33d29e356",
+          "bytes": 129
+        },
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/generated-record.stderr",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      ]
+    }
+  ],
+  "completion": {
+    "all_recorded_commands_completed": true,
+    "any_timeout": false,
+    "zero_original_tests_cli_observers_gap_controls_run": true,
+    "remaining_process_check": "PASS: final handback-verification and explicit ps inspection found no owned Gradle daemon/worker, capture, job or wait",
+    "passive_verification": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/final-verification.json",
+      "sha256": "2d625c57cc6cc3d4ab222999b091b23b3b95fe9248f4e3293d37474613822f50",
+      "bytes": 1964
+    }
+  }
+}

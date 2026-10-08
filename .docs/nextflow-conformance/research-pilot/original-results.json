@@ -1,0 +1,3870 @@
+{
+  "role": "Finite genuine-original attempts and accounting; no importer or production API",
+  "revision": "232b60569865e9a4577e48c1955409238359d6ca",
+  "item": "Phase2 Item2.2",
+  "author_start": "2026-10-08T14:07:58+00:00",
+  "decision_clock": "2026-10-08T14:31:31.501533+00:00",
+  "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+  "denominator": {
+    "spock_methods": 6,
+    "parser_input_units": 8,
+    "mix_input_units": 3,
+    "spock_input_units": 11,
+    "parser_predicates": 29,
+    "mix_predicates": 9,
+    "spock_predicates": 38,
+    "workflow_check_pairs": 2,
+    "cli_invocations": 4,
+    "literal_cli_predicates": 4,
+    "table_rows": 0,
+    "generated_providers": 0
+  },
+  "features": [
+    {
+      "id": "METHOD-P-INVALID",
+      "name": "should report an error for invalid syntax",
+      "origin": "original",
+      "status": "pass",
+      "native_testcase": {
+        "name": "should report an error for invalid syntax",
+        "classname": "nextflow.script.parser.ScriptAstBuilderTest",
+        "time": "0.613"
+      },
+      "actual_order_within_spec": 0,
+      "source_order_preserved": true,
+      "child_unit_ids": [
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+        "P5"
+      ],
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "command_capture": {
+        "id": "originals-parser",
+        "command": [
+          "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/tools/gradle-9.3.1/bin/gradle",
+          "--init-script",
+          "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch.init.gradle",
+          "--no-daemon",
+          "--offline",
+          "--max-workers=1",
+          "-Dorg.gradle.parallel=false",
+          "-Dorg.gradle.jvmargs=-Xmx2g",
+          "-Dorg.gradle.java.installations.auto-download=false",
+          ":nf-lang:test",
+          "--tests",
+          "nextflow.script.parser.ScriptAstBuilderTest.should report an error for invalid syntax",
+          "--tests",
+          "nextflow.script.parser.ScriptAstBuilderTest.should report an error for mixing script declarations with statements",
+          "--tests",
+          "nextflow.script.parser.ScriptAstBuilderTest.should report an error for params block without an entry workflow",
+          "--info",
+          "--stacktrace"
+        ],
+        "cwd": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/source",
+        "environment": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+          "NXF_SYNTAX_PARSER": "v2",
+          "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+          "CI_GROOVY_VERSION": null,
+          "BUILD_PACK": null,
+          "TEST_JDK": null,
+          "WITH_DOCKER": null,
+          "TERM": "dumb"
+        },
+        "start": "2026-10-08T14:09:34.148339+00:00",
+        "timeout_seconds": 300,
+        "deadline": "2026-10-08T14:14:34.148339+00:00",
+        "requested_command_deadline": "2026-10-08T14:14:34.148339+00:00",
+        "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+        "supervisor_version": "PREREQ-F1-correction-01",
+        "ownership": "Dedicated Linux subreaper, observed ancestry and birth ticks, stable pidfd signals",
+        "pid": 1624178,
+        "process_group": 1624178,
+        "timed_out": false,
+        "cleanup": {
+          "signals": [],
+          "remaining_live": [],
+          "final_process_states": [
+            {
+              "pid": 1624178,
+              "start_ticks": 1271569343,
+              "pgid": 1624178,
+              "first_ppid": 1624177,
+              "final_state": null
+            },
+            {
+              "pid": 1624213,
+              "start_ticks": 1271569410,
+              "pgid": 1624178,
+              "first_ppid": 1624178,
+              "final_state": null
+            },
+            {
+              "pid": 1624293,
+              "start_ticks": 1271570345,
+              "pgid": 1624213,
+              "first_ppid": 1624213,
+              "final_state": null
+            }
+          ],
+          "reaped_adopted_children": [],
+          "completed": true,
+          "failure": null,
+          "term_grace_seconds": 0.5,
+          "kill_grace_seconds": 1.0
+        },
+        "descendant_pids": [
+          1624213,
+          1624293
+        ],
+        "process_identities": [
+          {
+            "pid": 1624178,
+            "start_ticks": 1271569343,
+            "pgid": 1624178,
+            "first_ppid": 1624177
+          },
+          {
+            "pid": 1624213,
+            "start_ticks": 1271569410,
+            "pgid": 1624178,
+            "first_ppid": 1624178
+          },
+          {
+            "pid": 1624293,
+            "start_ticks": 1271570345,
+            "pgid": 1624213,
+            "first_ppid": 1624213
+          }
+        ],
+        "end": "2026-10-08T14:09:48.652459+00:00",
+        "exit_code": 0,
+        "signal": null,
+        "completed": true,
+        "logs": [
+          {
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.stdout",
+            "sha256": "49044e531c11ce6d536662d3dc16d95fc73f39e71ba89881e968c7440bbcdd16",
+            "bytes": 29530
+          },
+          {
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.stderr",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          }
+        ]
+      },
+      "launch_environment": {
+        "binding": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/parser-launch-command.json",
+          "bytes": 1616,
+          "sha256": "e13aedbe3262087cce527fb00abc0ff108a6ee201a5564a2ba8ff676acf222df",
+          "mode": "0o664"
+        },
+        "values": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+          "NXF_SYNTAX_PARSER": "v2",
+          "NXF_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-nxf-home",
+          "SPOCK_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-spock-home"
+        },
+        "boundary": "Issued launch environment; accepted supervisor records only its original finite subset, not NXF_HOME or SPOCK_USER_HOME"
+      },
+      "native_xml": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/native-parser/test-results/TEST-nextflow.script.parser.ScriptAstBuilderTest.xml",
+        "bytes": 780,
+        "sha256": "b4dfcf7ad5a576e86849a69f5f80fc3e77bd42a6396056e3603f38187dbfff01",
+        "mode": "0o664"
+      },
+      "native_exceptions": [],
+      "proof_boundary": "Completed native feature proves its unmodified sequential original assertions; successful raw values are not separately observed",
+      "completed": true
+    },
+    {
+      "id": "METHOD-P-MIXED",
+      "name": "should report an error for mixing script declarations with statements",
+      "origin": "original",
+      "status": "pass",
+      "native_testcase": {
+        "name": "should report an error for mixing script declarations with statements",
+        "classname": "nextflow.script.parser.ScriptAstBuilderTest",
+        "time": "0.074"
+      },
+      "actual_order_within_spec": 1,
+      "source_order_preserved": true,
+      "child_unit_ids": [
+        "P6"
+      ],
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "command_capture": {
+        "id": "originals-parser",
+        "command": [
+          "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/tools/gradle-9.3.1/bin/gradle",
+          "--init-script",
+          "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch.init.gradle",
+          "--no-daemon",
+          "--offline",
+          "--max-workers=1",
+          "-Dorg.gradle.parallel=false",
+          "-Dorg.gradle.jvmargs=-Xmx2g",
+          "-Dorg.gradle.java.installations.auto-download=false",
+          ":nf-lang:test",
+          "--tests",
+          "nextflow.script.parser.ScriptAstBuilderTest.should report an error for invalid syntax",
+          "--tests",
+          "nextflow.script.parser.ScriptAstBuilderTest.should report an error for mixing script declarations with statements",
+          "--tests",
+          "nextflow.script.parser.ScriptAstBuilderTest.should report an error for params block without an entry workflow",
+          "--info",
+          "--stacktrace"
+        ],
+        "cwd": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/source",
+        "environment": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+          "NXF_SYNTAX_PARSER": "v2",
+          "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+          "CI_GROOVY_VERSION": null,
+          "BUILD_PACK": null,
+          "TEST_JDK": null,
+          "WITH_DOCKER": null,
+          "TERM": "dumb"
+        },
+        "start": "2026-10-08T14:09:34.148339+00:00",
+        "timeout_seconds": 300,
+        "deadline": "2026-10-08T14:14:34.148339+00:00",
+        "requested_command_deadline": "2026-10-08T14:14:34.148339+00:00",
+        "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+        "supervisor_version": "PREREQ-F1-correction-01",
+        "ownership": "Dedicated Linux subreaper, observed ancestry and birth ticks, stable pidfd signals",
+        "pid": 1624178,
+        "process_group": 1624178,
+        "timed_out": false,
+        "cleanup": {
+          "signals": [],
+          "remaining_live": [],
+          "final_process_states": [
+            {
+              "pid": 1624178,
+              "start_ticks": 1271569343,
+              "pgid": 1624178,
+              "first_ppid": 1624177,
+              "final_state": null
+            },
+            {
+              "pid": 1624213,
+              "start_ticks": 1271569410,
+              "pgid": 1624178,
+              "first_ppid": 1624178,
+              "final_state": null
+            },
+            {
+              "pid": 1624293,
+              "start_ticks": 1271570345,
+              "pgid": 1624213,
+              "first_ppid": 1624213,
+              "final_state": null
+            }
+          ],
+          "reaped_adopted_children": [],
+          "completed": true,
+          "failure": null,
+          "term_grace_seconds": 0.5,
+          "kill_grace_seconds": 1.0
+        },
+        "descendant_pids": [
+          1624213,
+          1624293
+        ],
+        "process_identities": [
+          {
+            "pid": 1624178,
+            "start_ticks": 1271569343,
+            "pgid": 1624178,
+            "first_ppid": 1624177
+          },
+          {
+            "pid": 1624213,
+            "start_ticks": 1271569410,
+            "pgid": 1624178,
+            "first_ppid": 1624178
+          },
+          {
+            "pid": 1624293,
+            "start_ticks": 1271570345,
+            "pgid": 1624213,
+            "first_ppid": 1624213
+          }
+        ],
+        "end": "2026-10-08T14:09:48.652459+00:00",
+        "exit_code": 0,
+        "signal": null,
+        "completed": true,
+        "logs": [
+          {
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.stdout",
+            "sha256": "49044e531c11ce6d536662d3dc16d95fc73f39e71ba89881e968c7440bbcdd16",
+            "bytes": 29530
+          },
+          {
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.stderr",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          }
+        ]
+      },
+      "launch_environment": {
+        "binding": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/parser-launch-command.json",
+          "bytes": 1616,
+          "sha256": "e13aedbe3262087cce527fb00abc0ff108a6ee201a5564a2ba8ff676acf222df",
+          "mode": "0o664"
+        },
+        "values": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+          "NXF_SYNTAX_PARSER": "v2",
+          "NXF_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-nxf-home",
+          "SPOCK_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-spock-home"
+        },
+        "boundary": "Issued launch environment; accepted supervisor records only its original finite subset, not NXF_HOME or SPOCK_USER_HOME"
+      },
+      "native_xml": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/native-parser/test-results/TEST-nextflow.script.parser.ScriptAstBuilderTest.xml",
+        "bytes": 780,
+        "sha256": "b4dfcf7ad5a576e86849a69f5f80fc3e77bd42a6396056e3603f38187dbfff01",
+        "mode": "0o664"
+      },
+      "native_exceptions": [],
+      "proof_boundary": "Completed native feature proves its unmodified sequential original assertions; successful raw values are not separately observed",
+      "completed": true
+    },
+    {
+      "id": "METHOD-P-PARAMS",
+      "name": "should report an error for params block without an entry workflow",
+      "origin": "original",
+      "status": "pass",
+      "native_testcase": {
+        "name": "should report an error for params block without an entry workflow",
+        "classname": "nextflow.script.parser.ScriptAstBuilderTest",
+        "time": "0.036"
+      },
+      "actual_order_within_spec": 2,
+      "source_order_preserved": true,
+      "child_unit_ids": [
+        "P7",
+        "P8"
+      ],
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "command_capture": {
+        "id": "originals-parser",
+        "command": [
+          "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/tools/gradle-9.3.1/bin/gradle",
+          "--init-script",
+          "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch.init.gradle",
+          "--no-daemon",
+          "--offline",
+          "--max-workers=1",
+          "-Dorg.gradle.parallel=false",
+          "-Dorg.gradle.jvmargs=-Xmx2g",
+          "-Dorg.gradle.java.installations.auto-download=false",
+          ":nf-lang:test",
+          "--tests",
+          "nextflow.script.parser.ScriptAstBuilderTest.should report an error for invalid syntax",
+          "--tests",
+          "nextflow.script.parser.ScriptAstBuilderTest.should report an error for mixing script declarations with statements",
+          "--tests",
+          "nextflow.script.parser.ScriptAstBuilderTest.should report an error for params block without an entry workflow",
+          "--info",
+          "--stacktrace"
+        ],
+        "cwd": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/source",
+        "environment": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+          "NXF_SYNTAX_PARSER": "v2",
+          "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+          "CI_GROOVY_VERSION": null,
+          "BUILD_PACK": null,
+          "TEST_JDK": null,
+          "WITH_DOCKER": null,
+          "TERM": "dumb"
+        },
+        "start": "2026-10-08T14:09:34.148339+00:00",
+        "timeout_seconds": 300,
+        "deadline": "2026-10-08T14:14:34.148339+00:00",
+        "requested_command_deadline": "2026-10-08T14:14:34.148339+00:00",
+        "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+        "supervisor_version": "PREREQ-F1-correction-01",
+        "ownership": "Dedicated Linux subreaper, observed ancestry and birth ticks, stable pidfd signals",
+        "pid": 1624178,
+        "process_group": 1624178,
+        "timed_out": false,
+        "cleanup": {
+          "signals": [],
+          "remaining_live": [],
+          "final_process_states": [
+            {
+              "pid": 1624178,
+              "start_ticks": 1271569343,
+              "pgid": 1624178,
+              "first_ppid": 1624177,
+              "final_state": null
+            },
+            {
+              "pid": 1624213,
+              "start_ticks": 1271569410,
+              "pgid": 1624178,
+              "first_ppid": 1624178,
+              "final_state": null
+            },
+            {
+              "pid": 1624293,
+              "start_ticks": 1271570345,
+              "pgid": 1624213,
+              "first_ppid": 1624213,
+              "final_state": null
+            }
+          ],
+          "reaped_adopted_children": [],
+          "completed": true,
+          "failure": null,
+          "term_grace_seconds": 0.5,
+          "kill_grace_seconds": 1.0
+        },
+        "descendant_pids": [
+          1624213,
+          1624293
+        ],
+        "process_identities": [
+          {
+            "pid": 1624178,
+            "start_ticks": 1271569343,
+            "pgid": 1624178,
+            "first_ppid": 1624177
+          },
+          {
+            "pid": 1624213,
+            "start_ticks": 1271569410,
+            "pgid": 1624178,
+            "first_ppid": 1624178
+          },
+          {
+            "pid": 1624293,
+            "start_ticks": 1271570345,
+            "pgid": 1624213,
+            "first_ppid": 1624213
+          }
+        ],
+        "end": "2026-10-08T14:09:48.652459+00:00",
+        "exit_code": 0,
+        "signal": null,
+        "completed": true,
+        "logs": [
+          {
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.stdout",
+            "sha256": "49044e531c11ce6d536662d3dc16d95fc73f39e71ba89881e968c7440bbcdd16",
+            "bytes": 29530
+          },
+          {
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.stderr",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          }
+        ]
+      },
+      "launch_environment": {
+        "binding": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/parser-launch-command.json",
+          "bytes": 1616,
+          "sha256": "e13aedbe3262087cce527fb00abc0ff108a6ee201a5564a2ba8ff676acf222df",
+          "mode": "0o664"
+        },
+        "values": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+          "NXF_SYNTAX_PARSER": "v2",
+          "NXF_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-nxf-home",
+          "SPOCK_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-spock-home"
+        },
+        "boundary": "Issued launch environment; accepted supervisor records only its original finite subset, not NXF_HOME or SPOCK_USER_HOME"
+      },
+      "native_xml": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/native-parser/test-results/TEST-nextflow.script.parser.ScriptAstBuilderTest.xml",
+        "bytes": 780,
+        "sha256": "b4dfcf7ad5a576e86849a69f5f80fc3e77bd42a6396056e3603f38187dbfff01",
+        "mode": "0o664"
+      },
+      "native_exceptions": [],
+      "proof_boundary": "Completed native feature proves its unmodified sequential original assertions; successful raw values are not separately observed",
+      "completed": true
+    },
+    {
+      "id": "METHOD-M-CHANNELS",
+      "name": "should mix channels",
+      "origin": "original",
+      "status": "pass",
+      "native_testcase": {
+        "name": "should mix channels",
+        "classname": "nextflow.extension.MixOpTest",
+        "time": "2.533"
+      },
+      "actual_order_within_spec": 0,
+      "source_order_preserved": true,
+      "child_unit_ids": [
+        "M1"
+      ],
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      },
+      "command_capture": {
+        "id": "originals-mix",
+        "command": [
+          "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/tools/gradle-9.3.1/bin/gradle",
+          "--init-script",
+          "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch.init.gradle",
+          "--no-daemon",
+          "--offline",
+          "--max-workers=1",
+          "-Dorg.gradle.parallel=false",
+          "-Dorg.gradle.jvmargs=-Xmx2g",
+          "-Dorg.gradle.java.installations.auto-download=false",
+          ":nextflow:test",
+          "--tests",
+          "nextflow.extension.MixOpTest.should mix channels",
+          "--tests",
+          "nextflow.extension.MixOpTest.should mix with value channels",
+          "--tests",
+          "nextflow.extension.MixOpTest.should mix with two singleton",
+          "--info",
+          "--stacktrace"
+        ],
+        "cwd": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/source",
+        "environment": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+          "NXF_SYNTAX_PARSER": "v2",
+          "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+          "CI_GROOVY_VERSION": null,
+          "BUILD_PACK": null,
+          "TEST_JDK": null,
+          "WITH_DOCKER": null,
+          "TERM": "dumb"
+        },
+        "start": "2026-10-08T14:10:30.091603+00:00",
+        "timeout_seconds": 300,
+        "deadline": "2026-10-08T14:15:30.091603+00:00",
+        "requested_command_deadline": "2026-10-08T14:15:30.091603+00:00",
+        "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+        "supervisor_version": "PREREQ-F1-correction-01",
+        "ownership": "Dedicated Linux subreaper, observed ancestry and birth ticks, stable pidfd signals",
+        "pid": 1624368,
+        "process_group": 1624368,
+        "timed_out": false,
+        "cleanup": {
+          "signals": [],
+          "remaining_live": [],
+          "final_process_states": [
+            {
+              "pid": 1624368,
+              "start_ticks": 1271574937,
+              "pgid": 1624368,
+              "first_ppid": 1624367,
+              "final_state": null
+            },
+            {
+              "pid": 1624403,
+              "start_ticks": 1271575006,
+              "pgid": 1624368,
+              "first_ppid": 1624368,
+              "final_state": null
+            },
+            {
+              "pid": 1624477,
+              "start_ticks": 1271575907,
+              "pgid": 1624403,
+              "first_ppid": 1624403,
+              "final_state": null
+            }
+          ],
+          "reaped_adopted_children": [],
+          "completed": true,
+          "failure": null,
+          "term_grace_seconds": 0.5,
+          "kill_grace_seconds": 1.0
+        },
+        "descendant_pids": [
+          1624403,
+          1624477
+        ],
+        "process_identities": [
+          {
+            "pid": 1624368,
+            "start_ticks": 1271574937,
+            "pgid": 1624368,
+            "first_ppid": 1624367
+          },
+          {
+            "pid": 1624403,
+            "start_ticks": 1271575006,
+            "pgid": 1624368,
+            "first_ppid": 1624368
+          },
+          {
+            "pid": 1624477,
+            "start_ticks": 1271575907,
+            "pgid": 1624403,
+            "first_ppid": 1624403
+          }
+        ],
+        "end": "2026-10-08T14:10:47.395677+00:00",
+        "exit_code": 0,
+        "signal": null,
+        "completed": true,
+        "logs": [
+          {
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.stdout",
+            "sha256": "5b8386b59cc98df844154d5f50e16c20c971f9efa5abca0f046cb4ef788e6546",
+            "bytes": 182931
+          },
+          {
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.stderr",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          }
+        ]
+      },
+      "launch_environment": {
+        "binding": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/mix-launch-command.json",
+          "bytes": 1472,
+          "sha256": "3b821ffda454b867b47374a0c14fed3f3fe71d9bd65d24bb28e3bb3ffb72c66c",
+          "mode": "0o664"
+        },
+        "values": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+          "NXF_SYNTAX_PARSER": "v2",
+          "NXF_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-nxf-home",
+          "SPOCK_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-spock-home"
+        },
+        "boundary": "Issued launch environment; accepted supervisor records only its original finite subset, not NXF_HOME or SPOCK_USER_HOME"
+      },
+      "native_xml": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/native-mix/test-results/TEST-nextflow.extension.MixOpTest.xml",
+        "bytes": 151619,
+        "sha256": "92223a0928f77af281d8cd9b7dd0c5497c3daaff571ca1826069943f254e9352",
+        "mode": "0o664"
+      },
+      "native_exceptions": [],
+      "proof_boundary": "Completed native feature proves its unmodified sequential original assertions; successful raw values are not separately observed",
+      "completed": true
+    },
+    {
+      "id": "METHOD-M-VALUE",
+      "name": "should mix with value channels",
+      "origin": "original",
+      "status": "pass",
+      "native_testcase": {
+        "name": "should mix with value channels",
+        "classname": "nextflow.extension.MixOpTest",
+        "time": "0.193"
+      },
+      "actual_order_within_spec": 1,
+      "source_order_preserved": true,
+      "child_unit_ids": [
+        "M2"
+      ],
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      },
+      "command_capture": {
+        "id": "originals-mix",
+        "command": [
+          "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/tools/gradle-9.3.1/bin/gradle",
+          "--init-script",
+          "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch.init.gradle",
+          "--no-daemon",
+          "--offline",
+          "--max-workers=1",
+          "-Dorg.gradle.parallel=false",
+          "-Dorg.gradle.jvmargs=-Xmx2g",
+          "-Dorg.gradle.java.installations.auto-download=false",
+          ":nextflow:test",
+          "--tests",
+          "nextflow.extension.MixOpTest.should mix channels",
+          "--tests",
+          "nextflow.extension.MixOpTest.should mix with value channels",
+          "--tests",
+          "nextflow.extension.MixOpTest.should mix with two singleton",
+          "--info",
+          "--stacktrace"
+        ],
+        "cwd": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/source",
+        "environment": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+          "NXF_SYNTAX_PARSER": "v2",
+          "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+          "CI_GROOVY_VERSION": null,
+          "BUILD_PACK": null,
+          "TEST_JDK": null,
+          "WITH_DOCKER": null,
+          "TERM": "dumb"
+        },
+        "start": "2026-10-08T14:10:30.091603+00:00",
+        "timeout_seconds": 300,
+        "deadline": "2026-10-08T14:15:30.091603+00:00",
+        "requested_command_deadline": "2026-10-08T14:15:30.091603+00:00",
+        "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+        "supervisor_version": "PREREQ-F1-correction-01",
+        "ownership": "Dedicated Linux subreaper, observed ancestry and birth ticks, stable pidfd signals",
+        "pid": 1624368,
+        "process_group": 1624368,
+        "timed_out": false,
+        "cleanup": {
+          "signals": [],
+          "remaining_live": [],
+          "final_process_states": [
+            {
+              "pid": 1624368,
+              "start_ticks": 1271574937,
+              "pgid": 1624368,
+              "first_ppid": 1624367,
+              "final_state": null
+            },
+            {
+              "pid": 1624403,
+              "start_ticks": 1271575006,
+              "pgid": 1624368,
+              "first_ppid": 1624368,
+              "final_state": null
+            },
+            {
+              "pid": 1624477,
+              "start_ticks": 1271575907,
+              "pgid": 1624403,
+              "first_ppid": 1624403,
+              "final_state": null
+            }
+          ],
+          "reaped_adopted_children": [],
+          "completed": true,
+          "failure": null,
+          "term_grace_seconds": 0.5,
+          "kill_grace_seconds": 1.0
+        },
+        "descendant_pids": [
+          1624403,
+          1624477
+        ],
+        "process_identities": [
+          {
+            "pid": 1624368,
+            "start_ticks": 1271574937,
+            "pgid": 1624368,
+            "first_ppid": 1624367
+          },
+          {
+            "pid": 1624403,
+            "start_ticks": 1271575006,
+            "pgid": 1624368,
+            "first_ppid": 1624368
+          },
+          {
+            "pid": 1624477,
+            "start_ticks": 1271575907,
+            "pgid": 1624403,
+            "first_ppid": 1624403
+          }
+        ],
+        "end": "2026-10-08T14:10:47.395677+00:00",
+        "exit_code": 0,
+        "signal": null,
+        "completed": true,
+        "logs": [
+          {
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.stdout",
+            "sha256": "5b8386b59cc98df844154d5f50e16c20c971f9efa5abca0f046cb4ef788e6546",
+            "bytes": 182931
+          },
+          {
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.stderr",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          }
+        ]
+      },
+      "launch_environment": {
+        "binding": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/mix-launch-command.json",
+          "bytes": 1472,
+          "sha256": "3b821ffda454b867b47374a0c14fed3f3fe71d9bd65d24bb28e3bb3ffb72c66c",
+          "mode": "0o664"
+        },
+        "values": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+          "NXF_SYNTAX_PARSER": "v2",
+          "NXF_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-nxf-home",
+          "SPOCK_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-spock-home"
+        },
+        "boundary": "Issued launch environment; accepted supervisor records only its original finite subset, not NXF_HOME or SPOCK_USER_HOME"
+      },
+      "native_xml": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/native-mix/test-results/TEST-nextflow.extension.MixOpTest.xml",
+        "bytes": 151619,
+        "sha256": "92223a0928f77af281d8cd9b7dd0c5497c3daaff571ca1826069943f254e9352",
+        "mode": "0o664"
+      },
+      "native_exceptions": [],
+      "proof_boundary": "Completed native feature proves its unmodified sequential original assertions; successful raw values are not separately observed",
+      "completed": true
+    },
+    {
+      "id": "METHOD-M-SINGLETON",
+      "name": "should mix with two singleton",
+      "origin": "original",
+      "status": "pass",
+      "native_testcase": {
+        "name": "should mix with two singleton",
+        "classname": "nextflow.extension.MixOpTest",
+        "time": "0.102"
+      },
+      "actual_order_within_spec": 2,
+      "source_order_preserved": true,
+      "child_unit_ids": [
+        "M3"
+      ],
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      },
+      "command_capture": {
+        "id": "originals-mix",
+        "command": [
+          "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/tools/gradle-9.3.1/bin/gradle",
+          "--init-script",
+          "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch.init.gradle",
+          "--no-daemon",
+          "--offline",
+          "--max-workers=1",
+          "-Dorg.gradle.parallel=false",
+          "-Dorg.gradle.jvmargs=-Xmx2g",
+          "-Dorg.gradle.java.installations.auto-download=false",
+          ":nextflow:test",
+          "--tests",
+          "nextflow.extension.MixOpTest.should mix channels",
+          "--tests",
+          "nextflow.extension.MixOpTest.should mix with value channels",
+          "--tests",
+          "nextflow.extension.MixOpTest.should mix with two singleton",
+          "--info",
+          "--stacktrace"
+        ],
+        "cwd": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/source",
+        "environment": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+          "NXF_SYNTAX_PARSER": "v2",
+          "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+          "CI_GROOVY_VERSION": null,
+          "BUILD_PACK": null,
+          "TEST_JDK": null,
+          "WITH_DOCKER": null,
+          "TERM": "dumb"
+        },
+        "start": "2026-10-08T14:10:30.091603+00:00",
+        "timeout_seconds": 300,
+        "deadline": "2026-10-08T14:15:30.091603+00:00",
+        "requested_command_deadline": "2026-10-08T14:15:30.091603+00:00",
+        "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+        "supervisor_version": "PREREQ-F1-correction-01",
+        "ownership": "Dedicated Linux subreaper, observed ancestry and birth ticks, stable pidfd signals",
+        "pid": 1624368,
+        "process_group": 1624368,
+        "timed_out": false,
+        "cleanup": {
+          "signals": [],
+          "remaining_live": [],
+          "final_process_states": [
+            {
+              "pid": 1624368,
+              "start_ticks": 1271574937,
+              "pgid": 1624368,
+              "first_ppid": 1624367,
+              "final_state": null
+            },
+            {
+              "pid": 1624403,
+              "start_ticks": 1271575006,
+              "pgid": 1624368,
+              "first_ppid": 1624368,
+              "final_state": null
+            },
+            {
+              "pid": 1624477,
+              "start_ticks": 1271575907,
+              "pgid": 1624403,
+              "first_ppid": 1624403,
+              "final_state": null
+            }
+          ],
+          "reaped_adopted_children": [],
+          "completed": true,
+          "failure": null,
+          "term_grace_seconds": 0.5,
+          "kill_grace_seconds": 1.0
+        },
+        "descendant_pids": [
+          1624403,
+          1624477
+        ],
+        "process_identities": [
+          {
+            "pid": 1624368,
+            "start_ticks": 1271574937,
+            "pgid": 1624368,
+            "first_ppid": 1624367
+          },
+          {
+            "pid": 1624403,
+            "start_ticks": 1271575006,
+            "pgid": 1624368,
+            "first_ppid": 1624368
+          },
+          {
+            "pid": 1624477,
+            "start_ticks": 1271575907,
+            "pgid": 1624403,
+            "first_ppid": 1624403
+          }
+        ],
+        "end": "2026-10-08T14:10:47.395677+00:00",
+        "exit_code": 0,
+        "signal": null,
+        "completed": true,
+        "logs": [
+          {
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.stdout",
+            "sha256": "5b8386b59cc98df844154d5f50e16c20c971f9efa5abca0f046cb4ef788e6546",
+            "bytes": 182931
+          },
+          {
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.stderr",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          }
+        ]
+      },
+      "launch_environment": {
+        "binding": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/mix-launch-command.json",
+          "bytes": 1472,
+          "sha256": "3b821ffda454b867b47374a0c14fed3f3fe71d9bd65d24bb28e3bb3ffb72c66c",
+          "mode": "0o664"
+        },
+        "values": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+          "NXF_SYNTAX_PARSER": "v2",
+          "NXF_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-nxf-home",
+          "SPOCK_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-spock-home"
+        },
+        "boundary": "Issued launch environment; accepted supervisor records only its original finite subset, not NXF_HOME or SPOCK_USER_HOME"
+      },
+      "native_xml": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/native-mix/test-results/TEST-nextflow.extension.MixOpTest.xml",
+        "bytes": 151619,
+        "sha256": "92223a0928f77af281d8cd9b7dd0c5497c3daaff571ca1826069943f254e9352",
+        "mode": "0o664"
+      },
+      "native_exceptions": [],
+      "proof_boundary": "Completed native feature proves its unmodified sequential original assertions; successful raw values are not separately observed",
+      "completed": true
+    }
+  ],
+  "units": [
+    {
+      "id": "P1",
+      "origin": "original",
+      "method_id": "METHOD-P-INVALID",
+      "status": "pass",
+      "completed": true,
+      "subcase_order": 1,
+      "predicate_ids": [
+        "P1-COUNT",
+        "P1-LINE",
+        "P1-COLUMN",
+        "P1-MESSAGE"
+      ],
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "proof": "Reached and completed through the unmodified sequential when/then blocks of a completed passing feature",
+      "raw_successful_values": "unobserved",
+      "normalization_bytes": "unobserved; genuine source executed, no byte instrumentation",
+      "internal_equivalence": "unresolved; no projection mapping awarded"
+    },
+    {
+      "id": "P2",
+      "origin": "original",
+      "method_id": "METHOD-P-INVALID",
+      "status": "pass",
+      "completed": true,
+      "subcase_order": 2,
+      "predicate_ids": [
+        "P2-COUNT",
+        "P2-LINE",
+        "P2-COLUMN",
+        "P2-MESSAGE"
+      ],
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "proof": "Reached and completed through the unmodified sequential when/then blocks of a completed passing feature",
+      "raw_successful_values": "unobserved",
+      "normalization_bytes": "unobserved; genuine source executed, no byte instrumentation",
+      "internal_equivalence": "unresolved; no projection mapping awarded"
+    },
+    {
+      "id": "P3",
+      "origin": "original",
+      "method_id": "METHOD-P-INVALID",
+      "status": "pass",
+      "completed": true,
+      "subcase_order": 3,
+      "predicate_ids": [
+        "P3-COUNT",
+        "P3-LINE",
+        "P3-COLUMN",
+        "P3-MESSAGE"
+      ],
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "proof": "Reached and completed through the unmodified sequential when/then blocks of a completed passing feature",
+      "raw_successful_values": "unobserved",
+      "normalization_bytes": "unobserved; genuine source executed, no byte instrumentation",
+      "internal_equivalence": "unresolved; no projection mapping awarded"
+    },
+    {
+      "id": "P4",
+      "origin": "original",
+      "method_id": "METHOD-P-INVALID",
+      "status": "pass",
+      "completed": true,
+      "subcase_order": 4,
+      "predicate_ids": [
+        "P4-COUNT",
+        "P4-LINE",
+        "P4-COLUMN",
+        "P4-MESSAGE"
+      ],
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "proof": "Reached and completed through the unmodified sequential when/then blocks of a completed passing feature",
+      "raw_successful_values": "unobserved",
+      "normalization_bytes": "unobserved; genuine source executed, no byte instrumentation",
+      "internal_equivalence": "unresolved; no projection mapping awarded"
+    },
+    {
+      "id": "P5",
+      "origin": "original",
+      "method_id": "METHOD-P-INVALID",
+      "status": "pass",
+      "completed": true,
+      "subcase_order": 5,
+      "predicate_ids": [
+        "P5-COUNT",
+        "P5-LINE",
+        "P5-COLUMN",
+        "P5-MESSAGE"
+      ],
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "proof": "Reached and completed through the unmodified sequential when/then blocks of a completed passing feature",
+      "raw_successful_values": "unobserved",
+      "normalization_bytes": "unobserved; genuine source executed, no byte instrumentation",
+      "internal_equivalence": "unresolved; no projection mapping awarded"
+    },
+    {
+      "id": "P6",
+      "origin": "original",
+      "method_id": "METHOD-P-MIXED",
+      "status": "pass",
+      "completed": true,
+      "subcase_order": 1,
+      "predicate_ids": [
+        "P6-COUNT",
+        "P6-LINE",
+        "P6-COLUMN",
+        "P6-MESSAGE"
+      ],
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "proof": "Reached and completed through the unmodified sequential when/then blocks of a completed passing feature",
+      "raw_successful_values": "unobserved",
+      "normalization_bytes": "unobserved; genuine source executed, no byte instrumentation",
+      "internal_equivalence": "unresolved; no projection mapping awarded"
+    },
+    {
+      "id": "P7",
+      "origin": "original",
+      "method_id": "METHOD-P-PARAMS",
+      "status": "pass",
+      "completed": true,
+      "subcase_order": 1,
+      "predicate_ids": [
+        "P7-COUNT",
+        "P7-LINE",
+        "P7-COLUMN",
+        "P7-MESSAGE"
+      ],
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "proof": "Reached and completed through the unmodified sequential when/then blocks of a completed passing feature",
+      "raw_successful_values": "unobserved",
+      "normalization_bytes": "unobserved; genuine source executed, no byte instrumentation",
+      "internal_equivalence": "unresolved; no projection mapping awarded"
+    },
+    {
+      "id": "P8",
+      "origin": "original",
+      "method_id": "METHOD-P-PARAMS",
+      "status": "pass",
+      "completed": true,
+      "subcase_order": 2,
+      "predicate_ids": [
+        "P8-COUNT"
+      ],
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "proof": "Reached and completed through the unmodified sequential when/then blocks of a completed passing feature",
+      "raw_successful_values": "unobserved",
+      "normalization_bytes": "unobserved; genuine source executed, no byte instrumentation",
+      "internal_equivalence": "unresolved; no projection mapping awarded"
+    },
+    {
+      "id": "M1",
+      "origin": "original",
+      "method_id": "METHOD-M-CHANNELS",
+      "status": "pass",
+      "completed": true,
+      "subcase_order": 1,
+      "predicate_ids": [
+        "M1-MEMBER-1",
+        "M1-MEMBER-2",
+        "M1-MEMBER-3",
+        "M1-MEMBER-4",
+        "M1-MEMBER-5",
+        "M1-MEMBER-6",
+        "M1-NOT-C"
+      ],
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      },
+      "proof": "Reached and completed through the unmodified sequential when/then blocks of a completed passing feature",
+      "raw_successful_values": "unobserved",
+      "normalization_bytes": "unobserved; genuine source executed, no byte instrumentation",
+      "internal_equivalence": "unresolved; no projection mapping awarded"
+    },
+    {
+      "id": "M2",
+      "origin": "original",
+      "method_id": "METHOD-M-VALUE",
+      "status": "pass",
+      "completed": true,
+      "subcase_order": 1,
+      "predicate_ids": [
+        "M2-SORTED"
+      ],
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      },
+      "proof": "Reached and completed through the unmodified sequential when/then blocks of a completed passing feature",
+      "raw_successful_values": "unobserved",
+      "normalization_bytes": "unobserved; genuine source executed, no byte instrumentation",
+      "internal_equivalence": "unresolved; no projection mapping awarded"
+    },
+    {
+      "id": "M3",
+      "origin": "original",
+      "method_id": "METHOD-M-SINGLETON",
+      "status": "pass",
+      "completed": true,
+      "subcase_order": 1,
+      "predicate_ids": [
+        "M3-SORTED"
+      ],
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      },
+      "proof": "Reached and completed through the unmodified sequential when/then blocks of a completed passing feature",
+      "raw_successful_values": "unobserved",
+      "normalization_bytes": "unobserved; genuine source executed, no byte instrumentation",
+      "internal_equivalence": "unresolved; no projection mapping awarded"
+    }
+  ],
+  "predicates": [
+    {
+      "id": "P1-COUNT",
+      "unit_id": "P1",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P1-COUNT",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 1,
+      "observation_boundary": "Internal TestUtils filtered SyntaxException list length after parse and analyze",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P1-LINE",
+      "unit_id": "P1",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P1-LINE",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 2,
+      "observation_boundary": "Internal SyntaxException.getStartLine()",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P1-COLUMN",
+      "unit_id": "P1",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P1-COLUMN",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 14,
+      "observation_boundary": "Internal SyntaxException.getStartColumn()",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P1-MESSAGE",
+      "unit_id": "P1",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P1-MESSAGE",
+      "comparator": "equals",
+      "expected_type": "string",
+      "expected_value": "Unexpected input: '3'",
+      "observation_boundary": "Internal SyntaxException.getOriginalMessage(); retain equality versus substring distinction",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P2-COUNT",
+      "unit_id": "P2",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P2-COUNT",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 1,
+      "observation_boundary": "Internal TestUtils filtered SyntaxException list length after parse and analyze",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P2-LINE",
+      "unit_id": "P2",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P2-LINE",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 2,
+      "observation_boundary": "Internal SyntaxException.getStartLine()",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P2-COLUMN",
+      "unit_id": "P2",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P2-COLUMN",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 16,
+      "observation_boundary": "Internal SyntaxException.getStartColumn()",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P2-MESSAGE",
+      "unit_id": "P2",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P2-MESSAGE",
+      "comparator": "equals",
+      "expected_type": "string",
+      "expected_value": "Unexpected input: '\\n'",
+      "observation_boundary": "Internal SyntaxException.getOriginalMessage(); retain equality versus substring distinction",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P3-COUNT",
+      "unit_id": "P3",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P3-COUNT",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 1,
+      "observation_boundary": "Internal TestUtils filtered SyntaxException list length after parse and analyze",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P3-LINE",
+      "unit_id": "P3",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P3-LINE",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 3,
+      "observation_boundary": "Internal SyntaxException.getStartLine()",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P3-COLUMN",
+      "unit_id": "P3",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P3-COLUMN",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 24,
+      "observation_boundary": "Internal SyntaxException.getStartColumn()",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P3-MESSAGE",
+      "unit_id": "P3",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P3-MESSAGE",
+      "comparator": "equals",
+      "expected_type": "string",
+      "expected_value": "Unexpected input: 'val'",
+      "observation_boundary": "Internal SyntaxException.getOriginalMessage(); retain equality versus substring distinction",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P4-COUNT",
+      "unit_id": "P4",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P4-COUNT",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 1,
+      "observation_boundary": "Internal TestUtils filtered SyntaxException list length after parse and analyze",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P4-LINE",
+      "unit_id": "P4",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P4-LINE",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 3,
+      "observation_boundary": "Internal SyntaxException.getStartLine()",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P4-COLUMN",
+      "unit_id": "P4",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P4-COLUMN",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 40,
+      "observation_boundary": "Internal SyntaxException.getStartColumn()",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P4-MESSAGE",
+      "unit_id": "P4",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P4-MESSAGE",
+      "comparator": "equals",
+      "expected_type": "string",
+      "expected_value": "Unexpected input: 'emit'",
+      "observation_boundary": "Internal SyntaxException.getOriginalMessage(); retain equality versus substring distinction",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P5-COUNT",
+      "unit_id": "P5",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P5-COUNT",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 1,
+      "observation_boundary": "Internal TestUtils filtered SyntaxException list length after parse and analyze",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P5-LINE",
+      "unit_id": "P5",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P5-LINE",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 4,
+      "observation_boundary": "Internal SyntaxException.getStartLine()",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P5-COLUMN",
+      "unit_id": "P5",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P5-COLUMN",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 6,
+      "observation_boundary": "Internal SyntaxException.getStartColumn()",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P5-MESSAGE",
+      "unit_id": "P5",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P5-MESSAGE",
+      "comparator": "equals",
+      "expected_type": "string",
+      "expected_value": "Unexpected input: ','",
+      "observation_boundary": "Internal SyntaxException.getOriginalMessage(); retain equality versus substring distinction",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P6-COUNT",
+      "unit_id": "P6",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P6-COUNT",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 1,
+      "observation_boundary": "Internal TestUtils filtered SyntaxException list length after parse and analyze",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P6-LINE",
+      "unit_id": "P6",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P6-LINE",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 1,
+      "observation_boundary": "Internal SyntaxException.getStartLine()",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P6-COLUMN",
+      "unit_id": "P6",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P6-COLUMN",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 1,
+      "observation_boundary": "Internal SyntaxException.getStartColumn()",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P6-MESSAGE",
+      "unit_id": "P6",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P6-MESSAGE",
+      "comparator": "contains",
+      "expected_type": "string",
+      "expected_value": "Statements cannot be mixed with script declarations",
+      "observation_boundary": "Internal SyntaxException.getOriginalMessage(); retain equality versus substring distinction",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P7-COUNT",
+      "unit_id": "P7",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P7-COUNT",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 1,
+      "observation_boundary": "Internal TestUtils filtered SyntaxException list length after parse and analyze",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P7-LINE",
+      "unit_id": "P7",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P7-LINE",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 1,
+      "observation_boundary": "Internal SyntaxException.getStartLine()",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P7-COLUMN",
+      "unit_id": "P7",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P7-COLUMN",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 1,
+      "observation_boundary": "Internal SyntaxException.getStartColumn()",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P7-MESSAGE",
+      "unit_id": "P7",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P7-MESSAGE",
+      "comparator": "equals",
+      "expected_type": "string",
+      "expected_value": "Params block cannot be defined without an entry workflow",
+      "observation_boundary": "Internal SyntaxException.getOriginalMessage(); retain equality versus substring distinction",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "P8-COUNT",
+      "unit_id": "P8",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-P8-COUNT",
+      "comparator": "equals",
+      "expected_type": "integer",
+      "expected_value": 0,
+      "observation_boundary": "Internal TestUtils filtered SyntaxException list length after parse and analyze",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "M1-MEMBER-1",
+      "unit_id": "M1",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-M1-MEMBER-1",
+      "comparator": "membership",
+      "expected_type": "integer",
+      "expected_value": 1,
+      "observation_boundary": "Internal result list read from runScript(...).val after network completion",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "M1-MEMBER-2",
+      "unit_id": "M1",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-M1-MEMBER-2",
+      "comparator": "membership",
+      "expected_type": "integer",
+      "expected_value": 2,
+      "observation_boundary": "Internal result list read from runScript(...).val after network completion",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "M1-MEMBER-3",
+      "unit_id": "M1",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-M1-MEMBER-3",
+      "comparator": "membership",
+      "expected_type": "integer",
+      "expected_value": 3,
+      "observation_boundary": "Internal result list read from runScript(...).val after network completion",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "M1-MEMBER-4",
+      "unit_id": "M1",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-M1-MEMBER-4",
+      "comparator": "membership",
+      "expected_type": "string",
+      "expected_value": "a",
+      "observation_boundary": "Internal result list read from runScript(...).val after network completion",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "M1-MEMBER-5",
+      "unit_id": "M1",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-M1-MEMBER-5",
+      "comparator": "membership",
+      "expected_type": "string",
+      "expected_value": "b",
+      "observation_boundary": "Internal result list read from runScript(...).val after network completion",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "M1-MEMBER-6",
+      "unit_id": "M1",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-M1-MEMBER-6",
+      "comparator": "membership",
+      "expected_type": "string",
+      "expected_value": "z",
+      "observation_boundary": "Internal result list read from runScript(...).val after network completion",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "M1-NOT-C",
+      "unit_id": "M1",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-M1-NOT-C",
+      "comparator": "nonmembership",
+      "expected_type": "string",
+      "expected_value": "c",
+      "observation_boundary": "Internal result list membership negation",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "M2-SORTED",
+      "unit_id": "M2",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-M2-SORTED",
+      "comparator": "sorted-list-equals",
+      "expected_type": "list<integer>",
+      "expected_value": [
+        1,
+        2,
+        3
+      ],
+      "observation_boundary": "Internal collected value list; Groovy sort then equality retains multiplicity",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "M3-SORTED",
+      "unit_id": "M3",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-original-assertion-proved",
+      "source_id": "SRC-M3-SORTED",
+      "comparator": "sorted-list-equals",
+      "expected_type": "list<integer>",
+      "expected_value": [
+        1,
+        2
+      ],
+      "observation_boundary": "Internal collected value list; Groovy sort then equality retains multiplicity",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      },
+      "value_capture": {
+        "status": "unobserved",
+        "reason": "Native XML/logs expose feature outcome; no successful-value instrumentation was executed"
+      },
+      "oracle": "not-awarded",
+      "projection_equivalence": "unresolved",
+      "wr": "pending-supported-boundary"
+    },
+    {
+      "id": "ARITY-FRESH-CHECK",
+      "unit_id": "ARITY-FRESH",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-literal-check-trace-and-reviewed-invocation-capture",
+      "source_id": "SRC-ARITY-FRESH-CHECK",
+      "comparator": "numeric-status-equals",
+      "expected_type": "integer",
+      "expected_value": 0,
+      "value_capture": {
+        "status": "observed",
+        "actual": {
+          "type": "integer",
+          "value": 0
+        }
+      },
+      "checks_trace": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/checks.out",
+        "bytes": 313,
+        "sha256": "fd39178e3d2392c029b00c6fb426e2bcc10ddd87d5ad38b6feb4d14f61245466",
+        "mode": "0o664"
+      },
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/arity-fresh/capture.json",
+        "bytes": 3490,
+        "sha256": "a3442c480754e4de0862eff413e9d5d3fa2625adb0e6b5ca9f16d667bd7261ae",
+        "mode": "0o664"
+      },
+      "aggregate_distinction": "Original final expression status is separate from each invocation exit and reached literal condition"
+    },
+    {
+      "id": "ARITY-RESUME-CHECK",
+      "unit_id": "ARITY-RESUME",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-literal-check-trace-and-reviewed-invocation-capture",
+      "source_id": "SRC-ARITY-RESUME-CHECK",
+      "comparator": "numeric-status-equals",
+      "expected_type": "integer",
+      "expected_value": 0,
+      "value_capture": {
+        "status": "observed",
+        "actual": {
+          "type": "integer",
+          "value": 0
+        }
+      },
+      "checks_trace": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/checks.out",
+        "bytes": 313,
+        "sha256": "fd39178e3d2392c029b00c6fb426e2bcc10ddd87d5ad38b6feb4d14f61245466",
+        "mode": "0o664"
+      },
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/arity-resume/capture.json",
+        "bytes": 3243,
+        "sha256": "e4427e73a9486e08b78f1e715fb7c1e3d24574b380a641269d12da2a4b57878d",
+        "mode": "0o664"
+      },
+      "aggregate_distinction": "Original final expression status is separate from each invocation exit and reached literal condition"
+    },
+    {
+      "id": "TOPIC-FRESH-CHECK",
+      "unit_id": "TOPIC-FRESH",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-literal-check-trace-and-reviewed-invocation-capture",
+      "source_id": "SRC-TOPIC-FRESH-CHECK",
+      "comparator": "exact-file-bytes-equal",
+      "expected_type": "bytes",
+      "expected_value": "bar: 0.9.0\nfoo: 0.1.0\n",
+      "value_capture": {
+        "status": "observed",
+        "actual": {
+          "type": "bytes-hex",
+          "value": "6261723a20302e392e300a666f6f3a20302e312e300a",
+          "file": {
+            "source": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/versions.txt",
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-fresh/versions.txt",
+            "bytes": 22,
+            "sha256": "ce5e4c500ca731aa86fa5e5a3856b9bdbe3c64f685d0e51b2ba5d1886b13bceb"
+          }
+        }
+      },
+      "checks_trace": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/checks.out",
+        "bytes": 372,
+        "sha256": "93234e6e2e980a184367dda26d990981de2f9e7d66a2ad5009b7faee629cdfef",
+        "mode": "0o664"
+      },
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-fresh/capture.json",
+        "bytes": 3966,
+        "sha256": "d5560f907a52a2c7a41c02a7ed16ee03b41a97d805881979e957bb485f37dc0e",
+        "mode": "0o664"
+      },
+      "aggregate_distinction": "Original final expression status is separate from each invocation exit and reached literal condition"
+    },
+    {
+      "id": "TOPIC-RESUME-CHECK",
+      "unit_id": "TOPIC-RESUME",
+      "origin": "original",
+      "status": "pass",
+      "evidence_kind": "genuine-literal-check-trace-and-reviewed-invocation-capture",
+      "source_id": "SRC-TOPIC-RESUME-CHECK",
+      "comparator": "exact-file-bytes-equal",
+      "expected_type": "bytes",
+      "expected_value": "bar: 0.9.0\nfoo: 0.1.0\n",
+      "value_capture": {
+        "status": "observed",
+        "actual": {
+          "type": "bytes-hex",
+          "value": "6261723a20302e392e300a666f6f3a20302e312e300a",
+          "file": {
+            "source": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/versions.txt",
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-resume/versions.txt",
+            "bytes": 22,
+            "sha256": "ce5e4c500ca731aa86fa5e5a3856b9bdbe3c64f685d0e51b2ba5d1886b13bceb"
+          }
+        }
+      },
+      "checks_trace": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/checks.out",
+        "bytes": 372,
+        "sha256": "93234e6e2e980a184367dda26d990981de2f9e7d66a2ad5009b7faee629cdfef",
+        "mode": "0o664"
+      },
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-resume/capture.json",
+        "bytes": 3999,
+        "sha256": "0706d343fa944bf1d940fbf35264ff2a9d3007c9b6ef38ff4c57e3973cc28490",
+        "mode": "0o664"
+      },
+      "aggregate_distinction": "Original final expression status is separate from each invocation exit and reached literal condition"
+    }
+  ],
+  "invocations": [
+    {
+      "id": "ARITY-FRESH",
+      "origin": "original",
+      "mode": "fresh",
+      "status": "pass",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/arity-fresh/capture.json",
+        "bytes": 3490,
+        "sha256": "a3442c480754e4de0862eff413e9d5d3fa2625adb0e6b5ca9f16d667bd7261ae",
+        "mode": "0o664"
+      },
+      "command_capture": {
+        "id": "ARITY-FRESH",
+        "command": [
+          "/home/ubuntu/wr/.tmp/nextflow-conformance/nextflow-generation-2687641921/nextflow",
+          "-q",
+          "run",
+          "../../process-arity.nf"
+        ],
+        "wrapper_argv": [
+          "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf_capture.py",
+          "-q",
+          "run",
+          "../../process-arity.nf"
+        ],
+        "cwd": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf",
+        "start": "2026-10-08T14:20:52.933888+00:00",
+        "end": "2026-10-08T14:20:56.320332+00:00",
+        "deadline": "2026-10-08T14:22:52.933888+00:00",
+        "timeout_seconds": 120,
+        "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+        "timed_out": false,
+        "environment": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+          "NXF_CMD": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf_capture.py",
+          "NXF_BIN": "/home/ubuntu/wr/.tmp/nextflow-conformance/nextflow-generation-2687641921/nextflow-26.04.6-dist",
+          "NXF_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf-home",
+          "NXF_OFFLINE": "true",
+          "NXF_WORK": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch",
+          "NXF_SYNTAX_PARSER": "v2",
+          "TEST_JDK": "21",
+          "WITH_DOCKER": "",
+          "TERM": "xterm",
+          "HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-home"
+        },
+        "pid": 1624992,
+        "process_group": 1624992,
+        "process_identities": [
+          {
+            "pid": 1624992,
+            "start_ticks": 1271637221,
+            "pgid": 1624992,
+            "first_ppid": 1624991
+          },
+          {
+            "pid": 1625082,
+            "start_ticks": 1271637530,
+            "pgid": 1624992,
+            "first_ppid": 1624992
+          }
+        ],
+        "exit_code": 0,
+        "signal": null,
+        "completed": true,
+        "cleanup": {
+          "signals": [],
+          "remaining_live": [],
+          "final_process_states": [
+            {
+              "pid": 1624992,
+              "start_ticks": 1271637221,
+              "pgid": 1624992,
+              "first_ppid": 1624991,
+              "final_state": null
+            },
+            {
+              "pid": 1625082,
+              "start_ticks": 1271637530,
+              "pgid": 1624992,
+              "first_ppid": 1624992,
+              "final_state": null
+            }
+          ],
+          "reaped_adopted_children": [],
+          "completed": true,
+          "failure": null,
+          "term_grace_seconds": 0.5,
+          "kill_grace_seconds": 1.0
+        },
+        "files": [
+          {
+            "source": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/.nextflow.log",
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/arity-fresh/.nextflow.log",
+            "bytes": 8627,
+            "sha256": "f0745ef8c39db331577732aef7429c87a4b8f7db1ae2fec06b3ca38d1edbd066"
+          }
+        ],
+        "stdio": "Inherited stdout/stderr; raw genuine checks.out retained by runner"
+      },
+      "source_id": "SRC-INVOKE-ARITY-FRESH",
+      "capture_before_cmp_or_resume": true,
+      "cache_reuse": "not-awarded; resume flag and genuine outcomes recorded separately"
+    },
+    {
+      "id": "ARITY-RESUME",
+      "origin": "original",
+      "mode": "resume",
+      "status": "pass",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/arity-resume/capture.json",
+        "bytes": 3243,
+        "sha256": "e4427e73a9486e08b78f1e715fb7c1e3d24574b380a641269d12da2a4b57878d",
+        "mode": "0o664"
+      },
+      "command_capture": {
+        "id": "ARITY-RESUME",
+        "command": [
+          "/home/ubuntu/wr/.tmp/nextflow-conformance/nextflow-generation-2687641921/nextflow",
+          "-q",
+          "run",
+          "../../process-arity.nf",
+          "-resume"
+        ],
+        "wrapper_argv": [
+          "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf_capture.py",
+          "-q",
+          "run",
+          "../../process-arity.nf",
+          "-resume"
+        ],
+        "cwd": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf",
+        "start": "2026-10-08T14:20:56.381162+00:00",
+        "end": "2026-10-08T14:20:59.792762+00:00",
+        "deadline": "2026-10-08T14:22:56.381162+00:00",
+        "timeout_seconds": 120,
+        "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+        "timed_out": false,
+        "environment": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+          "NXF_CMD": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf_capture.py",
+          "NXF_BIN": "/home/ubuntu/wr/.tmp/nextflow-conformance/nextflow-generation-2687641921/nextflow-26.04.6-dist",
+          "NXF_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf-home",
+          "NXF_OFFLINE": "true",
+          "NXF_WORK": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch",
+          "NXF_SYNTAX_PARSER": "v2",
+          "TEST_JDK": "21",
+          "WITH_DOCKER": "",
+          "TERM": "xterm",
+          "HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-home"
+        },
+        "pid": 1625114,
+        "process_group": 1625114,
+        "process_identities": [
+          {
+            "pid": 1625114,
+            "start_ticks": 1271637566,
+            "pgid": 1625114,
+            "first_ppid": 1625113
+          }
+        ],
+        "exit_code": 0,
+        "signal": null,
+        "completed": true,
+        "cleanup": {
+          "signals": [],
+          "remaining_live": [],
+          "final_process_states": [
+            {
+              "pid": 1625114,
+              "start_ticks": 1271637566,
+              "pgid": 1625114,
+              "first_ppid": 1625113,
+              "final_state": null
+            }
+          ],
+          "reaped_adopted_children": [],
+          "completed": true,
+          "failure": null,
+          "term_grace_seconds": 0.5,
+          "kill_grace_seconds": 1.0
+        },
+        "files": [
+          {
+            "source": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/.nextflow.log",
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/arity-resume/.nextflow.log",
+            "bytes": 7474,
+            "sha256": "1490ca696de9536365bf929a24751a82936f24691c7cc47cba8e8cbb34e8b25f"
+          }
+        ],
+        "stdio": "Inherited stdout/stderr; raw genuine checks.out retained by runner"
+      },
+      "source_id": "SRC-INVOKE-ARITY-RESUME",
+      "capture_before_cmp_or_resume": true,
+      "cache_reuse": "not-awarded; resume flag and genuine outcomes recorded separately"
+    },
+    {
+      "id": "TOPIC-FRESH",
+      "origin": "original",
+      "mode": "fresh",
+      "status": "pass",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-fresh/capture.json",
+        "bytes": 3966,
+        "sha256": "d5560f907a52a2c7a41c02a7ed16ee03b41a97d805881979e957bb485f37dc0e",
+        "mode": "0o664"
+      },
+      "command_capture": {
+        "id": "TOPIC-FRESH",
+        "command": [
+          "/home/ubuntu/wr/.tmp/nextflow-conformance/nextflow-generation-2687641921/nextflow",
+          "-q",
+          "run",
+          "../../topic-channel.nf"
+        ],
+        "wrapper_argv": [
+          "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf_capture.py",
+          "-q",
+          "run",
+          "../../topic-channel.nf"
+        ],
+        "cwd": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf",
+        "start": "2026-10-08T14:20:59.861458+00:00",
+        "end": "2026-10-08T14:21:03.266084+00:00",
+        "deadline": "2026-10-08T14:22:59.861458+00:00",
+        "timeout_seconds": 120,
+        "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+        "timed_out": false,
+        "environment": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+          "NXF_CMD": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf_capture.py",
+          "NXF_BIN": "/home/ubuntu/wr/.tmp/nextflow-conformance/nextflow-generation-2687641921/nextflow-26.04.6-dist",
+          "NXF_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf-home",
+          "NXF_OFFLINE": "true",
+          "NXF_WORK": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch",
+          "NXF_SYNTAX_PARSER": "v2",
+          "TEST_JDK": "21",
+          "WITH_DOCKER": "",
+          "TERM": "xterm",
+          "HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-home"
+        },
+        "pid": 1625202,
+        "process_group": 1625202,
+        "process_identities": [
+          {
+            "pid": 1625202,
+            "start_ticks": 1271637914,
+            "pgid": 1625202,
+            "first_ppid": 1625201
+          }
+        ],
+        "exit_code": 0,
+        "signal": null,
+        "completed": true,
+        "cleanup": {
+          "signals": [],
+          "remaining_live": [],
+          "final_process_states": [
+            {
+              "pid": 1625202,
+              "start_ticks": 1271637914,
+              "pgid": 1625202,
+              "first_ppid": 1625201,
+              "final_state": null
+            }
+          ],
+          "reaped_adopted_children": [],
+          "completed": true,
+          "failure": null,
+          "term_grace_seconds": 0.5,
+          "kill_grace_seconds": 1.0
+        },
+        "files": [
+          {
+            "source": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/versions.txt",
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-fresh/versions.txt",
+            "bytes": 22,
+            "sha256": "ce5e4c500ca731aa86fa5e5a3856b9bdbe3c64f685d0e51b2ba5d1886b13bceb"
+          },
+          {
+            "source": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.nextflow.log",
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-fresh/.nextflow.log",
+            "bytes": 11382,
+            "sha256": "77cf67346786a9433db77e5d4685cf75c19a84bf84a2d3a8a6001cfe9fd629b1"
+          },
+          {
+            "source": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.expected",
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-fresh/.expected",
+            "bytes": 22,
+            "sha256": "ce5e4c500ca731aa86fa5e5a3856b9bdbe3c64f685d0e51b2ba5d1886b13bceb"
+          }
+        ],
+        "stdio": "Inherited stdout/stderr; raw genuine checks.out retained by runner"
+      },
+      "source_id": "SRC-INVOKE-TOPIC-FRESH",
+      "capture_before_cmp_or_resume": true,
+      "cache_reuse": "not-awarded; resume flag and genuine outcomes recorded separately"
+    },
+    {
+      "id": "TOPIC-RESUME",
+      "origin": "original",
+      "mode": "resume",
+      "status": "pass",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-resume/capture.json",
+        "bytes": 3999,
+        "sha256": "0706d343fa944bf1d940fbf35264ff2a9d3007c9b6ef38ff4c57e3973cc28490",
+        "mode": "0o664"
+      },
+      "command_capture": {
+        "id": "TOPIC-RESUME",
+        "command": [
+          "/home/ubuntu/wr/.tmp/nextflow-conformance/nextflow-generation-2687641921/nextflow",
+          "-q",
+          "run",
+          "../../topic-channel.nf",
+          "-resume"
+        ],
+        "wrapper_argv": [
+          "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf_capture.py",
+          "-q",
+          "run",
+          "../../topic-channel.nf",
+          "-resume"
+        ],
+        "cwd": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf",
+        "start": "2026-10-08T14:21:03.328575+00:00",
+        "end": "2026-10-08T14:21:06.693552+00:00",
+        "deadline": "2026-10-08T14:23:03.328575+00:00",
+        "timeout_seconds": 120,
+        "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+        "timed_out": false,
+        "environment": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+          "NXF_CMD": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf_capture.py",
+          "NXF_BIN": "/home/ubuntu/wr/.tmp/nextflow-conformance/nextflow-generation-2687641921/nextflow-26.04.6-dist",
+          "NXF_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf-home",
+          "NXF_OFFLINE": "true",
+          "NXF_WORK": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch",
+          "NXF_SYNTAX_PARSER": "v2",
+          "TEST_JDK": "21",
+          "WITH_DOCKER": "",
+          "TERM": "xterm",
+          "HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-home"
+        },
+        "pid": 1625377,
+        "process_group": 1625377,
+        "process_identities": [
+          {
+            "pid": 1625377,
+            "start_ticks": 1271638261,
+            "pgid": 1625377,
+            "first_ppid": 1625376
+          }
+        ],
+        "exit_code": 0,
+        "signal": null,
+        "completed": true,
+        "cleanup": {
+          "signals": [],
+          "remaining_live": [],
+          "final_process_states": [
+            {
+              "pid": 1625377,
+              "start_ticks": 1271638261,
+              "pgid": 1625377,
+              "first_ppid": 1625376,
+              "final_state": null
+            }
+          ],
+          "reaped_adopted_children": [],
+          "completed": true,
+          "failure": null,
+          "term_grace_seconds": 0.5,
+          "kill_grace_seconds": 1.0
+        },
+        "files": [
+          {
+            "source": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/versions.txt",
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-resume/versions.txt",
+            "bytes": 22,
+            "sha256": "ce5e4c500ca731aa86fa5e5a3856b9bdbe3c64f685d0e51b2ba5d1886b13bceb"
+          },
+          {
+            "source": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.nextflow.log",
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-resume/.nextflow.log",
+            "bytes": 8619,
+            "sha256": "ecdbd6d616471fea83f6dc1b49a8fd1c06d45ce25b7ab7dc5da505ceaa67b2bf"
+          },
+          {
+            "source": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.expected",
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-resume/.expected",
+            "bytes": 22,
+            "sha256": "ce5e4c500ca731aa86fa5e5a3856b9bdbe3c64f685d0e51b2ba5d1886b13bceb"
+          }
+        ],
+        "stdio": "Inherited stdout/stderr; raw genuine checks.out retained by runner"
+      },
+      "source_id": "SRC-INVOKE-TOPIC-RESUME",
+      "capture_before_cmp_or_resume": true,
+      "cache_reuse": "not-awarded; resume flag and genuine outcomes recorded separately"
+    }
+  ],
+  "workflow_pairs": [
+    {
+      "id": "PAIR-ARITY",
+      "origin": "original",
+      "invocation_ids": [
+        "ARITY-FRESH",
+        "ARITY-RESUME"
+      ],
+      "literal_predicate_ids": [
+        "ARITY-FRESH-CHECK",
+        "ARITY-RESUME-CHECK"
+      ],
+      "original_aggregate": {
+        "status": "pass",
+        "checks_subprocess_exit": 0,
+        "evidence_kind": "Successful unchanged genuine runner with selected pair reached and all original traced conditions completing",
+        "runner_capture": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-cli-runner.json",
+          "bytes": 6301,
+          "sha256": "f3fa90b92d833ea729b5d0903ccb4e784d1443940dee46118e7589d0c09e446a",
+          "mode": "0o664"
+        },
+        "checks_trace": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/checks.out",
+          "bytes": 313,
+          "sha256": "fd39178e3d2392c029b00c6fb426e2bcc10ddd87d5ad38b6feb4d14f61245466",
+          "mode": "0o664"
+        }
+      },
+      "stronger_claim": "not-awarded; this result records original individual exits/files without translating them into Phase 3 assurance"
+    },
+    {
+      "id": "PAIR-TOPIC",
+      "origin": "original",
+      "invocation_ids": [
+        "TOPIC-FRESH",
+        "TOPIC-RESUME"
+      ],
+      "literal_predicate_ids": [
+        "TOPIC-FRESH-CHECK",
+        "TOPIC-RESUME-CHECK"
+      ],
+      "original_aggregate": {
+        "status": "pass",
+        "checks_subprocess_exit": 0,
+        "evidence_kind": "Successful unchanged genuine runner with selected pair reached and all original traced conditions completing",
+        "runner_capture": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-cli-runner.json",
+          "bytes": 6301,
+          "sha256": "f3fa90b92d833ea729b5d0903ccb4e784d1443940dee46118e7589d0c09e446a",
+          "mode": "0o664"
+        },
+        "checks_trace": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/checks.out",
+          "bytes": 372,
+          "sha256": "93234e6e2e980a184367dda26d990981de2f9e7d66a2ad5009b7faee629cdfef",
+          "mode": "0o664"
+        }
+      },
+      "stronger_claim": "not-awarded; this result records original individual exits/files without translating them into Phase 3 assurance"
+    }
+  ],
+  "helper_obligations": [
+    {
+      "id": "H-M-LAST-SESSION",
+      "helper_id": "H-M-LAST",
+      "origin": "original",
+      "source_id": "SRC-H-M-LAST",
+      "disposition": "assertion-proved in completed genuine Mix helpers; raw object unobserved",
+      "projection_equivalence": "unresolved; no internal mapping awarded"
+    },
+    {
+      "id": "H-M-LAST-MAINSCRIPT",
+      "helper_id": "H-M-LAST",
+      "origin": "original",
+      "source_id": "SRC-H-M-LAST",
+      "disposition": "assertion-proved in completed genuine Mix helpers; raw object unobserved",
+      "projection_equivalence": "unresolved; no internal mapping awarded"
+    },
+    {
+      "id": "H-M-RUN-NETWORK",
+      "helper_id": "H-M-RUN",
+      "origin": "original",
+      "source_id": "SRC-H-M-RUN",
+      "disposition": "genuine helper lifecycle completed; ordered event stream not instrumented",
+      "projection_equivalence": "unresolved; no internal mapping awarded"
+    },
+    {
+      "id": "H-M-RUN-ERROR",
+      "helper_id": "H-M-RUN",
+      "origin": "original",
+      "source_id": "SRC-H-M-RUN",
+      "disposition": "no session error branch observed or injected; error-identity behavior not proved",
+      "projection_equivalence": "unresolved; no internal mapping awarded"
+    },
+    {
+      "id": "H-P-SHARED-INSTANCE",
+      "helper_id": "H-P-SHARED",
+      "origin": "original",
+      "source_id": "SRC-H-P-SHARED",
+      "disposition": "one native specification launch retains original shared setup; raw JVM identity unobserved",
+      "projection_equivalence": "unresolved; no internal mapping awarded"
+    },
+    {
+      "id": "H-P-TESTUTILS-ORDER",
+      "helper_id": "H-P-TESTUTILS",
+      "origin": "original",
+      "source_id": "SRC-H-P-TESTUTILS",
+      "disposition": "genuine helper executed; raw filtered/sorted exception list unobserved",
+      "projection_equivalence": "unresolved; no internal mapping awarded"
+    },
+    {
+      "id": "H-CLI-RUNNER-STATUS",
+      "helper_id": "H-CLI-RUNNER",
+      "origin": "original",
+      "source_id": "SRC-H-CLI-RUNNER",
+      "disposition": "genuine original aggregate propagation exercised on both successful pairs; failure propagation controls remain Phase 3",
+      "projection_equivalence": "unresolved; no internal mapping awarded"
+    }
+  ],
+  "completion_records": [
+    {
+      "id": "COMPLETE-P1",
+      "subject_id": "P1",
+      "completed": true,
+      "evidence_kind": "genuine-feature-sequential-completion",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      }
+    },
+    {
+      "id": "COMPLETE-P2",
+      "subject_id": "P2",
+      "completed": true,
+      "evidence_kind": "genuine-feature-sequential-completion",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      }
+    },
+    {
+      "id": "COMPLETE-P3",
+      "subject_id": "P3",
+      "completed": true,
+      "evidence_kind": "genuine-feature-sequential-completion",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      }
+    },
+    {
+      "id": "COMPLETE-P4",
+      "subject_id": "P4",
+      "completed": true,
+      "evidence_kind": "genuine-feature-sequential-completion",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      }
+    },
+    {
+      "id": "COMPLETE-P5",
+      "subject_id": "P5",
+      "completed": true,
+      "evidence_kind": "genuine-feature-sequential-completion",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      }
+    },
+    {
+      "id": "COMPLETE-P6",
+      "subject_id": "P6",
+      "completed": true,
+      "evidence_kind": "genuine-feature-sequential-completion",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      }
+    },
+    {
+      "id": "COMPLETE-P7",
+      "subject_id": "P7",
+      "completed": true,
+      "evidence_kind": "genuine-feature-sequential-completion",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      }
+    },
+    {
+      "id": "COMPLETE-P8",
+      "subject_id": "P8",
+      "completed": true,
+      "evidence_kind": "genuine-feature-sequential-completion",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      }
+    },
+    {
+      "id": "COMPLETE-M1",
+      "subject_id": "M1",
+      "completed": true,
+      "evidence_kind": "genuine-feature-sequential-completion",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      }
+    },
+    {
+      "id": "COMPLETE-M2",
+      "subject_id": "M2",
+      "completed": true,
+      "evidence_kind": "genuine-feature-sequential-completion",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      }
+    },
+    {
+      "id": "COMPLETE-M3",
+      "subject_id": "M3",
+      "completed": true,
+      "evidence_kind": "genuine-feature-sequential-completion",
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      }
+    },
+    {
+      "id": "COMPLETE-ARITY-FRESH",
+      "subject_id": "ARITY-FRESH",
+      "completed": true,
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/arity-fresh/capture.json",
+        "bytes": 3490,
+        "sha256": "a3442c480754e4de0862eff413e9d5d3fa2625adb0e6b5ca9f16d667bd7261ae",
+        "mode": "0o664"
+      },
+      "evidence_kind": "reviewed-per-invocation-status-and-owned-cleanup"
+    },
+    {
+      "id": "COMPLETE-ARITY-RESUME",
+      "subject_id": "ARITY-RESUME",
+      "completed": true,
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/arity-resume/capture.json",
+        "bytes": 3243,
+        "sha256": "e4427e73a9486e08b78f1e715fb7c1e3d24574b380a641269d12da2a4b57878d",
+        "mode": "0o664"
+      },
+      "evidence_kind": "reviewed-per-invocation-status-and-owned-cleanup"
+    },
+    {
+      "id": "COMPLETE-TOPIC-FRESH",
+      "subject_id": "TOPIC-FRESH",
+      "completed": true,
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-fresh/capture.json",
+        "bytes": 3966,
+        "sha256": "d5560f907a52a2c7a41c02a7ed16ee03b41a97d805881979e957bb485f37dc0e",
+        "mode": "0o664"
+      },
+      "evidence_kind": "reviewed-per-invocation-status-and-owned-cleanup"
+    },
+    {
+      "id": "COMPLETE-TOPIC-RESUME",
+      "subject_id": "TOPIC-RESUME",
+      "completed": true,
+      "capture": {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-resume/capture.json",
+        "bytes": 3999,
+        "sha256": "0706d343fa944bf1d940fbf35264ff2a9d3007c9b6ef38ff4c57e3973cc28490",
+        "mode": "0o664"
+      },
+      "evidence_kind": "reviewed-per-invocation-status-and-owned-cleanup"
+    }
+  ],
+  "runner": {
+    "capture": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-cli-runner.json",
+      "bytes": 6301,
+      "sha256": "f3fa90b92d833ea729b5d0903ccb4e784d1443940dee46118e7589d0c09e446a",
+      "mode": "0o664"
+    },
+    "command_capture": {
+      "id": "originals-cli-runner",
+      "command": [
+        "bash",
+        "run.sh",
+        "../process-arity.nf ../topic-channel.nf"
+      ],
+      "cwd": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks",
+      "environment": {
+        "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+        "GRADLE_USER_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-home",
+        "NXF_SYNTAX_PARSER": "v2",
+        "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+        "CI_GROOVY_VERSION": null,
+        "BUILD_PACK": null,
+        "TEST_JDK": "21",
+        "WITH_DOCKER": "",
+        "TERM": "xterm"
+      },
+      "start": "2026-10-08T14:20:52.865283+00:00",
+      "timeout_seconds": 540,
+      "deadline": "2026-10-08T14:29:52.865283+00:00",
+      "requested_command_deadline": "2026-10-08T14:29:52.865283+00:00",
+      "stage_deadline": "2026-10-08T14:58:40.671383+00:00",
+      "supervisor_version": "PREREQ-F1-correction-01",
+      "ownership": "Dedicated Linux subreaper, observed ancestry and birth ticks, stable pidfd signals",
+      "pid": 1624976,
+      "process_group": 1624976,
+      "timed_out": false,
+      "cleanup": {
+        "signals": [],
+        "remaining_live": [],
+        "final_process_states": [
+          {
+            "pid": 1624976,
+            "start_ticks": 1271637214,
+            "pgid": 1624976,
+            "first_ppid": 1624975,
+            "final_state": null
+          },
+          {
+            "pid": 1624992,
+            "start_ticks": 1271637221,
+            "pgid": 1624992,
+            "first_ppid": 1624991,
+            "final_state": null
+          },
+          {
+            "pid": 1624988,
+            "start_ticks": 1271637216,
+            "pgid": 1624976,
+            "first_ppid": 1624976,
+            "final_state": null
+          },
+          {
+            "pid": 1624990,
+            "start_ticks": 1271637216,
+            "pgid": 1624976,
+            "first_ppid": 1624988,
+            "final_state": null
+          },
+          {
+            "pid": 1624991,
+            "start_ticks": 1271637216,
+            "pgid": 1624976,
+            "first_ppid": 1624990,
+            "final_state": null
+          },
+          {
+            "pid": 1625113,
+            "start_ticks": 1271637561,
+            "pgid": 1624976,
+            "first_ppid": 1624990,
+            "final_state": null
+          },
+          {
+            "pid": 1625114,
+            "start_ticks": 1271637566,
+            "pgid": 1625114,
+            "first_ppid": 1625113,
+            "final_state": null
+          },
+          {
+            "pid": 1625201,
+            "start_ticks": 1271637909,
+            "pgid": 1624976,
+            "first_ppid": 1625200,
+            "final_state": null
+          },
+          {
+            "pid": 1625200,
+            "start_ticks": 1271637909,
+            "pgid": 1624976,
+            "first_ppid": 1625198,
+            "final_state": null
+          },
+          {
+            "pid": 1625198,
+            "start_ticks": 1271637909,
+            "pgid": 1624976,
+            "first_ppid": 1624976,
+            "final_state": null
+          },
+          {
+            "pid": 1625202,
+            "start_ticks": 1271637914,
+            "pgid": 1625202,
+            "first_ppid": 1625201,
+            "final_state": null
+          },
+          {
+            "pid": 1625376,
+            "start_ticks": 1271638256,
+            "pgid": 1624976,
+            "first_ppid": 1625200,
+            "final_state": null
+          },
+          {
+            "pid": 1625377,
+            "start_ticks": 1271638261,
+            "pgid": 1625377,
+            "first_ppid": 1625376,
+            "final_state": null
+          }
+        ],
+        "reaped_adopted_children": [],
+        "completed": true,
+        "failure": null,
+        "term_grace_seconds": 0.5,
+        "kill_grace_seconds": 1.0
+      },
+      "descendant_pids": [
+        1624988,
+        1624990,
+        1624991,
+        1624992,
+        1625113,
+        1625114,
+        1625198,
+        1625200,
+        1625201,
+        1625202,
+        1625376,
+        1625377
+      ],
+      "process_identities": [
+        {
+          "pid": 1624976,
+          "start_ticks": 1271637214,
+          "pgid": 1624976,
+          "first_ppid": 1624975
+        },
+        {
+          "pid": 1624992,
+          "start_ticks": 1271637221,
+          "pgid": 1624992,
+          "first_ppid": 1624991
+        },
+        {
+          "pid": 1624988,
+          "start_ticks": 1271637216,
+          "pgid": 1624976,
+          "first_ppid": 1624976
+        },
+        {
+          "pid": 1624990,
+          "start_ticks": 1271637216,
+          "pgid": 1624976,
+          "first_ppid": 1624988
+        },
+        {
+          "pid": 1624991,
+          "start_ticks": 1271637216,
+          "pgid": 1624976,
+          "first_ppid": 1624990
+        },
+        {
+          "pid": 1625113,
+          "start_ticks": 1271637561,
+          "pgid": 1624976,
+          "first_ppid": 1624990
+        },
+        {
+          "pid": 1625114,
+          "start_ticks": 1271637566,
+          "pgid": 1625114,
+          "first_ppid": 1625113
+        },
+        {
+          "pid": 1625201,
+          "start_ticks": 1271637909,
+          "pgid": 1624976,
+          "first_ppid": 1625200
+        },
+        {
+          "pid": 1625200,
+          "start_ticks": 1271637909,
+          "pgid": 1624976,
+          "first_ppid": 1625198
+        },
+        {
+          "pid": 1625198,
+          "start_ticks": 1271637909,
+          "pgid": 1624976,
+          "first_ppid": 1624976
+        },
+        {
+          "pid": 1625202,
+          "start_ticks": 1271637914,
+          "pgid": 1625202,
+          "first_ppid": 1625201
+        },
+        {
+          "pid": 1625376,
+          "start_ticks": 1271638256,
+          "pgid": 1624976,
+          "first_ppid": 1625200
+        },
+        {
+          "pid": 1625377,
+          "start_ticks": 1271638261,
+          "pgid": 1625377,
+          "first_ppid": 1625376
+        }
+      ],
+      "end": "2026-10-08T14:21:06.791841+00:00",
+      "exit_code": 0,
+      "signal": null,
+      "completed": true,
+      "logs": [
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-cli-runner.stdout",
+          "sha256": "0dba0581738444ff1d86c33d9aa3ba4063398a61bc1ec6d21f602e24f0d4e018",
+          "bytes": 66
+        },
+        {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-cli-runner.stderr",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0
+        }
+      ]
+    }
+  },
+  "environment_and_effective_mode": {
+    "invocations": [
+      {
+        "id": "ARITY-FRESH",
+        "environment": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+          "NXF_CMD": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf_capture.py",
+          "NXF_BIN": "/home/ubuntu/wr/.tmp/nextflow-conformance/nextflow-generation-2687641921/nextflow-26.04.6-dist",
+          "NXF_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf-home",
+          "NXF_OFFLINE": "true",
+          "NXF_WORK": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch",
+          "NXF_SYNTAX_PARSER": "v2",
+          "TEST_JDK": "21",
+          "WITH_DOCKER": "",
+          "TERM": "xterm",
+          "HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-home"
+        },
+        "log": {
+          "source": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/.nextflow.log",
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/arity-fresh/.nextflow.log",
+          "bytes": 8627,
+          "sha256": "f0745ef8c39db331577732aef7429c87a4b8f7db1ae2fec06b3ca38d1edbd066"
+        },
+        "config_files": [
+          {
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/nextflow.config",
+            "bytes": 803,
+            "sha256": "21a1231bf59d1e6b7d106976651378888ccd5826fe350b7da77a7814effc228e",
+            "mode": "0o644"
+          }
+        ],
+        "config_log_lines": [
+          [
+            10,
+            "Oct-08 14:20:54.399 [main] DEBUG nextflow.config.ConfigBuilder - Parsing config file: /home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/nextflow.config"
+          ]
+        ],
+        "executor": "local",
+        "executor_evidence": [
+          [
+            42,
+            "Oct-08 14:20:55.523 [main] DEBUG nextflow.executor.ExecutorFactory - >> processorType: 'local'"
+          ],
+          [
+            43,
+            "Oct-08 14:20:55.533 [main] DEBUG nextflow.executor.Executor - [warm up] executor > local"
+          ],
+          [
+            48,
+            "Oct-08 14:20:55.690 [main] DEBUG nextflow.executor.ExecutorFactory - >> processorType: 'local'"
+          ]
+        ],
+        "runtime": "Runtime: Groovy 4.0.31 on OpenJDK 64-Bit Server VM 21.0.12.1+1-LTS",
+        "declared_container": "quay.io/nextflow/tests",
+        "effective_container_execution": false,
+        "proof": "Fresh generated nxf_launch invokes host /bin/bash .command.sh without a container runtime; resume logs refer to those same task directories",
+        "cache_log_observation": [],
+        "cache_reuse_assurance": "not-awarded as an original assertion or wider cache correctness claim"
+      },
+      {
+        "id": "ARITY-RESUME",
+        "environment": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+          "NXF_CMD": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf_capture.py",
+          "NXF_BIN": "/home/ubuntu/wr/.tmp/nextflow-conformance/nextflow-generation-2687641921/nextflow-26.04.6-dist",
+          "NXF_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf-home",
+          "NXF_OFFLINE": "true",
+          "NXF_WORK": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch",
+          "NXF_SYNTAX_PARSER": "v2",
+          "TEST_JDK": "21",
+          "WITH_DOCKER": "",
+          "TERM": "xterm",
+          "HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-home"
+        },
+        "log": {
+          "source": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/.nextflow.log",
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/arity-resume/.nextflow.log",
+          "bytes": 7474,
+          "sha256": "1490ca696de9536365bf929a24751a82936f24691c7cc47cba8e8cbb34e8b25f"
+        },
+        "config_files": [
+          {
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/nextflow.config",
+            "bytes": 803,
+            "sha256": "21a1231bf59d1e6b7d106976651378888ccd5826fe350b7da77a7814effc228e",
+            "mode": "0o644"
+          }
+        ],
+        "config_log_lines": [
+          [
+            10,
+            "Oct-08 14:20:57.732 [main] DEBUG nextflow.config.ConfigBuilder - Parsing config file: /home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/nextflow.config"
+          ]
+        ],
+        "executor": "local",
+        "executor_evidence": [
+          [
+            42,
+            "Oct-08 14:20:59.064 [main] DEBUG nextflow.executor.ExecutorFactory - >> processorType: 'local'"
+          ],
+          [
+            43,
+            "Oct-08 14:20:59.073 [main] DEBUG nextflow.executor.Executor - [warm up] executor > local"
+          ],
+          [
+            48,
+            "Oct-08 14:20:59.199 [main] DEBUG nextflow.executor.ExecutorFactory - >> processorType: 'local'"
+          ]
+        ],
+        "runtime": "Runtime: Groovy 4.0.31 on OpenJDK 64-Bit Server VM 21.0.12.1+1-LTS",
+        "declared_container": "quay.io/nextflow/tests",
+        "effective_container_execution": false,
+        "proof": "Fresh generated nxf_launch invokes host /bin/bash .command.sh without a container runtime; resume logs refer to those same task directories",
+        "cache_log_observation": [
+          [
+            58,
+            "Oct-08 14:20:59.449 [Actor Thread 4] INFO  nextflow.processor.TaskProcessor - [97/14c619] Cached process > foo"
+          ],
+          [
+            59,
+            "Oct-08 14:20:59.491 [Actor Thread 6] INFO  nextflow.processor.TaskProcessor - [ab/515a98] Cached process > bar"
+          ]
+        ],
+        "cache_reuse_assurance": "not-awarded as an original assertion or wider cache correctness claim"
+      },
+      {
+        "id": "TOPIC-FRESH",
+        "environment": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+          "NXF_CMD": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf_capture.py",
+          "NXF_BIN": "/home/ubuntu/wr/.tmp/nextflow-conformance/nextflow-generation-2687641921/nextflow-26.04.6-dist",
+          "NXF_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf-home",
+          "NXF_OFFLINE": "true",
+          "NXF_WORK": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch",
+          "NXF_SYNTAX_PARSER": "v2",
+          "TEST_JDK": "21",
+          "WITH_DOCKER": "",
+          "TERM": "xterm",
+          "HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-home"
+        },
+        "log": {
+          "source": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.nextflow.log",
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-fresh/.nextflow.log",
+          "bytes": 11382,
+          "sha256": "77cf67346786a9433db77e5d4685cf75c19a84bf84a2d3a8a6001cfe9fd629b1"
+        },
+        "config_files": [
+          {
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/nextflow.config",
+            "bytes": 803,
+            "sha256": "21a1231bf59d1e6b7d106976651378888ccd5826fe350b7da77a7814effc228e",
+            "mode": "0o644"
+          }
+        ],
+        "config_log_lines": [
+          [
+            10,
+            "Oct-08 14:21:01.207 [main] DEBUG nextflow.config.ConfigBuilder - Parsing config file: /home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/nextflow.config"
+          ]
+        ],
+        "executor": "local",
+        "executor_evidence": [
+          [
+            42,
+            "Oct-08 14:21:02.455 [main] DEBUG nextflow.executor.ExecutorFactory - >> processorType: 'local'"
+          ],
+          [
+            43,
+            "Oct-08 14:21:02.465 [main] DEBUG nextflow.executor.Executor - [warm up] executor > local"
+          ],
+          [
+            48,
+            "Oct-08 14:21:02.576 [main] DEBUG nextflow.executor.ExecutorFactory - >> processorType: 'local'"
+          ]
+        ],
+        "runtime": "Runtime: Groovy 4.0.31 on OpenJDK 64-Bit Server VM 21.0.12.1+1-LTS",
+        "declared_container": "quay.io/nextflow/tests",
+        "effective_container_execution": false,
+        "proof": "Fresh generated nxf_launch invokes host /bin/bash .command.sh without a container runtime; resume logs refer to those same task directories",
+        "cache_log_observation": [],
+        "cache_reuse_assurance": "not-awarded as an original assertion or wider cache correctness claim"
+      },
+      {
+        "id": "TOPIC-RESUME",
+        "environment": {
+          "JAVA_HOME": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1",
+          "PATH": "/home/ubuntu/wr/.tmp/agent/java21/jdk-21.0.12.1+1/bin:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.codex/tmp/arg0/codex-arg0jgJpk1:/home/ubuntu/.codex/packages/standalone/releases/0.160.1-x86_64-unknown-linux-musl/codex-path:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/ubuntu/.gitbin:/home/ubuntu/go/bin:/home/ubuntu/go/bin:/home/ubuntu/go/bin",
+          "NXF_CMD": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf_capture.py",
+          "NXF_BIN": "/home/ubuntu/wr/.tmp/nextflow-conformance/nextflow-generation-2687641921/nextflow-26.04.6-dist",
+          "NXF_HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/nxf-home",
+          "NXF_OFFLINE": "true",
+          "NXF_WORK": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch",
+          "NXF_SYNTAX_PARSER": "v2",
+          "TEST_JDK": "21",
+          "WITH_DOCKER": "",
+          "TERM": "xterm",
+          "HOME": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-home"
+        },
+        "log": {
+          "source": "/home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.nextflow.log",
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-resume/.nextflow.log",
+          "bytes": 8619,
+          "sha256": "ecdbd6d616471fea83f6dc1b49a8fd1c06d45ce25b7ab7dc5da505ceaa67b2bf"
+        },
+        "config_files": [
+          {
+            "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/nextflow.config",
+            "bytes": 803,
+            "sha256": "21a1231bf59d1e6b7d106976651378888ccd5826fe350b7da77a7814effc228e",
+            "mode": "0o644"
+          }
+        ],
+        "config_log_lines": [
+          [
+            10,
+            "Oct-08 14:21:04.696 [main] DEBUG nextflow.config.ConfigBuilder - Parsing config file: /home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/nextflow.config"
+          ]
+        ],
+        "executor": "local",
+        "executor_evidence": [
+          [
+            42,
+            "Oct-08 14:21:06.001 [main] DEBUG nextflow.executor.ExecutorFactory - >> processorType: 'local'"
+          ],
+          [
+            43,
+            "Oct-08 14:21:06.011 [main] DEBUG nextflow.executor.Executor - [warm up] executor > local"
+          ],
+          [
+            48,
+            "Oct-08 14:21:06.127 [main] DEBUG nextflow.executor.ExecutorFactory - >> processorType: 'local'"
+          ]
+        ],
+        "runtime": "Runtime: Groovy 4.0.31 on OpenJDK 64-Bit Server VM 21.0.12.1+1-LTS",
+        "declared_container": "quay.io/nextflow/tests",
+        "effective_container_execution": false,
+        "proof": "Fresh generated nxf_launch invokes host /bin/bash .command.sh without a container runtime; resume logs refer to those same task directories",
+        "cache_log_observation": [
+          [
+            58,
+            "Oct-08 14:21:06.394 [Actor Thread 9] INFO  nextflow.processor.TaskProcessor - [f6/6722da] Cached process > bar (3)"
+          ],
+          [
+            59,
+            "Oct-08 14:21:06.394 [Actor Thread 8] INFO  nextflow.processor.TaskProcessor - [c0/197b58] Cached process > bar (2)"
+          ],
+          [
+            60,
+            "Oct-08 14:21:06.394 [Actor Thread 6] INFO  nextflow.processor.TaskProcessor - [c4/ef068d] Cached process > foo (2)"
+          ],
+          [
+            61,
+            "Oct-08 14:21:06.395 [Actor Thread 2] INFO  nextflow.processor.TaskProcessor - [81/cadc3b] Cached process > foo (1)"
+          ],
+          [
+            62,
+            "Oct-08 14:21:06.395 [Actor Thread 3] INFO  nextflow.processor.TaskProcessor - [57/09736e] Cached process > bar (1)"
+          ],
+          [
+            63,
+            "Oct-08 14:21:06.397 [Actor Thread 7] INFO  nextflow.processor.TaskProcessor - [93/105b11] Cached process > foo (3)"
+          ]
+        ],
+        "cache_reuse_assurance": "not-awarded as an original assertion or wider cache correctness claim"
+      }
+    ],
+    "fresh_host_task_launchers": [
+      {
+        "launcher": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/57/09736e92cda43f208f2ca7923cef59/.command.run",
+          "bytes": 3269,
+          "sha256": "e96adb187d8e55234dc5d3af5cfe54807390267da671a5f427ccd5789abacb0d",
+          "mode": "0o664"
+        },
+        "host_launch_lines": [
+          [
+            101,
+            "    /bin/bash -ue /home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/57/09736e92cda43f208f2ca7923cef59/.command.sh"
+          ]
+        ],
+        "script": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/57/09736e92cda43f208f2ca7923cef59/.command.sh",
+          "bytes": 34,
+          "sha256": "3c33ee52c90acd1724f297d0eee389f575c9c292efa1a9d642d3b94e4a699d1d",
+          "mode": "0o664"
+        },
+        "exit_bytes": "0",
+        "exit_capture": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/57/09736e92cda43f208f2ca7923cef59/.exitcode",
+          "bytes": 1,
+          "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+          "mode": "0o664"
+        }
+      },
+      {
+        "launcher": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/81/cadc3bdb2b912bb39bfe119082bd7e/.command.run",
+          "bytes": 3269,
+          "sha256": "6bedbdce3f7e91ccaad1b58e8d00e0966f9c1058886ca2c6dc5c4e270a5156dc",
+          "mode": "0o664"
+        },
+        "host_launch_lines": [
+          [
+            101,
+            "    /bin/bash -ue /home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/81/cadc3bdb2b912bb39bfe119082bd7e/.command.sh"
+          ]
+        ],
+        "script": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/81/cadc3bdb2b912bb39bfe119082bd7e/.command.sh",
+          "bytes": 34,
+          "sha256": "da2e977bce8dad086c4be1ed158cc70ab3059ac83459d66b63081f7d8d500d80",
+          "mode": "0o664"
+        },
+        "exit_bytes": "0",
+        "exit_capture": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/81/cadc3bdb2b912bb39bfe119082bd7e/.exitcode",
+          "bytes": 1,
+          "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+          "mode": "0o664"
+        }
+      },
+      {
+        "launcher": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/93/105b11fe694ed08372095cc4062388/.command.run",
+          "bytes": 3269,
+          "sha256": "466da85b1638fc902185082cb7570a0cb87ef500137bf4f6ab8e52472156b955",
+          "mode": "0o664"
+        },
+        "host_launch_lines": [
+          [
+            101,
+            "    /bin/bash -ue /home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/93/105b11fe694ed08372095cc4062388/.command.sh"
+          ]
+        ],
+        "script": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/93/105b11fe694ed08372095cc4062388/.command.sh",
+          "bytes": 34,
+          "sha256": "da2e977bce8dad086c4be1ed158cc70ab3059ac83459d66b63081f7d8d500d80",
+          "mode": "0o664"
+        },
+        "exit_bytes": "0",
+        "exit_capture": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/93/105b11fe694ed08372095cc4062388/.exitcode",
+          "bytes": 1,
+          "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+          "mode": "0o664"
+        }
+      },
+      {
+        "launcher": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/97/14c619f8a6d7c2db69dde4cc3521b2/.command.run",
+          "bytes": 3332,
+          "sha256": "147cc6d602897b6c33eb3673bcc713b9b9747497fe94d5f2fb24f32f57936435",
+          "mode": "0o664"
+        },
+        "host_launch_lines": [
+          [
+            105,
+            "    /bin/bash -ue /home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/97/14c619f8a6d7c2db69dde4cc3521b2/.command.sh"
+          ]
+        ],
+        "script": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/97/14c619f8a6d7c2db69dde4cc3521b2/.command.sh",
+          "bytes": 172,
+          "sha256": "bd6b0742b2dc68e9cfc7cb83391a4d5583efab2b7b281690a0d01cc76d69e0a5",
+          "mode": "0o664"
+        },
+        "exit_bytes": "0",
+        "exit_capture": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/97/14c619f8a6d7c2db69dde4cc3521b2/.exitcode",
+          "bytes": 1,
+          "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+          "mode": "0o664"
+        }
+      },
+      {
+        "launcher": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/ab/515a98b100104d437a9ab00de55516/.command.run",
+          "bytes": 4444,
+          "sha256": "68d0c48518e79ee2c503f752e29b91d2f5ebce22005578f13623a12430c30797",
+          "mode": "0o664"
+        },
+        "host_launch_lines": [
+          [
+            101,
+            "    /bin/bash -ue /home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/ab/515a98b100104d437a9ab00de55516/.command.sh"
+          ]
+        ],
+        "script": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/ab/515a98b100104d437a9ab00de55516/.command.sh",
+          "bytes": 58,
+          "sha256": "9746b552153a6d39fa0be31e7460234b635d3b3c1c4b49c04a46501d09f6aa79",
+          "mode": "0o664"
+        },
+        "exit_bytes": "0",
+        "exit_capture": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/ab/515a98b100104d437a9ab00de55516/.exitcode",
+          "bytes": 1,
+          "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+          "mode": "0o664"
+        }
+      },
+      {
+        "launcher": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c0/197b5809eb7c1a240a421ead434db1/.command.run",
+          "bytes": 3269,
+          "sha256": "4009a7094443986865052b85aab598bd28846070082a391bb41376bd3d81711a",
+          "mode": "0o664"
+        },
+        "host_launch_lines": [
+          [
+            101,
+            "    /bin/bash -ue /home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c0/197b5809eb7c1a240a421ead434db1/.command.sh"
+          ]
+        ],
+        "script": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c0/197b5809eb7c1a240a421ead434db1/.command.sh",
+          "bytes": 34,
+          "sha256": "3c33ee52c90acd1724f297d0eee389f575c9c292efa1a9d642d3b94e4a699d1d",
+          "mode": "0o664"
+        },
+        "exit_bytes": "0",
+        "exit_capture": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c0/197b5809eb7c1a240a421ead434db1/.exitcode",
+          "bytes": 1,
+          "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+          "mode": "0o664"
+        }
+      },
+      {
+        "launcher": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c4/ef068d95a26c2b46ecb3595d8ec826/.command.run",
+          "bytes": 3269,
+          "sha256": "dd15a80651b1e0fd25948f6149e7a7769c07540f4744ae72754bdc372c1e3dcd",
+          "mode": "0o664"
+        },
+        "host_launch_lines": [
+          [
+            101,
+            "    /bin/bash -ue /home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c4/ef068d95a26c2b46ecb3595d8ec826/.command.sh"
+          ]
+        ],
+        "script": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c4/ef068d95a26c2b46ecb3595d8ec826/.command.sh",
+          "bytes": 34,
+          "sha256": "da2e977bce8dad086c4be1ed158cc70ab3059ac83459d66b63081f7d8d500d80",
+          "mode": "0o664"
+        },
+        "exit_bytes": "0",
+        "exit_capture": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c4/ef068d95a26c2b46ecb3595d8ec826/.exitcode",
+          "bytes": 1,
+          "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+          "mode": "0o664"
+        }
+      },
+      {
+        "launcher": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/f6/6722da39dd7313c408127ad5d50bb4/.command.run",
+          "bytes": 3269,
+          "sha256": "a2a24c15634bd66ea6c3087574b7a8d26ebfb1f882e2a012a7edd0e968e0f5e5",
+          "mode": "0o664"
+        },
+        "host_launch_lines": [
+          [
+            101,
+            "    /bin/bash -ue /home/ubuntu/wr/.tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/f6/6722da39dd7313c408127ad5d50bb4/.command.sh"
+          ]
+        ],
+        "script": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/f6/6722da39dd7313c408127ad5d50bb4/.command.sh",
+          "bytes": 34,
+          "sha256": "3c33ee52c90acd1724f297d0eee389f575c9c292efa1a9d642d3b94e4a699d1d",
+          "mode": "0o664"
+        },
+        "exit_bytes": "0",
+        "exit_capture": {
+          "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/f6/6722da39dd7313c408127ad5d50bb4/.exitcode",
+          "bytes": 1,
+          "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+          "mode": "0o664"
+        }
+      }
+    ],
+    "task_count": 8,
+    "config_discovery": "Only copied tests/nextflow.config parsed in each retained native log; standard profile",
+    "container_boundary": "Declared tests container retained, but all eight observed fresh task launchers ran host Bash under local executor. No container execution was inferred from declaration.",
+    "NXF_CMD": "reviewed nxf_capture.py delegating byte-pinned real launcher",
+    "NXF_BIN": "/home/ubuntu/wr/.tmp/nextflow-conformance/nextflow-generation-2687641921/nextflow-26.04.6-dist",
+    "TEST_JDK": "21",
+    "WITH_DOCKER": "",
+    "NXF_SYNTAX_PARSER": "v2",
+    "static_typing_flag_added": false,
+    "topic_preview_flag_added": false
+  },
+  "tools": {
+    "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/environment-tools.json",
+    "bytes": 1856,
+    "sha256": "9094c92861f25c74c19df465be0fdac229d00952b15459ca52271502926635f5",
+    "mode": "0o664"
+  },
+  "reviewed_routes": [
+    {
+      "path": ".docs/nextflow-conformance/research-pilot/prerequisites-review-01.md",
+      "bytes": 9033,
+      "sha256": "fa80755d9725a2f9d341c5d90399572b4edb8211835f39cab49d9f977de38a21",
+      "mode": "0o664"
+    },
+    {
+      "path": ".docs/nextflow-conformance/research-pilot/prerequisites-review-02.md",
+      "bytes": 8118,
+      "sha256": "e311fc7bc3dfbaa74069e0e88e7278ddacfb2ff48996babee3317fce4d3ee570",
+      "mode": "0o664"
+    },
+    {
+      "path": ".docs/nextflow-conformance/research-pilot/instrumentation-review-01.md",
+      "bytes": 6616,
+      "sha256": "57d3a7dc5dbbcf6b3ca9994142ed4d813c716e2587ea638a67593ab17a63bfdd",
+      "mode": "0o664"
+    }
+  ],
+  "expected_values_independence": "Frozen source-authored values were not rewritten from observations",
+  "runtime_boundary": "Native original Spock and CLI outcomes only. Mock Mix is not shell proof; no projection, oracle, strengthened/gap/control or wr pass",
+  "R-UAT-02": "All scheduled genuine originals attempted with completed captures; independent result accounting review pending",
+  "unavailable_units": [],
+  "unresolved_observations": [
+    "successful parser diagnostic values and lists",
+    "actual Groovy/JDK stripIndent dispatch bytes",
+    "successful raw numeric/string Mix collection values",
+    "raw shared-parser JVM identity",
+    "internal observer equivalence and exception-identity branch",
+    "cache-reuse assurance",
+    "pending supported wr boundary"
+  ],
+  "live_work": {
+    "children": [],
+    "processes": [],
+    "tool_waits": [],
+    "jobs": []
+  }
+}

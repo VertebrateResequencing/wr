@@ -35,8 +35,8 @@ exit/signal, diagnostics and completion. Account for every affected unit.
 This is prerequisite coverage for the one R-UAT-02 test, not an execution
 pass. Item 2.2 depends on this reviewed closure or captured failure record.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.2: A1-A3, C1 - Attempt all scheduled originals
 
@@ -65,5 +65,5 @@ Phase 3 requires this reviewed attempt/accounting record. A measured original
 failure permits research to proceed with its affected mappings unavailable;
 it never becomes a successful original execution verdict.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

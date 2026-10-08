@@ -10636,5 +10636,1134 @@
       "git_blob": "cf0ef58c477bbba584db453afc55821388abaee6",
       "mode": "0o644"
     }
-  ]
+  ],
+  "phase2_prerequisites": {
+    "item": "2.1",
+    "status": "actual-closure-available-pending-independent-review",
+    "frozen_history_sha256": "2ac04fa4c27a17753afe39d9dcbf6489bafd5027475799099b0359787f0052d0",
+    "prerequisites": {
+      "path": ".docs/nextflow-conformance/research-pilot/prerequisites.json",
+      "sha256": "0811af15f92f19bfc416ac6f8bfdadccc8517c3fa4a82d05c2c382ecdee61f7e",
+      "bytes": 48665
+    },
+    "resources_acquired_index": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/resource-closure.json",
+      "sha256": "1e32c26ca1723e59e67eca9ba73f3074ca31ef252663e6ebed96ed00f99dbf63",
+      "bytes": 602185
+    },
+    "resources_acquired_count": 578,
+    "resources_reused_index": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/resource-closure.json",
+      "sha256": "1e32c26ca1723e59e67eca9ba73f3074ca31ef252663e6ebed96ed00f99dbf63",
+      "bytes": 602185
+    },
+    "tools": {
+      "java": "Temurin21.0.12.1+1",
+      "java_compile_target": "17",
+      "gradle": "9.3.1",
+      "gradle_embedded_groovy": "4.0.29",
+      "project_groovy": "4.0.31",
+      "spock": "2.4-groovy-4.0",
+      "requested_junit_launcher": "1.10.5",
+      "resolved_junit_launcher_engine_commons": "1.14.1",
+      "alignment": "Spock2.4/JUnit5.14.1 BOM and Gradle conflict/constraint resolution, not assumed starting launcher pin",
+      "byte_buddy": "1.14.17",
+      "objenesis": "3.4",
+      "jimfs": "1.2",
+      "antlr": "me.sunlan4.13.2.6",
+      "jacoco": "0.8.14",
+      "jacoco_asm": "9.9"
+    },
+    "dependency_edges_and_actual_resolution": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/resolution.json",
+      "sha256": "dbdfedf4475656ccb7e90cfe2a0cae2b3ed8a4ae9dd7317af068d5c7cdb19f11",
+      "bytes": 387272
+    },
+    "generated_and_compiler_closure": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/generated-closure.json",
+      "sha256": "ea0ddd44d0d99ffec1f7d9d3047cffe44006dfdd5d344c32c5bcc63deaf45f73",
+      "bytes": 790083
+    },
+    "captures": [
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-download.json",
+        "sha256": "774ff6fb44563b43e307e8fece76e1227323ee5bcaa31b838564ff9aea3a93fe",
+        "bytes": 2212
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-checksum.json",
+        "sha256": "e225ace27adf83a1a5989e31f6802a9f4bcd5834af9f1ac42043f75edad4af72",
+        "bytes": 2235
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/java-version.json",
+        "sha256": "8e8738e4b904a32c91e76f6cd3a6f5c3bc9f59487256e6eddb91186678c00e6a",
+        "bytes": 1877
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-version.json",
+        "sha256": "65a2bca54491f6ca83e22defc60135c648f7620c675f148c8076ea2cb8d38cd7",
+        "bytes": 1934
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/full-gradle-build.json",
+        "sha256": "2f71e081a9d35585549bc05ecb8991a5d29e9686a6a19c78edf35c8bbc7c06d2",
+        "bytes": 2277
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/phase1-before.json",
+        "sha256": "21050777a6c90166d082ed0bc3572a3312c7d10ea015effd928e2caa13c3f0bb",
+        "bytes": 1920
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/spock-sources.json",
+        "sha256": "06f18742dbb7502cad488c6136b8283b9005c071527ed6302db13024b2052354",
+        "bytes": 2287
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/closure-export.json",
+        "sha256": "6b380e87da9ac122331b19f1eab133520b0ada59a59550828b9a53c024f23d51",
+        "bytes": 2390
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/parser-bytecode.json",
+        "sha256": "eff70691f94188fab07de89e2dc44e6f0b14427885856fa6d686965652d0a5f4",
+        "bytes": 2088
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/mix-bytecode.json",
+        "sha256": "2fb3130d067d6981b78bcf4751c9a86ee2b5b6cac5570f9d0cf46440255ae6c0",
+        "bytes": 2064
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/resource-record.json",
+        "sha256": "f72c72e63334054712416d00cd77402859ec5e8fa417058a36c9415d0dbd5bf1",
+        "bytes": 1948
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/launch-closure-export.json",
+        "sha256": "7e0ca0777f85d64020facf8d36269457651d9b35ad2c011ebae1bd7b878d5619",
+        "bytes": 2411
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/terminal-prerequisite.json",
+        "sha256": "6a56a6654258c9f3fa75ecd457895774a68f98c191f66f78bccf82c4447cf750",
+        "bytes": 1914
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/resource-record-final.json",
+        "sha256": "836e7a49ec64ad44bb3f052bd54b825a75591d5c8afb811f410aee686ef1d9ed",
+        "bytes": 1966
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/generated-record.json",
+        "sha256": "456b232db8eaf81033f6ecb86b5f7428b1e85ca820f94c323ed333a7d7efa534",
+        "bytes": 1955
+      }
+    ],
+    "acquisition_origin_evidence": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/gradle-resource-origin.bin",
+      "sha256": "09d895d7b22018193e4e9ebe92050ecb85be8decee3b72cbb7e51a290a0d83a5",
+      "bytes": 251254
+    },
+    "phase1_fields": "Every original field and value remains byte-type/canonical equivalent to accepted frozen manifest; all sealed bytes except this allowed working-manifest extension stay unchanged",
+    "runtime_claim": "none",
+    "author_report": {
+      "path": ".docs/nextflow-conformance/research-pilot/item2.1-author-01.md",
+      "sha256": "ec77d6e3cd851feda75b3a8903d9801d32861e357eb68f893e7d931c9d6e590d",
+      "bytes": 7846
+    },
+    "review_read_plan": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/review-read-plan.md",
+      "sha256": "81d9fd9f8e3f9964b279837992a631fe3017f3109e20cea5499da30cee2b9fea",
+      "bytes": 4042
+    },
+    "passive_verification": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/final-verification.json",
+      "sha256": "2d625c57cc6cc3d4ab222999b091b23b3b95fe9248f4e3293d37474613822f50",
+      "bytes": 1964
+    },
+    "protected_baseline": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites01/protected-baseline.json",
+      "sha256": "df6904f32f1b8031130d3338ff5758df5cbd820e675815c98c4868807eba5eff",
+      "bytes": 337
+    }
+  },
+  "phase2_prerequisites_supervision_correction": {
+    "finding": "PREREQ-F1",
+    "status": "implemented; independent review pending",
+    "sidecar": {
+      "path": ".docs/nextflow-conformance/research-pilot/prerequisites-supervision-fix.json",
+      "sha256": "a5432e03bdfb30da74cac0901e381ecb41e7316f2f7483aa1ffdeedb95f77ebb",
+      "bytes": 18922,
+      "mode": "0o664"
+    },
+    "current_route": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/capture.py",
+    "supervisor": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/capture.py",
+      "sha256": "de625c1996b536afe6ca381d0978326f8e94690c7957923a4590f638430b3894",
+      "bytes": 11045,
+      "mode": "0o664"
+    },
+    "historical_working_manifest": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/working-manifest-before.json",
+      "sha256": "cb4ce476a157d79c87333a8441afb5c1941fe3edd969117928cde7eb8baa1886",
+      "bytes": 456542,
+      "mode": "0o664"
+    },
+    "boundary": "All existing fields and historical captures unchanged; new supervision route requires independent acceptance before originals"
+  },
+  "phase2_originals": {
+    "item": "2.2",
+    "status": "genuine attempts completed; independent result review pending",
+    "results": {
+      "path": ".docs/nextflow-conformance/research-pilot/original-results.json",
+      "bytes": 161878,
+      "sha256": "c16d8db5785d7094187f77033fc575d27d1cff7208ba05df7b22cd4d84a81120",
+      "mode": "0o664"
+    },
+    "instrumentation_proposal": {
+      "path": ".docs/nextflow-conformance/research-pilot/instrumentation-proposal.md",
+      "bytes": 2972,
+      "sha256": "763f99f7e2dc292b31f5be430afd0b4fdcb533de880381bccb7c8ebc79e7fe77",
+      "mode": "0o664"
+    },
+    "instrumentation_review": {
+      "path": ".docs/nextflow-conformance/research-pilot/instrumentation-review-01.md",
+      "bytes": 6616,
+      "sha256": "57d3a7dc5dbbcf6b3ca9994142ed4d813c716e2587ea638a67593ab17a63bfdd",
+      "mode": "0o664"
+    },
+    "captures": [
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-parser.json",
+        "bytes": 4148,
+        "sha256": "efaaabb5d3bad99611bc4ed4fa453ab674b229f09b1899cc2ec81153a25804ad",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-mix.json",
+        "bytes": 3999,
+        "sha256": "1141793664b36ccc564132c8a9fe35638b7343d839ee567f77677d7cd9f69b4a",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/prerequisites-fix-f1/originals-cli-runner.json",
+        "bytes": 6301,
+        "sha256": "f3fa90b92d833ea729b5d0903ccb4e784d1443940dee46118e7589d0c09e446a",
+        "mode": "0o664"
+      }
+    ],
+    "raw_artifacts": [
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/author_results.py",
+        "bytes": 14906,
+        "sha256": "6f5a69b6c8f48bb7e19d2aacc565a0a21892f70399b1bc2fc7207df503ee476e",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/before.json",
+        "bytes": 301361,
+        "sha256": "c7a55003ea26386ab3e14330d112234a6e385cd1ee41e13d6b8cabc3b253fbb7",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/arity-fresh/.nextflow.log",
+        "bytes": 8627,
+        "sha256": "f0745ef8c39db331577732aef7429c87a4b8f7db1ae2fec06b3ca38d1edbd066",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/arity-fresh/capture.json",
+        "bytes": 3490,
+        "sha256": "a3442c480754e4de0862eff413e9d5d3fa2625adb0e6b5ca9f16d667bd7261ae",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/arity-resume/.nextflow.log",
+        "bytes": 7474,
+        "sha256": "1490ca696de9536365bf929a24751a82936f24691c7cc47cba8e8cbb34e8b25f",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/arity-resume/capture.json",
+        "bytes": 3243,
+        "sha256": "e4427e73a9486e08b78f1e715fb7c1e3d24574b380a641269d12da2a4b57878d",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-fresh/.expected",
+        "bytes": 22,
+        "sha256": "ce5e4c500ca731aa86fa5e5a3856b9bdbe3c64f685d0e51b2ba5d1886b13bceb",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-fresh/.nextflow.log",
+        "bytes": 11382,
+        "sha256": "77cf67346786a9433db77e5d4685cf75c19a84bf84a2d3a8a6001cfe9fd629b1",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-fresh/capture.json",
+        "bytes": 3966,
+        "sha256": "d5560f907a52a2c7a41c02a7ed16ee03b41a97d805881979e957bb485f37dc0e",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-fresh/versions.txt",
+        "bytes": 22,
+        "sha256": "ce5e4c500ca731aa86fa5e5a3856b9bdbe3c64f685d0e51b2ba5d1886b13bceb",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-resume/.expected",
+        "bytes": 22,
+        "sha256": "ce5e4c500ca731aa86fa5e5a3856b9bdbe3c64f685d0e51b2ba5d1886b13bceb",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-resume/.nextflow.log",
+        "bytes": 8619,
+        "sha256": "ecdbd6d616471fea83f6dc1b49a8fd1c06d45ce25b7ab7dc5da505ceaa67b2bf",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-resume/capture.json",
+        "bytes": 3999,
+        "sha256": "0706d343fa944bf1d940fbf35264ff2a9d3007c9b6ef38ff4c57e3973cc28490",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-invocations/topic-resume/versions.txt",
+        "bytes": 22,
+        "sha256": "ce5e4c500ca731aa86fa5e5a3856b9bdbe3c64f685d0e51b2ba5d1886b13bceb",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/.IGNORE",
+        "bytes": 40,
+        "sha256": "42c5b07ee7e399e3ce9d191f7b268eaf87a22484d0717faaff6be350b90d922d",
+        "mode": "0o644"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/.IGNORE-DOCKER",
+        "bytes": 172,
+        "sha256": "bf06732ea42eed80b5827664db6f06be1fc0146c48a66ee68610504fa98b9bd8",
+        "mode": "0o644"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/.IGNORE-PARSER-V2",
+        "bytes": 308,
+        "sha256": "d4ed8c1681be229a5c8fab2cc87d7645ca8935c3f384c8e6db35c9e936e59447",
+        "mode": "0o644"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/.checks",
+        "bytes": 139,
+        "sha256": "2d21e718730bc7310f41447a064e0cd39dd417e16f539b7b21e9963489147088",
+        "mode": "0o644"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/.nextflow/cache/1856501f-abfd-4aff-b45c-304e4f040dfd/db/000005.sst",
+        "bytes": 1591,
+        "sha256": "f75f5cb89557368db5d09a392a566230b44d1d7463a2c2f39203eeb56d64a993",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/.nextflow/cache/1856501f-abfd-4aff-b45c-304e4f040dfd/db/000006.log",
+        "bytes": 1498,
+        "sha256": "5565e7f532643b82ee21d4cf516cb6356cec1e17b954c5060d9e5b6327316ac2",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/.nextflow/cache/1856501f-abfd-4aff-b45c-304e4f040dfd/db/CURRENT",
+        "bytes": 16,
+        "sha256": "0861415cada612ea5834d56e2cf1055d3e63979b69eb71d32ae9ae394d8306cd",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/.nextflow/cache/1856501f-abfd-4aff-b45c-304e4f040dfd/db/LOCK",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/.nextflow/cache/1856501f-abfd-4aff-b45c-304e4f040dfd/db/MANIFEST-000004",
+        "bytes": 105,
+        "sha256": "a996280b5161116c3c47e704026d5264a6e1db70ffe3bd5ef9b614a3357e8a8e",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/.nextflow/cache/1856501f-abfd-4aff-b45c-304e4f040dfd/index.cranky_bassi",
+        "bytes": 34,
+        "sha256": "da3391057e18f636ec88b43e606d280eab11738f432818cbda201bb912a14bc1",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/.nextflow/cache/1856501f-abfd-4aff-b45c-304e4f040dfd/index.loving_goldberg",
+        "bytes": 34,
+        "sha256": "b7eac0eb32e1e5ab3e66d0130d39ee9e05ce92d07cf50d7d30005c0418ffce6b",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/.nextflow/history",
+        "bytes": 311,
+        "sha256": "08341dffec4f55b6fa1c46a4d8523d621c8a0597f7f77eeafd2318aec8c512e8",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/.nextflow.log",
+        "bytes": 7474,
+        "sha256": "1490ca696de9536365bf929a24751a82936f24691c7cc47cba8e8cbb34e8b25f",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/.nextflow.log.1",
+        "bytes": 8627,
+        "sha256": "f0745ef8c39db331577732aef7429c87a4b8f7db1ae2fec06b3ca38d1edbd066",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/process-arity.nf/checks.out",
+        "bytes": 313,
+        "sha256": "fd39178e3d2392c029b00c6fb426e2bcc10ddd87d5ad38b6feb4d14f61245466",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/run.sh",
+        "bytes": 2008,
+        "sha256": "c66f45ada910231759d549df169090ed4a69872f18048522495bc66ddffde6e8",
+        "mode": "0o755"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/57/09736e92cda43f208f2ca7923cef59/.command.begin",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/57/09736e92cda43f208f2ca7923cef59/.command.err",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/57/09736e92cda43f208f2ca7923cef59/.command.log",
+        "bytes": 11,
+        "sha256": "662b97b5f6962cf6a3bfc77a543523d98492e88ceb2930c3a053a7fbf89f38a8",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/57/09736e92cda43f208f2ca7923cef59/.command.out",
+        "bytes": 11,
+        "sha256": "662b97b5f6962cf6a3bfc77a543523d98492e88ceb2930c3a053a7fbf89f38a8",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/57/09736e92cda43f208f2ca7923cef59/.command.run",
+        "bytes": 3269,
+        "sha256": "e96adb187d8e55234dc5d3af5cfe54807390267da671a5f427ccd5789abacb0d",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/57/09736e92cda43f208f2ca7923cef59/.command.sh",
+        "bytes": 34,
+        "sha256": "3c33ee52c90acd1724f297d0eee389f575c9c292efa1a9d642d3b94e4a699d1d",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/57/09736e92cda43f208f2ca7923cef59/.exitcode",
+        "bytes": 1,
+        "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/81/cadc3bdb2b912bb39bfe119082bd7e/.command.begin",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/81/cadc3bdb2b912bb39bfe119082bd7e/.command.err",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/81/cadc3bdb2b912bb39bfe119082bd7e/.command.log",
+        "bytes": 11,
+        "sha256": "f903d5639fb5c6c7af59cf58dcde9050b6849e40a5ec9295d0bdd7a8ab6d178c",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/81/cadc3bdb2b912bb39bfe119082bd7e/.command.out",
+        "bytes": 11,
+        "sha256": "f903d5639fb5c6c7af59cf58dcde9050b6849e40a5ec9295d0bdd7a8ab6d178c",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/81/cadc3bdb2b912bb39bfe119082bd7e/.command.run",
+        "bytes": 3269,
+        "sha256": "6bedbdce3f7e91ccaad1b58e8d00e0966f9c1058886ca2c6dc5c4e270a5156dc",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/81/cadc3bdb2b912bb39bfe119082bd7e/.command.sh",
+        "bytes": 34,
+        "sha256": "da2e977bce8dad086c4be1ed158cc70ab3059ac83459d66b63081f7d8d500d80",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/81/cadc3bdb2b912bb39bfe119082bd7e/.exitcode",
+        "bytes": 1,
+        "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/93/105b11fe694ed08372095cc4062388/.command.begin",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/93/105b11fe694ed08372095cc4062388/.command.err",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/93/105b11fe694ed08372095cc4062388/.command.log",
+        "bytes": 11,
+        "sha256": "f903d5639fb5c6c7af59cf58dcde9050b6849e40a5ec9295d0bdd7a8ab6d178c",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/93/105b11fe694ed08372095cc4062388/.command.out",
+        "bytes": 11,
+        "sha256": "f903d5639fb5c6c7af59cf58dcde9050b6849e40a5ec9295d0bdd7a8ab6d178c",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/93/105b11fe694ed08372095cc4062388/.command.run",
+        "bytes": 3269,
+        "sha256": "466da85b1638fc902185082cb7570a0cb87ef500137bf4f6ab8e52472156b955",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/93/105b11fe694ed08372095cc4062388/.command.sh",
+        "bytes": 34,
+        "sha256": "da2e977bce8dad086c4be1ed158cc70ab3059ac83459d66b63081f7d8d500d80",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/93/105b11fe694ed08372095cc4062388/.exitcode",
+        "bytes": 1,
+        "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/97/14c619f8a6d7c2db69dde4cc3521b2/.command.begin",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/97/14c619f8a6d7c2db69dde4cc3521b2/.command.err",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/97/14c619f8a6d7c2db69dde4cc3521b2/.command.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/97/14c619f8a6d7c2db69dde4cc3521b2/.command.out",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/97/14c619f8a6d7c2db69dde4cc3521b2/.command.run",
+        "bytes": 3332,
+        "sha256": "147cc6d602897b6c33eb3673bcc713b9b9747497fe94d5f2fb24f32f57936435",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/97/14c619f8a6d7c2db69dde4cc3521b2/.command.sh",
+        "bytes": 172,
+        "sha256": "bd6b0742b2dc68e9cfc7cb83391a4d5583efab2b7b281690a0d01cc76d69e0a5",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/97/14c619f8a6d7c2db69dde4cc3521b2/.exitcode",
+        "bytes": 1,
+        "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/97/14c619f8a6d7c2db69dde4cc3521b2/many_1.txt",
+        "bytes": 7,
+        "sha256": "d71ddcbf81306d7ecfb61be71bbcca80f757ff92f0ffde0a53c0c5825277f776",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/97/14c619f8a6d7c2db69dde4cc3521b2/many_2.txt",
+        "bytes": 7,
+        "sha256": "235ddc127e2d4876a92adac00dab7779f2f1626c5352a0d185eac1dcfc480004",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/97/14c619f8a6d7c2db69dde4cc3521b2/many_3.txt",
+        "bytes": 7,
+        "sha256": "d78e5708ff1bf7873d4accd98c8798fc4ecad614b806f621fffd692cf00f47bc",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/97/14c619f8a6d7c2db69dde4cc3521b2/one.txt",
+        "bytes": 4,
+        "sha256": "2c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c525434806",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/97/14c619f8a6d7c2db69dde4cc3521b2/pair_1.txt",
+        "bytes": 7,
+        "sha256": "920efed6fb0088143807720e9807a8cfdb6cfb76fc1a28dbe6ef3d8b93ac62c4",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/97/14c619f8a6d7c2db69dde4cc3521b2/pair_2.txt",
+        "bytes": 7,
+        "sha256": "d76e4390003eeee3518ecaaddeb6b6c1fb5b0b69029b7799b82a4ca9831bf7c9",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/ab/515a98b100104d437a9ab00de55516/.command.begin",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/ab/515a98b100104d437a9ab00de55516/.command.err",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/ab/515a98b100104d437a9ab00de55516/.command.log",
+        "bytes": 39,
+        "sha256": "9a02df37a1c15b23a0e28111bf7dce99bbca74ed67d70ff8f0eb0fa240135b1f",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/ab/515a98b100104d437a9ab00de55516/.command.out",
+        "bytes": 39,
+        "sha256": "9a02df37a1c15b23a0e28111bf7dce99bbca74ed67d70ff8f0eb0fa240135b1f",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/ab/515a98b100104d437a9ab00de55516/.command.run",
+        "bytes": 4444,
+        "sha256": "68d0c48518e79ee2c503f752e29b91d2f5ebce22005578f13623a12430c30797",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/ab/515a98b100104d437a9ab00de55516/.command.sh",
+        "bytes": 58,
+        "sha256": "9746b552153a6d39fa0be31e7460234b635d3b3c1c4b49c04a46501d09f6aa79",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/ab/515a98b100104d437a9ab00de55516/.exitcode",
+        "bytes": 1,
+        "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/ab/515a98b100104d437a9ab00de55516/many_1.txt",
+        "bytes": 7,
+        "sha256": "d71ddcbf81306d7ecfb61be71bbcca80f757ff92f0ffde0a53c0c5825277f776",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/ab/515a98b100104d437a9ab00de55516/many_2.txt",
+        "bytes": 7,
+        "sha256": "235ddc127e2d4876a92adac00dab7779f2f1626c5352a0d185eac1dcfc480004",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/ab/515a98b100104d437a9ab00de55516/many_3.txt",
+        "bytes": 7,
+        "sha256": "d78e5708ff1bf7873d4accd98c8798fc4ecad614b806f621fffd692cf00f47bc",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/ab/515a98b100104d437a9ab00de55516/one.txt",
+        "bytes": 4,
+        "sha256": "2c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c525434806",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/ab/515a98b100104d437a9ab00de55516/pair_1.txt",
+        "bytes": 7,
+        "sha256": "920efed6fb0088143807720e9807a8cfdb6cfb76fc1a28dbe6ef3d8b93ac62c4",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/ab/515a98b100104d437a9ab00de55516/pair_2.txt",
+        "bytes": 7,
+        "sha256": "d76e4390003eeee3518ecaaddeb6b6c1fb5b0b69029b7799b82a4ca9831bf7c9",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c0/197b5809eb7c1a240a421ead434db1/.command.begin",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c0/197b5809eb7c1a240a421ead434db1/.command.err",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c0/197b5809eb7c1a240a421ead434db1/.command.log",
+        "bytes": 11,
+        "sha256": "662b97b5f6962cf6a3bfc77a543523d98492e88ceb2930c3a053a7fbf89f38a8",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c0/197b5809eb7c1a240a421ead434db1/.command.out",
+        "bytes": 11,
+        "sha256": "662b97b5f6962cf6a3bfc77a543523d98492e88ceb2930c3a053a7fbf89f38a8",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c0/197b5809eb7c1a240a421ead434db1/.command.run",
+        "bytes": 3269,
+        "sha256": "4009a7094443986865052b85aab598bd28846070082a391bb41376bd3d81711a",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c0/197b5809eb7c1a240a421ead434db1/.command.sh",
+        "bytes": 34,
+        "sha256": "3c33ee52c90acd1724f297d0eee389f575c9c292efa1a9d642d3b94e4a699d1d",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c0/197b5809eb7c1a240a421ead434db1/.exitcode",
+        "bytes": 1,
+        "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c4/ef068d95a26c2b46ecb3595d8ec826/.command.begin",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c4/ef068d95a26c2b46ecb3595d8ec826/.command.err",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c4/ef068d95a26c2b46ecb3595d8ec826/.command.log",
+        "bytes": 11,
+        "sha256": "f903d5639fb5c6c7af59cf58dcde9050b6849e40a5ec9295d0bdd7a8ab6d178c",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c4/ef068d95a26c2b46ecb3595d8ec826/.command.out",
+        "bytes": 11,
+        "sha256": "f903d5639fb5c6c7af59cf58dcde9050b6849e40a5ec9295d0bdd7a8ab6d178c",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c4/ef068d95a26c2b46ecb3595d8ec826/.command.run",
+        "bytes": 3269,
+        "sha256": "dd15a80651b1e0fd25948f6149e7a7769c07540f4744ae72754bdc372c1e3dcd",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c4/ef068d95a26c2b46ecb3595d8ec826/.command.sh",
+        "bytes": 34,
+        "sha256": "da2e977bce8dad086c4be1ed158cc70ab3059ac83459d66b63081f7d8d500d80",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/c4/ef068d95a26c2b46ecb3595d8ec826/.exitcode",
+        "bytes": 1,
+        "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/collect-file/7780d4219fe0b9bb75d5df598ab9edb9",
+        "bytes": 43,
+        "sha256": "0f54eafbef04d1f35775b2fd02f71f51ddb6a4c9fff342cf520ade0b694a421d",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/f6/6722da39dd7313c408127ad5d50bb4/.command.begin",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/f6/6722da39dd7313c408127ad5d50bb4/.command.err",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/f6/6722da39dd7313c408127ad5d50bb4/.command.log",
+        "bytes": 11,
+        "sha256": "662b97b5f6962cf6a3bfc77a543523d98492e88ceb2930c3a053a7fbf89f38a8",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/f6/6722da39dd7313c408127ad5d50bb4/.command.out",
+        "bytes": 11,
+        "sha256": "662b97b5f6962cf6a3bfc77a543523d98492e88ceb2930c3a053a7fbf89f38a8",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/f6/6722da39dd7313c408127ad5d50bb4/.command.run",
+        "bytes": 3269,
+        "sha256": "a2a24c15634bd66ea6c3087574b7a8d26ebfb1f882e2a012a7edd0e968e0f5e5",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/f6/6722da39dd7313c408127ad5d50bb4/.command.sh",
+        "bytes": 34,
+        "sha256": "3c33ee52c90acd1724f297d0eee389f575c9c292efa1a9d642d3b94e4a699d1d",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/scratch/f6/6722da39dd7313c408127ad5d50bb4/.exitcode",
+        "bytes": 1,
+        "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.checks",
+        "bytes": 171,
+        "sha256": "01918af983a1c627a250bd15638a986bff3843af10c4f175ba5ae5abb837fe48",
+        "mode": "0o644"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.expected",
+        "bytes": 22,
+        "sha256": "ce5e4c500ca731aa86fa5e5a3856b9bdbe3c64f685d0e51b2ba5d1886b13bceb",
+        "mode": "0o644"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.nextflow/cache/e83ee9c5-92c5-470b-b9ac-36ed63aafb78/db/000005.sst",
+        "bytes": 3985,
+        "sha256": "be2f21e9708a10418d3c13358dfe3f15505b2eb58262fcaf55187b1f4677a68d",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.nextflow/cache/e83ee9c5-92c5-470b-b9ac-36ed63aafb78/db/000006.log",
+        "bytes": 3936,
+        "sha256": "0ff338bc5a4a99826bb37a49baf980cfd504d451f6a7280b78ec4106e612fb03",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.nextflow/cache/e83ee9c5-92c5-470b-b9ac-36ed63aafb78/db/CURRENT",
+        "bytes": 16,
+        "sha256": "0861415cada612ea5834d56e2cf1055d3e63979b69eb71d32ae9ae394d8306cd",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.nextflow/cache/e83ee9c5-92c5-470b-b9ac-36ed63aafb78/db/LOCK",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.nextflow/cache/e83ee9c5-92c5-470b-b9ac-36ed63aafb78/db/MANIFEST-000004",
+        "bytes": 105,
+        "sha256": "1dbf982734bf04755c15c7a8108c4084e36bf468e85e86f029d4d23358f55492",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.nextflow/cache/e83ee9c5-92c5-470b-b9ac-36ed63aafb78/index.drunk_payne",
+        "bytes": 102,
+        "sha256": "24c9089a43934f220b4ba22bb085cc0f9ee4bc2cb6c2c4de9179dd2765951591",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.nextflow/cache/e83ee9c5-92c5-470b-b9ac-36ed63aafb78/index.special_wilson",
+        "bytes": 102,
+        "sha256": "63a45a07315df3671005a4c902b0c48fdb5ec6a45a0da4f829acdcf69c0b9d90",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.nextflow/history",
+        "bytes": 309,
+        "sha256": "8993f3ada015429afc41fe020b79b909063f1993a396e4750b7f1f872dfd9081",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.nextflow.log",
+        "bytes": 8619,
+        "sha256": "ecdbd6d616471fea83f6dc1b49a8fd1c06d45ce25b7ab7dc5da505ceaa67b2bf",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/.nextflow.log.1",
+        "bytes": 11382,
+        "sha256": "77cf67346786a9433db77e5d4685cf75c19a84bf84a2d3a8a6001cfe9fd629b1",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/checks.out",
+        "bytes": 372,
+        "sha256": "93234e6e2e980a184367dda26d990981de2f9e7d66a2ad5009b7faee629cdfef",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/checks/topic-channel.nf/versions.txt",
+        "bytes": 22,
+        "sha256": "ce5e4c500ca731aa86fa5e5a3856b9bdbe3c64f685d0e51b2ba5d1886b13bceb",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/nextflow.config",
+        "bytes": 803,
+        "sha256": "21a1231bf59d1e6b7d106976651378888ccd5826fe350b7da77a7814effc228e",
+        "mode": "0o644"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/process-arity.nf",
+        "bytes": 601,
+        "sha256": "1d91a4f5d985df4d562d98e6f5b308240e6d0ab633aafdfd0e57fa8e61db16c3",
+        "mode": "0o644"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-layout/tests/topic-channel.nf",
+        "bytes": 441,
+        "sha256": "98bbaf627a283ea5db42215aab490c9a7a3f00c0aeef6c10bdc4da98bceced97",
+        "mode": "0o644"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-runner-launch-command.json",
+        "bytes": 1006,
+        "sha256": "4e5fafb96530a00d73ad350bb6fa787413bbcac7eca82463b9606e108653eea1",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-runner-wrapper-status.json",
+        "bytes": 12,
+        "sha256": "5bc232b82de377a5655a39a2af9d7ae0fc868de5b9df957e18905cb914606c88",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-runner-wrapper.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/cli-runner-wrapper.stdout",
+        "bytes": 4897,
+        "sha256": "474aa2d431febfea27edc0995749e7fdc535469468fd9db7bdb2bdd47bcb56af",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/effective-cli-mode.json",
+        "bytes": 25540,
+        "sha256": "98ab61774d895b9086bc6cdb38584cf170fd1c06888d1680faa6d029c58c5e8c",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/environment-tools.json",
+        "bytes": 1856,
+        "sha256": "9094c92861f25c74c19df465be0fdac229d00952b15459ca52271502926635f5",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/gate-development.md",
+        "bytes": 764,
+        "sha256": "476cd5e0608cfb71da5c9ad62d7e544f7203355796ad386b6a43959e4802f101",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/instrumentation-inputs.json",
+        "bytes": 1577,
+        "sha256": "60662c62167dd609efe0cff230ad26da9f0431119bc5568dd2c72f99032bcb74",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/instrumentation-root-approval.json",
+        "bytes": 469,
+        "sha256": "2c644b4b39cfee75e1cc1fe2b5c11d19a9baef72cd61d6c237643a61749f35a3",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/java-version.stderr",
+        "bytes": 205,
+        "sha256": "5b4412738541184e84f6b2d7520d4f4a7c2a455f60650491464c61adcbbbdeb0",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/java-version.stdout",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/mix-launch-command.json",
+        "bytes": 1472,
+        "sha256": "3b821ffda454b867b47374a0c14fed3f3fe71d9bd65d24bb28e3bb3ffb72c66c",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/mix-wrapper-status.json",
+        "bytes": 12,
+        "sha256": "5bc232b82de377a5655a39a2af9d7ae0fc868de5b9df957e18905cb914606c88",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/mix-wrapper.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/mix-wrapper.stdout",
+        "bytes": 3455,
+        "sha256": "4f0ffb9bd5a73d9d360ede76220932c53af1c2dc1ace8c004fc5baa2d61799b9",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/native-mix/test-results/TEST-nextflow.extension.MixOpTest.xml",
+        "bytes": 151619,
+        "sha256": "92223a0928f77af281d8cd9b7dd0c5497c3daaff571ca1826069943f254e9352",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/native-mix/test-results/binary/output-events.bin",
+        "bytes": 169312,
+        "sha256": "015c6410365413cb3145ba5e887780ec12402847563e0baa52e66299056e5e01",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/native-mix/test-results/binary/results-generic.bin",
+        "bytes": 405,
+        "sha256": "18bbfe22975bd32b72199e05ad51cff76fdebe6776457c25e7085a469bb00c12",
+        "mode": "0o600"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/native-parser/test-results/TEST-nextflow.script.parser.ScriptAstBuilderTest.xml",
+        "bytes": 780,
+        "sha256": "b4dfcf7ad5a576e86849a69f5f80fc3e77bd42a6396056e3603f38187dbfff01",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/native-parser/test-results/binary/output-events.bin",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/native-parser/test-results/binary/results-generic.bin",
+        "bytes": 573,
+        "sha256": "33814cf63c0f8b19b9dc57860c55bf2135e5df11565c059142c6ba964c64d4d7",
+        "mode": "0o600"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/nxf_capture.py",
+        "bytes": 5426,
+        "sha256": "73053d725dec2268c1a99c1afd7ae8aa17318df89cb188f73f37ae493080ec8e",
+        "mode": "0o755"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/parser-launch-command.json",
+        "bytes": 1616,
+        "sha256": "e13aedbe3262087cce527fb00abc0ff108a6ee201a5564a2ba8ff676acf222df",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/parser-wrapper-status.json",
+        "bytes": 12,
+        "sha256": "5bc232b82de377a5655a39a2af9d7ae0fc868de5b9df957e18905cb914606c88",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/parser-wrapper.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/parser-wrapper.stdout",
+        "bytes": 3604,
+        "sha256": "b822ecb7b285c024dcd4222b428a9b56aabedbc935f42ede305d5485aac0183e",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/prelaunch-cli-isolation.json",
+        "bytes": 632,
+        "sha256": "72eb1e26326e15e3d395bd0f60a1a557311c4aa651ba8b4aa5c7f2c0d63b17bc",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/review-read-plan.md",
+        "bytes": 4594,
+        "sha256": "55888def8bf0f19c43747082425443198fd51b0b3726c4a5895c6bcec79c8b5b",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/verify_originals.py",
+        "bytes": 12443,
+        "sha256": "1333f912418f569af923fe8dde52e6c77f24e0f69e7b85f267cfbf3c3e0f3ae8",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/working-manifest-before.json",
+        "bytes": 457714,
+        "sha256": "d834b2fec5bf89a32c8e99c085932d48f752501fe3fc747ee35b5a80431cd3a8",
+        "mode": "0o664"
+      }
+    ],
+    "denominator": {
+      "spock_methods": 6,
+      "parser_input_units": 8,
+      "mix_input_units": 3,
+      "spock_input_units": 11,
+      "parser_predicates": 29,
+      "mix_predicates": 9,
+      "spock_predicates": 38,
+      "workflow_check_pairs": 2,
+      "cli_invocations": 4,
+      "literal_cli_predicates": 4,
+      "table_rows": 0,
+      "generated_providers": 0
+    },
+    "claim_boundary": "Native original Spock and CLI outcomes only. Mock Mix is not shell proof; no projection, oracle, strengthened/gap/control or wr pass",
+    "author_report": {
+      "path": ".docs/nextflow-conformance/research-pilot/item2.2-author-01.md",
+      "bytes": 6600,
+      "sha256": "1ee3a7f8ab8467b2b2bbff3f84cb066ecf1821ae393a1bac8ca9c36d6165dcef",
+      "mode": "0o664"
+    },
+    "passive_gate": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/verify_originals.py",
+      "bytes": 12443,
+      "sha256": "1333f912418f569af923fe8dde52e6c77f24e0f69e7b85f267cfbf3c3e0f3ae8",
+      "mode": "0o664"
+    },
+    "review_read_plan": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/originals01/review-read-plan.md",
+      "bytes": 4594,
+      "sha256": "55888def8bf0f19c43747082425443198fd51b0b3726c4a5895c6bcec79c8b5b",
+      "mode": "0o664"
+    }
+  }
 }
