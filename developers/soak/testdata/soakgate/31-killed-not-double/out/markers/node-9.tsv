@@ -1,0 +1,28 @@
+S	4100000	portal_compress	A.1	node-9	901			/soak/work
+E	4105000	portal_compress	A.1	node-9	901		0	/soak/work
+S	4300000	portal_dedupe	B.1	node-9	902			/soak/work
+E	4305000	portal_dedupe	B.1	node-9	902		0	/soak/work
+S	4500900	portal_split	C.1	node-9	903			/soak/work
+E	4505900	portal_split	C.1	node-9	903		0	/soak/work
+S	4700000	portal_merge	D.1	node-9	904			/soak/work
+E	4705000	portal_merge	D.1	node-9	904		0	/soak/work
+S	4900700	portal_qc	E.1	node-9	905			/soak/work
+E	4905700	portal_qc	E.1	node-9	905		0	/soak/work
+S	5100000	portal_index	F.1	node-9	906			/soak/work
+E	5105000	portal_index	F.1	node-9	906		0	/soak/work
+S	5300000	portal_sort	G.1	node-9	907			/soak/work
+E	5305000	portal_sort	G.1	node-9	907		0	/soak/work
+S	5500000	portal_stats	H.1	node-9	908			/soak/work
+E	5505000	portal_stats	H.1	node-9	908		0	/soak/work
+S	5700000	portal_bam	I.1	node-9	909			/soak/work
+E	5705000	portal_bam	I.1	node-9	909		0	/soak/work
+S	1100000	portal_trim	J.1	node-9	910			/soak/work
+E	1105000	portal_trim	J.1	node-9	910		0	/soak/work
+S	5900000	portal_call	K.1	node-9	911			/soak/work
+E	5905000	portal_call	K.1	node-9	911		0	/soak/work
+S	6100000	portal_fix	L.1	node-9	912			/soak/work
+E	6105000	portal_fix	L.1	node-9	912		0	/soak/work
+S	6300000	portal_lint	M.1	node-9	913			/soak/work
+E	6305000	portal_lint	M.1	node-9	913		0	/soak/work
+S	6500000	portal_mark	N.1	node-9	914			/soak/work
+E	6505000	portal_mark	N.1	node-9	914		0	/soak/work

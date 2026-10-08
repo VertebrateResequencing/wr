@@ -1,0 +1,13 @@
+t=1969-12-31T20:39:59-0500 lvl=info msg="reserved a job" key=4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a cmd=": relb relb.r1.bur.1; h=$(hostname -s)" attempts=0
+t=1969-12-31T20:39:59-0500 lvl=info msg="started executing" jobkey=4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a cmd=": relb relb.r1.bur.1; h=$(hostname -s)" pid=1299
+t=1969-12-31T20:39:59-0500 lvl=warn msg="kill requested externally" jobkey=4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a caller=clog.go:338 caller=clog.go:338
+t=1969-12-31T20:39:59-0500 lvl=warn msg="jobqueue Execute(4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a): killed by user request" caller=clog.go:338 caller=clog.go:338
+t=1969-12-31T20:40:00-0500 lvl=info msg="reserved a job" key=1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d cmd="/soak/prodsim-1/psimjob.sh portal_fix L.1 1.0 100 2" attempts=0
+t=1969-12-31T20:40:00-0500 lvl=info msg="will start executing" key=1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d cmd="/soak/prodsim-1/psimjob.sh portal_fix L.1 1.0 100 2"
+t=1969-12-31T20:40:00-0500 lvl=info msg="started executing" jobkey=1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d cmd="/soak/prodsim-1/psimjob.sh portal_fix L.1 1.0 100 2" pid=1300
+t=1969-12-31T20:40:05-0500 lvl=warn msg="kill requested externally" jobkey=1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d caller=clog.go:338 caller=clog.go:338
+t=1969-12-31T20:40:05-0500 lvl=warn msg="jobqueue Execute(1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d): killed by user request" caller=clog.go:338 caller=clog.go:338
+t=1969-12-31T20:40:05-0500 lvl=info msg="reserved a job" key=1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d cmd="/soak/prodsim-1/psimjob.sh portal_fix L.1 1.0 100 2" attempts=0
+t=1969-12-31T20:40:05-0500 lvl=info msg="will start executing" key=1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d cmd="/soak/prodsim-1/psimjob.sh portal_fix L.1 1.0 100 2"
+t=1969-12-31T20:40:05-0500 lvl=info msg="started executing" jobkey=1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d cmd="/soak/prodsim-1/psimjob.sh portal_fix L.1 1.0 100 2" pid=1301
+t=1969-12-31T20:40:08-0500 lvl=info msg="command ran OK" key=1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d cmd="/soak/prodsim-1/psimjob.sh portal_fix L.1 1.0 100 2" exitcode=0

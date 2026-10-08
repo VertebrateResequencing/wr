@@ -1,0 +1,9 @@
+t=1969-12-31T20:46:40-0500 lvl=info msg="reserved a job" key=3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f cmd="/soak/prodsim-1/psimjob.sh portal_mark N.1 1.0 100 2" attempts=0
+t=1969-12-31T20:46:40-0500 lvl=info msg="will start executing" key=3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f cmd="/soak/prodsim-1/psimjob.sh portal_mark N.1 1.0 100 2"
+t=1969-12-31T20:46:40-0500 lvl=info msg="started executing" jobkey=3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f cmd="/soak/prodsim-1/psimjob.sh portal_mark N.1 1.0 100 2" pid=1501
+t=1969-12-31T20:46:43-0500 lvl=info msg="command ran OK" key=3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f cmd="/soak/prodsim-1/psimjob.sh portal_mark N.1 1.0 100 2" exitcode=0
+t=1969-12-31T20:46:43-0500 lvl=info msg="reserved a job" key=3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f cmd="/soak/prodsim-1/psimjob.sh portal_mark N.1 1.0 100 2" attempts=0
+t=1969-12-31T20:46:43-0500 lvl=info msg="will start executing" key=3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f cmd="/soak/prodsim-1/psimjob.sh portal_mark N.1 1.0 100 2"
+t=1969-12-31T20:46:43-0500 lvl=info msg="started executing" jobkey=3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f cmd="/soak/prodsim-1/psimjob.sh portal_mark N.1 1.0 100 2" pid=1502
+t=1969-12-31T20:46:46-0500 lvl=warn msg="kill requested externally" jobkey=3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f caller=clog.go:338 caller=clog.go:338
+t=1969-12-31T20:46:46-0500 lvl=warn msg="jobqueue Execute(3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f): killed by user request" caller=clog.go:338 caller=clog.go:338

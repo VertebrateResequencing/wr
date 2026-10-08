@@ -50,17 +50,35 @@ start and the second run's start, both inclusive, in whole seconds (marker times
 the runner logs hold several reservations of the job by that pid, the one nearest the first run's
 start is used.
 
+A doubles.tsv row is no double, but is printed "killed", if its first run's own reservation was
+killed: that runner log has the exact line msg="jobqueue Execute(<key>): killed by user request"
+for its key after the reservation's "reserved a job" line and before the log's next one, logged
+no later than the second run's start (in whole seconds). A kill of any other reservation by the
+same runner, earlier or later, says nothing about this run, so its row still counts.
+The runner logs that exact line only when the command's wait status was not 0 after a kill and
+the manager accepted the job's bury at the first try; a buried job runs again only once kicked or
+retried. Errors killing the command, closing its output, running behaviours or unmounting do not
+change the line, as Execute drops them when the command's own outcome buries the job.
+psimjob.sh writes its status-0 end marker before it exits, so a stop's kill landing between them
+leaves an exit-0 marker for a run that was killed. A kill line with text before or after that
+reason (a kill before the command started, a signal after the command exited, a bury that needed
+retries, a high-memory note) is not matched, so its row still counts as a double. A reservation
+that logged "command ran OK" was archived and never has the kill line, but a killed row is still
+acknowledged when an earlier reservation's OK line falls in its first run's start second; it is
+then counted nowhere.
+
 Every psimjob (kind, id) with an S marker must be in dbstart.tsv, except a put or fofnput whose
 last run's E status is not 0 or which has no E marker (prodsim may have removed it).
 
 It prints:
   nondurable source=<d1|warning> inside=<n> outside=<n> runs=<runs> outsidePct=<x.xxxx|nan>
   totals <ok|GAP pid <pid> after <n>|n/a>
-  doubles inside=<n> outside=<n> acknowledged=<n>
+  doubles inside=<n> outside=<n> acknowledged=<n>   (killed rows are in none of these)
   missing ran=<n> absent=<n> excused=<n>
   peakRUN=<n>
-then a "double" line per outside or acknowledged double, in doubles.tsv order, and an "absent"
-line per absent job, sorted by kind then id. outsidePct is nan when runs is 0: such a soak
+then a "double" line per outside or acknowledged double, in doubles.tsv order, a "killed" line
+per killed row ("killed <kind> <id> <inside|outside> reserved=<t>"), in doubles.tsv order, and an
+"absent" line per absent job, sorted by kind then id. outsidePct is nan when runs is 0: such a soak
 measured nothing, and nan compares false with any bound, so it fails a gate on outsidePct
 instead of passing as 0.
 """
@@ -86,6 +104,7 @@ ROTATED = re.compile(r'^log-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3})(?:\.gz)
 RES = re.compile(r'msg="reserved a job" key=([0-9a-f]{32}) cmd="\S*psimjob\.sh (\S+) (\S+) ')
 PID = re.compile(r' pid=(\d+)')
 OK = re.compile(r'msg="command ran OK" key=([0-9a-f]{32}) ')
+KILLED = re.compile(r'msg="jobqueue Execute\(([0-9a-f]{32})\): killed by user request"')
 RUN = re.compile(r'\bRUN=(\d+)')
 
 Window = tuple[int, int]
@@ -225,7 +244,8 @@ def marker_runs(outdir: str) -> dict[tuple[str, str, str, str], Run]:
 
 
 def runner_segments(rl: str, targets: set[tuple[str, str]]) -> dict[tuple[str, str], list[Run]]:
-    """Return each target (host, pid)'s reservations: job, key, time and that log's OK lines."""
+    """Return each target (host, pid)'s reservations: job, key, time, own kill times and that log's
+    OK lines."""
     found: dict[tuple[str, str], list[Run]] = collections.defaultdict(list)
     hosts = {h for h, _ in targets}
     for path in glob.glob(os.path.join(rl, '*', '*')):
@@ -241,7 +261,8 @@ def runner_segments(rl: str, targets: set[tuple[str, str]]) -> dict[tuple[str, s
 
 
 def scan_runner_log(path: str) -> tuple[list[Run], list[tuple[str, int]]]:
-    """Return a runner log's reservations (each with its job's pid) and its "command ran OK" lines."""
+    """Return a runner log's reservations (each with its job's pid and the times of its own kill
+    lines, up to the next reservation) and the log's "command ran OK" lines."""
     segs: list[Run] = []
     oks: list[tuple[str, int]] = []
     seg: Run | None = None
@@ -253,12 +274,16 @@ def scan_runner_log(path: str) -> tuple[list[Run], list[tuple[str, int]]]:
             if 'msg="reserved a job"' in line:
                 r = RES.search(line)
                 seg = {'key': r.group(1), 'job': (r.group(2), r.group(3)), 'res': epoch(m.group(1)),
-                       'pid': None} if r else None
+                       'pid': None, 'kills': []} if r else None
                 if seg is not None:
                     segs.append(seg)
             elif seg is not None and seg['pid'] is None and 'msg="started executing"' in line:
                 p = PID.search(line)
                 seg['pid'] = p.group(1) if p else None
+            elif seg is not None and 'killed by user request' in line:
+                k = KILLED.search(line)
+                if k and k.group(1) == seg['key']:
+                    seg['kills'].append(epoch(m.group(1)))
             ok = OK.search(line) if 'msg="command ran OK"' in line else None
             if ok:
                 oks.append((ok.group(1), epoch(m.group(1))))
@@ -266,8 +291,9 @@ def scan_runner_log(path: str) -> tuple[list[Run], list[tuple[str, int]]]:
 
 
 def classify_doubles(doubles_tsv: str, runs: dict[tuple[str, str, str, str], Run], rl: str,
-                     windows: list[Window]) -> list[tuple[str, str, str, int | None, bool]]:
-    """Return per doubles.tsv row: kind, id, inside|outside|unmapped, reserved time, acknowledged."""
+                     windows: list[Window]) -> list[tuple[str, str, str, int | None, bool, bool]]:
+    """Return per doubles.tsv row: kind, id, inside|outside|unmapped, reserved time, acknowledged,
+    and whether its first run was killed (so it is no double)."""
     with open(doubles_tsv) as f:
         rows = [line.rstrip('\n').split('\t') for line in f if line.strip()]
     pid_of = {(k[2], k[3], k[0], r['s']): k[1] for k, r in runs.items() if r['s'] is not None}
@@ -279,12 +305,13 @@ def classify_doubles(doubles_tsv: str, runs: dict[tuple[str, str, str, str], Run
         pid = pid_of.get((kind, jid, host, s1))
         cands = [s for s in segs.get((host, pid), ()) if s['job'] == (kind, jid)]
         if not cands:
-            out.append((kind, jid, 'unmapped', None, False))
+            out.append((kind, jid, 'unmapped', None, False, False))
             continue
         seg = min(cands, key=lambda s: abs(s['res'] * 1000 - s1))
         acked = any(key == seg['key'] and s1 // 1000 <= t <= s2 // 1000 for key, t in seg['oks'])
+        killed = any(t <= s2 // 1000 for t in seg['kills'])
         where = 'inside' if inside(seg['res'], windows) else 'outside'
-        out.append((kind, jid, where, seg['res'], acked))
+        out.append((kind, jid, where, seg['res'], acked, killed))
     return out
 
 
@@ -336,16 +363,20 @@ def main() -> None:
     print('totals ' + (totals_verdict(segments) if a.source == 'd1' else 'n/a'))
 
     runs = marker_runs(a.outdir)
-    doubles = classify_doubles(a.doubles, runs, a.runnerlogdir, windows)
+    rows = classify_doubles(a.doubles, runs, a.runnerlogdir, windows)
+    doubles = [d for d in rows if not d[5]]
     d_in = sum(1 for d in doubles if d[2] == 'inside')
     print(f'doubles inside={d_in} outside={len(doubles) - d_in} acknowledged={sum(1 for d in doubles if d[4])}')
     ran, excused, absent = missing_jobs(runs, a.dbstart)
     print(f'missing ran={ran} absent={len(absent)} excused={excused}')
     print(f'peakRUN={peak_run(a.outdir)}')
-    for kind, jid, where, res, acked in doubles:
+    for kind, jid, where, res, acked, _ in doubles:
         if where != 'inside' or acked:
             print(f'double {kind} {jid} {where} reserved={"-" if res is None else res} '
                   f'acknowledged={"yes" if acked else "no"}')
+    for kind, jid, where, res, _, killed in rows:
+        if killed:
+            print(f'killed {kind} {jid} {where} reserved={res}')
     for kind, jid, status in absent:
         print(f'absent {kind} {jid} last={status}')
 

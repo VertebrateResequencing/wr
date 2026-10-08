@@ -1,0 +1,16 @@
+portal_compress	A.1	no-outage	node-1	4000000	4005000	node-9	4100000	4105000	0
+portal_dedupe	B.1	no-outage	node-2	4200000	4205000	node-9	4300000	4305000	0
+portal_split	C.1	no-outage	node-3	4400000	4405000	node-9	4500900	4505900	0
+portal_merge	D.1	no-outage	node-4	4600000	4605000	node-9	4700000	4705000	0
+portal_qc	E.1	no-outage	node-5	4800000	4805000	node-9	4900700	4905700	0
+portal_index	F.1	no-outage	node-6	5010000	5015000	node-9	5100000	5105000	0
+portal_sort	G.1	no-outage	node-7	5200700	5200900	node-9	5300000	5305000	0
+portal_stats	H.1	no-outage	node-8	5400000	5405000	node-9	5500000	5505000	0
+portal_bam	I.1	no-outage	node-10	5600000	5603000	node-9	5700000	5705000	0
+portal_trim	J.1	no-outage	node-12	1050000	1055000	node-9	1100000	1105000	0
+portal_call	K.1	no-outage	node-11	5800000	5803000	node-11	5804000	None	None
+portal_call	K.1	no-outage	node-11	5800000	5803000	node-9	5900000	5905000	0
+portal_fix	L.1	no-outage	node-13	6005000	6008000	node-9	6100000	6105000	0
+portal_lint	M.1	no-outage	node-14	6200000	6205000	node-9	6300000	6305000	0
+portal_mark	N.1	no-outage	node-15	6400000	6403000	node-15	6403500	6405000	0
+portal_mark	N.1	no-outage	node-15	6403500	6405000	node-9	6500000	6505000	0

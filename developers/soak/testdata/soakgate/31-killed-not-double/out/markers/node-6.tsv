@@ -1,0 +1,3 @@
+S	5000000	portal_index	F.1	node-6	600			/soak/work
+S	5010000	portal_index	F.1	node-6	601			/soak/work
+E	5015000	portal_index	F.1	node-6	601		0	/soak/work

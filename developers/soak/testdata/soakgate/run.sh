@@ -14,7 +14,8 @@
 #   field in those lines ends in pid/total/repeats/RUN/runs (D1 logs key and
 #   total; only the repeated warning has repeats=; bjobs state names;
 #   markers.py's first line).
-# - RES/OK taking any key or path, or no space after the id: keys are 32 hex,
+# - RES/OK taking any key or path, or no space after the id, and KILLED taking
+#   any key: keys are 32 hex (and KILLED's must also equal its reservation's),
 #   and prodsim's psimjob.sh commands are absolute and take more arguments.
 # - stall.log guards (field count, digit epoch, the STALL word, END with no
 #   START): stall.sh, the only writer, prefixes date +%s and writes END only
@@ -26,9 +27,15 @@
 # - runner logs without the host, target or name-length filters, or globbed
 #   recursively: cmd/runner.go names them <dir>/<yy.mm.dd>/<time>.<host>.<pid>,
 #   and segments are looked up by (host, pid) anyway.
-# - the "command ran OK" substring pre-check: OK's regex requires it.
+# - the "command ran OK" and "killed by user request" substring pre-checks:
+#   OK's and KILLED's regexes require them.
 # - pid_of keeping runs with no S: their None start never equals an s1.
 # - dbstart rows needing 5 fields: dbstart writes 11, or 1 (schemaVersion=).
+# KILLED's prefix, with or without msg=", and its closing quote are not in that
+# list: case 31 pins them with M.1 (a signal error leads the kill reason, as
+# "sigErr; myerr") and H.1 (text after it). wr also wraps the reason when a kill
+# lands before the command started, but that run has no S marker, so it is
+# never a doubles row's first run.
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
