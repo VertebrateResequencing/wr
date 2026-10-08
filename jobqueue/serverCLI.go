@@ -1513,7 +1513,7 @@ func (s *Server) touchJob(ctx context.Context, cr *clientRequest, item *queue.It
 		emitLive = func() { s.emitLiveTouchSnapshot(ctx, cr, job, srerr) }
 	}
 
-	s.emitJobTransition(counts, emitLive)
+	s.emitJobTransition(0, counts, emitLive)
 
 	return srerr, qerr
 }

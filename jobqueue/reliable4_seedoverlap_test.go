@@ -363,7 +363,7 @@ func TestReliable4StatusSeedOverlapNaturalRace(t *testing.T) {
 		// this very queue, next to the materialising walk the seed used to do - and
 		// the error it can produce is the window times the transition rate.
 		seedStart := time.Now()
-		_, perRG := server.statusSeedCounts()
+		_, perRG, _ := server.statusSeedCounts()
 		seedMS := float64(time.Since(seedStart).Nanoseconds()) / 1e6
 		So(len(perRG), ShouldBeGreaterThan, 0)
 

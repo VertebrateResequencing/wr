@@ -186,7 +186,7 @@ func TestQueue(t *testing.T) {
 
 		waitForChanged := make(chan bool)
 
-		queue.SetChangedCallback(func(from, to SubQueue, data []any) {
+		queue.SetChangedCallback(func(from, to SubQueue, data []any, _ uint64) {
 			callBackLock2.Lock()
 			defer callBackLock2.Unlock()
 
@@ -2014,6 +2014,69 @@ func qdestroy(q *Queue) {
 	}
 }
 
+func TestQueueChangeSequence(t *testing.T) {
+	ctx := context.Background()
+
+	synctestConvey(t, "Each move's changed callback gets the next change sequence, "+
+		"and a Snapshot's sequence is that of the last move its states show", func() {
+		queue := New(ctx, "change sequence queue")
+		defer qdestroy(queue)
+
+		recorder := &seqRecorder{seqs: make(map[changedStruct]uint64)}
+		queue.SetChangedCallback(recorder.changed)
+
+		states, seq := snapshotStates(queue)
+		So(states, ShouldBeEmpty)
+		So(seq, ShouldEqual, 0)
+
+		_, err := queue.Add(ctx, key1, "", "a", 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+		synctest.Wait()
+
+		So(recorder.seq(SubQueueNew, SubQueueReady), ShouldEqual, 1)
+
+		states, seq = snapshotStates(queue)
+		So(states, ShouldResemble, map[any]ItemState{"a": ItemStateReady})
+		So(seq, ShouldEqual, 1)
+
+		reserved, err := queue.Reserve("", 0)
+		So(err, ShouldBeNil)
+		So(reserved.Key, ShouldEqual, key1)
+
+		_, err = queue.Add(ctx, key2, "", "b", 0, 0, time.Minute, "")
+		So(err, ShouldBeNil)
+		synctest.Wait()
+
+		So(recorder.seq(SubQueueReady, SubQueueRun), ShouldEqual, 2)
+
+		states, seq = snapshotStates(queue)
+		So(states, ShouldResemble, map[any]ItemState{"a": ItemStateRun, "b": ItemStateReady})
+		So(seq, ShouldEqual, 3)
+
+		So(queue.Suspend(ctx, key2), ShouldBeNil)
+		synctest.Wait()
+
+		So(recorder.seq(SubQueueReady, SubQueueSuspended), ShouldEqual, seq+1)
+
+		states, seq = snapshotStates(queue)
+		So(states, ShouldResemble, map[any]ItemState{"a": ItemStateRun, "b": ItemStateSuspended})
+		So(seq, ShouldEqual, 4)
+	})
+}
+
+// snapshotStates returns a Snapshot's item states keyed by item data, plus its
+// change sequence.
+func snapshotStates(queue *Queue) (map[any]ItemState, uint64) {
+	items, seq := queue.Snapshot()
+
+	states := make(map[any]ItemState, len(items))
+	for _, item := range items {
+		states[item.Data] = item.State
+	}
+
+	return states, seq
+}
+
 func containsSingleItemChange(records []*changedStruct, from, to SubQueue) bool {
 	for _, record := range records {
 		if record.from == from && record.to == to && record.count == 1 {
@@ -2051,7 +2114,7 @@ func (recorder *queueCallbackRecorder) ready(_ string, _ []any) {
 	recorder.readyCalls++
 }
 
-func (recorder *queueCallbackRecorder) changed(from, to SubQueue, data []any) {
+func (recorder *queueCallbackRecorder) changed(from, to SubQueue, data []any, _ uint64) {
 	recorder.mutex.Lock()
 	defer recorder.mutex.Unlock()
 
@@ -2586,6 +2649,27 @@ func TestQueueBuryWaiting(t *testing.T) {
 	})
 }
 
+// seqRecorder records the change sequence each changed callback was given,
+// keyed by the move it reported.
+type seqRecorder struct {
+	mutex sync.Mutex
+	seqs  map[changedStruct]uint64
+}
+
+func (recorder *seqRecorder) changed(from, to SubQueue, data []any, seq uint64) {
+	recorder.mutex.Lock()
+	defer recorder.mutex.Unlock()
+
+	recorder.seqs[changedStruct{from: from, to: to, count: len(data)}] = seq
+}
+
+func (recorder *seqRecorder) seq(from, to SubQueue) uint64 {
+	recorder.mutex.Lock()
+	defer recorder.mutex.Unlock()
+
+	return recorder.seqs[changedStruct{from: from, to: to, count: 1}]
+}
+
 func TestQueueChangedCallbackDispatchesConcurrently(t *testing.T) {
 	ctx := context.Background()
 
@@ -2597,7 +2681,7 @@ func TestQueueChangedCallbackDispatchesConcurrently(t *testing.T) {
 		started := make(chan struct{})
 		release := make(chan struct{})
 
-		queue.SetChangedCallback(func(from, to SubQueue, _ []any) {
+		queue.SetChangedCallback(func(from, to SubQueue, _ []any, _ uint64) {
 			if from == SubQueueNew && to == SubQueueReady {
 				close(started)
 				<-release
@@ -2630,7 +2714,7 @@ func TestQueueChangedCallbacksRunConcurrently(t *testing.T) {
 		releaseFirst := make(chan struct{})
 		secondStarted := make(chan struct{})
 
-		queue.SetChangedCallback(func(from, to SubQueue, _ []any) {
+		queue.SetChangedCallback(func(from, to SubQueue, _ []any, _ uint64) {
 			switch {
 			case from == SubQueueNew && to == SubQueueReady:
 				close(firstStarted)

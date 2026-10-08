@@ -920,6 +920,12 @@ type jstateCount struct {
 	FromState JobState
 	ToState   JobState
 	Count     int
+
+	// seq is the queue change sequence of the move this delta reports, or 0 for
+	// a delta that is not a queue move (a job going lost or coming back). It is
+	// never sent: the status pump uses it to drop a delta whose move the
+	// connection's seed already counted (see wsConnWriter).
+	seq uint64
 }
 
 // SchedulerIssue is the details of a scheduler problem encountered that we send
@@ -1782,7 +1788,7 @@ type Server struct {
 	recoveryPauseHook   func()
 	pauseRequests       int
 	wsconns             map[string]*websocket.Conn
-	wsWriteMutexes      map[string]*sync.Mutex // mutex per websocket connection
+	wsWriteMutexes      map[string]*wsConnWriter // write mutex per websocket connection
 	wsHandlerWG         sync.WaitGroup
 	clientSubscriptions map[string]*serverSubscription
 	badServers          map[string]*cloud.Server
@@ -5336,7 +5342,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		wsconns:                   make(map[string]*websocket.Conn),
 		statusCaster:              newCaster(true),
 		badServerCaster:           newCaster(false),
-		wsWriteMutexes:            make(map[string]*sync.Mutex),
+		wsWriteMutexes:            make(map[string]*wsConnWriter),
 		clientSubscriptions:       make(map[string]*serverSubscription),
 		badServers:                make(map[string]*cloud.Server),
 		schedCaster:               newCaster(false),
@@ -6245,8 +6251,8 @@ func (s *Server) createQueue(ctx context.Context) {
 
 	// we set a callback for things changing in the queue, which lets us
 	// update the status webpage with the minimal work and data transfer
-	q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []any) {
-		s.emitChangeCallbackTransition(ctx, fromQ, toQ, data)
+	q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []any, seq uint64) {
+		s.emitChangeCallbackTransition(ctx, fromQ, toQ, data, seq)
 	})
 
 	// we set a callback for running items that hit their ttr because the
@@ -6370,7 +6376,7 @@ func (s *Server) markJobLost(ctx context.Context, job *Job, lostUpdate *JobUpdat
 	// pre-built lost subscription update. Both run after job.Unlock while
 	// queue.mutex is still held; neither statusCaster.Send nor the subscription
 	// locks are ever taken before the queue lock.
-	s.emitJobTransition(
+	s.emitJobTransition(0,
 		[]countContribution{{from: JobStateRunning, to: JobStateLost, repGroup: repGroup, n: 1}},
 		func() { s.enqueueSubscriptionUpdate(lostUpdate, false) },
 	)
@@ -8734,7 +8740,7 @@ func (s *Server) storeWebSocketConnection(conn *websocket.Conn) (string, bool) {
 
 	unique := logext.RandId(webSocketIDLength)
 	s.wsconns[unique] = conn
-	s.wsWriteMutexes[unique] = &sync.Mutex{}
+	s.wsWriteMutexes[unique] = &wsConnWriter{}
 
 	return unique, true
 }

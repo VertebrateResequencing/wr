@@ -163,6 +163,13 @@ func defaultTTRCallback(_ any) SubQueue {
 	return SubQueueReady
 }
 
+// ItemSnapshot is one item's data and the state it was in when Snapshot() was
+// taken.
+type ItemSnapshot struct {
+	Data  any
+	State ItemState
+}
+
 // Suspend moves a delayed, ready, or dependent item to the suspended sub-queue.
 func (queue *Queue) Suspend(ctx context.Context, key string) error {
 	return queue.SuspendWith(ctx, key, nil)
@@ -528,6 +535,23 @@ func (queue *Queue) KickWith(ctx context.Context, key string, kicking func(data 
 	return nil
 }
 
+// Snapshot returns the data and state of every item in the queue, plus the
+// change sequence they reflect, all read under one hold of the queue's lock:
+// every move whose ChangedCallback seq is at or below the returned sequence is
+// reflected in the states, and every later move is not. NB: You should NOT
+// alter the data - use it for read-only purposes.
+func (queue *Queue) Snapshot() ([]ItemSnapshot, uint64) {
+	queue.mutex.RLock()
+	defer queue.mutex.RUnlock()
+
+	snapshots := make([]ItemSnapshot, 0, len(queue.items))
+	for _, item := range queue.items {
+		snapshots = append(snapshots, ItemSnapshot{Data: item.Data(), State: item.State()})
+	}
+
+	return snapshots, queue.changeSeq
+}
+
 // holdsDependencies says whether an item added with dependencies to startQueue
 // starts there with them recorded, rather than in the dependent sub-queue: a
 // buried or suspended item only waits on its dependencies once it is Kick()ed
@@ -599,8 +623,11 @@ type ReadyAddedCallback func(queuename string, allitemdata []any)
 // ChangedCallback is used as a callback to know when items change sub-queues,
 // telling you what item.Data() moved from which sub-queue to which other sub-
 // queue. For new items in the queue, `from` will be SubQueueNew, and for items
-// leaving the queue, `to` will be SubQueueRemoved.
-type ChangedCallback func(from, to SubQueue, data []any)
+// leaving the queue, `to` will be SubQueueRemoved. seq is the queue's change
+// sequence for this move: it rises by one with every move made while a
+// callback is set, so a move with a seq at or below the one Snapshot()
+// returned is already reflected in that snapshot's states.
+type ChangedCallback func(from, to SubQueue, data []any, seq uint64)
 
 // TTRCallback is used as a callback to decide which sub-queue an item should
 // move to when an item in the run sub-queue hits its TTR, based on that
@@ -634,6 +661,7 @@ type Queue struct {
 	readyAddedCb           ReadyAddedCallback
 	changedCb              ChangedCallback
 	ttrCb                  TTRCallback
+	changeSeq              uint64 // guarded by mutex; see changed()
 	mutex                  sync.RWMutex
 	readyAddedCbMutex      sync.Mutex
 	closed                 bool
@@ -804,21 +832,27 @@ func (queue *Queue) rescheduleReadyAddedIfRecall(ctx context.Context) {
 // sub-queue ('new' in the case of entering the queue for the first time), the
 // name of the moved-to sub-queue ('removed' in the case of the item being
 // removed from the queue), and a slice of item.Data() of everything that moved
-// in this way. The callback will be initiated in a go routine.
+// in this way, plus the move's change sequence (see ChangedCallback). The
+// callback will be initiated in a go routine, so callbacks can run in any
+// order; use the sequence to order them against a Snapshot().
 func (queue *Queue) SetChangedCallback(callback ChangedCallback) {
 	queue.changedCb = callback
 }
 
 // changed checks if a changedCallback has been set, and if so calls it in a go
-// routine.
+// routine with the next change sequence. You must hold the mutex for writing,
+// in the same hold as the move itself, so Snapshot() sees either both the move
+// and its sequence or neither.
 func (queue *Queue) changed(from, to SubQueue, items []*Item) {
 	if queue.changedCb != nil {
+		queue.changeSeq++
+
 		data := make([]any, 0, len(items))
 		for _, item := range items {
 			data = append(data, item.Data())
 		}
 
-		go queue.changedCb(from, to, data)
+		go queue.changedCb(from, to, data, queue.changeSeq)
 	}
 }
 
