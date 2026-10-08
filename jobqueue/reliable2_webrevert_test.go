@@ -239,8 +239,11 @@ func TestReliable2WebRevertNoDivergingCounter(t *testing.T) {
 // mirroring what the browser's status bar does: FromState drops by Count,
 // ToState rises by Count. Negative intermediate values are clamped to 0 so an
 // out-of-order delta cannot drive a state below zero (v0.36.5 behaviour).
+// seeded records that a seed's "end" boundary has been read since the counts
+// were last started afresh.
 type deltaCounts struct {
 	latest map[string]map[JobState]int
+	seeded bool
 }
 
 func newDeltaCounts() *deltaCounts {
@@ -391,6 +394,7 @@ func readJStateDeltasUntil(ws *websocket.Conn, timeout time.Duration,
 			inSeed = true
 		case seedBoundaryEnd:
 			inSeed = false
+			acc.seeded = true
 		default:
 			acc.apply(jstateCount{
 				RepGroup: msg.RepGroup, FromState: msg.FromState, ToState: msg.ToState, Count: msg.Count,

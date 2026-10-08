@@ -437,6 +437,76 @@ func TestReadJStateDeltasUntilSeedBegin(t *testing.T) {
 	})
 }
 
+// TestReadJStateDeltasUntilSeedBracket covers the delta reader the status tests
+// share, for counts that match partway through a seed but not once the whole
+// seed has been read. A status page part way through a seed shows counts that
+// are not yet whole, so the reader must not accept them.
+func TestReadJStateDeltasUntilSeedBracket(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Counts that match only partway through a seed are not accepted", t, func() {
+		stream := []any{
+			&jstatusSeedBoundary{SeedBoundary: seedBoundaryBegin},
+			&jstateCount{RepGroup: statusAllRepGroups, FromState: JobStateNew, ToState: JobStateReady, Count: 1},
+			&jstateCount{RepGroup: statusAllRepGroups, FromState: JobStateNew, ToState: JobStateRunning, Count: 1},
+			&jstatusSeedBoundary{SeedBoundary: seedBoundaryEnd},
+		}
+
+		ws := dialScriptedStatusWS(t, stream)
+
+		So(readJStateCounts(ws, []expectedJStateCount{
+			{repGroup: statusAllRepGroups, state: JobStateReady, count: 1},
+			{repGroup: statusAllRepGroups, state: JobStateRunning, count: 0},
+		}, time.Second), ShouldBeFalse)
+	})
+}
+
+// TestReadAbsoluteStateUntilSeed covers the reader that checks a status page's
+// seed. It must judge the counts of a whole seed, so a predicate wanting no
+// jobs is proven by an empty seed, not by reading nothing, and deltas received
+// before the seed's "begin" boundary are not counted, as the status page drops
+// them.
+func TestReadAbsoluteStateUntilSeed(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	const repGroup = "rg-helper-absolute"
+
+	noJobs := func(latest map[string]map[JobState]int) bool {
+		return statusCountsTotal(latest[repGroup]) == 0 && statusCountsTotal(latest[statusAllRepGroups]) == 0
+	}
+
+	Convey("With no seed, wanting no jobs is not satisfied", t, func() {
+		ws := dialScriptedStatusWS(t, nil)
+
+		So(readAbsoluteStateUntil(ws, time.Second, noJobs), ShouldBeFalse)
+	})
+
+	Convey("A seed that still counts jobs does not satisfy wanting no jobs", t, func() {
+		ws := dialScriptedStatusWS(t, []any{
+			&jstatusSeedBoundary{SeedBoundary: seedBoundaryBegin},
+			&jstateCount{RepGroup: statusAllRepGroups, FromState: JobStateNew, ToState: JobStateReady, Count: 2},
+			&jstatusSeedBoundary{SeedBoundary: seedBoundaryEnd},
+		})
+
+		So(readAbsoluteStateUntil(ws, time.Second, noJobs), ShouldBeFalse)
+	})
+
+	Convey("An empty seed satisfies wanting no jobs, despite deltas before its begin", t, func() {
+		ws := dialScriptedStatusWS(t, []any{
+			&jstateCount{RepGroup: repGroup, FromState: JobStateNew, ToState: JobStateReady, Count: 1},
+			&jstateCount{RepGroup: statusAllRepGroups, FromState: JobStateNew, ToState: JobStateReady, Count: 1},
+			&jstatusSeedBoundary{SeedBoundary: seedBoundaryBegin},
+			&jstatusSeedBoundary{SeedBoundary: seedBoundaryEnd},
+		})
+
+		So(readAbsoluteStateUntil(ws, 2*time.Second, noJobs), ShouldBeTrue)
+	})
+}
+
 // dialScriptedStatusWS connects to a websocket server that sends each of msgs
 // in order, then holds the connection open until the test ends.
 func dialScriptedStatusWS(t *testing.T, msgs []any) *websocket.Conn {

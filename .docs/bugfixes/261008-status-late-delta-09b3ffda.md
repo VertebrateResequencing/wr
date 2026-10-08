@@ -270,7 +270,7 @@ fix touches `queue.changed`, which runs on every queue move, so it also needs
       file for `jobqueue/serverWebI.go` and
       `jobqueue/status_late_delta_test.go`.
       Comments and test only, so `make speed` was not rerun.
-- [ ] `readAbsoluteStateUntil` (`jobqueue/serverWebI_test.go`) ignores seed
+- [x] `readAbsoluteStateUntil` (`jobqueue/serverWebI_test.go`) ignores seed
   boundaries and never resets on `begin`, like the old
   `readJStateDeltasUntil`; and its caller asserts both totals `== 0`, a
   predicate that already holds before any message is read, so that assertion
@@ -282,3 +282,60 @@ fix touches `queue.changed`, which runs on every queue move, so it also needs
     checks its predicate only outside a seed bracket, but nothing tests that;
     removing the gate survives every test. Add a scripted-stream case where
     the predicate holds partway through a seed but not at `end`.
+  - What the callers prove: `TestStatusCurrentAbsoluteState`'s last step
+    reconnects after removing the rep group's jobs and must see a seed that
+    shows the rep group and `+all+` empty. `TestServerWebI`'s "responds to
+    current requests" must see a seed with exact running, complete and
+    buried counts. Both are about the seed, so the helper must judge a whole
+    seed, not whatever it has read so far.
+  - Red (test-only, so mutants show the vacuity; each was reverted by
+    restoring a saved copy and confirmed with `cmp`). Command:
+    `nice -n 19 timeout 900 go test -tags netgo ./jobqueue -count=1 -run
+    'TestStatusCurrentAbsoluteState$' -v` on `7723961d`:
+    - M1, test mutant: the reconnect never asks for a seed (its
+      `jstatusRequestCurrent` write replaced by `err = nil`), so the server
+      sends nothing. Exit 0, `--- PASS: TestStatusCurrentAbsoluteState`.
+    - M2, production mutant: `statusSeedCounts` reports `+all+` ready 2
+      when the queue is empty (a seed still counting removed jobs). Exit 0,
+      `--- PASS: TestStatusCurrentAbsoluteState`.
+    - G, the gate: `readJStateDeltasUntil` with `!inSeed &&` removed (plus
+      `_ = inSeed`, so it still compiles). The
+      targeted `Status|WebI|Seed|Delta|Suspend|WebRevert` tests in
+      `./jobqueue` exit 0 (64 s).
+  - Fix (test-only):
+    - `jobqueue/reliable2_webrevert_test.go`: `deltaCounts` gains `seeded`,
+      which `readJStateDeltasUntil` sets on `end`; a `begin` still starts a
+      fresh `deltaCounts`, clearing it.
+    - `jobqueue/serverWebI_test.go`: `readAbsoluteStateUntil` now calls
+      `readJStateDeltasUntil` with its predicate guarded by `acc.seeded`, so
+      it resets on `begin`, checks only outside a seed bracket, and is only
+      satisfied once a seed has ended. Callers and their predicates are
+      unchanged. `cleanorder -min-diff` also moved two pre-existing
+      `statusCountReconcile*` consts in this file (the file at `7723961d`
+      already differed from its `-dry` output).
+    - `jobqueue/status_late_delta_test.go`: new scripted-stream tests.
+      `TestReadJStateDeltasUntilSeedBracket`: a seed whose first delta
+      matches (`+all+` ready 1, running 0) but whose second (running 1) does
+      not must not satisfy the reader. `TestReadAbsoluteStateUntilSeed`:
+      wanting no jobs is false with no seed and false for a seed still
+      counting jobs, and true for an empty seed after deltas received
+      before its `begin`.
+  - Red to green, same command and mutants after the fix:
+    - M1: exit 1 (`Expected: true`, `Actual: false`, `--- FAIL:
+      TestStatusCurrentAbsoluteState (3.83s)`).
+    - M2: exit 1 (`Expected: true`, `Actual: false`, 3.64 s).
+    - G: `-run 'TestReadJStateDeltasUntilSeed|TestReadAbsoluteStateUntilSeed$'`
+      exits 1 (`Expected: false`, `Actual: true`, `--- FAIL:
+      TestReadJStateDeltasUntilSeedBracket`).
+    - R, no reset on `begin` (`acc = newDeltaCounts()` removed):
+      `-run 'TestReadAbsoluteStateUntilSeed$'` exits 1 (`Expected: true`,
+      `Actual: false`).
+    - Unmutated, the new tests, `TestStatusCurrentAbsoluteState` and
+      `TestServerWebI` pass.
+  - Gates (`nice -n 19`, `GOFLAGS=-p=2`): targeted
+    `Status|WebI|Seed|Delta|Suspend|WebRevert|ReadAbsolute|ReadJState`
+    tests in `./jobqueue` pass plain (62 s) and under `CGO_ENABLED=1 -race`
+    (97 s). `make lint`: 0 issues. `make test`: 971 passed, 22 skipped.
+    `CGO_ENABLED=1 make race`: 971 passed, 21 skipped. `cleanorder -min-diff
+    -dry` output matches all three edited Go files. Test-only, so no
+    `make speed`.
