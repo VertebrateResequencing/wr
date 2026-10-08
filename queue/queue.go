@@ -164,7 +164,16 @@ func defaultTTRCallback(_ any) SubQueue {
 }
 
 // Suspend moves a delayed, ready, or dependent item to the suspended sub-queue.
-func (queue *Queue) Suspend(_ context.Context, key string) error {
+func (queue *Queue) Suspend(ctx context.Context, key string) error {
+	return queue.SuspendWith(ctx, key, nil)
+}
+
+// SuspendWith is Suspend, except that suspending, if not nil, is called with the
+// item's data and the queue locked, once the item is known to be suspendable and
+// before it leaves its sub-queue. Whatever suspending does therefore happens
+// before the item can be resumed, and it is not called at all if the suspend
+// fails. suspending must not call the queue.
+func (queue *Queue) SuspendWith(_ context.Context, key string, suspending func(data any)) error {
 	queue.mutex.Lock()
 
 	if queue.closed {
@@ -174,19 +183,17 @@ func (queue *Queue) Suspend(_ context.Context, key string) error {
 	}
 
 	item, ok := queue.items[key]
-	if !ok {
+	if !ok || !item.state.Suspendable() {
 		queue.mutex.Unlock()
 
 		return Error{queue.Name, opSuspend, key, ErrNotSuspendable}
 	}
 
-	from, moved := queue.suspendItem(item)
-	if !moved {
-		queue.mutex.Unlock()
-
-		return Error{queue.Name, opSuspend, key, ErrNotSuspendable}
+	if suspending != nil {
+		suspending(item.Data())
 	}
 
+	from := queue.suspendItem(item)
 	queue.suspendedQueue.push(item)
 	queue.changed(from, SubQueueSuspended, []*Item{item})
 	queue.mutex.Unlock()
@@ -194,25 +201,25 @@ func (queue *Queue) Suspend(_ context.Context, key string) error {
 	return nil
 }
 
-func (queue *Queue) suspendItem(item *Item) (SubQueue, bool) {
+// suspendItem takes a suspendable item out of its sub-queue and switches it to
+// suspended, returning the sub-queue it was taken from.
+func (queue *Queue) suspendItem(item *Item) SubQueue {
 	switch item.state {
 	case ItemStateDelay:
 		queue.delayQueue.remove(item)
 		item.switchDelaySuspended()
 
-		return SubQueueDelay, true
+		return SubQueueDelay
 	case ItemStateReady:
 		queue.readyQueue.remove(item)
 		item.switchReadySuspended()
 
-		return SubQueueReady, true
-	case ItemStateDependent:
+		return SubQueueReady
+	default:
 		queue.depQueue.remove(item)
 		item.switchDependentSuspended()
 
-		return SubQueueDependent, true
-	default:
-		return "", false
+		return SubQueueDependent
 	}
 }
 
@@ -2216,4 +2223,9 @@ func (queue *Queue) ttrNotificationTrigger(item *Item) {
 // Unwrap returns the underlying queue sentinel error.
 func (e Error) Unwrap() error {
 	return e.Err
+}
+
+// Suspendable says whether an item in this state can be suspended.
+func (state ItemState) Suspendable() bool {
+	return state == ItemStateDelay || state == ItemStateReady || state == ItemStateDependent
 }

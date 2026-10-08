@@ -129,12 +129,49 @@ func kickResumeBenchSuspend(ctx context.Context, b *testing.B, s *Server, n int)
 	return nil, keys
 }
 
+// kickResumeBenchDelay reserves the n ready targets on s and releases them into
+// the delay sub-queue for longer than a benchmark runs, so they stay
+// suspendable, and out of the reservers' reach, until suspended.
+func kickResumeBenchDelay(ctx context.Context, b *testing.B, s *Server, n int) ([]*Job, []string) {
+	b.Helper()
+
+	keys := make([]string, 0, n)
+
+	for range n {
+		item, srerr := s.reserveItem(ctx, &clientRequest{})
+		if item == nil {
+			b.Fatalf("could not reserve a target: %q", srerr)
+		}
+
+		job, ok := item.Data().(*Job)
+		if !ok {
+			b.Fatal("queue item is not a *Job")
+		}
+
+		if err := s.q.SetDelay(item.Key, time.Hour); err != nil {
+			b.Fatal(err)
+		}
+
+		if err := s.q.Release(ctx, item.Key); err != nil {
+			b.Fatal(err)
+		}
+
+		job.Lock()
+		job.State = JobStateDelayed
+		job.Unlock()
+
+		keys = append(keys, item.Key)
+	}
+
+	return nil, keys
+}
+
 // kickResumeBenchPrepare parks the n ready target jobs on s, the only jobs it
 // holds, returning their server-side jobs and keys.
 type kickResumeBenchPrepare func(ctx context.Context, b *testing.B, s *Server, n int) ([]*Job, []string)
 
 // benchKickResumeUnderReserveLoad runs b.N rounds, each on a fresh server: it
-// adds the target jobs, has prepare park them (bury or suspend), adds the
+// adds the target jobs, has prepare park them (bury, suspend or delay), adds the
 // fillers, starts the reservers, then times op over every target.
 func benchKickResumeUnderReserveLoad(b *testing.B, prepare kickResumeBenchPrepare, op kickResumeBenchOp) {
 	b.Helper()
@@ -359,7 +396,7 @@ func kickResumeBenchAdd(b *testing.B, jq *Client, jobs []*Job) {
 	}
 }
 
-// kickResumeBenchOp kicks or resumes the parked targets, returning how many it
+// kickResumeBenchOp kicks, resumes or suspends the parked targets, returning how many it
 // handled.
 type kickResumeBenchOp func(ctx context.Context, s *Server, jobs []*Job, keys []string) int
 
@@ -380,5 +417,14 @@ func BenchmarkResumeUnderReserveLoad(b *testing.B) {
 	benchKickResumeUnderReserveLoad(b, kickResumeBenchSuspend,
 		func(ctx context.Context, s *Server, _ []*Job, keys []string) int {
 			return s.resumeJobs(ctx, keys)
+		})
+}
+
+// BenchmarkSuspendUnderReserveLoad is BenchmarkKickUnderReserveLoad for
+// suspending delayed jobs.
+func BenchmarkSuspendUnderReserveLoad(b *testing.B) {
+	benchKickResumeUnderReserveLoad(b, kickResumeBenchDelay,
+		func(ctx context.Context, s *Server, _ []*Job, keys []string) int {
+			return s.suspendJobs(ctx, keys)
 		})
 }

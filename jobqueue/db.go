@@ -2945,6 +2945,26 @@ func (db *db) currentJobChange(job *Job, ahead *jobChangeAhead) (string, []byte,
 	return job.Key(), encoded, err
 }
 
+// moveJobChangeAhead moves a write prepareJobChange prepared for from onto to,
+// a job that has replaced from, and returns it for queueJobChangeAhead with to.
+// from's encoding is not to's, so it is outdated, and to is encoded afresh
+// when queued. ahead may be nil, when nil is returned.
+func (db *db) moveJobChangeAhead(from, to *Job, ahead *jobChangeAhead) *jobChangeAhead {
+	if ahead == nil {
+		return nil
+	}
+
+	from.Lock()
+	from.endChangeAheadLocked(ahead.writeLocks)
+	from.Unlock()
+
+	to.Lock()
+	writeLocks := to.beginChangeAheadLocked()
+	to.Unlock()
+
+	return &jobChangeAhead{key: ahead.key, writeLocks: writeLocks, wgKey: ahead.wgKey}
+}
+
 // discardJobChangeAhead abandons a write prepareJobChange prepared for job, for
 // a change that will not be made. ahead may be nil.
 func (db *db) discardJobChangeAhead(job *Job, ahead *jobChangeAhead) {
