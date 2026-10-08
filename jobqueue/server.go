@@ -3925,14 +3925,25 @@ func (s *Server) currentGroupCount(name string) int {
 	return group.getCount()
 }
 
-// markKicked updates a job whose buried item is being kicked, and queues its
-// write, prepared ahead. kickJobs calls it while the queue holds the item, so it
-// happens only for an item that really is being kicked, and before the item can
-// be reserved: a reservation then starts from the kicked job, and its write
-// queues after this one, so neither the kick's State nor its write can supersede
-// the reservation's.
-func (s *Server) markKicked(ctx context.Context, job *Job, ahead *jobChangeAhead) {
+// markKicked updates the job of a buried item being kicked, and queues its
+// write, prepared ahead for job, and returns the job it updated. kickJobs calls
+// it with the item's data while the queue holds the item, so it happens only for
+// an item that really is being kicked, and before the item can be reserved: a
+// reservation then starts from the kicked job, and its write queues after this
+// one, so neither the kick's State nor its write can supersede the
+// reservation's.
+//
+// If the item's data is no longer job, because an add that re-runs it replaced
+// the item's job after kickJobs looked it up, the item's job is the one updated
+// and written, encoded afresh, which is rare.
+func (s *Server) markKicked(ctx context.Context, job *Job, data any, ahead *jobChangeAhead) *Job {
+	if current, ok := data.(*Job); ok && current != job {
+		job, ahead = current, s.db.moveJobChangeAhead(job, current, ahead)
+	}
+
 	s.db.queueJobChangeAhead(ctx, job, ahead, kickChange)
+
+	return job
 }
 
 // logClientRequestError logs the error handleRequest returned for a client
@@ -7627,7 +7638,11 @@ func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 			s.setRACPending()
 		}
 
-		err := s.q.KickWith(ctx, key, func(any) { s.markKicked(ctx, job, ahead) })
+		kickedJob := job
+
+		err := s.q.KickWith(ctx, key, func(data any) {
+			kickedJob = s.markKicked(ctx, job, data, ahead)
+		})
 		if err == nil {
 			if kickQueuedHook != nil {
 				kickQueuedHook(key)
@@ -7635,10 +7650,10 @@ func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 
 			// logged here rather than in markKicked, to keep it out of the
 			// queue's lock.
-			job.RLock()
-			clog.Debug(ctx, "unburied job", "key", key, "cmd", job.loggableCmd(),
-				"schedGrp", job.schedulerGroup)
-			job.RUnlock()
+			kickedJob.RLock()
+			clog.Debug(ctx, "unburied job", "key", key, "cmd", kickedJob.loggableCmd(),
+				"schedGrp", kickedJob.schedulerGroup)
+			kickedJob.RUnlock()
 
 			kicked++
 
