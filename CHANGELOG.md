@@ -35,6 +35,9 @@ project adheres to [Semantic Versioning](http://semver.org/).
   for a slow resource check before reporting the end, and the stop gave up on
   it first. The runner now reports within a few seconds, logging at info that
   it did not wait for the check in progress.
+- The web UI's status counts could count a command twice, such as showing
+  two suspended where there was one, after opening the page while commands
+  were changing state; the counts stayed wrong until the page was reloaded.
 - With thousands of runners, the manager now records each reservation and
   start with a small write instead of rewriting the whole command, so fewer
   commands are handed out before their reservation is on disk, and so fewer
