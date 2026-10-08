@@ -1,0 +1,84 @@
+{
+  "finding": "D01",
+  "scope": "Only original report line 61 wrapping; semantic acceptance unchanged; independent correction review pending",
+  "accepted_manifest_sha256": "1f8fc3ecc8a37828562735d44bb3205201e12acafa969e4f50e288bf291dce2e",
+  "original_report": {
+    "path": ".docs/nextflow-conformance/research-pilot/item3.1-author-01.md",
+    "bytes": 6031,
+    "sha256": "d7a3e3d63eabe8afbc3db9d4e06146adce4e09864b00df95930bbdbfc8941143",
+    "mode": "0o664"
+  },
+  "corrected_report": {
+    "path": ".docs/nextflow-conformance/research-pilot/item3.1-author-02.md",
+    "bytes": 6031,
+    "sha256": "c52e37f579b11daa768ea2a3d50e2a81bbb4d230d8b2dc6d90f2b047f8126db4",
+    "mode": "0o664"
+  },
+  "wrapping": {
+    "original_line_number": 61,
+    "original_prose_columns": 102,
+    "original_line": "author evidence directory. It hash-binds every owned retained file, new bounded source spans and reuse\n",
+    "replacement": "author evidence directory. It hash-binds every owned retained file, new bounded\nsource spans and reuse\n",
+    "lossless_text_tokens": true
+  },
+  "bindings": [
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/documentary-fix03/before-working-manifest-22.json",
+      "bytes": 614309,
+      "sha256": "1f8fc3ecc8a37828562735d44bb3205201e12acafa969e4f50e288bf291dce2e",
+      "mode": "0o664"
+    },
+    {
+      "path": ".docs/nextflow-conformance/research-pilot/item3.1-author-01.md",
+      "bytes": 6031,
+      "sha256": "d7a3e3d63eabe8afbc3db9d4e06146adce4e09864b00df95930bbdbfc8941143",
+      "mode": "0o664"
+    },
+    {
+      "path": ".docs/nextflow-conformance/research-pilot/item3.1-author-02.md",
+      "bytes": 6031,
+      "sha256": "c52e37f579b11daa768ea2a3d50e2a81bbb4d230d8b2dc6d90f2b047f8126db4",
+      "mode": "0o664"
+    },
+    {
+      "path": ".docs/nextflow-conformance/research-pilot/phase3-results-review-01.md",
+      "bytes": 14245,
+      "sha256": "09414a87517b73be4b04ba2444bea2333ca3ebd2b0ca77b9aa9598e1cdd03826",
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/documentary-fix03/verify_correction.py",
+      "bytes": 6952,
+      "sha256": "612d4b40e5f0d91dc9eb29d4d19b3c12f0c3680ade90b1cdf6858f3b6314af30",
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/documentary-fix03/preserved-artifact-map.json",
+      "bytes": 9156595,
+      "sha256": "ea0b1c52a4165cead686b51c8b1748ae6fb3be5d795aa7a016b0d06b0cfb65da",
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/mappings03/integration/verify_integrated.py",
+      "bytes": 5035,
+      "sha256": "f57f93c80a2d727bd300a56465ffdaa92eb59871c6b9c68ed9f1d1ae82b978b3",
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/mappings03/integration/completion.json",
+      "bytes": 3219,
+      "sha256": "0d5bd016c64ad12360f6c7648dc068d8c8cac01daaa7b04c413c63735939be55",
+      "mode": "0o664"
+    },
+    {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/joint-review03/completion.json",
+      "bytes": 3068,
+      "sha256": "77b7b098faae5a512a66774d4a203374eba3b82cdf0c43b59ab378324a2dee45",
+      "mode": "0o664"
+    }
+  ],
+  "historical_gate": "Preserved gate binds its historical 22-field manifest. New current 23-field gate composes obligations against the archive; no historical gate rerun or current PASS claimed.",
+  "P01": "Open under root ownership: 79 local non-executable 0o664 records do not establish Git group-write portability.",
+  "execution": "No observer/control or behavioral reruns; passive reads only.",
+  "self_hash_cycles": "None: manifest binds correction record and reports; separate completion binds actual transition and current manifest externally."
+}

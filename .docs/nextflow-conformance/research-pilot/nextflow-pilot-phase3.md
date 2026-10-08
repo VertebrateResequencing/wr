@@ -44,8 +44,8 @@ claims. Nonexecuted mappings and unavailable originals earn no execution,
 oracle or translation pass. A supported wr DSL boundary remains pending;
 award no wr execution pass.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 #### Item 3.2: C2 - Reproduce all paired controls [parallel with 3.1]
 
@@ -76,8 +76,8 @@ all hash-linked captures and charter metadata. Complete the one R-UAT-04
 test only when all six subjects and all applicable loss controls have their
 paired expected results. Unfinished controls leave the pilot incomplete.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 For parallel batch items, use separate subagents per item under the
 `subagents` skill's shared concurrency limits. Item 3.1 owns mapping and

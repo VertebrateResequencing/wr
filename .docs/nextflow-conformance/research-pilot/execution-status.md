@@ -10,22 +10,31 @@ only for the hashed source-derived handoff in `contracts-review.md`.
 Phase 2 passed independent result review and R-UAT-02. Six genuine Spock
 features and four original CLI checks passed, accounting for eleven sequential
 units, 42 original predicates and fifteen completions. Successful raw Spock
-values and normalization bytes remain unobserved. No observer equivalence,
-translation, strengthening, gap or wr runtime pass is awarded.
+values and normalization bytes remain unobserved. Phase 3 accepts bounded
+scalar/value mappings, strengthening and four gap observations. Whole-harness
+equivalence, successful raw Spock comparison and wr runtime remain unverified.
 
 ## Phase checklist
 
 - [x] Phase 1: independently reviewed, immutable contract handoff.
 - [x] Phase 2: genuine prerequisite closure and original attempts.
-- [ ] Phase 3: reviewed neutral mappings and paired controls.
+- [x] Phase 3: reviewed neutral mappings and paired controls.
 - [ ] Phase 4: measured report and independent reconciliation.
 
-Phase 1 was committed and pushed as `7efd67d0`. Phase 2 is complete and
-awaits its commit and push. Phase 3 follows with manual mappings and paired
-controls. Each stage has two active hours; all stages have eight active hours. The execution clock is under
-`.tmp/agent/nextflow-conformance/research-pilot/`. Frozen Phase 1 manifest,
-seal and artifact bytes remain historical evidence; Phase 2 extends the
-working manifest with acquisition and capture records.
+Phase 1 was committed and pushed as `7efd67d0`. Phase 2 was committed and
+pushed as `8130bd90`. Phase 3 passed independent results review, accepting
+R-UAT-03 and R-UAT-04. All 155 required paired loss controls, six F1 subjects
+and three Mix witnesses have complete accounting. D01's prose correction
+passed independent preservation review; the original report remains intact.
+Phase 3 delivery is in progress. Phase 4 will reconcile the measured report
+and recommend the research route before core specification decisions.
+
+Each stage has two active hours; all stages have eight active hours. The
+execution clock is under `.tmp/agent/nextflow-conformance/research-pilot/`.
+Frozen Phase 1 artifacts remain immutable. The working manifest extends
+that history through genuine originals, measured mappings, controls and
+an explicit documentary correction. Historical pending fields remain
+historical; independent acceptance is recorded in separate reviews.
 
 ## Phase 2 supervision finding
 

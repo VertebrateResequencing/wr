@@ -20,9 +20,10 @@ accepted Phase 1 work and current source identities intact.
 
 Review 02 accepts the corrected sourced synthesis as a basis for a bounded
 executable pilot. It does not accept an exact architecture or exhaustive
-coverage. The reviewed experiment is under `research-pilot/`, using manually authored
-neutral contracts before any general importer or six-phase specification
-revision. Its Phase 1 immutable handoff has passed independent review.
+coverage. The reviewed experiment is under `research-pilot/`, using manually
+authored neutral contracts before any general importer or six-phase
+specification revision. Its Phase 1 immutable handoff has passed independent
+review.
 
 The bounded initial assessment is
 `reviews/nextflow-upstream-test-assessment-01.md`. It is evidence for the
@@ -45,10 +46,15 @@ The Phase 1 source-derived handoff passed review, accepting R-UAT-01 only.
 Pilot execution is tracked in `research-pilot/execution-status.md`; genuine
 prerequisite closure and original attempts passed independent review, accepting
 R-UAT-02 for the finite group. Six Spock features and four original CLI checks
-passed. Successful raw Spock values remain unobserved; no observer equivalence,
-translation, full-language or wr pass is awarded. Manual mappings and controls
-come next. Permission portability finding P01
-is owned by root and must be resolved before fresh-checkout reuse.
+passed. Successful raw Spock values remain unobserved. Phase 3 passed
+independent review for R-UAT-03 and R-UAT-04: bounded scalar/value mappings,
+four documented-gap observations, six F1 subjects and all 155 required
+paired loss controls are accepted. CLI-P8's runtime-stage mismatch remains
+unresolved separately from its parser count-zero observation. Whole-harness
+equivalence, full-language closure and wr execution remain unverified.
+Phase 4 reconciliation and the reviewed recommendation come next. D01's
+prose-only correction passed independent preservation review. Permission
+portability finding P01 remains root-owned before fresh-checkout reuse.
 
 ## Candidate under investigation
 
