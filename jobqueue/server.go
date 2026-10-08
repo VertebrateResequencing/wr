@@ -1837,9 +1837,37 @@ type Server struct {
 	deletesStopped bool
 	// deletesWG counts deleteJobIfRequested's goroutines (as well as s.wg), so
 	// shutdown can let them finish before it closes the database they write to.
-	deletesWG       sync.WaitGroup
-	subsClosed      bool        // shutdown swept the subscriptions; see storeClientSubscription
-	subSweepTimer   *time.Timer // runs sweepIdleClientSubscriptions; guarded by csmutex
+	deletesWG     sync.WaitGroup
+	subsClosed    bool        // shutdown swept the subscriptions; see storeClientSubscription
+	subSweepTimer *time.Timer // runs sweepIdleClientSubscriptions; guarded by csmutex
+	// racPending and racRunning hold reserves in waitForPendingReserves. An
+	// operation about to make items ready sets racPending first, so that a
+	// reserve does not act before the ready-added callback has updated those
+	// items' requirements and reserve group, updated the
+	// previouslyScheduledGroups counts that skipReserve reads, and asked the
+	// scheduler for runners. readyAddedCallback sets racRunning, and its
+	// finishRAC clears both and wakes waitingReserves.
+	//
+	// The hold is best-effort. The flags are shared by every operation, so it
+	// can be released before the callback that covers an operation has run, in
+	// two ways.
+	//
+	//   - Any clearRACPending, by an operation that turns out not to queue a
+	//     callback (eg. a resume back to dependent), clears the flag another
+	//     operation set, and wakes every waiting reserve even while a callback
+	//     is running.
+	//   - The queue merges a callback request that arrives while a callback is
+	//     running into one later recall. The running callback's finishRAC
+	//     releases the hold of the operations so merged, though its snapshot of
+	//     ready items may predate them, and the recall only starts after the
+	//     queue's recall break.
+	//
+	// A reserve released early, or one already waiting inside the queue, can
+	// then take an item at its old requirements, so that attempt loses a
+	// resource increase such as the one after a RAM failure; and a new
+	// runner's first reserve can be told nothing is ready. The hold only
+	// orders reserves: releasing it early never loses, double-runs or stalls a
+	// job.
 	racPending      bool
 	racRunning      bool
 	waitingReserves []chan struct{}
@@ -2012,6 +2040,8 @@ func (s *Server) finishRecovering() {
 	s.recovering = false
 }
 
+// setRACPending holds reserves (see Server.racPending) until the next
+// clearRACPending or finishRAC, whichever operation or callback calls it.
 func (s *Server) setRACPending() {
 	s.rpmutex.Lock()
 	s.racPending = true
@@ -2026,6 +2056,9 @@ func (s *Server) clearRACWaiters() {
 	s.waitingReserves = nil
 }
 
+// clearRACPending releases the reserve hold for an operation that queued no
+// ready-added callback. It wakes every waiting reserve, including any held for
+// another operation or for a running callback.
 func (s *Server) clearRACPending() {
 	s.rpmutex.Lock()
 	s.racPending = false
@@ -2033,6 +2066,8 @@ func (s *Server) clearRACPending() {
 	s.rpmutex.Unlock()
 }
 
+// finishRAC ends a ready-added callback's reserve hold, clearing racPending and
+// racRunning and waking every waiting reserve.
 func (s *Server) finishRAC() {
 	s.rpmutex.Lock()
 	s.racPending = false
@@ -3241,12 +3276,12 @@ func (s *Server) suspendedJob(key string) (*Job, queue.ItemState, bool) {
 }
 
 // resumeQueueItem resumes the suspended item with the given key, calling
-// resuming as ResumeWith does. RAC-pending is held from before the item can
-// become ready until the ready-added callback the resume queues has run. The
-// decision to release it early uses the state ResumeWith resumed the item to,
-// not the item's live state: a reserve already past waitForPendingReserves can
-// take the item as soon as ResumeWith returns, and the callback is still
-// queued then.
+// resuming as ResumeWith does. RAC-pending is set from before the item can
+// become ready, to hold reserves until the ready-added callback the resume
+// queues has run (best-effort; see Server.racPending). The decision to release
+// it early uses the state ResumeWith resumed the item to, not the item's live
+// state: a reserve already past waitForPendingReserves can take the item as
+// soon as ResumeWith returns, and the callback is still queued then.
 func (s *Server) resumeQueueItem(ctx context.Context, key string,
 	resuming func(data any, to queue.ItemState),
 ) bool {
