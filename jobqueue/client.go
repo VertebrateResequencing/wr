@@ -219,11 +219,31 @@ const (
 		"it ran and none of them is identifiably the job's, so its usage will be under-reported and no " +
 		"container will be killed with the job"
 
+	// checkingReportWait is how long Execute() waits for its resource checking
+	// goroutine to confirm that it has stopped before it reports the command's
+	// end with the peaks recorded so far. That goroutine can be stuck in a slow
+	// read (a /proc walk or a disk walk on a busy node), and a manager being
+	// stopped waits only ShutdownRunnerWait for the report: one that misses it
+	// leaves a finished job to run again after the restart.
+	checkingReportWait = 2 * time.Second
+
 	// checkingFinishTimeout is how long Execute() waits for its resource
-	// checking goroutine to confirm that it has stopped. It is a backstop for
-	// that goroutine blocking in something we don't control: a finished job
-	// must be able to complete regardless.
+	// checking goroutine when that goroutine is killing the command, since the
+	// kill's verdict decides how the job is reported. It is a backstop for that
+	// kill blocking in something we don't control: a finished job must be able
+	// to complete regardless.
 	checkingFinishTimeout = 60 * time.Second
+
+	// checkingStillReadingMsg is logged, at info level, when Execute() reports
+	// a command's end after checkingReportWait without its resource checking
+	// goroutine having stopped, as is routine when that goroutine is in a slow
+	// read on a busy node.
+	checkingStillReadingMsg = "reporting the command's end without waiting for the resource check in progress"
+
+	// checkingKillAbandonedMsg is logged, at warn level, when Execute() gives up
+	// after checkingFinishTimeout on a resource checking goroutine that is
+	// killing the command: the kill is stuck.
+	checkingKillAbandonedMsg = "gave up waiting for the resource checking goroutine to stop"
 
 	// fusermountRetryDelaySeconds is how long we wait before retrying a mount
 	// that failed with "fusermount exited with code 256".
@@ -298,6 +318,23 @@ const (
 	RepGroupMatchSubStr RepGroupMatch = "substr"
 	RepGroupMatchPrefix RepGroupMatch = "prefix"
 	RepGroupMatchSuffix RepGroupMatch = "suffix"
+)
+
+// checkingReportOutcome says how checkingRendezvous.awaitReport() ended.
+type checkingReportOutcome int
+
+const (
+	// checkingStopped means the checking goroutine confirmed that it stopped.
+	checkingStopped checkingReportOutcome = iota
+
+	// checkingStillReading means the short wait ended with the goroutine still
+	// in a check that had not tried a kill, as a slow read on a busy node
+	// routinely is.
+	checkingStillReading
+
+	// checkingKillAbandoned means the long wait for a check's kill ended
+	// without the goroutine stopping.
+	checkingKillAbandoned
 )
 
 // AddWarnings describes non-fatal add-time conditions callers may want to
@@ -549,7 +586,8 @@ func (state *serverContactState) schedulerMemoryFallbackAllowed() bool {
 // checkingRendezvous lets Execute() wait for its resource checking goroutine to
 // confirm that it has stopped.
 type checkingRendezvous struct {
-	ch chan bool
+	ch          chan bool
+	killStarted atomic.Bool
 }
 
 // newCheckingRendezvous creates a checkingRendezvous. Its channel is buffered
@@ -580,6 +618,35 @@ func (r *checkingRendezvous) await(timeout time.Duration) bool {
 	case <-time.After(timeout):
 		return false
 	}
+}
+
+// killing notes that the checking goroutine is about to try to kill the
+// command.
+func (r *checkingRendezvous) killing() {
+	r.killStarted.Store(true)
+}
+
+// awaitReport is await() for Execute() once it has waited for the command: it
+// gives up after reportWait, so that a check stuck in a slow read cannot hold
+// up the command's report, unless the checking goroutine has tried a kill,
+// whose verdict decides how the job is reported; then it waits up to
+// killWait in all. A kill tried after the command was waited for does
+// nothing, so one that killing() has not noted by the time the short wait ends
+// cannot change the report. It returns which of those waits, if any, gave up.
+func (r *checkingRendezvous) awaitReport(reportWait, killWait time.Duration) checkingReportOutcome {
+	if r.await(reportWait) {
+		return checkingStopped
+	}
+
+	if !r.killStarted.Load() {
+		return checkingStillReading
+	}
+
+	if r.await(killWait - reportWait) {
+		return checkingStopped
+	}
+
+	return checkingKillAbandoned
 }
 
 type executeLiveState struct {
@@ -1694,6 +1761,16 @@ func (c *Client) AddWithDuplicatesContext(
 	return resp.Added, dups, resp.AddWarnings, completeSkippedErr(cr, dups)
 }
 
+// processTreeCPUtime is currentProcessTreeCPUtime, or the test hook in its
+// place.
+func (c *Client) processTreeCPUtime(pid int) time.Duration {
+	if c.processTreeCPUtimeHook != nil {
+		return c.processTreeCPUtimeHook(pid)
+	}
+
+	return currentProcessTreeCPUtime(pid)
+}
+
 // stageBackup writes db to a uniquely named file in path's own directory,
 // returning that file's name for the caller to rename over path. The name is
 // unique because a fixed name is one the user may already have a file at, and
@@ -1933,6 +2010,12 @@ type Client struct {
 	// getChildProcesses when Execute kills a command, to see which processes
 	// the kill would sweep up.
 	childProcessesHook func(pid int32) ([]*process.Process, error)
+
+	// processTreeCPUtimeHook, if set, is used by in-package tests in place of
+	// currentProcessTreeCPUtime when Execute's resource checking goroutine
+	// reads the command's CPU time, so a test can make that read as slow as a
+	// /proc walk on a busy node.
+	processTreeCPUtimeHook func(pid int) time.Duration
 
 	// childLookupLimit, if set, is used by in-package tests in place of
 	// killChildLookupLimit.
@@ -3885,6 +3968,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		// container, or waiting for children to die), and record then notes,
 		// under stateMutex, whether it acted.
 		killForCheck := func(record func(acted bool)) {
+			finishedChecking.killing()
+
 			acted, errk := killCmd()
 
 			stateMutex.Lock()
@@ -3939,6 +4024,11 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				// get current disk usage
 				disk, errd := diskUsageCheck()
 
+				// like the reads above, this /proc walk can be slow on a busy
+				// node, so is made outside stateMutex, which Execute() needs to
+				// report the command's end
+				treeCPU := c.processTreeCPUtime(cmd.Process.Pid)
+
 				// now update peaks
 				stateMutex.Lock()
 
@@ -3967,7 +4057,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 					peakdisk = disk
 				}
 
-				cpuTime := currentProcessTreeCPUtime(cmd.Process.Pid) + time.Duration(dockerCPU)*time.Second
+				cpuTime := treeCPU + time.Duration(dockerCPU)*time.Second
 				liveState.updateResources(peakmem, peakdisk, cpuTime)
 				stateMutex.Unlock()
 			case <-stopChecking:
@@ -4000,8 +4090,12 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	stopChecking <- true
 
-	if !finishedChecking.await(checkingFinishTimeout) {
-		clog.Warn(ctx, "gave up waiting for the resource checking goroutine to stop", "cmd", job.Cmd)
+	switch finishedChecking.awaitReport(checkingReportWait, checkingFinishTimeout) {
+	case checkingStillReading:
+		clog.Info(ctx, checkingStillReadingMsg, "cmd", job.Cmd)
+	case checkingKillAbandoned:
+		clog.Warn(ctx, checkingKillAbandonedMsg, "cmd", job.Cmd)
+	case checkingStopped:
 	}
 
 	stateMutex.Lock()

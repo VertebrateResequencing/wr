@@ -113,10 +113,44 @@ func TestCheckingRendezvous(t *testing.T) {
 			})
 		})
 
+		Convey("Awaiting its report gives up after the short wait, saying a check was still reading", func() {
+			start := time.Now()
+
+			So(rendezvous.awaitReport(dockerTestCallTimeout, dockerTestBound), ShouldEqual, checkingStillReading)
+			So(time.Since(start), ShouldBeLessThan, dockerTestBound)
+		})
+
+		Convey("Once it has started a kill, awaiting its report gives up only after the long wait", func() {
+			rendezvous.killing()
+
+			killWait := 3 * dockerTestCallTimeout
+			start := time.Now()
+
+			So(rendezvous.awaitReport(dockerTestCallTimeout, killWait), ShouldEqual, checkingKillAbandoned)
+			So(time.Since(start), ShouldBeGreaterThanOrEqualTo, killWait)
+		})
+
 		Convey("Waiting for a checker that does finish reports that it finished", func() {
 			go rendezvous.finished()
 
 			So(rendezvous.await(dockerTestBound), ShouldBeTrue)
+		})
+
+		Convey("Awaiting the report of a checker that does finish says that it stopped", func() {
+			go rendezvous.finished()
+
+			So(rendezvous.awaitReport(dockerTestBound, dockerTestBound), ShouldEqual, checkingStopped)
+		})
+
+		Convey("Awaiting the report of a checker that finishes its kill after the short wait says that it stopped", func() {
+			rendezvous.killing()
+
+			go func() {
+				<-time.After(2 * dockerTestCallTimeout)
+				rendezvous.finished()
+			}()
+
+			So(rendezvous.awaitReport(dockerTestCallTimeout, dockerTestBound), ShouldEqual, checkingStopped)
 		})
 
 		Convey("A checker that reports finishing twice does not block on the second report", func() {
