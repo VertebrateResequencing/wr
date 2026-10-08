@@ -127,11 +127,26 @@ type jstatusReq struct {
 // The boundary lets the client discard everything it received before the seed:
 // a delta is only ever written after the transition it reports, and the "begin"
 // boundary is written before the snapshot, so anything received before it
-// describes a transition the snapshot has already accounted for. What is left
-// is the snapshot walk itself - a transition that happens while the walk is in
-// progress may be both seen by the walk and reported by a delta written after
-// the "end" boundary. That residual is bounded by the walk's duration rather
-// than by the whole connect handshake; see .docs/bugfixes/260820-2.md.
+// describes a transition the snapshot has already accounted for. A delta for a
+// move the snapshot counted can still be written after the "end" boundary,
+// since the queue runs its change callback in a goroutine, so the snapshot also
+// takes the queue's change sequence in the same lock hold as the item states,
+// and the status pump drops any delta at or below it (wsConnWriter). Two
+// residuals remain. First, the deltas that are not queue moves (a job going
+// lost, or coming back) carry no sequence, so the pump cannot drop them: they
+// keep the late-delivery residual as well as the walk residual. The status
+// pump can take such a delta from the caster and then block on the write
+// mutex this seed holds from before "begin" until after "end", so a job whose
+// lost flag changed before the walk read it, but whose delta was not yet
+// written when the seed took the mutex, is seeded in its new state and its
+// delta is still written after "end", counting it twice. Second, a RepGroup's
+// complete count is read from the database after the snapshot, while a job is
+// archived in the database before it leaves the queue, so a job archived
+// before that read but removed after the snapshot is seeded as both running
+// and complete; its removal delta, which is after the snapshot's sequence,
+// then leaves complete one too high until a refresh.
+// See .docs/bugfixes/260820-2.md and
+// .docs/bugfixes/261008-status-late-delta-09b3ffda.md.
 //
 // It is a new message type rather than a new jstateCount field so that a client
 // that predates it ignores it: the status page dispatches on the presence of
@@ -145,6 +160,25 @@ type jstatusSeedBoundary struct {
 // atomic with respect to the live delta feed.
 func writeSeedBoundary(conn *websocket.Conn, boundary string) error {
 	return conn.WriteJSON(&jstatusSeedBoundary{SeedBoundary: boundary})
+}
+
+// wsConnWriter serialises writes to one websocket connection. For a status page
+// connection it also holds the queue change sequence its latest seed was counted
+// at: the seed counts every move up to that sequence, so the status pump drops
+// any later-arriving delta for such a move instead of counting it twice. Both
+// are read and written only with the mutex held.
+type wsConnWriter struct {
+	sync.Mutex
+
+	seedSeq uint64
+}
+
+// alreadySeeded reports whether msg is a status-count delta for a queue move
+// that this connection's seed already counted. Call it with the mutex held.
+func (w *wsConnWriter) alreadySeeded(msg any) bool {
+	delta, ok := msg.(*jstateCount)
+
+	return ok && delta.seq != 0 && delta.seq <= w.seedSeq
 }
 
 // webInterfaceStatusSendStateCounts sends per-RepGroup display-state counts to
@@ -372,21 +406,26 @@ func webInterfaceStatic(ctx context.Context, s *Server) http.HandlerFunc {
 
 // statusSeedCounts walks the queue once and returns the display-state counts the
 // scan-on-connect seed needs: the "+all+" live aggregate, and the same counts
-// broken down per RepGroup. It is exactly statusStateCounts(getJobsCurrent(...)),
+// broken down per RepGroup, plus the queue change sequence they were taken at
+// (see queue.Queue.Snapshot). It is exactly statusStateCounts(getJobsCurrent(...)),
 // grouped by RepGroup, and TestReliable4StatusSeedCounts pins that equivalence.
 //
 // It deliberately does not materialise Jobs. getJobsCurrent goes through
 // itemToJob, which deep-copies every field of every job and populates its
 // std/env, and for a production-sized queue (prod: 118k live jobs) that copying
 // is nearly all of the walk's cost - while the seed only needs each job's
-// RepGroup and display state. The walk's duration matters because it is the one
-// window jstatusSeedBoundary cannot close: a transition that happens while the
-// walk is in progress can be both seen by the walk and reported by a delta
-// written after the closing boundary, so the residual error is the walk's
-// duration times the transition rate. Keeping the walk short is what keeps that
-// residual small.
-func (s *Server) statusSeedCounts() (map[JobState]int, map[string]map[JobState]int) {
-	items := s.q.AllItems()
+// RepGroup and display state. The item states and the sequence come from one
+// hold of the queue's lock, so the status pump can drop every queue move's
+// delta the counts already include. Lost and touch deltas carry no sequence,
+// though, and each job's lost flag is read after that hold, so a job going lost
+// or coming back before the walk reads its flag, whose delta is not yet
+// written, is counted twice: by the seed and by its delta written after the
+// seed. That covers any such delta still waiting for the write mutex when the
+// seed took it, not just one emitted during the walk; keeping the walk short
+// only narrows the latter. Both residuals are described at
+// jstatusSeedBoundary.
+func (s *Server) statusSeedCounts() (map[JobState]int, map[string]map[JobState]int, uint64) {
+	items, seq := s.q.Snapshot()
 	all := make(map[JobState]int)
 	perRepGroup := make(map[string]map[JobState]int)
 
@@ -407,21 +446,19 @@ func (s *Server) statusSeedCounts() (map[JobState]int, map[string]map[JobState]i
 		counts[state]++
 	}
 
-	return all, perRepGroup
+	return all, perRepGroup, seq
 }
 
 // itemDisplayState returns the RepGroup and status-bar display state of a queue
 // item's job, reporting false if the item does not hold one.
-func (s *Server) itemDisplayState(item *queue.Item) (string, JobState, bool) {
-	job, ok := item.Data().(*Job)
+func (s *Server) itemDisplayState(item queue.ItemSnapshot) (string, JobState, bool) {
+	job, ok := item.Data.(*Job)
 	if !ok {
 		return "", "", false
 	}
 
-	// the same lock order as itemToJob: the job's read lock, then the item's
-	// stats.
 	job.RLock()
-	state := s.itemStateToJobState(item.Stats().State, job.Lost)
+	state := s.itemStateToJobState(item.State, job.Lost)
 	repGroup := job.RepGroup
 	job.RUnlock()
 
@@ -632,7 +669,7 @@ func (s *Server) readStatusWSRequests(ctx context.Context, conn *websocket.Conn,
 type statusWSRequest struct {
 	conn           *websocket.Conn
 	req            jstatusReq
-	writeMutex     *sync.Mutex
+	writeMutex     *wsConnWriter
 	subscriptionID string
 }
 
@@ -725,7 +762,7 @@ func (s *Server) sendCurrentStatusCounts(r statusWSRequest) {
 		return
 	}
 
-	if !s.writeStatusCountSeed(r.conn) {
+	if !s.writeStatusCountSeed(r) {
 		return
 	}
 
@@ -736,10 +773,14 @@ func (s *Server) sendCurrentStatusCounts(r statusWSRequest) {
 
 // writeStatusCountSeed counts all current (incomplete) jobs, seeds the "+all+"
 // live aggregate from them, then for each RepGroup among them seeds that
-// RepGroup from its incomplete jobs plus its complete jobs. It reports whether
-// the whole seed was written; the caller must hold the connection's write mutex.
-func (s *Server) writeStatusCountSeed(conn *websocket.Conn) bool {
-	all, perRepGroup := s.statusSeedCounts()
+// RepGroup from its incomplete jobs plus its complete jobs. It records the queue
+// change sequence the counts were taken at as the connection's seed sequence,
+// and reports whether the whole seed was written; the caller must hold the
+// connection's write mutex.
+func (s *Server) writeStatusCountSeed(r statusWSRequest) bool {
+	all, perRepGroup, seq := s.statusSeedCounts()
+	r.writeMutex.seedSeq = seq
+	conn := r.conn
 
 	if err := webInterfaceStatusSendStateCounts(conn, statusAllRepGroups, all); err != nil {
 		return false
@@ -1020,6 +1061,13 @@ func (s *Server) setupUpdateListener(ctx context.Context, conn *websocket.Conn, 
 			}
 
 			writeMutex.Lock()
+
+			if writeMutex.alreadySeeded(msg) {
+				writeMutex.Unlock()
+
+				continue
+			}
+
 			err := conn.WriteJSON(msg)
 			writeMutex.Unlock()
 

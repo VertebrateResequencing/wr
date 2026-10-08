@@ -61,6 +61,17 @@ const (
 	webiSubRG2      = "sub_rg2"
 )
 
+// statusCountReconcileShards is how many node processes TestStatusCountReconcile
+// shares the reconcile harness's seeds between.
+const statusCountReconcileShards = 4
+
+// statusCountReconcileHangWait bounds TestStatusCountReconcile's node processes.
+// It is a hang detector, not a latency budget: each shard needs about 4s of CPU
+// and reports a failing scenario in its output, so only a harness that never
+// finishes needs it, and a starved one (it ran out 120s at host load 80+) must
+// not trip it.
+const statusCountReconcileHangWait = 10 * time.Minute
+
 func TestCaster(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -436,30 +447,16 @@ func TestStatusCurrentAbsoluteState(t *testing.T) {
 	})
 }
 
-// readAbsoluteStateUntil reads v0.36.5-style jstateCount delta messages,
-// accumulating them into a running per-RepGroup view, until the predicate holds
-// against that view or the timeout expires.
+// readAbsoluteStateUntil reads status messages like readJStateDeltasUntil
+// until a seed has been read whole and the predicate holds against the counts
+// accumulated since that seed's "begin" boundary, or the timeout expires. So a
+// predicate that holds before anything is read, such as one wanting no jobs,
+// still proves what the seed reported.
 func readAbsoluteStateUntil(ws *websocket.Conn, timeout time.Duration,
 	until func(latest map[string]map[JobState]int) bool) bool {
-	acc := newDeltaCounts()
-
-	if err := ws.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-		return false
-	}
-	defer clearReadDeadlineBestEffort(ws)
-
-	for {
-		if until(acc.latest) {
-			return true
-		}
-
-		var msg jstateCount
-		if err := ws.ReadJSON(&msg); err != nil {
-			return false
-		}
-
-		acc.apply(msg)
-	}
+	return readJStateDeltasUntil(ws, timeout, func(acc *deltaCounts) bool {
+		return acc.seeded && until(acc.latest)
+	})
 }
 
 func statusCountsTotal(counts map[JobState]int) int {
@@ -3329,17 +3326,6 @@ func TestStatusCountReconcile(t *testing.T) {
 		}
 	})
 }
-
-// statusCountReconcileShards is how many node processes TestStatusCountReconcile
-// shares the reconcile harness's seeds between.
-const statusCountReconcileShards = 4
-
-// statusCountReconcileHangWait bounds TestStatusCountReconcile's node processes.
-// It is a hang detector, not a latency budget: each shard needs about 4s of CPU
-// and reports a failing scenario in its output, so only a harness that never
-// finishes needs it, and a starved one (it ran out 120s at host load 80+) must
-// not trip it.
-const statusCountReconcileHangWait = 10 * time.Minute
 
 func TestStatusPageLiveIntrospectionAssets(t *testing.T) {
 	if runnermode || servermode {

@@ -157,7 +157,7 @@ func TestReservedRetryShowsNothingOfThePreviousRun(t *testing.T) {
 			// They are netted rather than applied in arrival order, because the
 			// change callbacks that send them may deliver two adjacent transitions
 			// in either order (which the browser reconciles).
-			all, perRepGroup := server.statusSeedCounts()
+			all, perRepGroup, _ := server.statusSeedCounts()
 			So(perRepGroup[rg], ShouldResemble, map[JobState]int{JobStateRunning: 1})
 
 			var net map[string]map[JobState]int

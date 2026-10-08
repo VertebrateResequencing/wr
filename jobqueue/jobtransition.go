@@ -63,7 +63,9 @@ type countContribution struct {
 // subscriber filtering (the change-callback path), or carries a pre-built
 // update that bypasses that gate (the TTR lost update, the touch live update).
 // Centralising the EMISSION here does not change WHICH updates are sent. Pass a
-// nil closure for a transition with no per-job update.
+// nil closure for a transition with no per-job update. seq is the queue change
+// sequence of the move being reported, or 0 for a transition that is not a
+// queue move; every status-count delta carries it (see jstateCount).
 //
 // Lock discipline (concurrency-critical; N1b): this method introduces NO
 // server-wide exclusive lock on the per-transition path. sendStatusCounts
@@ -77,8 +79,8 @@ type countContribution struct {
 // handler, so neither of those holds queue.mutex. In every case no subscription
 // lock is ever taken before queue.mutex, so the established acquisition order
 // queue.mutex -> subscription locks is never violated.
-func (s *Server) emitJobTransition(counts []countContribution, emitSubscriptions func()) {
-	s.sendStatusCounts(counts)
+func (s *Server) emitJobTransition(seq uint64, counts []countContribution, emitSubscriptions func()) {
+	s.sendStatusCounts(seq, counts)
 
 	if emitSubscriptions != nil {
 		emitSubscriptions()
@@ -101,7 +103,7 @@ type stateTransition struct {
 // members plus a short per-member mutex and a fast unbounded-queue append (the
 // status feed never drops; the actual client write happens later in the pump
 // goroutine), never a server-wide exclusive lock on the per-transition path.
-func (s *Server) sendStatusCounts(counts []countContribution) {
+func (s *Server) sendStatusCounts(seq uint64, counts []countContribution) {
 	if len(counts) == 0 {
 		return
 	}
@@ -114,6 +116,7 @@ func (s *Server) sendStatusCounts(counts []countContribution) {
 			FromState: contribution.from,
 			ToState:   contribution.to,
 			Count:     contribution.n,
+			seq:       seq,
 		})
 
 		allGrouped[stateTransition{contribution.from, contribution.to}] += contribution.n
@@ -125,6 +128,7 @@ func (s *Server) sendStatusCounts(counts []countContribution) {
 			FromState: transition.from,
 			ToState:   transition.to,
 			Count:     count,
+			seq:       seq,
 		})
 	}
 }
@@ -209,12 +213,15 @@ func jobKeyRepGroupState(job *Job, toQ queue.SubQueue) (string, string, JobState
 // filtering, exactly as before). Each job's to-state is derived from its own
 // real State at emission time (per-job, inside changeCallbackCounts and
 // enqueueChangeCallbackSubscriptions), so a succeeded job is reported complete
-// and a genuinely removed incomplete job is reported deleted.
-func (s *Server) emitChangeCallbackTransition(ctx context.Context, fromQ, toQ queue.SubQueue, data []any) {
+// and a genuinely removed incomplete job is reported deleted. seq is the move's
+// queue change sequence, which the status-count deltas carry.
+func (s *Server) emitChangeCallbackTransition(ctx context.Context, fromQ, toQ queue.SubQueue, data []any,
+	seq uint64,
+) {
 	from := subqueueToJobState[fromQ]
 	includeKeyStateChange := from == JobStateSuspended || toQ == queue.SubQueueSuspended
 
-	s.emitJobTransition(changeCallbackCounts(from, toQ, data), func() {
+	s.emitJobTransition(seq, changeCallbackCounts(from, toQ, data), func() {
 		s.enqueueChangeCallbackSubscriptions(ctx, data, from, toQ, includeKeyStateChange)
 	})
 }

@@ -621,7 +621,7 @@ func TestReliable4StatusSeedCounts(t *testing.T) {
 			wantPerRepGroup[repGroup] = statusStateCounts(group)
 		}
 
-		gotAll, gotPerRepGroup := server.statusSeedCounts()
+		gotAll, gotPerRepGroup, _ := server.statusSeedCounts()
 
 		// the states really are spread, so the equivalence is not vacuous - and
 		// reserved really is merged into running for display (3 started plus the

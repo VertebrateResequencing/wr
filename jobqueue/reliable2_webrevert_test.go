@@ -239,8 +239,11 @@ func TestReliable2WebRevertNoDivergingCounter(t *testing.T) {
 // mirroring what the browser's status bar does: FromState drops by Count,
 // ToState rises by Count. Negative intermediate values are clamped to 0 so an
 // out-of-order delta cannot drive a state below zero (v0.36.5 behaviour).
+// seeded records that a seed's "end" boundary has been read since the counts
+// were last started afresh.
 type deltaCounts struct {
 	latest map[string]map[JobState]int
+	seeded bool
 }
 
 func newDeltaCounts() *deltaCounts {
@@ -359,12 +362,16 @@ func TestReliable2WebRevertDeltaFeed(t *testing.T) {
 	})
 }
 
-// readJStateDeltasUntil reads jstateCount delta messages from the status
-// websocket, accumulating them, until the predicate holds against the running
-// accumulated state or the timeout expires.
+// readJStateDeltasUntil reads status messages from the status websocket,
+// accumulating their jstateCount deltas, until the predicate holds against the
+// running accumulated state or the timeout expires. Like the status page, it
+// starts its accumulator afresh on a seed's "begin" boundary, since the seed
+// already counts everything received before it, and it only checks the
+// predicate outside a seed's bracket, where the counts are whole.
 func readJStateDeltasUntil(ws *websocket.Conn, timeout time.Duration,
 	until func(acc *deltaCounts) bool) bool {
 	acc := newDeltaCounts()
+	inSeed := false
 
 	if err := ws.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return false
@@ -372,16 +379,27 @@ func readJStateDeltasUntil(ws *websocket.Conn, timeout time.Duration,
 	defer clearReadDeadlineBestEffort(ws)
 
 	for {
-		if until(acc) {
+		if !inSeed && until(acc) {
 			return true
 		}
 
-		var msg jstateCount
+		var msg statusWSMessage
 		if err := ws.ReadJSON(&msg); err != nil {
 			return false
 		}
 
-		acc.apply(msg)
+		switch msg.SeedBoundary {
+		case seedBoundaryBegin:
+			acc = newDeltaCounts()
+			inSeed = true
+		case seedBoundaryEnd:
+			inSeed = false
+			acc.seeded = true
+		default:
+			acc.apply(jstateCount{
+				RepGroup: msg.RepGroup, FromState: msg.FromState, ToState: msg.ToState, Count: msg.Count,
+			})
+		}
 	}
 }
 
