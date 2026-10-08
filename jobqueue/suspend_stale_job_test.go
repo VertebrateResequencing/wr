@@ -25,9 +25,9 @@
 
 package jobqueue
 
-// This file covers a kick whose caller looked the buried job up before an add
-// replaced the job its queue item holds. The kick must kick, and write, the job
-// the item holds when it kicks it, not the one its caller found.
+// This file covers a suspend that looked its job up before an add replaced the
+// job its queue item holds. The suspend must suspend, and write, the job the
+// item holds when it suspends it, not the one it found.
 
 import (
 	"context"
@@ -37,21 +37,22 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-const kickStaleNewRepGroup = "kick-stale-job-new"
+const suspendStaleNewRepGroup = "suspend-stale-job-new"
 
-// TestKickOfReplacedJobKicksItemsJob proves that a kick of a buried job whose
-// item's job was replaced, after the kick's caller looked it up, by an add that
-// re-runs it, leaves the replacement kicked and stored: a waiter brought back
-// complete by a dep-group re-run and buried as impossible is re-run by an add
-// under a new rep group while a kick of it is under way.
-func TestKickOfReplacedJobKicksItemsJob(t *testing.T) {
+// TestSuspendOfReplacedJobSuspendsItemsJob proves that a suspend of a ready job
+// whose item's job is replaced, by an add that re-runs it, while the suspend is
+// under way leaves the replacement suspended and stored: a waiter brought back
+// complete by a dep-group re-run, and made ready again, is re-run by an add
+// under a new rep group between the suspend looking up its job and suspending
+// its item.
+func TestSuspendOfReplacedJobSuspendsItemsJob(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
 
 	ctx := context.Background()
 
-	Convey("Given a buried complete waiter that an add re-runs while it is being kicked", t, func() {
+	Convey("Given a ready complete waiter that an add re-runs while it is being suspended", t, func() {
 		d := dgrStartServer(ctx)
 		serverStopped := false
 
@@ -64,10 +65,10 @@ func TestKickOfReplacedJobKicksItemsJob(t *testing.T) {
 		jq := d.connect()
 		defer disconnect(jq)
 
-		const group = "kick-stale-job-group"
+		const group = "suspend-stale-job-group"
 
-		first := dgaMemberJob(d, group, "kick stale first")
-		waiter := dgaWaiterJob(d, group, "kick stale waiter")
+		first := dgaMemberJob(d, group, "suspend stale first")
+		waiter := dgaWaiterJob(d, group, "suspend stale waiter")
 		key := waiter.Key()
 
 		dgrAddJobs(jq, []*Job{first})
@@ -76,23 +77,17 @@ func TestKickOfReplacedJobKicksItemsJob(t *testing.T) {
 		dgaExecuteReserved(ctx, d, jq, key)
 
 		// a new member of the waiter's group brings it back from the complete
-		// bucket, still complete, to wait for that member.
-		second := dgaMemberJob(d, group, "kick stale second")
+		// bucket, still complete, to wait for that member; once the member
+		// completes it is ready, its job still complete.
+		second := dgaMemberJob(d, group, "suspend stale second")
 		_, _, err := jq.Add([]*Job{second}, envVars, true)
 		So(err, ShouldBeNil)
 		So(dgaItemState(d.server, key), ShouldEqual, queue.ItemStateDependent)
 		dgaExecuteReserved(ctx, d, jq, second.Key())
 		So(dgaItemState(d.server, key), ShouldEqual, queue.ItemStateReady)
 
-		// scheduling finds its requirements impossible and buries it.
 		item, err := d.server.q.Get(key)
 		So(err, ShouldBeNil)
-
-		reserved, err := d.server.q.Reserve(item.ReserveGroup, 0)
-		So(err, ShouldBeNil)
-		So(reserved.Key, ShouldEqual, key)
-		d.server.buryImpossibleItem(ctx, reserved)
-		So(dgaItemState(d.server, key), ShouldEqual, queue.ItemStateBury)
 
 		looked, ok := item.Data().(*Job)
 		So(ok, ShouldBeTrue)
@@ -102,8 +97,9 @@ func TestKickOfReplacedJobKicksItemsJob(t *testing.T) {
 		looked.RUnlock()
 		So(lookedState, ShouldEqual, JobStateComplete)
 
-		// a job parked out of the way, whose durable write flushes the kick's.
-		other := d.job("echo kick stale other", kickStaleNewRepGroup+"-other")
+		// a job parked out of the way, whose durable write flushes the
+		// suspend's.
+		other := d.job("echo suspend stale other", suspendStaleNewRepGroup+"-other")
 		dgrAddJobs(jq, []*Job{other})
 		_, err = jq.Suspend([]*JobEssence{{JobKey: other.Key()}})
 		So(err, ShouldBeNil)
@@ -117,8 +113,8 @@ func TestKickOfReplacedJobKicksItemsJob(t *testing.T) {
 		adder := d.connect()
 		defer disconnect(adder)
 
-		rerun := dgaWaiterJob(d, group, "kick stale waiter")
-		rerun.RepGroup = kickStaleNewRepGroup
+		rerun := dgaWaiterJob(d, group, "suspend stale waiter")
+		rerun.RepGroup = suspendStaleNewRepGroup
 		So(rerun.Key(), ShouldEqual, key)
 
 		var (
@@ -126,26 +122,32 @@ func TestKickOfReplacedJobKicksItemsJob(t *testing.T) {
 			addCount int
 		)
 
-		// the add lands after the kick's caller has looked the job up and before
-		// the kick takes the item out of the bury sub-queue.
+		// the add lands after the suspend has looked up the item's job, and
+		// encoded its write, and before it suspends the item, while that job is
+		// still complete.
+		var added bool
+
 		jobChangeAheadHook = func(hooked string) {
-			if hooked == key {
+			if hooked == key && !added {
+				added = true
 				addCount, _, addErr = adder.Add([]*Job{rerun}, envVars, false)
 			}
 		}
 		defer func() { jobChangeAheadHook = nil }()
 
-		kicked, err := jq.Kick([]*JobEssence{{JobKey: key}})
+		suspended, err := jq.Suspend([]*JobEssence{{JobKey: key}})
 		jobChangeAheadHook = nil
+
+		So(added, ShouldBeTrue)
 
 		So(err, ShouldBeNil)
 		So(addErr, ShouldBeNil)
 		So(addCount, ShouldEqual, 1)
-		So(kicked, ShouldEqual, 1)
+		So(suspended, ShouldEqual, 1)
 
 		item, err = d.server.q.Get(key)
 		So(err, ShouldBeNil)
-		So(item.Stats().State, ShouldEqual, queue.ItemStateReady)
+		So(item.Stats().State, ShouldEqual, queue.ItemStateSuspended)
 
 		live, ok := item.Data().(*Job)
 		So(ok, ShouldBeTrue)
@@ -153,30 +155,22 @@ func TestKickOfReplacedJobKicksItemsJob(t *testing.T) {
 		// without their locks.
 		So(live != looked, ShouldBeTrue)
 
-		// a durable write queued after the kick's commits no earlier than it.
+		// a durable write queued after the suspend's commits no earlier than it.
 		So(d.server.db.updateJobAfterChangeDurable(otherJob), ShouldBeNil)
 
-		Convey("the job the item holds is the one kicked", func() {
+		Convey("the job the item holds is the one suspended, and is stored", func() {
 			live.RLock()
 			state := live.State
 			live.RUnlock()
 
-			So(state, ShouldEqual, JobStateReady)
-			So(storedLiveJobState(t, d.server.db, key), ShouldEqual, JobStateReady)
+			So(state, ShouldEqual, JobStateSuspended)
 
-			live.RLock()
-			liveAhead := live.changesAhead
-			live.RUnlock()
-
-			looked.RLock()
-			lookedAhead := looked.changesAhead
-			looked.RUnlock()
-
-			So(liveAhead, ShouldEqual, 0)
-			So(lookedAhead, ShouldEqual, 0)
+			stored := storedLiveJob(t, d.server.db, key)
+			So(stored.State, ShouldEqual, JobStateSuspended)
+			So(stored.RepGroup, ShouldEqual, suspendStaleNewRepGroup)
 		})
 
-		Convey("a crash recovers the re-added job ready under its new rep group", func() {
+		Convey("a crash recovers the re-added job suspended under its new rep group", func() {
 			serverStopped = true
 
 			rdrCrash(ctx, d, func() {})
@@ -187,8 +181,8 @@ func TestKickOfReplacedJobKicksItemsJob(t *testing.T) {
 			recovered, errg := recoveredJQ.GetByEssence(&JobEssence{JobKey: key}, false, false)
 			So(errg, ShouldBeNil)
 			So(recovered, ShouldNotBeNil)
-			So(recovered.RepGroup, ShouldEqual, kickStaleNewRepGroup)
-			So(recovered.State, ShouldEqual, JobStateReady)
+			So(recovered.RepGroup, ShouldEqual, suspendStaleNewRepGroup)
+			So(recovered.State, ShouldEqual, JobStateSuspended)
 		})
 	})
 }

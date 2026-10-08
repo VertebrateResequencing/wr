@@ -434,6 +434,14 @@ var kickQueuedHook func(key string)
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var resumeQueuedHook func(key string)
 
+// suspendQueuedHook, if non-nil, is called with a job's key once suspendJob has
+// suspended the job and moved its item into the suspended sub-queue, so a test
+// can act on the job before suspendJob returns. It is a test-only seam and is
+// nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var suspendQueuedHook func(key string)
+
 // resumeItemReadyHook, if non-nil, is called with a job's key once
 // resumeQueueItem's ResumeWith has returned and before it decides whether a
 // ready-added callback is still pending, so a test can have the item reserved
@@ -3104,6 +3112,13 @@ func (s *Server) suspendJobs(ctx context.Context, keys []string) (suspended int)
 	return suspended
 }
 
+// suspendJob suspends the job with the given key if its item is suspendable,
+// returning whether it did and whether the item was ready.
+//
+// The job's write is encoded before the queue is locked, and the job is changed
+// and its write queued while the queue holds the item, before it can be resumed:
+// a resume then starts from the suspended job, and its write queues after this
+// one, so neither the suspend's State nor its write can supersede the resume's.
 func (s *Server) suspendJob(ctx context.Context, key string) (bool, bool) {
 	item, err := s.q.Get(key)
 	if err != nil || item == nil {
@@ -3115,19 +3130,27 @@ func (s *Server) suspendJob(ctx context.Context, key string) (bool, bool) {
 		return false, false
 	}
 
-	wasReady := item.Stats().State == queue.ItemStateReady
-
-	if err = s.q.Suspend(ctx, key); err != nil {
+	state := item.Stats().State
+	if !state.Suspendable() {
 		return false, false
 	}
 
-	job.Lock()
-	job.State = JobStateSuspended
-	job.Unlock()
+	ahead := s.db.prepareJobChange(ctx, job, suspendChange)
 
-	s.db.updateJobAfterChange(ctx, job)
+	err = s.q.SuspendWith(ctx, key, func(data any) {
+		s.markItemJobChanged(ctx, job, data, ahead, suspendChange)
+	})
+	if err != nil {
+		s.db.discardJobChangeAhead(job, ahead)
 
-	return true, wasReady
+		return false, false
+	}
+
+	if suspendQueuedHook != nil {
+		suspendQueuedHook(key)
+	}
+
+	return true, state == queue.ItemStateReady
 }
 
 // resumeJobs resumes matching suspended jobs and returns the number affected.
@@ -3925,23 +3948,25 @@ func (s *Server) currentGroupCount(name string) int {
 	return group.getCount()
 }
 
-// markKicked updates the job of a buried item being kicked, and queues its
-// write, prepared ahead for job, and returns the job it updated. kickJobs calls
-// it with the item's data while the queue holds the item, so it happens only for
-// an item that really is being kicked, and before the item can be reserved: a
-// reservation then starts from the kicked job, and its write queues after this
-// one, so neither the kick's State nor its write can supersede the
-// reservation's.
+// markItemJobChanged makes change to the job of an item being kicked or
+// suspended, and queues its write, prepared ahead for job, and returns the job it
+// changed. kickJobs and suspendJob call it with the item's data while the queue
+// holds the item, so it happens only for an item that really is being kicked or
+// suspended, and before the item can be reserved or resumed: a reservation or
+// resume then starts from the changed job, and its write queues after this one,
+// so neither this change's State nor its write can supersede theirs.
 //
 // If the item's data is no longer job, because an add that re-runs it replaced
-// the item's job after kickJobs looked it up, the item's job is the one updated
+// the item's job after the caller looked it up, the item's job is the one changed
 // and written, encoded afresh, which is rare.
-func (s *Server) markKicked(ctx context.Context, job *Job, data any, ahead *jobChangeAhead) *Job {
+func (s *Server) markItemJobChanged(ctx context.Context, job *Job, data any, ahead *jobChangeAhead,
+	change func(*Job),
+) *Job {
 	if current, ok := data.(*Job); ok && current != job {
 		job, ahead = current, s.db.moveJobChangeAhead(job, current, ahead)
 	}
 
-	s.db.queueJobChangeAhead(ctx, job, ahead, kickChange)
+	s.db.queueJobChangeAhead(ctx, job, ahead, change)
 
 	return job
 }
@@ -4497,6 +4522,11 @@ func newPprofMux() *http.ServeMux {
 func disablePprofProfiling() {
 	runtime.SetMutexProfileFraction(0)
 	runtime.SetBlockProfileRate(0)
+}
+
+// suspendChange is the change a suspend makes to a job.
+func suspendChange(job *Job) {
+	job.State = JobStateSuspended
 }
 
 // kickChange is the change a kick makes to a job.
@@ -7641,14 +7671,14 @@ func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 		kickedJob := job
 
 		err := s.q.KickWith(ctx, key, func(data any) {
-			kickedJob = s.markKicked(ctx, job, data, ahead)
+			kickedJob = s.markItemJobChanged(ctx, job, data, ahead, kickChange)
 		})
 		if err == nil {
 			if kickQueuedHook != nil {
 				kickQueuedHook(key)
 			}
 
-			// logged here rather than in markKicked, to keep it out of the
+			// logged here rather than in markItemJobChanged, to keep it out of the
 			// queue's lock.
 			kickedJob.RLock()
 			clog.Debug(ctx, "unburied job", "key", key, "cmd", kickedJob.loggableCmd(),

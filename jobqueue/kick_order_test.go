@@ -332,7 +332,7 @@ func TestFailedKickLeavesJobAndStops(t *testing.T) {
 			So(kicked, ShouldEqual, 0)
 			So(state, ShouldEqual, JobStateReserved)
 			So(untilBuried, ShouldEqual, wantUntilBuried)
-			So(stopsWithin(ctx, server, failedChangeStopTimeout), ShouldBeTrue)
+			So(stopsPromptly(ctx, server), ShouldBeTrue)
 		})
 	})
 }
@@ -396,13 +396,14 @@ func TestFailedKickOfDependentJobStops(t *testing.T) {
 			serverStopped = true
 
 			So(kicked, ShouldEqual, 0)
-			So(stopsWithin(ctx, server, failedChangeStopTimeout), ShouldBeTrue)
+			So(stopsPromptly(ctx, server), ShouldBeTrue)
 		})
 	})
 }
 
-// stopsWithin stops server and says whether it stopped within d.
-func stopsWithin(ctx context.Context, server *Server, d time.Duration) bool {
+// stopsPromptly stops server and says whether it stopped within
+// failedChangeStopTimeout.
+func stopsPromptly(ctx context.Context, server *Server) bool {
 	stopped := make(chan struct{})
 
 	go func() {
@@ -413,7 +414,7 @@ func stopsWithin(ctx context.Context, server *Server, d time.Duration) bool {
 	select {
 	case <-stopped:
 		return true
-	case <-time.After(d):
+	case <-time.After(failedChangeStopTimeout):
 		return false
 	}
 }

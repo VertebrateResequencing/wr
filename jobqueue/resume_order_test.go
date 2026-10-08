@@ -361,7 +361,7 @@ func TestFailedResumeLeavesJobAndStops(t *testing.T) {
 			So(itemResumeErr, ShouldBeNil)
 			So(resumed, ShouldEqual, 0)
 			So(state, ShouldEqual, JobStateSuspended)
-			So(stopsWithin(ctx, server, failedChangeStopTimeout), ShouldBeTrue)
+			So(stopsPromptly(ctx, server), ShouldBeTrue)
 		})
 	})
 }
