@@ -1846,16 +1846,19 @@ type Server struct {
 	// items' requirements and reserve group, updated the
 	// previouslyScheduledGroups counts that skipReserve reads, and asked the
 	// scheduler for runners. readyAddedCallback sets racRunning, and its
-	// finishRAC clears both and wakes waitingReserves.
+	// finishRAC clears both and wakes waitingReserves. While paused or draining
+	// the callback returns without either, so a hold set then lasts until
+	// Resume's callback, shutdown or an early release below; reserves made
+	// then return before waiting.
 	//
 	// The hold is best-effort. The flags are shared by every operation, so it
 	// can be released before the callback that covers an operation has run, in
 	// two ways.
 	//
-	//   - Any clearRACPending, by an operation that turns out not to queue a
-	//     callback (eg. a resume back to dependent), clears the flag another
-	//     operation set, and wakes every waiting reserve even while a callback
-	//     is running.
+	//   - A clearRACPending by an operation that turns out not to queue a
+	//     callback (eg. a resume back to dependent) also clears the flag for
+	//     any other operation that set it, and wakes every waiting reserve even
+	//     while a callback is running.
 	//   - The queue merges a callback request that arrives while a callback is
 	//     running into one later recall. The running callback's finishRAC
 	//     releases the hold of the operations so merged, though its snapshot of
@@ -1864,10 +1867,10 @@ type Server struct {
 	//
 	// A reserve released early, or one already waiting inside the queue, can
 	// then take an item at its old requirements, so that attempt loses a
-	// resource increase such as the one after a RAM failure; and a new
-	// runner's first reserve can be told nothing is ready. The hold only
-	// orders reserves: releasing it early never loses, double-runs or stalls a
-	// job.
+	// resource increase such as the one after a RAM failure (a kicked job with
+	// no retries left is buried again); and a new runner's first reserve can be
+	// told nothing is ready. The hold only orders reserves: releasing it early
+	// never loses, double-runs or stalls a job.
 	racPending      bool
 	racRunning      bool
 	waitingReserves []chan struct{}
@@ -2041,7 +2044,7 @@ func (s *Server) finishRecovering() {
 }
 
 // setRACPending holds reserves (see Server.racPending) until the next
-// clearRACPending or finishRAC, whichever operation or callback calls it.
+// clearRACPending, finishRAC or shutdown, from any operation or callback.
 func (s *Server) setRACPending() {
 	s.rpmutex.Lock()
 	s.racPending = true
