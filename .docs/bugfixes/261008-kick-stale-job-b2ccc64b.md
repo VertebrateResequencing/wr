@@ -368,6 +368,17 @@ home directory: targeted `go test` runs, plain and `-race`; `make lint`,
   captured.
   - Source: item 3 implementer, incidental. Owner: investigate with a red
     loop before any fix; if it cannot be reproduced, record that and move on.
+  - Not reproduced (2026-10-08): about 760 runs, 0 failures: 20 single runs;
+    200 as 8 parallel processes x 25 at `GOMAXPROCS=2`; 20 group runs of
+    `Kick|Suspend|Resume|Stale|Modify`; 90 `-race` runs at `GOMAXPROCS=1`
+    grouped with the other kick and stale-job tests; 192 as 16 parallel x 12
+    at `GOMAXPROCS=1`. A pass takes 0.10-0.34 s. The failed run took 5.25 s,
+    about one 5 s budget more than a pass, which fits only a `serve` port
+    bind retry (direct `go test` without `WR_TEST_LANE`, other agents' tests
+    on the same host) or `Stop`'s 5 s background wait after an assertion
+    failure (the failure came while item 3 was rewriting the kick callback,
+    so intermediate code may have leaked a write slot). Neither can be
+    confirmed without the lost output. Left unchecked: no red loop, no fix.
 - [ ] TestServerWebISuspendedStatus flake: it failed twice at
   `jobqueue/serverWebI_test.go:309` (`readJStateCounts`, 3 s timeout; expected
   suspended counts not seen, 3.21 s and 3.37 s) in group runs during item 3's
@@ -379,3 +390,22 @@ home directory: targeted `go test` runs, plain and `-race`; `make lint`,
     `flake-webisuspended-M5.log`, `flake-webisuspended-M4.log` in the
     session scratchpad. Owner: red loop before any fix; if it cannot be
     reproduced, record that and move on.
+  - Reproduced deterministically (2026-10-08) by holding the suspend's change
+    callback until the status socket has joined the delta feed: fails at the
+    same `readJStateCounts` assertion after 3.1-3.3 s, on this branch and on
+    base `9fc0d795`. Cause: `queue.changed` (`queue/queue.go`) runs the
+    change callback in a goroutine (since 2016), so a status delta can reach
+    a socket that joined after the move. The test helper
+    `readJStateDeltasUntil` applies deltas from before the seed's `begin`
+    boundary (the browser discards them). In production a late delta can
+    also land after the seed's `end` boundary for a move the snapshot
+    already counted, so the status page double-counts it until a refresh;
+    the `jstatusSeedBoundary` doc (`jobqueue/serverWebI.go`) assumes deltas
+    arrive soon after their move. Pre-existing, independent of this
+    branch's fixes.
+  - Deferred to its own branch: item 8 of
+    `.docs/reserve-runstate/delivery-queue.md` (status-count deltas ordered
+    against the seed snapshot, e.g. by a queue change sequence number; the
+    test helper resets on `begin` as the browser does). Red probe:
+    `TestProbeWebISuspendedLateDelta` (session scratchpad, to be turned into
+    the red test there). Left unchecked here.
