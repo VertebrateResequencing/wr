@@ -110,6 +110,14 @@ project adheres to [Semantic Versioning](http://semver.org/).
 - `wr resume` of a command at the moment a runner started it could make
   `wr status` show the running command as reserved, and count it as having
   started twice if the runner had to resend its start.
+- `wr resume` of a command at the moment `wr suspend` was suspending it could
+  be lost: the command was ready, but if the manager then crashed it came back
+  suspended.
+- `wr kick` or `wr suspend` at the same moment as a `wr add` that re-adds the
+  same command (such as a buried dependent brought back by a dependency group
+  re-run) could update the manager's old copy of the command instead of the
+  re-added one. `wr status` then showed the command with no state, and after
+  a crash it came back without the add's changes, such as its new rep group.
 - `wr status` could say a delayed command would become ready in
   -2562047h47m16.854775808s, typically after lost contact with its runner. It
   now shows the real time until it becomes ready (also as `Ready` in
