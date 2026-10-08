@@ -52,23 +52,29 @@ four documented-gap observations, six F1 subjects and all 155 required
 paired loss controls are accepted. CLI-P8's runtime-stage mismatch remains
 unresolved separately from its parser count-zero observation. Whole-harness
 equivalence, full-language closure and wr execution remain unverified.
-Phase 4 reconciliation and the reviewed recommendation come next. D01's
-prose-only correction passed independent preservation review. Permission
-portability finding P01 remains root-owned before fresh-checkout reuse.
+Phase 4 passed independent reconciliation for all five research UATs.
+`research-pilot/pilot-report.md` and `pilot-report-review.md` accept measured
+expansion by proven families. D01's prose-only correction passed independent
+preservation review. Permission portability finding P01 remains root-owned
+before fresh-checkout reuse; evidence packaging and cache reconstruction
+also need explicit gates.
 
 ## Candidate under investigation
 
 The user proposed an independent suite that covers upstream scenarios,
 corrects identified weaknesses, runs against real Nextflow and future wr,
-then adds documented requirements not adequately tested upstream. Assess
-this candidate before choosing the exact design.
+then adds documented requirements not adequately tested upstream. The pilot
+supports this candidate for its measured families. Root now routes that
+evidence through a reviewed revision of the six-phase foundation plan.
 
 Retain upstream behavioural purposes and separately account for deliberate
 strengthening and spec-gap tests. Both engine adapters use independently
 reviewed expectations. A Nextflow observation cannot silently define the
 expected answer. Internal JVM, AST and mock assertions need reviewed
-behavioural equivalents or explicit unresolved dispositions. The bounded
-pilot must establish preservation and execution before broader adoption.
+behavioural equivalents or explicit unresolved dispositions. The pilot
+establishes bounded scalar/value/file preservation and genuine execution.
+Whole-upstream assertion accounting and independent document coverage remain
+separate obligations. No exhaustive denominator follows from this pilot.
 
 ## Schema review handoff
 

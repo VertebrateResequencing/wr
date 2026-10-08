@@ -54,5 +54,5 @@ Return the reviewed recommendation to root for the later assurance decision.
 Architecture, JVM/typed-language policy and the pending wr boundary remain
 later decisions. End with actual final handback and no live work.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

@@ -19,15 +19,18 @@ equivalence, successful raw Spock comparison and wr runtime remain unverified.
 - [x] Phase 1: independently reviewed, immutable contract handoff.
 - [x] Phase 2: genuine prerequisite closure and original attempts.
 - [x] Phase 3: reviewed neutral mappings and paired controls.
-- [ ] Phase 4: measured report and independent reconciliation.
+- [x] Phase 4: measured report and independent reconciliation.
 
 Phase 1 was committed and pushed as `7efd67d0`. Phase 2 was committed and
 pushed as `8130bd90`. Phase 3 passed independent results review, accepting
 R-UAT-03 and R-UAT-04. All 155 required paired loss controls, six F1 subjects
 and three Mix witnesses have complete accounting. D01's prose correction
 passed independent preservation review; the original report remains intact.
-Phase 3 delivery is in progress. Phase 4 will reconcile the measured report
-and recommend the research route before core specification decisions.
+Phase 3 was committed and pushed as `ec72a1ea`. Phase 4 passed independent
+reconciliation in `pilot-report-review.md`, accepting all five research UATs
+at their bounded scope. The report recommends expansion by proven families,
+with native original evidence retained for unresolved internal assertions.
+Core specification decisions follow this reviewed research recommendation.
 
 Each stage has two active hours; all stages have eight active hours. The
 execution clock is under `.tmp/agent/nextflow-conformance/research-pilot/`.
@@ -35,6 +38,13 @@ Frozen Phase 1 artifacts remain immutable. The working manifest extends
 that history through genuine originals, measured mappings, controls and
 an explicit documentary correction. Historical pending fields remain
 historical; independent acceptance is recorded in separate reviews.
+
+The accepted report is `pilot-report.md`; its independent review is
+`pilot-report-review.md`. The working manifest has 24 fields after the sole
+Phase 4 report contribution. All earlier fields remain unchanged. CLI-P8,
+the unexecuted document string-Mix example, five document closure links,
+internal equivalence and portable evidence/cache reconstruction remain open.
+No full-language, fresh-checkout or wr execution pass is claimed.
 
 ## Phase 2 supervision finding
 

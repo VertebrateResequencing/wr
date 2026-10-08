@@ -14309,5 +14309,92 @@
     ],
     "review": "Independent correction review pending; existing semantic verdicts unchanged",
     "P01": "Open; no fresh-checkout portability pass"
+  },
+  "phase4_report": {
+    "role": "Phase4 Item4.1 report author contribution staged after passive PASS; independent report review pending",
+    "working_manifest_before": {
+      "path": ".docs/nextflow-conformance/research-pilot/research-manifest.json",
+      "bytes": 615369,
+      "sha256": "724e4a56c4a3143f14e886de16acbce9a12d7ada1a3e3416340ea3717bf8bb2f",
+      "mode": "0o664"
+    },
+    "input_root_transition": {
+      "path": ".tmp/agent/nextflow-conformance/research-pilot/root-phase4-start.json",
+      "bytes": 967,
+      "sha256": "e74a124f2ceb57aa18b2a5ee135489c16846e38ff28876ea9bf7c4b81f4c7301",
+      "mode": "0o664"
+    },
+    "artifacts": [
+      {
+        "path": ".docs/nextflow-conformance/research-pilot/pilot-report.md",
+        "bytes": 42621,
+        "sha256": "c1233ec605d0bca3308c32a3f4623c10c536e2cb209dbea4e9751912ed545f2e",
+        "mode": "0o664"
+      },
+      {
+        "path": ".docs/nextflow-conformance/research-pilot/item4.1-author-01.md",
+        "bytes": 5276,
+        "sha256": "5dcb4f5633241dde5145ae4af1ecd5f127f9b224f4749719d7601f71cf98db4a",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/report04/current-baseline.json",
+        "bytes": 10338680,
+        "sha256": "010d44ded212e826b1f371dec6786623a93fe5cbfd24d793497d36bf1fa89dd0",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/report04/effort-reconciliation.json",
+        "bytes": 11759,
+        "sha256": "05988be5fd006deadefc6eae2b4d62664ff11dff7575ddde544b980bdc3906c0",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/report04/inspection-corrections.json",
+        "bytes": 1229,
+        "sha256": "de9f35c973201649301732e85c990393bfb1efbaf694a3ad3bca9ca156c48423",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/report04/reconcile.py",
+        "bytes": 14373,
+        "sha256": "01af3b9426c3ac4d5277babac2761747b569333c84db5c4175344bd609f20848",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/report04/reconciliation.json",
+        "bytes": 1123712,
+        "sha256": "c60818bfe22f295a1d376cb7397802f3e6f201b751e746e77343a409b018f066",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/report04/start.json",
+        "bytes": 555,
+        "sha256": "969fcdddda9f616549c2cf03543bee13b345306a283f8be53484ff066dd72a9f",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/report04/verification-command.json",
+        "bytes": 2564,
+        "sha256": "a04e9f68e93354f3226c91b008c4ccfb46b1187bb3bc88dc68d542d656fce116",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/report04/verification.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mode": "0o664"
+      },
+      {
+        "path": ".tmp/agent/nextflow-conformance/research-pilot/report04/verification.stdout",
+        "bytes": 1126,
+        "sha256": "e50c98a4e3acfb9259b58cdeaf024c4589ae4e84e7472933a76e029647c3e0bb",
+        "mode": "0o664"
+      }
+    ],
+    "R-UAT-05": "Pending independent root-owned report review",
+    "recommendation": "Expand proven finite families toward independent Nextflow/future-wr contracts; focus native internal and document-gap observer research; stop unsupported CLI-P8 count inference; retain eventual all-upstream/internal/document obligations",
+    "claims": "No new execution/oracle/translation/wr/whole-harness/full-language/portable-checkout pass",
+    "root_integration_rule": "No author mutation of working manifest. Root may integrate this exact field only after actual author FINAL under separately authorized integration; preserve all 23 prior fields and historical snapshots."
   }
 }
