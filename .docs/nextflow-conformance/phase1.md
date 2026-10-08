@@ -2,11 +2,52 @@
 
 Ref: [spec.md](spec.md) sections A1
 
+## Historical acceptance
+
+Phase 1 is implemented, independently reviewed, committed and pushed at
+`ec487ed2`. The checked items and acceptance below describe that historical
+work. Keep its eleven-schema evidence intact. Phase 2 owns retained-contract
+reconciliation, F11 correction, the amended `cross_refs` and `extraction`
+schemas, six suite schemas, eighteen-schema emission, active fixture
+regeneration and the generation loader. New schema, dependency, execution and
+portable-proof work belongs to Phases 2-6; none is retrospectively accepted
+here. The instructions below remain the record of the completed Phase 1
+handoffs.
+
+## Current contract boundary
+
+The accepted independent-suite spec has 69 UAT obligations. This phase retains
+its original seven A1 obligations; it gains no new checked item. Its historical
+Items and Exit conditions below are unchanged. Item 2.1 is implemented but
+unreviewed, and F11 must be corrected before its pending review can close. Phase
+2's current eighteen-schema contract supersedes the unfinished historical
+twelve-schema amendment for active data. Retain both histories; independently
+approve the new reconciliation before dependent extraction. Actual A1 tests also
+remain required in F3's isolated HTTPS fixture lane. The historical acquisition
+receipt supplies no fresh-checkout proof.
+
+## Acceptance ownership and dependencies
+
+Every ID below binds to `TestUAT_<ID>` in `nextflowconformance/` plus the listed
+test file. The owner closes the whole acceptance test, including its subcases;
+earlier items supply reviewed prerequisites. The dependency column names the
+last required item review, in addition to phase entry.
+
+| ID | Owner | Dependency | Test file |
+| --- | --- | --- | --- |
+| A1_01 | 1.2 | 1.1 | source_test.go |
+| A1_02 | 1.2 | 1.1 | source_test.go |
+| A1_03 | 1.2 | 1.1 | source_test.go |
+| A1_04 | 1.2 | 1.1 | source_test.go |
+| A1_05 | 1.2 | 1.1 | source_test.go |
+| A1_06 | 1.2 | 1.1 | source_test.go |
+| A1_07 | 1.2 | 1.1 | source_test.go |
+
 ## Instructions
 
 Use the `orchestrator` skill to complete this phase, coordinating fresh
-subagents with the `go-implementor` and `go-reviewer` skills. Read these
-skill files before implementation or review:
+subagents with the `go-implementor` and `go-reviewer` skills. Read these skill
+files before implementation or review:
 
 - `/home/ubuntu/.agents/skills/go-implementor/SKILL.md`
 - `/home/ubuntu/.agents/skills/go-reviewer/SKILL.md`
@@ -14,28 +55,31 @@ skill files before implementation or review:
 - `/home/ubuntu/.agents/skills/implementation-principles/SKILL.md`
 - `/home/ubuntu/.agents/skills/testing-principles/SKILL.md`
 
-Read the spec's Architecture, assigned stories, and Implementation Order.
-Give each item its own implementation and independent review handoff. Keep
-its input bundle, tool output, and reasoning within roughly 100k tokens;
-a reviewer must approve the bundle's size before work. Use exact relevant
-source spans rather than loading the whole acquired tree into context.
-Split an oversized item at its acceptance boundaries without adding scope.
+Read the spec's Architecture, assigned stories, and Implementation Order. Give
+each item its own implementation and independent review handoff. Before work,
+measure its source spans, skills, fixtures and changed-code inputs; record
+allowance for tool output, implementation growth and reasoning. An independent
+reviewer must approve the complete proposed context within roughly 100k tokens.
+Character counts are estimates, not approval. Rebalance allowances or split at
+coherent semantic/dependency boundaries when needed; remeasure and obtain review
+before proceeding. Keep all changed code needed for review in the bundle. Use
+exact source spans instead of whole trees.
 
-Run items sequentially, starting the next only after the prior review
-passes. Independent semantic reviews may run concurrently after source
-locking, with separate assigned spans; implementation remains sequential.
-Each acceptance ID maps to `TestUAT_<ID>` in its specified test file. Record
-a meaningful failing command before implementation and a passing command
-afterwards. Tests exercise observable CLI/results and artifacts. Runner
-tests use temporary fixture subjects and never invoke their outer suite.
+Run items sequentially, starting the next only after the prior review passes.
+Independent semantic reviews may run concurrently after source locking, with
+separate assigned spans; implementation remains sequential. Each acceptance ID
+maps to `TestUAT_<ID>` in its specified test file. Record a meaningful failing
+command before implementation and a passing command afterwards. Tests exercise
+observable CLI/results and artifacts. Runner tests use temporary fixture
+subjects and never invoke their outer suite.
 
-Use bounded commands from the repository root. Run focused GoConvey tests
-with `CGO_ENABLED=1`, `-tags netgo`, and `-count=1`, plus relevant linter
-checks. Report baseline or unrelated failures without unrelated edits.
-Full wr repository tests are outside this isolated tooling plan. Save CLI
-JSON, stderr, exit codes, and artifact paths for independent review; a
-missing prerequisite leaves the affected item incomplete. Both handoffs
-must pass before phase 2; existing fixture passes cannot defer A1 work.
+Use bounded commands from the repository root. Run focused GoConvey tests with
+`CGO_ENABLED=1`, `-tags netgo`, and `-count=1`, plus relevant linter checks.
+Report baseline or unrelated failures without unrelated edits. Full wr
+repository tests are outside this isolated tooling plan. Save CLI JSON, stderr,
+exit codes, and artifact paths for independent review; a missing prerequisite
+leaves the affected item incomplete. Both handoffs must pass before phase 2;
+existing fixture passes cannot defer A1 work.
 
 ## Items
 

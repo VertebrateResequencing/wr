@@ -23,27 +23,75 @@
 - [ ] Prove a dynamic runtime slice with real manager and CLI crash recovery.
 - [ ] Implement dependency-ordered batches against executable UATs.
 
+## Independent-suite foundation revision
+
+- [x] Complete and independently review the four-phase research pilot.
+- [x] Commit and push each pilot phase; final commit is cad2b64d.
+- [x] Preserve exact pre-revision core authority snapshots.
+- [x] Fresh clarification frontier ends with NONE.
+- [x] Revise the foundation spec from the accepted measured evidence.
+- [x] Two consecutive feature coverage reviews pass on the clarified spec.
+- [x] Two consecutive clean proofreading reviews pass.
+- [x] Revise all six phase plans and obtain clean independent reviews.
+- [ ] Reconcile retained implementation and refresh F11 input authority.
+- [ ] Continue all six core phases through reviewed commits and pushes.
+
+The pilot accepts finite original execution, scalar/value/file mappings,
+paired controls and independent reconciliation. Full upstream assertion
+accounting, document closure, internal equivalence, reusable checkout
+packaging and future wr execution remain separate unfinished obligations.
+The active revision uses spec-writer; its prompt is prompt.md and its
+measured basis is research-pilot/pilot-report.md plus pilot-report-review.md.
+
 ## Current handoff
 
-Phase 1 implementation and review are complete. Runtime review 02 passed
-after executable-mode, restrictive-umask and final lint corrections. Real
-candidate review 01 independently accepted the pinned source/runtime bytes,
-eighteen selections, sixteen grammar alternatives and 148 include edges.
-All 36 focused tests, seven A1 UATs, eleven schemas with 1,243 cases, and
-unchanged lint pass. Actual offline startup and traced startup pass.
+Phase 1 implementation, independent runtime/candidate review and delivery remain
+accepted at ec487ed27111e61dba7d104c2579ef053e478a24. The accepted lock selects
+160 files in eighteen batches. Historical offline startup, 36 tests, seven A1
+UATs and eleven schemas with 1,243 cases do not award new implementation or
+semantic completion.
 
-The accepted lock and batches select 160 files. Network-disabled public
-validation proves their bytes using explicitly temporary fixture records;
-production target/profile records remain for genuine ledger initialization.
-This proves neither semantic completion, E1 workflows nor wr execution.
-No project verify skill exists at .github/skills/verify-*/SKILL.md;
-verification is the skill that creates one.
+The four-phase executable research pilot passed all five bounded research UATs
+and was pushed through cad2b64d. It established finite original execution,
+scalar/value/file mappings and controls. Complete upstream accounting,
+documented-language coverage, internal equivalence and wr execution remain
+unfinished.
 
-The parent is committing and pushing Phase 1, then continuing Phase 2.
-Start from reviews/nextflow-phase1-candidate-review-01.md and its Phase 2
-handoff, the accepted lock/batches, and phase2.md. delivery.md records the
-user's instruction to complete all six phases and commit and push each one.
-Continue through context handoffs without a user restart.
+The research-informed spec-writer revision is complete. The accepted spec has 69
+assurance-tool UATs, retaining the original 49 and adding twenty independent-
+suite obligations. Feature reviews 07/08 and clean proofreading reviews 07/08
+passed. All six revised phase plans have clean independent reviews: Phase 1
+review 01, Phase 2 review 02 and Phases 3-6 review 03. No new core phase is
+implemented or accepted by those plan reviews.
+
+Phase 2 Item 2.1 retains its implemented twelve-schema amendment and remains
+unreviewed. Schema review 06 accepts F1-F10 but reports F11, a test gap for
+malformed UTF-8 inside otherwise valid strings. Production rejects those bytes
+correctly. Item 2.2 now explicitly precedes closing Item 2.1 review: approve
+fresh bounded inputs, add eleven invalid/valid pairs, prove every invalid
+assertion rejects the exact guard-removal fault, restore green and obtain
+independent PASS. Then refresh the full Item 2.1 review before six new suite
+schemas and further extraction work.
+
+Current implementation supports acquisition and validation only. Later commands,
+eighteen-schema reconciliation, source/assertion accounting, shared
+observations, genuine family execution and portable reconstruction remain
+implementation work. Historical planning approvals cannot approve current
+inputs. Preserve pre-research and revision authority snapshots, then measure and
+independently approve coherent fresh contexts.
+
+D2 binds Git commit and dirty source content as well as semantic inputs. A
+delivery commit can make prior attempts historical even with identical code
+bytes. After any bound revision change, execute newly bound attempts and accept
+their actual results before reporting current evidence. Phase 6 requires a fresh
+revision-bound bundle, reconstruction, builds and the complete 69-UAT
+composition after final changes.
+
+No project verify skill exists at .github/skills/verify-*/SKILL.md; verification
+is the skill that creates one. Continue through all six core phases, commit and
+push each accepted phase, then complete both branch-review cycles. delivery.md
+owns this standing authorization and the empty deferred issue queue. Context
+handoffs do not require a user restart.
 
 ## Review evidence
 

@@ -177,3 +177,150 @@ as snapshots; record the path migration separately. Use
   tampering, and an artifact's packaging label cannot bypass pinned identity.
 - This corrects an engineering assumption in the foundation spec without
   changing the release target or broadening the runtime compatibility scope.
+
+### Delivery authorization on 2026-09-30
+
+The user instructed:
+
+> Is there a reason for the stop? If not, your job is to ensure this proceeds
+> through all 6 phases. Commit and push after each phase.
+
+Phase 1 was reviewed, committed and pushed as ec487ed2. Continue the six
+phases through bounded context handoffs. Preserve completed phase evidence
+and history; commit and push each subsequent phase after acceptance.
+
+### Phase 2 reference and reconciliation contract gap
+
+- A2 already requires cross-reference edges to resolved tree paths or
+  outstanding external sources, and retained reconciliation of removed/new
+  block IDs and stale reviews. The current closed records cannot represent
+  all of this information.
+- A pinned example is docs/reference/process.md bytes [11678,11742), which
+  links to https://cloud.google.com/compute/docs/gpus/. Existing include
+  references require extracted blocks or acquired source artifacts. An
+  outstanding URL is neither an acquired artifact nor a verified blob.
+- Amend the record contract to represent those existing A2 requirements
+  explicitly, including validation, pending status and retained history.
+  Keep acquired bytes distinct from unresolved references. Extraction must
+  remain offline and preserve the reviewed immutable source lock.
+- Record shapes, schema changes and integration are engineering decisions.
+  Preserve the release target, six-phase order, existing acceptance IDs and
+  their behavioral obligations. Add explicit subcases where needed to prove
+  the already required reference and reconciliation behavior.
+- Preserve Phase 1's historical eleven-schema acceptance. Additional or
+  amended extraction records belong to Phase 2 with implementation and
+  independent review. Do not rewrite past evidence as if it tested them.
+- The typed milestone and JVM/plugin product decisions remain unresolved.
+  This amendment does not settle compatibility policy or expand wr runtime
+  scope. Full production ledger initialization still requires genuine
+  extracted blocks and obligations; temporary fixtures supply no semantics.
+- Fresh clarification returned NONE: no user-owned decision remains. The
+  `process-page` label resolves to locked docs/process.md:1, currently
+  unreviewed and outside the 160 selected files. Resolving it must not
+  select or extract that destination. Location evidence is not semantic
+  acceptance.
+- Define deterministic label/fragment resolution, unresolved local-reference
+  handling, history retention, atomic publication and check-mode behavior.
+  Preserve missing/cyclic include failures and existing historical reviews.
+
+### Research before approach selection on 2026-10-08
+
+The user asked:
+
+> Don't you need to establish that Nextflow’s tests exhaustively cover its
+> documented language? Shouldn't some proper research be done before figuring
+> out our exact approach?
+
+The user's candidate was:
+
+> Is one possible approach to write an independent nextflow test suite that
+> covers everything their test suite covers, without the identified issues
+> with their test suite, that can be used to both test real nextflow and the
+> future wr implementation of the dsl? And improve our suite further to cover
+> anything in the spec not tested.
+
+The sourced research and corrected synthesis passed independent review 02.
+Exhaustive upstream coverage, validated translation and exact architecture
+remain unestablished. Research found effective shell pass conditions can
+swallow earlier failures, in addition to internal mock/observer constraints.
+The next step is a reviewed bounded executable pilot under research-pilot/,
+using manually authored independent contracts before selecting a general
+importer or revising this six-phase specification. Both engine adapters would
+use reviewed expectations; observed Nextflow output cannot automatically
+define expected truth. Preserve all upstream assertions in inventory, with
+reviewed behavioral mappings or explicit unresolved/internal dispositions.
+Keep upstream provenance, strengthening and documented-gap tests separate.
+
+Product work remains on hold at Item 2.1 F11 pending this research and the
+later approach decision. Preserve accepted Phase 1 and existing code, lock,
+batches and six-phase evidence. research-status.md and delivery.md record
+the active handoff. Current F11 correction inputs need renewed independent
+measurement after these parent metadata changes; pre-research authority is
+retained in `.tmp/agent/nextflow-conformance/phase2-schema-f11-recovery/`.
+
+### Reviewed independent-suite pilot and foundation revision
+
+The four pilot phases have been independently accepted and pushed, ending
+with `cad2b64d`. Read `research-pilot/pilot-report.md` and its independent
+`pilot-report-review.md` as the measured basis for this revision. All five
+research UATs pass at their explicit bounded scope. They do not certify
+whole-language completeness, universal translation or wr execution.
+
+Revise the foundation spec and six phase plans through the full spec-writer
+workflow, then continue implementation under the standing delivery
+authorization. The user's independent-suite proposal above is the candidate
+supported by the pilot for proven families. Design choices must preserve
+the eventual all-upstream assertion and documented-language obligations.
+
+- Maintain separate source-derived upstream assertion accounting and
+  independently reviewed documented-behaviour accounting. Upstream test
+  success cannot discharge an uncovered documented requirement.
+- Independent expected results precede engine observations. Track original
+  purposes, deliberate strengthening and document-gap expectations with
+  their distinct provenance. Share reviewed expectations across real
+  Nextflow and the eventual wr adapter; fixture or mock results cannot
+  establish either engine's execution.
+- Use the pilot's proven scalar/value/file families as measured starting
+  points. Retain genuine native original attempts separately for assertions
+  without reviewed neutral equivalents. Every selected assertion, helper,
+  state requirement and completion must have a preserved obligation or
+  explicit unresolved disposition. Do not silently drop JVM/AST/mock
+  internals or call the portable subset all-upstream coverage.
+- Preserve the CLI-P8 runtime/parser mismatch, unexecuted six-string Mix
+  document example, seven internal/helper obligations and five document
+  closure links as unfinished work. Nextflow output cannot repair expected
+  truth or turn missing observations into a passing result.
+- Make repeatable fresh-checkout assurance an explicit acceptance gate.
+  Resolve P01's historical full permissions versus Git executable identity,
+  portable artifact paths, published executable tools, reconstructible
+  dependency caches and offline replays. Existing local ignored scratch is
+  research evidence, not a delivered reusable test suite.
+- Preserve accepted Phase 1's historical lock, runtime, selections and
+  evidence. Additional inventories or dependencies require truthful reviewed
+  extensions rather than rewriting historical acceptance. Keep the release
+  target, pure-Go production wr boundary and explicit Nextflow naming.
+- Retain the existing 49 foundation UAT obligations and six-phase delivery
+  order. Add reviewed acceptance obligations where this research requires
+  them. The foundation's bounded completion must remain distinct from
+  whole-target inventory and future wr implementation completion.
+- Reconcile retained implementation with the revised contracts before
+  resuming it. Core F11 still needs its test correction and independent
+  acceptance; parent input authorities need fresh measurement after revision.
+
+Exact pre-revision core authorities are archived, without changing their
+historical status, under
+`.tmp/agent/nextflow-conformance/independent-suite-revision-2026-10-08/`.
+The typed-language milestone and arbitrary JVM/library/plugin product policy
+remain unresolved product decisions; this pilot does not choose them.
+
+### Independent-suite clarification round 1 findings
+
+Fresh clarification returned NONE; see
+`reviews/nextflow-independent-suite-clarification-01.md`. No user-owned
+decision blocks the bounded foundation revision. Record shapes, initial
+proven-family selection, observers, packaging and placement within the six
+phases are engineering choices for the spec author and independent reviewers.
+Current CLI dispatch implements acquisition and validation only. The genuine
+production semantic ledger and engine suite still need implementation.
+The accepted pilot's native test dependency closure is additional evidence,
+not an automatic extension of the existing seven-case runtime environment.
