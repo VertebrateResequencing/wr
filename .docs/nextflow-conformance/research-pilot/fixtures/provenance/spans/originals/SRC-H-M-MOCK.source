@@ -1,0 +1,83 @@
+class MockSession extends Session {
+
+    MockSession(Map config) {
+        super(config)
+    }
+
+    MockSession() {
+        super()
+    }
+
+    @Override
+    Session start() {
+        this.executorFactory = new MockExecutorFactory()
+        return super.start()
+    }
+}
+
+class MockExecutorFactory extends ExecutorFactory {
+    @Override
+    protected Class<? extends Executor> getExecutorClass(String executorName) {
+        return MockExecutor
+    }
+
+    @Override
+    protected boolean isTypeSupported(ScriptType type, Object executor) {
+        true
+    }
+}
+
+class MockExecutor extends Executor {
+
+    @Override
+    void signal() {}
+
+    protected TaskMonitor createTaskMonitor() {
+        new MockMonitor()
+    }
+
+    @Override
+    TaskHandler createTaskHandler(TaskRun task) {
+        return new MockTaskHandler(task)
+    }
+}
+
+class MockMonitor implements TaskMonitor {
+
+    @Override void schedule(TaskHandler handler) { handler.submit() }
+    @Override boolean evict(TaskHandler handler) {}
+    @Override TaskMonitor start() {}
+    @Override void signal() {}
+}
+
+class MockTaskHandler extends TaskHandler {
+
+    protected MockTaskHandler(TaskRun task) {
+        super(task)
+    }
+
+    @Override
+    void submit() {
+        if( task.type == ScriptType.SCRIPTLET ) {
+            task.workDir = Path.of('.').complete()
+            task.stdout = task.script
+            task.exitStatus = 0
+        }
+        else {
+            task.code.call()
+        }
+        status = TaskStatus.COMPLETED
+        final fault = task.processor.finalizeTask(this)
+        if( fault instanceof TaskFault )
+            task.processor.session.fault(fault)
+    }
+
+    @Override
+    boolean checkIfRunning() { false }
+
+    @Override
+    boolean checkIfCompleted() { true }
+
+    @Override
+    protected void killTask() {}
+}

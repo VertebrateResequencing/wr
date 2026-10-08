@@ -1,0 +1,29 @@
+    def 'should report an error for params block without an entry workflow' () {
+        when:
+        def errors = check(
+            '''\
+            params {
+                greeting: String
+            }
+            '''
+        )
+        then:
+        errors.size() == 1
+        errors[0].getStartLine() == 1
+        errors[0].getStartColumn() == 1
+        errors[0].getOriginalMessage() == "Params block cannot be defined without an entry workflow"
+
+        when:
+        errors = check(
+            '''\
+            params {
+                greeting: String
+            }
+
+            workflow {
+            }
+            '''
+        )
+        then:
+        errors.size() == 0
+    }

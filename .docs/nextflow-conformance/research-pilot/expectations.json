@@ -1,0 +1,2636 @@
+{
+  "revision": "232b60569865e9a4577e48c1955409238359d6ca",
+  "originals": {
+    "contribution": "original-only",
+    "revision": "232b60569865e9a4577e48c1955409238359d6ca",
+    "expectations": [
+      {
+        "id": "P1-COUNT",
+        "unit_id": "P1",
+        "origin": "original",
+        "source_id": "SRC-P1-COUNT",
+        "literal_source_expression": "errors.size() == 1",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 1,
+        "expected_type": "integer",
+        "observation_boundary": "Internal TestUtils filtered SyntaxException list length after parse and analyze",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            workflow {\n                foo(1, 2 3, 4)\n            }\n            ",
+          "literal_fixture_id": "FX-P1-literal",
+          "decoded_fixture_id": "FX-P1-decoded"
+        }
+      },
+      {
+        "id": "P1-LINE",
+        "unit_id": "P1",
+        "origin": "original",
+        "source_id": "SRC-P1-LINE",
+        "literal_source_expression": "errors[0].getStartLine() == 2",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 2,
+        "expected_type": "integer",
+        "observation_boundary": "Internal SyntaxException.getStartLine()",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            workflow {\n                foo(1, 2 3, 4)\n            }\n            ",
+          "literal_fixture_id": "FX-P1-literal",
+          "decoded_fixture_id": "FX-P1-decoded"
+        }
+      },
+      {
+        "id": "P1-COLUMN",
+        "unit_id": "P1",
+        "origin": "original",
+        "source_id": "SRC-P1-COLUMN",
+        "literal_source_expression": "errors[0].getStartColumn() == 14",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 14,
+        "expected_type": "integer",
+        "observation_boundary": "Internal SyntaxException.getStartColumn()",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            workflow {\n                foo(1, 2 3, 4)\n            }\n            ",
+          "literal_fixture_id": "FX-P1-literal",
+          "decoded_fixture_id": "FX-P1-decoded"
+        }
+      },
+      {
+        "id": "P1-MESSAGE",
+        "unit_id": "P1",
+        "origin": "original",
+        "source_id": "SRC-P1-MESSAGE",
+        "literal_source_expression": "errors[0].getOriginalMessage() == \"Unexpected input: '3'\"",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": "Unexpected input: '3'",
+        "expected_type": "string",
+        "observation_boundary": "Internal SyntaxException.getOriginalMessage(); retain equality versus substring distinction",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "expected_utf8_hex": "556e657870656374656420696e7075743a20273327",
+        "message_decoding": "Groovy double-quoted String; source \\\" becomes quote and source \\\\ becomes one backslash; P2 expected backslash+n bytes 5c6e, not LF 0a; no interpolations in selected message",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            workflow {\n                foo(1, 2 3, 4)\n            }\n            ",
+          "literal_fixture_id": "FX-P1-literal",
+          "decoded_fixture_id": "FX-P1-decoded"
+        }
+      },
+      {
+        "id": "P2-COUNT",
+        "unit_id": "P2",
+        "origin": "original",
+        "source_id": "SRC-P2-COUNT",
+        "literal_source_expression": "errors.size() == 1",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 1,
+        "expected_type": "integer",
+        "observation_boundary": "Internal TestUtils filtered SyntaxException list length after parse and analyze",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            process hello {\n                debug true:\n\n                script:\n                \"\"\"\n                echo hello\n                \"\"\"\n            }\n            ",
+          "literal_fixture_id": "FX-P2-literal",
+          "decoded_fixture_id": "FX-P2-decoded"
+        }
+      },
+      {
+        "id": "P2-LINE",
+        "unit_id": "P2",
+        "origin": "original",
+        "source_id": "SRC-P2-LINE",
+        "literal_source_expression": "errors[0].getStartLine() == 2",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 2,
+        "expected_type": "integer",
+        "observation_boundary": "Internal SyntaxException.getStartLine()",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            process hello {\n                debug true:\n\n                script:\n                \"\"\"\n                echo hello\n                \"\"\"\n            }\n            ",
+          "literal_fixture_id": "FX-P2-literal",
+          "decoded_fixture_id": "FX-P2-decoded"
+        }
+      },
+      {
+        "id": "P2-COLUMN",
+        "unit_id": "P2",
+        "origin": "original",
+        "source_id": "SRC-P2-COLUMN",
+        "literal_source_expression": "errors[0].getStartColumn() == 16",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 16,
+        "expected_type": "integer",
+        "observation_boundary": "Internal SyntaxException.getStartColumn()",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            process hello {\n                debug true:\n\n                script:\n                \"\"\"\n                echo hello\n                \"\"\"\n            }\n            ",
+          "literal_fixture_id": "FX-P2-literal",
+          "decoded_fixture_id": "FX-P2-decoded"
+        }
+      },
+      {
+        "id": "P2-MESSAGE",
+        "unit_id": "P2",
+        "origin": "original",
+        "source_id": "SRC-P2-MESSAGE",
+        "literal_source_expression": "errors[0].getOriginalMessage() == \"Unexpected input: '\\\\n'\"",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": "Unexpected input: '\\n'",
+        "expected_type": "string",
+        "observation_boundary": "Internal SyntaxException.getOriginalMessage(); retain equality versus substring distinction",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "expected_utf8_hex": "556e657870656374656420696e7075743a20275c6e27",
+        "message_decoding": "Groovy double-quoted String; source \\\" becomes quote and source \\\\ becomes one backslash; P2 expected backslash+n bytes 5c6e, not LF 0a; no interpolations in selected message",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            process hello {\n                debug true:\n\n                script:\n                \"\"\"\n                echo hello\n                \"\"\"\n            }\n            ",
+          "literal_fixture_id": "FX-P2-literal",
+          "decoded_fixture_id": "FX-P2-decoded"
+        }
+      },
+      {
+        "id": "P3-COUNT",
+        "unit_id": "P3",
+        "origin": "original",
+        "source_id": "SRC-P3-COUNT",
+        "literal_source_expression": "errors.size() == 1",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 1,
+        "expected_type": "integer",
+        "observation_boundary": "Internal TestUtils filtered SyntaxException list length after parse and analyze",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            process hello {\n                output:\n                tuple val(\"hello\") val(\"goodbye\")\n\n                script:\n                \"\"\"\n                echo hello\n                \"\"\"\n            }\n            ",
+          "literal_fixture_id": "FX-P3-literal",
+          "decoded_fixture_id": "FX-P3-decoded"
+        }
+      },
+      {
+        "id": "P3-LINE",
+        "unit_id": "P3",
+        "origin": "original",
+        "source_id": "SRC-P3-LINE",
+        "literal_source_expression": "errors[0].getStartLine() == 3",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 3,
+        "expected_type": "integer",
+        "observation_boundary": "Internal SyntaxException.getStartLine()",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            process hello {\n                output:\n                tuple val(\"hello\") val(\"goodbye\")\n\n                script:\n                \"\"\"\n                echo hello\n                \"\"\"\n            }\n            ",
+          "literal_fixture_id": "FX-P3-literal",
+          "decoded_fixture_id": "FX-P3-decoded"
+        }
+      },
+      {
+        "id": "P3-COLUMN",
+        "unit_id": "P3",
+        "origin": "original",
+        "source_id": "SRC-P3-COLUMN",
+        "literal_source_expression": "errors[0].getStartColumn() == 24",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 24,
+        "expected_type": "integer",
+        "observation_boundary": "Internal SyntaxException.getStartColumn()",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            process hello {\n                output:\n                tuple val(\"hello\") val(\"goodbye\")\n\n                script:\n                \"\"\"\n                echo hello\n                \"\"\"\n            }\n            ",
+          "literal_fixture_id": "FX-P3-literal",
+          "decoded_fixture_id": "FX-P3-decoded"
+        }
+      },
+      {
+        "id": "P3-MESSAGE",
+        "unit_id": "P3",
+        "origin": "original",
+        "source_id": "SRC-P3-MESSAGE",
+        "literal_source_expression": "errors[0].getOriginalMessage() == \"Unexpected input: 'val'\"",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": "Unexpected input: 'val'",
+        "expected_type": "string",
+        "observation_boundary": "Internal SyntaxException.getOriginalMessage(); retain equality versus substring distinction",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "expected_utf8_hex": "556e657870656374656420696e7075743a202776616c27",
+        "message_decoding": "Groovy double-quoted String; source \\\" becomes quote and source \\\\ becomes one backslash; P2 expected backslash+n bytes 5c6e, not LF 0a; no interpolations in selected message",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            process hello {\n                output:\n                tuple val(\"hello\") val(\"goodbye\")\n\n                script:\n                \"\"\"\n                echo hello\n                \"\"\"\n            }\n            ",
+          "literal_fixture_id": "FX-P3-literal",
+          "decoded_fixture_id": "FX-P3-decoded"
+        }
+      },
+      {
+        "id": "P4-COUNT",
+        "unit_id": "P4",
+        "origin": "original",
+        "source_id": "SRC-P4-COUNT",
+        "literal_source_expression": "errors.size() == 1",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 1,
+        "expected_type": "integer",
+        "observation_boundary": "Internal TestUtils filtered SyntaxException list length after parse and analyze",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            process hello {\n                output:\n                tuple val('hello'), val('goodbye') emit: message\n\n                script:\n                \"\"\"\n                echo hello\n                \"\"\"\n            }\n            ",
+          "literal_fixture_id": "FX-P4-literal",
+          "decoded_fixture_id": "FX-P4-decoded"
+        }
+      },
+      {
+        "id": "P4-LINE",
+        "unit_id": "P4",
+        "origin": "original",
+        "source_id": "SRC-P4-LINE",
+        "literal_source_expression": "errors[0].getStartLine() == 3",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 3,
+        "expected_type": "integer",
+        "observation_boundary": "Internal SyntaxException.getStartLine()",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            process hello {\n                output:\n                tuple val('hello'), val('goodbye') emit: message\n\n                script:\n                \"\"\"\n                echo hello\n                \"\"\"\n            }\n            ",
+          "literal_fixture_id": "FX-P4-literal",
+          "decoded_fixture_id": "FX-P4-decoded"
+        }
+      },
+      {
+        "id": "P4-COLUMN",
+        "unit_id": "P4",
+        "origin": "original",
+        "source_id": "SRC-P4-COLUMN",
+        "literal_source_expression": "errors[0].getStartColumn() == 40",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 40,
+        "expected_type": "integer",
+        "observation_boundary": "Internal SyntaxException.getStartColumn()",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            process hello {\n                output:\n                tuple val('hello'), val('goodbye') emit: message\n\n                script:\n                \"\"\"\n                echo hello\n                \"\"\"\n            }\n            ",
+          "literal_fixture_id": "FX-P4-literal",
+          "decoded_fixture_id": "FX-P4-decoded"
+        }
+      },
+      {
+        "id": "P4-MESSAGE",
+        "unit_id": "P4",
+        "origin": "original",
+        "source_id": "SRC-P4-MESSAGE",
+        "literal_source_expression": "errors[0].getOriginalMessage() == \"Unexpected input: 'emit'\"",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": "Unexpected input: 'emit'",
+        "expected_type": "string",
+        "observation_boundary": "Internal SyntaxException.getOriginalMessage(); retain equality versus substring distinction",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "expected_utf8_hex": "556e657870656374656420696e7075743a2027656d697427",
+        "message_decoding": "Groovy double-quoted String; source \\\" becomes quote and source \\\\ becomes one backslash; P2 expected backslash+n bytes 5c6e, not LF 0a; no interpolations in selected message",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            process hello {\n                output:\n                tuple val('hello'), val('goodbye') emit: message\n\n                script:\n                \"\"\"\n                echo hello\n                \"\"\"\n            }\n            ",
+          "literal_fixture_id": "FX-P4-literal",
+          "decoded_fixture_id": "FX-P4-decoded"
+        }
+      },
+      {
+        "id": "P5-COUNT",
+        "unit_id": "P5",
+        "origin": "original",
+        "source_id": "SRC-P5-COUNT",
+        "literal_source_expression": "errors.size() == 1",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 1,
+        "expected_type": "integer",
+        "observation_boundary": "Internal TestUtils filtered SyntaxException list length after parse and analyze",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            workflow foo {\n                take:\n                x\n                y,\n                z\n\n                main:\n                println 'hello'\n            }\n            ",
+          "literal_fixture_id": "FX-P5-literal",
+          "decoded_fixture_id": "FX-P5-decoded"
+        }
+      },
+      {
+        "id": "P5-LINE",
+        "unit_id": "P5",
+        "origin": "original",
+        "source_id": "SRC-P5-LINE",
+        "literal_source_expression": "errors[0].getStartLine() == 4",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 4,
+        "expected_type": "integer",
+        "observation_boundary": "Internal SyntaxException.getStartLine()",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            workflow foo {\n                take:\n                x\n                y,\n                z\n\n                main:\n                println 'hello'\n            }\n            ",
+          "literal_fixture_id": "FX-P5-literal",
+          "decoded_fixture_id": "FX-P5-decoded"
+        }
+      },
+      {
+        "id": "P5-COLUMN",
+        "unit_id": "P5",
+        "origin": "original",
+        "source_id": "SRC-P5-COLUMN",
+        "literal_source_expression": "errors[0].getStartColumn() == 6",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 6,
+        "expected_type": "integer",
+        "observation_boundary": "Internal SyntaxException.getStartColumn()",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            workflow foo {\n                take:\n                x\n                y,\n                z\n\n                main:\n                println 'hello'\n            }\n            ",
+          "literal_fixture_id": "FX-P5-literal",
+          "decoded_fixture_id": "FX-P5-decoded"
+        }
+      },
+      {
+        "id": "P5-MESSAGE",
+        "unit_id": "P5",
+        "origin": "original",
+        "source_id": "SRC-P5-MESSAGE",
+        "literal_source_expression": "errors[0].getOriginalMessage() == \"Unexpected input: ','\"",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": "Unexpected input: ','",
+        "expected_type": "string",
+        "observation_boundary": "Internal SyntaxException.getOriginalMessage(); retain equality versus substring distinction",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "expected_utf8_hex": "556e657870656374656420696e7075743a20272c27",
+        "message_decoding": "Groovy double-quoted String; source \\\" becomes quote and source \\\\ becomes one backslash; P2 expected backslash+n bytes 5c6e, not LF 0a; no interpolations in selected message",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            workflow foo {\n                take:\n                x\n                y,\n                z\n\n                main:\n                println 'hello'\n            }\n            ",
+          "literal_fixture_id": "FX-P5-literal",
+          "decoded_fixture_id": "FX-P5-decoded"
+        }
+      },
+      {
+        "id": "P6-COUNT",
+        "unit_id": "P6",
+        "origin": "original",
+        "source_id": "SRC-P6-COUNT",
+        "literal_source_expression": "errors.size() == 1",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 1,
+        "expected_type": "integer",
+        "observation_boundary": "Internal TestUtils filtered SyntaxException list length after parse and analyze",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            println 'Hello world!'\n\n            workflow {\n            }\n            ",
+          "literal_fixture_id": "FX-P6-literal",
+          "decoded_fixture_id": "FX-P6-decoded"
+        }
+      },
+      {
+        "id": "P6-LINE",
+        "unit_id": "P6",
+        "origin": "original",
+        "source_id": "SRC-P6-LINE",
+        "literal_source_expression": "errors[0].getStartLine() == 1",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 1,
+        "expected_type": "integer",
+        "observation_boundary": "Internal SyntaxException.getStartLine()",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            println 'Hello world!'\n\n            workflow {\n            }\n            ",
+          "literal_fixture_id": "FX-P6-literal",
+          "decoded_fixture_id": "FX-P6-decoded"
+        }
+      },
+      {
+        "id": "P6-COLUMN",
+        "unit_id": "P6",
+        "origin": "original",
+        "source_id": "SRC-P6-COLUMN",
+        "literal_source_expression": "errors[0].getStartColumn() == 1",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 1,
+        "expected_type": "integer",
+        "observation_boundary": "Internal SyntaxException.getStartColumn()",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            println 'Hello world!'\n\n            workflow {\n            }\n            ",
+          "literal_fixture_id": "FX-P6-literal",
+          "decoded_fixture_id": "FX-P6-decoded"
+        }
+      },
+      {
+        "id": "P6-MESSAGE",
+        "unit_id": "P6",
+        "origin": "original",
+        "source_id": "SRC-P6-MESSAGE",
+        "literal_source_expression": "errors[0].getOriginalMessage().contains \"Statements cannot be mixed with script declarations\"",
+        "input_type": "SyntaxException list",
+        "comparator": "contains",
+        "expected_value": "Statements cannot be mixed with script declarations",
+        "expected_type": "string",
+        "observation_boundary": "Internal SyntaxException.getOriginalMessage(); retain equality versus substring distinction",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "expected_utf8_hex": "53746174656d656e74732063616e6e6f74206265206d69786564207769746820736372697074206465636c61726174696f6e73",
+        "message_decoding": "Groovy double-quoted String; source \\\" becomes quote and source \\\\ becomes one backslash; P2 expected backslash+n bytes 5c6e, not LF 0a; no interpolations in selected message",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            println 'Hello world!'\n\n            workflow {\n            }\n            ",
+          "literal_fixture_id": "FX-P6-literal",
+          "decoded_fixture_id": "FX-P6-decoded"
+        }
+      },
+      {
+        "id": "P7-COUNT",
+        "unit_id": "P7",
+        "origin": "original",
+        "source_id": "SRC-P7-COUNT",
+        "literal_source_expression": "errors.size() == 1",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 1,
+        "expected_type": "integer",
+        "observation_boundary": "Internal TestUtils filtered SyntaxException list length after parse and analyze",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            params {\n                greeting: String\n            }\n            ",
+          "literal_fixture_id": "FX-P7-literal",
+          "decoded_fixture_id": "FX-P7-decoded"
+        }
+      },
+      {
+        "id": "P7-LINE",
+        "unit_id": "P7",
+        "origin": "original",
+        "source_id": "SRC-P7-LINE",
+        "literal_source_expression": "errors[0].getStartLine() == 1",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 1,
+        "expected_type": "integer",
+        "observation_boundary": "Internal SyntaxException.getStartLine()",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            params {\n                greeting: String\n            }\n            ",
+          "literal_fixture_id": "FX-P7-literal",
+          "decoded_fixture_id": "FX-P7-decoded"
+        }
+      },
+      {
+        "id": "P7-COLUMN",
+        "unit_id": "P7",
+        "origin": "original",
+        "source_id": "SRC-P7-COLUMN",
+        "literal_source_expression": "errors[0].getStartColumn() == 1",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 1,
+        "expected_type": "integer",
+        "observation_boundary": "Internal SyntaxException.getStartColumn()",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            params {\n                greeting: String\n            }\n            ",
+          "literal_fixture_id": "FX-P7-literal",
+          "decoded_fixture_id": "FX-P7-decoded"
+        }
+      },
+      {
+        "id": "P7-MESSAGE",
+        "unit_id": "P7",
+        "origin": "original",
+        "source_id": "SRC-P7-MESSAGE",
+        "literal_source_expression": "errors[0].getOriginalMessage() == \"Params block cannot be defined without an entry workflow\"",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": "Params block cannot be defined without an entry workflow",
+        "expected_type": "string",
+        "observation_boundary": "Internal SyntaxException.getOriginalMessage(); retain equality versus substring distinction",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "expected_utf8_hex": "506172616d7320626c6f636b2063616e6e6f7420626520646566696e656420776974686f757420616e20656e74727920776f726b666c6f77",
+        "message_decoding": "Groovy double-quoted String; source \\\" becomes quote and source \\\\ becomes one backslash; P2 expected backslash+n bytes 5c6e, not LF 0a; no interpolations in selected message",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            params {\n                greeting: String\n            }\n            ",
+          "literal_fixture_id": "FX-P7-literal",
+          "decoded_fixture_id": "FX-P7-decoded"
+        }
+      },
+      {
+        "id": "P8-COUNT",
+        "unit_id": "P8",
+        "origin": "original",
+        "source_id": "SRC-P8-COUNT",
+        "literal_source_expression": "errors.size() == 0",
+        "input_type": "SyntaxException list",
+        "comparator": "equals",
+        "expected_value": 0,
+        "expected_type": "integer",
+        "observation_boundary": "Internal TestUtils filtered SyntaxException list length after parse and analyze",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "            params {\n                greeting: String\n            }\n\n            workflow {\n            }\n            ",
+          "literal_fixture_id": "FX-P8-literal",
+          "decoded_fixture_id": "FX-P8-decoded"
+        }
+      },
+      {
+        "id": "M1-MEMBER-1",
+        "unit_id": "M1",
+        "origin": "original",
+        "source_id": "SRC-M1-MEMBER-1",
+        "literal_source_expression": "1 in result",
+        "input_type": "Completed collected list with numeric Integer and String elements",
+        "comparator": "membership",
+        "expected_value": 1,
+        "expected_type": "integer",
+        "observation_boundary": "Internal result list read from runScript(...).val after network completion",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "\n            c1 = channel.of( 1,2,3 )\n            c2 = channel.of( 'a','b' )\n            c3 = channel.value( 'z' )\n            c1.mix(c2, c3).collect()\n            ",
+          "literal_fixture_id": "FX-M1-literal",
+          "decoded_fixture_id": "FX-M1-decoded",
+          "typed_channel_inputs": [
+            {
+              "kind": "queue",
+              "values": [
+                1,
+                2,
+                3
+              ],
+              "element_type": "integer"
+            },
+            {
+              "kind": "queue",
+              "values": [
+                "a",
+                "b"
+              ],
+              "element_type": "string"
+            },
+            {
+              "kind": "value",
+              "value": "z",
+              "element_type": "string"
+            }
+          ]
+        }
+      },
+      {
+        "id": "M1-MEMBER-2",
+        "unit_id": "M1",
+        "origin": "original",
+        "source_id": "SRC-M1-MEMBER-2",
+        "literal_source_expression": "2 in result",
+        "input_type": "Completed collected list with numeric Integer and String elements",
+        "comparator": "membership",
+        "expected_value": 2,
+        "expected_type": "integer",
+        "observation_boundary": "Internal result list read from runScript(...).val after network completion",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "\n            c1 = channel.of( 1,2,3 )\n            c2 = channel.of( 'a','b' )\n            c3 = channel.value( 'z' )\n            c1.mix(c2, c3).collect()\n            ",
+          "literal_fixture_id": "FX-M1-literal",
+          "decoded_fixture_id": "FX-M1-decoded",
+          "typed_channel_inputs": [
+            {
+              "kind": "queue",
+              "values": [
+                1,
+                2,
+                3
+              ],
+              "element_type": "integer"
+            },
+            {
+              "kind": "queue",
+              "values": [
+                "a",
+                "b"
+              ],
+              "element_type": "string"
+            },
+            {
+              "kind": "value",
+              "value": "z",
+              "element_type": "string"
+            }
+          ]
+        }
+      },
+      {
+        "id": "M1-MEMBER-3",
+        "unit_id": "M1",
+        "origin": "original",
+        "source_id": "SRC-M1-MEMBER-3",
+        "literal_source_expression": "3 in result",
+        "input_type": "Completed collected list with numeric Integer and String elements",
+        "comparator": "membership",
+        "expected_value": 3,
+        "expected_type": "integer",
+        "observation_boundary": "Internal result list read from runScript(...).val after network completion",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "\n            c1 = channel.of( 1,2,3 )\n            c2 = channel.of( 'a','b' )\n            c3 = channel.value( 'z' )\n            c1.mix(c2, c3).collect()\n            ",
+          "literal_fixture_id": "FX-M1-literal",
+          "decoded_fixture_id": "FX-M1-decoded",
+          "typed_channel_inputs": [
+            {
+              "kind": "queue",
+              "values": [
+                1,
+                2,
+                3
+              ],
+              "element_type": "integer"
+            },
+            {
+              "kind": "queue",
+              "values": [
+                "a",
+                "b"
+              ],
+              "element_type": "string"
+            },
+            {
+              "kind": "value",
+              "value": "z",
+              "element_type": "string"
+            }
+          ]
+        }
+      },
+      {
+        "id": "M1-MEMBER-4",
+        "unit_id": "M1",
+        "origin": "original",
+        "source_id": "SRC-M1-MEMBER-4",
+        "literal_source_expression": "'a' in result",
+        "input_type": "Completed collected list with numeric Integer and String elements",
+        "comparator": "membership",
+        "expected_value": "a",
+        "expected_type": "string",
+        "observation_boundary": "Internal result list read from runScript(...).val after network completion",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "\n            c1 = channel.of( 1,2,3 )\n            c2 = channel.of( 'a','b' )\n            c3 = channel.value( 'z' )\n            c1.mix(c2, c3).collect()\n            ",
+          "literal_fixture_id": "FX-M1-literal",
+          "decoded_fixture_id": "FX-M1-decoded",
+          "typed_channel_inputs": [
+            {
+              "kind": "queue",
+              "values": [
+                1,
+                2,
+                3
+              ],
+              "element_type": "integer"
+            },
+            {
+              "kind": "queue",
+              "values": [
+                "a",
+                "b"
+              ],
+              "element_type": "string"
+            },
+            {
+              "kind": "value",
+              "value": "z",
+              "element_type": "string"
+            }
+          ]
+        }
+      },
+      {
+        "id": "M1-MEMBER-5",
+        "unit_id": "M1",
+        "origin": "original",
+        "source_id": "SRC-M1-MEMBER-5",
+        "literal_source_expression": "'b' in result",
+        "input_type": "Completed collected list with numeric Integer and String elements",
+        "comparator": "membership",
+        "expected_value": "b",
+        "expected_type": "string",
+        "observation_boundary": "Internal result list read from runScript(...).val after network completion",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "\n            c1 = channel.of( 1,2,3 )\n            c2 = channel.of( 'a','b' )\n            c3 = channel.value( 'z' )\n            c1.mix(c2, c3).collect()\n            ",
+          "literal_fixture_id": "FX-M1-literal",
+          "decoded_fixture_id": "FX-M1-decoded",
+          "typed_channel_inputs": [
+            {
+              "kind": "queue",
+              "values": [
+                1,
+                2,
+                3
+              ],
+              "element_type": "integer"
+            },
+            {
+              "kind": "queue",
+              "values": [
+                "a",
+                "b"
+              ],
+              "element_type": "string"
+            },
+            {
+              "kind": "value",
+              "value": "z",
+              "element_type": "string"
+            }
+          ]
+        }
+      },
+      {
+        "id": "M1-MEMBER-6",
+        "unit_id": "M1",
+        "origin": "original",
+        "source_id": "SRC-M1-MEMBER-6",
+        "literal_source_expression": "'z' in result",
+        "input_type": "Completed collected list with numeric Integer and String elements",
+        "comparator": "membership",
+        "expected_value": "z",
+        "expected_type": "string",
+        "observation_boundary": "Internal result list read from runScript(...).val after network completion",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "\n            c1 = channel.of( 1,2,3 )\n            c2 = channel.of( 'a','b' )\n            c3 = channel.value( 'z' )\n            c1.mix(c2, c3).collect()\n            ",
+          "literal_fixture_id": "FX-M1-literal",
+          "decoded_fixture_id": "FX-M1-decoded",
+          "typed_channel_inputs": [
+            {
+              "kind": "queue",
+              "values": [
+                1,
+                2,
+                3
+              ],
+              "element_type": "integer"
+            },
+            {
+              "kind": "queue",
+              "values": [
+                "a",
+                "b"
+              ],
+              "element_type": "string"
+            },
+            {
+              "kind": "value",
+              "value": "z",
+              "element_type": "string"
+            }
+          ]
+        }
+      },
+      {
+        "id": "M1-NOT-C",
+        "unit_id": "M1",
+        "origin": "original",
+        "source_id": "SRC-M1-NOT-C",
+        "literal_source_expression": "!('c' in result)",
+        "input_type": "Completed collected list with numeric Integer and String elements",
+        "comparator": "nonmembership",
+        "expected_value": "c",
+        "expected_type": "string",
+        "observation_boundary": "Internal result list membership negation",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "\n            c1 = channel.of( 1,2,3 )\n            c2 = channel.of( 'a','b' )\n            c3 = channel.value( 'z' )\n            c1.mix(c2, c3).collect()\n            ",
+          "literal_fixture_id": "FX-M1-literal",
+          "decoded_fixture_id": "FX-M1-decoded",
+          "typed_channel_inputs": [
+            {
+              "kind": "queue",
+              "values": [
+                1,
+                2,
+                3
+              ],
+              "element_type": "integer"
+            },
+            {
+              "kind": "queue",
+              "values": [
+                "a",
+                "b"
+              ],
+              "element_type": "string"
+            },
+            {
+              "kind": "value",
+              "value": "z",
+              "element_type": "string"
+            }
+          ]
+        }
+      },
+      {
+        "id": "M2-SORTED",
+        "unit_id": "M2",
+        "origin": "original",
+        "source_id": "SRC-M2-SORTED",
+        "literal_source_expression": "result.val.sort() == [1,2,3]",
+        "input_type": "Completed collected list with numeric Integer and String elements",
+        "comparator": "sorted-list-equals",
+        "expected_value": [
+          1,
+          2,
+          3
+        ],
+        "expected_type": "list<integer>",
+        "observation_boundary": "Internal collected value list; Groovy sort then equality retains multiplicity",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "\n            channel.value(1).mix( channel.of(2,3) ).collect()\n            ",
+          "literal_fixture_id": "FX-M2-literal",
+          "decoded_fixture_id": "FX-M2-decoded",
+          "typed_channel_inputs": [
+            {
+              "kind": "value",
+              "value": 1,
+              "element_type": "integer"
+            },
+            {
+              "kind": "queue",
+              "values": [
+                2,
+                3
+              ],
+              "element_type": "integer"
+            }
+          ]
+        }
+      },
+      {
+        "id": "M3-SORTED",
+        "unit_id": "M3",
+        "origin": "original",
+        "source_id": "SRC-M3-SORTED",
+        "literal_source_expression": "result.val.sort() == [1,2]",
+        "input_type": "Completed collected list with numeric Integer and String elements",
+        "comparator": "sorted-list-equals",
+        "expected_value": [
+          1,
+          2
+        ],
+        "expected_type": "list<integer>",
+        "observation_boundary": "Internal collected value list; Groovy sort then equality retains multiplicity",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "typed_input": {
+          "type": "Groovy java.lang.String",
+          "value": "\n            channel.value(1).mix( channel.value(2) ).collect()\n            ",
+          "literal_fixture_id": "FX-M3-literal",
+          "decoded_fixture_id": "FX-M3-decoded",
+          "typed_channel_inputs": [
+            {
+              "kind": "value",
+              "value": 1,
+              "element_type": "integer"
+            },
+            {
+              "kind": "value",
+              "value": 2,
+              "element_type": "integer"
+            }
+          ]
+        }
+      },
+      {
+        "id": "ARITY-FRESH-CHECK",
+        "unit_id": "ARITY-FRESH",
+        "origin": "original",
+        "source_id": "SRC-ARITY-FRESH-CHECK",
+        "literal_source_expression": "[[ $? == 0 ]] || false",
+        "input_type": "Bash numeric status",
+        "comparator": "numeric-status-equals",
+        "expected_value": 0,
+        "expected_type": "integer",
+        "observation_boundary": "Immediate NXF_RUN status consumed by [[ ]]",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "propagation": "set +e disables inherited errexit; false does not abort; fresh failing expression can be hidden by final resume expression",
+        "typed_input": {
+          "type": "workflow-source-file",
+          "value": {
+            "kind": "workflow-source-file",
+            "source_id": "SRC-WORKFLOW-ARITY"
+          },
+          "invocation_id": "ARITY-FRESH"
+        }
+      },
+      {
+        "id": "ARITY-RESUME-CHECK",
+        "unit_id": "ARITY-RESUME",
+        "origin": "original",
+        "source_id": "SRC-ARITY-RESUME-CHECK",
+        "literal_source_expression": "[[ $? == 0 ]] || false",
+        "input_type": "Bash numeric status",
+        "comparator": "numeric-status-equals",
+        "expected_value": 0,
+        "expected_type": "integer",
+        "observation_boundary": "Immediate NXF_RUN status consumed by [[ ]]",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "propagation": "set +e disables inherited errexit; false does not abort; fresh failing expression can be hidden by final resume expression",
+        "typed_input": {
+          "type": "workflow-source-file",
+          "value": {
+            "kind": "workflow-source-file",
+            "source_id": "SRC-WORKFLOW-ARITY"
+          },
+          "invocation_id": "ARITY-RESUME"
+        }
+      },
+      {
+        "id": "TOPIC-FRESH-CHECK",
+        "unit_id": "TOPIC-FRESH",
+        "origin": "original",
+        "source_id": "SRC-TOPIC-FRESH-CHECK",
+        "literal_source_expression": "cmp versions.txt .expected || false",
+        "input_type": "File bytes",
+        "comparator": "exact-file-bytes-equal",
+        "expected_value": "bar: 0.9.0\nfoo: 0.1.0\n",
+        "expected_type": "bytes",
+        "observation_boundary": "cmp versions.txt .expected subprocess status and compared bytes",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "propagation": "Inherited bash -e remains active; failing engine command or cmp OR-list final false stops checks before later invocation",
+        "expected_fixture_id": "FX-TOPIC-EXPECTED",
+        "expected_utf8_hex": "6261723a20302e392e300a666f6f3a20302e312e300a",
+        "typed_input": {
+          "type": "workflow-source-file",
+          "value": {
+            "kind": "workflow-source-file",
+            "source_id": "SRC-WORKFLOW-TOPIC"
+          },
+          "invocation_id": "TOPIC-FRESH"
+        }
+      },
+      {
+        "id": "TOPIC-RESUME-CHECK",
+        "unit_id": "TOPIC-RESUME",
+        "origin": "original",
+        "source_id": "SRC-TOPIC-RESUME-CHECK",
+        "literal_source_expression": "cmp versions.txt .expected || false",
+        "input_type": "File bytes",
+        "comparator": "exact-file-bytes-equal",
+        "expected_value": "bar: 0.9.0\nfoo: 0.1.0\n",
+        "expected_type": "bytes",
+        "observation_boundary": "cmp versions.txt .expected subprocess status and compared bytes",
+        "rationale": "Retain this exact pinned original predicate independently of all other predicates and original aggregate outcome",
+        "disposition": "pending-execution",
+        "projection_disposition": "pending-reviewed-mapping",
+        "wr_disposition": "pending-supported-wr-boundary",
+        "propagation": "Inherited bash -e remains active; failing engine command or cmp OR-list final false stops checks before later invocation",
+        "expected_fixture_id": "FX-TOPIC-EXPECTED",
+        "expected_utf8_hex": "6261723a20302e392e300a666f6f3a20302e312e300a",
+        "typed_input": {
+          "type": "workflow-source-file",
+          "value": {
+            "kind": "workflow-source-file",
+            "source_id": "SRC-WORKFLOW-TOPIC"
+          },
+          "invocation_id": "TOPIC-RESUME"
+        }
+      }
+    ],
+    "aggregate_rules": [
+      {
+        "method_id": "METHOD-P-INVALID",
+        "rule": "All reached Spock conditions pass and feature completes; exceptions/timeouts/failure remain separate outcomes; failure in an earlier then block can leave later when/then units unexecuted",
+        "disposition": "pending-execution"
+      },
+      {
+        "method_id": "METHOD-P-MIXED",
+        "rule": "All reached Spock conditions pass and feature completes; exceptions/timeouts/failure remain separate outcomes; failure in an earlier then block can leave later when/then units unexecuted",
+        "disposition": "pending-execution"
+      },
+      {
+        "method_id": "METHOD-P-PARAMS",
+        "rule": "All reached Spock conditions pass and feature completes; exceptions/timeouts/failure remain separate outcomes; failure in an earlier then block can leave later when/then units unexecuted",
+        "disposition": "pending-execution"
+      },
+      {
+        "method_id": "METHOD-M-CHANNELS",
+        "rule": "All reached Spock conditions pass and feature completes; exceptions/timeouts/failure remain separate outcomes; failure in an earlier then block can leave later when/then units unexecuted",
+        "disposition": "pending-execution"
+      },
+      {
+        "method_id": "METHOD-M-VALUE",
+        "rule": "All reached Spock conditions pass and feature completes; exceptions/timeouts/failure remain separate outcomes; failure in an earlier then block can leave later when/then units unexecuted",
+        "disposition": "pending-execution"
+      },
+      {
+        "method_id": "METHOD-M-SINGLETON",
+        "rule": "All reached Spock conditions pass and feature completes; exceptions/timeouts/failure remain separate outcomes; failure in an earlier then block can leave later when/then units unexecuted",
+        "disposition": "pending-execution"
+      },
+      {
+        "pair_id": "PAIR-ARITY",
+        "rule": "Original runner reads final bash -ex .checks subprocess status; success requires zero aggregate and completion. Arity set +e means final resume status expression decides ordinary aggregate and can hide fresh failure.",
+        "disposition": "pending-execution"
+      },
+      {
+        "pair_id": "PAIR-TOPIC",
+        "rule": "Original runner reads bash -ex .checks subprocess status; inherited errexit aborts on a failed unguarded engine command or final false from cmp; both reached comparisons must succeed for ordinary zero aggregate.",
+        "disposition": "pending-execution"
+      }
+    ],
+    "claim_boundary": "Authored from literal pinned source before engine observations. No original, oracle, translation or wr execution verdict awarded."
+  },
+  "documents": {
+    "contribution": "Item 1.2",
+    "definitions": {
+      "typed_multiset_equals": "Equality of typed value multiplicities after complete collection; order ignored. Integer 1 differs from string 1.",
+      "exact_bytes_equals": "Byte-for-byte equality; terminal newlines and byte length retained.",
+      "type_and_value_equals": "Distinguish a file value from an ordered list containing file values; compare basename only within the corresponding shape. Runtime absolute paths are not authored expectations.",
+      "nonzero_exit_and_associated_arity_count_violation": "Require nonzero engine exit and evidence tying declared count 2 and actual count 1 to the named path input/output and process; unrelated failure rejects the case."
+    },
+    "expectations": [
+      {
+        "id": "D-MIX-EXAMPLE",
+        "origin": "DOCUMENT",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "queues": [
+              [
+                "1",
+                "2",
+                "3"
+              ],
+              [
+                "a",
+                "b"
+              ]
+            ],
+            "value_channel": "z",
+            "fixture": "fixtures/documents/mix-doc.nf"
+          }
+        },
+        "comparator": "typed_multiset_equals",
+        "expected": {
+          "type": "multiset[string]",
+          "value": [
+            "1",
+            "2",
+            "3",
+            "a",
+            "b",
+            "z"
+          ]
+        },
+        "observation_boundary": "Complete mixed channel value collection, with completion separately captured",
+        "rationale": "Complete document include uses quoted strings. Any permutation is permitted; the literal mix.out order is not required.",
+        "provenance": [
+          "DOC-MIX",
+          "DOC-MIX-NF",
+          "DOC-MIX-OUT"
+        ],
+        "document_facets": [
+          "D-MIX-STRING-INPUTS",
+          "D-MIX-ITEMS",
+          "D-MIX-ORDER"
+        ],
+        "mode": {
+          "nextflow_version": "26.04.6",
+          "source_commit": "232b60569865e9a4577e48c1955409238359d6ca",
+          "NXF_SYNTAX_PARSER": "v2",
+          "static_typing_enabled": false,
+          "added_flags": [],
+          "actual_executor": "unresolved until capture",
+          "actual_container_mode": "unresolved until capture"
+        },
+        "observer_status": "pending independent mapping review",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-MIX-DOC-NF",
+            "path": "fixtures/documents/mix-doc.nf"
+          },
+          {
+            "id": "FIX-MIX-DOC-OUT",
+            "path": "fixtures/documents/mix-doc.out"
+          }
+        ]
+      },
+      {
+        "id": "D-MIX-COMPLETION",
+        "origin": "DOCUMENT",
+        "typed_input": {
+          "type": "fixture",
+          "value": "fixtures/documents/mix-doc.nf"
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "boolean",
+          "value": true
+        },
+        "observation_boundary": "Mixed-channel termination and completed observation",
+        "rationale": "An incomplete prefix cannot establish all emitted document values.",
+        "provenance": [
+          "DOC-MIX",
+          "DOC-MIX-NF"
+        ],
+        "document_facets": [
+          "D-MIX-ITEMS"
+        ],
+        "mode": {
+          "nextflow_version": "26.04.6",
+          "source_commit": "232b60569865e9a4577e48c1955409238359d6ca",
+          "NXF_SYNTAX_PARSER": "v2",
+          "static_typing_enabled": false,
+          "added_flags": [],
+          "actual_executor": "unresolved until capture",
+          "actual_container_mode": "unresolved until capture"
+        },
+        "observer_status": "pending independent mapping review",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-MIX-DOC-NF",
+            "path": "fixtures/documents/mix-doc.nf"
+          }
+        ]
+      },
+      {
+        "id": "S-MIX",
+        "origin": "STRENGTHENED",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "queues": [
+              [
+                1,
+                2,
+                3
+              ],
+              [
+                "a",
+                "b"
+              ]
+            ],
+            "value_channel": "z",
+            "upstream_unit": "M1"
+          }
+        },
+        "comparator": "typed_multiset_equals",
+        "expected": {
+          "type": "multiset[integer|string]",
+          "value": [
+            1,
+            2,
+            3,
+            "a",
+            "b",
+            "z"
+          ]
+        },
+        "observation_boundary": "Complete mixed channel collection; preserve element types and counts",
+        "rationale": "New exact six-item multiplicity requirement from emits-the-items and any-order wording. Original M1 membership/nonmembership accepts duplicate 1 or extra d. Numeric inputs stay numeric; this claim is distinct from the string document example.",
+        "provenance": [
+          "DOC-SUPPORT-M1",
+          "DOC-MIX",
+          "DOC-MIX-NF"
+        ],
+        "document_facets": [
+          "D-MIX-ITEMS",
+          "D-MIX-ORDER"
+        ],
+        "mode": {
+          "nextflow_version": "26.04.6",
+          "source_commit": "232b60569865e9a4577e48c1955409238359d6ca",
+          "NXF_SYNTAX_PARSER": "v2",
+          "static_typing_enabled": false,
+          "added_flags": [],
+          "actual_executor": "unresolved until capture",
+          "actual_container_mode": "unresolved until capture"
+        },
+        "observer_status": "pending independent mapping review",
+        "execution_status": "unattempted",
+        "fixture_references": []
+      },
+      {
+        "id": "S-MIX-COMPLETION",
+        "origin": "STRENGTHENED",
+        "typed_input": {
+          "type": "upstream-unit",
+          "value": "M1"
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "boolean",
+          "value": true
+        },
+        "observation_boundary": "Mixed-channel termination and complete collection",
+        "rationale": "Exact multiset equality requires completed collection, rather than a six-value prefix.",
+        "provenance": [
+          "DOC-SUPPORT-M1",
+          "DOC-MIX"
+        ],
+        "document_facets": [
+          "D-MIX-ITEMS"
+        ],
+        "mode": {
+          "nextflow_version": "26.04.6",
+          "source_commit": "232b60569865e9a4577e48c1955409238359d6ca",
+          "NXF_SYNTAX_PARSER": "v2",
+          "static_typing_enabled": false,
+          "added_flags": [],
+          "actual_executor": "unresolved until capture",
+          "actual_container_mode": "unresolved until capture"
+        },
+        "observer_status": "pending independent mapping review",
+        "execution_status": "unattempted",
+        "fixture_references": []
+      },
+      {
+        "id": "S-ARITY-FRESH-EXIT",
+        "origin": "STRENGTHENED",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "workflow": "tests/process-arity.nf",
+            "invocation": "fresh",
+            "resume": false
+          }
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "integer",
+          "value": 0
+        },
+        "observation_boundary": "Individual engine process exit",
+        "rationale": "Valid selected input/output counts are 1, 2 and 1..*. Enforce each invocation exit independently, because set +e can let resumed success hide fresh failure. This asserts neither contents nor cache reuse.",
+        "provenance": [
+          "DOC-SUPPORT-ARITY",
+          "DOC-SUPPORT-ARITY-CHECKS",
+          "DOC-PATH-IN",
+          "DOC-PATH-OUT"
+        ],
+        "document_facets": [
+          "D-PATH-IN-ARITY-FAIL",
+          "D-PATH-OUT-ARITY-FAIL"
+        ],
+        "mode": {
+          "nextflow_version": "26.04.6",
+          "source_commit": "232b60569865e9a4577e48c1955409238359d6ca",
+          "NXF_SYNTAX_PARSER": "v2",
+          "static_typing_enabled": false,
+          "added_flags": [],
+          "actual_executor": "unresolved until capture",
+          "actual_container_mode": "unresolved until capture"
+        },
+        "observer_status": "pending independent mapping review",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-ARITY",
+            "path": "fixtures/documents/arity.checks"
+          }
+        ]
+      },
+      {
+        "id": "S-TOPIC-FRESH-EXIT",
+        "origin": "STRENGTHENED",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "workflow": "tests/topic-channel.nf",
+            "invocation": "fresh",
+            "resume": false
+          }
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "integer",
+          "value": 0
+        },
+        "observation_boundary": "Individual engine process exit",
+        "rationale": "Require each fresh/resume invocation to complete successfully; a byte comparison alone does not establish its exit. No cache reuse claim.",
+        "provenance": [
+          "DOC-SUPPORT-TOPIC",
+          "DOC-SUPPORT-TOPIC-CHECKS",
+          "DOC-TOPIC"
+        ],
+        "document_facets": [
+          "D-TOPIC-LEGACY-FORM",
+          "D-TOPIC-FACTORY"
+        ],
+        "mode": {
+          "nextflow_version": "26.04.6",
+          "source_commit": "232b60569865e9a4577e48c1955409238359d6ca",
+          "NXF_SYNTAX_PARSER": "v2",
+          "static_typing_enabled": false,
+          "added_flags": [],
+          "actual_executor": "unresolved until capture",
+          "actual_container_mode": "unresolved until capture"
+        },
+        "observer_status": "pending independent mapping review",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-TOPIC-CHECKS",
+            "path": "fixtures/documents/topic.checks"
+          }
+        ]
+      },
+      {
+        "id": "S-TOPIC-FRESH-BYTES",
+        "origin": "STRENGTHENED",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "file": "versions.txt",
+            "invocation": "fresh"
+          }
+        },
+        "comparator": "exact_bytes_equals",
+        "expected": {
+          "type": "bytes-hex",
+          "value": "6261723a20302e392e300a666f6f3a20302e312e300a"
+        },
+        "observation_boundary": "Captured versions.txt bytes for that invocation",
+        "rationale": "Freeze the selected workflow/check fixture. Sorted unique values and this exact byte sequence are source-specific expectations; the topic docs alone do not promise sorting, deduplication, versions or final newline.",
+        "provenance": [
+          "DOC-SUPPORT-TOPIC",
+          "DOC-SUPPORT-TOPIC-CHECKS",
+          "DOC-SUPPORT-TOPIC-EXPECTED"
+        ],
+        "document_facets": [
+          "D-TOPIC-FACTORY"
+        ],
+        "mode": {
+          "nextflow_version": "26.04.6",
+          "source_commit": "232b60569865e9a4577e48c1955409238359d6ca",
+          "NXF_SYNTAX_PARSER": "v2",
+          "static_typing_enabled": false,
+          "added_flags": [],
+          "actual_executor": "unresolved until capture",
+          "actual_container_mode": "unresolved until capture"
+        },
+        "observer_status": "pending independent mapping review",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-TOPIC-CHECKS",
+            "path": "fixtures/documents/topic.checks"
+          },
+          {
+            "id": "FIX-TOPIC-EXPECTED",
+            "path": "fixtures/documents/topic.expected"
+          }
+        ]
+      },
+      {
+        "id": "S-ARITY-RESUME-EXIT",
+        "origin": "STRENGTHENED",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "workflow": "tests/process-arity.nf",
+            "invocation": "resume",
+            "resume": true
+          }
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "integer",
+          "value": 0
+        },
+        "observation_boundary": "Individual engine process exit",
+        "rationale": "Valid selected input/output counts are 1, 2 and 1..*. Enforce each invocation exit independently, because set +e can let resumed success hide fresh failure. This asserts neither contents nor cache reuse.",
+        "provenance": [
+          "DOC-SUPPORT-ARITY",
+          "DOC-SUPPORT-ARITY-CHECKS",
+          "DOC-PATH-IN",
+          "DOC-PATH-OUT"
+        ],
+        "document_facets": [
+          "D-PATH-IN-ARITY-FAIL",
+          "D-PATH-OUT-ARITY-FAIL"
+        ],
+        "mode": {
+          "nextflow_version": "26.04.6",
+          "source_commit": "232b60569865e9a4577e48c1955409238359d6ca",
+          "NXF_SYNTAX_PARSER": "v2",
+          "static_typing_enabled": false,
+          "added_flags": [],
+          "actual_executor": "unresolved until capture",
+          "actual_container_mode": "unresolved until capture"
+        },
+        "observer_status": "pending independent mapping review",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-ARITY",
+            "path": "fixtures/documents/arity.checks"
+          }
+        ]
+      },
+      {
+        "id": "S-TOPIC-RESUME-EXIT",
+        "origin": "STRENGTHENED",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "workflow": "tests/topic-channel.nf",
+            "invocation": "resume",
+            "resume": true
+          }
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "integer",
+          "value": 0
+        },
+        "observation_boundary": "Individual engine process exit",
+        "rationale": "Require each fresh/resume invocation to complete successfully; a byte comparison alone does not establish its exit. No cache reuse claim.",
+        "provenance": [
+          "DOC-SUPPORT-TOPIC",
+          "DOC-SUPPORT-TOPIC-CHECKS",
+          "DOC-TOPIC"
+        ],
+        "document_facets": [
+          "D-TOPIC-LEGACY-FORM",
+          "D-TOPIC-FACTORY"
+        ],
+        "mode": {
+          "nextflow_version": "26.04.6",
+          "source_commit": "232b60569865e9a4577e48c1955409238359d6ca",
+          "NXF_SYNTAX_PARSER": "v2",
+          "static_typing_enabled": false,
+          "added_flags": [],
+          "actual_executor": "unresolved until capture",
+          "actual_container_mode": "unresolved until capture"
+        },
+        "observer_status": "pending independent mapping review",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-TOPIC-CHECKS",
+            "path": "fixtures/documents/topic.checks"
+          }
+        ]
+      },
+      {
+        "id": "S-TOPIC-RESUME-BYTES",
+        "origin": "STRENGTHENED",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "file": "versions.txt",
+            "invocation": "resume"
+          }
+        },
+        "comparator": "exact_bytes_equals",
+        "expected": {
+          "type": "bytes-hex",
+          "value": "6261723a20302e392e300a666f6f3a20302e312e300a"
+        },
+        "observation_boundary": "Captured versions.txt bytes for that invocation",
+        "rationale": "Freeze the selected workflow/check fixture. Sorted unique values and this exact byte sequence are source-specific expectations; the topic docs alone do not promise sorting, deduplication, versions or final newline.",
+        "provenance": [
+          "DOC-SUPPORT-TOPIC",
+          "DOC-SUPPORT-TOPIC-CHECKS",
+          "DOC-SUPPORT-TOPIC-EXPECTED"
+        ],
+        "document_facets": [
+          "D-TOPIC-FACTORY"
+        ],
+        "mode": {
+          "nextflow_version": "26.04.6",
+          "source_commit": "232b60569865e9a4577e48c1955409238359d6ca",
+          "NXF_SYNTAX_PARSER": "v2",
+          "static_typing_enabled": false,
+          "added_flags": [],
+          "actual_executor": "unresolved until capture",
+          "actual_container_mode": "unresolved until capture"
+        },
+        "observer_status": "pending independent mapping review",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-TOPIC-CHECKS",
+            "path": "fixtures/documents/topic.checks"
+          },
+          {
+            "id": "FIX-TOPIC-EXPECTED",
+            "path": "fixtures/documents/topic.expected"
+          }
+        ]
+      },
+      {
+        "id": "G-IN",
+        "origin": "DOCUMENTED-GAP",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "fixture": "fixtures/documents/g-in.nf",
+            "process": "count_input",
+            "qualifier": "path",
+            "affected_argument": "input_file",
+            "arity_literal": "2",
+            "declared_count": 2,
+            "actual_count": 1,
+            "existing_input": "fixtures/documents/gap-input.txt",
+            "produced_pattern": null
+          }
+        },
+        "comparator": "nonzero_exit_and_associated_arity_count_violation",
+        "expected": {
+          "type": "record",
+          "value": {
+            "exit": "nonzero",
+            "violation": "arity-count",
+            "side": "input",
+            "declared_count": 2,
+            "actual_count": 1,
+            "association": "same process and affected path input/output",
+            "exact_diagnostic": null
+          }
+        },
+        "observation_boundary": "Individual engine exit plus diagnostic/structured failure associated with this path count",
+        "rationale": "The task receives/produces exactly one existing file with arity 2. Parse errors, missing tools, missing fixtures and unrelated failures cannot pass. Review the observer association without inventing exact error text.",
+        "provenance": [
+          "DOC-PATH-IN"
+        ],
+        "document_facets": [
+          "D-PATH-IN-ARITY-FAIL"
+        ],
+        "mode": {
+          "nextflow_version": "26.04.6",
+          "source_commit": "232b60569865e9a4577e48c1955409238359d6ca",
+          "NXF_SYNTAX_PARSER": "v2",
+          "static_typing_enabled": false,
+          "added_flags": [],
+          "actual_executor": "unresolved until capture",
+          "actual_container_mode": "unresolved until capture"
+        },
+        "observer_status": "pending independent mapping review",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-G-IN",
+            "path": "fixtures/documents/g-in.nf"
+          },
+          {
+            "id": "FIX-GAP-INPUT",
+            "path": "fixtures/documents/gap-input.txt"
+          }
+        ]
+      },
+      {
+        "id": "G-OUT",
+        "origin": "DOCUMENTED-GAP",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "fixture": "fixtures/documents/g-out.nf",
+            "process": "count_output",
+            "qualifier": "path",
+            "affected_argument": "one.txt",
+            "arity_literal": "2",
+            "declared_count": 2,
+            "actual_count": 1,
+            "existing_input": null,
+            "produced_pattern": "one.txt"
+          }
+        },
+        "comparator": "nonzero_exit_and_associated_arity_count_violation",
+        "expected": {
+          "type": "record",
+          "value": {
+            "exit": "nonzero",
+            "violation": "arity-count",
+            "side": "output",
+            "declared_count": 2,
+            "actual_count": 1,
+            "association": "same process and affected path input/output",
+            "exact_diagnostic": null
+          }
+        },
+        "observation_boundary": "Individual engine exit plus diagnostic/structured failure associated with this path count",
+        "rationale": "The task receives/produces exactly one existing file with arity 2. Parse errors, missing tools, missing fixtures and unrelated failures cannot pass. Review the observer association without inventing exact error text.",
+        "provenance": [
+          "DOC-PATH-OUT"
+        ],
+        "document_facets": [
+          "D-PATH-OUT-ARITY-FAIL"
+        ],
+        "mode": {
+          "nextflow_version": "26.04.6",
+          "source_commit": "232b60569865e9a4577e48c1955409238359d6ca",
+          "NXF_SYNTAX_PARSER": "v2",
+          "static_typing_enabled": false,
+          "added_flags": [],
+          "actual_executor": "unresolved until capture",
+          "actual_container_mode": "unresolved until capture"
+        },
+        "observer_status": "pending independent mapping review",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-G-OUT",
+            "path": "fixtures/documents/g-out.nf"
+          },
+          {
+            "id": "FIX-GAP-PRODUCED",
+            "path": "fixtures/documents/gap-produced.expected"
+          }
+        ]
+      },
+      {
+        "id": "G-SHAPE-FILE",
+        "origin": "DOCUMENTED-GAP",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "fixture": "fixtures/documents/g-shape-file.nf",
+            "process": "shape_file",
+            "output_pattern": "one.txt",
+            "arity_literal": "1",
+            "actual_count": 1
+          }
+        },
+        "comparator": "type_and_value_equals",
+        "expected": {
+          "type": "file",
+          "value": {
+            "kind": "file",
+            "basename": "one.txt"
+          }
+        },
+        "observation_boundary": "Typed emitted path value before display/string coercion",
+        "rationale": "Output arity 1 emits one file; 1..* emits a one-element file list. Identical printed filenames cannot prove this distinction. Do not require JVM class identity without a separate equivalence argument.",
+        "provenance": [
+          "DOC-PATH-OUT"
+        ],
+        "document_facets": [
+          "D-PATH-OUT-ONE-SHAPE"
+        ],
+        "mode": {
+          "nextflow_version": "26.04.6",
+          "source_commit": "232b60569865e9a4577e48c1955409238359d6ca",
+          "NXF_SYNTAX_PARSER": "v2",
+          "static_typing_enabled": false,
+          "added_flags": [],
+          "actual_executor": "unresolved until capture",
+          "actual_container_mode": "unresolved until capture"
+        },
+        "observer_status": "pending independent mapping review",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-G-SHAPE-FILE",
+            "path": "fixtures/documents/g-shape-file.nf"
+          },
+          {
+            "id": "FIX-GAP-PRODUCED",
+            "path": "fixtures/documents/gap-produced.expected"
+          }
+        ]
+      },
+      {
+        "id": "G-SHAPE-FILE-EXIT",
+        "origin": "DOCUMENTED-GAP",
+        "typed_input": {
+          "type": "fixture",
+          "value": "fixtures/documents/g-shape-file.nf"
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "integer",
+          "value": 0
+        },
+        "observation_boundary": "Individual engine process exit and completion",
+        "rationale": "One produced file satisfies this declared arity, so the shape observation must come from a completed successful invocation.",
+        "provenance": [
+          "DOC-PATH-OUT"
+        ],
+        "document_facets": [
+          "D-PATH-OUT-ARITY-FORMS"
+        ],
+        "mode": {
+          "nextflow_version": "26.04.6",
+          "source_commit": "232b60569865e9a4577e48c1955409238359d6ca",
+          "NXF_SYNTAX_PARSER": "v2",
+          "static_typing_enabled": false,
+          "added_flags": [],
+          "actual_executor": "unresolved until capture",
+          "actual_container_mode": "unresolved until capture"
+        },
+        "observer_status": "pending independent mapping review",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-G-SHAPE-FILE",
+            "path": "fixtures/documents/g-shape-file.nf"
+          },
+          {
+            "id": "FIX-GAP-PRODUCED",
+            "path": "fixtures/documents/gap-produced.expected"
+          }
+        ]
+      },
+      {
+        "id": "G-SHAPE-LIST",
+        "origin": "DOCUMENTED-GAP",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "fixture": "fixtures/documents/g-shape-list.nf",
+            "process": "shape_list",
+            "output_pattern": "one.txt",
+            "arity_literal": "1..*",
+            "actual_count": 1
+          }
+        },
+        "comparator": "type_and_value_equals",
+        "expected": {
+          "type": "list[file]",
+          "value": {
+            "kind": "list",
+            "items": [
+              {
+                "kind": "file",
+                "basename": "one.txt"
+              }
+            ]
+          }
+        },
+        "observation_boundary": "Typed emitted path value before display/string coercion",
+        "rationale": "Output arity 1 emits one file; 1..* emits a one-element file list. Identical printed filenames cannot prove this distinction. Do not require JVM class identity without a separate equivalence argument.",
+        "provenance": [
+          "DOC-PATH-OUT"
+        ],
+        "document_facets": [
+          "D-PATH-OUT-OTHER-SHAPE"
+        ],
+        "mode": {
+          "nextflow_version": "26.04.6",
+          "source_commit": "232b60569865e9a4577e48c1955409238359d6ca",
+          "NXF_SYNTAX_PARSER": "v2",
+          "static_typing_enabled": false,
+          "added_flags": [],
+          "actual_executor": "unresolved until capture",
+          "actual_container_mode": "unresolved until capture"
+        },
+        "observer_status": "pending independent mapping review",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-G-SHAPE-LIST",
+            "path": "fixtures/documents/g-shape-list.nf"
+          },
+          {
+            "id": "FIX-GAP-PRODUCED",
+            "path": "fixtures/documents/gap-produced.expected"
+          }
+        ]
+      },
+      {
+        "id": "G-SHAPE-LIST-EXIT",
+        "origin": "DOCUMENTED-GAP",
+        "typed_input": {
+          "type": "fixture",
+          "value": "fixtures/documents/g-shape-list.nf"
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "integer",
+          "value": 0
+        },
+        "observation_boundary": "Individual engine process exit and completion",
+        "rationale": "One produced file satisfies this declared arity, so the shape observation must come from a completed successful invocation.",
+        "provenance": [
+          "DOC-PATH-OUT"
+        ],
+        "document_facets": [
+          "D-PATH-OUT-ARITY-FORMS"
+        ],
+        "mode": {
+          "nextflow_version": "26.04.6",
+          "source_commit": "232b60569865e9a4577e48c1955409238359d6ca",
+          "NXF_SYNTAX_PARSER": "v2",
+          "static_typing_enabled": false,
+          "added_flags": [],
+          "actual_executor": "unresolved until capture",
+          "actual_container_mode": "unresolved until capture"
+        },
+        "observer_status": "pending independent mapping review",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-G-SHAPE-LIST",
+            "path": "fixtures/documents/g-shape-list.nf"
+          },
+          {
+            "id": "FIX-GAP-PRODUCED",
+            "path": "fixtures/documents/gap-produced.expected"
+          }
+        ]
+      },
+      {
+        "id": "F1-ARITY-FRESH-FAIL-AGGREGATE",
+        "origin": "CONTROL",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "id": "F1-ARITY-FRESH-FAIL",
+            "family": "arity",
+            "fresh_exit": 1,
+            "resume_exit": 0,
+            "fresh_bytes": null,
+            "resume_bytes": null,
+            "expected_aggregate": 0,
+            "expected_stronger": false,
+            "rejected_by": [
+              "fresh.engine-exit"
+            ],
+            "tee_exits": null
+          }
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "integer",
+          "value": 0
+        },
+        "observation_boundary": "Original bash -ex .checks aggregate process exit",
+        "rationale": "Static authored harness expectation under set +e and no pipefail. Nullable pipeline status is tee status; final expression determines aggregate. These controls prove Bash harness propagation only, never Nextflow or wr execution.",
+        "provenance": [
+          "DOC-SUPPORT-ARITY-CHECKS",
+          "DOC-SUPPORT-RUNNER"
+        ],
+        "document_facets": [],
+        "mode": {
+          "shell": "bash -ex .checks",
+          "pipefail": false,
+          "scope": "F1 harness only"
+        },
+        "observer_status": "control observer to be reviewed in Phase 3; no control execution here",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-ARITY",
+            "path": "fixtures/documents/arity.checks"
+          }
+        ]
+      },
+      {
+        "id": "F1-ARITY-FRESH-FAIL-STRONGER",
+        "origin": "CONTROL",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "id": "F1-ARITY-FRESH-FAIL",
+            "family": "arity",
+            "fresh_exit": 1,
+            "resume_exit": 0,
+            "fresh_bytes": null,
+            "resume_bytes": null,
+            "expected_aggregate": 0,
+            "expected_stronger": false,
+            "rejected_by": [
+              "fresh.engine-exit"
+            ],
+            "tee_exits": null
+          }
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "record",
+          "value": {
+            "accept": false,
+            "failing_predicates": [
+              "fresh.engine-exit"
+            ]
+          }
+        },
+        "observation_boundary": "Each invocation engine exit plus applicable exact-byte predicate, independently evaluated",
+        "rationale": "Static authored harness expectation under set +e and no pipefail. Nullable pipeline status is tee status; final expression determines aggregate. These controls prove Bash harness propagation only, never Nextflow or wr execution.",
+        "provenance": [
+          "DOC-SUPPORT-ARITY-CHECKS",
+          "DOC-SUPPORT-RUNNER"
+        ],
+        "document_facets": [],
+        "mode": {
+          "shell": "bash -ex .checks",
+          "pipefail": false,
+          "scope": "F1 harness only"
+        },
+        "observer_status": "control observer to be reviewed in Phase 3; no control execution here",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-ARITY",
+            "path": "fixtures/documents/arity.checks"
+          }
+        ]
+      },
+      {
+        "id": "F1-ARITY-RESUME-FAIL-AGGREGATE",
+        "origin": "CONTROL",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "id": "F1-ARITY-RESUME-FAIL",
+            "family": "arity",
+            "fresh_exit": 0,
+            "resume_exit": 1,
+            "fresh_bytes": null,
+            "resume_bytes": null,
+            "expected_aggregate": 1,
+            "expected_stronger": false,
+            "rejected_by": [
+              "resume.engine-exit"
+            ],
+            "tee_exits": null
+          }
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "integer",
+          "value": 1
+        },
+        "observation_boundary": "Original bash -ex .checks aggregate process exit",
+        "rationale": "Static authored harness expectation under set +e and no pipefail. Nullable pipeline status is tee status; final expression determines aggregate. These controls prove Bash harness propagation only, never Nextflow or wr execution.",
+        "provenance": [
+          "DOC-SUPPORT-ARITY-CHECKS",
+          "DOC-SUPPORT-RUNNER"
+        ],
+        "document_facets": [],
+        "mode": {
+          "shell": "bash -ex .checks",
+          "pipefail": false,
+          "scope": "F1 harness only"
+        },
+        "observer_status": "control observer to be reviewed in Phase 3; no control execution here",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-ARITY",
+            "path": "fixtures/documents/arity.checks"
+          }
+        ]
+      },
+      {
+        "id": "F1-ARITY-RESUME-FAIL-STRONGER",
+        "origin": "CONTROL",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "id": "F1-ARITY-RESUME-FAIL",
+            "family": "arity",
+            "fresh_exit": 0,
+            "resume_exit": 1,
+            "fresh_bytes": null,
+            "resume_bytes": null,
+            "expected_aggregate": 1,
+            "expected_stronger": false,
+            "rejected_by": [
+              "resume.engine-exit"
+            ],
+            "tee_exits": null
+          }
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "record",
+          "value": {
+            "accept": false,
+            "failing_predicates": [
+              "resume.engine-exit"
+            ]
+          }
+        },
+        "observation_boundary": "Each invocation engine exit plus applicable exact-byte predicate, independently evaluated",
+        "rationale": "Static authored harness expectation under set +e and no pipefail. Nullable pipeline status is tee status; final expression determines aggregate. These controls prove Bash harness propagation only, never Nextflow or wr execution.",
+        "provenance": [
+          "DOC-SUPPORT-ARITY-CHECKS",
+          "DOC-SUPPORT-RUNNER"
+        ],
+        "document_facets": [],
+        "mode": {
+          "shell": "bash -ex .checks",
+          "pipefail": false,
+          "scope": "F1 harness only"
+        },
+        "observer_status": "control observer to be reviewed in Phase 3; no control execution here",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-ARITY",
+            "path": "fixtures/documents/arity.checks"
+          }
+        ]
+      },
+      {
+        "id": "F1-NULLABLE-FRESH-BYTES-FAIL-AGGREGATE",
+        "origin": "CONTROL",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "id": "F1-NULLABLE-FRESH-BYTES-FAIL",
+            "family": "nullable",
+            "fresh_exit": 1,
+            "resume_exit": 1,
+            "fresh_bytes": "656d70747920696e7075740a",
+            "resume_bytes": "656d70747920696e7075740a0a",
+            "expected_aggregate": 0,
+            "expected_stronger": false,
+            "rejected_by": [
+              "fresh.engine-exit",
+              "resume.engine-exit",
+              "fresh.exact-bytes"
+            ],
+            "tee_exits": [
+              0,
+              0
+            ]
+          }
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "integer",
+          "value": 0
+        },
+        "observation_boundary": "Original bash -ex .checks aggregate process exit",
+        "rationale": "Static authored harness expectation under set +e and no pipefail. Nullable pipeline status is tee status; final expression determines aggregate. These controls prove Bash harness propagation only, never Nextflow or wr execution.",
+        "provenance": [
+          "DOC-CONTROL-NULLABLE-CHECKS",
+          "DOC-SUPPORT-RUNNER",
+          "DOC-CONTROL-NULLABLE-EXPECTED"
+        ],
+        "document_facets": [],
+        "mode": {
+          "shell": "bash -ex .checks",
+          "pipefail": false,
+          "scope": "F1 harness only"
+        },
+        "observer_status": "control observer to be reviewed in Phase 3; no control execution here",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-NULLABLE-CONTROL-CHECKS",
+            "path": "fixtures/documents/nullable-control.checks"
+          },
+          {
+            "id": "FIX-NULLABLE-CONTROL-EXPECTED",
+            "path": "fixtures/documents/nullable-control.expected"
+          }
+        ]
+      },
+      {
+        "id": "F1-NULLABLE-FRESH-BYTES-FAIL-STRONGER",
+        "origin": "CONTROL",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "id": "F1-NULLABLE-FRESH-BYTES-FAIL",
+            "family": "nullable",
+            "fresh_exit": 1,
+            "resume_exit": 1,
+            "fresh_bytes": "656d70747920696e7075740a",
+            "resume_bytes": "656d70747920696e7075740a0a",
+            "expected_aggregate": 0,
+            "expected_stronger": false,
+            "rejected_by": [
+              "fresh.engine-exit",
+              "resume.engine-exit",
+              "fresh.exact-bytes"
+            ],
+            "tee_exits": [
+              0,
+              0
+            ]
+          }
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "record",
+          "value": {
+            "accept": false,
+            "failing_predicates": [
+              "fresh.engine-exit",
+              "resume.engine-exit",
+              "fresh.exact-bytes"
+            ]
+          }
+        },
+        "observation_boundary": "Each invocation engine exit plus applicable exact-byte predicate, independently evaluated",
+        "rationale": "Static authored harness expectation under set +e and no pipefail. Nullable pipeline status is tee status; final expression determines aggregate. These controls prove Bash harness propagation only, never Nextflow or wr execution.",
+        "provenance": [
+          "DOC-CONTROL-NULLABLE-CHECKS",
+          "DOC-SUPPORT-RUNNER",
+          "DOC-CONTROL-NULLABLE-EXPECTED"
+        ],
+        "document_facets": [],
+        "mode": {
+          "shell": "bash -ex .checks",
+          "pipefail": false,
+          "scope": "F1 harness only"
+        },
+        "observer_status": "control observer to be reviewed in Phase 3; no control execution here",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-NULLABLE-CONTROL-CHECKS",
+            "path": "fixtures/documents/nullable-control.checks"
+          },
+          {
+            "id": "FIX-NULLABLE-CONTROL-EXPECTED",
+            "path": "fixtures/documents/nullable-control.expected"
+          }
+        ]
+      },
+      {
+        "id": "F1-NULLABLE-RESUME-BYTES-FAIL-AGGREGATE",
+        "origin": "CONTROL",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "id": "F1-NULLABLE-RESUME-BYTES-FAIL",
+            "family": "nullable",
+            "fresh_exit": 0,
+            "resume_exit": 0,
+            "fresh_bytes": "656d70747920696e7075740a0a",
+            "resume_bytes": "656d70747920696e7075740a",
+            "expected_aggregate": 1,
+            "expected_stronger": false,
+            "rejected_by": [
+              "resume.exact-bytes"
+            ],
+            "tee_exits": [
+              0,
+              0
+            ]
+          }
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "integer",
+          "value": 1
+        },
+        "observation_boundary": "Original bash -ex .checks aggregate process exit",
+        "rationale": "Static authored harness expectation under set +e and no pipefail. Nullable pipeline status is tee status; final expression determines aggregate. These controls prove Bash harness propagation only, never Nextflow or wr execution.",
+        "provenance": [
+          "DOC-CONTROL-NULLABLE-CHECKS",
+          "DOC-SUPPORT-RUNNER",
+          "DOC-CONTROL-NULLABLE-EXPECTED"
+        ],
+        "document_facets": [],
+        "mode": {
+          "shell": "bash -ex .checks",
+          "pipefail": false,
+          "scope": "F1 harness only"
+        },
+        "observer_status": "control observer to be reviewed in Phase 3; no control execution here",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-NULLABLE-CONTROL-CHECKS",
+            "path": "fixtures/documents/nullable-control.checks"
+          },
+          {
+            "id": "FIX-NULLABLE-CONTROL-EXPECTED",
+            "path": "fixtures/documents/nullable-control.expected"
+          }
+        ]
+      },
+      {
+        "id": "F1-NULLABLE-RESUME-BYTES-FAIL-STRONGER",
+        "origin": "CONTROL",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "id": "F1-NULLABLE-RESUME-BYTES-FAIL",
+            "family": "nullable",
+            "fresh_exit": 0,
+            "resume_exit": 0,
+            "fresh_bytes": "656d70747920696e7075740a0a",
+            "resume_bytes": "656d70747920696e7075740a",
+            "expected_aggregate": 1,
+            "expected_stronger": false,
+            "rejected_by": [
+              "resume.exact-bytes"
+            ],
+            "tee_exits": [
+              0,
+              0
+            ]
+          }
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "record",
+          "value": {
+            "accept": false,
+            "failing_predicates": [
+              "resume.exact-bytes"
+            ]
+          }
+        },
+        "observation_boundary": "Each invocation engine exit plus applicable exact-byte predicate, independently evaluated",
+        "rationale": "Static authored harness expectation under set +e and no pipefail. Nullable pipeline status is tee status; final expression determines aggregate. These controls prove Bash harness propagation only, never Nextflow or wr execution.",
+        "provenance": [
+          "DOC-CONTROL-NULLABLE-CHECKS",
+          "DOC-SUPPORT-RUNNER",
+          "DOC-CONTROL-NULLABLE-EXPECTED"
+        ],
+        "document_facets": [],
+        "mode": {
+          "shell": "bash -ex .checks",
+          "pipefail": false,
+          "scope": "F1 harness only"
+        },
+        "observer_status": "control observer to be reviewed in Phase 3; no control execution here",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-NULLABLE-CONTROL-CHECKS",
+            "path": "fixtures/documents/nullable-control.checks"
+          },
+          {
+            "id": "FIX-NULLABLE-CONTROL-EXPECTED",
+            "path": "fixtures/documents/nullable-control.expected"
+          }
+        ]
+      },
+      {
+        "id": "F1-ARITY-VALID-AGGREGATE",
+        "origin": "CONTROL",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "id": "F1-ARITY-VALID",
+            "family": "arity",
+            "fresh_exit": 0,
+            "resume_exit": 0,
+            "fresh_bytes": null,
+            "resume_bytes": null,
+            "expected_aggregate": 0,
+            "expected_stronger": true,
+            "rejected_by": [],
+            "tee_exits": null
+          }
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "integer",
+          "value": 0
+        },
+        "observation_boundary": "Original bash -ex .checks aggregate process exit",
+        "rationale": "Static authored harness expectation under set +e and no pipefail. Nullable pipeline status is tee status; final expression determines aggregate. These controls prove Bash harness propagation only, never Nextflow or wr execution.",
+        "provenance": [
+          "DOC-SUPPORT-ARITY-CHECKS",
+          "DOC-SUPPORT-RUNNER"
+        ],
+        "document_facets": [],
+        "mode": {
+          "shell": "bash -ex .checks",
+          "pipefail": false,
+          "scope": "F1 harness only"
+        },
+        "observer_status": "control observer to be reviewed in Phase 3; no control execution here",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-ARITY",
+            "path": "fixtures/documents/arity.checks"
+          }
+        ]
+      },
+      {
+        "id": "F1-ARITY-VALID-STRONGER",
+        "origin": "CONTROL",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "id": "F1-ARITY-VALID",
+            "family": "arity",
+            "fresh_exit": 0,
+            "resume_exit": 0,
+            "fresh_bytes": null,
+            "resume_bytes": null,
+            "expected_aggregate": 0,
+            "expected_stronger": true,
+            "rejected_by": [],
+            "tee_exits": null
+          }
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "record",
+          "value": {
+            "accept": true,
+            "failing_predicates": []
+          }
+        },
+        "observation_boundary": "Each invocation engine exit plus applicable exact-byte predicate, independently evaluated",
+        "rationale": "Static authored harness expectation under set +e and no pipefail. Nullable pipeline status is tee status; final expression determines aggregate. These controls prove Bash harness propagation only, never Nextflow or wr execution.",
+        "provenance": [
+          "DOC-SUPPORT-ARITY-CHECKS",
+          "DOC-SUPPORT-RUNNER"
+        ],
+        "document_facets": [],
+        "mode": {
+          "shell": "bash -ex .checks",
+          "pipefail": false,
+          "scope": "F1 harness only"
+        },
+        "observer_status": "control observer to be reviewed in Phase 3; no control execution here",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-ARITY",
+            "path": "fixtures/documents/arity.checks"
+          }
+        ]
+      },
+      {
+        "id": "F1-NULLABLE-VALID-AGGREGATE",
+        "origin": "CONTROL",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "id": "F1-NULLABLE-VALID",
+            "family": "nullable",
+            "fresh_exit": 0,
+            "resume_exit": 0,
+            "fresh_bytes": "656d70747920696e7075740a0a",
+            "resume_bytes": "656d70747920696e7075740a0a",
+            "expected_aggregate": 0,
+            "expected_stronger": true,
+            "rejected_by": [],
+            "tee_exits": [
+              0,
+              0
+            ]
+          }
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "integer",
+          "value": 0
+        },
+        "observation_boundary": "Original bash -ex .checks aggregate process exit",
+        "rationale": "Static authored harness expectation under set +e and no pipefail. Nullable pipeline status is tee status; final expression determines aggregate. These controls prove Bash harness propagation only, never Nextflow or wr execution.",
+        "provenance": [
+          "DOC-CONTROL-NULLABLE-CHECKS",
+          "DOC-SUPPORT-RUNNER",
+          "DOC-CONTROL-NULLABLE-EXPECTED"
+        ],
+        "document_facets": [],
+        "mode": {
+          "shell": "bash -ex .checks",
+          "pipefail": false,
+          "scope": "F1 harness only"
+        },
+        "observer_status": "control observer to be reviewed in Phase 3; no control execution here",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-NULLABLE-CONTROL-CHECKS",
+            "path": "fixtures/documents/nullable-control.checks"
+          },
+          {
+            "id": "FIX-NULLABLE-CONTROL-EXPECTED",
+            "path": "fixtures/documents/nullable-control.expected"
+          }
+        ]
+      },
+      {
+        "id": "F1-NULLABLE-VALID-STRONGER",
+        "origin": "CONTROL",
+        "typed_input": {
+          "type": "record",
+          "value": {
+            "id": "F1-NULLABLE-VALID",
+            "family": "nullable",
+            "fresh_exit": 0,
+            "resume_exit": 0,
+            "fresh_bytes": "656d70747920696e7075740a0a",
+            "resume_bytes": "656d70747920696e7075740a0a",
+            "expected_aggregate": 0,
+            "expected_stronger": true,
+            "rejected_by": [],
+            "tee_exits": [
+              0,
+              0
+            ]
+          }
+        },
+        "comparator": "equals",
+        "expected": {
+          "type": "record",
+          "value": {
+            "accept": true,
+            "failing_predicates": []
+          }
+        },
+        "observation_boundary": "Each invocation engine exit plus applicable exact-byte predicate, independently evaluated",
+        "rationale": "Static authored harness expectation under set +e and no pipefail. Nullable pipeline status is tee status; final expression determines aggregate. These controls prove Bash harness propagation only, never Nextflow or wr execution.",
+        "provenance": [
+          "DOC-CONTROL-NULLABLE-CHECKS",
+          "DOC-SUPPORT-RUNNER",
+          "DOC-CONTROL-NULLABLE-EXPECTED"
+        ],
+        "document_facets": [],
+        "mode": {
+          "shell": "bash -ex .checks",
+          "pipefail": false,
+          "scope": "F1 harness only"
+        },
+        "observer_status": "control observer to be reviewed in Phase 3; no control execution here",
+        "execution_status": "unattempted",
+        "fixture_references": [
+          {
+            "id": "FIX-NULLABLE-CONTROL-CHECKS",
+            "path": "fixtures/documents/nullable-control.checks"
+          },
+          {
+            "id": "FIX-NULLABLE-CONTROL-EXPECTED",
+            "path": "fixtures/documents/nullable-control.expected"
+          }
+        ]
+      }
+    ]
+  },
+  "original_typed_input_resolution": {
+    "unit_record": "inventory.json originals.units by expectation.unit_id",
+    "invocation_record": "inventory.json originals.invocations by expectation.unit_id",
+    "parser": "literal.input_type and decoded_utf8 with raw/literal/decoded fixture IDs; normalized inputs remain manually source-derived Phase 2 candidates",
+    "mix": "unit literal plus typed_channel_inputs; numeric and string values preserved without coercion",
+    "cli": "invocation.typed_input, source_id and original input_type identify workflow and immediate observed status/file bytes",
+    "helper_obligations": "inventory.json originals.helper_observations retains seven typed comparators/expected values outside the selected predicate denominator"
+  },
+  "claim_boundary": "Source/document-authored expectations, no engine observations or execution passes. Comparator, expected value, type and origin are preserved."
+}

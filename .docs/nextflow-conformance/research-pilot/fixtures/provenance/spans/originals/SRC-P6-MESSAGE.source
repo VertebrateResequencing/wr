@@ -1,0 +1,1 @@
+        errors[0].getOriginalMessage().contains "Statements cannot be mixed with script declarations"

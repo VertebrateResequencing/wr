@@ -1,0 +1,23 @@
+: :::{tip}
+  See {ref}`process-multiple-input-files` for more information about accepting collections of files.
+  :::
+
+: The argument can be an identifier or string. If an identifier, the received value will be made available to the process body as a variable. If a string, the received value will be staged into the task directory under the given alias.
+
+: Available options:
+
+  `arity`
+  : :::{versionadded} 23.10.0
+    :::
+  : Specify the number of expected files. Can be a number, e.g. `'1'`, or a range, e.g. `'1..*'`. If a task receives an invalid number of files for this `path` input, it will fail.
+
+  `name`
+  : Specify how the file should be named in the task work directory. Can be a name or a pattern.
+
+  `stageAs`
+  : Alias of `name`.
+
+`env( name )`
+
+: Declare an environment variable input. The received value should be a string, and it will be exported to the task environment as an environment variable given by `name`.
+

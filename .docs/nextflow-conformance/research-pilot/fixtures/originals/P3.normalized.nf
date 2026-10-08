@@ -1,0 +1,9 @@
+process hello {
+    output:
+    tuple val("hello") val("goodbye")
+
+    script:
+    """
+    echo hello
+    """
+}

@@ -1,0 +1,7 @@
+            params {
+                greeting: String
+            }
+
+            workflow {
+            }
+            

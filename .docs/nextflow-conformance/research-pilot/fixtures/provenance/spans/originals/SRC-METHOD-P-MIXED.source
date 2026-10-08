@@ -1,0 +1,16 @@
+    def 'should report an error for mixing script declarations with statements' () {
+        when:
+        def errors = check(
+            '''\
+            println 'Hello world!'
+
+            workflow {
+            }
+            '''
+        )
+        then:
+        errors.size() == 1
+        errors[0].getStartLine() == 1
+        errors[0].getStartColumn() == 1
+        errors[0].getOriginalMessage().contains "Statements cannot be mixed with script declarations"
+    }

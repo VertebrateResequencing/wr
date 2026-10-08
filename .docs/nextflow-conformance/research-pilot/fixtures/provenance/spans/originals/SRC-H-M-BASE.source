@@ -1,0 +1,9 @@
+
+    def setup() {
+        log.info "TEST BEGIN [${specificationContext.currentIteration.name}]"
+    }
+
+    def cleanup() {
+        log.info "TEST CLOSE [${specificationContext.currentIteration.name}]"
+    }
+

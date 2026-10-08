@@ -1,0 +1,3 @@
+
+            channel.value(1).mix( channel.value(2) ).collect()
+            

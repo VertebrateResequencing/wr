@@ -1,0 +1,8 @@
+.cache
+.nextflow.*
+results
+scratch
+work
+**/checks.out
+**/.stdout
+**/stdout

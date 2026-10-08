@@ -1,0 +1,6 @@
+    def setup() {
+        TaskProcessor.reset()
+        ScriptMeta.reset()
+        Global.reset()
+        NF.init()
+    }

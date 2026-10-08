@@ -1,0 +1,15 @@
+# Workflows (typed)
+
+Typed workflows use a new syntax for inputs and outputs that supports static typing.
+
+To use this feature:
+
+1. Enable the {ref}`strict parser <strict-syntax-page>` by setting the `NXF_SYNTAX_PARSER` environment variable to `v2`:
+
+    ```bash
+    export NXF_SYNTAX_PARSER=v2
+    ```
+
+2. Set `nextflow.enable.types = true` in every script that uses typed workflows. The `params` block and `output` block can be used without this feature flag.
+
+See {ref}`syntax-workflow-typed` for the complete syntax reference and {ref}`migrating-static-types` to migrate existing code to static typing.

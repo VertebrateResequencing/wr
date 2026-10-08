@@ -1,0 +1,8 @@
+    def 'should mix with value channels'() {
+        when:
+        def result = runScript('''
+            channel.value(1).mix( channel.of(2,3) ).collect()
+            ''')
+        then:
+        result.val.sort() == [1,2,3]
+    }

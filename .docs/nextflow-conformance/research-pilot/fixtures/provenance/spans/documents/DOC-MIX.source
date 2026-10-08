@@ -1,0 +1,27 @@
+(operator-mix)=
+
+## mix
+
+*Returns: channel*
+
+The `mix` operator emits the items from two source channels into a single output channel:
+
+```{literalinclude} ../snippets/mix.nf
+:language: nextflow
+```
+
+```{literalinclude} ../snippets/mix.out
+:language: console
+```
+
+The items in the mixed output channel may appear in any order, regardless of which source channel they came from. Thus, the previous example could also output the following:
+
+```console
+z
+1
+a
+2
+b
+3
+```
+

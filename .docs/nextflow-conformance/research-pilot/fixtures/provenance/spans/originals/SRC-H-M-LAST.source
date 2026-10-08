@@ -1,0 +1,12 @@
+    ScriptLoaderV2 parse(String scriptText) {
+        parse0(scriptText, null)
+        return this
+    }
+
+    @Override
+    ScriptLoaderV2 runScript() {
+        assert session
+        assert mainScript
+        // capture the last statement of the snippet or entry workflow (used for testing)
+        this.result = mainScript.run()
+        return this

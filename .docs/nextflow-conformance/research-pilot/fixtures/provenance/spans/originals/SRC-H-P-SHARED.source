@@ -1,0 +1,8 @@
+class ScriptAstBuilderTest extends Specification {
+
+    @Shared
+    ScriptParser scriptParser
+
+    def setupSpec() {
+        scriptParser = new ScriptParser()
+    }

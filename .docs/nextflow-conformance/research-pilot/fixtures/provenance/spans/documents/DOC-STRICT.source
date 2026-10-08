@@ -1,0 +1,46 @@
+### Mixing script declarations and statements
+
+A Nextflow script may contain any of the following top-level declarations:
+
+- Feature flags
+- Include declarations
+- Parameter declarations
+- Workflows
+- Processes
+- Functions
+- Type definitions
+- Output block
+
+Alternatively, a script may contain only statements, also known as a _code snippet_:
+
+```nextflow
+println 'Hello world!'
+```
+
+Code snippets are treated as an implicit entry workflow:
+
+```nextflow
+workflow {
+    println 'Hello world!'
+}
+```
+
+Script declarations and statements cannot be mixed at the same level. All statements must reside within script declarations unless the script is a code snippet:
+
+```nextflow
+process hello {
+    // ...
+}
+
+// incorrect -- move into entry workflow
+// println 'Hello world!'
+
+// correct
+workflow {
+    println 'Hello world!'
+}
+```
+
+:::{note}
+Mixing statements and script declarations was necessary in DSL1 and optional in DSL2. However, this pattern is not supported by the strict parser in order to ensure that top-level statements are not executed when the script is included as a module.
+:::

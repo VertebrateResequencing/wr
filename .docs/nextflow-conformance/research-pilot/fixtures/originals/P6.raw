@@ -1,0 +1,6 @@
+\
+            println 'Hello world!'
+
+            workflow {
+            }
+            

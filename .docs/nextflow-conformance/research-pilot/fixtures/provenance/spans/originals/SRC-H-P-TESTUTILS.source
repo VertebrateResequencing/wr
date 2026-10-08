@@ -1,0 +1,53 @@
+    static List<SyntaxException> check(ScriptParser parser, String contents) {
+        final source = parser.parse('main.nf', contents.stripIndent())
+        parser.analyze()
+        return getErrors(source)
+    }
+
+    static List<SyntaxException> check(ScriptParser parser, List<Path> files) {
+        for( final path : files )
+            parser.parse(path.toFile())
+        parser.analyze()
+        return getErrors(files, parser.compiler())
+    }
+
+    /**
+     * Parse and analyze a config file and return the list of errors.
+     *
+     * @param parser
+     * @param contents
+     */
+    static List<SyntaxException> check(ConfigParser parser, String contents) {
+        final source = parser.parse('nextflow.config', contents.stripIndent())
+        parser.analyze()
+        return getErrors(source)
+    }
+
+    static List<SyntaxException> check(ConfigParser parser, List<Path> files) {
+        for( final path : files )
+            parser.parse(path.toFile())
+        parser.analyze()
+        return getErrors(files, parser.compiler())
+    }
+
+    /**
+     * Get the list of compiler errors for a source file.
+     *
+     * @param source
+     */
+    static List<SyntaxException> getErrors(SourceUnit source) {
+        final errorCollector = source.getErrorCollector()
+        if( !errorCollector.hasErrors() )
+            return Collections.emptyList()
+        return errorCollector.getErrors().stream()
+            .filter(e -> e instanceof SyntaxErrorMessage)
+            .map(e -> e.cause)
+            .sorted(ERROR_COMPARATOR)
+            .toList()
+    }
+
+    static final Comparator<SyntaxException> ERROR_COMPARATOR = (SyntaxException a, SyntaxException b) -> {
+        return a.getStartLine() != b.getStartLine()
+            ? a.getStartLine() - b.getStartLine()
+            : a.getStartColumn() - b.getStartColumn()
+    }

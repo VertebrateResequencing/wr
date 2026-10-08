@@ -1,0 +1,9 @@
+            process hello {
+                debug true:
+
+                script:
+                """
+                echo hello
+                """
+            }
+            

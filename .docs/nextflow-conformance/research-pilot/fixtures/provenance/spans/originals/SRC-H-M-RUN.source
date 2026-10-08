@@ -1,0 +1,22 @@
+    static Object runScript(Map opts = [:], String text) {
+        def session = opts.config ? new MockSession(opts.config) : new MockSession()
+        session.setBinding(new ScriptBinding())
+
+        session.init(null, null, opts.params, opts.configParams)
+        session.start()
+
+        def loader = ScriptLoaderFactory.create(session)
+        loader.parse(text)
+        loader.runScript()
+
+        def result = normalizeResult(loader.getResult())
+
+        session.fireDataflowNetwork()
+        session.await()
+        session.destroy()
+
+        if( session.error )
+            throw session.error
+
+        return result
+    }

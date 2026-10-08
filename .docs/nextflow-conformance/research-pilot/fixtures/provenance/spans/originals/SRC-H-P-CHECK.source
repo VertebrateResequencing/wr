@@ -1,0 +1,3 @@
+    List<SyntaxException> check(String contents) {
+        return TestUtils.check(scriptParser, contents)
+    }

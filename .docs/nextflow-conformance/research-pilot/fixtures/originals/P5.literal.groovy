@@ -1,0 +1,11 @@
+'''\
+            workflow foo {
+                take:
+                x
+                y,
+                z
+
+                main:
+                println 'hello'
+            }
+            '''

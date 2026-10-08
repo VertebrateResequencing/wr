@@ -1,0 +1,37 @@
+    private static Object normalizeResult(value) {
+        if( value instanceof ChannelOut ) {
+            def result = new ArrayList<>(value.size())
+            for( def el : value )
+                result.add(normalizeResult0(el))
+            return result.size() == 1 ? result[0] : result
+        }
+
+        if( value instanceof Object[] || value instanceof List ) {
+            def result = new ArrayList<>(value.size())
+            for( def el : value )
+                result.add(normalizeResult0(el))
+            return result
+        }
+
+        return normalizeResult0(value)
+    }
+
+    private static Object normalizeResult0(value) {
+        if( value instanceof ChannelImpl )
+            return value.getSource().createReadChannel()
+
+        if( value instanceof ValueImpl )
+            return value.getSource()
+
+        if( value instanceof ChannelOut ) {
+            def result = new ArrayList<>(value.size())
+            for( def el : value )
+                result.add(normalizeResult0(el))
+            return result.size() == 1 ? result[0] : result
+        }
+
+        if( value instanceof DataflowBroadcast )
+            return value.createReadChannel()
+
+        return value
+    }
