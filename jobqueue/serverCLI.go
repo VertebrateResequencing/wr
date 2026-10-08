@@ -1042,8 +1042,11 @@ func (s *Server) handleReserve(ctx context.Context, cr *clientRequest, drain boo
 	return s.respondWithReservedJob(ctx, cr, item), "", ""
 }
 
-// waitForPendingReserves blocks the caller until any in-progress ready-added
-// callback has finished, so reserves don't race new/changed items.
+// waitForPendingReserves blocks the caller if racPending or racRunning is set,
+// until clearRACPending, finishRAC or shutdown wakes it, so that a reserve
+// usually sees newly ready items only after the ready-added callback has
+// prepared them. This is best-effort ordering: see Server.racPending for how
+// the hold can be released early and what that costs.
 func (s *Server) waitForPendingReserves() {
 	// don't proceed when we're expecting new/changed items
 	s.rpmutex.Lock()

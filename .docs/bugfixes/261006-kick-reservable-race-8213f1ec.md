@@ -239,6 +239,10 @@ files.
     callback runs. Ordering only. A counter is not a drop-in fix because the
     queue merges `readyAdded` calls into one callback and `finishRAC` resets
     everything when it ends.
+    - Decided (owner, 2026-10-08): document the hold as best-effort for the
+      bolt release (option A), on branch `racdoc-41b80cca`; removing the
+      global hold (option D) gets a spec after the release. Analysis:
+      `runstate-gate/analysis/racpending-options.md`.
 
 ## Speed gate
 
