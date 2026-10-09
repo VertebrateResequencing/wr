@@ -2483,17 +2483,15 @@ cmd_status_seed_overlap() {  # status-seed-overlap [overlap] [natBacklog] - reli
   #             caster member is live, run the transitions, let their deltas be
   #             delivered, THEN send "current"), so the magnitude is exact and the gate
   #             never flakes. Pre-fix it over-counts `running` by the whole overlap set.
-  #   natural - the RESIDUAL MEASUREMENT. "current" is sent immediately on open exactly
-  #             as the browser does, while jobs keep starting. In-process the
-  #             pre-snapshot part of the window (the request hop, plus any delta the
-  #             caster had not written yet) is microseconds, so what is left is the seed
-  #             walk itself, which no boundary can close without locking the queue across
-  #             it (DEVELOPERS.md rule 1). It replays the same recording twice - as the
-  #             shipped client reads it and with the markers stripped, which is what an
-  #             older status page sees - and asserts only that the bracket is present,
-  #             that nothing interleaves it (both RED pre-fix) and that the boundary
-  #             never makes the residual worse. It PRINTS the residual and the seed
-  #             walk that bounds it.
+  #   natural - "current" is sent immediately on open exactly as the browser does,
+  #             while jobs keep starting. The seed reads item states and the queue's
+  #             change sequence in one lock hold, and the status pump drops any delta
+  #             at or below that sequence, so a move during the seed walk is counted
+  #             once. It asserts the bracket is present, that nothing interleaves it
+  #             (both RED pre-fix) and that the shipped client's running bar is exact
+  #             (RED, 2 to 8 over, if the walk stops being a point in time). It also
+  #             prints what a client that ignores the markers shows on the same
+  #             recording, and the error the walk's duration would allow otherwise.
   need_repo
   command -v node >/dev/null 2>&1 || die "node is required for status-seed-overlap"
   local overlap="${1:-120}" natbacklog="${2:-20000}"
@@ -2505,7 +2503,7 @@ cmd_status_seed_overlap() {  # status-seed-overlap [overlap] [natBacklog] - reli
   out=$(WR_SO_OVERLAP="$overlap" WR_SO_NAT_BACKLOG="$natbacklog" \
     timeout 600 go -C "$REPO" test -tags "netgo reliability_repro" ./jobqueue/ \
     -run 'TestReliable4StatusSeedOverlap' -count=1 -v 2>&1) || rc=$?
-  printf '%s\n' "$out" | grep -aE 'SEED-OVERLAP-REPRO|--- (PASS|FAIL)|^(ok|FAIL)'
+  printf '%s\n' "$out" | grep -aE 'SEED-OVERLAP-REPRO|--- (PASS|FAIL)|^(ok|FAIL)|_test\.go|Expected|Actual'
 
   # hard FAIL (NOT MEASURED) if either shape produced no measurement: a gate that
   # passes when the measurement is absent is worse than no gate.
@@ -2525,7 +2523,7 @@ cmd_status_seed_overlap() {  # status-seed-overlap [overlap] [natBacklog] - reli
   fshown=$(printf '%s' "$forced" | sed -E 's/.*shown_running=([0-9]+).*/\1/')
 
   # the discriminating comparison, reported before anything else so a pre-fix run says
-  # what actually went wrong rather than blaming the missing residual measurement (the
+  # what actually went wrong rather than blaming the missing natural measurement (the
   # natural shape aborts at its own bracket assertion pre-fix, and prints nothing).
   if [ "$fshown" -ne "$ftrue" ]; then
     echo "status-seed-overlap: forced  true_running=$ftrue shown_running=$fshown"
@@ -2536,7 +2534,7 @@ cmd_status_seed_overlap() {  # status-seed-overlap [overlap] [natBacklog] - reli
 
   if [ -z "$natural" ] || [ -z "$bracket" ] || [ -z "$overcounts" ]; then
     echo "status-seed-overlap: FAIL (NOT MEASURED - a natural, bracket or overcount measurement"
-    echo "  line is missing, so the residual was never measured; see the output above)"
+    echo "  line is missing, so the natural shape was never measured; see the output above)"
     return 1
   fi
   nramp=$(printf '%s' "$natural" | sed -E 's/.*ramp_started=([0-9]+).*/\1/')
@@ -2552,9 +2550,8 @@ cmd_status_seed_overlap() {  # status-seed-overlap [overlap] [natBacklog] - reli
   echo "status-seed-overlap: forced  true_running=$ftrue shown_running=$fshown (the discriminating shape)"
   echo "status-seed-overlap: natural true_running=$ntrue shown_running=$nshown (ramp started $nramp)"
   echo "status-seed-overlap: natural bracket=$begins/$ends seed_walk=${seedwalk}ms at ${starts} starts/s"
-  echo "status-seed-overlap:   => ACCEPTED RESIDUAL: the seed walk is not a point in time, so up to"
-  echo "status-seed-overlap:      ~$predicted transitions can be counted twice (measured: $aware; a"
-  echo "status-seed-overlap:      boundary-blind client on the same recording: $blind)"
+  echo "status-seed-overlap: natural overcount=$aware (a boundary-blind client on the same recording:"
+  echo "status-seed-overlap:   $blind; a walk that was not a point in time could allow ~$predicted)"
 
   # a natural run that started no jobs measured nothing either.
   if [ "$nramp" -le 0 ]; then
@@ -2568,8 +2565,9 @@ cmd_status_seed_overlap() {  # status-seed-overlap [overlap] [natBacklog] - reli
     return 1
   fi
 
-  if [ "$aware" -gt "$blind" ]; then
-    echo "status-seed-overlap: FAIL (the boundary made the residual WORSE: $aware vs $blind blind)"
+  if [ "$aware" -ne 0 ]; then
+    echo "status-seed-overlap: FAIL (the natural shape miscounted running by $aware: a move the seed"
+    echo "  counted was also counted from its delta, or a delta was lost)"
     return 1
   fi
 
@@ -2581,8 +2579,7 @@ cmd_status_seed_overlap() {  # status-seed-overlap [overlap] [natBacklog] - reli
     return "$rc"
   fi
 
-  echo "status-seed-overlap: PASS (the seed no longer double-counts what predates it; the residual"
-  echo "  above is the seed walk itself, which is bounded by the walk and not by the connect window)"
+  echo "status-seed-overlap: PASS (the seed and the live deltas count every transition once)"
   return 0
 }
 
@@ -5131,10 +5128,10 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         counted TWICE and a never-reconnecting status page over-counts
                         'running' for the rest of the run (prod: 274 shown vs 4 real). Runs a
                         forced-interleaving shape (exact, non-flaky, the discriminating one)
-                        and a natural one (the browser's own connect sequence) that measures
-                        the accepted residual - the seed walk itself - by replaying one
-                        recording both with and without the seed boundary, through the REAL
-                        websocket-handler.js. No manager, no LSF (defaults 120 20000)
+                        and a natural one (the browser's own connect sequence) that checks
+                        the shipped client is exact under real concurrency, printing a
+                        boundary-blind replay of the same recording for comparison, through
+                        the REAL websocket-handler.js. No manager, no LSF (defaults 120 20000)
   overprovision-check [limit] [siblings] [ready]
                         deterministic prod-scale check: summed runners requested per limit
                         group stay <= the limit (fails on pre-fix per-group accounting; no manager)
