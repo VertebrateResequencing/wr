@@ -71,3 +71,14 @@ a test and a developer script change, so no `make speed`.
     status-seed-overlap` with an isolated `WRDEV_ROOT`: PASS 3 of 3, rc 0.
     `make lint`: 0 issues. `go vet -tags "netgo reliability_repro"
     ./jobqueue/`: clean.
+  - Review cycle 2: the reviewer confirmed the fix but found wording that
+    still described a measured walk residual: wrdev.sh's help text for
+    `status-seed-overlap`, a comment, and a NOT MEASURED message. They now
+    say the natural shape checks the shipped client is exact and prints a
+    boundary-blind replay for comparison. No other stale residual wording
+    in wrdev.sh or the test; the `residual_predicted=` key is kept, since it
+    is the error a non-point-in-time walk could allow and wrdev.sh parses
+    it. Gates after the rewording: `bash -n` clean, `make lint` 0 issues,
+    the `TestReliable4StatusSeedOverlap*` tests pass with `-count=3` at load
+    10, and `developers/wrdev.sh status-seed-overlap` with an isolated
+    `WRDEV_ROOT` passes, rc 0.

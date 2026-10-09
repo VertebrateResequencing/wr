@@ -2523,7 +2523,7 @@ cmd_status_seed_overlap() {  # status-seed-overlap [overlap] [natBacklog] - reli
   fshown=$(printf '%s' "$forced" | sed -E 's/.*shown_running=([0-9]+).*/\1/')
 
   # the discriminating comparison, reported before anything else so a pre-fix run says
-  # what actually went wrong rather than blaming the missing residual measurement (the
+  # what actually went wrong rather than blaming the missing natural measurement (the
   # natural shape aborts at its own bracket assertion pre-fix, and prints nothing).
   if [ "$fshown" -ne "$ftrue" ]; then
     echo "status-seed-overlap: forced  true_running=$ftrue shown_running=$fshown"
@@ -2534,7 +2534,7 @@ cmd_status_seed_overlap() {  # status-seed-overlap [overlap] [natBacklog] - reli
 
   if [ -z "$natural" ] || [ -z "$bracket" ] || [ -z "$overcounts" ]; then
     echo "status-seed-overlap: FAIL (NOT MEASURED - a natural, bracket or overcount measurement"
-    echo "  line is missing, so the residual was never measured; see the output above)"
+    echo "  line is missing, so the natural shape was never measured; see the output above)"
     return 1
   fi
   nramp=$(printf '%s' "$natural" | sed -E 's/.*ramp_started=([0-9]+).*/\1/')
@@ -5128,10 +5128,10 @@ wrdev.sh - isolated wr reliability testing (see ../DEVELOPERS.md). NOT part of t
                         counted TWICE and a never-reconnecting status page over-counts
                         'running' for the rest of the run (prod: 274 shown vs 4 real). Runs a
                         forced-interleaving shape (exact, non-flaky, the discriminating one)
-                        and a natural one (the browser's own connect sequence) that measures
-                        the accepted residual - the seed walk itself - by replaying one
-                        recording both with and without the seed boundary, through the REAL
-                        websocket-handler.js. No manager, no LSF (defaults 120 20000)
+                        and a natural one (the browser's own connect sequence) that checks
+                        the shipped client is exact under real concurrency, printing a
+                        boundary-blind replay of the same recording for comparison, through
+                        the REAL websocket-handler.js. No manager, no LSF (defaults 120 20000)
   overprovision-check [limit] [siblings] [ready]
                         deterministic prod-scale check: summed runners requested per limit
                         group stay <= the limit (fails on pre-fix per-group accounting; no manager)
