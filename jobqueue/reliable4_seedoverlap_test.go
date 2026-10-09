@@ -238,16 +238,22 @@ func TestReliable4StatusSeedOverlap(t *testing.T) {
 
 // TestReliable4StatusSeedOverlapNaturalRace dials the status page and sends
 // "current" immediately, exactly as the browser's onopen does, while jobs keep
-// starting. Post-fix it is the RESIDUAL MEASUREMENT rather than the fix's proof:
-// in-process the pre-snapshot part of the connect window (the request hop, and
-// any delta the caster had not yet written) is microseconds, so what is left is
-// the seed walk itself, and the seed boundary cannot close that. It therefore
-// reports both what the shipped client shows and what a boundary-blind client
-// would show on the SAME recording, times the seed walk, and asserts only that
-// the bracket is there, that nothing interleaves it, and that the boundary never
-// makes the residual worse. The discriminating shape is the forced one above;
-// prod's window was mostly the part the boundary does close, since the browser
-// was remote and the manager CPU-bound.
+// starting. The forced shape above is the boundary's discriminating proof; this
+// one proves the seed is exact under real concurrency on a large queue. The
+// seed reads every item's state and the queue's change sequence in one hold of
+// the queue's lock (queue.Snapshot), so it is a point in time: a move made
+// while the seed is being built is either in the snapshot, and its delta is
+// discarded before "begin" or dropped by the pump for being at or below the
+// sequence, or not in it, and its delta is counted. The only deltas without a
+// sequence are lost and touch deltas, and nothing goes lost here, so the
+// shipped client's running bar must equal the truth exactly. When the walk read
+// each item's state after letting go of the queue's lock, moves made during the
+// walk were counted by both, and this shape measured 2 to 8 too many running.
+// The pump's drop of a delta whose callback goroutine ran late is pinned
+// deterministically by TestStatusLateDeltaAfterSeed; in-process here the
+// callback nearly always runs before the seed. The same recording is also
+// replayed with the boundary markers stripped, as a status page that predates
+// them would read it, and printed for comparison only.
 func TestReliable4StatusSeedOverlapNaturalRace(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -265,7 +271,7 @@ func TestReliable4StatusSeedOverlapNaturalRace(t *testing.T) {
 
 	ctx := context.Background()
 
-	Convey("The browser's own connect sequence double-counts whatever straddles the scan", t, func() {
+	Convey("The browser's own connect sequence counts every transition once", t, func() {
 		serverConfig, addr, standardReqs, clientConnectTime := subscriptionTestConfig(t)
 		serverConfig.Timings.ItemTTR = time.Hour
 
@@ -356,12 +362,9 @@ func TestReliable4StatusSeedOverlapNaturalRace(t *testing.T) {
 			RepGroupMatchExact, 0, "", false, false, false))
 		So(truth[JobStateRunning], ShouldEqual, leftover)
 
-		// quantify the residual the boundary CANNOT close: the seed's queue walk is
-		// not a point in time, so a transition that happens while it is in progress
-		// can be both counted by the walk and reported by a delta written after the
-		// closing boundary. The window is that walk's own duration - timed here on
-		// this very queue, next to the materialising walk the seed used to do - and
-		// the error it can produce is the window times the transition rate.
+		// time the seed's queue walk, next to the materialising walk the seed used
+		// to do, and the error that walk's window would allow at this start rate if
+		// it were not a point in time.
 		seedStart := time.Now()
 		_, perRG, _ := server.statusSeedCounts()
 		seedMS := float64(time.Since(seedStart).Nanoseconds()) / 1e6
@@ -374,8 +377,8 @@ func TestReliable4StatusSeedOverlapNaturalRace(t *testing.T) {
 
 		// the SAME recording, replayed twice: once as the shipped client reads it,
 		// once with the boundary markers stripped, which is exactly what a status
-		// page that predates them sees. The difference is what the boundary bought,
-		// measured within this one run rather than against a remembered number.
+		// page that predates them sees. Only the first is asserted; the second is
+		// printed for comparison.
 		dir := t.TempDir()
 		aware := replayThroughRealClient(t, dir, recorder.rawSnapshot(), "", false)
 		blind := replayThroughRealClient(t, dir, recorder.rawSnapshot(), "", true)
@@ -393,27 +396,11 @@ func TestReliable4StatusSeedOverlapNaturalRace(t *testing.T) {
 		printReproLine(fmt.Sprintf("  %s natural overcount_boundary_aware=%d overcount_boundary_blind=%d",
 			seedOverlapMarker, awareErr, blindErr))
 
-		// the blind replay must actually be wrong, or there is nothing to compare.
-		So(blindErr, ShouldBeGreaterThan, 0)
-
-		// nothing may be LOST (DEVELOPERS.md rule 3: a delta feed must never drop).
-		// The boundary discards what it received before the seed, so it is only safe
-		// because the seed already accounts for every one of those transitions - if
-		// the bracket were placed after the queue walk instead of before it, a
-		// transition the walk had already passed would be discarded AND absent from
-		// the seed, and this would go negative.
-		So(awareErr, ShouldBeGreaterThanOrEqualTo, 0)
-
-		// and the boundary must never make the residual worse. It cannot make it
-		// zero: in-process the pre-snapshot part of the window (the request hop and
-		// any delta the caster had not written yet) is microseconds, so essentially
-		// the whole of this shape's error is the seed walk itself - the residual the
-		// boundary cannot close without locking the queue across the walk
-		// (DEVELOPERS.md rule 1). Closing THAT is what the forced shape above shows,
-		// and what prod's real window - a browser over the network to a CPU-bound
-		// manager - is mostly made of.
-		So(awareErr, ShouldBeLessThanOrEqualTo, blindErr)
-
+		// nothing may be LOST (DEVELOPERS.md rule 3: a delta feed must never drop)
+		// and nothing may be counted twice: the seed is a point in time, the
+		// boundary discards what was received before it, and the pump drops what
+		// was written after it for a move it already counted.
+		So(awareErr, ShouldEqual, 0)
 	})
 }
 
