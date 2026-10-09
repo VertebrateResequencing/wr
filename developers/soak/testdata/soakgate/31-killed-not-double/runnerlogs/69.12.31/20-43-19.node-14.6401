@@ -1,0 +1,5 @@
+t=1969-12-31T20:43:20-0500 lvl=info msg="reserved a job" key=2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e cmd="/soak/prodsim-1/psimjob.sh portal_lint M.1 1.0 100 2" attempts=0
+t=1969-12-31T20:43:20-0500 lvl=info msg="will start executing" key=2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e cmd="/soak/prodsim-1/psimjob.sh portal_lint M.1 1.0 100 2"
+t=1969-12-31T20:43:20-0500 lvl=info msg="started executing" jobkey=2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e cmd="/soak/prodsim-1/psimjob.sh portal_lint M.1 1.0 100 2" pid=1401
+t=1969-12-31T20:43:25-0500 lvl=warn msg="kill requested externally" jobkey=2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e caller=clog.go:338 caller=clog.go:338
+t=1969-12-31T20:43:25-0500 lvl=warn msg="jobqueue Execute(2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e): runner received a signal to stop; jobqueue Execute(2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e): killed by user request" caller=clog.go:338 caller=clog.go:338

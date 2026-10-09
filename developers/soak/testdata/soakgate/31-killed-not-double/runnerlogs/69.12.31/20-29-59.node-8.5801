@@ -1,0 +1,5 @@
+t=1969-12-31T20:30:00-0500 lvl=info msg="reserved a job" key=c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9 cmd="/soak/prodsim-1/psimjob.sh portal_stats H.1 1.0 100 2" attempts=0
+t=1969-12-31T20:30:00-0500 lvl=info msg="will start executing" key=c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9 cmd="/soak/prodsim-1/psimjob.sh portal_stats H.1 1.0 100 2"
+t=1969-12-31T20:30:00-0500 lvl=info msg="started executing" jobkey=c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9 cmd="/soak/prodsim-1/psimjob.sh portal_stats H.1 1.0 100 2" pid=801
+t=1969-12-31T20:30:05-0500 lvl=warn msg="kill requested externally" jobkey=c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9 caller=clog.go:338 caller=clog.go:338
+t=1969-12-31T20:30:05-0500 lvl=warn msg="jobqueue Execute(c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9): killed by user request; recovered on a new server; you should stop reserving" caller=clog.go:338 caller=clog.go:338

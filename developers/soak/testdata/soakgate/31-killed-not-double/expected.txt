@@ -1,0 +1,21 @@
+nondurable source=d1 inside=0 outside=0 runs=10000 outsidePct=0.0000
+totals ok
+doubles inside=0 outside=11 acknowledged=5
+missing ran=14 absent=0 excused=0
+peakRUN=6100
+double portal_dedupe B.1 outside reserved=4200 acknowledged=no
+double portal_split C.1 outside reserved=4400 acknowledged=no
+double portal_merge D.1 outside reserved=4600 acknowledged=no
+double portal_index F.1 outside reserved=5010 acknowledged=no
+double portal_stats H.1 outside reserved=5400 acknowledged=no
+double portal_bam I.1 outside reserved=5600 acknowledged=yes
+double portal_call K.1 outside reserved=5800 acknowledged=yes
+double portal_call K.1 outside reserved=5800 acknowledged=yes
+double portal_fix L.1 outside reserved=6005 acknowledged=yes
+double portal_lint M.1 outside reserved=6200 acknowledged=no
+double portal_mark N.1 outside reserved=6400 acknowledged=yes
+killed portal_compress A.1 outside reserved=4000
+killed portal_qc E.1 outside reserved=4800
+killed portal_sort G.1 outside reserved=5200
+killed portal_trim J.1 inside reserved=1050
+killed portal_mark N.1 outside reserved=6403
