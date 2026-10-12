@@ -29,8 +29,8 @@ the caller's reserve group and priority before the push, keeping
 `applyItemPropertyChanges`' delay-first precedence. Covering all 7
 acceptance tests from A1, in new `queue/ready_hook_test.go`.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.2: A2 - Callbacks on release, requeue and bury
 
@@ -43,8 +43,8 @@ and before it leaves it, and never on a failed call; make `Release`,
 6 acceptance tests from A2, in new `queue/release_with_test.go`. Depends on
 item 1.1's hook.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1.3: A3 - HasReady and the callback-running flag
 
@@ -60,5 +60,5 @@ with `readyAddedCbMutex` not held before starting the recall's
 tests from A3, in `queue/ready_hook_test.go` (test 6 under
 `go test -race ./queue`).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
