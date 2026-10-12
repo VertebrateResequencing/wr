@@ -153,6 +153,7 @@ func TestUploadFailureCacheDeletion(t *testing.T) {
 		err := client.Execute(context.Background(), job, "/bin/sh")
 		So(err, ShouldNotBeNil)
 		So(err.Error(), ShouldContainSubstring, "failed to upload")
+		So(strings.Count(err.Error(), "failed to upload"), ShouldEqual, 1)
 		So(job.ActualCwd, ShouldNotBeBlank)
 
 		// the workspace is still there to be looked in, and so a read of it

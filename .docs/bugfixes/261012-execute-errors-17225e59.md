@@ -43,3 +43,9 @@ lookup) reach neither the caller nor the runner log.
     with `clog.Warn`. The lsf emulation dir removal, which ran in a defer
     after the return value was fixed, now logs its error too. The stale
     commented-out debugging block is gone. Nothing sent to the server changes.
+- [ ] High-memory note may over-fire: in TestExecuteReportsSecondaryErrors' red
+  run a plain `exit 1` job with Requirements.RAM 10 (MB) got "note: command
+  used too much RAM" appended to its error. Not investigated; independent of
+  this fix.
+  - Source: row-11 implementor, incidental. Deferred: not on this branch; owner
+    to triage after the delivery queue.
