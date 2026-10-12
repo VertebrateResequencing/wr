@@ -5,208 +5,133 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
-## [Unreleased]
+## [0.39.0] - 2026-10-12
+### Added
+- Go client API: `Context` variants of the `client.Scheduler` and
+  `jobqueue.Client` request methods (such as `SubmitJobsContext`);
+  `jobqueue.Client.RetryWhileManagerUnreachable`; `AddDuplicates.Resent`;
+  `jobqueue.ErrResentAddSkippedComplete`;
+  `jobqueue.ClientDefaultConnectTimeout`.
+
 ### Changed
 - The manager now refuses to start on a database created by wr 0.37.2 or
   earlier that has never been compacted. Stop the manager, run
-  `wr manager compact` once, then start it again. The manager and
-  `wr manager compact` also refuse a database with a newer schema version
-  than this wr supports, naming both schema versions, and leave it
-  unchanged.
-- Once this version's manager has opened a database, going back to an
-  earlier wr is not supported: an earlier version may run again commands
-  that were reserved or running when this version stopped.
-- The Go client's `Scheduler` now rides out the manager being down, such as
-  across a restart, as runners and `WaitForJobs` do. `SubmitJobs`,
-  `GetJobByKey`, `WaitForRunning`, the `Find*` methods, `KillJobs`,
-  `RemoveJobs` and the rest keep trying, logging warnings, and return normally
-  once the manager is back, instead of failing after `Timeout`. So a call can
-  now take up to the manager's retry time (24h by default); to give up sooner,
-  cancel the context given to a new `Context` variant, such as
-  `SubmitJobsContext`. `GetSchedulerAlerts` keeps trying only while its
-  request cannot have reached the manager, since reading alerts dismisses
-  them, and now also works after a restart that gave the manager a new token.
-  Other Go programs can get the same with the new
-  `jobqueue.Client.RetryWhileManagerUnreachable`; wr's own commands still fail
+  `wr manager compact` once, then start it again.
+- Once this version's manager has opened a database, going back to an earlier
+  wr is not supported: it may re-run commands that were reserved or running
+  when this version stopped.
+- The Go client's `Scheduler` now rides out the manager being down, as
+  runners do: calls retry, logging warnings, for up to the manager's retry
+  time (24h by default) instead of failing after `Timeout`. Cancel the context
+  of a `Context` variant to give up sooner. wr's own commands still fail
   fast.
+- Backwards incompatible change to the Go API: `queue.ChangedCallback` takes a
+  new `seq` argument.
+
 ### Fixed
+Grouped by when each bug could affect you, most likely first.
+
+#### Everyone
+- A command's peak RAM no longer counts the runner's memory twice, which made
+  small commands appear to use hundreds of MB. Their learned memory and
+  scheduler reservations will drop.
+- Cleanup no longer reports "Behaviour problems" when another run of the same
+  command re-creates its directories, as happened routinely on shared
+  filesystems.
+- The manager drops subscriptions of exited waiting clients (`wr add --sync`,
+  Go `WaitForJobs` and similar) once unpolled for 30 minutes, instead of
+  keeping them until it restarts.
+- The web UI's status counts could count a command twice until reloaded.
+- Logged internal panics now include their stack (`panic_stack`).
+
+#### With large queues or many runners
+Performance only.
+- Asking for incomplete commands by report group prefix or substring, by
+  state (such as `wr status -b`), or with a limit no longer copies every
+  queued command. With 570k queued, these took up to 2 minutes and several
+  GB.
+- `wr status -i <group> -o summary` is several times faster, using 1% of the
+  memory, for a group with a long history.
+- With a slow database, "not yet recorded on disk" and "slow request"
+  warnings are logged at most once a minute as one "(repeated)" line, instead
+  of per request.
+- The manager uses less CPU scheduling many queued or limited commands, and
+  allocates less memory saving commands and running cleanup (as in v0.37.2).
+
+#### If you use the LSF scheduler
+- When LSF refuses every `bsub` for some commands, the manager stops retrying
+  once those commands are removed, instead of logging errors until restarted.
+- A long-running manager no longer keeps memory for every runner it has used.
+- Each `bsub` returns about 100ms sooner.
+
+#### If `wr status` has shown "lost contact with runner"
+- Rare: the lost runner's late report could act on another runner's new run
+  of the command, leaving it running twice or marked complete while it ran.
+- The command shows the exit code and memory the runner later reported.
+- `wr status` shows the delayed command's real ready time (also `Ready` in
+  `-o json`), not -2562047h47m16.854775808s, and its walltime stops growing.
+- The manager no longer under-counts the runners it needs when the command's
+  late success arrives.
+
+#### If you stop or restart the manager
 - A command that finished just before `wr manager stop` could run again after
-  the manager restarted: on a busy node its runner could wait up to a minute
-  for a slow resource check before reporting the end, and the stop gave up on
-  it first. The runner now reports within a few seconds, logging at info that
-  it did not wait for the check in progress.
-- The web UI's status counts could count a command twice, such as showing
-  two suspended where there was one, after opening the page while commands
-  were changing state; the counts stayed wrong until the page was reloaded.
-- With thousands of runners, the manager now records each reservation and
-  start with a small write instead of rewriting the whole command, so fewer
-  commands are handed out before their reservation is on disk, and so fewer
-  can run twice if the manager crashes. Each command still handed out before
-  its reservation is on disk is logged at info with its key and a running
-  total.
-- Setting a limit on a limit group whose commands were already running, with
-  `wr limit` or by adding a command with `--limit_grps name:n`, now counts those
-  commands against it, instead of letting up to the limit more start at once.
-  Removing a group's limit and setting it again no longer forgets its running
-  commands either.
-- Removing a limit with `wr limit -g name:-1` at the moment a command in that
-  group was being scheduled could leave the old limit enforced until the limit
-  was next changed.
-- When every attempt to submit runners for some commands fails, such as when
-  the LSF queue chosen for them refuses every `bsub`, the manager now stops
-  trying once those commands are removed, instead of retrying the `bsub` and
-  logging errors until it restarts, and makes one retry at a time for them
-  instead of one more per failed attempt.
-- A runner's late report that its command failed, or should be buried, no
-  longer buries or delays a new run of that command by another runner, which
-  could leave the command running twice, and a late report that it succeeded no
-  longer marks complete a command another runner has just been given. This
-  could happen after the manager gave up on the first runner as lost and the
-  command started again elsewhere.
-- A command a runner picked up the moment `wr kick` made it ready could be
-  treated by the manager as ready while it ran, and if the manager then
-  crashed, it could run a second time after the restart.
-- Two adds, `wr mod` or `wr limit` changing the same limit group at the same
-  moment could leave the manager enforcing a different limit from the one it
-  saved, until the limit was next changed.
-- A job whose runner moved on to other work after its report of the job was
-  lost to a manager crash is now re-run as soon as that runner next contacts
-  the manager, instead of staying running for ever or, after an hour, having
-  its runner killed along with the job that runner was then running. This
-  applies to runners from this version on, under every scheduler.
-- Asking the manager for incomplete commands by report group prefix or
-  substring, by state (such as `wr status -b`), or with a limit (such as a
-  limited `wr status -i`) no longer copies every queued command first. With
-  about 570k commands queued, such requests took up to 2 minutes and could hold
-  several GB each.
-- A manager whose database is slow to commit no longer slows itself further by
-  logging a warning for every reservation or request. The "not yet recorded
-  on disk" and "slow request" warnings are now logged in full once, then at
-  most once a minute as one "(repeated)" line with a count, the longest
-  duration and the latest details.
-- A command could be declared lost, and its runner checked for death, before
-  the runner had even been given it, when the manager's database took longer
-  than the command's TTR to record the reservation. Its TTR now starts when
-  the runner is given it.
-- A command whose runner the manager had given up on as lost now shows the exit
-  code and memory use that runner later reported, rather than "lost contact
-  with runner".
-- A runner's bury of a command the manager had sent back to wait on a new
-  dependency now buries it, keeping that dependency for when it is kicked,
-  instead of being refused.
-- A manager crash while you added a command to a dep group (`--dep_grps`)
-  could stop a command depending on that group (`--deps`), whose run had just
-  finished, from running again after the new command. It now runs again after
-  the new command completes, whether or not the client retries the add.
-- Adding a command to a dep group (`--dep_grps`) while the completion of a
-  command depending on that group was being recorded could leave that command,
-  queued to run again, missing from `wr status -i` by its rep group and not
-  counted as a member of its own dep groups, until the manager restarted.
-  Commands depending on it could then start before it ran again.
-- Adding a command to a dep group (`--dep_grps`) just as the completion of a
-  command depending on that group was being saved could leave that command not
-  queued to run again until the manager restarted, and two such adds to its dep
-  groups could stop it running again at all. It now runs again after the new
-  command.
-- If an add to a dep group (`--dep_grps`) failed with an error after saving
-  its commands, a command depending on that group whose run had just finished
-  is now run again after the new command, whether the add is retried or the
-  manager restarts.
-- The manager no longer under-counts the runners it needs when a command's
-  success is reported after the manager had already given up on it and
-  scheduled it to run again.
-- `wr resume` of a command at the moment a runner started it could make
-  `wr status` show the running command as reserved, and count it as having
-  started twice if the runner had to resend its start.
-- `wr resume` of a command at the moment `wr suspend` was suspending it could
-  be lost: the command was ready, but if the manager then crashed it came back
-  suspended.
-- `wr kick` or `wr suspend` at the same moment as a `wr add` that re-adds the
-  same command (such as a buried dependent brought back by a dependency group
-  re-run) could update the manager's old copy of the command instead of the
-  re-added one. `wr status` then showed the command with no state, and after
-  a crash it came back without the add's changes, such as its new rep group.
-- `wr status` could say a delayed command would become ready in
-  -2562047h47m16.854775808s, typically after lost contact with its runner. It
-  now shows the real time until it becomes ready (also as `Ready` in
-  `wr status -o json`), and a command released after lost contact keeps the
-  time contact was lost as its end time instead of having none, so its
-  walltime no longer keeps growing.
-- A command's recorded peak RAM no longer includes the runner's own memory
-  twice. On Linux the kernel credited each command with the runner's peak
-  memory, and the runner's memory was then added again, so small commands
-  could appear to use hundreds of MB. Learned memory and scheduler memory
-  reservations for small commands will drop.
-- `wr status -i <group> -o summary` (and the Go client's
-  `GetStatusByRepGroupMatch` with details) no longer reads every completed
-  command in full, so it is several times faster, and uses about 1% of the
-  memory, for a group with a long history of long commands. The output is
-  unchanged.
-- A Go client's `SubmitJobs`, `wr add --rerun` and other adds that re-add
-  completed commands no longer risk running a command twice when the
-  connection to the manager drops before the add's reply arrives: the add is
-  sent again skipping completed commands, so a command it queued that has
-  completed meanwhile is not queued again. If any of its commands were then
-  complete, it returns `jobqueue.ErrResentAddSkippedComplete`, since they may
-  not have been rerun.
-- A Go client with a `Timeout` over 60s no longer sends a request a second
-  time to a manager that is slow to answer it, which could apply the request
-  twice.
-- A Go client's `Scheduler` or `Connect` with a zero `Timeout` now uses a 2
-  minute default, as the `wr` commands do, instead of blocking for ever when
-  the manager cannot be reached.
-- `wr lsf bsub` no longer says "Duplicate command specified" and fails for a
-  job it did submit, when its connection to the manager dropped and the add
-  was sent again.
-- The Go client's `SubmitJobs` no longer returns `ErrDuplicateJobs` for jobs
-  that only it added, when the manager stopped, or the connection dropped,
-  after acting on its add but before replying, and the client sent the add
-  again on reconnecting. Go programs using `jobqueue.Client` can see when an
-  add may have reached the manager more than once with the new
-  `AddDuplicates.Resent`, from `AddWithDuplicates` or the new
-  `AddWithDuplicatesContext`.
-- A Go client whose `WaitForJobs`, `SubmitJobsAndWait` or `AddAndWait` waited
-  through a manager restart no longer has its later requests fail after 1s,
-  instead of after its own timeout, while the manager cannot be reached.
-- A Go client's `Ping` with a timeout, and `Unsubscribe`, now give up on their
-  own shorter bound when the manager has gone, instead of waiting out the
-  client's whole timeout.
-- A manager whose port is already taken by an IPv6-only listener (such as
-  rpc.statd's) now fails to start at once, saying the port is in use by another
-  process, instead of seeming to start and then exiting a few seconds later.
-- On a host where some other service listens on a port for IPv6 only, wr no
-  longer suggests a manager port range containing that port, which the manager
-  then failed to start on.
-- A command's cleanup behaviour no longer reports a failure (as "Behaviour
-  problems" in its stderr) when another run of the same command re-created
-  the directories under `<cwd>/<AppName>_cwd` while it was cleaning up, which
-  on shared filesystems happened routinely. That other run tidies them away
-  when it finishes.
-- The manager no longer keeps, until it restarts, the subscription of a client
-  (`wr add --sync`, or a Go `WaitForJobs`, `SubmitJobsAndWait` or
-  `AddAndWait`) that exited while waiting, or whose unsubscribe or resubscribe
-  reply was lost. It now drops any subscription not polled for 30 minutes; a
-  client still waiting resubscribes and catches up.
-- The manager uses less CPU deciding what to schedule when many commands are
-  waiting in limit groups.
-- The manager uses less CPU working out how many runners to request when many
-  commands are queued: about 14-24% less per check with 200k commands waiting.
-- A long-running manager using the lsf scheduler no longer keeps a little
-  memory for every runner that has run a job (about 75 bytes each) and every
-  excess runner it has killed, and no longer slows each scheduling check by
-  copying that ever-growing record.
-- The manager allocates about 2 KiB less memory each time it saves a command,
-  which it does when the command is added, changes state and is archived. A
-  command's "cleanup" behaviour allocates about 80% less, and checking a limit
-  group the manager has not yet loaded allocates half as much.
-- With the lsf scheduler, each bsub returns about 100ms sooner.
-- When the manager or a runner logs an internal panic, the log now includes the
-  stack of where the panic happened (as `panic_stack`).
-- After a restart, the manager no longer logs an "unknown subscription" error
-  for each client still waiting on a subscription from before the restart.
-- After a restart, the manager no longer logs a "jtouch ... bad job" error for
-  each runner whose last touch of a command arrived just after the runner
-  reported the command finished.
+  the restart if its runner, on a busy node, was slow to report the end.
+- The manager no longer logs "unknown subscription" or "jtouch ... bad job"
+  errors for clients and runners catching up after a restart.
+
+#### If you use limit groups
+- Setting a limit on a group with commands already running (`wr limit` or
+  `--limit_grps name:n`) now counts them, instead of letting up to the limit
+  more start.
+- Rare: removing a limit as a command in the group was scheduled, or two
+  simultaneous limit changes, could leave a limit enforced other than the one
+  saved.
+
+#### If you use the Go client, or a connection drops during an add
+- An add that re-adds completed commands (such as `wr add --rerun`) no longer
+  risks running one twice if resent after a dropped connection; it returns
+  `jobqueue.ErrResentAddSkippedComplete` if any had completed.
+- A resent add no longer fails as duplicate (`wr lsf bsub`'s "Duplicate
+  command specified", or `ErrDuplicateJobs`).
+- A `Timeout` over 60s no longer sends a request twice to a slow manager.
+- A zero `Timeout` now means 2 minutes, not blocking for ever on an
+  unreachable manager. After waiting through a restart, requests no longer
+  fail after 1s, and `Ping` with a timeout and `Unsubscribe` no longer wait
+  out their whole timeout once the manager has gone.
+
+#### If the manager crashed
+Each needed a crash (such as `kill -9`) at a bad moment.
+- With thousands of runners, fewer commands are handed out before their
+  reservation is on disk, so fewer run twice. Any still handed out early are
+  logged at info.
+- A command whose report was lost while its runner moved on is now re-run when
+  that runner next contacts the manager, instead of staying running for ever,
+  or having the runner and its current command killed after an hour.
+
+#### If you use dep groups
+Rare: needed an add as a dependent completed, or a crash or error mid-add.
+- Adding a command to a dep group (`--dep_grps`) could fail to re-run its
+  dependents (`--deps`), or hide one from `wr status -i` while its own
+  dependents started.
+- A runner's bury of a command sent back to wait on a new dependency is no
+  longer refused.
+
+#### If you kick, suspend or resume commands
+Rare: needed another change to the same command at the same moment.
+- A command a runner picked up as `wr kick` made it ready could run twice
+  after a crash.
+- `wr resume` during `wr suspend` could be lost after a crash.
+- `wr kick` or `wr suspend` during a `wr add` re-adding the command could
+  leave it with no state in `wr status`.
+- `wr resume` as a runner started a command could show it as reserved.
+
+#### Uncommon setups
+- On a host with an IPv6-only listener (such as rpc.statd's), wr no longer
+  suggests a manager port range including its port, and a manager given that
+  port fails to start at once instead of exiting seconds later.
+- With a TTR under 10s and a slow database, a command could be declared lost
+  before its runner was given it. Its TTR now starts at hand-out.
+
 
 ## [0.38.0] - 2026-09-30
 ### Added
