@@ -15,5 +15,5 @@ time. Update at every state change.
 | 8 | statusdelta-b6642140 | #687 | develop | #3 | merged 2026-10-08 (bad1bc32) | - | done; worktree and branches removed |
 | 9 | soakgate-5c0eec66 | #689 | develop | - | merged 2026-10-09 (6fcbf4ed) | - | done; worktree and branches removed |
 | 10 | (new, post-release) remove the global reserve hold (option D) | - | develop | #4 | queued after the bolt release (owner 2026-10-08) | bolt release | spec-writer; red test from the racPending probe (P1 and P2) and the unreproduced released-for-RAM gap in racpending-options.md |
-| 11 | execerrs-472e3746 (worktree ../wr-execerrs) | - | develop | - | in progress 2026-10-12 (base 7b445f43); triaged not intentional, see .docs/bugfixes/261012-execute-errors-17225e59.md | bugfix | red test, fix, review, then PR and pr-resolver |
+| 11 | execerrs-472e3746 (worktree ../wr-execerrs) | #691 | develop | - | PR open 2026-10-12 (head 7261f3c9, base 7b445f43); review PASS; see .docs/bugfixes/261012-execute-errors-17225e59.md | CI, Copilot | pr-resolver, then ask owner to merge |
 | 12 | seedoverlap-6f57a39c | #690 | develop | - | merged 2026-10-09 (3ee9d770); test and tooling only | - | done; worktree and branches removed |
