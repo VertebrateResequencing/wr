@@ -245,6 +245,11 @@ const (
 	// killing the command: the kill is stuck.
 	checkingKillAbandonedMsg = "gave up waiting for the resource checking goroutine to stop"
 
+	// execSucceededWithProblemsMsg is logged, at warn level, when Execute()
+	// archives a command that worked but met other problems along the way, which
+	// it cannot return, since it returns nil for a command that worked.
+	execSucceededWithProblemsMsg = "command ran OK, but executing it had problem(s)"
+
 	// fusermountRetryDelaySeconds is how long we wait before retrying a mount
 	// that failed with "fusermount exited with code 256".
 	fusermountRetryDelaySeconds = 5
@@ -831,6 +836,13 @@ func describeContainers(containers []*container.Container) []string {
 	return described
 }
 
+// execProblem is a problem Execute met besides its command's own outcome, with
+// the phrase that introduces it when it follows another error.
+type execProblem struct {
+	err    error
+	phrase string
+}
+
 // combineExecOutcomes folds the verdict that unmounting the job's mounts
 // reached into the outcome of the command itself.
 //
@@ -844,6 +856,35 @@ func combineExecOutcomes(unmount, cmd execOutcome) execOutcome {
 	}
 
 	return unmount
+}
+
+// execProblems are the problems Execute met besides its command's own outcome,
+// in the order it met them.
+type execProblems []execProblem
+
+// add records err, if not nil, to be introduced by phrase.
+func (p *execProblems) add(err error, phrase string) {
+	if err != nil {
+		*p = append(*p, execProblem{err: err, phrase: phrase})
+	}
+}
+
+// resultErr returns the error Execute returns for its job's final outcome: the
+// outcome's own error (if any) followed by each of p. A command that worked is
+// archived and returns nil, so then p is logged as a warning instead.
+func (p execProblems) resultErr(ctx context.Context, job *Job, outcome execOutcome) error {
+	err := outcome.myerr
+	for _, problem := range p {
+		err = appendExecErr(err, problem.err, problem.phrase)
+	}
+
+	if !outcome.doarchive || err == nil {
+		return err
+	}
+
+	clog.Warn(ctx, execSucceededWithProblemsMsg, "cmd", job.loggableCmd(), "err", err)
+
+	return nil
 }
 
 // ConnectWithTokenFile is like Connect(), but reads the token from tokenFile,
@@ -3672,7 +3713,8 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 		stopTouching <- true
 	}()
 
-	var myerr error
+	// the problems met besides the command's own outcome; see resultErr.
+	var problems execProblems
 
 	var (
 		onCwd       bool
@@ -3686,8 +3728,12 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 			return c.buryWithCause(job, FailReasonCwd, err, "could not create lsf emulation directory")
 		}
+		// this runs after Execute has decided what to return, so can only be
+		// logged.
 		defer func() {
-			myerr = joinExecErr(myerr, os.RemoveAll(prependPath), "removing the lsf emulation dir failed")
+			if errr := os.RemoveAll(prependPath); errr != nil {
+				clog.Warn(ctx, "could not remove the lsf emulation dir", "dir", prependPath, "err", errr)
+			}
 		}()
 
 		err = c.createLSFSymlinks(prependPath, job)
@@ -3745,7 +3791,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	// later, check unmounted parts of unique cwd for disk usage, or mounted
 	// parts that start off empty
 	dontCheckDirs, addCwd, dirCloseErr := mountedDirsToSkip(uniqueMountedDirs, actualCwd, cmd.Dir)
-	myerr = joinExecErr(myerr, dirCloseErr, "closing dir failed")
+	problems.add(dirCloseErr, "closing dir failed")
 
 	if addCwd {
 		dirsToCheckDiskSpace = append(dirsToCheckDiskSpace, actualCwd)
@@ -4157,16 +4203,16 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 
 	finalStdErr := bytes.TrimSpace(stderr.Bytes())
 
-	myerr = appendExecErr(myerr, killErr, "killing the cmd also failed")
+	problems.add(killErr, "killing the cmd also failed")
 
 	if closeErr != nil && !strings.Contains(closeErr.Error(), "file already closed") {
-		myerr = appendExecErr(myerr, closeErr, "closing stderr/out of the cmd also failed")
+		problems.add(closeErr, "closing stderr/out of the cmd also failed")
 	}
 
 	// run behaviours
 	//nolint:contextcheck // behaviours run detached from the cancellable job context
-	berr := job.TriggerBehaviours(err == nil && myerr == nil)
-	myerr = appendExecErr(myerr, berr, "behaviour(s) also had problem(s)")
+	berr := job.TriggerBehaviours(err == nil && len(problems) == 0)
+	problems.add(berr, "behaviour(s) also had problem(s)")
 
 	// try and unmount now, because if we fail to upload files, we'll have to
 	// start over
@@ -4188,16 +4234,11 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 				exitcode:   exitCodeUploadFailure,
 			}
 
-			myerr = appendExecErr(myerr, job.rmMuxfysCaches(),
-				"deleting the un-uploaded mount cache also failed")
+			problems.add(job.rmMuxfysCaches(), "deleting the un-uploaded mount cache also failed")
 		}
 
-		myerr = appendExecErr(myerr, unmountErr, "unmounting also caused problem(s)")
+		problems.add(unmountErr, "unmounting also caused problem(s)")
 	}
-
-	// the accumulated problems are what we report if the unmount's verdict is
-	// the one that survives the combination below.
-	unmountOutcome.myerr = myerr
 
 	// the mount logs are only worth adding to the job's stderr if the job did
 	// not simply succeed: either the command failed (classifyExecOutcome then
@@ -4205,13 +4246,6 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	jobFailed := err != nil || unmountOutcome.dorelease
 
 	finalStdErr = appendExecProblems(finalStdErr, jobFailed, logs, berr, errsew)
-
-	// *** following is useful when debugging; need a better way to see these
-	// errors from runner clients...
-	// if myerr != nil {
-	// 	finalStdErr = append(finalStdErr, "\n\nExecution errors:\n"...)
-	// 	finalStdErr = append(finalStdErr, myerr.Error()...)
-	// }
 
 	finalStdOut := bytes.TrimSpace(stdout.Bytes())
 	if errsow != nil {
@@ -4237,7 +4271,7 @@ func (c *Client) Execute(ctx context.Context, job *Job, shell string) error {
 	})
 
 	outcome = combineExecOutcomes(unmountOutcome, outcome)
-	myerr = outcome.myerr
+	myerr := problems.resultErr(ctx, job, outcome)
 	exitcode := outcome.exitcode
 
 	// now we've done everything time-consuming so can stop touching the job

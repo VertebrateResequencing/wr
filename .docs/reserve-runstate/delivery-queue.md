@@ -1,6 +1,6 @@
 # Delivery queue
 
-Owner-approved order (2026-10-06); on 2026-10-08 the owner asked to finish this queue for a final bolt release, excluding non-critical bolt-specific items, before the customdb work. Delivery order now: 3, 5, 8, then 4 (owner chose a comment-only change), then 9; 10 after the release. One branch at a time; one subagent at a
+Owner-approved order (2026-10-06); on 2026-10-08 the owner asked to finish this queue for a final bolt release, excluding non-critical bolt-specific items, before the customdb work. Delivery order now: 3, 5, 8, then 4 (owner chose a comment-only change), then 9; 10 after the release. v0.39.0 (the bolt release) was tagged 2026-10-12; the owner then asked to deliver 11, then 10. One branch at a time; one subagent at a
 time. Update at every state change.
 
 | # | Branch | PR | Target | Depends on | Status | Waits on | Next action |
@@ -15,5 +15,5 @@ time. Update at every state change.
 | 8 | statusdelta-b6642140 | #687 | develop | #3 | merged 2026-10-08 (bad1bc32) | - | done; worktree and branches removed |
 | 9 | soakgate-5c0eec66 | #689 | develop | - | merged 2026-10-09 (6fcbf4ed) | - | done; worktree and branches removed |
 | 10 | (new, post-release) remove the global reserve hold (option D) | - | develop | #4 | queued after the bolt release (owner 2026-10-08) | bolt release | spec-writer; red test from the racPending probe (P1 and P2) and the unreproduced released-for-RAM gap in racpending-options.md |
-| 11 | (new) Execute drops its own kill/close/behaviour/unmount errors | - | develop | - | queued after the bolt release (owner 2026-10-08); found during #9's review; pre-existing (before #571) | bolt release | jobqueue/client.go Execute builds up kill, close, behaviour and unmount errors in myerr, then `myerr = outcome.myerr` overwrites them for every failed command (and for a successful one when unmount doesn't force a release), so "behaviour(s) also had problem(s)" and similar never reach the caller or runner log; no test asserts them. Confirm whether intentional; if not, bugfix with a red test |
-| 12 | seedoverlap-6f57a39c (worktree ../wr-seedoverlap) | - | develop | - | found by the 0.39.0 release sweep on 6fcbf4ed; test and tooling only, not a release blocker | PR, CI, Copilot | push, open PR, pr-resolver, then ask owner to merge |
+| 11 | execerrs-472e3746 (worktree ../wr-execerrs) | #691 | develop | - | PR open 2026-10-12 (head 7261f3c9, base 7b445f43); review PASS; see .docs/bugfixes/261012-execute-errors-17225e59.md | CI, Copilot | pr-resolver, then ask owner to merge |
+| 12 | seedoverlap-6f57a39c | #690 | develop | - | merged 2026-10-09 (3ee9d770); test and tooling only | - | done; worktree and branches removed |
