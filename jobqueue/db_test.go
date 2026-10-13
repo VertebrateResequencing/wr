@@ -322,7 +322,7 @@ func TestDBPutJobStatsCorruptDurationGuard(t *testing.T) {
 			job.EndTime = time.Time{}
 
 			err := testDB.bolt.Update(func(tx *bolt.Tx) error {
-				return putJobStats(tx, job)
+				return putJobStats(tx, testDB.reqStats, job)
 			})
 			So(err, ShouldBeNil)
 
@@ -347,7 +347,7 @@ func TestDBPutJobStatsCorruptDurationGuard(t *testing.T) {
 			job.EndTime = job.StartTime.Add(-time.Minute)
 
 			err := testDB.bolt.Update(func(tx *bolt.Tx) error {
-				return putJobStats(tx, job)
+				return putJobStats(tx, testDB.reqStats, job)
 			})
 			So(err, ShouldBeNil)
 
@@ -372,7 +372,7 @@ func TestDBPutJobStatsCorruptDurationGuard(t *testing.T) {
 			job.EndTime = job.StartTime.Add(1500 * time.Millisecond)
 
 			err := testDB.bolt.Update(func(tx *bolt.Tx) error {
-				return putJobStats(tx, job)
+				return putJobStats(tx, testDB.reqStats, job)
 			})
 			So(err, ShouldBeNil)
 

@@ -35,8 +35,8 @@ base (seeding with `putJobStat`) before the fix. Test 4 polls
 `!racPending && !racRunning` under `rpmutex`, so this phase stays
 independent of phase 1; phase 3 switches it to `racIdle()`.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.2: B2 - Refresh rate limit and single flight
 
@@ -52,8 +52,33 @@ builds its own `ServerConfig` and writes or depends on learned stats, with
 the result of checking it. Covering all 8 acceptance tests from B2, in
 `jobqueue/reqstat_cache_test.go`. Depends on item 2.1.
 
-- [ ] implemented
-- [ ] reviewed
+Tests that build their own `ServerConfig`, not through `jobqueueTestInit`,
+checked for learned stats (B2 test 8):
+
+- `TestREST` (`jobqueue/rest_test.go`): its `PeakRAM` 321 is a live touch
+  shown by the REST status, not a learned value. Not affected.
+- `TestJobqueueWithOpenStack` (`jobqueue/jobqueue_test.go`): its jobs use
+  `Override: 2` or are the first of their ReqGroup, and it asserts no
+  learned value. Not affected; it runs only with OpenStack credentials.
+- `TestJobqueueWithMounts` (`jobqueue/jobqueue_test.go`): archives jobs of
+  ReqGroup `"cat"`, but asserts no requirement. Not affected.
+- `TestJobqueueSpeed` (`jobqueue/jobqueue_test.go`): always skipped.
+- `cmd/status_test.go` (`startStatusTestServer`):
+  `TestStatusDetailsPreservesHighMemoryFailureNote` writes a high-peak RAM
+  stat on release, but asserts only the status text. Not affected.
+- `cmd/runner_clean_restart_test.go`, `cmd/manager_stop_shutdown_test.go`
+  and `developers/soak/dbstart/main_test.go`: no assertion on learned
+  values. Not affected.
+- `client/testing.PrepareWrConfig` (used by `client/client_test.go`,
+  `client/submit_resend_test.go`, `client/testing/server_test.go` and
+  `developers/prodsim/sim_test.go`): their requirement assertions are on
+  jobs built client-side, before any server learning. Not affected.
+- Tests that open a db with `initDB` and no `Serve` (such as `db_test.go`
+  and `queues_avoid_scheduling_test.go`) get a cache interval of 0, so no
+  limit. Not affected.
+
+- [x] implemented
+- [x] reviewed
 
 ### Item 2.3: B3 - The RAC reads the cache
 
@@ -65,5 +90,5 @@ tests from B3, in `jobqueue/reqstat_cache_test.go` (test 3 is the existing
 `TestReliable4*` rac-bound tests, with `racScanWork` unchanged). Depends
 on items 2.1 and 2.2.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

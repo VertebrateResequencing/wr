@@ -94,15 +94,13 @@ func TestJobCodecPreservesQueuesAvoid(t *testing.T) {
 // buckets are left empty so only the RAM recommendation is active.
 func seedReqGroupRAMRecommendation(testDB *db, reqGroup string, maxRAM int) {
 	err := testDB.bolt.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketJobRAM)
-
 		for i := range 40 {
 			val := maxRAM - (39-i)*5
 			if val < 1 {
 				val = 1
 			}
 
-			if e := putJobStat(b, reqGroup, val); e != nil {
+			if e := testDB.reqStats.putStat(tx, bucketJobRAM, reqGroup, val); e != nil {
 				return e
 			}
 		}

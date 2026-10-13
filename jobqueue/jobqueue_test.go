@@ -1195,6 +1195,9 @@ func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jq
 	serverConfig.Timings.InterruptTime = 10 * time.Millisecond
 	serverConfig.Timings.ReleaseDelayMin = 100 * time.Millisecond
 	serverConfig.Timings.ShutdownSocketWait = 1 * time.Millisecond
+	// tests that write stats expect the next add or RAC to use them, so they
+	// get no refresh limit; tests of the limit set their own (spec B2).
+	serverConfig.Timings.ReqStatRefreshInterval = -1
 	clientConnectTime := 1500 * time.Millisecond
 	// NB: RetryWait is left at its 15s default here. Only the crash/shutdown
 	// recovery tests (which wait it out before reconnecting) shorten it, via

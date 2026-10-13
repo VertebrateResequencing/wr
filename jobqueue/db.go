@@ -1001,6 +1001,7 @@ type beBatch struct {
 	exits   []jobExitData
 	wgkeys  []string
 	waiters []chan error
+	stats   *reqStatCache // the exit ops' fail stats are put through it
 }
 
 // apply writes the batch's coalesced live-bucket changes, its ordered exit ops
@@ -1062,7 +1063,7 @@ func (b beBatch) applyExits(tx *bolt.Tx) error {
 		fullSeq := b.changes[b.exits[i].key].fullSeq()
 		writeLive := fullSeq == 0 || b.exits[i].seq > fullSeq
 
-		if err := b.exits[i].update(tx, writeLive); err != nil {
+		if err := b.exits[i].update(tx, b.stats, writeLive); err != nil {
 			return err
 		}
 	}
@@ -1128,6 +1129,7 @@ type db struct {
 	backupWait           time.Duration
 	backupTickerStop     chan struct{} // closed by close() to stop the backup ticker
 	bolt                 *bolt.DB
+	reqStats             *reqStatCache
 	rerunGuards          rerunGuards
 	envcache             *lru.ARCCache[string, []byte]
 	updatingAfterJobExit atomic.Int64
@@ -1677,6 +1679,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 
 	dbstruct := &db{
 		bolt:               boltdb,
+		reqStats:           newReqStatCache(),
 		envcache:           envcache,
 		ch:                 new(codec.BincHandle),
 		backupsEnabled:     backupsEnabled,
@@ -1972,7 +1975,7 @@ func (db *db) recordCompleteTx(tx *bolt.Tx, key, encoded []byte, job *Job, keptL
 		return err
 	}
 
-	if err := putJobStats(tx, job); err != nil {
+	if err := putJobStats(tx, db.reqStats, job); err != nil {
 		return err
 	}
 
@@ -2305,7 +2308,10 @@ func (db *db) swapBestEffort() beBatch {
 	db.beMu.Lock()
 	defer db.beMu.Unlock()
 
-	batch := beBatch{changes: db.beChanges, exits: db.beExits, wgkeys: db.beWGKeys, waiters: db.beWaiters}
+	batch := beBatch{
+		changes: db.beChanges, exits: db.beExits, wgkeys: db.beWGKeys, waiters: db.beWaiters,
+		stats: db.reqStats,
+	}
 	db.beChanges = make(map[string]beChange)
 	db.beExits = nil
 	db.beWGKeys = nil
@@ -4693,13 +4699,13 @@ func (db *db) archiveJob(key string, job *Job) error {
 }
 
 // putJobStats records a completed job's peak RAM, peak disk and runtime in
-// their per-ReqGroup stat buckets.
-func putJobStats(tx *bolt.Tx, job *Job) error {
-	if err := putJobStat(tx.Bucket(bucketJobRAM), job.ReqGroup, job.PeakRAM); err != nil {
+// their per-ReqGroup stat buckets, through stats.
+func putJobStats(tx *bolt.Tx, stats *reqStatCache, job *Job) error {
+	if err := stats.putStat(tx, bucketJobRAM, job.ReqGroup, job.PeakRAM); err != nil {
 		return err
 	}
 
-	if err := putJobStat(tx.Bucket(bucketJobDisk), job.ReqGroup, int(job.PeakDisk)); err != nil {
+	if err := stats.putStat(tx, bucketJobDisk, job.ReqGroup, int(job.PeakDisk)); err != nil {
 		return err
 	}
 
@@ -4714,13 +4720,7 @@ func putJobStats(tx *bolt.Tx, job *Job) error {
 
 	secs := int(math.Ceil(duration.Seconds()))
 
-	return putJobStat(tx.Bucket(bucketJobSecs), job.ReqGroup, secs)
-}
-
-// putJobStat stores a single per-ReqGroup stat value, keyed so it sorts within
-// the ReqGroup.
-func putJobStat(b *bolt.Bucket, reqGroup string, val int) error {
-	return b.Put(fmt.Appendf(nil, "%s%s%20d", reqGroup, dbDelimiter, val), []byte(strconv.Itoa(val)))
+	return stats.putStat(tx, bucketJobSecs, job.ReqGroup, secs)
 }
 
 // updateRGEndTime records job.EndTime as its RepGroup's end time, unless a later
@@ -5426,8 +5426,8 @@ type jobExitData struct {
 // update is the transactional part of updateJobAfterExit: it rewrites the live
 // job (unless writeLive is false, because a newer change for it is being
 // written), refreshes its stored std, and records any resource-based failure
-// stat.
-func (e jobExitData) update(tx *bolt.Tx, writeLive bool) error {
+// stat through stats.
+func (e jobExitData) update(tx *bolt.Tx, stats *reqStatCache, writeLive bool) error {
 	key := []byte(e.key)
 
 	bjl := tx.Bucket(bucketJobsLive)
@@ -5441,7 +5441,7 @@ func (e jobExitData) update(tx *bolt.Tx, writeLive bool) error {
 		return err
 	}
 
-	return e.updateFailStat(tx)
+	return e.updateFailStat(tx, stats)
 }
 
 // updateStd deletes any existing stored std for the job and, if the job failed
@@ -5476,21 +5476,21 @@ func (e jobExitData) updateStd(tx *bolt.Tx, key []byte) error {
 }
 
 // updateFailStat records the job's resource usage in the appropriate stat
-// bucket when it failed for a resource-based reason.
-func (e jobExitData) updateFailStat(tx *bolt.Tx) error {
+// bucket, through stats, when it failed for a resource-based reason.
+func (e jobExitData) updateFailStat(tx *bolt.Tx, stats *reqStatCache) error {
 	if e.shouldRecordHighPeakRAMStat() {
-		if err := putJobStat(tx.Bucket(bucketJobRAM), e.reqGroup, e.peakRAM); err != nil {
+		if err := stats.putStat(tx, bucketJobRAM, e.reqGroup, e.peakRAM); err != nil {
 			return err
 		}
 	}
 
 	switch e.failReason {
 	case FailReasonRAM:
-		return putJobStat(tx.Bucket(bucketJobRAM), e.reqGroup, e.peakRAM)
+		return stats.putStat(tx, bucketJobRAM, e.reqGroup, e.peakRAM)
 	case FailReasonDisk:
-		return putJobStat(tx.Bucket(bucketJobDisk), e.reqGroup, int(e.peakDisk))
+		return stats.putStat(tx, bucketJobDisk, e.reqGroup, int(e.peakDisk))
 	case FailReasonTime:
-		return putJobStat(tx.Bucket(bucketJobSecs), e.reqGroup, e.secs)
+		return stats.putStat(tx, bucketJobSecs, e.reqGroup, e.secs)
 	default:
 		return nil
 	}
@@ -5907,7 +5907,7 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		var errs error
 
-		maxVal, recommendation, errs = scanReqGroupStat(tx.Bucket(statBucket).Cursor(), []byte(reqGroup))
+		maxVal, recommendation, errs = scanReqGroupStat(tx.Bucket(statBucket).Cursor(), []byte(reqGroup+dbDelimiter))
 
 		return errs
 	})
@@ -5918,10 +5918,11 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 	return roundRecommendation(recommendation, maxVal, roundAmount), nil
 }
 
-// scanReqGroupStat seeks over a stat bucket for the given reqGroup prefix and
-// returns the maximum stored value and the 95th-percentile recommendation. To
-// avoid scanning twice it keeps a trailing 5%-sized window of values, updating
-// the recommendation as the window fills.
+// scanReqGroupStat seeks over a stat bucket for the given prefix (a ReqGroup
+// and dbDelimiter, so that a ReqGroup whose name starts with another's is not
+// included in the other's stats) and returns the maximum stored value and the
+// 95th-percentile recommendation. To avoid scanning twice it keeps a trailing
+// 5%-sized window of values, updating the recommendation as the window fills.
 func scanReqGroupStat(c *bolt.Cursor, prefix []byte) (maxVal, recommendation int, err error) {
 	count := 0
 	window := jobStatWindowPercent
@@ -6115,8 +6116,9 @@ func putReverseLookupEntry(tx *bolt.Tx, lookupBucket, lookupKey []byte) error {
 	return b.Put(reverseLookupEntryKey(jobKey, lookupBucket, lookupKey), nil)
 }
 
-// close shuts down the db, should be used prior to exiting. It stops the
-// periodic backup ticker, waits for any in-progress periodic backup and all
+// close shuts down the db, should be used prior to exiting. It stops
+// background learned-requirement loads starting and waits for those running,
+// stops the periodic backup ticker, waits for any in-progress periodic backup and all
 // ongoing async write transactions to finish, then writes a final backup that
 // captures the fully-drained committed state before closing bolt.
 func (db *db) close(ctx context.Context) error {
@@ -6128,6 +6130,10 @@ func (db *db) close(ctx context.Context) error {
 	}
 
 	db.closed = true
+
+	// before bolt closes under them, so no learned-requirement load reads a
+	// closed database.
+	db.reqStats.close()
 
 	db.finaliseBackup(ctx)
 

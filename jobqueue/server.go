@@ -293,6 +293,10 @@ var (
 	// ServerTimings.SubscriptionIdleTimeout.
 	serverSubscriptionIdleTimeout = 30 * time.Minute
 
+	// serverReqStatRefreshInterval is the default
+	// ServerTimings.ReqStatRefreshInterval.
+	serverReqStatRefreshInterval = 1 * time.Second
+
 	// subscriptionIdleTimeoutMin is the shortest
 	// ServerTimings.SubscriptionIdleTimeout a server uses. A shorter one would
 	// drop live clients' subscriptions during their long polls, which last up
@@ -689,6 +693,11 @@ type ServerTimings struct {
 	// serverSubscriptionHoldTime (50s) is raised to that, since it would drop
 	// the subscriptions of clients in the middle of a poll.
 	SubscriptionIdleTimeout time.Duration
+
+	// ReqStatRefreshInterval is the least time between two loads of one
+	// ReqGroup's learned requirements from the database (default
+	// serverReqStatRefreshInterval, 1s). Negative means no limit, for tests.
+	ReqStatRefreshInterval time.Duration
 }
 
 // dfltDuration returns v, or def if v is not positive.
@@ -701,7 +710,8 @@ func dfltDuration(v, def time.Duration) time.Duration {
 }
 
 // withDefaults returns a copy of t with every non-positive duration or
-// rounding value replaced by its package-default value.
+// rounding value replaced by its package-default value, except that a negative
+// ReqStatRefreshInterval becomes 0, meaning no limit.
 func (t ServerTimings) withDefaults() ServerTimings {
 	t.InterruptTime = dfltDuration(t.InterruptTime, ServerInterruptTime)
 	t.ItemTTR = dfltDuration(t.ItemTTR, ServerItemTTR)
@@ -738,6 +748,13 @@ func (t ServerTimings) withDefaults() ServerTimings {
 	t.BindRetryBudget = dfltDuration(t.BindRetryBudget, serverBindRetryBudget)
 	t.SubscriptionIdleTimeout = max(dfltDuration(t.SubscriptionIdleTimeout, serverSubscriptionIdleTimeout),
 		subscriptionIdleTimeoutMin)
+
+	switch {
+	case t.ReqStatRefreshInterval < 0:
+		t.ReqStatRefreshInterval = 0
+	case t.ReqStatRefreshInterval == 0:
+		t.ReqStatRefreshInterval = serverReqStatRefreshInterval
+	}
 
 	return t
 }
@@ -5260,6 +5277,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	db.recSecRound = timings.RecSecRound
 	db.recMBRound = timings.RecMBRound
 	db.setBatchTuning(timings.DBBatchDelay, timings.DBBatchSize)
+	db.reqStats.interval = timings.ReqStatRefreshInterval
 
 	defer func() { closeOnError(&err, "db", func() error { return db.close(ctx) }) }()
 
@@ -6571,35 +6589,19 @@ func (s *Server) buildSchedulerGroups(ctx context.Context, q *queue.Queue,
 }
 
 // recommendedReqForGroup returns the recommended requirements for reqGroup,
-// using and populating the cache. A nil entry (cached) means recommendations
-// could not be determined.
+// using and populating the per-cycle cache, which it fills from the db's
+// learned-requirement cache: a ReqGroup is loaded from the database only when
+// its values may have changed and its refresh is due. A nil entry means none
+// were ever loaded: a first load is in flight elsewhere, or every load so far
+// failed; a failed later load keeps the last loaded values.
 func (s *Server) recommendedReqForGroup(reqGroup string,
 	cache map[string]*scheduler.Requirements) *scheduler.Requirements {
 	if rec, existed := cache[reqGroup]; existed {
 		return rec
 	}
 
-	recm, errm := s.db.recommendedReqGroupMemory(reqGroup)
-	recd, errd := s.db.recommendedReqGroupDisk(reqGroup)
+	recommendedReq := s.db.refreshReqGroupRecs(reqGroup)
 
-	recs, errs := s.db.recommendedReqGroupTime(reqGroup)
-	if errm != nil || errd != nil || errs != nil {
-		cache[reqGroup] = nil
-
-		return nil
-	}
-
-	recdGBs := 0
-	if recd > 0 {
-		recdGBs = int(math.Ceil(float64(recd) / float64(mbPerGB)))
-	}
-
-	recommendedReq := &scheduler.Requirements{
-		RAM:     max(recm, 0),
-		Disk:    recdGBs,
-		DiskSet: true,
-		Time:    time.Duration(max(recs, 0)) * time.Second,
-	}
 	cache[reqGroup] = recommendedReq
 
 	return recommendedReq
