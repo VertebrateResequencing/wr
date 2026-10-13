@@ -1829,9 +1829,10 @@ func TestJobqueueSignal(t *testing.T) {
 				So(job2.Cmd, ShouldEqual, cmd2)
 				So(job2.State, ShouldEqual, JobStateBuried)
 				So(job2.FailReason, ShouldEqual, FailReasonTime)
-				So(job2.Requirements.Time.Seconds(), ShouldEqual, 1)
+				// the manager applies the time failure's increase (the run's time
+				// plus an hour) as it buries the job
+				So(job2.Requirements.Time.Seconds(), ShouldBeGreaterThanOrEqualTo, 3601)
 
-				// requirements only change on becoming ready
 				kicked, err := jq.Kick([]*JobEssence{job2.ToEssense()})
 				So(err, ShouldBeNil)
 				So(kicked, ShouldEqual, 1)
@@ -7365,7 +7366,8 @@ func TestJobqueueHighMem(t *testing.T) {
 			So(job.FailReason, ShouldEqual, FailReasonRAM)
 			So(job.Requirements.RAM, ShouldEqual, 10)
 
-			// requirements only change on becoming ready
+			// that is the runner's own copy: the manager applied the failure's
+			// increase to its copy when it buried the job
 			kicked, err := jq.Kick([]*JobEssence{job.ToEssense()})
 			So(err, ShouldBeNil)
 			So(kicked, ShouldEqual, 1)

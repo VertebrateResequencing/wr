@@ -83,6 +83,12 @@ var errNoTargets = errors.New("no Targets specified")
 // its result, only in the work it did. It is nil in production.
 var envDecodeHook func() //nolint:gochecknoglobals // the only seam onto work that has no result
 
+// modifyKeyCheckHook, when set, is called by JobModifier.modifyJob just before
+// it checks the queue for a job with the key a modification would give, so a
+// test can have a delay expire at that moment. It must make no queue call. It
+// is nil in production.
+var modifyKeyCheckHook func() //nolint:gochecknoglobals // the only seam onto that moment
+
 // JobState is how we describe the possible job states.
 type JobState string
 
@@ -788,6 +794,24 @@ func (j *JobModifier) nilEntryMessage() string {
 	return ""
 }
 
+// applyIfKeyUnchanged locks job and, if its key is still before, applies the
+// modifications and records the new->old key mapping in keys. It returns false
+// if the key had changed.
+func (j *JobModifier) applyIfKeyUnchanged(job *Job, before string, keys map[string]string) bool {
+	job.Lock()
+	defer job.Unlock()
+
+	if job.Key() != before {
+		return false
+	}
+
+	j.applyTo(job)
+
+	keys[job.Key()] = before
+
+	return true
+}
+
 // mergeBehaviours returns existing with, for each trigger that modifications
 // supplies behaviours for, all of existing's behaviours for that trigger
 // replaced by the whole supplied set in the supplied order. Triggers that
@@ -1085,6 +1109,23 @@ type Job struct {
 	Attempts uint32
 	// remaining number of Release()s allowed before being buried instead.
 	UntilBuried uint8
+	// FailBumpsCleared holds a FailBump* bit for each resource whose
+	// requirement a user modified since the job last failed: the increase that
+	// failure called for is no longer applied to it. A new failure clears it.
+	FailBumpsCleared uint8 `codec:",omitempty"`
+	// ModifiedReqs holds the RAM, Disk, DiskSet and Time a user's wr mod set,
+	// for the resources whose bit is set in FailBumpsCleared. The requirement
+	// recompute resets those resources to it and compares with it. It is never
+	// nil while any FailBump* bit is set; a new failure sets it to nil along
+	// with clearing the bits.
+	ModifiedReqs *scheduler.Requirements `codec:",omitempty"`
+	// FailedRunReqs holds the RAM, Disk, DiskSet and Time the job's last failed
+	// run reserved, copied from Requirements when the failure is recorded and
+	// before any increase for it; that is what the run reserved, since a modify
+	// skips running jobs. Every requirement recompute starts from it, and the
+	// failure's jobRAM stat is judged against its RAM. Only read while
+	// FailReason is set; nil in records from older managers.
+	FailedRunReqs *scheduler.Requirements `codec:",omitempty"`
 	// we note which client reserved this job, for validating if that client has
 	// permission to do other stuff to this Job; the server only ever sets this
 	// on Reserve(), so clients can't cheat by changing this on their end.
@@ -2316,6 +2357,8 @@ func (j *Job) buildJStatus(streams jobStatusStreams, leaf string) JStatus {
 		state = JobStateLost
 	}
 
+	runReqs := j.lastRunReqs()
+
 	js := JStatus{
 		Key:                 j.Key(),
 		RepGroup:            j.RepGroup,
@@ -2340,6 +2383,9 @@ func (j *Job) buildJStatus(streams jobStatusStreams, leaf string) JStatus {
 		ExpectedRAM:         j.Requirements.RAM,
 		ExpectedTime:        j.Requirements.Time.Seconds(),
 		RequestedDisk:       j.Requirements.Disk,
+		RunRAM:              runReqs.RAM,
+		RunTime:             runReqs.Time.Seconds(),
+		RunDisk:             runReqs.Disk,
 		EnvOverrides:        streams.envOverrides,
 		OtherRequests:       j.otherRequests(),
 		Cores:               j.Requirements.Cores,
@@ -2969,33 +3015,36 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 	return keys, nil
 }
 
-// modifyJob applies the modifications to a single job (locking it for the
-// duration), recording the new->old key mapping in keys. Jobs whose modified
+// modifyJob applies the modifications to a single job (locking it while it
+// does so), recording the new->old key mapping in keys. Jobs whose modified
 // key would duplicate another job are left unchanged and not recorded.
+//
+// The duplicate-key check is made without the job's lock, since it calls the
+// queue, and the queue may lock this job (in its ready hook) while holding its
+// own lock. If the job's key changed in the meantime, the check is made again.
 func (j *JobModifier) modifyJob(job *Job, server *Server, keys map[string]string) error {
-	job.Lock()
-	defer job.Unlock()
+	for {
+		job.RLock()
+		before, newKey := job.Key(), j.modifiedKey(job)
+		job.RUnlock()
 
-	before := job.Key()
+		skip, err := j.skipForDuplicateKey(server, keys, before, newKey)
+		if err != nil || skip {
+			return err
+		}
 
-	skip, err := j.skipForDuplicateKey(job, server, keys, before)
-	if err != nil || skip {
-		return err
+		if j.applyIfKeyUnchanged(job, before, keys) {
+			return nil
+		}
 	}
-
-	j.applyTo(job)
-
-	keys[job.Key()] = before
-
-	return nil
 }
 
-// skipForDuplicateKey works out whether modifying job would change its key into
-// one already used by another job in this batch or in the queue/db, in which
-// case the job should be skipped (skip=true) and left unchanged.
-func (j *JobModifier) skipForDuplicateKey(job *Job, server *Server, keys map[string]string,
-	before string) (skip bool, err error) {
-	newKey := j.modifiedKey(job)
+// skipForDuplicateKey works out whether modifying a job would change its key
+// from before into newKey when newKey is already used by another job in this
+// batch or in the queue/db, in which case the job should be skipped
+// (skip=true) and left unchanged. The caller must not hold the job's lock.
+func (j *JobModifier) skipForDuplicateKey(server *Server, keys map[string]string,
+	before, newKey string) (skip bool, err error) {
 	if _, done := keys[newKey]; done {
 		// duplicate of prior job in this loop, ignore
 		return true, nil
@@ -3003,6 +3052,10 @@ func (j *JobModifier) skipForDuplicateKey(job *Job, server *Server, keys map[str
 
 	if newKey == before {
 		return false, nil
+	}
+
+	if modifyKeyCheckHook != nil {
+		modifyKeyCheckHook()
 	}
 
 	// check queue and db
@@ -3173,7 +3226,9 @@ func (j *JobModifier) applyGrouping(job *Job) {
 	}
 }
 
-// applyRequirements applies any set scheduler Requirements modifications to job.
+// applyRequirements applies any set scheduler Requirements modifications to
+// job. Each RAM, Time or Disk it sets is recorded in ModifiedReqs, with its
+// FailBump* bit set, so a pending failure's increase no longer applies to it.
 func (j *JobModifier) applyRequirements(job *Job) {
 	if j.Requirements == nil {
 		return
@@ -3181,10 +3236,12 @@ func (j *JobModifier) applyRequirements(job *Job) {
 
 	if j.Requirements.RAM != 0 {
 		job.Requirements.RAM = j.Requirements.RAM
+		job.userModifiedReqs(FailBumpRAM).RAM = j.Requirements.RAM
 	}
 
 	if j.Requirements.Time != 0 {
 		job.Requirements.Time = j.Requirements.Time
+		job.userModifiedReqs(FailBumpTime).Time = j.Requirements.Time
 	}
 
 	if j.Requirements.CoresSet {
@@ -3193,6 +3250,9 @@ func (j *JobModifier) applyRequirements(job *Job) {
 
 	if j.Requirements.DiskSet {
 		job.Requirements.Disk = j.Requirements.Disk
+		modified := job.userModifiedReqs(FailBumpDisk)
+		modified.Disk = j.Requirements.Disk
+		modified.DiskSet = true
 	}
 
 	if j.Requirements.OtherSet {

@@ -2031,7 +2031,8 @@ func (s *Server) pauseForModify(ctx context.Context) (string, string, bool) {
 }
 
 // modifyJobs applies cr.Modifier to the keyed non-running jobs, persisting the
-// changes, and returns the old->new key mapping plus any error strings.
+// changes and preparing the modified ready jobs again, and returns the old->new
+// key mapping plus any error strings.
 func (s *Server) modifyJobs(ctx context.Context, cr *clientRequest) (map[string]string, string, string) {
 	toModifyJobs, toModifyKeys := s.collectModifiableJobs(cr.Keys)
 
@@ -2053,6 +2054,7 @@ func (s *Server) modifyJobs(ctx context.Context, cr *clientRequest) (map[string]
 	}
 
 	s.persistModifiedJobs(ctx, cr, modified, toModify)
+	s.prepareModifiedJobs(ctx, toModify)
 
 	return modified, "", ""
 }
@@ -2633,6 +2635,9 @@ func copyJobForClient(sjob *Job, state JobState) *Job {
 		State:                 state,
 		Attempts:              sjob.Attempts,
 		UntilBuried:           sjob.UntilBuried,
+		FailBumpsCleared:      sjob.FailBumpsCleared,
+		ModifiedReqs:          cloneRequirements(sjob.ModifiedReqs),
+		FailedRunReqs:         cloneRequirements(sjob.FailedRunReqs),
 		ReservedBy:            sjob.ReservedBy,
 		EnvKey:                sjob.EnvKey,
 		EnvOverride:           sjob.EnvOverride,

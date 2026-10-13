@@ -889,27 +889,7 @@ func (r *reqStatTest) reserveJob(retries uint8) *Job {
 	So(job, ShouldNotBeNil)
 	So(jq.Started(job, os.Getpid()), ShouldBeNil)
 
-	So(waitForRACIdleUnderHold(r.server, reqStatTestRACIdleWait), ShouldBeTrue)
+	So(pollUntilFor(reqStatTestRACIdleWait, r.server.racIdle), ShouldBeTrue)
 
 	return job
-}
-
-// waitForRACIdleUnderHold reports whether, within timeout, no ready-added
-// callback is pending or running, as the reserve hold sees it.
-func waitForRACIdleUnderHold(server *Server, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-
-	for time.Now().Before(deadline) {
-		server.rpmutex.Lock()
-		idle := !server.racPending && !server.racRunning
-		server.rpmutex.Unlock()
-
-		if idle {
-			return true
-		}
-
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	return false
 }

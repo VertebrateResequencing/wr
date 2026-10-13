@@ -212,7 +212,11 @@ func (db *db) refreshReqGroupRecs(reqGroup string) *scheduler.Requirements {
 // the cache's wg, started only when a load is due. It does nothing once the
 // database has started closing.
 //
-//nolint:unparam // only tests call it until the ready hook (spec D1) does.
+// The load is detached from whichever request found the entry stale, so it
+// takes no context; contextcheck reports that at every caller that has one,
+// and nolintlint cannot see the reports this directive suppresses there.
+//
+//nolint:contextcheck,nolintlint // see above
 func (db *db) refreshReqGroupRecsLater(reqGroup string) {
 	c := db.reqStats
 

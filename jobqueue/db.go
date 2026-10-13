@@ -967,10 +967,13 @@ func (w *backupCopyWriter) writePacedChunk(p []byte) (int, error) {
 	return n, w.pace()
 }
 
+// newJobExitData takes the exit op's data from job. A failed job's RAM is
+// already raised for its retry by then, so the high-peak stat is judged
+// against what its failed run reserved.
 func newJobExitData(job *Job, stdo, stde []byte, forceStorage bool) jobExitData {
 	requiredRAM := 0
-	if job.Requirements != nil {
-		requiredRAM = job.Requirements.RAM
+	if reqs := job.lastRunReqs(); reqs != nil {
+		requiredRAM = reqs.RAM
 	}
 
 	return jobExitData{

@@ -959,7 +959,16 @@ func statusShouldShowHighMemoryNote(job *jobqueue.Job) bool {
 	return requiredRAM > 0 && job.PeakRAM > requiredRAM
 }
 
+// statusRequiredRAMForProblem returns the RAM the failed run reserved: the
+// manager raises a failed job's RAM for its next attempt when it fails, so
+// Requirements may already hold that increase.
 func statusRequiredRAMForProblem(job *jobqueue.Job) int {
+	// FailedRunReqs is never cleared, so this is only safe because the caller
+	// requires FailReason != "".
+	if job.FailedRunReqs != nil && job.FailedRunReqs.RAM > 0 {
+		return job.FailedRunReqs.RAM
+	}
+
 	if job.RequirementsOrig != nil && job.RequirementsOrig.RAM > 0 {
 		return job.RequirementsOrig.RAM
 	}

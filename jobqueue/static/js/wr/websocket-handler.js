@@ -475,6 +475,9 @@ function mergeJobDetailsPushUpdate(existing, update) {
         merged.ExpectedRAM = update.ExpectedRAM > 0 ? update.ExpectedRAM : existing.ExpectedRAM;
         merged.ExpectedTime = update.ExpectedTime > 0 ? update.ExpectedTime : existing.ExpectedTime;
         merged.RequestedDisk = update.RequestedDisk > 0 ? update.RequestedDisk : existing.RequestedDisk;
+        merged.RunRAM = update.RunRAM > 0 ? update.RunRAM : existing.RunRAM;
+        merged.RunTime = update.RunTime > 0 ? update.RunTime : existing.RunTime;
+        merged.RunDisk = update.RunDisk > 0 ? update.RunDisk : existing.RunDisk;
         merged.Cores = update.Cores > 0 ? update.Cores : existing.Cores;
         merged.Attempts = update.Attempts > 0 ? update.Attempts : existing.Attempts;
     }

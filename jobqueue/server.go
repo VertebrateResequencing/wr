@@ -1331,6 +1331,13 @@ type readyJobCandidate struct {
 	snapshot schedulerGroupSnapshot
 }
 
+// releasedRun is what applyRunEndLocked returned for a release that took its
+// item out of Run, for finalizeReleasedJob.
+type releasedRun struct {
+	group string
+	msg   string
+}
+
 // releaseReport describes one release of a job: the end state and fail reason
 // to record, whether the release must be persisted or forced to a bury, and -
 // crucially for the retry budget - whether it was reported by the job's owner
@@ -1395,6 +1402,11 @@ type releaseReport struct {
 	// it, so that a run released or reserved again since they looked is left
 	// alone.
 	isRun func(*Job) bool
+
+	// ended is filled in by the queue change that takes the item out of Run
+	// (see runEndCallback), for finalizeReleasedJob. releaseJobSnapshot sets
+	// it, never a caller.
+	ended *releasedRun
 }
 
 // lostJobReleaseReport is the release report the manager makes on its own
@@ -1423,13 +1435,42 @@ func releaseSpendsARetry(job *Job, rep releaseReport) bool {
 	return rep.attempted || !job.StartTime.IsZero()
 }
 
-// applyRelease sets a released job's retry budget, state and fail reason, and
-// returns its scheduler group and a message saying whether it was buried or
-// released.
+// applyRunEndLocked applies a release's end of run to job: the end state (only
+// if rep.endState exited and the job has not already recorded one), the fail
+// reason, the run's own requirements as FailedRunReqs, and the retry budget
+// and state. As this is a new failure, any user's modification no longer
+// clears its increase. It then recomputes the requirements from rec, the
+// cached learned values, so the job waits at its retry size. It returns the
+// scheduler group and log message applyRelease returns. The caller holds job's
+// lock.
+func (j *Job) applyRunEndLocked(rep releaseReport, rec *scheduler.Requirements) (string, string) {
+	if !j.Exited && rep.endState != nil && rep.endState.Exited {
+		j.recordEndStateLocked(rep.endState)
+	}
+
+	j.FailedRunReqs = runReqs(j.Requirements)
+	j.FailBumpsCleared = 0
+	j.ModifiedReqs = nil
+
+	group, msg := j.applyReleaseLocked(rep)
+
+	updateJobRequirementsForRetry(j, j.Override, rec)
+
+	return group, msg
+}
+
+// applyRelease locks the job for applyReleaseLocked.
 func (j *Job) applyRelease(rep releaseReport) (string, string) {
 	j.Lock()
 	defer j.Unlock()
 
+	return j.applyReleaseLocked(rep)
+}
+
+// applyReleaseLocked sets a released job's retry budget, state and fail
+// reason, and returns its scheduler group and a message saying whether it was
+// buried or released. The caller holds job's lock.
+func (j *Job) applyReleaseLocked(rep releaseReport) (string, string) {
 	if rep.forceBury {
 		j.UntilBuried = 0
 	} else if rep.spendsRetry && j.UntilBuried > 0 {
@@ -1481,6 +1522,10 @@ type releaseSnapshot struct {
 	// supplanted says the release is a runner's report and the job is now
 	// reserved by a different runner, so the release must change nothing.
 	supplanted bool
+
+	// rep is the release being made, as releaseJobSnapshot completed it, for
+	// the queue change's runEndCallback.
+	rep releaseReport
 }
 
 // takeReleaseSnapshot is releaseJobSnapshot, followed, for a job still on the
@@ -2094,6 +2139,20 @@ func (s *Server) finishRAC() {
 	s.racRunning = false
 	s.clearRACWaiters()
 	s.rpmutex.Unlock()
+}
+
+// racIdle reports whether no ready-added callback is running or queued to run
+// (recall and its break included), and no reserve hold is pending. Poll it
+// rather than checking it once: an operation can queue a callback at any time.
+func (s *Server) racIdle() bool {
+	if s.q.ReadyAddedCallbackRunning() {
+		return false
+	}
+
+	s.rpmutex.Lock()
+	defer s.rpmutex.Unlock()
+
+	return !s.racPending
 }
 
 func (s *Server) triggerReadyAddedCallback(ctx context.Context) {
@@ -2814,13 +2873,7 @@ func (s *Server) prepareReadyJob(ctx context.Context, q *queue.Queue, job *Job, 
 		return schedulerGroupSnapshot{}, false
 	}
 
-	snapshot := job.schedulerGroupSnapshot()
-
-	if snapshot.previousGroup != snapshot.group {
-		job.setSchedulerGroup(snapshot.group)
-
-		warnUnexpectedSetReserveGroupError(ctx, q.SetReserveGroup(snapshot.key, snapshot.group))
-	}
+	snapshot, _ := regroupJob(ctx, q, job)
 
 	return snapshot, true
 }
@@ -3341,52 +3394,6 @@ func failureMayUpdateJobRequirements(job *Job) bool {
 		job.FailReason == FailReasonTime
 }
 
-// updateJobRequirementsForRetry applies the learned requirements a retry should
-// use, and invalidates the job's memoised derived scheduler-group strings.
-//
-// Requirements is an input of those derived strings (jobDerived), and everything
-// below can change it in place on EITHER exit: applyRecommendedJobRequirements
-// applies a learned value for any resource the user did not specify whatever
-// their override (see cmd/add.go's "If you choose to override eg. only
-// disk..."), including on the jobOverrideAlwaysUseJobReqs early return below.
-// Invalidating in a defer is therefore not just tidier, it is the only placement
-// no future edit to those branches or that early return can silently defeat.
-//
-// It is also deliberately unconditional rather than conditional on a value
-// actually changing: only the jobs a rac cycle deems schedulable reach here
-// (prepareReadyJob is the bounded half of the cycle, see
-// scheduleReadyJobsByPriority), so re-deriving when the numbers happen to come
-// out the same costs nothing at backlog scale.
-func updateJobRequirementsForRetry(job *Job, jobOverride uint8, recommendedReq *scheduler.Requirements) {
-	defer job.invalidateDerivedLocked()
-
-	if job.RequirementsOrig == nil {
-		job.RequirementsOrig = &scheduler.Requirements{
-			RAM:     job.Requirements.RAM,
-			Time:    job.Requirements.Time,
-			Disk:    job.Requirements.Disk,
-			DiskSet: job.Requirements.DiskSet,
-		}
-	}
-
-	applyRecommendedJobRequirements(job, jobOverride, recommendedReq)
-
-	if jobOverride == jobOverrideAlwaysUseJobReqs {
-		return
-	}
-
-	if shouldIncreaseJobRAMAfterHighPeak(job) {
-		increaseJobRAMAfterHighPeak(job)
-	}
-
-	switch job.FailReason {
-	case FailReasonDisk:
-		increaseJobDiskAfterFailure(job)
-	case FailReasonTime:
-		increaseJobTimeAfterFailure(job)
-	}
-}
-
 // capGroupCountsToLimits ensures that, for every limit group, the summed runner
 // request across its sibling scheduler groups does not exceed that limit group's
 // limit. The ready count was capped against the limit group's remaining capacity
@@ -3764,7 +3771,7 @@ func (s *Server) buryReleasedItem(ctx context.Context, q *queue.Queue, item *que
 		return releaseAlreadyDone, nil
 	}
 
-	outcome, errq := s.buryItemWhereItIs(ctx, q, item, snap)
+	outcome, errq := s.buryItemWhereItIs(ctx, q, item, snap, job)
 	if errq != nil {
 		return outcome, errq
 	}
@@ -3794,9 +3801,9 @@ func (s *Server) buryReleasedItem(ctx context.Context, q *queue.Queue, item *que
 // the waiting item. An item seen waiting and since reserved again is not
 // buried: BuryWaiting fails, and the owner's re-sent bury gets ErrMustReserve.
 func (s *Server) buryItemWhereItIs(ctx context.Context, q *queue.Queue, item *queue.Item,
-	snap releaseSnapshot) (releaseOutcome, error) {
+	snap releaseSnapshot, job *Job) (releaseOutcome, error) {
 	if !snap.waiting && !itemIsWaiting(item.Stats().State) {
-		return releaseMoved, q.Bury(snap.key)
+		return releaseMoved, q.BuryWith(snap.key, s.runEndCallback(job, snap.rep))
 	}
 
 	from, errq := q.BuryWaiting(snap.key)
@@ -3870,7 +3877,8 @@ func (s *Server) releaseRun(ctx context.Context, job *Job, rep releaseReport) (b
 //
 // The owner's report of how its command ended, arriving after the manager's own
 // lost release, is the job's first real end state. It is written as that
-// release's was, std and fail stats included.
+// release's was, std and fail stats included, with the increase its failure
+// calls for, and an item already ready is prepared again for its new size.
 //
 // A redundant report, such as a runner re-sending after its first request timed
 // out on a slow commit, must not be acknowledged before that first write is on
@@ -3881,6 +3889,9 @@ func (s *Server) releaseRun(ctx context.Context, job *Job, rep releaseReport) (b
 // resurrect a deleted or archived job nor overwrite a newer record.
 func (s *Server) ackAlreadyReleased(ctx context.Context, job *Job, rep releaseReport) error {
 	if rep.reporter != (uuid.UUID{}) && job.replaceLostEndState(rep.endState, rep.failReason) {
+		s.recomputeJobRequirements(job)
+		s.prepareReadyJobAgain(ctx, job)
+
 		return s.writeReleasedJob(ctx, job, rep)
 	}
 
@@ -4030,6 +4041,41 @@ func (s *Server) markItemJobChanged(ctx context.Context, job *Job, data any, ahe
 	s.db.queueJobChangeAhead(ctx, job, ahead, change)
 
 	return job
+}
+
+// runEndCallback returns the queue callback that applies rep's end of run to
+// job (applyRunEndLocked) under the queue's lock, as the queue takes the
+// job's item out of Run, so no reserve can see the item before its retry size
+// is set. It keeps the scheduler group the run had in rep.ended, for
+// finalizeReleasedJob. It must not call the queue.
+func (s *Server) runEndCallback(job *Job, rep releaseReport) func(any) {
+	return func(any) {
+		job.Lock()
+		defer job.Unlock()
+
+		rep.ended.group, rep.ended.msg = job.applyRunEndLocked(rep, s.currentReqGroupRecs(job.ReqGroup))
+	}
+}
+
+// finalizeBuriedWaiting records the bury of an item that was waiting to run
+// again, returning its scheduler group and log message.
+//
+// updateAfterExit keeps the end state of whichever release took the item out
+// of Run first, but an owner's bury of an item the manager released as lost
+// knows how its command really ended, so its failure's increase is applied
+// now.
+func (s *Server) finalizeBuriedWaiting(job *Job, rep releaseReport) (string, string) {
+	job.updateAfterExit(rep.endState, s.limiter)
+
+	if rep.reporter != (uuid.UUID{}) {
+		job.replaceLostEndState(rep.endState, rep.failReason)
+	}
+
+	sgroup, msg := job.applyRelease(rep)
+
+	s.recomputeJobRequirements(job)
+
+	return sgroup, msg
 }
 
 // logClientRequestError logs the error handleRequest returned for a client
@@ -4610,8 +4656,14 @@ func itemIsReleasable(state queue.ItemState) bool {
 	return state == queue.ItemStateRun || itemIsWaiting(state)
 }
 
+// shouldIncreaseJobRAMAfterHighPeak says whether job's pending failure calls
+// for more RAM: it failed for RAM, or for another reason with a peak above its
+// current RAM, whether it is to be retried or was buried (so a kick reruns it
+// with more memory). It does not read job.State, which the queue's changed
+// callback updates asynchronously. An impossible job (FailReasonResource) is
+// never raised back to an impossible size.
 func shouldIncreaseJobRAMAfterHighPeak(job *Job) bool {
-	if job == nil || job.Requirements == nil || job.FailReason == "" {
+	if job == nil || job.Requirements == nil || job.FailReason == "" || job.FailReason == FailReasonResource {
 		return false
 	}
 
@@ -4619,8 +4671,7 @@ func shouldIncreaseJobRAMAfterHighPeak(job *Job) bool {
 		return true
 	}
 
-	return job.State == JobStateDelayed &&
-		commandExceededMemoryEstimate(job.PeakRAM, job.Requirements.RAM)
+	return commandExceededMemoryEstimate(job.PeakRAM, job.Requirements.RAM)
 }
 
 func applyRecommendedJobRequirements(
@@ -7298,6 +7349,8 @@ func releaseJobSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseS
 		remaining--
 	}
 
+	rep.ended = &releasedRun{}
+
 	return releaseSnapshot{
 		key:               job.Key(),
 		state:             job.State,
@@ -7306,6 +7359,7 @@ func releaseJobSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseS
 		reservedBy:        job.ReservedBy,
 		runnerReservation: job.RunnerReservation,
 		notTheRun:         rep.isRun != nil && (stats.State != queue.ItemStateRun || !rep.isRun(job)),
+		rep:               *rep,
 	}
 }
 
@@ -7333,11 +7387,11 @@ func (s *Server) applyReleaseQueueChange(ctx context.Context, q *queue.Queue, it
 		// q.Release and error ErrNotRunning (looping the client's retry).
 		return releaseAlreadyDone, nil
 	case len(rerunDeps) > 0:
-		if errq := q.Requeue(ctx, snap.key, rerunDeps); errq != nil {
+		if errq := q.RequeueWith(ctx, snap.key, rerunDeps, s.runEndCallback(job, snap.rep)); errq != nil {
 			return releaseMoved, errq
 		}
 	default:
-		if errq := q.Release(ctx, snap.key); errq != nil {
+		if errq := q.ReleaseWith(ctx, snap.key, s.runEndCallback(job, snap.rep)); errq != nil {
 			return releaseMoved, errq
 		}
 	}
@@ -7345,27 +7399,26 @@ func (s *Server) applyReleaseQueueChange(ctx context.Context, q *queue.Queue, it
 	return releaseMoved, nil
 }
 
-// finalizeReleasedJob updates a released job's state (to buried or delayed,
-// obeying its Retries count), persists it, and decrements its scheduler group
-// count. With rep.durable it returns only once that write has committed.
+// finalizeReleasedJob finishes a release, persisting the job and, for one that
+// took its item out of Run, giving back its limit groups and its run's
+// scheduler group count. With rep.durable it returns only once that write has
+// committed.
 //
-// outcome is what applyReleaseQueueChange did: only a release that took the
-// item out of Run gives back its run's count.
+// outcome is what applyReleaseQueueChange did. A release that took the item
+// out of Run had its end of run applied by the queue change's callback, which
+// kept the run's scheduler group in rep.ended: a zero-delay release's item can
+// be prepared for ready, changing job.schedulerGroup, before this runs.
 func (s *Server) finalizeReleasedJob(ctx context.Context, job *Job, rep releaseReport,
 	outcome releaseOutcome) error {
-	job.updateAfterExit(rep.endState, s.limiter)
-
-	// updateAfterExit keeps the end state of whichever release took the item
-	// out of Run first, but an owner's bury of an item the manager released as
-	// lost knows how its command really ended.
-	if outcome == releaseBuriedWaiting && rep.reporter != (uuid.UUID{}) {
-		job.replaceLostEndState(rep.endState, rep.failReason)
-	}
-
-	sgroup, msg := job.applyRelease(rep)
+	var sgroup, msg string
 
 	if outcome == releaseMoved {
+		job.decrementLimitGroups(s.limiter)
+
+		sgroup, msg = rep.ended.group, rep.ended.msg
 		s.decrementGroupCount(ctx, sgroup)
+	} else {
+		sgroup, msg = s.finalizeBuriedWaiting(job, rep)
 	}
 
 	clog.Debug(ctx, msg, "key", job.Key(), "cmd", job.loggableCmd(), "schedGrp", sgroup)

@@ -3405,7 +3405,10 @@ const existing = {
     Cmd: 'sleep 60',
     ExpectedRAM: 100,
     ExpectedTime: 60,
-    RequestedDisk: 0,
+    RequestedDisk: 3,
+    RunRAM: 100,
+    RunTime: 60,
+    RunDisk: 3,
     Cores: 1,
     Attempts: 1
 };
@@ -3450,6 +3453,9 @@ context.handleJobDetailsMessage(viewModel, {
     ExpectedRAM: 0,
     ExpectedTime: 0,
     RequestedDisk: 0,
+    RunRAM: 0,
+    RunTime: 0,
+    RunDisk: 0,
     Cores: 0,
     Attempts: 0
 });
@@ -3461,6 +3467,9 @@ assert(job.CPUtime === 5, 'reserved push CPUtime was not applied');
 assert(job.Cmd === 'sleep 60', 'reserved push should preserve existing command text');
 assert(job.ExpectedRAM === 100, 'reserved push should preserve expected RAM');
 assert(job.ExpectedTime === 60, 'reserved push should preserve expected time');
+assert(job.RunRAM === 100, 'reserved push should preserve the run RAM its peak is judged against');
+assert(job.RunTime === 60, 'reserved push should preserve the run time its walltime is judged against');
+assert(job.RunDisk === 3, 'reserved push should preserve the run disk its peak is judged against');
 assert(job.Cores === 1, 'reserved push should preserve cores');
 assert(job.Attempts === 1, 'reserved push should preserve attempts');
 

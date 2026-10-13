@@ -36,66 +36,14 @@ package jobqueue
 import (
 	"context"
 	"os"
-	"sync"
 	"testing"
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-type racGates struct {
-	mu     sync.Mutex
-	calls  int
-	called []chan struct{}
-	gates  []chan struct{}
-}
-
-func newRACGates(n int) *racGates {
-	g := &racGates{}
-	for range n {
-		g.called = append(g.called, make(chan struct{}))
-		g.gates = append(g.gates, make(chan struct{}))
-	}
-
-	return g
-}
-
-func (g *racGates) enter() int {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	n := g.calls
-	g.calls++
-
-	if n < len(g.called) {
-		close(g.called[n])
-	}
-
-	return n
-}
-
-func (g *racGates) wait(n int) {
-	if n < len(g.gates) {
-		<-g.gates[n]
-	}
-}
-
-func (g *racGates) open(n int) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	select {
-	case <-g.gates[n]:
-	default:
-		close(g.gates[n])
-	}
-}
-
-func (g *racGates) openAll() {
-	for i := range g.gates {
-		g.open(i)
-	}
-}
+// racGates, newRACGates and reserveReturnsWhileGated are in
+// jobqueue/nohold_test.go.
 
 func awaitCalled(t *testing.T, g *racGates, n int) {
 	t.Helper()
@@ -104,36 +52,6 @@ func awaitCalled(t *testing.T, g *racGates, n int) {
 	case <-g.called[n]:
 	case <-time.After(5 * time.Second):
 		t.Fatalf("ready-added callback %d was not called", n)
-	}
-}
-
-// reserveReturnsWhileGated starts a reserve and reports whether it returned
-// (and with what job key) within a second, while the caller keeps a callback
-// gated.
-func reserveReturnsWhileGated(runner *Client) (bool, string, chan struct{}) {
-	type outcome struct {
-		job *Job
-	}
-
-	res := make(chan outcome, 1)
-	done := make(chan struct{})
-
-	go func() {
-		job, _ := runner.Reserve(50 * time.Millisecond) //nolint:errcheck
-		res <- outcome{job}
-		close(done)
-	}()
-
-	select {
-	case o := <-res:
-		key := ""
-		if o.job != nil {
-			key = o.job.Key()
-		}
-
-		return true, key, done
-	case <-time.After(time.Second):
-		return false, "", done
 	}
 }
 

@@ -33,6 +33,12 @@ Covering all 11 acceptance tests from D1, in `jobqueue/nohold_test.go`;
 test 11's sweep of tests assuming add-time state is listed in the phase's
 checklist. Re-run C3 test 10, which discriminates from this item on.
 
+Phase 3 hand-off (see the notes under Items 3.3 and 3.1 in phase3.md): the
+reviewer of this item must re-run C3.10 against the mutant that keeps the job
+lock across `modifyJob`'s duplicate-key check, now that the ready hook exists,
+and check `wr mod --override 2` on a buried or delayed high-peak-bumped job
+with no learned values returns to the failed run's size once ready.
+
 - [ ] implemented
 - [ ] reviewed
 
