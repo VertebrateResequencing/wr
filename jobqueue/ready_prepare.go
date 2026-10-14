@@ -27,6 +27,7 @@ package jobqueue
 
 import (
 	"context"
+	"time"
 
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
@@ -44,6 +45,26 @@ func runReqs(req *scheduler.Requirements) *scheduler.Requirements {
 	return &scheduler.Requirements{RAM: req.RAM, Disk: req.Disk, DiskSet: req.DiskSet, Time: req.Time}
 }
 
+// recomputedReqs is the part of a job's Requirements that
+// updateJobRequirementsForRetry may change; valid is false for nil
+// Requirements.
+type recomputedReqs struct {
+	ram     int
+	disk    int
+	diskSet bool
+	time    time.Duration
+	valid   bool
+}
+
+// recomputedReqsOf returns req's recomputedReqs.
+func recomputedReqsOf(req *scheduler.Requirements) recomputedReqs {
+	if req == nil {
+		return recomputedReqs{}
+	}
+
+	return recomputedReqs{ram: req.RAM, disk: req.Disk, diskSet: req.DiskSet, time: req.Time, valid: true}
+}
+
 // updateJobRequirementsForRetry recomputes job's requirements: the learned
 // values in recommendedReq under jobOverride, then any increase its pending
 // failure calls for. It is the one recompute, made when the job fails, when an
@@ -57,13 +78,12 @@ func runReqs(req *scheduler.Requirements) *scheduler.Requirements {
 // recompute's increase. The caller holds job's lock.
 //
 // It also invalidates the job's memoised derived scheduler-group strings, of
-// which Requirements is an input, in a defer, so that no return can skip it.
-// That is deliberately unconditional: only the jobs a rac cycle deems
-// schedulable reach here from the RAC (prepareReadyJob is the bounded half of
-// the cycle, see scheduleReadyJobsByPriority), so re-deriving when the numbers
-// come out the same costs nothing at backlog scale.
+// which Requirements is an input, if it changed their RAM, disk or time (the
+// only inputs it changes), in a defer, so that no return can skip it. The queue's
+// ready hook calls it for every item entering ready under the queue's lock, so
+// when the numbers come out the same the memo is kept for the hook to use.
 func updateJobRequirementsForRetry(job *Job, jobOverride uint8, recommendedReq *scheduler.Requirements) {
-	defer job.invalidateDerivedLocked()
+	defer job.invalidateDerivedIfChangedLocked(recomputedReqsOf(job.Requirements))
 
 	if job.RequirementsOrig == nil {
 		job.RequirementsOrig = &scheduler.Requirements{
@@ -149,6 +169,17 @@ func increaseDiskOrTimeAfterFailure(job *Job, kept uint8) {
 	}
 }
 
+// invalidateDerivedIfChangedLocked invalidates j's memoised derived strings
+// unless j's recomputedReqs still equal before. The caller holds j's write
+// lock.
+func (j *Job) invalidateDerivedIfChangedLocked(before recomputedReqs) {
+	if before.valid && recomputedReqsOf(j.Requirements) == before {
+		return
+	}
+
+	j.invalidateDerivedLocked()
+}
+
 // regroupJob gives job the scheduler group its current requirements call for
 // and moves its queue item to that reserve group, if the group changed. It
 // returns the snapshot it took and whether it regrouped. The caller must not
@@ -163,6 +194,30 @@ func regroupJob(ctx context.Context, q *queue.Queue, job *Job) (schedulerGroupSn
 	warnUnexpectedSetReserveGroupError(ctx, q.SetReserveGroup(snapshot.key, snapshot.group))
 
 	return snapshot, true
+}
+
+// prepareBeforeQueueing does for each of jobs, whose items are about to be
+// queued ready, what the queue's ready hook (prepareForReady) will do, but
+// without the queue's lock: it recomputes the job's requirements from the
+// cached learned values and, when a runner command is set, derives its
+// scheduler group. The hook then normally finds nothing to change and the group
+// memoised, so the queue's lock is held for less per item. The hook still
+// prepares every item; this only moves the work. The caller holds no job's
+// lock.
+func (s *Server) prepareBeforeQueueing(jobs []*Job) {
+	rc := s.runnerCommand()
+
+	for _, job := range jobs {
+		job.Lock()
+
+		updateJobRequirementsForRetry(job, job.Override, s.currentReqGroupRecs(job.ReqGroup))
+
+		if rc != "" {
+			job.derivedLocked()
+		}
+
+		job.Unlock()
+	}
 }
 
 // userKeptFailBumps returns the FailBump* bits of the resources whose
@@ -233,6 +288,42 @@ func (s *Server) recomputeJobRequirements(job *Job) {
 	defer job.Unlock()
 
 	updateJobRequirementsForRetry(job, job.Override, s.currentReqGroupRecs(job.ReqGroup))
+}
+
+// prepareForReady is the queue's ReadyHook: it prepares each job as its item
+// enters ready, before any reserve can take it. It recomputes the job's
+// requirements from the cached learned values and its pending failure,
+// unconditionally (prepareReadyJob's guard is for the RAC's cost, not
+// correctness), and, when a runner command is set, gives the job the scheduler
+// group they call for and returns it as the item's reserve group. With no
+// runner command it returns reserveGroup unchanged, since a group-less Reserve
+// pops only group "" items. Other data is returned unchanged.
+//
+// It runs under the queue's lock, so it takes only the job's lock and, through
+// currentReqGroupRecs, the learned-requirement cache's; it does no database
+// I/O, takes no Server mutex (runnerCommand is atomic), does not count
+// racScanWork and never calls the queue. It must not call
+// schedulerGroupSnapshot, which takes the job lock it holds.
+func (s *Server) prepareForReady(data any, reserveGroup string) string {
+	job, ok := data.(*Job)
+	if !ok {
+		return reserveGroup
+	}
+
+	rc := s.runnerCommand()
+
+	job.Lock()
+	defer job.Unlock()
+
+	updateJobRequirementsForRetry(job, job.Override, s.currentReqGroupRecs(job.ReqGroup))
+
+	if rc == "" {
+		return reserveGroup
+	}
+
+	job.schedulerGroup = job.derivedLocked().group
+
+	return job.schedulerGroup
 }
 
 // prepareReadyJobAgain gives a job whose requirements changed while its item

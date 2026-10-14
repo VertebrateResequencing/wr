@@ -114,8 +114,9 @@ func TestReliable4SchedulerGroupSnapshotMemoised(t *testing.T) {
 		server, allitemdata := memoBacklogServer(t, ctx, memoBacklog)
 
 		// the first cycle derives each ready job's strings once. Every job starts
-		// cold (nothing derives at add time, and the paused server runs no cycle
-		// of its own), so this is exactly one derivation per ready job.
+		// cold (with no runner command the ready hook derives nothing at add
+		// time, and the paused server runs no cycle of its own), so this is
+		// exactly one derivation per ready job.
 		cold := memoDerivationsDuring(allitemdata, func() {
 			server.buildSchedulerGroups(ctx, server.q, allitemdata, "true")
 		})
@@ -193,6 +194,32 @@ func TestReliable4SchedulerGroupSnapshotInvalidated(t *testing.T) {
 		So(afterReq.group, ShouldNotEqual, beforeReq)
 		So(afterReq.group, ShouldEqual, schedulerGroupString(reqForScheduler(reqJob.Requirements), reqJob.LimitGroups))
 		So(afterReq.requirements.RAM, ShouldBeGreaterThan, memoTestRAM)
+
+		// a time-only change, as a learned runtime or a time failure's increase
+		// makes it
+		reqJob.Lock()
+		updateJobRequirementsForRetry(reqJob, jobOverridePreferSystemReqs,
+			&jqs.Requirements{Time: memoTestTime + 2*time.Hour})
+		reqJob.Unlock()
+
+		afterTime := reqJob.schedulerGroupSnapshot()
+		So(afterTime.group, ShouldNotEqual, afterReq.group)
+		So(afterTime.group, ShouldEqual, schedulerGroupString(reqForScheduler(reqJob.Requirements), reqJob.LimitGroups))
+		So(afterTime.requirements.Time, ShouldBeGreaterThan, memoTestTime)
+
+		// recomputing to the same requirements keeps the memo, so it is not
+		// derived again
+		reqJob.Lock()
+		derivations := reqJob.derivations
+		updateJobRequirementsForRetry(reqJob, jobOverridePreferSystemReqs,
+			&jqs.Requirements{Time: memoTestTime + 2*time.Hour})
+		reqJob.Unlock()
+
+		So(reqJob.schedulerGroupSnapshot().group, ShouldEqual, afterTime.group)
+
+		reqJob.RLock()
+		So(reqJob.derivations, ShouldEqual, derivations)
+		reqJob.RUnlock()
 
 		// the same change for a job that always overrides the learned values
 		// (`wr add --override always`): that only overrides the resources the user

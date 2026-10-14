@@ -75,9 +75,9 @@ func TestReliable2ScheduleGroupDeadlock(t *testing.T) {
 			previouslyScheduledGroups: make(map[string]*sgroup),
 			wg:                        waitgroup.New(),
 			scheduler:                 sched,
-			rc:                        "reliable2-deadlock-runner %s",
 			ServerInfo:                &ServerInfo{},
 		}
+		s.setRC("reliable2-deadlock-runner %s")
 
 		grp := &sgroup{
 			name:     "reliable2_deadlock_rg",

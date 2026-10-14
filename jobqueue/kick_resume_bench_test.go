@@ -63,6 +63,10 @@ const (
 	// kickResumeBenchReservers is how many goroutines reserve concurrently.
 	kickResumeBenchReservers = 8
 
+	// addManyBenchJobs is how many jobs BenchmarkAddManyUnderReserveLoad adds
+	// in its one Add.
+	addManyBenchJobs = 10000
+
 	// kickResumeBenchReservePause is how long each reserver waits between
 	// reserves, standing in for the arrival rate of runners' requests.
 	kickResumeBenchReservePause = 50 * time.Microsecond
@@ -187,24 +191,20 @@ func benchKickResumeUnderReserveLoad(b *testing.B, prepare kickResumeBenchPrepar
 	for range b.N {
 		s, jobs, keys, stop := kickResumeBenchServer(ctx, b, prepare)
 
-		got, elapsed := kickResumeBenchRound(ctx, b, s, jobs, keys, op)
+		got, elapsed := kickResumeBenchRound(ctx, b, s, "", jobs, keys, op)
 		latencies = append(latencies, got...)
 		opTotal += elapsed
 
 		stop()
 	}
 
-	b.ReportMetric(float64(opTotal.Nanoseconds())/float64(b.N), "ns/op")
-	b.ReportMetric(float64(len(latencies))/float64(b.N), "reserves/op")
-	b.ReportMetric(durationPercentileMicros(latencies, percentile50), "reserve-p50-us")
-	b.ReportMetric(durationPercentileMicros(latencies, percentile99), "reserve-p99-us")
-	b.ReportMetric(durationPercentileMicros(latencies, percentileMax), "reserve-max-us")
+	reportUnderReserveLoad(b, opTotal, latencies)
 }
 
-// kickResumeBenchRound starts the reservers, times op over every target, stops
-// the reservers, and returns the latencies of the reserves that began while op
-// ran and got a job, and how long op took.
-func kickResumeBenchRound(ctx context.Context, b *testing.B, s *Server, jobs []*Job,
+// kickResumeBenchRound starts the reservers, reserving from group, times op
+// over every target, stops the reservers, and returns the latencies of the
+// reserves that began while op ran and got a job, and how long op took.
+func kickResumeBenchRound(ctx context.Context, b *testing.B, s *Server, group string, jobs []*Job,
 	keys []string, op kickResumeBenchOp,
 ) ([]time.Duration, time.Duration) {
 	b.Helper()
@@ -219,7 +219,7 @@ func kickResumeBenchRound(ctx context.Context, b *testing.B, s *Server, jobs []*
 
 	for range kickResumeBenchReservers {
 		wg.Go(func() {
-			got := kickResumeBenchReserve(ctx, s, window, done)
+			got := kickResumeBenchReserve(ctx, s, group, window, done)
 
 			mu.Lock()
 
@@ -249,10 +249,15 @@ func kickResumeBenchRound(ctx context.Context, b *testing.B, s *Server, jobs []*
 	return samples, elapsed
 }
 
-// kickResumeBenchReserve reserves repeatedly until done is closed, returning the
-// latency of each reserve that began after window was closed and got a job.
-func kickResumeBenchReserve(ctx context.Context, s *Server, window, done <-chan struct{}) []time.Duration {
+// kickResumeBenchReserve reserves from group repeatedly until done is closed,
+// returning the latency of each reserve that began after window was closed and
+// got a job.
+func kickResumeBenchReserve(ctx context.Context, s *Server, group string,
+	window, done <-chan struct{},
+) []time.Duration {
 	var samples []time.Duration
+
+	cr := &clientRequest{SchedulerGroup: group}
 
 	for {
 		select {
@@ -263,7 +268,7 @@ func kickResumeBenchReserve(ctx context.Context, s *Server, window, done <-chan 
 
 		inWindow := isClosed(window)
 		start := time.Now()
-		item, _ := s.reserveItem(ctx, &clientRequest{})
+		item, _ := s.reserveItem(ctx, cr)
 		took := time.Since(start)
 
 		if inWindow && item != nil && !isClosed(done) {
@@ -281,6 +286,19 @@ func isClosed(ch <-chan struct{}) bool {
 	default:
 		return false
 	}
+}
+
+// reportUnderReserveLoad reports, per op, how long the op took in all and how
+// many reserves ran meanwhile, and the 50th, 99th and 100th percentiles of
+// their latencies.
+func reportUnderReserveLoad(b *testing.B, opTotal time.Duration, latencies []time.Duration) {
+	b.Helper()
+
+	b.ReportMetric(float64(opTotal.Nanoseconds())/float64(b.N), "ns/op")
+	b.ReportMetric(float64(len(latencies))/float64(b.N), "reserves/op")
+	b.ReportMetric(durationPercentileMicros(latencies, percentile50), "reserve-p50-us")
+	b.ReportMetric(durationPercentileMicros(latencies, percentile99), "reserve-p99-us")
+	b.ReportMetric(durationPercentileMicros(latencies, percentileMax), "reserve-max-us")
 }
 
 // durationPercentileMicros returns the pth percentile (nearest rank) of ds in
@@ -308,6 +326,26 @@ func kickResumeBenchServer(ctx context.Context, b *testing.B,
 ) (*Server, []*Job, []string, func()) {
 	b.Helper()
 
+	s, jq, standardReqs, stop := kickResumeBenchServe(ctx, b, "")
+
+	targets := kickResumeBenchTargetJobs(standardReqs)
+	kickResumeBenchAdd(b, jq, targets)
+
+	jobs, keys := prepare(ctx, b, s, len(targets))
+
+	kickResumeBenchAdd(b, jq, kickResumeBenchFillerJobs(standardReqs))
+
+	return s, jobs, keys, stop
+}
+
+// kickResumeBenchServe starts a server on its own database with an hour's TTR
+// and the given runner command, and connects a client to it. It returns them,
+// the standard requirements and a function that stops both.
+func kickResumeBenchServe(ctx context.Context, b *testing.B,
+	rc string,
+) (*Server, *Client, *jqs.Requirements, func()) {
+	b.Helper()
+
 	_, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(false)
 
 	dir := b.TempDir()
@@ -315,6 +353,7 @@ func kickResumeBenchServer(ctx context.Context, b *testing.B,
 	serverConfig.DBFileBackup = filepath.Join(dir, "db.bk")
 	serverConfig.TokenFile = filepath.Join(dir, "token")
 	serverConfig.Timings.ItemTTR = time.Hour
+	serverConfig.RunnerCmd = rc
 
 	s, _, token, err := serve(ctx, serverConfig)
 	if err != nil {
@@ -332,22 +371,7 @@ func kickResumeBenchServer(ctx context.Context, b *testing.B,
 		s.Stop(ctx, true)
 	}
 
-	targets := kickResumeBenchTargetJobs(standardReqs)
-	kickResumeBenchAdd(b, jq, targets)
-
-	jobs, keys := prepare(ctx, b, s, len(targets))
-
-	fillers := make([]*Job, kickResumeBenchFillers)
-	for i := range fillers {
-		fillers[i] = &Job{
-			Cmd: "true filler " + strconv.Itoa(i), Cwd: testCwd, RepGroup: kickResumeBenchRepGroup,
-			ReqGroup: kickResumeBenchRepGroup, Requirements: standardReqs, Retries: 3,
-		}
-	}
-
-	kickResumeBenchAdd(b, jq, fillers)
-
-	return s, jobs, keys, stop
+	return s, jq, standardReqs, stop
 }
 
 // kickResumeBenchTargetJobs returns the target jobs, each with a distinct
@@ -396,6 +420,20 @@ func kickResumeBenchAdd(b *testing.B, jq *Client, jobs []*Job) {
 	}
 }
 
+// kickResumeBenchFillerJobs returns kickResumeBenchFillers small jobs for the
+// reservers to reserve.
+func kickResumeBenchFillerJobs(reqs *jqs.Requirements) []*Job {
+	fillers := make([]*Job, kickResumeBenchFillers)
+	for i := range fillers {
+		fillers[i] = &Job{
+			Cmd: "true filler " + strconv.Itoa(i), Cwd: testCwd, RepGroup: kickResumeBenchRepGroup,
+			ReqGroup: kickResumeBenchRepGroup, Requirements: reqs, Retries: 3,
+		}
+	}
+
+	return fillers
+}
+
 // kickResumeBenchOp kicks, resumes or suspends the parked targets, returning how many it
 // handled.
 type kickResumeBenchOp func(ctx context.Context, s *Server, jobs []*Job, keys []string) int
@@ -427,4 +465,83 @@ func BenchmarkSuspendUnderReserveLoad(b *testing.B) {
 		func(ctx context.Context, s *Server, _ []*Job, keys []string) int {
 			return s.suspendJobs(ctx, keys)
 		})
+}
+
+// BenchmarkAddManyUnderReserveLoad measures adding addManyBenchJobs jobs in one
+// Add while reservers reserve from the same queue. The queue prepares each item
+// under its write lock as it enters ready, as it does for each of the live jobs
+// recovery queues, so this measures that per-item cost and what it does to
+// concurrent reserves. ns/op is the time the Add takes; the reserve rows are as
+// for BenchmarkKickUnderReserveLoad. Sub-benchmark "rc" has a runner command,
+// so each item is also given its scheduler group, and "norc" has none. The
+// ready-added callback does nothing, so no runner is scheduled and the RAC's
+// work does not compete with the Add's.
+func BenchmarkAddManyUnderReserveLoad(b *testing.B) {
+	for _, bc := range []struct{ name, rc string }{{"norc", ""}, {"rc", serverRC}} {
+		b.Run(bc.name, func(b *testing.B) {
+			benchAddManyUnderReserveLoad(b, bc.rc)
+		})
+	}
+}
+
+// benchAddManyUnderReserveLoad runs b.N rounds of BenchmarkAddManyUnderReserveLoad
+// with runner command rc, each on a fresh server holding the fillers.
+func benchAddManyUnderReserveLoad(b *testing.B, rc string) {
+	b.Helper()
+
+	ctx := context.Background()
+
+	var opTotal time.Duration
+
+	latencies := make([]time.Duration, 0, b.N*kickResumeBenchFillers)
+
+	b.StopTimer()
+
+	for range b.N {
+		s, jq, reqs, stop := kickResumeBenchServe(ctx, b, rc)
+		s.q.SetReadyAddedCallback(func(string, []any) {})
+
+		fillers := kickResumeBenchFillerJobs(reqs)
+		kickResumeBenchAdd(b, jq, fillers)
+
+		item, err := s.q.Get(fillers[0].Key())
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		jobs, keys := addManyBenchNewJobs(reqs)
+
+		got, elapsed := kickResumeBenchRound(ctx, b, s, item.ReserveGroup, jobs, keys,
+			func(_ context.Context, _ *Server, jobs []*Job, _ []string) int {
+				inserts, _, errAdd := jq.Add(jobs, os.Environ(), true)
+				if errAdd != nil {
+					b.Fatal(errAdd)
+				}
+
+				return inserts
+			})
+		latencies = append(latencies, got...)
+		opTotal += elapsed
+
+		stop()
+	}
+
+	reportUnderReserveLoad(b, opTotal, latencies)
+}
+
+// addManyBenchNewJobs returns addManyBenchJobs small jobs of the fillers'
+// ReqGroup, and their keys.
+func addManyBenchNewJobs(reqs *jqs.Requirements) ([]*Job, []string) {
+	jobs := make([]*Job, addManyBenchJobs)
+	keys := make([]string, addManyBenchJobs)
+
+	for i := range jobs {
+		jobs[i] = &Job{
+			Cmd: "true added " + strconv.Itoa(i), Cwd: testCwd, RepGroup: kickResumeBenchRepGroup,
+			ReqGroup: kickResumeBenchRepGroup, Requirements: reqs, Retries: 3,
+		}
+		keys[i] = jobs[i].Key()
+	}
+
+	return jobs, keys
 }

@@ -62,9 +62,13 @@ func TestReliable4RacBoundedBySchedulable(t *testing.T) {
 			limitGroup   = "lg:5"
 			highRAM      = 10
 			lowRAM       = 100
+			// lowLearnedRAM is a learned RAM for the low ReqGroup that differs
+			// from lowRAM.
+			lowLearnedRAM = 500
 		)
 
 		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
+		serverConfig.Timings.ReqStatRefreshInterval = -1
 
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
@@ -149,6 +153,39 @@ func TestReliable4RacBoundedBySchedulable(t *testing.T) {
 
 			So(blocked.count, ShouldEqual, 0)
 			So(blocked.skipped, ShouldEqual, lowCount)
+		})
+
+		Convey("the limit-blocked jobs keep their size when their ReqGroup learns a new one", func() {
+			// the add prepared every job with the low ReqGroup's (empty) learned
+			// values, so only a recompute after this seed can change their RAM.
+			seedReqGroupStats(server, bucketJobRAM, "reliable4-low", lowLearnedRAM)
+
+			server.buildSchedulerGroups(ctx, server.q, allitemdata, "true")
+			So(int(server.racScanWork.Load()), ShouldEqual, limit)
+
+			low, resized := 0, 0
+
+			for _, data := range allitemdata {
+				job, ok := data.(*Job)
+				So(ok, ShouldBeTrue)
+
+				job.RLock()
+				reqGroup, ram := job.ReqGroup, job.Requirements.RAM
+				job.RUnlock()
+
+				if reqGroup != "reliable4-low" {
+					continue
+				}
+
+				low++
+
+				if ram != lowRAM {
+					resized++
+				}
+			}
+
+			So(low, ShouldEqual, lowCount)
+			So(resized, ShouldEqual, 0)
 		})
 
 		Convey("the limit-blocked jobs are recorded as skipped so a completion re-triggers scheduling", func() {

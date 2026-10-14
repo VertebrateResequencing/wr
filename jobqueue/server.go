@@ -1797,9 +1797,12 @@ type Server struct {
 	// channel while the manager is not yet reachable (spec E4).
 	startupStatus *startupStatusReporter
 	ch            codec.Handle
-	// runner command string compatible with fmt.Sprintf(..., schedulerGroup,
-	// deployment, serverAddr, reserveTimeout, maxMinsAllowed).
-	rc string
+	// rcValue holds the runner command string compatible with fmt.Sprintf(...,
+	// schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed).
+	// It is atomic, not under racmutex, because the queue's ready hook reads it
+	// under the queue's lock, and waitThenRecheckRAC holds racmutex while it
+	// calls the queue. Unset reads as "".
+	rcValue atomic.Pointer[string]
 
 	ServerInfo         *ServerInfo
 	ServerVersions     *ServerVersions
@@ -2878,6 +2881,25 @@ func (s *Server) prepareReadyJob(ctx context.Context, q *queue.Queue, job *Job, 
 	return snapshot, true
 }
 
+// queuedJobs returns the jobs of the queue items with the given keys, skipping
+// keys with no item.
+func (s *Server) queuedJobs(keys []string) []*Job {
+	jobs := make([]*Job, 0, len(keys))
+
+	for _, key := range keys {
+		item, err := s.q.Get(key)
+		if err != nil || item == nil {
+			continue
+		}
+
+		if job, ok := item.Data().(*Job); ok {
+			jobs = append(jobs, job)
+		}
+	}
+
+	return jobs
+}
+
 func warnUnexpectedSetReserveGroupError(ctx context.Context, err error) {
 	if err == nil {
 		return
@@ -3273,6 +3295,8 @@ func (s *Server) suspendJob(ctx context.Context, key string) (bool, bool) {
 // write lock for that encode, but only for a key whose item is suspended, so
 // callers may pass any keys.
 func (s *Server) resumeJobs(ctx context.Context, keys []string) (resumed int) {
+	s.db.warmReqGroupRecs(s.queuedJobs(keys))
+
 	for _, key := range keys {
 		if s.resumeJob(ctx, key) {
 			resumed++
@@ -4426,6 +4450,32 @@ func (s *Server) applyStoredLimitGroups(groups []string) error {
 	return nil
 }
 
+// readyItemDefJobs returns the jobs of the item defs that start ready.
+func readyItemDefJobs(itemdefs []*queue.ItemDef) []*Job {
+	jobs := make([]*Job, 0, len(itemdefs))
+
+	for _, itemdef := range itemdefs {
+		if job, ok := itemdef.Data.(*Job); ok && itemDefTriggersReadyAdded(itemdef) {
+			jobs = append(jobs, job)
+		}
+	}
+
+	return jobs
+}
+
+// itemDefJobs returns the jobs of the item defs.
+func itemDefJobs(itemdefs []*queue.ItemDef) []*Job {
+	jobs := make([]*Job, 0, len(itemdefs))
+
+	for _, itemdef := range itemdefs {
+		if job, ok := itemdef.Data.(*Job); ok {
+			jobs = append(jobs, job)
+		}
+	}
+
+	return jobs
+}
+
 // jobHasDependents says whether anything still depends on this job, either on
 // its own key (an essence dependency) or through one of its dep groups. Both
 // have to be asked: a dep-group dependency is an edge on the group's own key, so
@@ -4469,14 +4519,10 @@ func (s *Server) runStatusWebSocketWorker(worker func()) {
 	worker()
 }
 
-// setRC sets the runner command template under racmutex, matching the locking
-// used by the readers (runnerCommand, readyAddedCallback). Production sets rc
-// once at construction before any reader can run, but tests reconfigure it on a
-// live server, so this synchronised setter keeps those writes race-free.
+// setRC sets the runner command template. Production sets it once, before the
+// queue is created, but tests reconfigure it on a live server, so it is atomic.
 func (s *Server) setRC(rc string) {
-	s.racmutex.Lock()
-	s.rc = rc
-	s.racmutex.Unlock()
+	s.rcValue.Store(&rc)
 }
 
 // countUndecodedJobs adds the jobs that were counted but never decoded to the
@@ -5445,7 +5491,6 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		up:                        true,
 		scheduler:                 sch,
 		previouslyScheduledGroups: make(map[string]*sgroup),
-		rc:                        config.RunnerCmd,
 		wsconns:                   make(map[string]*websocket.Conn),
 		statusCaster:              newCaster(true),
 		badServerCaster:           newCaster(false),
@@ -5467,6 +5512,9 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// the confirm-dead coordinator groups lost jobs' ssh checks by host; it needs
 	// the fully-built Server, so it is wired up after the literal above.
 	s.confirmDead = newConfirmDeadCoordinator(s)
+
+	// before createQueue, so the queue's ready hook sees it for every item.
+	s.setRC(config.RunnerCmd)
 
 	s.startIdleSubscriptionSweep(ctx)
 
@@ -5913,11 +5961,11 @@ func (s *Server) recoveredItemDef(ctx context.Context, recovered resolvedJob, lo
 	// reads job.schedulerGroup directly) bucket the job under its real group
 	// rather than the empty group "" - otherwise the manager schedules empty-group
 	// runners that immediately exit and never adds the running work to its real
-	// group. Only jobs recovered into the run sub-queue need this: they never pass
-	// through prepareReadyJob (which recomputes the group for ready jobs on the
-	// next rac cycle). Ready/other recovered jobs must keep an empty group so a
-	// group-less Reserve() can still pop them from the ready sub-queue. Snapshot
-	// (RLock) and set (Lock) are separate statements to avoid self-deadlock.
+	// group. Only jobs recovered into the run sub-queue need this here: they do
+	// not enter ready, so the queue's ready hook (prepareForReady) does not
+	// prepare them, whereas it prepares a recovered ready job as it is queued, as
+	// it does any other item entering ready. Snapshot (RLock) and set (Lock) are
+	// separate statements to avoid self-deadlock.
 	intoRun := recoversIntoRun(job)
 	if intoRun && job.getSchedulerGroup() == "" {
 		group := job.schedulerGroupSnapshot().group
@@ -6356,6 +6404,10 @@ func (s *Server) createQueue(ctx context.Context) {
 		s.readyAddedCallback(ctx, q, allitemdata)
 	})
 
+	// every item is prepared as it enters ready, before any reserve can take
+	// it; set before any item is added.
+	q.SetReadyHook(s.prepareForReady)
+
 	// we set a callback for things changing in the queue, which lets us
 	// update the status webpage with the minimal work and data transfer
 	q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []any, seq uint64) {
@@ -6577,9 +6629,7 @@ func (s *Server) readyAddedCallback(ctx context.Context, q *queue.Queue, allitem
 
 	defer s.finishRAC()
 
-	s.racmutex.RLock()
-	rc := s.rc
-	s.racmutex.RUnlock()
+	rc := s.runnerCommand()
 
 	groups := s.buildSchedulerGroups(ctx, q, allitemdata, rc)
 
@@ -6844,6 +6894,10 @@ func (s *Server) waitThenRecheckRAC(ctx context.Context, q *queue.Queue, wgk str
 func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (added, dups int, err error) {
 	readyCallbackExpected := slices.ContainsFunc(itemdefs, itemDefTriggersReadyAdded)
 
+	readyJobs := readyItemDefJobs(itemdefs)
+	s.db.warmReqGroupRecs(readyJobs)
+	s.prepareBeforeQueueing(readyJobs)
+
 	if readyCallbackExpected {
 		s.setRACPending()
 	}
@@ -6869,15 +6923,7 @@ func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (a
 // recordRepGroupKeys adds each item's RepGroup->key mapping to the lookup and
 // then remembers each as a subscription key.
 func (s *Server) recordRepGroupKeys(itemdefs []*queue.ItemDef) {
-	jobs := make([]*Job, 0, len(itemdefs))
-
-	for _, itemdef := range itemdefs {
-		if job, ok := itemdef.Data.(*Job); ok {
-			jobs = append(jobs, job)
-		}
-	}
-
-	s.recordJobRepGroupKeys(jobs)
+	s.recordJobRepGroupKeys(itemDefJobs(itemdefs))
 }
 
 // prepareInputJobs locks and initialises each input job (env key, retry count,
@@ -6936,9 +6982,7 @@ func (s *Server) createJobs(
 	envkey string,
 	ignoreComplete bool,
 ) (added int, dups DuplicateBreakdown, warnings AddWarnings, srerr string, qerr error) {
-	s.racmutex.RLock()
-	rcSet := s.rc != ""
-	s.racmutex.RUnlock()
+	rcSet := s.runnerCommand() != ""
 
 	inputJobs, queuedDups, newRepGroupDups := s.jobsNotAlreadyQueued(inputJobs, ignoreComplete)
 
@@ -7052,6 +7096,10 @@ func (s *Server) queueNewJobItems(ctx context.Context, dependents liveDependents
 
 	var replaced, marked int
 	if qerr == nil {
+		// before replaceLiveRerunItems takes the item defs of live reruns away
+		// from enqueueItems' warm.
+		s.db.warmReqGroupRecs(itemDefJobs(itemdefs))
+
 		itemdefs, replaced, qerr = s.replaceLiveRerunItems(ctx, itemdefs, ignoreComplete)
 	}
 
@@ -7749,6 +7797,8 @@ func refreshJobFromLiveItem(job *Job, item *queue.Item) {
 // handleKick and the web UI do: a job that is not buried costs that encode for
 // nothing.
 func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
+	s.db.warmReqGroupRecs(jobs)
+
 	for _, job := range jobs {
 		readyCallbackExpected := false
 
@@ -8450,12 +8500,14 @@ func (s *Server) groupToScheduleCmd(ctx context.Context, rc, group string, req *
 	)
 }
 
-// runnerCommand returns the configured runner command template under lock.
+// runnerCommand returns the configured runner command template, "" if none is
+// set. It takes no lock, so the queue's ready hook may call it.
 func (s *Server) runnerCommand() string {
-	s.racmutex.RLock()
-	defer s.racmutex.RUnlock()
+	if rc := s.rcValue.Load(); rc != nil {
+		return *rc
+	}
 
-	return s.rc
+	return ""
 }
 
 // scheduleRunners asks the scheduler for group.count runners for the group,

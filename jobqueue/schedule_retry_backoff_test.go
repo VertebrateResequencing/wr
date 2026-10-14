@@ -158,10 +158,10 @@ func TestScheduleRetryBackoff(t *testing.T) {
 			previouslyScheduledGroups: make(map[string]*sgroup),
 			wg:                        waitgroup.New(),
 			scheduler:                 sched,
-			rc:                        "schedule-retry-runner %s %s %s %s %d %d",
 			ServerInfo:                &ServerInfo{},
 			stopClientHandling:        make(chan bool),
 		}
+		s.setRC("schedule-retry-runner %s %s %s %s %d %d")
 		s.timings.CheckRunnerTime = minSleep
 
 		ms := &mock.Sleeper{}
@@ -227,10 +227,10 @@ func TestScheduleRetryBackoff(t *testing.T) {
 			previouslyScheduledGroups: make(map[string]*sgroup),
 			wg:                        waitgroup.New(),
 			scheduler:                 sched,
-			rc:                        "schedule-retry-runner %s %s %s %s %d %d",
 			ServerInfo:                &ServerInfo{},
 			stopClientHandling:        make(chan bool),
 		}
+		s.setRC("schedule-retry-runner %s %s %s %s %d %d")
 		s.timings.CheckRunnerTime = minSleep
 
 		// a real-time Sleeper with a long Min: only a working shutdown-abort can
@@ -302,10 +302,10 @@ func TestScheduleRetryFailureAsLoopEnds(t *testing.T) {
 			previouslyScheduledGroups: map[string]*sgroup{live.name: live},
 			wg:                        waitgroup.New(),
 			scheduler:                 sched,
-			rc:                        "schedule-retry-runner %s %s %s %s %d %d",
 			ServerInfo:                &ServerInfo{},
 			stopClientHandling:        make(chan bool),
 		}
+		s.setRC("schedule-retry-runner %s %s %s %s %d %d")
 		s.timings.CheckRunnerTime = minSleep
 
 		defer close(s.stopClientHandling)
@@ -510,10 +510,10 @@ func TestScheduleRetryFollowsGroupCount(t *testing.T) {
 			previouslyScheduledGroups: map[string]*sgroup{live.name: live},
 			wg:                        waitgroup.New(),
 			scheduler:                 sched,
-			rc:                        "schedule-retry-runner %s %s %s %s %d %d",
 			ServerInfo:                &ServerInfo{},
 			stopClientHandling:        make(chan bool),
 		}
+		s.setRC("schedule-retry-runner %s %s %s %s %d %d")
 		s.timings.CheckRunnerTime = minSleep
 
 		defer close(s.stopClientHandling)
@@ -598,10 +598,10 @@ func TestScheduleRetryAgainAfterRecovery(t *testing.T) {
 			previouslyScheduledGroups: map[string]*sgroup{live.name: live},
 			wg:                        waitgroup.New(),
 			scheduler:                 sched,
-			rc:                        "schedule-retry-runner %s %s %s %s %d %d",
 			ServerInfo:                &ServerInfo{},
 			stopClientHandling:        make(chan bool),
 		}
+		s.setRC("schedule-retry-runner %s %s %s %s %d %d")
 		s.timings.CheckRunnerTime = minSleep
 
 		defer close(s.stopClientHandling)

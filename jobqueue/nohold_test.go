@@ -55,6 +55,19 @@ const (
 	noHoldPeakRAM   = 150
 	noHoldBumpedRAM = 1200
 
+	// noHoldLearnedRAM is the RAM Section D's tests seed for a job's ReqGroup
+	// ("learned 300"): seeded alone, it is also the recommendation.
+	noHoldLearnedRAM = 300
+
+	// noHoldNewerLearnedRAM is the RAM spec D3's test seeds after a job was
+	// prepared at noHoldLearnedRAM; seeded alongside it, it is the new
+	// recommendation.
+	noHoldNewerLearnedRAM = 800
+
+	// noHoldChildCmd is appended to a test's command for a second job of its
+	// ReqGroup.
+	noHoldChildCmd = " child"
+
 	noHoldReserveWait = 5 * time.Second
 	noHoldLostWait    = 20 * time.Second
 )
@@ -111,6 +124,11 @@ func noHoldLostRuns(c *ServerConfig) {
 // delay is 2 to 4s.
 func noHoldSlowRetry(c *ServerConfig) {
 	c.Timings.ReleaseDelayMin = 2 * time.Second
+}
+
+// noHoldServerRC sets the runner command to serverRC.
+func noHoldServerRC(c *ServerConfig) {
+	c.RunnerCmd = serverRC
 }
 
 // racGates holds each ready-added callback a test routes through it at its own
@@ -170,6 +188,269 @@ func (g *racGates) openAll() {
 	}
 }
 
+// queueLockProbe records, at each load of one ReqGroup's learned requirements,
+// whether the queue's lock was held, as spec D4 test 1 checks it.
+type queueLockProbe struct {
+	mu      sync.Mutex
+	server  *Server
+	loads   *reqStatLoads
+	group   string
+	checked int
+	under   int
+}
+
+// loadsAfter waits until no ready-added callback is running or pending, so
+// none can load the probed ReqGroup first, invalidates it, runs step, and
+// reports whether at least one load of it then started and every load started
+// so far was checked.
+func (p *queueLockProbe) loadsAfter(step func()) bool {
+	if !pollUntil(p.server.racIdle) {
+		return false
+	}
+
+	p.server.db.invalidateReqGroupRecs(p.group)
+	before := p.loads.count(p.group)
+
+	step()
+
+	return pollUntil(func() bool {
+		started := p.loads.count(p.group)
+
+		p.mu.Lock()
+		defer p.mu.Unlock()
+
+		return started > before && p.checked == started
+	})
+}
+
+// underLock returns how many checked loads held the queue's lock.
+func (p *queueLockProbe) underLock() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.under
+}
+
+// TestNoHoldNoIOUnderQueueLock covers spec D4 tests 1, 2, 3 and 5: preparing an
+// item as it enters ready never holds the queue's lock across a database read,
+// a Server mutex or a wait on the learned-requirement cache. D4 test 4 is
+// `CGO_ENABLED=1 make race`.
+func TestNoHoldNoIOUnderQueueLock(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a check at each load of a ReqGroup of whether the queue's lock is held, jobs entering "+
+		"ready by add, kick, resume, dependency satisfied and delay expiry load it with the lock free",
+		t, func() {
+			loads := countReqStatLoads()
+			n := newNoHoldTest(ctx, t, noHoldSlowRetry)
+
+			Reset(func() { reqStatLoadHook = nil })
+
+			const name = "d4-1"
+
+			reqGroup := "nohold-" + name
+			job := func(cmd string, retries, priority uint8) *Job {
+				j := n.newJob(name, retries, jobOverridePreferSystemReqs)
+				j.Cmd += " " + cmd
+				j.Priority = priority
+
+				return j
+			}
+
+			buried := job("buried", 0, 0)
+			n.add(buried)
+			n.failRun(buried, FailReasonExit, 5)
+			So(n.itemState(buried.Key()), ShouldEqual, queue.ItemStateBury)
+
+			suspended := job("suspended", 0, 0)
+			n.add(suspended)
+			n.suspend(suspended)
+
+			parent := n.newJob(name+"-parent", 0, jobOverridePreferSystemReqs)
+			parent.Priority = 2
+			parent.DepGroups = []string{reqGroup + "-parent"}
+			n.add(parent)
+
+			dependent := job("dependent", 0, 0)
+			dependent.Dependencies = Dependencies{NewDepGroupDependency(reqGroup + "-parent")}
+			n.add(dependent)
+			So(n.itemState(dependent.Key()), ShouldEqual, queue.ItemStateDependent)
+
+			delayed := job("delayed", 3, 3)
+
+			probe := n.probeQueueLockOnLoad(loads, reqGroup)
+
+			So(probe.loadsAfter(func() { n.add(job("added", 0, 0)) }), ShouldBeTrue)
+			So(probe.loadsAfter(func() { n.kick(buried) }), ShouldBeTrue)
+			So(probe.loadsAfter(func() { n.resume(suspended) }), ShouldBeTrue)
+			So(probe.loadsAfter(func() {
+				n.archive(parent, 5)
+				n.waitReady(dependent.Key())
+			}), ShouldBeTrue)
+
+			n.add(delayed)
+			n.failRun(delayed, FailReasonExit, 5)
+			So(n.itemState(delayed.Key()), ShouldEqual, queue.ItemStateDelay)
+			So(probe.loadsAfter(func() { n.waitReady(delayed.Key()) }), ShouldBeTrue)
+
+			So(loads.count(reqGroup), ShouldBeGreaterThanOrEqualTo, 1)
+			So(probe.underLock(), ShouldEqual, 0)
+		})
+
+	Convey("Given a runner command and a job delayed after failing for RAM in the RAM 10 group, while "+
+		"racmutex is held across its delay expiry the queue stays responsive, and once released the "+
+		"item is in the bumped group", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldServerRC, noHoldSlowRetry)
+		job := n.addJob("d4-2", 3, jobOverridePreferSystemReqs)
+		n.gateRAC(ctx)
+
+		n.failRAMInGroup(job, n.groupFor(10))
+
+		_, item := n.serverJob(job.Key())
+		So(item.Stats().State, ShouldEqual, queue.ItemStateDelay)
+		So(item.ReserveGroup, ShouldEqual, n.groupFor(10))
+
+		responsive, expired := n.holdRACMutexUntilReady()
+		So(responsive, ShouldBeTrue)
+		So(expired, ShouldBeTrue)
+
+		_, item = n.serverJob(job.Key())
+		So(item.ReserveGroup, ShouldEqual, n.groupFor(noHoldBumpedRAM))
+	})
+
+	Convey("Given the runner command set and then unset, an added job's item has reserve group \"\"", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldServerRC)
+		n.server.setRC("")
+		n.gateRAC(ctx)
+
+		job := n.addJob("d4-3", 0, jobOverridePreferSystemReqs)
+
+		_, item := n.serverJob(job.Key())
+		So(item.ReserveGroup, ShouldEqual, "")
+	})
+
+	Convey("Given learned 300 loaded, then 800 seeded and a background load of it held, an add returns at "+
+		"once at RAM 300, and once the load completes the RAC brings the job to 800", t, func() {
+		held := newHeldLoad()
+		Reset(held.release)
+
+		loads := countReqStatLoads()
+		n := newNoHoldTest(ctx, t, noHoldServerRC)
+
+		Reset(func() { reqStatLoadHook = nil })
+		n.gateRAC(ctx)
+
+		job := n.newJob("d4-5", 0, jobOverridePreferSystemReqs)
+		n.seedLearned("d4-5")
+		n.server.db.refreshReqGroupRecs(job.ReqGroup)
+
+		seedReqGroupStats(n.server, bucketJobRAM, job.ReqGroup, noHoldNewerLearnedRAM)
+		_, current := n.server.db.cachedReqGroupRecs(job.ReqGroup)
+		So(current, ShouldBeFalse)
+
+		loads.setOnLoad(held.hold)
+		n.server.db.refreshReqGroupRecsLater(job.ReqGroup)
+		So(held.started(), ShouldBeTrue)
+
+		So(addsWithin(n.jq, job, time.Second), ShouldBeTrue)
+		So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldLearnedRAM)
+
+		held.release()
+		So(pollUntil(func() bool {
+			_, current := n.server.db.cachedReqGroupRecs(job.ReqGroup)
+
+			return current
+		}), ShouldBeTrue)
+
+		sjob, _ := n.serverJob(job.Key())
+		n.server.buildSchedulerGroups(ctx, n.server.q, []any{sjob}, serverRC)
+		So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldNewerLearnedRAM)
+	})
+}
+
+func newHeldLoad() *heldLoad {
+	return &heldLoad{entered: make(chan struct{}), released: make(chan struct{})}
+}
+
+// addsWithin has jq add job, which must be new, and reports whether the add
+// returned without error within wait.
+func addsWithin(jq *Client, job *Job, wait time.Duration) bool {
+	added := make(chan bool, 1)
+
+	go func() {
+		inserts, _, err := jq.Add([]*Job{job}, os.Environ(), true)
+		added <- err == nil && inserts == 1
+	}()
+
+	select {
+	case ok := <-added:
+		return ok
+	case <-time.After(wait):
+		return false
+	}
+}
+
+// hookDerivations is what recordHookDerivations records at one call of the
+// ready hook for its job: whether the job's derived strings were memoised as
+// the hook began, and the job's derivation count before and after it.
+type hookDerivations struct {
+	derived bool
+	before  uint32
+	after   uint32
+}
+
+// TestNoHoldHookFindsGroupDerived covers the cost spec G1.3 measures: a job's
+// scheduler group is derived before its item is queued, and preparing it as it
+// enters ready re-derives only when that changes its requirements, so the
+// queue's ready hook finds the group memoised.
+func TestNoHoldHookFindsGroupDerived(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a runner command and learned 300, an added job's group is derived before its item is "+
+		"queued, and the hook derives nothing more", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldServerRC)
+		n.seedLearned("g13-add")
+		n.gateRAC(ctx)
+
+		job := n.newJob("g13-add", 0, jobOverridePreferSystemReqs)
+		calls := n.recordHookDerivations(job.Key())
+
+		n.add(job)
+
+		So(calls(), ShouldResemble, []hookDerivations{{derived: true, before: 1, after: 1}})
+
+		_, item := n.serverJob(job.Key())
+		So(item.ReserveGroup, ShouldEqual, n.groupFor(noHoldLearnedRAM))
+	})
+
+	Convey("Given a runner command and a ready job, suspending and resuming it with nothing learned in "+
+		"between derives its group no more", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldServerRC)
+		n.seedLearned("g13-resume")
+		job := n.addJob("g13-resume", 0, jobOverridePreferSystemReqs)
+		n.gateRAC(ctx)
+
+		before := n.derivations(job.Key())
+
+		n.suspend(job)
+		n.resume(job)
+		n.waitReady(job.Key())
+
+		So(n.derivations(job.Key()), ShouldEqual, before)
+
+		_, item := n.serverJob(job.Key())
+		So(item.ReserveGroup, ShouldEqual, n.groupFor(noHoldLearnedRAM))
+	})
+}
+
 // noHoldTest is a durability-config manager on its own database, with a user
 // client that adds and inspects jobs and a runner client that reserves them and
 // reports how they ended.
@@ -184,6 +465,9 @@ type noHoldTest struct {
 	connect func() *Client
 	addr    string
 	connTO  time.Duration
+
+	// releaseRecovery, set while restartPaused holds recovery, lets it go.
+	releaseRecovery func()
 }
 
 // newNoHoldTest starts a noHoldTest with spec Section C's defaults (ItemTTR 1m,
@@ -204,13 +488,11 @@ func newNoHoldTest(ctx context.Context, t *testing.T, configure ...func(*ServerC
 	n.start(ctx)
 
 	Reset(func() {
-		if n.gates != nil {
-			n.gates.openAll()
+		if n.releaseRecovery != nil {
+			n.releaseRecovery()
 		}
 
-		disconnect(n.runner)
-		disconnect(n.jq)
-		n.server.Stop(ctx, true)
+		n.stop(ctx)
 	})
 
 	return n
@@ -234,12 +516,23 @@ func (n *noHoldTest) start(ctx context.Context) {
 	n.runner = n.connect()
 }
 
-// restart stops the manager and starts a new one on its database, returning
-// once the new one has recovered.
-func (n *noHoldTest) restart(ctx context.Context) {
+// stop opens any RAC gate, so no callback is left waiting at it, then
+// disconnects n's clients and stops the manager.
+func (n *noHoldTest) stop(ctx context.Context) {
+	if n.gates != nil {
+		n.gates.openAll()
+		n.gates = nil
+	}
+
 	disconnect(n.runner)
 	disconnect(n.jq)
 	n.server.Stop(ctx, true)
+}
+
+// restart stops the manager and starts a new one on its database, returning
+// once the new one has recovered.
+func (n *noHoldTest) restart(ctx context.Context) {
+	n.stop(ctx)
 
 	n.config.dontWipeDevDB = true
 	n.start(ctx)
@@ -247,19 +540,57 @@ func (n *noHoldTest) restart(ctx context.Context) {
 	So(waitUntilRecovered(n.server), ShouldBeTrue)
 }
 
+// restartPaused stops the manager and starts a new one on its database whose
+// recovery is held before it queues anything, until the returned func is
+// called. That func returns once the new manager has recovered, with n's
+// clients connected to it.
+func (n *noHoldTest) restartPaused(ctx context.Context) func() {
+	n.stop(ctx)
+
+	n.config.dontWipeDevDB = true
+	server, token, release := pausedRecoveringFixtureServer(ctx, n.config)
+	n.server = server
+	n.releaseRecovery = release
+
+	return func() {
+		release()
+		So(waitUntilRecovered(n.server), ShouldBeTrue)
+
+		n.connect = func() *Client {
+			client, errc := Connect(n.addr, n.config.CAFile, n.config.CertDomain, token, n.connTO)
+			So(errc, ShouldBeNil)
+
+			return client
+		}
+
+		n.jq = n.connect()
+		n.runner = n.connect()
+	}
+}
+
 // addJob adds a job with standardReqs and a ReqGroup of its own, named after
 // name, and returns it.
 func (n *noHoldTest) addJob(name string, retries, override uint8) *Job {
-	job := &Job{
+	job := n.newJob(name, retries, override)
+	n.add(job)
+
+	return job
+}
+
+// newJob returns a job with standardReqs and a ReqGroup of its own, named
+// after name, without adding it.
+func (n *noHoldTest) newJob(name string, retries, override uint8) *Job {
+	return &Job{
 		Cmd: restFormTrue + " " + name, Cwd: testCwd, RepGroup: "nohold-" + name,
 		ReqGroup: "nohold-" + name, Requirements: n.reqs.Clone(), Retries: retries, Override: override,
 	}
+}
 
-	inserts, _, err := n.jq.Add([]*Job{job}, os.Environ(), true)
+// add has the user add jobs, all of which must be new.
+func (n *noHoldTest) add(jobs ...*Job) {
+	inserts, _, err := n.jq.Add(jobs, os.Environ(), true)
 	So(err, ShouldBeNil)
-	So(inserts, ShouldEqual, 1)
-
-	return job
+	So(inserts, ShouldEqual, len(jobs))
 }
 
 // gateRAC waits until no ready-added callback is running or pending, then
@@ -267,12 +598,16 @@ func (n *noHoldTest) addJob(name string, retries, override uint8) *Job {
 func (n *noHoldTest) gateRAC(ctx context.Context) {
 	So(pollUntil(n.server.racIdle), ShouldBeTrue)
 
-	n.gates = newRACGates(1)
+	// the callback keeps this server, queue and gates, since n's are replaced
+	// by a restart and the server's queue is cleared when it stops.
+	gates := newRACGates(1)
+	n.gates = gates
+	server, q := n.server, n.server.q
 
-	n.server.q.SetReadyAddedCallback(func(_ string, allitemdata []any) {
-		i := n.gates.enter()
-		n.gates.wait(i)
-		n.server.readyAddedCallback(ctx, n.server.q, allitemdata)
+	q.SetReadyAddedCallback(func(_ string, allitemdata []any) {
+		i := gates.enter()
+		gates.wait(i)
+		server.readyAddedCallback(ctx, q, allitemdata)
 	})
 }
 
@@ -439,6 +774,284 @@ func (n *noHoldTest) serverJobRAM(key string) int {
 	defer sjob.RUnlock()
 
 	return sjob.Requirements.RAM
+}
+
+// seedLearned seeds noHoldLearnedRAM as name's ReqGroup's only RAM stat, so its
+// learned RAM is noHoldLearnedRAM ("learned 300").
+func (n *noHoldTest) seedLearned(name string) {
+	seedReqGroupStats(n.server, bucketJobRAM, "nohold-"+name, noHoldLearnedRAM)
+}
+
+// groupFor returns the scheduler group of standardReqs with the given RAM and
+// limit groups.
+func (n *noHoldTest) groupFor(ram int, limitGroups ...string) string {
+	req := n.reqs.Clone()
+	req.RAM = ram
+
+	return schedulerGroupString(reqForScheduler(req), limitGroups)
+}
+
+// asOlderRecord makes the manager's job for key look as a record from a
+// manager before FailedRunReqs does: its RAM back at 10 and no FailedRunReqs.
+func (n *noHoldTest) asOlderRecord(key string) {
+	sjob, _ := n.serverJob(key)
+
+	sjob.Lock()
+	sjob.Requirements.RAM = 10
+	sjob.FailedRunReqs = nil
+	sjob.Unlock()
+}
+
+// kick has the user kick job.
+func (n *noHoldTest) kick(job *Job) {
+	kicked, err := n.jq.Kick([]*JobEssence{{JobKey: job.Key()}})
+	So(err, ShouldBeNil)
+	So(kicked, ShouldEqual, 1)
+}
+
+// suspend has the user suspend job.
+func (n *noHoldTest) suspend(job *Job) {
+	suspended, err := n.jq.Suspend([]*JobEssence{{JobKey: job.Key()}})
+	So(err, ShouldBeNil)
+	So(suspended, ShouldEqual, 1)
+}
+
+// resume has the user resume job.
+func (n *noHoldTest) resume(job *Job) {
+	resumed, err := n.jq.Resume([]*JobEssence{{JobKey: job.Key()}})
+	So(err, ShouldBeNil)
+	So(resumed, ShouldEqual, 1)
+}
+
+// archive has the runner reserve job and archive it as a success with the
+// given peak RAM.
+func (n *noHoldTest) archive(job *Job, peakRAM int) {
+	reserved := n.reserveStarted(job, "", os.Getpid())
+
+	So(n.runner.Archive(reserved, &JobEndState{
+		Exited: true, Exitcode: 0, PeakRAM: peakRAM, EndTime: time.Now(),
+	}), ShouldBeNil)
+}
+
+// failRAMInGroup has the runner reserve job from the given scheduler group,
+// report it started and release it for RAM with noHoldPeakRAM.
+func (n *noHoldTest) failRAMInGroup(job *Job, group string) {
+	reserved := n.reserveStarted(job, group, os.Getpid())
+
+	So(n.runner.Release(reserved, &JobEndState{
+		Exited: true, Exitcode: 1, PeakRAM: noHoldPeakRAM, EndTime: time.Now(),
+	}, FailReasonRAM), ShouldBeNil)
+}
+
+// addCompleteDependent queues, straight into the queue, the item of a complete
+// job (a rerun candidate) named after name, with " child" added to its
+// command, that depends on parent, and returns its key.
+func (n *noHoldTest) addCompleteDependent(ctx context.Context, name string, parent *Job) string {
+	old := n.newJob(name, 0, jobOverridePreferSystemReqs)
+	old.Cmd += noHoldChildCmd
+	old.State = JobStateComplete
+
+	added, _, err := n.server.q.AddMany(ctx, []*queue.ItemDef{{
+		Key: old.Key(), Data: old, TTR: n.server.itemTTRDuration(), Dependencies: []string{parent.Key()},
+	}})
+	So(err, ShouldBeNil)
+	So(added, ShouldEqual, 1)
+
+	return old.Key()
+}
+
+// recordItemStatesOnLoad has loads record, at each load of job's ReqGroup, the
+// state of job's queue item ("" if it is not queued). It reads the item in a
+// goroutine and waits up to a second for it, since a load under the queue's
+// lock would stop that read returning; such a wait records "timeout". It
+// returns a func giving the states recorded so far.
+func (n *noHoldTest) recordItemStatesOnLoad(loads *reqStatLoads, job *Job) func() []queue.ItemState {
+	var (
+		mu     sync.Mutex
+		states []queue.ItemState
+	)
+
+	q, key := n.server.q, job.Key()
+
+	loads.setOnLoad(func(reqGroup string) {
+		if reqGroup != job.ReqGroup {
+			return
+		}
+
+		got := make(chan queue.ItemState, 1)
+
+		go func() {
+			item, err := q.Get(key)
+			if err != nil || item == nil {
+				got <- ""
+
+				return
+			}
+
+			got <- item.Stats().State
+		}()
+
+		var state queue.ItemState
+
+		select {
+		case state = <-got:
+		case <-time.After(time.Second):
+			state = "timeout"
+		}
+
+		mu.Lock()
+
+		states = append(states, state)
+		mu.Unlock()
+	})
+
+	return func() []queue.ItemState {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return append([]queue.ItemState(nil), states...)
+	}
+}
+
+// probeQueueLockOnLoad has each load of reqGroup call the queue's Stats in a
+// goroutine and wait up to a second for it, counting a wait that times out as
+// a load under the queue's lock: such a load holds the lock while it waits, so
+// Stats cannot return. The load does not depend on Stats, so this cannot
+// deadlock. It resets loads' counts, so only probed loads are counted.
+func (n *noHoldTest) probeQueueLockOnLoad(loads *reqStatLoads, reqGroup string) *queueLockProbe {
+	p := &queueLockProbe{server: n.server, loads: loads, group: reqGroup}
+	q := n.server.q
+
+	loads.reset()
+
+	loads.setOnLoad(func(group string) {
+		if group != reqGroup {
+			return
+		}
+
+		returned := make(chan struct{})
+
+		go func() {
+			q.Stats()
+			close(returned)
+		}()
+
+		under := false
+
+		select {
+		case <-returned:
+		case <-time.After(time.Second):
+			under = true
+		}
+
+		p.mu.Lock()
+		defer p.mu.Unlock()
+
+		p.checked++
+		if under {
+			p.under++
+		}
+	})
+
+	return p
+}
+
+// holdRACMutexUntilReady holds racmutex for writing until the queue's only item
+// is ready, checking every 50ms that the queue's Stats returns within a second
+// meanwhile. It reports whether Stats always did, and whether the item became
+// ready within noHoldLostWait.
+func (n *noHoldTest) holdRACMutexUntilReady() (bool, bool) {
+	q := n.server.q
+
+	n.server.racmutex.Lock()
+	defer n.server.racmutex.Unlock()
+
+	deadline := time.Now().Add(noHoldLostWait)
+
+	for time.Now().Before(deadline) {
+		stats, ok := statsWithin(q, time.Second)
+		if !ok {
+			return false, false
+		}
+
+		if stats.Delayed == 0 && stats.Ready == 1 {
+			return true, true
+		}
+
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	return true, false
+}
+
+// statsWithin returns q's Stats, and false if they did not return within wait.
+func statsWithin(q *queue.Queue, wait time.Duration) (*queue.Stats, bool) {
+	got := make(chan *queue.Stats, 1)
+
+	go func() { got <- q.Stats() }()
+
+	select {
+	case stats := <-got:
+		return stats, true
+	case <-time.After(wait):
+		return nil, false
+	}
+}
+
+// recordHookDerivations wraps the queue's ready hook so that each call for
+// key's job records its hookDerivations. It returns a func giving the calls
+// recorded so far.
+func (n *noHoldTest) recordHookDerivations(key string) func() []hookDerivations {
+	var (
+		mu    sync.Mutex
+		calls []hookDerivations
+	)
+
+	server := n.server
+
+	server.q.SetReadyHook(func(data any, reserveGroup string) string {
+		job, ok := data.(*Job)
+		if !ok {
+			return server.prepareForReady(data, reserveGroup)
+		}
+
+		job.RLock()
+		matches, derived, before := job.Key() == key, job.derived != nil, job.derivations
+		job.RUnlock()
+
+		group := server.prepareForReady(data, reserveGroup)
+
+		if matches {
+			job.RLock()
+			after := job.derivations
+			job.RUnlock()
+
+			mu.Lock()
+
+			calls = append(calls, hookDerivations{derived: derived, before: before, after: after})
+			mu.Unlock()
+		}
+
+		return group
+	})
+
+	return func() []hookDerivations {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return append([]hookDerivations(nil), calls...)
+	}
+}
+
+// derivations returns how many times the manager's job for key has derived its
+// scheduler-group strings.
+func (n *noHoldTest) derivations(key string) uint32 {
+	sjob, _ := n.serverJob(key)
+
+	sjob.RLock()
+	defer sjob.RUnlock()
+
+	return sjob.derivations
 }
 
 // TestNoHoldFailTimeBumps covers spec C1 tests 1 to 7: a release or bury
@@ -627,7 +1240,7 @@ func TestNoHoldOwnerReportAfterLost(t *testing.T) {
 
 	Convey("Given the same with a runner command, the owner's RAM report puts the ready item in the bumped "+
 		"RAM's group", t, func() {
-		n := newNoHoldTest(ctx, t, noHoldLostRuns, noHoldRunnerCmd(serverRC))
+		n := newNoHoldTest(ctx, t, noHoldLostRuns, noHoldServerRC)
 		job := n.addJob("c1-10", 3, jobOverridePreferSystemReqs)
 
 		owned := n.loseRun(job, schedulerGroupString(reqForScheduler(n.reqs), nil))
@@ -688,11 +1301,6 @@ func TestNoHoldOwnerReportAfterLost(t *testing.T) {
 // ownerRAMEndState is the owner's report of a run that used noHoldPeakRAM.
 func ownerRAMEndState() *JobEndState {
 	return &JobEndState{Exited: true, Exitcode: 1, PeakRAM: noHoldPeakRAM}
-}
-
-// noHoldRunnerCmd sets the runner command.
-func noHoldRunnerCmd(rc string) func(*ServerConfig) {
-	return func(c *ServerConfig) { c.RunnerCmd = rc }
 }
 
 // TestNoHoldHighPeakBumps covers spec C2 tests 1 to 4 and 7 to 9: a non-RAM
@@ -1057,7 +1665,7 @@ func TestNoHoldModifyClearsBump(t *testing.T) {
 	})
 
 	Convey("Given a runner command, the RAC gated and a ready job with no stats", t, func() {
-		n := newNoHoldTest(ctx, t, noHoldRunnerCmd(serverRC))
+		n := newNoHoldTest(ctx, t, noHoldServerRC)
 		job := n.addJob("c3-5", 0, jobOverridePreferSystemReqs)
 		n.gateRAC(ctx)
 
@@ -1095,7 +1703,7 @@ func TestNoHoldModifyClearsBump(t *testing.T) {
 		n.failForRAM(job)
 		So(n.get(job).Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
 
-		n.modify(job, overrideModifier(jobOverrideAlwaysUseJobReqs))
+		n.modify(job, override2Modifier())
 
 		So(n.kickAndReserve(job).Requirements.RAM, ShouldEqual, 10)
 	})
@@ -1112,7 +1720,7 @@ func TestNoHoldModifyClearsBump(t *testing.T) {
 		}, FailReasonTime), ShouldBeNil)
 		So(n.get(job).Requirements.Time, ShouldEqual, time.Hour+10*time.Second)
 
-		n.modify(job, overrideModifier(jobOverrideAlwaysUseJobReqs))
+		n.modify(job, override2Modifier())
 
 		So(n.kickAndReserve(job).Requirements.Time, ShouldEqual, 10*time.Second)
 	})
@@ -1139,7 +1747,7 @@ func TestNoHoldModifyClearsBump(t *testing.T) {
 		n.waitReady(job.Key())
 		So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldBumpedRAM)
 
-		n.modify(job, overrideModifier(jobOverrideAlwaysUseJobReqs))
+		n.modify(job, override2Modifier())
 
 		So(n.serverJobRAM(job.Key()), ShouldEqual, 10)
 		So(n.get(job).Requirements.RAM, ShouldEqual, 10)
@@ -1147,10 +1755,12 @@ func TestNoHoldModifyClearsBump(t *testing.T) {
 
 	Convey("Given a 500ms release delay and a job delayed after failing for RAM, when Modify changes its "+
 		"command while its delay expires, Modify returns and the job is ready under its new key", t, func() {
-		n := newNoHoldTest(ctx, t, func(c *ServerConfig) { c.Timings.ReleaseDelayMin = 500 * time.Millisecond })
+		n := newNoHoldTest(ctx, t, noHoldServerRC,
+			func(c *ServerConfig) { c.Timings.ReleaseDelayMin = 500 * time.Millisecond })
 		job := n.addJob("c3-10", 3, jobOverridePreferSystemReqs)
+		n.gateRAC(ctx)
 
-		n.failForRAM(job)
+		n.failRAMInGroup(job, n.groupFor(10))
 
 		_, item := n.serverJob(job.Key())
 		So(item.Stats().State, ShouldEqual, queue.ItemStateDelay)
@@ -1196,17 +1806,455 @@ func TestNoHoldModifyClearsBump(t *testing.T) {
 		So(newKey, ShouldNotEqual, job.Key())
 		n.waitReady(newKey)
 
+		// the item was prepared as it became ready, with the RAC gated: it is
+		// in the bumped group, not the RAM 10 group it waited in.
 		sjob, item := n.serverJob(newKey)
 		So(sjob.Cmd, ShouldEqual, job.Cmd+" modified")
-		So(item.ReserveGroup, ShouldEqual, "")
+		So(item.ReserveGroup, ShouldEqual, n.groupFor(noHoldBumpedRAM))
+		So(sjob.getSchedulerGroup(), ShouldEqual, item.ReserveGroup)
 		So(n.serverJobRAM(newKey), ShouldEqual, noHoldBumpedRAM)
+	})
+
+	Convey("Given no learned values (every load fails), the RAC gated and a job whose RAM a high peak "+
+		"bumped", t, func() {
+		const name = "c3-override2-no-learning"
+
+		loads := countReqStatLoads()
+		loads.setFailing("nohold-"+name, true)
+
+		Convey("buried, when Modify sets only override 2, kicked its item has its original RAM", func() {
+			n := newNoHoldTest(ctx, t)
+
+			Reset(func() { reqStatLoadHook = nil })
+
+			job := n.addJob(name, 0, jobOverridePreferSystemReqs)
+			n.gateRAC(ctx)
+
+			n.failRun(job, FailReasonExit, noHoldPeakRAM)
+			So(n.get(job).State, ShouldEqual, JobStateBuried)
+			So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldBumpedRAM)
+
+			rec, _ := n.server.db.cachedReqGroupRecs(job.ReqGroup)
+			So(rec, ShouldBeNil)
+
+			n.modify(job, override2Modifier())
+			n.kick(job)
+
+			So(n.serverJobRAM(job.Key()), ShouldEqual, 10)
+		})
+
+		Convey("delayed, when Modify sets only override 2, its item has its original RAM once ready", func() {
+			n := newNoHoldTest(ctx, t, noHoldSlowRetry)
+
+			Reset(func() { reqStatLoadHook = nil })
+
+			job := n.addJob(name, 1, jobOverridePreferSystemReqs)
+			n.gateRAC(ctx)
+
+			n.failRun(job, FailReasonExit, noHoldPeakRAM)
+			So(n.itemState(job.Key()), ShouldEqual, queue.ItemStateDelay)
+			So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldBumpedRAM)
+
+			n.modify(job, override2Modifier())
+
+			n.waitReady(job.Key())
+			So(n.serverJobRAM(job.Key()), ShouldEqual, 10)
+		})
 	})
 }
 
-// overrideModifier returns a modifier that sets only the override.
-func overrideModifier(override uint8) *JobModifier {
+// override2Modifier returns a modifier that sets only Override 2
+// (jobOverrideAlwaysUseJobReqs).
+func override2Modifier() *JobModifier {
 	jm := NewJobModifer()
-	jm.SetOverride(override)
+	jm.SetOverride(jobOverrideAlwaysUseJobReqs)
 
 	return jm
+}
+
+// TestNoHoldReadyPrepare covers spec D1: every item is prepared by the queue's
+// ready hook as it becomes ready, so its data and reserve group are already
+// right before any reserve or RAC.
+func TestNoHoldReadyPrepare(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a job with no retries buried after failing for RAM, with a record from an older manager, "+
+		"kicked its item has the bumped RAM when Kick returns", t, func() {
+		n := newNoHoldTest(ctx, t)
+		job := n.addJob("d1-1", 0, jobOverridePreferSystemReqs)
+		n.gateRAC(ctx)
+
+		n.failForRAM(job)
+		So(n.get(job).State, ShouldEqual, JobStateBuried)
+		n.asOlderRecord(job.Key())
+
+		n.kick(job)
+
+		So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldBumpedRAM)
+	})
+
+	Convey("Given learned 300 and no runner command, an added job's item has RAM 300 and reserve group "+
+		"\"\" when Add returns", t, func() {
+		n := newNoHoldTest(ctx, t)
+		n.seedLearned("d1-2")
+		n.gateRAC(ctx)
+
+		job := n.addJob("d1-2", 0, jobOverridePreferSystemReqs)
+
+		_, item := n.serverJob(job.Key())
+		So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldLearnedRAM)
+		So(item.ReserveGroup, ShouldEqual, "")
+	})
+
+	Convey("Given learned 300 and a runner command, an added job's item is in the RAM 300 group, as is "+
+		"the job, when Add returns", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldServerRC)
+		n.seedLearned("d1-3")
+		n.gateRAC(ctx)
+
+		job := n.addJob("d1-3", 0, jobOverridePreferSystemReqs)
+
+		sjob, item := n.serverJob(job.Key())
+		So(item.ReserveGroup, ShouldEqual, n.groupFor(noHoldLearnedRAM))
+		So(sjob.getSchedulerGroup(), ShouldEqual, item.ReserveGroup)
+	})
+
+	Convey("Given learned 300", t, func() {
+		Convey("a suspended job, resumed after 300 is learned, is ready at RAM 300", func() {
+			n := newNoHoldTest(ctx, t)
+			job := n.addJob("d1-4-resume", 0, jobOverridePreferSystemReqs)
+			n.suspend(job)
+			n.gateRAC(ctx)
+
+			n.seedLearned("d1-4-resume")
+			n.resume(job)
+
+			n.waitReady(job.Key())
+			So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldLearnedRAM)
+		})
+
+		Convey("a dependent job is ready at RAM 300 once its parent is archived", func() {
+			n := newNoHoldTest(ctx, t)
+			n.seedLearned("d1-4-dep")
+			parent := n.newJob("d1-4-dep", 0, jobOverridePreferSystemReqs)
+			parent.DepGroups = []string{"nohold-d1-4-dep"}
+			n.add(parent)
+
+			child := n.newJob("d1-4-dep", 0, jobOverridePreferSystemReqs)
+			child.Cmd += noHoldChildCmd
+			child.Dependencies = Dependencies{NewDepGroupDependency("nohold-d1-4-dep")}
+			n.add(child)
+			n.gateRAC(ctx)
+
+			So(n.itemState(child.Key()), ShouldEqual, queue.ItemStateDependent)
+			So(n.serverJobRAM(child.Key()), ShouldEqual, 10)
+
+			n.archive(parent, noHoldLearnedRAM)
+
+			n.waitReady(child.Key())
+			So(n.serverJobRAM(child.Key()), ShouldEqual, noHoldLearnedRAM)
+		})
+
+		Convey("a job whose record is from an older manager is ready at RAM 300 when its delay expires", func() {
+			n := newNoHoldTest(ctx, t, noHoldSlowRetry)
+			n.seedLearned("d1-4-delay")
+			job := n.addJob("d1-4-delay", 3, jobOverridePreferSystemReqs)
+			n.gateRAC(ctx)
+
+			n.failRun(job, FailReasonExit, 5)
+			So(n.itemState(job.Key()), ShouldEqual, queue.ItemStateDelay)
+			n.asOlderRecord(job.Key())
+
+			n.waitReady(job.Key())
+			So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldLearnedRAM)
+		})
+
+		Convey("a dependent job replaced by a live rerun, added by the user, is ready at RAM 300 once its "+
+			"dependency is satisfied", func() {
+			n := newNoHoldTest(ctx, t)
+			parent := n.newJob("d1-4-rerun-parent", 0, jobOverridePreferSystemReqs)
+			parent.DepGroups = []string{"nohold-d1-4-rerun-parent"}
+			n.add(parent)
+
+			n.seedLearned("d1-4-rerun")
+			childKey := n.addCompleteDependent(ctx, "d1-4-rerun", parent)
+			n.gateRAC(ctx)
+
+			rerun := n.newJob("d1-4-rerun", 0, jobOverridePreferSystemReqs)
+			rerun.Cmd += noHoldChildCmd
+			rerun.Dependencies = Dependencies{NewDepGroupDependency("nohold-d1-4-rerun-parent")}
+			So(rerun.Key(), ShouldEqual, childKey)
+
+			inserts, _, err := n.jq.Add([]*Job{rerun}, os.Environ(), false)
+			So(err, ShouldBeNil)
+			So(inserts, ShouldEqual, 1)
+
+			sjob, _ := n.serverJob(childKey)
+			sjob.RLock()
+			So(sjob.State, ShouldNotEqual, JobStateComplete)
+			sjob.RUnlock()
+			So(n.itemState(childKey), ShouldEqual, queue.ItemStateDependent)
+			So(n.serverJobRAM(childKey), ShouldEqual, 10)
+
+			n.archive(parent, 5)
+
+			n.waitReady(childKey)
+			So(n.serverJobRAM(childKey), ShouldEqual, noHoldLearnedRAM)
+		})
+	})
+
+	Convey("Given a runner command, a limit group with its 1 slot in use and learned 300, an added job of "+
+		"that limit group is in the RAM 300 group with its limit group", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldServerRC)
+		n.seedLearned("d1-5")
+
+		first := n.newJob("d1-5", 0, jobOverridePreferSystemReqs)
+		first.LimitGroups = []string{"nohold:1"}
+		n.add(first)
+		So(pollUntil(n.server.racIdle), ShouldBeTrue)
+		n.reserveStarted(first, n.groupFor(noHoldLearnedRAM, "nohold"), os.Getpid())
+		n.gateRAC(ctx)
+
+		second := n.newJob("d1-5", 0, jobOverridePreferSystemReqs)
+		second.Cmd += " second"
+		second.LimitGroups = []string{"nohold"}
+		n.add(second)
+
+		_, item := n.serverJob(second.Key())
+		So(n.serverJobRAM(second.Key()), ShouldEqual, noHoldLearnedRAM)
+		So(item.ReserveGroup, ShouldEqual, n.groupFor(noHoldLearnedRAM, "nohold"))
+	})
+
+	Convey("Given the RAC gated, adding 10 jobs does no RAC scan work", t, func() {
+		n := newNoHoldTest(ctx, t)
+		n.gateRAC(ctx)
+		n.server.racScanWork.Store(0)
+
+		jobs := make([]*Job, 0, 10)
+		for i := range 10 {
+			jobs = append(jobs, n.newJob(fmt.Sprintf("d1-6-%d", i), 0, jobOverridePreferSystemReqs))
+		}
+
+		n.add(jobs...)
+
+		So(n.server.racScanWork.Load(), ShouldEqual, 0)
+	})
+
+	Convey("Given learned 300 for a ReqGroup never loaded, adding a job loads it once, before its item is "+
+		"queued, and its item has RAM 300", t, func() {
+		loads := countReqStatLoads()
+		n := newNoHoldTest(ctx, t)
+
+		Reset(func() { reqStatLoadHook = nil })
+		n.gateRAC(ctx)
+
+		job := n.newJob("d1-7", 0, jobOverridePreferSystemReqs)
+		states := n.recordItemStatesOnLoad(loads, job)
+
+		n.seedLearned("d1-7")
+		_, current := n.server.db.cachedReqGroupRecs(job.ReqGroup)
+		So(current, ShouldBeFalse)
+
+		n.add(job)
+
+		So(loads.count(job.ReqGroup), ShouldEqual, 1)
+		So(states(), ShouldResemble, []queue.ItemState{""})
+		So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldLearnedRAM)
+	})
+
+	Convey("Given a buried job and learned 300 seeded after its bury, after a restart a kick loads its "+
+		"ReqGroup once, while its item is buried, and its item has RAM 300", t, func() {
+		loads := countReqStatLoads()
+		n := newNoHoldTest(ctx, t)
+
+		Reset(func() { reqStatLoadHook = nil })
+
+		job := n.addJob("d1-8", 0, jobOverridePreferSystemReqs)
+		n.gateRAC(ctx)
+
+		n.failRun(job, FailReasonExit, 5)
+		So(n.itemState(job.Key()), ShouldEqual, queue.ItemStateBury)
+		n.seedLearned("d1-8")
+
+		n.restart(ctx)
+		n.gateRAC(ctx)
+
+		states := n.recordItemStatesOnLoad(loads, job)
+		loads.reset()
+
+		n.kick(job)
+
+		So(loads.count(job.ReqGroup), ShouldEqual, 1)
+		So(states(), ShouldResemble, []queue.ItemState{queue.ItemStateBury})
+		So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldLearnedRAM)
+	})
+
+	Convey("Given a suspended job and learned 300 seeded after its suspend, after a restart a resume loads "+
+		"its ReqGroup once, while its item is suspended, and its item has RAM 300", t, func() {
+		loads := countReqStatLoads()
+		n := newNoHoldTest(ctx, t)
+
+		Reset(func() { reqStatLoadHook = nil })
+
+		job := n.addJob("d1-9", 0, jobOverridePreferSystemReqs)
+		n.suspend(job)
+		n.seedLearned("d1-9")
+
+		n.restart(ctx)
+		n.gateRAC(ctx)
+
+		states := n.recordItemStatesOnLoad(loads, job)
+		loads.reset()
+
+		n.resume(job)
+
+		So(loads.count(job.ReqGroup), ShouldEqual, 1)
+		So(states(), ShouldResemble, []queue.ItemState{queue.ItemStateSuspended})
+		So(n.itemState(job.Key()), ShouldEqual, queue.ItemStateReady)
+		So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldLearnedRAM)
+	})
+
+	Convey("Given a runner command, a 2s release delay and a job with 3 retries that fails for RAM, it "+
+		"waits in the RAM 10 group at the bumped RAM, and is in the bumped group once its delay expires",
+		t, func() {
+			n := newNoHoldTest(ctx, t, noHoldServerRC, noHoldSlowRetry)
+			job := n.addJob("d1-10", 3, jobOverridePreferSystemReqs)
+			n.gateRAC(ctx)
+
+			n.failRAMInGroup(job, n.groupFor(10))
+
+			_, item := n.serverJob(job.Key())
+			So(item.Stats().State, ShouldEqual, queue.ItemStateDelay)
+			So(item.ReserveGroup, ShouldEqual, n.groupFor(10))
+			So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldBumpedRAM)
+
+			n.waitReady(job.Key())
+
+			sjob, item := n.serverJob(job.Key())
+			So(item.ReserveGroup, ShouldEqual, n.groupFor(noHoldBumpedRAM))
+			So(sjob.getSchedulerGroup(), ShouldEqual, n.groupFor(noHoldBumpedRAM))
+		})
+}
+
+// TestNoHoldRecoveredReadyPrepared covers spec D2 tests 1 and 2: a ready job
+// recovered by a restarted manager is prepared like any other item entering
+// ready.
+func TestNoHoldRecoveredReadyPrepared(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a stopped manager whose database holds a ready job at RAM 10 with learned 300", t, func() {
+		n := newNoHoldTest(ctx, t)
+		job := n.addJob("d2", 0, jobOverridePreferSystemReqs)
+		n.gateRAC(ctx)
+		So(n.serverJobRAM(job.Key()), ShouldEqual, 10)
+		n.seedLearned("d2")
+
+		recoverJobs := n.restartPaused(ctx)
+
+		Convey("a manager given a runner command while its recovery is held queues the job in the RAM 300 "+
+			"group at RAM 300", func() {
+			n.server.setRC(serverRC)
+			n.gateRAC(ctx)
+			recoverJobs()
+
+			sjob, item := n.serverJob(job.Key())
+			So(item.Stats().State, ShouldEqual, queue.ItemStateReady)
+			So(item.ReserveGroup, ShouldEqual, n.groupFor(noHoldLearnedRAM))
+			So(sjob.getSchedulerGroup(), ShouldEqual, item.ReserveGroup)
+			So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldLearnedRAM)
+		})
+
+		Convey("a manager with no runner command queues the job in group \"\" at RAM 300", func() {
+			n.gateRAC(ctx)
+			recoverJobs()
+
+			_, item := n.serverJob(job.Key())
+			So(item.Stats().State, ShouldEqual, queue.ItemStateReady)
+			So(item.ReserveGroup, ShouldEqual, "")
+			So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldLearnedRAM)
+		})
+	})
+}
+
+// TestNoHoldRACFloor covers spec D3 test 1: the ready-added callback still
+// re-prepares a long-waiting ready job from learning newer than its
+// preparation, so ready-time preparation is a floor, not a freeze.
+func TestNoHoldRACFloor(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("A long-waiting ready job keeps picking up newer learning", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldServerRC)
+		n.seedLearned("d3-1")
+
+		job := n.addJob("d3-1", 0, jobOverridePreferSystemReqs)
+
+		// the item's ReserveGroup is read through HasReady, which takes the
+		// queue's lock, since the ungated RAC may be setting it.
+		learnedGroup, newerGroup := n.groupFor(noHoldLearnedRAM), n.groupFor(noHoldNewerLearnedRAM)
+		So(n.server.q.HasReady(learnedGroup), ShouldBeTrue)
+		So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldLearnedRAM)
+
+		seedReqGroupStats(n.server, bucketJobRAM, job.ReqGroup, noHoldNewerLearnedRAM)
+		n.server.q.TriggerReadyAddedCallback(ctx)
+
+		So(pollUntilFor(noHoldReserveWait, func() bool {
+			item, err := n.server.q.Get(job.Key())
+			if err != nil {
+				return false
+			}
+
+			sjob, ok := item.Data().(*Job)
+			if !ok {
+				return false
+			}
+
+			sjob.RLock()
+			ram := sjob.Requirements.RAM
+			sjob.RUnlock()
+
+			return ram == noHoldNewerLearnedRAM && sjob.getSchedulerGroup() == newerGroup &&
+				n.server.q.HasReady(newerGroup) && !n.server.q.HasReady(learnedGroup)
+		}), ShouldBeTrue)
+	})
+}
+
+// heldLoad holds the loads it is given to hold until released.
+type heldLoad struct {
+	once     sync.Once
+	entered  chan struct{}
+	enterOne sync.Once
+	released chan struct{}
+}
+
+// hold is a reqStatLoads onLoad that blocks each load until release.
+func (h *heldLoad) hold(string) {
+	h.enterOne.Do(func() { close(h.entered) })
+	<-h.released
+}
+
+// started reports whether a load reached hold within a second.
+func (h *heldLoad) started() bool {
+	select {
+	case <-h.entered:
+		return true
+	case <-time.After(time.Second):
+		return false
+	}
+}
+
+// release lets every held load, and every later one, go.
+func (h *heldLoad) release() {
+	h.once.Do(func() { close(h.released) })
 }

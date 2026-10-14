@@ -653,18 +653,20 @@ func (j *Job) derivedLocked() *jobDerived {
 //     fields, LimitGroups and the Requirements fields), the only path that
 //     changes a live job's Cmd/Cwd/mounts/container fields at all;
 //   - updateJobRequirementsForRetry (Requirements RAM/Disk/Time), the only path
-//     that applies learned or post-failure requirements to a live job, via
-//     prepareReadyJob;
+//     that applies learned or post-failure requirements to a live job (at fail
+//     time, in the queue's ready hook and its off-lock twin
+//     prepareBeforeQueueing, and in prepareReadyJob), through
+//     invalidateDerivedIfChangedLocked, so only when it changed one of them;
 //   - Server.handleUserSpecifiedJobLimitGroups (LimitGroups normalisation).
 //
 // That the set is complete is necessary but not sufficient: each of those call
 // sites must also invalidate on EVERY path through it that can have mutated an
 // input. applyTo and handleUserSpecifiedJobLimitGroups have a single exit each and
 // invalidate at it, but updateJobRequirementsForRetry mutates Requirements before
-// an early return, so it invalidates in a DEFER; invalidating at its tail instead
-// would silently leave a stale memo (and so schedule against stale requirements)
-// for every job whose override says to keep its own values but which still learns
-// the resources it did not specify.
+// an early return, so it compares and invalidates in a DEFER; invalidating at its
+// tail instead would silently leave a stale memo (and so schedule against stale
+// requirements) for every job whose override says to keep its own values but
+// which still learns the resources it did not specify.
 //
 // Everywhere else those fields are only ever set while building a brand new Job
 // (at add time, on decoding a database record, or in the field-by-field copies

@@ -239,6 +239,12 @@ func (db *db) refreshReqGroupRecsLater(reqGroup string) {
 
 // warmReqGroupRecs calls refreshReqGroupRecs once for each distinct ReqGroup
 // of jobs.
+//
+// A load is a short local read whose result is shared by every later caller,
+// so it takes no context, as refreshReqGroupRecsLater's does not; contextcheck
+// reports that at every caller that has one.
+//
+//nolint:contextcheck,nolintlint // see above
 func (db *db) warmReqGroupRecs(jobs []*Job) {
 	seen := make(map[string]bool)
 
