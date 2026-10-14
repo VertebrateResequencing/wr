@@ -623,6 +623,72 @@ func (n *noHoldTest) clientStatuses(ctx context.Context, job *Job) []JStatus {
 	return []JStatus{fromServer, fromClient}
 }
 
+// assertBumpKeptWhenReservedAfterReport seeds low learning for a job named
+// name, has the manager release a run of it as lost, then sends the owner's RAM
+// report with report while the job is delayed. Once the manager has applied
+// that report, a new runner reserves the job, after a kick if kick is set. It
+// asserts that runner and the manager both have the bumped RAM.
+func (n *noHoldTest) assertBumpKeptWhenReservedAfterReport(name string, kick bool, report func(owned *Job) error) {
+	n.seedLowLearning(name)
+	job := n.addJob(name, 3, jobOverridePreferSystemReqs)
+
+	owned := n.loseRun(job, "")
+	So(n.itemState(job.Key()), ShouldEqual, queue.ItemStateDelay)
+
+	reservedRAM := n.reserveOnceLostEndStateApplied(job, kick)
+
+	So(report(owned), ShouldBeNil)
+
+	So(<-reservedRAM, ShouldEqual, noHoldBumpedRAM)
+	So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldBumpedRAM)
+	So(n.get(job).Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
+}
+
+// reserveOnceLostEndStateApplied has a new runner reserve job, from inside the
+// manager, once an owner's report of job's lost run has been applied to it,
+// kicking it first if kick is set. It sends the RAM that runner was handed, or
+// -1 if the kick or reserve failed, on the returned channel. The hook is
+// removed, and the runner disconnected, when the Convey ends.
+func (n *noHoldTest) reserveOnceLostEndStateApplied(job *Job, kick bool) <-chan int {
+	other := n.connect()
+	reservedRAM := make(chan int, 1)
+
+	var once sync.Once
+
+	lostEndStateAppliedHook = func(key string) {
+		if key != job.Key() {
+			return
+		}
+
+		once.Do(func() { reservedRAM <- n.kickAndReserveRAM(other, job, kick) })
+	}
+
+	Reset(func() {
+		lostEndStateAppliedHook = nil
+
+		disconnect(other)
+	})
+
+	return reservedRAM
+}
+
+// kickAndReserveRAM kicks job if kick is set, then has runner reserve it,
+// returning the RAM it was handed, or -1 if either failed.
+func (n *noHoldTest) kickAndReserveRAM(runner *Client, job *Job, kick bool) int {
+	if kick {
+		if kicked, err := n.jq.Kick([]*JobEssence{{JobKey: job.Key()}}); err != nil || kicked != 1 {
+			return -1
+		}
+	}
+
+	reserved, err := runner.Reserve(noHoldReserveWait)
+	if err != nil || reserved == nil || reserved.Key() != job.Key() {
+		return -1
+	}
+
+	return reserved.Requirements.RAM
+}
+
 // TestNoHoldSkipReserve covers spec E2 tests 1 to 5: a runner's first reserve
 // is skipped only when its group has no count and nothing ready, so a fresh
 // runner gets work the RAC has not yet counted.
@@ -1919,6 +1985,24 @@ func TestNoHoldOwnerReportAfterLost(t *testing.T) {
 		got := n.get(job)
 		So(got.Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
 		So(got.FailBumpsCleared, ShouldEqual, FailBumpRAM)
+	})
+
+	Convey("Given low learning and a job released as lost and delayed, a run reserved once the owner's RAM "+
+		"report has been applied has the bumped RAM, and the manager keeps it", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldLostRuns, noHoldSlowRetry)
+
+		n.assertBumpKeptWhenReservedAfterReport("c1-applied-release", false, func(owned *Job) error {
+			return n.runner.Release(owned, ownerRAMEndState(), FailReasonRAM)
+		})
+	})
+
+	Convey("Given low learning and a job released as lost and delayed, a run reserved after a kick once the "+
+		"owner's RAM bury has been applied has the bumped RAM, and the manager keeps it", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldLostRuns, noHoldSlowRetry)
+
+		n.assertBumpKeptWhenReservedAfterReport("c1-applied-bury", true, func(owned *Job) error {
+			return n.runner.Bury(owned, ownerRAMEndState(), FailReasonRAM)
+		})
 	})
 }
 

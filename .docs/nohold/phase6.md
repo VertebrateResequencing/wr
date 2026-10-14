@@ -193,6 +193,72 @@ speed comparison was not run.
 - [x] implemented
 - [x] reviewed
 
+### Item 6.1c: lost-release recompute races a reservation reset
+
+Found by review, not by a failing run. `ackAlreadyReleased` applies an
+owner's report of a run the manager already released as lost in two holds
+of the job's lock: `replaceLostEndState` sets the owner's `FailReason` and
+`PeakRAM`, then `recomputeJobRequirements` recomputes. The item is waiting
+to run again, so a reserve can take it between the two. Its
+`resetJobForReservation` clears `FailReason` and `PeakRAM`, the recompute
+then finds no pending failure, skips `resetRequirementsForRecompute` and
+the bump, and sets the reserved run's RAM to the learned value. As in
+item 6.1b, the reserve copies the job for its runner only after
+`persistReservation`, so the runner can be handed that size, and the
+manager records it as the run's either way. Phase 3 (16f8070a) added the
+recompute; 6f1b41bb had none. A reserve before `replaceLostEndState` is
+harmless: `FailReason` is no longer `FailReasonLost`, so nothing is
+replaced.
+
+`finalizeBuriedWaiting` had the same shape: `applyRelease` and the
+recompute took the lock separately. Its item is buried, so a kick in the
+window makes it ready for a reserve.
+
+Red: a new test-only seam, `lostEndStateAppliedHook`, is called once an
+owner's report has been applied in `ackAlreadyReleased` and
+`finalizeBuriedWaiting`. Two new `TestNoHoldOwnerReportAfterLost` leaves
+seed low learning, lose a run, and send the owner's RAM release or bury
+while the item is delayed. From the hook a second runner reserves the job:
+for the release, once the delay moves the item to ready; for the bury, after
+a kick. On 23f2c40c with the seam, that runner is handed 1200, and once the
+report returns the manager's job has RAM 100 in both leaves.
+
+Fix: a new `Server.replaceLostEndState` takes the job's lock once for
+`replaceLostEndStateLocked` and, if it replaced the end state,
+`recomputeJobRequirementsLocked`. A reserve then either comes first, and
+nothing is replaced, or comes after the recompute and takes the bumped size.
+`finalizeBuriedWaiting` applies the owner's end state, `applyReleaseLocked`
+and the recompute under one hold. The lock order is unchanged: the
+recompute takes only the learned-requirement cache's mutex under the job's
+lock, as the ready hook does, and does no database I/O and no queue calls.
+The unused `Job.applyRelease` wrapper is removed.
+
+Mutants, each in a scratch worktree: splitting the release path back into
+two holds, with the hook moved into the gap between applying the report and
+the recompute, fails the release leaf (100); the same for the bury path
+fails the bury leaf (100); both at once fail both. With the hook left after
+both holds, as in the fix, a re-split survives: the seam cannot sit inside
+the lock, so the new leaves prove the race and the fix but do not guard
+against a later re-split. The comments on `Server.replaceLostEndState` and
+`finalizeBuriedWaiting` record why the hold must not be split. Dropping the
+release path's recompute fails C1 tests 9, 10 and 13 (10, 10 and 200), and
+dropping the bury path's fails C1 test 11 (10).
+
+Still open, and older than this branch: `finalizeBuriedWaiting` runs after
+`BuryWaiting` has buried the item. A kick and reserve before its hold can
+still have `updateAfterExit` and `applyReleaseLocked` act on the new run,
+as 6f1b41bb's `applyRelease` did, and the recompute then bumps that run's
+RAM. That needs its own fix, routed separately.
+
+Gates: `make lint` 0 issues; `CGO_ENABLED=1 go test -race -count 3 -run
+'TestNoHold|TestHighPeak|TestReleaseAfterLost' ./jobqueue/` passes;
+`make test` and `CGO_ENABLED=1 make race` pass (998 passed). Neither path
+is hot: both run only for an owner's report of a run already released, so
+no benchmark was run.
+
+- [x] implemented
+- [x] reviewed
+
 ### Item 6.2: G1 - Local gates
 
 spec.md section: G1

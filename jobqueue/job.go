@@ -488,6 +488,24 @@ func (j *Job) endChangeAheadLocked(began uint64) bool {
 	return unchanged
 }
 
+// replaceLostEndStateLocked records the owner's report of how its command
+// ended, and its fail reason, over the end state the manager's own lost release
+// recorded, which is all FailReasonLost can come from on a job waiting to run
+// again. It reports whether it did: once done, FailReason is the owner's, so a
+// re-send of the same report, or a concurrent duplicate, changes nothing. Limit
+// groups are not touched, since the lost release already gave them back. The
+// caller holds j's lock.
+func (j *Job) replaceLostEndStateLocked(jes *JobEndState, failReason string) bool {
+	if j.FailReason != FailReasonLost || jes == nil || !jes.Exited {
+		return false
+	}
+
+	j.recordEndStateLocked(jes)
+	j.FailReason = failReason
+
+	return true
+}
+
 // runsAsImageUser tells you if the Cmd's processes of a job with the given
 // ContainerImageUser and WithDocker will really run as the user the container
 // image specifies instead of as the calling user. That needs both, since
@@ -534,26 +552,6 @@ func (j *Job) recordEndStateLocked(jes *JobEndState) {
 	}
 
 	j.setActualCwd(jes.Cwd)
-}
-
-// replaceLostEndState records the owner's report of how its command ended, and
-// its fail reason, over the end state the manager's own lost release recorded,
-// which is all FailReasonLost can come from on a job waiting to run again. It
-// reports whether it did: once done, FailReason is the owner's, so a re-send of
-// the same report, or a concurrent duplicate, changes nothing. Limit groups are
-// not touched, since the lost release already gave them back.
-func (j *Job) replaceLostEndState(jes *JobEndState, failReason string) bool {
-	j.Lock()
-	defer j.Unlock()
-
-	if j.FailReason != FailReasonLost || jes == nil || !jes.Exited {
-		return false
-	}
-
-	j.recordEndStateLocked(jes)
-	j.FailReason = failReason
-
-	return true
 }
 
 // cwdLeaf returns the part of cwd below cwdBase, prefixed with "/", for display

@@ -313,12 +313,18 @@ func (s *Server) currentReqGroupRecs(reqGroup string) *scheduler.Requirements {
 }
 
 // recomputeJobRequirements locks job and recomputes its requirements from the
-// cached learned values, as after an owner's report replaces the end state of
-// a lost release.
+// cached learned values, as prepareModifiedJobs does for a user's
+// modification of a ready job.
 func (s *Server) recomputeJobRequirements(job *Job) {
 	job.Lock()
 	defer job.Unlock()
 
+	s.recomputeJobRequirementsLocked(job)
+}
+
+// recomputeJobRequirementsLocked is recomputeJobRequirements for a caller that
+// holds job's lock.
+func (s *Server) recomputeJobRequirementsLocked(job *Job) {
 	updateJobRequirementsForRetry(job, job.Override, s.currentReqGroupRecs(job.ReqGroup))
 }
 

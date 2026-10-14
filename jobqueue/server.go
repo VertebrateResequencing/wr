@@ -446,6 +446,16 @@ var resumeQueuedHook func(key string)
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var suspendQueuedHook func(key string)
 
+// lostEndStateAppliedHook, if non-nil, is called with a job's key, before the
+// job is written: by ackAlreadyReleased once it has replaced a lost release's
+// end state with the owner's report, and by finalizeBuriedWaiting once it has
+// applied any bury of a waiting item, whether or not it replaced an end state.
+// A test can then have the job kicked or reserved. It is a test-only seam and
+// is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var lostEndStateAppliedHook func(key string)
+
 // resumeItemReadyHook, if non-nil, is called with a job's key once
 // resumeQueueItem's ResumeWith has returned, so a test can have the item
 // reserved before the resume returns. It is a test-only seam and is nil in
@@ -1425,8 +1435,8 @@ func releaseSpendsARetry(job *Job, rep releaseReport) bool {
 // and state. As this is a new failure, any user's modification no longer
 // clears its increase. It then recomputes the requirements from rec, the
 // cached learned values, so the job waits at its retry size. It returns the
-// scheduler group and log message applyRelease returns. The caller holds job's
-// lock.
+// scheduler group and log message applyReleaseLocked returns. The caller
+// holds job's lock.
 func (j *Job) applyRunEndLocked(rep releaseReport, rec *scheduler.Requirements) (string, string) {
 	if !j.Exited && rep.endState != nil && rep.endState.Exited {
 		j.recordEndStateLocked(rep.endState)
@@ -1441,14 +1451,6 @@ func (j *Job) applyRunEndLocked(rep releaseReport, rec *scheduler.Requirements) 
 	updateJobRequirementsForRetry(j, j.Override, rec)
 
 	return group, msg
-}
-
-// applyRelease locks the job for applyReleaseLocked.
-func (j *Job) applyRelease(rep releaseReport) (string, string) {
-	j.Lock()
-	defer j.Unlock()
-
-	return j.applyReleaseLocked(rep)
 }
 
 // applyReleaseLocked sets a released job's retry budget, state and fail
@@ -3844,8 +3846,11 @@ func (s *Server) releaseRun(ctx context.Context, job *Job, rep releaseReport) (b
 // later arrival order than anything already queued for it, so this can neither
 // resurrect a deleted or archived job nor overwrite a newer record.
 func (s *Server) ackAlreadyReleased(ctx context.Context, job *Job, rep releaseReport) error {
-	if rep.reporter != (uuid.UUID{}) && job.replaceLostEndState(rep.endState, rep.failReason) {
-		s.recomputeJobRequirements(job)
+	if rep.reporter != (uuid.UUID{}) && s.replaceLostEndState(job, rep) {
+		if lostEndStateAppliedHook != nil {
+			lostEndStateAppliedHook(job.Key())
+		}
+
 		s.prepareReadyJobAgain(ctx, job)
 
 		return s.writeReleasedJob(ctx, job, rep)
@@ -3856,6 +3861,31 @@ func (s *Server) ackAlreadyReleased(ctx context.Context, job *Job, rep releaseRe
 	}
 
 	return s.db.updateJobAfterChangeDurable(job)
+}
+
+// replaceLostEndState records the owner's report rep over the end state of the
+// manager's own lost release of job (replaceLostEndStateLocked) and, if it did,
+// recomputes job's requirements for the failure the report gives it, both under
+// one hold of job's lock. It reports whether it replaced the end state.
+//
+// The job's item is waiting to run again, so a reserve can take it as soon as
+// that lock is let go, and the reserve's reset clears the failure. A recompute
+// after the reset would find no failure and put the reserved run back to the
+// learned size, without the increase it was reserved with: the runner could be
+// handed that size, and the manager would record it as the run's. Under one
+// hold, a reserve either comes first, so FailReason is no longer
+// FailReasonLost and nothing is replaced, or comes after the recompute.
+func (s *Server) replaceLostEndState(job *Job, rep releaseReport) bool {
+	job.Lock()
+	defer job.Unlock()
+
+	if !job.replaceLostEndStateLocked(rep.endState, rep.failReason) {
+		return false
+	}
+
+	s.recomputeJobRequirementsLocked(job)
+
+	return true
 }
 
 // attemptScheduleRunners asks the scheduler once for group.count runners for
@@ -4020,16 +4050,28 @@ func (s *Server) runEndCallback(job *Job, rep releaseReport) func(any) {
 // of Run first, but an owner's bury of an item the manager released as lost
 // knows how its command really ended, so its failure's increase is applied
 // now.
+//
+// The report is applied and the job's requirements recomputed under one hold of
+// its lock: the item is buried, so a kick can make it ready and a reserve take
+// it as soon as the lock is let go, and a recompute after that reserve's reset
+// would put the run back to the learned size (see Server.replaceLostEndState).
 func (s *Server) finalizeBuriedWaiting(job *Job, rep releaseReport) (string, string) {
 	job.updateAfterExit(rep.endState, s.limiter)
 
+	job.Lock()
+
 	if rep.reporter != (uuid.UUID{}) {
-		job.replaceLostEndState(rep.endState, rep.failReason)
+		job.replaceLostEndStateLocked(rep.endState, rep.failReason)
 	}
 
-	sgroup, msg := job.applyRelease(rep)
+	sgroup, msg := job.applyReleaseLocked(rep)
+	s.recomputeJobRequirementsLocked(job)
 
-	s.recomputeJobRequirements(job)
+	job.Unlock()
+
+	if lostEndStateAppliedHook != nil {
+		lostEndStateAppliedHook(job.Key())
+	}
 
 	return sgroup, msg
 }
