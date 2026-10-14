@@ -333,11 +333,7 @@ func memoBacklogServer(t *testing.T, ctx context.Context, n int) (*Server, []any
 	So(existed, ShouldEqual, 0)
 
 	So(pollUntil(func() bool {
-		server.rpmutex.Lock()
-		running := server.racRunning
-		server.rpmutex.Unlock()
-
-		return !running && len(server.q.AllItems()) == n
+		return server.racIdle() && len(server.q.AllItems()) == n
 	}), ShouldBeTrue)
 
 	allitemdata := itemData(server.q.AllItems())

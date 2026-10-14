@@ -1018,8 +1018,6 @@ func (s *Server) handleReserve(ctx context.Context, cr *clientRequest, drain boo
 		return nil, "", ""
 	}
 
-	s.waitForPendingReserves()
-
 	if s.skipReserve(cr) {
 		return nil, "", ""
 	}
@@ -1042,44 +1040,22 @@ func (s *Server) handleReserve(ctx context.Context, cr *clientRequest, drain boo
 	return s.respondWithReservedJob(ctx, cr, item), "", ""
 }
 
-// waitForPendingReserves blocks the caller if racPending or racRunning is set,
-// until clearRACPending, finishRAC or shutdown wakes it, so that a reserve
-// usually sees newly ready items only after the ready-added callback has
-// prepared them. This is best-effort ordering: see Server.racPending for how
-// the hold can be released early and what that costs.
-func (s *Server) waitForPendingReserves() {
-	// don't proceed when we're expecting new/changed items
-	s.rpmutex.Lock()
-
-	var wch chan struct{}
-	if s.racPending || s.racRunning {
-		wch = make(chan struct{})
-		s.waitingReserves = append(s.waitingReserves, wch)
-	}
-	s.rpmutex.Unlock()
-
-	if wch != nil {
-		<-wch
-	}
-}
-
 // skipReserve reports whether a reserve should be treated as if nothing were
 // ready because the client's first reserve targets a scheduler group we no
-// longer want more clients working on.
+// longer want more clients working on: one the ready-added callback counts no
+// runners for and that has nothing ready. A group with ready items is not
+// skipped even with no count, since items are reservable as soon as they are
+// ready, which can be before the callback has counted their group.
 func (s *Server) skipReserve(cr *clientRequest) bool {
 	if cr.SchedulerGroup == "" || !cr.FirstReserve || s.runnerCommand() == "" {
 		return false
 	}
 
-	// if this is the first job that the client is trying to reserve, and if we
-	// don't actually want any more clients working on this schedulerGroup, we'll
-	// just act as if nothing was ready. Likewise if in drain mode.
-	s.psgmutex.RLock()
-	defer s.psgmutex.RUnlock()
+	if s.currentGroupCount(cr.SchedulerGroup) > 0 {
+		return false
+	}
 
-	group, existed := s.previouslyScheduledGroups[cr.SchedulerGroup]
-
-	return !existed || group.getCount() == 0
+	return !s.q.HasReady(cr.SchedulerGroup)
 }
 
 // reserveItem reserves the next item for the client's scheduler group, mapping

@@ -3885,7 +3885,10 @@ func TestCommandDependenciesStayStatic(t *testing.T) {
 	})
 }
 
-func TestRerunReplacementReadyCallbackBlocksReserve(t *testing.T) {
+// TestRerunReplacementReservableAtOnce proves that a live rerun replacement that
+// becomes ready can be reserved, as the replacement, while the ready-added
+// callback it queued is still running.
+func TestRerunReplacementReservableAtOnce(t *testing.T) {
 	ctx := context.Background()
 
 	if runnermode || servermode {
@@ -3894,7 +3897,7 @@ func TestRerunReplacementReadyCallbackBlocksReserve(t *testing.T) {
 
 	_, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
-	Convey("A rerun replacement that becomes ready blocks reserves until ReadyAdded finishes", t, func() {
+	Convey("A rerun replacement that becomes ready is reservable while ReadyAdded runs", t, func() {
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -3972,7 +3975,6 @@ func TestRerunReplacementReadyCallbackBlocksReserve(t *testing.T) {
 				close(callbackStarted)
 			})
 			<-releaseCallback
-			server.finishRAC()
 		})
 
 		updated, err := server.replaceLiveRerunItem(ctx, &queue.ItemDef{
@@ -3991,38 +3993,11 @@ func TestRerunReplacementReadyCallbackBlocksReserve(t *testing.T) {
 			return
 		}
 
-		type reserveResult struct {
-			job *Job
-			err error
-		}
-
-		reserved := make(chan reserveResult, 1)
-
-		go func() {
-			job, reserveErr := jq.Reserve(2 * time.Second)
-			reserved <- reserveResult{job: job, err: reserveErr}
-		}()
-
-		select {
-		case <-reserved:
-			So("reserve returned before ReadyAdded callback completed", ShouldBeBlank)
-			release()
-
-			return
-		case <-time.After(150 * time.Millisecond):
-		}
-
-		release()
-
-		select {
-		case result := <-reserved:
-			So(result.err, ShouldBeNil)
-			So(result.job, ShouldNotBeNil)
-			So(result.job.Key(), ShouldEqual, childKey)
-			So(result.job.RepGroup, ShouldEqual, newJob.RepGroup)
-		case <-time.After(2 * time.Second):
-			So("timed out waiting for reserve after ReadyAdded callback completed", ShouldBeBlank)
-		}
+		returned, job := reserveReturnsWhileGated(jq)
+		So(returned, ShouldBeTrue)
+		So(job, ShouldNotBeNil)
+		So(job.Key(), ShouldEqual, childKey)
+		So(job.RepGroup, ShouldEqual, newJob.RepGroup)
 	})
 }
 

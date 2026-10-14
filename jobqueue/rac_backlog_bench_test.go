@@ -50,6 +50,21 @@ const (
 	racBacklogLimitGroups = 10
 )
 
+const (
+	// racCountedJobs is the ready backlog BenchmarkRACCycleCounted counts: jobs
+	// with no limit group, so a cycle prepares and counts every one of them.
+	racCountedJobs = 100000
+
+	// racCountedRunning is how many running jobs that benchmark's cycles count.
+	racCountedRunning = 2000
+
+	// racCountedGroups is how many scheduler groups its jobs are spread over.
+	racCountedGroups = 4
+
+	// racCountedReqGroup is the ReqGroup of its jobs.
+	racCountedReqGroup = "rac-counted"
+)
+
 // BenchmarkBuildSchedulerGroupsBacklog records the per-rac-cycle cost of
 // buildSchedulerGroups over a large, unchanging, limit-blocked ready backlog,
 // which is what a live manager with a long queue pays on every ready-added
@@ -163,4 +178,146 @@ func racBacklogData(jobs []*Job) []any {
 	}
 
 	return data
+}
+
+// BenchmarkRACCycleCounted records the cost of a rac cycle that counts
+// racCountedJobs ready jobs with no limit group, then the running jobs
+// (accountForRunningJobs), run as the queue's ready-added callback so the
+// queue hands it its ready jobs as a live manager's does. The leavers variants
+// have that many ready jobs reserved during the cycle, after its ready
+// snapshot and before it counts the running jobs, as runners do; they are put
+// back, untimed, after each op. It only calls functions an older tree also
+// has, so it can be copied into one to compare versions.
+func BenchmarkRACCycleCounted(b *testing.B) {
+	ctx := context.Background()
+	s, q := racCountedFixture(b)
+
+	for _, leavers := range []int{0, 100} {
+		b.Run(fmt.Sprintf("leavers=%d", leavers), func(b *testing.B) {
+			b.ReportAllocs()
+
+			for range b.N {
+				reserved := racCountedCycle(ctx, b, s, q, leavers)
+
+				b.StopTimer()
+				racCountedPutBack(ctx, b, q, reserved)
+				b.StartTimer()
+			}
+		})
+	}
+}
+
+// racCountedFixture returns a server and its queue holding racCountedJobs ready
+// jobs and racCountedRunning running ones, spread over racCountedGroups
+// scheduler groups, with no limit groups and no learned requirements.
+func racCountedFixture(b *testing.B) (*Server, *queue.Queue) {
+	b.Helper()
+
+	ctx := context.Background()
+	q := queue.New(ctx, "rac-counted-bench")
+	s := &Server{
+		q:                         q,
+		limiter:                   limiter.New(func(context.Context, string) *limiter.GroupData { return nil }),
+		previouslyScheduledGroups: make(map[string]*sgroup),
+	}
+
+	defs := make([]*queue.ItemDef, 0, racCountedJobs+racCountedRunning)
+
+	for i := range racCountedJobs + racCountedRunning {
+		job := &Job{
+			Cmd: fmt.Sprintf("echo rac-counted %d", i), Cwd: testCwd,
+			ReqGroup: racCountedReqGroup, RepGroup: racCountedReqGroup,
+			Requirements: &jqs.Requirements{
+				RAM: 100 * (1 + i%racCountedGroups), Time: time.Minute, Cores: 1, Disk: 1,
+			},
+		}
+		group := job.schedulerGroupSnapshot().group
+		job.setSchedulerGroup(group)
+
+		def := &queue.ItemDef{Key: job.Key(), ReserveGroup: group, Data: job, TTR: time.Hour}
+		if i >= racCountedJobs {
+			def.StartQueue = queue.SubQueueRun
+		}
+
+		defs = append(defs, def)
+	}
+
+	if _, _, err := q.AddMany(ctx, defs); err != nil {
+		b.Fatal(err)
+	}
+
+	b.Cleanup(func() {
+		if err := q.Destroy(); err != nil {
+			b.Fatal(err)
+		}
+	})
+
+	return s, q
+}
+
+// racCountedCycle runs one rac cycle through q's ready-added callback,
+// reserving leavers ready jobs once the cycle has counted the ready jobs, and
+// returns the keys of the jobs it reserved.
+func racCountedCycle(ctx context.Context, b *testing.B, s *Server, q *queue.Queue, leavers int) []string {
+	b.Helper()
+
+	done := make(chan []string, 1)
+
+	q.SetReadyAddedCallback(func(_ string, allitemdata []any) {
+		groups := make(map[string]*sgroup)
+		s.scheduleReadyJobsByPriority(ctx, q, groups, s.snapshotReadyJobs(allitemdata), racLimitRunnerCmd,
+			map[string]*jqs.Requirements{racCountedReqGroup: nil})
+
+		reserved := make([]string, 0, leavers)
+
+		for name := range groups {
+			for len(reserved) < leavers {
+				item, err := q.Reserve(name, 0)
+				if err != nil {
+					break
+				}
+
+				reserved = append(reserved, item.Key)
+			}
+		}
+
+		s.accountForRunningJobs(q, groups)
+
+		done <- reserved
+	})
+
+	q.TriggerReadyAddedCallback(ctx)
+
+	reserved := <-done
+	if len(reserved) != leavers {
+		b.Fatalf("reserved %d jobs, not %d", len(reserved), leavers)
+	}
+
+	return reserved
+}
+
+// racCountedPutBack puts the given reserved jobs back in the ready sub-queue,
+// and waits until they are ready and no ready-added callback is running. That
+// includes the cycle's own, which hands back its result before runReadyAddedCb
+// has finished, so with no keys too the next op's trigger cannot land on it and
+// add a recall to the timed region.
+func racCountedPutBack(ctx context.Context, b *testing.B, q *queue.Queue, keys []string) {
+	b.Helper()
+
+	q.SetReadyAddedCallback(func(string, []any) {})
+
+	for _, key := range keys {
+		if err := q.Release(ctx, key); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	deadline := time.Now().Add(time.Minute)
+	for q.Stats().Ready != racCountedJobs || q.ReadyAddedCallbackRunning() {
+		if time.Now().After(deadline) {
+			b.Fatal("reserved jobs did not become ready again")
+		}
+
+		time.Sleep(time.Millisecond)
+	}
 }

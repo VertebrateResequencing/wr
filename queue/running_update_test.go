@@ -34,6 +34,22 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+// errBackNotReady is what releaseToReady returns if its released item does not
+// become ready again.
+var errBackNotReady = errors.New("released item did not become ready again")
+
+const (
+	// leftReadyRun, leftReadyBury and leftReadyBack name the items
+	// TestGetRunningDataAndLeftReady's callback leaves running, buries, and
+	// returns to ready; leftReadyRunData and leftReadyBackData are the data of
+	// the first and the last.
+	leftReadyRun      = "run"
+	leftReadyBury     = "bury"
+	leftReadyBack     = "back"
+	leftReadyRunData  = "run data"
+	leftReadyBackData = "back data"
+)
+
 // TestUpdateUnlessRunningAndRequeue covers the operations that let a caller
 // hold a dependency change back from a running item until its run ends.
 func TestUpdateUnlessRunningAndRequeue(t *testing.T) {
@@ -196,4 +212,177 @@ func TestUpdateUnlessRunningAndRequeue(t *testing.T) {
 			So(qerr.Err, ShouldEqual, ErrNotRunning)
 		})
 	})
+}
+
+// leftReadyResult is what a ready-added callback in TestGetRunningDataAndLeftReady
+// reports.
+type leftReadyResult struct {
+	running []any
+	left    []any
+	err     error
+}
+
+// TestGetRunningDataAndLeftReady covers the call that gets the running items'
+// data and those of the items that left ready during a ready-added callback.
+func TestGetRunningDataAndLeftReady(t *testing.T) {
+	ctx := context.Background()
+
+	Convey("Given a queue with five ready items in their own reserve groups", t, func() {
+		q := New(ctx, "running_left_ready")
+
+		defer func() { So(q.Destroy(), ShouldBeNil) }()
+
+		for _, name := range []string{leftReadyRun, leftReadyBury, "remove", "untouched", leftReadyBack} {
+			_, err := q.Add(ctx, name, name, name+" data", 0, 0, time.Hour, "")
+			So(err, ShouldBeNil)
+		}
+
+		Convey("outside a ready-added callback, including after one has finished, nothing is reported "+
+			"as having left ready", func() {
+			q.SetReadyAddedCallback(func(string, []any) {})
+			q.TriggerReadyAddedCallback(ctx)
+			So(pollQueue(func() bool { return !q.ReadyAddedCallbackRunning() }), ShouldBeTrue)
+
+			_, err := q.Reserve(leftReadyRun, 0)
+			So(err, ShouldBeNil)
+
+			running, left := q.GetRunningDataAndLeftReady()
+			So(running, ShouldResemble, []any{leftReadyRunData})
+			So(left, ShouldBeEmpty)
+		})
+
+		Convey("a ready-added callback is told of the items that left ready during it and are not "+
+			"back, and the next callback is told only of its own", func() {
+			results := make(chan leftReadyResult, 10)
+			calls := 0
+
+			q.SetReadyAddedCallback(func(_ string, _ []any) {
+				calls++
+				if calls > 1 {
+					running, left := q.GetRunningDataAndLeftReady()
+					results <- leftReadyResult{running: running, left: left}
+
+					return
+				}
+
+				results <- leftReadyResult{err: leaveReadyInCallback(ctx, q)}
+
+				running, left := q.GetRunningDataAndLeftReady()
+				results <- leftReadyResult{running: running, left: left}
+			})
+			q.TriggerReadyAddedCallback(ctx)
+
+			So((<-results).err, ShouldBeNil)
+
+			first := <-results
+			So(first.running, ShouldResemble, []any{leftReadyRunData})
+			So(first.left, ShouldHaveLength, 3)
+			So(first.left, ShouldContain, leftReadyRunData)
+			So(first.left, ShouldContain, "bury data")
+			So(first.left, ShouldContain, "remove data")
+
+			// the release back to ready may already have asked for the next
+			// callback; if not, this does.
+			q.TriggerReadyAddedCallback(ctx)
+
+			second := <-results
+			So(second.running, ShouldResemble, []any{leftReadyRunData})
+			So(second.left, ShouldBeEmpty)
+		})
+
+		Convey("an item that leaves ready twice during a ready-added callback is reported once", func() {
+			results := make(chan leftReadyResult, 10)
+			calls := 0
+
+			q.SetReadyAddedCallback(func(_ string, _ []any) {
+				calls++
+				if calls > 1 {
+					return
+				}
+
+				results <- leftReadyResult{err: leaveReadyTwiceInCallback(ctx, q)}
+
+				running, left := q.GetRunningDataAndLeftReady()
+				results <- leftReadyResult{running: running, left: left}
+			})
+			q.TriggerReadyAddedCallback(ctx)
+
+			So((<-results).err, ShouldBeNil)
+
+			result := <-results
+			So(result.running, ShouldResemble, []any{leftReadyBackData})
+			So(result.left, ShouldResemble, []any{leftReadyBackData})
+		})
+	})
+}
+
+// pollQueue reports whether check returns true within 5 seconds.
+func pollQueue(check func() bool) bool {
+	deadline := time.Now().Add(5 * time.Second)
+
+	for time.Now().Before(deadline) {
+		if check() {
+			return true
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	return false
+}
+
+// leaveReadyInCallback takes the "run" item to run, the "bury" item to buried,
+// removes the "remove" item, and takes the "back" item to run and releases it,
+// waiting until it is ready again.
+func leaveReadyInCallback(ctx context.Context, q *Queue) error {
+	for _, name := range []string{leftReadyRun, leftReadyBury, leftReadyBack} {
+		if _, err := q.Reserve(name, 0); err != nil {
+			return err
+		}
+	}
+
+	if err := q.Bury(leftReadyBury); err != nil {
+		return err
+	}
+
+	if err := q.Remove(ctx, "remove"); err != nil {
+		return err
+	}
+
+	return releaseToReady(ctx, q, leftReadyBack)
+}
+
+// releaseToReady releases the running item key and waits until it is ready
+// again.
+func releaseToReady(ctx context.Context, q *Queue, key string) error {
+	if err := q.Release(ctx, key); err != nil {
+		return err
+	}
+
+	backReady := pollQueue(func() bool {
+		item, err := q.Get(key)
+
+		return err == nil && item.State() == ItemStateReady
+	})
+	if !backReady {
+		return errBackNotReady
+	}
+
+	return nil
+}
+
+// leaveReadyTwiceInCallback takes the "back" item to run, releases it, waits
+// until it is ready again, and takes it to run again.
+func leaveReadyTwiceInCallback(ctx context.Context, q *Queue) error {
+	if _, err := q.Reserve(leftReadyBack, 0); err != nil {
+		return err
+	}
+
+	if err := releaseToReady(ctx, q, leftReadyBack); err != nil {
+		return err
+	}
+
+	_, err := q.Reserve(leftReadyBack, 0)
+
+	return err
 }

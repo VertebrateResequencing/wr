@@ -38,6 +38,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -81,36 +82,200 @@ var statusPageOverLimitRE = regexp.MustCompile(`data-bind="text: ([^"]*?), css: 
 // return in time.
 var errModifyNeverReturned = errors.New("modify never returned")
 
-// reserveReturnsWhileGated starts a reserve and reports whether it returned
-// (and with what job key) within a second, while the caller keeps a callback
-// gated.
-//
-//nolint:unused // spec E1's tests (phase 5) use it.
-func reserveReturnsWhileGated(runner *Client) (bool, string, chan struct{}) {
-	type outcome struct {
-		job *Job
-	}
+const (
+	// readyPreparedReqGroup is the ReqGroup of the jobs of a
+	// readyPreparedProbe, other than its RAM-failed job.
+	readyPreparedReqGroup = "racprobe"
 
-	res := make(chan outcome, 1)
-	done := make(chan struct{})
+	// readyPreparedGates is how many ready-added callbacks a readyPreparedProbe
+	// gates: a callback and its recall, as the probe's P2 has them, and one more.
+	readyPreparedGates = 3
+)
+
+// noHoldFastRetry sets ReleaseDelayMin to 10ms, so a released job is soon ready
+// again.
+func noHoldFastRetry(c *ServerConfig) {
+	c.Timings.ReleaseDelayMin = 10 * time.Millisecond
+}
+
+// noHoldQuickShutdown sets ShutdownRunnerWait to 1s, so stopping the manager
+// does not wait out a touch interval for runners its scheduler may have been
+// asked for.
+func noHoldQuickShutdown(c *ServerConfig) {
+	c.Timings.ShutdownRunnerWait = time.Second
+}
+
+// readyPreparedProbe is the setup of the racpending probe that spec E1's tests
+// keep: a parent reserved and never finished, and a suspended child waiting on
+// it, so resuming the child sends it back to dependent (P1's early release on
+// the base), with learned RAM noHoldLearnedRAM for their ReqGroup.
+type readyPreparedProbe struct {
+	t      *testing.T
+	server *Server
+	jq     *Client
+	runner *Client
+	reqs   *jqs.Requirements
+	child  *Job
+	gates  *racGates
+}
+
+// newReadyPreparedProbe starts a manager with no runner command and no
+// learned-value refresh limit, and sets up the probe's parent and child. It
+// is stopped when the current Convey leaf ends, after opening the gates.
+func newReadyPreparedProbe(ctx context.Context, t *testing.T) *readyPreparedProbe {
+	t.Helper()
+
+	_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+	serverConfig.Timings.ItemTTR = time.Minute
+	serverConfig.Timings.ReqStatRefreshInterval = -1
+
+	server, _, token, err := serve(ctx, serverConfig)
+	So(err, ShouldBeNil)
+
+	p := &readyPreparedProbe{t: t, server: server, reqs: standardReqs}
+	connect := func() *Client {
+		client, errc := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(errc, ShouldBeNil)
+
+		return client
+	}
+	p.jq, p.runner = connect(), connect()
+
+	Reset(func() {
+		if p.gates != nil {
+			p.gates.openAll()
+		}
+
+		disconnect(p.runner)
+		disconnect(p.jq)
+		server.Stop(ctx, true)
+	})
+
+	parent := p.newJob("parent", 3)
+	parent.DepGroups = []string{"racprobe-parent"}
+	p.child = p.newJob("child", 3)
+	p.child.Dependencies = Dependencies{NewDepGroupDependency("racprobe-parent")}
+	p.add(parent, p.child)
+
+	got, err := p.jq.Reserve(time.Second)
+	So(err, ShouldBeNil)
+	So(got, ShouldNotBeNil)
+	So(got.Key(), ShouldEqual, parent.Key())
+
+	suspended, err := p.jq.Suspend([]*JobEssence{{JobKey: p.child.Key()}})
+	So(err, ShouldBeNil)
+	So(suspended, ShouldEqual, 1)
+
+	seedReqGroupStats(server, bucketJobRAM, readyPreparedReqGroup, noHoldLearnedRAM)
+
+	return p
+}
+
+// newJob returns a job of the probe's ReqGroup named after name.
+func (p *readyPreparedProbe) newJob(name string, retries uint8) *Job {
+	return &Job{
+		Cmd: restFormTrue + " " + name, Cwd: testCwd, RepGroup: readyPreparedReqGroup,
+		ReqGroup: readyPreparedReqGroup, Requirements: p.reqs.Clone(), Retries: retries,
+	}
+}
+
+// add has the user add jobs, all of which must be new.
+func (p *readyPreparedProbe) add(jobs ...*Job) {
+	inserts, _, err := p.jq.Add(jobs, os.Environ(), true)
+	So(err, ShouldBeNil)
+	So(inserts, ShouldEqual, len(jobs))
+}
+
+// gate waits until no ready-added callback is running or queued, then holds
+// each of the next readyPreparedGates at its own gate.
+func (p *readyPreparedProbe) gate(ctx context.Context) {
+	So(pollUntil(p.server.racIdle), ShouldBeTrue)
+
+	p.gates = newRACGates(readyPreparedGates)
+	gates, server, q := p.gates, p.server, p.server.q
+
+	q.SetReadyAddedCallback(func(_ string, allitemdata []any) {
+		i := gates.enter()
+		gates.wait(i)
+		server.readyAddedCallback(ctx, q, allitemdata)
+	})
+}
+
+// awaitCalled waits until the ready-added callback has reached gate n.
+func (p *readyPreparedProbe) awaitCalled(n int) {
+	select {
+	case <-p.gates.called[n]:
+	case <-time.After(noHoldReserveWait):
+		p.t.Fatalf("ready-added callback %d was not called", n)
+	}
+}
+
+// resumeChild resumes the child, which goes back to dependent.
+func (p *readyPreparedProbe) resumeChild() {
+	resumed, err := p.jq.Resume([]*JobEssence{{JobKey: p.child.Key()}})
+	So(err, ShouldBeNil)
+	So(resumed, ShouldEqual, 1)
+}
+
+// buryForRAM adds a job with no retries and a ReqGroup of its own (so nothing
+// is learned for it), has the runner reserve it and report it failed for using
+// noHoldPeakRAM, and waits until it is buried.
+func (p *readyPreparedProbe) buryForRAM() *Job {
+	job := p.newJob("ramfail", 0)
+	job.ReqGroup = "ramfail"
+	p.add(job)
+
+	reserved, err := p.runner.Reserve(noHoldReserveWait)
+	So(err, ShouldBeNil)
+	So(reserved, ShouldNotBeNil)
+	So(reserved.Key(), ShouldEqual, job.Key())
+	So(p.runner.Started(reserved, os.Getpid()), ShouldBeNil)
+	So(p.runner.Release(reserved, &JobEndState{
+		Exited: true, Exitcode: 1, PeakRAM: noHoldPeakRAM, EndTime: time.Now(),
+	}, FailReasonRAM), ShouldBeNil)
+
+	So(pollUntil(func() bool {
+		item, errg := p.server.q.Get(job.Key())
+
+		return errg == nil && item.Stats().State == queue.ItemStateBury
+	}), ShouldBeTrue)
+
+	return job
+}
+
+// kick has the user kick job.
+func (p *readyPreparedProbe) kick(job *Job) {
+	kicked, err := p.jq.Kick([]*JobEssence{{JobKey: job.Key()}})
+	So(err, ShouldBeNil)
+	So(kicked, ShouldEqual, 1)
+}
+
+// reservesAtOnce asserts that a reserve made now returns want within a second,
+// with the given RAM, while the ready-added callback stays gated.
+func (p *readyPreparedProbe) reservesAtOnce(want *Job, ram int) {
+	returned, got := reserveReturnsWhileGated(p.runner)
+	So(returned, ShouldBeTrue)
+	So(got, ShouldNotBeNil)
+	So(got.Key(), ShouldEqual, want.Key())
+	So(got.Requirements.RAM, ShouldEqual, ram)
+}
+
+// reserveReturnsWhileGated starts a reserve and reports whether it returned
+// (and with what job, nil if none) within a second, while the caller keeps a
+// callback gated.
+func reserveReturnsWhileGated(runner *Client) (bool, *Job) {
+	res := make(chan *Job, 1)
 
 	go func() {
 		job, _ := runner.Reserve(50 * time.Millisecond) //nolint:errcheck
-		res <- outcome{job}
-
-		close(done)
+		res <- job
 	}()
 
 	select {
-	case o := <-res:
-		key := ""
-		if o.job != nil {
-			key = o.job.Key()
-		}
-
-		return true, key, done
+	case job := <-res:
+		return true, job
 	case <-time.After(time.Second):
-		return false, "", done
+		return false, nil
 	}
 }
 
@@ -186,6 +351,349 @@ func (g *racGates) openAll() {
 	for i := range g.gates {
 		g.open(i)
 	}
+}
+
+// TestNoHoldReadyPrepared covers spec E1 tests 1 to 6, the racpending probe
+// with its assertion inverted: a reserve no longer waits for the ready-added
+// callback, and the job it gets is already prepared, whatever would have
+// released the old hold early.
+func TestNoHoldReadyPrepared(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a reserved parent, a suspended child waiting on it and learned RAM 300", t, func() {
+		p := newReadyPreparedProbe(ctx, t)
+		newJob := p.newJob("new", 3)
+
+		Convey("control: a reserve gets a new add at once, prepared, while its callback is gated", func() {
+			p.gate(ctx)
+			p.add(newJob)
+			p.awaitCalled(0)
+
+			p.reservesAtOnce(newJob, noHoldLearnedRAM)
+		})
+
+		Convey("P1: a resume to dependent after the add changes nothing", func() {
+			p.gate(ctx)
+			p.add(newJob)
+			p.awaitCalled(0)
+			p.resumeChild()
+
+			p.reservesAtOnce(newJob, noHoldLearnedRAM)
+		})
+
+		Convey("P2: an add merged into a recall of a running callback is reservable at once, prepared", func() {
+			p.gate(ctx)
+			p.server.triggerReadyAddedCallback(ctx)
+			p.awaitCalled(0)
+
+			p.add(newJob)
+
+			p.gates.open(0)
+			p.awaitCalled(1)
+
+			p.reservesAtOnce(newJob, noHoldLearnedRAM)
+		})
+
+		Convey("a job added while paused is prepared, not reservable until resumed, then reservable", func() {
+			p.gate(ctx)
+
+			paused, err := p.server.Pause()
+			So(err, ShouldBeNil)
+			So(paused, ShouldBeTrue)
+
+			p.add(newJob)
+
+			got, err := p.jq.GetByEssence(&JobEssence{JobKey: newJob.Key()}, false, false)
+			So(err, ShouldBeNil)
+			So(got, ShouldNotBeNil)
+			So(got.Requirements.RAM, ShouldEqual, noHoldLearnedRAM)
+
+			idle, err := p.runner.Reserve(10 * time.Millisecond)
+			So(err, ShouldBeNil)
+			So(idle, ShouldBeNil)
+
+			resumed, err := p.server.Resume(ctx)
+			So(err, ShouldBeNil)
+			So(resumed, ShouldBeTrue)
+
+			p.reservesAtOnce(newJob, noHoldLearnedRAM)
+		})
+
+		Convey("Given a job with no retries buried after failing for RAM", func() {
+			ramFailed := p.buryForRAM()
+			p.gate(ctx)
+
+			Convey("a reserve gets it at the bumped RAM at once when it is kicked", func() {
+				p.kick(ramFailed)
+				p.awaitCalled(0)
+
+				p.reservesAtOnce(ramFailed, noHoldBumpedRAM)
+			})
+
+			Convey("a resume to dependent after the kick changes nothing", func() {
+				p.kick(ramFailed)
+				p.awaitCalled(0)
+				p.resumeChild()
+
+				p.reservesAtOnce(ramFailed, noHoldBumpedRAM)
+			})
+		})
+	})
+}
+
+// TestNoHoldRACCountsReservedOnce covers item 5.4 of the nohold phase 5 plan:
+// a job a runner reserves after the ready-added callback took its ready
+// snapshot, and before it counts the running jobs, is counted once for what it
+// is when the callback counts, whatever its run did meanwhile.
+func TestNoHoldRACCountsReservedOnce(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a runner command and the RAC gated after its snapshot of a ready job", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldServerRC, noHoldSlowRetry, noHoldLostRuns)
+		group := n.groupFor(n.reqs.RAM)
+
+		n.gateRAC(ctx)
+		job := n.addJob("raconce", 3, 0)
+		n.awaitGatedRAC()
+
+		reserved := n.reserveStarted(job, group, os.Getpid())
+
+		Convey("a reserve of it still running when the callback counts is counted once", func() {
+			n.openGatedRAC()
+			So(n.server.currentGroupCount(group), ShouldEqual, 1)
+		})
+
+		Convey("its run lost when the callback counts is counted once", func() {
+			So(waitForJobLost(n.server, job.Key(), noHoldLostWait), ShouldBeTrue)
+			So(n.itemState(job.Key()), ShouldEqual, queue.ItemStateRun)
+
+			n.openGatedRAC()
+			So(n.server.currentGroupCount(group), ShouldEqual, 1)
+		})
+
+		Convey("its run archived before the callback counts is not counted", func() {
+			So(n.runner.Archive(reserved, &JobEndState{Exited: true, EndTime: time.Now()}), ShouldBeNil)
+
+			n.openGatedRAC()
+			So(n.server.currentGroupCount(group), ShouldEqual, 0)
+		})
+
+		Convey("its run released to delayed before the callback counts is not counted", func() {
+			So(n.runner.Release(reserved, &JobEndState{Exited: true, Exitcode: 1, EndTime: time.Now()},
+				FailReasonExit), ShouldBeNil)
+			So(n.itemState(job.Key()), ShouldEqual, queue.ItemStateDelay)
+
+			n.openGatedRAC()
+			So(n.server.currentGroupCount(group), ShouldEqual, 0)
+		})
+
+		Convey("its run buried before the callback counts is not counted", func() {
+			So(n.runner.Bury(reserved, &JobEndState{Exited: true, Exitcode: 1, EndTime: time.Now()},
+				FailReasonExit), ShouldBeNil)
+			So(n.itemState(job.Key()), ShouldEqual, queue.ItemStateBury)
+
+			n.openGatedRAC()
+			So(n.server.currentGroupCount(group), ShouldEqual, 0)
+		})
+	})
+
+	Convey("Given a runner command and the RAC gated after its snapshot of a ready job in each of three "+
+		"scheduler groups, two reserved before the callback counts, each group counts its one job", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldServerRC)
+
+		rams := []int{n.reqs.RAM, noHoldLearnedRAM, noHoldNewerLearnedRAM}
+		jobs := make([]*Job, 0, len(rams))
+
+		for i, ram := range rams {
+			job := n.newJob("racgroups", 0, 0)
+			job.Cmd += strings.Repeat(noHoldChildCmd, i)
+			job.Requirements.RAM = ram
+			jobs = append(jobs, job)
+		}
+
+		n.gateRAC(ctx)
+		n.add(jobs...)
+		n.awaitGatedRAC()
+
+		n.reserveStarted(jobs[0], n.groupFor(rams[0]), os.Getpid())
+		n.reserveStarted(jobs[1], n.groupFor(rams[1]), os.Getpid())
+
+		n.openGatedRAC()
+
+		for _, ram := range rams {
+			So(n.server.currentGroupCount(n.groupFor(ram)), ShouldEqual, 1)
+		}
+	})
+
+	Convey("Given a runner command and the RAC gated after its snapshot of 2 ready jobs of a limit group "+
+		"of 5, one reserved before the callback counts, their group counts 2", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldServerRC)
+		group := n.groupFor(n.reqs.RAM, "nohold-lc")
+
+		job := n.newJob("raclimit", 0, 0)
+		job.LimitGroups = []string{"nohold-lc:5"}
+		other := n.newJob("raclimit", 0, 0)
+		other.Cmd += noHoldChildCmd
+		other.LimitGroups = []string{"nohold-lc"}
+
+		n.gateRAC(ctx)
+		n.add(job, other)
+		n.awaitGatedRAC()
+
+		reserved, err := n.runner.ReserveScheduled(noHoldReserveWait, group)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+
+		n.openGatedRAC()
+		So(n.server.currentGroupCount(group), ShouldEqual, 2)
+	})
+
+	Convey("Given a runner command, a running job an earlier callback counted as ready, and a callback "+
+		"gated after its snapshot of another ready job of its group, the job released to ready and "+
+		"reserved again during the callback is counted once", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldServerRC, noHoldFastRetry, noHoldQuickShutdown)
+		group := n.groupFor(n.reqs.RAM)
+
+		job := n.newJob("racearlier", 3, 0)
+		job.Priority = 5
+		n.add(job)
+		So(pollUntil(func() bool { return n.server.racIdle() && n.server.currentGroupCount(group) == 1 }),
+			ShouldBeTrue)
+
+		reserved := n.reserveStarted(job, group, os.Getpid())
+
+		counted := n.gateFirstRACCounting(ctx, group)
+
+		other := n.newJob("racearlier", 0, 0)
+		other.Cmd += noHoldChildCmd
+		n.add(other)
+		counted.awaitGated()
+
+		So(n.runner.Release(reserved, &JobEndState{Exited: true, Exitcode: 1, EndTime: time.Now()},
+			FailReasonExit), ShouldBeNil)
+		n.waitReady(job.Key())
+		n.reserveStarted(job, group, os.Getpid())
+
+		So(counted.open(), ShouldEqual, 2)
+	})
+
+	Convey("Given a runner command and a callback gated after its snapshot of a ready job, the job "+
+		"suspended, resumed and reserved during the callback, so leaving ready twice, is counted once",
+		t, func() {
+			n := newNoHoldTest(ctx, t, noHoldServerRC, noHoldQuickShutdown)
+			group := n.groupFor(n.reqs.RAM)
+
+			counted := n.gateFirstRACCounting(ctx, group)
+			job := n.addJob("racleavetwice", 0, 0)
+
+			counted.awaitGated()
+
+			n.suspend(job)
+			n.resume(job)
+			n.waitReady(job.Key())
+			n.reserveStarted(job, group, os.Getpid())
+
+			So(counted.open(), ShouldEqual, 1)
+		})
+}
+
+// TestNoHoldSkipReserve covers spec E2 tests 1 to 5: a runner's first reserve
+// is skipped only when its group has no count and nothing ready, so a fresh
+// runner gets work the RAC has not yet counted.
+func TestNoHoldSkipReserve(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a runner command and the RAC gated, a fresh client's first reserve gets an added job "+
+		"of its group at once", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldServerRC)
+		n.gateRAC(ctx)
+
+		job := n.addJob("e2-1", 0, 0)
+
+		got, took := n.firstReserve(noHoldReserveWait, n.groupFor(n.reqs.RAM))
+		So(got, ShouldNotBeNil)
+		So(got.Key(), ShouldEqual, job.Key())
+		So(took, ShouldBeLessThan, time.Second)
+	})
+
+	Convey("Given a runner command, a fresh client's first reserve for a group with no count and nothing "+
+		"ready returns nothing at once", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldServerRC)
+
+		got, took := n.firstReserve(noHoldReserveWait, "nohold-nothing")
+		So(got, ShouldBeNil)
+		So(took, ShouldBeLessThan, time.Second)
+	})
+
+	Convey("Given a runner command and a group whose only job the RAC counted and a client reserved, a "+
+		"fresh client's first reserve waits out its timeout", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldServerRC)
+		group := n.groupFor(n.reqs.RAM)
+
+		job := n.addJob("e2-3", 0, 0)
+
+		So(pollUntil(func() bool { return n.server.racIdle() && n.server.currentGroupCount(group) == 1 }),
+			ShouldBeTrue)
+		n.reserveStarted(job, group, os.Getpid())
+		So(n.server.currentGroupCount(group), ShouldEqual, 1)
+		So(n.server.q.HasReady(group), ShouldBeFalse)
+
+		wait := 300 * time.Millisecond
+		got, took := n.firstReserve(wait, group)
+		So(got, ShouldBeNil)
+		So(took, ShouldBeGreaterThanOrEqualTo, wait)
+	})
+
+	Convey("Given no runner command, skipReserve is false for any request", t, func() {
+		n := newNoHoldTest(ctx, t)
+
+		for _, cr := range []*clientRequest{
+			{SchedulerGroup: "nohold-nothing", FirstReserve: true},
+			{SchedulerGroup: "nohold-nothing"},
+			{FirstReserve: true},
+			{},
+		} {
+			So(n.server.skipReserve(cr), ShouldBeFalse)
+		}
+	})
+
+	Convey("Given a runner command, the RAC gated and a ready job blocked by its limit group's 1 slot in "+
+		"use, a fresh client's first reserve waits out its timeout for the slot and leaves it ready", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldServerRC)
+		n.gateRAC(ctx)
+
+		group := n.groupFor(n.reqs.RAM, "nohold-lb")
+
+		first := n.newJob("e2-5", 0, 0)
+		first.LimitGroups = []string{"nohold-lb:1"}
+		n.add(first)
+		n.reserveStarted(first, group, os.Getpid())
+
+		second := n.newJob("e2-5", 0, 0)
+		second.Cmd += noHoldChildCmd
+		second.LimitGroups = []string{"nohold-lb"}
+		n.add(second)
+		n.waitReady(second.Key())
+
+		wait := 500 * time.Millisecond
+		got, took := n.firstReserve(wait, group)
+		So(got, ShouldBeNil)
+		So(took, ShouldBeGreaterThanOrEqualTo, wait)
+		So(took, ShouldBeLessThan, 1500*time.Millisecond)
+		So(n.itemState(second.Key()), ShouldEqual, queue.ItemStateReady)
+	})
 }
 
 // queueLockProbe records, at each load of one ReqGroup's learned requirements,
@@ -451,6 +959,42 @@ func TestNoHoldHookFindsGroupDerived(t *testing.T) {
 	})
 }
 
+// countingGate holds the first ready-added callback after its snapshot until
+// opened, and reports the scheduler group's count as that callback left it,
+// before any recall can change it.
+type countingGate struct {
+	entered  chan struct{}
+	gate     chan struct{}
+	finished chan int
+	once     sync.Once
+}
+
+// awaitGated waits until the gated callback has its snapshot.
+func (g *countingGate) awaitGated() {
+	select {
+	case <-g.entered:
+	case <-time.After(noHoldReserveWait):
+		So("ready-added callback was not called", ShouldBeEmpty)
+	}
+}
+
+// open opens the gate and returns the group's count as the gated callback left
+// it.
+func (g *countingGate) open() int {
+	g.release()
+
+	select {
+	case count := <-g.finished:
+		return count
+	case <-time.After(noHoldReserveWait):
+		return -1
+	}
+}
+
+func (g *countingGate) release() {
+	g.once.Do(func() { close(g.gate) })
+}
+
 // noHoldTest is a durability-config manager on its own database, with a user
 // client that adds and inspects jobs and a runner client that reserves them and
 // reports how they ended.
@@ -609,6 +1153,23 @@ func (n *noHoldTest) gateRAC(ctx context.Context) {
 		gates.wait(i)
 		server.readyAddedCallback(ctx, q, allitemdata)
 	})
+}
+
+// awaitGatedRAC waits until the ready-added callback gateRAC holds has taken its
+// snapshot of the ready jobs and reached its gate.
+func (n *noHoldTest) awaitGatedRAC() {
+	select {
+	case <-n.gates.called[0]:
+	case <-time.After(noHoldReserveWait):
+		n.t.Fatalf("ready-added callback was not called")
+	}
+}
+
+// openGatedRAC opens the gate of the ready-added callback gateRAC holds and
+// waits until no callback is running.
+func (n *noHoldTest) openGatedRAC() {
+	n.gates.open(0)
+	So(pollUntil(n.server.racIdle), ShouldBeTrue)
 }
 
 // reserveStarted has the runner reserve job (from the given scheduler group,
@@ -1052,6 +1613,51 @@ func (n *noHoldTest) derivations(key string) uint32 {
 	defer sjob.RUnlock()
 
 	return sjob.derivations
+}
+
+// firstReserve has a fresh client make its first reserve, from group with the
+// given timeout, and returns the job it got (nil if none) and how long the
+// reserve took.
+func (n *noHoldTest) firstReserve(wait time.Duration, group string) (*Job, time.Duration) {
+	fresh := n.connect()
+	defer disconnect(fresh)
+
+	start := time.Now()
+	job, err := fresh.ReserveScheduled(wait, group)
+	took := time.Since(start)
+
+	So(err, ShouldBeNil)
+
+	return job, took
+}
+
+// gateFirstRACCounting routes n's ready-added callbacks through a countingGate
+// for group, after waiting until no callback is running.
+func (n *noHoldTest) gateFirstRACCounting(ctx context.Context, group string) *countingGate {
+	So(pollUntil(n.server.racIdle), ShouldBeTrue)
+
+	g := &countingGate{entered: make(chan struct{}), gate: make(chan struct{}), finished: make(chan int, 1)}
+	server, q := n.server, n.server.q
+	calls := 0
+
+	q.SetReadyAddedCallback(func(_ string, allitemdata []any) {
+		calls++
+		if calls > 1 {
+			server.readyAddedCallback(ctx, q, allitemdata)
+
+			return
+		}
+
+		close(g.entered)
+		<-g.gate
+		server.readyAddedCallback(ctx, q, allitemdata)
+
+		g.finished <- server.currentGroupCount(group)
+	})
+
+	Reset(func() { g.release() })
+
+	return g
 }
 
 // TestNoHoldFailTimeBumps covers spec C1 tests 1 to 7: a release or bury

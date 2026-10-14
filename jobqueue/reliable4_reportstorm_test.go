@@ -712,12 +712,8 @@ func reliable4RSWaitForGroups(t *testing.T, server *Server, jobs int) []string {
 	deadline := time.Now().Add(reliable4RSGroupWaitMax)
 
 	for time.Now().Before(deadline) {
-		server.rpmutex.Lock()
-		running := server.racRunning
-		server.rpmutex.Unlock()
-
 		groups := reliable4RSDistinctGroups(server)
-		if !running && len(groups) >= reliable4RSSiblingGroups && len(server.q.AllItems()) == jobs {
+		if server.racIdle() && len(groups) >= reliable4RSSiblingGroups && len(server.q.AllItems()) == jobs {
 			return groups
 		}
 

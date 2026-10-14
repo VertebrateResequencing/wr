@@ -779,11 +779,7 @@ func TestReqStatCacheRAC(t *testing.T) {
 		So(added, ShouldEqual, jobCount)
 
 		So(pollUntil(func() bool {
-			server.rpmutex.Lock()
-			running := server.racRunning
-			server.rpmutex.Unlock()
-
-			return !running && len(server.q.AllItems()) == jobCount
+			return server.racIdle() && len(server.q.AllItems()) == jobCount
 		}), ShouldBeTrue)
 
 		allitemdata := itemData(server.q.AllItems())

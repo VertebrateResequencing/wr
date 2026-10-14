@@ -1181,6 +1181,20 @@ type Job struct {
 	// out with it unset, so a memo can never travel to a different Job.
 	derived *jobDerived
 
+	// racCountedIn is the racID of the scheduler group a ready-added callback
+	// last counted this job in as ready (see Server.prepareAndCountReadyJob), so
+	// that the callback can uncount it if the job leaves ready before it counts
+	// the running jobs (see runningDataUncountingLeftReady, which clears it once
+	// it has, so the job is never uncounted twice). A racID is never
+	// reused, so one set by an earlier callback names none of the current one's
+	// groups. It is a number, not the group, so setting it for every counted job
+	// adds no pointer for the garbage collector to track. It is atomic as the
+	// callback sets and reads it without the job's lock; being unexported it is
+	// neither serialised nor sent to clients. It sits beside derived, which the
+	// callback reads for every job it counts, so setting it rarely needs a cache
+	// line that read did not already bring in.
+	racCountedIn atomic.Uint64
+
 	// derivations counts how many times derived has actually been computed (ie.
 	// how many 2-MD5-plus-sort derivations this job has cost). It is INERT
 	// observability in the style of Server.racScanWork: nothing but the reliable4

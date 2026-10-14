@@ -223,6 +223,7 @@ any regression the change accepts.
   - `jobqueue`: `BenchmarkAddJobs`, `BenchmarkUpdateJobState`,
     `BenchmarkArchiveJobs`, `BenchmarkArchiveSpacedArrivals`,
     `BenchmarkReadyBacklogSnapshot`, `BenchmarkBuildSchedulerGroupsBacklog`,
+    `BenchmarkRACCycleCounted`,
     `BenchmarkRepGroupStatusDetails`, `BenchmarkJobKey`,
     `BenchmarkModifyLiveJobsReverseLookup`, `BenchmarkJobCleanup*` and
     `BenchmarkAddDepGroupMember` (a tree without a benchmark, such as an

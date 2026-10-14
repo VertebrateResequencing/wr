@@ -57,6 +57,11 @@ type subQueue struct {
 	sqIndex                  int
 	reserveGroup             string
 	pushNotificationChannels map[string]map[string]*pushNotification
+
+	// recorded, while recording, holds every item pop or remove takes out of
+	// this sub-queue, once for each time it does.
+	recorded  []*Item
+	recording bool
 }
 
 // pushNotification holds the channel that a notifyPush() caller is waiting on,
@@ -191,6 +196,8 @@ func (q *subQueue) pop(reserveGroup ...string) *Item {
 		return nil
 	}
 
+	q.recordLeaver(item)
+
 	return item
 }
 
@@ -224,6 +231,54 @@ func (q *subQueue) remove(item *Item) {
 	}
 
 	heap.Remove(q, item.queueIndexes[q.sqIndex])
+	q.recordLeaver(item)
+}
+
+// recordLeaver records that item left this sub-queue, if leavers are being
+// recorded. The caller must hold q.mutex.
+func (q *subQueue) recordLeaver(item *Item) {
+	if q.recording {
+		q.recorded = append(q.recorded, item)
+	}
+}
+
+// recordLeavers starts recording the items that leave this sub-queue, forgetting
+// any recorded before.
+func (q *subQueue) recordLeavers() {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	q.recorded = nil
+	q.recording = true
+}
+
+// stopRecordingLeavers stops recording the items that leave this sub-queue, and
+// forgets those recorded.
+func (q *subQueue) stopRecordingLeavers() {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	q.recorded = nil
+	q.recording = false
+}
+
+// leavers returns the items recorded as leaving this sub-queue since
+// recordLeavers, each once.
+func (q *subQueue) leavers() []*Item {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	seen := make(map[*Item]bool, len(q.recorded))
+	items := make([]*Item, 0, len(q.recorded))
+
+	for _, item := range q.recorded {
+		if !seen[item] {
+			seen[item] = true
+			items = append(items, item)
+		}
+	}
+
+	return items
 }
 
 // len tells you how many items are in the queue.

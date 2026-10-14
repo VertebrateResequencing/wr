@@ -745,6 +745,37 @@ func (queue *Queue) HasReady(reserveGroup string) bool {
 	return queue.readyQueue.len(reserveGroup) > 0
 }
 
+// runningDataLocked returns the item.Data() of every item in the run sub-queue.
+// The caller must hold the queue's lock.
+func (queue *Queue) runningDataLocked() []any {
+	data := make([]any, 0, len(queue.runQueue.items))
+	for _, item := range queue.runQueue.items {
+		data = append(data, item.Data())
+	}
+
+	return data
+}
+
+// GetRunningDataAndLeftReady returns what GetRunningData does and, under the
+// same lock, so as of the same moment, the Data() of the items that have left
+// the ready sub-queue since the running ready-added callback was given its ready
+// items, and are not back in it. When no ready-added callback is running, the
+// second is empty.
+func (queue *Queue) GetRunningDataAndLeftReady() ([]any, []any) {
+	queue.mutex.RLock()
+	defer queue.mutex.RUnlock()
+
+	var left []any
+
+	for _, item := range queue.readyQueue.leavers() {
+		if item.State() != ItemStateReady {
+			left = append(left, item.Data())
+		}
+	}
+
+	return queue.runningDataLocked(), left
+}
+
 // Error records an error and the operation, item and queue that caused it.
 type Error struct {
 	Queue string // the queue's Name
@@ -929,6 +960,7 @@ func (queue *Queue) runReadyAddedCb(ctx context.Context, source string) {
 
 		clog.Debug(ctx, "ready items available, triggering callback", "source", source, "items", len(data))
 		cb(queue.Name, data)
+		queue.readyQueue.stopRecordingLeavers()
 		clog.Debug(ctx, "finished triggering callback for ready items", "source", source, "items", len(data))
 	}
 
@@ -936,7 +968,9 @@ func (queue *Queue) runReadyAddedCb(ctx context.Context, source string) {
 }
 
 // readyItemData returns the Data() of every item currently in the ready
-// sub-queue.
+// sub-queue, and has the ready sub-queue record, from that moment, the items
+// that leave it (see GetRunningDataAndLeftReady), until runReadyAddedCb stops
+// it once the callback given this data has returned.
 func (queue *Queue) readyItemData() []any {
 	queue.mutex.RLock()
 	defer queue.mutex.RUnlock()
@@ -948,6 +982,8 @@ func (queue *Queue) readyItemData() []any {
 			data = append(data, item.Data())
 		}
 	}
+
+	queue.readyQueue.recordLeavers()
 
 	return data
 }
@@ -1462,12 +1498,7 @@ func (queue *Queue) GetRunningData() []any {
 	queue.mutex.RLock()
 	defer queue.mutex.RUnlock()
 
-	data := make([]any, 0, len(queue.runQueue.items))
-	for _, item := range queue.runQueue.items {
-		data = append(data, item.Data())
-	}
-
-	return data
+	return queue.runningDataLocked()
 }
 
 // AllItems returns the items in the queue. NB: You should NOT do anything

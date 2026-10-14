@@ -389,7 +389,7 @@ func TestReliable4SlowRequestHandleRequestWiring(t *testing.T) {
 			server, token, clientID := slowRequestTestServer(ctx, "slow-request-warn")
 			slowRequestThreshold = slowRequestTestThreshold
 
-			slowRequestStallServer(server, slowRequestTestWait)
+			slowRequestStallServer(ctx, server, slowRequestTestWait)
 
 			logCtx, buf := captureLogCtx(ctx)
 			slowRequestReserve(logCtx, server, token, clientID, 0)
@@ -406,7 +406,7 @@ func TestReliable4SlowRequestHandleRequestWiring(t *testing.T) {
 
 		Convey("handleRequest says nothing about the same stall at the shipped default", func() {
 			server, token, clientID := slowRequestTestServer(ctx, "slow-request-quiet-default")
-			slowRequestStallServer(server, slowRequestTestWait)
+			slowRequestStallServer(ctx, server, slowRequestTestWait)
 
 			logCtx, buf := captureLogCtx(ctx)
 			slowRequestReserve(logCtx, server, token, clientID, 0)
@@ -418,7 +418,7 @@ func TestReliable4SlowRequestHandleRequestWiring(t *testing.T) {
 			server, token, clientID := slowRequestTestServer(ctx, "slow-request-quiet-high")
 			slowRequestThreshold = time.Hour
 
-			slowRequestStallServer(server, slowRequestTestWait)
+			slowRequestStallServer(ctx, server, slowRequestTestWait)
 
 			logCtx, buf := captureLogCtx(ctx)
 			slowRequestReserve(logCtx, server, token, clientID, 0)
@@ -461,17 +461,36 @@ func slowRequestTestServer(ctx context.Context, name string) (*Server, []byte, u
 	return server, token, clientID
 }
 
-// slowRequestStallServer makes the server hold every reserve inside
-// waitForPendingReserves (as a rac cycle does) for hold, then lets it through.
-// That is MANAGER slowness with no client-requested wait at all, which is the
-// only thing the warning is supposed to report.
-func slowRequestStallServer(server *Server, hold time.Duration) {
-	server.racPending = true
+// slowRequestStallServer makes the server hold every reserve for hold by
+// holding the queue's lock that long: it adds a ready item and suspends it in
+// a goroutine whose suspend callback, run under the queue's lock, signals and
+// then sleeps for hold. It returns once the lock is held, and the queue is
+// empty of ready items once it is let go. That is MANAGER slowness with no
+// client-requested wait at all, which is the only thing the warning is
+// supposed to report.
+func slowRequestStallServer(ctx context.Context, server *Server, hold time.Duration) {
+	added, _, err := server.q.AddMany(ctx, []*queue.ItemDef{{Key: "slow-request-stall", TTR: time.Minute}})
+	So(err, ShouldBeNil)
+	So(added, ShouldEqual, 1)
+
+	locked := make(chan struct{})
+	failed := make(chan error, 1)
 
 	go func() {
-		time.Sleep(hold)
-		server.finishRAC()
+		if errs := server.q.SuspendWith(ctx, "slow-request-stall", func(any) {
+			close(locked)
+			time.Sleep(hold)
+		}); errs != nil {
+			failed <- errs
+		}
 	}()
+
+	select {
+	case <-locked:
+	case err = <-failed:
+	}
+
+	So(err, ShouldBeNil)
 }
 
 // captureLogCtx returns a context whose clog output is captured into the
