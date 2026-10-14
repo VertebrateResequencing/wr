@@ -24,8 +24,115 @@ lines the file puts before each version heading, with exactly the entries
 F1 gives, under their headings and in their order. Covering the 1 acceptance
 test from F1.
 
-- [ ] implemented
-- [ ] reviewed
+F1's text is in place verbatim, with two additions beyond F1:
+
+- A second "Added" bullet for the `JStatus` fields `RunRAM`, `RunTime` and
+  `RunDisk` from item 3.2. `wr status -o json`, the REST API
+  (`jobsToStatuses`) and the web status page all emit `JStatus`, and F1's
+  Go API bullet does not cover these fields. The bullet goes after F1's, so
+  F1's own bullet stays first.
+- A last bullet under Fixed, "Everyone", for `wr status`'s "note: command
+  used too much RAM" and the web status page's over-limit highlights of
+  RAM, time and disk. Before this branch both compared with
+  `Requirements`: `copyJobForClient` never copies `RequirementsOrig`, so
+  `wr status` fell back to `Requirements.RAM`, and the web page used
+  `ExpectedRAM`, `ExpectedTime` and `RequestedDisk`. The RAC rewrites
+  `Requirements` for a ready failed job, raising it after a high peak or
+  replacing it with a learned value, so the note and highlights could go
+  missing or appear falsely. Both now compare with what the last run
+  reserved (`FailedRunReqs` and `RunRAM`, `RunTime`, `RunDisk`). The
+  coordinator ruled it user-visible and asked for it to be listed. It goes
+  last because it arises only for a failed command waiting to run again.
+
+F1 itself changed: its Go API bullet said `FailBumpsCleared`, `ModifiedReqs`
+and `FailedRunReqs` also appear in JSON output. They do not: JSON output is
+`[]JStatus`, which lacks them, and only Go clients get them, through
+`copyJobForClient`. The orchestrator, delegated by the owner, ruled that the
+docs must match the code and that adding the fields to `JStatus` is out of
+scope, so the clause is dropped from `CHANGELOG.md`, from F1 in `spec.md`,
+and from the matching note after the `Job` fields in `spec.md`.
+
+`make lint` runs only golangci-lint, so the formatting was checked against
+0.39.0 by hand.
+
+Considered and not added: item 5.4's scheduler double count was introduced
+and fixed on this branch, so no release had it.
+
+The re-review found that the Go API bullet lacked
+`queue.Queue.GetRunningDataAndLeftReady`, added in phase 5. It is now in
+that bullet in `CHANGELOG.md` and in F1 in `spec.md`. The last Fixed bullet
+keeps "waiting to run again": the base compared with `Requirements`, which
+it raised only in `prepareReadyJob`, so it was wrong only for a ready job
+and right for a delayed or buried one.
+
+The re-review also found a regression from item 3.2. `Job.lastRunReqs`
+returned `FailedRunReqs` whenever `FailReason` was set, but `ttrCallback`
+sets `FailReasonLost` on a running retry without recording a run end, and a
+touch (`recoverLostTouchedJob`) clears `Lost` but leaves `FailReason`. A
+retry at the raised RAM that went lost, or lost and then recovered, so
+showed the failed run's RAM, time and disk as `RunRAM`, `RunTime` and
+`RunDisk`, and the web page flagged use between the two sizes as over the
+limit. The same holds for a retry reserved but never started: `ttrCallback`
+marks it lost while its `State` is still reserved, and a touch leaves it
+reserved with `FailReasonLost`. And every client copy of a lost job
+(`copyJobForClient`, which does not copy `Lost`) has `State` lost, as do the
+web interface's jobs (`reqToRepGroupJobs`, `reqToKeyJobs`), so the REST API,
+`wr status -o json` and the web page read `lastRunReqs` from a lost `State`.
+`lastRunReqs` now uses `FailedRunReqs` only when no run is in progress,
+which `Job.runInProgress` decides from `State`: reserved, running or lost,
+the states a job normally has only while its item is in the run sub-queue,
+since every release sets `State` anew. Three paths break that. The web
+interface's write of `State` can overwrite a release's
+(`.docs/reserve-runstate/delivery-queue.md` row 16), and recovery can put a
+lost `State` that write persisted into ready, so a failed job then shows its
+next run's size. Recovery also puts an old client's reservation (Pid 0) into
+ready with `State` reserved, which is harmless, since the reservation
+cleared `FailReason`. A reservation clears `FailReason`, so while a run is
+in progress its `FailReason` can only be this run's `FailReasonLost`.
+Excluding `FailReasonLost` instead would be wrong: a lost run confirmed dead
+goes through `applyRunEndLocked`, which sets `FailedRunReqs` to that run's
+size while the recompute may move `Requirements` to a learned value.
+
+Clearing `FailedRunReqs` at reservation was not chosen. `jobRunState` does
+not carry it, so after a restart the live record's older value would come
+back, and the fix would need a run-state format change. The other readers
+were checked: `resetRequirementsForRecompute` and `failBumpBase` run only
+for jobs with no run in progress, `statusRequiredRAMForProblem` requires
+`Exited`, which a reservation clears, and `newJobExitData` runs only after
+`applyRunEndLocked` (or for a job it already released), so it never sees an
+earlier run's value. The `FailedRunReqs` and `statusRequiredRAMForProblem`
+comments now say so.
+
+Tests: `TestNoHoldStatusPageOverLimit` gains a lost retry (`RunRAM` is the
+retry's RAM while lost, and after a touch recovers it, and the page does not
+flag a peak between the sizes), red on 2e95d03c with `RunRAM` 10 for 1200. A
+second leaf does the same for a retry reserved but never started. Both
+leaves also read the client copies, from `getJobsByKeys` (the REST API and
+web page) and from `GetByEssence` (`wr status -o json`), asserting `State`
+lost and `RunRAM` 1200 while lost, and `RunRAM` 1200 after the touch. Those
+reads were red, with `RunRAM` 10, under the earlier reserved-or-running
+gate. A third leaf has a run released as lost after its group learned more
+RAM, and its `RunRAM` stays the lost run's 10. A fourth leaf has the retry
+at the raised RAM complete, and asserts `RunRAM` 1200 on the live job and on
+both client copies, the server one read from the complete bucket. It pins
+the `FailReason` gate, since `FailedRunReqs` is never cleared and an archive
+clears only `FailReason`. Clearing `FailedRunReqs` at archive was not
+chosen: it would change the exported field in complete records for no gain,
+as the gate already covers it. `TestNoHoldHighPeakBumps` gains a lost and
+recovered retry failing within its RAM, which records no high-peak stat. The
+third leaf and the high-peak test pass on 2e95d03c and guard the
+alternatives.
+
+Mutants, each killed: dropping reserved from `runInProgress` (the reserved
+leaf fails while lost), dropping running (the started leaf fails while
+lost), dropping lost (both leaves' client copies fail), gating on `!j.Lost`
+(fails after the touch), excluding `FailReasonLost` (fails the learned-RAM
+leaf), and `applyRunEndLocked` keeping an earlier `FailedRunReqs` (fails the
+high-peak test). Dropping `j.FailReason != ""` from `lastRunReqs` is killed
+by the completed-retry leaf (`RunRAM` 10 for 1200).
+
+- [x] implemented
+- [x] reviewed
 
 ### Item 6.2: G1 - Local gates
 

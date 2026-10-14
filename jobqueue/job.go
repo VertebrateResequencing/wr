@@ -1125,8 +1125,11 @@ type Job struct {
 	// run reserved, copied from Requirements when the failure is recorded and
 	// before any increase for it; that is what the run reserved, since a modify
 	// skips running jobs. Every requirement recompute starts from it, and the
-	// failure's jobRAM stat is judged against its RAM. Only read while
-	// FailReason is set; nil in records from older managers.
+	// failure's jobRAM stat is judged against its RAM. Only read while a
+	// failure is pending: FailReason is set and no run is in progress
+	// (runInProgress), since a lost run's FailReason is set without recording
+	// a run end. It is never cleared, so otherwise it may be an earlier run's.
+	// Nil in records from older managers.
 	FailedRunReqs *scheduler.Requirements `codec:",omitempty"`
 	// we note which client reserved this job, for validating if that client has
 	// permission to do other stuff to this Job; the server only ever sets this

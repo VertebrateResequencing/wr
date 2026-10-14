@@ -605,6 +605,24 @@ func TestNoHoldRACCountsReservedOnce(t *testing.T) {
 		})
 }
 
+// clientStatuses returns the JStatus of job's client copies: the one the REST
+// API and the web page build from getJobsByKeys, and the one `wr status -o
+// json` builds from a client's GetByEssence.
+func (n *noHoldTest) clientStatuses(ctx context.Context, job *Job) []JStatus {
+	jobs, srerr, qerr := n.server.getJobsByKeys(ctx, []string{job.Key()}, false, false)
+	So(srerr, ShouldBeEmpty)
+	So(qerr, ShouldBeEmpty)
+	So(len(jobs), ShouldEqual, 1)
+
+	fromServer, err := jobs[0].ToStatus()
+	So(err, ShouldBeNil)
+
+	fromClient, err := n.get(job).ToStatus()
+	So(err, ShouldBeNil)
+
+	return []JStatus{fromServer, fromClient}
+}
+
 // TestNoHoldSkipReserve covers spec E2 tests 1 to 5: a runner's first reserve
 // is skipped only when its group has no count and nothing ready, so a fresh
 // runner gets work the RAC has not yet counted.
@@ -2016,6 +2034,35 @@ func TestNoHoldHighPeakBumps(t *testing.T) {
 		So(learned, ShouldEqual, 200)
 	})
 
+	Convey("Given a job that failed for RAM and whose retry at the raised RAM was lost and recovered, the "+
+		"retry failing within that RAM records no high-peak stat", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldLostRuns)
+		job := n.addJob("c2-lost-retry", 3, jobOverridePreferSystemReqs)
+		n.gateRAC(ctx)
+
+		n.failForRAM(job)
+		retry := n.reserveStarted(job, "", os.Getpid())
+		So(retry.Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
+		So(waitForJobLost(n.server, job.Key(), noHoldLostWait), ShouldBeTrue)
+
+		_, err := n.runner.Touch(retry)
+		So(err, ShouldBeNil)
+
+		const withinRetryRAM = 500
+
+		So(n.runner.Release(retry, &JobEndState{
+			Exited: true, Exitcode: 1, PeakRAM: withinRetryRAM, EndTime: time.Now(),
+		}, FailReasonExit), ShouldBeNil)
+		So(storedLiveJob(t, n.server.db, job.Key()).FailReason, ShouldEqual, FailReasonExit)
+
+		So(n.server.db.bolt.View(func(tx *bolt.Tx) error {
+			key := fmt.Appendf(nil, "%s%s%20d", job.ReqGroup, dbDelimiter, withinRetryRAM)
+			So(tx.Bucket(bucketJobRAM).Get(key), ShouldBeNil)
+
+			return nil
+		}), ShouldBeNil)
+	})
+
 	for _, override := range []uint8{jobOverridePreferSystemReqs, jobOverridePreferHigherReqs} {
 		Convey(fmt.Sprintf("Given no prior stats, override %d and a 2s release delay, a retried job that "+
 			"exceeded its RAM is delayed at the bumped RAM and then learns its own stat", override), t, func() {
@@ -2136,6 +2183,142 @@ func TestNoHoldStatusPageOverLimit(t *testing.T) {
 
 		js.PeakRAM = noHoldPeakRAM
 		So(statusPageFlagsOverLimit(t, js, "window.wrUtils.mbIEC(PeakRAM)"), ShouldBeFalse)
+	})
+
+	Convey("Given a job that failed for RAM and whose retry at the raised RAM is lost, its usage is judged "+
+		"against the retry's RAM while lost and once a touch recovers it", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldLostRuns)
+		job := n.addJob("status-lost-retry", 3, jobOverridePreferSystemReqs)
+		n.gateRAC(ctx)
+
+		n.failForRAM(job)
+		retry := n.reserveStarted(job, "", os.Getpid())
+		So(retry.Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
+		So(waitForJobLost(n.server, job.Key(), noHoldLostWait), ShouldBeTrue)
+
+		sjob, _ := n.serverJob(job.Key())
+
+		js, err := sjob.ToStatus()
+		So(err, ShouldBeNil)
+		So(js.State, ShouldEqual, JobStateLost)
+		So(js.RunRAM, ShouldEqual, noHoldBumpedRAM)
+
+		for _, copied := range n.clientStatuses(ctx, job) {
+			So(copied.State, ShouldEqual, JobStateLost)
+			So(copied.RunRAM, ShouldEqual, noHoldBumpedRAM)
+		}
+
+		_, err = n.runner.Touch(retry)
+		So(err, ShouldBeNil)
+
+		js, err = sjob.ToStatus()
+		So(err, ShouldBeNil)
+		So(js.State, ShouldEqual, JobStateRunning)
+		So(js.FailReason, ShouldEqual, FailReasonLost)
+		So(js.RunRAM, ShouldEqual, noHoldBumpedRAM)
+
+		for _, copied := range n.clientStatuses(ctx, job) {
+			So(copied.RunRAM, ShouldEqual, noHoldBumpedRAM)
+		}
+
+		js.PeakRAM = noHoldPeakRAM
+		So(statusPageFlagsOverLimit(t, js, "window.wrUtils.mbIEC(PeakRAM)"), ShouldBeFalse)
+	})
+
+	Convey("Given a job that failed for RAM and whose retry is reserved at the raised RAM but never "+
+		"started, and is lost, its usage is judged against the retry's RAM while lost and once a touch "+
+		"recovers it", t, func() {
+		n := newNoHoldTest(ctx, t, noHoldLostRuns)
+		job := n.addJob("status-lost-reserved", 3, jobOverridePreferSystemReqs)
+		n.gateRAC(ctx)
+
+		n.failForRAM(job)
+		retry := n.reserve(job, noHoldReserveWait)
+		So(retry.Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
+		So(waitForJobLost(n.server, job.Key(), noHoldLostWait), ShouldBeTrue)
+
+		sjob, _ := n.serverJob(job.Key())
+
+		js, err := sjob.ToStatus()
+		So(err, ShouldBeNil)
+		So(js.FailReason, ShouldEqual, FailReasonLost)
+		So(js.RunRAM, ShouldEqual, noHoldBumpedRAM)
+
+		for _, copied := range n.clientStatuses(ctx, job) {
+			So(copied.State, ShouldEqual, JobStateLost)
+			So(copied.RunRAM, ShouldEqual, noHoldBumpedRAM)
+		}
+
+		_, err = n.runner.Touch(retry)
+		So(err, ShouldBeNil)
+
+		js, err = sjob.ToStatus()
+		So(err, ShouldBeNil)
+		So(js.State, ShouldEqual, JobStateReserved)
+		So(js.FailReason, ShouldEqual, FailReasonLost)
+		So(js.RunRAM, ShouldEqual, noHoldBumpedRAM)
+
+		for _, copied := range n.clientStatuses(ctx, job) {
+			So(copied.RunRAM, ShouldEqual, noHoldBumpedRAM)
+		}
+	})
+
+	Convey("Given a job that failed for RAM and whose retry at the raised RAM completed, its usage is "+
+		"judged against the retry's RAM", t, func() {
+		n := newNoHoldTest(ctx, t)
+		job := n.addJob("status-complete-retry", 3, jobOverridePreferSystemReqs)
+		n.gateRAC(ctx)
+
+		n.failForRAM(job)
+		sjob, _ := n.serverJob(job.Key())
+		n.archive(job, noHoldPeakRAM)
+
+		js, err := sjob.ToStatus()
+		So(err, ShouldBeNil)
+		So(js.State, ShouldEqual, JobStateComplete)
+		So(js.RunRAM, ShouldEqual, noHoldBumpedRAM)
+
+		for _, copied := range n.clientStatuses(ctx, job) {
+			So(copied.State, ShouldEqual, JobStateComplete)
+			So(copied.RunRAM, ShouldEqual, noHoldBumpedRAM)
+		}
+	})
+
+	Convey("Given a run released as lost after its group learned more RAM, its usage is judged against "+
+		"the RAM the lost run reserved", t, func() {
+		n := newNoHoldTest(ctx, t, func(c *ServerConfig) { c.Timings.ItemTTR = 3 * time.Second })
+		job := n.addJob("status-lost-learned", 3, jobOverridePreferSystemReqs)
+		n.gateRAC(ctx)
+
+		n.server.SetLostJobCheckTimeout(2 * time.Second)
+		n.server.SetLostJobCheckRetryTime(200 * time.Millisecond)
+
+		lostRun := n.reserveStarted(job, "", definitelyDeadPid(t))
+		So(lostRun.Requirements.RAM, ShouldEqual, 10)
+		setServerJobRunnerPid(n.server, job.Key(), definitelyDeadPid(t))
+
+		n.seedLearned("status-lost-learned")
+		So(pollUntil(func() bool {
+			n.server.db.refreshReqGroupRecs(job.ReqGroup)
+			_, current := n.server.db.cachedReqGroupRecs(job.ReqGroup)
+
+			return current
+		}), ShouldBeTrue)
+
+		So(pollUntilFor(noHoldLostWait, func() bool {
+			_, _, failReason, ok := serverJobState(n.server, job.Key())
+			state := n.itemState(job.Key())
+
+			return ok && failReason == FailReasonLost &&
+				(state == queue.ItemStateDelay || state == queue.ItemStateReady)
+		}), ShouldBeTrue)
+
+		sjob, _ := n.serverJob(job.Key())
+
+		js, err := sjob.ToStatus()
+		So(err, ShouldBeNil)
+		So(js.ExpectedRAM, ShouldEqual, noHoldLearnedRAM)
+		So(js.RunRAM, ShouldEqual, 10)
 	})
 }
 

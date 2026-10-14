@@ -291,10 +291,11 @@ type JStatus struct {
 	ExpectedRAM         int     // ExpectedRAM is in Megabytes.
 	ExpectedTime        float64 // ExpectedTime is in seconds.
 	RequestedDisk       int     // RequestedDisk is in Gigabytes.
-	// RunRAM, RunTime and RunDisk are what the job's last run reserved, in the
-	// units of ExpectedRAM, ExpectedTime and RequestedDisk, which its usage is
-	// judged against. They differ from those only for a failed job, whose
-	// requirements are raised for its next run when it fails.
+	// RunRAM, RunTime and RunDisk are the memory, time and disk of the job's
+	// current or last run, or of its first run if it has not run yet, in the
+	// units of ExpectedRAM, ExpectedTime and RequestedDisk. Its usage is
+	// judged against them. They differ from those only between a failure and
+	// the next run, when those already hold the next run's size.
 	RunRAM              int
 	RunTime             float64
 	RunDisk             int

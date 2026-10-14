@@ -249,12 +249,44 @@ func (j *Job) userKeptFailBumps() uint8 {
 // lastRunReqs returns the requirements of the job's last run: those its failed
 // run reserved (FailedRunReqs) while a failure is pending, since Requirements
 // already holds that failure's increase, otherwise Requirements. It may be nil.
+//
+// While a run is in progress (runInProgress), that run's are Requirements. A
+// reservation clears FailReason, so it can then only be FailReasonLost, which
+// marking the run lost sets without recording a run end, and which a touch
+// recovering it leaves set: its FailedRunReqs are still an earlier run's.
 func (j *Job) lastRunReqs() *scheduler.Requirements {
-	if j.FailReason != "" && j.FailedRunReqs != nil {
+	if j.FailReason != "" && !j.runInProgress() && j.FailedRunReqs != nil {
 		return j.FailedRunReqs
 	}
 
 	return j.Requirements
+}
+
+// runInProgress says whether j's State is one a job normally has only while
+// its queue item is in the run sub-queue, so a run is in progress:
+//
+//   - JobStateReserved: reserved, not yet reported started, or so shown by the
+//     web interface for any item in run.
+//   - JobStateRunning: reported started.
+//   - JobStateLost: in run but lost, whether or not it started. A client copy
+//     (copyJobForClient, which does not copy Lost) and the web interface's
+//     jobs show a lost job so.
+//
+// Every release sets State anew, but a few paths leave one of these on a job
+// that is not in run. The web interface's write of State can overwrite a
+// release's (.docs/reserve-runstate/delivery-queue.md row 16), and recovery
+// can put a lost State that write persisted into ready: a failed job then
+// reports its Requirements, the next run's size, not its failed run's.
+// Recovery also puts an old client's reservation (Pid 0) into ready with
+// State reserved, which is harmless, since the reservation cleared
+// FailReason.
+func (j *Job) runInProgress() bool {
+	switch j.State {
+	case JobStateReserved, JobStateRunning, JobStateLost:
+		return true
+	default:
+		return false
+	}
 }
 
 // failBumpBase returns the requirements a recompute starts the given

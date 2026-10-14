@@ -316,11 +316,10 @@ ModifiedReqs *scheduler.Requirements
 FailedRunReqs *scheduler.Requirements
 ```
 
-As exported `Job` fields they also appear in JSON output (`wr status -o json`,
-the REST API). That is intended: they explain why a retry has the size it has.
-
-`copyJobForClient` (`jobqueue/serverCLI.go`) copies all three, since tests and
-users read them through `GetByEssence`.
+As exported `Job` fields they reach Go clients only: `copyJobForClient`
+(`jobqueue/serverCLI.go`) copies all three, since tests and users read them
+through `GetByEssence`. JSON output (`wr status -o json`, the REST API) is
+`[]JStatus`, which does not carry them.
 
 `JobModifier.applyRequirements` sets `FailBumpRAM` when it sets RAM,
 `FailBumpTime` when it sets Time, and `FailBumpDisk` when `DiskSet`, and records
@@ -1276,11 +1275,10 @@ these entries (each under its heading, in this order):
 ```markdown
 ### Added
 - Go API: `queue.Queue.SetReadyHook` (with `queue.ReadyHook`),
-  `ReleaseWith`, `RequeueWith`, `BuryWith`, `HasReady` and
-  `ReadyAddedCallbackRunning`, and
-  `jobqueue.Job.FailBumpsCleared` with its `jobqueue.FailBump*` bits, and
-  `jobqueue.Job.ModifiedReqs` and `jobqueue.Job.FailedRunReqs`, which also
-  appear in JSON output (such as `wr status -o json` and the REST API), and
+  `ReleaseWith`, `RequeueWith`, `BuryWith`, `HasReady`,
+  `ReadyAddedCallbackRunning` and `GetRunningDataAndLeftReady`, and
+  `jobqueue.Job.FailBumpsCleared` with its `jobqueue.FailBump*` bits,
+  `jobqueue.Job.ModifiedReqs`, `jobqueue.Job.FailedRunReqs` and
   `jobqueue.ServerTimings.ReqStatRefreshInterval`.
 
 ### Changed
