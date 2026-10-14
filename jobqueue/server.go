@@ -2807,9 +2807,7 @@ func (s *Server) prepareReadyJob(ctx context.Context, q *queue.Queue, job *Job, 
 	recommendedReq := s.recommendedReqForGroup(reqGroup, reqGroupToReqs)
 
 	if recommendedReq != nil || failureUpdateNeeded {
-		job.Lock()
-		updateJobRequirementsForRetry(job, jobOverride, recommendedReq)
-		job.Unlock()
+		recomputeIfStillReady(q, job, jobOverride, recommendedReq)
 	}
 
 	if rc == "" {
@@ -2819,6 +2817,32 @@ func (s *Server) prepareReadyJob(ctx context.Context, q *queue.Queue, job *Job, 
 	snapshot, _ := regroupJob(ctx, q, job)
 
 	return snapshot, true
+}
+
+// recomputeIfStillReady recomputes job's requirements, unless its item has
+// left the ready sub-queue since the RAC's snapshot. A reserve may by then have
+// taken the job at the size the ready hook gave it and reset it for its run,
+// which clears the failure that size was raised for, so a recompute would put
+// the reserved job back to the learned size: the runner could be handed that
+// size, and the manager would record it as the run's. The item's state is read
+// under the job's lock, which that reset also takes, and a reserve moves the
+// item out of ready before its reset, so no reset can come between the check
+// and the recompute. A job with no item, which has left the queue, is
+// recomputed as before, since no run of it is in progress.
+func recomputeIfStillReady(q *queue.Queue, job *Job, jobOverride uint8, rec *scheduler.Requirements) {
+	item, err := q.Get(job.Key())
+	if err != nil {
+		item = nil
+	}
+
+	job.Lock()
+	defer job.Unlock()
+
+	if item != nil && item.State() != queue.ItemStateReady {
+		return
+	}
+
+	updateJobRequirementsForRetry(job, jobOverride, rec)
 }
 
 // queuedJobs returns the jobs of the queue items with the given keys, skipping

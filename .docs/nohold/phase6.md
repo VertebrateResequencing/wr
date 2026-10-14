@@ -134,6 +134,65 @@ by the completed-retry leaf (`RunRAM` 10 for 1200).
 - [x] implemented
 - [x] reviewed
 
+### Item 6.1b: kicked high-peak job reserved at unbumped RAM (flake investigation)
+
+A review run of `go test -race -count 3 -run
+'TestNoHold|TestReleaseAfterLost|TestHighPeak' ./jobqueue/` failed once in
+`TestNoHoldHighPeakBumps`'s first leaf: a buried job that exceeded its RAM
+was kicked, and the reserve got RAM 100 (the learned value) instead of the
+bumped 1200. This is a product bug, not a flaky test.
+
+Root cause: a RAC cycle prepares the jobs of its ready snapshot
+(`prepareReadyJob`), but with the reserve hold gone a reserve can take a job
+between that snapshot and its recompute. The reserve's
+`resetJobForReservation` clears `FailReason` and `PeakRAM`, so the recompute
+then finds no pending failure and sets the reserved job's RAM to the learned
+100. The reserve copies the job for its runner only after
+`persistReservation`'s durable write. A RAC recompute in that window hands
+the runner the unbumped size, which is what the flake caught. One landing
+later still leaves the manager recording 100 as the run's RAM, and
+`lastRunReqs`, status and the next failure's `FailedRunReqs` all read that.
+Before this branch the hold kept reserves out while a RAC ran.
+
+Fix: `prepareReadyJob` recomputes through `recomputeIfStillReady`, which
+skips the recompute when the job's queue item is no longer ready. It reads the
+item's state under the job's lock. A reserve moves the item out of ready
+before its reset takes that lock, so no reset can come between the check and
+the recompute. A job with no item is recomputed as before:
+`TestServerSchedulerQueuesAvoidPreserved` and the RAC benchmarks pass
+unqueued jobs.
+
+Hypotheses ruled out by the deterministic red: the test asserting before the
+bury was applied (the bury's 1200 is asserted and passed), learned-stat
+refresh timing and `ReqStatRefreshInterval` (the red needs no load), and the
+ready hook's own recompute (the item had 1200 when reserved).
+
+Red: a new `TestNoHoldHighPeakBumps` leaf holds the RAC that the kick triggers
+at its gate, reserves the job (1200), opens the gate, and asserts the
+manager's job and its client copy still have 1200. On 8b527918 the manager's
+job has 100.
+
+Load-matched loop: the first leaf alone, built with `-race`, run as 16
+processes of `-count 125` with 8 CPU burners on 8 CPUs. On 8b527918, 50
+failures in 6000 runs (24, 15 and 11 per 2000), all "Actual 100". With the
+fix, 0 in 4000. The full test under the same load failed 1 in 320 on
+8b527918. The loop's few "the server's publication gave up" startup failures
+(1 on 8b527918, 1 with the fix) come from its 16 processes contending for
+picked ports, and are unrelated.
+
+Mutants: dropping the state check fails the new leaf (100). Skipping jobs with
+no item fails `TestServerSchedulerQueuesAvoidPreserved`. Reading the state
+before taking the job's lock survives: it reopens a window of a few
+instructions that no test can hit without a seam there, and the comment
+records why the order matters.
+
+`BenchmarkBuildSchedulerGroupsBacklog`, interleaved, shows no slowdown (fix
+94.3ms and 160.0ms against 101.0ms and 168.3ms, n=12). The `wrdev.sh`
+speed comparison was not run.
+
+- [x] implemented
+- [x] reviewed
+
 ### Item 6.2: G1 - Local gates
 
 spec.md section: G1

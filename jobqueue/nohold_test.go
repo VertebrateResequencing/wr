@@ -1962,6 +1962,33 @@ func TestNoHoldHighPeakBumps(t *testing.T) {
 		})
 	})
 
+	Convey("Given low learning, a buried job that exceeded its RAM and the RAC its kick triggers held "+
+		"until a reserve has taken it at the bumped RAM, the reserved job keeps that RAM once the RAC "+
+		"has run", t, func() {
+		n := newNoHoldTest(ctx, t)
+		n.seedLowLearning("c2-1-rac")
+		job := n.addJob("c2-1-rac", 0, jobOverridePreferSystemReqs)
+		So(pollUntil(n.server.racIdle), ShouldBeTrue)
+
+		n.failRun(job, FailReasonExit, noHoldPeakRAM)
+		So(n.get(job).State, ShouldEqual, JobStateBuried)
+
+		n.gateRAC(ctx)
+		n.kick(job)
+		n.awaitGatedRAC()
+
+		reserved, err := n.runner.Reserve(noHoldReserveWait)
+		So(err, ShouldBeNil)
+		So(reserved, ShouldNotBeNil)
+		So(reserved.Key(), ShouldEqual, job.Key())
+		So(reserved.Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
+
+		n.openGatedRAC()
+
+		So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldBumpedRAM)
+		So(n.get(job).Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
+	})
+
 	Convey("Given low learning and a job with no retries that stayed within its RAM, kicked it has the "+
 		"learned RAM", t, func() {
 		n := newNoHoldTest(ctx, t)
