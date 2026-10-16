@@ -9,7 +9,8 @@ project adheres to [Semantic Versioning](http://semver.org/).
 ### Added
 - Go API: `queue.Queue.SetReadyHook` (with `queue.ReadyHook`),
   `ReleaseWith`, `RequeueWith`, `BuryWith`, `HasReady`,
-  `ReadyAddedCallbackRunning` and `GetRunningDataAndLeftReady`, and
+  `ReadyAddedCallbackRunning`, `RegroupReady` and
+  `GetRunningDataAndLeftReady`, and
   `jobqueue.Job.FailBumpsCleared` with its `jobqueue.FailBump*` bits,
   `jobqueue.Job.ModifiedReqs`, `jobqueue.Job.FailedRunReqs` and
   `jobqueue.ServerTimings.ReqStatRefreshInterval`.
@@ -53,6 +54,9 @@ Grouped by when each bug could affect you, most likely first.
   change.
 - A newly started runner no longer sometimes exits at once without running
   anything when commands were ready for it.
+- Commands waiting behind a full limit group now pick up the memory, disk and
+  time learned for their requirements group while they wait, instead of often
+  running at the size known when they became ready.
 - `wr status`'s note that a command which failed for another reason used
   too much RAM, and the web status page's highlight of memory, time or disk
   use beyond the reservation, now compare with what the command's latest

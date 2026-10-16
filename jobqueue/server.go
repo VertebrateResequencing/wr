@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net"
 	"net/http"
@@ -105,6 +106,10 @@ const (
 	ServerModePause     = "paused"
 	ServerModeDrain     = "draining"
 )
+
+// racRegroupChunk is how many limit-blocked ready jobs a ready-added callback
+// regroups in one hold of the queue's lock.
+const racRegroupChunk = 1024
 
 const (
 	maxJobsForStd                  = 1000
@@ -1724,6 +1729,19 @@ func (g *racCycleGroup) limitBlocked() bool {
 	return false
 }
 
+// racBlockedJobs is a ready-added callback's state for the limit-blocked ready
+// jobs of one cycle: the learned-requirement cache's change stamps from before
+// and after the cycle refreshed the blocked ReqGroups (see newRACBlockedJobs),
+// the cycle's learned values by ReqGroup, the ReqGroups whose blocked jobs it
+// compared, and the keys of the jobs whose reserve group must change.
+type racBlockedJobs struct {
+	stamp     uint32 // after the refresh: a job with this stamp is current
+	markStamp uint32 // before the refresh: what a job found current gets
+	recs      map[string]*scheduler.Requirements
+	reqGroups map[string]bool
+	regroup   []string
+}
+
 // remove removes a job with no dependents from the queue, recording it in the
 // pass if that worked.
 func (p *deletePass) remove(ctx context.Context, q *queue.Queue, job *Job, jobkey string) {
@@ -1901,18 +1919,32 @@ type Server struct {
 
 	// racScanWork is INERT observability for the reliable4 rac-scan-bound
 	// invariant (issue #1). buildSchedulerGroups resets it to 0 at the start of
-	// each cycle, and prepareReadyJob (the EXPENSIVE per-job path) increments it
-	// once per call. When a runner command is configured (rc != "", the production
-	// case the backlog-rescan reproducer drives), buildSchedulerGroups runs
-	// prepareReadyJob only for the jobs its priority/limit-group selection deems
-	// schedulable this cycle (the cheap pre-pass does not count), so the counter
-	// stays bounded by the schedulable count (~limit), not by the ready backlog
-	// size. The rc == "" path (a manager with no scheduler command) schedules
-	// nothing but still refreshes every ready job's requirements, calling
+	// each cycle, and prepareReadyJob and refreshSkippedReadyJob (the EXPENSIVE
+	// per-job paths) increment it once per call. When a runner command is
+	// configured (rc != "", the production case the backlog-rescan reproducer
+	// drives), buildSchedulerGroups runs prepareReadyJob only for the jobs its
+	// priority/limit-group selection deems schedulable this cycle (the cheap
+	// pre-pass does not count), and refreshSkippedReadyJob only for the
+	// limit-blocked jobs whose ReqGroup has learned other values since they were
+	// prepared, so the counter stays bounded by the schedulable count (~limit),
+	// not by the ready backlog size, on every cycle that sees no learned change,
+	// and grows by each stale job once on a cycle that does. The rc == "" path
+	// (a manager with no scheduler command) schedules nothing but still
+	// refreshes every ready job's requirements, calling
 	// prepareReadyJob once per ready job, so there racScanWork equals the backlog
 	// and the bound does not apply. It affects no scheduling behaviour: nothing
 	// reads it except that test.
 	racScanWork atomic.Int64
+
+	// racRegrouped is INERT observability: the running total of ready items the
+	// ready-added callback's bulk regroup moved to a new reserve group (see
+	// regroupSkippedReadyJobs). Nothing but tests reads it.
+	racRegrouped atomic.Int64
+
+	// racBlockedReqGroups is every ReqGroup a ready-added callback has compared
+	// a limit-blocked job of; see newRACBlockedJobs. racBlockedMu guards it.
+	racBlockedReqGroups map[string]bool
+	racBlockedMu        sync.Mutex
 
 	// racGroupIDs is the last racID ensureGroup gave a group.
 	racGroupIDs atomic.Uint64
@@ -2794,8 +2826,8 @@ func (s *Server) serveClientsReader(ctx context.Context, sock mangos.Socket, wg 
 func (s *Server) prepareReadyJob(ctx context.Context, q *queue.Queue, job *Job, rc string,
 	reqGroupToReqs map[string]*scheduler.Requirements) (schedulerGroupSnapshot, bool) {
 	// count one unit of EXPENSIVE per-job scheduling work (see Server.racScanWork):
-	// buildSchedulerGroups runs this only for the jobs it selects as schedulable
-	// this cycle, so the counter stays bounded by the schedulable count.
+	// with a runner command, buildSchedulerGroups runs this only for the jobs it
+	// selects as schedulable this cycle.
 	s.racScanWork.Add(1)
 
 	job.RLock()
@@ -2864,6 +2896,124 @@ func (s *Server) queuedJobs(keys []string) []*Job {
 	}
 
 	return jobs
+}
+
+// newRACBlockedJobs returns the state for one cycle's limit-blocked jobs, with
+// recs as the cycle's learned values. It first refreshes the learned values of
+// each ReqGroup that has had a limit-blocked job compared, so that a change
+// since the last cycle shows in the stamp: nothing else might load a ReqGroup
+// whose ready jobs are all blocked, and a job found current is not compared
+// again until the stamp changes. A refresh loads only a ReqGroup whose values
+// may have changed and whose refresh is due, as every RAC load.
+//
+// It reads the stamp both before and after the refresh. A load started
+// elsewhere (refreshReqGroupRecsLater) can finish during the refresh, after the
+// refresh found that ReqGroup's load in flight and kept its old values, and
+// bump the stamp. A job compared with those old values must then not get the
+// later stamp, or it would be skipped as current until the next change. So a
+// job is skipped only if it has the later stamp, and is given the earlier one,
+// which the next cycle does not skip if they differ.
+func (s *Server) newRACBlockedJobs(recs map[string]*scheduler.Requirements) *racBlockedJobs {
+	s.racBlockedMu.Lock()
+	reqGroups := slices.Collect(maps.Keys(s.racBlockedReqGroups))
+	s.racBlockedMu.Unlock()
+
+	before := s.db.reqStats.changes.Load()
+
+	for _, reqGroup := range reqGroups {
+		s.recommendedReqForGroup(reqGroup, recs)
+	}
+
+	return &racBlockedJobs{
+		stamp: s.db.reqStats.changes.Load(), markStamp: before,
+		recs: recs, reqGroups: make(map[string]bool),
+	}
+}
+
+// noteBlockedReqGroups adds the ReqGroups a cycle compared blocked jobs of to
+// those newRACBlockedJobs refreshes. The set only grows, as the cache's entries
+// do (production has about 130 ReqGroups): a ReqGroup whose blocked jobs were
+// all found current is not seen again by later cycles, which skip its jobs
+// without reading their ReqGroup, so it cannot be told apart from one that has
+// none left.
+func (s *Server) noteBlockedReqGroups(reqGroups map[string]bool) {
+	if len(reqGroups) == 0 {
+		return
+	}
+
+	s.racBlockedMu.Lock()
+	defer s.racBlockedMu.Unlock()
+
+	if s.racBlockedReqGroups == nil {
+		s.racBlockedReqGroups = make(map[string]bool, len(reqGroups))
+	}
+
+	maps.Copy(s.racBlockedReqGroups, reqGroups)
+}
+
+// learnedChanged returns the cycle's learned values for job's ReqGroup, and
+// whether they differ from those job was last prepared with. A job whose
+// snapshot carries the cycle's stamp was found current since the last change to
+// any ReqGroup's rounded learned values, so it is not looked at again: on a
+// cycle when no ReqGroup's have changed that is the only cost per job.
+// Otherwise its values are compared, without its lock held while the cycle's
+// are looked up (which may load them), and if they are current it is given the
+// cycle's earlier stamp (see newRACBlockedJobs), so each job is compared at most
+// twice per change: the cycle after it, and once more if a load bumped the stamp
+// during that cycle's refresh. A ReqGroup with none loaded (nil) has nothing new
+// to apply.
+func (s *Server) learnedChanged(b *racBlockedJobs, job *Job,
+	snapshot schedulerGroupSnapshot) (*scheduler.Requirements, bool) {
+	if snapshot.learnedStamp == b.stamp {
+		return nil, false
+	}
+
+	job.RLock()
+	reqGroup, learned := job.ReqGroup, job.preparedLearned
+	job.RUnlock()
+
+	b.reqGroups[reqGroup] = true
+
+	rec := s.recommendedReqForGroup(reqGroup, b.recs)
+	if rec != nil && learnedReqsOf(rec) != learned {
+		return rec, true
+	}
+
+	job.markLearnedCurrent(learned, b.markStamp)
+
+	return nil, false
+}
+
+// refreshSkippedReadyJob recomputes a limit-blocked ready job with its
+// ReqGroup's newly learned values rec, as prepareReadyJob would, unless a
+// reserve has taken it since the cycle's snapshot (recomputeIfStillReady), and
+// returns its snapshot afterwards. It counts one unit of racScanWork.
+func (s *Server) refreshSkippedReadyJob(q *queue.Queue, job *Job, rec *scheduler.Requirements) schedulerGroupSnapshot {
+	s.racScanWork.Add(1)
+
+	job.RLock()
+	jobOverride := job.Override
+	job.RUnlock()
+
+	recomputeIfStillReady(q, job, jobOverride, rec)
+
+	return job.schedulerGroupSnapshot()
+}
+
+// regroupSkippedReadyJobs moves the items of the given limit-blocked ready jobs
+// to the reserve groups their requirements now call for, racRegroupChunk at a
+// time, each chunk in one hold of the queue's lock, giving each job that
+// scheduler group in the same hold as its item, so no reserve can find the job
+// and its item in different groups. Chunking bounds how long one hold keeps
+// reserves waiting. An item a reserve has taken since keeps its group, as its
+// job does.
+func (s *Server) regroupSkippedReadyJobs(ctx context.Context, q *queue.Queue, keys []string) {
+	for chunk := range slices.Chunk(keys, racRegroupChunk) {
+		moved, err := q.RegroupReady(chunk, regroupReadyJob)
+		warnUnexpectedSetReserveGroupError(ctx, err)
+
+		s.racRegrouped.Add(int64(moved))
+	}
 }
 
 func warnUnexpectedSetReserveGroupError(ctx context.Context, err error) {
@@ -3454,7 +3604,10 @@ func (s *Server) snapshotReadyJobs(allitemdata []any) []readyJobCandidate {
 // remaining capacity), runs the expensive prepareReadyJob path only for those, and
 // counts them into their scheduler groups. Limit-blocked jobs are recorded as
 // skipped WITHOUT that expensive work, so a rac cycle's per-job work stays bounded
-// by the schedulable count, not the ready-backlog size.
+// by the schedulable count, not the ready-backlog size, except for the blocked
+// jobs whose ReqGroup's learned values changed since they were prepared, which
+// are recomputed once and then regrouped together in one hold of the queue's
+// lock.
 //
 // Selection shares one remaining-capacity budget per limit group across all
 // sibling scheduler groups of the cycle, so the reliable3 over-provision and
@@ -3488,22 +3641,36 @@ func (s *Server) scheduleReadyJobsByPriority(ctx context.Context, q *queue.Queue
 	// per job. The queue hands over its ready jobs grouped by scheduler group, so
 	// consecutive jobs usually share one and need no lookup at all.
 	cycleGroups := make(map[string]*racCycleGroup)
+	groupFor := func(name string) *racCycleGroup {
+		return s.racCycleGroupFor(ctx, cycleGroups, limitBudgets, name)
+	}
+
+	// a load of learned values is a short local read shared by every later
+	// caller, so it takes no context, as warmReqGroupRecs' does not
+	//nolint:contextcheck // see above
+	blocked := s.newRACBlockedJobs(reqGroupToReqs)
 
 	var current *racCycleGroup
 
 	for _, candidate := range candidates {
 		if current == nil || current.name != candidate.snapshot.group {
-			current = s.racCycleGroupFor(ctx, cycleGroups, limitBudgets, candidate.snapshot.group)
+			current = groupFor(candidate.snapshot.group)
 		}
 
 		if current.limitBlocked() {
-			s.recordSkippedReadyJob(ctx, q, groups, current, candidate)
+			// a load of learned values is a short local read shared by every later
+			// caller, so it takes no context, as warmReqGroupRecs' does not
+			//nolint:contextcheck // see above
+			s.recordSkippedReadyJob(q, groups, blocked, groupFor, current, candidate)
 
 			continue
 		}
 
 		s.prepareAndCountReadyJob(ctx, q, groups, candidate.job, rc, reqGroupToReqs)
 	}
+
+	s.regroupSkippedReadyJobs(ctx, q, blocked.regroup)
+	s.noteBlockedReqGroups(blocked.reqGroups)
 }
 
 // candidatesNeedPrioritySort reports whether scheduleReadyJobsByPriority must
@@ -3564,46 +3731,42 @@ func (s *Server) racCycleGroupFor(ctx context.Context, cycleGroups map[string]*r
 
 // recordSkippedReadyJob records one limit-blocked ready job against its scheduler
 // group's skipped count and keeps it reservable, WITHOUT the expensive
-// prepareReadyJob requirement recompute. The skipped count keeps the deferred job
-// accounted so a later completion re-triggers scheduling (decrementGroupCount /
+// prepareReadyJob work. The skipped count keeps the deferred job accounted so a
+// later completion re-triggers scheduling (decrementGroupCount /
 // hasSkippedScheduledGroups) and it is fully prepared once it becomes schedulable.
-// Meanwhile it must still be reservable so a runner scheduled for its group can pick
-// it up the moment capacity frees, so we keep its scheduler/queue reserve group in
-// step with the cheap snapshot (the queue's ready hook set it as the job became
-// ready, so this writes only when the group changed), which does not count towards
-// racScanWork. The job's sgroup is found once per cycle, then kept in its
-// cycleGroup.
-func (s *Server) recordSkippedReadyJob(ctx context.Context, q *queue.Queue,
-	groups map[string]*sgroup, cycleGroup *racCycleGroup, candidate readyJobCandidate) {
+//
+// Meanwhile it must still be reservable at the right size, so a runner scheduled
+// for its group can pick it up the moment capacity frees. The queue's ready hook
+// prepared it as it became ready, so normally this does nothing more: the cheap
+// pre-pass snapshot already shows it with the values it was prepared with and in
+// the group they call for. If its ReqGroup has learned other values since
+// (learnedChanged), it is recomputed with them now (refreshSkippedReadyJob), which
+// may give it a new group; that is counted towards racScanWork. Rounded learned
+// values change rarely, so on most cycles no blocked job is. A job whose group
+// changed is queued for the cycle's one bulk regroup (regroupSkippedReadyJobs)
+// and counted in its new group, whose sgroup is found once per cycle, then kept in
+// its cycleGroup.
+func (s *Server) recordSkippedReadyJob(q *queue.Queue, groups map[string]*sgroup, blocked *racBlockedJobs,
+	groupFor func(string) *racCycleGroup, cycleGroup *racCycleGroup, candidate readyJobCandidate) {
+	snapshot := candidate.snapshot
+
+	if rec, changed := s.learnedChanged(blocked, candidate.job, snapshot); changed {
+		snapshot = s.refreshSkippedReadyJob(q, candidate.job, rec)
+
+		if snapshot.group != cycleGroup.name {
+			cycleGroup = groupFor(snapshot.group)
+		}
+	}
+
 	if cycleGroup.sgroup == nil {
-		cycleGroup.sgroup = s.ensureGroup(groups, candidate.snapshot)
+		cycleGroup.sgroup = s.ensureGroup(groups, snapshot)
 	}
 
 	cycleGroup.sgroup.skipped++
 
-	s.ensureReserveGroup(ctx, q, candidate.job, candidate.snapshot)
-}
-
-// ensureReserveGroup sets a ready job's scheduler and queue reserve group from its
-// cheap pre-pass snapshot, but ONLY when the group actually changed
-// (snapshot.previousGroup != snapshot.group). The queue's ready hook already gave
-// the job its group as it became ready, so this normally does nothing; it keeps a
-// limit-blocked job's group in step with its snapshot without the expensive
-// prepareReadyJob requirement recompute, and is a one-time cost per change: once
-// its group is set, later rac cycles find it unchanged and do no work, keeping the
-// sustained hot loop bounded. It deliberately does NOT
-// recompute requirements (that is deferred to prepareReadyJob when the job becomes
-// schedulable), so on the rare cycle where a job's requirements would change this
-// sets the pre-change group; prepareReadyJob later corrects it when scheduling.
-func (s *Server) ensureReserveGroup(ctx context.Context, q *queue.Queue, job *Job,
-	snapshot schedulerGroupSnapshot) {
-	if snapshot.previousGroup == snapshot.group {
-		return
+	if snapshot.previousGroup != snapshot.group {
+		blocked.regroup = append(blocked.regroup, snapshot.key)
 	}
-
-	job.setSchedulerGroup(snapshot.group)
-
-	warnUnexpectedSetReserveGroupError(ctx, q.SetReserveGroup(snapshot.key, snapshot.group))
 }
 
 // prepareAndCountReadyJob runs the expensive prepareReadyJob path for one
@@ -4683,6 +4846,24 @@ func newPprofMux() *http.ServeMux {
 func disablePprofProfiling() {
 	runtime.SetMutexProfileFraction(0)
 	runtime.SetBlockProfileRate(0)
+}
+
+// regroupReadyJob is RegroupReady's callback: it gives a ready job the
+// scheduler group its current requirements call for and returns it as its
+// item's reserve group. It runs under the queue's lock, so it takes only the
+// job's and never calls the queue. Other data keeps reserveGroup.
+func regroupReadyJob(data any, reserveGroup string) string {
+	job, ok := data.(*Job)
+	if !ok {
+		return reserveGroup
+	}
+
+	job.Lock()
+	defer job.Unlock()
+
+	job.schedulerGroup = job.derivedLocked().group
+
+	return job.schedulerGroup
 }
 
 // suspendChange is the change a suspend makes to a job.
@@ -6659,7 +6840,8 @@ func (s *Server) readyAddedCallback(ctx context.Context, q *queue.Queue, allitem
 // (cheaply), keeping it accounted so a later completion re-triggers the callback
 // (decrementGroupCount / hasSkippedScheduledGroups) and schedules it then; a
 // deferred job keeps the reserve group the queue's ready hook gave it as it became
-// ready, so it stays reservable meanwhile.
+// ready, so it stays reservable meanwhile, unless its ReqGroup has learned other
+// values since, when it is recomputed and regrouped (see recordSkippedReadyJob).
 func (s *Server) buildSchedulerGroups(ctx context.Context, q *queue.Queue,
 	allitemdata []any, rc string) map[string]*sgroup {
 	groups := make(map[string]*sgroup)

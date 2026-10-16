@@ -134,3 +134,13 @@ Branch `nohold-2b5fd495`, worktree `../wr-nohold`, base `origin/develop` at
     the `resumeQueueItem` doc, shutdown's clears, `waitForPendingReserves`).
     `racRunning` can stay as a RAC-idle signal for tests;
     `jobqueue/resume_order_test.go` also references the hold.
+
+- Owner decision 2026-10-16 (item 6.3b): a learned requirement change must
+  reach ready jobs that are already queued, including jobs blocked behind a
+  full limit group, without the hold. Each job records the learned values it
+  was last prepared with; the RAC's cheap pre-pass compares them with the
+  cycle's values for its ReqGroup (O(1) per job) and recomputes and regroups
+  a job whose values differ, in bulk, in chunks of 1,024 jobs with one
+  queue-lock hold each. This amends
+  D3.2 and B3.3 (the RAC scan-work bound) and the reliable4 rac-bound tests
+  to match. The LSF gates (6.3) are rerun after the fix.

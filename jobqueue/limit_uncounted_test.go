@@ -92,11 +92,15 @@ func TestLimitSetOnRunningGroup(t *testing.T) {
 			jobs = append(jobs, &Job{
 				Cmd: fmt.Sprintf("echo lu %d", i), Cwd: testCwd, ReqGroup: reqGroupFake,
 				Requirements: reqs, RepGroup: "lu", LimitGroups: []string{luGroup},
+				Override: jobOverrideAlwaysUseJobReqs,
 			})
 		}
 
 		dgrAddJobs(jq, jobs)
 
+		// the jobs keep their own requirements (Override 2), so what the
+		// finished ones teach their ReqGroup does not move the waiting ones to
+		// another group while the limit holds them
 		group := schedulerGroupString(reqForScheduler(reqs), []string{luGroup})
 		reserve := func(wait time.Duration) *Job {
 			job, errr := jq.ReserveScheduled(wait, group)
@@ -150,6 +154,7 @@ func TestLimitSetOnRunningGroup(t *testing.T) {
 				dgrAddJobs(jq, []*Job{{
 					Cmd: "echo lu limited", Cwd: testCwd, ReqGroup: reqGroupFake, Requirements: reqs,
 					RepGroup: "lu", LimitGroups: []string{fmt.Sprintf("%s:%d", luGroup, luLimit)},
+					Override: jobOverrideAlwaysUseJobReqs,
 				}})
 
 				limitHolds()

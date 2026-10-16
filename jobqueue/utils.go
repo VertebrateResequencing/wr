@@ -2385,14 +2385,9 @@ func reqForScheduler(req *scheduler.Requirements) *scheduler.Requirements {
 		ram += reqSchedExtraRAM
 	}
 
-	d := req.Time.Round(reqSchedTimeRound)
-	if d < req.Time {
-		d += reqSchedTimeRound
-	}
-
 	out := &scheduler.Requirements{
 		RAM:   ram,
-		Time:  d,
+		Time:  schedulerTime(req.Time),
 		Cores: req.Cores,
 		Disk:  req.Disk,
 	}
@@ -2403,6 +2398,17 @@ func reqForScheduler(req *scheduler.Requirements) *scheduler.Requirements {
 	}
 
 	return out
+}
+
+// schedulerTime returns t rounded up to the nearest half hour, as
+// reqForScheduler gives it to the job scheduler.
+func schedulerTime(t time.Duration) time.Duration {
+	d := t.Round(reqSchedTimeRound)
+	if d < t {
+		d += reqSchedTimeRound
+	}
+
+	return d
 }
 
 // calculateItemDelay returns a delay based on a backoff and the number of

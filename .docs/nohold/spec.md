@@ -31,20 +31,25 @@ correct when it becomes ready, so reserves never wait on the RAC:
 - The hold (`racPending`, `waitingReserves`, `waitForPendingReserves`) is
   removed. `skipReserve` skips only when the group's count is 0 and nothing in
   the runner's reserve group is ready. The RAC still refreshes schedulable ready
-  jobs and schedules runners; the reliable4 bounded scan is unchanged.
+  jobs and schedules runners. It also recomputes and regroups, in bulk, any
+  limit-blocked ready job whose ReqGroup has learned other values since the job
+  was prepared (D3), so the reliable4 bounded scan grows only on a cycle that
+  sees a learned change.
 
 ## Architecture
 
 ### Packages and files
 
 - `queue/queue.go`: `ReadyHook`, `SetReadyHook`, `ReleaseWith`, `RequeueWith`,
-  `BuryWith`, `HasReady`, `ReadyAddedCallbackRunning`; every push into the ready
-  sub-queue goes through one internal helper that calls the hook. Tests:
-  `queue/ready_hook_test.go`, `queue/release_with_test.go`.
+  `BuryWith`, `HasReady`, `ReadyAddedCallbackRunning`, `RegroupReady`; every
+  push into the ready sub-queue goes through one internal helper that calls the
+  hook. Tests: `queue/ready_hook_test.go`, `queue/release_with_test.go`,
+  `queue/regroup_ready_test.go`.
 - `jobqueue/reqstat_cache.go` (new): the learned-requirement cache. Tests:
   `jobqueue/reqstat_cache_test.go`.
 - `jobqueue/ready_prepare.go` (new): the jobqueue ready hook, failure-bump
-  helpers and the bump-cleared bits. Tests: `jobqueue/nohold_test.go`.
+  helpers and the bump-cleared bits. Tests: `jobqueue/nohold_test.go`, and
+  `jobqueue/nohold_learnchange_test.go` for D3 tests 3 to 8.
 - Changed: `jobqueue/server.go`, `jobqueue/serverCLI.go`, `jobqueue/db.go`,
   `jobqueue/job.go`, `jobqueue/serverREST.go` and `CHANGELOG.md`
   (`jobqueue/running_dependent.go` is unchanged; see "Run end applied with the
@@ -86,6 +91,16 @@ func (queue *Queue) HasReady(reserveGroup string) bool
 // ReadyAddedCallbackRunning reports whether the ready-added callback is
 // running or queued to run (readyAddedCbRunning), recall break included.
 func (queue *Queue) ReadyAddedCallbackRunning() bool
+
+// RegroupReady moves ready items to new reserve groups in one hold of the
+// queue's lock. For each of keys whose item is in the ready sub-queue, it
+// calls regroup with the item's data and reserve group, with the queue
+// locked, and gives the item the reserve group regroup returns. Keys with no
+// item, or whose item is not ready, are skipped without calling regroup.
+// regroup must not call the queue. It returns how many items changed reserve
+// group.
+func (queue *Queue) RegroupReady(keys []string,
+	regroup func(data any, reserveGroup string) string) (int, error)
 ```
 
 For that flag to be a reliable idle signal, `rescheduleReadyAddedIfRecall` hands
@@ -589,6 +604,38 @@ callback is running or queued, so that tests can wait for it.
 6. Given a callback replaced with `SetReadyAddedCallback` while items are being
    added from another goroutine, then `go test -race ./queue` reports no race.
 
+### A4: Regrouping ready items in bulk
+
+As jobqueue, I want to move many ready items to new reserve groups in one hold
+of the queue's lock, so that a learned change regroups a large limit-blocked
+backlog without taking the lock once per job.
+
+**Package:** `queue/`
+**File:** `queue/queue.go`
+**Test file:** `queue/regroup_ready_test.go`
+
+**Acceptance tests:**
+
+1. Given a reserved item `"k3"`, then ready items `"k"` and `"k2"`, all of
+   group `"g1"`, and a callback that records its calls and returns `"g2"` for
+   `"k"` and its group argument otherwise, when `RegroupReady(["k", "k2",
+   "k3", "missing"], callback)`, then it returns 1, the callback was called
+   exactly for `("k", "g1")` and `("k2", "g1")`, `"k3"`'s group is still
+   `"g1"`, `Reserve("g1", 0)` returns `"k2"` and `Reserve("g2", 0)` returns
+   `"k"`.
+2. Given a goroutine blocked in `Reserve("g2", 2*time.Second)`, when
+   `RegroupReady` moves `"k"` to `"g2"`, then that reserve returns `"k"` within
+   200ms.
+3. Given a callback that calls `HasReady` in a goroutine, then that call has not
+   returned 100ms later, while the callback still runs.
+4. Given a destroyed queue, then `RegroupReady` returns an `Error` wrapping
+   `ErrQueueClosed` and the callback was not called.
+5. Given 100 ready items of `"g1"` with mixed priorities, after moving 1, 60 or
+   all 100 to `"g2"`, after moving 10 and then 50 more (which rebuilds `"g2"`
+   with its existing items), and after moving 60 and then 1 more, both groups
+   have the right counts and reserve in priority order. A key given twice
+   moves its item once.
+
 ## Section B: Learned-requirement cache
 
 ### B1: Cache, invalidation on a new stat key
@@ -710,7 +757,16 @@ have changed, so that the RAC does no more I/O than today.
    prepared) and RAM 300 seeded between them, then the second call loads `"rg"`
    once and all 100 jobs have `Requirements.RAM` 300.
 3. Given the existing `TestReliable4*` rac-bound tests, then they pass with
-   `racScanWork` unchanged.
+   `racScanWork` unchanged on every cycle that sees no learned change: still the
+   schedulable count, never the backlog. On a cycle whose learned values for a
+   ReqGroup differ from those its limit-blocked jobs were prepared with,
+   `racScanWork` is the schedulable count plus the number of those jobs (D3).
+   `TestReliable4RacBoundedBySchedulable`'s leaf that seeds a learned RAM for
+   its blocked group asserts that: 5 schedulable plus 6 blocked on that cycle,
+   all 6 at the learned RAM and out of their old group, then 5 on each of the
+   next two cycles. A new leaf seeds a learned time of 20s for the blocked
+   group (11 on that cycle), then 25s, which rounds up to the same half hour:
+   5 on that cycle.
 
 ## Section C: Failure bumps at fail time
 
@@ -1080,11 +1136,74 @@ group "" goes); recovered running jobs still get their group there.
 ### D3: The RAC remains a floor
 
 As the manager, I want long-waiting ready jobs to keep picking up newer
-learning, so that ready-time preparation does not freeze their size.
+learning, including jobs blocked behind a full limit group, so that ready-time
+preparation does not freeze their size.
 
 **Package:** `jobqueue/`
-**File:** `jobqueue/server.go`
-**Test file:** `jobqueue/nohold_test.go`
+**File:** `jobqueue/server.go`, `jobqueue/ready_prepare.go`, `jobqueue/job.go`
+**Test file:** `jobqueue/nohold_test.go` (test 1),
+`jobqueue/nohold_learnchange_test.go` (tests 3 to 8)
+
+Without the hold a runner reserves a limit-blocked job as soon as a slot frees,
+before any RAC can prepare it, so the RAC must bring such jobs up to date while
+they wait. `updateJobRequirementsForRetry` records on the job (unexported,
+not persisted) the learned values it recomputed with, as `learnedReqsOf(rec)`:
+RAM, disk and time, with time rounded up to the half hour as `reqForScheduler`
+rounds it, and nil as all zero (what a ReqGroup with no stats loads). The
+learned-requirement cache keeps a change stamp, starting at 1, that a load
+increments whenever it changes a ReqGroup's `learnedReqsOf`. Each job has a
+`preparedStamp`, reset to 0 when its recorded values change, which the snapshot
+carries in what was padding beside its priority, so the snapshot does not
+grow.
+
+At the start of a cycle with a runner command, the RAC reads the stamp
+(`stamp0`), refreshes (`recommendedReqForGroup`) every ReqGroup it has ever
+compared a limit-blocked job of, since nothing else may load a ReqGroup whose
+ready jobs are all blocked, and reads the stamp again (`stamp1`). For each
+limit-blocked job, `recordSkippedReadyJob` skips the job if its snapshot's stamp
+is `stamp1`, which is the only per-job cost on a cycle when no ReqGroup's
+rounded learned values have changed. Otherwise it reads the job's ReqGroup and
+recorded values under its read lock, looks up the cycle's values for that
+ReqGroup with no job lock held (a nil result is no change), and, if they are
+equal, sets the job's stamp to `stamp0`, so each job is compared at most twice
+per change: in the cycle after it, and once more if a load bumped the stamp
+during that cycle's refresh, since `stamp0` then differs from the next cycle's
+`stamp1`. A `wr mod` that changes a job's ReqGroup resets its stamp to 0, so it
+is compared against its new ReqGroup's values. Marking with `stamp0` matters: a
+background load (`refreshReqGroupRecsLater`) can finish during the refresh,
+after the refresh found that ReqGroup's load in flight and kept its old values,
+and bump the stamp. A job compared with those old values and marked `stamp1`
+would be skipped until some other change; marked `stamp0`, it is compared again
+next cycle. Reading only `stamp0` would instead delay every resize by a cycle.
+
+When the values differ it recomputes the job as `prepareReadyJob` does,
+through `recomputeIfStillReady` (so a job a reserve took since the snapshot is
+left alone), counts it in `racScanWork`, and counts it as skipped in its new
+group. The ReqGroups it compared are added to the refreshed set once per
+cycle. The set is not pruned: later cycles skip a current job without reading
+its ReqGroup, so they cannot tell a ReqGroup with no blocked jobs left from one
+whose jobs are all current. Every blocked job whose group changed is then
+moved by `q.RegroupReady`, 1,024 keys per call, each call one hold of the
+queue's lock. Its callback sets the job's scheduler group to its derived group
+and returns it, so a job and its item change group in the same hold.
+`RegroupReady` rebuilds a group's heap once when many of its items move. This
+replaces `ensureReserveGroup`'s per-job `SetReserveGroup`. The callback takes
+no Server mutex, and nothing calls the queue under a job's lock.
+
+Rounded learned values change rarely, so a change cycle recomputes each stale
+blocked job once, and the cycles after it compare only. A recompute is the one
+`updateJobRequirementsForRetry`, so overrides, `wr mod` values and failure bumps
+come out as they would when the job became schedulable. A job reserved between
+its recompute and its chunk's regroup runs at the recomputed size from its old
+group, the same window `regroupJob` has for a schedulable job.
+
+Measured over 60,000 blocked jobs (`BenchmarkRACLearnedChange`): a cycle that
+resizes them all takes about 260ms of RAC time, and no reader of the queue
+waits longer than the base's (about 6ms); a cycle after another ReqGroup's
+rounded values changed compares them all, about 24ms against 14ms with no
+change, outside the queue's lock. RACs run one at a time, serialised by the
+queue's callback-running flag (`readyAddedCbRunning` and its recall), not by
+a Server mutex.
 
 **Acceptance tests:**
 
@@ -1092,8 +1211,59 @@ learning, so that ready-time preparation does not freeze their size.
    job at learned 300, when RAM 800 is seeded and the RAC is triggered, then
    within 5s (polling the outcome, not `racIdle()`) the job's `Requirements.RAM`
    is 800 and its item's `ReserveGroup` is the RAM 800 group.
-2. Given the existing `TestReliable4Rac*` tests, then they pass and the
-   limit-blocked remainder is still not prepared by the RAC.
+2. Given the existing `TestReliable4Rac*` tests, then they pass as B3 test 3
+   says, and the limit-blocked remainder is prepared by the RAC only on a cycle
+   whose learned values for its ReqGroup differ from those it was prepared
+   with.
+
+Tests 3 to 6 (`TestNoHoldLearningAfterReady`) use runner command `serverRC`,
+interval -1, jobs of RAM 600 and Override 0 unless stated, and learn from real
+archives: a job of the ReqGroup archived with PeakRAM 150 makes the learned RAM
+200. "A RAC after" means a triggered RAC that started after the step has
+finished. Limit group `nohold-lc:1` has its slot held by a job of it reserved
+and started.
+
+3. (Red.) Given two jobs of the limit group, one holding its slot, a job of a
+   ReqGroup with no stats in the limit group, and a learner job of the
+   ReqGroup with no limit group, when the learner is archived with PeakRAM 150
+   and a RAC after has run, then the blocked job has `Requirements.RAM` 200,
+   and its scheduler group and item's `ReserveGroup` are the RAM 200 group with
+   limit group `nohold-lc`; the no-stats job keeps RAM 600 and its group, and
+   the RAC's bulk regroup moved exactly 1 item. Once the slot holder is
+   archived, a `ReserveScheduled` on the RAM 200 group returns the blocked job
+   with RAM 200. (On the base it stays at 600 in its old group.)
+4. Given test 3 after its RAC, when two more RACs after run, then the bulk
+   regroup moved no item, `racScanWork` is 0 and the blocked job's scheduler
+   group was not derived again.
+5. Given test 3's setup with the RAC gated after the learner's archive, a gated
+   RAC that has its snapshot, and then the slot holder archived and the blocked
+   job reserved from its RAM 600 group (at RAM 600), when the gate opens and the
+   RAC is idle, then the manager's job still has `Requirements.RAM` 600 and the
+   RAM 600 group.
+6. Given a blocked job with Override 1 whose `Modify` set RAM 400, then after
+   the learner's archive and a RAC after it has RAM 400 and the RAM 400 group.
+   Given instead `ReleaseDelayMin` 2s and a blocked job with Retries 3 that
+   failed for RAM with PeakRAM 150 (RAM 1200), whose slot is then held by a job
+   of a ReqGroup with no stats, when a learner of its ReqGroup is archived with
+   PeakRAM 250 (learned 300) and a RAC after has run, then it keeps RAM 1200 and
+   the RAM 1200 group.
+7. (Red against the single-stamp version.) Given a paused server with interval
+   -1, and, in each of 20 trials, two ReqGroups each with 2 jobs blocked behind
+   limit group `nohold-stamprace:0`, a cycle that finds them current, then RAM
+   500 seeded for both and a background load of the first held in
+   `reqStatLoadHook` until a load of the second starts (which lets it go and
+   waits for it to finish), when 3 direct `buildSchedulerGroups` calls are made,
+   then in every trial the first ReqGroup's jobs have RAM 500
+   (`TestNoHoldLearnedStampRace`). With the stamp read only after the refresh,
+   about half the trials stay at 100: the refresh order is the set's map order.
+8. (Red.) Given a job of ReqGroup `nohold-reqgroupmod-from` blocked behind
+   `nohold-reqgroupmod:0` and a RAC after its add, when a `Modify` sets its
+   ReqGroup to `nohold-reqgroupmod-to` (no stats, so the same rounded learned
+   values, and no blocked job of it seen before), that ReqGroup is loaded and
+   a RAC after runs, then RAM 500 is seeded for it and two RACs after run, the
+   job has RAM 500 (`TestNoHoldLearnedReqGroupModified`). Without the stamp
+   reset on a ReqGroup change it stays at 600.
+
 
 ### D4: No bolt I/O under the queue lock
 
@@ -1276,7 +1446,8 @@ these entries (each under its heading, in this order):
 ### Added
 - Go API: `queue.Queue.SetReadyHook` (with `queue.ReadyHook`),
   `ReleaseWith`, `RequeueWith`, `BuryWith`, `HasReady`,
-  `ReadyAddedCallbackRunning` and `GetRunningDataAndLeftReady`, and
+  `ReadyAddedCallbackRunning`, `RegroupReady` and
+  `GetRunningDataAndLeftReady`, and
   `jobqueue.Job.FailBumpsCleared` with its `jobqueue.FailBump*` bits,
   `jobqueue.Job.ModifiedReqs`, `jobqueue.Job.FailedRunReqs` and
   `jobqueue.ServerTimings.ReqStatRefreshInterval`.
@@ -1314,6 +1485,9 @@ Grouped by when each bug could affect you, most likely first.
   change.
 - A newly started runner no longer sometimes exits at once without running
   anything when commands were ready for it.
+- Commands waiting behind a full limit group now pick up the memory, disk and
+  time learned for their requirements group while they wait, instead of often
+  running at the size known when they became ready.
 
 #### With large queues or many runners
 Performance only.
@@ -1403,7 +1577,8 @@ The PR body records both run directories, the figures and the verdict.
    preparation, removing the hold would let every reserve take unprepared items,
    and without E2 a fresh runner's first reserve would be skipped.
 6. **Phase 6: CHANGELOG and gates (F1, G1, G2, G3).** Sequential: F1, G1, G2,
-   then G3, the last step before the PR is ready.
+   then G3, the last step before the PR is ready. G2's `add-storm-lsf` finding
+   (item 6.3b) adds A4 and D3 tests 2 to 8, after which G1 and G2 are rerun.
 
 ## Appendix: Key Decisions
 
@@ -1492,6 +1667,23 @@ The PR body records both run directories, the figures and the verdict.
   plus the bumps, and refreshes off the lock. Adds, kicks and resumes warm the
   cache first; delay expiry, dependency satisfaction and TTR rely on the RAC to
   catch up on learned values, while their bumps always apply.
+- **Learned changes reach limit-blocked jobs through the RAC (item 6.3b).**
+  On the base, the hold let the RAC resize the front of a limit group's
+  backlog before each freed slot was reserved. Without it the RAC never
+  catches up while the group stays full, so stale jobs ran at their unlearned
+  size until the backlog drained. Checking at reserve time (a cache read on
+  every reserve) and a ReqGroup-to-ready-jobs index were rejected for the
+  RAC's O(1) compare of the learned values each job was prepared with. On a
+  cycle when no ReqGroup's rounded learned values have changed it costs one
+  integer compare per blocked job. The stamp is global, so a change to any
+  ReqGroup makes the next cycle compare every blocked job once (about 24ms
+  against 14ms at 60,000), and the recompute and regroup happen once per
+  stale job per change. Time is compared at the
+  scheduler's half-hour rounding, since the learned time, rounded to the
+  second, can move on any completion without changing a job's group. A first
+  version kept each job's ReqGroup and values in the snapshot: 40 more bytes
+  per ready job made no-change cycles 7 to 24% slower and allocate 45 to 55%
+  more, so the snapshot carries only the job's stamp, in its padding.
 - **No racmutex in the hook.** `waitThenRecheckRAC` holds `racmutex` while
   calling `q.Stats()`, so the hook reading `runnerCommand()` under the queue
   lock would deadlock; it reads an atomic copy instead (D4 test 2).
@@ -1510,8 +1702,9 @@ The PR body records both run directories, the figures and the verdict.
   draining before it reaches `skipReserve`, and the hook still runs while
   paused, so items are prepared by `Resume`.
 - **Testing.** GoConvey, following go-implementor and go-reviewer. Red tests
-  (B1.9, C1.1, C1.9, C2.1, C3.1, C3.5, D1.10, D2.1, E1.1 to E1.3, E1.5, E1.6,
-  E2.1) must be shown failing on the base before the fix. The red runs on the
+  (B1.9, C1.1, C1.9, C2.1, C3.1, C3.5, D1.10, D2.1, D3.3, D3.8, E1.1 to E1.3,
+  E1.5, E1.6, E2.1) must be shown failing on the base before the fix; D3.7 fails
+  on its single-stamp predecessor, which the base lacks. The red runs on the
   base use only what the base has: they seed stats with `putJobStat` (the base
   has no `putStat`), wait with the base's hold check instead of `racIdle()`, and
   drop assertions on fields and timings that do not exist there

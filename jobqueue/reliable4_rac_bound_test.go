@@ -65,6 +65,11 @@ func TestReliable4RacBoundedBySchedulable(t *testing.T) {
 			// lowLearnedRAM is a learned RAM for the low ReqGroup that differs
 			// from lowRAM.
 			lowLearnedRAM = 500
+			// lowLearnedSecs and then lowLaterLearnedSecs are learned times for
+			// the low ReqGroup, in seconds, that differ but not once rounded up
+			// to the half hour.
+			lowLearnedSecs      = 20
+			lowLaterLearnedSecs = 25
 		)
 
 		serverConfig, addr, _, clientConnectTime := subscriptionTestConfig(t)
@@ -151,13 +156,14 @@ func TestReliable4RacBoundedBySchedulable(t *testing.T) {
 			So(blocked.skipped, ShouldEqual, lowCount)
 		})
 
-		Convey("the limit-blocked jobs keep their size when their ReqGroup learns a new one", func() {
+		Convey("the limit-blocked jobs are resized once when their ReqGroup learns a new size, "+
+			"and later cycles are bounded again", func() {
 			// the add prepared every job with the low ReqGroup's (empty) learned
 			// values, so only a recompute after this seed can change their RAM.
 			seedReqGroupStats(server, bucketJobRAM, "reliable4-low", lowLearnedRAM)
 
-			server.buildSchedulerGroups(ctx, server.q, allitemdata, "true")
-			So(int(server.racScanWork.Load()), ShouldEqual, limit)
+			changed := server.buildSchedulerGroups(ctx, server.q, allitemdata, "true")
+			So(int(server.racScanWork.Load()), ShouldEqual, limit+lowCount)
 
 			low, resized := 0, 0
 
@@ -175,13 +181,40 @@ func TestReliable4RacBoundedBySchedulable(t *testing.T) {
 
 				low++
 
-				if ram != lowRAM {
+				if ram == lowLearnedRAM {
 					resized++
 				}
 			}
 
 			So(low, ShouldEqual, lowCount)
-			So(resized, ShouldEqual, 0)
+			So(resized, ShouldEqual, lowCount)
+
+			resizedGroup := itemsInGroup(server.q.AllItems(), blocked.name)
+			So(resizedGroup, ShouldBeEmpty)
+			So(changed[blocked.name], ShouldBeNil)
+
+			// the next cycles over the same backlog, with nothing newly learned,
+			// do only the schedulable jobs' work again: pre-fix of BUG 1, or with
+			// the blocked jobs rescanned on every cycle, this would be the backlog.
+			for range 2 {
+				server.buildSchedulerGroups(ctx, server.q, allitemdata, "true")
+				So(int(server.racScanWork.Load()), ShouldEqual, limit)
+			}
+		})
+
+		Convey("a learned time that moves within the same half hour is no change", func() {
+			// the first learned time is new, so the blocked jobs take it once
+			seedReqGroupStats(server, bucketJobSecs, "reliable4-low", lowLearnedSecs)
+
+			server.buildSchedulerGroups(ctx, server.q, allitemdata, "true")
+			So(int(server.racScanWork.Load()), ShouldEqual, limit+lowCount)
+
+			// a later one rounds up to the same half hour as the scheduler sees
+			// it, so it changes neither their scheduler group nor their queue
+			seedReqGroupStats(server, bucketJobSecs, "reliable4-low", lowLaterLearnedSecs)
+
+			server.buildSchedulerGroups(ctx, server.q, allitemdata, "true")
+			So(int(server.racScanWork.Load()), ShouldEqual, limit)
 		})
 
 		Convey("the limit-blocked jobs are recorded as skipped so a completion re-triggers scheduling", func() {

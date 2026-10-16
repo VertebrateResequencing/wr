@@ -31,6 +31,7 @@ import (
 	"math"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
@@ -78,6 +79,10 @@ func (db *db) loadReqGroupRecsInto(reqGroup string, e *reqStatEntry, gen uint64)
 		return e.rec
 	}
 
+	if learnedReqsOf(rec) != learnedReqsOf(e.rec) {
+		c.changes.Add(1)
+	}
+
 	e.rec, e.loadedGen, e.loaded = rec, gen, true
 
 	return rec
@@ -92,10 +97,18 @@ type reqStatCache struct {
 	interval time.Duration  // least time between load starts for one ReqGroup
 	wg       sync.WaitGroup // loads started by refreshReqGroupRecsLater
 	closed   bool
+
+	// changes is a stamp that a load increments whenever it changes some
+	// ReqGroup's learnedReqs. It starts at 1, so it never equals a Job's
+	// preparedStamp of 0.
+	changes atomic.Uint32
 }
 
 func newReqStatCache() *reqStatCache {
-	return &reqStatCache{entries: make(map[string]*reqStatEntry)}
+	c := &reqStatCache{entries: make(map[string]*reqStatEntry)}
+	c.changes.Store(1)
+
+	return c
 }
 
 // startLoadLocked reports whether a load of e is due: e is not current, no

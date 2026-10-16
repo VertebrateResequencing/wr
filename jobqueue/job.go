@@ -605,8 +605,8 @@ func (j *Job) memoisedSchedulerGroupSnapshot() (schedulerGroupSnapshot, bool) {
 }
 
 // snapshotWithDerived combines the given memoised derived strings with this job's
-// live priority and current scheduler group. Call with at least the read lock
-// held.
+// live priority, current scheduler group and preparedStamp. Call with at least
+// the read lock held.
 func (j *Job) snapshotWithDerived(derived *jobDerived) schedulerGroupSnapshot {
 	return schedulerGroupSnapshot{
 		key:           derived.key,
@@ -614,6 +614,7 @@ func (j *Job) snapshotWithDerived(derived *jobDerived) schedulerGroupSnapshot {
 		previousGroup: j.schedulerGroup,
 		group:         derived.group,
 		priority:      j.Priority,
+		learnedStamp:  j.preparedStamp.Load(),
 	}
 }
 
@@ -1181,6 +1182,23 @@ type Job struct {
 	// (copyJobForClient) and for key calculations (JobModifier.modifiedKey) start
 	// out with it unset, so a memo can never travel to a different Job.
 	derived *jobDerived
+
+	// preparedLearned is the learnedReqs of the learned values
+	// updateJobRequirementsForRetry last recomputed this job with, so that a
+	// ready-added callback can tell from its snapshot that the job's ReqGroup
+	// has learned other values since (see Server.recordSkippedReadyJob). It is
+	// written under the write lock and, being unexported, is neither
+	// serialised nor sent to clients: a job recovered from the database is
+	// prepared again as it becomes ready.
+	preparedLearned learnedReqs
+
+	// preparedStamp is the learned-requirement cache's change stamp (see
+	// reqStatCache.changes) as of which a ready-added callback last found
+	// preparedLearned current, or 0 if none has since preparedLearned last
+	// changed. A snapshot carries it in what would otherwise be padding, so a
+	// callback can skip a job that is current without reading anything else of
+	// it. It is atomic because the callback sets it under the read lock.
+	preparedStamp atomic.Uint32
 
 	// racCountedIn is the racID of the scheduler group a ready-added callback
 	// last counted this job in as ready (see Server.prepareAndCountReadyJob), so
@@ -2279,6 +2297,7 @@ type schedulerGroupSnapshot struct {
 	previousGroup string
 	group         string
 	priority      uint8
+	learnedStamp  uint32 // the job's preparedStamp
 }
 
 // schedulerGroupSnapshot returns the cheap per-rac-cycle view of this job: its
@@ -3222,8 +3241,12 @@ func (j *JobModifier) applyCmdCwd(job *Job) {
 
 // applyGrouping applies the group/module/dependency modifications to job.
 func (j *JobModifier) applyGrouping(job *Job) {
-	if j.ReqGroupSet {
+	if j.ReqGroupSet && job.ReqGroup != j.ReqGroup {
 		job.ReqGroup = j.ReqGroup
+
+		// its prepared learned values were found current for its old
+		// ReqGroup, so a ready-added callback must compare it again
+		job.preparedStamp.Store(0)
 	}
 
 	if j.GroupSet {

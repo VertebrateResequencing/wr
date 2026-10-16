@@ -587,8 +587,528 @@ client's receive floor). Explain any figure more than 10% worse than the
 base's, any `badjobDelta` or `maxLost` above the base's, and any gap over
 60s on this tree. Depends on item 6.2.
 
+Results (2026-10-16, branch head c39739ff, base 6f1b41bb built from a
+scratch worktree; farm22-wrstat01, queue `normal`, `OS_*` unset). Each
+tree had its own `WRDEV_ROOT` and binary, built before any run, with
+ports 52610 to 52613. Runs went one at a time, base then branch.
+`g2run.sh` does not wait for LSF to empty. Before each next run I
+checked by hand, from the shell, with `bjobs -w` ("No unfinished job
+found") or an `until` loop on the previous run's job-name prefix
+(`bjobs -J '<prefix>*'` returning nothing). Those checks' output was
+not saved, so the run start and end times in each `.out` are the only
+record. Branch run 1's CLEANUP printed `jobs left in LSF: 55`; the
+scenario had already bkilled them. A `bjobs -J` on its prefix then
+found none, and base run 2 started 22s after it ended (09:02:04 to
+09:02:26) under another root, so another job-name token and its own
+certificates. All
+scenario arguments were the defaults. `WRDEV_DEBUG=1` was set for both
+trees, because the `confirmed_dead` figure needs it (without it the
+scenario prints `n/a`). It also makes the manager log dense enough for
+a `GAP` to mean a freeze, and production runs with `--debug` too.
+Storm modes ran on their own copies of
+`/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/fix120k.db` and
+`pristine10`; the fixtures' mtimes are unchanged. Outputs, gzipped
+manager logs and the launcher `g2run.sh` are in
+`/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-g2/`. Wall time is the
+whole `wrdev.sh` invocation; drain is the manager log's first
+`added jobs` to its last `completed job`. Lost is the highest `lost`
+count seen; confirmed dead is the count of `killed a job after
+confirming it was dead` in the manager log. Binary provenance: each
+`.out` header records the binary's sha1 prefix (base `b736a5e6c77b`,
+branch `aa66a3f28044`), but no `wr version` output was saved (these
+builds print none without the release ldflags), and the binaries were
+deleted with the work roots.
+
+- **`add-storm-lsf`: PASS on both trees, twice each.** Its run length is
+  fixed (120s storm, a kill, 120s more), so wall time cannot show
+  throughput; jobs completed is the manager log's `completed job` count
+  over storm, recovered and child jobs. The scenario does not print
+  lost. The primary evidence that none were lost is the manager logs:
+  none contains a line mentioning `lost` or a confirm-dead kill. A
+  read-only side sampler (`wr status -o counts` every 20s; files
+  `*.lostsamples`) corroborates it: it never saw `lost contact` above
+  0. Its samples were empty while the manager was down or starting
+  (4, 2, 5 and 3 of 16 or 17 per run).
+
+  | Run | Tree | Wall | Jobs completed | Acked adds (missing) | Add p50 / p99 / max | Lost | Confirmed dead | Bad job |
+  |---|---|---|---|---|---|---|---|---|
+  | 1 | base | 331s | 17,883 | 4,741 (0) | 198 / 1,153 / 1,798ms | 0 | 0 | 0 |
+  | 1 | branch | 319s | 26,008 | 4,469 (0) | 274 / 1,361 / 1,931ms | 0 | 0 | 0 |
+  | 2 | base | 327s | 18,475 | 4,921 (0) | 102 / 1,329 / 1,834ms | 0 | 0 | 0 |
+  | 2 | branch | 320s | 32,822 | 4,722 (0) | 139 / 1,103 / 1,650ms | 0 | 0 | 0 |
+
+  Both trees printed `PASS: all <n> acknowledged adds`, with no slow
+  add (`overSlow=0`, `mgrSlowAdds=0`). Four figures are more than 10%
+  worse on this tree:
+
+  - Add p50: +38% (run 1) and +36% (run 2).
+  - `ackedPreKill` in run 1: 2,110 against 2,456 (-14.1%); in run 2
+    2,605 against 2,649 (-1.7%). This compares like for like: both
+    storms ran 120s before the kill, and the `t+` offsets differ only
+    by the fixture copy time (18s, 9s, 14s, 15s). It matches the adds
+    logged by the last pre-kill sample (1,956 against 2,279 in run 1;
+    2,397 against 2,436 in run 2). So in run 1 the branch's
+    think-time-paced adders completed fewer adds before the kill
+    because each add took longer. The slower adds have the same
+    possible cause, and the same variance caveat, as add latency
+    below; run 2 shows almost no difference.
+  - Add p99 in run 1: +18% (in run 2 it is 17% better).
+  - The VERDICT's `maxStatusRPC`: 214 against 186ms (+15%, run 1) and
+    185 against 106ms (+75%, run 2). Each is the single worst of the
+    run's 23 or 24 sampled status RPCs, and all are under 250ms. The
+    per-sample medians are 55 against 57.5ms in run 1 (this tree
+    lower) and 75 against 57ms in run 2.
+
+  In the same fixed window this tree completed 1.45 and 1.78 times as
+  many jobs as the base: fixture population 20,937 and 27,361 against
+  12,943 and 13,253. It did so with a lower peak LSF RUN (84 against
+  97, 73 against 96). That is unexplained. The RAC logged fewer
+  `rac scheduling jobs` on this tree (1,467 against 2,300; 1,274
+  against 2,415), but nothing here shows that this caused the lower
+  peak. One plausible cause of the slower adds is that
+  this tree's runners take ready work sooner without the reserve hold,
+  so more reserves and archives compete with the adds on the same
+  manager. That was not measured, and the data is weak evidence for
+  it. Run-to-run variance on one tree is about 2x (base p50 198 then
+  102ms; branch 274 then 139ms), bigger than the tree delta: the base's
+  run 1 was slower than the branch's run 2. Run 1's branch status-RPC
+  median is not higher than the base's either. The per-add adder logs
+  (`addstormlsf-*/adder_*.log`) that could show latency against time
+  were deleted with the work roots, although each `.out` says they
+  "are kept". Either way the cost is about 40 to 75ms at the median,
+  against a 5,000ms bound and the 10s slow-request threshold. The 24
+  adders are think-time paced, so slower adds also mean the 4 to 6%
+  fewer acknowledged adds.
+
+  I compared every other VERDICT field of both runs, base against
+  branch. None is worse by more than 10% beyond the four above:
+
+  - `adds`, `acked`, `measuredAdds`, `presentAfterRestart` and
+    `stormJobsInDb` are 4 to 6% lower.
+  - `outage`, `stormComplete` and `stormCompleteAtKill` are within 6%.
+  - `notAcked` is 13% lower in run 2, which is better.
+  - Every safety and zero field matches (`missingAcked`,
+    `neverAddedFound`, `unackedInDb`, `overSlow`, `mgrSlow*`, `*Buried`).
+  - `ackedInKillWindow` (7 against 5; 9 against 11) and
+    `inFlightAtKill` count luck at the kill instant; they are neither
+    better nor worse.
+  - `maxLSFPend` is lower.
+  - The fixture and kid completion and added counts are all higher on
+    this tree. `fixReadyNow` is 17% and 30% lower, because more of the
+    fixture had run. The kid
+    jobs' completion ratio is lower: 558 of 896 and 702 of 1,148
+    against 474 of 568 and 582 of 590. More kids were completed, but
+    many more were added and still unfinished when the window closed.
+    The VERDICT does not give their states, so the reason is not shown.
+
+  One job in the branch's run 2 shows a kill-window artifact, not a
+  lost job: fixture job `448a6775a98910514fdefdbcb098afbd` was reserved
+  at 09:10:43, just before the kill. At the restart (09:11:06) it was
+  released, then re-reserved and completed in the same second. It is
+  the only `released job` line in any `add-storm-lsf` manager log.
+- **`report-storm-lsf`: PASS on both trees.**
+
+  | Tree | Wall | Drain | Completed | Verdict line | Longest GAP |
+  |---|---|---|---|---|---|
+  | base | 302s | 248s | 100,000 | `badjobDelta=0 maxDelayed=0 maxLost=0 maxStatusRPC=571ms` | 20s |
+  | branch | 296s | 222s | 100,000 | `badjobDelta=0 maxDelayed=0 maxLost=0 maxStatusRPC=661ms` | 22s |
+
+  Both printed `FULLY DRAINED (complete=100000 buried=0)` and exited 0;
+  confirmed dead 0 on both, and `badjobDelta` and `maxLost` (0) equal
+  the base's. Each tree logged 2 gaps, both before any job ran: the 20s
+  and 22s gap is the 100,000-job `wr add` (the manager log goes from
+  start-up to `ready items available ... items=100000`), and the 12s
+  and 10s gap is the wait for LSF to start the first runner (it ends
+  at the first `reserved job`). No gap is over 60s. This tree drained
+  10% faster. `maxStatusRPC` is 16% worse (661 against 571ms), and the
+  median of the 30s-sampled status RPCs is 511 against 356ms. This tree
+  ran more jobs at once: peak `running` 1,960 against 1,529, and peak
+  LSF_RUN 2,000 against 1,690. Its mean `running` was about 1,760 over
+  its 6 mid-drain samples (t+32 to t+189, leaving out t+221 with 2
+  running) against about 1,040 over the base's 7 (t+32 to t+218). More
+  concurrent reports may slow a status RPC, but the samples do not
+  show a clean link to load. The branch at t+189 had 1,960 running and
+  answered in 311ms; the base at t+94 had 901 running and took 507ms.
+  Every sample was well under a second, against the client's 60s
+  receive floor.
+- **`limit-drain`: PASS on both trees.**
+
+  | Tree | Wall | Drain | Completed | Lost | Confirmed dead | Bad job | Archive reject | Max status RPC |
+  |---|---|---|---|---|---|---|---|---|
+  | base | 1,016s | 963s | 60,000 | 0 | 0 | 0 | 0 | 456ms |
+  | branch | 972s | 956s | 60,000 | 0 | 0 | 0 | 0 | 639ms |
+
+  Both printed `FULLY DRAINED (complete=60000 buried=0)`. Each tree's
+  max status RPC is one outlier sample: the base's 456ms at t+47s and
+  this tree's 639ms at t+594s, with the next sample 161ms. Excluding
+  each outlier, the highest was 315 and 327ms, and the medians were
+  133.5 and 132ms. So the 40% higher max is one sample, not a trend. The
+  scenario stopped neither manager, so each was stopped with
+  `wrdev.sh stop` (its verified pid and its own namespaced jobs; output
+  in `limit-drain-*.stop.out`). Then an `until` loop on `bjobs -J` for
+  that manager's job prefix waited until LSF held none (09:41:37 for
+  the base, before the branch run started at 09:41:41). The loop's
+  output was not saved beyond the time it printed.
+
+Every scenario passes on this tree by its own criteria. Nothing is
+left running: no LSF job, no manager. The scratch worktree, the scratch
+`GOCACHE` and the work roots (DB copies, binaries) were removed.
+
+These results are from c39739ff, before item 6.3b changed how learned
+sizes reach ready jobs. Item 6.3 is rerun on the branch after 6.3b, and
+the rerun's results replace the branch figures above.
+
 - [ ] implemented
 - [ ] reviewed
+
+### Item 6.3b: ready jobs keep their unlearned size (add-storm-lsf finding)
+
+Problem. In item 6.3's `add-storm-lsf` runs, this tree's recovered fixture
+jobs mostly ran at their unlearned 600MB for the whole first manager
+lifetime, while the base moved about half of them to the learned 200MB.
+After the restart the reverse held: every fixture job ran at 200 here, but
+the kids' reservations dropped to 1 or 2.
+
+Evidence. Manager logs in
+`/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-g2/`. `reserved job` lines
+were split by manager lifetime (the boundary is the second `recovering
+prior state` line) and by kind: fixture (`aslfix N plain` and `selfadd`),
+kid (`aslfix N kid`) and storm (`sleep`). Learning (the first fixture
+reservation at 200) arrived 6 to 7s after the first reservation on both
+trees. The fixture's limit group is `aslblock:30`.
+
+| Run | Fixture at 600, per 30s before the kill | Before the kill | After the restart | Kid reservations after the restart |
+|---|---|---|---|---|
+| base 1 | 72, 64, 51, 40, 34% | 55% of 7,500 | 31% of 5,480 | 369 |
+| branch 1 | 92, 84, 87, 89, 91% | 89% of 12,562 | 0% of 8,449 | 1 |
+| base 2 | 70, 51, 36, 33, 28% | 47% of 8,661 | 32% of 4,647 | 582 |
+| branch 2 | 94, 96, 94, 94, 92% | 94% of 16,285 | 0% of 11,137 | 2 |
+
+The last bucket is partial. Storm jobs, which are added during the run,
+ran at 200 before the kill on both trees (2 to 3% at 600, 17% in base
+run 2). Over each whole run, 45% and 42% of the base's fixture runs were
+at 600, against 53% and 56% here. In the RAC's `rac saw ready jobs` lines
+before the kill:
+
+- The base counted 5,481 and 6,498 fixture jobs into the 200 group. Its
+  600 group had a count above 0 in only 11 and 9 cycles.
+- This tree counted 1,591 and 986 into the 200 group. Its 600 group had a
+  count of 1 to 4 in 98 and 138 cycles.
+- On both trees the 600 group's skipped count stayed large: 52,017 and
+  50,313 at the base's last pre-kill cycle, 47,396 and 43,745 here. The
+  base still had 46,697 and 46,694 skipped in it at its last cycle after
+  the restart.
+
+Mechanism: (a), the expected result of removing the hold, not a bug in
+the RAC or ready path.
+
+- On both trees the recovered limit-blocked remainder gets a real reserve
+  group at the size known when it first became ready (here 600, since the
+  fixture database holds no stats). On the base, the first RAC's
+  `recordSkippedReadyJob` -> `ensureReserveGroup` sets it from the
+  unprepared snapshot. Here the ready hook and `prepareBeforeQueueing` set
+  it at recovery. Neither tree's RAC recomputes a limit-blocked job
+  (`ensureReserveGroup` does not recompute, by design, and spec D3.2
+  keeps that). So runners already submitted for the 600 group keep
+  reserving it on both trees.
+- What moved the base's jobs to 200 was the hold. Each archive frees a
+  slot of `aslblock` and sets `racPending` (`decrementGroupCount` on a
+  group with skipped jobs), so the runner's next reserve waits. The RAC
+  then has the freed slot as budget. It prepares the front candidates of
+  the first group it visits (`readyItemData` walks `groupedItems`, a
+  map), which regroups 600-group jobs to 200 before any 600 runner can
+  take them.
+- Without the hold, the 600 runner reserves the front item at once, so by
+  the time the RAC runs, the budget is spent. The few candidates it does
+  prepare are the same front items the runners take, and
+  `recomputeIfStillReady` (item 6.1b) correctly skips those already
+  reserved. They are then counted at 600, which is what keeps this tree's
+  600 group asking for runners. So the RAC never catches up while the
+  limit group stays saturated. The stale group drains only by running:
+  about 45,000 jobs at 84 to 105 per second, 7 to 9 more minutes here,
+  had there been no restart.
+- After the restart this tree's recovery prepares the remainder at the
+  learned 200 (spec D2, correct). The base's recovery does not, so 31 to
+  32% of its post-restart fixture runs were still at 600. The kids
+  (`--memory 100M`, `-l aslblock`, learned 200) then share
+  `200~aslblock` with about 47,000 older fixture jobs of equal priority.
+  The queue serves a reserve group by priority, size, then creation, so
+  they wait behind them. On the base they were served because the
+  remainder sat in the stale 600 group. Over the whole run this tree
+  completed more kids (558 and 702, against 474 and 582). Only their
+  order relative to equal-priority older jobs changed.
+
+Over-reservation: at 30 concurrent fixture runs, each run at 600 reserves
+400MB more than the learned size. Before the kill that is about 10.7 to
+11.3GB here, against about 5.6 to 6.6GB on the base, which was falling
+to about 3.4 to 4.1GB by the kill. After the restart it is 0 here,
+against about 3.7GB on the base. When learning raises a size instead,
+stale jobs run under-sized and can fail for RAM before their bump. The
+base has the same exposure for its stale remainder, but its hold resized
+most jobs just before they ran.
+
+Red/green. `.docs/nohold/learnchange_probe_test.go.txt` holds
+`TestNoHoldLearningAfterReady`, which uses only what both trees have. It
+learns from real archives (peak 150, learned 200) of jobs added at 600,
+with runner command `serverRC`, and counts finished RACs through a
+wrapped ready-added callback. It was copied into scratch worktrees of
+6f1b41bb and c39739ff and run with `go test -tags netgo -count 3 -run
+TestNoHoldLearningAfterReady ./jobqueue`:
+
+1. A schedulable ready job is moved to 200 and its group, and a runner of
+   that group reserves it at 200, once a RAC runs after a completion:
+   passes on both trees. So the RAC still re-sizes the jobs it prepares,
+   through the real archive's cache invalidation, the change-only memo and
+   `recomputeIfStillReady`. Mutants in the scratch head copy: skipping
+   `prepareReadyJob`'s recompute fails it (600, not 200); never
+   invalidating the memo on a change fails it (group `700:30:1:0` against
+   `300:30:1:0`).
+2. A job blocked behind its full limit group is not re-sized by a RAC
+   after learning changes: it stays at 600 on both trees, as spec D3.2
+   says. This is not a regression.
+3. With the RAC that the slot holder's archive triggers held for 1s, a
+   runner of the old group reserving at once gets the blocked job: the
+   base returns nil (its reserve waits for the RAC, which has moved the
+   job to 200), and this tree returns it at RAM 600 (3 of 3 runs each).
+   This is the mechanism above, made deterministic. It is red here only
+   because the reserve no longer waits, which is spec E1's contract, so
+   it is not a test to make green as written.
+
+Options (not implemented; for the owner):
+
+1. Accept and document it. Jobs waiting behind a busy limit group run at
+   the size known when they became ready until the RAC reaches them,
+   which under saturation is not before they run. This is a user-visible
+   change in reserved memory (DEVELOPERS.md rule 10), so it would need a
+   CHANGELOG line.
+2. Re-size stale ready jobs when a ReqGroup's learned values change. Each
+   job would record the learned RAM, disk and time it was last prepared
+   with. The RAC's cheap pre-pass would compare those with the cycle's
+   values for its ReqGroup, an O(1) compare per job, and recompute and
+   regroup only on a difference, limit-blocked jobs included. Rounded
+   learned values change rarely, so the extra work is one recompute and
+   one `SetReserveGroup` per stale job per change. Here that is a single
+   burst of about 60,000, which a bulk `SetReserveGroups` would make one
+   queue-lock hold. It amends spec D3.2 and B3.3 (`racScanWork` would no
+   longer be bounded by the schedulable count on a change cycle), so it
+   needs the owner's ruling and the reliable4 rac-bound tests updated.
+   This is the recommended option.
+3. Check at reserve time. If a popped job's ReqGroup values differ from
+   those it was prepared with, recompute it, and if its group changes,
+   regroup it and give the runner the next item. This puts a cache read
+   on every reserve and complicates the reserve path. Not recommended.
+4. Regroup a ReqGroup's ready jobs when a background load after an
+   invalidation completes. This needs an index from ReqGroup to ready
+   jobs, and does the same work as option 2 off the RAC.
+
+No code was changed, so no gates were run. The scratch worktrees and
+`GOCACHE` were removed.
+
+Owner decision 2026-10-16: option 2 (fix in the RAC). Record per job
+the learned values it was last prepared with; the RAC's cheap pre-pass
+recomputes and regroups any ready job, limit-blocked included, whose
+values differ from the cycle's, in bulk. Amend spec D3.2 and B3.3 and the
+reliable4 rac-bound tests to match, then rerun item 6.3's LSF gates.
+
+Implementation (uncommitted on c39739ff). Spec: Overview, Packages, queue
+API, new A4, B3.3, D3 (rewritten, tests 2 to 8 added), F1 and two Key
+Decisions amended. CHANGELOG: `RegroupReady` under Added, a Fixed line for
+commands waiting behind a full limit group.
+
+Design:
+
+- `updateJobRequirementsForRetry` records `learnedReqsOf(rec)` on the job
+  (`preparedLearned`: RAM, disk, and time rounded up to the half hour as
+  `reqForScheduler` rounds it; nil is zero), and resets `preparedStamp` to 0
+  when that changes. Every recompute path records it, the hook included.
+- The cache keeps a change stamp (`reqStatCache.changes`, from 1) that a load
+  increments when it changes a ReqGroup's `learnedReqsOf`. The snapshot
+  carries the job's `preparedStamp` in the padding beside its priority, so it
+  does not grow.
+- Each RAC cycle with a runner command reads the stamp (`stamp0`), refreshes
+  every ReqGroup it has compared a blocked job of (`newRACBlockedJobs`),
+  since with every ready job blocked nothing else loads it, then reads the
+  stamp again (`stamp1`). For a blocked job (`recordSkippedReadyJob`): a
+  snapshot stamp equal to `stamp1` is skipped, one compare. Otherwise its
+  ReqGroup and values are read under its read lock, the cycle's values looked
+  up with no job lock held, and if equal the job gets `stamp0`
+  (`markLearnedCurrent`). The compared ReqGroups go into a cycle-local set,
+  merged into the refreshed set once per cycle. If they
+  differ, `refreshSkippedReadyJob` recomputes it through
+  `recomputeIfStillReady` (6.1b: a job a reserve took is left alone), counts
+  a unit of `racScanWork`, and counts it as skipped in its new group.
+- Blocked jobs whose group changed (this replaces `ensureReserveGroup`) are
+  moved by `q.RegroupReady`, 1,024 keys per call (`racRegroupChunk`), each
+  call one hold of the queue's lock. Its callback (`regroupReadyJob`) sets
+  `job.schedulerGroup` to the derived group under the queue's lock, so the
+  job and its item never disagree. Items no longer ready are skipped. The
+  queue rebuilds a group's heap once when many of its items move
+  (`subQueue.regroup`, `manyOf`), instead of a heap fix per item, which took
+  one hold for 60,000 items from about 180ms to about 60ms; chunking then
+  took the longest hold to the base's level (about 6ms, below).
+- Lock order is unchanged: queue, then job, then cache `mu`. No bolt I/O or
+  queue call happens under a job lock, the callback takes no Server mutex,
+  and nothing waits for the RAC.
+- `racRegrouped` (inert) counts the items the bulk regroup moved.
+
+Tests:
+
+- `jobqueue/nohold_learnchange_test.go` (`TestNoHoldLearningAfterReady`,
+  from the probe, which is deleted): D3 tests 3 to 6. Red on c39739ff plus
+  only the unused `queue.RegroupReady` and the inert `racRegrouped` field:
+  D3.3 fails at "blocked job RAM",
+  Expected 200, Actual 600; every other leaf passed there. Green after.
+  The probe's reserve-during-held-RAC leaf is replaced by D3.3's "reserves
+  it at 200 once the slot frees" and D3.5's reserved-after-snapshot leaf.
+- `queue/regroup_ready_test.go`: A4, plus a repeated key and priority order
+  after moving 1, 60, 100, and 60 then 1 of 100 items.
+- `reliable4_rac_bound_test.go`: the "keep their size" leaf now asserts 11
+  (5 + 6) on the change cycle, all 6 at learned 500 and out of their old
+  group, then 5 on each of the next two. A new leaf: learned time 20s gives
+  11, then 25s (same half hour) gives 5.
+- `limit_uncounted_test.go` (`TestLimitSetOnRunningGroup`): its jobs now
+  use Override 2. Their `echo` completions teach `fake_group` RAM 100, which
+  now moves the blocked jobs out of the test's hard-coded RAM 10 group.
+- `&Server{}` fixtures that reach the blocked path got
+  `db: racNoStatsDB(...)`, a cache with current empty entries, in
+  `rac_backlog_bench_test.go`, `rac_limit_groups_test.go`,
+  `rac_cycle_groups_test.go`, `reliable3_overprovision_test.go` and
+  `reliable3_rac_accounting_test.go`. `BenchmarkBuildSchedulerGroupsBacklog`'s
+  fixture sets each job's scheduler group after its cold cycle, because its
+  items are not queued, which `ensureReserveGroup` used to cover.
+
+Mutants, in a scratch detached worktree of c39739ff plus this diff, running
+`TestNoHoldLearningAfterReady`, `TestReliable4RacBoundedBySchedulable`,
+`TestRACParsesLimitGroupsOncePerGroup`, `TestReliable4SchedulerGroupSnapshot*`
+and `TestRegroupReady`:
+
+| Mutant | Red |
+|---|---|
+| never compare learned values | LearningAfterReady, RacBounded |
+| compare, but no bulk regroup | LearningAfterReady |
+| recompute, but count the old snapshot (no regroup that cycle) | RacBounded |
+| never record `preparedLearned` | LearningAfterReady, RacBounded |
+| recompute without the still-ready check | LearningAfterReady (D3.5) |
+| compare raw learned time | RacBounded (time leaf) |
+| no cycle-start refresh of blocked ReqGroups | LearningAfterReady, RacBounded |
+| bulk heap rebuild without `heap.Init` | RegroupReady |
+| `RegroupReady` regroups non-ready items | RegroupReady |
+| never mark a job current (compare every cycle) | survives: cost only |
+
+Per-job instead of bulk regrouping has the same behaviour and is not
+testable. `BenchmarkRACLearnedChange` shows the cost.
+
+Speed: interleaved, 6 rounds each, c39739ff vs this diff, the same bench
+files in both (`rac_learned_bench_test.go` is new, copied into the base with
+its RAM check off, since the base does not resize). Shared host, load about
+2.5. Raw files and benchstat output are in the session scratchpad
+(`6.3b/bench-*.txt`, `benchstat2.txt`).
+
+| Benchmark | base | this | delta |
+|---|---|---|---|
+| BuildSchedulerGroupsBacklog/priorities=1 (200k blocked) | 87.8ms | 91.2ms | ~ (p=0.82) |
+| BuildSchedulerGroupsBacklog/priorities=4 | 154.8ms | 147.3ms | ~ (p=0.49) |
+| RACCycleCounted/leavers=0 (100k schedulable) | 84.5ms | 87.9ms | ~ (p=1.0) |
+| RACCycleCounted/leavers=100 | 84.9ms | 90.9ms | +7.1% (p=0.026) |
+| ReadyBacklogSnapshot | 1.42ms | 1.39ms | ~ |
+| RACLearnedChange (60k blocked, learned RAM changed) | 18.2ms | 229.5ms | new work |
+| RACLearnedChange max queue-lock wait | 6.6ms | 78.8ms | new work |
+
+B/op is unchanged on the no-change benchmarks. allocs/op is +3 per cycle,
+constant: the cycle-start refresh's slice and the blocked-job state. No
+no-change row is over 10%. A change cycle over 60,000 blocked jobs costs
+about 230ms of RAC time and one queue-lock hold that kept a concurrent
+reader waiting at most about 79ms, once per change in a ReqGroup's rounded
+learned values. The first version, which kept each job's ReqGroup and
+values in the snapshot (40 more bytes per job), was +7 to +24% on time
+(BuildSchedulerGroupsBacklog +14% and +7%, RACCycleCounted +15% and +7%,
+ReadyBacklogSnapshot +24%) and +45 to +55% on B/op for the same no-change
+rows, so it was replaced.
+
+Review fixes (coordinator review of the above, FAIL on one defect):
+
+- Stamp race (blocking). The first stamp design read the stamp once, after
+  the cycle-start refresh. A background `refreshReqGroupRecsLater` load in
+  flight when the refresh reached its ReqGroup made that refresh keep the old
+  values; the load then finished during the refresh of another ReqGroup and
+  bumped the stamp; the cycle compared that ReqGroup's blocked jobs with the
+  old values, found them equal and marked them with the new stamp, so they
+  were skipped until some other change. Regression test first:
+  `TestNoHoldLearnedStampRace` (spec D3.7), 20 trials so the refresh's map
+  order meets the race in about half: red on that diff (14 of 20 trials
+  stuck at RAM 100), green after, 5 runs under `-race`. Fix: read `stamp0`
+  before the refresh and `stamp1` after; skip on `stamp1`, mark with
+  `stamp0`. Mutants: marking with `stamp1` (the old code) fails
+  `TestNoHoldLearnedStampRace`; reading only `stamp0` fails
+  `TestReliable4RacBoundedBySchedulable` (11 on the change cycle becomes 5).
+- Hold cut: `regroupSkippedReadyJobs` chunks its keys (`slices.Chunk`,
+  1,024). `RegroupReady` pre-sizes `moved`, `oldGroups` and `isMoved` to
+  `len(keys)`, and `subQueue.regroup` each leaving set.
+- Minors: the spec's cost wording now says no rounded change in any
+  ReqGroup, and gives the change=other cost; compared ReqGroups go into a
+  cycle-local set instead of taking `racBlockedMu` per job. The refreshed set
+  is not pruned: later cycles skip a current job without reading its
+  ReqGroup, so they cannot tell a ReqGroup with no blocked jobs left from one
+  whose jobs are all current, and pruning would bring back the no-reload case
+  the refresh exists for. The first version's figure is corrected to +7 to
+  +24% here and in the spec. A4 has a bulk-join leaf (10 then 50 into g2,
+  `manyOf(50, 60)`, rebuilding g2 with its existing items); a mutant that
+  drops the existing items fails it.
+
+Speed after the review fixes (interleaved, 6 rounds each, c39739ff vs this
+diff, same bench files, host load about 2; `6.3b/benchstat3.txt`).
+`BenchmarkRACLearnedChange` now has three variants on its 60,000 blocked
+jobs: change=ram (all resized), change=other (only another ReqGroup changed,
+so all are compared and none resized) and change=none.
+
+| Benchmark | base | this | delta |
+|---|---|---|---|
+| BuildSchedulerGroupsBacklog/priorities=1 | 94.1ms | 95.4ms | ~ (p=0.70) |
+| BuildSchedulerGroupsBacklog/priorities=4 | 152.0ms | 158.6ms | ~ (p=0.24) |
+| RACCycleCounted/leavers=0 | 79.4ms | 85.5ms | ~ (p=0.09) |
+| RACCycleCounted/leavers=100 | 87.9ms | 93.6ms | ~ (p=0.18) |
+| ReadyBacklogSnapshot | 1.40ms | 1.51ms | ~ (p=0.39) |
+| RACLearnedChange/change=none | 14.9ms | 13.6ms | -8.3% |
+| RACLearnedChange/change=other | 15.0ms | 24.0ms | compares 60k jobs |
+| RACLearnedChange/change=ram | 14.7ms | 259.9ms | resizes 60k jobs |
+| max queue-lock wait, change=ram | 6.5ms | 6.4ms | ~ (p=0.82) |
+
+B/op is unchanged except change=ram (28.9MB against 4.1MB). allocs/op is +4
+per cycle, constant. No no-change row is significantly worse. A change
+cycle's longest queue-lock hold is now no worse than the base's, against
+about 79ms unchunked; its RAC time rose from about 230ms to about 260ms, off
+the queue's lock. A change in any ReqGroup costs the next cycle about 24ms
+against 14ms at 60,000 blocked jobs, outside the queue's lock (RACs are
+serialised by the queue's callback-running flag, not a Server mutex).
+
+Second review (PASS) follow-ups:
+
+- Docs: no RAC holds `racmutex`; RACs are serialised by the queue's
+  callback-running flag. The spec's D3 and this item's Design and speed text
+  now say so. "Compared once per change" is now "at most twice": the cycle
+  after it, and once more if a load bumped the stamp during that cycle's
+  refresh (`stamp0` then differs from the next `stamp1`), in the spec and the
+  `learnedChanged` comment. prompt.md's last Note says chunks of 1,024 with
+  one hold each.
+- `wr mod` of a blocked job's ReqGroup: the job kept its stamp, so if the new
+  ReqGroup had equal rounded values and no blocked job seen before, the job was
+  skipped until some ReqGroup changed. Red test first:
+  `TestNoHoldLearnedReqGroupModified` (spec D3.8) failed 3 of 3 runs at RAM
+  600 against 500. Fix: `JobModifier.applyGrouping` resets `preparedStamp`
+  when it changes the ReqGroup. Mutant: dropping the reset is the pre-fix code,
+  red as above.
+
+Gates (all `OS_*` unset), on the final diff: `make lint` 0 issues; `CGO_ENABLED=1 go test -race -count 2 -run
+'TestNoHold|TestReliable4Rac|TestLimit|TestRegroup|TestModify' ./jobqueue/
+./queue/` ok (jobqueue 253s, queue 1.4s); `make test` PASSED (1002 passed,
+22 skipped, 34 packages, 4m25s);
+`cleanorder -min-diff` on every edited Go file. Earlier, after the first
+review fixes: `make test` PASSED (1001 passed, 4m3s) and `CGO_ENABLED=1 make
+race` PASSED (1001 passed, 5m32s). Item 6.3's LSF gates are to be rerun (not
+run here).
+
+- [x] implemented
+- [x] reviewed
 
 ### Item 6.4: G3 - prodsim soak
 

@@ -31,6 +31,7 @@ package queue
 
 import (
 	"container/heap"
+	"math/bits"
 	"sync"
 	"time"
 
@@ -344,6 +345,115 @@ func (q *subQueue) update(item *Item, oldGroup ...string) {
 	}
 
 	heap.Fix(q, item.queueIndexes[q.sqIndex])
+}
+
+// regroup moves each of items, which are in this ready sub-queue and whose
+// ReserveGroup has already been changed, out of the group the matching entry
+// of oldGroups names and into its new group, as update does for one item, and
+// notifies a waiter on the new group for each. A group that many of the items
+// leave or join has its heap rebuilt once instead of being fixed per item,
+// which for a large group costs a fraction of len(items) heap fixes.
+func (q *subQueue) regroup(items []*Item, oldGroups []string) {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	leaving := make(map[string]map[*Item]bool)
+	joining := make(map[string][]*Item)
+
+	for i, item := range items {
+		gone, ok := leaving[oldGroups[i]]
+		if !ok {
+			gone = make(map[*Item]bool, len(items))
+			leaving[oldGroups[i]] = gone
+		}
+
+		gone[item] = true
+		joining[item.ReserveGroup] = append(joining[item.ReserveGroup], item)
+	}
+
+	for group, gone := range leaving {
+		q.removeFromGroup(group, gone)
+	}
+
+	for group, added := range joining {
+		q.addToGroup(group, added)
+
+		for range added {
+			q.triggerNotify(group)
+		}
+	}
+}
+
+// manyOf reports whether changing k items of a heap of n is cheaper as one
+// rebuild, O(n), than as k fixes, O(k log n).
+func manyOf(k, n int) bool {
+	return k*bits.Len(uint(n)) >= n
+}
+
+// removeFromGroup takes the gone items out of group's heap. You must hold
+// q.mutex.
+func (q *subQueue) removeFromGroup(group string, gone map[*Item]bool) {
+	itemList := q.groupedItems[group]
+	q.reserveGroup = group
+
+	if !manyOf(len(gone), len(itemList)) {
+		for item := range gone {
+			heap.Remove(q, item.queueIndexes[q.sqIndex])
+		}
+
+		return
+	}
+
+	kept := itemList[:0]
+
+	for _, item := range itemList {
+		if !gone[item] {
+			kept = append(kept, item)
+		}
+	}
+
+	// clear the vacated slots, as Pop does
+	clear(itemList[len(kept):])
+
+	if len(kept) == 0 {
+		delete(q.groupedItems, group)
+
+		return
+	}
+
+	q.groupedItems[group] = kept
+	q.reindexAndInit(kept)
+}
+
+// addToGroup puts the added items into group's heap. You must hold q.mutex.
+func (q *subQueue) addToGroup(group string, added []*Item) {
+	itemList := q.groupedItems[group]
+	q.reserveGroup = group
+
+	if !manyOf(len(added), len(itemList)+len(added)) {
+		for _, item := range added {
+			heap.Push(q, item)
+		}
+
+		return
+	}
+
+	itemList = append(itemList, added...)
+	q.groupedItems[group] = itemList
+	q.reindexAndInit(itemList)
+}
+
+// reindexAndInit records each of itemList's positions in its item, then
+// restores the heap order of q.reserveGroup's items, which itemList is. You
+// must hold q.mutex.
+func (q *subQueue) reindexAndInit(itemList []*Item) {
+	for i, item := range itemList {
+		item.mutex.Lock()
+		item.queueIndexes[q.sqIndex] = i
+		item.mutex.Unlock()
+	}
+
+	heap.Init(q)
 }
 
 // empty clears out a queue, setting it back to its new state.

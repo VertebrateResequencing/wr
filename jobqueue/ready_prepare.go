@@ -75,7 +75,8 @@ func recomputedReqsOf(req *scheduler.Requirements) recomputedReqs {
 // (FailedRunReqs), or from the user's value (ModifiedReqs) for a resource a
 // wr mod set since, so the result is the same however often it runs: learning
 // is judged against what the run reserved, never against an earlier
-// recompute's increase. The caller holds job's lock.
+// recompute's increase. It records recommendedReq's learnedReqs as the values
+// job was last prepared with (preparedLearned). The caller holds job's lock.
 //
 // It also invalidates the job's memoised derived scheduler-group strings, of
 // which Requirements is an input, if it changed their RAM, disk or time (the
@@ -84,6 +85,11 @@ func recomputedReqsOf(req *scheduler.Requirements) recomputedReqs {
 // when the numbers come out the same the memo is kept for the hook to use.
 func updateJobRequirementsForRetry(job *Job, jobOverride uint8, recommendedReq *scheduler.Requirements) {
 	defer job.invalidateDerivedIfChangedLocked(recomputedReqsOf(job.Requirements))
+
+	if learned := learnedReqsOf(recommendedReq); learned != job.preparedLearned {
+		job.preparedLearned = learned
+		job.preparedStamp.Store(0)
+	}
 
 	if job.RequirementsOrig == nil {
 		job.RequirementsOrig = &scheduler.Requirements{
@@ -106,6 +112,15 @@ func updateJobRequirementsForRetry(job *Job, jobOverride uint8, recommendedReq *
 	}
 
 	applyFailureBumpsLocked(job)
+}
+
+// learnedReqsOf returns rec's learnedReqs.
+func learnedReqsOf(rec *scheduler.Requirements) learnedReqs {
+	if rec == nil {
+		return learnedReqs{}
+	}
+
+	return learnedReqs{ram: rec.RAM, disk: rec.Disk, time: schedulerTime(rec.Time)}
 }
 
 // resetRequirementsForRecompute sets the RAM, disk and time of a job with a
@@ -178,6 +193,28 @@ func (j *Job) invalidateDerivedIfChangedLocked(before recomputedReqs) {
 	}
 
 	j.invalidateDerivedLocked()
+}
+
+// learnedReqs is a ReqGroup's learned RAM, disk and time as far as they can
+// change a job's size: the time rounded up as reqForScheduler rounds it, so a
+// learned time that moves within one such step is no change. No learned values
+// (nil) are all zero, as a ReqGroup with no stats has.
+type learnedReqs struct {
+	ram  int
+	disk int
+	time time.Duration
+}
+
+// markLearnedCurrent gives j the learned-requirement change stamp, recording
+// that its prepared learned values, learned, were found current as of it,
+// unless a recompute has changed them since they were read.
+func (j *Job) markLearnedCurrent(learned learnedReqs, stamp uint32) {
+	j.RLock()
+	defer j.RUnlock()
+
+	if j.preparedLearned == learned {
+		j.preparedStamp.Store(stamp)
+	}
 }
 
 // regroupJob gives job the scheduler group its current requirements call for

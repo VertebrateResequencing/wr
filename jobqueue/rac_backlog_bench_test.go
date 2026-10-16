@@ -110,7 +110,8 @@ func racBacklogFixture(b *testing.B) (*Server, *queue.Queue, []*Job) {
 	ctx := context.Background()
 	q := queue.New(ctx, "rac-backlog-bench")
 	s := &Server{
-		q: q,
+		q:  q,
+		db: racNoStatsDB("rac-backlog"),
 		limiter: limiter.New(func(context.Context, string) *limiter.GroupData {
 			return limiter.NewCountGroupData(0)
 		}),
@@ -138,8 +139,13 @@ func racBacklogFixture(b *testing.B) (*Server, *queue.Queue, []*Job) {
 
 	rng.Shuffle(len(jobs), func(i, j int) { jobs[i], jobs[j] = jobs[j], jobs[i] })
 
-	// the cold cycle derives every job's memo and sets its scheduler group
+	// the cold cycle derives every job's memo; their items are not queued, so
+	// each job is given its scheduler group here, as the ready hook gives it
 	racBacklogCycle(ctx, b, s, q, racBacklogData(jobs))
+
+	for _, job := range jobs {
+		job.setSchedulerGroup(job.schedulerGroupSnapshot().group)
+	}
 
 	slices.SortStableFunc(jobs, func(a, b *Job) int {
 		return cmp.Compare(a.getSchedulerGroup(), b.getSchedulerGroup())
@@ -148,6 +154,19 @@ func racBacklogFixture(b *testing.B) (*Server, *queue.Queue, []*Job) {
 	b.Cleanup(func() { others = nil })
 
 	return s, q, jobs
+}
+
+// racNoStatsDB returns a db with no bolt database whose learned-requirement
+// cache holds, as current, no learned values for each of reqGroups, so a rac
+// cycle over their jobs finds them without loading anything.
+func racNoStatsDB(reqGroups ...string) *db {
+	cache := newReqStatCache()
+
+	for _, reqGroup := range reqGroups {
+		cache.entries[reqGroup] = &reqStatEntry{rec: &jqs.Requirements{DiskSet: true}, loaded: true}
+	}
+
+	return &db{reqStats: cache}
 }
 
 // racBacklogSetPriorities spreads the jobs' priorities over the given number of
@@ -217,6 +236,7 @@ func racCountedFixture(b *testing.B) (*Server, *queue.Queue) {
 	q := queue.New(ctx, "rac-counted-bench")
 	s := &Server{
 		q:                         q,
+		db:                        racNoStatsDB(racCountedReqGroup),
 		limiter:                   limiter.New(func(context.Context, string) *limiter.GroupData { return nil }),
 		previouslyScheduledGroups: make(map[string]*sgroup),
 	}

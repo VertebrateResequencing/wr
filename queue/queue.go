@@ -776,6 +776,69 @@ func (queue *Queue) GetRunningDataAndLeftReady() ([]any, []any) {
 	return queue.runningDataLocked(), left
 }
 
+// RegroupReady moves ready items to new reserve groups in one hold of the
+// queue's lock. For each of keys whose item is in the ready sub-queue, it calls
+// regroup with the item's data and reserve group, with the queue locked, and
+// gives the item the reserve group regroup returns. Keys with no item, or whose
+// item is not ready, are skipped without calling regroup, so an item reserved
+// since the caller chose it keeps its group, and an item given more than once
+// moves at most once. regroup must not call the queue. It returns how many
+// items changed reserve group.
+func (queue *Queue) RegroupReady(keys []string, regroup func(data any, reserveGroup string) string) (int, error) {
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+
+	if queue.closed {
+		return 0, Error{queue.Name, "RegroupReady", "", ErrQueueClosed}
+	}
+
+	moved, oldGroups := make([]*Item, 0, len(keys)), make([]string, 0, len(keys))
+	isMoved := make(map[*Item]bool, len(keys))
+
+	for _, key := range keys {
+		item, exists := queue.items[key]
+		if !exists || isMoved[item] {
+			continue
+		}
+
+		if oldGroup, changed := regroupItemLocked(item, regroup); changed {
+			isMoved[item] = true
+			moved = append(moved, item)
+			oldGroups = append(oldGroups, oldGroup)
+		}
+	}
+
+	if len(moved) > 0 {
+		queue.readyQueue.regroup(moved, oldGroups)
+	}
+
+	return len(moved), nil
+}
+
+// regroupItemLocked gives item, if it is ready, the reserve group regroup
+// returns for it, without moving it in the ready sub-queue, and returns its old
+// group and whether that changed. You must hold the queue's lock.
+func regroupItemLocked(item *Item, regroup func(data any, reserveGroup string) string) (string, bool) {
+	item.mutex.RLock()
+	ready, oldGroup := item.state == ItemStateReady, item.ReserveGroup
+	item.mutex.RUnlock()
+
+	if !ready {
+		return oldGroup, false
+	}
+
+	newGroup := regroup(item.Data(), oldGroup)
+	if newGroup == oldGroup {
+		return oldGroup, false
+	}
+
+	item.mutex.Lock()
+	item.ReserveGroup = newGroup
+	item.mutex.Unlock()
+
+	return oldGroup, true
+}
+
 // Error records an error and the operation, item and queue that caused it.
 type Error struct {
 	Queue string // the queue's Name
