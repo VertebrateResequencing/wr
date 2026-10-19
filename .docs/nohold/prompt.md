@@ -159,3 +159,12 @@ Branch `nohold-2b5fd495`, worktree `../wr-nohold`, base `origin/develop` at
   against the base's 16ms in-process on NFS; mean -15% against the base).
   The gap is writer occupancy from the extra archive throughput, which no
   write ordering can remove.
+- Owner decision 2026-10-19 (item 6.3 record): two further costs of removing
+  the hold are accepted. (1) Kid ordering: in add-storm-lsf the branch
+  completes far fewer self-added kid jobs than the base (112 against 519),
+  because ready jobs now reach their learned size and, within a priority, the
+  queue serves older jobs first; the base finished more kids only because its
+  fixture jobs were stuck at a stale size. (2) In-process archive latency on
+  NFS: the archive median rises (299ms against the base's 20ms in the 6.3e
+  probe) from writer occupancy; at LSF scale the archive writer's mean wait
+  is +8% with +31% throughput.
