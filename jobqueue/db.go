@@ -1225,6 +1225,10 @@ type db struct {
 	njStop       chan struct{} // closed by close() to stop the writer after a final drain
 	njWriterDone chan struct{} // closed by the writer when it has fully stopped
 	njStopped    bool          // guarded by njMu: the writer will drain no more
+	// turns orders the new jobs, archive and best-effort writers' transactions
+	// so an add is not left behind every archive queued on bolt's write lock,
+	// nor an archive behind a stream of adds (see writeturns.go).
+	turns writeTurns
 	// backupMu guards the backup-state fields below (backingUp, backupFinal,
 	// backupQueued, backupStopped, slowBackups, backupLast, backupWait), keeping
 	// backup coordination off the exclusive db RWMutex so the archive/exit hot
@@ -2289,7 +2293,7 @@ func (db *db) drainBestEffort(ctx context.Context) {
 
 	defer func() { db.doneBestEffort(batch, err) }()
 
-	if err = db.bolt.Update(batch.apply); err != nil {
+	if err = db.updateInTurn(writerBestEffort, batch.apply); err != nil {
 		clog.Error(ctx, "Database best-effort job update failed", "err", err)
 
 		return
@@ -3284,7 +3288,7 @@ func (db *db) archiveTx(ops []*archiveOp, failed *int) error {
 
 	var begun time.Time
 
-	err := db.bolt.Update(func(tx *bolt.Tx) error {
+	err := db.updateInTurn(writerArchive, func(tx *bolt.Tx) error {
 		begun = time.Now()
 
 		for i, op := range ops {
@@ -3301,10 +3305,10 @@ func (db *db) archiveTx(ops []*archiveOp, failed *int) error {
 	})
 
 	// the fold this transaction achieved, how long it took in total, and how much
-	// of that was spent acquiring bolt's single write lock before the transaction
-	// body ran - so a concurrent add's transactions starving the archive writer is
-	// distinguishable from this transaction's own commit being expensive
-	// (archivefold.go).
+	// of that was spent waiting for its write turn and bolt's single write lock
+	// before the transaction body ran - so other transactions starving the
+	// archive writer is distinguishable from this transaction's own commit being
+	// expensive (archivefold.go).
 	db.arFold.observeTx(len(ops), time.Since(started), begun.Sub(started))
 
 	noteArchivesWritten(ops, err)
@@ -3599,7 +3603,7 @@ func (db *db) drainNewJobs(final bool) {
 // whole transaction is rolled back, so the caller can take that op out and retry
 // the rest.
 func (db *db) newJobsTx(ops []*newJobsOp, failed *int) error {
-	return db.bolt.Update(func(tx *bolt.Tx) error {
+	return db.updateInTurn(writerNewJobs, func(tx *bolt.Tx) error {
 		for i, op := range ops {
 			if err := db.applyNewJobsOp(tx, op); err != nil {
 				if failed != nil {

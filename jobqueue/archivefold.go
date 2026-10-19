@@ -47,9 +47,9 @@ package jobqueue
 //     serialising them and no amount of extra batching has anything to divide;
 //   - WHERE the waiting is (meanWait/maxWait against meanTx/maxTx): wait is how
 //     long a caller's archive sat queued before the writer picked it up, tx is
-//     how long the write transaction it landed in took, INCLUDING acquiring
-//     bolt's single write lock (so an `add`'s own transaction starving the
-//     archive writer shows up as tx, not as wait).
+//     how long the write transaction it landed in took, INCLUDING waiting for
+//     its write turn and acquiring bolt's single write lock (so an `add`'s own
+//     transaction starving the archive writer shows up as tx, not as wait).
 //
 // The three regimes read as follows, and they need different work:
 //
@@ -62,12 +62,12 @@ package jobqueue
 //	                             shape); the queue is deep and nothing folds it
 //	>> 1      ~ meanTx  large    SLOW: the writer folds fine but its transaction
 //	                             is expensive. meanLock then says which: close to
-//	                             meanTx means it is queuing on bolt's single write
-//	                             lock behind another writer (newJobsWriter and
-//	                             bestEffortWriter each take one transaction per
-//	                             fold, and wr mod / wr remove / limit-group
-//	                             writes take a bolt.Batch one), near zero means
-//	                             its own commit is the cost
+//	                             meanTx means it is waiting for its write turn or
+//	                             bolt's single write lock behind another writer
+//	                             (newJobsWriter and bestEffortWriter each take one
+//	                             transaction per fold, and wr mod / wr remove /
+//	                             limit-group writes take a bolt.Batch one), near
+//	                             zero means its own commit is the cost
 //
 // It follows the established inert-counter convention (db.archivedDecodes
 // 5c75a15, Job.derivations 8087866, db.archiveTxObserver f7e36bc,
@@ -164,8 +164,9 @@ func (s archiveFoldSummary) meanTx() time.Duration {
 	return s.perTx(s.txNanos)
 }
 
-// meanLock is the average part of those durations spent acquiring bolt's single
-// write lock. Close to meanTx means the writer is queuing behind another writer
+// meanLock is the average part of those durations spent waiting for the write
+// turn and acquiring bolt's single write lock (see writeturns.go). Close to
+// meanTx means the writer is queuing behind another writer
 // (newJobsWriter and bestEffortWriter each take one transaction per fold, and wr
 // mod / wr remove / limit-group writes take a bolt.Batch one); near zero means
 // the transaction's own commit is what costs.
@@ -220,12 +221,14 @@ type archiveFoldStats struct {
 	maxWait   atomic.Uint64
 
 	// txNanos and maxTx are the summed and worst duration of those transactions,
-	// including acquiring bolt's single write lock.
+	// including waiting for the write turn and acquiring bolt's single write
+	// lock.
 	txNanos atomic.Uint64
 	maxTx   atomic.Uint64
 
 	// lockNanos and maxLock are the summed and worst part of those durations
-	// spent acquiring bolt's single write lock, before the transaction body ran.
+	// spent waiting for the write turn and acquiring bolt's single write lock,
+	// before the transaction body ran.
 	lockNanos atomic.Uint64
 	maxLock   atomic.Uint64
 }
@@ -262,7 +265,8 @@ func (s *archiveFoldStats) observeWaits(ops []*archiveOp, now time.Time) {
 }
 
 // observeTx records one write transaction: how many archives it folded, how long
-// it took in total, and how much of that was acquiring bolt's single write lock.
+// it took in total, and how much of that was waiting for its write turn and
+// acquiring bolt's single write lock.
 func (s *archiveFoldStats) observeTx(fold int, took, lockWait time.Duration) {
 	if fold <= 0 {
 		return

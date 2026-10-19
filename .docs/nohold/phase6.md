@@ -587,176 +587,268 @@ client's receive floor). Explain any figure more than 10% worse than the
 base's, any `badjobDelta` or `maxLost` above the base's, and any gap over
 60s on this tree. Depends on item 6.2.
 
-Results (2026-10-16, branch head c39739ff, base 6f1b41bb built from a
-scratch worktree; farm22-wrstat01, queue `normal`, `OS_*` unset). Each
-tree had its own `WRDEV_ROOT` and binary, built before any run, with
-ports 52610 to 52613. Runs went one at a time, base then branch.
-`g2run.sh` does not wait for LSF to empty. Before each next run I
-checked by hand, from the shell, with `bjobs -w` ("No unfinished job
-found") or an `until` loop on the previous run's job-name prefix
-(`bjobs -J '<prefix>*'` returning nothing). Those checks' output was
-not saved, so the run start and end times in each `.out` are the only
-record. Branch run 1's CLEANUP printed `jobs left in LSF: 55`; the
-scenario had already bkilled them. A `bjobs -J` on its prefix then
-found none, and base run 2 started 22s after it ended (09:02:04 to
-09:02:26) under another root, so another job-name token and its own
-certificates. All
-scenario arguments were the defaults. `WRDEV_DEBUG=1` was set for both
-trees, because the `confirmed_dead` figure needs it (without it the
-scenario prints `n/a`). It also makes the manager log dense enough for
-a `GAP` to mean a freeze, and production runs with `--debug` too.
-Storm modes ran on their own copies of
-`/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/fix120k.db` and
-`pristine10`; the fixtures' mtimes are unchanged. Outputs, gzipped
-manager logs and the launcher `g2run.sh` are in
-`/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-g2/`. Wall time is the
-whole `wrdev.sh` invocation; drain is the manager log's first
-`added jobs` to its last `completed job`. Lost is the highest `lost`
-count seen; confirmed dead is the count of `killed a job after
-confirming it was dead` in the manager log. Binary provenance: each
-`.out` header records the binary's sha1 prefix (base `b736a5e6c77b`,
-branch `aa66a3f28044`), but no `wr version` output was saved (these
-builds print none without the release ldflags), and the binaries were
-deleted with the work roots.
+Results (2026-10-16; farm22-wrstat01, queue `normal`, `OS_*` unset).
+The base is 6f1b41bb, built from a scratch worktree and run that
+morning. The branch figures are the rerun at 959f3fd0, after item 6.3b,
+run that evening. 6.3b changed only branch code, so the base figures
+were reused.
+
+Setup:
+
+- Each tree had its own `WRDEV_ROOT` and binary, built before any of
+  its runs, with ports 52610 to 52613. Runs went one at a time; scenario
+  arguments were the defaults.
+- `WRDEV_DEBUG=1` on both trees: the `confirmed_dead` figure needs it
+  (without it the scenario prints `n/a`), it makes the manager log dense
+  enough for a `GAP` to mean a freeze, and production runs with
+  `--debug` too.
+- Storm modes ran on their own copies of
+  `/nfs/hgi/wr/sb10-bigdb/runstate-gate/fixtures/fix120k.db` and
+  `pristine10`; the fixtures' mtimes are unchanged.
+- Base outputs, gzipped manager logs and `g2run.sh` are in
+  `/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-g2/` (with the pre-6.3b
+  branch runs). The rerun's are in
+  `/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-g2-rerun/`: `g2rerun.sh`,
+  each run's `.out`, manager log, lost sampler and, for
+  `add-storm-lsf`, its adder logs (`*.adderlogs.tgz`). There are also
+  the reservation split (`split.sh`, `reserve-split.txt`) and
+  `lsf-after-all.txt`.
+- Provenance. The branch binary's `go version -m` shows
+  `vcs.revision=959f3fd079a0965c5579989140552a35cc047811`,
+  `vcs.modified=false` (`branch-wr.buildinfo.txt`, with its sha1
+  `ddab837b...`). `wr version` prints nothing for these builds (no
+  release ldflags), as each `.out` header shows. For the base only the
+  sha1 prefix `b736a5e6c77b` in each `.out` header was saved.
+- LSF empty before each run. Each rerun `.out` records `bjobs -w` from
+  just before the run: "No unfinished job found" all 4 times. The
+  base's checks were made by hand (`bjobs -w`, or an `until` loop on
+  the previous run's job prefix) and not saved; its runs' start and end
+  times in each `.out` are the only record. The rerun's `add-storm-lsf`
+  run 1 CLEANUP printed `jobs left in LSF: 12`, already bkilled; run 2's
+  saved `bjobs -w` shows they had gone before it started.
+- Definitions. Wall time is the whole `wrdev.sh` invocation. Drain is
+  the manager log's first `added jobs` to its last `completed job`. Lost
+  is the highest `lost` count seen. Confirmed dead is the count of
+  `killed a job after confirming it was dead` in the manager log.
 
 - **`add-storm-lsf`: PASS on both trees, twice each.** Its run length is
   fixed (120s storm, a kill, 120s more), so wall time cannot show
   throughput; jobs completed is the manager log's `completed job` count
-  over storm, recovered and child jobs. The scenario does not print
-  lost. The primary evidence that none were lost is the manager logs:
-  none contains a line mentioning `lost` or a confirm-dead kill. A
-  read-only side sampler (`wr status -o counts` every 20s; files
-  `*.lostsamples`) corroborates it: it never saw `lost contact` above
-  0. Its samples were empty while the manager was down or starting
-  (4, 2, 5 and 3 of 16 or 17 per run).
+  over storm, recovered and kid jobs. Lost is not printed by the
+  scenario. The primary evidence that none were lost is the manager
+  logs: none contains a line mentioning `lost` or a confirm-dead kill,
+  and the rerun's have no `released job` line. A read-only side sampler
+  (`wr status -o counts` every 20s, `*.lostsamples`) never saw
+  `lost contact` above 0. Its samples were empty while the manager was
+  down or starting: 4 and 5 of 17 for the base, 3 and 2 of 16 for the
+  rerun.
 
   | Run | Tree | Wall | Jobs completed | Acked adds (missing) | Add p50 / p99 / max | Lost | Confirmed dead | Bad job |
   |---|---|---|---|---|---|---|---|---|
   | 1 | base | 331s | 17,883 | 4,741 (0) | 198 / 1,153 / 1,798ms | 0 | 0 | 0 |
-  | 1 | branch | 319s | 26,008 | 4,469 (0) | 274 / 1,361 / 1,931ms | 0 | 0 | 0 |
+  | 1 | branch | 319s | 22,675 | 4,444 (0) | 296 / 1,311 / 1,755ms | 0 | 0 | 0 |
   | 2 | base | 327s | 18,475 | 4,921 (0) | 102 / 1,329 / 1,834ms | 0 | 0 | 0 |
-  | 2 | branch | 320s | 32,822 | 4,722 (0) | 139 / 1,103 / 1,650ms | 0 | 0 | 0 |
+  | 2 | branch | 320s | 21,762 | 4,492 (0) | 285 / 1,156 / 1,560ms | 0 | 0 | 0 |
 
   Both trees printed `PASS: all <n> acknowledged adds`, with no slow
-  add (`overSlow=0`, `mgrSlowAdds=0`). Four figures are more than 10%
-  worse on this tree:
+  add (`overSlow=0`, `mgrSlowAdds=0`).
 
-  - Add p50: +38% (run 1) and +36% (run 2).
-  - `ackedPreKill` in run 1: 2,110 against 2,456 (-14.1%); in run 2
-    2,605 against 2,649 (-1.7%). This compares like for like: both
-    storms ran 120s before the kill, and the `t+` offsets differ only
-    by the fixture copy time (18s, 9s, 14s, 15s). It matches the adds
-    logged by the last pre-kill sample (1,956 against 2,279 in run 1;
-    2,397 against 2,436 in run 2). So in run 1 the branch's
-    think-time-paced adders completed fewer adds before the kill
-    because each add took longer. The slower adds have the same
-    possible cause, and the same variance caveat, as add latency
-    below; run 2 shows almost no difference.
-  - Add p99 in run 1: +18% (in run 2 it is 17% better).
-  - The VERDICT's `maxStatusRPC`: 214 against 186ms (+15%, run 1) and
-    185 against 106ms (+75%, run 2). Each is the single worst of the
-    run's 23 or 24 sampled status RPCs, and all are under 250ms. The
-    per-sample medians are 55 against 57.5ms in run 1 (this tree
-    lower) and 75 against 57ms in run 2.
+  Fixture reservations at the unlearned 600MB, by manager lifetime.
+  `reserved job` lines are split at the second `recovering prior
+  state` line, by kind (fixture `aslfix N plain|selfadd`, kid
+  `aslfix N kid`) and by the `schedGrp` RAM. Kid reservations are in
+  the learned 200 group on every run.
 
-  In the same fixed window this tree completed 1.45 and 1.78 times as
-  many jobs as the base: fixture population 20,937 and 27,361 against
-  12,943 and 13,253. It did so with a lower peak LSF RUN (84 against
-  97, 73 against 96). That is unexplained. The RAC logged fewer
-  `rac scheduling jobs` on this tree (1,467 against 2,300; 1,274
-  against 2,415), but nothing here shows that this caused the lower
-  peak. One plausible cause of the slower adds is that
-  this tree's runners take ready work sooner without the reserve hold,
-  so more reserves and archives compete with the adds on the same
-  manager. That was not measured, and the data is weak evidence for
-  it. Run-to-run variance on one tree is about 2x (base p50 198 then
-  102ms; branch 274 then 139ms), bigger than the tree delta: the base's
-  run 1 was slower than the branch's run 2. Run 1's branch status-RPC
-  median is not higher than the base's either. The per-add adder logs
-  (`addstormlsf-*/adder_*.log`) that could show latency against time
-  were deleted with the work roots, although each `.out` says they
-  "are kept". Either way the cost is about 40 to 75ms at the median,
-  against a 5,000ms bound and the 10s slow-request threshold. The 24
-  adders are think-time paced, so slower adds also mean the 4 to 6%
-  fewer acknowledged adds.
+  | Run | Fixture at 600, first lifetime | After the restart | Kid reservations, first lifetime / after the restart |
+  |---|---|---|---|
+  | base 1 | 55% of 7,500 | 31% of 5,480 | 105 / 369 |
+  | branch 1 | 1% of 9,149 | 0% of 9,001 | 0 / 112 |
+  | base 2 | 48% of 8,661 | 32% of 4,647 | 0 / 582 |
+  | branch 2 | 0.5% of 8,903 | 0% of 8,280 | 0 / 106 |
 
-  I compared every other VERDICT field of both runs, base against
-  branch. None is worse by more than 10% beyond the four above:
+  So 6.3b does what it intends: almost every fixture job now runs at
+  the learned size in both lifetimes. The remaining 97 and 44 are at the
+  start, before learning. Before 6.3b, the branch ran 89% and 95% of
+  its first-lifetime fixture jobs at 600 (see "Before item 6.3b"
+  below).
 
-  - `adds`, `acked`, `measuredAdds`, `presentAfterRestart` and
-    `stormJobsInDb` are 4 to 6% lower.
-  - `outage`, `stormComplete` and `stormCompleteAtKill` are within 6%.
-  - `notAcked` is 13% lower in run 2, which is better.
-  - Every safety and zero field matches (`missingAcked`,
-    `neverAddedFound`, `unackedInDb`, `overSlow`, `mgrSlow*`, `*Buried`).
-  - `ackedInKillWindow` (7 against 5; 9 against 11) and
-    `inFlightAtKill` count luck at the kill instant; they are neither
-    better nor worse.
-  - `maxLSFPend` is lower.
-  - The fixture and kid completion and added counts are all higher on
-    this tree. `fixReadyNow` is 17% and 30% lower, because more of the
-    fixture had run. The kid
-    jobs' completion ratio is lower: 558 of 896 and 702 of 1,148
-    against 474 of 568 and 582 of 590. More kids were completed, but
-    many more were added and still unfinished when the window closed.
-    The VERDICT does not give their states, so the reason is not shown.
+  Figures more than 10% worse on this tree, each VERDICT field compared
+  run for run with the base's:
 
-  One job in the branch's run 2 shows a kill-window artifact, not a
-  lost job: fixture job `448a6775a98910514fdefdbcb098afbd` was reserved
-  at 09:10:43, just before the kill. At the restart (09:11:06) it was
-  released, then re-reserved and completed in the same second. It is
-  the only `released job` line in any `add-storm-lsf` manager log.
+  - **Kid completions:** `kidComplete` 112 against 474 (-76%) and 106
+    against 582 (-82%), out of `kidJobs` 786 and 743 against 568 and
+    590. Every kid reservation in the rerun is in
+    `200:30:1:0:8cf0c858...~aslblock`, the same reserve group as 18,053
+    fixture reservations (run 1). Item 6.3b describes the cause: the
+    queue serves a group by priority, size, then creation, so kids
+    queue behind about 40,000 older fixture jobs of equal priority. On
+    the base, its stale 600 group took part of the fixture remainder
+    out of their way. The logs fit this explanation (one shared
+    group, and kid reservations fell as the 600 share went to 0), but
+    the queue order itself was not traced. More fixture jobs completed
+    instead (18,122 and 17,106 against 12,943 and 13,253). The total
+    is higher too (22,675 and 21,762 against 17,883 and 18,475).
+  - **Add p50:** 296 against 198ms (+50%) and 285 against 102ms (+179%).
+    Unlike the pre-6.3b runs, both rerun runs are above the base's
+    slower run. The adder logs show it is not one burst. Per 30s
+    window, the median was 169 to 422ms (run 1) and 185 to 435ms (run
+    2), raised in both lifetimes; the first window was the lowest.
+    Cause not found. Two untested candidates: the extra job throughput
+    (+27% and +18% completions) competing on the same manager, and 6.3b's
+    per-cycle refresh of blocked ReqGroups. The base's own run-to-run
+    spread is 2x (198 then 102ms), and the base's adder logs were
+    deleted, so a like-for-like time profile is not available. Even so,
+    the medians are under 300ms, against a 5,000ms bound and the 10s
+    slow-request threshold.
+  - **Add p99 in run 1:** 1,311 against 1,153ms (+14%). In run 2 it is
+    13% better, and max is better in both.
+  - **`ackedPreKill` in run 2:** 2,359 against 2,649 (-10.9%); in run 1
+    2,231 against 2,456 (-9.2%). Both storms ran 120s before the kill,
+    so this compares like for like. The adders are think-time paced, so
+    slower adds mean fewer of them, the same cause as add p50.
+    `adds`, `acked`, `measuredAdds`, `presentAfterRestart` and
+    `stormJobsInDb` are 5 to 9% lower for the same reason.
+  - **`maxStatusRPC` in run 2:** 242 against 106ms (+128%); in run 1
+    167 against 186ms (10% better). Each is the single worst of the
+    run's 24 samples, and all are under 250ms. The per-sample medians
+    are 51.5 against 57.5ms and 55 against 57ms, lower on this tree.
+
+  Other fields: every safety and zero field matches the base's
+  (`missingAcked`, `neverAddedFound`, `unackedInDb`, `overSlow`,
+  `mgrSlow*`, `*Buried`). `outage` and `stormComplete` are within 3%.
+  `stormCompleteAtKill` is 2,011 against 2,005 and 2,020 against 2,242
+  (-9.9%), another effect of fewer pre-kill adds. `notAcked` is 4%
+  higher in run 1 (509 against 488) and 10% lower in run 2.
+  `fixReadyNow` is 11% and 8% lower because more of the fixture had
+  run. `ackedInKillWindow` (this tree against the base: 6 against 7,
+  9 against 9) and `inFlightAtKill` (7 against 0, 3 against 3) count
+  luck at the kill instant, so they are neither better nor worse. Peak
+  LSF RUN is 90 against 97 and 64 against 96 while completing more
+  jobs. `maxLSFPend` is 32 against 60 and 60 against 33. Neither is
+  explained.
 - **`report-storm-lsf`: PASS on both trees.**
 
   | Tree | Wall | Drain | Completed | Verdict line | Longest GAP |
   |---|---|---|---|---|---|
   | base | 302s | 248s | 100,000 | `badjobDelta=0 maxDelayed=0 maxLost=0 maxStatusRPC=571ms` | 20s |
-  | branch | 296s | 222s | 100,000 | `badjobDelta=0 maxDelayed=0 maxLost=0 maxStatusRPC=661ms` | 22s |
+  | branch | 323s | 253s | 100,000 | `badjobDelta=0 maxDelayed=0 maxLost=0 maxStatusRPC=547ms` | 25s |
 
-  Both printed `FULLY DRAINED (complete=100000 buried=0)` and exited 0;
-  confirmed dead 0 on both, and `badjobDelta` and `maxLost` (0) equal
-  the base's. Each tree logged 2 gaps, both before any job ran: the 20s
-  and 22s gap is the 100,000-job `wr add` (the manager log goes from
-  start-up to `ready items available ... items=100000`), and the 12s
-  and 10s gap is the wait for LSF to start the first runner (it ends
-  at the first `reserved job`). No gap is over 60s. This tree drained
-  10% faster. `maxStatusRPC` is 16% worse (661 against 571ms), and the
-  median of the 30s-sampled status RPCs is 511 against 356ms. This tree
-  ran more jobs at once: peak `running` 1,960 against 1,529, and peak
-  LSF_RUN 2,000 against 1,690. Its mean `running` was about 1,760 over
-  its 6 mid-drain samples (t+32 to t+189, leaving out t+221 with 2
-  running) against about 1,040 over the base's 7 (t+32 to t+218). More
-  concurrent reports may slow a status RPC, but the samples do not
-  show a clean link to load. The branch at t+189 had 1,960 running and
-  answered in 311ms; the base at t+94 had 901 running and took 507ms.
-  Every sample was well under a second, against the client's 60s
-  receive floor.
+  Both printed `FULLY DRAINED (complete=100000 buried=0)` and exited 0,
+  with confirmed dead 0. `badjobDelta` and `maxLost` (0) equal the
+  base's. No figure is more than 10% worse: wall +7%, drain +2%.
+  `maxStatusRPC` is better, and the median status RPC is 276.5 against
+  356ms. The branch peaked at 2,000 running, against the base's 1,529.
+  Gaps: the base's 20s and 12s were the 100,000-job `wr add` and the
+  wait for the first runner. The branch's 6s ends at the first `reserved
+  job`. Its 25s is after the drain: from the last `completed job`
+  (19:04:19) to an `archive fold` warning (19:04:44), with nothing left
+  to run. No gap is over 60s.
 - **`limit-drain`: PASS on both trees.**
 
   | Tree | Wall | Drain | Completed | Lost | Confirmed dead | Bad job | Archive reject | Max status RPC |
   |---|---|---|---|---|---|---|---|---|
   | base | 1,016s | 963s | 60,000 | 0 | 0 | 0 | 0 | 456ms |
-  | branch | 972s | 956s | 60,000 | 0 | 0 | 0 | 0 | 639ms |
+  | branch | 968s | 948s | 60,000 | 0 | 0 | 0 | 0 | 146ms |
 
-  Both printed `FULLY DRAINED (complete=60000 buried=0)`. Each tree's
-  max status RPC is one outlier sample: the base's 456ms at t+47s and
-  this tree's 639ms at t+594s, with the next sample 161ms. Excluding
-  each outlier, the highest was 315 and 327ms, and the medians were
-  133.5 and 132ms. So the 40% higher max is one sample, not a trend. The
-  scenario stopped neither manager, so each was stopped with
-  `wrdev.sh stop` (its verified pid and its own namespaced jobs; output
-  in `limit-drain-*.stop.out`). Then an `until` loop on `bjobs -J` for
-  that manager's job prefix waited until LSF held none (09:41:37 for
-  the base, before the branch run started at 09:41:41). The loop's
-  output was not saved beyond the time it printed.
+  Both printed `FULLY DRAINED (complete=60000 buried=0)`. No figure is
+  worse; the status RPC medians are 118 against 135ms. The scenario
+  stops neither manager, so each was stopped with `wrdev.sh stop`
+  (verified pid, its own namespaced jobs; `limit-drain-branch.stop.out`).
+  An `until` loop on `bjobs -J` for its job prefix then waited until
+  LSF held none, and `lsf-after-all.txt` saves the final empty
+  `bjobs -w`.
 
 Every scenario passes on this tree by its own criteria. Nothing is
-left running: no LSF job, no manager. The scratch worktree, the scratch
-`GOCACHE` and the work roots (DB copies, binaries) were removed.
+left running: no LSF job, no manager. The scratch worktrees, the
+scratch `GOCACHE`s (the rerun's emptied with `GOCACHE=<dir> go clean
+-cache`) and the work roots (DB copies, binaries) were removed.
 
-These results are from c39739ff, before item 6.3b changed how learned
-sizes reach ready jobs. Item 6.3 is rerun on the branch after 6.3b, and
-the rerun's results replace the branch figures above.
+Before item 6.3b (c39739ff; outputs in `nohold-g2/`, the split in
+`nohold-g2-rerun/reserve-split.txt`), the three scenarios also passed.
+A reviewer then found, from those manager logs, that the branch ran
+89% and 95% of its first-lifetime fixture jobs at the stale 600 group
+(base 55% and 48%, falling to about 30% by the kill). After the restart
+it ran 0% at 600 but made only 1 and 2 kid reservations, against 369
+and 582 on the base. That finding led to item 6.3b. Those runs
+completed 26,008 and 32,822 jobs with add p50 274 and 139ms. In the
+earlier write-up, `ackedInKillWindow` was quoted in base-then-branch
+order. This tree against the base, it was 5 against 7 (run 1) and 11
+against 9 (run 2).
+
+**Load-matched add-storm A/B.** Item 6.3c found that add p50 tracks the
+archive writer's `meanWait`, and that the base and branch runs above
+were hours apart. So `add-storm-lsf` was rerun as interleaved base,
+branch, base, branch, base, branch: 6 runs back to back, 19:55 to 20:27
+on 2026-10-16.
+
+- **Setup.** As above: defaults, `WRDEV_DEBUG=1`, fixture copies, ports
+  52610 to 52613, one run at a time. Each tree had its own root and its
+  own binary, built from clean scratch worktrees. `go version -m` shows
+  `vcs.revision` 6f1b41bb and 959f3fd0, both with `vcs.modified=false`.
+- **Checks.** Every `.out` saves a `bjobs -w` from just before its run:
+  "No unfinished job found" all 6 times. Every CLEANUP reported 0 jobs
+  left.
+- **Measurement.** Add percentiles are over every acknowledged add in
+  both trees' adder logs, the kill window included, so max is about
+  22s on every run (the outage). The VERDICT p50, which leaves the kill
+  window out, agrees within 1ms. `meanWait` is the mean of the run's
+  four `archive fold` lines, as 6.3c computed it.
+- **Where it is saved.** Outputs, manager logs, adder logs and scripts
+  (`g2ab.sh`, `abdrive.sh`, `abstats.sh`, `split.sh`, `ab-summary.txt`)
+  are in `/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-g2-ab/`.
+
+| Run | Tree | Acked (missing) | Jobs completed | Add p50 / p90 / p99 | meanWait (4 lines) | Mean | Host load | Kids complete | Fixture at 600, lifetime 1 / 2 |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | base | 4,666 (0) | 17,456 | 206 / 744 / 1,289ms | 35, 148, 115, 99ms | 99ms | 5.5 to 6.4 | 388 of 565 | 57% / 36% |
+| 2 | branch | 5,125 (0) | 25,412 | 146 / 392 / 876ms | 19, 18, 84, 52ms | 43ms | 6.4 to 4.0 | 184 of 880 | 1% / 0% |
+| 3 | base | 5,107 (0) | 21,285 | 108 / 433 / 926ms | 15, 32, 63, 72ms | 46ms | 4.0 to 4.6 | 692 of 696 | 60% / 31% |
+| 4 | branch | 4,751 (0) | 21,143 | 232 / 500 / 1,252ms | 20, 74, 89, 81ms | 66ms | 4.6 to 5.1 | 101 of 705 | 2% / 0% |
+| 5 | base | 5,150 (0) | 22,140 | 125 / 398 / 761ms | 16, 29, 77, 53ms | 44ms | 5.1 to 5.3 | 718 of 721 | 57% / 58% |
+| 6 | branch | 4,878 (0) | 22,667 | 213 / 466 / 881ms | 70, 29, 76, 75ms | 62ms | 5.1 to 5.6 | 125 of 766 | 1% / 0% |
+
+All 6 printed `PASS`, with no acknowledged add missing.
+
+Branch add p50 against the base:
+
+- **Adjacent pairs.** Runs 1 and 2: -29%, but the base's `meanWait`
+  was 2.3 times the branch's, so they are not matched. Runs 2 and 3:
+  +35%, the best-matched pair (43 against 46ms). Runs 3 and 4: +115%;
+  runs 4 and 5: +86%; runs 5 and 6: +70%. In each of those, the
+  branch's `meanWait` was 62 to 66ms and the base's 44 to 46ms.
+- **Matched `meanWait`.** At 43 to 46ms there is branch run 2, at
+  146ms, against base runs 3 and 5, at 108 and 125ms: +17% to +35%.
+  No base run fell at 62 to 66ms. Interpolating linearly between the
+  base's points at 44 to 46ms (108 to 125ms) and 99ms (206ms) gives
+  about 140 to 150ms there. Branch runs 4 and 6 (232 and 213ms) are
+  then about +45% to +60%. That interpolation rests on 3 points. The
+  rerun's runs (95 and 103ms, p50 285 and 296ms) against base run 1 (99ms,
+  206ms) give about +40%.
+
+So at matched archive-writer load the branch's add p50 was higher in
+every comparison that could be matched, by about 25 to 90ms (+17% to
++60%). Those comparisons are branch run 2 against base runs 3 and 5,
+branch runs 4 and 6 against the interpolation, and the rerun against
+base run 1. Its p90 and p99 were not consistently worse: run 2's
+392 and 876ms were at or below runs 3 and 5's (433 and 398ms; 926 and
+761ms). This A/B did not run c39739ff. 6.3c's figures (c39739ff about
+35 to 40% above the base at equal `meanWait`) suggest the cost predates
+6.3b, but that was not tested here.
+
+Another observation, not a cause: the branch's `meanWait` was higher
+in 2 of 3 adjacent pairs, so its archives wait longer too. Runs 4 and
+5 completed about the same number of jobs (21,143 and 22,140) but had
+`meanWait` 66 and 44ms, and p50 232 and 125ms. So job throughput alone
+does not explain it. This A/B does not show what, in the branch, makes
+archives and adds wait longer.
+
+Kids and sizes match the earlier runs. The branch ran 98 to 99% of its
+fixture reservations at 200 in lifetime 1 and all of them in lifetime 2.
+The base ran 57 to 60% at 600 before the kill. The branch completed
+101 to 184 kids, against 388 to 718 on the base, for the ordering
+reason 6.3c traced. Nothing is left running: the final `bjobs -w`
+(`lsf-after-all.txt`) is empty. The scratch worktrees, the scratch
+`GOCACHE` (emptied with `GOCACHE=<dir> go clean -cache`) and the work
+roots were removed.
 
 - [ ] implemented
 - [ ] reviewed
@@ -1109,6 +1201,450 @@ run here).
 
 - [x] implemented
 - [x] reviewed
+
+### Item 6.3c: add latency and kid starvation after 6.3b
+
+Question. Item 6.3's rerun at 959f3fd0 had add p50 296 and 285ms, against
+198 and 102ms on the base and 274 and 139ms at c39739ff. Kid completions
+fell to 112 and 106. What in 6.3b makes adds slower, and do the kids
+really wait behind the fixture?
+
+Verdict: 6.3b's code is not what slowed the adds. Nothing was cut, and no
+code was changed. The kids do wait behind the older fixture jobs, as 6.3b
+said; the base served them only because of its stale 600 group.
+
+Add latency, from code reading:
+
+- (a) The cycle-start refresh (`newRACBlockedJobs`) does synchronous bolt
+  reads on the RAC goroutine: `refreshReqGroupRecs` for each ReqGroup in
+  `racBlockedReqGroups`. A read happens only if an archive invalidated the
+  entry, no load is in flight, and the last load started at least
+  `ReqStatRefreshInterval` (1s) ago. Each read is three `View` cursor scans
+  of that ReqGroup's distinct stat values. These reads take no queue, job
+  or db lock, and hold the cache `mu` only around the bookkeeping, never
+  across the I/O. A `View` does not take bolt's writer lock. Here the
+  blocked ReqGroups are `echo` (fixture and kids) and `sleep` (storm). Both
+  have schedulable jobs every cycle, so before 6.3b `prepareReadyJob` loaded
+  them in the same cycle through the same per-cycle map. In this run the
+  refresh adds about no loads.
+- (a) Per blocked job, the cost is one stamp compare
+  (`snapshot.learnedStamp == b.stamp`). The full compare, recompute and
+  regroup run only after a rounded learned value changes. The manager logs
+  show that happened once per run: the `600` to `200` move at 18:48:06 in
+  run 1 and 18:54:03 in run 2, within 10s of the first reservation. Before
+  it the RAC saw only `600:30` groups for `aslblock` and `asllimit`, and
+  after it only `200:30` groups (run 1: 596 and 500 `rac saw ready jobs`
+  lines). Nothing moved after the restart.
+- (b) `RegroupReady` ran for that one cycle only (about 59 chunks of up to
+  1,024 items, each hold about 6ms at most; see 6.3b's speed table). There
+  is no trigger storm: 607 and 613 RACs, against 643 and 539 at c39739ff
+  and 701 and 710 on the base.
+- (c) More completions are not the cause either. c39739ff run 2 completed
+  32,822 jobs (26,248 fixture) with add p50 139ms. 959f3fd0 completed
+  22,675 and 21,762 with 296 and 285ms.
+
+In-process A/B. `nohold_addlat_probe_test.go` (session scratchpad
+`63c/`, not committed) was copied unchanged into scratch worktrees of
+c39739ff and 959f3fd0. It runs a real server with `serverRC`, 60,000 ready
+jobs of ReqGroup `fix` blocked at `blk:0`, and 20,000 `fix` learners at
+`lrn:1000`. One goroutine reserves, starts and archives learners, so `fix`
+keeps learning and its cache entry keeps being invalidated. 8 clients each
+add one `sleep` job at `asllimit:30` every 20ms, and the probe times each
+Add for 15s. Mode `stable`: learner peaks are 1 to 50MB, so the rounded
+RAM stays at 100 after the first load (the LSF case). Mode `rising`: each
+peak is 100MB above the last, so the rounded RAM changes at every load (at
+most 1/s), and 959f3fd0 recomputes and regroups all 60,000 on almost every
+cycle (the worst case). Runs were interleaved, host load 3 to 5. Raw
+output is in `63c/ab1.txt` and `63c/ab-nfs.txt`.
+
+| DB on | Mode | Tree | Add p50 per round | Add p90 | Mean RAC | RAC busy |
+|---|---|---|---|---|---|---|
+| local /tmp | stable | c39739ff | 6.06, 5.13, 5.39ms | 9.6 to 10.6ms | 27 to 31ms | 5 to 6% |
+| local /tmp | stable | 959f3fd0 | 6.08, 5.32, 5.63ms | 10.0 to 11.8ms | 40 to 41ms | 7 to 8% |
+| local /tmp | rising | c39739ff | 2.63, 2.97, 2.74ms | 6.0 to 6.6ms | 26 to 30ms | 5 to 6% |
+| local /tmp | rising | 959f3fd0 | 2.89, 2.99, 2.58ms | 7.5 to 8.3ms | 149 to 193ms | 23 to 28% |
+| NFS (/nfs/hgi) | stable | c39739ff | 8.49, 8.13ms | 13.8 to 16.0ms | 26 to 29ms | 6 to 7% |
+| NFS (/nfs/hgi) | stable | 959f3fd0 | 8.19, 7.95ms | 13.9 to 14.6ms | 30 to 37ms | 6 to 8% |
+| NFS (/nfs/hgi) | rising | c39739ff | 6.75, 6.57ms | 12.0 to 12.8ms | 28ms | 6% |
+| NFS (/nfs/hgi) | rising | 959f3fd0 | 7.67, 7.54ms | 16.0 to 16.3ms | 370 to 377ms | 43 to 44% |
+
+In the LSF case (`stable`), add p50 differs by -4 to +4% between the
+trees. The higher mean RAC on 959f3fd0 is its one change cycle, when the
+first archive teaches `fix` 100MB, spread over about 30 cycles. An
+instrumented copy counted 79,000 jobs recomputed and regrouped once, the
+stamp bumped once (to 2), and about 80,000 stamp skips per cycle after
+that. Only `rising`, where every cycle regroups 60,000 jobs, costs adds
+anything: on NFS, p50 +13 to +15% and p90 +25 to +35%, with the RAC busy
+43%. The LSF logs show that case did not happen.
+
+What the LSF add latency does track is the bolt write path. About a
+quarter of the rerun's adds took 33 to 160ms (min 37 and 33ms, p10 52
+and 55ms): a whole `wr add` process against an uncontended manager. The
+rest spread evenly from 150ms to 1s, the shape of waiting on a shared
+writer. Each run's add p50 follows the mean of its four `archive fold`
+`meanWait` figures, which say how long an archive waited for the archive
+writer:
+
+| Run | Add p50 | Archive meanWait, the 4 one-minute lines | Mean |
+|---|---|---|---|
+| c39739ff run 2 | 139ms | 19, 22, 45, 100ms | 47ms |
+| base run 2 | 102ms | 17, 23, 62, 88ms | 48ms |
+| c39739ff run 1 | 274ms | 70, 97, 88, 54ms | 77ms |
+| base run 1 | 198ms | 49, 38, 83, 144ms | 79ms |
+| 959f3fd0 run 2 | 285ms | 71, 60, 117, 133ms | 95ms |
+| 959f3fd0 run 1 | 296ms | 77, 132, 113, 89ms | 103ms |
+
+The rerun's meanTx (22 to 38ms) and archives per minute (about 4,000 to
+6,100) are like the other runs'. Its archives wait longer and fold less:
+meanFold 2.7 to 3.4, against 3.1 to 5.9 on the base, with maxWait 1.0 to
+1.5s. In run 1 the per-10s add p50 was 169 then 64ms until 18:48:20 (the
+64ms window had 1,592 completions), then 207 to 539ms. Why the archive
+writer waited longer that evening was not found. 6.3b does no bolt
+writes. Two candidates are untested. One is the backup copy of the 3.3GB
+DB, at least every 30s, competing with commit fsyncs on the shared NFS
+(Part C, unfixed, the same on every tree). The other is NFS load at that
+time of day: the evening `report-storm-lsf`'s meanWait was 521 to 706ms,
+against 224 to 453ms on both trees that morning. At equal meanWait both
+branch trees run about 35 to 40% above the base (139 against 102ms, 274
+against 198ms), so that much may come from the branch itself, before
+6.3b. Only an evening base run, with its adder logs kept, can tell these
+apart.
+
+Kids. `queue/subqueue.go` `lessByPriority` orders a reserve group by
+priority (higher first), then size (larger first), then `creation`
+(older first), then `iid`. jobqueue never sets an item's size, so it is
+0, and fixture, kids and storm jobs all have priority 0. `newItem` sets
+`creation` to the enqueue time and `iid` from a global counter. All
+recovered items share about one creation instant and keep the iid order
+recovery enqueued them in, which is key order. So:
+
+- Lifetime 1. The fixture remainder, about 50,000 items, sits in
+  `200:30:1:0:8cf0c858...~aslblock` with creation at recovery. Every kid
+  is added later into the same group, so it sorts behind all of them. The
+  rerun reserved 0 kids in lifetime 1 in both runs. Fixture reservations
+  went through the keyspace in order: in run 1, keys `00` to `26` were
+  consumed before the kill.
+- Lifetime 2. Recovery re-enqueues the remaining fixture and the
+  lifetime-1 kids together, ordered by key. The sweep goes on from `26` to
+  `43`. The 112 kids reserved are those whose keys are at or below the
+  sweep front: 1 to 3 in each two-hex-digit prefix from `00` to `43`, none
+  above it. Kids added in lifetime 2 come last again.
+- Base. Its recovered remainder stayed in the stale 600 group. The 200
+  group held only the fixture items its hold-time RAC had moved there,
+  plus the kids, so 200-group runners reached the kids soon (369 and 582
+  kid reservations after the restart). c39739ff behaved the same way
+  before its kill (557 and 700). After its restart, recovery put
+  everything at 200, and it reserved 1 and 2 kids.
+
+So 6.3b changed which jobs share a group with the kids, not the queue
+order. Serving the kids before 50,000 older equal-priority jobs was a
+side effect of the stale group, not a property of the base. The ordering
+is unchanged here. If kid jobs matter more than older work, they need a
+higher priority.
+
+No gates were run, because no code changed. The scratch worktrees, the
+scratch `GOCACHE` and the NFS probe directory were removed.
+
+- [ ] implemented
+- [ ] reviewed
+
+### Item 6.3d: branch add latency at matched load
+
+Question. Item 6.3's load-matched `add-storm-lsf` A/B had this tree's add
+p50 17% to 60% above the base's at equal archive-writer `meanWait`, and
+item 6.3c found c39739ff (before 6.3b) about as slow. Which change makes
+adds slower, and can it be cut without bringing back the hold?
+
+Verdict: phase 5, the removal of the hold, and the cost comes with it.
+No branch code adds work to an add, and none of the per-archive work
+changed. The hold made each runner's reserve wait about 0.4 to 0.5s for
+the RAC. That kept the single bolt writer below saturation on NFS. Without
+the hold, runners take the writer's spare capacity at once, and adds, which
+need the same writer, queue behind more archive transactions. Two cuts were
+tried in scratch copies. Coalescing archives does nothing. Making the
+archive and best-effort writers yield to pending adds helps, but it changes
+the order of the archive critical path, so it needs the owner's ruling. No
+code was changed on the branch.
+
+Reproduction. `nohold_addstorm_probe_test.go` (`TestNoHoldAddStormProbe`,
+not committed) was copied into scratch worktrees of each tree. Each run
+copies `fix120k.db` (3.3GB, 120,000 incomplete jobs) to
+`/nfs/hgi/wr/sb10-bigdb/devroot`. It starts a real server with backups on
+and raises `aslblock` to 30. The mock scheduler's `RunnerFunc` is an
+in-process runner: it reserves its scheduler group until nothing is left,
+calls `Started`, sleeps 200ms (fixture) or 1s (storm), self-adds a kid for
+a `selfadd` job through a new connection, and archives. So the server
+decides how many runners each group gets, as LSF does. 24 adders each
+connect, add one `sleep` job (`asllimit:30`, 500M, retries 3) and
+disconnect, with a 0.5 to 1.5s jittered think time, like `asl_adder`. After
+a 20s warm-up the probe measures 60s: client add latency, the archive
+writer's fold figures (its report interval set to 1h so the probe owns
+them), bolt `TxStats` deltas, the write-transaction count, and whether a
+backup copy is in progress. Runs were interleaved, one at a time, on a
+shared 8-CPU host at load 1 to 3.7.
+
+Add latency on NFS has two modes: about 5 to 10ms when the writer is free
+and 0.2 to 1.5s when it is not. The per-run p50 lands in one mode or the
+other, so its percentages overstate the change. The mean is the steadier
+figure. Medians over runs, Mann-Whitney U (`stats.py`):
+
+| Comparison (NFS, backups on) | Add p50 | Add mean | Archives/s |
+|---|---|---|---|
+| base, phase 3, phase 4 (9 runs) against phase 5, c39739ff, 959f3fd0 (9) | 30 against 114ms, p=0.0003 | 180 against 211ms (+17%), p=0.003 | 62.7 against 73.2 (+17%), p=0.007 |
+| phase 4 against phase 5 (3 against 3) | 25 against 96ms, p=0.10 | +17%, p=0.20 | +18%, p=0.10 |
+| base against 959f3fd0 (20 against 20) | 15.6 against 99.6ms, p<0.0001 | 180 against 222ms (+23%), p=0.0007 | 65.6 against 74.0 (+13%), p=0.066 |
+| base against 959f3fd0 with `aslblock:25` (6 against 6) | 14.7 against 72.8ms, p=0.04 | 182 against 240ms (+32%), p=0.065 | 65.2 against 66.2 (+1%) |
+
+Per tree in the 3-round bisect (`ab3-nfs.txt`), add p50: base 70, 16 and
+49ms; phase 3 6, 30 and 35ms; phase 4 40, 15 and 25ms; phase 5 114, 96 and
+77ms; c39739ff 125, 45 and 138ms; 959f3fd0 110, 116 and 169ms. Phases 1 to
+4 (the ready hook, `prepareBeforeQueueing` and the memo included) match
+the base. The change comes with phase 5, and 6.3b adds nothing on top.
+On local disk (`ab2-local.txt`, 3 rounds) add p50 is 2.0 to 2.9ms on
+every tree. 959f3fd0 with `aslblock:20` completes 17% more archives than
+the base with a lower add mean (12 to 22 against 21 to 30ms).
+
+Where an add's time goes (profiles of 60s windows, phase 4 against
+959f3fd0, `prof/`):
+
+- The block profile puts all of an add's blocked time in
+  `storeNewJobStores` waiting for the new-jobs writer's reply (275s and
+  298s across about 1,300 adds). No queue, job or cache lock wait shows
+  on the add path.
+- Add CPU (`handleAdd`) is 0.12s and 0.15s for about 1,300 adds each, about
+  0.1ms per add on both trees. The ready hook and the reqstat warm-up do
+  not show.
+- The mutex profile charges bolt's write lock (`Tx.close`) 50.1s and 56.5s,
+  of which the archive writer's transactions hold 46.1s and 51.8s. Its
+  best-effort and new-jobs transactions hold 2 to 3s each.
+
+So an add is as fast as the bolt writer lets the new-jobs writer in, and
+archive transactions fill that writer.
+
+The per-archive work is the same on both trees, as `ab8-bk.txt` shows for
+two rounds. Page allocation is 3,655 and 3,513 KB/s on the base at 76.0
+and 71.5 archives/s, against 2,623 and 3,315 KB/s here at 62.3 and 74.4,
+about 47KB per archive on both. Spills, splits, rebalances and nodes per
+archive are equal too. Writer time per archive (transactions times
+`meanTx` over archives) is 8 to 10ms on every tree. What differs is how
+the work arrives:
+
+- Reserve p50 in the probe is 380 to 520ms on the base, waiting on the
+  hold, and 15 to 40ms here.
+- Fold drops without the hold's bursts. On local disk it is 4.1 against
+  1.4 archives per transaction, with 4.5 times the archive transactions.
+  On NFS, where transactions are longer, it is 5.3 to 7.5 against 4.1 to
+  6.6. Non-archive write transactions rise from 25 to 30/s to 34 to 48/s
+  (more `Started` best-effort drains).
+- The per-second timelines (`tl/`, base against `aslblock:25`) show this
+  tree completing 115 to 150 archives per free second against the base's
+  80 to 110, at an equal mean. More of its seconds therefore fall in the
+  slow mode. Both trees stall for about 1.2s every few seconds, during
+  and between backup copies.
+
+Without backups (`ab7-nobk.txt`, and two `ab8-bk.txt` pairs) the trees did
+not differ significantly: add mean 166 against 176ms (+6%, p=0.31), p50
+121 against 129ms. In those runs the writer was saturated on every tree
+(`meanTx` about 95 to 115ms against 35 to 60ms with backups on, as the NFS
+slowed down that evening, and possibly because the backup's read keeps the
+file's pages cached). So the absence of a gap there may be because neither
+tree had spare writer capacity left, not because the backup causes it. With
+backups on, adds that complete during a copy (5 to 9% of the window) have
+p50 255 to 262ms on the base and 394 to 1,260ms here. Outside a copy it is
+5.6 to 7.9ms against 16 to 37ms.
+
+Cuts tried (scratch worktree `nohold-63d-hg`, `hg-gather-addprio.diff`,
+both behind env knobs):
+
+1. Coalescing: the archive writer sleeps 20ms and the best-effort writer
+   10ms before each drain. Fold rose from 4.6 to 7.2 to about 9, and archive
+   transactions halved. Add latency did not change: mean 184 and 177ms
+   against 192, 305 and 188ms (`ab9-gather.txt`; its third gather run was
+   discarded after an overlapping run overwrote its DB copy). As the
+   per-archive figures say, the writer's cost is per archive, not per
+   transaction, so folding is not a lever.
+2. Add priority: before each transaction, the archive and best-effort
+   writers wait (at most 200ms) while adds are pending or their
+   transaction is starting. Against 959f3fd0 (`ab11-prio.txt`, 3 rounds):
+   add mean 215, 132 and 141ms against 274, 279 and 214ms (-49% on the
+   medians, p=0.2), p50 142, 39 and 84ms against 183, 131 and 104ms
+   (-36%, p=0.4), with archive p50 326, 47 and 243ms against 362, 41 and
+   347ms. The base in the same run had mean 196, 252 and 178ms and p50
+   9, 21 and 7ms. So the add mean fell below the base's while archives did
+   not get visibly slower. It is not significant at 3 rounds, and it is
+   not landed. It reorders the bolt writer for every caller: under a
+   real add storm adds are pending almost all the time, so each archive
+   transaction could wait up to the cap and slow the archive critical path
+   (DEVELOPERS.md section 1). That is a change for the owner to rule on and
+   would need `report-storm`, `add-storm` and `add-storm-lsf` evidence. A
+   bounded alternation between writers, rather than strict priority, would
+   be the safer form.
+
+Per-add and per-archive cost. Server CPU per add is about 0.1ms on both
+trees, and per-archive bolt work is the same. The extra add latency is
+queueing on the one bolt writer, which this tree keeps busier because its
+runners no longer wait about 0.4 to 0.5s per reserve. In-process that is
++23% mean (about +40ms on a 180ms base) with backups on and archive
+throughput 13% higher. In the LSF A/B it was +25 to +90ms at p50. The
+throughput gain is the hold removal's purpose (spec E1), so the remaining
+cost is intrinsic unless the owner wants the writer reordered (cut 2).
+
+No code changed, so no gates were run. Evidence is in
+`/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-63d/`: the probe, `ab.sh`,
+`sum.py`, `stats.py` and `stats-out.txt`, every run's output
+(`ab*.txt`), `tl/`, `prof/` (`.pprof` files and text tops), the cut
+diff, and `fuseslow.diff`. That diff added a fixed fsync delay to
+`fusestall`, tried once and dropped, because writes through FUSE
+saturated the writer (`ab4-fuse-try.txt`). The scratch worktrees, the
+scratch `GOCACHE` and the NFS probe directory were removed.
+
+- [ ] implemented
+- [ ] reviewed
+
+### Item 6.3e: adds wait behind archive writes (owner decision 2026-10-19)
+
+Item 6.3d found the slower `wr add` on NFS comes from phase 5: without the
+hold archives complete about 17% faster, the single bolt writer saturates
+more often, and `storeNewJobStores` commits queue behind archive
+transactions. The owner chose to fix this rather than accept it (see
+prompt.md Notes).
+
+Implement bounded alternation between the bolt writers (jobqueue db.go
+new-jobs writer, archive writer, best-effort writer) so a pending add batch
+gets the write lock within a bounded wait, and archives in turn are never
+deferred more than a bounded amount under a sustained add storm. The
+scratch prototype (add-priority with a 200ms cap) is in
+/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-63d/hg-gather-addprio.diff;
+use it as a starting point only, replacing the unbounded-priority form with
+fair alternation.
+
+Requirements:
+
+- A red-first test showing an add waits behind a stream of archive
+  transactions (deterministic, using seams, not timing alone), and a test
+  that archives are not starved by a continuous add stream.
+- The in-process probe (nohold-63d/nohold_addstorm_probe_test.go, ab.sh)
+  on NFS with backups on: add mean and p50 at or below the base, archive
+  p50/p99 and archives/s not worse than HEAD (959f3fd0) by more than 10%,
+  with enough interleaved rounds to be significant (at least 9 each).
+- `make test`, `make race` (with OS_* unset) and lint pass; benchmarks for
+  the touched writer path.
+- CHANGELOG Fixed line if user-visible.
+- Then rerun report-storm-lsf, add-storm-lsf and limit-drain on LSF against
+  the base, and record results here. Pass: nothing more than 10% worse than
+  the base except costs the owner already accepted.
+
+Results (2026-10-19, uncommitted on the branch, LSF scenarios not yet run).
+
+Design. `jobqueue/writeturns.go` adds `writeTurns`, which the three
+coalescing writers take before each of their bolt write transactions
+(`db.updateInTurn`, used by `newJobsTx`, `archiveTx` and
+`drainBestEffort`). When a turn ends, the new jobs writer goes next if it is
+waiting; otherwise the writer that has waited longest goes. Each writer is a
+single goroutine, so the new jobs writer is never waiting when its own turn
+ends, and the order alternates by construction, with no timer and no cap to
+tune:
+
+- a waiting add commits in the transaction right after the one in flight;
+- the archive and best-effort writers each wait behind at most three other
+  transactions (the one in flight, the other's and one add's), the same
+  bound bolt's first-come mutex gives them today.
+
+The prototype's form (archives wait while adds are pending, up to 200ms) was
+not used: under an add storm adds are always pending, so every archive would
+wait the full cap. Other bolt write transactions (RAC, deletes, compaction)
+take no turn and still queue on bolt's lock. Archive `meanLock` in the fold
+summary now includes the turn wait; it rose from 2.9 to 4.4ms to 3.6 to
+5.4ms per transaction in the probe.
+
+Tests (`jobqueue/nohold_write_turns_test.go`, `TestNoHoldWriteTurns`):
+
+- An add commits in the transaction right after the archive in flight,
+  ahead of a best-effort write and an archive queued before it. The archive
+  is held inside its transaction by the `archiveTxObserver` seam; order is
+  read from bolt transaction ids. RED on 959f3fd0 in 5 of 5 runs (the add
+  committed 2 transactions later, behind the best-effort write and the second
+  archive), GREEN after.
+- An archive that arrives while 8 adds (one transaction each) are queued
+  behind an add in flight commits after at most one more add transaction. It
+  passes on 959f3fd0 (bolt's mutex is first-come) and fails with 8 adds
+  ahead against a mutant that defers archives while adds are pending (the
+  prototype's form without its cap). A mutant that ignores the add
+  preference (longest waiting first) fails the first test.
+
+In-process probe A/B (the 6.3d probe, `fix120k.db` on NFS, backups on), 10
+interleaved rounds per tree with the order rotated each round, base
+6f1b41bb, HEAD 959f3fd0, and HEAD plus this change ("turns"). Medians over
+runs, two-sided Mann-Whitney U (`stats.py`, normal approximation; a
+permutation p agrees). Latencies in ms:
+
+| Metric | base | HEAD | turns | turns against base | turns against HEAD |
+|---|---|---|---|---|---|
+| add mean | 157.3 | 190.9 | 134.1 | -15%, p=0.04 | -30%, p=0.0002 |
+| add p50 | 16.4 | 99.0 | 67.3 | +311%, p=0.0003 | -32%, p=0.0004 |
+| add p99 | 1,024 | 1,060 | 960 | -6%, p=0.34 | -9%, p=0.10 |
+| archive p50 | 19.6 | 305.8 | 298.8 | | -2%, p=0.38 |
+| archive p99 | 1,000 | 1,018 | 1,148 | | +13%, p=0.43 |
+| archives/s | 67.6 | 74.5 | 74.4 | +10%, p=0.016 | 0%, p=0.76 |
+
+Against the criteria:
+
+- Add mean at or below the base: met (-15%, p=0.04).
+- Add p50 at or below the base: not met (67 against 16ms). Owner accepted
+  2026-10-19.
+- Archive p50 and archives/s within 10% of HEAD: met.
+- Archive p99 within 10% of HEAD: +13% on the medians, not significant
+  (p=0.43). The per-run values overlap fully (HEAD 781 to 1,388, turns 770
+  to 1,387).
+
+Why no ordering can bring the add p50 back to the base's. The base's add p50
+(5 to 55ms per run) is the "writer free" mode 6.3d described: an add finds
+no transaction in flight. The time bolt spends writing per second
+(`boltWriteTime/s`) is 440 to 652ms on the base, 704 to 759ms on HEAD and
+698 to 749ms with turns, because without the hold the same writer completes
+10% more archives (6.3d: per-archive write cost is equal on every tree). At
+that load a typical add finds a transaction in flight, so even going next it
+waits for that transaction's remainder and then its own (`meanTx` 40 to
+80ms), which is the 51 to 92ms per-run p50 seen. Reordering cannot create
+idle time; only less write work per second can, which means fewer archives
+per second, and 6.3d's gather cut (delaying archive drains) did not change
+add latency at all. Meeting the p50 criterion would need either giving back
+the hold removal's throughput gain or cheaper commits, neither of which is
+an ordering change.
+
+Benchmarks (`jobqueue/nohold_write_turns_bench_test.go`, local disk, 6
+interleaved runs each, HEAD against turns, medians): the new
+`BenchmarkAddDuringWriterStreams` (single-job adds while archives arrive
+every 4ms with a 20ms commit cost and best-effort writes every 2ms) went
+from 22.9 to 11.9ms per add (-48%), with archives/s 246.9 against 243.6
+(-1.4%). The existing writer benchmarks are unchanged within 1%:
+`BenchmarkAddJobs` -0.9%, `BenchmarkArchiveJobs` -0.7%,
+`BenchmarkArchiveSpacedArrivals` 0.0% (same transactions per job),
+`BenchmarkUpdateJobState` -0.4%.
+
+Gates: `make lint` 0 issues. `make test` and `make race` (OS_* unset)
+pass (1,003 passed; `make-test.log`, `make-race.log` in the evidence
+directory), and the writer tests (`TestNoHoldWriteTurns`, `TestReliable4Add*`,
+`TestReliable4Archive*`, `TestReliable4BestEffort*`) pass 3 times under
+`-race`.
+
+No CHANGELOG line: against the released base, adds are faster on mean and
+tail but slower at the median, and the branch's existing performance entry
+already covers the hold removal. Add one if the owner reads the mean as the
+user-visible figure.
+
+Not done: report-storm-lsf, add-storm-lsf and limit-drain on LSF (left for
+the owner after review). The host was shared with another session's test
+runs during the A/B; the rotating interleave spreads that load across trees.
+
+Evidence in `/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-63e/`: `ab1.txt`
+(every probe run), `ab.sh`, `stats.py` and `stats-out.txt`, `sum.py` and
+`sum-out.txt` (writer figures per run), the probe source, `bench.txt`,
+`bench.sh`, `benchsum.py`, `bench-summary.txt`, and `turns.diff` (the change
+as measured; the branch differs only in one comment).
+
+- [ ] implemented
+- [ ] reviewed
 
 ### Item 6.4: G3 - prodsim soak
 

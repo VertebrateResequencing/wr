@@ -144,3 +144,18 @@ Branch `nohold-2b5fd495`, worktree `../wr-nohold`, base `origin/develop` at
   queue-lock hold each. This amends
   D3.2 and B3.3 (the RAC scan-work bound) and the reliable4 rac-bound tests
   to match. The LSF gates (6.3) are rerun after the fix.
+- Owner decision 2026-10-19 (item 6.3d): the extra `wr add` latency on NFS
+  is not accepted as-is. Without the hold, archives complete faster, so the
+  single bolt writer saturates more often and adds wait behind archive
+  transactions. Develop a fix first: bounded alternation between the bolt
+  writers so a pending add is not starved by archive and best-effort writes,
+  with a cap so archives are not starved during an add storm. It is proven
+  with report-storm, add-storm and add-storm-lsf evidence showing archive
+  latency and throughput are not worse by more than 10%, then the gates are
+  rerun.
+- Owner decision 2026-10-19 (item 6.3e): the write-turns fix (a waiting add
+  commits in the next bolt write transaction; archive and best-effort writes
+  wait behind at most 3) is accepted with its remaining add p50 gap (67ms
+  against the base's 16ms in-process on NFS; mean -15% against the base).
+  The gap is writer occupancy from the extra archive throughput, which no
+  write ordering can remove.
