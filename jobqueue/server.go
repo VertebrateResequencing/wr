@@ -262,8 +262,7 @@ var (
 	// what is pending into one db.bolt.Update - across a commit, not within a
 	// fixed window - so MaxBatchDelay never applies to them. What is left on
 	// db.bolt.Batch is db.storeLimitGroups, db.storeEnv's db.store,
-	// db.deleteLiveJobs, db.modifyLiveJobs and db.storeNewJobDataChunked (an add
-	// too big for one transaction), all occasional except that
+	// db.deleteLiveJobs and db.modifyLiveJobs, all occasional except that
 	// deleteJobIfRequested reaches db.deleteLiveJobs once per job for jobs
 	// carrying the Remove behaviour, which can therefore arrive in bulk. A grep
 	// for db.bolt.Batch finds one more, db.storeLookups, which now only tests

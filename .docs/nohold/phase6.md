@@ -2156,5 +2156,881 @@ and `latency.py`: no double run or lost job attributable to the change
 record both run directories, the figures and the verdict in the PR body.
 Depends on item 6.3.
 
+G3 summary. Criteria 1 and 4 pass. Criteria 2 and 3 (p99) fail as
+measured, because the farm gave the branch soak fewer runners. At matched
+runner counts, throughput is equal and latency outside the minutes after
+each restart is better (details below). The owner decides whether to accept
+that, or to rerun the pair at a load both soaks reach.
+
+| | Base | Branch |
+| --- | --- | --- |
+| tree | 6f1b41bb | 2d5f1899 |
+| run directory | `$G3/soak-base/run/prodsim-1792425803` | `$G3/soak-branch/run/prodsim-1792439340` |
+| ran (2026-10-19) | 17:03 to 20:09 | 20:49 to 23:54 |
+| ports, pprof | 52710 to 52713, 6271 | 52720 to 52723, 6272 |
+| runs (keys) | 447,691 (439,154) | 279,458 (276,522) |
+| live jobs at the last recovery | 1,540,462 | 1,977,962 |
+| peak RUN, mean RUN, mean PEND | 3,175, 1,452, 2,527 | 2,258, 923, 2,556 |
+| stops | 17: 12 crashes (6 injected), 5 clean | 17: 12 crashes (6 injected), 5 clean |
+| injected stall | 1792429049 to the crashon-stall kill at 1792429140 | 1792442624 to the crashon-stall kill at 1792442715 |
+| manager peak RSS, heap in use | 67,133MB, 37,884MB | 77,923MB, 42,716MB |
+| manager start, first and longest | 6.9s, 114s | 8.4s, 163s |
+
+`$G3` is `/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-g3`.
+
+Setup. `$G3/soak-go.sh <base|branch>` is battery10's `soak-go.sh` with
+only the tree, ports and `SOAK_ROOT` changed: `HOURS=3`, `RESTART_MIN=15`
+with the same 11 restart kinds, `USE_FUSE=1 FUSE_ON_AT=3 FUSE_OFF_AT=4
+STALL_AFTER_MIN=7 STALL_SECS=180`, `RAMP0=600
+RAMP="0:600 8:1200 16:2100 25:3000 40:3600 60:4000"`, `RUNNER_FILELOG=1`,
+`WRDEV_PRODSIM_KEEP_DB=1`, and the injectors crashon (stall and 2
+bursts), crashafter, relbury r1 and r2, rundep and stopstate.
+`FIXTURE` was `runstate-gate/fixtures/fix120k.db`, which prodsim copies.
+Each tree's `run.sh` ran from a clean scratch detached worktree of that
+tree and built its own `$SOAK_ROOT/wr`. Nothing replaced that binary during
+the run. `go version -m` shows `vcs.modified=false` for both:
+6f1b41bb has sha1 `d22b975d...` and 2d5f1899 has `13b52b9b...`
+(`soak-*/*-wr.buildinfo.txt`, `*.sha1`). The two soaks did not overlap,
+and all `OS_*` variables were unset. `$G3/analyse.sh` ran the branch
+tree's tools over each soak, with `soakgate.py --source d1` for both,
+since the base has the D1 lines too. The outputs are in
+`$G3/analysis/{base,branch}/`. The load-matched breakdowns below, and
+the scripts that made them, are in `$G3/analysis/extra/`.
+
+`soakgate.py`, base:
+
+```text
+nondurable source=d1 inside=173 outside=298 runs=447691 outsidePct=0.0666
+totals ok
+doubles inside=174 outside=0 acknowledged=0
+missing ran=439154 absent=0 excused=197
+peakRUN=3175
+```
+
+`soakgate.py`, branch:
+
+```text
+nondurable source=d1 inside=185 outside=1125 runs=279458 outsidePct=0.4026
+totals ok
+doubles inside=183 outside=0 acknowledged=0
+missing ran=276522 absent=0 excused=155
+peakRUN=2258
+```
+
+1. No double run or lost job attributable to the change: PASS.
+   - Doubles. All 174 doubles in the base and all 183 in the branch are
+     inside the injected stall. From `doubles.tsv`, every first run
+     started within the stall, before crashon-stall's `kill -9`: base
+     1792429056 to 1792429063, branch 1792442633 to 1792442708. Those
+     reservations were handed out while the fsync was held (D1), so
+     the crash lost them. After the restart, `anyway.py` shows each first
+     run's `jstart` rejected as "bad job" or "you must Reserve()", and
+     its `jarchive` rejected as "you must Reserve()", so the job was run
+     again. None was acknowledged. The cause is the injectors, and the base
+     has the same behaviour. `doubles.py` counts 5 of the branch's doubles
+     as "crash ended-while-down", but they belong to the same stall.
+   - Lost jobs. `absent=0` in both soaks. In the base, `relburycheck.py`
+     reports problems 0. In the branch it reports 6 `STUCK relb.r2.*`, all
+     false positives of its snapshot timing. The relbury-r2 crash
+     (1792443618) was followed by crashafter's crash right after the
+     restart (1792443664), so the "+180" snapshot came only about 140s
+     after the manager that ran the batch came up. Each "stuck" job's E
+     mark is 0.7 to 4s before that snapshot, so its report was still in
+     flight. By the +600 snapshot all 400 were buried, rel jobs had run
+     twice and bur jobs once, as specified.
+   - `rundepcheck.py`: base `{'OK': 35, 'CHECK': 4, 'OK-late-add': 1}`,
+     branch `{'OK': 37, 'CHECK': 3}`. Each CHECK is a run with no end that
+     a clean stop killed. Branch instances 14 and 16 are labelled
+     `stop-crash`, but their runners logged "kill requested externally"
+     at 21:53:09. That is the scheduled clean stop, which began at
+     1792443188, 1s after the restart that followed crashon-burst
+     (`restarts.tsv`: stop `ms=127749` logged at 1792443316). The A.14
+     double is one of the stall doubles.
+2. Steady ends per minute at least 90% of the base's: FAIL as measured.
+   `latency.py` rc0 ends per minute: mean 1,511.1 against 2,402.4 (63%),
+   p50 1,583 against 2,026 (78%). Over minutes wholly outside outages,
+   the mean is 1,744.8 against 2,745.4 (64%). Load-matched by our LSF RUN
+   in that minute, the two trees do the same work per runner: 1.74 to
+   1.77 ends per minute per runner on the branch, against 1.69 to 1.90
+   on the base, in every RUN band both reached
+   (`throughput-*.txt`). The difference is how many runners LSF ran.
+   - In the first hour, while LSF dispatched freely, the branch had more
+     RUN than the base (963 to 1,756 against 457 to 1,131) and more ends
+     per minute (1,879 to 3,007 against 940 to 1,603; `timeline-*.txt`).
+   - From about t+60m (21:50 onwards), LSF started only 360 to 640 of
+     our runners in most 15-minute periods, with 2,300 to 4,000 of ours
+     pending. RUN fell to between 146 and 1,071, and ends per minute
+     followed it. The base, three hours earlier, got 359 to 9,140
+     runners per 15 minutes.
+   - wr asked for the runners: mean PEND was the same in both soaks
+     (2,527 and 2,556). It asked for the same sizes: runners by
+     scheduler group are 400MB `results_portal` 25,343 against 22,686
+     and 1024MB 3,353 against 2,314. LSF's pending reasons are its own
+     ("New job is waiting for scheduling" in 73 of 90 probes, "Job slot
+     limit reached" in 40 against the base's 23), and at 23:13 the
+     `normal` queue held 21,250 pending jobs farm-wide. The order of the
+     soaks may also matter: the branch ran straight after the base,
+     under the same user's fair-share, and this was not measured.
+   - Runners that ran at least one job ran 19.7 jobs each on the branch
+     and 25 on the base (`runnerend-*.txt`). Runners did not exit
+     earlier on the branch: the exit reasons have the same mix in both
+     soaks (no more commands 46% against 43%, reconnect 16% against 18%,
+     could not reach the server during an outage 37% against 35%).
+3. Steady end-to-acknowledgement p50 and p99 no more than 10% worse:
+   p50 PASS, p99 FAIL as measured. `latency.py` steady figures:
+
+   | outcome | base n, p50, p99 | branch n, p50, p99 |
+   | --- | --- | --- |
+   | archive | 381,180, 1.17s, 5.45s | 233,084, 0.71s, 6.42s (+18%) |
+   | release | 3,767, 1.23s, 6.15s | 2,249, 0.68s, 7.72s (+26%) |
+   | bury | 87, 0.54s, 6.18s | 75, 0.64s, 3.40s |
+
+   The p99 excess comes from the 5 minutes after each manager start.
+   "Steady" counts ends from the moment a start completes, while runners
+   still flush reports held through the outage. Leaving out those 5
+   minutes, archives on the branch are better: p50 0.49s against 1.18s and
+   p99 4.46s against 5.18s. Release p99 is 6.02s against 5.51s (n 1,213
+   and 2,325). In the 5 minutes after a start, the branch's p99 over all
+   outcomes is 11.37s against 6.05s. Most of that is the restart after
+   the stall crash: 23.63s against 13.09s. When that crash came, the
+   branch had 1,832 runners running against the base's 1,297
+   (`latbins-*.txt`). Binned by RUN, neither tree is consistently worse.
+   The branch's 1,000 to 1,499 band (p99 12.73s) holds its run of
+   injected crashes from t+58m to t+100m.
+4. Peak RUN against the 5,500 target: reported. The base peaked at 3,175
+   and the branch at 2,258, both short of the target. LSF capped both;
+   the ramp's portal target tops out at 4,000.
+
+Strain points:
+
+- LSF first. In the base, by t+15m LSF held 1,719 of our runners pending
+  against a target of 1,200, with 561 running, nearly all "New job is
+  waiting for scheduling". It reached 5,873 pending at t+36m, with
+  "Affinity ... not enough processor units" and "Job slot limit
+  reached" also appearing. In the branch, LSF kept up for the first
+  hour (PEND 24 at t+5m), then stopped dispatching from about t+60m.
+  `bjobs` stayed fast in both soaks (mean 137 and 119ms, maximum 283 and
+  317ms).
+- The manager's strain follows the backlog of live jobs, which grows
+  because prodsim adds far more than the farm runs. Starts took 6.9s at
+  first, rising to 114s in the base and 163s in the branch, whose last
+  recovery held 1.98M live jobs against 1.54M. The branch's status calls
+  were slower late in the run: `ws_seed` q4 p95 80.8s against 9.9s, and
+  `status_portal_summary` p95 37.4s against 18.9s, max 118.8s against
+  83.7s. Ping peaked during manager starts (26.0s and 29.8s).
+  Final-report send or receive timeouts on runners, around the outages,
+  numbered 6,342 in the base and 5,371 in the branch.
+
+Open, not a G3 criterion: non-durable hand-outs outside the stall were
+1,125 on the branch against 298 on the base (`outsidePct` 0.40 against
+0.07). In both soaks they come in the 2 or 3 minutes after the
+restart that followed the stall crash: branch 21:48 to 21:50, base 18:01
+to 18:03. More runners were running at that crash on the branch (1,832
+against 1,297). None became a double run.
+
+Evidence: each run directory (with `launch.out`, `runnerlogs/`, the kept
+DB in `dbdir/` and the binary) is under `$G3/soak-<tree>/run`, and the
+analysis is in `$G3/analysis/`.
+
+#### Investigation (owner request 2026-10-20)
+
+From the saved data only (no new soak). Scripts and outputs are in
+`$G3/investigate/`. `calls.tsv`'s `t_s` is a call's end, so call start is
+`t_s - ms`.
+
+A. Slower status calls late in the branch soak: a backlog and memory effect,
+not a branch effect.
+
+- Why the backlog was larger. prodsim's portal actor is closed-loop: it
+  sends 1,000-job adds back to back and spent about 1,770 of every 1,800s
+  in add calls in both soaks. Burst size does not depend on completions.
+  Branch adds were faster (mean per 1,000-job call 3.6 to 3.9s against 4.1
+  to 4.8s in the middle hour, 5.8s against 7.2s in the last), so it started
+  29 bursts against 26 and submitted 2.21M jobs against 1.92M (+286k). It
+  also completed fewer (279k runs against 448k, -168k, from LSF dispatch).
+  The two add up to the ~440k gap in live jobs.
+- Status cost tracks live backlog the same way on both trees. `ws_seed` p50
+  by interpolated live jobs: 750k-1M 3.5s against 3.8s (base, branch),
+  1.25M-1.5M 6.1s against 6.2s, 1.5M-1.75M 9.3s against 8.0s;
+  `status_portal_summary` p50 is equally close. Outside the 5 minutes after
+  a manager start, branch `ws_seed` p95 is 9.9s at 1.5M-1.75M and 8.5s at
+  1.75M-2.1M, against the base's 10.7s at 1.5M-1.75M. RSS by live backlog is
+  also the same (1.5M-1.75M: max 65.6GB against 63.4GB; heap 37.0 against
+  37.4GB) (`statuslat-*.txt`, `rssvslive-*.txt`).
+- The q4 p95 figures come from a handful of calls that began in the first
+  2 minutes after a start. The worst are 3 `ws_seed` calls of 81 to 84s and
+  one `getrs repgroup=portal` of 118.8s (server-side "slow request"
+  1m58.8s), all started within 10s of start 15 (23:26:14, 1.76M live, 162s
+  start, after a clean stop). The base's largest start had 1.54M live and
+  its `ws_seed` stayed under 10.6s (`poststart-*.txt`).
+- Cause of those outliers: the post-start goroutine dump
+  (`profiles/poststart.1792448775.6.goroutine.txt`) shows the seed and the
+  `getrs` in `db.addCompleteJobStatusByRepGroup`, walking `bucketRTK` and
+  doing bolt `Get`s (`Page.FastCheck`) for every live and complete key of each
+  rep group. The 30s CPU profile there used only 106% CPU, against 170 to
+  250% after the base's late starts, so the handlers were mostly waiting,
+  not computing. The host has 91GB RAM and 7GB swap, now full. The branch
+  manager reached 73 to 78GB RSS beside a 31 to 33GB DB, past what the
+  host can keep resident; the base peaked at 67GB. Cold mmap pages faulted
+  from NFS explain it. Not proven: no fault counts were sampled.
+- Code. `git diff 6f1b41bb 2d5f1899` does not touch `writeStatusCountSeed`,
+  `statusSeedCounts`, `getStatusByRepGroup`,
+  `retrieveCompleteJobStatusByRepGroup` or `handleGetRepGroupStatus`.
+  `serverWebI.go` only adds `JStatus.RunRAM/RunTime/RunDisk`. RAC/queue
+  changes (`RegroupReady`, write turns) do not share a lock with the seed's
+  bolt `View`. Item RLocks in `snapshotReadyJobs` and `addQueueItemStatus`
+  appear in both trees' post-start profiles.
+
+B. Hand-outs before the reservation was on disk, outside the stall: a load
+effect. Write turns and hold removal were not shown to cause it. The base
+has the same exposure.
+
+- How it is counted. `soakgate.py --source d1` counts each manager-log line
+  `reservation handed out before it was recorded on disk`.
+  `persistReservation` logs it when the reservation's run-state write is
+  not confirmed committed within `ReserveWriteWait` (10s), or the DB is
+  closed. The write stays queued and normally commits shortly after.
+- Where they are. Branch: 1,116 in 21:48:12 to 21:50:05, after the
+  post-stall-crash restart (21:47:39), plus 9 after start 15. Base: 111 in
+  18:01:46 to 18:03:23, after its post-stall-crash restart; 66 at 18:41:49
+  to 50, a minute after a crash restart with 915k live (that minute's
+  archive `maxTx` was 10.8s); and 121 at 19:33:37 during a clean stop.
+  Those 121 were reserves that had waited 3m22s on the base's hold, then
+  were handed out as the DB closed. The branch cannot do this, having no
+  hold. So the summary above is wrong that all of the base's 298 came after
+  the stall restart; 111 did.
+- Rate in the matched window (first 150s after each post-stall-crash
+  restart, runner `reserved a job` lines, `d1rate-*.txt`). Branch: 3,897
+  hand-outs, 1,116 non-durable (28.6%), 1,832 runners in flight. Base: 3,361
+  hand-outs, 111 non-durable (3.3%), 1,297 runners. Hand-outs per runner in
+  flight were lower on the branch (2.1 against 2.6 per runner). Without the
+  hold the branch did not reserve faster. A larger share of its run-state
+  drains missed 10s: the lines come in bursts of 50 to 265 every ~10s
+  (21:49:25, :36, :46, :57), each one whole best-effort drain.
+- Why drains missed 10s. That window's archive fold lines show writers
+  queuing longer for the bolt lock on the branch: meanLock 1.9 to 3.7s,
+  maxLock to 10.6s, against 1.2 to 1.4s and 7.8s. Their own commits were
+  similar (meanTx - meanLock 0.6 to 0.8s against 0.4 to 0.5s). Adds were
+  matched (about 36k jobs in the 4 minutes in each). The branch had 41% more
+  runners flushing starts, touches and final reports held through the
+  outage, on a DB still behind FUSE.
+- Write turns are not the cause at matched load. An in-process probe
+  (`zz_turnsprobe_test.go`, toggle in `turnsprobe-toggle.diff`, run in a
+  scratch copy of 2d5f1899) streams archives (60ms commit), back-to-back
+  1,000-job adds and run-state durable writes. Four interleaved rounds
+  each, turns on against off: run-state p50 136 to 147ms against 137 to
+  154ms, p99 211 to 233ms against 215 to 268ms, the same archive folds
+  (`turnsprobe-results.txt`). One indirect branch effect is left open:
+  item 6.3d measured archives completing 13 to 17% faster without the
+  hold, which keeps the writer saturated more of the time. This data cannot
+  separate that from the extra runners.
+- Crash exposure. A non-durable hand-out is exposed from hand-out until
+  the first commit of its run-state or `Started` write. Branch `jstart`
+  calls in that window took up to 27.8s, so the exposure lasts seconds to
+  tens of seconds. A crash then recovers the job's older record. The job
+  goes to Ready, the live runner's start and touches get `ErrBadJob`, its
+  archive `ErrMustReserve`, and another runner runs it again
+  (`.docs/bugfixes/260928-reserve-durability.md`). That is a double run,
+  never acknowledged, the same as the 174 and 183 stall doubles. It is not
+  a lost job: the job's live record stays on disk and it reruns. Once
+  `Started` commits, `260917-start-durability.md` keeps the run safe. The
+  base has the same 10s bounded wait and the same exposure. It showed it at
+  a lower rate under lighter load, plus the shutdown hand-outs above. No
+  crash landed in these windows: the branch's next crash was 21:52:17, two
+  minutes after the last line, so none became a double.
+
+Rerun. It is not needed for A, since status cost per live job is the same
+on both trees. A rerun would diverge again, because the portal actor is
+closed-loop on add speed. For B, matched load would mean matching runners in
+flight at the post-stall crash, and LSF dispatch decides that, not the ramp:
+over minutes when wr had runners pending, base RUN was at least 500 in 91%,
+750 in 77%, 1,000 in 68%; branch 81%, 64% and 54%. The branch's last hour
+reached 500 in only 50%. No cap gives both trees the same load reliably. A
+cap of 750 (`RAMP="0:600 8:750"`) is the highest both held in about two
+thirds of minutes, and running the branch first would test the fair-share
+order. A cheaper check of B is a paired base and branch crash-restart at a
+fixed runner count, counting non-durable lines per hand-out.
+
+#### Crash-pair check of B (owner request 2026-10-20)
+
+Result: B is not explained by load alone. At matched runner counts, the
+stall crash shows no tree difference. But the branch has bursts of
+non-durable hand-outs that the base never had: after a plain crash, and in
+steady running with no crash at all. Each burst is one write stall of 10 to
+20s that starts with a slow 1,000-job add. No double run came of it. The
+trials are few (5 per tree), so the difference is indicative, not proven.
+
+Setup. `$CP` is `$G3/crashpair`. `$CP/trial.sh <tree> <k>` runs one trial:
+a fresh isolated prod-mode manager of that tree's prebuilt binary, on a
+fresh copy of `fix120k.db` behind `fusestall` from the first start. prodsim
+runs for 100 minutes with a fixed portal concurrency and limit (`TARGET`),
+1,000-job add bursts every 5 minutes, and no operator limit changes.
+
+- Crash A, at the start plus 18 minutes once our LSF RUN reaches `GOAL`:
+  hold every fsync for 180s, `kill -9` the manager 90s in, release, then
+  restart.
+- Crash B, 8 minutes after restart A once RUN reaches `GOAL`: a plain
+  `kill -9` and restart.
+
+`$CP/run-all.sh` ran the trials one after another, alternating base and
+branch, and `$CP/analyse-trial.sh` ran the soak tools and `cpmeasure.py` over
+each one. The binaries are base 6f1b41bb (sha1 `c78cfb31...`) and branch
+2d5f1899 (`ecf287e8...`), both `vcs.modified=false`. They ran on 2026-10-20
+from 11:00 to 00:33. The trials had these settings:
+
+- k1 and k2: `TARGET=600 GOAL=550`, with a 20-minute wait for the goal.
+- k3 and k4: `TARGET=350 GOAL=420`, 20 minutes. k4 missed the goal at both
+  crashes (407 and 347).
+- k5 to k10: `TARGET=350 GOAL=400`, 60 minutes. Crash B of k9 went ahead at
+  RUN 200. Crash B of k10 is void: prodsim had already finished at 00:20,
+  before RUN reached 400 at 00:31, so its window holds 2 hand-outs.
+
+The outputs are each trial's `prodsim-*/` (`soakgate.txt`, `cpmeasure.tsv`,
+`manager.log`, `profiles/`) and `$CP/summary.txt`, `d1-where.txt`,
+`adds-steady.txt`, `d1-vs-slowreads.txt` and `d1-vs-slowadds.txt`, with the
+scripts that made them. The trials' DBs were deleted after `dbstart`.
+
+Non-durable lines (D1) per runner `reserved a job` line in the 300s after
+each restart. RUN is our LSF RUN at the crash:
+
+| trial | crash A: RUN, D1 / hand-outs | crash B: RUN, D1 / hand-outs |
+| --- | --- | --- |
+| k1 base | 712, 30 / 3,218 | 550, 0 / 5,772 |
+| k2 branch | 439, 0 / 1,289 | 551, 595 / 5,668 |
+| k3 base | 450, 0 / 1,707 | 424, 0 / 4,350 |
+| k4 branch | 407, 18 / 1,519 | 347, 73 / 2,633 |
+| k5 base | 459, 3 / 1,768 | 401, 0 / 4,047 |
+| k6 branch | 461, 6 / 3,592 | 451, 0 / 4,161 |
+| k7 base | 422, 0 / 1,460 | 411, 0 / 4,056 |
+| k8 branch | 410, 0 / 1,033 | 406, 204 / 3,977 |
+| k9 base | 419, 11 / 1,283 | 200, 6 / 1,904 |
+| k10 branch | 417, 1 / 1,793 | void |
+
+- Crash A, the G3 post-stall-crash case, at matched RUN: no difference.
+  Over k3 to k10, base 14 of 6,218 hand-outs (0.23%, in 2 of 4 trials,
+  mean RUN 438) against branch 25 of 7,937 (0.31%, 3 of 4, mean RUN 424).
+  All of them came in the first 150s. G3's 28.6% and 3.3% were at
+  1,832 and 1,297 runners, well above the 400 to 460 here.
+- Crash B: base 6 of 20,129 (0.03%, in 1 of 5 trials, k9 at RUN 200),
+  against branch 872 of 16,439 (5.3%, in 3 of 4: k2, k4 and k8). Over k3
+  onwards it is 0.04% against 2.6%. The branch's lines did not follow the
+  restart closely. They came at 0 to 120s (k2), 50 to 160s (k4) and 262 to
+  283s (k8).
+- Steady running, outside the stall and both 300s windows
+  (`d1-where.txt`): the base had none in any of its 5 trials (185k runs).
+  The branch had 197 (k2, 12:48 to 12:49), 102 (k4, 15:02) and 22 (k8,
+  19:29), and none in k6 or k10. Each burst is a single episode, not a rate.
+  For 3 of 5 trials against 0 of 5, the one-sided Fisher exact p is 0.08.
+- Doubles: in all 10 trials every double is inside the injected stall
+  (`doubles inside=0..23 outside=0 acknowledged=0`), and `absent=0`. No
+  burst was hit by a crash.
+
+What a burst looks like (`adds-steady.txt`, `d1-vs-slowadds.txt`). The
+manager logs a "slow request" for a 1,000-job add (12.1 to 12.6s server
+side). `jstart`, `jarchive` and `jrelease` then take 10 to 19s. That
+minute's archive fold shows `maxTx` and `maxLock` of 7 to 10.7s, with
+`txs` down from 300 to 600 per minute to 9 to 87. A batch of run-state
+drains misses the 10s `ReserveWriteWait`, and the 50 to 265 D1 lines come
+together. The base had no add over 10s in steady running in any trial. The
+branch had them in k2, k4 and k8, each at a burst. After restarts both trees
+have slow adds (base k1, k3, k5, k9), and on the base they came with few or
+no D1 lines.
+
+Ruled out: long status reads. `d1-vs-slowreads.txt` shows `getrs` and
+`getbr` calls of 25 to 36s on the base in k1, k7 and k9 with 0 to 6 D1
+lines, and k2's 595 lines overlap no slow read.
+
+Open. The add path or the add-first write turn (f04eaa3e) now looks like a
+cause, at a load the in-process `zz_turnsprobe_test.go` did not model: its
+adds committed in tens of milliseconds, while a slow add here holds the
+writer for over 10s. This data cannot say whether the add was slow by itself,
+with everything else queued behind it, or whether something else stalled
+the writer and the add was its first victim. The 15s goroutine dumps cover
+only the first 150s after each restart. Only k2's crash-B burst (12:50 to
+12:51) falls inside them (`profiles/postcrashpair-plain.*`). There, 9 of the
+10 dumps from 12:50:32 to 12:52:33 show the one bolt write transaction
+inside disk I/O: `Tx.write` (pwrite) 4 times, `fdatasync` 4 times and
+`DB.grow` once. The holder is a different writer from dump to dump: the
+archive writer 6 times, the best-effort writer once, a `bolt.Batch` once,
+and the new-jobs (add) writer once, in `DB.grow`. So in that burst the stall
+was the DB's write and sync time through FUSE and NFS. No lock was held by a
+slow handler, and no one writer owned the stall. Base and branch go through
+the same FUSE and NFS path. Still open: why only the branch's commits reach
+10s. The candidates are larger folded commits (`meanFold` 51 and 65 in that
+burst's fold lines), or the add's file growth coming earlier in the queue
+under write turns. The exposure is the same kind as in B above: a crash
+inside a burst runs those jobs twice, none acknowledged.
+
 - [ ] implemented
 - [ ] reviewed
+
+### Item 6.4b: reservation-write stalls past ReserveWriteWait
+
+Question. Item 6.4's crash-pair check found that at about 400 runners the
+branch has bursts in which reservation writes miss the 10s
+`ReserveWriteWait` ("reservation handed out before it was recorded on
+disk", D1) in steady running and after a plain crash, while the base
+almost never does. Each burst comes with a 1,000-job add taking about 12s.
+Which change causes it: write turns (f04eaa3e), larger folded commits, or
+the removal of the hold?
+
+Verdict: write turns. Two write-turn mechanisms are identified and fixed
+(below), and the hold removal is not shown to cause it. The fix keeps
+write turns and the 6.3e add benefit. It cuts head's D1 bursts, but the
+probe cannot tell the fix from before write turns (pre, 959f3fd0) on D1
+bursts: in the `slow1` probe 3 of 8 runs of the fix (fix2) had one, and
+under the same conditions 1 of 12 pre runs did (`slow1` and the plain-pre
+runs of `slowhold`; Fisher exact p=0.26). fix2's `Started` and archive
+tails stay longer than pre's. That remaining gap is unexplained, though in
+this probe the two trees' db code differs only by write-turns code (see the
+`slow1` figures below).
+
+1. An add of 1,000 jobs or more is too big for the new jobs writer and goes
+   through `storeNewJobDataChunked`, one `bolt.Batch` transaction per
+   bucket. Those transactions took no write turn. Write turns put the
+   archive, best-effort and new jobs writers in one queue, so on bolt's lock
+   a chunk competed with only the one turn holder, and a run of chunks took
+   every other transaction. The best-effort writer, which carries the
+   reservations' run-state writes and `Started`, then waited behind a chunk
+   for each turn ahead of its own. On 959f3fd0 all four queued on bolt's
+   lock, and a chunk came round once per cycle.
+2. An add that keeps arriving went next every time a turn ended. When the
+   archive writer's turn came between two adds, a best-effort write waited
+   behind both, and the 6.3e bound ("at most three other transactions")
+   did not hold. A burst's last add of 618 jobs (6MB of 10KB commands)
+   goes through the new jobs writer, so this cost several seconds.
+
+With the DB on a slow filesystem, one big-add chunk takes several seconds,
+and the best-effort writer's wait grew from one chunk to two or three, past
+10s.
+
+#### Evidence
+
+Crash-pair trials, every portal burst in steady running (outside 300s after
+a start and outside the stall; `$P/trialdata/bursts.py`, `bursts.txt`).
+Per burst, the worst archive-fold `maxTx` of the minutes it covers, base
+(54 bursts) against branch (63):
+
+| | p50 | p90 | bursts over 5s | over 7s | add call mean p50 |
+| --- | --- | --- | --- | --- | --- |
+| base | 2.17s | 3.26s | 4 | 1 | 2.26s |
+| branch | 2.79s | 6.08s | 10 | 5 | 2.60s |
+
+Mann-Whitney: `maxTx` p<0.0001, add mean p<0.0001. So the branch's writer
+stalls longer at bursts generally, not only in item 6.4's three D1
+episodes. The goroutine dumps cover only k2's crash-B burst (12:50 to
+12:51), not its steady D1 burst (12:48 to 12:49). In that crash-B burst,
+`dumpclass.py` shows, in 3 of its 4 dumps
+(`postcrashpair-plain.17924970{32,47,62,78}`), a `bolt.Batch` big-add chunk
+in or queued at bolt's lock beside one of the three turn writers, the
+archive or best-effort writer, with the other of those two waiting for its
+turn. The third turn writer, the new jobs writer, is neither in a
+transaction nor waiting in those three dumps.
+
+In-process probe (`$P/probe/zz_64bprobe_test.go`, `TestZZ64bProbe`, not
+committed). It runs against the real `initDB` on a copy of `fix120k.db` on
+NFS, behind `fusestall`, with backups on. 400 runner goroutines loop:
+reservation run-state write (`updateJobRunStateDurableWithin`, 10s, as
+`persistReservation` does), `Started` (durable run-state), a lognormal run
+with a 24s median, then archive, or a durable release for 2%. Small adds of
+5 jobs every 2s go through the new jobs writer. A portal burst is prodsim's:
+two phases of 6,618 jobs with 10KB commands, 1,000 per add, back to back,
+dedupe jobs in dep groups and compress jobs depending on them. A scratch
+hook (`zz_64bhook.go`, plus `patch.py` on `db.go`) logs every archive,
+best-effort, new jobs and big-add transaction: when its writer asked, when
+it began and when it ended. Scratch detached worktrees of each tree were
+used, and runs were interleaved one at a time with the order rotated each
+round. Trees: pre is 959f3fd0; head is 2d5f1899, the same code as
+f04eaa3e; fix is head with item 1 fixed; fix2 is head with items 1 and 2
+fixed (the change below).
+
+On plain FUSE over NFS (`ab1`, 4 rounds each, 300s, 3 bursts), nothing
+reached 10s, but head's reservation writes were slower in the tail: p90
+1.80 against 0.45s, p99 3.53 against 1.87s (p=0.021), max 4.86 against
+3.05s (p=0.043). Its `Started` p99 was also worse: 4.86 against 2.94s
+(p=0.043). Each best-effort wait over 1s had 1.21 big-add chunks
+begin during it on head, against 0.76 on pre (p=0.021). Archive folds,
+`maxTx` and add latency did not differ, but head archived 2% fewer jobs
+per second: 12.55 against 12.80 (p=0.017).
+
+To reach the LSF regime, `fusestall` was given a write limit (`-wbps`,
+scratch build `fusestall-slow`) of 5MB/s, which makes a 1,000-job add take
+about 12s, as in the D1 bursts. `slow1`: 8 rounds of each tree, one burst
+per run from 30s into a 240s window. Medians over runs, p from Mann-Whitney
+against pre (`slow1/stats-out.txt`):
+
+| | pre | head | fix | fix2 |
+| --- | --- | --- | --- | --- |
+| D1 per run | 5 (1 to 11) | 716 (645 to 1,053), p=0.001 | 84 (11 to 162), p=0.001 | 3 (1 to 139), p=0.96 |
+| runs with D1 over 11 | 0 of 8 | 8 of 8 | 7 of 8 | 3 of 8 (79, 81, 139) |
+| reservation write mean | 1.52s | 4.30s | 1.60s | 1.20s |
+| `Started` p99 | 11.8s | 21.6s, p=0.001 | 17.8s, p=0.001 | 15.6s, p=0.001 |
+| archive p50 | 3.07s | 6.92s, p=0.001 | 3.32s, p=0.027 | 3.54s, p=0.009 |
+| archive p99 | 11.2s | 24.7s, p=0.001 | 16.8s, p=0.001 | 15.0s, p=0.001 |
+| archive `maxTx` | 8.7s | 14.2s | 14.8s | 8.8s, p=0.83 |
+| longest best-effort wait | 8.7s | 15.5s | 14.0s | 8.6s, p=0.35 |
+| big-add chunks per best-effort wait over 1s | 0.81 | 2.22 | 0.89 | 0.85 |
+| 1,000-job add p50 | 11.9s | 11.1s | 11.6s | 11.8s |
+| small add p50 | 0.59s | 0.11s | 0.22s | 0.27s |
+| archives/s | 9.4 | 7.7 | 9.1 | 9.2 |
+
+fix2 cuts head's D1 bursts, but the probe does not show it differs from pre
+on them. Its median D1 is pre's (p=0.96), and 3 of its 8 runs had 79 to 139
+(per run, fix2: 1, 2, 2, 3, 3, 79, 81, 139; `slow1` pre: 1, 2, 3, 4, 6, 10,
+11, 11). No `slow1` pre run was above 11, but `slowhold`, queued right after
+`slow1` by the same `queue.sh` under the same settings (`P64_DUR_S=240`,
+`P64_FIRST_S=30`, `fusestall-slow -wbps 5000000`), ran 4 more plain pre
+runs, and one of them had 113 (per run: 4, 4, 2, 113;
+`slowhold/results.txt`). Pooled, 1 of 12 pre runs was above 11 against 3 of
+8 fix2 runs (Fisher exact p=0.26; Mann-Whitney on D1 p=0.85), which is not
+a clear difference.
+
+fix2 is still significantly worse than pre on `Started` p99 (15.6s against
+11.8s, p=0.001) and archive p99 (15.0s against 11.2s, p=0.001), though
+better than head on both (21.6s and 24.7s; head against fix2 p=0.001 for
+each). In `slow1` the `Started` p99 runs do not overlap: every fix2 run
+(14.5 to 17.4s) is above every pre run (11.5 to 14.0s). With `slowhold`'s 4
+plain pre runs pooled in, fix2 is still worse on both (p=0.002 each), but
+one pre run overlaps: the run with 113 D1 had a `Started` p99 of 20.4s and
+an archive p99 of 17.9s, above every fix2 run (at most 17.4s and 15.4s).
+fix2's archive p50 is also higher than pre's (3.54s against 3.07s, +15%,
+p=0.009). This probe does not show what causes the remaining gap: fix2
+matches pre on archive `maxTx` and the longest best-effort wait.
+
+Mechanism 1 shows in the big-add chunks begun during each best-effort wait
+over 1s: 2.22 on head against 0.81 on pre, and 0.89 once chunks take turns
+(fix). The transaction logs show mechanism 2. A typical longest wait on head
+is r4-head's "big-add chunk 8.0s, add, archive 1.3s, add 6.8s" (16.2s), an
+add having gone ahead twice. On fix the chunks no longer stack, but r1-fix's
+"chunk 7.6s, add, archive, add 6.9s" (14.8s) remains: the 618-job add went
+ahead twice. On pre and fix2 the longest waits are mostly one chunk plus
+small transactions (8.0 to 9.5s); in one run of each (r4-pre, r4-fix2), a
+618-job add instead.
+
+Other candidates:
+
+- Larger folded commits: no. `meanFold` and archive transaction time were
+  the same on pre and head without the write limit; in `slow1`, head's
+  `meanFold` (3.1) is the lowest of the four trees.
+- The hold removal: not shown. The probe runs at the db layer, so the hold
+  was imitated with a 450ms sleep before each reservation on pre
+  (`slowhold`, 4 rounds each). The imitated hold raised D1 rather than
+  reducing it, though not significantly (116 against 4, p=0.08), and
+  per-runner rates in the trials are the same on both trees (item 6.4).
+  The crash-pair trials compare base with the branch, but the probe's pre
+  against head isolates write turns: their db code differs only by
+  f04eaa3e.
+
+#### Fix
+
+`jobqueue/writeturns.go`, `jobqueue/db.go`:
+
+- A big add's chunk transactions take a write turn
+  (`writerChunkedAdd`, no preference, so turns go to it in arrival order)
+  through `updateInTurn`, instead of `bolt.Batch`. A panic in a chunk's
+  put now fails only that add, through `applyNewJobsOp`'s recover. This is
+  a fix, not parity: in bbolt v1.4.3, `bolt.Batch`'s `safelyCall` recovers
+  a panic only to return `trySolo`, and `DB.Batch` then reruns the function
+  with a plain `db.Update` in the caller's goroutine, where it panics
+  again. That panic reached `storeNewJobStores`' deferred
+  `internal.LogPanic(..., true)`, which exits the manager. The existing
+  `applyNewJobsOp` comment made the same false claim about `bolt.Batch`
+  and is corrected (comment only).
+- The new jobs writer goes next when it is waiting, unless it has already
+  gone ahead of the longest-waiting writer of another kind since that
+  writer began waiting. Every other writer then waits behind at most the
+  transaction in flight, one add, and one transaction of each other writer
+  waiting, however many goroutines take turns as the new jobs writer. An
+  add still goes straight after the transaction in flight unless an add has
+  already overtaken the oldest waiter of another kind.
+- Comments that claimed `bolt.Batch` recovers a panic are corrected
+  (comment only): on `errArchivePanic`, `errBestEffortWriteAborted`,
+  `drainBestEffort`'s default error and `applyArchiveOp` in
+  `jobqueue/db.go`, and on `TestStartDurabilityAbortedWriteIsNotCommitted`,
+  `TestReliable4AddPanicStaysPerAdd` and
+  `TestReliable4ArchivePanicStaysPerJob`. All seven were already on develop
+  (6f1b41bb), as was the `applyNewJobsOp` one above.
+
+Tests (`jobqueue/nohold_write_turns_test.go`):
+
+- "a best-effort write queued before a big add's first transaction commits
+  ahead of it": an archive is held in its transaction, an add waits, then a
+  best-effort write, then a two-chunk big add. The add must commit next and
+  the big add's first chunk two transactions later. It orders the add, the
+  best-effort write and the big add by waiting for one, two and then three
+  writers to be waiting for a turn. RED on HEAD: the chunk never waits for
+  a turn, so the wait for three turn waiters times out (with an earlier
+  form that ordered them by sleeping, the chunk committed straight after
+  the archive, ahead of the waiting add, 5 of 5); GREEN after.
+- "a big add whose put panics fails only itself and gives up its turn".
+  It guards the recover and the turn's release, and requires the add's
+  error to wrap `errNewJobsPanic`. On HEAD the panic killed the test binary:
+  `bolt.Batch` recovered it in its batch run, returned `trySolo`, and reran
+  the put with a plain `db.Update` in the caller's goroutine, which panicked
+  again, whatever `MaxBatchDelay` is. It fails if `applyNewJobsOp` has no
+  recover (the panic kills the test binary), or if the recover returns an
+  error that does not wrap `errNewJobsPanic`.
+- `TestNoHoldWriteTurnsAddOvertakesOnce` drives `writeTurns` directly with
+  an add that keeps arriving. The archive and best-effort writers that were
+  waiting each get their turn after one add, not one add per turn. RED on
+  HEAD 3 of 3 (the second add went ahead of the archive writer again);
+  GREEN after.
+- "a big add's first transaction arriving while no add waits commits after
+  a best-effort write queued before it": an archive is held in its
+  transaction, a best-effort write waits for its turn, then a two-chunk big
+  add arrives with no add waiting. The big add's first chunk must commit two
+  transactions after the archive. It fails if chunks take the new jobs
+  writer's turns (`updateInTurn(writerNewJobs, …)` in
+  `storeNewJobDataChunked`): the chunk then commits straight after the
+  archive, 3 of 3. The test above cannot see that change, because there the
+  add has already overtaken the best-effort write.
+- `TestNoHoldWriteTurnsAddOvertakesOnce`, "an add arriving after the archive
+  writer's turn still goes ahead of the best-effort write": with no add
+  waiting, the archive writer's turn ends and an add then arrives. The add
+  must go next, since no add has overtaken the best-effort write. It fails
+  if `give` counts every turn handed over as an add's turn (the best-effort
+  write then goes first), 3 of 3.
+- `TestNoHoldWriteTurnsAddOvertakesOnce`, "the chunk's turn does not count
+  as an add going ahead of the archive": a big add's chunk and then an
+  archive wait for the turn in flight. The chunk goes first, then an add
+  arrives and must go next, ahead of the archive. It guards that a chunk's
+  turn does not count as an add's: it fails if `give` counts
+  `writerChunkedAdd` turns too (the archive then goes first), 3 of 3.
+- "a best-effort write queued while a big add's first transaction is in
+  flight commits between that transaction and the add's next one": a
+  two-chunk big add is held inside its first chunk, and a best-effort write
+  then waits for a turn (one turn waiter). Once released, the add's second
+  chunk must commit two transactions after its first, the best-effort
+  write's between them. The putter records every chunk's transaction id. It
+  fails if the chunked add takes one turn for all its chunks
+  (`db.turns.take(writerChunkedAdd)` and a deferred `give` at the top of
+  `storeNewJobDataChunked`, each chunk straight to `db.bolt.Update`): the
+  second chunk then commits straight after the first (6 expected, 5 got),
+  and no other test fails. Every earlier test passed under that change,
+  since each recorded only a big add's first transaction.
+- `TestNoHoldWriteTurnsAddOvertakesOnce`, "the first add goes next, then
+  the archive, ahead of the second add": two adds and then an archive wait
+  for the turn in flight. Each queued writer sends its own label, not just
+  its kind, when it gets the turn, so the test tells the two adds apart: the
+  first add must go next, then the archive, then the second add. It guards
+  that an add's turn is checked against the oldest waiter of another kind,
+  not the oldest waiter: it fails if `nextTurn` checks only `waiting[0]`
+  (`other := 0`, or -1 when `waiting[0]` is a new jobs writer), since the
+  second add then goes ahead of the archive. It also guards that adds go in
+  arrival order (M6 below: `nextTurn` picking the last waiting new jobs
+  writer, which survived while the queuer sent only the writer's kind). The
+  other direct cases use labels too.
+- "a writer whose transaction panics gives up its turn": a best-effort
+  turn's transaction panics, and the test recovers it; a later turn must
+  still get through. It fails if `updateInTurn` calls `give` only after a
+  returning `Update` (M8).
+- "two big adds in progress at once each wait for a turn of their own": with
+  an archive held in its transaction, two two-chunk big adds must both wait
+  for a turn. It fails if big adds are serialised (M12).
+- "a big add whose second transaction fails keeps its first one committed":
+  the putter fails its second call. Its first call must have stored exactly
+  `storeBatchGranularity` (1,000) of the add's 2,000 items, and every key of
+  it must then be in the live bucket. It fails if earlier chunks are rolled
+  back on a later chunk's error (M13), or if each chunk's transaction stores
+  the whole bucket instead of its own chunk (M26: 2,000 stored, not 1,000).
+- "a write that takes no turn does not wait for the turn in progress": with
+  a turn held, `deleteLiveJobs` must still complete. It fails if
+  `deleteLiveJobs` takes a turn (M14). It covers this one path, not every
+  transaction that takes no turn.
+- Mutants, one at a time in a scratch copy, each against
+  `TestNoHoldWriteTurns` and `TestNoHoldWriteTurnsAddOvertakesOnce` with
+  `-race`, one run each. Every one is killed except M17, which cannot
+  change behaviour:
+
+  | Mutant | Claim it breaks | Killed by |
+  | --- | --- | --- |
+  | M1 `nextTurn` returns 0 (FIFO) | an add goes next | first 6.3e case; direct cases |
+  | M2 no "already gone ahead" rule | other writers' bound | "keeps arriving"; "two adds" |
+  | M3 oldest other is the last one | longest-waiting writer goes | "keeps arriving" |
+  | M4 no add waiting: last goes | longest-waiting writer goes | chunked DB cases; direct cases |
+  | M5 every turn counts as an add's | `addTurns` counts adds | "after the archive writer's turn"; "chunk's turn" |
+  | M6 last waiting add goes | adds in arrival order | "two adds" |
+  | M7 chunk turns count as adds | big adds get no preference | "chunk's turn" |
+  | M8 `give` not deferred | turn ends on panic | "transaction panics" |
+  | M9 `other := 0` | any add's turn counts | "two adds" |
+  | M10 chunks on `writerNewJobs` | big adds get no preference | "no add waits" |
+  | M11 one turn for all chunks | each chunk takes a turn | "in flight ... next one" |
+  | M12 big adds serialised | several big adds at once | "two big adds" |
+  | M13 earlier chunks rolled back | earlier chunks stay committed | "second transaction fails" |
+  | M14 `deleteLiveJobs` takes a turn | only `updateInTurn` takes turns | "takes no turn" |
+  | M15 strict add/other alternation | add waits only behind writers it overtook | "keeps arriving" |
+  | M17 fast-path `take` counts an add | none (equivalent) | survives |
+  | M19 compare with the add's own arrival | any add's turn counts | "two adds" |
+  | M21 `updateInTurn` takes no turn | writers take turns | first 6.3e case (its wait for turn waiters) |
+  | M22 no recover in `applyNewJobsOp` | a chunk's panic fails only its add | "put panics" |
+  | M23-M25 best-effort, archive or new jobs writer takes no turn | those writers take turns | first 6.3e case (its wait for turn waiters) |
+  | M26 each chunk stores the whole bucket (`{bucket, s.encodes, s.put}`) | storeBatched-sized transactions | "second transaction fails" |
+
+  M17 increments `addTurns` when `take` finds no turn in progress. No
+  writer is waiting then, and each later waiter records `addTurns` at
+  arrival and is compared against it only after `give` increments it, so
+  the comparison is unchanged: the `addTurns` comment says this case need
+  not be counted.
+- The first 6.3e case ("an add commits in the transaction right after the
+  archive in flight") orders the best-effort write and the add by waiting
+  for one and then two writers to be waiting for a turn, instead of
+  sleeping `reliable4ACAddSettle` after each (`noHoldWTBestEffortAsync` no
+  longer sleeps; its other callers already waited for turn waiters). What
+  it asserts is unchanged. It still fails under M1 (the add commits one
+  transaction later, 7 against 6), and under M21 and M23 to M25 its wait
+  for turn waiters now times out (the best-effort write, or for M25 the
+  add, never waits for a turn), where the sleep form failed the ordering
+  assertion; 1 of 1 runs each. The other 6.3e test passes unchanged.
+
+#### Gates and figures
+
+`gofmt` and `go vet ./jobqueue/` are clean and `make lint` reports 0
+issues. `make test` and `make race`, with `OS_*` unset, pass: 1,004 passed
+each (`$P/make-test.log`, `make-race.log`). `TestNoHoldWriteTurns` and
+`TestNoHoldWriteTurnsAddOvertakesOnce` passed 5 runs in a row with
+`-race` after the two mutant-guarding tests were added, and `make test`
+and `make race` were rerun then (1,004 passed each; the new tests are
+cases inside existing test functions). After the chunk-turn test and the
+`errNewJobsPanic` check were added, the two tests passed 5 runs in a row
+with `-race`, `gofmt`, `go vet` and `make lint` were clean again, and
+`make test` and `make race` passed (1,004 passed each).
+
+After the third review's fixes (comments, this record, and the first
+chunked test ordered by turn waiters instead of sleeps), on 2026-10-22: the
+two tests passed 5 runs in a row with `-race`, `gofmt`, `go vet` and
+`make lint` (0 issues) were clean, and `make test` and `make race` passed:
+1,004 passed each, 22 and 21 skipped (`$P/make-test.log`, `make-race.log`,
+replacing the 2026-10-21 logs). The chunk-turn test still fails with chunks
+on the new jobs writer's turns (3 of 3); the reordered test does not see
+that change, as before.
+
+After the fifth review's fixes (the chunk-interleaving test, this record's
+D1 comparison with `slowhold`'s plain pre runs, and comments), on
+2026-10-22: the two tests passed 5 runs in a row with `-race`, `gofmt`,
+`go vet` and `make lint` (0 issues) were clean, and `make test` passed
+(1,004 passed, 22 skipped). The first `make race` failed one test,
+`TestReliable4ArchiveFoldMeansStaySelfConsistent`, which polls the
+archive-fold log for every archive and timed out
+(`$P/make-race-foldlog-fail.log`). It passed 6 runs in a row with `-race`
+alone, and a rerun of `make race` passed (1,004 passed, 21 skipped).
+`$P/make-test.log` and `make-race.log` replace the earlier logs. The
+failure is not in this item's code: `archiveFoldStats.observeTx` adds
+`txs` before `archives`, and a `take()` between the two logs too few
+archives for its interval. The next `take()` then finds `txs` at 0 and
+logs nothing, dropping the rest. The code is the same on develop.
+
+After the seventh review's fixes (the two-adds-before-an-archive test, the
+`nextTurn` comment, the `bolt.Batch` panic comments, and this record), on
+2026-10-22: the write-turns tests passed 5 runs in a row with `-race`, the
+new case failed under the `waiting[0]` mutant (1 of 1 runs), `gofmt`,
+`go vet ./jobqueue/` and `make lint` (0 issues) were clean, and `make test`
+and `make race` passed on the final tree: 1,004 passed each, 22 and 21
+skipped (`$P/make-test.log`, `make-race.log`, replacing the earlier logs).
+
+After the eighth review's fixes (labelled direct turns, so the two-adds case
+tells the adds apart; four new cases; the "only `updateInTurn` takes turns"
+comment; the test file header; and the mutant table above), on 2026-10-22:
+every mutant in the table but the equivalent M17 failed the write-turns tests
+(M6, M8 and M13 rechecked on the final tree), the write-turns tests passed 5
+runs in a row with `-race`, `gofmt`, `go vet ./jobqueue/` and `make lint`
+(0 issues) were clean, and `make test` and `make race` passed on the final
+tree: 1,004 passed each, 22 and 21 skipped (`$P/make-test.log`,
+`make-race.log`, replacing the earlier logs; the new tests are cases inside
+existing test functions).
+
+After the ninth review's fixes (the partial-add case asserting exactly
+`storeBatchGranularity` items in its first transaction, M26, the first
+6.3e case ordered by turn waiters, and this record), on 2026-10-22: M26
+survived the earlier `ShouldBeGreaterThan, 0` assertion and fails the new
+one (1,000 expected, 2,000 got; 1 of 1), and M1, M21 and M23 to M25 still
+fail the first 6.3e case (1 of 1 each). The write-turns tests passed 10
+runs in a row with `-race` (`-count=10`), `gofmt`, `go vet ./jobqueue/`
+and `make lint` (0 issues) were clean, and `make test` passed (1,004
+passed, 22 skipped). The first `make race` failed one test,
+`TestLostJobBehavioursActOnTheLostRun`, at a `soPathsGone` check after
+`soGoneWithin` had waited only for the lost run's working directory
+(`$P/make-race-lostrun-fail.log`). It passed 40 runs of 40 with `-race`
+both on this tree and, alongside it, on HEAD without the item's changes,
+and a rerun of `make race` passed (1,004 passed, 21 skipped). The test
+and the cleanup it checks are not touched by this item; it is the
+existing race recorded as delivery-queue row 14. `$P/make-test.log`
+and `make-race.log` replace the earlier logs.
+
+Benchmarks on local disk, HEAD against fix2 (the working tree; the files
+label it `fix`), 6 interleaved runs each, medians, Mann-Whitney
+(`$P/bench-summary.txt`, `bench-addjobs10x.txt`):
+
+- `BenchmarkAddJobs` (3,000-job adds, the chunked path), at a fixed 10
+  iterations: 191 against 115ms per add (-40%), with bolt writes and pages
+  per job (1.248 and 1.245), bytes and allocations the same. Each chunk no
+  longer waits out `bolt.Batch`'s 10ms `MaxBatchDelay`. At the default
+  benchtime fix2 ran twice as many iterations into a larger DB, which
+  made its per-job pages and allocations look 15 to 38% higher; the
+  fixed-iteration run removes that.
+- `BenchmarkAddDuringWriterStreams` +2.2% (p=0.08), `BenchmarkArchiveJobs`
+  +2.5% (p=0.15), `BenchmarkArchiveSpacedArrivals` 0.0%: no change.
+
+Item 6.3e's in-process probe (`TestNoHoldAddStormProbe`, `fix120k.db` on
+NFS, backups on, single-job adds; `$P/p63e/`), HEAD against fix2,
+interleaved:
+
+14 rounds each (`ab2.txt`, `ab3.txt`, `stats-out-fix2.txt`), medians over
+runs, Mann-Whitney:
+
+| Metric | HEAD | fix2 | change |
+| --- | --- | --- | --- |
+| add mean | 136.5ms | 135.3ms | -1%, p=0.84 |
+| add p50 | 51.7ms | 59.6ms | +15%, p=0.63 |
+| add p99 | 1,078ms | 1,093ms | +1%, p=0.84 |
+| archive p50 | 283.9ms | 288.4ms | +2%, p=0.54 |
+| archive p99 | 1,337ms | 1,416ms | +6%, p=0.84 |
+| archives/s | 76.2 | 75.8 | 0%, p=0.60 |
+
+Only the add p50 median moved more than 10%, and it is not significant: the
+per-run values overlap fully (HEAD 38 to 78ms, fix2 25 to 75ms in the first
+8 rounds), as item 6.3d found for this two-mode figure. The mean, which 6.3d
+found steadier, is 1% lower. An earlier 8-round run with item 1 only
+(`ab1.txt`, `stats-out.txt`) moved every figure by 10% or less, none
+significantly (add p99 -10%, p=0.79; every other figure 4% or less).
+
+These adds are single-job adds, which never take the chunked path, and
+fix2 leaves their turn first unless an add has already overtaken the oldest
+waiter of another kind, so no change was expected.
+
+What changes for users: an add of 1,000 jobs or more no longer gets every
+other transaction while chunks follow one another. In `slow1` its median is
+11.8s against head's 11.1s (+7%) and pre's 11.9s. Small adds keep most of
+6.3e's cut at a burst (0.27s against pre's 0.59s; head 0.11s). Each turn of
+the archive and best-effort writers, which make reservation, `Started` and
+archive writes, now waits behind at most the transaction in flight, one add,
+and one transaction of each other writer waiting (the other of those two
+writers, and a chunk of each big add in progress). A single write can wait
+longer: first for its own writer's transaction in flight, and behind the
+transactions that take no turn (deletes, modifications, limit group changes
+and other stores through `bolt.Batch`), which still queue on bolt's lock.
+These writes' tail is still longer than before write turns: in `slow1`,
+`Started` p99 is 15.6s against pre's 11.8s and archive p99 15.0s against
+11.2s (p=0.001 each), down from head's 21.6s and 24.7s. Every fix2 run's
+`Started` p99 (14.5 to 17.4s) is above every `slow1` pre run's (11.5 to
+14.0s), and the archive p50 is 3.54s against pre's 3.07s (+15%, p=0.009). D1
+bursts are reduced from head's but not eliminated, and not shown to differ
+from pre's: 3 of 8 fix2 runs had 79 to 139 reservations handed out before
+they were recorded, against 1 of 12 pre runs (113, in `slowhold` under the
+same settings as `slow1`; Fisher exact p=0.26). An add whose stores panic
+now fails with an error instead of exiting the manager.
+
+Not done: no LSF rerun of the crash-pair design with the fix. The
+in-process probe reproduces the D1 bursts at the LSF bursts' add latency,
+and the LSF trials take 100 minutes each.
+
+`$P` is `/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-64b`. It holds the
+probe, the hook and patch script, the run scripts (`run1.sh`, `ab2.sh`,
+`queue.sh`), `fusestall-slow` and its diff, every run's output
+(`probe/ab1`, `probe/slow1`, `probe/slowhold`, each with `txlog.txt` and
+`timeline.txt` per run), `stats.py`, `txsum.py`, the crash-pair burst and
+dump analysis in `trialdata/`, and `p63e/`. `probe/discarded/` holds runs
+that overlapped another run or used a burst schedule that depended on add
+speed; none are counted.
+
+- [x] implemented
+- [x] reviewed

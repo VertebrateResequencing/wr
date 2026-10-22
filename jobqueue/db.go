@@ -163,7 +163,7 @@ var ErrDBUnreadable = errors.New("could not open the database file")
 var errDBClosed = errors.New("database closed")
 
 // errArchivePanic is returned to the one caller whose archive panicked, so a
-// malformed job fails only itself (as it did under bbolt.Batch's safelyCall).
+// malformed job fails only itself.
 var errArchivePanic = errors.New("panic while archiving job")
 
 // errNewJobsPanic is the same for the one add whose bucket puts panicked, so a
@@ -173,8 +173,8 @@ var errNewJobsPanic = errors.New("panic while storing new jobs")
 // errBestEffortWriteAborted is what a caller waiting on a best-effort drain is
 // told when that drain did not commit. It is drainBestEffort's DEFAULT, cleared
 // only by a successful write, so a panic inside the transaction body - which
-// db.bolt.Update rolls back but, unlike bbolt.Batch's safelyCall, does not
-// recover - can never be reported to a waiter as a write that reached disk.
+// db.bolt.Update rolls back but does not recover - can never be reported to a
+// waiter as a write that reached disk.
 var errBestEffortWriteAborted = errors.New("best-effort write transaction aborted")
 
 // errNoRunStateBucket is what a best-effort drain returns if it has a run state
@@ -1225,9 +1225,11 @@ type db struct {
 	njStop       chan struct{} // closed by close() to stop the writer after a final drain
 	njWriterDone chan struct{} // closed by the writer when it has fully stopped
 	njStopped    bool          // guarded by njMu: the writer will drain no more
-	// turns orders the new jobs, archive and best-effort writers' transactions
-	// so an add is not left behind every archive queued on bolt's write lock,
-	// nor an archive behind a stream of adds (see writeturns.go).
+	// turns orders the transactions of the new jobs, archive and best-effort
+	// writers, and the chunks of adds too big for one transaction, so an add is
+	// not left behind every archive queued on bolt's write lock, nor an archive
+	// behind a stream of adds, nor any of them behind one big add's chunks (see
+	// writeturns.go).
 	turns writeTurns
 	// backupMu guards the backup-state fields below (backingUp, backupFinal,
 	// backupQueued, backupStopped, slowBackups, backupLast, backupWait), keeping
@@ -2283,8 +2285,8 @@ func (db *db) drainBestEffort(ctx context.Context) {
 	}
 
 	// the default is "did not commit", not nil: db.bolt.Update rolls a panicking
-	// transaction back but does not recover it (applyArchiveOp exists precisely
-	// because bbolt.Batch's safelyCall did and Update does not), so a panic inside
+	// transaction back but does not recover it (neither does bbolt.Batch, which
+	// reruns a panicking function solo with Update), so a panic inside
 	// batch.apply unwinds through this deferred reply carrying no error of its own.
 	// A waiter handed nil there would read it as "your write is on disk" for a
 	// transaction that rolled back, which is the acknowledge-before-durable bug
@@ -3317,9 +3319,11 @@ func (db *db) archiveTx(ops []*archiveOp, failed *int) error {
 }
 
 // applyArchiveOp applies one archive within tx, turning a panic into that
-// archive's own error. bbolt.Batch did this (safelyCall) and db.bolt.Update does
-// not, so without it a single malformed job would take the whole manager down
-// instead of failing one archive; the transaction is rolled back either way.
+// archive's own error, so a single malformed job fails one archive instead of
+// taking the whole manager down; the transaction is rolled back either way.
+// Neither db.bolt.Update nor bbolt.Batch gives this: Batch's safelyCall recovers
+// a panic only to have the caller rerun the function solo with Update, where it
+// panics again.
 func (db *db) applyArchiveOp(tx *bolt.Tx, op *archiveOp) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -3619,9 +3623,11 @@ func (db *db) newJobsTx(ops []*newJobsOp, failed *int) error {
 }
 
 // applyNewJobsOp applies one add's stores within tx, turning a panic into that
-// add's own error. bbolt.Batch did this (safelyCall) and db.bolt.Update does not,
-// so without it a single malformed job would take the whole manager down instead
-// of failing one add; the transaction is rolled back either way.
+// add's own error, so a single malformed job fails its add instead of taking the
+// whole manager down; the transaction is rolled back either way. Neither
+// db.bolt.Update nor bbolt.Batch gives this: Batch's safelyCall recovers a panic
+// only to have the caller rerun the function solo with Update, where it panics
+// again.
 func (db *db) applyNewJobsOp(tx *bolt.Tx, op *newJobsOp) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -3799,12 +3805,18 @@ func (db *db) newJobStores(encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rg
 }
 
 // storeNewJobDataChunked stores each bucket's data in storeBatched-sized write
-// transactions, for an add too big to put in one.
+// transactions, for an add too big to put in one. Each transaction takes a write
+// turn (see writeTurns), and a panic in one fails only this add, though, as for
+// any error in a chunk, the chunks before it stay committed. When these went
+// through bolt.Batch such a panic was rerun solo with Update and so reached
+// storeNewJobStores' LogPanic, exiting the manager.
 func (db *db) storeNewJobDataChunked(stores []newJobStore) error {
 	for _, s := range stores {
 		storer := func(bucket []byte, chunk sobsd) error {
-			return db.bolt.Batch(func(tx *bolt.Tx) error {
-				return s.put(tx, bucket, chunk)
+			op := &newJobsOp{stores: []newJobStore{{bucket, chunk, s.put}}}
+
+			return db.updateInTurn(writerChunkedAdd, func(tx *bolt.Tx) error {
+				return db.applyNewJobsOp(tx, op)
 			})
 		}
 

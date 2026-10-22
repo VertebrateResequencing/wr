@@ -32,13 +32,18 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// writerKind names one of the db's coalescing writer goroutines.
+// writerKind names a kind of write transaction that takes write turns: one of
+// the db's coalescing writer goroutines, or a chunk of an add too big for one
+// transaction.
 type writerKind int
 
 const (
 	writerNewJobs writerKind = iota
 	writerArchive
 	writerBestEffort
+	// writerChunkedAdd is an add too big for one transaction: each of its
+	// chunks takes a turn of its own (storeNewJobDataChunked).
+	writerChunkedAdd
 )
 
 // updateInTurn runs fn in a bolt write transaction once it is kind's turn to
@@ -54,31 +59,50 @@ func (db *db) updateInTurn(kind writerKind, fn func(*bolt.Tx) error) error {
 type writeTurn struct {
 	kind  writerKind
 	ready chan struct{}
+	// addTurnsAtArrival is writeTurns.addTurns when this writer began waiting.
+	addTurnsAtArrival uint64
 }
 
 // writeTurns orders the write transactions of the new jobs, archive and
-// best-effort writers, which otherwise queue on bolt's single write lock in
-// arrival order. On a slow filesystem the archive writer, which re-queues the
-// moment its transaction ends, fills that lock, and an add, whose client waits
-// for it, ends up behind every transaction already queued (item 6.3d of
-// .docs/nohold/phase6.md).
+// best-effort writers, and of adds too big for one transaction, which otherwise
+// queue on bolt's single write lock in arrival order. On a slow filesystem the
+// archive writer, which re-queues the moment its transaction ends, fills that
+// lock, and an add, whose client waits for it, ends up behind every transaction
+// already queued (item 6.3d of .docs/nohold/phase6.md).
 //
-// The new jobs writer goes next whenever it is waiting; otherwise the writer
-// that has waited longest goes. So a waiting add commits right after the
-// transaction in flight. Each writer is a single goroutine, so it is never
-// waiting when its own turn ends, and the others alternate with it rather than
-// wait out an add storm: the archive and best-effort writers each wait behind at
-// most three other transactions (the one in flight, the other's and an add's).
-// These bounds assume exactly one goroutine takes turns per writerKind; a
-// second new jobs goroutine could keep the turn between the two of them and
-// starve the others.
+// The new jobs writer goes next when it is waiting, unless it has already
+// gone ahead of the writer that has waited longest; otherwise that writer goes.
+// So a waiting add usually commits right after the transaction in flight, and
+// at worst after one transaction of each writer it has already overtaken. Each
+// of the other writers waits behind at most the transaction in flight, one
+// add, and one transaction of each other writer waiting (the archive writer's,
+// the best-effort writer's, and a chunk of each big add in progress), however
+// fast adds keep arriving. Without the "already gone ahead" rule an add that
+// arrived during each of those transactions went ahead again every time, and
+// a best-effort write waited behind one add per other writer (item 6.4b of
+// .docs/nohold/phase6.md). The other writers' bound holds however many
+// goroutines take turns as the new jobs writer, since any add's turn counts as
+// having gone ahead; with more than one, an add also waits behind the adds
+// queued before it. Big adds, which get no preference, may take turns from
+// several goroutines at once.
 //
-// Other bolt write transactions do not take a turn and still queue on bolt's
-// lock alongside whichever writer holds one. The zero value is ready to use.
+// A big add's chunks take turns too. Each is a full transaction (megabytes on
+// a production add), and one that queued on bolt's lock instead would get every
+// other transaction while one chunk follows another, since only the turn
+// holder competes with it there: a reservation's write then waited behind
+// several chunks per turn of its own, past ReserveWriteWait (item 6.4b).
+//
+// Only transactions run through updateInTurn take a turn. Any other bolt write
+// transaction queues on bolt's lock alongside whichever writer holds one. The
+// zero value is ready to use.
 type writeTurns struct {
 	mu      sync.Mutex
 	busy    bool
 	waiting []writeTurn
+	// addTurns counts the turns give has handed to the new jobs writer. A take
+	// that finds no turn in progress is not counted, but then no writer is
+	// waiting for an add to overtake.
+	addTurns uint64
 }
 
 // take blocks until it is kind's turn to write. The caller must call give once
@@ -93,7 +117,7 @@ func (w *writeTurns) take(kind writerKind) {
 		return
 	}
 
-	turn := writeTurn{kind: kind, ready: make(chan struct{})}
+	turn := writeTurn{kind: kind, ready: make(chan struct{}), addTurnsAtArrival: w.addTurns}
 	w.waiting = append(w.waiting, turn)
 	w.mu.Unlock()
 
@@ -114,20 +138,37 @@ func (w *writeTurns) give() {
 
 	next := w.nextTurn()
 	turn := w.waiting[next]
+
+	if turn.kind == writerNewJobs {
+		w.addTurns++
+	}
+
 	w.waiting = slices.Delete(w.waiting, next, next+1)
 
 	close(turn.ready)
 }
 
 // nextTurn returns the index in waiting of the writer to go next: the new jobs
-// writer if it is waiting, else the one that has waited longest. waiting must
-// not be empty.
+// writer if it is waiting and has not gone ahead of the longest-waiting writer
+// of another kind since that writer began waiting, else that writer. With no
+// new jobs writer waiting, the writer that has waited longest goes. waiting
+// must not be empty.
 func (w *writeTurns) nextTurn() int {
-	if i := slices.IndexFunc(w.waiting, func(turn writeTurn) bool {
+	add := slices.IndexFunc(w.waiting, func(turn writeTurn) bool {
 		return turn.kind == writerNewJobs
-	}); i >= 0 {
-		return i
+	})
+	if add < 0 {
+		return 0
 	}
 
-	return 0
+	// the longest waiting other writer goes before another add if an add has
+	// already gone ahead of it.
+	other := slices.IndexFunc(w.waiting, func(turn writeTurn) bool {
+		return turn.kind != writerNewJobs
+	})
+	if other >= 0 && w.waiting[other].addTurnsAtArrival != w.addTurns {
+		return other
+	}
+
+	return add
 }

@@ -295,12 +295,12 @@ func waitForRuns(marker string, want int, timeout time.Duration) bool {
 
 // TestStartDurabilityAbortedWriteIsNotCommitted covers the one path that would
 // reintroduce the bug this file exists to close. db.bolt.Update rolls a panicking
-// transaction back but does NOT recover it - applyArchiveOp exists precisely
-// because bbolt.Batch's safelyCall did and Update does not - so a panic inside
-// batch.apply unwinds through drainBestEffort's deferred reply carrying no error
-// of its own. A waiter told nil there would read a rolled-back transaction as a
-// write that reached disk, handleStart would acknowledge the start, and the
-// restarted manager would re-run the live command.
+// transaction back but does NOT recover it - nor does bbolt.Batch, which reruns
+// a panicking function solo with Update - so a panic inside batch.apply unwinds
+// through drainBestEffort's deferred reply carrying no error of its own. A
+// waiter told nil there would read a rolled-back transaction as a write that
+// reached disk, handleStart would acknowledge the start, and the restarted
+// manager would re-run the live command.
 //
 // The drain runs on THIS goroutine, and the batch is queued without waking the
 // writer, because bestEffortWriter's deferred internal.LogPanic calls os.Exit(1):
