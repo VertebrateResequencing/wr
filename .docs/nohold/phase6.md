@@ -3032,5 +3032,171 @@ dump analysis in `trialdata/`, and `p63e/`. `probe/discarded/` holds runs
 that overlapped another run or used a burst schedule that depended on add
 speed; none are counted.
 
+#### LSF crash-pair rerun with 6.4b (c6ee8376)
+
+Result: the branch no longer shows the D1 bursts that item 6.4 found. No
+reservation write missed `ReserveWriteWait` in steady running on either tree.
+After both kinds of crash, the branch handed out fewer non-durable
+reservations than the base. Doubles stay inside the injected stall, and no
+job was lost. Two limits apply. First, these trials had less steady running
+than item 6.4's: 3 steady portal bursts per trial (15 per tree), against 50
+to 59 per tree then. Second, the branch's portal add p90 and archive p99 are
+more than 10% higher than the base's in the median, though not significantly
+at 5 trials per tree. So the stall and hand-out criteria pass, and the
+latency-tail criterion is not shown to pass.
+
+Setup. `$Q` is `/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-64c`. It holds
+copies of item 6.4's crash-pair scripts with only their paths changed, and
+uses the same tools binaries (`prodsim`, `fusestall`, `dbstart`), fixture
+(`fix120k.db`) and NFS. One addition applies to both trees alike: `trial.sh`
+takes 3 goroutine dumps 3s apart, at most once per 60s, whenever the manager
+log gains a D1 or "slow request" line (`profiles/stall.*`,
+`stalldumps.log`). Both binaries were built fresh to `$Q/bin/<tree>/wr` with
+`go build -tags netgo`: base 6f1b41bb from a scratch worktree (sha1
+`31c62dfc...`) and branch c6ee8376 (`0573b589...`), both
+`vcs.modified=false`. `run-all.sh` ran 10 trials, alternating base (k1, k3,
+..., k9) and branch (k2, ..., k10), all with `TARGET=350 GOAL=400
+MAXWAIT_MIN=60` (item 6.4's k5 to k10 settings). They ran on 2026-10-22 and
+23 from 22:45 to 06:00. Every trial reached `GOAL` without waiting, so each
+ran about 37 minutes: crash A at 18 minutes (RUN 451 to 457), crash B 8
+minutes after restart A (RUN 451 to 468), and the end 300s after restart B.
+No crash B is void.
+
+New analysis scripts in `$Q`:
+
+- `lat64c.py`: steady add, reserve-gap and archive latency, and throughput.
+- `latency64c.py`: the soak `latency.py`, with "steady" also leaving out the
+  300s after every start and the time from the stall to restart A.
+- `compare64c.py`: the tables and tests below, also over item 6.4's trials.
+- `analysis/bursts2.py`: `bursts.py` with one fix. It also leaves out a burst
+  that starts inside the stall. `bursts.py` kept those, which in this rerun
+  was every trial's fourth burst.
+
+Outputs: `compare.txt`, `bursts2.txt`, `old-g3/bursts2.txt` (item 6.4's
+trials, rerun), `latency/`, and each trial's `prodsim-*/` (`soakgate.txt`,
+`cpmeasure.tsv`, `manager.log`, `profiles/`). Doubles and lost jobs come
+from this worktree's `soakgate.py`, which applies the #689 killed-first-run
+rule.
+
+Per trial: D1 lines against hand-outs in the 300s after each restart, steady
+D1 lines (outside the stall and both 300s windows), and soakgate's doubles
+(inside the stall, outside it, acknowledged) and absent jobs:
+
+| trial | crash A: RUN, D1 / hand-outs | crash B: RUN, D1 / hand-outs | steady D1 | doubles | absent |
+| --- | --- | --- | --- | --- | --- |
+| k1 base | 455, 0 / 4,201 | 454, 0 / 4,236 | 0 | 7 / 0 / 0 | 0 |
+| k2 branch | 451, 0 / 4,113 | 468, 1 / 4,121 | 0 | 1 / 0 / 0 | 0 |
+| k3 base | 453, 0 / 4,166 | 452, 0 / 4,293 | 0 | 3 / 0 / 0 | 0 |
+| k4 branch | 457, 1 / 3,851 | 458, 2 / 4,275 | 0 | 5 / 0 / 0 | 0 |
+| k5 base | 454, 95 / 3,939 | 455, 17 / 4,227 | 0 | 1 / 0 / 0 | 0 |
+| k6 branch | 451, 0 / 4,202 | 451, 0 / 4,288 | 0 | 0 / 0 / 0 | 0 |
+| k7 base | 457, 0 / 4,156 | 457, 4 / 4,116 | 0 | 8 / 0 / 0 | 0 |
+| k8 branch | 455, 0 / 4,059 | 452, 0 / 4,265 | 0 | 5 / 0 / 0 | 0 |
+| k9 base | 455, 143 / 4,041 | 453, 0 / 4,167 | 0 | 2 / 0 / 0 | 0 |
+| k10 branch | 451, 70 / 4,221 | 451, 1 / 4,344 | 0 | 0 / 0 / 0 | 0 |
+
+Every trial's soakgate reports `totals ok`.
+
+- Steady D1 bursts: base 0 of 5 trials, branch 0 of 5. In item 6.4 the
+  branch (2d5f1899) had them in 3 of 5 trials (2 of 4 from k3 on), and the
+  base in none.
+- Crash A: base 238 of 20,503 (1.16%, in 2 of 5 trials) against branch 71
+  of 20,446 (0.35%, 2 of 5). Per-trial rates do not differ (Mann-Whitney
+  p=0.68). In k5, k9 and k10 the lines came with the burst that began
+  during the stall. In item 6.4 the branch had 0.31% (k3 onwards).
+- Crash B: base 21 of 21,039 (0.10%, 2 of 5) against branch 4 of 21,293
+  (0.02%, 3 of 5, at most 2 lines a trial). Per-trial p=1.0. In item 6.4
+  the branch had 277 of 10,771 (2.57%) and the base 0.04%, from k3 on.
+- Doubles: every double is inside the injected stall (base 1 to 8 per
+  trial, branch 0 to 5). None is outside it or acknowledged, and no job is
+  absent in any trial.
+
+Steady portal bursts (`bursts2.py`; outside the 300s after any start, the
+stall and the crashes). Per burst, the worst archive-fold `maxTx` of the
+minutes it covers:
+
+| | bursts | maxTx p50 | p90 | max | over 5s | with D1 |
+| --- | --- | --- | --- | --- | --- | --- |
+| base | 16 | 2.49s | 4.20s | 7.33s | 1 | 1 |
+| branch | 15 | 2.82s | 4.04s | 4.16s | 0 | 0 |
+| item 6.4 base | 50 | 2.06s | 2.81s | 3.87s | 0 | 0 |
+| item 6.4 branch | 59 | 2.75s | 5.13s | 8.98s | 6 | 3 |
+
+- Base against branch here: Mann-Whitney p=0.25 on `maxTx` and p=0.32 on
+  the add mean.
+- The base's one burst with D1 lines (k5, 17 lines) began while the manager
+  was down for crash B. Its lines are crash B's window, already counted
+  above. `bursts2.py` does not leave out a burst that starts during a plain
+  crash's outage.
+- The item 6.4 rows are item 6.4's trials run through `bursts2.py`. With
+  in-stall bursts left out, base and branch still differ there (p=5e-07;
+  item 6.4b gave p<0.0001 with `bursts.py`).
+- This rerun's branch does not differ from item 6.4's branch on `maxTx`
+  (p=0.81), but none of its bursts reached 5s.
+- This rerun's base is slower at bursts than item 6.4's base (p=0.026). So
+  conditions differed between the two runs, and base against branch should
+  be compared within each run.
+
+Steady latency and throughput, as the median over trials, with an exact
+Mann-Whitney test over the 5 per-trial values. Portal adds are prodsim's
+1,000-job adds, 24 per trial. The reserve gap runs from a runner's outcome
+line to its next "reserved a job" line, in whole seconds. Archive latency
+runs from the E marker to the acknowledgement (`latency64c.py`). Its outcome
+stamps are whole seconds, so values under 1s are noise.
+
+| | base | branch | change | p |
+| --- | --- | --- | --- | --- |
+| portal add p50 | 2.32s | 2.64s | +14% | 0.42 |
+| portal add p90 | 3.28s | 6.04s | +84% | 0.095 |
+| portal add max | 5.10s | 8.38s | +64% | 0.55 |
+| other adds p99 | 1.65s | 1.61s | -2% | 1.0 |
+| reserve gap mean | 0.39s | 0.16s | -59% | 0.008 |
+| reserve gap p99 | 3s | 3s | 0% | 0.99 |
+| reserve gap max | 4s | 6s | +50% | 0.21 |
+| reserve gaps of 10s or more | 0 | 0 | | |
+| archive p99 | 1.49s | 2.88s | +93% | 0.31 |
+| archives over 5s | 6 | 9 | +50% | 0.79 |
+| exit-0 ends per minute | 729 | 730 | 0% | 1.0 |
+| archive-fold archives per minute | 791 | 790 | 0% | 0.52 |
+
+Per trial, portal add p90 was base 3.25, 6.18, 3.50, 3.01 and 3.28s against
+branch 4.29, 6.39, 3.32, 6.04 and 6.84s. Archive p99 was base 1.49, 3.65,
+1.26, 1.50 and 1.28s against branch 2.05, 3.26, 1.29, 2.88 and 3.25s. In
+item 6.4's trials from k3 on, measured the same way, archive p99 was base
+1.09, 1.02, 1.41 and 0.97s against branch 4.96, 1.94, 2.84 and 2.30s. So
+this run does not show that 6.4b narrowed the archive p99 gap. Item 6.4b's
+`slow1` probe found a remaining gap of the same kind (archive p99 15.0s
+against pre's 11.2s). The throughput figures cover about 37 minutes per
+trial, so they cannot be compared with item 6.4's longer trials.
+
+Pass criteria:
+
+- Stalls, no worse than base by more than 10%: pass. Steady D1 bursts were
+  0 against 0, reserve gaps of 10s or more 0 against 0, and burst `maxTx`
+  p90 4.04s against 4.20s. This rests on 15 steady bursts per tree. At item
+  6.4's branch rate (3 D1 bursts in 59 steady bursts), 15 bursts would show
+  none about 46% of the time, so the steady figure alone does not prove the
+  bursts gone. The crash windows, where item 6.4's branch had most of its D1
+  lines, add 10 more chances per tree.
+- Non-durable hand-outs: pass. The branch had 0.35% and 0.02% against the
+  base's 1.16% and 0.10% (crash A and crash B).
+- Latency tails: not shown. Portal add p90 (+84%, p=0.095) and archive p99
+  (+93%, p=0.31) are more than 10% worse in the median, but not
+  significantly. Reserve gaps are not worse (mean -59%, p=0.008; p99 the
+  same). Settling this needs more trials, or longer steady running per
+  trial.
+- Lost jobs: pass, 0 in all 10 trials.
+- Doubles outside injected stalls: pass, 0 in all 10 trials.
+
+Goroutine dumps: the watcher took 6 to 15 dumps per trial
+(`profiles/stall.*`), on slow-request and D1 lines that came mostly in the
+restart windows. Neither tree had a steady-running stall, so no stall
+mechanism was analysed.
+
+Cleanup: no manager, runner, LSF job or fusestall mount was left; every
+`trial.log` reports `LSF jobs left with our prefix: 0`. The trials' DBs were
+deleted after `dbstart`, and the scratch worktree and build cache were
+removed.
+
 - [x] implemented
 - [x] reviewed
