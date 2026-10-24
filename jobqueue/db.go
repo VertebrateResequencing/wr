@@ -377,6 +377,22 @@ const (
 	// practice newJobsFoldMaxBytes governs the large-add case and this bound only
 	// catches a pathological tiny-put flood.
 	newJobsFoldMaxPuts = 50000
+
+	// newJobsPreferMaxBytes is the most encoded bytes one add may carry and still
+	// have the transaction it is folded into go ahead of the other writers
+	// waiting for a write turn (see writeTurns and newJobsWriterKind). It is a
+	// size, not a job count: what makes an add costly to let through is how long
+	// its transaction writes, and a burst's last add of 618 jobs with 10KB
+	// commands, about 6MB, is under the 1,000 jobs at which an add is chunked
+	// yet took 5 to 7s on a slow filesystem (item 6.4c of
+	// .docs/nohold/phase6.md). 1MB is far above the single-job and few-job adds
+	// that a client waits on in a storm (about 1.5KB each), but at production's
+	// ~25KB commands an add of about 41 jobs already loses the preference. It is
+	// judged per add (newJobsWriterKind), so a fold of many small adds, up to
+	// newJobsFoldMaxBytes (32MB), deliberately keeps it: each of those adds has
+	// a client waiting on it, and such a fold is the add storm the preference
+	// exists for.
+	newJobsPreferMaxBytes = 1024 * 1024
 )
 
 // ErrArchivedHistoryTooBig is what a request that asks for complete jobs with no
@@ -1005,6 +1021,7 @@ type beBatch struct {
 	wgkeys  []string
 	waiters []chan error
 	stats   *reqStatCache // the exit ops' fail stats are put through it
+	oldest  time.Time     // when the batch's first write was queued (see writeTurns)
 }
 
 // apply writes the batch's coalesced live-bucket changes, its ordered exit ops
@@ -2295,7 +2312,7 @@ func (db *db) drainBestEffort(ctx context.Context) {
 
 	defer func() { db.doneBestEffort(batch, err) }()
 
-	if err = db.updateInTurn(writerBestEffort, batch.apply); err != nil {
+	if err = db.updateInTurnSince(writerBestEffort, batch.oldest, batch.apply); err != nil {
 		clog.Error(ctx, "Database best-effort job update failed", "err", err)
 
 		return
@@ -2319,7 +2336,7 @@ func (db *db) swapBestEffort() beBatch {
 
 	batch := beBatch{
 		changes: db.beChanges, exits: db.beExits, wgkeys: db.beWGKeys, waiters: db.beWaiters,
-		stats: db.reqStats,
+		stats: db.reqStats, oldest: db.turns.swapped(writerBestEffort),
 	}
 	db.beChanges = make(map[string]beChange)
 	db.beExits = nil
@@ -2426,6 +2443,7 @@ func (db *db) enqueueArchive(op *archiveOp) bool {
 	}
 
 	db.arPending = append(db.arPending, op)
+	db.turns.queued(writerArchive)
 	db.arMu.Unlock()
 
 	select {
@@ -2438,27 +2456,28 @@ func (db *db) enqueueArchive(op *archiveOp) bool {
 
 // swapArchives takes ownership of every currently-pending archive and resets the
 // queue, so callers keep enqueuing (never blocking) while the writer persists the
-// snapshot. When final is true it also latches the queue shut in the same critical
-// section, so an archive submitted after the last drain is rejected rather than
-// left waiting forever.
-func (db *db) swapArchives(final bool) []*archiveOp {
+// snapshot. It also returns when the first of them was queued, for the
+// writer's write turn. When final is true it also latches the queue shut in the
+// same critical section, so an archive submitted after the last drain is
+// rejected rather than left waiting forever.
+func (db *db) swapArchives(final bool) ([]*archiveOp, time.Time) {
 	db.arMu.Lock()
 	defer db.arMu.Unlock()
 
-	ops := db.arPending
+	ops, oldest := db.arPending, db.turns.swapped(writerArchive)
 	db.arPending = nil
 
 	if final {
 		db.arStopped = true
 	}
 
-	return ops
+	return ops, oldest
 }
 
 // drainArchives persists every currently-pending archive, all of them in ONE write
 // transaction, and replies to each waiter with its own outcome.
 func (db *db) drainArchives(final bool) {
-	ops := db.swapArchives(final)
+	ops, oldest := db.swapArchives(final)
 	if len(ops) == 0 {
 		return
 	}
@@ -2468,7 +2487,9 @@ func (db *db) drainArchives(final bool) {
 	// (see archivefold.go).
 	db.arFold.observeWaits(ops, time.Now())
 
-	applyFolded(ops, db.archiveTx)
+	applyFolded(ops, func(ops []*archiveOp, failed *int) error {
+		return db.archiveTx(ops, failed, oldest)
+	})
 
 	// mark the db dirty for the backup ticker exactly as the pre-fix per-archive
 	// path did: unconditionally, after the write attempt.
@@ -2481,7 +2502,7 @@ func (db *db) enqueueExitLocked(exit jobExitData, waiter chan error) {
 	db.beSeq++
 	exit.seq = db.beSeq
 	db.beExits = append(db.beExits, exit)
-	db.beWGKeys = append(db.beWGKeys, db.wg.Add(1))
+	db.trackBestEffortLocked(db.wg.Add(1))
 
 	if waiter != nil {
 		db.beWaiters = append(db.beWaiters, waiter)
@@ -2510,7 +2531,7 @@ func (db *db) enqueueRunStateLocked(key string, encoded []byte, waiter chan erro
 	change.runState = encoded
 	change.rsSeq = db.beSeq
 	db.beChanges[key] = change
-	db.beWGKeys = append(db.beWGKeys, db.wg.Add(1))
+	db.trackBestEffortLocked(db.wg.Add(1))
 
 	if waiter != nil {
 		db.beWaiters = append(db.beWaiters, waiter)
@@ -2524,7 +2545,20 @@ func (db *db) enqueueRunStateLocked(key string, encoded []byte, waiter chan erro
 func (db *db) enqueueChangeInSlotLocked(key string, encoded []byte, wgKey string) {
 	db.beSeq++
 	db.beChanges[key] = beChange{encoded: encoded, seq: db.beSeq}
+	db.trackBestEffortLocked(wgKey)
+}
+
+// trackBestEffortLocked adds a write just queued to the pending batch's db.wg
+// keys, to be released once the batch is persisted, and tells the write turns
+// a request is queued for the writer, unless it has made its final drain (see
+// writeTurns). Every best-effort write is queued through here. Must be called
+// with db.beMu held.
+func (db *db) trackBestEffortLocked(wgKey string) {
 	db.beWGKeys = append(db.beWGKeys, wgKey)
+
+	if !db.beStopped {
+		db.turns.queued(writerBestEffort)
+	}
 }
 
 // putNewLiveJobs is putLiveRecords for the jobs of an add, except that it
@@ -3048,6 +3082,11 @@ func (db *db) readLiveJobsTx(tx *bolt.Tx, rsr *runStateRecovery) ([]*Job, []stri
 // updateJobRunStateDurable is updateJobAfterChangeDurable for the run state: it
 // queues job's run-state record, which recovery overlays on its live record,
 // and blocks until the drain that covers it has committed.
+//
+// The caller must not hold a job's lock, db.arMu or db.beMu: a writer whose
+// write turn is kept for it may take any of those on its way to that turn (see
+// writeTurns), so no writer would get a turn and this would never return. Nor
+// may it hold db.wgMutex, which queueJobRunState takes itself.
 func (db *db) updateJobRunStateDurable(job *Job) error {
 	return awaitQueuedWrite(db.queueJobRunState, job)
 }
@@ -3066,6 +3105,11 @@ func awaitQueuedWrite(queue func(*Job, chan error) error, job *Job) error {
 
 // updateJobRunStateDurableWithin is updateJobRunStateDurable, but gives up
 // waiting after wait, returning errDurableWriteWaitExpired.
+//
+// The caller must not hold a job's lock, db.arMu or db.beMu: a writer whose
+// write turn is kept for it may take any of those on its way to that turn (see
+// writeTurns), so no writer would get a turn until this gave up. Nor may it
+// hold db.wgMutex, which queueJobRunState takes itself.
 func (db *db) updateJobRunStateDurableWithin(job *Job, wait time.Duration) error {
 	return awaitQueuedWriteWithin(db.queueJobRunState, job, wait)
 }
@@ -3161,6 +3205,11 @@ func noteArchivesWritten(ops []*archiveOp, err error) {
 // that covers this job's write has committed, and returns that write's outcome.
 // Like updateJobAfterChangeDurable it shares the best-effort writer's coalesced
 // drain rather than costing a transaction of its own (see handleRelease).
+//
+// The caller must not hold a job's lock, db.arMu or db.beMu: a writer whose
+// write turn is kept for it may take any of those on its way to that turn (see
+// writeTurns), so no writer would get a turn and this would never return. Nor
+// may it hold db.wgMutex, which queueJobExit takes itself.
 func (db *db) updateJobAfterExitDurable(job *Job, stdo, stde []byte, forceStorage bool) error {
 	waiter := make(chan error, 1)
 
@@ -3232,6 +3281,21 @@ func (db *db) retrieveStoredLimits(groups []string) ([]int64, error) {
 	return limits, err
 }
 
+// newJobsWriterKind is the kind of write turn a transaction of ops takes:
+// writerLargeNewJobs, with no preference, if any one of them carries more than
+// newJobsPreferMaxBytes, else writerNewJobs. It looks at each add rather than
+// the fold, so that many small adds folded together, each with a client
+// waiting on it, keep the preference.
+func newJobsWriterKind(ops []*newJobsOp) writerKind {
+	for _, op := range ops {
+		if op.foldBytes > newJobsPreferMaxBytes {
+			return writerLargeNewJobs
+		}
+	}
+
+	return writerNewJobs
+}
+
 // foldedOp is one caller's pending write, waiting for a coalescing writer to
 // persist it and hand back that caller's own outcome. Both synchronous coalescing
 // writers' ops (archiveOp, newJobsOp) are one.
@@ -3281,16 +3345,17 @@ func applyFolded[T foldedOp](ops []T, applyTx func(ops []T, failed *int) error) 
 	}
 }
 
-// archiveTx applies every op's archive within one write transaction. If an op's
+// archiveTx applies every op's archive within one write transaction, taking a
+// write turn for a batch whose first archive was queued at oldest. If an op's
 // own work fails, its index is recorded in failed (when non-nil) and the whole
 // transaction is rolled back, so the caller can take that op out and retry the
 // rest.
-func (db *db) archiveTx(ops []*archiveOp, failed *int) error {
+func (db *db) archiveTx(ops []*archiveOp, failed *int, oldest time.Time) error {
 	started := time.Now()
 
 	var begun time.Time
 
-	err := db.updateInTurn(writerArchive, func(tx *bolt.Tx) error {
+	err := db.updateInTurnSince(writerArchive, oldest, func(tx *bolt.Tx) error {
 		begun = time.Now()
 
 		for i, op := range ops {
@@ -3350,7 +3415,9 @@ func (db *db) applyArchiveOp(tx *bolt.Tx, op *archiveOp) (err error) {
 // this is the safety net for a writer that stopped without it, so no archive
 // caller can be left waiting forever.
 func (db *db) failPendingArchives() {
-	for _, op := range db.swapArchives(true) {
+	ops, _ := db.swapArchives(true)
+
+	for _, op := range ops {
 		op.reply(errDBClosed)
 	}
 }
@@ -3607,7 +3674,7 @@ func (db *db) drainNewJobs(final bool) {
 // whole transaction is rolled back, so the caller can take that op out and retry
 // the rest.
 func (db *db) newJobsTx(ops []*newJobsOp, failed *int) error {
-	return db.updateInTurn(writerNewJobs, func(tx *bolt.Tx) error {
+	return db.updateInTurn(newJobsWriterKind(ops), func(tx *bolt.Tx) error {
 		for i, op := range ops {
 			if err := db.applyNewJobsOp(tx, op); err != nil {
 				if failed != nil {
@@ -5538,6 +5605,11 @@ func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
 // write pending when it next wakes into one commit, so concurrent waiters share
 // a single fsync and the write-storm amplification PR #555 removed
 // (.docs/reliable4/) is not reintroduced.
+//
+// The caller must not hold a job's lock, db.arMu or db.beMu: a writer whose
+// write turn is kept for it may take any of those on its way to that turn (see
+// writeTurns), so no writer would get a turn and this would never return. Nor
+// may it hold db.wgMutex, which queueJobChange takes itself.
 func (db *db) updateJobAfterChangeDurable(job *Job) error {
 	return awaitQueuedWrite(db.queueJobChange, job)
 }

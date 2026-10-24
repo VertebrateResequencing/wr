@@ -3200,3 +3200,1034 @@ removed.
 
 - [x] implemented
 - [x] reviewed
+
+### Item 6.4c: residual Started/archive tail
+
+Question. Item 6.4b left `Started` and archive tails longer on c6ee8376 than
+before write turns (959f3fd0) in its slow-disk probe, and the LSF rerun had
+portal add p90 and archive p99 more than 10% above the base in the median.
+Which of these is a regression against the base 6f1b41bb, and what causes it?
+
+Verdict: the probe tail is a regression against the base, of about 30% on the
+`Started` and archive p99 at 5MB/s writes, and of 10 to 20% on archive mean and
+p99 on unthrottled FUSE. The mechanism found for the slow-disk case is the
+order in which writers ask for turns after a big add's chunk, not the big
+add's preference. A fix that took the preference away from large adds was
+built, tested and measured: it did not cut the tail, and it was reverted. No
+fix is in the tree. The LSF gaps are not shown to be the same mechanism. The
+options are below.
+
+#### Setup
+
+`$T` is `/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-64c-tail`. The probe is
+item 6.4b's `TestZZ64bProbe`, renamed `TestZZ64cProbe`
+(`$T/probe/zz_64cprobe_test.go`, not committed), with two additions: every
+reservation, `Started`, archive, release and add call is logged with its start
+and end (`reqlog.txt`), and each turn-taking transaction's line in `txlog.txt`
+also records when its write turn was taken (`zz_64bhook.go`, `patch2.py` on
+`writeturns.go`; trees without turns record the request time). It ran in
+scratch detached worktrees of base 6f1b41bb, pre 959f3fd0 and head 41a75a38
+(code as c6ee8376), each built once, one run at a time, the order rotated each
+round (`run1.sh`, `ab2.sh`). Mann-Whitney U over per-run values (`stats.py`,
+item 6.4b's, extended); medians over runs.
+
+- `slow3`: item 6.4b's `slow1` settings (`fusestall-slow -wbps 5000000`, one
+  portal burst from 30s in a 240s window, 4,000 seed jobs, ~400 runners), 8
+  rounds of base, pre and head.
+- `plain4`: item 6.4b's `ab1` settings (plain `fusestall` over NFS, 300s, a
+  burst every 75s, 12,000 seed jobs), where a 1,000-job add takes about 2.5s,
+  as in the LSF crash-pair trials. 8 rounds of base, pre, head and fix3 (the
+  candidate fix below). Round 1's pre and head runs overlapped this item's
+  mutation tests; the figures below are rounds 2 to 8 (7 runs each) unless
+  stated, and the 8-round figures agree in direction (`stats-out.txt`,
+  `stats-out-r2to8.txt`).
+- `slowfix`: `slow3`'s settings, base, head and fix3. Stopped after 3 rounds
+  (9 runs) once the result was clear; the killed round-4 run is
+  `r4-head-killed` and is not counted.
+
+#### What regressed against the base
+
+`slow3`, 8 runs per tree:
+
+| | base | pre | head | head against base | head against pre |
+| --- | --- | --- | --- | --- | --- |
+| `Started` p99 | 12.29s | 13.21s | 15.73s | +28%, p=0.001 | +19%, p=0.012 |
+| archive p99 | 11.44s | 12.46s | 14.79s | +29%, p=0.012 | +19%, p=0.093 |
+| archive mean | 3.77s | 4.43s | 4.41s | +17%, p=0.046 | 0%, p=1.0 |
+| archive p50 | 2.98s | 3.87s | 3.52s | +18%, p=0.17 | -9%, p=0.75 |
+| 1,000-job add p50 | 12.10s | 11.97s | 11.64s | -4%, p=0.046 | -3%, p=0.21 |
+| small add p50 | 589ms | 810ms | 239ms | -59%, p=0.002 | -70%, p=0.002 |
+| archives/s | 9.40 | 8.95 | 9.10 | -3%, p=0.15 | +2%, p=0.71 |
+| D1 per run | 9 | 31.5 | 43.5 | p=1.0 | p=0.67 |
+
+Base and pre do not differ significantly on any figure (every p≥0.17), as
+expected: at the db layer the probe drives, they differ only by the
+learned-requirements cache's extra `Get` per stat put. So item 6.4b's tail
+against pre is a tail against the base too.
+
+`plain4`, rounds 2 to 8:
+
+| | head against base | fix3 against base |
+| --- | --- | --- |
+| `Started` mean | +82%, p=0.030 | +39%, p=0.035 |
+| `Started` p99 | -1%, p=0.34 | -6%, p=0.95 |
+| archive mean | +10%, p=0.025 | +9%, p=0.035 |
+| archive p99 | +19%, p=0.021 | +15%, p=0.035 |
+| reservation p99 | +14%, p=0.035 | +52%, p=0.006 |
+| 1,000-job add mean | +1%, p=0.66 | -3%, p=0.34 |
+| small add mean | -10%, p=0.13 | -5%, p=0.95 |
+
+Over all 8 rounds head is also worse on archive max (3.90 against 3.32s, +18%,
+p=0.009) and on best-effort transactions that waited over 2s (9.5 against 5
+per run, p=0.004). Pre matches the base within 4% on every latency here except
+small add p50. Archives/s are within 1% on every tree.
+
+#### Mechanism, slow disk
+
+`$T/analysis/reqahead.py` takes each request slower than a threshold, finds
+the writer transaction that served it, splits its time into waiting for that
+writer's previous transaction, the turn wait, bolt's lock and its own
+transaction, and sums the transactions that ran inside its life. `slow3`,
+requests over 10s, medians over runs (`slow3/reqahead-10s.txt`):
+
+| | base | pre | head |
+| --- | --- | --- | --- |
+| archives over 10s per run | 120 | 174 | 232 |
+| new jobs (N) time inside one | 0.10s | 0.13s | 3.31s |
+| N transactions over 3s inside one | 0 | 0 | 0.49 |
+| `Started` over 10s per run | 436 | 481 | 545 |
+| N time inside one | 0.11s | 0.14s | 1.49s |
+| N transactions over 3s inside one | 0 | 0 | 0.19 |
+
+The long N transaction is each burst phase's last add, 618 jobs (6MB of 10KB
+commands), which fits one transaction and so goes through the new jobs writer
+(5 to 7s at 5MB/s). `spans.py` shows where it lands. Before write turns, when
+the phase's last chunk (the 1,000-job add's live-bucket chunk, 7 to 9s) ends,
+the archive and best-effort writers commit straight away and ask for their
+next turns at once, about 0.2s before the 618-job add arrives, so it goes
+after them. On head, the small add waiting through that chunk goes first, as
+6.3e intends; the archive and best-effort writers then commit and ask for
+their next turns about 0.2 to 0.4s after the chunk, by which time the 618-job
+add is already waiting. It goes first in arrival order, and every archive and
+`Started` queued during the chunk waits for both: 15 to 17s two-cycle spans on
+head, against at most 12 to 14s on pre (`slow1`'s txlogs, the same pattern in
+`slow3`'s). In `slowfix` the same sequence shows with the candidate fix:
+`C(t7.3) N(small) A B N(618, waited 0.3s, t6.7) A(waited 6.8s)`.
+
+Item 6.4b's other figures fit this: `maxTx` and the longest best-effort wait
+are the same on every tree (one chunk), but two long waits in a row for the
+same requests happen only on head.
+
+Not the cause, in this probe:
+
+- Turn handoff. The gap from a transaction's end to the next one's start, when
+  the next was already waiting, is 0.1 to 0.2ms on head against under 0.1ms
+  (`txkinds.py`).
+- Writers taking no turn. The probe has none in steady running: every write
+  goes through the archive, best-effort or new jobs writer or a chunk.
+- Lost coalescing. `meanFold` is 4.15 on head against 3.90 on the base
+  (p=0.49).
+- The hold removal: base and pre agree, and the probe has no hold.
+- The large add's preference: it waited 0.33s median on head against 1.20s on
+  the base, but taking the preference away (fix3) did not change where it
+  landed, since it arrives before the archive and best-effort writers ask
+  again.
+
+#### Mechanism, unthrottled FUSE
+
+`plain4` has no N transaction over 3s, so the mechanism above cannot apply.
+Requests over 2s, medians over runs (`plain4/reqahead-2s.txt`): head has about
+twice as many as the base (`Started` 207 against 110, archives 202 against 140,
+reservation writes 41 against 26), with more chunk time inside each slow
+`Started` (1.98 against 1.67s) and more N time (0.43 against 0.28s). Big-add
+chunks begun during each best-effort wait over 1s are 0.83 on head against
+0.62 on pre (p=0.001). So here the excess comes with big-add chunks, which
+since 6.4b take write turns, but no single ordering was isolated. Not found.
+
+#### LSF
+
+The LSF trials have no per-transaction log. From each trial's steady archives
+(`$T/lsf/lsfslow.py`, `lsfslow.txt`, latency64c's steady definition), the
+archives slower than 2s were base 67, 417, 34, 84 and 24 against branch 138,
+503, 44, 283 and 335. Attributing each to the portal add it overlaps most, the
+share on a burst phase's 860-job add (the new jobs writer, the long-N case
+above) is 0 to 47% on the base and 30 to 48% on the branch, so the branch's
+extra slow archives are not concentrated on that add. Its slow portal adds are
+the 1,000-job (chunked) adds in positions 2 and 3 of a phase (medians up to
+5.5 and 6.2s in k4, against 3.0 and 3.3s in base k3). This looks more like the
+unthrottled probe's shape than the slow-disk one, but with 5 trials and no
+transaction log it is not established. The LSF portal add p90 gap has no
+in-process counterpart: in `plain4` 1,000-job adds are within 4% of the base on
+every tree.
+
+#### Candidate fix tried (fix3), reverted
+
+An add carrying more than 1MB took its write turn as a new kind,
+`writerLargeNewJobs`, with no preference, judged per add so that a fold of
+many small adds kept it. Tests (`TestNoHoldWriteTurns`, two cases, and a
+direct case in `TestNoHoldWriteTurnsAddOvertakesOnce`): an add over the limit
+commits after a best-effort write queued before it (RED on 41a75a38: it
+committed straight after the archive, 3 of 3); two folded adds under the limit
+keep the preference; a large add's turn is not counted as an add's. Mutants,
+each with `-race`, all killed (`$T/fix/mutants.txt`): large adds keep the
+preference, judge the fold's total, no add preferred, `nextTurn` prefers large
+adds, `give` counts large adds. `gofmt` and `go vet` were clean. The probe's
+fix3 binary judged the fold's total, which in this probe is the same thing: no
+fold holds two adds that together pass 1MB.
+
+Result: no cut. `slowfix`, 3 runs each, fix3 against head: `Started` p99 +10%
+(p=0.28), archive p99 +3% (p=0.05), D1 114 against 3 per run (p=0.18); fix3
+against the base: `Started` p99 +32% (16.47 against 12.52s, p=0.05). In
+`plain4` fix3 is no better than head against the base (table above), and its
+reservation p99 is worse (+52% against the base, p=0.006). The change was
+reverted; its diff is `$T/fix/fix-64c.diff`. With no code change left, the
+`make test`, `make race`, `make lint` and benchmark gates were not run for
+this item.
+
+#### Options
+
+1. Order turns among the writers with no preference by the age of the oldest
+   request each carries, not by when the writer asked: the archive writer has
+   each op's `queued` time, an add its enqueue time, a chunk the time it was
+   asked for, and the best-effort writer would need the time of the first
+   write queued since its last swap. In the slow-disk sequence the archive and
+   best-effort writers then carry requests from before the chunk and go ahead
+   of the 618-job add that arrived during their turns. Small adds keep their
+   preference and every writer keeps the 6.4b bound (one turn of each other
+   writer), so no accepted benefit is given up, but it is not prototyped, and
+   whether it touches the unthrottled shape is unknown. Recommended next step:
+   prototype it in the probe against base and head, `slow3` and `plain4`
+   settings, 8 rounds each. Done in item 6.4d: it cuts the tail to the base's
+   or below, but in item 6.3e's add-storm probe it gives up the 6.3e add
+   benefit, so it was reverted (see item 6.4d).
+2. Take the small adds' preference away right after a long transaction. This
+   gives up part of the 6.3e add benefit (a trade-off for the owner).
+3. Revert write turns. This gives back the 6.3e add cut and 6.4b's D1 fix (a
+   trade-off for the owner).
+4. Accept the tail: in the slow-disk probe about +30% on `Started` and archive
+   p99 against the base with small adds 59% faster, and on unthrottled FUSE
+   about +10 to 20% on archive mean and p99, with throughput unchanged.
+
+Evidence in `$T`: `probe/` (probe, hook, patches, scripts, `slow3/`,
+`plain4/`, `slowfix/` with per-run `txlog.txt`, `reqlog.txt`, `timeline.txt`,
+`stats-out*.txt` and `reqahead-*.txt`), `analysis/` (`txkinds.py`, `spans.py`,
+`around.py`, `reqahead.py`), `lsf/` and `fix/`.
+
+- [x] implemented
+- [x] reviewed
+
+### Item 6.4d: order turns by oldest request
+
+Question. Item 6.4c's option 1: does ordering write turns by the age of the
+oldest request each writer carries, rather than by when the writer asked, cut
+the residual `Started` and archive tail against the base 6f1b41bb, while
+keeping the 6.3e add benefit, 6.4b's D1 fix and throughput?
+
+Verdict: no, not as a whole. It cuts the tail, to below the base's in the
+slow-disk probe and to the base's or below on unthrottled FUSE, keeps 6.4b's
+D1 fix, and raises archive throughput in the slow-disk probe. But in item 6.3e's
+add-storm probe, single-job adds become 45% slower than head on the mean
+(p=0.010) and 17% slower than the base (p=0.13), where head is 19% faster than
+the base (p=0.002). So it gives up the 6.3e add benefit. Per the brief, the
+change was reverted and no fix is in the tree. The options are below.
+
+#### Design tried
+
+`$D` is `/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-64d`.
+
+- Each request queued for the archive or best-effort writer marks, if that
+  writer has none marked, the time and the count of add turns handed out so far
+  (`writeTurns.queued`, called under `arMu` and in `trackBestEffortLocked` under
+  `beMu`). The writer takes that mark with its queue (`swapped`) and carries it
+  into its turn. Adds and chunks are marked when they ask, so adds stay FIFO
+  among themselves, and chunks FIFO in ask order.
+- Writers other than the new jobs writer go in the order of their marks.
+- An add goes next unless an add has gone ahead of the oldest mark among the
+  other waiting writers since that mark was made. This replaces 6.4b's
+  per-asking count ("since that writer began waiting") with a per-request one.
+- The writer the brief asked about, one still committing when the decision is
+  made: when the archive or best-effort writer's turn ends and the requests it
+  has queued since it took its queue would go next, it keeps the turn for its
+  next transaction ("kept"), and no other writer goes until it asks again. The
+  path between its `give` and its next `take` takes only its queue mutex, the
+  `db.wg` mutex and each archived job's lock (`noteArchivesWritten`). None of
+  their holders waits for a write turn. A best-effort write queued after the
+  final drain began marks nothing, so no turn is kept for a stopped writer.
+- The new bound, which the `writeTurns` doc comment stated: a request waits
+  behind at most the transaction in flight, transactions carrying older
+  requests (at most two per other coalescing writer, and one chunk of each big
+  add in progress), and one add. A second add can overtake it only if a turn
+  ends while its writer is between its own turn and asking again.
+
+Two variants were measured in the probes: `opt1`, without the kept turn, and
+`kept`, with it (`opt1` plus `P64D_RETAIN=1` in the prototype). The prototype
+with the probe hooks is `$D/probe/opt1-final-with-hooks.diff`. The
+implementation, with the kept turn and the tests below, is
+`$D/mut/impl-final.diff`.
+
+#### Probe results
+
+Item 6.4c's probe (`TestZZ64cProbe`, its hooks and run scripts, copied to
+`$D/probe/` with only paths changed). Scratch detached worktrees of base
+6f1b41bb, head 41a75a38 and head plus the prototype were each built once. Runs
+went one at a time, with the order rotated each round. Medians over runs, and
+two-sided Mann-Whitney p values (`$D/analysis/table.py`, `stats.py`).
+
+`slow3`, 5MB/s writes, one portal burst, 8 runs per tree (`$D/probe/slow3/`):
+
+| Metric | base | head | opt1 | kept | kept against base | kept against head |
+| --- | --- | --- | --- | --- | --- | --- |
+| `Started` mean | 4.31s | 4.62s | 1.24s | 1.25s | -71%, p=0.001 | -73%, p=0.001 |
+| `Started` p99 | 11.93s | 16.24s | 8.52s | 8.18s | -31%, p=0.001 | -50%, p=0.001 |
+| archive mean | 3.93s | 4.49s | 3.35s | 3.23s | -18%, p=0.001 | -28%, p=0.001 |
+| archive p99 | 11.06s | 15.01s | 9.69s | 9.10s | -18%, p=0.001 | -39%, p=0.001 |
+| reservation p99 | 8.23s | 8.22s | 8.15s | 7.83s | -5%, p=0.046 | -5%, p=0.093 |
+| D1 per run | 6.5 | 2 | 0 | 0 | p<0.001 | p<0.001 |
+| 1,000-job add mean | 11.99s | 11.77s | 12.73s | 12.60s | +5%, p=0.001 | +7%, p=0.002 |
+| 1,000-job add max | 15.72s | 16.14s | 18.78s | 18.26s | +16%, p=0.002 | +13%, p=0.003 |
+| small add p50 | 603ms | 292ms | 632ms | 587ms | -3%, p=0.53 | +101%, p=0.001 |
+| small add mean | 1.70s | 1.63s | 1.88s | 1.80s | +6%, p=0.21 | +10%, p=0.002 |
+| archives/s | 9.35 | 9.20 | 10.4 | 10.5 | +12%, p=0.001 | +14%, p=0.001 |
+
+D1 per run: base 2 to 11, head 1 to 129 (one run of 129), `opt1` 0 in 7 runs
+and 5 in one, `kept` 0 in all 8. In item 6.4b's `slow1`, fix2 (head's code) had
+1 to 139, with 3 of 8 runs over 11.
+
+In `slow3` small adds lose head's lead: `kept`'s small-add p50 is the base's.
+`smallahead.py` (`$D/probe/slow3/smallahead.txt`) shows a small add's turn
+wait is mostly the remainder of the transaction in flight, not transactions
+that went ahead of it (about 0.1 per add on `opt1` against 0.05 on head). Those
+transactions are longer because the probe is closed-loop: with faster
+`Started` writes the runners complete 12% more jobs, so each archive fold is
+larger (`meanFold` 5.6 against 4.15 on head).
+
+`plain4`, plain `fusestall` over NFS, a burst every 75s, 8 runs per tree
+(`$D/probe/plain4/`):
+
+| Metric | base | head | opt1 | kept | kept against base | kept against head |
+| --- | --- | --- | --- | --- | --- | --- |
+| `Started` mean | 164ms | 263ms | 190ms | 142ms | -14%, p=0.25 | -46%, p=0.001 |
+| `Started` p99 | 2.87s | 3.14s | 2.58s | 1.85s | -35%, p=0.002 | -41%, p=0.001 |
+| archive mean | 368ms | 414ms | 449ms | 371ms | +1%, p=1.0 | -10%, p=0.32 |
+| archive p99 | 2.69s | 3.20s | 2.98s | 2.60s | -3%, p=0.14 | -19%, p=0.005 |
+| reservation p99 | 1.81s | 2.20s | 2.30s | 2.01s | +11%, p=0.059 | -8%, p=0.29 |
+| reservation max | 2.88s | 3.64s | 3.39s | 3.07s | +7%, p=0.29 | -16%, p=0.009 |
+| 1,000-job add mean | 2.68s | 2.45s | 2.99s | 2.82s | +5%, p=0.17 | +15%, p=0.25 |
+| 1,000-job add max | 5.12s | 5.03s | 6.75s | 5.97s | +17%, p=0.027 | +19%, p=0.005 |
+| small add p50 | 82ms | 36ms | 72ms | 55ms | -34%, p=0.53 | +51%, p=0.14 |
+| small add mean | 403ms | 332ms | 371ms | 315ms | -22%, p=0.074 | -5%, p=0.60 |
+| archives/s | 12.9 | 12.8 | 12.85 | 12.9 | 0%, p=0.70 | +1%, p=0.032 |
+
+`opt1` without the kept turn is no better than head here, and its reservation
+p99 is 27% above the base's (p=0.009). Two of its runs (rounds 2 and 4) were
+much slower, while the host's load rose to 12 and 21 on 8 cores, so part of
+that may be interference. Both runs are counted. The kept turn is what makes
+the unthrottled shape match the base.
+
+Item 6.3e's add-storm probe (`TestNoHoldAddStormProbe`, `fix120k.db` on NFS,
+backups on, single-job adds while archives stream), 10 interleaved rounds per
+tree (`$D/p63e/ab1.txt`, `stats4.py`, `stats-out.txt`):
+
+| Metric | base | head | opt1 | kept | kept against base | kept against head |
+| --- | --- | --- | --- | --- | --- | --- |
+| add mean | 169ms | 136ms | 195ms | 198ms | +17%, p=0.13 | +45%, p=0.010 |
+| add p50 | 9.7ms | 44ms | 62ms | 76ms | +685%, p=0.002 | +72%, p=0.11 |
+| add p99 | 1,325ms | 1,148ms | 1,467ms | 1,280ms | -3%, p=0.41 | +11%, p=0.019 |
+| archive p99 | 1,353ms | 1,293ms | 1,468ms | 1,359ms | 0%, p=0.82 | +5%, p=0.76 |
+| archives/s | 68.5 | 77.8 | 79.7 | 76.8 | +12%, p<0.001 | -1%, p=0.76 |
+
+Head reproduces 6.3e's add benefit (add mean -19% against the base, p=0.002;
+p99 -13%, p=0.008). Both variants lose it. The cause is the per-request rule
+itself: once an add has gone, the next one waits until every writer carrying a
+request queued before that add has had its turn, up to two turns each of the
+archive and best-effort writers, which under a continuous archive stream almost
+always hold such requests. Head lets the next add go after one turn of each
+writer that was waiting. That rule is also what cuts the tail, since it stops a
+618-job add, or a run of adds, from overtaking the same requests twice. The
+archive throughput gain over the base stays (+12%).
+
+Against the brief's criteria:
+
+- Tail within 10% of the base: met by `kept` in both probes. Reservation p99 at
+  `plain4` is +11% (p=0.059, not significant).
+- 6.4b's D1 fix kept: met (0 in every `kept` run).
+- Throughput kept: met.
+- 6.3e add benefit kept (small adds faster than the base): not met. In the
+  6.3e probe the add mean is above the base's, and in `slow3` the small-add p50
+  is the base's. At `plain4` small adds stay faster than the base, though not
+  significantly.
+
+1,000-job adds also got slower in both probes (`kept` mean +5% against the
+base, max +16 to 17%), which is the 618- and 1,000-job adds no longer
+overtaking older requests.
+
+#### Tests and mutants (reverted with the change)
+
+The implementation was built test-first in the branch worktree and then
+reverted. It is kept in `$D/mut/impl-final.diff`. Tests:
+
+- `TestNoHoldWriteTurns`, three DB-level cases built on one sequence: a big
+  add's chunk held in its transaction, a coalescing writer waiting with one
+  request and a second queued behind it, an add (add1) and a second big add's
+  chunk (held) waiting, then a second add (add2) arriving before that chunk
+  commits. They assert that an archive, and a run-state write, queued before
+  add1 went ahead of them commit ahead of add2, though their writer asks after
+  add2. A third archive, or change write, joins the batch while add1 is held,
+  so the batch is judged by its first request. The third case asserts that
+  with no add waiting, the writer with the oldest request goes before a chunk
+  that asked first. All three were RED on HEAD 41a75a38 in 3 of 3 runs
+  (`aged`: the archive committed after add2; `agedbe`: add2 straight after the
+  chunk; `oldest`: the chunk first).
+- `TestNoHoldWriteTurns`, "an archive writer whose turn ends keeps it": an
+  archive queued before add1 commits straight after the archive writer's
+  previous transaction, ahead of add2 that arrived during it.
+- `TestNoHoldWriteTurns`, "a best-effort write queued after the writer's final
+  drain began keeps no turn for it": after close, a turn is still free.
+- `TestNoHoldWriteTurnsKept`, direct: a best-effort write waiting from before
+  the archive's queued request goes first, and a kept turn goes to its writer
+  ahead of a chunk that asked meanwhile.
+
+Each mutant was applied alone in a scratch copy and run against the three
+write-turns test functions with `-race` (`$D/mut/mut64d.py`, `mutants.txt`;
+A2 rerun in `mutants-A2-rerun.txt`, since its first form did not compile). All
+21 were killed:
+
+| Mutant | Claim it breaks |
+| --- | --- |
+| A1 others ordered by when they asked | oldest request first |
+| A2 archive batch carries no mark | archive batches carry their first request's mark |
+| A3 best-effort batch carries no mark | best-effort batches carry their first request's mark |
+| A4 `queued` keeps the latest request | a batch is judged by its first request |
+| A5 `swapped` does not clear the mark | each batch is marked afresh |
+| A6 `enqueueArchive` does not mark | archives are marked |
+| A7 best-effort writes do not mark | best-effort writes are marked |
+| A8 marks after the final drain began | no turn is kept for a stopped writer |
+| K1 a turn is never kept | the writer whose turn ends keeps it when its requests are next |
+| K2 kept whenever requests are queued | kept only when they are the oldest |
+| K3 a kept turn goes to any writer | a kept turn goes to its writer |
+| K4 a kept turn frees the lock | nobody else goes during a kept turn |
+| K5 an add goes when only the keeper is older | the keeper's requests count against adds |
+| K6, K7 holder not recorded on hand-over, or on a free take | keeping is judged for the writer whose turn ends |
+| P1 FIFO | an add goes next |
+| P2 no overtake rule | one add per request |
+| P3 every turn counts as an add | add turns are counted |
+| P4 chunk turns count as adds | chunks get no preference |
+| P5 last waiting add goes | adds FIFO |
+| P6 `give` not deferred | a panicking transaction gives up its turn |
+
+`go vet ./jobqueue/` was clean, and the write-turns tests passed 3 runs in a row
+with `-race`. With the change reverted, the `make test`, `make race`,
+`make lint` and benchmark gates were not run.
+
+#### Options
+
+1. Keep head (41a75a38) and accept the tail (6.4c's option 4): in the
+   slow-disk probe `Started` and archive p99 are about 30% above the base, and
+   about 10 to 20% above it on unthrottled FUSE, with small adds faster than
+   the base.
+2. Take this change and accept the add cost: in the 6.3e probe the add mean
+   goes back to about the base's (+17%, p=0.13) and stays below the base's
+   p99, while every `Started`, archive and D1 figure is at or below the base's
+   and archive throughput is up 12%. This is a trade-off for the owner. It is
+   ready in `$D/mut/impl-final.diff`, but its gates would need running.
+3. A hybrid not yet tried: keep head's per-asking overtake rule for adds that
+   fit in one fold, order the other writers by their oldest request, and
+   give adds over about 1MB (6.4c's fix3 limit) no preference, so that they
+   are ordered by their own request's age too. In `slow3` this puts the
+   618-job add behind the archive and best-effort requests queued during the
+   chunk, as 6.4c's mechanism needs, while single-job adds keep 6.3e's rule.
+   Whether it cuts `plain4`'s tail, where the kept turn mattered, is unknown.
+   It needs the same three probes. Done in item 6.4e: in the form that also
+   lets only the writers an add has overtaken go before it, it keeps 6.4d's
+   tail cut and the 6.3e add benefit, and is implemented there.
+
+Recommendation: option 3 is the only one that may keep every accepted benefit,
+so prototype it next in the three probes (`slow3`, `plain4`, 6.3e add-storm)
+against base and head, before choosing between options 1 and 2.
+
+Evidence in `$D`: `probe/` (scripts, `slow3/`, `plain4/` with per-run
+`txlog.txt`, `reqlog.txt`, `results.txt`, `stats-out.txt`, `table.txt`,
+`slow3/smallahead.txt`, `loadavg.txt` from the middle of `plain4` on),
+`p63e/` (the 6.3e probe source, `ab.sh`, `ab1.txt`, `stats4.py`,
+`stats-out.txt`), `analysis/` (`table.py`, `smallahead.py`), `mut/` (the
+implementation diff, the mutant script and results) and `NOTES.txt`. Nothing is
+left running, no `fusestall` mount is left, and the scratch worktrees and build
+cache were removed.
+
+- [x] implemented
+- [x] reviewed
+
+### Item 6.4e: hybrid turn order
+
+Question. Item 6.4d's option 3: keep 6.3e's rule for small adds (an add goes
+next unless it has already overtaken a waiting writer since that writer
+asked), order every other writer by its oldest request with 6.4d's kept turn,
+and give adds over about 1MB no preference. Does that keep 6.4d's cut of the
+`Started`, archive and reservation tails, 6.4b's D1 fix and throughput, and
+also 6.3e's add benefit?
+
+Verdict: yes, in the form called hyb2 below. Against the base 6f1b41bb, in
+the slow-disk probe (`slow3`) every `Started` and archive tail is 14 to 30%
+lower and D1 is 0; on unthrottled FUSE (`plain4`) every `Started`, archive and
+reservation p99 is 12 to 41% lower; in 6.3e's add-storm probe the add mean is
+15% below the base (p=0.012) and not significantly above head's (+3%,
+p=0.30). Throughput is the same or higher. Two figures sit at the 10% line:
+`plain4` reservation max +10% (p=0.021) and 1,000-job add max, +9% in `slow3`
+(p=0.003) and +11% in `plain4` (p=0.17), while the 1,000-job add means are +4%
+in `slow3` and -4% in `plain4`.
+One benchmark regresses against head: `BenchmarkAddDuringWriterStreams`,
+6.3e's add benchmark, is 21% slower (p=0.004), from the ordering by oldest
+request among the archive and best-effort writers (see Gates and benchmarks).
+The change is in the working tree, uncommitted.
+
+#### Design
+
+`$H` is `/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-64e`.
+
+The first form tried (`hyb`, `$H/hybrid-prototype.diff`) is 6.4d's
+implementation (`nohold-64d/mut/impl-final.diff`) with two changes: an add
+over 1MB takes its turn as a new kind, `writerLargeNewJobs`, and the small
+add's test went back to 6.3e's per-asking rule (an add goes unless the
+longest-waiting other writer has been overtaken by an add since it asked). In
+the add-storm probe it lost the add benefit: add mean 156.9ms against the
+base's 161.1ms (-3%, p=0.88) and head's 142.0ms (+11%, p=0.08), 10 rounds
+(`$H/p63e/ab1.txt`). The same with the kept turn disabled (`hybnk`) was no
+better (163.0 against `hyb`'s 164.8ms, 4 rounds each, `$H/p63e/ab2.txt`), so
+the kept turn was not the cause. The cause: when an add was held back by a
+writer it had overtaken (A), `hyb` gave the turn to the writer with the oldest
+request, which could be another writer (B) that asked after the add's last
+turn; then A went, and only then the add, which waited behind two turns where
+head makes it wait behind one.
+
+`hyb2`, the form measured below and implemented:
+
+- Small adds (`writerNewJobs`: every add in the fold carries at most
+  `newJobsPreferMaxBytes`, 1MB) go next unless an add has gone ahead of a
+  waiting writer since that writer asked. If one has, only the writers that
+  were overtaken that way may go before the add, the one with the oldest
+  request first. With more than one new jobs goroutine, adds go in the order
+  they asked.
+- With no small add waiting, the writer carrying the oldest request goes:
+  the archive and best-effort writers carry the time of the first request
+  queued since they took their queue (6.4d's marks); chunks and large adds
+  the time they asked, so each kind stays FIFO.
+- The kept turn (6.4d): when the archive or best-effort writer's turn ends
+  with no small add waiting and its newly queued requests are older than every
+  waiting writer's, it keeps the turn. It never keeps it while a small add is
+  waiting.
+- A large add's turn is not counted as an add's turn, and nor is a chunk's.
+
+The threshold is 6.4c fix3's: more than 1MB of encoded bytes in one add,
+judged per add, so that a fold of many small adds keeps the preference. The
+chunking threshold could not serve: it counts jobs (1,000 per bucket), and the
+add that caused 6.4c's slow-disk mechanism, a burst phase's last add of 618
+jobs with 10KB commands (about 6MB), is under it. 1MB is far above the 1.5KB
+single-job adds of an add storm.
+
+The bound, as the `writeTurns` doc comment states it: a small add waits behind
+at most the transaction in flight (or, if it asks while a turn is kept, that
+writer's next transaction) and one transaction of each writer it has already
+overtaken. While its writer waits for a turn, a request queued for any other
+writer waits behind at most the transaction in flight, transactions carrying
+older requests (at most two batches per other coalescing writer, one chunk of
+each big add in progress), and the small adds that go ahead of its writer: one
+once its writer is waiting. While its writer is between its turn ending and
+asking again (replying to the requests it has just written, then taking its
+queue), the requests it has queued are invisible to the ordering: only that
+writer's own keep decision, as its turn ends, sees them. Any writer waiting or
+asking in that gap can go ahead of them, whatever the age of its own request,
+and how many do depends on how long the gap lasts. For example, with an
+archive turn in flight and an archive request R queued for its next one, a
+chunk asks and then a small add; the turn ends and the add goes (no turn is
+kept while an add waits); the add's turn ends before the archive writer asks,
+so the chunk goes; the archive writer then asks carrying R's time and commits
+after the chunk. A direct test pins this (Tests below). The first form of this
+bound, in the review draft, left that gap out and was false.
+
+A batch is one transaction unless archives in it fail. `applyFolded` then
+retries the rest after each failing archive and re-runs each failed one alone,
+and every attempt passes the batch's oldest request (`drainArchives`). A
+batch with k failing archives takes at most 2k+1 transactions: 2k+1 when the
+rest commit, 2k when every archive in it fails, and 2j+1 when the rest fail as
+a whole after j failing archives have been taken out (1 if the first
+transaction does). All are ordered as older than a request queued after the
+batch's first; two DB-level cases pin this for a retry and a solo re-run
+(review fixes (3)). The new jobs writer's retries ask with the time they ask,
+so they carry no older request, and a large add's solo re-run asks as a large
+add, with no preference.
+
+Owner follow-up, not done (it changes the ordering, so it would need the three
+probes again, about 7 hours): with no small add waiting, `nextTurn` could also
+weigh the `queuedSince` of an archive or best-effort writer that is not the
+holder and is not waiting. That would cover the reply gap above, but not the
+gap after its swap, when `queuedSince` has been cleared and the writer has not
+yet asked.
+
+#### Probe results
+
+Scratch detached worktrees of base 6f1b41bb, head 41a75a38 and `hyb2`, each
+built once with item 6.4c's hooks (`$H/probe/patch.py`, `patch2.py`;
+`patch3.py` for the hybrid trees). Runs went one at a time, the order rotated
+each round (`$H/queue3.sh`). Medians over runs and two-sided Mann-Whitney p
+(`$H/analysis/table3.py`, item 6.4d's `stats.py` and `stats4.py`). Start-of-run
+load averages were 1.4 to 7.4 on 8 cores (`run.log` per run, `loadavg.txt`),
+so no round was rerun.
+
+`slow3`, 5MB/s writes, one portal burst, 8 runs per tree
+(`$H/probe/slow3/`):
+
+| Metric | base | head | hyb2 | hyb2 against base | hyb2 against head |
+| --- | --- | --- | --- | --- | --- |
+| `Started` mean | 4.14s | 4.56s | 1.15s | -72%, p=0.001 | -75%, p=0.001 |
+| `Started` p99 | 11.80s | 15.78s | 8.29s | -30%, p=0.001 | -47%, p=0.001 |
+| archive mean | 3.74s | 4.39s | 3.07s | -18%, p=0.001 | -30%, p=0.001 |
+| archive p99 | 10.75s | 14.79s | 9.21s | -14%, p=0.001 | -38%, p=0.001 |
+| reservation p99 | 8.18s | 8.13s | 8.19s | 0%, p=0.53 | +1%, p=0.53 |
+| reservation max | 10.0s | 10.0s | 8.57s | -14%, p=0.001 | -14%, p<0.001 |
+| D1 per run | 5 | 4.5 | 0 | p<0.001 | p=0.001 |
+| 1,000-job add mean | 11.80s | 11.70s | 12.31s | +4%, p=0.005 | +5%, p=0.002 |
+| 1,000-job add max | 15.59s | 16.48s | 17.04s | +9%, p=0.003 | +3%, p=0.046 |
+| small add p50 | 548ms | 303ms | 602ms | +10%, p=0.67 | +99%, p=0.036 |
+| small add mean | 1.64s | 1.54s | 1.71s | +4%, p=0.059 | +11%, p=0.002 |
+| archives/s | 9.5 | 9.2 | 10.6 | +12%, p=0.001 | +15%, p=0.001 |
+
+`plain4`, plain `fusestall` over NFS, a burst every 75s, 8 runs per tree
+(`$H/probe/plain4/`):
+
+| Metric | base | head | hyb2 | hyb2 against base | hyb2 against head |
+| --- | --- | --- | --- | --- | --- |
+| `Started` mean | 148ms | 189ms | 107ms | -27%, p=0.012 | -43%, p=0.001 |
+| `Started` p99 | 2.80s | 2.80s | 1.65s | -41%, p=0.001 | -41%, p=0.001 |
+| archive mean | 325ms | 362ms | 298ms | -8%, p=0.014 | -18%, p=0.001 |
+| archive p99 | 2.52s | 2.73s | 2.21s | -12%, p=0.003 | -19%, p=0.001 |
+| reservation p99 | 1.62s | 1.79s | 1.38s | -15%, p=0.012 | -23%, p=0.001 |
+| reservation max | 2.60s | 2.99s | 2.87s | +10%, p=0.021 | -4%, p=0.059 |
+| D1 per run | 0 | 0 | 0 | | |
+| 1,000-job add mean | 2.30s | 2.23s | 2.20s | -4%, p=0.012 | -2%, p=0.40 |
+| 1,000-job add max | 4.59s | 4.66s | 5.08s | +11%, p=0.17 | +9%, p=0.003 |
+| small add p50 | 40ms | 39ms | 35ms | -11%, p=0.53 | -10%, p=0.21 |
+| small add mean | 343ms | 325ms | 289ms | -16%, p=0.046 | -11%, p=0.13 |
+| archives/s | 13.0 | 12.9 | 13.0 | 0%, p=0.064 | +1%, p<0.001 |
+
+Item 6.3e's add-storm probe (`TestNoHoldAddStormProbe`, `fix120k.db` on NFS,
+backups on), 20 interleaved rounds per tree in two runs of 10
+(`$H/p63e/ab3.txt`, `ab4.txt`; pooled in `ab34.txt`, `stats-out-ab34.txt`):
+
+| Metric | base | head | hyb2 | hyb2 against base | hyb2 against head |
+| --- | --- | --- | --- | --- | --- |
+| add mean | 170.6ms | 140.9ms | 145.3ms | -15%, p=0.012 | +3%, p=0.30 |
+| add p50 | 12.2ms | 63.9ms | 64.8ms | +432%, p<0.001 | +1%, p=0.89 |
+| add p99 | 1,249ms | 1,062ms | 1,132ms | -9%, p=0.011 | +7%, p=0.051 |
+| archive p50 | 17.6ms | 295.7ms | 287.5ms | +1,534%, p<0.001 | -3%, p=0.18 |
+| archive p99 | 1,272ms | 1,368ms | 1,338ms | +5%, p=0.14 | -2%, p=0.89 |
+| archives/s | 67.1 | 74.0 | 75.8 | +13%, p<0.001 | +2%, p=0.25 |
+
+The first 10 rounds alone (`ab3.txt`) gave add mean -13% against the base
+(p=0.028) and +7% against head (p=0.17), and archive p99 +14% against the
+base (p=0.041; head +8%, p=0.20). The second 10 were run to settle that
+archive p99: in them it was +2% (p=0.65), and pooled it is +5% (p=0.14). Head's
+add benefit itself was weaker in this session than in 6.4d's (add mean -10%
+to -19% against the base across the four sets of rounds, `ab1.txt` to
+`ab4.txt`; `stats-out.txt` and `stats-out-ab2.txt` to `stats-out-ab4.txt`), so
+the comparison with head is the firmer one for the hybrid.
+
+Against the brief's criteria:
+
+- `Started`, archive and reservation tails within 10% of the base, or no
+  significant regression: met, except `plain4` reservation max, +10% (2.87
+  against 2.60s, p=0.021). Reservation p99 in the same runs is 15% lower
+  (p=0.012), and max is one observation per run. In 6.4d's `plain4`, `kept`
+  had reservation max +7% (p=0.29).
+- D1 no worse than head: met (0 in every `hyb2` run of both probes; head had
+  4.5 per run in `slow3`).
+- Throughput kept: met (archives/s +12% in `slow3`, +13% in the add storm, the
+  same in `plain4`).
+- 6.3e add benefit kept: met in the add-storm probe (-15% against the base,
+  p=0.012; +3% against head, p=0.30). In `slow3`, as with 6.4d's `kept`, small
+  adds lose head's lead: their mean is 11% above head's (p=0.002) and 4% above
+  the base's (p=0.059). Faster `Started` writes let the runners complete 12%
+  more jobs, so archive folds are larger (`meanFold` 4.8 against the base's 3.9
+  and head's 4.2) and a small add waits longer for the transaction in flight.
+  In `plain4` small adds are faster than the base (-16%, p=0.046).
+- 1,000-job adds not more than 10% worse than the base: met on the mean (+4%
+  in `slow3`, -4% in `plain4`). Their max is +9% (`slow3`, p=0.003) and +11%
+  (`plain4`, p=0.17), which is these adds no longer overtaking older requests.
+
+#### Change
+
+`jobqueue/writeturns.go`, `jobqueue/db.go` (working tree, uncommitted):
+
+- 6.4d's implementation (`nohold-64d/mut/impl-final.diff`): the archive and
+  best-effort writers record when the first request since their last swap was
+  queued (`writeTurns.queued`, `swapped`), carry it into their turn
+  (`updateInTurnSince`), and the kept turn. A request's mark is now only its
+  time (`time.Time`); 6.4d's per-request add count is gone with the
+  per-request add rule.
+- `writerLargeNewJobs` and `newJobsWriterKind`: a new jobs transaction holding
+  any add over `newJobsPreferMaxBytes` (1MB) takes its turn with no
+  preference (6.4c fix3's criterion, per add).
+- `nextTurn`: with a small add waiting, only the writers it has overtaken
+  since they asked can go before it (`oldestOther`); with none waiting, the
+  oldest request goes, or the writer whose turn ends keeps it.
+- The `writeTurns` doc comment states the new rules and the bound (above). A
+  panicking transaction still ends its turn (`updateInTurnSince`'s deferred
+  `give`), and a chunk's panic still fails only its add (6.4b). Chunks stay
+  FIFO, each taking a turn, and the per-turn bound now names the small adds
+  that can pass a writer as well as the older requests.
+
+#### Tests
+
+`jobqueue/nohold_write_turns_test.go`. Run on HEAD 41a75a38 in a scratch copy
+(the new direct tests and the final-drain case, which use the new API, taken
+out, and `newJobsPreferMaxBytes` given as a test constant), six of the
+DB-level cases below fail in each of 3 runs (`$H/tdd/red-head-{1,2,3}.txt`):
+the large-add archive sequence ("aged"), the small-add archive sequence
+("agedsmall"), the run-state sequence ("agedbe"), the oldest-request case
+("oldest"), the kept case with a large add2 ("kept") and fix3's large-add case
+("large"). Two pass on HEAD and are guards that only mutants kill: the kept
+case's companion with a small add2 (H8, below) and the folded-adds case (H4,
+P3). The run-state sequence was later made a table over the three kinds of
+best-effort write (review fixes, below), after the red runs.
+
+- 6.4d's three sequence cases with the second add made large (over 1MB): an
+  archive, and a run-state write, queued while add1 went ahead of them commit
+  ahead of the large add2, though their writer asks after it; on HEAD the
+  archive commits after add2 and the run-state writes wait behind bigA's
+  chunk. With no add waiting, the writer with the oldest request goes before a
+  chunk that asked first (unchanged from 6.4d).
+- "an archive queued while an add went ahead of it does not hold back a later
+  small add that asks before its writer does": the same sequence with a small
+  add2, which must commit straight after bigB's chunk, the archives after it.
+  It fails on HEAD because there the archives also wait behind bigA's second
+  chunk; it guards that small adds keep 6.3e's rule.
+- "an archive writer whose turn ends keeps it ... ahead of a later large add"
+  (6.4d's kept case with a large add2), and its companion with a small add2,
+  which must go first (no turn is kept while a small add waits).
+- 6.4c fix3's cases: an add over the limit commits after a best-effort write
+  queued before it (fails on HEAD: it committed straight after the archive);
+  folded adds each under the limit keep the preference although the fold is
+  over it; and a small add folded with one over the limit commits after a
+  best-effort write queued before them (review fixes (2)). The sized adds are
+  exactly 1MB (at the limit, so preferred) and 1MB plus one byte.
+- Direct `writeTurns` cases: a large add's turn, like a chunk's, does not count
+  as an add's (one table over both kinds);
+  `TestNoHoldWriteTurnsSmallAddsByAsking`:
+  an add held back by a writer it overtook waits for that writer only, not for
+  another that carries an older request but asked after the add's last turn
+  (the `hyb` mechanism above); and a writer whose turn ends while an add is
+  held back keeps no turn although its queued requests are the oldest.
+- 6.4d's final-drain case, for the best-effort writer, is kept unchanged, and
+  gains an archive-writer companion (review fixes (4), below). 6.4d's
+  `TestNoHoldWriteTurnsKept`
+  keeps its cases and gains three: the gap counterexample (review fixes,
+  below), and a kept turn used up once and a small add waiting for the
+  keeper's next transaction (review fixes (2), below).
+
+The write-turns tests pass 5 of 5 runs with `-race`
+(`$H/tdd/green-race-x5.txt`; after the review fixes, again 5 of 5,
+`$H/review1/green-race-x5.txt`; after review fixes (2), 5 of 5 again,
+`$H/review2/green-race-x5.txt`; after review fixes (3), 5 of 5 again,
+`$H/review3/green-race-x5.txt`; after review fixes (4), 5 of 5 again,
+`$H/review4/green-race-x5.txt`).
+
+Mutants, each applied alone to a scratch copy of the final tree and run
+against the four write-turns test functions with `-race`
+(`$H/mut/mut64e.py`, `mutants.txt`; K1, K2 rerun in `mutants-rerun.txt`
+because their first form did not compile, H1 rerun there with every failing
+line). All 27 are killed. Four more, X1 to X3 and H8, were added in review and
+run the same way (`$H/review1/mutx.py`, `review1/mut/`); all four are killed:
+
+| Mutant | Claim it breaks | Killed by |
+| --- | --- | --- |
+| H1 small adds held back by any writer with an older request | small adds judged by when writers asked | first 6.3e case; direct overtake cases |
+| H2 a held-back add lets the oldest of all others go first | an add waits only for writers it overtook | "waits for that writer only" |
+| H3 large adds keep the preference | large adds get none | large sequence and kept cases; fix3 case |
+| H4 the fold's total is judged | judged per add | folded-adds case |
+| H5 large add turns count as adds | only small adds' turns count | "its turn does not count" (large) |
+| H6 a turn is kept while an add is held back | no kept turn while a small add waits | "keeps no turn" |
+| H7 large adds preferred like small ones | large adds get none | large sequence and kept cases; fix3 case |
+| A1 others by ask order | oldest request first | sequence cases, oldest case |
+| A2 archive batch carries no time | archive batches carry their first request's time | sequence cases |
+| A3 best-effort batch carries no time | best-effort batches carry it | run-state sequence case |
+| A4 `queued` keeps the latest request | a batch is judged by its first | sequence cases |
+| A5 `swapped` does not clear the time | each batch is timed afresh | timeout (test binary) |
+| A6 `enqueueArchive` does not mark | archives are marked | sequence and kept cases |
+| A7 best-effort writes do not mark | best-effort writes are marked | run-state sequence case |
+| A8 marks after the final drain began | no turn kept for a stopped writer | final-drain case |
+| MA `enqueueArchive` marks before its `arStopped` check | no turn kept for a stopped writer | archive final-drain case (timeout) |
+| K1 a turn is never kept | kept turn | kept case; `TestNoHoldWriteTurnsKept` |
+| K2 kept whenever requests are queued | kept only when oldest | timeout (`TestNoHoldWriteTurns`) |
+| K3 a kept turn goes to any writer | kept for its writer | `TestNoHoldWriteTurnsKept` |
+| K4 a kept turn frees the lock | nobody else goes | `TestNoHoldWriteTurnsKept` |
+| K6, K7 holder not recorded on hand-over, or on a free take | kept judged for the writer whose turn ends | kept case; `TestNoHoldWriteTurnsKept` |
+| P1 FIFO | an add goes next | first 6.3e case; direct cases |
+| P2 no overtake rule | one add per writer's wait | direct overtake cases |
+| P3 every turn counts as an add | add turns counted | small sequence case; folded case; direct |
+| P4 chunk turns count as adds | chunks get no preference | small sequence case; "its turn does not count" |
+| P5 last waiting add goes | adds FIFO | "two adds" |
+| P6 `give` not deferred | a panicking transaction ends its turn | the panic cases (timeout) |
+| H8 a turn is kept while a small add waits and no writer it overtook does | no kept turn while a small add waits | kept case's small-add companion; first 6.3e case; `TestNoHoldWriteTurnsKept` (timeout) |
+| X1 `enqueueChangeInSlotLocked` appends its db.wg key without `trackBestEffortLocked` | change writes are marked | change row of the best-effort sequence table |
+| X2 among writers an add overtook, ask order instead of oldest request | the overtaken writer with the oldest request goes first | "of two writers an add went ahead of" |
+| X3 `enqueueExitLocked` appends its db.wg key without `trackBestEffortLocked` | exit writes are marked | exit row of the best-effort sequence table |
+| M15 a fold loses the preference only if every add in it is over 1MB | any one add over 1MB loses it | "a small add folded with one too large" |
+| M7 taking a kept turn does not clear `kept` | a kept turn is used once | "a kept turn is used up once its writer takes it" |
+| M3 the limit is 1MB less 200KB | the limit is 1MB | folded-adds case (1MB adds) |
+| M3b an add of exactly 1MB loses the preference | more than 1MB loses it | folded-adds case |
+| M3c the limit is 1MB plus 200KB | the limit is 1MB | large sequence and kept cases; fix3 cases |
+| K8 a small add takes a turn kept for another writer | a small add asking while a turn is kept waits for the keeper's next transaction | "a small add asking while the archive writer keeps the turn" |
+| N28 the best-effort writer never keeps a turn | the best-effort writer keeps a turn as the archive writer does | "with nobody waiting the best-effort writer keeps the turn" |
+| N27a among the writers an add overtook, a chunk is skipped | a chunk an add went ahead of goes before the next add | "an add that went ahead of it waits for it ... the next time" (chunk row) |
+| N27b among the writers an add overtook, a large add is skipped | a large add an add went ahead of goes before the next add | "an add that went ahead of it waits for it ... the next time" (large row) |
+| N8 a failed archive's solo re-run carries no time | every attempt of a batch carries its oldest request | solo row of the failing-archive table |
+| N8b every attempt after a batch's first carries no time | every attempt of a batch carries its oldest request | both rows of the failing-archive table |
+| N18 a large add's solo re-run asks as a small add | a large add gets no preference | "an add too large ... re-run alone after failing" |
+
+A5, K2 and P6 are killed only by a timeout: the writers deadlock, and the
+test fails when a bounded wait expires (3 minutes, with a message naming the
+wait for P6) or when the test binary's timeout panics (A5, K2), not on an
+order assertion. They are killed, but a failure under them is slow and says
+less about the cause than the others'.
+
+Review fixes (reviewer FAIL on the draft):
+
+- The bound in the `writeTurns` doc comment and in Design above was false;
+  it now states the gap in which a writer's requests are invisible to the
+  ordering. `TestNoHoldWriteTurnsKept` pins the counterexample: "an archive
+  queued while its writer has not yet asked again is invisible to the order:
+  once an add has gone, a chunk that asked after it goes first".
+- `TestNoHoldWriteTurnsSmallAddsByAsking` gained "of two writers an add went
+  ahead of, the one carrying the older request goes first, though it asked
+  after the other" (X2).
+- The run-state sequence case is now a table over the three kinds of
+  best-effort write, run-state, change and exit, each queued as the first
+  write of its batch (X1, X3).
+- `writeTurns.take` was test-only and is gone; the tests call
+  `takeSince(kind, time.Time{})`.
+- The `newJobsPreferMaxBytes` comment says that at production's ~25KB
+  commands an add of about 41 jobs loses the preference, and why a fold of
+  many small adds, up to 32MB, keeps it.
+- `updateJobAfterChangeDurable`, `updateJobRunStateDurable` and
+  `updateJobAfterExitDurable` now say that their caller must not hold a job's
+  lock, `db.arMu`, `db.beMu` or `db.wgMutex`, since a kept turn would then
+  deadlock; the `writeTurns` comment points at them.
+
+Each new test fails under its mutant and passes without it.
+
+Review fixes (2) (second reviewer FAIL). M15, M7 and M3 are the reviewer's
+surviving mutants; K8, M3b and M3c were added here. All six, applied one at a
+time to a scratch copy of the final tree and run against the write-turns
+tests with `-race`, are killed (`$H/review2/mutr2.py`, `review2/mut/`), each by
+the case named in the table; without them the tests pass
+(`review2/mut/green-scratch.txt`).
+
+- `newJobsWriterKind` judged a fold as large if any add in it is over 1MB,
+  as documented, but no test folded a large add with a small one, so M15
+  survived. New DB-level case: "a small add folded with one too large to go
+  ahead of the other writers commits after a best-effort write queued before
+  them" (the small add first, so a check of only the first add also fails).
+- A kept turn must be used up when its writer takes it; nothing checked that,
+  so M7 (two writers holding turns at once) survived. New direct case in
+  `TestNoHoldWriteTurnsKept`: keep, take, hand on to a chunk, and a second chunk
+  must wait. The direct tests' queuer now fails as soon as any writer is
+  handed a turn while it waits for writers to queue, so M7 and K8 fail at once
+  rather than on a 3-minute wait.
+- The small-add bound was false with a kept turn: an add that asks while a
+  turn is kept waits for that writer's next transaction too. It is restated in
+  the `writeTurns` comment and in Design, and pinned by "a small add asking
+  while the archive writer keeps the turn waits for that writer's next
+  transaction" (K8).
+- "At most two per other coalescing writer" did not hold when archives fail:
+  `applyFolded`'s retries and solo re-runs all carry the batch's oldest
+  request, so k failing archives give at most 2k+1 transactions (exact
+  counts in Design). The bound now counts batches and says so (comment and
+  Design).
+- The sized adds are exactly the size asked for, 1MB and 1MB plus one byte,
+  where they were nominally 768KB and 1,088KB (a few KB more once encoded),
+  which left any limit between those untested (M3).
+- The durable-wait comments gave the wrong reason for forbidding
+  `db.wgMutex`: no writer takes it on its way to a kept turn (the writer
+  comment's "db.wg mutex" is waitgroup's own). The rule stands because each
+  `queueJob*` takes `db.wgMutex` itself; the comments now say that, and
+  `updateJobRunStateDurableWithin`, which also waits for a turn, states the
+  rule too. The `writeTurns` lock list names `db.arMu` and `db.beMu`,
+  waitgroup's own mutex, and says the archive fold stats it records on the
+  way are atomics.
+- The benchmark note said allocations rise with `queued`'s marks; the A1
+  variant keeps the marks and allocates as head does, so it now says they
+  follow time per add.
+
+The earlier 31 mutants, rerun against the final tests the same way
+(`$H/review2/mut/mut64e-rerun.txt`, `mutx-rerun.txt`): all 31 are still
+killed. A5, A8, H6, K2 and P6 are killed only by a bounded wait or the test
+binary's timeout; H1, K6 and P1 hit one too, besides order assertions.
+
+Review fixes (3) (third reviewer FAIL). N28, N27a, N27b, N8 and N8b are the
+reviewer's surviving mutants, N18 its non-blocking one. All six, applied one
+at a time to a scratch copy of the final tree and run against the write-turns
+tests with `-race`, are killed, each by the case named in the table
+(`$H/review3/mutr3.py`, `review3/mut/`, `review3/mut-summary.txt`); without
+them the tests pass (`review3/mut/green-scratch.txt`).
+
+- Nothing checked that the best-effort writer keeps a turn, so N28 survived.
+  New direct case in `TestNoHoldWriteTurnsKept`: a best-effort turn ends with
+  a write queued and nobody waiting, a chunk asks, and the best-effort
+  writer's next transaction goes first.
+- Nothing checked that a chunk or a large add an add has overtaken holds back
+  the next add (N27a, N27b). New direct case, a table over both kinds, in
+  `TestNoHoldWriteTurnsAddOvertakesOnce`: with the chunk (or large add) and an
+  archive waiting, add1 goes; then add2 asks and waits for both, the chunk (or
+  large add), whose request is older, first.
+- Nothing checked that a batch's retry and solo re-run carry its oldest
+  request (N8, N8b). New DB-level table in `TestNoHoldWriteTurns`: a batch of
+  a good archive and one whose archive panics follows a blocker; while one
+  attempt is held, a chunk asks and then an add; the add goes, and the next
+  attempt, the retry of the good archive (row one) or the failed archive's
+  solo re-run (row two), commits before the chunk. The solo re-run rolls back,
+  so its transaction id is the one the next committed transaction gets; the
+  case allows for that.
+- A large add's solo re-run asks as a large add (N18). New DB-level case: a
+  large add whose putter fails is held in its first transaction while a chunk
+  and then an archive ask; the chunk goes, the solo re-run asks during it, and
+  the archive, whose request is older, commits before the re-run.
+- The `writeTurns` comment said a writer keeps its turn "with no add
+  waiting"; it is with no small add waiting, as the code has it.
+- "k failing archives take 2k+1 transactions" is now "at most 2k+1", with the
+  exact counts (comment and Design).
+- Probe results gave head's add-mean benefit as -12% to -19% across the four
+  sets; `ab2` has -10%. The range is now -10% to -19%, with the sets named.
+- The benchmark note gave the A1 variant's allocations as means (1,102 against
+  1,104) in a section of medians; the medians are 1,092.5 against 1,090.
+
+The review-2 mutants (M15, M7, M3, M3b, M3c, K8), rerun against the final
+tests the same way (`$H/review3/mut-review2-set-summary.txt`), are all still
+killed.
+
+Review fixes (4) (fourth reviewer FAIL). MA is the reviewer's surviving
+mutant: `enqueueArchive` marks the archive writer's request before its
+`arStopped` check. An archive offered during the final drain is then rejected
+but marked, the final drain's turn is kept for an archive writer that has
+exited, and every later write turn waits forever, a shutdown hang. Applied to
+a scratch copy of the final tree and run against the write-turns tests with
+`-race`, it is killed, by a bounded wait, with "a turn is kept for the stopped
+archive writer" (`$H/review4/mutr4.py`, `review4/mut/mut-MA.txt`); without it
+the tests pass (`review4/mut/green-scratch.txt`).
+
+- The stopped-writer rule was tested only for the best-effort writer. New
+  DB-level case beside it: "an archive offered during the archive writer's
+  final drain is rejected and keeps no turn for it once the database is
+  closed". Archive A is held in its transaction while archive B is queued as
+  `enqueueArchive` queues it (with `queued`) but without waking the writer;
+  the database is closed, and once the writer is told to stop A is released,
+  so B rides in the final drain, during whose transaction the observer offers
+  another archive. That offer must be rejected, and after close a chunk's
+  `updateInTurn` must return `ErrDatabaseNotOpen` within a bounded wait.
+- The `writeTurns` and `nextTurn` comments said an add goes next "unless it
+  has already gone ahead"; it is unless an add has, as Design has it.
+- The small-add part of the bound in the `writeTurns` comment now reads "at
+  most one small add per wait".
+- `writerLargeNewJobs`'s comment says `writeTurns` treats it exactly as
+  `writerChunkedAdd` (no preference, ordered by when it asked, never kept),
+  and that the two are separate kinds only so each call site names its
+  transaction: nothing logs or labels by kind.
+
+#### Gates and benchmarks
+
+`gofmt`, `go vet ./jobqueue/` and `make lint` (0 issues, `$H/make-lint.log`)
+are clean. `make test` and `make race` with `OS_*` unset pass: 1,006 passed
+each, 23 and 22 skipped (`$H/make-test.log`, `make-race.log`). Both were run
+with `HOME` set to an empty scratch directory: with the user's home, every
+test that connects to a manager failed with "could not reach the server", on
+HEAD 41a75a38 too (`TestJobqueueBasics`; `$H/make-test-userhome-fail.log`),
+because `~/.wr_config.yml`, changed on 2026-10-23 at 13:41 outside this item,
+now names `~/.config/devtls/hgi-farm.crt` as the manager's CA and
+certificate. The extra skip in `make test` is the S3 tests, which need
+`~/.s3cfg`.
+
+After the review fixes the same gates, run the same way (`HOME` an empty
+scratch directory, `OS_*` unset), pass again: `make lint` 0 issues, `make
+race` 1,006 passed and 22 skipped, `make test` 1,006 passed and 23 skipped
+(`$H/review1/make-lint.log`, `make-race.log`, `make-test.log`).
+
+After review fixes (2), run the same way: `make lint` 0 issues, `make race`
+1,006 passed and 22 skipped, `make test` 1,006 passed and 23 skipped
+(`$H/review2/make-lint.log`, `make-race.log`, `make-test.log`).
+
+After review fixes (3), run the same way: `make lint` 0 issues, `make race`
+1,006 passed and 22 skipped, `make test` 1,006 passed and 23 skipped
+(`$H/review3/make-lint.log`, `make-race.log`, `make-test.log`).
+
+After review fixes (4), run the same way: `make lint` 0 issues (after a blank
+line the new case lacked, `review4/make-lint-wsl-fail.log`), `make race`
+1,006 passed and 22 skipped, `make test` 1,006 passed and 23 skipped
+(`$H/review4/make-lint.log`, `make-race.log`, `make-test.log`).
+
+Benchmarks on local disk, head 41a75a38 against the working tree, 6
+interleaved runs each, medians, Mann-Whitney (`$H/bench.sh`, `bench.txt`,
+`bench-summary.txt`):
+
+| Benchmark | head | change | p |
+| --- | --- | --- | --- |
+| `BenchmarkAddDuringWriterStreams` ns/op | 11.6ms | +20.9% (14.0ms) | 0.004 |
+| `BenchmarkAddDuringWriterStreams` allocs/op | 1,037 | +16.5% | 0.004 |
+| `BenchmarkAddDuringWriterStreams` archives/s | 243.4 | +0.6% | 0.010 |
+| `BenchmarkAddJobs` ns/op (10 iterations) | 114ms | +2.6% | 0.26 |
+| `BenchmarkAddJobs` bolt writes, pages per job | 1.248, 1.245 | 0% | 1.0 |
+| `BenchmarkArchiveJobs` ns/op | 262ms | +2.7% | 0.26 |
+| `BenchmarkArchiveSpacedArrivals` ns/op | 2.48s | -0.1% | 0.20 |
+
+`BenchmarkAddDuringWriterStreams` (6.3e's: single-job adds back to back while
+archives with a 20ms commit cost arrive every 4ms and best-effort writes
+every 2ms) is the one regression: adds 21% slower than head, though still
+about 40% faster than before write turns (6.3e: 22.9 against 11.9ms). Its
+allocations per op (+16.5%) follow its time per op, not `queued`'s marks: the
+benchmark counts the archive and best-effort streams' allocations too, which
+go on while each add waits, and the A1 variant below, which keeps the marks,
+allocates as head does (medians 1,092.5 against 1,090 per op,
+`bench-variants2.txt`).
+Variants of the change, measured the
+same way (`$H/bench-variants.txt`, `bench-variants2.txt`, 6 runs each against
+head): no kept turn +16% (p=0.004); a small add taking a kept turn from its
+keeper +21% (p=0.004); the other writers ordered by when they asked instead of
+by their oldest request (mutant A1) +1% (p=0.87). So the cost is the ordering
+by oldest request among the archive and best-effort writers: with no add
+waiting, the archive writer, whose batch's first request is usually the
+oldest, goes right after each add, and the next add then waits out its 20ms
+commit; ordered by asking, the best-effort writer's short transaction goes
+first and the next add follows it. In the add-storm probe, the same effect is
++3% against head (p=0.30) on the add mean.
+
+Not done: `make speed` and the real-LSF scenarios (DEVELOPERS.md §5 asks for
+both before a PR on this hot path).
+
+#### Options
+
+1. Take the change: every probe tail at or below the base, D1 0, throughput
+   kept, and the add-storm add mean 15% below the base, at the cost of the
+   21% slower `BenchmarkAddDuringWriterStreams` against head (adds still 40%
+   faster than before write turns), `slow3`'s small adds 11% slower than
+   head's, and `plain4` reservation max +10% against the base.
+2. Try ordering the archive and best-effort writers by when they asked, and by
+   oldest request only against chunks and large adds. That would remove the
+   benchmark cost (A1 variant: +1%), but A1 also orders those two against
+   chunks by asking, and whether the probe tails need the archive and
+   best-effort writers ordered against each other by request is not known; it
+   needs the three probes again (about 7 hours).
+3. Keep head (6.4c's option 4) and accept the tail.
+
+Recommendation: option 1, unless the owner reads
+`BenchmarkAddDuringWriterStreams` as a user-visible add latency, in which case
+option 2 is the next prototype.
+
+Evidence in `$H`: `NOTES.txt`; `queue.sh`, `queue2.sh`, `queue3.sh`;
+`probe/` (scripts, hooks, patches, `slow3/`, `plain4/` with per-run
+`txlog.txt`, `reqlog.txt`, `run.log`, `results.txt`, `table.txt`,
+`stats-out.txt`; `discarded/`, one head run from a queue stopped to add
+`hybnk`); `p63e/` (the probe, `ab.sh`, `ab1.txt` to `ab4.txt`, `ab34.txt`,
+`stats-out*.txt`); `analysis/table3.py`; `hybrid-prototype.diff`,
+`hybnk-prototype.diff`, `hyb2-prototype.diff` (the prototypes as measured) and
+`impl.diff` (the working tree's change); `tdd/`; `mut/`; `bench*`;
+`make-*.log`; `loadavg.txt`.
+
+- [x] implemented
+- [x] reviewed
