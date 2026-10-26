@@ -4848,9 +4848,7 @@ func regroupReadyJob(data any, reserveGroup string) string {
 	job.Lock()
 	defer job.Unlock()
 
-	job.schedulerGroup = job.derivedLocked().group
-
-	return job.schedulerGroup
+	return job.setDerivedSchedulerGroupLocked()
 }
 
 // suspendChange is the change a suspend makes to a job.

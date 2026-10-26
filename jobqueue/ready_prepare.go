@@ -247,7 +247,7 @@ func (s *Server) prepareBeforeQueueing(jobs []*Job) {
 	for _, job := range jobs {
 		job.Lock()
 
-		updateJobRequirementsForRetry(job, job.Override, s.currentReqGroupRecs(job.ReqGroup))
+		s.recomputeJobRequirementsLocked(job)
 
 		if rc != "" {
 			job.derivedLocked()
@@ -350,8 +350,8 @@ func (s *Server) currentReqGroupRecs(reqGroup string) *scheduler.Requirements {
 }
 
 // recomputeJobRequirements locks job and recomputes its requirements from the
-// cached learned values, as prepareModifiedJobs does for a user's
-// modification of a ready job.
+// cached learned values, for prepareModifiedJobs (a user's modification of a
+// ready job).
 func (s *Server) recomputeJobRequirements(job *Job) {
 	job.Lock()
 	defer job.Unlock()
@@ -390,15 +390,21 @@ func (s *Server) prepareForReady(data any, reserveGroup string) string {
 	job.Lock()
 	defer job.Unlock()
 
-	updateJobRequirementsForRetry(job, job.Override, s.currentReqGroupRecs(job.ReqGroup))
+	s.recomputeJobRequirementsLocked(job)
 
 	if rc == "" {
 		return reserveGroup
 	}
 
-	job.schedulerGroup = job.derivedLocked().group
+	return job.setDerivedSchedulerGroupLocked()
+}
 
-	return job.schedulerGroup
+// setDerivedSchedulerGroupLocked gives j the scheduler group its current
+// requirements call for and returns it. The caller holds j's write lock.
+func (j *Job) setDerivedSchedulerGroupLocked() string {
+	j.schedulerGroup = j.derivedLocked().group
+
+	return j.schedulerGroup
 }
 
 // prepareReadyJobAgain gives a job whose requirements changed while its item
