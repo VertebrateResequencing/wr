@@ -825,8 +825,9 @@ func (p *queueLockProbe) underLock() int {
 
 // TestNoHoldNoIOUnderQueueLock covers spec D4 tests 1, 2, 3 and 5: preparing an
 // item as it enters ready never holds the queue's lock across a database read,
-// a Server mutex or a wait on the learned-requirement cache. D4 test 4 is
-// `CGO_ENABLED=1 make race`.
+// a Server mutex or a wait on the learned-requirement cache, but starts the
+// background load of a ReqGroup whose cached values are not current. D4 test 4
+// is `CGO_ENABLED=1 make race`.
 func TestNoHoldNoIOUnderQueueLock(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -962,6 +963,46 @@ func TestNoHoldNoIOUnderQueueLock(t *testing.T) {
 		n.server.buildSchedulerGroups(ctx, n.server.q, []any{sjob}, serverRC)
 		So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldNewerLearnedRAM)
 	})
+
+	Convey("Given the RAC gated and a delayed job whose ReqGroup is invalidated while it waits, its delay "+
+		"expiry starts one load of that ReqGroup, after its item is ready, and the cache becomes current",
+		t, func() {
+			loads := countReqStatLoads()
+			n := newNoHoldTest(ctx, t, noHoldSlowRetry)
+
+			Reset(func() { reqStatLoadHook = nil })
+
+			job := n.addJob("d4-5-hook", 3, jobOverridePreferSystemReqs)
+			n.gateRAC(ctx)
+
+			n.failRun(job, FailReasonExit, 5)
+			So(n.itemState(job.Key()), ShouldEqual, queue.ItemStateDelay)
+
+			So(pollUntil(func() bool {
+				n.server.db.refreshReqGroupRecs(job.ReqGroup)
+				_, current := n.server.db.cachedReqGroupRecs(job.ReqGroup)
+
+				return current
+			}), ShouldBeTrue)
+
+			states := n.recordItemStatesOnLoad(loads, job)
+			loads.reset()
+
+			n.seedLearned("d4-5-hook")
+			_, current := n.server.db.cachedReqGroupRecs(job.ReqGroup)
+			So(current, ShouldBeFalse)
+			So(n.itemState(job.Key()), ShouldEqual, queue.ItemStateDelay)
+
+			n.waitReady(job.Key())
+
+			So(pollUntil(func() bool {
+				rec, current := n.server.db.cachedReqGroupRecs(job.ReqGroup)
+
+				return current && rec != nil && rec.RAM == noHoldLearnedRAM
+			}), ShouldBeTrue)
+			So(loads.count(job.ReqGroup), ShouldEqual, 1)
+			So(states(), ShouldResemble, []queue.ItemState{queue.ItemStateReady})
+		})
 }
 
 func newHeldLoad() *heldLoad {
