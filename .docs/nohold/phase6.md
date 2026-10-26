@@ -2561,6 +2561,11 @@ burst's fold lines), or the add's file growth coming earlier in the queue
 under write turns. The exposure is the same kind as in B above: a crash
 inside a burst runs those jobs twice, none acknowledged.
 
+Owner decision 2026-10-25: rerun the G3 soak pair (base, then branch) on the
+final code, after items 6.4f and 6.4g, at the full production ramp (about 7
+hours). If the farm gives the two runs different runner counts, judge them at
+matched counts. This item is settled on that rerun.
+
 - [ ] implemented
 - [ ] reviewed
 
@@ -3708,9 +3713,9 @@ head makes it wait behind one.
   request first. With more than one new jobs goroutine, adds go in the order
   they asked.
 - With no small add waiting, the writer carrying the oldest request goes:
-  the archive and best-effort writers carry the time of the first request
-  queued since they took their queue (6.4d's marks); chunks and large adds
-  the time they asked, so each kind stays FIFO.
+  the archive and best-effort writers carry the time of the oldest request
+  in the queue they took (6.4d's marks); chunks and large adds the time they
+  asked, so each kind stays FIFO.
 - The kept turn (6.4d): when the archive or best-effort writer's turn ends
   with no small add waiting and its newly queued requests are older than every
   waiting writer's, it keeps the turn. It never keeps it while a small add is
@@ -4228,6 +4233,1740 @@ Evidence in `$H`: `NOTES.txt`; `queue.sh`, `queue2.sh`, `queue3.sh`;
 `hybnk-prototype.diff`, `hyb2-prototype.diff` (the prototypes as measured) and
 `impl.diff` (the working tree's change); `tdd/`; `mut/`; `bench*`;
 `make-*.log`; `loadavg.txt`.
+
+- [x] implemented
+- [x] reviewed
+
+### Item 6.4f: speed and LSF check of 6.4e
+
+Question. Item 6.4e left `make speed` and the real-LSF scenarios undone
+(DEVELOPERS.md section 5). Does 849cc680 pass them against the base 6f1b41bb,
+and does item 6.4b's LSF crash-pair rerun still pass on it?
+
+Verdict. No correctness failure: every scenario passed by its own criteria,
+and no crash-pair trial lost a job or ran one twice outside the injected
+stall. `make speed` fails only on `AddJobs` per-job rows, which are a
+benchmark artefact, not a regression (below). The crash-pair passes on every
+criterion, now including the latency tails 6.4b left unshown. One figure is
+more than 10% worse than the base at p < 0.05: the `add-storm-lsf` add p50,
++37% (p=0.007), larger than 6.3e's owner-accepted +23%. 6.3e's p90 and p99
+gains over the base are gone. Against pre-6.4e c6ee8376, run in the same
+session, the add p50 is +14% (p=0.024).
+
+`$F` is `/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-64f`. Everything ran on
+farm22-wrstat01 on 2026-10-24 and 25, one run at a time, with all `OS_*`
+unset. `$F/NOTES.txt` logs each step.
+
+Setup:
+
+- Binaries. Each tree was built from a scratch detached worktree with a
+  scratch `GOCACHE`, before any run. `go version -m` shows `vcs.revision`
+  6f1b41bb (sha1 `0222b496...`), 849cc680 (`e475f1fc...`) and c6ee8376
+  (`74c7fca9...`), each with `vcs.modified=false`
+  (`$F/g2/*-wr.buildinfo.txt`). The crash-pair used copies at
+  `$F/cp/bin/<tree>/wr`. The worktree's HEAD was eb30e536, which is 849cc680
+  plus a docs-only commit, so `make speed` measured the same code.
+- HOME. `~/.wr_config.yml`, changed on 2026-10-23 at 13:41, after items 6.3
+  and 6.4b ran, names farm TLS certificates. wr reads it after
+  `WR_CONFIG_DIR`, so isolated localhost managers would use those
+  certificates (item 6.4e's tests failed this way). So every run had `HOME`
+  set to an empty directory, which for the LSF runs held only a symlink to
+  `~/.ssh`. That matches the config the earlier runs had.
+
+#### make speed
+
+`make speed`, quick mode, baseline the merge-base 6f1b41bb
+(`$F/speed/run-1792845435/`): FAIL on 4 rows, all from `AddJobs`:
+
+| Row | Base | Head | Change |
+| --- | --- | --- | --- |
+| `AddJobs` sec/op | 177.6ms | 138.0ms | -22.3% (p=0.002) |
+| `AddJobs` B/op | 22.48Mi | 29.06Mi | +29.3% (p=0.002) |
+| `AddJobs` allocs/op | 139.4k | 159.9k | +14.7% (p=0.002) |
+| `AddJobs` bolt_pages/job | 1.071 | 1.474 | +37.6% (p=0.002) |
+| `AddJobs` bolt_writes/job | 1.073 | 1.476 | +37.6% (p=0.002) |
+
+Other rows benchstat marks as changed: `ReadyBacklogSnapshot` sec/op -15.4%,
+`UpdateJobState` B/op -2.65%, `ArchiveSpacedArrivals` B/op +1.19% and allocs
++3.12%, `ArchiveJobs` allocs +3.22%, `AddDepGroupMember` B/op +3.31% and
+allocs -1.26%, `BuildSchedulerGroupsBacklog` allocs +3.92% (102 to 106), and
+`QueueLifecycle` B/op +0.02%. All are under 10%.
+
+The `AddJobs` rows are an artefact of `-benchtime=1s`. Head is faster, so the
+framework ran it 15 or 16 times against the base's 7, and the benchmark adds
+every batch to the same growing database, so per-job pages and bytes grow
+with that count (head's 16-iteration round has 1.514 pages/job, its
+15-iteration rounds 1.474). Re-runs of `AddJobs` alone, 10 rounds each:
+
+- Against 6f1b41bb (`run-1792846338`): the same 4 rows, sec/op -22.9%.
+- Against 41a75a38, pre-6.4e (`run-1792846395`): no row changed (sec/op
+  -1.8%, p=0.25). So 6.4e changed nothing here.
+- Against 6f1b41bb with `SPEED_BENCHTIME=10x` (`run-1792846472`): pages/job
+  1.245 on both, writes 1.248 on both, B/op 25.17Mi on both, allocs 148.5k on
+  both, and sec/op -38.8% (p<0.001). PASS.
+
+The scenarios ran once each in that run. A rerun of only the scenarios, 6
+rounds each, on a quiet host after the LSF work (`SPEED_BENCH='^$'
+SPEED_SCENARIO_COUNT=6`, `run-1792883370`), printed PASS:
+
+- `report-storm`: jobs/s 832 against 3,147 (+278%), wall -74%, max archive
+  78 against 99ms (+27%, p=0.275, not significant).
+- `dep-granularity-check`: peak RSS 284 against 299MiB (+5.2%, p=0.002),
+  recovery 194 against 193ms, add 463 against 502ms (+8.5%, p=0.12).
+
+#### G2: real-LSF scenarios
+
+Run as in items 6.3 and 6.3e: `$F/g2/g2.sh` and `drive.sh` are copies of
+`nohold-63e-lsf`'s with only paths changed. Defaults, `WRDEV_DEBUG=1`, ports
+52610 to 52613, the storm modes on copies of `fix120k.db` and `pristine10`.
+Each run's `.out` saves the `bjobs -w` taken just before it, and all 26 say
+"No unfinished job found". Order: `add-storm-lsf` base, branch, base, branch,
+base, branch, branch, base, branch, base, branch, base (r1 to r12, 13:55 to
+15:00). Then `report-storm-lsf` branch, base, base, branch (r13 to r16, 15:00 to
+15:21). Then 8 extra `add-storm-lsf` runs, pre-6.4e c6ee8376 and branch
+alternating (r19 to r26, 15:42 to 16:25). Last, `limit-drain` base, branch
+(r17 and r18, 16:25 to 17:02).
+
+- **`add-storm-lsf`: PASS, all 20 runs.** Every run printed `PASS: all <n>
+  acknowledged adds`, with `missingAcked=0` and 0 in every safety field.
+  Measured as in item 6.3e (`collect.sh` gives `addstorm-runs-all.tsv`;
+  `stats.py`, exact Mann-Whitney). Medians, latencies in ms:
+
+  | Metric | base (6) | branch (10) | pre-6.4e (4) | branch against base | branch against pre-6.4e | 6.3e: branch against base |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | add p50 | 181 | 248 | 217.5 | +37%, p=0.007 | +14%, p=0.024 | +23%, p=0.11 |
+  | add p90 | 771.5 | 754.5 | 736.5 | -2%, p=0.41 | +2%, p=0.56 | -25%, p=0.04 |
+  | add p99 | 1,213 | 1,174.5 | 1,102 | -3%, p=0.12 | +7%, p=0.15 | -19%, p=0.009 |
+  | add mean | 301.5 | 334.5 | 304 | +11%, p=0.073 | +10%, p=0.11 | -5%, p=0.24 |
+  | jobs completed | 17,293 | 27,818.5 | 29,099 | +61%, p<0.001 | -4%, p=0.19 | +32%, p=0.004 |
+  | archives/min | 3,873 | 6,259 | 6,565.5 | +62%, p<0.001 | -5%, p=0.19 | +31%, p=0.004 |
+  | archive `meanWait` | 90.9 | 96.2 | 89.35 | +6%, p=0.23 | +8%, p=0.058 | +8%, p=0.39 |
+  | archive `meanLock` | 3.1 | 3.9 | 3.2 | +26%, p=0.017 | +22%, p=0.093 | +22%, p=0.33 |
+  | archive `meanTx` | 28 | 22.25 | 18.4 | -21%, p=0.007 | +21%, p=0.004 | -14%, p=0.31 |
+  | storm done at kill | 1,999.5 | 1,851.5 | 1,715.5 | -7%, p=0.056 | +8%, p=0.036 | -4%, p=0.18 |
+  | kids done | 445 | 195 | 221 | -56%, p=0.003 | -12%, p=0.18 | -78%, p=0.002 |
+  | `maxStatusRPC` | 198 | 191.5 | 187.5 | -3%, p=0.71 | +2%, p=0.66 | -25%, p=0.06 |
+
+  The pre-6.4e runs came about 1.5 hours after the base's, so the
+  base-against-pre-6.4e figures cross two blocks of the session. In the
+  alternating block alone (r19 to r26, 4 each), branch against pre-6.4e is
+  add p50 +14% (p=0.34), mean +8% (p=0.34), p99 +4% and `meanTx` +14%
+  (p=0.029). Branch run r22 is an outlier: 37,457 jobs completed and add
+  p50 126ms. Without it, all 3 other branch runs (246 to 256ms) are above
+  all 4 pre-6.4e runs (213 to 225ms). Pre-6.4e against the base: p50 +20%
+  (p=0.010), p99 -9% (p=0.010), mean +1%.
+
+  Against the pass criterion (nothing more than 10% worse than the base,
+  except accepted costs):
+
+  - Add p50, +37% (p=0.007). This exceeds the +23% the owner accepted for
+    6.3e. About +20 points of it are on pre-6.4e already, and 6.4e adds
+    about +14% on top. A likely cause, not shown: the hybrid order lets an
+    add overtake a waiting writer only once, while 6.4b and 6.4e raised
+    throughput (archives/min +62% against the base here, +31% in 6.3e's
+    session), so an add more often waits behind an archive transaction.
+    The in-process add-storm probe gave 6.4e's add mean as +3% against head
+    (p=0.30); here it is +10% (p=0.11). It needs an owner decision: accept,
+    or try 6.4e's option 2.
+  - Add mean, +11% (p=0.073). Not significant. 6.3e's mean was 5% below
+    the base.
+  - Archive `meanLock`, +26% (p=0.017). It is about 0.8ms per
+    transaction. Since 6.3e it includes the write-turn wait. `meanWait`,
+    an archive's whole wait, is +6% (p=0.23), and the branch archives 62%
+    more per minute. 6.3e found the same +22%, not significant then.
+  - Kids done, -56%. This is the kid ordering the owner accepted on
+    2026-10-19.
+
+- **`report-storm-lsf`: PASS, all 4 runs.** Every run printed `FULLY DRAINED
+  (complete=100000 buried=0)` with `badjobDelta=0 maxDelayed=0 maxLost=0`,
+  and 0 confirmed dead (`rs-summary.txt`).
+
+  | Run | Tree | Wall | Drain | `maxStatusRPC` | Longest GAP | archive `meanWait` / `meanLock` |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | r13 | branch | 329s | 254s | 562ms | 25s | 263 / 15ms |
+  | r14 | base | 297s | 238s | 491ms | 19s | 211 / 10ms |
+  | r15 | base | 323s | 254s | 627ms | 24s | 248 / 10ms |
+  | r16 | branch | 313s | 231s | 434ms | 21s | 238 / 19ms |
+
+  Wall +3.5% and drain -1% in the median. No gap is over 60s. `meanLock` is
+  17 against 10ms, the same direction as above. With 2 runs per tree this
+  is not tested.
+- **`limit-drain`: PASS, both runs.** Both printed `FULLY DRAINED
+  (complete=60000 buried=0)`, with 0 lost, 0 bad job, 0 confirmed dead and 0
+  archive reject. The base's wall was 1,059s (drain 1,022s) against the
+  branch's 1,105s (drain 1,049s): +4% and +3%. Status RPC median and max:
+  115 and 215ms against 123 and 154ms. Each manager was stopped with
+  `wrdev.sh stop` (`*.stop.out`, verified pid).
+
+#### LSF crash-pair rerun with 6.4e (849cc680)
+
+Run exactly as item 6.4b's rerun. `$F/cp` holds copies of `nohold-64c`'s
+`trial.sh`, `run-all.sh`, `analyse-trial.sh` and analysis scripts with only
+paths changed. The tools binaries (`prodsim`, `fusestall`, `dbstart`,
+`psimjob.sh`) are the same files (sha1-identical), and the fixture is
+`fix120k.db`. There were 10 trials: base k1, k3, k5, k7 and k9, branch k2,
+k4, k6, k8 and k10, all with `TARGET=350 GOAL=400 MAXWAIT_MIN=60`, from
+17:02 to 00:09. Every trial reached `GOAL` without waiting. Crash A was at
+RUN 451 to 457 and crash B at RUN 451 to 465, and no crash B is void.
+`compare64f.py` (`compare64c.py` with its comparison sets changed) compares
+this run's base and branch, and each against 6.4b's rerun
+(`cp/compare.txt`). `bursts2.py` gives `cp/bursts2.txt`.
+
+| trial | crash A: RUN, D1 / hand-outs | crash B: RUN, D1 / hand-outs | steady D1 | doubles (inside / outside / acked) | absent |
+| --- | --- | --- | --- | --- | --- |
+| k1 base | 455, 0 / 4,282 | 458, 0 / 4,229 | 0 | 3 / 0 / 0 | 0 |
+| k2 branch | 451, 0 / 4,268 | 451, 0 / 4,321 | 0 | 0 / 0 / 0 | 0 |
+| k3 base | 454, 0 / 4,137 | 452, 0 / 4,171 | 0 | 4 / 0 / 0 | 0 |
+| k4 branch | 451, 0 / 4,253 | 456, 0 / 4,141 | 0 | 1 / 0 / 0 | 0 |
+| k5 base | 453, 2 / 4,280 | 465, 0 / 4,249 | 0 | 2 / 0 / 0 | 0 |
+| k6 branch | 451, 0 / 4,021 | 451, 0 / 4,213 | 0 | 0 / 0 / 0 | 0 |
+| k7 base | 454, 0 / 4,266 | 453, 0 / 4,263 | 0 | 2 / 0 / 0 | 0 |
+| k8 branch | 456, 0 / 4,223 | 456, 0 / 4,242 | 0 | 1 / 0 / 0 | 0 |
+| k9 base | 457, 0 / 4,247 | 452, 0 / 4,251 | 0 | 3 / 0 / 0 | 0 |
+| k10 branch | 451, 0 / 4,138 | 451, 0 / 4,138 | 0 | 0 / 0 / 0 | 0 |
+
+Every trial's soakgate reports `totals ok`, and every `trial.log` reports
+`LSF jobs left with our prefix: 0`.
+
+- Steady D1 bursts: 0 of 5 trials on each tree (Fisher p=1.0). Reserve gaps
+  of 10s or more: 0 on each tree.
+- Crash A: base 2 of 21,212 (0.01%, in 1 of 5 trials) against branch 0 of
+  20,903 (0%). Pooled Fisher two-sided p=0.5, per-trial Mann-Whitney p=1.0.
+  6.4b's rerun had base 1.16% and branch 0.35%, both from bursts that began
+  during the stall. No trial here had one.
+- Crash B: 0 of 21,163 against 0 of 21,055 (p=1.0). 6.4b's rerun had 0.10%
+  and 0.02%.
+- Doubles: all inside the injected stall (base 2 to 4 per trial, branch 0
+  or 1), none outside it, none acknowledged. No job is absent in any trial.
+- Steady portal bursts (`bursts2.py`), 15 per tree. Worst `maxTx` p50, p90
+  and max: base 2.35, 2.77 and 3.35s against branch 2.19, 2.64 and 2.76s.
+  None is over 5s. Mann-Whitney p=0.16 on `maxTx`, p=0.82 on add mean.
+
+Steady latency and throughput, medians over trials, exact Mann-Whitney over 5
+per tree (as in 6.4b; seconds):
+
+| | base | branch | change | p | 6.4b rerun: base / branch |
+| --- | --- | --- | --- | --- | --- |
+| portal add p50 | 2.15 | 2.14 | 0% | 0.69 | 2.32 / 2.64 |
+| portal add p90 | 3.16 | 3.52 | +11% | 0.087 | 3.28 / 6.04 |
+| portal add max | 4.65 | 4.21 | -9% | 0.69 | 5.10 / 8.38 |
+| other adds p99 | 1.295 | 0.888 | -31% | 0.008 | 1.65 / 1.61 |
+| reserve gap mean | 0.37 | 0.10 | -73% | 0.008 | 0.39 / 0.16 |
+| reserve gap p99 | 2 | 1 | -50% | 0.008 | 3 / 3 |
+| reserve gap max | 4 | 3 | -25% | 0.17 | 4 / 6 |
+| archive p50 | under 1 | under 1 | | | |
+| archive p99 | 1.17 | 1.06 | -9% | 0.42 | 1.49 / 2.88 |
+| archives over 5s | 2 | 2 | 0% | 0.95 | 6 / 9 |
+| exit-0 ends per minute | 726 | 721 | -1% | 0.22 | 729 / 730 |
+| archive-fold archives per minute | 798 | 784 | -2% | 0.28 | 791 / 790 |
+
+The archive p50 reads -0.42 to -0.43s on every trial. Its outcome stamps
+are whole seconds, so it means under 1s, as 6.4b said. `Started` latency
+cannot be measured by this method: the runner logs "started executing"
+before its `jstart` call and nothing after it, and the trial manager runs
+without `--debug`. The only `Started` figure available is the server's
+"slow request" (over 10s) for `jstart`: 0 in the windows after both crashes
+in all 10 trials (`jstartMax` 0). 6.4b's rerun had 10 to 16s ones in 4
+branch windows (after crash B in 3 of 5 trials, 10.1 to 15.9s, and after
+crash A in one, 11.0s) and in 4 base windows (11.4 to 13.1s).
+
+Against 6.4b's rerun (c6ee8376), branch against branch: portal add p90
+-42% (p=0.048), max -50% (p=0.016), other adds p99 -45% (p=0.016), reserve
+gap mean -38% (p=0.008), max -50% (p=0.008), archive p99 -63% (p=0.008).
+Throughput did not change (-1%). The two bases differ too: this run's base
+has archive p99 -21% (p=0.008) against 6.4b's base, so this run was calmer.
+Compare base against branch within each run, as 6.4b said.
+
+Pass criteria, as in 6.4b:
+
+- Stalls: pass. 0 steady D1 bursts against 0, no reserve gap of 10s, burst
+  `maxTx` p90 2.64 against 2.77s.
+- Non-durable hand-outs: pass. Crash A 0% against 0.01%, crash B 0% against
+  0%.
+- Latency tails: pass, the first time this has been shown. Portal add p90
+  is +11% (p=0.087, not significant) and its max -9%. Archive p99 is -9%,
+  other adds p99 -31%, and reserve gaps are shorter (mean -73%, p99 -50%).
+  6.4b's +84% add p90 and +93% archive p99 gaps are gone. These trials, like
+  6.4b's, have 3 steady portal bursts each.
+- Lost jobs: pass, 0 in all 10 trials.
+- Doubles outside injected stalls: pass, 0 in all 10 trials.
+
+Figures more than 10% worse than the base on this branch, all checks
+together:
+
+- `add-storm-lsf` add p50, +37% (p=0.007), and archive `meanLock`, +26%
+  (p=0.017). Both are above.
+- Not significant: crash-pair portal add p90 +11% (p=0.087),
+  `add-storm-lsf` add mean +11% (p=0.073), `report-storm` max archive +27%
+  (p=0.275).
+- `AddJobs` B/op, allocs and pages per job in `make speed`: the
+  iteration-count artefact, equal at 10 iterations.
+
+Cleanup: no manager, runner, LSF job (the final `bjobs -w` says "No
+unfinished job found"), fusestall mount or prodsim was left. The G2 work
+roots (`/nfs/hgi/wr/sb10-bigdb/nohold-64f-work`, with their DB copies and
+binaries) were removed once each run's outputs, manager logs and adder logs
+were saved in `$F/g2/`. `analyse-trial.sh` removed the trials' DBs. The
+scratch worktrees were removed, and the scratch `GOCACHE` was emptied with
+`GOCACHE=<dir> go clean -cache`.
+
+Evidence in `$F`: `NOTES.txt`; `master.sh`, `extra.sh`, `speed.sh`,
+`speedconfirm.sh` and their `.out` files; `speed/run-*/` (benchstat,
+regressions, raw); `g2/` (scripts, every run's `.out`, `.managerlog.gz`,
+`.lostsamples` and `.adderlogs.tgz`, `addstorm-runs-all.tsv`,
+`stats-out-all.txt`, `stats-out-extra.txt`, `stats-out-pre-vs-base.txt`,
+`rs-summary.txt`, `ld-summary.txt`, buildinfo); `cp/` (scripts, `bin/`,
+`trials/k*/prodsim-*/`, `compare.txt`, `bursts2.txt`, `latency/`,
+`analysis.log`, `run-all.out`).
+
+Owner decision 2026-10-25: the add p50 is handled by item 6.4g, and its
+remaining +28% against the base is accepted there. The other figures above
+(add mean, archive `meanLock`, kids done) are within accepted costs or not
+significant.
+
+- [x] implemented
+- [x] reviewed
+
+### Item 6.4g: add p50 after 6.4e
+
+Question. Item 6.4f found the `add-storm-lsf` add p50 on 849cc680 at +37%
+against the base (p=0.007), beyond the +23% the owner accepted for 6.3e, and
++14% against pre-6.4e c6ee8376 (p=0.024). Item 6.4e had traced its one
+benchmark regression, `BenchmarkAddDuringWriterStreams` +21%, to the ordering
+by oldest request between the archive and best-effort writers. Does 6.4e's
+option 2 (order those two writers among themselves by when they asked, and by
+oldest request only against chunks and large adds) bring the add p50 back
+while keeping 6.4e's tail cuts?
+
+Verdict: yes, and it is implemented (uncommitted). On real LSF the add p50 is
+back at c6ee8376's level (232.5 against 232.5ms, +0%, p=0.91) and 8% below
+849cc680's (p=0.017), with the add mean 12% lower (p=0.009) and p99 8% lower
+(p=0.015). Against the base the p50 is still +28% (p=0.002), above the +23%
+accepted level, so it passes on the criterion's second arm (not significantly
+worse than c6ee8376), not the first; p90 is the base's and p99 is 12% below it
+(p=0.004). In-process every `Started`, archive and reservation tail is at or
+below the base's except `plain4`'s reservation max (+6%, p=0.17, not
+significant), and within 4% of 849cc680's, the add-storm probe's add mean
+is 19% below the base (p<0.001) and 8% below 849cc680 (p=0.013), throughput is
+unchanged, and the benchmark is back at c6ee8376's speed. No other change was
+needed for the add p50.
+
+`$G` is `/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-64g`. Everything ran on
+farm22-wrstat01 from 2026-10-25 00:23 BST to 10:50 GMT (clocks went back at
+02:00), one run at a time, with all `OS_*` unset. `$G/NOTES.txt` logs each step.
+
+#### Design
+
+`p2` (the prototype, `$G/p2.diff`; the implementation is the same logic with
+renamed variables and the doc comment rewritten). This section says what
+changed from 6.4e and why; the ordering itself is stated only in the
+`writeTurns` doc comment in `jobqueue/writeturns.go`. Rule 1 to Rule 3 there
+are its three bullets on what happens when a turn ends (Rule 2 holds the
+keep), and Bound 1 to Bound 6 are its bounds, in the order they appear.
+
+- Between the archive and best-effort writers (the coalescing writers), 6.4e's
+  order by oldest request becomes order by when they asked (Rule 3; Bound 2
+  states the exception for a kept turn). The `writeTurns` doc says why:
+  ordered by time, the archive writer went straight after each add and kept
+  its turn over a waiting best-effort writer, so the next add waited out a
+  whole archive commit.
+- Against chunks and large adds the coalescing writers are still judged by
+  time, now by the oldest time of the coalescing writers `nextOther` may
+  choose from (Rule 3). Judging the pair by the older of their two requests
+  keeps 6.4c's guarantee for the coalescing writer that holds it: with no
+  small add waiting, a chunk cannot slip in between because the other asked
+  first with a younger request.
+- The kept turn only where it still helps: a coalescing writer that
+  `nextOther` chooses to go next now stops the keep (Rule 2; Bound 3 says when
+  the other coalescing writer can still keep its turn while one waits). With
+  no small add waiting the keep still protects the requests queued during a
+  chunk against a later chunk or large add, as 6.4d needed for `plain4`. With
+  only the other coalescing writer waiting, as in
+  `BenchmarkAddDuringWriterStreams`, the archive writer's turns no longer run
+  back to back while the best-effort writer waits.
+- Unchanged from 6.4e: small adds' overtake-once rule (Rule 1, Bound 1),
+  large adds' lack of preference, chunk turns, the per-batch request marks, a
+  kept turn going to its writer alone and once, and no turn kept for a
+  stopped writer. Rule 1's choice among the writers an add has overtaken did
+  change: it is `nextOther`'s (Rule 3), so of the two coalescing writers the
+  one that asked first goes, where 6.4e chose the older request.
+
+Bounds: the `writeTurns` doc comment states them, as Bound 1 to Bound 6.
+Since review 4 the doc comment states only bounds proved against the code:
+Bounds 1 to 5 against `nextTurn`, `nextOther`, `firstCoalescing`,
+`oldestUncoalesced`, `mayGoNext` and `takeSince`, and Bound 6 against
+`applyFolded` and `drainArchives`; Bound 6's clause on the time each attempt
+of a batch carries is pinned by the DB-level `TestNoHoldWriteTurns` cases.
+The tests that pin each clause of the rules and bounds are in the clause,
+mutant and killing-test table under Review fixes (12), derived from running
+each mutant against each test function on its own. Against 6.4e, Bound 2
+now orders the two coalescing writers by when they asked, where 6.4e ordered
+them by time; Bound 1 is unchanged.
+
+#### Benchmark screen
+
+`BenchmarkAddDuringWriterStreams`, local disk, 12 interleaved rounds before
+the LSF runs (`$G/bench-screen1.txt`): median per add c6ee8376 12.12ms,
+849cc680 14.84ms, `p2` 12.09ms. So `p2` removes the 6.4e cost, as 6.4e's A1
+variant did. Final benchmarks against the implementation are under Gates and
+benchmarks.
+
+#### add-storm-lsf
+
+Run as in item 6.4f (`$G/g2/g2.sh`, `drive.sh`, `collect.sh` copied from
+`nohold-64f/g2` with paths changed; `stats64g.py` is its `stats.py` with the
+item's pairs). Four trees, each binary built to a fresh path from a scratch
+detached worktree with a scratch `GOCACHE` (`$G/build-*.log`,
+`$G/g2/*-wr.buildinfo.txt`): base 6f1b41bb, pre (c6ee8376) and 849cc680 with
+`vcs.modified=false`, `p2` (849cc680 plus `p2.diff`) with
+`vcs.modified=true`. `HOME` was an empty directory holding only a link to
+`~/.ssh`, as in 6.4f. 6 rounds, the tree order rotated each round (r1 to r24,
+00:31 BST to 01:40 GMT). Every run printed `PASS: all <n> acknowledged adds`
+with `missingAcked=0`, and every run's pre-run `bjobs -w` says "No unfinished
+job found". Exact two-sided permutation Mann-Whitney over 6 runs per tree.
+Medians, latencies in ms:
+
+| Metric | base | c6ee8376 | 849cc680 | p2 | p2 against base | against 849cc680 | against c6ee8376 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| add p50 | 181 | 232.5 | 251.5 | 232.5 | +28%, p=0.002 | -8%, p=0.017 | 0%, p=0.91 |
+| add p90 | 733.5 | 724 | 770.5 | 736.5 | 0%, p=0.94 | -4%, p=0.37 | +2%, p=0.43 |
+| add p99 | 1,251 | 1,083.5 | 1,196 | 1,105.5 | -12%, p=0.004 | -8%, p=0.015 | +2%, p=0.24 |
+| add mean | 303.5 | 302.5 | 350.5 | 307.5 | +1%, p=0.46 | -12%, p=0.009 | +2%, p=0.29 |
+| jobs completed | 17,401 | 27,686.5 | 27,843.5 | 27,654 | +59%, p=0.002 | -1%, p=0.70 | 0%, p=0.59 |
+| archives/min | 3,895 | 6,159 | 6,186.5 | 6,248.5 | +60%, p=0.002 | +1%, p=0.31 | +1%, p=0.39 |
+| archive `meanWait` | 91 | 93.6 | 99.65 | 92.9 | +2%, p=0.86 | -7%, p=0.024 | -1%, p=0.51 |
+| archive `meanLock` | 3.0 | 3.35 | 3.65 | 3.35 | +12%, p=0.022 | -8%, p=0.39 | 0%, p=0.71 |
+| archive `meanTx` | 28 | 21.5 | 22.1 | 20.4 | -27%, p=0.002 | -8%, p=0.006 | -5%, p=0.51 |
+| storm done at kill | 2,009.5 | 1,794.5 | 1,816 | 1,771.5 | -12%, p=0.002 | -2%, p=0.49 | -1%, p=0.39 |
+| kids done | 523.5 | 193 | 199 | 198.5 | -62%, p=0.002 | 0%, p=0.62 | +3%, p=0.33 |
+| `maxStatusRPC` | 192 | 217 | 195.5 | 219 | +14%, p=0.18 | +12%, p=0.13 | +1%, p=0.94 |
+
+This session reproduces 6.4f: 849cc680 against the base is add p50 +39%
+(p=0.002) and mean +15% (p=0.009), and c6ee8376 against the base is p50 +28%
+(p=0.002) with p99 -13% (p=0.002). `p2` matches c6ee8376 on every add figure
+(all p≥0.24). Against the base:
+
+- Add p50 +28% is above the accepted +23%, but `p2` is c6ee8376's level, the
+  criterion's second arm. The remaining gap is the one 6.3e's in-process
+  analysis described (writer occupancy at higher archive throughput), not this
+  ordering: c6ee8376 has it too, with no oldest-request ordering at all.
+- Archive `meanLock` +12% (p=0.022), about 0.35ms per transaction; 849cc680 was
+  +22% (p=0.006) here and 6.4f's +26%. `meanWait`, an archive's whole wait, is
+  +2% (p=0.86).
+- Storm jobs done at the kill -12% (p=0.002): every no-hold tree has it here
+  (849cc680 -10%, c6ee8376 -11%, both p=0.002), and `p2` against 849cc680 is
+  -2% (p=0.49). It is item 6.3e's open -4% to -10% observation, now
+  significant with 6 runs a tree; not from this item. Kids done -62% is the
+  accepted kid ordering.
+
+Owner decision 2026-10-25: accept the add p50 at +28% against the base
+(181 to 232.5ms), the level c6ee8376 already had.
+
+#### In-process probes
+
+The 6.4e scripts (`run1.sh`, `ab2.sh`, `p63e/ab.sh`, hooks `patch.py`,
+`patch2.py`, `patch3.py`) copied to `$G/probe/` and `$G/p63e/` with only paths
+changed. One test binary per tree, built once from a scratch worktree with the
+hooks (`$G/probe/binaries.sha1`). Medians over runs, two-sided Mann-Whitney
+(normal approximation, 6.4d's `mwu`). Start-of-run load averages were 1.3 to
+3.7 on 8 cores for `slow3` and `plain4`, and 1.6 to 9.2 for the add-storm
+probe (two short spikes at round boundaries; `ab1.txt` has each run's).
+
+Item 6.3e's add-storm probe (`fix120k.db` on NFS, backups on), 10 rounds of
+base, c6ee8376, 849cc680 and `p2` (`$G/p63e/ab1.txt`, `stats-out.txt`), ms:
+
+| Metric | base | c6ee8376 | 849cc680 | p2 | p2 against base | against 849cc680 | against c6ee8376 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| add mean | 171.2 | 139.7 | 151.2 | 138.5 | -19%, p<0.001 | -8%, p=0.013 | -1%, p=0.29 |
+| add p50 | 26.0 | 80.5 | 91.8 | 78.7 | +203%, p<0.001 | -14%, p=0.049 | -2%, p=0.41 |
+| add p99 | 1,204.5 | 1,034.2 | 1,110.7 | 850.9 | -29%, p=0.001 | -23%, p=0.070 | -18%, p=0.13 |
+| archive p50 | 32.7 | 308.6 | 317.9 | 308.6 | +843%, p<0.001 | -3%, p=0.17 | 0%, p=0.88 |
+| archive p99 | 1,300.9 | 1,306.9 | 1,254.7 | 1,156.0 | -11%, p=0.33 | -8%, p=0.50 | -12%, p=0.50 |
+| archives/s | 65.3 | 70.5 | 70.8 | 70.7 | +8%, p=0.001 | 0%, p=0.85 | 0%, p=0.82 |
+
+`slow3` (5MB/s writes, one portal burst), 8 rounds of base, 849cc680 and `p2`
+(`$G/probe/slow3/`, `table.txt`; `table4g.py` is 6.4e's `table3.py` with the
+trees renamed):
+
+| Metric | base | 849cc680 | p2 | p2 against base | p2 against 849cc680 |
+| --- | --- | --- | --- | --- | --- |
+| `Started` mean | 4.28s | 1.17s | 1.04s | -76%, p=0.001 | -11%, p=0.046 |
+| `Started` p99 | 11.84s | 8.17s | 7.98s | -33%, p=0.001 | -2%, p=0.40 |
+| archive mean | 3.73s | 3.03s | 3.08s | -17%, p=0.012 | +2%, p=0.17 |
+| archive p99 | 10.89s | 8.96s | 9.05s | -17%, p=0.006 | +1%, p=0.46 |
+| reservation p99 | 8.05s | 8.25s | 7.91s | -2%, p=0.75 | -4%, p=0.75 |
+| reservation max | 10.0s | 8.86s | 8.68s | -13%, p=0.005 | -2%, p=0.25 |
+| D1 per run | 1.5 | 0 | 0 | p=0.015 | p=0.32 |
+| 1,000-job add mean | 11.81s | 12.28s | 12.35s | +5%, p=0.001 | +1%, p=0.83 |
+| 1,000-job add max | 15.94s | 16.92s | 16.78s | +5%, p=0.006 | -1%, p=0.83 |
+| small add p50 | 521ms | 623ms | 594ms | +14%, p=0.093 | -5%, p=0.92 |
+| small add mean | 1.63s | 1.74s | 1.75s | +7%, p=0.002 | +1%, p=0.83 |
+| archives/s | 9.4 | 10.6 | 10.6 | +13%, p<0.001 | 0%, p=0.95 |
+
+D1 per run: base 0 to 3, 849cc680 0 in all 8, `p2` 0 in 7 and 3 in one.
+
+`plain4` (plain `fusestall` over NFS, a burst every 75s), 8 rounds
+(`$G/probe/plain4/`):
+
+| Metric | base | 849cc680 | p2 | p2 against base | p2 against 849cc680 |
+| --- | --- | --- | --- | --- | --- |
+| `Started` mean | 121ms | 102ms | 104ms | -14%, p=0.046 | +2%, p=0.56 |
+| `Started` p99 | 2.46s | 1.58s | 1.63s | -34%, p=0.002 | +4%, p=0.29 |
+| archive mean | 320ms | 299ms | 298ms | -7%, p=0.010 | 0%, p=0.43 |
+| archive p99 | 2.40s | 2.19s | 2.19s | -9%, p=0.002 | 0%, p=0.40 |
+| reservation p99 | 1.67s | 1.46s | 1.44s | -14%, p=0.027 | -1%, p=0.83 |
+| reservation max | 2.73s | 2.87s | 2.88s | +6%, p=0.17 | +1%, p=0.92 |
+| D1 per run | 0 | 0 | 0 | | |
+| 1,000-job add mean | 2.27s | 2.25s | 2.19s | -3%, p=0.21 | -3%, p=0.13 |
+| 1,000-job add max | 4.67s | 5.09s | 5.01s | +7%, p=0.14 | -2%, p=0.35 |
+| small add p50 | 38ms | 39ms | 25ms | -34%, p=0.021 | -36%, p=0.005 |
+| small add mean | 342ms | 307ms | 282ms | -18%, p=0.003 | -8%, p=0.027 |
+| archives/s | 13.0 | 13.0 | 13.0 | 0%, p=0.063 | 0%, p=0.32 |
+
+Against the brief's criteria:
+
+- `add-storm-lsf` add p50 within +23% of the base, or not significantly worse
+  than c6ee8376's level: met on the second arm (0% against c6ee8376, p=0.91;
+  +28% against the base, p=0.002). p90 and p99 not more than 10% worse than the
+  base: met (0% and -12%).
+- In-process `Started`, archive and reservation tails within 10% of the base or
+  not significantly worse: met. Every one is at or below the base's except
+  `plain4` reservation max, +6% (p=0.17).
+- D1 no worse than 849cc680: met in `plain4` (0 everywhere); in `slow3` one
+  `p2` run of 8 had 3 against none for 849cc680 (p=0.32, not significant;
+  the base's runs had 0 to 3).
+- Throughput kept: met (archives/s equal to 849cc680's in all three probes,
+  archives/min +1% on LSF).
+- 6.3e add-storm probe add mean significantly below the base: met (-19%,
+  p<0.001).
+
+Against 849cc680 the only significant changes are improvements: LSF add p50,
+p99 and mean, archive `meanWait` and `meanTx`; the add-storm probe's add mean
+and p50; `slow3`'s `Started` mean; `plain4`'s small adds.
+
+Other cheap changes considered for the add p50, not tried, because `p2` already
+reached c6ee8376's level and the rest of the gap to the base predates 6.4e:
+letting a small add take a turn kept for another writer (6.4e measured it as no
+help in the benchmark, and the kept turn now arises with the other coalescing
+writer waiting only as Bound 3 in the `writeTurns` doc allows), and dropping
+the kept turn when nobody waits (it guards the queued requests against a chunk
+asking in the gap, which `plain4` needed in 6.4d).
+
+#### Change
+
+`jobqueue/writeturns.go` (working tree, uncommitted; `$G/impl.diff`):
+`oldestOther` becomes `nextOther`, which implements Rule 3 of the `writeTurns`
+doc, choosing among the coalescing writers with `firstCoalescing` and among
+chunks and large adds with `oldestUncoalesced`, and says whether it chose a
+coalescing writer. `mayGoNext` holds the filter both helpers use for which
+writers count with a small add waiting (Rule 1), and `writerKind.coalescing`
+names the two coalescing writers. `nextTurn` implements Rules 1 and 2. New in
+its keep is the condition that `nextOther` chose no coalescing writer, so a
+coalescing writer can keep its turn while the other coalescing writer waits,
+when a chunk or large add older than that writer's request is chosen (Rule 2
+has every condition). The split into helpers is for `make lint` (`gocognit`,
+`nestif`); the behaviour is the prototype's, which the probes measured. The
+`writeTurns`, `nextTurn` and `nextOther` doc comments state the new order;
+only the `writeTurns` doc states why the coalescing writers go by asking, and
+only it states Bounds 1 to 6. `db.go` is unchanged.
+
+#### Tests
+
+`jobqueue/nohold_write_turns_test.go`, red first on the 849cc680 code
+(wr-nohold HEAD eb30e536, 3 of 3 runs, 6 failing assertions each,
+`$G/tdd/red-cur-{1,2,3}.txt`):
+
+- DB-level, `TestNoHoldWriteTurns`: "with no chunk or large add waiting, a
+  best-effort write waiting when an archive commits goes ahead of the archive
+  queued for the archive writer's next transaction, though that was queued
+  first". On 849cc680 the archive
+  writer kept its turn and the second archive committed straight after the
+  first.
+- New `TestNoHoldWriteTurnsCoalescingByAsking` (direct), with no add
+  waiting: of the two coalescing writers the one that asked first goes though
+  the other carries the older request; the coalescing writers go ahead of a
+  chunk that asked before both, in the order they asked, when the one that
+  asked last carries a request older than the chunk's; and a large add older
+  than both goes first. A best-effort writer, the only writer waiting when the
+  archive writer's turn ends, goes next, so the archive writer keeps no turn,
+  though its queued archive is older.
+- `TestNoHoldWriteTurnsSmallAddsByAsking`: 6.4e's X2 case ("of two writers an
+  add went ahead of, the one carrying the older request goes first") now says
+  the opposite for the two coalescing writers ("the one that asked first goes
+  first, though the other carries the older request"), and gains a companion
+  that keeps X2's claim where it still holds: of a chunk and an archive an add
+  went ahead of, the archive goes first when it carries the older request,
+  though it asked after the chunk.
+- Added after the mutant run (H2 survived, below): "with only a chunk an add
+  went ahead of and an archive that asked after that add's turn waiting, the
+  next add goes after the chunk and before the archive, though the archive
+  carries an older request". 6.4e's case for this claim used
+  two coalescing writers, which are now ordered by asking, so it could no
+  longer tell the rule apart from H2. It is a guard: it passes on 849cc680 and
+  on the change, and fails under H2.
+- Added in review 1, in `TestNoHoldWriteTurnsCoalescingByAsking`'s block
+  with an archive writer's turn in flight and an archive queued: "with no add
+  waiting, the archive writer keeps its turn while a best-effort writer waits,
+  when a chunk that asked after the archive was queued, and before the
+  best-effort writer asked, would go next" (the archive writer's next
+  transaction, then the chunk, then the best-effort writer), and "a failing
+  archive batch's retries keep the turn kept at the first attempt's end, and
+  the next batch takes it, while only a chunk and a best-effort writer wait"
+  (until review 5 its name also said the
+  retries "do not take the archive queue"; the retry, the solo re-run, the
+  next batch's first transaction, then the chunk, then the best-effort
+  writer). They pin the keep rule as the code has it,
+  which the first version of this record and of the doc comments misstated.
+  Both pass on the change. Against the tests as they were before them, G8 (the
+  reviewer's mutant: no turn kept while a coalescing writer waits) and G9
+  (taking a kept turn clears its writer's queued time, so retries stop keeping
+  it) both survived (`$G/review1/pre-review-tests-G8-G9.txt`); with them G8
+  fails both cases and G9 the second (`$G/review1/red-new-tests.txt`).
+- Added in review 2, in `TestNoHoldWriteTurnsCoalescingByAsking`: "a turn
+  kept at the end of a failing archive batch's first attempt with nobody
+  waiting is decided again at the retry's end: a best-effort writer, the only
+  writer to ask during the retry, goes before the solo re-run" (in the block
+  with an archive writer's turn in flight and an archive queued), and, in a new
+  block with a failing batch's first attempt in flight carrying an old request
+  and no archive queued since the swap, "each chunk of one big add, the only
+  writer waiting as an attempt ends, goes before the next attempt, though the
+  batch's request is older than every chunk's" (attempt, chunk 1, retry,
+  chunk 2, solo re-run).
+  They pin the two behaviours the review 2 counterexamples showed the doc
+  comment had wrong; both pass on the change. Each is red under a mutant that
+  makes the old wording true (G10, G11 below), run alone in a scratch test
+  holding only these two cases (`$G/review2/zz_review2_focus_test.go.txt`,
+  `new-cases-focused.txt`), since G11 also hangs an earlier case of the same
+  test and so hides the later ones in the full run.
+- Added in review 3, in `TestNoHoldWriteTurnsSmallAddsByAsking`: "a
+  best-effort writer asking after an add went ahead of a chunk, with the next
+  add waiting as that add's turn ends, goes after the chunk and that next add,
+  though its request is older than the chunk's" (a chunk waits, add 1 goes
+  ahead of it, then a best-effort writer carrying an older request and add 2
+  ask: chunk, add 2, best-effort), the review 3 counterexample; and "an
+  archive asking after an add went ahead of a chunk and a best-effort writer,
+  with the next add waiting as that add's turn ends, goes after both and that
+  next add, though its request is older than both of theirs" (a chunk and a
+  best-effort writer wait, add 1 goes ahead of both, then an archive
+  carrying an older request and add 2 ask: chunk, best-effort, add 2,
+  archive), a second counterexample to the old wording, found while checking
+  it. In `TestNoHoldWriteTurnsCoalescingByAsking`: "of a waiting large add and
+  chunk, the one with the older request goes first". All three pass on the
+  change. The first has the H2 guard's order with a best-effort writer for the
+  archive, stated as the bound's case. Against review 2's tests G13 and G14
+  survived the direct write-turns tests and G12 and G15 did not; with the new
+  cases G12 and G15 fail the first, G12 and G14 the second and G13 the third
+  (`$G/review3/new-mutants-focused.txt`; review 2's tests are
+  `pre-review3-tests.go.txt`).
+- Added in review 4, in `TestNoHoldWriteTurnsCoalescingByAsking`: "a
+  best-effort writer chosen to go next keeps the archive writer from keeping
+  its turn though a chunk waits too" (in the block with an archive writer's
+  turn in flight and an archive queued at q: a chunk waits, then a
+  best-effort writer whose request is between q and the chunk's: best-effort,
+  archive, chunk), and, in a new block with an archive writer's turn in flight
+  and a chunk waiting, "an archive queued after the chunk asked is younger
+  than the chunk's request, so the chunk goes when the turn ends, though a
+  best-effort writer that asked later waits too, the only other writer
+  waiting" (chunk, best-effort, archive). They pin the keep rule's "nextOther chose no coalescing writer"
+  and "older than the chosen chunk's" conditions, which R3 and R5 (the fourth
+  reviewer's mutants) broke without failing any test. Each starts the archive
+  writer's next ask right after the turn ends, so under the mutant the kept
+  turn goes to it at once and the case fails on its first order assertion
+  rather than on a wait. New `TestNoHoldWriteTurnsFailingBatchAttempts`
+  drives `applyFolded` directly and pins the attempt counts the doc comment
+  gives (2k+1 for k failing ops when at least one op does not fail, 2k when
+  every op fails, 1 when the first transaction fails as a whole). All pass on the change.
+- Added in review 5, for doc comment rules no test pinned. In
+  `TestNoHoldWriteTurnsCoalescingByAsking`'s block with a big add's chunk in
+  flight: "with no add waiting, the pair is judged by the older request either
+  carries, though the first to ask carries it" (a chunk waits, then an archive
+  carrying an older request asks, then a best-effort writer: archive, chunk,
+  best-effort); and two ties, "with no add waiting, a coalescing writer
+  carrying a request exactly as old as a waiting chunk's goes ahead of it" and
+  "of a waiting chunk and large add whose
+  requests are exactly as old, the one that asked first goes first". In its
+  block with an archive writer's turn in flight and an archive queued: "the
+  archive writer keeps no turn for queued requests exactly as old as a waiting
+  chunk's". In `TestNoHoldWriteTurnsKept`, a new block with a best-effort
+  writer's turn in flight and an archive queued for the archive writer: "the
+  best-effort writer's keep is decided on its own queued requests: one queued
+  after a waiting chunk asked keeps no turn, though the archive queued is
+  older than the chunk's request" (chunk, then best-effort). These five are
+  the reviewer's scratch tests (`$G/review5/zz_review5_test.go.txt`) in the
+  file's style. DB-level, in `TestNoHoldWriteTurns`: "with only a chunk
+  waiting that asked after it was queued, an archive queued during a failing
+  batch's first attempt keeps the turn for the archive writer at each
+  attempt's end, so the next batch, which carries it, commits ahead of the
+  chunk". It is new, for V5, which no direct test can
+  reach as it changes `db.go`. All six pass on the change, and each fails
+  under its own mutant on its own line and nowhere else
+  (`$G/review5-fix/red-new-cases.txt`).
+
+The red runs used the new cases as first written; the later rewrite of some
+assertions into single `give`/`noHoldWTNextTurn` steps (for `make lint`) does
+not change what they assert.
+
+All of 6.4e's other cases pass with their logic unchanged (some renamed in
+reviews 8 and 11). The write-turns tests pass 5 of 5
+runs with `-race` (`$G/tdd/green-race-x5.txt`).
+
+Mutants (`$G/mut/mut64g.py`, `mutants.txt`): each applied alone to a scratch
+copy of the final tree and run against the write-turns tests with `-race`; the
+script marks a mutant whose text does not match exactly once, or that does not
+compile, INVALID. The seven new ones (G1 to G7) cover this item's claims; 6.4e's
+44 are re-expressed against the new code where it changed (H1, H2, H6, H7, A1,
+K1, K2, P2, X2, N27a, N27b). A first pass on the prototype-shaped code
+(`$G/mut/pass1/`) had 48 killed, H2 surviving and G2 and A1 invalid (unused
+variables); that led to the H2 test above. On the final tree, the unmodified
+tests pass and all 51 are killed. Review 1 added G8 and G9 and reran the whole
+set of 53 against the final tests (`$G/review1/mut64g-r1.py`, the same script
+with `nextOther`'s renamed index; `$G/review1/mutants.txt`): the unmodified
+tests pass and all 53 are killed. Review 2 added G10 and G11 and reran the whole set
+of 55 against the final tests (`$G/review2/mut64g-r2.py`, review 1's script
+with the two added; `$G/review2/mutants.txt`): the unmodified tests pass and
+all 55 are killed. Review 3 added G12 to G15 and reran the whole set of 59
+against the final tests (`$G/review3/mut64g-r3.py`, review 2's script with the
+four added; `$G/review3/mutants.txt`): the unmodified tests pass and all 59
+are killed. Review 4 added R1 to R5 (the fourth reviewer's) and F1 and
+reran the whole set of 65 against the final tests (`$G/review4/mut64g-r4.py`,
+review 3's script with the six added; `$G/review4/mutants.txt`): the
+unmodified tests pass and all 65 are killed. Review 5 added V1 to V5, V7,
+V11, V15 and V19 (the fifth reviewer's) and reran the whole set of 74 against
+the final tests (`$G/review5-fix/mut64g-r5.py`, the reviewer's
+`$G/review5/mut64g-r5.py` unchanged; `$G/review5-fix/mutants.txt`): the
+unmodified tests pass and all 74 are killed.
+
+| Mutant | Claim it breaks | Killed by |
+| --- | --- | --- |
+| G1 coalescing writers ordered among themselves by oldest request (6.4e's order) | the coalescing writers go by asking | `CoalescingByAsking` "with no add waiting, of the archive and best-effort writers the one that asked first goes, though the other carries the older request", "with no add waiting, the archive and best-effort writers go ahead of a chunk that asked before both, in the order they asked, when the one that asked last carries a request older than the chunk's" and "with no add waiting, a large add whose request is older than both of theirs goes ahead of the archive and best-effort writers"; `SmallAddsByAsking` "of the archive and best-effort writers an add went ahead of, the one that asked first goes first, though the other carries the older request" (`$G/review12/mutants12b.txt`) |
+| G2 a turn kept although `nextOther` chose a coalescing writer | no kept turn when a coalescing writer would go next | the DB-level case; `CoalescingByAsking` keep case |
+| G8 no turn kept while a coalescing writer waits (the review 1 counterexample) | a turn is kept over a waiting coalescing writer when an older chunk or large add would go next | both review 1 cases |
+| G9 taking a kept turn clears its writer's queued time | a failing batch's retries keep the turn | the review 1 retry case |
+| G10 a turn kept at one attempt's end stays kept at each later one while no small add waits (review 2) | the keep is decided again at each attempt's end | the review 2 retry case (best-effort before the solo re-run) |
+| G11 an archive turn ending with nothing queued since the swap is kept against younger chunks for the batch's own request (review 2) | a chunk waiting as an attempt ends goes before the next attempt | the review 2 chunk case alone; in the full run the test binary's timeout, as earlier cases hang on the kept turn |
+| G12 under the small-add rule a coalescing writer the add has not gone ahead of counts too (the reviewer's I11) | a request queued for a coalescing writer waits behind the chunks and large adds that asked before its writer did, whatever their age | both review 3 bound cases; 6.4e's overtake cases |
+| G15 with a small add held back, a coalescing writer the add has not gone ahead of goes before a chunk or large add it overtook that carries a younger request (review 3) | as G12 | the first review 3 bound case; the H2 guard |
+| G14 under the small-add rule the requests of coalescing writers the add has not gone ahead of count against chunks and large adds (review 3) | as G12 | the second review 3 bound case |
+| G13 the chunk or large add with the youngest request goes first (the reviewer's I12) | chunks and large adds go oldest first | the review 3 large-add-and-chunk case |
+| R3 `nextOther` reports a coalescing choice only when no chunk or large add waits (review 4) | no turn is kept when `nextOther` chose a coalescing writer | the review 4 case "a best-effort writer chosen to go next keeps the archive writer from keeping its turn" |
+| R5 the keep compares the holder's queued requests with the first-asking coalescing writer's time, not the chosen chunk's (review 4) | a turn is kept only for requests older than the chosen chunk's or large add's | the review 4 case "an archive queued after the chunk asked is younger than the chunk's request" |
+| R1 no turn is kept when nobody waits (review 4) | a writer with requests queued keeps its turn when nobody waits | `TestNoHoldWriteTurnsKept` |
+| R2 the coalescing pair is judged by the younger of their times (review 4) | the pair is judged by the older | "go ahead of a chunk that asked before both, in the order they asked" |
+| R4 chunks and large adds ignore the overtaken filter (review 4) | with a small add waiting only writers an add has gone ahead of go | "an add that went ahead of it waits for it" (`AddOvertakesOnce`); `TestNoHoldWriteTurnsKept`'s case of an archive queued while its writer has not yet asked again; a bounded wait in `TestNoHoldWriteTurns` |
+| F1 a failed op is not re-run alone (review 4) | a batch with k failing archives takes up to 2k+1 transactions | `TestNoHoldWriteTurnsFailingBatchAttempts`; a bounded wait in `TestNoHoldWriteTurns` |
+| V1 the pair is judged by the last-asking coalescing writer's time (review 5) | the pair is judged by the older of their times, whichever asked first | the review 5 case "the pair is judged by the older request either carries" |
+| V2 a chunk or large add whose time ties with the pair's goes first (review 5) | a chunk or large add goes ahead of the coalescing writers only with a time older than theirs | the review 5 case "exactly as old as a waiting chunk's goes ahead of it" |
+| V3 a turn is kept for queued requests whose time ties with the chosen chunk's (review 5) | a turn is kept only for requests older than the chosen chunk's or large add's | the review 5 case "keeps no turn for queued requests exactly as old as a waiting chunk's" |
+| V4 of chunks and large adds whose times tie, the last to ask goes first (review 5) | chunks and large adds go in the order they asked | the review 5 case "of a waiting chunk and large add whose requests are exactly as old" |
+| V5 each attempt after a failing batch's first clears the archive writer's queued time (`db.go`, review 5) | the keep counts every request queued since the writer took its queue, at each attempt's end too | the review 5 DB-level case |
+| V11 the best-effort writer keeps its turn for the archive writer's older queued requests (review 5) | a writer's keep is decided on the requests queued for it | the review 5 `Kept` case |
+| V7, V15, V19 (review 5) | a writer asking after an add's turn is not overtaken by it; no turn is kept with nothing queued; a chunk's time is when it asked | already killed before review 5 (V7 by `AddOvertakesOnce` and DB-level cases, V15 by the test binary's timeout on a kept turn, V19 by DB-level order assertions) |
+| G3 against chunks only the first-asking coalescing writer's request counts | the pair is judged by the older of their requests | "go ahead of a chunk that asked before both, in the order they asked" |
+| G4 coalescing writers always before chunks and large adds | the oldest request goes first against chunks | the chunk and large-add rows of `TestNoHoldWriteTurnsAddOvertakesOnce`; a bounded wait in `TestNoHoldWriteTurns` |
+| G5 chunks and large adds always before coalescing writers | the oldest request goes first against chunks | 6.4e's DB-level cases (a best-effort write before a big add's first transaction; the aged-archive and run-state sequences) |
+| G6 kept whenever no coalescing writer waits, whatever the chunks' ages | kept only when older than the waiting chunks and large adds | a bounded wait in the large-add sequence case |
+| G7 the last-asking coalescing writer goes first | the first to ask goes first | the folded-adds case; a bounded wait |
+| A1 every writer other than a small add by ask order | oldest request against chunks | 6.4e's sequence cases |
+| H2 a held-back add lets the next of all others go first | an add waits only for writers it overtook | the case added after the mutant run |
+| H1, H6, H7, K1, K2, P2, N27a, N27b (re-expressed) | as in 6.4e | as in 6.4e |
+| X2 (re-expressed: of the writers an add overtook, a coalescing writer and a chunk by asking) | the overtaken writer with the oldest request goes first, against chunks | "of a chunk and an archive an add went ahead of" |
+| the other 33 of 6.4e's (H3 to H5, H8, A2 to A8, MA, K3, K4, K6 to K8, M7, N28, P1, P3 to P6, X1, X3, M15, M3, M3b, M3c, N8, N8b, N18) | as in 6.4e | as in 6.4e |
+
+G4, G7, H1 and P1 also hit a bounded wait (3 minutes) besides order
+assertions; among others, MA, A5, A8, K2, H6 and P6 are killed only by a bounded
+wait or the test binary's timeout, as several were in 6.4e. That was in these
+earlier full `-race` runs of the whole write-turns test set; for the result of
+each test function run alone, see the matrix in Review fixes (12).
+
+#### Gates and benchmarks
+
+`gofmt` and `go vet ./jobqueue/` are clean, and `make lint` reports 0 issues
+(`$G/gates/make-lint.log`). The first `make lint` failed on the first form of
+`nextOther` (cognitive complexity 21, nested blocks) and on repeated label
+strings and a missing blank line in the new tests
+(`$G/gates/run1-before-lint-fix/`); the helpers above and assertions rewritten
+as single `give`/`noHoldWTNextTurn` steps fixed them, and the write-turns tests
+were rerun 5 of 5 with `-race` on the final tree
+(`$G/tdd/green-race-x5-final.txt`).
+
+`make race` and `make test`, run as the brief gives them (`HOME` an empty
+scratch directory, `OS_*` unset), each report one failure, `TestLimiter` in
+`limiter` (line 739, a `time<` limit an hour ahead is refused;
+`$G/gates/make-race.log`, `make-test.log`). It is not this change: the base
+6f1b41bb and 849cc680 fail it the same way today, and it passes with `TZ=UTC`.
+These runs were on 2026-10-25, the day Europe/London's clocks went back, and the
+host's zone is Europe/London; the cause in the test or the limiter was not
+traced. With `TZ=UTC` both pass: `make race` 1,007 passed and 22 skipped, `make
+test` 1,007 passed and 23 skipped (`make-race-tzutc.log`,
+`make-test-tzutc.log`). 6.4e had 1,006; the one more is
+`TestNoHoldWriteTurnsCoalescingByAsking`; review 4 added
+`TestNoHoldWriteTurnsFailingBatchAttempts`, so later runs count 1,008. The
+local-time runs print only the
+failure, not counts, so they do not show the rest passed; the `TZ=UTC` runs do.
+
+Benchmarks, local disk, 6 interleaved rounds, medians, Mann-Whitney
+(`$G/bench.sh`, `bench.txt`, `benchsum.py`, `bench-summary.txt`):
+
+| Benchmark | c6ee8376 | 849cc680 | 6.4g | against 849cc680 | against c6ee8376 |
+| --- | --- | --- | --- | --- | --- |
+| `BenchmarkAddDuringWriterStreams` ns/op | 11.84ms | 13.71ms | 11.86ms | -13.5%, p=0.004 | +0.2%, p=0.87 |
+| `BenchmarkAddDuringWriterStreams` allocs/op | 1,060 | 1,192 | 1,060 | -11.0%, p=0.004 | +0.1%, p=1.0 |
+| `BenchmarkAddDuringWriterStreams` archives/s | 243.8 | 244.4 | 243.8 | -0.2%, p=0.064 | 0%, p=1.0 |
+| `BenchmarkAddJobs` ns/op (10 iterations) | | 113.7ms | 115.8ms | +1.8%, p=0.52 | |
+| `BenchmarkAddJobs` bolt pages, writes per job | | 1.245, 1.248 | 1.245, 1.248 | 0% | |
+| `BenchmarkArchiveJobs` ns/op | | 267.5ms | 266.3ms | -0.5%, p=1.0 | |
+| `BenchmarkArchiveSpacedArrivals` ns/op | | 2.475s | 2.474s | 0%, p=0.63 | |
+
+So 6.4e's one benchmark regression is gone, and the other writer benchmarks are
+unchanged (bolt transactions, pages and writes per job identical).
+
+The 6.4f crash-pair was not rerun. The change orders write turns among
+writers that already take them; it does not move any write into or out of a
+turn, change which writes are durable before a reply, or touch reservation,
+run-state or recovery code. The crash-pair checks durability ordering
+(hand-outs that must not survive a crash undone); its latency side (reserve
+gaps, archive tails) is what the three probes and `add-storm-lsf` measured.
+
+Not done: `make speed` (DEVELOPERS.md section 5) and `report-storm-lsf` and
+`limit-drain` on LSF; 6.4f ran them on 849cc680, and this item changes only
+which of two waiting writers goes first.
+
+Evidence in `$G`: `NOTES.txt`; `master.sh` and `master.out`; `p2.diff`;
+`env.sh`; `bench-screen1.txt`, `benchscreen.sh`; `g2/` (scripts, every run's
+`.out`, `.managerlog.gz`, `.lostsamples`, `.adderlogs.tgz`, `addstorm-runs.tsv`,
+`stats-out.txt`, buildinfo); `p63e/` (`ab1.txt`, `stats-out.txt`, scripts);
+`probe/` (scripts, hooks, `table4g.py`, `slow3/`, `plain4/` with per-run
+`txlog.txt`, `reqlog.txt`, `run.log`, `results.txt`, `table.txt`); `tdd/`;
+`mut/`; `gates/`; `bench*`.
+
+#### Review fixes (1)
+
+The reviewer returned FAIL: the documented keep rule was false. With the
+archive writer's turn ending while its queued requests date from t1, a chunk
+waiting since t2 and a best-effort writer since t3 (t1 before t2 before t3),
+`nextOther` chooses the chunk, so `nextTurn` keeps the turn for the archive
+writer while the best-effort writer waits. The code was kept, as measured;
+the documents now state what it does, and tests pin it.
+
+- The keep rule is restated exactly in the `writeTurns` and `nextTurn` doc
+  comments, `TestNoHoldWriteTurnsCoalescingByAsking`'s doc and the Design
+  section: the holder keeps its turn when no small add waits, it has requests
+  queued since it took its queue, `nextOther` chooses no coalescing writer
+  (nobody waits, or a chunk or large add carries a request older than every
+  waiting coalescing writer's), and the queued requests are older than that
+  chunk's or large add's. The "order they asked" rule between the coalescing
+  writers now names the keep as its exception, and the "other cheap changes"
+  paragraph no longer says a turn is kept only with the other coalescing
+  writer not waiting.
+- The bound for a request queued for a coalescing writer is two transactions
+  of the other coalescing writer besides the one in flight, not one, and the
+  failure path no longer says a waiting best-effort writer always goes before
+  each retry: retries do not take the archive queue, so a kept turn stays kept
+  for every remaining attempt and the next batch's first transaction (up to
+  2k+1 archive transactions and one more). Fixed in the doc comment and in the
+  Bounds section.
+- Two tests pin the keep and the retry chain (Tests); G8, the reviewer's
+  mutant, and G9 survived the earlier tests and are killed by them. The whole
+  set of 53 mutants was rerun and all are killed.
+- The verdict no longer says every in-process tail is at or below the base's:
+  `plain4`'s reservation max is +6% (p=0.17). The benchmark table's third data
+  column is headed 6.4g. Item 6.4f's `jstart` sentence now counts 6.4b's one
+  branch window after crash A (11.0s).
+- Code, behaviour unchanged: `nextOther`'s index is renamed `first`, so
+  `coalescing` names only `nextTurn`'s bool. `mayGoNext`'s
+  `turn.kind != writerNewJobs` stays: it is not redundant, since
+  `oldestUncoalesced` skips only coalescing writers itself and relies on it to
+  skip small adds; without it `nextOther` could choose a small add. Its doc
+  comment is reworded.
+- Gates (`$G/review1/`): the first `make lint` flagged two repeated label
+  strings (`goconst`) in the new cases' final order assertions, which were
+  then written as single `give`/`noHoldWTNextTurn` steps, asserting the same
+  order (`run1-before-lint-fix/`). On the final tree `make lint` reports 0
+  issues; the write-turns tests pass 5 of 5 runs with `-race`
+  (`green-race-x5.txt`); the 53 mutants were run again against the final tests,
+  the unmodified tests passing and all 53 killed (`mutants.txt`; the run
+  before the lint fix is in `mut-run1-before-lint-fix/`, also 53 of 53); and
+  with `TZ=UTC` `make race` reports 1,007 passed and 22 skipped and `make
+  test` 1,007 passed and 23 skipped (`make-race-tzutc.log`,
+  `make-test-tzutc.log`; `TestLimiter` still fails in local time on every
+  tree around the clock change, as above).
+
+#### Review fixes (2)
+
+A second reviewer returned FAIL on two documented bounds of a failing archive
+batch's retries, both false. The code was kept, as measured; the doc comment
+and the Bounds section now state what it does, and two direct tests pin it.
+
+- "While no small add waits a turn kept at the end of one attempt is kept at
+  the end of each later one" was false: the keep is decided again at each
+  attempt's end. With the first keep made with nobody waiting, a best-effort
+  writer that asks during the retry is chosen by `nextOther` at the retry's
+  end, so no turn is kept and it goes before the solo re-run. The doc comment
+  and the Bounds section now give the rule exactly as the code has it: the
+  archive writer's queued requests do not change across the attempts and a
+  chunk or large add asking meanwhile carries a later request, so a keep is
+  repeated at the next attempt's end unless a small add waits then, or the
+  best-effort writer, not waiting at the keep, has asked since with a request
+  no younger than every waiting chunk's and large add's (any request, with
+  none waiting). The "waits behind every remaining attempt" consequence is
+  restated for the case where it holds: from an attempt's end at which a chunk
+  or large add waits with a request older than the waiting best-effort
+  writer's but younger than the archive writer's queued requests, while no
+  small add asks.
+- "One chunk of each big add in progress" was false while a batch retries:
+  each attempt asks only after the one before it has ended, and the keep looks
+  at the archive writer's queued requests (`queuedSince`), not the batch's own
+  oldest request, so a chunk waiting as an attempt ends goes before the next
+  attempt (attempt, chunk 1, retry, chunk 2, solo re-run: 2k or more chunks of
+  one big add with k failing archives). The first bound now excepts a
+  retrying batch, the gap paragraph counts the moment between attempts as a
+  gap in which the batch's requests are invisible too, and the retry
+  paragraph says the chunks and large adds waiting as each attempt ends can go
+  before the next attempt, with no limit of one per big add.
+- Tests (Tests above): the two review 2 cases. G10 (a turn kept at one
+  attempt's end stays kept at each later one while no small add waits) makes
+  the first false sentence true and fails the first case; G11 (an archive turn
+  ending with nothing queued since the swap is kept against younger chunks for
+  the batch's own request) makes the "one chunk per big add" bound true for a
+  retrying batch and fails the second. G2 also fails the first. Run alone in a
+  scratch test holding only the two cases, G10, G11 and G2 fail them and G6 and
+  G9 do not (`$G/review2/new-cases-focused.txt`; same cases, same setup,
+  `zz_review2_focus_test.go.txt`). On the final code the reviewer's
+  `TestRev64gChunksBetweenAttempts` passes and `TestRev64gCounterexamples`,
+  which asserts the two old claims, fails on both (`reviewer-repro.txt`).
+- Not done (optional, behaviour-identical): making `oldestUncoalesced` skip
+  small adds itself. `mayGoNext` already skips them for both callers, and
+  review 1 kept it there; a second check would duplicate it, and dropping
+  the first would re-express a dozen mutants keyed on `mayGoNext`'s text.
+- Gates (`$G/review2/`, `gates.sh`): `make lint` reports 0 issues
+  (`make-lint.log`); the write-turns tests pass 5 of 5 runs with `-race`
+  (`green-race-x5.txt`); the unmodified tests pass and all 55 mutants are
+  killed (`run-mutants.sh`, `mutants.txt`); and with `TZ=UTC` `make race` reports
+  1,007 passed and 22 skipped and `make test` 1,007 passed and 23 skipped
+  (`make-race-tzutc.log`, `make-test-tzutc.log`; the count is unchanged, as
+  the new cases are in an existing test function).
+
+#### Review fixes (3)
+
+A third reviewer returned FAIL on one documented bound, false on the
+small-add path. The code was kept, as measured; the doc comment and the
+Bounds section now state what it does, and direct tests pin it.
+
+- "A request queued for a coalescing writer waits behind the chunks and large
+  adds that asked before the oldest request either coalescing writer
+  carries" was false. A chunk waits, add 1 goes ahead of it, then a
+  best-effort writer carrying a request older than the chunk's asks, and
+  add 2: at the next turn only the writers add 1 went ahead of may go, so the
+  chunk goes, then add 2, then the best-effort writer, though the chunk asked
+  after the best-effort writer's request was queued. This is the order the
+  H2 guard already pinned (with an archive). Checking the other bound
+  sentences for the same small-add path found a second case under the same
+  sentence: with a chunk and a best-effort writer both overtaken by add 1, and
+  the best-effort writer's request younger than the chunk's, the chunk goes
+  first though an archive that asked after add 1's turn carries a request
+  older than the chunk's, so the archive's request waits behind it. The bound
+  is now "the chunks and large adds that asked before its writer did, whatever
+  the age of their requests", and the doc comment and the Bounds section say
+  why that holds on both paths: with no small add waiting a chunk or large add
+  goes first only with a request older than every waiting coalescing
+  writer's; with one waiting, one the add went ahead of goes first when the
+  writer is not among those the add went ahead of (it began waiting before
+  the add's turn, which came before the writer asked) or when its request is
+  older than every coalescing writer's among them. The other bounds hold on
+  that path, rechecked against `nextTurn`, `nextOther`, `firstCoalescing`
+  and `oldestUncoalesced`: with a small add waiting, a writer the add went
+  ahead of passes one it did not go ahead of only if it asked first, and the
+  writers it went ahead of go among themselves in the order used with no small
+  add waiting. A writer that asked before a waiting chunk or large add is one
+  the chunk bound allows (a chunk or large add that asked before it, or a
+  coalescing writer carrying an older request), and one that asked before a
+  waiting coalescing writer is the other coalescing writer's "asked before
+  it" transaction. So the chunk bound, the "two more transactions of the other
+  coalescing writer" and the small-add bound are unchanged.
+- Tests (Tests above): the two bound cases and "of a waiting large add and
+  chunk, the one with the older request goes first", which asserts directly
+  what G13 (the reviewer's I12) broke and earlier only a bounded wait caught.
+  G12 (the reviewer's I11) and G15 make the old wording true for the first
+  case and fail it; G14 makes it true for the second and fails it. The
+  reviewer's `TestRev64g3YoungerChunkAheadOfCoalescing`, which asserts the
+  old bound, fails on the final code (`reviewer-repro.txt`).
+- `TestNoHoldWriteTurnsSmallAddsByAsking`'s doc comment states a
+  consequence of the bound for when another small add waits (narrowed in
+  review 6, Review fixes (6) below).
+- Gates (`$G/review3/`, `gates.sh`): `make lint` reports 0 issues
+  (`make-lint.log`); the write-turns tests pass 5 of 5 runs with `-race`
+  (`green-race-x5.txt`); the unmodified tests pass and all 59 mutants are
+  killed (`mutants.txt`; G12 and G13 also hit a bounded wait in
+  `TestNoHoldWriteTurns`); and with `TZ=UTC` `make race` reports 1,007 passed
+  and 22 skipped and `make test` 1,007 passed and 23 skipped
+  (`make-race-tzutc.log`, `make-test-tzutc.log`; the count is unchanged, as
+  the new cases are in existing test functions).
+
+#### Review fixes (4)
+
+A fourth reviewer returned FAIL on one more false bound on the failing
+archive batch path, the fourth round in a row to find one in the derived
+bounds prose, and on two keep conditions no test pinned. The code was kept,
+as measured. Rather than patch the sentence again, the `writeTurns` doc
+comment and the Bounds section above were rewritten to state the ordering
+rules exactly as `takeSince`, `nextTurn`, `nextOther`, `firstCoalescing`,
+`oldestUncoalesced` and `mayGoNext` implement them, and only bounds that
+follow from those rules in a step or two and that a direct test pins.
+
+- False: "once a chunk or large add waits as an attempt ends with a request
+  older than the waiting best-effort writer's but younger than the archive
+  writer's queued requests, and while no small add asks, the best-effort
+  writer waits behind every attempt of the batch still to run and the first
+  transaction of the archive writer's next batch". With an older chunk W
+  waiting too, no turn is kept, W goes, and the best-effort writer goes before
+  the retry (the reviewer's `TestRev64g4OlderChunkBreaksBEWaitsBehindAttempts`:
+  W, best-effort, retry, then the kept turn). Removed, with the rest of the
+  retry chain.
+- Dropped as intricate, though not shown false: the per-wait counts for a
+  request queued for a coalescing writer ("at most the transaction in flight,
+  two more transactions of the other coalescing writer ..., one chunk of each
+  big add in progress, ... at most one small add per wait") and for a chunk or
+  large add ("at most two batches of each with older requests and ... at most
+  one batch of the other carrying only later requests"); the retry chain ("a
+  turn kept at one attempt's end is kept again at the next one's end unless
+  ...", "one big add's chunks can alternate with the attempts ..., 2k of them
+  or more"); and the enumeration of what makes up the gap between a
+  coalescing writer's turn and its next ask. Their replacements are weaker
+  and say who can go ahead, not how many: while a coalescing writer waits,
+  every writer that goes ahead of it asked before it did, is a small add, or
+  is the other coalescing writer keeping its turn; a coalescing writer goes
+  ahead of a waiting chunk or large add, with no small add waiting, only while
+  a waiting coalescing writer carries a time no younger than its own or by a
+  keep for older requests; and while a failing batch retries each attempt
+  asks afresh, so these hold per attempt, not per batch, and any waiting
+  writer (small adds, the best-effort writer, chunks and large adds whatever
+  their times) can go between attempts.
+- Minor findings: the "queued requests stay the same across the attempts"
+  justification (true only once a request is queued) and "a turn kept with
+  nobody waiting goes, as the next attempt ends, to a best-effort writer that
+  asked in the meantime" (false if a small add also asked) went with the
+  retry chain; "the writers that add has gone ahead of" is now "a writer an
+  add has gone ahead of". The small-add bound is restated for a small add
+  that asks while no other small add waits, and includes the small adds that
+  asked before it, which the old wording left to a separate sentence.
+- `nextTurn`'s and `nextOther`'s doc comments say the same as the rules (with
+  a small add waiting no turn is kept; the keep compares with the chosen chunk's
+  or large add's time only when one was chosen). The Design section's pair
+  guarantee is qualified "with no small add waiting", and its keep bullet now
+  reads "when a chunk or large add was chosen". `db.go`'s comments make no
+  ordering or bound claims beyond `writeTurns`' and are unchanged.
+- Tests (Tests above): the two review 4 keep cases and
+  `TestNoHoldWriteTurnsFailingBatchAttempts`. Against the tests as they were
+  before them R3 and R5 survive (`$G/review4/pre-review4-tests-R3-R5.txt`);
+  with them each fails on an order assertion in its own case, the R3 case's
+  "best-effort" and the R5 case's "chunk", after 0.06s
+  (`new-cases-R3-R5.txt`, both runs). F1 fails the attempt-count test.
+
+Superseded by the clause, mutant and killing-test table under Review fixes
+(12), which review 12 showed some of these rows overstate; kept as the record
+of this round. Each rule and bound in the doc comment, and the test that pins
+it (test functions shortened: `AddOvertakesOnce`, `Kept`, `CoalescingByAsking`,
+`SmallAddsByAsking`, `FailingBatchAttempts`, all `TestNoHoldWriteTurns*`;
+"DB-level" is a case of `TestNoHoldWriteTurns`):
+
+| Sentence | Test |
+| --- | --- |
+| The sentence before the rules, on asking for a turn | `Kept` "with nobody waiting the archive writer keeps the turn, and a chunk asking meanwhile waits for it", "a kept turn is used up once its writer takes it" |
+| Rule 1: a turn ending with a small add waiting | `AddOvertakesOnce` "an add that keeps arriving goes ahead of each of them only once"; DB-level "an archive writer whose turn ends with a small add waiting does not keep" and `Kept` "an archive queued while its writer has not yet asked again counts only in that writer's keep" (no turn kept) |
+| Rule 2: a turn ending with no small add waiting, and the keep | `Kept` both "with nobody waiting ... keeps the turn" cases, the review 5 best-effort case (its own queued requests); `CoalescingByAsking` "a best-effort writer, the only writer waiting when the turn ends, goes next", the review 1 keep case, both review 4 cases, the review 5 tie case (requests as old as the chunk's keep no turn); at a failing batch's attempts: `CoalescingByAsking` review 1 retry case, review 2 "decided again at the retry's end", DB-level review 5 "an archive queued during a failing batch's first attempt keeps the turn" |
+| Rule 3: `nextOther` | `CoalescingByAsking` "with no add waiting ... the one that asked first goes", "go ahead of a chunk that asked before both, in the order they asked", the review 5 "the pair is judged by the older request either carries", "a large add whose request is older than both", "of a waiting large add and chunk"; ties: the review 5 "exactly as old as a waiting chunk's goes ahead of it" and "of a waiting chunk and large add whose requests are exactly as old" |
+| The sentence after the rules, on a kept turn | `Kept` "a small add asking while the archive writer keeps the turn waits for that writer's next transaction", "a chunk asking meanwhile waits for it" |
+| Bound 1, small adds | `AddOvertakesOnce` all three blocks; `Kept` small-add case; `SmallAddsByAsking` "with only an archive an add went ahead of and a best-effort writer that asked after that add's turn waiting, the next add goes after the archive and before the best-effort writer" |
+| Bound 2, order within each kind | `CoalescingByAsking` "the one that asked first goes", "of a waiting large add and chunk", the review 5 tie "of a waiting chunk and large add whose requests are exactly as old"; `SmallAddsByAsking` "of the archive and best-effort writers an add went ahead of, the one that asked first goes first"; `AddOvertakesOnce` "the first add goes next, then the archive, ahead of the second add"; the keep exception: the review 1 keep case |
+| Bound 3, a waiting coalescing writer | `SmallAddsByAsking` both review 3 cases; `CoalescingByAsking` "a large add whose request is older than both", the review 5 "the pair is judged by the older request either carries", the review 1 keep case, the review 4 best-effort case |
+| Bound 4, a waiting chunk or large add | `CoalescingByAsking` "go ahead of a chunk that asked before both, in the order they asked", the review 5 "the pair is judged by the older request either carries" and "exactly as old as a waiting chunk's goes ahead of it", the review 4 chunk case; `Kept` "a chunk asking meanwhile waits for it" |
+| Bound 5, requests queued between asks | `Kept` "an archive queued while its writer has not yet asked again counts only in that writer's keep" |
+| Bound 6, a failing batch's transaction counts | `FailingBatchAttempts` |
+| Bound 6, who goes between attempts | review 2 "a best-effort writer, the only writer to ask during the retry, goes before the solo re-run" and "each chunk of one big add, the only writer waiting as an attempt ends, goes before the next attempt"; small adds by rule 1 (DB-level no-keep case), with no retry-specific case |
+
+- Mutants: the whole set of 65 (review 3's 59, R1 to R5 and F1) rerun
+  against the final tests: the unmodified tests pass and all 65 are killed
+  (`$G/review4/mutants.txt`).
+- Gates (`$G/review4/`, `gates.sh`): `make lint` reports 0 issues
+  (`make-lint.log`; a first run, `make-lint-run1-err113.log`, flagged two
+  `err113` dynamic errors in the new test, made package-level); the write-turns
+  tests pass 5 of 5 runs with `-race` (`green-race-x5.txt`); and with `TZ=UTC`
+  `make race` reports 1,008 passed and 22 skipped and `make test` 1,008 passed
+  and 23 skipped (`make-race-tzutc.log`, `make-test-tzutc.log`; one more than
+  review 3, the new `TestNoHoldWriteTurnsFailingBatchAttempts`).
+
+#### Review fixes (5)
+
+A fifth reviewer returned FAIL only on rules no test pinned: it found no
+false sentence, and its mutants V1 to V5 and V11 survived every test
+(`$G/review5/mutants-r5.txt`), each killed by a scratch test asserting a
+sentence of the doc comment (`$G/review5/zz_review5_test.go.txt`,
+`mutants-r5-vs-scratch-tests.txt`). The code was kept, as measured.
+
+- V1 (the coalescing pair judged by the time of the last of them to ask) and
+  V11 (the best-effort writer's keep decided on the archive writer's queued
+  requests): two cases pin Rule 2 and Rule 3 where they had no test (Tests
+  above).
+- V5 (each attempt after a failing batch's first clears the archive writer's
+  queued time, in `db.go`): Bound 6's clause "and does not take the archive
+  queue, so the keep at each attempt's end is decided by the rule above on
+  the archive writer's queued requests, not the batch's" is deleted from the
+  `writeTurns` doc comment and from the Bounds section, since Rule 2 states
+  the keep for every turn's end, an attempt's included. The table row that
+  pinned it is gone; its tests now pin Rule 2. No other current sentence says
+  it: `TestNoHoldWriteTurnsCoalescingByAsking`'s doc comment no longer says
+  the attempts "do not take the archive queue", and the review 1 retry case's
+  name no longer says it either (the Tests bullet above quotes the new name).
+  Review fixes (1) and (2) above keep their wording as the record of those
+  reviews. Deleting the clause does not kill V5, which breaks Rule 2 on the
+  `db.go` path that no direct test reaches, so the DB-level review 5 case
+  pins it: an archive queued during a failing batch's first attempt keeps the
+  turn at each attempt's end, and the next batch commits ahead of a chunk that
+  asked after that archive was queued. Under V5 the chunk goes as soon as the
+  retry ends.
+- Ties (V2, V3, V4): Rule 2 ("older than the time of the chunk or large add
+  nextOther chose") and Rule 3's comparison with the coalescing writers ("one
+  older than every coalescing writer's") already say which way a tie goes.
+  Rule 3's "the chunk or large add with the oldest time" did not, so it, and
+  the `nextOther` and `oldestUncoalesced` doc comments, now add "of those with
+  the same time, the one that asked first", which Bound 2's "in the order they
+  asked" follows from. Three tie cases pin the three directions.
+- V7, V15 and V19, the reviewer's other mutants, were already killed and are
+  in the rerun set.
+- Red: against the tests as they were before this round V1 to V5 and V11
+  survive (`$G/review5/mutants-r5.txt`). With the new cases each fails on its
+  own case's first order assertion and nowhere else, after at most 1.6s
+  (`$G/review5-fix/red-new-cases.txt`, lines mapped to cases in
+  `new-case-lines.txt`): V1 line 2002, V2 2019, V3 2124, V4 2033 (all
+  `CoalescingByAsking`), V5 1092 (the DB-level case), V11 1924 (`Kept`). A
+  first red run, before the `make lint` fix below, gave the same result
+  (`aborted-run-before-lint-fix/red-new-cases.txt`).
+- Gates (`$G/review5-fix/`, `gates.sh`): the first `make lint`
+  (`make-lint-run1.log`) flagged two repeated label strings (`goconst`) in
+  the new cases' final order assertions, written as `noHoldWTGiveTurns`
+  slices, and one doc line over 120 columns; the assertions were rewritten as
+  single `give`/`noHoldWTNextTurn` steps, asserting the same order, and the
+  line rewrapped. On the final tree `make lint` reports 0 issues
+  (`make-lint.log`). The whole set of 74 mutants (review 4's 65, V1 to V5,
+  V7, V11, V15 and V19) was rerun in a scratch detached worktree against the
+  final tests: the unmodified tests pass and all 74 are killed
+  (`mutants.txt`; V15 by the test binary's timeout, as before). The
+  write-turns tests pass 5 of 5 runs with `-race` (`green-race-x5.txt`). With
+  `TZ=UTC` `make race` reports 1,008 passed and 22 skipped and `make test`
+  1,008 passed and 23 skipped (`make-race-tzutc.log`, `make-test-tzutc.log`;
+  the count is unchanged, as the new cases are in existing test functions).
+
+#### Review fixes (6)
+
+A sixth reviewer returned FAIL on wording only; the code and tests were kept.
+Its scratch test (`$G/review6/zz_review6_test.go.txt`,
+`counterexamples.txt`) shows two sentences that read wrongly. These changes
+are to comments and this record only.
+
+- A coalescing writer's time: the `writeTurns` doc comment and the Bounds
+  preamble said a coalescing writer carries "the first request queued since
+  it (last) took its queue", which reads as the `queuedSince` mark the keep
+  decision uses. Both now say it carries when the oldest request in the queue
+  it took was queued, the first queued since it took the queue before that,
+  matching the `writeTurn.oldest` field comment. 6.4e's Design bullet on the
+  same time is reworded to match. This round also added a clause saying that
+  after the best-effort writer is stopped nothing marks its requests, so its
+  final drain may carry its ask time; review 7 removed it, since nothing can
+  be queued after `beStopped` is set (`close()` holds `db.Lock` with
+  `db.closed` set, and `queueJobChangeAhead` checks `beStopped`). The sentences about the keep ("requests queued since it took its
+  queue") mean the mark and are unchanged.
+- The `writeTurns` doc comment's "Between those two a request's age gains
+  little, since each asks again behind the other as soon as its turn ends"
+  now ends "since each asks again soon after its turn ends".
+- Design bullet 1 now says the coalescing writers go in the order they asked
+  "except when one keeps its turn (below)".
+- `TestNoHoldWriteTurnsSmallAddsByAsking`'s doc comment: the request waits
+  behind the chunks and large adds the add went ahead of only "while another
+  small add waits". With none waiting, the coalescing writer carrying the
+  older request goes first (the reviewer's second case). The tail "behind
+  the chunks and large adds that asked before its writer did" is dropped,
+  since after the second add's turn a chunk that asked after the add's turn
+  but before the writer, with a younger request, goes after it. The Review
+  fixes (3) bullet that said the comment "states the bound's consequence"
+  now says it states a consequence of the bound for when another small add
+  waits.
+- `firstCoalescing` and `oldestUncoalesced`: "-1 if none is waiting" is now
+  "-1 if none counts", since with `onlyOvertaken` a waiting writer may not
+  count.
+- Gates (`$G/review6-fix/`): printed without comments, `writeturns.go` and
+  `nohold_write_turns_test.go` are identical before and after this round
+  (`strip-compare-writeturns.txt`, `strip-compare-test.txt`); `make lint`
+  reports 0 issues (`make-lint.log`); the write-turns tests pass with `-race`
+  (`race.txt`). No mutant rerun, as no code changed.
+
+#### Review fixes (7)
+
+A seventh reviewer returned FAIL on wording only
+(`$G/review7/counterexamples.txt`); the code and tests were kept. These
+changes are to comments and this record only.
+
+- The clause "after the best-effort writer is stopped nothing marks its
+  requests, so its final drain may carry its ask time" is removed from the
+  `writeTurns` doc comment and the Bounds preamble. It was false: no
+  best-effort write can be queued once `beStopped` is set, so the final drain
+  carries the mark of its first write.
+- `firstCoalescing`'s doc comment said it returns "the oldest request either
+  waiting coalescing writer carries"; with `onlyOvertaken` it returns only
+  the oldest of the writers that count. It now says "the oldest time of the
+  coalescing writers that count".
+- Gates (`$G/review7-fix/`): printed without comments, `writeturns.go` is
+  identical before and after this round (`strip-compare-writeturns.txt`);
+  `make lint` reports 0 issues (`make-lint.log`).
+
+#### Review fixes (8)
+
+An eighth reviewer returned FAIL on wording only
+(`$G/review8/counterexamples.txt`); the code and tests were kept. These
+changes are to comments, two test case names and this record only. After
+fixing the three findings, one sweep read every sentence of the `writeTurns`
+doc comment and its helpers' comments, the test function docs and case names
+in `nohold_write_turns_test.go`, and this item's Design, Bounds and Change
+for quantifiers wider than the code (the keep reads only `queuedSince`, the
+first and so oldest request queued), names from before this item that
+contradict the ask order of the coalescing writers, and claims missing their
+conditions. Each was narrowed or deleted.
+
+`writeturns.go`:
+
+- Deleted (F1): "By the first rule, at most one small add gets a turn while
+  another writer waits." Several small adds can wait, and each goes in turn;
+  Bound 1 states the bound. The next sentence's "Without that rule" became
+  "Without the first rule".
+- Rule 2 (F3): "either nobody waits or those queued requests are older than
+  the time of the chunk or large add nextOther chose" now says "the oldest of
+  those queued requests is older than".
+- `nextTurn` doc (F3): "those queued requests are older than the chosen
+  chunk's or large add's time" now says "the oldest of those queued requests
+  is older than".
+- Bound 3 (F3): "the requests queued for the keeper are older still" now says
+  "the oldest of the requests queued for the keeper is older still".
+- Bound 4: "or by keeping the turn for requests older than that time" now says
+  "or by keeping the turn when the oldest of the requests queued for it is
+  older than that time".
+- Bound 5: "those queued for it since it took its queue count only in its keep
+  decision as its turn ends" now says "of those queued for it since it took
+  its queue, only the oldest counts, and only in its keep decision as its turn
+  ends".
+- "The coalescing writers go among themselves by asking because" now says "by
+  asking, but for a kept turn, because" (the exception Bound 2 states).
+- "Against chunks and large adds the order is by time rather than by asking"
+  now says "Against chunks and large adds the coalescing writers are judged by
+  time rather than by asking": the coalescing writer that goes is still the
+  first to ask, which may carry a younger time than a waiting chunk's.
+- `nextOther` doc: "The coalescing writer that asked first goes unless a chunk
+  or large add carries a time older than that of every coalescing writer that
+  counts" now says "Of the writers that count, the coalescing writer that
+  asked first goes unless a chunk or large add carries a time older than that
+  of every coalescing writer", so the first-asking writer is also one that
+  counts.
+- `addTurns` field (pre-existing): "counts the turns give has handed to the
+  new jobs writer" now says "counts the turns give has handed to small adds
+  (writerNewJobs), not those handed to large adds (writerLargeNewJobs)".
+
+`nohold_write_turns_test.go`:
+
+- Case name (F2), DB-level: "with no add waiting, the writer whose oldest
+  request is oldest goes next, not the one that asked first" is now "with no
+  add waiting, an archive whose request is older than a waiting chunk's goes
+  ahead of it, though the chunk asked first". The case is an archive against
+  bigA's second chunk; between the coalescing writers the old name was false
+  since this item.
+- Case name, `Kept`: "an archive queued while its writer has not yet asked
+  again is invisible to the order: once an add has gone, ..." is now "...
+  counts only in that writer's keep: once an add has gone, ...". The queued
+  archive counts in its writer's keep (Bound 5), so "invisible" held only
+  because a small add stopped the keep in this case.
+- File comment: "Items 6.3e to 6.4e" is now "6.3e to 6.4g", and "a pending
+  add commits within a bounded number of other transactions" now says "a
+  pending small add"; large adds have no preference.
+- `TestNoHoldWriteTurnsKept` doc: "keeps it only when the requests it has
+  queued since it took its queue would go next" now says "the oldest request
+  it has queued".
+- `TestNoHoldWriteTurnsCoalescingByAsking` doc: "go among themselves in the
+  order they asked" gains "but for a kept turn"; "against chunks and large
+  adds by their oldest request" now says "by the oldest request either
+  carries"; "the queued requests of the writer whose turn ends are older
+  still" now says "the oldest of the requests queued for the writer whose turn
+  ends is older still"; and "against the requests queued for the writer whose
+  turn ends" now says "against the oldest request queued for".
+- `TestNoHoldWriteTurnsSmallAddsByAsking` doc: "a small add is held back only
+  by the writers it has already gone ahead of" now says "besides the turn in
+  flight or kept and the small adds that asked before it, a small add is held
+  back only by the writers an add has gone ahead of"; and "though they carry
+  younger requests" now says "even when they carry younger requests".
+
+This record:
+
+- Design bullet 2: "Against chunks and large adds the oldest request goes
+  first, judged for the coalescing writers by" now says "Against chunks and
+  large adds the coalescing writers are judged by", as in the doc comment.
+- Design bullet 3 (F3): "its queued requests are older than that one's. Its
+  queued requests are then the oldest of all" now says "the oldest of its
+  queued requests is older than that one's. The oldest of its queued requests
+  is then the oldest of all"; "So it still protects the requests queued during
+  a chunk" gains "with no small add waiting".
+- Design bullet 4: "with an add held back only the writers it overtook go
+  first" now says "the writers an add has overtaken".
+- Bounds 3, 4 and 5: as in the doc comment.
+- Change: "the holder's queued requests are older than the chosen chunk's"
+  now says "the oldest of the holder's queued requests is older than".
+- The renamed `Kept` case's references: the mutant table's R4 row ("the
+  invisible-archive case") and the Review fixes (4) table's Bound 5 row.
+
+Kept as they are, after the sweep: names and sentences that describe one case
+with one queued request ("keeps no turn for queued requests exactly as old as
+a waiting chunk's", "decided on its own queued requests", "the requests it
+has queued are older than every waiting writer's"), and Bound 1's "before
+another small add has had one" (while the small add waits, any small add
+given a turn is another).
+
+- Gates (`$G/review8-fix/`): printed without comments by go/printer
+  (`tools/strip.go`), `writeturns.go` is identical before and after this round
+  (`strip-compare-writeturns.txt`) and the test file differs only in the two
+  case names (`strip-diff-test.txt`); `make lint` reports 0 issues
+  (`make-lint.log`); the write-turns tests pass with `-race`
+  (`test-race.log`).
+
+#### Review fixes (9)
+
+A ninth reviewer returned FAIL on two sentences (`$G/review9/`); the code and
+tests were kept. These changes are to comments and this record only.
+
+- Change (this record): "`nextOther`, which returns the coalescing writer that
+  asked first (`firstCoalescing`) unless the chunk or large add with the oldest
+  request (`oldestUncoalesced`) is older than every request either coalescing
+  writer carries" now says "which returns, of the writers that count, the
+  coalescing writer that asked first ... is older than every request of the
+  coalescing writers that count". With a small add waiting, a coalescing writer
+  no add has gone ahead of does not count (the reviewer's
+  `TestReview9ChangeSentence`).
+- Design bullet 2 (this record), the same unqualified phrasing: "judged by the
+  oldest request either carries: if that is no younger than every waiting
+  chunk's and large add's, the coalescing writer that asked first goes" now
+  says "judged by the oldest request carried by those of them that count (with
+  a small add waiting, only the writers an add has gone ahead of count)", and
+  the coalescing writer, chunks and large adds it compares are those that
+  count. The other "every ... coalescing writer's" sentences in this item are
+  on the path with no small add waiting, where every writer counts, or already
+  say "among them", and were kept.
+- `TestNoHoldWriteTurnsKept` doc: "a writer whose turn ends keeps it only when
+  the oldest request it has queued since it took its queue would go next" now
+  states Rule 2 of the `writeTurns` doc: with no small add waiting, it keeps
+  it only when it has requests queued since it took its queue, `nextOther`
+  chose no coalescing writer, and either nobody waits or the oldest of those
+  queued requests is older than the time of the chunk or large add `nextOther`
+  chose.
+- Rewrapped to 80 columns the comment lines this item made longer: in
+  `writeturns.go` the `coalescing` doc, the Bound 2 sentence ending "goes
+  before one it has not", the `nextTurn` doc's last sentence and the
+  `nextOther` doc; in `nohold_write_turns_test.go` the file comment and the
+  `TestNoHoldWriteTurnsKept` doc.
+
+- Gates (`$G/review9-fix/`): printed without comments by go/printer
+  (`$G/review8-fix/tools/strip.go`), `writeturns.go` and
+  `nohold_write_turns_test.go` are identical before and after this round
+  (`strip-compare.txt`); `make lint` reports 0 issues (`make-lint.log`).
+
+#### Review fixes (10)
+
+A tenth reviewer returned FAIL on two paraphrases of the ordering rules
+(`$G/review10/counterexamples.txt`); the code and tests were kept, and
+reviews 6 to 10 each found the `writeTurns` doc comment's rules and bounds
+true. These changes are to comments and this record only.
+
+- F1, `TestNoHoldWriteTurnsCoalescingByAsking` doc: "and against chunks and
+  large adds by the oldest request either carries" lacked "with no small add
+  waiting". The doc no longer restates the rules (below).
+- F2, Change (this record): "so it keeps its turn while the other coalescing
+  writer waits if a chunk or large add older than that writer's request is
+  chosen" stated a condition as sufficient that is not. It now says "so a
+  coalescing writer can keep its turn while the other coalescing writer
+  waits, when a chunk or large add older than that writer's request is
+  chosen (Rule 2 has every condition)".
+- Reviews 6 to 10 each failed on a paraphrase like these outside the
+  `writeTurns` doc, so the paraphrases are gone: each restatement of an
+  ordering rule, keep condition or bound in the places below is now a
+  reference by number (Rule 1 to Rule 3, Bound 1 to Bound 6, numbered as
+  they appear in the `writeTurns` doc), and each test doc says what its
+  cases set up and check.
+  - `nohold_write_turns_test.go`: the docs of
+    `TestNoHoldWriteTurnsFailingBatchAttempts`,
+    `TestNoHoldWriteTurnsAddOvertakesOnce`, `TestNoHoldWriteTurnsKept`,
+    `TestNoHoldWriteTurnsCoalescingByAsking` and
+    `TestNoHoldWriteTurnsSmallAddsByAsking`.
+  - This item's Design section (all four bullets, with the rationale kept),
+    its Bounds paragraph (the six restated bounds and the definition of a
+    writer's time removed), the In-process probes paragraph on other cheap
+    changes (its keep clause), the Change section (`nextOther`, `mayGoNext`
+    and `nextTurn`), and the Sentence column of the Review fixes (4) table
+    (the rows for asking, Rule 1, Rule 2, a kept turn and Bound 6).
+  - `writeturns.go`: the `writeTurn.oldest` field comment, "when the oldest
+    request this writer's transaction carries was queued", which does not
+    hold for a chunk or large add (the moment it asked), now says it is the
+    time the writer waits with, as the `writeTurns` doc defines it.
+- Convey case names, the Tests section and earlier Review fixes sections
+  were left: case names describe their own setup, and the rest is history.
+
+- Gates (`$G/review10-fix/`): printed without comments by go/printer
+  (`$G/review8-fix/tools/strip.go`), `writeturns.go` and
+  `nohold_write_turns_test.go` are identical before and after this round
+  (`strip-compare.txt`); `make lint` reports 0 issues (`make-lint.log`).
+
+#### Review fixes (11)
+
+An eleventh reviewer returned FAIL on three case names and one test doc
+claim (`$G/review11/counterexamples.txt`); the code, the test logic and the
+`writeTurns` doc rules and bounds were kept. These changes are to case names,
+one test doc comment and this record only.
+
+- `CoalescingByAsking` "the archive and best-effort writers go ahead of a
+  chunk, in the order they asked, when either carries a request older than
+  the chunk's" was false when the first to ask carries the older request:
+  after it goes, the other, younger than the chunk, waits behind the chunk
+  (`TestReview11EitherOlder`: best-effort, chunk, archive). The case has the
+  last to ask carry it, and its name now says so.
+- `SmallAddsByAsking` "a request queued for a coalescing writer waits behind
+  a chunk that asked before its writer did, though the request is older than
+  the chunk's: ..." led with a claim false with no next add waiting, when the
+  older request goes first (`TestReview11WaitsBehindChunk`). The name now
+  leads with the case's condition.
+- DB-level "a best-effort write waiting when an archive commits goes ahead of
+  the archive queued for the archive writer's next transaction, though that
+  was queued first" was false with an older chunk waiting, which makes the
+  archive writer keep its turn (`TestReview11BEAheadOfQueuedArchive`: archive,
+  chunk, best-effort). The name now starts "with no chunk or large add
+  waiting".
+- `TestNoHoldWriteTurnsSmallAddsByAsking`'s doc said its cases check "that a
+  writer whose turn ends while an add is held back keeps no turn", and its
+  last case's name said it, but no case there pins it: the one turn that ends
+  with an add held back and a request queued for its holder is that case's
+  archive writer's, and the best-effort writer, a coalescing writer, waits to
+  go next, so Rule 2 would keep no turn either. The claim is gone from the
+  doc, which now
+  says the test pins the order Rule 1 gives, and the case is renamed for the
+  order it checks. In the Review fixes (4) table the Rule 1 row cites the
+  cases that pin the no-keep clause instead: DB-level "an archive writer whose
+  turn ends with a small add waiting does not keep" and `Kept` "an archive
+  queued while its writer has not yet asked again counts only in that
+  writer's keep", whose turn ends with an archive queued and a small add
+  waiting.
+
+Then one sweep read every Convey case name in `nohold_write_turns_test.go`
+for a claim stated as general that is false when other writers wait (a small
+add, an older chunk or large add, the other coalescing writer, or a kept
+turn). Each such name now states the case's condition: which writers wait,
+or that no add waits. The 35 renames, in file order (`DB` is
+`TestNoHoldWriteTurns`, the others as in the Review fixes (4) table; a name
+built from a loop label shows the labels in brackets):
+
+| Test | Old name | New name |
+| --- | --- | --- |
+| DB | an add commits in the transaction right after the archive in flight, ahead of best-effort and archive writes queued before it | an add asking while an archive is in flight and only a best-effort write waits commits in the next transaction, ahead of that write and of an archive queued after the add asked |
+| DB | a best-effort write queued before a big add's first transaction commits ahead of it, so a big add's transactions wait their turn too | with only an add and a best-effort write waiting behind the archive in flight, a big add's first transaction asking after them commits after both, so a big add's transactions wait their turn too |
+| DB | a big add's first transaction arriving while no add waits commits after a best-effort write queued before it | a big add's first transaction asking while only a best-effort write waits behind the archive in flight commits after that write |
+| DB | a best-effort write queued while a big add's first transaction is in flight commits between that transaction and the add's next one | a best-effort write queued while a big add's first transaction is in flight, with no other writer waiting, commits between that transaction and the add's next one |
+| DB | an archive queued while an add went ahead of it commits ahead of a later large add, though its writer asks for its turn after that add | an archive queued before an add went ahead of its writer commits ahead of a big add's next chunk and a large add that asked after it was queued, the only writers waiting with it, though the chunk asked before its writer did |
+| DB | an archive queued while an add went ahead of it does not hold back a later small add that asks for its turn before its writer does | with only an archive and a big add's next chunk waiting, both asking after the last add's turn, a small add goes first and the archive next, though the archive was queued before that add went ahead of its writer |
+| DB | [a run-state, a change, an exit] write queued while an add went ahead of it commits ahead of a later large add, though its writer asks for its turn after that add | [a run-state, a change, an exit] write queued before an add went ahead of its writer commits ahead of a big add's next chunk and a large add that asked after it was queued, the only writers waiting with it, though the chunk asked before its writer did |
+| DB | with no add waiting, an archive whose request is older than a waiting chunk's goes ahead of it, though the chunk asked first | with only an archive and a big add's next chunk waiting, the archive goes first when its request is older than the chunk's, though the chunk asked first |
+| DB | an archive writer whose turn ends keeps it for archives queued before an add went ahead of them, ahead of a later large add | an archive writer whose turn ends with only a large add waiting keeps it for an archive queued before an add went ahead of its writer and before the large add asked |
+| DB | a best-effort write waiting when an archive commits goes ahead of the archive queued for the archive writer's next transaction, though that was queued first | with no chunk or large add waiting, a best-effort write waiting when an archive commits goes ahead of the archive queued for the archive writer's next transaction, though that was queued first |
+| DB | an add too large to go ahead of the other writers commits after a best-effort write queued before it | with an archive in flight and only a best-effort write waiting, an add too large to go ahead of the other writers commits after that write |
+| DB | adds each small enough to go ahead keep going ahead when folded into a transaction larger than one add may be | adds each small enough to go ahead still go ahead when folded into a transaction larger than one add may be: the fold goes ahead of an archive, the only other writer waiting, that asked after the last add's turn began |
+| DB | a small add folded with one too large to go ahead of the other writers commits after a best-effort write queued before them | a small add folded with one too large to go ahead of the other writers commits after a best-effort write queued before them, the only other writer waiting |
+| DB | [the retry of a batch's archives that did not fail, a failed archive's solo re-run] goes ahead of a chunk that asked after the batch's first archive was queued | [the retry of a batch's archives that did not fail, a failed archive's solo re-run] goes ahead of a chunk that asked after the batch's first archive was queued, once an add that went ahead of the chunk has gone and nothing else waits |
+| DB | an archive queued during a failing batch's first attempt keeps the turn for the archive writer at each attempt's end, so the next batch, which carries it, commits ahead of a chunk that asked after it was queued | with only a chunk waiting that asked after it was queued, an archive queued during a failing batch's first attempt keeps the turn for the archive writer at each attempt's end, so the next batch, which carries it, commits ahead of the chunk |
+| DB | an archive commits after at most one more add transaction while adds stay queued | with only small adds waiting besides it, an archive commits after at most one more add transaction while they stay queued |
+| `FailingBatchAttempts` | A batch with k failing ops takes 2k+1 transactions, the failing ops getting their own error and the rest none | A batch with k failing ops and at least one that does not fail takes 2k+1 transactions, the failing ops getting their own error and the rest none |
+| `Kept` | an archive queued while its writer has not yet asked again counts only in that writer's keep: once an add has gone, a chunk that asked after it goes first | an archive queued while its writer has not yet asked again counts only in that writer's keep: once an add has gone, a chunk that asked after it, the only writer waiting, goes before it |
+| `CoalescingByAsking` | the archive and best-effort writers go ahead of a chunk, in the order they asked, when either carries a request older than the chunk's | with no add waiting, the archive and best-effort writers go ahead of a chunk that asked before both, in the order they asked, when the one that asked last carries a request older than the chunk's |
+| `CoalescingByAsking` | the pair is judged by the older request either carries, though the first to ask carries it: a chunk waits behind an archive that asked after it with an older request, then goes ahead of a best-effort writer that asked last | with no add waiting, the pair is judged by the older request either carries, though the first to ask carries it: (rest unchanged) |
+| `CoalescingByAsking` | a coalescing writer carrying a request exactly as old as a waiting chunk's goes ahead of it | with no add waiting, a coalescing writer carrying a request exactly as old as a waiting chunk's goes ahead of it |
+| `CoalescingByAsking` | a large add whose request is older than both of theirs goes ahead of the archive and best-effort writers | with no add waiting, a large add whose request is older than both of theirs goes ahead of the archive and best-effort writers |
+| `CoalescingByAsking` | a best-effort writer waiting when the turn ends goes next, though the archive queued is older than its request, so the archive writer keeps no turn | a best-effort writer, the only writer waiting when the turn ends, goes next, though the archive queued is older than its request, so the archive writer keeps no turn |
+| `CoalescingByAsking` | the archive writer keeps no turn for queued requests exactly as old as a waiting chunk's: the chunk goes next | the archive writer keeps no turn for queued requests exactly as old as a waiting chunk's: the chunk, the only writer waiting, goes next |
+| `CoalescingByAsking` | a best-effort writer chosen to go next keeps the archive writer from keeping its turn though a chunk waits too: a best-effort writer whose request is younger than the archive queued but older than a waiting chunk's goes first | a best-effort writer chosen to go next keeps the archive writer from keeping its turn though a chunk waits too: with only that chunk waiting besides it, a best-effort writer whose request is younger than the archive queued but older than the chunk's goes first |
+| `CoalescingByAsking` | the archive writer keeps its turn while a best-effort writer waits, when a chunk that asked after the archive was queued, and before the best-effort writer asked, would go next | with no add waiting, the archive writer keeps its turn while a best-effort writer waits, when a chunk that asked after the archive was queued, and before the best-effort writer asked, would go next |
+| `CoalescingByAsking` | a failing archive batch's retries keep the turn kept at the first attempt's end, and the next batch takes it, while a chunk and a best-effort writer wait | a failing archive batch's retries keep the turn kept at the first attempt's end, and the next batch takes it, while only a chunk and a best-effort writer wait |
+| `CoalescingByAsking` | a turn kept at the end of a failing archive batch's first attempt with nobody waiting is decided again at the retry's end: a best-effort writer that asked during the retry goes before the solo re-run | a turn kept at the end of a failing archive batch's first attempt with nobody waiting is decided again at the retry's end: a best-effort writer, the only writer to ask during the retry, goes before the solo re-run |
+| `CoalescingByAsking` | an archive queued after the chunk asked is younger than the chunk's request, so the chunk goes when the turn ends, though a best-effort writer that asked later waits too | an archive queued after the chunk asked is younger than the chunk's request, so the chunk goes when the turn ends, though a best-effort writer that asked later waits too, the only other writer waiting |
+| `CoalescingByAsking` | each chunk of one big add waiting as an attempt ends goes before the next attempt, though the batch's request is older than every chunk's | each chunk of one big add, the only writer waiting as an attempt ends, goes before the next attempt, though the batch's request is older than every chunk's |
+| `SmallAddsByAsking` | an add held back by a writer it went ahead of waits for that writer only, not for another carrying an older request that asked after its turn | with only an archive an add went ahead of and a best-effort writer that asked after that add's turn waiting, the next add goes after the archive and before the best-effort writer, though the best-effort writer carries an older request |
+| `SmallAddsByAsking` | an add held back by a chunk it went ahead of waits for that chunk only, not for an archive carrying an older request that asked after its turn | with only a chunk an add went ahead of and an archive that asked after that add's turn waiting, the next add goes after the chunk and before the archive, though the archive carries an older request |
+| `SmallAddsByAsking` | a request queued for a coalescing writer waits behind a chunk that asked before its writer did, though the request is older than the chunk's: a best-effort writer asking after an add went ahead of a chunk goes after that chunk and the next add | a best-effort writer asking after an add went ahead of a chunk, with the next add waiting as that add's turn ends, goes after the chunk and that next add, though its request is older than the chunk's |
+| `SmallAddsByAsking` | a request queued for a coalescing writer an add has not gone ahead of waits behind a chunk the add went ahead of whose request is younger than its own but older than that of a coalescing writer the add went ahead of | an archive asking after an add went ahead of a chunk and a best-effort writer, with the next add waiting as that add's turn ends, goes after both and that next add, though its request is older than both of theirs |
+| `SmallAddsByAsking` | a writer whose turn ends while an add is held back keeps no turn, though the requests it has queued are older than every waiting writer's | the archive and best-effort writers an add went ahead of both go before the next add, in the order they asked |
+
+Kept as they are, after the sweep: names whose claim holds whatever else
+waits (a turn ending with a small add waiting keeps none; a kept turn goes to
+its writer alone; the first-asking of two coalescing writers goes first
+between them, with no add waiting or among those an add went ahead of; of a
+waiting chunk and large add, the older or, tied, the first to ask goes
+first; a big add's put or a writer's transaction that panics gives up its
+turn; a large add's re-run gets no preference), names under a "Given" whose
+writers are all named in the setup (`AddOvertakesOnce`, `Kept`'s best-effort
+and nobody-waiting cases), and the panic, partial-commit, no-turn and
+final-drain cases, which state no order.
+
+Record quotes updated to the new names: this item's Tests section (the
+DB-level case, the `CoalescingByAsking` summary, the H2 guard and the
+review 1 to 5 cases, and the attempt counts of
+`TestNoHoldWriteTurnsFailingBatchAttempts`), the mutant table's R2 and G3
+rows, and the Review fixes (4) table's Rule 1, Rule 2, Rule 3, Bound 1,
+Bound 4 and Bound 6 rows. The Tests sections of earlier items and the earlier
+Review fixes sections keep the old names, as the record of those rounds.
+
+- Gates (`$G/review11-fix/`): printed without comments by go/printer
+  (`$G/review8-fix/tools/strip.go`), `writeturns.go` is identical before and
+  after this round (`strip-compare-writeturns.txt`) and the test file differs
+  only in Convey name strings (`strip-diff-test.txt`); `make lint` reports 0
+  issues (`make-lint.log`); the write-turns tests pass with `-race`
+  (`test-race.log`).
+
+#### Review fixes (12)
+
+A twelfth reviewer returned FAIL only on "this test pins Rule or Bound N"
+claims that a mutant breaking that clause still passes
+(`$G/review12/mutants12.txt`, `mutants12b.txt`, `mut12.py`); the code, the
+test logic, the Convey case names and the `writeTurns` doc rules and bounds
+were kept. Hand-written pin claims had been wrong in several rounds, so they
+are gone, and the table below, derived mechanically, replaces them.
+
+- `nohold_write_turns_test.go`: every "pinning Rule ... / Bound ..." claim is
+  deleted from the test function doc comments, which now say only what each
+  test's cases set up and check.
+- `writeturns.go`: the sentence before the bounds no longer names five tests
+  that "pin them". It says the first five bounds follow from the rules and the
+  last from `applyFolded` and `drainArchives`, and points to this record for
+  the tests that pin each.
+- This record: the Bounds paragraph (Bound 6 is proved against
+  `applyFolded` and `drainArchives`, its batch-time clause pinned by the
+  DB-level cases, and it points here), the mutant table's G1 row (the killing
+  cases by name, from `$G/review12/mutants12b.txt`), the Tests section ("pass
+  with their logic unchanged (some renamed in reviews 8 and 11)"), Design
+  bullet 4 (Rule 1's choice among overtaken writers changed, by asking) and
+  the Change section (only the `writeTurns` doc states the bounds). The
+  Review fixes (4) table is marked superseded and kept as history.
+
+Method (`$G/review12-fix/`): Rules 1 to 3, the sentence after the rules on a
+kept turn, and Bounds 1 to 6 of the `writeTurns` doc were split into clauses
+(`clauses.txt`). Each clause got at least one mutant that breaks it, reusing
+reviews 4, 5, 6 and 12's (`mut64g-r6.copy.py` holds reviews 4 to 6's) and
+adding N1 to N5 and N2b where none fitted (`mutmatrix.py`). Each of the 65
+mutants was applied alone in a scratch detached worktree holding this item's
+code, and each of the six write-turns test functions was run on its own
+(`-run '^Name$'`, `-count=1`, `-timeout 4m`, no `-race`), as review 12 did;
+the unmodified tree passes all six. A test counts as killing a mutant only if
+its run failed, by an assertion, a bounded wait or the binary's timeout. The
+full matrix is `matrix.txt` (raw runs `matrix-w1.txt` to `matrix-w4.txt`);
+`table.py` generates it and the table below (`clause-table.md`).
+
+Two mutants survive every test. Y17 (chunks and large adds by asking,
+whatever their times) is equivalent in the code, so Rule 3's "with the oldest
+time" among chunks and large adds is pinned only against G13 and, for ties,
+V4. N2 (a waiting coalescing writer's requests queued since its take count
+in the order when older than the time it carries) is equivalent for the
+`db.go` callers (corrected in review 13): a waiting coalescing writer carries
+the time `swapped` returned (or, for a retry, the batch's time), which is no
+younger than the swap, and every request queued after the swap is strictly
+younger; a zero time cannot arise with a non-empty queue; and after
+`beStopped` nothing calls `queued`. The direct tests reach N2's condition
+only where a test writer asks with "now" (`TestNoHoldWriteTurnsKept` near
+line 1789 and `TestNoHoldWriteTurnsCoalescingByAsking` near line 2233), and
+there that writer is the only one waiting, so N2 changes nothing; the
+DB-level test and the model checker (`TestReview7WriteTurnsBounds`) never
+reach it (`$G/review13/n2probe-*.txt`). N2b, which makes those requests count
+whenever there are any, is killed by a DB-level case. So Bound 5's "only in
+its keep decision" has no live direction left unpinned. Four clauses have no
+mutant: Rule 2's "(so only a coalescing writer can)", a consequence of which
+callers call `queued`; Bound 2's "except that a coalescing writer that keeps
+its turn goes again while the other waits", which scopes the clause before
+it; Bound 5's "So a writer waiting or asking between the end of its turn and
+its next ask can go ahead of those", a consequence of the clause before it;
+and Bound 6's "The bounds above hold for each attempt's own wait", which
+scopes the others. Bound 6's "between attempts any waiting writer can go,
+among them small adds" has no attempt-specific mutant for small adds.
+
+Test functions are shortened as in the Review fixes (4) table; `DB` is
+`TestNoHoldWriteTurns`.
+
+| Clause | Mutant | Killed by |
+| --- | --- | --- |
+| Rule 1: "With a small add waiting, no turn is kept." | M1 (review 12): with a small add waiting, the turn is kept by Rule 2's keep test | `Kept`, `DB` |
+|  | H6 (6.4e): a turn is kept while an add is held back | `SmallAddsByAsking` |
+|  | H8 (6.4e): a turn is kept while a small add waits and no writer it overtook does | `Kept`, `DB` |
+| Rule 1: "If a small add has been given a turn since any waiting writer other than a small add began waiting ..., the writer nextOther chooses from those writers goes" (an overtaken writer goes before the add) | P2 (6.4e): no overtake rule, a waiting small add always goes | `AddOvertakesOnce`, `SmallAddsByAsking` |
+|  | Y14 (review 6): a writer must be overtaken twice before it holds an add back | `AddOvertakesOnce`, `SmallAddsByAsking` |
+|  | H1 (6.4e): a small add is held back by any waiting writer with an older time | `AddOvertakesOnce`, `Kept`, `SmallAddsByAsking`, `DB` |
+| Rule 1: "a small add has been given a turn" (a small add's turn, not a large add's or a chunk's) | H5 (6.4e): large add turns count as add turns | `AddOvertakesOnce` |
+|  | P4 (6.4e): chunk turns count as add turns | `AddOvertakesOnce`, `SmallAddsByAsking`, `DB` |
+|  | Y4 (review 6): every turn given counts as an add turn | `AddOvertakesOnce`, `SmallAddsByAsking`, `DB` |
+| Rule 1: "since ... began waiting" | V7 (review 5): a writer asking after an add's turn counts as overtaken by it | `AddOvertakesOnce`, `SmallAddsByAsking`, `DB` |
+| Rule 1: "from those writers" (only overtaken writers count) | R4 (review 4): chunks and large adds ignore the overtaken filter | `AddOvertakesOnce`, `Kept`, `SmallAddsByAsking`, `DB` |
+|  | G12 (review 3): with a small add waiting, a coalescing writer no add has gone ahead of counts too | `AddOvertakesOnce`, `SmallAddsByAsking`, `DB` |
+|  | G14 (review 3): with a small add waiting, coalescing writers no add has gone ahead of count in the pair's time | `SmallAddsByAsking` |
+|  | G15 (review 3): with a small add waiting, a coalescing writer no add has gone ahead of goes before an overtaken chunk with a younger time | `SmallAddsByAsking` |
+|  | H2 (6.4e): a held-back add lets the next of all other writers go first | `SmallAddsByAsking` |
+| Rule 1: "the writer nextOther chooses" among them (Rule 3's choice) | X2 (6.4e): among writers an add overtook, a coalescing writer and a chunk by asking | `SmallAddsByAsking` |
+| Rule 1: "otherwise the small add that asked first goes" | P5 (6.4e): the last waiting small add goes | `AddOvertakesOnce` |
+| Rule 2: "With no small add waiting, the writer nextOther chooses from all those waiting goes" | N1 (review 12 fix): with no small add waiting, nextOther still chooses only among overtaken writers | `AddOvertakesOnce`, `Kept`, `CoalescingByAsking`, `DB` |
+| Rule 2: keep "when it has requests queued since it took its queue" (its own, since the take) | V15 (review 5): a coalescing writer keeps its turn with nothing queued | `AddOvertakesOnce`, `Kept`, `CoalescingByAsking`, `DB` |
+|  | G9 (6.4g): taking a kept turn clears its writer's queued time | `CoalescingByAsking`, `DB` |
+|  | A5 (6.4e): swapped does not clear the queued time | `Kept`, `CoalescingByAsking`, `DB` |
+|  | V11 (review 5): the best-effort writer keeps its turn for the archive writer's older queued requests | `Kept` |
+|  | V5 (review 5, db.go): each attempt after a failing batch's first clears the archive writer's queued time | `DB` |
+| Rule 2: "(so only a coalescing writer can)" | none | not mutated: only the coalescing writers' queues call queued, so this follows from the callers |
+| Rule 2: "nextOther chose no coalescing writer" | G2 (6.4g): a turn is kept although nextOther chose a coalescing writer | `CoalescingByAsking`, `DB` |
+|  | R3 (review 4): nextOther reports a coalescing choice only when no chunk or large add waits | `CoalescingByAsking` |
+|  | Y9 (review 6): nextOther reports a coalescing choice whenever a coalescing writer counts | `CoalescingByAsking` |
+|  | G8 (review 1): no turn is kept while a coalescing writer waits | `CoalescingByAsking` |
+| Rule 2: "either nobody waits" | R1 (review 4): no turn is kept when nobody waits | `Kept` |
+| Rule 2: "the oldest of those queued requests" | A4 (6.4e): queued keeps the latest request, not the first | `DB` |
+| Rule 2: "is older than the time of the chunk or large add nextOther chose" | G6 (6.4g): a turn is kept whenever no coalescing writer is chosen, whatever the chunk's time | `Kept`, `CoalescingByAsking`, `DB` |
+|  | R5 (review 4): the keep compares with the first-asking coalescing writer's time, not the chosen chunk's | `CoalescingByAsking` |
+|  | Y18 (review 6): the keep compares with the oldest coalescing writer's time, ignoring the chosen chunk | `Kept`, `CoalescingByAsking`, `DB` |
+|  | V3 (review 5): a turn is kept for queued requests tying with the chosen chunk's time | `CoalescingByAsking` |
+| Rule 3: "the coalescing writer that asked first" | G1 (6.4g): the coalescing writers go among themselves by oldest time | `CoalescingByAsking`, `SmallAddsByAsking` |
+|  | G7 (6.4g): the last-asking coalescing writer goes first | `AddOvertakesOnce`, `CoalescingByAsking`, `SmallAddsByAsking`, `DB` |
+| Rule 3: "the chunk or large add with the oldest time" | G13 (review 3): the chunk or large add with the youngest time goes first | `CoalescingByAsking`, `DB` |
+|  | Y17 (review 6): chunks and large adds go by asking, whatever their times | none (survives): equivalent in the code: chunks and large adds ask through updateInTurn, so each carries the time it asked, read under the writeTurns mutex, and their ask order and time order agree (ties are V4) |
+| Rule 3: "(of those with the same time, the one that asked first)" | V4 (review 5): of chunks and large adds tying in time, the last to ask goes first | `CoalescingByAsking` |
+| Rule 3: "has one older than every coalescing writer's" | G3 (6.4g): against chunks only the first-asking coalescing writer's time counts | `CoalescingByAsking` |
+|  | R2 (review 4): the coalescing pair is judged by the younger of their times | `CoalescingByAsking` |
+|  | V1 (review 5): the pair is judged by the last-asking coalescing writer's time | `CoalescingByAsking` |
+|  | G4 (6.4g): coalescing writers always go before chunks and large adds | `AddOvertakesOnce`, `CoalescingByAsking`, `SmallAddsByAsking`, `DB` |
+|  | G5 (6.4g): chunks and large adds always go before coalescing writers | `CoalescingByAsking`, `SmallAddsByAsking`, `DB` |
+|  | V2 (review 5): a chunk or large add tying with the pair's time goes first | `CoalescingByAsking` |
+| After the rules: "A kept turn goes to its writer alone" | K3 (6.4e): a kept turn is taken by any writer | `Kept` |
+|  | K8 (6.4e): a small add takes a turn kept for another writer | `Kept` |
+| After the rules: "when it next asks" (once) | M7 (6.4e): taking a kept turn does not clear it | `Kept`, `DB` |
+| After the rules: "until then no writer goes" | K4 (6.4e): a kept turn leaves no turn in progress | `Kept`, `CoalescingByAsking`, `DB` |
+| Bound 1: "Once a small add waits, no turn is kept" | M1 (review 12): with a small add waiting, the turn is kept by Rule 2's keep test | `Kept`, `DB` |
+|  | H6 (6.4e): a turn is kept while an add is held back | `SmallAddsByAsking` |
+|  | H8 (6.4e): a turn is kept while a small add waits and no writer it overtook does | `Kept`, `DB` |
+| Bound 1: "each turn after the one in flight or kept as it asks goes to it, to a small add that asked before it, or to a writer an add has gone ahead of" | H2 (6.4e): a held-back add lets the next of all other writers go first | `SmallAddsByAsking` |
+|  | R4 (review 4): chunks and large adds ignore the overtaken filter | `AddOvertakesOnce`, `Kept`, `SmallAddsByAsking`, `DB` |
+|  | G12 (review 3): with a small add waiting, a coalescing writer no add has gone ahead of counts too | `AddOvertakesOnce`, `SmallAddsByAsking`, `DB` |
+|  | G15 (review 3): with a small add waiting, a coalescing writer no add has gone ahead of goes before an overtaken chunk with a younger time | `SmallAddsByAsking` |
+|  | H1 (6.4e): a small add is held back by any waiting writer with an older time | `AddOvertakesOnce`, `Kept`, `SmallAddsByAsking`, `DB` |
+| Bound 1: "No add has gone ahead of a writer that asks again after its turn, so while the small add waits it gets no second turn before another small add has had one" | V7 (review 5): a writer asking after an add's turn counts as overtaken by it | `AddOvertakesOnce`, `SmallAddsByAsking`, `DB` |
+|  | Y4 (review 6): every turn given counts as an add turn | `AddOvertakesOnce`, `SmallAddsByAsking`, `DB` |
+| Bound 1: "goes after the transaction in flight ... and at most one transaction of each writer then waiting that an add has already gone ahead of, however many others wait" | H2 (6.4e): a held-back add lets the next of all other writers go first | `SmallAddsByAsking` |
+|  | G12 (review 3): with a small add waiting, a coalescing writer no add has gone ahead of counts too | `AddOvertakesOnce`, `SmallAddsByAsking`, `DB` |
+|  | H1 (6.4e): a small add is held back by any waiting writer with an older time | `AddOvertakesOnce`, `Kept`, `SmallAddsByAsking`, `DB` |
+| Bound 2: "Small adds go among themselves in the order they asked" | P5 (6.4e): the last waiting small add goes | `AddOvertakesOnce` |
+| Bound 2: "as do chunks and large adds (whose time is when they asked)" | G13 (review 3): the chunk or large add with the youngest time goes first | `CoalescingByAsking`, `DB` |
+|  | V4 (review 5): of chunks and large adds tying in time, the last to ask goes first | `CoalescingByAsking` |
+| Bound 2: "and the two coalescing writers" | G1 (6.4g): the coalescing writers go among themselves by oldest time | `CoalescingByAsking`, `SmallAddsByAsking` |
+|  | G7 (6.4g): the last-asking coalescing writer goes first | `AddOvertakesOnce`, `CoalescingByAsking`, `SmallAddsByAsking`, `DB` |
+| Bound 2: "except that a coalescing writer that keeps its turn goes again while the other waits" | none | not mutated: it scopes the clause before it, carving out the kept turn Rule 2 allows, and states no order of its own |
+| Bound 3: "each writer that goes ahead of it asked before it did, is a small add, or is the other coalescing writer keeping its turn" | G1 (6.4g): the coalescing writers go among themselves by oldest time | `CoalescingByAsking`, `SmallAddsByAsking` |
+|  | G5 (6.4g): chunks and large adds always go before coalescing writers | `CoalescingByAsking`, `SmallAddsByAsking`, `DB` |
+|  | V19 (review 5): a writer asking with no time carries the zero time | `AddOvertakesOnce`, `CoalescingByAsking`, `SmallAddsByAsking`, `DB` |
+| Bound 3: "With no small add waiting, a chunk or large add goes ahead of it only with a time older than its own" | G5 (6.4g): chunks and large adds always go before coalescing writers | `CoalescingByAsking`, `SmallAddsByAsking`, `DB` |
+|  | G3 (6.4g): against chunks only the first-asking coalescing writer's time counts | `CoalescingByAsking` |
+|  | R2 (review 4): the coalescing pair is judged by the younger of their times | `CoalescingByAsking` |
+|  | V1 (review 5): the pair is judged by the last-asking coalescing writer's time | `CoalescingByAsking` |
+|  | V2 (review 5): a chunk or large add tying with the pair's time goes first | `CoalescingByAsking` |
+| Bound 3: "the other coalescing writer keeps its turn only when a chunk or large add with a time older than the waiting writer's would go next" | G2 (6.4g): a turn is kept although nextOther chose a coalescing writer | `CoalescingByAsking`, `DB` |
+|  | R3 (review 4): nextOther reports a coalescing choice only when no chunk or large add waits | `CoalescingByAsking` |
+| Bound 3: "and the oldest of the requests queued for the keeper is older still" | G6 (6.4g): a turn is kept whenever no coalescing writer is chosen, whatever the chunk's time | `Kept`, `CoalescingByAsking`, `DB` |
+|  | R5 (review 4): the keep compares with the first-asking coalescing writer's time, not the chosen chunk's | `CoalescingByAsking` |
+|  | V3 (review 5): a turn is kept for queued requests tying with the chosen chunk's time | `CoalescingByAsking` |
+|  | Y18 (review 6): the keep compares with the oldest coalescing writer's time, ignoring the chosen chunk | `Kept`, `CoalescingByAsking`, `DB` |
+|  | V15 (review 5): a coalescing writer keeps its turn with nothing queued | `AddOvertakesOnce`, `Kept`, `CoalescingByAsking`, `DB` |
+| Bound 3: "With a small add waiting, a writer an add has gone ahead of goes before one it has not, whatever their times" | G15 (review 3): with a small add waiting, a coalescing writer no add has gone ahead of goes before an overtaken chunk with a younger time | `SmallAddsByAsking` |
+|  | G12 (review 3): with a small add waiting, a coalescing writer no add has gone ahead of counts too | `AddOvertakesOnce`, `SmallAddsByAsking`, `DB` |
+| Bound 4: "a coalescing writer gets the turn only if a waiting coalescing writer carries a time no younger than the chunk's or large add's" | G4 (6.4g): coalescing writers always go before chunks and large adds | `AddOvertakesOnce`, `CoalescingByAsking`, `SmallAddsByAsking`, `DB` |
+| Bound 4: "or by keeping the turn when the oldest of the requests queued for it is older than that time" | G6 (6.4g): a turn is kept whenever no coalescing writer is chosen, whatever the chunk's time | `Kept`, `CoalescingByAsking`, `DB` |
+|  | R5 (review 4): the keep compares with the first-asking coalescing writer's time, not the chosen chunk's | `CoalescingByAsking` |
+|  | V3 (review 5): a turn is kept for queued requests tying with the chosen chunk's time | `CoalescingByAsking` |
+|  | Y18 (review 6): the keep compares with the oldest coalescing writer's time, ignoring the chosen chunk | `Kept`, `CoalescingByAsking`, `DB` |
+|  | V15 (review 5): a coalescing writer keeps its turn with nothing queued | `AddOvertakesOnce`, `Kept`, `CoalescingByAsking`, `DB` |
+|  | G11 (review 2): an archive turn ending with nothing queued is kept against younger chunks for the batch's own time | `AddOvertakesOnce`, `Kept`, `CoalescingByAsking`, `DB` |
+| Bound 5: "The requests a coalescing writer has taken count in the order through the time it carries while it waits" | A2 (6.4e, db.go): an archive batch carries no time | `DB` |
+|  | A3 (6.4e, db.go): a best-effort batch carries no time | `DB` |
+|  | Y11 (review 6): a coalescing writer carries the time it took its queue | `CoalescingByAsking`, `DB` |
+| Bound 5: "of those queued for it since it took its queue, only the oldest counts" | A4 (6.4e): queued keeps the latest request, not the first | `DB` |
+| Bound 5: "and only in its keep decision as its turn ends" | N2 (review 12 fix): a waiting coalescing writer's requests queued since it took its queue count in the order | none (survives): equivalent for the db.go callers: a waiting writer carries the time swapped returned (or, for a retry, the batch's time), no younger than the swap, and every request queued after the swap is strictly younger; a zero time cannot arise with a non-empty queue; after beStopped nothing calls queued. The direct tests reach N2's condition only where a test writer asks with "now" (`Kept` near line 1789, `CoalescingByAsking` near line 2233), where that writer is the only one waiting, so N2 changes nothing; `DB` and the model checker never reach it. With N2b killed, no live direction of the clause is unpinned |
+|  | N2b (review 12 fix): a waiting coalescing writer carries the time of its requests queued since it took its queue, when it has any | `DB` |
+|  | V11 (review 5): the best-effort writer keeps its turn for the archive writer's older queued requests | `Kept` |
+| Bound 5: "So a writer waiting or asking between the end of its turn and its next ask can go ahead of those, whatever its time" | none | not mutated: a consequence of the previous clause, stating no order of its own |
+| Bound 6: "applyFolded retries the rest of a batch after each archive that fails in it, then re-runs each failed one alone" | Y16 (review 6, db.go): after one failing op the rest get the error without a retry | `FailingBatchAttempts`, `DB` |
+|  | F1 (review 4, db.go): a failed op is not re-run alone | `FailingBatchAttempts`, `DB` |
+|  | Y3 (review 6, db.go): the solo re-runs share one transaction | `FailingBatchAttempts` |
+| Bound 6: "takes at most 2k+1 transactions" | N3 (review 12 fix, db.go): each failed op is re-run alone twice | `FailingBatchAttempts`, `DB` |
+| Bound 6: "(2k when every archive in it fails" | F1 (review 4, db.go): a failed op is not re-run alone | `FailingBatchAttempts`, `DB` |
+|  | Y3 (review 6, db.go): the solo re-runs share one transaction | `FailingBatchAttempts` |
+| Bound 6: "1 when its first transaction fails as a whole)" | N4 (review 12 fix, db.go): a transaction failing as a whole re-runs each op alone | `FailingBatchAttempts` |
+| Bound 6: "Each attempt carries the batch's time" | N8 (6.4e, db.go): a failed archive's solo re-run carries no time | `DB` |
+|  | N8b (6.4e, db.go): every attempt after a batch's first carries no time | `DB` |
+| Bound 6: "but asks afresh, only after the one before it has ended" | N5 (review 12 fix, db.go): a failed archive's solo re-run takes no write turn | `DB` |
+| Bound 6: "The bounds above hold for each attempt's own wait, not for the batch" | none | not mutated: it scopes Bounds 1 to 5 and states no order of its own |
+| Bound 6: "between attempts any waiting writer can go, among them small adds, the best-effort writer, and chunks and large adds whatever their times" | G10 (review 2): a turn kept at one attempt's end stays kept at each later one while no small add waits | `CoalescingByAsking` |
+|  | G11 (review 2): an archive turn ending with nothing queued is kept against younger chunks for the batch's own time | `AddOvertakesOnce`, `Kept`, `CoalescingByAsking`, `DB` |
+|  | none | small adds: no attempt-specific mutant; Rule 1's no-keep row covers every turn's end |
+
+- Gates (`$G/review12-fix/`): printed without comments by go/printer
+  (`$G/review8-fix/tools/strip.go`), `writeturns.go` and
+  `nohold_write_turns_test.go` are identical before and after this round
+  (`strip-compare.txt`; pre-edit copies in `before/`); `make lint` reports 0
+  issues (`make-lint.log`).
+
+#### Review fixes (13)
+
+A thirteenth reviewer returned FAIL only on the Review fixes (12) table
+(`$G/review13/`, with `n2probe-*.txt`). This round changes comments and this
+record only; the code, the test logic and the Convey case names are unchanged.
+
+- N2's reason was false: a test does reach its condition. The Review fixes
+  (12) text and the Bound 5 "only in its keep decision" row now say N2 is
+  equivalent for the `db.go` callers, that the direct tests reach its
+  condition only with one writer waiting, where it changes nothing, and that
+  the DB-level test and the model checker never reach it, so that row has no
+  live direction left unpinned.
+- Bound 5's "So a writer waiting or asking ..." row lists no mutant; it is a
+  consequence of the clause before it.
+- Bound 3's "With a small add waiting, a writer an add has gone ahead of goes
+  before one it has not" row no longer lists G14, which stays under Rule 1's
+  "from those writers"; G12 and G15 remain.
+- Bound 2's carve-out for a coalescing writer that keeps its turn lists no
+  mutant; it scopes the clause before it. G8 moved to Rule 2's "nextOther chose
+  no coalescing writer" row, beside Y9, killed by `CoalescingByAsking`.
+- `writeturns.go`: the first five bounds follow "from the rules and the
+  definitions above them", and this record lists, for each bound, "the tests
+  that pin it or why none does".
+- The Tests section's note on mutants killed only by a bounded wait or the
+  test binary's timeout says it describes the earlier full `-race` runs and
+  points to the Review fixes (12) matrix for each test function's result.
+- `TestNoHoldWriteTurnsFailingBatchAttempts`'s doc says it calls
+  `applyFolded` with a fake transaction and counts the transactions it would
+  take, each a write turn of its own in production.
+
+- Gates (`$G/review13-fix/`): every mutant row's "Killed by" list in the
+  Review fixes (12) table equals the failing tests in
+  `$G/review12-fix/matrix.txt` (109 rows, 0 mismatches; `tablecheck.txt`,
+  `tools/tablecheck.py`).
+  Printed without comments (`$G/review8-fix/tools/strip.go`), `writeturns.go`
+  and `nohold_write_turns_test.go` are identical before and after this round
+  (`strip-compare.txt`; pre-edit copies in `before/`); `make lint` reports 0
+  issues (`make-lint.log`).
+
+#### Review fixes (14)
+
+Review 14 (`$G/review14/`) found one false sentence, in the Tests section: G6,
+K4 and M7 were listed as killed only by a bounded wait or the test binary's
+timeout, but in the earlier full runs G6 also failed order assertions
+(`$G/review4/mutants.txt`, `$G/review5-fix/mutants.txt`) and K4 and M7 failed
+`TestNoHoldWriteTurnsKept`'s fast "given a turn while ... queued" check. They
+are dropped from that list. The Gates section now notes that later runs count
+1,008, since review 4 added `TestNoHoldWriteTurnsFailingBatchAttempts`. Only
+this record changed.
 
 - [x] implemented
 - [x] reviewed

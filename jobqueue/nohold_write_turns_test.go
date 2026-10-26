@@ -25,11 +25,11 @@
 
 package jobqueue
 
-// Items 6.3e to 6.4e of .docs/nohold/phase6.md: the new-jobs, archive and
+// Items 6.3e to 6.4g of .docs/nohold/phase6.md: the new-jobs, archive and
 // best-effort writers, and each chunk of an add too big for one transaction,
-// take turns at bolt's single write lock, so a pending add commits within a
-// bounded number of other transactions, and archives still get their turns
-// while adds keep arriving.
+// take turns at bolt's single write lock, so a pending small add commits
+// within a bounded number of other transactions, and archives still get their
+// turns while adds keep arriving.
 //
 // The order of transactions is read from bolt's transaction ids (unique and
 // increasing per committed write transaction): archives report theirs through
@@ -75,6 +75,13 @@ const noHoldWTSizedAddValue = 8 * 1024
 
 // errNoHoldWTChunk is what a big add's failing putter returns.
 var errNoHoldWTChunk = errors.New("nohold write turns chunk failure")
+
+// errNoHoldWTBadOp is what a failing noHoldWTFoldedOp's write returns, and
+// errNoHoldWTWholeTx what a transaction that fails as a whole returns.
+var (
+	errNoHoldWTBadOp   = errors.New("nohold write turns bad op")
+	errNoHoldWTWholeTx = errors.New("nohold write turns whole transaction failure")
+)
 
 // noHoldWTTxLog records the bolt transaction ids each observed write ran in,
 // in the order they ran.
@@ -127,8 +134,9 @@ func TestNoHoldWriteTurns(t *testing.T) {
 
 		txLog := newNoHoldWTTxLog()
 
-		Convey("an add commits in the transaction right after the archive in flight, ahead of "+
-			"best-effort and archive writes queued before it", func() {
+		Convey("an add asking while an archive is in flight and only a best-effort write waits "+
+			"commits in the next transaction, ahead of that write and of an archive queued after "+
+			"the add asked", func() {
 			archives := reliable4ACCompletableJobs(t, ctx, database, "turns", 2)
 			changed := reliable4WSSeedLiveJobs(t, ctx, database, 1)[0]
 
@@ -167,8 +175,9 @@ func TestNoHoldWriteTurns(t *testing.T) {
 			So(txLog.get(archives[1].Key()), ShouldBeGreaterThan, txLog.get("add"))
 		})
 
-		Convey("a best-effort write queued before a big add's first transaction commits ahead "+
-			"of it, so a big add's transactions wait their turn too", func() {
+		Convey("with only an add and a best-effort write waiting behind the archive in flight, a "+
+			"big add's first transaction asking after them commits after both, so a big add's "+
+			"transactions wait their turn too", func() {
 			archive := reliable4ACCompletableJobs(t, ctx, database, "chunked", 1)[0]
 			changed := reliable4WSSeedLiveJobs(t, ctx, database, 1)[0]
 
@@ -208,8 +217,8 @@ func TestNoHoldWriteTurns(t *testing.T) {
 			So(txLog.get("big"), ShouldEqual, txLog.get("add")+2)
 		})
 
-		Convey("a big add's first transaction arriving while no add waits commits after a "+
-			"best-effort write queued before it", func() {
+		Convey("a big add's first transaction asking while only a best-effort write waits behind "+
+			"the archive in flight commits after that write", func() {
 			archive := reliable4ACCompletableJobs(t, ctx, database, "chunkedalone", 1)[0]
 			changed := reliable4WSSeedLiveJobs(t, ctx, database, 1)[0]
 
@@ -243,8 +252,9 @@ func TestNoHoldWriteTurns(t *testing.T) {
 			So(txLog.get("big"), ShouldEqual, txLog.get(archive.Key())+2)
 		})
 
-		Convey("a best-effort write queued while a big add's first transaction is in flight "+
-			"commits between that transaction and the add's next one", func() {
+		Convey("a best-effort write queued while a big add's first transaction is in flight, "+
+			"with no other writer waiting, commits between that transaction and the add's next "+
+			"one", func() {
 			changed := reliable4WSSeedLiveJobs(t, ctx, database, 1)[0]
 
 			bigGate := newNoHoldWTGate()
@@ -268,8 +278,9 @@ func TestNoHoldWriteTurns(t *testing.T) {
 			So(chunks[1], ShouldEqual, chunks[0]+2)
 		})
 
-		Convey("an archive queued while an add went ahead of it commits ahead of a later large "+
-			"add, though its writer asks for its turn after that add", func() {
+		Convey("an archive queued before an add went ahead of its writer commits ahead of a big "+
+			"add's next chunk and a large add that asked after it was queued, the only writers "+
+			"waiting with it, though the chunk asked before its writer did", func() {
 			archives := reliable4ACCompletableJobs(t, ctx, database, "aged", 3)
 
 			archiveTxObserver = func(txID int, key []byte) { txLog.record(string(key), txID) }
@@ -313,8 +324,9 @@ func TestNoHoldWriteTurns(t *testing.T) {
 			So(txLog.get("aged-add2"), ShouldBeGreaterThan, txLog.get(archives[1].Key()))
 		})
 
-		Convey("an archive queued while an add went ahead of it does not hold back a later small "+
-			"add that asks for its turn before its writer does", func() {
+		Convey("with only an archive and a big add's next chunk waiting, both asking after the "+
+			"last add's turn, a small add goes first and the archive next, though the archive was "+
+			"queued before that add went ahead of its writer", func() {
 			archives := reliable4ACCompletableJobs(t, ctx, database, "agedsmall", 3)
 
 			archiveTxObserver = func(txID int, key []byte) { txLog.record(string(key), txID) }
@@ -373,8 +385,9 @@ func TestNoHoldWriteTurns(t *testing.T) {
 				return database.updateJobAfterExitDurable(job, nil, nil, false)
 			}},
 		} {
-			Convey(write.name+" write queued while an add went ahead of it commits ahead of a "+
-				"later large add, though its writer asks for its turn after that add", func() {
+			Convey(write.name+" write queued before an add went ahead of its writer commits ahead "+
+				"of a big add's next chunk and a large add that asked after it was queued, the "+
+				"only writers waiting with it, though the chunk asked before its writer did", func() {
 				changed := reliable4WSSeedLiveJobs(t, ctx, database, 3)
 				prefix := "agedbe-" + write.label
 
@@ -420,8 +433,8 @@ func TestNoHoldWriteTurns(t *testing.T) {
 			})
 		}
 
-		Convey("with no add waiting, the writer whose oldest request is oldest goes next, "+
-			"not the one that asked first", func() {
+		Convey("with only an archive and a big add's next chunk waiting, the archive goes first "+
+			"when its request is older than the chunk's, though the chunk asked first", func() {
 			archives := reliable4ACCompletableJobs(t, ctx, database, "oldest", 2)
 
 			archiveTxObserver = func(txID int, key []byte) { txLog.record(string(key), txID) }
@@ -452,8 +465,8 @@ func TestNoHoldWriteTurns(t *testing.T) {
 			So(txLog.all("oldest-bigA")[1], ShouldBeGreaterThan, txLog.get(archives[1].Key()))
 		})
 
-		Convey("an archive writer whose turn ends keeps it for archives queued before an add "+
-			"went ahead of them, ahead of a later large add", func() {
+		Convey("an archive writer whose turn ends with only a large add waiting keeps it for an "+
+			"archive queued before an add went ahead of its writer and before the large add asked", func() {
 			archives := reliable4ACCompletableJobs(t, ctx, database, "kept", 2)
 
 			arGate := newNoHoldWTGate()
@@ -555,6 +568,43 @@ func TestNoHoldWriteTurns(t *testing.T) {
 			So(txLog.get("keptsmall-add1"), ShouldEqual, txLog.get(archives[0].Key())-1)
 			So(txLog.get("keptsmall-add2"), ShouldEqual, txLog.get(archives[0].Key())+1)
 			So(txLog.get(archives[1].Key()), ShouldEqual, txLog.get("keptsmall-add2")+1)
+		})
+
+		Convey("with no chunk or large add waiting, a best-effort write waiting when an archive "+
+			"commits goes ahead of the archive queued for the archive writer's next transaction, "+
+			"though that was queued first", func() {
+			archives := reliable4ACCompletableJobs(t, ctx, database, "byasking", 2)
+			changed := reliable4WSSeedLiveJobs(t, ctx, database, 1)[0]
+
+			arGate := newNoHoldWTGate()
+			archiveTxObserver = func(txID int, key []byte) {
+				txLog.record(string(key), txID)
+				arGate.wait()
+			}
+
+			defer func() { archiveTxObserver = nil }()
+
+			defer arGate.open()
+
+			first := reliable4ACArchiveAsync(database, archives[0].Key(), archives[0])
+
+			arGate.awaitHeld(t)
+
+			second := reliable4ACArchiveAsync(database, archives[1].Key(), archives[1])
+			noHoldWTAwaitArchivesPending(t, database, 1)
+
+			beDone := noHoldWTBestEffortAsync(t, database, changed)
+			noHoldWTAwaitTurnWaiters(t, &database.turns, 1)
+
+			arGate.open()
+
+			for _, done := range []chan error{first, second, beDone} {
+				So(reliable4ACAwait(t, done), ShouldBeNil)
+			}
+
+			// the one transaction between the two archives' is the best-effort
+			// write's.
+			So(txLog.get(archives[1].Key()), ShouldEqual, txLog.get(archives[0].Key())+2)
 		})
 
 		Convey("a best-effort write queued after the writer's final drain began keeps no turn "+
@@ -769,8 +819,8 @@ func TestNoHoldWriteTurns(t *testing.T) {
 			So(reliable4ACAwait(t, done), ShouldBeNil)
 		})
 
-		Convey("an add too large to go ahead of the other writers commits after a "+
-			"best-effort write queued before it", func() {
+		Convey("with an archive in flight and only a best-effort write waiting, an add too large "+
+			"to go ahead of the other writers commits after that write", func() {
 			archive := reliable4ACCompletableJobs(t, ctx, database, "large", 1)[0]
 			changed := reliable4WSSeedLiveJobs(t, ctx, database, 1)[0]
 
@@ -805,8 +855,9 @@ func TestNoHoldWriteTurns(t *testing.T) {
 			So(txLog.get("large"), ShouldEqual, txLog.get(archive.Key())+2)
 		})
 
-		Convey("adds each small enough to go ahead keep going ahead when folded into a "+
-			"transaction larger than one add may be", func() {
+		Convey("adds each small enough to go ahead still go ahead when folded into a transaction "+
+			"larger than one add may be: the fold goes ahead of an archive, the only other writer "+
+			"waiting, that asked after the last add's turn began", func() {
 			archive := reliable4ACCompletableJobs(t, ctx, database, "smallfold", 1)[0]
 			changed := reliable4WSSeedLiveJobs(t, ctx, database, 1)[0]
 
@@ -846,8 +897,8 @@ func TestNoHoldWriteTurns(t *testing.T) {
 			So(txLog.get(archive.Key()), ShouldEqual, txLog.get("folded")+1)
 		})
 
-		Convey("a small add folded with one too large to go ahead of the other writers "+
-			"commits after a best-effort write queued before them", func() {
+		Convey("a small add folded with one too large to go ahead of the other writers commits "+
+			"after a best-effort write queued before them, the only other writer waiting", func() {
 			archive := reliable4ACCompletableJobs(t, ctx, database, "mixedfold", 1)[0]
 			changed := reliable4WSSeedLiveJobs(t, ctx, database, 1)[0]
 
@@ -912,7 +963,8 @@ func TestNoHoldWriteTurns(t *testing.T) {
 			{"a failed archive's solo re-run", 2, true},
 		} {
 			Convey(attempt.name+" goes ahead of a chunk that asked after the batch's first "+
-				"archive was queued", func() {
+				"archive was queued, once an add that went ahead of the chunk has gone and "+
+				"nothing else waits", func() {
 				prefix := fmt.Sprintf("failing%d", attempt.heldAt)
 				jobs := reliable4ACCompletableJobs(t, ctx, database, prefix, 3)
 				blocker, good, bad := jobs[0], jobs[1], jobs[2]
@@ -991,6 +1043,64 @@ func TestNoHoldWriteTurns(t *testing.T) {
 			})
 		}
 
+		Convey("with only a chunk waiting that asked after it was queued, an archive queued "+
+			"during a failing batch's first attempt keeps the turn for the archive writer at each "+
+			"attempt's end, so the next batch, which carries it, commits ahead of the chunk", func() {
+			jobs := reliable4ACCompletableJobs(t, ctx, database, "keptattempts", 4)
+			blocker, good, bad, later := jobs[0], jobs[1], jobs[2], jobs[3]
+
+			blockerGate, attemptGate := newNoHoldWTGate(), newNoHoldWTGate()
+
+			archiveTxObserver = func(txID int, key []byte) {
+				txLog.record(string(key), txID)
+
+				switch string(key) {
+				case blocker.Key():
+					blockerGate.wait()
+				case bad.Key():
+					panic("nohold write turns failing archive")
+				case good.Key():
+					attemptGate.wait()
+				}
+			}
+
+			defer func() { archiveTxObserver = nil }()
+
+			defer blockerGate.open()
+			defer attemptGate.open()
+
+			blockerDone := reliable4ACArchiveAsync(database, blocker.Key(), blocker)
+
+			blockerGate.awaitHeld(t)
+
+			goodDone := reliable4ACArchiveAsync(database, good.Key(), good)
+			noHoldWTAwaitArchivesPending(t, database, 1)
+
+			badDone := reliable4ACArchiveAsync(database, bad.Key(), bad)
+			noHoldWTAwaitArchivesPending(t, database, 2)
+
+			blockerGate.open()
+			attemptGate.awaitHeld(t)
+
+			laterDone := reliable4ACArchiveAsync(database, later.Key(), later)
+			noHoldWTAwaitArchivesPending(t, database, 1)
+
+			bigDone := noHoldWTChunkedAddAsync(database, noHoldWTRecordingPutter(txLog, "keptattempts-big", nil),
+				"nohold-turns-keptattempts-big", noHoldWTChunkedChunks)
+			noHoldWTAwaitTurnWaiters(t, &database.turns, 1)
+
+			attemptGate.open()
+
+			So(reliable4ACAwait(t, blockerDone), ShouldBeNil)
+			So(reliable4ACAwait(t, goodDone), ShouldBeNil)
+			So(reliable4ACAwait(t, badDone), ShouldWrap, errArchivePanic)
+			So(reliable4ACAwait(t, laterDone), ShouldBeNil)
+			So(reliable4ACAwait(t, bigDone), ShouldBeNil)
+
+			So(txLog.all(bad.Key()), ShouldHaveLength, 2)
+			So(txLog.get(later.Key()), ShouldBeLessThan, txLog.get("keptattempts-big"))
+		})
+
 		Convey("an add too large to go ahead of the other writers gets no preference when it "+
 			"is re-run alone after failing in its transaction", func() {
 			archive := reliable4ACCompletableJobs(t, ctx, database, "largesolo", 1)[0]
@@ -1034,8 +1144,8 @@ func TestNoHoldWriteTurns(t *testing.T) {
 			So(txLog.get(archive.Key()), ShouldBeLessThan, attempts[1])
 		})
 
-		Convey("an archive commits after at most one more add transaction while adds stay "+
-			"queued", func() {
+		Convey("with only small adds waiting besides it, an archive commits after at most one "+
+			"more add transaction while they stay queued", func() {
 			archive := reliable4ACCompletableJobs(t, ctx, database, "starve", 1)[0]
 
 			archiveTxObserver = func(txID int, key []byte) { txLog.record(string(key), txID) }
@@ -1419,10 +1529,105 @@ func (s *noHoldWTAgedSequence) await(t *testing.T) {
 	}
 }
 
-// TestNoHoldWriteTurnsAddOvertakesOnce drives writeTurns directly: an add that
-// keeps arriving goes ahead of each other waiting writer at most once (item
-// 6.4b), so a best-effort write is not left behind one add per turn of every
-// other writer.
+// noHoldWTFoldedOp is an op for applyFolded that fails whenever it is written,
+// if bad, and records the outcome it is given.
+type noHoldWTFoldedOp struct {
+	bad     bool
+	replied error
+}
+
+func (op *noHoldWTFoldedOp) reply(err error) {
+	op.replied = err
+}
+
+// TestNoHoldWriteTurnsFailingBatchAttempts calls applyFolded with a fake
+// transaction and counts the transactions it would take for a batch with
+// failing ops (in production each would be a write turn of its own for the
+// archive writer), against the counts in Bound 6 of the writeTurns doc. Its
+// cases are a batch in which some ops fail, one in which every op fails, and
+// one whose first transaction fails as a whole, and they check the transaction
+// count and each op's reply (item 6.4g of .docs/nohold/phase6.md).
+func TestNoHoldWriteTurnsFailingBatchAttempts(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	attempts := func(ops []*noHoldWTFoldedOp, whole bool) int {
+		n := 0
+
+		applyFolded(slices.Clone(ops), func(batch []*noHoldWTFoldedOp, failed *int) error {
+			n++
+
+			if whole {
+				return errNoHoldWTWholeTx
+			}
+
+			for i, op := range batch {
+				if !op.bad {
+					continue
+				}
+
+				if failed != nil {
+					*failed = i
+				}
+
+				return errNoHoldWTBadOp
+			}
+
+			return nil
+		})
+
+		return n
+	}
+
+	batch := func(bad ...bool) []*noHoldWTFoldedOp {
+		ops := make([]*noHoldWTFoldedOp, len(bad))
+		for i, b := range bad {
+			ops[i] = &noHoldWTFoldedOp{bad: b}
+		}
+
+		return ops
+	}
+
+	Convey("A batch with k failing ops and at least one that does not fail takes 2k+1 "+
+		"transactions, the failing ops getting their own error and the rest none", t, func() {
+		for k, ops := range [][]*noHoldWTFoldedOp{
+			batch(false, false, false),
+			batch(false, true, false),
+			batch(true, false, true),
+		} {
+			So(attempts(ops, false), ShouldEqual, 2*k+1)
+
+			for _, op := range ops {
+				var want error
+				if op.bad {
+					want = errNoHoldWTBadOp
+				}
+
+				So(op.replied, ShouldEqual, want)
+			}
+		}
+	})
+
+	Convey("A batch whose every op fails takes 2k transactions", t, func() {
+		ops := batch(true, true, true)
+		So(attempts(ops, false), ShouldEqual, 6)
+	})
+
+	Convey("A batch whose first transaction fails as a whole takes 1, every op getting "+
+		"that error", t, func() {
+		ops := batch(false, false)
+		So(attempts(ops, true), ShouldEqual, 1)
+		So(ops[0].replied, ShouldEqual, errNoHoldWTWholeTx)
+		So(ops[1].replied, ShouldEqual, errNoHoldWTWholeTx)
+	})
+}
+
+// TestNoHoldWriteTurnsAddOvertakesOnce drives writeTurns directly (item 6.4b
+// of .docs/nohold/phase6.md). Its cases set up a turn in flight with an archive
+// and a best-effort write waiting while adds keep arriving, with a big add's
+// chunk or a large add waiting alongside an archive, and with two adds queued
+// before an archive, and check the order the writers' turns go in.
 func TestNoHoldWriteTurnsAddOvertakesOnce(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -1553,10 +1758,12 @@ func TestNoHoldWriteTurnsAddOvertakesOnce(t *testing.T) {
 	})
 }
 
-// TestNoHoldWriteTurnsKept drives writeTurns directly: a writer whose turn ends
-// keeps it only when the requests it has queued since it took its queue would
-// go next, a kept turn goes to that writer alone and only once, and a small add
-// asking meanwhile waits for it (items 6.4d and 6.4e).
+// TestNoHoldWriteTurnsKept drives writeTurns directly (items 6.4d and 6.4e of
+// .docs/nohold/phase6.md). Its cases set up an archive or best-effort writer's
+// turn in flight with a request queued behind it, and a best-effort write, a
+// chunk, a small add or nobody waiting, and check which writer goes next, that
+// a kept turn is used up once its writer takes it, and that each writer's keep
+// is decided on its own queued requests.
 func TestNoHoldWriteTurnsKept(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -1650,8 +1857,9 @@ func TestNoHoldWriteTurnsKept(t *testing.T) {
 			turns.give()
 		})
 
-		Convey("an archive queued while its writer has not yet asked again is invisible to the "+
-			"order: once an add has gone, a chunk that asked after it goes first", func() {
+		Convey("an archive queued while its writer has not yet asked again counts only in that "+
+			"writer's keep: once an add has gone, a chunk that asked after it, the only writer "+
+			"waiting, goes before it", func() {
 			turns.queued(writerArchive)
 			queue(writerChunkedAdd, "chunk", 1)
 			queue(writerNewJobs, "add", 2)
@@ -1704,12 +1912,417 @@ func TestNoHoldWriteTurnsKept(t *testing.T) {
 			turns.give()
 		})
 	})
+
+	Convey("Given a best-effort writer's turn in flight and an archive queued for the archive "+
+		"writer", t, func() {
+		turns := &writeTurns{}
+		turns.takeSince(writerBestEffort, time.Time{})
+		turns.queued(writerArchive)
+
+		order := make(chan string, 8)
+		queue := noHoldWTTurnQueuer(t, turns, order)
+
+		Convey("the best-effort writer's keep is decided on its own queued requests: one queued "+
+			"after a waiting chunk asked keeps no turn, though the archive queued is older than "+
+			"the chunk's request", func() {
+			queue(writerChunkedAdd, "chunk", 1)
+			turns.queued(writerBestEffort)
+
+			turns.give()
+
+			go func() {
+				turns.takeSince(writerBestEffort, turns.swapped(writerBestEffort))
+
+				order <- "best-effort"
+			}()
+
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "chunk")
+
+			noHoldWTAwaitTurnWaiters(t, turns, 1)
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "best-effort")
+
+			turns.give()
+		})
+	})
 }
 
-// TestNoHoldWriteTurnsSmallAddsByAsking drives writeTurns directly: a small add
-// is held back only by the writers it has already gone ahead of since they
-// began waiting, judged by when they asked, not by how old their requests are
-// (item 6.4e of .docs/nohold/phase6.md).
+// TestNoHoldWriteTurnsCoalescingByAsking drives writeTurns directly, with no
+// small add asking (item 6.4g of .docs/nohold/phase6.md). Its cases set up a
+// big add's chunk, an archive writer's turn or a failing archive batch's first
+// attempt in flight, with the archive and best-effort writers, chunks and
+// large adds waiting with older, younger or exactly as old times, and check
+// the order their turns go in and whether the writer whose turn ends keeps it,
+// including at the end of each of a failing batch's attempts.
+func TestNoHoldWriteTurnsCoalescingByAsking(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a big add's chunk in flight", t, func() {
+		turns := &writeTurns{}
+		turns.takeSince(writerChunkedAdd, time.Time{})
+
+		order := make(chan string, 8)
+		queue := noHoldWTTurnQueuer(t, turns, order)
+		queueSince := noHoldWTTurnQueuerSince(t, turns, order)
+		old := time.Now().Add(-time.Minute)
+
+		Convey("with no add waiting, of the archive and best-effort writers the one that asked "+
+			"first goes, though the other carries the older request", func() {
+			queue(writerBestEffort, "best-effort", 1)
+			queueSince(writerArchive, "archive", old, 2)
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "best-effort")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "archive")
+
+			turns.give()
+		})
+
+		Convey("with no add waiting, the archive and best-effort writers go ahead of a chunk "+
+			"that asked before both, in the order they asked, when the one that asked last "+
+			"carries a request older than the chunk's", func() {
+			queue(writerChunkedAdd, "chunk", 1)
+			queue(writerBestEffort, "best-effort", 2)
+			queueSince(writerArchive, "archive", old, 3)
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "best-effort")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "archive")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "chunk")
+
+			turns.give()
+		})
+
+		Convey("with no add waiting, the pair is judged by the older request either carries, "+
+			"though the first to ask carries it: a chunk waits behind an archive that asked after "+
+			"it with an older request, then goes ahead of a best-effort writer that asked last", func() {
+			queue(writerChunkedAdd, "chunk", 1)
+			queueSince(writerArchive, "archive", old, 2)
+			queue(writerBestEffort, "best-effort", 3)
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "archive")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "chunk")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "best-effort")
+
+			turns.give()
+		})
+
+		Convey("with no add waiting, a coalescing writer carrying a request exactly as old as a "+
+			"waiting chunk's goes ahead of it", func() {
+			queueSince(writerChunkedAdd, "chunk", old, 1)
+			queueSince(writerBestEffort, "best-effort", old, 2)
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "best-effort")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "chunk")
+
+			turns.give()
+		})
+
+		Convey("of a waiting chunk and large add whose requests are exactly as old, the one "+
+			"that asked first goes first", func() {
+			queueSince(writerChunkedAdd, "chunk", old, 1)
+			queueSince(writerLargeNewJobs, "large", old, 2)
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "chunk")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "large")
+
+			turns.give()
+		})
+
+		Convey("with no add waiting, a large add whose request is older than both of theirs goes "+
+			"ahead of the archive and best-effort writers", func() {
+			queueSince(writerLargeNewJobs, "large", old, 1)
+			queue(writerBestEffort, "best-effort", 2)
+			queueSince(writerArchive, "archive", old.Add(time.Second), 3)
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "large")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "best-effort")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "archive")
+
+			turns.give()
+		})
+
+		Convey("of a waiting large add and chunk, the one with the older request goes first", func() {
+			queue(writerLargeNewJobs, "large", 1)
+			queue(writerChunkedAdd, "chunk", 2)
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "large")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "chunk")
+
+			turns.give()
+		})
+	})
+
+	Convey("Given an archive writer's turn in flight with an archive queued behind it", t, func() {
+		turns := &writeTurns{}
+		turns.takeSince(writerArchive, time.Time{})
+		turns.queued(writerArchive)
+
+		order := make(chan string, 8)
+		queue := noHoldWTTurnQueuer(t, turns, order)
+		queueSince := noHoldWTTurnQueuerSince(t, turns, order)
+
+		Convey("a best-effort writer, the only writer waiting when the turn ends, goes next, "+
+			"though the archive queued is older than its request, so the archive writer keeps no "+
+			"turn", func() {
+			queue(writerBestEffort, "best-effort", 1)
+
+			turns.give()
+
+			oldest := turns.swapped(writerArchive)
+
+			go func() {
+				turns.takeSince(writerArchive, oldest)
+
+				order <- "archive"
+			}()
+
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "best-effort")
+
+			noHoldWTAwaitTurnWaiters(t, turns, 1)
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "archive")
+
+			turns.give()
+		})
+
+		takeArchiveTurn := func(oldest time.Time, label string) {
+			go func() {
+				turns.takeSince(writerArchive, oldest)
+
+				order <- label
+			}()
+		}
+
+		Convey("the archive writer keeps no turn for queued requests exactly as old as a waiting "+
+			"chunk's: the chunk, the only writer waiting, goes next", func() {
+			turns.mu.Lock()
+			queuedAt := turns.queuedSince[writerArchive]
+			turns.mu.Unlock()
+
+			queueSince(writerChunkedAdd, "chunk", queuedAt, 1)
+
+			turns.give()
+
+			takeArchiveTurn(turns.swapped(writerArchive), "archive")
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "chunk")
+
+			noHoldWTAwaitTurnWaiters(t, turns, 1)
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "archive")
+
+			turns.give()
+		})
+
+		Convey("a best-effort writer chosen to go next keeps the archive writer from keeping its "+
+			"turn though a chunk waits too: with only that chunk waiting besides it, a "+
+			"best-effort writer whose request is younger than the archive queued but older than "+
+			"the chunk's goes first", func() {
+			beOldest := time.Now()
+
+			queue(writerChunkedAdd, "chunk", 1)
+			queueSince(writerBestEffort, "best-effort", beOldest, 2)
+
+			turns.give()
+
+			takeArchiveTurn(turns.swapped(writerArchive), "archive")
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "best-effort")
+
+			noHoldWTAwaitTurnWaiters(t, turns, 2)
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "archive")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "chunk")
+
+			turns.give()
+		})
+
+		Convey("with no add waiting, the archive writer keeps its turn while a best-effort "+
+			"writer waits, when a chunk that asked after the archive was queued, and before the "+
+			"best-effort writer asked, would go next", func() {
+			queue(writerChunkedAdd, "chunk", 1)
+			queue(writerBestEffort, "best-effort", 2)
+
+			turns.give()
+
+			takeArchiveTurn(turns.swapped(writerArchive), "archive")
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "archive")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "chunk")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "best-effort")
+
+			turns.give()
+		})
+
+		Convey("a failing archive batch's retries keep the turn kept at the first attempt's end, "+
+			"and the next batch takes it, while only a chunk and a best-effort writer wait", func() {
+			queue(writerChunkedAdd, "chunk", 1)
+			queue(writerBestEffort, "best-effort", 2)
+
+			turns.give()
+
+			takeArchiveTurn(time.Time{}, "retry")
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "retry")
+
+			turns.give()
+
+			takeArchiveTurn(time.Time{}, "solo re-run")
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "solo re-run")
+
+			turns.give()
+
+			takeArchiveTurn(turns.swapped(writerArchive), "next batch")
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "next batch")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "chunk")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "best-effort")
+
+			turns.give()
+		})
+
+		Convey("a turn kept at the end of a failing archive batch's first attempt with nobody "+
+			"waiting is decided again at the retry's end: a best-effort writer, the only writer "+
+			"to ask during the retry, goes before the solo re-run", func() {
+			turns.give()
+
+			takeArchiveTurn(time.Time{}, "retry")
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "retry")
+
+			queue(writerBestEffort, "best-effort", 1)
+
+			turns.give()
+
+			takeArchiveTurn(time.Time{}, "solo re-run")
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "best-effort")
+
+			noHoldWTAwaitTurnWaiters(t, turns, 1)
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "solo re-run")
+
+			turns.give()
+		})
+	})
+
+	Convey("Given an archive writer's turn in flight with a chunk waiting", t, func() {
+		turns := &writeTurns{}
+		turns.takeSince(writerArchive, time.Time{})
+
+		order := make(chan string, 8)
+		queue := noHoldWTTurnQueuer(t, turns, order)
+		queue(writerChunkedAdd, "chunk", 1)
+
+		Convey("an archive queued after the chunk asked is younger than the chunk's request, so "+
+			"the chunk goes when the turn ends, though a best-effort writer that asked later "+
+			"waits too, the only other writer waiting", func() {
+			turns.queued(writerArchive)
+			queue(writerBestEffort, "best-effort", 2)
+
+			turns.give()
+
+			go func() {
+				turns.takeSince(writerArchive, turns.swapped(writerArchive))
+
+				order <- "archive"
+			}()
+
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "chunk")
+
+			noHoldWTAwaitTurnWaiters(t, turns, 2)
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "best-effort")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "archive")
+
+			turns.give()
+		})
+	})
+
+	Convey("Given a failing archive batch's first attempt in flight, carrying an old request, "+
+		"with no archive queued since its writer took its queue", t, func() {
+		turns := &writeTurns{}
+		old := time.Now().Add(-time.Minute)
+		turns.takeSince(writerArchive, old)
+
+		order := make(chan string, 8)
+		queue := noHoldWTTurnQueuer(t, turns, order)
+
+		takeAttempt := func(label string) {
+			go func() {
+				turns.takeSince(writerArchive, old)
+
+				order <- label
+			}()
+		}
+
+		Convey("each chunk of one big add, the only writer waiting as an attempt ends, goes "+
+			"before the next attempt, though the batch's request is older than every chunk's", func() {
+			queue(writerChunkedAdd, "chunk 1", 1)
+
+			turns.give()
+
+			takeAttempt("retry")
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "chunk 1")
+
+			noHoldWTAwaitTurnWaiters(t, turns, 1)
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "retry")
+
+			queue(writerChunkedAdd, "chunk 2", 1)
+
+			turns.give()
+
+			takeAttempt("solo re-run")
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "chunk 2")
+
+			noHoldWTAwaitTurnWaiters(t, turns, 1)
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "solo re-run")
+
+			turns.give()
+		})
+	})
+}
+
+// TestNoHoldWriteTurnsSmallAddsByAsking drives writeTurns directly (items 6.4e
+// and 6.4g of .docs/nohold/phase6.md). Its cases set up a big add's chunk in
+// flight, an add that goes ahead of waiting chunks and archive and best-effort
+// writers, and writers that ask after its turn, some with older times, and
+// check which writers the next small add waits for and the order they go in.
 func TestNoHoldWriteTurnsSmallAddsByAsking(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -1724,8 +2337,9 @@ func TestNoHoldWriteTurnsSmallAddsByAsking(t *testing.T) {
 		queueSince := noHoldWTTurnQueuerSince(t, turns, order)
 		old := time.Now().Add(-time.Minute)
 
-		Convey("an add held back by a writer it went ahead of waits for that writer only, "+
-			"not for another carrying an older request that asked after its turn", func() {
+		Convey("with only an archive an add went ahead of and a best-effort writer that asked "+
+			"after that add's turn waiting, the next add goes after the archive and before the "+
+			"best-effort writer, though the best-effort writer carries an older request", func() {
 			queue(writerArchive, "archive", 1)
 			queue(writerNewJobs, "add1", 2)
 
@@ -1738,8 +2352,84 @@ func TestNoHoldWriteTurnsSmallAddsByAsking(t *testing.T) {
 			So(noHoldWTGiveTurns(t, turns, order, 3), ShouldResemble, []string{"archive", "add2", "best-effort"})
 		})
 
-		Convey("of two writers an add went ahead of, the one carrying the older request goes "+
-			"first, though it asked after the other", func() {
+		Convey("with only a chunk an add went ahead of and an archive that asked after that "+
+			"add's turn waiting, the next add goes after the chunk and before the archive, though "+
+			"the archive carries an older request", func() {
+			queue(writerChunkedAdd, "chunk", 1)
+			queue(writerNewJobs, "add1", 2)
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "add1")
+
+			queueSince(writerArchive, "archive", old, 2)
+			queue(writerNewJobs, "add2", 3)
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "chunk")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "add2")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "archive")
+
+			turns.give()
+		})
+
+		Convey("a best-effort writer asking after an add went ahead of a chunk, with the next "+
+			"add waiting as that add's turn ends, goes after the chunk and that next add, though "+
+			"its request is older than the chunk's", func() {
+			queue(writerChunkedAdd, "chunk", 1)
+			queue(writerNewJobs, "add1", 2)
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "add1")
+
+			queueSince(writerBestEffort, "best-effort", old, 2)
+			queue(writerNewJobs, "add2", 3)
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "chunk")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "add2")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "best-effort")
+
+			turns.give()
+		})
+
+		Convey("an archive asking after an add went ahead of a chunk and a best-effort writer, "+
+			"with the next add waiting as that add's turn ends, goes after both and that next "+
+			"add, though its request is older than both of theirs", func() {
+			queue(writerChunkedAdd, "chunk", 1)
+			queue(writerBestEffort, "best-effort", 2)
+			queue(writerNewJobs, "add1", 3)
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "add1")
+
+			queueSince(writerArchive, "archive", old, 3)
+			queue(writerNewJobs, "add2", 4)
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "chunk")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "best-effort")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "add2")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "archive")
+
+			turns.give()
+		})
+
+		Convey("of the archive and best-effort writers an add went ahead of, the one that asked "+
+			"first goes first, though the other carries the older request", func() {
 			queue(writerArchive, "archive", 1)
 			queueSince(writerBestEffort, "best-effort", old, 2)
 			queue(writerNewJobs, "add1", 3)
@@ -1749,10 +2439,10 @@ func TestNoHoldWriteTurnsSmallAddsByAsking(t *testing.T) {
 
 			queue(writerNewJobs, "add2", 3)
 			turns.give()
-			So(noHoldWTNextTurn(t, order), ShouldEqual, "best-effort")
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "archive")
 
 			turns.give()
-			So(noHoldWTNextTurn(t, order), ShouldEqual, "archive")
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "best-effort")
 
 			turns.give()
 			So(noHoldWTNextTurn(t, order), ShouldEqual, "add2")
@@ -1760,8 +2450,30 @@ func TestNoHoldWriteTurnsSmallAddsByAsking(t *testing.T) {
 			turns.give()
 		})
 
-		Convey("a writer whose turn ends while an add is held back keeps no turn, though the "+
-			"requests it has queued are older than every waiting writer's", func() {
+		Convey("of a chunk and an archive an add went ahead of, the archive goes first when it "+
+			"carries the older request, though it asked after the chunk", func() {
+			queue(writerChunkedAdd, "chunk", 1)
+			queueSince(writerArchive, "archive", old, 2)
+			queue(writerNewJobs, "add1", 3)
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "add1")
+
+			queue(writerNewJobs, "add2", 3)
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "archive")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "chunk")
+
+			turns.give()
+			So(noHoldWTNextTurn(t, order), ShouldEqual, "add2")
+
+			turns.give()
+		})
+
+		Convey("the archive and best-effort writers an add went ahead of both go before the next "+
+			"add, in the order they asked", func() {
 			turns.queued(writerArchive)
 			queueSince(writerArchive, "archive", old, 1)
 			queue(writerBestEffort, "best-effort", 2)

@@ -55,6 +55,12 @@ const (
 	writerKinds
 )
 
+// coalescing reports whether k is one of the coalescing writers, the archive
+// and best-effort writers, which batch the requests queued for them.
+func (k writerKind) coalescing() bool {
+	return k == writerArchive || k == writerBestEffort
+}
+
 // updateInTurn runs fn in a bolt write transaction once it is kind's turn to
 // write, and ends the turn even if fn panics. The writer's oldest request is
 // taken to be one made now.
@@ -75,8 +81,7 @@ func (db *db) updateInTurnSince(kind writerKind, oldest time.Time, fn func(*bolt
 type writeTurn struct {
 	kind  writerKind
 	ready chan struct{}
-	// oldest is when the oldest request this writer's transaction carries was
-	// queued.
+	// oldest is the time this writer waits with (see the writeTurns doc).
 	oldest time.Time
 	// addTurnsAtArrival is writeTurns.addTurns when this writer began waiting.
 	addTurnsAtArrival uint64
@@ -89,65 +94,115 @@ type writeTurn struct {
 // lock, and an add, whose client waits for it, ends up behind every transaction
 // already queued (item 6.3d of .docs/nohold/phase6.md).
 //
-// Adds small enough to be cheap to let through (writerNewJobs; see
-// newJobsWriterKind) go first. A waiting add goes next unless an add has
-// already gone ahead of another waiting writer since that writer began waiting;
-// then only the writers an add has gone ahead of go before it. So a waiting add
-// usually commits right after the transaction in flight or, if it asks while a
-// turn is kept, right after that writer's next transaction, and at worst after
-// one transaction of each writer an add has already overtaken as well, however
-// many others wait. Without the "already gone ahead" rule an add that arrived
-// during each of those transactions went ahead again every time (item 6.4b of
-// .docs/nohold/phase6.md). The rule is judged by when each writer asked, not by
-// when its oldest request was queued: judged by request, the archive and
-// best-effort writers, which under a steady stream nearly always carry a
-// request older than the last add's turn, held every add back until each had
-// gone, and adds lost the speed-up this ordering exists for (item 6.4d).
+// The writers are small adds (writerNewJobs: adds small enough to be cheap to
+// let through; see newJobsWriterKind), the coalescing writers (the archive and
+// best-effort writers, which batch the requests queued for them), and chunks
+// and large adds (each chunk of an add too big for one transaction, and the new
+// jobs writer with an add too large to go ahead of the others). Each waiting
+// writer carries a time. A coalescing writer carries when the oldest request in
+// the queue it took was queued, that is the first request queued since it took
+// the queue before that (see queued and swapped). Every attempt of a failing
+// archive batch carries the batch's. A chunk or large add carries the moment
+// it asked. A writer that asks while no turn is in progress takes one at once,
+// one that asks for a turn kept for it takes that, and any other waits. When a
+// turn ends (give and nextTurn):
 //
-// Every other writer (the archive and best-effort writers, each chunk of a big
-// add, and the new jobs writer with a large add) carries the time of the oldest
-// request its transaction holds: the archive and best-effort writers that of the
-// first request queued since they last took their queue (see queued and
-// swapped), the others the moment they asked for the turn. Among them the
-// oldest request goes first. When the archive or best-effort writer's turn ends
-// with no small add waiting, and the requests it has queued since it took its
-// queue are older than every waiting writer's, it keeps the turn for its next
-// transaction, which it asks for as soon as it has replied to the requests it
-// just wrote; until then no other writer goes.
+//   - With a small add waiting, no turn is kept. If a small add has been given
+//     a turn since any waiting writer other than a small add began waiting (an
+//     add has gone ahead of that writer), the writer nextOther chooses from
+//     those writers goes; otherwise the small add that asked first goes.
+//   - With no small add waiting, the writer nextOther chooses from all those
+//     waiting goes, if any, unless the writer whose turn is ending keeps the
+//     turn. It keeps it when it has requests queued since it took its queue (so
+//     only a coalescing writer can), nextOther chose no coalescing writer, and
+//     either nobody waits or the oldest of those queued requests is older than
+//     the time of the chunk or large add nextOther chose.
+//   - Of the writers it may choose from, nextOther chooses the coalescing
+//     writer that asked first, unless the chunk or large add with the oldest
+//     time (of those with the same time, the one that asked first) has one
+//     older than every coalescing writer's; then it chooses that chunk or large
+//     add.
 //
-// Ordering them by request rather than by when they asked matters because the
-// archive and best-effort writers take their queues before they ask: requests
-// that arrive while one of them waits behind a long transaction (a big add's
-// chunk, megabytes on a production add) ride in its next transaction, which
-// asks only after this one commits. Ordered by asking, a large add queued in
-// that moment went ahead of them, and they waited behind two long transactions
-// (items 6.4c and 6.4d of .docs/nohold/phase6.md). That is also why a large
+// A kept turn goes to its writer alone, when it next asks; until then no writer
+// goes.
+//
+// Without the first rule an add that arrived during each transaction went
+// ahead again every time (item 6.4b of .docs/nohold/phase6.md). The rule is
+// judged by when each writer asked, not by its time: judged by time, the
+// archive and best-effort writers, which under a steady stream nearly always
+// carry a request older than the last add's turn, held every add back until
+// each had gone, and adds lost the speed-up this ordering exists for (item
+// 6.4d).
+//
+// The coalescing writers go among themselves by asking, but for a kept turn,
+// because, ordered by time, the archive writer, whose batch's first request
+// under a steady stream is nearly always the older, went straight after each
+// add and kept its turn over a waiting best-effort writer, so the next add
+// waited out a whole archive commit rather than a short best-effort one:
+// single-job adds were 21% slower in BenchmarkAddDuringWriterStreams (items
+// 6.4e and 6.4g). Between those two a request's age gains little, since each
+// asks again soon after its turn ends.
+//
+// Against chunks and large adds the coalescing writers are judged by time
+// rather than by asking because the archive and best-effort writers take their
+// queues before they ask: requests that arrive while one of them waits behind a
+// long transaction (a big add's chunk, megabytes on a production add) ride in
+// its next transaction, which asks only after this one commits. Ordered by
+// asking, a large add queued in that moment went ahead of them, and they waited
+// behind two long transactions (items 6.4c and 6.4d). That is also why a large
 // add gets no preference: its transaction can take seconds on a slow
 // filesystem, and going ahead it often landed just after a chunk the other
 // writers had already waited through.
 //
-// So, while its writer waits for a turn, a request queued for one of the other
-// writers waits behind at most the transaction in flight, transactions carrying
-// requests older than it (of each other coalescing writer at most two batches:
-// the one it has taken and the one queued behind that; and one chunk of each
-// big add in progress, since each chunk asks after the one before it has
-// committed), and the small adds that go ahead of its writer: at most one small
-// add per wait. While its writer is between its turn ending and asking again
-// (the time it takes to reply to the requests it has just written, or a
-// transaction it waits for before it takes its queue), the requests it has
-// queued are invisible to the ordering: only its own keep decision, as its turn
-// ends, sees them. Any writer waiting then, or asking then, can go ahead of
-// them, whatever the age of its own request, so a chunk that asked after such a
-// request can commit before it; how many go depends on how long that gap lasts.
-// A batch is one transaction unless archives in it fail: applyFolded then
-// retries the rest after each failing archive and re-runs each failed one
-// alone, every attempt carrying the batch's oldest request, so a batch with k
-// failing archives takes at most 2k+1 transactions (2k when all of its archives
-// fail, 1 when its first transaction fails as a whole), all of which go ahead
-// of the request. With more than one goroutine taking turns as the new jobs
-// writer, an add also waits behind the adds queued before it, which go in the
-// order they asked. Big and large adds, which get no preference, may take turns
-// from several goroutines at once, and go in the order they asked.
+// The first five of these bounds follow from the rules and the definitions
+// above them, and the last from applyFolded and drainArchives (item 6.4g of
+// .docs/nohold/phase6.md lists, for each, the tests that pin it or why none
+// does):
+//
+//   - Once a small add waits, no turn is kept, and each turn after the one in
+//     flight or kept as it asks goes to it, to a small add that asked before
+//     it, or to a writer an add has gone ahead of. No add has gone ahead of a
+//     writer that asks again after its turn, so while the small add waits it
+//     gets no second turn before another small add has had one. So a small add
+//     that asks while no other small add waits goes after the transaction in
+//     flight (or, if it asks while a turn is kept, that writer's next
+//     transaction) and at most one transaction of each writer then waiting that
+//     an add has already gone ahead of, however many others wait.
+//   - Small adds go among themselves in the order they asked, as do chunks and
+//     large adds (whose time is when they asked) and the two coalescing
+//     writers, except that a coalescing writer that keeps its turn goes again
+//     while the other waits.
+//   - While a coalescing writer waits, each writer that goes ahead of it asked
+//     before it did, is a small add, or is the other coalescing writer keeping
+//     its turn. With no small add waiting, a chunk or large add goes ahead of
+//     it only with a time older than its own, and the other coalescing writer
+//     keeps its turn only when a chunk or large add with a time older than the
+//     waiting writer's would go next and the oldest of the requests queued for
+//     the keeper is older still. With a small add waiting, a writer an add has
+//     gone ahead of goes before one it has not, whatever their times.
+//   - When a turn ends with a chunk or large add waiting and no small add, a
+//     coalescing writer gets the turn only if a waiting coalescing writer
+//     carries a time no younger than the chunk's or large add's, or by keeping
+//     the turn when the oldest of the requests queued for it is older than that
+//     time.
+//   - The requests a coalescing writer has taken count in the order through the
+//     time it carries while it waits; of those queued for it since it took its
+//     queue, only the oldest counts, and only in its keep decision as its turn
+//     ends. So a writer waiting or asking between the end of its turn and its
+//     next ask can go ahead of those, whatever its time.
+//   - A failing archive batch is not one wait. applyFolded retries the rest of
+//     a batch after each archive that fails in it, then re-runs each failed one
+//     alone, so a batch in which k archives fail takes at most 2k+1
+//     transactions (2k when every archive in it fails, 1 when its first
+//     transaction fails as a whole). Each attempt carries the batch's time but
+//     asks afresh, only after the one before it has ended. The bounds above
+//     hold for each attempt's own wait, not for the batch: between attempts any
+//     waiting writer can go, among them small adds, the best-effort writer, and
+//     chunks and large adds whatever their times.
+//
+// With more than one goroutine taking turns as the new jobs writer, several
+// small adds can wait at once, and big and large adds may take turns from
+// several goroutines at once.
 //
 // A big add's chunks take turns too. Each is a full transaction, and one that
 // queued on bolt's lock instead would get every other transaction while one
@@ -168,9 +223,9 @@ type writeTurn struct {
 // that has made its final drain has no requests queued (queued is not called
 // after it), so no turn is kept for it.
 //
-// Only transactions run through updateInTurn or updateInTurnSince take a
-// turn. Any other bolt write transaction queues on bolt's lock alongside
-// whichever writer holds one. The zero value is ready to use.
+// Only transactions run through updateInTurn or updateInTurnSince take a turn.
+// Any other bolt write transaction queues on bolt's lock alongside whichever
+// writer holds one. The zero value is ready to use.
 type writeTurns struct {
 	mu      sync.Mutex
 	busy    bool
@@ -183,7 +238,8 @@ type writeTurns struct {
 	// request queued since the writer last took its queue was queued; zero when
 	// it has none.
 	queuedSince [writerKinds]time.Time
-	// addTurns counts the turns give has handed to the new jobs writer. A take
+	// addTurns counts the turns give has handed to small adds (writerNewJobs),
+	// not those handed to large adds (writerLargeNewJobs). A take
 	// that finds no turn in progress is not counted, but then no writer is
 	// waiting for an add to overtake.
 	addTurns uint64
@@ -275,18 +331,21 @@ func (w *writeTurns) give() {
 
 // nextTurn returns the index in waiting of the writer to go next, or keep true
 // if the writer whose turn is ending should keep it, or neither (-1, false) if
-// no writer has a turn to take. With a small add waiting, the first to ask goes
-// unless an add has already gone ahead of a waiting writer since that writer
-// began waiting; then, of the writers an add has gone ahead of, the one carrying
-// the oldest request goes. With no small add waiting, the writer carrying the
-// oldest request goes, counting the requests the writer whose turn is ending has
-// queued since it took its queue, which keeps the turn if they are the oldest.
+// no writer has a turn to take. With a small add waiting no turn is kept: the
+// writer nextOther chooses from those an add has gone ahead of since they began
+// waiting goes, or, if there is none, the small add that asked first. With no
+// small add waiting, the writer nextOther chooses from all those waiting goes,
+// unless the writer whose turn is ending keeps the turn: it does when it has
+// requests queued since it took its queue, nextOther chose no coalescing
+// writer, and either nobody waits or the oldest of those queued requests is
+// older than the chosen chunk's or large add's time. So it can keep the turn
+// while the other coalescing writer waits.
 func (w *writeTurns) nextTurn() (int, bool) {
 	add := slices.IndexFunc(w.waiting, func(turn writeTurn) bool {
 		return turn.kind == writerNewJobs
 	})
 
-	next, oldest := w.oldestOther(add >= 0)
+	next, coalescing := w.nextOther(add >= 0)
 
 	if add >= 0 {
 		if next < 0 {
@@ -297,21 +356,68 @@ func (w *writeTurns) nextTurn() (int, bool) {
 	}
 
 	own := w.queuedSince[w.holder]
+	if own.IsZero() || coalescing {
+		return next, false
+	}
 
-	return next, !own.IsZero() && (next < 0 || own.Before(oldest))
+	return next, next < 0 || own.Before(w.waiting[next].oldest)
 }
 
-// oldestOther returns the index in waiting of the writer other than a small
-// add carrying the oldest request, and when that request was queued, or -1 if
-// there is none. With onlyOvertaken, only the writers a small add has gone
-// ahead of since they began waiting count.
-func (w *writeTurns) oldestOther(onlyOvertaken bool) (int, time.Time) {
+// nextOther returns the index in waiting of the writer other than a small add
+// to go next, or -1 if there is none, and whether it is a coalescing writer
+// (the archive or best-effort writer). Of the writers that count, the
+// coalescing writer that asked first goes unless a chunk or large add carries a
+// time older than that of every coalescing writer; then the chunk or large add
+// with the oldest time goes (of those with the same time, the one that asked
+// first). With onlyOvertaken, only the writers a small add has gone ahead of
+// since they began waiting count.
+func (w *writeTurns) nextOther(onlyOvertaken bool) (int, bool) {
+	first, coalescingOldest := w.firstCoalescing(onlyOvertaken)
+	other, otherOldest := w.oldestUncoalesced(onlyOvertaken)
+
+	if first >= 0 && (other < 0 || !otherOldest.Before(coalescingOldest)) {
+		return first, true
+	}
+
+	return other, false
+}
+
+// firstCoalescing returns the index in waiting of the coalescing writer that
+// asked first, or -1 if none counts, and the oldest time of the coalescing
+// writers that count. With onlyOvertaken, only the writers a small add has
+// gone ahead of since they began waiting count.
+func (w *writeTurns) firstCoalescing(onlyOvertaken bool) (int, time.Time) {
+	first := -1
+
+	var oldest time.Time
+
+	for i, turn := range w.waiting {
+		if !turn.kind.coalescing() || !w.mayGoNext(turn, onlyOvertaken) {
+			continue
+		}
+
+		if first < 0 {
+			first, oldest = i, turn.oldest
+		} else if turn.oldest.Before(oldest) {
+			oldest = turn.oldest
+		}
+	}
+
+	return first, oldest
+}
+
+// oldestUncoalesced returns the index in waiting of the chunk or large add
+// carrying the oldest request (of those carrying the same, the one that asked
+// first), or -1 if none counts, and when that request was made. With
+// onlyOvertaken, only the writers a small add has gone ahead of since they
+// began waiting count.
+func (w *writeTurns) oldestUncoalesced(onlyOvertaken bool) (int, time.Time) {
 	next := -1
 
 	var oldest time.Time
 
 	for i, turn := range w.waiting {
-		if turn.kind == writerNewJobs || (onlyOvertaken && turn.addTurnsAtArrival == w.addTurns) {
+		if turn.kind.coalescing() || !w.mayGoNext(turn, onlyOvertaken) {
 			continue
 		}
 
@@ -321,4 +427,11 @@ func (w *writeTurns) oldestOther(onlyOvertaken bool) (int, time.Time) {
 	}
 
 	return next, oldest
+}
+
+// mayGoNext reports whether nextOther may choose turn: never a small add, and,
+// with onlyOvertaken, only a writer a small add has gone ahead of since it
+// began waiting.
+func (w *writeTurns) mayGoNext(turn writeTurn, onlyOvertaken bool) bool {
+	return turn.kind != writerNewJobs && (!onlyOvertaken || turn.addTurnsAtArrival != w.addTurns)
 }
