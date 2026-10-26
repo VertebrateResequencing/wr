@@ -105,6 +105,17 @@ const (
 	reliable4RSRepGroup       = "reliable4_reportstorm_rg"
 )
 
+// reliable4RSLatBuckets is the number of (non-overflow) archive-latency buckets.
+const reliable4RSLatBuckets = 15
+
+// reliable4RSLatBucketsMs are the inclusive upper bounds (in ms) of the archive
+// latency histogram buckets; a final overflow bucket counts anything larger.
+//
+//nolint:gochecknoglobals // an immutable lookup table for the latency histogram
+var reliable4RSLatBucketsMs = [reliable4RSLatBuckets]int64{
+	1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000, 60000,
+}
+
 // reliable4RSParams holds the parsed knobs for one report-storm run.
 type reliable4RSParams struct {
 	jobs        int
@@ -255,17 +266,6 @@ func (s *reliable4RSStats) completedCount() int {
 func (s *reliable4RSStats) recordArchiveLatency(d time.Duration) {
 	s.lat.record(d)
 	reliable4RSStoreMax(&s.maxLatNs, d)
-}
-
-// reliable4RSLatBuckets is the number of (non-overflow) archive-latency buckets.
-const reliable4RSLatBuckets = 15
-
-// reliable4RSLatBucketsMs are the inclusive upper bounds (in ms) of the archive
-// latency histogram buckets; a final overflow bucket counts anything larger.
-//
-//nolint:gochecknoglobals // an immutable lookup table for the latency histogram
-var reliable4RSLatBucketsMs = [reliable4RSLatBuckets]int64{
-	1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000, 60000,
 }
 
 // reliable4RSLatHist is a concurrent, memory-bounded latency histogram: atomic
@@ -702,20 +702,18 @@ func reliable4RSAddJobs(t *testing.T, addr, caFile, certDomain string, token []b
 	}
 }
 
-// reliable4RSWaitForGroups waits for the first ready-added callback to assign
-// each job its real scheduler/reserve group (and to populate the server's
-// previously-scheduled-groups so a first ReserveScheduled is not skipped), then
-// returns the distinct group names our runners will reserve from.
+// reliable4RSWaitForGroups waits for the jobs to be queued, each in its real
+// scheduler/reserve group (which the queue's ready hook gives it as it is
+// added), and for the first ready-added callback to finish (so the server's
+// previously-scheduled-groups are populated and a first ReserveScheduled is not
+// skipped), then returns the distinct group names our runners will reserve
+// from.
 func reliable4RSWaitForGroups(t *testing.T, server *Server, jobs int) []string {
 	deadline := time.Now().Add(reliable4RSGroupWaitMax)
 
 	for time.Now().Before(deadline) {
-		server.rpmutex.Lock()
-		running := server.racRunning
-		server.rpmutex.Unlock()
-
 		groups := reliable4RSDistinctGroups(server)
-		if !running && len(groups) >= reliable4RSSiblingGroups && len(server.q.AllItems()) == jobs {
+		if server.racIdle() && len(groups) >= reliable4RSSiblingGroups && len(server.q.AllItems()) == jobs {
 			return groups
 		}
 

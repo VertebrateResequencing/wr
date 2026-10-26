@@ -274,10 +274,11 @@ func TestReliable4ArchiveErrorsStayPerJob(t *testing.T) {
 }
 
 // TestReliable4ArchivePanicStaysPerJob proves a malformed archive that PANICS
-// inside the write transaction fails only its own caller. bbolt.Batch used to give
-// this for free (safelyCall turned a panic into that call's error); a plain
-// db.Update does not, so without applyArchiveOp's recover one bad job would take
-// the whole manager down along with every archive folded in beside it.
+// inside the write transaction fails only its own caller. Neither db.Update nor
+// bbolt.Batch gives this (Batch's safelyCall recovers a panic only to rerun the
+// function solo with Update, where it panics again), so without applyArchiveOp's
+// recover one bad job would take the whole manager down along with every archive
+// folded in beside it.
 func TestReliable4ArchivePanicStaysPerJob(t *testing.T) {
 	if runnermode || servermode {
 		return

@@ -1,0 +1,187 @@
+/*******************************************************************************
+ * Copyright (c) 2026 Genome Research Ltd.
+ *
+ * Author: Sendu Bala <sb10@sanger.ac.uk>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included
+ * in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ ******************************************************************************/
+
+package jobqueue
+
+// PROBE ONLY (racpending investigation, delivery queue item 4). It shows that
+// the RAC-pending hold an add takes is dropped before the ready-added callback
+// that add queued has run, so a reserve hands out the new job first:
+//   - P1: another operation's clear (a resume to dependent) drops it.
+//   - P2: finishRAC of a callback already running when the add arrived drops
+//     it, ~recallBreak before the merged recall callback runs.
+// The control leaf shows the hold works when nothing else clears it.
+
+import (
+	"context"
+	"os"
+	"testing"
+	"time"
+
+	. "github.com/smartystreets/goconvey/convey"
+)
+
+// racGates, newRACGates and reserveReturnsWhileGated are in
+// jobqueue/nohold_test.go.
+
+func awaitCalled(t *testing.T, g *racGates, n int) {
+	t.Helper()
+
+	select {
+	case <-g.called[n]:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("ready-added callback %d was not called", n)
+	}
+}
+
+func TestRACPendingProbe(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a manager with idle ready-added callbacks", t, func() {
+		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
+		serverConfig.Timings.ItemTTR = time.Minute
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		defer server.Stop(ctx, true)
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		runner, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(runner)
+
+		mkJob := func(name string) *Job {
+			return &Job{
+				Cmd: restFormTrue + " " + name, Cwd: testCwd, RepGroup: "racprobe",
+				ReqGroup: "racprobe", Requirements: standardReqs, Retries: 3,
+			}
+		}
+
+		// a parent that stays incomplete (we reserve it and never finish it), and
+		// a suspended child waiting on it, so resuming the child sends it back to
+		// dependent
+		parent := mkJob("parent")
+		parent.DepGroups = []string{"racprobe-parent"}
+		child := mkJob("child")
+		child.Dependencies = Dependencies{NewDepGroupDependency("racprobe-parent")}
+
+		inserts, _, err := jq.Add([]*Job{parent, child}, os.Environ(), true)
+		So(err, ShouldBeNil)
+		So(inserts, ShouldEqual, 2)
+
+		got, err := jq.Reserve(time.Second)
+		So(err, ShouldBeNil)
+		So(got, ShouldNotBeNil)
+		So(got.Key(), ShouldEqual, parent.Key())
+
+		suspended, err := jq.Suspend([]*JobEssence{{JobKey: child.Key()}})
+		So(err, ShouldBeNil)
+		So(suspended, ShouldEqual, 1)
+
+		idle, err := jq.Reserve(10 * time.Millisecond)
+		So(err, ShouldBeNil)
+		So(idle, ShouldBeNil)
+
+		server.rpmutex.Lock()
+		racIdle := !server.racPending && !server.racRunning
+		server.rpmutex.Unlock()
+		So(racIdle, ShouldBeTrue)
+
+		gates := newRACGates(3)
+		defer gates.openAll()
+
+		server.q.SetReadyAddedCallback(func(_ string, allitemdata []any) {
+			n := gates.enter()
+			gates.wait(n)
+			server.readyAddedCallback(ctx, server.q, allitemdata)
+		})
+
+		newJob := mkJob("new")
+
+		Convey("control: a reserve waits for the callback a new add queued", func() {
+			added, _, errA := jq.Add([]*Job{newJob}, os.Environ(), true)
+			So(errA, ShouldBeNil)
+			So(added, ShouldEqual, 1)
+			awaitCalled(t, gates, 0)
+
+			early, _, done := reserveReturnsWhileGated(runner)
+			So(early, ShouldBeFalse)
+
+			gates.openAll()
+			<-done
+		})
+
+		Convey("P1: a resume to dependent does not release the add's hold", func() {
+			added, _, errA := jq.Add([]*Job{newJob}, os.Environ(), true)
+			So(errA, ShouldBeNil)
+			So(added, ShouldEqual, 1)
+			awaitCalled(t, gates, 0)
+
+			resumed, errR := jq.Resume([]*JobEssence{{JobKey: child.Key()}})
+			So(errR, ShouldBeNil)
+			So(resumed, ShouldEqual, 1)
+
+			early, key, done := reserveReturnsWhileGated(runner)
+			So(key, ShouldBeBlank)
+			So(early, ShouldBeFalse)
+
+			gates.openAll()
+			<-done
+		})
+
+		Convey("P2: an add during a running callback keeps its hold until the recall runs", func() {
+			// a first callback is triggered and held at the gate, so the queue
+			// considers the callback running
+			server.triggerReadyAddedCallback(ctx)
+			awaitCalled(t, gates, 0)
+
+			// this add's readyAdded is merged into a recall
+			added, _, errA := jq.Add([]*Job{newJob}, os.Environ(), true)
+			So(errA, ShouldBeNil)
+			So(added, ShouldEqual, 1)
+
+			// the first callback (whose data predates the add) finishes; the
+			// recall that covers the add is held at its gate
+			gates.open(0)
+			awaitCalled(t, gates, 1)
+
+			early, key, done := reserveReturnsWhileGated(runner)
+			So(key, ShouldBeBlank)
+			So(early, ShouldBeFalse)
+
+			gates.openAll()
+			<-done
+		})
+	})
+}

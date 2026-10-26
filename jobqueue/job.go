@@ -83,6 +83,12 @@ var errNoTargets = errors.New("no Targets specified")
 // its result, only in the work it did. It is nil in production.
 var envDecodeHook func() //nolint:gochecknoglobals // the only seam onto work that has no result
 
+// modifyKeyCheckHook, when set, is called by JobModifier.modifyJob just before
+// it checks the queue for a job with the key a modification would give, so a
+// test can have a delay expire at that moment. It must make no queue call. It
+// is nil in production.
+var modifyKeyCheckHook func() //nolint:gochecknoglobals // the only seam onto that moment
+
 // JobState is how we describe the possible job states.
 type JobState string
 
@@ -482,6 +488,24 @@ func (j *Job) endChangeAheadLocked(began uint64) bool {
 	return unchanged
 }
 
+// replaceLostEndStateLocked records the owner's report of how its command
+// ended, and its fail reason, over the end state the manager's own lost release
+// recorded, which is all FailReasonLost can come from on a job waiting to run
+// again. It reports whether it did: once done, FailReason is the owner's, so a
+// re-send of the same report, or a concurrent duplicate, changes nothing. Limit
+// groups are not touched, since the lost release already gave them back. The
+// caller holds j's lock.
+func (j *Job) replaceLostEndStateLocked(jes *JobEndState, failReason string) bool {
+	if j.FailReason != FailReasonLost || jes == nil || !jes.Exited {
+		return false
+	}
+
+	j.recordEndStateLocked(jes)
+	j.FailReason = failReason
+
+	return true
+}
+
 // runsAsImageUser tells you if the Cmd's processes of a job with the given
 // ContainerImageUser and WithDocker will really run as the user the container
 // image specifies instead of as the calling user. That needs both, since
@@ -528,26 +552,6 @@ func (j *Job) recordEndStateLocked(jes *JobEndState) {
 	}
 
 	j.setActualCwd(jes.Cwd)
-}
-
-// replaceLostEndState records the owner's report of how its command ended, and
-// its fail reason, over the end state the manager's own lost release recorded,
-// which is all FailReasonLost can come from on a job waiting to run again. It
-// reports whether it did: once done, FailReason is the owner's, so a re-send of
-// the same report, or a concurrent duplicate, changes nothing. Limit groups are
-// not touched, since the lost release already gave them back.
-func (j *Job) replaceLostEndState(jes *JobEndState, failReason string) bool {
-	j.Lock()
-	defer j.Unlock()
-
-	if j.FailReason != FailReasonLost || jes == nil || !jes.Exited {
-		return false
-	}
-
-	j.recordEndStateLocked(jes)
-	j.FailReason = failReason
-
-	return true
 }
 
 // cwdLeaf returns the part of cwd below cwdBase, prefixed with "/", for display
@@ -601,8 +605,8 @@ func (j *Job) memoisedSchedulerGroupSnapshot() (schedulerGroupSnapshot, bool) {
 }
 
 // snapshotWithDerived combines the given memoised derived strings with this job's
-// live priority and current scheduler group. Call with at least the read lock
-// held.
+// live priority, current scheduler group and preparedStamp. Call with at least
+// the read lock held.
 func (j *Job) snapshotWithDerived(derived *jobDerived) schedulerGroupSnapshot {
 	return schedulerGroupSnapshot{
 		key:           derived.key,
@@ -610,6 +614,7 @@ func (j *Job) snapshotWithDerived(derived *jobDerived) schedulerGroupSnapshot {
 		previousGroup: j.schedulerGroup,
 		group:         derived.group,
 		priority:      j.Priority,
+		learnedStamp:  j.preparedStamp.Load(),
 	}
 }
 
@@ -647,18 +652,20 @@ func (j *Job) derivedLocked() *jobDerived {
 //     fields, LimitGroups and the Requirements fields), the only path that
 //     changes a live job's Cmd/Cwd/mounts/container fields at all;
 //   - updateJobRequirementsForRetry (Requirements RAM/Disk/Time), the only path
-//     that applies learned or post-failure requirements to a live job, via
-//     prepareReadyJob;
+//     that applies learned or post-failure requirements to a live job (at fail
+//     time, in the queue's ready hook and its off-lock twin
+//     prepareBeforeQueueing, and in prepareReadyJob), through
+//     invalidateDerivedIfChangedLocked, so only when it changed one of them;
 //   - Server.handleUserSpecifiedJobLimitGroups (LimitGroups normalisation).
 //
 // That the set is complete is necessary but not sufficient: each of those call
 // sites must also invalidate on EVERY path through it that can have mutated an
 // input. applyTo and handleUserSpecifiedJobLimitGroups have a single exit each and
 // invalidate at it, but updateJobRequirementsForRetry mutates Requirements before
-// an early return, so it invalidates in a DEFER; invalidating at its tail instead
-// would silently leave a stale memo (and so schedule against stale requirements)
-// for every job whose override says to keep its own values but which still learns
-// the resources it did not specify.
+// an early return, so it compares and invalidates in a DEFER; invalidating at its
+// tail instead would silently leave a stale memo (and so schedule against stale
+// requirements) for every job whose override says to keep its own values but
+// which still learns the resources it did not specify.
 //
 // Everywhere else those fields are only ever set while building a brand new Job
 // (at add time, on decoding a database record, or in the field-by-field copies
@@ -786,6 +793,24 @@ func (j *JobModifier) nilEntryMessage() string {
 	}
 
 	return ""
+}
+
+// applyIfKeyUnchanged locks job and, if its key is still before, applies the
+// modifications and records the new->old key mapping in keys. It returns false
+// if the key had changed.
+func (j *JobModifier) applyIfKeyUnchanged(job *Job, before string, keys map[string]string) bool {
+	job.Lock()
+	defer job.Unlock()
+
+	if job.Key() != before {
+		return false
+	}
+
+	j.applyTo(job)
+
+	keys[job.Key()] = before
+
+	return true
 }
 
 // mergeBehaviours returns existing with, for each trigger that modifications
@@ -1085,6 +1110,26 @@ type Job struct {
 	Attempts uint32
 	// remaining number of Release()s allowed before being buried instead.
 	UntilBuried uint8
+	// FailBumpsCleared holds a FailBump* bit for each resource whose
+	// requirement a user modified since the job last failed: the increase that
+	// failure called for is no longer applied to it. A new failure clears it.
+	FailBumpsCleared uint8 `codec:",omitempty"`
+	// ModifiedReqs holds the RAM, Disk, DiskSet and Time a user's wr mod set,
+	// for the resources whose bit is set in FailBumpsCleared. The requirement
+	// recompute resets those resources to it and compares with it. It is never
+	// nil while any FailBump* bit is set; a new failure sets it to nil along
+	// with clearing the bits.
+	ModifiedReqs *scheduler.Requirements `codec:",omitempty"`
+	// FailedRunReqs holds the RAM, Disk, DiskSet and Time the job's last failed
+	// run reserved, copied from Requirements when the failure is recorded and
+	// before any increase for it; that is what the run reserved, since a modify
+	// skips running jobs. Every requirement recompute starts from it, and the
+	// failure's jobRAM stat is judged against its RAM. Only read while a
+	// failure is pending: FailReason is set and no run is in progress
+	// (runInProgress), since a lost run's FailReason is set without recording
+	// a run end. It is never cleared, so otherwise it may be an earlier run's.
+	// Nil in records from older managers.
+	FailedRunReqs *scheduler.Requirements `codec:",omitempty"`
 	// we note which client reserved this job, for validating if that client has
 	// permission to do other stuff to this Job; the server only ever sets this
 	// on Reserve(), so clients can't cheat by changing this on their end.
@@ -1137,6 +1182,37 @@ type Job struct {
 	// (copyJobForClient) and for key calculations (JobModifier.modifiedKey) start
 	// out with it unset, so a memo can never travel to a different Job.
 	derived *jobDerived
+
+	// preparedLearned is the learnedReqs of the learned values
+	// updateJobRequirementsForRetry last recomputed this job with, so that a
+	// ready-added callback can tell from its snapshot that the job's ReqGroup
+	// has learned other values since (see Server.recordSkippedReadyJob). It is
+	// written under the write lock and, being unexported, is neither
+	// serialised nor sent to clients: a job recovered from the database is
+	// prepared again as it becomes ready.
+	preparedLearned learnedReqs
+
+	// preparedStamp is the learned-requirement cache's change stamp (see
+	// reqStatCache.changes) as of which a ready-added callback last found
+	// preparedLearned current, or 0 if none has since preparedLearned last
+	// changed. A snapshot carries it in what would otherwise be padding, so a
+	// callback can skip a job that is current without reading anything else of
+	// it. It is atomic because the callback sets it under the read lock.
+	preparedStamp atomic.Uint32
+
+	// racCountedIn is the racID of the scheduler group a ready-added callback
+	// last counted this job in as ready (see Server.prepareAndCountReadyJob), so
+	// that the callback can uncount it if the job leaves ready before it counts
+	// the running jobs (see runningDataUncountingLeftReady, which clears it once
+	// it has, so the job is never uncounted twice). A racID is never
+	// reused, so one set by an earlier callback names none of the current one's
+	// groups. It is a number, not the group, so setting it for every counted job
+	// adds no pointer for the garbage collector to track. It is atomic as the
+	// callback sets and reads it without the job's lock; being unexported it is
+	// neither serialised nor sent to clients. It sits beside derived, which the
+	// callback reads for every job it counts, so setting it rarely needs a cache
+	// line that read did not already bring in.
+	racCountedIn atomic.Uint64
 
 	// derivations counts how many times derived has actually been computed (ie.
 	// how many 2-MD5-plus-sort derivations this job has cost). It is INERT
@@ -2221,6 +2297,7 @@ type schedulerGroupSnapshot struct {
 	previousGroup string
 	group         string
 	priority      uint8
+	learnedStamp  uint32 // the job's preparedStamp
 }
 
 // schedulerGroupSnapshot returns the cheap per-rac-cycle view of this job: its
@@ -2316,6 +2393,8 @@ func (j *Job) buildJStatus(streams jobStatusStreams, leaf string) JStatus {
 		state = JobStateLost
 	}
 
+	runReqs := j.lastRunReqs()
+
 	js := JStatus{
 		Key:                 j.Key(),
 		RepGroup:            j.RepGroup,
@@ -2340,6 +2419,9 @@ func (j *Job) buildJStatus(streams jobStatusStreams, leaf string) JStatus {
 		ExpectedRAM:         j.Requirements.RAM,
 		ExpectedTime:        j.Requirements.Time.Seconds(),
 		RequestedDisk:       j.Requirements.Disk,
+		RunRAM:              runReqs.RAM,
+		RunTime:             runReqs.Time.Seconds(),
+		RunDisk:             runReqs.Disk,
 		EnvOverrides:        streams.envOverrides,
 		OtherRequests:       j.otherRequests(),
 		Cores:               j.Requirements.Cores,
@@ -2969,33 +3051,36 @@ func (j *JobModifier) Modify(jobs []*Job, server *Server) (map[string]string, er
 	return keys, nil
 }
 
-// modifyJob applies the modifications to a single job (locking it for the
-// duration), recording the new->old key mapping in keys. Jobs whose modified
+// modifyJob applies the modifications to a single job (locking it while it
+// does so), recording the new->old key mapping in keys. Jobs whose modified
 // key would duplicate another job are left unchanged and not recorded.
+//
+// The duplicate-key check is made without the job's lock, since it calls the
+// queue, and the queue may lock this job (in its ready hook) while holding its
+// own lock. If the job's key changed in the meantime, the check is made again.
 func (j *JobModifier) modifyJob(job *Job, server *Server, keys map[string]string) error {
-	job.Lock()
-	defer job.Unlock()
+	for {
+		job.RLock()
+		before, newKey := job.Key(), j.modifiedKey(job)
+		job.RUnlock()
 
-	before := job.Key()
+		skip, err := j.skipForDuplicateKey(server, keys, before, newKey)
+		if err != nil || skip {
+			return err
+		}
 
-	skip, err := j.skipForDuplicateKey(job, server, keys, before)
-	if err != nil || skip {
-		return err
+		if j.applyIfKeyUnchanged(job, before, keys) {
+			return nil
+		}
 	}
-
-	j.applyTo(job)
-
-	keys[job.Key()] = before
-
-	return nil
 }
 
-// skipForDuplicateKey works out whether modifying job would change its key into
-// one already used by another job in this batch or in the queue/db, in which
-// case the job should be skipped (skip=true) and left unchanged.
-func (j *JobModifier) skipForDuplicateKey(job *Job, server *Server, keys map[string]string,
-	before string) (skip bool, err error) {
-	newKey := j.modifiedKey(job)
+// skipForDuplicateKey works out whether modifying a job would change its key
+// from before into newKey when newKey is already used by another job in this
+// batch or in the queue/db, in which case the job should be skipped
+// (skip=true) and left unchanged. The caller must not hold the job's lock.
+func (j *JobModifier) skipForDuplicateKey(server *Server, keys map[string]string,
+	before, newKey string) (skip bool, err error) {
 	if _, done := keys[newKey]; done {
 		// duplicate of prior job in this loop, ignore
 		return true, nil
@@ -3003,6 +3088,10 @@ func (j *JobModifier) skipForDuplicateKey(job *Job, server *Server, keys map[str
 
 	if newKey == before {
 		return false, nil
+	}
+
+	if modifyKeyCheckHook != nil {
+		modifyKeyCheckHook()
 	}
 
 	// check queue and db
@@ -3152,8 +3241,12 @@ func (j *JobModifier) applyCmdCwd(job *Job) {
 
 // applyGrouping applies the group/module/dependency modifications to job.
 func (j *JobModifier) applyGrouping(job *Job) {
-	if j.ReqGroupSet {
+	if j.ReqGroupSet && job.ReqGroup != j.ReqGroup {
 		job.ReqGroup = j.ReqGroup
+
+		// its prepared learned values were found current for its old
+		// ReqGroup, so a ready-added callback must compare it again
+		job.preparedStamp.Store(0)
 	}
 
 	if j.GroupSet {
@@ -3173,7 +3266,9 @@ func (j *JobModifier) applyGrouping(job *Job) {
 	}
 }
 
-// applyRequirements applies any set scheduler Requirements modifications to job.
+// applyRequirements applies any set scheduler Requirements modifications to
+// job. Each RAM, Time or Disk it sets is recorded in ModifiedReqs, with its
+// FailBump* bit set, so a pending failure's increase no longer applies to it.
 func (j *JobModifier) applyRequirements(job *Job) {
 	if j.Requirements == nil {
 		return
@@ -3181,10 +3276,12 @@ func (j *JobModifier) applyRequirements(job *Job) {
 
 	if j.Requirements.RAM != 0 {
 		job.Requirements.RAM = j.Requirements.RAM
+		job.userModifiedReqs(FailBumpRAM).RAM = j.Requirements.RAM
 	}
 
 	if j.Requirements.Time != 0 {
 		job.Requirements.Time = j.Requirements.Time
+		job.userModifiedReqs(FailBumpTime).Time = j.Requirements.Time
 	}
 
 	if j.Requirements.CoresSet {
@@ -3193,6 +3290,9 @@ func (j *JobModifier) applyRequirements(job *Job) {
 
 	if j.Requirements.DiskSet {
 		job.Requirements.Disk = j.Requirements.Disk
+		modified := job.userModifiedReqs(FailBumpDisk)
+		modified.Disk = j.Requirements.Disk
+		modified.DiskSet = true
 	}
 
 	if j.Requirements.OtherSet {

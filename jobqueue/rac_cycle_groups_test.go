@@ -119,7 +119,7 @@ func newRACLimitsServer(limits map[string]int) *Server {
 		lim.SetLimit(name, *limiter.NewCountGroupData(int64(limit)))
 	}
 
-	return &Server{limiter: lim, previouslyScheduledGroups: make(map[string]*sgroup)}
+	return &Server{db: racNoStatsDB(), limiter: lim, previouslyScheduledGroups: make(map[string]*sgroup)}
 }
 
 // racRandomCycle runs a rac cycle over a random arrangement: up to 4 limit

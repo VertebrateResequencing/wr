@@ -641,12 +641,12 @@
                                                 <!-- ko if: Exited && PeakRAM > 0 -->
                                                 <span class="prop-separator">→</span>
                                                 <span class="actual-value"
-                                                    data-bind="text: window.wrUtils.mbIEC(PeakRAM), css: { 'over-limit': PeakRAM > ExpectedRAM }"></span>
+                                                    data-bind="text: window.wrUtils.mbIEC(PeakRAM), css: { 'over-limit': PeakRAM > RunRAM }"></span>
                                                 <!-- /ko -->
                                                 <!-- ko if: !Exited && (State == 'running' || State == 'reserved') && PeakRAM > 0 -->
                                                 <span class="prop-separator">→</span>
                                                 <span class="actual-value live-value"
-                                                    data-bind="text: window.wrUtils.mbIEC(PeakRAM), css: { 'over-limit': PeakRAM > ExpectedRAM }"></span>
+                                                    data-bind="text: window.wrUtils.mbIEC(PeakRAM), css: { 'over-limit': PeakRAM > RunRAM }"></span>
                                                 <!-- /ko -->
                                             </span>
                                         </div>
@@ -659,7 +659,7 @@
                                                 <!-- ko if: Exited -->
                                                 <span class="prop-separator">→</span>
                                                 <span class="actual-value"
-                                                    data-bind="text: window.wrUtils.toDuration(Walltime), css: { 'over-limit': Walltime > ExpectedTime }"></span>
+                                                    data-bind="text: window.wrUtils.toDuration(Walltime), css: { 'over-limit': Walltime > RunTime }"></span>
                                                 <span class="prop-separator">•</span>
                                                 <span
                                                     data-bind="text: 'CPU: ' + window.wrUtils.toDuration(CPUtime)"></span>
@@ -668,7 +668,7 @@
                                                 <!-- ko if: !Exited && (State == 'running' || State == 'reserved') -->
                                                 <span class="prop-separator">→</span>
                                                 <span class="actual-value"
-                                                    data-bind="text: window.wrUtils.toDuration(LiveWalltime()), css: { 'over-limit': LiveWalltime() > ExpectedTime }"></span>
+                                                    data-bind="text: window.wrUtils.toDuration(LiveWalltime()), css: { 'over-limit': LiveWalltime() > RunTime }"></span>
                                                 <!-- ko if: !Exited && (State == 'running' || State == 'reserved') && CPUtime > 0 -->
                                                 <span class="prop-separator">•</span>
                                                 <span class="live-value"
@@ -679,7 +679,7 @@
                                                 <!-- ko if: !Exited && State == 'lost' -->
                                                 <span class="prop-separator">→</span>
                                                 <span class="actual-value"
-                                                    data-bind="text: window.wrUtils.toDuration(Walltime), css: { 'over-limit': Walltime > ExpectedTime }"></span>
+                                                    data-bind="text: window.wrUtils.toDuration(Walltime), css: { 'over-limit': Walltime > RunTime }"></span>
                                                 <!-- /ko -->
                                             </span>
                                         </div>
@@ -692,7 +692,7 @@
                                                 <!-- ko if: Exited -->
                                                 <span class="prop-separator">→</span>
                                                 <span class="actual-value"
-                                                    data-bind="text: PeakDisk === 0 ? '0GB' : window.wrUtils.mbIEC(PeakDisk), css: { 'over-limit': RequestedDisk > 0 && PeakDisk > RequestedDisk*1024 }"></span>
+                                                    data-bind="text: PeakDisk === 0 ? '0GB' : window.wrUtils.mbIEC(PeakDisk), css: { 'over-limit': RunDisk > 0 && PeakDisk > RunDisk*1024 }"></span>
                                                 <!-- /ko -->
                                             </span>
                                         </div>

@@ -312,7 +312,7 @@ func TestReliable3RacAccountingCaps(t *testing.T) {
 			// GetRemainingCapacity's callback even before its group is first
 			// vivified. The sort then cannot change the outcome.
 			lim := limiter.New(func(_ context.Context, _ string) *limiter.GroupData { return nil })
-			s := &Server{limiter: lim, previouslyScheduledGroups: make(map[string]*sgroup)}
+			s := &Server{db: racNoStatsDB(), limiter: lim, previouslyScheduledGroups: make(map[string]*sgroup)}
 
 			low := racReadyJobs("low", 100, 0, lg, 4)
 			high := racReadyJobs("high", 200, 250, lg, 4)

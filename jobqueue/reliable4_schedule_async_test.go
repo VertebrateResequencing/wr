@@ -102,9 +102,9 @@ func TestReliable4ArchiveSchedulingAsync(t *testing.T) {
 			previouslyScheduledGroups: make(map[string]*sgroup),
 			wg:                        waitgroup.New(),
 			scheduler:                 sched,
-			rc:                        "reliable4-async-runner %s",
 			ServerInfo:                &ServerInfo{},
 		}
+		s.setRC("reliable4-async-runner %s")
 
 		grp := &sgroup{
 			name:     "reliable4_async_rg",

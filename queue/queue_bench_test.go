@@ -39,16 +39,24 @@ const benchQueueItems = 1000
 // as the manager does for add, Reserve, Touch and Archive. The groups variant
 // spreads the items over many reserve groups, as a real manager's scheduler
 // groups do. It only uses the exported API, so it can be copied into an older
-// tree to compare versions.
+// tree to compare versions. The callback=running variants reserve and remove
+// while a ready-added callback, given the ready items once they were all added,
+// is still running, as a live manager's reserves overlap its callbacks.
 func BenchmarkQueueLifecycle(b *testing.B) {
 	for _, groups := range []int{1, 100} {
 		b.Run(fmt.Sprintf("groups=%d", groups), func(b *testing.B) {
-			benchQueueLifecycle(b, groups)
+			benchQueueLifecycle(b, groups, false)
+		})
+	}
+
+	for _, groups := range []int{1, 100} {
+		b.Run(fmt.Sprintf("groups=%d,callback=running", groups), func(b *testing.B) {
+			benchQueueLifecycle(b, groups, true)
 		})
 	}
 }
 
-func benchQueueLifecycle(b *testing.B, groups int) {
+func benchQueueLifecycle(b *testing.B, groups int, duringCallback bool) {
 	b.Helper()
 
 	ctx := context.Background()
@@ -71,6 +79,11 @@ func benchQueueLifecycle(b *testing.B, groups int) {
 			}
 		}
 
+		var finishCallback func()
+		if duringCallback {
+			finishCallback = holdReadyAddedCallback(ctx, q)
+		}
+
 		for i := range keys {
 			item, err := q.Reserve(rgs[i], 0)
 			if err != nil {
@@ -86,8 +99,34 @@ func benchQueueLifecycle(b *testing.B, groups int) {
 			}
 		}
 
+		if finishCallback != nil {
+			finishCallback()
+		}
+
 		if err := q.Destroy(); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// holdReadyAddedCallback triggers a ready-added callback on q, returning once it
+// has been given q's ready items; the callback runs until the returned func is
+// called, which returns once it has finished.
+func holdReadyAddedCallback(ctx context.Context, q *Queue) func() {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+
+	q.SetReadyAddedCallback(func(string, []any) {
+		close(entered)
+		<-release
+		close(finished)
+	})
+	q.TriggerReadyAddedCallback(ctx)
+	<-entered
+
+	return func() {
+		close(release)
+		<-finished
 	}
 }

@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net"
 	"net/http"
@@ -105,6 +106,10 @@ const (
 	ServerModePause     = "paused"
 	ServerModeDrain     = "draining"
 )
+
+// racRegroupChunk is how many limit-blocked ready jobs a ready-added callback
+// regroups in one hold of the queue's lock.
+const racRegroupChunk = 1024
 
 const (
 	maxJobsForStd                  = 1000
@@ -257,8 +262,7 @@ var (
 	// what is pending into one db.bolt.Update - across a commit, not within a
 	// fixed window - so MaxBatchDelay never applies to them. What is left on
 	// db.bolt.Batch is db.storeLimitGroups, db.storeEnv's db.store,
-	// db.deleteLiveJobs, db.modifyLiveJobs and db.storeNewJobDataChunked (an add
-	// too big for one transaction), all occasional except that
+	// db.deleteLiveJobs and db.modifyLiveJobs, all occasional except that
 	// deleteJobIfRequested reaches db.deleteLiveJobs once per job for jobs
 	// carrying the Remove behaviour, which can therefore arrive in bulk. A grep
 	// for db.bolt.Batch finds one more, db.storeLookups, which now only tests
@@ -292,6 +296,10 @@ var (
 	// serverSubscriptionIdleTimeout is the default
 	// ServerTimings.SubscriptionIdleTimeout.
 	serverSubscriptionIdleTimeout = 30 * time.Minute
+
+	// serverReqStatRefreshInterval is the default
+	// ServerTimings.ReqStatRefreshInterval.
+	serverReqStatRefreshInterval = 1 * time.Second
 
 	// subscriptionIdleTimeoutMin is the shortest
 	// ServerTimings.SubscriptionIdleTimeout a server uses. A shorter one would
@@ -442,10 +450,19 @@ var resumeQueuedHook func(key string)
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var suspendQueuedHook func(key string)
 
+// lostEndStateAppliedHook, if non-nil, is called with a job's key, before the
+// job is written: by ackAlreadyReleased once it has replaced a lost release's
+// end state with the owner's report, and by finalizeBuriedWaiting once it has
+// applied any bury of a waiting item, whether or not it replaced an end state.
+// A test can then have the job kicked or reserved. It is a test-only seam and
+// is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var lostEndStateAppliedHook func(key string)
+
 // resumeItemReadyHook, if non-nil, is called with a job's key once
-// resumeQueueItem's ResumeWith has returned and before it decides whether a
-// ready-added callback is still pending, so a test can have the item reserved
-// in between. It is a test-only seam and is nil in
+// resumeQueueItem's ResumeWith has returned, so a test can have the item
+// reserved before the resume returns. It is a test-only seam and is nil in
 // production.
 //
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
@@ -689,6 +706,11 @@ type ServerTimings struct {
 	// serverSubscriptionHoldTime (50s) is raised to that, since it would drop
 	// the subscriptions of clients in the middle of a poll.
 	SubscriptionIdleTimeout time.Duration
+
+	// ReqStatRefreshInterval is the least time between two loads of one
+	// ReqGroup's learned requirements from the database (default
+	// serverReqStatRefreshInterval, 1s). Negative means no limit, for tests.
+	ReqStatRefreshInterval time.Duration
 }
 
 // dfltDuration returns v, or def if v is not positive.
@@ -701,7 +723,8 @@ func dfltDuration(v, def time.Duration) time.Duration {
 }
 
 // withDefaults returns a copy of t with every non-positive duration or
-// rounding value replaced by its package-default value.
+// rounding value replaced by its package-default value, except that a negative
+// ReqStatRefreshInterval becomes 0, meaning no limit.
 func (t ServerTimings) withDefaults() ServerTimings {
 	t.InterruptTime = dfltDuration(t.InterruptTime, ServerInterruptTime)
 	t.ItemTTR = dfltDuration(t.ItemTTR, ServerItemTTR)
@@ -738,6 +761,13 @@ func (t ServerTimings) withDefaults() ServerTimings {
 	t.BindRetryBudget = dfltDuration(t.BindRetryBudget, serverBindRetryBudget)
 	t.SubscriptionIdleTimeout = max(dfltDuration(t.SubscriptionIdleTimeout, serverSubscriptionIdleTimeout),
 		subscriptionIdleTimeoutMin)
+
+	switch {
+	case t.ReqStatRefreshInterval < 0:
+		t.ReqStatRefreshInterval = 0
+	case t.ReqStatRefreshInterval == 0:
+		t.ReqStatRefreshInterval = serverReqStatRefreshInterval
+	}
 
 	return t
 }
@@ -966,25 +996,10 @@ type sgroup struct {
 	// reuses the same object it was handed. Accessed under the same locking
 	// discipline as failures.
 	retryBackoff *backoff.Backoff
+	// racID, when not 0, is the id a rac cycle gave the group as it made it,
+	// unique to the group (see Server.ensureGroup); clone and snapshot leave it 0.
+	racID uint64
 	sync.RWMutex
-}
-
-// ensureGroup returns groups[snapshot.group], creating it (seeded with the
-// snapshot's requirements) on first use. The scheduler group string encodes the
-// requirements, so every job mapping to the same group carries the same
-// requirements, and it does not matter whether a counted or a skipped job creates
-// the group first.
-func ensureGroup(groups map[string]*sgroup, snapshot schedulerGroupSnapshot) *sgroup {
-	group, set := groups[snapshot.group]
-	if !set {
-		group = &sgroup{
-			name: snapshot.group,
-			req:  snapshot.requirements.Clone(),
-		}
-		groups[snapshot.group] = group
-	}
-
-	return group
 }
 
 // ensureRetryBackoff returns the group's schedule-retry backoff, lazily creating
@@ -1314,6 +1329,13 @@ type readyJobCandidate struct {
 	snapshot schedulerGroupSnapshot
 }
 
+// releasedRun is what applyRunEndLocked returned for a release that took its
+// item out of Run, for finalizeReleasedJob.
+type releasedRun struct {
+	group string
+	msg   string
+}
+
 // releaseReport describes one release of a job: the end state and fail reason
 // to record, whether the release must be persisted or forced to a bury, and -
 // crucially for the retry budget - whether it was reported by the job's owner
@@ -1378,6 +1400,11 @@ type releaseReport struct {
 	// it, so that a run released or reserved again since they looked is left
 	// alone.
 	isRun func(*Job) bool
+
+	// ended is filled in by the queue change that takes the item out of Run
+	// (see runEndCallback), for finalizeReleasedJob. releaseJobSnapshot sets
+	// it, never a caller.
+	ended *releasedRun
 }
 
 // lostJobReleaseReport is the release report the manager makes on its own
@@ -1406,13 +1433,34 @@ func releaseSpendsARetry(job *Job, rep releaseReport) bool {
 	return rep.attempted || !job.StartTime.IsZero()
 }
 
-// applyRelease sets a released job's retry budget, state and fail reason, and
-// returns its scheduler group and a message saying whether it was buried or
-// released.
-func (j *Job) applyRelease(rep releaseReport) (string, string) {
-	j.Lock()
-	defer j.Unlock()
+// applyRunEndLocked applies a release's end of run to job: the end state (only
+// if rep.endState exited and the job has not already recorded one), the fail
+// reason, the run's own requirements as FailedRunReqs, and the retry budget
+// and state. As this is a new failure, any user's modification no longer
+// clears its increase. It then recomputes the requirements from rec, the
+// cached learned values, so the job waits at its retry size. It returns the
+// scheduler group and log message applyReleaseLocked returns. The caller
+// holds job's lock.
+func (j *Job) applyRunEndLocked(rep releaseReport, rec *scheduler.Requirements) (string, string) {
+	if !j.Exited && rep.endState != nil && rep.endState.Exited {
+		j.recordEndStateLocked(rep.endState)
+	}
 
+	j.FailedRunReqs = runReqs(j.Requirements)
+	j.FailBumpsCleared = 0
+	j.ModifiedReqs = nil
+
+	group, msg := j.applyReleaseLocked(rep)
+
+	updateJobRequirementsForRetry(j, j.Override, rec)
+
+	return group, msg
+}
+
+// applyReleaseLocked sets a released job's retry budget, state and fail
+// reason, and returns its scheduler group and a message saying whether it was
+// buried or released. The caller holds job's lock.
+func (j *Job) applyReleaseLocked(rep releaseReport) (string, string) {
 	if rep.forceBury {
 		j.UntilBuried = 0
 	} else if rep.spendsRetry && j.UntilBuried > 0 {
@@ -1464,6 +1512,10 @@ type releaseSnapshot struct {
 	// supplanted says the release is a runner's report and the job is now
 	// reserved by a different runner, so the release must change nothing.
 	supplanted bool
+
+	// rep is the release being made, as releaseJobSnapshot completed it, for
+	// the queue change's runEndCallback.
+	rep releaseReport
 }
 
 // takeReleaseSnapshot is releaseJobSnapshot, followed, for a job still on the
@@ -1676,6 +1728,19 @@ func (g *racCycleGroup) limitBlocked() bool {
 	return false
 }
 
+// racBlockedJobs is a ready-added callback's state for the limit-blocked ready
+// jobs of one cycle: the learned-requirement cache's change stamps from before
+// and after the cycle refreshed the blocked ReqGroups (see newRACBlockedJobs),
+// the cycle's learned values by ReqGroup, the ReqGroups whose blocked jobs it
+// compared, and the keys of the jobs whose reserve group must change.
+type racBlockedJobs struct {
+	stamp     uint32 // after the refresh: a job with this stamp is current
+	markStamp uint32 // before the refresh: what a job found current gets
+	recs      map[string]*scheduler.Requirements
+	reqGroups map[string]bool
+	regroup   []string
+}
+
 // remove removes a job with no dependents from the queue, recording it in the
 // pass if that worked.
 func (p *deletePass) remove(ctx context.Context, q *queue.Queue, job *Job, jobkey string) {
@@ -1735,9 +1800,12 @@ type Server struct {
 	// channel while the manager is not yet reachable (spec E4).
 	startupStatus *startupStatusReporter
 	ch            codec.Handle
-	// runner command string compatible with fmt.Sprintf(..., schedulerGroup,
-	// deployment, serverAddr, reserveTimeout, maxMinsAllowed).
-	rc string
+	// rcValue holds the runner command string compatible with fmt.Sprintf(...,
+	// schedulerGroup, deployment, serverAddr, reserveTimeout, maxMinsAllowed).
+	// It is atomic, not under racmutex, because the queue's ready hook reads it
+	// under the queue's lock, and waitThenRecheckRAC holds racmutex while it
+	// calls the queue. Unset reads as "".
+	rcValue atomic.Pointer[string]
 
 	ServerInfo         *ServerInfo
 	ServerVersions     *ServerVersions
@@ -1802,7 +1870,6 @@ type Server struct {
 	psgmutex            sync.RWMutex // to protect previouslyScheduledGroups
 	srmutex             sync.Mutex   // to protect scheduleRetries
 	csmutex             sync.RWMutex // to protect clientSubscriptions and subsClosed
-	rpmutex             sync.Mutex   // to protect racPending, racRunning and waitingReserves
 	// lgmutex is held across reading stored limit groups back from the
 	// database and giving them to the limiter (see applyStoredLimitGroups).
 	// Under it only a bolt read transaction and the limiter's own lock are
@@ -1840,58 +1907,41 @@ type Server struct {
 	deletesWG     sync.WaitGroup
 	subsClosed    bool        // shutdown swept the subscriptions; see storeClientSubscription
 	subSweepTimer *time.Timer // runs sweepIdleClientSubscriptions; guarded by csmutex
-	// racPending and racRunning hold reserves in waitForPendingReserves. An
-	// operation about to make items ready sets racPending first, so that a
-	// reserve does not act before the ready-added callback has updated those
-	// items' requirements and reserve group, updated the
-	// previouslyScheduledGroups counts that skipReserve reads, and asked the
-	// scheduler for runners. readyAddedCallback sets racRunning, and its
-	// finishRAC clears both and wakes waitingReserves. While paused or draining
-	// the callback returns without either, so a hold set then lasts until
-	// Resume's callback, shutdown or an early release below; reserves made
-	// then return before waiting.
-	//
-	// The hold is best-effort. The flags are shared by every operation, so it
-	// can be released before the callback that covers an operation has run, in
-	// two ways.
-	//
-	//   - A clearRACPending by an operation that turns out not to queue a
-	//     callback (eg. a resume back to dependent) also clears the flag for
-	//     any other operation that set it, and wakes every waiting reserve even
-	//     while a callback is running.
-	//   - The queue merges a callback request that arrives while a callback is
-	//     running into one later recall. The running callback's finishRAC
-	//     releases the hold of the operations so merged, though its snapshot of
-	//     ready items may predate them, and the recall only starts after the
-	//     queue's recall break.
-	//
-	// A reserve released early, or one already waiting inside the queue, can
-	// then take an item at its old requirements, so that attempt loses a
-	// resource increase such as the one after a RAM failure (a kicked job with
-	// no retries left is buried again); and a new runner's first reserve can be
-	// told nothing is ready. The hold only orders reserves: releasing it early
-	// never loses, double-runs or stalls a job.
-	racPending      bool
-	racRunning      bool
-	waitingReserves []chan struct{}
 
 	// lastRunToken is the last runToken this manager minted; only mintRunToken touches it.
 	lastRunToken atomic.Uint64
 
 	// racScanWork is INERT observability for the reliable4 rac-scan-bound
 	// invariant (issue #1). buildSchedulerGroups resets it to 0 at the start of
-	// each cycle, and prepareReadyJob (the EXPENSIVE per-job path) increments it
-	// once per call. When a runner command is configured (rc != "", the production
-	// case the backlog-rescan reproducer drives), buildSchedulerGroups runs
-	// prepareReadyJob only for the jobs its priority/limit-group selection deems
-	// schedulable this cycle (the cheap pre-pass does not count), so the counter
-	// stays bounded by the schedulable count (~limit), not by the ready backlog
-	// size. The rc == "" path (a manager with no scheduler command) schedules
-	// nothing but still refreshes every ready job's requirements, calling
+	// each cycle, and prepareReadyJob and refreshSkippedReadyJob (the EXPENSIVE
+	// per-job paths) increment it once per call. When a runner command is
+	// configured (rc != "", the production case the backlog-rescan reproducer
+	// drives), buildSchedulerGroups runs prepareReadyJob only for the jobs its
+	// priority/limit-group selection deems schedulable this cycle (the cheap
+	// pre-pass does not count), and refreshSkippedReadyJob only for the
+	// limit-blocked jobs whose ReqGroup has learned other values since they were
+	// prepared, so the counter stays bounded by the schedulable count (~limit),
+	// not by the ready backlog size, on every cycle that sees no learned change,
+	// and grows by each stale job once on a cycle that does. The rc == "" path
+	// (a manager with no scheduler command) schedules nothing but still
+	// refreshes every ready job's requirements, calling
 	// prepareReadyJob once per ready job, so there racScanWork equals the backlog
 	// and the bound does not apply. It affects no scheduling behaviour: nothing
 	// reads it except that test.
 	racScanWork atomic.Int64
+
+	// racRegrouped is INERT observability: the running total of ready items the
+	// ready-added callback's bulk regroup moved to a new reserve group (see
+	// regroupSkippedReadyJobs). Nothing but tests reads it.
+	racRegrouped atomic.Int64
+
+	// racBlockedReqGroups is every ReqGroup a ready-added callback has compared
+	// a limit-blocked job of; see newRACBlockedJobs. racBlockedMu guards it.
+	racBlockedReqGroups map[string]bool
+	racBlockedMu        sync.Mutex
+
+	// racGroupIDs is the last racID ensureGroup gave a group.
+	racGroupIDs atomic.Uint64
 
 	// timings holds this server's resolved timing parameters. The fixed ones
 	// are set once in Serve() and then only read; the three below
@@ -1926,6 +1976,25 @@ type Server struct {
 	// warns rate-limits the warnings that can fire for every reservation or
 	// request, such as when commits are slow (see warn_aggregator.go).
 	warns *warnAggregator
+}
+
+// ensureGroup returns groups[snapshot.group], creating it (seeded with the
+// snapshot's requirements, and given a new racID) on first use. The scheduler
+// group string encodes the requirements, so every job mapping to the same group
+// carries the same requirements, and it does not matter whether a counted or a
+// skipped job creates the group first.
+func (s *Server) ensureGroup(groups map[string]*sgroup, snapshot schedulerGroupSnapshot) *sgroup {
+	group, set := groups[snapshot.group]
+	if !set {
+		group = &sgroup{
+			name:  snapshot.group,
+			req:   snapshot.requirements.Clone(),
+			racID: s.racGroupIDs.Add(1),
+		}
+		groups[snapshot.group] = group
+	}
+
+	return group
 }
 
 // itemTTRDuration returns the current (runtime-adjustable) time-to-release given
@@ -2043,44 +2112,14 @@ func (s *Server) finishRecovering() {
 	s.recovering = false
 }
 
-// setRACPending holds reserves (see Server.racPending) until the next
-// clearRACPending, finishRAC or shutdown, from any operation or callback.
-func (s *Server) setRACPending() {
-	s.rpmutex.Lock()
-	s.racPending = true
-	s.rpmutex.Unlock()
-}
-
-func (s *Server) clearRACWaiters() {
-	for _, ch := range s.waitingReserves {
-		close(ch)
-	}
-
-	s.waitingReserves = nil
-}
-
-// clearRACPending releases the reserve hold for an operation that queued no
-// ready-added callback. It wakes every waiting reserve, including any held for
-// another operation or for a running callback.
-func (s *Server) clearRACPending() {
-	s.rpmutex.Lock()
-	s.racPending = false
-	s.clearRACWaiters()
-	s.rpmutex.Unlock()
-}
-
-// finishRAC ends a ready-added callback's reserve hold, clearing racPending and
-// racRunning and waking every waiting reserve.
-func (s *Server) finishRAC() {
-	s.rpmutex.Lock()
-	s.racPending = false
-	s.racRunning = false
-	s.clearRACWaiters()
-	s.rpmutex.Unlock()
+// racIdle reports whether no ready-added callback is running or queued to run
+// (recall and its break included). Poll it rather than checking it once: an
+// operation can queue a callback at any time.
+func (s *Server) racIdle() bool {
+	return !s.q.ReadyAddedCallbackRunning()
 }
 
 func (s *Server) triggerReadyAddedCallback(ctx context.Context) {
-	s.setRACPending()
 	s.q.TriggerReadyAddedCallback(ctx)
 }
 
@@ -2767,14 +2806,15 @@ func (s *Server) serveClientsReader(ctx context.Context, sock mangos.Socket, wg 
 // scheduler group, returning the snapshot to be counted with ready=true. When rc
 // is empty the job's requirements are still (re)computed (so scheduling and
 // learning see up-to-date values) but its scheduler group and queue reserve group
-// are left untouched, and it is not counted, so ready=false. (The reserve group is
-// established at job-add time; this function only updates it, via setSchedulerGroup
-// and q.SetReserveGroup, when rc is set and the group has changed.)
+// are left untouched, and it is not counted, so ready=false. (The queue's ready
+// hook, prepareForReady, gives the item its reserve group as it enters ready; this
+// function only moves it, via regroupJob, when rc is set and the group has changed,
+// eg. because newer learned values changed the requirements.)
 func (s *Server) prepareReadyJob(ctx context.Context, q *queue.Queue, job *Job, rc string,
 	reqGroupToReqs map[string]*scheduler.Requirements) (schedulerGroupSnapshot, bool) {
 	// count one unit of EXPENSIVE per-job scheduling work (see Server.racScanWork):
-	// buildSchedulerGroups runs this only for the jobs it selects as schedulable
-	// this cycle, so the counter stays bounded by the schedulable count.
+	// with a runner command, buildSchedulerGroups runs this only for the jobs it
+	// selects as schedulable this cycle.
 	s.racScanWork.Add(1)
 
 	job.RLock()
@@ -2788,24 +2828,179 @@ func (s *Server) prepareReadyJob(ctx context.Context, q *queue.Queue, job *Job, 
 	recommendedReq := s.recommendedReqForGroup(reqGroup, reqGroupToReqs)
 
 	if recommendedReq != nil || failureUpdateNeeded {
-		job.Lock()
-		updateJobRequirementsForRetry(job, jobOverride, recommendedReq)
-		job.Unlock()
+		recomputeIfStillReady(q, job, jobOverride, recommendedReq)
 	}
 
 	if rc == "" {
 		return schedulerGroupSnapshot{}, false
 	}
 
-	snapshot := job.schedulerGroupSnapshot()
-
-	if snapshot.previousGroup != snapshot.group {
-		job.setSchedulerGroup(snapshot.group)
-
-		warnUnexpectedSetReserveGroupError(ctx, q.SetReserveGroup(snapshot.key, snapshot.group))
-	}
+	snapshot, _ := regroupJob(ctx, q, job)
 
 	return snapshot, true
+}
+
+// recomputeIfStillReady recomputes job's requirements, unless its item has
+// left the ready sub-queue since the RAC's snapshot. A reserve may by then have
+// taken the job at the size the ready hook gave it and reset it for its run,
+// which clears the failure that size was raised for, so a recompute would put
+// the reserved job back to the learned size: the runner could be handed that
+// size, and the manager would record it as the run's. The item's state is read
+// under the job's lock, which that reset also takes, and a reserve moves the
+// item out of ready before its reset, so no reset can come between the check
+// and the recompute. A job with no item, which has left the queue, is
+// recomputed as before, since no run of it is in progress.
+func recomputeIfStillReady(q *queue.Queue, job *Job, jobOverride uint8, rec *scheduler.Requirements) {
+	item, err := q.Get(job.Key())
+	if err != nil {
+		item = nil
+	}
+
+	job.Lock()
+	defer job.Unlock()
+
+	if item != nil && item.State() != queue.ItemStateReady {
+		return
+	}
+
+	updateJobRequirementsForRetry(job, jobOverride, rec)
+}
+
+// queuedJobs returns the jobs of the queue items with the given keys, skipping
+// keys with no item.
+func (s *Server) queuedJobs(keys []string) []*Job {
+	jobs := make([]*Job, 0, len(keys))
+
+	for _, key := range keys {
+		item, err := s.q.Get(key)
+		if err != nil || item == nil {
+			continue
+		}
+
+		if job, ok := item.Data().(*Job); ok {
+			jobs = append(jobs, job)
+		}
+	}
+
+	return jobs
+}
+
+// newRACBlockedJobs returns the state for one cycle's limit-blocked jobs, with
+// recs as the cycle's learned values. It first refreshes the learned values of
+// each ReqGroup that has had a limit-blocked job compared, so that a change
+// since the last cycle shows in the stamp: nothing else might load a ReqGroup
+// whose ready jobs are all blocked, and a job found current is not compared
+// again until the stamp changes. A refresh loads only a ReqGroup whose values
+// may have changed and whose refresh is due, as every RAC load.
+//
+// It reads the stamp both before and after the refresh. A load started
+// elsewhere (refreshReqGroupRecsLater) can finish during the refresh, after the
+// refresh found that ReqGroup's load in flight and kept its old values, and
+// bump the stamp. A job compared with those old values must then not get the
+// later stamp, or it would be skipped as current until the next change. So a
+// job is skipped only if it has the later stamp, and is given the earlier one,
+// which the next cycle does not skip if they differ.
+func (s *Server) newRACBlockedJobs(recs map[string]*scheduler.Requirements) *racBlockedJobs {
+	s.racBlockedMu.Lock()
+	reqGroups := slices.Collect(maps.Keys(s.racBlockedReqGroups))
+	s.racBlockedMu.Unlock()
+
+	before := s.db.reqStats.changes.Load()
+
+	for _, reqGroup := range reqGroups {
+		s.recommendedReqForGroup(reqGroup, recs)
+	}
+
+	return &racBlockedJobs{
+		stamp: s.db.reqStats.changes.Load(), markStamp: before,
+		recs: recs, reqGroups: make(map[string]bool),
+	}
+}
+
+// noteBlockedReqGroups adds the ReqGroups a cycle compared blocked jobs of to
+// those newRACBlockedJobs refreshes. The set only grows, as the cache's entries
+// do (production has about 130 ReqGroups): a ReqGroup whose blocked jobs were
+// all found current is not seen again by later cycles, which skip its jobs
+// without reading their ReqGroup, so it cannot be told apart from one that has
+// none left.
+func (s *Server) noteBlockedReqGroups(reqGroups map[string]bool) {
+	if len(reqGroups) == 0 {
+		return
+	}
+
+	s.racBlockedMu.Lock()
+	defer s.racBlockedMu.Unlock()
+
+	if s.racBlockedReqGroups == nil {
+		s.racBlockedReqGroups = make(map[string]bool, len(reqGroups))
+	}
+
+	maps.Copy(s.racBlockedReqGroups, reqGroups)
+}
+
+// learnedChanged returns the cycle's learned values for job's ReqGroup, and
+// whether they differ from those job was last prepared with. A job whose
+// snapshot carries the cycle's stamp was found current since the last change to
+// any ReqGroup's rounded learned values, so it is not looked at again: on a
+// cycle when no ReqGroup's have changed that is the only cost per job.
+// Otherwise its values are compared, without its lock held while the cycle's
+// are looked up (which may load them), and if they are current it is given the
+// cycle's earlier stamp (see newRACBlockedJobs), so each job is compared at most
+// twice per change: the cycle after it, and once more if a load bumped the stamp
+// during that cycle's refresh. A ReqGroup with none loaded (nil) has nothing new
+// to apply.
+func (s *Server) learnedChanged(b *racBlockedJobs, job *Job,
+	snapshot schedulerGroupSnapshot) (*scheduler.Requirements, bool) {
+	if snapshot.learnedStamp == b.stamp {
+		return nil, false
+	}
+
+	job.RLock()
+	reqGroup, learned := job.ReqGroup, job.preparedLearned
+	job.RUnlock()
+
+	b.reqGroups[reqGroup] = true
+
+	rec := s.recommendedReqForGroup(reqGroup, b.recs)
+	if rec != nil && learnedReqsOf(rec) != learned {
+		return rec, true
+	}
+
+	job.markLearnedCurrent(learned, b.markStamp)
+
+	return nil, false
+}
+
+// refreshSkippedReadyJob recomputes a limit-blocked ready job with its
+// ReqGroup's newly learned values rec, as prepareReadyJob would, unless a
+// reserve has taken it since the cycle's snapshot (recomputeIfStillReady), and
+// returns its snapshot afterwards. It counts one unit of racScanWork.
+func (s *Server) refreshSkippedReadyJob(q *queue.Queue, job *Job, rec *scheduler.Requirements) schedulerGroupSnapshot {
+	s.racScanWork.Add(1)
+
+	job.RLock()
+	jobOverride := job.Override
+	job.RUnlock()
+
+	recomputeIfStillReady(q, job, jobOverride, rec)
+
+	return job.schedulerGroupSnapshot()
+}
+
+// regroupSkippedReadyJobs moves the items of the given limit-blocked ready jobs
+// to the reserve groups their requirements now call for, racRegroupChunk at a
+// time, each chunk in one hold of the queue's lock, giving each job that
+// scheduler group in the same hold as its item, so no reserve can find the job
+// and its item in different groups. Chunking bounds how long one hold keeps
+// reserves waiting. An item a reserve has taken since keeps its group, as its
+// job does.
+func (s *Server) regroupSkippedReadyJobs(ctx context.Context, q *queue.Queue, keys []string) {
+	for chunk := range slices.Chunk(keys, racRegroupChunk) {
+		moved, err := q.RegroupReady(chunk, regroupReadyJob)
+		warnUnexpectedSetReserveGroupError(ctx, err)
+
+		s.racRegrouped.Add(int64(moved))
+	}
 }
 
 func warnUnexpectedSetReserveGroupError(ctx context.Context, err error) {
@@ -3053,7 +3248,7 @@ func (s *Server) replaceLiveRerunItem(ctx context.Context, itemdef *queue.ItemDe
 		return false, nil
 	}
 
-	if err = s.updateLiveRerunItemWithReadyPending(ctx, item, itemdef); err != nil {
+	if err = s.updateLiveRerunItem(ctx, itemdef); err != nil {
 		return false, err
 	}
 
@@ -3096,25 +3291,6 @@ func (s *Server) updateLiveRerunItem(ctx context.Context, itemdef *queue.ItemDef
 		itemdef.TTR,
 		itemdef.Dependencies,
 	)
-}
-
-func (s *Server) updateLiveRerunItemWithReadyPending(
-	ctx context.Context,
-	item *queue.Item,
-	itemdef *queue.ItemDef,
-) error {
-	readyCallbackExpected := itemDefTriggersReadyAdded(itemdef) &&
-		itemWillBecomeReadyAfterDependencyUpdate(item, nil)
-	if readyCallbackExpected {
-		s.setRACPending()
-	}
-
-	err := s.updateLiveRerunItem(ctx, itemdef)
-	if err != nil && readyCallbackExpected {
-		s.clearRACPending()
-	}
-
-	return err
 }
 
 func (s *Server) rememberRerunReplacementRepGroup(oldRepGroup, newRepGroup, key string) {
@@ -3203,6 +3379,8 @@ func (s *Server) suspendJob(ctx context.Context, key string) (bool, bool) {
 // write lock for that encode, but only for a key whose item is suspended, so
 // callers may pass any keys.
 func (s *Server) resumeJobs(ctx context.Context, keys []string) (resumed int) {
+	s.db.warmReqGroupRecs(s.queuedJobs(keys))
+
 	for _, key := range keys {
 		if s.resumeJob(ctx, key) {
 			resumed++
@@ -3279,36 +3457,18 @@ func (s *Server) suspendedJob(key string) (*Job, queue.ItemState, bool) {
 }
 
 // resumeQueueItem resumes the suspended item with the given key, calling
-// resuming as ResumeWith does. RAC-pending is set from before the item can
-// become ready, to hold reserves until the ready-added callback the resume
-// queues has run (best-effort; see Server.racPending). The decision to release
-// it early uses the state ResumeWith resumed the item to, not the item's live
-// state: a reserve already past waitForPendingReserves can take the item as
-// soon as ResumeWith returns, and the callback is still queued then.
+// resuming as ResumeWith does. An item resumed to ready is prepared by the
+// queue's ready hook before ResumeWith returns, so a reserve can take it at
+// once.
 func (s *Server) resumeQueueItem(ctx context.Context, key string,
 	resuming func(data any, to queue.ItemState),
 ) bool {
-	s.setRACPending()
-
-	var resumedTo queue.ItemState
-
-	err := s.q.ResumeWith(ctx, key, func(data any, to queue.ItemState) {
-		resumedTo = to
-
-		resuming(data, to)
-	})
-	if err != nil {
-		s.clearRACPending()
-
+	if err := s.q.ResumeWith(ctx, key, resuming); err != nil {
 		return false
 	}
 
 	if resumeItemReadyHook != nil {
 		resumeItemReadyHook(key)
-	}
-
-	if resumedTo != queue.ItemStateReady {
-		s.clearRACPending()
 	}
 
 	return true
@@ -3322,52 +3482,6 @@ func failureMayUpdateJobRequirements(job *Job) bool {
 	return shouldIncreaseJobRAMAfterHighPeak(job) ||
 		job.FailReason == FailReasonDisk ||
 		job.FailReason == FailReasonTime
-}
-
-// updateJobRequirementsForRetry applies the learned requirements a retry should
-// use, and invalidates the job's memoised derived scheduler-group strings.
-//
-// Requirements is an input of those derived strings (jobDerived), and everything
-// below can change it in place on EITHER exit: applyRecommendedJobRequirements
-// applies a learned value for any resource the user did not specify whatever
-// their override (see cmd/add.go's "If you choose to override eg. only
-// disk..."), including on the jobOverrideAlwaysUseJobReqs early return below.
-// Invalidating in a defer is therefore not just tidier, it is the only placement
-// no future edit to those branches or that early return can silently defeat.
-//
-// It is also deliberately unconditional rather than conditional on a value
-// actually changing: only the jobs a rac cycle deems schedulable reach here
-// (prepareReadyJob is the bounded half of the cycle, see
-// scheduleReadyJobsByPriority), so re-deriving when the numbers happen to come
-// out the same costs nothing at backlog scale.
-func updateJobRequirementsForRetry(job *Job, jobOverride uint8, recommendedReq *scheduler.Requirements) {
-	defer job.invalidateDerivedLocked()
-
-	if job.RequirementsOrig == nil {
-		job.RequirementsOrig = &scheduler.Requirements{
-			RAM:     job.Requirements.RAM,
-			Time:    job.Requirements.Time,
-			Disk:    job.Requirements.Disk,
-			DiskSet: job.Requirements.DiskSet,
-		}
-	}
-
-	applyRecommendedJobRequirements(job, jobOverride, recommendedReq)
-
-	if jobOverride == jobOverrideAlwaysUseJobReqs {
-		return
-	}
-
-	if shouldIncreaseJobRAMAfterHighPeak(job) {
-		increaseJobRAMAfterHighPeak(job)
-	}
-
-	switch job.FailReason {
-	case FailReasonDisk:
-		increaseJobDiskAfterFailure(job)
-	case FailReasonTime:
-		increaseJobTimeAfterFailure(job)
-	}
 }
 
 // capGroupCountsToLimits ensures that, for every limit group, the summed runner
@@ -3477,7 +3591,10 @@ func (s *Server) snapshotReadyJobs(allitemdata []any) []readyJobCandidate {
 // remaining capacity), runs the expensive prepareReadyJob path only for those, and
 // counts them into their scheduler groups. Limit-blocked jobs are recorded as
 // skipped WITHOUT that expensive work, so a rac cycle's per-job work stays bounded
-// by the schedulable count, not the ready-backlog size.
+// by the schedulable count, not the ready-backlog size, except for the blocked
+// jobs whose ReqGroup's learned values changed since they were prepared, which
+// are recomputed once and then regrouped together in one hold of the queue's
+// lock.
 //
 // Selection shares one remaining-capacity budget per limit group across all
 // sibling scheduler groups of the cycle, so the reliable3 over-provision and
@@ -3511,22 +3628,36 @@ func (s *Server) scheduleReadyJobsByPriority(ctx context.Context, q *queue.Queue
 	// per job. The queue hands over its ready jobs grouped by scheduler group, so
 	// consecutive jobs usually share one and need no lookup at all.
 	cycleGroups := make(map[string]*racCycleGroup)
+	groupFor := func(name string) *racCycleGroup {
+		return s.racCycleGroupFor(ctx, cycleGroups, limitBudgets, name)
+	}
+
+	// a load of learned values is a short local read shared by every later
+	// caller, so it takes no context, as warmReqGroupRecs' does not
+	//nolint:contextcheck // see above
+	blocked := s.newRACBlockedJobs(reqGroupToReqs)
 
 	var current *racCycleGroup
 
 	for _, candidate := range candidates {
 		if current == nil || current.name != candidate.snapshot.group {
-			current = s.racCycleGroupFor(ctx, cycleGroups, limitBudgets, candidate.snapshot.group)
+			current = groupFor(candidate.snapshot.group)
 		}
 
 		if current.limitBlocked() {
-			s.recordSkippedReadyJob(ctx, q, groups, current, candidate)
+			// a load of learned values is a short local read shared by every later
+			// caller, so it takes no context, as warmReqGroupRecs' does not
+			//nolint:contextcheck // see above
+			s.recordSkippedReadyJob(q, groups, blocked, groupFor, current, candidate)
 
 			continue
 		}
 
 		s.prepareAndCountReadyJob(ctx, q, groups, candidate.job, rc, reqGroupToReqs)
 	}
+
+	s.regroupSkippedReadyJobs(ctx, q, blocked.regroup)
+	s.noteBlockedReqGroups(blocked.reqGroups)
 }
 
 // candidatesNeedPrioritySort reports whether scheduleReadyJobsByPriority must
@@ -3587,50 +3718,50 @@ func (s *Server) racCycleGroupFor(ctx context.Context, cycleGroups map[string]*r
 
 // recordSkippedReadyJob records one limit-blocked ready job against its scheduler
 // group's skipped count and keeps it reservable, WITHOUT the expensive
-// prepareReadyJob requirement recompute. The skipped count keeps the deferred job
-// accounted so a later completion re-triggers scheduling (decrementGroupCount /
+// prepareReadyJob work. The skipped count keeps the deferred job accounted so a
+// later completion re-triggers scheduling (decrementGroupCount /
 // hasSkippedScheduledGroups) and it is fully prepared once it becomes schedulable.
-// Meanwhile it must still be reservable so a runner scheduled for its group can pick
-// it up the moment capacity frees, so we establish its scheduler/queue reserve group
-// from the cheap snapshot (a one-time write, a no-op on later cycles once the group
-// is set), which does not count towards racScanWork. The job's sgroup is found
-// once per cycle, then kept in its cycleGroup.
-func (s *Server) recordSkippedReadyJob(ctx context.Context, q *queue.Queue,
-	groups map[string]*sgroup, cycleGroup *racCycleGroup, candidate readyJobCandidate) {
+//
+// Meanwhile it must still be reservable at the right size, so a runner scheduled
+// for its group can pick it up the moment capacity frees. The queue's ready hook
+// prepared it as it became ready, so normally this does nothing more: the cheap
+// pre-pass snapshot already shows it with the values it was prepared with and in
+// the group they call for. If its ReqGroup has learned other values since
+// (learnedChanged), it is recomputed with them now (refreshSkippedReadyJob), which
+// may give it a new group; that is counted towards racScanWork. Rounded learned
+// values change rarely, so on most cycles no blocked job is. A job whose group
+// changed is queued for the cycle's one bulk regroup (regroupSkippedReadyJobs)
+// and counted in its new group, whose sgroup is found once per cycle, then kept in
+// its cycleGroup.
+func (s *Server) recordSkippedReadyJob(q *queue.Queue, groups map[string]*sgroup, blocked *racBlockedJobs,
+	groupFor func(string) *racCycleGroup, cycleGroup *racCycleGroup, candidate readyJobCandidate) {
+	snapshot := candidate.snapshot
+
+	if rec, changed := s.learnedChanged(blocked, candidate.job, snapshot); changed {
+		snapshot = s.refreshSkippedReadyJob(q, candidate.job, rec)
+
+		if snapshot.group != cycleGroup.name {
+			cycleGroup = groupFor(snapshot.group)
+		}
+	}
+
 	if cycleGroup.sgroup == nil {
-		cycleGroup.sgroup = ensureGroup(groups, candidate.snapshot)
+		cycleGroup.sgroup = s.ensureGroup(groups, snapshot)
 	}
 
 	cycleGroup.sgroup.skipped++
 
-	s.ensureReserveGroup(ctx, q, candidate.job, candidate.snapshot)
-}
-
-// ensureReserveGroup establishes a ready job's scheduler and queue reserve group
-// from its cheap pre-pass snapshot, but ONLY when the group actually changed
-// (snapshot.previousGroup != snapshot.group). This makes a limit-blocked job
-// reservable without the expensive prepareReadyJob requirement recompute, and is a
-// one-time cost per job: once its group is set, later rac cycles find it unchanged
-// and do no work, keeping the sustained hot loop bounded. It deliberately does NOT
-// recompute requirements (that is deferred to prepareReadyJob when the job becomes
-// schedulable), so on the rare cycle where a job's requirements would change this
-// sets the pre-change group; prepareReadyJob later corrects it when scheduling.
-func (s *Server) ensureReserveGroup(ctx context.Context, q *queue.Queue, job *Job,
-	snapshot schedulerGroupSnapshot) {
-	if snapshot.previousGroup == snapshot.group {
-		return
+	if snapshot.previousGroup != snapshot.group {
+		blocked.regroup = append(blocked.regroup, snapshot.key)
 	}
-
-	job.setSchedulerGroup(snapshot.group)
-
-	warnUnexpectedSetReserveGroupError(ctx, q.SetReserveGroup(snapshot.key, snapshot.group))
 }
 
 // prepareAndCountReadyJob runs the expensive prepareReadyJob path for one
 // schedulable ready job (updating its requirements and, on change, its scheduler
 // and queue reserve group so runners can reserve it) and counts the resulting
-// post-update snapshot against its scheduler group. prepareReadyJob increments
-// racScanWork, so this is the only per-job path that does.
+// post-update snapshot against its scheduler group, noting that group on the job
+// for accountForRunningJobs. prepareReadyJob increments racScanWork, so this is
+// the only per-job path that does.
 func (s *Server) prepareAndCountReadyJob(ctx context.Context, q *queue.Queue,
 	groups map[string]*sgroup, job *Job, rc string,
 	reqGroupToReqs map[string]*scheduler.Requirements) {
@@ -3639,8 +3770,9 @@ func (s *Server) prepareAndCountReadyJob(ctx context.Context, q *queue.Queue,
 		return
 	}
 
-	group := ensureGroup(groups, snapshot)
+	group := s.ensureGroup(groups, snapshot)
 	group.count++
+	job.racCountedIn.Store(group.racID)
 
 	if snapshot.priority > group.priority {
 		group.priority = snapshot.priority
@@ -3747,7 +3879,7 @@ func (s *Server) buryReleasedItem(ctx context.Context, q *queue.Queue, item *que
 		return releaseAlreadyDone, nil
 	}
 
-	outcome, errq := s.buryItemWhereItIs(ctx, q, item, snap)
+	outcome, errq := s.buryItemWhereItIs(ctx, q, item, snap, job)
 	if errq != nil {
 		return outcome, errq
 	}
@@ -3777,9 +3909,9 @@ func (s *Server) buryReleasedItem(ctx context.Context, q *queue.Queue, item *que
 // the waiting item. An item seen waiting and since reserved again is not
 // buried: BuryWaiting fails, and the owner's re-sent bury gets ErrMustReserve.
 func (s *Server) buryItemWhereItIs(ctx context.Context, q *queue.Queue, item *queue.Item,
-	snap releaseSnapshot) (releaseOutcome, error) {
+	snap releaseSnapshot, job *Job) (releaseOutcome, error) {
 	if !snap.waiting && !itemIsWaiting(item.Stats().State) {
-		return releaseMoved, q.Bury(snap.key)
+		return releaseMoved, q.BuryWith(snap.key, s.runEndCallback(job, snap.rep))
 	}
 
 	from, errq := q.BuryWaiting(snap.key)
@@ -3853,7 +3985,8 @@ func (s *Server) releaseRun(ctx context.Context, job *Job, rep releaseReport) (b
 //
 // The owner's report of how its command ended, arriving after the manager's own
 // lost release, is the job's first real end state. It is written as that
-// release's was, std and fail stats included.
+// release's was, std and fail stats included, with the increase its failure
+// calls for, and an item already ready is prepared again for its new size.
 //
 // A redundant report, such as a runner re-sending after its first request timed
 // out on a slow commit, must not be acknowledged before that first write is on
@@ -3863,7 +3996,13 @@ func (s *Server) releaseRun(ctx context.Context, job *Job, rep releaseReport) (b
 // later arrival order than anything already queued for it, so this can neither
 // resurrect a deleted or archived job nor overwrite a newer record.
 func (s *Server) ackAlreadyReleased(ctx context.Context, job *Job, rep releaseReport) error {
-	if rep.reporter != (uuid.UUID{}) && job.replaceLostEndState(rep.endState, rep.failReason) {
+	if rep.reporter != (uuid.UUID{}) && s.replaceLostEndState(job, rep) {
+		if lostEndStateAppliedHook != nil {
+			lostEndStateAppliedHook(job.Key())
+		}
+
+		s.prepareReadyJobAgain(ctx, job)
+
 		return s.writeReleasedJob(ctx, job, rep)
 	}
 
@@ -3872,6 +4011,31 @@ func (s *Server) ackAlreadyReleased(ctx context.Context, job *Job, rep releaseRe
 	}
 
 	return s.db.updateJobAfterChangeDurable(job)
+}
+
+// replaceLostEndState records the owner's report rep over the end state of the
+// manager's own lost release of job (replaceLostEndStateLocked) and, if it did,
+// recomputes job's requirements for the failure the report gives it, both under
+// one hold of job's lock. It reports whether it replaced the end state.
+//
+// The job's item is waiting to run again, so a reserve can take it as soon as
+// that lock is let go, and the reserve's reset clears the failure. A recompute
+// after the reset would find no failure and put the reserved run back to the
+// learned size, without the increase it was reserved with: the runner could be
+// handed that size, and the manager would record it as the run's. Under one
+// hold, a reserve either comes first, so FailReason is no longer
+// FailReasonLost and nothing is replaced, or comes after the recompute.
+func (s *Server) replaceLostEndState(job *Job, rep releaseReport) bool {
+	job.Lock()
+	defer job.Unlock()
+
+	if !job.replaceLostEndStateLocked(rep.endState, rep.failReason) {
+		return false
+	}
+
+	s.recomputeJobRequirementsLocked(job)
+
+	return true
 }
 
 // attemptScheduleRunners asks the scheduler once for group.count runners for
@@ -4013,6 +4177,53 @@ func (s *Server) markItemJobChanged(ctx context.Context, job *Job, data any, ahe
 	s.db.queueJobChangeAhead(ctx, job, ahead, change)
 
 	return job
+}
+
+// runEndCallback returns the queue callback that applies rep's end of run to
+// job (applyRunEndLocked) under the queue's lock, as the queue takes the
+// job's item out of Run, so no reserve can see the item before its retry size
+// is set. It keeps the scheduler group the run had in rep.ended, for
+// finalizeReleasedJob. It must not call the queue.
+func (s *Server) runEndCallback(job *Job, rep releaseReport) func(any) {
+	return func(any) {
+		job.Lock()
+		defer job.Unlock()
+
+		rep.ended.group, rep.ended.msg = job.applyRunEndLocked(rep, s.currentReqGroupRecs(job.ReqGroup))
+	}
+}
+
+// finalizeBuriedWaiting records the bury of an item that was waiting to run
+// again, returning its scheduler group and log message.
+//
+// updateAfterExit keeps the end state of whichever release took the item out
+// of Run first, but an owner's bury of an item the manager released as lost
+// knows how its command really ended, so its failure's increase is applied
+// now.
+//
+// The report is applied and the job's requirements recomputed under one hold of
+// its lock: the item is buried, so a kick can make it ready and a reserve take
+// it as soon as the lock is let go, and a recompute after that reserve's reset
+// would put the run back to the learned size (see Server.replaceLostEndState).
+func (s *Server) finalizeBuriedWaiting(job *Job, rep releaseReport) (string, string) {
+	job.updateAfterExit(rep.endState, s.limiter)
+
+	job.Lock()
+
+	if rep.reporter != (uuid.UUID{}) {
+		job.replaceLostEndStateLocked(rep.endState, rep.failReason)
+	}
+
+	sgroup, msg := job.applyReleaseLocked(rep)
+	s.recomputeJobRequirementsLocked(job)
+
+	job.Unlock()
+
+	if lostEndStateAppliedHook != nil {
+		lostEndStateAppliedHook(job.Key())
+	}
+
+	return sgroup, msg
 }
 
 // logClientRequestError logs the error handleRequest returned for a client
@@ -4363,6 +4574,66 @@ func (s *Server) applyStoredLimitGroups(groups []string) error {
 	return nil
 }
 
+// runningDataUncountingLeftReady returns the running jobs' data and, as of the
+// same moment, takes out of groups' counts each job this rac cycle counted as
+// ready that has since left ready and not come back. It costs in proportion to
+// the jobs that left ready during the cycle, not to the cycle's ready jobs.
+func runningDataUncountingLeftReady(q *queue.Queue, groups map[string]*sgroup) []any {
+	running, left := q.GetRunningDataAndLeftReady()
+	if len(left) == 0 {
+		return running
+	}
+
+	byID := make(map[uint64]*sgroup, len(groups))
+
+	for _, group := range groups {
+		if group.racID != 0 {
+			byID[group.racID] = group
+		}
+	}
+
+	for _, inter := range left {
+		job, ok := inter.(*Job)
+		if !ok {
+			continue
+		}
+
+		if group := byID[job.racCountedIn.Load()]; group != nil {
+			group.count--
+
+			job.racCountedIn.Store(0)
+		}
+	}
+
+	return running
+}
+
+// readyItemDefJobs returns the jobs of the item defs that start ready.
+func readyItemDefJobs(itemdefs []*queue.ItemDef) []*Job {
+	jobs := make([]*Job, 0, len(itemdefs))
+
+	for _, itemdef := range itemdefs {
+		if job, ok := itemdef.Data.(*Job); ok && itemDefTriggersReadyAdded(itemdef) {
+			jobs = append(jobs, job)
+		}
+	}
+
+	return jobs
+}
+
+// itemDefJobs returns the jobs of the item defs.
+func itemDefJobs(itemdefs []*queue.ItemDef) []*Job {
+	jobs := make([]*Job, 0, len(itemdefs))
+
+	for _, itemdef := range itemdefs {
+		if job, ok := itemdef.Data.(*Job); ok {
+			jobs = append(jobs, job)
+		}
+	}
+
+	return jobs
+}
+
 // jobHasDependents says whether anything still depends on this job, either on
 // its own key (an essence dependency) or through one of its dep groups. Both
 // have to be asked: a dep-group dependency is an edge on the group's own key, so
@@ -4406,14 +4677,10 @@ func (s *Server) runStatusWebSocketWorker(worker func()) {
 	worker()
 }
 
-// setRC sets the runner command template under racmutex, matching the locking
-// used by the readers (runnerCommand, readyAddedCallback). Production sets rc
-// once at construction before any reader can run, but tests reconfigure it on a
-// live server, so this synchronised setter keeps those writes race-free.
+// setRC sets the runner command template. Production sets it once, before the
+// queue is created, but tests reconfigure it on a live server, so it is atomic.
 func (s *Server) setRC(rc string) {
-	s.racmutex.Lock()
-	s.rc = rc
-	s.racmutex.Unlock()
+	s.rcValue.Store(&rc)
 }
 
 // countUndecodedJobs adds the jobs that were counted but never decoded to the
@@ -4568,6 +4835,22 @@ func disablePprofProfiling() {
 	runtime.SetBlockProfileRate(0)
 }
 
+// regroupReadyJob is RegroupReady's callback: it gives a ready job the
+// scheduler group its current requirements call for and returns it as its
+// item's reserve group. It runs under the queue's lock, so it takes only the
+// job's and never calls the queue. Other data keeps reserveGroup.
+func regroupReadyJob(data any, reserveGroup string) string {
+	job, ok := data.(*Job)
+	if !ok {
+		return reserveGroup
+	}
+
+	job.Lock()
+	defer job.Unlock()
+
+	return job.setDerivedSchedulerGroupLocked()
+}
+
 // suspendChange is the change a suspend makes to a job.
 func suspendChange(job *Job) {
 	job.State = JobStateSuspended
@@ -4593,8 +4876,14 @@ func itemIsReleasable(state queue.ItemState) bool {
 	return state == queue.ItemStateRun || itemIsWaiting(state)
 }
 
+// shouldIncreaseJobRAMAfterHighPeak says whether job's pending failure calls
+// for more RAM: it failed for RAM, or for another reason with a peak above its
+// current RAM, whether it is to be retried or was buried (so a kick reruns it
+// with more memory). It does not read job.State, which the queue's changed
+// callback updates asynchronously. An impossible job (FailReasonResource) is
+// never raised back to an impossible size.
 func shouldIncreaseJobRAMAfterHighPeak(job *Job) bool {
-	if job == nil || job.Requirements == nil || job.FailReason == "" {
+	if job == nil || job.Requirements == nil || job.FailReason == "" || job.FailReason == FailReasonResource {
 		return false
 	}
 
@@ -4602,8 +4891,7 @@ func shouldIncreaseJobRAMAfterHighPeak(job *Job) bool {
 		return true
 	}
 
-	return job.State == JobStateDelayed &&
-		commandExceededMemoryEstimate(job.PeakRAM, job.Requirements.RAM)
+	return commandExceededMemoryEstimate(job.PeakRAM, job.Requirements.RAM)
 }
 
 func applyRecommendedJobRequirements(
@@ -4835,14 +5123,6 @@ func itemDefTriggersReadyAdded(itemdef *queue.ItemDef) bool {
 	}
 
 	return itemdef.Delay == 0 && len(itemdef.Dependencies) == 0
-}
-
-func itemWillBecomeReadyAfterDependencyUpdate(item *queue.Item, err error) bool {
-	if err != nil || item == nil {
-		return false
-	}
-
-	return item.Stats().State == queue.ItemStateDependent && len(item.UnresolvedDependencies()) > 0
 }
 
 // ServerConfig is supplied to Serve() to configure your jobqueue server. All
@@ -5260,6 +5540,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	db.recSecRound = timings.RecSecRound
 	db.recMBRound = timings.RecMBRound
 	db.setBatchTuning(timings.DBBatchDelay, timings.DBBatchSize)
+	db.reqStats.interval = timings.ReqStatRefreshInterval
 
 	defer func() { closeOnError(&err, "db", func() error { return db.close(ctx) }) }()
 
@@ -5376,7 +5657,6 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 		up:                        true,
 		scheduler:                 sch,
 		previouslyScheduledGroups: make(map[string]*sgroup),
-		rc:                        config.RunnerCmd,
 		wsconns:                   make(map[string]*websocket.Conn),
 		statusCaster:              newCaster(true),
 		badServerCaster:           newCaster(false),
@@ -5398,6 +5678,9 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// the confirm-dead coordinator groups lost jobs' ssh checks by host; it needs
 	// the fully-built Server, so it is wired up after the literal above.
 	s.confirmDead = newConfirmDeadCoordinator(s)
+
+	// before createQueue, so the queue's ready hook sees it for every item.
+	s.setRC(config.RunnerCmd)
 
 	s.startIdleSubscriptionSweep(ctx)
 
@@ -5844,11 +6127,11 @@ func (s *Server) recoveredItemDef(ctx context.Context, recovered resolvedJob, lo
 	// reads job.schedulerGroup directly) bucket the job under its real group
 	// rather than the empty group "" - otherwise the manager schedules empty-group
 	// runners that immediately exit and never adds the running work to its real
-	// group. Only jobs recovered into the run sub-queue need this: they never pass
-	// through prepareReadyJob (which recomputes the group for ready jobs on the
-	// next rac cycle). Ready/other recovered jobs must keep an empty group so a
-	// group-less Reserve() can still pop them from the ready sub-queue. Snapshot
-	// (RLock) and set (Lock) are separate statements to avoid self-deadlock.
+	// group. Only jobs recovered into the run sub-queue need this here: they do
+	// not enter ready, so the queue's ready hook (prepareForReady) does not
+	// prepare them, whereas it prepares a recovered ready job as it is queued, as
+	// it does any other item entering ready. Snapshot (RLock) and set (Lock) are
+	// separate statements to avoid self-deadlock.
 	intoRun := recoversIntoRun(job)
 	if intoRun && job.getSchedulerGroup() == "" {
 		group := job.schedulerGroupSnapshot().group
@@ -6287,6 +6570,10 @@ func (s *Server) createQueue(ctx context.Context) {
 		s.readyAddedCallback(ctx, q, allitemdata)
 	})
 
+	// every item is prepared as it enters ready, before any reserve can take
+	// it; set before any item is added.
+	q.SetReadyHook(s.prepareForReady)
+
 	// we set a callback for things changing in the queue, which lets us
 	// update the status webpage with the minimal work and data transfer
 	q.SetChangedCallback(func(fromQ, toQ queue.SubQueue, data []any, seq uint64) {
@@ -6502,26 +6789,19 @@ func (s *Server) readyAddedCallback(ctx context.Context, q *queue.Queue, allitem
 
 	s.ssmutex.RUnlock()
 
-	s.rpmutex.Lock()
-	s.racRunning = true
-	s.rpmutex.Unlock()
-
-	defer s.finishRAC()
-
-	s.racmutex.RLock()
-	rc := s.rc
-	s.racmutex.RUnlock()
+	rc := s.runnerCommand()
 
 	groups := s.buildSchedulerGroups(ctx, q, allitemdata, rc)
 
-	// We build scheduler groups above regardless (so newly added jobs get their
-	// reserve group and stay reservable), but we do NOT dispatch runners for new
-	// work while background prior-state recovery is still running (spec B1):
-	// recovered running jobs have not yet been fully re-accounted in the
-	// scheduler, so scheduling now could overcommit resources those recovered
-	// runners still occupy. When recovery finishes it re-triggers this callback
-	// (see recoverInBackground), so these ready jobs are then scheduled against
-	// capacity that includes the recovered running jobs.
+	// We build scheduler groups above regardless (so ready jobs' requirements
+	// and reserve groups pick up newer learned values), but we do NOT dispatch
+	// runners for new work while background prior-state recovery is still
+	// running (spec B1): recovered running jobs have not yet been fully
+	// re-accounted in the scheduler, so scheduling now could overcommit
+	// resources those recovered runners still occupy. When recovery finishes
+	// it re-triggers this callback (see recoverInBackground), so these ready
+	// jobs are then scheduled against capacity that includes the recovered
+	// running jobs.
 	if rc != "" && !s.isRecovering() {
 		s.scheduleGroupRunners(ctx, q, groups)
 	}
@@ -6538,7 +6818,9 @@ func (s *Server) readyAddedCallback(ctx context.Context, q *queue.Queue, allitem
 // actually schedule this cycle. The limit-blocked remainder is recorded as skipped
 // (cheaply), keeping it accounted so a later completion re-triggers the callback
 // (decrementGroupCount / hasSkippedScheduledGroups) and schedules it then; a
-// deferred job keeps its add-time reserve group, so it stays reservable meanwhile.
+// deferred job keeps the reserve group the queue's ready hook gave it as it became
+// ready, so it stays reservable meanwhile, unless its ReqGroup has learned other
+// values since, when it is recomputed and regrouped (see recordSkippedReadyJob).
 func (s *Server) buildSchedulerGroups(ctx context.Context, q *queue.Queue,
 	allitemdata []any, rc string) map[string]*sgroup {
 	groups := make(map[string]*sgroup)
@@ -6571,35 +6853,19 @@ func (s *Server) buildSchedulerGroups(ctx context.Context, q *queue.Queue,
 }
 
 // recommendedReqForGroup returns the recommended requirements for reqGroup,
-// using and populating the cache. A nil entry (cached) means recommendations
-// could not be determined.
+// using and populating the per-cycle cache, which it fills from the db's
+// learned-requirement cache: a ReqGroup is loaded from the database only when
+// its values may have changed and its refresh is due. A nil entry means none
+// were ever loaded: a first load is in flight elsewhere, or every load so far
+// failed; a failed later load keeps the last loaded values.
 func (s *Server) recommendedReqForGroup(reqGroup string,
 	cache map[string]*scheduler.Requirements) *scheduler.Requirements {
 	if rec, existed := cache[reqGroup]; existed {
 		return rec
 	}
 
-	recm, errm := s.db.recommendedReqGroupMemory(reqGroup)
-	recd, errd := s.db.recommendedReqGroupDisk(reqGroup)
+	recommendedReq := s.db.refreshReqGroupRecs(reqGroup)
 
-	recs, errs := s.db.recommendedReqGroupTime(reqGroup)
-	if errm != nil || errd != nil || errs != nil {
-		cache[reqGroup] = nil
-
-		return nil
-	}
-
-	recdGBs := 0
-	if recd > 0 {
-		recdGBs = int(math.Ceil(float64(recd) / float64(mbPerGB)))
-	}
-
-	recommendedReq := &scheduler.Requirements{
-		RAM:     max(recm, 0),
-		Disk:    recdGBs,
-		DiskSet: true,
-		Time:    time.Duration(max(recs, 0)) * time.Second,
-	}
 	cache[reqGroup] = recommendedReq
 
 	return recommendedReq
@@ -6652,6 +6918,12 @@ func (s *Server) scheduleGroup(ctx context.Context, name string, group *sgroup) 
 // scheduling accounts for them, then caps each limit group's summed request at its
 // limit (capGroupCountsToLimits).
 //
+// Reserves do not wait for a rac cycle, so a job counted from the cycle's ready
+// snapshot may since have been reserved, and its run may even have ended. So, as
+// of the same moment it gets the running jobs, it takes out of the counts each
+// counted job that has left ready since the snapshot: one still running is then
+// counted once, as running, and one whose run ended is not counted at all.
+//
 // As each running job is added, it also raises its group's priority to the max of
 // its ready jobs' and running jobs' priorities, so the group's priority reflects
 // BOTH its ready and its running work. This matters because the cap trims
@@ -6664,7 +6936,7 @@ func (s *Server) scheduleGroup(ctx context.Context, name string, group *sgroup) 
 // cycle (not yet published to previouslyScheduledGroups), so their fields are
 // mutated without the per-sgroup lock, as elsewhere in the build/account path.
 func (s *Server) accountForRunningJobs(q *queue.Queue, groups map[string]*sgroup) {
-	for _, inter := range q.GetRunningData() {
+	for _, inter := range runningDataUncountingLeftReady(q, groups) {
 		job, ok := inter.(*Job)
 		if !ok {
 			continue
@@ -6789,23 +7061,13 @@ func (s *Server) waitThenRecheckRAC(ctx context.Context, q *queue.Queue, wgk str
 
 // enqueueItems adds new items to a queue, for when we have new jobs to handle.
 func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (added, dups int, err error) {
-	readyCallbackExpected := slices.ContainsFunc(itemdefs, itemDefTriggersReadyAdded)
-
-	if readyCallbackExpected {
-		s.setRACPending()
-	}
+	readyJobs := readyItemDefJobs(itemdefs)
+	s.db.warmReqGroupRecs(readyJobs)
+	s.prepareBeforeQueueing(readyJobs)
 
 	added, dups, err = s.q.AddMany(ctx, itemdefs)
 	if err != nil {
-		if readyCallbackExpected {
-			s.clearRACPending()
-		}
-
 		return added, dups, err
-	}
-
-	if readyCallbackExpected && added == 0 {
-		s.clearRACPending()
 	}
 
 	s.recordRepGroupKeys(itemdefs)
@@ -6816,15 +7078,7 @@ func (s *Server) enqueueItems(ctx context.Context, itemdefs []*queue.ItemDef) (a
 // recordRepGroupKeys adds each item's RepGroup->key mapping to the lookup and
 // then remembers each as a subscription key.
 func (s *Server) recordRepGroupKeys(itemdefs []*queue.ItemDef) {
-	jobs := make([]*Job, 0, len(itemdefs))
-
-	for _, itemdef := range itemdefs {
-		if job, ok := itemdef.Data.(*Job); ok {
-			jobs = append(jobs, job)
-		}
-	}
-
-	s.recordJobRepGroupKeys(jobs)
+	s.recordJobRepGroupKeys(itemDefJobs(itemdefs))
 }
 
 // prepareInputJobs locks and initialises each input job (env key, retry count,
@@ -6883,9 +7137,7 @@ func (s *Server) createJobs(
 	envkey string,
 	ignoreComplete bool,
 ) (added int, dups DuplicateBreakdown, warnings AddWarnings, srerr string, qerr error) {
-	s.racmutex.RLock()
-	rcSet := s.rc != ""
-	s.racmutex.RUnlock()
+	rcSet := s.runnerCommand() != ""
 
 	inputJobs, queuedDups, newRepGroupDups := s.jobsNotAlreadyQueued(inputJobs, ignoreComplete)
 
@@ -6999,6 +7251,10 @@ func (s *Server) queueNewJobItems(ctx context.Context, dependents liveDependents
 
 	var replaced, marked int
 	if qerr == nil {
+		// before replaceLiveRerunItems takes the item defs of live reruns away
+		// from enqueueItems' warm.
+		s.db.warmReqGroupRecs(itemDefJobs(itemdefs))
+
 		itemdefs, replaced, qerr = s.replaceLiveRerunItems(ctx, itemdefs, ignoreComplete)
 	}
 
@@ -7103,19 +7359,12 @@ func (s *Server) updateJobDependencies(ctx context.Context, dependents liveDepen
 		dependencyUpdatesHook()
 	}
 
-	updates, readyCallbackExpected, qerr := s.gatherDependencyUpdates(dependents.jobs)
+	updates, qerr := s.gatherDependencyUpdates(dependents.jobs)
 	if qerr != nil {
 		return nil, ErrDBError, qerr
 	}
 
-	if readyCallbackExpected {
-		s.setRACPending()
-	}
-
 	resurrected, qerr = s.updateLiveDependents(ctx, updates, dependents.wasPutBack)
-	if qerr != nil && readyCallbackExpected {
-		s.clearRACPending()
-	}
 
 	return resurrected, "", qerr
 }
@@ -7128,28 +7377,20 @@ type jobDependencyUpdate struct {
 	waitingForDepGroups []string
 }
 
-// gatherDependencyUpdates recomputes each job's incomplete dependencies,
-// reporting whether applying them is expected to make a job ready (so the
-// ready-added callback should be armed).
-func (s *Server) gatherDependencyUpdates(jobs []*Job) ([]jobDependencyUpdate, bool, error) {
+// gatherDependencyUpdates recomputes each job's incomplete dependencies.
+func (s *Server) gatherDependencyUpdates(jobs []*Job) ([]jobDependencyUpdate, error) {
 	updates := make([]jobDependencyUpdate, 0, len(jobs))
-	readyCallbackExpected := false
 
 	for _, job := range jobs {
 		deps, waitingForDepGroups, err := job.Dependencies.dependencyKeys(s.db, s.depGroups)
 		if err != nil {
-			return updates, readyCallbackExpected, err
+			return updates, err
 		}
 
 		updates = append(updates, jobDependencyUpdate{job: job, deps: deps, waitingForDepGroups: waitingForDepGroups})
-
-		if len(deps) == 0 && !readyCallbackExpected {
-			item, errq := s.q.Get(job.Key())
-			readyCallbackExpected = itemWillBecomeReadyAfterDependencyUpdate(item, errq)
-		}
 	}
 
-	return updates, readyCallbackExpected, nil
+	return updates, nil
 }
 
 // mintRunToken hands out the identity of one run of one job; see runToken.
@@ -7296,6 +7537,8 @@ func releaseJobSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseS
 		remaining--
 	}
 
+	rep.ended = &releasedRun{}
+
 	return releaseSnapshot{
 		key:               job.Key(),
 		state:             job.State,
@@ -7304,6 +7547,7 @@ func releaseJobSnapshot(job *Job, item *queue.Item, rep *releaseReport) releaseS
 		reservedBy:        job.ReservedBy,
 		runnerReservation: job.RunnerReservation,
 		notTheRun:         rep.isRun != nil && (stats.State != queue.ItemStateRun || !rep.isRun(job)),
+		rep:               *rep,
 	}
 }
 
@@ -7331,11 +7575,11 @@ func (s *Server) applyReleaseQueueChange(ctx context.Context, q *queue.Queue, it
 		// q.Release and error ErrNotRunning (looping the client's retry).
 		return releaseAlreadyDone, nil
 	case len(rerunDeps) > 0:
-		if errq := q.Requeue(ctx, snap.key, rerunDeps); errq != nil {
+		if errq := q.RequeueWith(ctx, snap.key, rerunDeps, s.runEndCallback(job, snap.rep)); errq != nil {
 			return releaseMoved, errq
 		}
 	default:
-		if errq := q.Release(ctx, snap.key); errq != nil {
+		if errq := q.ReleaseWith(ctx, snap.key, s.runEndCallback(job, snap.rep)); errq != nil {
 			return releaseMoved, errq
 		}
 	}
@@ -7343,27 +7587,26 @@ func (s *Server) applyReleaseQueueChange(ctx context.Context, q *queue.Queue, it
 	return releaseMoved, nil
 }
 
-// finalizeReleasedJob updates a released job's state (to buried or delayed,
-// obeying its Retries count), persists it, and decrements its scheduler group
-// count. With rep.durable it returns only once that write has committed.
+// finalizeReleasedJob finishes a release, persisting the job and, for one that
+// took its item out of Run, giving back its limit groups and its run's
+// scheduler group count. With rep.durable it returns only once that write has
+// committed.
 //
-// outcome is what applyReleaseQueueChange did: only a release that took the
-// item out of Run gives back its run's count.
+// outcome is what applyReleaseQueueChange did. A release that took the item
+// out of Run had its end of run applied by the queue change's callback, which
+// kept the run's scheduler group in rep.ended: a zero-delay release's item can
+// be prepared for ready, changing job.schedulerGroup, before this runs.
 func (s *Server) finalizeReleasedJob(ctx context.Context, job *Job, rep releaseReport,
 	outcome releaseOutcome) error {
-	job.updateAfterExit(rep.endState, s.limiter)
-
-	// updateAfterExit keeps the end state of whichever release took the item
-	// out of Run first, but an owner's bury of an item the manager released as
-	// lost knows how its command really ended.
-	if outcome == releaseBuriedWaiting && rep.reporter != (uuid.UUID{}) {
-		job.replaceLostEndState(rep.endState, rep.failReason)
-	}
-
-	sgroup, msg := job.applyRelease(rep)
+	var sgroup, msg string
 
 	if outcome == releaseMoved {
+		job.decrementLimitGroups(s.limiter)
+
+		sgroup, msg = rep.ended.group, rep.ended.msg
 		s.decrementGroupCount(ctx, sgroup)
+	} else {
+		sgroup, msg = s.finalizeBuriedWaiting(job, rep)
 	}
 
 	clog.Debug(ctx, msg, "key", job.Key(), "cmd", job.loggableCmd(), "schedGrp", sgroup)
@@ -7694,23 +7937,16 @@ func refreshJobFromLiveItem(job *Job, item *queue.Item) {
 // handleKick and the web UI do: a job that is not buried costs that encode for
 // nothing.
 func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
-	for _, job := range jobs {
-		readyCallbackExpected := false
+	s.db.warmReqGroupRecs(jobs)
 
+	for _, job := range jobs {
 		// hoisted: Key() rebuilds and hashes the whole Cmd, so a job with a 130KB
 		// command line paid for that once per call site.
 		key := job.Key()
 
-		// prepared before RAC-pending is set, so reserves are not held up for
-		// the encode.
+		// prepared before the kick, so the encode is not done under the queue's
+		// lock.
 		ahead := s.db.prepareJobChange(ctx, job, kickChange)
-
-		item, errg := s.q.Get(key)
-		if errg == nil && item != nil && len(item.UnresolvedDependencies()) == 0 {
-			readyCallbackExpected = true
-
-			s.setRACPending()
-		}
 
 		kickedJob := job
 
@@ -7735,10 +7971,6 @@ func (s *Server) kickJobs(ctx context.Context, jobs []*Job) (kicked int) {
 		}
 
 		s.db.discardJobChangeAhead(job, ahead)
-
-		if readyCallbackExpected {
-			s.clearRACPending()
-		}
 	}
 
 	return kicked
@@ -8395,12 +8627,14 @@ func (s *Server) groupToScheduleCmd(ctx context.Context, rc, group string, req *
 	)
 }
 
-// runnerCommand returns the configured runner command template under lock.
+// runnerCommand returns the configured runner command template, "" if none is
+// set. It takes no lock, so the queue's ready hook may call it.
 func (s *Server) runnerCommand() string {
-	s.racmutex.RLock()
-	defer s.racmutex.RUnlock()
+	if rc := s.rcValue.Load(); rc != nil {
+		return *rc
+	}
 
-	return s.rc
+	return ""
 }
 
 // scheduleRunners asks the scheduler for group.count runners for the group,
@@ -8871,7 +9105,7 @@ func (s *Server) shutdown(ctx context.Context, reason string, wait bool, stopSig
 }
 
 // closeServerCommsAndDB closes the command line interface, command socket and
-// database, and frees any clients waiting on a reserve.
+// database.
 //
 // Stopping the readers is skipped when publication never started them (a
 // shutdown inside the startup window, spec E3): nothing would ever close
@@ -8899,13 +9133,6 @@ func (s *Server) closeServerCommsAndDB(ctx context.Context) {
 	if err := s.db.close(ctx); err != nil {
 		clog.Warn(ctx, "server shutdown database close failed", "err", err)
 	}
-
-	// free any waiting reserves
-	s.rpmutex.Lock()
-	s.racPending = false
-	s.racRunning = false
-	s.clearRACWaiters()
-	s.rpmutex.Unlock()
 }
 
 // resetStateAfterShutdown clears the queue and shutdown flags so the same

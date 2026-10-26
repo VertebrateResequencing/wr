@@ -208,7 +208,6 @@ func TestHighPeakMemoryRetryGrowth(t *testing.T) {
 			Requirements: &scheduler.Requirements{RAM: 100, Time: time.Minute, Cores: 1},
 			PeakRAM:      200,
 			FailReason:   FailReasonExit,
-			State:        JobStateDelayed,
 		}
 
 		So(shouldIncreaseJobRAMAfterHighPeak(job), ShouldBeTrue)
@@ -239,7 +238,6 @@ func TestHighPeakMemoryRetryGrowth(t *testing.T) {
 			Requirements: &scheduler.Requirements{RAM: 100, Time: time.Minute, Cores: 1},
 			PeakRAM:      200,
 			FailReason:   FailReasonExit,
-			State:        JobStateDelayed,
 		}
 		recommendedReq := &scheduler.Requirements{RAM: 300}
 
@@ -262,16 +260,21 @@ func TestHighPeakMemoryRetryGrowth(t *testing.T) {
 		So(job.Requirements.RAM, ShouldEqual, 100)
 	})
 
-	Convey("A kicked non-RAM failure does not grow RAM from stale peak usage", t, func() {
-		job := &Job{
-			Requirements: &scheduler.Requirements{RAM: 100, Time: time.Minute, Cores: 1},
-			PeakRAM:      200,
-			FailReason:   FailReasonExit,
-			State:        JobStateReady,
-		}
+	Convey("A kicked or buried non-RAM failure grows RAM from its peak usage", t, func() {
+		for _, state := range []JobState{JobStateReady, JobStateBuried} {
+			job := &Job{
+				Requirements: &scheduler.Requirements{RAM: 100, Time: time.Minute, Cores: 1},
+				PeakRAM:      200,
+				FailReason:   FailReasonExit,
+				State:        state,
+			}
 
-		So(shouldIncreaseJobRAMAfterHighPeak(job), ShouldBeFalse)
-		So(job.Requirements.RAM, ShouldEqual, 100)
+			So(shouldIncreaseJobRAMAfterHighPeak(job), ShouldBeTrue)
+
+			increaseJobRAMAfterHighPeak(job)
+
+			So(job.Requirements.RAM, ShouldEqual, 1200)
+		}
 	})
 
 	Convey("A kicked RAM failure still grows RAM from peak usage", t, func() {
@@ -284,4 +287,144 @@ func TestHighPeakMemoryRetryGrowth(t *testing.T) {
 
 		So(shouldIncreaseJobRAMAfterHighPeak(job), ShouldBeTrue)
 	})
+}
+
+func TestHighPeakRetryRecompute(t *testing.T) {
+	Convey("A recompute under override 0 starts from the failed run's RAM", t, func() {
+		So(recomputedRAM(bumpedHighPeakJob(jobOverridePreferSystemReqs, 10), learnedRAM(100)), ShouldEqual, 1200)
+		So(recomputedRAM(bumpedHighPeakJob(jobOverridePreferSystemReqs, 10), learnedRAM(200)), ShouldEqual, 200)
+	})
+
+	Convey("A recompute under override 1 starts from the failed run's RAM, not the bumped one", t, func() {
+		So(recomputedRAM(bumpedHighPeakJob(jobOverridePreferHigherReqs, 100), learnedRAM(200)), ShouldEqual, 200)
+		So(recomputedRAM(bumpedHighPeakJob(jobOverridePreferHigherReqs, 100), learnedRAM(100)), ShouldEqual, 1200)
+	})
+
+	Convey("A user's modified RAM under override 1 is kept over a lower learned RAM", t, func() {
+		job := userModifiedRAM(bumpedHighPeakJob(jobOverridePreferHigherReqs, 100), 500)
+
+		So(recomputedRAM(job, learnedRAM(200)), ShouldEqual, 500)
+	})
+
+	Convey("A RAM failure's increase applies once learning replaced a user's RAM under override 0", t, func() {
+		ramFailure := func() *Job {
+			job := userModifiedRAM(bumpedHighPeakJob(jobOverridePreferSystemReqs, 10), 500)
+			job.FailReason = FailReasonRAM
+
+			return job
+		}
+
+		So(recomputedRAM(ramFailure(), learnedRAM(200)), ShouldEqual, 1200)
+		So(recomputedRAM(ramFailure(), nil), ShouldEqual, 500)
+	})
+
+	Convey("A second recompute resets RAM to the user's stored value, not the learned one", t, func() {
+		job := userModifiedRAM(bumpedHighPeakJob(jobOverridePreferSystemReqs, 200), 500)
+		job.FailReason = FailReasonLost
+
+		So(recomputedRAM(job, learnedRAM(200)), ShouldEqual, 200)
+
+		job.FailReason = FailReasonRAM
+
+		So(recomputedRAM(job, learnedRAM(200)), ShouldEqual, 1200)
+	})
+
+	Convey("An impossible job is neither reset nor bumped from its high peak", t, func() {
+		impossible := func() *Job {
+			job := bumpedHighPeakJob(jobOverridePreferSystemReqs, 10)
+			job.FailReason = FailReasonResource
+			job.Requirements.RAM = 64000
+			job.PeakRAM = 70000
+
+			return job
+		}
+
+		So(recomputedRAM(impossible(), learnedRAM(200)), ShouldEqual, 200)
+		So(recomputedRAM(impossible(), nil), ShouldEqual, 64000)
+	})
+
+	Convey("A recompute run twice gives the same RAM", t, func() {
+		job := bumpedHighPeakJob(jobOverridePreferSystemReqs, 10)
+
+		So(recomputedRAM(job, learnedRAM(100)), ShouldEqual, 1200)
+		So(recomputedRAM(job, learnedRAM(100)), ShouldEqual, 1200)
+	})
+
+	Convey("A record from an older manager starts from its current RAM", t, func() {
+		job := bumpedHighPeakJob(jobOverridePreferSystemReqs, 0)
+		job.FailedRunReqs = nil
+		job.Requirements.RAM = 100
+
+		So(recomputedRAM(job, nil), ShouldEqual, 1200)
+	})
+
+	Convey("Override 2 set after a bump returns the job to its failed run's sizes", t, func() {
+		job := &Job{
+			Requirements:  &scheduler.Requirements{RAM: 1200, Time: time.Hour + 10*time.Second, Cores: 1},
+			FailReason:    FailReasonTime,
+			Override:      jobOverrideAlwaysUseJobReqs,
+			FailedRunReqs: &scheduler.Requirements{RAM: 10, Time: 10 * time.Second},
+		}
+
+		updateJobRequirementsForRetry(job, job.Override, nil)
+
+		So(job.Requirements.RAM, ShouldEqual, 10)
+		So(job.Requirements.Time, ShouldEqual, 10*time.Second)
+
+		raised := bumpedHighPeakJob(jobOverrideAlwaysUseJobReqs, 10)
+		raised.State = JobStateReady
+
+		So(recomputedRAM(raised, nil), ShouldEqual, 10)
+	})
+
+	Convey("Override 2 learns only the resources the user did not specify, with no bump", t, func() {
+		job := &Job{
+			Requirements:     &scheduler.Requirements{RAM: 10, Time: time.Minute, Cores: 1},
+			RequirementsOrig: &scheduler.Requirements{RAM: 10, Time: time.Minute},
+			PeakRAM:          150,
+			FailReason:       FailReasonExit,
+			Override:         jobOverrideAlwaysUseJobReqs,
+			FailedRunReqs:    &scheduler.Requirements{RAM: 10, Time: time.Minute},
+		}
+
+		updateJobRequirementsForRetry(job, job.Override, &scheduler.Requirements{RAM: 300, Disk: 50})
+
+		So(job.Requirements.Disk, ShouldEqual, 50)
+		So(job.Requirements.RAM, ShouldEqual, 10)
+	})
+}
+
+// recomputedRAM runs job through updateJobRequirementsForRetry under its own
+// override and returns its RAM.
+func recomputedRAM(job *Job, learned *scheduler.Requirements) int {
+	updateJobRequirementsForRetry(job, job.Override, learned)
+
+	return job.Requirements.RAM
+}
+
+// bumpedHighPeakJob returns a job whose non-RAM failure, with a peak of 150,
+// was already bumped to RAM 1200, from a failed run that reserved
+// failedRunRAM.
+func bumpedHighPeakJob(override uint8, failedRunRAM int) *Job {
+	return &Job{
+		Requirements:  &scheduler.Requirements{RAM: 1200, Time: time.Minute, Cores: 1},
+		PeakRAM:       150,
+		FailReason:    FailReasonExit,
+		Override:      override,
+		FailedRunReqs: &scheduler.Requirements{RAM: failedRunRAM, Time: time.Minute},
+	}
+}
+
+// learnedRAM returns learned requirements of the given RAM.
+func learnedRAM(ram int) *scheduler.Requirements {
+	return &scheduler.Requirements{RAM: ram}
+}
+
+// userModifiedRAM records a user's wr mod of job's RAM to ram.
+func userModifiedRAM(job *Job, ram int) *Job {
+	job.FailBumpsCleared = FailBumpRAM
+	job.ModifiedReqs = &scheduler.Requirements{RAM: ram}
+	job.Requirements.RAM = ram
+
+	return job
 }

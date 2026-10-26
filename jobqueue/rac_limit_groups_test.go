@@ -62,7 +62,8 @@ func TestRACParsesLimitGroupsOncePerGroup(t *testing.T) {
 		}()
 
 		s := &Server{
-			q: q,
+			q:  q,
+			db: racNoStatsDB("rac"),
 			limiter: limiter.New(func(context.Context, string) *limiter.GroupData {
 				return limiter.NewCountGroupData(0)
 			}),

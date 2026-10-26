@@ -2227,7 +2227,10 @@ func (s *Server) modifyJobsByKeys(ctx context.Context, keys []string,
 		return modified, err
 	}
 
-	return modified, s.storeModifiedJobs(ctx, modified, toModifyKeys, modifier)
+	err = s.storeModifiedJobs(ctx, modified, toModifyKeys, modifier)
+	s.prepareModifiedJobs(ctx, modifiedJobs(modified, toModifyKeys))
+
+	return modified, err
 }
 
 func (s *Server) resumeAfterModify(ctx context.Context, modified *map[string]string, modifyErr *error) {

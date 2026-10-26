@@ -163,7 +163,7 @@ var ErrDBUnreadable = errors.New("could not open the database file")
 var errDBClosed = errors.New("database closed")
 
 // errArchivePanic is returned to the one caller whose archive panicked, so a
-// malformed job fails only itself (as it did under bbolt.Batch's safelyCall).
+// malformed job fails only itself.
 var errArchivePanic = errors.New("panic while archiving job")
 
 // errNewJobsPanic is the same for the one add whose bucket puts panicked, so a
@@ -173,8 +173,8 @@ var errNewJobsPanic = errors.New("panic while storing new jobs")
 // errBestEffortWriteAborted is what a caller waiting on a best-effort drain is
 // told when that drain did not commit. It is drainBestEffort's DEFAULT, cleared
 // only by a successful write, so a panic inside the transaction body - which
-// db.bolt.Update rolls back but, unlike bbolt.Batch's safelyCall, does not
-// recover - can never be reported to a waiter as a write that reached disk.
+// db.bolt.Update rolls back but does not recover - can never be reported to a
+// waiter as a write that reached disk.
 var errBestEffortWriteAborted = errors.New("best-effort write transaction aborted")
 
 // errNoRunStateBucket is what a best-effort drain returns if it has a run state
@@ -377,6 +377,22 @@ const (
 	// practice newJobsFoldMaxBytes governs the large-add case and this bound only
 	// catches a pathological tiny-put flood.
 	newJobsFoldMaxPuts = 50000
+
+	// newJobsPreferMaxBytes is the most encoded bytes one add may carry and still
+	// have the transaction it is folded into go ahead of the other writers
+	// waiting for a write turn (see writeTurns and newJobsWriterKind). It is a
+	// size, not a job count: what makes an add costly to let through is how long
+	// its transaction writes, and a burst's last add of 618 jobs with 10KB
+	// commands, about 6MB, is under the 1,000 jobs at which an add is chunked
+	// yet took 5 to 7s on a slow filesystem (item 6.4c of
+	// .docs/nohold/phase6.md). 1MB is far above the single-job and few-job adds
+	// that a client waits on in a storm (about 1.5KB each), but at production's
+	// ~25KB commands an add of about 41 jobs already loses the preference. It is
+	// judged per add (newJobsWriterKind), so a fold of many small adds, up to
+	// newJobsFoldMaxBytes (32MB), deliberately keeps it: each of those adds has
+	// a client waiting on it, and such a fold is the add storm the preference
+	// exists for.
+	newJobsPreferMaxBytes = 1024 * 1024
 )
 
 // ErrArchivedHistoryTooBig is what a request that asks for complete jobs with no
@@ -967,10 +983,13 @@ func (w *backupCopyWriter) writePacedChunk(p []byte) (int, error) {
 	return n, w.pace()
 }
 
+// newJobExitData takes the exit op's data from job. A failed job's RAM is
+// already raised for its retry by then, so the high-peak stat is judged
+// against what its failed run reserved.
 func newJobExitData(job *Job, stdo, stde []byte, forceStorage bool) jobExitData {
 	requiredRAM := 0
-	if job.Requirements != nil {
-		requiredRAM = job.Requirements.RAM
+	if reqs := job.lastRunReqs(); reqs != nil {
+		requiredRAM = reqs.RAM
 	}
 
 	return jobExitData{
@@ -1001,6 +1020,8 @@ type beBatch struct {
 	exits   []jobExitData
 	wgkeys  []string
 	waiters []chan error
+	stats   *reqStatCache // the exit ops' fail stats are put through it
+	oldest  time.Time     // when the batch's first write was queued (see writeTurns)
 }
 
 // apply writes the batch's coalesced live-bucket changes, its ordered exit ops
@@ -1062,7 +1083,7 @@ func (b beBatch) applyExits(tx *bolt.Tx) error {
 		fullSeq := b.changes[b.exits[i].key].fullSeq()
 		writeLive := fullSeq == 0 || b.exits[i].seq > fullSeq
 
-		if err := b.exits[i].update(tx, writeLive); err != nil {
+		if err := b.exits[i].update(tx, b.stats, writeLive); err != nil {
 			return err
 		}
 	}
@@ -1128,6 +1149,7 @@ type db struct {
 	backupWait           time.Duration
 	backupTickerStop     chan struct{} // closed by close() to stop the backup ticker
 	bolt                 *bolt.DB
+	reqStats             *reqStatCache
 	rerunGuards          rerunGuards
 	envcache             *lru.ARCCache[string, []byte]
 	updatingAfterJobExit atomic.Int64
@@ -1220,6 +1242,12 @@ type db struct {
 	njStop       chan struct{} // closed by close() to stop the writer after a final drain
 	njWriterDone chan struct{} // closed by the writer when it has fully stopped
 	njStopped    bool          // guarded by njMu: the writer will drain no more
+	// turns orders the transactions of the new jobs, archive and best-effort
+	// writers, and the chunks of adds too big for one transaction, so an add is
+	// not left behind every archive queued on bolt's write lock, nor an archive
+	// behind a stream of adds, nor any of them behind one big add's chunks (see
+	// writeturns.go).
+	turns writeTurns
 	// backupMu guards the backup-state fields below (backingUp, backupFinal,
 	// backupQueued, backupStopped, slowBackups, backupLast, backupWait), keeping
 	// backup coordination off the exclusive db RWMutex so the archive/exit hot
@@ -1677,6 +1705,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 
 	dbstruct := &db{
 		bolt:               boltdb,
+		reqStats:           newReqStatCache(),
 		envcache:           envcache,
 		ch:                 new(codec.BincHandle),
 		backupsEnabled:     backupsEnabled,
@@ -1972,7 +2001,7 @@ func (db *db) recordCompleteTx(tx *bolt.Tx, key, encoded []byte, job *Job, keptL
 		return err
 	}
 
-	if err := putJobStats(tx, job); err != nil {
+	if err := putJobStats(tx, db.reqStats, job); err != nil {
 		return err
 	}
 
@@ -2273,8 +2302,8 @@ func (db *db) drainBestEffort(ctx context.Context) {
 	}
 
 	// the default is "did not commit", not nil: db.bolt.Update rolls a panicking
-	// transaction back but does not recover it (applyArchiveOp exists precisely
-	// because bbolt.Batch's safelyCall did and Update does not), so a panic inside
+	// transaction back but does not recover it (neither does bbolt.Batch, which
+	// reruns a panicking function solo with Update), so a panic inside
 	// batch.apply unwinds through this deferred reply carrying no error of its own.
 	// A waiter handed nil there would read it as "your write is on disk" for a
 	// transaction that rolled back, which is the acknowledge-before-durable bug
@@ -2283,7 +2312,7 @@ func (db *db) drainBestEffort(ctx context.Context) {
 
 	defer func() { db.doneBestEffort(batch, err) }()
 
-	if err = db.bolt.Update(batch.apply); err != nil {
+	if err = db.updateInTurnSince(writerBestEffort, batch.oldest, batch.apply); err != nil {
 		clog.Error(ctx, "Database best-effort job update failed", "err", err)
 
 		return
@@ -2305,7 +2334,10 @@ func (db *db) swapBestEffort() beBatch {
 	db.beMu.Lock()
 	defer db.beMu.Unlock()
 
-	batch := beBatch{changes: db.beChanges, exits: db.beExits, wgkeys: db.beWGKeys, waiters: db.beWaiters}
+	batch := beBatch{
+		changes: db.beChanges, exits: db.beExits, wgkeys: db.beWGKeys, waiters: db.beWaiters,
+		stats: db.reqStats, oldest: db.turns.swapped(writerBestEffort),
+	}
 	db.beChanges = make(map[string]beChange)
 	db.beExits = nil
 	db.beWGKeys = nil
@@ -2411,6 +2443,7 @@ func (db *db) enqueueArchive(op *archiveOp) bool {
 	}
 
 	db.arPending = append(db.arPending, op)
+	db.turns.queued(writerArchive)
 	db.arMu.Unlock()
 
 	select {
@@ -2423,27 +2456,28 @@ func (db *db) enqueueArchive(op *archiveOp) bool {
 
 // swapArchives takes ownership of every currently-pending archive and resets the
 // queue, so callers keep enqueuing (never blocking) while the writer persists the
-// snapshot. When final is true it also latches the queue shut in the same critical
-// section, so an archive submitted after the last drain is rejected rather than
-// left waiting forever.
-func (db *db) swapArchives(final bool) []*archiveOp {
+// snapshot. It also returns when the first of them was queued, for the
+// writer's write turn. When final is true it also latches the queue shut in the
+// same critical section, so an archive submitted after the last drain is
+// rejected rather than left waiting forever.
+func (db *db) swapArchives(final bool) ([]*archiveOp, time.Time) {
 	db.arMu.Lock()
 	defer db.arMu.Unlock()
 
-	ops := db.arPending
+	ops, oldest := db.arPending, db.turns.swapped(writerArchive)
 	db.arPending = nil
 
 	if final {
 		db.arStopped = true
 	}
 
-	return ops
+	return ops, oldest
 }
 
 // drainArchives persists every currently-pending archive, all of them in ONE write
 // transaction, and replies to each waiter with its own outcome.
 func (db *db) drainArchives(final bool) {
-	ops := db.swapArchives(final)
+	ops, oldest := db.swapArchives(final)
 	if len(ops) == 0 {
 		return
 	}
@@ -2453,7 +2487,9 @@ func (db *db) drainArchives(final bool) {
 	// (see archivefold.go).
 	db.arFold.observeWaits(ops, time.Now())
 
-	applyFolded(ops, db.archiveTx)
+	applyFolded(ops, func(ops []*archiveOp, failed *int) error {
+		return db.archiveTx(ops, failed, oldest)
+	})
 
 	// mark the db dirty for the backup ticker exactly as the pre-fix per-archive
 	// path did: unconditionally, after the write attempt.
@@ -2466,7 +2502,7 @@ func (db *db) enqueueExitLocked(exit jobExitData, waiter chan error) {
 	db.beSeq++
 	exit.seq = db.beSeq
 	db.beExits = append(db.beExits, exit)
-	db.beWGKeys = append(db.beWGKeys, db.wg.Add(1))
+	db.trackBestEffortLocked(db.wg.Add(1))
 
 	if waiter != nil {
 		db.beWaiters = append(db.beWaiters, waiter)
@@ -2495,7 +2531,7 @@ func (db *db) enqueueRunStateLocked(key string, encoded []byte, waiter chan erro
 	change.runState = encoded
 	change.rsSeq = db.beSeq
 	db.beChanges[key] = change
-	db.beWGKeys = append(db.beWGKeys, db.wg.Add(1))
+	db.trackBestEffortLocked(db.wg.Add(1))
 
 	if waiter != nil {
 		db.beWaiters = append(db.beWaiters, waiter)
@@ -2509,7 +2545,20 @@ func (db *db) enqueueRunStateLocked(key string, encoded []byte, waiter chan erro
 func (db *db) enqueueChangeInSlotLocked(key string, encoded []byte, wgKey string) {
 	db.beSeq++
 	db.beChanges[key] = beChange{encoded: encoded, seq: db.beSeq}
+	db.trackBestEffortLocked(wgKey)
+}
+
+// trackBestEffortLocked adds a write just queued to the pending batch's db.wg
+// keys, to be released once the batch is persisted, and tells the write turns
+// a request is queued for the writer, unless it has made its final drain (see
+// writeTurns). Every best-effort write is queued through here. Must be called
+// with db.beMu held.
+func (db *db) trackBestEffortLocked(wgKey string) {
 	db.beWGKeys = append(db.beWGKeys, wgKey)
+
+	if !db.beStopped {
+		db.turns.queued(writerBestEffort)
+	}
 }
 
 // putNewLiveJobs is putLiveRecords for the jobs of an add, except that it
@@ -3033,6 +3082,11 @@ func (db *db) readLiveJobsTx(tx *bolt.Tx, rsr *runStateRecovery) ([]*Job, []stri
 // updateJobRunStateDurable is updateJobAfterChangeDurable for the run state: it
 // queues job's run-state record, which recovery overlays on its live record,
 // and blocks until the drain that covers it has committed.
+//
+// The caller must not hold a job's lock, db.arMu or db.beMu: a writer whose
+// write turn is kept for it may take any of those on its way to that turn (see
+// writeTurns), so no writer would get a turn and this would never return. Nor
+// may it hold db.wgMutex, which queueJobRunState takes itself.
 func (db *db) updateJobRunStateDurable(job *Job) error {
 	return awaitQueuedWrite(db.queueJobRunState, job)
 }
@@ -3051,6 +3105,11 @@ func awaitQueuedWrite(queue func(*Job, chan error) error, job *Job) error {
 
 // updateJobRunStateDurableWithin is updateJobRunStateDurable, but gives up
 // waiting after wait, returning errDurableWriteWaitExpired.
+//
+// The caller must not hold a job's lock, db.arMu or db.beMu: a writer whose
+// write turn is kept for it may take any of those on its way to that turn (see
+// writeTurns), so no writer would get a turn until this gave up. Nor may it
+// hold db.wgMutex, which queueJobRunState takes itself.
 func (db *db) updateJobRunStateDurableWithin(job *Job, wait time.Duration) error {
 	return awaitQueuedWriteWithin(db.queueJobRunState, job, wait)
 }
@@ -3146,6 +3205,11 @@ func noteArchivesWritten(ops []*archiveOp, err error) {
 // that covers this job's write has committed, and returns that write's outcome.
 // Like updateJobAfterChangeDurable it shares the best-effort writer's coalesced
 // drain rather than costing a transaction of its own (see handleRelease).
+//
+// The caller must not hold a job's lock, db.arMu or db.beMu: a writer whose
+// write turn is kept for it may take any of those on its way to that turn (see
+// writeTurns), so no writer would get a turn and this would never return. Nor
+// may it hold db.wgMutex, which queueJobExit takes itself.
 func (db *db) updateJobAfterExitDurable(job *Job, stdo, stde []byte, forceStorage bool) error {
 	waiter := make(chan error, 1)
 
@@ -3217,6 +3281,21 @@ func (db *db) retrieveStoredLimits(groups []string) ([]int64, error) {
 	return limits, err
 }
 
+// newJobsWriterKind is the kind of write turn a transaction of ops takes:
+// writerLargeNewJobs, with no preference, if any one of them carries more than
+// newJobsPreferMaxBytes, else writerNewJobs. It looks at each add rather than
+// the fold, so that many small adds folded together, each with a client
+// waiting on it, keep the preference.
+func newJobsWriterKind(ops []*newJobsOp) writerKind {
+	for _, op := range ops {
+		if op.foldBytes > newJobsPreferMaxBytes {
+			return writerLargeNewJobs
+		}
+	}
+
+	return writerNewJobs
+}
+
 // foldedOp is one caller's pending write, waiting for a coalescing writer to
 // persist it and hand back that caller's own outcome. Both synchronous coalescing
 // writers' ops (archiveOp, newJobsOp) are one.
@@ -3266,16 +3345,17 @@ func applyFolded[T foldedOp](ops []T, applyTx func(ops []T, failed *int) error) 
 	}
 }
 
-// archiveTx applies every op's archive within one write transaction. If an op's
+// archiveTx applies every op's archive within one write transaction, taking a
+// write turn for a batch whose first archive was queued at oldest. If an op's
 // own work fails, its index is recorded in failed (when non-nil) and the whole
 // transaction is rolled back, so the caller can take that op out and retry the
 // rest.
-func (db *db) archiveTx(ops []*archiveOp, failed *int) error {
+func (db *db) archiveTx(ops []*archiveOp, failed *int, oldest time.Time) error {
 	started := time.Now()
 
 	var begun time.Time
 
-	err := db.bolt.Update(func(tx *bolt.Tx) error {
+	err := db.updateInTurnSince(writerArchive, oldest, func(tx *bolt.Tx) error {
 		begun = time.Now()
 
 		for i, op := range ops {
@@ -3292,10 +3372,10 @@ func (db *db) archiveTx(ops []*archiveOp, failed *int) error {
 	})
 
 	// the fold this transaction achieved, how long it took in total, and how much
-	// of that was spent acquiring bolt's single write lock before the transaction
-	// body ran - so a concurrent add's transactions starving the archive writer is
-	// distinguishable from this transaction's own commit being expensive
-	// (archivefold.go).
+	// of that was spent waiting for its write turn and bolt's single write lock
+	// before the transaction body ran - so other transactions starving the
+	// archive writer is distinguishable from this transaction's own commit being
+	// expensive (archivefold.go).
 	db.arFold.observeTx(len(ops), time.Since(started), begun.Sub(started))
 
 	noteArchivesWritten(ops, err)
@@ -3304,9 +3384,11 @@ func (db *db) archiveTx(ops []*archiveOp, failed *int) error {
 }
 
 // applyArchiveOp applies one archive within tx, turning a panic into that
-// archive's own error. bbolt.Batch did this (safelyCall) and db.bolt.Update does
-// not, so without it a single malformed job would take the whole manager down
-// instead of failing one archive; the transaction is rolled back either way.
+// archive's own error, so a single malformed job fails one archive instead of
+// taking the whole manager down; the transaction is rolled back either way.
+// Neither db.bolt.Update nor bbolt.Batch gives this: Batch's safelyCall recovers
+// a panic only to have the caller rerun the function solo with Update, where it
+// panics again.
 func (db *db) applyArchiveOp(tx *bolt.Tx, op *archiveOp) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -3333,7 +3415,9 @@ func (db *db) applyArchiveOp(tx *bolt.Tx, op *archiveOp) (err error) {
 // this is the safety net for a writer that stopped without it, so no archive
 // caller can be left waiting forever.
 func (db *db) failPendingArchives() {
-	for _, op := range db.swapArchives(true) {
+	ops, _ := db.swapArchives(true)
+
+	for _, op := range ops {
 		op.reply(errDBClosed)
 	}
 }
@@ -3590,7 +3674,7 @@ func (db *db) drainNewJobs(final bool) {
 // whole transaction is rolled back, so the caller can take that op out and retry
 // the rest.
 func (db *db) newJobsTx(ops []*newJobsOp, failed *int) error {
-	return db.bolt.Update(func(tx *bolt.Tx) error {
+	return db.updateInTurn(newJobsWriterKind(ops), func(tx *bolt.Tx) error {
 		for i, op := range ops {
 			if err := db.applyNewJobsOp(tx, op); err != nil {
 				if failed != nil {
@@ -3606,9 +3690,11 @@ func (db *db) newJobsTx(ops []*newJobsOp, failed *int) error {
 }
 
 // applyNewJobsOp applies one add's stores within tx, turning a panic into that
-// add's own error. bbolt.Batch did this (safelyCall) and db.bolt.Update does not,
-// so without it a single malformed job would take the whole manager down instead
-// of failing one add; the transaction is rolled back either way.
+// add's own error, so a single malformed job fails its add instead of taking the
+// whole manager down; the transaction is rolled back either way. Neither
+// db.bolt.Update nor bbolt.Batch gives this: Batch's safelyCall recovers a panic
+// only to have the caller rerun the function solo with Update, where it panics
+// again.
 func (db *db) applyNewJobsOp(tx *bolt.Tx, op *newJobsOp) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -3786,12 +3872,18 @@ func (db *db) newJobStores(encodedJobs, rgLookups, depGroupsSeen, rdgLookups, rg
 }
 
 // storeNewJobDataChunked stores each bucket's data in storeBatched-sized write
-// transactions, for an add too big to put in one.
+// transactions, for an add too big to put in one. Each transaction takes a write
+// turn (see writeTurns), and a panic in one fails only this add, though, as for
+// any error in a chunk, the chunks before it stay committed. When these went
+// through bolt.Batch such a panic was rerun solo with Update and so reached
+// storeNewJobStores' LogPanic, exiting the manager.
 func (db *db) storeNewJobDataChunked(stores []newJobStore) error {
 	for _, s := range stores {
 		storer := func(bucket []byte, chunk sobsd) error {
-			return db.bolt.Batch(func(tx *bolt.Tx) error {
-				return s.put(tx, bucket, chunk)
+			op := &newJobsOp{stores: []newJobStore{{bucket, chunk, s.put}}}
+
+			return db.updateInTurn(writerChunkedAdd, func(tx *bolt.Tx) error {
+				return db.applyNewJobsOp(tx, op)
 			})
 		}
 
@@ -4693,13 +4785,13 @@ func (db *db) archiveJob(key string, job *Job) error {
 }
 
 // putJobStats records a completed job's peak RAM, peak disk and runtime in
-// their per-ReqGroup stat buckets.
-func putJobStats(tx *bolt.Tx, job *Job) error {
-	if err := putJobStat(tx.Bucket(bucketJobRAM), job.ReqGroup, job.PeakRAM); err != nil {
+// their per-ReqGroup stat buckets, through stats.
+func putJobStats(tx *bolt.Tx, stats *reqStatCache, job *Job) error {
+	if err := stats.putStat(tx, bucketJobRAM, job.ReqGroup, job.PeakRAM); err != nil {
 		return err
 	}
 
-	if err := putJobStat(tx.Bucket(bucketJobDisk), job.ReqGroup, int(job.PeakDisk)); err != nil {
+	if err := stats.putStat(tx, bucketJobDisk, job.ReqGroup, int(job.PeakDisk)); err != nil {
 		return err
 	}
 
@@ -4714,13 +4806,7 @@ func putJobStats(tx *bolt.Tx, job *Job) error {
 
 	secs := int(math.Ceil(duration.Seconds()))
 
-	return putJobStat(tx.Bucket(bucketJobSecs), job.ReqGroup, secs)
-}
-
-// putJobStat stores a single per-ReqGroup stat value, keyed so it sorts within
-// the ReqGroup.
-func putJobStat(b *bolt.Bucket, reqGroup string, val int) error {
-	return b.Put(fmt.Appendf(nil, "%s%s%20d", reqGroup, dbDelimiter, val), []byte(strconv.Itoa(val)))
+	return stats.putStat(tx, bucketJobSecs, job.ReqGroup, secs)
 }
 
 // updateRGEndTime records job.EndTime as its RepGroup's end time, unless a later
@@ -5426,8 +5512,8 @@ type jobExitData struct {
 // update is the transactional part of updateJobAfterExit: it rewrites the live
 // job (unless writeLive is false, because a newer change for it is being
 // written), refreshes its stored std, and records any resource-based failure
-// stat.
-func (e jobExitData) update(tx *bolt.Tx, writeLive bool) error {
+// stat through stats.
+func (e jobExitData) update(tx *bolt.Tx, stats *reqStatCache, writeLive bool) error {
 	key := []byte(e.key)
 
 	bjl := tx.Bucket(bucketJobsLive)
@@ -5441,7 +5527,7 @@ func (e jobExitData) update(tx *bolt.Tx, writeLive bool) error {
 		return err
 	}
 
-	return e.updateFailStat(tx)
+	return e.updateFailStat(tx, stats)
 }
 
 // updateStd deletes any existing stored std for the job and, if the job failed
@@ -5476,21 +5562,21 @@ func (e jobExitData) updateStd(tx *bolt.Tx, key []byte) error {
 }
 
 // updateFailStat records the job's resource usage in the appropriate stat
-// bucket when it failed for a resource-based reason.
-func (e jobExitData) updateFailStat(tx *bolt.Tx) error {
+// bucket, through stats, when it failed for a resource-based reason.
+func (e jobExitData) updateFailStat(tx *bolt.Tx, stats *reqStatCache) error {
 	if e.shouldRecordHighPeakRAMStat() {
-		if err := putJobStat(tx.Bucket(bucketJobRAM), e.reqGroup, e.peakRAM); err != nil {
+		if err := stats.putStat(tx, bucketJobRAM, e.reqGroup, e.peakRAM); err != nil {
 			return err
 		}
 	}
 
 	switch e.failReason {
 	case FailReasonRAM:
-		return putJobStat(tx.Bucket(bucketJobRAM), e.reqGroup, e.peakRAM)
+		return stats.putStat(tx, bucketJobRAM, e.reqGroup, e.peakRAM)
 	case FailReasonDisk:
-		return putJobStat(tx.Bucket(bucketJobDisk), e.reqGroup, int(e.peakDisk))
+		return stats.putStat(tx, bucketJobDisk, e.reqGroup, int(e.peakDisk))
 	case FailReasonTime:
-		return putJobStat(tx.Bucket(bucketJobSecs), e.reqGroup, e.secs)
+		return stats.putStat(tx, bucketJobSecs, e.reqGroup, e.secs)
 	default:
 		return nil
 	}
@@ -5519,6 +5605,11 @@ func (db *db) updateJobAfterChange(ctx context.Context, job *Job) {
 // write pending when it next wakes into one commit, so concurrent waiters share
 // a single fsync and the write-storm amplification PR #555 removed
 // (.docs/reliable4/) is not reintroduced.
+//
+// The caller must not hold a job's lock, db.arMu or db.beMu: a writer whose
+// write turn is kept for it may take any of those on its way to that turn (see
+// writeTurns), so no writer would get a turn and this would never return. Nor
+// may it hold db.wgMutex, which queueJobChange takes itself.
 func (db *db) updateJobAfterChangeDurable(job *Job) error {
 	return awaitQueuedWrite(db.queueJobChange, job)
 }
@@ -5907,7 +5998,7 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		var errs error
 
-		maxVal, recommendation, errs = scanReqGroupStat(tx.Bucket(statBucket).Cursor(), []byte(reqGroup))
+		maxVal, recommendation, errs = scanReqGroupStat(tx.Bucket(statBucket).Cursor(), []byte(reqGroup+dbDelimiter))
 
 		return errs
 	})
@@ -5918,10 +6009,11 @@ func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundA
 	return roundRecommendation(recommendation, maxVal, roundAmount), nil
 }
 
-// scanReqGroupStat seeks over a stat bucket for the given reqGroup prefix and
-// returns the maximum stored value and the 95th-percentile recommendation. To
-// avoid scanning twice it keeps a trailing 5%-sized window of values, updating
-// the recommendation as the window fills.
+// scanReqGroupStat seeks over a stat bucket for the given prefix (a ReqGroup
+// and dbDelimiter, so that a ReqGroup whose name starts with another's is not
+// included in the other's stats) and returns the maximum stored value and the
+// 95th-percentile recommendation. To avoid scanning twice it keeps a trailing
+// 5%-sized window of values, updating the recommendation as the window fills.
 func scanReqGroupStat(c *bolt.Cursor, prefix []byte) (maxVal, recommendation int, err error) {
 	count := 0
 	window := jobStatWindowPercent
@@ -6115,10 +6207,11 @@ func putReverseLookupEntry(tx *bolt.Tx, lookupBucket, lookupKey []byte) error {
 	return b.Put(reverseLookupEntryKey(jobKey, lookupBucket, lookupKey), nil)
 }
 
-// close shuts down the db, should be used prior to exiting. It stops the
-// periodic backup ticker, waits for any in-progress periodic backup and all
-// ongoing async write transactions to finish, then writes a final backup that
-// captures the fully-drained committed state before closing bolt.
+// close shuts down the db, should be used prior to exiting. It stops
+// background learned-requirement loads starting and waits for those running,
+// stops the periodic backup ticker, waits for any in-progress periodic backup
+// and all ongoing async write transactions to finish, then writes a final
+// backup that captures the fully-drained committed state before closing bolt.
 func (db *db) close(ctx context.Context) error {
 	db.Lock()
 	defer db.Unlock()
@@ -6128,6 +6221,10 @@ func (db *db) close(ctx context.Context) error {
 	}
 
 	db.closed = true
+
+	// before bolt closes under them, so no learned-requirement load reads a
+	// closed database.
+	db.reqStats.close()
 
 	db.finaliseBackup(ctx)
 

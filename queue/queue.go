@@ -100,6 +100,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
@@ -140,6 +141,12 @@ var (
 	ErrDataChanged    = errors.New("data changed")
 )
 
+// recallHandOffHook, if set, is called by rescheduleReadyAddedIfRecall with the
+// queue as it hands off to the recall, with readyAddedCbMutex not held. It is a
+// test seam, nil in production; it is atomic because the goroutines of queues
+// from other tests may read it while a test sets it.
+var recallHandOffHook atomic.Pointer[func(*Queue)] //nolint:gochecknoglobals // A test seam.
+
 // SubQueue is how we name the sub-queues of a Queue.
 type SubQueue string
 
@@ -168,6 +175,23 @@ func defaultTTRCallback(_ any) SubQueue {
 type ItemSnapshot struct {
 	Data  any
 	State ItemState
+}
+
+// ReadyHook is called by the queue, with the queue locked, for every item
+// about to enter the ready sub-queue, after the operation's own changes to the
+// item (including any KickWith, ResumeWith, ReleaseWith or RequeueWith
+// callback, and Update's new reserve group) and before the item is pushed. It
+// gets the item's data and current reserve group and returns the reserve group
+// the item is pushed under. It must not call the queue.
+type ReadyHook func(data any, reserveGroup string) string
+
+// SetReadyHook sets the queue's ReadyHook, under the queue's lock. nil (the
+// default) leaves every item's reserve group as it is.
+func (queue *Queue) SetReadyHook(hook ReadyHook) {
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+
+	queue.readyHook = hook
 }
 
 // Suspend moves a delayed, ready, or dependent item to the suspended sub-queue.
@@ -286,7 +310,7 @@ func (queue *Queue) resumeSuspendedItem(ctx context.Context, item *Item, resumin
 		return
 	}
 
-	queue.readyQueue.push(item)
+	queue.pushReady(item)
 	item.switchSuspendedReady()
 	queue.changed(SubQueueSuspended, SubQueueReady, []*Item{item})
 	queue.mutex.Unlock()
@@ -426,6 +450,10 @@ func (queue *Queue) updateUnlessRunning(ctx context.Context, key string, reserve
 
 	queue.applyItemPropertyChanges(item, reserveGroup, priority, delay, ttr, addedReady)
 
+	if addedReady {
+		queue.moveDependentToReady(item)
+	}
+
 	queue.notifyUpdate(ctx, item, changedFrom, addedReady)
 
 	return false, nil
@@ -436,9 +464,23 @@ func (queue *Queue) updateUnlessRunning(ctx context.Context, key string, reserve
 // to the dependent sub-queue if there are any, otherwise straight to the ready
 // sub-queue. Unlike Remove, the dependants of the item are left waiting on it.
 func (queue *Queue) Requeue(ctx context.Context, key string, deps []string) error {
+	return queue.RequeueWith(ctx, key, deps, nil)
+}
+
+// RequeueWith is Requeue, except that requeueing, if not nil, is called with
+// the item's data and the queue locked, once the item is known to be in the
+// run sub-queue and before it leaves it. Whatever requeueing does therefore
+// happens before the ReadyHook and before the item can be reserved again, and
+// it is not called at all if the requeue fails. requeueing must not call the
+// queue.
+func (queue *Queue) RequeueWith(ctx context.Context, key string, deps []string, requeueing func(data any)) error {
 	item, err := queue.lockItemInState(opRequeue, key, ItemStateRun, ErrNotRunning)
 	if err != nil {
 		return err
+	}
+
+	if requeueing != nil {
+		requeueing(item.Data())
 	}
 
 	toRemove, _ := diffDependencies(item, deps)
@@ -525,7 +567,7 @@ func (queue *Queue) KickWith(ctx context.Context, key string, kicking func(data 
 		queue.changed(SubQueueBury, SubQueueDependent, []*Item{item})
 		queue.mutex.Unlock()
 	} else {
-		queue.readyQueue.push(item)
+		queue.pushReady(item)
 		item.switchBuryReady()
 		queue.changed(SubQueueBury, SubQueueReady, []*Item{item})
 		queue.mutex.Unlock()
@@ -604,6 +646,199 @@ func (queue *Queue) BuryWaiting(key string) (SubQueue, error) {
 	return from, nil
 }
 
+// pushReady is the only way an item enters the ready sub-queue: it calls the
+// ReadyHook, if set, and pushes the item under the reserve group the hook
+// returns, so that only reservers of that group are notified. You must hold the
+// mutex lock, and have made the operation's own changes to the item.
+func (queue *Queue) pushReady(item *Item) {
+	if queue.readyHook != nil {
+		group := queue.readyHook(item.Data(), item.ReserveGroup)
+
+		item.mutex.Lock()
+		item.ReserveGroup = group
+		item.mutex.Unlock()
+	}
+
+	queue.readyQueue.push(item)
+}
+
+// ReleaseWith is Release, except that releasing, if not nil, is called with the
+// item's data and the queue locked, once the item is known to be in the run
+// sub-queue and before it leaves it. Whatever releasing does therefore happens
+// before the ReadyHook and before the item can be reserved again, and it is not
+// called at all if the release fails. releasing must not call the queue.
+func (queue *Queue) ReleaseWith(ctx context.Context, key string, releasing func(data any)) error {
+	item, err := queue.lockItemInState(opRelease, key, ItemStateRun, ErrNotRunning)
+	if err != nil {
+		return err
+	}
+
+	if releasing != nil {
+		releasing(item.Data())
+	}
+
+	// switch from run to delay queue (unless there is no delay, in which case
+	// straight to ready)
+	queue.runQueue.remove(item)
+
+	if item.delay.Nanoseconds() == 0 {
+		item.switchRunReady()
+		queue.pushReady(item)
+		queue.changed(SubQueueRun, SubQueueReady, []*Item{item})
+		queue.mutex.Unlock()
+		queue.readyAdded(ctx, "released")
+	} else {
+		item.restart()
+		queue.delayQueue.push(item)
+		item.switchRunDelay()
+		queue.changed(SubQueueRun, SubQueueDelay, []*Item{item})
+		queue.mutex.Unlock()
+		queue.delayNotificationTrigger(item)
+	}
+
+	return nil
+}
+
+// BuryWith is Bury, except that burying, if not nil, is called with the item's
+// data and the queue locked, once the item is known to be in the run sub-queue
+// and before it leaves it. It is not called at all if the bury fails. burying
+// must not call the queue.
+func (queue *Queue) BuryWith(key string, burying func(data any)) error {
+	item, err := queue.lockItemInState(opBury, key, ItemStateRun, ErrNotRunning)
+	if err != nil {
+		return err
+	}
+
+	if burying != nil {
+		burying(item.Data())
+	}
+
+	// switch from run to bury queue
+	queue.runQueue.remove(item)
+	queue.buryQueue.push(item)
+	item.switchRunBury()
+	queue.changed(SubQueueRun, SubQueueBury, []*Item{item})
+	queue.mutex.Unlock()
+
+	return nil
+}
+
+// ReadyAddedCallbackRunning reports whether the ready-added callback is running
+// or queued to run, the break before a recall included.
+func (queue *Queue) ReadyAddedCallbackRunning() bool {
+	queue.readyAddedCbMutex.Lock()
+	defer queue.readyAddedCbMutex.Unlock()
+
+	return queue.readyAddedCbRunning
+}
+
+// HasReady reports whether at least one item with the given reserve group is in
+// the ready sub-queue. A closed queue has none.
+func (queue *Queue) HasReady(reserveGroup string) bool {
+	queue.mutex.RLock()
+	defer queue.mutex.RUnlock()
+
+	if queue.closed {
+		return false
+	}
+
+	return queue.readyQueue.len(reserveGroup) > 0
+}
+
+// runningDataLocked returns the item.Data() of every item in the run sub-queue.
+// The caller must hold the queue's lock.
+func (queue *Queue) runningDataLocked() []any {
+	data := make([]any, 0, len(queue.runQueue.items))
+	for _, item := range queue.runQueue.items {
+		data = append(data, item.Data())
+	}
+
+	return data
+}
+
+// GetRunningDataAndLeftReady returns what GetRunningData does and, under the
+// same lock, so as of the same moment, the Data() of the items that have left
+// the ready sub-queue since the running ready-added callback was given its ready
+// items, and are not back in it. When no ready-added callback is running, the
+// second is empty.
+func (queue *Queue) GetRunningDataAndLeftReady() ([]any, []any) {
+	queue.mutex.RLock()
+	defer queue.mutex.RUnlock()
+
+	var left []any
+
+	for _, item := range queue.readyQueue.leavers() {
+		if item.State() != ItemStateReady {
+			left = append(left, item.Data())
+		}
+	}
+
+	return queue.runningDataLocked(), left
+}
+
+// RegroupReady moves ready items to new reserve groups in one hold of the
+// queue's lock. For each of keys whose item is in the ready sub-queue, it calls
+// regroup with the item's data and reserve group, with the queue locked, and
+// gives the item the reserve group regroup returns. Keys with no item, or whose
+// item is not ready, are skipped without calling regroup, so an item reserved
+// since the caller chose it keeps its group, and an item given more than once
+// moves at most once. regroup must not call the queue. It returns how many
+// items changed reserve group.
+func (queue *Queue) RegroupReady(keys []string, regroup func(data any, reserveGroup string) string) (int, error) {
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+
+	if queue.closed {
+		return 0, Error{queue.Name, "RegroupReady", "", ErrQueueClosed}
+	}
+
+	moved, oldGroups := make([]*Item, 0, len(keys)), make([]string, 0, len(keys))
+	isMoved := make(map[*Item]bool, len(keys))
+
+	for _, key := range keys {
+		item, exists := queue.items[key]
+		if !exists || isMoved[item] {
+			continue
+		}
+
+		if oldGroup, changed := regroupItemLocked(item, regroup); changed {
+			isMoved[item] = true
+			moved = append(moved, item)
+			oldGroups = append(oldGroups, oldGroup)
+		}
+	}
+
+	if len(moved) > 0 {
+		queue.readyQueue.regroup(moved, oldGroups)
+	}
+
+	return len(moved), nil
+}
+
+// regroupItemLocked gives item, if it is ready, the reserve group regroup
+// returns for it, without moving it in the ready sub-queue, and returns its old
+// group and whether that changed. You must hold the queue's lock.
+func regroupItemLocked(item *Item, regroup func(data any, reserveGroup string) string) (string, bool) {
+	item.mutex.RLock()
+	ready, oldGroup := item.state == ItemStateReady, item.ReserveGroup
+	item.mutex.RUnlock()
+
+	if !ready {
+		return oldGroup, false
+	}
+
+	newGroup := regroup(item.Data(), oldGroup)
+	if newGroup == oldGroup {
+		return oldGroup, false
+	}
+
+	item.mutex.Lock()
+	item.ReserveGroup = newGroup
+	item.mutex.Unlock()
+
+	return oldGroup, true
+}
+
 // Error records an error and the operation, item and queue that caused it.
 type Error struct {
 	Queue string // the queue's Name
@@ -658,10 +893,11 @@ type Queue struct {
 	ttrNotification        chan bool
 	startedTTRProcessing   chan bool
 	ttrClose               chan bool
-	readyAddedCb           ReadyAddedCallback
+	readyAddedCb           ReadyAddedCallback // guarded by readyAddedCbMutex
 	changedCb              ChangedCallback
 	ttrCb                  TTRCallback
-	changeSeq              uint64 // guarded by mutex; see changed()
+	readyHook              ReadyHook // guarded by mutex
+	changeSeq              uint64    // guarded by mutex; see changed()
 	mutex                  sync.RWMutex
 	readyAddedCbMutex      sync.Mutex
 	closed                 bool
@@ -734,6 +970,9 @@ func New(ctx context.Context, name string) *Queue {
 // running, you will only know about them when your callback is called again,
 // immediately after the previous call completes.
 func (queue *Queue) SetReadyAddedCallback(callback ReadyAddedCallback) {
+	queue.readyAddedCbMutex.Lock()
+	defer queue.readyAddedCbMutex.Unlock()
+
 	queue.readyAddedCb = callback
 }
 
@@ -749,11 +988,13 @@ func (queue *Queue) TriggerReadyAddedCallback(ctx context.Context) {
 // still running from a previous call, we only schedule that the callback be
 // called (once) after the current call completes.
 func (queue *Queue) readyAdded(ctx context.Context, source string) {
+	queue.readyAddedCbMutex.Lock()
 	if queue.readyAddedCb == nil {
+		queue.readyAddedCbMutex.Unlock()
+
 		return
 	}
 
-	queue.readyAddedCbMutex.Lock()
 	if queue.readyAddedCbRunning {
 		queue.readyAddedCbRecall = true
 		queue.readyAddedCbMutex.Unlock()
@@ -770,19 +1011,29 @@ func (queue *Queue) readyAdded(ctx context.Context, source string) {
 // runReadyAddedCb gathers the current ready item data, calls the
 // readyAddedCallback, and then reschedules itself if another call was requested
 // while it was running. It is always launched in its own goroutine by
-// readyAdded.
+// readyAdded or rescheduleReadyAddedIfRecall. If the callback has since been
+// set to nil, it is not called, but the recall is still honoured.
 func (queue *Queue) runReadyAddedCb(ctx context.Context, source string) {
-	data := queue.readyItemData()
+	queue.readyAddedCbMutex.Lock()
+	cb := queue.readyAddedCb
+	queue.readyAddedCbMutex.Unlock()
 
-	clog.Debug(ctx, "ready items available, triggering callback", "source", source, "items", len(data))
-	queue.readyAddedCb(queue.Name, data)
-	clog.Debug(ctx, "finished triggering callback for ready items", "source", source, "items", len(data))
+	if cb != nil {
+		data := queue.readyItemData()
+
+		clog.Debug(ctx, "ready items available, triggering callback", "source", source, "items", len(data))
+		cb(queue.Name, data)
+		queue.readyQueue.stopRecordingLeavers()
+		clog.Debug(ctx, "finished triggering callback for ready items", "source", source, "items", len(data))
+	}
 
 	queue.rescheduleReadyAddedIfRecall(ctx)
 }
 
 // readyItemData returns the Data() of every item currently in the ready
-// sub-queue.
+// sub-queue, and has the ready sub-queue record, from that moment, the items
+// that leave it (see GetRunningDataAndLeftReady), until runReadyAddedCb stops
+// it once the callback given this data has returned.
 func (queue *Queue) readyItemData() []any {
 	queue.mutex.RLock()
 	defer queue.mutex.RUnlock()
@@ -795,12 +1046,16 @@ func (queue *Queue) readyItemData() []any {
 		}
 	}
 
+	queue.readyQueue.recordLeavers()
+
 	return data
 }
 
 // rescheduleReadyAddedIfRecall finishes a runReadyAddedCb call: if another call
-// was requested while it was running, it waits a short while and triggers
-// readyAdded again; otherwise it marks the callback as no longer running.
+// was requested while it was running, it waits a short while and hands off to
+// the recall, a new runReadyAddedCb goroutine, without ever clearing
+// readyAddedCbRunning, so that ReadyAddedCallbackRunning() is a reliable idle
+// signal; otherwise it marks the callback as no longer running.
 func (queue *Queue) rescheduleReadyAddedIfRecall(ctx context.Context) {
 	queue.readyAddedCbMutex.Lock()
 
@@ -820,11 +1075,14 @@ func (queue *Queue) rescheduleReadyAddedIfRecall(ctx context.Context) {
 	// items
 	<-time.After(recallBreak)
 	queue.readyAddedCbMutex.Lock()
-	queue.readyAddedCbRunning = false
-
 	queue.readyAddedCbRecall = false
-	defer queue.readyAdded(ctx, "recall")
 	queue.readyAddedCbMutex.Unlock()
+
+	if hook := recallHandOffHook.Load(); hook != nil {
+		(*hook)(queue)
+	}
+
+	go queue.runReadyAddedCb(ctx, "recall")
 }
 
 // SetChangedCallback sets a callback that will be called when items move from
@@ -1053,7 +1311,7 @@ func (queue *Queue) addReadyOrDelayedItem(ctx context.Context, item *Item, delay
 	if delay.Nanoseconds() == 0 {
 		// put it directly on the ready queue
 		item.switchDelayReady()
-		queue.readyQueue.push(item)
+		queue.pushReady(item)
 		queue.changed(SubQueueNew, SubQueueReady, []*Item{item})
 		queue.mutex.Unlock()
 		queue.readyAdded(ctx, "new")
@@ -1266,7 +1524,7 @@ func (queue *Queue) addManyReadyOrDelayedItem(def *ItemDef, item *Item, buckets 
 	if def.Delay.Nanoseconds() == 0 {
 		// put it directly on the ready queue
 		item.switchDelayReady()
-		queue.readyQueue.push(item)
+		queue.pushReady(item)
 		buckets.ready = append(buckets.ready, item)
 
 		return
@@ -1303,12 +1561,7 @@ func (queue *Queue) GetRunningData() []any {
 	queue.mutex.RLock()
 	defer queue.mutex.RUnlock()
 
-	data := make([]any, 0, len(queue.runQueue.items))
-	for _, item := range queue.runQueue.items {
-		data = append(data, item.Data())
-	}
-
-	return data
+	return queue.runningDataLocked()
 }
 
 // AllItems returns the items in the queue. NB: You should NOT do anything
@@ -1353,6 +1606,10 @@ func (queue *Queue) Update(ctx context.Context, key string, reserveGroup string,
 
 	queue.applyItemPropertyChanges(item, reserveGroup, priority, delay, ttr, addedReady)
 
+	if addedReady {
+		queue.moveDependentToReady(item)
+	}
+
 	queue.notifyUpdate(ctx, item, changedFrom, addedReady)
 
 	return nil
@@ -1377,9 +1634,12 @@ func (queue *Queue) notifyUpdate(ctx context.Context, item *Item, changedFrom Su
 }
 
 // updateDependencies applies a new set of dependencies to an item during
-// Update(), moving it between the dependent and other sub-queues as needed. It
-// returns the sub-queue the item moved from (if it became dependent) and
-// whether it became ready. You must hold the mutex lock before calling this.
+// Update(), moving it to the dependent sub-queue if it gained any. It returns
+// the sub-queue the item moved from (if it became dependent) and whether it
+// lost its last dependency while dependent, in which case the caller must
+// moveDependentToReady() it once the Update's other changes are applied, so
+// that the ReadyHook sees them. You must hold the mutex lock before calling
+// this.
 func (queue *Queue) updateDependencies(item *Item, key string, newDeps []string) (SubQueue, bool) {
 	toRemove, added := diffDependencies(item, newDeps)
 	if len(toRemove) == 0 && added == 0 {
@@ -1402,7 +1662,7 @@ func (queue *Queue) updateDependencies(item *Item, key string, newDeps []string)
 	}
 
 	if len(newDeps) == 0 {
-		return "", queue.moveDependentToReady(item)
+		return "", iState == ItemStateDependent
 	}
 
 	return "", false
@@ -1497,19 +1757,12 @@ func (queue *Queue) detachForDependentMove(item *Item, iState ItemState) (SubQue
 	}
 }
 
-// moveDependentToReady moves an item that is currently in the dependent
-// sub-queue to the ready sub-queue, returning true if it did so. You must hold
-// the mutex lock before calling this.
-func (queue *Queue) moveDependentToReady(item *Item) bool {
-	if item.State() != ItemStateDependent {
-		return false
-	}
-
+// moveDependentToReady moves an item that is in the dependent sub-queue to the
+// ready sub-queue. You must hold the mutex lock before calling this.
+func (queue *Queue) moveDependentToReady(item *Item) {
 	queue.depQueue.remove(item)
 	item.switchDependentReady()
-	queue.readyQueue.push(item)
-
-	return true
+	queue.pushReady(item)
 }
 
 // applyItemPropertyChanges updates an item's delay, priority/ReserveGroup or
@@ -1853,50 +2106,14 @@ func (queue *Queue) Touch(key string) error {
 // Release is a thread-safe way to switch an item in the run sub-queue to the
 // delay sub-queue, for when the item should be dealt with later, not now.
 func (queue *Queue) Release(ctx context.Context, key string) error {
-	item, err := queue.lockItemInState(opRelease, key, ItemStateRun, ErrNotRunning)
-	if err != nil {
-		return err
-	}
-
-	// switch from run to delay queue (unless there is no delay, in which case
-	// straight to ready)
-	queue.runQueue.remove(item)
-
-	if item.delay.Nanoseconds() == 0 {
-		item.switchRunReady()
-		queue.readyQueue.push(item)
-		queue.changed(SubQueueRun, SubQueueReady, []*Item{item})
-		queue.mutex.Unlock()
-		queue.readyAdded(ctx, "released")
-	} else {
-		item.restart()
-		queue.delayQueue.push(item)
-		item.switchRunDelay()
-		queue.changed(SubQueueRun, SubQueueDelay, []*Item{item})
-		queue.mutex.Unlock()
-		queue.delayNotificationTrigger(item)
-	}
-
-	return nil
+	return queue.ReleaseWith(ctx, key, nil)
 }
 
 // Bury is a thread-safe way to switch an item in the run sub-queue to the
 // bury sub-queue, for when the item can't be dealt with ever, at least until
 // the user takes some action and changes something.
 func (queue *Queue) Bury(key string) error {
-	item, err := queue.lockItemInState(opBury, key, ItemStateRun, ErrNotRunning)
-	if err != nil {
-		return err
-	}
-
-	// switch from run to bury queue
-	queue.runQueue.remove(item)
-	queue.buryQueue.push(item)
-	item.switchRunBury()
-	queue.changed(SubQueueRun, SubQueueBury, []*Item{item})
-	queue.mutex.Unlock()
-
-	return nil
+	return queue.BuryWith(key, nil)
 }
 
 // Kick is a thread-safe way to switch an item in the bury sub-queue to the
@@ -1954,7 +2171,7 @@ func (queue *Queue) promoteDependants(key string) []*Item {
 
 			// put it straight on the ready queue, regardless of delay value
 			dep.switchDependentReady()
-			queue.readyQueue.push(dep)
+			queue.pushReady(dep)
 			addedReadyItems = append(addedReadyItems, dep)
 		}
 	}
@@ -2082,7 +2299,7 @@ func (queue *Queue) moveReadyDelayedItems(ctx context.Context) {
 
 		// remove it from the delay sub-queue and add it to the ready sub-queue
 		queue.delayQueue.remove(item)
-		queue.readyQueue.push(item)
+		queue.pushReady(item)
 		item.switchDelayReady()
 		items = append(items, item)
 	}
@@ -2222,7 +2439,7 @@ func (queue *Queue) moveTimedOutItem(item *Item, moveTo SubQueue, moves *ttrMove
 		item.switchRunBury(true)
 		moves.buried = append(moves.buried, item)
 	default:
-		queue.readyQueue.push(item)
+		queue.pushReady(item)
 		item.switchRunReady()
 		moves.ready = append(moves.ready, item)
 	}

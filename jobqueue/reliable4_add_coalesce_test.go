@@ -255,10 +255,11 @@ func TestReliable4AddErrorsStayPerAdd(t *testing.T) {
 }
 
 // TestReliable4AddPanicStaysPerAdd proves a malformed add that PANICS inside the
-// write transaction fails only its own caller. bbolt.Batch used to give this for
-// free (safelyCall turned a panic into that call's error); a plain db.Update does
-// not, so without applyNewJobsOp's recover one bad add would take the whole
-// manager down along with every add folded in beside it.
+// write transaction fails only its own caller. Neither db.Update nor bbolt.Batch
+// gives this (Batch's safelyCall recovers a panic only to rerun the function solo
+// with Update, where it panics again), so without applyNewJobsOp's recover one
+// bad add would take the whole manager down along with every add folded in
+// beside it.
 func TestReliable4AddPanicStaysPerAdd(t *testing.T) {
 	if runnermode || servermode {
 		return

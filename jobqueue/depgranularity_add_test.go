@@ -179,12 +179,7 @@ func dgaAddMemberTxCost(ctx context.Context, members int) int {
 	paused, err := d.server.Pause()
 	So(err, ShouldBeNil)
 	So(paused, ShouldBeTrue)
-	So(pollUntil(func() bool {
-		d.server.rpmutex.Lock()
-		defer d.server.rpmutex.Unlock()
-
-		return !d.server.racRunning
-	}), ShouldBeTrue)
+	So(pollUntil(d.server.racIdle), ShouldBeTrue)
 
 	before := d.server.db.bolt.Stats().TxN
 	added := 0

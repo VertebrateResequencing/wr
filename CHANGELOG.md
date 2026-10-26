@@ -5,6 +5,71 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](http://semver.org/).
 
 
+## [Unreleased]
+### Added
+- Go API: `queue.Queue.SetReadyHook` (with `queue.ReadyHook`),
+  `ReleaseWith`, `RequeueWith`, `BuryWith`, `HasReady`,
+  `ReadyAddedCallbackRunning`, `RegroupReady` and
+  `GetRunningDataAndLeftReady`, and
+  `jobqueue.Job.FailBumpsCleared` with its `jobqueue.FailBump*` bits,
+  `jobqueue.Job.ModifiedReqs`, `jobqueue.Job.FailedRunReqs` and
+  `jobqueue.ServerTimings.ReqStatRefreshInterval`.
+- Job details in JSON output (`wr status -o json` and the REST API; Go
+  `jobqueue.JStatus`): `RunRAM`, `RunTime` and `RunDisk`, the memory, time
+  and disk of the command's current or last run, or of its first run if it
+  has not run yet, in the units of `ExpectedRAM`, `ExpectedTime` and
+  `RequestedDisk`. They differ from those only between a failure and the
+  next run, when those already hold the next run's size.
+
+### Changed
+- The resources of a command waiting to run again after a failure are now
+  worked out afresh from the failed run each time, rather than only ever
+  raised. With `--override 1`, a later, lower learned value can now lower
+  an earlier increase. `wr mod --override 2` on such a command now always
+  returns it to the failed run's size, even if the manager had already
+  raised it.
+
+### Fixed
+Grouped by when each bug could affect you, most likely first.
+
+#### Everyone
+- `wr kick` of a command buried for using too much RAM now reruns it with
+  more memory, instead of sometimes at the old size, which could bury it
+  again. Kicking a command buried for any other failure after it used more
+  memory than it reserved, or resuming such a command after suspending it
+  while it waited to retry, now also reruns it with more memory, as a retry
+  already did.
+- A retry after a memory, disk or time failure no longer sometimes runs at the
+  old size. `wr status` now shows the increased size while the command is
+  delayed or buried.
+- A memory, disk or time set with `wr mod` on a command that failed is now
+  used when it next runs, instead of being raised again for that failure,
+  wherever wr uses your size: with `--override` 1 or 2 for a resource you
+  gave when adding the command, or when nothing has been learned for it. As
+  before, a learned value still replaces your size under `--override` 0,
+  and for a resource you did not give when adding the command.
+- The memory, disk and time learned for a requirements group (`--req_grp`)
+  no longer include the usage of other groups whose names start with its
+  name, such as `rg` and `rgz`. Learned reservations for such groups may
+  change.
+- A newly started runner no longer sometimes exits at once without running
+  anything when commands were ready for it.
+- Commands waiting behind a full limit group now pick up the memory, disk and
+  time learned for their requirements group while they wait, instead of often
+  running at the size known when they became ready.
+- `wr status`'s note that a command which failed for another reason used
+  too much RAM, and the web status page's highlight of memory, time or disk
+  use beyond the reservation, now compare with what the command's latest
+  run reserved. For a command waiting to run again after a failure, they
+  could appear when it stayed within that reservation, or be missing when it
+  did not.
+
+#### With large queues or many runners
+Performance only.
+- Runners no longer wait for the manager's scheduling pass before they can
+  take newly added, kicked or resumed commands.
+
+
 ## [0.39.0] - 2026-10-12
 ### Added
 - Go client API: `Context` variants of the `client.Scheduler` and

@@ -29,8 +29,9 @@ package jobqueue
 // resume makes the job's item reservable before it updates the job, so a runner
 // can reserve and start the job in between. The resume must not then reset that
 // running job to reserved, or the runner's re-sent start report is taken for a
-// new attempt. Nor may a reservation that overtakes the resume make it release
-// other reserves before the ready-added callback it queued has run.
+// new attempt. Nor may a reservation that overtakes the resume take the job
+// before it is prepared, and other reserves do not wait for the ready-added
+// callback the resume queued.
 
 import (
 	"context"
@@ -158,19 +159,21 @@ func TestResumeRacingStart(t *testing.T) {
 	})
 }
 
-// TestResumeRacingReserveKeepsRACPending proves that a resume whose item is
-// reserved before the resume checks its state still holds back other reserves
-// until the ready-added callback it queued has run.
-func TestResumeRacingReserveKeepsRACPending(t *testing.T) {
+// TestResumeRacingReserveGetsPreparedJob proves that a reservation made as soon
+// as a resume makes its job ready gets the job already prepared at the size
+// learned while it was suspended, and that another reserve does not wait for the
+// ready-added callback the resume queued.
+func TestResumeRacingReserveGetsPreparedJob(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
 
 	ctx := context.Background()
 
-	Convey("Given a suspended job reserved between its resume making it ready and the resume checking it", t, func() {
+	Convey("Given a suspended job reserved as soon as its resume makes it ready", t, func() {
 		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
 		serverConfig.Timings.ItemTTR = time.Minute
+		serverConfig.Timings.ReqStatRefreshInterval = -1
 
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
@@ -196,16 +199,9 @@ func TestResumeRacingReserveKeepsRACPending(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(suspended, ShouldEqual, 1)
 
-		// a reserve waits out every ready-added callback the add and suspend
-		// queued, and finds nothing, since the job is suspended
-		idle, err := jq.Reserve(10 * time.Millisecond)
-		So(err, ShouldBeNil)
-		So(idle, ShouldBeNil)
+		seedReqGroupStats(server, bucketJobRAM, resumeOrderRepGroup, noHoldLearnedRAM)
 
-		server.rpmutex.Lock()
-		racIdle := !server.racPending && !server.racRunning
-		server.rpmutex.Unlock()
-		So(racIdle, ShouldBeTrue)
+		So(pollUntil(server.racIdle), ShouldBeTrue)
 
 		// gate the ready-added callback, so the test decides when it runs
 		racCalled, racGate := make(chan struct{}), make(chan struct{})
@@ -221,12 +217,11 @@ func TestResumeRacingReserveKeepsRACPending(t *testing.T) {
 			server.readyAddedCallback(ctx, server.q, allitemdata)
 		})
 
-		// stands in for a runner whose reserve was already past
-		// waitForPendingReserves when the resume began: it takes the item as
-		// soon as it is ready
+		// stands in for a runner whose reserve was already waiting when the
+		// resume began: it takes the item as soon as it is ready
 		var (
-			hookReserved bool
-			hookSrerr    string
+			hookReservedRAM = -1
+			hookSrerr       string
 		)
 
 		resumeItemReadyHook = func(hooked string) {
@@ -235,14 +230,21 @@ func TestResumeRacingReserveKeepsRACPending(t *testing.T) {
 			}
 
 			item, srerr := server.reserveItem(ctx, &clientRequest{})
-			hookReserved = item != nil && item.Key == key
 			hookSrerr = srerr
+
+			if item == nil || item.Key != key {
+				return
+			}
+
+			if job, ok := item.Data().(*Job); ok {
+				job.RLock()
+				hookReservedRAM = job.Requirements.RAM
+				job.RUnlock()
+			}
 		}
 		defer func() { resumeItemReadyHook = nil }()
 
 		So(server.resumeJobs(ctx, []string{key}), ShouldEqual, 1)
-		So(hookSrerr, ShouldBeBlank)
-		So(hookReserved, ShouldBeTrue)
 
 		select {
 		case <-racCalled:
@@ -255,34 +257,19 @@ func TestResumeRacingReserveKeepsRACPending(t *testing.T) {
 
 		defer disconnect(runner)
 
-		type reserveOutcome struct {
-			job *Job
-			err error
-		}
+		Convey("the job reserved at once is prepared at the learned size", func() {
+			So(hookSrerr, ShouldBeBlank)
+			So(hookReservedRAM, ShouldEqual, noHoldLearnedRAM)
+		})
 
-		reserveResult := make(chan reserveOutcome, 1)
+		Convey("another reserve returns nothing without waiting for the ready-added callback", func() {
+			// a reserve still held by the gate must be let go before runner
+			// disconnects, or the disconnect waits for it
+			defer openGate()
 
-		go func() {
-			job, errr := runner.Reserve(50 * time.Millisecond)
-			reserveResult <- reserveOutcome{job, errr}
-		}()
-
-		Convey("another reserve waits until the ready-added callback has run", func() {
-			returnedEarly := false
-
-			select {
-			case <-reserveResult:
-				returnedEarly = true
-			case <-time.After(time.Second):
-			}
-
-			So(returnedEarly, ShouldBeFalse)
-
-			openGate()
-
-			outcome := <-reserveResult
-			So(outcome.err, ShouldBeNil)
-			So(outcome.job, ShouldBeNil)
+			returned, job := reserveReturnsWhileGated(runner)
+			So(returned, ShouldBeTrue)
+			So(job, ShouldBeNil)
 		})
 	})
 }

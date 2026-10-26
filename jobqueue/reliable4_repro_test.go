@@ -142,11 +142,7 @@ func TestReliable4BacklogRescan(t *testing.T) {
 
 		// wait for every job to be queued and the rac fired by Add to be idle.
 		So(pollUntil(func() bool {
-			server.rpmutex.Lock()
-			running := server.racRunning
-			server.rpmutex.Unlock()
-
-			return !running && len(server.q.AllItems()) == backlog
+			return server.racIdle() && len(server.q.AllItems()) == backlog
 		}), ShouldBeTrue)
 
 		// gather the ready item data exactly as the queue hands it to the rac

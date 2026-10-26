@@ -137,7 +137,7 @@ func newOverProvisionServer(limit int) *Server {
 	})
 	lim.SetLimit("lg", *limiter.NewCountGroupData(int64(limit)))
 
-	return &Server{limiter: lim, previouslyScheduledGroups: make(map[string]*sgroup)}
+	return &Server{db: racNoStatsDB(), limiter: lim, previouslyScheduledGroups: make(map[string]*sgroup)}
 }
 
 // racReadyJobs builds n ready jobs for driving a rac cycle's live ready-job

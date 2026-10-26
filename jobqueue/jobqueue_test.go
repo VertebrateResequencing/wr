@@ -1195,6 +1195,9 @@ func jobqueueTestInit(shortTTR bool) (internal.Config, ServerConfig, string, *jq
 	serverConfig.Timings.InterruptTime = 10 * time.Millisecond
 	serverConfig.Timings.ReleaseDelayMin = 100 * time.Millisecond
 	serverConfig.Timings.ShutdownSocketWait = 1 * time.Millisecond
+	// tests that write stats expect the next add or RAC to use them, so they
+	// get no refresh limit; tests of the limit set their own (spec B2).
+	serverConfig.Timings.ReqStatRefreshInterval = -1
 	clientConnectTime := 1500 * time.Millisecond
 	// NB: RetryWait is left at its 15s default here. Only the crash/shutdown
 	// recovery tests (which wait it out before reconnecting) shorten it, via
@@ -1826,9 +1829,10 @@ func TestJobqueueSignal(t *testing.T) {
 				So(job2.Cmd, ShouldEqual, cmd2)
 				So(job2.State, ShouldEqual, JobStateBuried)
 				So(job2.FailReason, ShouldEqual, FailReasonTime)
-				So(job2.Requirements.Time.Seconds(), ShouldEqual, 1)
+				// the manager applies the time failure's increase (the run's time
+				// plus an hour) as it buries the job
+				So(job2.Requirements.Time.Seconds(), ShouldBeGreaterThanOrEqualTo, 3601)
 
-				// requirements only change on becoming ready
 				kicked, err := jq.Kick([]*JobEssence{job2.ToEssense()})
 				So(err, ShouldBeNil)
 				So(kicked, ShouldEqual, 1)
@@ -3881,7 +3885,10 @@ func TestCommandDependenciesStayStatic(t *testing.T) {
 	})
 }
 
-func TestRerunReplacementReadyCallbackBlocksReserve(t *testing.T) {
+// TestRerunReplacementReservableAtOnce proves that a live rerun replacement that
+// becomes ready can be reserved, as the replacement, while the ready-added
+// callback it queued is still running.
+func TestRerunReplacementReservableAtOnce(t *testing.T) {
 	ctx := context.Background()
 
 	if runnermode || servermode {
@@ -3890,7 +3897,7 @@ func TestRerunReplacementReadyCallbackBlocksReserve(t *testing.T) {
 
 	_, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
 
-	Convey("A rerun replacement that becomes ready blocks reserves until ReadyAdded finishes", t, func() {
+	Convey("A rerun replacement that becomes ready is reservable while ReadyAdded runs", t, func() {
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
 
@@ -3968,7 +3975,6 @@ func TestRerunReplacementReadyCallbackBlocksReserve(t *testing.T) {
 				close(callbackStarted)
 			})
 			<-releaseCallback
-			server.finishRAC()
 		})
 
 		updated, err := server.replaceLiveRerunItem(ctx, &queue.ItemDef{
@@ -3987,38 +3993,11 @@ func TestRerunReplacementReadyCallbackBlocksReserve(t *testing.T) {
 			return
 		}
 
-		type reserveResult struct {
-			job *Job
-			err error
-		}
-
-		reserved := make(chan reserveResult, 1)
-
-		go func() {
-			job, reserveErr := jq.Reserve(2 * time.Second)
-			reserved <- reserveResult{job: job, err: reserveErr}
-		}()
-
-		select {
-		case <-reserved:
-			So("reserve returned before ReadyAdded callback completed", ShouldBeBlank)
-			release()
-
-			return
-		case <-time.After(150 * time.Millisecond):
-		}
-
-		release()
-
-		select {
-		case result := <-reserved:
-			So(result.err, ShouldBeNil)
-			So(result.job, ShouldNotBeNil)
-			So(result.job.Key(), ShouldEqual, childKey)
-			So(result.job.RepGroup, ShouldEqual, newJob.RepGroup)
-		case <-time.After(2 * time.Second):
-			So("timed out waiting for reserve after ReadyAdded callback completed", ShouldBeBlank)
-		}
+		returned, job := reserveReturnsWhileGated(jq)
+		So(returned, ShouldBeTrue)
+		So(job, ShouldNotBeNil)
+		So(job.Key(), ShouldEqual, childKey)
+		So(job.RepGroup, ShouldEqual, newJob.RepGroup)
 	})
 }
 
@@ -7362,7 +7341,8 @@ func TestJobqueueHighMem(t *testing.T) {
 			So(job.FailReason, ShouldEqual, FailReasonRAM)
 			So(job.Requirements.RAM, ShouldEqual, 10)
 
-			// requirements only change on becoming ready
+			// that is the runner's own copy: the manager applied the failure's
+			// increase to its copy when it buried the job
 			kicked, err := jq.Kick([]*JobEssence{job.ToEssense()})
 			So(err, ShouldBeNil)
 			So(kicked, ShouldEqual, 1)
