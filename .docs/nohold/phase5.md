@@ -110,6 +110,10 @@ Mutants, each in a scratch copy:
 - `skipReserve` never skipping: SURVIVED the `TestReliable2Reserve*` tests
   and the `serverRC` tests. E2 tests 2 and 3 (item 5.2) must kill it.
 
+2026-10-26: `racRunning`, with `rpmutex` and `finishRAC`, was later removed
+as unused. This item kept it as a test idle signal, but `racIdle()` (which
+uses `q.ReadyAddedCallbackRunning()`) replaced that use.
+
 - [x] implemented
 - [x] reviewed
 

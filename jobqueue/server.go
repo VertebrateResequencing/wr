@@ -1870,7 +1870,6 @@ type Server struct {
 	psgmutex            sync.RWMutex // to protect previouslyScheduledGroups
 	srmutex             sync.Mutex   // to protect scheduleRetries
 	csmutex             sync.RWMutex // to protect clientSubscriptions and subsClosed
-	rpmutex             sync.Mutex   // to protect racRunning
 	// lgmutex is held across reading stored limit groups back from the
 	// database and giving them to the limiter (see applyStoredLimitGroups).
 	// Under it only a bolt read transaction and the limiter's own lock are
@@ -1908,10 +1907,6 @@ type Server struct {
 	deletesWG     sync.WaitGroup
 	subsClosed    bool        // shutdown swept the subscriptions; see storeClientSubscription
 	subSweepTimer *time.Timer // runs sweepIdleClientSubscriptions; guarded by csmutex
-	// racRunning is set while readyAddedCallback runs, from just after its
-	// paused/draining check to its end. Reserves never wait for it: items are
-	// prepared as they become ready (see prepareForReady).
-	racRunning bool
 
 	// lastRunToken is the last runToken this manager minted; only mintRunToken touches it.
 	lastRunToken atomic.Uint64
@@ -2115,13 +2110,6 @@ func (s *Server) finishRecovering() {
 	defer s.ssmutex.Unlock()
 
 	s.recovering = false
-}
-
-// finishRAC clears racRunning at the end of a ready-added callback.
-func (s *Server) finishRAC() {
-	s.rpmutex.Lock()
-	s.racRunning = false
-	s.rpmutex.Unlock()
 }
 
 // racIdle reports whether no ready-added callback is running or queued to run
@@ -6802,12 +6790,6 @@ func (s *Server) readyAddedCallback(ctx context.Context, q *queue.Queue, allitem
 	}
 
 	s.ssmutex.RUnlock()
-
-	s.rpmutex.Lock()
-	s.racRunning = true
-	s.rpmutex.Unlock()
-
-	defer s.finishRAC()
 
 	rc := s.runnerCommand()
 
