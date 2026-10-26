@@ -311,7 +311,7 @@ func (j *Job) lastRunReqs() *scheduler.Requirements {
 //
 // Every release sets State anew, but a few paths leave one of these on a job
 // that is not in run. The web interface's write of State can overwrite a
-// release's (.docs/reserve-runstate/delivery-queue.md row 16), and recovery
+// release's (.docs/delivery-queue.md row 16), and recovery
 // can put a lost State that write persisted into ready: a failed job then
 // reports its Requirements, the next run's size, not its failed run's.
 // Recovery also puts an old client's reservation (Pid 0) into ready with

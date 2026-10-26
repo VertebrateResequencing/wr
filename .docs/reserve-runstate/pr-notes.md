@@ -422,7 +422,7 @@ below.
 3. Double runs: PASS. Outside stalls the change soak had one double run and
    the baseline two. All three were at a scheduled clean stop, and none was
    caused by the change. The clean-stop double run is queued separately as
-   item 5 in `delivery-queue.md`.
+   item 5 in `.docs/delivery-queue.md`.
    - Change soak: the double is not a non-durable hand-out, since no D1 line
      names its key (d1582bc1...). Its first run (node-13-08 pid 2170469,
      runner log `runnerlogs/26.10.07/12-12-10.node-13-08.2081262`) was
