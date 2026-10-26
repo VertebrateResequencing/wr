@@ -800,7 +800,7 @@ func (p *queueLockProbe) loadsAfter(step func()) bool {
 		return false
 	}
 
-	p.server.db.invalidateReqGroupRecs(p.group)
+	p.server.db.reqStats.invalidate(p.group)
 	before := p.loads.count(p.group)
 
 	step()
@@ -2706,8 +2706,8 @@ func TestNoHoldModifyClearsBump(t *testing.T) {
 		_, item := n.serverJob(job.Key())
 		So(item.Stats().State, ShouldEqual, queue.ItemStateDelay)
 
-		// the delay expires, and from phase 4 the queue's ready hook tries to
-		// lock the job, while modifyJob is about to check the new key.
+		// the delay expires, and the queue's ready hook tries to lock the job,
+		// while modifyJob is about to check the new key.
 		readyAt := item.ReadyAt()
 		modifyKeyCheckHook = func() { time.Sleep(time.Until(readyAt.Add(200 * time.Millisecond))) }
 

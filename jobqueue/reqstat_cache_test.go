@@ -257,7 +257,7 @@ func TestReqStatCache(t *testing.T) {
 		Convey("a failed load keeps the previous value, not current, until a load succeeds", func() {
 			seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, 300)
 			db.refreshReqGroupRecs(reqStatTestGroup)
-			db.invalidateReqGroupRecs(reqStatTestGroup)
+			db.reqStats.invalidate(reqStatTestGroup)
 
 			loads.setFailing(reqStatTestGroup, true)
 			So(db.refreshReqGroupRecs(reqStatTestGroup).RAM, ShouldEqual, 300)
@@ -329,7 +329,7 @@ func TestReqStatCache(t *testing.T) {
 		})
 
 		Convey("an invalidation during a load leaves the loaded value not current", func() {
-			loads.setOnLoad(func(reqGroup string) { db.invalidateReqGroupRecs(reqGroup) })
+			loads.setOnLoad(func(reqGroup string) { db.reqStats.invalidate(reqGroup) })
 
 			db.refreshReqGroupRecs(reqStatTestGroup)
 
@@ -635,7 +635,7 @@ func TestReqStatRefreshLimit(t *testing.T) {
 			_, current := db.cachedReqGroupRecs(reqStatTestGroup)
 			So(current, ShouldBeTrue)
 
-			db.invalidateReqGroupRecs(reqStatTestGroup)
+			db.reqStats.invalidate(reqStatTestGroup)
 			loads.reset()
 
 			db.refreshReqGroupRecsLater(reqStatTestGroup)

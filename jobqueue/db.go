@@ -6209,9 +6209,9 @@ func putReverseLookupEntry(tx *bolt.Tx, lookupBucket, lookupKey []byte) error {
 
 // close shuts down the db, should be used prior to exiting. It stops
 // background learned-requirement loads starting and waits for those running,
-// stops the periodic backup ticker, waits for any in-progress periodic backup and all
-// ongoing async write transactions to finish, then writes a final backup that
-// captures the fully-drained committed state before closing bolt.
+// stops the periodic backup ticker, waits for any in-progress periodic backup
+// and all ongoing async write transactions to finish, then writes a final
+// backup that captures the fully-drained committed state before closing bolt.
 func (db *db) close(ctx context.Context) error {
 	db.Lock()
 	defer db.Unlock()

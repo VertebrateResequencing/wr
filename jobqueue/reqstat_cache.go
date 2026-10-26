@@ -46,6 +46,8 @@ import (
 //nolint:gochecknoglobals // prod-inert test seam, like jobExitSnapshotHook.
 var reqStatLoadHook func(reqGroup string) error
 
+// reqStatEntry is one ReqGroup's cached learned requirements and the state of
+// their loading.
 type reqStatEntry struct {
 	rec       *scheduler.Requirements // last loaded; nil if never loaded
 	gen       uint64                  // incremented by invalidate
@@ -104,6 +106,7 @@ type reqStatCache struct {
 	changes atomic.Uint32
 }
 
+// newReqStatCache returns an empty reqStatCache with its changes stamp at 1.
 func newReqStatCache() *reqStatCache {
 	c := &reqStatCache{entries: make(map[string]*reqStatEntry)}
 	c.changes.Store(1)
@@ -148,6 +151,8 @@ func (c *reqStatCache) entryLocked(reqGroup string) *reqStatEntry {
 	return e
 }
 
+// invalidate increments reqGroup's entry's gen, so its loaded value is no
+// longer current.
 func (c *reqStatCache) invalidate(reqGroup string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -274,11 +279,6 @@ func (db *db) warmReqGroupRecs(jobs []*Job) {
 
 		db.refreshReqGroupRecs(reqGroup)
 	}
-}
-
-// invalidateReqGroupRecs marks reqGroup's entry not current.
-func (db *db) invalidateReqGroupRecs(reqGroup string) {
-	db.reqStats.invalidate(reqGroup)
 }
 
 // loadReqGroupRecs reads reqGroup's learned requirements from the database:

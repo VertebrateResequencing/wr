@@ -318,7 +318,7 @@ func TestNoHoldLearningAfterReady(t *testing.T) {
 			learner := lc.job("learner", jobOverridePreferSystemReqs)
 			lc.add(noStats, learner)
 
-			Convey("(red) a RAC after learning moves the blocked job to the learned 200 and its group, "+
+			Convey("a RAC after learning moves the blocked job to the learned 200 and its group, "+
 				"and a runner of that group then reserves it at 200", func() {
 				regroupedBefore := lc.server.racRegrouped.Load()
 
