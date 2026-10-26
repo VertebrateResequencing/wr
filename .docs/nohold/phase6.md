@@ -2566,8 +2566,188 @@ final code, after items 6.4f and 6.4g, at the full production ramp (about 7
 hours). If the farm gives the two runs different runner counts, judge them at
 matched counts. This item is settled on that rerun.
 
-- [ ] implemented
-- [ ] reviewed
+#### Rerun on the final code (2026-10-26)
+
+Verdict: PASS. Criteria 1, 3 and 4 pass as measured. Criterion 2 fails as
+measured, because LSF again ran fewer of the branch's runners, and passes at
+matched runner counts: the branch did more work per runner than the base in
+every RUN band both soaks reached. Both open items of the first pair are
+gone on the final code. The branch had 54 non-durable hand-outs outside the
+stall against the base's 1,872, and neither tree had a steady burst of them
+or a steady commit of 10s or more.
+
+| | Base | Branch |
+| --- | --- | --- |
+| tree | 6f1b41bb | acdf6134 |
+| run directory | `$G3B/soak-base/run/prodsim-1792999937` | `$G3B/soak-branch/run/prodsim-1793011000` |
+| ran (2026-10-26, UTC) | 07:32 to 10:35 | 10:36 to 13:40 |
+| ports, pprof | 52730 to 52733, 6273 | 52740 to 52743, 6274 |
+| binary sha1 | `bfd44966...` | `1e34b235...` |
+| runs (keys) | 626,238 (611,942) | 505,166 (498,554) |
+| live jobs at the last recovery | 1,361,386 | 1,369,240 |
+| peak RUN, mean RUN, mean PEND | 4,154, 2,013, 1,715 | 3,733, 1,576, 1,945 |
+| stops | 16: 11 crashes (5 injected), 5 clean | 17: 12 crashes (6 injected), 5 clean |
+| injected stall, RUN at its start | 1793003207 to 1793003413, crash at 1793003296, 2,344 | 1793014273 to 1793014480, crash at 1793014363, 3,727 |
+| manager peak RSS, heap in use | 62,337MB, 33,574MB | 61,143MB, 32,569MB |
+| manager start, first and longest | 6.6s, 108.6s | 7.1s, 100.1s |
+| rc0 ends per minute, mean and p50 | 3,342.3, 3,206 | 2,710.7, 2,766 |
+| steady archive p50, p99 | 1.26s, 7.87s | 0.62s, 5.22s |
+
+`$G3B` is `/nfs/hgi/wr/sb10-bigdb/runstate-gate/nohold-g3b`.
+
+Setup. `$G3B/soak-go.sh <base|branch>` is the first pair's `$G3/soak-go.sh`
+with the tree, ports and `SOAK_ROOT` changed, a fresh scratch `GOCACHE`, and
+one addition. The user's `~/.wr_config.yml` changed on 2026-10-23, after the
+first pair, to name farm TLS certs, and `wrdev.sh` refuses those for an
+isolated manager. The first base launch stopped there, before any manager
+started (`soak-base/failed-start1-*`). The launcher now sets an isolated
+`HOME=$G3B/home` with `.ssh` linked in, and pins `GOPATH` and `GOMODCACHE`,
+as `nohold-64f/master.sh` did. Everything else is the same: `HOURS=3`,
+`RESTART_MIN=15` with the same 11 restart kinds, `USE_FUSE=1 FUSE_ON_AT=3
+FUSE_OFF_AT=4 STALL_AFTER_MIN=7 STALL_SECS=180`, the same `RAMP0` and
+`RAMP`, the same injectors, and `FIXTURE=fix120k.db`. Each tree's `run.sh`
+ran from a clean scratch detached worktree of that tree and built its own
+`$SOAK_ROOT/wr`, which nothing replaced during the run. `go version -m`
+shows `vcs.modified=false` for both (`soak-*/*-wr.buildinfo.txt`,
+`*.sha1`). The base ran first, the soaks did not overlap, and all `OS_*`
+variables were unset. `$G3B/analyse.sh` ran the branch tree's tools over each
+soak, with `soakgate.py --source d1`, into `$G3B/analysis/{base,branch}/`.
+The load-matched breakdowns, and the scripts that made them, are in
+`$G3B/analysis/extra/`.
+
+`soakgate.py`, base:
+
+```text
+nondurable source=d1 inside=389 outside=1872 runs=626238 outsidePct=0.2989
+totals ok
+doubles inside=388 outside=0 acknowledged=0
+missing ran=611942 absent=0 excused=271
+peakRUN=4154
+killed portal_dedupe 20261026T084251.1938 outside reserved=1793006655
+```
+
+`soakgate.py`, branch:
+
+```text
+nondurable source=d1 inside=708 outside=54 runs=505166 outsidePct=0.0107
+totals ok
+doubles inside=165 outside=0 acknowledged=0
+missing ran=498554 absent=0 excused=193
+peakRUN=3733
+```
+
+1. No double run or lost job attributable to the change: PASS.
+   - Doubles. Every first run of the base's 388 doubles and the branch's 165
+     started inside the injected stall, before crashon-stall's `kill -9`:
+     base 1793003213 to 1793003297, branch 1793014283 to 1793014326
+     (`doublesrange-*.txt`). `anyway.py` marks each one's reservation as
+     handed out before it was on disk, with its `jstart` rejected as "bad
+     job" or "you must Reserve()" and its `jarchive` as "you must
+     Reserve()" after the restart. None was acknowledged. This is the
+     injectors' D1 exposure, as in the first pair. The branch had fewer
+     doubles at the stall than the base, with more runners running there.
+     The base's one `killed` row is not a double: a clean stop at 1793006683
+     killed its first run between the exit-0 marker and the exit.
+   - Lost jobs. `absent=0` in both. `relburycheck.py` reports problems 0
+     for the base. For the branch it reports 1, `STUCK relb.r2.rel.62` at
+     +180, a false positive of the snapshot timing, as in the first pair.
+     The job's second run started at 11:52:37, and its runner logged the
+     acknowledged exit at 11:52:39, within 1.2s after the +180 snapshot
+     (1793015558.77). At +1500 all 400 r2 jobs were buried, rel jobs had
+     run twice and bur jobs once. The base's relbury-r2 skipped its own
+     crash because crashafter's crash, 1s after the deadline, held the
+     restart lock (`relbury/driver.log`), so that batch still met a crash.
+   - `rundepcheck.py`: base `{'OK': 34, 'CHECK': 4, 'OK-late-add': 2}`,
+     branch `{'OK': 38, 'CHECK': 2}`. Every CHECK is
+     `noend-then-stop-clean`, a run that a scheduled clean stop killed.
+2. Steady ends per minute at least 90% of the base's: FAIL as measured,
+   PASS at matched runner counts. `latency.py` rc0 ends per minute: mean
+   2,710.7 against 3,342.3 (81%), p50 2,766 against 3,206 (86%). Over
+   minutes wholly outside outages, the mean is 3,036.3 against 3,759.2
+   (81%). Mean RUN was 1,576 against 2,013 (78%).
+   - Matched by our LSF RUN in that minute (`throughput-*.txt`), ends per
+     minute per runner, branch against base: 0 to 499 1.39 against 1.20,
+     500 to 999 1.71 against 1.49, 1,000 to 1,499 1.74 against 1.65,
+     1,500 to 1,999 1.79 against 1.71, 2,000 to 2,499 1.85 against 1.63,
+     2,500 to 2,999 1.90 against 1.75, 3,000 to 3,499 1.89 against 1.64,
+     3,500 to 3,999 1.77 against 1.76. The branch is ahead in every band.
+   - wr asked for the runners: mean PEND was higher on the branch (1,945
+     against 1,715), and runners by scheduler group have the same mix
+     (`runnergroups.txt`: 400MB `results_portal` 34,841 against 38,478,
+     1024MB 4,239 against 6,696). LSF's pending reasons differ
+     (`pendreasons-*.txt`). "Affinity ... not enough processor units"
+     appeared in all 90 of the branch's probes, with 114,635 job-probes,
+     against 61 of 91 probes and 23,343 job-probes for the base. The farm
+     had fewer free cores during the branch soak. As in the first pair, the
+     branch ran second under the same user's fair-share.
+3. Steady end-to-acknowledgement p50 and p99 no more than 10% worse: PASS.
+
+   | outcome | base n, p50, p99 | branch n, p50, p99 |
+   | --- | --- | --- |
+   | archive | 520,135, 1.26s, 7.87s | 422,746, 0.62s, 5.22s (-34%) |
+   | release | 5,200, 1.31s, 9.20s | 4,257, 0.65s, 8.13s (-12%) |
+   | bury | 127, 0.95s, 5.40s | 84, 0.38s, 4.30s (-20%) |
+
+   - Matched by RUN, the p50 is lower on the branch in most bands. The p99
+     is mixed (`latbins-*.txt`, `settledbins-*.txt`). Over all steady ends,
+     the branch is better at 0 to 499 and from 2,000 up, and worse at 500
+     to 1,999 (10.33s against 3.14s at 500 to 999), where the minutes after
+     restarts fall. Leaving out the 5 minutes after each start, the branch
+     p99 is equal at 500 to 999 (3.31s against 3.30s), better at 0 to 499,
+     1,500 to 1,999 and from 2,500 up, and worse at 1,000 to 1,499 (3.58s
+     against 2.76s) and 2,000 to 2,499 (5.22s against 4.04s). Overall
+     settled p99 is 4.76s against 5.33s.
+   - The branch had more steady ends acknowledged after more than 30s: 496
+     against 56 (`steadytail-*.txt`). They are host-local. Each minute's
+     long acknowledgements come from one exec host, and 380 of the
+     branch's came from `node-13-24`, against 28 on `node-13-18` and 16 on
+     `node-13-24` in the base. In the worst minute (12:05, 79 ends, up to
+     124s), the manager's archive folds had `maxTx` under 4s and it logged
+     no slow `jarchive`, and the runner logged nothing between starting the
+     command and "command ran OK". The other branch group is the stall
+     itself, at 11:31: 29 releases that ended before the crash and were
+     acknowledged after the restart (the base has the same at 08:26).
+4. Peak RUN against the 5,500 target: reported. The base peaked at 4,154 and
+   the branch at 3,733, both short of the target. The ramp's portal target
+   tops out at 4,000.
+
+The first pair's open items (`openitems-*.txt`, `poststart-d1-*.txt`):
+
+- Non-durable hand-outs outside the stall: branch 54 (0.03% of hand-outs in
+  the 300s after each start), base 1,872 (0.79%). After the restart that
+  followed the stall crash, the branch logged 50 D1 lines for 7,811
+  hand-outs (0.64%, RUN 3,706 at the stop) and the base 1,479 for 15,853
+  (9.33%, RUN 2,654). The first pair had 28.6% on the branch against 3.3%.
+  The rest are the branch's 4 after the 11:58 start and the base's 197 and
+  196 after its 08:56 and 10:20 starts.
+- Steady D1 bursts, the crash-B exposure: none on either tree. With none, no
+  crash could turn one into a double, and no double came outside the stall.
+- Slow commits: archive-fold minutes with `maxTx` of 10s or more number 2 on
+  the base and 1 on the branch, all within 300s of a manager start, and none
+  in steady running on either tree.
+- Server-side slow adds of 10s or more in steady running: branch 15 (max
+  24.5s), base 1 (10.3s). Not a G3 criterion. prodsim's settled portal add
+  calls (`addlat-*.txt`): `add_portal_compress` p50 5.02s against 4.54s
+  (+11%), p90 8.35s against 6.39s, p99 11.79s against 9.79s;
+  `add_portal_dedupe` p50 4.04s against 4.24s, p99 8.51s against 8.51s.
+  This is in line with the add cost the owner accepted in item 6.4g.
+
+Cleanup: no manager, runner, LSF job (`bjobs -w`: "No unfinished job
+found" after each soak), fusestall mount or prodsim of ours was left. After
+the failed first launch, its injector subshell (pid 2725495, verified by
+cmdline) was killed so that it could not attach to the relaunch. The scratch
+worktrees were removed and the scratch `GOCACHE` was emptied with
+`GOCACHE=<dir> go clean -cache`.
+
+Evidence in `$G3B`: `soak-go.sh`, `analyse.sh`, `analysis-*.log`;
+`soak-<tree>/` (`launch.out`, buildinfo, sha1, and `run/` with the output
+directory, `runnerlogs/`, the kept DB in `dbdir/` and the binary);
+`analysis/<tree>/` (soakgate, doubles, anyway, latency, rundepcheck,
+relburycheck, starttimes, runnerlogs, `dbstart.tsv`); `analysis/extra/`
+(scripts and outputs above).
+
+- [x] implemented
+- [x] reviewed
 
 ### Item 6.4b: reservation-write stalls past ReserveWriteWait
 
