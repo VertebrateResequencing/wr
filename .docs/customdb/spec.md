@@ -288,11 +288,31 @@ snapshot being encoded, so for one key a higher seq is a later snapshot.
 Keys are 16 binary bytes (wr's 32-hex md5).
 
 A key has two independent planes, as today's `jobslive` and `jobscomplete`
-buckets: live (spec, state, delete, modify) and history (complete). Replay
-keeps a last-applied seq per key per plane and applies a record only if its
-seq is higher than its plane's. No live record changes history and a
-`complete` record changes no live state, so a key can be complete and live
-at once, as today after a keep-live archive or a put-back.
+buckets: live (spec, state, delete, modify) and history (complete). No live
+record changes history and a `complete` record changes no live state, so a
+key can be complete and live at once, as today after a keep-live archive or
+a put-back.
+
+One reducer applies records in memory (the `done` func), at replay and at
+checkpoint:
+
+- History: a `complete` record applies only if its seq is higher than the
+  key's last applied `complete` seq.
+- A spec record (add, put-back, modify's new key) makes the key live with
+  that spec seq. A delete record, an archive's delete or modify's old key
+  removes the key's live entry, its state and its std.
+- A state or std record applies only if the key is live, its seq is above
+  the key's spec seq and above the last applied seq of its kind (state, or
+  that std stream; a `complete` record on a keep-live key sets the std seq
+  to its own). Else it is ignored, as today's orphan drops are
+  (`beBatch.applyRunStates`, `storeRunningRerunMarks`,
+  `runStateDroppable`). So a best-effort state record or exit block
+  snapshotted before an archive, delete or modify but committed after it
+  never recreates a live entry or std.
+- No tombstone: a re-add's spec seq is taken after the removing block has
+  applied and the item left the queue, so it exceeds every seq snapshotted
+  from the queued job. A snapshot from a stale `*Job` pointer racing both
+  removal and re-add is the window today's key-based live check has too.
 
 | Type | Name | Body |
 | --- | --- | --- |
@@ -382,24 +402,26 @@ at once, as today after a keep-live archive or a put-back.
   `retrieveJobStd` waits for exit updates expected or in flight.
 - In-memory state reflects a record only once its commit succeeds. Every
   append passes a `done` func that, on nil, applies the record to the
-  in-memory state below with the replay reducer (highest seq per key wins,
-  so apply order does not matter); on error it does nothing. So a failed
-  batch leaves no live key, overlay entry, std, env, limit, dep group or
-  Ref behind, and its Refs are never reachable; nothing reads them. A
-  caller that waits sees its record applied when `Wait` returns nil.
+  in-memory state below with the replay reducer (Records: seq rules and
+  orphan drops, so apply order does not matter); on error it does
+  nothing. So a failed batch leaves no live key, overlay entry, std, env,
+  limit, dep group or Ref behind, and its Refs are never reachable;
+  nothing reads them. A caller that waits sees its record applied when
+  `Wait` returns nil.
 - Keys of an add in flight sit in a pending set; a concurrent add that
   meets a pending key waits for that add's commit, then dedups against the
   result.
 
 ### In-memory state of `logStore`
 
-Per live key: last applied seq, Ref of its spec record, Ref of its last state
-record, its rep group, dep groups and reverse dep groups (index membership
-only). Plus: envs (blob by key), limits, dep groups ever seen, std Refs by
-key, learned-requirement samples per req group (sorted slices),
-history key index, history overlay (completions not yet folded: key to spec
-Ref and `complete` record Ref). Live `*Job` values are never held by the
-store; methods that return live jobs decode them through their Refs.
+Per live key: spec seq and last applied state and std seqs, Ref of its
+spec record, Ref of its last state record, its rep group, dep groups and
+reverse dep groups (index membership only). Plus: envs (blob by key),
+limits, dep groups ever seen, std Refs by key, learned-requirement samples
+per req group (sorted slices), history key index (with each key's last
+applied `complete` seq), history overlay (completions not yet folded: key
+to spec Ref and `complete` record Ref). Live `*Job` values are never held
+by the store; methods that return live jobs decode them through their Refs.
 
 ### Recovery
 
@@ -431,7 +453,9 @@ Every `checkpointInterval` (5 min) or `checkpointLogBytes` (256MiB of wal
 since the last), and never sooner after the previous one ended than it took:
 
 1. Rotate the writer; the sealed file number + 1 is the cut `walFrom`.
-2. Wait until the folder's position is at or past the cut.
+2. Wait until the folder's position is at or past the cut. While the
+   folder is failing (Folder and history), this checkpoint is skipped, not
+   waited for; the next interval tries again.
 3. Merge the previous checkpoint with wal files before the cut using the
    recovery reducer, writing `NNNNNNNN.ckpt.tmp`: a header frame (`walFrom`,
    `histFrom` = durable F read at the start of this step, max seq, counts),
@@ -459,7 +483,11 @@ folds into history every `complete` record (with its spec) and rglookup,
 and every new learned-requirement sample, from `complete` and exitstat
 records only (Records). It reads a file followed by another only up
 to the next file's header `prevEnd`, so an abandoned batch is never folded.
-Folding is idempotent and resumable from a log position.
+Folding is idempotent and resumable from a log position. A failed fold
+(read or history commit) is retried from the last durable position with
+the writer's backoff (100ms doubling, capped at `walRetryCap`) and logged
+as `foldFailedLogMsg = "history fold failed"` at error at most once a
+minute with `failures`; it never stops the manager.
 
 - Phase 1: history is `history.bolt` with today's history buckets
   (`jobscomplete`, `repgroupToKey`, `repgroups`, `depgroupToKey`,
@@ -1042,7 +1070,8 @@ runner's `ClaimForReserve` claim stays, as it does today when the queue has
 nothing ready; that runner then exits or reserves again.
 `releaseRunsMovedOnFrom` is not called, as when nothing is ready. The
 minted run token and the item's Reserves count are overwritten by the next
-reserve. On `errDBClosed` it answers with no job and undoes nothing.
+reserve. On `errDBClosed` it answers with no job and undoes nothing, which
+is harmless: the limit usage and the runner's claim die with the manager.
 Today (`serverCLI.go` `persistReservation`) hands the job out on
 `errDBClosed`; answering no job instead is intended: it happens only at
 shutdown, the reservation is not durable so recovery sees the job as
@@ -1151,6 +1180,15 @@ are state records.
    `checkIfLive` and `checkIfComplete` are both true, its live record has
    RerunAfterRun false and ReservedBy zero, and
    `retrieveCompleteJobStatusByRepGroup` counts 0 complete.
+8. Given live jobs k1, k2 and k3, each with a state record and
+   an exit block (std `"o"`/`"e"`) snapshotted but not yet appended (test
+   hook), when k1 is archived, k2 deleted and k3 modified to k4, and only
+   then the held records are appended and committed, then `checkIfLive`
+   is false for k1, k2 and k3, `count(kindLive)` is 1 (k4),
+   `count(kindStdOut)` and `count(kindStdErr)` equal their values before
+   the held appends, `retrieveJobStd(k4)` is unchanged, and re-adding k1
+   with `ignoreAdded` true reports 1 already complete and stores nothing;
+   the same holds after reopen and after a checkpoint then reopen.
 
 ### C5: Recovery
 
@@ -1494,6 +1532,10 @@ new store.
    backup with today's "corrupt (?) db file" messages; with no backup, or
    a backup that fails restore step 2, return the error as today with
    `dbFile` untouched.
+
+Wiping before the S3 missing-file download loses no dev-mode restore:
+today `initDB` downloads first and then wipes both copies, so the wipe
+already makes that download moot.
 
 Restore never touches `dbFile` until the backup is proven good, as today
 (`initDB` opens the backup before replacing):
@@ -1967,7 +2009,8 @@ passing. Work and measurements on NFS go under
 - 0c: A3 (stats). Parallel with 0b.
 - 0d: A4 (crash test against bbolt) and A5 (record/replay). Record a
   prodsim run on develop-equivalent bbolt (keep it on NFS) for Phase 1.
-- Gate: no behaviour change; `make speed` within 10% of `d1a4b6d7`.
+- Gate: no behaviour change; `make speed` (not `make speed-full`, which
+  gates Phases 1 and 2) within 10% of `d1a4b6d7`.
 
 ### Phase 1: live tier on the log, history in bbolt
 
@@ -2067,7 +2110,8 @@ passing. Work and measurements on NFS go under
 - **Error policy.** Durable-write errors reach the caller as today; damage
   at the log's tail (or an abandoned file's) is normal crash recovery,
   damage anywhere else is `errStoreCorrupt` and goes to backup restore; the
-  only retry is the writer opening a new file after a failed batch, with
-  capped backoff, forever; the manager never stops on a write failure.
+  only retries are the writer opening a new file after a failed batch and
+  the folder retrying a fold, both with capped backoff, forever; the
+  manager never stops on a write failure.
 - **Apply on commit.** In-memory state changes only in a commit's `done`
   func, so a failed write leaves nothing to revert.
