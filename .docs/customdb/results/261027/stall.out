@@ -1,0 +1,32 @@
+=== 07:39:01 d2
+preloaded 120000 in 10.187s
+  stall   on at +1m30s for 1m0s
+  stall   off
+RESULT design=wal dir=WORK/fusemnt runners=6000 cmd=10000 nosync=false lease=false runs=25282 runs/s=105.3
+  reserve p50=1.15ms    p99=44.54ms   max=100.51ms  >10s=0.00%
+  start   p50=980µs     p99=75.07ms   max=76.75ms  
+  archive p50=1.29ms    p99=58.399s   max=1m0.116s 
+  add     p50=61.45ms   p99=83.39ms   max=1m0.112s  (n=37)
+  store   batches=65528 syncs=65528 MB=1626.4 meanBatchFlush=1.931ms leases=0
+=== 07:43:12 d6
+preloaded 120000 in 10.348s
+  stall   on at +1m30s for 1m0s
+  stall   off
+RESULT design=wal dir=WORK/fusemnt runners=6000 cmd=10000 nosync=false lease=true runs=25195 runs/s=105.0
+  reserve p50=1µs       p99=44.09ms   max=48.74ms   >10s=0.00%
+  start   p50=1.02ms    p99=2.79ms    max=36.25ms  
+  archive p50=1.16ms    p99=58.21s    max=1m0.126s 
+  add     p50=62.62ms   p99=105.98ms  max=1m0.108s  (n=37)
+  store   batches=18912 syncs=18912 MB=1612.8 meanBatchFlush=4.623ms leases=33000
+=== 07:47:23 d5
+preloaded 120000 in 8.322s
+  stall   on at +1m30s for 1m0s
+  stall   off
+  ship    steady-state maxLagBytes=128635246 maxCopyLag=673ms (+ up to 1s until the replica's fdatasync)
+RESULT design=wal dir=WORK/local runners=6000 cmd=10000 nosync=false lease=false runs=31093 runs/s=129.6
+  reserve p50=883µs     p99=2.01ms    max=40.03ms   >10s=0.00%
+  start   p50=809µs     p99=1.93ms    max=40.86ms  
+  archive p50=1.07ms    p99=2.39ms    max=39.39ms  
+  add     p50=42.01ms   p99=48.69ms   max=54.46ms   (n=48)
+  store   batches=99989 syncs=99989 MB=1742.8 meanBatchFlush=866µs leases=0
+=== done 07:51:32

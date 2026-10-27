@@ -65,7 +65,12 @@ func scanStates(path string, at int, typ byte, keep func(flat.State)) (int64, er
 
 	st, _ := f.Stat()
 
-	end, err := gc.Scan(f, func(_ int64, rec []byte) error {
+	var decompress func(dst, src []byte) ([]byte, error)
+	if BatchCodec != nil {
+		decompress = BatchCodec.Decode
+	}
+
+	end, err := gc.ScanWith(f, decompress, func(_ int64, rec []byte) error {
 		if typ != 0 && rec[0] != typ {
 			return nil
 		}

@@ -1,0 +1,37 @@
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+CRASHTEST design=wal batchcodec=s2 rounds=10 failed=0
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+CRASHTEST design=wal batchcodec=s2 rounds=6 failed=0
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+CRASHTEST design=wal batchcodec=zstd rounds=10 failed=0
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+PASS acked=3000 recovered=3000 lostAcked=0 tornTailBytes=0 truncOrFlipFails=0/20
+CRASHTEST design=wal batchcodec=zstd rounds=6 failed=0
+=== done 08:31:20

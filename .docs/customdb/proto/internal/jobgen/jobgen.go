@@ -14,10 +14,46 @@ import (
 	"github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 )
 
+// Corpus, when set, holds real commands that Job builds commands from, so
+// that they compress as real ones do: job i's command is a unique prefix then
+// a run of corpus commands of its own, joined by " ; " and cut to cmdSize (or
+// just corpus[i] when cmdSize is 0). Runs do not overlap between neighbouring
+// jobs, so a batch compresses no better than its real commands do.
+var Corpus []string //nolint:gochecknoglobals // prototype switch
+
+// corpusStride is how many corpus commands each job's run starts after the
+// previous job's: enough that 10KB runs of commands of at least 1KB do not
+// overlap.
+const corpusStride = 10
+
 // Job returns job i with a command of about cmdSize bytes.
 func Job(i, cmdSize int) *jobqueue.Job {
 	prefix := fmt.Sprintf("portal_dedupe --input /lustre/scratch125/humgen/projects/x/%08d.cram --out ", i)
 	cmd := prefix + strings.Repeat("a", max(cmdSize-len(prefix), 0))
+
+	if len(Corpus) > 0 {
+		var b strings.Builder
+
+		b.WriteString(prefix)
+
+		first := i
+		if cmdSize > 0 {
+			first = i * corpusStride
+		}
+
+		for k := first; k == first || b.Len() < cmdSize; k++ {
+			if k > first {
+				b.WriteString(" ; ")
+			}
+
+			b.WriteString(Corpus[k%len(Corpus)])
+		}
+
+		cmd = b.String()
+		if cmdSize > 0 && len(cmd) > cmdSize {
+			cmd = cmd[:cmdSize]
+		}
+	}
 
 	return &jobqueue.Job{
 		Cmd:          cmd,

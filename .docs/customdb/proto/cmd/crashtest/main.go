@@ -22,6 +22,7 @@ import (
 	"github.com/VertebrateResequencing/wr/customdbproto/internal/flat"
 	"github.com/VertebrateResequencing/wr/customdbproto/internal/jobgen"
 	"github.com/VertebrateResequencing/wr/customdbproto/internal/store"
+	"github.com/VertebrateResequencing/wr/customdbproto/internal/zc"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 )
 
@@ -30,7 +31,17 @@ func main() {
 	dir := flag.String("dir", "", "base directory")
 	iters := flag.Int("iters", 10, "kill/recover rounds")
 	child := flag.Bool("child", false, "internal: be the writer")
+	batchName := flag.String("batchcodec", "none", "batch compression for the log designs: none|s2|zstd")
 	flag.Parse()
+
+	bc, err := zc.New(*batchName, "")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	store.BatchCodec = bc
+	batchCodec = *batchName
 
 	if *child {
 		if err := writer(*design, *dir); err != nil {
@@ -65,15 +76,18 @@ func main() {
 		_ = os.RemoveAll(d)
 	}
 
-	fmt.Printf("CRASHTEST design=%s rounds=%d failed=%d\n", *design, *iters, bad)
+	fmt.Printf("CRASHTEST design=%s batchcodec=%s rounds=%d failed=%d\n", *design, *batchName, *iters, bad)
 }
+
+// batchCodec is passed on to the child writer.
+var batchCodec string //nolint:gochecknoglobals
 
 func round(design, dir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 
-	cmd := exec.Command(os.Args[0], "-child", "-design", design, "-dir", dir) //nolint:gosec
+	cmd := exec.Command(os.Args[0], "-child", "-design", design, "-dir", dir, "-batchcodec", batchCodec) //nolint:gosec
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {

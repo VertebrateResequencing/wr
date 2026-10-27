@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/customdbproto/internal/flat"
 	"github.com/VertebrateResequencing/wr/customdbproto/internal/jobgen"
 	"github.com/VertebrateResequencing/wr/customdbproto/internal/store"
+	"github.com/VertebrateResequencing/wr/customdbproto/internal/zc"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"golang.org/x/sys/unix"
 )
@@ -24,7 +26,32 @@ func main() {
 	n := flag.Int("n", 120000, "live jobs")
 	cmd := flag.Int("cmd", 10000, "command bytes")
 	build := flag.Bool("build", true, "build the store first")
+	codecName := flag.String("codec", "none", "spec compression for the log designs: none|s2|zstd|zstd-dict")
+	batchName := flag.String("batchcodec", "none", "batch compression for the log designs: none|s2|zstd")
+	dictFile := flag.String("dict", "", "zstd-dict's dictionary")
+	corpus := flag.String("corpus", "", "build commands from this corpus of real commands")
+	heap := flag.Bool("heap", false, "keep recovered jobs and report heap per live job")
 	flag.Parse()
+
+	c, err := zc.New(*codecName, *dictFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	store.SpecCodec = c
+
+	if store.BatchCodec, err = zc.New(*batchName, *dictFile); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	if *corpus != "" {
+		if jobgen.Corpus, err = zc.ReadCorpus(*corpus); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
 
 	if *build {
 		if err := buildStore(*design, *dir, *n, *cmd); err != nil {
@@ -53,14 +80,33 @@ func main() {
 				evict(*dir)
 			}
 
+			store.KeepJobs = *heap && temp == "warm"
+			store.Kept = nil
+
+			var before runtime.MemStats
+
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+
 			r, err := store.Recover(m, *dir, true)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
 
-			fmt.Printf("RECOVER design=%s fs=%s n=%d cmd=%d files=%d sizeMB=%.0f %s %s\n",
-				m, filepath.Dir(*dir), *n, *cmd, len(ents), float64(size)/1e6, temp, r)
+			fmt.Printf("RECOVER design=%s fs=%s n=%d cmd=%d codec=%s/%s files=%d sizeMB=%.0f %s %s\n",
+				m, filepath.Dir(*dir), *n, *cmd, *codecName, *batchName, len(ents), float64(size)/1e6, temp, r)
+
+			if store.KeepJobs {
+				var after runtime.MemStats
+
+				runtime.GC()
+				runtime.ReadMemStats(&after)
+				fmt.Printf("HEAP kept=%d heapInuse=%.0fMB perJob=%.0fB\n", len(store.Kept),
+					float64(after.HeapInuse-before.HeapInuse)/1e6,
+					float64(after.HeapInuse-before.HeapInuse)/float64(max(len(store.Kept), 1)))
+				runtime.KeepAlive(store.Kept)
+			}
 		}
 	}
 }

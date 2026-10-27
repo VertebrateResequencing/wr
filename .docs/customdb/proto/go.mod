@@ -5,6 +5,8 @@ go 1.27
 require (
 	github.com/VertebrateResequencing/wr v0.0.0
 	github.com/gofrs/uuid/v5 v5.4.0
+	github.com/klauspost/compress v1.20.0
+	github.com/pierrec/lz4/v4 v4.1.22
 	github.com/ugorji/go/codec v1.3.1
 	go.etcd.io/bbolt v1.4.3
 	golang.org/x/sys v0.48.0
@@ -50,7 +52,6 @@ require (
 	github.com/jinzhu/configor v1.2.2 // indirect
 	github.com/jpillora/backoff v1.0.0 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
-	github.com/klauspost/compress v1.20.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
 	github.com/kr/fs v0.1.0 // indirect

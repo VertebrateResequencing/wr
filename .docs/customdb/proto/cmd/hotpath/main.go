@@ -19,6 +19,7 @@ import (
 	"github.com/VertebrateResequencing/wr/customdbproto/internal/jobgen"
 	"github.com/VertebrateResequencing/wr/customdbproto/internal/stats"
 	"github.com/VertebrateResequencing/wr/customdbproto/internal/store"
+	"github.com/VertebrateResequencing/wr/customdbproto/internal/zc"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/gofrs/uuid/v5"
 	"golang.org/x/sys/unix"
@@ -31,6 +32,8 @@ type cfg struct {
 	secs, ramp           int
 	dmin, dmax, addEvery time.Duration
 	noSync, lease        bool
+	stallCtl, timeline   string
+	stallAt, stallFor    time.Duration
 }
 
 type driver struct {
@@ -48,6 +51,17 @@ type driver struct {
 	add     *stats.Lat
 	over10  atomic.Int64
 	leases  atomic.Int64
+
+	// per-second timeline counters
+	reserves, archives, adds atomic.Int64
+
+	// D6 leases: handed is how many hand-outs were asked for, leased how many
+	// a durable lease covers; a hand-out past leased waits for the leaser.
+	leaseMu sync.Mutex
+	leaseCV *sync.Cond
+	handed  int64
+	leased  int64
+	stopped chan struct{}
 }
 
 func main() {
@@ -67,7 +81,20 @@ func main() {
 	flag.DurationVar(&c.dmax, "dmax", 60*time.Second, "max job run time")
 	flag.BoolVar(&c.noSync, "nosync", false, "write() without fdatasync")
 	flag.BoolVar(&c.lease, "lease", false, "D6: reserve/start not written; one lease write per 1000 reserves")
+	flag.StringVar(&c.stallCtl, "stallctl", "", "fusestall control file to create for the stall")
+	flag.DurationVar(&c.stallAt, "stallat", 60*time.Second, "when the stall starts, after the runners do")
+	flag.DurationVar(&c.stallFor, "stallfor", 30*time.Second, "how long the stall lasts")
+	flag.StringVar(&c.timeline, "timeline", "", "file for per-second counts")
+	codecName := flag.String("codec", "none", "spec compression for the log designs: none|s2|zstd|zstd-dict")
+	batchName := flag.String("batchcodec", "none", "batch compression for the log designs: none|s2|zstd")
+	dictFile := flag.String("dict", "", "zstd-dict's dictionary")
+	corpus := flag.String("corpus", "", "build commands from this corpus of real commands")
 	flag.Parse()
+
+	if err := setup(*codecName, *batchName, *dictFile, *corpus); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	if err := run(c); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -87,6 +114,7 @@ func run(c cfg) error {
 
 	d := &driver{cfg: c, s: s, ready: make(chan int, 4<<20), reserve: stats.New(), start: stats.New(),
 		archive: stats.New(), add: stats.New()}
+	d.leaseCV = sync.NewCond(&d.leaseMu)
 
 	t := time.Now()
 	for d.nextID.Load() < int64(c.preload) {
@@ -99,6 +127,7 @@ func run(c cfg) error {
 	d.add = stats.New()
 
 	stop := make(chan struct{})
+	d.stopped = stop
 
 	var wg sync.WaitGroup
 
@@ -109,6 +138,23 @@ func run(c cfg) error {
 			defer wg.Done()
 			ship(c.dir, c.ship, stop)
 		}()
+	}
+
+	if c.lease {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+			d.leaser(stop)
+		}()
+	}
+
+	if c.stallCtl != "" {
+		go stall(c.stallCtl, c.stallAt, c.stallFor, stop)
+	}
+
+	if c.timeline != "" {
+		go d.writeTimeline(c.timeline, stop)
 	}
 
 	if c.addEvery > 0 {
@@ -137,9 +183,17 @@ func run(c cfg) error {
 	}
 
 	time.Sleep(time.Duration(c.secs) * time.Second)
-	close(stop)
 
 	runs := d.runs.Load()
+
+	close(stop)
+	d.leaseMu.Lock()
+	d.leaseCV.Broadcast()
+	d.leaseMu.Unlock()
+
+	if c.stallCtl != "" {
+		_ = os.Remove(c.stallCtl)
+	}
 
 	wg.Wait()
 
@@ -168,6 +222,7 @@ func (d *driver) addBatch(n int) error {
 	}
 
 	d.add.Add(time.Since(t))
+	d.adds.Add(int64(n))
 
 	d.mu.Lock()
 	d.jobs = append(d.jobs, jobs...)
@@ -237,16 +292,29 @@ func (d *driver) runner(n int, stop chan struct{}) {
 		st.PeakRAM = 1200
 		d.timed(d.archive, store.Archive, &st, j)
 		d.runs.Add(1)
+		d.archives.Add(1)
 	}
 }
 
 func (d *driver) persistReserve(st *flat.State, j *jobqueue.Job) {
+	defer d.reserves.Add(1)
+
 	if d.lease {
-		// D6: the hand-out itself is in memory; one durable lease record covers
-		// the next 1000 hand-outs, written ahead of them.
-		if d.leases.Add(1)%1000 == 1 {
-			d.timed(d.reserve, store.Reserve, st, j)
+		// D6: the hand-out itself is in memory, but only once a durable lease
+		// (written ahead by leaser, 1000 hand-outs at a time) covers it.
+		t := time.Now()
+
+		d.leaseMu.Lock()
+		d.handed++
+		n := d.handed
+		d.leaseCV.Broadcast()
+
+		for n > d.leased && !d.closed() {
+			d.leaseCV.Wait()
 		}
+		d.leaseMu.Unlock()
+
+		d.reserve.Add(time.Since(t))
 
 		return
 	}
@@ -264,6 +332,119 @@ func (d *driver) persistReserve(st *flat.State, j *jobqueue.Job) {
 
 	<-done
 	d.reserve.Add(time.Since(t))
+}
+
+// setup sets the spec codec and the command corpus.
+func setup(codecName, batchName, dictFile, corpus string) error {
+	c, err := zc.New(codecName, dictFile)
+	if err != nil {
+		return err
+	}
+
+	store.SpecCodec = c
+
+	if store.BatchCodec, err = zc.New(batchName, dictFile); err != nil {
+		return err
+	}
+
+	if corpus != "" {
+		jobgen.Corpus, err = zc.ReadCorpus(corpus)
+	}
+
+	return err
+}
+
+func (d *driver) closed() bool {
+	select {
+	case <-d.stopped:
+		return true
+	default:
+		return false
+	}
+}
+
+// leaser keeps a durable lease 1000 hand-outs ahead of those asked for, as D6's
+// manager would, writing one lease record per 1000.
+func (d *driver) leaser(stop chan struct{}) {
+	st := flat.State{State: flat.SReserved}
+
+	for {
+		d.leaseMu.Lock()
+		for d.leased >= d.handed+1000 && !d.closed() {
+			d.leaseCV.Wait()
+		}
+		d.leaseMu.Unlock()
+
+		select {
+		case <-stop:
+			return
+		default:
+		}
+
+		st.Seq++
+		d.timed(d.start, store.Reserve, &st, nil)
+		d.leases.Add(1000)
+
+		d.leaseMu.Lock()
+		d.leased += 1000
+		d.leaseCV.Broadcast()
+		d.leaseMu.Unlock()
+	}
+}
+
+// stall creates ctl, which makes fusestall hold every fsync, at after and
+// removes it for later.
+func stall(ctl string, after, length time.Duration, stop chan struct{}) {
+	select {
+	case <-stop:
+		return
+	case <-time.After(after):
+	}
+
+	f, err := os.Create(ctl)
+	if err != nil {
+		panic(err)
+	}
+
+	f.Close()
+	fmt.Printf("  stall   on at +%s for %s\n", after, length)
+
+	select {
+	case <-stop:
+	case <-time.After(length):
+	}
+
+	_ = os.Remove(ctl)
+	fmt.Printf("  stall   off\n")
+}
+
+// writeTimeline writes, each second, the reserves, archives and added jobs
+// done in that second.
+func (d *driver) writeTimeline(path string, stop chan struct{}) {
+	f, err := os.Create(path)
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+
+	fmt.Fprintln(f, "sec reserves archives addedjobs")
+
+	var lr, la, ld int64
+
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+
+	for i := 1; ; i++ {
+		select {
+		case <-stop:
+			return
+		case <-tick.C:
+		}
+
+		r, a, ad := d.reserves.Load(), d.archives.Load(), d.adds.Load()
+		fmt.Fprintf(f, "%d %d %d %d\n", i, r-lr, a-la, ad-ld)
+		lr, la, ld = r, a, ad
+	}
 }
 
 func gcWaitWithin(done <-chan struct{}, errf func() error, w time.Duration) (bool, error) {

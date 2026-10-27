@@ -1,0 +1,261 @@
+records: live=118213 (113MB) complete=200000 (168MB) big(>4KB)=591 (30MB) bincLive=118213 (187MB); dicts zstd=65539B s2=65539B from 31822 records
+rec    live      none               ratio= 1.00 saved=  0.0% enc=    457ns/rec   2078MB/s dec=   153ns/rec   6200MB/s
+rec    live      snappy             ratio= 2.24 saved= 55.3% enc=   2223ns/rec    427MB/s dec=   334ns/rec   2842MB/s
+rec    live      s2                 ratio= 2.24 saved= 55.4% enc=    978ns/rec    972MB/s dec=   374ns/rec   2544MB/s
+rec    live      s2-better          ratio= 2.26 saved= 55.7% enc=   2698ns/rec    352MB/s dec=   354ns/rec   2685MB/s
+rec    live      s2-dict            ratio= 6.37 saved= 84.3% enc=   1973ns/rec    482MB/s dec=   459ns/rec   2070MB/s
+rec    live      s2-dict-better     ratio= 3.45 saved= 71.0% enc=  11339ns/rec     84MB/s dec=   442ns/rec   2151MB/s
+rec    live      lz4                ratio= 2.20 saved= 54.6% enc=   2134ns/rec    445MB/s dec=   297ns/rec   3203MB/s
+rec    live      flate-1            ratio= 2.56 saved= 61.0% enc=  23709ns/rec     40MB/s dec=  9579ns/rec     99MB/s
+rec    live      zstd-fastest       ratio= 2.56 saved= 61.0% enc=  12428ns/rec     76MB/s dec=  5698ns/rec    167MB/s
+rec    live      zstd-default       ratio= 2.60 saved= 61.5% enc=  13545ns/rec     70MB/s dec=  5524ns/rec    172MB/s
+rec    live      zstd-better        ratio= 2.60 saved= 61.5% enc=  14952ns/rec     64MB/s dec=  5445ns/rec    175MB/s
+rec    live      zstd-best          ratio= 2.63 saved= 61.9% enc=  60070ns/rec     16MB/s dec=  5341ns/rec    178MB/s
+rec    live      zstd-dict-fastest  ratio= 6.47 saved= 84.5% enc=  13788ns/rec     69MB/s dec=  1464ns/rec    649MB/s
+rec    live      zstd-dict-default  ratio= 6.82 saved= 85.3% enc= 108961ns/rec      9MB/s dec=  1271ns/rec    748MB/s
+rec    live      zstd-dict-better   ratio= 7.09 saved= 85.9% enc=  41821ns/rec     23MB/s dec=  1275ns/rec    745MB/s
+rec    complete  none               ratio= 1.00 saved=  0.0% enc=    777ns/rec   1081MB/s dec=   188ns/rec   4463MB/s
+rec    complete  snappy             ratio= 1.73 saved= 42.2% enc=   2724ns/rec    308MB/s dec=   491ns/rec   1709MB/s
+rec    complete  s2                 ratio= 1.72 saved= 41.8% enc=   1467ns/rec    572MB/s dec=   504ns/rec   1666MB/s
+rec    complete  s2-better          ratio= 1.73 saved= 42.3% enc=   3039ns/rec    276MB/s dec=   497ns/rec   1690MB/s
+rec    complete  s2-dict            ratio= 3.51 saved= 71.5% enc=   3017ns/rec    278MB/s dec=   934ns/rec    899MB/s
+rec    complete  s2-dict-better     ratio= 3.99 saved= 74.9% enc=  12524ns/rec     67MB/s dec=   935ns/rec    898MB/s
+rec    complete  lz4                ratio= 1.61 saved= 38.1% enc=   2850ns/rec    295MB/s dec=   404ns/rec   2078MB/s
+rec    complete  flate-1            ratio= 1.87 saved= 46.6% enc=  28352ns/rec     30MB/s dec= 11667ns/rec     72MB/s
+rec    complete  zstd-fastest       ratio= 1.86 saved= 46.4% enc=  15945ns/rec     53MB/s dec=  7136ns/rec    118MB/s
+rec    complete  zstd-default       ratio= 1.90 saved= 47.3% enc=  18359ns/rec     46MB/s dec=  6561ns/rec    128MB/s
+rec    complete  zstd-better        ratio= 1.91 saved= 47.6% enc=  20288ns/rec     41MB/s dec=  6173ns/rec    136MB/s
+rec    complete  zstd-best          ratio= 1.95 saved= 48.6% enc=  79824ns/rec     11MB/s dec=  5832ns/rec    144MB/s
+rec    complete  zstd-dict-fastest  ratio= 3.51 saved= 71.5% enc=  19605ns/rec     43MB/s dec=  2978ns/rec    282MB/s
+rec    complete  zstd-dict-default  ratio= 3.69 saved= 72.9% enc= 105057ns/rec      8MB/s dec=  2390ns/rec    351MB/s
+rec    complete  zstd-dict-better   ratio= 3.84 saved= 74.0% enc=  60716ns/rec     14MB/s dec=  2284ns/rec    368MB/s
+rec    big       none               ratio= 1.00 saved=  0.0% enc=  18451ns/rec   2759MB/s dec=  6737ns/rec   7556MB/s
+rec    big       snappy             ratio=10.87 saved= 90.8% enc=  61140ns/rec    833MB/s dec= 14488ns/rec   3513MB/s
+rec    big       s2                 ratio=12.02 saved= 91.7% enc=  21153ns/rec   2406MB/s dec= 15403ns/rec   3305MB/s
+rec    big       s2-better          ratio=11.99 saved= 91.7% enc=  75258ns/rec    676MB/s dec= 15688ns/rec   3245MB/s
+rec    big       s2-dict            ratio=12.84 saved= 92.2% enc=  24034ns/rec   2118MB/s dec= 14362ns/rec   3544MB/s
+rec    big       s2-dict-better     ratio= 1.58 saved= 36.6% enc=  60755ns/rec    838MB/s dec= 10654ns/rec   4778MB/s
+rec    big       lz4                ratio=15.08 saved= 93.4% enc=  37722ns/rec   1349MB/s dec= 10398ns/rec   4895MB/s
+rec    big       flate-1            ratio=22.93 saved= 95.6% enc=  71625ns/rec    711MB/s dec= 40741ns/rec   1249MB/s
+rec    big       zstd-fastest       ratio=26.60 saved= 96.2% enc=  64049ns/rec    795MB/s dec= 26421ns/rec   1927MB/s
+rec    big       zstd-default       ratio=26.06 saved= 96.2% enc=  72805ns/rec    699MB/s dec= 25144ns/rec   2024MB/s
+rec    big       zstd-better        ratio=26.81 saved= 96.3% enc= 141472ns/rec    360MB/s dec= 24848ns/rec   2049MB/s
+rec    big       zstd-best          ratio=27.79 saved= 96.4% enc= 499843ns/rec    102MB/s dec= 24775ns/rec   2055MB/s
+rec    big       zstd-dict-fastest  ratio=30.14 saved= 96.7% enc=  71577ns/rec    711MB/s dec= 34391ns/rec   1480MB/s
+rec    big       zstd-dict-default  ratio=30.12 saved= 96.7% enc= 173230ns/rec    294MB/s dec= 32961ns/rec   1544MB/s
+rec    big       zstd-dict-better   ratio=30.92 saved= 96.8% enc= 297280ns/rec    171MB/s dec= 34888ns/rec   1459MB/s
+rec    bincLive  none               ratio= 1.00 saved=  0.0% enc=    852ns/rec   1855MB/s dec=   288ns/rec   5481MB/s
+rec    bincLive  snappy             ratio= 1.60 saved= 37.6% enc=   4548ns/rec    347MB/s dec=   680ns/rec   2322MB/s
+rec    bincLive  s2                 ratio= 1.61 saved= 37.8% enc=   1967ns/rec    803MB/s dec=   618ns/rec   2558MB/s
+rec    bincLive  s2-better          ratio= 1.61 saved= 37.8% enc=   4594ns/rec    344MB/s dec=   659ns/rec   2396MB/s
+rec    bincLive  s2-dict            ratio= 2.07 saved= 51.6% enc=   3612ns/rec    437MB/s dec=   643ns/rec   2455MB/s
+rec    bincLive  s2-dict-better     ratio= 1.86 saved= 46.2% enc=  15008ns/rec    105MB/s dec=  1047ns/rec   1509MB/s
+rec    bincLive  lz4                ratio= 1.54 saved= 35.2% enc=   4145ns/rec    381MB/s dec=   389ns/rec   4064MB/s
+rec    bincLive  flate-1            ratio= 1.96 saved= 48.9% enc=  28673ns/rec     55MB/s dec= 12038ns/rec    131MB/s
+rec    bincLive  zstd-fastest       ratio= 1.94 saved= 48.4% enc=  15527ns/rec    102MB/s dec=  6302ns/rec    251MB/s
+rec    bincLive  zstd-default       ratio= 1.97 saved= 49.4% enc=  18398ns/rec     86MB/s dec=  6622ns/rec    239MB/s
+rec    bincLive  zstd-better        ratio= 1.98 saved= 49.4% enc=  21461ns/rec     74MB/s dec=  6343ns/rec    249MB/s
+rec    bincLive  zstd-best          ratio= 2.00 saved= 50.1% enc=  87190ns/rec     18MB/s dec=  7084ns/rec    223MB/s
+rec    bincLive  zstd-dict-fastest  ratio= 2.56 saved= 60.9% enc=  25671ns/rec     62MB/s dec=  6752ns/rec    234MB/s
+rec    bincLive  zstd-dict-default  ratio= 2.59 saved= 61.4% enc= 109621ns/rec     14MB/s dec=  6319ns/rec    250MB/s
+rec    bincLive  zstd-dict-better   ratio= 2.62 saved= 61.8% enc= 109862ns/rec     14MB/s dec=  6339ns/rec    249MB/s
+b64    live      none               ratio= 1.00 saved=  0.0% enc=    405ns/rec   2345MB/s dec=   111ns/rec   8567MB/s
+b64    live      snappy             ratio= 9.78 saved= 89.8% enc=    974ns/rec    976MB/s dec=   280ns/rec   3396MB/s
+b64    live      s2                 ratio=11.99 saved= 91.7% enc=    412ns/rec   2308MB/s dec=   281ns/rec   3386MB/s
+b64    live      s2-better          ratio=12.14 saved= 91.8% enc=   1055ns/rec    900MB/s dec=   287ns/rec   3311MB/s
+b64    live      s2-dict            ratio=12.72 saved= 92.1% enc=    494ns/rec   1925MB/s dec=   250ns/rec   3797MB/s
+b64    live      s2-dict-better     ratio= 3.76 saved= 73.4% enc=   1274ns/rec    746MB/s dec=   250ns/rec   3803MB/s
+b64    live      lz4                ratio=13.29 saved= 92.5% enc=    730ns/rec   1302MB/s dec=   162ns/rec   5852MB/s
+b64    live      flate-1            ratio=15.38 saved= 93.5% enc=   1923ns/rec    494MB/s dec=   913ns/rec   1042MB/s
+b64    live      zstd-fastest       ratio=17.63 saved= 94.3% enc=   1298ns/rec    732MB/s dec=   372ns/rec   2556MB/s
+b64    live      zstd-default       ratio=17.66 saved= 94.3% enc=   1517ns/rec    627MB/s dec=   343ns/rec   2772MB/s
+b64    live      zstd-better        ratio=18.09 saved= 94.5% enc=   2875ns/rec    331MB/s dec=   351ns/rec   2711MB/s
+b64    live      zstd-best          ratio=18.52 saved= 94.6% enc=  11839ns/rec     80MB/s dec=   328ns/rec   2902MB/s
+b64    live      zstd-dict-fastest  ratio=19.12 saved= 94.8% enc=   1559ns/rec    610MB/s dec=   559ns/rec   1700MB/s
+b64    live      zstd-dict-default  ratio=19.67 saved= 94.9% enc=   3328ns/rec    286MB/s dec=   507ns/rec   1873MB/s
+b64    live      zstd-dict-better   ratio=20.25 saved= 95.1% enc=   6713ns/rec    142MB/s dec=   485ns/rec   1962MB/s
+b64    complete  none               ratio= 1.00 saved=  0.0% enc=    429ns/rec   1956MB/s dec=   108ns/rec   7769MB/s
+b64    complete  snappy             ratio= 4.03 saved= 75.2% enc=   1958ns/rec    429MB/s dec=   521ns/rec   1612MB/s
+b64    complete  s2                 ratio= 4.02 saved= 75.1% enc=   1077ns/rec    780MB/s dec=   499ns/rec   1683MB/s
+b64    complete  s2-better          ratio= 4.18 saved= 76.1% enc=   2104ns/rec    399MB/s dec=   538ns/rec   1559MB/s
+b64    complete  s2-dict            ratio= 5.08 saved= 80.3% enc=   1362ns/rec    616MB/s dec=   686ns/rec   1224MB/s
+b64    complete  s2-dict-better     ratio= 5.39 saved= 81.5% enc=   2592ns/rec    324MB/s dec=   711ns/rec   1180MB/s
+b64    complete  lz4                ratio= 3.95 saved= 74.7% enc=   1927ns/rec    436MB/s dec=   357ns/rec   2350MB/s
+b64    complete  flate-1            ratio= 4.40 saved= 77.3% enc=   3779ns/rec    222MB/s dec=  2518ns/rec    333MB/s
+b64    complete  zstd-fastest       ratio= 5.07 saved= 80.3% enc=   2800ns/rec    300MB/s dec=  1012ns/rec    830MB/s
+b64    complete  zstd-default       ratio= 5.19 saved= 80.7% enc=   3536ns/rec    237MB/s dec=  1009ns/rec    832MB/s
+b64    complete  zstd-better        ratio= 5.35 saved= 81.3% enc=   5184ns/rec    162MB/s dec=   945ns/rec    888MB/s
+b64    complete  zstd-best          ratio= 5.50 saved= 81.8% enc=  24246ns/rec     35MB/s dec=   988ns/rec    849MB/s
+b64    complete  zstd-dict-fastest  ratio= 6.29 saved= 84.1% enc=   2999ns/rec    280MB/s dec=  1336ns/rec    628MB/s
+b64    complete  zstd-dict-default  ratio= 6.48 saved= 84.6% enc=   5580ns/rec    150MB/s dec=  1169ns/rec    718MB/s
+b64    complete  zstd-dict-better   ratio= 6.94 saved= 85.6% enc=  10590ns/rec     79MB/s dec=  1050ns/rec    799MB/s
+b64    big       none               ratio= 1.00 saved=  0.0% enc=  25070ns/rec   2030MB/s dec= 14664ns/rec   3471MB/s
+b64    big       snappy             ratio=11.39 saved= 91.2% enc=  51093ns/rec    996MB/s dec= 16785ns/rec   3033MB/s
+b64    big       s2                 ratio=12.80 saved= 92.2% enc=  28978ns/rec   1757MB/s dec= 16958ns/rec   3002MB/s
+b64    big       s2-better          ratio=12.85 saved= 92.2% enc=  51045ns/rec    997MB/s dec= 17240ns/rec   2953MB/s
+b64    big       s2-dict            ratio=12.82 saved= 92.2% enc=  31115ns/rec   1636MB/s dec= 17717ns/rec   2873MB/s
+b64    big       s2-dict-better     ratio= 1.00 saved=  0.2% enc=  21616ns/rec   2355MB/s dec= 15363ns/rec   3313MB/s
+b64    big       lz4                ratio=16.70 saved= 94.0% enc=  44724ns/rec   1138MB/s dec= 10457ns/rec   4868MB/s
+b64    big       flate-1            ratio=25.78 saved= 96.1% enc=  55188ns/rec    922MB/s dec= 44482ns/rec   1144MB/s
+b64    big       zstd-fastest       ratio=30.56 saved= 96.7% enc=  60522ns/rec    841MB/s dec= 25806ns/rec   1972MB/s
+b64    big       zstd-default       ratio=29.16 saved= 96.6% enc=  71474ns/rec    712MB/s dec= 24659ns/rec   2064MB/s
+b64    big       zstd-better        ratio=32.03 saved= 96.9% enc= 150046ns/rec    339MB/s dec= 23616ns/rec   2155MB/s
+b64    big       zstd-best          ratio=33.90 saved= 97.1% enc= 475260ns/rec    107MB/s dec= 22518ns/rec   2261MB/s
+b64    big       zstd-dict-fastest  ratio=30.42 saved= 96.7% enc=  73221ns/rec    695MB/s dec= 37052ns/rec   1374MB/s
+b64    big       zstd-dict-default  ratio=29.23 saved= 96.6% enc=  73676ns/rec    691MB/s dec= 35628ns/rec   1429MB/s
+b64    big       zstd-dict-better   ratio=30.22 saved= 96.7% enc= 172445ns/rec    295MB/s dec= 35661ns/rec   1427MB/s
+b64    bincLive  none               ratio= 1.00 saved=  0.0% enc=   1462ns/rec   1080MB/s dec=   227ns/rec   6954MB/s
+b64    bincLive  snappy             ratio=12.85 saved= 92.2% enc=   1681ns/rec    940MB/s dec=   436ns/rec   3627MB/s
+b64    bincLive  s2                 ratio=20.93 saved= 95.2% enc=    552ns/rec   2860MB/s dec=   394ns/rec   4014MB/s
+b64    bincLive  s2-better          ratio=21.30 saved= 95.3% enc=   1684ns/rec    938MB/s dec=   390ns/rec   4051MB/s
+b64    bincLive  s2-dict            ratio=22.33 saved= 95.5% enc=    604ns/rec   2616MB/s dec=   288ns/rec   5479MB/s
+b64    bincLive  s2-dict-better     ratio= 2.67 saved= 62.5% enc=   1531ns/rec   1032MB/s dec=   275ns/rec   5735MB/s
+b64    bincLive  lz4                ratio=22.67 saved= 95.6% enc=    931ns/rec   1696MB/s dec=   191ns/rec   8255MB/s
+b64    bincLive  flate-1            ratio=23.83 saved= 95.8% enc=   2060ns/rec    767MB/s dec=  1107ns/rec   1427MB/s
+b64    bincLive  zstd-fastest       ratio=32.89 saved= 97.0% enc=   1537ns/rec   1028MB/s dec=   522ns/rec   3027MB/s
+b64    bincLive  zstd-default       ratio=33.78 saved= 97.0% enc=   1496ns/rec   1056MB/s dec=   469ns/rec   3369MB/s
+b64    bincLive  zstd-better        ratio=35.83 saved= 97.2% enc=   3721ns/rec    424MB/s dec=   472ns/rec   3349MB/s
+b64    bincLive  zstd-best          ratio=37.16 saved= 97.3% enc=  12434ns/rec    127MB/s dec=   430ns/rec   3677MB/s
+b64    bincLive  zstd-dict-fastest  ratio=34.60 saved= 97.1% enc=   1674ns/rec    944MB/s dec=   710ns/rec   2223MB/s
+b64    bincLive  zstd-dict-default  ratio=36.75 saved= 97.3% enc=   3269ns/rec    483MB/s dec=   668ns/rec   2364MB/s
+b64    bincLive  zstd-dict-better   ratio=39.25 saved= 97.5% enc=   7927ns/rec    199MB/s dec=   627ns/rec   2519MB/s
+b1000  live      none               ratio= 1.00 saved=  0.0% enc=    370ns/rec   2567MB/s dec=   201ns/rec   4718MB/s
+b1000  live      snappy             ratio=10.41 saved= 90.4% enc=    867ns/rec   1096MB/s dec=   281ns/rec   3386MB/s
+b1000  live      s2                 ratio=13.31 saved= 92.5% enc=    385ns/rec   2471MB/s dec=   277ns/rec   3435MB/s
+b1000  live      s2-better          ratio=13.46 saved= 92.6% enc=    876ns/rec   1085MB/s dec=   280ns/rec   3400MB/s
+b1000  live      s2-dict            ratio=13.36 saved= 92.5% enc=    433ns/rec   2193MB/s dec=   255ns/rec   3721MB/s
+b1000  live      s2-dict-better     ratio= 1.08 saved=  7.6% enc=    411ns/rec   2312MB/s dec=   203ns/rec   4690MB/s
+b1000  live      lz4                ratio=15.20 saved= 93.4% enc=    768ns/rec   1238MB/s dec=   160ns/rec   5922MB/s
+b1000  live      flate-1            ratio=17.20 saved= 94.2% enc=   1591ns/rec    597MB/s dec=   803ns/rec   1184MB/s
+b1000  live      zstd-fastest       ratio=21.66 saved= 95.4% enc=   1270ns/rec    748MB/s dec=   294ns/rec   3232MB/s
+b1000  live      zstd-default       ratio=21.43 saved= 95.3% enc=   1355ns/rec    701MB/s dec=   267ns/rec   3564MB/s
+b1000  live      zstd-better        ratio=21.92 saved= 95.4% enc=   2731ns/rec    348MB/s dec=   269ns/rec   3533MB/s
+b1000  live      zstd-best          ratio=22.64 saved= 95.6% enc=  10442ns/rec     91MB/s dec=   260ns/rec   3659MB/s
+b1000  live      zstd-dict-fastest  ratio=21.66 saved= 95.4% enc=   1218ns/rec    780MB/s dec=   410ns/rec   2318MB/s
+b1000  live      zstd-dict-default  ratio=21.61 saved= 95.4% enc=   1608ns/rec    591MB/s dec=   387ns/rec   2455MB/s
+b1000  live      zstd-dict-better   ratio=22.08 saved= 95.5% enc=   3394ns/rec    280MB/s dec=   422ns/rec   2251MB/s
+b1000  complete  none               ratio= 1.00 saved=  0.0% enc=    439ns/rec   1913MB/s dec=   104ns/rec   8060MB/s
+b1000  complete  snappy             ratio= 5.77 saved= 82.7% enc=   1407ns/rec    597MB/s dec=   389ns/rec   2159MB/s
+b1000  complete  s2                 ratio= 6.11 saved= 83.6% enc=    754ns/rec   1114MB/s dec=   382ns/rec   2200MB/s
+b1000  complete  s2-better          ratio= 6.37 saved= 84.3% enc=   1373ns/rec    611MB/s dec=   383ns/rec   2192MB/s
+b1000  complete  s2-dict            ratio= 6.20 saved= 83.9% enc=    838ns/rec   1002MB/s dec=   428ns/rec   1962MB/s
+b1000  complete  s2-dict-better     ratio= 1.16 saved= 13.8% enc=    560ns/rec   1498MB/s dec=   179ns/rec   4693MB/s
+b1000  complete  lz4                ratio= 5.13 saved= 80.5% enc=   1755ns/rec    478MB/s dec=   292ns/rec   2875MB/s
+b1000  complete  flate-1            ratio= 4.88 saved= 79.5% enc=   2603ns/rec    323MB/s dec=  2135ns/rec    393MB/s
+b1000  complete  zstd-fastest       ratio= 8.21 saved= 87.8% enc=   2002ns/rec    419MB/s dec=   420ns/rec   1999MB/s
+b1000  complete  zstd-default       ratio= 8.44 saved= 88.2% enc=   2536ns/rec    331MB/s dec=   425ns/rec   1974MB/s
+b1000  complete  zstd-better        ratio= 8.87 saved= 88.7% enc=   3578ns/rec    235MB/s dec=   380ns/rec   2211MB/s
+b1000  complete  zstd-best          ratio= 9.16 saved= 89.1% enc=  18820ns/rec     45MB/s dec=   373ns/rec   2250MB/s
+b1000  complete  zstd-dict-fastest  ratio= 8.50 saved= 88.2% enc=   1975ns/rec    425MB/s dec=   718ns/rec   1169MB/s
+b1000  complete  zstd-dict-default  ratio= 8.81 saved= 88.7% enc=   2747ns/rec    306MB/s dec=   681ns/rec   1232MB/s
+b1000  complete  zstd-dict-better   ratio= 9.34 saved= 89.3% enc=   4578ns/rec    183MB/s dec=   604ns/rec   1390MB/s
+b1000  big       none               ratio= 1.00 saved=  0.0% enc=  33148ns/rec   1536MB/s dec= 20576ns/rec   2474MB/s
+b1000  big       snappy             ratio=11.49 saved= 91.3% enc=  55355ns/rec    920MB/s dec= 24596ns/rec   2070MB/s
+b1000  big       s2                 ratio=14.16 saved= 92.9% enc=  25736ns/rec   1978MB/s dec= 53628ns/rec    949MB/s
+b1000  big       s2-better          ratio=15.04 saved= 93.4% enc=  48353ns/rec   1053MB/s dec= 53317ns/rec    955MB/s
+b1000  big       s2-dict            ratio=14.15 saved= 92.9% enc=  29040ns/rec   1753MB/s dec= 51297ns/rec    992MB/s
+b1000  big       s2-dict-better     ratio= 1.00 saved= -0.0% enc=  87182ns/rec    584MB/s dec= 19904ns/rec   2557MB/s
+b1000  big       lz4                ratio=16.73 saved= 94.0% enc=  37765ns/rec   1348MB/s dec= 46158ns/rec   1103MB/s
+b1000  big       flate-1            ratio=25.80 saved= 96.1% enc=  55044ns/rec    925MB/s dec=132919ns/rec    383MB/s
+b1000  big       zstd-fastest       ratio=30.34 saved= 96.7% enc=  69997ns/rec    727MB/s dec= 62252ns/rec    818MB/s
+b1000  big       zstd-default       ratio=30.35 saved= 96.7% enc=  80832ns/rec    630MB/s dec= 58898ns/rec    864MB/s
+b1000  big       zstd-better        ratio=33.53 saved= 97.0% enc= 159190ns/rec    320MB/s dec= 60283ns/rec    844MB/s
+b1000  big       zstd-best          ratio=36.51 saved= 97.3% enc= 468846ns/rec    109MB/s dec= 62455ns/rec    815MB/s
+b1000  big       zstd-dict-fastest  ratio=30.33 saved= 96.7% enc= 414609ns/rec    123MB/s dec= 59489ns/rec    856MB/s
+b1000  big       zstd-dict-default  ratio=30.41 saved= 96.7% enc= 724219ns/rec     70MB/s dec= 65179ns/rec    781MB/s
+b1000  big       zstd-dict-better   ratio=31.37 saved= 96.8% enc= 849333ns/rec     60MB/s dec= 60390ns/rec    843MB/s
+b1000  bincLive  none               ratio= 1.00 saved=  0.0% enc=    797ns/rec   1983MB/s dec=   425ns/rec   3714MB/s
+b1000  bincLive  snappy             ratio=14.39 saved= 93.0% enc=   1468ns/rec   1076MB/s dec=   444ns/rec   3560MB/s
+b1000  bincLive  s2                 ratio=26.94 saved= 96.3% enc=    499ns/rec   3164MB/s dec=   379ns/rec   4171MB/s
+b1000  bincLive  s2-better          ratio=27.31 saved= 96.3% enc=   1432ns/rec   1103MB/s dec=   382ns/rec   4131MB/s
+b1000  bincLive  s2-dict            ratio=27.08 saved= 96.3% enc=    564ns/rec   2800MB/s dec=   266ns/rec   5933MB/s
+b1000  bincLive  s2-dict-better     ratio= 1.04 saved=  3.6% enc=    598ns/rec   2642MB/s dec=   384ns/rec   4112MB/s
+b1000  bincLive  lz4                ratio=28.88 saved= 96.5% enc=    976ns/rec   1618MB/s dec=   199ns/rec   7925MB/s
+b1000  bincLive  flate-1            ratio=28.51 saved= 96.5% enc=   1831ns/rec    862MB/s dec=  1045ns/rec   1511MB/s
+b1000  bincLive  zstd-fastest       ratio=49.69 saved= 98.0% enc=   1355ns/rec   1166MB/s dec=   471ns/rec   3354MB/s
+b1000  bincLive  zstd-default       ratio=50.87 saved= 98.0% enc=   1386ns/rec   1139MB/s dec=   410ns/rec   3849MB/s
+b1000  bincLive  zstd-better        ratio=57.19 saved= 98.3% enc=   3879ns/rec    407MB/s dec=   392ns/rec   4033MB/s
+b1000  bincLive  zstd-best          ratio=61.10 saved= 98.4% enc=  12278ns/rec    129MB/s dec=   350ns/rec   4509MB/s
+b1000  bincLive  zstd-dict-fastest  ratio=49.07 saved= 98.0% enc=   1367ns/rec   1156MB/s dec=   679ns/rec   2326MB/s
+b1000  bincLive  zstd-dict-default  ratio=51.23 saved= 98.0% enc=   1473ns/rec   1072MB/s dec=   530ns/rec   2982MB/s
+b1000  bincLive  zstd-dict-better   ratio=56.61 saved= 98.2% enc=   4683ns/rec    337MB/s dec=   529ns/rec   2986MB/s
+blk64k live      none               ratio= 1.00 saved=  0.0% enc=    324ns/rec   2936MB/s dec=   109ns/rec   8753MB/s
+blk64k live      snappy             ratio=10.02 saved= 90.0% enc=   1048ns/rec    907MB/s dec=   280ns/rec   3399MB/s
+blk64k live      s2                 ratio=12.37 saved= 91.9% enc=    447ns/rec   2127MB/s dec=   277ns/rec   3434MB/s
+blk64k live      s2-better          ratio=12.52 saved= 92.0% enc=   1055ns/rec    901MB/s dec=   274ns/rec   3470MB/s
+blk64k live      lz4                ratio=13.85 saved= 92.8% enc=    755ns/rec   1258MB/s dec=   160ns/rec   5926MB/s
+blk64k live      flate-1            ratio=15.87 saved= 93.7% enc=   1770ns/rec    537MB/s dec=   852ns/rec   1116MB/s
+blk64k live      zstd-fastest       ratio=18.59 saved= 94.6% enc=   1245ns/rec    764MB/s dec=   334ns/rec   2847MB/s
+blk64k live      zstd-default       ratio=18.63 saved= 94.6% enc=   1403ns/rec    678MB/s dec=   312ns/rec   3047MB/s
+blk64k live      zstd-better        ratio=19.08 saved= 94.8% enc=   2667ns/rec    356MB/s dec=   316ns/rec   3004MB/s
+blk64k live      zstd-best          ratio=19.50 saved= 94.9% enc=  10481ns/rec     91MB/s dec=   301ns/rec   3155MB/s
+blk64k complete  none               ratio= 1.00 saved=  0.0% enc=    231ns/rec   3636MB/s dec=    90ns/rec   9379MB/s
+blk64k complete  snappy             ratio= 4.21 saved= 76.3% enc=   1988ns/rec    422MB/s dec=   518ns/rec   1620MB/s
+blk64k complete  s2                 ratio= 4.22 saved= 76.3% enc=   1061ns/rec    791MB/s dec=   478ns/rec   1757MB/s
+blk64k complete  s2-better          ratio= 4.39 saved= 77.2% enc=   2122ns/rec    396MB/s dec=   507ns/rec   1657MB/s
+blk64k complete  lz4                ratio= 4.16 saved= 76.0% enc=   1825ns/rec    460MB/s dec=   335ns/rec   2504MB/s
+blk64k complete  flate-1            ratio= 4.48 saved= 77.7% enc=   3647ns/rec    230MB/s dec=  2419ns/rec    347MB/s
+blk64k complete  zstd-fastest       ratio= 5.33 saved= 81.2% enc=   2914ns/rec    288MB/s dec=   927ns/rec    906MB/s
+blk64k complete  zstd-default       ratio= 5.45 saved= 81.7% enc=   3392ns/rec    247MB/s dec=   927ns/rec    905MB/s
+blk64k complete  zstd-better        ratio= 5.63 saved= 82.3% enc=   4976ns/rec    169MB/s dec=   880ns/rec    954MB/s
+blk64k complete  zstd-best          ratio= 5.79 saved= 82.7% enc=  22222ns/rec     38MB/s dec=   883ns/rec    951MB/s
+blk64k big       none               ratio= 1.00 saved=  0.0% enc=  15831ns/rec   3215MB/s dec=  7393ns/rec   6885MB/s
+blk64k big       snappy             ratio=11.52 saved= 91.3% enc=  41135ns/rec   1237MB/s dec= 14138ns/rec   3600MB/s
+blk64k big       s2                 ratio=12.84 saved= 92.2% enc=  19262ns/rec   2643MB/s dec= 15079ns/rec   3376MB/s
+blk64k big       s2-better          ratio=12.81 saved= 92.2% enc=  41992ns/rec   1212MB/s dec= 14901ns/rec   3416MB/s
+blk64k big       lz4                ratio=16.42 saved= 93.9% enc=  36446ns/rec   1397MB/s dec=  8655ns/rec   5881MB/s
+blk64k big       flate-1            ratio=25.26 saved= 96.0% enc=  56224ns/rec    905MB/s dec= 34197ns/rec   1488MB/s
+blk64k big       zstd-fastest       ratio=30.83 saved= 96.8% enc=  54684ns/rec    931MB/s dec= 19278ns/rec   2640MB/s
+blk64k big       zstd-default       ratio=29.82 saved= 96.6% enc=  62427ns/rec    815MB/s dec= 18227ns/rec   2793MB/s
+blk64k big       zstd-better        ratio=31.30 saved= 96.8% enc= 133817ns/rec    380MB/s dec= 17237ns/rec   2953MB/s
+blk64k big       zstd-best          ratio=32.70 saved= 96.9% enc= 464512ns/rec    110MB/s dec= 17306ns/rec   2941MB/s
+blk64k bincLive  none               ratio= 1.00 saved=  0.0% enc=    601ns/rec   2630MB/s dec=   188ns/rec   8395MB/s
+blk64k bincLive  snappy             ratio=12.30 saved= 91.9% enc=   1728ns/rec    914MB/s dec=   421ns/rec   3753MB/s
+blk64k bincLive  s2                 ratio=19.31 saved= 94.8% enc=    511ns/rec   3091MB/s dec=   368ns/rec   4295MB/s
+blk64k bincLive  s2-better          ratio=19.69 saved= 94.9% enc=   1703ns/rec    927MB/s dec=   383ns/rec   4129MB/s
+blk64k bincLive  lz4                ratio=21.06 saved= 95.3% enc=    922ns/rec   1714MB/s dec=   188ns/rec   8388MB/s
+blk64k bincLive  flate-1            ratio=22.17 saved= 95.5% enc=   2093ns/rec    755MB/s dec=  1117ns/rec   1414MB/s
+blk64k bincLive  zstd-fastest       ratio=29.57 saved= 96.6% enc=   1500ns/rec   1053MB/s dec=   506ns/rec   3122MB/s
+blk64k bincLive  zstd-default       ratio=29.99 saved= 96.7% enc=   1567ns/rec   1008MB/s dec=   488ns/rec   3239MB/s
+blk64k bincLive  zstd-better        ratio=31.57 saved= 96.8% enc=   3866ns/rec    409MB/s dec=   464ns/rec   3406MB/s
+blk64k bincLive  zstd-best          ratio=32.72 saved= 96.9% enc=  13039ns/rec    121MB/s dec=   470ns/rec   3364MB/s
+blk1m  live      none               ratio= 1.00 saved=  0.0% enc=    483ns/rec   1966MB/s dec=   237ns/rec   4018MB/s
+blk1m  live      snappy             ratio=10.41 saved= 90.4% enc=    884ns/rec   1075MB/s dec=   282ns/rec   3374MB/s
+blk1m  live      s2                 ratio=13.32 saved= 92.5% enc=    384ns/rec   2472MB/s dec=   278ns/rec   3423MB/s
+blk1m  live      s2-better          ratio=13.46 saved= 92.6% enc=    902ns/rec   1054MB/s dec=   284ns/rec   3345MB/s
+blk1m  live      lz4                ratio=15.23 saved= 93.4% enc=    767ns/rec   1240MB/s dec=   171ns/rec   5543MB/s
+blk1m  live      flate-1            ratio=17.23 saved= 94.2% enc=   1558ns/rec    610MB/s dec=   837ns/rec   1135MB/s
+blk1m  live      zstd-fastest       ratio=21.69 saved= 95.4% enc=   1247ns/rec    762MB/s dec=   304ns/rec   3130MB/s
+blk1m  live      zstd-default       ratio=21.49 saved= 95.3% enc=   1370ns/rec    694MB/s dec=   280ns/rec   3389MB/s
+blk1m  live      zstd-better        ratio=21.99 saved= 95.5% enc=   2761ns/rec    344MB/s dec=   278ns/rec   3418MB/s
+blk1m  live      zstd-best          ratio=22.72 saved= 95.6% enc=   9804ns/rec     97MB/s dec=   268ns/rec   3551MB/s
+blk1m  complete  none               ratio= 1.00 saved=  0.0% enc=    437ns/rec   1921MB/s dec=   246ns/rec   3409MB/s
+blk1m  complete  snappy             ratio= 5.84 saved= 82.9% enc=   1645ns/rec    510MB/s dec=   571ns/rec   1470MB/s
+blk1m  complete  s2                 ratio= 6.17 saved= 83.8% enc=    764ns/rec   1098MB/s dec=   389ns/rec   2158MB/s
+blk1m  complete  s2-better          ratio= 6.46 saved= 84.5% enc=   1568ns/rec    536MB/s dec=   385ns/rec   2183MB/s
+blk1m  complete  lz4                ratio= 5.15 saved= 80.6% enc=   1792ns/rec    468MB/s dec=   300ns/rec   2802MB/s
+blk1m  complete  flate-1            ratio= 4.89 saved= 79.5% enc=   2580ns/rec    325MB/s dec=  2188ns/rec    384MB/s
+blk1m  complete  zstd-fastest       ratio= 8.38 saved= 88.1% enc=   2000ns/rec    420MB/s dec=   398ns/rec   2107MB/s
+blk1m  complete  zstd-default       ratio= 8.62 saved= 88.4% enc=   2463ns/rec    341MB/s dec=   410ns/rec   2046MB/s
+blk1m  complete  zstd-better        ratio= 9.06 saved= 89.0% enc=   3491ns/rec    240MB/s dec=   361ns/rec   2325MB/s
+blk1m  complete  zstd-best          ratio= 9.36 saved= 89.3% enc=  17820ns/rec     47MB/s dec=   359ns/rec   2342MB/s
+blk1m  big       none               ratio= 1.00 saved=  0.0% enc=  30534ns/rec   1667MB/s dec= 14995ns/rec   3395MB/s
+blk1m  big       snappy             ratio=11.47 saved= 91.3% enc=  44755ns/rec   1137MB/s dec= 17549ns/rec   2901MB/s
+blk1m  big       s2                 ratio=12.86 saved= 92.2% enc=  20920ns/rec   2433MB/s dec= 18499ns/rec   2752MB/s
+blk1m  big       s2-better          ratio=12.89 saved= 92.2% enc=  42658ns/rec   1193MB/s dec= 17762ns/rec   2866MB/s
+blk1m  big       lz4                ratio=16.69 saved= 94.0% enc=  37562ns/rec   1355MB/s dec= 11204ns/rec   4543MB/s
+blk1m  big       flate-1            ratio=25.72 saved= 96.1% enc=  53437ns/rec    953MB/s dec= 35756ns/rec   1424MB/s
+blk1m  big       zstd-fastest       ratio=31.11 saved= 96.8% enc=  56419ns/rec    902MB/s dec= 21573ns/rec   2360MB/s
+blk1m  big       zstd-default       ratio=29.74 saved= 96.6% enc=  75123ns/rec    678MB/s dec= 20319ns/rec   2505MB/s
+blk1m  big       zstd-better        ratio=32.29 saved= 96.9% enc= 144695ns/rec    352MB/s dec= 18858ns/rec   2699MB/s
+blk1m  big       zstd-best          ratio=34.08 saved= 97.1% enc= 445794ns/rec    114MB/s dec= 18928ns/rec   2689MB/s
+blk1m  bincLive  none               ratio= 1.00 saved=  0.0% enc=    788ns/rec   2003MB/s dec=   460ns/rec   3435MB/s
+blk1m  bincLive  snappy             ratio=14.37 saved= 93.0% enc=   1363ns/rec   1159MB/s dec=   424ns/rec   3726MB/s
+blk1m  bincLive  s2                 ratio=26.72 saved= 96.3% enc=    452ns/rec   3496MB/s dec=   359ns/rec   4396MB/s
+blk1m  bincLive  s2-better          ratio=27.10 saved= 96.3% enc=   1358ns/rec   1163MB/s dec=   360ns/rec   4390MB/s
+blk1m  bincLive  lz4                ratio=28.62 saved= 96.5% enc=    879ns/rec   1797MB/s dec=   182ns/rec   8699MB/s
+blk1m  bincLive  flate-1            ratio=28.34 saved= 96.5% enc=   1729ns/rec    914MB/s dec=   970ns/rec   1628MB/s
+blk1m  bincLive  zstd-fastest       ratio=49.09 saved= 98.0% enc=   1315ns/rec   1201MB/s dec=   446ns/rec   3544MB/s
+blk1m  bincLive  zstd-default       ratio=50.28 saved= 98.0% enc=   1334ns/rec   1184MB/s dec=   381ns/rec   4145MB/s
+blk1m  bincLive  zstd-better        ratio=56.23 saved= 98.2% enc=   3604ns/rec    438MB/s dec=   373ns/rec   4240MB/s
+blk1m  bincLive  zstd-best          ratio=59.92 saved= 98.3% enc=  11033ns/rec    143MB/s dec=   330ns/rec   4785MB/s

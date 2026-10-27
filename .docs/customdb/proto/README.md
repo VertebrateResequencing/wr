@@ -14,4 +14,14 @@ keeps the Go build and module caches off `$HOME`.
 - `cmd/hotpath`: closed-loop runners plus adds; `-ship` (D5), `-lease` (D6),
   `-nosync`.
 - `cmd/recoverbench`, `cmd/crashtest`, `cmd/fsyncbench`, `cmd/dbstats`.
+- `internal/zc`: the spec and batch codecs (`-codec`, `-batchcodec`) and the
+  corpus of real commands (`-corpus`) that `hotpath`, `recoverbench` and
+  `crashtest` take; `internal/gc` compresses whole batches when given one.
+- `cmd/compbench`: compressors on real records from a manager database;
+  `-corpusout` and `-dictout` write the corpus and a zstd dictionary, and
+  `cmd/bigcorpus` keeps the commands of at least 1KB.
+- `cmd/nfsprobe`: hours of small and large appends with fdatasync, for how
+  often a filesystem stalls.
+- `hotpath -stallctl` holds every fsync through the soaks' `fusestall` mount
+  for a timed stall; `-timeline` writes per-second counts.
 - `scripts/`: the exact runs behind `../benchmarks.md`.

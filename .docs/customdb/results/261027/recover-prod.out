@@ -1,0 +1,15 @@
+built wal n=118213 in 738ms
+RECOVER design=wal fs=/nfs/hgi/wr/sb10-bigdb/customdb/compress n=118213 cmd=0 codec=none/none files=1 sizeMB=114 cold live=118213 complete=0 records=124124 readMB=114 took=753ms 
+RECOVER design=wal fs=/nfs/hgi/wr/sb10-bigdb/customdb/compress n=118213 cmd=0 codec=none/none files=1 sizeMB=114 warm live=118213 complete=0 records=124124 readMB=114 took=329ms 
+HEAP kept=118213 heapInuse=269MB perJob=2271B
+apparent 109MB du 20MB
+built wal n=118213 in 717ms
+RECOVER design=wal fs=/nfs/hgi/wr/sb10-bigdb/customdb/compress n=118213 cmd=0 codec=none/s2 files=1 sizeMB=12 cold live=118213 complete=0 records=124124 readMB=12 took=553ms 
+RECOVER design=wal fs=/nfs/hgi/wr/sb10-bigdb/customdb/compress n=118213 cmd=0 codec=none/s2 files=1 sizeMB=12 warm live=118213 complete=0 records=124124 readMB=12 took=334ms 
+HEAP kept=118213 heapInuse=269MB perJob=2273B
+apparent 12MB du 15MB
+built wal n=118213 in 903ms
+RECOVER design=wal fs=/nfs/hgi/wr/sb10-bigdb/customdb/compress n=118213 cmd=0 codec=none/zstd files=1 sizeMB=7 cold live=118213 complete=0 records=124124 readMB=7 took=382ms 
+RECOVER design=wal fs=/nfs/hgi/wr/sb10-bigdb/customdb/compress n=118213 cmd=0 codec=none/zstd files=1 sizeMB=7 warm live=118213 complete=0 records=124124 readMB=7 took=384ms 
+HEAP kept=118213 heapInuse=269MB perJob=2273B
+apparent 8MB du 11MB

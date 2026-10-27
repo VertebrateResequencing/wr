@@ -17,6 +17,10 @@ recommendation below on 2026-10-27. Contents:
   [D5 local-disk primary + replication to NFS](d5-local-primary.md),
   [D6 runners as the source of truth, with leases](d6-runner-truth.md).
 - [benchmarks.md](benchmarks.md): methods and numbers.
+- [phase34-compression.md](phase34-compression.md): daytime experiments on
+  whether Phases 3 and 4 are needed, and on compression (2026-10-27).
+- [phase0-prep.md](phase0-prep.md): the `db` surface Phase 0's interface must
+  fix, its leaks, and the tests and tools that reach into bbolt.
 - [proto/](proto/): the throwaway prototype (its own Go module; the root
   module's `go list`, `make lint` and `make test` do not see it).
 
@@ -122,10 +126,10 @@ saturation point.
 | Phase | Work | What it fixes | Effort |
 | --- | --- | --- | --- |
 | 0 | Freeze the `db` API as an interface; port the prototype's crash test and a record/replay harness to `jobqueue`; add per-writer stats to develop (useful either way; `writeTurns` is the natural place to count them) | Nothing yet; makes the swap testable | 1-2 weeks |
-| 1 | Live tier on the log: specs at add, state records for every transition, archives as completion records; checkpoints; recovery = snapshot + replay. History stays in bbolt, filled asynchronously from the log by a background folder that is never on a reply path (idempotent, resumable from a log position). The learned-requirement stats (`jobRAM`, `jobDisk`, `jobSecs`) are filled by that folder too, so `reqStatCache` invalidation moves from the archive transaction to the folder's; learned values then lag an archive by the folder's delay, which the ready hook already tolerates (it reads at most once a second) | Every hot-path write and its stalls; ReserveWriteWait hand-outs; ordering machinery; recovery read volume becomes the live set only | 4-6 weeks incl. converter, wrdev crash/recovery modes, `make speed`, one production-scale soak |
-| 2 | Replace bbolt history with immutable segments and the per-query-shape indexes; incremental backup by shipping new files; drop bbolt, prefetch, freelist and backup pacing code | Backup stalls, whole-file copies, file growth and compaction, slow status for big rep groups | 4-6 weeks |
-| 3 (optional) | Lazy specs: the queue holds the 192-byte state and a spec reference, not the whole Job (D3's recovery: 154MB and 0.6s for 800k jobs instead of 8GB) | Recovery time on NFS, 20-25KB heap per live job | 4+ weeks, touches `queue` and every `job.Cmd` user |
-| 4 (optional) | D6 leases, or D5 local primary | Hand-outs independent of NFS stalls | 2-4 weeks each |
+| 1 | Live tier on the log: specs at add, state records for every transition, archives as completion records; checkpoints; recovery = snapshot + replay. Each add compresses its own records as one s2 block in the add handler (halved add latency and cut archive p99 6x on NFS; state records stay uncompressed). History stays in bbolt, filled asynchronously from the log by a background folder that is never on a reply path (idempotent, resumable from a log position). The learned-requirement stats (`jobRAM`, `jobDisk`, `jobSecs`) are filled by that folder too, so `reqStatCache` invalidation moves from the archive transaction to the folder's; learned values then lag an archive by the folder's delay, which the ready hook already tolerates (it reads at most once a second) | Every hot-path write and its stalls; ReserveWriteWait hand-outs; ordering machinery; recovery read volume becomes the live set only | 4-6 weeks incl. converter, wrdev crash/recovery modes, `make speed`, one production-scale soak |
+| 2 | Replace bbolt history with immutable segments, zstd-compressed per 64KB block, and the per-query-shape indexes; incremental backup by shipping new files; drop bbolt, prefetch, freelist and backup pacing code | Backup stalls, whole-file copies, file growth and compaction, slow status for big rep groups | 4-6 weeks |
+| 3 (only if needed) | Lazy specs: the queue holds the 192-byte state and a spec reference, not the whole Job (D3's recovery: 154MB and 0.6s for 800k jobs instead of 8GB) | Recovery time on NFS and heap per live job (measured 2.3KB at production shape, 11.5KB for 10KB jobs) | 4+ weeks, touches `queue` and every `job.Cmd` user Not needed at production shape: 118k live jobs recover in under 1s and hold 269MB (phase34-compression.md). Needed only if hundreds of thousands of 10KB jobs queue at once (800k hold 9.2GB). |
+| 4 (deployment option) | D5 local primary. D6 leases dropped: under a 60s stall it stalled exactly as D2 did, because runners wait on the durable archive (phase34-compression.md) | Writes independent of NFS stalls; the replica lags by the stall | 2-4 weeks |
 
 Phases 0-1 are about 6-8 weeks of agent-driven delivery including soaks;
 phases 0-2, which retire bbolt, about 3-4 months.

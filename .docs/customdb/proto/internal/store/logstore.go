@@ -8,6 +8,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/customdbproto/internal/flat"
 	"github.com/VertebrateResequencing/wr/customdbproto/internal/gc"
+	"github.com/VertebrateResequencing/wr/customdbproto/internal/zc"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 )
 
@@ -20,6 +21,24 @@ const keyFileBuckets = 64
 const (
 	recSpec  = 1
 	recState = 2
+	// recSpecZ is a spec compressed with SpecCodec.
+	recSpecZ = 3
+)
+
+// BatchCodec, when set, compresses each group-commit batch the log designs
+// write as one frame (see gc.Writer.Compress), and recovery expands them.
+var BatchCodec zc.Codec //nolint:gochecknoglobals // prototype switch
+
+// SpecCodec, when set, compresses every spec record the log designs write and
+// decompresses them at recovery. Set it before Open or Recover.
+var SpecCodec zc.Codec //nolint:gochecknoglobals // prototype switch
+
+// KeepJobs makes recovery keep every decoded live Job in Kept, so a caller can
+// measure their heap.
+var (
+	KeepJobs bool            //nolint:gochecknoglobals
+	Kept     []*jobqueue.Job //nolint:gochecknoglobals
+	keptMu   sync.Mutex      //nolint:gochecknoglobals
 )
 
 // logStore is both the single write-ahead log (D2, buckets=1) and the owner's
@@ -49,6 +68,10 @@ func openLogStore(dir string, buckets int, noSync bool) (*logStore, error) {
 	w := gc.New(files)
 	w.NoSync = noSync
 
+	if BatchCodec != nil {
+		w.Compress = BatchCodec.Encode
+	}
+
 	return &logStore{w: w, buckets: buckets, bufPool: sync.Pool{New: func() any { return new([]byte) }}}, nil
 }
 
@@ -58,11 +81,23 @@ func (s *logStore) Add(jobs []*jobqueue.Job, keys []flat.Key) error {
 	idx := make([]int, len(jobs))
 	recs := make([][]byte, len(jobs))
 
+	var spec []byte
+
 	for i, j := range jobs {
-		rec := append(make([]byte, 0, len(j.Cmd)+300), recSpec)
-		rec = append(rec, keys[i][:]...)
-		recs[i] = flat.AppendSpec(rec, j, nil)
 		idx[i] = s.bucket(keys[i])
+
+		if SpecCodec == nil {
+			rec := append(make([]byte, 0, len(j.Cmd)+300), recSpec)
+			rec = append(rec, keys[i][:]...)
+			recs[i] = flat.AppendSpec(rec, j, nil)
+
+			continue
+		}
+
+		spec = flat.AppendSpec(spec[:0], j, nil)
+		rec := append(make([]byte, 0, len(spec)/2+64), recSpecZ)
+		rec = append(rec, keys[i][:]...)
+		recs[i] = SpecCodec.Encode(rec, spec)
 	}
 
 	return gc.Wait(s.w.AppendMulti(idx, recs))
@@ -157,7 +192,12 @@ func scanBucket(path string, decode bool) (map[flat.Key]*jobEntry, Recovered, er
 	st, _ := f.Stat()
 	m := make(map[flat.Key]*jobEntry)
 
-	end, err := gc.Scan(f, func(_ int64, rec []byte) error {
+	var decompress func(dst, src []byte) ([]byte, error)
+	if BatchCodec != nil {
+		decompress = BatchCodec.Decode
+	}
+
+	end, err := gc.ScanWith(f, decompress, func(_ int64, rec []byte) error {
 		r.Records++
 
 		var k flat.Key
@@ -172,6 +212,11 @@ func scanBucket(path string, decode bool) (map[flat.Key]*jobEntry, Recovered, er
 		switch rec[0] {
 		case recSpec:
 			e.spec = append([]byte(nil), rec[17:]...)
+		case recSpecZ:
+			var err error
+			if e.spec, err = SpecCodec.Decode(nil, rec[17:]); err != nil {
+				return err
+			}
 		case recState:
 			if err := flat.GetState(rec[17:], &e.state); err != nil {
 				return err
@@ -212,6 +257,12 @@ func scanBucket(path string, decode bool) (map[flat.Key]*jobEntry, Recovered, er
 
 			if e.has {
 				e.state.ApplyTo(j)
+			}
+
+			if KeepJobs {
+				keptMu.Lock()
+				Kept = append(Kept, j)
+				keptMu.Unlock()
 			}
 		}
 	}

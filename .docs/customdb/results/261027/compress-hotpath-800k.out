@@ -1,0 +1,40 @@
+=== hp batchcodec=none 08:14:28
+preloaded 120000 in 12.666s
+RESULT design=wal dir=/nfs/hgi/wr/sb10-bigdb/customdb/compress runners=6000 cmd=10000 nosync=false lease=false runs=21980 runs/s=122.1
+  reserve p50=765µs     p99=3.26ms    max=56.53ms   >10s=0.00%
+  start   p50=723µs     p99=2.96ms    max=53.44ms  
+  archive p50=883µs     p99=15.62ms   max=90.82ms  
+  add     p50=59.71ms   p99=76.18ms   max=105.17ms  (n=36)
+  store   batches=74262 syncs=74262 MB=1614.0 meanBatchFlush=845µs leases=0
+=== hp batchcodec=s2 08:17:42
+preloaded 120000 in 9.219s
+RESULT design=wal dir=/nfs/hgi/wr/sb10-bigdb/customdb/compress runners=6000 cmd=10000 nosync=false lease=false runs=21991 runs/s=122.2
+  reserve p50=797µs     p99=1.79ms    max=34.07ms   >10s=0.00%
+  start   p50=737µs     p99=1.74ms    max=43.45ms  
+  archive p50=873µs     p99=2.43ms    max=42.79ms  
+  add     p50=28.51ms   p99=34.87ms   max=35ms      (n=36)
+  store   batches=74724 syncs=74724 MB=85.2 meanBatchFlush=780µs leases=0
+=== hp batchcodec=zstd 08:20:52
+preloaded 120000 in 9.709s
+RESULT design=wal dir=/nfs/hgi/wr/sb10-bigdb/customdb/compress runners=6000 cmd=10000 nosync=false lease=false runs=21933 runs/s=121.8
+  reserve p50=833µs     p99=1.89ms    max=30.46ms   >10s=0.00%
+  start   p50=770µs     p99=1.82ms    max=32.75ms  
+  archive p50=928µs     p99=2.58ms    max=40.11ms  
+  add     p50=33.15ms   p99=39.89ms   max=43.65ms   (n=36)
+  store   batches=74303 syncs=74303 MB=57.6 meanBatchFlush=819µs leases=0
+built wal n=800000 in 53.802s
+RECOVER design=wal fs=/nfs/hgi/wr/sb10-bigdb/customdb/compress n=800000 cmd=10000 codec=none/none files=1 sizeMB=8199 cold live=800000 complete=0 records=840000 readMB=8199 took=35.151s 
+RECOVER design=wal fs=/nfs/hgi/wr/sb10-bigdb/customdb/compress n=800000 cmd=10000 codec=none/none files=1 sizeMB=8199 warm live=800000 complete=0 records=840000 readMB=8199 took=7.454s 
+HEAP kept=800000 heapInuse=9202MB perJob=11503B
+apparent 7820MB du 871MB
+built wal n=800000 in 39.753s
+RECOVER design=wal fs=/nfs/hgi/wr/sb10-bigdb/customdb/compress n=800000 cmd=10000 codec=none/s2 files=1 sizeMB=392 cold live=800000 complete=0 records=840000 readMB=392 took=13.225s 
+RECOVER design=wal fs=/nfs/hgi/wr/sb10-bigdb/customdb/compress n=800000 cmd=10000 codec=none/s2 files=1 sizeMB=392 warm live=800000 complete=0 records=840000 readMB=392 took=7.741s 
+HEAP kept=800000 heapInuse=9202MB perJob=11503B
+apparent 375MB du 470MB
+built wal n=800000 in 45.299s
+RECOVER design=wal fs=/nfs/hgi/wr/sb10-bigdb/customdb/compress n=800000 cmd=10000 codec=none/zstd files=1 sizeMB=250 cold live=800000 complete=0 records=840000 readMB=250 took=13.119s 
+RECOVER design=wal fs=/nfs/hgi/wr/sb10-bigdb/customdb/compress n=800000 cmd=10000 codec=none/zstd files=1 sizeMB=250 warm live=800000 complete=0 records=840000 readMB=250 took=8.162s 
+HEAP kept=800000 heapInuse=9202MB perJob=11503B
+apparent 239MB du 343MB
+=== done 08:27:57

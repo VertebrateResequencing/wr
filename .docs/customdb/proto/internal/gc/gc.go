@@ -26,6 +26,9 @@ import (
 // FrameHeader is the bytes added to every appended record.
 const FrameHeader = 8
 
+// compressedFlag in a frame's length marks a compressed batch of frames.
+const compressedFlag = 1 << 31
+
 var crcTable = crc32.MakeTable(crc32.Castagnoli) //nolint:gochecknoglobals
 
 // ErrClosed is returned for writes after Close.
@@ -58,6 +61,10 @@ type Writer struct {
 	closed bool
 	wg     sync.WaitGroup
 	NoSync bool // write() only: survives a process crash, not a host crash
+	// Compress, when set, compresses each file's appends in a batch into one
+	// outer frame (marked by compressedFlag in its length), which Scan given
+	// the matching decompressor expands. Set it before the first append.
+	Compress func(dst, src []byte) []byte
 
 	Batches, Syncs, Bytes atomic.Int64
 	SyncNanos             atomic.Int64
@@ -255,11 +262,20 @@ func (w *Writer) flushFile(i int, fb *fileBuf) error {
 	f := w.files[i]
 
 	if len(fb.app) > 0 {
-		if _, err := f.Write(fb.app); err != nil {
+		app := fb.app
+
+		if w.Compress != nil {
+			out := w.Compress(make([]byte, FrameHeader, FrameHeader+len(app)/4), app)
+			binary.LittleEndian.PutUint32(out, uint32(len(out)-FrameHeader)|compressedFlag) //nolint:gosec
+			binary.LittleEndian.PutUint32(out[4:], crc32.Checksum(out[FrameHeader:], crcTable))
+			app = out
+		}
+
+		if _, err := f.Write(app); err != nil {
 			return err
 		}
 
-		w.Bytes.Add(int64(len(fb.app)))
+		w.Bytes.Add(int64(len(app)))
 	}
 
 	for _, p := range fb.pw {
@@ -307,7 +323,18 @@ func (w *Writer) Close() {
 // at the first torn or corrupt frame. It returns the offset just after the
 // last good record, which is where a recovering writer truncates to.
 func Scan(r io.Reader, fn func(off int64, rec []byte) error) (int64, error) {
+	return ScanWith(r, nil, fn)
+}
+
+// ScanWith is Scan for a file whose batches may be compressed: decompress
+// expands a compressed batch, whose records fn is then called for with the
+// batch's offset. A batch that does not decompress, or whose records are not
+// all intact, ends the good data like a torn frame.
+func ScanWith(r io.Reader, decompress func(dst, src []byte) ([]byte, error),
+	fn func(off int64, rec []byte) error) (int64, error) {
 	br := newBufReader(r)
+
+	var plain []byte
 
 	var off int64
 
@@ -320,7 +347,10 @@ func Scan(r io.Reader, fn func(off int64, rec []byte) error) (int64, error) {
 		}
 
 		n := binary.LittleEndian.Uint32(hdr)
-		if n > 1<<30 {
+		compressed := n&compressedFlag != 0
+		n &^= compressedFlag
+
+		if n > 1<<30 || (compressed && decompress == nil) {
 			return off, nil
 		}
 
@@ -337,12 +367,56 @@ func Scan(r io.Reader, fn func(off int64, rec []byte) error) (int64, error) {
 			return off, nil
 		}
 
-		if err := fn(off+FrameHeader, rec); err != nil {
+		if compressed {
+			var err error
+			if plain, err = decompress(plain[:0], rec); err != nil {
+				return off, nil //nolint:nilerr // corrupt batch: end of good data
+			}
+
+			intact, err := scanBytes(plain, func(inner []byte) error {
+				return fn(off+FrameHeader, inner)
+			})
+			if err != nil {
+				return off, err
+			}
+
+			if !intact {
+				return off, nil
+			}
+		} else if err := fn(off+FrameHeader, rec); err != nil {
 			return off, err
 		}
 
 		off += FrameHeader + int64(n)
 	}
+}
+
+// scanBytes calls fn for each framed record in b, in place, and reports
+// whether b held only intact frames.
+func scanBytes(b []byte, fn func(rec []byte) error) (bool, error) {
+	for len(b) > 0 {
+		if len(b) < FrameHeader {
+			return false, nil
+		}
+
+		n := binary.LittleEndian.Uint32(b)
+		if n&compressedFlag != 0 || int64(n) > int64(len(b)-FrameHeader) {
+			return false, nil
+		}
+
+		rec := b[FrameHeader : FrameHeader+n]
+		if crc32.Checksum(rec, crcTable) != binary.LittleEndian.Uint32(b[4:]) {
+			return false, nil
+		}
+
+		if err := fn(rec); err != nil {
+			return false, err
+		}
+
+		b = b[FrameHeader+n:]
+	}
+
+	return true, nil
 }
 
 func newBufReader(r io.Reader) io.Reader { return bufio.NewReaderSize(r, 4<<20) }

@@ -1,0 +1,25 @@
+=== sat batchcodec=none 08:31:54
+preloaded 300000 in 29.779s
+RESULT design=wal dir=/nfs/hgi/wr/sb10-bigdb/customdb/compress runners=6000 cmd=10000 nosync=false lease=false runs=311000 runs/s=5183.3
+  reserve p50=1.52ms    p99=6.6ms     max=74.18ms   >10s=0.00%
+  start   p50=1.5ms     p99=7.1ms     max=74.14ms  
+  archive p50=1.37ms    p99=13.8ms    max=74.19ms  
+  add     p50=55.06ms   p99=63.09ms   max=63.48ms   (n=12)
+  store   batches=42959 syncs=42959 MB=3396.7 meanBatchFlush=1.051ms leases=0
+=== sat batchcodec=s2 08:33:25
+preloaded 300000 in 22.102s
+RESULT design=wal dir=/nfs/hgi/wr/sb10-bigdb/customdb/compress runners=6000 cmd=10000 nosync=false lease=false runs=311000 runs/s=5183.3
+  reserve p50=1.45ms    p99=6.72ms    max=93.47ms   >10s=0.00%
+  start   p50=1.43ms    p99=7.45ms    max=93.96ms  
+  archive p50=1.33ms    p99=27.05ms   max=93.11ms  
+  add     p50=29.67ms   p99=89.47ms   max=91.55ms   (n=12)
+  store   batches=44082 syncs=44082 MB=225.5 meanBatchFlush=842µs leases=0
+=== sat batchcodec=zstd 08:34:48
+preloaded 300000 in 21.99s
+RESULT design=wal dir=/nfs/hgi/wr/sb10-bigdb/customdb/compress runners=6000 cmd=10000 nosync=false lease=false runs=311000 runs/s=5183.3
+  reserve p50=1.65ms    p99=6.83ms    max=109.96ms  >10s=0.00%
+  start   p50=1.62ms    p99=7.04ms    max=109.92ms 
+  archive p50=1.47ms    p99=29.57ms   max=109.98ms 
+  add     p50=37.51ms   p99=89.9ms    max=92.32ms   (n=12)
+  store   batches=39963 syncs=39963 MB=158.3 meanBatchFlush=959µs leases=0
+=== done 08:36:11
