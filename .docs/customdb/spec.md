@@ -530,8 +530,12 @@ minute with `failures`; it never stops the manager.
 - Phase 1: history is `history.bolt` with today's history buckets
   (`jobscomplete`, `repgroupToKey`, `repgroups`, `depgroupToKey`,
   `reverseDepgroupToKey`, `depgroups`, `endTimeToKey`, `repgroupEndTime`,
-  `jobRAM`, `jobDisk`, `jobSecs`) holding completed jobs only, plus `meta`
-  holding the folded position, written in the same transaction. Existing
+  `jobRAM`, `jobDisk`, `jobSecs`), plus `meta` holding the folded
+  position, written in the same transaction. `jobscomplete`,
+  `endTimeToKey`, `repgroupEndTime` and the stats buckets hold completed
+  jobs only. `repgroupToKey` and `repgroups` also hold every folded
+  rglookup, and those name jobs that are still live: `storeRepGroupLookups`
+  writes one for each queued job re-added under another rep group. Existing
   bbolt query code is reused with live-bucket checks replaced by the store's
   live set.
 - Phase 2: history is sealed `.hist` segments (layout in D2). The open
@@ -741,7 +745,8 @@ As an operator, I want a periodic log line per writer and per wait, so that
 a burst can be attributed without a code change.
 
 Follows `archivefold.go`: atomics only, no behaviour derived. Every
-`archiveFoldReportInterval`, for each writer with activity, warn
+`archiveFoldReportInterval` (Phase 2 moves it into `store_stats.go`,
+since F4 deletes `archivefold.go`), for each writer with activity, warn
 `dbWriterStatsLogMsg = "db writer"` with `writer` (`newJobs`, `addChunk`,
 `archive`, `bestEffort`, `batch`; Phase 1 adds `log` and `fold`), `txs`,
 `items`, `meanLock`, `maxLock` (waiting for turn and lock), `meanHold`,
@@ -834,8 +839,10 @@ one random byte flipped, and recovers each.
 3. Given test-only wrapper `ackEarlyStore` around any store, which runs
    each wrapped write in a new goroutine and returns nil at once (so it
    acknowledges before the write is durable, against bbolt in Phase 0 as
-   against the log store), when 5 rounds run, then at least one round
-   reports missing > 0 (the test can fail).
+   against the log store), when crash-point hook `crashInFlightWrite`
+   kills the child inside `ackEarlyStore` after it acknowledges a write and
+   before that write's goroutine starts it, then the round reports
+   missing > 0 (the test can fail).
 
 ### A5: Record/replay harness
 
@@ -1093,7 +1100,9 @@ durable, even during a filesystem stall, so that a crash never runs it twice.
 
 Each transition appends one state record. `persistReservation` calls
 `reserveRunState(job)` and then `WaitWithin(reserveDurableWait())` on the
-handle; on timeout or any error but `errDBClosed` it does not hand out.
+handle. On any failure it answers with no job: on timeout or any error
+but `errDBClosed` it also undoes the reservation as below, and on
+`errDBClosed` it undoes nothing.
 `logStore` returns the reserve record's `wal.Commit`. The bbolt store
 starts a goroutine running its `Batch` update of the run state and returns
 a handle that is done, with Batch's error, once Batch returns;
@@ -1468,7 +1477,11 @@ rewriting segments; live keys are filtered per query as listed under
    `retrieveCompleteJobsByRepGroup` runs, then it returns the job once,
    with the second run's EndTime.
 5. Given 1,000,000 completed keys, when indexed, then heap growth of the key
-   index is under 47MB (100MB at 2.15M keys).
+   index is under 47MB (100MB at 2.15M keys). The index is a packed
+   structure, not a Go map of keys: a sorted slice of fixed-size entries
+   (a 16-byte MD5 of the job key, since a key may carry a prefix, and its
+   Ref; a lookup confirms the key against the record) per sealed segment,
+   plus a small map for keys folded since the last seal.
 
 ### D3: History queries on segments (Phase 2)
 
@@ -2158,10 +2171,18 @@ passing. Work and measurements on NFS go under
     folded position changed, a known caveat since Phase 1 is never released;
     the Phase 2 soak gives the authoritative backup-I/O result.
   - `make speed-full`: no regression above 10% against `d1a4b6d7`.
-  - Daytime NFS (weekday, 10:00 to 17:00): reservation wait p99 at most
-    50ms from the soak's `"reservation wait"` lines; 1000-job add p50 at
-    most 200ms from `TestAddLatency1000` (A3) with `WR_ADDBENCH_DIR` under
-    the NFS work directory and `WR_TEST_STORE=log`, passing 3 runs of 3.
+  - Daytime NFS targets, measured apart from the crash soak, whose
+    injected stalls push abandoned reservations' waits to
+    `reserveDurableWait()`. Both runs fall wholly between 10:00 and 17:00
+    on one weekday, with the work directory on NFS:
+    - a stall-free soak: `run.sh` with `SOAK_ROOT` on NFS, `USE_FUSE=0`,
+      `HOURS=1`, `RESTART_MIN=120` (so no restart falls inside the run)
+      and no injectors. Every `"reservation wait"` line the manager writes
+      has `p99` at most 50ms and `abandoned=0`; there is no averaging
+      across lines;
+    - `TestAddLatency1000` (A3) with `WR_ADDBENCH_DIR` under the NFS work
+      directory and `WR_TEST_STORE=log`: 1000-job add p50 at most 200ms in
+      each of 3 runs.
   - wrdev `crash-recovery` and every other `wrdev.sh` scenario pass.
 
 ### Phase 2: history segments, incremental backup, no bbolt
@@ -2173,7 +2194,11 @@ passing. Work and measurements on NFS go under
 - 2e: F4, F5.
 - Gates: A4 and A5 as in Phase 1 against the final store (A5 against the
   Phase 0 recording); the crash soak repeated; `make speed-full` within
-  10%; daytime NFS targets as Phase 1; `wr status -i` for production's
+  10%; the daytime NFS targets measured as in Phase 1 (both runs, same
+  rules) against the final store; wrdev `crash-recovery` and every other
+  remaining `wrdev.sh` scenario pass (F4 deletes `freelist-check`,
+  `remap-stall-check` and `compact-fixture`);
+  `wr status -i` for production's
   biggest rep group on the converted `runstate-gate/fixtures/prod.db` no
   slower than develop on the bbolt fixture (both timings recorded in the
   PR).
