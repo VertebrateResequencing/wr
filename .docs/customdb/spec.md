@@ -463,20 +463,26 @@ Folding is idempotent and resumable from a log position.
 - Incremental backup (production, or forced): every
   `minimumTimeBetweenBackups` (30s) at most, ship to the backup location, in
   this order: history files not yet shipped (Phase 1: `history.bolt` copied
-  whole when changed; Phase 2: newly sealed `.hist`), new checkpoints, then
-  wal bytes. Wal bytes ship as parts: each tick, for each wal file, the
+  whole when changed, by `tx.WriteTo` under one read transaction that also reads
+  its `meta` folded position; Phase 2: newly sealed `.hist`), new checkpoints,
+  then wal bytes. Wal bytes ship as parts: each tick, for each wal file, the
   durable bytes not yet shipped (bounded by the next file's `prevEnd` for an
   abandoned file) go to one new part `NNNNNNNN.wal.OOOOOOOOOOOOOOOO` (16-hex
-  start offset; written to `.tmp` then renamed locally, one object on S3).
-  No byte is shipped twice; checkpoints rotate the writer every 5 min, so a
-  file has a handful of parts. Restore rebuilds each wal file by
-  concatenating its parts in offset order, stopping at the first gap (the
-  rest is a torn tail to recovery). Files the store has deleted (all parts
-  of a wal file) are deleted from the backup only after a newer
-  checkpoint has been shipped. History before log keeps the backup's log at
-  or past its history's folded position. `close` runs one final
-  incremental ship after the writer's last commit when anything is
-  unshipped, as today's `finaliseBackup` writes a final backup on close.
+  start offset; written to `.tmp` then renamed locally, one object on S3). No
+  byte is shipped twice; checkpoints rotate the writer every 5 min, so a file
+  has a handful of parts. Restore rebuilds each wal file by concatenating its
+  parts in offset order, stopping at the first gap (the rest is a torn tail to
+  recovery). The backup applies the wal deletion rule to its own contents: all
+  parts of a wal file the store has deleted are deleted from the backup only
+  when that file is below both the newest shipped checkpoint's `walFrom` and the
+  shipped history's folded position (Phase 1: the position read with the shipped
+  `history.bolt` copy; Phase 2: the last shipped sealed segment's). The store's
+  own deletion is not enough: its F can pass a file after the tick shipped
+  history (a fold commit after the copy, a seal after the history step) and a
+  checkpoint can complete in that gap. History before log keeps the backup's log
+  at or past its history's folded position. `close` runs one final incremental
+  ship after the writer's last commit when anything is unshipped, as today's
+  `finaliseBackup` writes a final backup on close.
 - An S3 `dbBkFile` in development deployment (forced backups) keeps
   today's `"." + deployment` suffix (`initDB`), so the prefix is
   `<dbBkFile>.development/`.
@@ -596,14 +602,12 @@ Follows `archivefold.go`: atomics only, no behaviour derived. Every
 `archiveFoldReportInterval`, for each writer with activity, warn
 `dbWriterStatsLogMsg = "db writer"` with `writer` (`newJobs`, `addChunk`,
 `archive`, `bestEffort`, `batch`; Phase 1 adds `log` and `fold`), `txs`,
-`items`,
-`meanLock`, `maxLock` (waiting for turn and lock), `meanHold`, `maxHold`
-(transaction including commit), `interval`; for `log`: `batches`,
-`records`, `bytes`, `meanSync`, `maxSync`. Also warn
-`reservationWaitLogMsg = "reservation wait"` (`n`, `p50`, `p99`, `max`,
-`notDurable`) and `addWaitLogMsg = "add wait"` (`n`, `p50`, `p99`, `max`
-over `storeNewJobsGuarded` calls). Lines with `n` or `txs` 0 are not
-written.
+`items`, `meanLock`, `maxLock` (waiting for turn and lock), `meanHold`,
+`maxHold` (transaction including commit), `interval`; for `log`: `batches`,
+`records`, `bytes`, `meanSync`, `maxSync`. Also warn `reservationWaitLogMsg =
+"reservation wait"` (`n`, `p50`, `p99`, `max`, `notDurable`, `abandoned`) and
+`addWaitLogMsg = "add wait"` (`n`, `p50`, `p99`, `max` over
+`storeNewJobsGuarded` calls). Lines with `n` or `txs` 0 are not written.
 
 ```go
 // waitHistogram is a lock-free log-linear histogram of durations.
@@ -909,9 +913,9 @@ their records and wait.
 
 **Acceptance tests:**
 
-1. Given a log store, when 1,000 jobs are added in one call, then the wal
-   holds exactly one new outer frame, it is a block with codec s2, and it
-   contains 1,000 spec records.
+1. Given a log store, when 1,000 jobs are added in one direct
+   `db.storeNewJobsGuarded` call, then the wal holds exactly one new outer
+   frame, it is a block with codec s2, and it contains 1,000 spec records.
 2. Given an added job that is running, when the same job is added again,
    then after reopen its state is still running with its ReservedBy.
 3. Given an env blob stored twice, when reopened, then `count(kindEnv)` is
@@ -957,8 +961,10 @@ On success `handOutReservation` restarts the TTR, as today. It checks the
 reservation's `Commit` with `WaitWithin(0)`; if it is not done it still
 hands out but counts the job in the `"reservation wait"` line's
 `notDurable` field (replacing `logReserveNotDurable`'s count), so any
-non-durable hand-out is visible in the manager log. Removed:
-`updateJobRunStateDurableWithin`, `logReserveNotDurable`,
+non-durable hand-out is visible in the manager log. Each reservation
+abandoned in step 6 is counted in that line's `abandoned` field (its wait
+is observed too), since `s.warns` rate-limits `reserveAbandonedLogMsg`.
+Removed: `updateJobRunStateDurableWithin`, `logReserveNotDurable`,
 `errDurableWriteWaitExpired`, `ReserveWriteWait`, `setBatchTuning`.
 
 ```go
@@ -990,7 +996,8 @@ func reserveDurableWait() time.Duration
    then the job is buried.
 6. Given syncs held for 2s and a test hook making `persistReservation` skip
    its wait, when a runner reserves, then the next `"reservation wait"` line
-   has `notDurable=1`; without the hook (test 2) it has `notDurable=0`.
+   has `notDurable=1`; without the hook (test 2) it has `notDurable=0` and
+   `abandoned=1`.
 7. Given a job in limit group `"g"` with limit 1 and a sync hook returning
    `EIO` once, when a runner reserves with the job's scheduler group, then
    it gets no job, the item is in the ready sub-queue with Attempts
@@ -1265,7 +1272,11 @@ claimed error is returned as today with nothing renamed back or restored
 (a resumed run sees `SOURCE` and retries). So a corrupt bbolt file never
 loops on resume.
 
-Accepts bbolt schema 0, 1 and 2. Schema 0 is needed for real production
+Accepts bbolt schema 0, 1 and 2. In step 0 it reads the stamp as
+`readOnlyDBFileSchemaVersion` does and refuses, renaming nothing and
+creating no `.converting`, a malformed stamp (`errBadDBSchemaVersion`) or
+a newer schema (`checkDBSchemaVersion`'s `errDBSchemaTooNew`, "use a newer
+wr"); neither is a corrupt source. Schema 0 is needed for real production
 DBs: `db_schema.go` defines it as a DB with no recorded version, which older
 wr wrote. In every schema,
 StdOutC/StdErrC of complete records are dropped. A missing bucket reads as
@@ -1318,6 +1329,11 @@ func buildStoreFromBolt(ctx context.Context, boltFile, dir string,
    `IsDBUpgradeState("convert database")` is true.
 6. Given a finished conversion, when `dbFile` is listed, then it holds no
    `SOURCE`, and `dbFile.bolt-pre-dev` exists with the original's sha256.
+7. Given a bbolt DB stamped schema `currentDBSchemaVersion + 1`, when the
+   manager starts, then the error wraps `errDBSchemaTooNew` and contains
+   "use a newer wr"; given one whose stamp is 4 bytes, the error wraps
+   `errBadDBSchemaVersion`; in both, `dbFile` is still the untouched bbolt
+   file, no `.converting` or `.bolt-pre-` file exists and no restore ran.
 
 ### E2: Open, restore and corruption
 
@@ -1490,6 +1506,13 @@ never stalls the manager or rewrites gigabytes.
 8. Given development deployment with `forceBackups` and S3 `dbBkFile`
    `s3://b/wr/db_bk` (fake target), when a tick ships, then every object is
    under `wr/db_bk.development/`.
+9. Given a test hook that, during a tick, after the history step and
+   before the deletion step, folds and commits (Phase 1) or seals a
+   segment (Phase 2) past wal file w, then runs a checkpoint whose
+   `walFrom` is past w and lets the store delete w, when the tick finishes
+   and the backup is restored (E2), then every job completed before the
+   tick is complete in the restored store; the same holds after the next
+   tick and another restore.
 
 ### E5: Self-contained backup
 
@@ -1556,7 +1579,11 @@ As a cloud user, I want deploy and teardown to keep carrying my database.
   a manager not answering on that port can.
 - Teardown with a non-S3 backup location `os.RemoveAll`s any
   `ManagerDBFile + ".old"`, renames an existing store directory to it, then
-  calls `BackupDB(ManagerDBFile)`; the S3 branch is unchanged.
+  calls `BackupDB(ManagerDBFile)`. The S3 branch also `os.RemoveAll`s
+  `ManagerDBFile + ".old"` before its rename: today's `os.Rename` fails on
+  a stale non-empty `.old` directory or a `.old` file when the source is a
+  directory, and only warns, so a local start would open the stale store
+  instead of restoring from S3.
 
 ```go
 func ExportStore(dbDir string, w io.Writer) error
@@ -1579,6 +1606,11 @@ func ExportStore(dbDir string, w io.Writer) error
 4. Given teardown with a local store directory and a stale `db.old`, when
    the rename step runs (test seam), then `db.old` is the store directory
    and `db` is free for the backup file.
+5. Given teardown with an S3 backup location, a local store directory
+   `db` and a stale `db.old` directory holding files, when the rename step
+   runs (test seam), then `db.old` is the store directory, `db` does not
+   exist and no warning is logged; the same holds with a stale bbolt file
+   at `db.old`.
 
 ## F: Server cleanup, config, tools and docs
 
@@ -1728,7 +1760,8 @@ passing. Work and measurements on NFS go under
     stalls: `soakgate.py` sums `notDurable` over the manager log's
     `"reservation wait"` lines and requires 0; `notDurable` is the
     production `WaitWithin(0)` check `handOutReservation` makes on every
-    hand-out (C3), not a test hook), 0 double runs outside
+    hand-out (C3), not a test hook), and the same lines' `abandoned` sum is
+    at least 1, showing the stall path ran; 0 double runs outside
     injected stalls.
   - `make speed-full`: no regression above 10% against `d1a4b6d7`.
   - Daytime NFS, from the A3 lines in the soak: reservation wait p99 at
