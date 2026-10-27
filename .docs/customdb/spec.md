@@ -327,9 +327,14 @@ applied for that key. Keys are 16 binary bytes (wr's 32-hex md5).
   reserve, so recovery never sees a job handed out before its reservation is
   durable. A crash after the reserve is durable but before the release is
   recovers the job as reserved by a runner that never had it; it is not run
-  twice and returns to ready through the lost-job path, at worst at
-  `ServerTimings.LostRunnerBackstop` (1h). Waiting for the release would
-  put the stall back on the reserve handler, so it is not waited for.
+  twice and spends no retry. A record without Host/Pid recovers straight to
+  ready. Otherwise `releaseRunsMovedOnFrom` (`moved_on_runner.go`) normally
+  releases it when that runner reserves its next job; failing that, TTR
+  expiry and confirm-dead release it. Only a live runner that never
+  reserves again parks it until `ServerTimings.LostRunnerBackstop` (1h),
+  which kills the runner and so depends on the farm forced command.
+  Waiting for the release would put the stall back on the reserve handler,
+  so it is not waited for.
 - `beSeq`, run-state overlays, change-versus-exit skipping and writer turns
   do not exist in `logStore`. `expectJobExitUpdate` keeps its contract:
   `retrieveJobStd` waits for exit updates expected or in flight.
@@ -439,7 +444,9 @@ log position.
   `NNNNNNNN.wal.tmp` then renamed, or uploaded over the object). Files the
   store has deleted are deleted from the backup only after a newer
   checkpoint has been shipped. History before log keeps the backup's log at
-  or past its history's folded position.
+  or past its history's folded position. `close` runs one final
+  incremental ship after the writer's last commit when anything is
+  unshipped, as today's `finaliseBackup` writes a final backup on close.
 - An old backup is a bbolt file at `dbBkFile` (default `db_bk`) or one S3
   object. Before the first incremental ship, if the backup path holds bbolt
   (meta magic), it is renamed to `dbBkFile + ".bolt-pre-" + v` (as E1;
@@ -884,24 +891,43 @@ durable, even during a filesystem stall, so that a crash never runs it twice.
 
 Each transition appends one state record. In `persistReservation`, the
 server waits `reserveDurableWait()`; on timeout or any error but
-`errDBClosed` it does not hand out: it
-releases the item to the ready sub-queue with no delay and no added attempt,
-forgets the runner hold, sets State ready and clears ReservedBy, records the
-change with `prepareJobChange`/`queueJobChangeAhead`, logs
-`reserveAbandonedLogMsg` through `s.warns`, and answers with no job (as when
-nothing is ready); on `errDBClosed` it answers with no job without the
-release. On success `handOutReservation` restarts the TTR, as
-today. `handOutReservation` checks the reservation's `Commit` with
-`WaitWithin(0)`; if it is not done it still hands out but counts the job in
-the `"reservation wait"` line's `notDurable` field (replacing
-`logReserveNotDurable`'s count), so any non-durable hand-out is visible in
-the manager log. Removed: `updateJobRunStateDurableWithin`,
+`errDBClosed` it does not hand out. It undoes each per-reserve side effect
+that a release undoes today:
+
+1. releases the item to the ready sub-queue with no delay and no added
+   attempt;
+2. calls `job.decrementLimitGroups(s.limiter)`, as `finalizeReleasedJob`
+   and `ttrCallback` do, giving back the limit-group usage that
+   `reserveWithLimits` took and `noteReserveLimitGroups` recorded;
+3. forgets the runner hold (`s.runnerHolds.forget`);
+4. under the job lock sets State ready, clears ReservedBy, Host, Pid and
+   `handingOut` (which `handOutReservation` clears on hand-out);
+5. records the reserved-to-ready change with
+   `prepareJobChange`/`queueJobChangeAhead`, so status-feed counts move the
+   job back from reserved to ready;
+6. logs `reserveAbandonedLogMsg` through `s.warns` and answers with no job,
+   as when nothing is ready.
+
+It does not undo the rest. The scheduler group count is not decremented:
+the item still wants a runner, and the ready-added recount
+(`accountForRunningJobs`) counts it as ready instead of running. The
+runner's `ClaimForReserve` claim stays, as it does today when the queue has
+nothing ready; that runner then exits or reserves again.
+`releaseRunsMovedOnFrom` is not called, as when nothing is ready. The
+minted run token and the item's Reserves count are overwritten by the next
+reserve. On `errDBClosed` it answers with no job and undoes nothing.
+
+On success `handOutReservation` restarts the TTR, as today. It checks the
+reservation's `Commit` with `WaitWithin(0)`; if it is not done it still
+hands out but counts the job in the `"reservation wait"` line's
+`notDurable` field (replacing `logReserveNotDurable`'s count), so any
+non-durable hand-out is visible in the manager log. Removed: `updateJobRunStateDurableWithin`,
 `logReserveNotDurable`, `errDurableWriteWaitExpired`, `ReserveWriteWait`,
 `setBatchTuning`.
 
 ```go
-// reserveDurableWait is min(10s, ClientMinRequestTimeout/4), as
-// serverReserveWriteWait today.
+// reserveDurableWait is min(10s, ClientMinRequestTimeout/4), today's
+// reservation write bound.
 func reserveDurableWait() time.Duration
 ```
 
@@ -929,9 +955,13 @@ func reserveDurableWait() time.Duration
 6. Given syncs held for 2s and a test hook making `persistReservation` skip
    its wait, when a runner reserves, then the next `"reservation wait"` line
    has `notDurable=1`; without the hook (test 2) it has `notDurable=0`.
-7. Given a sync hook returning `EIO` once, when a runner reserves, then it
-   gets no job, the item is in the ready sub-queue with Attempts unchanged,
-   and a second reserve gets the job.
+7. Given a job in limit group `"g"` with limit 1 and a sync hook returning
+   `EIO` once, when a runner reserves with the job's scheduler group, then
+   it gets no job, the item is in the ready sub-queue with Attempts
+   unchanged, State ready, empty ReservedBy and `handingOut` false,
+   `s.limiter.GetRemainingCapacity(ctx, ["g"])` is 1 (usage 0), and the
+   status feed received a reserved-to-ready `jstateCount` delta for it; a
+   second reserve with that group gets the job.
 8. Given a test hook that drops the release record after a durable reserve
    timed out (test 2), when the store is reopened, then the job recovers as
    reserved by that ClientID, the wal holds no start record for it, and
@@ -994,13 +1024,13 @@ quickly, so that recovery neither loses nor resurrects work.
 3. Given a byte flipped in a wal file that is not the last, when reopened,
    then `openStore` restores from backup if one exists, else returns an
    error wrapping `errStoreCorrupt`.
-5. Given a sync error mid-run (B2 test 3) after which file 1 is given 50
+4. Given a sync error mid-run (B2 test 3) after which file 1 is given 50
    extra bytes past its header-recorded `prevEnd`, when reopened, then
    recovery succeeds, file 1 is truncated to `prevEnd`, the failed batch's
    records are absent, and later records in file 2 are applied.
-6. Given wal file 2 deleted while file 3 exists, when reopened, then the
+5. Given wal file 2 deleted while file 3 exists, when reopened, then the
    error wraps `errStoreCorrupt`.
-4. Given 100,000 live 1KiB jobs, when recovered, then the store's own heap
+6. Given 100,000 live 1KiB jobs, when recovered, then the store's own heap
    growth (excluding returned jobs, measured after dropping them) is under
    40MB.
 
@@ -1173,7 +1203,9 @@ rerun marks applied, envs, limits, stats, std, and `history.bolt` from the
 history buckets; Phase 2: `.hist` segments instead); (5) fsync, rename
 `.converting` to `dbFile`, fsync the parent. At open, an existing
 `.converting/SOURCE` resumes: clear the rest of `.converting` and redo from
-the source (at `dbFile` or the pre name). Accepts bbolt schema 0, 1 and 2;
+the source (at `dbFile` or the pre name). Accepts bbolt schema 0, 1 and 2.
+Schema 0 is needed for real production DBs: `db_schema.go` defines it as a
+DB with no recorded version, which older wr wrote. In every schema,
 StdOutC/StdErrC of complete records are dropped. Progress uses
 `internal.DBUpgradeConvertState = "convert database"` with Processed/Total
 in jobs; `IsDBUpgradeState` returns true for it.
@@ -1351,6 +1383,9 @@ never stalls the manager or rewrites gigabytes.
    ships, then `db_bk.bolt-pre-dev` has the old file's sha256, `db_bk` is a
    directory that opens as the store, and the same holds for a bbolt object
    in a fake S3 target.
+6. Given production deployment and 10 archives after the last tick, when
+   the store is closed before the next tick, then opening the backup
+   directory as a store shows all 10 jobs complete.
 
 ### E5: Self-contained backup
 
@@ -1535,7 +1570,8 @@ undurable; the automatic one-way conversion; `managerdbfile` and
 `managerdbbkfile` are now directories (or an S3 prefix); rollback = stop,
 remove the `db` and `db_bk` directories, rename `db.bolt-pre-<version>` to
 `db` and `db_bk.bolt-pre-<version>` to `db_bk`, start the older wr, losing
-everything done since the conversion; the two removed knobs.
+everything done since the conversion; the two removed knobs; restore
+messages now say "db" where they said "db file" (E2).
 `cmd/conf.go` comments for the two paths. `DEVELOPERS.md`: store layout,
 `WR_TEST_STORE`, `WR_STORE_RECORD`, `WR_STORE_REPLAY`, crash-test env vars,
 and the fallback below for the key index.
