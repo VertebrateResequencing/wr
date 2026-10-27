@@ -295,6 +295,16 @@ applied for that key. Keys are 16 binary bytes (wr's 32-hex md5).
 | 7 | limit | group, i64 limit, or removed flag |
 | 8 | rglookup | rep group, key (`storeRepGroupLookups`) |
 | 9 | histdrop | key (a completed job made live again) |
+| 10 | depgroup | dep group name, first time it is added |
+
+- Depgroup: today's `depgroups` bucket (dep groups ever added, never
+  removed). An add block carries one per dep group not yet in the store's
+  ever-seen set, so `depGroupEverSeen` stays true after every member is
+  deleted. Checkpoints carry the whole set; conversion writes one per
+  `depgroups` entry.
+- Learned-requirement samples have no record: they are history (Phase 1:
+  `history.bolt`'s `jobRAM`, `jobDisk`, `jobSecs`; Phase 2: segment
+  footers), loaded into memory at open and extended by the folder.
 
 - Flat spec: every field `encodeJob` persists today that `jobRunState` does
   not. Strings and string slices are length-prefixed; Dependencies,
@@ -353,7 +363,7 @@ that return live jobs decode them through their Refs.
 
 ### Recovery
 
-1. Take the lock, check `VERSION`, delete `*.tmp`.
+1. Take the lock, check `VERSION`, delete `*.tmp` and any `SOURCE` (E1).
 2. Load the newest checkpoint with a valid trailer, decoding blocks with 8
    concurrent readers.
 3. Open history and read its durable folded position F (file, offset).
@@ -384,7 +394,7 @@ since the last), and never sooner after the previous one ended than it took:
    recovery reducer, writing `NNNNNNNN.ckpt.tmp`: a header frame (`walFrom`,
    max seq, counts), zstd blocks of at most 64KiB uncompressed holding each
    live job's spec and state records, each live key's non-empty std, and
-   every env, limit, dep-group and stat record, then a trailer frame (block
+   every env, limit and depgroup record, then a trailer frame (block
    offsets, magic `WRCKPT01`).
 4. fsync, rename to `.ckpt`, fsync the directory, then swap every in-memory
    Ref (spec, last state, std) that points below the cut for its copy
@@ -431,7 +441,8 @@ log position.
   `managerDBOpenTimeout`, then `ErrDBLocked`.
 - At open, `dbFile` may be: absent; a store directory; a bbolt file (bbolt
   meta magic `0xED0CDAED`) to convert; a self-contained backup (tar, "ustar"
-  at offset 257) to restore. Anything else is "corrupt (?)".
+  at offset 257) to restore. Anything else is corrupt and restored from
+  backup as today's "corrupt (?)" db file (E2 order step 8).
 - The self-contained backup is a tar of `VERSION`, the newest checkpoint,
   the wal files from its cut through a just-sealed one, and all history
   files (Phase 1: `history.bolt` via `tx.WriteTo`; Phase 2: sealed `.hist`).
@@ -921,9 +932,9 @@ On success `handOutReservation` restarts the TTR, as today. It checks the
 reservation's `Commit` with `WaitWithin(0)`; if it is not done it still
 hands out but counts the job in the `"reservation wait"` line's
 `notDurable` field (replacing `logReserveNotDurable`'s count), so any
-non-durable hand-out is visible in the manager log. Removed: `updateJobRunStateDurableWithin`,
-`logReserveNotDurable`, `errDurableWriteWaitExpired`, `ReserveWriteWait`,
-`setBatchTuning`.
+non-durable hand-out is visible in the manager log. Removed:
+`updateJobRunStateDurableWithin`, `logReserveNotDurable`,
+`errDurableWriteWaitExpired`, `ReserveWriteWait`, `setBatchTuning`.
 
 ```go
 // reserveDurableWait is min(10s, ClientMinRequestTimeout/4), today's
@@ -1110,7 +1121,8 @@ today while history is written in the background.
    answers are unchanged and the overlay is empty.
 3. Given 3 completions in req group `"q"` with PeakRAM 100, 100, 200, and
    2 releases in `"q"` with FailReasonRAM (PeakRAM 300) and FailReasonTime,
-   when folded, then the rise in `reqStatChanges()` and
+   when the folder is flushed (test hook: fold to `Writer.Durable()` and
+   return), then the rise in `reqStatChanges()` and
    `refreshReqGroupRecs("q")` equal what bbolt gives for the same five
    exits.
 4. Given a fold killed after its bbolt transaction but before anything
@@ -1193,19 +1205,34 @@ record length.
 As an operator, I want my existing bbolt database converted on the first
 `wr manager start`, with progress shown and the old file kept for rollback.
 
-Steps, crash-safe: (1) check free space on `dbFile`'s filesystem is at least
+Steps, crash-safe: (0) validate the source: open it read-only with
+`bolt.Open` (which checks both meta pages' magic, version and checksum);
+(1) check free space on `dbFile`'s filesystem is at least
 the bbolt file's size, else `errNotEnoughSpace` naming needed and available
 bytes; (2) create `dbFile + ".converting"` and write `SOURCE` naming
 `dbFile + ".bolt-pre-" + v` (`v` = `ServerVersion`, or `dev` when empty),
 fsync; (3) rename `dbFile` to that name; (4) build the store inside
 `.converting` (Phase 1: checkpoint of live jobs with run-state overlays and
-rerun marks applied, envs, limits, stats, std, and `history.bolt` from the
-history buckets; Phase 2: `.hist` segments instead); (5) fsync, rename
-`.converting` to `dbFile`, fsync the parent. At open, an existing
+rerun marks applied, envs, limits, depgroups, std, and `history.bolt` from
+the history buckets, stats included; Phase 2: `.hist` segments
+instead); (5) fsync, rename `.converting` to `dbFile`, fsync the parent,
+then delete `dbFile/SOURCE` (recovery deletes a leftover one). The bbolt
+file at the pre name is kept for rollback. At open, an existing
 `.converting/SOURCE` resumes: clear the rest of `.converting` and redo from
-the source (at `dbFile` or the pre name). Accepts bbolt schema 0, 1 and 2.
-Schema 0 is needed for real production DBs: `db_schema.go` defines it as a
-DB with no recorded version, which older wr wrote. In every schema,
+step 0 on the source (at `dbFile` or the pre name).
+
+Corrupt source: an error from step 0, or a read error or recovered bbolt
+panic from the source during step 4, that `openErrorThatIsNotCorruption`
+does not claim, means the source is corrupt. Then `os.RemoveAll`
+`.converting`, rename the pre name back to `dbFile` if step 3 ran, fsync the
+parent, and restore as E2 order step 8 with today's corrupt-db message. A
+claimed error is returned as today with nothing renamed back or restored
+(a resumed run sees `SOURCE` and retries). So a corrupt bbolt file never
+loops on resume.
+
+Accepts bbolt schema 0, 1 and 2. Schema 0 is needed for real production
+DBs: `db_schema.go` defines it as a DB with no recorded version, which older
+wr wrote. In every schema,
 StdOutC/StdErrC of complete records are dropped. Progress uses
 `internal.DBUpgradeConvertState = "convert database"` with Processed/Total
 in jobs; `IsDBUpgradeState` returns true for it.
@@ -1244,6 +1271,8 @@ func buildStoreFromBolt(ctx context.Context, boltFile, dir string,
 5. Given a conversion in progress, when the sidecar is read, then State is
    `"convert database"`, Processed rises to Total, and
    `IsDBUpgradeState("convert database")` is true.
+6. Given a finished conversion, when `dbFile` is listed, then it holds no
+   `SOURCE`, and `dbFile.bolt-pre-dev` exists with the original's sha256.
 
 ### E2: Open, restore and corruption
 
@@ -1259,8 +1288,12 @@ new store.
 4. `dbFile` absent: restore (below), or create an empty store (`VERSION`,
    empty checkpoint) when there is no backup.
 5. `dbFile` a self-contained file: restore it, then remove the file.
-6. `dbFile` bbolt: convert (E1).
-7. `dbFile` a store: recover; on `errStoreCorrupt` with a backup, restore.
+6. `dbFile` bbolt (meta magic): convert (E1); a corrupt source goes to 8.
+7. `dbFile` a store: recover; on `errStoreCorrupt`, go to 8.
+8. Otherwise (unrecognised, or corrupt from 6 or 7): restore from the
+   backup with today's "corrupt (?) db file" messages; with no backup, or
+   a backup that fails restore step 2, return the error as today with
+   `dbFile` untouched.
 
 Restore never touches `dbFile` until the backup is proven good, as today
 (`initDB` opens the backup before replacing):
@@ -1279,8 +1312,8 @@ Restore never touches `dbFile` until the backup is proven good, as today
 
 A crash at any point leaves either the original `dbFile` (step 2 of the
 order then discards the partial `.restoring`) or no `dbFile` (the restore
-reruns from the same backup). The returned message strings keep today's
-wording with "db file" replaced by "db".
+reruns from the same backup). The returned message strings are today's,
+word for word (`initDB`).
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_open.go`
@@ -1290,7 +1323,7 @@ wording with "db file" replaced by "db".
 
 1. Given no `dbFile` and a backup directory, when opened, then the live and
    complete sets equal those at backup time and the message starts
-   `"recreated missing db"`.
+   `"recreated missing db file"`.
 2. Given no `dbFile` and a self-contained file at the backup path, when
    opened, then the same holds.
 3. Given `dbFile` is a self-contained file, when opened, then `dbFile`
@@ -1302,7 +1335,7 @@ wording with "db file" replaced by "db".
    opens.
 6. Given no `dbFile` and a bbolt file at the backup path, when opened, then
    `dbFile` is a converted store whose live and complete sets equal the
-   bbolt file's, and the message starts `"recreated missing db"`.
+   bbolt file's, and the message starts `"recreated missing db file"`.
 7. Given the same with the bbolt file as one object in a fake S3 target,
    when opened, then the same holds.
 8. Given a corrupt store and a backup directory whose checkpoint trailer is
@@ -1316,7 +1349,21 @@ wording with "db file" replaced by "db".
 10. Given a corrupt store and an old bbolt backup at the backup path, when
     opened, then `dbFile` is a store whose live and complete sets equal the
     bbolt file's, the backup file is unchanged, and the message starts
-    `"recreated corrupt (?) db"`.
+    `"recreated corrupt (?) db file"`.
+11. Given `dbFile` a bbolt file with both meta page checksums damaged and a
+    good bbolt backup at `dbBkFile`, when opened, then `dbFile` is a store
+    equal to the backup, the message starts `"recreated corrupt (?) db
+    file"`, no `.converting` or `dbFile.bolt-pre-dev` exists, and a second
+    open recovers the store without restoring or converting.
+12. Given the same corrupt `dbFile` and a store-directory backup, when
+    opened, then the same holds with the store equal to the backup.
+13. Given `dbFile` a bbolt file whose meta pages are valid but a branch
+    page is zeroed, and a store-directory backup, when opened, then the
+    same holds (the failure arises during E1 step 4).
+14. Given `dbFile` holds 4KiB of random bytes and a store-directory
+    backup, when opened, then the store equals the backup and the message
+    starts `"recreated corrupt (?) db file"`; with no backup, the error is
+    returned and `dbFile` is byte-identical.
 
 ### E3: Recursive deletes
 
@@ -1570,8 +1617,7 @@ undurable; the automatic one-way conversion; `managerdbfile` and
 `managerdbbkfile` are now directories (or an S3 prefix); rollback = stop,
 remove the `db` and `db_bk` directories, rename `db.bolt-pre-<version>` to
 `db` and `db_bk.bolt-pre-<version>` to `db_bk`, start the older wr, losing
-everything done since the conversion; the two removed knobs; restore
-messages now say "db" where they said "db file" (E2).
+everything done since the conversion; the two removed knobs.
 `cmd/conf.go` comments for the two paths. `DEVELOPERS.md`: store layout,
 `WR_TEST_STORE`, `WR_STORE_RECORD`, `WR_STORE_REPLAY`, crash-test env vars,
 and the fallback below for the key index.
@@ -1623,7 +1669,9 @@ passing. Work and measurements on NFS go under
     shape, about 6,000 runners, at least 3h, injected stalls and crashes):
     0 acknowledged writes lost, 0 non-durable hand-outs (including during
     stalls: `soakgate.py` sums `notDurable` over the manager log's
-    `"reservation wait"` lines and requires 0), 0 double runs outside
+    `"reservation wait"` lines and requires 0; `notDurable` is the
+    production `WaitWithin(0)` check `handOutReservation` makes on every
+    hand-out (C3), not a test hook), 0 double runs outside
     injected stalls.
   - `make speed-full`: no regression above 10% against `d1a4b6d7`.
   - Daytime NFS, from the A3 lines in the soak: reservation wait p99 at
