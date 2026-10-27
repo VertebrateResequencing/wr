@@ -220,7 +220,6 @@ func (c Commit) WaitWithin(d time.Duration) (done bool, err error)
 
 type Writer struct{ /* one goroutine, one open segment */ }
 
-func NewWriter(dir string, file uint32, segmentSize int64) (*Writer, error)
 func (w *Writer) Append(rec []byte) (Ref, Commit)
 func (w *Writer) AppendBlock(block []byte, n int) (Ref, Commit) // pre-built
 func (w *Writer) Rotate() (sealed uint32, err error)
@@ -232,10 +231,37 @@ func (w *Writer) Close() error
 `Append` and `AppendBlock` assign the record's Ref under the writer's mutex,
 so Ref order is log order. The writer goroutine takes everything queued,
 issues one `write()` and one `fdatasync`, then closes the batch's channel; no
-lock is held across the sync (as `proto/internal/gc`). A write or sync error
-fails that batch's commits and every later one with that error; the writer
-does not retry. Segments rotate at `walSegmentSize` (256MiB) on a batch
-boundary; rotation fsyncs the old file and the directory.
+lock is held across the sync (as `proto/internal/gc`). Segments rotate at
+`walSegmentSize` (256MiB) on a batch boundary; rotation fsyncs the old file
+and the directory. Every file's first frame is a header written by the
+writer, `"WRWALHDR"`, u32 previous file number, u64 previous file's durable
+end (its size on a normal rotation); `Scan` passes it to fn like any record
+and `ParseHeader` recognises it.
+
+Write or sync error:
+
+- Only the failing batch's commits get the error.
+- The writer abandons the file (a page cache after a failed fsync cannot be
+  trusted: nothing more is written to it), opens the next file number,
+  whose header records the abandoned file's last durable end, and carries
+  on with later batches.
+- If opening, writing or syncing a new file also fails, it retries with
+  backoff (100ms doubling, at most `walFailLimit`, 1 min, in all); pending
+  commits keep waiting. Past the limit every pending and later commit gets
+  `ErrWriterFailed` and `onFatal` is called once.
+
+```go
+var ErrWriterFailed = errors.New("wal writer failed")
+
+func ParseHeader(rec []byte) (prevFile uint32, prevEnd uint64, ok bool)
+func NewWriter(dir string, file uint32, segmentSize int64,
+	onFatal func(error)) (*Writer, error)
+```
+
+The log store passes an `onFatal` that logs at error and shuts the server
+down with reason `ErrClosedStorage = "queues closed due to a storage write
+failure"`; `logServerStop` reports that reason with `die`, so
+`wr manager start` exits non-zero rather than serving without durability.
 
 Files in the store directory, `NNNNNNNN` being an 8-hex-digit file number
 from one counter (max existing + 1 at open):
@@ -295,10 +321,15 @@ applied for that key. Keys are 16 binary bytes (wr's 32-hex md5).
   release, bury, delete, modify, limits, rerun marks wait; best-effort
   changes do not.
 - Reservation (C3): wait at most `reserveDurableWait()`
-  (`ClientMinRequestTimeout/4`); on timeout, return the job to the ready
-  queue, record a release state record (not waited for) and answer "no job".
-  Log order puts the release after the reserve, so recovery never sees a
-  job handed out before its reservation is durable.
+  (`min(10s, ClientMinRequestTimeout/4)`, today's bound); on timeout or any
+  error, return the job to the ready queue, record a release state record
+  (not waited for) and answer "no job". Log order puts the release after the
+  reserve, so recovery never sees a job handed out before its reservation is
+  durable. A crash after the reserve is durable but before the release is
+  recovers the job as reserved by a runner that never had it; it is not run
+  twice and returns to ready through the lost-job path, at worst at
+  `ServerTimings.LostRunnerBackstop` (1h). Waiting for the release would
+  put the stall back on the reserve handler, so it is not waited for.
 - `beSeq`, run-state overlays, change-versus-exit skipping and writer turns
   do not exist in `logStore`. `expectJobExitUpdate` keeps its contract:
   `retrieveJobStd` waits for exit updates expected or in flight.
@@ -320,13 +351,22 @@ that return live jobs decode them through their Refs.
 1. Take the lock, check `VERSION`, delete `*.tmp`.
 2. Load the newest checkpoint with a valid trailer, decoding blocks with 8
    concurrent readers.
-3. Replay every wal file from the checkpoint's `walFrom` in file order. A
-   torn or corrupt tail of the last wal file is truncated there (logged at
-   warn with the byte count). Damage in any earlier wal file, a missing wal
-   file number, or no valid checkpoint is `errStoreCorrupt`.
-4. Open history; rebuild the overlay from completions after the history's
-   folded position.
+3. Open history and read its durable folded position F (file, offset).
+   Scan every wal file from min(F's file, the checkpoint's `walFrom`) in
+   file order. Records from `walFrom` on are applied to live state;
+   completions, rglookups and histdrops at or after F rebuild the overlay.
+4. Damage rules over that range: a file followed by another is valid up to
+   the next file's header `prevEnd`; bytes beyond it are an abandoned or
+   torn tail and are truncated (logged at warn with the byte count), as is
+   a torn or corrupt tail of the last file. Damage before `prevEnd`, a
+   missing file number, a missing or wrong header, or no valid checkpoint is
+   `errStoreCorrupt`.
 5. Return live jobs (spec + latest state), as `recoverIncompleteJobs` does.
+
+Wal deletion rule (the only one): a wal file is deleted only when it is
+below both the newest checkpoint's `walFrom` and F's file, where F is
+durable at each fold commit in Phase 1 (`history.bolt` meta) and at each
+segment seal in Phase 2, and only when no reader holds it.
 
 ### Checkpoints
 
@@ -342,9 +382,9 @@ since the last), and never sooner after the previous one ended than it took:
    every env, limit, dep-group and stat record, then a trailer frame (block
    offsets, magic `WRCKPT01`).
 4. fsync, rename to `.ckpt`, fsync the directory, then swap every in-memory
-   Ref (spec, last state, std) that points into a dropped file for its copy
-   in the new checkpoint, then delete older checkpoints and wal files below
-   the cut (each unlinked only when no reader holds it).
+   Ref (spec, last state, std) that points below the cut for its copy
+   in the new checkpoint, then delete older checkpoints and apply the wal
+   deletion rule.
 
 A checkpoint is a pure function of files on disk, so it is a consistent cut
 whatever the hot path does meanwhile.
@@ -371,8 +411,6 @@ log position.
   rename) at `histSegmentBytes` (256MiB uncompressed) or `histSegmentAge`
   (1h). The folded position durable across a crash is the last sealed
   segment's; the open segment is rebuilt from the log at recovery.
-- Wal files are deleted only when below both the checkpoint cut and the
-  durable folded position.
 - Until folded, a completion is in the overlay, and every history query
   answers from history plus overlay, so status straight after an archive is
   unchanged.
@@ -405,8 +443,7 @@ log position.
 - An old backup is a bbolt file at `dbBkFile` (default `db_bk`) or one S3
   object. Before the first incremental ship, if the backup path holds bbolt
   (meta magic), it is renamed to `dbBkFile + ".bolt-pre-" + v` (as E1;
-  S3: copy then delete) and kept. Restore on a missing `dbFile` also accepts
-  such a backup: it is copied or downloaded to `dbFile`, then converted (E1).
+  S3: copy then delete) and kept. Restore also accepts such a backup (E2).
 
 ### Configuration and removals
 
@@ -424,7 +461,8 @@ New sentinels in `jobqueue`: `errStoreCorrupt`, `errNotEnoughSpace`,
 `errStoreVersionTooNew`. `ErrDBLocked` and `ErrDBUnreadable` keep their
 meaning; `openErrorThatIsNotCorruption`'s errno list applies to the store
 directory and its files too. A failed durable write returns its error to the
-caller (as today); a writer error after `close` returns `errDBClosed`.
+caller (as today); a writer error after `close` returns `errDBClosed`; a
+failed writer (`wal.ErrWriterFailed`) stops the manager (Write path).
 
 ## A: Store interface and harnesses (Phase 0)
 
@@ -609,20 +647,54 @@ hashes a canonical result: jobs sorted by key, with fields not persisted by
 `encodeJob` zeroed, maps sorted. Replay runs calls serially in recorded
 `End` order against a fresh store and reports a mismatch only for calls
 that did not overlap a write call in the recording ([Start, End] seq
-intervals).
+intervals). `ctx` is never recorded; replay passes its own.
+
+Arguments that are closures or live objects are recorded as data. A handle
+(`*jobChangeAhead`, `*rerunGuard`, the func from `expectJobExitUpdate`) is
+recorded as the `Start` of the call that returned it (0 for nil); replay
+keeps a map from that id to the handle its own store returned and passes
+the mapped handle (nil for 0 or unmapped). A `change` func is recorded as
+the job it leaves: the wrapper passes the store a closure that calls
+`change` and then encodes the job (the store holds the job's lock then); a
+call whose store never ran `change` records the job unchanged.
+
+| Call | Recorded | Replay |
+| --- | --- | --- |
+| `prepareJobChange` | job as `change` left it; result id | change = set the recorded fields; map result |
+| `queueJobChangeAhead` | ahead id; job as `change` left it | same change; mapped ahead |
+| `moveJobChangeAhead` | from, to, ahead id; result id | mapped ahead; map result |
+| `discardJobChangeAhead` | job, ahead id | mapped ahead |
+| `expectJobExitUpdate` | result id; calling the func records `expectJobExitUpdate.done` with that id | call the mapped func |
+| `registerRerunGuard`, `releaseRerunGuard` | result id; guard id | map result; mapped guard |
+| `storeNewJobsGuarded` | guard id with its member and dependent keys at entry | mapped guard given them (`setDependents`) first |
+| `spendArchivedBytesByRepGroup` | budget's `remaining` at entry | fresh budget with that `remaining` |
+| `resolveDependencies` | each `hasMembers` and `liveCommandVariants` query and answer (wrapped `groups`) | `groups` answering from those; an unrecorded query is a mismatch |
+
+The digest of `spendArchivedBytesByRepGroup` covers only whether it
+returned an error, since stores price records differently (D3).
+
+Methods removed in Phase 1: a store without
+`updateJobRunStateDurableWithin` gets `updateJobRunStateDurable(job)`
+(digest not compared), and `logReserveNotDurable` and `setBatchTuning`
+are skipped. Skipped calls count in `skipped`, never as mismatches.
 
 ```go
 type recordedCall struct {
 	Start, End uint64 // global call sequence at entry and at return
 	Method     string
-	Args       []byte // Binc of the arguments
+	Args       []byte // Binc of the arguments as tabled above
 	Digest     [32]byte
 	Nanos      int64
 	Write      bool
 }
 
 func replayRecording(ctx context.Context, path string,
-	s store) (calls int, mismatches []replayMismatch, err error)
+	s store) (replayStats, error)
+
+type replayStats struct {
+	calls, skipped int
+	mismatches     []replayMismatch
+}
 
 type replayMismatch struct {
 	Seq    uint64
@@ -642,14 +714,27 @@ gate's runner, not an acceptance test of the harness.
 
 1. Given a scripted workload (add 100 jobs in 2 calls, reserve/start/archive
    50, delete 10, modify 5, status by rep group, recent completions with a
-   fixed cutoff) recorded against bbolt, when replayed against a fresh bbolt
-   store, then `calls` equals the recorded count and `mismatches` is empty.
+   fixed cutoff, one kick through `prepareJobChange`/`queueJobChangeAhead`,
+   one discarded change ahead, a guarded add, an archived-bytes spend, a
+   dependency resolve) recorded against bbolt, when replayed against a fresh
+   bbolt store, then `calls` equals the recorded count, `skipped` is 0 and
+   `mismatches` is empty.
 2. Given that recording, when replayed against a store whose
    `retrieveCompleteJobsByKeys` drops its last result, then `mismatches` is
    non-empty and its first entry has Method
    `"retrieveCompleteJobsByKeys"`.
 3. Given a recording whose last frame is truncated by 3 bytes, when
    replayed, then it replays every complete frame and returns no error.
+4. Given a bbolt recording with 3 `updateJobRunStateDurableWithin`, 1
+   `logReserveNotDurable` and 1 `setBatchTuning` call, when replayed
+   against a store wrapper that hides those three methods, then `skipped`
+   is 2, `mismatches` is empty and the 3 jobs are reserved in the replayed
+   store.
+5. Given a recording with two changes prepared and then queued in reverse
+   order, when replayed against a bbolt store wrapped to note handles, then
+   each `queueJobChangeAhead` received the handle its own job's replayed
+   `prepareJobChange` returned, and the replayed jobs' changed fields equal
+   the recorded ones.
 
 ## B: Log engine (Phase 1)
 
@@ -694,16 +779,22 @@ page rewrites.
 
 1. Given 1,000 goroutines each appending one record and waiting, when all
    return, then `Stats().Records` is 1,000, `Stats().Syncs` is less than
-   1,000, and a scan of the file finds 1,000 records.
+   1,000, and a scan of the file finds the header then 1,000 records.
 2. Given a test sync hook that blocks the first sync for 200ms, when a
    record is appended, then `WaitWithin(50ms)` returns `(false, nil)` and
    `Wait()` returns nil after the hook releases.
-3. Given a sync hook returning `EIO`, when two records are appended in
-   separate batches, then both `Wait()` calls return an error wrapping
-   `syscall.EIO`.
+3. Given a sync hook returning `EIO` once, when record a is appended and
+   then record b in a later batch, then a's `Wait()` returns an error
+   wrapping `syscall.EIO`, b's returns nil, b's Ref names file 2, nothing
+   is written to file 1 after the failure, and file 2's header gives
+   `prevFile` 1 and `prevEnd` file 1's size before a's batch.
 4. Given `segmentSize` 4KiB and 100 records of 100 bytes, when appended,
    then at least 2 `.wal` files exist, records never span files, and Refs
    name the file each record is in.
+5. Given a sync hook returning `EIO` for every sync and `walFailLimit`
+   500ms, when one record is appended, then its `Wait()` returns an error,
+   a later append's `Wait()` returns `ErrWriterFailed` within 1s, and
+   `onFatal` was called exactly once.
 
 ### B3: Block codecs
 
@@ -792,12 +883,14 @@ As a user, I want a job never handed to a runner before its reservation is
 durable, even during a filesystem stall, so that a crash never runs it twice.
 
 Each transition appends one state record. In `persistReservation`, the
-server waits `reserveDurableWait()`; on timeout it does not hand out: it
+server waits `reserveDurableWait()`; on timeout or any error but
+`errDBClosed` it does not hand out: it
 releases the item to the ready sub-queue with no delay and no added attempt,
 forgets the runner hold, sets State ready and clears ReservedBy, records the
 change with `prepareJobChange`/`queueJobChangeAhead`, logs
 `reserveAbandonedLogMsg` through `s.warns`, and answers with no job (as when
-nothing is ready). On success `handOutReservation` restarts the TTR, as
+nothing is ready); on `errDBClosed` it answers with no job without the
+release. On success `handOutReservation` restarts the TTR, as
 today. `handOutReservation` checks the reservation's `Commit` with
 `WaitWithin(0)`; if it is not done it still hands out but counts the job in
 the `"reservation wait"` line's `notDurable` field (replacing
@@ -807,7 +900,9 @@ the manager log. Removed: `updateJobRunStateDurableWithin`,
 `setBatchTuning`.
 
 ```go
-func reserveDurableWait() time.Duration // ClientMinRequestTimeout / 4
+// reserveDurableWait is min(10s, ClientMinRequestTimeout/4), as
+// serverReserveWriteWait today.
+func reserveDurableWait() time.Duration
 ```
 
 **Package:** `jobqueue/`
@@ -834,6 +929,18 @@ func reserveDurableWait() time.Duration // ClientMinRequestTimeout / 4
 6. Given syncs held for 2s and a test hook making `persistReservation` skip
    its wait, when a runner reserves, then the next `"reservation wait"` line
    has `notDurable=1`; without the hook (test 2) it has `notDurable=0`.
+7. Given a sync hook returning `EIO` once, when a runner reserves, then it
+   gets no job, the item is in the ready sub-queue with Attempts unchanged,
+   and a second reserve gets the job.
+8. Given a test hook that drops the release record after a durable reserve
+   timed out (test 2), when the store is reopened, then the job recovers as
+   reserved by that ClientID, the wal holds no start record for it, and
+   the server treats it as a reserved job whose runner vanished (as a
+   bbolt store recovered with the same record does).
+9. Given a sync hook returning `EIO` for every sync and `walFailLimit`
+   500ms, when a job is added, then the add returns an error, `Block()`
+   returns a `jobqueue.Error` whose Err is `ErrClosedStorage` within 2s,
+   and `wr manager start` (via `logServerStop`) exits with status 1.
 
 ### C4: Delete, modify and reruns
 
@@ -887,6 +994,12 @@ quickly, so that recovery neither loses nor resurrects work.
 3. Given a byte flipped in a wal file that is not the last, when reopened,
    then `openStore` restores from backup if one exists, else returns an
    error wrapping `errStoreCorrupt`.
+5. Given a sync error mid-run (B2 test 3) after which file 1 is given 50
+   extra bytes past its header-recorded `prevEnd`, when reopened, then
+   recovery succeeds, file 1 is truncated to `prevEnd`, the failed batch's
+   records are absent, and later records in file 2 are applied.
+6. Given wal file 2 deleted while file 3 exists, when reopened, then the
+   error wraps `errStoreCorrupt`.
 4. Given 100,000 live 1KiB jobs, when recovered, then the store's own heap
    growth (excluding returned jobs, measured after dropping them) is under
    40MB.
@@ -903,17 +1016,22 @@ change.
 
 **Acceptance tests:**
 
-1. Given a checkpoint after 2,000 jobs were added and 1,000 archived and
-   folded, when it completes, then no wal file below its cut remains and
-   reopening gives the same live set as before it.
-2. Given a test hook that kills the checkpoint after writing `.ckpt.tmp`
+1. Phase 1: given a checkpoint after 2,000 jobs were added and 1,000
+   archived and folded, when it completes, then no wal file below its cut
+   remains and reopening gives the same live set as before it.
+2. Phase 2: given the same with the open history segment not yet sealed,
+   when the checkpoint completes, then wal files from the last sealed
+   segment's position onward remain, and reopening gives the same live set
+   and all 1,000 completions; after the segment seals and another
+   checkpoint runs, no wal file below the cut remains.
+3. Given a test hook that kills the checkpoint after writing `.ckpt.tmp`
    but before rename, when reopened, then the previous checkpoint is used,
    the `.tmp` is gone, and the live set equals the model.
-3. Given 1,000 live jobs, 100 of them with std, and a checkpoint that
+4. Given 1,000 live jobs, 100 of them with std, and a checkpoint that
    drops every earlier wal file, when each live entry's spec, last state
    and std Ref is read with `wal.ReadAt`, then it decodes to that job's
    spec, state and std (1,000, 1,000 and 100 of each).
-4. Given 4 goroutines writing continuously during 3 checkpoints, when
+5. Given 4 goroutines writing continuously during 3 checkpoints, when
    reopened, then the live set equals the in-memory model.
 
 ### C7: Lock and version
@@ -948,24 +1066,34 @@ today while history is written in the background.
 
 **Acceptance tests:**
 
-1. Given the folder paused by a test hook, when a job of rep group `"rg"`
-   is archived, then `checkIfComplete` is true,
-   `retrieveCompleteJobsByKeys` returns it,
-   `retrieveCompleteJobsRecent(before)` includes it,
-   `retrieveLastCompletionTimeByRepGroup(["rg"])` is its EndTime, and
-   `retrieveCompleteJobStatusByRepGroup("rg", false)` counts 1 complete.
-2. Given that job, when the folder resumes and runs, then the same five
+1. Given the folder paused by a test hook and rep group `"rg"` never seen
+   before, when a job of `"rg"` is archived, then `checkIfComplete` is
+   true, `retrieveCompleteJobsByKeys` and
+   `retrieveCompleteJobsByRepGroup("rg")` return it,
+   `retrieveOldestCompleteJobsByRepGroup("rg", limit 10)` returns it with
+   count 1, `retrieveCompleteJobsRecent(before)` includes it,
+   `retrieveLastCompletionTimeByRepGroup(["rg"])` is its EndTime,
+   `retrieveCompleteJobStatusByRepGroup("rg", false)` counts 1 complete,
+   `repGroupHasHistory("rg")` is true and `retrieveRepGroups()` includes
+   `"rg"`.
+2. Given that job, when the folder resumes and runs, then the same nine
    answers are unchanged and the overlay is empty.
-3. Given 3 completions in req group `"q"` with PeakRAM 100, 100, 200, when
-   folded, then `reqStatChanges()` rose by 2 and
-   `refreshReqGroupRecs("q")` equals what bbolt gives for the same three
-   archives.
+3. Given 3 completions in req group `"q"` with PeakRAM 100, 100, 200, and
+   2 releases in `"q"` with FailReasonRAM (PeakRAM 300) and FailReasonTime,
+   when folded, then the rise in `reqStatChanges()` and
+   `refreshReqGroupRecs("q")` equal what bbolt gives for the same five
+   exits.
 4. Given a fold killed after its bbolt transaction but before anything
    else, when reopened and folded again, then `count(kindComplete)` is
    unchanged (idempotent).
 5. Given a fold hook that blocks the folder for 2s, when 100 archives are
    made meanwhile, then every `archiveCompletion` returns within 500ms and
    the `"db writer"` line has `writer=fold`.
+6. Given the folder paused, a job archived and then put back live
+   (`storeLiveForRerun`), when the folder resumes and the store is
+   reopened, then `checkIfLive` is true, `checkIfComplete` is false, and
+   `retrieveCompleteJobsByRepGroup` does not return it, before and after
+   the fold.
 
 ### D2: History segments (Phase 2)
 
@@ -1053,6 +1181,11 @@ in jobs; `IsDBUpgradeState` returns true for it.
 ```go
 func convertBoltDB(ctx context.Context, dbFile string,
 	upgrade *dbUpgradeReporter) error
+
+// buildStoreFromBolt is step 4: it reads boltFile read-only and writes a
+// store into the empty directory dir.
+func buildStoreFromBolt(ctx context.Context, boltFile, dir string,
+	upgrade *dbUpgradeReporter) error
 ```
 
 **Package:** `jobqueue/`, `internal/`
@@ -1085,15 +1218,37 @@ func convertBoltDB(ctx context.Context, dbFile string,
 As an operator, I want the restore-from-backup behaviour of today for the
 new store.
 
-`openStore` order: dev wipe (E3); resume conversion; if `dbFile` is absent,
-restore from backup (directory, S3 prefix, or self-contained file at the
-backup path) into `dbFile + ".restoring"` then rename, or from an old bbolt
-backup (file or object) then convert, or create an empty
-store (`VERSION`, empty checkpoint); if a self-contained file, restore it the
-same way and remove the file; if bbolt, convert; if a store, recover, and on
-`errStoreCorrupt` with a backup, `os.RemoveAll(dbFile)` and restore. The
-returned message strings keep today's wording with "db file" replaced by
-"db".
+`openStore` order:
+
+1. Dev wipe (E3).
+2. `os.RemoveAll` any leftover `dbFile + ".restoring"` and
+   `dbFile + ".corrupt"`.
+3. Resume conversion.
+4. `dbFile` absent: restore (below), or create an empty store (`VERSION`,
+   empty checkpoint) when there is no backup.
+5. `dbFile` a self-contained file: restore it, then remove the file.
+6. `dbFile` bbolt: convert (E1).
+7. `dbFile` a store: recover; on `errStoreCorrupt` with a backup, restore.
+
+Restore never touches `dbFile` until the backup is proven good, as today
+(`initDB` opens the backup before replacing):
+
+1. Copy or download the backup into `dbFile + ".restoring"`: a store
+   backup's files, a self-contained file's tar members, or an old bbolt
+   backup, opened read-only and built into it by `buildStoreFromBolt` (a
+   downloaded bbolt object lives inside `.restoring` and is removed before
+   step 3). S3 downloads land only inside
+   `.restoring`.
+2. Recover the store in `.restoring` fully (as `openStore` would), then
+   close it and fsync. Any error: `os.RemoveAll` `.restoring`, leave
+   `dbFile` untouched, return the error with today's message.
+3. If `dbFile` exists, rename it to `dbFile + ".corrupt"`; rename
+   `.restoring` to `dbFile`; fsync the parent; `os.RemoveAll` `.corrupt`.
+
+A crash at any point leaves either the original `dbFile` (step 2 of the
+order then discards the partial `.restoring`) or no `dbFile` (the restore
+reruns from the same backup). The returned message strings keep today's
+wording with "db file" replaced by "db".
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_open.go`
@@ -1118,6 +1273,18 @@ returned message strings keep today's wording with "db file" replaced by
    bbolt file's, and the message starts `"recreated missing db"`.
 7. Given the same with the bbolt file as one object in a fake S3 target,
    when opened, then the same holds.
+8. Given a corrupt store and a backup directory whose checkpoint trailer is
+   damaged, when opened, then the error is returned, every file of the
+   corrupt store is byte-identical to before, and no `.restoring` exists.
+9. Given a corrupt store, a good backup, and a test hook crashing after
+   each restore step (mid-copy, after recovery of `.restoring`, after the
+   rename to `.corrupt`, after the rename to `dbFile`), when opened again
+   without the hook, then the store equals the backup and neither
+   `.restoring` nor `.corrupt` exists.
+10. Given a corrupt store and an old bbolt backup at the backup path, when
+    opened, then `dbFile` is a store whose live and complete sets equal the
+    bbolt file's, the backup file is unchanged, and the message starts
+    `"recreated corrupt (?) db"`.
 
 ### E3: Recursive deletes
 
@@ -1152,6 +1319,10 @@ type backupTarget interface {
    opened, then the fake holds 0 objects.
 3. Given a corrupt store restored from backup (E2 test 4), when listed,
    then no file from the corrupt store's directory remains.
+4. Given a corrupt store and a fake S3 target, once holding a good backup
+   and once a backup with a damaged checkpoint, when opened, then in both
+   cases no downloaded file remains anywhere (`.restoring` absent, no other
+   new entry in `dbFile`'s parent directory).
 
 ### E4: Incremental backup
 
@@ -1235,10 +1406,15 @@ supported yet (unreleased).
 
 As a cloud user, I want deploy and teardown to keep carrying my database.
 
-- `bootstrapDBBackupLocation` uploads a self-contained file made by
-  `jobqueue.ExportStore` to the remote's `.wr_<deployment>/db` (restored on
-  the remote's first start, E2 test 3). `ExportStore` takes the store lock
-  and fails with `ErrDBLocked` if a manager holds it.
+- `bootstrapDBBackupLocation`: when `ManagerDBFile` is a store directory,
+  it uploads a self-contained file made by `jobqueue.ExportStore` to the
+  remote's `.wr_<deployment>/db` (restored on the remote's first start, E2
+  test 3); when it is still a bbolt file it uploads it unchanged, as today,
+  and the remote converts it on first start (E1).
+- Deploy already dies if a local manager answers on its port
+  (`cmd/cloud.go`, "is already running"); `ExportStore` also takes the
+  store lock and fails with `ErrDBLocked` if a manager holds it, which only
+  a manager not answering on that port can.
 - Teardown with a non-S3 backup location `os.RemoveAll`s any
   `ManagerDBFile + ".old"`, renames an existing store directory to it, then
   calls `BackupDB(ManagerDBFile)`; the S3 branch is unchanged.
@@ -1258,7 +1434,10 @@ func ExportStore(dbDir string, w io.Writer) error
    `dbFile`, then it has the same 10 live and 10 complete jobs.
 2. Given a running manager on the store, when `ExportStore` runs, then it
    returns an error wrapping `ErrDBLocked`.
-3. Given teardown with a local store directory and a stale `db.old`, when
+3. Given a bbolt file as `ManagerDBFile`, when the upload step runs (test
+   seam), then the uploaded file has the bbolt file's sha256 and
+   `ExportStore` was not called.
+4. Given teardown with a local store directory and a stale `db.old`, when
    the rename step runs (test seam), then `db.old` is the store directory
    and `db` is free for the backup file.
 
@@ -1402,7 +1581,8 @@ passing. Work and measurements on NFS go under
     copies each, 0 missing; `FuzzScan` and `FuzzFlatSpec` 10 minutes each
     with no crasher.
   - A5: the Phase 0 prodsim recording replays against the log store with 0
-    mismatches; the A2 suite passes with `WR_TEST_STORE=all`.
+    mismatches (removed methods mapped or skipped as A5 says); the A2 suite
+    passes with `WR_TEST_STORE=all`.
   - Crash soak at production LSF concurrency with a staged ramp (battery10
     shape, about 6,000 runners, at least 3h, injected stalls and crashes):
     0 acknowledged writes lost, 0 non-durable hand-outs (including during
@@ -1459,6 +1639,7 @@ passing. Work and measurements on NFS go under
   with `Reset`. Every acceptance test has a GoConvey test; A4, A5 and the
   fuzz targets also run in the gates at larger sizes.
 - **Error policy.** Durable-write errors reach the caller as today; damage
-  at the log's tail is normal crash recovery, damage anywhere else is
-  `errStoreCorrupt` and goes to backup restore; nothing is retried
-  silently.
+  at the log's tail (or an abandoned file's) is normal crash recovery,
+  damage anywhere else is `errStoreCorrupt` and goes to backup restore; the
+  only retry is the writer's bounded reopen, and its failure stops the
+  manager.
