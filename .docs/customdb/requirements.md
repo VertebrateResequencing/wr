@@ -1,7 +1,8 @@
 # What durability wr's manager needs
 
 This is the inventory behind the designs in this directory. Code references
-are to develop at 9fc0d795 (which includes the run-state change, #684).
+were taken at develop 9fc0d795 (which includes the run-state change, #684)
+and checked against d1a4b6d7 (which adds the no-hold change, #692).
 Rates come from the battery10 soak (`/nfs/hgi/wr/sb10-bigdb/battery10/`,
 be432093, 3h, peak 6,104 LSF runners), the runstate-gate soaks
 (`runstate-gate/analysis/bursts-findings.md`) and `dbstats` (in `proto/`)
@@ -90,6 +91,13 @@ says what the manager waits for today.
 | Schema/meta | `putDBSchemaVersion` | Start, compact | | |
 | Run-state drops | `dropRunStates` at recovery | Once per start | | |
 
+Since #692 these writers no longer queue on bbolt's write lock in arrival
+order: `writeTurns` (`writeturns.go`) decides which of the new-jobs,
+archive, best-effort and chunked-add writers goes next, so that a small add
+is not stuck behind the archive writer re-queueing on slow NFS. Adds also
+encode a job's live record ahead of the change (`jobChangeAhead`,
+`prepareJobChange`) to keep encoding off the locked path.
+
 Write volume at peak today: each reserve and start writes ~400B (since #684;
 before it, the whole 1-10KB job), each archive writes the whole encoded job a
 second time (into `jobscomplete`) plus 3-4 index keys and deletes the live
@@ -117,7 +125,7 @@ commit costs 5.4ms per archive on NFS (bursts-findings §1).
 | All rep groups | `retrieveRepGroups` | Status listing | Bucket scan |
 | Std out/err of a job | `retrieveJobStd` | Status of failed jobs | Get |
 | Env blob | `retrieveEnv` (LRU) | Per reservation | Get |
-| Resource recommendations | `recommendedReqGroup{Memory,Disk,Time}` | Per scheduling of a req group | Prefix scan of sorted samples |
+| Resource recommendations | `recommendedReqGroup{Memory,Disk,Time}`, behind `reqStatCache` (`reqstat_cache.go`, #692) | Per item becoming ready (the queue's ready hook reads the cache under the queue lock); loads at most once a second per req group, invalidated when a stat write adds a key | Prefix scan of sorted samples, off the queue lock |
 | Stored limits | `retrieveStoredLimits`, `retrieveLimitGroup` | Adds, start | Get |
 
 Every live-job query is answerable from memory while the manager runs; only
@@ -166,6 +174,7 @@ Unreleased, battery10 and the runstate gate:
 | Archive stall reruns (260928-archive-stall-rerun), start/release durability bugs (260917, 260930) | Writes queued but not durable when the reply went out; separate writers with no ordering | Partly: one writer with one sequence gives total order for free; the reply-after-durable rule still has to be applied in the server |
 | Re-add overwrites running job's record (260929) | Full-record rewrites from paths that don't know the run state | Yes: specs immutable, state separate, a re-add can't touch state |
 | `beSeq` ordering, CRC-matching run-state overlay, kick ordering (#683, #684) | Full rewrites and small records racing in one key-value store | Yes: per-job sequence numbers in a log make last-writer-wins trivial |
+| Write-turn scheduling between writers (`writeTurns`, #692, 437 lines; items 6.3d-6.4g of `.docs/nohold/phase6.md`) | Four writers sharing one write lock whose commits take seconds on NFS, so the order they go in decides add latency | Yes: one group commit has no writers to order; an add's records and transitions share a batch |
 | Backup stalls, remap stalls, mmap growth (260726-1, 260727-2, 260927-backup-remap-stall) | Whole-file copy of a mutable B+tree; mmap remaps block on read txns | Yes: immutable segments are backed up by copying new files only; no mmap remap |
 | Freelist and cold-start cost (260928-db-cold-start-and-freelist) | bbolt freelist, flock dropping NFS cache, page-fault-driven decode | Yes for freelist; a sequential log read is what the prefetch emulates |
 | Write amplification as free space grows | B+tree pages scattered over a 7-21GB file | Yes |

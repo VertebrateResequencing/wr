@@ -1,6 +1,8 @@
 # Could wr's manager replace bbolt with a purpose-built store?
 
-Exploration on branch `customdb-f397b547` (develop 9fc0d795). Contents:
+Exploration on branch `customdb-f397b547`, done at develop 9fc0d795 and
+rechecked against d1a4b6d7 (#685-#692). The owner accepted the
+recommendation below on 2026-10-27. Contents:
 
 - [requirements.md](requirements.md): what the manager actually needs to be
   durable, every write kind and query shape, rates at production scale, and
@@ -57,7 +59,8 @@ part of durability:
   (D3) or a local primary avoids it. Host crashes need fdatasync and CRC
   framing in any design.
 - **What a simpler store genuinely removes:** the multiple writers and their
-  priority and ordering machinery (`beSeq`, change-versus-exit skipping,
+  priority and ordering machinery (`writeTurns` from #692, `beSeq`,
+  change-versus-exit skipping,
   CRC-matched run-state overlays, kick ordering), the 10s ReserveWriteWait
   and "handed out before recorded" escape hatch, full-record rewrites
   overwriting run state (260929), whole-file backup copies and their stalls
@@ -102,7 +105,11 @@ Why D2 over the alternatives:
 Why not continue with bbolt and the delivery queue (writer priority,
 transaction caps, a 20s ReserveWriteWait, per-writer stats): those make the
 current design degrade more gracefully, and bursts-findings.md's option B is
-the right next step if the custom route is not taken. But the measurements
+the right next step if the custom route is not taken. #692 has since landed
+the priority half of option B as `writeTurns`, which orders the four
+writers so that small adds are not stuck behind the archive writer; its
+design notes (items 6.3d-6.4g of `.docs/nohold/phase6.md`) show each
+ordering rule moving latency from one writer to another. But the measurements
 above are of bbolt with those problems already solved (one writer, small
 run-state records, folding everything into one transaction), and it was
 still 2,000 times slower than a log at p50 on NFS, with second-scale tails
@@ -114,14 +121,24 @@ saturation point.
 
 | Phase | Work | What it fixes | Effort |
 | --- | --- | --- | --- |
-| 0 | Freeze the `db` API as an interface; port the prototype's crash test and a record/replay harness to `jobqueue`; add per-writer stats to develop (useful either way) | Nothing yet; makes the swap testable | 1-2 weeks |
-| 1 | Live tier on the log: specs at add, state records for every transition, archives as completion records; checkpoints; recovery = snapshot + replay. History stays in bbolt, filled asynchronously from the log by a background folder that is never on a reply path (idempotent, resumable from a log position) | Every hot-path write and its stalls; ReserveWriteWait hand-outs; ordering machinery; recovery read volume becomes the live set only | 4-6 weeks incl. converter, wrdev crash/recovery modes, `make speed`, one production-scale soak |
+| 0 | Freeze the `db` API as an interface; port the prototype's crash test and a record/replay harness to `jobqueue`; add per-writer stats to develop (useful either way; `writeTurns` is the natural place to count them) | Nothing yet; makes the swap testable | 1-2 weeks |
+| 1 | Live tier on the log: specs at add, state records for every transition, archives as completion records; checkpoints; recovery = snapshot + replay. History stays in bbolt, filled asynchronously from the log by a background folder that is never on a reply path (idempotent, resumable from a log position). The learned-requirement stats (`jobRAM`, `jobDisk`, `jobSecs`) are filled by that folder too, so `reqStatCache` invalidation moves from the archive transaction to the folder's; learned values then lag an archive by the folder's delay, which the ready hook already tolerates (it reads at most once a second) | Every hot-path write and its stalls; ReserveWriteWait hand-outs; ordering machinery; recovery read volume becomes the live set only | 4-6 weeks incl. converter, wrdev crash/recovery modes, `make speed`, one production-scale soak |
 | 2 | Replace bbolt history with immutable segments and the per-query-shape indexes; incremental backup by shipping new files; drop bbolt, prefetch, freelist and backup pacing code | Backup stalls, whole-file copies, file growth and compaction, slow status for big rep groups | 4-6 weeks |
 | 3 (optional) | Lazy specs: the queue holds the 192-byte state and a spec reference, not the whole Job (D3's recovery: 154MB and 0.6s for 800k jobs instead of 8GB) | Recovery time on NFS, 20-25KB heap per live job | 4+ weeks, touches `queue` and every `job.Cmd` user |
 | 4 (optional) | D6 leases, or D5 local primary | Hand-outs independent of NFS stalls | 2-4 weeks each |
 
 Phases 0-1 are about 6-8 weeks of agent-driven delivery including soaks;
 phases 0-2, which retire bbolt, about 3-4 months.
+
+## Where to run on NFS
+
+Use `/nfs/hgi/wr/sb10-bigdb/customdb/` for benchmarks, crash tests and
+stores built during delivery, beside the soak fixtures in `sb10-bigdb/` on
+the same filesystem as production. The prototype's
+`/nfs/hgi/wr/sb10-bigdb/customdb-proto/` no longer exists, so rebuild a
+store before rerunning a benchmark. `/nfs/hgi` was 91% full (231GB free) on
+2026-10-27; an 800k-job 10KB store is about 8GB, so delete stores once
+their numbers are recorded.
 
 ## Risks the custom route adds
 
