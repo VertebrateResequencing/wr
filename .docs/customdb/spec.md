@@ -452,7 +452,9 @@ spec record, Ref of its last state record, its rep group, dep groups and
 reverse dep groups (index membership only). Plus: envs (blob by key),
 limits, dep groups ever seen, std Refs by key, learned-requirement samples
 per req group (sorted slices), history key index (with each key's last
-applied `complete` seq), history overlay (completions not yet folded: key
+applied `complete` seq: Phase 1 reads it from `history.bolt`'s
+`completeSeq` bucket, Phase 2 from the record its Ref points to), history
+overlay (completions not yet folded: key
 to spec Ref and `complete` record Ref). Live `*Job` values are never held
 by the store; methods that return live jobs decode them through their Refs.
 
@@ -472,8 +474,9 @@ by the store; methods that return live jobs decode them through their Refs.
    missing file number, a missing or wrong header, or no valid checkpoint is
    `errStoreCorrupt`.
 5. Set the seq counter to 1 + the maximum seq seen in the checkpoint
-   header, the scanned wal records and history (the history key index's
-   `complete` seqs), so a record written after the restart outranks every
+   header, the scanned wal records and history (Phase 1: `history.bolt`
+   `meta`'s highest folded `complete` seq; Phase 2: the highest in the
+   segment footers), so a record written after the restart outranks every
    record for a carried-over key. Restore (E2) and compact (E6) keep every
    record's seq and reach the counter only through this step.
 6. Return live jobs (spec + latest state), as `recoverIncompleteJobs` does.
@@ -531,7 +534,11 @@ minute with `failures`; it never stops the manager.
   (`jobscomplete`, `repgroupToKey`, `repgroups`, `depgroupToKey`,
   `reverseDepgroupToKey`, `depgroups`, `endTimeToKey`, `repgroupEndTime`,
   `jobRAM`, `jobDisk`, `jobSecs`), plus `meta` holding the folded
-  position, written in the same transaction. `jobscomplete`,
+  position and the highest folded `complete` seq, and `completeSeq` (key
+  to the seq of its last folded `complete` record), all written in the
+  fold's transaction (and by E1 step 4). A fold applies a `complete`
+  record only if its seq is above the key's `completeSeq` (the reducer's
+  history rule). `jobscomplete`,
   `endTimeToKey`, `repgroupEndTime` and the stats buckets hold completed
   jobs only. `repgroupToKey` and `repgroups` also hold every folded
   rglookup, and those name jobs that are still live: `storeRepGroupLookups`
@@ -627,7 +634,10 @@ minute with `failures`; it never stops the manager.
 - An old backup is a bbolt file at `dbBkFile` (default `db_bk`) or one S3
   object. Before the first incremental ship, if the backup path holds bbolt
   (meta magic), it is renamed to `dbBkFile + ".bolt-pre-" + v` (as E1;
-  S3: copy then delete) and kept. Restore also accepts such a backup (E2).
+  S3: copy then delete) and kept. If that name already exists, the tick
+  overwrites nothing and ships nothing, and logs at error, at most once a
+  minute, an error wrapping `errBoltPreExists` that names it. Restore also
+  accepts such a backup (E2).
 - `daemonStopWait` (`cmd/root.go`) adds its 1s per 50MiB for the total
   size of the regular files under the `dbFile` directory (walked
   recursively) instead of `os.Stat(dbFile).Size()`; a regular file at
@@ -647,7 +657,8 @@ minute with `failures`; it never stops the manager.
 ### Errors
 
 New sentinels in `jobqueue`: `errStoreCorrupt`, `errNotEnoughSpace`,
-`errStoreVersionTooNew`, `errCompactNotSupported` (Phase 1 only).
+`errBoltPreExists`, `errStoreVersionTooNew`, `errCompactNotSupported`
+(Phase 1 only).
 `ErrDBLocked` and `ErrDBUnreadable` keep their meaning;
 `openErrorThatIsNotCorruption`'s errno list applies to the store directory
 and its files too. A failed durable write returns its error to the
@@ -1205,6 +1216,11 @@ func reserveDurableWait() time.Duration
     returns `(false, nil)` and `WaitWithin(1s)` returns `(true, nil)`; with
     the hold at 2s and test 2's timeouts, a runner gets no job and the item
     is in the ready sub-queue.
+11. Given that 2s hold and the abandoned reservation of test 10, when the
+    store is closed while `Batch` is held, then close returns no error
+    once the hold ends, the handle is done, `runtime.NumGoroutine()` is
+    back to its value before the reserve within 1s, and the test passes
+    under `make race` with no race report.
 
 ### C4: Delete, modify and reruns
 
@@ -1296,8 +1312,9 @@ quickly, so that recovery neither loses nor resurrects work.
    then recovery succeeds, the file is truncated to its last good frame,
    and a warn line names the 10 bytes dropped.
 3. Given a byte flipped in a wal file that is not the last, when reopened,
-   then `openStore` restores from backup if one exists, else returns an
-   error wrapping `errStoreCorrupt`.
+   then `openStore` returns an error wrapping `errStoreCorrupt` when no
+   backup exists, and (run in 1f, with E2) restores from backup if one
+   exists.
 4. Given a sync error mid-run (B2 test 3) after which file 1 is given 50
    extra bytes past its header-recorded `prevEnd`, when reopened, then
    recovery succeeds, file 1 is truncated to `prevEnd`, the failed batch's
@@ -1319,8 +1336,9 @@ quickly, so that recovery neither loses nor resurrects work.
 8. Given live job k reserved (Attempts 0), when the store is reopened, k
    is released (`updateJobAfterExitDurable`, exit 1) and the store is
    reopened again, then k is ready with Attempts 1. The same holds with a
-   checkpoint written between the two reopens, and when the first open is
-   of a store converted from bbolt (E1) holding k reserved.
+   checkpoint written between the two reopens, and (run in 1f, with E1)
+   when the first open is of a store converted from bbolt holding k
+   reserved.
 
 ### C6: Checkpoints and spec addressing
 
@@ -1446,11 +1464,12 @@ As an operator, I want completed jobs in immutable compressed segments, so
 that history never rewrites pages and backup copies only new files.
 
 Segment layout: zstd blocks of at most 64KiB uncompressed, each holding
-completed-job records (key, flat spec, flat final state) and rglookup
-entries; then a footer frame holding the block offsets, the folded position
-it covers, and sorted sections equivalent to today's history buckets for the
-jobs in it: key to Ref, rep group to keys, dep group to keys, reverse dep
-group to keys, dep groups seen, end time to Ref, rep group end time, and new
+completed-job records (key, `complete` seq, flat spec, flat final state)
+and rglookup entries; then a footer frame holding the block offsets, the
+folded position it covers, the highest `complete` seq in it, and sorted
+sections equivalent to today's history buckets for the jobs in it: key to
+Ref, rep group to keys, dep group to keys, reverse dep group to keys, dep
+groups seen, end time to Ref, rep group end time, and new
 learned-requirement samples; then a trailer (footer offset, CRC, magic
 `WRHIST01`). In memory: the key index (key to Ref, about 50-100MB at 2.15M
 jobs), rep group to segment numbers, dep group to segment numbers, each
@@ -1525,11 +1544,13 @@ As an operator, I want my existing bbolt database converted on the first
 
 Steps, crash-safe: (0) validate the source: open it read-only with
 `bolt.Open` (which checks both meta pages' magic, version and checksum);
-(1) check free space on `dbFile`'s filesystem is at least
-the bbolt file's size, else `errNotEnoughSpace` naming needed and available
-bytes; (2) create `dbFile + ".converting"` and write `SOURCE` naming
-`dbFile + ".bolt-pre-" + v` (`v` = `ServerVersion`, or `dev` when empty),
-fsync; (3) rename `dbFile` to that name; (4) build the store inside
+(1) if the source is at `dbFile` and the pre name `dbFile + ".bolt-pre-" +
+v` (`v` = `ServerVersion`, or `dev` when empty) already exists, refuse
+with `errBoltPreExists` naming it, renaming and overwriting nothing; check
+free space on `dbFile`'s filesystem is at least the bbolt file's size, else
+`errNotEnoughSpace` naming needed and available bytes; (2) create
+`dbFile + ".converting"` and write `SOURCE` naming the pre name, fsync;
+(3) rename `dbFile` to the pre name; (4) build the store inside
 `.converting` (Phase 1: checkpoint of live jobs with run-state overlays and
 rerun marks applied, envs, limits, depgroups, std, and `history.bolt` from
 the history buckets, stats included; Phase 2: `.hist` segments
@@ -1614,6 +1635,10 @@ func buildStoreFromBolt(ctx context.Context, boltFile, dir string,
    "use a newer wr"; given one whose stamp is 4 bytes, the error wraps
    `errBadDBSchemaVersion`; in both, `dbFile` is still the untouched bbolt
    file, no `.converting` or `.bolt-pre-` file exists and no restore ran.
+8. Given a bbolt `dbFile` and an existing `dbFile.bolt-pre-dev`, when the
+   manager starts, then the error wraps `errBoltPreExists` and names
+   `dbFile.bolt-pre-dev`, both files are byte-identical to before, no
+   `.converting` exists and no restore ran.
 
 ### E2: Open, restore and corruption
 
@@ -1647,7 +1672,8 @@ Restore never touches `dbFile` until the backup is proven good, as today
 
 1. Copy or download the backup into `dbFile + ".restoring"`: a store
    backup's files, a self-contained file's tar members, or an old bbolt
-   backup, opened read-only and built into it by `buildStoreFromBolt` (a
+   backup, opened read-only and built into it by `buildStoreFromBolt`
+   after E1 step 1's free-space check against the bbolt file's size (a
    downloaded bbolt object lives inside `.restoring` and is removed before
    step 3). S3 downloads land only inside
    `.restoring`.
@@ -1712,6 +1738,10 @@ word for word (`initDB`).
     backup, when opened, then the store equals the backup and the message
     starts `"recreated corrupt (?) db file"`; with no backup, the error is
     returned and `dbFile` is byte-identical.
+15. Given a corrupt store, an old bbolt backup at the backup path and a
+    free-space hook reporting 1 byte less than its size, when opened, then
+    the error wraps `errNotEnoughSpace`, every file of the corrupt store is
+    byte-identical to before, and no `.restoring` exists.
 
 ### E3: Recursive deletes
 
@@ -1825,6 +1855,11 @@ never stalls the manager or rewrites gigabytes.
     subdirectory holding a 20*`daemonStopBackupBytesPerSec` file, when
     `daemonStopWait()` runs, then it returns `daemonStopGiveup` + 21s; with
     the directory absent it returns `daemonStopGiveup`.
+13. Given a converted store in production deployment, a bbolt file at
+    `db_bk` and an existing `db_bk.bolt-pre-dev`, when 2 ticks run within
+    a minute, then nothing is shipped, both files are byte-identical to
+    before, and the captured log has exactly one error line, naming
+    `db_bk.bolt-pre-dev`.
 
 ### E5: Self-contained backup
 
@@ -1962,7 +1997,8 @@ As an operator, I want removed tuning knobs to be ignored, not fatal.
    other key keeps its value.
 2. Given the source tree, when searched, then `DBBatchDelay`,
    `DBBatchSize`, `ReserveWriteWait` and `managerdbbatch` appear in no
-   `.go` file.
+   `.go` file of the wr module (`.docs/` excluded: `.docs/customdb/proto`
+   is a separate module).
 
 ### F2: Concurrent key-changing modifies (delivery-queue row 15)
 
@@ -2092,7 +2128,9 @@ automatic one-way conversion; `managerdbfile` a store directory and
 `managerdbbkfile` a backup directory or S3 prefix), rollback = stop, remove
 the `db` and `db_bk` directories, rename `db.bolt-pre-<version>` to `db`
 and `db_bk.bolt-pre-<version>` to `db_bk`, start the older wr, losing
-everything done since the conversion; the two removed config keys.
+everything done since the conversion; `wr manager backup -p` now writes a
+tar an older wr cannot open, so rollback uses the `.bolt-pre-` files, not
+such a backup; the two removed config keys.
 `cmd/conf.go` comments for the two paths. `DEVELOPERS.md`: store layout,
 `WR_TEST_STORE`, `WR_STORE_RECORD`, `WR_STORE_REPLAY`, crash-test env vars,
 and the fallback below for the key index.
@@ -2104,8 +2142,9 @@ and the fallback below for the key index.
 **Acceptance tests:**
 
 1. Given `CHANGELOG.md`, when read, then its Unreleased section states the
-   rollback procedure and that rolling back loses everything done since the
-   conversion.
+   rollback procedure, that rolling back loses everything done since the
+   conversion, and that an older wr cannot open a `wr manager backup -p`
+   file made by this wr.
 2. Given `CHANGELOG.md`, when read, then the performance and reliability
    entries listed above sit under Unreleased's `### Fixed` (in one of its
    `####` subsections), the on-disk format, conversion, rollback and
@@ -2140,8 +2179,9 @@ passing. Work and measurements on NFS go under
   `history.bolt` and the overlay from D1 so history queries work.
 - 1d: C6 (checkpoints), D1 (folder, stats).
 - 1e: C3 (reservations), F1, F2; switch default `storeKind` to log.
-- 1f: E1, E2, E3, E5, E7 (Phase 1 forms), F3, F3b; incremental backup (E4) with
-  `history.bolt` shipped whole.
+- 1f: E1, E2, E3, E5, E7 (Phase 1 forms), F3, F3b; incremental backup
+  (E4) with `history.bolt` shipped whole; C5 test 3's backup clause and
+  test 8's converted-store clause.
 - Gates:
   - A4 on the log store: 16 rounds local and 16 on NFS, plus 20 damaged
     copies each, 0 missing; `FuzzScan` and `FuzzFlatSpec` 10 minutes each
@@ -2167,9 +2207,12 @@ passing. Work and measurements on NFS go under
     - 0 double runs outside injected stalls (`soakgate.py`'s `doubles`
       line, `outside=0`).
 
-    The soak's backup ticks copy `history.bolt` whole (paced) whenever its
-    folded position changed, a known caveat since Phase 1 is never released;
-    the Phase 2 soak gives the authoritative backup-I/O result.
+    The soak runs without `FIXTURE` (an empty store), not from the
+    converted production fixture, so its `history.bolt` holds only its own
+    completions and the soak measures the log. Its backup ticks copy
+    `history.bolt` whole (paced) whenever its folded position changed, a
+    known caveat since Phase 1 is never released; the Phase 2 soak gives
+    the authoritative backup-I/O result.
   - `make speed-full`: no regression above 10% against `d1a4b6d7`.
   - Daytime NFS targets, measured apart from the crash soak, whose
     injected stalls push abandoned reservations' waits to
@@ -2179,7 +2222,9 @@ passing. Work and measurements on NFS go under
       `HOURS=1`, `RESTART_MIN=120` (so no restart falls inside the run)
       and no injectors. Every `"reservation wait"` line the manager writes
       has `p99` at most 50ms and `abandoned=0`; there is no averaging
-      across lines;
+      across lines. That histogram is the durability wait
+      `persistReservation` observes (C3), which is how the target "reserve
+      p99 at most 50ms" is read;
     - `TestAddLatency1000` (A3) with `WR_ADDBENCH_DIR` under the NFS work
       directory and `WR_TEST_STORE=log`: 1000-job add p50 at most 200ms in
       each of 3 runs.
