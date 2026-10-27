@@ -3,17 +3,17 @@
 ## Overview
 
 Replace the manager's bbolt database with a purpose-built store: one
-append-only, group-committed log of small typed records for live jobs, the
-live state in memory as today, periodic checkpoints, and completed jobs folded
-in the background into immutable, zstd-compressed history segments with
-purpose-built indexes. The owner accepted this design (D2) on 2026-10-27;
-measurements and rationale are in [README.md](README.md),
-[requirements.md](requirements.md), [d2-wal.md](d2-wal.md),
-[benchmarks.md](benchmarks.md) and
-[phase34-compression.md](phase34-compression.md). The `db` surface and its
-leaks are in [phase0-prep.md](phase0-prep.md); the throwaway prototype in
-[proto/](proto/) is the reference for framing, group commit, the crash test
-and compression.
+append-only, group-committed log of small typed records for live jobs, the live
+state in memory as today, periodic checkpoints, and completed jobs folded in the
+background into immutable, zstd-compressed history segments with purpose-built
+indexes. The owner accepted this design (design D2 in README.md, distinct from
+story D2 below) on 2026-10-27; measurements and rationale are in
+[README.md](README.md), [requirements.md](requirements.md),
+[d2-wal.md](d2-wal.md), [benchmarks.md](benchmarks.md) and
+[phase34-compression.md](phase34-compression.md). The `db` surface and its leaks
+are in [phase0-prep.md](phase0-prep.md); the throwaway prototype in
+[proto/](proto/) is the reference for framing, group commit, the crash test and
+compression.
 
 Three phases ship as one PR from branch `customdb-f397b547` (base `develop`):
 
@@ -28,9 +28,9 @@ Three phases ship as one PR from branch `customdb-f397b547` (base `develop`):
 
 User-facing behaviour does not change: same commands, flags, outputs, status
 answers and config file (minus two removed knobs). wr never special-cases
-where the database lives and never requires a fast local disk (D5 rejected).
-D6 is out. D3 (lazy specs) is later, so the format lets every live job's spec
-be addressed by file and offset.
+where the database lives and never requires a fast local disk (design D5
+rejected). Design D6 is out. Design D3 (lazy specs) is later, so the format
+lets every live job's spec be addressed by file and offset.
 
 ## Architecture
 
@@ -84,10 +84,9 @@ lists plus the replacements for its leaks, 49 in all, closed as follows:
 - `s.db.rerunGuards.register/release` become `registerRerunGuard` and
   `releaseRerunGuard`. `rerunGuard.keeps`, `rerunGuards.archiving` and
   `Job.archiveOutcome` take `addStored func(member []byte) bool` instead of
-  `*bolt.Bucket`. Ordering
-  promise: an archive recorded after a guard registered sees it, and
-  `addStored` is true only if the add's first job was committed before the
-  archive was recorded (log store: Write path, rerun guard).
+  `*bolt.Bucket`. Ordering promise: an archive recorded after a guard registered
+  sees it, and `addStored` is true only if the add's first job was committed
+  before the archive was recorded (log store: Write path, rerun guard).
 - `updateJobRunStateDurableWithin`, `logReserveNotDurable` and
   `setBatchTuning` stay in Phase 0. Phase 1 (C3) removes them and adds
   `reserveRunState` to both stores, leaving 47.
@@ -208,8 +207,8 @@ const (
 )
 
 // Ref addresses one record: the file number, the offset of its outer frame,
-// and its index inside that frame (0 for a plain frame). D3 reads a spec
-// through a Ref without a format change.
+// and its index inside that frame (0 for a plain frame). Lazy specs (design
+// D3) read a spec through a Ref without a format change.
 type Ref struct {
 	File uint32
 	Off  uint64
@@ -241,15 +240,14 @@ func (w *Writer) Close() error
 ```
 
 `Append` and `AppendBlock` assign the record's Ref under the writer's mutex,
-so Ref order is log order. The writer goroutine takes everything queued,
-issues one `write()` and one `fdatasync`, calls the batch's `done` funcs in
-Ref order, then closes the batch's channel; no lock is held across the sync
-(as `proto/internal/gc`). Segments rotate at
-`walSegmentSize` (256MiB) on a batch boundary; rotation fsyncs the old file
-and the directory. Every file's first frame is a header written by the
-writer, `"WRWALHDR"`, u32 previous file number, u64 previous file's durable
-end (its size on a normal rotation); `Scan` passes it to fn like any record
-and `ParseHeader` recognises it.
+so Ref order is log order. The writer goroutine takes everything queued, issues
+one `write()` and one `fdatasync`, calls the batch's `done` funcs in Ref order,
+then closes the batch's channel; no lock is held across the sync (as
+`proto/internal/gc`). Segments rotate at `walSegmentSize` (256MiB) on a batch
+boundary; rotation fsyncs the old file and the directory. Every file's first
+frame is a header written by the writer, `"WRWALHDR"`, u32 previous file number,
+u64 previous file's durable end (its size on a normal rotation); `Scan` passes
+it to fn like any record and `ParseHeader` recognises it.
 
 Write or sync error:
 
@@ -293,9 +291,8 @@ from one counter (max existing + 1 at open):
 Every record payload starts `[u8 type][u64 seq]`. `seq` comes from one
 store-wide atomic counter, taken while the job's read lock is held for the
 snapshot being encoded, so for one key a higher seq is a later snapshot.
-The counter is not persisted on its own; recovery resumes it (Recovery step
-5).
-Keys are 16 binary bytes (wr's 32-hex md5).
+The counter is not persisted on its own; recovery resumes it (Recovery
+step 5). Keys are 16 binary bytes (wr's 32-hex md5).
 
 A key has two independent planes, as today's `jobslive` and `jobscomplete`
 buckets: live (spec, state, delete, modify) and history (complete). No live
@@ -533,18 +530,16 @@ minute with `failures`; it never stops the manager.
 - Phase 1: history is `history.bolt` with today's history buckets
   (`jobscomplete`, `repgroupToKey`, `repgroups`, `depgroupToKey`,
   `reverseDepgroupToKey`, `depgroups`, `endTimeToKey`, `repgroupEndTime`,
-  `jobRAM`, `jobDisk`, `jobSecs`), plus `meta` holding the folded
-  position and the highest folded `complete` seq, and `completeSeq` (key
-  to the seq of its last folded `complete` record), all written in the
-  fold's transaction (and by E1 step 4). A fold applies a `complete`
-  record only if its seq is above the key's `completeSeq` (the reducer's
-  history rule). `jobscomplete`,
-  `endTimeToKey`, `repgroupEndTime` and the stats buckets hold completed
-  jobs only. `repgroupToKey` and `repgroups` also hold every folded
-  rglookup, and those name jobs that are still live: `storeRepGroupLookups`
-  writes one for each queued job re-added under another rep group. Existing
-  bbolt query code is reused with live-bucket checks replaced by the store's
-  live set.
+  `jobRAM`, `jobDisk`, `jobSecs`), plus `meta` holding the folded position and
+  the highest folded `complete` seq, and `completeSeq` (key to the seq of its
+  last folded `complete` record), all written in the fold's transaction (and by
+  E1 step 4). A fold applies a `complete` record only if its seq is above the
+  key's `completeSeq` (the reducer's history rule). `jobscomplete`,
+  `endTimeToKey`, `repgroupEndTime` and the stats buckets hold completed jobs
+  only. `repgroupToKey` and `repgroups` also hold every folded rglookup, and
+  those name jobs that are still live: `storeRepGroupLookups` writes one for
+  each queued job re-added under another rep group. Existing bbolt query code is
+  reused with live-bucket checks replaced by the store's live set.
 - Phase 2: history is sealed `.hist` segments (layout in D2). The open
   segment is written as `NNNNNNNN.hist.tmp` and sealed (footer, fsync,
   rename) at `histSegmentBytes` (256MiB uncompressed) or `histSegmentAge`
@@ -674,8 +669,7 @@ so that Phase 1 can supply a log implementation behind it.
 
 `*db` implements `store` (`var _ store = (*db)(nil)`); `Server.db` is a
 `store`; `rerunGuard`, `rerunGuards` and `archiveOutcome` take `addStored`
-as above. No
-behaviour changes.
+as above. No behaviour changes.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store.go`, `jobqueue/store_bolt.go`,
@@ -806,7 +800,6 @@ round trips. It fails when p50 exceeds `WR_ADDBENCH_P50` (default 200ms).
    `writer=log` (log store).
 3. Given an idle server for 3 intervals, when the log is read, then it has
    no `"db writer"`, `"add wait"` or `"reservation wait"` line.
-
 4. Given `WR_ADDBENCH_DIR` a temp dir and `WR_ADDBENCH_P50` 1ns, when
    `TestAddLatency1000` runs as a child process, then it fails and its
    output has `n=100` and a `p50=` value.
@@ -1119,8 +1112,8 @@ starts a goroutine running its `Batch` update of the run state and returns
 a handle that is done, with Batch's error, once Batch returns;
 `WaitWithin` selects on that against a timer. The rules below live in the
 server and are store-independent, so the bbolt store follows them from 1e
-on too. It undoes each per-reserve side effect
-that a release undoes today:
+on too. The server undoes each per-reserve side effect that a release
+undoes today:
 
 1. releases the item to the ready sub-queue with no delay and no added
    attempt;
@@ -1145,7 +1138,7 @@ nothing ready; that runner then exits or reserves again.
 minted run token and the item's Reserves count are overwritten by the next
 reserve. On `errDBClosed` it answers with no job and undoes nothing, which
 is harmless: the limit usage and the runner's claim die with the manager.
-Today (`serverCLI.go` `persistReservation`) hands the job out on
+Today `persistReservation` (`serverCLI.go`) hands the job out on
 `errDBClosed`; answering no job instead is intended: it happens only at
 shutdown, the reservation is not durable so recovery sees the job as
 before it, and it keeps the invariant that no hand-out is ever
@@ -1262,20 +1255,19 @@ depending on dep group `"g"` and an add of new member m to `"g"`.
    `retrieveJobStd(k2)` returns `"o"`/`"e"` and `retrieveJobStd(k1)`
    returns empty, both before and after a checkpoint and reopen.
 7. Given a running job with RerunAfterRun true, recorded by
-   `storeRunningRerunMarks`, when archived and the store reopened, then
-   the outcome is `archiveKeptLive`,
-   `checkIfLive` and `checkIfComplete` are both true, its live record has
-   RerunAfterRun false and ReservedBy zero, and
+   `storeRunningRerunMarks`, when archived and the store reopened, then the
+   outcome is `archiveKeptLive`, `checkIfLive` and `checkIfComplete` are both
+   true, its live record has RerunAfterRun false and ReservedBy zero, and
    `retrieveCompleteJobStatusByRepGroup` counts 0 complete.
-8. Given live jobs k1, k2 and k3, each with a state record and
-   an exit block (std `"o"`/`"e"`) snapshotted but not yet appended (test
-   hook), when k1 is archived, k2 deleted and k3 modified to k4, and only
-   then the held records are appended and committed, then `checkIfLive`
-   is false for k1, k2 and k3, `count(kindLive)` is 1 (k4),
-   `count(kindStdOut)` and `count(kindStdErr)` equal their values before
-   the held appends, `retrieveJobStd(k4)` is unchanged, and re-adding k1
-   with `ignoreAdded` true reports 1 already complete and stores nothing;
-   the same holds after reopen and after a checkpoint then reopen.
+8. Given live jobs k1, k2 and k3, each with a state record and an exit block
+   (std `"o"`/`"e"`) snapshotted but not yet appended (test hook), when k1 is
+   archived, k2 deleted and k3 modified to k4, and only then the held records
+   are appended and committed, then `checkIfLive` is false for k1, k2 and k3,
+   `count(kindLive)` is 1 (k4), `count(kindStdOut)` and `count(kindStdErr)`
+   equal their values before the held appends, `retrieveJobStd(k4)` is
+   unchanged, and re-adding k1 with `ignoreAdded` true reports 1 already
+   complete and stores nothing; the same holds after reopen and after a
+   checkpoint then reopen.
 9. Given a test hook after the add's `AppendBlock` and before its commit
    (a sync hook holding that batch), when d's successful archive starts
    there, then it has not returned 100ms later; when the sync is released,
@@ -1343,8 +1335,8 @@ quickly, so that recovery neither loses nor resurrects work.
 ### C6: Checkpoints and spec addressing
 
 As a wr developer, I want background checkpoints that bound recovery and
-log size and keep every live spec addressable, so that D3 needs no format
-change.
+log size and keep every live spec addressable, so that lazy specs (design
+D3) need no format change.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_checkpoint.go`
@@ -1573,18 +1565,17 @@ claimed error is returned as today with nothing renamed back or restored
 loops on resume.
 
 Accepts bbolt schema 0, 1 and 2. In step 0 it reads the stamp as
-`readOnlyDBFileSchemaVersion` does and refuses, renaming nothing and
-creating no `.converting`, a malformed stamp (`errBadDBSchemaVersion`) or
-a newer schema (`checkDBSchemaVersion`'s `errDBSchemaTooNew`, "use a newer
-wr"); neither is a corrupt source. Schema 0 is needed for real production
-DBs: `db_schema.go` defines it as a DB with no recorded version, which older
-wr wrote. In every schema,
-StdOutC/StdErrC of complete records are dropped. A missing bucket reads as
-empty, except where `initDB` back-fills one today: `depgroups` is derived
-from `depgroupToKey` (Records); `jobLookupEntries` is a bbolt-only reverse
-index the converter never reads. No other bucket is back-filled
-(`repgroups` and the rest are created empty), and the schema 1 and 2 bumps
-only record a version, so nothing else is derived. Progress uses
+`readOnlyDBFileSchemaVersion` does and refuses, renaming nothing and creating no
+`.converting`, a malformed stamp (`errBadDBSchemaVersion`) or a newer schema
+(`checkDBSchemaVersion`'s `errDBSchemaTooNew`, "use a newer wr"); neither is a
+corrupt source. Schema 0 is needed for real production DBs: `db_schema.go`
+defines it as a DB with no recorded version, which older wr wrote. In every
+schema, StdOutC/StdErrC of complete records are dropped. A missing bucket reads
+as empty, except where `initDB` back-fills one today: `depgroups` is derived
+from `depgroupToKey` (Records); `jobLookupEntries` is a bbolt-only reverse index
+the converter never reads. No other bucket is back-filled (`repgroups` and the
+rest are created empty), and the schema 1 and 2 bumps only record a version, so
+nothing else is derived. Progress uses
 `internal.DBUpgradeConvertState = "convert database"` with Processed/Total
 in jobs; `IsDBUpgradeState` returns true for it.
 
@@ -1675,8 +1666,7 @@ Restore never touches `dbFile` until the backup is proven good, as today
    backup, opened read-only and built into it by `buildStoreFromBolt`
    after E1 step 1's free-space check against the bbolt file's size (a
    downloaded bbolt object lives inside `.restoring` and is removed before
-   step 3). S3 downloads land only inside
-   `.restoring`.
+   step 3). S3 downloads land only inside `.restoring`.
 2. Recover the store in `.restoring` fully (as `openStore` would), then
    close it and fsync. Any error: `os.RemoveAll` `.restoring`, leave
    `dbFile` untouched, return the error with today's message.
@@ -1883,19 +1873,18 @@ that a manager can start from.
 
 As an operator, I want `wr manager compact` to tidy the new store offline.
 
-Phase 2. With the lock held: recover, fold the log and seal the open
-segment, write a checkpoint (its rotation leaves one new empty wal file at
-the cut), delete covered wal files, merge `.hist` segments smaller than
-`histSegmentBytes` into new ones (write, fsync, rename, then delete
-inputs). `CompactStats` before/after are
-the directory's total bytes; unreadable records are counted as today.
-Refusal while a manager runs is unchanged. On an unconverted bbolt file,
+Phase 2. With the lock held: recover, fold the log and seal the open segment,
+write a checkpoint (its rotation leaves one new empty wal file at the cut),
+delete covered wal files, merge `.hist` segments smaller than `histSegmentBytes`
+into new ones (write, fsync, rename, then delete inputs). `CompactStats`
+before/after are the directory's total bytes; unreadable records are counted as
+today. Refusal while a manager runs is unchanged. On an unconverted bbolt file,
 compact first runs `convertBoltDB` (same steps, free-space check and crash
-safety as E1), then compacts the new store, so no older wr is needed.
-Phase 1: compact on an unconverted bbolt file compacts it as bbolt exactly
-as today (`db_compact.go` survives until Phase 2), so `wrdev.sh
-compact-fixture` keeps passing; on a store directory it returns
-`errCompactNotSupported` (unreleased; Phase 2 deletes it).
+safety as E1), then compacts the new store, so no older wr is needed. Phase 1:
+compact on an unconverted bbolt file compacts it as bbolt exactly as today
+(`db_compact.go` survives until Phase 2), so `wrdev.sh compact-fixture` keeps
+passing; on a store directory it returns `errCompactNotSupported` (unreleased;
+Phase 2 deletes it).
 
 **Package:** `jobqueue/`, `cmd/`
 **File:** `jobqueue/store_compact.go`, `cmd/manager.go`
@@ -1906,8 +1895,7 @@ compact-fixture` keeps passing; on a store directory it returns
 1. Given a store with 10 small segments and 5 wal files holding 100
    unsealed completions, when compacted, then 1 segment and 1 wal file
    remain, that file is empty and numbered the checkpoint's `walFrom`,
-   and every query answer is
-   unchanged (A5 digest compare).
+   and every query answer is unchanged (A5 digest compare).
 2. Given a compaction killed after writing the merged segment but before
    deleting inputs, when opened, then each key is found once.
 3. Given a manager holding the lock, when `CompactDBFileStats` runs, then
@@ -2100,11 +2088,11 @@ directories 32 to 36
 As a wr developer, I want bbolt gone, so that only one storage engine
 remains.
 
-Delete `db.go` and the files listed under Packages, `developers/soak/
-bboltexp/`, `.docs/reliable2/harness/statinspect/`, the bbolt-only tests,
-`wrdev.sh` modes `freelist-check`, `remap-stall-check` and
-`compact-fixture`, and `go.etcd.io/bbolt` from `go.mod` (the converter keeps
-a read-only bbolt reader, so the module stays if needed only by
+Delete `db.go` and the files listed under "Packages and files",
+`developers/soak/bboltexp/`, `.docs/reliable2/harness/statinspect/`, the
+bbolt-only tests, `wrdev.sh` modes `freelist-check`, `remap-stall-check` and
+`compact-fixture`, and `go.etcd.io/bbolt` from `go.mod` (the converter keeps a
+read-only bbolt reader, so the module stays if needed only by
 `store_convert.go`). Delivery-queue row 18 closes with `archivefold.go`.
 
 **Package:** `jobqueue/`
@@ -2237,16 +2225,14 @@ passing. Work and measurements on NFS go under
 - 2c: E4 final form (sealed `.hist` files), E5 with segments.
 - 2d: E1 to segments, E6.
 - 2e: F4, F5.
-- Gates: A4 and A5 as in Phase 1 against the final store (A5 against the
-  Phase 0 recording); the crash soak repeated; `make speed-full` within
-  10%; the daytime NFS targets measured as in Phase 1 (both runs, same
-  rules) against the final store; wrdev `crash-recovery` and every other
-  remaining `wrdev.sh` scenario pass (F4 deletes `freelist-check`,
-  `remap-stall-check` and `compact-fixture`);
-  `wr status -i` for production's
-  biggest rep group on the converted `runstate-gate/fixtures/prod.db` no
-  slower than develop on the bbolt fixture (both timings recorded in the
-  PR).
+- Gates: A4 and A5 as in Phase 1 against the final store (A5 against the Phase 0
+  recording); the crash soak repeated; `make speed-full` within 10%; the daytime
+  NFS targets measured as in Phase 1 (both runs, same rules) against the final
+  store; wrdev `crash-recovery` and every other remaining `wrdev.sh` scenario
+  pass (F4 deletes `freelist-check`, `remap-stall-check` and `compact-fixture`);
+  `wr status -i` for production's biggest rep group on the converted
+  `runstate-gate/fixtures/prod.db` no slower than develop on the bbolt fixture
+  (both timings recorded in the PR).
 
 ## Appendix: Key Decisions
 
