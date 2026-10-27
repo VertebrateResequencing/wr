@@ -86,8 +86,8 @@ lists plus the replacements for its leaks, 49 in all, closed as follows:
   `Job.archiveOutcome` take `addStored func(member []byte) bool` instead of
   `*bolt.Bucket`. Ordering
   promise: an archive recorded after a guard registered sees it, and
-  `addStored` is true only if the add's first job was recorded before the
-  archive.
+  `addStored` is true only if the add's first job was committed before the
+  archive was recorded (log store: Write path, rerun guard).
 - `updateJobRunStateDurableWithin`, `logReserveNotDurable` and
   `setBatchTuning` stay in Phase 0 and are removed in Phase 1 (C3).
 - Writer turns, folding, best-effort batching, backup pacing, prefetch and
@@ -411,6 +411,29 @@ checkpoint:
 - Keys of an add in flight sit in a pending set; a concurrent add that
   meets a pending key waits for that add's commit, then dedups against the
   result.
+- Rerun guard. bbolt gets it right because transactions are serial; the
+  log store gets the same from `logStore.guardMu` and one rule: never decide
+  on a peer that is appended but not committed; wait for its `Commit`, then
+  decide again.
+  - `guardMu` is held by `registerRerunGuard`, by each archive from
+    `rerunGuards.archiving` through building its block and `AppendBlock`,
+    and by a guarded add whose guard has dependents from `atRiskKeys`
+    through building its block (spec, state and put-back records) and
+    `AppendBlock`. Seq order therefore equals decision order. Waits are
+    made with `guardMu` released.
+  - `inFlight` maps the key of each archive appended under `guardMu` to its
+    `Commit`; `registerRerunGuard` seeds the new guard's archived set with
+    those whose `WaitWithin(0)` is not done (bbolt's `scanKeys`). Entries
+    found done are dropped; `done` funcs never take `guardMu`.
+  - Archive: if a guard has the key as a dependent and its add's `Commit`
+    (set under `guardMu` at its `AppendBlock`) is not done, wait for it.
+    `addStored(member)` is then "member is live in memory" (committed).
+  - Guarded add: if an at-risk key is in `inFlight` and not done, wait for
+    it. A key is put back only if not live in memory.
+  - Add commit fails: the archive that waited finds the member not live,
+    notes the key and archives normally; nothing is put back, as when
+    bbolt rolls back a failed add. The add returns the error (Errors); the
+    user's retried add reruns the dependent as any add of a member does.
 
 ### In-memory state of `logStore`
 
@@ -634,7 +657,9 @@ behaviour changes.
 
 1. Given every non-test `.go` file in `jobqueue/` except `db.go`,
    `db_*.go`, `dependency.go`, `writeturns.go`, `reqstat_cache.go`,
-   `archivefold.go` and `store_bolt.go`, when parsed
+   `archivefold.go` and `store_bolt.go` (from Phase 1 also
+   `store_history_bolt.go`, `store_convert.go` and `store_backup.go`; F4
+   test 1 replaces this list in Phase 2), when parsed
    with `go/parser`, then none imports `go.etcd.io/bbolt` and none refers to
    the identifier `db` as a type (count of violations is 0).
 2. Given `rerunGuard` g with dependents `["k1"]` and member `"m"`, when
@@ -743,9 +768,10 @@ round trips. It fails when p50 exceeds `WR_ADDBENCH_P50` (default 200ms).
    then `n` is 100, `max` is exactly 100ms, `p50` is in [45ms, 55ms] and
    `p99` is in [89ms, 110ms]; a second `take()` has `n` 0.
 2. Given a server with the report interval at 50ms, when 3 adds and 5
-   reservations are made, then within 500ms the captured log has one
-   `"add wait"` line with `n=3` and one `"reservation wait"` line with
-   `n=5`, and a `"db writer"` line with `writer=newJobs` (bbolt) or
+   reservations are made, then within 500ms the captured log's
+   `"add wait"` lines have `n` values summing to 3, its
+   `"reservation wait"` lines `n` values summing to 5, and it has a
+   `"db writer"` line with `writer=newJobs` (bbolt) or
    `writer=log` (log store).
 3. Given an idle server for 3 intervals, when the log is read, then it has
    no `"db writer"`, `"add wait"` or `"reservation wait"` line.
@@ -1151,7 +1177,11 @@ are state records.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_log.go`
-**Test file:** `jobqueue/store_log_ops_test.go`
+**Test file:** `jobqueue/store_log_ops_test.go`,
+`jobqueue/store_log_guard_test.go`
+
+Rerun guard tests (9 to 11) run a server on a log store with running job d
+depending on dep group `"g"` and an add of new member m to `"g"`.
 
 **Acceptance tests:**
 
@@ -1189,6 +1219,22 @@ are state records.
    the held appends, `retrieveJobStd(k4)` is unchanged, and re-adding k1
    with `ignoreAdded` true reports 1 already complete and stores nothing;
    the same holds after reopen and after a checkpoint then reopen.
+9. Given a test hook after the add's `AppendBlock` and before its commit
+   (a sync hook holding that batch), when d's successful archive starts
+   there, then it has not returned 100ms later; when the sync is released,
+   the outcome is `archiveKeptLive`, d's item state is
+   `queue.ItemStateDependent` then `queue.ItemStateReady` once m completes,
+   and d is reserved again; after reopen `checkIfLive(d)` is true.
+10. Given d's archive appended but its commit held by a sync hook, when
+    the add then runs, then it has not stored by 100ms; when the sync is
+    released, d's archive outcome is `archiveRemovedLive`, the add puts d
+    back (`checkIfLive(d)` true before and after reopen) and d runs again
+    once m completes.
+11. Given test 9's hold, when the held batch's sync returns `EIO`, then the
+    add returns an error wrapping `syscall.EIO`, d's outcome is
+    `archiveRemovedLive`, `checkIfLive(d)` is false and
+    `checkIfComplete(d)` true before and after reopen; when m is added
+    again, it succeeds and d is live and runs again once m completes.
 
 ### C5: Recovery
 
@@ -1292,6 +1338,11 @@ version to be refused clearly.
 
 As a user, I want status, history and learned requirements to answer as
 today while history is written in the background.
+
+Learned stats lag the folder harmlessly: schedulers read them only
+through the cache (`currentReqGroupRecs`, `recommendedReqForGroup`), which
+already reloads a req group at most once per refresh interval, so no path
+reads them synchronously after an archive.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_fold.go`, `jobqueue/store_history_bolt.go`
@@ -1436,7 +1487,8 @@ instead); (5) fsync, rename `.converting` to `dbFile`, fsync the parent,
 then delete `dbFile/SOURCE` (recovery deletes a leftover one). The bbolt
 file at the pre name is kept for rollback. At open, an existing
 `.converting/SOURCE` resumes: clear the rest of `.converting` and redo from
-step 0 on the source (at `dbFile` or the pre name).
+step 0 on the source (at `dbFile` or the pre name). A `.converting` with no
+`SOURCE` (a crash in step 2) is removed and conversion starts at step 0.
 
 Corrupt source: an error from step 0, or a read error or recovered bbolt
 panic from the source during step 4, that `openErrorThatIsNotCorruption`
@@ -1493,9 +1545,10 @@ func buildStoreFromBolt(ctx context.Context, boltFile, dir string,
    member, when converted, then jobs added depending on `"d"`, on `"e"` and
    on never-seen `"f"` get the same `resolveDependencies` results and
    `depGroupEverSeen` answers as on a copy of the DB opened by `initDB`.
-3. Given a test hook crashing after each of steps 2, 3, 4 (mid-build) and
-   before 5, when started again, then each yields the same store as an
-   uninterrupted run and the bbolt file's sha256 is unchanged.
+3. Given a test hook crashing in step 2 before `SOURCE` is written, after
+   each of steps 2, 3, 4 (mid-build) and before 5, when started again,
+   then each yields the same store as an uninterrupted run and the bbolt
+   file's sha256 is unchanged.
 4. Given a free-space hook reporting 1 byte less than the bbolt size, when
    started, then the error wraps `errNotEnoughSpace`, `dbFile` is still the
    untouched bbolt file and no `.converting` exists.
