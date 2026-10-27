@@ -141,13 +141,24 @@ Reservations, archives and added jobs in 15s windows (the stall covers
 ### How often does NFS stall?
 
 `cmd/nfsprobe` appends 4KB and fdatasyncs it every 100ms, and 1MB every 10s,
-to the same NFS mount (and, for comparison, to local disk), from 07:12 for 12
-hours. By 08:36, of 49,120 small appends 4 took over 100ms and none over 1s,
-and none of 492 1MB appends took over 1s: no stall of the kind the soaks
-inject. (The probe runs until 19:12; this section will be updated with the
-whole day.) The soaks' stalls came from a full filesystem (ENOSPC) and the
-injected FUSE hold, not from NFS latency, so how often production would stall
-is a question about the filer's capacity and failures, not its speed.
+to the same NFS mount (and, for comparison, to local disk), for 12 hours from
+07:12 to 19:13.
+
+| Target | Small appends | p50 / p99 / p99.9 | Max | Over 100ms | Over 1s | 1MB p99 / max |
+| --- | --- | --- | --- | --- | --- | --- |
+| NFS | 429,311 | 1.0 / 2.1 / 31.8ms | 2.6s | 20 | 6 | 12.9 / 93.6ms |
+| Local disk | 429,001 | 1.1 / 1.8 / 16.4ms | 0.47s | 65 | 0 | 6.0 / 330ms |
+
+The NFS outliers come in clusters in the first minute of an hour (09:00,
+10:00, 12:00, 13:00, 16:00), which looks like a scheduled job on the filer
+such as a snapshot. The worst, at 09:00 and 12:00, held small appends for
+1.2 to 2.6s several times within 40s. Nothing came close to the 60s stall the
+soaks inject. Under D2 a 2.6s hold delays every hand-out and archive by up to
+2.6s and loses nothing, well inside the 60s client timeout. The soaks' long
+stalls came from a full filesystem (ENOSPC) and the injected FUSE hold, not
+from NFS latency, so how often production would stall for a minute is a
+question about the filer's capacity and failures, not its speed. That keeps
+D5 an option for later rather than a need.
 
 ## Compression on the hot path
 
