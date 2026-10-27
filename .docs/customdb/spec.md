@@ -293,6 +293,8 @@ from one counter (max existing + 1 at open):
 Every record payload starts `[u8 type][u64 seq]`. `seq` comes from one
 store-wide atomic counter, taken while the job's read lock is held for the
 snapshot being encoded, so for one key a higher seq is a later snapshot.
+The counter is not persisted on its own; recovery resumes it (Recovery step
+5).
 Keys are 16 binary bytes (wr's 32-hex md5).
 
 A key has two independent planes, as today's `jobslive` and `jobscomplete`
@@ -469,7 +471,12 @@ by the store; methods that return live jobs decode them through their Refs.
    a torn or corrupt tail of the last file. Damage before `prevEnd`, a
    missing file number, a missing or wrong header, or no valid checkpoint is
    `errStoreCorrupt`.
-5. Return live jobs (spec + latest state), as `recoverIncompleteJobs` does.
+5. Set the seq counter to 1 + the maximum seq seen in the checkpoint
+   header, the scanned wal records and history (the history key index's
+   `complete` seqs), so a record written after the restart outranks every
+   record for a carried-over key. Restore (E2) and compact (E6) keep every
+   record's seq and reach the counter only through this step.
+6. Return live jobs (spec + latest state), as `recoverIncompleteJobs` does.
 
 Wal deletion rule (the only one): a wal file is deleted only when it is
 below both the newest checkpoint's `walFrom` and F's file, where F is
@@ -804,9 +811,11 @@ reserve < start < release < archive within an attempt count. The parent
 sends SIGKILL to the child's exact pid after a random 1.5-4.5s, reopens the
 store and checks. Rounds: env `WR_CRASHTEST_ROUNDS` (default 2), directory env
 `WR_CRASHTEST_DIR` (default `t.TempDir()`), so the gate can run 16 rounds on
-NFS. For the log store each round also makes 20 copies with the last wal
-file truncated at a random offset or one random byte flipped, and recovers
-each.
+NFS. Each round reopens the previous round's store, adds 300 new jobs and
+also writes reserve, start and release transitions to 50 random live jobs
+from earlier rounds, checked as the new ones. For the log store each round
+also makes 20 copies with the last wal file truncated at a random offset or
+one random byte flipped, and recovers each.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_crash_test.go`
@@ -822,9 +831,11 @@ each.
    no error, and every recovered job's state equals a state the child wrote
    for it (checked against a per-key list the child wrote before each
    append).
-3. Given a store implementation with a fault that acknowledges before
-   `Commit.Wait` (test-only wrapper `ackEarlyStore`), when 5 rounds run,
-   then at least one round reports missing > 0 (the test can fail).
+3. Given test-only wrapper `ackEarlyStore` around any store, which runs
+   each wrapped write in a new goroutine and returns nil at once (so it
+   acknowledges before the write is durable, against bbolt in Phase 0 as
+   against the log store), when 5 rounds run, then at least one round
+   reports missing > 0 (the test can fail).
 
 ### A5: Record/replay harness
 
@@ -1296,6 +1307,11 @@ quickly, so that recovery neither loses nor resurrects work.
    `"x"`/`"y"`, and with the hook cleared a retried add of k1 stores it
    (`checkIfLive(k1)` true, not deduped); the same answers hold after
    reopen and after the folder has run.
+8. Given live job k reserved (Attempts 0), when the store is reopened, k
+   is released (`updateJobAfterExitDurable`, exit 1) and the store is
+   reopened again, then k is ready with Attempts 1. The same holds with a
+   checkpoint written between the two reopens, and when the first open is
+   of a store converted from bbolt (E1) holding k reserved.
 
 ### C6: Checkpoints and spec addressing
 
@@ -1504,7 +1520,9 @@ fsync; (3) rename `dbFile` to that name; (4) build the store inside
 `.converting` (Phase 1: checkpoint of live jobs with run-state overlays and
 rerun marks applied, envs, limits, depgroups, std, and `history.bolt` from
 the history buckets, stats included; Phase 2: `.hist` segments
-instead); (5) fsync, rename `.converting` to `dbFile`, fsync the parent,
+instead), its records taking seqs 1, 2, ... with the highest in the
+checkpoint header, so the first open's counter starts above them (Recovery
+step 5); (5) fsync, rename `.converting` to `dbFile`, fsync the parent,
 then delete `dbFile/SOURCE` (recovery deletes a leftover one). The bbolt
 file at the pre name is kept for rollback. At open, an existing
 `.converting/SOURCE` resumes: clear the rest of `.converting` and redo from
@@ -1825,9 +1843,11 @@ inputs). `CompactStats` before/after are
 the directory's total bytes; unreadable records are counted as today.
 Refusal while a manager runs is unchanged. On an unconverted bbolt file,
 compact first runs `convertBoltDB` (same steps, free-space check and crash
-safety as E1), then compacts the new store, so no older wr is needed. In
-Phase 1 compact on a store directory returns `errCompactNotSupported`
-(unreleased; Phase 2 deletes it).
+safety as E1), then compacts the new store, so no older wr is needed.
+Phase 1: compact on an unconverted bbolt file compacts it as bbolt exactly
+as today (`db_compact.go` survives until Phase 2), so `wrdev.sh
+compact-fixture` keeps passing; on a store directory it returns
+`errCompactNotSupported` (unreleased; Phase 2 deletes it).
 
 **Package:** `jobqueue/`, `cmd/`
 **File:** `jobqueue/store_compact.go`, `cmd/manager.go`
@@ -1844,14 +1864,19 @@ Phase 1 compact on a store directory returns `errCompactNotSupported`
    deleting inputs, when opened, then each key is found once.
 3. Given a manager holding the lock, when `CompactDBFileStats` runs, then
    it returns an error wrapping `ErrDBLocked`.
-4. Given a bbolt file at `dbFile` and no manager, when `CompactDBFileStats`
-   runs, then `dbFile` is a store directory, `dbFile.bolt-pre-dev` has the
-   original's sha256, and the A5 query set gives equal digests for the
-   bbolt file and the compacted store.
+4. Phase 2: given a bbolt file at `dbFile` and no manager, when
+   `CompactDBFileStats` runs, then `dbFile` is a store directory,
+   `dbFile.bolt-pre-dev` has the original's sha256, and the A5 query set
+   gives equal digests for the bbolt file and the compacted store.
 5. Phase 1 only: given a store directory at `dbFile` and no manager, when
    `CompactDBFileStats` runs, then the error is `errCompactNotSupported`,
    its text is exactly `compacting the new database store is not
    supported yet`, and the directory's files and sizes are unchanged.
+6. Phase 1 only: given a bbolt file at `dbFile` and no manager, when
+   `CompactDBFileStats` runs, then `dbFile` is still a bbolt file (no
+   `.converting` or `.bolt-pre-` file exists), the returned stats equal
+   those develop's `CompactDBFileStats` returns on a copy, and `wrdev.sh
+   compact-fixture` passes.
 
 ### E7: Cloud deploy and teardown
 
@@ -2047,13 +2072,14 @@ a read-only bbolt reader, so the module stays if needed only by
 
 As an operator, I want to know what changed on disk and how to roll back.
 
-CHANGELOG (Unreleased, under Fixed by impact, per repo style): faster adds
-and reservations, no backup stalls, reservations never handed out
-undurable; the automatic one-way conversion; `managerdbfile` and
-`managerdbbkfile` are now directories (or an S3 prefix); rollback = stop,
-remove the `db` and `db_bk` directories, rename `db.bolt-pre-<version>` to
-`db` and `db_bk.bolt-pre-<version>` to `db_bk`, start the older wr, losing
-everything done since the conversion; the two removed knobs.
+CHANGELOG (Unreleased, each section ordered by impact, per repo style).
+Under Fixed: faster adds and reservations, no backup stalls, reservations
+never handed out undurable. Under Changed: the on-disk format (the
+automatic one-way conversion; `managerdbfile` a store directory and
+`managerdbbkfile` a backup directory or S3 prefix), rollback = stop, remove
+the `db` and `db_bk` directories, rename `db.bolt-pre-<version>` to `db`
+and `db_bk.bolt-pre-<version>` to `db_bk`, start the older wr, losing
+everything done since the conversion; the two removed config keys.
 `cmd/conf.go` comments for the two paths. `DEVELOPERS.md`: store layout,
 `WR_TEST_STORE`, `WR_STORE_RECORD`, `WR_STORE_REPLAY`, crash-test env vars,
 and the fallback below for the key index.
@@ -2067,9 +2093,11 @@ and the fallback below for the key index.
 1. Given `CHANGELOG.md`, when read, then its Unreleased section states the
    rollback procedure and that rolling back loses everything done since the
    conversion.
-2. Given `CHANGELOG.md`, when read, then every entry listed above sits
-   under Unreleased's `### Fixed` (in one of its `####` subsections), and
-   none under `### Added` or `### Changed`.
+2. Given `CHANGELOG.md`, when read, then the performance and reliability
+   entries listed above sit under Unreleased's `### Fixed` (in one of its
+   `####` subsections), the on-disk format, conversion, rollback and
+   removed config key entries sit under `### Changed`, and none of them
+   under `### Added`.
 3. Given `cmd/conf.go`, when read, then the `managerdbfile` comment says
    it is a directory, and the `managerdbbkfile` comment says it is a
    directory or an S3 prefix.
