@@ -284,8 +284,14 @@ from one counter (max existing + 1 at open):
 Every record payload starts `[u8 type][u64 seq]`. `seq` comes from one
 store-wide atomic counter, taken while the job's read lock is held for the
 snapshot being encoded, so for one key a higher seq is a later snapshot.
-Replay applies a record for a key only if its seq is higher than the last
-applied for that key. Keys are 16 binary bytes (wr's 32-hex md5).
+Keys are 16 binary bytes (wr's 32-hex md5).
+
+A key has two independent planes, as today's `jobslive` and `jobscomplete`
+buckets: live (spec, state, delete, modify) and history (complete). Replay
+keeps a last-applied seq per key per plane and applies a record only if its
+seq is higher than its plane's. No live record changes history and a
+`complete` record changes no live state, so a key can be complete and live
+at once, as today after a keep-live archive or a put-back.
 
 | Type | Name | Body |
 | --- | --- | --- |
@@ -297,7 +303,7 @@ applied for that key. Keys are 16 binary bytes (wr's 32-hex md5).
 | 6 | env | env key string, blob |
 | 7 | limit | group, i64 limit, or removed flag |
 | 8 | rglookup | rep group, key (`storeRepGroupLookups`) |
-| 9 | histdrop | key (a completed job made live again) |
+| 9 | complete | key, flat run state (the job's complete record) |
 | 10 | depgroup | dep group name, first time it is added |
 
 - Depgroup: today's `depgroups` bucket (dep groups ever added, never
@@ -316,16 +322,26 @@ applied for that key. Keys are 16 binary bytes (wr's 32-hex md5).
   embedded Binc blob, present only when non-empty (as
   `proto/internal/flat`). First byte is the spec codec version (1).
 - Flat run state: every `jobRunState` field, variable length, first byte
-  version (1). An archive is a state record with State `complete`.
-- Every multi-record operation (an add, a modify, a rerun put-back, an exit
-  with std) is one s2 block, built and compressed by the calling goroutine
-  before `AppendBlock`. Single state records are plain frames; the writer
-  never compresses.
+  version (1).
+- Archive (`archiveCompletion`, as `archiveJobTx`): one block of a
+  `complete` record holding `recordCompleteTx`'s complete record (for a
+  keep-live archive, `rerunRecords`' complete record), then a `delete`
+  record, or for a keep-live archive a state record of `rerunRecords`' live
+  record. A history entry is a `complete` record plus the key's spec record
+  current when it applies; a later `complete` record for the key replaces
+  it, as today's `jobscomplete` Put does. Nothing removes a history entry:
+  put-backs (`storeLiveForRerun`, `putBackArchivedDependentsTx`, archived
+  dependents `retrieveDependentJobs` resurrects), `deleteLiveJobs` and
+  re-adds touch only the live plane.
+- Every multi-record operation (an add, a modify, an archive, a rerun
+  put-back, an exit with std) is one s2 block, built and compressed by the
+  calling goroutine before `AppendBlock`. Single state records are plain
+  frames; the writer never compresses.
 - Std follows today's lifecycle (`updateStd`, `recordCompleteTx`,
   `deleteOldLiveJobs`/`jobStd.restore`). Every exit's block carries a std
   record per stream: the new bytes if the exit failed or storage is forced,
   else empty, which clears earlier std. Replay drops a key's std on a
-  complete state record or a delete record, and moves it from old key to new
+  `complete` record or a delete record, and moves it from old key to new
   key on a modify record.
 
 ### Write path
@@ -370,8 +386,8 @@ record, its rep group, dep groups and reverse dep groups (index membership
 only). Plus: envs (blob by key), limits, dep groups ever seen, std Refs by
 key, learned-requirement samples per req group (sorted slices),
 history key index, history overlay (completions not yet folded: key to spec
-Ref and state Ref). Live `*Job` values are never held by the store; methods
-that return live jobs decode them through their Refs.
+Ref and `complete` record Ref). Live `*Job` values are never held by the
+store; methods that return live jobs decode them through their Refs.
 
 ### Recovery
 
@@ -380,8 +396,8 @@ that return live jobs decode them through their Refs.
    concurrent readers.
 3. Open history and read its durable folded position F (file, offset).
    Scan every wal file from min(F's file, the checkpoint's `walFrom`) in
-   file order. Records from `walFrom` on are applied to live state;
-   completions, rglookups and histdrops at or after F rebuild the overlay.
+   file order. Live records from `walFrom` on are applied to live state;
+   `complete` and rglookup records at or after F rebuild the overlay.
 4. Damage rules over that range: a file followed by another is valid up to
    the next file's header `prevEnd`; bytes beyond it are an abandoned or
    torn tail and are truncated (logged at warn with the byte count), as is
@@ -407,11 +423,14 @@ since the last), and never sooner after the previous one ended than it took:
    max seq, counts), zstd blocks of at most 64KiB uncompressed holding each
    live job's spec and state records, each live key's non-empty std, and
    every env, limit and depgroup record, then a trailer frame (block
-   offsets, magic `WRCKPT01`).
+   offsets, magic `WRCKPT01`). It also holds the spec record of each key
+   with a `complete` record at or after F and before the cut that is no
+   longer live, so an overlay entry's spec survives wal deletion (Phase 2:
+   completions in the open segment).
 4. fsync, rename to `.ckpt`, fsync the directory, then swap every in-memory
-   Ref (spec, last state, std) that points below the cut for its copy
-   in the new checkpoint, then delete older checkpoints and apply the wal
-   deletion rule.
+   Ref (spec, last state, std, overlay spec) that points below the cut for
+   its copy in the new checkpoint, then delete older checkpoints and apply
+   the wal deletion rule.
 
 A checkpoint is a pure function of files on disk, so it is a consistent cut
 whatever the hot path does meanwhile.
@@ -420,8 +439,8 @@ whatever the hot path does meanwhile.
 
 The folder is one background goroutine, never on a reply path. At least once
 a second it reads the log from its position up to `Writer.Durable()` and
-folds into history every completion (spec + final state), rglookup and
-histdrop, and every new learned-requirement sample (from completions and
+folds into history every `complete` record (with its spec) and rglookup,
+and every new learned-requirement sample (from completions and
 from releases with a resource fail reason, as `putJobStats` and
 `updateFailStat` choose today). It reads a file followed by another only up
 to the next file's header `prevEnd`, so an abandoned batch is never folded.
@@ -442,6 +461,18 @@ Folding is idempotent and resumable from a log position.
 - Until folded, a completion is in the overlay, and every history query
   answers from history plus overlay, so status straight after an archive is
   unchanged.
+- History membership never depends on live state; each query filters live
+  keys exactly where today's does (`jobqueue/db.go`):
+  - no live filter: `checkIfComplete`, add dedup
+    (`checkIfCompleteUnderRepGroup`), `retrieveCompleteJobsByKeys`,
+    `retrieveLastCompletionTimeByRepGroup`, `repGroupHasHistory`,
+    `retrieveRepGroups` (rep groups ever added) and
+    `spendArchivedBytesByRepGroup` (also charges live keys);
+  - live keys skipped: `retrieveCompleteJobsByRepGroup`,
+    `retrieveOldestCompleteJobsByRepGroup` (selection and count),
+    `retrieveCompleteJobStatusByRepGroup`, `retrieveCompleteJobsRecent`;
+  - the add's dependent scan (`dependentJobsScan.processKey`) reads a key's
+    history entry only when the key is not live and not in the add.
 - `reqStatChanges` increments when the folder adds a distinct sample, which
   is where `reqStatCache` invalidation moves to.
 
@@ -622,9 +653,18 @@ type waitSummary struct {
 }
 ```
 
+`TestAddLatency1000` (`jobqueue/store_addbench_test.go`) is the add gate's
+fixed-size measurement, since `"add wait"` mixes add sizes. It skips unless
+`WR_ADDBENCH_DIR` is set; it starts a server whose `DBFile` is under that
+directory, with the store kind from `WR_TEST_STORE`, adds 100,000 jobs, then
+makes 100 sequential `client.Add` calls of 1,000 new jobs each with
+`ignoreAdded` true (as `wr add`), and logs `n`, `p50` and `p99` of their
+round trips. It fails when p50 exceeds `WR_ADDBENCH_P50` (default 200ms).
+
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_stats.go`
-**Test file:** `jobqueue/store_stats_test.go`
+**Test file:** `jobqueue/store_stats_test.go`,
+`jobqueue/store_addbench_test.go`
 
 **Acceptance tests:**
 
@@ -638,6 +678,10 @@ type waitSummary struct {
    `writer=log` (log store).
 3. Given an idle server for 3 intervals, when the log is read, then it has
    no `"db writer"`, `"add wait"` or `"reservation wait"` line.
+
+4. Given `WR_ADDBENCH_DIR` a temp dir and `WR_ADDBENCH_P50` 1ns, when
+   `TestAddLatency1000` runs as a child process, then it fails and its
+   output has `n=100` and a `p50=` value.
 
 ### A4: Kill -9 crash test
 
@@ -901,11 +945,11 @@ As a user, I want `wr add` to be durable before it replies, as today, and
 faster.
 
 `storeNewJobsGuarded` builds one s2 block per call containing a spec and
-state record per new job (and any rglookup, histdrop and put-back records
-the add makes), appends it and waits. Dedup, dependency handling and the
-260929 rule (a re-add never touches a queued or running job's record) are
-unchanged. `storeEnv`, `storeLimitGroups`, `storeRepGroupLookups` append
-their records and wait.
+state record per new job (and any rglookup, depgroup and put-back spec and
+state records the add makes), appends it and waits. Dedup, dependency
+handling and the 260929 rule (a re-add never touches a queued or running
+job's record) are unchanged. `storeEnv`, `storeLimitGroups` and
+`storeRepGroupLookups` append their records and wait.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_log.go`, `jobqueue/store_records.go`
@@ -1023,7 +1067,8 @@ that a crash never resurrects or half-modifies a job.
 
 Delete appends delete records (one block per call). Modify appends one block
 per job: modify, new spec, new state. Put-backs (`storeLiveForRerun`) append
-spec, state and histdrop in one block. Rerun marks are state records.
+spec and state records in one block and leave history as it is. Rerun marks
+are state records.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_log.go`
@@ -1035,8 +1080,12 @@ spec, state and histdrop in one block. Rerun marks are state records.
    `count(kindLive)` is 1.
 2. Given a modify of job k1 to key k2 whose block is truncated by 1 byte,
    when reopened, then k1 is live with its old spec and k2 does not exist.
-3. Given a completed job put back live, when reopened, then `checkIfLive`
-   is true and `checkIfComplete` is false.
+3. Given a completed job put back live (`storeLiveForRerun`), when checked
+   before and after reopen, then `checkIfLive` and `checkIfComplete` are
+   both true, `retrieveCompleteJobsByKeys` returns it and
+   `retrieveCompleteJobsByRepGroup` does not; when it is then deleted
+   (`deleteLiveJobs`) and re-added with `ignoreAdded` true, then the add
+   reports 1 already complete, stores nothing and `checkIfLive` is false.
 4. Given a job that exited 1 with std `"o"`/`"e"`, when it then exits 0
    and the store is reopened, then `retrieveJobStd` returns empty and
    `count(kindStdOut)` is 0.
@@ -1046,6 +1095,12 @@ spec, state and histdrop in one block. Rerun marks are state records.
 6. Given k1 exited 1 with std `"o"`/`"e"`, when modified to key k2, then
    `retrieveJobStd(k2)` returns `"o"`/`"e"` and `retrieveJobStd(k1)`
    returns empty, both before and after a checkpoint and reopen.
+7. Given a running job with RerunAfterRun true, recorded by
+   `storeRunningRerunMarks`, when archived and the store reopened, then
+   the outcome is `archiveKeptLive`,
+   `checkIfLive` and `checkIfComplete` are both true, its live record has
+   RerunAfterRun false and ReservedBy zero, and
+   `retrieveCompleteJobStatusByRepGroup` counts 0 complete.
 
 ### C5: Recovery
 
@@ -1124,7 +1179,8 @@ version to be refused clearly.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_open.go`
-**Test file:** `jobqueue/store_open_test.go`
+**Test file:** `jobqueue/store_open_test.go`; test 4 in
+`jobqueue/store_convert_test.go` (which may import bbolt, F4)
 
 **Acceptance tests:**
 
@@ -1135,6 +1191,12 @@ version to be refused clearly.
    wraps `errStoreVersionTooNew` and says "use a newer wr"; no file changed.
 3. Given an unreadable store directory (mode 0), when opened, then the error
    wraps `ErrDBUnreadable` and no restore is attempted.
+4. Given a closed store directory, when `bolt.Open(dir, 0600,
+   &bolt.Options{Timeout: time.Second})` runs (what a downgraded wr's
+   `initDB` does), then it returns an error matching `syscall.EISDIR`,
+   `openErrorThatIsNotCorruption` turns it into one wrapping
+   `ErrDBUnreadable`, and the directory's file names and every file's
+   sha256 are unchanged.
 
 ## D: History and folding
 
@@ -1175,9 +1237,19 @@ today while history is written in the background.
    the `"db writer"` line has `writer=fold`.
 6. Given the folder paused, a job archived and then put back live
    (`storeLiveForRerun`), when the folder resumes and the store is
-   reopened, then `checkIfLive` is true, `checkIfComplete` is false, and
-   `retrieveCompleteJobsByRepGroup` does not return it, before and after
-   the fold.
+   reopened, then before and after the fold `checkIfLive` and
+   `checkIfComplete` are true, `retrieveLastCompletionTimeByRepGroup` and
+   `repGroupHasHistory` still report it, and
+   `retrieveCompleteJobsByRepGroup`, `retrieveCompleteJobsRecent` and
+   `retrieveCompleteJobStatusByRepGroup` omit it.
+7. Given scripted workloads recorded against bbolt (A5), each with every
+   history query and a re-add with `ignoreAdded` true after each step:
+   (a) archive then `storeLiveForRerun`; (b) a keep-live archive (rerun
+   mark set while running); (c) archive, add of a new member to a dep group
+   the archived job depends on (resurrection) and archive again; (d)
+   archive, put back, `deleteLiveJobs`, re-add; when each is replayed
+   against the log store with the folder paused and again with it flushed
+   after every write call, then `mismatches` is empty.
 
 ### D2: History segments (Phase 2)
 
@@ -1195,8 +1267,9 @@ learned-requirement samples; then a trailer (footer offset, CRC, magic
 jobs), rep group to segment numbers, dep group to segment numbers, each
 segment's end-time range, the samples. Footer sections are read on demand
 through a 64MiB LRU. A posting is valid only while the key index maps its key
-to a record in history and the key is not live, so superseded and put-back
-jobs drop out without rewriting segments.
+to that segment's record, so a superseded record drops out without
+rewriting segments; live keys are filtered per query as listed under
+"Folder and history".
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_segment.go`, `jobqueue/store_history.go`
@@ -1230,8 +1303,9 @@ record length.
 
 **Acceptance tests:**
 
-1. Given the A5 workload recording (made against bbolt), when replayed
-   against the Phase 2 store, then `mismatches` is empty.
+1. Given the A5 workload recording and the four D1 test 7 recordings (all
+   made against bbolt), when replayed against the Phase 2 store with
+   segments sealed after every write call, then `mismatches` is empty.
 2. Given rep group `"big"` with 50,000 completions over 5 segments, when
    `retrieveCompleteJobStatusByRepGroup("big", false)` runs, then it reports
    50,000 complete and reads no record block (footer reads only, counted by
@@ -1436,7 +1510,11 @@ or S3 prefix, not fail silently on one.
 
 Every `os.Remove(dbFile)`, `os.Remove(dbBkFile)` and
 `accessor.DeleteFile(dbBkFile)` in the open path becomes `os.RemoveAll` or a
-prefix delete through `backupTarget`.
+prefix delete through `backupTarget`. The dev wipe keeps today's intent,
+starting from an empty DB, so it removes everything the DB owns: `dbFile`,
+`dbBkFile`, and any `dbFile + ".converting"`, `".restoring"`, `".corrupt"`,
+`dbFile + ".bolt-pre-*"` and `dbBkFile + ".bolt-pre-*"` (S3: objects with
+that prefix). The `.upgrade` sidecar is left, as today.
 
 ```go
 type backupTarget interface {
@@ -1460,9 +1538,13 @@ type backupTarget interface {
    an empty store is created (0 jobs).
 2. Given the same with an S3 backup (fake target holding 5 objects), when
    opened, then the fake holds 0 objects.
-3. Given a corrupt store restored from backup (E2 test 4), when listed,
+3. Given development deployment with `wipeDevDB`, a store directory, a
+   `dbFile.converting` holding `SOURCE`, `dbFile.bolt-pre-dev` and
+   `db_bk.bolt-pre-dev`, when opened, then none of them remains, no
+   conversion ran and the new store has 0 jobs.
+4. Given a corrupt store restored from backup (E2 test 4), when listed,
    then no file from the corrupt store's directory remains.
-4. Given a corrupt store and a fake S3 target, once holding a good backup
+5. Given a corrupt store and a fake S3 target, once holding a good backup
    and once a backup with a damaged checkpoint, when opened, then in both
    cases no downloaded file remains anywhere (`.restoring` absent, no other
    new entry in `dbFile`'s parent directory).
@@ -1487,8 +1569,8 @@ never stalls the manager or rewrites gigabytes.
    the next tick ships, then those files are deleted from the backup only
    after the new checkpoint is there.
 3. Given a crash at a random point during shipping, when the backup
-   directory is opened as a store, then it opens and every job in its
-   history is complete and not live.
+   directory is opened as a store, then it opens and every history entry
+   has State complete.
 4. Given development deployment without `forceBackups`, when 3 ticks pass,
    then nothing is shipped.
 5. Given a converted store and a bbolt file at `db_bk`, when the first tick
@@ -1755,17 +1837,27 @@ passing. Work and measurements on NFS go under
     mismatches (removed methods mapped or skipped as A5 says); the A2 suite
     passes with `WR_TEST_STORE=all`.
   - Crash soak at production LSF concurrency with a staged ramp (battery10
-    shape, about 6,000 runners, at least 3h, injected stalls and crashes):
-    0 acknowledged writes lost, 0 non-durable hand-outs (including during
-    stalls: `soakgate.py` sums `notDurable` over the manager log's
-    `"reservation wait"` lines and requires 0; `notDurable` is the
-    production `WaitWithin(0)` check `handOutReservation` makes on every
-    hand-out (C3), not a test hook), and the same lines' `abandoned` sum is
-    at least 1, showing the stall path ran; 0 double runs outside
-    injected stalls.
+    shape, about 6,000 runners, at least 3h, injected stalls and crashes,
+    with `relbury.sh` batches at the injected kills as in the soak README):
+    - 0 acknowledged writes lost: `soakgate.py`'s `missing` line has
+      `absent=0` (every job a runner started is in the final
+      `dbstart.tsv`, so no acknowledged add was lost) and
+      `relburycheck.py` prints `problems: 0` (no acknowledged release or
+      bury lost across a kill -9);
+    - 0 non-durable hand-outs, including during stalls: `soakgate.py` sums
+      `notDurable` over the manager log's `"reservation wait"` lines and
+      requires 0. `notDurable` is the production `WaitWithin(0)` check
+      `handOutReservation` makes on every hand-out (C3), not a test hook,
+      so it is a regression guard that is nonzero only through a defect.
+      It is paired with the same lines' `abandoned` sum being at least 1,
+      which shows the stall path ran;
+    - 0 double runs outside injected stalls (`soakgate.py`'s `doubles`
+      line, `outside=0`).
   - `make speed-full`: no regression above 10% against `d1a4b6d7`.
-  - Daytime NFS, from the A3 lines in the soak: reservation wait p99 at
-    most 50ms, add wait p50 at most 200ms.
+  - Daytime NFS (weekday, 10:00 to 17:00): reservation wait p99 at most
+    50ms from the soak's `"reservation wait"` lines; 1000-job add p50 at
+    most 200ms from `TestAddLatency1000` (A3) with `WR_ADDBENCH_DIR` under
+    the NFS work directory and `WR_TEST_STORE=log`, passing 3 runs of 3.
   - wrdev `crash-recovery` and every other `wrdev.sh` scenario pass.
 
 ### Phase 2: history segments, incremental backup, no bbolt
@@ -1799,6 +1891,11 @@ passing. Work and measurements on NFS go under
   records, zstd per 64KiB block for checkpoints and history
   (phase34-compression.md "At saturation" and "Conclusions"). No
   dictionaries.
+- **History independent of live state.** Today a key can be in
+  `jobscomplete` and `jobslive` at once (keep-live archive, put-backs), and
+  some queries filter live keys while `checkIfComplete` and add dedup do
+  not. Two record planes keep every one of those answers, so dup counts and
+  re-adds after `wr remove` are unchanged.
 - **Key index in memory.** About 50-100MB at 2.15M completed jobs. If memory
   becomes a concern, the fallback is on-disk sorted per-segment key indexes
   with a per-segment bloom filter; DEVELOPERS.md records it.
