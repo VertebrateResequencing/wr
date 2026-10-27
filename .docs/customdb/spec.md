@@ -10,8 +10,8 @@ indexes. The owner accepted this design (design D2 in README.md, distinct from
 story D2 below) on 2026-10-27; measurements and rationale are in
 [README.md](README.md), [requirements.md](requirements.md),
 [d2-wal.md](d2-wal.md), [benchmarks.md](benchmarks.md) and
-[phase34-compression.md](phase34-compression.md). The `db` surface and its leaks
-are in [phase0-prep.md](phase0-prep.md); the throwaway prototype in
+[phase34-compression.md](phase34-compression.md). The `db` methods and their
+leaks are in [phase0-prep.md](phase0-prep.md); the throwaway prototype in
 [proto/](proto/) is the reference for framing, group commit, the crash test and
 compression.
 
@@ -2035,7 +2035,8 @@ func ReadStore(dbDir string, fn func(live bool, job *Job) error) error
 
 As a soak operator, I want `soakgate.py` to count non-durable hand-outs
 from the new store's log lines, so that the Phase 1 crash-soak gate can be
-checked once C3 removes the D1 line and the warning.
+checked once C3 removes the D1 line (`"reservation handed out before it was
+recorded on disk"`) and the warning.
 
 - New `--source wait`: in each manager segment (split and pre-start lines
   ignored as today), every `msg="reservation wait"` line adds its
@@ -2215,7 +2216,7 @@ passing. Work and measurements on NFS go under
       `persistReservation` observes (C3), which is how the target "reserve
       p99 at most 50ms" is read;
     - `TestAddLatency1000` (A3) with `WR_ADDBENCH_DIR` under the NFS work
-      directory and `WR_TEST_STORE=log`: 1000-job add p50 at most 200ms in
+      directory and `WR_TEST_STORE=log`: 1,000-job add p50 at most 200ms in
       each of 3 runs.
   - wrdev `crash-recovery` and every other `wrdev.sh` scenario pass.
 
