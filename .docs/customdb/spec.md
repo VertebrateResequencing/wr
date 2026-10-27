@@ -89,7 +89,8 @@ lists plus the replacements for its leaks, 49 in all, closed as follows:
   `addStored` is true only if the add's first job was committed before the
   archive was recorded (log store: Write path, rerun guard).
 - `updateJobRunStateDurableWithin`, `logReserveNotDurable` and
-  `setBatchTuning` stay in Phase 0 and are removed in Phase 1 (C3).
+  `setBatchTuning` stay in Phase 0. Phase 1 (C3) removes them and adds
+  `reserveRunState` to both stores, leaving 47.
 - Writer turns, folding, best-effort batching, backup pacing, prefetch and
   freelist handling stay inside `*db`.
 
@@ -114,6 +115,7 @@ type store interface {
 	checkIfComplete(key string) (bool, error)
 
 	updateJobRunStateDurable(job *Job) error
+	reserveRunState(job *Job) (pendingCommit, error)                  // Phase 1
 	updateJobRunStateDurableWithin(job *Job, wait time.Duration) error // Phase 0
 	logReserveNotDurable(key string)                                   // Phase 0
 	updateJobAfterChangeDurable(job *Job) error
@@ -161,6 +163,12 @@ type store interface {
 	setReqStatRefreshInterval(d time.Duration)
 	setRecRounding(secRound, mbRound int)
 	setBatchTuning(delay time.Duration, size int) // Phase 0
+}
+
+// pendingCommit is one write's durability. done is false while the write
+// is not yet durable; err is its result once done. wal.Commit satisfies it.
+type pendingCommit interface {
+	WaitWithin(d time.Duration) (done bool, err error)
 }
 
 type storeKind uint8
@@ -385,8 +393,8 @@ checkpoint:
 - Reservation (C3): wait at most `reserveDurableWait()`
   (`min(10s, ClientMinRequestTimeout/4)`, today's bound); on timeout or any
   error, return the job to the ready queue, record a release state record
-  (not waited for) and answer "no job". Log order puts the release after the
-  reserve, so recovery never sees a job handed out before its reservation is
+  (not waited for) and answer "no job". The release takes a higher seq than
+  the reserve, so recovery never sees a job handed out before its reservation is
   durable. A crash after the reserve is durable but before the release is
   recovers the job as reserved by a runner that never had it; it is not run
   twice and spends no retry. A record without Host/Pid recovers straight to
@@ -674,7 +682,7 @@ behaviour changes.
 As a wr developer, I want tests to inspect stored state through a small
 interface, so that the same tests run against bbolt and the log store.
 
-Methods live in `_test.go` files on each implementation. The 46 test files
+Methods live in `_test.go` files on each implementation. The test files
 that call `db.bolt.View/Update/Batch` or take `*bolt.Tx` move onto it,
 except tests of bbolt mechanics (freelist, remap, backup pacing, writer
 turns, prefetch, compaction of bbolt), which stay bbolt-only and are deleted
@@ -853,15 +861,17 @@ call whose store never ran `change` records the job unchanged.
 | `registerRerunGuard`, `releaseRerunGuard` | result id; guard id | map result; mapped guard |
 | `storeNewJobsGuarded` | guard id with its member and dependent keys at entry | mapped guard given them (`setDependents`) first |
 | `spendArchivedBytesByRepGroup` | budget's `remaining` at entry | fresh budget with that `remaining` |
+| `reserveRunState` | job | call, then `WaitWithin(reserveDurableWait())` on the result; digest is the returned error |
 | `resolveDependencies` | each `hasMembers` and `liveCommandVariants` query and answer (wrapped `groups`) | `groups` answering from those; an unrecorded query is a mismatch |
 
 The digest of `spendArchivedBytesByRepGroup` covers only whether it
 returned an error, since stores price records differently (D3).
 
 Methods removed in Phase 1: a store without
-`updateJobRunStateDurableWithin` gets `updateJobRunStateDurable(job)`
-(digest not compared), and `logReserveNotDurable` and `setBatchTuning`
-are skipped. Skipped calls count in `skipped`, never as mismatches.
+`updateJobRunStateDurableWithin(job, wait)` gets `reserveRunState(job)`
+then `WaitWithin(wait)` on the result (digest not compared), and
+`logReserveNotDurable` and `setBatchTuning` are skipped. Skipped calls
+count in `skipped`, never as mismatches.
 
 ```go
 type recordedCall struct {
@@ -1070,9 +1080,15 @@ job's record) are unchanged. `storeEnv`, `storeLimitGroups` and
 As a user, I want a job never handed to a runner before its reservation is
 durable, even during a filesystem stall, so that a crash never runs it twice.
 
-Each transition appends one state record. In `persistReservation`, the
-server waits `reserveDurableWait()`; on timeout or any error but
-`errDBClosed` it does not hand out. It undoes each per-reserve side effect
+Each transition appends one state record. `persistReservation` calls
+`reserveRunState(job)` and then `WaitWithin(reserveDurableWait())` on the
+handle; on timeout or any error but `errDBClosed` it does not hand out.
+`logStore` returns the reserve record's `wal.Commit`. The bbolt store
+starts a goroutine running its `Batch` update of the run state and returns
+a handle that is done, with Batch's error, once Batch returns;
+`WaitWithin` selects on that against a timer. The rules below live in the
+server and are store-independent, so the bbolt store follows them from 1e
+on too. It undoes each per-reserve side effect
 that a release undoes today:
 
 1. releases the item to the ready sub-queue with no delay and no added
@@ -1107,7 +1123,7 @@ manager stops, which it already gets once the manager is gone, so it has
 no CHANGELOG line.
 
 On success `handOutReservation` restarts the TTR, as today. It checks the
-reservation's `Commit` with `WaitWithin(0)`; if it is not done it still
+reservation's handle with `WaitWithin(0)`; if it is not done it still
 hands out but counts the job in the `"reservation wait"` line's
 `notDurable` field (replacing `logReserveNotDurable`'s count), so any
 non-durable hand-out is visible in the manager log. Each reservation
@@ -1123,7 +1139,7 @@ func reserveDurableWait() time.Duration
 ```
 
 **Package:** `jobqueue/`
-**File:** `jobqueue/serverCLI.go`, `jobqueue/store_log.go`
+**File:** `jobqueue/serverCLI.go`, `jobqueue/store_log.go`, `jobqueue/db.go`
 **Test file:** `jobqueue/store_reserve_test.go`
 
 **Acceptance tests:**
@@ -1132,7 +1148,7 @@ func reserveDurableWait() time.Duration
    the job and, after a crash-reopen, the job is reserved with that
    runner's ClientID as ReservedBy.
 2. Given `ClientMinRequestTimeout` 800ms (bound 200ms) and a sync hook
-   holding every sync for 2s, when a runner reserves, then within 400ms it
+   holding every sync for 2s, when a runner reserves, then within 1s it
    gets no job, the item is in the ready sub-queue, Attempts is unchanged,
    and after the hold ends and the store is reopened the job is ready.
 3. Given that held reservation, when the wal is scanned after the hold,
@@ -1164,6 +1180,11 @@ func reserveDurableWait() time.Duration
    answers a status request, and the captured log has exactly one
    `"wal write failed"` line with `failures` at least 1; when the hook is
    cleared, a fourth add succeeds and its job is live after reopen.
+10. Given a bbolt store whose `Batch` is held 300ms by a test hook, when
+    `reserveRunState(job)` returns, then `WaitWithin(50ms)` on its handle
+    returns `(false, nil)` and `WaitWithin(1s)` returns `(true, nil)`; with
+    the hold at 2s and test 2's timeouts, a runner gets no job and the item
+    is in the ready sub-queue.
 
 ### C4: Delete, modify and reruns
 
@@ -1837,10 +1858,11 @@ Phase 1 compact on a store directory returns `errCompactNotSupported`
 As a cloud user, I want deploy and teardown to keep carrying my database.
 
 - `bootstrapDBBackupLocation`: when `ManagerDBFile` is a store directory,
-  it uploads a self-contained file made by `jobqueue.ExportStore` to the
-  remote's `.wr_<deployment>/db` (restored on the remote's first start, E2
-  test 3); when it is still a bbolt file it uploads it unchanged, as today,
-  and the remote converts it on first start (E1).
+  it uploads a self-contained file made by `jobqueue.ExportStore` (the
+  `backup -p` tar, written by `backup(w)`) to the remote's
+  `.wr_<deployment>/db` (restored on the remote's first start, E2 test 3);
+  when it is still a bbolt file it uploads it unchanged, as today, and the
+  remote converts it on first start (E1).
 - Deploy already dies if a local manager answers on its port
   (`cmd/cloud.go`, "is already running"); `ExportStore` also takes the
   store lock and fails with `ErrDBLocked` if a manager holds it, which only
@@ -1879,6 +1901,10 @@ func ExportStore(dbDir string, w io.Writer) error
    runs (test seam), then `db.old` is the store directory, `db` does not
    exist and no warning is logged; the same holds with a stale bbolt file
    at `db.old`.
+6. Given the file the upload step sent (test seam) placed at a fresh
+   remote deployment's `.wr_<deployment>/db`, when that remote manager
+   first starts, then `db` is a store directory with the source store's
+   live and complete jobs and the message is E2 test 3's.
 
 ## F: Server cleanup, config, tools and docs
 
@@ -2135,8 +2161,8 @@ passing. Work and measurements on NFS go under
   a checkpoint interval; the overlay covers the gap.
 - **Global seq, not log order alone.** Snapshots are encoded outside the
   writer's lock; a seq taken under the job's read lock orders them, and
-  replay keeps the highest per key. Log order still decides the reservation
-  release, because it is snapshotted later.
+  replay keeps the highest per key. The reservation release wins because
+  it is snapshotted later and so has the higher seq.
 - **Compression placement.** s2 per add block in the handler, none on state
   records, zstd per 64KiB block for checkpoints and history
   (phase34-compression.md "At saturation" and "Conclusions"). No
