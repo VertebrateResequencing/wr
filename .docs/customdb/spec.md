@@ -421,7 +421,9 @@ store; methods that return live jobs decode them through their Refs.
 Wal deletion rule (the only one): a wal file is deleted only when it is
 below both the newest checkpoint's `walFrom` and F's file, where F is
 durable at each fold commit in Phase 1 (`history.bolt` meta) and at each
-segment seal in Phase 2, and only when no reader holds it.
+segment seal in Phase 2, only when no reader holds it, and, while
+incremental backup runs, only once the backup has shipped all its bytes
+(else a backup still needing the file keeps a torn copy).
 
 ### Checkpoints
 
@@ -432,17 +434,19 @@ since the last), and never sooner after the previous one ended than it took:
 2. Wait until the folder's position is at or past the cut.
 3. Merge the previous checkpoint with wal files before the cut using the
    recovery reducer, writing `NNNNNNNN.ckpt.tmp`: a header frame (`walFrom`,
-   max seq, counts), zstd blocks of at most 64KiB uncompressed holding each
+   `histFrom` = durable F read at the start of this step, max seq, counts),
+   zstd blocks of at most 64KiB uncompressed holding each
    live job's spec and state records, each live key's non-empty std, and
    every env, limit and depgroup record, then a trailer frame (block
-   offsets, magic `WRCKPT01`). It also holds the spec record of each key
-   with a `complete` record at or after F and before the cut that is no
-   longer live, so an overlay entry's spec survives wal deletion (Phase 2:
-   completions in the open segment).
+   offsets, magic `WRCKPT01`). Phase 2 only: it also holds the spec record
+   of each key with a `complete` record at or after `histFrom` and before
+   the cut that is no longer live (completions in the open segment), so an
+   overlay entry's spec survives wal deletion. In Phase 1 that set is
+   empty: after step 2, `histFrom` is at or past the cut.
 4. fsync, rename to `.ckpt`, fsync the directory, then swap every in-memory
    Ref (spec, last state, std, overlay spec) that points below the cut for
-   its copy in the new checkpoint, then delete older checkpoints and apply
-   the wal deletion rule.
+   its copy in the new checkpoint, then delete older checkpoints (except one
+   a backup tick holds) and apply the wal deletion rule.
 
 A checkpoint is a pure function of files on disk, so it is a consistent cut
 whatever the hot path does meanwhile.
@@ -498,37 +502,54 @@ Folding is idempotent and resumable from a log position.
   meta magic `0xED0CDAED`) to convert; a self-contained backup (tar, "ustar"
   at offset 257) to restore. Anything else is corrupt and restored from
   backup as today's "corrupt (?)" db file (E2 order step 8).
-- The self-contained backup is a tar of `VERSION`, the newest checkpoint,
-  the wal files from its cut through a just-sealed one, and all history
-  files (Phase 1: `history.bolt` via `tx.WriteTo`; Phase 2: sealed `.hist`).
+- The self-contained backup is a tar of `VERSION`, the newest checkpoint C
+  (chosen and held first), all history files (Phase 1: `history.bolt` via
+  `tx.WriteTo`; Phase 2: sealed `.hist`), then the wal files from min(C's
+  `walFrom`, the copied history's folded position's file) through a
+  just-sealed one.
   `backup(w)` writes it; `wr manager backup -p` stores it as one file.
-- Incremental backup (production, or forced): every `minimumTimeBetweenBackups`
-  (30s) at most, ship to the backup location, in this order: history files not
-  yet shipped (Phase 1: `history.bolt` copied whole, only when its `meta` folded
-  position differs from the last shipped copy's, under one read transaction that
-  also reads that position; Phase 2: newly sealed `.hist`), new checkpoints,
-  then wal bytes. Every local copy goes through today's paced `backupCopyWriter`
+- Incremental backup (production, or forced): a tick runs every
+  `minimumTimeBetweenBackups` (30s) at most. Invariant: the backup's
+  checkpoint C has `histFrom` at or below its history's folded position
+  F_b, so every completion at or after F_b finds its spec in C or in wal
+  the backup keeps. A tick, in order:
+  1. Picks the newest local checkpoint C and holds it, so the store keeps
+     it until the tick ends.
+  2. Ships history not yet shipped. Phase 1: `history.bolt` copied whole,
+     only when its `meta` folded position differs from the last shipped
+     copy's, under one read transaction that also reads that position.
+     Phase 2: every sealed `.hist` not yet shipped. F only advances and C's
+     `histFrom` was durable before C existed, so F_b is at or past it. A
+     fold commit or seal after this step cannot break the invariant: a
+     checkpoint written after it is shipped only by a later tick, after
+     that tick's history step.
+  3. If C is not yet shipped and its `histFrom` is at or below F_b, ships
+     C (`.tmp` then rename locally; one object on S3), then deletes every
+     other checkpoint from the backup. Otherwise it keeps the shipped one
+     and logs at warn. The backup holds exactly one checkpoint, two only
+     between the ship and that delete; restore uses the newest.
+  4. Ships wal bytes as parts: for each wal file, the durable bytes not
+     yet shipped (bounded by the next file's `prevEnd` for an abandoned
+     file) go to one new part `NNNNNNNN.wal.OOOOOOOOOOOOOOOO` (16-hex start
+     offset; `.tmp` then rename locally, one object on S3). No byte is
+     shipped twice; checkpoints rotate the writer every 5 min, so a file
+     has a handful of parts. History before log keeps the backup's log at
+     or past F_b once the tick ends.
+  5. Deletes all parts of a wal file from the backup only when the file is
+     below both the shipped C's `walFrom` and F_b's file (Phase 1: the
+     position read with the shipped `history.bolt` copy; Phase 2: the last
+     shipped sealed segment's). The store's own deletion is not the test:
+     its checkpoint and F are newer than the backup's.
+
+  Every local copy goes through today's paced `backupCopyWriter`
   (`jobqueue/db.go` `copyBackup`/`pace`: async writeback every
   `backupCopySyncBytes`, 8MiB, via `backupPaceRange` in
-  `db_backupsync_linux.go`, then one fsync), the fix for the backup copy burst
-  that starved bbolt's fdatasync on NFS; it moves to `store_backup.go` when
-  Phase 2 deletes `db.go`. Wal bytes ship as parts: each tick, for each wal
-  file, the durable bytes not yet shipped (bounded by the next file's `prevEnd`
-  for an abandoned file) go to one new part `NNNNNNNN.wal.OOOOOOOOOOOOOOOO`
-  (16-hex start offset; written to `.tmp` then renamed locally, one object on
-  S3). No byte is shipped twice; checkpoints rotate the writer every 5 min, so a
-  file has a handful of parts. Restore rebuilds each wal file by concatenating
-  its parts in offset order, stopping at the first gap (the rest is a torn tail
-  to recovery). The backup applies the wal deletion rule to its own contents:
-  all parts of a wal file the store has deleted are deleted from the backup only
-  when that file is below both the newest shipped checkpoint's `walFrom` and the
-  shipped history's folded position (Phase 1: the position read with the shipped
-  `history.bolt` copy; Phase 2: the last shipped sealed segment's). The store's
-  own deletion is not enough: its F can pass a file after the tick shipped
-  history (a fold commit after the copy, a seal after the history step) and a
-  checkpoint can complete in that gap. History before log keeps the backup's log
-  at or past its history's folded position. `close` runs one final incremental
-  ship after the writer's last commit when anything is unshipped, as today's
+  `db_backupsync_linux.go`, then one fsync), the fix for the backup copy
+  burst that starved bbolt's fdatasync on NFS; it moves to
+  `store_backup.go` when Phase 2 deletes `db.go`. Restore rebuilds each wal
+  file by concatenating its parts in offset order, stopping at the first
+  gap (the rest is a torn tail to recovery). `close` runs one final tick
+  after the writer's last commit when anything is unshipped, as today's
   `finaliseBackup` writes a final backup on close.
 - An S3 `dbBkFile` in development deployment (forced backups) keeps
   today's `"." + deployment` suffix (`initDB`), so the prefix is
@@ -1321,8 +1342,10 @@ rewriting segments; live keys are filtered per query as listed under
 
 As a user, I want every status and history answer to equal today's.
 
-`spendArchivedBytesByRepGroup` prices each record at its uncompressed flat
-record length.
+`spendArchivedBytesByRepGroup` prices each history entry at the
+uncompressed flat length of its spec and `complete` records, times
+`archivedFlatScale` (unexported, per mille, fixed by test 4), so the guard
+trips where today's Binc pricing does.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_history.go`
@@ -1340,6 +1363,13 @@ record length.
 3. Given `retrieveOldestCompleteJobsByRepGroup` with a limit of 10 on that
    group, when run, then it returns the 10 oldest by StartTime and counts
    50,000.
+4. Given a production-shaped completed job (300-byte Cmd, 60-byte Cwd,
+   40-byte RepGroup, 30-byte ReqGroup, 3 DepGroups and 2 Dependencies of
+   20 bytes, Requirements with RAM, Time, Cores, Disk and one Other entry,
+   one Behaviour, EnvKey, Host, HostID, IP, StartTime, EndTime, PeakRAM,
+   CPUtime), when n copies are priced against `maxArchivedBytes` by both
+   the Phase 2 pricing and `len` of today's Binc record, then the count
+   at which `ErrArchivedHistoryTooBig` trips differs by at most 10%.
 
 ## E: Lifecycle (Phase 1, history parts Phase 2)
 
@@ -1615,18 +1645,28 @@ never stalls the manager or rewrites gigabytes.
 8. Given development deployment with `forceBackups` and S3 `dbBkFile`
    `s3://b/wr/db_bk` (fake target), when a tick ships, then every object is
    under `wr/db_bk.development/`.
-9. Given a test hook that, during a tick, after the history step and
-   before the deletion step, folds and commits (Phase 1) or seals a
-   segment (Phase 2) past wal file w, then runs a checkpoint whose
-   `walFrom` is past w and lets the store delete w, when the tick finishes
-   and the backup is restored (E2), then every job completed before the
-   tick is complete in the restored store; the same holds after the next
-   tick and another restore.
+9. Given a tick T1 that ships checkpoint C1 and history at folded
+   position F_b in wal file f and deletes from the backup the wal files
+   holding the adds of 20 jobs (all below C1's `walFrom` and f), then
+   those 20 jobs completing in file f or later, and a test hook that
+   during tick T2, after the history step and before the checkpoint
+   step, folds and commits (Phase 1) or seals a segment (Phase 2) past
+   those completions, then runs a checkpoint whose `walFrom` is past them
+   and lets the store delete every wal file it may: when T2 finishes and
+   the backup is restored (E2), then restore returns no error and the 20
+   jobs and every job completed before T2 are complete, each with the Cmd
+   it was added with; the same holds after a tick T3 and another restore,
+   and after each tick the backup holds one checkpoint, whose `histFrom`
+   is at or below the shipped history's folded position.
 10. Phase 1: given `backupCopySyncBytes` set to the page size and
     `backupPaceHook` counting calls, when a tick ships a `history.bolt` of
     n bytes, then the hook ran at least n/pagesize - 1 times; when a second
     tick follows with no fold commit between, then it copies no
     `history.bolt`.
+11. Given production deployment and a checkpoint that seals wal file w
+    before a tick has shipped w's last 10 adds, when the checkpoint
+    finishes, then w still exists locally; after the next tick it is
+    deleted, and restoring the backup (E2) yields those 10 jobs live.
 
 ### E5: Self-contained backup
 
@@ -1650,9 +1690,11 @@ that a manager can start from.
 
 As an operator, I want `wr manager compact` to tidy the new store offline.
 
-Phase 2. With the lock held: recover, write a checkpoint, delete covered wal
-files, merge `.hist` segments smaller than `histSegmentBytes` into new ones
-(write, fsync, rename, then delete inputs). `CompactStats` before/after are
+Phase 2. With the lock held: recover, fold the log and seal the open
+segment, write a checkpoint (its rotation leaves one new empty wal file at
+the cut), delete covered wal files, merge `.hist` segments smaller than
+`histSegmentBytes` into new ones (write, fsync, rename, then delete
+inputs). `CompactStats` before/after are
 the directory's total bytes; unreadable records are counted as today.
 Refusal while a manager runs is unchanged. On an unconverted bbolt file,
 compact first runs `convertBoltDB` (same steps, free-space check and crash
@@ -1666,8 +1708,10 @@ supported yet (unreleased).
 
 **Acceptance tests:**
 
-1. Given a store with 10 small segments and 5 wal files, when compacted,
-   then 1 segment and 1 wal file remain, and every query answer is
+1. Given a store with 10 small segments and 5 wal files holding 100
+   unsealed completions, when compacted, then 1 segment and 1 wal file
+   remain, that file is empty and numbered the checkpoint's `walFrom`,
+   and every query answer is
    unchanged (A5 digest compare).
 2. Given a compaction killed after writing the merged segment but before
    deleting inputs, when opened, then each key is found once.
@@ -1986,9 +2030,10 @@ passing. Work and measurements on NFS go under
   with a per-segment bloom filter; DEVELOPERS.md records it.
 - **No Phase 1 to Phase 2 migration.** Phase 1 never reaches a release;
   fixtures are bbolt files and reach each phase through the converter.
-- **Archived-bytes budget** prices records by uncompressed flat length,
-  which is smaller than Binc, so the 256MB guard fires slightly later than
-  today for the same history.
+- **Archived-bytes budget** prices records by scaled uncompressed flat
+  length (D3), pinned within 10% of Binc pricing for a typical record, so
+  the 256MB guard shows no visible threshold change and needs no Binc
+  encode on the query path.
 - **Testing.** GoConvey per go-conventions; implementors follow
   go-implementor, reviewers go-reviewer. Fault-injection hooks (sync hold,
   sync error, crash points, free space) are unexported package vars reset
