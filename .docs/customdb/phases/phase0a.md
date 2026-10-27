@@ -40,11 +40,14 @@ Brief every subagent with these project constraints:
 
 spec.md section: A1
 
-Define `store` in `jobqueue/store.go` and make `*db` implement it in
-`jobqueue/store_bolt.go` (`var _ store = (*db)(nil)`); make `Server.db`
-a `store`; make `rerunGuard`, `rerunGuards` and `archiveOutcome` take
-`addStored` (`jobqueue/running_dependent.go`, `server.go`,
-`serverCLI.go`), as "The store interface" describes. No behaviour change.
+Define `store`, `storeConfig` and `openStore` in `jobqueue/store.go`
+and make `*db` implement `store` in `jobqueue/store_bolt.go`
+(`var _ store = (*db)(nil)`). Make `Server.db` a `store`, replace the
+`initDB` call in `Serve` with `openStore` (always bbolt in Phase 0), and
+give `ServerConfig` the unexported `storeKind`. Make `rerunGuard`,
+`rerunGuards` and `archiveOutcome` take `addStored`
+(`jobqueue/running_dependent.go`, `server.go`, `serverCLI.go`), as "The
+store interface" describes. No behaviour change.
 Cover all 3 acceptance tests from A1 in `jobqueue/store_test.go`.
 
 - [ ] implemented

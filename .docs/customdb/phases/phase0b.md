@@ -44,9 +44,10 @@ Add `recordKind`, `storeInspector` and `forEachStore(t, fn)` (env
 `WR_TEST_STORE`) in `jobqueue/store_inspect_test.go`, with the bbolt
 implementation of the inspector, and move the tests that use
 `db.bolt.View/Update/Batch` or `*bolt.Tx` onto it. Tests of bbolt
-mechanics stay bbolt-only and are listed in `boltOnlyTests`. Cover all 3
-acceptance tests from A2. Depends on 0a. The spec lets 0b and 0c run in
-either order; run them one after the other.
+mechanics (freelist, remap, backup pacing, writer turns, prefetch,
+bbolt compaction) stay bbolt-only, and their files are listed in
+`boltOnlyTests`. Cover all 3 acceptance tests from A2. Depends on 0a.
+The spec lets 0b and 0c run in parallel; run them one after the other.
 
 - [ ] implemented
 - [ ] reviewed

@@ -40,11 +40,16 @@ Brief every subagent with these project constraints:
 
 spec.md section: A3
 
-Add the periodic `dbWriterStatsLogMsg` ("db writer") line per writer and
-the wait lines in `jobqueue/store_stats.go`, atomics only, following
-`archivefold.go`; include `TestAddLatency1000` as A3 defines it. Cover
-all 4 acceptance tests from A3. Depends on 0a. The spec lets 0b and 0c
-run in either order; run them one after the other.
+Add `waitHistogram` and the periodic `dbWriterStatsLogMsg` ("db
+writer") line for each bbolt writer (`newJobs`, `addChunk`, `archive`,
+`bestEffort`, `batch`), plus the `reservationWaitLogMsg` ("reservation
+wait") and `addWaitLogMsg` ("add wait") lines, in
+`jobqueue/store_stats.go`, atomics only, following `archivefold.go`.
+Add `TestAddLatency1000` in `jobqueue/store_addbench_test.go` as A3
+defines it. Cover all 4 acceptance tests from A3 in
+`jobqueue/store_stats_test.go` and `jobqueue/store_addbench_test.go`.
+Depends on 0a. The spec lets 0b and 0c run in parallel; run them one
+after the other.
 
 - [ ] implemented
 - [ ] reviewed
