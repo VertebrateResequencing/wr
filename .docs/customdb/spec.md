@@ -558,6 +558,11 @@ Folding is idempotent and resumable from a log position.
   object. Before the first incremental ship, if the backup path holds bbolt
   (meta magic), it is renamed to `dbBkFile + ".bolt-pre-" + v` (as E1;
   S3: copy then delete) and kept. Restore also accepts such a backup (E2).
+- `daemonStopWait` (`cmd/root.go`) adds its 1s per 50MiB for the total
+  size of the regular files under the `dbFile` directory (walked
+  recursively) instead of `os.Stat(dbFile).Size()`; a regular file at
+  `dbFile` (unconverted bbolt) still counts its own size, so a same-size
+  database gets today's wait.
 
 ### Configuration and removals
 
@@ -572,9 +577,10 @@ Folding is idempotent and resumable from a log position.
 ### Errors
 
 New sentinels in `jobqueue`: `errStoreCorrupt`, `errNotEnoughSpace`,
-`errStoreVersionTooNew`. `ErrDBLocked` and `ErrDBUnreadable` keep their
-meaning; `openErrorThatIsNotCorruption`'s errno list applies to the store
-directory and its files too. A failed durable write returns its error to the
+`errStoreVersionTooNew`, `errCompactNotSupported` (Phase 1 only).
+`ErrDBLocked` and `ErrDBUnreadable` keep their meaning;
+`openErrorThatIsNotCorruption`'s errno list applies to the store directory
+and its files too. A failed durable write returns its error to the
 caller (as today) and the manager keeps serving; a writer error after
 `close` returns `errDBClosed`.
 
@@ -1611,9 +1617,10 @@ type backupTarget interface {
 As an operator, I want backups that copy only new files, so that a backup
 never stalls the manager or rewrites gigabytes.
 
-**Package:** `jobqueue/`
-**File:** `jobqueue/store_backup.go`
-**Test file:** `jobqueue/store_backup_test.go`
+**Package:** `jobqueue/`, `cmd/`
+**File:** `jobqueue/store_backup.go`, `cmd/root.go`
+**Test file:** `jobqueue/store_backup_test.go`,
+`cmd/manager_stop_shutdown_test.go`
 
 **Acceptance tests:**
 
@@ -1667,6 +1674,10 @@ never stalls the manager or rewrites gigabytes.
     before a tick has shipped w's last 10 adds, when the checkpoint
     finishes, then w still exists locally; after the next tick it is
     deleted, and restoring the backup (E2) yields those 10 jobs live.
+12. Given `config.ManagerDBFile` a directory holding a 10MiB file and a
+    subdirectory holding a 20*`daemonStopBackupBytesPerSec` file, when
+    `daemonStopWait()` runs, then it returns `daemonStopGiveup` + 21s; with
+    the directory absent it returns `daemonStopGiveup`.
 
 ### E5: Self-contained backup
 
@@ -1699,8 +1710,8 @@ the directory's total bytes; unreadable records are counted as today.
 Refusal while a manager runs is unchanged. On an unconverted bbolt file,
 compact first runs `convertBoltDB` (same steps, free-space check and crash
 safety as E1), then compacts the new store, so no older wr is needed. In
-Phase 1 compact on a store directory returns an error saying it is not
-supported yet (unreleased).
+Phase 1 compact on a store directory returns `errCompactNotSupported`
+(unreleased; Phase 2 deletes it).
 
 **Package:** `jobqueue/`, `cmd/`
 **File:** `jobqueue/store_compact.go`, `cmd/manager.go`
@@ -1721,6 +1732,10 @@ supported yet (unreleased).
    runs, then `dbFile` is a store directory, `dbFile.bolt-pre-dev` has the
    original's sha256, and the A5 query set gives equal digests for the
    bbolt file and the compacted store.
+5. Phase 1 only: given a store directory at `dbFile` and no manager, when
+   `CompactDBFileStats` runs, then the error is `errCompactNotSupported`,
+   its text is exactly `compacting the new database store is not
+   supported yet`, and the directory's files and sizes are unchanged.
 
 ### E7: Cloud deploy and teardown
 
@@ -1931,6 +1946,12 @@ and the fallback below for the key index.
 1. Given `CHANGELOG.md`, when read, then its Unreleased section states the
    rollback procedure and that rolling back loses everything done since the
    conversion.
+2. Given `CHANGELOG.md`, when read, then every entry listed above sits
+   under Unreleased's `### Fixed` (in one of its `####` subsections), and
+   none under `### Added` or `### Changed`.
+3. Given `cmd/conf.go`, when read, then the `managerdbfile` comment says
+   it is a directory, and the `managerdbbkfile` comment says it is a
+   directory or an S3 prefix.
 
 ## Implementation Order
 
@@ -1982,6 +2003,10 @@ passing. Work and measurements on NFS go under
       shows the stall path ran;
     - 0 double runs outside injected stalls (`soakgate.py`'s `doubles`
       line, `outside=0`).
+
+    The soak's backup ticks copy `history.bolt` whole (paced) whenever its
+    folded position changed, a known caveat since Phase 1 is never released;
+    the Phase 2 soak gives the authoritative backup-I/O result.
   - `make speed-full`: no regression above 10% against `d1a4b6d7`.
   - Daytime NFS (weekday, 10:00 to 17:00): reservation wait p99 at most
     50ms from the soak's `"reservation wait"` lines; 1000-job add p50 at
