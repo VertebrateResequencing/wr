@@ -62,12 +62,14 @@ lets every live job's spec be addressed by file and offset.
   - `store_convert.go`: bbolt to store converter.
   - `store_backup.go`: incremental shipping, `backup -p` archive.
   - `store_export.go`: exported read-only API for developer tools.
+  - `store_record.go`: the record/replay wrapper (A5).
+  - `store_compact.go`: offline compaction (E6).
   - `store_record_test.go` (record/replay), `store_crash_test.go`,
     `store_inspect_test.go`.
 - `internal/db_upgrade_status.go`: new conversion phase.
 - `internal/config.go`, `cmd/conf.go`, `cmd/manager.go`, `cmd/cloud.go`.
 - `developers/soak/dbstart/` rewritten; `developers/soak/soakgate.py`
-  gains `--source wait` (F3b, Phase 1 gate); `developers/soak/bboltexp/` and
+  gains `--source wait` (F4, Phase 1 gate); `developers/soak/bboltexp/` and
   `.docs/reliable2/harness/statinspect/` deleted (Phase 2).
 
 ### The store interface
@@ -682,7 +684,7 @@ as above. No behaviour changes.
 1. Given every non-test `.go` file in `jobqueue/` except `db.go`,
    `db_*.go`, `dependency.go`, `writeturns.go`, `reqstat_cache.go`,
    `archivefold.go` and `store_bolt.go` (from Phase 1 also
-   `store_history_bolt.go`, `store_convert.go` and `store_backup.go`; F4
+   `store_history_bolt.go`, `store_convert.go` and `store_backup.go`; F5
    test 1 replaces this list in Phase 2), when parsed
    with `go/parser`, then none imports `go.etcd.io/bbolt` and none refers to
    the identifier `db` as a type (count of violations is 0).
@@ -751,7 +753,7 @@ a burst can be attributed without a code change.
 
 Follows `archivefold.go`: atomics only, no behaviour derived. Every
 `archiveFoldReportInterval` (Phase 2 moves it into `store_stats.go`,
-since F4 deletes `archivefold.go`), for each writer with activity, warn
+since F5 deletes `archivefold.go`), for each writer with activity, warn
 `dbWriterStatsLogMsg = "db writer"` with `writer` (`newJobs`, `addChunk`,
 `archive`, `bestEffort`, `batch`; Phase 1 adds `log` and `fold`), `txs`,
 `items`, `meanLock`, `maxLock` (waiting for turn and lock), `meanHold`,
@@ -1104,9 +1106,8 @@ durable, even during a filesystem stall, so that a crash never runs it twice.
 
 Each transition appends one state record. `persistReservation` calls
 `reserveRunState(job)` and then `WaitWithin(reserveDurableWait())` on the
-handle. On any failure it answers with no job: on timeout or any error
-but `errDBClosed` it also undoes the reservation as below, and on
-`errDBClosed` it undoes nothing.
+handle. On any failure it answers with no job; on timeout or any error
+but `errDBClosed` it also undoes the reservation as below.
 `logStore` returns the reserve record's `wal.Commit`. The bbolt store
 starts a goroutine running its `Batch` update of the run state and returns
 a handle that is done, with Batch's error, once Batch returns;
@@ -1364,13 +1365,13 @@ D3) need no format change.
 
 ### C7: Lock and version
 
-As an operator, I want two managers never to share a store and an old store
-version to be refused clearly.
+As an operator, I want two managers never to share a store and a store
+written by a newer wr to be refused clearly.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_open.go`
 **Test file:** `jobqueue/store_open_test.go`; test 4 in
-`jobqueue/store_convert_test.go` (which may import bbolt, F4)
+`jobqueue/store_convert_test.go` (which may import bbolt, F5)
 
 **Acceptance tests:**
 
@@ -1735,7 +1736,7 @@ word for word (`initDB`).
 
 ### E3: Recursive deletes
 
-As a developer, I want the dev wipe and restore paths to remove a directory
+As a wr developer, I want the dev wipe and restore paths to remove a directory
 or S3 prefix, not fail silently on one.
 
 Every `os.Remove(dbFile)`, `os.Remove(dbBkFile)` and
@@ -2030,7 +2031,7 @@ func ReadStore(dbDir string, fn func(live bool, job *Job) error) error
    two lines with the columns and values the bbolt `dbstart` printed for
    the same jobs (golden test data regenerated from a bbolt run).
 
-### F3b: soakgate reads `"reservation wait"` lines
+### F4: soakgate reads `"reservation wait"` lines
 
 As a soak operator, I want `soakgate.py` to count non-durable hand-outs
 from the new store's log lines, so that the Phase 1 crash-soak gate can be
@@ -2083,7 +2084,7 @@ directories 32 to 36
    `abandoned` into the hand-out count; ignoring segments; dropping the
    window placement; NONE when k = 0; NONE never.
 
-### F4: Retire bbolt (Phase 2)
+### F5: Retire bbolt (Phase 2)
 
 As a wr developer, I want bbolt gone, so that only one storage engine
 remains.
@@ -2105,7 +2106,7 @@ read-only bbolt reader, so the module stays if needed only by
    by `jobqueue/store_convert.go` and its tests.
 2. Given `make test`, `make race` and `make lint`, when run, then all pass.
 
-### F5: Documentation
+### F6: Documentation
 
 As an operator, I want to know what changed on disk and how to roll back.
 
@@ -2167,7 +2168,7 @@ passing. Work and measurements on NFS go under
   `history.bolt` and the overlay from D1 so history queries work.
 - 1d: C6 (checkpoints), D1 (folder, stats).
 - 1e: C3 (reservations), F1, F2; switch default `storeKind` to log.
-- 1f: E1, E2, E3, E5, E7 (Phase 1 forms), F3, F3b; incremental backup
+- 1f: E1, E2, E3, E5, E7 (Phase 1 forms), F3, F4; incremental backup
   (E4) with `history.bolt` shipped whole; C5 test 3's backup clause and
   test 8's converted-store clause.
 - Gates:
@@ -2186,7 +2187,7 @@ passing. Work and measurements on NFS go under
       `relburycheck.py` prints `problems: 0` (no acknowledged release or
       bury lost across a kill -9);
     - 0 non-durable hand-outs, including during stalls: `soakgate.py
-      --source wait` (F3b) prints `nondurable source=wait inside=0
+      --source wait` (F4) prints `nondurable source=wait inside=0
       outside=0`. `notDurable` is the production `WaitWithin(0)` check
       `handOutReservation` makes on every hand-out (C3), not a test hook,
       so it is a regression guard that is nonzero only through a defect.
@@ -2224,12 +2225,12 @@ passing. Work and measurements on NFS go under
 - 2b: D3; the folder writes segments; learned samples from footers.
 - 2c: E4 final form (sealed `.hist` files), E5 with segments.
 - 2d: E1 to segments, E6.
-- 2e: F4, F5.
+- 2e: F5, F6.
 - Gates: A4 and A5 as in Phase 1 against the final store (A5 against the Phase 0
   recording); the crash soak repeated; `make speed-full` within 10%; the daytime
   NFS targets measured as in Phase 1 (both runs, same rules) against the final
   store; wrdev `crash-recovery` and every other remaining `wrdev.sh` scenario
-  pass (F4 deletes `freelist-check`, `remap-stall-check` and `compact-fixture`);
+  pass (F5 deletes `freelist-check`, `remap-stall-check` and `compact-fixture`);
   `wr status -i` for production's biggest rep group on the converted
   `runstate-gate/fixtures/prod.db` no slower than develop on the bbolt fixture
   (both timings recorded in the PR).
