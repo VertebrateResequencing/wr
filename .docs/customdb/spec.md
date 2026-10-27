@@ -220,8 +220,11 @@ func (c Commit) WaitWithin(d time.Duration) (done bool, err error)
 
 type Writer struct{ /* one goroutine, one open segment */ }
 
-func (w *Writer) Append(rec []byte) (Ref, Commit)
-func (w *Writer) AppendBlock(block []byte, n int) (Ref, Commit) // pre-built
+// done, if non-nil, is called by the writer goroutine with the batch's
+// result after its sync and before Wait returns. It must not block.
+func (w *Writer) Append(rec []byte, done func(error)) (Ref, Commit)
+func (w *Writer) AppendBlock(block []byte, n int,
+	done func(error)) (Ref, Commit) // pre-built
 func (w *Writer) Rotate() (sealed uint32, err error)
 func (w *Writer) Durable() (file uint32, off int64)
 func (w *Writer) Stats() WriterStats
@@ -230,8 +233,9 @@ func (w *Writer) Close() error
 
 `Append` and `AppendBlock` assign the record's Ref under the writer's mutex,
 so Ref order is log order. The writer goroutine takes everything queued,
-issues one `write()` and one `fdatasync`, then closes the batch's channel; no
-lock is held across the sync (as `proto/internal/gc`). Segments rotate at
+issues one `write()` and one `fdatasync`, calls the batch's `done` funcs in
+Ref order, then closes the batch's channel; no lock is held across the sync
+(as `proto/internal/gc`). Segments rotate at
 `walSegmentSize` (256MiB) on a batch boundary; rotation fsyncs the old file
 and the directory. Every file's first frame is a header written by the
 writer, `"WRWALHDR"`, u32 previous file number, u64 previous file's durable
@@ -245,23 +249,22 @@ Write or sync error:
   trusted: nothing more is written to it), opens the next file number,
   whose header records the abandoned file's last durable end, and carries
   on with later batches.
-- If opening, writing or syncing a new file also fails, it retries with
-  backoff (100ms doubling, at most `walFailLimit`, 1 min, in all); pending
-  commits keep waiting. Past the limit every pending and later commit gets
-  `ErrWriterFailed` and `onFatal` is called once.
+- If opening, writing or syncing a new file also fails, that batch's
+  commits get the error too, and the writer waits a backoff (100ms,
+  doubling per consecutive failure, capped at `walRetryCap`, 5s) before
+  taking the next batch, which opens a new file number. A success resets
+  the backoff. The writer never gives up; the manager keeps serving and
+  every failed commit returns its error to its caller, as a failed bbolt
+  transaction does today.
+- `onError` is called for every failed batch. The log store's `onError`
+  logs `walWriteFailedLogMsg = "wal write failed"` at error at most once a
+  minute, with the error and `failures` (count since the last line).
 
 ```go
-var ErrWriterFailed = errors.New("wal writer failed")
-
 func ParseHeader(rec []byte) (prevFile uint32, prevEnd uint64, ok bool)
 func NewWriter(dir string, file uint32, segmentSize int64,
-	onFatal func(error)) (*Writer, error)
+	onError func(error)) (*Writer, error)
 ```
-
-The log store passes an `onFatal` that logs at error and shuts the server
-down with reason `ErrClosedStorage = "queues closed due to a storage write
-failure"`; `logServerStop` reports that reason with `die`, so
-`wr manager start` exits non-zero rather than serving without durability.
 
 Files in the store directory, `NNNNNNNN` being an 8-hex-digit file number
 from one counter (max existing + 1 at open):
@@ -301,7 +304,8 @@ applied for that key. Keys are 16 binary bytes (wr's 32-hex md5).
   removed). An add block carries one per dep group not yet in the store's
   ever-seen set, so `depGroupEverSeen` stays true after every member is
   deleted. Checkpoints carry the whole set; conversion writes one per
-  `depgroups` entry.
+  `depgroups` entry, or, when that bucket is absent, one per distinct dep
+  group in `depgroupToKey` (as `initDB`'s `rebuildDepGroups` back-fills).
 - Learned-requirement samples have no record: they are history (Phase 1:
   `history.bolt`'s `jobRAM`, `jobDisk`, `jobSecs`; Phase 2: segment
   footers), loaded into memory at open and extended by the folder.
@@ -348,8 +352,16 @@ applied for that key. Keys are 16 binary bytes (wr's 32-hex md5).
 - `beSeq`, run-state overlays, change-versus-exit skipping and writer turns
   do not exist in `logStore`. `expectJobExitUpdate` keeps its contract:
   `retrieveJobStd` waits for exit updates expected or in flight.
-- A read through a Ref whose batch is not yet written waits for that
-  batch's commit.
+- In-memory state reflects a record only once its commit succeeds. Every
+  append passes a `done` func that, on nil, applies the record to the
+  in-memory state below with the replay reducer (highest seq per key wins,
+  so apply order does not matter); on error it does nothing. So a failed
+  batch leaves no live key, overlay entry, std, env, limit, dep group or
+  Ref behind, and its Refs are never reachable; nothing reads them. A
+  caller that waits sees its record applied when `Wait` returns nil.
+- Keys of an add in flight sit in a pending set; a concurrent add that
+  meets a pending key waits for that add's commit, then dedups against the
+  result.
 
 ### In-memory state of `logStore`
 
@@ -411,8 +423,9 @@ a second it reads the log from its position up to `Writer.Durable()` and
 folds into history every completion (spec + final state), rglookup and
 histdrop, and every new learned-requirement sample (from completions and
 from releases with a resource fail reason, as `putJobStats` and
-`updateFailStat` choose today). Folding is idempotent and resumable from a
-log position.
+`updateFailStat` choose today). It reads a file followed by another only up
+to the next file's header `prevEnd`, so an abandoned batch is never folded.
+Folding is idempotent and resumable from a log position.
 
 - Phase 1: history is `history.bolt` with today's history buckets
   (`jobscomplete`, `repgroupToKey`, `repgroups`, `depgroupToKey`,
@@ -450,14 +463,23 @@ log position.
 - Incremental backup (production, or forced): every
   `minimumTimeBetweenBackups` (30s) at most, ship to the backup location, in
   this order: history files not yet shipped (Phase 1: `history.bolt` copied
-  whole when changed; Phase 2: newly sealed `.hist`), new checkpoints, newly
-  sealed wal files, then the durable prefix of the open wal file (to
-  `NNNNNNNN.wal.tmp` then renamed, or uploaded over the object). Files the
-  store has deleted are deleted from the backup only after a newer
+  whole when changed; Phase 2: newly sealed `.hist`), new checkpoints, then
+  wal bytes. Wal bytes ship as parts: each tick, for each wal file, the
+  durable bytes not yet shipped (bounded by the next file's `prevEnd` for an
+  abandoned file) go to one new part `NNNNNNNN.wal.OOOOOOOOOOOOOOOO` (16-hex
+  start offset; written to `.tmp` then renamed locally, one object on S3).
+  No byte is shipped twice; checkpoints rotate the writer every 5 min, so a
+  file has a handful of parts. Restore rebuilds each wal file by
+  concatenating its parts in offset order, stopping at the first gap (the
+  rest is a torn tail to recovery). Files the store has deleted (all parts
+  of a wal file) are deleted from the backup only after a newer
   checkpoint has been shipped. History before log keeps the backup's log at
   or past its history's folded position. `close` runs one final
   incremental ship after the writer's last commit when anything is
   unshipped, as today's `finaliseBackup` writes a final backup on close.
+- An S3 `dbBkFile` in development deployment (forced backups) keeps
+  today's `"." + deployment` suffix (`initDB`), so the prefix is
+  `<dbBkFile>.development/`.
 - An old backup is a bbolt file at `dbBkFile` (default `db_bk`) or one S3
   object. Before the first incremental ship, if the backup path holds bbolt
   (meta magic), it is renamed to `dbBkFile + ".bolt-pre-" + v` (as E1;
@@ -479,8 +501,8 @@ New sentinels in `jobqueue`: `errStoreCorrupt`, `errNotEnoughSpace`,
 `errStoreVersionTooNew`. `ErrDBLocked` and `ErrDBUnreadable` keep their
 meaning; `openErrorThatIsNotCorruption`'s errno list applies to the store
 directory and its files too. A failed durable write returns its error to the
-caller (as today); a writer error after `close` returns `errDBClosed`; a
-failed writer (`wal.ErrWriterFailed`) stops the manager (Write path).
+caller (as today) and the manager keeps serving; a writer error after
+`close` returns `errDBClosed`.
 
 ## A: Store interface and harnesses (Phase 0)
 
@@ -809,10 +831,13 @@ page rewrites.
 4. Given `segmentSize` 4KiB and 100 records of 100 bytes, when appended,
    then at least 2 `.wal` files exist, records never span files, and Refs
    name the file each record is in.
-5. Given a sync hook returning `EIO` for every sync and `walFailLimit`
-   500ms, when one record is appended, then its `Wait()` returns an error,
-   a later append's `Wait()` returns `ErrWriterFailed` within 1s, and
-   `onFatal` was called exactly once.
+5. Given a sync hook returning `EIO` for every sync and `walRetryCap`
+   200ms, when 5 records are appended 100ms apart, then each `Wait()`
+   returns an error wrapping `syscall.EIO` within 1s of its append and
+   `onError` was called once per failed batch; when the hook is then
+   cleared, the next record's `Wait()` returns nil within 1s, a scan finds
+   it in a file numbered above every earlier one, and `done` funcs were
+   called with the same results the `Wait()`s returned.
 
 ### B3: Block codecs
 
@@ -978,10 +1003,11 @@ func reserveDurableWait() time.Duration
    reserved by that ClientID, the wal holds no start record for it, and
    the server treats it as a reserved job whose runner vanished (as a
    bbolt store recovered with the same record does).
-9. Given a sync hook returning `EIO` for every sync and `walFailLimit`
-   500ms, when a job is added, then the add returns an error, `Block()`
-   returns a `jobqueue.Error` whose Err is `ErrClosedStorage` within 2s,
-   and `wr manager start` (via `logServerStop`) exits with status 1.
+9. Given a sync hook returning `EIO` for every sync, when 3 adds are made
+   within 2s, then each returns an error to the client, the server still
+   answers a status request, and the captured log has exactly one
+   `"wal write failed"` line with `failures` at least 1; when the hook is
+   cleared, a fourth add succeeds and its job is live after reopen.
 
 ### C4: Delete, modify and reruns
 
@@ -1044,6 +1070,15 @@ quickly, so that recovery neither loses nor resurrects work.
 6. Given 100,000 live 1KiB jobs, when recovered, then the store's own heap
    growth (excluding returned jobs, measured after dropping them) is under
    40MB.
+7. Given live k2 (running) and k3 (running, earlier exit 1 with std
+   `"x"`/`"y"`), a sync hook holding one sync until three writes are queued
+   and then returning `EIO`, when a 1-job add of new key k1, the archive of
+   k2 and k3's exit 1 with std `"o"`/`"e"` are made into that batch, then
+   each returns an error; `checkIfLive(k1)` is false, `checkIfLive(k2)` is
+   true and `checkIfComplete(k2)` false, `retrieveJobStd(k3)` returns
+   `"x"`/`"y"`, and with the hook cleared a retried add of k1 stores it
+   (`checkIfLive(k1)` true, not deduped); the same answers hold after
+   reopen and after the folder has run.
 
 ### C6: Checkpoints and spec addressing
 
@@ -1173,7 +1208,7 @@ jobs drop out without rewriting segments.
    `retrieveCompleteJobsByRepGroup` runs, then it returns the job once,
    with the second run's EndTime.
 5. Given 1,000,000 completed keys, when indexed, then heap growth of the key
-   index is under 100MB.
+   index is under 47MB (100MB at 2.15M keys).
 
 ### D3: History queries on segments (Phase 2)
 
@@ -1233,7 +1268,12 @@ loops on resume.
 Accepts bbolt schema 0, 1 and 2. Schema 0 is needed for real production
 DBs: `db_schema.go` defines it as a DB with no recorded version, which older
 wr wrote. In every schema,
-StdOutC/StdErrC of complete records are dropped. Progress uses
+StdOutC/StdErrC of complete records are dropped. A missing bucket reads as
+empty, except where `initDB` back-fills one today: `depgroups` is derived
+from `depgroupToKey` (Records); `jobLookupEntries` is a bbolt-only reverse
+index the converter never reads. No other bucket is back-filled
+(`repgroups` and the rest are created empty), and the schema 1 and 2 bumps
+only record a version, so nothing else is derived. Progress uses
 `internal.DBUpgradeConvertState = "convert database"` with Processed/Total
 in jobs; `IsDBUpgradeState` returns true for it.
 
@@ -1261,7 +1301,12 @@ func buildStoreFromBolt(ctx context.Context, boltFile, dir string,
    digests for bbolt and the converted store.
 2. Given a schema 0 bbolt DB with StdOutC on complete records, when
    converted, then no history record holds std and the completed count is
-   unchanged; schema 1 and 2 DBs convert too.
+   unchanged; schema 1 and 2 DBs convert too. Given a schema 0 DB with no
+   `jobslive` and no `depgroups` bucket (so `initDB` accepts it) whose
+   `depgroupToKey` holds groups `"d"` and `"e"`, each with one complete
+   member, when converted, then jobs added depending on `"d"`, on `"e"` and
+   on never-seen `"f"` get the same `resolveDependencies` results and
+   `depGroupEverSeen` answers as on a copy of the DB opened by `initDB`.
 3. Given a test hook crashing after each of steps 2, 3, 4 (mid-build) and
    before 5, when started again, then each yields the same store as an
    uninterrupted run and the bbolt file's sha256 is unchanged.
@@ -1287,7 +1332,9 @@ new store.
 3. Resume conversion.
 4. `dbFile` absent: restore (below), or create an empty store (`VERSION`,
    empty checkpoint) when there is no backup.
-5. `dbFile` a self-contained file: restore it, then remove the file.
+5. `dbFile` a self-contained file: restore it, then remove the file;
+   message `"restored db directory <dbFile> from self-contained backup
+   file"`.
 6. `dbFile` bbolt (meta magic): convert (E1); a corrupt source goes to 8.
 7. `dbFile` a store: recover; on `errStoreCorrupt`, go to 8.
 8. Otherwise (unrecognised, or corrupt from 6 or 7): restore from the
@@ -1327,7 +1374,8 @@ word for word (`initDB`).
 2. Given no `dbFile` and a self-contained file at the backup path, when
    opened, then the same holds.
 3. Given `dbFile` is a self-contained file, when opened, then `dbFile`
-   becomes a directory holding the restored store.
+   becomes a directory holding the restored store and the message is
+   `"restored db directory <dbFile> from self-contained backup file"`.
 4. Given a corrupt store and a backup, when opened, then the store is
    restored and no file of the corrupt store remains.
 5. Given an S3 backup location (fake `backupTarget`), when `dbFile` is
@@ -1416,8 +1464,9 @@ never stalls the manager or rewrites gigabytes.
 
 1. Given production deployment, two backup ticks with 100 archives between
    them, when the second tick ships, then it uploads only files new or
-   changed since the first (counted by the fake target) and no sealed file
-   twice.
+   changed since the first (counted by the fake target), no sealed file
+   twice, and the wal parts it uploads total exactly the wal bytes made
+   durable since the first tick.
 2. Given a backup directory after a checkpoint deleted old wal files, when
    the next tick ships, then those files are deleted from the backup only
    after the new checkpoint is there.
@@ -1433,6 +1482,14 @@ never stalls the manager or rewrites gigabytes.
 6. Given production deployment and 10 archives after the last tick, when
    the store is closed before the next tick, then opening the backup
    directory as a store shows all 10 jobs complete.
+7. Given one open wal file and 3 ticks with 10 adds before each, when the
+   backup directory is listed, then that file has 3 parts whose offsets and
+   sizes tile it from 0 without overlap, and restoring the backup (E2)
+   yields all 30 jobs live; with the last part deleted, restore yields the
+   first 20 and no error.
+8. Given development deployment with `forceBackups` and S3 `dbBkFile`
+   `s3://b/wr/db_bk` (fake target), when a tick ships, then every object is
+   under `wr/db_bk.development/`.
 
 ### E5: Self-contained backup
 
@@ -1725,5 +1782,7 @@ passing. Work and measurements on NFS go under
 - **Error policy.** Durable-write errors reach the caller as today; damage
   at the log's tail (or an abandoned file's) is normal crash recovery,
   damage anywhere else is `errStoreCorrupt` and goes to backup restore; the
-  only retry is the writer's bounded reopen, and its failure stops the
-  manager.
+  only retry is the writer opening a new file after a failed batch, with
+  capped backoff, forever; the manager never stops on a write failure.
+- **Apply on commit.** In-memory state changes only in a commit's `done`
+  func, so a failed write leaves nothing to revert.
