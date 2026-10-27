@@ -44,8 +44,9 @@ be addressed by file and offset.
   - `store.go`: the `store` interface, `storeConfig`, `openStore`.
   - `store_bolt.go`: bbolt-only glue for `*db` (Phase 0-1; deleted in
     Phase 2 with `db.go`, `db_runstate.go`, `writeturns.go`,
-    `archivefold.go`, `db_compact.go`, `db_prefetch*.go`, `db_schema.go`,
-    `db_backupsync_*.go`). Phase 2 also takes bbolt out of
+    `archivefold.go`, `db_compact.go`, `db_prefetch*.go`, `db_schema.go`;
+    `backupCopyWriter` moves to `store_backup.go` and `db_backupsync_*.go`
+    becomes `store_backupsync_*.go`). Phase 2 also takes bbolt out of
     `dependency.go` (`txDepReader` and `resolveDependencyChunk` go; the log
     store resolves through its own `depReader` over its in-memory dep-group
     sets) and `reqstat_cache.go` (`putStat` goes; the folder calls
@@ -66,7 +67,7 @@ be addressed by file and offset.
 - `internal/db_upgrade_status.go`: new conversion phase.
 - `internal/config.go`, `cmd/conf.go`, `cmd/manager.go`, `cmd/cloud.go`.
 - `developers/soak/dbstart/` rewritten; `developers/soak/soakgate.py`
-  checks `notDurable` (Phase 1 gate); `developers/soak/bboltexp/` and
+  gains `--source wait` (F3b, Phase 1 gate); `developers/soak/bboltexp/` and
   `.docs/reliable2/harness/statinspect/` deleted (Phase 2).
 
 ### The store interface
@@ -305,6 +306,7 @@ at once, as today after a keep-live archive or a put-back.
 | 8 | rglookup | rep group, key (`storeRepGroupLookups`) |
 | 9 | complete | key, flat run state (the job's complete record) |
 | 10 | depgroup | dep group name, first time it is added |
+| 11 | exitstat | key, `jobExitData`'s sample fields (below) |
 
 - Depgroup: today's `depgroups` bucket (dep groups ever added, never
   removed). An add block carries one per dep group not yet in the store's
@@ -312,9 +314,19 @@ at once, as today after a keep-live archive or a put-back.
   deleted. Checkpoints carry the whole set; conversion writes one per
   `depgroups` entry, or, when that bucket is absent, one per distinct dep
   group in `depgroupToKey` (as `initDB`'s `rebuildDepGroups` back-fills).
-- Learned-requirement samples have no record: they are history (Phase 1:
-  `history.bolt`'s `jobRAM`, `jobDisk`, `jobSecs`; Phase 2: segment
-  footers), loaded into memory at open and extended by the folder.
+- Exitstat: the exit marker. Every exit op (each `writeReleasedJob` call:
+  release, bury and a replaced lost end state alike) writes exactly one in
+  its block, holding the fields `newJobExitData` captures today: req group,
+  fail reason, PeakRAM, `lastRunReqs().RAM`, PeakDisk and secs. Nothing
+  else writes one; replay ignores it for live state. FailReason survives on
+  the job after an exit (cleared only by completion and `resetRunLocked`),
+  so later state records (kick, `wr mod`, delay changes) carry it too; they
+  are never sampled.
+- Learned-requirement samples are history (Phase 1: `history.bolt`'s
+  `jobRAM`, `jobDisk`, `jobSecs`; Phase 2: segment footers), loaded into
+  memory at open and extended by the folder from `complete` records (as
+  `putJobStats`) and exitstat records (as `updateFailStat`, including
+  `shouldRecordHighPeakRAMStat`) only.
 
 - Flat spec: every field `encodeJob` persists today that `jobRunState` does
   not. Strings and string slices are length-prefixed; Dependencies,
@@ -334,15 +346,15 @@ at once, as today after a keep-live archive or a put-back.
   dependents `retrieveDependentJobs` resurrects), `deleteLiveJobs` and
   re-adds touch only the live plane.
 - Every multi-record operation (an add, a modify, an archive, a rerun
-  put-back, an exit with std) is one s2 block, built and compressed by the
+  put-back, an exit) is one s2 block, built and compressed by the
   calling goroutine before `AppendBlock`. Single state records are plain
   frames; the writer never compresses.
 - Std follows today's lifecycle (`updateStd`, `recordCompleteTx`,
-  `deleteOldLiveJobs`/`jobStd.restore`). Every exit's block carries a std
-  record per stream: the new bytes if the exit failed or storage is forced,
-  else empty, which clears earlier std. Replay drops a key's std on a
-  `complete` record or a delete record, and moves it from old key to new
-  key on a modify record.
+  `deleteOldLiveJobs`/`jobStd.restore`). Every exit's block is its state record,
+  its exitstat record and a std record per stream: the new bytes if the exit
+  failed or storage is forced, else empty, which clears earlier std. Replay
+  drops a key's std on a `complete` record or a delete record, and moves it from
+  old key to new key on a modify record.
 
 ### Write path
 
@@ -440,9 +452,8 @@ whatever the hot path does meanwhile.
 The folder is one background goroutine, never on a reply path. At least once
 a second it reads the log from its position up to `Writer.Durable()` and
 folds into history every `complete` record (with its spec) and rglookup,
-and every new learned-requirement sample (from completions and
-from releases with a resource fail reason, as `putJobStats` and
-`updateFailStat` choose today). It reads a file followed by another only up
+and every new learned-requirement sample, from `complete` and exitstat
+records only (Records). It reads a file followed by another only up
 to the next file's header `prevEnd`, so an abandoned batch is never folded.
 Folding is idempotent and resumable from a log position.
 
@@ -491,20 +502,25 @@ Folding is idempotent and resumable from a log position.
   the wal files from its cut through a just-sealed one, and all history
   files (Phase 1: `history.bolt` via `tx.WriteTo`; Phase 2: sealed `.hist`).
   `backup(w)` writes it; `wr manager backup -p` stores it as one file.
-- Incremental backup (production, or forced): every
-  `minimumTimeBetweenBackups` (30s) at most, ship to the backup location, in
-  this order: history files not yet shipped (Phase 1: `history.bolt` copied
-  whole when changed, by `tx.WriteTo` under one read transaction that also reads
-  its `meta` folded position; Phase 2: newly sealed `.hist`), new checkpoints,
-  then wal bytes. Wal bytes ship as parts: each tick, for each wal file, the
-  durable bytes not yet shipped (bounded by the next file's `prevEnd` for an
-  abandoned file) go to one new part `NNNNNNNN.wal.OOOOOOOOOOOOOOOO` (16-hex
-  start offset; written to `.tmp` then renamed locally, one object on S3). No
-  byte is shipped twice; checkpoints rotate the writer every 5 min, so a file
-  has a handful of parts. Restore rebuilds each wal file by concatenating its
-  parts in offset order, stopping at the first gap (the rest is a torn tail to
-  recovery). The backup applies the wal deletion rule to its own contents: all
-  parts of a wal file the store has deleted are deleted from the backup only
+- Incremental backup (production, or forced): every `minimumTimeBetweenBackups`
+  (30s) at most, ship to the backup location, in this order: history files not
+  yet shipped (Phase 1: `history.bolt` copied whole, only when its `meta` folded
+  position differs from the last shipped copy's, under one read transaction that
+  also reads that position; Phase 2: newly sealed `.hist`), new checkpoints,
+  then wal bytes. Every local copy goes through today's paced `backupCopyWriter`
+  (`jobqueue/db.go` `copyBackup`/`pace`: async writeback every
+  `backupCopySyncBytes`, 8MiB, via `backupPaceRange` in
+  `db_backupsync_linux.go`, then one fsync), the fix for the backup copy burst
+  that starved bbolt's fdatasync on NFS; it moves to `store_backup.go` when
+  Phase 2 deletes `db.go`. Wal bytes ship as parts: each tick, for each wal
+  file, the durable bytes not yet shipped (bounded by the next file's `prevEnd`
+  for an abandoned file) go to one new part `NNNNNNNN.wal.OOOOOOOOOOOOOOOO`
+  (16-hex start offset; written to `.tmp` then renamed locally, one object on
+  S3). No byte is shipped twice; checkpoints rotate the writer every 5 min, so a
+  file has a handful of parts. Restore rebuilds each wal file by concatenating
+  its parts in offset order, stopping at the first gap (the rest is a torn tail
+  to recovery). The backup applies the wal deletion rule to its own contents:
+  all parts of a wal file the store has deleted are deleted from the backup only
   when that file is below both the newest shipped checkpoint's `walFrom` and the
   shipped history's folded position (Phase 1: the position read with the shipped
   `history.bolt` copy; Phase 2: the last shipped sealed segment's). The store's
@@ -1000,6 +1016,13 @@ nothing ready; that runner then exits or reserves again.
 `releaseRunsMovedOnFrom` is not called, as when nothing is ready. The
 minted run token and the item's Reserves count are overwritten by the next
 reserve. On `errDBClosed` it answers with no job and undoes nothing.
+Today (`serverCLI.go` `persistReservation`) hands the job out on
+`errDBClosed`; answering no job instead is intended: it happens only at
+shutdown, the reservation is not durable so recovery sees the job as
+before it, and it keeps the invariant that no hand-out is ever
+non-durable. The only visible effect is a runner getting no job while the
+manager stops, which it already gets once the manager is gone, so it has
+no CHANGELOG line.
 
 On success `handOutReservation` restarts the TTR, as today. It checks the
 reservation's `Commit` with `WaitWithin(0)`; if it is not done it still
@@ -1223,12 +1246,16 @@ today while history is written in the background.
    `"rg"`.
 2. Given that job, when the folder resumes and runs, then the same nine
    answers are unchanged and the overlay is empty.
-3. Given 3 completions in req group `"q"` with PeakRAM 100, 100, 200, and
-   2 releases in `"q"` with FailReasonRAM (PeakRAM 300) and FailReasonTime,
-   when the folder is flushed (test hook: fold to `Writer.Durable()` and
-   return), then the rise in `reqStatChanges()` and
-   `refreshReqGroupRecs("q")` equal what bbolt gives for the same five
-   exits.
+3. Given 3 completions in req group `"q"` with PeakRAM 100, 100, 200; 2
+   releases in `"q"` with FailReasonRAM (PeakRAM 300) and FailReasonTime;
+   1 bury in `"q"` with FailReasonDisk (PeakDisk 50); and 1 release in
+   `"q"` with FailReasonExit, PeakRAM 900 and required RAM 100 (a
+   `shouldRecordHighPeakRAMStat` sample); then each released or buried job
+   kicked, given a `wr mod` change (`modifyLiveJobs`) and a delay change
+   (best-effort state record), when the folder is flushed (test hook: fold
+   to `Writer.Durable()` and return), then the rise in `reqStatChanges()`
+   and `refreshReqGroupRecs("q")` equal what bbolt gives for the same
+   steps, and the wal holds exactly 4 exitstat records.
 4. Given a fold killed after its bbolt transaction but before anything
    else, when reopened and folded again, then `count(kindComplete)` is
    unchanged (idempotent).
@@ -1595,6 +1622,11 @@ never stalls the manager or rewrites gigabytes.
    and the backup is restored (E2), then every job completed before the
    tick is complete in the restored store; the same holds after the next
    tick and another restore.
+10. Phase 1: given `backupCopySyncBytes` set to the page size and
+    `backupPaceHook` counting calls, when a tick ships a `history.bolt` of
+    n bytes, then the hook ran at least n/pagesize - 1 times; when a second
+    tick follows with no fold commit between, then it copies no
+    `history.bolt`.
 
 ### E5: Self-contained backup
 
@@ -1756,6 +1788,59 @@ func ReadStore(dbDir string, fn func(live bool, job *Job) error) error
    two lines with the columns and values the bbolt `dbstart` printed for
    the same jobs (golden test data regenerated from a bbolt run).
 
+### F3b: soakgate reads `"reservation wait"` lines
+
+As a soak operator, I want `soakgate.py` to count non-durable hand-outs
+from the new store's log lines, so that the Phase 1 crash-soak gate can be
+checked once C3 removes the D1 line and the warning.
+
+- New `--source wait`: in each manager segment (split and pre-start lines
+  ignored as today), every `msg="reservation wait"` line adds its
+  `notDurable=` to the hand-out count, placed inside or outside the stall
+  windows by its `t=`, and its `abandoned=` to an abandoned total. It
+  ignores D1 lines and warnings.
+- `--source d1` and `--source warning` are kept unchanged, for soak trees
+  from wr before this change; their cases (01 to 31) stay.
+- The rotated-log refusal (`ROTATED`, exit 1) applies to every source.
+- Output for `wait`: the `nondurable source=wait ...` line as today, then
+  `totals n/a`, then a new line `abandoned n=<n> stalls=<k> <ok|NONE>`
+  (k = stall windows; NONE when k > 0 and n = 0), then the rest as today.
+  Other sources print no `abandoned` line.
+- `RESERVE_WRITE_WAIT_S` becomes `RESERVE_WAIT_S = 10  # jobqueue's
+  reserveDurableWait() with the default timeouts`, and the docstring's
+  window rule says reserveDurableWait (10s) instead of ReserveWriteWait.
+- `run.sh`'s header keeps its rule: every new rule has a case that fails
+  under its mutant, or is listed with the reason it cannot.
+
+**Package:** `developers/soak`
+**File:** `developers/soak/soakgate.py`
+**Test file:** `developers/soak/testdata/soakgate/run.sh` with new case
+directories 32 to 36
+
+**Acceptance tests:**
+
+1. Case 32 (wait-counts): two manager segments; lines before the first
+   start with `notDurable=5`; in-segment lines with `notDurable=0
+   abandoned=2`, `notDurable=1 abandoned=0` inside a stall window and
+   `notDurable=2 abandoned=1` outside; one stall. Expected starts
+   `nondurable source=wait inside=1 outside=2`, then `totals n/a`, then
+   `abandoned n=3 stalls=1 ok`.
+2. Case 33 (wait-stall-none): one stall and only `notDurable=0
+   abandoned=0` lines: `nondurable source=wait inside=0 outside=0` and
+   `abandoned n=0 stalls=1 NONE`.
+3. Case 34 (wait-no-stalls): no stall.log, `abandoned=0` lines:
+   `abandoned n=0 stalls=0 ok`.
+4. Case 35 (wait-ignores-old): D1 lines and `"reservation not yet recorded
+   on disk"` warnings (one `(repeated)`) beside one `notDurable=0
+   abandoned=1` line: `inside=0 outside=0` and `abandoned n=1 stalls=0
+   ok`.
+5. Case 36 (wait-rotated): a rotated manager log in the soak manager's
+   directory: output `ROTATED <file>`, exit 1.
+6. `run.sh` passes with all 36 cases, and each of these mutants of
+   `soakgate.py` makes at least one of cases 32 to 36 fail: summing
+   `abandoned` into the hand-out count; ignoring segments; dropping the
+   window placement; NONE when k = 0; NONE never.
+
 ### F4: Retire bbolt (Phase 2)
 
 As a wr developer, I want bbolt gone, so that only one storage engine
@@ -1827,7 +1912,7 @@ passing. Work and measurements on NFS go under
   `history.bolt` and the overlay from D1 so history queries work.
 - 1d: C6 (checkpoints), D1 (folder, stats).
 - 1e: C3 (reservations), F1, F2; switch default `storeKind` to log.
-- 1f: E1, E2, E3, E5, E7 (Phase 1 forms), F3; incremental backup (E4) with
+- 1f: E1, E2, E3, E5, E7 (Phase 1 forms), F3, F3b; incremental backup (E4) with
   `history.bolt` shipped whole.
 - Gates:
   - A4 on the log store: 16 rounds local and 16 on NFS, plus 20 damaged
@@ -1844,13 +1929,13 @@ passing. Work and measurements on NFS go under
       `dbstart.tsv`, so no acknowledged add was lost) and
       `relburycheck.py` prints `problems: 0` (no acknowledged release or
       bury lost across a kill -9);
-    - 0 non-durable hand-outs, including during stalls: `soakgate.py` sums
-      `notDurable` over the manager log's `"reservation wait"` lines and
-      requires 0. `notDurable` is the production `WaitWithin(0)` check
+    - 0 non-durable hand-outs, including during stalls: `soakgate.py
+      --source wait` (F3b) prints `nondurable source=wait inside=0
+      outside=0`. `notDurable` is the production `WaitWithin(0)` check
       `handOutReservation` makes on every hand-out (C3), not a test hook,
       so it is a regression guard that is nonzero only through a defect.
-      It is paired with the same lines' `abandoned` sum being at least 1,
-      which shows the stall path ran;
+      Its `abandoned` line must end `ok` with `stalls` at least 1, which
+      shows the stall path ran;
     - 0 double runs outside injected stalls (`soakgate.py`'s `doubles`
       line, `outside=0`).
   - `make speed-full`: no regression above 10% against `d1a4b6d7`.
