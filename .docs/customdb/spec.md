@@ -45,7 +45,11 @@ be addressed by file and offset.
   - `store_bolt.go`: bbolt-only glue for `*db` (Phase 0-1; deleted in
     Phase 2 with `db.go`, `db_runstate.go`, `writeturns.go`,
     `archivefold.go`, `db_compact.go`, `db_prefetch*.go`, `db_schema.go`,
-    `db_backupsync_*.go`).
+    `db_backupsync_*.go`). Phase 2 also takes bbolt out of
+    `dependency.go` (`txDepReader` and `resolveDependencyChunk` go; the log
+    store resolves through its own `depReader` over its in-memory dep-group
+    sets) and `reqstat_cache.go` (`putStat` goes; the folder calls
+    `invalidate`). `running_dependent.go` loses bbolt in Phase 0 (A1).
   - `store_stats.go`: per-writer and wait-distribution stats.
   - `store_flat.go`: the flat spec and run-state codec.
   - `store_log.go`: `logStore`, its write path and in-memory indexes.
@@ -61,14 +65,15 @@ be addressed by file and offset.
     `store_inspect_test.go`.
 - `internal/db_upgrade_status.go`: new conversion phase.
 - `internal/config.go`, `cmd/conf.go`, `cmd/manager.go`, `cmd/cloud.go`.
-- `developers/soak/dbstart/` rewritten; `developers/soak/bboltexp/` and
+- `developers/soak/dbstart/` rewritten; `developers/soak/soakgate.py`
+  checks `notDurable` (Phase 1 gate); `developers/soak/bboltexp/` and
   `.docs/reliable2/harness/statinspect/` deleted (Phase 2).
 
 ### The store interface
 
 `Server.db` changes type from `*db` to `store`. `openStore` replaces the
 `initDB` call in `Serve`. The interface is the 43 methods phase0-prep.md
-lists, with the leaks closed as follows:
+lists plus the replacements for its leaks, 49 in all, closed as follows:
 
 - Change-ahead stays as four methods taking an opaque `*jobChangeAhead`. A
   store may return nil from `prepareJobChange`; `queueJobChangeAhead` with
@@ -76,8 +81,9 @@ lists, with the leaks closed as follows:
 - `s.db.reqStats.changes`/`.interval` and `db.recSecRound`/`recMBRound`
   become `reqStatChanges`, `setReqStatRefreshInterval` and `setRecRounding`.
 - `s.db.rerunGuards.register/release` become `registerRerunGuard` and
-  `releaseRerunGuard`. `rerunGuard.keeps` and `rerunGuards.archiving` take
-  `addStored func(member []byte) bool` instead of `*bolt.Bucket`. Ordering
+  `releaseRerunGuard`. `rerunGuard.keeps`, `rerunGuards.archiving` and
+  `Job.archiveOutcome` take `addStored func(member []byte) bool` instead of
+  `*bolt.Bucket`. Ordering
   promise: an archive recorded after a guard registered sees it, and
   `addStored` is true only if the add's first job was recorded before the
   archive.
@@ -258,7 +264,7 @@ applied for that key. Keys are 16 binary bytes (wr's 32-hex md5).
 | 2 | state | key, flat run state |
 | 3 | delete | key |
 | 4 | modify | old key, new key (same block: new spec, new state) |
-| 5 | std | key, u8 out/err, bytes (as stored in `stdo`/`stde` today) |
+| 5 | std | key, u8 out/err, bytes (as `stdo`/`stde` today; empty clears) |
 | 6 | env | env key string, blob |
 | 7 | limit | group, i64 limit, or removed flag |
 | 8 | rglookup | rep group, key (`storeRepGroupLookups`) |
@@ -275,6 +281,12 @@ applied for that key. Keys are 16 binary bytes (wr's 32-hex md5).
   with std) is one s2 block, built and compressed by the calling goroutine
   before `AppendBlock`. Single state records are plain frames; the writer
   never compresses.
+- Std follows today's lifecycle (`updateStd`, `recordCompleteTx`,
+  `deleteOldLiveJobs`/`jobStd.restore`). Every exit's block carries a std
+  record per stream: the new bytes if the exit failed or storage is forced,
+  else empty, which clears earlier std. Replay drops a key's std on a
+  complete state record or a delete record, and moves it from old key to new
+  key on a modify record.
 
 ### Write path
 
@@ -326,11 +338,13 @@ since the last), and never sooner after the previous one ended than it took:
 3. Merge the previous checkpoint with wal files before the cut using the
    recovery reducer, writing `NNNNNNNN.ckpt.tmp`: a header frame (`walFrom`,
    max seq, counts), zstd blocks of at most 64KiB uncompressed holding each
-   live job's spec and state records and every env, limit, std, dep-group
-   and stat record, then a trailer frame (block offsets, magic `WRCKPT01`).
-4. fsync, rename to `.ckpt`, fsync the directory, then swap in-memory spec
-   Refs that point into dropped files, then delete older checkpoints and
-   wal files below the cut (each unlinked only when no reader holds it).
+   live job's spec and state records, each live key's non-empty std, and
+   every env, limit, dep-group and stat record, then a trailer frame (block
+   offsets, magic `WRCKPT01`).
+4. fsync, rename to `.ckpt`, fsync the directory, then swap every in-memory
+   Ref (spec, last state, std) that points into a dropped file for its copy
+   in the new checkpoint, then delete older checkpoints and wal files below
+   the cut (each unlinked only when no reader holds it).
 
 A checkpoint is a pure function of files on disk, so it is a consistent cut
 whatever the hot path does meanwhile.
@@ -388,6 +402,11 @@ log position.
   store has deleted are deleted from the backup only after a newer
   checkpoint has been shipped. History before log keeps the backup's log at
   or past its history's folded position.
+- An old backup is a bbolt file at `dbBkFile` (default `db_bk`) or one S3
+  object. Before the first incremental ship, if the backup path holds bbolt
+  (meta magic), it is renamed to `dbBkFile + ".bolt-pre-" + v` (as E1;
+  S3: copy then delete) and kept. Restore on a missing `dbFile` also accepts
+  such a backup: it is copied or downloaded to `dbFile`, then converted (E1).
 
 ### Configuration and removals
 
@@ -415,7 +434,8 @@ As a wr developer, I want the server to reach storage only through `store`,
 so that Phase 1 can supply a log implementation behind it.
 
 `*db` implements `store` (`var _ store = (*db)(nil)`); `Server.db` is a
-`store`; `rerunGuard` and `rerunGuards` take `addStored` as above. No
+`store`; `rerunGuard`, `rerunGuards` and `archiveOutcome` take `addStored`
+as above. No
 behaviour changes.
 
 **Package:** `jobqueue/`
@@ -428,7 +448,7 @@ behaviour changes.
 
 1. Given every non-test `.go` file in `jobqueue/` except `db.go`,
    `db_*.go`, `dependency.go`, `writeturns.go`, `reqstat_cache.go`,
-   `archivefold.go`, `store_bolt.go` and `running_dependent.go`, when parsed
+   `archivefold.go` and `store_bolt.go`, when parsed
    with `go/parser`, then none imports `go.etcd.io/bbolt` and none refers to
    the identifier `db` as a type (count of violations is 0).
 2. Given `rerunGuard` g with dependents `["k1"]` and member `"m"`, when
@@ -497,7 +517,8 @@ a burst can be attributed without a code change.
 Follows `archivefold.go`: atomics only, no behaviour derived. Every
 `archiveFoldReportInterval`, for each writer with activity, warn
 `dbWriterStatsLogMsg = "db writer"` with `writer` (`newJobs`, `addChunk`,
-`archive`, `bestEffort`, `batch`; Phase 1 adds `log`), `txs`, `items`,
+`archive`, `bestEffort`, `batch`; Phase 1 adds `log` and `fold`), `txs`,
+`items`,
 `meanLock`, `maxLock` (waiting for turn and lock), `meanHold`, `maxHold`
 (transaction including commit), `interval`; for `log`: `batches`,
 `records`, `bytes`, `meanSync`, `maxSync`. Also warn
@@ -777,8 +798,13 @@ forgets the runner hold, sets State ready and clears ReservedBy, records the
 change with `prepareJobChange`/`queueJobChangeAhead`, logs
 `reserveAbandonedLogMsg` through `s.warns`, and answers with no job (as when
 nothing is ready). On success `handOutReservation` restarts the TTR, as
-today. Removed: `updateJobRunStateDurableWithin`, `logReserveNotDurable`,
-`errDurableWriteWaitExpired`, `ReserveWriteWait`, `setBatchTuning`.
+today. `handOutReservation` checks the reservation's `Commit` with
+`WaitWithin(0)`; if it is not done it still hands out but counts the job in
+the `"reservation wait"` line's `notDurable` field (replacing
+`logReserveNotDurable`'s count), so any non-durable hand-out is visible in
+the manager log. Removed: `updateJobRunStateDurableWithin`,
+`logReserveNotDurable`, `errDurableWriteWaitExpired`, `ReserveWriteWait`,
+`setBatchTuning`.
 
 ```go
 func reserveDurableWait() time.Duration // ClientMinRequestTimeout / 4
@@ -805,6 +831,9 @@ func reserveDurableWait() time.Duration // ClientMinRequestTimeout / 4
 5. Given two state records for one key appended in reverse seq order
    (seq 7 with State buried, then seq 6 with State ready), when reopened,
    then the job is buried.
+6. Given syncs held for 2s and a test hook making `persistReservation` skip
+   its wait, when a runner reserves, then the next `"reservation wait"` line
+   has `notDurable=1`; without the hook (test 2) it has `notDurable=0`.
 
 ### C4: Delete, modify and reruns
 
@@ -827,6 +856,15 @@ spec, state and histdrop in one block. Rerun marks are state records.
    when reopened, then k1 is live with its old spec and k2 does not exist.
 3. Given a completed job put back live, when reopened, then `checkIfLive`
    is true and `checkIfComplete` is false.
+4. Given a job that exited 1 with std `"o"`/`"e"`, when it then exits 0
+   and the store is reopened, then `retrieveJobStd` returns empty and
+   `count(kindStdOut)` is 0.
+5. Given two jobs that exited 1 with std, when one is archived and the
+   other deleted and the store reopened, then `count(kindStdOut)` and
+   `count(kindStdErr)` are 0.
+6. Given k1 exited 1 with std `"o"`/`"e"`, when modified to key k2, then
+   `retrieveJobStd(k2)` returns `"o"`/`"e"` and `retrieveJobStd(k1)`
+   returns empty, both before and after a checkpoint and reopen.
 
 ### C5: Recovery
 
@@ -871,8 +909,10 @@ change.
 2. Given a test hook that kills the checkpoint after writing `.ckpt.tmp`
    but before rename, when reopened, then the previous checkpoint is used,
    the `.tmp` is gone, and the live set equals the model.
-3. Given a checkpoint, when each live entry's spec Ref is read with
-   `wal.ReadAt`, then it decodes to that job's spec (1,000 of 1,000).
+3. Given 1,000 live jobs, 100 of them with std, and a checkpoint that
+   drops every earlier wal file, when each live entry's spec, last state
+   and std Ref is read with `wal.ReadAt`, then it decodes to that job's
+   spec, state and std (1,000, 1,000 and 100 of each).
 4. Given 4 goroutines writing continuously during 3 checkpoints, when
    reopened, then the live set equals the in-memory model.
 
@@ -1047,7 +1087,8 @@ new store.
 
 `openStore` order: dev wipe (E3); resume conversion; if `dbFile` is absent,
 restore from backup (directory, S3 prefix, or self-contained file at the
-backup path) into `dbFile + ".restoring"` then rename, or create an empty
+backup path) into `dbFile + ".restoring"` then rename, or from an old bbolt
+backup (file or object) then convert, or create an empty
 store (`VERSION`, empty checkpoint); if a self-contained file, restore it the
 same way and remove the file; if bbolt, convert; if a store, recover, and on
 `errStoreCorrupt` with a backup, `os.RemoveAll(dbFile)` and restore. The
@@ -1072,6 +1113,11 @@ returned message strings keep today's wording with "db file" replaced by
 5. Given an S3 backup location (fake `backupTarget`), when `dbFile` is
    missing, then every object under the prefix is downloaded and the store
    opens.
+6. Given no `dbFile` and a bbolt file at the backup path, when opened, then
+   `dbFile` is a converted store whose live and complete sets equal the
+   bbolt file's, and the message starts `"recreated missing db"`.
+7. Given the same with the bbolt file as one object in a fake S3 target,
+   when opened, then the same holds.
 
 ### E3: Recursive deletes
 
@@ -1087,6 +1133,7 @@ type backupTarget interface {
 	list() ([]string, error)
 	upload(local, name string) error
 	download(name, local string) error
+	rename(from, to string) error
 	remove(name string) error
 	removeAll() error
 }
@@ -1129,6 +1176,10 @@ never stalls the manager or rewrites gigabytes.
    history is complete and not live.
 4. Given development deployment without `forceBackups`, when 3 ticks pass,
    then nothing is shipped.
+5. Given a converted store and a bbolt file at `db_bk`, when the first tick
+   ships, then `db_bk.bolt-pre-dev` has the old file's sha256, `db_bk` is a
+   directory that opens as the store, and the same holds for a bbolt object
+   in a fake S3 target.
 
 ### E5: Self-contained backup
 
@@ -1156,8 +1207,11 @@ Phase 2. With the lock held: recover, write a checkpoint, delete covered wal
 files, merge `.hist` segments smaller than `histSegmentBytes` into new ones
 (write, fsync, rename, then delete inputs). `CompactStats` before/after are
 the directory's total bytes; unreadable records are counted as today.
-Refusal while a manager runs is unchanged. In Phase 1 compact on a store
-directory returns an error saying it is not supported yet (unreleased).
+Refusal while a manager runs is unchanged. On an unconverted bbolt file,
+compact first runs `convertBoltDB` (same steps, free-space check and crash
+safety as E1), then compacts the new store, so no older wr is needed. In
+Phase 1 compact on a store directory returns an error saying it is not
+supported yet (unreleased).
 
 **Package:** `jobqueue/`, `cmd/`
 **File:** `jobqueue/store_compact.go`, `cmd/manager.go`
@@ -1172,6 +1226,10 @@ directory returns an error saying it is not supported yet (unreleased).
    deleting inputs, when opened, then each key is found once.
 3. Given a manager holding the lock, when `CompactDBFileStats` runs, then
    it returns an error wrapping `ErrDBLocked`.
+4. Given a bbolt file at `dbFile` and no manager, when `CompactDBFileStats`
+   runs, then `dbFile` is a store directory, `dbFile.bolt-pre-dev` has the
+   original's sha256, and the A5 query set gives equal digests for the
+   bbolt file and the compacted store.
 
 ### E7: Cloud deploy and teardown
 
@@ -1296,11 +1354,12 @@ CHANGELOG (Unreleased, under Fixed by impact, per repo style): faster adds
 and reservations, no backup stalls, reservations never handed out
 undurable; the automatic one-way conversion; `managerdbfile` and
 `managerdbbkfile` are now directories (or an S3 prefix); rollback = stop,
-remove the `db` directory, rename `db.bolt-pre-<version>` to `db`, start
-the older wr, losing everything done since the conversion; the two removed
-knobs. `cmd/conf.go` comments for the two paths. `DEVELOPERS.md`: store
-layout, `WR_TEST_STORE`, `WR_STORE_RECORD`, `WR_STORE_REPLAY`, crash-test
-env vars, and the fallback below for the key index.
+remove the `db` and `db_bk` directories, rename `db.bolt-pre-<version>` to
+`db` and `db_bk.bolt-pre-<version>` to `db_bk`, start the older wr, losing
+everything done since the conversion; the two removed knobs.
+`cmd/conf.go` comments for the two paths. `DEVELOPERS.md`: store layout,
+`WR_TEST_STORE`, `WR_STORE_RECORD`, `WR_STORE_REPLAY`, crash-test env vars,
+and the fallback below for the key index.
 
 **Package:** docs
 **File:** `CHANGELOG.md`, `cmd/conf.go`, `DEVELOPERS.md`
@@ -1347,7 +1406,9 @@ passing. Work and measurements on NFS go under
   - Crash soak at production LSF concurrency with a staged ramp (battery10
     shape, about 6,000 runners, at least 3h, injected stalls and crashes):
     0 acknowledged writes lost, 0 non-durable hand-outs (including during
-    stalls), 0 double runs outside injected stalls.
+    stalls: `soakgate.py` sums `notDurable` over the manager log's
+    `"reservation wait"` lines and requires 0), 0 double runs outside
+    injected stalls.
   - `make speed-full`: no regression above 10% against `d1a4b6d7`.
   - Daytime NFS, from the A3 lines in the soak: reservation wait p99 at
     most 50ms, add wait p50 at most 200ms.
