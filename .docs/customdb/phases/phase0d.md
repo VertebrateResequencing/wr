@@ -33,6 +33,7 @@ Brief every subagent with these project constraints:
   `make race` and `make lint` pass.
 - Gates that need the LSF farm, daytime NFS runs or multi-hour soaks
   are not items here; they are in [phase0-gate.md](phase0-gate.md).
+  Item 0d.3 is not a gate: the spec places its prodsim recording in 0d.
 
 ## Items
 
@@ -42,7 +43,11 @@ spec.md section: A4
 
 Port the prototype's crash test to drive `store` in
 `jobqueue/store_crash_test.go` (the test re-executes its own binary as a
-child) and run it against bbolt. Cover all 3 acceptance tests from A4.
+child) and run it against bbolt. Cover acceptance tests 1 and 3 from A4
+against bbolt. Test 2 (damaged copies) applies only to the log store:
+write its copy-and-recover step so it runs only when the store under test
+is the log store; it first runs in item 1g.1
+([phase1-gate.md](phase1-gate.md)).
 
 - [ ] implemented
 - [ ] reviewed
@@ -51,10 +56,11 @@ child) and run it against bbolt. Cover all 3 acceptance tests from A4.
 
 spec.md section: A5
 
-Add `recordingStore`, `recordedCall`, `storeDigest` and replay in
-`jobqueue/store_record.go`, enabled by env `WR_STORE_RECORD` at
-`openStore`. Cover all 5 acceptance tests from A5. Depends on 0d.1 only
-for ordering.
+Add `recordingStore`, `recordedCall`, `storeDigest` and
+`replayRecording` in `jobqueue/store_record.go`, enabled by env
+`WR_STORE_RECORD` at `openStore`, plus the `TestStoreReplay` runner (env
+`WR_STORE_REPLAY`). Cover all 5 acceptance tests from A5. Depends on
+0d.1 only for ordering.
 
 - [ ] implemented
 - [ ] reviewed

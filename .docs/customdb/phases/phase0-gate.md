@@ -1,6 +1,6 @@
 # Phase 0 gate: no behaviour change, speed
 
-Ref: [spec.md](../spec.md) sections A1, A2, A3, A4, A5
+Ref: [spec.md](../spec.md) section A1
 
 ## Instructions
 
@@ -40,7 +40,7 @@ Run these after 0a to 0d are all reviewed.
 
 ### Item 0g.1: Phase 0 speed gate
 
-spec.md section: Implementation Order, Phase 0, Gate
+spec.md section: Implementation Order, Phase 0, Gate; A1
 
 Show no behaviour change (the existing suite passes with no test removed
 or skipped, A1 test 3) and run `make speed` (not `make speed-full`)
