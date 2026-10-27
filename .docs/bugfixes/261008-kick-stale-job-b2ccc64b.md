@@ -4,7 +4,7 @@
 - Base: `origin/develop` at `9fc0d795` (#684)
 - Worktree: `../wr-kickjob`
 - Queue owner: this branch, this checklist; item 3 of
-  `.docs/reserve-runstate/delivery-queue.md`.
+  `.docs/delivery-queue.md`.
 
 Quality gates, with `nice -n 19`, `GOFLAGS=-p=2` and `GOCACHE` outside the
 home directory: targeted `go test` runs, plain and `-race`; `make lint`,
@@ -404,7 +404,7 @@ home directory: targeted `go test` runs, plain and `-race`; `make lint`,
     arrive soon after their move. Pre-existing, independent of this
     branch's fixes.
   - Deferred to its own branch: item 8 of
-    `.docs/reserve-runstate/delivery-queue.md` (status-count deltas ordered
+    `.docs/delivery-queue.md` (status-count deltas ordered
     against the seed snapshot, e.g. by a queue change sequence number; the
     test helper resets on `begin` as the browser does). Red probe:
     `TestProbeWebISuspendedLateDelta` (session scratchpad, to be turned into

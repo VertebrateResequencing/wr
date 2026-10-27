@@ -4,7 +4,7 @@
 - Base: `origin/develop` at `2dda10c8` (#685)
 - Worktree: `../wr-statusdelta`
 - Queue owner: this branch, this checklist; item 8 of
-  `.docs/reserve-runstate/delivery-queue.md`.
+  `.docs/delivery-queue.md`.
 
 Quality gates, with `nice -n 19`, `GOFLAGS=-p=2` and `GOCACHE` outside the
 home directory: targeted `go test` runs, plain and `-race`; `make lint`,

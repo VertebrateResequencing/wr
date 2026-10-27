@@ -1,6 +1,6 @@
 # Remove the global reserve hold (racPending), option D
 
-Delivery-queue row 10 (`.docs/reserve-runstate/delivery-queue.md`): remove the
+Delivery-queue row 10 (`.docs/delivery-queue.md`): remove the
 global reserve hold (`racPending`), option D in
 `.docs/nohold/racpending-options.md` (copied from
 `runstate-gate/analysis/racpending-options.md`; read the whole doc: P1, P2,

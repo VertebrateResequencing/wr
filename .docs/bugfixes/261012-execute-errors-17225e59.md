@@ -3,7 +3,7 @@
 - Branch: `execerrs-472e3746` (worktree `../wr-execerrs`)
 - Base: `origin/develop` at `7b445f43`
 - Queue owner: this branch and checklist (deliver row 11 of
-  `.docs/reserve-runstate/delivery-queue.md`)
+  `.docs/delivery-queue.md`)
 
 ## Triage (owner, 2026-10-12)
 

@@ -3,7 +3,7 @@
 - Branch: `soakgate-5c0eec66`
 - Base: `origin/develop` at `bad1bc32` (#687)
 - Worktree: `../wr-soakgate`
-- Queue owner: item 9 of `.docs/reserve-runstate/delivery-queue.md`.
+- Queue owner: item 9 of `.docs/delivery-queue.md`.
 
 Quality gates: `bash developers/soak/testdata/soakgate/run.sh` (every
 fixture case). The repository defines no Python or Markdown lint; `make lint`

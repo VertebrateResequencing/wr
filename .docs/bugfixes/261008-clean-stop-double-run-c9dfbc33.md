@@ -4,7 +4,7 @@
 - Base: `origin/develop` at `9fc0d795` (#684)
 - Worktree: `../wr-cleanstop`
 - Queue owner: this branch, this checklist. It is item 5 of
-  `.docs/reserve-runstate/delivery-queue.md` on branch `kickjob-66783567`
+  `.docs/delivery-queue.md` on branch `kickjob-66783567`
   (PR #685).
 
 Evidence: `.docs/reserve-runstate/pr-notes.md` on `kickjob-66783567`,
@@ -91,7 +91,7 @@ leaves its job recovered as running, and the next manager reruns it.
     count a first run as a double when the runner logged "killed by user
     request" for it, or when the job was buried before its next run.
   - Deferred (owner, 2026-10-08): a separate tooling branch, item 9 of
-    `.docs/reserve-runstate/delivery-queue.md`, after the release-critical
+    `.docs/delivery-queue.md`, after the release-critical
     items. Left unchecked here: not a wr defect.
 - [x] B: a completion report held up by the resource-check wait
   (`checkingFinishTimeout` in `jobqueue/client.go`).

@@ -83,7 +83,7 @@ which `Job.runInProgress` decides from `State`: reserved, running or lost,
 the states a job normally has only while its item is in the run sub-queue,
 since every release sets `State` anew. Three paths break that. The web
 interface's write of `State` can overwrite a release's
-(`.docs/reserve-runstate/delivery-queue.md` row 16), and recovery can put a
+(`.docs/delivery-queue.md` row 16), and recovery can put a
 lost `State` that write persisted into ready, so a failed job then shows its
 next run's size. Recovery also puts an old client's reservation (Pid 0) into
 ready with `State` reserved, which is harmless, since the reservation

@@ -18,6 +18,11 @@ Gates: `make test`, `make race` and `make lint` run in CI. `make speed` does
 not, but a change to a hot path must pass it before its PR is opened or merged
 (see §5).
 
+Open work: `.docs/delivery-queue.md` lists the branches in delivery and the
+known bugs deferred from earlier work, each with what was found and the next
+step. Check it before starting on an area, and add to it any bug you find but
+do not fix.
+
 ---
 
 ## 1. The critical path — keep jobs running
