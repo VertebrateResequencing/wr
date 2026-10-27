@@ -157,8 +157,7 @@ soaks inject. Under D2 a 2.6s hold delays every hand-out and archive by up to
 2.6s and loses nothing, well inside the 60s client timeout. The soaks' long
 stalls came from a full filesystem (ENOSPC) and the injected FUSE hold, not
 from NFS latency, so how often production would stall for a minute is a
-question about the filer's capacity and failures, not its speed. That keeps
-D5 an option for later rather than a need.
+question about the filer's capacity and failures, not its speed.
 
 ## Compression on the hot path
 
@@ -269,7 +268,7 @@ suggest (871MB to 343MB with zstd, not 7,820MB to 239MB), and a compressed
 file occupies a little more than its size, at block granularity. It still
 cuts what crosses the network 19-28x on the hot path and 21-33x at recovery,
 which is where the speed comes from, and any copy to a filesystem that does
-not compress (a local-disk primary, D5, or a backup elsewhere) gets the full
+not compress (such as a backup elsewhere) gets the full
 saving.
 
 ## Conclusions
@@ -280,13 +279,11 @@ saving.
   latency. It would only help with stalls if completions were also
   acknowledged before they were durable, which moves completion durability
   into the runner and is a different, riskier design.
-- **Phase 4, D5 (local-disk primary): keep as an option, not in this spec.**
-  It is the only design that rides through a stall unaffected, and costs
-  about 300 lines once D2 exists. Whether to accept a replica that lags by a
-  stall's worth of writes, and a local disk to provision, is a deployment
-  decision for the owner. The spec should keep it cheap to add later: the log
-  must be shippable by copying whole new bytes of append-only files, which D2
-  already is.
+- **Phase 4, D5 (local-disk primary): rejected.** It is the only design that
+  rode through the stall unaffected, but the owner ruled on 2026-10-27 that
+  wr must not special-case where its database lives or require a fast local
+  disk for it. The day's NFS probe found no stall longer than 2.6s, which D2
+  absorbs.
 - **Phase 3, D3 (lazy specs): not needed for production; needed only for
   large numbers of large queued jobs.** At production shape (118k live jobs)
   recovery takes 0.4-0.75s and the jobs hold 269MB. At 800k queued 10KB jobs

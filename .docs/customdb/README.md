@@ -88,9 +88,9 @@ fsyncing every bucket a batch touches made D1 2-10 times slower than one log
 thing key layout bought, parallel recovery reads (12s against 38s cold for
 800k), comes equally from reading a segmented log in parallel. Keep D3 (lazy
 specs) and D6 (leases) as later, optional phases; reject SQLite (D4: 30-500x
-slower than a log on NFS, page-based, a large dependency) and treat D5 (local
-primary) as a deployment option the owner can choose once D2 exists, since it
-is D2 plus a 300-line shipper (replica lag 217ms plus up to 1s to sync).
+slower than a log on NFS, page-based, a large dependency) and reject D5 (local
+primary): the owner ruled on 2026-10-27 that wr must not special-case where
+its database lives or require a fast local disk for it.
 
 Why D2 over the alternatives:
 
@@ -129,10 +129,15 @@ saturation point.
 | 1 | Live tier on the log: specs at add, state records for every transition, archives as completion records; checkpoints; recovery = snapshot + replay. Each add compresses its own records as one s2 block in the add handler (halved add latency and cut archive p99 6x on NFS; state records stay uncompressed). History stays in bbolt, filled asynchronously from the log by a background folder that is never on a reply path (idempotent, resumable from a log position). The learned-requirement stats (`jobRAM`, `jobDisk`, `jobSecs`) are filled by that folder too, so `reqStatCache` invalidation moves from the archive transaction to the folder's; learned values then lag an archive by the folder's delay, which the ready hook already tolerates (it reads at most once a second) | Every hot-path write and its stalls; ReserveWriteWait hand-outs; ordering machinery; recovery read volume becomes the live set only | 4-6 weeks incl. converter, wrdev crash/recovery modes, `make speed`, one production-scale soak |
 | 2 | Replace bbolt history with immutable segments, zstd-compressed per 64KB block, and the per-query-shape indexes; incremental backup by shipping new files; drop bbolt, prefetch, freelist and backup pacing code | Backup stalls, whole-file copies, file growth and compaction, slow status for big rep groups | 4-6 weeks |
 | 3 (only if needed) | Lazy specs: the queue holds the 192-byte state and a spec reference, not the whole Job (D3's recovery: 154MB and 0.6s for 800k jobs instead of 8GB) | Recovery time on NFS and heap per live job (measured 2.3KB at production shape, 11.5KB for 10KB jobs) | 4+ weeks, touches `queue` and every `job.Cmd` user Not needed at production shape: 118k live jobs recover in under 1s and hold 269MB (phase34-compression.md). Needed only if hundreds of thousands of 10KB jobs queue at once (800k hold 9.2GB). |
-| 4 (deployment option) | D5 local primary. D6 leases dropped: under a 60s stall it stalled exactly as D2 did, because runners wait on the durable archive (phase34-compression.md) | Writes independent of NFS stalls; the replica lags by the stall | 2-4 weeks |
+| 4 (dropped) | D5 local primary rejected by the owner 2026-10-27 (the database location is not special-cased and no fast local disk is required). D6 leases dropped: under a 60s stall it stalled exactly as D2 did, because runners wait on the durable archive (phase34-compression.md) | None | None |
 
 Phases 0-1 are about 6-8 weeks of agent-driven delivery including soaks;
 phases 0-2, which retire bbolt, about 3-4 months.
+
+Spec scope (owner, 2026-10-27): one spec for phases 0-2, including s2 add
+blocks in Phase 1 and zstd 64KB history blocks in Phase 2. D5 and D6 are out.
+D3 is left for later, so the log format must let a record point at a job's
+spec (segment and offset) without a format change.
 
 ## Where to run on NFS
 
