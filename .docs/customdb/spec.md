@@ -2169,7 +2169,7 @@ passing. Work and measurements on NFS go under
   `history.bolt` and the overlay from D1 so history queries work.
 - 1d: C6 (checkpoints), D1 (folder, stats).
 - 1e: C3 (reservations), F1, F2; switch default `storeKind` to log.
-- 1f: E1, E2, E3, E5, E7 (Phase 1 forms), F3, F4; incremental backup
+- 1f: E1, E2, E3, E5, E6, E7 (Phase 1 forms), F3, F4; incremental backup
   (E4) with `history.bolt` shipped whole; C5 test 3's backup clause and
   test 8's converted-store clause.
 - Gates:
