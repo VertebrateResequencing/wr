@@ -95,7 +95,7 @@ the same rules.
 
 ### Item 2g.6: wrdev.sh scenarios
 
-spec.md section: Implementation Order, Phase 2, Gates
+spec.md section: Implementation Order, Phase 2, Gates; F5
 
 Run wrdev `crash-recovery` and every remaining `wrdev.sh` scenario; all
 pass (F5 deleted `freelist-check`, `remap-stall-check` and
