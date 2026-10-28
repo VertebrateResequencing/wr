@@ -43,7 +43,10 @@ spec.md section: E4
 Ship sealed `.hist` files once each in place of the whole
 `history.bolt` (`jobqueue/store_backup.go`). Cover E4's acceptance
 tests against the final store; test 10 is Phase 1 only and is removed
-with `history.bolt` shipping. Depends on 2b.
+with `history.bolt` shipping. Tests 5 and 13 take their converted
+store from the converter as it stands, which writes `history.bolt` until
+2d.1; they check only the old-backup rename and that the backup opens.
+Depends on 2b.
 
 - [ ] implemented
 - [ ] reviewed
