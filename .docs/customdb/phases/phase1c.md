@@ -74,7 +74,7 @@ spec.md section: D1
 Add `history.bolt` and the in-memory history overlay
 (`jobqueue/store_history_bolt.go`) so that history queries on the log
 store answer while completions are not yet folded. The folder itself and
-its stats are item 1d.2, which completes D1's 7 acceptance tests; here,
+its stats are item 1d.1, which completes D1's 7 acceptance tests; here,
 test the overlay answers D1 test 1 names with no folder running.
 Depends on 1c.1.
 
@@ -87,7 +87,7 @@ spec.md section: C4
 
 Add durable, atomic delete, modify and rerun records to
 `jobqueue/store_log.go`. Cover all 11 acceptance tests from C4, except
-the checkpoint clauses of tests 6 and 8, which run in item 1d.1. Depends
+the checkpoint clauses of tests 6 and 8, which run in item 1d.2. Depends
 on 1c.3.
 
 - [ ] implemented
@@ -101,8 +101,8 @@ Add recovery in `jobqueue/store_recover.go`, rebuilding exactly the
 acknowledged state. Cover the 8 acceptance tests from C5, except test 3's
 backup clause and test 8's converted-store clause, which run in 1f (item
 1f.10), test 7's "after the folder has run" clause, which runs in item
-1d.2, and test 1's checkpoints and test 8's checkpoint clause, which run
-in item 1d.1. Depends on 1c.4.
+1d.1, and test 1's checkpoints and test 8's checkpoint clause, which run
+in item 1d.2. Depends on 1c.4.
 
 - [ ] implemented
 - [ ] reviewed
