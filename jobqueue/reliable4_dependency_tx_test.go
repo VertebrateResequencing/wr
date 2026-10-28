@@ -738,12 +738,12 @@ func TestReliable4RecoveryDependencyState(t *testing.T) {
 
 		serverConfig.dontWipeDevDB = true
 		server, token, release := pausedRecoveringFixtureServer(ctx, serverConfig)
-		beforeTx := server.db.bolt.Stats().TxN
+		beforeTx := server.boltDB().bolt.Stats().TxN
 
 		release()
 		So(waitUntilRecovered(server), ShouldBeTrue)
 
-		recoveryTx := server.db.bolt.Stats().TxN - beforeTx
+		recoveryTx := server.boltDB().bolt.Stats().TxN - beforeTx
 
 		jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
 		So(err, ShouldBeNil)

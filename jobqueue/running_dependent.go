@@ -118,7 +118,6 @@ import (
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid/v5"
-	bolt "go.etcd.io/bbolt"
 )
 
 // maxDependentUpdateAttempts bounds how many times updateDependentUnlessRunning
@@ -381,14 +380,15 @@ func (g *rerunGuard) isDependentLocked(key string) bool {
 }
 
 // keeps reports whether the keyed job is one of g's dependents and g's add has
-// stored its jobs, as seen in a transaction whose live bucket is live, and if
-// so notes that the job's archive keeps it live for the add to queue again. An
-// archive before setDependents is never kept: the add has yet to write.
-func (g *rerunGuard) keeps(live *bolt.Bucket, key string) bool {
+// stored its jobs, as addStored tells of the add's first job as seen by the
+// archive, and if so notes that the job's archive keeps it live for the add to
+// queue again. An archive before setDependents is never kept: the add has yet to
+// write.
+func (g *rerunGuard) keeps(addStored func(member []byte) bool, key string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	if !g.known || live.Get(g.member) == nil || !g.isDependentLocked(key) {
+	if !g.known || !addStored(g.member) || !g.isDependentLocked(key) {
 		return false
 	}
 
@@ -491,10 +491,10 @@ func (r *rerunGuards) release(g *rerunGuard) {
 }
 
 // archiving is called by the archive of the keyed job, in write transaction
-// txID whose live bucket is live. It reports whether a guard keeps the job live
-// for its add to run again (see rerunGuard.keeps); if none does, each notes the
-// key for its add's write.
-func (r *rerunGuards) archiving(txID int, live *bolt.Bucket, key string) bool {
+// txID, where addStored tells whether an add's first job is stored. It reports
+// whether a guard keeps the job live for its add to run again (see
+// rerunGuard.keeps); if none does, each notes the key for its add's write.
+func (r *rerunGuards) archiving(txID int, addStored func(member []byte) bool, key string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -506,7 +506,7 @@ func (r *rerunGuards) archiving(txID int, live *bolt.Bucket, key string) bool {
 	r.scanKeys = append(r.scanKeys, key)
 
 	for g := range r.guards {
-		if g.keeps(live, key) {
+		if g.keeps(addStored, key) {
 			return true
 		}
 	}
@@ -586,17 +586,20 @@ func (j *Job) endArchive() bool {
 }
 
 // archiveOutcome returns what the archive of the job's successful completion,
-// in write transaction txID whose live bucket is live, must do with its live
-// record. A job marked to run again is kept live, and its item stays in the
-// queue (archiveKeptLive). So is a job an add guarding it has stored its jobs
-// for, making it a dependent whose run ended before the add could give it its
-// dependencies; but its item is removed like that of any archived job
-// (archiveRemovedLive), since the add, which will find it gone, queues it again,
-// as it would one whose archive came before its write (see rerunGuard.keeps).
+// in write transaction txID where addStored tells whether an add's first job is
+// stored, must do with its live record. A job marked to run again is kept live,
+// and its item stays in the queue (archiveKeptLive). So is a job an add guarding
+// it has stored its jobs for, making it a dependent whose run ended before the
+// add could give it its dependencies; but its item is removed like that of any
+// archived job (archiveRemovedLive), since the add, which will find it gone,
+// queues it again, as it would one whose archive came before its write (see
+// rerunGuard.keeps).
 // Any other job leaves the live bucket, and keepLive is false, the adds in
 // flight noting that their writes may have to put the job back (see
 // rerunGuards.archiving).
-func (j *Job) archiveOutcome(txID int, live *bolt.Bucket, guards *rerunGuards) (outcome archiveOutcome, keepLive bool) {
+func (j *Job) archiveOutcome(txID int, addStored func(member []byte) bool,
+	guards *rerunGuards,
+) (outcome archiveOutcome, keepLive bool) {
 	j.RLock()
 	defer j.RUnlock()
 
@@ -604,7 +607,7 @@ func (j *Job) archiveOutcome(txID int, live *bolt.Bucket, guards *rerunGuards) (
 		return archiveKeptLive, true
 	}
 
-	return archiveRemovedLive, guards.archiving(txID, live, j.Key())
+	return archiveRemovedLive, guards.archiving(txID, addStored, j.Key())
 }
 
 // queuedJob returns the in-memory job of the keyed queue item, or nil if there is

@@ -418,14 +418,14 @@ func TestResumeWritesResumedState(t *testing.T) {
 
 		Convey("one with no unresolved dependencies is stored ready", func() {
 			key := resumeAndStore(target, other)
-			So(storedLiveJobState(t, server.db, key), ShouldEqual, JobStateReady)
+			So(storedLiveJobState(t, server.boltDB(), key), ShouldEqual, JobStateReady)
 		})
 
 		Convey("one with an unresolved dependency is stored dependent", func() {
 			target.Dependencies = Dependencies{NewDepGroupDependency(depGroup)}
 
 			key := resumeAndStore(parent, target, other)
-			So(storedLiveJobState(t, server.db, key), ShouldEqual, JobStateDependent)
+			So(storedLiveJobState(t, server.boltDB(), key), ShouldEqual, JobStateDependent)
 		})
 	})
 }
@@ -468,13 +468,13 @@ func TestResumeStoredWithoutLaterWrite(t *testing.T) {
 		suspended, err := jq.Suspend([]*JobEssence{{JobKey: key}})
 		So(err, ShouldBeNil)
 		So(suspended, ShouldEqual, 1)
-		So(storedStateWithin(t, server.db, key, JobStateSuspended), ShouldEqual, JobStateSuspended)
+		So(storedStateWithin(t, server.boltDB(), key, JobStateSuspended), ShouldEqual, JobStateSuspended)
 
 		Convey("resuming it stores it ready with no other write following", func() {
 			resumed, errr := jq.Resume([]*JobEssence{{JobKey: key}})
 			So(errr, ShouldBeNil)
 			So(resumed, ShouldEqual, 1)
-			So(storedStateWithin(t, server.db, key, JobStateReady), ShouldEqual, JobStateReady)
+			So(storedStateWithin(t, server.boltDB(), key, JobStateReady), ShouldEqual, JobStateReady)
 		})
 	})
 }
@@ -523,7 +523,7 @@ func TestResumeDuringFinalDrainStops(t *testing.T) {
 		suspended, err := jq.Suspend([]*JobEssence{{JobKey: key}})
 		So(err, ShouldBeNil)
 		So(suspended, ShouldEqual, 1)
-		So(storedStateWithin(t, server.db, key, JobStateSuspended), ShouldEqual, JobStateSuspended)
+		So(storedStateWithin(t, server.boltDB(), key, JobStateSuspended), ShouldEqual, JobStateSuspended)
 
 		stopped, finalSwap, resumeMade := make(chan struct{}), make(chan struct{}), make(chan struct{})
 
@@ -531,7 +531,7 @@ func TestResumeDuringFinalDrainStops(t *testing.T) {
 
 		bestEffortSwappedHook = func() {
 			select {
-			case <-server.db.beStop:
+			case <-server.boltDB().beStop:
 			default:
 				return
 			}
@@ -686,7 +686,7 @@ func TestResumeAfterChangeWritesResumedJob(t *testing.T) {
 			So(modified, ShouldResemble, map[string]string{key: key})
 			So(resumed, ShouldEqual, 1)
 
-			stored := storedLiveJob(t, server.db, key)
+			stored := storedLiveJob(t, server.boltDB(), key)
 			So(stored.State, ShouldEqual, JobStateReady)
 			So(stored.Priority, ShouldEqual, modifiedPriority)
 		})
@@ -704,7 +704,7 @@ func TestResumeAfterChangeWritesResumedJob(t *testing.T) {
 			item, errg := server.q.Get(key)
 			So(errg, ShouldBeNil)
 			So(item.Stats().State, ShouldEqual, queue.ItemStateReady)
-			So(storedLiveJobState(t, server.db, key), ShouldEqual, JobStateReady)
+			So(storedLiveJobState(t, server.boltDB(), key), ShouldEqual, JobStateReady)
 		})
 
 		Convey("a dependency gained in between leaves it stored dependent", func() {
@@ -736,7 +736,7 @@ func TestResumeAfterChangeWritesResumedJob(t *testing.T) {
 			item, errg := server.q.Get(key)
 			So(errg, ShouldBeNil)
 			So(item.Stats().State, ShouldEqual, queue.ItemStateDependent)
-			So(storedLiveJobState(t, server.db, key), ShouldEqual, JobStateDependent)
+			So(storedLiveJobState(t, server.boltDB(), key), ShouldEqual, JobStateDependent)
 		})
 	})
 }
@@ -811,7 +811,7 @@ func TestResumeAfterWriterStopsStops(t *testing.T) {
 				close(stopped)
 			}()
 
-			writerStopped = waitForWriterStopped(server.db, failedChangeStopTimeout)
+			writerStopped = waitForWriterStopped(server.boltDB(), failedChangeStopTimeout)
 		}
 		defer func() { jobChangeAheadHook = nil }()
 

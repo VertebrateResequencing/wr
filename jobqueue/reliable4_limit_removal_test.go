@@ -115,7 +115,7 @@ func rl4rmLimitCmd(d *dgrServer, group string) map[string]int {
 func limitGroupRecorded(d *dgrServer, group string) bool {
 	var recorded bool
 
-	err := d.server.db.bolt.View(func(tx *bolt.Tx) error {
+	err := d.server.boltDB().bolt.View(func(tx *bolt.Tx) error {
 		recorded = tx.Bucket(bucketLGs).Get([]byte(group)) != nil
 
 		return nil

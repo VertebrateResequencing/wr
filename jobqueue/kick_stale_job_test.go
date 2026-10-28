@@ -162,7 +162,7 @@ func TestKickOfReplacedJobKicksItemsJob(t *testing.T) {
 			live.RUnlock()
 
 			So(state, ShouldEqual, JobStateReady)
-			So(storedLiveJobState(t, d.server.db, key), ShouldEqual, JobStateReady)
+			So(storedLiveJobState(t, d.server.boltDB(), key), ShouldEqual, JobStateReady)
 
 			live.RLock()
 			liveAhead := live.changesAhead

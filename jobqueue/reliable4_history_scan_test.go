@@ -126,7 +126,7 @@ func TestReliable4ControlPathsSkipArchivedHistory(t *testing.T) {
 		addHistoryScanLiveJobs(jq, reqs, historyScanRepGroup)
 
 		decodes := func() uint64 {
-			return server.db.archivedDecodes.Load()
+			return server.boltDB().archivedDecodes.Load()
 		}
 
 		Convey("the live-only request shape suspend/resume send costs no archived decode", func() {
@@ -379,7 +379,7 @@ func measureHistoryScanRequest(ctx context.Context, t *testing.T, archived int) 
 
 	addHistoryScanLiveJobs(jq, reqs, historyScanRepGroup)
 
-	before := server.db.archivedDecodes.Load()
+	before := server.boltDB().archivedDecodes.Load()
 	best := time.Duration(0)
 
 	for run := range historyScanTimingRuns {
@@ -395,7 +395,7 @@ func measureHistoryScanRequest(ctx context.Context, t *testing.T, archived int) 
 		}
 	}
 
-	return server.db.archivedDecodes.Load() - before, best
+	return server.boltDB().archivedDecodes.Load() - before, best
 }
 
 // seedArchivedRepGroupHistory creates config's DB pre-populated with count

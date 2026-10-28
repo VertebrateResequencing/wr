@@ -76,8 +76,13 @@ lets every live job's spec be addressed by file and offset.
 
 `Server.db` changes type from `*db` to `store`. `openStore` replaces the
 `initDB` call in `Serve`. The interface is the 43 methods phase0-prep.md
-lists plus the replacements for its leaks, 49 in all, closed as follows:
+lists plus the replacements for its leaks, 52 in all, closed as follows:
 
+- The store embeds `depReader` (`depGroupEverSeen`, `depGroupsEverSeen` and
+  `checkIfLive`, which comes through it), so dependency resolution on the
+  control paths reads through the store.
+- `retrieveLimitGroup`, which the server already calls on `*db`, joins the
+  interface.
 - Change-ahead stays as four methods taking an opaque `*jobChangeAhead`. A
   store may return nil from `prepareJobChange`; `queueJobChangeAhead` with
   nil records the change afresh, as it does today.
@@ -91,12 +96,14 @@ lists plus the replacements for its leaks, 49 in all, closed as follows:
   before the archive was recorded (log store: Write path, rerun guard).
 - `updateJobRunStateDurableWithin`, `logReserveNotDurable` and
   `setBatchTuning` stay in Phase 0. Phase 1 (C3) removes them and adds
-  `reserveRunState` to both stores, leaving 47.
+  `reserveRunState` to both stores, leaving 50.
 - Writer turns, folding, best-effort batching, backup pacing, prefetch and
   freelist handling stay inside `*db`.
 
 ```go
 type store interface {
+	depReader // depGroupEverSeen, depGroupsEverSeen, checkIfLive
+
 	recoverIncompleteJobs() ([]*Job, runStateRecovery, error)
 	resolveDependencies(ctx context.Context, jobs []*Job,
 		groups depGroupState) ([]resolvedJob, error)
@@ -112,7 +119,6 @@ type store interface {
 	storeLimitGroups(groups map[string]*limiter.GroupData) (changed,
 		removed []string, err error)
 	storeRepGroupLookups(ctx context.Context, jobs []*Job) error
-	checkIfLive(key string) (bool, error)
 	checkIfComplete(key string) (bool, error)
 
 	updateJobRunStateDurable(job *Job) error
@@ -154,13 +160,14 @@ type store interface {
 	retrieveJobStd(ctx context.Context, jobkey string) (stdo, stde []byte)
 
 	retrieveEnv(ctx context.Context, envkey string) []byte
+	retrieveLimitGroup(ctx context.Context, group string) *limiter.GroupData
 	retrieveStoredLimits(groups []string) ([]int64, error)
 
 	cachedReqGroupRecs(reqGroup string) (*scheduler.Requirements, bool)
 	refreshReqGroupRecs(reqGroup string) *scheduler.Requirements
 	refreshReqGroupRecsLater(reqGroup string)
 	warmReqGroupRecs(jobs []*Job)
-	reqStatChanges() uint64
+	reqStatChanges() uint32
 	setReqStatRefreshInterval(d time.Duration)
 	setRecRounding(secRound, mbRound int)
 	setBatchTuning(delay time.Duration, size int) // Phase 0

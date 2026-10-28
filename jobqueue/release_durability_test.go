@@ -143,7 +143,7 @@ func releaseDurabilityCrashAndRecover(ctx context.Context, t *testing.T,
 // it returned while the lock was still held. The lock is let go after
 // startDurabilityHoldWrite for a manager that waits for its own write.
 func reportWithWriteHeld(server *Server, report func() error) (*bytes.Buffer, bool) {
-	holdTx, err := server.db.bolt.Begin(true)
+	holdTx, err := server.boltDB().bolt.Begin(true)
 	So(err, ShouldBeNil)
 
 	done := make(chan error, 1)

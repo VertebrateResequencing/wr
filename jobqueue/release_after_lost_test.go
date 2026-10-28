@@ -377,7 +377,7 @@ func assertOwnerReportsOnWaitingJob(f *releaseAfterLostFixture, untilBuried uint
 		err := f.runner.Bury(f.job, releaseAfterLostEndState(), FailReasonExit)
 		So(err, ShouldBeNil)
 
-		So(storedLiveJobState(f.t, f.server.db, f.job.Key()), ShouldEqual, JobStateBuried)
+		So(storedLiveJobState(f.t, f.server.boltDB(), f.job.Key()), ShouldEqual, JobStateBuried)
 
 		job := f.finalJob()
 		So(job.State, ShouldEqual, JobStateBuried)

@@ -77,10 +77,10 @@ func TestReservationLeavesWaitingForDepGroupsToRecovery(t *testing.T) {
 
 		key := (&Job{Cmd: restFormTrue + " movedon waits", Cwd: testCwd}).Key()
 
-		So(rewriteStoredLiveJob(f.server.db, key, func(job *Job) {
+		So(rewriteStoredLiveJob(f.server.boltDB(), key, func(job *Job) {
 			job.WaitingForDepGroups = []string{"g"}
 		}), ShouldBeNil)
-		So(storedLiveJob(t, f.server.db, key).WaitingForDepGroups, ShouldResemble, []string{"g"})
+		So(storedLiveJob(t, f.server.boltDB(), key).WaitingForDepGroups, ShouldResemble, []string{"g"})
 
 		Convey("once it is reserved and the manager crashes, it is recovered waiting on nothing", func() {
 			So(f.reserve().Key(), ShouldEqual, key)
@@ -122,7 +122,7 @@ func TestReservationStoresClearedRerunMark(t *testing.T) {
 
 		key := (&Job{Cmd: cmd, Cwd: testCwd}).Key()
 
-		So(rewriteStoredLiveJob(f.server.db, key, func(job *Job) {
+		So(rewriteStoredLiveJob(f.server.boltDB(), key, func(job *Job) {
 			job.State = JobStateLost
 			job.Lost = true
 			job.RerunAfterRun = true
@@ -1147,19 +1147,19 @@ func TestReserveAndStartWriteRunState(t *testing.T) {
 		f.add(movedOnRetries, func(job *Job) { job.Cmd = cmd }, "big")
 
 		key := (&Job{Cmd: cmd, Cwd: testCwd}).Key()
-		added := runStateBucketValue(t, f.server.db, bucketJobsLive, key)
+		added := runStateBucketValue(t, f.server.boltDB(), bucketJobsLive, key)
 		So(len(added), ShouldBeGreaterThanOrEqualTo, runStateBigCmdBytes)
 
 		Convey("once it is reserved and started, its live record is unchanged and recovery reads the in-memory job", func() {
 			So(f.reserveAndStart().Key(), ShouldEqual, key)
 
-			So(bytes.Equal(runStateBucketValue(t, f.server.db, bucketJobsLive, key), added), ShouldBeTrue)
-			So(runStateBucketValue(t, f.server.db, bucketJobRunState, key), ShouldNotBeEmpty)
+			So(bytes.Equal(runStateBucketValue(t, f.server.boltDB(), bucketJobsLive, key), added), ShouldBeTrue)
+			So(runStateBucketValue(t, f.server.boltDB(), bucketJobRunState, key), ShouldNotBeEmpty)
 
-			want, err := f.server.db.encodeJob(preStartServerJob(f.server, key))
+			want, err := f.server.boltDB().encodeJob(preStartServerJob(f.server, key))
 			So(err, ShouldBeNil)
 
-			got, err := f.server.db.encode(runStateRecoveredJob(t, f.server.db, key))
+			got, err := f.server.boltDB().encode(runStateRecoveredJob(t, f.server.boltDB(), key))
 			So(err, ShouldBeNil)
 			So(bytes.Equal(got, want), ShouldBeTrue)
 		})
@@ -1167,7 +1167,7 @@ func TestReserveAndStartWriteRunState(t *testing.T) {
 		Convey("once it is reserved, recovery reads it reserved by the runner, with the runner's host and pid", func() {
 			So(f.reserve().Key(), ShouldEqual, key)
 
-			So(bytes.Equal(runStateBucketValue(t, f.server.db, bucketJobsLive, key), added), ShouldBeTrue)
+			So(bytes.Equal(runStateBucketValue(t, f.server.boltDB(), bucketJobsLive, key), added), ShouldBeTrue)
 
 			inMemory := preStartServerJob(f.server, key)
 			inMemory.RLock()
@@ -1176,7 +1176,7 @@ func TestReserveAndStartWriteRunState(t *testing.T) {
 
 			So(reservation, ShouldBeGreaterThan, 0)
 
-			recovered := runStateRecoveredJob(t, f.server.db, key)
+			recovered := runStateRecoveredJob(t, f.server.boltDB(), key)
 			host, pid := reserveHostAndPid()
 
 			So(recovered.State, ShouldEqual, JobStateReserved)
@@ -1223,7 +1223,7 @@ func TestReserveAndStartWriteRunState(t *testing.T) {
 			inMemory.Unlock()
 
 			So(f.server.db.updateJobRunStateDurable(inMemory), ShouldBeNil)
-			So(runStateRecoveredJob(t, f.server.db, key).RunnerPid, ShouldEqual, 0)
+			So(runStateRecoveredJob(t, f.server.boltDB(), key).RunnerPid, ShouldEqual, 0)
 
 			req, err := f.runner.startedRequest(reserved, f.cmdPid, time.Now())
 			So(err, ShouldBeNil)
@@ -1233,7 +1233,7 @@ func TestReserveAndStartWriteRunState(t *testing.T) {
 			_, err = f.runner.request(req)
 			So(err, ShouldBeNil)
 
-			So(bytes.Equal(runStateBucketValue(t, f.server.db, bucketJobsLive, key), added), ShouldBeTrue)
+			So(bytes.Equal(runStateBucketValue(t, f.server.boltDB(), bucketJobsLive, key), added), ShouldBeTrue)
 
 			f.crashOnto(ctx, f.backup())
 
@@ -1408,7 +1408,7 @@ func TestReservationKeepsLearnedRequirements(t *testing.T) {
 		}
 
 		So(pollUntil(func() bool {
-			ram, err := f.server.db.recommendedReqGroupMemory(reqGroup)
+			ram, err := f.server.boltDB().recommendedReqGroupMemory(reqGroup)
 
 			return err == nil && ram > requested
 		}), ShouldBeTrue)

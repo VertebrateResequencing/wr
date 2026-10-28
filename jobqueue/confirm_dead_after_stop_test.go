@@ -114,10 +114,10 @@ func TestStopWaitsForABadServerConfirmation(t *testing.T) {
 			startStop()
 
 			So(pollUntil(func() bool {
-				server.db.RLock()
-				defer server.db.RUnlock()
+				server.boltDB().RLock()
+				defer server.boltDB().RUnlock()
 
-				return server.db.closed
+				return server.boltDB().closed
 			}), ShouldBeTrue)
 
 			stoppedBeforeRelease := false

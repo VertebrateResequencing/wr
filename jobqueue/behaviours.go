@@ -501,7 +501,7 @@ func (p pinnedBehaviours) trigger() error {
 //
 // It must be called with no lock held, since it reads the database, and it reads
 // nothing unless a `run` behaviour is there to need it.
-func (p *pinnedBehaviours) fillEnvFromDB(ctx context.Context, jobsDB *db) {
+func (p *pinnedBehaviours) fillEnvFromDB(ctx context.Context, jobsDB store) {
 	env := &p.workSpace.env
 	if env.stored.retrieved || env.envKey == "" || !p.behaviours.includesRun() {
 		return

@@ -158,7 +158,7 @@ func bdrSoBuriedThenKickWaits(ctx context.Context, d *dgrServer, waiterKey, seco
 // bdrCrash crashes the manager once the bury it has accepted is committed, as a
 // kill some time after the bury would find it.
 func bdrCrash(ctx context.Context, d *dgrServer) {
-	rdrCrash(ctx, d, d.server.db.waitForJobExitUpdates)
+	rdrCrash(ctx, d, d.server.boltDB().waitForJobExitUpdates)
 }
 
 // bdrSoBuried asserts the keyed job is buried as its client sees it and as its

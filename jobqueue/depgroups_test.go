@@ -398,7 +398,7 @@ func TestDepGroupRetiredIndex(t *testing.T) {
 	Convey("A database holding pre-upgrade dep group entries opens unchanged and still resolves", t, func() {
 		testDB, parent, child, legacyKey := dgReopenedLegacyDB(t, ctx, false)
 
-		So(testDB.upgradedOnOpen, ShouldBeFalse)
+		So(testDB.upgradedOnOpen(), ShouldBeFalse)
 
 		err := testDB.bolt.View(func(tx *bolt.Tx) error {
 			So(dgLookupKeys(tx, bucketDTK, dgRetiredGroup), ShouldResemble, []string{legacyKey})

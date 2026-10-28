@@ -354,7 +354,7 @@ func TestReserveDurabilityStalledWrite(t *testing.T) {
 		defer clog.ToDefault()
 
 		// holding bolt's single write transaction stalls every best-effort drain.
-		holdTx, err := server.db.bolt.Begin(true)
+		holdTx, err := server.boltDB().bolt.Begin(true)
 		So(err, ShouldBeNil)
 
 		released := make(chan struct{})
@@ -1044,7 +1044,7 @@ func TestReserveNotDurableLogged(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(inserts, ShouldEqual, 2)
 
-		holdTx, err := server.db.bolt.Begin(true)
+		holdTx, err := server.boltDB().bolt.Begin(true)
 		So(err, ShouldBeNil)
 
 		released := make(chan struct{})
@@ -1118,7 +1118,7 @@ func TestReserveNotDurableLogged(t *testing.T) {
 
 		So(reserved, ShouldEqual, 3)
 		So(reserveNotDurableLines(logs.String()), ShouldBeEmpty)
-		So(reservesNotDurable(server.db), ShouldEqual, 0)
+		So(reservesNotDurable(server.boltDB()), ShouldEqual, 0)
 	})
 
 	Convey("Given a manager whose database is closed", t, func() {
@@ -1134,9 +1134,9 @@ func TestReserveNotDurableLogged(t *testing.T) {
 		defer clog.ToDefault()
 
 		setClosed := func(closed bool) {
-			server.db.Lock()
-			server.db.closed = closed
-			server.db.Unlock()
+			server.boltDB().Lock()
+			server.boltDB().closed = closed
+			server.boltDB().Unlock()
 		}
 
 		setClosed(true)

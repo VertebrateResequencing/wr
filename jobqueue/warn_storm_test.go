@@ -105,7 +105,7 @@ func TestWarningStormIsAggregated(t *testing.T) {
 
 		defer clog.ToDefault()
 
-		holdTx, err := server.db.bolt.Begin(true)
+		holdTx, err := server.boltDB().bolt.Begin(true)
 		So(err, ShouldBeNil)
 
 		reserved := 0

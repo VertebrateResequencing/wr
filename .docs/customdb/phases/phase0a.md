@@ -50,5 +50,5 @@ give `ServerConfig` the unexported `storeKind`. Make `rerunGuard`,
 store interface" describes. No behaviour change.
 Cover all 3 acceptance tests from A1 in `jobqueue/store_test.go`.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

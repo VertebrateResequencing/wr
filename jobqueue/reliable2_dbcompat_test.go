@@ -119,7 +119,7 @@ func TestReliable2DBCompatOpen(t *testing.T) {
 		// F1 acceptance test 4 (rebuild flag): opening an already-indexed DB must
 		// not report a post-upgrade rebuild. upgradedOnOpen is set once during
 		// initDB and never mutated afterwards, so reading it here is race-free.
-		So(server.db.upgradedOnOpen, ShouldBeFalse)
+		So(server.db.upgradedOnOpen(), ShouldBeFalse)
 
 		So(waitUntilRecovered(server), ShouldBeTrue)
 

@@ -4122,7 +4122,7 @@ func buriedSubscriptionItemDefs(
 func hideLiveSubscriptionJobInDB(server *Server, key string) func() {
 	var live, runState []byte
 
-	err := server.db.bolt.Update(func(tx *bolt.Tx) error {
+	err := server.boltDB().bolt.Update(func(tx *bolt.Tx) error {
 		live = bytes.Clone(tx.Bucket(bucketJobsLive).Get([]byte(key)))
 		runState = bytes.Clone(tx.Bucket(bucketJobRunState).Get([]byte(key)))
 
@@ -4132,7 +4132,7 @@ func hideLiveSubscriptionJobInDB(server *Server, key string) func() {
 	So(live, ShouldNotBeNil)
 
 	return func() {
-		err := server.db.bolt.Update(func(tx *bolt.Tx) error {
+		err := server.boltDB().bolt.Update(func(tx *bolt.Tx) error {
 			if errp := tx.Bucket(bucketJobsLive).Put([]byte(key), live); errp != nil || runState == nil {
 				return errp
 			}

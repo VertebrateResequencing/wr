@@ -1809,7 +1809,7 @@ type Server struct {
 
 	ServerInfo         *ServerInfo
 	ServerVersions     *ServerVersions
-	db                 *db
+	db                 store
 	done               chan error
 	stopSigHandling    chan bool
 	stopClientHandling chan bool
@@ -2321,7 +2321,7 @@ func (s *Server) satisfyEmptiedDepGroups(ctx context.Context, emptied []string) 
 // own, which shutdown never cancels, and is what publication hands the web
 // interface and the RPC readers - stopBackgroundStartupTasks cancels ctx at the
 // top of shutdown, long before the readers are meant to stop.
-func (s *Server) startPriorStateRecovery(ctx, serveCtx context.Context, config ServerConfig, db *db) error {
+func (s *Server) startPriorStateRecovery(ctx, serveCtx context.Context, config ServerConfig, db store) error {
 	s.setRecovering(0)
 
 	s.startupStatus.report(internal.DBStartupDecodeState, startupDecodeDetail, 0)
@@ -2362,7 +2362,7 @@ func startupRecoveryDetail(elapsed time.Duration) string {
 // the phase. The elapsed field is at warn, not info, so it appears at the
 // default log level and an operator sizing this startup window can see where the
 // time went (spec E9).
-func (s *Server) decodePriorJobs(ctx context.Context, db *db) ([]*Job, error) {
+func (s *Server) decodePriorJobs(ctx context.Context, db store) ([]*Job, error) {
 	started := time.Now()
 
 	priorJobs, rsr, err := db.recoverIncompleteJobs()
@@ -2905,14 +2905,14 @@ func (s *Server) newRACBlockedJobs(recs map[string]*scheduler.Requirements) *rac
 	reqGroups := slices.Collect(maps.Keys(s.racBlockedReqGroups))
 	s.racBlockedMu.Unlock()
 
-	before := s.db.reqStats.changes.Load()
+	before := s.db.reqStatChanges()
 
 	for _, reqGroup := range reqGroups {
 		s.recommendedReqForGroup(reqGroup, recs)
 	}
 
 	return &racBlockedJobs{
-		stamp: s.db.reqStats.changes.Load(), markStamp: before,
+		stamp: s.db.reqStatChanges(), markStamp: before,
 		recs: recs, reqGroups: make(map[string]bool),
 	}
 }
@@ -3632,9 +3632,6 @@ func (s *Server) scheduleReadyJobsByPriority(ctx context.Context, q *queue.Queue
 		return s.racCycleGroupFor(ctx, cycleGroups, limitBudgets, name)
 	}
 
-	// a load of learned values is a short local read shared by every later
-	// caller, so it takes no context, as warmReqGroupRecs' does not
-	//nolint:contextcheck // see above
 	blocked := s.newRACBlockedJobs(reqGroupToReqs)
 
 	var current *racCycleGroup
@@ -3645,9 +3642,6 @@ func (s *Server) scheduleReadyJobsByPriority(ctx context.Context, q *queue.Queue
 		}
 
 		if current.limitBlocked() {
-			// a load of learned values is a short local read shared by every later
-			// caller, so it takes no context, as warmReqGroupRecs' does not
-			//nolint:contextcheck // see above
 			s.recordSkippedReadyJob(q, groups, blocked, groupFor, current, candidate)
 
 			continue
@@ -5257,6 +5251,9 @@ type ServerConfig struct {
 	// forceBackups enables database backups even for a development deployment
 	// (production always backs up regardless). Only set by tests.
 	forceBackups bool
+
+	// storeKind picks the store implementation. Only set by tests.
+	storeKind storeKind
 }
 
 // resolveServerLogger returns the logger to use for the server: the one
@@ -5527,20 +5524,19 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	}()
 
 	// we need to persist stuff to disk, and we do so using boltdb
-	db, msg, err := initDB(
-		ctx, config.DBFile, config.DBFileBackup, config.Deployment,
-		!config.dontWipeDevDB, config.forceBackups,
-	)
+	db, msg, err := openStore(ctx, storeConfig{
+		dbFile: config.DBFile, dbBkFile: config.DBFileBackup, deployment: config.Deployment,
+		wipeDevDB: !config.dontWipeDevDB, forceBackups: config.forceBackups, kind: config.storeKind,
+	})
 	msg = joinStartupMessages(certMsg, msg)
 
 	if err != nil {
 		return s, msg, token, err
 	}
 
-	db.recSecRound = timings.RecSecRound
-	db.recMBRound = timings.RecMBRound
+	db.setRecRounding(timings.RecSecRound, timings.RecMBRound)
 	db.setBatchTuning(timings.DBBatchDelay, timings.DBBatchSize)
-	db.reqStats.interval = timings.ReqStatRefreshInterval
+	db.setReqStatRefreshInterval(timings.ReqStatRefreshInterval)
 
 	defer func() { closeOnError(&err, "db", func() error { return db.close(ctx) }) }()
 
@@ -5548,7 +5544,7 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// publication and to shutdown, so this defer covers only the paths where
 	// neither runs: an error return from here on would otherwise leave the file
 	// behind for the next reader (spec E4).
-	startupStatus := newStartupStatusReporter(config.DBFile, serverLogger, db.upgradedOnOpen)
+	startupStatus := newStartupStatusReporter(config.DBFile, serverLogger, db.upgradedOnOpen())
 
 	defer func() {
 		closeOnError(&err, "startup status", func() error {
@@ -7161,8 +7157,8 @@ func (s *Server) createJobs(
 	//
 	// Until it has given the live dependents it reads their new dependencies, it
 	// guards them (see running_dependent.go).
-	guard := s.db.rerunGuards.register()
-	defer s.db.rerunGuards.release(guard)
+	guard := s.db.registerRerunGuard()
+	defer s.db.releaseRerunGuard(guard)
 
 	stored, err := s.db.storeNewJobsGuarded(ctx, inputJobs, ignoreComplete, guard)
 

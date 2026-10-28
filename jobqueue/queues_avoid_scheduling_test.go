@@ -247,7 +247,7 @@ func TestServerSchedulerQueuesAvoidEndToEnd(t *testing.T) {
 			// archiving the first batch teaches the manager a RAM recommendation.
 			archiveGroup(preLearningGroup, firstBatch)
 
-			recRAM, err := server.db.recommendedReqGroupMemory(reqGroup)
+			recRAM, err := server.boltDB().recommendedReqGroupMemory(reqGroup)
 			So(err, ShouldBeNil)
 			So(recRAM, ShouldEqual, learnedPeakRAM)
 

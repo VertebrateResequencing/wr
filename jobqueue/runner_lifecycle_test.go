@@ -367,7 +367,7 @@ func TestJobqueueRunnerResourceLearning(t *testing.T) {
 				expectedLearnedRAM := roundRecommendation(
 					complete[0].PeakRAM,
 					complete[0].PeakRAM,
-					fixture.server.db.mbRound(),
+					fixture.server.boltDB().mbRound(),
 				)
 
 				jobs = append(jobs,

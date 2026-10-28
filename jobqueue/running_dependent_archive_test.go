@@ -219,7 +219,7 @@ func rdaServerJob(d *dgrServer, key string) (*queue.Item, *Job) {
 func rdaSoLiveRecordUnmarked(t *testing.T, d *dgrServer, key string) {
 	t.Helper()
 
-	live := storedLiveJob(t, d.server.db, key)
+	live := storedLiveJob(t, d.server.boltDB(), key)
 	So(live.RerunAfterRun, ShouldBeFalse)
 	So(live.ReservedBy, ShouldEqual, uuid.UUID{})
 }

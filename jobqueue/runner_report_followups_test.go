@@ -278,7 +278,7 @@ func assertOwnerEndStateAfterLostRelease(t *testing.T, f *releaseAfterLostFixtur
 	ownerEnd := &JobEndState{Exited: true, Exitcode: 3, PeakRAM: 1234, EndTime: time.Now()}
 
 	assertOwnerEndRecorded := func(state JobState, untilBuried uint8) {
-		for _, job := range []*Job{f.finalJob(), storedLiveJob(t, f.server.db, f.job.Key())} {
+		for _, job := range []*Job{f.finalJob(), storedLiveJob(t, f.server.boltDB(), f.job.Key())} {
 			So(job.State, ShouldBeIn, []JobState{state, JobStateReady})
 			So(job.Exitcode, ShouldEqual, 3)
 			So(job.PeakRAM, ShouldEqual, 1234)
@@ -341,7 +341,7 @@ func TestOwnerBuryOfRequeuedDependent(t *testing.T) {
 		Convey("the owner's bury is acknowledged and buries it, and a kick makes it wait on the new member", func() {
 			So(jq.Bury(waiter, rdrFailedEnd(), FailReasonExit), ShouldBeNil)
 			So(dgaItemState(d.server, waiter.Key()), ShouldEqual, queue.ItemStateBury)
-			So(storedLiveJobState(t, d.server.db, waiter.Key()), ShouldEqual, JobStateBuried)
+			So(storedLiveJobState(t, d.server.boltDB(), waiter.Key()), ShouldEqual, JobStateBuried)
 
 			kicked, errk := jq.Kick([]*JobEssence{waiter.ToEssense()})
 			So(errk, ShouldBeNil)

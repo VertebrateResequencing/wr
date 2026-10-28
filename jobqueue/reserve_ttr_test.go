@@ -86,7 +86,7 @@ func TestReservationTTRStartsAtHandOut(t *testing.T) {
 		released := make(chan error, 1)
 
 		go func() {
-			released <- server.db.bolt.Update(func(*bolt.Tx) error {
+			released <- server.boltDB().bolt.Update(func(*bolt.Tx) error {
 				close(stalled)
 				<-time.After(reserveWriteStall)
 

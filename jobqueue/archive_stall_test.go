@@ -142,7 +142,7 @@ func TestArchiveStallDoesNotRerunJob(t *testing.T) {
 			So("the job's start was not persisted", ShouldBeEmpty)
 		}
 
-		holdTx, err := server.db.bolt.Begin(true)
+		holdTx, err := server.boltDB().bolt.Begin(true)
 		So(err, ShouldBeNil)
 
 		// released by each case once its stall has done its work, and here on any

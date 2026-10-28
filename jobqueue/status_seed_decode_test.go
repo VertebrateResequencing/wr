@@ -78,12 +78,12 @@ func TestStatusSeedCountsWithoutDecodingHistory(t *testing.T) {
 		Convey("opening the status page seeds its counts without decoding that history", func() {
 			recorder := dialStatusWS(ctx, t, server, token)
 
-			before := server.db.archivedDecodes.Load()
+			before := server.boltDB().archivedDecodes.Load()
 
 			So(recorder.ws.WriteJSON(jstatusReq{Request: jstatusRequestCurrent}), ShouldBeNil)
 			recorder.waitQuiet()
 
-			decodes := server.db.archivedDecodes.Load() - before
+			decodes := server.boltDB().archivedDecodes.Load() - before
 
 			msgs := recorder.snapshot()
 			begins, ends, _ := seedBoundaries(msgs)

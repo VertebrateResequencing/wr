@@ -2411,15 +2411,15 @@ func TestJobqueueBasics(t *testing.T) {
 
 				<-time.After(200 * time.Millisecond)
 
-				rmem, err := server.db.recommendedReqGroupMemory("fake_group")
+				rmem, err := server.boltDB().recommendedReqGroupMemory("fake_group")
 				So(err, ShouldBeNil)
 				So(rmem, ShouldEqual, 0)
 
-				rdisk, err := server.db.recommendedReqGroupDisk("fake_group")
+				rdisk, err := server.boltDB().recommendedReqGroupDisk("fake_group")
 				So(err, ShouldBeNil)
 				So(rdisk, ShouldEqual, 0)
 
-				rtime, err := server.db.recommendedReqGroupTime("fake_group")
+				rtime, err := server.boltDB().recommendedReqGroupTime("fake_group")
 				So(err, ShouldBeNil)
 				So(rtime, ShouldEqual, 0)
 
@@ -2448,22 +2448,22 @@ func TestJobqueueBasics(t *testing.T) {
 				expectedShort := int(math.Ceil(float64(10)/float64(RecSecRound))) * RecSecRound
 
 				So(pollUntil(func() bool {
-					m, e1 := server.db.recommendedReqGroupMemory("fake_group")
-					d, e2 := server.db.recommendedReqGroupDisk("fake_group")
-					tm, e3 := server.db.recommendedReqGroupTime("fake_group")
+					m, e1 := server.boltDB().recommendedReqGroupMemory("fake_group")
+					d, e2 := server.boltDB().recommendedReqGroupDisk("fake_group")
+					tm, e3 := server.boltDB().recommendedReqGroupTime("fake_group")
 
 					return e1 == nil && e2 == nil && e3 == nil && m == 100 && d == 100 && tm == expectedShort
 				}), ShouldBeTrue)
 
-				rmem, err = server.db.recommendedReqGroupMemory("fake_group")
+				rmem, err = server.boltDB().recommendedReqGroupMemory("fake_group")
 				So(err, ShouldBeNil)
 				So(rmem, ShouldEqual, 100)
 
-				rdisk, err = server.db.recommendedReqGroupDisk("fake_group")
+				rdisk, err = server.boltDB().recommendedReqGroupDisk("fake_group")
 				So(err, ShouldBeNil)
 				So(rdisk, ShouldEqual, 100)
 
-				rtime, err = server.db.recommendedReqGroupTime("fake_group")
+				rtime, err = server.boltDB().recommendedReqGroupTime("fake_group")
 				So(err, ShouldBeNil)
 				So(rtime, ShouldEqual, expectedShort)
 
@@ -2490,23 +2490,23 @@ func TestJobqueueBasics(t *testing.T) {
 				// as above, wait for every per-resource recalculation to settle
 				// on its expected value, not just memory.
 				So(pollUntil(func() bool {
-					m, e1 := server.db.recommendedReqGroupMemory("fake_group")
-					d, e2 := server.db.recommendedReqGroupDisk("fake_group")
-					tm, e3 := server.db.recommendedReqGroupTime("fake_group")
+					m, e1 := server.boltDB().recommendedReqGroupMemory("fake_group")
+					d, e2 := server.boltDB().recommendedReqGroupDisk("fake_group")
+					tm, e3 := server.boltDB().recommendedReqGroupTime("fake_group")
 
 					return e1 == nil && e2 == nil && e3 == nil &&
 						m == 3400 && d == 12800 && tm >= 9500 && tm%RecSecRound == 0
 				}), ShouldBeTrue)
 
-				rmem, err = server.db.recommendedReqGroupMemory("fake_group")
+				rmem, err = server.boltDB().recommendedReqGroupMemory("fake_group")
 				So(err, ShouldBeNil)
 				So(rmem, ShouldEqual, 3400)
 
-				rdisk, err = server.db.recommendedReqGroupDisk("fake_group")
+				rdisk, err = server.boltDB().recommendedReqGroupDisk("fake_group")
 				So(err, ShouldBeNil)
 				So(rdisk, ShouldEqual, 12800)
 
-				rtime, err = server.db.recommendedReqGroupTime("fake_group")
+				rtime, err = server.boltDB().recommendedReqGroupTime("fake_group")
 				So(err, ShouldBeNil)
 				So(rtime, ShouldBeGreaterThanOrEqualTo, 9500)
 				So(rtime%RecSecRound, ShouldEqual, 0)
@@ -4539,9 +4539,9 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					cmd := "perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'"
 					jobs = append(jobs, &Job{Cmd: cmd, Cwd: testCwd, ReqGroup: "highmem", Requirements: standardReqs, Retries: uint8(0), RepGroup: "too_much_mem"})
 
-					server.db.recMBRound = 1
+					server.boltDB().recMBRound = 1
 					defer func() {
-						server.db.recMBRound = 100 // revert back to normal
+						server.boltDB().recMBRound = 100 // revert back to normal
 					}()
 
 					inserts, already, err := jq.Add(jobs, envVars, true)
@@ -5446,11 +5446,11 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				j2 := mkLCTJob("echo lct2", "lct-rg", base.Add(3*time.Second))
 				j3 := mkLCTJob("echo lct3", "lct-rg", base.Add(2*time.Second))
 
-				err = server.db.archiveJob(j1.Key(), j1)
+				err = server.boltDB().archiveJob(j1.Key(), j1)
 				So(err, ShouldBeNil)
-				err = server.db.archiveJob(j2.Key(), j2)
+				err = server.boltDB().archiveJob(j2.Key(), j2)
 				So(err, ShouldBeNil)
-				err = server.db.archiveJob(j3.Key(), j3)
+				err = server.boltDB().archiveJob(j3.Key(), j3)
 				So(err, ShouldBeNil)
 
 				completionTimes, errf := server.db.retrieveLastCompletionTimeByRepGroup(
@@ -5468,17 +5468,17 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				jB1 := mkLCTJob("echo lctB1", "lct-rgB", base.Add(1*time.Second))
 				jB2 := mkLCTJob("echo lctB2", "lct-rgB", base.Add(4*time.Second))
 
-				err = server.db.storeLookups(bucketRGs, sobsd{
+				err = server.boltDB().storeLookups(bucketRGs, sobsd{
 					{[]byte("lct-rgA"), nil},
 					{[]byte("lct-rgB"), nil},
 				})
 				So(err, ShouldBeNil)
 
-				err = server.db.archiveJob(jA.Key(), jA)
+				err = server.boltDB().archiveJob(jA.Key(), jA)
 				So(err, ShouldBeNil)
-				err = server.db.archiveJob(jB1.Key(), jB1)
+				err = server.boltDB().archiveJob(jB1.Key(), jB1)
 				So(err, ShouldBeNil)
-				err = server.db.archiveJob(jB2.Key(), jB2)
+				err = server.boltDB().archiveJob(jB2.Key(), jB2)
 				So(err, ShouldBeNil)
 
 				completionTimes, err := jq.GetLastCompletionTimeByRepGroup("lct-rg",
@@ -6627,7 +6627,7 @@ func TestJobqueueModify(t *testing.T) {
 		// read rather than fixed because an in-process Execute's peak includes
 		// this test binary's own memory, which depends on what ran before it.
 		learned := func(reqGroup string) (string, int) {
-			ram, err := server.db.recommendedReqGroupMemory(reqGroup)
+			ram, err := server.boltDB().recommendedReqGroupMemory(reqGroup)
 			So(err, ShouldBeNil)
 			So(ram, ShouldBeGreaterThan, 0)
 
@@ -7309,9 +7309,9 @@ func TestJobqueueHighMem(t *testing.T) {
 			cmd := "perl -e '@a; for (1..1000) { push(@a, q[a] x 800000000) }'"
 			jobs = append(jobs, &Job{Cmd: cmd, Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(0), RepGroup: "run_out_of_mem"})
 
-			server.db.recMBRound = 1
+			server.boltDB().recMBRound = 1
 			defer func() {
-				server.db.recMBRound = 100 // revert back to normal
+				server.boltDB().recMBRound = 100 // revert back to normal
 			}()
 
 			inserts, already, err := jq.Add(jobs, envVars, true)
@@ -7455,7 +7455,7 @@ func TestJobqueueProduction(t *testing.T) {
 
 			// do this in 2 separate Add() calls to better test how backups
 			// work
-			configureFastTestBackups(server.db)
+			configureFastTestBackups(server.boltDB())
 
 			var jobs []*Job
 
@@ -7650,7 +7650,7 @@ func TestJobqueueProduction(t *testing.T) {
 
 			defer disconnect(jq)
 
-			configureFastTestBackups(server.db)
+			configureFastTestBackups(server.boltDB())
 
 			var jobs []*Job
 
@@ -9288,7 +9288,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			// stop the server
 			server.Stop(ctx, true)
 
-			errd := server.db.s3accessor.DeleteFile(s3BkPath)
+			errd := server.boltDB().s3accessor.DeleteFile(s3BkPath)
 			if errd != nil {
 				t.Logf("deleting s3 db backup failed: %s", errd)
 			}
@@ -9317,7 +9317,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 			dlPath := filepath.Join(t.TempDir(), "db.bk")
 
 			So(pollUntilFor(s3BackupWait, func() bool {
-				if errd := server.db.s3accessor.DownloadFile(s3BkPath, dlPath); errd != nil {
+				if errd := server.boltDB().s3accessor.DownloadFile(s3BkPath, dlPath); errd != nil {
 					return false
 				}
 
@@ -9368,7 +9368,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 				_, err = os.Stat(localBkPath)
 				So(err, ShouldNotBeNil)
 
-				err = server.db.s3accessor.DownloadFile(s3BkPath, localBkPath)
+				err = server.boltDB().s3accessor.DownloadFile(s3BkPath, localBkPath)
 				So(err, ShouldBeNil)
 				assertNonEmptyFile(localBkPath)
 				assertBoltLiveJobs(localBkPath, 1)

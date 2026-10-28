@@ -107,7 +107,7 @@ func TestReliable4StatusUnboundedHistoryBudget(t *testing.T) {
 		So(waitUntilRecovered(server), ShouldBeTrue)
 
 		decodes := func() uint64 {
-			return server.db.archivedDecodes.Load()
+			return server.boltDB().archivedDecodes.Load()
 		}
 
 		restore := maxArchivedBytes

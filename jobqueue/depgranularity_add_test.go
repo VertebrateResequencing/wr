@@ -181,7 +181,7 @@ func dgaAddMemberTxCost(ctx context.Context, members int) int {
 	So(paused, ShouldBeTrue)
 	So(pollUntil(d.server.racIdle), ShouldBeTrue)
 
-	before := d.server.db.bolt.Stats().TxN
+	before := d.server.boltDB().bolt.Stats().TxN
 	added := 0
 
 	for i := range dgaTxAdds {
@@ -191,7 +191,7 @@ func dgaAddMemberTxCost(ctx context.Context, members int) int {
 		added += inserts
 	}
 
-	txns := d.server.db.bolt.Stats().TxN - before
+	txns := d.server.boltDB().bolt.Stats().TxN - before
 
 	So(added, ShouldEqual, dgaTxAdds)
 
@@ -318,7 +318,7 @@ func TestDepGranularityAddRerunKeepsDepGroup(t *testing.T) {
 			So(d.server.depGroups.hasMembers(dgaGroup), ShouldBeTrue)
 			So(dgaItemState(d.server, waiter.Key()), ShouldEqual, queue.ItemStateDependent)
 
-			stored := storedLiveJob(t, d.server.db, member.Key())
+			stored := storedLiveJob(t, d.server.boltDB(), member.Key())
 			So(stored.DepGroups, ShouldResemble, []string{dgaGroup})
 		})
 	})

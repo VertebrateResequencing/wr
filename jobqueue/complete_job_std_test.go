@@ -79,13 +79,13 @@ func TestCompleteJobKeepsNoStd(t *testing.T) {
 		archivedRecord := func(key string) *Job {
 			var record *Job
 
-			errv := server.db.bolt.View(func(tx *bolt.Tx) error {
+			errv := server.boltDB().bolt.View(func(tx *bolt.Tx) error {
 				encoded := tx.Bucket(bucketJobsComplete).Get([]byte(key))
 				if encoded == nil {
 					return nil
 				}
 
-				decoded, errd := server.db.decodeJob(encoded)
+				decoded, errd := server.boltDB().decodeJob(encoded)
 				record = decoded
 
 				return errd

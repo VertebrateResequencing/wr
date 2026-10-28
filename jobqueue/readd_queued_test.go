@@ -249,7 +249,7 @@ func TestReaddQueuedKeepsRecord(t *testing.T) {
 		// the state changes before a re-add are also written in the background,
 		// so they must all be on disk before the record is compared.
 		settledRecord := func(key string) []byte {
-			server.db.wg.Wait(readdQueuedSettle)
+			server.boltDB().wg.Wait(readdQueuedSettle)
 
 			return liveJobRecord(server, key)
 		}
@@ -289,15 +289,15 @@ func TestReaddQueuedKeepsRecord(t *testing.T) {
 		})
 
 		Convey("a ready one, re-added under its own RepGroup, without writing to the database", func() {
-			server.db.wg.Wait(readdQueuedSettle)
-			writesBefore := boltWrites(server.db)
+			server.boltDB().wg.Wait(readdQueuedSettle)
+			writesBefore := boltWrites(server.boltDB())
 
 			readded, existed := add(newJob(cmd), false)
 			So(readded, ShouldEqual, 0)
 			So(existed, ShouldEqual, 1)
 
-			server.db.wg.Wait(readdQueuedSettle)
-			So(boltWrites(server.db), ShouldEqual, writesBefore)
+			server.boltDB().wg.Wait(readdQueuedSettle)
+			So(boltWrites(server.boltDB()), ShouldEqual, writesBefore)
 		})
 
 		Convey("a reserved one", func() {
@@ -459,7 +459,7 @@ func TestStoreNewJobsKeepsHandedOutRecord(t *testing.T) {
 func liveJobRecord(server *Server, key string) []byte {
 	var record []byte
 
-	err := server.db.bolt.View(func(tx *bolt.Tx) error {
+	err := server.boltDB().bolt.View(func(tx *bolt.Tx) error {
 		record = liveAndRunStateRecord(tx, key)
 
 		return nil

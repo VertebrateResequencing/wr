@@ -137,7 +137,7 @@ func TestStartDurability(t *testing.T) {
 
 		// hold the single bbolt write lock, so the start write the manager queues
 		// cannot reach disk.
-		holdTx, err := server.db.bolt.Begin(true)
+		holdTx, err := server.boltDB().bolt.Begin(true)
 		So(err, ShouldBeNil)
 
 		started := make(chan error, 1)

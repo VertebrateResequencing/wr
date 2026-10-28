@@ -611,7 +611,7 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 
 			archiveGroup(preLearningGroup, firstBatch, req.RAM)
 
-			recRAM, err := server.db.recommendedReqGroupMemory(reqGroup)
+			recRAM, err := server.boltDB().recommendedReqGroupMemory(reqGroup)
 			So(err, ShouldBeNil)
 			So(recRAM, ShouldEqual, learnedPeakRAM)
 

@@ -140,7 +140,7 @@ func TestKickAfterModifyKeepsModification(t *testing.T) {
 		So(server.db.updateJobAfterChangeDurable(otherJob), ShouldBeNil)
 
 		Convey("the kick's write keeps the modified fields and the budget of the new Retries", func() {
-			stored := storedLiveJob(t, server.db, key)
+			stored := storedLiveJob(t, server.boltDB(), key)
 			So(stored.State, ShouldEqual, JobStateReady)
 			So(stored.Retries, ShouldEqual, modifiedRetries)
 			So(stored.Priority, ShouldEqual, modifiedPriority)
@@ -258,7 +258,7 @@ func TestKickDuringBuryWriteStoresKicked(t *testing.T) {
 			sjob.RUnlock()
 
 			So(state, ShouldEqual, JobStateReady)
-			So(storedLiveJobState(t, server.db, key), ShouldEqual, JobStateReady)
+			So(storedLiveJobState(t, server.boltDB(), key), ShouldEqual, JobStateReady)
 		})
 	})
 }
@@ -459,13 +459,13 @@ func TestKickStoredWithoutLaterWrite(t *testing.T) {
 		So(reserved, ShouldNotBeNil)
 		So(reserved.Key(), ShouldEqual, key)
 		So(jq.Bury(reserved, nil, "failed"), ShouldBeNil)
-		So(storedStateWithin(t, server.db, key, JobStateBuried), ShouldEqual, JobStateBuried)
+		So(storedStateWithin(t, server.boltDB(), key, JobStateBuried), ShouldEqual, JobStateBuried)
 
 		Convey("kicking it stores it ready with no other write following", func() {
 			kicked, errk := jq.Kick([]*JobEssence{{JobKey: key}})
 			So(errk, ShouldBeNil)
 			So(kicked, ShouldEqual, 1)
-			So(storedStateWithin(t, server.db, key, JobStateReady), ShouldEqual, JobStateReady)
+			So(storedStateWithin(t, server.boltDB(), key, JobStateReady), ShouldEqual, JobStateReady)
 		})
 	})
 }
@@ -514,7 +514,7 @@ func TestOverlappingChangesAheadKeepModification(t *testing.T) {
 		So(reserved, ShouldNotBeNil)
 		So(reserved.Key(), ShouldEqual, key)
 		So(jq.Bury(reserved, nil, "failed"), ShouldBeNil)
-		So(storedStateWithin(t, server.db, key, JobStateBuried), ShouldEqual, JobStateBuried)
+		So(storedStateWithin(t, server.boltDB(), key, JobStateBuried), ShouldEqual, JobStateBuried)
 
 		item, err := server.q.Get(key)
 		So(err, ShouldBeNil)
@@ -542,14 +542,14 @@ func TestOverlappingChangesAheadKeepModification(t *testing.T) {
 			sjob.Lock()
 			sjob.Priority = modifiedPriority
 			sjob.Unlock()
-			server.db.updateJobAfterChange(ctx, sjob)
+			server.boltDB().updateJobAfterChange(ctx, sjob)
 
 			server.db.queueJobChangeAhead(ctx, sjob, second, kickChange)
 
 			// a durable write queued after the second's commits no earlier than it.
 			So(server.db.updateJobAfterChangeDurable(otherJob), ShouldBeNil)
 
-			stored := storedLiveJob(t, server.db, key)
+			stored := storedLiveJob(t, server.boltDB(), key)
 			So(stored.State, ShouldEqual, JobStateReady)
 			So(stored.Priority, ShouldEqual, modifiedPriority)
 		})
@@ -600,7 +600,7 @@ func TestKickQueuesBeforeLaterChange(t *testing.T) {
 		So(reserved, ShouldNotBeNil)
 		So(reserved.Key(), ShouldEqual, key)
 		So(jq.Bury(reserved, nil, "failed"), ShouldBeNil)
-		So(storedStateWithin(t, server.db, key, JobStateBuried), ShouldEqual, JobStateBuried)
+		So(storedStateWithin(t, server.boltDB(), key, JobStateBuried), ShouldEqual, JobStateBuried)
 
 		item, err := server.q.Get(key)
 		So(err, ShouldBeNil)
@@ -632,7 +632,7 @@ func TestKickQueuesBeforeLaterChange(t *testing.T) {
 					sjob.Lock()
 					sjob.Priority = modifiedPriority
 					sjob.Unlock()
-					server.db.updateJobAfterChange(ctx, sjob)
+					server.boltDB().updateJobAfterChange(ctx, sjob)
 				}()
 
 				// if the job stays write-locked until the kick's write is
@@ -657,7 +657,7 @@ func TestKickQueuesBeforeLaterChange(t *testing.T) {
 			// a durable write queued after the change's commits no earlier than it.
 			So(server.db.updateJobAfterChangeDurable(otherJob), ShouldBeNil)
 
-			stored := storedLiveJob(t, server.db, key)
+			stored := storedLiveJob(t, server.boltDB(), key)
 			So(stored.State, ShouldEqual, JobStateReady)
 			So(stored.Priority, ShouldEqual, modifiedPriority)
 		})
@@ -711,7 +711,7 @@ func TestKickAfterDBClosedStillKicks(t *testing.T) {
 		So(reserved, ShouldNotBeNil)
 		So(reserved.Key(), ShouldEqual, key)
 		So(jq.Bury(reserved, nil, "failed"), ShouldBeNil)
-		So(storedStateWithin(t, server.db, key, JobStateBuried), ShouldEqual, JobStateBuried)
+		So(storedStateWithin(t, server.boltDB(), key, JobStateBuried), ShouldEqual, JobStateBuried)
 
 		item, err := server.q.Get(key)
 		So(err, ShouldBeNil)

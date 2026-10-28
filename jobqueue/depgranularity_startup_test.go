@@ -838,7 +838,7 @@ func TestDepGranularitySidecarReportsRecoveryPhase(t *testing.T) {
 
 		defer dgsCleanup(ctx, server, release)()
 
-		So(server.db.upgradedOnOpen, ShouldBeFalse)
+		So(server.db.upgradedOnOpen(), ShouldBeFalse)
 
 		status, _, err := internal.ReadDBUpgradeStatus(serverConfig.DBFile)
 		So(err, ShouldBeNil)

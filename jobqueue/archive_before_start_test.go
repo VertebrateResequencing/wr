@@ -545,7 +545,7 @@ func TestLateStartDuringArchive(t *testing.T) {
 
 		startTime := reserved.StartTime
 
-		holdTx, err := server.db.bolt.Begin(true)
+		holdTx, err := server.boltDB().bolt.Begin(true)
 		So(err, ShouldBeNil)
 
 		var releaseOnce sync.Once

@@ -85,7 +85,7 @@ func TestReliable4AddEnvNoRewrite(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			addTxEvictEnvCache(d, "repeat")
-			So(d.server.db.envcache.Contains(envkey), ShouldBeFalse)
+			So(d.server.boltDB().envcache.Contains(envkey), ShouldBeFalse)
 
 			So(addTxStoreCost(ctx, d, env), ShouldEqual, 0)
 		})
@@ -116,7 +116,7 @@ func TestReliable4EnvMissNotCached(t *testing.T) {
 			envkey := byteKey(env)
 
 			So(d.server.db.retrieveEnv(ctx, envkey), ShouldBeEmpty)
-			So(d.server.db.envcache.Contains(envkey), ShouldBeFalse)
+			So(d.server.boltDB().envcache.Contains(envkey), ShouldBeFalse)
 
 			So(addTxStoreCost(ctx, d, env), ShouldEqual, 1)
 		})
@@ -137,8 +137,8 @@ func addTxStoreCost(ctx context.Context, d *dgrServer, env []byte) int {
 
 	cost := addTxWriteTxID(d) - before
 
-	d.server.db.envcache.Remove(envkey)
-	So(d.server.db.envcache.Contains(envkey), ShouldBeFalse)
+	d.server.boltDB().envcache.Remove(envkey)
+	So(d.server.boltDB().envcache.Contains(envkey), ShouldBeFalse)
 	So(d.server.db.retrieveEnv(ctx, envkey), ShouldResemble, env)
 
 	return cost
@@ -282,7 +282,7 @@ func TestReliable4AddOneWriteTx(t *testing.T) {
 		// inside a batch shared with a concurrent Batch call elsewhere in the
 		// server: a transaction either of them committed is then counted here
 		// instead of being coalesced away.
-		d.server.db.bolt.MaxBatchSize = 1
+		d.server.boltDB().bolt.MaxBatchSize = 1
 
 		// the first add of all pays for storing the client's environment, which
 		// later adds find cached
@@ -315,7 +315,7 @@ func TestReliable4AddOneWriteTx(t *testing.T) {
 
 			// the job waits on addTxWaitedOn, so a later add of a member of that
 			// dep group has to find it through the reverse lookup
-			_, jobsToUpdate, errW := d.server.db.retrieveDependentJobs(
+			_, jobsToUpdate, errW := d.server.boltDB().retrieveDependentJobs(
 				map[string]bool{addTxWaitedOn: true}, nil)
 			So(errW, ShouldBeNil)
 			So(len(jobsToUpdate), ShouldEqual, 1)
@@ -334,7 +334,7 @@ func TestReliable4AddOneWriteTx(t *testing.T) {
 func addTxWriteTxID(d *dgrServer) int {
 	var id int
 
-	err := d.server.db.bolt.View(func(tx *bolt.Tx) error {
+	err := d.server.boltDB().bolt.View(func(tx *bolt.Tx) error {
 		id = tx.ID()
 
 		return nil
@@ -359,7 +359,7 @@ func addTxEvictEnvCache(d *dgrServer, label string) {
 func addTxRepGroupLookupKeys(d *dgrServer, repGroup string) []string {
 	var keys []string
 
-	err := d.server.db.bolt.View(func(tx *bolt.Tx) error {
+	err := d.server.boltDB().bolt.View(func(tx *bolt.Tx) error {
 		prefix := []byte(repGroup + dbDelimiter)
 
 		cursor := tx.Bucket(bucketRTK).Cursor()
@@ -419,14 +419,14 @@ func storeBatchedCost(d *dgrServer, num int) (calls, empty, stored int) {
 
 	sort.Sort(data)
 
-	err := d.server.db.storeBatched(bucketRGs, data, func(bucket []byte, chunk sobsd) error {
+	err := d.server.boltDB().storeBatched(bucketRGs, data, func(bucket []byte, chunk sobsd) error {
 		calls++
 
 		if len(chunk) == 0 {
 			empty++
 		}
 
-		return d.server.db.storeLookups(bucket, chunk)
+		return d.server.boltDB().storeLookups(bucket, chunk)
 	})
 	So(err, ShouldBeNil)
 

@@ -79,13 +79,13 @@ func TestBuriedJobsStdIsThereOnceItIsBuried(t *testing.T) {
 		So(job, ShouldNotBeNil)
 		So(jq.Started(job, os.Getpid()), ShouldBeNil)
 
-		server.db.Lock()
+		server.boltDB().Lock()
 
 		dbLocked := true
 		unlockDB := func() {
 			if dbLocked {
 				dbLocked = false
-				server.db.Unlock()
+				server.boltDB().Unlock()
 			}
 		}
 

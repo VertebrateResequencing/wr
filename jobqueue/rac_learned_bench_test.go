@@ -158,7 +158,7 @@ func racLearnedFixture(b *testing.B) (*Server, *queue.Queue, []any) {
 
 // racLearnedSetRAM makes ram the current learned RAM of racLearnedReqGroup.
 func racLearnedSetRAM(s *Server, ram int) {
-	c := s.db.reqStats
+	c := s.boltDB().reqStats
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -170,7 +170,7 @@ func racLearnedSetRAM(s *Server, ram int) {
 // racLearnedOtherChanged records a change to some other ReqGroup's learned
 // values, as a load that changes them does.
 func racLearnedOtherChanged(s *Server) {
-	s.db.reqStats.changes.Add(1)
+	s.boltDB().reqStats.changes.Add(1)
 }
 
 // racQueueLockWaitDuring runs f while another goroutine reads q's state over

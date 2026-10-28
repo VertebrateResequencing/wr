@@ -515,7 +515,7 @@ func asParkedNow(buf []byte) (asParked, []byte) {
 // account (best-effort job updates, scheduling state) ride in the same figure,
 // which is right: they are competing for the same single writer.
 func asTxID(server *Server) int {
-	tx, err := server.db.bolt.Begin(false)
+	tx, err := server.boltDB().bolt.Begin(false)
 	if err != nil {
 		return 0
 	}
@@ -651,7 +651,7 @@ func asTuneBatching(t *testing.T, server *Server) {
 
 	if delay == 0 && size == 0 {
 		t.Logf("ADDSTORM: bbolt batching left at its defaults (MaxBatchDelay=%s MaxBatchSize=%d)",
-			server.db.bolt.MaxBatchDelay, server.db.bolt.MaxBatchSize)
+			server.boltDB().bolt.MaxBatchDelay, server.boltDB().bolt.MaxBatchSize)
 
 		return
 	}
@@ -660,7 +660,7 @@ func asTuneBatching(t *testing.T, server *Server) {
 
 	t.Logf("ADDSTORM: MUTATION CONTROL applied - MaxBatchDelay=%s MaxBatchSize=%d "+
 		"(this is not a fix, it is a check that the gate measures the fragmentation)",
-		server.db.bolt.MaxBatchDelay, server.db.bolt.MaxBatchSize)
+		server.boltDB().bolt.MaxBatchDelay, server.boltDB().bolt.MaxBatchSize)
 }
 
 // asLogDBShape reports the shape of the database the run is against, because the
@@ -669,8 +669,8 @@ func asTuneBatching(t *testing.T, server *Server) {
 func asLogDBShape(t *testing.T, server *Server, work string, backups bool) {
 	t.Helper()
 
-	stats := server.db.bolt.Stats()
-	pageSize := int64(server.db.bolt.Info().PageSize)
+	stats := server.boltDB().bolt.Stats()
+	pageSize := int64(server.boltDB().bolt.Info().PageSize)
 
 	var size int64
 	if fi, err := os.Stat(work); err == nil {

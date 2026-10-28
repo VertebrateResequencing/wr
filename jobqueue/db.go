@@ -1263,7 +1263,7 @@ type db struct {
 	s3accessor     *muxfys.S3Accessor
 	closed         bool
 	slowBackups    bool // just for testing purposes
-	upgradedOnOpen bool
+	upgraded       bool
 	recSecRound    int // rounding (secs) for recommended reserve times; from the server's timings
 	recMBRound     int // rounding (MBs) for recommended memory/disk; from the server's timings
 	// rndMu guards reservesNotDurable, and is held while each hand-out of a
@@ -1729,7 +1729,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		njSignal:           make(chan struct{}, 1),
 		njStop:             make(chan struct{}),
 		njWriterDone:       make(chan struct{}),
-		upgradedOnOpen:     upgradedOnOpen,
+		upgraded:           upgradedOnOpen,
 	}
 
 	go dbstruct.bestEffortWriter(ctx)
@@ -1950,7 +1950,9 @@ func (db *db) archiveJobTx(tx *bolt.Tx, key, encoded []byte, job *Job) (archiveO
 		archiveTxObserver(tx.ID(), key)
 	}
 
-	outcome, keepLive := job.archiveOutcome(tx.ID(), tx.Bucket(bucketJobsLive), &db.rerunGuards)
+	live := tx.Bucket(bucketJobsLive)
+	outcome, keepLive := job.archiveOutcome(tx.ID(), func(member []byte) bool { return live.Get(member) != nil },
+		&db.rerunGuards)
 
 	if archiveGuardsSeenHook != nil {
 		archiveGuardsSeenHook(key)

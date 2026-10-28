@@ -119,7 +119,7 @@ func TestReliable4StatusLimitPushdown(t *testing.T) {
 		So(waitUntilRecovered(server), ShouldBeTrue)
 
 		decodes := func() uint64 {
-			return server.db.archivedDecodes.Load()
+			return server.boltDB().archivedDecodes.Load()
 		}
 
 		// the reference: the unlimited fetch this fix deliberately leaves alone,
@@ -539,7 +539,7 @@ func TestReliable4StatusLimitMixedHistory(t *testing.T) {
 		So(waitUntilRecovered(server), ShouldBeTrue)
 
 		decodes := func() uint64 {
-			return server.db.archivedDecodes.Load()
+			return server.boltDB().archivedDecodes.Load()
 		}
 
 		reference, refSrerr, _ := server.getJobsByRepGroup(ctx, statusLimitOpts(mixedRepGroup,

@@ -138,7 +138,7 @@ func TestReqStatCache(t *testing.T) {
 	Convey("Given a server with no learned stats", t, func() {
 		loads := countReqStatLoads()
 		rt := newReqStatTest(ctx, t)
-		server, db, jq := rt.server, rt.server.db, rt.jq
+		server, db, jq := rt.server, rt.server.boltDB(), rt.jq
 
 		Convey("a ReqGroup with no stats is not cached until loaded, then loads as zero", func() {
 			rec, current := db.cachedReqGroupRecs(reqStatTestGroup)
@@ -484,9 +484,9 @@ func newReqStatTest(ctx context.Context, t *testing.T, configure ...func(*Server
 // seedReqGroupStats puts each of vals in bucket for reqGroup with the
 // production stat write, in one transaction.
 func seedReqGroupStats(server *Server, bucket []byte, reqGroup string, vals ...int) {
-	err := server.db.bolt.Update(func(tx *bolt.Tx) error {
+	err := server.boltDB().bolt.Update(func(tx *bolt.Tx) error {
 		for _, val := range vals {
-			if err := server.db.reqStats.putStat(tx, bucket, reqGroup, val); err != nil {
+			if err := server.boltDB().reqStats.putStat(tx, bucket, reqGroup, val); err != nil {
 				return err
 			}
 		}
@@ -526,7 +526,7 @@ func TestReqStatRefreshLimit(t *testing.T) {
 	Convey("Given a server with a 2s refresh interval and a ReqGroup just loaded at RAM 300", t, func() {
 		loads := countReqStatLoads()
 		rt := newReqStatTest(ctx, t, func(c *ServerConfig) { c.Timings.ReqStatRefreshInterval = 2 * time.Second })
-		server, db := rt.server, rt.server.db
+		server, db := rt.server, rt.server.boltDB()
 
 		seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, 300)
 		So(db.refreshReqGroupRecs(reqStatTestGroup).RAM, ShouldEqual, 300)
@@ -555,7 +555,7 @@ func TestReqStatRefreshLimit(t *testing.T) {
 	Convey("Given a server built by jobqueueTestInit, whose refresh interval is -1", t, func() {
 		loads := countReqStatLoads()
 		rt := newReqStatTest(ctx, t)
-		server, db := rt.server, rt.server.db
+		server, db := rt.server, rt.server.boltDB()
 
 		Convey("every refresh after a new stat key loads", func() {
 			seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, 300)

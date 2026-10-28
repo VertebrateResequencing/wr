@@ -800,7 +800,7 @@ func (p *queueLockProbe) loadsAfter(step func()) bool {
 		return false
 	}
 
-	p.server.db.reqStats.invalidate(p.group)
+	p.server.boltDB().reqStats.invalidate(p.group)
 	before := p.loads.count(p.group)
 
 	step()
@@ -1819,7 +1819,7 @@ func TestNoHoldFailTimeBumps(t *testing.T) {
 		})
 
 		Convey("its stored record has the bumped RAM once the release has returned", func() {
-			So(storedLiveJob(t, n.server.db, job.Key()).Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
+			So(storedLiveJob(t, n.server.boltDB(), job.Key()).Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
 		})
 
 		Convey("the runner re-sending the same release changes neither its RAM nor its retries", func() {
@@ -1951,7 +1951,7 @@ func TestNoHoldOwnerReportAfterLost(t *testing.T) {
 		So(n.runner.Release(owned, ownerRAMEndState(), FailReasonRAM), ShouldBeNil)
 
 		// the report's write carries the increase, so a restart keeps it
-		So(storedLiveJob(t, n.server.db, job.Key()).Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
+		So(storedLiveJob(t, n.server.boltDB(), job.Key()).Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
 
 		got := n.get(job)
 		So(got.Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
@@ -2174,14 +2174,14 @@ func TestNoHoldHighPeakBumps(t *testing.T) {
 		n.failRun(job, FailReasonExit, noHoldPeakRAM)
 		So(n.get(job).Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
 
-		So(n.server.db.bolt.View(func(tx *bolt.Tx) error {
+		So(n.server.boltDB().bolt.View(func(tx *bolt.Tx) error {
 			key := fmt.Appendf(nil, "%s%s%20d", job.ReqGroup, dbDelimiter, noHoldPeakRAM)
 			So(tx.Bucket(bucketJobRAM).Get(key), ShouldNotBeNil)
 
 			return nil
 		}), ShouldBeNil)
 
-		learned, err := n.server.db.recommendedReqGroupMemory(job.ReqGroup)
+		learned, err := n.server.boltDB().recommendedReqGroupMemory(job.ReqGroup)
 		So(err, ShouldBeNil)
 		So(learned, ShouldEqual, 200)
 	})
@@ -2205,9 +2205,9 @@ func TestNoHoldHighPeakBumps(t *testing.T) {
 		So(n.runner.Release(retry, &JobEndState{
 			Exited: true, Exitcode: 1, PeakRAM: withinRetryRAM, EndTime: time.Now(),
 		}, FailReasonExit), ShouldBeNil)
-		So(storedLiveJob(t, n.server.db, job.Key()).FailReason, ShouldEqual, FailReasonExit)
+		So(storedLiveJob(t, n.server.boltDB(), job.Key()).FailReason, ShouldEqual, FailReasonExit)
 
-		So(n.server.db.bolt.View(func(tx *bolt.Tx) error {
+		So(n.server.boltDB().bolt.View(func(tx *bolt.Tx) error {
 			key := fmt.Appendf(nil, "%s%s%20d", job.ReqGroup, dbDelimiter, withinRetryRAM)
 			So(tx.Bucket(bucketJobRAM).Get(key), ShouldBeNil)
 
