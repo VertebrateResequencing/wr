@@ -175,3 +175,14 @@ called ready, or explicitly deferred with the owner.
   review decides whether the two serving-time ones count under `batch`.
   Done in 0c.1: the two serving-time writes count under `batch` via
   `updateUncoalesced`; the recovery and close ones stay uncounted.
+- [ ] (from 0d.2) Replaying the prodsim recording may report false
+  mismatches: `cachedReqGroupRecs` and `reqStatChanges` depend on when the
+  async `refreshReqGroupRecsLater` loads finish, and `RepGroupStatus`
+  float sums may differ in summation order. They are not writes, so the
+  overlap rule does not exclude them. Check at the first replay of the
+  0d.3 recording (A5 gate) and, if they mismatch, exclude or normalise
+  them in `storeDigest` with a spec note. At the same replay, revisit two
+  Phase 0 digest choices (spec A5): error results digest by their text,
+  which the log store's errors may word differently; and handle results
+  digest only whether they are nil, so a log store returning a nil handle
+  where bbolt returns one mismatches.

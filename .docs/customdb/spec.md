@@ -211,7 +211,7 @@ inner framing ends the good data at the block's start, as a torn frame does.
 ```go
 const (
 	FrameHeader   = 8
-	maxFrameLen   = 1 << 30
+	MaxFrameLen   = 1 << 30
 	CodecS2  byte = 1
 	CodecZstd byte = 2
 )
@@ -922,13 +922,20 @@ can be shown to give the same answers.
 
 `recordingStore` wraps a `store`. When env `WR_STORE_RECORD=<path>` is set
 at `openStore`, the server's store is wrapped and each call is written, at
-return, as one wal frame holding a Binc `recordedCall`. Time arguments
+return, as one wal frame holding a Binc `recordedCall`. The recording file
+is created exclusively: if `<path>` exists, `openStore` fails and leaves it
+unchanged. `close` is not recorded: it ends the recording. Time arguments
 (`cutoff`) are recorded, never read from the clock at replay. `storeDigest`
 hashes a canonical result: jobs sorted by key, with fields not persisted by
 `encodeJob` zeroed, maps sorted. Replay runs calls serially in recorded
 `End` order against a fresh store and reports a mismatch only for calls
 that did not overlap a write call in the recording ([Start, End] seq
 intervals). `ctx` is never recorded; replay passes its own.
+
+In Phase 0 an error result is digested by its text, and a handle result
+(`*jobChangeAhead`, `*rerunGuard`, the `expectJobExitUpdate` func) only by
+whether it is nil, so a store that returns a nil handle where bbolt returns
+one mismatches. Revisit both at the first log-store replay.
 
 Arguments that are closures or live objects are recorded as data. A handle
 (`*jobChangeAhead`, `*rerunGuard`, the func from `expectJobExitUpdate`) is
@@ -951,6 +958,7 @@ call whose store never ran `change` records the job unchanged.
 | `spendArchivedBytesByRepGroup` | budget's `remaining` at entry | fresh budget with that `remaining` |
 | `reserveRunState` | job | call, then `WaitWithin(reserveDurableWait())` on the result; digest is the returned error |
 | `resolveDependencies` | each `hasMembers` and `liveCommandVariants` query and answer (wrapped `groups`) | `groups` answering from those; an unrecorded query is a mismatch |
+| `retrieveOldestCompleteJobsByRepGroup` | each `group(facets)` and `limit(group)` question and first answer | `query` answering from those; an unrecorded question is a mismatch |
 
 The digest of `spendArchivedBytesByRepGroup` covers only whether it
 returned an error, since stores price records differently (D3).

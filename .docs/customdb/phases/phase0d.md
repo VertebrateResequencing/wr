@@ -76,8 +76,8 @@ input: a bbolt recording at
 `WR_STORE_RECORD_REGEN` is set writes it. Depends on 0d.1 only for
 ordering.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 0d.3: Record the Phase 0 prodsim run
 

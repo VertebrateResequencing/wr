@@ -366,6 +366,15 @@ func (g *rerunGuard) setDependents(keys []string, member []byte) {
 	g.keys, g.member, g.known = keys, member, true
 }
 
+// dependentsSet returns what setDependents last set, and whether it has been
+// called.
+func (g *rerunGuard) dependentsSet() (keys []string, member []byte, known bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	return g.keys, g.member, g.known
+}
+
 // isDependentLocked reports whether the key is one of g's dependents. g.mu must
 // be held.
 func (g *rerunGuard) isDependentLocked(key string) bool {

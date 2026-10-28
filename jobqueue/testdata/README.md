@@ -70,6 +70,22 @@ pre-removal commit.
 
    Keep the fixture small (a handful of jobs, as above).
 
+## store_record/removed_methods.rec (store recording fixture)
+
+`store_record/removed_methods.rec` is a recording, made by the store
+record/replay harness (`jobqueue/store_record.go`, spec A5 in
+`.docs/customdb/spec.md`), of calls to a bbolt store: 3 adds, 3
+`updateJobRunStateDurableWithin` calls reserving the added jobs, 1
+`logReserveNotDurable` and 1 `setBatchTuning`. Phase 1 removes those three
+methods from the store, so the recording cannot be made afterwards; A5
+acceptance test 4 replays it onto a store without them.
+
+Regenerate it, while the methods still exist, with:
+
+```bash
+WR_STORE_RECORD_REGEN=1 CGO_ENABLED=1 go test -tags netgo --count 1 ./jobqueue -run TestStoreRecordRegen
+```
+
 ## Status page count delta protocol
 
 The status page receives v0.36.5-style per-RepGroup count deltas over the
