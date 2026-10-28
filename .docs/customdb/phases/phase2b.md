@@ -45,14 +45,17 @@ including `spendArchivedBytesByRepGroup`'s pricing, so each answer equals
 today's. Cover acceptance tests 2, 3 and 4 from D3, writing test 2's
 segments with 2a.1's segment writer. Test 1 is deferred to item 2b.2: it
 replays with segments sealed after every write call, which needs the
-folder to seal segments. Depends on 2a.
+folder to seal segments. The folder keeps committing to `history.bolt`
+until 2b.2 switches it, so the log store answers from `history.bolt`
+until then and existing tests keep passing. Depends on 2a.
 
 - [ ] implemented
 - [ ] reviewed
 
 ### Item 2b.2: Folder writes segments; learned samples from footers
 
-spec.md section: Implementation Order, Phase 2, 2b; D1; D2; Folder and history
+spec.md section: Implementation Order, Phase 2, 2b; D1; D2; D3; C6;
+Folder and history
 
 Make the folder seal `.hist` segments (`NNNNNNNN.hist.tmp`, footer,
 fsync, rename) instead of committing to `history.bolt`, and load learned
