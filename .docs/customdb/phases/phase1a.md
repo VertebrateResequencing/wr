@@ -45,7 +45,10 @@ spec.md section: B1
 
 Add framed, CRC-checked records and a scanner that stops at the first
 damage in `jobqueue/wal/frame.go` and `jobqueue/wal/scan.go`, including
-`FuzzScan`. Cover all 4 acceptance tests from B1.
+`FuzzScan`. B1 test 2 and the block seeds need s2 blocks, so this item
+also adds `AppendBlock` and the s2 and zstd decode path in
+`jobqueue/wal/codec.go`, making `github.com/klauspost/compress` a direct
+dependency. Cover all 4 acceptance tests from B1.
 
 - [ ] implemented
 - [ ] reviewed
@@ -65,9 +68,9 @@ acceptance tests from B2. Depends on 1a.1.
 
 spec.md section: B3
 
-Add the s2 and zstd block helpers in `jobqueue/wal/codec.go` using
-`github.com/klauspost/compress` (made a direct dependency). Cover both
-acceptance tests from B3.
+Complete the s2 and zstd block helpers in `jobqueue/wal/codec.go`
+(zstd at `SpeedFastest`, no dictionary). Cover both acceptance tests
+from B3. Depends on 1a.1.
 
 - [ ] implemented
 - [ ] reviewed
