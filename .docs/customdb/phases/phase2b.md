@@ -42,7 +42,10 @@ spec.md section: D3
 
 Answer every history query from segments in `jobqueue/store_history.go`,
 including `spendArchivedBytesByRepGroup`'s pricing, so each answer equals
-today's. Cover all 4 acceptance tests from D3. Depends on 2a.
+today's. Cover acceptance tests 2, 3 and 4 from D3, writing test 2's
+segments with 2a.1's segment writer. Test 1 is deferred to item 2b.2: it
+replays with segments sealed after every write call, which needs the
+folder to seal segments. Depends on 2a.
 
 - [ ] implemented
 - [ ] reviewed
@@ -55,7 +58,10 @@ Make the folder seal `.hist` segments (`NNNNNNNN.hist.tmp`, footer,
 fsync, rename) instead of committing to `history.bolt`, and load learned
 requirement samples from segment footers. Keep D1's acceptance tests
 passing on the segment store and add C6 test 2 (the Phase 2 checkpoint
-with the open segment not yet sealed). Depends on 2b.1.
+with the open segment not yet sealed). Cover D2 acceptance tests 1, 2
+and 4 in `jobqueue/store_segment_test.go`, deferred from item 2a.1, and
+D3 acceptance test 1 in `jobqueue/store_history_test.go`, deferred from
+item 2b.1, because they need the folder to seal segments. Depends on 2b.1.
 
 - [ ] implemented
 - [ ] reviewed

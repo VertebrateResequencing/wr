@@ -46,8 +46,14 @@ spec.md section: D2
 Add immutable `.hist` segments in `jobqueue/store_segment.go` and
 `jobqueue/store_history.go`: zstd blocks of at most 64KiB, the footer
 sections, the `WRHIST01` trailer, the in-memory key, rep group and dep
-group indexes, and the 64MiB footer LRU. Cover all 5 acceptance tests from
-D2.
+group indexes, and the 64MiB footer LRU. `openStore` loads sealed
+segments into those indexes. Cover acceptance tests 3 and 5 from D2 in
+`jobqueue/store_segment_test.go`, writing test 3's segment with this
+item's segment writer.
+
+Tests 1, 2 and 4 are deferred to item 2b.2 ([phase2b.md](phase2b.md)):
+they need the folder to seal segments (2b.2), and test 4 also needs
+`retrieveCompleteJobsByRepGroup` answered from segments (2b.1).
 
 - [ ] implemented
 - [ ] reviewed
