@@ -43,7 +43,9 @@ spec.md section: C6
 Add background checkpoints in `jobqueue/store_checkpoint.go` that bound
 recovery and log size and keep every live spec addressable. Cover the
 Phase 1 acceptance tests from C6 (4 of 5); test 2 is Phase 2 and runs in
-2b.
+2b. Also add the checkpoint clauses deferred from 1c: C4 tests 6 and 8
+(`jobqueue/store_log_ops_test.go`), and C5 test 1's 3 checkpoints and
+test 8's checkpoint between reopens (`jobqueue/store_recover_test.go`).
 
 - [ ] implemented
 - [ ] reviewed
@@ -53,9 +55,10 @@ Phase 1 acceptance tests from C6 (4 of 5); test 2 is Phase 2 and runs in
 spec.md section: D1
 
 Add the background folder into `history.bolt` and the `fold` writer
-stats in `jobqueue/store_fold.go`, on top of the overlay from 1c.2.
-Cover all 7 acceptance tests from D1 in `jobqueue/store_fold_test.go`.
-Depends on 1d.1.
+stats in `jobqueue/store_fold.go`, on top of the overlay from 1c.3.
+Cover all 7 acceptance tests from D1 in `jobqueue/store_fold_test.go`,
+and add C5 test 7's "after the folder has run" clause (deferred from 1c.5)
+to `jobqueue/store_recover_test.go`. Depends on 1d.1.
 
 - [ ] implemented
 - [ ] reviewed
