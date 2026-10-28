@@ -46,7 +46,8 @@ spec.md section: E3
 
 Make every dev wipe and restore path remove a store directory or S3 prefix
 recursively instead of failing silently (`jobqueue/store_open.go`,
-`jobqueue/store_backup.go`). Cover all 5 acceptance tests from E3.
+`jobqueue/store_backup.go`). Cover E3 tests 1 to 3; tests 4 and 5 need
+restore from backup and are finished in 1f.4.
 
 - [ ] implemented
 - [ ] reviewed
@@ -72,8 +73,8 @@ spec.md section: E5
 Make `backup(w)` and `Client.BackupDB(path)` write one tar file
 (`VERSION`, one `.ckpt`, `.wal` files and history files, here
 `history.bolt`) in `jobqueue/store_backup.go`. Cover both acceptance
-tests from E5; test 2's restore half depends on 1f.4 and may be finished
-there.
+tests from E5; test 1's open and test 2's restore halves depend on 1f.4
+and may be finished there.
 
 - [ ] implemented
 - [ ] reviewed
@@ -86,7 +87,8 @@ Implement the `openStore` order and the restore steps in
 `jobqueue/store_open.go`: dev wipe (1f.1), leftover `.restoring`
 cleanup, resumed conversion (1f.2), restore from a store directory, a
 self-contained file (1f.3) or an old bbolt backup, and corruption
-handling. Cover all 15 acceptance tests from E2.
+handling. Cover all 15 acceptance tests from E2, plus E3 tests 4 and 5
+deferred from 1f.1 and the halves of E5's tests deferred from 1f.3.
 
 - [ ] implemented
 - [ ] reviewed
@@ -125,7 +127,7 @@ spec.md section: E7
 Make cloud deploy and teardown carry a store directory as a
 self-contained file made by `jobqueue.ExportStore`
 (`jobqueue/store_export.go`, `cmd/cloud.go`). Cover all 6 acceptance
-tests from E7. Depends on 1f.3.
+tests from E7. Depends on 1f.3 and 1f.4.
 
 - [ ] implemented
 - [ ] reviewed
