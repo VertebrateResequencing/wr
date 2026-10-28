@@ -52,7 +52,7 @@ Run A4 against the log store: 16 rounds local and 16 on NFS
 (`WR_CRASHTEST_ROUNDS=16`, with `WR_CRASHTEST_DIR` under the NFS work
 directory for the NFS run), plus 20 damaged copies each, with 0 missing.
 This is the first run of A4 acceptance test 2 (damaged copies), deferred
-from item 0d.1 ([phase0d.md](phase0d.md)); acceptance tests 1 and 3 run
+from item 0d.1 ([phase0d.md](phase0d.md)); acceptance tests 1, 3 and 4 run
 against the log store too. Run `FuzzScan` and `FuzzFlatSpec` for 10
 minutes each with no crasher.
 

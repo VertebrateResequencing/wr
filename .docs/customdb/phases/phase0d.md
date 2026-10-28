@@ -43,14 +43,14 @@ spec.md section: A4
 
 Port the prototype's crash test to drive `store` in
 `jobqueue/store_crash_test.go` (the test re-executes its own binary as a
-child) and run it against bbolt. Cover acceptance tests 1 and 3 from A4
+child) and run it against bbolt. Cover acceptance tests 1, 3 and 4 from A4
 against bbolt. Test 2 (damaged copies) applies only to the log store:
 write its copy-and-recover step so it runs only when the store under test
 is the log store; it first runs in item 1g.1
 ([phase1-gate.md](phase1-gate.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 0d.2: A5 - Record/replay harness
 

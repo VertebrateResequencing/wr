@@ -864,21 +864,28 @@ As a wr developer, I want the prototype's crash test driving `store`, so
 that every implementation must keep every acknowledged write.
 
 The test re-executes its own binary as a child (pattern of
-`TestOpenManagerBoltLimitChild`). The child opens the store, adds 300 jobs,
-and runs one goroutine per job through 5 cycles of reserve
+`TestOpenManagerBoltLimitChild`). The child opens the store and runs
+overlapping waves until it is killed. Each wave adds 300 jobs and runs one
+goroutine per job; job i of a wave goes through i%6 cycles of reserve
 (`updateJobRunStateDurable`, State reserved), start (running) and release
-(`updateJobAfterExitDurable`, exit 1, Attempts + 1), then reserve, start and
-archive (`archiveCompletion`). After each call returns it appends
-`key<TAB>attempts<TAB>step` to an ack file (fsynced). Steps order as
-reserve < start < release < archive within an attempt count. The parent
-sends SIGKILL to the child's exact pid after a random 1.5-4.5s, reopens the
-store and checks. Rounds: env `WR_CRASHTEST_ROUNDS` (default 2), directory env
-`WR_CRASHTEST_DIR` (default `t.TempDir()`), so the gate can run 16 rounds on
-NFS. Each round reopens the previous round's store, adds 300 new jobs and
-also writes reserve, start and release transitions to 50 random live jobs
-from earlier rounds, checked as the new ones. For the log store each round
-also makes 20 copies with the last wal file truncated at a random offset or
-one random byte flipped, and recovers each.
+(`updateJobAfterExitDurable`, exit 1, Attempts + 1), then reserve, start
+and archive (`archiveCompletion`). The next wave starts when half of the
+current wave's goroutines have finished, so at most about two waves run at
+once, the previous wave is still writing while the next one adds (no idle
+gap), and archives are spread through each wave rather than bunched at its
+end; job 0 of each wave archives within its first three calls, so archives
+are in flight even on a slow or loaded host. After each call returns the
+child appends `key<TAB>attempts<TAB>step` to an ack file (fsynced).
+Steps order as reserve < start < release < archive within an attempt
+count. The parent
+sends SIGKILL to the child's exact pid after a random 1.5-4.5s, reopens
+the store and checks. Rounds: env `WR_CRASHTEST_ROUNDS` (default 2),
+directory env `WR_CRASHTEST_DIR` (default `t.TempDir()`), so the gate can
+run 16 rounds on NFS. Each round reopens the previous round's store, runs
+new waves as above and also cycles 50 random live jobs from earlier rounds
+through reserve, start and release until killed, checked as the new ones.
+For the log store each round also makes 20 copies with the last wal file
+truncated at a random offset or one random byte flipped, and recovers each.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_crash_test.go`
@@ -889,7 +896,9 @@ one random byte flipped, and recovers each.
 1. Given a killed child, when the store is reopened, then for every acked
    (key, attempts, step) the recovered job is complete, or live with
    (Attempts, step implied by State) at or after the ack in that order;
-   missing count is 0.
+   missing count is 0, and the child's intents file (a line appended
+   before each call) holds at least one call with no ack (it was still
+   writing).
 2. Given a damaged copy (log store), when recovered, then recovery returns
    no error, and every recovered job's state equals a state the child wrote
    for it (checked against a per-key list the child wrote before each
@@ -901,6 +910,9 @@ one random byte flipped, and recovers each.
    kills the child inside `ackEarlyStore` after it acknowledges a write and
    before that write's goroutine starts it, then the round reports
    missing > 0 (the test can fail).
+4. Given a test-only store wrapper whose `updateJobAfterExitDurable`
+   returns nil without writing (a dropped acknowledged release), when 4
+   rounds run, then at least one round reports missing > 0.
 
 ### A5: Record/replay harness
 
