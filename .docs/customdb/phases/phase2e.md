@@ -1,6 +1,6 @@
 # Phase 2e: Retire bbolt and documentation
 
-Ref: [spec.md](../spec.md) sections F5, F6, A1
+Ref: [spec.md](../spec.md) sections F5, F6
 
 ## Instructions
 
@@ -44,9 +44,12 @@ Delete `db.go` and the files under "Packages and files",
 `developers/soak/bboltexp/`, `.docs/reliable2/harness/statinspect/`,
 the bbolt-only tests, the `wrdev.sh` modes `freelist-check`,
 `remap-stall-check` and `compact-fixture`, and `go.etcd.io/bbolt` from
-`go.mod` unless only the converter's read-only reader needs it. Replace
-A1 test 1's file list as F5 test 1 says. Cover both acceptance tests from
-F5.
+`go.mod` unless only the converter's read-only reader needs it. Move
+`backupCopyWriter` to `store_backup.go`, rename `db_backupsync_*.go` to
+`store_backupsync_*.go`, and take bbolt out of `dependency.go` and
+`reqstat_cache.go`, as "Packages and files" says. Replace A1 test 1's
+file list as F5 test 1 says, and close delivery-queue row 18. Cover both
+acceptance tests from F5.
 
 - [ ] implemented
 - [ ] reviewed
