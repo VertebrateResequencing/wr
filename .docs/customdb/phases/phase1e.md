@@ -1,6 +1,6 @@
 # Phase 1e: Reservations, config removal, default to log
 
-Ref: [spec.md](../spec.md) sections C3, F1, F2
+Ref: [spec.md](../spec.md) sections C3, F1, F2, A5 (test 4 only)
 
 ## Instructions
 
@@ -38,14 +38,23 @@ Brief every subagent with these project constraints:
 
 ### Item 1e.1: C3 - Transitions and durable reservations
 
-spec.md section: C3
+spec.md section: C3; A5
 
 Make each transition append one state record and make
 `persistReservation` and `handOutReservation` hand a job out only after
 its reservation is durable, with the abandoned-reservation path and the
 `"reservation wait"` histogram line (`jobqueue/serverCLI.go`,
-`jobqueue/store_log.go`, `jobqueue/db.go`). Cover all 11 acceptance
-tests from C3 in `jobqueue/store_reserve_test.go`.
+`jobqueue/store_log.go`, `jobqueue/db.go`). Add `reserveRunState` to
+both stores and remove `updateJobRunStateDurableWithin`,
+`logReserveNotDurable`, `errDurableWriteWaitExpired`,
+`ReserveWriteWait` and `setBatchTuning`. Add A5's replay mapping for
+those removed methods to `replayRecording` (`jobqueue/store_record.go`)
+and cover A5 test 4, deferred from item 0d.2 because it needs
+`reserveRunState`, in `jobqueue/store_record_test.go` by replaying
+`jobqueue/testdata/store_record/removed_methods.rec`, which 0d.2
+committed. Delete 0d.2's `WR_STORE_RECORD_REGEN` test that wrote that
+file, since it calls the removed methods. Cover all 11
+acceptance tests from C3 in `jobqueue/store_reserve_test.go`.
 
 - [ ] implemented
 - [ ] reviewed
@@ -55,8 +64,8 @@ tests from C3 in `jobqueue/store_reserve_test.go`.
 spec.md section: F1
 
 Make the removed tuning knobs ignored, not fatal (`internal/config.go`,
-`cmd/conf.go`, `cmd/manager.go` and the other files F1 lists). Cover
-both acceptance tests from F1.
+`cmd/conf.go`, `cmd/manager.go`, `jobqueue/server.go`). Cover both
+acceptance tests from F1 in `internal/config_test.go`.
 
 - [ ] implemented
 - [ ] reviewed
@@ -67,7 +76,7 @@ spec.md section: F2
 
 Make two concurrent key-changing `wr mod` calls persist both jobs
 (`jobqueue/server.go`, delivery-queue row 15). Cover the 1 acceptance
-test from F2.
+test from F2 in `jobqueue/store_modify_race_test.go`.
 
 - [ ] implemented
 - [ ] reviewed

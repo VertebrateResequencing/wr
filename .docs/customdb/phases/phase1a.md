@@ -44,7 +44,8 @@ is reviewed.
 spec.md section: B1
 
 Add framed, CRC-checked records and a scanner that stops at the first
-damage in `jobqueue/wal/frame.go` and `jobqueue/wal/scan.go`, including
+damage in `jobqueue/wal/frame.go` and `jobqueue/wal/scan.go`, completing
+the plain-frame part item 0d.2 added for A5's recordings, including
 `FuzzScan`. B1 test 2 and the block seeds need s2 blocks, so this item
 also adds `AppendBlock` and the s2 and zstd decode path in
 `jobqueue/wal/codec.go`, making `github.com/klauspost/compress` a direct

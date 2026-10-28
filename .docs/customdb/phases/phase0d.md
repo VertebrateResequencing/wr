@@ -59,8 +59,22 @@ spec.md section: A5
 Add `recordingStore`, `recordedCall`, `storeDigest` and
 `replayRecording` in `jobqueue/store_record.go`, enabled by env
 `WR_STORE_RECORD` at `openStore`, plus the `TestStoreReplay` runner (env
-`WR_STORE_REPLAY`). Cover all 5 acceptance tests from A5. Depends on
-0d.1 only for ordering.
+`WR_STORE_REPLAY`). The recording's wal frames need the plain-frame
+append and scan of `jobqueue/wal/frame.go` and `jobqueue/wal/scan.go`,
+so this item adds that part early; item 1a.1 ([phase1a.md](phase1a.md))
+completes it. Cover acceptance tests 1, 2, 3 and 5 from A5.
+
+Test 4 and the removed-methods mapping it checks are deferred to item
+1e.1 ([phase1e.md](phase1e.md)): they replay onto `reserveRunState`,
+which C3 adds in Phase 1, and 1e.1 removes the methods a live bbolt store
+would need to record test 4's input. So this item also commits that
+input: a bbolt recording at
+`jobqueue/testdata/store_record/removed_methods.rec` of 3 adds, then 3
+`updateJobRunStateDurableWithin` calls reserving those jobs, 1
+`logReserveNotDurable` and 1 `setBatchTuning` call. A test in
+`jobqueue/store_record_test.go` that runs only when env
+`WR_STORE_RECORD_REGEN` is set writes it. Depends on 0d.1 only for
+ordering.
 
 - [ ] implemented
 - [ ] reviewed
