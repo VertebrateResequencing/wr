@@ -91,6 +91,7 @@ var boltOnlyTests = []string{ //nolint:gochecknoglobals
 	"reserve_ttr_test.go",
 	"resume_order_bolt_test.go",
 	"start_durability_test.go",
+	"store_stats_bolt_test.go",
 	"warn_storm_bolt_test.go",
 
 	// backup pacing, remap, freelist, prefetch, cold start and compaction.

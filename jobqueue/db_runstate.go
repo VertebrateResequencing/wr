@@ -336,6 +336,8 @@ func (db *db) runStateDroppable(live, record []byte) bool {
 func (db *db) dropRunStates(keys []string) (int, error) {
 	dropped := 0
 
+	// not counted in the "db writer" line: it is a one-off write by startup
+	// recovery, not one of the serving writers whose bursts the line attributes.
 	err := db.bolt.Update(func(tx *bolt.Tx) error {
 		var err error
 

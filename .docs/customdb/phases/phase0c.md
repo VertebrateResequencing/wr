@@ -51,5 +51,5 @@ defines it. Cover all 4 acceptance tests from A3 in
 Depends on 0a. The spec lets 0b and 0c run in parallel; run them one
 after the other.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

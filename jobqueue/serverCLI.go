@@ -1160,7 +1160,11 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 // hand-out, including one while the database is closing, is also logged with a
 // running total (see logReserveNotDurable), for an exact count up to a crash.
 func (s *Server) persistReservation(ctx context.Context, job *Job) {
+	writing := time.Now()
 	err := s.db.updateJobRunStateDurableWithin(job, s.timings.ReserveWriteWait)
+
+	s.waitStats.observeReservation(time.Since(writing), err != nil)
+
 	if err != nil {
 		//nolint:contextcheck // logged on a handler-less context so it reaches the info-level log file
 		s.db.logReserveNotDurable(job.Key())

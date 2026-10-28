@@ -1220,6 +1220,9 @@ type db struct {
 	// a -race failure.
 	arFoldInterval time.Duration
 	arFoldStop     chan struct{} // closed by close() to stop the fold reporter
+	// writerStats is what each writer's transactions cost, summarised to the
+	// log alongside arFold (see store_stats.go). Atomics only.
+	writerStats dbWriterStats
 	// New adds are SYNCHRONOUS too - the client's add RPC blocks until its jobs
 	// are durable - and are persisted by their own single coalescing writer
 	// (newJobsWriter), for the same reason the archives have one: db.bolt.Batch
@@ -1777,7 +1780,7 @@ func (db *db) storeLimitGroups(limitGroups map[string]*limiter.GroupData) (chang
 		return changed, removed, err
 	}
 
-	err = db.bolt.Batch(func(tx *bolt.Tx) error {
+	err = db.batchWrite(len(limitGroups), func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketLGs)
 
 		// classified again in here, discarding what the read transaction found:
@@ -2084,7 +2087,7 @@ func (db *db) storeRunningRerunMarks(jobs []*Job) error {
 		return nil
 	}
 
-	err := db.bolt.Update(func(tx *bolt.Tx) error {
+	err := db.updateUncoalesced(len(jobs), func(tx *bolt.Tx) error {
 		for _, job := range jobs {
 			if err := db.putRunningRerunMark(tx, job); err != nil {
 				return err
@@ -2141,7 +2144,7 @@ func (db *db) storeLiveForRerun(jobs []*Job) error {
 		records = append(records, [2][]byte{[]byte(job.Key()), live})
 	}
 
-	err := db.bolt.Update(func(tx *bolt.Tx) error {
+	err := db.updateUncoalesced(len(records), func(tx *bolt.Tx) error {
 		return putLiveRecords(tx, records)
 	})
 
@@ -2314,7 +2317,7 @@ func (db *db) drainBestEffort(ctx context.Context) {
 
 	defer func() { db.doneBestEffort(batch, err) }()
 
-	if err = db.updateInTurnSince(writerBestEffort, batch.oldest, batch.apply); err != nil {
+	if err = db.updateInTurnSince(writerBestEffort, batch.oldest, len(batch.wgkeys), batch.apply); err != nil {
 		clog.Error(ctx, "Database best-effort job update failed", "err", err)
 
 		return
@@ -3357,7 +3360,7 @@ func (db *db) archiveTx(ops []*archiveOp, failed *int, oldest time.Time) error {
 
 	var begun time.Time
 
-	err := db.updateInTurnSince(writerArchive, oldest, func(tx *bolt.Tx) error {
+	err := db.updateInTurnSince(writerArchive, oldest, len(ops), func(tx *bolt.Tx) error {
 		begun = time.Now()
 
 		for i, op := range ops {
@@ -3676,7 +3679,7 @@ func (db *db) drainNewJobs(final bool) {
 // whole transaction is rolled back, so the caller can take that op out and retry
 // the rest.
 func (db *db) newJobsTx(ops []*newJobsOp, failed *int) error {
-	return db.updateInTurn(newJobsWriterKind(ops), func(tx *bolt.Tx) error {
+	return db.updateInTurn(newJobsWriterKind(ops), len(ops), func(tx *bolt.Tx) error {
 		for i, op := range ops {
 			if err := db.applyNewJobsOp(tx, op); err != nil {
 				if failed != nil {
@@ -3884,7 +3887,7 @@ func (db *db) storeNewJobDataChunked(stores []newJobStore) error {
 		storer := func(bucket []byte, chunk sobsd) error {
 			op := &newJobsOp{stores: []newJobStore{{bucket, chunk, s.put}}}
 
-			return db.updateInTurn(writerChunkedAdd, func(tx *bolt.Tx) error {
+			return db.updateInTurn(writerChunkedAdd, len(chunk), func(tx *bolt.Tx) error {
 				return db.applyNewJobsOp(tx, op)
 			})
 		}
@@ -4831,7 +4834,7 @@ func updateRGEndTime(b *bolt.Bucket, job *Job) error {
 
 // deleteLiveJobs remove multiple jobs from the live bucket.
 func (db *db) deleteLiveJobs(ctx context.Context, keys []string) error {
-	err := db.bolt.Batch(func(tx *bolt.Tx) error {
+	err := db.batchWrite(len(keys), func(tx *bolt.Tx) error {
 		for _, key := range keys {
 			errd := deleteLiveRecord(tx, []byte(key))
 			if errd != nil {
@@ -5688,7 +5691,7 @@ func (db *db) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job)
 
 	sort.Sort(encodedJobs)
 
-	err = db.bolt.Batch(func(tx *bolt.Tx) error {
+	err = db.batchWrite(len(jobs), func(tx *bolt.Tx) error {
 		return db.modifyLiveJobsTx(tx, oldKeys, jobs, encodedJobs, lookups)
 	})
 	if err != nil {
@@ -6071,7 +6074,7 @@ func roundRecommendation(recommendation, maxVal, roundAmount int) int {
 
 // store does a basic set of a key/val in a given bucket.
 func (db *db) store(bucket []byte, key string, val []byte) error {
-	err := db.bolt.Batch(func(tx *bolt.Tx) error {
+	err := db.batchWrite(1, func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucket)
 		err := b.Put([]byte(key), val)
 
@@ -6160,7 +6163,7 @@ func batchSizeFor(num int) int {
 // storeLookups is a sobsdStorer for storing Job.[somevalue]->Job.Key() lookups
 // in the db.
 func (db *db) storeLookups(bucket []byte, lookups sobsd) error {
-	err := db.bolt.Batch(func(tx *bolt.Tx) error {
+	err := db.batchWrite(len(lookups), func(tx *bolt.Tx) error {
 		return db.putLookups(tx, bucket, lookups)
 	})
 
@@ -6279,6 +6282,8 @@ func (db *db) finaliseBackup(ctx context.Context) {
 // close, once every write has finished; a failure only costs the next open that
 // walk.
 func (db *db) syncFreelist(ctx context.Context) {
+	// not counted in the "db writer" line: it runs once, after the final
+	// report (see stopArchiveFoldReporter), so nothing would log it.
 	err := db.bolt.Update(func(tx *bolt.Tx) error {
 		// set inside the transaction so that it is ordered, by bbolt's writer
 		// lock, before this and any later commit reads it

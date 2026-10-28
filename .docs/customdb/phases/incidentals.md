@@ -168,3 +168,10 @@ called ready, or explicitly deferred with the owner.
   grow with completed-only history and seeds no complete counts. Owner:
   1d.1 (D1), which can seed `history.bolt` at that scale and assert the
   same of the log store's startup.
+- [x] (from 0c.1) Four `db.bolt.Update` calls bypass write turns and
+  Batch, so no "db writer" line counts them: `storeRunningRerunMarks`
+  and `storeLiveForRerun` (while serving), `dropRunStates` (recovery)
+  and `syncFreelist` (close). A3 names five writers only; the 0c.1
+  review decides whether the two serving-time ones count under `batch`.
+  Done in 0c.1: the two serving-time writes count under `batch` via
+  `updateUncoalesced`; the recovery and close ones stay uncounted.

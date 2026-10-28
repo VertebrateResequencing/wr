@@ -1817,12 +1817,12 @@ type Server struct {
 	lostCleanupTokens  chan struct{}
 	clientHandlingDone chan struct{}
 	wg                 *waitgroup.WaitGroup
-	// bgWG tracks only the background startup goroutines (prior-state recovery
-	// and the one-time complete-counter backfill), separately from wg, so
-	// shutdown can wait for just them early - before scheduler cleanup, DB close
-	// and queue destroy - rather than at the final wg.Wait. bgCancel cancels the
-	// context those goroutines observe, so shutdown can tell them to abort
-	// promptly and quietly instead of racing the teardown.
+	// bgWG tracks only the background goroutines (prior-state recovery, the
+	// one-time complete-counter backfill and waitStatsReporter), separately
+	// from wg, so shutdown can wait for just them early - before scheduler
+	// cleanup, DB close and queue destroy - rather than at the final wg.Wait.
+	// bgCancel cancels the context those goroutines observe, so shutdown can
+	// tell them to abort promptly and quietly instead of racing the teardown.
 	bgWG     *waitgroup.WaitGroup
 	bgCancel context.CancelFunc
 	q        *queue.Queue
@@ -1976,6 +1976,10 @@ type Server struct {
 	// warns rate-limits the warnings that can fire for every reservation or
 	// request, such as when commits are slow (see warn_aggregator.go).
 	warns *warnAggregator
+
+	// waitStats is how long adds and reservations waited on the store,
+	// summarised to the log by waitStatsReporter (see store_stats.go).
+	waitStats serverWaitStats
 }
 
 // ensureGroup returns groups[snapshot.group], creating it (seeded with the
@@ -5606,10 +5610,10 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// our limiter will use a callback that gets group limits from our database
 	l := limiter.New(db.retrieveLimitGroup)
 
-	// bgCtx is the context the background startup goroutines (prior-state
-	// recovery and the one-time complete-counter backfill) observe; shutdown
-	// cancels it via s.bgCancel so those goroutines abort promptly and quietly
-	// rather than racing scheduler cleanup, DB close or queue destroy.
+	// bgCtx is the context the background goroutines (prior-state recovery,
+	// the one-time complete-counter backfill and waitStatsReporter) observe;
+	// shutdown cancels it via s.bgCancel so those goroutines abort promptly and
+	// quietly rather than racing scheduler cleanup, DB close or queue destroy.
 	bgCtx, bgCancel := context.WithCancel(ctx)
 
 	s = &Server{
@@ -5688,6 +5692,10 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	// wait for signal or s.Stop() and call s.shutdown(). (We don't use the
 	// waitgroup here since we call shutdown, which waits on the group)
 	certExpired := time.After(time.Until(expiry))
+
+	// registered on bgWG before handleSignals starts, so a signal-driven
+	// shutdown's wait on bgWG cannot come before this Add.
+	go s.waitStatsReporter(bgCtx, archiveFoldReportInterval, s.bgWG.Add(1))
 
 	go s.handleSignals(ctx, sigs, certExpired, stopSigHandling)
 
@@ -7160,7 +7168,10 @@ func (s *Server) createJobs(
 	guard := s.db.registerRerunGuard()
 	defer s.db.releaseRerunGuard(guard)
 
+	storing := time.Now()
 	stored, err := s.db.storeNewJobsGuarded(ctx, inputJobs, ignoreComplete, guard)
+
+	s.waitStats.add.observe(time.Since(storing))
 
 	stored.dependents.guard = guard
 

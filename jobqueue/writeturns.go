@@ -61,20 +61,48 @@ func (k writerKind) coalescing() bool {
 	return k == writerArchive || k == writerBestEffort
 }
 
+// statsWriter is the writer the "db writer" line reports k's transactions
+// under (see store_stats.go).
+func (k writerKind) statsWriter() dbWriter {
+	switch k {
+	case writerArchive:
+		return dbWriterArchive
+	case writerBestEffort:
+		return dbWriterBestEffort
+	case writerChunkedAdd:
+		return dbWriterAddChunk
+	default:
+		return dbWriterNewJobs
+	}
+}
+
 // updateInTurn runs fn in a bolt write transaction once it is kind's turn to
 // write, and ends the turn even if fn panics. The writer's oldest request is
-// taken to be one made now.
-func (db *db) updateInTurn(kind writerKind, fn func(*bolt.Tx) error) error {
-	return db.updateInTurnSince(kind, time.Time{}, fn)
+// taken to be one made now. items is how many of the writer's items the
+// transaction holds, for the "db writer" line.
+func (db *db) updateInTurn(kind writerKind, items int, fn func(*bolt.Tx) error) error {
+	return db.updateInTurnSince(kind, time.Time{}, items, fn)
 }
 
 // updateInTurnSince is updateInTurn for a writer whose oldest request was
 // queued at oldest (the zero time means now).
-func (db *db) updateInTurnSince(kind writerKind, oldest time.Time, fn func(*bolt.Tx) error) error {
+func (db *db) updateInTurnSince(kind writerKind, oldest time.Time, items int, fn func(*bolt.Tx) error) error {
+	asked := time.Now()
+
+	var begun time.Time
+
 	db.turns.takeSince(kind, oldest)
 	defer db.turns.give()
 
-	return db.bolt.Update(fn)
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		begun = time.Now()
+
+		return fn(tx)
+	})
+
+	db.writerStats.observe(kind.statsWriter(), items, asked, begun)
+
+	return err
 }
 
 // writeTurn is a writer waiting for its turn, woken by closing ready.
@@ -434,4 +462,49 @@ func (w *writeTurns) oldestUncoalesced(onlyOvertaken bool) (int, time.Time) {
 // began waiting.
 func (w *writeTurns) mayGoNext(turn writeTurn, onlyOvertaken bool) bool {
 	return turn.kind != writerNewJobs && (!onlyOvertaken || turn.addTurnsAtArrival != w.addTurns)
+}
+
+// batchWrite runs fn through bolt.Batch, recording the call under the batch
+// writer in the "db writer" line as one transaction of the given number of
+// items. bbolt may coalesce several calls into one transaction, and the hold
+// then includes the other calls' functions and the shared commit.
+func (db *db) batchWrite(items int, fn func(*bolt.Tx) error) error {
+	asked := time.Now()
+
+	var begun time.Time
+
+	// bbolt calls fn on its batch goroutine, or again on this one if the batch
+	// fails; either call happens before Batch returns, which it does by a
+	// channel receive from that goroutine, so begun needs no other
+	// synchronisation.
+	err := db.bolt.Batch(func(tx *bolt.Tx) error {
+		if begun.IsZero() {
+			begun = time.Now()
+		}
+
+		return fn(tx)
+	})
+
+	db.writerStats.observe(dbWriterBatch, items, asked, begun)
+
+	return err
+}
+
+// updateUncoalesced runs fn in its own bolt write transaction, outside write
+// turns and Batch, recording it under the batch writer in the "db writer" line
+// as one transaction of the given number of items.
+func (db *db) updateUncoalesced(items int, fn func(*bolt.Tx) error) error {
+	asked := time.Now()
+
+	var begun time.Time
+
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		begun = time.Now()
+
+		return fn(tx)
+	})
+
+	db.writerStats.observe(dbWriterBatch, items, asked, begun)
+
+	return err
 }

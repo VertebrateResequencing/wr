@@ -638,7 +638,7 @@ func TestNoHoldWriteTurns(t *testing.T) {
 
 			done := make(chan error, 1)
 
-			go func() { done <- database.updateInTurn(writerChunkedAdd, func(*bolt.Tx) error { return nil }) }()
+			go func() { done <- database.updateInTurn(writerChunkedAdd, 1, func(*bolt.Tx) error { return nil }) }()
 
 			So(reliable4ACAwait(t, done), ShouldWrap, berrors.ErrDatabaseNotOpen)
 		})
@@ -702,7 +702,7 @@ func TestNoHoldWriteTurns(t *testing.T) {
 
 			done := make(chan error, 1)
 
-			go func() { done <- database.updateInTurn(writerChunkedAdd, func(*bolt.Tx) error { return nil }) }()
+			go func() { done <- database.updateInTurn(writerChunkedAdd, 1, func(*bolt.Tx) error { return nil }) }()
 
 			select {
 			case err := <-done:
@@ -729,7 +729,7 @@ func TestNoHoldWriteTurns(t *testing.T) {
 				defer func() { recovered = recover() }()
 
 				// this returns only if fn did not panic, and recovered then ends up nil.
-				recovered = database.updateInTurn(writerBestEffort, func(*bolt.Tx) error {
+				recovered = database.updateInTurn(writerBestEffort, 1, func(*bolt.Tx) error {
 					panic("nohold write turns panic")
 				})
 			}()
@@ -738,7 +738,7 @@ func TestNoHoldWriteTurns(t *testing.T) {
 
 			done := make(chan error, 1)
 
-			go func() { done <- database.updateInTurn(writerArchive, func(*bolt.Tx) error { return nil }) }()
+			go func() { done <- database.updateInTurn(writerArchive, 1, func(*bolt.Tx) error { return nil }) }()
 
 			So(reliable4ACAwait(t, done), ShouldBeNil)
 		})

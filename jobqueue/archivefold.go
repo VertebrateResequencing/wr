@@ -334,11 +334,11 @@ func formatMeanFold(mean float64) string {
 	return strconv.FormatFloat(mean, 'f', foldMeanDecimals, 64)
 }
 
-// archiveFoldReporter is the goroutine that logs one archive-fold summary per
-// db.arFoldInterval. An interval with no transaction logs nothing, so an idle
-// manager pays a single atomic load a minute and adds no log volume. Started by
-// initDB; told to exit by close() via stopArchiveFoldReporter, which writes the
-// final summary itself.
+// archiveFoldReporter is the goroutine that logs one archive-fold summary, and
+// the "db writer" lines (store_stats.go), per db.arFoldInterval. An interval
+// with no transaction logs nothing, so an idle manager pays a few atomic loads
+// a minute and adds no log volume. Started by initDB; told to exit by close()
+// via stopArchiveFoldReporter, which writes the final summary itself.
 func (db *db) archiveFoldReporter(ctx context.Context) {
 	defer internal.LogPanic(ctx, "jobqueue archive fold reporter", false)
 
@@ -351,6 +351,7 @@ func (db *db) archiveFoldReporter(ctx context.Context) {
 			return
 		case <-ticker.C:
 			db.reportArchiveFold(ctx)
+			db.writerStats.report(ctx, db.arFoldInterval)
 		}
 	}
 }
@@ -390,5 +391,6 @@ func (db *db) reportArchiveFold(ctx context.Context) {
 // interval over two lines; it cannot double-count.
 func (db *db) stopArchiveFoldReporter(ctx context.Context) {
 	db.reportArchiveFold(ctx)
+	db.writerStats.report(ctx, db.arFoldInterval)
 	close(db.arFoldStop)
 }
