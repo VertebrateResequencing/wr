@@ -29,17 +29,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/VertebrateResequencing/wr/internal"
-	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
 	bolt "go.etcd.io/bbolt"
@@ -70,20 +66,9 @@ const (
 	// startDurabilityAckWait bounds how long we wait for Started() to return.
 	startDurabilityAckWait = 30 * time.Second
 
-	// startDurabilityRerunWait is how long a second run of the command is given
-	// to appear before we conclude it did not happen.
-	startDurabilityRerunWait = 5 * time.Second
-
-	// startDurabilityPollTime is how often the marker file is re-read.
-	startDurabilityPollTime = 20 * time.Millisecond
-
 	// startDurabilityRepGroup names the one job these tests add.
 	startDurabilityRepGroup = "start_durability"
 )
-
-// errStartNeverReturned stands in for the Started() error when the call did not
-// come back at all within startDurabilityAckWait.
-var errStartNeverReturned = errors.New("Started() did not return")
 
 // TestStartDurability proves that a job whose start the manager acknowledged is
 // not run a second time after the manager crashes and recovers, while the first
@@ -242,55 +227,6 @@ func TestStartDurability(t *testing.T) {
 			So(ackedWhileWriteHeld, ShouldBeFalse)
 		})
 	})
-}
-
-// startDurabilityConfig gives a test server its own database, database backup and
-// token file under t.TempDir(), so the crash image this test writes over that
-// database cannot reach any other test's manager directory.
-func startDurabilityConfig(t *testing.T) (internal.Config, ServerConfig, string, *jqs.Requirements, time.Duration) {
-	t.Helper()
-
-	config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(false)
-
-	dir := t.TempDir()
-	serverConfig.DBFile = filepath.Join(dir, "db")
-	serverConfig.DBFileBackup = filepath.Join(dir, "db.bk")
-	serverConfig.TokenFile = filepath.Join(dir, "token")
-
-	return config, serverConfig, addr, standardReqs, clientConnectTime
-}
-
-// startDurabilityCmd is a command that records one line per run in marker and
-// then stays alive until stopFile appears, so a second run of it overlaps the
-// first.
-func startDurabilityCmd(marker, stopFile string) string {
-	return fmt.Sprintf("echo run >> %s; while [ ! -e %s ]; do sleep 0.05; done", marker, stopFile)
-}
-
-// runCount is how many runs of a startDurabilityCmd have recorded themselves in
-// marker.
-func runCount(marker string) int {
-	content, err := os.ReadFile(marker)
-	if err != nil {
-		return 0
-	}
-
-	return len(strings.Fields(string(content)))
-}
-
-// waitForRuns reports whether marker records at least want runs within timeout.
-func waitForRuns(marker string, want int, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-
-	for time.Now().Before(deadline) {
-		if runCount(marker) >= want {
-			return true
-		}
-
-		time.Sleep(startDurabilityPollTime)
-	}
-
-	return runCount(marker) >= want
 }
 
 // TestStartDurabilityAbortedWriteIsNotCommitted covers the one path that would

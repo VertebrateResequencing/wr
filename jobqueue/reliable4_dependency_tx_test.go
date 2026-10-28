@@ -31,8 +31,9 @@ package jobqueue
 // job for it: 150,472 of them for jobs with no dependencies at all, against a
 // brand-new (wholly cold) 7 GB database on NFS.
 //
-// The cost is measured with bbolt's own read-transaction counter,
-// db.bolt.Stats().TxN, so these tests assert the real number of transactions
+// The cost is measured with bbolt's own read-transaction counter, Stats().TxN,
+// by the tests in reliable4_dependency_tx_bolt_test.go, so they assert the real
+// number of transactions
 // rather than a proxy for it; a wall-clock gate cannot see the difference on
 // warm local disk. Alongside each count is an assertion that the resolved keys
 // and waited-for dep groups are exactly what they were before the change, for
@@ -46,7 +47,7 @@ package jobqueue
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -117,6 +118,10 @@ const (
 // depTxFixture is a database holding the live jobs, dep groups and dep group
 // history that the dependency-resolution tests resolve against.
 type depTxFixture struct {
+	// s is the store holding the fixture, and db that store when it is a bbolt
+	// *db opened by newDepTxFixture, for the tests that count its
+	// transactions.
+	s  store
 	db *db
 
 	// liveGroupKeys are the keys of the live jobs in depTxLiveGroup, and are what
@@ -135,7 +140,7 @@ type depTxFixture struct {
 	groups *depGroupMembers
 }
 
-// newDepTxFixture builds the fixture database. The caller must close
+// newDepTxFixture builds the fixture in a bbolt database. The caller must close
 // fixture.db.
 func newDepTxFixture(t *testing.T, ctx context.Context) *depTxFixture {
 	t.Helper()
@@ -146,6 +151,24 @@ func newDepTxFixture(t *testing.T, ctx context.Context) *depTxFixture {
 		filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
 	So(err, ShouldBeNil)
 
+	fixture := seedDepTxFixture(ctx, testDB)
+	fixture.db = testDB
+
+	return fixture
+}
+
+// newDepTxStoreFixture builds the fixture in a fresh store of the given kind,
+// closed when the Convey block ends.
+func newDepTxStoreFixture(t *testing.T, ctx context.Context, kind storeKind) *depTxFixture {
+	t.Helper()
+
+	s, _ := openTestStore(t, ctx, kind)
+
+	return seedDepTxFixture(ctx, s)
+}
+
+// seedDepTxFixture stores the fixture's jobs in s and returns the fixture.
+func seedDepTxFixture(ctx context.Context, s store) *depTxFixture {
 	first := testDBJob("echo deptx first", "deptx")
 	first.DepGroups = []string{depTxLiveGroup}
 	second := testDBJob("echo deptx second", "deptx")
@@ -154,14 +177,14 @@ func newDepTxFixture(t *testing.T, ctx context.Context) *depTxFixture {
 	gone.DepGroups = []string{depTxGoneGroup}
 	live := testDBJob(depTxLiveCmd, "deptx")
 
-	queued, _, _, err := testDB.storeNewJobs(ctx, []*Job{first, second, gone, live}, false)
+	stored, err := s.storeNewJobsGuarded(ctx, []*Job{first, second, gone, live}, false, nil)
 	So(err, ShouldBeNil)
-	So(queued, ShouldHaveLength, 4)
+	So(stored.jobsToQueue, ShouldHaveLength, 4)
 
 	// gone leaves depTxGoneGroup seen, with a historical depgroupToKey entry but
 	// no live member - the state of a dep group whose jobs have all been
 	// archived.
-	So(testDB.deleteLiveJobs(ctx, []string{gone.Key()}), ShouldBeNil)
+	So(s.deleteLiveJobs(ctx, []string{gone.Key()}), ShouldBeNil)
 
 	liveGroupKeys := []string{first.Key(), second.Key()}
 	slices.Sort(liveGroupKeys)
@@ -174,7 +197,7 @@ func newDepTxFixture(t *testing.T, ctx context.Context) *depTxFixture {
 		groups.add([]string{depTxLiveGroup}, key)
 	}
 
-	return &depTxFixture{db: testDB, liveGroupKeys: liveGroupKeys, liveKey: live.Key(), groups: groups}
+	return &depTxFixture{s: s, liveGroupKeys: liveGroupKeys, liveKey: live.Key(), groups: groups}
 }
 
 // soResolves resolves deps against the fixture, asserting no error.
@@ -183,60 +206,6 @@ func (f *depTxFixture) soResolves(deps Dependencies) ([]string, []string) {
 	So(err, ShouldBeNil)
 
 	return keys, waiting
-}
-
-// TestReliable4DependencyFreeTxCost proves that resolving the dependencies of a
-// job that has none costs no bolt read transaction at all, and still returns
-// nothing to depend on. incompleteJobKeys used to ask depGroupsEverSeen about an
-// empty list of dep groups, and that opened a read transaction regardless.
-func TestReliable4DependencyFreeTxCost(t *testing.T) {
-	if runnermode || servermode {
-		return
-	}
-
-	ctx := context.Background()
-
-	Convey("Given a database holding live jobs in dep groups", t, func() {
-		fixture := newDepTxFixture(t, ctx)
-
-		defer func() {
-			So(fixture.db.close(ctx), ShouldBeNil)
-		}()
-
-		Convey("Resolving jobs with no dependencies opens no read transaction", func() {
-			var deps Dependencies
-
-			before := fixture.db.bolt.Stats().TxN
-			unexpected := 0
-
-			for range depTxResolutions {
-				keys, waiting, err := deps.dependencyKeys(fixture.db, fixture.groups)
-				if err != nil || len(keys) != 0 || len(waiting) != 0 {
-					unexpected++
-				}
-			}
-
-			So(unexpected, ShouldEqual, 0)
-			So(fixture.db.bolt.Stats().TxN-before, ShouldEqual, 0)
-		})
-
-		Convey("Resolving jobs with only an essence dependency costs one transaction each", func() {
-			deps := Dependencies{NewEssenceDependency(depTxLiveCmd, "")}
-
-			before := fixture.db.bolt.Stats().TxN
-			unexpected := 0
-
-			for range depTxResolutions {
-				keys, _, err := deps.dependencyKeys(fixture.db, fixture.groups)
-				if err != nil || len(keys) != 1 {
-					unexpected++
-				}
-			}
-
-			So(unexpected, ShouldEqual, 0)
-			So(fixture.db.bolt.Stats().TxN-before, ShouldEqual, depTxResolutions)
-		})
-	})
 }
 
 // TestReliable4DependencyResolutionUnchanged pins the resolved dependency keys
@@ -341,187 +310,46 @@ func TestReliable4DependencyResolutionUnchanged(t *testing.T) {
 	})
 }
 
-// TestReliable4RecoveryDependencyPass proves that resolving a whole recovery's
-// worth of jobs costs one bolt read transaction per chunk of jobs rather than
-// one or more per job, resolves each job to exactly what per-job resolution
-// resolves it to whether the jobs fit in one chunk or span many, and still stops
-// promptly when the recovery's context is cancelled without leaving a
-// transaction open.
-func TestReliable4RecoveryDependencyPass(t *testing.T) {
+// TestStoreRecoveryDependencyPass proves that resolveDependencies, the
+// dependency pass of prior-state recovery, resolves every job exactly as
+// per-job resolution does, and that a cancelled context ends the pass with
+// context.Canceled before it marks any job as waiting on a dep group.
+// TestReliable4RecoveryDependencyPass pins what the pass costs bbolt.
+func TestStoreRecoveryDependencyPass(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
 
 	ctx := context.Background()
 
-	Convey("Given a database of live jobs and a recovery's worth of jobs to resolve", t, func() {
-		fixture := newDepTxFixture(t, ctx)
+	forEachStore(t, func(kind storeKind) {
+		Convey(fmt.Sprintf("Given a %s store of live jobs and a recovery's worth of jobs to resolve",
+			storeKindName(kind)), t, func() {
+			fixture := newDepTxStoreFixture(t, ctx, kind)
+			jobs := depTxRecoveryJobs(depTxResolutions)
 
-		defer func() {
-			So(fixture.db.close(ctx), ShouldBeNil)
-		}()
+			Convey("The pass resolves every job exactly as per-job resolution does", func() {
+				depTxSoResolvesAsPerJob(ctx, fixture, jobs)
+			})
 
-		jobs := depTxRecoveryJobs(depTxResolutions)
+			Convey("A cancelled context ends the pass instead of resolving every job", func() {
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
 
-		Convey("The pass costs a transaction per chunk where per-job resolution costs one per reading job", func() {
-			beforePerJob := fixture.db.bolt.Stats().TxN
-			failed := 0
+				resolved, err := fixture.s.resolveDependencies(cancelled, jobs, fixture.groups)
+				So(err, ShouldWrap, context.Canceled)
+				So(resolved, ShouldBeNil)
 
-			for _, job := range jobs {
-				if _, _, err := job.Dependencies.dependencyKeys(fixture.db, fixture.groups); err != nil {
-					failed++
-				}
-			}
+				waiting := 0
 
-			perJobTx := fixture.db.bolt.Stats().TxN - beforePerJob
-
-			beforePass := fixture.db.bolt.Stats().TxN
-			resolved, err := fixture.db.resolveDependencies(ctx, jobs, fixture.groups)
-			passTx := fixture.db.bolt.Stats().TxN - beforePass
-
-			So(failed, ShouldEqual, 0)
-			So(err, ShouldBeNil)
-			So(resolved, ShouldHaveLength, len(jobs))
-
-			// one transaction for each job that has to ask the database
-			// something, and none at all for the rest: a dep group with a live
-			// member is answered from memory, so a dependency on one costs no
-			// database read however many members the group has.
-			So(perJobTx, ShouldEqual, depTxReadingJobs)
-			So(depTxReadingJobs+depTxReadFreeJobs, ShouldEqual, len(jobs))
-
-			So(passTx, ShouldEqual, depTxWantChunks(len(jobs)))
-		})
-
-		Convey("At the production chunk size the pass costs exactly one transaction per 1,000 jobs", func() {
-			So(dependencyResolutionChunkSize, ShouldEqual, depTxProdChunkSize)
-
-			many := depTxRecoveryJobs(depTxProdPassJobs)
-			So(depTxWantChunks(len(many)), ShouldEqual, depTxProdPassChunks)
-
-			before := fixture.db.bolt.Stats().TxN
-			resolved, err := fixture.db.resolveDependencies(ctx, many, fixture.groups)
-			passTx := fixture.db.bolt.Stats().TxN - before
-
-			So(err, ShouldBeNil)
-			So(resolved, ShouldHaveLength, len(many))
-
-			// exactly ceil(N/1000), not a range. A bound loose enough to allow one
-			// transaction per essence dependency or one per named dep group would
-			// still be satisfied by a regression to per-job reads inside a chunk,
-			// which is the cost this pass exists to remove.
-			So(passTx, ShouldEqual, depTxProdPassChunks)
-		})
-
-		Convey("Jobs spanning many chunks cost exactly one transaction per chunk", func() {
-			defer setDependencyResolutionChunkSize(depTxChunkSize)()
-
-			wantChunks := depTxWantChunks(len(jobs))
-
-			before := fixture.db.bolt.Stats().TxN
-			resolved, err := fixture.db.resolveDependencies(ctx, jobs, fixture.groups)
-			passTx := fixture.db.bolt.Stats().TxN - before
-
-			So(err, ShouldBeNil)
-			So(resolved, ShouldHaveLength, len(jobs))
-
-			// exactly, not at most: a single transaction for the whole pass would
-			// be fewer, but it would hold bolt's mmaplock for the whole pass and
-			// so stall every write to the database for that long, which is the
-			// production symptom this pass must not create.
-			So(passTx, ShouldEqual, wantChunks)
-
-			// the jobs really do span more than one chunk, and a chunk each is
-			// still far below a transaction per job.
-			So(wantChunks, ShouldBeGreaterThan, 1)
-			So(wantChunks, ShouldBeLessThan, len(jobs))
-		})
-
-		// dependencyResolutionChunkSize is a var so that the tests above can lower
-		// it, and slices.Chunk panics outright on a chunk size below 1. The floor
-		// in resolveDependencies is what keeps a zero or negative one from taking
-		// the manager down in the middle of prior-state recovery, and without it
-		// this block panics rather than failing an assertion
-		// (.docs/bugfixes/260825-3.md item 4).
-		Convey("A chunk size below one is floored to one rather than panicking", func() {
-			floored, cost := 0, 0
-
-			for _, size := range []int{0, -1} {
-				func() {
-					defer setDependencyResolutionChunkSize(size)()
-
-					before := fixture.db.bolt.Stats().TxN
-					resolved, err := fixture.db.resolveDependencies(ctx, jobs, fixture.groups)
-
-					if err == nil && len(resolved) == len(jobs) {
-						floored++
+				for _, job := range jobs {
+					if len(job.WaitingForDepGroups) > 0 {
+						waiting++
 					}
-
-					// floored to one, so a transaction per job: the smallest
-					// chunking the pass can do, never a pass-wide transaction.
-					if fixture.db.bolt.Stats().TxN-before == len(jobs) {
-						cost++
-					}
-				}()
-			}
-
-			So(floored, ShouldEqual, 2)
-			So(cost, ShouldEqual, 2)
-		})
-
-		Convey("The pass resolves every job exactly as per-job resolution does", func() {
-			depTxSoResolvesAsPerJob(ctx, fixture, jobs)
-		})
-
-		Convey("Chunking resolves every job exactly as per-job resolution does too", func() {
-			defer setDependencyResolutionChunkSize(depTxChunkSize)()
-
-			So(depTxWantChunks(len(jobs)), ShouldBeGreaterThan, 1)
-
-			depTxSoResolvesAsPerJob(ctx, fixture, jobs)
-		})
-
-		Convey("A cancelled context ends the pass instead of resolving every job", func() {
-			cancelled, cancel := context.WithCancel(ctx)
-			cancel()
-
-			resolved, err := fixture.db.resolveDependencies(cancelled, jobs, fixture.groups)
-			So(err, ShouldNotBeNil)
-			So(errors.Is(err, context.Canceled), ShouldBeTrue)
-			So(resolved, ShouldBeNil)
-
-			waiting := 0
-
-			for _, job := range jobs {
-				if len(job.WaitingForDepGroups) > 0 {
-					waiting++
 				}
-			}
 
-			So(waiting, ShouldEqual, 0)
-
-			// nothing is left holding a read transaction, which would hold
-			// bolt's mmaplock and stall every write to the database.
-			So(fixture.db.bolt.Stats().OpenTxN, ShouldEqual, 0)
-		})
-
-		Convey("A cancelled context stops at the chunk it is in, opening no more", func() {
-			defer setDependencyResolutionChunkSize(1)()
-
-			cancelled, cancel := context.WithCancel(ctx)
-			cancel()
-
-			before := fixture.db.bolt.Stats().TxN
-			resolved, err := fixture.db.resolveDependencies(cancelled, jobs, fixture.groups)
-			passTx := fixture.db.bolt.Stats().TxN - before
-
-			So(errors.Is(err, context.Canceled), ShouldBeTrue)
-			So(resolved, ShouldBeNil)
-
-			// one chunk per job at this chunk size, so a pass that carried on
-			// would open len(jobs) transactions.
-			So(passTx, ShouldBeLessThanOrEqualTo, 1)
-			So(len(jobs), ShouldBeGreaterThan, 1)
+				So(waiting, ShouldEqual, 0)
+			})
 		})
 	})
 }
@@ -551,23 +379,6 @@ func depTxRecoveryJobs(count int) []*Job {
 	return jobs
 }
 
-// depTxWantChunks is how many bolt read transactions a pass over count jobs is
-// allowed to cost: one per chunk of dependencyResolutionChunkSize jobs.
-func depTxWantChunks(count int) int {
-	size := dependencyResolutionChunkSize
-
-	return (count + size - 1) / size
-}
-
-// setDependencyResolutionChunkSize sets the dependencyResolutionChunkSize
-// package var to n and returns a function that restores it.
-func setDependencyResolutionChunkSize(n int) func() {
-	prev := dependencyResolutionChunkSize
-	dependencyResolutionChunkSize = n
-
-	return func() { dependencyResolutionChunkSize = prev }
-}
-
 // depTxSoResolvesAsPerJob resolves the jobs one at a time, then as a pass at the
 // current chunk size, and asserts the pass paired every job with exactly the
 // keys and waited-for dep groups per-job resolution gives it - so neither the
@@ -578,7 +389,7 @@ func depTxSoResolvesAsPerJob(ctx context.Context, fixture *depTxFixture, jobs []
 	failed := 0
 
 	for i, job := range jobs {
-		keys, waiting, err := job.Dependencies.dependencyKeys(fixture.db, fixture.groups)
+		keys, waiting, err := job.Dependencies.dependencyKeys(fixture.s, fixture.groups)
 		if err != nil {
 			failed++
 		}
@@ -586,7 +397,7 @@ func depTxSoResolvesAsPerJob(ctx context.Context, fixture *depTxFixture, jobs []
 		wantKeys[i], wantWaiting[i] = keys, waiting
 	}
 
-	resolved, err := fixture.db.resolveDependencies(ctx, jobs, fixture.groups)
+	resolved, err := fixture.s.resolveDependencies(ctx, jobs, fixture.groups)
 
 	So(failed, ShouldEqual, 0)
 	So(err, ShouldBeNil)
@@ -630,10 +441,20 @@ func depTxSoResolvesAsPerJob(ctx context.Context, fixture *depTxFixture, jobs []
 	So(withWaiting, ShouldBeGreaterThan, 0)
 }
 
+// setDependencyResolutionChunkSize sets the dependencyResolutionChunkSize
+// package var to n and returns a function that restores it.
+func setDependencyResolutionChunkSize(n int) func() {
+	prev := dependencyResolutionChunkSize
+	dependencyResolutionChunkSize = n
+
+	return func() { dependencyResolutionChunkSize = prev }
+}
+
 // TestDepGranularityDependencyKeys pins what keeping a dep-group dependency at
-// the granularity the user declared it buys: the resolved key count does not grow
-// with the group's membership, and a group with a live member is answered from
-// memory for no database read at all.
+// the granularity the user declared it buys: a group with live members resolves
+// to the group's one key, and the resolved key count does not grow with the
+// group's membership. TestDepGranularityLiveGroupTxCost pins that such a group is
+// answered from memory for no bbolt read at all.
 //
 // What each kind of dependency resolves to is pinned once, by
 // TestReliable4DependencyResolutionUnchanged, and a job with no dependencies
@@ -653,15 +474,9 @@ func TestDepGranularityDependencyKeys(t *testing.T) {
 		}()
 
 		Convey("A dep group with live members resolves to that group's one key", func() {
-			before := fixture.db.bolt.Stats().TxN
-
 			deps, waiting := fixture.soResolves(Dependencies{NewDepGroupDependency(depTxLiveGroup)})
 			So(deps, ShouldResemble, []string{depGroupDependencyKey(depTxLiveGroup)})
 			So(waiting, ShouldResemble, []string{})
-
-			// the group has a live member, so the seen check is not needed and no
-			// read transaction is opened for it.
-			So(fixture.db.bolt.Stats().TxN-before, ShouldEqual, 0)
 		})
 
 		Convey("The resolved key count does not grow with the group's membership", func() {
@@ -690,10 +505,11 @@ func depTxGrowGroup(fixture *depTxFixture, from, to int) {
 
 // TestReliable4RecoveryDependencyState proves that the queue state a
 // DB-preserving restart recovers dependent jobs into is exactly the state they
-// were in before it, and that the recovery no longer costs a read transaction
-// per job. The dependency keys recovery resolved are then exercised for real:
-// completing the parents must release the children, while the child waiting on a
-// never seen dep group stays dependent.
+// were in before it. The dependency keys recovery resolved are then exercised
+// for real: completing the parents must release the children, while the child
+// waiting on a never seen dep group stays dependent.
+// TestReliable4RecoveryDependencyTxCost pins that bbolt's recovery costs fewer
+// read transactions than there are jobs.
 //
 // Its state strings are what WaitingForDepGroups means, which the dep-group
 // granularity change does not touch: never-seen groups only.
@@ -701,8 +517,8 @@ func depTxGrowGroup(fixture *depTxFixture, from, to int) {
 // Both its Connect calls stand as they are once the manager's externally
 // observable surface is published only at the end of recovery. The first is
 // against the first server, which the serve helper waits on; the second already
-// follows release() and waitUntilRecovered, and publication happens before
-// recovery is marked finished, so there is nothing left to race.
+// follows waitUntilRecovered, and publication happens before recovery is marked
+// finished, so there is nothing left to race.
 func TestReliable4RecoveryDependencyState(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -710,100 +526,75 @@ func TestReliable4RecoveryDependencyState(t *testing.T) {
 
 	ctx := context.Background()
 
-	Convey("Given a stopped server whose database holds ready, dependent and waiting jobs", t, func() {
-		config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+	forEachStore(t, func(kind storeKind) {
+		Convey(fmt.Sprintf("Given a stopped server whose %s store holds ready, dependent and waiting jobs",
+			storeKindName(kind)), t, func() {
+			config, serverConfig, addr, standardReqs, clientConnectTime := jobqueueTestInit(true)
+			serverConfig.storeKind = kind
 
-		server, _, token, err := serve(ctx, serverConfig)
-		So(err, ShouldBeNil)
+			beforeRestart := depTxStoppedServer(ctx, config, serverConfig, addr, standardReqs, clientConnectTime)
 
-		defer func() {
-			server.Stop(ctx, true)
-		}()
+			serverConfig.dontWipeDevDB = true
+			server, _, token, err := serve(ctx, serverConfig)
+			So(err, ShouldBeNil)
 
-		jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
-		So(err, ShouldBeNil)
+			defer func() {
+				server.Stop(ctx, true)
+			}()
 
-		jobs := depTxE2EJobs(standardReqs)
+			So(waitUntilRecovered(server), ShouldBeTrue)
 
-		inserts, _, err := jq.Add(jobs, envVars, true)
-		So(err, ShouldBeNil)
-		So(inserts, ShouldEqual, len(jobs))
+			jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+			So(err, ShouldBeNil)
 
-		beforeRestart, err := depTxJobStates(jq)
-		So(err, ShouldBeNil)
-		So(beforeRestart, ShouldHaveLength, len(jobs))
+			defer disconnect(jq)
 
-		disconnect(jq)
-		server.Stop(ctx, true)
+			Convey("Recovery restores every job's state and waited-for dep groups", func() {
+				afterRestart, errs := depTxJobStates(jq)
+				So(errs, ShouldBeNil)
+				So(afterRestart, ShouldResemble, beforeRestart)
 
-		serverConfig.dontWipeDevDB = true
-		server, token, release := pausedRecoveringFixtureServer(ctx, serverConfig)
-		beforeTx := server.boltDB().bolt.Stats().TxN
+				// the states really are a mix, so the comparison is not just
+				// agreeing that everything is ready.
+				So(beforeRestart["echo deptx e2e parent 0"], ShouldEqual, string(JobStateReady)+" waiting:")
+				So(beforeRestart["echo deptx e2e child 0"], ShouldEqual, string(JobStateDependent)+" waiting:")
+				So(beforeRestart["echo deptx e2e waiter"],
+					ShouldEqual, string(JobStateDependent)+" waiting:"+depTxE2EFutureGroup)
+			})
 
-		release()
-		So(waitUntilRecovered(server), ShouldBeTrue)
-
-		recoveryTx := server.boltDB().bolt.Stats().TxN - beforeTx
-
-		jq, err = Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
-		So(err, ShouldBeNil)
-
-		defer disconnect(jq)
-
-		Convey("Recovery restores every job's state and waited-for dep groups, for far fewer transactions", func() {
-			afterRestart, errs := depTxJobStates(jq)
-			So(errs, ShouldBeNil)
-			So(afterRestart, ShouldResemble, beforeRestart)
-
-			// the states really are a mix, so the comparison is not just
-			// agreeing that everything is ready.
-			So(beforeRestart["echo deptx e2e parent 0"], ShouldEqual, string(JobStateReady)+" waiting:")
-			So(beforeRestart["echo deptx e2e child 0"], ShouldEqual, string(JobStateDependent)+" waiting:")
-			So(beforeRestart["echo deptx e2e waiter"],
-				ShouldEqual, string(JobStateDependent)+" waiting:"+depTxE2EFutureGroup)
-
-			So(recoveryTx, ShouldBeLessThan, len(jobs))
-		})
-
-		Convey("The recovered dependencies release the children once the parents complete", func() {
-			// the parents are the only ready jobs, so each reserve gets one of
-			// them; a manager-spawned runner may win one first, in which case it
-			// completes that parent instead of us.
-			for range depTxE2EParents {
-				reserved, errr := jq.Reserve(time.Second)
-				So(errr, ShouldBeNil)
-
-				if reserved == nil {
-					continue
-				}
-
-				So(reserved.DepGroups, ShouldResemble, []string{depTxE2EGroup})
-				execute(ctx, jq, reserved, config.RunnerExecShell)
-			}
-
-			ready := func() bool {
-				states, errs := depTxJobStates(jq)
-				if errs != nil {
-					return false
-				}
-
-				for i := range depTxE2EChildren {
-					if states["echo deptx e2e child "+strconv.Itoa(i)] != string(JobStateReady)+" waiting:" {
-						return false
-					}
-				}
-
-				return true
-			}
-
-			So(pollUntil(ready), ShouldBeTrue)
-
-			states, errs := depTxJobStates(jq)
-			So(errs, ShouldBeNil)
-			So(states["echo deptx e2e waiter"],
-				ShouldEqual, string(JobStateDependent)+" waiting:"+depTxE2EFutureGroup)
+			Convey("The recovered dependencies release the children once the parents complete", func() {
+				depTxSoReleasesChildren(ctx, jq, config.RunnerExecShell)
+			})
 		})
 	})
+}
+
+// depTxStoppedServer serves serverConfig, adds depTxE2EJobs to it and stops it,
+// returning the jobs' states as depTxJobStates reported them before the stop.
+func depTxStoppedServer(ctx context.Context, config internal.Config, serverConfig ServerConfig, addr string,
+	standardReqs *jqs.Requirements, clientConnectTime time.Duration,
+) map[string]string {
+	server, _, token, err := serve(ctx, serverConfig)
+	So(err, ShouldBeNil)
+
+	defer server.Stop(ctx, true)
+
+	jq, err := Connect(addr, config.ManagerCAFile, config.ManagerCertDomain, token, clientConnectTime)
+	So(err, ShouldBeNil)
+
+	defer disconnect(jq)
+
+	jobs := depTxE2EJobs(standardReqs)
+
+	inserts, _, err := jq.Add(jobs, envVars, true)
+	So(err, ShouldBeNil)
+	So(inserts, ShouldEqual, len(jobs))
+
+	states, err := depTxJobStates(jq)
+	So(err, ShouldBeNil)
+	So(states, ShouldHaveLength, len(jobs))
+
+	return states
 }
 
 // depTxE2EJobs returns the jobs a DB-preserving restart will recover: parents
@@ -835,6 +626,47 @@ func depTxE2EJobs(reqs *jqs.Requirements) []*Job {
 	waiter.Dependencies = Dependencies{NewDepGroupDependency(depTxE2EFutureGroup)}
 
 	return append(jobs, waiter)
+}
+
+// depTxSoReleasesChildren completes the recovered parents and asserts that the
+// children become ready while the waiter stays dependent.
+func depTxSoReleasesChildren(ctx context.Context, jq *Client, shell string) {
+	// the parents are the only ready jobs, so each reserve gets one of them; a
+	// manager-spawned runner may win one first, in which case it completes that
+	// parent instead of us.
+	for range depTxE2EParents {
+		reserved, errr := jq.Reserve(time.Second)
+		So(errr, ShouldBeNil)
+
+		if reserved == nil {
+			continue
+		}
+
+		So(reserved.DepGroups, ShouldResemble, []string{depTxE2EGroup})
+		execute(ctx, jq, reserved, shell)
+	}
+
+	ready := func() bool {
+		states, errs := depTxJobStates(jq)
+		if errs != nil {
+			return false
+		}
+
+		for i := range depTxE2EChildren {
+			if states["echo deptx e2e child "+strconv.Itoa(i)] != string(JobStateReady)+" waiting:" {
+				return false
+			}
+		}
+
+		return true
+	}
+
+	So(pollUntil(ready), ShouldBeTrue)
+
+	states, errs := depTxJobStates(jq)
+	So(errs, ShouldBeNil)
+	So(states["echo deptx e2e waiter"],
+		ShouldEqual, string(JobStateDependent)+" waiting:"+depTxE2EFutureGroup)
 }
 
 // depTxJobStates returns each of the rep group's jobs' state and waited-for dep

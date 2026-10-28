@@ -31,7 +31,6 @@ import (
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
-	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -109,20 +108,15 @@ func rl4rmLimitCmd(d *dgrServer, group string) map[string]int {
 	return limits
 }
 
-// limitGroupRecorded says whether bucketLGs holds a record for group. That
+// limitGroupRecorded says whether the store holds a limit for group. That
 // record is what has to go for a removed limit not to be vivified back into
 // memory.
 func limitGroupRecorded(d *dgrServer, group string) bool {
-	var recorded bool
-
-	err := d.server.boltDB().bolt.View(func(tx *bolt.Tx) error {
-		recorded = tx.Bucket(bucketLGs).Get([]byte(group)) != nil
-
-		return nil
-	})
+	limits, err := d.server.db.retrieveStoredLimits([]string{group})
 	So(err, ShouldBeNil)
+	So(limits, ShouldHaveLength, 1)
 
-	return recorded
+	return limits[0] >= 0
 }
 
 // rl4rmReportedLimit returns the limit `wr limit -g <group>` prints for the

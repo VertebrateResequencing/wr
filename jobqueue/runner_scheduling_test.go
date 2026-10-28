@@ -611,9 +611,7 @@ func TestJobqueueRunnerScheduling(t *testing.T) {
 
 			archiveGroup(preLearningGroup, firstBatch, req.RAM)
 
-			recRAM, err := server.boltDB().recommendedReqGroupMemory(reqGroup)
-			So(err, ShouldBeNil)
-			So(recRAM, ShouldEqual, learnedPeakRAM)
+			So(storeLearnedReqs(server.db, reqGroup).RAM, ShouldEqual, learnedPeakRAM)
 
 			jobs = learningScheduleJobs(tmpdir, reqGroup, repGroup, "batch2", secondBatch, req)
 			inserts, already, err = jq.Add(jobs, envVars, true)

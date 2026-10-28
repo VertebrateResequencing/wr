@@ -46,7 +46,6 @@ import (
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	"github.com/VertebrateResequencing/wr/queue"
 	. "github.com/smartystreets/goconvey/convey"
-	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -166,7 +165,7 @@ func newReadyPreparedProbe(ctx context.Context, t *testing.T) *readyPreparedProb
 	So(err, ShouldBeNil)
 	So(suspended, ShouldEqual, 1)
 
-	seedReqGroupStats(server, bucketJobRAM, readyPreparedReqGroup, noHoldLearnedRAM)
+	seedReqGroupStats(server, FailReasonRAM, readyPreparedReqGroup, noHoldLearnedRAM)
 
 	return p
 }
@@ -941,7 +940,7 @@ func TestNoHoldNoIOUnderQueueLock(t *testing.T) {
 		n.seedLearned("d4-5")
 		n.server.db.refreshReqGroupRecs(job.ReqGroup)
 
-		seedReqGroupStats(n.server, bucketJobRAM, job.ReqGroup, noHoldNewerLearnedRAM)
+		seedReqGroupStats(n.server, FailReasonRAM, job.ReqGroup, noHoldNewerLearnedRAM)
 		_, current := n.server.db.cachedReqGroupRecs(job.ReqGroup)
 		So(current, ShouldBeFalse)
 
@@ -1449,7 +1448,7 @@ func (n *noHoldTest) seedLowLearning(name string) {
 		vals = append(vals, v+1)
 	}
 
-	seedReqGroupStats(n.server, bucketJobRAM, "nohold-"+name, vals...)
+	seedReqGroupStats(n.server, FailReasonRAM, "nohold-"+name, vals...)
 }
 
 // serverJobRAM returns the RAM of the manager's own job for key.
@@ -1465,7 +1464,7 @@ func (n *noHoldTest) serverJobRAM(key string) int {
 // seedLearned seeds noHoldLearnedRAM as name's ReqGroup's only RAM stat, so its
 // learned RAM is noHoldLearnedRAM ("learned 300").
 func (n *noHoldTest) seedLearned(name string) {
-	seedReqGroupStats(n.server, bucketJobRAM, "nohold-"+name, noHoldLearnedRAM)
+	seedReqGroupStats(n.server, FailReasonRAM, "nohold-"+name, noHoldLearnedRAM)
 }
 
 // groupFor returns the scheduler group of standardReqs with the given RAM and
@@ -1819,7 +1818,7 @@ func TestNoHoldFailTimeBumps(t *testing.T) {
 		})
 
 		Convey("its stored record has the bumped RAM once the release has returned", func() {
-			So(storedLiveJob(t, n.server.boltDB(), job.Key()).Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
+			So(storedLiveJob(t, n.server.inspector(), job.Key()).Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
 		})
 
 		Convey("the runner re-sending the same release changes neither its RAM nor its retries", func() {
@@ -1951,7 +1950,7 @@ func TestNoHoldOwnerReportAfterLost(t *testing.T) {
 		So(n.runner.Release(owned, ownerRAMEndState(), FailReasonRAM), ShouldBeNil)
 
 		// the report's write carries the increase, so a restart keeps it
-		So(storedLiveJob(t, n.server.boltDB(), job.Key()).Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
+		So(storedLiveJob(t, n.server.inspector(), job.Key()).Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
 
 		got := n.get(job)
 		So(got.Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
@@ -2011,7 +2010,7 @@ func TestNoHoldOwnerReportAfterLost(t *testing.T) {
 	Convey("Given learned RAM 200, a job released as lost and its RAM modified to 500, the owner's RAM "+
 		"report bumps its RAM, since the learned value replaced the user's under override 0", t, func() {
 		n := newNoHoldTest(ctx, t, noHoldLostRuns)
-		seedReqGroupStats(n.server, bucketJobRAM, "nohold-c1-13", 200)
+		seedReqGroupStats(n.server, FailReasonRAM, "nohold-c1-13", 200)
 		job := n.addJob("c1-13", 3, jobOverridePreferSystemReqs)
 
 		owned := n.loseRun(job, "")
@@ -2171,19 +2170,17 @@ func TestNoHoldHighPeakBumps(t *testing.T) {
 		job := n.addJob("c2-7", 3, jobOverridePreferSystemReqs)
 		n.gateRAC(ctx)
 
+		inspector := n.server.inspector()
+		So(inspector.flush(), ShouldBeNil)
+		statsBefore := inspectedCount(inspector, kindStat)
+
 		n.failRun(job, FailReasonExit, noHoldPeakRAM)
 		So(n.get(job).Requirements.RAM, ShouldEqual, noHoldBumpedRAM)
 
-		So(n.server.boltDB().bolt.View(func(tx *bolt.Tx) error {
-			key := fmt.Appendf(nil, "%s%s%20d", job.ReqGroup, dbDelimiter, noHoldPeakRAM)
-			So(tx.Bucket(bucketJobRAM).Get(key), ShouldNotBeNil)
+		So(inspector.flush(), ShouldBeNil)
+		So(inspectedCount(inspector, kindStat), ShouldEqual, statsBefore+1)
 
-			return nil
-		}), ShouldBeNil)
-
-		learned, err := n.server.boltDB().recommendedReqGroupMemory(job.ReqGroup)
-		So(err, ShouldBeNil)
-		So(learned, ShouldEqual, 200)
+		So(storeLearnedReqs(n.server.db, job.ReqGroup).RAM, ShouldEqual, 200)
 	})
 
 	Convey("Given a job that failed for RAM and whose retry at the raised RAM was lost and recovered, the "+
@@ -2202,17 +2199,17 @@ func TestNoHoldHighPeakBumps(t *testing.T) {
 
 		const withinRetryRAM = 500
 
+		inspector := n.server.inspector()
+		So(inspector.flush(), ShouldBeNil)
+		statsBefore := inspectedCount(inspector, kindStat)
+
 		So(n.runner.Release(retry, &JobEndState{
 			Exited: true, Exitcode: 1, PeakRAM: withinRetryRAM, EndTime: time.Now(),
 		}, FailReasonExit), ShouldBeNil)
-		So(storedLiveJob(t, n.server.boltDB(), job.Key()).FailReason, ShouldEqual, FailReasonExit)
+		So(storedLiveJob(t, inspector, job.Key()).FailReason, ShouldEqual, FailReasonExit)
 
-		So(n.server.boltDB().bolt.View(func(tx *bolt.Tx) error {
-			key := fmt.Appendf(nil, "%s%s%20d", job.ReqGroup, dbDelimiter, withinRetryRAM)
-			So(tx.Bucket(bucketJobRAM).Get(key), ShouldBeNil)
-
-			return nil
-		}), ShouldBeNil)
+		So(inspector.flush(), ShouldBeNil)
+		So(inspectedCount(inspector, kindStat), ShouldEqual, statsBefore)
 	})
 
 	for _, override := range []uint8{jobOverridePreferSystemReqs, jobOverridePreferHigherReqs} {
@@ -3147,7 +3144,7 @@ func TestNoHoldRACFloor(t *testing.T) {
 		So(n.server.q.HasReady(learnedGroup), ShouldBeTrue)
 		So(n.serverJobRAM(job.Key()), ShouldEqual, noHoldLearnedRAM)
 
-		seedReqGroupStats(n.server, bucketJobRAM, job.ReqGroup, noHoldNewerLearnedRAM)
+		seedReqGroupStats(n.server, FailReasonRAM, job.ReqGroup, noHoldNewerLearnedRAM)
 		n.server.q.TriggerReadyAddedCallback(ctx)
 
 		So(pollUntilFor(noHoldReserveWait, func() bool {

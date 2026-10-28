@@ -114,7 +114,7 @@ func TestBackupDBSparesUnrelatedTmpFile(t *testing.T) {
 
 			So(errb, ShouldBeNil)
 			assertNonEmptyFile(backupPath)
-			assertBoltLiveJobs(backupPath, 1)
+			assertStoreFileLiveJobs(backupPath, 1)
 		})
 
 		Convey("A backup beside a read-only file of the user's leaves that file alone", func() {
@@ -126,7 +126,7 @@ func TestBackupDBSparesUnrelatedTmpFile(t *testing.T) {
 
 			So(errb, ShouldBeNil)
 			assertNonEmptyFile(backupPath)
-			assertBoltLiveJobs(backupPath, 1)
+			assertStoreFileLiveJobs(backupPath, 1)
 		})
 
 		Convey("A backup lands atomically at the asked-for path, leaving no staging file behind", func() {

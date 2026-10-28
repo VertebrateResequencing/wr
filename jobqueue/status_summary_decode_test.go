@@ -33,10 +33,10 @@ package jobqueue
 // timing bound, and the summary is compared with what the full decode gave.
 
 import (
-	"bytes"
 	"context"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -44,8 +44,6 @@ import (
 
 	"github.com/VertebrateResequencing/wr/internal"
 	. "github.com/smartystreets/goconvey/convey"
-	"github.com/ugorji/go/codec"
-	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -71,9 +69,11 @@ func TestStatusSummaryWithoutDecodingHistory(t *testing.T) {
 
 		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
 
-		So(seedStatusSummaryHistory(testDB, statusSummaryDecodeArchived, statusSummaryDecodeCmdBytes), ShouldBeNil)
+		archivedKeys, err := seedStatusSummaryHistory(ctx, testDB, statusSummaryDecodeArchived,
+			statusSummaryDecodeCmdBytes)
+		So(err, ShouldBeNil)
 
-		want := fullDecodeCompleteJobStatus(testDB, statusSummaryDecodeRepGroup)
+		want := fullDecodeCompleteJobStatus(inspectorOf(testDB), archivedKeys)
 		So(want.Counts[JobStateComplete], ShouldEqual, statusSummaryDecodeArchived-1)
 		So(want.Memory.NumDataValues(), ShouldEqual, statusSummaryDecodeArchived-1)
 		So(want.StartTime.IsZero(), ShouldBeFalse)
@@ -106,54 +106,52 @@ func TestStatusSummaryWithoutDecodingHistory(t *testing.T) {
 	})
 }
 
-// seedStatusSummaryHistory writes count archived jobs of the test RepGroup,
-// each with a cmdBytes-long Cmd and its own usage figures, straight into the
-// complete bucket, interleaved with another RepGroup's. One of them is also
-// live again (being re-run), and the RepGroup also has a live-only job, so
-// both must be left out of the summary.
-func seedStatusSummaryHistory(testDB *db, count, cmdBytes int) error {
+// seedStatusSummaryHistory adds and archives count jobs of the test RepGroup,
+// each with a cmdBytes-long Cmd and its own usage figures, interleaved with
+// another RepGroup's. One of them is then added again (to be re-run), so is live
+// again, and the RepGroup also has a live-only job, so both must be left out of
+// the summary. It returns the keys of the test RepGroup's jobs that are only
+// archived.
+func seedStatusSummaryHistory(ctx context.Context, testDB *db, count, cmdBytes int) ([]string, error) {
 	zone := time.FixedZone("summary", 3600)
 	base := time.Date(2026, 9, 28, 10, 0, 0, 0, zone)
 	padding := strings.Repeat("x", cmdBytes)
 
-	return testDB.bolt.Update(func(tx *bolt.Tx) error {
-		complete := tx.Bucket(bucketJobsComplete)
-		live := tx.Bucket(bucketJobsLive)
-		lookup := tx.Bucket(bucketRTK)
+	jobs := make([]*Job, 0, 2*count)
+	archivedKeys := make([]string, 0, count)
 
-		for i := range count {
-			for _, rg := range []string{statusSummaryDecodeRepGroup, statusSummaryDecodeOther} {
-				job := statusSummaryArchivedJob(rg, i, base, padding)
-				key := []byte(job.Key())
+	var rerun *Job
 
-				encoded, errp := testDBEncode(testDB, job)
-				if errp != nil {
-					return errp
-				}
+	for i := range count {
+		for _, rg := range []string{statusSummaryDecodeRepGroup, statusSummaryDecodeOther} {
+			job := statusSummaryArchivedJob(rg, i, base, padding)
+			jobs = append(jobs, job)
 
-				if errp = complete.Put(key, encoded); errp != nil {
-					return errp
-				}
-
-				if errp = lookup.Put(testDB.generateLookupKey(rg, key), nil); errp != nil {
-					return errp
-				}
-
-				if rg == statusSummaryDecodeRepGroup && i == statusSummaryDecodeLiveKey {
-					if errp = live.Put(key, encoded); errp != nil {
-						return errp
-					}
-				}
+			switch {
+			case rg != statusSummaryDecodeRepGroup:
+			case i == statusSummaryDecodeLiveKey:
+				rerun = statusSummaryArchivedJob(rg, i, base, padding)
+				rerun.State = JobStateReady
+			default:
+				archivedKeys = append(archivedKeys, job.Key())
 			}
 		}
+	}
 
-		liveOnly := []byte("status-summary-decode-live-only")
-		if errp := live.Put(liveOnly, []byte("x")); errp != nil {
-			return errp
-		}
+	if _, err := testDB.storeNewJobsGuarded(ctx, jobs, false, nil); err != nil {
+		return nil, err
+	}
 
-		return lookup.Put(testDB.generateLookupKey(statusSummaryDecodeRepGroup, liveOnly), nil)
-	})
+	if err := archiveJobsInStore(testDB, jobs); err != nil {
+		return nil, err
+	}
+
+	liveOnly := testDBJob("echo status-summary-decode-live-only", statusSummaryDecodeRepGroup)
+	if _, err := testDB.storeNewJobsGuarded(ctx, []*Job{rerun, liveOnly}, false, nil); err != nil {
+		return nil, err
+	}
+
+	return archivedKeys, nil
 }
 
 // statusSummaryArchivedJob returns the i'th archived job of repGroup. Its usage
@@ -185,47 +183,19 @@ func allocatedBytes() uint64 {
 	return stats.TotalAlloc
 }
 
-// testDBEncode encodes job the way the db stores it.
-func testDBEncode(testDB *db, job *Job) ([]byte, error) {
-	var encoded []byte
-
-	err := codec.NewEncoderBytes(&encoded, testDB.ch).Encode(job)
-
-	return encoded, err
-}
-
 // fullDecodeCompleteJobStatus is the detailed summary as it was built before
-// the fix: every archived record of repGroup that is not live again, walked in
-// lookup order, fully decoded and added with AddCompleteJob. It does not touch
-// db.archivedDecodes.
-func fullDecodeCompleteJobStatus(testDB *db, repGroup string) *RepGroupStatus {
+// the fix: each of the given keys' archived record, in key order, fully decoded
+// and added with AddCompleteJob.
+func fullDecodeCompleteJobStatus(inspector storeInspector, keys []string) *RepGroupStatus {
 	summary := NewRepGroupStatus()
 
-	err := testDB.bolt.View(func(tx *bolt.Tx) error {
-		live := tx.Bucket(bucketJobsLive)
-		complete := tx.Bucket(bucketJobsComplete)
-		cursor := tx.Bucket(bucketRTK).Cursor()
-		prefix := []byte(repGroup + dbDelimiter)
+	for _, key := range slices.Sorted(slices.Values(keys)) {
+		job, found, err := inspector.completeJob(key)
+		So(err, ShouldBeNil)
+		So(found, ShouldBeTrue)
 
-		for k, _ := cursor.Seek(prefix); bytes.HasPrefix(k, prefix); k, _ = cursor.Next() {
-			key := k[len(prefix):]
-
-			encoded := complete.Get(key)
-			if len(encoded) == 0 || live.Get(key) != nil {
-				continue
-			}
-
-			job, errd := testDB.decodeJob(encoded)
-			if errd != nil {
-				return errd
-			}
-
-			summary.AddCompleteJob(job)
-		}
-
-		return nil
-	})
-	So(err, ShouldBeNil)
+		summary.AddCompleteJob(job)
+	}
 
 	return summary
 }
@@ -260,7 +230,7 @@ func benchRepGroupStatusDetails(b *testing.B, archived int) {
 		}
 	}()
 
-	if err = seedStatusSummaryHistory(testDB, archived, 20*1024); err != nil {
+	if _, err = seedStatusSummaryHistory(ctx, testDB, archived, 20*1024); err != nil {
 		b.Fatal(err)
 	}
 

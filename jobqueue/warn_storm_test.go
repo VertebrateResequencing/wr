@@ -35,8 +35,6 @@ package jobqueue
 import (
 	"context"
 	"fmt"
-	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -53,106 +51,6 @@ const (
 	warnStormReserves     = 20
 	warnStormQueries      = 50
 )
-
-func TestWarningStormIsAggregated(t *testing.T) {
-	if runnermode || servermode {
-		return
-	}
-
-	ctx := context.Background()
-
-	Convey("Given a manager whose reservation writes are stalled and whose requests are all slow", t, func() {
-		restoreThreshold, restoreInterval := slowRequestThreshold, warnAggregateInterval
-		slowRequestThreshold = time.Nanosecond
-		warnAggregateInterval = time.Hour
-
-		defer func() {
-			slowRequestThreshold, warnAggregateInterval = restoreThreshold, restoreInterval
-		}()
-
-		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
-		serverConfig.Timings.ReserveWriteWait = 50 * time.Millisecond
-
-		server, _, token, err := serve(ctx, serverConfig)
-		So(err, ShouldBeNil)
-
-		stopped := false
-
-		defer func() {
-			if !stopped {
-				server.Stop(ctx, true)
-			}
-		}()
-
-		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
-		So(err, ShouldBeNil)
-
-		defer disconnect(jq)
-
-		jobs := make([]*Job, warnStormReserves)
-		for i := range jobs {
-			jobs[i] = &Job{
-				Cmd: fmt.Sprintf("echo %d", i), Cwd: testCwd, RepGroup: warnStormRepGroup,
-				ReqGroup: warnStormRepGroup, Requirements: standardReqs,
-			}
-		}
-
-		inserts, _, err := jq.Add(jobs, os.Environ(), true)
-		So(err, ShouldBeNil)
-		So(inserts, ShouldEqual, warnStormReserves)
-
-		logs := clog.ToBufferAtLevel("warn")
-
-		defer clog.ToDefault()
-
-		holdTx, err := server.boltDB().bolt.Begin(true)
-		So(err, ShouldBeNil)
-
-		reserved := 0
-
-		for range warnStormReserves {
-			if job, errr := jq.Reserve(time.Second); errr == nil && job != nil {
-				reserved++
-			}
-		}
-
-		So(holdTx.Rollback(), ShouldBeNil)
-		So(reserved, ShouldEqual, warnStormReserves)
-
-		queried := 0
-
-		for range warnStormQueries {
-			if _, errg := jq.GetIncomplete(1, JobStateBuried, false, false); errg == nil {
-				queried++
-			}
-		}
-
-		So(queried, ShouldEqual, warnStormQueries)
-
-		disconnect(jq)
-		server.Stop(ctx, true)
-
-		stopped = true
-		out := logs.String()
-
-		Convey("the reservation warning is logged once, with the rest counted and a sample job key", func() {
-			So(countLines(out, reserveNotRecordedMsg, "repeated"), ShouldEqual, 1)
-
-			summary := findLine(out, reserveNotRecordedMsg, "(repeated)")
-			So(summary, ShouldContainSubstring, fmt.Sprintf("repeats=%d", warnStormReserves-1))
-			So(regexp.MustCompile(`sample_key=[0-9a-f]{32}`).MatchString(summary), ShouldBeTrue)
-		})
-
-		Convey("the slow-request warning is logged once per request shape, with the rest counted", func() {
-			So(countLines(out, "method="+requestMethodGetIncomplete, "repeated"), ShouldEqual, 1)
-
-			summary := findLine(out, slowRequestLogMsg+" (repeated)", "sample_method="+requestMethodGetIncomplete)
-			So(summary, ShouldContainSubstring, fmt.Sprintf("repeats=%d", warnStormQueries-1))
-			So(summary, ShouldContainSubstring, "maxDuration=")
-			So(summary, ShouldContainSubstring, "state=buried")
-		})
-	})
-}
 
 func TestWarnAggregator(t *testing.T) {
 	Convey("Given a warn aggregator with a long interval", t, func() {
@@ -264,6 +162,77 @@ func TestWarnAggregator(t *testing.T) {
 		agg.mu.Unlock()
 
 		So(remaining, ShouldEqual, 0)
+	})
+}
+
+func TestSlowRequestWarningIsAggregated(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a manager whose requests are all slow", t, func() {
+		restoreThreshold, restoreInterval := slowRequestThreshold(), warnAggregateInterval
+
+		setSlowRequestThreshold(time.Nanosecond)
+
+		warnAggregateInterval = time.Hour
+
+		// registered before the server's own Stop defer, so it runs after the
+		// server has stopped; the interval is only read when a Server is built.
+		defer func() {
+			setSlowRequestThreshold(restoreThreshold)
+
+			warnAggregateInterval = restoreInterval
+		}()
+
+		_, serverConfig, addr, _, clientConnectTime := startDurabilityConfig(t)
+
+		server, _, token, err := serve(ctx, serverConfig)
+		So(err, ShouldBeNil)
+
+		stopped := false
+
+		defer func() {
+			if !stopped {
+				server.Stop(ctx, true)
+			}
+		}()
+
+		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
+		So(err, ShouldBeNil)
+
+		defer disconnect(jq)
+
+		logs := clog.ToBufferAtLevel("warn")
+
+		defer clog.ToDefault()
+
+		queried := 0
+
+		for range warnStormQueries {
+			if _, errg := jq.GetIncomplete(1, JobStateBuried, false, false); errg == nil {
+				queried++
+			}
+		}
+
+		So(queried, ShouldEqual, warnStormQueries)
+
+		disconnect(jq)
+		server.Stop(ctx, true)
+
+		stopped = true
+		out := logs.String()
+
+		Convey("the slow-request warning is logged once per request shape, with the rest counted", func() {
+			So(countLines(out, "method="+requestMethodGetIncomplete, "repeated"), ShouldEqual, 1)
+
+			summary := findLine(out, slowRequestLogMsg+" (repeated)", "sample_method="+requestMethodGetIncomplete)
+			So(summary, ShouldContainSubstring, fmt.Sprintf("repeats=%d", warnStormQueries-1))
+			So(summary, ShouldContainSubstring, "maxDuration=")
+			So(summary, ShouldContainSubstring, "state=buried")
+		})
 	})
 }
 

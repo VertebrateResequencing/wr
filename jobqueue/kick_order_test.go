@@ -140,7 +140,7 @@ func TestKickAfterModifyKeepsModification(t *testing.T) {
 		So(server.db.updateJobAfterChangeDurable(otherJob), ShouldBeNil)
 
 		Convey("the kick's write keeps the modified fields and the budget of the new Retries", func() {
-			stored := storedLiveJob(t, server.boltDB(), key)
+			stored := storedLiveJob(t, server.inspector(), key)
 			So(stored.State, ShouldEqual, JobStateReady)
 			So(stored.Retries, ShouldEqual, modifiedRetries)
 			So(stored.Priority, ShouldEqual, modifiedPriority)
@@ -258,7 +258,7 @@ func TestKickDuringBuryWriteStoresKicked(t *testing.T) {
 			sjob.RUnlock()
 
 			So(state, ShouldEqual, JobStateReady)
-			So(storedLiveJobState(t, server.boltDB(), key), ShouldEqual, JobStateReady)
+			So(storedLiveJobState(t, server.inspector(), key), ShouldEqual, JobStateReady)
 		})
 	})
 }
@@ -459,13 +459,13 @@ func TestKickStoredWithoutLaterWrite(t *testing.T) {
 		So(reserved, ShouldNotBeNil)
 		So(reserved.Key(), ShouldEqual, key)
 		So(jq.Bury(reserved, nil, "failed"), ShouldBeNil)
-		So(storedStateWithin(t, server.boltDB(), key, JobStateBuried), ShouldEqual, JobStateBuried)
+		So(storedStateWithin(t, server.inspector(), key, JobStateBuried), ShouldEqual, JobStateBuried)
 
 		Convey("kicking it stores it ready with no other write following", func() {
 			kicked, errk := jq.Kick([]*JobEssence{{JobKey: key}})
 			So(errk, ShouldBeNil)
 			So(kicked, ShouldEqual, 1)
-			So(storedStateWithin(t, server.boltDB(), key, JobStateReady), ShouldEqual, JobStateReady)
+			So(storedStateWithin(t, server.inspector(), key, JobStateReady), ShouldEqual, JobStateReady)
 		})
 	})
 }
@@ -514,7 +514,7 @@ func TestOverlappingChangesAheadKeepModification(t *testing.T) {
 		So(reserved, ShouldNotBeNil)
 		So(reserved.Key(), ShouldEqual, key)
 		So(jq.Bury(reserved, nil, "failed"), ShouldBeNil)
-		So(storedStateWithin(t, server.boltDB(), key, JobStateBuried), ShouldEqual, JobStateBuried)
+		So(storedStateWithin(t, server.inspector(), key, JobStateBuried), ShouldEqual, JobStateBuried)
 
 		item, err := server.q.Get(key)
 		So(err, ShouldBeNil)
@@ -542,14 +542,14 @@ func TestOverlappingChangesAheadKeepModification(t *testing.T) {
 			sjob.Lock()
 			sjob.Priority = modifiedPriority
 			sjob.Unlock()
-			server.boltDB().updateJobAfterChange(ctx, sjob)
+			So(server.db.updateJobAfterChangeDurable(sjob), ShouldBeNil)
 
 			server.db.queueJobChangeAhead(ctx, sjob, second, kickChange)
 
 			// a durable write queued after the second's commits no earlier than it.
 			So(server.db.updateJobAfterChangeDurable(otherJob), ShouldBeNil)
 
-			stored := storedLiveJob(t, server.boltDB(), key)
+			stored := storedLiveJob(t, server.inspector(), key)
 			So(stored.State, ShouldEqual, JobStateReady)
 			So(stored.Priority, ShouldEqual, modifiedPriority)
 		})
@@ -600,7 +600,7 @@ func TestKickQueuesBeforeLaterChange(t *testing.T) {
 		So(reserved, ShouldNotBeNil)
 		So(reserved.Key(), ShouldEqual, key)
 		So(jq.Bury(reserved, nil, "failed"), ShouldBeNil)
-		So(storedStateWithin(t, server.boltDB(), key, JobStateBuried), ShouldEqual, JobStateBuried)
+		So(storedStateWithin(t, server.inspector(), key, JobStateBuried), ShouldEqual, JobStateBuried)
 
 		item, err := server.q.Get(key)
 		So(err, ShouldBeNil)
@@ -619,7 +619,10 @@ func TestKickQueuesBeforeLaterChange(t *testing.T) {
 
 			changed := make(chan struct{})
 
-			var hooked atomic.Bool
+			var (
+				changeErr error
+				hooked    atomic.Bool
+			)
 
 			jobChangeAheadQueueingHook = func(queueing string) {
 				if queueing != key || !hooked.CompareAndSwap(false, true) {
@@ -632,7 +635,7 @@ func TestKickQueuesBeforeLaterChange(t *testing.T) {
 					sjob.Lock()
 					sjob.Priority = modifiedPriority
 					sjob.Unlock()
-					server.boltDB().updateJobAfterChange(ctx, sjob)
+					changeErr = server.db.updateJobAfterChangeDurable(sjob)
 				}()
 
 				// if the job stays write-locked until the kick's write is
@@ -653,11 +656,12 @@ func TestKickQueuesBeforeLaterChange(t *testing.T) {
 			So(hooked.Load(), ShouldBeTrue)
 
 			<-changed
+			So(changeErr, ShouldBeNil)
 
 			// a durable write queued after the change's commits no earlier than it.
 			So(server.db.updateJobAfterChangeDurable(otherJob), ShouldBeNil)
 
-			stored := storedLiveJob(t, server.boltDB(), key)
+			stored := storedLiveJob(t, server.inspector(), key)
 			So(stored.State, ShouldEqual, JobStateReady)
 			So(stored.Priority, ShouldEqual, modifiedPriority)
 		})
@@ -711,7 +715,7 @@ func TestKickAfterDBClosedStillKicks(t *testing.T) {
 		So(reserved, ShouldNotBeNil)
 		So(reserved.Key(), ShouldEqual, key)
 		So(jq.Bury(reserved, nil, "failed"), ShouldBeNil)
-		So(storedStateWithin(t, server.boltDB(), key, JobStateBuried), ShouldEqual, JobStateBuried)
+		So(storedStateWithin(t, server.inspector(), key, JobStateBuried), ShouldEqual, JobStateBuried)
 
 		item, err := server.q.Get(key)
 		So(err, ShouldBeNil)
@@ -740,16 +744,16 @@ func TestKickAfterDBClosedStillKicks(t *testing.T) {
 	})
 }
 
-// storedStateWithin polls the state stored for key in database's live bucket
+// storedStateWithin polls the state inspector has stored for key's live job
 // until it is want or storedStateWait has passed, and returns the last state it
 // read.
-func storedStateWithin(t *testing.T, database *db, key string, want JobState) JobState {
+func storedStateWithin(t *testing.T, inspector storeInspector, key string, want JobState) JobState {
 	t.Helper()
 
 	deadline := time.Now().Add(storedStateWait)
 
 	for {
-		state := storedLiveJobState(t, database, key)
+		state := storedLiveJobState(t, inspector, key)
 		if state == want || time.Now().After(deadline) {
 			return state
 		}

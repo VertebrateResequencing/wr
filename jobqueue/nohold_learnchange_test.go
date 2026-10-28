@@ -486,7 +486,7 @@ func TestNoHoldLearnedReqGroupModified(t *testing.T) {
 		lc.racAfter(ctx)
 
 		Convey("when that ReqGroup then learns a new RAM, a RAC resizes the job", func() {
-			seedReqGroupStats(lc.server, bucketJobRAM, reqGroupModTo, stampRaceLearnedRAM)
+			seedReqGroupStats(lc.server, FailReasonRAM, reqGroupModTo, stampRaceLearnedRAM)
 
 			lc.racAfter(ctx)
 			lc.racAfter(ctx)
@@ -593,8 +593,8 @@ func TestNoHoldLearnedStampRace(t *testing.T) {
 				// a cycle with nothing new finds the jobs current
 				server.buildSchedulerGroups(ctx, server.q, data, "true")
 
-				seedReqGroupStats(server, bucketJobRAM, tr.held, stampRaceLearnedRAM)
-				seedReqGroupStats(server, bucketJobRAM, tr.other, stampRaceLearnedRAM)
+				seedReqGroupStats(server, FailReasonRAM, tr.held, stampRaceLearnedRAM)
+				seedReqGroupStats(server, FailReasonRAM, tr.other, stampRaceLearnedRAM)
 
 				trial.Store(tr)
 				server.db.refreshReqGroupRecsLater(tr.held)

@@ -37,13 +37,13 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	. "github.com/smartystreets/goconvey/convey"
-	bolt "go.etcd.io/bbolt"
 )
 
 var errTimedOutWaitingForServeTokenRead = errors.New("timed out waiting for Serve to read the initial token")
@@ -58,6 +58,10 @@ const (
 	// retry intervals, so a retry still happens, and a fifth of the shipped 5s.
 	pscBindRetryBudget = 2 * serverBindRetryInterval
 )
+
+// recoveryPauseHookWait bounds pausedRecoveringFixtureServer's wait for
+// background recovery to reach its pause hook.
+const recoveryPauseHookWait = 30 * time.Second
 
 // TestServeFailsCleanlyWhenPortTaken covers the window between isolateTestConfig
 // picking a manager port and the server binding it: if another process takes
@@ -201,99 +205,6 @@ func waitForServeStartup(t *testing.T, result <-chan serveStartupResult) serveSt
 	}
 }
 
-// TestServeReportsPostUpgradeStartupUntilTokenReady covers E4 acceptance test 7.
-// It keeps its name because prepareDBNeedingStartupUpgrade is still its fixture,
-// but the FIFO-backed token now holds PUBLICATION rather than Serve, so the
-// sidecar assertion moves from "gone when Serve returns" to "gone when
-// <-server.Serving() returns".
-//
-// It cannot assert postUpgradeStartupDetail in that window. The FIFO blocks at
-// persistToken, which is publication step 2, and by then the startup phase writes
-// have moved the sidecar on three times, the last of them to
-// DBStartupRecoveryState. Nor is there any seam between initDB and
-// startPriorStateRecovery at which the upgrade detail is guaranteed to still be
-// readable. So it matches on State: the recovery phase's Detail is an elapsed
-// time that changes on every heartbeat tick.
-func TestServeReportsPostUpgradeStartupUntilTokenReady(t *testing.T) {
-	Convey("Serve keeps a live startup-progress sidecar after a DB upgrade until the token is ready", t, func() {
-		ctx := context.Background()
-		_, serverConfig, _, _, _ := jobqueueTestInit(true)
-		serverConfig.dontWipeDevDB = true
-
-		prepareDBNeedingStartupUpgrade(ctx, t, serverConfig)
-		initialTokenWritten := prepareFIFOBackedToken(t, serverConfig.TokenFile)
-
-		serveResult := make(chan serveStartupResult, 1)
-
-		go func() {
-			server, _, token, err := Serve(ctx, serverConfig)
-			serveResult <- serveStartupResult{server: server, token: token, err: err}
-		}()
-
-		So(waitForFIFOInitialToken(initialTokenWritten), ShouldBeNil)
-
-		status, found := waitForDBUpgradeStatusState(
-			serverConfig.DBFile,
-			internal.DBStartupRecoveryState,
-			2*time.Second,
-		)
-
-		tokenInfo, statErr := os.Stat(serverConfig.TokenFile)
-		So(statErr, ShouldBeNil)
-		So(tokenInfo.Size(), ShouldEqual, 0)
-		So(found, ShouldBeTrue)
-		So(status.State, ShouldEqual, internal.DBStartupRecoveryState)
-		So(status.PID, ShouldEqual, os.Getpid())
-
-		tokenRead := readFIFOAsync(serverConfig.TokenFile)
-
-		result := waitForServeStartup(t, serveResult)
-		if result.server != nil {
-			defer result.server.Stop(ctx, true)
-		}
-
-		So(result.err, ShouldBeNil)
-
-		tokenReadResult := waitForFIFORead(t, serverConfig.TokenFile, tokenRead)
-		So(tokenReadResult.err, ShouldBeNil)
-		So(tokenReadResult.payload, ShouldResemble, result.token)
-
-		So(waitForServing(result.server), ShouldBeTrue)
-
-		_, _, err := internal.ReadDBUpgradeStatus(serverConfig.DBFile)
-		So(os.IsNotExist(err), ShouldBeTrue)
-	})
-}
-
-func prepareDBNeedingStartupUpgrade(ctx context.Context, t *testing.T, config ServerConfig) {
-	t.Helper()
-
-	testDB, _, err := initDB(ctx, config.DBFile, config.DBFileBackup, internal.Development, false, false)
-	So(err, ShouldBeNil)
-
-	parent := testDBJob("echo parent", "startup-upgrade-parent")
-	parent.DepGroups = []string{"startup-upgrade-parent-dg"}
-
-	child := testDBJob("echo child", "startup-upgrade-child")
-	child.Dependencies = Dependencies{NewDepGroupDependency("startup-upgrade-parent-dg")}
-
-	jobsToQueue, jobsToUpdate, alreadyAdded, err := testDB.storeNewJobs(ctx, []*Job{parent, child}, false)
-	So(err, ShouldBeNil)
-	So(jobsToQueue, ShouldHaveLength, 2)
-	So(jobsToUpdate, ShouldHaveLength, 0)
-	So(alreadyAdded, ShouldResemble, DuplicateBreakdown{})
-
-	err = testDB.bolt.Update(func(tx *bolt.Tx) error {
-		if errd := tx.DeleteBucket(bucketDepGroups); errd != nil {
-			return errd
-		}
-
-		return tx.DeleteBucket(bucketJobLookupEntries)
-	})
-	So(err, ShouldBeNil)
-	So(testDB.close(ctx), ShouldBeNil)
-}
-
 func prepareFIFOBackedToken(t *testing.T, tokenFile string) <-chan error {
 	t.Helper()
 
@@ -384,6 +295,53 @@ func waitForFIFORead(t *testing.T, tokenFile string, result <-chan fifoReadResul
 
 		return fifoReadResult{err: errTimedOutWaitingForServeTokenWrite}
 	}
+}
+
+// pausedRecoveringFixtureServer opens a server against serverConfig's DB (for
+// this file, a copy of the committed fixture; the startup-window tests point it
+// at their own) with its background prior-state recovery blocked at the retained
+// recoveryPauseHook seam, so the startup window is observable without timing
+// flakiness. It returns the server, a connect token, and an idempotent release
+// func that unblocks recovery. The caller owns server.Stop and must arrange for
+// release to run (recovery, publication and thus a clean shutdown are all stuck
+// at the hook until then).
+//
+// It opens the server with serveWithoutPublication, not serve: publication is
+// what the hook is holding, so waiting for it here would deadlock against a
+// release that can only come after this function returns.
+func pausedRecoveringFixtureServer(ctx context.Context, serverConfig ServerConfig) (*Server, []byte, func()) {
+	hookEntered := make(chan struct{})
+	release := make(chan struct{})
+
+	var (
+		once    sync.Once
+		relOnce sync.Once
+	)
+
+	recoveryPauseHookForTest = func() {
+		once.Do(func() { close(hookEntered) })
+		<-release
+	}
+	defer func() { recoveryPauseHookForTest = nil }()
+
+	server, _, token, err := serveWithoutPublication(ctx, serverConfig)
+	recoveryPauseHookForTest = nil
+
+	So(err, ShouldBeNil)
+
+	releaseFn := func() { relOnce.Do(func() { close(release) }) }
+
+	// a hang detector, not a latency budget: the hook is normally reached
+	// within a millisecond of Serve returning, but only once the background
+	// recovery goroutine is scheduled, which a heavily loaded host can delay by
+	// seconds.
+	select {
+	case <-hookEntered:
+	case <-time.After(recoveryPauseHookWait):
+		So("timed out waiting for recovery to reach the pause hook", ShouldBeBlank)
+	}
+
+	return server, token, releaseFn
 }
 
 func unblockFIFOReader(tokenFile string) {

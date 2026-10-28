@@ -138,66 +138,6 @@ func TestDepGranularityAddDepGroupWaiters(t *testing.T) {
 	})
 }
 
-// TestDepGranularityAddTransactionCost covers D1 acceptance test 2, a regression
-// guard: what one more member costs in bolt transactions does not scale with the
-// group's membership.
-func TestDepGranularityAddTransactionCost(t *testing.T) {
-	if runnermode || servermode {
-		return
-	}
-
-	ctx := context.Background()
-
-	Convey("Given the same add against a small and a large dep group", t, func() {
-		small := dgaAddMemberTxCost(ctx, dgaMembers)
-		big := dgaAddMemberTxCost(ctx, dgaBigMembers)
-
-		Convey("The larger group's add costs no more transactions", func() {
-			So(small, ShouldBeGreaterThan, 0)
-			So(float64(big), ShouldBeLessThanOrEqualTo, dgaTxRatio*float64(small))
-		})
-	})
-}
-
-// dgaAddMemberTxCost builds a dep group of the given size with dgaWaiters
-// waiters on it, then returns how many bolt read transactions dgaTxAdds further
-// one-member adds cost.
-func dgaAddMemberTxCost(ctx context.Context, members int) int {
-	d := dgrStartServer(ctx)
-
-	defer d.stop(ctx)
-
-	jq := d.connect()
-
-	defer disconnect(jq)
-
-	So(dgrAddJobs(jq, dgaMemberJobs(d, dgaGroup, members)), ShouldHaveLength, members)
-	So(dgrAddJobs(jq, dgaWaiterJobs(d, dgaGroup, dgaWaiters)), ShouldHaveLength, dgaWaiters)
-
-	// pausing stops the ready-added callbacks, not adds, and waiting for any
-	// callback already running leaves only the adds reading the database
-	paused, err := d.server.Pause()
-	So(err, ShouldBeNil)
-	So(paused, ShouldBeTrue)
-	So(pollUntil(d.server.racIdle), ShouldBeTrue)
-
-	before := d.server.boltDB().bolt.Stats().TxN
-	added := 0
-
-	for i := range dgaTxAdds {
-		inserts, _, err := jq.Add([]*Job{dgaMemberJob(d, dgaGroup, dgaExtraName+strconv.Itoa(i))}, envVars, true)
-		So(err, ShouldBeNil)
-
-		added += inserts
-	}
-
-	txns := d.server.boltDB().bolt.Stats().TxN - before
-
-	So(added, ShouldEqual, dgaTxAdds)
-
-	return txns
-}
-
 // TestDepGranularityAddSameBatchMemberAndWaiter covers D1 acceptance test 3, a
 // regression guard: a member of a new group and a job depending on that group,
 // added in one call, see each other whichever order they are listed in.
@@ -318,7 +258,7 @@ func TestDepGranularityAddRerunKeepsDepGroup(t *testing.T) {
 			So(d.server.depGroups.hasMembers(dgaGroup), ShouldBeTrue)
 			So(dgaItemState(d.server, waiter.Key()), ShouldEqual, queue.ItemStateDependent)
 
-			stored := storedLiveJob(t, d.server.boltDB(), member.Key())
+			stored := storedLiveJob(t, d.server.inspector(), member.Key())
 			So(stored.DepGroups, ShouldResemble, []string{dgaGroup})
 		})
 	})

@@ -70,7 +70,6 @@ import (
 	"github.com/phayes/freeport"
 	"github.com/shirou/gopsutil/v4/process"
 	. "github.com/smartystreets/goconvey/convey"
-	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -178,13 +177,12 @@ var (
 )
 
 var (
-	errMissingLiveJobsBucket = errors.New("missing live jobs bucket")
-	errUnexpectedLiveJobs    = errors.New("unexpected live job count")
-	errFileStillExists       = errors.New("file still exists")
-	errNoFreeLanePort        = errors.New("no free test port in lane range")
-	errNoFreeEphemeralPort   = errors.New("no ephemeral test port a server could listen on")
-	errNoDockerResultQuery   = errors.New("no-Docker result query failed")
-	errNoDockerResultState   = errors.New("unexpected OpenStack no-Docker job result")
+	errUnexpectedLiveJobs  = errors.New("unexpected live job count")
+	errFileStillExists     = errors.New("file still exists")
+	errNoFreeLanePort      = errors.New("no free test port in lane range")
+	errNoFreeEphemeralPort = errors.New("no ephemeral test port a server could listen on")
+	errNoDockerResultQuery = errors.New("no-Docker result query failed")
+	errNoDockerResultState = errors.New("unexpected OpenStack no-Docker job result")
 )
 
 //nolint:gochecknoinits // registers test command-line flags
@@ -418,38 +416,25 @@ func assertNonEmptyFile(path string) {
 	So(size, ShouldBeGreaterThan, int64(0))
 }
 
-func boltLiveJobs(path string) (liveJobs int, err error) {
-	boltdb, err := bolt.Open(path, dbFilePermission, &bolt.Options{ReadOnly: true, Timeout: time.Second})
+// storeFileLiveJobs returns how many jobs the store at path, such as a backup,
+// holds live.
+func storeFileLiveJobs(path string) (liveJobs int, err error) {
+	inspector, closeStore, err := openStoreFileInspector(path)
 	if err != nil {
 		return 0, err
 	}
 
 	defer func() {
-		if closeErr := boltdb.Close(); err == nil {
+		if closeErr := closeStore(); err == nil {
 			err = closeErr
 		}
 	}()
 
-	err = boltdb.View(func(tx *bolt.Tx) error {
-		jobs := tx.Bucket(bucketJobsLive)
-		if jobs == nil {
-			return errMissingLiveJobsBucket
-		}
-
-		return jobs.ForEach(func(_, encoded []byte) error {
-			if encoded != nil {
-				liveJobs++
-			}
-
-			return nil
-		})
-	})
-
-	return liveJobs, err
+	return inspector.count(kindLive)
 }
 
-func assertBoltLiveJobs(path string, expected int) {
-	liveJobs, err := boltLiveJobs(path)
+func assertStoreFileLiveJobs(path string, expected int) {
+	liveJobs, err := storeFileLiveJobs(path)
 	So(err, ShouldBeNil)
 
 	if err != nil {
@@ -459,7 +444,7 @@ func assertBoltLiveJobs(path string, expected int) {
 	So(liveJobs, ShouldEqual, expected)
 }
 
-func waitForBoltLiveJobs(path string, expected int, maxWait time.Duration) error {
+func waitForStoreFileLiveJobs(path string, expected int, maxWait time.Duration) error {
 	var (
 		liveJobs int
 		err      error
@@ -468,7 +453,7 @@ func waitForBoltLiveJobs(path string, expected int, maxWait time.Duration) error
 	deadline := time.Now().Add(maxWait)
 
 	for {
-		liveJobs, err = boltLiveJobs(path)
+		liveJobs, err = storeFileLiveJobs(path)
 		if err == nil && liveJobs == expected {
 			return nil
 		}
@@ -2411,17 +2396,10 @@ func TestJobqueueBasics(t *testing.T) {
 
 				<-time.After(200 * time.Millisecond)
 
-				rmem, err := server.boltDB().recommendedReqGroupMemory("fake_group")
-				So(err, ShouldBeNil)
-				So(rmem, ShouldEqual, 0)
-
-				rdisk, err := server.boltDB().recommendedReqGroupDisk("fake_group")
-				So(err, ShouldBeNil)
-				So(rdisk, ShouldEqual, 0)
-
-				rtime, err := server.boltDB().recommendedReqGroupTime("fake_group")
-				So(err, ShouldBeNil)
-				So(rtime, ShouldEqual, 0)
+				rec := storeLearnedReqs(server.db, "fake_group")
+				So(rec.RAM, ShouldEqual, 0)
+				So(rec.Disk, ShouldEqual, 0)
+				So(rec.Time, ShouldEqual, 0)
 
 				for index, job := range jobs {
 					job.PeakRAM = index + 1
@@ -2447,25 +2425,12 @@ func TestJobqueueBasics(t *testing.T) {
 				// settling implies disk and time have too).
 				expectedShort := int(math.Ceil(float64(10)/float64(RecSecRound))) * RecSecRound
 
+				// 100MB of disk is learned as 1GB, rounded up.
 				So(pollUntil(func() bool {
-					m, e1 := server.boltDB().recommendedReqGroupMemory("fake_group")
-					d, e2 := server.boltDB().recommendedReqGroupDisk("fake_group")
-					tm, e3 := server.boltDB().recommendedReqGroupTime("fake_group")
+					rec = storeLearnedReqs(server.db, "fake_group")
 
-					return e1 == nil && e2 == nil && e3 == nil && m == 100 && d == 100 && tm == expectedShort
+					return rec.RAM == 100 && rec.Disk == 1 && rec.Time == time.Duration(expectedShort)*time.Second
 				}), ShouldBeTrue)
-
-				rmem, err = server.boltDB().recommendedReqGroupMemory("fake_group")
-				So(err, ShouldBeNil)
-				So(rmem, ShouldEqual, 100)
-
-				rdisk, err = server.boltDB().recommendedReqGroupDisk("fake_group")
-				So(err, ShouldBeNil)
-				So(rdisk, ShouldEqual, 100)
-
-				rtime, err = server.boltDB().recommendedReqGroupTime("fake_group")
-				So(err, ShouldBeNil)
-				So(rtime, ShouldEqual, expectedShort)
 
 				for i := 11; i <= 100; i++ {
 					job := &Job{Cmd: fmt.Sprintf("test cmd %d", i), Cwd: "/fake/cwd", ReqGroup: "fake_group", Requirements: &jqs.Requirements{RAM: 1024, Time: 4 * time.Hour, Cores: 1}, Retries: uint8(3), RepGroup: "manually_added"}
@@ -2489,27 +2454,13 @@ func TestJobqueueBasics(t *testing.T) {
 				}
 				// as above, wait for every per-resource recalculation to settle
 				// on its expected value, not just memory.
+				// 12800MB of disk is learned as 13GB, rounded up.
 				So(pollUntil(func() bool {
-					m, e1 := server.boltDB().recommendedReqGroupMemory("fake_group")
-					d, e2 := server.boltDB().recommendedReqGroupDisk("fake_group")
-					tm, e3 := server.boltDB().recommendedReqGroupTime("fake_group")
+					rec = storeLearnedReqs(server.db, "fake_group")
 
-					return e1 == nil && e2 == nil && e3 == nil &&
-						m == 3400 && d == 12800 && tm >= 9500 && tm%RecSecRound == 0
+					return rec.RAM == 3400 && rec.Disk == 13 && rec.Time >= 9500*time.Second &&
+						rec.Time%(time.Duration(RecSecRound)*time.Second) == 0
 				}), ShouldBeTrue)
-
-				rmem, err = server.boltDB().recommendedReqGroupMemory("fake_group")
-				So(err, ShouldBeNil)
-				So(rmem, ShouldEqual, 3400)
-
-				rdisk, err = server.boltDB().recommendedReqGroupDisk("fake_group")
-				So(err, ShouldBeNil)
-				So(rdisk, ShouldEqual, 12800)
-
-				rtime, err = server.boltDB().recommendedReqGroupTime("fake_group")
-				So(err, ShouldBeNil)
-				So(rtime, ShouldBeGreaterThanOrEqualTo, 9500)
-				So(rtime%RecSecRound, ShouldEqual, 0)
 			})
 
 			Convey("You can reserve jobs from the queue in the correct order", func() {
@@ -4539,10 +4490,8 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 					cmd := "perl -e '@a; for (1..3) { push(@a, q[a] x 50000000); sleep(1) }'"
 					jobs = append(jobs, &Job{Cmd: cmd, Cwd: testCwd, ReqGroup: "highmem", Requirements: standardReqs, Retries: uint8(0), RepGroup: "too_much_mem"})
 
-					server.boltDB().recMBRound = 1
-					defer func() {
-						server.boltDB().recMBRound = 100 // revert back to normal
-					}()
+					server.db.setRecRounding(RecSecRound, 1)
+					defer server.db.setRecRounding(RecSecRound, RecMBRound)
 
 					inserts, already, err := jq.Add(jobs, envVars, true)
 					So(err, ShouldBeNil)
@@ -5446,12 +5395,7 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				j2 := mkLCTJob("echo lct2", "lct-rg", base.Add(3*time.Second))
 				j3 := mkLCTJob("echo lct3", "lct-rg", base.Add(2*time.Second))
 
-				err = server.boltDB().archiveJob(j1.Key(), j1)
-				So(err, ShouldBeNil)
-				err = server.boltDB().archiveJob(j2.Key(), j2)
-				So(err, ShouldBeNil)
-				err = server.boltDB().archiveJob(j3.Key(), j3)
-				So(err, ShouldBeNil)
+				So(archiveJobsInStore(server.db, []*Job{j1, j2, j3}), ShouldBeNil)
 
 				completionTimes, errf := server.db.retrieveLastCompletionTimeByRepGroup(
 					[]string{"lct-rg"})
@@ -5468,18 +5412,8 @@ func TestJobqueueExecutionAndDependencyScenarios(t *testing.T) {
 				jB1 := mkLCTJob("echo lctB1", "lct-rgB", base.Add(1*time.Second))
 				jB2 := mkLCTJob("echo lctB2", "lct-rgB", base.Add(4*time.Second))
 
-				err = server.boltDB().storeLookups(bucketRGs, sobsd{
-					{[]byte("lct-rgA"), nil},
-					{[]byte("lct-rgB"), nil},
-				})
-				So(err, ShouldBeNil)
-
-				err = server.boltDB().archiveJob(jA.Key(), jA)
-				So(err, ShouldBeNil)
-				err = server.boltDB().archiveJob(jB1.Key(), jB1)
-				So(err, ShouldBeNil)
-				err = server.boltDB().archiveJob(jB2.Key(), jB2)
-				So(err, ShouldBeNil)
+				So(server.db.storeRepGroupLookups(ctx, []*Job{jA, jB1, jB2}), ShouldBeNil)
+				So(archiveJobsInStore(server.db, []*Job{jA, jB1, jB2}), ShouldBeNil)
 
 				completionTimes, err := jq.GetLastCompletionTimeByRepGroup("lct-rg",
 					RepGroupMatchPrefix)
@@ -6627,8 +6561,7 @@ func TestJobqueueModify(t *testing.T) {
 		// read rather than fixed because an in-process Execute's peak includes
 		// this test binary's own memory, which depends on what ran before it.
 		learned := func(reqGroup string) (string, int) {
-			ram, err := server.boltDB().recommendedReqGroupMemory(reqGroup)
-			So(err, ShouldBeNil)
+			ram := storeLearnedReqs(server.db, reqGroup).RAM
 			So(ram, ShouldBeGreaterThan, 0)
 
 			return schedulerGroupString(reqForScheduler(&jqs.Requirements{RAM: ram, Time: standardReqs.Time, Cores: 1}), nil), ram
@@ -7309,10 +7242,8 @@ func TestJobqueueHighMem(t *testing.T) {
 			cmd := "perl -e '@a; for (1..1000) { push(@a, q[a] x 800000000) }'"
 			jobs = append(jobs, &Job{Cmd: cmd, Cwd: testCwd, ReqGroup: "fake_group", Requirements: standardReqs, Retries: uint8(0), RepGroup: "run_out_of_mem"})
 
-			server.boltDB().recMBRound = 1
-			defer func() {
-				server.boltDB().recMBRound = 100 // revert back to normal
-			}()
+			server.db.setRecRounding(RecSecRound, 1)
+			defer server.db.setRecRounding(RecSecRound, RecMBRound)
 
 			inserts, already, err := jq.Add(jobs, envVars, true)
 			So(err, ShouldBeNil)
@@ -7472,12 +7403,12 @@ func TestJobqueueProduction(t *testing.T) {
 			So(already, ShouldEqual, 1)
 
 			tmpPath := managerDBBkFile + ".tmp"
-			So(waitForBoltLiveJobs(managerDBBkFile, 2, 5*time.Second), ShouldBeNil)
+			So(waitForStoreFileLiveJobs(managerDBBkFile, 2, 5*time.Second), ShouldBeNil)
 			So(waitForFileToDisappear(tmpPath, 5*time.Second), ShouldBeNil)
 
 			assertNonEmptyFile(config.ManagerDBFile)
 			assertNonEmptyFile(managerDBBkFile)
-			assertBoltLiveJobs(managerDBBkFile, 2)
+			assertStoreFileLiveJobs(managerDBBkFile, 2)
 
 			_, err = os.Stat(tmpPath)
 			So(err, ShouldNotBeNil)
@@ -7487,7 +7418,7 @@ func TestJobqueueProduction(t *testing.T) {
 				err = jq.BackupDB(manualBackup)
 				So(err, ShouldBeNil)
 				assertNonEmptyFile(manualBackup)
-				assertBoltLiveJobs(manualBackup, 2)
+				assertStoreFileLiveJobs(manualBackup, 2)
 
 				server.Stop(ctx, true)
 				server, _, token, errs = serve(ctx, serverConfig)
@@ -7564,7 +7495,7 @@ func TestJobqueueProduction(t *testing.T) {
 
 				assertNonEmptyFile(config.ManagerDBFile)
 				assertNonEmptyFile(managerDBBkFile)
-				assertBoltLiveJobs(managerDBBkFile, 2)
+				assertStoreFileLiveJobs(managerDBBkFile, 2)
 
 				// background recovery (spec B1) must re-enqueue the restored
 				// jobs before we query them.
@@ -7593,7 +7524,7 @@ func TestJobqueueProduction(t *testing.T) {
 
 				assertNonEmptyFile(config.ManagerDBFile)
 				assertNonEmptyFile(managerDBBkFile)
-				assertBoltLiveJobs(managerDBBkFile, 2)
+				assertStoreFileLiveJobs(managerDBBkFile, 2)
 
 				// background recovery (spec B1) must re-enqueue the restored
 				// jobs before we query them.
@@ -7662,9 +7593,9 @@ func TestJobqueueProduction(t *testing.T) {
 			server.Stop(ctx, true)
 
 			assertNonEmptyFile(config.ManagerDBFile)
-			assertBoltLiveJobs(config.ManagerDBFile, 1)
+			assertStoreFileLiveJobs(config.ManagerDBFile, 1)
 			assertNonEmptyFile(managerDBBkFile)
-			assertBoltLiveJobs(managerDBBkFile, 1)
+			assertStoreFileLiveJobs(managerDBBkFile, 1)
 
 			Convey("You can restart the server with that existing job, delete it, and it stays deleted when restoring from backup", func() {
 				serverConfig.dontWipeDevDB = true
@@ -9321,7 +9252,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 					return false
 				}
 
-				liveJobs, errb := boltLiveJobs(dlPath)
+				liveJobs, errb := storeFileLiveJobs(dlPath)
 
 				return errb == nil && liveJobs == 1
 			}), ShouldBeTrue)
@@ -9371,7 +9302,7 @@ func TestJobqueueWithMounts(t *testing.T) {
 				err = server.boltDB().s3accessor.DownloadFile(s3BkPath, localBkPath)
 				So(err, ShouldBeNil)
 				assertNonEmptyFile(localBkPath)
-				assertBoltLiveJobs(localBkPath, 1)
+				assertStoreFileLiveJobs(localBkPath, 1)
 				err = os.Remove(localBkPath)
 				So(err, ShouldBeNil)
 
@@ -9713,153 +9644,7 @@ func TestJobqueueSpeed(t *testing.T) {
 	// log.Printf("Added %d items to queue in %s == %d per\n", n, e, per)
 
 	server.Stop(ctx, true)
-
-	/* test speed of bolt db when there are lots of jobs already stored
-	n := 10000000 // num jobs to start with
-	b := 10000    // jobs per identifier
-
-	server, _, err := serve(serverConfig)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	jq, err := Connect(addr, "cmds", 60*time.Second)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer disconnect(jq)
-
-	// get timings when the bolt db is empty
-	total := 0
-	batchNum := 1
-	timeDealingWithBatch(addr, jq, batchNum, b)
-	batchNum++
-	total += b
-
-	// add n jobs in b batches to the completed bolt db bucket to simulate
-	// a well used database
-	before := time.Now()
-	q := server.getOrCreateQueue("cmds")
-	for total < n {
-		var jobs []*Job
-		for i := 0; i < b; i++ {
-			jobs = append(jobs, &Job{Cmd: fmt.Sprintf("test cmd %d", i+((batchNum-1)*b)), Cwd: "/fake/cwd", ReqGroup: "reqgroup", Requirements: &jqs.Requirements{RAM: 1024, Time: 4*time.Hour, Cores: 1}, Retries: uint8(3), RepGroup: fmt.Sprintf("batch_%d", batchNum)})
-		}
-		_, _, err := jq.Add(jobs, envVars, true)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Printf("\nadded batch %d", batchNum)
-
-		// it's too slow to reserve and archive things properly in this
-		// test; this is not a real-world performance concern though, since
-		// normally you wouldn't archive so many jobs in a row in a single
-		// process...
-		// for {
-		// 	job, _ := jq.Reserve(1 * time.Millisecond)
-		// 	if job == nil {
-		// 		break
-		// 	}
-		// 	jq.Started(job, 123)
-		// 	jq.Ended(job, 0, 5, 1*time.Second, []byte{}, []byte{})
-		// 	err = jq.Archive(job)
-		// 	if err != nil {
-		// 		log.Fatal(err)
-		// 	}
-		// 	fmt.Print(".")
-		// }
-
-		// ... Instead we bypass the client interface and directly add to
-		// bolt db
-		err = server.db.bolt.Batch(func(tx *bolt.Tx) error {
-			bl := tx.Bucket(bucketJobsLive)
-			b := tx.Bucket(bucketJobsComplete)
-
-			var puterr error
-			for _, job := range jobs {
-				key := job.key()
-				var encoded []byte
-				enc := codec.NewEncoderBytes(&encoded, server.db.ch)
-				enc.Encode(job)
-
-				bl.Delete([]byte(key))
-				q.Remove(key)
-
-				puterr = b.Put([]byte(key), encoded)
-				if puterr != nil {
-					break
-				}
-			}
-			return puterr
-		})
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		batchNum++
-		total += b
-	}
-	e := time.Since(before)
-	log.Printf("Archived %d jobqueue jobs in %d sized groups in %s\n", n, b, e)
-
-	// now re-time how long it takes to deal with a single new batch
-	timeDealingWithBatch(addr, jq, batchNum, b)
-
-	server.Stop()
-	*/
 }
-
-/* this func is used by the commented out test above
-func timeDealingWithBatch(addr string, jq *Client, batchNum int, b int) {
-	before := time.Now()
-	var jobs []*Job
-	batchName := fmt.Sprintf("batch_%d", batchNum)
-	for i := 0; i < b; i++ {
-        jobs = append(jobs, &Job{Cmd: fmt.Sprintf("test cmd %d", i+((batchNum-1)*b)), Cwd: "/fake/cwd", ReqGroup: "reqgroup", Requirements: &jqs.Requirements{RAM: 1024, Time: 4*time.Hour, Cores: 1}, Retries: uint8(3), RepGroup: batchName})
-	}
-	_, _, err := jq.Add(jobs, envVars, true)
-	if err != nil {
-		log.Fatal(err)
-	}
-	e := time.Since(before)
-	log.Printf("\nAdded a new batch of %d jobs in %s\n", b, e)
-
-	before = time.Now()
-	runtime.GOMAXPROCS(runtime.NumCPU())
-	var wg sync.WaitGroup
-	wg.Add(runtime.NumCPU())
-	for i := 0; i < runtime.NumCPU(); i++ {
-		go func() {
-			defer wg.Done()
-			gojq, _ := Connect(addr, "cmds", 10*time.Second)
-            defer gojq.Disconnect()
-			for {
-				job, _ := gojq.Reserve(1 * time.Millisecond)
-				if job == nil {
-					break
-				}
-				gojq.Started(job, 123)
-				gojq.Ended(job, 0, 5, 1*time.Second, []byte{}, []byte{})
-				err = gojq.Archive(job)
-				if err != nil {
-					log.Fatal(err)
-				}
-			}
-		}()
-	}
-	wg.Wait()
-	e = time.Since(before)
-	log.Printf("Reserved and Archived that batch of jobs in %s\n", e)
-
-	before = time.Now()
-	jobs, err = jq.GetByRepGroup(batchName, 1, JobStateComplete, false, false) // without a limit this takes longer than 60s, so would time out
-	if err != nil {
-		log.Fatal(err)
-	}
-	e = time.Since(before)
-	log.Printf("Was able to get all %d jobs in that batch in %s\n", 1+jobs[0].Similar, e)
-}
-*/
 
 func timelimitDebug(jobs []*Job, err error) {
 	if err != nil {

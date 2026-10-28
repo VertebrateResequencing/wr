@@ -121,8 +121,8 @@ func TestReliable4SlowRequestWarning(t *testing.T) {
 	}
 
 	Convey("Given the default slow-request threshold", t, func() {
-		restore := slowRequestThreshold
-		defer func() { slowRequestThreshold = restore }()
+		restore := slowRequestThreshold()
+		defer func() { setSlowRequestThreshold(restore) }()
 
 		Convey("It is well below the client's own give-up timeout", func() {
 			// the point of the warning is to reach an operator while the manager
@@ -130,11 +130,11 @@ func TestReliable4SlowRequestWarning(t *testing.T) {
 			// failed, so it must fire comfortably before ClientMinRequestTimeout.
 			So(slowRequestThresholdDefault, ShouldBeLessThan, ClientMinRequestTimeout)
 			So(slowRequestThresholdDefault, ShouldBeGreaterThan, time.Second)
-			So(slowRequestThreshold, ShouldEqual, slowRequestThresholdDefault)
+			So(slowRequestThreshold(), ShouldEqual, slowRequestThresholdDefault)
 		})
 
 		Convey("A request over the threshold logs exactly one warning naming it", func() {
-			slowRequestThreshold = slowRequestTestThreshold
+			setSlowRequestThreshold(slowRequestTestThreshold)
 			ctx, buf := captureLogCtx(context.Background())
 
 			cr := &clientRequest{
@@ -168,7 +168,7 @@ func TestReliable4SlowRequestWarning(t *testing.T) {
 		})
 
 		Convey("A request under the threshold logs nothing at all", func() {
-			slowRequestThreshold = time.Hour
+			setSlowRequestThreshold(time.Hour)
 			ctx, buf := captureLogCtx(context.Background())
 
 			cr := &clientRequest{Method: slowRequestTestMethod, Job: &Job{RepGroup: "rg-fast"}}
@@ -183,7 +183,7 @@ func TestReliable4SlowRequestWarning(t *testing.T) {
 			// {Err: srerr}, so reporting len(sr.Jobs) there would credit the client
 			// with jobs it never received - and hide the error that a slow request
 			// finally produced.
-			slowRequestThreshold = slowRequestTestThreshold
+			setSlowRequestThreshold(slowRequestTestThreshold)
 			ctx, buf := captureLogCtx(context.Background())
 
 			cr := &clientRequest{Method: slowRequestTestMethod, Job: &Job{RepGroup: "rg-err"}}
@@ -202,7 +202,7 @@ func TestReliable4SlowRequestWarning(t *testing.T) {
 			// a subscription long-poll is held for serverSubscriptionHoldTime, 25
 			// SECONDS, by design: warning about it would put one line per idle
 			// subscriber in the log every 25s and make the warning worthless.
-			slowRequestThreshold = slowRequestTestThreshold
+			setSlowRequestThreshold(slowRequestTestThreshold)
 			ctx, buf := captureLogCtx(context.Background())
 
 			cr := &clientRequest{Method: requestMethodWaitForUpdates, Timeout: serverSubscriptionHoldTime}
@@ -230,7 +230,7 @@ func TestReliable4SlowRequestWarning(t *testing.T) {
 			// gets held for 25s BY DESIGN. Without mirroring that clamp this would be
 			// one spurious warning per idle subscriber per poll - exactly the log spam
 			// the exemption exists to prevent.
-			slowRequestThreshold = slowRequestTestThreshold
+			setSlowRequestThreshold(slowRequestTestThreshold)
 			ctx, buf := captureLogCtx(context.Background())
 
 			cr := &clientRequest{Method: requestMethodWaitForUpdates}
@@ -248,7 +248,7 @@ func TestReliable4SlowRequestWarning(t *testing.T) {
 			// server never holds a poll for an hour however long the client claims.
 			// Exempting the whole claim would let a client hide a genuinely wedged
 			// waitForUpdates - one stuck on csmutex, say - for as long as it liked.
-			slowRequestThreshold = slowRequestTestThreshold
+			setSlowRequestThreshold(slowRequestTestThreshold)
 			ctx, buf := captureLogCtx(context.Background())
 
 			cr := &clientRequest{Method: requestMethodWaitForUpdates, Timeout: time.Hour}
@@ -265,7 +265,7 @@ func TestReliable4SlowRequestWarning(t *testing.T) {
 		Convey("A method that ignores its Timeout cannot use it to hide", func() {
 			// only reserve and the subscription long-poll honour cr.Timeout, so a
 			// client cannot mask a slow query by claiming it asked to wait.
-			slowRequestThreshold = slowRequestTestThreshold
+			setSlowRequestThreshold(slowRequestTestThreshold)
 			ctx, buf := captureLogCtx(context.Background())
 
 			cr := &clientRequest{Method: slowRequestTestMethod, Timeout: time.Hour}
@@ -278,7 +278,7 @@ func TestReliable4SlowRequestWarning(t *testing.T) {
 		})
 
 		Convey("A nil response is reported rather than panicking", func() {
-			slowRequestThreshold = slowRequestTestThreshold
+			setSlowRequestThreshold(slowRequestTestThreshold)
 			ctx, buf := captureLogCtx(context.Background())
 
 			warnIfSlowRequest(ctx, nil, &clientRequest{Method: slowRequestTestNoReplyMeth}, nil, "", 0,
@@ -301,11 +301,11 @@ func TestReliable4SlowRequestDecode(t *testing.T) {
 	}
 
 	Convey("Given a request that cannot be decoded", t, func() {
-		restore := slowRequestThreshold
-		defer func() { slowRequestThreshold = restore }()
+		restore := slowRequestThreshold()
+		defer func() { setSlowRequestThreshold(restore) }()
 
 		Convey("A slow decode failure is warned about, naming its size", func() {
-			slowRequestThreshold = slowRequestTestThreshold
+			setSlowRequestThreshold(slowRequestTestThreshold)
 			ctx, buf := captureLogCtx(context.Background())
 
 			warnIfSlowDecode(ctx, slowRequestTestBodyBytes, time.Now().Add(-slowRequestTestElapsed),
@@ -323,7 +323,7 @@ func TestReliable4SlowRequestDecode(t *testing.T) {
 		})
 
 		Convey("A fast decode failure logs nothing at all", func() {
-			slowRequestThreshold = time.Hour
+			setSlowRequestThreshold(time.Hour)
 			ctx, buf := captureLogCtx(context.Background())
 
 			warnIfSlowDecode(ctx, slowRequestTestBodyBytes, time.Now().Add(-slowRequestTestElapsed),
@@ -342,7 +342,7 @@ func TestReliable4SlowRequestDecode(t *testing.T) {
 			// the real decode of a truncated body is instant, so the only honest way
 			// to exercise the wiring is a zero threshold: every decode is then "slow"
 			// and the warning must appear for one that FAILED.
-			slowRequestThreshold = 0
+			setSlowRequestThreshold(0)
 
 			logCtx, buf := captureLogCtx(ctx)
 			err := server.handleRequest(logCtx, &mangos.Message{Body: body})
@@ -357,7 +357,7 @@ func TestReliable4SlowRequestDecode(t *testing.T) {
 			So(out, ShouldNotContainSubstring, "replyBytes=")
 
 			Convey("but says nothing about it at the shipped default", func() {
-				slowRequestThreshold = slowRequestThresholdDefault
+				setSlowRequestThreshold(slowRequestThresholdDefault)
 
 				quietCtx, quietBuf := captureLogCtx(ctx)
 				errq := server.handleRequest(quietCtx,
@@ -382,12 +382,13 @@ func TestReliable4SlowRequestHandleRequestWiring(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		restore := slowRequestThreshold
-		defer func() { slowRequestThreshold = restore }()
+		restore := slowRequestThreshold()
+		defer func() { setSlowRequestThreshold(restore) }()
 
 		Convey("handleRequest warns when the MANAGER held a request past the threshold", func() {
 			server, token, clientID := slowRequestTestServer(ctx, "slow-request-warn")
-			slowRequestThreshold = slowRequestTestThreshold
+
+			setSlowRequestThreshold(slowRequestTestThreshold)
 
 			slowRequestStallServer(ctx, server, slowRequestTestWait)
 
@@ -416,7 +417,8 @@ func TestReliable4SlowRequestHandleRequestWiring(t *testing.T) {
 
 		Convey("handleRequest says nothing about the same stall at a high threshold", func() {
 			server, token, clientID := slowRequestTestServer(ctx, "slow-request-quiet-high")
-			slowRequestThreshold = time.Hour
+
+			setSlowRequestThreshold(time.Hour)
 
 			slowRequestStallServer(ctx, server, slowRequestTestWait)
 
@@ -430,7 +432,8 @@ func TestReliable4SlowRequestHandleRequestWiring(t *testing.T) {
 			// a runner polling an empty queue with -r seconds is not the manager
 			// being slow, and there is one such reserve per idle runner per poll.
 			server, token, clientID := slowRequestTestServer(ctx, "slow-request-quiet-wait")
-			slowRequestThreshold = slowRequestTestThreshold
+
+			setSlowRequestThreshold(slowRequestTestThreshold)
 
 			logCtx, buf := captureLogCtx(ctx)
 			slowRequestReserve(logCtx, server, token, clientID, slowRequestTestWait)

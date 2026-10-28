@@ -62,6 +62,9 @@ Add crash-safe conversion of a bbolt `dbFile` on first start in
 checkpoint of live jobs with run-state overlays plus the history buckets
 in `history.bolt`, stats included. Cover all 8 acceptance tests from E1
 against the Phase 1 form.
+Also resolve the 0b.1 incidentals on `reliable2_dbcompat_test.go`'s
+recovery tests and on opening an older bbolt database
+([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed
@@ -89,6 +92,8 @@ cleanup, resumed conversion (1f.2), restore from a store directory, a
 self-contained file (1f.3) or an old bbolt backup, and corruption
 handling. Cover all 15 acceptance tests from E2, plus E3 tests 4 and 5
 deferred from 1f.1 and the halves of E5's tests deferred from 1f.3.
+Keep the lock taken first, as the 0b.1 incidental owned by 1c.2 says
+([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

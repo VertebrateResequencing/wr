@@ -37,9 +37,11 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	. "github.com/smartystreets/goconvey/convey"
@@ -59,6 +61,56 @@ const (
 	// test can tell "the database" from "the older backup" by what it holds.
 	dbUnreadableRepGroup = "db-unreadable"
 )
+
+const (
+	// dgbDeadlineSlack is how much longer than managerDBOpenTimeout each test
+	// gives initDB before declaring it hung. It is a hang detector, not a
+	// latency budget: without Options.Timeout bbolt retries the flock every 50ms
+	// for as long as the lock is held, so an unbounded initDB would otherwise
+	// block until go test's 10-minute panic took the whole package down with a
+	// stack dump instead of a named failure.
+	dgbDeadlineSlack = 5 * time.Second
+
+	// dgbRepGroup is the RepGroup of the job dgbSeededDB stores.
+	dgbRepGroup = "depgranularity-dblock"
+)
+
+// dgbInitDBResult is what a bounded initDB call came back with.
+type dgbInitDBResult struct {
+	db  *db
+	msg string
+	err error
+}
+
+// dgbInitDB calls initDB on a goroutine and returns either its result or, if it
+// has not returned within managerDBOpenTimeout + dgbDeadlineSlack, a nil result
+// having reported the hang as a named failure. The caller closes any *db it gets
+// back, with dgbClose.
+//
+// The bound is what makes a run without Options.Timeout report a per-test
+// "initDB did not return" instead of blocking until go test's 10-minute panic
+// takes the whole package down with a stack dump. On that branch a second
+// goroutine closes whatever the blocked call eventually opens, so it lets the
+// file go rather than holding it for the rest of the package run.
+func dgbInitDB(ctx context.Context, dbFile, dbBkFile string) (dgbInitDBResult, bool) {
+	results := make(chan dgbInitDBResult, 1)
+
+	go func() {
+		opened, msg, err := initDB(ctx, dbFile, dbBkFile, internal.Development, false, false)
+		results <- dgbInitDBResult{db: opened, msg: msg, err: err}
+	}()
+
+	select {
+	case result := <-results:
+		return result, true
+	case <-time.After(managerDBOpenTimeout + dgbDeadlineSlack):
+		go func() { dgbClose(ctx, <-results) }()
+
+		So("initDB did not return within the database open timeout", ShouldBeBlank)
+
+		return dgbInitDBResult{}, false
+	}
+}
 
 // TestDBUnreadableDirectoryWhereTheDatabaseShouldBeSurvives proves the refusal
 // covers more than a permission error, using the one class that is
@@ -93,6 +145,27 @@ func TestDBUnreadableDirectoryWhereTheDatabaseShouldBeSurvives(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(info.IsDir(), ShouldBeTrue)
 	})
+}
+
+// dgbSeededDB creates a fresh database in t.TempDir() holding one live job, plus
+// a valid backup of it, and returns both paths with nothing holding either.
+func dgbSeededDB(ctx context.Context, t *testing.T) (string, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	dbFile := filepath.Join(dir, "db")
+	dbBkFile := dbFile + "_bk"
+
+	seed, _, err := initDB(ctx, dbFile, dbBkFile, internal.Development, false, false)
+	So(err, ShouldBeNil)
+
+	jobsToQueue, _, _, err := seed.storeNewJobs(ctx, []*Job{testDBJob("echo dgb", dgbRepGroup)}, false)
+	So(err, ShouldBeNil)
+	So(jobsToQueue, ShouldHaveLength, 1)
+	So(seed.close(ctx), ShouldBeNil)
+	So(copyFile(dbFile, dbBkFile), ShouldBeNil)
+
+	return dbFile, dbBkFile
 }
 
 // TestDBUnreadableDBIsNotReplacedFromBackup proves that making the manager's
@@ -149,6 +222,21 @@ func TestDBUnreadableDBIsNotReplacedFromBackup(t *testing.T) {
 				[]string{dbUnreadableRepGroup, dgbRepGroup})
 		})
 	})
+}
+
+// dgbFileIdentity returns the size, modification time and inode of path, so a
+// test can prove initDB left the winner's database file completely alone: not
+// truncated, not rewritten, and above all not unlinked and replaced.
+func dgbFileIdentity(t *testing.T, path string) (int64, time.Time, uint64) {
+	t.Helper()
+
+	info, err := os.Stat(path)
+	So(err, ShouldBeNil)
+
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	So(ok, ShouldBeTrue)
+
+	return info.Size(), info.ModTime(), stat.Ino
 }
 
 // TestDBUnreadableDBWithoutBackupStillReportsUnreadable proves the refusal does
@@ -248,4 +336,11 @@ func dbUnreadableRepGroups(ctx context.Context, t *testing.T, dbFile, dbBkFile s
 	slices.Sort(groups)
 
 	return groups
+}
+
+// dgbClose closes the database a dgbInitDB result holds, if it holds one.
+func dgbClose(ctx context.Context, result dgbInitDBResult) {
+	if result.db != nil {
+		_ = result.db.close(ctx)
+	}
 }

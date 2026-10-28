@@ -108,6 +108,9 @@ const (
 // reliable4RSLatBuckets is the number of (non-overflow) archive-latency buckets.
 const reliable4RSLatBuckets = 15
 
+// reliable4GiB is a gibibyte, for reporting database file sizes.
+const reliable4GiB = 1 << 30
+
 // reliable4RSLatBucketsMs are the inclusive upper bounds (in ms) of the archive
 // latency histogram buckets; a final overflow bucket counts anything larger.
 //
@@ -143,6 +146,22 @@ func (p reliable4RSParams) suffix() string {
 	}
 
 	return fmt.Sprintf("j%d_r%d_l%d%s", p.jobs, p.runners, p.limit, tag)
+}
+
+// envIntDefault returns the int value of env var name, or def if it is unset or
+// not an int.
+func envIntDefault(name string, def int) int {
+	v := os.Getenv(name)
+	if v == "" {
+		return def
+	}
+
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+
+	return n
 }
 
 // reliable4RSOutcome classifies the results of one kind of RPC (started, touch,

@@ -37,7 +37,6 @@ import (
 
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
-	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -163,7 +162,7 @@ func TestReqStatCache(t *testing.T) {
 
 			loads.reset()
 
-			seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, 300)
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 300)
 
 			cached, current := db.cachedReqGroupRecs(reqStatTestGroup)
 			So(cached, ShouldEqual, old)
@@ -176,11 +175,11 @@ func TestReqStatCache(t *testing.T) {
 		})
 
 		Convey("rewriting an existing stat key invalidates nothing", func() {
-			seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, 300)
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 300)
 			db.refreshReqGroupRecs(reqStatTestGroup)
 			loads.reset()
 
-			seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, 300)
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 300)
 
 			cached, current := db.cachedReqGroupRecs(reqStatTestGroup)
 			So(cached.RAM, ShouldEqual, 300)
@@ -191,8 +190,8 @@ func TestReqStatCache(t *testing.T) {
 		})
 
 		Convey("archiving a job with a new peak RAM makes its ReqGroup not current by the time the archive returns", func() {
-			seedReqGroupStats(server, bucketJobDisk, reqStatTestGroup, 0)
-			seedReqGroupStats(server, bucketJobSecs, reqStatTestGroup, reqStatTestRuntimes()...)
+			seedReqGroupStats(server, FailReasonDisk, reqStatTestGroup, 0)
+			seedReqGroupStats(server, FailReasonTime, reqStatTestGroup, reqStatTestRuntimes()...)
 
 			job := rt.reserveJob(0)
 
@@ -230,9 +229,9 @@ func TestReqStatCache(t *testing.T) {
 				ram = append(ram, v)
 			}
 
-			seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, ram...)
-			seedReqGroupStats(server, bucketJobDisk, reqStatTestGroup, 1500, 2500)
-			seedReqGroupStats(server, bucketJobSecs, reqStatTestGroup, 30, 90)
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, ram...)
+			seedReqGroupStats(server, FailReasonDisk, reqStatTestGroup, 1500, 2500)
+			seedReqGroupStats(server, FailReasonTime, reqStatTestGroup, 30, 90)
 
 			rec := db.refreshReqGroupRecs(reqStatTestGroup)
 
@@ -255,7 +254,7 @@ func TestReqStatCache(t *testing.T) {
 		})
 
 		Convey("a failed load keeps the previous value, not current, until a load succeeds", func() {
-			seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, 300)
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 300)
 			db.refreshReqGroupRecs(reqStatTestGroup)
 			db.reqStats.invalidate(reqStatTestGroup)
 
@@ -276,7 +275,7 @@ func TestReqStatCache(t *testing.T) {
 		})
 
 		Convey("a restarted server starts with nothing cached", func() {
-			seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, 300)
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 300)
 			So(db.refreshReqGroupRecs(reqStatTestGroup).RAM, ShouldEqual, 300)
 
 			disconnect(jq)
@@ -299,8 +298,8 @@ func TestReqStatCache(t *testing.T) {
 		})
 
 		Convey("a ReqGroup's values exclude those of a ReqGroup whose name it prefixes", func() {
-			seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, 300)
-			seedReqGroupStats(server, bucketJobRAM, reqStatTestPrefixedGroup, 5000)
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 300)
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestPrefixedGroup, 5000)
 
 			So(db.refreshReqGroupRecs(reqStatTestGroup).RAM, ShouldEqual, 300)
 
@@ -319,7 +318,7 @@ func TestReqStatCache(t *testing.T) {
 			db.refreshReqGroupRecs(reqStatTestGroup)
 			db.refreshReqGroupRecs(reqStatTestPrefixedGroup)
 
-			seedReqGroupStats(server, bucketJobRAM, reqStatTestPrefixedGroup, 800)
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestPrefixedGroup, 800)
 
 			_, current := db.cachedReqGroupRecs(reqStatTestGroup)
 			So(current, ShouldBeTrue)
@@ -354,8 +353,8 @@ func TestReqStatCache(t *testing.T) {
 				{
 					name: "archive with a new peak disk",
 					seed: func() {
-						seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, 100)
-						seedReqGroupStats(server, bucketJobSecs, reqStatTestGroup, reqStatTestRuntimes()...)
+						seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 100)
+						seedReqGroupStats(server, FailReasonTime, reqStatTestGroup, reqStatTestRuntimes()...)
 					},
 					report: func(job *Job) error {
 						return jq.Archive(job, &JobEndState{Exited: true, PeakRAM: 100, PeakDisk: 2048, EndTime: time.Now()})
@@ -364,8 +363,8 @@ func TestReqStatCache(t *testing.T) {
 				{
 					name: "archive with a new runtime",
 					seed: func() {
-						seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, 100)
-						seedReqGroupStats(server, bucketJobDisk, reqStatTestGroup, 0)
+						seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 100)
+						seedReqGroupStats(server, FailReasonDisk, reqStatTestGroup, 0)
 					},
 					report: func(job *Job) error {
 						return jq.Archive(job, &JobEndState{Exited: true, PeakRAM: 100, EndTime: time.Now()})
@@ -413,29 +412,6 @@ func TestReqStatCache(t *testing.T) {
 			}
 		})
 
-		Convey("a load during an uncommitted new stat key is not current once it commits", func() {
-			db.refreshReqGroupRecs(reqStatTestGroup)
-
-			err := db.bolt.Update(func(tx *bolt.Tx) error {
-				if err := db.reqStats.putStat(tx, bucketJobRAM, reqStatTestGroup, 300); err != nil {
-					return err
-				}
-
-				done := make(chan *jqs.Requirements)
-
-				go func() { done <- db.refreshReqGroupRecs(reqStatTestGroup) }()
-
-				So((<-done).RAM, ShouldEqual, 0)
-
-				return nil
-			})
-			So(err, ShouldBeNil)
-
-			_, current := db.cachedReqGroupRecs(reqStatTestGroup)
-			So(current, ShouldBeFalse)
-			So(db.refreshReqGroupRecs(reqStatTestGroup).RAM, ShouldEqual, 300)
-		})
-
 		Convey("warming loads each distinct ReqGroup of the jobs once, even when a load fails", func() {
 			loads.setFailing(reqStatTestGroup, true)
 
@@ -481,19 +457,37 @@ func newReqStatTest(ctx context.Context, t *testing.T, configure ...func(*Server
 	return &reqStatTest{server: server, serverConfig: serverConfig, jq: jq, standardReqs: standardReqs}
 }
 
-// seedReqGroupStats puts each of vals in bucket for reqGroup with the
-// production stat write, in one transaction.
-func seedReqGroupStats(server *Server, bucket []byte, reqGroup string, vals ...int) {
-	err := server.boltDB().bolt.Update(func(tx *bolt.Tx) error {
-		for _, val := range vals {
-			if err := server.boltDB().reqStats.putStat(tx, bucket, reqGroup, val); err != nil {
-				return err
-			}
+// seedReqGroupStats records each of vals as reqGroup's learned stat of the kind
+// failReason (FailReasonRAM, FailReasonDisk or FailReasonTime) names, the way a
+// job that failed for that reason records it, and waits until they are
+// durable. Each val is a distinct job that was never stored live, so nothing
+// but the stat is written.
+func seedReqGroupStats(server *Server, failReason, reqGroup string, vals ...int) {
+	ctx := context.Background()
+	start := time.Now()
+
+	for i, val := range vals {
+		job := &Job{
+			Cmd: fmt.Sprintf("seed %s %s %d", failReason, reqGroup, i), Cwd: "/", ReqGroup: reqGroup,
+			State: JobStateBuried, Exited: true, Exitcode: 1, FailReason: failReason,
+			StartTime: start, EndTime: start,
 		}
 
-		return nil
-	})
-	So(err, ShouldBeNil)
+		switch failReason {
+		case FailReasonRAM:
+			job.PeakRAM = val
+		case FailReasonDisk:
+			job.PeakDisk = int64(val)
+		case FailReasonTime:
+			job.EndTime = start.Add(time.Duration(val) * time.Second)
+		default:
+			So(failReason, ShouldBeIn, []string{FailReasonRAM, FailReasonDisk, FailReasonTime})
+		}
+
+		server.db.updateJobAfterExit(ctx, job, nil, nil, false)
+	}
+
+	So(server.inspector().flush(), ShouldBeNil)
 }
 
 // reqStatTestRuntimes is every runtime, in seconds, up to an hour: seeded, it
@@ -528,7 +522,7 @@ func TestReqStatRefreshLimit(t *testing.T) {
 		rt := newReqStatTest(ctx, t, func(c *ServerConfig) { c.Timings.ReqStatRefreshInterval = 2 * time.Second })
 		server, db := rt.server, rt.server.boltDB()
 
-		seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, 300)
+		seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 300)
 		So(db.refreshReqGroupRecs(reqStatTestGroup).RAM, ShouldEqual, 300)
 
 		loadedBy := time.Now()
@@ -558,7 +552,7 @@ func TestReqStatRefreshLimit(t *testing.T) {
 		server, db := rt.server, rt.server.boltDB()
 
 		Convey("every refresh after a new stat key loads", func() {
-			seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, 300)
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 300)
 			db.refreshReqGroupRecs(reqStatTestGroup)
 			loads.reset()
 
@@ -645,9 +639,9 @@ func TestReqStatRefreshLimit(t *testing.T) {
 		})
 
 		Convey("a load in progress blocks no reader of the cache", func() {
-			seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, 300)
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 300)
 			db.refreshReqGroupRecs(reqStatTestGroup)
-			seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, 400)
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 400)
 
 			started, release := blockReqStatLoads(loads, reqStatTestGroup)
 			defer release()
@@ -690,7 +684,7 @@ func seedAndRefreshReqStatRAMs(db *db, server *Server, check func(rec *jqs.Requi
 			time.Sleep(40 * time.Millisecond)
 		}
 
-		seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, ram)
+		seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, ram)
 		check(db.refreshReqGroupRecs(reqStatTestGroup))
 	}
 }
@@ -795,7 +789,7 @@ func TestReqStatCacheRAC(t *testing.T) {
 
 		Convey("a new stat between two passes is loaded once by the second and applied to every job", func() {
 			server.buildSchedulerGroups(ctx, server.q, allitemdata, "")
-			seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, learnedRAM)
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, learnedRAM)
 			loads.reset()
 
 			server.buildSchedulerGroups(ctx, server.q, allitemdata, "")
@@ -823,7 +817,7 @@ func TestReqStatCacheRAC(t *testing.T) {
 		})
 
 		Convey("a new stat committed during a pass's load leaves every job of the ReqGroup one value that pass", func() {
-			seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, learnedRAM)
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, learnedRAM)
 
 			var seedOnce sync.Once
 
@@ -832,7 +826,7 @@ func TestReqStatCacheRAC(t *testing.T) {
 					return
 				}
 
-				seedOnce.Do(func() { seedReqGroupStats(server, bucketJobRAM, reqStatTestGroup, 5000) })
+				seedOnce.Do(func() { seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 5000) })
 			})
 
 			server.buildSchedulerGroups(ctx, server.q, allitemdata, "")

@@ -42,7 +42,7 @@ spec.md section: F5
 
 Delete `db.go` and the files under "Packages and files",
 `developers/soak/bboltexp/`, `.docs/reliable2/harness/statinspect/`,
-the bbolt-only tests, the `wrdev.sh` modes `freelist-check`,
+the files in A2's `boltOnlyTests`, the `wrdev.sh` modes `freelist-check`,
 `remap-stall-check` and `compact-fixture`, and `go.etcd.io/bbolt` from
 `go.mod` unless only the converter's read-only reader needs it. Move
 `backupCopyWriter` to `store_backup.go`, rename `db_backupsync_*.go` to
@@ -50,6 +50,8 @@ the bbolt-only tests, the `wrdev.sh` modes `freelist-check`,
 `reqstat_cache.go`, as "Packages and files" says. Replace A1 test 1's
 file list as F5 test 1 says, and close delivery-queue row 18. Cover both
 acceptance tests from F5.
+First resolve the 0b.1 incidental on unlisted tests that open a bbolt
+`*db` directly ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

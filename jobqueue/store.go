@@ -34,9 +34,14 @@ import (
 	"github.com/VertebrateResequencing/wr/limiter"
 )
 
-// storeKind picks the store implementation openStore opens. Its kinds arrive
-// with the log store; until then every kind opens bbolt.
+// storeKind picks the store implementation openStore opens. Until the log store
+// arrives, every kind opens bbolt.
 type storeKind uint8
+
+const (
+	storeKindLog  storeKind = iota // the default once the log store exists
+	storeKindBolt                  // bbolt; removed with it
+)
 
 // store is how the server reaches its persistent storage: the live jobs, their
 // history, and the environments, limits and learned requirements beside them.

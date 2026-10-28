@@ -55,6 +55,8 @@ and cover A5 test 4, deferred from item 0d.2 because it needs
 committed. Delete 0d.2's `WR_STORE_RECORD_REGEN` test that wrote that
 file, since it calls the removed methods. Cover all 11
 acceptance tests from C3 in `jobqueue/store_reserve_test.go`.
+Also resolve the 0b.1 incidental on the listed tests that hold the bbolt
+write lock to open their crash window ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed
@@ -88,6 +90,8 @@ spec.md section: Implementation Order, Phase 1, 1e; The store interface
 Make `storeKindLog` the default `storeKind` and `log` the
 `WR_TEST_STORE` default, and show `make test` and `make race` pass on
 it and with `WR_TEST_STORE=all`. Depends on 1e.1 to 1e.3.
+First resolve the 0b.1 incidental on tests that reach bbolt through
+`server.boltDB()` or `db.go` hooks ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

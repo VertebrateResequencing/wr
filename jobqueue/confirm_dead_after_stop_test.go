@@ -27,6 +27,7 @@ package jobqueue
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -113,11 +114,11 @@ func TestStopWaitsForABadServerConfirmation(t *testing.T) {
 
 			startStop()
 
-			So(pollUntil(func() bool {
-				server.boltDB().RLock()
-				defer server.boltDB().RUnlock()
+			// the store refuses writes once it has closed.
+			probe := &Job{Cmd: "confirm dead after stop probe", Cwd: testCwd}
 
-				return server.boltDB().closed
+			So(pollUntil(func() bool {
+				return errors.Is(server.db.updateJobRunStateDurable(probe), errDBClosed)
 			}), ShouldBeTrue)
 
 			stoppedBeforeRelease := false

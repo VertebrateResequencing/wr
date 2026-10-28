@@ -123,7 +123,7 @@ func TestSuspendRacingResumeKeepsResume(t *testing.T) {
 			job.RUnlock()
 
 			So(state, ShouldEqual, JobStateReady)
-			So(storedLiveJobState(t, d.server.boltDB(), key), ShouldEqual, JobStateReady)
+			So(storedLiveJobState(t, d.server.inspector(), key), ShouldEqual, JobStateReady)
 		})
 
 		Convey("a crash recovers it ready", func() {
@@ -241,7 +241,7 @@ func TestFailedSuspendLeavesJobAndStops(t *testing.T) {
 			// a durable write queued after the reservation's commits no earlier
 			// than it.
 			So(server.db.updateJobAfterChangeDurable(otherJob), ShouldBeNil)
-			So(storedLiveJobState(t, server.boltDB(), key), ShouldEqual, JobStateReserved)
+			So(storedLiveJobState(t, server.inspector(), key), ShouldEqual, JobStateReserved)
 
 			serverStopped = true
 

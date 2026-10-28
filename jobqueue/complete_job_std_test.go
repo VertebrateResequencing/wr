@@ -32,7 +32,6 @@ import (
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
-	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -77,21 +76,9 @@ func TestCompleteJobKeepsNoStd(t *testing.T) {
 		}
 
 		archivedRecord := func(key string) *Job {
-			var record *Job
-
-			errv := server.boltDB().bolt.View(func(tx *bolt.Tx) error {
-				encoded := tx.Bucket(bucketJobsComplete).Get([]byte(key))
-				if encoded == nil {
-					return nil
-				}
-
-				decoded, errd := server.boltDB().decodeJob(encoded)
-				record = decoded
-
-				return errd
-			})
-			So(errv, ShouldBeNil)
-			So(record, ShouldNotBeNil)
+			record, found, errc := server.inspector().completeJob(key)
+			So(errc, ShouldBeNil)
+			So(found, ShouldBeTrue)
 
 			return record
 		}

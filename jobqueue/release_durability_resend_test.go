@@ -41,6 +41,17 @@ import (
 // applied in memory, and must still not acknowledge it before the job's state is
 // on disk, since that is when the runner moves on.
 
+const (
+	// releaseDurabilityRepGroup names the one job these tests add.
+	releaseDurabilityRepGroup = "release_durability"
+
+	// releaseDurabilityRetries is the released job's Retries.
+	releaseDurabilityRetries = 1
+
+	// releaseDurabilityExitCode is the failed attempt's exit code.
+	releaseDurabilityExitCode = 3
+)
+
 // releaseResendRetries is the Retries of a job whose release is re-sent with
 // retries still to spare after the first release, alongside the
 // releaseDurabilityRetries case where the first release spent the last spare
@@ -78,37 +89,16 @@ func startedJobForResend(ctx context.Context, t *testing.T, retries uint8) (*Ser
 	return server, jq, reserved
 }
 
-// TestReleaseDurabilityResend proves that a re-sent release or bury, which the
-// manager has already applied, is acknowledged, and only once a write covering
-// the job's state has committed.
+// TestReleaseDurabilityResend proves that a re-sent release, which the manager
+// has already applied, is acknowledged and spends no second retry.
+// TestReleaseDurabilityResendWaitsForWrite proves it is acknowledged only once a
+// write covering the job's state has committed.
 func TestReleaseDurabilityResend(t *testing.T) {
 	if runnermode || servermode {
 		return
 	}
 
 	ctx := context.Background()
-
-	Convey("Given a job a runner has released after a failed attempt", t, func() {
-		server, jq, job := startedJobForResend(ctx, t, releaseResendRetries)
-
-		defer server.Stop(ctx, true)
-		defer disconnect(jq)
-
-		So(jq.releaseAfterAttempt(job, failedAttempt(), FailReasonExit), ShouldBeNil)
-
-		Convey("a re-sent release is not acknowledged while writes are held off disk", func() {
-			_, acked := reportWithWriteHeld(server, func() error {
-				return jq.releaseAfterAttempt(job, failedAttempt(), FailReasonExit)
-			})
-
-			So(acked, ShouldBeFalse)
-
-			jobs, err := jq.GetByRepGroup(releaseDurabilityRepGroup, false, 0, "", false, false)
-			So(err, ShouldBeNil)
-			So(len(jobs), ShouldEqual, 1)
-			So(jobs[0].UntilBuried, ShouldEqual, releaseResendRetries)
-		})
-	})
 
 	Convey("Given a job a runner has released after a failed attempt at its last spare retry", t, func() {
 		server, jq, job := startedJobForResend(ctx, t, releaseDurabilityRetries)
@@ -128,21 +118,9 @@ func TestReleaseDurabilityResend(t *testing.T) {
 			So(jobs[0].UntilBuried, ShouldEqual, releaseDurabilityRetries)
 		})
 	})
+}
 
-	Convey("Given a job a runner has buried", t, func() {
-		server, jq, job := startedJobForResend(ctx, t, releaseDurabilityRetries)
-
-		defer server.Stop(ctx, true)
-		defer disconnect(jq)
-
-		So(jq.Bury(job, failedAttempt(), FailReasonExit), ShouldBeNil)
-
-		Convey("a re-sent bury is acknowledged, but not while writes are held off disk", func() {
-			_, acked := reportWithWriteHeld(server, func() error {
-				return jq.Bury(job, failedAttempt(), FailReasonExit)
-			})
-
-			So(acked, ShouldBeFalse)
-		})
-	})
+// failedAttempt is the end state of a run whose command exited non-zero.
+func failedAttempt() *JobEndState {
+	return &JobEndState{Exited: true, Exitcode: releaseDurabilityExitCode, EndTime: time.Now()}
 }

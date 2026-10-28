@@ -59,7 +59,7 @@ dependency. Cover all 4 acceptance tests from B1.
 spec.md section: B2
 
 Add the single writer goroutine that makes each batch durable with one
-write and one fdatasync in `jobqueue/wal/writer.go`. Cover all 5
+write and one fdatasync in `jobqueue/wal/writer.go`. Cover all 6
 acceptance tests from B2. Depends on 1a.1.
 
 - [ ] implemented

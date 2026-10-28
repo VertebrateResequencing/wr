@@ -54,7 +54,6 @@ import (
 	"github.com/VertebrateResequencing/wr/queue"
 	"github.com/gofrs/uuid/v5"
 	. "github.com/smartystreets/goconvey/convey"
-	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -570,6 +569,18 @@ func TestMovedOnRunnerAfterRestart(t *testing.T) {
 			f.soCommandAlive()
 		})
 	})
+}
+
+// TestMovedOnRunnerAfterRestartSecondReserved proves that the release follows a
+// manager crash that recovers both of a runner's jobs as running, the second
+// only reserved. That crash image, the first job's started record beside the
+// second's reserved one, is composed from two backups through the store.
+func TestMovedOnRunnerAfterRestartSecondReserved(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
 
 	Convey("Given a runner's two jobs recovered running after a crash, the second only reserved", t, func() {
 		f := newMovedOnFixture(ctx, t, serverRC)
@@ -579,7 +590,11 @@ func TestMovedOnRunnerAfterRestart(t *testing.T) {
 		first := f.reserveAndStart()
 		firstStarted := f.backup()
 		second := f.reserve()
-		f.crashOnto(ctx, withLiveRecord(t, f.backup(), firstStarted, first.Key()))
+		// reserving the second releases the first through the asynchronous
+		// best-effort writer; wait for it, so the base image always holds that
+		// release and only the composed live record makes the first running.
+		So(f.server.inspector().flush(), ShouldBeNil)
+		f.crashOnto(ctx, withLiveRecord(ctx, t, f.serverConfig.storeKind, f.backup(), firstStarted, first.Key()))
 		f.soStillRunning(first.Key())
 		f.soStillRunning(second.Key())
 
@@ -609,41 +624,32 @@ func TestMovedOnRunnerAfterRestart(t *testing.T) {
 	})
 }
 
-// withLiveRecord returns base with the live record of key replaced by the one
-// in from, along with from's run-state record of key; base's run-state record
-// of key is deleted if from has none.
-func withLiveRecord(t *testing.T, base, from *bytes.Buffer, key string) *bytes.Buffer {
+// withLiveRecord returns base with key's live job replaced by the one in from,
+// as recovery would read each: from's job, with its run state, is stored over
+// base's as the job's full live record, through a store of the given kind.
+func withLiveRecord(ctx context.Context, t *testing.T, kind storeKind, base, from *bytes.Buffer,
+	key string) *bytes.Buffer {
 	t.Helper()
 
-	dir := t.TempDir()
-	basePath, fromPath := filepath.Join(dir, "base"), filepath.Join(dir, "from")
-	So(os.WriteFile(basePath, base.Bytes(), 0o600), ShouldBeNil)
+	fromPath := filepath.Join(t.TempDir(), "from")
 	So(os.WriteFile(fromPath, from.Bytes(), 0o600), ShouldBeNil)
 
-	fromDB, err := bolt.Open(fromPath, 0o600, nil)
+	inspector, closeFrom, err := openStoreFileInspector(fromPath)
 	So(err, ShouldBeNil)
 
-	var record, runState []byte
+	job, live, err := inspector.liveJob(key)
 
-	So(fromDB.View(func(tx *bolt.Tx) error {
-		record = bytes.Clone(tx.Bucket(bucketJobsLive).Get([]byte(key)))
-		runState = bytes.Clone(tx.Bucket(bucketJobRunState).Get([]byte(key)))
-
-		return nil
-	}), ShouldBeNil)
-	So(fromDB.Close(), ShouldBeNil)
-	So(record, ShouldNotBeEmpty)
-
-	baseDB, err := bolt.Open(basePath, 0o600, nil)
+	So(closeFrom(), ShouldBeNil)
 	So(err, ShouldBeNil)
-	So(baseDB.Update(func(tx *bolt.Tx) error {
-		if errp := putLiveRecord(tx, []byte(key), record); errp != nil || runState == nil {
-			return errp
-		}
+	So(live, ShouldBeTrue)
 
-		return tx.Bucket(bucketJobRunState).Put([]byte(key), runState)
-	}), ShouldBeNil)
-	So(baseDB.Close(), ShouldBeNil)
+	baseDir := t.TempDir()
+	basePath := filepath.Join(baseDir, "queue.db")
+	So(os.WriteFile(basePath, base.Bytes(), 0o600), ShouldBeNil)
+
+	s := openStoreIn(ctx, kind, baseDir)
+	So(s.updateJobAfterChangeDurable(job), ShouldBeNil)
+	So(s.close(ctx), ShouldBeNil)
 
 	composed, err := os.ReadFile(basePath)
 	So(err, ShouldBeNil)

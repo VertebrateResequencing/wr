@@ -28,6 +28,7 @@ package jobqueue
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,7 +37,6 @@ import (
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
-	bolt "go.etcd.io/bbolt"
 )
 
 // This file covers .docs/bugfixes/260929-readd-overwrites-running-job.md: an add
@@ -200,7 +200,7 @@ func TestReaddRunningJobSurvivesCrash(t *testing.T) {
 
 			// the cause: what recovery read was the record of the started job,
 			// not a fresh copy the re-add wrote over it.
-			So(bytes.Equal(crashedRecord, startedRecord), ShouldBeTrue)
+			So(crashedRecord, ShouldResemble, startedRecord)
 		})
 	})
 }
@@ -248,8 +248,8 @@ func TestReaddQueuedKeepsRecord(t *testing.T) {
 
 		// the state changes before a re-add are also written in the background,
 		// so they must all be on disk before the record is compared.
-		settledRecord := func(key string) []byte {
-			server.boltDB().wg.Wait(readdQueuedSettle)
+		settledRecord := func(key string) *Job {
+			So(server.inspector().flush(), ShouldBeNil)
 
 			return liveJobRecord(server, key)
 		}
@@ -262,7 +262,7 @@ func TestReaddQueuedKeepsRecord(t *testing.T) {
 			So(inserts, ShouldEqual, 0)
 			So(existed, ShouldEqual, 1)
 
-			So(bytes.Equal(settledRecord(key), before), ShouldBeTrue)
+			So(settledRecord(key), ShouldResemble, before)
 
 			got, errg := jq.GetByEssence(&JobEssence{JobKey: key}, false, false)
 			So(errg, ShouldBeNil)
@@ -286,18 +286,6 @@ func TestReaddQueuedKeepsRecord(t *testing.T) {
 		Convey("a ready one", func() {
 			job := newJob(cmd)
 			readdKeepsRecord(job, job.Key(), JobStateReady)
-		})
-
-		Convey("a ready one, re-added under its own RepGroup, without writing to the database", func() {
-			server.boltDB().wg.Wait(readdQueuedSettle)
-			writesBefore := boltWrites(server.boltDB())
-
-			readded, existed := add(newJob(cmd), false)
-			So(readded, ShouldEqual, 0)
-			So(existed, ShouldEqual, 1)
-
-			server.boltDB().wg.Wait(readdQueuedSettle)
-			So(boltWrites(server.boltDB()), ShouldEqual, writesBefore)
 		})
 
 		Convey("a reserved one", func() {
@@ -379,133 +367,99 @@ func TestStoreNewJobsKeepsHandedOutRecord(t *testing.T) {
 
 	ctx := context.Background()
 
-	Convey("Given a database holding a job's live record", t, func() {
-		database := openReliable4WriteStormDB(t, ctx)
-		defer func() { _ = database.close(ctx) }()
+	forEachStore(t, func(kind storeKind) {
+		Convey(fmt.Sprintf("Given a %s store holding a job's live record", storeKindName(kind)), t, func() {
+			database, _ := openTestStore(t, ctx, kind)
+			inspector := inspectorOf(database)
 
-		freshJob := func() *Job {
-			job := testDBJob("echo readd_queued_store", readdQueuedRepGroup)
-			job.State = JobStateReady
+			freshJob := func() *Job {
+				job := testDBJob("echo readd_queued_store", readdQueuedRepGroup)
+				job.State = JobStateReady
 
-			return job
-		}
+				return job
+			}
 
-		_, _, _, err := database.storeNewJobs(ctx, []*Job{freshJob()}, false)
-		So(err, ShouldBeNil)
-
-		key := freshJob().Key()
-
-		recordOf := func() []byte {
-			var record []byte
-
-			errv := database.bolt.View(func(tx *bolt.Tx) error {
-				record = liveAndRunStateRecord(tx, key)
-
-				return nil
-			})
-			So(errv, ShouldBeNil)
-			So(record, ShouldNotBeNil)
-
-			return record
-		}
-
-		progress := func(state JobState) []byte {
-			job := freshJob()
-			job.State = state
-			job.Attempts = 1
-			job.StartTime = time.Now()
-			job.Pid = 1
-			job.Host = reserveDurabilityHost
-
-			So(database.updateJobAfterChangeDurable(job), ShouldBeNil)
-
-			return recordOf()
-		}
-
-		for _, state := range []JobState{
-			JobStateReserved, JobStateRunning, JobStateLost, JobStateDelayed, JobStateBuried,
-			JobStateSuspended, JobStateReady,
-		} {
-			Convey("an add does not replace it once it is "+string(state), func() {
-				before := progress(state)
-
-				_, _, _, err = database.storeNewJobs(ctx, []*Job{freshJob()}, false)
-				So(err, ShouldBeNil)
-				So(bytes.Equal(recordOf(), before), ShouldBeTrue)
-			})
-		}
-
-		Convey("an add replaces it when it is a complete job's, so re-running it", func() {
-			before := progress(JobStateComplete)
-
-			_, _, _, err = database.storeNewJobs(ctx, []*Job{freshJob()}, false)
+			_, err := database.storeNewJobsGuarded(ctx, []*Job{freshJob()}, false, nil)
 			So(err, ShouldBeNil)
 
-			after := recordOf()
-			So(bytes.Equal(after, before), ShouldBeFalse)
+			key := freshJob().Key()
 
-			stored, errd := database.decodeJob(after)
-			So(errd, ShouldBeNil)
-			So(stored.State, ShouldEqual, JobStateReady)
-			So(stored.Attempts, ShouldEqual, 0)
+			recordOf := func() *Job {
+				record, found, errl := inspector.liveJob(key)
+				So(errl, ShouldBeNil)
+				So(found, ShouldBeTrue)
+
+				return record
+			}
+
+			progress := func(state JobState) *Job {
+				job := freshJob()
+				job.State = state
+				job.Attempts = 1
+				job.StartTime = time.Now()
+				job.Pid = 1
+				job.Host = reserveDurabilityHost
+
+				So(database.updateJobAfterChangeDurable(job), ShouldBeNil)
+
+				return recordOf()
+			}
+
+			for _, state := range []JobState{
+				JobStateReserved, JobStateRunning, JobStateLost, JobStateDelayed, JobStateBuried,
+				JobStateSuspended, JobStateReady,
+			} {
+				Convey("an add does not replace it once it is "+string(state), func() {
+					before := progress(state)
+
+					_, err = database.storeNewJobsGuarded(ctx, []*Job{freshJob()}, false, nil)
+					So(err, ShouldBeNil)
+					So(recordOf(), ShouldResemble, before)
+				})
+			}
+
+			Convey("an add replaces it when it is a complete job's, so re-running it", func() {
+				before := progress(JobStateComplete)
+
+				_, err = database.storeNewJobsGuarded(ctx, []*Job{freshJob()}, false, nil)
+				So(err, ShouldBeNil)
+
+				stored := recordOf()
+				So(stored, ShouldNotResemble, before)
+				So(stored.State, ShouldEqual, JobStateReady)
+				So(stored.Attempts, ShouldEqual, 0)
+			})
 		})
 	})
 }
 
-// liveJobRecord returns a copy of the given job's encoded record in server's
-// live bucket followed by its run-state record (if any), so that comparing two
-// of them compares everything recovery would read of the job, or nil if it has
-// no live record.
-func liveJobRecord(server *Server, key string) []byte {
-	var record []byte
-
-	err := server.boltDB().bolt.View(func(tx *bolt.Tx) error {
-		record = liveAndRunStateRecord(tx, key)
-
-		return nil
-	})
-	So(err, ShouldBeNil)
-
-	return record
+// liveJobRecord returns the given job as server's store holds it live, with its
+// latest durable state, as recovery would read it, or nil if it has no live
+// record.
+func liveJobRecord(server *Server, key string) *Job {
+	return inspectedLiveJob(server.inspector(), key)
 }
 
 // liveJobRecordInImage is liveJobRecord for the given database image.
-func liveJobRecordInImage(t *testing.T, image []byte, key string) []byte {
+func liveJobRecordInImage(t *testing.T, image []byte, key string) *Job {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "image.db")
 	So(os.WriteFile(path, image, 0o600), ShouldBeNil)
 
-	boltdb, err := bolt.Open(path, 0o600, &bolt.Options{ReadOnly: true})
+	inspector, closeImage, err := openStoreFileInspector(path)
 	So(err, ShouldBeNil)
 
-	defer func() { _ = boltdb.Close() }()
+	defer func() { So(closeImage(), ShouldBeNil) }()
 
-	var record []byte
-
-	err = boltdb.View(func(tx *bolt.Tx) error {
-		record = liveAndRunStateRecord(tx, key)
-
-		return nil
-	})
-	So(err, ShouldBeNil)
-
-	return record
+	return inspectedLiveJob(inspector, key)
 }
 
-// liveAndRunStateRecord returns a copy of key's live record followed by its
-// run-state record (empty if it has none), or nil if it has no live record.
-func liveAndRunStateRecord(tx *bolt.Tx, key string) []byte {
-	live := tx.Bucket(bucketJobsLive).Get([]byte(key))
-	if live == nil {
-		return nil
-	}
+// inspectedLiveJob is inspector.liveJob(key), asserting it succeeded, or nil if
+// key has no live record.
+func inspectedLiveJob(inspector storeInspector, key string) *Job {
+	job, _, err := inspector.liveJob(key)
+	So(err, ShouldBeNil)
 
-	record := bytes.Clone(live)
-
-	if bucket := tx.Bucket(bucketJobRunState); bucket != nil {
-		record = append(record, bucket.Get([]byte(key))...)
-	}
-
-	return record
+	return job
 }

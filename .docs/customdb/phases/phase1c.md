@@ -59,10 +59,13 @@ Cover all 4 acceptance tests from C2.
 
 spec.md section: C7
 
-Add the store directory lock and `VERSION` check in
-`jobqueue/store_open.go`, so two managers never share a store and a
-store from a newer wr is refused. Cover all 4 acceptance tests from C7.
+Add the store lock beside the store directory (`dbFile + ".lock"`) and
+the `VERSION` check in `jobqueue/store_open.go`, so two managers never
+share a store and a store from a newer wr is refused. Cover all 4
+acceptance tests from C7.
 Depends on 1c.1.
+Also resolve the 0b.1 incidental on taking the lock before anything else
+in `openStore` ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

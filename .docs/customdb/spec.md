@@ -65,7 +65,8 @@ lets every live job's spec be addressed by file and offset.
   - `store_record.go`: the record/replay wrapper (A5).
   - `store_compact.go`: offline compaction (E6).
   - `store_record_test.go` (record/replay), `store_crash_test.go`,
-    `store_inspect_test.go`.
+    `store_inspect_test.go`, `store_bolt_inspect_test.go` (deleted in
+    Phase 2).
 - `internal/db_upgrade_status.go`: new conversion phase.
 - `internal/config.go`, `cmd/conf.go`, `cmd/manager.go`, `cmd/cloud.go`.
 - `developers/soak/dbstart/` rewritten; `developers/soak/soakgate.py`
@@ -237,6 +238,9 @@ func (c Commit) WaitWithin(d time.Duration) (done bool, err error)
 
 type Writer struct{ /* one goroutine, one open segment */ }
 
+// ErrClosed is the error of an append made after Close.
+var ErrClosed = errors.New("wal: writer closed")
+
 // done, if non-nil, is called by the writer goroutine with the batch's
 // result after its sync and before Wait returns. It must not block.
 func (w *Writer) Append(rec []byte, done func(error)) (Ref, Commit)
@@ -245,6 +249,10 @@ func (w *Writer) AppendBlock(block []byte, n int,
 func (w *Writer) Rotate() (sealed uint32, err error)
 func (w *Writer) Durable() (file uint32, off int64)
 func (w *Writer) Stats() WriterStats
+
+// Close refuses later appends (ErrClosed), then syncs every batch
+// already queued, calls its done funcs and closes its channels before it
+// returns.
 func (w *Writer) Close() error
 ```
 
@@ -288,7 +296,6 @@ from one counter (max existing + 1 at open):
 | Name | What |
 | --- | --- |
 | `VERSION` | `wr-store 1\n` |
-| `LOCK` | flock'd exclusive lock file |
 | `NNNNNNNN.wal` | log segment |
 | `NNNNNNNN.ckpt` | checkpoint |
 | `NNNNNNNN.hist` | sealed history segment (Phase 2) |
@@ -398,6 +405,15 @@ checkpoint:
   waits are today's (requirements.md "Write kinds"): adds, start, archive,
   release, bury, delete, modify, limits, rerun marks wait; best-effort
   changes do not.
+- `close` makes every record appended before it durable. `logStore`'s
+  appends check a closed flag under a read lock, held until
+  `Writer.Append` returns, that `close` takes for writing to set it, so an append after `close` gets `errDBClosed` (a
+  reserve gets a handle whose `WaitWithin` returns it) and never reaches
+  the writer; `wal.ErrClosed` is the writer's own guard and never reaches
+  a caller. Then `Writer.Close` syncs every queued batch and calls its
+  `done` funcs before returning. So a best-effort change queued before
+  `close()` is recovered with its latest state, as today's best-effort
+  writer drains on close (`TestStoreCloseDrainsWrites`).
 - Reservation (C3): wait at most `reserveDurableWait()`
   (`min(10s, ClientMinRequestTimeout/4)`, today's bound); on timeout or any
   error, return the job to the ready queue, record a release state record
@@ -466,7 +482,11 @@ by the store; methods that return live jobs decode them through their Refs.
 
 ### Recovery
 
-1. Take the lock, check `VERSION`, delete `*.tmp` and any `SOURCE` (E1).
+Recovery takes no lock: its caller already holds `dbFile + ".lock"` (C7),
+whether `openStore` (including E2's recovery of `.restoring`), E6 compact,
+`ReadStore` or `ExportStore`.
+
+1. Check `VERSION`, delete `*.tmp` and any `SOURCE` (E1).
 2. Load the newest checkpoint with a valid trailer, decoding blocks with 8
    concurrent readers.
 3. Open history and read its durable folded position F (file, offset).
@@ -577,8 +597,13 @@ minute with `failures`; it never stops the manager.
 - `managerdbfile` (default `db`) is the store directory; `managerdbbkfile`
   is a backup directory or S3 prefix. No new config key. The upgrade sidecar
   stays at `dbFile + ".upgrade"`.
-- `LOCK` is taken with `flock(LOCK_EX|LOCK_NB)`, retried until
-  `managerDBOpenTimeout`, then `ErrDBLocked`.
+- The lock is the file `dbFile + ".lock"`, beside the store directory
+  rather than in it, because E2's open order and a restore remove or rename
+  `dbFile`. It is taken with `flock(LOCK_EX|LOCK_NB)`, retried until
+  `managerDBOpenTimeout`, then `ErrDBLocked`. `openStore` takes it before
+  anything else, so a manager that gets `ErrDBLocked` has changed nothing.
+  The path is `dbFile` as configured, not resolved, so two configs naming
+  one store by different paths (such as a symlink) do not share a lock.
 - At open, `dbFile` may be: absent; a store directory; a bbolt file (bbolt
   meta magic `0xED0CDAED`) to convert; a self-contained backup (tar, "ustar"
   at offset 257) to restore. Anything else is corrupt and restored from
@@ -708,12 +733,18 @@ As a wr developer, I want tests to inspect stored state through a small
 interface, so that the same tests run against bbolt and the log store.
 
 Methods live in `_test.go` files on each implementation. The test files
-that call `db.bolt.View/Update/Batch` or take `*bolt.Tx` move onto it,
+that reach bbolt (any match for `\.bolt\.|\*bolt\.Tx|bolt\.Open`, which
+includes held writer transactions and `Stats().TxN` counts) move onto it,
 except tests of bbolt mechanics (freelist, remap, backup pacing, writer
 turns, prefetch, compaction of bbolt), which stay bbolt-only and are deleted
-in Phase 2. `forEachStore(t, fn)` runs `fn` once with the kind named by env
-`WR_TEST_STORE` (`log` default from Phase 1, `bolt`), or both when it is
-`all`.
+in Phase 2. A behavioural test that needs bbolt for one step moves into its
+own `*_bolt_test.go` file, so the rest of its file stays. Calling a test
+helper that reaches bbolt counts as reaching it, so such a helper lives in a
+listed file and only listed files call it. `boltOnlyTests` lists every file
+Phase 2 deletes: the matching files, plus any file that tests only bbolt
+machinery without matching. `forEachStore(t, fn)` runs `fn` once with the
+kind named by env `WR_TEST_STORE` (`log` default from Phase 1, `bolt`), or
+both when it is `all`.
 
 ```go
 type recordKind uint8
@@ -738,7 +769,8 @@ type storeInspector interface {
 ```
 
 **Package:** `jobqueue/`
-**File:** `jobqueue/store_inspect_test.go`
+**File:** `jobqueue/store_inspect_test.go`; the bbolt methods in
+`jobqueue/store_bolt_inspect_test.go`, which is in `boltOnlyTests`
 **Test file:** `jobqueue/store_inspect_test.go`
 
 **Acceptance tests:**
@@ -747,11 +779,24 @@ type storeInspector interface {
    inspected, then `count(kindLive)` is 2, `count(kindComplete)` is 1, and
    `liveJob` of an archived key returns false.
 2. Given `updateJobAfterExitDurable(job, []byte("o"), []byte("e"), false)`
-   for a job with Exitcode 1, when `flush()` returns, then
-   `count(kindStdOut)` is 1 and `retrieveJobStd` returns `"o"` and `"e"`.
-3. Given `grep -l 'db\.bolt\.\|\*bolt\.Tx'` over `jobqueue/*_test.go`, when
-   run after the move, then only files named in a `boltOnlyTests` list in
-   `store_inspect_test.go` match.
+   for a job with Exitcode 1, and `updateJobAfterExitDurable(job2,
+   []byte("o2"), nil, false)` for another, when `flush()` returns, then
+   `count(kindStdOut)` is 2, `count(kindStdErr)` is 1 and `retrieveJobStd`
+   returns `"o"` and `"e"` for the first.
+3. Given `grep -lE '\.bolt\.|\*bolt\.Tx|bolt\.Open'` over
+   `jobqueue/*_test.go`, when run after the move, then only files named in a
+   `boltOnlyTests` list in `store_inspect_test.go` match, every listed file
+   exists, and `store_inspect_test.go` neither matches nor is listed.
+4. Given `go vet -overlay` on `jobqueue/` with an overlay that empties
+   every file in `boltOnlyTests`, run once per tag set the package's tests
+   are built with (`netgo`, `netgo,race`, `netgo,reliability`,
+   `netgo,reliability_repro` and `netgo,reliability_repro,reliability`),
+   when run (in-test, in parallel, a few seconds with a warm build cache),
+   then each passes, and every tag in a `//go:build` line of
+   `jobqueue/*_test.go` other than `linux` and `windows` is in one of those
+   sets; with an added unlisted test file calling `boltWrites(s.boltDB())`
+   (defined only in a listed file), `go vet -tags netgo` fails with
+   `undefined: boltWrites`.
 
 ### A3: Per-writer stats
 
@@ -1024,6 +1069,11 @@ page rewrites.
    cleared, the next record's `Wait()` returns nil within 1s, a scan finds
    it in a file numbered above every earlier one, and `done` funcs were
    called with the same results the `Wait()`s returned.
+6. Given a sync hook that blocks the first sync for 200ms, when 50 records
+   are appended without waiting and `Close()` is called while the hook
+   holds, then `Close()` returns nil after the hook releases, every
+   record's `done` func was called with nil, a later `Append`'s `Wait()`
+   returns `wal.ErrClosed`, and a scan finds all 50 records.
 
 ### B3: Block codecs
 
@@ -1382,11 +1432,15 @@ written by a newer wr to be refused clearly.
 
 **Acceptance tests:**
 
-1. Given a store held open, when a second `openStore` runs with
-   `managerDBOpenTimeout` 100ms, then it returns an error wrapping
-   `ErrDBLocked` within 1s.
+1. Given a store held open, with its backup, a `dbFile + ".restoring"`
+   and a `dbFile + ".corrupt"` beside it, when a second `openStore` runs
+   with `managerDBOpenTimeout` 100ms, then it returns an error wrapping
+   `ErrDBLocked` within 1s, and every file in and beside `dbFile` has its
+   inode and sha256 unchanged (`TestStoreOpenLocked` covers this for every
+   store kind).
 2. Given `VERSION` containing `wr-store 2`, when opened, then the error
-   wraps `errStoreVersionTooNew` and says "use a newer wr"; no file changed.
+   wraps `errStoreVersionTooNew` and says "use a newer wr"; no file in
+   `dbFile` changed.
 3. Given an unreadable store directory (mode 0), when opened, then the error
    wraps `ErrDBUnreadable` and no restore is attempted.
 4. Given a closed store directory, when `bolt.Open(dir, 0600,
@@ -1644,7 +1698,7 @@ func buildStoreFromBolt(ctx context.Context, boltFile, dir string,
 As an operator, I want the restore-from-backup behaviour of today for the
 new store.
 
-`openStore` order:
+`openStore` order, all under the lock (C7), which it takes first:
 
 1. Dev wipe (E3).
 2. `os.RemoveAll` any leftover `dbFile + ".restoring"` and
@@ -1675,9 +1729,10 @@ Restore never touches `dbFile` until the backup is proven good, as today
    after E1 step 1's free-space check against the bbolt file's size (a
    downloaded bbolt object lives inside `.restoring` and is removed before
    step 3). S3 downloads land only inside `.restoring`.
-2. Recover the store in `.restoring` fully (as `openStore` would), then
-   close it and fsync. Any error: `os.RemoveAll` `.restoring`, leave
-   `dbFile` untouched, return the error with today's message.
+2. Recover the store in `.restoring` fully (as `openStore` would, under
+   the `dbFile + ".lock"` it already holds), then close it and fsync. Any
+   error: `os.RemoveAll` `.restoring`, leave `dbFile` untouched, return
+   the error with today's message.
 3. If `dbFile` exists, rename it to `dbFile + ".corrupt"`; rename
    `.restoring` to `dbFile`; fsync the parent; `os.RemoveAll` `.corrupt`.
 
@@ -1752,7 +1807,8 @@ prefix delete through `backupTarget`. The dev wipe keeps today's intent,
 starting from an empty DB, so it removes everything the DB owns: `dbFile`,
 `dbBkFile`, and any `dbFile + ".converting"`, `".restoring"`, `".corrupt"`,
 `dbFile + ".bolt-pre-*"` and `dbBkFile + ".bolt-pre-*"` (S3: objects with
-that prefix). The `.upgrade` sidecar is left, as today.
+that prefix). The `.upgrade` sidecar is left, as today, and so is the
+`.lock` file the wiping manager holds.
 
 ```go
 type backupTarget interface {
@@ -1785,7 +1841,8 @@ type backupTarget interface {
 5. Given a corrupt store and a fake S3 target, once holding a good backup
    and once a backup with a damaged checkpoint, when opened, then in both
    cases no downloaded file remains anywhere (`.restoring` absent, no other
-   new entry in `dbFile`'s parent directory).
+   new entry in `dbFile`'s parent directory except the `dbFile + ".lock"`
+   that open creates).
 
 ### E4: Incremental backup
 
@@ -1881,18 +1938,18 @@ that a manager can start from.
 
 As an operator, I want `wr manager compact` to tidy the new store offline.
 
-Phase 2. With the lock held: recover, fold the log and seal the open segment,
-write a checkpoint (its rotation leaves one new empty wal file at the cut),
-delete covered wal files, merge `.hist` segments smaller than `histSegmentBytes`
-into new ones (write, fsync, rename, then delete inputs). `CompactStats`
-before/after are the directory's total bytes; unreadable records are counted as
-today. Refusal while a manager runs is unchanged. On an unconverted bbolt file,
-compact first runs `convertBoltDB` (same steps, free-space check and crash
-safety as E1), then compacts the new store, so no older wr is needed. Phase 1:
-compact on an unconverted bbolt file compacts it as bbolt exactly as today
-(`db_compact.go` survives until Phase 2), so `wrdev.sh compact-fixture` keeps
-passing; on a store directory it returns `errCompactNotSupported` (unreleased;
-Phase 2 deletes it).
+Phase 2. Holding the store lock (`dbFile + ".lock"`, taken as C7 says), recover,
+fold the log and seal the open segment, write a checkpoint (its rotation leaves
+one new empty wal file at the cut), delete covered wal files, merge `.hist`
+segments smaller than `histSegmentBytes` into new ones (write, fsync, rename,
+then delete inputs). `CompactStats` before/after are the directory's total
+bytes; unreadable records are counted as today. Refusal while a manager runs is
+unchanged. On an unconverted bbolt file, compact first runs `convertBoltDB`
+(same steps, free-space check and crash safety as E1), then compacts the new
+store, so no older wr is needed. Phase 1: compact on an unconverted bbolt file
+compacts it as bbolt exactly as today (`db_compact.go` survives until Phase 2),
+so `wrdev.sh compact-fixture` keeps passing; on a store directory it returns
+`errCompactNotSupported` (unreleased; Phase 2 deletes it).
 
 **Package:** `jobqueue/`, `cmd/`
 **File:** `jobqueue/store_compact.go`, `cmd/manager.go`
@@ -1932,10 +1989,10 @@ As a cloud user, I want deploy and teardown to keep carrying my database.
   `.wr_<deployment>/db` (restored on the remote's first start, E2 test 3);
   when it is still a bbolt file it uploads it unchanged, as today, and the
   remote converts it on first start (E1).
-- Deploy already dies if a local manager answers on its port
-  (`cmd/cloud.go`, "is already running"); `ExportStore` also takes the
-  store lock and fails with `ErrDBLocked` if a manager holds it, which only
-  a manager not answering on that port can.
+- Deploy already dies if a local manager answers on its port (`cmd/cloud.go`,
+  "is already running"); `ExportStore` also takes the store lock
+  (`dbDir + ".lock"`) and fails with `ErrDBLocked` if a manager holds it,
+  which only a manager not answering on that port can.
 - Teardown with a non-S3 backup location `os.RemoveAll`s any
   `ManagerDBFile + ".old"`, renames an existing store directory to it, then
   calls `BackupDB(ManagerDBFile)`. The S3 branch also `os.RemoveAll`s
@@ -2023,7 +2080,7 @@ stamping bbolt fixtures, is deleted in Phase 2).
 
 ```go
 // ReadStore calls fn for every live then every complete job in a stopped
-// manager's store, taking the store lock.
+// manager's store, taking the store lock (dbDir + ".lock").
 func ReadStore(dbDir string, fn func(live bool, job *Job) error) error
 ```
 
@@ -2099,10 +2156,11 @@ remains.
 
 Delete `db.go` and the files listed under "Packages and files",
 `developers/soak/bboltexp/`, `.docs/reliable2/harness/statinspect/`, the
-bbolt-only tests, `wrdev.sh` modes `freelist-check`, `remap-stall-check` and
-`compact-fixture`, and `go.etcd.io/bbolt` from `go.mod` (the converter keeps a
-read-only bbolt reader, so the module stays if needed only by
-`store_convert.go`). Delivery-queue row 18 closes with `archivefold.go`.
+files in A2's `boltOnlyTests`, `wrdev.sh` modes `freelist-check`,
+`remap-stall-check` and `compact-fixture`, and `go.etcd.io/bbolt` from
+`go.mod` (the converter keeps a read-only bbolt reader, so the module stays
+if needed only by `store_convert.go`). Delivery-queue row 18 closes with
+`archivefold.go`.
 
 **Package:** `jobqueue/`
 **File:** as listed

@@ -88,7 +88,9 @@ func TestRerunGuardKeepsOnlyDependentsLive(t *testing.T) {
 			So(archiveErr, ShouldBeNil)
 
 			rdrSoCompleteRecorded(d, unrelated.Key())
-			So(len(d.server.boltDB().retrieve(ctx, bucketJobsLive, unrelated.Key())), ShouldEqual, 0)
+			_, live, err := d.server.inspector().liveJob(unrelated.Key())
+			So(err, ShouldBeNil)
+			So(live, ShouldBeFalse)
 		})
 	})
 }

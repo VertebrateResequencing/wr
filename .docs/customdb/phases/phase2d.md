@@ -43,6 +43,8 @@ spec.md section: E1
 Make conversion write `.hist` segments instead of `history.bolt`
 (`jobqueue/store_convert.go`). Cover all 8 acceptance tests from E1
 against the final store.
+Keep the 1f.2 coverage of `reliable2_dbcompat_test.go`'s recovery tests,
+as the 0b.1 incidental owned by 1f.2 says ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

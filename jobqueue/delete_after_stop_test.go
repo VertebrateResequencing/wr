@@ -33,7 +33,6 @@ import (
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
-	bolt "go.etcd.io/bbolt"
 )
 
 // deleteAfterStopGrace is how long the test gives a Stop that does not wait for
@@ -153,7 +152,7 @@ func TestStopWaitsForARemoveOnFailureDelete(t *testing.T) {
 
 			So(stoppedBeforeRelease, ShouldBeFalse)
 			So(stoppedAfterRelease, ShouldBeTrue)
-			So(liveBucketHas(serverConfig.DBFile, job.Key()), ShouldBeFalse)
+			So(storeHasLive(serverConfig.DBFile, job.Key()), ShouldBeFalse)
 		})
 	})
 }
@@ -268,22 +267,16 @@ func TestStopStillRemovesAJobBuriedWhileRunnersDie(t *testing.T) {
 	})
 }
 
-// liveBucketHas reports whether the live bucket of the stopped manager's
-// database at path still holds key, which is what a restarted manager would
-// recover.
-func liveBucketHas(path, key string) bool {
-	boltdb, err := bolt.Open(path, dbFilePermission, &bolt.Options{ReadOnly: true, Timeout: time.Second})
+// storeHasLive reports whether the stopped manager's store at path still holds
+// key live, which is what a restarted manager would recover.
+func storeHasLive(path, key string) bool {
+	inspector, closeStore, err := openStoreFileInspector(path)
 	So(err, ShouldBeNil)
 
-	defer func() { So(boltdb.Close(), ShouldBeNil) }()
+	defer func() { So(closeStore(), ShouldBeNil) }()
 
-	found := false
+	_, live, err := inspector.liveJob(key)
+	So(err, ShouldBeNil)
 
-	So(boltdb.View(func(tx *bolt.Tx) error {
-		found = tx.Bucket(bucketJobsLive).Get([]byte(key)) != nil
-
-		return nil
-	}), ShouldBeNil)
-
-	return found
+	return live
 }

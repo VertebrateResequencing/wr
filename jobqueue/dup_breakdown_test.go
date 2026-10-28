@@ -28,14 +28,11 @@ package jobqueue
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/VertebrateResequencing/wr/internal"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
-	bolt "go.etcd.io/bbolt"
 )
 
 func TestAlreadyCompleteDuplicateAttribution(t *testing.T) {
@@ -49,179 +46,145 @@ func TestAlreadyCompleteDuplicateAttribution(t *testing.T) {
 
 	completedAt := time.Date(2026, 8, 28, 9, 30, 0, 0, time.UTC)
 
-	Convey("Given a command that completed under one report group", t, func() {
-		testDB := testDBForAttribution(ctx, t)
+	forEachStore(t, func(kind storeKind) {
+		Convey("Given a command that completed under one report group", t, func() {
+			s, _ := openTestStore(t, ctx, kind)
 
-		seedCompletedJob(ctx, testDB, doneCmd, firstRepGroup, completedAt)
+			seedCompletedJob(ctx, s, doneCmd, firstRepGroup, completedAt)
 
-		Convey("Adding it again under that same report group is attributed to it", func() {
-			_, _, sameDups, errs := testDB.storeNewJobs(ctx, []*Job{testDBJob(doneCmd, firstRepGroup)}, true)
-			So(errs, ShouldBeNil)
-			So(sameDups.Total(), ShouldEqual, 1)
-			So(sameDups.Complete, ShouldEqual, 1)
-			So(sameDups.CompleteSameRepGroup, ShouldEqual, 1)
-			So(sameDups.CompleteOtherRepGroups(), ShouldEqual, 0)
-			So(sameDups.OtherRepGroups, ShouldBeEmpty)
-		})
+			Convey("Adding it again under that same report group is attributed to it", func() {
+				sameDups, errs := addedDuplicates(ctx, s, []*Job{testDBJob(doneCmd, firstRepGroup)})
+				So(errs, ShouldBeNil)
+				So(sameDups.Total(), ShouldEqual, 1)
+				So(sameDups.Complete, ShouldEqual, 1)
+				So(sameDups.CompleteSameRepGroup, ShouldEqual, 1)
+				So(sameDups.CompleteOtherRepGroups(), ShouldEqual, 0)
+				So(sameDups.OtherRepGroups, ShouldBeEmpty)
+			})
 
-		Convey("Adding it again under a different report group names the one it completed under", func() {
-			_, _, otherDups, erro := testDB.storeNewJobs(ctx, []*Job{testDBJob(doneCmd, otherRepGroup)}, true)
-			So(erro, ShouldBeNil)
-			So(otherDups.Complete, ShouldEqual, 1)
-			So(otherDups.CompleteSameRepGroup, ShouldEqual, 0)
-			So(otherDups.CompleteOtherRepGroups(), ShouldEqual, 1)
-			So(dupRepGroupSummaries(otherDups.OtherRepGroups), ShouldResemble,
-				[]string{firstRepGroup + " x1 completed 2026-08-28"})
-		})
+			Convey("Adding it again under a different report group names the one it completed under", func() {
+				otherDups, erro := addedDuplicates(ctx, s, []*Job{testDBJob(doneCmd, otherRepGroup)})
+				So(erro, ShouldBeNil)
+				So(otherDups.Complete, ShouldEqual, 1)
+				So(otherDups.CompleteSameRepGroup, ShouldEqual, 0)
+				So(otherDups.CompleteOtherRepGroups(), ShouldEqual, 1)
+				So(dupRepGroupSummaries(otherDups.OtherRepGroups), ShouldResemble,
+					[]string{firstRepGroup + " x1 completed 2026-08-28"})
+			})
 
-		Convey("Each input job of one add is attributed by its own report group", func() {
-			_, _, mixedDups, errm := testDB.storeNewJobs(ctx, []*Job{
-				testDBJob(doneCmd, firstRepGroup),
-				testDBJob(doneCmd, otherRepGroup),
-			}, true)
-			So(errm, ShouldBeNil)
-			So(mixedDups.Complete, ShouldEqual, 2)
-			So(mixedDups.CompleteSameRepGroup, ShouldEqual, 1)
-			So(dupRepGroupSummaries(mixedDups.OtherRepGroups), ShouldResemble,
-				[]string{firstRepGroup + " x1 completed 2026-08-28"})
-		})
+			Convey("Each input job of one add is attributed by its own report group", func() {
+				mixedDups, errm := addedDuplicates(ctx, s, []*Job{
+					testDBJob(doneCmd, firstRepGroup),
+					testDBJob(doneCmd, otherRepGroup),
+				})
+				So(errm, ShouldBeNil)
+				So(mixedDups.Complete, ShouldEqual, 2)
+				So(mixedDups.CompleteSameRepGroup, ShouldEqual, 1)
+				So(dupRepGroupSummaries(mixedDups.OtherRepGroups), ShouldResemble,
+					[]string{firstRepGroup + " x1 completed 2026-08-28"})
+			})
 
-		Convey("A command repeated within one add counts once per input job", func() {
-			_, _, repeatDups, errr := testDB.storeNewJobs(ctx, []*Job{
-				testDBJob(doneCmd, firstRepGroup),
-				testDBJob(doneCmd, firstRepGroup),
-			}, true)
-			So(errr, ShouldBeNil)
-			So(repeatDups, ShouldResemble, DuplicateBreakdown{Complete: 2, CompleteSameRepGroup: 2})
-			So(repeatDups.Total(), ShouldEqual, 2)
-		})
+			Convey("A command repeated within one add counts once per input job", func() {
+				repeatDups, errr := addedDuplicates(ctx, s, []*Job{
+					testDBJob(doneCmd, firstRepGroup),
+					testDBJob(doneCmd, firstRepGroup),
+				})
+				So(errr, ShouldBeNil)
+				So(repeatDups, ShouldResemble, DuplicateBreakdown{Complete: 2, CompleteSameRepGroup: 2})
+				So(repeatDups.Total(), ShouldEqual, 2)
+			})
 
-		Convey("A command that never completed is not a duplicate", func() {
-			_, _, freshDups, errf := testDB.storeNewJobs(ctx, []*Job{testDBJob("echo fresh", firstRepGroup)}, true)
-			So(errf, ShouldBeNil)
-			So(freshDups, ShouldResemble, DuplicateBreakdown{})
-		})
-
-		Convey("A same-report-group duplicate is attributed without reading the archived record", func() {
-			// the archived record says the command completed under
-			// firstRepGroup, but the index also links its key to
-			// otherRepGroup, as it does for a command that was added under
-			// both. Adding under otherRepGroup must then report no other report
-			// group at all: naming firstRepGroup here could only come from
-			// reading the record, which this path must not do.
-			So(indexKeyUnderRepGroup(testDB, doneCmd, firstRepGroup, otherRepGroup), ShouldBeNil)
-
-			_, _, indexedDups, erri := testDB.storeNewJobs(ctx, []*Job{testDBJob(doneCmd, otherRepGroup)}, true)
-			So(erri, ShouldBeNil)
-			So(indexedDups, ShouldResemble, DuplicateBreakdown{Complete: 1, CompleteSameRepGroup: 1})
-			So(indexedDups.OtherRepGroups, ShouldBeEmpty)
-		})
-
-		Convey("A duplicate with no index entry is attributed by the record's own report group", func() {
-			// a database old enough, or built by hand, to have no
-			// repgroup->key entry for the record. Re-adding under the report
-			// group the record itself names must not report that report group
-			// as another one: the operator just typed it.
-			So(forgetIndexKey(testDB, doneCmd, firstRepGroup), ShouldBeNil)
-
-			_, _, unindexedDups, erru := testDB.storeNewJobs(ctx,
-				[]*Job{testDBJob(doneCmd, firstRepGroup)}, true)
-			So(erru, ShouldBeNil)
-			So(unindexedDups, ShouldResemble, DuplicateBreakdown{Complete: 1, CompleteSameRepGroup: 1})
-		})
-	})
-
-	Convey("Given commands that completed under 2 other report groups", t, func() {
-		testDB := testDBForAttribution(ctx, t)
-
-		const (
-			busierRepGroup  = "attributionBusy"
-			quieterRepGroup = "attributionQuiet"
-			newRepGroup     = "attributionNew"
-			busyCmd         = "echo busy 1"
-			busierCmd       = "echo busy 2"
-			quietCmd        = "echo quiet 1"
-		)
-
-		newest := completedAt.Add(48 * time.Hour)
-
-		seedCompletedJob(ctx, testDB, busyCmd, busierRepGroup, completedAt)
-		seedCompletedJob(ctx, testDB, busierCmd, busierRepGroup, newest)
-		seedCompletedJob(ctx, testDB, quietCmd, quieterRepGroup, completedAt)
-
-		Convey("They are grouped per report group, biggest count first, newest end time each", func() {
-			_, _, dups, err := testDB.storeNewJobs(ctx, []*Job{
-				testDBJob(quietCmd, newRepGroup),
-				testDBJob(busyCmd, newRepGroup),
-				testDBJob(busierCmd, newRepGroup),
-			}, true)
-			So(err, ShouldBeNil)
-			So(dups.Complete, ShouldEqual, 3)
-			So(dups.CompleteOtherRepGroups(), ShouldEqual, 3)
-			So(dupRepGroupSummaries(dups.OtherRepGroups), ShouldResemble, []string{
-				busierRepGroup + " x2 completed 2026-08-30",
-				quieterRepGroup + " x1 completed 2026-08-28",
+			Convey("A command that never completed is not a duplicate", func() {
+				freshDups, errf := addedDuplicates(ctx, s, []*Job{testDBJob("echo fresh", firstRepGroup)})
+				So(errf, ShouldBeNil)
+				So(freshDups, ShouldResemble, DuplicateBreakdown{})
 			})
 		})
 
-		Convey("Equal counts are ordered by report group, so the report is deterministic", func() {
-			_, _, dups, err := testDB.storeNewJobs(ctx, []*Job{
-				testDBJob(quietCmd, newRepGroup),
-				testDBJob(busierCmd, newRepGroup),
-			}, true)
-			So(err, ShouldBeNil)
-			So(dupRepGroupSummaries(dups.OtherRepGroups), ShouldResemble, []string{
-				busierRepGroup + " x1 completed 2026-08-30",
-				quieterRepGroup + " x1 completed 2026-08-28",
+		Convey("Given commands that completed under 2 other report groups", t, func() {
+			s, _ := openTestStore(t, ctx, kind)
+
+			const (
+				busierRepGroup  = "attributionBusy"
+				quieterRepGroup = "attributionQuiet"
+				newRepGroup     = "attributionNew"
+				busyCmd         = "echo busy 1"
+				busierCmd       = "echo busy 2"
+				quietCmd        = "echo quiet 1"
+			)
+
+			newest := completedAt.Add(48 * time.Hour)
+
+			seedCompletedJob(ctx, s, busyCmd, busierRepGroup, completedAt)
+			seedCompletedJob(ctx, s, busierCmd, busierRepGroup, newest)
+			seedCompletedJob(ctx, s, quietCmd, quieterRepGroup, completedAt)
+
+			Convey("They are grouped per report group, biggest count first, newest end time each", func() {
+				dups, err := addedDuplicates(ctx, s, []*Job{
+					testDBJob(quietCmd, newRepGroup),
+					testDBJob(busyCmd, newRepGroup),
+					testDBJob(busierCmd, newRepGroup),
+				})
+				So(err, ShouldBeNil)
+				So(dups.Complete, ShouldEqual, 3)
+				So(dups.CompleteOtherRepGroups(), ShouldEqual, 3)
+				So(dupRepGroupSummaries(dups.OtherRepGroups), ShouldResemble, []string{
+					busierRepGroup + " x2 completed 2026-08-30",
+					quieterRepGroup + " x1 completed 2026-08-28",
+				})
+			})
+
+			Convey("Equal counts are ordered by report group, so the report is deterministic", func() {
+				dups, err := addedDuplicates(ctx, s, []*Job{
+					testDBJob(quietCmd, newRepGroup),
+					testDBJob(busierCmd, newRepGroup),
+				})
+				So(err, ShouldBeNil)
+				So(dupRepGroupSummaries(dups.OtherRepGroups), ShouldResemble, []string{
+					busierRepGroup + " x1 completed 2026-08-30",
+					quieterRepGroup + " x1 completed 2026-08-28",
+				})
+			})
+		})
+
+		Convey("Given a command that completed without recording an end time", t, func() {
+			s, _ := openTestStore(t, ctx, kind)
+
+			seedCompletedJob(ctx, s, doneCmd, firstRepGroup, time.Time{})
+
+			Convey("The report group it completed under is named with no end time", func() {
+				dups, err := addedDuplicates(ctx, s, []*Job{testDBJob(doneCmd, otherRepGroup)})
+				So(err, ShouldBeNil)
+				So(dups, ShouldResemble, DuplicateBreakdown{
+					Complete:       1,
+					OtherRepGroups: []DuplicateRepGroup{{RepGroup: firstRepGroup, Count: 1}},
+				})
+				So(dups.OtherRepGroups[0].LastCompleted.IsZero(), ShouldBeTrue)
 			})
 		})
 	})
-
-	Convey("Given a command that completed without recording an end time", t, func() {
-		testDB := testDBForAttribution(ctx, t)
-
-		seedCompletedJob(ctx, testDB, doneCmd, firstRepGroup, time.Time{})
-
-		Convey("The report group it completed under is named with no end time", func() {
-			_, _, dups, err := testDB.storeNewJobs(ctx, []*Job{testDBJob(doneCmd, otherRepGroup)}, true)
-			So(err, ShouldBeNil)
-			So(dups, ShouldResemble, DuplicateBreakdown{
-				Complete:       1,
-				OtherRepGroups: []DuplicateRepGroup{{RepGroup: firstRepGroup, Count: 1}},
-			})
-			So(dups.OtherRepGroups[0].LastCompleted.IsZero(), ShouldBeTrue)
-		})
-	})
-}
-
-// testDBForAttribution returns a new empty database that is closed when the
-// test finishes.
-func testDBForAttribution(ctx context.Context, t *testing.T) *db {
-	t.Helper()
-
-	tmpdir := t.TempDir()
-
-	testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
-		filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
-	So(err, ShouldBeNil)
-
-	Reset(func() {
-		So(testDB.close(ctx), ShouldBeNil)
-	})
-
-	return testDB
 }
 
 // seedCompletedJob stores cmd as a job of repGroup and then archives it as
 // having completed at endTime, so that a later add of the same command finds it
 // already complete.
-func seedCompletedJob(ctx context.Context, testDB *db, cmd, repGroup string, endTime time.Time) {
+func seedCompletedJob(ctx context.Context, s store, cmd, repGroup string, endTime time.Time) {
 	job := testDBArchivedJob(cmd, repGroup, endTime)
 
-	_, _, dups, err := testDB.storeNewJobs(ctx, []*Job{job}, true)
+	dups, err := addedDuplicates(ctx, s, []*Job{job})
 	So(err, ShouldBeNil)
 	So(dups, ShouldResemble, DuplicateBreakdown{})
-	So(testDB.archiveJob(job.Key(), job), ShouldBeNil)
+
+	_, err = s.archiveCompletion(job.Key(), job)
+	So(err, ShouldBeNil)
+}
+
+// addedDuplicates adds jobs to s as wr add does, ignoring the ones already
+// added, and returns its breakdown of those duplicates.
+func addedDuplicates(ctx context.Context, s store, jobs []*Job) (DuplicateBreakdown, error) {
+	stored, err := s.storeNewJobsGuarded(ctx, jobs, true, nil)
+
+	return stored.alreadyAdded, err
 }
 
 // dupRepGroupSummaries renders report groups in the order they would be reported
@@ -242,28 +205,6 @@ func dupRepGroupSummaries(groups []DuplicateRepGroup) []string {
 	}
 
 	return summaries
-}
-
-// indexKeyUnderRepGroup adds the repGroup->key index entry that storing cmd as a
-// job of repGroup would have added, without storing or archiving any record for
-// it.
-func indexKeyUnderRepGroup(testDB *db, cmd, jobRepGroup, repGroup string) error {
-	key := []byte(testDBJob(cmd, jobRepGroup).Key())
-
-	return testDB.bolt.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketRTK).Put(testDB.generateLookupKey(repGroup, key), nil)
-	})
-}
-
-// forgetIndexKey removes the repGroup->key index entry for cmd stored as a job
-// of repGroup, leaving its archived record in place, as a database predating
-// that index has it.
-func forgetIndexKey(testDB *db, cmd, repGroup string) error {
-	key := []byte(testDBJob(cmd, repGroup).Key())
-
-	return testDB.bolt.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketRTK).Delete(testDB.generateLookupKey(repGroup, key))
-	})
 }
 
 func TestAddDuplicatesReporting(t *testing.T) {

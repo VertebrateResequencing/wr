@@ -165,7 +165,7 @@ func TestSuspendOfReplacedJobSuspendsItemsJob(t *testing.T) {
 
 			So(state, ShouldEqual, JobStateSuspended)
 
-			stored := storedLiveJob(t, d.server.boltDB(), key)
+			stored := storedLiveJob(t, d.server.inspector(), key)
 			So(stored.State, ShouldEqual, JobStateSuspended)
 			So(stored.RepGroup, ShouldEqual, suspendStaleNewRepGroup)
 		})

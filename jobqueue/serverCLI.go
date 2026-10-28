@@ -37,6 +37,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
@@ -104,17 +105,29 @@ const reserveNotRecordedLogMsg = "reservation not yet recorded on disk, handing 
 // parts: how many clientRequest fields requestSelector can report.
 const slowRequestSelectorParts = 6
 
-// slowRequestThreshold is the live threshold. It is a var only so tests can
-// drive it down; nothing in the manager writes it, so it needs no
-// synchronisation (a test must set it before the server it measures starts
-// serving).
+// slowRequestThresholdNanos holds the live threshold, read via
+// slowRequestThreshold(). Only tests change it, but it is atomic because a
+// request goroutine of an earlier test's server can still be reading it after
+// that server's Stop returns (Stop waits only ServerShutdownWaitTime for its
+// goroutines), while the next test is setting it.
 //
 //nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
-var slowRequestThreshold = slowRequestThresholdDefault
+var slowRequestThresholdNanos = func() *atomic.Int64 {
+	v := new(atomic.Int64)
+	v.Store(int64(slowRequestThresholdDefault))
+
+	return v
+}()
 
 // wrongTokenReason is the detailed reason logged for a request refused because
 // its client presented the wrong token.
 const wrongTokenReason = "Client presented the wrong token"
+
+// setSlowRequestThreshold changes the live slow-request threshold; only tests
+// call it.
+func setSlowRequestThreshold(d time.Duration) {
+	slowRequestThresholdNanos.Store(int64(d))
+}
 
 type subscriptionCatchUpRecord struct {
 	job    *Job
@@ -388,6 +401,11 @@ func compressedStdString(compressed []byte) (string, error) {
 	return string(decompressed), nil
 }
 
+// slowRequestThreshold returns the live slow-request threshold.
+func slowRequestThreshold() time.Duration {
+	return time.Duration(slowRequestThresholdNanos.Load())
+}
+
 func liveSnapshotPresent(jes *JobEndState) bool {
 	if jes == nil {
 		return false
@@ -461,7 +479,7 @@ func warnIfSlowRequest(ctx context.Context, warns *warnAggregator, cr *clientReq
 	elapsed := time.Since(start)
 
 	wait := requestWait(cr)
-	if elapsed < slowRequestThreshold+wait {
+	if elapsed < slowRequestThreshold()+wait {
 		return
 	}
 
@@ -588,7 +606,7 @@ func selectorCount(n int) string {
 // invisible. requestBytes is the actionable fact here, and it is free.
 func warnIfSlowDecode(ctx context.Context, requestBytes int, start time.Time, decodeErr error) {
 	elapsed := time.Since(start)
-	if elapsed < slowRequestThreshold {
+	if elapsed < slowRequestThreshold() {
 		return
 	}
 

@@ -50,8 +50,6 @@ import (
 // snapshotted without it, whatever the timing of the best-effort writer.
 
 const (
-	// releaseDurabilityRepGroup names the one job these tests add.
-	releaseDurabilityRepGroup = "release_durability"
 
 	// releaseDurabilityTTR is the recovered manager's TTR, short so that a job
 	// parked in Run is checked for loss well within the test's waits.
@@ -60,12 +58,6 @@ const (
 	// releaseDurabilityReserveWait bounds how long a fresh runner is given to
 	// reserve the released job from the recovered manager.
 	releaseDurabilityReserveWait = 10 * time.Second
-
-	// releaseDurabilityRetries is the released job's Retries.
-	releaseDurabilityRetries = 1
-
-	// releaseDurabilityExitCode is the failed attempt's exit code.
-	releaseDurabilityExitCode = 3
 )
 
 // errReportNeverReturned stands in for the release or bury error when the call
@@ -184,11 +176,6 @@ func (c *releaseDurabilityCrash) recoveredJob() *Job {
 	So(len(jobs), ShouldEqual, 1)
 
 	return jobs[0]
-}
-
-// failedAttempt is the end state of a run whose command exited non-zero.
-func failedAttempt() *JobEndState {
-	return &JobEndState{Exited: true, Exitcode: releaseDurabilityExitCode, EndTime: time.Now()}
 }
 
 // TestReleaseDurability proves that a job released after a failed attempt, just

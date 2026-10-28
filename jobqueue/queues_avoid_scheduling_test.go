@@ -40,7 +40,6 @@ import (
 	"github.com/VertebrateResequencing/wr/queue"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
-	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -87,27 +86,19 @@ func TestJobCodecPreservesQueuesAvoid(t *testing.T) {
 	})
 }
 
-// seedReqGroupRAMRecommendation writes a spread of peak-RAM stat values for the
-// given reqGroup directly into the db's stat bucket, so that
-// recommendedReqGroupMemory() returns a non-zero recommendation (simulating a
-// manager that has "learned" resource usage for that reqGroup). Disk and time
-// buckets are left empty so only the RAM recommendation is active.
-func seedReqGroupRAMRecommendation(testDB *db, reqGroup string, maxRAM int) {
-	err := testDB.bolt.Update(func(tx *bolt.Tx) error {
-		for i := range 40 {
-			val := maxRAM - (39-i)*5
-			if val < 1 {
-				val = 1
-			}
+// seedReqGroupRAMRecommendation records a spread of peak-RAM stat values for
+// the given reqGroup in server's store, so that recommendedReqGroupMemory()
+// returns a non-zero recommendation (simulating a manager that has "learned"
+// resource usage for that reqGroup). Disk and time stats are left empty so only
+// the RAM recommendation is active.
+func seedReqGroupRAMRecommendation(server *Server, reqGroup string, maxRAM int) {
+	vals := make([]int, 0, 40)
 
-			if e := testDB.reqStats.putStat(tx, bucketJobRAM, reqGroup, val); e != nil {
-				return e
-			}
-		}
+	for i := range 40 {
+		vals = append(vals, max(maxRAM-(39-i)*5, 1))
+	}
 
-		return nil
-	})
-	So(err, ShouldBeNil)
+	seedReqGroupStats(server, FailReasonRAM, reqGroup, vals...)
 }
 
 // avoidJob builds a ready job in the given reqGroup that carries a
@@ -247,9 +238,7 @@ func TestServerSchedulerQueuesAvoidEndToEnd(t *testing.T) {
 			// archiving the first batch teaches the manager a RAM recommendation.
 			archiveGroup(preLearningGroup, firstBatch)
 
-			recRAM, err := server.boltDB().recommendedReqGroupMemory(reqGroup)
-			So(err, ShouldBeNil)
-			So(recRAM, ShouldEqual, learnedPeakRAM)
+			So(storeLearnedReqs(server.db, reqGroup).RAM, ShouldEqual, learnedPeakRAM)
 
 			// the second batch must now be scheduled under the learned group, and
 			// that group's req must STILL carry queues_avoid.
@@ -348,7 +337,7 @@ func TestServerSchedulerQueuesAvoidPreserved(t *testing.T) {
 		})
 
 		Convey("Once recommendations are learned, queues_avoid is still preserved", func() {
-			seedReqGroupRAMRecommendation(testDB, reqGroup, 800)
+			seedReqGroupRAMRecommendation(server, reqGroup, 800)
 
 			recRAM, errr := testDB.recommendedReqGroupMemory(reqGroup)
 			So(errr, ShouldBeNil)
@@ -364,7 +353,7 @@ func TestServerSchedulerQueuesAvoidPreserved(t *testing.T) {
 		})
 
 		Convey("With concurrent status reads of the same jobs, queues_avoid is preserved (race)", func() {
-			seedReqGroupRAMRecommendation(testDB, reqGroup, 800)
+			seedReqGroupRAMRecommendation(server, reqGroup, 800)
 
 			const (
 				iterations = 200

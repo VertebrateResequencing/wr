@@ -45,6 +45,9 @@ stats in `jobqueue/store_fold.go`, on top of the overlay from 1c.3.
 Cover all 7 acceptance tests from D1 in `jobqueue/store_fold_test.go`,
 and add C5 test 7's "after the folder has run" clause (deferred from 1c.5)
 to `jobqueue/store_recover_test.go`.
+Also resolve the 0b.1 incidentals on a learned-requirements load racing an
+uncommitted sample and on startup with a large history
+([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

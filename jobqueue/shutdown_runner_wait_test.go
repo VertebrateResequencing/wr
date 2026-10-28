@@ -44,7 +44,8 @@ const shutdownRunnerWaitTestBound = 30 * time.Second
 // TestShutdownRunnerWaitIsBounded stops a manager whose one runner reserves a
 // job and then never exits, as a runner whose command survives the kill does,
 // so the scheduler reports it busy for ever. The shutdown must still finish, and
-// finish cleanly: freelist synced, final backup written, database closed.
+// finish cleanly: database closed with the job stored running, final backup
+// written.
 func TestShutdownRunnerWaitIsBounded(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -83,10 +84,13 @@ func TestShutdownRunnerWaitIsBounded(t *testing.T) {
 
 		defer disconnect(jq)
 
-		_, _, err = jq.Add([]*Job{{
+		held := &Job{
 			Cmd: "echo never finishes", Cwd: testCwd, RepGroup: "runner_wait",
 			ReqGroup: "runner_wait", Requirements: standardReqs,
-		}}, os.Environ(), true)
+		}
+		heldKey := held.Key()
+
+		_, _, err = jq.Add([]*Job{held}, os.Environ(), true)
 		So(err, ShouldBeNil)
 
 		started := false
@@ -123,7 +127,17 @@ func TestShutdownRunnerWaitIsBounded(t *testing.T) {
 			So(finished, ShouldBeTrue)
 			So(logs.String(), ShouldContainSubstring, "gave up waiting for runners to exit")
 			So(logs.String(), ShouldContainSubstring, "runningJobs=1")
-			So(boltFreelistSynced(serverConfig.DBFile), ShouldBeTrue)
+
+			// a closed store's files open read-only, holding the running job.
+			inspector, closeFiles, err := openStoreFileInspector(serverConfig.DBFile)
+			So(err, ShouldBeNil)
+
+			job, live, err := inspector.liveJob(heldKey)
+
+			So(closeFiles(), ShouldBeNil)
+			So(err, ShouldBeNil)
+			So(live, ShouldBeTrue)
+			So(job.State, ShouldEqual, JobStateRunning)
 
 			_, err = os.Stat(serverConfig.DBFileBackup)
 			So(err, ShouldBeNil)

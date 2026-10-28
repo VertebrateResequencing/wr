@@ -48,7 +48,6 @@ import (
 	"github.com/kballard/go-shellquote"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
-	bolt "go.etcd.io/bbolt"
 	"go.nanomsg.org/mangos/v3"
 )
 
@@ -801,12 +800,7 @@ func TestServerRejectsAddWithNilDependency(t *testing.T) {
 		_, _, err = client.AddAndWaitWithWarnings(ctx, jobs, env, false)
 		assertRejected(err)
 
-		err = testDB.bolt.View(func(tx *bolt.Tx) error {
-			So(tx.Bucket(bucketEnvs).Stats().KeyN, ShouldEqual, 0)
-
-			return nil
-		})
-		So(err, ShouldBeNil)
+		So(inspectedCount(inspectorOf(testDB), kindEnv), ShouldEqual, 0)
 
 		validAfterError := &Job{
 			Cmd:          "echo manager remains available",
@@ -1239,12 +1233,7 @@ func TestServerRejectsAddWithNilBehaviour(t *testing.T) {
 		_, _, err = client.AddAndWaitWithWarnings(ctx, jobs, env, false)
 		assertRejected(err)
 
-		err = testDB.bolt.View(func(tx *bolt.Tx) error {
-			So(tx.Bucket(bucketEnvs).Stats().KeyN, ShouldEqual, 0)
-
-			return nil
-		})
-		So(err, ShouldBeNil)
+		So(inspectedCount(inspectorOf(testDB), kindEnv), ShouldEqual, 0)
 
 		repGroup := "payload-nil-behaviour"
 		validAfterError := []*Job{

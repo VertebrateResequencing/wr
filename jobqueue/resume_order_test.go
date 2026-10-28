@@ -199,7 +199,7 @@ func TestResumeRacingReserveGetsPreparedJob(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(suspended, ShouldEqual, 1)
 
-		seedReqGroupStats(server, bucketJobRAM, resumeOrderRepGroup, noHoldLearnedRAM)
+		seedReqGroupStats(server, FailReasonRAM, resumeOrderRepGroup, noHoldLearnedRAM)
 
 		So(pollUntil(server.racIdle), ShouldBeTrue)
 
@@ -418,14 +418,14 @@ func TestResumeWritesResumedState(t *testing.T) {
 
 		Convey("one with no unresolved dependencies is stored ready", func() {
 			key := resumeAndStore(target, other)
-			So(storedLiveJobState(t, server.boltDB(), key), ShouldEqual, JobStateReady)
+			So(storedLiveJobState(t, server.inspector(), key), ShouldEqual, JobStateReady)
 		})
 
 		Convey("one with an unresolved dependency is stored dependent", func() {
 			target.Dependencies = Dependencies{NewDepGroupDependency(depGroup)}
 
 			key := resumeAndStore(parent, target, other)
-			So(storedLiveJobState(t, server.boltDB(), key), ShouldEqual, JobStateDependent)
+			So(storedLiveJobState(t, server.inspector(), key), ShouldEqual, JobStateDependent)
 		})
 	})
 }
@@ -468,125 +468,13 @@ func TestResumeStoredWithoutLaterWrite(t *testing.T) {
 		suspended, err := jq.Suspend([]*JobEssence{{JobKey: key}})
 		So(err, ShouldBeNil)
 		So(suspended, ShouldEqual, 1)
-		So(storedStateWithin(t, server.boltDB(), key, JobStateSuspended), ShouldEqual, JobStateSuspended)
+		So(storedStateWithin(t, server.inspector(), key, JobStateSuspended), ShouldEqual, JobStateSuspended)
 
 		Convey("resuming it stores it ready with no other write following", func() {
 			resumed, errr := jq.Resume([]*JobEssence{{JobKey: key}})
 			So(errr, ShouldBeNil)
 			So(resumed, ShouldEqual, 1)
-			So(storedStateWithin(t, server.boltDB(), key, JobStateReady), ShouldEqual, JobStateReady)
-		})
-	})
-}
-
-// TestResumeDuringFinalDrainStops proves that a resume whose change is made
-// while the database's writer makes its final drain, after that drain took the
-// pending writes, does not hold up the manager's stop: the writer must refuse
-// writes before its final drain takes them, not after it has written them.
-func TestResumeDuringFinalDrainStops(t *testing.T) {
-	if runnermode || servermode {
-		return
-	}
-
-	ctx := context.Background()
-
-	Convey("Given a suspended job whose resume is made during the writer's final drain", t, func() {
-		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
-		serverConfig.Timings.ItemTTR = time.Minute
-
-		server, _, token, err := serve(ctx, serverConfig)
-		So(err, ShouldBeNil)
-
-		serverStopping := false
-
-		defer func() {
-			if !serverStopping {
-				server.Stop(ctx, true)
-			}
-		}()
-
-		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
-		So(err, ShouldBeNil)
-
-		defer disconnect(jq)
-
-		target := &Job{
-			Cmd: restFormTrue + " resumedrain", Cwd: testCwd, RepGroup: resumeOrderRepGroup,
-			ReqGroup: resumeOrderRepGroup, Requirements: standardReqs, Retries: 3,
-		}
-		inserts, _, err := jq.Add([]*Job{target}, os.Environ(), true)
-		So(err, ShouldBeNil)
-		So(inserts, ShouldEqual, 1)
-
-		key := target.Key()
-
-		suspended, err := jq.Suspend([]*JobEssence{{JobKey: key}})
-		So(err, ShouldBeNil)
-		So(suspended, ShouldEqual, 1)
-		So(storedStateWithin(t, server.boltDB(), key, JobStateSuspended), ShouldEqual, JobStateSuspended)
-
-		stopped, finalSwap, resumeMade := make(chan struct{}), make(chan struct{}), make(chan struct{})
-
-		var swapOnce sync.Once
-
-		bestEffortSwappedHook = func() {
-			select {
-			case <-server.boltDB().beStop:
-			default:
-				return
-			}
-
-			swapOnce.Do(func() {
-				close(finalSwap)
-
-				select {
-				case <-resumeMade:
-				case <-time.After(failedChangeStopTimeout):
-				}
-			})
-		}
-		defer func() { bestEffortSwappedHook = nil }()
-
-		swapped := false
-
-		jobChangeAheadHook = func(hooked string) {
-			if hooked != key {
-				return
-			}
-
-			serverStopping = true
-
-			go func() {
-				server.Stop(ctx, true)
-				close(stopped)
-			}()
-
-			select {
-			case <-finalSwap:
-				swapped = true
-			case <-time.After(failedChangeStopTimeout):
-			}
-		}
-		defer func() { jobChangeAheadHook = nil }()
-
-		Convey("the resume is made, and the manager stops promptly", func() {
-			resumed := server.resumeJobs(ctx, []string{key})
-			jobChangeAheadHook = nil
-
-			close(resumeMade)
-
-			stoppedInTime := false
-
-			select {
-			case <-stopped:
-				stoppedInTime = true
-			case <-time.After(failedChangeStopTimeout):
-			}
-
-			So(serverStopping, ShouldBeTrue)
-			So(swapped, ShouldBeTrue)
-			So(resumed, ShouldEqual, 1)
-			So(stoppedInTime, ShouldBeTrue)
+			So(storedStateWithin(t, server.inspector(), key, JobStateReady), ShouldEqual, JobStateReady)
 		})
 	})
 }
@@ -686,7 +574,7 @@ func TestResumeAfterChangeWritesResumedJob(t *testing.T) {
 			So(modified, ShouldResemble, map[string]string{key: key})
 			So(resumed, ShouldEqual, 1)
 
-			stored := storedLiveJob(t, server.boltDB(), key)
+			stored := storedLiveJob(t, server.inspector(), key)
 			So(stored.State, ShouldEqual, JobStateReady)
 			So(stored.Priority, ShouldEqual, modifiedPriority)
 		})
@@ -704,7 +592,7 @@ func TestResumeAfterChangeWritesResumedJob(t *testing.T) {
 			item, errg := server.q.Get(key)
 			So(errg, ShouldBeNil)
 			So(item.Stats().State, ShouldEqual, queue.ItemStateReady)
-			So(storedLiveJobState(t, server.boltDB(), key), ShouldEqual, JobStateReady)
+			So(storedLiveJobState(t, server.inspector(), key), ShouldEqual, JobStateReady)
 		})
 
 		Convey("a dependency gained in between leaves it stored dependent", func() {
@@ -736,7 +624,7 @@ func TestResumeAfterChangeWritesResumedJob(t *testing.T) {
 			item, errg := server.q.Get(key)
 			So(errg, ShouldBeNil)
 			So(item.Stats().State, ShouldEqual, queue.ItemStateDependent)
-			So(storedLiveJobState(t, server.boltDB(), key), ShouldEqual, JobStateDependent)
+			So(storedLiveJobState(t, server.inspector(), key), ShouldEqual, JobStateDependent)
 		})
 	})
 }
@@ -750,107 +638,4 @@ func resumeOrderComplete(jq *Client, key string) {
 	So(job.Key(), ShouldEqual, key)
 	So(jq.Started(job, os.Getpid()), ShouldBeNil)
 	So(jq.Archive(job, &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}), ShouldBeNil)
-}
-
-// TestResumeAfterWriterStopsStops proves that a resume whose write was prepared
-// before the database's writer stopped, and whose change is made after, does not
-// hold up the manager's stop.
-func TestResumeAfterWriterStopsStops(t *testing.T) {
-	if runnermode || servermode {
-		return
-	}
-
-	ctx := context.Background()
-
-	Convey("Given a suspended job whose resume is made after the manager began stopping", t, func() {
-		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
-		serverConfig.Timings.ItemTTR = time.Minute
-
-		server, _, token, err := serve(ctx, serverConfig)
-		So(err, ShouldBeNil)
-
-		serverStopping := false
-
-		defer func() {
-			if !serverStopping {
-				server.Stop(ctx, true)
-			}
-		}()
-
-		jq, err := Connect(addr, serverConfig.CAFile, serverConfig.CertDomain, token, clientConnectTime)
-		So(err, ShouldBeNil)
-
-		defer disconnect(jq)
-
-		target := &Job{
-			Cmd: restFormTrue + " resumestop", Cwd: testCwd, RepGroup: resumeOrderRepGroup,
-			ReqGroup: resumeOrderRepGroup, Requirements: standardReqs, Retries: 3,
-		}
-		inserts, _, err := jq.Add([]*Job{target}, os.Environ(), true)
-		So(err, ShouldBeNil)
-		So(inserts, ShouldEqual, 1)
-
-		key := target.Key()
-
-		suspended, err := jq.Suspend([]*JobEssence{{JobKey: key}})
-		So(err, ShouldBeNil)
-		So(suspended, ShouldEqual, 1)
-
-		stopped := make(chan struct{})
-		writerStopped := false
-
-		jobChangeAheadHook = func(hooked string) {
-			if hooked != key {
-				return
-			}
-
-			serverStopping = true
-
-			go func() {
-				server.Stop(ctx, true)
-				close(stopped)
-			}()
-
-			writerStopped = waitForWriterStopped(server.boltDB(), failedChangeStopTimeout)
-		}
-		defer func() { jobChangeAheadHook = nil }()
-
-		Convey("the resume is made, and the manager stops promptly", func() {
-			resumed := server.resumeJobs(ctx, []string{key})
-			jobChangeAheadHook = nil
-
-			stoppedInTime := false
-
-			select {
-			case <-stopped:
-				stoppedInTime = true
-			case <-time.After(failedChangeStopTimeout):
-			}
-
-			So(serverStopping, ShouldBeTrue)
-			So(writerStopped, ShouldBeTrue)
-			So(resumed, ShouldEqual, 1)
-			So(stoppedInTime, ShouldBeTrue)
-		})
-	})
-}
-
-// waitForWriterStopped waits up to d for database's best-effort writer to latch
-// that it has stopped, and says whether it did.
-func waitForWriterStopped(database *db, d time.Duration) bool {
-	deadline := time.Now().Add(d)
-
-	for time.Now().Before(deadline) {
-		database.beMu.Lock()
-		stopped := database.beStopped
-		database.beMu.Unlock()
-
-		if stopped {
-			return true
-		}
-
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	return false
 }

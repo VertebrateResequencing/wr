@@ -50,7 +50,6 @@ import (
 	gpnet "github.com/shirou/gopsutil/v4/net"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
-	bolt "go.etcd.io/bbolt"
 	"go.nanomsg.org/mangos/v3"
 )
 
@@ -4118,28 +4117,16 @@ func buriedSubscriptionItemDefs(
 }
 
 // hideLiveSubscriptionJobInDB deletes the job's live and run-state records, and
-// returns a func that puts both back as they were.
+// returns a func that stores it live again, as it was stored.
 func hideLiveSubscriptionJobInDB(server *Server, key string) func() {
-	var live, runState []byte
-
-	err := server.boltDB().bolt.Update(func(tx *bolt.Tx) error {
-		live = bytes.Clone(tx.Bucket(bucketJobsLive).Get([]byte(key)))
-		runState = bytes.Clone(tx.Bucket(bucketJobRunState).Get([]byte(key)))
-
-		return deleteLiveRecord(tx, []byte(key))
-	})
+	stored, found, err := server.inspector().liveJob(key)
 	So(err, ShouldBeNil)
-	So(live, ShouldNotBeNil)
+	So(found, ShouldBeTrue)
+
+	So(server.db.deleteLiveJobs(context.Background(), []string{key}), ShouldBeNil)
 
 	return func() {
-		err := server.boltDB().bolt.Update(func(tx *bolt.Tx) error {
-			if errp := tx.Bucket(bucketJobsLive).Put([]byte(key), live); errp != nil || runState == nil {
-				return errp
-			}
-
-			return tx.Bucket(bucketJobRunState).Put([]byte(key), runState)
-		})
-		So(err, ShouldBeNil)
+		So(server.db.storeLiveForRerun([]*Job{stored}), ShouldBeNil)
 	}
 }
 

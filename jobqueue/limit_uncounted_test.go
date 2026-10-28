@@ -418,3 +418,13 @@ func raceLimitStore(hook *func(), hold time.Duration, held func(), change func()
 
 	return <-completedWhileHeld
 }
+
+// limitGroupStored returns the limit the database holds for group, so that a
+// store which commits nothing can still be held to leaving the right value
+// there. Asserts that a limit is stored for the group at all.
+func limitGroupStored(ctx context.Context, d *dgrServer, group string) int64 {
+	gd := d.server.db.retrieveLimitGroup(ctx, group)
+	So(gd.IsCount(), ShouldBeTrue)
+
+	return gd.Limit()
+}

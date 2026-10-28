@@ -160,7 +160,7 @@ func TestReliable4RacBoundedBySchedulable(t *testing.T) {
 			"and later cycles are bounded again", func() {
 			// the add prepared every job with the low ReqGroup's (empty) learned
 			// values, so only a recompute after this seed can change their RAM.
-			seedReqGroupStats(server, bucketJobRAM, "reliable4-low", lowLearnedRAM)
+			seedReqGroupStats(server, FailReasonRAM, "reliable4-low", lowLearnedRAM)
 
 			changed := server.buildSchedulerGroups(ctx, server.q, allitemdata, "true")
 			So(int(server.racScanWork.Load()), ShouldEqual, limit+lowCount)
@@ -204,14 +204,14 @@ func TestReliable4RacBoundedBySchedulable(t *testing.T) {
 
 		Convey("a learned time that moves within the same half hour is no change", func() {
 			// the first learned time is new, so the blocked jobs take it once
-			seedReqGroupStats(server, bucketJobSecs, "reliable4-low", lowLearnedSecs)
+			seedReqGroupStats(server, FailReasonTime, "reliable4-low", lowLearnedSecs)
 
 			server.buildSchedulerGroups(ctx, server.q, allitemdata, "true")
 			So(int(server.racScanWork.Load()), ShouldEqual, limit+lowCount)
 
 			// a later one rounds up to the same half hour as the scheduler sees
 			// it, so it changes neither their scheduler group nor their queue
-			seedReqGroupStats(server, bucketJobSecs, "reliable4-low", lowLaterLearnedSecs)
+			seedReqGroupStats(server, FailReasonTime, "reliable4-low", lowLaterLearnedSecs)
 
 			server.buildSchedulerGroups(ctx, server.q, allitemdata, "true")
 			So(int(server.racScanWork.Load()), ShouldEqual, limit)

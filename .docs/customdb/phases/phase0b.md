@@ -42,12 +42,20 @@ spec.md section: A2
 
 Add `recordKind`, `storeInspector` and `forEachStore(t, fn)` (env
 `WR_TEST_STORE`) in `jobqueue/store_inspect_test.go`, with the bbolt
-implementation of the inspector, and move the tests that use
-`db.bolt.View/Update/Batch` or `*bolt.Tx` onto it. Tests of bbolt
+implementation of the inspector in
+`jobqueue/store_bolt_inspect_test.go`, and move the tests that reach
+bbolt (`\.bolt\.|\*bolt\.Tx|bolt\.Open`) onto it. Tests of bbolt
 mechanics (freelist, remap, backup pacing, writer turns, prefetch,
 bbolt compaction) stay bbolt-only, and their files are listed in
-`boltOnlyTests`. Cover all 3 acceptance tests from A2. Depends on 0a.
+`boltOnlyTests`; a behavioural test that needs bbolt for one step moves
+into its own `*_bolt_test.go` file so the rest of its file stays, and a
+helper that reaches bbolt lives only in a listed file. Cover all 4
+acceptance tests from A2; test 4 type-checks the package with the listed
+files emptied through `go vet -overlay`, once per tag set the tests are
+built with (`netgo`, `netgo,race`, `netgo,reliability`,
+`netgo,reliability_repro` and `netgo,reliability_repro,reliability`).
+Depends on 0a.
 The spec lets 0b and 0c run in parallel; run them one after the other.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

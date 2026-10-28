@@ -75,7 +75,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
@@ -95,7 +94,6 @@ var reliable4ChurnBucket = []byte("reliable4churn") //nolint:gochecknoglobals
 
 const (
 	reliable4MiB = 1 << 20
-	reliable4GiB = 1 << 30
 
 	// reliable4DefaultRecords matches the real production DB that reproduced the
 	// stall (jobscomplete = 2,110,982 records).
@@ -277,20 +275,6 @@ func reliable4CmdPad(recordDataGB, records int) int {
 	}
 
 	return pad
-}
-
-func envIntDefault(name string, def int) int {
-	v := os.Getenv(name)
-	if v == "" {
-		return def
-	}
-
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return def
-	}
-
-	return n
 }
 
 // createReliable4Buckets creates every bucket the real initDB creates, so a later

@@ -285,7 +285,7 @@ func TestReliable4AddStorm(t *testing.T) {
 		"slowThreshold=%s clientFloor=%s (production 2026-08-27: 28,815 slow adds in 23min, "+
 		"p50 12.8s / max 40.0s, 20,524 of them adding ONE job; 763 goroutines in DB.Batch, "+
 		"29 in beginRWTx)",
-		low, high, think, window, cmdBytes, backups, slowRequestThreshold, ClientMinRequestTimeout)
+		low, high, think, window, cmdBytes, backups, slowRequestThreshold(), ClientMinRequestTimeout)
 
 	watcher := newACBackupWatcher(work + "_bk.tmp")
 	watcher.start()
@@ -541,7 +541,7 @@ type asMeter struct {
 
 // record folds one add's outcome into the meter.
 func (a *asMeter) record(lat time.Duration, err error) {
-	if lat >= slowRequestThreshold {
+	if lat >= slowRequestThreshold() {
 		a.overSlow.Add(1)
 	}
 

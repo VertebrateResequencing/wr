@@ -58,11 +58,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/VertebrateResequencing/wr/internal"
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
-	"github.com/ugorji/go/codec"
-	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -74,7 +71,7 @@ const (
 	// historyScanArchived is the per-RepGroup archived history size. It is big
 	// enough that the pre-fix decode count is unmistakable (and its cost visible in
 	// the logged timings) while staying fast to seed, since the history is
-	// bulk-inserted rather than run through the queue.
+	// archived straight into the store rather than run through the queue.
 	historyScanArchived = 5000
 
 	// historyScanLive is how many live jobs each control request must find, and is
@@ -398,53 +395,19 @@ func measureHistoryScanRequest(ctx context.Context, t *testing.T, archived int) 
 	return server.boltDB().archivedDecodes.Load() - before, best
 }
 
-// seedArchivedRepGroupHistory creates config's DB pre-populated with count
-// archived jobs in each of the given RepGroups. The entries are bulk-inserted
-// (complete bucket + RTK lookup index + rep-groups bucket + the RepGroup end
-// time, exactly what archiveJobTx writes and what retrieveCompleteJobsByRepGroup
-// and repGroupHasHistory read) so that seeding thousands of them is fast.
+// seedArchivedRepGroupHistory creates config's DB holding count archived jobs
+// in each of the given RepGroups, added and archived through the store.
 func seedArchivedRepGroupHistory(ctx context.Context, config ServerConfig, count int, repGroups ...string) {
-	testDB, _, err := initDB(ctx, config.DBFile, config.DBFileBackup, internal.Development, false, false)
-	So(err, ShouldBeNil)
-
 	endTime := time.Now()
-	archived := testDBArchivedJob("echo history scan archived", repGroups[0], endTime)
+	jobs := make([]*Job, 0, count*len(repGroups))
 
-	var encoded []byte
-	So(codec.NewEncoderBytes(&encoded, testDB.ch).Encode(archived), ShouldBeNil)
-
-	err = testDB.bolt.Update(func(tx *bolt.Tx) error {
-		completeBucket := tx.Bucket(bucketJobsComplete)
-		lookupBucket := tx.Bucket(bucketRTK)
-		repGroupsBucket := tx.Bucket(bucketRGs)
-		endTimeBucket := tx.Bucket(bucketRGEndTime)
-
-		for _, repGroup := range repGroups {
-			if errp := repGroupsBucket.Put([]byte(repGroup), nil); errp != nil {
-				return errp
-			}
-
-			if errp := updateRGEndTime(endTimeBucket, &Job{RepGroup: repGroup, EndTime: endTime}); errp != nil {
-				return errp
-			}
-
-			for i := range count {
-				key := []byte(repGroup + "-key-" + strconv.Itoa(i))
-
-				if errp := completeBucket.Put(key, encoded); errp != nil {
-					return errp
-				}
-
-				if errp := lookupBucket.Put(testDB.generateLookupKey(repGroup, key), nil); errp != nil {
-					return errp
-				}
-			}
+	for _, repGroup := range repGroups {
+		for i := range count {
+			jobs = append(jobs, testDBArchivedJob("echo "+repGroup+" archived "+strconv.Itoa(i), repGroup, endTime))
 		}
+	}
 
-		return nil
-	})
-	So(err, ShouldBeNil)
-	So(testDB.close(ctx), ShouldBeNil)
+	seedArchivedJobs(ctx, config, jobs, nil)
 }
 
 // addHistoryScanLiveJobs adds historyScanLive ready jobs in repGroup.

@@ -68,7 +68,6 @@ import (
 	jqs "github.com/VertebrateResequencing/wr/jobqueue/scheduler"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
-	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -345,68 +344,28 @@ func TestReliable4StatusLimitPushdown(t *testing.T) {
 	})
 }
 
-// seedStatusLimitHistory creates config's DB pre-populated with the two report
-// groups' archived histories, bulk-inserted into the buckets archiveJobTx writes
-// and retrieveCompleteJobsByRepGroup reads.
+// seedStatusLimitHistory creates config's DB holding the two report groups'
+// archived histories, added and archived through the store.
 //
-// The ith job of a group is keyed so that it sorts ith in the RTK cursor, but is
-// given the (count-i)th start time, so cursor order is the exact REVERSE of the
-// start-time order limitJobs uses. A pushdown that took the cursor's first
-// `limit` records rather than the oldest-started ones therefore returns visibly
-// wrong jobs.
+// The ith job of a group is given the (count-i)th start time, so start-time
+// order is unrelated to the order the store keeps the jobs in (by key). A
+// pushdown that took the store's first `limit` records rather than the
+// oldest-started ones therefore returns visibly wrong jobs.
 func seedStatusLimitHistory(ctx context.Context, config ServerConfig) {
-	testDB, _, err := initDB(ctx, config.DBFile, config.DBFileBackup, internal.Development, false, false)
-	So(err, ShouldBeNil)
-
 	base := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 
-	err = testDB.bolt.Update(func(tx *bolt.Tx) error {
-		for _, group := range []struct {
-			repGroup string
-			count    int
-		}{{statusLimitRepGroup, statusLimitArchived}, {statusLimitOtherRG, statusLimitOtherArchived}} {
-			if errs := seedStatusLimitRepGroup(tx, testDB, group.repGroup, group.count, base); errs != nil {
-				return errs
-			}
-		}
+	jobs := make([]*Job, 0, statusLimitArchived+statusLimitOtherArchived)
 
-		return nil
-	})
-	So(err, ShouldBeNil)
-	So(testDB.close(ctx), ShouldBeNil)
-}
-
-func seedStatusLimitRepGroup(tx *bolt.Tx, testDB *db, repGroup string, count int, base time.Time) error {
-	completeBucket := tx.Bucket(bucketJobsComplete)
-	lookupBucket := tx.Bucket(bucketRTK)
-
-	if err := tx.Bucket(bucketRGs).Put([]byte(repGroup), nil); err != nil {
-		return err
-	}
-
-	if err := updateRGEndTime(tx.Bucket(bucketRGEndTime), &Job{RepGroup: repGroup, EndTime: base}); err != nil {
-		return err
-	}
-
-	for i := range count {
-		var encoded []byte
-		if err := codec.NewEncoderBytes(&encoded, testDB.ch).
-			Encode(statusLimitArchivedJob(repGroup, i, count, base)); err != nil {
-			return err
-		}
-
-		key := fmt.Appendf(nil, "%s-key-%06d", repGroup, i)
-
-		if err := completeBucket.Put(key, encoded); err != nil {
-			return err
-		}
-
-		if err := lookupBucket.Put(testDB.generateLookupKey(repGroup, key), nil); err != nil {
-			return err
+	for _, group := range []struct {
+		repGroup string
+		count    int
+	}{{statusLimitRepGroup, statusLimitArchived}, {statusLimitOtherRG, statusLimitOtherArchived}} {
+		for i := range group.count {
+			jobs = append(jobs, statusLimitArchivedJob(group.repGroup, i, group.count, base))
 		}
 	}
 
-	return nil
+	seedArchivedJobs(ctx, config, jobs, nil)
 }
 
 // statusLimitArchivedJob returns the ith of count archived jobs for repGroup,
@@ -651,7 +610,7 @@ func TestReliable4StatusLimitMixedHistory(t *testing.T) {
 const (
 	mixedRepGroup = "reliable4-status-limit-mixed"
 
-	// the archived record shapes seeded by seedMixedHistory, in key order: ordinary
+	// the archived record shapes seeded by seedMixedHistory, by index: ordinary
 	// complete ones, complete ones with a non-zero exit code and a fail reason,
 	// buried ones, and finally one stored under a different RepGroup because it was
 	// re-run. Each shape is its own limitJobs group.
@@ -708,49 +667,32 @@ func mixedCmd(i int) string {
 	return "echo mixed " + strconv.Itoa(i)
 }
 
-// seedMixedHistory creates config's DB pre-populated with mixedRepGroup's
-// deliberately heterogeneous archived history, keyed so that cursor order is the
-// reverse of start-time order.
+// seedMixedHistory creates config's DB holding mixedRepGroup's deliberately
+// heterogeneous archived history, added and archived through the store. The
+// re-run job is added under mixedRepGroup and archived under mixedRerunGroup,
+// as a job re-added under another RepGroup is.
 func seedMixedHistory(ctx context.Context, config ServerConfig) {
-	testDB, _, err := initDB(ctx, config.DBFile, config.DBFileBackup, internal.Development, false, false)
-	So(err, ShouldBeNil)
-
 	base := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 
-	err = testDB.bolt.Update(func(tx *bolt.Tx) error {
-		completeBucket := tx.Bucket(bucketJobsComplete)
-		lookupBucket := tx.Bucket(bucketRTK)
+	jobs := make([]*Job, 0, mixedTotal)
+	for i := range mixedTotal {
+		jobs = append(jobs, mixedArchivedJob(i, base))
+	}
 
-		if errp := tx.Bucket(bucketRGs).Put([]byte(mixedRepGroup), nil); errp != nil {
-			return errp
+	var rerun []*Job
+
+	for _, job := range jobs {
+		if job.RepGroup == mixedRerunGroup {
+			job.RepGroup = mixedRepGroup
+			rerun = append(rerun, job)
 		}
+	}
 
-		if errp := updateRGEndTime(tx.Bucket(bucketRGEndTime),
-			&Job{RepGroup: mixedRepGroup, EndTime: base}); errp != nil {
-			return errp
+	seedArchivedJobs(ctx, config, jobs, func() {
+		for _, job := range rerun {
+			job.RepGroup = mixedRerunGroup
 		}
-
-		for i := range mixedTotal {
-			var encoded []byte
-			if errp := codec.NewEncoderBytes(&encoded, testDB.ch).Encode(mixedArchivedJob(i, base)); errp != nil {
-				return errp
-			}
-
-			key := fmt.Appendf(nil, "%s-key-%06d", mixedRepGroup, i)
-
-			if errp := completeBucket.Put(key, encoded); errp != nil {
-				return errp
-			}
-
-			if errp := lookupBucket.Put(testDB.generateLookupKey(mixedRepGroup, key), nil); errp != nil {
-				return errp
-			}
-		}
-
-		return nil
 	})
-	So(err, ShouldBeNil)
-	So(testDB.close(ctx), ShouldBeNil)
 }
 
 // mixedArchivedJob returns the ith of mixedTotal archived jobs, whose shape

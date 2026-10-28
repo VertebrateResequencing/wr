@@ -42,6 +42,7 @@ package jobqueue
 
 import (
 	"context"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"testing"
@@ -483,37 +484,6 @@ func dgrMissingItems(s *Server, keys []string) int {
 	return missing
 }
 
-// TestDepGranularityRecoveryPassTransactions covers C1 acceptance test 7: the
-// recovery dependency pass costs one bolt read transaction per chunk of jobs -
-// not one for the whole pass, which would hold bolt's mmaplock for a whole
-// recovery, and not one per job, which is the bug it replaced.
-func TestDepGranularityRecoveryPassTransactions(t *testing.T) {
-	if runnermode || servermode {
-		return
-	}
-
-	ctx := context.Background()
-
-	Convey("Given a database of recovered chain jobs and a small chunk size", t, func() {
-		testDB, server, priorJobs := dgrResolutionFixture(t, ctx, dgrChainDBJobs(dgrPassJobs, 1, dgrNeverSeenGroup))
-		So(priorJobs, ShouldHaveLength, dgrPassJobs)
-
-		defer setDependencyResolutionChunkSize(dgrPassChunkSize)()
-
-		Convey("The pass costs exactly one read transaction per chunk", func() {
-			before := testDB.bolt.Stats().TxN
-
-			resolved, err := testDB.resolveDependencies(ctx, priorJobs, server.depGroups)
-			So(err, ShouldBeNil)
-			So(resolved, ShouldHaveLength, dgrPassJobs)
-
-			So(testDB.bolt.Stats().TxN-before, ShouldEqual, dgrPassChunks)
-			So(dgrPassChunks, ShouldBeGreaterThan, 1)
-			So(dgrPassChunks, ShouldBeLessThan, dgrPassJobs)
-		})
-	})
-}
-
 // TestDepGranularityRecoverySharedSeenCache covers C1 acceptance test 8: the one
 // seenDepGroupCache the pass builds means a never-seen dep group named by every
 // recovered job is read from bucketDepGroups once, not once per job and not once
@@ -586,6 +556,30 @@ func dgrResolutionFixture(t *testing.T, ctx context.Context, jobs []*Job) (*db, 
 	server.registerDepGroupMembers(priorJobs)
 
 	return testDB, server, priorJobs
+}
+
+// dgTestDB returns an open database in a temporary directory, closed when the
+// Convey block ends.
+func dgTestDB(t *testing.T, ctx context.Context) *db {
+	t.Helper()
+
+	tmpdir := t.TempDir()
+
+	return dgOpenDB(t, ctx, filepath.Join(tmpdir, "queue.db"), filepath.Join(tmpdir, "queue.db.bak"))
+}
+
+// dgOpenDB opens the named database, closing it when the Convey block ends.
+func dgOpenDB(t *testing.T, ctx context.Context, dbFile, dbBackup string) *db {
+	t.Helper()
+
+	testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+	So(err, ShouldBeNil)
+
+	Reset(func() {
+		So(testDB.close(ctx), ShouldBeNil)
+	})
+
+	return testDB
 }
 
 // dgrNeverSeenDBJobs returns count database-level jobs that all depend on

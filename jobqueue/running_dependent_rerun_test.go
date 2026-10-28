@@ -350,7 +350,7 @@ func TestRunningDependentRerunRaces(t *testing.T) {
 
 				_, _, _, srerr := markJobComplete(serverJob, item, success, d.server.limiter, jq.clientid)
 				if srerr == "" {
-					archiveErr = d.server.boltDB().archiveJob(waiter.Key(), serverJob)
+					_, archiveErr = d.server.db.archiveCompletion(waiter.Key(), serverJob)
 				}
 			}
 
@@ -366,7 +366,8 @@ func TestRunningDependentRerunRaces(t *testing.T) {
 
 			dgrAddJobs(jq, []*Job{second})
 
-			So(d.server.boltDB().archiveJob(waiter.Key(), serverJob), ShouldBeNil)
+			_, err := d.server.db.archiveCompletion(waiter.Key(), serverJob)
+			So(err, ShouldBeNil)
 
 			rdrSoRerunsAfterCrash(ctx, d, waiter.Key(), second.Key())
 		})
@@ -548,12 +549,15 @@ func rdrSoRerunsAfterCrash(ctx context.Context, d *dgrServer, waiterKey, secondK
 // that it must run again, asserting it had the other. Without it is what a crash
 // between an add's commit and its storing the mark would leave.
 func rdrSetStoredMark(d *dgrServer, key string, mark bool) {
-	err := rewriteStoredLiveJob(d.server.boltDB(), key, func(job *Job) {
+	So(rewriteStoredLiveJob(d.server, key, func(job *Job) {
 		So(job.RerunAfterRun, ShouldEqual, !mark)
 
 		job.RerunAfterRun = mark
-	})
+	}), ShouldBeNil)
+
+	stored, _, err := d.server.inspector().liveJob(key)
 	So(err, ShouldBeNil)
+	So(stored.RerunAfterRun, ShouldEqual, mark)
 }
 
 // rdrSoCompleteRecorded asserts the job's successful completion is in the

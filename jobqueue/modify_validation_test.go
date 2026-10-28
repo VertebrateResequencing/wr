@@ -43,7 +43,6 @@ import (
 	"github.com/gofrs/uuid/v5"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
-	bolt "go.etcd.io/bbolt"
 	"go.nanomsg.org/mangos/v3"
 )
 
@@ -434,6 +433,13 @@ func validationJobsWithMounts(containerMounts ...string) []*Job {
 	return jobs
 }
 
+// modifierStoreSnapshot is what the store holds of the harness's jobs: each one
+// as it is stored live, and how many records of each kind there are.
+type modifierStoreSnapshot struct {
+	live   map[string]*Job
+	counts map[recordKind]int
+}
+
 type modifierValidationHarness struct {
 	cancel context.CancelFunc
 	db     *db
@@ -531,36 +537,20 @@ func (h *modifierValidationHarness) queueSnapshot() modifierQueueSnapshot {
 	return snapshot
 }
 
-func (h *modifierValidationHarness) dbSnapshot() map[string]map[string]string {
-	buckets := [][]byte{
-		bucketJobsLive, bucketRTK, bucketRGs, bucketDTK, bucketDepGroups,
-		bucketRDTK, bucketJobLookupEntries, bucketEnvs, bucketLGs, bucketJobRunState,
+func (h *modifierValidationHarness) dbSnapshot() modifierStoreSnapshot {
+	inspector := h.server.inspector()
+	snapshot := modifierStoreSnapshot{live: make(map[string]*Job), counts: make(map[recordKind]int)}
+
+	for _, key := range h.originalKeys() {
+		job, _, err := inspector.liveJob(key)
+		So(err, ShouldBeNil)
+
+		snapshot.live[key] = job
 	}
-	snapshot := make(map[string]map[string]string, len(buckets))
 
-	err := h.db.bolt.View(func(tx *bolt.Tx) error {
-		for _, name := range buckets {
-			values := make(map[string]string)
-
-			bucket := tx.Bucket(name)
-			if bucket == nil {
-				continue
-			}
-
-			if err := bucket.ForEach(func(key, value []byte) error {
-				values[string(key)] = string(value)
-
-				return nil
-			}); err != nil {
-				return err
-			}
-
-			snapshot[string(name)] = values
-		}
-
-		return nil
-	})
-	So(err, ShouldBeNil)
+	for _, kind := range []recordKind{kindLive, kindComplete, kindStdOut, kindStdErr, kindEnv, kindLimit, kindStat} {
+		snapshot.counts[kind] = inspectedCount(inspector, kind)
+	}
 
 	return snapshot
 }

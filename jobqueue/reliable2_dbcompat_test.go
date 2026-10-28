@@ -47,7 +47,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -78,10 +77,6 @@ const (
 	// that recovery has not yet restored during the recovery window.
 	dbcompatIncompleteCmd1 = "true 3"
 )
-
-// recoveryPauseHookWait bounds pausedRecoveringFixtureServer's wait for
-// background recovery to reach its pause hook.
-const recoveryPauseHookWait = 30 * time.Second
 
 // TestReliable2DBCompatOpen covers all four F1 acceptance tests against the
 // committed fixture opened with the reworked build.
@@ -308,53 +303,6 @@ func copyFixtureToTempDB(t *testing.T, suggestedName string) string {
 	return dstPath
 }
 
-// pausedRecoveringFixtureServer opens a server against serverConfig's DB (for
-// this file, a copy of the committed fixture; the startup-window tests point it
-// at their own) with its background prior-state recovery blocked at the retained
-// recoveryPauseHook seam, so the startup window is observable without timing
-// flakiness. It returns the server, a connect token, and an idempotent release
-// func that unblocks recovery. The caller owns server.Stop and must arrange for
-// release to run (recovery, publication and thus a clean shutdown are all stuck
-// at the hook until then).
-//
-// It opens the server with serveWithoutPublication, not serve: publication is
-// what the hook is holding, so waiting for it here would deadlock against a
-// release that can only come after this function returns.
-func pausedRecoveringFixtureServer(ctx context.Context, serverConfig ServerConfig) (*Server, []byte, func()) {
-	hookEntered := make(chan struct{})
-	release := make(chan struct{})
-
-	var (
-		once    sync.Once
-		relOnce sync.Once
-	)
-
-	recoveryPauseHookForTest = func() {
-		once.Do(func() { close(hookEntered) })
-		<-release
-	}
-	defer func() { recoveryPauseHookForTest = nil }()
-
-	server, _, token, err := serveWithoutPublication(ctx, serverConfig)
-	recoveryPauseHookForTest = nil
-
-	So(err, ShouldBeNil)
-
-	releaseFn := func() { relOnce.Do(func() { close(release) }) }
-
-	// a hang detector, not a latency budget: the hook is normally reached
-	// within a millisecond of Serve returning, but only once the background
-	// recovery goroutine is scheduled, which a heavily loaded host can delay by
-	// seconds.
-	select {
-	case <-hookEntered:
-	case <-time.After(recoveryPauseHookWait):
-		So("timed out waiting for recovery to reach the pause hook", ShouldBeBlank)
-	}
-
-	return server, token, releaseFn
-}
-
 // dbcompatIncompleteJob rebuilds one of the two incomplete fixture jobs so its
 // Key() matches the key recovery will restore. The fixture jobs set neither
 // CwdMatters nor any mounts/container image, so Cmd alone determines Key(); the
@@ -423,67 +371,4 @@ func reserveIncompleteJobs(jq *Client) []string {
 	}
 
 	return repGroups
-}
-
-// TestReliable2RecoveryMachineryRetained covers spec E6 acceptance test 3. E6's
-// decision is to KEEP the recovery-window RPC machinery as defence in depth even
-// though spec E1 makes the server-request pathway unreachable in production, for
-// three recorded reasons: the scheduling gate is still load-bearing (
-// buildSchedulerGroups still runs during the window and no bsub must happen
-// before serving begins), the sub-millisecond publish-before-finishRecovering
-// window keeps the getij branches reachable, and .docs/reliable2/spec.md H2 is a
-// binding written contract.
-//
-// This is a live grep of the tree rather than a behavioural assertion because
-// what it guards against is a future reader deleting all three as dead code; the
-// behaviour itself is covered by the two tests above.
-func TestReliable2RecoveryMachineryRetained(t *testing.T) {
-	if runnermode || servermode {
-		return
-	}
-
-	Convey("The retained recovery-window machinery is still present and referenced", t, func() {
-		// the sentinel itself, getij's recovering branch, getijForReport's, and the
-		// runner-dispatch gate. The sentinel's name and value are matched as two
-		// substrings of one line rather than as the single gofmt-aligned string
-		// they appear as, so that adding a longer name to that const block
-		// re-aligns it without failing this test with a misleading "the machinery
-		// was deleted".
-		So(dbcompatGrepCount(t, "server.go", "ErrRecovering", `= "server is recovering`), ShouldEqual, 1)
-		So(dbcompatGrepCount(t, "serverCLI.go", "return item, nil, ErrRecovering"), ShouldEqual, 1)
-		// getijForReport's branch returns no item or job; this counts it with
-		// getij's.
-		So(dbcompatGrepCount(t, "serverCLI.go", "nil, ErrRecovering"), ShouldEqual, 2)
-		So(dbcompatGrepCount(t, "server.go", "!s.isRecovering()"), ShouldBeGreaterThanOrEqualTo, 1)
-	})
-}
-
-// dbcompatGrepCount counts the lines of the named package source file that
-// contain every one of substrs.
-func dbcompatGrepCount(t *testing.T, file string, substrs ...string) int {
-	t.Helper()
-
-	source, err := os.ReadFile(file)
-	So(err, ShouldBeNil)
-
-	count := 0
-
-	for line := range strings.SplitSeq(string(source), "\n") {
-		if lineContainsAll(line, substrs) {
-			count++
-		}
-	}
-
-	return count
-}
-
-// lineContainsAll reports whether line contains every one of substrs.
-func lineContainsAll(line string, substrs []string) bool {
-	for _, substr := range substrs {
-		if !strings.Contains(line, substr) {
-			return false
-		}
-	}
-
-	return true
 }

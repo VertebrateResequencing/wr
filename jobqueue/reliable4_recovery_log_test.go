@@ -52,6 +52,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/clog"
+	"github.com/VertebrateResequencing/wr/internal"
 	log15 "github.com/inconshreveable/log15/v3"
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -72,6 +73,10 @@ const (
 	// its ~148k live jobs. The production heartbeat interval has to be longer, or
 	// every ordinary restart logs heartbeats.
 	warmRestartRecovery = 40 * time.Second
+
+	// recoveryLogIncompleteJobs is how many prior incomplete jobs
+	// recoveryLogFixtureConfig stores for recovery to restore.
+	recoveryLogIncompleteJobs = 2
 )
 
 // TestReliable4RecoveryVisibleInManagerLog covers the start and finish
@@ -87,7 +92,7 @@ func TestReliable4RecoveryVisibleInManagerLog(t *testing.T) {
 
 	Convey("A default manager start logs prior-state recovery starting and finishing", t, func() {
 		_, serverConfig, _, _, _ := jobqueueTestInit(true)
-		serverConfig = recoveryLogFixtureConfig(t, serverConfig)
+		serverConfig = recoveryLogFixtureConfig(t, ctx, serverConfig)
 		logPath, serverCtx := managerLogContext(t, ctx)
 
 		server, _, _, err := serve(serverCtx, serverConfig)
@@ -97,7 +102,7 @@ func TestReliable4RecoveryVisibleInManagerLog(t *testing.T) {
 		server.Stop(ctx, true)
 
 		logged := readLogFile(t, logPath)
-		total := strconv.Itoa(dbcompatIncompleteCount)
+		total := strconv.Itoa(recoveryLogIncompleteJobs)
 
 		startLines := logLinesContaining(logged, recoveryStartLogMatch)
 		So(len(startLines), ShouldEqual, 1)
@@ -128,7 +133,7 @@ func TestReliable4LongRecoveryReportsStillWorking(t *testing.T) {
 
 	Convey("A recovery that outlasts the heartbeat interval keeps reporting that it is still working", t, func() {
 		_, serverConfig, _, _, _ := jobqueueTestInit(true)
-		serverConfig = recoveryLogFixtureConfig(t, serverConfig)
+		serverConfig = recoveryLogFixtureConfig(t, ctx, serverConfig)
 		logPath, serverCtx := managerLogContext(t, ctx)
 
 		previousInterval := recoveryHeartbeatInterval
@@ -151,7 +156,7 @@ func TestReliable4LongRecoveryReportsStillWorking(t *testing.T) {
 			return len(heartbeats) > 0
 		}), ShouldBeTrue)
 
-		So(heartbeats[0], ShouldContainSubstring, "total="+strconv.Itoa(dbcompatIncompleteCount))
+		So(heartbeats[0], ShouldContainSubstring, "total="+strconv.Itoa(recoveryLogIncompleteJobs))
 
 		elapsed, err := time.ParseDuration(logLineValue(heartbeats[0], "elapsed"))
 		So(err, ShouldBeNil)
@@ -173,16 +178,30 @@ func TestReliable4LongRecoveryReportsStillWorking(t *testing.T) {
 	})
 }
 
-// recoveryLogFixtureConfig points the given config at a fresh, compacted copy
-// of the committed golden DB, whose jobslive bucket holds dbcompatIncompleteCount
-// prior incomplete jobs for recovery to restore.
-func recoveryLogFixtureConfig(t *testing.T, serverConfig ServerConfig) ServerConfig {
+// recoveryLogFixtureConfig points the given config at a fresh database holding
+// recoveryLogIncompleteJobs prior incomplete jobs for recovery to restore.
+func recoveryLogFixtureConfig(t *testing.T, ctx context.Context, serverConfig ServerConfig) ServerConfig {
 	t.Helper()
 
-	dbPath := compactedFixtureCopy(t, serverConfig.DBFile)
-	serverConfig.DBFile = dbPath
-	serverConfig.DBFileBackup = dbPath + "_bk"
+	dir := t.TempDir()
+	serverConfig.DBFile = filepath.Join(dir, "db")
+	serverConfig.DBFileBackup = filepath.Join(dir, "db.bk")
 	serverConfig.dontWipeDevDB = true
+
+	s, _, err := openStore(ctx, storeConfig{
+		dbFile: serverConfig.DBFile, dbBkFile: serverConfig.DBFileBackup,
+		deployment: internal.Development, kind: serverConfig.storeKind,
+	})
+	So(err, ShouldBeNil)
+
+	jobs := make([]*Job, 0, recoveryLogIncompleteJobs)
+	for i := range recoveryLogIncompleteJobs {
+		jobs = append(jobs, testDBJob("echo recovery log "+strconv.Itoa(i), "recovery-log"))
+	}
+
+	_, err = s.storeNewJobsGuarded(ctx, jobs, false, nil)
+	So(err, ShouldBeNil)
+	So(s.close(ctx), ShouldBeNil)
 
 	return serverConfig
 }

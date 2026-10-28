@@ -55,11 +55,6 @@ const (
 	addTxRepGroup = "rl4tx-rg"
 	addTxDepGroup = "rl4tx-dg"
 	addTxWaitedOn = "rl4tx-dep"
-
-	// addTxLimitGroupA and addTxLimitGroupB are the two limit groups the limit
-	// group test stores.
-	addTxLimitGroupA = "rl4lg-a"
-	addTxLimitGroupB = "rl4lg-b"
 )
 
 func TestReliable4AddEnvNoRewrite(t *testing.T) {
@@ -236,25 +231,6 @@ func limitGroupsStoreCost(d *dgrServer, limitGroups map[string]*limiter.GroupDat
 	So(err, ShouldBeNil)
 
 	return changed, removed, addTxWriteTxID(d) - before
-}
-
-// limitGroupsAB returns the two limit groups the limit group test stores, with
-// the given limits.
-func limitGroupsAB(a, b int64) map[string]*limiter.GroupData {
-	return map[string]*limiter.GroupData{
-		addTxLimitGroupA: limiter.NewCountGroupData(a),
-		addTxLimitGroupB: limiter.NewCountGroupData(b),
-	}
-}
-
-// limitGroupStored returns the limit the database holds for group, so that a
-// store which commits nothing can still be held to leaving the right value
-// there. Asserts that a limit is stored for the group at all.
-func limitGroupStored(ctx context.Context, d *dgrServer, group string) int64 {
-	gd := d.server.db.retrieveLimitGroup(ctx, group)
-	So(gd.IsCount(), ShouldBeTrue)
-
-	return gd.Limit()
 }
 
 func TestReliable4AddOneWriteTx(t *testing.T) {
