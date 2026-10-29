@@ -391,13 +391,21 @@ checkpoint:
   `putJobStats`) and exitstat records (as `updateFailStat`, including
   `shouldRecordHighPeakRAMStat`) only.
 
-- Flat spec: every field `encodeJob` persists today that `jobRunState` does
-  not. Strings and string slices are length-prefixed; Dependencies,
-  Behaviours, MountConfigs and any `Requirements.Other` map may be an
-  embedded Binc blob, present only when non-empty (as
-  `proto/internal/flat`). First byte is the spec codec version (1).
-- Flat run state: every `jobRunState` field, variable length, first byte
-  version (1).
+- Flat spec: every field `encodeJob` persists today that the flat run state
+  does not; these are fixed from the add until a modify or put-back writes a
+  new spec. Strings and string slices are length-prefixed; Dependencies,
+  Behaviours and MountConfigs are one embedded Binc blob, present only when
+  one of them is non-nil (as `proto/internal/flat`, but keeping Binc's nil
+  versus empty). First byte is the spec codec version (1).
+- Flat run state (`logRunState`): every `jobRunState` field plus the
+  persisted fields that a transition changes after the add without writing a
+  new spec: UntilBuried (release, bury, kick, lost-job refresh),
+  FailBumpsCleared, ModifiedReqs and FailedRunReqs (release and bury), and
+  WaitingForDepGroups (dependency resolution).
+  bbolt writes the whole job on exits and kicks, so these survive a restart
+  today; carrying them in every state record keeps that. `jobRunState`
+  itself is unchanged, since bbolt's run-state records are its Binc encoding.
+  Variable length, first byte version (1).
 - Archive (`archiveCompletion`, as `archiveJobTx`): one block of a
   `complete` record holding `recordCompleteTx`'s complete record (for a
   keep-live archive, `rerunRecords`' complete record), then a `delete`
@@ -1178,11 +1186,28 @@ zstd uses `SpeedFastest` with no dictionary.
 As a wr developer, I want a zero-allocation spec and run-state codec, so
 that encoding is off the critical path.
 
+The run state carries the persisted fields a transition changes after the
+add as well as every `jobRunState` field (Records, "Flat run state"), so
+that a state record alone keeps them across a restart, as bbolt's whole-job
+writes do today.
+
 ```go
 func appendFlatSpec(dst []byte, j *Job, ch codec.Handle) ([]byte, error)
 func decodeFlatSpec(src []byte, j *Job, ch codec.Handle) error
-func appendFlatRunState(dst []byte, rs *jobRunState) []byte
-func decodeFlatRunState(src []byte, rs *jobRunState) error
+func appendFlatRunState(dst []byte, rs *logRunState) []byte
+func decodeFlatRunState(src []byte, rs *logRunState) error
+
+// logRunState is jobRunState plus the fields Records' "Flat run state"
+// names; newLogRunState snapshots them under j's read lock.
+type logRunState struct {
+	jobRunState
+	UntilBuried, FailBumpsCleared uint8
+	ModifiedReqs, FailedRunReqs   *scheduler.Requirements
+	WaitingForDepGroups           []string
+}
+
+func newLogRunState(j *Job) logRunState
+func (rs *logRunState) applyTo(j *Job)
 ```
 
 **Package:** `jobqueue/`
@@ -1202,6 +1227,10 @@ func decodeFlatRunState(src []byte, rs *jobRunState) error
    a Job, never panic.
 4. Given a spec whose version byte is 2, when decoded, then the error wraps
    `errStoreVersionTooNew`.
+5. Given the spec record of a zero Job and the run-state record of test 1's
+   Job, when both are decoded into a fresh Job, then each `jobRunState`
+   field and each field Records' "Flat run state" names equals test 1's
+   decoded value, and every other persisted field equals the zero Job's.
 
 ### C2: Adds, envs, limits and rep group lookups
 

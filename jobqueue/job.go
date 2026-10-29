@@ -89,6 +89,10 @@ var envDecodeHook func() //nolint:gochecknoglobals // the only seam onto work th
 // is nil in production.
 var modifyKeyCheckHook func() //nolint:gochecknoglobals // the only seam onto that moment
 
+// errNilStoredElement is the error of decoding a stored Job whose Dependencies
+// or Behaviours hold a nil element, which wr never writes.
+var errNilStoredElement = errors.New("stored job has a nil dependency or behaviour")
+
 // JobState is how we describe the possible job states.
 type JobState string
 
@@ -837,6 +841,18 @@ func mergeBehaviours(existing, modifications Behaviours) Behaviours {
 	}
 
 	return append(merged, modifications...)
+}
+
+// checkStoredElements returns errNilStoredElement if deps or behaviours, decoded
+// from a stored Job, hold a nil element, which later reads (such as
+// dropImpossibleCleanups) would dereference. Every decoder of a stored Job
+// calls it.
+func checkStoredElements(deps Dependencies, behaviours Behaviours) error {
+	if slices.Contains(deps, nil) || slices.Contains(behaviours, nil) {
+		return errNilStoredElement
+	}
+
+	return nil
 }
 
 func sshTarget(reqs *scheduler.Requirements, host, hostIP string) string {

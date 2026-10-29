@@ -41,8 +41,8 @@ Brief every subagent with these project constraints:
 spec.md section: C1
 
 Add the zero-allocation spec and run-state codec in
-`jobqueue/store_flat.go`, including `FuzzFlatSpec`. Cover all 4
+`jobqueue/store_flat.go`, including `FuzzFlatSpec`. Cover all 5
 acceptance tests from C1. Depends on 1a.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

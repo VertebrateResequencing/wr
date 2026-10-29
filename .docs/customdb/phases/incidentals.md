@@ -208,3 +208,12 @@ called ready, or explicitly deferred with the owner.
   but A3's `log` line reports `maxSync` per interval. Owner: 1c.1 (C2),
   which adds the `log` writer's "db writer" stats and decides how the
   per-interval maximum is kept (in the writer or in the log store).
+- [x] (from 1b.1 review) A decoded Behaviours or Dependencies holding a
+  nil element panics in `dropImpossibleCleanups` (`behaviours.go`
+  `withoutCleanups` reads `b.Do`). `FuzzFlatSpec` found it in the flat
+  spec's blob, and bbolt's `decodeJob` calls the same function, so a
+  corrupt bbolt record panics the same way. wr never writes nil elements.
+  Owner: 1b.1 (C1), which rejects such a blob as malformed in both
+  decoders through one shared check. Done in 1b.1: `checkStoredElements`
+  (`job.go`) returns `errNilStoredElement`, which `decodeJob` returns and
+  the flat blob decode wraps in `errFlatMalformed`.

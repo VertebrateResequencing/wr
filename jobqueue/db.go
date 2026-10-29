@@ -2249,6 +2249,10 @@ func (db *db) decodeJob(encoded []byte) (*Job, error) {
 		return nil, err
 	}
 
+	if err := checkStoredElements(job.Dependencies, job.Behaviours); err != nil {
+		return nil, err
+	}
+
 	job.dropImpossibleCleanups()
 
 	return job, nil
