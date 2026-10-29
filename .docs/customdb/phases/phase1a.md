@@ -63,8 +63,8 @@ Add the single writer goroutine that makes each batch durable with one
 write and one fdatasync in `jobqueue/wal/writer.go`. Cover all 6
 acceptance tests from B2. Depends on 1a.1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1a.3: B3 - Block codecs
 

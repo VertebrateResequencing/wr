@@ -248,7 +248,9 @@ type Writer struct{ /* one goroutine, one open segment */ }
 var ErrClosed = errors.New("wal: writer closed")
 
 // done, if non-nil, is called by the writer goroutine with the batch's
-// result after its sync and before Wait returns. It must not block.
+// result after its sync and before Wait returns. It must not block. After
+// Close, done is called with ErrClosed on the caller's goroutine before
+// Append returns.
 func (w *Writer) Append(rec []byte, done func(error)) (Ref, Commit)
 func (w *Writer) AppendBlock(block []byte, n int,
 	done func(error)) (Ref, Commit) // pre-built
@@ -266,15 +268,21 @@ func (w *Writer) Close() error
 so Ref order is log order. The writer goroutine takes everything queued, issues
 one `write()` and one `fdatasync`, calls the batch's `done` funcs in Ref order,
 then closes the batch's channel; no lock is held across the sync (as
-`proto/internal/gc`). Segments rotate at `walSegmentSize` (256MiB) on a batch
-boundary; rotation fsyncs the old file and the directory. Every file's first
+`proto/internal/gc`). Segments rotate at `walSegmentSize` (256MiB) on a
+record boundary: a batch that would cross it is split, and a record larger
+than a segment goes alone into the current one. Rotation makes the new
+file's header durable and fsyncs the old file and the directory before any
+record is written to the new file. Every file's first
 frame is a header written by the writer, `"WRWALHDR"`, u32 previous file number,
 u64 previous file's durable end (its size on a normal rotation); `Scan` passes
 it to fn like any record and `ParseHeader` recognises it.
 
 Write or sync error:
 
-- Only the failing batch's commits get the error.
+- Only the failing batch's commits get the error, plus those of any batch
+  already queued for the same file: their Refs name the abandoned file, so
+  they cannot be written anywhere valid. Batches queued for a later file
+  (after a size rotation) are not failed.
 - The writer abandons the file (a page cache after a failed fsync cannot be
   trusted: nothing more is written to it), opens the next file number,
   whose header records the abandoned file's last durable end, and carries
@@ -295,6 +303,12 @@ func ParseHeader(rec []byte) (prevFile uint32, prevEnd uint64, ok bool)
 func NewWriter(dir string, file uint32, segmentSize int64,
 	onError func(error)) (*Writer, error)
 ```
+
+Tests outside `wal` (C3, C5) hold or fail syncs and shorten `walRetryCap`
+through the test-only `wal.SetTestSyncHook(func(path string) error)` and
+`wal.SetTestRetryCap(time.Duration)`, each returning a restore func, which
+every writer copies at `NewWriter` so changing them never races a running
+writer.
 
 Files in the store directory, `NNNNNNNN` being an 8-hex-digit file number
 from one counter (max existing + 1 at open):

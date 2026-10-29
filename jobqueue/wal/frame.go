@@ -119,6 +119,17 @@ func blockCRC(lenFlags uint32, payload []byte) uint32 {
 // buffer. rec must be 1 byte to 1GiB: an empty or longer one could never be
 // scanned back, so AppendFrame panics rather than write it.
 func AppendFrame(dst, rec []byte) []byte {
+	checkRecord(rec)
+
+	dst = binary.LittleEndian.AppendUint32(dst, uint32(len(rec))) //nolint:gosec // at most MaxFrameLen
+	dst = binary.LittleEndian.AppendUint32(dst, crc32.Checksum(rec, castagnoli))
+
+	return append(dst, rec...)
+}
+
+// checkRecord panics unless rec is 1 byte to 1GiB, the records a frame can
+// hold.
+func checkRecord(rec []byte) {
 	if len(rec) == 0 {
 		panic("wal: an empty record cannot be framed")
 	}
@@ -126,9 +137,4 @@ func AppendFrame(dst, rec []byte) []byte {
 	if len(rec) > MaxFrameLen {
 		panic(fmt.Sprintf("wal: record of %d bytes is over the %d byte frame limit", len(rec), MaxFrameLen))
 	}
-
-	dst = binary.LittleEndian.AppendUint32(dst, uint32(len(rec))) //nolint:gosec // at most MaxFrameLen
-	dst = binary.LittleEndian.AppendUint32(dst, crc32.Checksum(rec, castagnoli))
-
-	return append(dst, rec...)
 }

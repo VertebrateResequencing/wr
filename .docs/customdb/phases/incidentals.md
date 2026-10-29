@@ -204,3 +204,7 @@ called ready, or explicitly deferred with the owner.
   folder keeps folding and invalidates the cache unprompted (D1 test 2 and
   C6's wait on the folder's position cover it only in part). Owner: 1d.1
   (D1), which adds that test.
+- [ ] (from 1a.2) `wal.WriterStats` is cumulative and has no `MaxSync`,
+  but A3's `log` line reports `maxSync` per interval. Owner: 1c.1 (C2),
+  which adds the `log` writer's "db writer" stats and decides how the
+  per-interval maximum is kept (in the writer or in the log store).

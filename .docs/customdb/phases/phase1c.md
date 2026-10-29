@@ -50,7 +50,8 @@ reservation rules stay in 1e), which C2 test 2 and the tests of later
 items drive. Add the replay on open in `jobqueue/store_recover.go`
 that the reopen in these tests needs; 1c.4 extends it to its records and
 1c.5 completes recovery.
-Cover all 4 acceptance tests from C2.
+Cover all 4 acceptance tests from C2. Also resolve the 1a.2 incidental on
+the `log` writer's per-interval `maxSync` ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed
