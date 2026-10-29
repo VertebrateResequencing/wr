@@ -432,8 +432,8 @@ func TestWriterClose(t *testing.T) {
 
 			late := newResults()
 			ref, c := w.Append([]byte("late"), late.done(0))
-			So(waitFor(c), ShouldEqual, ErrClosed)
 			So(late.calls(0), ShouldResemble, []error{ErrClosed})
+			So(waitFor(c), ShouldEqual, ErrClosed)
 			So(ref, ShouldResemble, Ref{})
 
 			_, c = w.AppendBlock(mustBlock("late"), 1, nil)

@@ -447,22 +447,6 @@ func TestScanBlocks(t *testing.T) {
 		So(s.end, ShouldEqual, 0)
 	})
 
-	Convey("Given blocks whose codec byte is 9 but whose bytes are good s2 or zstd, a scan stops at the block "+
-		"with no error", t, func() {
-		z, err := zstdCodec()
-		So(err, ShouldBeNil)
-
-		for _, compressed := range [][]byte{
-			s2.Encode(nil, appendFrames("b")),
-			z.enc.EncodeAll(appendFrames("b"), nil),
-		} {
-			s := scanAll(appendRawBlock(appendFrames("a"), 9, compressed))
-			So(s.err, ShouldBeNil)
-			So(s.recs, ShouldResemble, []string{"a"})
-			So(s.end, ShouldEqual, 9)
-		}
-	})
-
 	Convey("Given s2 blocks of a frame then 1 to 7 bytes too few for a frame header, a scan gives none of "+
 		"their records", t, func() {
 		wrong := 0

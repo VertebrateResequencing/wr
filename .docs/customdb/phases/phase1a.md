@@ -74,5 +74,5 @@ Complete the s2 and zstd block helpers in `jobqueue/wal/codec.go`
 (zstd at `SpeedFastest`, no dictionary). Cover both acceptance tests
 from B3. Depends on 1a.1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

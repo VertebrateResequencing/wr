@@ -477,6 +477,8 @@ func (w *Writer) run() {
 			return
 		}
 
+		// Closing only wakes the loop: it must go round to take again, never
+		// return here, or an append queued just before Close is lost.
 		select {
 		case <-w.kick:
 		case <-w.closing:
