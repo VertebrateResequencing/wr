@@ -27,8 +27,11 @@
 // that a scan reads back up to the first damage.
 //
 // A frame is [u32 lenFlags][u32 crc32c(payload)][payload], little endian, with
-// the CRC Castagnoli. Bit 31 of lenFlags marks a block (a compressed run of
-// frames); the low 31 bits are the payload's length, at most 1GiB.
+// the CRC Castagnoli. Bit 31 of lenFlags marks a block; the low 31 bits are the
+// payload's length, at most 1GiB. A block's payload is [u8 codec][compressed
+// bytes], whose decompressed bytes are a sequence of plain frames, and its CRC
+// covers lenFlags then the payload. Records are never empty: a frame of length
+// 0, plain or inside a block, is damage, so a zero-filled tail ends a log.
 package wal
 
 import (
@@ -61,10 +64,65 @@ type Ref struct {
 	Idx  uint32
 }
 
+// AppendBlock appends frames, a sequence of plain frames made with AppendFrame,
+// to dst as one block compressed with codec (CodecS2 or CodecZstd), returning
+// the extended buffer. A scan gives a block's records all or none.
+//
+// It returns ErrEmptyBlock for no frames, ErrUnknownCodec for another codec,
+// and ErrBlockTooLarge if frames or the block's payload is over MaxFrameLen, in
+// each case with dst unchanged. It does not check frames: a block of damaged
+// frames scans as damage.
+func AppendBlock(dst []byte, codec byte, frames []byte) ([]byte, error) {
+	if len(frames) == 0 {
+		return dst, ErrEmptyBlock
+	}
+
+	if len(frames) > MaxFrameLen {
+		return dst, fmt.Errorf("%w: %d bytes of frames", ErrBlockTooLarge, len(frames))
+	}
+
+	start := len(dst)
+	dst = append(dst, make([]byte, FrameHeader)...)
+	dst = append(dst, codec)
+
+	dst, err := compress(dst, codec, frames)
+	if err != nil {
+		return dst[:start], err
+	}
+
+	payload := dst[start+FrameHeader:]
+	if len(payload) > MaxFrameLen {
+		return dst[:start], fmt.Errorf("%w: %d byte payload", ErrBlockTooLarge, len(payload))
+	}
+
+	lenFlags := blockFlag | uint32(len(payload)) //nolint:gosec // at most MaxFrameLen
+	binary.LittleEndian.PutUint32(dst[start:], lenFlags)
+	binary.LittleEndian.PutUint32(dst[start+4:], blockCRC(lenFlags, payload))
+
+	return dst, nil
+}
+
+// blockCRC is the CRC of a block with the given lenFlags and payload. Unlike a
+// plain frame's, it covers lenFlags as well as the payload: were it the
+// payload's alone, a block whose bit 31 is lost would pass as a plain frame of
+// its compressed bytes, and a plain frame whose bit 31 is set could pass as a
+// block.
+func blockCRC(lenFlags uint32, payload []byte) uint32 {
+	var lf [4]byte
+
+	binary.LittleEndian.PutUint32(lf[:], lenFlags)
+
+	return crc32.Update(crc32.Checksum(lf[:], castagnoli), castagnoli, payload)
+}
+
 // AppendFrame appends rec to dst as a plain frame, returning the extended
-// buffer. rec must be at most 1GiB: a longer one could never be scanned back, so
-// AppendFrame panics rather than write it.
+// buffer. rec must be 1 byte to 1GiB: an empty or longer one could never be
+// scanned back, so AppendFrame panics rather than write it.
 func AppendFrame(dst, rec []byte) []byte {
+	if len(rec) == 0 {
+		panic("wal: an empty record cannot be framed")
+	}
+
 	if len(rec) > MaxFrameLen {
 		panic(fmt.Sprintf("wal: record of %d bytes is over the %d byte frame limit", len(rec), MaxFrameLen))
 	}

@@ -207,6 +207,12 @@ and at most 1GiB. A block's payload is `[u8 codec][compressed bytes]`
 (codec 1 = s2, 2 = zstd) whose decompressed bytes are a sequence of plain
 frames. A block is all or nothing: a block that fails CRC, decompression or
 inner framing ends the good data at the block's start, as a torn frame does.
+A block's CRC is crc32c over its `lenFlags` (4 bytes, little endian) then
+its payload, so a lost or gained bit 31 is damage; a plain frame's CRC
+covers its payload only, so A5 recordings keep their format. Records are
+never empty: a frame of length 0, plain or inside a block, and a block
+that decompresses to nothing are damage, so a zero-filled tail ends the
+good data instead of scanning as empty records.
 
 ```go
 const (

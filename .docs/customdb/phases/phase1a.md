@@ -49,10 +49,11 @@ the plain-frame part item 0d.2 added for A5's recordings, including
 `FuzzScan`. B1 test 2 and the block seeds need s2 blocks, so this item
 also adds `AppendBlock` and the s2 and zstd decode path in
 `jobqueue/wal/codec.go`, making `github.com/klauspost/compress` a direct
-dependency. Cover all 4 acceptance tests from B1.
+dependency. It also adds `ReadAt` (spec "Log format"), which C6 test 4
+uses and no other item names. Cover all 4 acceptance tests from B1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1a.2: B2 - Group-commit writer
 
