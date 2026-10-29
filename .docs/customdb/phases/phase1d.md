@@ -46,8 +46,9 @@ Cover all 7 acceptance tests from D1 in `jobqueue/store_fold_test.go`,
 and add C5 test 7's "after the folder has run" clause (deferred from 1c.5)
 to `jobqueue/store_recover_test.go`.
 Also resolve the 0b.1 incidentals on a learned-requirements load racing an
-uncommitted sample and on startup with a large history
-([incidentals.md](incidentals.md)).
+uncommitted sample and on startup with a large history, and the 0d.3
+incidental on testing that the folder keeps folding and invalidating the
+learned-requirements cache unprompted ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

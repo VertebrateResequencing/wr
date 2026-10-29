@@ -305,27 +305,27 @@ var storeReplays = map[string]replayFunc{
 	"retrieveStoredLimits": replayWith(func(rp *replayer, a *recKeys) [32]byte {
 		return storeDigest(rp.s.retrieveStoredLimits(a.Keys))
 	}),
-	"cachedReqGroupRecs": replayWith(func(rp *replayer, a *recKey) [32]byte {
-		return storeDigest(rp.s.cachedReqGroupRecs(a.Key))
-	}),
-	"refreshReqGroupRecs": replayWith(func(rp *replayer, a *recKey) [32]byte {
-		return storeDigest(rp.s.refreshReqGroupRecs(a.Key))
-	}),
+	"cachedReqGroupRecs":  replayWith(replayCachedReqGroupRecs),
+	"refreshReqGroupRecs": replayWith(replayRefreshReqGroupRecs),
 	"refreshReqGroupRecsLater": replayWith(func(rp *replayer, a *recKey) [32]byte {
+		rp.probeLearned(a.Key)
 		rp.s.refreshReqGroupRecsLater(a.Key)
 
 		return storeDigest()
 	}),
 	"warmReqGroupRecs": replayWith(func(rp *replayer, a *recJobs) [32]byte {
-		rp.s.warmReqGroupRecs(rp.jobList(a.Jobs))
+		jobs := rp.jobList(a.Jobs)
+		for _, job := range jobs {
+			rp.probeLearned(job.ReqGroup)
+		}
+
+		rp.s.warmReqGroupRecs(jobs)
 
 		return storeDigest()
 	}),
-	"reqStatChanges": replayWith(func(rp *replayer, _ *recNone) [32]byte {
-		return storeDigest(rp.s.reqStatChanges())
-	}),
-	"setReqStatRefreshInterval": replayWith(func(rp *replayer, a *recDuration) [32]byte {
-		rp.s.setReqStatRefreshInterval(a.D)
+	"reqStatChanges": replayWith(replayReqStatChanges),
+	"setReqStatRefreshInterval": replayWith(func(rp *replayer, _ *recDuration) [32]byte {
+		rp.s.setReqStatRefreshInterval(0) // see probeLearned
 
 		return storeDigest()
 	}),
@@ -544,10 +544,16 @@ type replayer struct {
 	exitDones map[uint64]func()
 	lastEnd   uint64
 
+	// learned is what the replay has seen of s's learned requirements.
+	learned *learnedReplay
+
 	// call is the call being replayed, and unrecorded is set when it asked a
 	// question the recording has no answer to, which makes it a mismatch.
+	// accept, if set, says whether the call's recorded digest is an answer it
+	// accepts, in place of comparing it with the replayed one.
 	call       *recordedCall
 	unrecorded bool
+	accept     func(recorded [32]byte) bool
 	err        error
 }
 
@@ -560,6 +566,7 @@ func newReplayer(ctx context.Context, s store) *replayer {
 		guards:    make(map[uint64]*rerunGuard),
 		aheads:    make(map[uint64]*jobChangeAhead),
 		exitDones: make(map[uint64]func()),
+		learned:   newLearnedReplay(),
 	}
 }
 
@@ -607,7 +614,7 @@ func (rp *replayer) replay(call *recordedCall, writes writeSpans, stats *replayS
 		return fmt.Errorf("%w: %q", errUnknownRecordedMethod, call.Method)
 	}
 
-	rp.call, rp.unrecorded, rp.err = call, false, nil
+	rp.call, rp.unrecorded, rp.accept, rp.err = call, false, nil, nil
 	rp.lastEnd = call.End
 	stats.calls++
 
@@ -620,11 +627,28 @@ func (rp *replayer) replay(call *recordedCall, writes writeSpans, stats *replayS
 		return fmt.Errorf("could not replay %s (End %d): %w", call.Method, call.End, err)
 	}
 
-	if (digest != call.Digest || rp.unrecorded) && !writes.overlaps(call) {
+	if call.Write {
+		rp.probeAllLearned()
+	}
+
+	if rp.mismatched(digest, writes) {
 		stats.mismatches = append(stats.mismatches, replayMismatch{Seq: call.End, Method: call.Method})
 	}
 
 	return nil
+}
+
+// mismatched reports whether the call being replayed, which gave the given
+// digest, is a mismatch: its recorded answer is not the replayed one (or one
+// the call's accept accepts), or it asked a question the recording has no
+// answer to; and it did not overlap a write in the recording.
+func (rp *replayer) mismatched(digest [32]byte, writes writeSpans) bool {
+	same := digest == rp.call.Digest
+	if rp.accept != nil {
+		same = rp.accept(rp.call.Digest)
+	}
+
+	return (!same || rp.unrecorded) && !writes.overlaps(rp.call)
 }
 
 // decodedJob decodes a recorded job afresh; nil for nil.

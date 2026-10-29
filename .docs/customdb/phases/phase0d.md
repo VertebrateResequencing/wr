@@ -91,5 +91,17 @@ run's shape in the branch's docs. The prodsim run uses LSF; the
 implementor runs it unless the farm is unavailable, in which case it
 reports the blocker instead of substituting a local run.
 
-- [ ] implemented
-- [ ] reviewed
+Recorded 2026-10-28 at `44e8cd6a`:
+`/nfs/hgi/wr/sb10-bigdb/customdb/recordings/phase0-prodsim-20261028b.rec`
+(1.19GB, 400,863 calls), from a 1.5h LSF `wrdev.sh prodsim` run with
+`rundep.sh` and a side driver for modify, remove, suspend, rerun, kick,
+backup and recent-completion calls. Its shape, calls by method and first
+bbolt replay (30,701 mismatches, all in `cachedReqGroupRecs`,
+`refreshReqGroupRecs` and `reqStatChanges`) are in
+[results/phase0-prodsim-recording.md](../results/phase0-prodsim-recording.md).
+After the replay harness fix for those learned-requirements reads (A5),
+the recording replays against bbolt with 0 mismatches (400,863 calls, 0
+skipped).
+
+- [x] implemented
+- [x] reviewed

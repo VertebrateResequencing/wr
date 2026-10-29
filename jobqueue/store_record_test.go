@@ -34,6 +34,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1236,4 +1237,399 @@ func (b buriedStatusStore) retrieveCompleteJobStatusByRepGroup(repgroup string,
 	}
 
 	return status, err
+}
+
+const (
+	// recordCachedMethod and recordRefreshMethod are the recorded method names
+	// of cachedReqGroupRecs and refreshReqGroupRecs.
+	recordCachedMethod  = "cachedReqGroupRecs"
+	recordRefreshMethod = "refreshReqGroupRecs"
+
+	// learnedTestReqGroup is the ReqGroup of the jobs the learned-requirements
+	// recordings archive.
+	learnedTestReqGroup = "record-learned"
+
+	// learnedTestInterval is the refresh interval recordLearnedThrottled sets
+	// and then sleeps past, as a manager's clock passes it between two loads,
+	// so that its recording loads where a replay at full speed would not.
+	learnedTestInterval = 500 * time.Millisecond
+
+	// learnedTestLoadDelay is how long each load of learned requirements takes
+	// while recordLearnedBetweenWrites's recording replays: far longer than a
+	// replay takes to reach its next calls, so that a load the replay starts in
+	// the background cannot finish before them.
+	learnedTestLoadDelay = 100 * time.Millisecond
+)
+
+func TestStoreReplayLearned(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	forEachStore(t, func(kind storeKind) {
+		Convey(fmt.Sprintf("Given a %s recording that loaded learned requirements once its refresh interval had "+
+			"passed", storeKindName(kind)), t, func() {
+			path := filepath.Join(t.TempDir(), "throttled.rec")
+			s := openRecordingStoreIn(t, ctx, kind, path)
+			recordLearnedThrottled(ctx, s)
+			So(s.close(ctx), ShouldBeNil)
+
+			replayedTo := func(wrap func(store) store) replayStats {
+				replayTo, _ := openTestStore(t, ctx, kind)
+
+				stats, err := replayRecording(ctx, path, wrap(replayTo))
+				So(err, ShouldBeNil)
+
+				return stats
+			}
+
+			Convey("replayed at full speed against a fresh store, there is no mismatch", func() {
+				So(replayedTo(func(s store) store { return s }).mismatches, ShouldBeEmpty)
+			})
+
+			Convey("replayed against a store whose learned requirements are wrong, its reads of them mismatch",
+				func() {
+					stats := replayedTo(func(s store) store { return wrongLearnedStore{store: s} })
+					So(mismatchedMethods(stats), ShouldResemble, []string{recordCachedMethod, recordRefreshMethod})
+				})
+
+			Convey("replayed against a store whose learned requirements never change once loaded, its reads of "+
+				"them mismatch", func() {
+				stats := replayedTo(func(s store) store {
+					return &staleLearnedStore{store: s, first: make(map[string]*jqs.Requirements)}
+				})
+				So(mismatchedMethods(stats), ShouldResemble, []string{recordCachedMethod, recordRefreshMethod})
+			})
+
+			Convey("replayed against a store whose cache never reports its learned requirements current, "+
+				"cachedReqGroupRecs mismatches", func() {
+				stats := replayedTo(func(s store) store { return notCurrentLearnedStore{store: s} })
+				So(mismatchedMethods(stats), ShouldResemble, []string{recordCachedMethod})
+			})
+
+			Convey("replayed against a store whose cache alone answers wrongly, cachedReqGroupRecs mismatches",
+				func() {
+					stats := replayedTo(func(s store) store { return wrongCacheOnlyStore{store: s} })
+					So(mismatchedMethods(stats), ShouldResemble, []string{recordCachedMethod})
+				})
+
+			Convey("replayed against a store whose refreshes alternate between right and wrong answers, its "+
+				"refreshReqGroupRecs reads mismatch", func() {
+				stats := replayedTo(func(s store) store { return &alternatingLearnedStore{store: s} })
+				So(mismatchedMethods(stats), ShouldContain, recordRefreshMethod)
+			})
+
+			Convey("replayed against a store whose change stamp never rises, reqStatChanges mismatches", func() {
+				stats := replayedTo(func(s store) store { return fixedStampStore{store: s} })
+				So(mismatchedMethods(stats), ShouldResemble, []string{"reqStatChanges"})
+			})
+		})
+
+		Convey(fmt.Sprintf("Given a %s recording whose ReqGroups were first named by a cache read, a warm and a "+
+			"background load", storeKindName(kind)), t, func() {
+			path := filepath.Join(t.TempDir(), "first.rec")
+			recordLearnedFirstReads(t, ctx, kind, path)
+
+			Convey("replayed against a fresh store whose loads are slow, there is no mismatch", func() {
+				So(replayedWithSlowLoads(t, ctx, kind, path), ShouldBeEmpty)
+			})
+		})
+
+		Convey(fmt.Sprintf("Given a %s recording whose background load of learned requirements read them between "+
+			"two archives", storeKindName(kind)), t, func() {
+			path := filepath.Join(t.TempDir(), "between.rec")
+			recordLearnedBetweenWrites(t, ctx, kind, path)
+
+			Convey("replayed against a fresh store whose loads are slow, there is no mismatch", func() {
+				So(replayedWithSlowLoads(t, ctx, kind, path), ShouldBeEmpty)
+			})
+		})
+	})
+}
+
+// replayedWithSlowLoads replays the recording at path against a fresh store of
+// the given kind, each of whose loads of learned requirements takes
+// learnedTestLoadDelay, and returns the mismatches.
+func replayedWithSlowLoads(t *testing.T, ctx context.Context, kind storeKind, path string) []replayMismatch {
+	t.Helper()
+
+	replayTo, _ := openTestStore(t, ctx, kind)
+
+	reqStatLoadHook = func(string) error {
+		time.Sleep(learnedTestLoadDelay)
+
+		return nil
+	}
+
+	Reset(func() { reqStatLoadHook = nil })
+
+	stats, err := replayRecording(ctx, path, replayTo)
+	So(err, ShouldBeNil)
+
+	return stats.mismatches
+}
+
+// learnedTestJobs returns a new job in learnedTestReqGroup peaking at each of
+// peakRAMs.
+func learnedTestJobs(peakRAMs ...int) []*Job {
+	jobs := make([]*Job, len(peakRAMs))
+
+	for i, peak := range peakRAMs {
+		jobs[i] = testDBJob(fmt.Sprintf("echo record learned %d", i), "record-learned-rg")
+		jobs[i].ReqGroup = learnedTestReqGroup
+		jobs[i].PeakRAM = peak
+	}
+
+	return jobs
+}
+
+// recordLearnedThrottled sets a refresh interval of learnedTestInterval,
+// archives a job, loads its ReqGroup's learned requirements, waits out the
+// interval, archives another job of a higher peak RAM and loads them again,
+// then reads them from the cache and reads the change stamp.
+func recordLearnedThrottled(ctx context.Context, s store) {
+	s.setReqStatRefreshInterval(learnedTestInterval)
+
+	jobs := learnedTestJobs(100, 300)
+	_, err := s.storeNewJobsGuarded(ctx, jobs, false, nil)
+	So(err, ShouldBeNil)
+
+	recordRunToCompletion(s, jobs[0], 0)
+	So(s.refreshReqGroupRecs(learnedTestReqGroup).RAM, ShouldEqual, 100)
+
+	time.Sleep(learnedTestInterval)
+
+	recordRunToCompletion(s, jobs[1], 1)
+	So(s.refreshReqGroupRecs(learnedTestReqGroup).RAM, ShouldEqual, 300)
+
+	rec, current := s.cachedReqGroupRecs(learnedTestReqGroup)
+	So(rec.RAM, ShouldEqual, 300)
+	So(current, ShouldBeTrue)
+	So(s.reqStatChanges(), ShouldEqual, 3)
+}
+
+// recordLearnedBetweenWrites records to path, against a store of the given
+// kind: an archive and a load of its ReqGroup's learned requirements, a second
+// archive, then a background load (refreshReqGroupRecsLater) that reads them
+// only after a third archive, and a fourth archive once it has; then a read of
+// the cache, which holds the values that held only between the third and
+// fourth archives, and of the change stamp.
+func recordLearnedBetweenWrites(t *testing.T, ctx context.Context, kind storeKind, path string) {
+	t.Helper()
+
+	inner := openStoreIn(ctx, kind, t.TempDir())
+	s, err := newRecordingStore(ctx, inner, path)
+	So(err, ShouldBeNil)
+
+	jobs := learnedTestJobs(100, 300, 500, 700)
+	_, err = s.storeNewJobsGuarded(ctx, jobs, false, nil)
+	So(err, ShouldBeNil)
+
+	recordRunToCompletion(s, jobs[0], 0)
+	So(s.refreshReqGroupRecs(learnedTestReqGroup).RAM, ShouldEqual, 100)
+	recordRunToCompletion(s, jobs[1], 1)
+
+	loading, release := make(chan struct{}), make(chan struct{})
+	reqStatLoadHook = func(string) error {
+		close(loading)
+		waitFor(release)
+
+		return nil
+	}
+
+	Reset(func() { reqStatLoadHook = nil })
+
+	s.refreshReqGroupRecsLater(learnedTestReqGroup)
+	So(waitFor(loading), ShouldBeTrue)
+
+	reqStatLoadHook = nil
+
+	recordRunToCompletion(s, jobs[2], 2)
+	close(release)
+	So(cacheBecomes(inner, learnedTestReqGroup, func(rec *jqs.Requirements, _ bool) bool {
+		return rec != nil && rec.RAM == 500
+	}), ShouldBeTrue)
+
+	recordRunToCompletion(s, jobs[3], 3)
+
+	rec, current := s.cachedReqGroupRecs(learnedTestReqGroup)
+	So(rec.RAM, ShouldEqual, 500)
+	So(current, ShouldBeFalse)
+	So(s.reqStatChanges(), ShouldEqual, 3)
+	So(s.close(ctx), ShouldBeNil)
+}
+
+// recordLearnedFirstReads records to path, against a store of the given kind,
+// the first naming of three ReqGroups, each with one job archived: the first by
+// a read of the cache before any load; the second by a warm, after which a
+// second job is archived and the cache read; and the third by a background
+// load, which completes before the cache is read.
+func recordLearnedFirstReads(t *testing.T, ctx context.Context, kind storeKind, path string) {
+	t.Helper()
+
+	inner := openStoreIn(ctx, kind, t.TempDir())
+	s, err := newRecordingStore(ctx, inner, path)
+	So(err, ShouldBeNil)
+
+	jobs := learnedTestJobs(100, 300, 100, 100)
+	unloaded, warmed, background := learnedTestReqGroup+"-unloaded", learnedTestReqGroup+"-warmed",
+		learnedTestReqGroup+"-background"
+	jobs[0].ReqGroup, jobs[1].ReqGroup, jobs[2].ReqGroup, jobs[3].ReqGroup = warmed, warmed, unloaded, background
+
+	_, err = s.storeNewJobsGuarded(ctx, jobs, false, nil)
+	So(err, ShouldBeNil)
+
+	recordRunToCompletion(s, jobs[0], 0)
+	recordRunToCompletion(s, jobs[2], 2)
+	recordRunToCompletion(s, jobs[3], 3)
+
+	rec, current := s.cachedReqGroupRecs(unloaded)
+	So(rec, ShouldBeNil)
+	So(current, ShouldBeFalse)
+
+	s.warmReqGroupRecs(jobs[1:2])
+	recordRunToCompletion(s, jobs[1], 1)
+
+	rec, current = s.cachedReqGroupRecs(warmed)
+	So(rec.RAM, ShouldEqual, 100)
+	So(current, ShouldBeFalse)
+
+	s.refreshReqGroupRecsLater(background)
+
+	So(cacheBecomes(inner, background, func(_ *jqs.Requirements, current bool) bool { return current }),
+		ShouldBeTrue)
+
+	rec, current = s.cachedReqGroupRecs(background)
+	So(rec.RAM, ShouldEqual, 100)
+	So(current, ShouldBeTrue)
+	So(s.close(ctx), ShouldBeNil)
+}
+
+// cacheBecomes reports whether s's cached learned requirements of reqGroup
+// became what done accepts within pausingArchiveWait, as a background load
+// finishes.
+func cacheBecomes(s store, reqGroup string, done func(rec *jqs.Requirements, current bool) bool) bool {
+	deadline := time.Now().Add(pausingArchiveWait)
+
+	for time.Now().Before(deadline) {
+		if done(s.cachedReqGroupRecs(reqGroup)) {
+			return true
+		}
+
+		time.Sleep(time.Millisecond)
+	}
+
+	return false
+}
+
+// wrongLearnedStore is a store whose learned requirements have 1MB more RAM
+// than its store's.
+type wrongLearnedStore struct {
+	store
+}
+
+func (w wrongLearnedStore) cachedReqGroupRecs(reqGroup string) (*jqs.Requirements, bool) {
+	rec, current := w.store.cachedReqGroupRecs(reqGroup)
+
+	return moreRAM(rec), current
+}
+
+func (w wrongLearnedStore) refreshReqGroupRecs(reqGroup string) *jqs.Requirements {
+	return moreRAM(w.store.refreshReqGroupRecs(reqGroup))
+}
+
+// moreRAM returns a copy of rec with 1MB more RAM; nil for nil.
+func moreRAM(rec *jqs.Requirements) *jqs.Requirements {
+	if rec == nil {
+		return nil
+	}
+
+	more := *rec
+	more.RAM++
+
+	return &more
+}
+
+// wrongCacheOnlyStore is a store whose cachedReqGroupRecs answers with 1MB more
+// RAM than its store's, while its refreshReqGroupRecs answers rightly.
+type wrongCacheOnlyStore struct {
+	store
+}
+
+func (w wrongCacheOnlyStore) cachedReqGroupRecs(reqGroup string) (*jqs.Requirements, bool) {
+	rec, current := w.store.cachedReqGroupRecs(reqGroup)
+
+	return moreRAM(rec), current
+}
+
+// alternatingLearnedStore is a store whose refreshReqGroupRecs answers with 1MB
+// more RAM than its store's on every second call, so a refresh can answer with
+// a value other than the one the refresh just before it gave.
+type alternatingLearnedStore struct {
+	store
+
+	calls atomic.Uint64
+}
+
+func (a *alternatingLearnedStore) refreshReqGroupRecs(reqGroup string) *jqs.Requirements {
+	rec := a.store.refreshReqGroupRecs(reqGroup)
+	if a.calls.Add(1)%2 == 0 {
+		return moreRAM(rec)
+	}
+
+	return rec
+}
+
+// staleLearnedStore is a store whose learned requirements of a ReqGroup, once
+// its store has given any, stay those first ones, as from a cache that new
+// samples never invalidate.
+type staleLearnedStore struct {
+	store
+
+	first map[string]*jqs.Requirements
+}
+
+func (s *staleLearnedStore) cachedReqGroupRecs(reqGroup string) (*jqs.Requirements, bool) {
+	rec, current := s.store.cachedReqGroupRecs(reqGroup)
+
+	return s.stale(reqGroup, rec), current
+}
+
+func (s *staleLearnedStore) refreshReqGroupRecs(reqGroup string) *jqs.Requirements {
+	return s.stale(reqGroup, s.store.refreshReqGroupRecs(reqGroup))
+}
+
+// stale returns the first non-nil rec given for reqGroup, rec if none was.
+func (s *staleLearnedStore) stale(reqGroup string, rec *jqs.Requirements) *jqs.Requirements {
+	if first := s.first[reqGroup]; first != nil {
+		return first
+	}
+
+	s.first[reqGroup] = rec
+
+	return rec
+}
+
+// notCurrentLearnedStore is a store whose cachedReqGroupRecs never reports its
+// learned requirements current.
+type notCurrentLearnedStore struct {
+	store
+}
+
+func (n notCurrentLearnedStore) cachedReqGroupRecs(reqGroup string) (*jqs.Requirements, bool) {
+	rec, _ := n.store.cachedReqGroupRecs(reqGroup)
+
+	return rec, false
+}
+
+// fixedStampStore is a store whose learned-requirements change stamp stays at
+// its starting value of 1.
+type fixedStampStore struct {
+	store
+}
+
+func (fixedStampStore) reqStatChanges() uint32 {
+	return 1
 }

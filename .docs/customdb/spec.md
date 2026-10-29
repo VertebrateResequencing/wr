@@ -935,7 +935,43 @@ intervals). `ctx` is never recorded; replay passes its own.
 In Phase 0 an error result is digested by its text, and a handle result
 (`*jobChangeAhead`, `*rerunGuard`, the `expectJobExitUpdate` func) only by
 whether it is nil, so a store that returns a nil handle where bbolt returns
-one mismatches. Revisit both at the first log-store replay.
+one mismatches. A bbolt replay cannot test either choice, since bbolt gives
+the recorded errors and handles; the first log-store replay (Phase 1 gate
+1g.2) revisits both.
+
+The learned-requirements cache reads (`cachedReqGroupRecs`,
+`refreshReqGroupRecs` and `reqStatChanges`) are not compared by digest.
+What they answered while recording depended on when the cache's loads ran:
+at most one per ReqGroup per refresh interval of wall clock, and
+`refreshReqGroupRecsLater`'s in the background. A recording holds neither,
+so a replay at full speed answers differently (the first replay of the
+Phase 0 prodsim recording had 30,701 such mismatches and no others).
+Instead, replay passes 0 (no limit) for the recorded
+`setReqStatRefreshInterval`, and probes the store with
+`refreshReqGroupRecs` before each call naming a ReqGroup (each job's
+ReqGroup for `warmReqGroupRecs`) and, for every ReqGroup named so far,
+after each write call, noting each value the store's learned requirements
+take. No replayed load then runs in the background or is held back. A
+recorded `refreshReqGroupRecs` or `cachedReqGroupRecs` answer matches if it
+is the answer of a cache that has not loaded the ReqGroup (nil, not
+current) or one of its noted values with either current flag, and the
+replayed call answered the latest noted value (as current, for
+`cachedReqGroupRecs`). A recorded `reqStatChanges` stamp matches if it is
+at most the replayed store's: the recording's loads saw some of the values
+the probes load, so it cannot have counted more changes. A store whose
+learned values are wrong, that never takes up a new sample, whose cache
+reports a fresh value as not current, or whose stamp does not rise
+therefore mismatches; one whose stamp rises more often does not. Since
+every learned read is probed first, the replayed cache is always current,
+so replay never exercises the stale, throttled or background path: refresh
+interval handling, `refreshReqGroupRecsLater`'s loads, or a stale value
+wrongly reported current. `TestReqStatCache` and `TestReqStatRefreshLimit`
+(B1) cover those. Replay runs in End order, so a recorded load could have
+seen a write with a later End that committed first, giving a value no
+probe notes; if 1g.2 shows a lone learned-value mismatch beside concurrent
+archives, check this first. The log store's learned values change only
+when its folder folds a sample, so the 1g.2 replay folds (the D1 flush
+hook) before each probe, or a probe can miss a value the recording saw.
 
 Arguments that are closures or live objects are recorded as data. A handle
 (`*jobChangeAhead`, `*rerunGuard`, the func from `expectJobExitUpdate`) is

@@ -58,8 +58,10 @@ store.
 
 spec.md section: Implementation Order, Phase 2, Gates; A5
 
-Replay the Phase 0 prodsim recording (item 0d.3) against the final store
-with 0 mismatches, as in item 1g.2.
+Replay the Phase 0 prodsim recording (item 0d.3; its path, shape and
+first bbolt replay are in
+[results/phase0-prodsim-recording.md](../results/phase0-prodsim-recording.md))
+against the final store with 0 mismatches, as in item 1g.2.
 
 - [ ] implemented
 - [ ] reviewed

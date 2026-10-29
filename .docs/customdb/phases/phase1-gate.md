@@ -63,9 +63,15 @@ minutes each with no crasher.
 
 spec.md section: Implementation Order, Phase 1, Gates; A5
 
-Replay the Phase 0 prodsim recording (item 0d.3) against the log store
-with 0 mismatches, removed methods mapped or skipped as A5 says, and pass
-the A2 suite with `WR_TEST_STORE=all`.
+Replay the Phase 0 prodsim recording (item 0d.3; its path, shape and
+first bbolt replay are in
+[results/phase0-prodsim-recording.md](../results/phase0-prodsim-recording.md))
+against the log store with 0 mismatches, removed methods mapped or
+skipped as A5 says, and pass the A2 suite with `WR_TEST_STORE=all`. The
+replay folds (the D1 flush hook) before each learned-requirements probe,
+as A5 says. Those forced folds hide fold-liveness bugs (a folder that
+stalls or never folds without the hook), so D1's tests must cover fold
+liveness; this replay cannot.
 
 - [ ] implemented
 - [ ] reviewed

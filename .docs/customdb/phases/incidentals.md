@@ -175,7 +175,7 @@ called ready, or explicitly deferred with the owner.
   review decides whether the two serving-time ones count under `batch`.
   Done in 0c.1: the two serving-time writes count under `batch` via
   `updateUncoalesced`; the recovery and close ones stay uncounted.
-- [ ] (from 0d.2) Replaying the prodsim recording may report false
+- [x] (from 0d.2) Replaying the prodsim recording may report false
   mismatches: `cachedReqGroupRecs` and `reqStatChanges` depend on when the
   async `refreshReqGroupRecsLater` loads finish, and `RepGroupStatus`
   float sums may differ in summation order. They are not writes, so the
@@ -186,3 +186,21 @@ called ready, or explicitly deferred with the owner.
   which the log store's errors may word differently; and handle results
   digest only whether they are nil, so a log store returning a nil handle
   where bbolt returns one mismatches.
+  Done in 0d.3: the first replay had 30,701 mismatches, all in
+  `cachedReqGroupRecs`, `refreshReqGroupRecs` and `reqStatChanges`; status
+  float sums had none. The cause was the cache's 1s refresh interval, which
+  held back loads a replay at full speed reached in under a second (so
+  `reqStatChanges` ended 3 below the recording's every time), and background
+  loads. Replay now runs with no interval and probes the learned values
+  before each call naming a ReqGroup and after each write, and accepts a
+  recorded answer that is one of the probed values or a stamp no higher
+  than the replayed one (spec A5, `store_record_learned.go`,
+  `TestStoreReplayLearned`); the recording now replays with 0 mismatches.
+  The error-text and handle digests give bbolt's own answers on a bbolt
+  replay, so only a log-store replay can test them: 1g.2 owns that.
+- [ ] (from 0d.3 review) The 1g.2 replay folds before each
+  learned-requirements probe, which hides a folder that stalls or never
+  invalidates `reqStatCache`. Spec D1 has no acceptance test that the
+  folder keeps folding and invalidates the cache unprompted (D1 test 2 and
+  C6's wait on the folder's position cover it only in part). Owner: 1d.1
+  (D1), which adds that test.
