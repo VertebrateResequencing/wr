@@ -1,0 +1,64 @@
+  wr test suite · 35 packages
+
+    backoff                    1 passed
+    backoff/mock               1 passed
+    backoff/time               1 passed
+    bsubresource               3 passed
+    client                    25 passed
+    client/testing             5 passed
+    clog                       7 passed
+    cloud                     20 passed    1 skipped
+      - Without our special OS_OS_PREFIX, OS_OS_USERNAME, OS_LOCAL_USERNAME and OS_FLAVOR_REGEX environment variables, we'll skip openstack tests
+    cmd                      116 passed
+    container                 11 passed    9 skipped
+      - Can't really test the docker command line: exec: "docker": executable file not found in $PATH x2
+      - Can't really test the singularity command line: exec: "singularity": executable file not found in $PATH x2
+      - Can't really test docker file ownership: exec: "docker": executable file not found in $PATH x2
+      - Can't really test the docker stale container: exec: "docker": executable file not found in $PATH x2
+      - Can't really test the singularity working directory: exec: "singularity": executable file not found in $PATH
+    container/docker           2 passed    1 skipped
+      - skipping docker tests:  failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+    developers/prodsim         3 passed
+    developers/soak/dbstart    4 passed
+    fs                         1 passed
+    fs/dir                     1 passed
+    fs/file                    3 passed
+    fs/filepath                2 passed
+    fs/local                   1 passed
+    fs/mock                    1 passed
+    fs/test                    1 passed
+    internal                  13 passed
+    internal/mangostlstcp      1 passed
+    internal/publishexit       1 passed
+    internal/testcerts         1 passed
+    internal/testsuite        31 passed    1 skipped
+      - child of TestSuiteTempReaping
+    jobqueue                 686 passed   14 skipped
+      - child of TestStoreCrash
+      - WR_STORE_REPLAY is not set
+      - WR_STORE_RECORD_REGEN is not set
+      - child of TestTestBinaryTempDirs
+      - skipping speed test
+      - child of TestExecutePeakRAMUnderLargeParent
+      - WR_ADDBENCH_DIR is not set
+      - Can't do this test without ability to sudo
+      - Skipping the OpenStack tests
+      - Without the JOBQUEUE_REMOTES3_PATH environment variable and an ~/.s3cfg file, we'll skip jobqueue S3 tests
+      - child of TestOpenManagerBoltUnderAddressLimit
+      - child of TestFuseMountReaping
+      - child of TestOwnMemoryMB
+      - Skipping different-group execution because no supplementary group can be resolved by name
+    jobqueue/scheduler        51 passed    1 skipped
+      - Further LSF tests disabled since WR_DISABLE_UNRELIABLE_LSF_TESTS is set
+    jobqueue/wal               2 passed
+    limiter                    9 passed
+    math                       1 passed
+    math/convert               1 passed
+    network/port               2 passed
+    queue                     36 passed
+    retry                      2 passed
+    rp                         1 passed
+  --------------------------------------------
+  1047 passed · 27 skipped · 35 packages · 5m43s
+
+  PASSED

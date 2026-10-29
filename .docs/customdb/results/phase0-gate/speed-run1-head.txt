@@ -1,0 +1,236 @@
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkJobCleanup-8                    	    3546	    351872 ns/op	    9269 B/op	     175 allocs/op
+BenchmarkJobCleanupDepth1-8              	     343	   3482964 ns/op	   22566 B/op	     792 allocs/op
+BenchmarkJobCleanupDepth8-8              	     316	   3779467 ns/op	   29919 B/op	     960 allocs/op
+BenchmarkAddJobs-8                       	      16	 133048634 ns/op	         1.514 bolt_pages/job	         1.516 bolt_writes/job	30568433 B/op	  161458 allocs/op
+BenchmarkUpdateJobState-8                	      19	  54814054 ns/op	         0.8135 bolt_pages/job	         0.8148 bolt_writes/job	14089621 B/op	  119737 allocs/op
+BenchmarkArchiveJobs-8                   	       5	 254048790 ns/op	         3.117 bolt_pages/job	         0.03133 bolt_txns/job	         3.148 bolt_writes/job	36459307 B/op	  326655 allocs/op
+BenchmarkArchiveSpacedArrivals-8         	       1	2469197835 ns/op	         6.000 archives/biggest_txn	         3.120 bolt_pages/job	         0.2000 bolt_txns/job	         3.320 bolt_writes/job	 2391440 B/op	   19715 allocs/op
+BenchmarkModifyLiveJobsReverseLookup-8   	      99	  11489808 ns/op	   99476 B/op	     612 allocs/op
+BenchmarkAddDepGroupMember-8             	       3	 366664673 ns/op	107183157 B/op	 1175746 allocs/op
+BenchmarkJobKey-8                        	41259034	        28.92 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBuildSchedulerGroupsBacklog/priorities=1-8         	       9	 119169899 ns/op	14409432 B/op	     106 allocs/op
+BenchmarkBuildSchedulerGroupsBacklog/priorities=4-8         	       6	 174058566 ns/op	14409432 B/op	     106 allocs/op
+BenchmarkRACCycleCounted/leavers=0-8                        	      12	  97627963 ns/op	 8843352 B/op	      58 allocs/op
+BenchmarkRACCycleCounted/leavers=100-8                      	      12	 105109642 ns/op	 8863212 B/op	      77 allocs/op
+BenchmarkReadyBacklogSnapshot-8                             	     716	   1580617 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRepGroupStatusDetails/1000-8                       	     339	   3753745 ns/op	         0 decodes/op	  298395 B/op	   17050 allocs/op
+BenchmarkRepGroupStatusDetails/10000-8                      	      27	  42346944 ns/op	         0 decodes/op	 3209813 B/op	  200980 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/queue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkQueueLifecycle/groups=1-8         	     418	   2807191 ns/op	  423611 B/op	    1814 allocs/op
+BenchmarkQueueLifecycle/groups=100-8       	     603	   1958155 ns/op	  441044 B/op	    2309 allocs/op
+BenchmarkQueueLifecycle/groups=1,callback=running-8         	     412	   2723073 ns/op	  460643 B/op	    1862 allocs/op
+BenchmarkQueueLifecycle/groups=100,callback=running-8       	     609	   1945489 ns/op	  478206 B/op	    2358 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/limiter
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkLimiterIncDecUnlimited-8   	  614583	      1951 ns/op	     640 B/op	      11 allocs/op
+BenchmarkLimiterIncDec-8            	  534980	      2096 ns/op	     552 B/op	       9 allocs/op
+BenchmarkLimiterCapacity-8          	  588372	      1816 ns/op	     640 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkJobCleanup-8                    	    3547	    366123 ns/op	    9267 B/op	     175 allocs/op
+BenchmarkJobCleanupDepth1-8              	     338	   3414162 ns/op	   22477 B/op	     792 allocs/op
+BenchmarkJobCleanupDepth8-8              	     321	   3641559 ns/op	   29810 B/op	     960 allocs/op
+BenchmarkAddJobs-8                       	      16	 129138091 ns/op	         1.514 bolt_pages/job	         1.516 bolt_writes/job	30358169 B/op	  161360 allocs/op
+BenchmarkUpdateJobState-8                	      20	  53925678 ns/op	         0.8112 bolt_pages/job	         0.8125 bolt_writes/job	14837878 B/op	  120308 allocs/op
+BenchmarkArchiveJobs-8                   	       4	 287124948 ns/op	         3.200 bolt_pages/job	         0.03150 bolt_txns/job	         3.231 bolt_writes/job	37101382 B/op	  330329 allocs/op
+BenchmarkArchiveSpacedArrivals-8         	       1	2472725354 ns/op	         6.000 archives/biggest_txn	         3.130 bolt_pages/job	         0.2000 bolt_txns/job	         3.330 bolt_writes/job	 2417344 B/op	   19716 allocs/op
+BenchmarkModifyLiveJobsReverseLookup-8   	     100	  11449408 ns/op	  100106 B/op	     610 allocs/op
+BenchmarkAddDepGroupMember-8             	       3	 365382667 ns/op	107204488 B/op	 1175745 allocs/op
+BenchmarkJobKey-8                        	41295123	        29.83 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBuildSchedulerGroupsBacklog/priorities=1-8         	      10	 105555534 ns/op	14409432 B/op	     106 allocs/op
+BenchmarkBuildSchedulerGroupsBacklog/priorities=4-8         	       7	 164209596 ns/op	14409432 B/op	     106 allocs/op
+BenchmarkRACCycleCounted/leavers=0-8                        	      12	  95075748 ns/op	 8843406 B/op	      58 allocs/op
+BenchmarkRACCycleCounted/leavers=100-8                      	      12	 102975193 ns/op	 8863310 B/op	      78 allocs/op
+BenchmarkReadyBacklogSnapshot-8                             	     811	   1452716 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRepGroupStatusDetails/1000-8                       	     372	   3112230 ns/op	         0 decodes/op	  298296 B/op	   17038 allocs/op
+BenchmarkRepGroupStatusDetails/10000-8                      	      28	  37938719 ns/op	         0 decodes/op	 3211541 B/op	  201196 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/queue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkQueueLifecycle/groups=1-8         	     447	   2651287 ns/op	  423546 B/op	    1813 allocs/op
+BenchmarkQueueLifecycle/groups=100-8       	     622	   1857415 ns/op	  441027 B/op	    2309 allocs/op
+BenchmarkQueueLifecycle/groups=1,callback=running-8         	     439	   2724095 ns/op	  460602 B/op	    1862 allocs/op
+BenchmarkQueueLifecycle/groups=100,callback=running-8       	     615	   1931438 ns/op	  478244 B/op	    2358 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/limiter
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkLimiterIncDecUnlimited-8   	  532426	      1949 ns/op	     640 B/op	      11 allocs/op
+BenchmarkLimiterIncDec-8            	  521511	      2131 ns/op	     552 B/op	       9 allocs/op
+BenchmarkLimiterCapacity-8          	  605421	      1861 ns/op	     640 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkJobCleanup-8                    	    3469	    330564 ns/op	    9268 B/op	     175 allocs/op
+BenchmarkJobCleanupDepth1-8              	     362	   3377572 ns/op	   22568 B/op	     792 allocs/op
+BenchmarkJobCleanupDepth8-8              	     330	   3677059 ns/op	   29977 B/op	     960 allocs/op
+BenchmarkAddJobs-8                       	      16	 130002113 ns/op	         1.514 bolt_pages/job	         1.516 bolt_writes/job	30601834 B/op	  161438 allocs/op
+BenchmarkUpdateJobState-8                	      20	  55399061 ns/op	         0.8282 bolt_pages/job	         0.8296 bolt_writes/job	14703020 B/op	  120852 allocs/op
+BenchmarkArchiveJobs-8                   	       5	 255953722 ns/op	         3.218 bolt_pages/job	         0.03160 bolt_txns/job	         3.250 bolt_writes/job	37787939 B/op	  331684 allocs/op
+BenchmarkArchiveSpacedArrivals-8         	       1	2469265796 ns/op	         6.000 archives/biggest_txn	         3.135 bolt_pages/job	         0.2000 bolt_txns/job	         3.335 bolt_writes/job	 2442656 B/op	   19733 allocs/op
+BenchmarkModifyLiveJobsReverseLookup-8   	      99	  11383721 ns/op	   99749 B/op	     610 allocs/op
+BenchmarkAddDepGroupMember-8             	       3	 384083739 ns/op	107203048 B/op	 1175793 allocs/op
+BenchmarkJobKey-8                        	41013386	        29.07 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBuildSchedulerGroupsBacklog/priorities=1-8         	      10	 118831164 ns/op	14409432 B/op	     106 allocs/op
+BenchmarkBuildSchedulerGroupsBacklog/priorities=4-8         	       6	 176175934 ns/op	14409432 B/op	     106 allocs/op
+BenchmarkRACCycleCounted/leavers=0-8                        	      10	 103678777 ns/op	 8843434 B/op	      59 allocs/op
+BenchmarkRACCycleCounted/leavers=100-8                      	      10	 103829449 ns/op	 8863223 B/op	      77 allocs/op
+BenchmarkReadyBacklogSnapshot-8                             	     812	   1564982 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRepGroupStatusDetails/1000-8                       	     361	   3223403 ns/op	         0 decodes/op	  296377 B/op	   16798 allocs/op
+BenchmarkRepGroupStatusDetails/10000-8                      	      27	  40313857 ns/op	         0 decodes/op	 3209885 B/op	  200989 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/queue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkQueueLifecycle/groups=1-8         	     439	   2705429 ns/op	  423676 B/op	    1814 allocs/op
+BenchmarkQueueLifecycle/groups=100-8       	     619	   1914916 ns/op	  441092 B/op	    2309 allocs/op
+BenchmarkQueueLifecycle/groups=1,callback=running-8         	     426	   2796297 ns/op	  460632 B/op	    1862 allocs/op
+BenchmarkQueueLifecycle/groups=100,callback=running-8       	     568	   2027686 ns/op	  478205 B/op	    2358 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/limiter
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkLimiterIncDecUnlimited-8   	  533275	      2015 ns/op	     640 B/op	      11 allocs/op
+BenchmarkLimiterIncDec-8            	  508233	      2171 ns/op	     552 B/op	       9 allocs/op
+BenchmarkLimiterCapacity-8          	  589299	      1908 ns/op	     640 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkJobCleanup-8                    	    3626	    336800 ns/op	    9258 B/op	     175 allocs/op
+BenchmarkJobCleanupDepth1-8              	     364	   3439766 ns/op	   22406 B/op	     792 allocs/op
+BenchmarkJobCleanupDepth8-8              	     332	   3653259 ns/op	   29764 B/op	     960 allocs/op
+BenchmarkAddJobs-8                       	      15	 129644314 ns/op	         1.474 bolt_pages/job	         1.476 bolt_writes/job	30159886 B/op	  159690 allocs/op
+BenchmarkUpdateJobState-8                	      20	  56678988 ns/op	         0.8069 bolt_pages/job	         0.8083 bolt_writes/job	14880929 B/op	  119802 allocs/op
+BenchmarkArchiveJobs-8                   	       4	 253629556 ns/op	         3.071 bolt_pages/job	         0.03133 bolt_txns/job	         3.103 bolt_writes/job	35424984 B/op	  323587 allocs/op
+BenchmarkArchiveSpacedArrivals-8         	       1	2471501106 ns/op	         6.000 archives/biggest_txn	         3.100 bolt_pages/job	         0.2000 bolt_txns/job	         3.300 bolt_writes/job	 2425656 B/op	   19736 allocs/op
+BenchmarkModifyLiveJobsReverseLookup-8   	      99	  11739707 ns/op	   99698 B/op	     611 allocs/op
+BenchmarkAddDepGroupMember-8             	       3	 379294397 ns/op	107210672 B/op	 1175775 allocs/op
+BenchmarkJobKey-8                        	40577438	        28.95 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBuildSchedulerGroupsBacklog/priorities=1-8         	      10	 101896467 ns/op	14409432 B/op	     106 allocs/op
+BenchmarkBuildSchedulerGroupsBacklog/priorities=4-8         	       7	 160747440 ns/op	14409432 B/op	     106 allocs/op
+BenchmarkRACCycleCounted/leavers=0-8                        	      12	  94220809 ns/op	 8843355 B/op	      58 allocs/op
+BenchmarkRACCycleCounted/leavers=100-8                      	      12	 103036278 ns/op	 8863182 B/op	      77 allocs/op
+BenchmarkReadyBacklogSnapshot-8                             	     705	   1593725 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRepGroupStatusDetails/1000-8                       	     349	   3391095 ns/op	         0 decodes/op	  298298 B/op	   17038 allocs/op
+BenchmarkRepGroupStatusDetails/10000-8                      	      26	  42616096 ns/op	         0 decodes/op	 3209861 B/op	  200986 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/queue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkQueueLifecycle/groups=1-8         	     406	   2727650 ns/op	  423549 B/op	    1814 allocs/op
+BenchmarkQueueLifecycle/groups=100-8       	     624	   1955955 ns/op	  441035 B/op	    2309 allocs/op
+BenchmarkQueueLifecycle/groups=1,callback=running-8         	     427	   2792691 ns/op	  460615 B/op	    1862 allocs/op
+BenchmarkQueueLifecycle/groups=100,callback=running-8       	     600	   2001222 ns/op	  478225 B/op	    2358 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/limiter
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkLimiterIncDecUnlimited-8   	  524228	      2003 ns/op	     640 B/op	      11 allocs/op
+BenchmarkLimiterIncDec-8            	  483381	      2126 ns/op	     552 B/op	       9 allocs/op
+BenchmarkLimiterCapacity-8          	  560944	      1881 ns/op	     640 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkJobCleanup-8                    	    3657	    335938 ns/op	    9262 B/op	     175 allocs/op
+BenchmarkJobCleanupDepth1-8              	     361	   3339649 ns/op	   22409 B/op	     792 allocs/op
+BenchmarkJobCleanupDepth8-8              	     331	   3667946 ns/op	   29906 B/op	     960 allocs/op
+BenchmarkAddJobs-8                       	      14	 127446200 ns/op	         1.434 bolt_pages/job	         1.436 bolt_writes/job	29850911 B/op	  157909 allocs/op
+BenchmarkUpdateJobState-8                	      21	  56090994 ns/op	         0.8237 bolt_pages/job	         0.8252 bolt_writes/job	14410585 B/op	  120716 allocs/op
+BenchmarkArchiveJobs-8                   	       4	 263109040 ns/op	         3.186 bolt_pages/job	         0.03158 bolt_txns/job	         3.217 bolt_writes/job	36970634 B/op	  330103 allocs/op
+BenchmarkArchiveSpacedArrivals-8         	       1	2469420365 ns/op	         6.000 archives/biggest_txn	         3.120 bolt_pages/job	         0.2000 bolt_txns/job	         3.320 bolt_writes/job	 2438672 B/op	   19755 allocs/op
+BenchmarkModifyLiveJobsReverseLookup-8   	      98	  11642766 ns/op	   99696 B/op	     609 allocs/op
+BenchmarkAddDepGroupMember-8             	       3	 366717140 ns/op	107220760 B/op	 1175735 allocs/op
+BenchmarkJobKey-8                        	41368540	        29.21 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBuildSchedulerGroupsBacklog/priorities=1-8         	      10	 104610055 ns/op	14409432 B/op	     106 allocs/op
+BenchmarkBuildSchedulerGroupsBacklog/priorities=4-8         	       7	 172257557 ns/op	14409432 B/op	     106 allocs/op
+BenchmarkRACCycleCounted/leavers=0-8                        	      12	  88702080 ns/op	 8843386 B/op	      58 allocs/op
+BenchmarkRACCycleCounted/leavers=100-8                      	      12	 100505484 ns/op	 8863179 B/op	      77 allocs/op
+BenchmarkReadyBacklogSnapshot-8                             	     740	   1507880 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRepGroupStatusDetails/1000-8                       	     364	   3281668 ns/op	         0 decodes/op	  298225 B/op	   17029 allocs/op
+BenchmarkRepGroupStatusDetails/10000-8                      	      24	  44882474 ns/op	         0 decodes/op	 3209815 B/op	  200980 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/queue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkQueueLifecycle/groups=1-8         	     370	   2889495 ns/op	  423630 B/op	    1815 allocs/op
+BenchmarkQueueLifecycle/groups=100-8       	     553	   2032190 ns/op	  440983 B/op	    2309 allocs/op
+BenchmarkQueueLifecycle/groups=1,callback=running-8         	     405	   2986914 ns/op	  460652 B/op	    1862 allocs/op
+BenchmarkQueueLifecycle/groups=100,callback=running-8       	     562	   2191989 ns/op	  478186 B/op	    2358 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/limiter
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkLimiterIncDecUnlimited-8   	  502082	      2278 ns/op	     640 B/op	      11 allocs/op
+BenchmarkLimiterIncDec-8            	  523436	      2288 ns/op	     552 B/op	       9 allocs/op
+BenchmarkLimiterCapacity-8          	  540816	      1952 ns/op	     640 B/op	      11 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/jobqueue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkJobCleanup-8                    	    3580	    345624 ns/op	    9270 B/op	     175 allocs/op
+BenchmarkJobCleanupDepth1-8              	     346	   3346471 ns/op	   22467 B/op	     792 allocs/op
+BenchmarkJobCleanupDepth8-8              	     321	   3723986 ns/op	   29989 B/op	     960 allocs/op
+BenchmarkAddJobs-8                       	      15	 134425019 ns/op	         1.474 bolt_pages/job	         1.476 bolt_writes/job	30175848 B/op	  159714 allocs/op
+BenchmarkUpdateJobState-8                	      19	  57454692 ns/op	         0.8275 bolt_pages/job	         0.8289 bolt_writes/job	14352095 B/op	  120700 allocs/op
+BenchmarkArchiveJobs-8                   	       4	 262791068 ns/op	         3.129 bolt_pages/job	         0.03150 bolt_txns/job	         3.161 bolt_writes/job	36110798 B/op	  326944 allocs/op
+BenchmarkArchiveSpacedArrivals-8         	       1	2466063845 ns/op	         6.000 archives/biggest_txn	         3.110 bolt_pages/job	         0.2000 bolt_txns/job	         3.310 bolt_writes/job	 2397816 B/op	   19720 allocs/op
+BenchmarkModifyLiveJobsReverseLookup-8   	     100	  11939418 ns/op	  100240 B/op	     612 allocs/op
+BenchmarkAddDepGroupMember-8             	       3	 385565886 ns/op	107120760 B/op	 1175763 allocs/op
+BenchmarkJobKey-8                        	40438644	        28.82 ns/op	       0 B/op	       0 allocs/op
+BenchmarkBuildSchedulerGroupsBacklog/priorities=1-8         	      10	 101517432 ns/op	14409432 B/op	     106 allocs/op
+BenchmarkBuildSchedulerGroupsBacklog/priorities=4-8         	       7	 159056989 ns/op	14409432 B/op	     106 allocs/op
+BenchmarkRACCycleCounted/leavers=0-8                        	      12	  93660056 ns/op	 8843423 B/op	      59 allocs/op
+BenchmarkRACCycleCounted/leavers=100-8                      	      12	 100067374 ns/op	 8863296 B/op	      77 allocs/op
+BenchmarkReadyBacklogSnapshot-8                             	     776	   1470642 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRepGroupStatusDetails/1000-8                       	     360	   3296175 ns/op	         0 decodes/op	  298321 B/op	   17041 allocs/op
+BenchmarkRepGroupStatusDetails/10000-8                      	      27	  39868629 ns/op	         0 decodes/op	 3209863 B/op	  200986 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/queue
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkQueueLifecycle/groups=1-8         	     442	   2740269 ns/op	  423586 B/op	    1813 allocs/op
+BenchmarkQueueLifecycle/groups=100-8       	     634	   1901585 ns/op	  441013 B/op	    2309 allocs/op
+BenchmarkQueueLifecycle/groups=1,callback=running-8         	     427	   2785960 ns/op	  460635 B/op	    1862 allocs/op
+BenchmarkQueueLifecycle/groups=100,callback=running-8       	     597	   2066478 ns/op	  478206 B/op	    2358 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/VertebrateResequencing/wr/limiter
+cpu: Intel Xeon Processor (Skylake, IBRS)
+BenchmarkLimiterIncDecUnlimited-8   	  531763	      1972 ns/op	     640 B/op	      11 allocs/op
+BenchmarkLimiterIncDec-8            	  524976	      2143 ns/op	     552 B/op	       9 allocs/op
+BenchmarkLimiterCapacity-8          	  569119	      1892 ns/op	     640 B/op	      11 allocs/op
+PASS
+BenchmarkScenarioReportStorm 1 3096.0 jobs/s 113.000 max-archive-ms 6.46 wall-sec
+BenchmarkScenarioDepGranularity 1 318 peak-rss-MB 0.171 recovery-sec 0.511 add-sec

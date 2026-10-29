@@ -1,0 +1,23 @@
+                    │    base     │             head             │
+                    │   jobs/s    │   jobs/s     vs base         │
+ScenarioReportStorm   3.138k ± 3%   3.089k ± 2%  ~ (p=0.258 n=6)
+
+                    │      base      │              head               │
+                    │ max-archive-ms │ max-archive-ms  vs base         │
+ScenarioReportStorm      94.50 ± 34%     107.00 ± 57%  ~ (p=0.310 n=6)
+
+                    │    base    │            head             │
+                    │  wall-sec  │  wall-sec   vs base         │
+ScenarioReportStorm   6.375 ± 3%   6.475 ± 3%  ~ (p=0.258 n=6)
+
+                       │     base     │             head              │
+                       │  peak-rss-B  │  peak-rss-B   vs base         │
+ScenarioDepGranularity   297.5Mi ± 3%   305.2Mi ± 5%  ~ (p=0.253 n=6)
+
+                       │     base     │             head              │
+                       │ recovery-sec │ recovery-sec  vs base         │
+ScenarioDepGranularity   195.5m ± 25%   195.0m ± 13%  ~ (p=0.846 n=6)
+
+                       │    base     │             head             │
+                       │   add-sec   │   add-sec    vs base         │
+ScenarioDepGranularity   510.0m ± 9%   522.0m ± 8%  ~ (p=0.855 n=6)

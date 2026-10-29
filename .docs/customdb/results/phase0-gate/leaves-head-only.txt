@@ -1,0 +1,151 @@
+TestAddLatency1000FailsOverItsLimit :: Adds of 1,000 jobs to a bolt store holding 100,000 are fast enough
+TestAddLatency1000FailsOverItsLimit :: TestAddLatency1000 with a 1ns p50 limit fails and reports n and p50
+TestAlreadyCompleteDuplicateIndexAttribution :: Given a command that completed under one report group > A duplicate with no index entry is attributed by the record's own report group
+TestAlreadyCompleteDuplicateIndexAttribution :: Given a command that completed under one report group > A same-report-group duplicate is attributed without reading the archived record
+TestBoltOnlyTests :: Only the files listed in boltOnlyTests reach bbolt directly, and this file is not one
+TestBoltOnlyTests :: The build check fails for an unlisted test calling boltWrites, which only a listed file defines
+TestBoltOnlyTests :: Without the files in boltOnlyTests, the package and its other tests still build with every tag set
+TestDepGranularityLiveGroupTxCost :: Given a database and the per-group state its live jobs represent > Resolving a dep group with live members opens no read transaction
+TestMovedOnRunnerAfterRestartSecondReserved :: Given a runner's two jobs recovered running after a crash, the second only reserved > a stale touch of the first releases neither
+TestMovedOnRunnerAfterRestartSecondReserved :: Given a runner's two jobs recovered running after a crash, the second only reserved > the runner's start of the second releases the first
+TestMovedOnRunnerAfterRestartSecondReserved :: Given a runner's two jobs recovered running after a crash, the second only reserved > the runner's touch of the second releases the first
+TestReaddQueuedWritesNothing :: Given a manager with a ready job in the queue > re-adding it under its own RepGroup writes nothing to the database
+TestReleaseDurabilityResendWaitsForWrite :: Given a job a runner has buried > a re-sent bury is acknowledged, but not while writes are held off disk
+TestReleaseDurabilityResendWaitsForWrite :: Given a job a runner has released after a failed attempt > a re-sent release is not acknowledged while writes are held off disk
+TestReliable4RecoveryDependencyPass :: Given a database of live jobs and a recovery's worth of jobs to resolve > A cancelled pass leaves no read transaction open
+TestReliable4RecoveryDependencyState :: Given a stopped server whose bolt store holds ready, dependent and waiting jobs > Recovery restores every job's state and waited-for dep groups
+TestReliable4RecoveryDependencyState :: Given a stopped server whose bolt store holds ready, dependent and waiting jobs > The recovered dependencies release the children once the parents complete
+TestReliable4RecoveryDependencyTxCost :: Given a stopped server whose database holds ready, dependent and waiting jobs > Recovery costs fewer read transactions than there are jobs
+TestReqStatCacheUncommittedStat :: Given a server with no learned stats, a load during an uncommitted new stat key is not current once it commits
+TestReservationAndStartRecoveredAfterCrash :: Given a runner's manager with a job added > a duplicate start giving the runner pid of a job recovered without one is recovered with it
+TestReservationAndStartRecoveredAfterCrash :: Given a runner's manager with a job added > a manager killed after the reservation and before Started holds the job in Run for the runner
+TestReserveAndStartWriteRunState :: Given a runner's manager with a job whose Cmd is 10,000 bytes, added and its add committed > a duplicate start giving a runner pid leaves its live record unchanged
+TestReserveAndStartWriteRunState :: Given a runner's manager with a job whose Cmd is 10,000 bytes, added and its add committed > a manager killed after the reservation and before Started recovers its run-state record
+TestScan :: Given a frame whose length has bit 31 clear and value 2^30 + 1, a scan stops there with no error
+TestScan :: Given frames for records a, bb and ccc > a flipped payload byte ends the scan before that frame, with no error
+TestScan :: Given frames for records a, bb and ccc > a scan of the log cut at every offset sees the whole frames before the cut
+TestScan :: Given frames for records a, bb and ccc > a scan sees all 3 in order at their offsets, and ends after the last
+TestScan :: Given frames for records a, bb and ccc > an error from fn stops the scan and is returned, with end before that frame
+TestScanDamagedLength :: Given a frame claiming a 1GiB payload followed by only 64 bytes, a scan stops there with no error, allocating far less than the claimed length
+TestSlowRequestWarningIsAggregated :: Given a manager whose requests are all slow > the slow-request warning is logged once per request shape, with the rest counted
+TestStatsSplitByTakeAreKept :: A wait's count taken without its max still reports a max within its bucket
+TestStatsSplitByTakeAreKept :: A wait's max taken without its count reaches the next summary
+TestStatsSplitByTakeAreKept :: A writer's items taken without their transaction reach the next summary
+TestStatsSplitByTakeAreKept :: Waits' counts taken without their max report a max within the largest one's bucket
+TestStoreArchivedJobNotResurrected :: Given a bolt store with 2 jobs added and archived > a later change of one and exit of the other leave both archived and neither live
+TestStoreCheckIfComplete :: Given a fresh bolt store with one archived job > checkIfComplete is false for a key that was never archived
+TestStoreCheckIfComplete :: Given a fresh bolt store with one archived job > checkIfComplete is true for the archived job's key
+TestStoreCloseDrainsWrites :: Given a bolt store with jobs to archive, and more to add, while it closes > an add and an archive offered after close are refused
+TestStoreCloseDrainsWrites :: Given a bolt store with jobs to archive, and more to add, while it closes > close returns, and what reported success is there after a reopen
+TestStoreCompleteJobsRecentDurability :: Given a bolt store backed by on-disk files > A key re-archived at T2 is returned once with its T2 end time after a reopen
+TestStoreCompleteJobsRecentDurability :: Given a bolt store backed by on-disk files > An archived job is still recent after a close and reopen
+TestStoreContainerImageUser :: Given a bolt store holding docker jobs that differ only in ContainerImageUser > recovering it brings each job's flag back as it was stored
+TestStoreCorruptRestoredFromBackup :: Given a bolt store replaced by random bytes, and a backup of it > opening it restores the backup, saying the db file was corrupt
+TestStoreCrash :: Given a bolt store wrapped in ackEarlyStore, killed after an ack and before its write > the round reports missing acked transitions
+TestStoreCrash :: Given a bolt store wrapped to drop acknowledged releases, killed at a random moment > a round reports missing acked transitions
+TestStoreCrash :: Given a child writing transitions to a bolt store, SIGKILLed at a random moment each round
+TestStoreEnv :: Given a bolt store and an env it has never stored > retrieving it returns nothing, and once stored it is retrievable, also after a reopen
+TestStoreHighPeakMemoryRecommendation :: On a bolt store, a high-memory non-RAM failure seeds recommendations but honours override always
+TestStoreInspector :: Given a bolt store, a job that exited 1 with both std streams and one with only stdout > once flushed, 2 stdouts and 1 stderr are stored and retrieveJobStd returns both streams
+TestStoreInspector :: Given a fresh bolt store with 3 jobs added and 1 of them archived > a forced backup holds what the store held when it was made
+TestStoreInspector :: Given a fresh bolt store with 3 jobs added and 1 of them archived > it counts 2 live and 1 complete, and the archived key is not live
+TestStoreInterface :: A rerunGuard keeps a dependent live only once its add's first job is stored
+TestStoreInterface :: Outside the bbolt files, no jobqueue source imports bbolt or uses the db type
+TestStoreInterface :: The boundary check catches each way of using db as a type
+TestStoreJobStatsCorruptDurationGuard :: A bolt store does not store a corrupt duration stat > A job with a valid positive duration stores RAM, disk and duration
+TestStoreJobStatsCorruptDurationGuard :: A bolt store does not store a corrupt duration stat > A job with a zero EndTime stores RAM and disk but no duration
+TestStoreJobStatsCorruptDurationGuard :: A bolt store does not store a corrupt duration stat > A job with an EndTime before StartTime stores RAM and disk but no duration
+TestStoreLimitGroups :: Given a bolt store > a non-count group with no record is reported removed
+TestStoreLimitGroups :: Given a bolt store > storing new limit groups reports them changed and stores them > changing one limit reports only it changed
+TestStoreLimitGroups :: Given a bolt store > storing new limit groups reports them changed and stores them > removing one limit reports it removed and deletes only its record
+TestStoreLimitGroups :: Given a bolt store > storing new limit groups reports them changed and stores them > storing the same limits again reports nothing
+TestStoreLimitGroups :: Given a bolt store > storing no limit groups reports nothing
+TestStoreNewJobsKeepsHandedOutRecord :: Given a bolt store holding a job's live record > an add does not replace it once it is buried
+TestStoreNewJobsKeepsHandedOutRecord :: Given a bolt store holding a job's live record > an add does not replace it once it is delayed
+TestStoreNewJobsKeepsHandedOutRecord :: Given a bolt store holding a job's live record > an add does not replace it once it is lost
+TestStoreNewJobsKeepsHandedOutRecord :: Given a bolt store holding a job's live record > an add does not replace it once it is ready
+TestStoreNewJobsKeepsHandedOutRecord :: Given a bolt store holding a job's live record > an add does not replace it once it is reserved
+TestStoreNewJobsKeepsHandedOutRecord :: Given a bolt store holding a job's live record > an add does not replace it once it is running
+TestStoreNewJobsKeepsHandedOutRecord :: Given a bolt store holding a job's live record > an add does not replace it once it is suspended
+TestStoreNewJobsKeepsHandedOutRecord :: Given a bolt store holding a job's live record > an add replaces it when it is a complete job's, so re-running it
+TestStoreOpenLocked :: Given a bolt store held open only briefly > a second open waits for the lock to be released, then opens the store
+TestStoreOpenLocked :: Given a bolt store held open, with a backup and restore leftovers beside it > a second open fails with ErrDBLocked, touches no file, and the holder still works
+TestStoreOpenLocked :: Given a bolt store held open, with a backup and restore leftovers beside it > with no backup, a second open still fails with ErrDBLocked, touching no file
+TestStoreOpenLocked :: Given a closed bolt store, an open takes less than the open timeout
+TestStoreRecordRemovedMethodsInput :: The committed removed-methods recording holds its calls and replays onto a bolt store
+TestStoreRecordReplay :: Given WR_STORE_RECORD naming a file that exists, a bolt store does not open
+TestStoreRecordReplay :: Given a bolt store opened without WR_STORE_RECORD, it is not wrapped
+TestStoreRecordReplay :: Given a scripted workload recorded against a bolt store > every store method but close was recorded
+TestStoreRecordReplay :: Given a scripted workload recorded against a bolt store > replayed against a fresh store, every call replays with no skip or mismatch
+TestStoreRecordReplay :: Given a scripted workload recorded against a bolt store > replayed against a store asking a dependency question the recording has no answer to, the first mismatch is that call
+TestStoreRecordReplay :: Given a scripted workload recorded against a bolt store > replayed against a store asking any question the recording has no answer to, the only mismatch is the call that asked it
+TestStoreRecordReplay :: Given a scripted workload recorded against a bolt store > replayed against a store giving its unordered results in reverse, there is no mismatch
+TestStoreRecordReplay :: Given a scripted workload recorded against a bolt store > replayed against a store whose archiveCompletion reports writing nothing, the mismatches are those calls
+TestStoreRecordReplay :: Given a scripted workload recorded against a bolt store > replayed against a store whose prepareJobChange returns no handle, the first mismatch is that call
+TestStoreRecordReplay :: Given a scripted workload recorded against a bolt store > replayed against a store whose retrieveCompleteJobsByKeys drops its last result, the first mismatch is that call
+TestStoreRecordReplay :: Given a scripted workload recorded against a bolt store > replayed against a store whose retrieveRepGroups also returns an error, the mismatch is that call
+TestStoreRecordReplay :: Given a scripted workload recorded against a bolt store > replayed, the replay no longer holds the jobs it saw archived or deleted
+TestStoreRecordReplay :: Given a scripted workload recorded against a bolt store > with its last frame truncated by 3 bytes, it replays every complete frame with no error
+TestStoreRecordServe :: Given a manager on a bolt store serving with WR_STORE_RECORD set > its recording replays against a fresh store with no mismatch
+TestStoreRecoveryDependencyPass :: Given a bolt store of live jobs and a recovery's worth of jobs to resolve > A cancelled context ends the pass instead of resolving every job
+TestStoreRecoveryDependencyPass :: Given a bolt store of live jobs and a recovery's worth of jobs to resolve > The pass resolves every job exactly as per-job resolution does
+TestStoreRecoveryDropsImpossibleCleanups :: Given a bolt store holding a cwd_matters job persisted with a cleanup behaviour > recovering it drops the cleanup, but leaves an ordinary job's cleanup alone
+TestStoreReopenRoundTrip :: Given a bolt store holding 2 live jobs and 1 archived one, closed > reopening it recovers both live jobs and retrieves the archived one by key
+TestStoreReplayChangeHandles :: Given a bolt recording of two changes prepared and then queued in reverse order > replayed against a store noting handles, each queue gets its own job's handle and the changes are stored
+TestStoreReplayLearned :: Given a bolt recording that loaded learned requirements once its refresh interval had passed > replayed against a store whose cache alone answers wrongly, cachedReqGroupRecs mismatches
+TestStoreReplayLearned :: Given a bolt recording that loaded learned requirements once its refresh interval had passed > replayed against a store whose cache never reports its learned requirements current, cachedReqGroupRecs mismatches
+TestStoreReplayLearned :: Given a bolt recording that loaded learned requirements once its refresh interval had passed > replayed against a store whose change stamp never rises, reqStatChanges mismatches
+TestStoreReplayLearned :: Given a bolt recording that loaded learned requirements once its refresh interval had passed > replayed against a store whose learned requirements are wrong, its reads of them mismatch
+TestStoreReplayLearned :: Given a bolt recording that loaded learned requirements once its refresh interval had passed > replayed against a store whose learned requirements never change once loaded, its reads of them mismatch
+TestStoreReplayLearned :: Given a bolt recording that loaded learned requirements once its refresh interval had passed > replayed against a store whose refreshes alternate between right and wrong answers, its refreshReqGroupRecs reads mismatch
+TestStoreReplayLearned :: Given a bolt recording that loaded learned requirements once its refresh interval had passed > replayed at full speed against a fresh store, there is no mismatch
+TestStoreReplayLearned :: Given a bolt recording whose ReqGroups were first named by a cache read, a warm and a background load > replayed against a fresh store whose loads are slow, there is no mismatch
+TestStoreReplayLearned :: Given a bolt recording whose background load of learned requirements read them between two archives > replayed against a fresh store whose loads are slow, there is no mismatch
+TestStoreReplayOverlap :: Given a bolt recording of a read by key made while an archive of that key had written but not returned > replayed, where the read comes before the archive, it is not a mismatch
+TestStoreReplayOverlap :: Given a bolt recording of a rep group status with buried keys k1 and k2 > replayed against a store giving k1 and k3, the status is a mismatch
+TestStoreReplayOverlap :: Given a bolt recording of a rep group status with buried keys k1 and k2 > replayed against a store giving them as k2 and k1, there is no mismatch
+TestStoreReplayOverlap :: Given storeEnv write calls with their bolt answer and retrieveRepGroups calls with a wrong one > a read after a short write but inside a long write that started before it is not a mismatch
+TestStoreReplayOverlap :: Given storeEnv write calls with their bolt answer and retrieveRepGroups calls with a wrong one > a read during which a write started is not a mismatch
+TestStoreReplayOverlap :: Given storeEnv write calls with their bolt answer and retrieveRepGroups calls with a wrong one > a read inside a write is not a mismatch, but the same read after it is
+TestStoreReplayOverlap :: Given storeEnv write calls with their bolt answer and retrieveRepGroups calls with a wrong one > a write overlapping no other write is compared like a read
+TestStoreResurrectedDependentSkipsCompleteJobs :: On a bolt store, resurrecting a dependent does not re-queue complete jobs from the same batch
+TestStoreRetrieveCompleteJobsRecent :: Given a fresh bolt store > With a job archived at T whose key is also live again (re-running) > It is returned before being made live again
+TestStoreRetrieveCompleteJobsRecent :: Given a fresh bolt store > With a job archived at T whose key is also live again (re-running) > retrieveCompleteJobsRecent(T-1m) skips it once the key is live again
+TestStoreRetrieveCompleteJobsRecent :: Given a fresh bolt store > With a job archived at now, a cutoff before 1970 returns it (huge window) > retrieveCompleteJobsRecent(pre-1970) returns the job, not an empty slice
+TestStoreRetrieveCompleteJobsRecent :: Given a fresh bolt store > With a job archived twice at the same end time, it is returned once with that end time
+TestStoreRetrieveCompleteJobsRecent :: Given a fresh bolt store > With an empty history, retrieveCompleteJobsRecent(now-1h) returns empty and no error
+TestStoreRetrieveCompleteJobsRecent :: Given a fresh bolt store > With three archived jobs ending at now-3h, now-30m and now-1m > retrieveCompleteJobsRecent(now-1h) returns the in-window jobs in ascending end-time order
+TestStoreStatsBoltWaits :: Given a bolt server holding 1 job, whose reservations wait 50ms to be written, and which reports when it stops > a reservation handed out while bbolt's write lock is held is counted as not durable
+TestStoreStatsBoltWaits :: Given a bolt server holding 1 job, whose reservations wait 50ms to be written, and which reports when it stops > an add made while bbolt's write lock is held reports at least the time it was kept waiting
+TestStoreStatsBoltWriters :: Given a bolt store holding 3 live jobs, which reports only when it closes > 3 adds queued while one waits for bbolt's write lock are reported as 3 items in 2 txs
+TestStoreStatsBoltWriters :: Given a bolt store holding 3 live jobs, which reports only when it closes > 3 archives are reported under archive
+TestStoreStatsBoltWriters :: Given a bolt store holding 3 live jobs, which reports only when it closes > 3 archives queued while one waits for bbolt's write lock are reported as 3 items in 2 txs
+TestStoreStatsBoltWriters :: Given a bolt store holding 3 live jobs, which reports only when it closes > 3 exits are reported under bestEffort
+TestStoreStatsBoltWriters :: Given a bolt store holding 3 live jobs, which reports only when it closes > a delete kept from bbolt's write lock reports that wait as lock, not hold
+TestStoreStatsBoltWriters :: Given a bolt store holding 3 live jobs, which reports only when it closes > a store to run again kept from bbolt's write lock reports that wait as lock, not hold
+TestStoreStatsBoltWriters :: Given a bolt store holding 3 live jobs, which reports only when it closes > an add too big for one transaction is reported under addChunk with an item per record
+TestStoreStatsBoltWriters :: Given a bolt store holding 3 live jobs, which reports only when it closes > an archive kept from bbolt's write lock reports that wait as lock, not hold
+TestStoreStatsBoltWriters :: Given a bolt store holding 3 live jobs, which reports only when it closes > an archive kept waiting for its write turn reports that wait as lock, not hold
+TestStoreStatsBoltWriters :: Given a bolt store holding 3 live jobs, which reports only when it closes > deleting the 3 is reported under batch as 1 call of 3 items
+TestStoreStatsBoltWriters :: Given a bolt store holding 3 live jobs, which reports only when it closes > marking the 3 to run again is reported under batch as 1 tx of 3 items
+TestStoreStatsBoltWriters :: Given a bolt store holding 3 live jobs, which reports only when it closes > modifying 1 is reported under batch as 1 tx of 1 item
+TestStoreStatsBoltWriters :: Given a bolt store holding 3 live jobs, which reports only when it closes > storing 2 limit groups is reported under batch as 1 call of 2 items
+TestStoreStatsBoltWriters :: Given a bolt store holding 3 live jobs, which reports only when it closes > storing 3 lookups is reported under batch as 1 call of 3 items
+TestStoreStatsBoltWriters :: Given a bolt store holding 3 live jobs, which reports only when it closes > storing an environment is reported under batch as 1 call of 1 item
+TestStoreStatsBoltWriters :: Given a bolt store holding 3 live jobs, which reports only when it closes > storing the 3 live to run again is reported under batch as 1 tx of 3 items
+TestStoreStatsLogLines :: Given a bolt server reporting every 50ms > 3 adds and 5 reservations are reported within 500ms
+TestStoreStatsLogLines :: Given a bolt server reporting every 50ms > an idle server writes none of the lines over 3 intervals
+TestStoreStatsReport :: A reservation handed out before it was durable is counted on one line only
+TestStoreStatsReport :: A reservation handed out before it was durable is counted on the next line
+TestStoreStatsReport :: A wait line's quantiles and max are each their own
+TestStoreStatsReport :: A writer's report carries its lock and hold separately
+TestStoreStatsReport :: A writer's report gives its mean lock and hold per transaction
+TestStoreStatsReportedAtStop :: Given a bolt server whose report interval never ends > an add and a reservation are logged when it stops
+TestStoreStatsWriterKinds :: Every write turn kind is reported under the writer that runs it
+TestWaitHistogram :: A histogram keeps sub-bucket precision across its whole range
+TestWaitHistogram :: A histogram's quantiles come from the observation at their rank
+TestWaitHistogram :: Given a histogram observing 1ms, 2ms, ..., 100ms once each > take() summarises them and resets
+TestWarningStormIsAggregated :: Given a manager whose reservation writes are stalled > the reservation warning is logged once, with the rest counted and a sample job key
+TestWriterStats :: A transaction that never began records nothing
+TestWriterStats :: A transaction's hold is at least the time since it began
+TestWriterStats :: Given a writer's two transactions with fixed asks and begins > take() sums their items and locks, keeps the longest, and resets

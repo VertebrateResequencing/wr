@@ -1,0 +1,12 @@
+BenchmarkScenarioReportStorm 1 3044.1 jobs/s 78.000 max-archive-ms 6.57 wall-sec
+BenchmarkScenarioDepGranularity 1 321 peak-rss-MB 0.171 recovery-sec 0.511 add-sec
+BenchmarkScenarioReportStorm 1 3076.9 jobs/s 73.000 max-archive-ms 6.50 wall-sec
+BenchmarkScenarioDepGranularity 1 312 peak-rss-MB 0.192 recovery-sec 0.501 add-sec
+BenchmarkScenarioReportStorm 1 3169.6 jobs/s 127.000 max-archive-ms 6.31 wall-sec
+BenchmarkScenarioDepGranularity 1 312 peak-rss-MB 0.195 recovery-sec 0.504 add-sec
+BenchmarkScenarioReportStorm 1 3105.6 jobs/s 93.000 max-archive-ms 6.44 wall-sec
+BenchmarkScenarioDepGranularity 1 315 peak-rss-MB 0.214 recovery-sec 0.556 add-sec
+BenchmarkScenarioReportStorm 1 3220.6 jobs/s 108.000 max-archive-ms 6.21 wall-sec
+BenchmarkScenarioDepGranularity 1 306 peak-rss-MB 0.245 recovery-sec 0.509 add-sec
+BenchmarkScenarioReportStorm 1 3200.0 jobs/s 96.000 max-archive-ms 6.25 wall-sec
+BenchmarkScenarioDepGranularity 1 311 peak-rss-MB 0.196 recovery-sec 0.532 add-sec

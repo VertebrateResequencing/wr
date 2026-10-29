@@ -1,0 +1,11 @@
+                    │    base     │                head                │
+                    │   jobs/s    │   jobs/s     vs base               │
+ScenarioReportStorm   3.077k ± 2%   3.145k ± 2%  +2.20% (p=0.031 n=12)
+
+                    │      base      │               head               │
+                    │ max-archive-ms │ max-archive-ms  vs base          │
+ScenarioReportStorm      107.5 ± 53%      108.5 ± 47%  ~ (p=0.660 n=12)
+
+                    │    base    │               head                │
+                    │  wall-sec  │  wall-sec   vs base               │
+ScenarioReportStorm   6.500 ± 2%   6.360 ± 2%  -2.15% (p=0.031 n=12)

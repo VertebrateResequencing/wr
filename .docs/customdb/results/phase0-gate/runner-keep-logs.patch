@@ -1,0 +1,18 @@
+diff --git a/internal/testsuite/runner.go b/internal/testsuite/runner.go
+index eb8823a9..e04f23c2 100644
+--- a/internal/testsuite/runner.go
++++ b/internal/testsuite/runner.go
+@@ -246,7 +246,12 @@ func RunPlan(ctx context.Context, stdout io.Writer, stderr io.Writer, root strin
+ 		return fmt.Errorf("create test-suite temp dir: %w", err)
+ 	}
+ 
+-	defer removeTemp(stderr, base)
++	defer func() {
++		if d := os.Getenv("WRTS_KEEP"); d != "" {
++			_ = exec.Command("sh", "-c", "cp "+base+"/*.log "+d).Run()
++		}
++		removeTemp(stderr, base)
++	}()
+ 
+ 	restorePortBase, err := setRunPortBase(ctx, plan)
+ 	if err != nil {

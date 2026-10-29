@@ -47,5 +47,14 @@ or skipped, A1 test 3) and run `make speed` (not `make speed-full`)
 against `d1a4b6d7`: every measure within 10%. Record both runs' numbers in
 the branch's docs.
 
-- [ ] implemented
-- [ ] reviewed
+Run 2026-10-29 at `98f03181`; both parts pass. `make test` at the base
+gives 1008 passed and 23 skipped, at HEAD 1047 and 27: every base test
+still runs, the 8 renamed ones and 33 moved or split Convey leaves are
+mapped, and the 4 new skips are new opt-in tests. `make speed` passes in
+all 3 runs, with every measure within 10% once the noisy single-round
+report-storm max-archive-ms was rerun over 12 rounds (+0.9%, p=0.66).
+Numbers and the test-set comparison are in
+[results/phase0-gate.md](../results/phase0-gate.md).
+
+- [x] implemented
+- [x] reviewed

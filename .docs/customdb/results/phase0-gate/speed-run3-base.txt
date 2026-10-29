@@ -1,0 +1,12 @@
+BenchmarkScenarioReportStorm 1 3062.8 jobs/s 76.000 max-archive-ms 6.53 wall-sec
+BenchmarkScenarioReportStorm 1 3072.2 jobs/s 116.000 max-archive-ms 6.51 wall-sec
+BenchmarkScenarioReportStorm 1 3062.8 jobs/s 174.000 max-archive-ms 6.53 wall-sec
+BenchmarkScenarioReportStorm 1 3030.3 jobs/s 76.000 max-archive-ms 6.60 wall-sec
+BenchmarkScenarioReportStorm 1 3134.8 jobs/s 176.000 max-archive-ms 6.38 wall-sec
+BenchmarkScenarioReportStorm 1 3134.8 jobs/s 76.000 max-archive-ms 6.38 wall-sec
+BenchmarkScenarioReportStorm 1 3053.4 jobs/s 116.000 max-archive-ms 6.55 wall-sec
+BenchmarkScenarioReportStorm 1 3149.6 jobs/s 75.000 max-archive-ms 6.35 wall-sec
+BenchmarkScenarioReportStorm 1 3081.7 jobs/s 147.000 max-archive-ms 6.49 wall-sec
+BenchmarkScenarioReportStorm 1 3062.8 jobs/s 99.000 max-archive-ms 6.53 wall-sec
+BenchmarkScenarioReportStorm 1 3125.0 jobs/s 164.000 max-archive-ms 6.40 wall-sec
+BenchmarkScenarioReportStorm 1 3120.1 jobs/s 72.000 max-archive-ms 6.41 wall-sec

@@ -1,0 +1,42 @@
+TestAlreadyCompleteDuplicateAttribution :: Given a command that completed under one report group > A duplicate with no index entry is attributed by the record's own report group
+TestAlreadyCompleteDuplicateAttribution :: Given a command that completed under one report group > A same-report-group duplicate is attributed without reading the archived record
+TestDBCheckIfComplete :: Given a fresh db with one archived job > checkIfComplete is false for a key that was never archived
+TestDBCheckIfComplete :: Given a fresh db with one archived job > checkIfComplete is true for the archived job's key
+TestDBContainerImageUser :: Given a db file holding docker jobs that differ only in ContainerImageUser > recovering it brings each job's flag back as it was stored
+TestDBDepGroups :: Resurrecting a dependent does not re-queue complete jobs from the same batch
+TestDBEndTimeIndexDurability :: Given a db backed by an on-disk file > An archived job's index entry survives a close/reopen from the same file
+TestDBHighPeakMemoryRecommendation :: A high-memory non-RAM failure seeds recommendations but honours override always
+TestDBLoadDropsImpossibleCleanups :: Given a db file holding a cwd_matters job persisted with a cleanup behaviour > recovering it drops the cleanup, but leaves an ordinary job's cleanup alone
+TestDBRetrieveCompleteJobsRecent :: Given a fresh db > With a job archived at T whose key is also live again (re-running) > It is returned before being made live again
+TestDBRetrieveCompleteJobsRecent :: Given a fresh db > With a job archived at T whose key is also live again (re-running) > retrieveCompleteJobsRecent(T-1m) skips it once the key is live again
+TestDBRetrieveCompleteJobsRecent :: Given a fresh db > With a job archived at now, a cutoff before 1970 returns it (huge window) > retrieveCompleteJobsRecent(pre-1970) returns the job, not an empty slice
+TestDBRetrieveCompleteJobsRecent :: Given a fresh db > With an empty complete store, retrieveCompleteJobsRecent(now-1h) returns empty and no error
+TestDBRetrieveCompleteJobsRecent :: Given a fresh db > With three archived jobs ending at now-3h, now-30m and now-1m > retrieveCompleteJobsRecent(now-1h) returns the in-window jobs in ascending end-time order
+TestDepGranularityCorruptDBStillRestores :: initDB still recreates a corrupt database from its backup
+TestDepGranularityDBLockWaitsForRelease :: initDB waits for a briefly-held database rather than failing fast
+TestDepGranularityDBLockedLeavesBackupAlone :: initDB on a held database leaves the backup alone and the holder working
+TestDepGranularityDBLockedLeavesFileAlone :: initDB on a database another manager holds fails without touching the file
+TestDepGranularityUnlockedDBOpensImmediately :: initDB on an unlocked database opens it with no measurable delay
+TestMovedOnRunnerAfterRestart :: Given a runner's two jobs recovered running after a crash, the second only reserved > a stale touch of the first releases neither
+TestMovedOnRunnerAfterRestart :: Given a runner's two jobs recovered running after a crash, the second only reserved > the runner's start of the second releases the first
+TestMovedOnRunnerAfterRestart :: Given a runner's two jobs recovered running after a crash, the second only reserved > the runner's touch of the second releases the first
+TestReaddQueuedKeepsRecord :: Given a manager with a job in the queue > a ready one, re-added under its own RepGroup, without writing to the database
+TestReleaseDurabilityResend :: Given a job a runner has buried > a re-sent bury is acknowledged, but not while writes are held off disk
+TestReleaseDurabilityResend :: Given a job a runner has released after a failed attempt > a re-sent release is not acknowledged while writes are held off disk
+TestReliable4RecoveryDependencyPass :: Given a database of live jobs and a recovery's worth of jobs to resolve > A cancelled context ends the pass instead of resolving every job
+TestReliable4RecoveryDependencyPass :: Given a database of live jobs and a recovery's worth of jobs to resolve > The pass resolves every job exactly as per-job resolution does
+TestReliable4RecoveryDependencyState :: Given a stopped server whose database holds ready, dependent and waiting jobs > Recovery restores every job's state and waited-for dep groups, for far fewer transactions
+TestReliable4RecoveryDependencyState :: Given a stopped server whose database holds ready, dependent and waiting jobs > The recovered dependencies release the children once the parents complete
+TestReqStatCache :: Given a server with no learned stats > a load during an uncommitted new stat key is not current once it commits
+TestReserveAndStartWriteRunState :: Given a runner's manager with a job whose Cmd is 10,000 bytes, added and its add committed > a duplicate start giving the runner pid of a job recovered without one is recovered with it
+TestReserveAndStartWriteRunState :: Given a runner's manager with a job whose Cmd is 10,000 bytes, added and its add committed > a manager killed after the reservation and before Started recovers its run state, holding the job in Run for the runner
+TestStoreNewJobsKeepsHandedOutRecord :: Given a database holding a job's live record > an add does not replace it once it is buried
+TestStoreNewJobsKeepsHandedOutRecord :: Given a database holding a job's live record > an add does not replace it once it is delayed
+TestStoreNewJobsKeepsHandedOutRecord :: Given a database holding a job's live record > an add does not replace it once it is lost
+TestStoreNewJobsKeepsHandedOutRecord :: Given a database holding a job's live record > an add does not replace it once it is ready
+TestStoreNewJobsKeepsHandedOutRecord :: Given a database holding a job's live record > an add does not replace it once it is reserved
+TestStoreNewJobsKeepsHandedOutRecord :: Given a database holding a job's live record > an add does not replace it once it is running
+TestStoreNewJobsKeepsHandedOutRecord :: Given a database holding a job's live record > an add does not replace it once it is suspended
+TestStoreNewJobsKeepsHandedOutRecord :: Given a database holding a job's live record > an add replaces it when it is a complete job's, so re-running it
+TestWarningStormIsAggregated :: Given a manager whose reservation writes are stalled and whose requests are all slow > the reservation warning is logged once, with the rest counted and a sample job key
+TestWarningStormIsAggregated :: Given a manager whose reservation writes are stalled and whose requests are all slow > the slow-request warning is logged once per request shape, with the rest counted
