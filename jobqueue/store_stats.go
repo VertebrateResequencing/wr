@@ -39,7 +39,9 @@ package jobqueue
 //   - "db writer" (dbWriterStatsLogMsg), one line per writer that ran a
 //     transaction: txs and items, meanLock/maxLock (waiting for its write turn
 //     and bbolt's single write lock, before the transaction body ran) and
-//     meanHold/maxHold (the transaction itself, including its commit).
+//     meanHold/maxHold (the transaction itself, including its commit). The
+//     log store's writer has its own line, writer=log, with the batches,
+//     records and bytes it made durable and meanSync/maxSync (logWriterReport).
 //   - "add wait" (addWaitLogMsg): n, p50, p99 and max of how long adds waited
 //     for storeNewJobsGuarded.
 //   - "reservation wait" (reservationWaitLogMsg): n, p50, p99 and max of how
@@ -55,6 +57,7 @@ import (
 
 	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/jobqueue/wal"
 )
 
 const (
@@ -207,6 +210,41 @@ func (s *dbWriterStats) report(ctx context.Context, interval time.Duration) {
 // nanosDuration is an accumulated nanosecond count as a reported duration.
 func nanosDuration(nanos uint64) time.Duration {
 	return time.Duration(nanos).Round(statsDurationPrecision) //nolint:gosec // accumulated durations
+}
+
+// logWriterReport turns the log writer's totals into the per-interval "db
+// writer" line with writer=log: batches, records and bytes made durable, and
+// the mean and longest sync. Only the log store's reporter, and its close once
+// that has stopped, call report.
+type logWriterReport struct {
+	last wal.WriterStats
+}
+
+// report logs the log writer's line for the interval since the last report,
+// given its totals now and its longest sync in the interval, unless it made no
+// batch durable.
+func (r *logWriterReport) report(ctx context.Context, interval time.Duration, now wal.WriterStats,
+	maxSync time.Duration,
+) {
+	last := r.last
+	r.last = now
+
+	batches := now.Batches - last.Batches
+	if batches == 0 {
+		return
+	}
+
+	syncs := max(now.Syncs-last.Syncs, 1)
+	meanSync := (now.SyncTime - last.SyncTime) / time.Duration(syncs) //nolint:gosec // a count of syncs
+
+	clog.Warn(ctx, dbWriterStatsLogMsg,
+		"writer", logWriterName,
+		"batches", batches,
+		"records", now.Records-last.Records,
+		"bytes", now.Bytes-last.Bytes,
+		"meanSync", meanSync.Round(statsDurationPrecision),
+		"maxSync", maxSync.Round(statsDurationPrecision),
+		"interval", interval)
 }
 
 // waitSummary is what a waitHistogram observed between two takes.

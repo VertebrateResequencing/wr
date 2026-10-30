@@ -471,11 +471,10 @@ const (
 // a group whose limit is stored again unaltered is reported unchanged without a
 // write.
 //
-// It only reads b, so it can also be called in a read transaction, to find out
+// existing is the group's stored limit record, or nil if it has none. Planning
+// only reads, so a bbolt store can plan in a read transaction, to find out
 // whether a write transaction is needed at all.
-func planLimitGroup(b *bolt.Bucket, group string, limitG *limiter.GroupData) (limitGroupOutcome, limitGroupWrite) {
-	existing := b.Get([]byte(group))
-
+func planLimitGroup(existing []byte, limitG *limiter.GroupData) (limitGroupOutcome, limitGroupWrite) {
 	if limitG.IsCount() {
 		return planLimitGroupStore(existing, limitG.Limit())
 	}
@@ -1811,7 +1810,7 @@ type limitGroupOutcome int
 // storeLimitGroup stores (or deletes) a single limit group in the given bucket,
 // reporting what it did. b must come from a write transaction.
 func storeLimitGroup(b *bolt.Bucket, group string, limitG *limiter.GroupData) (limitGroupOutcome, error) {
-	outcome, write := planLimitGroup(b, group, limitG)
+	outcome, write := planLimitGroup(b.Get([]byte(group)), limitG)
 
 	var err error
 
@@ -1862,7 +1861,7 @@ func (db *db) planLimitGroups(limitGroups map[string]*limiter.GroupData) (
 		b := tx.Bucket(bucketLGs)
 
 		for group, limitG := range limitGroups {
-			outcome, write := planLimitGroup(b, group, limitG)
+			outcome, write := planLimitGroup(b.Get([]byte(group)), limitG)
 			if write != limitGroupWriteNone {
 				writeNeeded = true
 			}
@@ -2630,15 +2629,7 @@ func (db *db) liveRecordKept(runStates *bolt.Bucket, key, existing []byte) bool 
 // suspended, or has been attempted or started. A complete job's live record is
 // one a dependency re-run put there for it to run again, so it does not count.
 func liveRecordHandedOut(job *Job) bool {
-	switch job.State {
-	case JobStateComplete:
-		return false
-	case JobStateReserved, JobStateRunning, JobStateLost, JobStateDelayed,
-		JobStateBuried, JobStateSuspended:
-		return true
-	default:
-		return job.Attempts > 0 || !job.StartTime.IsZero()
-	}
+	return runStateHandedOut(job.State, job.Attempts, job.StartTime)
 }
 
 // storeRepGroupLookups stores the RepGroup->key lookup of each of the given
@@ -3513,6 +3504,20 @@ func splitNewJobsFold(pending []*newJobsOp) (fold, remainder []*newJobsOp) {
 	}
 
 	return pending, nil
+}
+
+// runStateHandedOut is liveRecordHandedOut of a job with the given State,
+// Attempts and StartTime.
+func runStateHandedOut(state JobState, attempts uint32, start time.Time) bool {
+	switch state {
+	case JobStateComplete:
+		return false
+	case JobStateReserved, JobStateRunning, JobStateLost, JobStateDelayed,
+		JobStateBuried, JobStateSuspended:
+		return true
+	default:
+		return attempts > 0 || !start.IsZero()
+	}
 }
 
 // openErrorThatIsNotCorruption returns the error initDB should fail with when

@@ -28,9 +28,11 @@ package wal
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -656,9 +658,16 @@ func TestWriterFailureWithinATake(t *testing.T) {
 			So(waitFor(cB), ShouldBeNil)
 			So(recordAt(dir, refB), ShouldEqual, "bbbbbbbbbb")
 
+			// file 2's failed start left nothing durable, so file 2 was
+			// created again, holding no record, before file 3.
+			s2 := scanSegment(dir, 2)
+			So(s2.prevFile, ShouldEqual, 1)
+			So(s2.prevEnd, ShouldEqual, fileSize(segment(dir, 1)))
+			So(s2.recs, ShouldBeEmpty)
+
 			s := scanSegment(dir, 3)
 			So(s.prevFile, ShouldEqual, 2)
-			So(s.prevEnd, ShouldEqual, 0)
+			So(s.prevEnd, ShouldEqual, headerEnd)
 		})
 	})
 
@@ -739,6 +748,87 @@ func TestWriterDoneOrder(t *testing.T) {
 			defer mu.Unlock()
 
 			So(order, ShouldResemble, []int{0, 1, 2, 3, 4})
+		})
+	})
+}
+
+func TestWriterAppendBlocks(t *testing.T) {
+	Convey("Given a writer whose first sync is held", t, func() {
+		hold := newSyncHold(nil)
+		dir := t.TempDir()
+		w := newTestWriter(dir, testSegmentSize, nil)
+
+		_, first := w.Append([]byte("first"), nil)
+
+		hold.awaitEntered()
+
+		Convey("blocks appended together share one batch, each record at its Ref", func() {
+			res := newResults()
+
+			refs, c := w.AppendBlocks([][]byte{mustBlock("a", "b"), mustBlock("c")}, []int{2, 1},
+				[]func(error){res.done(0), res.done(1)})
+
+			hold.Release()
+			So(waitFor(first), ShouldBeNil)
+			So(waitFor(c), ShouldBeNil)
+
+			So(res.calls(0), ShouldResemble, []error{nil})
+			So(res.calls(1), ShouldResemble, []error{nil})
+			So(w.Stats().Batches, ShouldEqual, 2)
+			So(w.Stats().Records, ShouldEqual, 4)
+
+			So(recordAt(dir, Ref{File: refs[0].File, Off: refs[0].Off, Idx: 1}), ShouldEqual, "b")
+			So(recordAt(dir, refs[1]), ShouldEqual, "c")
+		})
+
+		Convey("after Close, each done gets ErrClosed", func() {
+			hold.Release()
+			So(w.Close(), ShouldBeNil)
+
+			res := newResults()
+
+			_, c := w.AppendBlocks([][]byte{mustBlock("a"), mustBlock("b")}, []int{1, 1},
+				[]func(error){res.done(0), res.done(1)})
+			So(c.Wait(), ShouldEqual, ErrClosed)
+			So(res.calls(0), ShouldResemble, []error{ErrClosed})
+			So(res.calls(1), ShouldResemble, []error{ErrClosed})
+		})
+	})
+
+	Convey("Given a durable record, in segments with room after it for block a but not also block b", t, func() {
+		dir := t.TempDir()
+		a, b := mustBlock("a"), mustBlock("b")
+		w := newTestWriter(dir, headerEnd+FrameHeader+5+int64(len(a)+len(b))-1, nil)
+
+		_, c := w.Append([]byte("first"), nil)
+		So(waitFor(c), ShouldBeNil)
+
+		Convey("a and b appended together both go in segment 2, so no rotation separates them", func() {
+			refs, cb := w.AppendBlocks([][]byte{a, b}, []int{1, 1}, []func(error){nil, nil})
+			So(waitFor(cb), ShouldBeNil)
+
+			So(refs, ShouldResemble, []Ref{
+				{File: 2, Off: uint64(headerEnd)},
+				{File: 2, Off: uint64(headerEnd) + uint64(len(a))},
+			})
+			So(recordAt(dir, refs[0]), ShouldEqual, "a")
+			So(recordAt(dir, refs[1]), ShouldEqual, "b")
+		})
+
+		Convey("blocks that together exceed a whole segment still all go in segment 2", func() {
+			big := mustBlock(strings.Repeat("x", 4*len(a)))
+
+			refs, cb := w.AppendBlocks([][]byte{a, big, b}, []int{1, 1, 1}, []func(error){nil, nil, nil})
+			So(waitFor(cb), ShouldBeNil)
+
+			for i, rec := range []string{"a", strings.Repeat("x", 4*len(a)), "b"} {
+				So(refs[i].File, ShouldEqual, 2)
+				So(recordAt(dir, refs[i]), ShouldEqual, rec)
+			}
+
+			_, cn := w.Append([]byte("next"), nil)
+			So(waitFor(cn), ShouldBeNil)
+			So(segmentFiles(dir), ShouldResemble, []uint32{1, 2, 3})
 		})
 	})
 }
@@ -833,8 +923,8 @@ func TestWriterRotate(t *testing.T) {
 		dir := t.TempDir()
 		w := newTestWriter(dir, testSegmentSize, nil)
 
-		Convey("Rotate returns the error, and the next record goes to the file after, whose header names the "+
-			"failed file with no durable bytes", func() {
+		Convey("Rotate returns the error, and the next record goes to the file after, with file 2 made again "+
+			"holding no record, so every header names the file before", func() {
 			_, err := w.Rotate()
 			So(err, ShouldWrap, syscall.EIO)
 
@@ -842,9 +932,14 @@ func TestWriterRotate(t *testing.T) {
 			So(waitFor(c), ShouldBeNil)
 			So(ref, ShouldResemble, Ref{File: 3, Off: uint64(headerEnd)})
 
+			s2 := scanSegment(dir, 2)
+			So(s2.prevFile, ShouldEqual, 1)
+			So(s2.prevEnd, ShouldEqual, fileSize(segment(dir, 1)))
+			So(s2.recs, ShouldBeEmpty)
+
 			s := scanSegment(dir, 3)
 			So(s.prevFile, ShouldEqual, 2)
-			So(s.prevEnd, ShouldEqual, 0)
+			So(s.prevEnd, ShouldEqual, headerEnd)
 			So(s.recs, ShouldResemble, []string{"a"})
 		})
 	})
@@ -1107,6 +1202,268 @@ func TestNewWriter(t *testing.T) {
 	})
 }
 
+func TestWriterReopensAfterAbandon(t *testing.T) {
+	Convey("Given a writer whose first batch sync fails with EIO", t, func() {
+		var failed atomic.Bool
+
+		setSyncHook(func(string) error {
+			if failed.CompareAndSwap(false, true) {
+				return syscall.EIO
+			}
+
+			return nil
+		})
+
+		dir := t.TempDir()
+		w := newTestWriter(dir, testSegmentSize, nil)
+
+		Convey("with no later append, the next segment bounds the abandoned one by Close", func() {
+			_, c := w.Append([]byte("lost"), nil)
+			So(waitFor(c), ShouldWrap, syscall.EIO)
+			So(w.Close(), ShouldBeNil)
+
+			So(segmentFiles(dir), ShouldResemble, []uint32{1, 2})
+
+			s := scanSegment(dir, 2)
+			So(s.isHeader, ShouldBeTrue)
+			So(s.prevFile, ShouldEqual, 1)
+			So(s.prevEnd, ShouldEqual, headerEnd)
+			So(s.recs, ShouldBeEmpty)
+			So(fileSize(segment(dir, 1)), ShouldBeGreaterThan, headerEnd)
+		})
+	})
+
+	Convey("Given a writer whose syncs all fail until allowed, with a long retry cap", t, func() {
+		var (
+			allowed     atomic.Bool
+			reopenTries atomic.Int32
+		)
+
+		Reset(SetTestRetryCap(time.Minute))
+
+		dir := t.TempDir()
+
+		setSyncHook(func(path string) error {
+			if allowed.Load() {
+				return nil
+			}
+
+			if path == segment(dir, 2) {
+				reopenTries.Add(1)
+			}
+
+			return syscall.EIO
+		})
+
+		var errs atomic.Int32
+
+		w := newTestWriter(dir, testSegmentSize, func(error) { errs.Add(1) })
+
+		start := time.Now()
+
+		_, c := w.Append([]byte("lost"), nil)
+		So(waitFor(c), ShouldWrap, syscall.EIO)
+
+		Convey("idle tries reuse segment 2's number, backing off between them, call no onError, and Close "+
+			"makes a last try", func() {
+			deadline := time.Now().Add(testTimeout)
+			for reopenTries.Load() < 4 && time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond)
+			}
+
+			tries := reopenTries.Load()
+			So(tries, ShouldBeGreaterThanOrEqualTo, 4)
+			So(tries, ShouldBeLessThanOrEqualTo, maxReopenTries(time.Since(start), time.Minute))
+			So(segmentFiles(dir), ShouldResemble, []uint32{1})
+			So(errs.Load(), ShouldEqual, 1)
+
+			allowed.Store(true)
+			So(w.Close(), ShouldBeNil)
+
+			So(segmentFiles(dir), ShouldResemble, []uint32{1, 2})
+
+			s := scanSegment(dir, 2)
+			So(s.prevFile, ShouldEqual, 1)
+			So(s.prevEnd, ShouldEqual, headerEnd)
+		})
+
+		Convey("once syncs work again, the next record goes in segment 2 after the abandoned one", func() {
+			allowed.Store(true)
+
+			ref, c2 := w.Append([]byte("kept"), nil)
+			So(waitFor(c2), ShouldBeNil)
+			So(ref.File, ShouldEqual, 2)
+			So(recordAt(dir, ref), ShouldEqual, "kept")
+
+			s := scanSegment(dir, 2)
+			So(s.prevFile, ShouldEqual, 1)
+			So(s.prevEnd, ShouldEqual, headerEnd)
+		})
+	})
+
+	Convey("Given a writer that rotates twice while a failure has left no segment open", t, func() {
+		Reset(SetTestRetryCap(time.Minute))
+
+		dir := t.TempDir()
+
+		var allowed atomic.Bool
+
+		setSyncHook(func(string) error {
+			if allowed.Load() {
+				return nil
+			}
+
+			return syscall.EIO
+		})
+
+		w := newTestWriter(dir, testSegmentSize, nil)
+
+		_, c := w.Append([]byte("lost"), nil)
+		So(waitFor(c), ShouldWrap, syscall.EIO)
+
+		allowed.Store(true)
+
+		_, err := w.Rotate()
+		So(err, ShouldBeNil)
+
+		ref, c2 := w.Append([]byte("kept"), nil)
+		So(waitFor(c2), ShouldBeNil)
+
+		Convey("every segment is created, each header naming the one before", func() {
+			files := segmentFiles(dir)
+			So(files[0], ShouldEqual, 1)
+			So(files[len(files)-1], ShouldEqual, ref.File)
+
+			for i, n := range files {
+				So(n, ShouldEqual, uint32(i)+1)
+
+				if i > 0 {
+					So(scanSegment(dir, n).prevFile, ShouldEqual, n-1)
+				}
+			}
+		})
+	})
+}
+
+// maxReopenTries is the most idle reopen tries a writer can have made within
+// elapsed of its first batch failing, with backoff cap limit: one at once, then
+// each a retryDelay after the last.
+func maxReopenTries(elapsed, limit time.Duration) int32 {
+	tries := int32(1)
+
+	for wait := retryDelay(2, limit); wait <= elapsed; wait += retryDelay(int(tries)+1, limit) {
+		tries++
+	}
+
+	return tries
+}
+
+func TestWriterSpendsAnExistingNumber(t *testing.T) {
+	Convey("Given a writer of file 1 in a directory already holding a file 2", t, func() {
+		dir := t.TempDir()
+		w := newTestWriter(dir, testSegmentSize, nil)
+
+		So(os.WriteFile(segment(dir, 2), []byte("stray"), 0o600), ShouldBeNil)
+
+		Convey("Rotate fails, and the next record goes to file 3, whose header skips spent file 2 to name file 1 "+
+			"and its durable end", func() {
+			_, err := w.Rotate()
+			So(err, ShouldWrap, fs.ErrExist)
+
+			ref, c := w.Append([]byte("a"), nil)
+			So(waitFor(c), ShouldBeNil)
+			So(ref, ShouldResemble, Ref{File: 3, Off: uint64(headerEnd)})
+
+			s := scanSegment(dir, 3)
+			So(s.prevFile, ShouldEqual, 1)
+			So(s.prevEnd, ShouldEqual, headerEnd)
+			So(s.recs, ShouldResemble, []string{"a"})
+		})
+	})
+
+	Convey("Given a writer with record a durable in file 1, whose next batch fails, then whose idle open of "+
+		"file 2 fails with its header not durable and file 2 left behind", t, func() {
+		dir := t.TempDir()
+
+		var failed, spent atomic.Bool
+
+		setSyncHook(func(path string) error {
+			switch {
+			case path == segment(dir, 1) && failed.Load() && !spent.Load():
+				return syscall.EIO
+			case path == segment(dir, 2) && spent.CompareAndSwap(false, true):
+				// tear the header, and leave something that cannot be removed
+				return errors.Join(syscall.EIO, os.Remove(path), os.Mkdir(path, 0o700),
+					os.WriteFile(filepath.Join(path, "stray"), nil, 0o600))
+			default:
+				return nil
+			}
+		})
+
+		w := newTestWriter(dir, testSegmentSize, nil)
+
+		refA, c := w.Append([]byte("a"), nil)
+		So(waitFor(c), ShouldBeNil)
+
+		failed.Store(true)
+
+		_, c = w.Append([]byte("lost"), nil)
+		So(waitFor(c), ShouldWrap, syscall.EIO)
+
+		Convey("file 3's header skips spent file 2 to name file 1 and a's end, which no later header "+
+			"would otherwise record", func() {
+			So(w.Close(), ShouldBeNil)
+			So(spent.Load(), ShouldBeTrue)
+			So(segmentFiles(dir), ShouldResemble, []uint32{1, 2, 3})
+
+			s := scanSegment(dir, 3)
+			So(s.prevFile, ShouldEqual, 1)
+			So(s.prevEnd, ShouldEqual, refA.Off+FrameHeader+1)
+			So(fileSize(segment(dir, 1)), ShouldBeGreaterThan, s.prevEnd)
+		})
+	})
+}
+
+func TestWriterReusesAGoneNumber(t *testing.T) {
+	Convey("Given a writer of file 1 whose open of file 2 fails with file 2 already gone when it removes it, "+
+		"as when a retransmitted remove's success is lost", t, func() {
+		dir := t.TempDir()
+
+		var gone atomic.Bool
+
+		setSyncHook(func(path string) error {
+			if path == segment(dir, 2) && gone.CompareAndSwap(false, true) {
+				return errors.Join(syscall.EIO, os.Remove(path))
+			}
+
+			return nil
+		})
+
+		w := newTestWriter(dir, testSegmentSize, nil)
+
+		_, err := w.Rotate()
+		So(err, ShouldWrap, syscall.EIO)
+		So(gone.Load(), ShouldBeTrue)
+
+		Convey("number 2 is not spent: file 2 is opened again, naming file 1, and the next record goes to "+
+			"file 3, naming file 2, so no number is skipped", func() {
+			ref, c := w.Append([]byte("a"), nil)
+			So(waitFor(c), ShouldBeNil)
+			So(ref, ShouldResemble, Ref{File: 3, Off: uint64(headerEnd)})
+			So(w.Close(), ShouldBeNil)
+			So(segmentFiles(dir), ShouldResemble, []uint32{1, 2, 3})
+
+			reopened := scanSegment(dir, 2)
+			So(reopened.prevFile, ShouldEqual, 1)
+			So(reopened.recs, ShouldBeEmpty)
+
+			s := scanSegment(dir, 3)
+			So(s.prevFile, ShouldEqual, 2)
+			So(s.recs, ShouldResemble, []string{"a"})
+		})
+	})
+}
+
 // results records the error each done func was called with, by record index.
 type results struct {
 	mu   sync.Mutex
@@ -1129,6 +1486,70 @@ func (r *results) calls(i int) []error {
 	defer r.mu.Unlock()
 
 	return slices.Clone(r.errs[i])
+}
+
+func TestWriterIdleReopenSpendsANumber(t *testing.T) {
+	Convey("Given a writer whose first batch fails, then whose idle open of file 2 fails leaving a file 2 behind, "+
+		"while a record is queued for file 2", t, func() {
+		dir := t.TempDir()
+		entered, release := make(chan struct{}), make(chan struct{})
+
+		var (
+			failed      atomic.Bool
+			releaseOnce sync.Once
+		)
+
+		Reset(func() { releaseOnce.Do(func() { close(release) }) })
+
+		setSyncHook(func(path string) error {
+			if failed.CompareAndSwap(false, true) {
+				return syscall.EIO
+			}
+
+			if path != segment(dir, 2) {
+				return nil
+			}
+
+			close(entered)
+			<-release
+
+			// leave something at file 2's path that cannot be removed
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+
+			if err := os.Mkdir(path, 0o700); err != nil {
+				return err
+			}
+
+			if err := os.WriteFile(filepath.Join(path, "stray"), nil, 0o600); err != nil {
+				return err
+			}
+
+			return syscall.EIO
+		})
+
+		w := newTestWriter(dir, testSegmentSize, nil)
+
+		_, c := w.Append([]byte("lost"), nil)
+		So(waitFor(c), ShouldWrap, syscall.EIO)
+
+		select {
+		case <-entered:
+		case <-time.After(testTimeout):
+			So("the idle open of file 2 never synced", ShouldBeEmpty)
+		}
+
+		ref, queued := w.Append([]byte("queued"), nil)
+		So(ref.File, ShouldEqual, 2)
+
+		releaseOnce.Do(func() { close(release) })
+
+		Convey("the queued record fails with the open's error", func() {
+			err := waitFor(queued)
+			So(err, ShouldWrap, syscall.EIO)
+		})
+	})
 }
 
 func TestWriterBackoff(t *testing.T) {
@@ -1345,5 +1766,43 @@ func TestWriterCloseRace(t *testing.T) {
 		So(bad, ShouldEqual, 0)
 		So(doneBad, ShouldEqual, 0)
 		So(lost, ShouldEqual, 0)
+	})
+}
+
+func TestWriterTakeMaxSync(t *testing.T) {
+	Convey("Given a writer whose first batch sync takes at least 300ms and later ones are quick", t, func() {
+		const slow = 300 * time.Millisecond
+
+		var calls atomic.Int32
+
+		setSyncHook(func(string) error {
+			if calls.Add(1) == 1 {
+				time.Sleep(slow)
+			}
+
+			return nil
+		})
+
+		w := newTestWriter(t.TempDir(), testSegmentSize, nil)
+
+		Convey("TakeMaxSync gives the longest sync since the last take, then starts afresh", func() {
+			_, c := w.Append([]byte("slow"), nil)
+			So(waitFor(c), ShouldBeNil)
+
+			_, c = w.Append([]byte("quick"), nil)
+			So(waitFor(c), ShouldBeNil)
+
+			first := w.TakeMaxSync()
+			So(first, ShouldBeGreaterThanOrEqualTo, slow)
+			So(first, ShouldBeLessThanOrEqualTo, w.Stats().SyncTime)
+			So(w.TakeMaxSync(), ShouldEqual, 0)
+
+			_, c = w.Append([]byte("later"), nil)
+			So(waitFor(c), ShouldBeNil)
+
+			later := w.TakeMaxSync()
+			So(later, ShouldBeGreaterThan, 0)
+			So(later, ShouldBeLessThan, slow)
+		})
 	})
 }

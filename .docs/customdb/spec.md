@@ -254,9 +254,15 @@ var ErrClosed = errors.New("wal: writer closed")
 func (w *Writer) Append(rec []byte, done func(error)) (Ref, Commit)
 func (w *Writer) AppendBlock(block []byte, n int,
 	done func(error)) (Ref, Commit) // pre-built
+
+// AppendBlocks queues blocks together in one segment (rotating first if
+// they do not all fit), so they always share one batch.
+func (w *Writer) AppendBlocks(blocks [][]byte, ns []int,
+	dones []func(error)) ([]Ref, Commit)
 func (w *Writer) Rotate() (sealed uint32, err error)
 func (w *Writer) Durable() (file uint32, off int64)
 func (w *Writer) Stats() WriterStats
+func (w *Writer) TakeMaxSync() time.Duration // longest sync since last call
 
 // Close refuses later appends (ErrClosed), then syncs every batch
 // already queued, calls its done funcs and closes its channels before it
@@ -286,14 +292,34 @@ Write or sync error:
 - The writer abandons the file (a page cache after a failed fsync cannot be
   trusted: nothing more is written to it), opens the next file number,
   whose header records the abandoned file's last durable end, and carries
-  on with later batches.
+  on with later batches. It opens it at once, not when the next batch
+  arrives, so the header bounds the abandoned file even if nothing is
+  appended again; if that open fails it is retried with the same backoff
+  while idle, and `Close` makes a last try.
 - If opening, writing or syncing a new file also fails, that batch's
   commits get the error too, and the writer waits a backoff (100ms,
   doubling per consecutive failure, capped at `walRetryCap`, 5s) before
-  taking the next batch, which opens a new file number. A success resets
-  the backoff. The writer never gives up; the manager keeps serving and
-  every failed commit returns its error to its caller, as a failed bbolt
-  transaction does today.
+  taking the next batch, which opens a new file. A success resets the
+  backoff. A failed open that leaves no file of that number (never
+  created, or removed after its header failed) does not spend the number:
+  the next open tries it again, still naming the file before it. Only a
+  file that is left behind is spent: it holds nothing durable but perhaps
+  its header, and the next header skips it, still naming the last file
+  opened and that file's durable end, which a spent file whose header never
+  became durable could not record. So file numbers never skip one, and
+  each file is opened from the one before, even one no batch is for (a
+  rotation while none was open). The writer never gives up; the manager
+  keeps serving and every failed commit returns its error to its caller,
+  as a failed bbolt transaction does today.
+- Residual window: if the open after an abandon fails on every try until
+  the process dies, `Close`'s last try included, no header bounds the
+  abandoned file (unless a spent file's header became durable), and
+  recovery treats it as the last file, replaying the failed batch's
+  records if they reached the disk. Such an outage fails every write
+  meanwhile, as each of those batches' opens fails too. If a crash tears
+  the header of the file opened after a spent file whose header is also
+  torn, the spent file is neither last nor followed by a whole header, so
+  recovery reports `errStoreCorrupt`.
 - `onError` is called for every failed batch. The log store's `onError`
   logs `walWriteFailedLogMsg = "wal write failed"` at error at most once a
   minute, with the error and `failures` (count since the last line).
@@ -340,10 +366,16 @@ One reducer applies records in memory (the `done` func), at replay and at
 checkpoint:
 
 - History: a `complete` record applies only if its seq is higher than the
-  key's last applied `complete` seq.
+  key's last applied `complete` seq. One whose key is neither live nor in
+  history has no spec to make a history entry of, so it is dropped, as an
+  orphan state record is (the archive-versus-delete race that can make one
+  is C4's).
 - A spec record (add, put-back, modify's new key) makes the key live with
-  that spec seq. A delete record, an archive's delete or modify's old key
-  removes the key's live entry, its state and its std.
+  that spec seq, unless its spec seq is already higher. It drops the key's
+  state and std whose last applied seq is below its own and keeps those
+  above it, so a state or std record outranks a spec it is later than in
+  whichever order the two apply. A delete record, an archive's delete or
+  modify's old key removes the key's live entry, its state and its std.
 - A state or std record applies only if the key is live, its seq is above
   the key's spec seq and above the last applied seq of its kind (state, or
   that std stream; a `complete` record on a keep-live key sets the std seq
@@ -417,9 +449,10 @@ checkpoint:
   dependents `retrieveDependentJobs` resurrects), `deleteLiveJobs` and
   re-adds touch only the live plane.
 - Every multi-record operation (an add, a modify, an archive, a rerun
-  put-back, an exit) is one s2 block, built and compressed by the
-  calling goroutine before `AppendBlock`. Single state records are plain
-  frames; the writer never compresses.
+  put-back, an exit) is one s2 block (an add over the block size limit is
+  several, appended together with `AppendBlocks`), built and compressed by
+  the calling goroutine before `AppendBlock` or `AppendBlocks`. Single
+  state records are plain frames; the writer never compresses.
 - Std follows today's lifecycle (`updateStd`, `recordCompleteTx`,
   `deleteOldLiveJobs`/`jobStd.restore`). Every exit's block is its state record,
   its exitstat record and a std record per stream: the new bytes if the exit
@@ -471,6 +504,19 @@ checkpoint:
 - Keys of an add in flight sit in a pending set; a concurrent add that
   meets a pending key waits for that add's commit, then dedups against the
   result.
+- An add deciding the 260929 rule for a key with a state record appended
+  but not finished (a transition or an exit) waits for it, then decides on
+  the result. It decides and takes its seqs under `logStore.stateMu`,
+  which each transition and exit also holds while taking its state
+  record's seq and noting it as in flight, so a state record the add did
+  not wait for has a later seq than the add's spec, and outranks it even
+  if it is durable and applied first. Each put-back (an add's archived
+  dependent, or a guarded add's at-risk key) likewise decides and takes its
+  seqs under `stateMu`: a key that is live by then (another add re-added
+  it) is not put back, and an add's archived dependent found live is
+  returned as a live dependent to update instead. A put-back need not wait
+  for a state record in flight: a key not live has none but a stale one,
+  which the put-back's later spec drops.
 - Rerun guard. bbolt gets it right because transactions are serial; the
   log store gets the same from `logStore.guardMu` and one rule: never decide
   on a peer that is appended but not committed; wait for its `Commit`, then
@@ -522,11 +568,21 @@ whether `openStore` (including E2's recovery of `.restoring`), E6 compact,
    file order. Live records from `walFrom` on are applied to live state;
    `complete` and rglookup records at or after F rebuild the overlay.
 4. Damage rules over that range: a file followed by another is valid up to
-   the next file's header `prevEnd`; bytes beyond it are an abandoned or
-   torn tail and are truncated (logged at warn with the byte count), as is
-   a torn or corrupt tail of the last file. Damage before `prevEnd`, a
-   missing file number, a missing or wrong header, or no valid checkpoint is
-   `errStoreCorrupt`.
+   the `prevEnd` of the first later file with a whole header, if that
+   header names it; if it names an earlier file, it skips this one as spent
+   (B2), which holds nothing durable and is truncated to empty; a later
+   header naming a file after it is `errStoreCorrupt`. Bytes beyond that
+   end are an abandoned or torn tail and are truncated (logged at warn
+   with the byte count), as is a torn or corrupt tail of the last file. A
+   file that no later whole header bounds is valid up to its first damage,
+   as the last file is. A last file whose header is torn holds nothing
+   durable (no record is written before its header is durable), so it is
+   removed (logged at warn with its size), and the file before it is then
+   the last file, valid up to its first damage. A first frame whose length
+   is neither a header's nor zero is a wrong header, whole or torn, in any
+   file. Damage before `prevEnd`, a missing file number, a wrong header in
+   any file, a missing header in any other file not skipped as spent, or
+   no valid checkpoint is `errStoreCorrupt`.
 5. Set the seq counter to 1 + the maximum seq seen in the checkpoint
    header, the scanned wal records and history (Phase 1: `history.bolt`
    `meta`'s highest folded `complete` seq; Phase 2: the highest in the
@@ -577,7 +633,8 @@ a second it reads the log from its position up to `Writer.Durable()` and
 folds into history every `complete` record (with its spec) and rglookup,
 and every new learned-requirement sample, from `complete` and exitstat
 records only (Records). It reads a file followed by another only up
-to the next file's header `prevEnd`, so an abandoned batch is never folded.
+to the end recovery gives it (step 4), so an abandoned batch is never
+folded.
 Folding is idempotent and resumable from a log position. A failed fold
 (read or history commit) is retried from the last durable position with
 the writer's backoff (100ms doubling, capped at `walRetryCap`) and logged
@@ -1239,10 +1296,22 @@ faster.
 
 `storeNewJobsGuarded` builds one s2 block per call containing a spec and
 state record per new job (and any rglookup, depgroup and put-back spec and
-state records the add makes), appends it and waits. Dedup, dependency
-handling and the 260929 rule (a re-add never touches a queued or running
-job's record) are unchanged. `storeEnv`, `storeLimitGroups` and
-`storeRepGroupLookups` append their records and wait.
+state records the add makes), appends it and waits. A call over the block
+size limit is split into several blocks, only ever between one job's
+records (its rglookup, spec and state, or a put-back's spec and state) and
+the next's, appended together with `AppendBlocks` and waited for together.
+They always share one batch, so a failed batch fails them all and none is
+applied. A crash before that batch is durable can still leave a prefix of
+its blocks on disk: the jobs of earlier blocks recovered without those of
+later ones, as bbolt's chunked adds (`storeNewJobDataChunked`,
+`storeBatched`) can leave earlier chunks stored, but never a later block
+without an earlier one. The add's jobs' records come before its depgroup
+and put-back records, so such a prefix never holds a put-back without the
+jobs it was put back for, and the user's retried add writes what it
+lacks. Dedup, dependency handling and the 260929 rule (a re-add never
+touches a queued or running job's record) are unchanged. `storeEnv`,
+`storeLimitGroups` and `storeRepGroupLookups` append their records and
+wait.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_log.go`, `jobqueue/store_records.go`

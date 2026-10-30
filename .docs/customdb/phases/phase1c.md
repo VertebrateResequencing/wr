@@ -53,8 +53,8 @@ that the reopen in these tests needs; 1c.4 extends it to its records and
 Cover all 4 acceptance tests from C2. Also resolve the 1a.2 incidental on
 the `log` writer's per-interval `maxSync` ([incidentals.md](incidentals.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1c.2: C7 - Lock and version
 
@@ -92,7 +92,8 @@ spec.md section: C4
 Add durable, atomic delete, modify and rerun records to
 `jobqueue/store_log.go`. Cover all 11 acceptance tests from C4, except
 the checkpoint clauses of tests 6 and 8, which run in item 1d.2. Depends
-on 1c.3.
+on 1c.3. Also resolve the 1c.1 incidental on the reverse dep-group index
+after a spec change ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

@@ -204,10 +204,23 @@ called ready, or explicitly deferred with the owner.
   folder keeps folding and invalidates the cache unprompted (D1 test 2 and
   C6's wait on the folder's position cover it only in part). Owner: 1d.1
   (D1), which adds that test.
-- [ ] (from 1a.2) `wal.WriterStats` is cumulative and has no `MaxSync`,
+- [x] (from 1a.2) `wal.WriterStats` is cumulative and has no `MaxSync`,
   but A3's `log` line reports `maxSync` per interval. Owner: 1c.1 (C2),
   which adds the `log` writer's "db writer" stats and decides how the
   per-interval maximum is kept (in the writer or in the log store).
+  Done in 1c.1: the writer keeps it, since only its goroutine times each
+  sync. `Writer.TakeMaxSync` returns the longest batch sync since the last
+  call and resets it (`TestWriterTakeMaxSync`); `WriterStats` stays totals.
+  The log store's reporter, its one caller, takes it each interval and
+  turns the totals into per-interval figures (`logWriterReport` in
+  `store_stats.go`, `TestLogStoreWriterStats`).
+- [x] (from 1c.1) After a failed sync the wal writer opened the next file
+  only when the next batch arrived, so a manager stopping first left the
+  abandoned file unbounded and recovery replayed the failed batch. Done in
+  1c.1: the writer opens the next file at once, retries it while idle and
+  makes a last try at `Close`, and never skips a file number
+  (`TestWriterReopensAfterAbandon`, `TestLogStoreFailedWriteNotReplayed`;
+  spec B2 and Recovery step 4 amended, with the residual window stated).
 - [x] (from 1b.1 review) A decoded Behaviours or Dependencies holding a
   nil element panics in `dropImpossibleCleanups` (`behaviours.go`
   `withoutCleanups` reads `b.Do`). `FuzzFlatSpec` found it in the flat
@@ -217,3 +230,14 @@ called ready, or explicitly deferred with the owner.
   decoders through one shared check. Done in 1b.1: `checkStoredElements`
   (`job.go`) returns `errNilStoredElement`, which `decodeJob` returns and
   the flat blob decode wraps in `errFlatMalformed`.
+- [ ] (from 1c.1) The log store's `applySpec` adds reverse dep-group index
+  entries for a new spec but never removes the replaced spec's entries, so
+  the index depends on apply order once a key's spec changes its
+  dependencies. Today's re-adds keep the spec, so it is not reachable yet.
+  Owner: 1c.4 (C4), whose modify records change a key's spec; remove the
+  replaced spec's entries and test the index after a modify in either
+  apply order. The 1c.1 review also found two more order dependences C4
+  must settle: a delete applied before an older spec lets that spec make
+  the key live again (the reducer keeps no tombstone), and
+  `applyComplete` copies whichever spec is live at apply time. Extend
+  `TestLogStoreReducerOrder` to delete, modify and complete records.

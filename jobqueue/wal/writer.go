@@ -29,6 +29,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -62,6 +63,10 @@ const (
 
 // ErrClosed is the error of an append made after Close.
 var ErrClosed = errors.New("wal: writer closed")
+
+// errSegmentOrder is the error of a batch for a segment the writer has already
+// left, which the writer never queues.
+var errSegmentOrder = errors.New("wal: batch out of segment order")
 
 // Test seams, set through SetTestSyncHook and SetTestRetryCap. Each writer
 // copies them when made, so changing them never races a running writer.
@@ -224,8 +229,9 @@ type WriterStats struct {
 // since a page cache after a failed fsync cannot be trusted. The batch, and
 // every batch queued behind it with Refs in that segment, get the error, and
 // the writer carries on in the next file number, whose header records the
-// abandoned file's durable end. After a second consecutive failure it waits a
-// backoff before going on, and it never gives up.
+// abandoned file's durable end (skipping any number a failed open spent).
+// After a second consecutive failure it waits a backoff before going on, and
+// it never gives up.
 type Writer struct {
 	dir         string
 	segmentSize int64
@@ -246,12 +252,21 @@ type Writer struct {
 
 	// Only the writer goroutine (or NewWriter before starting it) uses these.
 	f        *os.File // the open segment; nil once abandoned
-	file     uint32   // the segment last created or tried
-	end      int64    // its durable end
+	file     uint32   // the segment number last created or tried
+	named    uint32   // the segment the next header names: the last opened
+	end      int64    // named's durable end
 	failures int      // consecutive failed batches
-	closeErr error
+
+	// While a failure has left no segment open (f nil), reopen tries to open
+	// the next at reopenAt; reopenFailures is how many tries have failed.
+	reopenAt       time.Time
+	reopenFailures int
+	closeErr       error
 
 	batches, records, bytes, syncs, syncNanos atomic.Uint64
+
+	// maxSyncNanos is the longest batch sync since the last TakeMaxSync.
+	maxSyncNanos atomic.Uint64
 }
 
 // NewWriter creates segment file in dir, writes its header and makes it
@@ -275,6 +290,7 @@ func NewWriter(dir string, file uint32, segmentSize int64, onError func(error)) 
 		closing:     make(chan struct{}),
 		exited:      make(chan struct{}),
 		file:        prevFile,
+		named:       prevFile,
 		end:         prevEnd,
 		qFile:       file,
 		qEnd:        headerEnd,
@@ -284,9 +300,7 @@ func NewWriter(dir string, file uint32, segmentSize int64, onError func(error)) 
 		return nil, err
 	}
 
-	if h := testSyncHook.Load(); h != nil {
-		w.syncHook = *h
-	}
+	w.syncHook = loadTestSyncHook()
 
 	go w.run()
 
@@ -329,14 +343,61 @@ func checkBlock(block []byte) {
 	}
 }
 
+// AppendBlocks is AppendBlock for each of blocks, holding ns[i] records, with
+// dones[i] (which may be nil) its done func. They are queued together in one
+// segment, rotating first if they do not all fit in the open one (a segment
+// holding them alone may exceed the segment size), so they join one batch and
+// share its write and sync: a failed batch fails all of them. It returns their
+// Refs and the Commit of the last, which is done once all are. After Close,
+// each done is called with ErrClosed before it returns.
+func (w *Writer) AppendBlocks(blocks [][]byte, ns []int, dones []func(error)) ([]Ref, Commit) {
+	size := checkBlocks(blocks)
+	refs := make([]Ref, len(blocks))
+
+	w.mu.Lock()
+
+	if w.closed {
+		w.mu.Unlock()
+
+		var c Commit
+		for _, done := range dones {
+			c = closedCommit(done)
+		}
+
+		return refs, c
+	}
+
+	var c Commit
+
+	w.fit(size)
+
+	for i, block := range blocks {
+		refs[i], c = w.place(block, false, ns[i], dones[i])
+	}
+
+	w.mu.Unlock()
+
+	w.signal()
+
+	return refs, c
+}
+
+// checkBlocks is checkBlock for each of blocks, returning their total size.
+func checkBlocks(blocks [][]byte) int64 {
+	var size int64
+
+	for _, block := range blocks {
+		checkBlock(block)
+
+		size += int64(len(block))
+	}
+
+	return size
+}
+
 // add queues data, framing it first if plain, holding n records, under the
 // mutex, so Ref order is log order.
 func (w *Writer) add(data []byte, plain bool, n int, done func(error)) (Ref, Commit) {
-	size := int64(len(data))
-	if plain {
-		size += FrameHeader
-	}
-
 	w.mu.Lock()
 
 	if w.closed {
@@ -345,20 +406,49 @@ func (w *Writer) add(data []byte, plain bool, n int, done func(error)) (Ref, Com
 		return Ref{}, closedCommit(done)
 	}
 
+	ref, c := w.addLocked(data, plain, n, done)
+	w.mu.Unlock()
+
+	w.signal()
+
+	return ref, c
+}
+
+// addLocked is add with the mutex held and the writer not closed.
+func (w *Writer) addLocked(data []byte, plain bool, n int, done func(error)) (Ref, Commit) {
+	w.fit(queuedSize(data, plain))
+
+	return w.place(data, plain, n, done)
+}
+
+// queuedSize is the bytes data takes in a segment: with a frame header if
+// plain, else as it is, a whole block frame.
+func queuedSize(data []byte, plain bool) int64 {
+	if plain {
+		return int64(len(data)) + FrameHeader
+	}
+
+	return int64(len(data))
+}
+
+// fit rotates the queue to the next segment if size more bytes do not fit in
+// the current one and it holds any record. The caller holds the mutex.
+func (w *Writer) fit(size int64) {
 	if w.qEnd > headerEnd && w.qEnd+size > w.segmentSize {
 		w.qFile++
 		w.qEnd = headerEnd
 	}
+}
 
+// place queues data, framing it first if plain, holding n records, at the end
+// of the current segment, which never rotates here. The caller holds the mutex.
+func (w *Writer) place(data []byte, plain bool, n int, done func(error)) (Ref, Commit) {
 	b := w.openBatch()
 	ref := Ref{File: w.qFile, Off: uint64(w.qEnd)} //nolint:gosec // never negative
 
 	b.add(data, plain, n, done)
 
-	w.qEnd += size
-	w.mu.Unlock()
-
-	w.signal()
+	w.qEnd += queuedSize(data, plain)
 
 	return ref, Commit{b}
 }
@@ -436,6 +526,37 @@ func (w *Writer) Stats() WriterStats {
 	}
 }
 
+// TakeMaxSync returns the longest batch sync, failed or not, made since the last
+// call (or since the writer was made), and starts the next such period. Unlike
+// Stats, which are totals, it is for one caller reporting per interval.
+func (w *Writer) TakeMaxSync() time.Duration {
+	return time.Duration(w.maxSyncNanos.Swap(0)) //nolint:gosec // a duration
+}
+
+// timedSync is fdatasync of the open segment for a batch, counted in the
+// writer's sync totals and its longest sync.
+func (w *Writer) timedSync() error {
+	start := time.Now()
+	err := w.fdatasync(w.f)
+	took := uint64(time.Since(start)) //nolint:gosec // a positive duration
+
+	w.syncs.Add(1)
+	w.syncNanos.Add(took)
+	w.noteSync(took)
+
+	return err
+}
+
+// noteSync raises the longest batch sync to took nanoseconds if that is longer.
+func (w *Writer) noteSync(took uint64) {
+	for {
+		old := w.maxSyncNanos.Load()
+		if took <= old || w.maxSyncNanos.CompareAndSwap(old, took) {
+			return
+		}
+	}
+}
+
 // Close refuses later appends (ErrClosed), then syncs every batch already
 // queued, calls its done funcs and closes its channels before it returns. Its
 // error is that of closing the open segment; batches' errors go to their
@@ -471,19 +592,62 @@ func (w *Writer) run() {
 			continue
 		}
 
+		if w.f == nil && (closed || !time.Now().Before(w.reopenAt)) {
+			w.reopen()
+		}
+
 		if closed {
 			w.closeSegment()
 
 			return
 		}
 
-		// Closing only wakes the loop: it must go round to take again, never
-		// return here, or an append queued just before Close is lost.
-		select {
-		case <-w.kick:
-		case <-w.closing:
-		}
+		w.idle()
 	}
+}
+
+// idle waits for an append or Close, or, while a failure has left no segment
+// open, until the next try at opening one is due. Closing only wakes the loop:
+// it must go round to take again, never return here, or an append queued just
+// before Close is lost.
+func (w *Writer) idle() {
+	var due <-chan time.Time
+
+	if w.f == nil {
+		t := time.NewTimer(time.Until(w.reopenAt))
+		defer t.Stop()
+
+		due = t.C
+	}
+
+	select {
+	case <-w.kick:
+	case <-w.closing:
+	case <-due:
+	}
+}
+
+// reopen tries to open the segment after the abandoned one with no append
+// waiting for it, so that its header records the abandoned segment's durable
+// end, which bounds that segment for recovery even if no record is ever
+// appended again. A failed try is retried after a backoff; if it spent its
+// number (see openSegment), any batch queued for that number fails.
+func (w *Writer) reopen() {
+	n := w.file + 1
+
+	err := w.openSegment(n)
+	if err == nil {
+		w.reopenFailures = 0
+
+		return
+	}
+
+	if w.file == n {
+		w.failAll(w.takeQueued(n), err)
+	}
+
+	w.reopenFailures++
+	w.reopenAt = time.Now().Add(retryDelay(w.reopenFailures+1, w.retryCap))
 }
 
 // closeSegment closes the open segment, if any, keeping the error for Close.
@@ -520,26 +684,31 @@ func (w *Writer) commitAll(batches []*batch) {
 			continue
 		}
 
-		for _, failed := range w.abandon(b) {
-			if w.onError != nil {
-				w.onError(err)
-			}
-
-			failed.finish(err)
-		}
+		w.failAll(w.abandon(b), err)
 
 		w.failures++
+		w.reopenFailures = 0
+		w.reopenAt = time.Now()
 		w.backoff()
+	}
+}
+
+// failAll gives each of batches err, calling onError for each.
+func (w *Writer) failAll(batches []*batch, err error) {
+	for _, failed := range batches {
+		if w.onError != nil {
+			w.onError(err)
+		}
+
+		failed.finish(err)
 	}
 }
 
 // commit writes b to its segment, opening the segment first if b is its first
 // batch, and syncs it.
 func (w *Writer) commit(b *batch) error {
-	if b.file != w.file {
-		if err := w.openSegment(b.file); err != nil {
-			return err
-		}
+	if err := w.reach(b.file); err != nil {
+		return err
 	}
 
 	if len(b.buf) == 0 {
@@ -552,12 +721,7 @@ func (w *Writer) commit(b *batch) error {
 		return fmt.Errorf("wal: write segment %08x: %w", b.file, err)
 	}
 
-	start := time.Now()
-	err := w.fdatasync(w.f)
-
-	w.syncs.Add(1)
-	w.syncNanos.Add(uint64(time.Since(start))) //nolint:gosec // a positive duration
-
+	err := w.timedSync()
 	if err != nil {
 		return fmt.Errorf("wal: sync segment %08x: %w", b.file, err)
 	}
@@ -571,35 +735,71 @@ func (w *Writer) commit(b *batch) error {
 	return nil
 }
 
-// openSegment creates segment n with a header naming the segment last created
-// or tried and its durable end, then syncs it, the segment it replaces and the
+// reach makes segment file the open one, opening each segment after the open
+// one in turn, even one no batch is for (a rotation while none was open), so
+// that every header names its predecessor's durable end.
+func (w *Writer) reach(file uint32) error {
+	if file < w.file || (file == w.file && w.f == nil) {
+		return fmt.Errorf("%w: batch for segment %08x after %08x", errSegmentOrder, file, w.file)
+	}
+
+	for file != w.file {
+		if err := w.openSegment(w.file + 1); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// openSegment creates segment n with a header naming the segment last opened
+// and its durable end, then syncs it, the segment it replaces and the
 // directory, so n and everything before it are durable before any record is
-// written to it. On failure no segment is open and n is abandoned, with no
-// durable end.
+// written to it. On failure no segment is open. If no file n is there (it was
+// never created, or was removed), n is not spent: the next open tries n again,
+// so segment numbers never skip one. Otherwise n is spent, holding nothing
+// durable but perhaps its header, and the next segment's header skips it,
+// still naming the segment last opened and its durable end, which a spent file
+// whose header was never made durable could not record.
 func (w *Writer) openSegment(n uint32) error {
-	old, prevFile, prevEnd := w.f, w.file, w.end
-	w.f, w.file, w.end = nil, n, 0
+	old, prevFile := w.f, w.file
+	w.f, w.file = nil, n
 
 	if old != nil {
 		// Its data is synced, and nothing more is written to it.
 		defer old.Close()
 	}
 
-	f, err := os.OpenFile(segmentPath(w.dir, n), os.O_WRONLY|os.O_CREATE|os.O_EXCL, segmentPerm)
+	path := segmentPath(w.dir, n)
+
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, segmentPerm)
 	if err != nil {
+		w.unspend(!errors.Is(err, fs.ErrExist), prevFile)
+
 		return fmt.Errorf("wal: create segment: %w", err)
 	}
 
-	if err = w.startSegment(f, old, prevFile, prevEnd); err != nil {
+	if err = w.startSegment(f, old, w.named, w.end); err != nil {
 		_ = f.Close() // abandoned: its error changes nothing
+
+		errr := os.Remove(path)
+		w.unspend(errr == nil || errors.Is(errr, fs.ErrNotExist), prevFile)
 
 		return fmt.Errorf("wal: start segment %08x: %w", n, err)
 	}
 
-	w.f, w.end = f, headerEnd
+	w.f, w.named, w.end = f, n, headerEnd
 	w.setDurable(n, headerEnd)
 
 	return nil
+}
+
+// unspend, if gone (no file of the number a failed open tried is there), makes
+// prevFile the number the next open follows again.
+func (w *Writer) unspend(gone bool, prevFile uint32) {
+	if gone {
+		w.file = prevFile
+	}
 }
 
 // startSegment writes f's header and syncs it, old if not nil, and the
@@ -673,15 +873,21 @@ func (w *Writer) abandon(b *batch) []*batch {
 		w.f = nil
 	}
 
-	failed := []*batch{b}
+	return append([]*batch{b}, w.takeQueued(b.file)...)
+}
 
+// takeQueued removes and returns every batch queued for segment file, which has
+// been abandoned, so that records appended from now on go to a later one.
+func (w *Writer) takeQueued(file uint32) []*batch {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	var failed []*batch
 
 	kept := w.pending[:0]
 
 	for _, p := range w.pending {
-		if p.file == b.file {
+		if p.file == file {
 			failed = append(failed, p)
 		} else {
 			kept = append(kept, p)
@@ -690,7 +896,7 @@ func (w *Writer) abandon(b *batch) []*batch {
 
 	w.pending = kept
 
-	if w.qFile == b.file {
+	if w.qFile == file {
 		w.qFile++
 		w.qEnd = headerEnd
 	}
@@ -733,6 +939,15 @@ func retryDelay(failures int, limit time.Duration) time.Duration {
 	}
 
 	return min(d, limit)
+}
+
+// loadTestSyncHook returns the sync hook SetTestSyncHook set, if any.
+func loadTestSyncHook() func(path string) error {
+	if h := testSyncHook.Load(); h != nil {
+		return *h
+	}
+
+	return nil
 }
 
 // retryCap returns the backoff cap for a new writer: walRetryCap, unless a test
