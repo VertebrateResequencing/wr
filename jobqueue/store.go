@@ -132,16 +132,25 @@ type store interface {
 }
 
 // openStore opens the store described by cfg, returning it along with any
-// startup message for the user. Every kind currently opens bbolt (see initDB).
+// startup message for the user. Before anything else it takes the store lock
+// beside cfg.dbFile (see lockStore), which the store holds until it closes.
+// Every kind currently opens bbolt (see initDB).
 //
 // If the WR_STORE_RECORD env var names a file, the store returned records every
 // call made to it there (see recordingStore); otherwise it is not wrapped at
 // all, so recording costs nothing unless asked for.
 func openStore(ctx context.Context, cfg storeConfig) (store, string, error) {
+	lock, err := lockStore(ctx, cfg.dbFile)
+	if err != nil {
+		return nil, "", err
+	}
+
 	bdb, msg, err := initDB(ctx, cfg.dbFile, cfg.dbBkFile, cfg.deployment, cfg.wipeDevDB, cfg.forceBackups)
 	if err != nil {
-		return nil, msg, err
+		return nil, msg, errors.Join(err, lock.release())
 	}
+
+	bdb.storeLock = lock
 
 	path := os.Getenv(storeRecordEnv)
 	if path == "" {

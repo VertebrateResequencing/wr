@@ -313,12 +313,16 @@ type logStore struct {
 	statsEvery  time.Duration
 	statsStop   chan struct{}
 	statsExited chan struct{}
+
+	// lock, if not nil, is the store lock close releases.
+	lock *storeLock
 }
 
-// openLogStore opens, creating if need be, the log store in dir: it replays the
-// log there into memory and starts a writer on a new segment.
+// openLogStore opens, creating if need be, the log store in dir: it checks its
+// VERSION, replays the log there into memory and starts a writer on a new
+// segment. The caller holds the store's lock (see openLogStoreLocked).
 func openLogStore(ctx context.Context, dir string) (*logStore, error) {
-	if err := os.MkdirAll(dir, logStoreDirPerm); err != nil {
+	if err := prepareStoreDir(dir); err != nil {
 		return nil, err
 	}
 
@@ -488,7 +492,7 @@ func (s *logStore) close(ctx context.Context) error {
 	<-s.statsExited
 	s.stats.report(ctx, s.statsEvery, s.w.Stats(), s.w.TakeMaxSync())
 
-	return errors.Join(err, s.closeFiles())
+	return errors.Join(err, s.closeFiles(), s.lock.release())
 }
 
 // closeFiles closes the files opened to read records.

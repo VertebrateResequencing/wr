@@ -68,8 +68,8 @@ Depends on 1c.1.
 Also resolve the 0b.1 incidental on taking the lock before anything else
 in `openStore` ([incidentals.md](incidentals.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1c.3: D1 (history.bolt and overlay) - Folder into bbolt history
 

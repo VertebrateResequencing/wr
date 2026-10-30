@@ -148,8 +148,8 @@ var (
 //nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
 var managerDBOpenTimeout = 30 * time.Second
 
-// ErrDBLocked is returned by initDB when another wr manager holds the database
-// file lock. It is deliberately NOT treated as a corrupt database: the
+// ErrDBLocked is returned by initDB and lockStore when another wr manager holds
+// the database file lock. It is deliberately NOT treated as a corrupt database: the
 // restore-from-backup path would unlink the live file out from under the running
 // manager and come up on a stale backup, on a fresh inode so the flock protects
 // nothing (spec E7).
@@ -1264,7 +1264,8 @@ type db struct {
 	backupsEnabled bool
 	s3accessor     *muxfys.S3Accessor
 	closed         bool
-	slowBackups    bool // just for testing purposes
+	storeLock      *storeLock // taken by openStore, released by close; nil from initDB alone
+	slowBackups    bool       // just for testing purposes
 	upgraded       bool
 	recSecRound    int // rounding (secs) for recommended reserve times; from the server's timings
 	recMBRound     int // rounding (MBs) for recommended memory/disk; from the server's timings
@@ -6242,7 +6243,7 @@ func (db *db) close(ctx context.Context) error {
 
 	db.finaliseBackup(ctx)
 
-	return db.closeBolt()
+	return errors.Join(db.closeBolt(), db.storeLock.release())
 }
 
 // finaliseBackup is called once from close() (with db.Lock held). It stops the

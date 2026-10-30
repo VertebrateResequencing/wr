@@ -870,8 +870,11 @@ type storeInspector interface {
    returns `"o"` and `"e"` for the first.
 3. Given `grep -lE '\.bolt\.|\*bolt\.Tx|bolt\.Open'` over
    `jobqueue/*_test.go`, when run after the move, then only files named in a
-   `boltOnlyTests` list in `store_inspect_test.go` match, every listed file
-   exists, and `store_inspect_test.go` neither matches nor is listed.
+   `boltOnlyTests` list in `store_inspect_test.go` match, apart from
+   `store_convert_test.go` (the converter's tests, which F5 keeps), every
+   listed file exists, and neither `store_inspect_test.go` nor
+   `store_convert_test.go` is listed; `store_inspect_test.go` does not
+   match.
 4. Given `go vet -overlay` on `jobqueue/` with an overlay that empties
    every file in `boltOnlyTests`, run once per tag set the package's tests
    are built with (`netgo`, `netgo,race`, `netgo,reliability`,

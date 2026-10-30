@@ -136,6 +136,11 @@ var errNoStoreFileOpener = errors.New("no store file opener is registered")
 // boltOnlyTests.
 const storeInspectTestFile = "store_inspect_test.go"
 
+// storeConvertTestFile holds the converter's tests, which may reach bbolt and
+// which Phase 2 keeps, with the converter's bbolt reader (spec F5), so it is
+// not in boltOnlyTests.
+const storeConvertTestFile = "store_convert_test.go"
+
 // boltWritesFile is the listed file that defines boltWrites, which the build
 // check's own test calls from an unlisted file.
 const boltWritesFile = "db_bench_test.go"
@@ -452,7 +457,8 @@ func TestBoltOnlyTests(t *testing.T) {
 		return
 	}
 
-	Convey("Only the files listed in boltOnlyTests reach bbolt directly, and this file is not one", t, func() {
+	Convey("Only the files listed in boltOnlyTests, and the converter's tests, reach bbolt directly, "+
+		"and this file is not one", t, func() {
 		paths, err := filepath.Glob("*_test.go")
 		So(err, ShouldBeNil)
 		So(paths, ShouldNotBeEmpty)
@@ -463,13 +469,15 @@ func TestBoltOnlyTests(t *testing.T) {
 			content, errr := os.ReadFile(path)
 			So(errr, ShouldBeNil)
 
-			if boltReachPattern.Match(content) && !slices.Contains(boltOnlyTests, path) {
+			allowed := slices.Contains(boltOnlyTests, path) || path == storeConvertTestFile
+			if boltReachPattern.Match(content) && !allowed {
 				unlisted = append(unlisted, path)
 			}
 		}
 
 		So(unlisted, ShouldBeEmpty)
 		So(boltOnlyTests, ShouldNotContain, storeInspectTestFile)
+		So(boltOnlyTests, ShouldNotContain, storeConvertTestFile)
 
 		content, err := os.ReadFile(storeInspectTestFile)
 		So(err, ShouldBeNil)

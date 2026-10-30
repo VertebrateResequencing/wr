@@ -131,7 +131,7 @@ called ready, or explicitly deferred with the owner.
   `TestDBMapFreelistRoundTrip`); and a key archived twice at one end time
   is recent once (`TestStoreRetrieveCompleteJobsRecent`, from
   `TestDBEndTimeIndex`).
-- [ ] (from 0b.1 review) The ported lock tests (`TestStoreOpenLocked` in
+- [x] (from 0b.1 review) The ported lock tests (`TestStoreOpenLocked` in
   `store_lock_test.go`) hold a store open and require a second open to
   fail with `ErrDBLocked` leaving every file in and beside `dbFile`
   unchanged, `.restoring` and `.corrupt` included. bbolt meets this
@@ -141,7 +141,15 @@ called ready, or explicitly deferred with the owner.
   `.corrupt`, resuming conversion), and so cannot keep it inside the
   store directory those steps remove or rename. spec.md now says so: the
   lock is `dbFile + ".lock"`, taken first (C7, E2, E3), and C7 test 1
-  checks the files. Owner: 1c.2 (C7), kept by 1f.4 (E2).
+  checks the files. Owner: 1c.2 (C7), kept by 1f.4 (E2). Done in 1c.2:
+  `lockStore` (`store_open.go`) flocks `dbFile + ".lock"`, retried until
+  `managerDBOpenTimeout`, then `ErrDBLocked`. `openStore` takes it before
+  `initDB` for every kind, so bbolt's dev wipe no longer runs while
+  another manager holds the store, and `openLogStoreLocked` takes it
+  before the store directory or `VERSION` is touched; each store releases
+  it on close. `TestStoreOpenLock` (`store_open_test.go`) proves a refused
+  open changes no file, with a dev wipe asked for (bbolt) and with only the
+  lock held and no store directory yet (log).
 - [ ] (from 0b.1 review) `TestReqStatCacheUncommittedStat`
   (`reqstat_cache_bolt_test.go`) holds a bbolt write transaction open,
   so F5 deletes its rule: a learned-requirements load that runs while a
@@ -241,3 +249,8 @@ called ready, or explicitly deferred with the owner.
   the key live again (the reducer keeps no tombstone), and
   `applyComplete` copies whichever spec is live at apply time. Extend
   `TestLogStoreReducerOrder` to delete, modify and complete records.
+
+- [ ] (from 1c.2) The store lock now creates `dbFile + ".lock"` in the
+  store's parent directory, so that directory must be writable. This is
+  new for deployments whose parent directory is read-only. Owner: 2e.2
+  (F6): add a CHANGELOG line saying so.
