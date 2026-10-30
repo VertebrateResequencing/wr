@@ -82,8 +82,8 @@ its stats are item 1d.1, which completes D1's 7 acceptance tests; here,
 test the overlay answers D1 test 1 names with no folder running.
 Depends on 1c.1.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1c.4: C4 - Delete, modify and reruns
 
@@ -93,7 +93,8 @@ Add durable, atomic delete, modify and rerun records to
 `jobqueue/store_log.go`. Cover all 11 acceptance tests from C4, except
 the checkpoint clauses of tests 6 and 8, which run in item 1d.2. Depends
 on 1c.3. Also resolve the 1c.1 incidental on the reverse dep-group index
-after a spec change ([incidentals.md](incidentals.md)).
+after a spec change, and the 1c.3 incidental on a complete record for a
+folded, deleted key ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

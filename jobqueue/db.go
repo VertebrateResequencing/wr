@@ -691,6 +691,13 @@ type archivedJobFacets struct {
 	Lost       bool
 }
 
+// facetsOf returns job's archivedJobFacets. The caller holds job's read lock,
+// or job is not shared.
+func facetsOf(job *Job) archivedJobFacets {
+	return archivedJobFacets{StartTime: job.StartTime, EndTime: job.EndTime, State: job.State,
+		Exitcode: job.Exitcode, FailReason: job.FailReason, Lost: job.Lost}
+}
+
 // completeJobsQuery describes how the caller of
 // retrieveOldestCompleteJobsByRepGroup will group and limit the archived jobs it
 // asks for, so that the ones it could never return are counted instead of
@@ -937,6 +944,18 @@ func putRunState(bjl, brs *bolt.Bucket, key, encodedRunState []byte) error {
 	return brs.Put(key, runStateRecord(live, encodedRunState))
 }
 
+// offer counts the archived job of key, whose facets are a.facets, and offers
+// it to its group's selector, if the query keeps it.
+func (a *archivedScan) offer(key []byte) {
+	group, keep := a.query.group(&a.facets)
+	if !keep {
+		return
+	}
+
+	a.counted[group]++
+	a.selector(group).offer(key, group, &a.facets)
+}
+
 // pace bounds the backup copy's dirty-page backlog for the bytes written since the
 // last pace. On Linux it starts asynchronous writeback of the just-written range
 // and waits on the previous one (cheap, pipelined, no full-file round-trip);
@@ -1113,13 +1132,7 @@ func (a *archivedScan) consider(key, encoded []byte) error {
 		return err
 	}
 
-	group, keep := a.query.group(&a.facets)
-	if !keep {
-		return nil
-	}
-
-	a.counted[group]++
-	a.selector(group).offer(key, group, &a.facets)
+	a.offer(key)
 
 	return nil
 }
@@ -1134,6 +1147,23 @@ func (a *archivedScan) selector(group string) *oldestArchivedJobs {
 	}
 
 	return selector
+}
+
+// spendLen is spend for a record of n bytes.
+func (b *archivedBytesBudget) spendLen(n int) error {
+	if b == nil {
+		return nil
+	}
+
+	b.remaining -= n
+	b.priced++
+
+	if b.remaining < 0 {
+		return fmt.Errorf("%w (over %d bytes at %d complete jobs)", ErrArchivedHistoryTooBig,
+			maxArchivedBytes, b.priced)
+	}
+
+	return nil
 }
 
 type db struct {
@@ -1998,7 +2028,7 @@ func (db *db) recordCompleteTx(tx *bolt.Tx, key, encoded []byte, job *Job, keptL
 		}
 	}
 
-	if err := db.updateEndTimeIndex(tx, key, job); err != nil {
+	if err := updateEndTimeIndex(tx, key, job, db.ch); err != nil {
 		return err
 	}
 
@@ -2011,6 +2041,25 @@ func (db *db) recordCompleteTx(tx *bolt.Tx, key, encoded []byte, job *Job, keptL
 	}
 
 	return updateRGEndTime(tx.Bucket(bucketRGEndTime), job)
+}
+
+// updateEndTimeIndex records job's end time in the time-ordered per-job index,
+// replacing any previous entry for the same key so only the latest completion
+// per key is indexed. Uses job.EndTime.UnixNano as 8 big-endian bytes. The prior
+// end time is recovered from the job's existing bucketJobsComplete record, so
+// this must run before that record is overwritten. No-op if the stored end time
+// is unchanged.
+func updateEndTimeIndex(tx *bolt.Tx, jobKey []byte, job *Job, ch codec.Handle) error {
+	newNanos := job.EndTime.UnixNano()
+
+	changed, err := dropStaleEndTimeIndex(tx, jobKey, newNanos, ch)
+	if err != nil || !changed {
+		return err
+	}
+
+	newTimeBytes := endTimeToBytes(newNanos)
+
+	return tx.Bucket(bucketEndTimeToKey).Put(endTimeIndexKey(newTimeBytes, jobKey), nil)
 }
 
 // rerunRecords returns the complete-bucket and live-bucket records of an encoded
@@ -2166,23 +2215,51 @@ func putLiveRecords(tx *bolt.Tx, encodes sobsd) error {
 	return nil
 }
 
-// updateEndTimeIndex records job's end time in the time-ordered per-job index,
-// replacing any previous entry for the same key so only the latest completion
-// per key is indexed. Uses job.EndTime.UnixNano as 8 big-endian bytes. The prior
-// end time is recovered from the job's existing bucketJobsComplete record, so
-// this must run before that record is overwritten. No-op if the stored end time
-// is unchanged.
-func (db *db) updateEndTimeIndex(tx *bolt.Tx, jobKey []byte, job *Job) error {
-	newNanos := job.EndTime.UnixNano()
+// decodeStoredJob is decodeJob with the codec handle ch, for history.bolt, whose
+// complete records are the same Binc encoding.
+func decodeStoredJob(encoded []byte, ch codec.Handle) (*Job, error) {
+	job := &Job{}
 
-	changed, err := db.dropStaleEndTimeIndex(tx, jobKey, newNanos)
-	if err != nil || !changed {
-		return err
+	if err := codec.NewDecoderBytes(encoded, ch).Decode(job); err != nil {
+		return nil, err
 	}
 
-	newTimeBytes := endTimeToBytes(newNanos)
+	if err := checkStoredElements(job.Dependencies, job.Behaviours); err != nil {
+		return nil, err
+	}
 
-	return tx.Bucket(bucketEndTimeToKey).Put(endTimeIndexKey(newTimeBytes, jobKey), nil)
+	job.dropImpossibleCleanups()
+
+	return job, nil
+}
+
+// dropStaleEndTimeIndex recovers the key's prior end time from its existing
+// bucketJobsComplete record (so it must run before that record is overwritten)
+// and, if different from newNanos, deletes the prior forward index entry. It
+// reports whether the index still needs the new entry written: false only when
+// the prior end time equals newNanos (idempotent re-archive). A Get result is
+// only valid until the next mutation, so oldEncoded is decoded immediately and
+// only the extracted nanos kept; this is safe because we read bucketJobsComplete
+// and mutate only bucketEndTimeToKey.
+func dropStaleEndTimeIndex(tx *bolt.Tx, jobKey []byte, newNanos int64, ch codec.Handle) (bool, error) {
+	oldEncoded := tx.Bucket(bucketJobsComplete).Get(jobKey)
+	if len(oldEncoded) == 0 {
+		return true, nil
+	}
+
+	oldJob, err := decodeStoredJob(oldEncoded, ch)
+	if err != nil {
+		return false, err
+	}
+
+	oldNanos := oldJob.EndTime.UnixNano()
+	if oldNanos == newNanos {
+		return false, nil
+	}
+
+	oldTimeBytes := endTimeToBytes(oldNanos)
+
+	return true, tx.Bucket(bucketEndTimeToKey).Delete(endTimeIndexKey(oldTimeBytes, jobKey))
 }
 
 // endTimeToBytes encodes a UnixNano end time as endTimeBytes big-endian bytes,
@@ -2208,54 +2285,13 @@ func endTimeIndexKey(endNanos, jobKey []byte) []byte {
 	return append(key, jobKey...)
 }
 
-// dropStaleEndTimeIndex recovers the key's prior end time from its existing
-// bucketJobsComplete record (so it must run before that record is overwritten)
-// and, if different from newNanos, deletes the prior forward index entry. It
-// reports whether the index still needs the new entry written: false only when
-// the prior end time equals newNanos (idempotent re-archive). A Get result is
-// only valid until the next mutation, so oldEncoded is decoded immediately and
-// only the extracted nanos kept; this is safe because we read bucketJobsComplete
-// and mutate only bucketEndTimeToKey.
-func (db *db) dropStaleEndTimeIndex(tx *bolt.Tx, jobKey []byte, newNanos int64) (bool, error) {
-	oldEncoded := tx.Bucket(bucketJobsComplete).Get(jobKey)
-	if len(oldEncoded) == 0 {
-		return true, nil
-	}
-
-	oldJob, err := db.decodeJob(oldEncoded)
-	if err != nil {
-		return false, err
-	}
-
-	oldNanos := oldJob.EndTime.UnixNano()
-	if oldNanos == newNanos {
-		return false, nil
-	}
-
-	oldTimeBytes := endTimeToBytes(oldNanos)
-
-	return true, tx.Bucket(bucketEndTimeToKey).Delete(endTimeIndexKey(oldTimeBytes, jobKey))
-}
-
 // decodeJob decodes a Job we previously stored in one of our job buckets, and
 // applies the invariants a stored Job must satisfy before anything else sees it.
 // Every read of a stored Job goes through here, so that a db written by an older
 // wr cannot bring a cwd_matters job carrying a cleanup behaviour back into a
 // running server (see Job.dropImpossibleCleanups).
 func (db *db) decodeJob(encoded []byte) (*Job, error) {
-	job := &Job{}
-
-	if err := codec.NewDecoderBytes(encoded, db.ch).Decode(job); err != nil {
-		return nil, err
-	}
-
-	if err := checkStoredElements(job.Dependencies, job.Behaviours); err != nil {
-		return nil, err
-	}
-
-	job.dropImpossibleCleanups()
-
-	return job, nil
+	return decodeStoredJob(encoded, db.ch)
 }
 
 // bestEffortWriter is the single long-lived goroutine that persists all queued
@@ -5075,19 +5111,7 @@ func newArchivedBytesBudget() *archivedBytesBudget {
 // spend accounts for one archived record, returning ErrArchivedHistoryTooBig
 // once the budget is exhausted. A nil budget spends nothing and never errors.
 func (b *archivedBytesBudget) spend(encoded []byte) error {
-	if b == nil {
-		return nil
-	}
-
-	b.remaining -= len(encoded)
-	b.priced++
-
-	if b.remaining < 0 {
-		return fmt.Errorf("%w (over %d bytes at %d complete jobs)", ErrArchivedHistoryTooBig,
-			maxArchivedBytes, b.priced)
-	}
-
-	return nil
+	return b.spendLen(len(encoded))
 }
 
 // decodeArchivedJob decodes the job with the given key from the complete bucket,

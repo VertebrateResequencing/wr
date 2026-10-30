@@ -26,7 +26,7 @@
 package jobqueue
 
 // This file replays the log store's wal files into memory when it opens (spec
-// "Recovery", steps 3 to 6, without checkpoints or history yet).
+// "Recovery", steps 3 to 6, without checkpoints yet).
 
 import (
 	"bytes"
@@ -99,16 +99,27 @@ func (r *logReplayer) op(rec []byte, ref wal.Ref, ch codec.Handle) (logOp, error
 	switch parsed.typ {
 	case logRecSpec:
 		err = r.specIndex(&op, parsed.body, ch)
-	case logRecState:
-		if err = decodeFlatRunState(parsed.body, &r.rs); err == nil {
-			op.handedOut = runStateHandedOut(r.rs.State, r.rs.Attempts, r.rs.StartTime)
-		}
+	case logRecState, logRecComplete:
+		err = r.runState(&op, parsed.body)
 	case logRecEnv:
 		op.blob = slices.Clone(parsed.body)
 	default:
 	}
 
 	return op, err
+}
+
+// runState sets what op, a state or complete record's, keeps of its run state,
+// from the record's body, as addState sets it.
+func (r *logReplayer) runState(op *logOp, body []byte) error {
+	if err := decodeFlatRunState(body, &r.rs); err != nil {
+		return err
+	}
+
+	op.handedOut = runStateHandedOut(r.rs.State, r.rs.Attempts, r.rs.StartTime)
+	op.endTime = r.rs.EndTime
+
+	return nil
 }
 
 // specIndex sets op's index from a spec record's body.

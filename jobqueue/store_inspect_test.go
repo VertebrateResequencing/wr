@@ -119,6 +119,10 @@ var boltOnlyTests = []string{ //nolint:gochecknoglobals
 	"reliable4_upgrade_log_test.go",
 	"server_startup_upgrade_bolt_test.go",
 
+	// history.bolt, the log store's Phase 1 history, checked against the
+	// bbolt store's history.
+	"store_history_bolt_test.go",
+
 	// fixtures written as raw bbolt records, at a scale the store API would
 	// take minutes to reach, or copied between bbolt files.
 	"reliable2_startup_scale_bolt_test.go",

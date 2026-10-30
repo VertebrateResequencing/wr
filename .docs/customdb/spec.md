@@ -550,9 +550,13 @@ limits, dep groups ever seen, std Refs by key, learned-requirement samples
 per req group (sorted slices), history key index (with each key's last
 applied `complete` seq: Phase 1 reads it from `history.bolt`'s
 `completeSeq` bucket, Phase 2 from the record its Ref points to), history
-overlay (completions not yet folded: key
-to spec Ref and `complete` record Ref). Live `*Job` values are never held
-by the store; methods that return live jobs decode them through their Refs.
+overlay (completions not yet folded: key to spec Ref, `complete` record
+Ref, rep group and EndTime; rglookups not yet folded; and each rep group's
+latest EndTime among them, kept until a fold commits one as late, as
+`repgroupEndTime` keeps it), and the folded position F that decides which
+`complete` and rglookup records the overlay leaves out (Folder and
+history). Live `*Job` values are never held by the store; methods that
+return live jobs decode them through their Refs.
 
 ### Recovery
 
@@ -662,6 +666,11 @@ minute with `failures`; it never stops the manager.
 - Until folded, a completion is in the overlay, and every history query
   answers from history plus overlay, so status straight after an archive is
   unchanged.
+- The folder may fold a record before the `done` func of its batch applies
+  it, since `Writer.Durable()` advances before `done` funcs run. Each fold
+  moves the in-memory folded position F forward under the store's lock, and
+  a `complete` or rglookup record whose Ref is before F applies as replay
+  applies it: to the live plane only, never to the overlay.
 - History membership never depends on live state; each query filters live
   keys exactly where today's does (`jobqueue/db.go`):
   - no live filter: `checkIfComplete`, add dedup

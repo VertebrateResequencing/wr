@@ -35,6 +35,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/VertebrateResequencing/wr/jobqueue/wal"
 )
@@ -124,19 +125,36 @@ type logOp struct {
 	hasStd    bool         // std: not empty
 	limit     int64        // limit
 	removed   bool         // limit
+	endTime   time.Time    // complete: the job's EndTime
 }
 
 // logState is the log store's in-memory state (spec "In-memory state of
 // logStore"), which the reducer, apply, changes.
 type logState struct {
 	live          map[logKey]*logLive
-	history       map[logKey]*logHistory
 	envs          map[string][]byte
 	limits        map[string]int64
 	depGroupsSeen map[string]struct{}
-	repGroupKeys  map[string]map[logKey]struct{} // rglookup records
 	reverseDeps   map[string]map[logKey]struct{} // dep group to keys depending on it
 	maxSeq        uint64
+
+	// history is the history key index: every key with a history entry, folded
+	// or not, to its last applied complete record's seq.
+	history map[logKey]uint64
+
+	// overlay is the history entries not yet folded into history.bolt, and
+	// repGroupKeys the rglookup records not yet folded. overlayEnds is the
+	// latest EndTime, as a unix time, of the completions that made overlay
+	// entries under each rep group, kept, as history.bolt's repgroupEndTime
+	// keeps it, when an entry is replaced, until a fold commits one as late.
+	overlay      map[logKey]*logHistory
+	repGroupKeys map[string]map[logKey]struct{}
+	overlayEnds  map[string]int64
+
+	// folded is history.bolt's folded position: a complete or rglookup record
+	// before it is one history.bolt holds, whether replay or a done func that
+	// a fold overtook applies it.
+	folded historyPos
 }
 
 // logReducers apply each type of record that changes the in-memory state; an
@@ -254,12 +272,18 @@ func (r *logRecord) parseRGLookup(body []byte) error {
 // unindex removes key from the reverse dep group index entries of index.
 func (st *logState) unindex(key logKey, index logSpecIndex) {
 	for _, dg := range index.depDeps {
-		keys := st.reverseDeps[dg]
-		delete(keys, key)
+		removeFromIndex(st.reverseDeps, dg, key)
+	}
+}
 
-		if len(keys) == 0 {
-			delete(st.reverseDeps, dg)
-		}
+// removeFromIndex removes key from index's set for name, and the set once
+// empty.
+func removeFromIndex(index map[string]map[logKey]struct{}, name string, key logKey) {
+	keys := index[name]
+	delete(keys, key)
+
+	if len(keys) == 0 {
+		delete(index, name)
 	}
 }
 
@@ -271,6 +295,31 @@ func (st *logState) stdRefs(k logKey) ([2]wal.Ref, [2]bool) {
 	}
 
 	return e.std, e.hasStd
+}
+
+// putOverlay makes h k's overlay entry. Entries are replaced, never changed,
+// so a query may read one it copied without the lock.
+func (st *logState) putOverlay(k logKey, h *logHistory) {
+	st.overlay[k] = h
+	noteLatest(st.overlayEnds, h.repGroup, h.endTime.Unix())
+}
+
+// noteLatest sets latest[rg] to end if it has none or an earlier one.
+func noteLatest(latest map[string]int64, rg string, end int64) {
+	if last, ok := latest[rg]; !ok || end > last {
+		latest[rg] = end
+	}
+}
+
+// unfold drops k's overlay entry if history.bolt now holds it: its seq is at
+// most seq, the folded one.
+func (st *logState) unfold(k logKey, seq uint64) {
+	h := st.overlay[k]
+	if h == nil || h.seq > seq {
+		return
+	}
+
+	delete(st.overlay, k)
 }
 
 // parseLogRecord parses rec.
@@ -373,9 +422,12 @@ func (st *logState) applyEnv(op *logOp) {
 	st.envs[op.name] = op.blob
 }
 
-// applyRGLookup records a key under a rep group.
+// applyRGLookup records a key under a rep group, unless history.bolt holds
+// the record.
 func (st *logState) applyRGLookup(op *logOp) {
-	addToIndex(st.repGroupKeys, op.name, op.key)
+	if !st.folded.covers(op.ref) {
+		addToIndex(st.repGroupKeys, op.name, op.key)
+	}
 }
 
 // addToIndex adds key to index's set for name.
@@ -451,29 +503,43 @@ func (st *logState) applyStd(op *logOp) {
 	e.stdSeq[op.stream], e.std[op.stream], e.hasStd[op.stream] = op.seq, op.ref, op.hasStd
 }
 
-// applyComplete makes op the key's history entry, with the key's live spec,
-// unless a later complete record applied. It drops a live key's std. A key
-// with neither a live spec nor a history entry has no spec to complete, so op
-// is dropped, as an orphan state record is.
+// applyComplete makes op the key's history entry, in the overlay, with the
+// key's live spec, unless a later complete record applied. It drops a live
+// key's std. A key with neither a live spec nor an overlay entry has no spec
+// to complete, so op is dropped, as an orphan state record is; that includes a
+// key whose only history entry is folded, which only a complete record racing
+// a delete (C4) can meet. A record history.bolt already holds, one before the
+// folded position, changes only the live plane.
 func (st *logState) applyComplete(op *logOp) {
-	h := st.history[op.key]
-	if h != nil && op.seq <= h.seq {
+	e := st.live[op.key]
+
+	if st.folded.covers(op.ref) {
+		if e != nil {
+			e.clearStd(op.seq)
+		}
+
 		return
 	}
 
-	e := st.live[op.key]
+	if seq, complete := st.history[op.key]; complete && op.seq <= seq {
+		return
+	}
+
+	h := st.overlay[op.key]
 
 	switch {
 	case e != nil:
-		st.history[op.key] = &logHistory{seq: op.seq, complete: op.ref, spec: e.spec, repGroup: e.index.repGroup}
-
-		for stream := range e.stdSeq {
-			e.stdSeq[stream] = max(e.stdSeq[stream], op.seq)
-			e.hasStd[stream] = false
-		}
+		st.putOverlay(op.key, &logHistory{seq: op.seq, complete: op.ref, spec: e.spec,
+			repGroup: e.index.repGroup, endTime: op.endTime})
+		e.clearStd(op.seq)
 	case h != nil:
-		h.seq, h.complete = op.seq, op.ref
+		st.putOverlay(op.key, &logHistory{seq: op.seq, complete: op.ref, spec: h.spec,
+			repGroup: h.repGroup, endTime: op.endTime})
+	default:
+		return
 	}
+
+	st.history[op.key] = op.seq
 }
 
 // applyLimit sets or removes a limit group's limit.
@@ -498,6 +564,14 @@ type logLive struct {
 	index             logSpecIndex
 }
 
+// clearStd marks e's std streams cleared by a complete record of seq.
+func (e *logLive) clearStd(seq uint64) {
+	for stream := range e.stdSeq {
+		e.stdSeq[stream] = max(e.stdSeq[stream], seq)
+		e.hasStd[stream] = false
+	}
+}
+
 // dropBefore forgets e's state, and each std stream, whose last applied record
 // is earlier than seq.
 func (e *logLive) dropBefore(seq uint64) {
@@ -512,23 +586,35 @@ func (e *logLive) dropBefore(seq uint64) {
 	}
 }
 
-// logHistory is a key's history entry: its last applied complete record and
-// the spec record current when it applied.
+// logHistory is a key's overlay entry: its last applied complete record and
+// the spec record current when it applied, the rep group of that spec and the
+// EndTime of that complete record.
 type logHistory struct {
 	seq            uint64
 	complete, spec wal.Ref
 	repGroup       string
+	endTime        time.Time
 }
 
 func newLogState() logState {
 	return logState{
 		live:          make(map[logKey]*logLive),
-		history:       make(map[logKey]*logHistory),
+		history:       make(map[logKey]uint64),
+		overlay:       make(map[logKey]*logHistory),
+		overlayEnds:   make(map[string]int64),
 		envs:          make(map[string][]byte),
 		limits:        make(map[string]int64),
 		depGroupsSeen: make(map[string]struct{}),
 		repGroupKeys:  make(map[string]map[logKey]struct{}),
 		reverseDeps:   make(map[string]map[logKey]struct{}),
+	}
+}
+
+// unfoldEnd drops repGroup's overlayEnds entry if it is no later than end, the
+// EndTime of a completion under repGroup that history.bolt now holds.
+func (st *logState) unfoldEnd(repGroup string, end time.Time) {
+	if latest, ok := st.overlayEnds[repGroup]; ok && latest <= end.Unix() {
+		delete(st.overlayEnds, repGroup)
 	}
 }
 

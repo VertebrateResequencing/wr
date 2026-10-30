@@ -254,3 +254,16 @@ called ready, or explicitly deferred with the owner.
   store's parent directory, so that directory must be writable. This is
   new for deployments whose parent directory is read-only. Owner: 2e.2
   (F6): add a CHANGELOG line saying so.
+
+- [ ] (from 1c.3) The reducer drops a complete record for a key that is
+  not live and whose only history entry is already folded: it would need
+  the key's spec from history.bolt to make an overlay entry (see the
+  comment in `applyComplete`). Only an archive racing a delete (C4) can
+  produce one, once 1d.1 folds. Owner: 1c.4 (C4), which owns that race.
+
+- [ ] (from 1c.3) `foldHistory` trusts its caller for contiguity: it does
+  not check that a fold starts at the previous folded position F, and
+  `putHistoryMeta` persists `f.to` even when it is below the stored F
+  (in-memory F never moves back). Both are safe with one folder reading
+  the log in order. Owner: 1d.1: have the folder fold contiguously from F,
+  and either assert that in `foldHistory` or never persist a lower F.

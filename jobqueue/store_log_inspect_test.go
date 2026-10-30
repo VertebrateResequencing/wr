@@ -116,17 +116,7 @@ func (s *logStore) completeJob(key string) (*Job, bool, error) {
 		return nil, false, err
 	}
 
-	s.mu.RLock()
-	h, found := s.state.history[k]
-	s.mu.RUnlock()
-
-	if !found {
-		return nil, false, nil
-	}
-
-	job, err := s.decodeJob(h.spec, h.complete, logRecComplete)
-
-	return job, err == nil, err
+	return s.historyJob(k)
 }
 
 // count returns how many records of kind the store holds.

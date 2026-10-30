@@ -155,6 +155,28 @@ type logStateWrites struct {
 	idle chan struct{}
 }
 
+// recover loads history.bolt's key index and folded position, replays the
+// log, and resumes the seq counter above every seq the log and history.bolt
+// hold (spec "Recovery", step 5). It returns the number the next wal file
+// must have.
+func (s *logStore) recover(ctx context.Context) (uint32, error) {
+	folded, foldedSeq, err := s.history.load(s.state.history)
+	if err != nil {
+		return 0, err
+	}
+
+	s.state.folded = folded
+
+	next, err := s.replay(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	s.seq.Store(max(s.state.maxSeq, foldedSeq))
+
+	return next, nil
+}
+
 // logWrite is one append's records on their way to being durable. The writer's
 // done func and the appender, once it has the Ref, each arrive; whichever is
 // second applies the records to the store's state if the batch succeeded, then
@@ -316,11 +338,15 @@ type logStore struct {
 
 	// lock, if not nil, is the store lock close releases.
 	lock *storeLock
+
+	// history is history.bolt.
+	history *historyBolt
 }
 
 // openLogStore opens, creating if need be, the log store in dir: it checks its
-// VERSION, replays the log there into memory and starts a writer on a new
-// segment. The caller holds the store's lock (see openLogStoreLocked).
+// VERSION, opens its history.bolt, replays the log there into memory and
+// starts a writer on a new segment. The caller holds the store's lock (see
+// openLogStoreLocked).
 func openLogStore(ctx context.Context, dir string) (*logStore, error) {
 	if err := prepareStoreDir(dir); err != nil {
 		return nil, err
@@ -328,15 +354,20 @@ func openLogStore(ctx context.Context, dir string) (*logStore, error) {
 
 	s := newLogStore(ctx, dir)
 
-	next, err := s.replay(ctx)
+	history, err := openHistoryBolt(dir, s.ch)
 	if err != nil {
-		return nil, errors.Join(err, s.closeFiles())
+		return nil, err
 	}
 
-	s.seq.Store(s.state.maxSeq)
+	s.history = history
+
+	next, err := s.recover(ctx)
+	if err != nil {
+		return nil, errors.Join(err, s.closeFiles(), s.history.close())
+	}
 
 	if s.w, err = wal.NewWriter(dir, next, walSegmentSize, s.writeFailed); err != nil {
-		return nil, errors.Join(err, s.closeFiles())
+		return nil, errors.Join(err, s.closeFiles(), s.history.close())
 	}
 
 	go s.reportStats()
@@ -492,7 +523,7 @@ func (s *logStore) close(ctx context.Context) error {
 	<-s.statsExited
 	s.stats.report(ctx, s.statsEvery, s.w.Stats(), s.w.TakeMaxSync())
 
-	return errors.Join(err, s.closeFiles(), s.lock.release())
+	return errors.Join(err, s.closeFiles(), s.history.close(), s.lock.release())
 }
 
 // closeFiles closes the files opened to read records.
@@ -812,7 +843,8 @@ func (s *logStore) addSpecAndStateLocked(f *logFrames, job *Job, k logKey, rs lo
 func (s *logStore) addState(f *logFrames, typ logRecordType, k logKey, rs *logRunState) {
 	seq := s.nextSeq()
 	f.add(appendKeyedRecord(f.rec, typ, seq, k, appendFlatRunState(nil, rs)),
-		logOp{typ: typ, seq: seq, key: k, handedOut: runStateHandedOut(rs.State, rs.Attempts, rs.StartTime)})
+		logOp{typ: typ, seq: seq, key: k, handedOut: runStateHandedOut(rs.State, rs.Attempts, rs.StartTime),
+			endTime: rs.EndTime})
 }
 
 // updateJobRunStateDurable records job's run state and waits until it is
@@ -1405,20 +1437,25 @@ func (s *logStore) completeUnderRepGroup(job *Job, key string) (bool, *completed
 	job.RUnlock()
 
 	s.mu.RLock()
-	h, complete := s.state.history[k]
+	_, complete := s.state.history[k]
 	_, lookedUp := s.state.repGroupKeys[repGroup][k]
 	s.mu.RUnlock()
 
-	if !complete || lookedUp || h.repGroup == repGroup {
+	if !complete || lookedUp {
 		return complete, nil, nil
 	}
 
-	archived, err := s.decodeJob(h.spec, h.complete, logRecComplete)
-	if err != nil {
-		return true, nil, err
-	}
+	var elsewhere *completedElsewhere
 
-	return true, &completedElsewhere{repGroup: h.repGroup, endTime: archived.EndTime}, nil
+	err = s.viewHistoryKeys([]logKey{k}, func(r *historyRead) error {
+		var errc error
+
+		elsewhere, errc = r.completedElsewhere(k, repGroup)
+
+		return errc
+	})
+
+	return true, elsewhere, err
 }
 
 // planDependents adds to add a depgroup record for each of its dep groups not
@@ -1580,7 +1617,6 @@ func (s *logStore) reverseDepKeys(depGroup string) []logKey {
 func (s *logStore) dependentJob(k logKey, newKeys map[string]bool) (*Job, bool, error) {
 	s.mu.RLock()
 	e := s.state.live[k]
-	h := s.state.history[k]
 
 	var spec, state wal.Ref
 	if e != nil {
@@ -1595,11 +1631,11 @@ func (s *logStore) dependentJob(k logKey, newKeys map[string]bool) (*Job, bool, 
 		return job, true, err
 	}
 
-	if h == nil || newKeys[k.String()] {
+	if newKeys[k.String()] {
 		return nil, false, nil
 	}
 
-	job, err := s.decodeJob(h.spec, h.complete, logRecComplete)
+	job, _, err := s.historyJob(k)
 
 	return job, false, err
 }
@@ -1703,17 +1739,12 @@ func (s *logStore) addGuardPutBack(f *logFrames, key string) (bool, error) {
 		return false, err
 	}
 
-	s.mu.RLock()
-	_, live := s.state.live[k]
-	h := s.state.history[k]
-	s.mu.RUnlock()
-
-	if live || h == nil {
+	if s.liveKey(k) {
 		return false, nil
 	}
 
-	job, err := s.decodeJob(h.spec, h.complete, logRecComplete)
-	if err != nil {
+	job, complete, err := s.historyJob(k)
+	if err != nil || !complete {
 		return false, err
 	}
 

@@ -43,9 +43,11 @@ import (
 const boltImportPath = "go.etcd.io/bbolt"
 
 // boltOnlyFiles are the non-test jobqueue files allowed to reach bbolt and the
-// *db type directly (spec A1 acceptance test 1).
+// *db type directly (spec A1 acceptance test 1), including the file of the log
+// store's Phase 1 bbolt history.
 var boltOnlyFiles = []string{ //nolint:gochecknoglobals
 	"dependency.go", "writeturns.go", "reqstat_cache.go", "archivefold.go", "store_bolt.go",
+	"store_history_bolt.go",
 }
 
 func TestStoreInterface(t *testing.T) {
