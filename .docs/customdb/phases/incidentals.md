@@ -328,7 +328,7 @@ called ready, or explicitly deferred with the owner.
   a modify between F and `walFrom` must not let its old key's earlier
   rglookups come back on recovery.
 
-- [ ] (from 1c.4 review) `TestLogStoreFailedWriteNotReplayedAfterSpentFile`
+- [x] (from 1c.4 review) `TestLogStoreFailedWriteNotReplayedAfterSpentFile`
   flakes about 1 in 500 under load, pre-existing (load-matched A/B at 1000
   runs: 2 fails at 4d128f96, 1 on the 1c.4 tree; files `[1 2]` instead of
   `[1 2 3]`). In `jobqueue/wal/writer.go` `run()`, if Close is seen before
@@ -337,10 +337,30 @@ called ready, or explicitly deferred with the owner.
   Owner: 1c.5: decide whether a close after a spent open must open file
   n+1 (a product fix) or the test must wait for the reopen before
   closing, with a red loop first.
+  Done in 1c.5, as a test fix: red loop 3 fails in 1,200 runs (8 at once,
+  -race), 0 in 1,200 after. The writer does what spec B2 says: retries
+  while idle, and `Close` makes one last try; the residual window names
+  a close whose last try fails, spent or not, as leaving the abandoned file
+  unbounded. A close racing the first try is that case, not the test's
+  (file 3 opened while idle), so the test now waits for `Durable()` to
+  reach file 3 before closing.
 
-- [ ] (from 1c.4 review) No test pins that a delete over the block size
+- [x] (from 1c.4 review) No test pins that a delete over the block size
   limit splits only between keys (mutant `delete-not-grouped`, dropping
   `f.group()` per key in `deleteLiveJobs`, survives). Impact is small: a
   delete is one record per key. Owner: 1c.5: add a Convey under
   `logBlockMaxFrames = 1` asserting a 3-key delete gives 3 frames, like
   `TestLogStoreSplitPutBacks`.
+  Done in 1c.5: `TestLogStoreSplitPutBacks` deletes 3 live jobs under a
+  1 byte limit and requires 3 frames of 1 delete record each, and none live
+  after reopen; `delete-not-grouped` is killed.
+
+- [ ] (from 1c.5 review) Two recovery behaviours have no test:
+  `recoverIncompleteJobs` returning jobs in key order, as bbolt does
+  (mutant `jobs-unsorted` survives), and `jobsOf` failing with
+  `errStoreCorrupt` when a live ref's wal file is missing (mutant
+  `missing-record-skipped`, unreachable until checkpoints delete old wal
+  files). Owner: 1d.2: once checkpoints delete wal files, add a test that
+  deletes a wal file holding a live ref after open and expects
+  `errStoreCorrupt`, and pin the key order of recovered jobs (or state in
+  the spec that callers must not rely on it).

@@ -1050,13 +1050,18 @@ func TestWriterRetries(t *testing.T) {
 	Convey("Given a sync hook returning EIO for every sync, and walRetryCap 200ms", t, func() {
 		Reset(SetTestRetryCap(200 * time.Millisecond))
 
-		var failing atomic.Bool
+		var (
+			failing atomic.Bool
+			retried atomic.Int64
+		)
 
 		failing.Store(true)
 		setSyncHook(func(string) error {
 			if failing.Load() {
 				return syscall.EIO
 			}
+
+			retried.CompareAndSwap(0, time.Now().UnixNano())
 
 			return nil
 		})
@@ -1093,11 +1098,17 @@ func TestWriterRetries(t *testing.T) {
 
 			failing.Store(false)
 
+			appended := time.Now()
 			ref, c := w.Append([]byte("ok"), results.done(n))
 
-			done, err := c.WaitWithin(time.Second)
-			So(done, ShouldBeTrue)
+			// The writer must try a sync within 1s of the append: its waits
+			// are capped at 200ms. How long that sync then takes is the
+			// disk's, seconds under others' fsync load, so durability only
+			// has the hang guard.
+			err := waitFor(c)
 			So(err, ShouldBeNil)
+			So(retried.Load(), ShouldBeGreaterThan, 0)
+			So(time.Unix(0, retried.Load()).Sub(appended), ShouldBeLessThan, time.Second)
 
 			waitErrs = append(waitErrs, err)
 
@@ -1488,6 +1499,39 @@ func (r *results) calls(i int) []error {
 	return slices.Clone(r.errs[i])
 }
 
+// failTimes records when a writer failed each batch. Its onError is the
+// writer's, which the writer calls before it starts the backoff after that
+// failure, so the time between two of them includes the whole backoff however
+// late the appender wakes.
+type failTimes struct {
+	mu sync.Mutex
+	at []time.Time
+}
+
+// onError records a failure now.
+func (f *failTimes) onError(error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.at = append(f.at, time.Now())
+}
+
+// since returns the failure times recorded from the ith on.
+func (f *failTimes) since(i int) []time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return slices.Clone(f.at[i:])
+}
+
+// count returns how many failures were recorded.
+func (f *failTimes) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return len(f.at)
+}
+
 func TestWriterIdleReopenSpendsANumber(t *testing.T) {
 	Convey("Given a writer whose first batch fails, then whose idle open of file 2 fails leaving a file 2 behind, "+
 		"while a record is queued for file 2", t, func() {
@@ -1558,10 +1602,11 @@ func TestWriterBackoff(t *testing.T) {
 
 		setSyncHook(func(string) error { return syscall.EIO })
 
-		w := newTestWriter(t.TempDir(), testSegmentSize, nil)
+		failed := &failTimes{}
+		w := newTestWriter(t.TempDir(), testSegmentSize, failed.onError)
 
 		Convey("each failed batch is followed by at least retryDelay before the next is taken", func() {
-			gaps := failGaps(w, 6)
+			gaps := failGaps(w, failed, 6)
 
 			var late time.Duration
 
@@ -1593,10 +1638,11 @@ func TestWriterBackoff(t *testing.T) {
 			return nil
 		})
 
-		w := newTestWriter(t.TempDir(), testSegmentSize, nil)
+		failed := &failTimes{}
+		w := newTestWriter(t.TempDir(), testSegmentSize, failed.onError)
 
 		// After 6 failures the writer waits 1.6s before its next batch.
-		failGaps(w, 6)
+		failGaps(w, failed, 6)
 
 		Convey("Close does not wait out the backoff", func() {
 			start := time.Now()
@@ -1615,7 +1661,7 @@ func TestWriterBackoff(t *testing.T) {
 
 			// Reset, the failures after it wait 0 then 100ms; carried on from
 			// 6 they would wait 3.2s then 6.4s.
-			gaps := failGaps(w, 3)
+			gaps := failGaps(w, failed, 3)
 			So(gaps[1]+gaps[2], ShouldBeLessThan, 2*time.Second)
 			So(gaps[2], ShouldBeGreaterThanOrEqualTo, retryDelay(2, time.Minute))
 		})
@@ -1623,18 +1669,25 @@ func TestWriterBackoff(t *testing.T) {
 }
 
 // failGaps appends n records that must each fail, returning the time from each
-// failure (or the call, for the first) to the next.
-func failGaps(w *Writer, n int) []time.Duration {
-	gaps := make([]time.Duration, 0, n)
+// failure (or the call, for the first) to the next, as failed, w's onError
+// recorder, timed them.
+func failGaps(w *Writer, failed *failTimes, n int) []time.Duration {
+	first := failed.count()
 	last := time.Now()
 
 	for i := range n {
 		_, c := w.Append(fmt.Appendf(nil, "r%d", i), nil)
 		So(waitFor(c), ShouldWrap, syscall.EIO)
+	}
 
-		now := time.Now()
-		gaps = append(gaps, now.Sub(last))
-		last = now
+	times := failed.since(first)
+	So(times, ShouldHaveLength, n)
+
+	gaps := make([]time.Duration, 0, n)
+
+	for _, at := range times {
+		gaps = append(gaps, at.Sub(last))
+		last = at
 	}
 
 	return gaps
@@ -1660,17 +1713,11 @@ func TestWriterTestSeams(t *testing.T) {
 
 		setSyncHook(func(string) error { return syscall.EIO })
 
-		w := newTestWriter(t.TempDir(), testSegmentSize, nil)
+		failed := &failTimes{}
+		w := newTestWriter(t.TempDir(), testSegmentSize, failed.onError)
 
-		for range 2 {
-			_, c := w.Append([]byte("r"), nil)
-			So(waitFor(c), ShouldWrap, syscall.EIO)
-		}
-
-		start := time.Now()
-		_, c := w.Append([]byte("r"), nil)
-		So(waitFor(c), ShouldWrap, syscall.EIO)
-		So(time.Since(start), ShouldBeGreaterThanOrEqualTo, walRetryBase)
+		gaps := failGaps(w, failed, 3)
+		So(gaps[2], ShouldBeGreaterThanOrEqualTo, walRetryBase)
 	})
 }
 

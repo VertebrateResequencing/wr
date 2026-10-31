@@ -34,6 +34,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -144,7 +145,7 @@ type logState struct {
 	// depending on it, and keyDeps its inverse, key to those dep groups, so
 	// a key leaves it in time proportional to its own dep groups.
 	reverseDeps map[string]map[logKey]struct{}
-	keyDeps     map[logKey]map[string]struct{}
+	keyDeps     map[logKey][]string
 
 	// history is the history key index: every key with a history entry, folded
 	// or not, to its last applied complete record's seq.
@@ -158,7 +159,7 @@ type logState struct {
 	// keeps it, when an entry is replaced, until a fold commits one as late.
 	overlay      map[logKey]*logHistory
 	repGroupKeys map[string]map[logKey]struct{}
-	keyRepGroups map[logKey]map[string]struct{}
+	keyRepGroups map[logKey][]string
 	overlayEnds  map[string]int64
 
 	// folded is history.bolt's folded position: a complete or rglookup record
@@ -305,7 +306,7 @@ func (r *logRecord) parseRGLookup(body []byte) error {
 func (st *logState) unindex(key logKey, index logSpecIndex) {
 	for _, dg := range index.depDeps {
 		removeFromIndex(st.reverseDeps, dg, key)
-		removeFromIndex(st.keyDeps, key, dg)
+		removeFromKeyIndex(st.keyDeps, key, dg)
 	}
 }
 
@@ -320,21 +321,44 @@ func removeFromIndex[N, M comparable](index map[N]map[M]struct{}, name N, member
 	}
 }
 
+// removeFromKeyIndex removes name from key's names in index, an index by key,
+// and key once it has none.
+func removeFromKeyIndex(index map[logKey][]string, key logKey, name string) {
+	names := slices.DeleteFunc(index[key], func(n string) bool { return n == name })
+	if len(names) == 0 {
+		delete(index, key)
+
+		return
+	}
+
+	index[key] = names
+}
+
 // lookUp records key under repGroup's rglookups.
 func (st *logState) lookUp(repGroup string, key logKey) {
 	addToIndex(st.repGroupKeys, repGroup, key)
-	addToIndex(st.keyRepGroups, key, repGroup)
+	addToKeyIndex(st.keyRepGroups, key, repGroup)
+}
+
+// addToKeyIndex adds name to key's names in index, an index by key, unless it
+// is there already. An index by key holds a slice per key rather than a set, as
+// a key has a handful of names: a set per key cost 370 bytes, so 100,000 live
+// keys' rglookups alone took 37MB of the store's 40MB budget (spec C5 test 6).
+func addToKeyIndex(index map[logKey][]string, key logKey, name string) {
+	if !slices.Contains(index[key], name) {
+		index[key] = append(index[key], name)
+	}
 }
 
 // unlookUp removes key from repGroup's rglookups.
 func (st *logState) unlookUp(repGroup string, key logKey) {
 	removeFromIndex(st.repGroupKeys, repGroup, key)
-	removeFromIndex(st.keyRepGroups, key, repGroup)
+	removeFromKeyIndex(st.keyRepGroups, key, repGroup)
 }
 
 // dropLookups removes key from the rglookups of every rep group it is under.
 func (st *logState) dropLookups(key logKey) {
-	for rg := range st.keyRepGroups[key] {
+	for _, rg := range st.keyRepGroups[key] {
 		removeFromIndex(st.repGroupKeys, rg, key)
 	}
 
@@ -343,7 +367,7 @@ func (st *logState) dropLookups(key logKey) {
 
 // unindexAll removes key from every reverse dep group index entry it is in.
 func (st *logState) unindexAll(key logKey) {
-	for dg := range st.keyDeps[key] {
+	for _, dg := range st.keyDeps[key] {
 		removeFromIndex(st.reverseDeps, dg, key)
 	}
 
@@ -533,7 +557,7 @@ func (st *logState) applySpec(op *logOp) {
 
 	for _, dg := range op.index.depDeps {
 		addToIndex(st.reverseDeps, dg, op.key)
-		addToIndex(st.keyDeps, op.key, dg)
+		addToKeyIndex(st.keyDeps, op.key, dg)
 	}
 }
 
@@ -705,9 +729,9 @@ func newLogState() logState {
 		limits:        make(map[string]int64),
 		depGroupsSeen: make(map[string]struct{}),
 		repGroupKeys:  make(map[string]map[logKey]struct{}),
-		keyRepGroups:  make(map[logKey]map[string]struct{}),
+		keyRepGroups:  make(map[logKey][]string),
 		reverseDeps:   make(map[string]map[logKey]struct{}),
-		keyDeps:       make(map[logKey]map[string]struct{}),
+		keyDeps:       make(map[logKey][]string),
 	}
 }
 

@@ -721,64 +721,6 @@ func TestLogStoreFailedWrite(t *testing.T) {
 	})
 }
 
-func TestLogStoreTornTail(t *testing.T) {
-	if runnermode || servermode {
-		return
-	}
-
-	ctx := context.Background()
-
-	Convey("Given a closed log store whose last wal file has 10 garbage bytes appended", t, func() {
-		logPath, logCtx := managerLogContext(t, ctx)
-		s, dir := openTestLogStore(t, logCtx)
-
-		job := testDBJob("echo torn", "torn")
-		_, err := s.storeNewJobsGuarded(ctx, []*Job{job}, false, nil)
-		So(err, ShouldBeNil)
-		So(s.close(ctx), ShouldBeNil)
-
-		files, err := walFileNumbers(dir)
-		So(err, ShouldBeNil)
-
-		last := walFilePath(dir, files[len(files)-1])
-		info, err := os.Stat(last)
-		So(err, ShouldBeNil)
-
-		f, err := os.OpenFile(last, os.O_APPEND|os.O_WRONLY, 0)
-		So(err, ShouldBeNil)
-		_, err = f.WriteString("0123456789")
-		So(err, ShouldBeNil)
-		So(f.Close(), ShouldBeNil)
-
-		Convey("it reopens with its jobs, the tail truncated and logged", func() {
-			reopened := openLogStoreIn(logCtx, dir)
-
-			Reset(func() { So(reopened.close(ctx), ShouldBeNil) })
-
-			after, errs := os.Stat(last)
-			So(errs, ShouldBeNil)
-			So(after.Size(), ShouldEqual, info.Size())
-
-			live, errl := reopened.checkIfLive(job.Key())
-			So(errl, ShouldBeNil)
-			So(live, ShouldBeTrue)
-
-			lines := logLinesContaining(readLogFile(t, logPath), walTailTruncatedLogMsg)
-			So(lines, ShouldHaveLength, 1)
-			So(logLineValue(lines[0], "bytes"), ShouldEqual, "10")
-
-			Convey("and a further reopen keeps every write", func() {
-				more := testDBJob("echo torn more", "torn")
-				_, err = reopened.storeNewJobsGuarded(ctx, []*Job{more}, false, nil)
-				So(err, ShouldBeNil)
-
-				again := reopenLogStore(ctx, reopened)
-				So(inspectedCount(again, kindLive), ShouldEqual, 2)
-			})
-		})
-	})
-}
-
 func TestLogStoreWriterStats(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -1329,12 +1271,12 @@ func indexesInverse(st *logState) bool {
 
 // isInverse reports whether byMember holds each member of each of byName's
 // sets under that set's name, and nothing else.
-func isInverse[N, M comparable](byName map[N]map[M]struct{}, byMember map[M]map[N]struct{}) bool {
+func isInverse[N, M comparable](byName map[N]map[M]struct{}, byMember map[M][]N) bool {
 	n := 0
 
 	for name, members := range byName {
 		for member := range members {
-			if _, found := byMember[member][name]; !found {
+			if !slices.Contains(byMember[member], name) {
 				return false
 			}
 
@@ -1445,6 +1387,16 @@ func TestLogStoreFailedWriteNotReplayedAfterSpentFile(t *testing.T) {
 		b := testDBJob("echo spent b", "spent")
 		_, err = s.storeNewJobsGuarded(ctx, []*Job{b}, false, nil)
 		So(err, ShouldWrap, syscall.EIO)
+
+		// The writer opens file 3 while idle, one 100ms backoff after spending
+		// file 2 (5s allows 50 such backoffs). Close makes only one last try
+		// (spec B2), so closing first would leave file 2 spent at that try with
+		// no file 3 bounding file 1: the residual window, not this test's case.
+		So(pollUntilFor(5*time.Second, func() bool {
+			file, _ := s.w.Durable()
+
+			return file == 3
+		}), ShouldBeTrue)
 
 		So(s.close(ctx), ShouldBeNil)
 		So(spent.Load(), ShouldBeTrue)

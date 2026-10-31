@@ -787,6 +787,23 @@ func TestLogStoreAdd(t *testing.T) {
 			So(string(reopened.retrieveEnv(ctx, key)), ShouldEqual, string(env))
 			So(reopened.retrieveEnv(ctx, "nokey"), ShouldBeNil)
 		})
+
+		Convey("a long env then a shorter one both retrieve intact after reopen", func() {
+			// the shorter env's frame is read into the buffer the long one's
+			// was, so replay must keep its own copy of each
+			long := []byte("PATH=/bin:/usr/bin:/usr/local/bin:/opt/somewhere/bin")
+			short := []byte("A=1")
+
+			longKey, err := s.storeEnv(long)
+			So(err, ShouldBeNil)
+
+			shortKey, err := s.storeEnv(short)
+			So(err, ShouldBeNil)
+
+			reopened := reopenLogStore(ctx, s)
+			So(string(reopened.retrieveEnv(ctx, longKey)), ShouldEqual, string(long))
+			So(string(reopened.retrieveEnv(ctx, shortKey)), ShouldEqual, string(short))
+		})
 	})
 
 	Convey("Given limit group g set to 5 then removed", t, func() {
@@ -1017,6 +1034,33 @@ func TestLogStoreSplitPutBacks(t *testing.T) {
 
 			So(specsPerFrame(walFrames(dir)[before:]), ShouldResemble, []int{1, 1, 1})
 		})
+	})
+
+	Convey("Given 3 live jobs and a 1 byte block limit, a delete of them puts each in a frame of its own", t, func() {
+		s, dir := openTestLogStore(t, ctx)
+
+		jobs := testLogJobs("split delete", "c4", 3)
+		_, err := s.storeNewJobsGuarded(ctx, jobs, false, nil)
+		So(err, ShouldBeNil)
+
+		old := logBlockMaxFrames
+		logBlockMaxFrames = 1
+
+		Reset(func() { logBlockMaxFrames = old })
+
+		before := len(walFrames(dir))
+
+		So(s.deleteLiveJobs(ctx, []string{jobs[0].Key(), jobs[1].Key(), jobs[2].Key()}), ShouldBeNil)
+
+		frames := walFrames(dir)[before:]
+
+		deletes := make([]int, len(frames))
+		for i, frame := range frames {
+			deletes[i] = countRecords(frame.recs, logRecDelete)
+		}
+
+		So(deletes, ShouldResemble, []int{1, 1, 1})
+		So(inspectedCount(reopenLogStore(ctx, s), kindLive), ShouldEqual, 0)
 	})
 }
 

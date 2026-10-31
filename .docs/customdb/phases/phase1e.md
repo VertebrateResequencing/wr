@@ -97,6 +97,8 @@ First resolve the 0b.1 incidental on tests that reach bbolt through
 `server.boltDB()` or `db.go` hooks ([incidentals.md](incidentals.md)).
 Also resolve the 1c.4 incidental: the server-only clauses of C4 tests 9
 to 11.
+Switch C5 test 3 (`TestLogStoreRecoverDamage`, 1c.5) from
+`openLogStoreLocked` to `openStore`, as the spec names it.
 
 - [ ] implemented
 - [ ] reviewed

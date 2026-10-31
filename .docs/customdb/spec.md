@@ -1307,9 +1307,12 @@ page rewrites.
    200ms, when 5 records are appended 100ms apart, then each `Wait()`
    returns an error wrapping `syscall.EIO` within 1s of its append and
    `onError` was called once per failed batch; when the hook is then
-   cleared, the next record's `Wait()` returns nil within 1s, a scan finds
-   it in a file numbered above every earlier one, and `done` funcs were
-   called with the same results the `Wait()`s returned.
+   cleared and the next record is appended, the writer's next sync
+   attempt starts within 1s of that append (its backoff is capped at
+   200ms; how long the sync itself takes is the disk's), that record's
+   `Wait()` returns nil, a scan finds it in a file numbered above every
+   earlier one, and `done` funcs were called with the same results the
+   `Wait()`s returned.
 6. Given a sync hook that blocks the first sync for 200ms, when 50 records
    are appended without waiting and `Close()` is called while the hook
    holds, then `Close()` returns nil after the hook releases, every

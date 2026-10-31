@@ -66,6 +66,9 @@ Phase 1 acceptance tests from C6 (4 of 5); test 2 is Phase 2 and runs in
 (`jobqueue/store_log_ops_test.go`), and C5 test 1's 3 checkpoints and
 test 8's checkpoint between reopens (`jobqueue/store_recover_test.go`).
 Depends on 1d.1.
+Also resolve the 1c.4 incidental on modify records between F and
+`walFrom`, and the 1c.5 incidental on recovered-job order and a missing
+wal file ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

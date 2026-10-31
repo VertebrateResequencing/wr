@@ -112,5 +112,5 @@ in item 1d.2. Depends on 1c.4. Also resolve the 1c.4 incidental on
 the wal writer's spent reopen at close, and the 1c.4 incidental on a
 split delete's test ([incidentals.md](incidentals.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
