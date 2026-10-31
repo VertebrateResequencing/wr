@@ -527,6 +527,18 @@ func (r *rerunGuards) archiving(txID int, addStored func(member []byte) bool, ke
 	return false
 }
 
+// archiveOutcomeLocked is archiveOutcome for a caller holding at least the
+// job's read lock.
+func (j *Job) archiveOutcomeLocked(txID int, addStored func(member []byte) bool,
+	guards *rerunGuards,
+) (outcome archiveOutcome, keepLive bool) {
+	if j.RerunAfterRun {
+		return archiveKeptLive, true
+	}
+
+	return archiveRemovedLive, guards.archiving(txID, addStored, j.Key())
+}
+
 // markRerunAfterRun marks the job to run again once its run ends. The caller
 // must have seen the job's item running with the queue locked, and still hold
 // that lock. It reports whether a successful completion of the run is already
@@ -612,11 +624,7 @@ func (j *Job) archiveOutcome(txID int, addStored func(member []byte) bool,
 	j.RLock()
 	defer j.RUnlock()
 
-	if j.RerunAfterRun {
-		return archiveKeptLive, true
-	}
-
-	return archiveRemovedLive, guards.archiving(txID, addStored, j.Key())
+	return j.archiveOutcomeLocked(txID, addStored, guards)
 }
 
 // queuedJob returns the in-memory job of the keyed queue item, or nil if there is

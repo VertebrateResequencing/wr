@@ -124,48 +124,16 @@ func TestLogStoreHistoryMatchesBolt(t *testing.T) {
 	})
 }
 
-// foldOverlay folds everything in s's overlay into history.bolt, as the folder
-// will, up to the durable end of the log. The folder folds from the log; this
-// reads the overlay, so it is only for a store with no write in flight.
-func foldOverlay(s *logStore) {
-	file, off := s.w.Durable()
-	f := historyFold{to: historyPos{file: file, off: uint64(off)}} //nolint:gosec // an offset
-
-	s.mu.RLock()
-	entries := make(map[logKey]logHistory, len(s.state.overlay))
-
-	for k, h := range s.state.overlay {
-		entries[k] = *h
-	}
-
-	for rg, keys := range s.state.repGroupKeys {
-		for k := range keys {
-			f.lookups = append(f.lookups, historyLookup{repGroup: rg, key: k})
-		}
-	}
-
-	s.mu.RUnlock()
-
-	for k, h := range entries {
-		job, err := s.decodeJob(h.spec, h.complete, logRecComplete)
-		So(err, ShouldBeNil)
-
-		f.complete = append(f.complete, historyFolded{key: k, seq: h.seq, job: job})
-	}
-
-	So(s.foldHistory(&f), ShouldBeNil)
-}
-
 // overlayEmpty reports whether s's overlay holds no history entry, no
-// rglookup and no rep group's end time.
+// rglookup, by rep group or by key, and no rep group's end time.
 func overlayEmpty(s *logStore) bool {
 	entries, lookups := overlaySize(s)
 
 	s.mu.RLock()
-	ends := len(s.state.overlayEnds)
+	ends, byKey := len(s.state.overlayEnds), len(s.state.keyRepGroups)
 	s.mu.RUnlock()
 
-	return entries == 0 && lookups == 0 && ends == 0
+	return entries == 0 && lookups == 0 && byKey == 0 && ends == 0
 }
 
 // overlaySize returns how many history entries and rglookups s's overlay holds.

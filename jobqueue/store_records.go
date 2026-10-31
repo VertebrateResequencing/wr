@@ -88,6 +88,7 @@ type logRecord struct {
 
 	// set by parseLogRecord for the types that have them.
 	stream  uint8  // std
+	newKey  logKey // modify
 	name    string // env key, limit group, rep group, dep group name
 	limit   int64  // limit
 	removed bool   // limit
@@ -100,6 +101,7 @@ var logRecordParsers = [...]func(r *logRecord, body []byte) error{
 	logRecSpec:     (*logRecord).takeKey,
 	logRecState:    (*logRecord).takeKey,
 	logRecDelete:   (*logRecord).takeKey,
+	logRecModify:   (*logRecord).parseModify,
 	logRecStd:      (*logRecord).parseStd,
 	logRecEnv:      (*logRecord).parseEnv,
 	logRecLimit:    (*logRecord).parseLimit,
@@ -119,6 +121,7 @@ type logOp struct {
 	name string // env key, limit group, rep group, dep group name
 	blob []byte // env
 
+	newKey    logKey       // modify: the new key it moves key, the old key, to
 	index     logSpecIndex // spec
 	handedOut bool         // state: liveRecordHandedOut of it
 	stream    uint8        // std
@@ -135,20 +138,27 @@ type logState struct {
 	envs          map[string][]byte
 	limits        map[string]int64
 	depGroupsSeen map[string]struct{}
-	reverseDeps   map[string]map[logKey]struct{} // dep group to keys depending on it
 	maxSeq        uint64
+
+	// reverseDeps is the reverse dep group index, dep group to the keys
+	// depending on it, and keyDeps its inverse, key to those dep groups, so
+	// a key leaves it in time proportional to its own dep groups.
+	reverseDeps map[string]map[logKey]struct{}
+	keyDeps     map[logKey]map[string]struct{}
 
 	// history is the history key index: every key with a history entry, folded
 	// or not, to its last applied complete record's seq.
 	history map[logKey]uint64
 
 	// overlay is the history entries not yet folded into history.bolt, and
-	// repGroupKeys the rglookup records not yet folded. overlayEnds is the
+	// repGroupKeys the rglookup records not yet folded, rep group to keys, with
+	// keyRepGroups its inverse, key to rep groups. overlayEnds is the
 	// latest EndTime, as a unix time, of the completions that made overlay
 	// entries under each rep group, kept, as history.bolt's repgroupEndTime
 	// keeps it, when an entry is replaced, until a fold commits one as late.
 	overlay      map[logKey]*logHistory
 	repGroupKeys map[string]map[logKey]struct{}
+	keyRepGroups map[logKey]map[string]struct{}
 	overlayEnds  map[string]int64
 
 	// folded is history.bolt's folded position: a complete or rglookup record
@@ -165,6 +175,7 @@ var logReducers = [...]func(st *logState, op *logOp){
 	logRecSpec:     (*logState).applySpec,
 	logRecState:    (*logState).applyState,
 	logRecDelete:   (*logState).applyDelete,
+	logRecModify:   (*logState).applyModify,
 	logRecStd:      (*logState).applyStd,
 	logRecEnv:      (*logState).applyEnv,
 	logRecLimit:    (*logState).applyLimit,
@@ -221,6 +232,11 @@ func appendStdRecord(dst []byte, seq uint64, key logKey, stream uint8, std []byt
 	return append(dst, std...)
 }
 
+// appendModifyRecord appends a modify record of old to newKey to dst.
+func appendModifyRecord(dst []byte, seq uint64, old, newKey logKey) []byte {
+	return appendKeyedRecord(dst, logRecModify, seq, old, newKey[:])
+}
+
 // appendRGLookupRecord appends an rglookup record of key under repGroup to dst.
 func appendRGLookupRecord(dst []byte, seq uint64, repGroup string, key logKey) []byte {
 	dst = appendRecordHeader(dst, logRecRGLookup, seq)
@@ -241,6 +257,22 @@ func appendExitStatRecord(dst []byte, seq uint64, key logKey, exit *jobExitData)
 	}
 
 	return dst
+}
+
+// parseModify sets r's key to a modify record's old key and its newKey to its
+// new key.
+func (r *logRecord) parseModify(body []byte) error {
+	if err := r.takeKey(body); err != nil {
+		return err
+	}
+
+	if len(r.body) != logKeyLen {
+		return fmt.Errorf("%w: modify record without a new key", errLogRecordMalformed)
+	}
+
+	r.newKey = logKey(r.body)
+
+	return nil
 }
 
 // takeKey sets r's key from the start of body and its body to the rest.
@@ -273,18 +305,49 @@ func (r *logRecord) parseRGLookup(body []byte) error {
 func (st *logState) unindex(key logKey, index logSpecIndex) {
 	for _, dg := range index.depDeps {
 		removeFromIndex(st.reverseDeps, dg, key)
+		removeFromIndex(st.keyDeps, key, dg)
 	}
 }
 
-// removeFromIndex removes key from index's set for name, and the set once
+// removeFromIndex removes member from index's set for name, and the set once
 // empty.
-func removeFromIndex(index map[string]map[logKey]struct{}, name string, key logKey) {
-	keys := index[name]
-	delete(keys, key)
+func removeFromIndex[N, M comparable](index map[N]map[M]struct{}, name N, member M) {
+	members := index[name]
+	delete(members, member)
 
-	if len(keys) == 0 {
+	if len(members) == 0 {
 		delete(index, name)
 	}
+}
+
+// lookUp records key under repGroup's rglookups.
+func (st *logState) lookUp(repGroup string, key logKey) {
+	addToIndex(st.repGroupKeys, repGroup, key)
+	addToIndex(st.keyRepGroups, key, repGroup)
+}
+
+// unlookUp removes key from repGroup's rglookups.
+func (st *logState) unlookUp(repGroup string, key logKey) {
+	removeFromIndex(st.repGroupKeys, repGroup, key)
+	removeFromIndex(st.keyRepGroups, key, repGroup)
+}
+
+// dropLookups removes key from the rglookups of every rep group it is under.
+func (st *logState) dropLookups(key logKey) {
+	for rg := range st.keyRepGroups[key] {
+		removeFromIndex(st.repGroupKeys, rg, key)
+	}
+
+	delete(st.keyRepGroups, key)
+}
+
+// unindexAll removes key from every reverse dep group index entry it is in.
+func (st *logState) unindexAll(key logKey) {
+	for dg := range st.keyDeps[key] {
+		removeFromIndex(st.reverseDeps, dg, key)
+	}
+
+	delete(st.keyDeps, key)
 }
 
 // stdRefs returns the Refs of a key's std streams, and which it has.
@@ -426,19 +489,19 @@ func (st *logState) applyEnv(op *logOp) {
 // the record.
 func (st *logState) applyRGLookup(op *logOp) {
 	if !st.folded.covers(op.ref) {
-		addToIndex(st.repGroupKeys, op.name, op.key)
+		st.lookUp(op.name, op.key)
 	}
 }
 
-// addToIndex adds key to index's set for name.
-func addToIndex(index map[string]map[logKey]struct{}, name string, key logKey) {
-	keys := index[name]
-	if keys == nil {
-		keys = make(map[logKey]struct{})
-		index[name] = keys
+// addToIndex adds member to index's set for name.
+func addToIndex[N, M comparable](index map[N]map[M]struct{}, name N, member M) {
+	members := index[name]
+	if members == nil {
+		members = make(map[M]struct{})
+		index[name] = members
 	}
 
-	keys[key] = struct{}{}
+	members[member] = struct{}{}
 }
 
 // applyDepGroup records a dep group as seen.
@@ -449,14 +512,20 @@ func (st *logState) applyDepGroup(op *logOp) {
 // applySpec makes the key live with op's spec, unless a later spec is live. It
 // drops the key's state and std records earlier than op and keeps later ones,
 // which outrank it, so a state or std record outranks a spec it is later than
-// whichever applies first.
+// whichever applies first. The reverse dep group index follows the live spec:
+// a replaced spec's dep groups no longer find the key, so two specs applied in
+// either order leave the later one's.
 func (st *logState) applySpec(op *logOp) {
 	e := st.live[op.key]
-	if e == nil {
+
+	switch {
+	case e == nil:
 		e = &logLive{}
 		st.live[op.key] = e
-	} else if op.seq <= e.specSeq {
+	case op.seq <= e.specSeq:
 		return
+	default:
+		st.unindex(op.key, e.index)
 	}
 
 	e.specSeq, e.spec, e.index = op.seq, op.ref, op.index
@@ -464,6 +533,7 @@ func (st *logState) applySpec(op *logOp) {
 
 	for _, dg := range op.index.depDeps {
 		addToIndex(st.reverseDeps, dg, op.key)
+		addToIndex(st.keyDeps, op.key, dg)
 	}
 }
 
@@ -492,6 +562,28 @@ func (st *logState) applyDelete(op *logOp) {
 	}
 }
 
+// applyModify, as the bbolt store's modify drops every lookup of the old key
+// (deleteLookupEntriesForJobKey) whether or not it is live, removes a modify's
+// old key from every rep group's lookups and from the reverse dep group index
+// even if it is complete, so neither its rep groups nor a dep group it
+// depended on find it, and removes its live entry, with its state and std. It
+// does nothing if the key's live spec is later than op. A modify keeping its
+// key leaves it live, and the new spec, rglookup and std records after it in
+// its block put back its new spec, lookup, dep groups and std.
+func (st *logState) applyModify(op *logOp) {
+	e := st.live[op.key]
+	if e != nil && op.seq <= e.specSeq {
+		return
+	}
+
+	st.dropLookups(op.key)
+	st.unindexAll(op.key)
+
+	if op.newKey != op.key {
+		delete(st.live, op.key)
+	}
+}
+
 // applyStd sets or, if empty, clears a live key's std stream, if op is later
 // than its spec and that stream's last std.
 func (st *logState) applyStd(op *logOp) {
@@ -506,10 +598,14 @@ func (st *logState) applyStd(op *logOp) {
 // applyComplete makes op the key's history entry, in the overlay, with the
 // key's live spec, unless a later complete record applied. It drops a live
 // key's std. A key with neither a live spec nor an overlay entry has no spec
-// to complete, so op is dropped, as an orphan state record is; that includes a
-// key whose only history entry is folded, which only a complete record racing
-// a delete (C4) can meet. A record history.bolt already holds, one before the
-// folded position, changes only the live plane.
+// to complete, so op is dropped, as an orphan state record is. No archive
+// writes one: it claims its key, so decides once any delete or modify of it
+// in flight has applied (logClaim), and puts
+// the job's spec record before its complete record if the key is not live
+// (logStore.decideArchive), so its complete record always finds a spec. The
+// live spec it finds may be later than it: a put-back's of the job it
+// archives, whose spec is the same. A record history.bolt already holds, one
+// before the folded position, changes only the live plane.
 func (st *logState) applyComplete(op *logOp) {
 	e := st.live[op.key]
 
@@ -564,11 +660,14 @@ type logLive struct {
 	index             logSpecIndex
 }
 
-// clearStd marks e's std streams cleared by a complete record of seq.
+// clearStd marks e's std streams cleared by a complete record of seq, except
+// one whose last std record is later, which outranks it whichever applies
+// first.
 func (e *logLive) clearStd(seq uint64) {
 	for stream := range e.stdSeq {
-		e.stdSeq[stream] = max(e.stdSeq[stream], seq)
-		e.hasStd[stream] = false
+		if e.stdSeq[stream] < seq {
+			e.stdSeq[stream], e.hasStd[stream] = seq, false
+		}
 	}
 }
 
@@ -606,7 +705,9 @@ func newLogState() logState {
 		limits:        make(map[string]int64),
 		depGroupsSeen: make(map[string]struct{}),
 		repGroupKeys:  make(map[string]map[logKey]struct{}),
+		keyRepGroups:  make(map[logKey]map[string]struct{}),
 		reverseDeps:   make(map[string]map[logKey]struct{}),
+		keyDeps:       make(map[logKey]map[string]struct{}),
 	}
 }
 

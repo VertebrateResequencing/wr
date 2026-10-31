@@ -57,6 +57,9 @@ file, since it calls the removed methods. Cover all 11
 acceptance tests from C3 in `jobqueue/store_reserve_test.go`.
 Also resolve the 0b.1 incidental on the listed tests that hold the bbolt
 write lock to open their crash window ([incidentals.md](incidentals.md)).
+Make the `reserveDurableWait` bound also cover a reserve's wait in the
+log store's `lockUnlessReviving` (1c.4), so a reserve of a key being
+revived by a modify or put-back never waits longer than the bound.
 
 - [ ] implemented
 - [ ] reviewed
@@ -92,6 +95,8 @@ Make `storeKindLog` the default `storeKind` and `log` the
 it and with `WR_TEST_STORE=all`. Depends on 1e.1 to 1e.3.
 First resolve the 0b.1 incidental on tests that reach bbolt through
 `server.boltDB()` or `db.go` hooks ([incidentals.md](incidentals.md)).
+Also resolve the 1c.4 incidental: the server-only clauses of C4 tests 9
+to 11.
 
 - [ ] implemented
 - [ ] reviewed

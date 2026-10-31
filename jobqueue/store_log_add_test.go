@@ -135,7 +135,7 @@ func TestLogStoreConcurrentAdds(t *testing.T) {
 			Convey("adding the job again meanwhile leaves it running with its ReservedBy, also after reopen", func() {
 				parked := signalAddWaits()
 				added := addAsync(ctx, s, testDBJob("echo c2 race", "c2"))
-				awaitParkedOrWriting(s, parked, 2)
+				awaitParkedOrWriting(s, parked)
 				hold.Release()
 
 				So(receiveWithin(reserved, logSyncHoldWait), ShouldBeNil)
@@ -235,7 +235,7 @@ func TestLogStoreConcurrentAdds(t *testing.T) {
 			Convey("adding the member again meanwhile waits for it, then finds d live rather than to put back", func() {
 				parked := signalAddWaits()
 				second := addAsync(ctx, s, member())
-				awaitParkedOrWriting(s, parked, 2)
+				awaitParkedOrWriting(s, parked)
 				hold.Release()
 
 				r := receiveStored(first)
@@ -325,9 +325,11 @@ func addAsync(ctx context.Context, s *logStore, jobs ...*Job) <-chan storedResul
 }
 
 // awaitParkedOrWriting waits until an add is about to wait, as signalled on
-// parked, or s has n writes appended and unfinished, failing if neither happens
-// within logSyncHoldWait.
-func awaitParkedOrWriting(s *logStore, parked <-chan struct{}, n int64) {
+// parked, or s has two writes appended and unfinished, the one a test holds and
+// another, failing if neither happens within logSyncHoldWait.
+func awaitParkedOrWriting(s *logStore, parked <-chan struct{}) {
+	const n = 2
+
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
 
@@ -942,8 +944,12 @@ func TestLogStoreSplitAdd(t *testing.T) {
 			job.DepGroups = []string{"g", "h"}
 		}
 
-		add, err := s.planAdd(members, false)
+		keys, err := jobLogKeys(members)
 		So(err, ShouldBeNil)
+
+		add, claim, err := s.planClaimedAdd(members, keys, false)
+		So(err, ShouldBeNil)
+		claim.release()
 		So(add.jobsToQueue, ShouldHaveLength, 40)
 
 		f := add.frames
@@ -1004,6 +1010,12 @@ func TestLogStoreSplitPutBacks(t *testing.T) {
 			So(stored.jobsToQueue, ShouldHaveLength, 4)
 
 			So(specsPerFrame(walFrames(dir)[before:]), ShouldResemble, []int{1, 1, 1, 1})
+		})
+
+		Convey("putting them back with storeLiveForRerun puts each back in a block of its own", func() {
+			So(s.storeLiveForRerun(dependents), ShouldBeNil)
+
+			So(specsPerFrame(walFrames(dir)[before:]), ShouldResemble, []int{1, 1, 1})
 		})
 	})
 }

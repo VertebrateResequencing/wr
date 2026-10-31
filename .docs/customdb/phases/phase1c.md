@@ -96,8 +96,8 @@ on 1c.3. Also resolve the 1c.1 incidental on the reverse dep-group index
 after a spec change, and the 1c.3 incidental on a complete record for a
 folded, deleted key ([incidentals.md](incidentals.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1c.5: C5 - Recovery
 
@@ -108,7 +108,9 @@ acknowledged state. Cover the 8 acceptance tests from C5, except test 3's
 backup clause and test 8's converted-store clause, which run in 1f (item
 1f.10), test 7's "after the folder has run" clause, which runs in item
 1d.1, and test 1's checkpoints and test 8's checkpoint clause, which run
-in item 1d.2. Depends on 1c.4.
+in item 1d.2. Depends on 1c.4. Also resolve the 1c.4 incidental on
+the wal writer's spent reopen at close, and the 1c.4 incidental on a
+split delete's test ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

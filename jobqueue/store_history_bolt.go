@@ -153,7 +153,7 @@ func (s *logStore) foldHistory(f *historyFold) error {
 	}
 
 	for _, l := range f.lookups {
-		removeFromIndex(s.state.repGroupKeys, l.repGroup, l.key)
+		s.state.unlookUp(l.repGroup, l.key)
 	}
 
 	return nil

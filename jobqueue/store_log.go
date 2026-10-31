@@ -65,6 +65,10 @@ const (
 
 	// logStoreDirPerm is the permission a new store directory is made with.
 	logStoreDirPerm = 0o700
+
+	// exitRecords is how many records an exit block holds: its state, its
+	// exitstat and a std record per stream.
+	exitRecords = 4
 )
 
 // logBlockMaxFrames is the most bytes of frames one block holds; a write with
@@ -78,20 +82,51 @@ var walSegmentSize int64 = 256 << 20 //nolint:gochecknoglobals // tuning knob, v
 
 // Test seams, nil outside tests.
 var (
-	// logStoreWaitHook is called by an add each time it is about to wait for
-	// another add of one of its keys, or for a state record of one of its keys,
-	// to finish.
+	// logStoreWaitHook is called by a write each time it is about to wait for
+	// another write in flight to finish: one holding a claim it needs, one of a
+	// state record of a key it adds, or one making live a key it would put back
+	// or make a transition of.
 	logStoreWaitHook func() //nolint:gochecknoglobals // a test seam
 
 	// logPutBackHook is called by an add once it has read archived dependents
 	// it will put back, before it decides on them: an add's own, or each a
 	// guarded add finds archived.
 	logPutBackHook func() //nolint:gochecknoglobals // a test seam
+
+	// logAppendedHook is called by every write once it has appended its
+	// records, before it has their Refs: a write applies only once it has them
+	// and its batch is durable, so holding it here lets a later write apply
+	// first.
+	logAppendedHook func() //nolint:gochecknoglobals // a test seam
+
+	// logTransitionSeqsHook is called by a transition or exit once it has
+	// taken its records' seqs and released its locks, before it makes and
+	// appends its records.
+	logTransitionSeqsHook func() //nolint:gochecknoglobals // a test seam
+
+	// logArchiveDecidedHook is called by an archive once it has decided what
+	// it does with its job's live record and made its records, before it
+	// appends them.
+	logArchiveDecidedHook func() //nolint:gochecknoglobals // a test seam
 )
 
-// errLogStoreBackup is the error of asking the log store for a backup, which it
-// cannot make yet.
-var errLogStoreBackup = errors.New("the log store does not make backups yet")
+var (
+	// errLogStoreBackup is the error of asking the log store for a backup,
+	// which it cannot make yet.
+	errLogStoreBackup = errors.New("the log store does not make backups yet")
+
+	// errModifyMismatch is the error of a modify given a different number of
+	// old keys and jobs.
+	errModifyMismatch = errors.New("modify needs one old key per job")
+)
+
+// logModify is one job of a modify: its old and new keys, the job and the old
+// key's std.
+type logModify struct {
+	old, new logKey
+	job      *Job
+	std      [2][]byte
+}
 
 // logAdd is what an add will write and report.
 type logAdd struct {
@@ -105,6 +140,11 @@ type logAdd struct {
 	// dep groups.
 	kept               []*Job
 	newKeys, depGroups map[string]bool
+
+	// claim is the add's claim, and claimed the key of a dependent to put
+	// back that another write has claimed.
+	claim   *logClaim
+	claimed logKey
 }
 
 // stored is what storeNewJobsGuarded reports of the add, before its write.
@@ -148,11 +188,502 @@ func (a *logAdd) keep(job *Job, key string) string {
 	return job.RepGroup
 }
 
-// logStateWrites counts a key's state records appended and not finished; idle
-// is closed once there are none.
-type logStateWrites struct {
-	n    int
-	idle chan struct{}
+// addRGLookupRecord adds an rglookup record of k under repGroup to f.
+func (s *logStore) addRGLookupRecord(f *logFrames, repGroup string, k logKey) {
+	seq := s.nextSeq()
+	f.add(appendRGLookupRecord(f.rec, seq, repGroup, k), logOp{typ: logRecRGLookup, seq: seq, name: repGroup, key: k})
+}
+
+// addSpecLocked adds job's spec record, as k's, to f. The caller holds job's
+// read lock, or job is not shared.
+func (s *logStore) addSpecLocked(f *logFrames, job *Job, k logKey) error {
+	spec, err := appendFlatSpec(nil, job, s.ch)
+	if err != nil {
+		return err
+	}
+
+	seq := s.nextSeq()
+	f.add(appendKeyedRecord(f.rec, logRecSpec, seq, k, spec),
+		logOp{typ: logRecSpec, seq: seq, key: k, index: newLogSpecIndex(job)})
+
+	return nil
+}
+
+// decideArchive sets a's outcome, deciding what job's archive does with its
+// live record, and returns the archive's records, all under job's read lock: a
+// rerun mark set before the decision keeps the job live, and one set after it
+// is followed by a put-back (storeLiveForRerun) whose records are later than
+// the archive's, so it is live after both, as in the bbolt store, whose
+// archive decides and writes in one transaction. If k is not live (a delete
+// came first, as for a lost job removed before its run ended), the records
+// start with job's spec record, which the complete record's history entry
+// takes; the bbolt store records such a completion too.
+func (s *logStore) decideArchive(a *logArchive, k logKey, job *Job) (logFrames, error) {
+	var (
+		f        logFrames
+		keepLive bool
+	)
+
+	job.RLock()
+	defer job.RUnlock()
+
+	a.outcome, keepLive = job.archiveOutcomeLocked(s.archiveTxs, s.addStored, &s.rerunGuards)
+
+	if !s.liveKey(k) {
+		if err := s.addSpecLocked(&f, job, k); err != nil {
+			return f, err
+		}
+	}
+
+	rs := newLogRunState(job)
+	s.addArchiveRecords(&f, k, &rs, keepLive)
+
+	return f, nil
+}
+
+// addDelete adds a delete record of k to f.
+func (s *logStore) addDelete(f *logFrames, k logKey) {
+	seq := s.nextSeq()
+	f.add(appendKeyedRecord(f.rec, logRecDelete, seq, k, nil), logOp{typ: logRecDelete, seq: seq, key: k})
+}
+
+// deleteLiveJobs removes each of the keyed jobs from the live plane, with its
+// state and std, in one block, and returns once it is durable. As the bbolt
+// store's, it leaves history as it is: a complete key stays complete, and
+// keeps its place in the reverse dep group index.
+func (s *logStore) deleteLiveJobs(_ context.Context, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	ks, err := parseLogKeys(keys)
+	if err != nil {
+		return err
+	}
+
+	return s.writeRemoval(ks, func(f *logFrames) error {
+		for _, k := range ks {
+			f.group()
+			s.addDelete(f, k)
+		}
+
+		return nil
+	})
+}
+
+// parseLogKeys is parseLogKey of each of keys.
+func parseLogKeys(keys []string) ([]logKey, error) {
+	ks := make([]logKey, len(keys))
+
+	for i, key := range keys {
+		k, err := parseLogKey(key)
+		if err != nil {
+			return nil, err
+		}
+
+		ks[i] = k
+	}
+
+	return ks, nil
+}
+
+// writeRemoval claims keys and appends the records build makes of a delete of
+// them, returning once they are durable (see writeClaimedRemoval).
+func (s *logStore) writeRemoval(keys []logKey, build func(f *logFrames) error) error {
+	claim := s.claimKeySet(keys...)
+	defer claim.release()
+
+	return s.writeClaimedRemoval(build)
+}
+
+// writeClaimedRemoval appends the records build makes of a delete or modify of
+// keys the caller has claimed, so they apply after those of any write of them
+// in flight (see logClaim), and returns once they are durable. It takes its
+// seqs and appends under guardMu, so its records also apply after those of any
+// guarded add's put-back of them appended before it: that add has its Refs by
+// then, and its batch is durable first.
+func (s *logStore) writeClaimedRemoval(build func(f *logFrames) error) error {
+	w, err := s.appendRemoval(build)
+	if err != nil {
+		return err
+	}
+
+	return w.wait()
+}
+
+// appendRemoval is writeClaimedRemoval's append, under closeMu and guardMu.
+func (s *logStore) appendRemoval(build func(f *logFrames) error) (*logWrite, error) {
+	s.closeMu.RLock()
+	defer s.closeMu.RUnlock()
+
+	if s.closed {
+		return nil, errDBClosed
+	}
+
+	s.guardMu.Lock()
+	defer s.guardMu.Unlock()
+
+	var f logFrames
+	if err := build(&f); err != nil {
+		return nil, err
+	}
+
+	return s.write(&f, nil)
+}
+
+// modifyLiveJobs replaces the live record of each job with the old key at the
+// same index of oldKeys by jobs[i], whose key may differ, as the bbolt store's
+// does: in one block per call (split between jobs, as an add's is, if over
+// the block size limit), each job's modify record, which removes the old key
+// from the live plane, its rep groups' lookups and the reverse dep group index,
+// then its new spec, state, std copied from the old key and rglookup, then a
+// depgroup record of each dep group not seen before. It returns once they are
+// durable. A transition or exit of a new key meanwhile waits for it (see
+// reviving).
+//
+// Each modify applies on its own, in order, so one whose new key is an old key
+// modified later in the same call (A to B, then B to C) leaves only the last
+// new key live, where the bbolt store's, removing every old key before storing
+// any new one, leaves both B and C. The server never asks for that: it skips a
+// modify whose new key is already queued (JobModifier.skipForDuplicateKey).
+func (s *logStore) modifyLiveJobs(ctx context.Context, oldKeys []string, jobs []*Job) error {
+	olds, news, err := modifyKeys(oldKeys, jobs)
+	if err != nil || len(jobs) == 0 {
+		return err
+	}
+
+	claim := s.claimKeySet(slices.Concat(olds, news)...)
+	defer claim.release()
+
+	claim.noteReviving(movedKeys(olds, news)...)
+
+	err = s.writeModifies(olds, news, jobs)
+	if err != nil {
+		clog.Error(ctx, "Database error during modify", "err", err)
+	}
+
+	return err
+}
+
+// modifyKeys returns oldKeys and the keys of jobs, which must be as many, as
+// logKeys.
+func modifyKeys(oldKeys []string, jobs []*Job) (olds, news []logKey, err error) {
+	if len(oldKeys) != len(jobs) {
+		return nil, nil, fmt.Errorf("%w: %d old keys, %d jobs", errModifyMismatch, len(oldKeys), len(jobs))
+	}
+
+	if olds, err = parseLogKeys(oldKeys); err != nil {
+		return nil, nil, err
+	}
+
+	news = make([]logKey, len(jobs))
+
+	for i, job := range jobs {
+		if news[i], err = parseLogKey(job.Key()); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	return olds, news, nil
+}
+
+// movedKeys returns those of news not the same as the old key at the same index
+// of olds: the keys a modify makes live.
+func movedKeys(olds, news []logKey) []logKey {
+	var moved []logKey
+
+	for i, k := range news {
+		if k != olds[i] {
+			moved = append(moved, k)
+		}
+	}
+
+	return moved
+}
+
+// writeModifies is modifyLiveJobs' write, once it has claimed olds and news,
+// reading each old key's std only then, so no delete, modify or put-back of one
+// comes between. An exit's std record of one still can, and is then lost with
+// the old key, as the copy did not see it.
+func (s *logStore) writeModifies(olds, news []logKey, jobs []*Job) error {
+	stds, err := s.liveStds(olds)
+	if err != nil {
+		return err
+	}
+
+	mods := make([]logModify, len(jobs))
+	for i, job := range jobs {
+		mods[i] = logModify{old: olds[i], new: news[i], job: job, std: stds[i]}
+	}
+
+	return s.writeClaimedRemoval(func(f *logFrames) error {
+		return s.addModifies(f, mods)
+	})
+}
+
+// liveStds returns the std of each of keys, empty for a stream it has none of.
+func (s *logStore) liveStds(keys []logKey) ([][2][]byte, error) {
+	stds := make([][2][]byte, len(keys))
+
+	for i, k := range keys {
+		s.mu.RLock()
+		refs, has := s.state.stdRefs(k)
+		s.mu.RUnlock()
+
+		for stream := range stds[i] {
+			if !has[stream] {
+				continue
+			}
+
+			std, err := s.readRecordBody(refs[stream], logRecStd)
+			if err != nil {
+				return nil, err
+			}
+
+			stds[i][stream] = std
+		}
+	}
+
+	return stds, nil
+}
+
+// addModifies adds to f the records of each of mods, then a depgroup record of
+// each of their dep groups not seen before.
+func (s *logStore) addModifies(f *logFrames, mods []logModify) error {
+	depGroups := make(map[string]bool)
+
+	for _, m := range mods {
+		f.group()
+
+		seq := s.nextSeq()
+		f.add(appendModifyRecord(f.rec, seq, m.old, m.new), logOp{typ: logRecModify, seq: seq, key: m.old, newKey: m.new})
+
+		repGroup, err := s.addModifiedJob(f, m.job, m.new, depGroups)
+		if err != nil {
+			return err
+		}
+
+		for _, stream := range [...]uint8{stdOut, stdErr} {
+			if len(m.std[stream]) > 0 {
+				s.addStd(f, m.new, stream, m.std[stream])
+			}
+		}
+
+		s.addRGLookupRecord(f, repGroup, m.new)
+	}
+
+	s.addUnseenDepGroups(f, depGroups)
+
+	return nil
+}
+
+// addModifiedJob adds job's spec and state records, as k's, to f, adding its
+// dep groups to depGroups, and returns its RepGroup.
+func (s *logStore) addModifiedJob(f *logFrames, job *Job, k logKey, depGroups map[string]bool) (string, error) {
+	job.RLock()
+	defer job.RUnlock()
+
+	for _, dg := range job.DepGroups {
+		if dg != "" {
+			depGroups[dg] = true
+		}
+	}
+
+	return job.RepGroup, s.addSpecAndStateLocked(f, job, k, newLogRunState(job))
+}
+
+// storeLiveForRerun puts each of jobs live, whether or not it is live now, as
+// the bbolt store's does: as rerunRecords' live record, no longer marked to run
+// again and reserved by no runner, in one block, and returns once it is
+// durable. They are jobs whose run has ended, or is ending, in an archive, but
+// which must run again; history is left as it is. It claims their keys (see
+// logClaim), so it puts back a job whose archive is in flight once that
+// archive has applied, and a transition or exit of one meanwhile waits for it
+// (see reviving).
+func (s *logStore) storeLiveForRerun(jobs []*Job) error {
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	keys, err := jobLogKeys(jobs)
+	if err != nil {
+		return err
+	}
+
+	claim := s.claimKeySet(keys...)
+	defer claim.release()
+
+	claim.noteReviving(keys...)
+
+	var f logFrames
+
+	for i, job := range jobs {
+		f.group()
+
+		if err = s.addRerunLive(&f, job, keys[i]); err != nil {
+			return err
+		}
+	}
+
+	return s.writeAndWait(&f)
+}
+
+// jobLogKeys returns the keys of jobs, as logKeys.
+func jobLogKeys(jobs []*Job) ([]logKey, error) {
+	keys := make([]logKey, len(jobs))
+
+	for i, job := range jobs {
+		k, err := parseLogKey(job.Key())
+		if err != nil {
+			return nil, err
+		}
+
+		keys[i] = k
+	}
+
+	return keys, nil
+}
+
+// addRerunLive adds to f job's spec and state records, as k's, as
+// rerunRecords' live record of it.
+func (s *logStore) addRerunLive(f *logFrames, job *Job, k logKey) error {
+	job.RLock()
+	defer job.RUnlock()
+
+	rs := newLogRunState(job)
+	rs.RerunAfterRun = false
+	rs.ReservedBy = uuid.UUID{}
+
+	return s.addSpecAndStateLocked(f, job, k, rs)
+}
+
+// storeRunningRerunMarks records, as a state record, the mark of each of jobs
+// marked to run again while running, in one write, and returns once it is
+// durable. As the bbolt store's, it skips a job no longer live, no longer
+// marked, or with a successful completion being archived: that archive decides
+// under the job's read lock, so it sees the mark and keeps the job live.
+func (s *logStore) storeRunningRerunMarks(jobs []*Job) error {
+	var f logFrames
+
+	finished, err := s.addRerunMarks(&f, jobs)
+	if err != nil || len(f.ops) == 0 {
+		return err
+	}
+
+	after := func() {
+		for _, fin := range finished {
+			fin()
+		}
+	}
+
+	w, err := s.writeOpen(&f, after)
+	if err != nil {
+		after()
+
+		return err
+	}
+
+	return w.wait()
+}
+
+// addRerunMarks is addRerunMark of each of jobs, returning the funcs it
+// returned. On error it has called them.
+func (s *logStore) addRerunMarks(f *logFrames, jobs []*Job) ([]func(), error) {
+	var finished []func()
+
+	for _, job := range jobs {
+		k, err := parseLogKey(job.Key())
+		if err != nil {
+			for _, fin := range finished {
+				fin()
+			}
+
+			return nil, err
+		}
+
+		if fin := s.addRerunMark(f, job, k); fin != nil {
+			finished = append(finished, fin)
+		}
+	}
+
+	return finished, nil
+}
+
+// addRerunMark adds job's state record, as k's, to f and returns the func to
+// call once it is written (see addTransition), or adds nothing and returns nil
+// if storeRunningRerunMarks skips job.
+func (s *logStore) addRerunMark(f *logFrames, job *Job, k logKey) func() {
+	return s.addTransition(job, k, func() bool {
+		if !s.liveKey(k) || !job.RerunAfterRun || job.archivePendingLocked() {
+			return false
+		}
+
+		f.group()
+
+		rs := newLogRunState(job)
+		s.addState(f, logRecState, k, &rs)
+
+		return true
+	})
+}
+
+// writeArchive writes f, a's records, noting it in flight, as k's archive,
+// until settleArchive. The caller holds guardMu.
+func (s *logStore) writeArchive(a *logArchive, k logKey, f *logFrames) error {
+	w, err := s.write(f, nil)
+	if err != nil {
+		return err
+	}
+
+	a.w, a.settled = w, make(chan struct{})
+	s.inFlight[k] = a.settled
+
+	return nil
+}
+
+// stateFrames returns job's state record, as k's, and the func to call once
+// its write has finished (see addTransition).
+func (s *logStore) stateFrames(job *Job, k logKey) (logFrames, func()) {
+	var (
+		f   logFrames
+		rs  logRunState
+		seq uint64
+	)
+
+	finished := s.addTransition(job, k, func() bool {
+		rs, seq = newLogRunState(job), s.nextSeq()
+
+		return true
+	})
+
+	if logTransitionSeqsHook != nil {
+		logTransitionSeqsHook()
+	}
+
+	s.addStateAt(&f, logRecState, seq, k, &rs)
+
+	return f, finished
+}
+
+// addTransition calls build, which snapshots job and takes the seqs of the
+// records of a transition or exit of it, as k's, or adds those records to a
+// write, under job's read lock and stateMu, once no write in flight is making k
+// live (see reviving), and notes k in stateWrites until the returned func,
+// which the caller calls once the write has finished or failed to append, is
+// called. If build reports false, having taken and added nothing, it notes
+// nothing and returns nil. A build that only takes seqs leaves its caller to
+// encode the records after, with neither lock held, so exits and transitions of
+// other keys do not wait on that.
+func (s *logStore) addTransition(job *Job, k logKey, build func() bool) func() {
+	s.lockUnlessReviving(job, k)
+	defer job.RUnlock()
+	defer s.stateMu.Unlock()
+
+	if !build() {
+		return nil
+	}
+
+	return s.notePending(s.stateWrites, k)
 }
 
 // recover loads history.bolt's key index and folded position, replays the
@@ -175,6 +706,51 @@ func (s *logStore) recover(ctx context.Context) (uint32, error) {
 	s.seq.Store(max(s.state.maxSeq, foldedSeq))
 
 	return next, nil
+}
+
+// takeSeqs takes the next n records' seqs, returning the first.
+func (s *logStore) takeSeqs(n uint64) uint64 {
+	return s.seq.Add(n) - n + 1
+}
+
+// addStateAt is addState with seq, taken already.
+func (s *logStore) addStateAt(f *logFrames, typ logRecordType, seq uint64, k logKey, rs *logRunState) {
+	f.add(appendKeyedRecord(f.rec, typ, seq, k, appendFlatRunState(nil, rs)),
+		logOp{typ: typ, seq: seq, key: k, handedOut: runStateHandedOut(rs.State, rs.Attempts, rs.StartTime),
+			endTime: rs.EndTime})
+}
+
+// addStdAt is addStd with seq, taken already.
+func (s *logStore) addStdAt(f *logFrames, seq uint64, k logKey, stream uint8, std []byte) {
+	f.add(appendStdRecord(f.rec, seq, k, stream, std),
+		logOp{typ: logRecStd, seq: seq, key: k, stream: stream, hasStd: len(std) > 0})
+}
+
+// finishAdd returns once an add's write, w, is durable, then makes any
+// put-backs it deferred (see putBackDeferred).
+func (s *logStore) finishAdd(w *logWrite, pb logPutBacks, claim *logClaim) error {
+	if err := w.wait(); err != nil || len(pb.deferred) == 0 {
+		return err
+	}
+
+	return s.putBackDeferred(pb, claim)
+}
+
+// addExitRecords adds to f the records of an exit of k, with the seqs from seq
+// on: rs as its state record, exit as its exitstat record, and a std record of
+// each stream of std.
+func (s *logStore) addExitRecords(f *logFrames, k logKey, seq uint64, rs *logRunState, exit *jobExitData,
+	std [2][]byte,
+) {
+	s.addStateAt(f, logRecState, seq, k, rs)
+
+	seq++
+	f.add(appendExitStatRecord(f.rec, seq, k, exit), logOp{typ: logRecExitStat, seq: seq, key: k})
+
+	for stream, b := range std {
+		seq++
+		s.addStdAt(f, seq, k, uint8(stream), b)
+	}
 }
 
 // logWrite is one append's records on their way to being durable. The writer's
@@ -206,6 +782,10 @@ func (w *logWrite) doneFor(i int) func(error) {
 // placed gives the write's records their Refs, given the Ref of each frame
 // holding them.
 func (w *logWrite) placed(refs []wal.Ref) {
+	if logAppendedHook != nil {
+		logAppendedHook()
+	}
+
 	for c, ref := range refs {
 		chunk := w.chunks[c]
 
@@ -290,10 +870,13 @@ type logStore struct {
 	mu    sync.RWMutex
 	state logState
 
-	// addMu guards adding, the keys of the adds in flight, each to a channel
-	// closed once its add has finished.
-	addMu  sync.Mutex
-	adding map[logKey]chan struct{}
+	// claimMu guards claims, the keys claimed by the adds, deletes, modifies,
+	// archives, put-backs and rep group lookups in flight, each to a channel
+	// closed once that write has finished, so that writes of a key's spec or
+	// its removal are made one at a time, each deciding and taking its seqs
+	// after the last has applied (see logClaim).
+	claimMu sync.Mutex
+	claims  map[logKey]chan struct{}
 
 	// limitMu makes each storeLimitGroups plan against what the last left.
 	limitMu sync.Mutex
@@ -301,19 +884,33 @@ type logStore struct {
 	// stateMu orders the 260929 rule's decisions with state records' seqs. It
 	// is held by each add deciding whether to write a key's spec and state,
 	// and by each put-back deciding whether its key is still not live, through
-	// taking their seqs, and by each transition or exit taking its state
-	// record's seq and noting it in stateWrites, the keys with state records
+	// taking their seqs, and by each transition or exit taking its records'
+	// seqs and noting its key in stateWrites, the keys with state records
 	// appended and not yet finished. An add waits, with stateMu released,
 	// until its key has none, so it never decides on a state that is appended
 	// but not committed. A put-back need not wait: a key not live has no state
 	// record it could outrank but a stale one, which its later spec drops.
+	//
+	// It also guards reviving, the keys a write in flight is making live: a
+	// modify's new keys, storeLiveForRerun's and every put-back's, noted
+	// before the write takes its seqs (see logClaim.noteReviving) until it has
+	// applied. A transition or exit of such a key waits, holding no lock,
+	// until it has none, then takes its seqs: its records are later than the
+	// write's spec, so must apply after it, as replay applies them, not be
+	// dropped as orphans for meeting the key not yet live. The server can make
+	// them: it rekeys its queue to a modify's new key before the modify, and
+	// keeps a job it puts back in its queue. A put-back of a key in reviving
+	// waits for that write, then decides again (see putBack), so two never both
+	// put a key back, yet one whose reviving write fails is still made.
 	stateMu     sync.Mutex
-	stateWrites map[logKey]*logStateWrites
+	stateWrites map[logKey]*logPending
+	reviving    map[logKey]*logPending
 
 	// guardMu orders rerun guard decisions with their appends (spec "Write
-	// path", rerun guard). It guards inFlight, the archives appended but not
-	// yet settled, each to a channel closed once settled, guardAdds, the
-	// write of each guarded add, and archiveTxs.
+	// path", rerun guard), and a guarded add's put-backs, which claim no key,
+	// with archives, deletes and modifies. It guards inFlight, the archives
+	// appended but not yet settled, each to a channel closed once settled,
+	// guardAdds, the write of each guarded add, and archiveTxs.
 	guardMu     sync.Mutex
 	inFlight    map[logKey]chan struct{}
 	guardAdds   map[*rerunGuard]*logWrite
@@ -382,8 +979,9 @@ func newLogStore(ctx context.Context, dir string) *logStore {
 		ctx:         ctx,
 		ch:          new(codec.BincHandle),
 		state:       newLogState(),
-		adding:      make(map[logKey]chan struct{}),
-		stateWrites: make(map[logKey]*logStateWrites),
+		claims:      make(map[logKey]chan struct{}),
+		stateWrites: make(map[logKey]*logPending),
+		reviving:    make(map[logKey]*logPending),
 		inFlight:    make(map[logKey]chan struct{}),
 		guardAdds:   make(map[*rerunGuard]*logWrite),
 		files:       make(map[uint32]*os.File),
@@ -780,25 +1378,29 @@ func (s *logStore) retrieveStoredLimits(groups []string) ([]int64, error) {
 
 // storeRepGroupLookups records each of jobs under its RepGroup, so it can be
 // found by it once complete. It is for queued jobs added again under another
-// RepGroup.
+// RepGroup. It claims their keys (see logClaim), as a modify, which drops an
+// old key's lookups, does.
 func (s *logStore) storeRepGroupLookups(_ context.Context, jobs []*Job) error {
 	if len(jobs) == 0 {
 		return nil
 	}
 
+	keys, err := jobLogKeys(jobs)
+	if err != nil {
+		return err
+	}
+
+	claim := s.claimKeySet(keys...)
+	defer claim.release()
+
 	var f logFrames
 
-	for _, job := range jobs {
-		k, err := parseLogKey(job.Key())
-		if err != nil {
-			return err
-		}
-
+	for i, job := range jobs {
 		job.RLock()
 		repGroup := job.RepGroup
 		job.RUnlock()
 
-		s.addRGLookup(&f, repGroup, k)
+		s.addRGLookup(&f, repGroup, keys[i])
 	}
 
 	return s.writeAndWait(&f)
@@ -808,9 +1410,7 @@ func (s *logStore) storeRepGroupLookups(_ context.Context, jobs []*Job) error {
 // group.
 func (s *logStore) addRGLookup(f *logFrames, repGroup string, k logKey) {
 	f.group()
-
-	seq := s.nextSeq()
-	f.add(appendRGLookupRecord(f.rec, seq, repGroup, k), logOp{typ: logRecRGLookup, seq: seq, name: repGroup, key: k})
+	s.addRGLookupRecord(f, repGroup, k)
 }
 
 // addSpecAndState adds job's spec and state records to f, taking their seqs
@@ -825,14 +1425,9 @@ func (s *logStore) addSpecAndState(f *logFrames, job *Job, k logKey) error {
 // addSpecAndStateLocked adds job's spec record and rs as its state record to
 // f. The caller holds job's read lock, or job is not shared.
 func (s *logStore) addSpecAndStateLocked(f *logFrames, job *Job, k logKey, rs logRunState) error {
-	spec, err := appendFlatSpec(nil, job, s.ch)
-	if err != nil {
+	if err := s.addSpecLocked(f, job, k); err != nil {
 		return err
 	}
-
-	seq := s.nextSeq()
-	f.add(appendKeyedRecord(f.rec, logRecSpec, seq, k, spec),
-		logOp{typ: logRecSpec, seq: seq, key: k, index: newLogSpecIndex(job)})
 
 	s.addState(f, logRecState, k, &rs)
 
@@ -841,10 +1436,7 @@ func (s *logStore) addSpecAndStateLocked(f *logFrames, job *Job, k logKey, rs lo
 
 // addState adds rs as k's record of typ (state or complete) to f.
 func (s *logStore) addState(f *logFrames, typ logRecordType, k logKey, rs *logRunState) {
-	seq := s.nextSeq()
-	f.add(appendKeyedRecord(f.rec, typ, seq, k, appendFlatRunState(nil, rs)),
-		logOp{typ: typ, seq: seq, key: k, handedOut: runStateHandedOut(rs.State, rs.Attempts, rs.StartTime),
-			endTime: rs.EndTime})
+	s.addStateAt(f, typ, s.nextSeq(), k, rs)
 }
 
 // updateJobRunStateDurable records job's run state and waits until it is
@@ -867,13 +1459,7 @@ func (s *logStore) writeJobState(job *Job) error {
 		return err
 	}
 
-	var f logFrames
-
-	job.RLock()
-	rs := newLogRunState(job)
-	finished := s.addTransitionState(&f, k, &rs)
-
-	job.RUnlock()
+	f, finished := s.stateFrames(job, k)
 
 	w, err := s.writeOpen(&f, finished)
 	if err != nil {
@@ -883,34 +1469,6 @@ func (s *logStore) writeJobState(job *Job) error {
 	}
 
 	return w.wait()
-}
-
-// addTransitionState adds rs as k's state record to f, noting it in
-// stateWrites until the returned func, which the caller calls once the write
-// has finished or failed to append, is called.
-func (s *logStore) addTransitionState(f *logFrames, k logKey, rs *logRunState) func() {
-	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
-
-	s.addState(f, logRecState, k, rs)
-
-	w := s.stateWrites[k]
-	if w == nil {
-		w = &logStateWrites{idle: make(chan struct{})}
-		s.stateWrites[k] = w
-	}
-
-	w.n++
-
-	return func() {
-		s.stateMu.Lock()
-		defer s.stateMu.Unlock()
-
-		if w.n--; w.n == 0 {
-			delete(s.stateWrites, k)
-			close(w.idle)
-		}
-	}
 }
 
 // awaitStateWrites returns, with stateMu held as when called, once k has no
@@ -974,35 +1532,38 @@ func (s *logStore) appendExit(job *Job, stdo, stde []byte, forceStorage bool) (*
 
 // exitFrames returns the records of job's exit: its state, its exitstat and
 // its std, and the func to call once their write has finished (see
-// addTransitionState).
+// addTransition).
 func (s *logStore) exitFrames(job *Job, k logKey, stdo, stde []byte, forceStorage bool) (logFrames, func()) {
-	var f logFrames
+	var (
+		f    logFrames
+		exit jobExitData
+		rs   logRunState
+		seq  uint64
+	)
 
-	job.RLock()
-	exit := newJobExitData(job, stdo, stde, forceStorage)
-	rs := newLogRunState(job)
-	finished := s.addTransitionState(&f, k, &rs)
+	finished := s.addTransition(job, k, func() bool {
+		exit, rs = newJobExitData(job, stdo, stde, forceStorage), newLogRunState(job)
+		seq = s.takeSeqs(exitRecords)
 
-	job.RUnlock()
+		return true
+	})
 
-	seq := s.nextSeq()
-	f.add(appendExitStatRecord(f.rec, seq, k, &exit), logOp{typ: logRecExitStat, seq: seq, key: k})
+	if logTransitionSeqsHook != nil {
+		logTransitionSeqsHook()
+	}
 
 	if exit.exitcode == 0 && !forceStorage {
 		stdo, stde = nil, nil
 	}
 
-	s.addStd(&f, k, stdOut, stdo)
-	s.addStd(&f, k, stdErr, stde)
+	s.addExitRecords(&f, k, seq, &rs, &exit, [...][]byte{stdOut: stdo, stdErr: stde})
 
 	return f, finished
 }
 
 // addStd adds k's std record of stream to f.
 func (s *logStore) addStd(f *logFrames, k logKey, stream uint8, std []byte) {
-	seq := s.nextSeq()
-	f.add(appendStdRecord(f.rec, seq, k, stream, std),
-		logOp{typ: logRecStd, seq: seq, key: k, stream: stream, hasStd: len(std) > 0})
+	s.addStdAt(f, s.nextSeq(), k, stream, std)
 }
 
 // expectJobExitUpdate makes retrieveJobStd wait for an exit update the caller
@@ -1070,12 +1631,18 @@ func (s *logStore) releaseRerunGuard(g *rerunGuard) {
 }
 
 // archiveCompletion records job's successful completion in history and,
-// unless it must run again, removes it from the live plane, in one block.
+// unless it must run again, removes it from the live plane, in one block. It
+// claims key from before it decides until it has applied (see logClaim), so it
+// decides after any add, delete, modify or put-back of key in flight has
+// applied, and none decides until it has.
 func (s *logStore) archiveCompletion(key string, job *Job) (archiveOutcome, error) {
 	k, err := parseLogKey(key)
 	if err != nil {
 		return archiveNotWritten, err
 	}
+
+	claim := s.claimKeySet(k)
+	defer claim.release()
 
 	a, err := s.appendArchiveOpen(k, key, job)
 	if err != nil || a.w == nil {
@@ -1108,12 +1675,12 @@ func (s *logStore) appendArchiveOpen(k logKey, key string, job *Job) (logArchive
 }
 
 // appendArchive decides and appends the archive of job under guardMu, once no
-// other archive of k, and no guarded add whose dependent k is, is unsettled.
+// guarded add whose dependent k is unfinished.
 func (s *logStore) appendArchive(k logKey, key string, job *Job) (logArchive, error) {
 	s.guardMu.Lock()
 	defer s.guardMu.Unlock()
 
-	s.awaitArchivePeers(k, key)
+	s.awaitArchivePeers(key)
 
 	a := logArchive{outcome: archiveAlreadyWritten}
 
@@ -1124,31 +1691,25 @@ func (s *logStore) appendArchive(k logKey, key string, job *Job) (logArchive, er
 
 	s.archiveTxs++
 
-	var keepLive bool
-
-	a.outcome, keepLive = job.archiveOutcome(s.archiveTxs, s.addStored, &s.rerunGuards)
-	f := s.archiveFrames(job, k, keepLive)
-
-	var err error
-	if a.w, err = s.write(&f, nil); err != nil {
+	f, err := s.decideArchive(&a, k, job)
+	if err != nil {
 		return logArchive{}, err
 	}
 
-	a.settled = make(chan struct{})
-	s.inFlight[k] = a.settled
+	if logArchiveDecidedHook != nil {
+		logArchiveDecidedHook()
+	}
 
-	return a, nil
+	return a, s.writeArchive(&a, k, &f)
 }
 
-// awaitArchivePeers returns, with guardMu held as when called, once no archive
-// of k is unsettled and no guarded add with k as a dependent is unfinished.
-func (s *logStore) awaitArchivePeers(k logKey, key string) {
+// awaitArchivePeers returns, with guardMu held as when called, once no guarded
+// add with key as a dependent is unfinished. No other archive of key is
+// unsettled: the caller holds key's claim, which an archive releases only once
+// settled.
+func (s *logStore) awaitArchivePeers(key string) {
 	for {
-		wait := s.inFlight[k]
-		if wait == nil {
-			wait = s.unfinishedGuardAdd(key)
-		}
-
+		wait := s.unfinishedGuardAdd(key)
 		if wait == nil {
 			return
 		}
@@ -1191,28 +1752,13 @@ func (s *logStore) addStored(member []byte) bool {
 	return err == nil && live
 }
 
-// archiveFrames returns the records of job's archive (see addArchiveRecords).
-func (s *logStore) archiveFrames(job *Job, k logKey, keepLive bool) logFrames {
-	var f logFrames
-
-	job.RLock()
-	defer job.RUnlock()
-
-	rs := newLogRunState(job)
-	s.addArchiveRecords(&f, k, &rs, keepLive)
-
-	return f
-}
-
 // addArchiveRecords adds an archive's records of k to f: its complete record of
 // rs and either its delete record or, if keepLive, a state record for it to
 // run again, as rerunRecords makes them.
 func (s *logStore) addArchiveRecords(f *logFrames, k logKey, rs *logRunState, keepLive bool) {
 	if !keepLive {
 		s.addState(f, logRecComplete, k, rs)
-
-		seq := s.nextSeq()
-		f.add(appendKeyedRecord(f.rec, logRecDelete, seq, k, nil), logOp{typ: logRecDelete, seq: seq, key: k})
+		s.addDelete(f, k)
 
 		return
 	}
@@ -1248,18 +1794,19 @@ func (s *logStore) recoverIncompleteJobs() ([]*Job, runStateRecovery, error) {
 // job's RepGroup lookup and each dep group not seen before are recorded; and
 // archived jobs depending on a dep group the add joins are put back live, as
 // are those guard saw archived after the add read them live. It returns once
-// the block is durable.
+// the block is durable, and any further block of put-backs it deferred (see
+// putBackDeferred).
 func (s *logStore) storeNewJobsGuarded(_ context.Context, jobs []*Job, ignoreAdded bool,
 	guard *rerunGuard,
 ) (storedNewJobs, error) {
-	release, err := s.claimAddKeys(jobs)
+	keys, err := jobLogKeys(jobs)
 	if err != nil {
 		return storedNewJobs{}, err
 	}
 
-	defer release()
+	add, claim, err := s.planClaimedAdd(jobs, keys, ignoreAdded)
+	defer claim.release()
 
-	add, err := s.planAdd(jobs, ignoreAdded)
 	stored := add.stored()
 
 	if err != nil {
@@ -1271,76 +1818,24 @@ func (s *logStore) storeNewJobsGuarded(_ context.Context, jobs []*Job, ignoreAdd
 		return stored, nil
 	}
 
-	w, putBack, err := s.appendAdd(&add.frames, guard, atRisk)
-	stored.dependents.putBack = putBack
-
-	if err != nil {
-		return stored, err
+	w, pb, err := s.appendAdd(&add.frames, guard, atRisk, claim)
+	if err == nil {
+		err = s.finishAdd(w, pb, claim)
 	}
 
-	return stored, w.wait()
-}
+	// pb.put holds the keys of the add's first block and, as finishAdd adds
+	// them, those of each further block of deferred put-backs made durable.
+	stored.dependents.putBack = pb.put
 
-// claimAddKeys marks the keys of jobs as being added, once no other add in
-// flight has any of them, returning the func that unmarks them.
-func (s *logStore) claimAddKeys(jobs []*Job) (func(), error) {
-	keys := make(map[logKey]struct{}, len(jobs))
-
-	for _, job := range jobs {
-		k, err := parseLogKey(job.Key())
-		if err != nil {
-			return nil, err
-		}
-
-		keys[k] = struct{}{}
-	}
-
-	mine := make(chan struct{})
-
-	for wait := s.tryClaimAddKeys(keys, mine); wait != nil; wait = s.tryClaimAddKeys(keys, mine) {
-		if logStoreWaitHook != nil {
-			logStoreWaitHook()
-		}
-
-		<-wait
-	}
-
-	return func() {
-		s.addMu.Lock()
-		for k := range keys {
-			delete(s.adding, k)
-		}
-		s.addMu.Unlock()
-
-		close(mine)
-	}, nil
-}
-
-// tryClaimAddKeys marks keys as added by mine and returns nil, unless another
-// add has one of them, when it returns that add's channel.
-func (s *logStore) tryClaimAddKeys(keys map[logKey]struct{}, mine chan struct{}) chan struct{} {
-	s.addMu.Lock()
-	defer s.addMu.Unlock()
-
-	for k := range keys {
-		if other := s.adding[k]; other != nil {
-			return other
-		}
-	}
-
-	for k := range keys {
-		s.adding[k] = mine
-	}
-
-	return nil
+	return stored, err
 }
 
 // planAdd builds an add's records: spec and state records of each job to
 // store, an rglookup of each job not already complete, a depgroup record for
 // each new dep group, and spec and state records putting back archived
 // dependents.
-func (s *logStore) planAdd(jobs []*Job, ignoreAdded bool) (logAdd, error) {
-	add := logAdd{depGroups: make(map[string]bool), newKeys: make(map[string]bool)}
+func (s *logStore) planAdd(jobs []*Job, ignoreAdded bool, claim *logClaim) (logAdd, error) {
+	add := logAdd{depGroups: make(map[string]bool), newKeys: make(map[string]bool), claim: claim}
 
 	var dups duplicateCounter
 
@@ -1485,10 +1980,12 @@ func (s *logStore) planDependents(add *logAdd) error {
 }
 
 // putBackArchived adds to add the records putting back each of archived, to
-// queue, or, for one live by now, adds it to those to update.
+// queue, or, for one live by now, adds it to those to update. It claims each
+// one's key first, returning errLogKeyClaimed, with the key in add.claimed, if
+// another write has it claimed.
 func (s *logStore) putBackArchived(add *logAdd, archived []*Job) error {
 	for _, job := range archived {
-		put, err := s.addPutBack(&add.frames, job)
+		put, err := s.claimAndPutBack(add, job)
 		if err != nil {
 			return err
 		}
@@ -1528,36 +2025,46 @@ func (s *logStore) addUnseenDepGroups(f *logFrames, depGroups map[string]bool) {
 	}
 }
 
-// addPutBack is putBack for job, decoded from its history entry.
-func (s *logStore) addPutBack(f *logFrames, job *Job) (bool, error) {
-	k, err := parseLogKey(job.Key())
-	if err != nil {
-		return false, err
-	}
-
+// addPutBack is putBack for job, decoded from its history entry, as k.
+func (s *logStore) addPutBack(f *logFrames, job *Job, k logKey, claim *logClaim) (bool, chan struct{}, error) {
 	job.RLock()
 	defer job.RUnlock()
 
-	return s.putBack(f, job, k)
+	return s.putBack(f, job, k, claim)
 }
 
 // putBack adds to f, as a group, the spec and state records putting job back
-// live as k and reports true, unless k is live by now, when it adds nothing.
-// It decides and takes their seqs under stateMu, as planAddJob does, so the
-// state record of any reservation of a re-add it did not see live is later
-// than its spec, and outranks it. The caller holds job's read lock, or job is
-// not shared.
-func (s *logStore) putBack(f *logFrames, job *Job, k logKey) (bool, error) {
+// live as k, noting k in reviving for claim's write (see
+// logClaim.unnoteReviving), and reports true, unless k is live by now, when it
+// adds nothing, or another write in flight is making it live, when it adds
+// nothing and returns that write's idle channel: the caller decides again once
+// it is closed, so an add's claimed put-back and a guarded add's put-back,
+// which claims nothing, of the same key never both put it back, yet a key whose
+// reviving write fails is still put back. It decides and takes their seqs
+// under stateMu, as planAddJob does, so the state record of any reservation of
+// a re-add it did not see live is later than its spec, and outranks it. The
+// caller holds job's read lock, or job is not shared.
+func (s *logStore) putBack(f *logFrames, job *Job, k logKey, claim *logClaim) (bool, chan struct{}, error) {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 
 	if s.liveKey(k) {
-		return false, nil
+		return false, nil, nil
+	}
+
+	if p := s.reviving[k]; p != nil {
+		return false, p.idle, nil
 	}
 
 	f.group()
 
-	return true, s.addSpecAndStateLocked(f, job, k, newLogRunState(job))
+	if err := s.addSpecAndStateLocked(f, job, k, newLogRunState(job)); err != nil {
+		return false, nil, err
+	}
+
+	claim.noteRevivingLocked(k)
+
+	return true, nil, nil
 }
 
 // liveKey reports whether k is live.
@@ -1643,46 +2150,56 @@ func (s *logStore) dependentJob(k logKey, newKeys map[string]bool) (*Job, bool, 
 // appendAdd appends an add's records. If atRisk is not nil, it first adds
 // records putting back each dependent atRisk reports that is no longer live but
 // complete, once no archive of one is unsettled, and appends under guardMu,
-// recording the write as guard's. It returns the keys put back.
-func (s *logStore) appendAdd(f *logFrames, guard *rerunGuard, atRisk func() []string) (*logWrite, map[string]bool,
-	error,
-) {
+// recording the write as guard's if guard is not nil. It returns what those
+// put-backs did, the keys put back noted in reviving for the write. If f is
+// then empty, it appends nothing and returns a nil write.
+func (s *logStore) appendAdd(f *logFrames, guard *rerunGuard, atRisk func() []string,
+	claim *logClaim,
+) (*logWrite, logPutBacks, error) {
 	s.closeMu.RLock()
 	defer s.closeMu.RUnlock()
 
 	if s.closed {
-		return nil, nil, errDBClosed
+		return nil, logPutBacks{}, errDBClosed
 	}
 
 	if atRisk == nil {
 		w, err := s.write(f, nil)
 
-		return w, nil, err
+		return w, logPutBacks{}, err
 	}
 
-	return s.appendGuardedAdd(f, guard, atRisk)
+	return s.appendGuardedAdd(f, guard, atRisk, claim)
 }
 
-// appendGuardedAdd is appendAdd with an atRisk, under guardMu.
-func (s *logStore) appendGuardedAdd(f *logFrames, guard *rerunGuard, atRisk func() []string) (*logWrite,
-	map[string]bool, error,
-) {
+// appendGuardedAdd is appendAdd with an atRisk, under guardMu. Its put-backs
+// claim no key, so nothing but guardMu orders them with a delete or modify of
+// the key: they rely on every delete and modify taking its seqs and appending
+// under guardMu too (appendRemoval), so whichever of them appends first has
+// lower seqs and applies first (it has its Refs by then, and its batch is
+// durable first). An archive likewise decides and appends under guardMu. A key
+// another write in flight is making live is deferred, not waited for: the
+// caller waits for that write once its own has finished (putBackDeferred), so
+// no write waits, before it has appended, for one that waits for it.
+func (s *logStore) appendGuardedAdd(f *logFrames, guard *rerunGuard, atRisk func() []string,
+	claim *logClaim,
+) (*logWrite, logPutBacks, error) {
 	s.guardMu.Lock()
 	defer s.guardMu.Unlock()
 
 	keys := s.awaitAtRisk(atRisk)
 
-	putBack, err := s.addGuardPutBacks(f, keys)
-	if err != nil {
-		return nil, putBack, err
+	pb, err := s.addGuardPutBacks(f, keys, claim)
+	if err != nil || len(f.ops) == 0 {
+		return nil, pb, err
 	}
 
-	w, err := s.write(f, nil)
+	w, err := s.write(f, claim.unnoteReviving)
 	if err == nil && guard != nil {
 		s.guardAdds[guard] = w
 	}
 
-	return w, putBack, err
+	return w, pb, err
 }
 
 // awaitAtRisk returns atRisk's keys, with guardMu held as when called, once no
@@ -1713,39 +2230,44 @@ func (s *logStore) awaitAtRisk(atRisk func() []string) []string {
 
 // addGuardPutBacks adds to f records putting back live, as rerunRecords' live
 // record of their history entries, each of keys that is not live but complete,
-// returning the set of those keys.
-func (s *logStore) addGuardPutBacks(f *logFrames, keys []string) (map[string]bool, error) {
-	putBack := make(map[string]bool)
+// noting them in reviving for claim's write, and returns what it did: a key
+// another write in flight is making live is deferred (see putBack).
+func (s *logStore) addGuardPutBacks(f *logFrames, keys []string, claim *logClaim) (logPutBacks, error) {
+	pb := logPutBacks{put: make(map[string]bool), deferred: make(map[string]chan struct{})}
 
 	for _, key := range keys {
-		put, err := s.addGuardPutBack(f, key)
+		put, wait, err := s.addGuardPutBack(f, key, claim)
 		if err != nil {
-			return putBack, err
+			return pb, err
 		}
 
 		if put {
-			putBack[key] = true
+			pb.put[key] = true
+		}
+
+		if wait != nil {
+			pb.deferred[key] = wait
 		}
 	}
 
-	return putBack, nil
+	return pb, nil
 }
 
 // addGuardPutBack is addGuardPutBacks for one key, reporting whether it put it
-// back.
-func (s *logStore) addGuardPutBack(f *logFrames, key string) (bool, error) {
+// back, or the idle channel of the write making it live if it deferred it.
+func (s *logStore) addGuardPutBack(f *logFrames, key string, claim *logClaim) (bool, chan struct{}, error) {
 	k, err := parseLogKey(key)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 
 	if s.liveKey(k) {
-		return false, nil
+		return false, nil, nil
 	}
 
 	job, complete, err := s.historyJob(k)
 	if err != nil || !complete {
-		return false, err
+		return false, nil, err
 	}
 
 	job.RerunAfterRun = false
@@ -1755,7 +2277,7 @@ func (s *logStore) addGuardPutBack(f *logFrames, key string) (bool, error) {
 		logPutBackHook()
 	}
 
-	return s.putBack(f, job, k)
+	return s.putBack(f, job, k, claim)
 }
 
 // logDependentsScan is the state of a dependentJobs traversal.

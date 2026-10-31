@@ -35,6 +35,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -277,6 +278,266 @@ func TestLogStoreTransitionRecords(t *testing.T) {
 			So(complete.ReservedBy, ShouldEqual, runner)
 		})
 	})
+}
+
+// reducerWrite is one write's ops, which apply together in order, and what
+// the store guarantees about when it applies relative to the key's other
+// writes (see allowedWriteOrder).
+type reducerWrite struct {
+	ops []logOp
+
+	// revives is set for an add making the key live from not live, or putting
+	// it back as an archived dependent: every later write but a stale one is
+	// made by a server that learnt of the key from it, so applies after it.
+	revives bool
+
+	// reviving is set for a write making the key live that the server knew of
+	// before it: a put-back (storeLiveForRerun or a guarded add's), or a modify
+	// to the key. The server may make transitions of the key before it
+	// applies, but those wait for it (logStore.reviving), so a later
+	// transition applies after it.
+	reviving bool
+
+	// claims is set, by add, for a write with a spec, complete, rglookup,
+	// delete or modify record, but for a guarded add's put-back: each claims
+	// the key from before it decides until it has applied (logClaim), so of
+	// two the later applies after the earlier.
+	claims bool
+
+	// guarded is set for a guarded add's put-back, which claims nothing but
+	// decides, takes its seqs and appends under guardMu, as each delete,
+	// modify and archive does, so of it and one of those the later applies
+	// after the earlier.
+	guarded bool
+
+	// removes is set, by add, for a write with a complete, delete or modify
+	// record: a delete, modify or archive, made under guardMu.
+	removes bool
+
+	// transition is set, by add, for a write of only state and std records: a
+	// transition or exit.
+	transition bool
+
+	// stale is set for an archive of the key made while it is not live, from
+	// a job the server knew before its delete (a lost job whose run ended):
+	// nothing orders it after earlier writes but its claim.
+	stale bool
+}
+
+// randomKeyWrites returns, in seq order, the writes of a random history of k,
+// starting with its add, in which k may be modified to moved once, after which
+// the history goes on with moved's writes.
+func randomKeyWrites(rng *rand.Rand, k, moved logKey) []reducerWrite {
+	h := keyHistory{rng: rng, k: k, moved: moved}
+	h.readd(reducerWrite{revives: true})
+
+	for range 1 + rng.IntN(10) {
+		h.next()
+	}
+
+	return h.writes
+}
+
+// applyWrite applies w's ops to st, in order.
+func applyWrite(st *logState, w reducerWrite) {
+	for i := range w.ops {
+		st.apply(&w.ops[i])
+	}
+}
+
+// allowedWriteOrder returns a random order of writes' indexes that keeps
+// every ordering reducerWrite says the store guarantees.
+func allowedWriteOrder(rng *rand.Rand, writes []reducerWrite) []int {
+	applied := make([]bool, len(writes))
+	order := make([]int, 0, len(writes))
+
+	for len(order) < len(writes) {
+		var ready []int
+
+		for j := range writes {
+			if !applied[j] && writeMayApply(writes, applied, j) {
+				ready = append(ready, j)
+			}
+		}
+
+		j := ready[rng.IntN(len(ready))]
+		applied[j] = true
+		order = append(order, j)
+	}
+
+	return order
+}
+
+// writeMayApply reports whether write j may apply once those applied have.
+func writeMayApply(writes []reducerWrite, applied []bool, j int) bool {
+	for i := range j {
+		if !applied[i] && writeOrdered(writes[i], writes[j]) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// writeOrdered reports whether the store makes later, a write with higher seqs
+// than earlier, apply after it.
+func writeOrdered(earlier, later reducerWrite) bool {
+	return (earlier.revives && !later.stale) ||
+		(earlier.claims && later.claims) ||
+		(earlier.guarded && later.removes) || (earlier.removes && later.guarded) ||
+		(earlier.reviving && later.transition)
+}
+
+// keyHistory builds a random history of one key's writes, in seq order.
+type keyHistory struct {
+	rng       *rand.Rand
+	k, moved  logKey
+	seq       uint64
+	tag       int
+	live      bool
+	movedAway bool
+	writes    []reducerWrite
+}
+
+// op returns an op of typ for key with the next seq and a Ref naming it. A
+// spec op has a new tag: its own rep group and dep group.
+func (h *keyHistory) op(typ logRecordType, key logKey) logOp {
+	h.seq++
+
+	op := logOp{typ: typ, seq: h.seq, key: key, ref: wal.Ref{File: 1, Off: h.seq}}
+
+	switch typ {
+	case logRecSpec:
+		h.tag++
+		op.index = logSpecIndex{repGroup: "tag" + strconv.Itoa(h.tag), depDeps: []string{"g" + strconv.Itoa(h.tag)}}
+	case logRecState:
+		op.handedOut = h.rng.IntN(2) == 0
+	case logRecRGLookup:
+		op.name = "rg" + strconv.Itoa(h.rng.IntN(3))
+	default:
+	}
+
+	return op
+}
+
+// readd appends, as w describes it, a write of the key's spec, state and
+// rglookup records, as an add or put-back makes them, leaving it live.
+func (h *keyHistory) readd(w reducerWrite) {
+	h.add(w, h.op(logRecSpec, h.k), h.op(logRecState, h.k), h.op(logRecRGLookup, h.k))
+	h.live = true
+}
+
+// std returns a std op of stream for key, empty or not at random.
+func (h *keyHistory) std(key logKey, stream uint8) logOp {
+	op := h.op(logRecStd, key)
+	op.stream, op.hasStd = stream, h.rng.IntN(2) == 0
+
+	return op
+}
+
+// add appends a write of ops, as w describes it, setting its claims, removes
+// and transition.
+func (h *keyHistory) add(w reducerWrite, ops ...logOp) {
+	w.ops, w.transition = ops, true
+
+	for _, op := range ops {
+		switch op.typ {
+		case logRecState, logRecStd:
+		case logRecComplete, logRecDelete, logRecModify:
+			w.claims, w.removes, w.transition = true, true, false
+		default:
+			w.claims, w.transition = !w.guarded, false
+		}
+	}
+
+	h.writes = append(h.writes, w)
+}
+
+// putBackGuarded appends a guarded add's put-back of the key, a write of its
+// spec and state records, leaving it live.
+func (h *keyHistory) putBackGuarded() {
+	h.add(reducerWrite{reviving: true, guarded: true}, h.op(logRecSpec, h.k), h.op(logRecState, h.k))
+	h.live = true
+}
+
+// next appends a random write the server could make of the key as it is.
+func (h *keyHistory) next() {
+	k := h.k
+
+	if !h.live {
+		h.nextNotLive()
+
+		return
+	}
+
+	switch h.rng.IntN(12) {
+	case 0:
+		h.add(reducerWrite{}, h.op(logRecState, k))
+	case 1:
+		h.add(reducerWrite{}, h.op(logRecState, k), h.std(k, stdOut), h.std(k, stdErr))
+	case 2:
+		h.readd(reducerWrite{})
+	case 3:
+		h.add(reducerWrite{}, h.op(logRecComplete, k), h.op(logRecDelete, k))
+		h.live = false
+	case 4:
+		h.add(reducerWrite{}, h.op(logRecComplete, k), h.op(logRecState, k))
+	case 5, 6:
+		h.add(reducerWrite{}, h.op(logRecDelete, k))
+		h.live = false
+	case 7:
+		modify := h.op(logRecModify, k)
+		modify.newKey = k
+		h.add(reducerWrite{}, modify, h.op(logRecSpec, k), h.op(logRecState, k),
+			h.std(k, stdOut), h.std(k, stdErr), h.op(logRecRGLookup, k))
+	case 8:
+		h.modifyAway()
+	case 9:
+		h.add(reducerWrite{}, h.op(logRecRGLookup, k))
+	case 10:
+		h.readd(reducerWrite{reviving: true})
+	default:
+		h.add(reducerWrite{}, h.op(logRecState, k), h.std(k, stdOut))
+	}
+}
+
+// nextNotLive appends a random write the server could make of the key while
+// it is not live.
+func (h *keyHistory) nextNotLive() {
+	k := h.k
+
+	switch h.rng.IntN(7) {
+	case 0:
+		h.readd(reducerWrite{revives: true})
+	case 1:
+		h.readd(reducerWrite{reviving: true})
+	case 6:
+		h.putBackGuarded()
+	case 2:
+		h.add(reducerWrite{stale: true}, h.op(logRecSpec, k), h.op(logRecComplete, k), h.op(logRecDelete, k))
+	case 3:
+		h.add(reducerWrite{}, h.op(logRecRGLookup, k))
+	case 4:
+		h.modifyAway()
+	default:
+		h.add(reducerWrite{}, h.op(logRecState, k))
+	}
+}
+
+// modifyAway appends a modify of the key, live or not, to the moved key, once,
+// after which the history is moved's; else a transition.
+func (h *keyHistory) modifyAway() {
+	if h.movedAway {
+		h.add(reducerWrite{}, h.op(logRecState, h.k))
+
+		return
+	}
+
+	modify := h.op(logRecModify, h.k)
+	modify.newKey = h.moved
+	h.add(reducerWrite{reviving: true}, modify, h.op(logRecSpec, h.moved), h.op(logRecState, h.moved),
+		h.std(h.moved, stdOut), h.op(logRecRGLookup, h.moved))
+	h.k, h.live, h.movedAway = h.moved, true, true
 }
 
 func TestLogStoreAddDedupAndDependents(t *testing.T) {
@@ -991,6 +1252,56 @@ func TestLogStoreReducerOrder(t *testing.T) {
 			So(mismatched, ShouldEqual, 0)
 		})
 	})
+
+	Convey("Given the writes of a key's random history of adds, transitions, exits, archives, put-backs, "+
+		"rep group lookups, deletes and modifies, applied in random orders the store allows", t, func() {
+		const trials = 5000
+
+		rng := rand.New(rand.NewPCG(3, 4)) //nolint:gosec // a fixed seed, for reproducible cases
+		k, moved := logKey{1}, logKey{2}
+
+		var mismatched, reordered, uninverted int
+
+		for range trials {
+			writes := randomKeyWrites(rng, k, moved)
+
+			want := newLogState()
+			for i := range writes {
+				applyWrite(&want, writes[i])
+			}
+
+			got := newLogState()
+			order := allowedWriteOrder(rng, writes)
+
+			for _, i := range order {
+				applyWrite(&got, writes[i])
+			}
+
+			if !slices.IsSorted(order) {
+				reordered++
+			}
+
+			if !indexesInverse(&got) || !indexesInverse(&want) {
+				uninverted++
+			}
+
+			for _, key := range []logKey{k, moved} {
+				if newReducerKeyView(&got, key) != newReducerKeyView(&want, key) {
+					mismatched++
+
+					break
+				}
+			}
+		}
+
+		Convey("each key ends as applying them in seq order leaves it: live or not, with the same spec, state, "+
+			"std, history entry, dependencies and rep group lookups, each index by key holding just what its "+
+			"index by group does", func() {
+			So(reordered, ShouldBeGreaterThan, trials/2)
+			So(mismatched, ShouldEqual, 0)
+			So(uninverted, ShouldEqual, 0)
+		})
+	})
 }
 
 // randomKeyOps returns 1 to 8 spec, state and std ops of k, with seqs 2 on in
@@ -1008,6 +1319,91 @@ func randomKeyOps(rng *rand.Rand, k logKey) []logOp {
 	}
 
 	return ops
+}
+
+// indexesInverse reports whether st's reverse dep group index and rglookups,
+// by key, hold just what they hold by dep group and by rep group.
+func indexesInverse(st *logState) bool {
+	return isInverse(st.reverseDeps, st.keyDeps) && isInverse(st.repGroupKeys, st.keyRepGroups)
+}
+
+// isInverse reports whether byMember holds each member of each of byName's
+// sets under that set's name, and nothing else.
+func isInverse[N, M comparable](byName map[N]map[M]struct{}, byMember map[M]map[N]struct{}) bool {
+	n := 0
+
+	for name, members := range byName {
+		for member := range members {
+			if _, found := byMember[member][name]; !found {
+				return false
+			}
+
+			n++
+		}
+	}
+
+	for _, names := range byMember {
+		n -= len(names)
+	}
+
+	return n == 0
+}
+
+// newReducerKeyView returns k's view in st.
+func newReducerKeyView(st *logState, k logKey) reducerKeyView {
+	var v reducerKeyView
+
+	if e := st.live[k]; e != nil {
+		lv := newLogLiveView(e)
+		v.live, v.spec, v.state, v.handedOut, v.std, v.hasStd = true, lv.spec, lv.state, lv.handedOut, lv.std,
+			lv.hasStd
+	}
+
+	v.completeSeq = st.history[k]
+
+	if h := st.overlay[k]; h != nil {
+		v.complete, v.completeSpecTag = h.complete, h.repGroup
+	}
+
+	var deps []string
+
+	for dg, keys := range st.reverseDeps {
+		if _, found := keys[k]; found {
+			deps = append(deps, dg)
+		}
+	}
+
+	slices.Sort(deps)
+	v.deps = strings.Join(deps, ",")
+
+	var lookups []string
+
+	for rg, keys := range st.repGroupKeys {
+		if _, found := keys[k]; found {
+			lookups = append(lookups, rg)
+		}
+	}
+
+	slices.Sort(lookups)
+	v.lookups = strings.Join(lookups, ",")
+
+	return v
+}
+
+// reducerKeyView is what of a key's state its records decide and a reader
+// sees: whether it is live, its live spec, state and std, its history entry,
+// the dep groups the reverse index finds it under and the rep groups whose
+// rglookups find it.
+type reducerKeyView struct {
+	live                  bool
+	spec, state           wal.Ref
+	handedOut             bool
+	std                   [2]wal.Ref
+	hasStd                [2]bool
+	completeSeq           uint64
+	complete              wal.Ref
+	completeSpecTag, deps string
+	lookups               string
 }
 
 func TestLogStoreFailedWriteNotReplayedAfterSpentFile(t *testing.T) {
@@ -1453,6 +1849,80 @@ func TestLogStoreReducerSeqRules(t *testing.T) {
 			})
 		})
 
+		Convey("a state record later than a modify keeping the key, applied before the modify, is kept", func() {
+			var modify, later logFrames
+
+			same := testDBJob(job.Cmd, job.RepGroup)
+			same.Priority = 3
+			So(s.addModifies(&modify, []logModify{{old: k, new: k, job: same}}), ShouldBeNil)
+
+			job.Priority = 3
+			job.State = JobStateRunning
+			job.Attempts = 1
+			rs := newLogRunState(job)
+			s.addState(&later, logRecState, k, &rs)
+
+			writeInReverse(s, &modify, &later)
+
+			beforeAndAfterReopen(func(st *logStore) {
+				got := storedLiveJob(t, st, key)
+				So(got.Priority, ShouldEqual, 3)
+				So(got.State, ShouldEqual, JobStateRunning)
+				So(got.Attempts, ShouldEqual, 1)
+			})
+		})
+
+		Convey("a modify of the key to another, applied after a later spec of the key, leaves it live", func() {
+			var modify, later logFrames
+
+			moved := testDBJob("echo reducer moved", job.RepGroup)
+			movedKey, errk := parseLogKey(moved.Key())
+			So(errk, ShouldBeNil)
+			So(s.addModifies(&modify, []logModify{{old: k, new: movedKey, job: moved}}), ShouldBeNil)
+
+			job.Priority = 4
+			So(s.addSpecAndState(&later, job, k), ShouldBeNil)
+
+			writeInReverse(s, &modify, &later)
+
+			beforeAndAfterReopen(func(st *logStore) {
+				So(storedLiveJob(t, st, key).Priority, ShouldEqual, 4)
+				soLive(st, moved.Key(), true)
+			})
+		})
+
+		Convey("a modify record is malformed without exactly an old and a new key", func() {
+			rec := appendModifyRecord(nil, 1, k, k)
+
+			parsed, errp := parseLogRecord(rec)
+			So(errp, ShouldBeNil)
+			So(parsed.key, ShouldEqual, k)
+			So(parsed.newKey, ShouldEqual, k)
+
+			_, errp = parseLogRecord(rec[:len(rec)-1])
+			So(errp, ShouldWrap, errLogRecordMalformed)
+
+			_, errp = parseLogRecord(append(rec, 0))
+			So(errp, ShouldWrap, errLogRecordMalformed)
+		})
+
+		Convey("a std record applied before an earlier complete record of its live key is kept", func() {
+			var complete, std logFrames
+
+			job.State = JobStateComplete
+			rs := newLogRunState(job)
+			s.addState(&complete, logRecComplete, k, &rs)
+
+			s.addStd(&std, k, stdOut, []byte("later"))
+
+			writeInReverse(s, &complete, &std)
+
+			beforeAndAfterReopen(func(st *logStore) {
+				stdo, _ := stdOf(st)
+				So(stdo, ShouldEqual, "later")
+			})
+		})
+
 		Convey("an archive's delete applied after a re-add's later spec leaves the key live", func() {
 			job.State = JobStateComplete
 			archive := s.archiveFrames(job, k, false)
@@ -1493,4 +1963,18 @@ func writeInReverse(s *logStore, earlier, later *logFrames) {
 	So(later.ops[0].seq, ShouldBeGreaterThan, earlier.ops[len(earlier.ops)-1].seq)
 	So(s.writeAndWait(later), ShouldBeNil)
 	So(s.writeAndWait(earlier), ShouldBeNil)
+}
+
+// archiveFrames returns the records of job's archive of a live key (see
+// addArchiveRecords), as decideArchive makes them.
+func (s *logStore) archiveFrames(job *Job, k logKey, keepLive bool) logFrames {
+	var f logFrames
+
+	job.RLock()
+	defer job.RUnlock()
+
+	rs := newLogRunState(job)
+	s.addArchiveRecords(&f, k, &rs, keepLive)
+
+	return f
 }

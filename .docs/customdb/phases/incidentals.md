@@ -238,7 +238,7 @@ called ready, or explicitly deferred with the owner.
   decoders through one shared check. Done in 1b.1: `checkStoredElements`
   (`job.go`) returns `errNilStoredElement`, which `decodeJob` returns and
   the flat blob decode wraps in `errFlatMalformed`.
-- [ ] (from 1c.1) The log store's `applySpec` adds reverse dep-group index
+- [x] (from 1c.1) The log store's `applySpec` adds reverse dep-group index
   entries for a new spec but never removes the replaced spec's entries, so
   the index depends on apply order once a key's spec changes its
   dependencies. Today's re-adds keep the spec, so it is not reachable yet.
@@ -249,17 +249,52 @@ called ready, or explicitly deferred with the owner.
   the key live again (the reducer keeps no tombstone), and
   `applyComplete` copies whichever spec is live at apply time. Extend
   `TestLogStoreReducerOrder` to delete, modify and complete records.
+  Done in 1c.4: `applySpec` unindexes the replaced spec's dep groups, and a
+  modify's old key leaves the index even if complete, as bbolt's modify
+  drops its lookups (`TestLogStoreReverseDepsAfterSpecChange`, both apply
+  orders). No tombstone is needed because no removal applies before a
+  lower-seq spec or complete record of its key: every add, delete, modify,
+  archive, put-back and rep group lookup claims its keys (`logClaim`) from
+  before it decides until it has applied, and a guarded add's put-backs,
+  which claim nothing, decide and append under `guardMu` as removals do
+  (`TestLogStoreArchiveRacesRemoval`, `TestLogStoreClaimedWrites`; tested
+  with a hook holding a write between its append and its Refs,
+  `logAppendedHook`); an archive
+  decides and takes its seqs under the job's read lock (`decideArchive`), so
+  a rerun mark's put-back after the decision is later than the archive's
+  delete (`TestLogStoreArchiveRacesRemoval`). A later spec a complete record
+  may pair with is a put-back of the same job, with the same spec. A
+  transition or exit of a key a put-back or modify is making live waits
+  for it to apply (`logStore.reviving`, spec Write path: reviving), so it
+  is not dropped in memory and kept by replay
+  (`TestLogStoreRevivedKeyTransitions`). The extended
+  `TestLogStoreReducerOrder` applies random histories of adds,
+  transitions, exits, archives (kept live or not, and of a key not live),
+  put-backs, rep group lookups, deletes and modifies (keeping the key or
+  not, of a live key or not, then the new key's own writes), each spec
+  with its own rep and dep group, in every order those rules allow and
+  checks each key ends as in seq order, rglookups included; it found that
+  `clearStd` cleared a std record later than the complete record, now fixed
+  (spec Records amended), and without the reviving rule it finds the
+  transitions that would be dropped.
 
 - [ ] (from 1c.2) The store lock now creates `dbFile + ".lock"` in the
   store's parent directory, so that directory must be writable. This is
   new for deployments whose parent directory is read-only. Owner: 2e.2
   (F6): add a CHANGELOG line saying so.
 
-- [ ] (from 1c.3) The reducer drops a complete record for a key that is
+- [x] (from 1c.3) The reducer drops a complete record for a key that is
   not live and whose only history entry is already folded: it would need
   the key's spec from history.bolt to make an overlay entry (see the
   comment in `applyComplete`). Only an archive racing a delete (C4) can
   produce one, once 1d.1 folds. Owner: 1c.4 (C4), which owns that race.
+  Done in 1c.4: an archive claims its key, so decides once any delete or
+  modify of it in flight has applied, and if the key is then not live (a
+  lost job removed before its run ended) its block starts with the job's
+  spec record, so its complete record always finds a spec and the
+  completion is recorded, as bbolt records it
+  (`TestLogStoreArchiveRacesRemoval`; spec Records and Archive amended).
+  The reducer's drop stays only for records no archive writes.
 
 - [ ] (from 1c.3) `foldHistory` trusts its caller for contiguity: it does
   not check that a fold starts at the previous folded position F, and
@@ -267,3 +302,45 @@ called ready, or explicitly deferred with the owner.
   (in-memory F never moves back). Both are safe with one folder reading
   the log in order. Owner: 1d.1: have the folder fold contiguously from F,
   and either assert that in `foldHistory` or never persist a lower F.
+
+- [ ] (from 1c.4) C4 tests 9 to 11 say "run a server on a log store",
+  which cannot run until 1e.4 makes the log store the server's store.
+  1c.4 covers every store-visible clause of them at the store level
+  (`store_log_guard_test.go`). Still to cover with a server: the
+  dependent going `ItemStateDependent` then `ItemStateReady`, "reserved
+  again", "runs again once m completes", and test 9's `archiveKeptLive`
+  (set by the server's mark; at the store level the outcome is
+  `archiveRemovedLive` with the guard keeping d live). Owner: 1e.4.
+
+- [ ] (from 1c.4) A modify drops its old key's rglookups, as bbolt's
+  `deleteOldLiveJobs` drops its `repgroupToKey` entries, but the log store
+  drops only those not yet folded (`applyModify` over the in-memory
+  rglookups). Once 1d.1 folds rglookups into `history.bolt`, a modify after
+  the fold leaves the old key under its folded rep groups, so
+  `retrieveCompleteJobsByRepGroup` and the add dedup's
+  `checkIfCompleteUnderRepGroup` still find it there, unlike bbolt.
+  Owner: 1d.1: have the folder delete a modify's old key from
+  `repgroupToKey` (history.bolt has no reverse lookup, so it needs one or a
+  scan), and have reads hide folded lookups of keys modified away and not
+  yet folded; extend `TestStoreModifyDropsRepGroupLookups` with a fold
+  before the modify. Likewise for 1d.2 (C6): replay applies rglookup
+  records from F but modify records only from a checkpoint's `walFrom`, so
+  a modify between F and `walFrom` must not let its old key's earlier
+  rglookups come back on recovery.
+
+- [ ] (from 1c.4 review) `TestLogStoreFailedWriteNotReplayedAfterSpentFile`
+  flakes about 1 in 500 under load, pre-existing (load-matched A/B at 1000
+  runs: 2 fails at 4d128f96, 1 on the 1c.4 tree; files `[1 2]` instead of
+  `[1 2 3]`). In `jobqueue/wal/writer.go` `run()`, if Close is seen before
+  the writer's first reopen try, `reopen()` tries file 2, which fails and
+  spends that number, and the loop returns without trying file 3.
+  Owner: 1c.5: decide whether a close after a spent open must open file
+  n+1 (a product fix) or the test must wait for the reopen before
+  closing, with a red loop first.
+
+- [ ] (from 1c.4 review) No test pins that a delete over the block size
+  limit splits only between keys (mutant `delete-not-grouped`, dropping
+  `f.group()` per key in `deleteLiveJobs`, survives). Impact is small: a
+  delete is one record per key. Owner: 1c.5: add a Convey under
+  `logBlockMaxFrames = 1` asserting a 3-key delete gives 3 frames, like
+  `TestLogStoreSplitPutBacks`.

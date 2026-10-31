@@ -368,18 +368,34 @@ checkpoint:
 - History: a `complete` record applies only if its seq is higher than the
   key's last applied `complete` seq. One whose key is neither live nor in
   history has no spec to make a history entry of, so it is dropped, as an
-  orphan state record is (the archive-versus-delete race that can make one
-  is C4's).
+  orphan state record is. No archive writes one: an archive of a key not
+  live (a lost job removed before its run ended) puts the job's spec record
+  before its `complete` record (Archive, below).
 - A spec record (add, put-back, modify's new key) makes the key live with
   that spec seq, unless its spec seq is already higher. It drops the key's
   state and std whose last applied seq is below its own and keeps those
   above it, so a state or std record outranks a spec it is later than in
-  whichever order the two apply. A delete record, an archive's delete or
-  modify's old key removes the key's live entry, its state and its std.
+  whichever order the two apply. A spec replacing a live spec moves the key
+  in the reverse dep group index from the old spec's dep groups to its own.
+  A delete record, an archive's delete or modify's old key removes the key's
+  live entry, its state and its std. A modify's old key also leaves the
+  reverse dep group index and every rep group's rglookups even if complete
+  or not live, as `deleteOldLiveJobs` drops all its lookups
+  (`deleteLookupEntriesForJobKey`); a delete keeps a complete key in both,
+  as `deleteLiveJobs` does. A modify keeping its key drops its rglookups and
+  dep groups too, and its block's spec and rglookup add back its new ones;
+  its new spec replaces the live one. Both indexes are also kept by key, so
+  this costs time in proportion to the key's own rep and dep groups. A
+  modify whose new key is an old key modified later in the same call (A to
+  B, then B to C) leaves only C live, where bbolt leaves B and C; the
+  server never asks for that (`skipForDuplicateKey` skips a modify whose
+  new key is queued). Phase 1 drops only rglookups not yet folded; the
+  folder (D1) must drop folded ones.
 - A state or std record applies only if the key is live, its seq is above
   the key's spec seq and above the last applied seq of its kind (state, or
   that std stream; a `complete` record on a keep-live key sets the std seq
-  to its own). Else it is ignored, as today's orphan drops are
+  to its own, clearing the std, unless a later std record applied). Else it
+  is ignored, as today's orphan drops are
   (`beBatch.applyRunStates`, `storeRunningRerunMarks`,
   `runStateDroppable`). So a best-effort state record or exit block
   snapshotted before an archive, delete or modify but committed after it
@@ -388,13 +404,18 @@ checkpoint:
   applied and the item left the queue, so it exceeds every seq snapshotted
   from the queued job. A snapshot from a stale `*Job` pointer racing both
   removal and re-add is the window today's key-based live check has too.
+  Nor does a removal ever apply before a lower-seq spec, `complete` or
+  rglookup record of its key (Write path: claims), nor a state or std
+  record before a lower-seq spec record of a put-back or modify making its
+  key live (Write path: reviving), so the outcome does not depend on the
+  order records apply in.
 
 | Type | Name | Body |
 | --- | --- | --- |
 | 1 | spec | key, flat spec |
 | 2 | state | key, flat run state |
 | 3 | delete | key |
-| 4 | modify | old key, new key (same block: new spec, new state) |
+| 4 | modify | old key, new key (same block: new spec, new state, std, rglookup) |
 | 5 | std | key, u8 out/err, bytes (as `stdo`/`stde` today; empty clears) |
 | 6 | env | env key string, blob |
 | 7 | limit | group, i64 limit, or removed flag |
@@ -438,27 +459,31 @@ checkpoint:
   today; carrying them in every state record keeps that. `jobRunState`
   itself is unchanged, since bbolt's run-state records are its Binc encoding.
   Variable length, first byte version (1).
-- Archive (`archiveCompletion`, as `archiveJobTx`): one block of a
-  `complete` record holding `recordCompleteTx`'s complete record (for a
-  keep-live archive, `rerunRecords`' complete record), then a `delete`
-  record, or for a keep-live archive a state record of `rerunRecords`' live
-  record. A history entry is a `complete` record plus the key's spec record
-  current when it applies; a later `complete` record for the key replaces
-  it, as today's `jobscomplete` Put does. Nothing removes a history entry:
+- Archive (`archiveCompletion`, as `archiveJobTx`): one block of, if the
+  key is not live, the job's spec record, then a `complete` record holding
+  `recordCompleteTx`'s complete record (for a keep-live archive,
+  `rerunRecords`' complete record), then a `delete` record, or for a
+  keep-live archive a state record of `rerunRecords`' live record. A
+  history entry is a `complete` record plus the key's spec record current
+  when it applies; a later `complete` record for the key replaces it, as
+  today's `jobscomplete` Put does. Nothing removes a history entry:
   put-backs (`storeLiveForRerun`, `putBackArchivedDependentsTx`, archived
   dependents `retrieveDependentJobs` resurrects), `deleteLiveJobs` and
   re-adds touch only the live plane.
-- Every multi-record operation (an add, a modify, an archive, a rerun
-  put-back, an exit) is one s2 block (an add over the block size limit is
-  several, appended together with `AppendBlocks`), built and compressed by
-  the calling goroutine before `AppendBlock` or `AppendBlocks`. Single
-  state records are plain frames; the writer never compresses.
+- Every multi-record operation (an add, a delete, a modify, an archive, a
+  rerun put-back, an exit) is one s2 block (an add, delete, modify or rerun
+  put-back over the block size limit is several, split only between jobs
+  and appended together with `AppendBlocks`), built and compressed by the
+  calling goroutine before `AppendBlock` or `AppendBlocks`. Single state
+  records are plain frames; the writer never compresses.
 - Std follows today's lifecycle (`updateStd`, `recordCompleteTx`,
   `deleteOldLiveJobs`/`jobStd.restore`). Every exit's block is its state record,
   its exitstat record and a std record per stream: the new bytes if the exit
   failed or storage is forced, else empty, which clears earlier std. Replay
-  drops a key's std on a `complete` record or a delete record, and moves it from
-  old key to new key on a modify record.
+  drops a key's std on a `complete` record, a delete record or a modify
+  record's old key. A modify's block carries the old key's std to the new key
+  as std records holding its bytes, as `jobStd.restore` does, so a modify
+  keeping its key keeps its std too.
 
 ### Write path
 
@@ -468,11 +493,12 @@ checkpoint:
   changes do not.
 - `close` makes every record appended before it durable. `logStore`'s
   appends check a closed flag under a read lock, held until
-  `Writer.Append` returns, that `close` takes for writing to set it, so an append after `close` gets `errDBClosed` (a
-  reserve gets a handle whose `WaitWithin` returns it) and never reaches
-  the writer; `wal.ErrClosed` is the writer's own guard and never reaches
-  a caller. Then `Writer.Close` syncs every queued batch and calls its
-  `done` funcs before returning. So a best-effort change queued before
+  `Writer.Append` returns, that `close` takes for writing to set it, so
+  an append after `close` gets `errDBClosed` (a reserve gets a handle
+  whose `WaitWithin` returns it) and never reaches the writer;
+  `wal.ErrClosed` is the writer's own guard and never reaches a caller.
+  Then `Writer.Close` syncs every queued batch and calls its `done` funcs
+  before returning. So a best-effort change queued before
   `close()` is recovered with its latest state, as today's best-effort
   writer drains on close (`TestStoreCloseDrainsWrites`).
 - Reservation (C3): wait at most `reserveDurableWait()`
@@ -504,11 +530,72 @@ checkpoint:
 - Keys of an add in flight sit in a pending set; a concurrent add that
   meets a pending key waits for that add's commit, then dedups against the
   result.
+- Claims. Every write of a key's spec, rglookup or removal puts the key in
+  the pending set (claims it) from before it decides until it has applied:
+  an add (its jobs' keys, and each archived dependent it puts back), a
+  delete, a modify (old and new keys), an archive, `storeLiveForRerun` and
+  `storeRepGroupLookups`. So each decides and takes its seqs after any other
+  of them has applied. A write waits for each holder of a key it needs
+  with none of its own claimed; an add finding a dependent's key claimed releases its claim
+  and plans again claiming that key with the rest, so no write waits holding
+  a claim. A guarded add's put-backs (Rerun guard, below) claim nothing:
+  they decide, take their seqs and append under `guardMu`, and rely on
+  deletes, modifies and archives doing so too, so whichever appends first
+  applies first (it has its Refs by then, and its batch is durable first).
+  So no removal applies before a lower-seq spec, `complete` or rglookup
+  record of its key. An archive decides its outcome and takes its seqs
+  under the job's read lock, so a rerun mark set after the decision is
+  followed by a put-back (`storeLiveForRerun`) with later seqs, which waits
+  for the archive's claim, and the job is live after both, as with bbolt's
+  archive, which decides and writes in one transaction.
+- Reviving. A write making a key live that the server already knows (a
+  modify's new key, which the server rekeys its queue to before the modify,
+  and every put-back: `storeLiveForRerun`, an add's archived dependents and
+  a guarded add's at-risk keys) notes the key as reviving, under
+  `logStore.stateMu`, from before it takes its seqs until its write has
+  applied or failed. A guarded add unnotes its keys then, not when it
+  releases its claim, as it may go on to wait for deferred put-backs; every
+  other such write releases its claim once its write has finished. A
+  transition or exit of a reviving key waits, holding neither the job's lock
+  nor `stateMu`, then takes its seqs, so its records are later than the
+  write's spec and apply after it, as replay applies them, instead of being
+  dropped as orphans for meeting the key not yet live. It looks again after
+  each wait, as another write may be reviving the key by then. An add's
+  put-back skips a key that is live, as bbolt's second transaction sees the
+  first's put-back live. `storeLiveForRerun` puts its keys back
+  unconditionally, as bbolt's does: its seqs are higher than those of any
+  put-back of the key already decided, so its records win in whichever order
+  the two apply. A put-back meeting a key another write is reviving decides
+  again once that write has finished: so an add's claimed put-back and a
+  guarded add's put-back of one key never both put it back, yet if the
+  reviving write fails, leaving no effect, the key is still put back, as
+  bbolt's serial transactions would. An add's claimed put-back waits for it
+  there, holding its claim: with the key claimed, only a guarded add's
+  put-back can be reviving it, and that is appended or about to be. A
+  guarded add defers the key instead: it appends its block without it, and
+  once that block has finished it waits, decides again under `guardMu` and
+  appends any put-backs in a further block before it returns, deferring
+  again a key another write is reviving by then. If its first block fails,
+  it returns that error without waiting. If the further block fails, the add
+  returns that error with its first block stored and applied: its jobs are
+  live, and the dependent is neither put back nor reported put back. The
+  server then has the jobs stored but not queued until a retried add or a
+  restart, as bbolt's chunked adds (`storeNewJobDataChunked`) can leave
+  earlier chunks stored when a later one fails. A crash between the two
+  blocks likewise leaves the add stored without the deferred put-back, as a
+  crash leaves a prefix of a multi-block add (C2): the add has not returned,
+  and the user's retried add puts the dependent back as any add of a member
+  does. No wait deadlocks: a waiting transition or exit is not yet in the
+  in-flight state set, so no add waits for it; a reviving write, once noted,
+  waits only for appended batches and brief locks, never for a claim or a
+  state record; and a guarded add waits for a reviving write only once its
+  own block has finished, with none of its keys still noted, so two guarded
+  adds each reviving a key the other must decide on both go on.
 - An add deciding the 260929 rule for a key with a state record appended
   but not finished (a transition or an exit) waits for it, then decides on
   the result. It decides and takes its seqs under `logStore.stateMu`,
-  which each transition and exit also holds while taking its state
-  record's seq and noting it as in flight, so a state record the add did
+  which each transition and exit also holds while taking its records'
+  seqs and noting its state record as in flight, so a state record the add did
   not wait for has a later seq than the add's spec, and outranks it even
   if it is durable and applied first. Each put-back (an add's archived
   dependent, or a guarded add's at-risk key) likewise decides and takes its
@@ -545,18 +632,19 @@ checkpoint:
 
 Per live key: spec seq and last applied state and std seqs, Ref of its
 spec record, Ref of its last state record, its rep group, dep groups and
-reverse dep groups (index membership only). Plus: envs (blob by key),
-limits, dep groups ever seen, std Refs by key, learned-requirement samples
-per req group (sorted slices), history key index (with each key's last
-applied `complete` seq: Phase 1 reads it from `history.bolt`'s
-`completeSeq` bucket, Phase 2 from the record its Ref points to), history
-overlay (completions not yet folded: key to spec Ref, `complete` record
-Ref, rep group and EndTime; rglookups not yet folded; and each rep group's
-latest EndTime among them, kept until a fold commits one as late, as
-`repgroupEndTime` keeps it), and the folded position F that decides which
-`complete` and rglookup records the overlay leaves out (Folder and
-history). Live `*Job` values are never held by the store; methods that
-return live jobs decode them through their Refs.
+reverse dep groups (index membership, kept by dep group and by key).
+Plus: envs (blob by key), limits, dep groups ever seen, std Refs by key,
+learned-requirement samples per req group (sorted slices), history key
+index (with each key's last applied `complete` seq: Phase 1 reads it
+from `history.bolt`'s `completeSeq` bucket, Phase 2 from the record its
+Ref points to), history overlay (completions not yet folded: key to spec
+Ref, `complete` record Ref, rep group and EndTime; rglookups not yet
+folded, by rep group and by key; and each rep group's latest EndTime
+among them, kept until a fold commits one as late, as `repgroupEndTime`
+keeps it), and the folded position F that decides which `complete` and
+rglookup records the overlay leaves out (Folder and history). Live
+`*Job` values are never held by the store; methods that return live jobs
+decode them through their Refs.
 
 ### Recovery
 
@@ -1313,15 +1401,19 @@ size limit is split into several blocks, only ever between one job's
 records (its rglookup, spec and state, or a put-back's spec and state) and
 the next's, appended together with `AppendBlocks` and waited for together.
 They always share one batch, so a failed batch fails them all and none is
-applied. A crash before that batch is durable can still leave a prefix of
-its blocks on disk: the jobs of earlier blocks recovered without those of
-later ones, as bbolt's chunked adds (`storeNewJobDataChunked`,
-`storeBatched`) can leave earlier chunks stored, but never a later block
-without an earlier one. The add's jobs' records come before its depgroup
-and put-back records, so such a prefix never holds a put-back without the
-jobs it was put back for, and the user's retried add writes what it
-lacks. Dedup, dependency handling and the 260929 rule (a re-add never
-touches a queued or running job's record) are unchanged. `storeEnv`,
+applied. The one exception is a guarded add that defers a put-back (Write
+path, Reviving): it writes that in a further block, in its own batch,
+once the first has finished, so if the further block fails, the first
+stays stored and applied. A crash before a batch is durable can still
+leave a prefix of its blocks on disk: the jobs of earlier blocks recovered
+without those of later ones, as bbolt's chunked adds
+(`storeNewJobDataChunked`, `storeBatched`) can leave earlier chunks
+stored, but never a later block without an earlier one. The add's jobs'
+records come before its depgroup and put-back records, so such a prefix
+never holds a put-back without the jobs it was put back for, and the
+user's retried add writes what it lacks. Dedup, dependency handling and
+the 260929 rule (a re-add never touches a queued or running job's record)
+are unchanged. `storeEnv`,
 `storeLimitGroups` and `storeRepGroupLookups` append their records and
 wait.
 
@@ -1464,10 +1556,14 @@ func reserveDurableWait() time.Duration
 As a user, I want `wr remove` and `wr mod` to be durable and atomic, so
 that a crash never resurrects or half-modifies a job.
 
-Delete appends delete records (one block per call). Modify appends one block
-per job: modify, new spec, new state. Put-backs (`storeLiveForRerun`) append
-spec and state records in one block and leave history as it is. Rerun marks
-are state records.
+Delete appends delete records, one block per call. Modify appends one block
+per call: per job a modify record, the new spec, the new state, std records
+copying the old key's std, and an rglookup of the new key under its RepGroup;
+then a depgroup record per dep group not seen before (bbolt's modify writes
+the same lookups). Put-backs (`storeLiveForRerun`) append spec and state
+records, one block per call, and leave history as it is. A delete, modify or
+put-back over the block size limit is split only between jobs, as an add is.
+Rerun marks are state records.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_log.go`

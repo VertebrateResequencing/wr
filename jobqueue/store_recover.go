@@ -93,7 +93,7 @@ func (r *logReplayer) op(rec []byte, ref wal.Ref, ch codec.Handle) (logOp, error
 		return logOp{}, err
 	}
 
-	op := logOp{typ: parsed.typ, seq: parsed.seq, key: parsed.key, ref: ref, stream: parsed.stream,
+	op := logOp{typ: parsed.typ, seq: parsed.seq, key: parsed.key, newKey: parsed.newKey, ref: ref, stream: parsed.stream,
 		hasStd: len(parsed.body) > 0, limit: parsed.limit, removed: parsed.removed, name: strings.Clone(parsed.name)}
 
 	switch parsed.typ {
