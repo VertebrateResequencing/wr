@@ -63,8 +63,8 @@ checkpoint of live jobs with run-state overlays plus the history buckets
 in `history.bolt`, stats included. Cover all 8 acceptance tests from E1
 against the Phase 1 form.
 Also resolve the 0b.1 incidentals on `reliable2_dbcompat_test.go`'s
-recovery tests and on opening an older bbolt database
-([incidentals.md](incidentals.md)).
+recovery tests and on opening an older bbolt database, and the 1d.1
+incidental on converting `keyRepgroups` ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed
@@ -144,6 +144,8 @@ spec.md section: F3
 Add `jobqueue.ReadStore` and make `developers/soak/dbstart/main.go`
 print the same TSV columns from it; remove `-schema`. Cover the 1
 acceptance test from F3.
+Also resolve the 1d.1 incidental on the startup history key index at prod
+scale ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

@@ -189,6 +189,22 @@ func TestReqStatCache(t *testing.T) {
 			So(loads.count(reqStatTestGroup), ShouldEqual, 0)
 		})
 
+		Convey("a reload that learns the same value leaves the changes stamp alone, and one that learns a new "+
+			"value raises it", func() {
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 300)
+			db.refreshReqGroupRecs(reqStatTestGroup)
+
+			stamp := db.reqStatChanges()
+
+			db.reqStats.invalidate(reqStatTestGroup)
+			So(db.refreshReqGroupRecs(reqStatTestGroup).RAM, ShouldEqual, 300)
+			So(db.reqStatChanges(), ShouldEqual, stamp)
+
+			seedReqGroupStats(server, FailReasonRAM, reqStatTestGroup, 900)
+			So(db.refreshReqGroupRecs(reqStatTestGroup).RAM, ShouldEqual, 900)
+			So(db.reqStatChanges(), ShouldBeGreaterThan, stamp)
+		})
+
 		Convey("archiving a job with a new peak RAM makes its ReqGroup not current by the time the archive returns", func() {
 			seedReqGroupStats(server, FailReasonDisk, reqStatTestGroup, 0)
 			seedReqGroupStats(server, FailReasonTime, reqStatTestGroup, reqStatTestRuntimes()...)

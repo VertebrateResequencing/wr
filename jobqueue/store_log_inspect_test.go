@@ -30,6 +30,7 @@ package jobqueue
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -38,9 +39,8 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-// errLogStoreNoStats is count's error for kindStat: the log store keeps no
-// learned-requirement samples of its own yet.
-var errLogStoreNoStats = errors.New("the log store keeps no learned-requirement samples yet")
+// errLogStoreUnknownKind is count's error for a kind it does not know.
+var errLogStoreUnknownKind = errors.New("unknown record kind")
 
 // logStoreFlushPoll is how often flush checks for unfinished writes.
 const logStoreFlushPoll = time.Millisecond
@@ -148,8 +148,10 @@ func (s *logStore) count(kind recordKind) (int, error) {
 		return len(s.state.envs), nil
 	case kindLimit:
 		return len(s.state.limits), nil
+	case kindStat:
+		return s.sampleCount()
 	default:
-		return 0, errLogStoreNoStats
+		return 0, fmt.Errorf("%w: %d", errLogStoreUnknownKind, kind)
 	}
 }
 
@@ -158,11 +160,13 @@ func (s *logStore) forceBackup() error {
 	return errLogStoreBackup
 }
 
-// flush waits until every write appended so far has finished.
+// flush waits until every write appended so far has finished, then folds
+// them, so that what the folder writes, such as learned-requirement samples,
+// is there too.
 func (s *logStore) flush() error {
 	for s.writing.Load() != 0 {
 		time.Sleep(logStoreFlushPoll)
 	}
 
-	return nil
+	return s.foldNow()
 }

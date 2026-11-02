@@ -65,6 +65,9 @@ with the open segment not yet sealed). Cover D2 acceptance tests 1, 2
 and 4 in `jobqueue/store_segment_test.go`, deferred from item 2a.1, and
 D3 acceptance test 1 in `jobqueue/store_history_test.go`, deferred from
 item 2b.1, because they need the folder to seal segments. Depends on 2b.1.
+Also resolve the 1d.1 incidental on keeping `logState.replaced` and the
+Phase 2 checkpoint's spec per overlay or replaced entry
+([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

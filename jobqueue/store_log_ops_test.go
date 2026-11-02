@@ -30,6 +30,7 @@ package jobqueue
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"slices"
 	"sync"
@@ -591,35 +592,9 @@ func soStd(ctx context.Context, st *logStore, key, wantOut, wantErr string) {
 }
 
 // foldOverlay folds everything in s's overlay into history.bolt, as the folder
-// will, up to the durable end of the log. The folder folds from the log; this
-// reads the overlay, so it is only for a store with no write in flight.
+// does, up to the durable end of the log.
 func foldOverlay(s *logStore) {
-	file, off := s.w.Durable()
-	f := historyFold{to: historyPos{file: file, off: uint64(off)}} //nolint:gosec // an offset
-
-	s.mu.RLock()
-	entries := make(map[logKey]logHistory, len(s.state.overlay))
-
-	for k, h := range s.state.overlay {
-		entries[k] = *h
-	}
-
-	for rg, keys := range s.state.repGroupKeys {
-		for k := range keys {
-			f.lookups = append(f.lookups, historyLookup{repGroup: rg, key: k})
-		}
-	}
-
-	s.mu.RUnlock()
-
-	for k, h := range entries {
-		job, err := s.decodeJob(h.spec, h.complete, logRecComplete)
-		So(err, ShouldBeNil)
-
-		f.complete = append(f.complete, historyFolded{key: k, seq: h.seq, job: job})
-	}
-
-	So(s.foldHistory(&f), ShouldBeNil)
+	So(s.foldNow(), ShouldBeNil)
 }
 
 // appendedHold is a logAppendedHook that holds the first write to append after
@@ -1751,6 +1726,7 @@ type modifyLookupStore interface {
 	deleteLiveJobs(ctx context.Context, keys []string) error
 	checkIfComplete(key string) (bool, error)
 	retrieveCompleteJobsByRepGroup(repgroup string) ([]*Job, error)
+	retrieveRepGroups() ([]string, error)
 }
 
 func TestStoreModifyDropsRepGroupLookups(t *testing.T) {
@@ -1760,67 +1736,109 @@ func TestStoreModifyDropsRepGroupLookups(t *testing.T) {
 
 	ctx := context.Background()
 
-	for _, kind := range []storeKind{storeKindBolt, storeKindLog} {
-		Convey("Given a "+storeKindName(kind)+" store with a job of rep group A completed and put back live", t,
-			func() {
-				var st modifyLookupStore
+	for _, c := range []struct {
+		kind      storeKind
+		foldFirst bool
+	}{{storeKindBolt, false}, {storeKindLog, false}, {storeKindLog, true}} {
+		Convey(fmt.Sprintf("Given a %s store with a job of rep group A completed and put back live, folded "+
+			"before the modify: %t", storeKindName(c.kind), c.foldFirst), t, func() {
+			var (
+				st modifyLookupStore
+				ls *logStore
+			)
 
-				if kind == storeKindLog {
-					st, _ = openTestLogStore(t, ctx)
-				} else {
-					st, _ = openTestStore(t, ctx, kind)
+			if c.kind == storeKindLog {
+				pauseLogFolder()
+
+				ls, _ = openTestLogStore(t, ctx)
+				st = ls
+			} else {
+				st, _ = openTestStore(t, ctx, c.kind)
+			}
+
+			// beforeModify folds the log store's history if asked to, so
+			// that the modify must drop folded rglookups.
+			beforeModify := func() {
+				if c.foldFirst {
+					So(ls.foldNow(), ShouldBeNil)
+				}
+			}
+
+			// each calls check with st, then, for the log store, once the
+			// modify is folded too, and after reopen.
+			each := func(check func(st modifyLookupStore)) {
+				check(st)
+
+				if ls == nil {
+					return
 				}
 
-				job := testDBJob("echo c4 modify lookups", "c4rgA")
-				_, err := st.storeNewJobsGuarded(ctx, []*Job{job}, false, nil)
-				So(err, ShouldBeNil)
+				So(ls.foldNow(), ShouldBeNil)
+				check(ls)
+				check(reopenLogStore(ctx, ls))
+			}
 
-				job.State = JobStateComplete
-				job.EndTime = time.Now()
-				_, err = st.archiveCompletion(job.Key(), job)
-				So(err, ShouldBeNil)
+			job := testDBJob("echo c4 modify lookups", "c4rgA")
+			_, err := st.storeNewJobsGuarded(ctx, []*Job{job}, false, nil)
+			So(err, ShouldBeNil)
 
-				job.State = JobStateReady
-				So(st.storeLiveForRerun([]*Job{job}), ShouldBeNil)
+			job.State = JobStateComplete
+			job.EndTime = time.Now()
+			_, err = st.archiveCompletion(job.Key(), job)
+			So(err, ShouldBeNil)
 
-				Convey("modified to a new key, it is still complete but rep group A no longer finds it", func() {
+			job.State = JobStateReady
+			So(st.storeLiveForRerun([]*Job{job}), ShouldBeNil)
+
+			// droppedFromA asserts job is still complete but rep group A no
+			// longer finds it, though A is still a rep group ever added.
+			droppedFromA := func(st modifyLookupStore) {
+				complete, errc := st.checkIfComplete(job.Key())
+				So(errc, ShouldBeNil)
+				So(complete, ShouldBeTrue)
+
+				byRG, errr := st.retrieveCompleteJobsByRepGroup("c4rgA")
+				So(errr, ShouldBeNil)
+				So(byRG, ShouldBeEmpty)
+
+				rgs, errg := st.retrieveRepGroups()
+				So(errg, ShouldBeNil)
+				So(rgs, ShouldContain, "c4rgA")
+			}
+
+			Convey("modified to a new key in rep group B, it is still complete but rep group A no longer finds it",
+				func() {
+					beforeModify()
+
 					moved := modifiedCopy(job, "echo c4 modify lookups moved")
+					moved.RepGroup = "c4rgB"
 					So(st.modifyLiveJobs(ctx, []string{job.Key()}, []*Job{moved}), ShouldBeNil)
 
-					complete, errc := st.checkIfComplete(job.Key())
-					So(errc, ShouldBeNil)
-					So(complete, ShouldBeTrue)
-
-					byRG, errr := st.retrieveCompleteJobsByRepGroup("c4rgA")
-					So(errr, ShouldBeNil)
-					So(byRG, ShouldBeEmpty)
+					each(droppedFromA)
 				})
 
-				Convey("deleted, then modified to a new key, it is still complete but rep group A no longer finds "+
-					"it", func() {
-					So(st.deleteLiveJobs(ctx, []string{job.Key()}), ShouldBeNil)
+			Convey("deleted, then modified to a new key, it is still complete but rep group A no longer finds "+
+				"it", func() {
+				So(st.deleteLiveJobs(ctx, []string{job.Key()}), ShouldBeNil)
+				beforeModify()
 
-					moved := modifiedCopy(job, "echo c4 modify lookups moved")
-					So(st.modifyLiveJobs(ctx, []string{job.Key()}, []*Job{moved}), ShouldBeNil)
+				moved := modifiedCopy(job, "echo c4 modify lookups moved")
+				So(st.modifyLiveJobs(ctx, []string{job.Key()}, []*Job{moved}), ShouldBeNil)
 
-					complete, errc := st.checkIfComplete(job.Key())
-					So(errc, ShouldBeNil)
-					So(complete, ShouldBeTrue)
+				each(droppedFromA)
+			})
 
-					byRG, errr := st.retrieveCompleteJobsByRepGroup("c4rgA")
-					So(errr, ShouldBeNil)
-					So(byRG, ShouldBeEmpty)
-				})
+			Convey("looked up under rep group B and then modified keeping its key, an add of it under B with "+
+				"ignoreAdded counts it complete under A", func() {
+				inB := testDBJob(job.Cmd, "c4rgB")
+				So(st.storeRepGroupLookups(ctx, []*Job{inB}), ShouldBeNil)
+				beforeModify()
 
-				Convey("looked up under rep group B and then modified keeping its key, an add of it under B with "+
-					"ignoreAdded counts it complete under A", func() {
-					inB := testDBJob(job.Cmd, "c4rgB")
-					So(st.storeRepGroupLookups(ctx, []*Job{inB}), ShouldBeNil)
+				same := modifiedCopy(job, job.Cmd)
+				same.Priority = 7
+				So(st.modifyLiveJobs(ctx, []string{job.Key()}, []*Job{same}), ShouldBeNil)
 
-					same := modifiedCopy(job, job.Cmd)
-					same.Priority = 7
-					So(st.modifyLiveJobs(ctx, []string{job.Key()}, []*Job{same}), ShouldBeNil)
-
+				each(func(st modifyLookupStore) {
 					stored, erra := st.storeNewJobsGuarded(ctx, []*Job{testDBJob(job.Cmd, "c4rgB")}, true, nil)
 					So(erra, ShouldBeNil)
 					So(stored.alreadyAdded.Complete, ShouldEqual, 1)
@@ -1829,6 +1847,7 @@ func TestStoreModifyDropsRepGroupLookups(t *testing.T) {
 					So(stored.alreadyAdded.OtherRepGroups[0].RepGroup, ShouldEqual, "c4rgA")
 				})
 			})
+		})
 	}
 }
 

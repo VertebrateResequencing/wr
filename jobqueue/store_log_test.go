@@ -1271,7 +1271,7 @@ func indexesInverse(st *logState) bool {
 
 // isInverse reports whether byMember holds each member of each of byName's
 // sets under that set's name, and nothing else.
-func isInverse[N, M comparable](byName map[N]map[M]struct{}, byMember map[M][]N) bool {
+func isInverse[N, M comparable, V any](byName map[N]map[M]V, byMember map[M][]N) bool {
 	n := 0
 
 	for name, members := range byName {

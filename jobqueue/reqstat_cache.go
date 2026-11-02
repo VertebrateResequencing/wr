@@ -63,32 +63,8 @@ func (e *reqStatEntry) current() bool {
 	return e.loaded && e.loadedGen == e.gen
 }
 
-// loadReqGroupRecsInto does the load startLoadLocked marked e as doing, for
-// gen, with c.mu not held, then stores the result in e and returns e's value.
-func (db *db) loadReqGroupRecsInto(reqGroup string, e *reqStatEntry, gen uint64) *scheduler.Requirements {
-	c := db.reqStats
-
-	rec, err := db.loadReqGroupRecs(reqGroup)
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	e.loading = false
-
-	if err != nil {
-		clog.Debug(context.Background(), "loading learned requirements failed", "reqgroup", reqGroup, "err", err)
-
-		return e.rec
-	}
-
-	if learnedReqsOf(rec) != learnedReqsOf(e.rec) {
-		c.changes.Add(1)
-	}
-
-	e.rec, e.loadedGen, e.loaded = rec, gen, true
-
-	return rec
-}
+// reqStatLoad reads a ReqGroup's learned requirements from a store's samples.
+type reqStatLoad func(reqGroup string) (*scheduler.Requirements, error)
 
 // reqStatCache holds each ReqGroup's learned requirements, as
 // recommendedReqForGroup computed them from the jobRAM, jobDisk and jobSecs
@@ -112,6 +88,33 @@ func newReqStatCache() *reqStatCache {
 	c.changes.Store(1)
 
 	return c
+}
+
+// loadInto does the load startLoadLocked marked e as doing, for gen, with c.mu
+// not held, then stores the result in e and returns e's value.
+func (c *reqStatCache) loadInto(reqGroup string, e *reqStatEntry, gen uint64,
+	load reqStatLoad,
+) *scheduler.Requirements {
+	rec, err := load(reqGroup)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	e.loading = false
+
+	if err != nil {
+		clog.Debug(context.Background(), "loading learned requirements failed", "reqgroup", reqGroup, "err", err)
+
+		return e.rec
+	}
+
+	if learnedReqsOf(rec) != learnedReqsOf(e.rec) {
+		c.changes.Add(1)
+	}
+
+	e.rec, e.loadedGen, e.loaded = rec, gen, true
+
+	return rec
 }
 
 // startLoadLocked reports whether a load of e is due: e is not current, no
@@ -182,22 +185,10 @@ func (c *reqStatCache) putStat(tx *bolt.Tx, bucket []byte, reqGroup string, val 
 	return nil
 }
 
-// mbToRoundedUpGB returns mb in GB, rounded up; 0 if mb is not positive.
-func mbToRoundedUpGB(mb int) int {
-	if mb <= 0 {
-		return 0
-	}
-
-	return int(math.Ceil(float64(mb) / float64(mbPerGB)))
-}
-
-// cachedReqGroupRecs returns reqGroup's last loaded learned requirements (nil
-// if never loaded) and whether they are current: loaded, and not invalidated
-// since the load started. It does no database I/O and is safe under the
-// queue lock.
-func (db *db) cachedReqGroupRecs(reqGroup string) (*scheduler.Requirements, bool) {
-	c := db.reqStats
-
+// cached returns reqGroup's last loaded learned requirements (nil if never
+// loaded) and whether they are current: loaded, and not invalidated since the
+// load started. It does no database I/O and is safe under the queue lock.
+func (c *reqStatCache) cached(reqGroup string) (*scheduler.Requirements, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -206,13 +197,11 @@ func (db *db) cachedReqGroupRecs(reqGroup string) (*scheduler.Requirements, bool
 	return e.rec, e.current()
 }
 
-// refreshReqGroupRecs loads reqGroup's learned requirements if they are not
+// refresh loads reqGroup's learned requirements with load if they are not
 // current, the last load started at least interval ago, and no load is in
 // flight; otherwise it loads nothing. It returns the cached value afterwards,
 // which after a failed load is the previous value.
-func (db *db) refreshReqGroupRecs(reqGroup string) *scheduler.Requirements {
-	c := db.reqStats
-
+func (c *reqStatCache) refresh(reqGroup string, load reqStatLoad) *scheduler.Requirements {
 	c.mu.Lock()
 	e := c.entryLocked(reqGroup)
 	gen, due := c.startLoadLocked(e)
@@ -223,21 +212,12 @@ func (db *db) refreshReqGroupRecs(reqGroup string) *scheduler.Requirements {
 		return rec
 	}
 
-	return db.loadReqGroupRecsInto(reqGroup, e, gen)
+	return c.loadInto(reqGroup, e, gen, load)
 }
 
-// refreshReqGroupRecsLater is refreshReqGroupRecs in a goroutine tracked by
-// the cache's wg, started only when a load is due. It does nothing once the
-// database has started closing.
-//
-// The load is detached from whichever request found the entry stale, so it
-// takes no context; contextcheck reports that at every caller that has one,
-// and nolintlint cannot see the reports this directive suppresses there.
-//
-//nolint:contextcheck,nolintlint // see above
-func (db *db) refreshReqGroupRecsLater(reqGroup string) {
-	c := db.reqStats
-
+// refreshLater is refresh in a goroutine tracked by wg, started only when a
+// load is due. It does nothing once the cache has started closing.
+func (c *reqStatCache) refreshLater(reqGroup string, load reqStatLoad) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -252,18 +232,11 @@ func (db *db) refreshReqGroupRecsLater(reqGroup string) {
 		return
 	}
 
-	c.wg.Go(func() { db.loadReqGroupRecsInto(reqGroup, e, gen) })
+	c.wg.Go(func() { c.loadInto(reqGroup, e, gen, load) })
 }
 
-// warmReqGroupRecs calls refreshReqGroupRecs once for each distinct ReqGroup
-// of jobs.
-//
-// A load is a short local read whose result is shared by every later caller,
-// so it takes no context, as refreshReqGroupRecsLater's does not; contextcheck
-// reports that at every caller that has one.
-//
-//nolint:contextcheck,nolintlint // see above
-func (db *db) warmReqGroupRecs(jobs []*Job) {
+// warm calls refresh once for each distinct ReqGroup of jobs.
+func (c *reqStatCache) warm(jobs []*Job, load reqStatLoad) {
 	seen := make(map[string]bool)
 
 	for _, job := range jobs {
@@ -277,31 +250,32 @@ func (db *db) warmReqGroupRecs(jobs []*Job) {
 
 		seen[reqGroup] = true
 
-		db.refreshReqGroupRecs(reqGroup)
+		c.refresh(reqGroup, load)
 	}
 }
 
-// loadReqGroupRecs reads reqGroup's learned requirements from the database:
-// RAM from recommendedReqGroupMemory, disk in GB rounded up, and time in
-// seconds. A ReqGroup with no stats gets zero RAM, disk and time.
-func (db *db) loadReqGroupRecs(reqGroup string) (*scheduler.Requirements, error) {
+// loadLearnedReqs reads reqGroup's learned requirements from the jobRAM,
+// jobDisk and jobSecs buckets of bdb: RAM from recommendedReqGroupStat, disk in
+// GB rounded up, and time in seconds, rounding to secRound seconds and mbRound
+// MB. A ReqGroup with no stats gets zero RAM, disk and time.
+func loadLearnedReqs(bdb *bolt.DB, reqGroup string, secRound, mbRound int) (*scheduler.Requirements, error) {
 	if reqStatLoadHook != nil {
 		if err := reqStatLoadHook(reqGroup); err != nil {
 			return nil, err
 		}
 	}
 
-	recm, err := db.recommendedReqGroupMemory(reqGroup)
+	recm, err := recommendedReqGroupStat(bdb, bucketJobRAM, reqGroup, mbRound)
 	if err != nil {
 		return nil, err
 	}
 
-	recd, err := db.recommendedReqGroupDisk(reqGroup)
+	recd, err := recommendedReqGroupStat(bdb, bucketJobDisk, reqGroup, mbRound)
 	if err != nil {
 		return nil, err
 	}
 
-	recs, err := db.recommendedReqGroupTime(reqGroup)
+	recs, err := recommendedReqGroupStat(bdb, bucketJobSecs, reqGroup, secRound)
 	if err != nil {
 		return nil, err
 	}
@@ -312,4 +286,60 @@ func (db *db) loadReqGroupRecs(reqGroup string) (*scheduler.Requirements, error)
 		DiskSet: true,
 		Time:    time.Duration(max(recs, 0)) * time.Second,
 	}, nil
+}
+
+// mbToRoundedUpGB returns mb in GB, rounded up; 0 if mb is not positive.
+func mbToRoundedUpGB(mb int) int {
+	if mb <= 0 {
+		return 0
+	}
+
+	return int(math.Ceil(float64(mb) / float64(mbPerGB)))
+}
+
+// cachedReqGroupRecs returns reqGroup's last loaded learned requirements (nil
+// if never loaded) and whether they are current: loaded, and not invalidated
+// since the load started. It does no database I/O and is safe under the
+// queue lock.
+func (db *db) cachedReqGroupRecs(reqGroup string) (*scheduler.Requirements, bool) {
+	return db.reqStats.cached(reqGroup)
+}
+
+// refreshReqGroupRecs loads reqGroup's learned requirements if they are not
+// current, the last load started at least interval ago, and no load is in
+// flight; otherwise it loads nothing. It returns the cached value afterwards,
+// which after a failed load is the previous value.
+func (db *db) refreshReqGroupRecs(reqGroup string) *scheduler.Requirements {
+	return db.reqStats.refresh(reqGroup, db.loadReqGroupRecs)
+}
+
+// refreshReqGroupRecsLater is refreshReqGroupRecs in a goroutine tracked by
+// the cache's wg, started only when a load is due. It does nothing once the
+// database has started closing.
+//
+// The load is detached from whichever request found the entry stale, so it
+// takes no context; contextcheck reports that at every caller that has one,
+// and nolintlint cannot see the reports this directive suppresses there.
+//
+//nolint:contextcheck,nolintlint // see above
+func (db *db) refreshReqGroupRecsLater(reqGroup string) {
+	db.reqStats.refreshLater(reqGroup, db.loadReqGroupRecs)
+}
+
+// warmReqGroupRecs calls refreshReqGroupRecs once for each distinct ReqGroup
+// of jobs.
+//
+// A load is a short local read whose result is shared by every later caller,
+// so it takes no context, as refreshReqGroupRecsLater's does not; contextcheck
+// reports that at every caller that has one.
+//
+//nolint:contextcheck,nolintlint // see above
+func (db *db) warmReqGroupRecs(jobs []*Job) {
+	db.reqStats.warm(jobs, db.loadReqGroupRecs)
+}
+
+// loadReqGroupRecs reads reqGroup's learned requirements from the database
+// (see loadLearnedReqs).
+func (db *db) loadReqGroupRecs(reqGroup string) (*scheduler.Requirements, error) {
+	return loadLearnedReqs(db.bolt, reqGroup, recommendationRound(db.recSecRound, RecSecRound), db.mbRound())
 }

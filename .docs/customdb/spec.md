@@ -389,8 +389,10 @@ checkpoint:
   modify whose new key is an old key modified later in the same call (A to
   B, then B to C) leaves only C live, where bbolt leaves B and C; the
   server never asks for that (`skipForDuplicateKey` skips a modify whose
-  new key is queued). Phase 1 drops only rglookups not yet folded; the
-  folder (D1) must drop folded ones.
+  new key is queued). In Phase 1 the reducer drops only rglookups not yet
+  folded; the folder (D1) deletes the folded ones when it folds the modify,
+  and until then queries skip the folded rglookups of a key that a modify
+  not yet folded dropped.
 - A state or std record applies only if the key is live, its seq is above
   the key's spec seq and above the last applied seq of its kind (state, or
   that std stream; a `complete` record on a keep-live key sets the std seq
@@ -439,8 +441,9 @@ checkpoint:
   so later state records (kick, `wr mod`, delay changes) carry it too; they
   are never sampled.
 - Learned-requirement samples are history (Phase 1: `history.bolt`'s
-  `jobRAM`, `jobDisk`, `jobSecs`; Phase 2: segment footers), loaded into
-  memory at open and extended by the folder from `complete` records (as
+  `jobRAM`, `jobDisk`, `jobSecs`, read as bbolt's are when the cache loads a
+  req group; Phase 2: segment footers, loaded into memory at open), extended
+  by the folder from `complete` records (as
   `putJobStats`) and exitstat records (as `updateFailStat`, including
   `shouldRecordHighPeakRAMStat`) only.
 
@@ -630,21 +633,27 @@ checkpoint:
 
 ### In-memory state of `logStore`
 
-Per live key: spec seq and last applied state and std seqs, Ref of its
-spec record, Ref of its last state record, its rep group, dep groups and
-reverse dep groups (index membership, kept by dep group and by key).
-Plus: envs (blob by key), limits, dep groups ever seen, std Refs by key,
-learned-requirement samples per req group (sorted slices), history key
-index (with each key's last applied `complete` seq: Phase 1 reads it
-from `history.bolt`'s `completeSeq` bucket, Phase 2 from the record its
-Ref points to), history overlay (completions not yet folded: key to spec
-Ref, `complete` record Ref, rep group and EndTime; rglookups not yet
-folded, by rep group and by key; and each rep group's latest EndTime
-among them, kept until a fold commits one as late, as `repgroupEndTime`
-keeps it), and the folded position F that decides which `complete` and
-rglookup records the overlay leaves out (Folder and history). Live
-`*Job` values are never held by the store; methods that return live jobs
-decode them through their Refs.
+Per live key: spec seq and last applied state and std seqs, Ref of its spec
+record, Ref of its last state record, its rep group, dep groups and reverse dep
+groups (index membership, kept by dep group and by key). Plus: envs (blob by
+key), limits, dep groups ever seen, std Refs by key, learned-requirement samples
+per req group (sorted slices; Phase 2 only, as Phase 1 reads them from
+`history.bolt`), history key index (with each key's last applied `complete` seq:
+Phase 1 reads it from `history.bolt`'s `completeSeq` bucket, Phase 2 from the
+record its Ref points to), history overlay (completions not yet folded: key to
+spec Ref, `complete` record Ref, rep group and EndTime, and, until each folds,
+the entries a later `complete` of their key replaced, so that the folder pairs
+every `complete` with the spec it applied with whenever it reads it; rglookups
+not yet folded, by rep group and by key, and their rep groups, each with the Ref
+of its latest rglookup, dropped once F passes that Ref (not its seq, as records
+can reach the log out of seq order) and kept when a modify drops the rglookup,
+as `repgroups` keeps them; and each rep group's latest EndTime among them, kept
+until a fold commits one as late, as `repgroupEndTime` keeps it), the keys whose
+folded rglookups a modify not yet folded dropped (each with that modify's seq),
+and the folded position F that decides which `complete`, rglookup and modify
+records the in-memory state leaves to history (Folder and history). Live `*Job`
+values are never held by the store; methods that return live jobs decode them
+through their Refs.
 
 ### Recovery
 
@@ -706,14 +715,19 @@ since the last), and never sooner after the previous one ended than it took:
    live job's spec and state records, each live key's non-empty std, and
    every env, limit and depgroup record, then a trailer frame (block
    offsets, magic `WRCKPT01`). Phase 2 only: it also holds the spec record
-   of each key with a `complete` record at or after `histFrom` and before
-   the cut that is no longer live (completions in the open segment), so an
-   overlay entry's spec survives wal deletion. In Phase 1 that set is
-   empty: after step 2, `histFrom` is at or past the cut.
+   of each overlay or replaced entry (In-memory state of `logStore`) made
+   by a `complete` record at or after `histFrom` and before the cut
+   (completions in the open segment), unless it is a live job's spec
+   record, which it holds already. That is one spec per entry, not one per
+   key, as a re-add or modify can change a key's spec between two of its
+   `complete` records, and it lets each entry's spec survive wal deletion.
+   In Phase 1 that set is empty: after step 2, `histFrom` is at or past
+   the cut.
 4. fsync, rename to `.ckpt`, fsync the directory, then swap every in-memory
-   Ref (spec, last state, std, overlay spec) that points below the cut for
-   its copy in the new checkpoint, then delete older checkpoints (except one
-   a backup tick holds) and apply the wal deletion rule.
+   Ref (spec, last state, std, overlay spec, replaced entry spec) that
+   points below the cut for its copy in the new checkpoint, then delete
+   older checkpoints (except one a backup tick holds) and apply the wal
+   deletion rule.
 
 A checkpoint is a pure function of files on disk, so it is a consistent cut
 whatever the hot path does meanwhile.
@@ -727,19 +741,30 @@ and every new learned-requirement sample, from `complete` and exitstat
 records only (Records). It reads a file followed by another only up
 to the end recovery gives it (step 4), so an abandoned batch is never
 folded.
-Folding is idempotent and resumable from a log position. A failed fold
-(read or history commit) is retried from the last durable position with
-the writer's backoff (100ms doubling, capped at `walRetryCap`) and logged
-as `foldFailedLogMsg = "history fold failed"` at error at most once a
-minute with `failures`; it never stops the manager.
+Folding is idempotent and resumable from a log position. A fold of more than
+`foldChunkRecords` (4,096) records is made in chunks: each ends at the first
+frame after that many records and commits its records with the folded position
+it moves to in one transaction, so a backlog is folded, held in memory and
+under the store's lock a chunk at a time, and a crash between chunks leaves
+history holding the log up to its folded position. A chunk never splits a
+block, so one large write (an add of many jobs) folds in one transaction.
+Close stops a fold after the chunk it is folding, as a crash between chunks
+would, so it never waits for a backlog; the next open folds the rest. A
+failed fold (read or history commit) is retried from the last durable position
+with the writer's backoff (100ms doubling, capped at `walRetryCap`) and logged
+as `foldFailedLogMsg = "history fold failed"` at error at most once a minute
+with `failures`; it never stops the manager.
 
 - Phase 1: history is `history.bolt` with today's history buckets
   (`jobscomplete`, `repgroupToKey`, `repgroups`, `depgroupToKey`,
   `reverseDepgroupToKey`, `depgroups`, `endTimeToKey`, `repgroupEndTime`,
   `jobRAM`, `jobDisk`, `jobSecs`), plus `meta` holding the folded position and
-  the highest folded `complete` seq, and `completeSeq` (key to the seq of its
-  last folded `complete` record), all written in the fold's transaction (and by
-  E1 step 4). A fold applies a `complete` record only if its seq is above the
+  the highest folded `complete` seq, `completeSeq` (key to the seq of its
+  last folded `complete` record), and `keyRepgroups` (`repgroupToKey`'s
+  reverse, key then rep group, so that a fold of a modify record deletes its
+  old key's folded rglookups as `deleteLookupEntriesForJobKey` does), all
+  written in the fold's transaction (and by E1 step 4). The folded position in
+  `meta` never moves back. A fold applies a `complete` record only if its seq is above the
   key's `completeSeq` (the reducer's history rule). `jobscomplete`,
   `endTimeToKey`, `repgroupEndTime` and the stats buckets hold completed jobs
   only. `repgroupToKey` and `repgroups` also hold every folded rglookup, and
@@ -995,10 +1020,14 @@ since F5 deletes `archivefold.go`), for each writer with activity, warn
 `archive`, `bestEffort`, `batch`; Phase 1 adds `log` and `fold`), `txs`,
 `items`, `meanLock`, `maxLock` (waiting for turn and lock), `meanHold`,
 `maxHold` (transaction including commit), `interval`; for `log`: `batches`,
-`records`, `bytes`, `meanSync`, `maxSync`. Also warn `reservationWaitLogMsg =
-"reservation wait"` (`n`, `p50`, `p99`, `max`, `notDurable`, `abandoned`) and
-`addWaitLogMsg = "add wait"` (`n`, `p50`, `p99`, `max` over
-`storeNewJobsGuarded` calls). Lines with `n` or `txs` 0 are not written.
+`records`, `bytes`, `meanSync`, `maxSync`; `fold` counts each committed
+history.bolt transaction of a fold (one per chunk), with the records it folded
+as `items`, but not a fold that folds no record and only moves the folded
+position (as the first after an open does), so an idle store logs no line.
+Also warn `reservationWaitLogMsg = "reservation wait"` (`n`, `p50`, `p99`,
+`max`, `notDurable`, `abandoned`) and `addWaitLogMsg = "add wait"` (`n`,
+`p50`, `p99`, `max` over `storeNewJobsGuarded` calls). Lines with `n` or `txs`
+0 are not written.
 
 ```go
 // waitHistogram is a lock-free log-linear histogram of durations.

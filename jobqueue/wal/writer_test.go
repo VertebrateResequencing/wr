@@ -120,6 +120,18 @@ func TestRetryDelay(t *testing.T) {
 	})
 }
 
+func TestExportedRetryDelay(t *testing.T) {
+	Convey("RetryDelay is the writer's backoff, capped as a new writer caps it", t, func() {
+		So(RetryDelay(1), ShouldEqual, 0)
+		So(RetryDelay(3), ShouldEqual, 200*time.Millisecond)
+		So(RetryDelay(1000), ShouldEqual, walRetryCap)
+
+		Reset(SetTestRetryCap(150 * time.Millisecond))
+
+		So(RetryDelay(1000), ShouldEqual, 150*time.Millisecond)
+	})
+}
+
 // syncHold is a sync hook that blocks its first call until released.
 type syncHold struct {
 	entered, release chan struct{}

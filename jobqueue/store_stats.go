@@ -178,6 +178,25 @@ func (w *writerStats) take() writerSummary {
 	return summary
 }
 
+// report logs w's "db writer" line, as writer name, if it ran a transaction
+// since the last report.
+func (w *writerStats) report(ctx context.Context, name string, interval time.Duration) {
+	summary := w.take()
+	if summary.txs == 0 {
+		return
+	}
+
+	clog.Warn(ctx, dbWriterStatsLogMsg,
+		"writer", name,
+		"txs", summary.txs,
+		"items", summary.items,
+		"meanLock", nanosDuration(summary.lockNanos/summary.txs),
+		"maxLock", nanosDuration(summary.maxLock),
+		"meanHold", nanosDuration(summary.holdNanos/summary.txs),
+		"maxHold", nanosDuration(summary.maxHold),
+		"interval", interval)
+}
+
 // dbWriterStats holds every bbolt writer's writerStats.
 type dbWriterStats [dbWriterCount]writerStats
 
@@ -190,20 +209,7 @@ func (s *dbWriterStats) observe(writer dbWriter, items int, asked, begun time.Ti
 // last report.
 func (s *dbWriterStats) report(ctx context.Context, interval time.Duration) {
 	for writer := range dbWriterCount {
-		summary := s[writer].take()
-		if summary.txs == 0 {
-			continue
-		}
-
-		clog.Warn(ctx, dbWriterStatsLogMsg,
-			"writer", dbWriterNames[writer],
-			"txs", summary.txs,
-			"items", summary.items,
-			"meanLock", nanosDuration(summary.lockNanos/summary.txs),
-			"maxLock", nanosDuration(summary.maxLock),
-			"meanHold", nanosDuration(summary.holdNanos/summary.txs),
-			"maxHold", nanosDuration(summary.maxHold),
-			"interval", interval)
+		s[writer].report(ctx, dbWriterNames[writer], interval)
 	}
 }
 

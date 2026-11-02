@@ -2233,6 +2233,25 @@ func decodeStoredJob(encoded []byte, ch codec.Handle) (*Job, error) {
 	return job, nil
 }
 
+// recommendedReqGroupStat is the implementation for the recommend*() methods,
+// over the stat buckets of bdb.
+func recommendedReqGroupStat(bdb *bolt.DB, statBucket []byte, reqGroup string, roundAmount int) (int, error) {
+	var maxVal, recommendation int
+
+	err := bdb.View(func(tx *bolt.Tx) error {
+		var errs error
+
+		maxVal, recommendation, errs = scanReqGroupStat(tx.Bucket(statBucket).Cursor(), []byte(reqGroup+dbDelimiter))
+
+		return errs
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	return roundRecommendation(recommendation, maxVal, roundAmount), nil
+}
+
 // dropStaleEndTimeIndex recovers the key's prior end time from its existing
 // bucketJobsComplete record (so it must run before that record is overwritten)
 // and, if different from newNanos, deletes the prior forward index entry. It
@@ -5991,7 +6010,7 @@ func copyBucketValue(b *bolt.Bucket, key []byte) []byte {
 // case, the true value is rounded up to the nearest 100 MB. Returns 0 if there
 // are no prior values.
 func (db *db) recommendedReqGroupMemory(reqGroup string) (int, error) {
-	return db.recommendedReqGroupStat(bucketJobRAM, reqGroup, db.mbRound())
+	return recommendedReqGroupStat(db.bolt, bucketJobRAM, reqGroup, db.mbRound())
 }
 
 // recommendedReqGroupDisk returns the 95th percentile peak disk usage of
@@ -6001,7 +6020,7 @@ func (db *db) recommendedReqGroupMemory(reqGroup string) (int, error) {
 // case, the true value is rounded up to the nearest 100 MB. Returns 0 if there
 // are no prior values.
 func (db *db) recommendedReqGroupDisk(reqGroup string) (int, error) {
-	return db.recommendedReqGroupStat(bucketJobDisk, reqGroup, db.mbRound())
+	return recommendedReqGroupStat(db.bolt, bucketJobDisk, reqGroup, db.mbRound())
 }
 
 // mbRound returns the MB rounding for recommendations, falling back to the
@@ -6026,26 +6045,7 @@ func recommendationRound(round, defaultRound int) int {
 // case, the true value is rounded up to the nearest second. Returns 0 if there
 // are no prior values.
 func (db *db) recommendedReqGroupTime(reqGroup string) (int, error) {
-	return db.recommendedReqGroupStat(bucketJobSecs, reqGroup, recommendationRound(db.recSecRound, RecSecRound))
-}
-
-// recommendedReqGroupStat is the implementation for the other recommend*()
-// methods.
-func (db *db) recommendedReqGroupStat(statBucket []byte, reqGroup string, roundAmount int) (int, error) {
-	var maxVal, recommendation int
-
-	err := db.bolt.View(func(tx *bolt.Tx) error {
-		var errs error
-
-		maxVal, recommendation, errs = scanReqGroupStat(tx.Bucket(statBucket).Cursor(), []byte(reqGroup+dbDelimiter))
-
-		return errs
-	})
-	if err != nil {
-		return 0, err
-	}
-
-	return roundRecommendation(recommendation, maxVal, roundAmount), nil
+	return recommendedReqGroupStat(db.bolt, bucketJobSecs, reqGroup, recommendationRound(db.recSecRound, RecSecRound))
 }
 
 // scanReqGroupStat seeks over a stat bucket for the given prefix (a ReqGroup

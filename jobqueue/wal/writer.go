@@ -941,6 +941,13 @@ func retryDelay(failures int, limit time.Duration) time.Duration {
 	return min(d, limit)
 }
 
+// RetryDelay returns the writer's backoff after failures consecutive failures,
+// for another writer that retries as this one does: none after the first, then
+// 100ms doubling per further failure, capped as a writer made now caps it.
+func RetryDelay(failures int) time.Duration {
+	return retryDelay(failures, retryCap())
+}
+
 // loadTestSyncHook returns the sync hook SetTestSyncHook set, if any.
 func loadTestSyncHook() func(path string) error {
 	if h := testSyncHook.Load(); h != nil {

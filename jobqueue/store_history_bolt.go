@@ -75,6 +75,10 @@ var (
 	// record's seq.
 	bucketCompleteSeq = []byte("completeSeq") //nolint:gochecknoglobals
 
+	// bucketKeyRGs is repgroupToKey's reverse, key then rep group, so that a
+	// fold of a modify finds every rglookup of its old key to delete.
+	bucketKeyRGs = []byte("keyRepgroups") //nolint:gochecknoglobals
+
 	// historyMetaFolded is meta's key of the folded position, and
 	// historyMetaMaxSeq of the highest folded complete record's seq.
 	historyMetaFolded = []byte("folded") //nolint:gochecknoglobals
@@ -84,15 +88,30 @@ var (
 	historyBoltBuckets = [][]byte{ //nolint:gochecknoglobals
 		bucketJobsComplete, bucketRTK, bucketRGs, bucketDTK, bucketRDTK, bucketDepGroups,
 		bucketEndTimeToKey, bucketRGEndTime, bucketJobRAM, bucketJobDisk, bucketJobSecs,
-		bucketHistoryMeta, bucketCompleteSeq,
+		bucketHistoryMeta, bucketCompleteSeq, bucketKeyRGs,
 	}
 )
+
+// foldApplyBatch is how many of a fold's records foldHistory drops from the
+// in-memory state per hold of the store's lock, so that a fold of one large
+// block, which no chunk splits (see foldNow), never holds it for long.
+const foldApplyBatch = 1024
 
 // historyPos is a position in the log: a wal file and an offset in it. The
 // folded position is the end of the log the folder has folded.
 type historyPos struct {
 	file uint32
 	off  uint64
+}
+
+// historyFoldedPos returns the folded position meta holds.
+func historyFoldedPos(meta *bolt.Bucket) historyPos {
+	v := meta.Get(historyMetaFolded)
+	if len(v) != historyPosLen {
+		return historyPos{}
+	}
+
+	return historyPos{file: binary.BigEndian.Uint32(v), off: binary.BigEndian.Uint64(v[4:])}
 }
 
 // covers reports whether ref's record is before p, so folded if p is the
@@ -114,32 +133,112 @@ type historyFolded struct {
 	job *Job
 }
 
-// historyLookup is one rglookup record a fold commits.
+// historyLookup is one rglookup record a fold commits, or, if dropped, one
+// modify record, which drops every rglookup of its old key, key. seq is the
+// record's.
 type historyLookup struct {
 	repGroup string
 	key      logKey
+	seq      uint64
+	dropped  bool
+}
+
+// netHistoryLookups returns what lookups, in order, leave: the rglookups put
+// and not dropped after, and the keys dropped, whose rglookups history.bolt
+// already holds go, in key order.
+func netHistoryLookups(lookups []historyLookup) ([]historyLookup, []logKey) {
+	put := make(map[logKey]map[string]bool)
+	dropped := make(map[logKey]bool)
+
+	for _, l := range lookups {
+		if l.dropped {
+			delete(put, l.key)
+			dropped[l.key] = true
+
+			continue
+		}
+
+		if put[l.key] == nil {
+			put[l.key] = make(map[string]bool)
+		}
+
+		put[l.key][l.repGroup] = true
+	}
+
+	var puts []historyLookup
+
+	for k, rgs := range put {
+		for rg := range rgs {
+			puts = append(puts, historyLookup{repGroup: rg, key: k})
+		}
+	}
+
+	return puts, slices.SortedFunc(maps.Keys(dropped), func(a, b logKey) int { return bytes.Compare(a[:], b[:]) })
+}
+
+// lookupRepGroups returns the rep group of each of lookups' rglookups, once
+// each, whether or not a later one dropped it.
+func lookupRepGroups(lookups []historyLookup) [][]byte {
+	seen := make(map[string]bool)
+
+	var repGroups [][]byte
+
+	for _, l := range lookups {
+		if !l.dropped && !seen[l.repGroup] {
+			seen[l.repGroup] = true
+			repGroups = append(repGroups, []byte(l.repGroup))
+		}
+	}
+
+	return repGroups
 }
 
 // historyFold is what one fold commits to history.bolt: complete records,
-// each with the job of its history entry, rglookup records, and the folded
+// each with the job of its history entry, rglookup and modify records in log
+// order, the learned-requirement samples of exitstat records, and the folded
 // position they bring history.bolt to.
 type historyFold struct {
 	complete []historyFolded
 	lookups  []historyLookup
+	samples  []jobExitData
 	to       historyPos
+}
+
+// items returns how many records f folds.
+func (f *historyFold) items() int {
+	return len(f.complete) + len(f.lookups) + len(f.samples)
 }
 
 // foldHistory commits f to history.bolt, then drops from the overlay what it
 // folded and moves the state's folded position to f's, so that a record f
 // folded before its done func applied it is applied as folded too. The folder
-// calls it for each fold.
+// calls it for each fold, contiguously from the folded position.
+//
+// It changes the in-memory state in batches, each under the store's lock,
+// in an order that keeps every query's answer whole between them, as each
+// batch drops only what history.bolt now holds: first the folded position
+// and the history index, together, as a done func f overtook then applies to
+// the live plane only, leaving the index to this fold; then the keys a modify
+// dropped the folded rglookups of, which history.bolt no longer holds, before
+// any rglookup they would hide once their own is dropped; then the overlay's
+// completions and rglookups.
 func (s *logStore) foldHistory(f *historyFold) error {
-	if err := s.history.fold(f); err != nil {
+	if err := s.history.fold(f, s.reqStats, &s.foldStats); err != nil {
 		return err
 	}
 
+	callHook(&logFoldCommittedHook)
+
+	s.moveFolded(f)
+	s.dropFolded(f)
+
+	return nil
+}
+
+// moveFolded moves the state's folded position to f's, and raises the history
+// index to f's complete records, for foldHistory.
+func (s *logStore) moveFolded(f *historyFold) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if f.to.after(s.state.folded) {
 		s.state.folded = f.to
@@ -147,16 +246,34 @@ func (s *logStore) foldHistory(f *historyFold) error {
 
 	for i := range f.complete {
 		c := &f.complete[i]
-		s.state.unfold(c.key, c.seq)
-		s.state.unfoldEnd(c.job.RepGroup, c.job.EndTime)
 		s.state.history[c.key] = max(s.state.history[c.key], c.seq)
 	}
 
-	for _, l := range f.lookups {
-		s.state.unlookUp(l.repGroup, l.key)
-	}
+	s.mu.Unlock()
+	callHook(&logFoldBatchHook)
+}
 
-	return nil
+// dropFolded drops from the in-memory state what f folded, for foldHistory, in
+// batches: the keys a modify dropped first, then completions and rglookups.
+func (s *logStore) dropFolded(f *historyFold) {
+	s.inFoldBatches(len(f.lookups), func(i int) {
+		if l := f.lookups[i]; l.dropped {
+			s.state.relook(l.key, l.seq)
+		}
+	})
+
+	s.inFoldBatches(len(f.complete), func(i int) {
+		c := &f.complete[i]
+		s.state.unfold(c.key, c.seq)
+		s.state.unfoldEnd(c.job.RepGroup, c.job.EndTime)
+	})
+
+	s.inFoldBatches(len(f.lookups), func(i int) {
+		if l := f.lookups[i]; !l.dropped {
+			s.state.unlookUp(l.repGroup, l.key, l.seq)
+			s.state.unlookUpRG(l.repGroup)
+		}
+	})
 }
 
 // historyBolt is history.bolt.
@@ -199,10 +316,7 @@ func (h *historyBolt) load(index map[logKey]uint64) (historyPos, uint64, error) 
 	)
 
 	err := h.bolt.View(func(tx *bolt.Tx) error {
-		if v := tx.Bucket(bucketHistoryMeta).Get(historyMetaFolded); len(v) == historyPosLen {
-			pos = historyPos{file: binary.BigEndian.Uint32(v), off: binary.BigEndian.Uint64(v[4:])}
-		}
-
+		pos = historyFoldedPos(tx.Bucket(bucketHistoryMeta))
 		maxSeq = historyMaxSeq(tx)
 
 		return loadCompleteSeqs(tx, index)
@@ -239,96 +353,177 @@ func loadCompleteSeqs(tx *bolt.Tx, index map[logKey]uint64) error {
 	})
 }
 
-// fold commits f in one transaction: each rglookup into repgroupToKey and
-// repgroups, each complete record whose seq is above its key's completeSeq as
-// today's archive records a completion (jobscomplete, endTimeToKey,
-// repgroupEndTime), and the folded position and highest folded seq into meta.
-// A complete record at or below its key's completeSeq is already folded, so
-// folding again changes nothing.
-func (h *historyBolt) fold(f *historyFold) error {
-	return h.bolt.Update(func(tx *bolt.Tx) error {
-		for _, l := range f.lookups {
-			if err := putHistoryLookup(tx, l); err != nil {
-				return err
-			}
-		}
+// fold commits f in one transaction: each rglookup into repgroupToKey,
+// repgroups and keyRepgroups, and each modify's dropping of its old key's
+// rglookups, in log order; each complete record whose seq is above its key's
+// completeSeq as today's archive records a completion (jobscomplete,
+// endTimeToKey, repgroupEndTime); the learned-requirement samples of each
+// complete record it records (as putJobStats) and exitstat record (as
+// updateFailStat), through stats, which invalidates a ReqGroup given a new
+// sample once the transaction commits; and the folded position and highest
+// folded seq into meta. A complete record at or below its key's completeSeq is already folded,
+// so folding it again changes nothing and adds no sample, and samples are kept
+// per distinct value, so an exitstat sample folded again adds none. The
+// transaction is observed in writer once it commits, unless it folds no record
+// and only moves the folded position, as the first fold after an open does, so
+// an idle store logs no "db writer" line (spec A3); a failed one is not, as the
+// fold that retries it is.
+func (h *historyBolt) fold(f *historyFold, stats *reqStatCache, writer *writerStats) error {
+	var begun time.Time
 
-		maxSeq, err := h.putCompletes(tx, f.complete)
-		if err != nil {
-			return err
-		}
+	asked := time.Now()
 
-		return putHistoryMeta(tx, f.to, maxSeq)
+	err := h.bolt.Update(func(tx *bolt.Tx) error {
+		begun = time.Now()
+
+		return h.foldTx(tx, f, stats)
 	})
+	if err == nil && f.items() > 0 {
+		writer.observe(f.items(), asked, begun)
+	}
+
+	return err
 }
 
-// putHistoryLookup records l's key under its rep group, as an add does in the
-// bbolt store.
-func putHistoryLookup(tx *bolt.Tx, l historyLookup) error {
-	key := []byte(l.repGroup + dbDelimiter + l.key.String())
-	if err := tx.Bucket(bucketRTK).Put(key, nil); err != nil {
+// foldTx makes fold's changes of f in tx.
+func (h *historyBolt) foldTx(tx *bolt.Tx, f *historyFold, stats *reqStatCache) error {
+	if err := foldHistoryLookups(tx, f.lookups); err != nil {
 		return err
 	}
 
-	return tx.Bucket(bucketRGs).Put([]byte(l.repGroup), nil)
+	maxSeq, err := h.putCompletes(tx, f.complete, stats)
+	if err == nil {
+		err = putFailStats(tx, f.samples, stats)
+	}
+
+	if hook := logFoldTxHook.Load(); err == nil && hook != nil {
+		err = (*hook)()
+	}
+
+	if err != nil {
+		return err
+	}
+
+	return putHistoryMeta(tx, f.to, maxSeq)
 }
 
-// putHistoryMeta records the folded position and highest folded seq in meta.
+// foldHistoryLookups puts each of lookups' rglookups in tx, or, for a dropped
+// one, deletes every rglookup of its key, as if in order. It works out their net
+// effect first, then deletes and puts in key order, since bbolt inserts into a
+// node it has not yet split by moving every later entry: so putting in random
+// order costs time quadratic in the number put. Every rglookup's rep group goes
+// into repgroups, the rep groups ever added, even one a later modify drops.
+func foldHistoryLookups(tx *bolt.Tx, lookups []historyLookup) error {
+	puts, drops := netHistoryLookups(lookups)
+
+	for _, k := range drops {
+		if err := dropHistoryLookups(tx, k); err != nil {
+			return err
+		}
+	}
+
+	lookupKeys := make([][]byte, len(puts))
+	reverseKeys := make([][]byte, len(puts))
+
+	for i, l := range puts {
+		key := l.key.String()
+		lookupKeys[i] = []byte(l.repGroup + dbDelimiter + key)
+		reverseKeys[i] = []byte(key + dbDelimiter + l.repGroup)
+	}
+
+	for bucket, keys := range map[string][][]byte{
+		string(bucketRTK): lookupKeys, string(bucketKeyRGs): reverseKeys, string(bucketRGs): lookupRepGroups(lookups),
+	} {
+		if err := putSortedKeys(tx.Bucket([]byte(bucket)), keys); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// putFailStats records the learned-requirement sample of each of samples, an
+// exitstat record's, as the bbolt store's exits do (updateFailStat).
+func putFailStats(tx *bolt.Tx, samples []jobExitData, stats *reqStatCache) error {
+	for i := range samples {
+		if err := samples[i].updateFailStat(tx, stats); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// putHistoryMeta records the folded position, unless meta holds a later one,
+// which it never moves back from, and the highest folded seq in meta.
 func putHistoryMeta(tx *bolt.Tx, to historyPos, maxSeq uint64) error {
 	meta := tx.Bucket(bucketHistoryMeta)
-	pos := binary.BigEndian.AppendUint64(binary.BigEndian.AppendUint32(nil, to.file), to.off)
 
-	if err := meta.Put(historyMetaFolded, pos); err != nil {
-		return err
+	if !historyFoldedPos(meta).after(to) {
+		pos := binary.BigEndian.AppendUint64(binary.BigEndian.AppendUint32(nil, to.file), to.off)
+		if err := meta.Put(historyMetaFolded, pos); err != nil {
+			return err
+		}
 	}
 
 	return meta.Put(historyMetaMaxSeq, binary.BigEndian.AppendUint64(nil, maxSeq))
 }
 
-// putCompletes is putComplete of each of complete, returning the highest
-// folded seq meta is to hold after them.
-func (h *historyBolt) putCompletes(tx *bolt.Tx, complete []historyFolded) (uint64, error) {
+// putCompletes is putComplete of each of complete, with the learned-requirement
+// samples of each it records through stats, returning the highest folded seq
+// meta is to hold after them.
+func (h *historyBolt) putCompletes(tx *bolt.Tx, complete []historyFolded, stats *reqStatCache) (uint64, error) {
 	maxSeq := historyMaxSeq(tx)
 
-	for i := range complete {
-		if err := h.putComplete(tx, &complete[i]); err != nil {
+	// In key order, for the reason foldHistoryLookups puts in key order; the
+	// completeSeq rule makes the order of one key's records not matter.
+	sorted := slices.Clone(complete)
+	slices.SortStableFunc(sorted, func(a, b historyFolded) int { return bytes.Compare(a.key[:], b.key[:]) })
+
+	for i := range sorted {
+		put, err := h.putComplete(tx, &sorted[i])
+		if err == nil && put {
+			err = putJobStats(tx, stats, sorted[i].job)
+		}
+
+		if err != nil {
 			return 0, err
 		}
 
-		maxSeq = max(maxSeq, complete[i].seq)
+		maxSeq = max(maxSeq, sorted[i].seq)
 	}
 
 	return maxSeq, nil
 }
 
-// putComplete records c's job as its key's history entry, unless completeSeq
-// shows it is already folded.
-func (h *historyBolt) putComplete(tx *bolt.Tx, c *historyFolded) error {
+// putComplete records c's job as its key's history entry and reports true,
+// unless completeSeq shows it is already folded.
+func (h *historyBolt) putComplete(tx *bolt.Tx, c *historyFolded) (bool, error) {
 	key := []byte(c.key.String())
 	seqs := tx.Bucket(bucketCompleteSeq)
 
 	if v := seqs.Get(key); len(v) == historySeqLen && binary.BigEndian.Uint64(v) >= c.seq {
-		return nil
+		return false, nil
 	}
 
 	var encoded []byte
 	if err := codec.NewEncoderBytes(&encoded, h.ch).Encode(c.job); err != nil {
-		return err
+		return false, err
 	}
 
 	if err := updateEndTimeIndex(tx, key, c.job, h.ch); err != nil {
-		return err
+		return false, err
 	}
 
 	if err := tx.Bucket(bucketJobsComplete).Put(key, encoded); err != nil {
-		return err
+		return false, err
 	}
 
 	if err := updateRGEndTime(tx.Bucket(bucketRGEndTime), c.job); err != nil {
-		return err
+		return false, err
 	}
 
-	return seqs.Put(key, binary.BigEndian.AppendUint64(nil, c.seq))
+	return true, seqs.Put(key, binary.BigEndian.AppendUint64(nil, c.seq))
 }
 
 // close closes history.bolt.
@@ -372,14 +567,16 @@ func (s *logStore) retrieveCompleteJobsRecent(cutoff time.Time) ([]*Job, error) 
 	return jobs, err
 }
 
-// historyRead is one history query's view: a copy of the overlay, and of the
-// overlay's rglookups of repGroup, taken before tx, its history.bolt read
-// transaction.
+// historyRead is one history query's view: a copy of the overlay, of the
+// overlay's rglookups of repGroup, and of the keys whose rglookups in
+// history.bolt a modify dropped (unlooked), taken before tx, its history.bolt
+// read transaction.
 type historyRead struct {
 	s        *logStore
 	overlay  map[logKey]logHistory
 	repGroup string
-	lookups  map[logKey]struct{}
+	lookups  map[logKey]uint64
+	unlooked map[logKey]uint64
 	tx       *bolt.Tx
 }
 
@@ -393,11 +590,12 @@ func (r *historyRead) view(fn func(r *historyRead) error) error {
 }
 
 // repGroupKeys returns, in key order as bbolt's repgroupToKey walk gives
-// them, the keys looked up under r's rep group.
+// them, the keys looked up under r's rep group, skipping those history.bolt
+// holds of a key a modify not yet folded dropped.
 func (r *historyRead) repGroupKeys() ([]logKey, error) {
-	keys := maps.Clone(r.lookups)
-	if keys == nil {
-		keys = make(map[logKey]struct{})
+	keys := make(map[logKey]struct{}, len(r.lookups))
+	for k := range r.lookups {
+		keys[k] = struct{}{}
 	}
 
 	prefix := []byte(r.repGroup + dbDelimiter)
@@ -409,7 +607,9 @@ func (r *historyRead) repGroupKeys() ([]logKey, error) {
 			return nil, err
 		}
 
-		keys[key] = struct{}{}
+		if _, dropped := r.unlooked[key]; !dropped {
+			keys[key] = struct{}{}
+		}
 	}
 
 	return slices.SortedFunc(maps.Keys(keys), func(a, b logKey) int { return bytes.Compare(a[:], b[:]) }), nil
@@ -659,14 +859,11 @@ func (r *historyRead) archivedBytes(k logKey) (int, error) {
 
 // completedElsewhere is the bbolt store's checkIfCompleteUnderRepGroupTx for
 // k, whose history entry no overlay rglookup links to repGroup: nil if
-// history.bolt's repgroupToKey links it, or its entry's rep group is
-// repGroup; else that rep group and the entry's EndTime.
+// history.bolt's repgroupToKey links it (and no modify not yet folded dropped
+// that), or its entry's rep group is repGroup; else that rep group and the
+// entry's EndTime.
 func (r *historyRead) completedElsewhere(k logKey, repGroup string) (*completedElsewhere, error) {
-	if r.tx.Bucket(bucketRTK).Get([]byte(repGroup+dbDelimiter+k.String())) != nil {
-		return nil, nil //nolint:nilnil // completed under repGroup
-	}
-
-	if h, ok := r.overlay[k]; ok && h.repGroup == repGroup {
+	if r.completedUnder(k, repGroup) {
 		return nil, nil //nolint:nilnil // completed under repGroup
 	}
 
@@ -676,6 +873,20 @@ func (r *historyRead) completedElsewhere(k logKey, repGroup string) (*completedE
 	}
 
 	return &completedElsewhere{repGroup: job.RepGroup, endTime: job.EndTime}, nil
+}
+
+// completedUnder reports whether history.bolt's repgroupToKey links k to
+// repGroup, unless a modify not yet folded dropped that, or k's overlay entry
+// is of repGroup.
+func (r *historyRead) completedUnder(k logKey, repGroup string) bool {
+	_, dropped := r.unlooked[k]
+	if !dropped && r.tx.Bucket(bucketRTK).Get([]byte(repGroup+dbDelimiter+k.String())) != nil {
+		return true
+	}
+
+	h, ok := r.overlay[k]
+
+	return ok && h.repGroup == repGroup
 }
 
 // historyJob returns the keyed job's history entry's job and true, or false if
@@ -721,16 +932,20 @@ func (s *logStore) retrieveCompleteJobsByKeys(keys []string) ([]*Job, error) {
 	return jobs, err
 }
 
-// viewHistoryKeys calls fn with a historyRead of the overlay entries of keys
-// alone.
+// viewHistoryKeys calls fn with a historyRead of the overlay entries, and
+// unlooked keys, of keys alone.
 func (s *logStore) viewHistoryKeys(keys []logKey, fn func(r *historyRead) error) error {
-	r := &historyRead{s: s, overlay: make(map[logKey]logHistory)}
+	r := &historyRead{s: s, overlay: make(map[logKey]logHistory), unlooked: make(map[logKey]uint64)}
 
 	s.mu.RLock()
 
 	for _, k := range keys {
 		if h := s.state.overlay[k]; h != nil {
 			r.overlay[k] = *h
+		}
+
+		if seq, ok := s.state.unlooked[k]; ok {
+			r.unlooked[k] = seq
 		}
 	}
 
@@ -842,9 +1057,83 @@ func (s *logStore) viewHistory(repGroup string, fn func(r *historyRead) error) e
 	}
 
 	r.lookups = maps.Clone(s.state.repGroupKeys[repGroup])
+	r.unlooked = maps.Clone(s.state.unlooked)
 	s.mu.RUnlock()
 
 	return r.view(fn)
+}
+
+// putSortedKeys puts each of keys in b with no value, in key order.
+func putSortedKeys(b *bolt.Bucket, keys [][]byte) error {
+	slices.SortFunc(keys, bytes.Compare)
+
+	for _, k := range keys {
+		if err := b.Put(k, nil); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// dropHistoryLookups deletes every rglookup of k, as the bbolt store's modify
+// deletes its old key's (deleteLookupEntriesForJobKey). repgroups keeps the rep
+// groups, which are ever added.
+func dropHistoryLookups(tx *bolt.Tx, k logKey) error {
+	key := k.String()
+	prefix := []byte(key + dbDelimiter)
+	reverse := tx.Bucket(bucketKeyRGs)
+
+	var found [][]byte //nolint:prealloc // how many there are is not known before the walk
+
+	cursor := reverse.Cursor()
+	for rk, _ := cursor.Seek(prefix); bytes.HasPrefix(rk, prefix); rk, _ = cursor.Next() {
+		found = append(found, slices.Clone(rk))
+	}
+
+	lookups := tx.Bucket(bucketRTK)
+
+	for _, rk := range found {
+		if err := lookups.Delete([]byte(string(rk[len(prefix):]) + dbDelimiter + key)); err != nil {
+			return err
+		}
+
+		if err := reverse.Delete(rk); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// inFoldBatches calls fn with each index below n, foldApplyBatch at a time
+// under the store's lock.
+func (s *logStore) inFoldBatches(n int, fn func(i int)) {
+	for start := 0; start < n; start += foldApplyBatch {
+		s.mu.Lock()
+
+		for i := start; i < min(start+foldApplyBatch, n); i++ {
+			fn(i)
+		}
+
+		s.mu.Unlock()
+		callHook(&logFoldBatchHook)
+	}
+}
+
+// sampleCount returns how many learned-requirement samples history.bolt holds.
+func (s *logStore) sampleCount() (int, error) {
+	n := 0
+
+	err := s.history.bolt.View(func(tx *bolt.Tx) error {
+		for _, name := range [][]byte{bucketJobRAM, bucketJobDisk, bucketJobSecs} {
+			n += tx.Bucket(name).Stats().KeyN
+		}
+
+		return nil
+	})
+
+	return n, err
 }
 
 // retrieveLastCompletionTimeByRepGroup returns, as UTC instants to the second,
@@ -915,7 +1204,7 @@ func (s *logStore) repGroupHasHistory(repGroup string) bool {
 // every rep group a job has ever been added under.
 func (s *logStore) retrieveRepGroups() ([]string, error) {
 	s.mu.RLock()
-	rgs := slices.Collect(maps.Keys(s.state.repGroupKeys))
+	rgs := slices.Collect(maps.Keys(s.state.lookedUpRGs))
 	s.mu.RUnlock()
 
 	err := s.history.bolt.View(func(tx *bolt.Tx) error {

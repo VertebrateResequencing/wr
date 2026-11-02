@@ -938,6 +938,24 @@ type logStore struct {
 
 	// history is history.bolt.
 	history *historyBolt
+
+	// foldMu makes folds one at a time (see foldNow), and guards foldClosed,
+	// set once close has stopped the folder goroutine, which foldStop stops
+	// and closes foldExited as it ends. foldStats are the folds' "db writer"
+	// figures, and foldFailures how many failed since foldFailLogged, when
+	// the folder goroutine last logged one.
+	foldMu         sync.Mutex
+	foldClosed     bool
+	foldStop       chan struct{}
+	foldExited     chan struct{}
+	foldStats      writerStats
+	foldFailures   atomic.Uint64
+	foldFailLogged time.Time
+
+	// reqStats are the learned requirements loaded from the samples the
+	// folder folds, rounded to recSecRound seconds and recMBRound MB.
+	reqStats                *reqStatCache
+	recSecRound, recMBRound int
 }
 
 // openLogStore opens, creating if need be, the log store in dir: it checks its
@@ -969,6 +987,8 @@ func openLogStore(ctx context.Context, dir string) (*logStore, error) {
 
 	go s.reportStats()
 
+	s.startFolder()
+
 	return s, nil
 }
 
@@ -988,6 +1008,7 @@ func newLogStore(ctx context.Context, dir string) *logStore {
 		statsEvery:  archiveFoldReportInterval,
 		statsStop:   make(chan struct{}),
 		statsExited: make(chan struct{}),
+		reqStats:    newReqStatCache(),
 	}
 }
 
@@ -1029,6 +1050,7 @@ func (s *logStore) reportStats() {
 			return
 		case <-ticker.C:
 			s.stats.report(s.ctx, s.statsEvery, s.w.Stats(), s.w.TakeMaxSync())
+			s.foldStats.report(s.ctx, foldWriterName, s.statsEvery)
 		}
 	}
 }
@@ -1117,9 +1139,13 @@ func (s *logStore) close(ctx context.Context) error {
 
 	err := s.w.Close()
 
+	s.stopFolder()
+	s.reqStats.close()
+
 	close(s.statsStop)
 	<-s.statsExited
 	s.stats.report(ctx, s.statsEvery, s.w.Stats(), s.w.TakeMaxSync())
+	s.foldStats.report(ctx, foldWriterName, s.statsEvery)
 
 	return errors.Join(err, s.closeFiles(), s.history.close(), s.lock.release())
 }

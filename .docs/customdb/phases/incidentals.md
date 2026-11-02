@@ -150,13 +150,19 @@ called ready, or explicitly deferred with the owner.
   it on close. `TestStoreOpenLock` (`store_open_test.go`) proves a refused
   open changes no file, with a dev wipe asked for (bbolt) and with only the
   lock held and no store directory yet (log).
-- [ ] (from 0b.1 review) `TestReqStatCacheUncommittedStat`
+- [x] (from 0b.1 review) `TestReqStatCacheUncommittedStat`
   (`reqstat_cache_bolt_test.go`) holds a bbolt write transaction open,
   so F5 deletes its rule: a learned-requirements load that runs while a
   new sample is not yet committed is not current once it commits. On the
   log store the folder adds samples and bumps `reqStatChanges` (spec
   "Folder and history"), so the same race is a fold commit. Owner: 1d.1
   (D1), which adds a log-store test with the fold commit held.
+  Done in 1d.1: `TestStoreFoldUncommittedSample` (`store_fold_test.go`)
+  loads the req group from inside a fold's open history.bolt transaction
+  (`logFoldTxHook`), which sees no sample, and requires the cache not
+  current once the fold commits and the next load to give the new sample.
+  The fold adds samples through `reqStatCache.putStat`, whose commit hook
+  invalidates, as bbolt's archive does.
 - [ ] (from 0b.1 review) Listed tests cover what a manager does when it
   opens an older bbolt database, and F5 deletes them: its upgrade is
   logged with progress, rate-limited, and not at all when there is none
@@ -170,12 +176,21 @@ called ready, or explicitly deferred with the owner.
   instead. Owner: 1f.2 (E1), which shows a converted pre-upgrade database
   resolves and modifies the same way, and that the conversion's sidecar
   and log lines behave as these tests require of the upgrade's.
-- [ ] (from 0b.1 review) `TestReliable2FastStartupNoHistoryScan`
+- [x] (from 0b.1 review) `TestReliable2FastStartupNoHistoryScan`
   (`reliable2_startup_scale_bolt_test.go`) writes its 250,000-job history
   as raw bbolt records, so F5 deletes the check that startup time does not
   grow with completed-only history and seeds no complete counts. Owner:
   1d.1 (D1), which can seed `history.bolt` at that scale and assert the
   same of the log store's startup.
+  Done in 1d.1: `TestLogStoreFastStartupNoHistoryScan`
+  (`store_history_bolt_test.go`, in `boltOnlyTests` as it seeds
+  history.bolt raw; Phase 2 needs its own over segments) seeds 25,000 and
+  250,000 completed-only jobs whose history records no decoder accepts, so
+  an open that read one would fail, and requires the large open within
+  `c2AbsoluteStartupLimit`. It does not assert bbolt's no-scaling ratio:
+  the log store loads the in-memory history key index (spec "In-memory
+  state of logStore") from `completeSeq` at open, about 0.25µs per
+  completed key (6ms at 25,000, 62ms at 250,000), which that ratio fails.
 - [x] (from 0c.1) Four `db.bolt.Update` calls bypass write turns and
   Batch, so no "db writer" line counts them: `storeRunningRerunMarks`
   and `storeLiveForRerun` (while serving), `dropRunStates` (recovery)
@@ -206,12 +221,17 @@ called ready, or explicitly deferred with the owner.
   `TestStoreReplayLearned`); the recording now replays with 0 mismatches.
   The error-text and handle digests give bbolt's own answers on a bbolt
   replay, so only a log-store replay can test them: 1g.2 owns that.
-- [ ] (from 0d.3 review) The 1g.2 replay folds before each
+- [x] (from 0d.3 review) The 1g.2 replay folds before each
   learned-requirements probe, which hides a folder that stalls or never
   invalidates `reqStatCache`. Spec D1 has no acceptance test that the
   folder keeps folding and invalidates the cache unprompted (D1 test 2 and
   C6's wait on the folder's position cover it only in part). Owner: 1d.1
   (D1), which adds that test.
+  Done in 1d.1: `TestStoreFoldUnprompted` archives two jobs with new
+  samples, one after the other, never calling `foldNow`, and requires each
+  folded and the cache invalidated within 5 fold intervals, then the new
+  value learned; `TestStoreFoldFailureRetried` requires the folder to fold
+  by itself after failed folds.
 - [x] (from 1a.2) `wal.WriterStats` is cumulative and has no `MaxSync`,
   but A3's `log` line reports `maxSync` per interval. Owner: 1c.1 (C2),
   which adds the `log` writer's "db writer" stats and decides how the
@@ -296,12 +316,17 @@ called ready, or explicitly deferred with the owner.
   (`TestLogStoreArchiveRacesRemoval`; spec Records and Archive amended).
   The reducer's drop stays only for records no archive writes.
 
-- [ ] (from 1c.3) `foldHistory` trusts its caller for contiguity: it does
+- [x] (from 1c.3) `foldHistory` trusts its caller for contiguity: it does
   not check that a fold starts at the previous folded position F, and
   `putHistoryMeta` persists `f.to` even when it is below the stored F
   (in-memory F never moves back). Both are safe with one folder reading
   the log in order. Owner: 1d.1: have the folder fold contiguously from F,
   and either assert that in `foldHistory` or never persist a lower F.
+  Done in 1d.1: folds are made one at a time (`foldNow` under `foldMu`),
+  each reading the log from F, taken under the store's lock, to the
+  writer's durable end; `putHistoryMeta` never writes a folded position
+  before the one `meta` holds (`TestStoreFoldNeverMovesBack`, which reopens
+  after a fold to an earlier position).
 
 - [ ] (from 1c.4) C4 tests 9 to 11 say "run a server on a log store",
   which cannot run until 1e.4 makes the log store the server's store.
@@ -327,6 +352,24 @@ called ready, or explicitly deferred with the owner.
   records from F but modify records only from a checkpoint's `walFrom`, so
   a modify between F and `walFrom` must not let its old key's earlier
   rglookups come back on recovery.
+  1d.1 half done: history.bolt gains `keyRepgroups`, `repgroupToKey`'s
+  reverse, and a fold of a modify record deletes its old key's folded
+  rglookups through it, in log order with the fold's rglookups. Until the
+  modify folds, the reducer notes the old key in `logState.unlooked` (not
+  for a modify already folded), and `repGroupKeys` and the add dedup's
+  `completedUnder` skip its folded rglookups. In-memory rglookups now carry
+  their record's seq, so a fold of an older rglookup never drops a newer
+  one of the same rep group and key (re-added after a modify the fold did
+  not read). `TestStoreModifyDropsRepGroupLookups` runs each case with a fold
+  before the modify and checks again once the modify folds and after
+  reopen; `TestStoreFoldLookupAfterModify` makes the put-back, modify and
+  delete while a fold of the original rglookup commits. The 1d.2 half
+  stays open, and must also settle this: the folder drops a modify's old
+  key's folded rglookups whenever it folds the modify record, while
+  `applyModify` ignores a modify at or below its key's live spec seq. No
+  live path writes such a modify today, but checkpoint replay (a modify
+  replayed after a spec its checkpoint already holds) may reach it, and
+  then history.bolt would lose rglookups the in-memory state keeps.
 
 - [x] (from 1c.4 review) `TestLogStoreFailedWriteNotReplayedAfterSpentFile`
   flakes about 1 in 500 under load, pre-existing (load-matched A/B at 1000
@@ -364,3 +407,194 @@ called ready, or explicitly deferred with the owner.
   deletes a wal file holding a live ref after open and expects
   `errStoreCorrupt`, and pin the key order of recovered jobs (or state in
   the spec that callers must not rely on it).
+
+- [ ] (from 1d.1) E1 step 4 writes `history.bolt` (spec "Folder and
+  history"), which now also has `keyRepgroups`, `repgroupToKey`'s reverse:
+  a fold of a modify record finds the old key's folded rglookups only
+  through it, so a converted store whose `keyRepgroups` is empty keeps a
+  modified key under its old rep groups, as the log store did before 1d.1.
+  Owner: 1f.2 (E1): write one `keyRepgroups` entry per `repgroupToKey`
+  entry it converts, and add a modify-after-conversion check.
+
+- [x] (from 1d.1) The folder paired a `complete` record with its key's
+  spec (`logState.specOf`): the overlay entry's if the record applied as
+  it, else the latest spec of its key read before it by the same
+  `foldNow`, in any of its chunks (from 1d.1 fix round 2, so chunk
+  boundaries did not matter: `TestStoreFoldSpecPrecedence` folds in chunks
+  of 1 record), else the live spec. What remained was pairing across
+  separate `foldNow` calls: a record that applied and was replaced by a
+  later `complete` of its key before the folder read it (an archive, a
+  re-add and a second archive within one fold interval), whose spec record
+  an earlier `foldNow` read (or one before a restart), gets its key's
+  current spec, whose ReqGroup may differ if the re-add changed it, so
+  that one learned sample goes to the new ReqGroup, where bbolt gives it to
+  the old one. Only that sample differs: the history entry is replaced by
+  the later one either way, and no in-memory state depends on it. Owner:
+  2b.2 (folder writes segments): carry the spec Ref of a replaced overlay
+  entry until it folds, or accept and say so in the spec.
+  Resolved by 1d.1 (fix round 3), as review round 3 showed the in-memory
+  state did depend on it (next entry): the reducer keeps each replaced
+  overlay entry until it folds (`logState.replaced`), so a `complete` that
+  applied is always paired with the spec it applied with, whichever
+  `foldNow`, chunk or restart reads it; one that has not applied yet gets
+  the spec the reducer will give it, as before. No pairing difference
+  remains. Review round 4 showed the spec records kept across chunks were
+  then dead, and could grow past 100MB at 2M jobs: a `complete` that has
+  not applied finds every earlier write of its key applied (claims), so
+  its key's live spec is the one, or, if the key is not live, its write is
+  an archive of a key not live, one block holding its spec record, which
+  no chunk splits. Fix round 4 keeps only the chunk's own spec records
+  (`foldRead.specs`). The open entries below route keeping
+  `logState.replaced` to 2b.2 and swapping its spec Refs to 1d.2.
+
+- [ ] (from 1d.1 review round 4) A replaced overlay entry
+  (`logState.replaced`) keeps the spec Ref of the `complete` record it
+  applied as until it folds, and the folder reads that spec through it
+  (`specOf`, then `readRecordBodies`). Once checkpoints delete wal files, a
+  replaced entry whose spec Ref points into a deleted file makes every fold
+  fail on `readRecordBodies`, and the folder never moves past it. Owner:
+  1d.2 (C6): swap the spec Refs of replaced entries with the overlay's
+  (spec C6 step 4 now lists them), and add a test that archives a job,
+  re-adds it, archives it again before a fold, checkpoints past the first
+  archive's spec and deletes its wal file, then folds both archives.
+
+- [ ] (from 1d.1 review round 4) The Phase 2 folder pairs each `complete`
+  record with the spec it applied with through `logState.replaced`, so
+  when the folder writes segments it must keep `replaced` and drop its
+  entries only as they seal, and the Phase 2 checkpoint must hold one spec
+  per overlay or replaced entry, not one per key, as a re-add or modify can
+  change a key's spec between two of its `complete` records (spec C6 step
+  3 now says so). Owner: 2b.2: keep `replaced` in the segment folder, and
+  cover C6 test 2 with a key re-added under another spec between two
+  `complete` records in the open segment.
+
+- [x] (from 1d.1 review round 3) Memory diverged from replay: a job added
+  under rep group rg1 and req group q1 and folded, archived (C1), added
+  again under rg2 and q2 and archived again (C2), with one fold then
+  reading C1, the re-add's spec and C2, paired C1 with the re-add's spec,
+  since C2 had replaced C1's overlay entry and C1's spec was before F. So
+  C1's EndTime went to rg2, `overlayEnds[rg1]` was never dropped, and after
+  a reopen rg1 was missing from `retrieveLastCompletionTimeByRepGroup`,
+  `repGroupHasHistory(rg1)` was false and q1 learned no RAM, where bbolt
+  gives 300. A `wr mod` changing the rep group of a kept-live job between
+  two archives did the same. Owner: 1d.1. Done in 1d.1 (fix round 3): see
+  the previous entry. `TestStoreFoldReplacedElsewhere` moves the job
+  through three rep and req groups, by re-adds and, kept live, by modifies
+  (archived twice under the first, so two replaced entries share a spec),
+  each with one fold of every archive, with two folds (the first to the
+  log's durable end noted after the first archive, made once later ones
+  have replaced it, which must drop that archive's replaced entry from
+  memory while the current one stays, from fix round 4) and with a reopen
+  before any fold of them, and
+  requires bbolt's last completion times, history, learned requirements
+  and sample count before and after reopen, with nothing left unfolded.
+
+- [ ] (from 1d.1) The log store loads its whole history key index from
+  `completeSeq` at open (spec "In-memory state of logStore", from 1c.3),
+  so its startup and heap grow with the number of completed keys, which
+  DEVELOPERS.md rule 6 forbids for bbolt's startup: measured at about
+  0.25µs per key (62ms at 250,000, `TestLogStoreFastStartupNoHistoryScan`),
+  so roughly 0.5s, and tens of MB of map, at prod's 2.15M completed jobs.
+  It decodes no history record, so it is far from the cold scan rule 6
+  was written for, but nothing measures it at prod scale yet. Owner: 1f.8
+  (F3, dbstart over the new store): time `openStore` and its heap on a
+  store converted from a prod-sized database, and if either is too much,
+  route a lazier index (seqs read from `completeSeq` on demand) back to
+  the spec.
+
+- [x] (from 1d.1 review) Folds were unbounded: a fold read the whole log
+  from F to the durable end, so after a backlog (150,000 archives from 64
+  writers) one fold of 158,000 records held the store's write lock for
+  86ms in `foldHistory` and its read lock for 22ms in `specRefs`, and the
+  slowest archive rose from 24-36ms to 124-361ms. Owner: 1d.1. Done in
+  1d.1 (fix round 1): `foldNow` folds in chunks of `foldChunkRecords`
+  (4,096) records, each ending at a frame and committed with the folded
+  position it moves to in a transaction of its own, until it reaches the
+  durable end it started for (`TestStoreFoldChunks`, which crashes between
+  two chunks and reopens). `foldHistory` changes the in-memory state in
+  batches of `foldApplyBatch` (1,024), each under the lock: the folded
+  position and history index first, then the modify drops, then the
+  overlay's completions and rglookups, so no answer has a gap between
+  them (`TestStoreFoldBeforeApply`, `TestStoreFoldTwoModifies`). One block,
+  such as a 150,000-job add's, is still folded in one transaction, since
+  the folded position cannot fall inside a block; only its lock holds are
+  batched. Interleaved A/B against 875f784e (no folder), 150,000 archives
+  from 64 writers: slowest archive 77-85ms against 6-24ms, p99 11-14ms
+  against 3.1-3.3ms, throughput 16-21% lower. Lock holds are now at most
+  about 3ms; the remaining slowest archive is the one transaction folding
+  the probe's 150,000-job add block, whose writes delay the log's syncs
+  (28-57ms with that add folded before the archives). p99 and throughput
+  are the folder's own work (reading spec blocks, decoding and encoding
+  jobs, bbolt writes) on the same CPUs and disk: with the folder paused
+  the build matches 875f784e.
+
+- [x] (from 1d.1 fix round 1) `retrieveRepGroups` (rep groups ever added,
+  spec D1) lost a rep group on the log store when a modify dropped its only
+  rglookup before the folder folded it: the reducer's `dropLookups` removed
+  it from the in-memory rglookups (from 1c.4), and the folder's net of the
+  rglookup and the modify put nothing into `repgroups`, where bbolt's add
+  keeps it there for good. Owner: 1d.1. Done in 1d.1 (fix round 1): the
+  reducer keeps the rep group of each rglookup not yet folded in
+  `logState.lookedUpRGs`, which a modify does not drop and a fold of that
+  rglookup does, and a fold puts every rglookup's rep group into
+  `repgroups`. `TestStoreModifyDropsRepGroupLookups` moves the modified job
+  to rep group B and requires A still listed, on bbolt and on the log store
+  before the modify folds, after and after reopen.
+
+- [ ] (from 1d.1 review round 2) The folder takes the spec Refs of a
+  chunk's `complete` records (`foldRead.specRefs`) under the store's read
+  lock, then reads those records' frames with no lock
+  (`readRecordBodies`), and reads wal files listed once per chunk
+  (`walFileNumbers`). Nothing deletes a wal file yet, so this is safe
+  today; once checkpoints swap Refs and delete wal files, a checkpoint
+  between the two can delete a file a Ref names, and the fold fails with
+  an error until it retries. A rotation during a fold is the other half:
+  `readFiles` skips files after its durable file (`n > to.file`), which
+  `TestStoreFoldStopsAtItsDurableFile` pins by reading to a durable end
+  noted before a reopen started a new file, but no test races a real
+  fold with a rotation or a checkpoint. Owner: 1d.2 (checkpoints): give the
+  folder a reader hold that keeps the files it reads until its fold ends,
+  or add a test of a fold racing a checkpoint, with a rotation during the
+  fold, that shows the fold succeeds or retries to the same history.
+
+- [x] (from 1d.1 review round 3) Close waited for a whole backlog's fold:
+  `stopFolder` waits for the folder goroutine, whose `foldNow` folded every
+  chunk to the durable end it started for. Owner: 1d.1. Done in 1d.1 (fix
+  round 3): `foldNow` returns `errDBClosed` after the chunk it is folding
+  once close has asked the folder to stop, which `foldRound` does not count
+  or log as a failed fold; each chunk commits with its folded position, so
+  this is the crash-between-chunks case and the next open folds the rest.
+  `TestStoreFoldStopsAtClose` closes while the folder reads its first chunk
+  of several (`logFoldReadHook`, from fix round 4, so that a close
+  discarding the chunk it read fails), and requires that chunk committed and
+  no other, no failed-fold line, and a reopen that holds that chunk and folds
+  the rest.
+
+- [x] (from 1d.1 review round 3) `TestReqStatCache` never asserted that a
+  reload learning the same value leaves `reqStatChanges` alone, so a
+  `reqStatCache` that bumped `changes` on every load passed (mutant
+  `changes-every-load`). The code moved to `reqstat_cache.go` in 1d.1 and
+  both stores share it, so the log-versus-bbolt comparisons cannot catch
+  it. Owner: 2b. Done in 1d.1 (fix round 3): `TestReqStatCache` reloads an
+  unchanged req group and requires the stamp unchanged, then learns a new
+  value and requires it raised.
+
+- [ ] (from 1d.1 review round 6) A rep group's latest overlay EndTime
+  (`logState.overlayEnds`) can differ between memory and a replay of the
+  log, though every answer agrees. Memory drops a rep group's entry once a
+  fold commits a completion as late, as spec "In-memory state of
+  `logStore`" allows, while a replay rebuilds it from the completions after
+  F, which may include an earlier-ending one still unfolded; history.bolt's
+  later EndTime then gives the same answer. Owner: 1d.2 (C6): checkpoint
+  and recovery comparisons must compare `overlayEnds` by its answers
+  (`retrieveLastCompletionTimeByRepGroup`, `repGroupHasHistory`), not
+  field by field, or the checkpoint must canonicalise it, as memory may
+  legitimately differ from replay.
+
+- [ ] (from 1d.1 review round 7) The order of a key's rep groups in
+  `logState.keyRepGroups` follows the order its rglookups applied in, so
+  under concurrent writes it can differ from a replay's, which applies them
+  in log order, when a key has two or more rep groups. Every answer
+  agrees, as the slice is used as a set. This predates 1d.1 (from 1c).
+  Owner: 1d.2 (C6): checkpoint and recovery comparisons must compare
+  `keyRepGroups` as a set, or the checkpoint must normalise its order.

@@ -121,6 +121,36 @@ func ReadAt(f io.ReaderAt, ref Ref) ([]byte, error) {
 	return blockRecord(payload, ref)
 }
 
+// ReadFrame calls fn with each record of the frame at off in f, a log file: a
+// plain frame's record, or each of a block's records, decompressing the block
+// once, with its Ref (File 0, as for Scan). It returns ErrBadRef if there is no
+// undamaged frame at off, the error of reading f, or the first error fn
+// returns, which stops it. rec is only valid until fn returns.
+func ReadFrame(f io.ReaderAt, off uint64, fn func(ref Ref, rec []byte) error) error {
+	if off > math.MaxInt64-FrameHeader-MaxFrameLen {
+		return fmt.Errorf("%w: offset %d", ErrBadRef, off)
+	}
+
+	payload, isBlock, ok, err := readFrame(io.NewSectionReader(f, int64(off), FrameHeader+MaxFrameLen), nil)
+	if err != nil {
+		return fmt.Errorf("wal: read frame at %d: %w", off, err)
+	}
+
+	if ok {
+		_, ok, err = giveRecords(payload, isBlock, nil, Ref{Off: off}, fn)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if !ok {
+		return fmt.Errorf("%w: offset %d", ErrBadRef, off)
+	}
+
+	return nil
+}
+
 // readFrame reads the next frame from r, returning its payload in buf, whether
 // it is a block, and whether it read one whole and undamaged. The error is only
 // from reading r.

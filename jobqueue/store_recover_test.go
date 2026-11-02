@@ -244,6 +244,11 @@ func TestLogStoreRecoverMemory(t *testing.T) {
 	ctx := context.Background()
 
 	Convey("Given a closed log store holding 100,000 live 1KiB jobs", t, func() {
+		// The folder is paused so that no fold's working set is in flight when
+		// the heap is measured: the measure is of the recovered state, here at
+		// its largest, with none of its rglookups folded.
+		pauseLogFolder()
+
 		s, dir := openTestLogStore(t, ctx)
 
 		pad := strings.Repeat("x", recoverMemoryJobSize)
@@ -285,9 +290,10 @@ func TestLogStoreRecoverMemory(t *testing.T) {
 	})
 }
 
-// TestLogStoreRecoverFailedBatch covers spec C5 test 7, without "after the
-// folder has run" (item 1d.1): an add, an archive and an exit whose shared
-// batch fails leave no trace, in memory or after reopen.
+// TestLogStoreRecoverFailedBatch covers spec C5 test 7: an add, an archive and
+// an exit whose shared batch fails leave no trace, in memory, after reopen or
+// after the folder has run, which reads the abandoned file only up to its
+// durable end, so folds neither the failed archive nor the exit's sample.
 func TestLogStoreRecoverFailedBatch(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -342,7 +348,7 @@ func TestLogStoreRecoverFailedBatch(t *testing.T) {
 			armed.Store(true)
 
 			k2.State, k2.Exited, k2.EndTime = JobStateComplete, true, time.Now()
-			k3.State, k3.Exited, k3.Exitcode = JobStateDelayed, true, 1
+			k3.State, k3.Exited, k3.Exitcode, k3.FailReason, k3.PeakRAM = JobStateDelayed, true, 1, FailReasonRAM, 500
 
 			errs := make(chan error, 3)
 
@@ -380,6 +386,11 @@ func TestLogStoreRecoverFailedBatch(t *testing.T) {
 				So(errc, ShouldBeNil)
 				So(complete, ShouldBeFalse)
 
+				byKeys, errk := st.retrieveCompleteJobsByKeys([]string{k2.Key()})
+				So(errk, ShouldBeNil)
+				So(byKeys, ShouldBeEmpty)
+				So(inspectedCount(st, kindStat), ShouldEqual, 0)
+
 				stdo, stde := st.retrieveJobStd(ctx, k3.Key())
 				So(string(stdo), ShouldEqual, "x")
 				So(string(stde), ShouldEqual, "y")
@@ -399,12 +410,19 @@ func TestLogStoreRecoverFailedBatch(t *testing.T) {
 			So(errl, ShouldBeNil)
 			So(live, ShouldBeTrue)
 
+			So(s.foldNow(), ShouldBeNil)
+			assertUnchanged(s)
+
 			reopened := reopenLogStore(ctx, s)
 
 			live, errl = reopened.checkIfLive(k1.Key())
 			So(errl, ShouldBeNil)
 			So(live, ShouldBeTrue)
 			assertUnchanged(reopened)
+
+			So(reopened.foldNow(), ShouldBeNil)
+			assertUnchanged(reopened)
+			assertUnchanged(reopenLogStore(ctx, reopened))
 		})
 	})
 }
@@ -663,6 +681,12 @@ func TestLogStoreRecoverRandomOps(t *testing.T) {
 		Convey(fmt.Sprintf("Given 500 random adds, reserves, starts, archives, releases, deletes, modifies and "+
 			"kicks on a log store from %d goroutine(s), and the jobs they leave live as the server holds them",
 			goroutines), t, func() {
+			// The folder is paused so that the state compared is the one the
+			// done funcs built: a fold during the operations changes what
+			// the overlay holds, and one after the copy below makes the store's
+			// state later than the copy's log.
+			pauseLogFolder()
+
 			s, dir := openTestLogStore(t, ctx)
 
 			runs := make([]*recoverRun, goroutines)
@@ -736,8 +760,8 @@ func recoverViews(jobs []*Job) map[string]recoverView {
 }
 
 // comparableLogState returns a copy of st in which what is equal compares
-// equal: a live key's empty dep group list is nil, and an overlay entry's
-// EndTime has no monotonic clock reading.
+// equal: a live key's empty dep group list is nil, and an overlay or replaced
+// entry's EndTime has no monotonic clock reading.
 func comparableLogState(st *logState) logState {
 	c := *st
 	c.live = make(map[logKey]*logLive, len(st.live))
@@ -754,12 +778,30 @@ func comparableLogState(st *logState) logState {
 	c.overlay = make(map[logKey]*logHistory, len(st.overlay))
 
 	for k, h := range st.overlay {
-		copied := *h
-		copied.endTime = time.Unix(0, h.endTime.UnixNano())
-		c.overlay[k] = &copied
+		c.overlay[k] = comparableHistory(h)
+	}
+
+	c.replaced = make(map[logKey][]*logHistory, len(st.replaced))
+
+	for k, hs := range st.replaced {
+		copied := make([]*logHistory, len(hs))
+		for i, h := range hs {
+			copied[i] = comparableHistory(h)
+		}
+
+		c.replaced[k] = copied
 	}
 
 	return c
+}
+
+// comparableHistory returns a copy of h whose EndTime has no monotonic clock
+// reading.
+func comparableHistory(h *logHistory) *logHistory {
+	copied := *h
+	copied.endTime = time.Unix(0, h.endTime.UnixNano())
+
+	return &copied
 }
 
 // TestLogStoreRecoverDamage covers spec C5 tests 3 (without its backup, item

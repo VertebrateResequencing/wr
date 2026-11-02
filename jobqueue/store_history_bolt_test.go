@@ -33,8 +33,10 @@ package jobqueue
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -43,6 +45,8 @@ import (
 
 	"github.com/VertebrateResequencing/wr/jobqueue/wal"
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/ugorji/go/codec"
+	bolt "go.etcd.io/bbolt"
 )
 
 // historyNeverRepGroup is a rep group no job is ever added under.
@@ -66,6 +70,8 @@ func TestLogStoreHistoryMatchesBolt(t *testing.T) {
 	ctx := context.Background()
 
 	Convey("Given the same history made in the bbolt store and the log store", t, func() {
+		pauseLogFolder()
+
 		h := historyScenario{t0: time.Now().Truncate(time.Second).Add(-time.Hour)}
 
 		bdb, _ := openTestStore(t, ctx, storeKindBolt)
@@ -122,31 +128,6 @@ func TestLogStoreHistoryMatchesBolt(t *testing.T) {
 			So(h.answers(reopenLogStore(ctx, s)), ShouldResemble, bolt2)
 		})
 	})
-}
-
-// overlayEmpty reports whether s's overlay holds no history entry, no
-// rglookup, by rep group or by key, and no rep group's end time.
-func overlayEmpty(s *logStore) bool {
-	entries, lookups := overlaySize(s)
-
-	s.mu.RLock()
-	ends, byKey := len(s.state.overlayEnds), len(s.state.keyRepGroups)
-	s.mu.RUnlock()
-
-	return entries == 0 && lookups == 0 && byKey == 0 && ends == 0
-}
-
-// overlaySize returns how many history entries and rglookups s's overlay holds.
-func overlaySize(s *logStore) (int, int) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	lookups := 0
-	for _, keys := range s.state.repGroupKeys {
-		lookups += len(keys)
-	}
-
-	return len(s.state.overlay), lookups
 }
 
 // historyAnswers is every history query's answer about the scenario, with
@@ -340,6 +321,8 @@ func TestLogStoreHistoryBolt(t *testing.T) {
 	ctx := context.Background()
 
 	Convey("Given a log store with a job archived and folded into history.bolt", t, func() {
+		pauseLogFolder()
+
 		s, dir := openTestLogStore(t, ctx)
 
 		job := newHistoryJob("folded", historyTestRepGroup)
@@ -564,6 +547,8 @@ func TestLogStoreHistoryFoldBeforeApply(t *testing.T) {
 
 	Convey("Given a job's complete, delete and rglookup records, which the folder may fold, reading the log up "+
 		"to its durable end, before their done funcs apply them", t, func() {
+		pauseLogFolder()
+
 		s, _ := openTestLogStore(t, ctx)
 
 		job := newHistoryJob("early fold", historyTestRepGroup)
@@ -603,7 +588,7 @@ func TestLogStoreHistoryFoldBeforeApply(t *testing.T) {
 		fold := func(to historyPos) {
 			So(s.foldHistory(&historyFold{
 				complete: []historyFolded{{key: k, seq: completeSeq, job: job}},
-				lookups:  []historyLookup{{repGroup: lookupRepGroup, key: k}},
+				lookups:  []historyLookup{{repGroup: lookupRepGroup, key: k, seq: lookupSeq}},
 				to:       to,
 			}), ShouldBeNil)
 		}
@@ -816,6 +801,95 @@ func foldConcurrently(s *logStore, to historyPos) {
 	}
 
 	_ = s.foldHistory(&f) //nolint:errcheck // a failed fold leaves the overlay as it was
+}
+
+// TestLogStoreFastStartupNoHistoryScan is TestReliable2FastStartupNoHistoryScan
+// for the log store, whose 250,000-job history is seeded straight into
+// history.bolt. The log store loads its history key index from completeSeq at
+// open (spec "In-memory state of logStore"), which costs about 0.25µs per
+// completed key, so unlike bbolt's its startup grows with the number of
+// completed keys, by about 60ms at this scale. What the bbolt test guards
+// still holds: startup reads no history record (each is undecodable here)
+// and seeds no complete count from one, and it stays well within the absolute
+// bound.
+func TestLogStoreFastStartupNoHistoryScan(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Log store startup reads no history record, however many completed-only jobs it has", t, func() {
+		var small, large time.Duration
+
+		for _, n := range []int{c2SmallHistorySize, c2LargeHistorySize} {
+			dir := seedLogStoreHistory(ctx, t, n)
+
+			var fastest time.Duration
+
+			for i := range c2StartupSamples {
+				started := time.Now()
+				s := openLogStoreIn(ctx, dir)
+				elapsed := time.Since(started)
+
+				So(inspectedCount(s, kindComplete), ShouldEqual, n)
+				So(s.close(ctx), ShouldBeNil)
+
+				if i == 0 || elapsed < fastest {
+					fastest = elapsed
+				}
+			}
+
+			small, large = large, fastest
+		}
+
+		t.Logf("fastest of %d log store startups took %s with %d completed-only jobs and %s with %d",
+			c2StartupSamples, small, c2SmallHistorySize, large, c2LargeHistorySize)
+
+		So(large, ShouldBeLessThan, c2AbsoluteStartupLimit)
+	})
+}
+
+// seedLogStoreHistory returns the directory of a closed log store whose
+// history.bolt holds n completed-only jobs, each under its own rep group, as a
+// fold of them would leave it, except that each history record is a byte no
+// decoder accepts.
+func seedLogStoreHistory(ctx context.Context, t *testing.T, n int) string {
+	t.Helper()
+
+	dir := filepath.Join(t.TempDir(), "store")
+	So(openLogStoreIn(ctx, dir).close(ctx), ShouldBeNil)
+
+	history, err := openHistoryBolt(dir, new(codec.BincHandle))
+	So(err, ShouldBeNil)
+
+	err = history.bolt.Update(func(tx *bolt.Tx) error {
+		for i := range n {
+			var k logKey
+
+			binary.BigEndian.PutUint64(k[logKeyLen-8:], uint64(i))
+
+			key, rg := k.String(), fmt.Sprintf("%s%08d", c2HistoryRepGroupPrefix, i)
+
+			for _, put := range [][3][]byte{
+				{bucketJobsComplete, []byte(key), {0xff}},
+				{bucketRTK, []byte(rg + dbDelimiter + key), nil},
+				{bucketKeyRGs, []byte(key + dbDelimiter + rg), nil},
+				{bucketRGs, []byte(rg), nil},
+				{bucketCompleteSeq, []byte(key), binary.BigEndian.AppendUint64(nil, uint64(i+1))},
+			} {
+				if errp := tx.Bucket(put[0]).Put(put[1], put[2]); errp != nil {
+					return errp
+				}
+			}
+		}
+
+		return nil
+	})
+	So(err, ShouldBeNil)
+	So(history.close(), ShouldBeNil)
+
+	return dir
 }
 
 // historyJobSummary is the parts of an archived job the stores must agree on.

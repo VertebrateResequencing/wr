@@ -30,6 +30,7 @@ package jobqueue
 // 16 binary bytes of a job's 32-hex-digit key.
 
 import (
+	"cmp"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -152,19 +153,42 @@ type logState struct {
 	history map[logKey]uint64
 
 	// overlay is the history entries not yet folded into history.bolt, and
-	// repGroupKeys the rglookup records not yet folded, rep group to keys, with
-	// keyRepGroups its inverse, key to rep groups. overlayEnds is the
-	// latest EndTime, as a unix time, of the completions that made overlay
-	// entries under each rep group, kept, as history.bolt's repgroupEndTime
-	// keeps it, when an entry is replaced, until a fold commits one as late.
+	// repGroupKeys the rglookup records not yet folded, rep group to keys,
+	// each with the seq of its latest such record, with keyRepGroups its
+	// inverse, key to rep groups. overlayEnds is the latest EndTime, as a unix
+	// time, of the completions that made overlay entries under each rep group,
+	// kept, as history.bolt's repgroupEndTime keeps it, when an entry is
+	// replaced, until a fold commits one as late.
 	overlay      map[logKey]*logHistory
-	repGroupKeys map[string]map[logKey]struct{}
+	repGroupKeys map[string]map[logKey]uint64
 	keyRepGroups map[logKey][]string
 	overlayEnds  map[string]int64
 
-	// folded is history.bolt's folded position: a complete or rglookup record
-	// before it is one history.bolt holds, whether replay or a done func that
-	// a fold overtook applies it.
+	// replaced is, by key, the overlay entries a later complete record of
+	// their key replaced before they folded, oldest first, kept until they
+	// fold, so that the folder pairs each complete record with the spec it
+	// applied with (specOf) however late it reads it: by then a re-add or a
+	// modify may have given its key a spec of another rep group or ReqGroup.
+	replaced map[logKey][]*logHistory
+
+	// lookedUpRGs is the rep groups of rglookup records not yet folded, each
+	// with the Ref of its latest applied one: the rep groups ever added that
+	// history.bolt may not hold yet. A fold drops a rep group once the folded
+	// position covers that Ref, so that it is what a replay of the log from
+	// the folded position rebuilds. That is the Ref, not the seq, as records
+	// can reach the log out of seq order. It is kept when a modify drops the
+	// rglookup, as repgroups keeps them.
+	lookedUpRGs map[string]wal.Ref
+
+	// unlooked is the keys a modify record not yet folded moved away, each
+	// with that record's seq: history.bolt still holds the rglookups of the
+	// key folded before it, which the modify dropped, so queries skip them
+	// until the folder folds the modify and deletes them.
+	unlooked map[logKey]uint64
+
+	// folded is history.bolt's folded position: a complete, rglookup or
+	// modify record before it is one history.bolt holds, whether replay or a
+	// done func that a fold overtook applies it.
 	folded historyPos
 }
 
@@ -183,6 +207,23 @@ var logReducers = [...]func(st *logState, op *logOp){
 	logRecRGLookup: (*logState).applyRGLookup,
 	logRecComplete: (*logState).applyComplete,
 	logRecDepGroup: (*logState).applyDepGroup,
+}
+
+// parseExitStat returns the sample fields of an exitstat record from its body
+// after the key, as appendExitStatRecord wrote them.
+func parseExitStat(body []byte) (jobExitData, error) {
+	fr := flatReader{b: body}
+
+	var exit jobExitData
+
+	exit.reqGroup = strings.Clone(fr.str())
+	exit.failReason = strings.Clone(fr.str())
+	exit.peakRAM = int(fr.varint())
+	exit.requiredRAM = int(fr.varint())
+	exit.peakDisk = fr.varint()
+	exit.secs = int(fr.varint())
+
+	return exit, fr.end()
 }
 
 // appendKeyedRecord appends a record of typ with key and body to dst.
@@ -312,7 +353,7 @@ func (st *logState) unindex(key logKey, index logSpecIndex) {
 
 // removeFromIndex removes member from index's set for name, and the set once
 // empty.
-func removeFromIndex[N, M comparable](index map[N]map[M]struct{}, name N, member M) {
+func removeFromIndex[N, M comparable, V any](index map[N]map[M]V, name N, member M) {
 	members := index[name]
 	delete(members, member)
 
@@ -334,10 +375,21 @@ func removeFromKeyIndex(index map[logKey][]string, key logKey, name string) {
 	index[key] = names
 }
 
-// lookUp records key under repGroup's rglookups.
-func (st *logState) lookUp(repGroup string, key logKey) {
-	addToIndex(st.repGroupKeys, repGroup, key)
+// lookUp records key under repGroup's rglookups, by an rglookup record of seq
+// at ref.
+func (st *logState) lookUp(repGroup string, key logKey, seq uint64, ref wal.Ref) {
+	keys := st.repGroupKeys[repGroup]
+	if keys == nil {
+		keys = make(map[logKey]uint64)
+		st.repGroupKeys[repGroup] = keys
+	}
+
+	keys[key] = max(keys[key], seq)
 	addToKeyIndex(st.keyRepGroups, key, repGroup)
+
+	if latest, ok := st.lookedUpRGs[repGroup]; !ok || refAfter(ref, latest) {
+		st.lookedUpRGs[repGroup] = ref
+	}
 }
 
 // addToKeyIndex adds name to key's names in index, an index by key, unless it
@@ -350,10 +402,30 @@ func addToKeyIndex(index map[logKey][]string, key logKey, name string) {
 	}
 }
 
-// unlookUp removes key from repGroup's rglookups.
-func (st *logState) unlookUp(repGroup string, key logKey) {
+// refAfter reports whether a's record is later in the log than b's.
+func refAfter(a, b wal.Ref) bool {
+	return cmp.Or(cmp.Compare(a.File, b.File), cmp.Compare(a.Off, b.Off), cmp.Compare(a.Idx, b.Idx)) > 0
+}
+
+// unlookUp removes key from repGroup's rglookups, now that history.bolt holds
+// its rglookup record of seq, unless a later one applied: that one is not
+// folded yet, and a modify folded with it may have dropped the earlier.
+func (st *logState) unlookUp(repGroup string, key logKey, seq uint64) {
+	if latest, ok := st.repGroupKeys[repGroup][key]; !ok || latest > seq {
+		return
+	}
+
 	removeFromIndex(st.repGroupKeys, repGroup, key)
 	removeFromKeyIndex(st.keyRepGroups, key, repGroup)
+}
+
+// relook stops queries skipping the rglookups history.bolt holds of key, a
+// modify's old key, now that it has folded the modify of seq and deleted them,
+// unless a later modify of key applied, which is not folded yet.
+func (st *logState) relook(key logKey, seq uint64) {
+	if latest, ok := st.unlooked[key]; ok && latest <= seq {
+		delete(st.unlooked, key)
+	}
 }
 
 // dropLookups removes key from the rglookups of every rep group it is under.
@@ -384,9 +456,14 @@ func (st *logState) stdRefs(k logKey) ([2]wal.Ref, [2]bool) {
 	return e.std, e.hasStd
 }
 
-// putOverlay makes h k's overlay entry. Entries are replaced, never changed,
-// so a query may read one it copied without the lock.
+// putOverlay makes h k's overlay entry, keeping the entry it replaces in
+// replaced until that folds. Entries are replaced, never changed, so a query
+// may read one it copied without the lock.
 func (st *logState) putOverlay(k logKey, h *logHistory) {
+	if old := st.overlay[k]; old != nil {
+		st.replaced[k] = append(st.replaced[k], old)
+	}
+
 	st.overlay[k] = h
 	noteLatest(st.overlayEnds, h.repGroup, h.endTime.Unix())
 }
@@ -398,9 +475,15 @@ func noteLatest(latest map[string]int64, rg string, end int64) {
 	}
 }
 
-// unfold drops k's overlay entry if history.bolt now holds it: its seq is at
-// most seq, the folded one.
+// unfold drops k's overlay entry, and each of k's replaced entries, that
+// history.bolt now holds: one whose seq is at most seq, the folded one.
 func (st *logState) unfold(k logKey, seq uint64) {
+	if replaced := slices.DeleteFunc(st.replaced[k], func(h *logHistory) bool { return h.seq <= seq }); len(replaced) > 0 {
+		st.replaced[k] = replaced
+	} else {
+		delete(st.replaced, k)
+	}
+
 	h := st.overlay[k]
 	if h == nil || h.seq > seq {
 		return
@@ -513,7 +596,7 @@ func (st *logState) applyEnv(op *logOp) {
 // the record.
 func (st *logState) applyRGLookup(op *logOp) {
 	if !st.folded.covers(op.ref) {
-		st.lookUp(op.name, op.key)
+		st.lookUp(op.name, op.key, op.seq, op.ref)
 	}
 }
 
@@ -593,7 +676,9 @@ func (st *logState) applyDelete(op *logOp) {
 // depended on find it, and removes its live entry, with its state and std. It
 // does nothing if the key's live spec is later than op. A modify keeping its
 // key leaves it live, and the new spec, rglookup and std records after it in
-// its block put back its new spec, lookup, dep groups and std.
+// its block put back its new spec, lookup, dep groups and std. The old key's
+// rglookups history.bolt holds are skipped by queries until the folder folds
+// op and deletes them (unlooked), unless history.bolt already holds op.
 func (st *logState) applyModify(op *logOp) {
 	e := st.live[op.key]
 	if e != nil && op.seq <= e.specSeq {
@@ -602,6 +687,10 @@ func (st *logState) applyModify(op *logOp) {
 
 	st.dropLookups(op.key)
 	st.unindexAll(op.key)
+
+	if !st.folded.covers(op.ref) {
+		st.unlooked[op.key] = max(st.unlooked[op.key], op.seq)
+	}
 
 	if op.newKey != op.key {
 		delete(st.live, op.key)
@@ -725,13 +814,24 @@ func newLogState() logState {
 		history:       make(map[logKey]uint64),
 		overlay:       make(map[logKey]*logHistory),
 		overlayEnds:   make(map[string]int64),
+		replaced:      make(map[logKey][]*logHistory),
 		envs:          make(map[string][]byte),
 		limits:        make(map[string]int64),
 		depGroupsSeen: make(map[string]struct{}),
-		repGroupKeys:  make(map[string]map[logKey]struct{}),
+		repGroupKeys:  make(map[string]map[logKey]uint64),
+		lookedUpRGs:   make(map[string]wal.Ref),
+		unlooked:      make(map[logKey]uint64),
 		keyRepGroups:  make(map[logKey][]string),
 		reverseDeps:   make(map[string]map[logKey]struct{}),
 		keyDeps:       make(map[logKey][]string),
+	}
+}
+
+// unlookUpRG drops repGroup from lookedUpRGs, now that history.bolt holds an
+// rglookup of it, if the folded position covers its latest one too.
+func (st *logState) unlookUpRG(repGroup string) {
+	if latest, ok := st.lookedUpRGs[repGroup]; ok && st.folded.covers(latest) {
+		delete(st.lookedUpRGs, repGroup)
 	}
 }
 

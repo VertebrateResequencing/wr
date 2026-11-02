@@ -698,6 +698,55 @@ func TestReadAt(t *testing.T) {
 			So(string(rec), ShouldEqual, "cc")
 		})
 
+		Convey("ReadFrame gives each record of the frame at an offset, with its Ref, until fn fails", func() {
+			read := func(off uint64) ([]Ref, []string, error) {
+				var (
+					refs []Ref
+					recs []string
+				)
+
+				err := ReadFrame(f, off, func(ref Ref, rec []byte) error {
+					refs = append(refs, ref)
+					recs = append(recs, string(rec))
+
+					return nil
+				})
+
+				return refs, recs, err
+			}
+
+			refs, recs, err := read(zstdOff)
+			So(err, ShouldBeNil)
+			So(recs, ShouldResemble, []string{"d", "ee", "fff"})
+			So(refs, ShouldResemble, []Ref{{Off: zstdOff}, {Off: zstdOff, Idx: 1}, {Off: zstdOff, Idx: 2}})
+
+			refs, recs, err = read(lastOff)
+			So(err, ShouldBeNil)
+			So(recs, ShouldResemble, []string{"g"})
+			So(refs, ShouldResemble, []Ref{{Off: lastOff}})
+
+			for _, off := range []uint64{1, lastOff + 1, uint64(len(log)), 1 << 63} {
+				_, _, err = read(off)
+				So(err, ShouldWrap, ErrBadRef)
+			}
+
+			log[zstdOff+FrameHeader+2] ^= 0xff
+
+			_, recs, err = read(zstdOff)
+			So(err, ShouldWrap, ErrBadRef)
+			So(recs, ShouldBeEmpty)
+
+			calls := 0
+
+			err = ReadFrame(f, s2Off, func(Ref, []byte) error {
+				calls++
+
+				return io.ErrShortWrite
+			})
+			So(err, ShouldEqual, io.ErrShortWrite)
+			So(calls, ShouldEqual, 1)
+		})
+
 		Convey("ReadAt refuses a block whose CRC is good but whose contents are not", func() {
 			bad := appendRawBlock(nil, CodecS2, s2.Encode(nil, appendFrames("a")[:FrameHeader]))
 

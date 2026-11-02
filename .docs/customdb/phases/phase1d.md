@@ -50,8 +50,8 @@ uncommitted sample and on startup with a large history, and the 0d.3
 incidental on testing that the folder keeps folding and invalidating the
 learned-requirements cache unprompted ([incidentals.md](incidentals.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1d.2: C6 - Checkpoints and spec addressing
 
@@ -67,8 +67,11 @@ Phase 1 acceptance tests from C6 (4 of 5); test 2 is Phase 2 and runs in
 test 8's checkpoint between reopens (`jobqueue/store_recover_test.go`).
 Depends on 1d.1.
 Also resolve the 1c.4 incidental on modify records between F and
-`walFrom`, and the 1c.5 incidental on recovered-job order and a missing
-wal file ([incidentals.md](incidentals.md)).
+`walFrom`, the 1c.5 incidental on recovered-job order and a missing
+wal file, and the 1d.1 incidentals on the folder's reader hold and a
+rotation during a fold, on swapping the spec Refs of replaced overlay
+entries, on comparing `overlayEnds` by answer, and on comparing
+`keyRepGroups` as a set ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed
