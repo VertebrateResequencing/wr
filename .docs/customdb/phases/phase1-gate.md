@@ -112,7 +112,11 @@ Measured apart from the crash soak, both runs wholly between 10:00 and
 `p99` at most 50ms and `abandoned=0`, with no averaging across lines; and
 `TestAddLatency1000` with `WR_ADDBENCH_DIR` under the NFS work directory
 and `WR_TEST_STORE=log`, with 1,000-job add p50 at most 200ms in each of 3
-runs.
+runs. Also resolve the 1d.2 incidental on the unpaced checkpoint write
+and reserve p99 while a checkpoint runs, measured while a checkpoint of a
+production-sized live set (a `.ckpt` of 40MB or more) is written, not
+only the small ones a test-scale soak makes
+([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

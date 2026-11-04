@@ -298,9 +298,14 @@ func (r *foldRead) note(ref wal.Ref, parsed *logRecord) error {
 func (r *foldRead) fold(to historyPos) (*historyFold, error) {
 	f := &historyFold{lookups: r.lookups, samples: r.samples, to: to}
 
-	specRefs := r.specRefs()
+	specRefs, gen := r.specRefs()
+
+	callHook(&logFoldSpecsHook)
 
 	bodies, err := r.s.readRecordBodies(specRefs)
+
+	r.s.releaseRefs(gen)
+
 	if err != nil {
 		return nil, err
 	}
@@ -324,8 +329,9 @@ func (r *foldRead) fold(to historyPos) (*historyFold, error) {
 
 // specRefs returns the Ref of the spec of each of r's complete records, by
 // index, leaving out one with none, which the reducer drops too (see
-// applyComplete).
-func (r *foldRead) specRefs() map[int]wal.Ref {
+// applyComplete), and the hold (see holdRefs) to release once they are read, so
+// that no checkpoint deletes a file they name meanwhile.
+func (r *foldRead) specRefs() (map[int]wal.Ref, uint64) {
 	refs := make(map[int]wal.Ref, len(r.completes))
 
 	r.s.mu.RLock()
@@ -337,7 +343,7 @@ func (r *foldRead) specRefs() map[int]wal.Ref {
 		}
 	}
 
-	return refs
+	return refs, r.s.holdRefs()
 }
 
 // readFiles reads, as readFile does, each of files between positions from and

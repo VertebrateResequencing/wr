@@ -35,7 +35,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/VertebrateResequencing/wr/jobqueue/wal"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -89,23 +88,9 @@ func (s *logStore) liveJob(key string) (*Job, bool, error) {
 		return nil, false, err
 	}
 
-	s.mu.RLock()
-	e := s.state.live[k]
+	job, live, err := s.liveJobOf(k)
 
-	var spec, state wal.Ref
-	if e != nil {
-		spec, state = e.spec, e.state
-	}
-
-	s.mu.RUnlock()
-
-	if e == nil {
-		return nil, false, nil
-	}
-
-	job, err := s.decodeJob(spec, state, logRecState)
-
-	return job, err == nil, err
+	return job, live && err == nil, err
 }
 
 // completeJob returns the keyed job as its history entry holds it, and whether

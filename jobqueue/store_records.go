@@ -698,14 +698,20 @@ func (st *logState) applyModify(op *logOp) {
 }
 
 // applyStd sets or, if empty, clears a live key's std stream, if op is later
-// than its spec and that stream's last std.
+// than its spec and that stream's last std. A cleared stream keeps no Ref, as
+// nothing reads it and a checkpoint copies no record of it (see clearStd).
 func (st *logState) applyStd(op *logOp) {
 	e := st.live[op.key]
 	if e == nil || op.seq <= e.specSeq || op.seq <= e.stdSeq[op.stream] {
 		return
 	}
 
-	e.stdSeq[op.stream], e.std[op.stream], e.hasStd[op.stream] = op.seq, op.ref, op.hasStd
+	ref := op.ref
+	if !op.hasStd {
+		ref = wal.Ref{}
+	}
+
+	e.stdSeq[op.stream], e.std[op.stream], e.hasStd[op.stream] = op.seq, ref, op.hasStd
 }
 
 // applyComplete makes op the key's history entry, in the overlay, with the
@@ -775,11 +781,13 @@ type logLive struct {
 
 // clearStd marks e's std streams cleared by a complete record of seq, except
 // one whose last std record is later, which outranks it whichever applies
-// first.
+// first. A cleared stream keeps no Ref: a checkpoint holds it as an empty std
+// record, which replays to no Ref, and its old Ref would name a record in a
+// file the checkpoint deletes.
 func (e *logLive) clearStd(seq uint64) {
 	for stream := range e.stdSeq {
 		if e.stdSeq[stream] < seq {
-			e.stdSeq[stream], e.hasStd[stream] = seq, false
+			e.stdSeq[stream], e.std[stream], e.hasStd[stream] = seq, wal.Ref{}, false
 		}
 	}
 }

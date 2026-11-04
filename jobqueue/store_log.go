@@ -99,6 +99,11 @@ var (
 	// first.
 	logAppendedHook func() //nolint:gochecknoglobals // a test seam
 
+	// logSegmentFileHook is called by every read of a record file through
+	// segmentFile, before it opens the file or finds it open, so holding it
+	// holds a reader once it has copied its Refs and taken its hold.
+	logSegmentFileHook atomic.Pointer[func()] //nolint:gochecknoglobals // a test seam
+
 	// logTransitionSeqsHook is called by a transition or exit once it has
 	// taken its records' seqs and released its locks, before it makes and
 	// appends its records.
@@ -426,25 +431,43 @@ func (s *logStore) liveStds(keys []logKey) ([][2][]byte, error) {
 	stds := make([][2][]byte, len(keys))
 
 	for i, k := range keys {
-		s.mu.RLock()
-		refs, has := s.state.stdRefs(k)
-		s.mu.RUnlock()
-
-		for stream := range stds[i] {
-			if !has[stream] {
-				continue
-			}
-
-			std, err := s.readRecordBody(refs[stream], logRecStd)
-			if err != nil {
-				return nil, err
-			}
-
-			stds[i][stream] = std
+		std, err := s.readStd(k)
+		if err != nil {
+			return nil, err
 		}
+
+		stds[i] = std
 	}
 
 	return stds, nil
+}
+
+// readStd returns k's std, empty for a stream it has none of.
+func (s *logStore) readStd(k logKey) ([2][]byte, error) {
+	s.mu.RLock()
+	refs, has := s.state.stdRefs(k)
+	gen := s.holdRefs()
+	s.mu.RUnlock()
+
+	defer s.releaseRefs(gen)
+
+	var (
+		std  [2][]byte
+		errs []error
+	)
+
+	for stream := range std {
+		if !has[stream] {
+			continue
+		}
+
+		var err error
+
+		std[stream], err = s.readRecordBody(refs[stream], logRecStd)
+		errs = append(errs, err)
+	}
+
+	return std, errors.Join(errs...)
 }
 
 // addModifies adds to f the records of each of mods, then a depgroup record of
@@ -686,11 +709,17 @@ func (s *logStore) addTransition(job *Job, k logKey, build func() bool) func() {
 	return s.notePending(s.stateWrites, k)
 }
 
-// recover loads history.bolt's key index and folded position, replays the
-// log, and resumes the seq counter above every seq the log and history.bolt
-// hold (spec "Recovery", step 5). It returns the number the next wal file
-// must have.
+// recover deletes files left being written, loads history.bolt's key index and
+// folded position and the newest checkpoint, replays the log from the
+// checkpoint's walFrom, resumes the seq counter above every seq the
+// checkpoint, the log and history.bolt hold (spec "Recovery", steps 1 to 5),
+// and deletes the files the checkpoint made redundant that are left. It
+// returns the number the next wal file must have.
 func (s *logStore) recover(ctx context.Context) (uint32, error) {
+	if err := removeTmpFiles(s.dir); err != nil {
+		return 0, err
+	}
+
 	folded, foldedSeq, err := s.history.load(s.state.history)
 	if err != nil {
 		return 0, err
@@ -698,14 +727,39 @@ func (s *logStore) recover(ctx context.Context) (uint32, error) {
 
 	s.state.folded = folded
 
-	next, err := s.replay(ctx)
+	if s.ckptFrom, err = s.loadCheckpointAfter(folded); err != nil {
+		return 0, err
+	}
+
+	next, err := s.replay(ctx, s.ckptFrom)
 	if err != nil {
 		return 0, err
 	}
 
 	s.seq.Store(max(s.state.maxSeq, foldedSeq))
 
-	return next, nil
+	if s.ckptFrom != 0 {
+		err = s.deleteRedundant(s.ckptFrom, folded)
+	}
+
+	return next, err
+}
+
+// loadCheckpointAfter is loadCheckpoint, refusing a checkpoint whose cut is
+// after folded, history.bolt's folded position, as errStoreCorrupt. A
+// checkpoint is made only once the folded position is at or past its cut,
+// which it never moves back from, so the log from its walFrom holds every
+// complete, rglookup and modify record history.bolt does not. Phase 2's
+// checkpoints, whose folded position can be before the cut, also hold the
+// specs a replay from there needs (spec "Checkpoints", step 3).
+func (s *logStore) loadCheckpointAfter(folded historyPos) (uint32, error) {
+	walFrom, err := s.loadCheckpoint()
+	if err == nil && walFrom != 0 && folded.file < walFrom {
+		err = fmt.Errorf("%w: %s's folded position, in wal file %08x, is before checkpoint %08x",
+			errStoreCorrupt, historyBoltFile, folded.file, walFrom)
+	}
+
+	return walFrom, err
 }
 
 // takeSeqs takes the next n records' seqs, returning the first.
@@ -753,6 +807,31 @@ func (s *logStore) addExitRecords(f *logFrames, k logKey, seq uint64, rs *logRun
 	}
 }
 
+// liveJobOf returns k's job, as its latest durable spec and state, and true,
+// or false if k is not live.
+func (s *logStore) liveJobOf(k logKey) (*Job, bool, error) {
+	s.mu.RLock()
+	e := s.state.live[k]
+
+	var spec, state wal.Ref
+	if e != nil {
+		spec, state = e.spec, e.state
+	}
+
+	gen := s.holdRefs()
+	s.mu.RUnlock()
+
+	defer s.releaseRefs(gen)
+
+	if e == nil {
+		return nil, false, nil
+	}
+
+	job, err := s.decodeJob(spec, state, logRecState)
+
+	return job, true, err
+}
+
 // logWrite is one append's records on their way to being durable. The writer's
 // done func and the appender, once it has the Ref, each arrive; whichever is
 // second applies the records to the store's state if the batch succeeded, then
@@ -777,6 +856,16 @@ func (w *logWrite) doneFor(i int) func(error) {
 		w.errs[i] = err
 		w.arrive()
 	}
+}
+
+// dones returns the writer's done func for each of n frames.
+func (w *logWrite) dones(n int) []func(error) {
+	dones := make([]func(error), n)
+	for i := range dones {
+		dones[i] = w.doneFor(i)
+	}
+
+	return dones
 }
 
 // placed gives the write's records their Refs, given the Ref of each frame
@@ -956,6 +1045,24 @@ type logStore struct {
 	// folder folds, rounded to recSecRound seconds and recMBRound MB.
 	reqStats                *reqStatCache
 	recSecRound, recMBRound int
+
+	// ckptMu makes checkpoints one at a time, and guards ckptFrom, the newest
+	// checkpoint's walFrom (0 if there is none). The checkpointer goroutine
+	// stops once ckptStop is closed, closing ckptExited as it ends.
+	ckptMu     sync.Mutex
+	ckptFrom   uint32
+	ckptStop   chan struct{}
+	ckptExited chan struct{}
+
+	// refGen, guarded by mu, is the generation of reader holds (see
+	// holdRefs), and refHeld how many readers hold each of the last two.
+	refGen  uint64
+	refHeld [2]atomic.Int64
+
+	// appendGen is the generation of writes appending, and appending how many
+	// of each of the last two are (see enterAppend).
+	appendGen atomic.Uint64
+	appending [2]atomic.Int64
 }
 
 // openLogStore opens, creating if need be, the log store in dir: it checks its
@@ -988,6 +1095,7 @@ func openLogStore(ctx context.Context, dir string) (*logStore, error) {
 	go s.reportStats()
 
 	s.startFolder()
+	s.startCheckpointer()
 
 	return s, nil
 }
@@ -1070,6 +1178,9 @@ func (s *logStore) reportStats() {
 // called once the write has finished. The caller holds closeMu for reading and
 // has checked closed.
 func (s *logStore) write(f *logFrames, after func()) (*logWrite, error) {
+	gen := s.enterAppend()
+	defer s.exitAppend(gen)
+
 	w := &logWrite{s: s, ops: f.ops, block: len(f.ops) > 1, after: after, fin: make(chan struct{})}
 	w.chunks = f.chunks(logBlockMaxFrames)
 	w.errs = make([]error, len(w.chunks))
@@ -1089,14 +1200,9 @@ func (s *logStore) write(f *logFrames, after func()) (*logWrite, error) {
 		return nil, err
 	}
 
-	dones := make([]func(error), len(blocks))
-	for i := range dones {
-		dones[i] = w.doneFor(i)
-	}
-
 	s.writing.Add(1)
 
-	refs, _ := s.w.AppendBlocks(blocks, ns, dones)
+	refs, _ := s.w.AppendBlocks(blocks, ns, w.dones(len(blocks)))
 	w.placed(refs)
 
 	return w, nil
@@ -1139,7 +1245,9 @@ func (s *logStore) close(ctx context.Context) error {
 
 	err := s.w.Close()
 
+	s.stopCheckpointer()
 	s.stopFolder()
+	<-s.ckptExited
 	s.reqStats.close()
 
 	close(s.statsStop)
@@ -1176,8 +1284,11 @@ func (s *logStore) readRecord(ref wal.Ref) ([]byte, error) {
 	return wal.ReadAt(f, ref)
 }
 
-// segmentFile returns segment n, opened for reading.
+// segmentFile returns the file of Refs with file number n, a wal file or a
+// checkpoint (see recordFilePath), opened for reading.
 func (s *logStore) segmentFile(n uint32) (*os.File, error) {
+	callHook(&logSegmentFileHook)
+
 	s.filesMu.Lock()
 	defer s.filesMu.Unlock()
 
@@ -1185,7 +1296,7 @@ func (s *logStore) segmentFile(n uint32) (*os.File, error) {
 		return f, nil
 	}
 
-	f, err := os.Open(walFilePath(s.dir, n))
+	f, err := os.Open(recordFilePath(s.dir, n))
 	if err != nil {
 		return nil, err
 	}
@@ -1612,20 +1723,9 @@ func (s *logStore) retrieveJobStd(ctx context.Context, jobkey string) (stdo, std
 		return nil, nil
 	}
 
-	s.mu.RLock()
-	refs, has := s.state.stdRefs(k)
-	s.mu.RUnlock()
-
-	std := [2][]byte{}
-
-	for stream := range std {
-		if !has[stream] {
-			continue
-		}
-
-		if std[stream], err = s.readRecordBody(refs[stream], logRecStd); err != nil {
-			clog.Error(ctx, "Database retrieve failed", "err", err)
-		}
+	std, err := s.readStd(k)
+	if err != nil {
+		clog.Error(ctx, "Database retrieve failed", "err", err)
 	}
 
 	return std[stdOut], std[stdErr]
@@ -2148,19 +2248,8 @@ func (s *logStore) reverseDepKeys(depGroup string) []logKey {
 // dependentJob returns the keyed job and true if it is live, else its history
 // entry's job unless its key is in newKeys, else nil.
 func (s *logStore) dependentJob(k logKey, newKeys map[string]bool) (*Job, bool, error) {
-	s.mu.RLock()
-	e := s.state.live[k]
-
-	var spec, state wal.Ref
-	if e != nil {
-		spec, state = e.spec, e.state
-	}
-
-	s.mu.RUnlock()
-
-	if e != nil {
-		job, err := s.decodeJob(spec, state, logRecState)
-
+	job, live, err := s.liveJobOf(k)
+	if live {
 		return job, true, err
 	}
 
@@ -2168,7 +2257,7 @@ func (s *logStore) dependentJob(k logKey, newKeys map[string]bool) (*Job, bool, 
 		return nil, false, nil
 	}
 
-	job, _, err := s.historyJob(k)
+	job, _, err = s.historyJob(k)
 
 	return job, false, err
 }

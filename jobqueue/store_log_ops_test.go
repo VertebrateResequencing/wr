@@ -313,7 +313,7 @@ func TestLogStoreDeleteModifyRerun(t *testing.T) {
 
 			So(s.modifyLiveJobs(ctx, []string{k1.Key(), other.Key()}, []*Job{k2, otherMoved}), ShouldBeNil)
 
-			eachReopen(ctx, &s, func(st *logStore) {
+			check := func(st *logStore) {
 				soStd(ctx, st, k2.Key(), "o", "e")
 				soStd(ctx, st, k1.Key(), "", "")
 				soStd(ctx, st, otherMoved.Key(), "o2", "")
@@ -322,7 +322,13 @@ func TestLogStoreDeleteModifyRerun(t *testing.T) {
 				soLive(st, k1.Key(), false)
 				soLive(st, other.Key(), false)
 				So(storedLiveJob(t, st, k2.Key()).Cmd, ShouldEqual, k2.Cmd)
-			})
+			}
+
+			eachReopen(ctx, &s, check)
+
+			cut := checkpointed(s)
+			So(walFilesBelow(s.dir, cut), ShouldBeEmpty)
+			eachReopen(ctx, &s, check)
 		})
 
 		Convey("a job modified keeping its key keeps its std, takes the new spec and keeps its run state", func() {
@@ -493,8 +499,10 @@ func TestLogStoreDeleteModifyRerun(t *testing.T) {
 			stdOuts, stdErrs := inspectedCount(s, kindStdOut), inspectedCount(s, kindStdErr)
 			So(stdOuts, ShouldEqual, 1)
 
-			for _, h := range held {
-				So(h.write(s), ShouldBeNil)
+			appendHeld := func() {
+				for _, h := range held {
+					So(h.write(s), ShouldBeNil)
+				}
 			}
 
 			check := func(st *logStore) {
@@ -516,6 +524,23 @@ func TestLogStoreDeleteModifyRerun(t *testing.T) {
 
 			Convey("the held records, appended after the archive, delete and modify, recreate nothing, also after "+
 				"reopen", func() {
+				appendHeld()
+				check(s)
+				check(reopenLogStore(ctx, s))
+			})
+
+			Convey("the held records, appended after the archive, delete and modify, recreate nothing after a "+
+				"checkpoint then reopen", func() {
+				appendHeld()
+				checkpointed(s)
+				check(s)
+				check(reopenLogStore(ctx, s))
+			})
+
+			Convey("the held records, appended after a checkpoint made after the archive, delete and modify, "+
+				"recreate nothing, also after reopen", func() {
+				checkpointed(s)
+				appendHeld()
 				check(s)
 				check(reopenLogStore(ctx, s))
 			})

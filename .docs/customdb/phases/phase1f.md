@@ -93,7 +93,9 @@ self-contained file (1f.3) or an old bbolt backup, and corruption
 handling. Cover all 15 acceptance tests from E2, plus E3 tests 4 and 5
 deferred from 1f.1 and the halves of E5's tests deferred from 1f.3.
 Keep the lock taken first, as the 0b.1 incidental owned by 1c.2 says
-([incidentals.md](incidentals.md)).
+([incidentals.md](incidentals.md)). Also resolve the 1d.2 incidentals on
+testing that recovery deletes every `*.tmp` and on `dropBefore` keeping a
+state Ref ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

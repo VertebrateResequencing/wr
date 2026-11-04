@@ -949,7 +949,10 @@ func (s *logStore) viewHistoryKeys(keys []logKey, fn func(r *historyRead) error)
 		}
 	}
 
+	gen := s.holdRefs()
 	s.mu.RUnlock()
+
+	defer s.releaseRefs(gen)
 
 	return r.view(fn)
 }
@@ -1058,7 +1061,10 @@ func (s *logStore) viewHistory(repGroup string, fn func(r *historyRead) error) e
 
 	r.lookups = maps.Clone(s.state.repGroupKeys[repGroup])
 	r.unlooked = maps.Clone(s.state.unlooked)
+	gen := s.holdRefs()
 	s.mu.RUnlock()
+
+	defer s.releaseRefs(gen)
 
 	return r.view(fn)
 }

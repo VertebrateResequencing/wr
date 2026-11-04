@@ -1419,6 +1419,7 @@ func soStateLikeReplay(ctx context.Context, s *logStore, dir, crashed string) *l
 	s.mu.RUnlock()
 
 	So(comparableLogState(&reopened.state), ShouldResemble, memory)
+	So(overlayEndAnswers(reopened), ShouldResemble, overlayEndAnswers(s))
 
 	return reopened
 }

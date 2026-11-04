@@ -44,6 +44,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/jobqueue/wal"
+	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/gofrs/uuid/v5"
 	. "github.com/smartystreets/goconvey/convey"
 )
@@ -53,8 +54,14 @@ import (
 var errRecoverRun = errors.New("random operation went wrong")
 
 const (
-	// recoverRandomOps is how many random operations C5 test 1 makes.
-	recoverRandomOps = 500
+	// recoverRandomOps is how many random operations C5 test 1 makes, and
+	// recoverCheckpoints how many checkpoints it makes among them.
+	recoverRandomOps   = 500
+	recoverCheckpoints = 3
+
+	// recoverRunChoices is how many envs, limit groups and limits (one of
+	// them a removal) the random operations choose among.
+	recoverRunChoices = 4
 
 	// recoverMemoryJobs and recoverMemoryJobSize are C5 test 6's live jobs:
 	// this many, each with a spec of about this many bytes.
@@ -97,6 +104,8 @@ var recoverOps = map[string]func(r *recoverRun) bool{
 	"deletes":  (*recoverRun).remove,
 	"modifies": (*recoverRun).modify,
 	"kicks":    (*recoverRun).kick,
+	"envs":     (*recoverRun).storeEnv,
+	"limits":   (*recoverRun).storeLimit,
 }
 
 func TestLogStoreTornTail(t *testing.T) {
@@ -428,8 +437,9 @@ func TestLogStoreRecoverFailedBatch(t *testing.T) {
 }
 
 // TestLogStoreRecoverReopenedRelease covers spec C5 test 8, without its
-// checkpoint (item 1d.2) and converted store (item 1f.10): a release made after
-// a reopen outranks the reservation recovered by it at the next reopen.
+// converted store (item 1f.10): a release made after a reopen outranks the
+// reservation recovered by it at the next reopen, with or without a checkpoint
+// between the two reopens.
 func TestLogStoreRecoverReopenedRelease(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -461,14 +471,27 @@ func TestLogStoreRecoverReopenedRelease(t *testing.T) {
 				JobStateDelayed, 1, true, 1
 			So(reopened.updateJobAfterExitDurable(recovered, nil, nil, false), ShouldBeNil)
 
-			again := reopenLogStore(ctx, reopened)
+			soReleased := func(st *logStore) {
+				jobs, _, errr := st.recoverIncompleteJobs()
+				So(errr, ShouldBeNil)
+				So(jobs, ShouldHaveLength, 1)
+				So(jobs[0].State, ShouldEqual, JobStateDelayed)
+				So(recoversIntoRun(jobs[0]), ShouldBeFalse)
+				So(jobs[0].Attempts, ShouldEqual, 1)
+			}
 
-			jobs, _, errr := again.recoverIncompleteJobs()
-			So(errr, ShouldBeNil)
-			So(jobs, ShouldHaveLength, 1)
-			So(jobs[0].State, ShouldEqual, JobStateDelayed)
-			So(recoversIntoRun(jobs[0]), ShouldBeFalse)
-			So(jobs[0].Attempts, ShouldEqual, 1)
+			Convey("with no checkpoint", func() {
+				soReleased(reopenLogStore(ctx, reopened))
+			})
+
+			Convey("with a checkpoint written between the two reopens", func() {
+				cut := checkpointed(reopened)
+				So(walFilesBelow(reopened.dir, cut), ShouldBeEmpty)
+
+				again := reopenLogStore(ctx, reopened)
+				So(again.checkpointFrom(), ShouldEqual, cut)
+				soReleased(again)
+			})
 		})
 	})
 }
@@ -590,7 +613,8 @@ func (r *recoverRun) archive() bool {
 }
 
 // release ends a running job's run with exit 1, delaying it to run again or
-// burying it, as applyReleaseLocked does.
+// burying it, as applyReleaseLocked does, with std or, a third of the time,
+// none, clearing any std an earlier exit left.
 func (r *recoverRun) release() bool {
 	job := r.pick(JobStateRunning)
 	if job == nil {
@@ -604,7 +628,31 @@ func (r *recoverRun) release() bool {
 		job.State, job.UntilBuried = JobStateBuried, 0
 	}
 
-	r.check(r.s.updateJobAfterExitDurable(job, []byte("o"), []byte("e"), false))
+	stdo, stde := []byte("o"), []byte("e")
+	if r.rng.IntN(3) == 0 {
+		stdo, stde = nil, nil
+	}
+
+	r.check(r.s.updateJobAfterExitDurable(job, stdo, stde, false))
+
+	return true
+}
+
+// storeEnv stores one of a few envs, which may be stored already.
+func (r *recoverRun) storeEnv() bool {
+	_, err := r.s.storeEnv(fmt.Appendf(nil, "%s env %d", r.prefix, r.rng.IntN(recoverRunChoices)))
+	r.check(err)
+
+	return true
+}
+
+// storeLimit sets one of a few limit groups' limit, or removes it.
+func (r *recoverRun) storeLimit() bool {
+	group := fmt.Sprintf("c5limit%d", r.rng.IntN(recoverRunChoices))
+	limit := int64(r.rng.IntN(recoverRunChoices) - 1)
+
+	_, _, err := r.s.storeLimitGroups(map[string]*limiter.GroupData{group: limiter.NewCountGroupData(limit)})
+	r.check(err)
 
 	return true
 }
@@ -666,10 +714,10 @@ func (r *recoverRun) modify() bool {
 	return true
 }
 
-// TestLogStoreRecoverRandomOps covers spec C5 test 1, without its checkpoints
-// (item 1d.2): a store reopened after random operations gives back the live
-// jobs the operations left, closed or not, and rebuilds the same in-memory
-// state its done funcs had built.
+// TestLogStoreRecoverRandomOps covers spec C5 test 1: a store reopened after
+// random operations, with 3 checkpoints among them, gives back the live jobs
+// the operations left, closed or not, and rebuilds the same in-memory state its
+// done funcs had built.
 func TestLogStoreRecoverRandomOps(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -678,8 +726,9 @@ func TestLogStoreRecoverRandomOps(t *testing.T) {
 	ctx := context.Background()
 
 	for _, goroutines := range []int{1, 4} {
-		Convey(fmt.Sprintf("Given 500 random adds, reserves, starts, archives, releases, deletes, modifies and "+
-			"kicks on a log store from %d goroutine(s), and the jobs they leave live as the server holds them",
+		Convey(fmt.Sprintf("Given 500 random adds, reserves, starts, archives, releases (some clearing std), "+
+			"deletes, modifies, kicks, env stores and limit changes on a log store from %d goroutine(s), and the "+
+			"jobs they leave live as the server holds them",
 			goroutines), t, func() {
 			// The folder is paused so that the state compared is the one the
 			// done funcs built: a fold during the operations changes what
@@ -698,11 +747,27 @@ func TestLogStoreRecoverRandomOps(t *testing.T) {
 				}
 			}
 
-			var wg sync.WaitGroup
+			ops := recoverRandomOps / goroutines
+			checkpointAt := make(map[int]bool, recoverCheckpoints)
 
-			for _, run := range runs {
+			for len(checkpointAt) < recoverCheckpoints {
+				checkpointAt[runs[0].rng.IntN(ops)] = true
+			}
+
+			var (
+				wg          sync.WaitGroup
+				checkpoints int
+			)
+
+			for i, run := range runs {
 				wg.Go(func() {
-					for range recoverRandomOps / goroutines {
+					for op := range ops {
+						if i == 0 && checkpointAt[op] {
+							run.check(s.checkpoint())
+
+							checkpoints++
+						}
+
 						run.step()
 					}
 				})
@@ -710,20 +775,31 @@ func TestLogStoreRecoverRandomOps(t *testing.T) {
 
 			wg.Wait()
 
+			So(checkpoints, ShouldEqual, recoverCheckpoints)
+			So(s.checkpointFrom(), ShouldBeGreaterThan, 0)
+
 			want := make(map[string]recoverView)
 
-			for _, run := range runs {
+			var unmade []string
+
+			for i, run := range runs {
 				So(run.err, ShouldBeNil)
 
 				for _, name := range append(slices.Sorted(maps.Keys(recoverOps)), "adds") {
-					So(run.made[name], ShouldBeGreaterThan, 0)
+					if run.made[name] == 0 {
+						unmade = append(unmade, fmt.Sprintf("run %d made no %s", i, name))
+					}
 				}
 
 				maps.Copy(want, recoverViews(slices.Collect(maps.Values(run.live))))
 			}
 
+			So(unmade, ShouldBeEmpty)
+
 			crashed := filepath.Join(t.TempDir(), "crashed")
 			So(os.CopyFS(crashed, os.DirFS(dir)), ShouldBeNil)
+
+			answers := overlayEndAnswers(s)
 			So(s.close(ctx), ShouldBeNil)
 
 			for name, reopenDir := range map[string]string{"closed": dir, "not closed": crashed} {
@@ -734,6 +810,7 @@ func TestLogStoreRecoverRandomOps(t *testing.T) {
 						Reset(func() { So(reopened.close(ctx), ShouldBeNil) })
 
 						So(comparableLogState(&reopened.state), ShouldResemble, comparableLogState(&s.state))
+						So(overlayEndAnswers(reopened), ShouldResemble, answers)
 
 						jobs, rsr, err := reopened.recoverIncompleteJobs()
 						So(err, ShouldBeNil)
@@ -759,11 +836,41 @@ func recoverViews(jobs []*Job) map[string]recoverView {
 	return views
 }
 
+// overlayEndAnswers returns s's answers that its overlay's latest EndTimes
+// (overlayEnds) feed, for every rep group ever added: its last completion time
+// and whether it has history.
+func overlayEndAnswers(s *logStore) map[string]overlayEndAnswer {
+	rgs, err := s.retrieveRepGroups()
+	So(err, ShouldBeNil)
+
+	last, err := s.retrieveLastCompletionTimeByRepGroup(rgs)
+	So(err, ShouldBeNil)
+
+	answers := make(map[string]overlayEndAnswer, len(rgs))
+
+	for _, rg := range rgs {
+		answers[rg] = overlayEndAnswer{last: last[rg].UnixNano(), has: s.repGroupHasHistory(rg)}
+	}
+
+	return answers
+}
+
 // comparableLogState returns a copy of st in which what is equal compares
-// equal: a live key's empty dep group list is nil, and an overlay or replaced
-// entry's EndTime has no monotonic clock reading.
+// equal: a live key's empty dep group list is nil, an overlay or replaced
+// entry's EndTime has no monotonic clock reading, and each key's rep groups
+// (keyRepGroups), a set kept in the order its rglookups applied in, are sorted.
+// It leaves out overlayEnds, which memory may drop sooner than a replay of the
+// log does once a fold commits a completion as late (spec "In-memory state of
+// logStore"), giving the same answers; overlayEndAnswers compares those.
 func comparableLogState(st *logState) logState {
 	c := *st
+	c.overlayEnds = nil
+	c.keyRepGroups = make(map[logKey][]string, len(st.keyRepGroups))
+
+	for k, rgs := range st.keyRepGroups {
+		c.keyRepGroups[k] = slices.Sorted(slices.Values(rgs))
+	}
+
 	c.live = make(map[logKey]*logLive, len(st.live))
 
 	for k, e := range st.live {
@@ -877,6 +984,12 @@ func TestLogStoreRecoverDamage(t *testing.T) {
 			So(erro, ShouldWrap, errStoreCorrupt)
 		})
 	})
+}
+
+// overlayEndAnswer is a rep group's overlayEndAnswers.
+type overlayEndAnswer struct {
+	last int64
+	has  bool
 }
 
 // recoverView is what C5 test 1 compares of a live job: its key, State,

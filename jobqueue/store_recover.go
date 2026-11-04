@@ -26,7 +26,8 @@
 package jobqueue
 
 // This file replays the log store's wal files into memory when it opens (spec
-// "Recovery", steps 3 to 6, without checkpoints yet).
+// "Recovery", steps 3 to 6), from the walFrom of the checkpoint it loaded
+// (store_checkpoint.go).
 
 import (
 	"bytes"
@@ -35,6 +36,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"math"
 	"os"
@@ -252,6 +254,23 @@ func walEndCorrupt(name string, end, limit int64, last bool) error {
 	}
 }
 
+// walFilesFrom returns the numbers of the wal files in dir numbered from on,
+// ascending, checking that none is missing, from included if it is not 0.
+func walFilesFrom(dir string, from uint32) ([]uint32, error) {
+	files, err := walFileNumbers(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	files = slices.DeleteFunc(files, func(n uint32) bool { return n < from })
+
+	if from != 0 && (len(files) == 0 || files[0] != from) {
+		return nil, fmt.Errorf("%w: wal file %08x, the checkpoint's walFrom, is missing", errStoreCorrupt, from)
+	}
+
+	return files, checkWALSequence(files)
+}
+
 // walFileNumbers returns the numbers of the wal files in dir, ascending.
 func walFileNumbers(dir string) ([]uint32, error) {
 	entries, err := os.ReadDir(dir)
@@ -322,6 +341,22 @@ func walLengthNotHeader(prefix []byte) bool {
 	lenFlags := binary.LittleEndian.Uint32(prefix)
 
 	return lenFlags != 0 && lenFlags != walHeaderLen
+}
+
+// refFrames returns the offset of each frame holding one of refs' records, by
+// file number.
+func refFrames(refs map[wal.Ref]bool) map[uint32]map[uint64]bool {
+	frames := make(map[uint32]map[uint64]bool)
+
+	for ref := range refs {
+		if frames[ref.File] == nil {
+			frames[ref.File] = make(map[uint64]bool)
+		}
+
+		frames[ref.File][ref.Off] = true
+	}
+
+	return frames
 }
 
 // walValidEnd returns the durable end of wal file files[i] that the first
@@ -396,73 +431,35 @@ func (s *logStore) walHeader(n uint32) (uint32, int64, bool, error) {
 }
 
 // liveJobs returns every live job, as its latest durable spec and state, in key
-// order. It reads the wal files through once, rather than each job's records
-// through their Refs, since a block's records can only be read by
-// decompressing the whole block.
+// order. It reads each wal file holding one of their records through once,
+// rather than each record through its Ref, since a block's records can only be
+// read by decompressing the whole block; a checkpoint's blocks it reads one by
+// one, each once. A record whose file is missing is errStoreCorrupt.
 func (s *logStore) liveJobs() ([]*Job, error) {
-	want := s.liveRefs()
+	keys, refs, gen := s.liveRefs()
+	defer s.releaseRefs(gen)
 
-	found := make(map[wal.Ref][]byte, len(want))
+	want := make(map[wal.Ref]bool, 2*len(refs)) //nolint:mnd // a spec and a state each
 
-	files, err := walFileNumbers(s.dir)
+	for _, r := range refs {
+		want[r[0]], want[r[1]] = true, true
+	}
+
+	found, err := s.collectRecords(want)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, n := range files {
-		if err = s.collectRecords(n, want, found); err != nil {
-			return nil, err
-		}
-	}
-
-	return s.jobsOf(found)
+	return s.jobsOf(keys, refs, found)
 }
 
-// liveRefs returns the Refs of every live key's spec and state records.
-func (s *logStore) liveRefs() map[wal.Ref]bool {
+// liveRefs returns, in key order, every live key and the Refs of its spec and
+// state records, with the hold (see holdRefs) the caller releases once it has
+// read them.
+func (s *logStore) liveRefs() ([]logKey, [][2]wal.Ref, uint64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	want := make(map[wal.Ref]bool, 2*len(s.state.live)) //nolint:mnd // a spec and a state each
-
-	for _, e := range s.state.live {
-		want[e.spec], want[e.state] = true, true
-	}
-
-	return want
-}
-
-// collectRecords copies into found the body after the key of each record of
-// wal file n whose Ref is in want.
-func (s *logStore) collectRecords(n uint32, want map[wal.Ref]bool, found map[wal.Ref][]byte) error {
-	f, err := s.segmentFile(n)
-	if err != nil {
-		return err
-	}
-
-	_, err = wal.Scan(io.NewSectionReader(f, 0, math.MaxInt64), func(ref wal.Ref, rec []byte) error {
-		ref.File = n
-		if !want[ref] {
-			return nil
-		}
-
-		parsed, errp := parseLogRecord(rec)
-		if errp != nil {
-			return errp
-		}
-
-		found[ref] = slices.Clone(parsed.body)
-
-		return nil
-	})
-
-	return err
-}
-
-// jobsOf returns, in key order, the job of each live key, from its spec and
-// state record bodies in found.
-func (s *logStore) jobsOf(found map[wal.Ref][]byte) ([]*Job, error) {
-	s.mu.RLock()
 	keys := slices.SortedFunc(maps.Keys(s.state.live), func(a, b logKey) int { return bytes.Compare(a[:], b[:]) })
 	refs := make([][2]wal.Ref, len(keys))
 
@@ -471,8 +468,73 @@ func (s *logStore) jobsOf(found map[wal.Ref][]byte) ([]*Job, error) {
 		refs[i] = [2]wal.Ref{e.spec, e.state}
 	}
 
-	s.mu.RUnlock()
+	return keys, refs, s.holdRefs()
+}
 
+// collectRecords returns the body after the key of each record whose Ref is in
+// want.
+func (s *logStore) collectRecords(want map[wal.Ref]bool) (map[wal.Ref][]byte, error) {
+	found := make(map[wal.Ref][]byte, len(want))
+	frames := refFrames(want)
+
+	keep := func(file uint32) func(ref wal.Ref, rec []byte) error {
+		return func(ref wal.Ref, rec []byte) error {
+			ref.File = file
+			if !want[ref] {
+				return nil
+			}
+
+			parsed, err := parseLogRecord(rec)
+			if err != nil {
+				return err
+			}
+
+			found[ref] = slices.Clone(parsed.body)
+
+			return nil
+		}
+	}
+
+	for _, file := range slices.Sorted(maps.Keys(frames)) {
+		if err := s.collectFileRecords(file, slices.Sorted(maps.Keys(frames[file])), keep(file)); err != nil {
+			return nil, err
+		}
+	}
+
+	return found, nil
+}
+
+// collectFileRecords calls fn with the records of the file of Refs with file
+// number file: each of a checkpoint's frames at offs, or the whole of a wal
+// file. A missing file is errStoreCorrupt.
+func (s *logStore) collectFileRecords(file uint32, offs []uint64, fn func(ref wal.Ref, rec []byte) error) error {
+	f, err := s.segmentFile(file)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: %w", errStoreCorrupt, err)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if file&checkpointRefFlag == 0 {
+		_, err = wal.Scan(io.NewSectionReader(f, 0, math.MaxInt64), fn)
+
+		return err
+	}
+
+	for _, off := range offs {
+		if err = wal.ReadFrame(f, off, fn); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// jobsOf returns the job of each of keys, from the bodies in found of the spec
+// and state records at its refs.
+func (s *logStore) jobsOf(keys []logKey, refs [][2]wal.Ref, found map[wal.Ref][]byte) ([]*Job, error) {
 	jobs := make([]*Job, 0, len(keys))
 
 	for i, k := range keys {
@@ -502,14 +564,14 @@ func (s *logStore) jobsOf(found map[wal.Ref][]byte) ([]*Job, error) {
 // damage before it is errStoreCorrupt. The last file is valid
 // up to its first damage, its torn tail truncated, or, if its header itself was
 // never made durable, it holds nothing durable and is removed.
-func (s *logStore) replay(ctx context.Context) (uint32, error) {
-	files, err := walFileNumbers(s.dir)
+//
+// With a checkpoint, from is its walFrom: files before it, which the
+// checkpoint holds the live state of, are not replayed, and file from must be
+// there.
+func (s *logStore) replay(ctx context.Context, from uint32) (uint32, error) {
+	files, err := walFilesFrom(s.dir, from)
 	if err != nil || len(files) == 0 {
 		return 1, err
-	}
-
-	if err = checkWALSequence(files); err != nil {
-		return 0, err
 	}
 
 	for i, n := range files {

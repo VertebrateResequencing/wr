@@ -73,5 +73,5 @@ rotation during a fold, on swapping the spec Refs of replaced overlay
 entries, on comparing `overlayEnds` by answer, and on comparing
 `keyRepGroups` as a set ([incidentals.md](incidentals.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

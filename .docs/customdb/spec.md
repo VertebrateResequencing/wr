@@ -343,7 +343,7 @@ from one counter (max existing + 1 at open):
 | --- | --- |
 | `VERSION` | `wr-store 1\n` |
 | `NNNNNNNN.wal` | log segment |
-| `NNNNNNNN.ckpt` | checkpoint |
+| `NNNNNNNN.ckpt` | checkpoint, numbered by its `walFrom` |
 | `NNNNNNNN.hist` | sealed history segment (Phase 2) |
 | `history.bolt` | bbolt history (Phase 1 only) |
 | `*.tmp` | in-progress output, deleted at open |
@@ -663,11 +663,14 @@ whether `openStore` (including E2's recovery of `.restoring`), E6 compact,
 
 1. Check `VERSION`, delete `*.tmp` and any `SOURCE` (E1).
 2. Load the newest checkpoint with a valid trailer, decoding blocks with 8
-   concurrent readers.
+   concurrent readers and applying them in file order, since a block can
+   hold a key's state record and an earlier block its spec.
 3. Open history and read its durable folded position F (file, offset).
    Scan every wal file from min(F's file, the checkpoint's `walFrom`) in
    file order. Live records from `walFrom` on are applied to live state;
    `complete` and rglookup records at or after F rebuild the overlay.
+   Phase 1: F is at or past `walFrom` (Checkpoints, step 2), so the scan
+   starts at `walFrom`, and an F before it is `errStoreCorrupt`.
 4. Damage rules over that range: a file followed by another is valid up to
    the `prevEnd` of the first later file with a whole header, if that
    header names it; if it names an earlier file, it skips this one as spent
@@ -705,19 +708,29 @@ Every `checkpointInterval` (5 min) or `checkpointLogBytes` (256MiB of wal
 since the last), and never sooner after the previous one ended than it took:
 
 1. Rotate the writer; the sealed file number + 1 is the cut `walFrom`.
-2. Wait until the folder's position is at or past the cut. While the
-   folder is failing (Folder and history), this checkpoint is skipped, not
-   waited for; the next interval tries again.
+   Then wait until every write that appended before the rotation has its
+   Refs, so has applied (its batch was durable before the rotation's).
+2. Wait until the folder's position is at or past the cut: the checkpoint
+   folds to the writer's durable end itself, one fold at a time with the
+   folder's. While the folder is failing (Folder and history), this
+   checkpoint is skipped, not waited for; the next interval tries again.
 3. Merge the previous checkpoint with wal files before the cut using the
    recovery reducer, writing `NNNNNNNN.ckpt.tmp`: a header frame (`walFrom`,
    `histFrom` = durable F read at the start of this step, max seq, counts),
    zstd blocks of at most 64KiB uncompressed holding each
    live job's spec and state records, each live key's non-empty std, and
    every env, limit and depgroup record, then a trailer frame (block
-   offsets, magic `WRCKPT01`). Phase 2 only: it also holds the spec record
-   of each overlay or replaced entry (In-memory state of `logStore`) made
-   by a `complete` record at or after `histFrom` and before the cut
-   (completions in the open segment), unless it is a live job's spec
+   offsets, magic `WRCKPT01`). Max seq is the highest of the previous
+   checkpoint's and the merged records', as the record of the highest may
+   be gone. A std stream a record cleared (an empty std record, or a
+   keep-live archive's `complete` record) is held as an empty std record
+   at the seq that cleared it, so that an older std record appended after
+   the cut is still ignored. A Ref of a record in a checkpoint has bit 31
+   of its file number set, so it is never taken for wal file `walFrom`.
+   Phase 2 only: it also holds the spec record of each overlay or replaced
+   entry (In-memory state of `logStore`) made by a `complete` record at or
+   after `histFrom` and before the cut (completions in the open segment),
+   unless it is a live job's spec
    record, which it holds already. That is one spec per entry, not one per
    key, as a re-add or modify can change a key's spec between two of its
    `complete` records, and it lets each entry's spec survive wal deletion.
@@ -727,10 +740,16 @@ since the last), and never sooner after the previous one ended than it took:
    Ref (spec, last state, std, overlay spec, replaced entry spec) that
    points below the cut for its copy in the new checkpoint, then delete
    older checkpoints (except one a backup tick holds) and apply the wal
-   deletion rule.
+   deletion rule. A reader of records takes a hold, in the swap's
+   generation, while it copies their Refs under the store's lock, and
+   releases it once it has read them; the deletion waits until no reader
+   holds a generation before the swap. If a Ref below the cut has no copy,
+   nothing is deleted and the checkpoint fails.
 
 A checkpoint is a pure function of files on disk, so it is a consistent cut
-whatever the hot path does meanwhile.
+whatever the hot path does meanwhile. A failed checkpoint is logged as
+`checkpointFailedLogMsg = "checkpoint failed"` at error at most once a minute
+with `failures`.
 
 ### Folder and history
 
@@ -1730,7 +1749,8 @@ D3) need no format change.
 4. Given 1,000 live jobs, 100 of them with std, and a checkpoint that
    drops every earlier wal file, when each live entry's spec, last state
    and std Ref is read with `wal.ReadAt`, then it decodes to that job's
-   spec, state and std (1,000, 1,000 and 100 of each).
+   spec, state and std (1,000 specs, 1,000 states and 200 std Refs, a
+   stdout and a stderr for each of the 100).
 5. Given 4 goroutines writing continuously during 3 checkpoints, when
    reopened, then the live set equals the in-memory model.
 

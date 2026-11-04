@@ -337,7 +337,7 @@ called ready, or explicitly deferred with the owner.
   (set by the server's mark; at the store level the outcome is
   `archiveRemovedLive` with the guard keeping d live). Owner: 1e.4.
 
-- [ ] (from 1c.4) A modify drops its old key's rglookups, as bbolt's
+- [x] (from 1c.4) A modify drops its old key's rglookups, as bbolt's
   `deleteOldLiveJobs` drops its `repgroupToKey` entries, but the log store
   drops only those not yet folded (`applyModify` over the in-memory
   rglookups). Once 1d.1 folds rglookups into `history.bolt`, a modify after
@@ -370,6 +370,21 @@ called ready, or explicitly deferred with the owner.
   live path writes such a modify today, but checkpoint replay (a modify
   replayed after a spec its checkpoint already holds) may reach it, and
   then history.bolt would lose rglookups the in-memory state keeps.
+  Done in 1d.2: in Phase 1 there is no log between F and `walFrom`. A
+  checkpoint folds to the writer's durable end, past its cut, before it
+  merges (spec "Checkpoints", step 2), and F never moves back, so F is at
+  or past the newest checkpoint's `walFrom`; recovery replays from
+  `walFrom` and refuses an F before it as `errStoreCorrupt`
+  (`TestLogStoreRecoverHistoryBeforeCheckpoint`, which puts back a
+  history.bolt from before the checkpoint; spec "Recovery", step 3). Nor
+  can a checkpoint make a modify meet a spec it would not meet in a full
+  replay: the checkpoint is the reducer's state over the log before its
+  cut, and replay applies the records after it in log order, so each
+  modify after the cut meets the live spec seqs a replay of the whole log
+  gives it, and no spec of its key with a higher seq is earlier in the
+  log, as claims and `guardMu` make such a spec's write decide after the
+  modify has applied. Phase 2's checkpoints, whose F can be before the
+  cut, are 2b's (spec "Checkpoints", step 3).
 
 - [x] (from 1c.4 review) `TestLogStoreFailedWriteNotReplayedAfterSpentFile`
   flakes about 1 in 500 under load, pre-existing (load-matched A/B at 1000
@@ -398,7 +413,7 @@ called ready, or explicitly deferred with the owner.
   1 byte limit and requires 3 frames of 1 delete record each, and none live
   after reopen; `delete-not-grouped` is killed.
 
-- [ ] (from 1c.5 review) Two recovery behaviours have no test:
+- [x] (from 1c.5 review) Two recovery behaviours have no test:
   `recoverIncompleteJobs` returning jobs in key order, as bbolt does
   (mutant `jobs-unsorted` survives), and `jobsOf` failing with
   `errStoreCorrupt` when a live ref's wal file is missing (mutant
@@ -407,6 +422,14 @@ called ready, or explicitly deferred with the owner.
   deletes a wal file holding a live ref after open and expects
   `errStoreCorrupt`, and pin the key order of recovered jobs (or state in
   the spec that callers must not rely on it).
+  Done in 1d.2: `TestLogStoreRecoverMissingWAL` deletes the wal file
+  holding the live jobs' records after open and requires
+  `recoverIncompleteJobs` to fail with `errStoreCorrupt`, and requires the
+  recovered jobs in key order (mutant `jobs-unsorted` killed). `liveJobs`
+  now reads each file its Refs name, a checkpoint's frame by frame, so a
+  missing file is `errStoreCorrupt` before `jobsOf`'s check of each live
+  job's records, which stays; a mutant skipping either alone survives as
+  the other still fails the recovery, and skipping both is killed.
 
 - [ ] (from 1d.1) E1 step 4 writes `history.bolt` (spec "Folder and
   history"), which now also has `keyRepgroups`, `repgroupToKey`'s reverse:
@@ -447,7 +470,7 @@ called ready, or explicitly deferred with the owner.
   (`foldRead.specs`). The open entries below route keeping
   `logState.replaced` to 2b.2 and swapping its spec Refs to 1d.2.
 
-- [ ] (from 1d.1 review round 4) A replaced overlay entry
+- [x] (from 1d.1 review round 4) A replaced overlay entry
   (`logState.replaced`) keeps the spec Ref of the `complete` record it
   applied as until it folds, and the folder reads that spec through it
   (`specOf`, then `readRecordBodies`). Once checkpoints delete wal files, a
@@ -457,6 +480,16 @@ called ready, or explicitly deferred with the owner.
   (spec C6 step 4 now lists them), and add a test that archives a job,
   re-adds it, archives it again before a fold, checkpoints past the first
   archive's spec and deletes its wal file, then folds both archives.
+  Done in 1d.2: a checkpoint swaps the spec (and complete) Refs of every
+  overlay and replaced entry below its cut, replacing the entry, as
+  entries are never changed (`logState.swapRefs`).
+  `TestLogStoreCheckpointReplacedSpecs` archives k, re-adds and archives it
+  again after the checkpoint's cut but before its swap
+  (`logCheckpointFoldedHook`), so the first archive's replaced entry pairs
+  with k's spec in the wal file the checkpoint deletes, then folds both
+  archives and requires the second's completion, also after reopen
+  (mutant `replaced-not-swapped` killed: the fold fails reading the
+  deleted file).
 
 - [ ] (from 1d.1 review round 4) The Phase 2 folder pairs each `complete`
   record with the spec it applied with through `logState.replaced`, so
@@ -541,7 +574,7 @@ called ready, or explicitly deferred with the owner.
   to rep group B and requires A still listed, on bbolt and on the log store
   before the modify folds, after and after reopen.
 
-- [ ] (from 1d.1 review round 2) The folder takes the spec Refs of a
+- [x] (from 1d.1 review round 2) The folder takes the spec Refs of a
   chunk's `complete` records (`foldRead.specRefs`) under the store's read
   lock, then reads those records' frames with no lock
   (`readRecordBodies`), and reads wal files listed once per chunk
@@ -556,6 +589,20 @@ called ready, or explicitly deferred with the owner.
   folder a reader hold that keeps the files it reads until its fold ends,
   or add a test of a fold racing a checkpoint, with a rotation during the
   fold, that shows the fold succeeds or retries to the same history.
+  Done in 1d.2, both: every reader of records through Refs, the fold's
+  `specRefs` included, takes a hold (`holdRefs`) while it copies them under
+  the store's lock and releases it once it has read them, and a checkpoint
+  deletes files only once no reader holds a generation from before its
+  swap (spec "Checkpoints", step 4). The wal files a fold scans are at or
+  after F, which deletion never reaches.
+  `TestLogStoreCheckpointWaitsForFoldReads` holds a fold after it took k's
+  spec Ref, below the cut, and requires the checkpoint to wait, k's wal
+  file kept, until the fold has read it, then both to succeed and k's
+  completion folded (mutant `no-reader-wait` killed).
+  `TestLogStoreCheckpointRotatesDuringFold` rotates the log with a
+  checkpoint while a fold of 10 archives is reading, and requires the
+  checkpoint to wait for that fold, which folds them all, also after
+  reopen.
 
 - [x] (from 1d.1 review round 3) Close waited for a whole backlog's fold:
   `stopFolder` waits for the folder goroutine, whose `foldNow` folded every
@@ -579,7 +626,7 @@ called ready, or explicitly deferred with the owner.
   unchanged req group and requires the stamp unchanged, then learns a new
   value and requires it raised.
 
-- [ ] (from 1d.1 review round 6) A rep group's latest overlay EndTime
+- [x] (from 1d.1 review round 6) A rep group's latest overlay EndTime
   (`logState.overlayEnds`) can differ between memory and a replay of the
   log, though every answer agrees. Memory drops a rep group's entry once a
   fold commits a completion as late, as spec "In-memory state of
@@ -590,11 +637,61 @@ called ready, or explicitly deferred with the owner.
   (`retrieveLastCompletionTimeByRepGroup`, `repGroupHasHistory`), not
   field by field, or the checkpoint must canonicalise it, as memory may
   legitimately differ from replay.
+  Done in 1d.2: `comparableLogState` leaves `overlayEnds` out, and every
+  comparison of memory with a replay (`soStateLikeReplay`, C5 test 1) also
+  compares `overlayEndAnswers`, each rep group's last completion time and
+  `repGroupHasHistory`. `TestLogStoreReplayDiffersOnlyInAnswers` folds a
+  completion ending at 200 while one of its rep group ending at 100 applies
+  after the fold read the log, and requires memory without the entry, a
+  replay with 100, and the same answers (comparing field by field fails).
 
-- [ ] (from 1d.1 review round 7) The order of a key's rep groups in
+- [x] (from 1d.1 review round 7) The order of a key's rep groups in
   `logState.keyRepGroups` follows the order its rglookups applied in, so
   under concurrent writes it can differ from a replay's, which applies them
   in log order, when a key has two or more rep groups. Every answer
   agrees, as the slice is used as a set. This predates 1d.1 (from 1c).
   Owner: 1d.2 (C6): checkpoint and recovery comparisons must compare
   `keyRepGroups` as a set, or the checkpoint must normalise its order.
+  Done in 1d.2: `comparableLogState` sorts each key's rep groups.
+  `TestLogStoreReplayDiffersOnlyInAnswers` looks a key up under a, then b
+  and a again after a fold read its first lookup, and requires [a b] in
+  memory, [b a] in a replay and the states equal as sets (comparing in
+  order fails).
+
+- [ ] (from 1d.2) Recovery step 4 makes "no valid checkpoint"
+  `errStoreCorrupt`, but stores are still created with no checkpoint, so a
+  store with no checkpoint file replays every wal file, as before 1d.2;
+  only checkpoint files of which none has a valid trailer are
+  `errStoreCorrupt`. Owner: 1f (E2), which creates a new store with an
+  empty checkpoint: make a store with none `errStoreCorrupt` then.
+
+- [ ] (from 1d.2 review) A checkpoint writes its whole `.ckpt` (about
+  40-180MB at production's live set) through one buffered writer with no
+  pacing, then makes it durable with a single fsync, on NFS. That is the
+  burst pattern that starved the bbolt committer's fdatasync before, which
+  `backupCopyWriter` fixed by forcing writeback of the backup copy every
+  `syncEvery` bytes. Here it could delay the wal writer's syncs, and so
+  reservations, while a checkpoint runs. Owner: 1g.5 (daytime NFS
+  targets): make sure checkpoints run during the stall-free soak and check
+  the `"reservation wait"` p99 of the lines covering them; if any is above
+  50ms, pace the checkpoint's write as `backupCopyWriter` does. A soak at
+  test scale writes `.ckpt` files far smaller than production's, so also
+  measure that p99 while a checkpoint of a production-sized live set (a
+  `.ckpt` of 40MB or more) is written on the NFS work directory, such as
+  with checkpoints forced while the soak runs against a store seeded with
+  that many live jobs.
+
+- [ ] (from 1d.2 review round 6) Recovery step 1 deletes every `*.tmp`
+  (`removeTmpFiles`, `jobqueue/store_checkpoint.go`), but only a
+  `.ckpt.tmp` is tested, so deleting only checkpoint temp files would pass.
+  No effect in Phase 1, where the only other `.tmp` is `VERSION.tmp`,
+  which `createStoreDir` rewrites. Owner: 1f.4 (E2), before conversion and
+  compaction write other `.tmp` files: a reopen test that plants a
+  non-checkpoint `x.tmp` and requires it gone.
+
+- [ ] (from 1d.2 review round 6) `dropBefore` (`jobqueue/store_records.go`)
+  zeroes `stateSeq` but keeps the old state Ref. The swap and the
+  checkpoint's copy both skip a state whose `stateSeq` is 0, so that Ref
+  would stay below the cut and dangle once its file is deleted. It cannot
+  happen today, as every spec write carries a state record. Owner: 1f.4
+  (E2): zero the Ref there, as `clearStd` does for std, with a test.
