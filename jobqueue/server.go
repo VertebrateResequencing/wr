@@ -237,8 +237,6 @@ var (
 	ServerLostJobCheckTimeout                       = 15 * time.Second
 	ServerLostJobCheckRetryTime                     = 30 * time.Minute
 	ServerLostRunnerBackstop                        = 1 * time.Hour
-	serverReserveWriteWaitMax                       = 10 * time.Second
-	serverReserveWriteWaitFraction                  = 4
 	ServerConfirmDeadConcurrency                    = 16
 	ServerMaximumRunForResourceRecommendation       = 100
 	ServerMinimumScheduledForResourceRecommendation = 10
@@ -426,6 +424,14 @@ var releaseReportAcceptedHook func(key string)
 //
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var reservationQueuedHook func(key string)
+
+// reservationAbandonedHook, if non-nil, is called with a job's key once
+// abandonReservation has released the job's item back to the ready sub-queue,
+// so a test can have the job reserved again before the abandon returns. It is a
+// test-only seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var reservationAbandonedHook func(key string)
 
 // kickQueuedHook, if non-nil, is called with a job's key once kickJobs has moved
 // the job's item out of the bury sub-queue, so a test can have the job reserved
@@ -671,13 +677,6 @@ type ServerTimings struct {
 	// the same scope as DBBatchDelay.
 	DBBatchSize int
 
-	// ReserveWriteWait bounds how long a reservation waits for its write to reach
-	// disk before the job is handed out anyway (default serverReserveWriteWait()).
-	// It must stay well inside the client's request timeout: a runner that times
-	// out never gets the job it was reserved, which then parks lost. Tests set it
-	// low.
-	ReserveWriteWait time.Duration
-
 	// ShutdownSocketWait is how long shutdown waits, after client handling has
 	// stopped, before closing the command socket, to let in-flight messages
 	// drain (default serverSocketWait). Tests set this low to shut servers down
@@ -736,7 +735,6 @@ func (t ServerTimings) withDefaults() ServerTimings {
 	t.TouchInterval = dfltDuration(t.TouchInterval, ClientTouchInterval)
 	t.RetryWait = dfltDuration(t.RetryWait, ClientRetryWait)
 	t.RetryTime = dfltDuration(t.RetryTime, ClientRetryTime)
-	t.ReserveWriteWait = dfltDuration(t.ReserveWriteWait, serverReserveWriteWait())
 
 	if t.ConfirmDeadConcurrency <= 0 {
 		t.ConfirmDeadConcurrency = ServerConfirmDeadConcurrency
@@ -773,13 +771,6 @@ func (t ServerTimings) withDefaults() ServerTimings {
 }
 
 type subscriptionRequestError string
-
-// serverReserveWriteWait is the default ServerTimings.ReserveWriteWait:
-// serverReserveWriteWaitMax, or a quarter of ClientMinRequestTimeout if that is
-// less, so a reservation is always answered well before its client gives up.
-func serverReserveWriteWait() time.Duration {
-	return min(serverReserveWriteWaitMax, ClientMinRequestTimeout/time.Duration(serverReserveWriteWaitFraction))
-}
 
 func (e subscriptionRequestError) Error() string {
 	return string(e)
@@ -4180,13 +4171,16 @@ func (s *Server) markItemJobChanged(ctx context.Context, job *Job, data any, ahe
 // runEndCallback returns the queue callback that applies rep's end of run to
 // job (applyRunEndLocked) under the queue's lock, as the queue takes the
 // job's item out of Run, so no reserve can see the item before its retry size
-// is set. It keeps the scheduler group the run had in rep.ended, for
-// finalizeReleasedJob. It must not call the queue.
+// is set, and gives back the run's limit groups there too: a reserve of the
+// item once it is ready notes its own, which a later give-back would take
+// instead, leaking the run's. It keeps the scheduler group the run had in
+// rep.ended, for finalizeReleasedJob. It must not call the queue.
 func (s *Server) runEndCallback(job *Job, rep releaseReport) func(any) {
 	return func(any) {
 		job.Lock()
 		defer job.Unlock()
 
+		job.decrementLimitGroupsLocked(s.limiter)
 		rep.ended.group, rep.ended.msg = job.applyRunEndLocked(rep, s.currentReqGroupRecs(job.ReqGroup))
 	}
 }
@@ -5539,7 +5533,6 @@ func Serve(ctx context.Context, config ServerConfig) (s *Server, msg string, tok
 	}
 
 	db.setRecRounding(timings.RecSecRound, timings.RecMBRound)
-	db.setBatchTuning(timings.DBBatchDelay, timings.DBBatchSize)
 	db.setReqStatRefreshInterval(timings.ReqStatRefreshInterval)
 
 	defer func() { closeOnError(&err, "db", func() error { return db.close(ctx) }) }()
@@ -7595,21 +7588,19 @@ func (s *Server) applyReleaseQueueChange(ctx context.Context, q *queue.Queue, it
 }
 
 // finalizeReleasedJob finishes a release, persisting the job and, for one that
-// took its item out of Run, giving back its limit groups and its run's
-// scheduler group count. With rep.durable it returns only once that write has
-// committed.
+// took its item out of Run, giving back its run's scheduler group count. With
+// rep.durable it returns only once that write has committed.
 //
 // outcome is what applyReleaseQueueChange did. A release that took the item
-// out of Run had its end of run applied by the queue change's callback, which
-// kept the run's scheduler group in rep.ended: a zero-delay release's item can
-// be prepared for ready, changing job.schedulerGroup, before this runs.
+// out of Run had its end of run applied, and its limit groups given back, by
+// the queue change's callback (runEndCallback), which kept the run's scheduler
+// group in rep.ended: a zero-delay release's item can be prepared for ready,
+// changing job.schedulerGroup, before this runs.
 func (s *Server) finalizeReleasedJob(ctx context.Context, job *Job, rep releaseReport,
 	outcome releaseOutcome) error {
 	var sgroup, msg string
 
 	if outcome == releaseMoved {
-		job.decrementLimitGroups(s.limiter)
-
 		sgroup, msg = rep.ended.group, rep.ended.msg
 		s.decrementGroupCount(ctx, sgroup)
 	} else {

@@ -181,11 +181,6 @@ var errBestEffortWriteAborted = errors.New("best-effort write transaction aborte
 // to write to a database without bucketJobRunState, which initDB creates.
 var errNoRunStateBucket = errors.New("database has no job run-state bucket")
 
-// errDurableWriteWaitExpired is what awaitQueuedWriteWithin returns when its
-// write had not committed by the deadline. The write is still queued and may
-// commit later.
-var errDurableWriteWaitExpired = errors.New("gave up waiting for the write to commit")
-
 // jobExitUpdatePollInterval is how often retrieveJobStd polls for in-progress
 // updateJobAfterExit() calls to complete.
 const jobExitUpdatePollInterval = 10 * time.Millisecond
@@ -421,10 +416,6 @@ const maxArchivedBytesDefault = 256 * 1024 * 1024
 //
 //nolint:gochecknoglobals // internal tuning knob; a var only so tests can vary it
 var maxArchivedBytes = maxArchivedBytesDefault
-
-// reserveNotDurableLogMsg is the info line logged once per reservation handed
-// out before it was recorded on disk.
-const reserveNotDurableLogMsg = "reservation handed out before it was recorded on disk"
 
 const (
 	limitGroupUnchanged limitGroupOutcome = iota
@@ -956,6 +947,53 @@ func (a *archivedScan) offer(key []byte) {
 	a.selector(group).offer(key, group, &a.facets)
 }
 
+// queuedCommit is the durability of a write queued for the best-effort writer,
+// whose drain answers waiter, which is buffered so the drain never blocks.
+type queuedCommit struct {
+	waiter chan error
+
+	mu   sync.Mutex
+	done bool
+	err  error
+}
+
+// WaitWithin waits at most d for the drain that covers the write, returning
+// whether it has answered and, if so, its error. It holds c's mutex for up to
+// d, which is fine for its one caller, the reservation, which waits once and
+// then checks with a zero d; concurrent callers would queue behind each other.
+func (c *queuedCommit) WaitWithin(d time.Duration) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.done {
+		return true, c.err
+	}
+
+	select {
+	case c.err = <-c.waiter:
+		c.done = true
+
+		return true, c.err
+	default:
+	}
+
+	if d <= 0 {
+		return false, nil
+	}
+
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case c.err = <-c.waiter:
+		c.done = true
+
+		return true, c.err
+	case <-timer.C:
+		return false, nil
+	}
+}
+
 // pace bounds the backup copy's dirty-page backlog for the bytes written since the
 // last pace. On Linux it starts asynchronous writeback of the just-written range
 // and waits on the previous one (cheap, pipelined, no full-file round-trip);
@@ -1299,12 +1337,6 @@ type db struct {
 	upgraded       bool
 	recSecRound    int // rounding (secs) for recommended reserve times; from the server's timings
 	recMBRound     int // rounding (MBs) for recommended memory/disk; from the server's timings
-	// rndMu guards reservesNotDurable, and is held while each hand-out of a
-	// reservation that was not yet durable is counted and logged, so the
-	// logged totals are always exactly 1..n, even up to a crash. It is taken
-	// only on that non-durable path.
-	rndMu              sync.Mutex
-	reservesNotDurable uint64
 }
 
 // backupCopyWriter streams a consistent DB backup copy to f, forcing writeback of
@@ -1348,19 +1380,6 @@ func (w *backupCopyWriter) Write(p []byte) (int, error) {
 	}
 
 	return total, nil
-}
-
-// logReserveNotDurable counts a reservation of the job with the given key being
-// handed out before it was durable, and logs it with the running total. It logs
-// on a context with no handler, so the line reaches the root logger's
-// info-level manager log file, not the server context's warn-level handler.
-func (db *db) logReserveNotDurable(key string) {
-	db.rndMu.Lock()
-	defer db.rndMu.Unlock()
-
-	db.reservesNotDurable++
-
-	clog.Info(context.Background(), reserveNotDurableLogMsg, "key", key, "total", db.reservesNotDurable)
 }
 
 // copyBackup writes a consistent copy of the DB (via a read tx) to path. It always
@@ -1780,22 +1799,6 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 	return dbstruct, msg, err
 }
 
-// setBatchTuning configures BoltDB's write-transaction coalescing on the live
-// database. delay sets DB.MaxBatchDelay (how long Batch waits for concurrent
-// writes to join before committing) and size sets DB.MaxBatchSize (how many
-// coalesced writes force an early commit). Non-positive values are ignored,
-// leaving bbolt's own defaults in place. This only widens or narrows the
-// coalescing window: every commit is still fsync'd, so durability is unchanged.
-func (db *db) setBatchTuning(delay time.Duration, size int) {
-	if delay > 0 {
-		db.bolt.MaxBatchDelay = delay
-	}
-
-	if size > 0 {
-		db.bolt.MaxBatchSize = size
-	}
-}
-
 // storeLimitGroups stores a mapping of group names to unsigned ints in a
 // dedicated bucket. If a group was not already in the database, or had a
 // different value, that group name will be returned in the changed slice. If
@@ -2213,6 +2216,25 @@ func putLiveRecords(tx *bolt.Tx, encodes sobsd) error {
 	}
 
 	return nil
+}
+
+// reserveRunState queues job's run-state record, as updateJobRunStateDurable
+// does, and returns its durability without waiting for it. The record goes
+// through the best-effort writer, not a bolt.Batch of its own, so that it is
+// ordered with the job's other run-state and change records as they encoded
+// the job: one committed out of that order could leave an older state stored
+// over the reservation, or the reservation over a later state.
+//
+// The caller must not hold a job's lock, db.arMu, db.beMu or db.wgMutex, as
+// for updateJobRunStateDurable.
+func (db *db) reserveRunState(job *Job) (pendingCommit, error) {
+	waiter := make(chan error, 1)
+
+	if err := db.queueJobRunState(job, waiter); err != nil {
+		return nil, err
+	}
+
+	return &queuedCommit{waiter: waiter}, nil
 }
 
 // decodeStoredJob is decodeJob with the codec handle ch, for history.bolt, whose
@@ -3157,39 +3179,6 @@ func awaitQueuedWrite(queue func(*Job, chan error) error, job *Job) error {
 	}
 
 	return <-waiter
-}
-
-// updateJobRunStateDurableWithin is updateJobRunStateDurable, but gives up
-// waiting after wait, returning errDurableWriteWaitExpired.
-//
-// The caller must not hold a job's lock, db.arMu or db.beMu: a writer whose
-// write turn is kept for it may take any of those on its way to that turn (see
-// writeTurns), so no writer would get a turn until this gave up. Nor may it
-// hold db.wgMutex, which queueJobRunState takes itself.
-func (db *db) updateJobRunStateDurableWithin(job *Job, wait time.Duration) error {
-	return awaitQueuedWriteWithin(db.queueJobRunState, job, wait)
-}
-
-// awaitQueuedWriteWithin is awaitQueuedWrite, but gives up waiting after wait,
-// returning errDurableWriteWaitExpired. The write stays queued and may still
-// commit; the waiter channel is buffered, so the drain's reply to it never
-// blocks the writer.
-func awaitQueuedWriteWithin(queue func(*Job, chan error) error, job *Job, wait time.Duration) error {
-	waiter := make(chan error, 1)
-
-	if err := queue(job, waiter); err != nil {
-		return err
-	}
-
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-
-	select {
-	case err := <-waiter:
-		return err
-	case <-timer.C:
-		return errDurableWriteWaitExpired
-	}
 }
 
 // queueJobRunState encodes job's run state outside any transaction and queues

@@ -71,7 +71,7 @@ called ready, or explicitly deferred with the owner.
   exists. A2 test 4 cannot see this, since `db.go` stays until F5. Owner:
   2e.1 (F5), which deletes `db.go` and must port each to the store API or
   `storeInspector`, or delete it where a log-store test covers it.
-- [ ] (from 0b.1) The tests that open their crash window by holding the
+- [x] (from 0b.1) The tests that open their crash window by holding the
   bbolt write lock are listed, so F5 deletes them: `start_durability_test.go`,
   `release_durability_test.go`, `release_durability_resend_bolt_test.go`,
   `release_std_bolt_test.go`, `reserve_ttr_test.go`,
@@ -97,6 +97,37 @@ called ready, or explicitly deferred with the owner.
   (`TestStoreCloseDrainsWrites`, `TestStoreArchivedJobNotResurrected` in
   `store_jobs_test.go`), but there the race with `close()` decides how
   many writes are in flight; 1e.1 adds held-commit forms on the log store.
+  Done in 1e.1: a held wal sync holds the log's commit, with a manager on
+  the log store (`storeKind: storeKindLog`). Stalled reservations are C3's
+  tests in `store_reserve_test.go`; `store_log_held_test.go` has an
+  acknowledged release and bury recovered from a crash copy
+  (`TestLogHeldReleaseAndBury`), re-sent ones not acknowledged while held
+  (`TestLogHeldResentReport`), a buried job's stderr (`TestLogHeldBuriedStd`),
+  a stalled archive (`TestLogHeldArchiveStall`, which fails without
+  `ttrCallback`'s `archivePendingLocked` guard), a late start
+  (`TestLogHeldLateStart`), adds, archives and best-effort changes in flight
+  at close (`TestLogHeldCloseDrains`) and a change or exit queued behind a
+  held archive (`TestLogHeldArchiveBeatsChange`). A resume during the
+  writer's last drain cannot happen on the log store: its state record is
+  appended under the queue's lock, which shutdown's `q.Destroy` takes before
+  the store closes, so at the latest it is in flight at close, the case
+  `TestLogHeldCloseDrains` drains.
+
+- [ ] (from 1e.1) Under C3, a reservation made while bbolt's write lock is
+  held is abandoned, so `TestArchiveStallDoesNotRerunJob`
+  (`archive_stall_bolt_test.go`) no longer fails without `ttrCallback`'s
+  `archivePendingLocked` guard; its log-store form,
+  `TestLogHeldArchiveStall`, does. No action beyond keeping the log-store
+  form; F5 deletes the bbolt one. Owner: 2e.1 (F5), to delete it.
+
+- [ ] (from 1e.1) C3's tests need a manager on the log store before 1e.4
+  makes it the default, so `openStore` opens the log store for
+  `storeKindLog`, and `storeKindBolt` is put first in `store.go`, making it
+  the zero `storeKind` and so still the default. The log store's `backup`
+  returns `errLogStoreBackup` (E5, 1f.3), its `upgradedOnOpen` is false (E1,
+  1f.2) and `openStore` does no dev wipe for it (1f.1, 1f.4). Owner: 1e.4:
+  put `storeKindLog` first again, as the spec has it, to make it the
+  default.
 - [x] (from 0b.1 review) F5 broke the `reliability_repro` build:
   `envIntDefault` and `reliable4GiB` were defined only in the listed
   `reliable4_backup_repro_test.go`. Done in 0b.1: both moved to
@@ -695,3 +726,45 @@ called ready, or explicitly deferred with the owner.
   would stay below the cut and dangle once its file is deleted. It cannot
   happen today, as every spec write carries a state record. Owner: 1f.4
   (E2): zero the Ref there, as `clearStd` does for std, with a test.
+
+- [ ] (from 1e.1 review round 1 fix) Fixing 1e.1's limit-group leak on an
+  abandoned reservation also fixed one that predates 1e.1: a released job
+  reserved again before `finalizeReleasedJob` gave back its limit groups
+  lost a slot of each group until restart. `runEndCallback` now gives them
+  back inside the `ReleaseWith` callback. Owner: 2e.2 (F6): add a
+  CHANGELOG line under Fixed.
+
+- [ ] (from 1e.1 review round 1 fix) `jobqueue/wal`
+  `TestWriterReopensAfterAbandon` failed once in `make race` under heavy
+  load, seeing segment files {1,2} instead of {1}
+  (`writer_test.go:1300`); 0 failures in 100 runs alone and in a
+  load-matched A/B of 120 runs a side. Each background reopen try creates
+  segment 2 (`writer.go:775`) and removes it only after its header sync
+  fails (`writer.go:785`), so the test can list the files while a try is
+  in flight. Owner: 1e.4, which runs the suite on the log store: make the
+  test wait for the tries to settle (or the writer not leave a visible
+  segment), and show it with a hook that holds a try in flight.
+
+- [ ] (from 1e.1 review round 2) `TestStoreReserve*` assert the reserve
+  bound as `reserveTestRequestTimeout / reserveDurableWaitFraction`, so
+  changing the fraction passes (`store_reserve_test.go`); the spec says
+  "800ms (bound 200ms)". Owner: 1e.4: assert a literal 200ms.
+
+- [ ] (from 1e.1 review round 2) An abandoned reservation records the job
+  ready with the previous attempt's Exitcode, FailReason, StdErrC, PeakRAM
+  and similar fields cleared (`resetJobForReservation` runs before the
+  persist wait), so `wr status` loses why a retrying job last failed until
+  it runs again. Before 1e.1 such a reservation was handed out anyway, so
+  this only shows in the stall regime, but user-facing behaviour must not
+  change. Owner: 1e.4: keep the earlier attempt's details on an abandon
+  (restore them in the abandon, or clear them only after the reservation
+  is durable), with a test, and make spec C3's "does not undo the rest"
+  say so.
+
+- [ ] (from 1e.1 review round 2) Two abandon details are untested: the
+  `discardJobChangeAhead` after a failed `ReleaseWith`
+  (`serverCLI.go`, only reachable when the queue is destroyed during a
+  stalled reservation at shutdown; on bbolt a missing discard makes close
+  wait its 1-minute timeout), and that the abandon clears the job's note
+  of its limit groups (it uses the shared helper, which does). Owner: 2e.1
+  (F5), which deletes the bbolt path: add tests for whichever still apply.

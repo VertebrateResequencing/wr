@@ -1287,9 +1287,9 @@ gate's runner, not an acceptance test of the harness.
    replayed, then it replays every complete frame and returns no error.
 4. Given a bbolt recording with 3 `updateJobRunStateDurableWithin`, 1
    `logReserveNotDurable` and 1 `setBatchTuning` call, when replayed
-   against a store wrapper that hides those three methods, then `skipped`
-   is 2, `mismatches` is empty and the 3 jobs are reserved in the replayed
-   store.
+   against a store without those three methods (each store, once C3 has
+   removed them), then `skipped` is 2, `mismatches` is empty and the 3
+   jobs are reserved in the replayed store.
 5. Given a recording with two changes prepared and then queued in reverse
    order, when replayed against a bbolt store wrapped to note handles, then
    each `queueJobChangeAhead` received the handle its own job's replayed
@@ -1495,24 +1495,32 @@ Each transition appends one state record. `persistReservation` calls
 handle. On any failure it answers with no job; on timeout or any error
 but `errDBClosed` it also undoes the reservation as below.
 `logStore` returns the reserve record's `wal.Commit`. The bbolt store
-starts a goroutine running its `Batch` update of the run state and returns
-a handle that is done, with Batch's error, once Batch returns;
-`WaitWithin` selects on that against a timer. The rules below live in the
+queues the run state for its best-effort writer, as today's reservation
+write does, and returns a handle that is done, with the drain's error, once
+the drain covering it answers; `WaitWithin` selects on that against a
+timer. A `Batch` of its own would commit out of order with the job's other
+run-state and change records still queued for the best-effort writer, so
+an older state could be stored over the reservation. The rules below live in the
 server and are store-independent, so the bbolt store follows them from 1e
 on too. The server undoes each per-reserve side effect that a release
 undoes today:
 
 1. releases the item to the ready sub-queue with no delay and no added
-   attempt;
-2. calls `job.decrementLimitGroups(s.limiter)`, as `finalizeReleasedJob`
-   and `ttrCallback` do, giving back the limit-group usage that
-   `reserveWithLimits` took and `noteReserveLimitGroups` recorded;
+   attempt, with `q.ReleaseWith`, whose callback does steps 2 to 5 under the
+   queue's lock, before any reserve can see the item;
+2. calls `job.decrementLimitGroupsLocked(s.limiter)` under the job lock, as
+   `runEndCallback` (for `finalizeReleasedJob`) and `ttrCallback` do, giving
+   back the limit-group usage that `reserveWithLimits` took and
+   `noteReserveLimitGroups` recorded. It must precede the item being
+   reservable: a reserve of the ready item notes its own usage, which a later
+   give-back would take instead, leaking the abandoned reservation's;
 3. forgets the runner hold (`s.runnerHolds.forget`);
 4. under the job lock sets State ready, clears ReservedBy, Host, Pid and
    `handingOut` (which `handOutReservation` clears on hand-out);
 5. records the reserved-to-ready change with
-   `prepareJobChange`/`queueJobChangeAhead`, so status-feed counts move the
-   job back from reserved to ready;
+   `prepareJobChange`/`queueJobChangeAhead` (step 1's queue move is what
+   moves status-feed counts back, from running to ready, as the reservation
+   moved them from ready to running);
 6. logs `reserveAbandonedLogMsg` through `s.warns` and answers with no job,
    as when nothing is ready.
 
@@ -1579,7 +1587,7 @@ func reserveDurableWait() time.Duration
    it gets no job, the item is in the ready sub-queue with Attempts
    unchanged, State ready, empty ReservedBy and `handingOut` false,
    `s.limiter.GetRemainingCapacity(ctx, ["g"])` is 1 (usage 0), and the
-   status feed received a reserved-to-ready `jstateCount` delta for it; a
+   status feed received a running-to-ready `jstateCount` delta for it; a
    second reserve with that group gets the job.
 8. Given a test hook that drops the release record after a durable reserve
    timed out (test 2), when the store is reopened, then the job recovers as
@@ -1591,16 +1599,16 @@ func reserveDurableWait() time.Duration
    answers a status request, and the captured log has exactly one
    `"wal write failed"` line with `failures` at least 1; when the hook is
    cleared, a fourth add succeeds and its job is live after reopen.
-10. Given a bbolt store whose `Batch` is held 300ms by a test hook, when
-    `reserveRunState(job)` returns, then `WaitWithin(50ms)` on its handle
-    returns `(false, nil)` and `WaitWithin(1s)` returns `(true, nil)`; with
-    the hold at 2s and test 2's timeouts, a runner gets no job and the item
-    is in the ready sub-queue.
+10. Given a bbolt store whose best-effort drain is held 300ms by a test
+    hook, when `reserveRunState(job)` returns, then `WaitWithin(50ms)` on
+    its handle returns `(false, nil)` and `WaitWithin(1s)` returns
+    `(true, nil)`; with the hold at 2s and test 2's timeouts, a runner gets
+    no job and the item is in the ready sub-queue.
 11. Given that 2s hold and the abandoned reservation of test 10, when the
-    store is closed while `Batch` is held, then close returns no error
+    store is closed while the drain is held, then close returns no error
     once the hold ends, the handle is done, `runtime.NumGoroutine()` is
-    back to its value before the reserve within 1s, and the test passes
-    under `make race` with no race report.
+    back within 1s to its value taken before the store was opened, and the
+    test passes under `make race` with no race report.
 
 ### C4: Delete, modify and reruns
 

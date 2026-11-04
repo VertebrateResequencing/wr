@@ -36,6 +36,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"slices"
@@ -125,6 +126,8 @@ var (
 	errModifyMismatch = errors.New("modify needs one old key per job")
 )
 
+var _ store = (*logStore)(nil)
+
 // logModify is one job of a modify: its old and new keys, the job and the old
 // key's std.
 type logModify struct {
@@ -191,6 +194,77 @@ func (a *logAdd) keep(job *Job, key string) string {
 	}
 
 	return job.RepGroup
+}
+
+// logStateCommit is the durability of a state record appendState appends:
+// appended is closed once the record has been appended, as w, or failed to be,
+// with err.
+type logStateCommit struct {
+	appended chan struct{}
+	w        *logWrite
+	err      error
+}
+
+// append makes job's state record, as k's, with frames, and appends it.
+func (c *logStateCommit) append(s *logStore, job *Job, k logKey,
+	frames func(*Job, logKey) (logFrames, func()),
+) {
+	defer close(c.appended)
+
+	f, finished := frames(job, k)
+
+	c.w, c.err = s.writeOpen(&f, finished)
+	if c.err != nil {
+		finished()
+	}
+}
+
+// WaitWithin waits at most d for the record to be appended and its write to
+// finish, returning whether it has and, if so, the write's error.
+func (c *logStateCommit) WaitWithin(d time.Duration) (bool, error) {
+	var timeout <-chan time.Time
+
+	if d > 0 {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+
+		timeout = timer.C
+	}
+
+	if !closedBefore(c.appended, timeout) {
+		return false, nil
+	}
+
+	if c.err != nil {
+		return true, c.err
+	}
+
+	if !closedBefore(c.w.fin, timeout) {
+		return false, nil
+	}
+
+	return true, c.w.err
+}
+
+// closedBefore reports whether ch is closed, or closes before timeout fires; a
+// nil timeout only checks.
+func closedBefore(ch <-chan struct{}, timeout <-chan time.Time) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+	}
+
+	if timeout == nil {
+		return false
+	}
+
+	select {
+	case <-ch:
+		return true
+	case <-timeout:
+		return false
+	}
 }
 
 // addRGLookupRecord adds an rglookup record of k under repGroup to f.
@@ -667,13 +741,21 @@ func (s *logStore) writeArchive(a *logArchive, k logKey, f *logFrames) error {
 // stateFrames returns job's state record, as k's, and the func to call once
 // its write has finished (see addTransition).
 func (s *logStore) stateFrames(job *Job, k logKey) (logFrames, func()) {
+	s.lockUnlessReviving(job, k)
+
+	return s.lockedStateFrames(job, k)
+}
+
+// lockedStateFrames is stateFrames for a caller that has taken job's read lock
+// and then stateMu, as lockUnlessReviving does, which it releases.
+func (s *logStore) lockedStateFrames(job *Job, k logKey) (logFrames, func()) {
 	var (
 		f   logFrames
 		rs  logRunState
 		seq uint64
 	)
 
-	finished := s.addTransition(job, k, func() bool {
+	finished := s.addTransitionLocked(job, k, func() bool {
 		rs, seq = newLogRunState(job), s.nextSeq()
 
 		return true
@@ -699,6 +781,13 @@ func (s *logStore) stateFrames(job *Job, k logKey) (logFrames, func()) {
 // other keys do not wait on that.
 func (s *logStore) addTransition(job *Job, k logKey, build func() bool) func() {
 	s.lockUnlessReviving(job, k)
+
+	return s.addTransitionLocked(job, k, build)
+}
+
+// addTransitionLocked is addTransition for a caller that has taken job's read
+// lock and then stateMu, as lockUnlessReviving does, which it releases.
+func (s *logStore) addTransitionLocked(job *Job, k logKey, build func() bool) func() {
 	defer job.RUnlock()
 	defer s.stateMu.Unlock()
 
@@ -830,6 +919,111 @@ func (s *logStore) liveJobOf(k logKey) (*Job, bool, error) {
 	job, err := s.decodeJob(spec, state, logRecState)
 
 	return job, true, err
+}
+
+// reserveRunState appends job's state record, as a reservation of it, and
+// returns the record's durability without waiting for it. If a write in flight
+// is making job's key live (see reviving), the record is appended on a
+// goroutine of its own once that write has finished, so a caller waiting a
+// bounded time for the reservation to be durable waits no longer for that.
+func (s *logStore) reserveRunState(job *Job) (pendingCommit, error) {
+	k, err := parseLogKey(job.Key())
+	if err != nil {
+		return nil, err
+	}
+
+	return s.appendState(job, k), nil
+}
+
+// appendState appends job's state record, as k's, and returns its durability,
+// without waiting for it or, should a write in flight be making k live, for
+// that: the record is then appended on a goroutine of its own once that write
+// has finished.
+func (s *logStore) appendState(job *Job, k logKey) *logStateCommit {
+	c := &logStateCommit{appended: make(chan struct{})}
+
+	if s.lockIfNotReviving(job, k) != nil {
+		go c.append(s, job, k, s.stateFrames)
+
+		return c
+	}
+
+	c.append(s, job, k, s.lockedStateFrames)
+
+	return c
+}
+
+// prepareJobChange prepares nothing and returns nil: a change is one state
+// record, made once the change has been (see queueJobChangeAhead).
+func (s *logStore) prepareJobChange(context.Context, *Job, func(*Job)) *jobChangeAhead {
+	return nil
+}
+
+// queueJobChangeAhead makes change to job under its write lock, then appends
+// job's state record without waiting for it (see appendState). Its seq is taken
+// under job's read lock, so a later change of job, or its next reservation,
+// takes a later one, and recovery sees whichever was made last. ahead is
+// always nil, as prepareJobChange gives.
+func (s *logStore) queueJobChangeAhead(ctx context.Context, job *Job, _ *jobChangeAhead, change func(*Job)) {
+	job.Lock()
+	change(job)
+	job.Unlock()
+
+	k, err := parseLogKey(job.Key())
+	if err == nil {
+		_, err = s.appendState(job, k).WaitWithin(0)
+	}
+
+	if err != nil && !errors.Is(err, errDBClosed) {
+		clog.Error(ctx, "Database operation updateJobAfterChange failed", "err", err)
+	}
+}
+
+// moveJobChangeAhead returns nil, ahead being always nil.
+func (s *logStore) moveJobChangeAhead(_, _ *Job, _ *jobChangeAhead) *jobChangeAhead {
+	return nil
+}
+
+// discardJobChangeAhead does nothing, ahead being always nil.
+func (s *logStore) discardJobChangeAhead(*Job, *jobChangeAhead) {}
+
+// resolveDependencies resolves the dependencies of every one of the given
+// jobs, as db.resolveDependencies does, answering from the store's in-memory
+// state, returning each job paired with its dependency keys in the order given,
+// and setting each job's WaitingForDepGroups. ctx is checked before each job.
+func (s *logStore) resolveDependencies(ctx context.Context, jobs []*Job,
+	groups depGroupState,
+) ([]resolvedJob, error) {
+	resolved := make([]resolvedJob, 0, len(jobs))
+
+	for _, job := range jobs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		keys, waitingForDepGroups, err := job.Dependencies.dependencyKeys(s, groups)
+		if err != nil {
+			return nil, err
+		}
+
+		job.setWaitingForDepGroups(waitingForDepGroups)
+
+		resolved = append(resolved, resolvedJob{job: job, deps: keys})
+	}
+
+	return resolved, nil
+}
+
+// backup returns errLogStoreBackup: the log store makes no backups yet (spec
+// E5, item 1f.3).
+func (s *logStore) backup(io.Writer) error {
+	return errLogStoreBackup
+}
+
+// upgradedOnOpen reports false: the log store converts nothing on open yet
+// (spec E1, item 1f.2).
+func (s *logStore) upgradedOnOpen() bool {
+	return false
 }
 
 // logWrite is one append's records on their way to being durable. The writer's

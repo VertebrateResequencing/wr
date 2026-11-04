@@ -46,10 +46,9 @@ import (
 )
 
 const (
-	reserveNotRecordedMsg = "reservation not yet recorded on disk"
-	warnStormRepGroup     = "warn-storm"
-	warnStormReserves     = 20
-	warnStormQueries      = 50
+	warnStormRepGroup = "warn-storm"
+	warnStormReserves = 20
+	warnStormQueries  = 50
 )
 
 func TestWarnAggregator(t *testing.T) {

@@ -46,8 +46,9 @@ package jobqueue
 //     for storeNewJobsGuarded.
 //   - "reservation wait" (reservationWaitLogMsg): n, p50, p99 and max of how
 //     long reservations waited to be recorded on disk, how many were handed
-//     out before they were (notDurable), and how many were abandoned instead
-//     (abandoned; always 0 until reservations can be abandoned).
+//     out before they were (notDurable, which only a defect makes nonzero),
+//     and how many were abandoned instead, not being recorded in time
+//     (abandoned; spec C3).
 
 import (
 	"context"
@@ -383,6 +384,14 @@ func (s *serverWaitStats) observeReservation(d time.Duration, notDurable bool) {
 		s.reserveNotDurable.Add(1)
 	}
 
+	s.reservation.observe(d)
+}
+
+// observeAbandonedReservation records one reservation that waited d for its
+// write and was abandoned, the write not being durable in time. The count goes
+// in before the wait, as in observeReservation.
+func (s *serverWaitStats) observeAbandonedReservation(d time.Duration) {
+	s.reserveAbandoned.Add(1)
 	s.reservation.observe(d)
 }
 

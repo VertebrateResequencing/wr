@@ -42,14 +42,14 @@ const (
 
 	// reserveWriteStall is how long that test holds up the manager's database
 	// writer, and so the reservation's write, which is well past reserveTTR and
-	// well inside the ReserveWriteWait the reservation waits for.
+	// well inside the reserveDurableWait() the reservation waits for.
 	reserveWriteStall = 5 * reserveTTR
 )
 
 // TestReservationTTRStartsAtHandOut guards that a reservation whose write to
 // disk is slow is not declared lost before its runner has even been given it.
 // The TTR of a reserved item runs from the moment the queue reserves it, and
-// the manager then waits up to ReserveWriteWait for the reservation to reach
+// the manager then waits up to reserveDurableWait() for the reservation to reach
 // disk before handing it out. A wait longer than the TTR used to mark the job
 // lost, and start confirming its runner dead, during that wait, so the runner
 // was handed a job already in the lost state.

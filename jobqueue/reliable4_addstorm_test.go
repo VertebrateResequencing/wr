@@ -95,7 +95,7 @@ package jobqueue
 // even without a fix, which would make the gate pass vacuously.
 //
 // WR_AS_BATCH_DELAY_MS / WR_AS_BATCH_SIZE are a MUTATION CONTROL, not a fix:
-// they call db.setBatchTuning to widen bbolt's coalescing window, which removes
+// they set bbolt's MaxBatchDelay and MaxBatchSize to widen its coalescing window, which removes
 // the fragmentation without touching wr's own code, so the gate can be shown to
 // go RED->GREEN on the thing it claims to measure.
 //
@@ -656,7 +656,15 @@ func asTuneBatching(t *testing.T, server *Server) {
 		return
 	}
 
-	server.db.setBatchTuning(time.Duration(delay)*time.Millisecond, size)
+	database := server.boltDB()
+
+	if delay > 0 {
+		database.bolt.MaxBatchDelay = time.Duration(delay) * time.Millisecond
+	}
+
+	if size > 0 {
+		database.bolt.MaxBatchSize = size
+	}
 
 	t.Logf("ADDSTORM: MUTATION CONTROL applied - MaxBatchDelay=%s MaxBatchSize=%d "+
 		"(this is not a fix, it is a check that the gate measures the fragmentation)",

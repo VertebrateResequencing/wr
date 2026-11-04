@@ -49,10 +49,6 @@ const (
 	// replays.
 	storeReplayEnv = "WR_STORE_REPLAY"
 
-	// storeRecordRegenEnv names the env var that makes TestStoreRecordRegen
-	// rewrite removedMethodsRecording.
-	storeRecordRegenEnv = "WR_STORE_RECORD_REGEN"
-
 	// removedMethodsRecording is the committed bbolt recording of calls to the
 	// methods Phase 1 removes from store, which spec A5 acceptance test 4
 	// replays onto a store without them.
@@ -358,7 +354,6 @@ func recordWorkload(ctx context.Context, s store) {
 	So(s.upgradedOnOpen(), ShouldBeFalse)
 
 	s.setRecRounding(1, 100)
-	s.setBatchTuning(time.Millisecond, 100)
 	s.setReqStatRefreshInterval(time.Minute)
 
 	a, b := make([]*Job, 50), make([]*Job, 50)
@@ -467,8 +462,12 @@ func recordJobExits(ctx context.Context, s store, b []*Job) {
 	So(s.updateJobAfterChangeDurable(b[23]), ShouldBeNil)
 
 	b[41].State = JobStateReserved
-	So(s.updateJobRunStateDurableWithin(b[41], time.Minute), ShouldBeNil)
-	s.logReserveNotDurable(b[41].Key())
+	reservation, err := s.reserveRunState(b[41])
+	So(err, ShouldBeNil)
+
+	durable, err := reservation.WaitWithin(time.Minute)
+	So(durable, ShouldBeTrue)
+	So(err, ShouldBeNil)
 }
 
 // recordChangesAhead kicks buried b[20] through prepareJobChange and
@@ -862,54 +861,12 @@ func TestStoreReplayChangeHandles(t *testing.T) {
 	})
 }
 
-// TestStoreRecordRegen rewrites removedMethodsRecording against bbolt, when
-// WR_STORE_RECORD_REGEN is set. Phase 1 removes the methods it calls.
-func TestStoreRecordRegen(t *testing.T) {
-	if os.Getenv(storeRecordRegenEnv) == "" || runnermode || servermode {
-		t.Skipf("%s is not set", storeRecordRegenEnv)
-	}
-
-	ctx := context.Background()
-
-	Convey("The removed-methods recording is rewritten against bbolt", t, func() {
-		path := filepath.Join(t.TempDir(), "removed_methods.rec")
-
-		s := openRecordingStoreIn(t, ctx, storeKindBolt, path)
-		recordRemovedMethodCalls(ctx, s)
-		So(s.close(ctx), ShouldBeNil)
-
-		So(recordedMethods(t, path), ShouldResemble, removedMethodsCalls)
-
-		content, err := os.ReadFile(path)
-		So(err, ShouldBeNil)
-		So(os.MkdirAll(filepath.Dir(removedMethodsRecording), 0o755), ShouldBeNil)
-		So(os.WriteFile(removedMethodsRecording, content, 0o644), ShouldBeNil) //nolint:gosec
-	})
-}
-
-// recordRemovedMethodCalls makes the calls removedMethodsRecording holds: 3
-// adds, 3 updateJobRunStateDurableWithin calls reserving the added jobs, 1
-// logReserveNotDurable and 1 setBatchTuning. It returns the added jobs.
-func recordRemovedMethodCalls(ctx context.Context, s store) []*Job {
-	jobs := make([]*Job, 3)
-
-	for i := range jobs {
-		jobs[i] = testDBJob(fmt.Sprintf("echo removed methods %d", i), "removed-methods")
-		_, err := s.storeNewJobsGuarded(ctx, []*Job{jobs[i]}, false, nil)
-		So(err, ShouldBeNil)
-	}
-
-	for _, job := range jobs {
-		job.State = JobStateReserved
-		So(s.updateJobRunStateDurableWithin(job, time.Minute), ShouldBeNil)
-	}
-
-	s.logReserveNotDurable(jobs[0].Key())
-	s.setBatchTuning(time.Millisecond, 100)
-
-	return jobs
-}
-
+// TestStoreRecordRemovedMethodsInput covers spec A5 acceptance test 4: the
+// committed bbolt recording of 3 adds, 3 updateJobRunStateDurableWithin calls
+// reserving the added jobs, 1 logReserveNotDurable and 1 setBatchTuning, made
+// before Phase 1 removed those three methods from store, replays onto each
+// kind of store with the two calls that leave nothing to replay skipped, no
+// mismatch, and the 3 jobs reserved.
 func TestStoreRecordRemovedMethodsInput(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -917,7 +874,7 @@ func TestStoreRecordRemovedMethodsInput(t *testing.T) {
 
 	ctx := context.Background()
 
-	forEachStore(t, func(kind storeKind) {
+	for _, kind := range []storeKind{storeKindBolt, storeKindLog} {
 		Convey(fmt.Sprintf("The committed removed-methods recording holds its calls and replays onto a %s store",
 			storeKindName(kind)), t, func() {
 			So(recordedMethods(t, removedMethodsRecording), ShouldResemble, removedMethodsCalls)
@@ -927,6 +884,7 @@ func TestStoreRecordRemovedMethodsInput(t *testing.T) {
 			stats, err := replayRecording(ctx, removedMethodsRecording, replayTo)
 			So(err, ShouldBeNil)
 			So(stats.calls, ShouldEqual, len(removedMethodsCalls))
+			So(stats.skipped, ShouldEqual, 2)
 			So(stats.mismatches, ShouldBeEmpty)
 
 			inspector := inspectorOf(replayTo)
@@ -937,7 +895,7 @@ func TestStoreRecordRemovedMethodsInput(t *testing.T) {
 				So(storedLiveJobState(t, inspector, job.Key()), ShouldEqual, JobStateReserved)
 			}
 		})
-	})
+	}
 }
 
 func TestStoreRecordServe(t *testing.T) {

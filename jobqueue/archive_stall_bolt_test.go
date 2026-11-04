@@ -54,7 +54,6 @@ func TestArchiveStallDoesNotRerunJob(t *testing.T) {
 		config, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
 		serverConfig.Timings.ItemTTR = archiveStallTTR
 		serverConfig.Timings.TouchInterval = archiveStallTTR / 5
-		serverConfig.Timings.ReserveWriteWait = 300 * time.Millisecond
 
 		// the write held below must not stall the job's start: the runner settles
 		// its start report before it sends its archive, so a start still waiting

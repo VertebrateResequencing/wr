@@ -61,8 +61,8 @@ Make the `reserveDurableWait` bound also cover a reserve's wait in the
 log store's `lockUnlessReviving` (1c.4), so a reserve of a key being
 revived by a modify or put-back never waits longer than the bound.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1e.2: F1 - Config removal
 
@@ -90,13 +90,19 @@ test from F2 in `jobqueue/store_modify_race_test.go`.
 
 spec.md section: Implementation Order, Phase 1, 1e; The store interface
 
-Make `storeKindLog` the default `storeKind` and `log` the
+Make `storeKindLog` the default `storeKind` (putting it first in
+`store.go` again, as the 1e.1 incidental says) and `log` the
 `WR_TEST_STORE` default, and show `make test` and `make race` pass on
 it and with `WR_TEST_STORE=all`. Depends on 1e.1 to 1e.3.
 First resolve the 0b.1 incidental on tests that reach bbolt through
 `server.boltDB()` or `db.go` hooks ([incidentals.md](incidentals.md)).
 Also resolve the 1c.4 incidental: the server-only clauses of C4 tests 9
 to 11.
+Also resolve the 1e.1 incidental on `TestWriterReopensAfterAbandon`
+seeing a reopen try's segment ([incidentals.md](incidentals.md)).
+Also resolve the 1e.1 incidentals on asserting a literal reserve bound
+and on an abandon keeping the earlier attempt's details
+([incidentals.md](incidentals.md)).
 Switch C5 test 3 (`TestLogStoreRecoverDamage`, 1c.5) from
 `openLogStoreLocked` to `openStore`, as the spec names it.
 

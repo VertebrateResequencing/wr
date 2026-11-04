@@ -41,6 +41,10 @@ import (
 // reservation writes by holding bbolt's writer, so is deleted with bbolt (spec
 // F5). The slow-request half needs no bbolt and lives in warn_storm_test.go.
 
+// warnStormRequestTimeout is the ClientMinRequestTimeout of
+// TestWarningStormIsAggregated, making reserveDurableWait() 50ms.
+const warnStormRequestTimeout = 200 * time.Millisecond
+
 func TestWarningStormIsAggregated(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -48,14 +52,15 @@ func TestWarningStormIsAggregated(t *testing.T) {
 
 	ctx := context.Background()
 
-	Convey("Given a manager whose reservation writes are stalled", t, func() {
+	Convey("Given a manager whose reservation writes are stalled past their 50ms bound", t, func() {
+		defer setClientMinRequestTimeout(warnStormRequestTimeout)()
+
 		restoreInterval := warnAggregateInterval
 		warnAggregateInterval = time.Hour
 
 		defer func() { warnAggregateInterval = restoreInterval }()
 
 		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
-		serverConfig.Timings.ReserveWriteWait = 50 * time.Millisecond
 
 		server, _, token, err := serve(ctx, serverConfig)
 		So(err, ShouldBeNil)
@@ -101,7 +106,7 @@ func TestWarningStormIsAggregated(t *testing.T) {
 		}
 
 		So(holdTx.Rollback(), ShouldBeNil)
-		So(reserved, ShouldEqual, warnStormReserves)
+		So(reserved, ShouldEqual, 0)
 
 		disconnect(jq)
 		server.Stop(ctx, true)
@@ -109,10 +114,10 @@ func TestWarningStormIsAggregated(t *testing.T) {
 		stopped = true
 		out := logs.String()
 
-		Convey("the reservation warning is logged once, with the rest counted and a sample job key", func() {
-			So(countLines(out, reserveNotRecordedMsg, "repeated"), ShouldEqual, 1)
+		Convey("the abandoned reservation warning is logged once, with the rest counted and a sample job key", func() {
+			So(countLines(out, reserveAbandonedLogMsg, "repeated"), ShouldEqual, 1)
 
-			summary := findLine(out, reserveNotRecordedMsg, "(repeated)")
+			summary := findLine(out, reserveAbandonedLogMsg, "(repeated)")
 			So(summary, ShouldContainSubstring, fmt.Sprintf("repeats=%d", warnStormReserves-1))
 			So(regexp.MustCompile(`sample_key=[0-9a-f]{32}`).MatchString(summary), ShouldBeTrue)
 		})

@@ -236,7 +236,7 @@ type writeTurn struct {
 // queued on bolt's lock instead would get every other transaction while one
 // chunk follows another, since only the turn holder competes with it there: a
 // reservation's write then waited behind several chunks per turn of its own,
-// past ReserveWriteWait (item 6.4b).
+// past its bound, reserveDurableWait (item 6.4b).
 //
 // A turn kept for a writer is given to nobody else until that writer takes it.
 // That is safe because a writer with requests queued always asks for its next
@@ -246,7 +246,7 @@ type writeTurn struct {
 // and each archived job's lock (noteArchivesWritten). The archive fold stats it
 // records on the way (observeTx, observeWaits) are atomics and take no lock.
 // The durable best-effort waits (updateJobAfterChangeDurable,
-// updateJobRunStateDurable, updateJobRunStateDurableWithin and
+// updateJobRunStateDurable, reserveRunState's and
 // updateJobAfterExitDurable) state the same rule for their callers. A writer
 // that has made its final drain has no requests queued (queued is not called
 // after it), so no turn is kept for it.

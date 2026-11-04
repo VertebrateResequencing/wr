@@ -62,9 +62,10 @@ const (
 	// (batchSizeFor's minimum batch).
 	storeStatsChunkedJobs = storeBatchGranularity
 
-	// storeStatsReserveWait is the ReserveWriteWait of the not-durable test: a
-	// reservation write held up for longer is handed out before it is durable.
-	storeStatsReserveWait = 50 * time.Millisecond
+	// storeStatsRequestTimeout is the ClientMinRequestTimeout of the abandoned
+	// reservation test, making reserveDurableWait() 50ms: a reservation write
+	// held up for longer is abandoned.
+	storeStatsRequestTimeout = 200 * time.Millisecond
 )
 
 // TestStoreStatsWriterKinds checks that every write turn kind is reported
@@ -395,8 +396,8 @@ func TestStoreStatsBoltWriters(t *testing.T) {
 
 // TestStoreStatsBoltWaits covers the waits of spec A3's "add wait" and
 // "reservation wait" lines when bbolt's write lock holds them up: each is
-// reported as at least as long as it was held up for, and a reservation handed
-// out before its write reached disk is counted as notDurable.
+// reported as at least as long as it was held up for, and a reservation not
+// durable in time is counted as abandoned, not notDurable (spec C3).
 func TestStoreStatsBoltWaits(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -404,7 +405,7 @@ func TestStoreStatsBoltWaits(t *testing.T) {
 
 	ctx := context.Background()
 
-	Convey("Given a bolt server holding 1 job, whose reservations wait 50ms to be written, and which reports when it "+
+	Convey("Given a bolt server holding 1 job, which reports when it "+
 		"stops", t, func() {
 		productionInterval := archiveFoldReportInterval
 		archiveFoldReportInterval = time.Hour
@@ -413,7 +414,6 @@ func TestStoreStatsBoltWaits(t *testing.T) {
 
 		_, serverConfig, addr, standardReqs, clientConnectTime := startDurabilityConfig(t)
 		serverConfig.storeKind = storeKindBolt
-		serverConfig.Timings.ReserveWriteWait = storeStatsReserveWait
 		logPath, serverCtx := managerLogContext(t, ctx)
 
 		server, _, token, err := serve(serverCtx, serverConfig)
@@ -439,14 +439,16 @@ func TestStoreStatsBoltWaits(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(inserts, ShouldEqual, 1)
 
-		Convey("a reservation handed out while bbolt's write lock is held is counted as not durable", func() {
+		Convey("a reservation made while bbolt's write lock is held is abandoned and counted so", func() {
+			defer setClientMinRequestTimeout(storeStatsRequestTimeout)()
+
 			held := storeStatsHoldWriteLock(server.boltDB())
 			job, errr := jq.Reserve(5 * time.Second)
 
 			held.release()
 
 			So(errr, ShouldBeNil)
-			So(job, ShouldNotBeNil)
+			So(job, ShouldBeNil)
 			So(jq.Disconnect(), ShouldBeNil)
 
 			server.Stop(ctx, true)
@@ -455,8 +457,9 @@ func TestStoreStatsBoltWaits(t *testing.T) {
 
 			lines := logLinesContaining(readLogFile(t, logPath), reservationWaitLogMatch)
 			So(storeStatsN(t, lines), ShouldEqual, 1)
-			So(storeStatsSum(t, lines, "notDurable"), ShouldEqual, 1)
-			So(storeStatsDuration(t, lines[0], "max"), ShouldBeGreaterThanOrEqualTo, storeStatsReserveWait)
+			So(storeStatsSum(t, lines, "notDurable"), ShouldEqual, 0)
+			So(storeStatsSum(t, lines, "abandoned"), ShouldEqual, 1)
+			So(storeStatsDuration(t, lines[0], "max"), ShouldBeGreaterThanOrEqualTo, reserveDurableWait())
 		})
 
 		Convey("an add made while bbolt's write lock is held reports at least the time it was kept waiting", func() {

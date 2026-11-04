@@ -32,7 +32,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"math"
 	"os"
@@ -1138,14 +1137,12 @@ type learnedAnswers struct {
 }
 
 // logReplayStore is a log store as the store a recording is replayed against.
-// The store methods the log store does not have yet note their names in
-// missing, which a replay calling none of them leaves empty. If flushEach,
-// each write call is followed by a fold to the durable end of the log.
+// If flushEach, each write call is followed by a fold to the durable end of the
+// log.
 type logReplayStore struct {
 	*logStore
 
 	flushEach bool
-	missing   []string
 }
 
 // flushed folds, if r flushes each write, then returns err.
@@ -1193,58 +1190,6 @@ func (r *logReplayStore) updateJobRunStateDurable(job *Job) error {
 
 func (r *logReplayStore) updateJobAfterExitDurable(job *Job, stdo, stde []byte, forceStorage bool) error {
 	return r.flushed(r.logStore.updateJobAfterExitDurable(job, stdo, stde, forceStorage))
-}
-
-func (r *logReplayStore) resolveDependencies(context.Context, []*Job, depGroupState) ([]resolvedJob, error) {
-	r.missing = append(r.missing, "resolveDependencies")
-
-	return nil, nil
-}
-
-func (r *logReplayStore) backup(io.Writer) error {
-	r.missing = append(r.missing, "backup")
-
-	return nil
-}
-
-func (r *logReplayStore) upgradedOnOpen() bool {
-	r.missing = append(r.missing, "upgradedOnOpen")
-
-	return false
-}
-
-func (r *logReplayStore) updateJobRunStateDurableWithin(*Job, time.Duration) error {
-	r.missing = append(r.missing, "updateJobRunStateDurableWithin")
-
-	return nil
-}
-
-func (r *logReplayStore) logReserveNotDurable(string) {
-	r.missing = append(r.missing, "logReserveNotDurable")
-}
-
-func (r *logReplayStore) prepareJobChange(context.Context, *Job, func(*Job)) *jobChangeAhead {
-	r.missing = append(r.missing, "prepareJobChange")
-
-	return nil
-}
-
-func (r *logReplayStore) queueJobChangeAhead(context.Context, *Job, *jobChangeAhead, func(*Job)) {
-	r.missing = append(r.missing, "queueJobChangeAhead")
-}
-
-func (r *logReplayStore) moveJobChangeAhead(_, _ *Job, _ *jobChangeAhead) *jobChangeAhead {
-	r.missing = append(r.missing, "moveJobChangeAhead")
-
-	return nil
-}
-
-func (r *logReplayStore) discardJobChangeAhead(*Job, *jobChangeAhead) {
-	r.missing = append(r.missing, "discardJobChangeAhead")
-}
-
-func (r *logReplayStore) setBatchTuning(time.Duration, int) {
-	r.missing = append(r.missing, "setBatchTuning")
 }
 
 func TestStoreFoldWhileArchiving(t *testing.T) {
@@ -2051,7 +1996,6 @@ func TestStoreFoldReplay(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(stats.calls, ShouldBeGreaterThan, 0)
 					So(stats.skipped, ShouldEqual, 0)
-					So(replayed.missing, ShouldBeEmpty)
 					So(mismatchedMethods(stats), ShouldBeEmpty)
 
 					entries, _ := overlaySize(s)

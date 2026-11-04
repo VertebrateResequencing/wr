@@ -264,24 +264,29 @@ func (s *logStore) notePending(pending map[logKey]*logPending, k logKey) func() 
 // can take job's read lock to make its records, and an add never waits for it
 // in awaitStateWrites: it is not yet in stateWrites.
 func (s *logStore) lockUnlessReviving(job *Job, k logKey) {
-	for {
-		job.RLock()
-		s.stateMu.Lock()
-
-		p := s.reviving[k]
-		if p == nil {
-			return
-		}
-
-		s.stateMu.Unlock()
-		job.RUnlock()
-
+	for p := s.lockIfNotReviving(job, k); p != nil; p = s.lockIfNotReviving(job, k) {
 		if logStoreWaitHook != nil {
 			logStoreWaitHook()
 		}
 
 		<-p.idle
 	}
+}
+
+// lockIfNotReviving takes job's read lock, then stateMu, and returns nil,
+// unless a write in flight is making k live, when it returns that write's
+// pending and leaves both unlocked.
+func (s *logStore) lockIfNotReviving(job *Job, k logKey) *logPending {
+	job.RLock()
+	s.stateMu.Lock()
+
+	p := s.reviving[k]
+	if p != nil {
+		s.stateMu.Unlock()
+		job.RUnlock()
+	}
+
+	return p
 }
 
 // claimAndPutBack claims job's key for add, then is addPutBack of job to add's

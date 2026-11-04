@@ -83,25 +83,31 @@ var recordHandle = newRecordHandle() //nolint:gochecknoglobals // a shared, read
 // these ran at the same time, since a concurrent write may legitimately change
 // it.
 var recordedWrites = map[string]bool{ //nolint:gochecknoglobals // a constant set
-	"recoverIncompleteJobs":          true,
-	"storeNewJobsGuarded":            true,
-	"storeEnv":                       true,
-	"storeLimitGroups":               true,
-	"storeRepGroupLookups":           true,
-	"updateJobRunStateDurable":       true,
-	"updateJobRunStateDurableWithin": true,
-	"updateJobAfterChangeDurable":    true,
-	"updateJobAfterExit":             true,
-	"updateJobAfterExitDurable":      true,
-	"archiveCompletion":              true,
-	"queueJobChangeAhead":            true,
-	"deleteLiveJobs":                 true,
-	"modifyLiveJobs":                 true,
-	"storeLiveForRerun":              true,
-	"storeRunningRerunMarks":         true,
+	"recoverIncompleteJobs":       true,
+	"storeNewJobsGuarded":         true,
+	"storeEnv":                    true,
+	"storeLimitGroups":            true,
+	"storeRepGroupLookups":        true,
+	"updateJobRunStateDurable":    true,
+	"reserveRunState":             true,
+	"updateJobAfterChangeDurable": true,
+	"updateJobAfterExit":          true,
+	"updateJobAfterExitDurable":   true,
+	"archiveCompletion":           true,
+	"queueJobChangeAhead":         true,
+	"deleteLiveJobs":              true,
+	"modifyLiveJobs":              true,
+	"storeLiveForRerun":           true,
+	"storeRunningRerunMarks":      true,
 }
 
 var _ store = (*recordingStore)(nil)
+
+// skippedReplays are the methods removed in Phase 1 whose recorded calls have
+// nothing left to replay: replay counts each in skipped.
+//
+//nolint:gochecknoglobals // a constant set
+var skippedReplays = map[string]bool{"logReserveNotDurable": true, "setBatchTuning": true}
 
 // replayFunc replays one recorded call from its Binc arguments, returning the
 // digest of its results.
@@ -174,13 +180,15 @@ var storeReplays = map[string]replayFunc{
 	"updateJobRunStateDurable": replayWith(func(rp *replayer, a *recJob) [32]byte {
 		return storeDigest(rp.s.updateJobRunStateDurable(rp.job(a.Job)))
 	}),
-	"updateJobRunStateDurableWithin": replayWith(func(rp *replayer, a *recWithin) [32]byte {
-		return storeDigest(rp.s.updateJobRunStateDurableWithin(rp.job(a.Job), a.Wait))
+	"reserveRunState": replayWith(func(rp *replayer, a *recJob) [32]byte {
+		return storeDigest(rp.reserve(rp.job(a.Job), reserveDurableWait()))
 	}),
-	"logReserveNotDurable": replayWith(func(rp *replayer, a *recKey) [32]byte {
-		rp.s.logReserveNotDurable(a.Key)
+	// removed in Phase 1: a reservation, waited for as the recording waited,
+	// whose answer is not compared, since reserveRunState does not wait.
+	"updateJobRunStateDurableWithin": replayWith(func(rp *replayer, a *recWithin) [32]byte {
+		rp.accept = func([32]byte) bool { return true }
 
-		return storeDigest()
+		return storeDigest(rp.reserve(rp.job(a.Job), a.Wait))
 	}),
 	"updateJobAfterChangeDurable": replayWith(func(rp *replayer, a *recJob) [32]byte {
 		return storeDigest(rp.s.updateJobAfterChangeDurable(rp.job(a.Job)))
@@ -334,11 +342,6 @@ var storeReplays = map[string]replayFunc{
 
 		return storeDigest()
 	}),
-	"setBatchTuning": replayWith(func(rp *replayer, a *recBatch) [32]byte {
-		rp.s.setBatchTuning(a.Delay, a.Size)
-
-		return storeDigest()
-	}),
 }
 
 // newRecordHandle returns a canonical Binc handle.
@@ -440,10 +443,6 @@ type (
 	}
 	recDuration struct{ D time.Duration }
 	recRounding struct{ Sec, MB int }
-	recBatch    struct {
-		Delay time.Duration
-		Size  int
-	}
 )
 
 // replayMismatch is a replayed call whose result differed from the recording's,
@@ -610,19 +609,19 @@ func decodeRecorded(encoded []byte, v any) error {
 // replay replays call, counting it in stats.
 func (rp *replayer) replay(call *recordedCall, writes writeSpans, stats *replayStats) error {
 	replayFn, ok := storeReplays[call.Method]
-	if !ok {
+	if !ok && !skippedReplays[call.Method] {
 		return fmt.Errorf("%w: %q", errUnknownRecordedMethod, call.Method)
 	}
 
-	rp.call, rp.unrecorded, rp.accept, rp.err = call, false, nil, nil
-	rp.lastEnd = call.End
 	stats.calls++
 
-	digest, err := replayFn(rp, call.Args)
-	if err == nil {
-		err = rp.err
+	if !ok {
+		stats.skipped++
+
+		return nil
 	}
 
+	digest, err := rp.replayed(call, replayFn)
 	if err != nil {
 		return fmt.Errorf("could not replay %s (End %d): %w", call.Method, call.End, err)
 	}
@@ -636,6 +635,20 @@ func (rp *replayer) replay(call *recordedCall, writes writeSpans, stats *replayS
 	}
 
 	return nil
+}
+
+// replayed replays call with replayFn, returning the digest of its results
+// and any error replaying it met.
+func (rp *replayer) replayed(call *recordedCall, replayFn replayFunc) ([32]byte, error) {
+	rp.call, rp.unrecorded, rp.accept, rp.err = call, false, nil, nil
+	rp.lastEnd = call.End
+
+	digest, err := replayFn(rp, call.Args)
+	if err == nil {
+		err = rp.err
+	}
+
+	return digest, err
 }
 
 // mismatched reports whether the call being replayed, which gave the given
@@ -768,6 +781,18 @@ func (rp *replayer) replayedJobsQuery(a *recOldest) completeJobsQuery {
 func facetsKey(facets *archivedJobFacets) string {
 	return fmt.Sprintf("%s|%s|%s|%d|%q|%t", facets.StartTime.UTC().Format(time.RFC3339Nano),
 		facets.EndTime.UTC().Format(time.RFC3339Nano), facets.State, facets.Exitcode, facets.FailReason, facets.Lost)
+}
+
+// reserve reserves job in the store being replayed against, as a server does,
+// waiting at most wait for the reservation to be durable, and returns
+// reserveRunState's error.
+func (rp *replayer) reserve(job *Job, wait time.Duration) error {
+	commit, err := rp.s.reserveRunState(job)
+	if err == nil {
+		_, _ = commit.WaitWithin(wait) //nolint:errcheck // the recording has reserveRunState's answer only
+	}
+
+	return err
 }
 
 // takeAhead returns the replay's ahead for a recorded id, forgetting it, since
@@ -1212,19 +1237,13 @@ func (r *recordingStore) updateJobRunStateDurable(job *Job) error {
 	return err
 }
 
-func (r *recordingStore) updateJobRunStateDurableWithin(job *Job, wait time.Duration) error {
-	c := r.begin("updateJobRunStateDurableWithin")
-	args := recWithin{Job: recordJob(job), Wait: wait}
-	err := r.s.updateJobRunStateDurableWithin(job, wait)
+func (r *recordingStore) reserveRunState(job *Job) (pendingCommit, error) {
+	c := r.begin("reserveRunState")
+	args := recJob{Job: recordJob(job)}
+	commit, err := r.s.reserveRunState(job)
 	r.end(c, args, err)
 
-	return err
-}
-
-func (r *recordingStore) logReserveNotDurable(key string) {
-	c := r.begin("logReserveNotDurable")
-	r.s.logReserveNotDurable(key)
-	r.end(c, recKey{Key: key})
+	return commit, err
 }
 
 func (r *recordingStore) updateJobAfterChangeDurable(job *Job) error {
@@ -1561,12 +1580,6 @@ func (r *recordingStore) setRecRounding(secRound, mbRound int) {
 	c := r.begin("setRecRounding")
 	r.s.setRecRounding(secRound, mbRound)
 	r.end(c, recRounding{Sec: secRound, MB: mbRound})
-}
-
-func (r *recordingStore) setBatchTuning(delay time.Duration, size int) {
-	c := r.begin("setBatchTuning")
-	r.s.setBatchTuning(delay, size)
-	r.end(c, recBatch{Delay: delay, Size: size})
 }
 
 // recordedSpan is the part of a recordedCall that says when it ran.

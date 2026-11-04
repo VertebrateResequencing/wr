@@ -51,7 +51,9 @@ the files in A2's `boltOnlyTests`, the `wrdev.sh` modes `freelist-check`,
 file list as F5 test 1 says, and close delivery-queue row 18. Cover both
 acceptance tests from F5.
 First resolve the 0b.1 incidental on unlisted tests that open a bbolt
-`*db` directly ([incidentals.md](incidentals.md)).
+`*db` directly ([incidentals.md](incidentals.md)). Also resolve the
+1e.1 incidental on two untested abandon details
+([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed
@@ -63,7 +65,8 @@ spec.md section: F6
 Update `CHANGELOG.md` (Unreleased, each section ordered by impact),
 `cmd/conf.go` and `DEVELOPERS.md` as F6 lists, covering what changed on
 disk and how to roll back. Cover all 3 acceptance tests from F6. Depends
-on 2e.1.
+on 2e.1. Also resolve the 1e.1 incidental on a CHANGELOG line for
+the limit-group leak after a release ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

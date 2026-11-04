@@ -96,10 +96,27 @@ const slowRequestLogMsg = "slow request"
 // request for minutes".
 const slowRequestDecodeLogMsg = slowRequestLogMsg + " decode"
 
-// reserveNotRecordedLogMsg is the warning that a reservation was handed out
-// before its write reached disk.
-const reserveNotRecordedLogMsg = "reservation not yet recorded on disk, handing the job out anyway; a manager " +
-	"crash before the job's start is recorded may run it twice"
+// reserveAbandonedLogMsg is the warning that a reservation could not be
+// recorded on disk in time, so its job was put back on the ready queue instead
+// of being handed out.
+const reserveAbandonedLogMsg = "reservation not recorded on disk in time; the job was not handed out and is " +
+	"ready again"
+
+const (
+	// reserveDurableWaitMax and reserveDurableWaitFraction make
+	// reserveDurableWait.
+	reserveDurableWaitMax      = 10 * time.Second
+	reserveDurableWaitFraction = 4
+)
+
+// errReserveNotDurable is persistReservation's error for a reservation that
+// was not durable within reserveDurableWait.
+var errReserveNotDurable = errors.New("reservation not durable in time")
+
+// persistReservationNoWait makes persistReservation hand a job out without
+// waiting for its reservation to be durable. It is a test seam, false outside
+// tests.
+var persistReservationNoWait atomic.Bool //nolint:gochecknoglobals // a test seam
 
 // slowRequestSelectorParts is the initial capacity for a rendered selector's
 // parts: how many clientRequest fields requestSelector can report.
@@ -127,6 +144,16 @@ const wrongTokenReason = "Client presented the wrong token"
 // call it.
 func setSlowRequestThreshold(d time.Duration) {
 	slowRequestThresholdNanos.Store(int64(d))
+}
+
+// unreserveChange makes a job whose reservation is abandoned ready again, with
+// no runner.
+func unreserveChange(job *Job) {
+	job.State = JobStateReady
+	job.ReservedBy = uuid.UUID{}
+	job.Host = ""
+	job.Pid = 0
+	job.handingOut = false
 }
 
 type subscriptionCatchUpRecord struct {
@@ -399,6 +426,13 @@ func compressedStdString(compressed []byte) (string, error) {
 	}
 
 	return string(decompressed), nil
+}
+
+// reserveDurableWait is min(10s, ClientMinRequestTimeout/4): the most a
+// reservation waits for its record to be durable, so a runner is always
+// answered well before its request times out.
+func reserveDurableWait() time.Duration {
+	return min(reserveDurableWaitMax, ClientMinRequestTimeout/reserveDurableWaitFraction)
 }
 
 // slowRequestThreshold returns the live slow-request threshold.
@@ -1118,8 +1152,16 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 	reservation := sjob.RunnerReservation
 	sjob.Unlock()
 
-	s.persistReservation(ctx, sjob)
-	s.handOutReservation(ctx, sjob, item.Key)
+	persisting := time.Now()
+
+	commit, err := s.persistReservation(sjob)
+	if err != nil {
+		s.abandonReservation(ctx, sjob, item.Key, err, time.Since(persisting))
+
+		return nil
+	}
+
+	s.handOutReservation(ctx, sjob, item.Key, commit, time.Since(persisting))
 
 	// a runner reserving this job has finished with any job it reserved before.
 	s.releaseRunsMovedOnFrom(ctx, cr.ClientID, item.Key, reservation)
@@ -1132,63 +1174,52 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 	return &serverResponse{Job: job}
 }
 
-// persistReservation writes a just-reserved job's run-state record, which
-// recovery overlays on its live record, and does not return until the write
-// commits or ReserveWriteWait passes, so the reservation is normally on disk
-// before the runner is told about it. The record carries the requirements the job may have learned in memory
-// since its last full write (see jobRunState), so those stay durable too.
+// persistReservation records a just-reserved job's run state, which recovery
+// overlays on its live record, and waits at most reserveDurableWait for it to be
+// durable, returning its durability and nil once it is. Otherwise it returns
+// the error that stopped it, errReserveNotDurable if time ran out, and the job
+// must not be handed out. The record carries the requirements the job may have
+// learned in memory since its last full write (see jobRunState), so those stay
+// durable too.
 //
-// The runner starts the command on the strength of the reservation alone, before
-// its Started reaches us. With nothing written here, a manager that crashed
-// between the reservation and the start write came back with the job's older
-// record: recovery put it on the ready queue under a ReservedBy that was not the
-// live runner's, so that runner's start and touches were refused as ErrBadJob,
-// its archive as ErrMustReserve, and a fresh runner ran the command again
-// (.docs/bugfixes/260928-reserve-durability.md). With the reserved state and the
-// runner's client id, host and pid on disk, recovery returns the job to the Run
-// sub-queue, where its runner's reports are accepted and, if that runner died,
-// the job is confirmed dead and re-run like any other lost job.
-//
-// Like the start write, this waits for the next coalesced drain, not for a
-// transaction of its own, but for no longer than ReserveWriteWait, which is well
-// inside the client's request timeout. A runner that timed out waiting would
-// never get the job, which would stay reserved to it and park lost until
-// LostRunnerBackstop. So a failed or slow write is logged and the job still
-// handed out, which is how reservations behaved before this write existed:
-// refusing the reservation would leave the item reserved to a runner that was
-// never given it. A slow write stays queued and may still commit. Every such
-// hand-out, including one while the database is closing, is also logged with a
-// running total (see logReserveNotDurable), for an exact count up to a crash.
-func (s *Server) persistReservation(ctx context.Context, job *Job) {
-	writing := time.Now()
-	err := s.db.updateJobRunStateDurableWithin(job, s.timings.ReserveWriteWait)
-
-	s.waitStats.observeReservation(time.Since(writing), err != nil)
-
-	if err != nil {
-		//nolint:contextcheck // logged on a handler-less context so it reaches the info-level log file
-		s.db.logReserveNotDurable(job.Key())
+// The runner starts the command on the strength of the reservation alone,
+// before its Started reaches us. A manager that crashed between handing out a
+// reservation not yet on disk and the start write came back with the job's
+// older record: recovery put it on the ready queue under a ReservedBy that was
+// not the live runner's, so a fresh runner ran the command again
+// (.docs/bugfixes/260928-reserve-durability.md). So no job is handed out
+// before its reservation is durable, even during a filesystem stall: the wait
+// is bounded well inside the client's request timeout, and a reservation not
+// durable by then is abandoned instead (see abandonReservation).
+func (s *Server) persistReservation(job *Job) (pendingCommit, error) {
+	commit, err := s.db.reserveRunState(job)
+	if err != nil || persistReservationNoWait.Load() {
+		return commit, err
 	}
 
-	switch {
-	case err == nil, errors.Is(err, errDBClosed):
-	case errors.Is(err, errDurableWriteWaitExpired):
-		s.warns.warn(ctx, reserveNotRecordedLogMsg, reserveNotRecordedLogMsg, 0,
-			"key", job.Key(), "waited", s.timings.ReserveWriteWait)
-	default:
-		clog.Error(ctx, "could not record a reservation on disk; a manager crash before the job's "+
-			"start is recorded may run it twice", "key", job.Key(), "err", err)
+	done, err := commit.WaitWithin(reserveDurableWait())
+	if err == nil && !done {
+		err = errReserveNotDurable
 	}
+
+	return commit, err
 }
 
-// handOutReservation ends the hand-out of a job's reservation, once the
-// manager has stopped waiting on it: it restarts the item's TTR, so the runner
-// gets a whole TTR from being handed the job to its first touch, and only then
-// lets the TTR make the job lost. The TTR of a reserved item runs from the
-// moment the queue reserves it, and persistReservation can wait for longer than
-// that; without this, a slow write had the job marked lost, and its runner
-// checked for death, before the runner was even given it.
-func (s *Server) handOutReservation(ctx context.Context, sjob *Job, key string) {
+// handOutReservation ends the hand-out of a job's reservation, once its record
+// is durable: it counts the reservation's wait, as notDurable if its record is
+// not yet durable after all (which only a defect can cause), and restarts the
+// item's TTR, so the runner gets a whole TTR from being handed the job to its
+// first touch, and only then lets the TTR make the job lost. The TTR of a
+// reserved item runs from the moment the queue reserves it, and
+// persistReservation can wait for longer than that; without this, a slow write
+// had the job marked lost, and its runner checked for death, before the runner
+// was even given it.
+func (s *Server) handOutReservation(ctx context.Context, sjob *Job, key string, commit pendingCommit,
+	waited time.Duration,
+) {
+	done, err := commit.WaitWithin(0)
+	s.waitStats.observeReservation(waited, !done || err != nil)
+
 	if err := s.q.Touch(key); err != nil {
 		clog.Debug(ctx, "reserved job left the run sub-queue before being handed out", "key", key, "err", err)
 	}
@@ -1196,6 +1227,67 @@ func (s *Server) handOutReservation(ctx context.Context, sjob *Job, key string) 
 	sjob.Lock()
 	sjob.handingOut = false
 	sjob.Unlock()
+}
+
+// abandonReservation undoes a reservation whose record persistReservation
+// could not make durable, given its error and how long it waited, and the
+// runner is given no job, as when none is ready. It undoes what a release of
+// the reservation would: the item goes back to the ready sub-queue with no
+// delay and no attempt spent (status counts see it move from running to
+// ready), the limit-group usage and runner hold the reservation took are given
+// back, and the job, ready again with no runner, is recorded without waiting
+// for that. Its scheduler group count is left alone, as the job still wants a
+// runner, and so is the runner's ClaimForReserve claim, as when nothing is
+// ready.
+//
+// A crash after the reservation became durable but before the release did
+// recovers the job as reserved by a runner that never had it, which is then
+// released as for any vanished runner (spec C3). On errDBClosed nothing is
+// undone: the manager is stopping, and the limit usage and claim go with it.
+func (s *Server) abandonReservation(ctx context.Context, sjob *Job, key string, err error, waited time.Duration) {
+	if errors.Is(err, errDBClosed) {
+		s.waitStats.observeReservation(waited, false)
+
+		return
+	}
+
+	s.waitStats.observeAbandonedReservation(waited)
+
+	// prepared for its write slot only: the change clears more than State, so it
+	// is encoded once made.
+	ahead := s.db.prepareJobChange(ctx, sjob, func(job *Job) { job.State = JobStateReady })
+	ahead.outdate()
+
+	if errr := s.releaseAbandonedItem(ctx, sjob, key, ahead); errr != nil {
+		s.db.discardJobChangeAhead(sjob, ahead)
+		clog.Warn(ctx, "abandoned reservation left the run sub-queue first", "key", key, "err", errr)
+	} else if reservationAbandonedHook != nil {
+		reservationAbandonedHook(key)
+	}
+
+	s.warns.warn(ctx, reserveAbandonedLogMsg, reserveAbandonedLogMsg, waited, "key", key, "err", err)
+}
+
+// releaseAbandonedItem releases the item of a job whose reservation is
+// abandoned to the ready sub-queue with no delay. Before the item can be
+// reserved again, it gives back the reservation's limit groups (a reserve of
+// the item once it is ready notes its own, which a later give-back would take
+// instead), forgets the reservation's runner hold, and makes the job ready with
+// no runner, queueing that change's write ahead.
+func (s *Server) releaseAbandonedItem(ctx context.Context, sjob *Job, key string, ahead *jobChangeAhead) error {
+	if err := s.q.SetDelay(key, 0); err != nil {
+		clog.Warn(ctx, "reserve queue SetDelay failed", "err", err)
+	}
+
+	return s.q.ReleaseWith(ctx, key, func(any) {
+		sjob.Lock()
+		reservedBy, reservation := sjob.ReservedBy, sjob.RunnerReservation
+		sjob.decrementLimitGroupsLocked(s.limiter)
+		sjob.Unlock()
+
+		s.runnerHolds.forget(reservedBy, key, reservation)
+		s.db.queueJobChangeAhead(ctx, sjob, ahead, unreserveChange)
+	})
 }
 
 // resetJobForReservation clears a job's past run state ready for a fresh run by

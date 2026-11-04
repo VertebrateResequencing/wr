@@ -36,18 +36,26 @@ import (
 	"github.com/VertebrateResequencing/wr/limiter"
 )
 
-// storeKind picks the store implementation openStore opens. Until the log store
-// arrives, every kind opens bbolt.
+// storeKind picks the store implementation openStore opens.
 type storeKind uint8
 
+// storeKindBolt comes first, so is the default, until item 1e.4 makes the log
+// store the default by putting storeKindLog first, as the spec has it.
 const (
-	storeKindLog  storeKind = iota // the default once the log store exists
-	storeKindBolt                  // bbolt; removed with it
+	storeKindBolt storeKind = iota // bbolt; removed with it
+	storeKindLog                   // the log store
 )
+
+// pendingCommit is one write's durability: WaitWithin reports done false while
+// the write is not yet durable, and its result once it is done. A d of 0 or
+// less only checks.
+type pendingCommit interface {
+	WaitWithin(d time.Duration) (done bool, err error)
+}
 
 // store is how the server reaches its persistent storage: the live jobs, their
 // history, and the environments, limits and learned requirements beside them.
-// *db, over bbolt, implements it.
+// *db, over bbolt, and *logStore implement it.
 //
 // The rerun guard methods carry an ordering promise: an archive recorded after
 // a guard registered sees it, and the addStored function a store gives
@@ -78,8 +86,7 @@ type store interface {
 	checkIfComplete(key string) (bool, error)
 
 	updateJobRunStateDurable(job *Job) error
-	updateJobRunStateDurableWithin(job *Job, wait time.Duration) error
-	logReserveNotDurable(key string)
+	reserveRunState(job *Job) (pendingCommit, error)
 	updateJobAfterChangeDurable(job *Job) error
 	updateJobAfterExit(ctx context.Context, job *Job, stdo, stde []byte,
 		forceStorage bool)
@@ -128,18 +135,48 @@ type store interface {
 	reqStatChanges() uint32
 	setReqStatRefreshInterval(d time.Duration)
 	setRecRounding(secRound, mbRound int)
-	setBatchTuning(delay time.Duration, size int)
 }
 
 // openStore opens the store described by cfg, returning it along with any
 // startup message for the user. Before anything else it takes the store lock
 // beside cfg.dbFile (see lockStore), which the store holds until it closes.
-// Every kind currently opens bbolt (see initDB).
+// storeKindBolt opens bbolt (see initDB) and storeKindLog the log store (see
+// openLogStoreLocked), which does not yet wipe a development store, convert,
+// restore or back up (items 1f.1 to 1f.5).
 //
 // If the WR_STORE_RECORD env var names a file, the store returned records every
 // call made to it there (see recordingStore); otherwise it is not wrapped at
 // all, so recording costs nothing unless asked for.
 func openStore(ctx context.Context, cfg storeConfig) (store, string, error) {
+	s, msg, err := openStoreKind(ctx, cfg)
+	if err != nil {
+		return nil, msg, err
+	}
+
+	path := os.Getenv(storeRecordEnv)
+	if path == "" {
+		return s, msg, nil
+	}
+
+	recording, err := newRecordingStore(ctx, s, path)
+	if err != nil {
+		return nil, msg, errors.Join(err, s.close(ctx))
+	}
+
+	return recording, msg, nil
+}
+
+// openStoreKind opens the store of cfg.kind, unwrapped.
+func openStoreKind(ctx context.Context, cfg storeConfig) (store, string, error) {
+	if cfg.kind == storeKindLog {
+		s, err := openLogStoreLocked(ctx, cfg)
+		if err != nil {
+			return nil, "", err
+		}
+
+		return s, "", nil
+	}
+
 	lock, err := lockStore(ctx, cfg.dbFile)
 	if err != nil {
 		return nil, "", err
@@ -152,17 +189,7 @@ func openStore(ctx context.Context, cfg storeConfig) (store, string, error) {
 
 	bdb.storeLock = lock
 
-	path := os.Getenv(storeRecordEnv)
-	if path == "" {
-		return bdb, msg, nil
-	}
-
-	recording, err := newRecordingStore(ctx, bdb, path)
-	if err != nil {
-		return nil, msg, errors.Join(err, bdb.close(ctx))
-	}
-
-	return recording, msg, nil
+	return bdb, msg, nil
 }
 
 // storeConfig is what openStore needs to open a store.
