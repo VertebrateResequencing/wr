@@ -159,6 +159,8 @@ spec.md section: F4
 Make `developers/soak/soakgate.py --source wait` count non-durable
 hand-outs and abandoned reservations from the `"reservation wait"`
 lines C3 writes. Cover all 6 acceptance tests from F4.
+Also resolve the 1e.2 incidental on `anyway.py` describing the pre-C3
+behaviour ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

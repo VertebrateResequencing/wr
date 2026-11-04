@@ -250,47 +250,6 @@ var (
 	// database, leaving the other half for the rest of the shutdown.
 	ServerShutdownRunnerWait = 60 * time.Second
 
-	// ServerDBBatchDelay is the default DB.MaxBatchDelay applied to the
-	// manager's live BoltDB: how long a db.bolt.Batch call may wait for
-	// concurrent Batch calls to coalesce into a single fsync'd commit.
-	//
-	// It reaches none of the manager's three busiest write paths. Job state
-	// changes (db.drainBestEffort), archives (db.archiveTx) and adds
-	// (db.newJobsTx) each have their own single coalescing writer, which folds
-	// what is pending into one db.bolt.Update - across a commit, not within a
-	// fixed window - so MaxBatchDelay never applies to them. What is left on
-	// db.bolt.Batch is db.storeLimitGroups, db.storeEnv's db.store,
-	// db.deleteLiveJobs and db.modifyLiveJobs, all occasional except that
-	// deleteJobIfRequested reaches db.deleteLiveJobs once per job for jobs
-	// carrying the Remove behaviour, which can therefore arrive in bulk. A grep
-	// for db.bolt.Batch finds one more, db.storeLookups, which now only tests
-	// call.
-	//
-	// It is left at bbolt's 10ms default. On normal/fast disks the manager's
-	// per-job bottleneck is CPU/lock contention rather than fsync (measured on an
-	// 8-core VM in 308d294, when the state-change and archive paths still went
-	// through Batch: raising it to 25-50ms made 10000 jobs dramatically slower).
-	// For the add path the verdict is now the opposite of a fix: a 500ms window
-	// was tried against the production add-latency collapse and refuted, reaching
-	// 96.64 adds/s against a ~100/s pass mark and costing low-concurrency p50
-	// 124ms -> 480ms, because newJobsWriter's group commit supersedes it
-	// (.docs/reliable4/addstorm-fix-trials.md, sections T1 and SUMMARY).
-	// Operators whose manager DB is on high-fsync-latency storage (NFS/Lustre)
-	// can still raise it per-server via ServerTimings.DBBatchDelay (and
-	// operationally via WR_MANAGERDBBATCHDELAY) for the Batch writes named above;
-	// we just don't impose that latency on them by default.
-	ServerDBBatchDelay = 10 * time.Millisecond
-
-	// ServerDBBatchSize is the default DB.MaxBatchSize applied to the manager's
-	// live BoltDB: the number of concurrent db.bolt.Batch calls that may coalesce
-	// into one commit before it commits early. Its scope is exactly
-	// ServerDBBatchDelay's - the residual Batch callers named there, none of the
-	// three coalescing writers. It is set well above the number of those writes
-	// expected in flight at once so the delay, not this cap, governs coalescing.
-	// Overridable via ServerTimings.DBBatchSize (and operationally via
-	// WR_MANAGERDBBATCHSIZE).
-	ServerDBBatchSize = 10000
-
 	// serverSubscriptionIdleTimeout is the default
 	// ServerTimings.SubscriptionIdleTimeout.
 	serverSubscriptionIdleTimeout = 30 * time.Minute
@@ -662,21 +621,6 @@ type ServerTimings struct {
 	// reservations are rounded up to (default RecMBRound).
 	RecMBRound int
 
-	// DBBatchDelay is the BoltDB DB.MaxBatchDelay applied to the manager's live
-	// database: how long a db.bolt.Batch call may wait for concurrent Batch calls
-	// to coalesce into a single fsync'd commit (default ServerDBBatchDelay).
-	// Durability is unaffected (every commit still fsyncs); a larger value only
-	// widens the coalescing window, trading per-write latency for fewer fsyncs
-	// when many of those writes are in flight. See ServerDBBatchDelay for which
-	// writes those are, and for the three write paths it cannot reach.
-	DBBatchDelay time.Duration
-
-	// DBBatchSize is the BoltDB DB.MaxBatchSize applied to the manager's live
-	// database: the number of concurrent db.bolt.Batch calls that may coalesce
-	// into one commit before it commits early (default ServerDBBatchSize), with
-	// the same scope as DBBatchDelay.
-	DBBatchSize int
-
 	// ShutdownSocketWait is how long shutdown waits, after client handling has
 	// stopped, before closing the command socket, to let in-flight messages
 	// drain (default serverSocketWait). Tests set this low to shut servers down
@@ -746,12 +690,6 @@ func (t ServerTimings) withDefaults() ServerTimings {
 
 	if t.RecMBRound <= 0 {
 		t.RecMBRound = RecMBRound
-	}
-
-	t.DBBatchDelay = dfltDuration(t.DBBatchDelay, ServerDBBatchDelay)
-
-	if t.DBBatchSize <= 0 {
-		t.DBBatchSize = ServerDBBatchSize
 	}
 
 	t.ShutdownSocketWait = dfltDuration(t.ShutdownSocketWait, serverSocketWait)

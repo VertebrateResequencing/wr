@@ -768,3 +768,24 @@ called ready, or explicitly deferred with the owner.
   wait its 1-minute timeout), and that the abandon clears the job's note
   of its limit groups (it uses the shared helper, which does). Owner: 2e.1
   (F5), which deletes the bbolt path: add tests for whichever still apply.
+
+- [ ] (from 1e.2 review) `TestConfigRemovedKnobsAbsentFromSource`
+  (`internal/config_test.go`, `skipNonModuleDir`) walks `.tmp/` and other
+  dot-directories, which are gitignored, hold agents' scratch files and
+  are not part of the module, so a stray `.go` file there fails the test.
+  Owner: 1e.4: skip directories whose names start with "." or "_", as the
+  go tool does.
+
+- [ ] (from 1e.2 review) `developers/soak/anyway.py` (and
+  `developers/soak/README.md` where it describes it) still describe the
+  pre-C3 behaviour: `ReserveWriteWait`, `serverReserveWriteWait()` and
+  reservations "handed out anyway". It still works on soak trees from
+  before customdb. Owner: 1f.9 (F4): say it applies only to trees from
+  before C3.
+
+- [ ] (from 1e.2 review) F6 lists only the two removed config keys for
+  the CHANGELOG, but 1e.1 and 1e.2 also removed exported Go API that
+  library users may set: `jobqueue.ServerTimings.DBBatchDelay`,
+  `DBBatchSize` and `ReserveWriteWait`, and `jobqueue.ServerDBBatchDelay`
+  and `ServerDBBatchSize`. Owner: 2e.2 (F6): list them in the CHANGELOG
+  under Changed (removed Go API).

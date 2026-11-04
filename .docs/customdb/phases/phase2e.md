@@ -67,6 +67,8 @@ Update `CHANGELOG.md` (Unreleased, each section ordered by impact),
 disk and how to roll back. Cover all 3 acceptance tests from F6. Depends
 on 2e.1. Also resolve the 1e.1 incidental on a CHANGELOG line for
 the limit-group leak after a release ([incidentals.md](incidentals.md)).
+Also resolve the 1e.2 incidental on listing the removed Go API
+([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

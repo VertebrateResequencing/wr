@@ -72,8 +72,8 @@ Make the removed tuning knobs ignored, not fatal (`internal/config.go`,
 `cmd/conf.go`, `cmd/manager.go`, `jobqueue/server.go`). Cover both
 acceptance tests from F1 in `internal/config_test.go`.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1e.3: F2 - Concurrent key-changing modifies
 
@@ -103,6 +103,8 @@ seeing a reopen try's segment ([incidentals.md](incidentals.md)).
 Also resolve the 1e.1 incidentals on asserting a literal reserve bound
 and on an abandon keeping the earlier attempt's details
 ([incidentals.md](incidentals.md)).
+Also resolve the 1e.2 incidental on the source walk skipping
+dot-directories ([incidentals.md](incidentals.md)).
 Switch C5 test 3 (`TestLogStoreRecoverDamage`, 1c.5) from
 `openLogStoreLocked` to `openStore`, as the spec names it.
 

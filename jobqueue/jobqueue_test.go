@@ -312,8 +312,6 @@ func TestServerTimingsWithDefaults(t *testing.T) {
 			RetryTime:             -1 * time.Nanosecond,
 			RecSecRound:           -1,
 			RecMBRound:            -1,
-			DBBatchDelay:          -1 * time.Nanosecond,
-			DBBatchSize:           -1,
 			ShutdownSocketWait:    -1 * time.Nanosecond,
 			BindRetryBudget:       -1 * time.Nanosecond,
 		}.withDefaults()
@@ -329,20 +327,18 @@ func TestServerTimingsWithDefaults(t *testing.T) {
 		So(timings.RetryTime, ShouldEqual, ClientRetryTime)
 		So(timings.RecSecRound, ShouldEqual, RecSecRound)
 		So(timings.RecMBRound, ShouldEqual, RecMBRound)
-		So(timings.DBBatchDelay, ShouldEqual, ServerDBBatchDelay)
-		So(timings.DBBatchSize, ShouldEqual, ServerDBBatchSize)
 		So(timings.ShutdownSocketWait, ShouldEqual, serverSocketWait)
 		So(timings.BindRetryBudget, ShouldEqual, serverBindRetryBudget)
 	})
 
 	Convey("Positive server timing values are preserved", t, func() {
 		timings := ServerTimings{
-			DBBatchDelay: 25 * time.Millisecond,
-			DBBatchSize:  4096,
+			ItemTTR:    25 * time.Millisecond,
+			RecMBRound: 4096,
 		}.withDefaults()
 
-		So(timings.DBBatchDelay, ShouldEqual, 25*time.Millisecond)
-		So(timings.DBBatchSize, ShouldEqual, 4096)
+		So(timings.ItemTTR, ShouldEqual, 25*time.Millisecond)
+		So(timings.RecMBRound, ShouldEqual, 4096)
 	})
 }
 

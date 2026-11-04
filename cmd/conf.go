@@ -155,68 +155,6 @@ managerdbfile: "db"
 # usage.
 managerdbbkfile: "db_bk"
 
-# managerdbbatchdelay: How many milliseconds may the manager's database wait to
-# coalesce its BoltDB Batch() writes - not its job add, job state-change or job
-# archive writes - into a single disk commit?
-#
-# This sets BoltDB's MaxBatchDelay, which applies only to the writes the
-# manager makes through bolt's Batch() call: Batch() calls arriving from
-# different goroutines within this window are grouped into one commit, with one
-# fsync. Durability is unchanged whatever you set: every commit is still
-# fsync'd to disk.
-#
-# It does NOT govern the manager's three busiest write paths. Job state
-# changes, job archiving (a job finishing) and job adding each have their own
-# single coalescing writer goroutine, which folds everything pending into one
-# bolt Update() transaction; that coalesces ACROSS a commit rather than within
-# a fixed window, and this knob cannot reach it.
-#
-# What it does still govern:
-#   - defining, changing or removing limit groups (db.storeLimitGroups): wr
-#     limit, and the limit groups an added job declares
-#   - storing a client environment the database has not seen before
-#     (db.storeEnv's db.store): once per distinct environment, on add
-#   - removing jobs (db.deleteLiveJobs): wr remove, plus one write per job for
-#     jobs carrying the Remove behaviour (added with eg. --on_failure
-#     '[{"remove":true}]'), which the manager deletes as it buries them
-#   - modifying jobs (db.modifyLiveJobs): wr mod
-#   - one add whose jobs do not fit a single write transaction
-#     (db.storeNewJobDataChunked), which is split into several
-#
-# All of those are occasional except one: the Remove behaviour fires once per
-# job, not once per command you run, so a workload that uses it and buries jobs
-# in bulk is the one case here that gives a wider window plenty to combine.
-#
-# A value of 0 (the default) uses wr's built-in default of 10ms (bbolt's own
-# default). Raising it (for example to 25-50ms) can only help if BOTH of the
-# following hold: the manager directory (managerdir) is on storage with high
-# fsync latency, such as a networked filesystem (NFS, Lustre, etc.), where each
-# commit is far more expensive; AND enough of the writes listed above are in
-# flight at once for a wider window to have something to combine. Otherwise you
-# only add latency to each of them.
-#
-# For the add path the measured verdict is the opposite. A 500ms window was
-# tried as a fix for a production add-latency collapse and refuted: it reached
-# 96.64 adds/s against a ~100/s pass mark, and cost the low-concurrency case
-# its latency (p50 124ms -> 480ms), because the add path's own coalescing
-# writer supersedes the window (see .docs/reliable4/addstorm-fix-trials.md,
-# sections T1 and SUMMARY).
-managerdbbatchdelay: 0
-
-# managerdbbatchsize: How many of the manager's BoltDB Batch() writes - not its
-# job add, job state-change or job archive writes - may coalesce into a single
-# disk commit before committing early?
-#
-# This is the companion cap to managerdbbatchdelay, with exactly the same
-# scope: it reaches the Batch() writes listed above and no others. Once this
-# many of them have accumulated, the batch commits immediately rather than
-# waiting out the delay. It should comfortably exceed the number of writes you
-# expect to be in flight at once so that the delay, not this cap, governs
-# coalescing.
-#
-# A value of 0 (the default) uses wr's built-in default of 10000.
-managerdbbatchsize: 0
-
 # managertokenfile: Where should the manager store the authentication token?
 # This defaults to a file named "client.token" in managerdir.
 #

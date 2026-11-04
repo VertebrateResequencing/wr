@@ -31,11 +31,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/VertebrateResequencing/wr/clog"
@@ -47,6 +51,178 @@ import (
 
 // expectedManagerPort is the manager port string used to verify tests.
 const expectedManagerPort = `managerport: "1000"`
+
+func TestConfigRemovedKnobs(t *testing.T) {
+	ctx := context.Background()
+	delayKey, sizeKey, _, _ := removedKnobTerms()
+
+	const otherKeys = "managerport: \"4321\"\nmanagerweb: \"4322\"\n" +
+		"logsmaxsizemb: 7\nmanagerdbfile: \"mydb\"\nmanagerqueue: \"long\"\n"
+
+	Convey("Given a config file containing the removed database batch knobs", t, func() {
+		dir := t.TempDir()
+		withPath := filepath.Join(dir, "with.yml")
+		withoutPath := filepath.Join(dir, "without.yml")
+
+		So(os.WriteFile(withPath, []byte(delayKey+": 50\n"+otherKeys+sizeKey+": 10\n"), 0o600), ShouldBeNil)
+		So(os.WriteFile(withoutPath, []byte(otherKeys), 0o600), ShouldBeNil)
+
+		Convey("loading succeeds and every other key keeps its value", func() {
+			with, fatal := loadConfigFileForTest(ctx, withPath)
+			So(fatal, ShouldBeEmpty)
+			So(with.ManagerPort, ShouldEqual, "4321")
+			So(with.Source("ManagerPort"), ShouldEqual, withPath)
+			So(with.ManagerWeb, ShouldEqual, "4322")
+			So(with.LogsMaxSizeMB, ShouldEqual, 7)
+			So(with.ManagerDBFile, ShouldEqual, "mydb")
+			So(with.ManagerQueue, ShouldEqual, "long")
+
+			without, fatal := loadConfigFileForTest(ctx, withoutPath)
+			So(fatal, ShouldBeEmpty)
+			So(slices.Sorted(maps.Keys(with.sources)), ShouldResemble, slices.Sorted(maps.Keys(without.sources)))
+
+			with.sources, without.sources = nil, nil
+			So(with, ShouldResemble, without)
+		})
+	})
+
+	Convey("Given the removed database batch knobs as environment variables", t, func() {
+		without, fatal := loadEnvConfigForTest(ctx)
+		So(fatal, ShouldBeEmpty)
+
+		for _, name := range []string{"WR_" + strings.ToUpper(delayKey), "WR_" + strings.ToUpper(sizeKey)} {
+			t.Setenv(name, "50")
+		}
+
+		Convey("loading the environment config succeeds and ignores them", func() {
+			with, fatal := loadEnvConfigForTest(ctx)
+			So(fatal, ShouldBeEmpty)
+			So(with, ShouldResemble, without)
+		})
+	})
+}
+
+func TestConfigRemovedKnobsAbsentFromSource(t *testing.T) {
+	_, _, caseSensitive, anyCase := removedKnobTerms()
+
+	Convey("Given the wr module's source tree", t, func() {
+		root, err := filepath.Abs("..")
+		So(err, ShouldBeNil)
+
+		_, err = os.Stat(filepath.Join(root, "go.mod"))
+		So(err, ShouldBeNil)
+
+		Convey("no .go file mentions a removed database tuning knob", func() {
+			module := os.DirFS(root)
+
+			var offenders []string
+
+			goFiles := 0
+
+			err := fs.WalkDir(module, ".", func(path string, d fs.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+
+				if d.IsDir() {
+					return skipNonModuleDir(module, path, d)
+				}
+
+				if filepath.Ext(path) != ".go" {
+					return nil
+				}
+
+				goFiles++
+
+				content, err := fs.ReadFile(module, path)
+				if err != nil {
+					return err
+				}
+
+				offenders = append(offenders, removedKnobMentions(path, string(content), caseSensitive, anyCase)...)
+
+				return nil
+			})
+			So(err, ShouldBeNil)
+			So(goFiles, ShouldBeGreaterThan, 100)
+			So(offenders, ShouldBeEmpty)
+		})
+	})
+}
+
+// removedKnobTerms returns the names of the removed manager database tuning
+// knobs, built from pieces so that this file is not itself a match for the
+// source-tree search.
+func removedKnobTerms() (delayKey, sizeKey string, caseSensitive []string, anyCase string) {
+	anyCase = "managerdb" + "batch"
+
+	return anyCase + "delay", anyCase + "size",
+		[]string{"DBBatch" + "Delay", "DBBatch" + "Size", "Reserve" + "WriteWait"}, anyCase
+}
+
+// skipNonModuleDir returns fs.SkipDir for directories that are not part of the
+// wr module whose root is module: .git, .docs and any directory with its own
+// go.mod.
+func skipNonModuleDir(module fs.FS, path string, d fs.DirEntry) error {
+	if path == "." {
+		return nil
+	}
+
+	if d.Name() == ".git" || d.Name() == ".docs" {
+		return fs.SkipDir
+	}
+
+	if _, err := fs.Stat(module, path+"/go.mod"); err == nil {
+		return fs.SkipDir
+	}
+
+	return nil
+}
+
+// removedKnobMentions returns "path: term" for each removed knob term found in
+// content.
+func removedKnobMentions(path, content string, caseSensitive []string, anyCase string) []string {
+	var found []string
+
+	for _, term := range caseSensitive {
+		if strings.Contains(content, term) {
+			found = append(found, path+": "+term)
+		}
+	}
+
+	if strings.Contains(strings.ToLower(content), anyCase) {
+		found = append(found, path+": "+anyCase)
+	}
+
+	return found
+}
+
+// loadConfigFileForTest loads the config file at path over the default config,
+// returning the config and any fatal output the load logged.
+func loadConfigFileForTest(ctx context.Context, path string) (*Config, string) {
+	buff := setBufferLevel()
+
+	defer clog.ToDefault()
+	defer os.Unsetenv("WR_FATAL_EXIT_TEST")
+
+	config := loadDefaultConfig(ctx)
+	config.configLoadFromFile(ctx, path)
+
+	return config, buff.String()
+}
+
+// loadEnvConfigForTest loads the config from WR_ environment variables,
+// returning it and any fatal output the load logged.
+func loadEnvConfigForTest(ctx context.Context) (*Config, string) {
+	buff := setBufferLevel()
+
+	defer clog.ToDefault()
+	defer os.Unsetenv("WR_FATAL_EXIT_TEST")
+
+	config := getEnvVarsConfig(ctx)
+
+	return config, buff.String()
+}
 
 func fileTestSetup(dir, mport, mweb1, mweb2 string) (string, string, error) {
 	path := filepath.Join(dir, ".wr_config.yml")
