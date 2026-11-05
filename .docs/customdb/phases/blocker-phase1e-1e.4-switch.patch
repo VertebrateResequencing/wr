@@ -1,0 +1,50 @@
+diff --git a/jobqueue/store.go b/jobqueue/store.go
+index e0fecb28..a9a275a5 100644
+--- a/jobqueue/store.go
++++ b/jobqueue/store.go
+@@ -39,11 +39,10 @@ import (
+ // storeKind picks the store implementation openStore opens.
+ type storeKind uint8
+ 
+-// storeKindBolt comes first, so is the default, until item 1e.4 makes the log
+-// store the default by putting storeKindLog first, as the spec has it.
++// storeKindLog comes first, so is the default.
+ const (
+-	storeKindBolt storeKind = iota // bbolt; removed with it
+-	storeKindLog                   // the log store
++	storeKindLog  storeKind = iota // the log store
++	storeKindBolt                  // bbolt; removed with it
+ )
+ 
+ // pendingCommit is one write's durability: WaitWithin reports done false while
+diff --git a/jobqueue/store_inspect_test.go b/jobqueue/store_inspect_test.go
+index 7e36f2dc..c60f7194 100644
+--- a/jobqueue/store_inspect_test.go
++++ b/jobqueue/store_inspect_test.go
+@@ -348,8 +348,8 @@ func TestStoreInspector(t *testing.T) {
+ }
+ 
+ // forEachStore runs fn once for the store kind named by the WR_TEST_STORE env
+-// var ("bolt", the default until the log store exists), or for every kind when
+-// it is "all". An unknown kind, or one not yet implemented, fails the test.
++// var ("log", the default, or "bolt"), or for every kind when it is "all". An
++// unknown kind fails the test.
+ func forEachStore(t *testing.T, fn func(kind storeKind)) {
+ 	t.Helper()
+ 
+@@ -363,10 +363,12 @@ func testStoreKinds(t *testing.T) []storeKind {
+ 	t.Helper()
+ 
+ 	switch name := os.Getenv(testStoreEnv); name {
+-	case "", "bolt", "all":
++	case "", "log":
++		return []storeKind{storeKindLog}
++	case "bolt":
+ 		return []storeKind{storeKindBolt}
+-	case "log":
+-		t.Fatalf("%s=log: the log store is not implemented yet", testStoreEnv)
++	case "all":
++		return []storeKind{storeKindLog, storeKindBolt}
+ 	default:
+ 		t.Fatalf("%s=%q: want bolt, log or all", testStoreEnv, name)
+ 	}

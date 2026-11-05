@@ -53,9 +53,9 @@ const (
 	reserveTestRepGroup = "store_reserve"
 
 	// reserveTestRequestTimeout is C3 test 2's ClientMinRequestTimeout, which
-	// makes reserveDurableWait() reserveTestBound.
+	// the spec says makes reserveDurableWait() reserveTestBound.
 	reserveTestRequestTimeout = 800 * time.Millisecond
-	reserveTestBound          = reserveTestRequestTimeout / reserveDurableWaitFraction
+	reserveTestBound          = 200 * time.Millisecond
 
 	// reserveTestHold is how long C3's stalls hold syncs (or bbolt's drain),
 	// and reserveTestAnswered how soon a runner must be answered despite one.
@@ -66,6 +66,14 @@ const (
 	// happen promptly, on a loaded machine.
 	reserveTestWait = 10 * time.Second
 )
+
+// abandonTestLiveStd is the stdout and stderr tails failFirstAttempt's attempt
+// reports in a touch while it runs.
+var abandonTestLiveStd = [2]string{"live out", "live err"} //nolint:gochecknoglobals
+
+// abandonTestPid is the pid failFirstAttempt's attempt reports, not the test's
+// own, which the runner that next reserves the job reports as its pid.
+const abandonTestPid = 99999
 
 // TestStoreReserveStateSeqOrder covers spec C3 acceptance test 5: of a key's
 // state records, the one with the higher seq wins, whatever order they were
@@ -162,6 +170,39 @@ func startReserveTestManager(t *testing.T, ctx context.Context, kind storeKind,
 	return m
 }
 
+// startAbandonTestManager starts a manager on a store of the given kind whose
+// failed jobs are ready again at once, and returns it with a function that
+// holds the store's writes for a duration, returning when they are released.
+func startAbandonTestManager(t *testing.T, ctx context.Context, kind storeKind) (*reserveTestManager,
+	func(time.Duration) time.Time,
+) {
+	t.Helper()
+
+	configure := func(c *ServerConfig) { c.Timings.ReleaseDelayMin = time.Millisecond }
+
+	if kind == storeKindLog {
+		pauseLogFolder()
+
+		syncs := &reserveTestSyncs{}
+		syncs.install()
+
+		return startReserveTestManager(t, ctx, kind, configure), syncs.holdFor
+	}
+
+	drains := &boltDrainHold{}
+	drains.install()
+
+	m := startReserveTestManager(t, ctx, kind, configure)
+
+	Reset(drains.uninstall)
+
+	return m, func(d time.Duration) time.Time {
+		drains.holdFor(d)
+
+		return time.Now().Add(d)
+	}
+}
+
 // connect returns a new client of the manager, disconnected when the Convey
 // block ends.
 func (m *reserveTestManager) connect() *Client {
@@ -188,14 +229,10 @@ func (m *reserveTestManager) stop(ctx context.Context) {
 	m.server.Stop(ctx, true)
 }
 
-// restart stops the manager and starts it again on its store, with configure,
-// if not nil, having its config first, reconnecting its client.
-func (m *reserveTestManager) restart(ctx context.Context, configure func(*ServerConfig)) {
+// restart stops the manager and starts it again on its store, reconnecting its
+// client.
+func (m *reserveTestManager) restart(ctx context.Context) {
 	m.stop(ctx)
-
-	if configure != nil {
-		configure(&m.serverConfig)
-	}
 
 	server, _, token, err := serve(ctx, m.serverConfig)
 	So(err, ShouldBeNil)
@@ -551,6 +588,146 @@ func recordedRunState(r logRecord) logRunState {
 	So(decodeFlatRunState(r.body, &rs), ShouldBeNil)
 
 	return rs
+}
+
+// TestStoreReserveAbandonKeepsLastAttempt covers spec C3's step 4: a job that
+// failed, whose next reservation is abandoned, keeps the details of the attempt
+// that failed, as wr status gets them, also after a restart, on either store.
+func TestStoreReserveAbandonKeepsLastAttempt(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	for _, kind := range []storeKind{storeKindLog, storeKindBolt} {
+		Convey("Given a manager on a "+storeKindName(kind)+" store holding a job whose first attempt failed", t,
+			func() {
+				m, hold := startAbandonTestManager(t, ctx, kind)
+
+				Reset(setClientMinRequestTimeout(reserveTestRequestTimeout))
+
+				key := m.add("last attempt")
+				failed := failFirstAttempt(m, key)
+
+				Convey("when its next reservation is abandoned, it keeps that attempt's details, also after a "+
+					"restart", func() {
+					released := hold(reserveTestHold)
+
+					reserved, errr := m.jq.Reserve(reserveTestBound / 2)
+					So(errr, ShouldBeNil)
+					So(reserved, ShouldBeNil)
+
+					item, _ := m.queued(key)
+					So(item.Stats().State, ShouldEqual, queue.ItemStateReady)
+
+					So(lastAttemptOf(m.jq, key), ShouldResemble, failed)
+					So(managerLiveStd(m, key), ShouldResemble, abandonTestLiveStd)
+
+					time.Sleep(time.Until(released))
+					m.restart(ctx)
+
+					So(lastAttemptOf(m.jq, key), ShouldResemble, failed)
+					So(managerLiveStd(m, key), ShouldResemble, abandonTestLiveStd)
+				})
+			})
+	}
+}
+
+// failFirstAttempt reserves, starts and fails the keyed job of m in a
+// working directory of its own, after a touch reporting abandonTestLiveStd,
+// waits for it to be ready again, and returns that attempt's details, each of
+// them set.
+func failFirstAttempt(m *reserveTestManager, key string) lastAttempt {
+	first, err := m.jq.Reserve(reserveTestWait)
+	So(err, ShouldBeNil)
+	So(first, ShouldNotBeNil)
+	So(m.jq.Started(first, abandonTestPid), ShouldBeNil)
+
+	stderr, err := compress([]byte("boom"))
+	So(err, ShouldBeNil)
+	stdout, err := compress([]byte("out"))
+	So(err, ShouldBeNil)
+
+	first.StdOutC, err = compress([]byte(abandonTestLiveStd[0]))
+	So(err, ShouldBeNil)
+	first.StdErrC, err = compress([]byte(abandonTestLiveStd[1]))
+	So(err, ShouldBeNil)
+
+	_, err = m.jq.Touch(first)
+	So(err, ShouldBeNil)
+
+	cwd := filepath.Join(testCwd, "abandon-test-cwd")
+	So(m.jq.Release(first, &JobEndState{
+		Cwd: cwd, Exited: true, Exitcode: 3, PeakRAM: 42, PeakDisk: 7, CPUtime: time.Second,
+		EndTime: time.Now(), Stdout: stdout, Stderr: stderr,
+	}, "it failed"), ShouldBeNil)
+
+	item, sjob := m.queued(key)
+
+	So(pollUntilFor(reserveTestWait, func() bool {
+		return item.Stats().State == queue.ItemStateReady
+	}), ShouldBeTrue)
+
+	// the attempt ran on another host than the runner that next reserves it,
+	// so the reservation's own host is not mistaken for it, and gets the host
+	// ID a cloud scheduler would have given it, as the local scheduler gives
+	// none.
+	sjob.Lock()
+	sjob.Host, sjob.HostID = "abandon-test-host", "abandon-test-host-id"
+	sjob.Unlock()
+
+	failed := lastAttemptOf(m.jq, key)
+	So(failed.Exitcode, ShouldEqual, 3)
+	So(failed.FailReason, ShouldEqual, "it failed")
+	So(failed.Pid, ShouldEqual, abandonTestPid)
+	So(failed.Host, ShouldEqual, "abandon-test-host")
+	So(failed.HostID, ShouldEqual, "abandon-test-host-id")
+	So(failed.ActualCwd, ShouldEqual, cwd)
+	So(failed.StdOut, ShouldEqual, "out")
+	So(failed.StdErr, ShouldEqual, "boom")
+	So(managerLiveStd(m, key), ShouldResemble, abandonTestLiveStd)
+
+	return failed
+}
+
+// lastAttemptOf returns the lastAttempt of the keyed job, as jq gets it with
+// its std.
+func lastAttemptOf(jq *Client, key string) lastAttempt {
+	job, err := jq.GetByEssence(&JobEssence{JobKey: key}, true, false)
+	So(err, ShouldBeNil)
+	So(job, ShouldNotBeNil)
+
+	stdout, err := job.StdOut()
+	So(err, ShouldBeNil)
+
+	stderr, err := job.StdErr()
+	So(err, ShouldBeNil)
+
+	return lastAttempt{
+		Exited: job.Exited, Exitcode: job.Exitcode, FailReason: job.FailReason,
+		Host: job.Host, HostID: job.HostID, HostIP: job.HostIP, Pid: job.Pid, ActualCwd: job.ActualCwd,
+		StartTime: job.StartTime.UTC(), EndTime: job.EndTime.UTC(),
+		PeakRAM: job.PeakRAM, PeakDisk: job.PeakDisk, CPUtime: job.CPUtime, StdOut: stdout, StdErr: stderr,
+	}
+}
+
+// managerLiveStd returns the std tails the manager's own copy of the keyed job
+// holds, which a runner's touches set while it runs and its state records
+// carry; wr status reads a ready job's std from the store instead.
+func managerLiveStd(m *reserveTestManager, key string) [2]string {
+	_, sjob := m.queued(key)
+
+	sjob.RLock()
+	defer sjob.RUnlock()
+
+	stdout, err := compressedStdString(sjob.StdOutC)
+	So(err, ShouldBeNil)
+
+	stderr, err := compressedStdString(sjob.StdErrC)
+	So(err, ShouldBeNil)
+
+	return [2]string{stdout, stderr}
 }
 
 // TestStoreReserveClosing covers C3's errDBClosed case: a reservation whose
@@ -1154,7 +1331,7 @@ func TestStoreReserveBolt(t *testing.T) {
 			So(item.Stats().State, ShouldEqual, queue.ItemStateReady)
 
 			hold.holdFor(0)
-			m.restart(ctx, nil)
+			m.restart(ctx)
 
 			item, job := m.queued(key)
 			So(item.Stats().State, ShouldEqual, queue.ItemStateReady)
@@ -1167,6 +1344,21 @@ func TestStoreReserveBolt(t *testing.T) {
 			So(reservedBy.IsNil(), ShouldBeTrue)
 		})
 	})
+}
+
+// lastAttempt is what wr status shows of a job's last attempt.
+type lastAttempt struct {
+	Exited               bool
+	Exitcode             int
+	FailReason           string
+	Host, HostID, HostIP string
+	Pid                  int
+	ActualCwd            string
+	StartTime, EndTime   time.Time
+	PeakRAM              int
+	PeakDisk             int64
+	CPUtime              time.Duration
+	StdOut, StdErr       string
 }
 
 // reserveTestSyncs is a wal sync hook a test controls: it can hold syncs until

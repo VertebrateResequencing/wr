@@ -75,6 +75,9 @@ type modifyRaceEntry struct {
 // until the Convey block ends.
 func installModifyRaceEntry() *modifyRaceEntry {
 	entry := &modifyRaceEntry{}
+
+	Reset(func() { modifyAppliedHook = nil })
+
 	modifyAppliedHook = func() {
 		sig := entry.current.Load()
 		if sig == nil {
@@ -100,8 +103,6 @@ func installModifyRaceEntry() *modifyRaceEntry {
 		case <-time.After(sig.hold):
 		}
 	}
-
-	Reset(func() { modifyAppliedHook = nil })
 
 	return entry
 }
@@ -137,7 +138,7 @@ func TestStoreModifyRace(t *testing.T) {
 
 			Convey("two concurrent Modify calls changing both their keys, each followed by a restart, "+
 				"lose no persist", func() {
-				var lost []string
+				var lost, unchanged []string
 
 				for round := range modifyRaceRounds {
 					lost = append(lost, modifyRacePair(ctx, m, entry, round, keys, filepath.Join(cwdBase, strconv.Itoa(round)))...)
@@ -147,12 +148,19 @@ func TestStoreModifyRace(t *testing.T) {
 						lost = append(lost, fmt.Sprintf("round %d held %d jobs in memory", round, len(inMemory)))
 					}
 
-					m.restart(ctx, nil)
+					for _, key := range keys {
+						if _, ok := inMemory[key]; ok {
+							unchanged = append(unchanged, fmt.Sprintf("round %d kept key %s", round, key))
+						}
+					}
+
+					m.restart(ctx)
 
 					lost = append(lost, modifyRaceLost(round, inMemory, modifyRaceJobs(m))...)
 					keys = slices.Collect(maps.Keys(inMemory))
 				}
 
+				So(unchanged, ShouldBeEmpty)
 				So(lost, ShouldBeEmpty)
 			})
 		})

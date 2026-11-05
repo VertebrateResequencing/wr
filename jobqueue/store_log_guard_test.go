@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/jobqueue/wal"
+	"github.com/VertebrateResequencing/wr/queue"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -229,6 +230,180 @@ func guardTestJobs(ctx context.Context, s *logStore, suffix ...string) (*Job, *J
 	return d, m
 }
 
+// TestLogStoreRerunGuardServer covers the clauses of spec C4 tests 9 to 11 that
+// need a server on a log store: running job d depends on dep group g, and a
+// client adds new member m to g while d's successful archive is in flight, with
+// the add's batch or the archive's held before its commit.
+func TestLogStoreRerunGuardServer(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a server on a log store with running job d depending on dep group g, and a client's add "+
+		"of new member m to g held before its commit", t, func() {
+		hold := newLogSyncFailHold()
+		readGate := newDependentReadGate()
+		g := startGuardServer(ctx)
+
+		readGate.resetAfter()
+		hold.arm()
+
+		added := g.addAsync(g.m)
+
+		hold.awaitEntered()
+
+		// d's archive decides once the add's write has finished, while the
+		// server then marks d to run again, which claims d's key as the archive
+		// does: whichever claims it first goes first. The archive held from the
+		// start of the add's write claims it first unless the add is quicker;
+		// the gate makes sure it is. The other order, the mark first, gives
+		// archiveKeptLive (rdaMarkedToRunAgain, on both stores).
+		Convey("test 9: when the archive decides first, it has not returned 100ms later; once released, it "+
+			"removes d, the add puts d back, and d waits on m, then runs again, also after a restart", func() {
+			finished := readGate.close(g.waiterKey)
+			archived := g.archiveAsync()
+
+			So(receiveArchived(archived, logGuardHoldWait).err, ShouldEqual, errOutageTestPending)
+
+			hold.Release(nil)
+
+			a := receiveArchived(archived, logSyncHoldWait)
+			So(a.err, ShouldBeNil)
+			So(a.outcome, ShouldEqual, archiveRemovedLive)
+
+			g.finishArchive(ctx, a)
+			close(finished)
+
+			So(receiveAdded(added), ShouldBeNil)
+			So(dgaItemState(g.server, g.waiterKey), ShouldEqual, queue.ItemStateDependent)
+			g.soLive(true)
+
+			g.restart(ctx)
+			g.soLive(true)
+			g.soRunsOnceMore(ctx)
+		})
+
+		Convey("test 11: if the add's batch fails with EIO, the add fails and d's archive removes d, also "+
+			"after a restart; adding m again then has d run again once m completes", func() {
+			archived := g.archiveAsync()
+
+			So(receiveArchived(archived, logGuardHoldWait).err, ShouldEqual, errOutageTestPending)
+
+			hold.Release(syscall.EIO)
+
+			So(receiveAdded(added), ShouldNotBeNil)
+
+			a := receiveArchived(archived, logSyncHoldWait)
+			So(a.err, ShouldBeNil)
+			So(a.outcome, ShouldEqual, archiveRemovedLive)
+
+			g.finishArchive(ctx, a)
+			g.soLive(false)
+			g.soComplete()
+
+			g.restart(ctx)
+			g.soLive(false)
+			g.soComplete()
+
+			So(receiveAdded(g.addAsync(dgaMemberJob(g.dgrServer, rdrGroup, rdrSecondName))), ShouldBeNil)
+			g.soLive(true)
+			g.soRunsOnceMore(ctx)
+		})
+	})
+
+	Convey("Given a server on a log store with running job d depending on dep group g, whose successful "+
+		"archive is held before its commit", t, func() {
+		hold := newLogSyncFailHold()
+		g := startGuardServer(ctx)
+
+		hold.arm()
+
+		archived := g.archiveAsync()
+
+		hold.awaitEntered()
+
+		Convey("test 10: a client's add of new member m to g waits for it; once released, the archive "+
+			"removes d and the add puts d back, also after a restart, and d runs again once m "+
+			"completes", func() {
+			added := g.addAsync(g.m)
+
+			select {
+			case <-added:
+				So("the add returned while the archive was held", ShouldBeEmpty)
+			case <-time.After(logGuardHoldWait):
+			}
+
+			_, errg := g.server.q.Get(g.m.Key())
+			So(errg, ShouldNotBeNil)
+
+			hold.Release(nil)
+
+			a := receiveArchived(archived, logSyncHoldWait)
+			So(a.err, ShouldBeNil)
+			So(a.outcome, ShouldEqual, archiveRemovedLive)
+
+			g.finishArchive(ctx, a)
+			So(receiveAdded(added), ShouldBeNil)
+			g.soLive(true)
+
+			g.restart(ctx)
+			g.soLive(true)
+			g.soRunsOnceMore(ctx)
+		})
+	})
+}
+
+// newDependentReadGate installs a dependentReadGate as dependentReadHook.
+// Install it before the server, and call resetAfter once the server is
+// started, so it is uninstalled only once the server has stopped.
+func newDependentReadGate() *dependentReadGate {
+	gate := &dependentReadGate{open: make(chan struct{})}
+
+	dependentReadHook = func(key string) {
+		if held := gate.key.Load(); held != nil && *held == key {
+			select {
+			case <-gate.open:
+			case <-time.After(logSyncHoldWait):
+			}
+		}
+	}
+
+	return gate
+}
+
+// startGuardServer starts a guardServer, stopped and disconnected when the
+// Convey block ends. Make any sync hold before it, so that the hold is released
+// before the server stops.
+func startGuardServer(ctx context.Context) *guardServer {
+	d, jq, waiter := rdrRunningWaiter(ctx, func(c *ServerConfig) { c.storeKind = storeKindLog })
+	item, job := rdaServerJob(d, waiter.Key())
+
+	g := &guardServer{
+		dgrServer: d, jq: jq, waiterKey: waiter.Key(), m: dgaMemberJob(d, rdrGroup, rdrSecondName),
+		item: item, job: job,
+	}
+
+	Reset(func() { g.stop(ctx) })
+
+	g.logStore()
+
+	return g
+}
+
+// receiveAdded returns the add error that arrives on ch.
+func receiveAdded(ch <-chan error) error {
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(logSyncHoldWait):
+		So("the add never returned", ShouldBeEmpty)
+
+		return nil
+	}
+}
+
 // archiveAsync archives job in s on another goroutine, returning where its
 // result arrives.
 func archiveAsync(s *logStore, job *Job) <-chan archivedResult {
@@ -240,6 +415,130 @@ func archiveAsync(s *logStore, job *Job) <-chan archivedResult {
 	}()
 
 	return ch
+}
+
+// dependentReadGate, once closed for a key, holds an add's update of that
+// key's queue item at dependentReadHook until the channel close returned is
+// closed.
+type dependentReadGate struct {
+	key  atomic.Pointer[string]
+	open chan struct{}
+}
+
+// resetAfter uninstalls the gate, opened, when the Convey block ends.
+func (gate *dependentReadGate) resetAfter() {
+	Reset(func() {
+		gate.key.Store(nil)
+
+		dependentReadHook = nil
+	})
+}
+
+// close holds updates of key's queue item until the returned channel is
+// closed.
+func (gate *dependentReadGate) close(key string) chan struct{} {
+	gate.key.Store(&key)
+
+	return gate.open
+}
+
+// guardServer is a server on a log store with running job d, whose key is
+// waiterKey, depending on dep group rdrGroup, the client running it, and m, a
+// new member of that group not yet added.
+type guardServer struct {
+	*dgrServer
+
+	jq        *Client
+	waiterKey string
+	m         *Job
+
+	item *queue.Item
+	job  *Job
+
+	key, repGroup, schedGroup string
+}
+
+// logStore returns the server's log store.
+func (g *guardServer) logStore() *logStore {
+	s, ok := g.server.db.(*logStore)
+	So(ok, ShouldBeTrue)
+
+	return s
+}
+
+// stop disconnects the client and stops the server.
+func (g *guardServer) stop(ctx context.Context) {
+	disconnect(g.jq)
+	g.dgrServer.stop(ctx)
+}
+
+// restart restarts the server on its store and reconnects its client.
+func (g *guardServer) restart(ctx context.Context) {
+	disconnect(g.jq)
+	g.dgrServer.restart(ctx)
+	g.jq = g.connect()
+}
+
+// addAsync has a new client add job, returning where the add's error arrives.
+func (g *guardServer) addAsync(job *Job) <-chan error {
+	adder := g.connect()
+	ch := make(chan error, 1)
+
+	go func() {
+		defer disconnect(adder)
+
+		_, _, err := adder.Add([]*Job{job}, envVars, true)
+		ch <- err
+	}()
+
+	return ch
+}
+
+// archiveAsync marks d complete, as its runner's archive would, and archives it
+// on another goroutine, returning where the store's outcome arrives.
+func (g *guardServer) archiveAsync() <-chan archivedResult {
+	var srerr string
+
+	g.key, g.repGroup, g.schedGroup, srerr = markJobComplete(g.job, g.item,
+		&JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()}, g.server.limiter, g.jq.clientid)
+	So(srerr, ShouldBeEmpty)
+
+	ch := make(chan archivedResult, 1)
+
+	go func() {
+		outcome, err := g.server.db.archiveCompletion(g.key, g.job)
+		ch <- archivedResult{outcome, err}
+	}()
+
+	return ch
+}
+
+// finishArchive has the server finish d's archive with result a, as the
+// runner's archive would.
+func (g *guardServer) finishArchive(ctx context.Context, a archivedResult) {
+	_, srerr, qerr := g.server.finishArchive(ctx, g.job, g.key, g.repGroup, g.schedGroup, a.outcome, a.err)
+	So(srerr, ShouldBeEmpty)
+	So(qerr, ShouldBeEmpty)
+}
+
+// soLive asserts whether d is live in the server's store.
+func (g *guardServer) soLive(want bool) {
+	live, err := g.server.db.checkIfLive(g.waiterKey)
+	So(err, ShouldBeNil)
+	So(live, ShouldEqual, want)
+}
+
+// soComplete asserts that d is complete in the server's store.
+func (g *guardServer) soComplete() {
+	complete, err := g.server.db.checkIfComplete(g.waiterKey)
+	So(err, ShouldBeNil)
+	So(complete, ShouldBeTrue)
+}
+
+// soRunsOnceMore asserts that d waits on m, and once m completes is reserved
+// and runs once more.
+func (g *guardServer) soRunsOnceMore(ctx context.Context) {
+	rdaSoRunsOnceMore(ctx, g.dgrServer, g.jq, g.waiterKey, g.m.Key())
 }
 
 // logSyncFailHold is a wal sync hook that holds the first wal file sync after

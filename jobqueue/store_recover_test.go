@@ -951,9 +951,9 @@ func TestLogStoreRecoverDamage(t *testing.T) {
 			data[off] ^= 0x01
 			So(os.WriteFile(path, data, 0o600), ShouldBeNil)
 
-			cfg := storeConfig{dbFile: dir}
+			cfg := storeConfig{dbFile: dir, kind: storeKindLog}
 
-			_, erro := openLogStoreLocked(ctx, cfg)
+			_, _, erro := openStore(ctx, cfg)
 			So(erro, ShouldWrap, errStoreCorrupt)
 
 			lock, errl := lockStore(ctx, cfg.dbFile)

@@ -161,14 +161,15 @@ func removedKnobTerms() (delayKey, sizeKey string, caseSensitive []string, anyCa
 }
 
 // skipNonModuleDir returns fs.SkipDir for directories that are not part of the
-// wr module whose root is module: .git, .docs and any directory with its own
-// go.mod.
+// wr module whose root is module: those whose names start with "." or "_",
+// which the go tool ignores (such as .git, .docs and agents' scratch in .tmp),
+// and any directory with its own go.mod.
 func skipNonModuleDir(module fs.FS, path string, d fs.DirEntry) error {
 	if path == "." {
 		return nil
 	}
 
-	if d.Name() == ".git" || d.Name() == ".docs" {
+	if strings.HasPrefix(d.Name(), ".") || strings.HasPrefix(d.Name(), "_") {
 		return fs.SkipDir
 	}
 

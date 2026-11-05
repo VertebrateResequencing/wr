@@ -50,6 +50,10 @@ const (
 	// testTimeout bounds every wait for something the writer must do soon, so
 	// a writer that never does it fails the test instead of hanging it.
 	testTimeout = 10 * time.Second
+
+	// reopenTestHold is how long TestWriterReopensAfterAbandon holds each
+	// idle reopen try in flight.
+	reopenTestHold = 20 * time.Millisecond
 )
 
 func TestNewWriterUnlistableDir(t *testing.T) {
@@ -1273,6 +1277,10 @@ func TestWriterReopensAfterAbandon(t *testing.T) {
 
 			if path == segment(dir, 2) {
 				reopenTries.Add(1)
+
+				// holding each try in flight, with segment 2 created, makes
+				// sure the tries below are seen in flight, not only settled.
+				time.Sleep(reopenTestHold)
 			}
 
 			return syscall.EIO
@@ -1297,6 +1305,13 @@ func TestWriterReopensAfterAbandon(t *testing.T) {
 			tries := reopenTries.Load()
 			So(tries, ShouldBeGreaterThanOrEqualTo, 4)
 			So(tries, ShouldBeLessThanOrEqualTo, maxReopenTries(time.Since(start), time.Minute))
+
+			// the last try counted is still in flight; each failed try removes
+			// the segment it created before the writer backs off.
+			for segmentExists(dir, 2) && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+
 			So(segmentFiles(dir), ShouldResemble, []uint32{1})
 			So(errs.Load(), ShouldEqual, 1)
 
@@ -1379,6 +1394,13 @@ func maxReopenTries(elapsed, limit time.Duration) int32 {
 	}
 
 	return tries
+}
+
+// segmentExists reports whether segment n is in dir.
+func segmentExists(dir string, n uint32) bool {
+	_, err := os.Stat(segment(dir, n))
+
+	return err == nil
 }
 
 func TestWriterSpendsAnExistingNumber(t *testing.T) {

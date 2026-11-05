@@ -146,14 +146,16 @@ func setSlowRequestThreshold(d time.Duration) {
 	slowRequestThresholdNanos.Store(int64(d))
 }
 
-// unreserveChange makes a job whose reservation is abandoned ready again, with
-// no runner.
-func unreserveChange(job *Job) {
-	job.State = JobStateReady
-	job.ReservedBy = uuid.UUID{}
-	job.Host = ""
-	job.Pid = 0
-	job.handingOut = false
+// unreserveChange returns the change that makes a job whose reservation is
+// abandoned ready again, with no runner and with prev, the details of the run
+// before the reservation, which the reservation cleared.
+func unreserveChange(prev runDetails) func(*Job) {
+	return func(job *Job) {
+		job.State = JobStateReady
+		job.ReservedBy = uuid.UUID{}
+		job.handingOut = false
+		job.restoreRunDetailsLocked(prev)
+	}
 }
 
 type subscriptionCatchUpRecord struct {
@@ -1143,7 +1145,7 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 		reservationQueuedHook(item.Key)
 	}
 
-	sgroup, retries, ub := s.resetJobForReservation(sjob, cr, item.Stats().Reserves)
+	sgroup, retries, ub, prev := s.resetJobForReservation(sjob, cr, item.Stats().Reserves)
 
 	delay := s.setItemDelay(ctx, item.Key, retries, ub)
 
@@ -1156,7 +1158,7 @@ func (s *Server) respondWithReservedJob(ctx context.Context, cr *clientRequest, 
 
 	commit, err := s.persistReservation(sjob)
 	if err != nil {
-		s.abandonReservation(ctx, sjob, item.Key, err, time.Since(persisting))
+		s.abandonReservation(ctx, sjob, item.Key, prev, err, time.Since(persisting))
 
 		return nil
 	}
@@ -1230,13 +1232,15 @@ func (s *Server) handOutReservation(ctx context.Context, sjob *Job, key string, 
 }
 
 // abandonReservation undoes a reservation whose record persistReservation
-// could not make durable, given its error and how long it waited, and the
-// runner is given no job, as when none is ready. It undoes what a release of
-// the reservation would: the item goes back to the ready sub-queue with no
-// delay and no attempt spent (status counts see it move from running to
-// ready), the limit-group usage and runner hold the reservation took are given
-// back, and the job, ready again with no runner, is recorded without waiting
-// for that. Its scheduler group count is left alone, as the job still wants a
+// could not make durable, given the details of the job's run before it that
+// the reservation cleared, its error and how long it waited, and the runner is
+// given no job, as when none is ready. It undoes what a release of the
+// reservation would: the item goes back to the ready sub-queue with no delay
+// and no attempt spent (status counts see it move from running to ready), the
+// limit-group usage and runner hold the reservation took are given back, and
+// the job, ready again with no runner and with its earlier run's details (so
+// wr status still shows why it last failed), is recorded without waiting for
+// that. Its scheduler group count is left alone, as the job still wants a
 // runner, and so is the runner's ClaimForReserve claim, as when nothing is
 // ready.
 //
@@ -1244,7 +1248,9 @@ func (s *Server) handOutReservation(ctx context.Context, sjob *Job, key string, 
 // recovers the job as reserved by a runner that never had it, which is then
 // released as for any vanished runner (spec C3). On errDBClosed nothing is
 // undone: the manager is stopping, and the limit usage and claim go with it.
-func (s *Server) abandonReservation(ctx context.Context, sjob *Job, key string, err error, waited time.Duration) {
+func (s *Server) abandonReservation(ctx context.Context, sjob *Job, key string, prev runDetails, err error,
+	waited time.Duration,
+) {
 	if errors.Is(err, errDBClosed) {
 		s.waitStats.observeReservation(waited, false)
 
@@ -1258,7 +1264,7 @@ func (s *Server) abandonReservation(ctx context.Context, sjob *Job, key string, 
 	ahead := s.db.prepareJobChange(ctx, sjob, func(job *Job) { job.State = JobStateReady })
 	ahead.outdate()
 
-	if errr := s.releaseAbandonedItem(ctx, sjob, key, ahead); errr != nil {
+	if errr := s.releaseAbandonedItem(ctx, sjob, key, ahead, prev); errr != nil {
 		s.db.discardJobChangeAhead(sjob, ahead)
 		clog.Warn(ctx, "abandoned reservation left the run sub-queue first", "key", key, "err", errr)
 	} else if reservationAbandonedHook != nil {
@@ -1273,8 +1279,11 @@ func (s *Server) abandonReservation(ctx context.Context, sjob *Job, key string, 
 // reserved again, it gives back the reservation's limit groups (a reserve of
 // the item once it is ready notes its own, which a later give-back would take
 // instead), forgets the reservation's runner hold, and makes the job ready with
-// no runner, queueing that change's write ahead.
-func (s *Server) releaseAbandonedItem(ctx context.Context, sjob *Job, key string, ahead *jobChangeAhead) error {
+// no runner and its earlier run's details prev, queueing that change's write
+// ahead.
+func (s *Server) releaseAbandonedItem(ctx context.Context, sjob *Job, key string, ahead *jobChangeAhead,
+	prev runDetails,
+) error {
 	if err := s.q.SetDelay(key, 0); err != nil {
 		clog.Warn(ctx, "reserve queue SetDelay failed", "err", err)
 	}
@@ -1286,13 +1295,14 @@ func (s *Server) releaseAbandonedItem(ctx context.Context, sjob *Job, key string
 		sjob.Unlock()
 
 		s.runnerHolds.forget(reservedBy, key, reservation)
-		s.db.queueJobChangeAhead(ctx, sjob, ahead, unreserveChange)
+		s.db.queueJobChangeAhead(ctx, sjob, ahead, unreserveChange(prev))
 	})
 }
 
 // resetJobForReservation clears a job's past run state ready for a fresh run by
 // the reserving client, returning its scheduler group, retries and
-// until-buried count (read under the same lock). reserves is the job's queue
+// until-buried count (read under the same lock), and the details of the run
+// before, for an abandon to give back. reserves is the job's queue
 // item's Reserves count after the reservation, which says the run the item is
 // on is this one (see Job.runHeldByLocked). A wr runner's reservation gets a new
 // RunnerReservation, and any other's 0.
@@ -1301,7 +1311,9 @@ func (s *Server) releaseAbandonedItem(ctx context.Context, sjob *Job, key string
 // identity (see runToken) and clears the fields that described the run before. The
 // runner makes its working directory, mounts filesystems and starts the Cmd on
 // the strength of the reservation alone, before its Started reaches us.
-func (s *Server) resetJobForReservation(sjob *Job, cr *clientRequest, reserves uint32) (string, uint8, uint8) {
+func (s *Server) resetJobForReservation(sjob *Job, cr *clientRequest, reserves uint32) (string, uint8, uint8,
+	runDetails,
+) {
 	reservation := s.runnerReservation(cr)
 
 	sjob.Lock()
@@ -1312,6 +1324,8 @@ func (s *Server) resetJobForReservation(sjob *Job, cr *clientRequest, reserves u
 	s.runnerHolds.forget(sjob.ReservedBy, sjob.Key(), sjob.RunnerReservation)
 	sjob.RunnerReservation = reservation
 	s.runnerHolds.hold(cr.ClientID, sjob.Key(), reservation)
+
+	prev := sjob.runDetailsLocked()
 
 	// Exitcode -1 says "has not exited" to anything that forgets to check Exited
 	// first.
@@ -1335,7 +1349,7 @@ func (s *Server) resetJobForReservation(sjob *Job, cr *clientRequest, reserves u
 	// until the runner has been handed it; see handOutReservation.
 	sjob.handingOut = true
 
-	return sjob.schedulerGroup, sjob.Retries, sjob.UntilBuried
+	return sjob.schedulerGroup, sjob.Retries, sjob.UntilBuried, prev
 }
 
 // handleStart records that a reserved job's command has started running. It does

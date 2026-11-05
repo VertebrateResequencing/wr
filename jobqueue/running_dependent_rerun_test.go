@@ -376,9 +376,10 @@ func TestRunningDependentRerunRaces(t *testing.T) {
 
 // rdrRunningWaiter starts a server holding a completed member of rdrGroup and a
 // job depending on that group which a runner (the returned client) has reserved
-// and started, returning the server, the client and the reserved waiter.
-func rdrRunningWaiter(ctx context.Context) (*dgrServer, *Client, *Job) {
-	d := dgrStartServer(ctx)
+// and started, returning the server, the client and the reserved waiter. Each of
+// configure has the server's config first.
+func rdrRunningWaiter(ctx context.Context, configure ...func(*ServerConfig)) (*dgrServer, *Client, *Job) {
+	d := dgrStartServer(ctx, configure...)
 	jq := d.connect()
 
 	member := dgaMemberJob(d, rdrGroup, rdrFirstName)

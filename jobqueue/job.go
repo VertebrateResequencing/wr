@@ -151,6 +151,24 @@ var itemsStateToJobState = map[queue.ItemState]JobState{
 	queue.ItemStateRemoved:   JobStateComplete,
 }
 
+// runDetails is what a run leaves on its Job for users to see: how it ended,
+// where it ran and what it used. resetRunLocked clears it with the rest of the
+// run's fields; a reservation that is abandoned gives it back (see
+// abandonReservation), as no new run began.
+type runDetails struct {
+	exited               bool
+	exitcode             int
+	failReason           string
+	host, hostID, hostIP string
+	pid                  int
+	actualCwd            string
+	startTime, endTime   time.Time
+	peakRAM              int
+	peakDisk             int64
+	cpuTime              time.Duration
+	stdOutC, stdErrC     []byte
+}
+
 // resolveMountPoint says where a MountConfig.Mount ends up being mounted: the
 // default when it is unspecified, itself when it is absolute, and otherwise
 // relative to cwd (so it can climb out of cwd, eg. "../shared" for a mount
@@ -510,6 +528,28 @@ func (j *Job) replaceLostEndStateLocked(jes *JobEndState, failReason string) boo
 	return true
 }
 
+// runDetailsLocked returns the Job's runDetails. Must be called with the Job at
+// least read-locked.
+func (j *Job) runDetailsLocked() runDetails {
+	return runDetails{
+		exited: j.Exited, exitcode: j.Exitcode, failReason: j.FailReason,
+		host: j.Host, hostID: j.HostID, hostIP: j.HostIP, pid: j.Pid, actualCwd: j.ActualCwd,
+		startTime: j.StartTime, endTime: j.EndTime,
+		peakRAM: j.PeakRAM, peakDisk: j.PeakDisk, cpuTime: j.CPUtime,
+		stdOutC: j.StdOutC, stdErrC: j.StdErrC,
+	}
+}
+
+// restoreRunDetailsLocked sets the Job's runDetails to d. Must be called with
+// the Job locked.
+func (j *Job) restoreRunDetailsLocked(d runDetails) {
+	j.Exited, j.Exitcode, j.FailReason = d.exited, d.exitcode, d.failReason
+	j.Host, j.HostID, j.HostIP, j.Pid, j.ActualCwd = d.host, d.hostID, d.hostIP, d.pid, d.actualCwd
+	j.StartTime, j.EndTime = d.startTime, d.endTime
+	j.PeakRAM, j.PeakDisk, j.CPUtime = d.peakRAM, d.peakDisk, d.cpuTime
+	j.StdOutC, j.StdErrC = d.stdOutC, d.stdErrC
+}
+
 // runsAsImageUser tells you if the Cmd's processes of a job with the given
 // ContainerImageUser and WithDocker will really run as the user the container
 // image specifies instead of as the calling user. That needs both, since
@@ -731,6 +771,9 @@ func (j *Job) lostForLocked() time.Duration {
 // What a run records about itself is set after this: the reserving runner's
 // host+pid and the run's token at reserve, and the command's pid, host and start
 // time at Started (applyJobStart).
+//
+// A field cleared here that users see of a run also belongs in runDetails, so
+// that a reservation which is abandoned gives it back.
 func (j *Job) resetRunLocked(state JobState, exitcode int) {
 	j.State = state
 	j.Exited = false

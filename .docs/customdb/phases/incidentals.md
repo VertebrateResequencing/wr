@@ -39,8 +39,8 @@ called ready, or explicitly deferred with the owner.
   (`TestBoltOnlyTests`) type-checks the package with every listed file
   emptied. `boltDB()` and `archivedDecodes` were never in listed files.
 - [ ] (from 0b.1) Unlisted tests reach the bbolt store through
-  `server.boltDB()`, which panics once 1e.4 makes the log store the
-  default, so they fail at 1e.4, not at F5. 0b.1 ported the plain store
+  `server.boltDB()`, which panics once 1f.11 makes the log store the
+  default, so they fail at 1f.11, not at F5. 0b.1 ported the plain store
   inspection ones (`crash_mid_add_guard_test.go`,
   `buried_dependent_restart_test.go`, `confirm_dead_after_stop_test.go`,
   `kick_order_test.go`, `running_dependent_rerun_test.go`,
@@ -56,14 +56,19 @@ called ready, or explicitly deferred with the owner.
   `reliable4_status_unbounded_test.go`, `status_seed_decode_test.go`: a
   decode counter); `reqStats` (`nohold_test.go` `loadsAfter`,
   `reqstat_cache_test.go`, `rac_learned_bench_test.go`: the learned
-  requirement cache). Also failing at 1e.4: tests driven by `db.go` hooks
+  requirement cache). Also failing at 1f.11: tests driven by `db.go` hooks
   the log store does not call (`jobChangeAheadHook`,
   `jobChangeAheadQueueingHook`, `jobExitSnapshotHook`,
   `dependentsReadHook`, `dependentsGuardHook`, `archiveGuardsSeenHook`,
   `reqStatLoadHook`; `grep` each in `jobqueue/*_test.go`), and listed tests
   that `serve()` a manager and call `boltDB()`, which must set
-  `storeKind: storeKindBolt`. Owner: 1e.4, which ports each, pins it to
-  bbolt, or deletes it where a log-store test covers it.
+  `storeKind: storeKindBolt`. Owner: 1f.11 (moved from 1e.4), which ports
+  each, pins it to bbolt, or deletes it where a log-store test covers it.
+  Not done in 1e.4: which of them fail is seen only with the log store the
+  default, and that switch is blocked (see the 1e.1 incidental on putting
+  `storeKindLog` first); a first run with it made saw `boltDB()` panics in
+  `jobqueue_test.go` (`configureFastTestBackups`) and
+  `reliable4_add_tx_test.go`, before the suite stopped.
 - [ ] (from 0b.1) Unlisted tests still open a bbolt `*db` directly
   (`initDB`, `depGroupSeenGets`, for example in `jobqueue_test.go`,
   `db_unreadable_test.go`, `db_encode_test.go`, `client_payload_test.go`
@@ -120,14 +125,20 @@ called ready, or explicitly deferred with the owner.
   `TestLogHeldArchiveStall`, does. No action beyond keeping the log-store
   form; F5 deletes the bbolt one. Owner: 2e.1 (F5), to delete it.
 
-- [ ] (from 1e.1) C3's tests need a manager on the log store before 1e.4
+- [ ] (from 1e.1) C3's tests need a manager on the log store before 1f.11
   makes it the default, so `openStore` opens the log store for
   `storeKindLog`, and `storeKindBolt` is put first in `store.go`, making it
   the zero `storeKind` and so still the default. The log store's `backup`
   returns `errLogStoreBackup` (E5, 1f.3), its `upgradedOnOpen` is false (E1,
-  1f.2) and `openStore` does no dev wipe for it (1f.1, 1f.4). Owner: 1e.4:
-  put `storeKindLog` first again, as the spec has it, to make it the
-  default.
+  1f.2) and `openStore` does no dev wipe for it (1f.1, 1f.4). Owner: 1f.11
+  (moved from 1e.4): put `storeKindLog` first again, as the spec has it,
+  to make it the default.
+  Blocked in 1e.4: with the switch made, `make test` fails in about 25
+  tests across `jobqueue`, `cmd` and `developers/soak/dbstart`, needing
+  the log store's dev wipe (1f.1), backup (1f.3, 1f.5) and conversion of a
+  bbolt file at the store path (1f.2), and 9 `forEachStore` tests fail
+  with `WR_TEST_STORE=all` (`TestStoreCrash` among them); the switch is
+  reverted until those land or are pulled forward.
 - [x] (from 0b.1 review) F5 broke the `reliability_repro` build:
   `envIntDefault` and `reliable4GiB` were defined only in the listed
   `reliable4_backup_repro_test.go`. Done in 0b.1: both moved to
@@ -359,7 +370,7 @@ called ready, or explicitly deferred with the owner.
   before the one `meta` holds (`TestStoreFoldNeverMovesBack`, which reopens
   after a fold to an earlier position).
 
-- [ ] (from 1c.4) C4 tests 9 to 11 say "run a server on a log store",
+- [x] (from 1c.4) C4 tests 9 to 11 say "run a server on a log store",
   which cannot run until 1e.4 makes the log store the server's store.
   1c.4 covers every store-visible clause of them at the store level
   (`store_log_guard_test.go`). Still to cover with a server: the
@@ -367,6 +378,19 @@ called ready, or explicitly deferred with the owner.
   again", "runs again once m completes", and test 9's `archiveKeptLive`
   (set by the server's mark; at the store level the outcome is
   `archiveRemovedLive` with the guard keeping d live). Owner: 1e.4.
+  Done in 1e.4: `TestLogStoreRerunGuardServer` (`store_log_guard_test.go`)
+  runs them on a server with `storeKind: storeKindLog`, through to d
+  waiting on m, being reserved again and running once more, also after a
+  restart. Test 9's server outcome is a race: d's archive decides once the
+  add's write finishes, and the server's mark of d then claims d's key as
+  the archive does, so either may go first (13 of 30 unforced runs gave
+  `archiveKeptLive`, 17 `archiveRemovedLive`, every one correct after).
+  The test forces the archive first (`archiveRemovedLive`, the add putting
+  d back); the mark first, giving `archiveKeptLive`, is the first case of
+  `TestRunningDependentRerunArchiveRaces` (`rdaMarkedToRunAgain`), which
+  now runs on both stores; its crash leaf stays bbolt-only until 1f.3
+  gives the log store backups, which `rdrCrash` takes its image with.
+  Spec C4 test 9 amended to allow either order.
 
 - [x] (from 1c.4) A modify drops its old key's rglookups, as bbolt's
   `deleteOldLiveJobs` drops its `repgroupToKey` entries, but the log store
@@ -734,7 +758,7 @@ called ready, or explicitly deferred with the owner.
   back inside the `ReleaseWith` callback. Owner: 2e.2 (F6): add a
   CHANGELOG line under Fixed.
 
-- [ ] (from 1e.1 review round 1 fix) `jobqueue/wal`
+- [x] (from 1e.1 review round 1 fix) `jobqueue/wal`
   `TestWriterReopensAfterAbandon` failed once in `make race` under heavy
   load, seeing segment files {1,2} instead of {1}
   (`writer_test.go:1300`); 0 failures in 100 runs alone and in a
@@ -744,13 +768,19 @@ called ready, or explicitly deferred with the owner.
   in flight. Owner: 1e.4, which runs the suite on the log store: make the
   test wait for the tries to settle (or the writer not leave a visible
   segment), and show it with a hook that holds a try in flight.
+  Done in 1e.4: the test's sync hook holds each reopen try in flight for
+  20ms, so the listing at the 4th try always sees it (5 of 5 runs failed
+  {1,2} without the wait), and the test waits for segment 2 to go before
+  listing (20 of 20 pass).
 
-- [ ] (from 1e.1 review round 2) `TestStoreReserve*` assert the reserve
+- [x] (from 1e.1 review round 2) `TestStoreReserve*` assert the reserve
   bound as `reserveTestRequestTimeout / reserveDurableWaitFraction`, so
   changing the fraction passes (`store_reserve_test.go`); the spec says
   "800ms (bound 200ms)". Owner: 1e.4: assert a literal 200ms.
+  Done in 1e.4: `reserveTestBound` is a literal 200ms, which
+  `TestStoreReserveStalled` asserts `reserveDurableWait()` equals.
 
-- [ ] (from 1e.1 review round 2) An abandoned reservation records the job
+- [x] (from 1e.1 review round 2) An abandoned reservation records the job
   ready with the previous attempt's Exitcode, FailReason, StdErrC, PeakRAM
   and similar fields cleared (`resetJobForReservation` runs before the
   persist wait), so `wr status` loses why a retrying job last failed until
@@ -760,6 +790,15 @@ called ready, or explicitly deferred with the owner.
   (restore them in the abandon, or clear them only after the reservation
   is durable), with a test, and make spec C3's "does not undo the rest"
   say so.
+  Done in 1e.4: `resetJobForReservation` returns the run's `runDetails`
+  from before its reset and the abandon's change gives them back
+  (`unreserveChange`), so they are in its state record too
+  (`TestStoreReserveAbandonKeepsLastAttempt`, on both stores, through
+  `GetByEssence` and after a restart, with every restored field set in the
+  failed attempt); spec C3 step 4 and "does not undo the rest" amended.
+  The std tails it gives back are the ones a touch left on the manager's
+  job, which its state records carry; `wr status` reads a ready job's std
+  from the store, so the test asserts those on the manager's job.
 
 - [ ] (from 1e.1 review round 2) Two abandon details are untested: the
   `discardJobChangeAhead` after a failed `ReleaseWith`
@@ -769,12 +808,14 @@ called ready, or explicitly deferred with the owner.
   of its limit groups (it uses the shared helper, which does). Owner: 2e.1
   (F5), which deletes the bbolt path: add tests for whichever still apply.
 
-- [ ] (from 1e.2 review) `TestConfigRemovedKnobsAbsentFromSource`
+- [x] (from 1e.2 review) `TestConfigRemovedKnobsAbsentFromSource`
   (`internal/config_test.go`, `skipNonModuleDir`) walks `.tmp/` and other
   dot-directories, which are gitignored, hold agents' scratch files and
   are not part of the module, so a stray `.go` file there fails the test.
   Owner: 1e.4: skip directories whose names start with "." or "_", as the
   go tool does.
+  Done in 1e.4: `skipNonModuleDir` skips them; a stray `.tmp/agent/*.go`
+  naming a knob failed the test before and passes after.
 
 - [ ] (from 1e.2 review) `developers/soak/anyway.py` (and
   `developers/soak/README.md` where it describes it) still describe the
@@ -790,10 +831,29 @@ called ready, or explicitly deferred with the owner.
   and `ServerDBBatchSize`. Owner: 2e.2 (F6): list them in the CHANGELOG
   under Changed (removed Go API).
 
-- [ ] (from 1e.3 review round 3) `TestStoreModifyRace`
+- [x] (from 1e.3 review round 3) `TestStoreModifyRace`
   (`jobqueue/store_modify_race_test.go`) never asserts that each round's
   modifies changed any keys, so a modify that silently did nothing would
   pass with zero lost persists; and `installModifyRaceEntry` sets
   `modifyAppliedHook` before registering its `Reset`. Owner: 1e.4: assert
   each round's keys differ from the keys before it, and register `Reset`
   first.
+  Done in 1e.4: both; with both modify paths made no-ops the new
+  assertion fails on kept keys (scratch-copy mutant).
+
+- [ ] (from 1e.4 review round 2) `TestConfigRemovedKnobsAbsentFromSource`
+  (`internal/config_test.go:123`) fails when another package's test
+  removes a directory in the module tree during the walk (e.g.
+  `jobqueue/scheduler/scheduler_test.go:1377` makes and removes
+  `./wr_schedulers_test_output_dir_*`): the `WalkDir` callback returns
+  every error. Seen once in `make race`; reproduced 41 and 54 times in
+  `-count=100` with such directories churning, on the 1e.4 tree and on
+  1e.2's. Owner: 1e.5: ignore `fs.ErrNotExist` in the callback, with a
+  red test first.
+
+- [ ] (from 1e.4 review round 2) `jobqueue/store.go:42` still says "until
+  item 1e.4 makes the log store the default" (now 1f.11); and in the bolt
+  branch of `startAbandonTestManager` (`jobqueue/store_reserve_test.go`)
+  `Reset(drains.uninstall)` is registered after the manager starts, so a
+  failed start leaves `bestEffortSwappedHook` installed. Owner: 1e.5.
+

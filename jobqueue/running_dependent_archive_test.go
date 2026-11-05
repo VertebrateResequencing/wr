@@ -53,55 +53,9 @@ func TestRunningDependentRerunArchiveRaces(t *testing.T) {
 	ctx := context.Background()
 	success := func() *JobEndState { return &JobEndState{Exited: true, Exitcode: 0, EndTime: time.Now()} }
 
-	Convey("Given a running job marked to run again because its dep group gained a member", t, func() {
-		d, jq, waiter := rdrRunningWaiter(ctx)
-
-		defer d.stop(ctx)
-		defer disconnect(jq)
-
-		second := dgaMemberJob(d, rdrGroup, rdrSecondName)
-		dgrAddJobs(jq, []*Job{second})
-
-		serverItem, serverJob := rdaServerJob(d, waiter.Key())
-
-		Convey("a late store of the mark, while or after its archive is written, leaves the archive's record", func() {
-			key, repGroup, schedGroup, srerr := markJobComplete(serverJob, serverItem, success(), d.server.limiter, jq.clientid)
-			So(srerr, ShouldBeEmpty)
-
-			outcome, err := d.server.db.archiveCompletion(key, serverJob)
-			So(err, ShouldBeNil)
-			So(outcome, ShouldEqual, archiveKeptLive)
-
-			d.server.storeRerunMarks(ctx, rerunMarks{running: []*Job{serverJob}})
-			rdaSoLiveRecordUnmarked(t, d, key)
-
-			_, srerr, qerr := d.server.finishArchive(ctx, serverJob, key, repGroup, schedGroup, outcome, err)
-			So(srerr, ShouldBeEmpty)
-			So(qerr, ShouldBeEmpty)
-
-			d.server.storeRerunMarks(ctx, rerunMarks{running: []*Job{serverJob}})
-			rdaSoLiveRecordUnmarked(t, d, key)
-
-			d.restart(ctx)
-
-			runner := d.connect()
-			defer disconnect(runner)
-
-			rdaSoRunsOnceMore(ctx, d, runner, waiter.Key(), second.Key())
-		})
-
-		Convey("a mark left in its stored record once it is not running is not acted on after a crash", func() {
-			So(jq.Archive(waiter, success()), ShouldBeNil)
-			So(dgaItemState(d.server, waiter.Key()), ShouldEqual, queue.ItemStateDependent)
-
-			rdrCrash(ctx, d, func() { rdrSetStoredMark(d, waiter.Key(), true) })
-
-			runner := d.connect()
-			defer disconnect(runner)
-
-			rdaSoRunsOnceMore(ctx, d, runner, waiter.Key(), second.Key())
-		})
-	})
+	for _, kind := range []storeKind{storeKindBolt, storeKindLog} {
+		rdaMarkedToRunAgain(t, ctx, kind, success)
+	}
 
 	Convey("Given a running job that another job depends on directly", t, func() {
 		d, jq, waiter := rdrRunningWaiter(ctx)
@@ -197,6 +151,71 @@ func TestRunningDependentRerunArchiveRaces(t *testing.T) {
 
 			_, errg = d.server.q.Get(waiter.Key())
 			So(errg, ShouldNotBeNil)
+		})
+	})
+}
+
+// rdaMarkedToRunAgain covers a running job, on a store of the given kind,
+// marked to run again because its dep group gained a member before its
+// successful archive decides, the order of spec C4 test 9 in which the archive
+// keeps it live (archiveKeptLive).
+func rdaMarkedToRunAgain(t *testing.T, ctx context.Context, kind storeKind, success func() *JobEndState) {
+	t.Helper()
+
+	Convey("Given a running job on a "+storeKindName(kind)+" store marked to run again because its dep group "+
+		"gained a member", t, func() {
+		d, jq, waiter := rdrRunningWaiter(ctx, func(c *ServerConfig) { c.storeKind = kind })
+
+		defer d.stop(ctx)
+		defer disconnect(jq)
+
+		second := dgaMemberJob(d, rdrGroup, rdrSecondName)
+		dgrAddJobs(jq, []*Job{second})
+
+		serverItem, serverJob := rdaServerJob(d, waiter.Key())
+
+		Convey("a late store of the mark, while or after its archive is written, leaves the archive's record", func() {
+			key, repGroup, schedGroup, srerr := markJobComplete(serverJob, serverItem, success(), d.server.limiter, jq.clientid)
+			So(srerr, ShouldBeEmpty)
+
+			outcome, err := d.server.db.archiveCompletion(key, serverJob)
+			So(err, ShouldBeNil)
+			So(outcome, ShouldEqual, archiveKeptLive)
+
+			d.server.storeRerunMarks(ctx, rerunMarks{running: []*Job{serverJob}})
+			rdaSoLiveRecordUnmarked(t, d, key)
+
+			_, srerr, qerr := d.server.finishArchive(ctx, serverJob, key, repGroup, schedGroup, outcome, err)
+			So(srerr, ShouldBeEmpty)
+			So(qerr, ShouldBeEmpty)
+
+			d.server.storeRerunMarks(ctx, rerunMarks{running: []*Job{serverJob}})
+			rdaSoLiveRecordUnmarked(t, d, key)
+
+			d.restart(ctx)
+
+			runner := d.connect()
+			defer disconnect(runner)
+
+			rdaSoRunsOnceMore(ctx, d, runner, waiter.Key(), second.Key())
+		})
+
+		// rdrCrash takes its crash image with a backup, which the log store
+		// does not make until item 1f.3.
+		if kind != storeKindBolt {
+			return
+		}
+
+		Convey("a mark left in its stored record once it is not running is not acted on after a crash", func() {
+			So(jq.Archive(waiter, success()), ShouldBeNil)
+			So(dgaItemState(d.server, waiter.Key()), ShouldEqual, queue.ItemStateDependent)
+
+			rdrCrash(ctx, d, func() { rdrSetStoredMark(d, waiter.Key(), true) })
+
+			runner := d.connect()
+			defer disconnect(runner)
+
+			rdaSoRunsOnceMore(ctx, d, runner, waiter.Key(), second.Key())
 		})
 	})
 }

@@ -1515,8 +1515,12 @@ undoes today:
    reservable: a reserve of the ready item notes its own usage, which a later
    give-back would take instead, leaking the abandoned reservation's;
 3. forgets the runner hold (`s.runnerHolds.forget`);
-4. under the job lock sets State ready, clears ReservedBy, Host, Pid and
-   `handingOut` (which `handOutReservation` clears on hand-out);
+4. under the job lock sets State ready, clears ReservedBy and `handingOut`
+   (which `handOutReservation` clears on hand-out), and gives back the
+   details of the job's previous run that the reservation cleared (Exited,
+   Exitcode, FailReason, Host, HostID, HostIP, Pid, ActualCwd, StartTime,
+   EndTime, PeakRAM, PeakDisk, CPUtime and the std tails), so `wr status`
+   still shows why a retrying job last failed;
 5. records the reserved-to-ready change with
    `prepareJobChange`/`queueJobChangeAhead` (step 1's queue move is what
    moves status-feed counts back, from running to ready, as the reservation
@@ -1524,7 +1528,8 @@ undoes today:
 6. logs `reserveAbandonedLogMsg` through `s.warns` and answers with no job,
    as when nothing is ready.
 
-It does not undo the rest. The scheduler group count is not decremented:
+It does not undo the rest, beyond the previous run's details step 4 gives
+back. The scheduler group count is not decremented:
 the item still wants a runner, and the ready-added recount
 (`accountForRunningJobs`) counts it as ready instead of running. The
 runner's `ClaimForReserve` claim stays, as it does today when the queue has
@@ -1670,9 +1675,14 @@ depending on dep group `"g"` and an add of new member m to `"g"`.
 9. Given a test hook after the add's `AppendBlock` and before its commit
    (a sync hook holding that batch), when d's successful archive starts
    there, then it has not returned 100ms later; when the sync is released,
-   the outcome is `archiveKeptLive`, d's item state is
-   `queue.ItemStateDependent` then `queue.ItemStateReady` once m completes,
-   and d is reserved again; after reopen `checkIfLive(d)` is true.
+   the outcome is `archiveKeptLive` if the server's mark of d to run again
+   claims d's key before the archive decides, and `archiveRemovedLive`, the
+   add putting d back, if the archive decides first (on a server either
+   order can happen; at the store level, with no server mark, it is always
+   `archiveRemovedLive`, the guard keeping d live). Either way d's item
+   state is `queue.ItemStateDependent` then `queue.ItemStateReady` once m
+   completes, and d is reserved again; after reopen `checkIfLive(d)` is
+   true.
 10. Given d's archive appended but its commit held by a sync hook, when
     the add then runs, then it has not stored by 100ms; when the sync is
     released, d's archive outcome is `archiveRemovedLive`, the add puts d
@@ -2576,10 +2586,10 @@ passing. Work and measurements on NFS go under
 - 1c: C2, C4, C5, C7 (log store live tier, recovery, lock, version), with
   `history.bolt` and the overlay from D1 so history queries work.
 - 1d: C6 (checkpoints), D1 (folder, stats).
-- 1e: C3 (reservations), F1, F2; switch default `storeKind` to log.
+- 1e: C3 (reservations), F1, F2.
 - 1f: E1, E2, E3, E5, E6, E7 (Phase 1 forms), F3, F4; incremental backup
   (E4) with `history.bolt` shipped whole; C5 test 3's backup clause and
-  test 8's converted-store clause.
+  test 8's converted-store clause; then switch default `storeKind` to log.
 - Gates:
   - A4 on the log store: 16 rounds local and 16 on NFS, plus 20 damaged
     copies each, 0 missing; `FuzzScan` and `FuzzFlatSpec` 10 minutes each

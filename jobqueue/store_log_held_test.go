@@ -198,7 +198,7 @@ func TestLogHeldLateStart(t *testing.T) {
 			So(refused, ShouldBeLessThan, refusedWithin)
 			So(<-archived, ShouldBeNil)
 
-			m.restart(ctx, nil)
+			m.restart(ctx)
 
 			done, errg := m.jq.GetByRepGroup(archiveBeforeStartRepGroup, false, 0, "", true, false)
 			So(errg, ShouldBeNil)

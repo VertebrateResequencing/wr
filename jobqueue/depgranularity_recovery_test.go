@@ -107,9 +107,14 @@ type dgrServer struct {
 	token        []byte
 }
 
-// dgrStartServer starts a server with an empty database.
-func dgrStartServer(ctx context.Context) *dgrServer {
+// dgrStartServer starts a server with an empty database, after each of
+// configure has had its config.
+func dgrStartServer(ctx context.Context, configure ...func(*ServerConfig)) *dgrServer {
 	config, serverConfig, addr, reqs, connectTime := jobqueueTestInit(true)
+
+	for _, c := range configure {
+		c(&serverConfig)
+	}
 
 	server, _, token, err := serve(ctx, serverConfig)
 	So(err, ShouldBeNil)

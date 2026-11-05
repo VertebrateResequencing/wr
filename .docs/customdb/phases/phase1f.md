@@ -177,3 +177,23 @@ and 1f.4.
 
 - [ ] implemented
 - [ ] reviewed
+
+### Item 1f.11: Switch the default store to log
+
+spec.md section: Implementation Order, Phase 1, 1f; The store interface
+
+Moved from 1e.4 ([blocker-phase1e-1e.4.md](blocker-phase1e-1e.4.md)).
+Make `storeKindLog` the default `storeKind` (putting it first in
+`store.go` again, as the 1e.1 incidental says) and `log` the
+`WR_TEST_STORE` default, and show `make test` and `make race` pass on
+it and with `WR_TEST_STORE=all`. Start from the patch and failure list
+in the blocker file. Resolve the 0b.1 incidental on tests that reach
+bbolt through `server.boltDB()` or `db.go` hooks
+([incidentals.md](incidentals.md)), port or pin the out-of-package
+bbolt readers (`cmd/manager_queue_db_test.go` `readStoredJobs`;
+`developers/soak/dbstart` `TestRunReadsRealReservation`, with 1f.8), and
+find the root cause of each server test that fails on the log store.
+Depends on 1e.5 and 1f.1 to 1f.10.
+
+- [ ] implemented
+- [ ] reviewed

@@ -1,4 +1,4 @@
-# Phase 1e: Reservations, config removal, default to log
+# Phase 1e: Reservations, config removal, store-switch preparation
 
 Ref: [spec.md](../spec.md) sections C3, F1, F2, A5 (test 4 only)
 
@@ -87,29 +87,47 @@ delivery-queue row 15). Cover the 1 acceptance test from F2 in
 - [x] implemented
 - [x] reviewed
 
-### Item 1e.4: Switch the default store to log
+### Item 1e.4: Incidentals before the store switch
 
-spec.md section: Implementation Order, Phase 1, 1e; The store interface
+spec.md section: C3; C4; C5; The store interface
 
-Make `storeKindLog` the default `storeKind` (putting it first in
-`store.go` again, as the 1e.1 incidental says) and `log` the
-`WR_TEST_STORE` default, and show `make test` and `make race` pass on
-it and with `WR_TEST_STORE=all`. Depends on 1e.1 to 1e.3.
-First resolve the 0b.1 incidental on tests that reach bbolt through
-`server.boltDB()` or `db.go` hooks ([incidentals.md](incidentals.md)).
-Also resolve the 1c.4 incidental: the server-only clauses of C4 tests 9
-to 11.
-Also resolve the 1e.1 incidental on `TestWriterReopensAfterAbandon`
-seeing a reopen try's segment ([incidentals.md](incidentals.md)).
-Also resolve the 1e.1 incidentals on asserting a literal reserve bound
-and on an abandon keeping the earlier attempt's details
+Resolve the incidentals routed here ([incidentals.md](incidentals.md)):
+the 1c.4 incidental on the server-only clauses of C4 tests 9 to 11; the
+1e.1 incidentals on `TestWriterReopensAfterAbandon` seeing a reopen
+try's segment, on asserting a literal reserve bound and on an abandon
+keeping the earlier attempt's details; the 1e.2 incidental on the
+source walk skipping dot-directories; and the 1e.3 incidental on
+`TestStoreModifyRace` asserting that keys changed. Switch C5 test 3
+(`TestLogStoreRecoverDamage`, 1c.5) from `openLogStoreLocked` to
+`openStore`, as the spec names it.
+
+The default-store switch first planned here moved to item 1f.11: it
+needs the log store's dev wipe, conversion and backup from 1f, and
+`make test` fails without them ([blocker-phase1e-1e.4.md](blocker-phase1e-1e.4.md)).
+
+- [x] implemented
+- [x] reviewed
+
+### Item 1e.5: `WR_TEST_STORE=all` runs the log store
+
+spec.md section: A5; C5; The store interface
+
+Make `testStoreKinds` (`jobqueue/store_inspect_test.go`) map `all` to
+both stores and accept `log`, so every `forEachStore` test runs on the
+log store. Fix the log-store failures this exposes that do not need
+backup: `TestStoreCrash` ("wal file 00000002 does not start with a
+header"), the replay mismatches in `TestStoreRecordReplay`,
+`TestStoreReplayChangeHandles` and `TestStoreReplayLearned`, and
+`TestStoreCheckIfComplete` (a malformed key returns an error, not
+false). Find each root cause; fix the store, or the test where the
+test is wrong. `TestStoreInspector`, `TestStoreOpenLock`,
+`TestStoreOpenLocked` and `TestStoreCorruptRestoredFromBackup` need
+backup: skip them on the log store with a note naming 1f.3 and 1f.5,
+which un-skip them. Show `make test` and `make race` pass with
+`WR_TEST_STORE=all`. Depends on 1e.4.
+Also resolve the two 1e.4 review round 2 incidentals (the walk's
+`fs.ErrNotExist` flake; a stale comment and `Reset` order)
 ([incidentals.md](incidentals.md)).
-Also resolve the 1e.2 incidental on the source walk skipping
-dot-directories ([incidentals.md](incidentals.md)).
-Also resolve the 1e.3 incidental on `TestStoreModifyRace` asserting
-that keys changed ([incidentals.md](incidentals.md)).
-Switch C5 test 3 (`TestLogStoreRecoverDamage`, 1c.5) from
-`openLogStoreLocked` to `openStore`, as the spec names it.
 
 - [ ] implemented
 - [ ] reviewed
