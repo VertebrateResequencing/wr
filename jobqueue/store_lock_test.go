@@ -103,7 +103,7 @@ func TestStoreOpenLocked(t *testing.T) {
 	ctx := context.Background()
 
 	forEachStore(t, func(kind storeKind) {
-		Convey(fmt.Sprintf("Given a %s store held open, with a backup and restore leftovers beside it",
+		Convey(fmt.Sprintf("Given a %s store held open, with restore leftovers and any backup it makes beside it",
 			storeKindName(kind)), t, func() {
 			withStoreLockOpenTimeout()
 
@@ -200,8 +200,9 @@ func withStoreLockOpenTimeout() {
 }
 
 // storeLockSeeded creates a closed store of the given kind in a new temporary
-// directory, holding one live job, with a backup of it at the backup path. It
-// returns the directory and the config that opens the store.
+// directory, holding one live job, with a backup of it at the backup path
+// unless the store makes no backups (see conveyNeedingBackup). It returns the
+// directory and the config that opens the store.
 func storeLockSeeded(ctx context.Context, t *testing.T, kind storeKind) (string, storeConfig) {
 	t.Helper()
 
@@ -218,10 +219,13 @@ func storeLockSeeded(ctx context.Context, t *testing.T, kind storeKind) (string,
 	_, err := s.storeNewJobsGuarded(ctx, []*Job{testDBJob("echo store lock", storeLockRepGroup)}, false, nil)
 	So(err, ShouldBeNil)
 
-	backup, err := os.Create(cfg.dbBkFile)
-	So(err, ShouldBeNil)
-	So(s.backup(backup), ShouldBeNil)
-	So(backup.Close(), ShouldBeNil)
+	if kind != storeKindLog {
+		backup, errc := os.Create(cfg.dbBkFile)
+		So(errc, ShouldBeNil)
+		So(s.backup(backup), ShouldBeNil)
+		So(backup.Close(), ShouldBeNil)
+	}
+
 	So(s.close(ctx), ShouldBeNil)
 
 	return dir, cfg
@@ -318,36 +322,36 @@ func TestStoreCorruptRestoredFromBackup(t *testing.T) {
 	ctx := context.Background()
 
 	forEachStore(t, func(kind storeKind) {
-		Convey(fmt.Sprintf("Given a %s store replaced by random bytes, and a backup of it", storeKindName(kind)),
-			t, func() {
-				withStoreLockOpenTimeout()
+		conveyNeedingBackup(kind)(fmt.Sprintf("Given a %s store replaced by random bytes, and a backup of it",
+			storeKindName(kind)), t, func() {
+			withStoreLockOpenTimeout()
 
-				_, cfg := storeLockSeeded(ctx, t, kind)
+			_, cfg := storeLockSeeded(ctx, t, kind)
 
-				So(os.RemoveAll(cfg.dbFile), ShouldBeNil)
+			So(os.RemoveAll(cfg.dbFile), ShouldBeNil)
 
-				garbage := make([]byte, storeLockCorruptBytes)
+			garbage := make([]byte, storeLockCorruptBytes)
 
-				_, err := rand.NewChaCha8([32]byte{storeLockCorruptSeed}).Read(garbage)
+			_, err := rand.NewChaCha8([32]byte{storeLockCorruptSeed}).Read(garbage)
+			So(err, ShouldBeNil)
+
+			So(os.WriteFile(cfg.dbFile, garbage, dbFilePermission), ShouldBeNil)
+
+			Convey("opening it restores the backup, saying the db file was corrupt", func() {
+				result := openStoreBounded(ctx, cfg)
+
+				defer closeOpenResult(ctx, result)
+
+				So(result.err, ShouldBeNil)
+				So(result.s, ShouldNotBeNil)
+				So(result.msg, ShouldStartWith, "recreated corrupt (?) db file")
+
+				jobs, _, err := result.s.recoverIncompleteJobs()
 				So(err, ShouldBeNil)
-
-				So(os.WriteFile(cfg.dbFile, garbage, dbFilePermission), ShouldBeNil)
-
-				Convey("opening it restores the backup, saying the db file was corrupt", func() {
-					result := openStoreBounded(ctx, cfg)
-
-					defer closeOpenResult(ctx, result)
-
-					So(result.err, ShouldBeNil)
-					So(result.s, ShouldNotBeNil)
-					So(result.msg, ShouldStartWith, "recreated corrupt (?) db file")
-
-					jobs, _, err := result.s.recoverIncompleteJobs()
-					So(err, ShouldBeNil)
-					So(jobs, ShouldHaveLength, 1)
-					So(jobs[0].RepGroup, ShouldEqual, storeLockRepGroup)
-				})
+				So(jobs, ShouldHaveLength, 1)
+				So(jobs[0].RepGroup, ShouldEqual, storeLockRepGroup)
 			})
+		})
 	})
 }
 

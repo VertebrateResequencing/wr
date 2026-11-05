@@ -145,6 +145,29 @@ func startReserveTestManager(t *testing.T, ctx context.Context, kind storeKind,
 ) *reserveTestManager {
 	t.Helper()
 
+	return startReserveTestManagerThen(t, ctx, kind, configure, nil)
+}
+
+// startReserveTestManagerThen is startReserveTestManager, also calling
+// afterStop, if not nil, when the Convey block ends: once the manager has
+// stopped, or once the start has failed.
+func startReserveTestManagerThen(t *testing.T, ctx context.Context, kind storeKind,
+	configure func(*ServerConfig), afterStop func(),
+) *reserveTestManager {
+	t.Helper()
+
+	var m *reserveTestManager
+
+	Reset(func() {
+		if m != nil {
+			m.stop(ctx)
+		}
+
+		if afterStop != nil {
+			afterStop()
+		}
+	})
+
 	_, serverConfig, addr, reqs, connectTime := startDurabilityConfig(t)
 	serverConfig.storeKind = kind
 	serverConfig.dontWipeDevDB = true
@@ -156,12 +179,10 @@ func startReserveTestManager(t *testing.T, ctx context.Context, kind storeKind,
 	server, _, token, err := serve(ctx, serverConfig)
 	So(err, ShouldBeNil)
 
-	m := &reserveTestManager{
+	m = &reserveTestManager{
 		server: server, serverConfig: serverConfig, addr: addr, token: token, connectTime: connectTime,
 		reqs: reqs,
 	}
-
-	Reset(func() { m.stop(ctx) })
 
 	So(waitUntilRecovered(server), ShouldBeTrue)
 
@@ -192,9 +213,7 @@ func startAbandonTestManager(t *testing.T, ctx context.Context, kind storeKind) 
 	drains := &boltDrainHold{}
 	drains.install()
 
-	m := startReserveTestManager(t, ctx, kind, configure)
-
-	Reset(drains.uninstall)
+	m := startReserveTestManagerThen(t, ctx, kind, configure, drains.uninstall)
 
 	return m, func(d time.Duration) time.Time {
 		drains.holdFor(d)

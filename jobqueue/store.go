@@ -39,7 +39,7 @@ import (
 // storeKind picks the store implementation openStore opens.
 type storeKind uint8
 
-// storeKindBolt comes first, so is the default, until item 1e.4 makes the log
+// storeKindBolt comes first, so is the default, until item 1f.11 makes the log
 // store the default by putting storeKindLog first, as the spec has it.
 const (
 	storeKindBolt storeKind = iota // bbolt; removed with it

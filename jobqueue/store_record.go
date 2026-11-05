@@ -546,6 +546,12 @@ type replayer struct {
 	// learned is what the replay has seen of s's learned requirements.
 	learned *learnedReplay
 
+	// fold, if set, runs before each probe of s's learned requirements, so
+	// that s has taken up every sample it has written: the log store learns
+	// only when its folder folds (spec A5). A test sets it to the replayed
+	// store's storeInspector flush.
+	fold func() error
+
 	// call is the call being replayed, and unrecorded is set when it asked a
 	// question the recording has no answer to, which makes it a mismatch.
 	// accept, if set, says whether the call's recorded digest is an answer it
@@ -626,10 +632,6 @@ func (rp *replayer) replay(call *recordedCall, writes writeSpans, stats *replayS
 		return fmt.Errorf("could not replay %s (End %d): %w", call.Method, call.End, err)
 	}
 
-	if call.Write {
-		rp.probeAllLearned()
-	}
-
 	if rp.mismatched(digest, writes) {
 		stats.mismatches = append(stats.mismatches, replayMismatch{Seq: call.End, Method: call.Method})
 	}
@@ -638,7 +640,9 @@ func (rp *replayer) replay(call *recordedCall, writes writeSpans, stats *replayS
 }
 
 // replayed replays call with replayFn, returning the digest of its results
-// and any error replaying it met.
+// and any error replaying it met. After a write it probes every learned
+// requirement the replay has seen, since a write may add a sample that changes
+// them.
 func (rp *replayer) replayed(call *recordedCall, replayFn replayFunc) ([32]byte, error) {
 	rp.call, rp.unrecorded, rp.accept, rp.err = call, false, nil, nil
 	rp.lastEnd = call.End
@@ -646,6 +650,10 @@ func (rp *replayer) replayed(call *recordedCall, replayFn replayFunc) ([32]byte,
 	digest, err := replayFn(rp, call.Args)
 	if err == nil {
 		err = rp.err
+	}
+
+	if err == nil && call.Write {
+		err = rp.probeAllLearned()
 	}
 
 	return digest, err

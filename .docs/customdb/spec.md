@@ -1117,8 +1117,12 @@ directory env `WR_CRASHTEST_DIR` (default `t.TempDir()`), so the gate can
 run 16 rounds on NFS. Each round reopens the previous round's store, runs
 new waves as above and also cycles 50 random live jobs from earlier rounds
 through reserve, start and release until killed, checked as the new ones.
-For the log store each round also makes 20 copies with the last wal file
-truncated at a random offset or one random byte flipped, and recovers each.
+For the log store each round also makes 20 copies of the store as the
+killed child left it, before the reopen (which starts a new wal file
+holding only its header), with the last wal file truncated at a random
+offset or one random byte after its first frame's length flipped (a
+changed length there is a wrong header, which Recovery step 4 makes
+corruption), and recovers each.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_crash_test.go`
@@ -1263,8 +1267,10 @@ type replayMismatch struct {
 ```
 
 `TestStoreReplay` runs `replayRecording` on `WR_STORE_REPLAY=<path>` against
-the kind in `WR_TEST_STORE` and skips when the variable is unset; it is the
-gate's runner, not an acceptance test of the harness.
+the kind in `WR_TEST_STORE`, folding the store before each
+learned-requirements probe as above (`replayRecordingFolding`,
+`jobqueue/store_record_test.go`), and skips when the variable is unset; it
+is the gate's runner, not an acceptance test of the harness.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_record.go`

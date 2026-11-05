@@ -355,13 +355,18 @@ type crashRecovery struct {
 
 // crashRoundRecovered runs a kill round, merges its acks and intents into those
 // of earlier rounds, and recovers the store, returning the round and which keys
-// acked in any round so far the store lost.
+// acked in any round so far the store lost. If killed is not empty, it first
+// copies the store, as the killed child left it, into the directory killed.
 func crashRoundRecovered(t *testing.T, ctx context.Context, kind storeKind, dir string, round int,
-	wrapper string, acks map[string]int, intents map[string][]int,
+	wrapper string, acks map[string]int, intents map[string][]int, killed string,
 ) (crashRoundResult, crashRecovery) {
 	t.Helper()
 
 	result := runCrashRound(t, kind, dir, round, wrapper)
+
+	if killed != "" {
+		So(copyCrashStore(filepath.Join(dir, crashStoreFile), killed), ShouldBeNil)
+	}
 
 	for key, p := range result.acks {
 		acks[key] = max(acks[key], p)
@@ -448,14 +453,21 @@ func TestStoreCrash(t *testing.T) {
 			intents := make(map[string][]int)
 
 			for round := range crashTestRounds(t) {
-				result, recovery := crashRoundRecovered(t, ctx, kind, dir, round, crashWrapNone, acks, intents)
+				var killed string
+				if kind == storeKindLog {
+					killed = filepath.Join(dir, fmt.Sprintf("killed.%d", round))
+				}
+
+				result, recovery := crashRoundRecovered(t, ctx, kind, dir, round, crashWrapNone, acks, intents,
+					killed)
 
 				So(len(result.acks), ShouldBeGreaterThan, 0)
 				So(result.unacked, ShouldBeGreaterThan, 0)
 				So(shownMissing(recovery.missing), ShouldBeEmpty)
 
-				if kind == storeKindLog {
-					checkDamagedCrashCopies(ctx, kind, dir, intents)
+				if killed != "" {
+					checkDamagedCrashCopies(ctx, kind, killed, intents)
+					So(os.RemoveAll(killed), ShouldBeNil)
 				}
 			}
 		})
@@ -465,7 +477,7 @@ func TestStoreCrash(t *testing.T) {
 			dir := crashTestDir(t)
 
 			result, recovery := crashRoundRecovered(t, ctx, kind, dir, 0, crashWrapAckEarly,
-				make(map[string]int), make(map[string][]int))
+				make(map[string]int), make(map[string][]int), "")
 			So(len(result.acks), ShouldBeGreaterThan, 0)
 
 			Convey("the round reports missing acked transitions", func() {
@@ -483,7 +495,7 @@ func TestStoreCrash(t *testing.T) {
 			// The outcome needs one round with missing keys out of
 			// crashDropRounds, so later rounds cannot change it once one has.
 			for round := range crashDropRounds {
-				_, recovery := crashRoundRecovered(t, ctx, kind, dir, round, crashWrapDropRelease, acks, intents)
+				_, recovery := crashRoundRecovered(t, ctx, kind, dir, round, crashWrapDropRelease, acks, intents, "")
 				if len(recovery.missing) > 0 {
 					missingRounds++
 
@@ -552,13 +564,15 @@ func shownMissing(missing []string) []string {
 }
 
 // checkDamagedCrashCopies is spec A4 acceptance test 2, for the log store: it
-// makes crashDamagedCopies copies of the store in dir, alternately truncating
-// its last wal file at a random offset and flipping one random byte of it, and
-// requires each copy to recover without error, with every job in a state the
-// child wrote for it (intents).
-func checkDamagedCrashCopies(ctx context.Context, kind storeKind, dir string, intents map[string][]int) {
-	storeDir := filepath.Join(dir, crashStoreFile)
-
+// makes crashDamagedCopies copies of storeDir, a store as a killed child left
+// it, alternately truncating its last wal file at a random offset and flipping
+// one random byte of it, and requires each copy to recover without error, with
+// every job in a state the child wrote for it (intents).
+//
+// The copies must be of the store before it is reopened: the reopen starts a
+// new wal file holding only its header, which would then be the last file, so
+// the damage would miss every record the child wrote.
+func checkDamagedCrashCopies(ctx context.Context, kind storeKind, storeDir string, intents map[string][]int) {
 	wals, err := filepath.Glob(filepath.Join(storeDir, "*"+crashWalSuffix))
 	So(err, ShouldBeNil)
 	So(wals, ShouldNotBeEmpty)
@@ -571,7 +585,7 @@ func checkDamagedCrashCopies(ctx context.Context, kind storeKind, dir string, in
 	var unwritten []string //nolint:prealloc // each copy adds any number
 
 	for i := range crashDamagedCopies {
-		copyDir := filepath.Join(dir, fmt.Sprintf("damaged.%d", i))
+		copyDir := fmt.Sprintf("%s.damaged.%d", storeDir, i)
 		So(copyCrashStore(storeDir, copyDir), ShouldBeNil)
 		So(damageCrashFile(filepath.Join(copyDir, lastWal), i%2 == 0), ShouldBeNil)
 
@@ -630,19 +644,25 @@ func copyCrashFile(src, dst string) error {
 	return out.Close()
 }
 
-// damageCrashFile truncates the file at path at a random offset, or else flips
-// every bit of one random byte of it.
+// damageCrashFile truncates the wal file at path at a random offset, or else
+// flips every bit of one random byte of it after its first frame's length.
+// Recovery takes a changed length there for a wrong header, which is corruption
+// rather than crash damage (spec Recovery, step 4), so it does not flip one.
 func damageCrashFile(path string, truncate bool) error {
 	info, err := os.Stat(path)
 	if err != nil || info.Size() == 0 {
 		return err
 	}
 
-	offset := rand.Int64N(info.Size()) //nolint:gosec // a damage offset, not a secret
-
 	if truncate {
-		return os.Truncate(path, offset)
+		return os.Truncate(path, rand.Int64N(info.Size())) //nolint:gosec // a damage offset, not a secret
 	}
+
+	if info.Size() <= walLenFlagsLen {
+		return nil
+	}
+
+	offset := walLenFlagsLen + rand.Int64N(info.Size()-walLenFlagsLen) //nolint:gosec // a damage offset, not a secret
 
 	f, err := os.OpenFile(path, os.O_RDWR, crashFileMode)
 	if err != nil {

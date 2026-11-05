@@ -147,17 +147,47 @@ func replayReqStatChanges(rp *replayer, _ *recNone) [32]byte {
 	return storeDigest(stamp)
 }
 
-// probeLearned loads reqGroup's learned requirements in the replayed store, if
-// they are not current, and notes them. The replay runs with no refresh
-// interval, so the load is never held back.
+// probeLearned folds the replayed store, if the replay folds, then loads
+// reqGroup's learned requirements in it, if they are not current, and notes
+// them. The replay runs with no refresh interval, so the load is never held
+// back. A failed fold is the replayed call's error.
 func (rp *replayer) probeLearned(reqGroup string) {
-	rp.learned.note(reqGroup, rp.s.refreshReqGroupRecs(reqGroup))
+	if err := rp.foldForProbe(); err != nil && rp.err == nil {
+		rp.err = err
+	}
+
+	rp.noteLearned(reqGroup)
 }
 
-// probeAllLearned is probeLearned of every ReqGroup the replay has seen, which
-// it does after each write, since a write may add a sample that changes them.
-func (rp *replayer) probeAllLearned() {
-	for reqGroup := range rp.learned.latest {
-		rp.probeLearned(reqGroup)
+// probeAllLearned is probeLearned of every ReqGroup the replay has seen, after
+// one fold. It returns the fold's error.
+func (rp *replayer) probeAllLearned() error {
+	if len(rp.learned.latest) == 0 {
+		return nil
 	}
+
+	if err := rp.foldForProbe(); err != nil {
+		return err
+	}
+
+	for reqGroup := range rp.learned.latest {
+		rp.noteLearned(reqGroup)
+	}
+
+	return nil
+}
+
+// foldForProbe runs the replay's fold, if it has one.
+func (rp *replayer) foldForProbe() error {
+	if rp.fold == nil {
+		return nil
+	}
+
+	return rp.fold()
+}
+
+// noteLearned loads reqGroup's learned requirements in the replayed store, if
+// they are not current, and notes them.
+func (rp *replayer) noteLearned(reqGroup string) {
+	rp.learned.note(reqGroup, rp.s.refreshReqGroupRecs(reqGroup))
 }

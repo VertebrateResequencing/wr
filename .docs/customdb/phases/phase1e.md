@@ -129,5 +129,5 @@ Also resolve the two 1e.4 review round 2 incidentals (the walk's
 `fs.ErrNotExist` flake; a stale comment and `Reset` order)
 ([incidentals.md](incidentals.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed

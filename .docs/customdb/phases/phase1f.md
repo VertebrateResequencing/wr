@@ -77,7 +77,10 @@ Make `backup(w)` and `Client.BackupDB(path)` write one tar file
 (`VERSION`, one `.ckpt`, `.wal` files and history files, here
 `history.bolt`) in `jobqueue/store_backup.go`. Cover both acceptance
 tests from E5; test 1's open and test 2's restore halves depend on 1f.4
-and may be finished there.
+and may be finished there. With 1f.5, resolve the 1e.5 incidental on the
+tests that skip on the log store for want of a backup
+(`conveyNeedingBackup`, `storeLockSeeded`, `recordWorkload`)
+([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed
@@ -95,7 +98,10 @@ deferred from 1f.1 and the halves of E5's tests deferred from 1f.3.
 Keep the lock taken first, as the 0b.1 incidental owned by 1c.2 says
 ([incidentals.md](incidentals.md)). Also resolve the 1d.2 incidentals on
 testing that recovery deletes every `*.tmp` and on `dropBefore` keeping a
-state Ref ([incidentals.md](incidentals.md)).
+state Ref, the 1e.5 incidental on a folded job recovering both complete
+and live after wal damage, and the 1e.5 review incidental on a last wal
+whose whole header fails its CRC being removed as torn
+([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed
@@ -109,7 +115,10 @@ Add incremental backup ticks in `jobqueue/store_backup.go` and
 shipped whole (paced by `backupCopySyncBytes`) whenever its folded
 position changed, in place of sealed segments. Cover the 13 acceptance
 tests from E4 against the Phase 1 form, including Phase-1-only test 10;
-2c replaces the history step with sealed `.hist` files.
+2c replaces the history step with sealed `.hist` files. With 1f.3,
+resolve the 1e.5 incidental on the tests that skip on the log store for
+want of a backup (`conveyNeedingBackup`, `storeLockSeeded`,
+`recordWorkload`) ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed
@@ -193,6 +202,8 @@ bbolt through `server.boltDB()` or `db.go` hooks
 bbolt readers (`cmd/manager_queue_db_test.go` `readStoredJobs`;
 `developers/soak/dbstart` `TestRunReadsRealReservation`, with 1f.8), and
 find the root cause of each server test that fails on the log store.
+Also resolve the 1e.5 review round 3 incidental on log-store methods that
+reject malformed keys ([incidentals.md](incidentals.md)).
 Depends on 1e.5 and 1f.1 to 1f.10.
 
 - [ ] implemented

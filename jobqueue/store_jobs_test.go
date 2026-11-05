@@ -195,9 +195,20 @@ func TestStoreCheckIfComplete(t *testing.T) {
 			})
 
 			Convey("checkIfComplete is false for a key that was never archived", func() {
-				complete, errc := s.checkIfComplete("no.such.key")
+				never := testDBArchivedJob("echo never", "rg-complete", time.Now())
+				complete, errc := s.checkIfComplete(never.Key())
 				So(errc, ShouldBeNil)
 				So(complete, ShouldBeFalse)
+			})
+
+			Convey("a key no job can have is neither complete nor live", func() {
+				complete, errc := s.checkIfComplete("not a job key")
+				So(errc, ShouldBeNil)
+				So(complete, ShouldBeFalse)
+
+				live, errl := s.checkIfLive("not a job key")
+				So(errl, ShouldBeNil)
+				So(live, ShouldBeFalse)
 			})
 		})
 	})

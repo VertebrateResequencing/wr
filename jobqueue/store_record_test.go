@@ -77,9 +77,160 @@ var removedMethodsCalls = slices.Concat( //nolint:gochecknoglobals
 	[]string{"logReserveNotDurable", "setBatchTuning"},
 )
 
+const (
+	// recordNeverAsked is the question an askingStore asks.
+	recordNeverAsked = "record-never-asked"
+
+	// recordRepGroupsMethod is the recorded method name of retrieveRepGroups.
+	recordRepGroupsMethod = "retrieveRepGroups"
+)
+
+// errBoom is the error boomRepGroupsStore adds.
+var errBoom = errors.New("boom")
+
+// pausingArchiveWait is the longest a pausingArchiveStore or its test waits
+// for the other: far longer than one archive takes.
+const pausingArchiveWait = 10 * time.Second
+
+const (
+	// recordCachedMethod and recordRefreshMethod are the recorded method names
+	// of cachedReqGroupRecs and refreshReqGroupRecs.
+	recordCachedMethod  = "cachedReqGroupRecs"
+	recordRefreshMethod = "refreshReqGroupRecs"
+
+	// learnedTestReqGroup is the ReqGroup of the jobs the learned-requirements
+	// recordings archive.
+	learnedTestReqGroup = "record-learned"
+
+	// learnedTestInterval is the refresh interval recordLearnedThrottled sets
+	// and then sleeps past, as a manager's clock passes it between two loads,
+	// so that its recording loads where a replay at full speed would not.
+	learnedTestInterval = 500 * time.Millisecond
+
+	// learnedTestLoadDelay is how long each load of learned requirements takes
+	// while recordLearnedBetweenWrites's recording replays: far longer than a
+	// replay takes to reach its next calls, so that a load the replay starts in
+	// the background cannot finish before them.
+	learnedTestLoadDelay = 100 * time.Millisecond
+)
+
+// flippedChangeAheadStore is a store whose prepareJobChange discards the handle
+// its store prepared and returns none, or returns a handle where its store
+// prepared none: a store whose handle answer differs from the recorded one,
+// whether the recording was of bbolt, which prepares handles, or of the log
+// store, which does not.
+type flippedChangeAheadStore struct {
+	store
+}
+
+func (f flippedChangeAheadStore) prepareJobChange(ctx context.Context, job *Job,
+	change func(*Job)) *jobChangeAhead {
+	ahead := f.store.prepareJobChange(ctx, job, change)
+	if ahead == nil {
+		return &jobChangeAhead{key: job.Key()}
+	}
+
+	f.discardJobChangeAhead(job, ahead)
+
+	return nil
+}
+
+// shouldBeChangeAheadHandle returns the assertion a change-ahead handle that a
+// store of the given kind returns meets: bbolt returns one for each prepared
+// or moved change, and the log store returns none (spec, The store
+// interface).
+func shouldBeChangeAheadHandle(kind storeKind) func(any, ...any) string {
+	if kind == storeKindLog {
+		return ShouldBeNil
+	}
+
+	return ShouldNotBeNil
+}
+
+// replayRecordingFolding is replayRecording against s, with replayed, the store
+// s is or wraps, folded by learnedFold before each probe of learned
+// requirements, as spec A5 says a replay must for the log store.
+func replayRecordingFolding(ctx context.Context, path string, s, replayed store) (replayStats, error) {
+	rp := newReplayer(ctx, s)
+	rp.fold = learnedFold(replayed)
+
+	return rp.replayFile(path)
+}
+
+// learnedFold returns the fold a replay against s runs before each probe of
+// its learned requirements: for the log store, which learns a sample only once
+// its folder folds it (spec D1), its flush; for bbolt, which learns as it
+// archives, nil, since its flush also waits for every expected job exit update
+// and so never returns while the replay has one it has yet to finish.
+func learnedFold(s store) func() error {
+	if ls, ok := s.(*logStore); ok {
+		return ls.flush
+	}
+
+	return nil
+}
+
+// replayedFoldErrors replays the recording at path against a fresh store of
+// the given kind with a fold that fails with errBoom on its failAt'th call
+// (never, for 0). It returns the number of folds the replay ran if it then
+// failed with that error, or ran them all with no error; -1 otherwise.
+func replayedFoldErrors(t *testing.T, ctx context.Context, kind storeKind, path string, failAt int) int {
+	t.Helper()
+
+	replayTo, _ := openTestStore(t, ctx, kind)
+
+	var folds int
+
+	rp := newReplayer(ctx, replayTo)
+	rp.fold = func() error {
+		folds++
+		if folds == failAt {
+			return errBoom
+		}
+
+		return nil
+	}
+
+	_, err := rp.replayFile(path)
+	if (failAt == 0 && err == nil) || (failAt > 0 && errors.Is(err, errBoom)) {
+		return folds
+	}
+
+	return -1
+}
+
+// foldedRunToCompletion is recordRunToCompletion followed by a flush of inner,
+// the store s records, so that its learned requirements include job's sample:
+// the log store learns a sample only once its folder folds it, which lags the
+// archive (spec D1), where bbolt learns it as it archives. A flush is not a
+// store call, so it is not recorded.
+func foldedRunToCompletion(s, inner store, job *Job, i int) {
+	recordRunToCompletion(s, job, i)
+	So(inspectorOf(inner).flush(), ShouldBeNil)
+}
+
+// recordLearnedReadBetweenArchives records to path, against bbolt, which learns
+// a sample as it archives: an archive, a load of its ReqGroup's learned
+// requirements, and a second archive of a higher peak RAM, the last call.
+func recordLearnedReadBetweenArchives(t *testing.T, ctx context.Context, path string) {
+	t.Helper()
+
+	s := openRecordingStoreIn(t, ctx, storeKindBolt, path)
+
+	jobs := learnedTestJobs(100, 300)
+	_, err := s.storeNewJobsGuarded(ctx, jobs, false, nil)
+	So(err, ShouldBeNil)
+
+	recordRunToCompletion(s, jobs[0], 0)
+	So(s.refreshReqGroupRecs(learnedTestReqGroup).RAM, ShouldEqual, 100)
+	recordRunToCompletion(s, jobs[1], 1)
+	So(s.close(ctx), ShouldBeNil)
+}
+
 // TestStoreReplay replays the recording named by WR_STORE_REPLAY against a
-// fresh store of each kind WR_TEST_STORE selects. It is the A5 gate's runner,
-// and skips when WR_STORE_REPLAY is unset.
+// fresh store of each kind WR_TEST_STORE selects, folding it before each probe
+// of learned requirements as spec A5 says. It is the A5 gate's runner, and
+// skips when WR_STORE_REPLAY is unset.
 func TestStoreReplay(t *testing.T) {
 	path := os.Getenv(storeReplayEnv)
 	if path == "" || runnermode || servermode {
@@ -93,7 +244,7 @@ func TestStoreReplay(t *testing.T) {
 			storeKindName(kind)), t, func() {
 			replayTo, _ := openTestStore(t, ctx, kind)
 
-			stats, err := replayRecording(ctx, path, replayTo)
+			stats, err := replayRecordingFolding(ctx, path, replayTo, replayTo)
 			t.Logf("replayed %d calls, %d skipped, %d mismatches", stats.calls, stats.skipped,
 				len(stats.mismatches))
 			So(err, ShouldBeNil)
@@ -158,7 +309,7 @@ func TestStoreRecordReplay(t *testing.T) {
 			Convey("replayed against a fresh store, every call replays with no skip or mismatch", func() {
 				replayTo, _ := openTestStore(t, ctx, kind)
 
-				stats, err := replayRecording(ctx, path, replayTo)
+				stats, err := replayRecordingFolding(ctx, path, replayTo, replayTo)
 				So(err, ShouldBeNil)
 				So(stats.calls, ShouldEqual, len(methods))
 				So(stats.skipped, ShouldEqual, 0)
@@ -169,7 +320,7 @@ func TestStoreRecordReplay(t *testing.T) {
 				"the first mismatch is that call", func() {
 				replayTo, _ := openTestStore(t, ctx, kind)
 
-				stats, err := replayRecording(ctx, path, dropLastCompleteStore{store: replayTo})
+				stats, err := replayRecordingFolding(ctx, path, dropLastCompleteStore{store: replayTo}, replayTo)
 				So(err, ShouldBeNil)
 				So(stats.mismatches, ShouldNotBeEmpty)
 				So(stats.mismatches[0].Method, ShouldEqual, "retrieveCompleteJobsByKeys")
@@ -179,7 +330,7 @@ func TestStoreRecordReplay(t *testing.T) {
 				"the first mismatch is that call", func() {
 				replayTo, _ := openTestStore(t, ctx, kind)
 
-				stats, err := replayRecording(ctx, path, unaskedQuestions()[0].asking(replayTo))
+				stats, err := replayRecordingFolding(ctx, path, unaskedQuestions()[0].asking(replayTo), replayTo)
 				So(err, ShouldBeNil)
 				So(stats.mismatches, ShouldNotBeEmpty)
 				So(stats.mismatches[0].Method, ShouldEqual, "resolveDependencies")
@@ -193,7 +344,7 @@ func TestStoreRecordReplay(t *testing.T) {
 				for _, question := range questions {
 					replayTo, _ := openTestStore(t, ctx, kind)
 
-					stats, err := replayRecording(ctx, path, question.asking(replayTo))
+					stats, err := replayRecordingFolding(ctx, path, question.asking(replayTo), replayTo)
 					So(err, ShouldBeNil)
 
 					got = append(got, mismatchedMethods(stats))
@@ -207,16 +358,16 @@ func TestStoreRecordReplay(t *testing.T) {
 				"the mismatches are those calls", func() {
 				replayTo, _ := openTestStore(t, ctx, kind)
 
-				stats, err := replayRecording(ctx, path, notWrittenArchiveStore{store: replayTo})
+				stats, err := replayRecordingFolding(ctx, path, notWrittenArchiveStore{store: replayTo}, replayTo)
 				So(err, ShouldBeNil)
 				So(mismatchedMethods(stats), ShouldResemble, []string{"archiveCompletion"})
 			})
 
-			Convey("replayed against a store whose prepareJobChange returns no handle, "+
-				"the first mismatch is that call", func() {
+			Convey("replayed against a store whose prepareJobChange answers a handle where the recording "+
+				"has none, or none where it has one, the first mismatch is that call", func() {
 				replayTo, _ := openTestStore(t, ctx, kind)
 
-				stats, err := replayRecording(ctx, path, noChangeAheadStore{store: replayTo})
+				stats, err := replayRecordingFolding(ctx, path, flippedChangeAheadStore{store: replayTo}, replayTo)
 				So(err, ShouldBeNil)
 				So(stats.mismatches, ShouldNotBeEmpty)
 				So(stats.mismatches[0].Method, ShouldEqual, "prepareJobChange")
@@ -226,7 +377,7 @@ func TestStoreRecordReplay(t *testing.T) {
 				"the mismatch is that call", func() {
 				replayTo, _ := openTestStore(t, ctx, kind)
 
-				stats, err := replayRecording(ctx, path, boomRepGroupsStore{store: replayTo})
+				stats, err := replayRecordingFolding(ctx, path, boomRepGroupsStore{store: replayTo}, replayTo)
 				So(err, ShouldBeNil)
 				So(mismatchedMethods(stats), ShouldResemble, []string{recordRepGroupsMethod})
 			})
@@ -235,7 +386,7 @@ func TestStoreRecordReplay(t *testing.T) {
 				func() {
 					replayTo, _ := openTestStore(t, ctx, kind)
 
-					stats, err := replayRecording(ctx, path, reversingStore{store: replayTo})
+					stats, err := replayRecordingFolding(ctx, path, reversingStore{store: replayTo}, replayTo)
 					So(err, ShouldBeNil)
 					So(stats.mismatches, ShouldBeEmpty)
 				})
@@ -244,6 +395,7 @@ func TestStoreRecordReplay(t *testing.T) {
 				replayTo, _ := openTestStore(t, ctx, kind)
 
 				rp := newReplayer(ctx, replayTo)
+				rp.fold = learnedFold(replayTo)
 				stats, err := rp.replayFile(path)
 				So(err, ShouldBeNil)
 				So(stats.mismatches, ShouldBeEmpty)
@@ -275,7 +427,7 @@ func TestStoreRecordReplay(t *testing.T) {
 
 				replayTo, _ := openTestStore(t, ctx, kind)
 
-				stats, err := replayRecording(ctx, path, replayTo)
+				stats, err := replayRecordingFolding(ctx, path, replayTo, replayTo)
 				So(err, ShouldBeNil)
 				So(stats.calls, ShouldEqual, len(methods)-1)
 				So(stats.mismatches, ShouldBeEmpty)
@@ -320,7 +472,7 @@ func recordWorkloadTo(t *testing.T, ctx context.Context, kind storeKind, path st
 	t.Helper()
 
 	s := openRecordingStoreIn(t, ctx, kind, path)
-	recordWorkload(ctx, s)
+	recordWorkload(ctx, s, kind)
 	So(s.close(ctx), ShouldBeNil)
 }
 
@@ -345,10 +497,9 @@ func openRecordingStoreIn(t *testing.T, ctx context.Context, kind storeKind, pat
 // completions with a fixed cutoff, by key), kicks a buried job through
 // prepareJobChange and queueJobChangeAhead, discards and moves changes ahead,
 // makes a guarded add, spends an archived-bytes budget and resolves the
-// dependencies of two jobs.
-//
-
-func recordWorkload(ctx context.Context, s store) {
+// dependencies of two jobs. s is a recordingStore wrapping a store of the given
+// kind.
+func recordWorkload(ctx context.Context, s store, kind storeKind) {
 	_, _, err := s.recoverIncompleteJobs()
 	So(err, ShouldBeNil)
 	So(s.upgradedOnOpen(), ShouldBeFalse)
@@ -404,12 +555,26 @@ func recordWorkload(ctx context.Context, s store) {
 
 	So(s.modifyLiveJobs(ctx, oldKeys, modified), ShouldBeNil)
 
-	recordChangesAhead(ctx, s, b)
+	recordChangesAhead(ctx, s, kind, b)
 	recordHistoryReads(ctx, s, a)
 	recordGuardedAdd(ctx, s, b[30], b[31])
+
+	// the log store learns a sample only once its folder folds it (spec D1),
+	// so without this flush the reads below see however many of a's samples
+	// the folder has folded by then, a value a folding replay never notes. A
+	// flush is not a store call, so it is not recorded.
+	recording, ok := s.(*recordingStore)
+	So(ok, ShouldBeTrue)
+	So(inspectorOf(recording.s).flush(), ShouldBeNil)
 	recordReqGroupCalls(s, a)
 
-	So(s.backup(io.Discard), ShouldBeNil)
+	if kind == storeKindLog {
+		// the log store makes no backups until items 1f.3 and 1f.5, which
+		// make this a backup that succeeds, as bbolt's does.
+		So(s.backup(io.Discard), ShouldWrap, errLogStoreBackup)
+	} else {
+		So(s.backup(io.Discard), ShouldBeNil)
+	}
 
 	b[24].RerunAfterRun = true
 	So(s.storeRunningRerunMarks([]*Job{b[24]}), ShouldBeNil)
@@ -472,20 +637,24 @@ func recordJobExits(ctx context.Context, s store, b []*Job) {
 
 // recordChangesAhead kicks buried b[20] through prepareJobChange and
 // queueJobChangeAhead, prepares and discards a kick of b[21], and moves a change
-// prepared for b[42] onto a job replacing it.
-func recordChangesAhead(ctx context.Context, s store, b []*Job) {
+// prepared for b[42] onto a job replacing it. bbolt returns a handle from each
+// prepare and move, so its recording maps handles; the log store returns none
+// (spec, The store interface), so its recording holds nil ones.
+func recordChangesAhead(ctx context.Context, s store, kind storeKind, b []*Job) {
+	handle := shouldBeChangeAheadHandle(kind)
+
 	ahead := s.prepareJobChange(ctx, b[20], recordKickChange)
-	So(ahead, ShouldNotBeNil)
+	So(ahead, handle)
 	s.queueJobChangeAhead(ctx, b[20], ahead, recordKickChange)
 
 	discarded := s.prepareJobChange(ctx, b[21], recordKickChange)
-	So(discarded, ShouldNotBeNil)
+	So(discarded, handle)
 	s.discardJobChangeAhead(b[21], discarded)
 
 	replacement := testDBJob("echo record b 42 replacement", recordTestRepGroupB)
 	moving := s.prepareJobChange(ctx, b[42], recordKickChange)
 	moved := s.moveJobChangeAhead(b[42], replacement, moving)
-	So(moved, ShouldNotBeNil)
+	So(moved, handle)
 	s.queueJobChangeAhead(ctx, replacement, moved, recordKickChange)
 }
 
@@ -634,14 +803,6 @@ func recordHistoryReads(ctx context.Context, s store, a []*Job) {
 	_ = ctx
 }
 
-const (
-	// recordNeverAsked is the question an askingStore asks.
-	recordNeverAsked = "record-never-asked"
-
-	// recordRepGroupsMethod is the recorded method name of retrieveRepGroups.
-	recordRepGroupsMethod = "retrieveRepGroups"
-)
-
 // askingStore is a store that asks a question before resolving dependencies
 // or before reading the oldest complete jobs, through askGroups or askQuery when
 // set: a store that asks what the recorded one did not.
@@ -710,9 +871,6 @@ func (n notWrittenArchiveStore) archiveCompletion(key string, job *Job) (archive
 	return archiveNotWritten, err
 }
 
-// errBoom is the error boomRepGroupsStore adds.
-var errBoom = errors.New("boom")
-
 // boomRepGroupsStore is a store whose retrieveRepGroups returns its groups
 // with an error: a store that fails where the recorded one did not.
 type boomRepGroupsStore struct {
@@ -758,19 +916,6 @@ func (r reversingStore) resolveDependencies(ctx context.Context, jobs []*Job,
 	return resolved, err
 }
 
-// noChangeAheadStore is a store whose prepareJobChange discards the handle it
-// prepared and returns none: a store that answers a handle where the recorded
-// one gave none.
-type noChangeAheadStore struct {
-	store
-}
-
-func (n noChangeAheadStore) prepareJobChange(ctx context.Context, job *Job, change func(*Job)) *jobChangeAhead {
-	n.discardJobChangeAhead(job, n.store.prepareJobChange(ctx, job, change))
-
-	return nil
-}
-
 // mismatchedMethods returns the methods of stats' mismatches, sorted, each
 // once.
 func mismatchedMethods(stats replayStats) []string {
@@ -786,7 +931,8 @@ func mismatchedMethods(stats replayStats) []string {
 
 // handleNotingStore is a store that notes, by job key, the handle each
 // prepareJobChange returned, and whether each queueJobChangeAhead was given the
-// handle its own job's prepareJobChange returned.
+// handle its own job's prepareJobChange returned (none, for a store that
+// prepares none).
 type handleNotingStore struct {
 	store
 
@@ -803,7 +949,7 @@ func (h *handleNotingStore) prepareJobChange(ctx context.Context, job *Job, chan
 
 func (h *handleNotingStore) queueJobChangeAhead(ctx context.Context, job *Job, ahead *jobChangeAhead,
 	change func(*Job)) {
-	h.queued[job.Key()] = ahead != nil && ahead == h.prepared[job.Key()]
+	h.queued[job.Key()] = ahead == h.prepared[job.Key()]
 	h.store.queueJobChangeAhead(ctx, job, ahead, change)
 }
 
@@ -845,6 +991,11 @@ func TestStoreReplayChangeHandles(t *testing.T) {
 					So(stats.mismatches, ShouldBeEmpty)
 					So(noting.prepared, ShouldHaveLength, 2)
 					So(noting.queued, ShouldResemble, map[string]bool{first.Key(): true, second.Key(): true})
+
+					handle := shouldBeChangeAheadHandle(kind)
+
+					So(noting.prepared[first.Key()], handle)
+					So(noting.prepared[second.Key()], handle)
 
 					inspector := inspectorOf(replayTo)
 					So(inspector.flush(), ShouldBeNil)
@@ -946,7 +1097,7 @@ func TestStoreRecordServe(t *testing.T) {
 
 					replayTo, _ := openTestStore(t, ctx, kind)
 
-					stats, err := replayRecording(ctx, path, replayTo)
+					stats, err := replayRecordingFolding(ctx, path, replayTo, replayTo)
 					So(err, ShouldBeNil)
 					So(stats.calls, ShouldEqual, len(methods))
 					So(stats.mismatches, ShouldBeEmpty)
@@ -1145,10 +1296,6 @@ func TestStoreReplayOverlap(t *testing.T) {
 	})
 }
 
-// pausingArchiveWait is the longest a pausingArchiveStore or its test waits
-// for the other: far longer than one archive takes.
-const pausingArchiveWait = 10 * time.Second
-
 // pausingArchiveStore is a store whose archiveCompletion, having archived,
 // closes archived and waits for release to be closed before it returns.
 type pausingArchiveStore struct {
@@ -1197,28 +1344,6 @@ func (b buriedStatusStore) retrieveCompleteJobStatusByRepGroup(repgroup string,
 	return status, err
 }
 
-const (
-	// recordCachedMethod and recordRefreshMethod are the recorded method names
-	// of cachedReqGroupRecs and refreshReqGroupRecs.
-	recordCachedMethod  = "cachedReqGroupRecs"
-	recordRefreshMethod = "refreshReqGroupRecs"
-
-	// learnedTestReqGroup is the ReqGroup of the jobs the learned-requirements
-	// recordings archive.
-	learnedTestReqGroup = "record-learned"
-
-	// learnedTestInterval is the refresh interval recordLearnedThrottled sets
-	// and then sleeps past, as a manager's clock passes it between two loads,
-	// so that its recording loads where a replay at full speed would not.
-	learnedTestInterval = 500 * time.Millisecond
-
-	// learnedTestLoadDelay is how long each load of learned requirements takes
-	// while recordLearnedBetweenWrites's recording replays: far longer than a
-	// replay takes to reach its next calls, so that a load the replay starts in
-	// the background cannot finish before them.
-	learnedTestLoadDelay = 100 * time.Millisecond
-)
-
 func TestStoreReplayLearned(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -1237,7 +1362,7 @@ func TestStoreReplayLearned(t *testing.T) {
 			replayedTo := func(wrap func(store) store) replayStats {
 				replayTo, _ := openTestStore(t, ctx, kind)
 
-				stats, err := replayRecording(ctx, path, wrap(replayTo))
+				stats, err := replayRecordingFolding(ctx, path, wrap(replayTo), replayTo)
 				So(err, ShouldBeNil)
 
 				return stats
@@ -1283,6 +1408,44 @@ func TestStoreReplayLearned(t *testing.T) {
 				stats := replayedTo(func(s store) store { return fixedStampStore{store: s} })
 				So(mismatchedMethods(stats), ShouldResemble, []string{"reqStatChanges"})
 			})
+
+			Convey("replayed with a fold that fails, whichever fold it is, the replay fails with the fold's error",
+				func() {
+					folds := replayedFoldErrors(t, ctx, kind, path, 0)
+					So(folds, ShouldBeGreaterThan, 1)
+
+					var unreported int
+
+					for n := 1; n <= folds; n++ {
+						if replayedFoldErrors(t, ctx, kind, path, n) != n {
+							unreported++
+						}
+					}
+
+					So(unreported, ShouldEqual, 0)
+				})
+		})
+
+		Convey(fmt.Sprintf("Given a bolt recording that read learned requirements between two archives, replayed "+
+			"against a %s store whose folder is paused", storeKindName(kind)), t, func() {
+			path := filepath.Join(t.TempDir(), "last-write.rec")
+			recordLearnedReadBetweenArchives(t, ctx, path)
+
+			pauseLogFolder()
+
+			replayTo, _ := openTestStore(t, ctx, kind)
+
+			rp := newReplayer(ctx, replayTo)
+			rp.fold = learnedFold(replayTo)
+			stats, err := rp.replayFile(path)
+			So(err, ShouldBeNil)
+			So(stats.mismatches, ShouldBeEmpty)
+
+			Convey("the latest learned value it noted after the last archive is the store's", func() {
+				So(inspectorOf(replayTo).flush(), ShouldBeNil)
+				So(rp.learned.isLatest(learnedTestReqGroup, replayTo.refreshReqGroupRecs(learnedTestReqGroup)),
+					ShouldBeTrue)
+			})
 		})
 
 		Convey(fmt.Sprintf("Given a %s recording whose ReqGroups were first named by a cache read, a warm and a "+
@@ -1323,7 +1486,7 @@ func replayedWithSlowLoads(t *testing.T, ctx context.Context, kind storeKind, pa
 
 	Reset(func() { reqStatLoadHook = nil })
 
-	stats, err := replayRecording(ctx, path, replayTo)
+	stats, err := replayRecordingFolding(ctx, path, replayTo, replayTo)
 	So(err, ShouldBeNil)
 
 	return stats.mismatches
@@ -1348,18 +1511,23 @@ func learnedTestJobs(peakRAMs ...int) []*Job {
 // interval, archives another job of a higher peak RAM and loads them again,
 // then reads them from the cache and reads the change stamp.
 func recordLearnedThrottled(ctx context.Context, s store) {
+	recording, ok := s.(*recordingStore)
+	So(ok, ShouldBeTrue)
+
+	inner := recording.s
+
 	s.setReqStatRefreshInterval(learnedTestInterval)
 
 	jobs := learnedTestJobs(100, 300)
 	_, err := s.storeNewJobsGuarded(ctx, jobs, false, nil)
 	So(err, ShouldBeNil)
 
-	recordRunToCompletion(s, jobs[0], 0)
+	foldedRunToCompletion(s, inner, jobs[0], 0)
 	So(s.refreshReqGroupRecs(learnedTestReqGroup).RAM, ShouldEqual, 100)
 
 	time.Sleep(learnedTestInterval)
 
-	recordRunToCompletion(s, jobs[1], 1)
+	foldedRunToCompletion(s, inner, jobs[1], 1)
 	So(s.refreshReqGroupRecs(learnedTestReqGroup).RAM, ShouldEqual, 300)
 
 	rec, current := s.cachedReqGroupRecs(learnedTestReqGroup)
@@ -1385,9 +1553,9 @@ func recordLearnedBetweenWrites(t *testing.T, ctx context.Context, kind storeKin
 	_, err = s.storeNewJobsGuarded(ctx, jobs, false, nil)
 	So(err, ShouldBeNil)
 
-	recordRunToCompletion(s, jobs[0], 0)
+	foldedRunToCompletion(s, inner, jobs[0], 0)
 	So(s.refreshReqGroupRecs(learnedTestReqGroup).RAM, ShouldEqual, 100)
-	recordRunToCompletion(s, jobs[1], 1)
+	foldedRunToCompletion(s, inner, jobs[1], 1)
 
 	loading, release := make(chan struct{}), make(chan struct{})
 	reqStatLoadHook = func(string) error {
@@ -1404,13 +1572,13 @@ func recordLearnedBetweenWrites(t *testing.T, ctx context.Context, kind storeKin
 
 	reqStatLoadHook = nil
 
-	recordRunToCompletion(s, jobs[2], 2)
+	foldedRunToCompletion(s, inner, jobs[2], 2)
 	close(release)
 	So(cacheBecomes(inner, learnedTestReqGroup, func(rec *jqs.Requirements, _ bool) bool {
 		return rec != nil && rec.RAM == 500
 	}), ShouldBeTrue)
 
-	recordRunToCompletion(s, jobs[3], 3)
+	foldedRunToCompletion(s, inner, jobs[3], 3)
 
 	rec, current := s.cachedReqGroupRecs(learnedTestReqGroup)
 	So(rec.RAM, ShouldEqual, 500)
@@ -1439,16 +1607,16 @@ func recordLearnedFirstReads(t *testing.T, ctx context.Context, kind storeKind, 
 	_, err = s.storeNewJobsGuarded(ctx, jobs, false, nil)
 	So(err, ShouldBeNil)
 
-	recordRunToCompletion(s, jobs[0], 0)
-	recordRunToCompletion(s, jobs[2], 2)
-	recordRunToCompletion(s, jobs[3], 3)
+	foldedRunToCompletion(s, inner, jobs[0], 0)
+	foldedRunToCompletion(s, inner, jobs[2], 2)
+	foldedRunToCompletion(s, inner, jobs[3], 3)
 
 	rec, current := s.cachedReqGroupRecs(unloaded)
 	So(rec, ShouldBeNil)
 	So(current, ShouldBeFalse)
 
 	s.warmReqGroupRecs(jobs[1:2])
-	recordRunToCompletion(s, jobs[1], 1)
+	foldedRunToCompletion(s, inner, jobs[1], 1)
 
 	rec, current = s.cachedReqGroupRecs(warmed)
 	So(rec.RAM, ShouldEqual, 100)

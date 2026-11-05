@@ -1555,21 +1555,23 @@ func (s *logStore) jobOf(spec, state []byte) (*Job, error) {
 	return job, nil
 }
 
-// checkIfLive tells you if the keyed job is live.
+// checkIfLive tells you if the keyed job is live. A key no job can have is not
+// live, as in bbolt, rather than an error: callers pass keys from clients.
 func (s *logStore) checkIfLive(key string) (bool, error) {
 	k, err := parseLogKey(key)
 	if err != nil {
-		return false, err
+		return false, nil //nolint:nilerr // a malformed key names no job
 	}
 
 	return s.liveKey(k), nil
 }
 
-// checkIfComplete tells you if the keyed job has a history entry.
+// checkIfComplete tells you if the keyed job has a history entry. A key no job
+// can have is not complete (see checkIfLive).
 func (s *logStore) checkIfComplete(key string) (bool, error) {
 	k, err := parseLogKey(key)
 	if err != nil {
-		return false, err
+		return false, nil
 	}
 
 	s.mu.RLock()

@@ -119,7 +119,14 @@ func TestConfigRemovedKnobsAbsentFromSource(t *testing.T) {
 
 			goFiles := 0
 
+			// Other packages' tests make and remove directories in the tree
+			// while this walks it, so a path gone by the time it is read is
+			// skipped: it was not source.
 			err := fs.WalkDir(module, ".", func(path string, d fs.DirEntry, err error) error {
+				if errors.Is(err, fs.ErrNotExist) {
+					return nil
+				}
+
 				if err != nil {
 					return err
 				}
@@ -135,6 +142,10 @@ func TestConfigRemovedKnobsAbsentFromSource(t *testing.T) {
 				goFiles++
 
 				content, err := fs.ReadFile(module, path)
+				if errors.Is(err, fs.ErrNotExist) {
+					return nil
+				}
+
 				if err != nil {
 					return err
 				}

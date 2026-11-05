@@ -302,7 +302,7 @@ func TestStoreInspector(t *testing.T) {
 					So(found, ShouldBeFalse)
 				})
 
-				Convey("a forced backup holds what the store held when it was made", func() {
+				conveyNeedingBackup(kind)("a forced backup holds what the store held when it was made", func() {
 					So(inspector.forceBackup(), ShouldBeNil)
 
 					backup, closeBackup, errb := openStoreFileInspector(filepath.Join(dir, testStoreBackupFile))
@@ -348,8 +348,8 @@ func TestStoreInspector(t *testing.T) {
 }
 
 // forEachStore runs fn once for the store kind named by the WR_TEST_STORE env
-// var ("bolt", the default until the log store exists), or for every kind when
-// it is "all". An unknown kind, or one not yet implemented, fails the test.
+// var ("bolt", the default until item 1f.11 switches it to "log"), or for every
+// kind when it is "all". An unknown kind fails the test.
 func forEachStore(t *testing.T, fn func(kind storeKind)) {
 	t.Helper()
 
@@ -363,10 +363,12 @@ func testStoreKinds(t *testing.T) []storeKind {
 	t.Helper()
 
 	switch name := os.Getenv(testStoreEnv); name {
-	case "", "bolt", "all":
+	case "", "bolt":
 		return []storeKind{storeKindBolt}
 	case "log":
-		t.Fatalf("%s=log: the log store is not implemented yet", testStoreEnv)
+		return []storeKind{storeKindLog}
+	case "all":
+		return []storeKind{storeKindBolt, storeKindLog}
 	default:
 		t.Fatalf("%s=%q: want bolt, log or all", testStoreEnv, name)
 	}
@@ -422,6 +424,17 @@ func testDBJob(cmd, repGroup string) *Job {
 		},
 		RepGroup: repGroup,
 	}
+}
+
+// conveyNeedingBackup returns Convey for a test of kind's backups, or for one
+// that needs a backup to start from, or SkipConvey for the log store, which
+// makes no backups until items 1f.3 and 1f.5; they un-skip these tests.
+func conveyNeedingBackup(kind storeKind) func(items ...any) {
+	if kind == storeKindLog {
+		return SkipConvey
+	}
+
+	return Convey
 }
 
 // inspector returns s's store as a storeInspector.

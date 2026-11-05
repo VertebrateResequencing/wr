@@ -69,9 +69,11 @@ first bbolt replay are in
 against the log store with 0 mismatches, removed methods mapped or
 skipped as A5 says, and pass the A2 suite with `WR_TEST_STORE=all`. The
 replay folds (the D1 flush hook) before each learned-requirements probe,
-as A5 says. Those forced folds hide fold-liveness bugs (a folder that
-stalls or never folds without the hook), so D1's tests must cover fold
-liveness; this replay cannot.
+as A5 says; 1e.5 added this as `replayRecordingFolding`
+(`jobqueue/store_record_test.go`), which `TestStoreReplay` uses. Those
+forced folds hide fold-liveness bugs (a folder that stalls or never folds
+without the hook), so D1's tests must cover fold liveness; this replay
+cannot.
 
 - [ ] implemented
 - [ ] reviewed

@@ -139,6 +139,8 @@ called ready, or explicitly deferred with the owner.
   bbolt file at the store path (1f.2), and 9 `forEachStore` tests fail
   with `WR_TEST_STORE=all` (`TestStoreCrash` among them); the switch is
   reverted until those land or are pulled forward.
+  1e.5 made `WR_TEST_STORE=all` run the log store: those 9 now pass on it,
+  with the leaves that need a backup (1f.3, 1f.5) skipped there.
 - [x] (from 0b.1 review) F5 broke the `reliability_repro` build:
   `envIntDefault` and `reliable4GiB` were defined only in the listed
   `reliable4_backup_repro_test.go`. Done in 0b.1: both moved to
@@ -841,7 +843,7 @@ called ready, or explicitly deferred with the owner.
   Done in 1e.4: both; with both modify paths made no-ops the new
   assertion fails on kept keys (scratch-copy mutant).
 
-- [ ] (from 1e.4 review round 2) `TestConfigRemovedKnobsAbsentFromSource`
+- [x] (from 1e.4 review round 2) `TestConfigRemovedKnobsAbsentFromSource`
   (`internal/config_test.go:123`) fails when another package's test
   removes a directory in the module tree during the walk (e.g.
   `jobqueue/scheduler/scheduler_test.go:1377` makes and removes
@@ -850,10 +852,74 @@ called ready, or explicitly deferred with the owner.
   `-count=100` with such directories churning, on the 1e.4 tree and on
   1e.2's. Owner: 1e.5: ignore `fs.ErrNotExist` in the callback, with a
   red test first.
+  Done in 1e.5: the callback, and its read of each `.go` file, skip a
+  path that is gone. Red: 44 of 100 runs failed with a script making and
+  removing directories in the module tree; green: 0 of 100 under the same
+  churn.
 
-- [ ] (from 1e.4 review round 2) `jobqueue/store.go:42` still says "until
+- [x] (from 1e.4 review round 2) `jobqueue/store.go:42` still says "until
   item 1e.4 makes the log store the default" (now 1f.11); and in the bolt
   branch of `startAbandonTestManager` (`jobqueue/store_reserve_test.go`)
   `Reset(drains.uninstall)` is registered after the manager starts, so a
   failed start leaves `bestEffortSwappedHook` installed. Owner: 1e.5.
+  Done in 1e.5: the comment names 1f.11; `startReserveTestManagerThen`
+  registers one `Reset`, before the manager starts, that stops the
+  manager if it started and then calls `afterStop`, which the bolt branch
+  passes `drains.uninstall`, so the hook goes on a failed start too and
+  still only after every store is closed.
 
+- [ ] (from 1e.5) The log store makes no backups yet, so with
+  `WR_TEST_STORE=all` or `log` these skip on it (`conveyNeedingBackup`,
+  `jobqueue/store_inspect_test.go`): `TestStoreInspector`'s "a forced
+  backup holds what the store held" leaf and all of
+  `TestStoreCorruptRestoredFromBackup`. `storeLockSeeded`
+  (`jobqueue/store_lock_test.go`) backs up only bbolt, whose backup
+  `TestStoreCorruptRestoredFromBackup` restores and `TestStoreOpenLocked`
+  checks a locked-out open leaves alone. `recordWorkload`
+  (`jobqueue/store_record_test.go`) requires the log store's `backup` to
+  fail with `errLogStoreBackup`. Owner: 1f.3 and 1f.5 (E4, E5): make
+  `conveyNeedingBackup` return `Convey` for every kind, make
+  `storeLockSeeded` back up every kind, and require `backup` to succeed in
+  `recordWorkload`.
+
+- [x] (from 1e.5) A replay against the log store must fold before each
+  probe of its learned requirements (spec A5), or every replay leaf of
+  `TestStoreReplayLearned` (`jobqueue/store_record_test.go`) mismatches on
+  it. The test wrappers there embed `store`, so a replayer cannot find the
+  log store's `foldNow` through them by a type assertion. Owner: 1g.2.
+  Done in 1e.5: the replayer's `fold`, if set, runs before each probe
+  (once per write for `probeAllLearned`), and its error fails the replay;
+  `replayRecordingFolding` sets it to the inner store's `flush`. The
+  leaves run on both stores; with no fold, 8 of the 9 fail on the log
+  store (the alternating-refresh leaf still finds its mismatch).
+
+- [ ] (from 1e.5) After damage that truncates the wal before the folder's
+  position, a job already folded into `history.bolt` can recover both
+  complete (from history) and live at an earlier state (from older wal
+  records). A SIGKILL cannot produce this, and A4 test 2 does not check
+  for it. Owner: 1f.4 (E2): decide what recovery does when history holds
+  a key the replayed wal also holds live, and test it with damage that
+  cuts the wal before the folded position.
+
+- [ ] (from 1e.5 review) A last wal file whose header is full length but
+  fails its CRC, with records after it, is taken as torn and removed with
+  only a warning (`settleWALEnd`, `case limit < 0 && end == 0`, and
+  `walHeader` in `jobqueue/store_recover.go`). Flipping one byte at
+  offset 12 of an 8972-byte wal holding 50 acked adds, the reopen
+  succeeded and recovered 0 of the 50. A crash cannot do this, since no
+  record is written before its header is durable, so spec Recovery step
+  4's "holds nothing durable" is wrong when bytes follow the header.
+  Owner: 1f.4 (E2): with a red test first, make a whole-length header that
+  fails its CRC with bytes after it `errStoreCorrupt` (restore from
+  backup), count only a short or zero-filled header as torn, and amend
+  Recovery step 4.
+
+- [ ] (from 1e.5 review round 3) Log-store methods other than
+  `checkIfComplete` and `checkIfLive` that take keys through
+  `parseLogKeys` (for example `retrieveCompleteJobsByKeys` in
+  `jobqueue/store_log.go`) return an error for a malformed key, where
+  bbolt returns no match. Also `checkIfComplete` lacks the
+  `//nolint:nilerr` that `checkIfLive` carries on the same
+  `return false, nil`; make the two match. Owner: 1f.11 (the switch):
+  trace whether a client can pass these methods unchecked keys, and if so
+  match bbolt with a test on both stores.
