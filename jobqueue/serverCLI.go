@@ -2124,6 +2124,9 @@ func (s *Server) pauseForModify(ctx context.Context) (string, string, bool) {
 // changes and preparing the modified ready jobs again, and returns the old->new
 // key mapping plus any error strings.
 func (s *Server) modifyJobs(ctx context.Context, cr *clientRequest) (map[string]string, string, string) {
+	s.modifyMutex.Lock()
+	defer s.modifyMutex.Unlock()
+
 	toModifyJobs, toModifyKeys := s.collectModifiableJobs(cr.Keys)
 
 	modified, err := cr.Modifier.Modify(toModifyJobs, s)
@@ -2203,6 +2206,10 @@ func (s *Server) persistModifiedJobs(ctx context.Context, cr *clientRequest,
 	s.holdBringBacks(rekeyed)
 
 	defer s.releaseBringBacks(ctx, rekeyed)
+
+	if modifyAppliedHook != nil {
+		modifyAppliedHook()
+	}
 
 	s.changeModifiedJobKeys(ctx, modified, toModify)
 

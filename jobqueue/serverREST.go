@@ -2220,6 +2220,9 @@ func (s *Server) modifyJobsByKeys(ctx context.Context, keys []string,
 		clog.Debug(ctx, "rest modify requested, paused server")
 	}
 
+	s.modifyMutex.Lock()
+	defer s.modifyMutex.Unlock()
+
 	toModifyJobs, toModifyKeys := s.editableQueueJobs(keys)
 
 	modified, err = modifier.Modify(toModifyJobs, s)
@@ -2282,6 +2285,10 @@ func (s *Server) storeModifiedJobs(ctx context.Context, modified map[string]stri
 	s.holdBringBacks(rekeyed)
 
 	defer s.releaseBringBacks(ctx, rekeyed)
+
+	if modifyAppliedHook != nil {
+		modifyAppliedHook()
+	}
 
 	if err := s.changeModifiedQueueKeys(modified, jobs); err != nil {
 		return err

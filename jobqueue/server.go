@@ -464,6 +464,14 @@ var archiveCommittedHook func(key string)
 //nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
 var dependentReadHook func(key string)
 
+// modifyAppliedHook, if non-nil, is called by a modify whose modifier changed
+// some jobs in memory, at the last point before it changes their queue keys and
+// persists them, so a test can run another modify in between. It is a test-only
+// seam and is nil in production.
+//
+//nolint:gochecknoglobals // deliberate test seam, mirroring deleteOnFailureHook
+var modifyAppliedHook func()
+
 // archiveRemovedHook, if non-nil, is called with a job's key by an archive that
 // has removed that job's queue item, before it drops the job's dep group
 // memberships and rep group lookup, so a test can have an add bring the job back
@@ -1804,6 +1812,13 @@ type Server struct {
 	// Under it only a bolt read transaction and the limiter's own lock are
 	// taken, and nothing holding either takes it.
 	lgmutex sync.Mutex
+	// modifyMutex is held by each modification from collecting its jobs to
+	// persisting and preparing them. A modify that changes a job's key while
+	// another is between those steps leaves the other's new->old key mapping
+	// naming a key its own lookup does not hold, so that job is changed in
+	// memory but never persisted. It is held before any other lock a modify
+	// holds, and nothing holding it waits on another modify.
+	modifyMutex sync.Mutex
 	sync.Mutex
 	wsmutex  sync.RWMutex
 	up       bool

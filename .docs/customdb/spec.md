@@ -2401,7 +2401,8 @@ As a user, I want two concurrent `wr mod` calls that change keys to persist
 both jobs.
 
 **Package:** `jobqueue/`
-**File:** `jobqueue/server.go`
+**File:** `jobqueue/server.go`, `jobqueue/serverCLI.go`,
+`jobqueue/serverREST.go`
 **Test file:** `jobqueue/store_modify_race_test.go`
 
 **Acceptance tests:**

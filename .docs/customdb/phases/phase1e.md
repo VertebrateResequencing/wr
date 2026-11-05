@@ -80,11 +80,12 @@ acceptance tests from F1 in `internal/config_test.go`.
 spec.md section: F2
 
 Make two concurrent key-changing `wr mod` calls persist both jobs
-(`jobqueue/server.go`, delivery-queue row 15). Cover the 1 acceptance
-test from F2 in `jobqueue/store_modify_race_test.go`.
+(`jobqueue/server.go`, `jobqueue/serverCLI.go`, `jobqueue/serverREST.go`,
+delivery-queue row 15). Cover the 1 acceptance test from F2 in
+`jobqueue/store_modify_race_test.go`.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1e.4: Switch the default store to log
 
@@ -105,6 +106,8 @@ and on an abandon keeping the earlier attempt's details
 ([incidentals.md](incidentals.md)).
 Also resolve the 1e.2 incidental on the source walk skipping
 dot-directories ([incidentals.md](incidentals.md)).
+Also resolve the 1e.3 incidental on `TestStoreModifyRace` asserting
+that keys changed ([incidentals.md](incidentals.md)).
 Switch C5 test 3 (`TestLogStoreRecoverDamage`, 1c.5) from
 `openLogStoreLocked` to `openStore`, as the spec names it.
 

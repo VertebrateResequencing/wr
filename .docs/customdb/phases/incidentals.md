@@ -789,3 +789,11 @@ called ready, or explicitly deferred with the owner.
   `DBBatchSize` and `ReserveWriteWait`, and `jobqueue.ServerDBBatchDelay`
   and `ServerDBBatchSize`. Owner: 2e.2 (F6): list them in the CHANGELOG
   under Changed (removed Go API).
+
+- [ ] (from 1e.3 review round 3) `TestStoreModifyRace`
+  (`jobqueue/store_modify_race_test.go`) never asserts that each round's
+  modifies changed any keys, so a modify that silently did nothing would
+  pass with zero lost persists; and `installModifyRaceEntry` sets
+  `modifyAppliedHook` before registering its `Reset`. Owner: 1e.4: assert
+  each round's keys differ from the keys before it, and register `Reset`
+  first.
