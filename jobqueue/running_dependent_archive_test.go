@@ -200,8 +200,8 @@ func rdaMarkedToRunAgain(t *testing.T, ctx context.Context, kind storeKind, succ
 			rdaSoRunsOnceMore(ctx, d, runner, waiter.Key(), second.Key())
 		})
 
-		// rdrCrash takes its crash image with a backup, which the log store
-		// does not make until item 1f.3.
+		// rdrCrash restarts from its crash image, a backup, at dbFile, which
+		// the log store does not restore until item 1f.4.
 		if kind != storeKindBolt {
 			return
 		}

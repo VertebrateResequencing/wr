@@ -109,8 +109,8 @@ func TestLogStoreInspector(t *testing.T) {
 			So(outcome, ShouldEqual, archiveAlreadyWritten)
 		})
 
-		Convey("it makes no backup yet", func() {
-			So(s.forceBackup(), ShouldWrap, errLogStoreBackup)
+		Convey("it makes no incremental backup yet", func() {
+			So(s.forceBackup(), ShouldWrap, errLogStoreNoForcedBackup)
 		})
 	})
 

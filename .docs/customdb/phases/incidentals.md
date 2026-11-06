@@ -915,6 +915,15 @@ called ready, or explicitly deferred with the owner.
   `conveyNeedingBackup` return `Convey` for every kind, make
   `storeLockSeeded` back up every kind, and require `backup` to succeed in
   `recordWorkload`.
+  Done in 1f.3: `recordWorkload` requires `backup` to succeed, and
+  `storeLockSeeded` backs up every kind, the log store's backup being its
+  self-contained tar (`storeWipeSeeded` swaps that for a copy of the store
+  directory, the backup directory E3 test 1 names). `conveyNeedingBackup`
+  still skips both tests on the log store: restoring the tar
+  `TestStoreCorruptRestoredFromBackup` needs is E2's (owner 1f.4), and the
+  log store's `forceBackup`, an incremental tick, returns
+  `errLogStoreNoForcedBackup` until E4 (owner 1f.5). The last of 1f.4 and
+  1f.5 makes `conveyNeedingBackup` return `Convey` for every kind.
 
 - [x] (from 1e.5) A replay against the log store must fold before each
   probe of its learned requirements (spec A5), or every replay leaf of
@@ -1092,3 +1101,45 @@ called ready, or explicitly deferred with the owner.
   6's "bbolt (meta magic)" to cover either meta page, and test that a bbolt
   file with page 0 zeroed and a backup present converts, or at least is not
   restored over.
+
+- [ ] (from 1f.3) `rdrCrash` (`jobqueue/running_dependent_rerun_test.go`)
+  restarts a manager from a `BackupDB` image written to `dbFile`, which on
+  the log store is now a self-contained tar that only E2 restores, so the
+  crash leaf of `TestRunningDependentRerunArchiveRaces`
+  (`jobqueue/running_dependent_archive_test.go`, "a mark left in its stored
+  record once it is not running is not acted on after a crash") still runs
+  on bbolt only. Owner: 1f.4 (E2 test 3): run that leaf on every store
+  kind, making `rdrSetStoredMark` work on the log store if it does not.
+
+- [ ] (from 1f.3 review round 1) `historyBolt.backup`
+  (`store_history_bolt.go`) holds one `history.bolt` read transaction
+  while `tx.WriteTo` copies the whole file, multi-GB at prod scale, as
+  spec E5 requires. A fold commit that needs a bbolt remap meanwhile waits
+  for that transaction, and since bbolt's mmap lock is an `RWMutex`, every
+  new `history.bolt` reader queues behind the commit until the copy ends:
+  the scheduling cycle's synchronous `refreshReqGroupRecs`
+  (`server.go` ~6817) and status and REST history reads. A remap happens
+  only at mmap growth steps (1GB once large), so the stall is rare and
+  smaller than bbolt's whole-DB version of it. E4's 30s ticks copy
+  `history.bolt` whole under the same kind of transaction. Owner: 1f.5
+  (E4): measure the stall, and bound it if it matters; the phase 1 gate's
+  NFS targets will observe it too.
+
+- [ ] (from 1f.3 review round 1) `Server.handleBackup`
+  (`serverCLI.go`) buffers the whole backup in a `bytes.Buffer` and sends
+  it as one response: multi-GB of manager memory at prod scale, held while
+  the log store's `backup` holds `ckptMu`. bbolt's backup did the same, so
+  this is not a regression. Owner: 1f.4: stream the backup to the client
+  instead if `wr manager backup -p` must work on prod-sized stores.
+
+- [ ] (from 1f.3 review round 3) No test races a backup's start against
+  `close`, so a `startBackup` (`store_backup.go`) that joins
+  `s.backups` without holding `closeMu` survives: a backup starting as
+  close reaches `backups.Wait` could then read files close is removing.
+  Also, the close-during-backup leaf in `store_backup_test.go` waits for
+  `ckptExited` in its hook, so it depends on close stopping the
+  checkpointer before it waits for backups; a close that waits first is
+  not a defect but fails that leaf after a one-minute timeout. Owner: 1f.5
+  (E4, whose final tick changes the same close path): add a leaf that
+  races backup starts against close under `-race`, and loosen the leaf's
+  coupling if 1f.5 reorders close.

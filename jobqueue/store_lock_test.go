@@ -200,9 +200,10 @@ func withStoreLockOpenTimeout() {
 }
 
 // storeLockSeeded creates a closed store of the given kind in a new temporary
-// directory, holding one live job, with a backup of it at the backup path
-// unless the store makes no backups (see conveyNeedingBackup). It returns the
-// directory and the config that opens the store.
+// directory, holding one live job, with a backup of it at the backup path made
+// by the store's backup: a bbolt file, or the log store's self-contained
+// backup (spec E5). It returns the directory and the config that opens the
+// store.
 func storeLockSeeded(ctx context.Context, t *testing.T, kind storeKind) (string, storeConfig) {
 	t.Helper()
 
@@ -219,12 +220,10 @@ func storeLockSeeded(ctx context.Context, t *testing.T, kind storeKind) (string,
 	_, err := s.storeNewJobsGuarded(ctx, []*Job{testDBJob("echo store lock", storeLockRepGroup)}, false, nil)
 	So(err, ShouldBeNil)
 
-	if kind != storeKindLog {
-		backup, errc := os.Create(cfg.dbBkFile)
-		So(errc, ShouldBeNil)
-		So(s.backup(backup), ShouldBeNil)
-		So(backup.Close(), ShouldBeNil)
-	}
+	backup, err := os.Create(cfg.dbBkFile)
+	So(err, ShouldBeNil)
+	So(s.backup(backup), ShouldBeNil)
+	So(backup.Close(), ShouldBeNil)
 
 	So(s.close(ctx), ShouldBeNil)
 

@@ -633,15 +633,16 @@ func TestStoreDevWipe(t *testing.T) {
 	})
 }
 
-// storeWipeSeeded is storeLockSeeded, returning only the config, but with a
-// backup for every store kind: a store that makes no backup yet gets a copy of
-// its directory at the backup path, as a store-directory backup.
+// storeWipeSeeded is storeLockSeeded, returning only the config, but with the
+// log store's backup a backup directory, as spec E3 test 1 has it: its
+// self-contained backup is replaced with a copy of its directory.
 func storeWipeSeeded(ctx context.Context, t *testing.T, kind storeKind) storeConfig {
 	t.Helper()
 
 	_, cfg := storeLockSeeded(ctx, t, kind)
 
 	if kind == storeKindLog {
+		So(os.Remove(cfg.dbBkFile), ShouldBeNil)
 		So(os.CopyFS(cfg.dbBkFile, os.DirFS(cfg.dbFile)), ShouldBeNil)
 	}
 

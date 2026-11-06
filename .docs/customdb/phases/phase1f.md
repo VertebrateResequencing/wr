@@ -77,13 +77,13 @@ Make `backup(w)` and `Client.BackupDB(path)` write one tar file
 (`VERSION`, one `.ckpt`, `.wal` files and history files, here
 `history.bolt`) in `jobqueue/store_backup.go`. Cover both acceptance
 tests from E5; test 1's open and test 2's restore halves depend on 1f.4
-and may be finished there. With 1f.5, resolve the 1e.5 incidental on the
-tests that skip on the log store for want of a backup
-(`conveyNeedingBackup`, `storeLockSeeded`, `recordWorkload`)
-([incidentals.md](incidentals.md)).
+and may be finished there. Resolve the `storeLockSeeded` and
+`recordWorkload` parts of the 1e.5 incidental on the tests that skip on
+the log store for want of a backup; its `conveyNeedingBackup` part is
+1f.4's and 1f.5's ([incidentals.md](incidentals.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1f.4: E2 - Open, restore and corruption
 
@@ -94,7 +94,11 @@ Implement the `openStore` order and the restore steps in
 cleanup, resumed conversion (1f.2), restore from a store directory, a
 self-contained file (1f.3) or an old bbolt backup, and corruption
 handling. Cover all 15 acceptance tests from E2, plus E3 tests 4 and 5
-deferred from 1f.1 and the halves of E5's tests deferred from 1f.3.
+deferred from 1f.1 and the halves of E5's tests deferred from 1f.3: open
+E5 test 1's backup through restore (`TestLogStoreSelfContainedBackup`,
+`store_backup_test.go`, opens it by extracting the tar), and start a
+manager with `Client.BackupDB`'s file as `dbFile`
+(`TestClientBackupDBSelfContained`, which also opens it by extracting).
 Keep the lock taken first, as the 0b.1 incidental owned by 1c.2 says
 ([incidentals.md](incidentals.md)). Also resolve the 1d.2 incidentals on
 testing that recovery deletes every `*.tmp` and on `dropBefore` keeping a
@@ -109,7 +113,12 @@ incidental on which conversion failures restore, the 1f.2 review
 round 4 incidental on a file at `dbFile` that is not bbolt, the 1f.2
 review round 5 incidental on a conversion's abandon failing to remove
 `.converting`, and the 1f.2 review round 6 incidental on a bbolt file
-whose meta page 0 is damaged ([incidentals.md](incidentals.md)).
+whose meta page 0 is damaged, the 1e.5 incidental on
+`conveyNeedingBackup` (with 1f.5; un-skip
+`TestStoreCorruptRestoredFromBackup` on the log store), the 1f.3
+incidental on `rdrCrash`'s crash leaf, and the 1f.3 review round 1
+incidental on `handleBackup` buffering the whole backup
+([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed
@@ -123,11 +132,15 @@ Add incremental backup ticks in `jobqueue/store_backup.go` and
 shipped whole (paced by `backupCopySyncBytes`) whenever its folded
 position changed, in place of sealed segments. Cover the 13 acceptance
 tests from E4 against the Phase 1 form, including Phase-1-only test 10;
-2c replaces the history step with sealed `.hist` files. With 1f.3,
-resolve the 1e.5 incidental on the tests that skip on the log store for
-want of a backup (`conveyNeedingBackup`, `storeLockSeeded`,
-`recordWorkload`), and resolve the 1f.2 review round 4 incidental on
-asserting a converted checkpoint's `histFrom`
+2c replaces the history step with sealed `.hist` files. With 1f.4,
+finish the 1e.5 incidental on the tests that skip on the log store for
+want of a backup (make the log store's `forceBackup` a tick and un-skip
+`TestStoreInspector`'s forced-backup leaf through `conveyNeedingBackup`;
+1f.3 did `storeLockSeeded` and `recordWorkload`), and resolve the 1f.2
+review round 4 incidental on asserting a converted checkpoint's
+`histFrom`, the 1f.3 review round 1 incidental on the `history.bolt`
+read transaction a backup holds during its copy, and the 1f.3 review
+round 3 incidental on backup starts racing close
 ([incidentals.md](incidentals.md)).
 
 - [ ] implemented

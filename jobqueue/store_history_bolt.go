@@ -41,6 +41,7 @@ package jobqueue
 // completions.
 
 import (
+	"archive/tar"
 	"bytes"
 	"encoding/binary"
 	"errors"
@@ -529,6 +530,26 @@ func (h *historyBolt) putComplete(tx *bolt.Tx, c *historyFolded) (bool, error) {
 // close closes history.bolt.
 func (h *historyBolt) close() error {
 	return h.bolt.Close()
+}
+
+// backup writes history.bolt to tw as one tar member, under a read
+// transaction that also reads its folded position, which it returns.
+func (h *historyBolt) backup(tw *tar.Writer) (historyPos, error) {
+	var folded historyPos
+
+	err := h.bolt.View(func(tx *bolt.Tx) error {
+		folded = historyFoldedPos(tx.Bucket(bucketHistoryMeta))
+
+		if err := tw.WriteHeader(backupTarHeader(historyBoltFile, tx.Size())); err != nil {
+			return err
+		}
+
+		_, err := tx.WriteTo(tw)
+
+		return err
+	})
+
+	return folded, err
 }
 
 // historyRecent is an archived job retrieveCompleteJobsRecent returns, with

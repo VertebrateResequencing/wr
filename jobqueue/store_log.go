@@ -36,7 +36,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"os"
 	"slices"
@@ -117,10 +116,6 @@ var (
 )
 
 var (
-	// errLogStoreBackup is the error of asking the log store for a backup,
-	// which it cannot make yet.
-	errLogStoreBackup = errors.New("the log store does not make backups yet")
-
 	// errModifyMismatch is the error of a modify given a different number of
 	// old keys and jobs.
 	errModifyMismatch = errors.New("modify needs one old key per job")
@@ -1014,12 +1009,6 @@ func (s *logStore) resolveDependencies(ctx context.Context, jobs []*Job,
 	return resolved, nil
 }
 
-// backup returns errLogStoreBackup: the log store makes no backups yet (spec
-// E5, item 1f.3).
-func (s *logStore) backup(io.Writer) error {
-	return errLogStoreBackup
-}
-
 // upgradedOnOpen reports whether opening the store converted a bbolt
 // database into it (spec E1).
 func (s *logStore) upgradedOnOpen() bool {
@@ -1245,12 +1234,18 @@ type logStore struct {
 	recSecRound, recMBRound int
 
 	// ckptMu makes checkpoints one at a time, and guards ckptFrom, the newest
-	// checkpoint's walFrom (0 if there is none). The checkpointer goroutine
-	// stops once ckptStop is closed, closing ckptExited as it ends.
+	// checkpoint's walFrom (0 if there is none); backup holds it so that no
+	// checkpoint deletes a file it copies. The checkpointer goroutine stops
+	// once ckptStop is closed, closing ckptExited as it ends.
 	ckptMu     sync.Mutex
 	ckptFrom   uint32
 	ckptStop   chan struct{}
 	ckptExited chan struct{}
+
+	// backups counts the backups in progress, which close waits for before it
+	// closes the files they read and releases the store's lock. A backup joins
+	// it under closeMu, so none joins once close has set closed.
+	backups sync.WaitGroup
 
 	// refGen, guarded by mu, is the generation of reader holds (see
 	// holdRefs), and refHeld how many readers hold each of the last two.
@@ -1430,7 +1425,8 @@ func (s *logStore) writeOpen(f *logFrames, after func()) (*logWrite, error) {
 }
 
 // close makes every record appended before it durable, then refuses further
-// writes with errDBClosed.
+// writes and backups with errDBClosed. It waits for a backup in progress, which
+// then fails with errDBClosed unless it had already sealed its last wal file.
 func (s *logStore) close(ctx context.Context) error {
 	s.closeMu.Lock()
 	already := s.closed
@@ -1452,6 +1448,7 @@ func (s *logStore) close(ctx context.Context) error {
 	<-s.statsExited
 	s.stats.report(ctx, s.statsEvery, s.w.Stats(), s.w.TakeMaxSync())
 	s.foldStats.report(ctx, foldWriterName, s.statsEvery)
+	s.backups.Wait()
 
 	return errors.Join(err, s.closeFiles(), s.history.close(), s.lock.release())
 }

@@ -143,7 +143,8 @@ type store interface {
 // Then it wipes the store if cfg asks for a development wipe (see
 // wipeDevStore). storeKindBolt opens bbolt (see initDB) and storeKindLog the
 // log store (see openConvertedLogStore), converting a bbolt file at dbFile
-// first; it does not yet restore or back up (items 1f.3 to 1f.5).
+// first; it does not yet restore (item 1f.4) or make incremental backups
+// (item 1f.5).
 //
 // If the WR_STORE_RECORD env var names a file, the store returned records every
 // call made to it there (see recordingStore); otherwise it is not wrapped at

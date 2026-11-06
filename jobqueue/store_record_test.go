@@ -568,13 +568,7 @@ func recordWorkload(ctx context.Context, s store, kind storeKind) {
 	So(inspectorOf(recording.s).flush(), ShouldBeNil)
 	recordReqGroupCalls(s, a)
 
-	if kind == storeKindLog {
-		// the log store makes no backups until items 1f.3 and 1f.5, which
-		// make this a backup that succeeds, as bbolt's does.
-		So(s.backup(io.Discard), ShouldWrap, errLogStoreBackup)
-	} else {
-		So(s.backup(io.Discard), ShouldBeNil)
-	}
+	So(s.backup(io.Discard), ShouldBeNil)
 
 	b[24].RerunAfterRun = true
 	So(s.storeRunningRerunMarks([]*Job{b[24]}), ShouldBeNil)

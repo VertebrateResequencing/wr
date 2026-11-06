@@ -941,11 +941,7 @@ func publishCheckpoint(dir, tmp, path string) error {
 // before the cut has applied, then folds to the writer's durable end, which
 // the rotation took past the cut. It returns the cut and the folded position.
 func (s *logStore) cutAndFold() (uint32, historyPos, error) {
-	sealed, err := s.w.Rotate()
-	if errors.Is(err, wal.ErrClosed) {
-		return 0, historyPos{}, errDBClosed
-	}
-
+	sealed, err := s.rotate()
 	if err != nil {
 		return 0, historyPos{}, err
 	}
@@ -960,6 +956,16 @@ func (s *logStore) cutAndFold() (uint32, historyPos, error) {
 	defer s.mu.RUnlock()
 
 	return sealed + 1, s.state.folded, nil
+}
+
+// rotate is the writer's Rotate, its ErrClosed being errDBClosed.
+func (s *logStore) rotate() (uint32, error) {
+	sealed, err := s.w.Rotate()
+	if errors.Is(err, wal.ErrClosed) {
+		return 0, errDBClosed
+	}
+
+	return sealed, err
 }
 
 // swapRefs passes e's Refs in use through swapped: its spec, its state if it
@@ -1117,6 +1123,11 @@ func (s *logStore) checkpoint() error {
 	s.ckptMu.Lock()
 	defer s.ckptMu.Unlock()
 
+	return s.checkpointLocked()
+}
+
+// checkpointLocked is checkpoint, the caller holding ckptMu.
+func (s *logStore) checkpointLocked() error {
 	walFrom, folded, err := s.cutAndFold()
 	if err != nil {
 		return err
