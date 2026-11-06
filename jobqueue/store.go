@@ -142,8 +142,8 @@ type store interface {
 // beside cfg.dbFile (see lockStore), which the store holds until it closes.
 // Then it wipes the store if cfg asks for a development wipe (see
 // wipeDevStore). storeKindBolt opens bbolt (see initDB) and storeKindLog the
-// log store (see openLogStoreHolding), which does not yet convert, restore or
-// back up (items 1f.2 to 1f.5).
+// log store (see openConvertedLogStore), converting a bbolt file at dbFile
+// first; it does not yet restore or back up (items 1f.3 to 1f.5).
 //
 // If the WR_STORE_RECORD env var names a file, the store returned records every
 // call made to it there (see recordingStore); otherwise it is not wrapped at
@@ -179,7 +179,7 @@ func openStoreKind(ctx context.Context, cfg storeConfig) (store, string, error) 
 	}
 
 	if cfg.kind == storeKindLog {
-		s, errl := openLogStoreHolding(ctx, cfg.dbFile, lock)
+		s, errl := openConvertedLogStore(ctx, cfg.dbFile, lock)
 		if errl != nil {
 			return nil, "", errl
 		}

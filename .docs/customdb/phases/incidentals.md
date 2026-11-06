@@ -143,6 +143,8 @@ called ready, or explicitly deferred with the owner.
   with the leaves that need a backup (1f.3, 1f.5) skipped there.
   1f.1 added the log store's dev wipe (`wipeDevStore`, called from
   `openStoreKind` for both store kinds).
+  1f.2 added conversion of a bbolt file at the store path
+  (`openConvertedLogStore`), after which `upgradedOnOpen` is true.
 - [x] (from 0b.1 review) F5 broke the `reliability_repro` build:
   `envIntDefault` and `reliable4GiB` were defined only in the listed
   `reliable4_backup_repro_test.go`. Done in 0b.1: both moved to
@@ -154,7 +156,7 @@ called ready, or explicitly deferred with the owner.
   are in `TestReservationAndStartRecoveredAfterCrash`
   (`db_runstate_test.go`), leaving the live record bytes and the
   `runStates=1` log in `db_runstate_bolt_test.go`.
-- [ ] (from 0b.1 review) `reliable2_dbcompat_test.go` is listed whole, as
+- [x] (from 0b.1 review) `reliable2_dbcompat_test.go` is listed whole, as
   its fixture is a bbolt golden file, so F5 deletes
   `TestReliable2RecoveryWindowReturnsRecovering` and
   `TestReliable2RecoveryRestoresIncompleteJobs`: a recovery-window j* call
@@ -162,6 +164,13 @@ called ready, or explicitly deferred with the owner.
   once recovery ends. These are E1 conversion coverage: a converted golden
   bbolt file must recover the same way. Owner: 1f.2 (E1, Phase 1 form),
   kept by 2d.1.
+  Done in 1f.2: `TestStoreConvertedDBCompatRecoveryWindow`
+  (`store_convert_test.go`) runs both on the golden fixture, uncompacted
+  and unversioned, converted by a log-store manager's start: the window's
+  j* call gets `ErrRecovering`, nothing is queued until recovery is
+  released, then both incomplete jobs are restored and reservable and the
+  complete rep group counts 2 complete. The fixture's constants and copy,
+  key and reserve helpers moved to `store_convert_test.go`, which F5 keeps.
 - [x] (from 0b.1 review 5) More store-neutral behaviour that F5 would
   have deleted with its listed file now runs on every store: an env
   retrieved before it is stored is still stored (`TestStoreEnv`, from
@@ -209,7 +218,7 @@ called ready, or explicitly deferred with the owner.
   current once the fold commits and the next load to give the new sample.
   The fold adds samples through `reqStatCache.putStat`, whose commit hook
   invalidates, as bbolt's archive does.
-- [ ] (from 0b.1 review) Listed tests cover what a manager does when it
+- [x] (from 0b.1 review) Listed tests cover what a manager does when it
   opens an older bbolt database, and F5 deletes them: its upgrade is
   logged with progress, rate-limited, and not at all when there is none
   (`reliable4_upgrade_log_test.go`, `TestDBUpgradeProgress`); the
@@ -222,6 +231,23 @@ called ready, or explicitly deferred with the owner.
   instead. Owner: 1f.2 (E1), which shows a converted pre-upgrade database
   resolves and modifies the same way, and that the conversion's sidecar
   and log lines behave as these tests require of the upgrade's.
+  Done in 1f.2 (`store_convert_test.go`): `TestStoreConvertPreUpgradeDB`
+  converts a database with a retired dep group index entry and no
+  `depgroups` or `jobLookupEntries` bucket, and requires the child to
+  resolve, a key-changing modify of the parent to work and the recovered
+  keys to match bbolt's after `initDB`'s upgrade; `TestStoreConvertSchemas`
+  back-fills `depgroups` from `depgroupToKey` as `initDB` does. The
+  conversion reports through the same `dbUpgradeReporter` as the upgrade:
+  `TestStoreConvertLogsAsUpgrade` (its milestones at the default log
+  level, no line per progress point, none on a restart),
+  `TestStoreLongConvertReportsProgress` (a long conversion's "still
+  running" lines), `TestDBUpgradeProgressLogRateLimit` (moved from
+  `reliable4_upgrade_log_test.go`, now on the conversion phase: one
+  promoted line per interval), `TestStoreConvertProgress` (the sidecar
+  during and after) and `TestServeReportsPostConversionStartupUntilTokenReady`
+  (the startup sidecar after a conversion until the token is ready). The
+  upgrade log match constants and `logLinesForPhase` moved to
+  `store_convert_test.go`.
 - [x] (from 0b.1 review) `TestReliable2FastStartupNoHistoryScan`
   (`reliable2_startup_scale_bolt_test.go`) writes its 250,000-job history
   as raw bbolt records, so F5 deletes the check that startup time does not
@@ -490,13 +516,19 @@ called ready, or explicitly deferred with the owner.
   job's records, which stays; a mutant skipping either alone survives as
   the other still fails the recovery, and skipping both is killed.
 
-- [ ] (from 1d.1) E1 step 4 writes `history.bolt` (spec "Folder and
+- [x] (from 1d.1) E1 step 4 writes `history.bolt` (spec "Folder and
   history"), which now also has `keyRepgroups`, `repgroupToKey`'s reverse:
   a fold of a modify record finds the old key's folded rglookups only
   through it, so a converted store whose `keyRepgroups` is empty keeps a
   modified key under its old rep groups, as the log store did before 1d.1.
   Owner: 1f.2 (E1): write one `keyRepgroups` entry per `repgroupToKey`
   entry it converts, and add a modify-after-conversion check.
+  Done in 1f.2: `storeBuild.copyHistory` (`store_convert.go`) writes
+  `keyRepgroups` as `repgroupToKey`'s reverse, and
+  `TestStoreConvertKeyChangingModify` converts a job completed and put
+  back live in rep group A, modifies it to a new key in rep group B, folds,
+  and requires A no longer to find it, before and after a reopen (mutants
+  dropping or not reversing the entries are killed).
 
 - [x] (from 1d.1) The folder paired a `complete` record with its key's
   spec (`logState.specOf`): the overlay entry's if the record applied as
@@ -966,3 +998,97 @@ called ready, or explicitly deferred with the owner.
   survives. Owner: 1f.4 (E2): when restore moves onto `backupTarget`,
   assert a development restore reads the `.development` key, and add a
   deeper key such as `key/a/b/c` to the wipe test's objects.
+
+- [ ] (from 1f.2) E1 says a corrupt source is restored as E2 order step 8,
+  with today's "corrupt (?) db file" message. 1f.2 stops short of the
+  restore, which 1f.4 builds: `convertBoltDB` (`store_convert.go`) renames
+  a corrupt bbolt file back to `dbFile` if step 3 moved it, removes
+  `.converting`, and returns an error wrapping `errStoreCorrupt` with the
+  cause. Only an error or panic of bbolt's reading the source counts: step
+  0's `openBoltSource` and `boltSourceSchema`, and step 4's reads through
+  `sourceBucket`, `eachSource` (with `sourceMove`) and `sourceGet`. Step 4
+  reads `jobslive` and `jobrunstate` again through `eachLiveJobTx`, which is
+  unguarded, so `countJobs` walks both through `eachSource` first, in the
+  same transaction. `TestStoreConvert` and `TestStoreConvertPanickingSource`
+  cover the rename-back, a corrupt meta pair from step 0, a zeroed branch
+  page, stdout bucket root and run-state bucket root in step 4, and a
+  claimed error (`ErrDBLocked`) before and after step 3, neither of which
+  renames the bbolt file back.
+  These failures do not wrap `errStoreCorrupt`, and 1f.4 must not restore
+  on them:
+  - A record bbolt reads that the converter cannot (an undecodable live or
+    complete job, a non-job key in `jobslive` or `jobscomplete`, a limit
+    under 8 bytes) wraps `errBoltUnconvertible`. The bbolt file is renamed
+    back and `.converting` removed, as for a corrupt source.
+  - A `SOURCE` naming no pre name of `dbFile` wraps `errBadConvertSource`,
+    and nothing is changed.
+  - Any other failure (a write error on the new store, a cancelled
+    context, a panic in the converter's own code, wrapping
+    `errConvertPanicked`) leaves `.converting` and `SOURCE` for the next
+    start to resume.
+
+  `TestStoreConvert` covers each, including a crash between the rename-back
+  and the removal and a resumed conversion failing the same way again.
+  Owner: 1f.4 (E2 tests 11 to 13): route only an `errStoreCorrupt` from the
+  conversion to restore with today's message, and with no backup return
+  the error, as E2 order step 8 says. Return the other three errors with
+  `dbFile` untouched, and add a test that a backup present beside an
+  unconvertible bbolt file, a bad `SOURCE` and a resumable failure is not
+  restored from.
+
+  Decision (orchestrator ruling for the owner, 1f.2 review round 1): an
+  undecodable live record or a non-job key is not a corrupt source. bbolt
+  reads such a file without error, and today's bbolt start fails on an
+  undecodable live job and leaves the file alone, so the conversion does
+  the same rather than restoring over it and deleting the only copy. An
+  undecodable complete record fails the same way rather than being copied
+  as it is, as compaction copies it: E1 drops every complete record's std,
+  which needs it decoded. This is stricter than bbolt's start, which never
+  decodes complete records; the owner may prefer copying it as it is.
+
+- [ ] (from 1f.2 review round 4) No Phase 1 code reads
+  `checkpointHeader.histFrom`: it is only written, by the checkpoint
+  writer (`store_checkpoint.go`) and by E1 step 4's converted checkpoint
+  (`store_convert.go`), so a mutant writing the converted checkpoint's
+  `histFrom` as zero survives. Owner: 1f.5 (E4), its first reader: assert
+  that a converted store's checkpoint has `histFrom` at
+  `(convertWalFrom, 0)`, or that a backup tick ships the converted store's
+  checkpoint.
+
+- [ ] (from 1f.2 review round 4) No test puts a regular file that is not
+  bbolt at `dbFile`, so a `hasBoltMagic` (`store_convert.go`) that never
+  compares the magic survives: it takes any file of 20 bytes or more for
+  bbolt, and the conversion then fails wrapping `errStoreCorrupt` instead
+  of the open failing on `VERSION: not a directory`. Neither loses data.
+  Also, `hasBoltMagic` treats any read error, an `EIO` included, as "not
+  bbolt" rather than returning `ErrDBUnreadable`. Owner: 1f.4 (E2, which
+  owns how anything else at `dbFile` is classified): test that a ustar tar
+  and a garbage regular file at `dbFile` are not taken for bbolt, and
+  decide whether a read error there is `ErrDBUnreadable`.
+
+- [ ] (from 1f.2 review round 5) No test makes `abandon`
+  (`store_convert.go`) fail to remove `.converting`, so a mutant that
+  ignores the `os.RemoveAll` error survives. In that double fault (a
+  corrupt source whose `.converting` cannot be removed) the mutant returns
+  the error wrapping `errStoreCorrupt` while `SOURCE` remains, where the
+  code returns the cause joined with the removal error. Once 1f.4 restores
+  on `errStoreCorrupt`, the mutant's next start would resume on a `SOURCE`
+  whose pre file the restore had replaced, and stay stuck there, though no
+  data is lost. Owner: 1f.4 (E2, which routes `errStoreCorrupt` to
+  restore): decide what this double fault returns, then test it by making
+  `.converting` unremovable (for example mode 0500) before a corrupt-source
+  abandon, asserting the error does not wrap `errStoreCorrupt` and
+  `SOURCE` is kept, or whatever 1f.4 rules.
+
+- [ ] (from 1f.2 review round 6) `hasBoltMagic` (`store_convert.go`)
+  checks only meta page 0's magic, but bbolt falls back to meta page 1: a
+  probe zeroed page 0 of a bbolt file, which bbolt still opens (read-only
+  and through the bbolt store), while `isBoltFile` says false and the log
+  store's start fails on `VERSION: not a directory`, leaving the file
+  untouched. No data is lost in 1f.2, but under E2 step 8 ("unrecognised"
+  restores from backup) 1f.4 would replace a bbolt file bbolt can open.
+  Owner: 1f.4, with the round 4 `hasBoltMagic` entry above: when meta 0's
+  magic is missing, also check meta 1 at the OS page size, reword E2 step
+  6's "bbolt (meta magic)" to cover either meta page, and test that a bbolt
+  file with page 0 zeroed and a backup present converts, or at least is not
+  restored over.

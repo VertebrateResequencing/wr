@@ -912,8 +912,8 @@ with `failures`; it never stops the manager.
 ### Errors
 
 New sentinels in `jobqueue`: `errStoreCorrupt`, `errNotEnoughSpace`,
-`errBoltPreExists`, `errStoreVersionTooNew`, `errCompactNotSupported`
-(Phase 1 only).
+`errBoltPreExists`, `errBoltUnconvertible`, `errBadConvertSource`,
+`errStoreVersionTooNew`, `errCompactNotSupported` (Phase 1 only).
 `ErrDBLocked` and `ErrDBUnreadable` keep their meaning;
 `openErrorThatIsNotCorruption`'s errno list applies to the store directory
 and its files too. A failed durable write returns its error to the
@@ -1975,14 +1975,27 @@ file at the pre name is kept for rollback. At open, an existing
 step 0 on the source (at `dbFile` or the pre name). A `.converting` with no
 `SOURCE` (a crash in step 2) is removed and conversion starts at step 0.
 
-Corrupt source: an error from step 0, or a read error or recovered bbolt
-panic from the source during step 4, that `openErrorThatIsNotCorruption`
-does not claim, means the source is corrupt. Then `os.RemoveAll`
-`.converting`, rename the pre name back to `dbFile` if step 3 ran, fsync the
-parent, and restore as E2 order step 8 with today's corrupt-db message. A
-claimed error is returned as today with nothing renamed back or restored
-(a resumed run sees `SOURCE` and retries). So a corrupt bbolt file never
-loops on resume.
+Corrupt source: an error from step 0, or an error or recovered panic of
+bbolt's reading the source during step 4 (damaged pages or meta), that
+`openErrorThatIsNotCorruption` does not claim, means the source is corrupt.
+Then rename the pre name back to `dbFile` if step 3 ran, fsync the parent,
+`os.RemoveAll` `.converting`, and restore as E2 order step 8 with today's
+corrupt-db message. Renaming back first means a crash in between resumes on
+the file at `dbFile`, which fails the same way again. A claimed error is
+returned as today with nothing renamed back or restored (a resumed run sees
+`SOURCE` and retries). So a corrupt bbolt file never loops on resume.
+
+Not corrupt: a record bbolt reads but the converter cannot, which is an
+undecodable live or complete job, a key in `jobslive` or `jobscomplete`
+that is not a job key, or a limit shorter than 8 bytes. Undo the conversion
+as for a corrupt source, then fail the start with `errBoltUnconvertible`
+naming the bucket, key and problem, restoring nothing, so `dbFile` is the
+untouched bbolt file, as bbolt's start fails today on an undecodable live
+job. A `SOURCE` that names no pre name of `dbFile` fails every start with
+`errBadConvertSource`, renaming, removing and restoring nothing. Any other
+failure in steps 3 to 5, such as a write error on the new store, a
+cancelled context or a panic in the converter's own code, is returned as it
+is, leaving `.converting` and `SOURCE` for the next start to resume.
 
 Accepts bbolt schema 0, 1 and 2. In step 0 it reads the stamp as
 `readOnlyDBFileSchemaVersion` does and refuses, renaming nothing and creating no

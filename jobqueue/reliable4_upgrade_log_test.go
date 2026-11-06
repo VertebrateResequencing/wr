@@ -48,34 +48,18 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
 	. "github.com/smartystreets/goconvey/convey"
 	bolt "go.etcd.io/bbolt"
 )
 
+// The upgrade log lines this file matches, and logLinesForPhase, are in
+// store_convert_test.go, whose conversion tests match them too and which F5
+// keeps.
+
 const (
-	// these are the upgrade lines an operator must be able to find in the manager
-	// log at the default log level.
-	dbUpgradeStartLogMatch     = `msg="database upgrade started"`
-	dbUpgradeStepStartLogMatch = `msg="database upgrade step started"`
-	dbUpgradeStepDoneLogMatch  = `msg="database upgrade step complete"`
-	dbUpgradeDoneLogMatch      = `msg="database upgrade complete"`
-
-	// dbUpgradeProgressLogMatch is the per-progress-point line, which must NOT
-	// reach that log for every point: a real rebuild processes millions of
-	// entries.
-	dbUpgradeProgressLogMatch = `msg="database upgrade progress"`
-
-	// dbUpgradeStillRunningLogMatch is the line that does reach it while a phase
-	// is running, at most once per dbUpgradeLogInterval. It carries its own
-	// message so that a default-level log cannot be mistaken for one line per
-	// progress point.
-	dbUpgradeStillRunningLogMatch = `msg="database upgrade step still running"`
-
 	// depGroupRebuildPhase is the state the dep-group index rebuild reports.
 	depGroupRebuildPhase = "rebuild dep-group index"
 
@@ -90,16 +74,6 @@ const (
 	// rebuild reaches at minimum (it reaches more if a point also falls due on
 	// dbUpgradeProgressInterval).
 	dbUpgradeLogFixtureProgressPoints = dbUpgradeLogFixtureEntries / dbUpgradeProgressEntries
-
-	// dbUpgradeRateLimitPoints is how many progress points
-	// TestReliable4DBUpgradeProgressLogRateLimit drives through the reporter, and
-	// dbUpgradeRateLimitPointsPerInterval is how many of them it packs into each
-	// dbUpgradeLogInterval. At dbUpgradeProgressEntries entries per point that is
-	// a million-entry rebuild, the scale at which the difference between "once per
-	// interval" and "once per point" is the difference between a readable log and
-	// a flooded one.
-	dbUpgradeRateLimitPoints            = 100
-	dbUpgradeRateLimitPointsPerInterval = 4
 )
 
 // TestReliable4DBUpgradeVisibleInManagerLog covers the phase milestones an
@@ -155,7 +129,7 @@ func TestReliable4DBUpgradeVisibleInManagerLog(t *testing.T) {
 //
 // It pins that the promoted line reaches the real manager log file, with the
 // phase and the entry count on it; how often it is promoted is pinned by
-// TestReliable4DBUpgradeProgressLogRateLimit, which the zero interval here
+// TestDBUpgradeProgressLogRateLimit, which the zero interval here
 // deliberately takes out of play.
 func TestReliable4LongDBUpgradeReportsProgress(t *testing.T) {
 	if runnermode || servermode {
@@ -248,88 +222,4 @@ func openDBLoggingAsManager(t *testing.T, ctx context.Context, dbFile string) st
 	So(testDB.close(ctx), ShouldBeNil)
 
 	return readLogFile(t, logPath)
-}
-
-// logLinesForPhase returns the log lines containing both the given message
-// substring and the given upgrade phase state.
-func logLinesForPhase(logged, msgMatch, state string) []string {
-	var lines []string
-
-	for _, line := range logLinesContaining(logged, msgMatch) {
-		if strings.Contains(line, `state="`+state+`"`) {
-			lines = append(lines, line)
-		}
-	}
-
-	return lines
-}
-
-// TestReliable4DBUpgradeProgressLogRateLimit pins the rate limit itself: the
-// default-level output of a long phase is proportional to how long it runs, not
-// to how many entries it processes. Without this, a single elapsed interval
-// latches promotion on and every remaining progress point reaches the default
-// log - a million-entry rebuild going from 7 lines to 87 - which is the flood
-// this whole guard exists to prevent, and which every log-file test above still
-// passes through.
-//
-// It drives the reporter directly, with its clock injected, because the cadence
-// cannot be measured through the log file without either a rebuild that really
-// takes minutes or a wall-clock race on a loaded host. The log file remains the
-// boundary for what gets logged; this covers only how often.
-func TestReliable4DBUpgradeProgressLogRateLimit(t *testing.T) {
-	if runnermode || servermode {
-		return
-	}
-
-	ctx := context.Background()
-
-	Convey("A long phase promotes one progress line per log interval, not one per progress point", t, func() {
-		clock := time.Now()
-		reporter := newDBUpgradeReporter(ctx, filepath.Join(t.TempDir(), "queue.db"))
-		reporter.now = func() time.Time { return clock }
-
-		var everyPoint, promoted []string
-
-		reporter.info = recordLoggedArgs(&everyPoint, "database upgrade progress")
-		reporter.warn = recordLoggedArgs(&promoted, "database upgrade step still running")
-
-		reporter.startPhase(depGroupRebuildPhase, "rebuilding database dependency-group index")
-
-		for point := range dbUpgradeRateLimitPoints {
-			clock = clock.Add(dbUpgradeLogInterval / dbUpgradeRateLimitPointsPerInterval)
-			processed := (point + 1) * dbUpgradeProgressEntries
-
-			reporter.writeProgress(depGroupRebuildPhase,
-				fmt.Sprintf("rebuilding database dependency-group index (%d entries processed)", processed), processed)
-		}
-
-		// every point is still recorded for --debug, and exactly one point per
-		// interval is promoted to the default log.
-		So(len(everyPoint), ShouldEqual, dbUpgradeRateLimitPoints)
-		So(len(promoted), ShouldEqual, dbUpgradeRateLimitPoints/dbUpgradeRateLimitPointsPerInterval)
-
-		// and the promoted line is a progress report, not a bare "still alive": it
-		// carries how far the phase has got.
-		So(logLineValue(promoted[len(promoted)-1], "processed"),
-			ShouldEqual, strconv.Itoa(dbUpgradeRateLimitPoints*dbUpgradeProgressEntries))
-	})
-}
-
-// recordLoggedArgs returns a dbUpgradeReporter log function that appends the
-// arguments of each call made with the given message to lines, rendered in the
-// same key=value form the manager log uses, so logLineValue reads them.
-func recordLoggedArgs(lines *[]string, msg string) func(string, ...any) {
-	return func(logged string, args ...any) {
-		if logged != msg {
-			return
-		}
-
-		var line strings.Builder
-
-		for i := 0; i+1 < len(args); i += 2 {
-			fmt.Fprintf(&line, " %v=%v", args[i], args[i+1])
-		}
-
-		*lines = append(*lines, line.String())
-	}
 }

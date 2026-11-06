@@ -43,9 +43,6 @@ package jobqueue
 
 import (
 	"context"
-	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -54,29 +51,8 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-const (
-	// dbcompatFixture is the committed golden DB produced by pre-removal code.
-	dbcompatFixture = "testdata/dbcompat/db.golden"
-
-	// dbcompatCompleteRepGroup holds the two archived (complete) fixture jobs.
-	dbcompatCompleteRepGroup = "reliable2-dbcompat-complete"
-
-	// dbcompatIncompleteRepGroup holds the two incomplete fixture jobs left in
-	// jobslive, each carrying non-empty WaitingForDepGroups and
-	// LimitGroupsForDisplay.
-	dbcompatIncompleteRepGroup = "reliable2-dbcompat-incomplete"
-
-	// dbcompatCompleteCount and dbcompatIncompleteCount are the known job counts
-	// baked into the fixture.
-	dbcompatCompleteCount   = 2
-	dbcompatIncompleteCount = 2
-
-	// dbcompatIncompleteCmd1 is the Cmd of the first incomplete fixture job (see
-	// testdata/dbcompat/gen.go). Because those jobs set neither CwdMatters nor any
-	// mounts, Cmd alone fixes their Job.Key(), so it lets a test address a key
-	// that recovery has not yet restored during the recovery window.
-	dbcompatIncompleteCmd1 = "true 3"
-)
+// The dbcompat fixture's constants and helpers are in store_convert_test.go,
+// whose conversion tests use them too and which F5 keeps.
 
 // TestReliable2DBCompatOpen covers all four F1 acceptance tests against the
 // committed fixture opened with the reworked build.
@@ -279,42 +255,6 @@ func compactedFixtureCopy(t *testing.T, suggestedName string) string {
 	return dbPath
 }
 
-// copyFixtureToTempDB copies the committed golden fixture into a fresh file in
-// t.TempDir() (BoltDB needs an exclusive read-write open, so tests never open
-// the committed file in place) and returns the copy's path. The suggestedName's
-// base name is reused so the on-disk name is unsurprising.
-func copyFixtureToTempDB(t *testing.T, suggestedName string) string {
-	t.Helper()
-
-	src, err := os.Open(dbcompatFixture)
-	So(err, ShouldBeNil)
-
-	defer func() { So(src.Close(), ShouldBeNil) }()
-
-	dstPath := filepath.Join(t.TempDir(), filepath.Base(suggestedName))
-
-	dst, err := os.Create(dstPath)
-	So(err, ShouldBeNil)
-
-	_, err = io.Copy(dst, src)
-	So(err, ShouldBeNil)
-	So(dst.Close(), ShouldBeNil)
-
-	return dstPath
-}
-
-// dbcompatIncompleteJob rebuilds one of the two incomplete fixture jobs so its
-// Key() matches the key recovery will restore. The fixture jobs set neither
-// CwdMatters nor any mounts/container image, so Cmd alone determines Key(); the
-// remaining fields mirror the fixture (see testdata/dbcompat/gen.go) for
-// clarity. A reconnecting runner reconstructs its job this way to reference a
-// key that recovery has not yet restored into the queue.
-func dbcompatIncompleteJob(cmd string) *Job {
-	return &Job{
-		Cmd: cmd, Cwd: defaultUploadDir, RepGroup: dbcompatIncompleteRepGroup, ReqGroup: "reliable2-dbcompat",
-	}
-}
-
 // countBucketKeys opens the BoltDB at path read-only and returns the number of
 // keys in the named bucket (0 if the bucket is absent). The DB must not be open
 // elsewhere when this is called.
@@ -341,34 +281,4 @@ func countBucketKeys(t *testing.T, path string, bucket []byte) int {
 	So(err, ShouldBeNil)
 
 	return n
-}
-
-// reserveIncompleteJobs reserves the recovered incomplete jobs and returns each
-// distinct job's RepGroup. Each reserved job is immediately Started with this
-// process's (alive) PID so a TTR expiry parks it Lost in the run sub-queue
-// rather than recycling it back to ready and being re-reserved (which would
-// otherwise inflate the count under the test's short TTR). Reserving is bounded
-// and stops once a Reserve yields no job.
-func reserveIncompleteJobs(jq *Client) []string {
-	seen := make(map[string]string)
-
-	for range dbcompatIncompleteCount + 1 {
-		job, err := jq.Reserve(2 * time.Second)
-		So(err, ShouldBeNil)
-
-		if job == nil {
-			break
-		}
-
-		So(jq.Started(job, os.Getpid()), ShouldBeNil)
-
-		seen[job.Key()] = job.RepGroup
-	}
-
-	repGroups := make([]string, 0, len(seen))
-	for _, rg := range seen {
-		repGroups = append(repGroups, rg)
-	}
-
-	return repGroups
 }

@@ -123,6 +123,25 @@ func (l *storeLock) release() error {
 	return l.f.Close()
 }
 
+// openConvertedLogStore is openLogStoreHolding, first converting dbFile if it
+// is a bbolt file or resuming a conversion a crash interrupted (see
+// convertOnOpen), after which the store reports it upgraded on open.
+func openConvertedLogStore(ctx context.Context, dbFile string, lock *storeLock) (*logStore, error) {
+	converted, err := convertOnOpen(ctx, dbFile)
+	if err != nil {
+		return nil, errors.Join(err, lock.release())
+	}
+
+	s, err := openLogStoreHolding(ctx, dbFile, lock)
+	if err != nil {
+		return nil, err
+	}
+
+	s.upgraded = converted
+
+	return s, nil
+}
+
 // openLogStoreHolding opens the log store at dbFile, giving it lock, the store
 // lock its caller took, to hold until it closes. If it cannot open the store
 // it releases lock.
@@ -329,10 +348,16 @@ func createStoreDir(dir string) error {
 	return syncDir(filepath.Dir(dir))
 }
 
-// writeStoreVersion durably writes dir's VERSION, through a .tmp file renamed
-// into place.
+// writeStoreVersion durably writes dir's VERSION.
 func writeStoreVersion(dir string) error {
-	path := filepath.Join(dir, storeVersionFile)
+	return writeFileDurably(filepath.Join(dir, storeVersionFile), fmt.Appendf(nil, "%s%d\n", storeVersionPrefix,
+		storeVersion))
+}
+
+// writeFileDurably writes content to path through a .tmp file, fsynced then
+// renamed into place, and fsyncs path's directory, so that path is never seen
+// partly written.
+func writeFileDurably(path string, content []byte) error {
 	tmp := path + storeTmpExt
 
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, dbFilePermission)
@@ -340,7 +365,7 @@ func writeStoreVersion(dir string) error {
 		return err
 	}
 
-	_, err = fmt.Fprintf(f, "%s%d\n", storeVersionPrefix, storeVersion)
+	_, err = f.Write(content)
 	if err == nil {
 		err = f.Sync()
 	}
@@ -353,7 +378,7 @@ func writeStoreVersion(dir string) error {
 		return err
 	}
 
-	return syncDir(dir)
+	return syncDir(filepath.Dir(path))
 }
 
 // syncDir fsyncs dir, making renames and creations in it durable.

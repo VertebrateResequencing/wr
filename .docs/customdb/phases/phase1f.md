@@ -66,8 +66,8 @@ Also resolve the 0b.1 incidentals on `reliable2_dbcompat_test.go`'s
 recovery tests and on opening an older bbolt database, and the 1d.1
 incidental on converting `keyRepgroups` ([incidentals.md](incidentals.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1f.3: E5 - Self-contained backup (Phase 1 form)
 
@@ -103,9 +103,13 @@ and live after wal damage, the 1e.5 review incidental on a last wal
 whose whole header fails its CRC being removed as torn, the 1f.1
 review incidental on `initDB`'s restore path removing with plain
 `os.Remove`, the 1f.1 review round 3 incidental on the fake S3's
-`DownloadFile` differing from minio's, and the 1f.1 review round 6
-incidental on the development S3 key and deep S3 nesting
-([incidentals.md](incidentals.md)).
+`DownloadFile` differing from minio's, the 1f.1 review round 6
+incidental on the development S3 key and deep S3 nesting, the 1f.2
+incidental on which conversion failures restore, the 1f.2 review
+round 4 incidental on a file at `dbFile` that is not bbolt, the 1f.2
+review round 5 incidental on a conversion's abandon failing to remove
+`.converting`, and the 1f.2 review round 6 incidental on a bbolt file
+whose meta page 0 is damaged ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed
@@ -122,7 +126,9 @@ tests from E4 against the Phase 1 form, including Phase-1-only test 10;
 2c replaces the history step with sealed `.hist` files. With 1f.3,
 resolve the 1e.5 incidental on the tests that skip on the log store for
 want of a backup (`conveyNeedingBackup`, `storeLockSeeded`,
-`recordWorkload`) ([incidentals.md](incidentals.md)).
+`recordWorkload`), and resolve the 1f.2 review round 4 incidental on
+asserting a converted checkpoint's `histFrom`
+([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

@@ -47,7 +47,7 @@ const boltImportPath = "go.etcd.io/bbolt"
 // store's Phase 1 bbolt history.
 var boltOnlyFiles = []string{ //nolint:gochecknoglobals
 	"dependency.go", "writeturns.go", "reqstat_cache.go", "archivefold.go", "store_bolt.go",
-	"store_history_bolt.go",
+	"store_history_bolt.go", "store_convert.go",
 }
 
 func TestStoreInterface(t *testing.T) {

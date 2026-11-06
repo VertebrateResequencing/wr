@@ -2195,6 +2195,39 @@ func (db *db) reserveRunState(job *Job) (pendingCommit, error) {
 	return &queuedCommit{waiter: waiter}, nil
 }
 
+// eachLiveJobTx calls fn with each job in the live bucket and its key, in key
+// order, overlaid with its matching run-state record (counted in rsr), until
+// fn or a decode returns an error. It returns the keys of the run-state
+// records it did not apply: stale, orphaned or undecodable.
+func (db *db) eachLiveJobTx(tx *bolt.Tx, rsr *runStateRecovery, fn func(key []byte, job *Job) error) ([]string,
+	error,
+) {
+	var drop []string
+
+	runStates := newRunStateWalk(tx)
+
+	err := tx.Bucket(bucketJobsLive).ForEach(func(key, encoded []byte) error {
+		if encoded == nil {
+			return nil
+		}
+
+		job, errd := db.decodeJob(encoded)
+		if errd != nil {
+			return fmt.Errorf("live job %q: %w", key, errd)
+		}
+
+		if db.overlayRunState(job, key, encoded, runStates.recordFor(key), rsr) {
+			drop = append(drop, string(key))
+		}
+
+		return fn(key, job)
+	})
+
+	runStates.skipBefore(nil)
+
+	return append(drop, runStates.orphans...), err
+}
+
 // decodeStoredJob is decodeJob with the codec handle ch, for history.bolt, whose
 // complete records are the same Binc encoding.
 func decodeStoredJob(encoded []byte, ch codec.Handle) (*Job, error) {
@@ -2230,6 +2263,19 @@ func recommendedReqGroupStat(bdb *bolt.DB, statBucket []byte, reqGroup string, r
 	}
 
 	return roundRecommendation(recommendation, maxVal, roundAmount), nil
+}
+
+// setPhaseTotal records total, how many entries the current phase processes,
+// once it is known, which its status then reports as its Total, with detail.
+func (r *dbUpgradeReporter) setPhaseTotal(detail string, total int) {
+	if r == nil || !r.phaseActive {
+		return
+	}
+
+	r.phaseTotal = total
+	r.phaseDetail = detail
+
+	r.writeStatus(r.phaseState, detail, r.phaseProcessed)
 }
 
 // dropStaleEndTimeIndex recovers the key's prior end time from its existing
@@ -3084,35 +3130,15 @@ func (db *db) snapshotJobExitLocked(job *Job, stdo, stde []byte, forceStorage bo
 // matching run-state record (counted in rsr), and the keys of the run-state
 // records it did not apply: stale, orphaned or undecodable.
 func (db *db) readLiveJobsTx(tx *bolt.Tx, rsr *runStateRecovery) ([]*Job, []string, error) {
-	var (
-		jobs []*Job
-		drop []string
-	)
+	var jobs []*Job
 
-	runStates := newRunStateWalk(tx)
-
-	err := tx.Bucket(bucketJobsLive).ForEach(func(key, encoded []byte) error {
-		if encoded == nil {
-			return nil
-		}
-
-		job, errd := db.decodeJob(encoded)
-		if errd != nil {
-			return errd
-		}
-
-		if db.overlayRunState(job, key, encoded, runStates.recordFor(key), rsr) {
-			drop = append(drop, string(key))
-		}
-
+	drop, err := db.eachLiveJobTx(tx, rsr, func(_ []byte, job *Job) error {
 		jobs = append(jobs, job)
 
 		return nil
 	})
 
-	runStates.skipBefore(nil)
-
-	return jobs, append(drop, runStates.orphans...), err
+	return jobs, drop, err
 }
 
 // updateJobRunStateDurable is updateJobAfterChangeDurable for the run state: it
@@ -3967,6 +3993,7 @@ type dbUpgradeReporter struct {
 	phaseState     string
 	phaseDetail    string
 	phaseProcessed int
+	phaseTotal     int
 }
 
 func newDBUpgradeReporter(ctx context.Context, dbFile string) *dbUpgradeReporter {
@@ -4009,6 +4036,7 @@ func (r *dbUpgradeReporter) startPhase(state, detail string) {
 	r.phaseState = state
 	r.phaseDetail = detail
 	r.phaseProcessed = 0
+	r.phaseTotal = 0
 	// the phase's own start line is the first thing an operator sees of it, so
 	// the rate limit's interval runs from here: a phase shorter than one interval
 	// says nothing more.
@@ -4092,6 +4120,7 @@ func (r *dbUpgradeReporter) writeStatus(state, detail string, processed int) {
 		State:     state,
 		Detail:    detail,
 		Processed: processed,
+		Total:     r.phaseTotal,
 		StartedAt: r.startedAt,
 	}
 

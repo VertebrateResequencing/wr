@@ -805,7 +805,7 @@ func (s *logStore) addTransitionLocked(job *Job, k logKey, build func() bool) fu
 // and deletes the files the checkpoint made redundant that are left. It
 // returns the number the next wal file must have.
 func (s *logStore) recover(ctx context.Context) (uint32, error) {
-	if err := removeTmpFiles(s.dir); err != nil {
+	if err := errors.Join(removeTmpFiles(s.dir), removeConvertSource(s.dir)); err != nil {
 		return 0, err
 	}
 
@@ -1020,10 +1020,10 @@ func (s *logStore) backup(io.Writer) error {
 	return errLogStoreBackup
 }
 
-// upgradedOnOpen reports false: the log store converts nothing on open yet
-// (spec E1, item 1f.2).
+// upgradedOnOpen reports whether opening the store converted a bbolt
+// database into it (spec E1).
 func (s *logStore) upgradedOnOpen() bool {
-	return false
+	return s.upgraded
 }
 
 // logWrite is one append's records on their way to being durable. The writer's
@@ -1218,6 +1218,10 @@ type logStore struct {
 
 	// lock, if not nil, is the store lock close releases.
 	lock *storeLock
+
+	// upgraded is whether opening the store converted a bbolt database into
+	// it.
+	upgraded bool
 
 	// history is history.bolt.
 	history *historyBolt

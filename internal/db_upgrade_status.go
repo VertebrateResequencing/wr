@@ -39,11 +39,16 @@ const (
 	// DBUpgradeDepGroupIndexState, DBUpgradeJobLookupState and
 	// DBUpgradeCommitState are the phases of a one-off database upgrade: the
 	// index rebuilds the manager does the first time it opens a database an
-	// older wr wrote. They are the ONLY states that mean the database itself is
-	// being upgraded - see IsDBUpgradeState.
+	// older wr wrote. They and DBUpgradeConvertState are the ONLY states that
+	// mean the database itself is being upgraded - see IsDBUpgradeState.
 	DBUpgradeDepGroupIndexState = "rebuild dep-group index"
 	DBUpgradeJobLookupState     = "rebuild job lookup index"
 	DBUpgradeCommitState        = "commit database upgrade"
+
+	// DBUpgradeConvertState is the phase of a one-off conversion of a bbolt
+	// database to the log store, the first time a manager opens one; its
+	// Processed and Total count jobs. It is a database-upgrade phase too.
+	DBUpgradeConvertState = "convert database"
 
 	// DBUpgradePostStartupState and DBUpgradePostStartupDetail describe the
 	// post-upgrade phase where the database upgrade is done but the manager is
@@ -75,7 +80,7 @@ const (
 // someone forgets to classify degrades to the honest wording.
 func IsDBUpgradeState(state string) bool {
 	switch state {
-	case DBUpgradeDepGroupIndexState, DBUpgradeJobLookupState, DBUpgradeCommitState:
+	case DBUpgradeDepGroupIndexState, DBUpgradeJobLookupState, DBUpgradeCommitState, DBUpgradeConvertState:
 		return true
 	default:
 		return false
