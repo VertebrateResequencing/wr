@@ -234,7 +234,7 @@ func openReliable4WriteStormDB(t *testing.T, ctx context.Context) *db {
 	tmpdir := t.TempDir()
 
 	database, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
-		filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+		filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false)
 	if err != nil {
 		t.Fatalf("initDB failed: %v", err)
 	}

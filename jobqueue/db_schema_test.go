@@ -57,7 +57,7 @@ func TestDBSchemaVersionCheckOnOpen(t *testing.T) {
 	Convey("Given a database stamped 1 holding 2 live jobs, initDB opens it, recovery reads both and it becomes 2", t,
 		func() {
 			dbFile := filepath.Join(t.TempDir(), "queue.db")
-			testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+			testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false)
 			So(err, ShouldBeNil)
 
 			live := []*Job{testDBJob("echo schema 1", "rg-schema"), testDBJob("echo schema 2", "rg-schema")}
@@ -67,7 +67,7 @@ func TestDBSchemaVersionCheckOnOpen(t *testing.T) {
 
 			stampTestDB(t, dbFile, dbSchemaVersionNoCompleteStd)
 
-			reDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+			reDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false)
 			So(err, ShouldBeNil)
 
 			jobs, _, err := reDB.recoverIncompleteJobs()
@@ -140,7 +140,7 @@ func TestDBSchemaVersionCheckOnOpen(t *testing.T) {
 		unstampDB(t, bkFile)
 
 		Convey("initDB restores it, refuses it, and a compaction makes it openable at 2", func() {
-			_, _, err := initDB(ctx, dbFile, bkFile, internal.Development, false, false)
+			_, _, err := initDB(ctx, dbFile, bkFile, internal.Development, false)
 			So(errors.Is(err, errDBNeedsCompact), ShouldBeTrue)
 
 			_, err = os.Stat(dbFile)
@@ -149,7 +149,7 @@ func TestDBSchemaVersionCheckOnOpen(t *testing.T) {
 			_, err = CompactDBFileStats(dbFile)
 			So(err, ShouldBeNil)
 
-			testDB, _, err := initDB(ctx, dbFile, bkFile, internal.Development, false, false)
+			testDB, _, err := initDB(ctx, dbFile, bkFile, internal.Development, false)
 			So(err, ShouldBeNil)
 			So(testDB.close(ctx), ShouldBeNil)
 
@@ -176,7 +176,7 @@ func TestDBSchemaVersionCheckOnOpen(t *testing.T) {
 // openAndCloseTestDB opens dbFile with initDB, as a development manager would,
 // and closes it, returning initDB's error.
 func openAndCloseTestDB(ctx context.Context, dbFile string) error {
-	testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+	testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false)
 	if err != nil {
 		return err
 	}

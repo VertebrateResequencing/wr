@@ -49,8 +49,8 @@ recursively instead of failing silently (`jobqueue/store_open.go`,
 `jobqueue/store_backup.go`). Cover E3 tests 1 to 3; tests 4 and 5 need
 restore from backup and are finished in 1f.4.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1f.2: E1 - Automatic conversion (Phase 1 form)
 
@@ -99,8 +99,12 @@ Keep the lock taken first, as the 0b.1 incidental owned by 1c.2 says
 ([incidentals.md](incidentals.md)). Also resolve the 1d.2 incidentals on
 testing that recovery deletes every `*.tmp` and on `dropBefore` keeping a
 state Ref, the 1e.5 incidental on a folded job recovering both complete
-and live after wal damage, and the 1e.5 review incidental on a last wal
-whose whole header fails its CRC being removed as torn
+and live after wal damage, the 1e.5 review incidental on a last wal
+whose whole header fails its CRC being removed as torn, the 1f.1
+review incidental on `initDB`'s restore path removing with plain
+`os.Remove`, the 1f.1 review round 3 incidental on the fake S3's
+`DownloadFile` differing from minio's, and the 1f.1 review round 6
+incidental on the development S3 key and deep S3 nesting
 ([incidentals.md](incidentals.md)).
 
 - [ ] implemented

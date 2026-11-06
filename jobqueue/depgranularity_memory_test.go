@@ -228,7 +228,7 @@ func TestDepGranularityRecoveredMemberships(t *testing.T) {
 func dgmSeedLiveJobs(ctx context.Context, t *testing.T, config ServerConfig, members int) {
 	t.Helper()
 
-	testDB, _, err := initDB(ctx, config.DBFile, config.DBFileBackup, internal.Development, false, false)
+	testDB, _, err := initDB(ctx, config.DBFile, config.DBFileBackup, internal.Development, false)
 	So(err, ShouldBeNil)
 
 	jobs := dgmFixtureJobs(members)

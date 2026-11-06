@@ -1330,7 +1330,7 @@ type db struct {
 	backupQueued   bool
 	backupStopped  bool // set by close() so no further periodic backup starts
 	backupsEnabled bool
-	s3accessor     *muxfys.S3Accessor
+	s3accessor     s3Objects
 	closed         bool
 	storeLock      *storeLock // taken by openStore, released by close; nil from initDB alone
 	slowBackups    bool       // just for testing purposes
@@ -1428,12 +1428,12 @@ func (db *db) copyBackup(path string) error {
 // which will cause that s3 path to be mounted in the same directory as dbFile
 // and backups will be written there.
 //
-// In development we delete any existing db and force a fresh start (unless
-// wipeDevDB is false). Backups are also not carried out in development (unless
-// forceBackups is true), so dbBkFile is ignored.
+// Backups are not carried out in development (unless forceBackups is true), so
+// there dbBkFile is ignored. A development store is wiped, if asked, by
+// openStore before it calls this (see wipeDevStore).
 //
 //nolint:lll,gocognit,gocyclo,cyclop,funlen,maintidx,nestif // entry point: sequential fallible db open/recovery
-func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB, forceBackups bool) (*db, string, error) {
+func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, forceBackups bool) (*db, string, error) {
 	// the manager is unreachable for the whole of this and the recovery phases
 	// that follow it, so each phase reports its own elapsed time at warn, where
 	// the default log level shows it and an operator sizing the startup window
@@ -1444,7 +1444,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 
 	var backupsEnabled bool
 
-	var accessor *muxfys.S3Accessor
+	var accessor s3Objects
 
 	// this staging name is deliberately fixed, not os.CreateTemp unique like
 	// the client's stageBackup(): copyBackup() opens it O_CREATE|O_TRUNC, so a
@@ -1460,34 +1460,9 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 		backupsEnabled = true
 
 		if internal.InS3(dbBkFile) {
-			if deployment == internal.Development {
-				dbBkFile += "." + deployment
-			}
+			var err error
 
-			path := strings.TrimPrefix(dbBkFile, internal.S3Prefix)
-			pp := strings.Split(path, "@")
-
-			profile := "default"
-			if len(pp) == s3ProfilePathParts {
-				profile = pp[0]
-				path = pp[1]
-			}
-
-			path = filepath.Dir(path)
-
-			accessorConfig, err := muxfys.S3ConfigFromEnvironment(profile, path)
-			if err != nil {
-				return nil, "", err
-			}
-
-			accessor, err = muxfys.NewS3Accessor(accessorConfig)
-			if err != nil {
-				return nil, "", err
-			}
-
-			dbBkFile = filepath.Join(path, filepath.Base(dbBkFile))
-
-			dbBkFile, err = stripBucketFromS3Path(dbBkFile)
+			accessor, dbBkFile, err = s3BackupLocation(dbBkFile, deployment)
 			if err != nil {
 				return nil, "", err
 			}
@@ -1501,23 +1476,6 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, wipeDevDB,
 					msg = "recreated missing db file " + dbFile + " from s3 backup file " + dbBkFile
 				}
 			}
-		}
-	}
-
-	if wipeDevDB && deployment == internal.Development {
-		errr := os.Remove(dbFile)
-		if errr != nil && !os.IsNotExist(errr) {
-			clog.Warn(ctx, "Failed to remove database file", "path", dbFile, "err", errr)
-		}
-
-		if accessor != nil {
-			errr = accessor.DeleteFile(dbBkFile)
-		} else {
-			errr = os.Remove(dbBkFile)
-		}
-
-		if errr != nil && !os.IsNotExist(errr) {
-			clog.Warn(ctx, "Failed to remove database backup file", "path", dbBkFile, "err", errr)
 		}
 	}
 

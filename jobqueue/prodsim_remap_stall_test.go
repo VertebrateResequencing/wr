@@ -103,7 +103,7 @@ func prodsimRemapRun(t *testing.T, dir string, cross bool, backupSecs float64) (
 
 	// fill to ~100MiB in a first open, so the reopen maps 128MiB and ~28MiB of
 	// writes cross it.
-	db1, _, err := initDB(ctx, dbFile, dbFile+"_bk", internal.Development, false, false)
+	db1, _, err := initDB(ctx, dbFile, dbFile+"_bk", internal.Development, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func prodsimRemapRun(t *testing.T, dir string, cross bool, backupSecs float64) (
 		t.Fatal(err)
 	}
 
-	testDB, _, err := initDB(ctx, dbFile, dbFile+"_bk", internal.Development, false, false)
+	testDB, _, err := initDB(ctx, dbFile, dbFile+"_bk", internal.Development, false)
 	if err != nil {
 		t.Fatal(err)
 	}

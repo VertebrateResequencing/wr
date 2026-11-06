@@ -131,7 +131,7 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 
 			So(stripped, ShouldEqual, len(keys))
 
-			reDB, _, errr := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+			reDB, _, errr := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false)
 			So(errr, ShouldBeNil)
 
 			jobs, errj := reDB.retrieveCompleteJobsByKeys(keys)
@@ -339,7 +339,7 @@ func TestDBCompactStripsOldCompleteStd(t *testing.T) {
 func populateCompactStdDB(ctx context.Context, t *testing.T, dbFile string, unversioned bool) ([]string, string) {
 	t.Helper()
 
-	testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+	testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false)
 	So(err, ShouldBeNil)
 
 	live := []*Job{testDBJob("echo compact live 1", compactStdTestRepGroup),
@@ -634,7 +634,7 @@ func TestDBSchemaVersionOnOpen(t *testing.T) {
 	Convey("initDB stamps a new database with the current schema version", t, func() {
 		dbFile := filepath.Join(t.TempDir(), "queue.db")
 
-		testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+		testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false)
 		So(err, ShouldBeNil)
 		So(testDB.close(ctx), ShouldBeNil)
 

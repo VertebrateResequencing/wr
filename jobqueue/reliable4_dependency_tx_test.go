@@ -148,7 +148,7 @@ func newDepTxFixture(t *testing.T, ctx context.Context) *depTxFixture {
 	tmpdir := t.TempDir()
 
 	testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
-		filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+		filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false)
 	So(err, ShouldBeNil)
 
 	fixture := seedDepTxFixture(ctx, testDB)

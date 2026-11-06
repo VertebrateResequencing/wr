@@ -111,7 +111,7 @@ func coordOpenBackupDB(t *testing.T, ctx context.Context) *db {
 	tmpdir := t.TempDir()
 
 	database, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
-		filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, true)
+		filepath.Join(tmpdir, "queue.db.bak"), internal.Development, true)
 	So(err, ShouldBeNil)
 
 	// NB: don't assert on `database` itself (e.g. ShouldNotBeNil) - goconvey

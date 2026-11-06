@@ -96,7 +96,7 @@ func dgbInitDB(ctx context.Context, dbFile, dbBkFile string) (dgbInitDBResult, b
 	results := make(chan dgbInitDBResult, 1)
 
 	go func() {
-		opened, msg, err := initDB(ctx, dbFile, dbBkFile, internal.Development, false, false)
+		opened, msg, err := initDB(ctx, dbFile, dbBkFile, internal.Development, false)
 		results <- dgbInitDBResult{db: opened, msg: msg, err: err}
 	}()
 
@@ -156,7 +156,7 @@ func dgbSeededDB(ctx context.Context, t *testing.T) (string, string) {
 	dbFile := filepath.Join(dir, "db")
 	dbBkFile := dbFile + "_bk"
 
-	seed, _, err := initDB(ctx, dbFile, dbBkFile, internal.Development, false, false)
+	seed, _, err := initDB(ctx, dbFile, dbBkFile, internal.Development, false)
 	So(err, ShouldBeNil)
 
 	jobsToQueue, _, _, err := seed.storeNewJobs(ctx, []*Job{testDBJob("echo dgb", dgbRepGroup)}, false)
@@ -290,7 +290,7 @@ func dbUnreadableSeededDB(ctx context.Context, t *testing.T) (string, string) {
 
 	dbFile, dbBkFile := dgbSeededDB(ctx, t)
 
-	opened, _, err := initDB(ctx, dbFile, dbBkFile, internal.Development, false, false)
+	opened, _, err := initDB(ctx, dbFile, dbBkFile, internal.Development, false)
 	So(err, ShouldBeNil)
 
 	jobsToQueue, _, _, err := opened.storeNewJobs(ctx, []*Job{testDBJob("echo new", dbUnreadableRepGroup)}, false)
@@ -320,7 +320,7 @@ func dbUnreadableChmod(path string) {
 func dbUnreadableRepGroups(ctx context.Context, t *testing.T, dbFile, dbBkFile string) []string {
 	t.Helper()
 
-	opened, _, err := initDB(ctx, dbFile, dbBkFile, internal.Development, false, false)
+	opened, _, err := initDB(ctx, dbFile, dbBkFile, internal.Development, false)
 	So(err, ShouldBeNil)
 
 	defer func() { So(opened.close(ctx), ShouldBeNil) }()

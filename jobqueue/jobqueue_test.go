@@ -353,7 +353,6 @@ func TestDBRecommendationRoundsWithDefaults(t *testing.T) {
 			filepath.Join(tmpdir, "queue.db.bak"),
 			internal.Development,
 			false,
-			false,
 		)
 		So(err, ShouldBeNil)
 

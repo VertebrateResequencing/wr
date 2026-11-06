@@ -1262,7 +1262,7 @@ type logStore struct {
 // openLogStore opens, creating if need be, the log store in dir: it checks its
 // VERSION, opens its history.bolt, replays the log there into memory and
 // starts a writer on a new segment. The caller holds the store's lock (see
-// openLogStoreLocked).
+// openLogStoreHolding).
 func openLogStore(ctx context.Context, dir string) (*logStore, error) {
 	if err := prepareStoreDir(dir); err != nil {
 		return nil, err

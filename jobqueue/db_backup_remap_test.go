@@ -185,7 +185,7 @@ func TestDBBackupRemap(t *testing.T) {
 		tmpdir := t.TempDir()
 		dbFile := filepath.Join(tmpdir, "queue.db")
 
-		testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+		testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false)
 		So(err, ShouldBeNil)
 
 		defer func() { So(testDB.close(ctx), ShouldBeNil) }()

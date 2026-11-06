@@ -93,7 +93,7 @@ func testDBForAttribution(ctx context.Context, t *testing.T) *db {
 	tmpdir := t.TempDir()
 
 	testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
-		filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+		filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false)
 	So(err, ShouldBeNil)
 
 	Reset(func() {

@@ -83,7 +83,7 @@ func TestManagerDBCommitFreelistCost(t *testing.T) {
 		ctx := context.Background()
 		dbFile := filepath.Join(t.TempDir(), "queue.db")
 
-		testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+		testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false)
 		So(err, ShouldBeNil)
 
 		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
@@ -112,7 +112,7 @@ func TestManagerDBFreelistCrashSafety(t *testing.T) {
 		ctx := context.Background()
 		dbFile := filepath.Join(t.TempDir(), "queue.db")
 
-		testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+		testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false)
 		So(err, ShouldBeNil)
 
 		jobs := make([]*Job, 0, 100)
@@ -141,7 +141,7 @@ func TestManagerDBFreelistCrashSafety(t *testing.T) {
 
 			defer clog.ToDefault()
 
-			reDB, _, errr := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+			reDB, _, errr := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false)
 			So(errr, ShouldBeNil)
 
 			// bbolt rebuilds the freelist by reading every page, so the file is
@@ -171,7 +171,7 @@ func TestManagerDBFreelistCrashSafety(t *testing.T) {
 			So(testDB.close(ctx), ShouldBeNil)
 			So(boltFreelistSynced(dbFile), ShouldBeTrue)
 
-			reDB, _, errr := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+			reDB, _, errr := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false)
 			So(errr, ShouldBeNil)
 
 			defer func() { So(reDB.close(ctx), ShouldBeNil) }()
@@ -189,7 +189,7 @@ func TestManagerDBPrefetch(t *testing.T) {
 		ctx := context.Background()
 		dbFile := filepath.Join(t.TempDir(), "queue.db")
 
-		testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+		testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false)
 		So(err, ShouldBeNil)
 
 		makeFreePages(testDB.bolt)
@@ -211,7 +211,7 @@ func TestManagerDBPrefetch(t *testing.T) {
 		}()
 
 		open := func() {
-			reDB, _, errr := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+			reDB, _, errr := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false)
 			So(errr, ShouldBeNil)
 			So(reDB.close(ctx), ShouldBeNil)
 		}
@@ -310,7 +310,7 @@ func TestManagerDBStaleFreelist(t *testing.T) {
 		ctx := context.Background()
 		dbFile := filepath.Join(t.TempDir(), "queue.db")
 
-		testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+		testDB, _, err := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false)
 		So(err, ShouldBeNil)
 
 		jobs := make([]*Job, 0, 100)
@@ -326,7 +326,7 @@ func TestManagerDBStaleFreelist(t *testing.T) {
 		So(boltFreelistSynced(dbFile), ShouldBeTrue)
 
 		reopenAndCheck := func() {
-			reDB, _, errr := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+			reDB, _, errr := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false)
 			So(errr, ShouldBeNil)
 
 			defer func() { So(reDB.close(ctx), ShouldBeNil) }()
@@ -347,7 +347,7 @@ func TestManagerDBStaleFreelist(t *testing.T) {
 		}
 
 		Convey("a later run's commits, then a crash, leave no stale freelist to trust", func() {
-			reDB, _, errr := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false, false)
+			reDB, _, errr := initDB(ctx, dbFile, dbFile+".bak", internal.Development, false)
 			So(errr, ShouldBeNil)
 
 			// many commits that reuse and free pages, including the synced

@@ -116,7 +116,7 @@ func seedHistoryDB(t *testing.T, dbFile, prefix string, groups, perGroup int) (i
 
 	ctx := context.Background()
 
-	testDB, _, err := initDB(ctx, dbFile, dbFile+"_bk", internal.Development, false, false)
+	testDB, _, err := initDB(ctx, dbFile, dbFile+"_bk", internal.Development, false)
 	if err != nil {
 		t.Fatalf("could not create %s: %s", dbFile, err)
 	}

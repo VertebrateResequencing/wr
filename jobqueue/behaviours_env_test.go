@@ -287,7 +287,7 @@ func TestBehaviourRunEnv(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			testDB, _, err := initDB(ctx, filepath.Join(t.TempDir(), "queue.db"), "",
-				internal.Development, false, false)
+				internal.Development, false)
 			So(err, ShouldBeNil)
 
 			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
@@ -315,7 +315,7 @@ func TestBehaviourRunEnv(t *testing.T) {
 			realWorkSpace(job)
 
 			testDB, _, err := initDB(ctx, filepath.Join(t.TempDir(), "queue.db"), "",
-				internal.Development, false, false)
+				internal.Development, false)
 			So(err, ShouldBeNil)
 
 			defer func() { So(testDB.close(ctx), ShouldBeNil) }()

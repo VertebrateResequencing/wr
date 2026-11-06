@@ -248,7 +248,7 @@ func TestReliable4InflateDBOpens(t *testing.T) {
 		}), ShouldBeNil)
 		So(bdb.Close(), ShouldBeNil)
 
-		testDB, _, err := initDB(ctx, path, path+".bak", internal.Development, false, false)
+		testDB, _, err := initDB(ctx, path, path+".bak", internal.Development, false)
 		So(err, ShouldBeNil)
 		So(testDB.close(ctx), ShouldBeNil)
 

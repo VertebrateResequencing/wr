@@ -402,7 +402,7 @@ func acOpenBigDB(t *testing.T, ctx context.Context, dbFile string, backups bool)
 		}
 	})
 
-	database, _, err := initDB(ctx, work, work+"_bk", internal.Development, false, backups)
+	database, _, err := initDB(ctx, work, work+"_bk", internal.Development, backups)
 	if err != nil {
 		t.Fatalf("initDB(%s) failed: %v", work, err)
 	}

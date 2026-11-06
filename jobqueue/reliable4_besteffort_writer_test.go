@@ -157,7 +157,7 @@ func TestReliable4BestEffortCloseDrains(t *testing.T) {
 	dbFile := filepath.Join(tmpdir, "queue.db")
 	dbBkFile := filepath.Join(tmpdir, "queue.db.bak")
 
-	database, _, err := initDB(ctx, dbFile, dbBkFile, internal.Development, false, false)
+	database, _, err := initDB(ctx, dbFile, dbBkFile, internal.Development, false)
 	if err != nil {
 		t.Fatalf("initDB failed: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestReliable4BestEffortCloseDrains(t *testing.T) {
 
 	// Reopen the (preserved) db file and confirm every job's latest state was
 	// persisted by close()'s drain - no best-effort write was lost on shutdown.
-	reopened, _, err := initDB(ctx, dbFile, dbBkFile, internal.Development, false, false)
+	reopened, _, err := initDB(ctx, dbFile, dbBkFile, internal.Development, false)
 	if err != nil {
 		t.Fatalf("reopen initDB failed: %v", err)
 	}

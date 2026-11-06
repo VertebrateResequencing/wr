@@ -372,7 +372,7 @@ func newModifierValidationHarnessForJobs(t *testing.T, jobs []*Job) *modifierVal
 	ctx, cancel := context.WithCancel(context.Background())
 	tmpDir := t.TempDir()
 	testDB, _, err := initDB(ctx, filepath.Join(tmpDir, "queue.db"),
-		filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false, false)
+		filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false)
 	So(err, ShouldBeNil)
 
 	ch := new(codec.BincHandle)

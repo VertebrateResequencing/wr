@@ -63,6 +63,10 @@ const (
 	storeOpenUnwritableDirMode os.FileMode = 0o500
 )
 
+// errStoreNotLog is returned by openLogStoreLocked if it opens another kind of
+// store.
+var errStoreNotLog = errors.New("opened store is not a log store")
+
 // logOpenResult is what a bounded openLogStoreLocked call came back with.
 type logOpenResult struct {
 	s   *logStore
@@ -252,6 +256,22 @@ func seededLogStore(ctx context.Context, cfg storeConfig) (*logStore, *Job) {
 	So(err, ShouldBeNil)
 
 	return s, job
+}
+
+// openLogStoreLocked opens the log store cfg names, under its lock, through
+// openStoreKind, so unwrapped.
+func openLogStoreLocked(ctx context.Context, cfg storeConfig) (*logStore, error) {
+	s, _, err := openStoreKind(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	ls, ok := s.(*logStore)
+	if !ok {
+		return nil, errors.Join(fmt.Errorf("%w: %T", errStoreNotLog, s), s.close(ctx))
+	}
+
+	return ls, nil
 }
 
 // soLogStoreHolds asserts that job is stored live in s.

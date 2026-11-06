@@ -131,7 +131,7 @@ func prepareArchivedJobsInRepGroup(ctx context.Context, t *testing.T, config Ser
 ) {
 	t.Helper()
 
-	testDB, _, err := initDB(ctx, config.DBFile, config.DBFileBackup, internal.Development, false, false)
+	testDB, _, err := initDB(ctx, config.DBFile, config.DBFileBackup, internal.Development, false)
 	So(err, ShouldBeNil)
 
 	jobs := make([]*Job, n)

@@ -41,6 +41,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/VertebrateResequencing/wr/internal"
 )
 
 const (
@@ -70,6 +72,18 @@ const (
 
 	// storeTmpExt ends the name of a file still being written.
 	storeTmpExt = ".tmp"
+
+	// storeConvertingSuffix, storeRestoringSuffix and storeCorruptSuffix make
+	// the names of the directories a conversion (spec E1) and a restore (E2)
+	// build or set aside beside dbFile.
+	storeConvertingSuffix = ".converting"
+	storeRestoringSuffix  = ".restoring"
+	storeCorruptSuffix    = ".corrupt"
+
+	// storeBoltPreInfix follows dbFile or dbBkFile in the name of a bbolt
+	// file a conversion keeps for rollback, and precedes the version that
+	// wrote it.
+	storeBoltPreInfix = ".bolt-pre-"
 )
 
 // storeLock is a held flock on dbFile + storeLockSuffix.
@@ -109,18 +123,13 @@ func (l *storeLock) release() error {
 	return l.f.Close()
 }
 
-// openLogStoreLocked opens the log store at cfg.dbFile under its lock, which
-// the store holds until it closes. openStore opens the log store kind through
-// it once that kind is the store the server uses.
-func openLogStoreLocked(ctx context.Context, cfg storeConfig) (*logStore, error) {
-	lock, err := lockStore(ctx, cfg.dbFile)
+// openLogStoreHolding opens the log store at dbFile, giving it lock, the store
+// lock its caller took, to hold until it closes. If it cannot open the store
+// it releases lock.
+func openLogStoreHolding(ctx context.Context, dbFile string, lock *storeLock) (*logStore, error) {
+	s, err := openLogStore(ctx, dbFile)
 	if err != nil {
-		return nil, err
-	}
-
-	s, err := openLogStore(ctx, cfg.dbFile)
-	if err != nil {
-		return nil, errors.Join(unreadableOr(err, cfg.dbFile), lock.release())
+		return nil, errors.Join(unreadableOr(err, dbFile), lock.release())
 	}
 
 	s.lock = lock
@@ -136,6 +145,96 @@ func unreadableOr(err error, dbFile string) error {
 	}
 
 	return err
+}
+
+// wipeDevStore, if cfg asks for a development wipe, removes everything the DB
+// at cfg.dbFile owns, so that a development manager starts from an empty DB
+// (spec E3): dbFile, file or directory, the directories a conversion or
+// restore left beside it, the bbolt files a conversion kept for rollback, and
+// the backup at cfg.dbBkFile (see wipeDevBackup). The ".upgrade" sidecar is
+// left, as is the ".lock" file, which the caller holds.
+func wipeDevStore(cfg storeConfig) error {
+	if !cfg.wipeDevDB || cfg.deployment != internal.Development {
+		return nil
+	}
+
+	err := removeOwned(cfg.dbFile, storeConvertingSuffix, storeRestoringSuffix, storeCorruptSuffix)
+	if err != nil {
+		return fmt.Errorf("wipe development db %s: %w", cfg.dbFile, err)
+	}
+
+	if err = wipeDevBackup(cfg.dbBkFile, cfg.forceBackups); err != nil {
+		return fmt.Errorf("wipe development db backup %s: %w", cfg.dbBkFile, err)
+	}
+
+	return nil
+}
+
+// removeOwned removes path, file or directory, path + each of suffixes, and
+// every sibling of path whose name is path's followed by storeBoltPreInfix. An
+// empty path owns nothing, so nothing is removed.
+func removeOwned(path string, suffixes ...string) error {
+	if path == "" {
+		return nil
+	}
+
+	paths, err := boltPreSiblings(path)
+	if err != nil {
+		return err
+	}
+
+	paths = append(paths, path)
+
+	for _, suffix := range suffixes {
+		paths = append(paths, path+suffix)
+	}
+
+	for _, p := range paths {
+		if err = os.RemoveAll(p); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// boltPreSiblings returns the paths beside path whose names are path's
+// followed by storeBoltPreInfix.
+func boltPreSiblings(path string) ([]string, error) {
+	dir := filepath.Dir(path)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+
+	pre := filepath.Base(path) + storeBoltPreInfix
+
+	var paths []string
+
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), pre) {
+			paths = append(paths, filepath.Join(dir, entry.Name()))
+		}
+	}
+
+	return paths, nil
+}
+
+// wipeDevBackup removes a development manager's backup at dbBkFile and the
+// bbolt files a conversion kept beside it. An S3 backup is removed only when
+// forceBackups, as a development manager otherwise makes none.
+func wipeDevBackup(dbBkFile string, forceBackups bool) error {
+	if internal.InS3(dbBkFile) && !forceBackups {
+		return nil
+	}
+
+	backup, err := backupTargetAt(dbBkFile, internal.Development)
+	if err != nil {
+		return err
+	}
+
+	return backup.removeAll()
 }
 
 // flockWithin takes an exclusive flock on f, trying again every

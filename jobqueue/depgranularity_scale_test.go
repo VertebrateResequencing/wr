@@ -203,7 +203,7 @@ func dgscWaitRecovered(server *Server) bool {
 func dgscSeedLiveJobs(ctx context.Context, t *testing.T, config ServerConfig, count int) {
 	t.Helper()
 
-	testDB, _, err := initDB(ctx, config.DBFile, config.DBFileBackup, internal.Development, false, false)
+	testDB, _, err := initDB(ctx, config.DBFile, config.DBFileBackup, internal.Development, false)
 	So(err, ShouldBeNil)
 
 	jobs := make([]*Job, count)

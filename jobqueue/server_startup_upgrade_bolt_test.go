@@ -108,7 +108,7 @@ func TestServeReportsPostUpgradeStartupUntilTokenReady(t *testing.T) {
 func prepareDBNeedingStartupUpgrade(ctx context.Context, t *testing.T, config ServerConfig) {
 	t.Helper()
 
-	testDB, _, err := initDB(ctx, config.DBFile, config.DBFileBackup, internal.Development, false, false)
+	testDB, _, err := initDB(ctx, config.DBFile, config.DBFileBackup, internal.Development, false)
 	So(err, ShouldBeNil)
 
 	parent := testDBJob("echo parent", "startup-upgrade-parent")

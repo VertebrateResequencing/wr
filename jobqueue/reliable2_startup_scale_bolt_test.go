@@ -131,7 +131,7 @@ func measureCompletedHistoryStartup(ctx context.Context, t *testing.T, config Se
 func prepareCompletedHistory(ctx context.Context, t *testing.T, config ServerConfig, count int) {
 	t.Helper()
 
-	testDB, _, err := initDB(ctx, config.DBFile, config.DBFileBackup, internal.Development, false, false)
+	testDB, _, err := initDB(ctx, config.DBFile, config.DBFileBackup, internal.Development, false)
 	So(err, ShouldBeNil)
 
 	seed := testDBArchivedJob("echo seed", c2SeedRepGroup, time.Now())

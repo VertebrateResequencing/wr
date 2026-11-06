@@ -767,7 +767,7 @@ func TestReliable4StatusLimitFacets(t *testing.T) {
 		// is exercised on a Job carrying a distinct non-zero value in every facet.
 		tmp := t.TempDir()
 		testDB, _, err := initDB(ctx, filepath.Join(tmp, "db"), filepath.Join(tmp, "db.bk"),
-			internal.Development, false, false)
+			internal.Development, false)
 		So(err, ShouldBeNil)
 
 		defer func() {

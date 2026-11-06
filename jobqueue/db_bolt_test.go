@@ -59,7 +59,7 @@ func TestDBUpgradeProgress(t *testing.T) {
 
 		defer clog.ToDefault()
 
-		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false)
 		So(err, ShouldBeNil)
 
 		parent := testDBJob("echo parent", "upgrade-parent")
@@ -83,7 +83,7 @@ func TestDBUpgradeProgress(t *testing.T) {
 
 		logs.Reset()
 
-		testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false)
 
 		So(err, ShouldBeNil)
 		defer func() {
@@ -115,7 +115,6 @@ func BenchmarkModifyLiveJobsReverseLookup(b *testing.B) {
 		filepath.Join(tmpdir, "queue.db"),
 		filepath.Join(tmpdir, "queue.db.bak"),
 		internal.Development,
-		false,
 		false,
 	)
 	if err != nil {
@@ -178,7 +177,7 @@ func TestDBRetrieveCompleteJobsRecent(t *testing.T) {
 		tmpdir := t.TempDir()
 
 		testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
-			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false)
 		So(err, ShouldBeNil)
 
 		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
@@ -209,7 +208,7 @@ func TestDBMapFreelistOpen(t *testing.T) {
 		dbFile := filepath.Join(tmpdir, "queue.db")
 		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
 
-		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false)
 		So(err, ShouldBeNil)
 		So(testDB.bolt.FreelistType, ShouldEqual, bolt.FreelistMapType)
 
@@ -218,7 +217,7 @@ func TestDBMapFreelistOpen(t *testing.T) {
 		So(testDB.close(ctx), ShouldBeNil)
 
 		Convey("and reopening the existing db also uses the map freelist without error", func() {
-			testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+			testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false)
 			So(err, ShouldBeNil)
 			So(testDB.bolt.FreelistType, ShouldEqual, bolt.FreelistMapType)
 
@@ -243,7 +242,7 @@ func TestDBMapFreelistRoundTrip(t *testing.T) {
 		dbFile := filepath.Join(tmpdir, "queue.db")
 		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
 
-		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false)
 		So(err, ShouldBeNil)
 
 		liveA := testDBJob("echo live a", "rg-live-a")
@@ -259,7 +258,7 @@ func TestDBMapFreelistRoundTrip(t *testing.T) {
 		So(testDB.close(ctx), ShouldBeNil)
 
 		Convey("reopening reads the same stored and archived jobs back", func() {
-			testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+			testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false)
 			So(err, ShouldBeNil)
 
 			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
@@ -323,7 +322,7 @@ func TestDBContainerImageUser(t *testing.T) {
 		dbFile := filepath.Join(tmpdir, "queue.db")
 		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
 
-		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false)
 		So(err, ShouldBeNil)
 
 		imageUser := testDBJob(imageUserCmd, "rg-image-user")
@@ -341,7 +340,7 @@ func TestDBContainerImageUser(t *testing.T) {
 			// no schema change was needed for the new field, so the check that
 			// matters is that an older record still decodes, and picks up the
 			// new safe default rather than the image's user.
-			testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+			testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false)
 			So(err, ShouldBeNil)
 
 			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
@@ -376,7 +375,7 @@ func TestDBPutJobStatsCorruptDurationGuard(t *testing.T) {
 	newTestDB := func() *db {
 		tmpdir := t.TempDir()
 		testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
-			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false)
 		So(err, ShouldBeNil)
 
 		return testDB
@@ -495,7 +494,7 @@ func TestDBReverseLookupIndex(t *testing.T) {
 		dbFile := filepath.Join(tmpdir, "queue.db")
 		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
 
-		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false)
 		So(err, ShouldBeNil)
 
 		parent := testDBJob("echo parent", "old-parent")
@@ -534,7 +533,7 @@ func TestDBReverseLookupIndex(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(testDB.close(ctx), ShouldBeNil)
 
-		testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false)
 
 		So(err, ShouldBeNil)
 		defer func() {
@@ -632,7 +631,6 @@ func TestDBDepGroups(t *testing.T) {
 			filepath.Join(tmpdir, "queue.db.bak"),
 			internal.Development,
 			false,
-			false,
 		)
 		So(err, ShouldBeNil)
 
@@ -669,7 +667,7 @@ func TestDBDepGroups(t *testing.T) {
 		dbFile := filepath.Join(tmpdir, "queue.db")
 		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
 
-		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false)
 		So(err, ShouldBeNil)
 
 		legacy := testDBJob("echo legacy", "legacy")
@@ -691,7 +689,7 @@ func TestDBDepGroups(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(testDB.close(ctx), ShouldBeNil)
 
-		testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false)
 		So(err, ShouldBeNil)
 
 		defer func() {
@@ -718,7 +716,6 @@ func TestDBReverseLookupRebuildOrder(t *testing.T) {
 			filepath.Join(tmpdir, "queue.db"),
 			filepath.Join(tmpdir, "queue.db.bak"),
 			internal.Development,
-			false,
 			false,
 		)
 		So(err, ShouldBeNil)
@@ -796,7 +793,6 @@ func TestDBReverseLookupRebuildProgress(t *testing.T) {
 			dbFile,
 			filepath.Join(tmpdir, "queue.db.bak"),
 			internal.Development,
-			false,
 			false,
 		)
 		So(err, ShouldBeNil)
@@ -877,7 +873,7 @@ func TestDBEndTimeIndex(t *testing.T) {
 		tmpdir := t.TempDir()
 
 		testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
-			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false)
 		So(err, ShouldBeNil)
 
 		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
@@ -956,7 +952,7 @@ func TestDBEndTimeIndexDurability(t *testing.T) {
 		dbFile := filepath.Join(tmpdir, "queue.db")
 		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
 
-		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false)
 		So(err, ShouldBeNil)
 
 		Convey("A key re-archived at T2 is returned once with its T2 end time after reopen", func() {
@@ -971,7 +967,7 @@ func TestDBEndTimeIndexDurability(t *testing.T) {
 			So(testDB.archiveJob(job.Key(), job), ShouldBeNil)
 			So(testDB.close(ctx), ShouldBeNil)
 
-			testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+			testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false)
 			So(err, ShouldBeNil)
 
 			defer func() { So(testDB.close(ctx), ShouldBeNil) }()
@@ -1041,7 +1037,7 @@ func TestDBContainerImageUserStorageCost(t *testing.T) {
 		dbFile := filepath.Join(tmpdir, "queue.db")
 		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
 
-		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false)
 		So(err, ShouldBeNil)
 
 		callingUser := testDBJob(callingUserCmd, "rg-storage-cost-calling-user")
@@ -1054,7 +1050,7 @@ func TestDBContainerImageUserStorageCost(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(testDB.close(ctx), ShouldBeNil)
 
-		testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		testDB, _, err = initDB(ctx, dbFile, dbBackup, internal.Development, false)
 		So(err, ShouldBeNil)
 
 		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
@@ -1120,7 +1116,7 @@ func TestDBCompactRoundTrip(t *testing.T) {
 		dbFile := filepath.Join(tmpdir, "queue.db")
 		dbBackup := filepath.Join(tmpdir, "queue.db.bak")
 
-		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+		testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false)
 		So(err, ShouldBeNil)
 
 		const perGroup = 60
@@ -1173,7 +1169,7 @@ func TestDBCompactRoundTrip(t *testing.T) {
 			So(beforeSize, ShouldBeGreaterThan, 0)
 			So(afterSize, ShouldBeLessThanOrEqualTo, beforeSize)
 
-			reDB, _, errr := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+			reDB, _, errr := initDB(ctx, dbFile, dbBackup, internal.Development, false)
 			So(errr, ShouldBeNil)
 
 			defer func() { So(reDB.close(ctx), ShouldBeNil) }()
@@ -1279,7 +1275,7 @@ func TestDBBackupCopy(t *testing.T) {
 		tmpdir := t.TempDir()
 
 		testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
-			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false)
 		So(err, ShouldBeNil)
 
 		defer func() { So(testDB.close(ctx), ShouldBeNil) }()

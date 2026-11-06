@@ -140,9 +140,10 @@ type store interface {
 // openStore opens the store described by cfg, returning it along with any
 // startup message for the user. Before anything else it takes the store lock
 // beside cfg.dbFile (see lockStore), which the store holds until it closes.
-// storeKindBolt opens bbolt (see initDB) and storeKindLog the log store (see
-// openLogStoreLocked), which does not yet wipe a development store, convert,
-// restore or back up (items 1f.1 to 1f.5).
+// Then it wipes the store if cfg asks for a development wipe (see
+// wipeDevStore). storeKindBolt opens bbolt (see initDB) and storeKindLog the
+// log store (see openLogStoreHolding), which does not yet convert, restore or
+// back up (items 1f.2 to 1f.5).
 //
 // If the WR_STORE_RECORD env var names a file, the store returned records every
 // call made to it there (see recordingStore); otherwise it is not wrapped at
@@ -168,21 +169,25 @@ func openStore(ctx context.Context, cfg storeConfig) (store, string, error) {
 
 // openStoreKind opens the store of cfg.kind, unwrapped.
 func openStoreKind(ctx context.Context, cfg storeConfig) (store, string, error) {
-	if cfg.kind == storeKindLog {
-		s, err := openLogStoreLocked(ctx, cfg)
-		if err != nil {
-			return nil, "", err
-		}
-
-		return s, "", nil
-	}
-
 	lock, err := lockStore(ctx, cfg.dbFile)
 	if err != nil {
 		return nil, "", err
 	}
 
-	bdb, msg, err := initDB(ctx, cfg.dbFile, cfg.dbBkFile, cfg.deployment, cfg.wipeDevDB, cfg.forceBackups)
+	if err = wipeDevStore(cfg); err != nil {
+		return nil, "", errors.Join(err, lock.release())
+	}
+
+	if cfg.kind == storeKindLog {
+		s, errl := openLogStoreHolding(ctx, cfg.dbFile, lock)
+		if errl != nil {
+			return nil, "", errl
+		}
+
+		return s, "", nil
+	}
+
+	bdb, msg, err := initDB(ctx, cfg.dbFile, cfg.dbBkFile, cfg.deployment, cfg.forceBackups)
 	if err != nil {
 		return nil, msg, errors.Join(err, lock.release())
 	}

@@ -208,7 +208,7 @@ func TestReliable4BackupStall(t *testing.T) {
 // enabled) via the real initDB, so this exercises the exact code path the manager
 // uses.
 func openReliable4StallDB(t *testing.T, ctx context.Context, dbFile, dbBk string) *db {
-	database, msg, err := initDB(ctx, dbFile, dbBk, internal.Production, false, false)
+	database, msg, err := initDB(ctx, dbFile, dbBk, internal.Production, false)
 	if err != nil {
 		t.Fatalf("initDB(%s) failed: %v", dbFile, err)
 	}

@@ -156,7 +156,7 @@ func dgReopenedLegacyDB(t *testing.T, ctx context.Context, withReverse bool) (*d
 	dbFile := filepath.Join(tmpdir, "queue.db")
 	dbBackup := filepath.Join(tmpdir, "queue.db.bak")
 
-	written, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+	written, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false)
 	So(err, ShouldBeNil)
 
 	parent, child := dgStoreRetiredPair(ctx, written)

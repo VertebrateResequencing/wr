@@ -577,7 +577,7 @@ func dgTestDB(t *testing.T, ctx context.Context) *db {
 func dgOpenDB(t *testing.T, ctx context.Context, dbFile, dbBackup string) *db {
 	t.Helper()
 
-	testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false, false)
+	testDB, _, err := initDB(ctx, dbFile, dbBackup, internal.Development, false)
 	So(err, ShouldBeNil)
 
 	Reset(func() {

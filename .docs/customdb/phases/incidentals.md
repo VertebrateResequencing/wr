@@ -141,6 +141,8 @@ called ready, or explicitly deferred with the owner.
   reverted until those land or are pulled forward.
   1e.5 made `WR_TEST_STORE=all` run the log store: those 9 now pass on it,
   with the leaves that need a backup (1f.3, 1f.5) skipped there.
+  1f.1 added the log store's dev wipe (`wipeDevStore`, called from
+  `openStoreKind` for both store kinds).
 - [x] (from 0b.1 review) F5 broke the `reliability_repro` build:
   `envIntDefault` and `reliable4GiB` were defined only in the listed
   `reliable4_backup_repro_test.go`. Done in 0b.1: both moved to
@@ -923,3 +925,44 @@ called ready, or explicitly deferred with the owner.
   `return false, nil`; make the two match. Owner: 1f.11 (the switch):
   trace whether a client can pass these methods unchecked keys, and if so
   match bbolt with a test on both stores.
+
+- [ ] (from 1f.1 review) `initDB`'s bbolt corrupt-restore path still
+  removes with plain `os.Remove`: the temporary S3 download at `bkPath`
+  (`jobqueue/db.go` line 1525) and `dbFile` before copying the backup over
+  it (line 1543). Once `dbFile` or the backup can be a store directory,
+  these fail on a non-empty directory. Owner: 1f.4 (E2): its rewrite of
+  the restore path makes both removals recursive, covered by E3 tests 4
+  and 5.
+
+- [ ] (from 1f.1 review round 3) The fake S3's `DownloadFile`
+  (`jobqueue/store_wipe_test.go` line 176) differs from the real one,
+  which is minio v7.3.0's `FGetObject` (muxfys v5.1.1 `s3.go` line 286).
+  For a missing key the fake returns an error wrapping `os.ErrNotExist`;
+  minio returns an `ErrorResponse` with code `NoSuchKey` from its
+  `StatObject` (`api-get-object-file.go` line 66,
+  `api-error-response.go` lines 154 to 160), which `errors.Is` does not
+  match to `os.ErrNotExist`. The fake writes `dest` directly; minio first
+  creates any missing parent directories of `dest` (lines 57 to 63, before
+  the key is checked, so even a missing key leaves them), then stages the
+  object in `dest`'s directory as
+  `sha256hex(base(dest) + etag) + ".part.minio"` (line 72) and renames it
+  to `dest` (line 143). On an error return it removes the part file (lines
+  83 to 89), but a manager killed mid-download leaves it, and the next
+  download of the same object appends to it (lines 75 and 99 to 100). E3
+  test 5 ("no downloaded file remains anywhere") passes on the fake
+  without covering these. Owner: 1f.4 (E2, E3 test 5): make the fake
+  create parent directories and stage to a `.part.minio` file as minio
+  does, return a `NoSuchKey`-coded `minio.ErrorResponse` for a missing
+  key, and have restore handle both, removing any directories it caused
+  to be created and any stale `.part.minio` beside the download.
+
+- [ ] (from 1f.1 review round 6) No test covers which S3 key `initDB`
+  downloads from for a development manager with `forceBackups`: changing
+  its `s3BackupLocation(dbBkFile, deployment)` to `internal.Production`
+  survives, so such a manager could restore the production backup. The
+  gap predates 1f.1, which only moved the code. Also, the dev-wipe tests'
+  fake S3 holds keys only one level below the backup prefix
+  (`key/parts/x`), so a recursion that stops below one nesting level
+  survives. Owner: 1f.4 (E2): when restore moves onto `backupTarget`,
+  assert a development restore reads the `.development` key, and add a
+  deeper key such as `key/a/b/c` to the wipe test's objects.

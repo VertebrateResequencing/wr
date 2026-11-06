@@ -134,7 +134,7 @@ func persistRunningJobForRecovery(ctx context.Context, t *testing.T, serverConfi
 	req *scheduler.Requirements, limitGroups []string) string {
 	t.Helper()
 
-	testDB, _, err := initDB(ctx, serverConfig.DBFile, serverConfig.DBFileBackup, internal.Development, false, false)
+	testDB, _, err := initDB(ctx, serverConfig.DBFile, serverConfig.DBFileBackup, internal.Development, false)
 	So(err, ShouldBeNil)
 
 	job := &Job{

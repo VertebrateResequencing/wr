@@ -265,7 +265,7 @@ func archiveFoldFixtureDB(t *testing.T, ctx context.Context) *db {
 	tmpdir := t.TempDir()
 
 	database, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
-		filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+		filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false)
 	So(err, ShouldBeNil)
 
 	// compared to nil rather than handed to ShouldNotBeNil, which formats its

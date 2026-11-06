@@ -210,7 +210,7 @@ func dbUpgradeLogFixture(t *testing.T, ctx context.Context) string {
 	dir := t.TempDir()
 	dbFile := filepath.Join(dir, "queue.db")
 
-	testDB, _, err := initDB(ctx, dbFile, filepath.Join(dir, "queue.db.bak"), internal.Development, false, false)
+	testDB, _, err := initDB(ctx, dbFile, filepath.Join(dir, "queue.db.bak"), internal.Development, false)
 	So(err, ShouldBeNil)
 
 	keys := make([][]byte, dbUpgradeLogFixtureEntries)
@@ -243,7 +243,7 @@ func openDBLoggingAsManager(t *testing.T, ctx context.Context, dbFile string) st
 
 	logPath, serverCtx := managerLogContext(t, ctx)
 
-	testDB, _, err := initDB(serverCtx, dbFile, dbFile+".bak", internal.Development, false, false)
+	testDB, _, err := initDB(serverCtx, dbFile, dbFile+".bak", internal.Development, false)
 	So(err, ShouldBeNil)
 	So(testDB.close(ctx), ShouldBeNil)
 

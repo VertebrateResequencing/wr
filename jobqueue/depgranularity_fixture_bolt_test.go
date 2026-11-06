@@ -163,7 +163,7 @@ func TestDepGranularityFixture(t *testing.T) {
 func dgfBuild(ctx context.Context, t *testing.T, dbFile string, shape dgfShape) dgfCounts {
 	t.Helper()
 
-	testDB, _, err := initDB(ctx, dbFile, dbFile+"_bk", internal.Development, false, false)
+	testDB, _, err := initDB(ctx, dbFile, dbFile+"_bk", internal.Development, false)
 	So(err, ShouldBeNil)
 
 	memberKeys := dgfStore(ctx, testDB, dgfMemberJobs(shape))

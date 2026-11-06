@@ -73,7 +73,7 @@ func TestDBJobEssenceEncoding(t *testing.T) {
 		tmpdir := t.TempDir()
 
 		testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
-			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false)
 		So(err, ShouldBeNil)
 
 		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
@@ -157,7 +157,6 @@ func TestDBEncodeJob(t *testing.T) {
 			filepath.Join(tmpdir, "queue.db"),
 			filepath.Join(tmpdir, "queue.db.bak"),
 			internal.Development,
-			false,
 			false,
 		)
 		So(err, ShouldBeNil)

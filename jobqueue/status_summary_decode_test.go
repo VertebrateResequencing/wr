@@ -64,7 +64,7 @@ func TestStatusSummaryWithoutDecodingHistory(t *testing.T) {
 		tmpdir := t.TempDir()
 
 		testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
-			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+			filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false)
 		So(err, ShouldBeNil)
 
 		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
@@ -219,7 +219,7 @@ func benchRepGroupStatusDetails(b *testing.B, archived int) {
 	tmpdir := b.TempDir()
 
 	testDB, _, err := initDB(ctx, filepath.Join(tmpdir, "queue.db"),
-		filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false, false)
+		filepath.Join(tmpdir, "queue.db.bak"), internal.Development, false)
 	if err != nil {
 		b.Fatal(err)
 	}

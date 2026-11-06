@@ -212,7 +212,7 @@ func wsfOpenBigDB(t *testing.T, ctx context.Context, dbFile string) *db {
 
 	t.Cleanup(func() { _ = os.Remove(work); _ = os.Remove(work + "_bk") })
 
-	database, _, err := initDB(ctx, work, work+"_bk", internal.Development, false, false)
+	database, _, err := initDB(ctx, work, work+"_bk", internal.Development, false)
 	if err != nil {
 		t.Fatalf("initDB(%s) failed: %v", work, err)
 	}

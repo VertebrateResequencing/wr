@@ -718,7 +718,7 @@ func TestServerRejectsAddWithNilDependency(t *testing.T) {
 
 		tmpDir := t.TempDir()
 		testDB, _, err := initDB(ctx, filepath.Join(tmpDir, "queue.db"),
-			filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false, false)
+			filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false)
 
 		So(err, ShouldBeNil)
 
@@ -830,7 +830,7 @@ func TestServerRejectsAddWithCommaInContainerMountPath(t *testing.T) {
 
 		tmpDir := t.TempDir()
 		testDB, _, err := initDB(ctx, filepath.Join(tmpDir, "queue.db"),
-			filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false, false)
+			filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false)
 
 		So(err, ShouldBeNil)
 
@@ -956,7 +956,7 @@ func TestClientAddErrorNamesTheProblem(t *testing.T) {
 
 		tmpDir := t.TempDir()
 		testDB, _, err := initDB(ctx, filepath.Join(tmpDir, "queue.db"),
-			filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false, false)
+			filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false)
 		So(err, ShouldBeNil)
 
 		defer func() { So(testDB.close(ctx), ShouldBeNil) }()
@@ -1137,7 +1137,7 @@ func TestServerRejectsAddWithNilBehaviour(t *testing.T) {
 
 		tmpDir := t.TempDir()
 		testDB, _, err := initDB(ctx, filepath.Join(tmpDir, "queue.db"),
-			filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false, false)
+			filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false)
 
 		So(err, ShouldBeNil)
 
@@ -1289,7 +1289,7 @@ func TestServerAddDropsImpossibleCleanups(t *testing.T) {
 
 		tmpDir := t.TempDir()
 		testDB, _, err := initDB(ctx, filepath.Join(tmpDir, "queue.db"),
-			filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false, false)
+			filepath.Join(tmpDir, "queue.db.bak"), internal.Development, false)
 
 		So(err, ShouldBeNil)
 
