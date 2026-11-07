@@ -48,6 +48,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/jobqueue/wal"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -645,9 +646,11 @@ func copyCrashFile(src, dst string) error {
 }
 
 // damageCrashFile truncates the wal file at path at a random offset, or else
-// flips every bit of one random byte of it after its first frame's length.
-// Recovery takes a changed length there for a wrong header, which is corruption
-// rather than crash damage (spec Recovery, step 4), so it does not flip one.
+// flips every bit of one random byte of it after its header frame. Recovery
+// takes a changed header length for a wrong header, and a whole-length header
+// failing its CRC with records after it for a damaged one, both corruption
+// rather than crash damage (spec Recovery, step 4), so it flips no byte of
+// the header frame.
 func damageCrashFile(path string, truncate bool) error {
 	info, err := os.Stat(path)
 	if err != nil || info.Size() == 0 {
@@ -658,11 +661,13 @@ func damageCrashFile(path string, truncate bool) error {
 		return os.Truncate(path, rand.Int64N(info.Size())) //nolint:gosec // a damage offset, not a secret
 	}
 
-	if info.Size() <= walLenFlagsLen {
+	const headerFrame = wal.FrameHeader + walHeaderLen
+
+	if info.Size() <= headerFrame {
 		return nil
 	}
 
-	offset := walLenFlagsLen + rand.Int64N(info.Size()-walLenFlagsLen) //nolint:gosec // a damage offset, not a secret
+	offset := headerFrame + rand.Int64N(info.Size()-headerFrame) //nolint:gosec // a damage offset, not a secret
 
 	f, err := os.OpenFile(path, os.O_RDWR, crashFileMode)
 	if err != nil {

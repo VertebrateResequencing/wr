@@ -32,7 +32,9 @@ package jobqueue
 import (
 	"archive/tar"
 	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,6 +65,20 @@ var newS3Objects = func(profile, path string) (s3Objects, error) { //nolint:goch
 
 	return accessor, nil
 }
+
+// backupDownloadName is the name in a restore's directory that a one-file
+// backup on S3 is downloaded to; recovery would delete it, as a .tmp file, if
+// restore did not.
+const backupDownloadName = "backup" + storeTmpExt
+
+// backupForm is what a backupTarget holds.
+type backupForm uint8
+
+const (
+	backupNone  backupForm = iota // no backup
+	backupStore                   // a store's files: a directory, or objects under a prefix
+	backupFile                    // one file: an old bbolt backup or a self-contained one
+)
 
 // s3Objects is the part of muxfys.S3Accessor that backups use, so tests can
 // stand a fake in for S3 (see newS3Objects).
@@ -107,8 +123,30 @@ func s3BackupLocation(dbBkFile, deployment string) (s3Objects, string, error) {
 }
 
 // backupTarget is where a store's backup is kept. Later items add the
-// operations that write and read a backup (spec E3).
+// operations that write a backup (spec E3).
 type backupTarget interface {
+	// form says what the backup is, if there is one.
+	form() (backupForm, error)
+
+	// list returns the names of the files of a store backup, relative to it
+	// and separated by "/".
+	list() ([]string, error)
+
+	// download copies the store backup's file name to the local path local,
+	// creating any directories it needs.
+	download(name, local string) error
+
+	// fetchFile returns a local path holding a one-file backup: the file
+	// itself, or a download of it into dir, which done removes.
+	fetchFile(dir string) (path string, done func() error, err error)
+
+	// describe names the backup as restore messages do: "backup file <path>"
+	// or "s3 backup file <key>".
+	describe() string
+
+	// location is the backup's path, or its key in its bucket.
+	location() string
+
 	// removeAll deletes the backup and everything the DB keeps beside it.
 	removeAll() error
 }
@@ -134,6 +172,73 @@ type s3Target struct {
 	key     string
 }
 
+// form lists t.key: objects under t.key + "/" are a store backup, which wins
+// over an object at t.key itself, a one-file backup.
+func (t s3Target) form() (backupForm, error) {
+	entries, err := t.objects.ListEntries(t.key)
+	if err != nil {
+		return backupNone, err
+	}
+
+	form := backupNone
+
+	for _, entry := range entries {
+		switch entry.Name {
+		case t.key + "/":
+			return backupStore, nil
+		case t.key:
+			form = backupFile
+		}
+	}
+
+	return form, nil
+}
+
+// list returns the keys of the objects under t.key + "/", relative to it,
+// leaving out folder markers.
+func (t s3Target) list() ([]string, error) {
+	prefix := t.key + "/"
+
+	var names []string
+
+	err := t.walkUnder(prefix, func(key string) error {
+		if name := strings.TrimPrefix(key, prefix); name != "" && !strings.HasSuffix(name, "/") {
+			names = append(names, name)
+		}
+
+		return nil
+	})
+
+	return names, err
+}
+
+// download downloads the object t.key + "/" + name to local. The object store
+// creates local's directories, and stages the object beside local, so a
+// restore downloads only inside the directory it removes on failure.
+func (t s3Target) download(name, local string) error {
+	return t.objects.DownloadFile(t.key+"/"+name, local)
+}
+
+// fetchFile downloads the object at t.key into dir.
+func (t s3Target) fetchFile(dir string) (string, func() error, error) {
+	path := filepath.Join(dir, backupDownloadName)
+	if err := t.objects.DownloadFile(t.key, path); err != nil {
+		return "", nil, err
+	}
+
+	return path, func() error { return os.Remove(path) }, nil
+}
+
+// describe returns "s3 backup file <key>".
+func (t s3Target) describe() string {
+	return "s3 backup file " + t.key
+}
+
+// location returns t.key.
+func (t s3Target) location() string {
+	return t.key
+}
+
 // removeAll deletes the objects of the backup at t.key, as dirTarget's does
 // the files: a store backup under key + "/", an old bbolt backup at key, and
 // the bbolt files E1 keeps beside it at key + ".bolt-pre-" + v. Other objects
@@ -148,9 +253,15 @@ func (t s3Target) removeAll() error {
 	return t.objects.DeleteFile(t.key)
 }
 
-// removeUnder deletes every object whose key starts with prefix, descending
-// into the common prefixes S3 lists in place of deeper keys.
+// removeUnder deletes every object whose key starts with prefix.
 func (t s3Target) removeUnder(prefix string) error {
+	return t.walkUnder(prefix, t.objects.DeleteFile)
+}
+
+// walkUnder calls fn with the key of every object whose key starts with
+// prefix, descending into the common prefixes S3 lists in place of deeper
+// keys.
+func (t s3Target) walkUnder(prefix string, fn func(key string) error) error {
 	entries, err := t.objects.ListEntries(prefix)
 	if err != nil {
 		return err
@@ -158,9 +269,9 @@ func (t s3Target) removeUnder(prefix string) error {
 
 	for _, entry := range entries {
 		if strings.HasSuffix(entry.Name, "/") && entry.Name != prefix {
-			err = t.removeUnder(entry.Name)
+			err = t.walkUnder(entry.Name, fn)
 		} else {
-			err = t.objects.DeleteFile(entry.Name)
+			err = fn(entry.Name)
 		}
 
 		if err != nil {
@@ -180,6 +291,69 @@ type dirTarget struct {
 // files E1 keeps beside it at path + ".bolt-pre-" + v.
 func (t dirTarget) removeAll() error {
 	return removeOwned(t.path)
+}
+
+// form stats t.path: a directory is a store backup and a regular file a
+// one-file backup. An empty path holds no backup.
+func (t dirTarget) form() (backupForm, error) {
+	if t.path == "" {
+		return backupNone, nil
+	}
+
+	info, err := os.Stat(t.path)
+
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return backupNone, nil
+	case err != nil:
+		return backupNone, err
+	case info.IsDir():
+		return backupStore, nil
+	case info.Mode().IsRegular():
+		return backupFile, nil
+	default:
+		return backupNone, fmt.Errorf("%w: backup %s is neither a directory nor a regular file",
+			errNotABackup, t.path)
+	}
+}
+
+// list returns the paths of the regular files under t.path, relative to it.
+func (t dirTarget) list() ([]string, error) {
+	var names []string
+
+	err := fs.WalkDir(os.DirFS(t.path), ".", func(path string, entry fs.DirEntry, err error) error {
+		if err == nil && entry.Type().IsRegular() {
+			names = append(names, path)
+		}
+
+		return err
+	})
+
+	return names, err
+}
+
+// download copies the file name under t.path to local.
+func (t dirTarget) download(name, local string) error {
+	if err := os.MkdirAll(filepath.Dir(local), logStoreDirPerm); err != nil {
+		return err
+	}
+
+	return copyFile(filepath.Join(t.path, filepath.FromSlash(name)), local)
+}
+
+// fetchFile returns t.path itself, which it never changes.
+func (t dirTarget) fetchFile(string) (string, func() error, error) {
+	return t.path, func() error { return nil }, nil
+}
+
+// describe returns "backup file <path>".
+func (t dirTarget) describe() string {
+	return "backup file " + t.path
+}
+
+// location returns t.path.
+func (t dirTarget) location() string {
+	return t.path
 }
 
 // tarFile writes the file at path, which must not change while it is copied,

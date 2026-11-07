@@ -427,9 +427,8 @@ func testDBJob(cmd, repGroup string) *Job {
 }
 
 // conveyNeedingBackup returns Convey for a test of kind's forced backups, or
-// for one that needs a backup restored, or SkipConvey for the log store, which
-// makes no forced (incremental) backups until item 1f.5 and restores none
-// until item 1f.4; they un-skip these tests.
+// SkipConvey for the log store, which makes no forced (incremental) backups
+// until item 1f.5, which un-skips these tests.
 func conveyNeedingBackup(kind storeKind) func(items ...any) {
 	if kind == storeKindLog {
 		return SkipConvey

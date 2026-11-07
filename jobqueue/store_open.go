@@ -25,20 +25,25 @@
 
 package jobqueue
 
-// This file holds what openStore does before it reads a store (spec C7): the
-// lock beside dbFile that keeps two managers off one store, and the VERSION
-// check that refuses a store written by a newer wr.
+// This file holds what openStore does before it reads a store: the lock beside
+// dbFile that keeps two managers off one store and the VERSION check that
+// refuses a store written by a newer wr (spec C7), the development wipe (E3),
+// and the open order and restore from backup (E2).
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -86,6 +91,524 @@ const (
 	storeBoltPreInfix = ".bolt-pre-"
 )
 
+const (
+	// storeTarMagicOffset and storeTarMagic say where a tar header, and so a
+	// self-contained backup, holds its "ustar" magic.
+	storeTarMagicOffset = 257
+	storeTarMagic       = "ustar"
+)
+
+// restorePoint is a point in a restore (spec E2) that logRestoreHook is
+// called at.
+type restorePoint uint8
+
+const (
+	restoreAtCopied    restorePoint = iota // in step 1, after each file is copied
+	restoreAtRecovered                     // after step 2
+	restoreAtSetAside                      // in step 3, after dbFile is renamed to ".corrupt"
+	restoreAtReplaced                      // in step 3, after ".restoring" is renamed to dbFile
+)
+
+var (
+	// logRestoreHook, a test seam nil outside tests, is called at each
+	// restorePoint of a restore; an error it returns ends the restore there as
+	// a crash would, leaving what the restore made so far for the next open.
+	logRestoreHook atomic.Pointer[func(at restorePoint) error] //nolint:gochecknoglobals // a test seam
+
+	// errRestoreHalted wraps an error of logRestoreHook's.
+	errRestoreHalted = errors.New("restore halted")
+
+	// errNotABackup is a restore's error for a backup it cannot read as a
+	// store's files, a self-contained backup or a bbolt file.
+	errNotABackup = errors.New("not a store backup, self-contained backup or bbolt file")
+
+	// errNotStoreOrFile is the error of a dbFile that is neither a directory
+	// nor a regular file.
+	errNotStoreOrFile = errors.New("the db file is neither a store directory nor a regular file")
+
+	// errNotSelfContainedBackup is the error of a self-contained backup that
+	// is not a tar of regular files named without a directory.
+	errNotSelfContainedBackup = errors.New("not a self-contained backup")
+
+	// errCorruptBesideDBFile is the error of a dbFile that is not a store
+	// directory with a dbFile + ".corrupt" beside it, which only something
+	// other than a restore can leave, so either may be the only copy of the
+	// data.
+	errCorruptBesideDBFile = errors.New("a db file that is not a store directory has a set-aside .corrupt beside it")
+)
+
+// dbFileForm is what is at dbFile once any conversion is done.
+type dbFileForm uint8
+
+const (
+	dbFileAbsent        dbFileForm = iota
+	dbFileStore                    // a directory
+	dbFileSelfContained            // a regular file that is a tar
+	dbFileUnrecognised             // any other regular file
+)
+
+// callRestoreHook returns the error of logRestoreHook at at, if it is set,
+// wrapping errRestoreHalted.
+func callRestoreHook(at restorePoint) error {
+	hook := logRestoreHook.Load()
+	if hook == nil {
+		return nil
+	}
+
+	if err := (*hook)(at); err != nil {
+		return fmt.Errorf("%w: %w", errRestoreHalted, err)
+	}
+
+	return nil
+}
+
+// dbFileFormOf says what is at dbFile, following a symlink. Something that is
+// neither a directory nor a regular file is an error, not unrecognised, so
+// that restore never replaces it.
+func dbFileFormOf(dbFile string) (dbFileForm, error) {
+	info, err := os.Stat(dbFile)
+
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return dbFileAbsent, nil
+	case err != nil:
+		return dbFileAbsent, unreadableOr(err, dbFile)
+	case info.IsDir():
+		return dbFileStore, nil
+	case !info.Mode().IsRegular():
+		return dbFileAbsent, fmt.Errorf("%w: %s; it has been left untouched", errNotStoreOrFile, dbFile)
+	}
+
+	isTar, err := hasTarMagic(dbFile)
+	if err != nil || isTar {
+		return dbFileSelfContained, err
+	}
+
+	return dbFileUnrecognised, nil
+}
+
+// openDBFileForm is openLogStoreAt once any conversion is done, whether one
+// was, converted.
+func openDBFileForm(ctx context.Context, cfg storeConfig, converted bool) (*logStore, string, error) {
+	form, err := dbFileFormOf(cfg.dbFile)
+
+	switch {
+	case err != nil:
+		return nil, "", err
+	case form == dbFileAbsent:
+		return openMissingLogStore(ctx, cfg)
+	case form == dbFileSelfContained:
+		return openSelfContainedLogStore(ctx, cfg.dbFile)
+	case form == dbFileUnrecognised:
+		return restoreCorruptLogStore(ctx, cfg, fmt.Errorf("%w: %s is not a store directory, bbolt file or "+
+			"self-contained backup", errStoreCorrupt, cfg.dbFile))
+	}
+
+	s, err := openLogStore(ctx, cfg.dbFile)
+	if errors.Is(err, errStoreCorrupt) {
+		return restoreCorruptLogStore(ctx, cfg, err)
+	}
+
+	if err != nil {
+		return nil, "", unreadableOr(err, cfg.dbFile)
+	}
+
+	s.upgraded = converted
+
+	return s, "", nil
+}
+
+// openMissingLogStore opens the log store at an absent dbFile: restored from
+// cfg's backup if it has one, else a new empty one.
+func openMissingLogStore(ctx context.Context, cfg storeConfig) (*logStore, string, error) {
+	backup, err := backupToRestore(cfg)
+	if err != nil {
+		return nil, "", err
+	}
+
+	if backup == nil {
+		s, erro := openLogStore(ctx, cfg.dbFile)
+
+		return s, "created new empty db file " + cfg.dbFile, erro
+	}
+
+	msg := "recreated missing db file " + cfg.dbFile + " from " + backup.describe()
+
+	if err = restoreLogStore(ctx, cfg.dbFile, backup); err != nil {
+		return nil, msg, err
+	}
+
+	s, err := openLogStore(ctx, cfg.dbFile)
+
+	return s, msg, err
+}
+
+// backupToRestore returns the backup cfg names, or nil if there is none. An
+// S3 backup is restored from only by a manager that makes backups there: one
+// in production deployment, or with forceBackups; a local one by any, as
+// initDB restores.
+func backupToRestore(cfg storeConfig) (backupTarget, error) {
+	if !restoresFrom(cfg) {
+		return nil, nil //nolint:nilnil // no backup is not an error
+	}
+
+	backup, err := backupTargetAt(cfg.dbBkFile, cfg.deployment)
+	if err != nil {
+		return nil, err
+	}
+
+	form, err := backup.form()
+	if err != nil || form == backupNone {
+		return nil, err
+	}
+
+	return backup, nil
+}
+
+// restoresFrom reports whether a manager of cfg restores from its dbBkFile.
+func restoresFrom(cfg storeConfig) bool {
+	if cfg.dbBkFile == "" {
+		return false
+	}
+
+	return !internal.InS3(cfg.dbBkFile) || cfg.deployment == internal.Production || cfg.forceBackups
+}
+
+// restoreLogStore replaces dbFile with a store restored from backup (spec
+// E2), never touching dbFile until the restored store has recovered: it is
+// built and recovered in dbFile + ".restoring", which on any error is
+// removed, then dbFile, if there, is renamed to dbFile + ".corrupt", the
+// restored store renamed to dbFile, and ".corrupt" removed. A crash at any
+// point leaves dbFile as it was, set aside as ".corrupt" with no dbFile, which
+// the next open renames back (see undoRestoreLeftovers), or the restored store;
+// the next open removes the rest of what this one left, and restores again if
+// it still needs to.
+func restoreLogStore(ctx context.Context, dbFile string, backup backupTarget) error {
+	restoring := dbFile + storeRestoringSuffix
+
+	if err := prepareRestore(ctx, dbFile, restoring, backup); err != nil {
+		if !errors.Is(err, errRestoreHalted) {
+			err = errors.Join(err, os.RemoveAll(restoring))
+		}
+
+		return err
+	}
+
+	return replaceWithRestored(dbFile, restoring)
+}
+
+// prepareRestore is restore steps 1 and 2: it fills restoring with a store
+// from backup, then recovers it, closes it and makes it durable.
+func prepareRestore(ctx context.Context, dbFile, restoring string, backup backupTarget) error {
+	if err := os.RemoveAll(restoring); err != nil {
+		return err
+	}
+
+	if err := os.Mkdir(restoring, logStoreDirPerm); err != nil {
+		return err
+	}
+
+	if err := fillRestoring(ctx, dbFile, restoring, backup); err != nil {
+		return err
+	}
+
+	if _, err := os.Stat(filepath.Join(restoring, storeVersionFile)); err != nil {
+		return fmt.Errorf("%w: backup %s holds no %s: %w", errNotABackup, backup.location(), storeVersionFile, err)
+	}
+
+	s, err := openLogStore(ctx, restoring)
+	if err != nil {
+		return err
+	}
+
+	if err = errors.Join(s.close(ctx), syncTree(restoring)); err != nil {
+		return err
+	}
+
+	return callRestoreHook(restoreAtRecovered)
+}
+
+// fillRestoring copies backup's files into restoring: a store backup's files,
+// a self-contained backup's tar members, or a store built from an old bbolt
+// backup, read-only.
+func fillRestoring(ctx context.Context, dbFile, restoring string, backup backupTarget) error {
+	form, err := backup.form()
+	if err != nil {
+		return err
+	}
+
+	if form == backupStore {
+		return copyStoreBackup(restoring, backup)
+	}
+
+	path, done, err := backup.fetchFile(restoring)
+	if err != nil {
+		return err
+	}
+
+	return errors.Join(fillFromFile(ctx, dbFile, restoring, path), done())
+}
+
+// copyStoreBackup copies every file of the store backup into restoring. A
+// backup holding a name that leads out of it, as an S3 object's can, is
+// errNotABackup, and nothing is copied.
+func copyStoreBackup(restoring string, backup backupTarget) error {
+	names, err := backup.list()
+	if err != nil {
+		return err
+	}
+
+	leadsOut := func(name string) bool { return !filepath.IsLocal(filepath.FromSlash(name)) }
+	if i := slices.IndexFunc(names, leadsOut); i >= 0 {
+		return fmt.Errorf("%w: backup %s holds %q, a name leading out of it", errNotABackup, backup.location(), names[i])
+	}
+
+	for _, name := range names {
+		if err = backup.download(name, filepath.Join(restoring, filepath.FromSlash(name))); err != nil {
+			return err
+		}
+
+		if err = callRestoreHook(restoreAtCopied); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// fillFromFile fills restoring from the one-file backup at path: the members
+// of a self-contained backup, or a store built from a bbolt file, once
+// dbFile's filesystem is known to have room for it.
+func fillFromFile(ctx context.Context, dbFile, restoring, path string) error {
+	isTar, err := hasTarMagic(path)
+	if err != nil {
+		return err
+	}
+
+	if isTar {
+		return extractStoreBackup(path, restoring)
+	}
+
+	isBolt, err := hasBoltMagic(path)
+	if err != nil {
+		return err
+	}
+
+	if !isBolt {
+		return fmt.Errorf("%w: %s", errNotABackup, path)
+	}
+
+	if err = checkFreeSpaceFor(path, filepath.Dir(dbFile)); err != nil {
+		return err
+	}
+
+	upgrade := newDBUpgradeReporter(ctx, dbFile)
+	err = buildStoreFromBolt(ctx, path, restoring, upgrade)
+	upgrade.finish(err)
+
+	return err
+}
+
+// hasTarMagic reports whether the regular file at path holds a tar header's
+// magic. A read error that openErrorThatIsNotCorruption claims is returned as
+// it words it; a file too short to hold the magic is not a tar.
+func hasTarMagic(path string) (bool, error) {
+	magic, err := readFileAt(path, storeTarMagicOffset, len(storeTarMagic))
+	if err != nil || magic == nil {
+		return false, err
+	}
+
+	return string(magic) == storeTarMagic, nil
+}
+
+// readFileAt returns n bytes of the file at path from offset off, or nil if
+// it ends before them. Any other error is returned as
+// openErrorThatIsNotCorruption words it, if it claims it.
+func readFileAt(path string, off int64, n int) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, unreadableOr(err, path)
+	}
+
+	buf := make([]byte, n)
+	_, err = f.ReadAt(buf, off)
+
+	if errc := f.Close(); err == nil {
+		err = errc
+	}
+
+	switch {
+	case errors.Is(err, io.EOF):
+		return nil, nil
+	case err != nil:
+		return nil, unreadableOr(err, path)
+	}
+
+	return buf, nil
+}
+
+// extractStoreBackup writes each member of the self-contained backup at path
+// into dir, refusing a file that is not a tar of regular files named without
+// a directory.
+func extractStoreBackup(path, dir string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return errors.Join(err, f.Close())
+	}
+
+	return errors.Join(extractTar(tar.NewReader(f), root, path), root.Close(), f.Close())
+}
+
+// extractTar writes each member of tr, the tar at path, into root.
+func extractTar(tr *tar.Reader, root *os.Root, path string) error {
+	hdr, err := tr.Next()
+	if err != nil {
+		return fmt.Errorf("%w: %s: %w", errNotSelfContainedBackup, path, err)
+	}
+
+	for ; err == nil; hdr, err = tr.Next() {
+		if hdr.Typeflag != tar.TypeReg || filepath.Base(hdr.Name) != hdr.Name {
+			return fmt.Errorf("%w: %s holds %q", errNotSelfContainedBackup, path, hdr.Name)
+		}
+
+		if err = extractBackupMember(tr, root, path, hdr.Name); err != nil {
+			return err
+		}
+	}
+
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+
+	return fmt.Errorf("%w: %s: %w", errNotSelfContainedBackup, path, err)
+}
+
+// extractBackupMember writes the rest of tr's current member, of the tar at
+// path, to name in root, refusing a name an earlier member had.
+func extractBackupMember(tr *tar.Reader, root *os.Root, path, name string) error {
+	out, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, dbFilePermission)
+	if errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("%w: %s holds %q more than once: %w", errNotSelfContainedBackup, path, name, err)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	_, err = io.Copy(out, tr)
+	if err = errors.Join(err, out.Close()); err != nil {
+		return err
+	}
+
+	return callRestoreHook(restoreAtCopied)
+}
+
+// syncTree fsyncs every regular file and directory under dir, dir included.
+func syncTree(dir string) error {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+
+	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || (!entry.IsDir() && !entry.Type().IsRegular()) {
+			return err
+		}
+
+		f, err := root.Open(path)
+		if err != nil {
+			return err
+		}
+
+		return errors.Join(f.Sync(), f.Close())
+	})
+
+	return errors.Join(err, root.Close())
+}
+
+// replaceWithRestored is restore step 3: it sets dbFile aside as
+// dbFile + ".corrupt", if it is there, renames restoring to dbFile, durably,
+// then removes ".corrupt".
+func replaceWithRestored(dbFile, restoring string) error {
+	corrupt := dbFile + storeCorruptSuffix
+
+	err := setAside(dbFile, corrupt)
+	if err != nil {
+		return err
+	}
+
+	if err = os.Rename(restoring, dbFile); err != nil {
+		return err
+	}
+
+	if err = syncDir(filepath.Dir(dbFile)); err != nil {
+		return err
+	}
+
+	if err = callRestoreHook(restoreAtReplaced); err != nil {
+		return err
+	}
+
+	return os.RemoveAll(corrupt)
+}
+
+// setAside renames dbFile, if it is there, to corrupt.
+func setAside(dbFile, corrupt string) error {
+	_, err := os.Lstat(dbFile)
+
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return err
+	}
+
+	if err = os.Rename(dbFile, corrupt); err != nil {
+		return err
+	}
+
+	return callRestoreHook(restoreAtSetAside)
+}
+
+// openSelfContainedLogStore restores the self-contained backup at dbFile into
+// a store directory there, removing the file, and opens it. If the file
+// cannot be restored it is left as it was.
+func openSelfContainedLogStore(ctx context.Context, dbFile string) (*logStore, string, error) {
+	if err := restoreLogStore(ctx, dbFile, dirTarget{path: dbFile}); err != nil {
+		return nil, "", err
+	}
+
+	s, err := openLogStore(ctx, dbFile)
+
+	return s, "restored db directory " + dbFile + " from self-contained backup file", err
+}
+
+// restoreCorruptLogStore restores the log store at cfg.dbFile, which cause
+// says is corrupt, from cfg's backup and opens it, with the messages initDB
+// gives for a corrupt bbolt file. With no backup, or one that cannot be
+// restored, it returns cause, and dbFile is left as it was.
+func restoreCorruptLogStore(ctx context.Context, cfg storeConfig, cause error) (*logStore, string, error) {
+	backup, err := backupToRestore(cfg)
+	if err != nil || backup == nil {
+		return nil, "", errors.Join(cause, err)
+	}
+
+	if err = restoreLogStore(ctx, cfg.dbFile, backup); err != nil {
+		return nil, fmt.Sprintf("tried to recreate corrupt (?) db file %s from %s (error with original db file "+
+			"was: %s)", cfg.dbFile, backup.describe(), cause), errors.Join(cause, err)
+	}
+
+	s, err := openLogStore(ctx, cfg.dbFile)
+
+	return s, fmt.Sprintf("recreated corrupt (?) db file %s from backup file %s (error with original db file "+
+		"was: %s)", cfg.dbFile, backup.location(), cause), err
+}
+
 // storeLock is a held flock on dbFile + storeLockSuffix.
 type storeLock struct {
 	f *os.File
@@ -123,39 +646,6 @@ func (l *storeLock) release() error {
 	return l.f.Close()
 }
 
-// openConvertedLogStore is openLogStoreHolding, first converting dbFile if it
-// is a bbolt file or resuming a conversion a crash interrupted (see
-// convertOnOpen), after which the store reports it upgraded on open.
-func openConvertedLogStore(ctx context.Context, dbFile string, lock *storeLock) (*logStore, error) {
-	converted, err := convertOnOpen(ctx, dbFile)
-	if err != nil {
-		return nil, errors.Join(err, lock.release())
-	}
-
-	s, err := openLogStoreHolding(ctx, dbFile, lock)
-	if err != nil {
-		return nil, err
-	}
-
-	s.upgraded = converted
-
-	return s, nil
-}
-
-// openLogStoreHolding opens the log store at dbFile, giving it lock, the store
-// lock its caller took, to hold until it closes. If it cannot open the store
-// it releases lock.
-func openLogStoreHolding(ctx context.Context, dbFile string, lock *storeLock) (*logStore, error) {
-	s, err := openLogStore(ctx, dbFile)
-	if err != nil {
-		return nil, errors.Join(unreadableOr(err, dbFile), lock.release())
-	}
-
-	s.lock = lock
-
-	return s, nil
-}
-
 // unreadableOr returns err as openErrorThatIsNotCorruption words it, if it is
 // one of its errors, else err unchanged.
 func unreadableOr(err error, dbFile string) error {
@@ -164,6 +654,103 @@ func unreadableOr(err error, dbFile string) error {
 	}
 
 	return err
+}
+
+// openLogStoreInOrder opens the log store at cfg.dbFile in spec E2's order,
+// after openStoreKind has taken lock and made any development wipe: it puts
+// back or removes what an interrupted restore left beside dbFile (see
+// undoRestoreLeftovers), resumes or makes a
+// conversion of a bbolt file there (E1), then opens what dbFile is: nothing
+// (see openMissingLogStore), a self-contained backup (see
+// openSelfContainedLogStore) or a store. A corrupt store, a corrupt bbolt
+// file, or anything else at dbFile is restored from backup (see
+// restoreCorruptLogStore). The store holds lock until it closes; if it cannot
+// be opened, lock is released.
+func openLogStoreInOrder(ctx context.Context, cfg storeConfig, lock *storeLock) (*logStore, string, error) {
+	s, msg, err := openLogStoreAt(ctx, cfg)
+	if err != nil {
+		return nil, msg, errors.Join(err, lock.release())
+	}
+
+	s.lock = lock
+
+	return s, msg, nil
+}
+
+// openLogStoreAt is openLogStoreInOrder without the lock.
+func openLogStoreAt(ctx context.Context, cfg storeConfig) (*logStore, string, error) {
+	if err := undoRestoreLeftovers(cfg.dbFile); err != nil {
+		return nil, "", unreadableOr(err, cfg.dbFile)
+	}
+
+	converted, err := convertOnOpen(ctx, cfg.dbFile)
+	if errors.Is(err, errStoreCorrupt) {
+		return restoreCorruptLogStore(ctx, cfg, err)
+	}
+
+	if err != nil {
+		return nil, "", err
+	}
+
+	return openDBFileForm(ctx, cfg, converted)
+}
+
+// undoRestoreLeftovers puts back what a restore interrupted between its two
+// renames set aside (spec E2 order, step 2): with no dbFile, a dbFile +
+// ".corrupt" is renamed back to dbFile, durably, as it may be the only copy of
+// the data, such as a self-contained backup restored in place. Then it removes
+// any dbFile + ".restoring", and any ".corrupt" beside a store directory, the
+// restored store a restore's rename to dbFile leaves, so the restore, if still
+// needed, runs again from the original dbFile. A ".corrupt" beside a dbFile
+// that is not a directory was not left by a restore, so it returns
+// errCorruptBesideDBFile, removing nothing.
+func undoRestoreLeftovers(dbFile string) error {
+	corrupt := dbFile + storeCorruptSuffix
+
+	info, err := os.Lstat(dbFile)
+
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		err = putBack(corrupt, dbFile)
+	case err == nil && !info.IsDir():
+		err = refuseCorruptBeside(dbFile, corrupt)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	return errors.Join(os.RemoveAll(dbFile+storeRestoringSuffix), os.RemoveAll(corrupt))
+}
+
+// putBack renames corrupt, if it is there, to dbFile, durably.
+func putBack(corrupt, dbFile string) error {
+	err := os.Rename(corrupt, dbFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+
+	if err != nil {
+		return err
+	}
+
+	return syncDir(filepath.Dir(dbFile))
+}
+
+// refuseCorruptBeside returns errCorruptBesideDBFile, naming dbFile and
+// corrupt, if corrupt is there.
+func refuseCorruptBeside(dbFile, corrupt string) error {
+	_, err := os.Lstat(corrupt)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+
+	if err != nil {
+		return err
+	}
+
+	return fmt.Errorf("%w: %s and %s; both have been left untouched, so keep the one holding the data, "+
+		"remove the other, and start wr again", errCorruptBesideDBFile, dbFile, corrupt)
 }
 
 // wipeDevStore, if cfg asks for a development wipe, removes everything the DB

@@ -321,7 +321,7 @@ func TestStoreCorruptRestoredFromBackup(t *testing.T) {
 	ctx := context.Background()
 
 	forEachStore(t, func(kind storeKind) {
-		conveyNeedingBackup(kind)(fmt.Sprintf("Given a %s store replaced by random bytes, and a backup of it",
+		Convey(fmt.Sprintf("Given a %s store replaced by random bytes, and a backup of it",
 			storeKindName(kind)), t, func() {
 			withStoreLockOpenTimeout()
 

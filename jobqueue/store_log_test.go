@@ -280,6 +280,31 @@ func TestLogStoreTransitionRecords(t *testing.T) {
 	})
 }
 
+func TestLogLiveDropBefore(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	Convey("Given a live entry with a state record and std records either side of seq 8", t, func() {
+		kept := wal.Ref{File: 4, Off: 10}
+		e := &logLive{
+			stateSeq: 5, state: wal.Ref{File: 3, Off: 100}, handedOut: true,
+			stdSeq: [2]uint64{4, 9}, std: [2]wal.Ref{{File: 3, Off: 50}, kept}, hasStd: [2]bool{true, true},
+		}
+
+		Convey("dropping before 8 forgets the earlier records' Refs, which could name a deleted file, and keeps "+
+			"the later one", func() {
+			e.dropBefore(8)
+
+			So(e.stateSeq, ShouldEqual, 0)
+			So(e.state, ShouldResemble, wal.Ref{})
+			So(e.handedOut, ShouldBeFalse)
+			So(e.std, ShouldResemble, [2]wal.Ref{{}, kept})
+			So(e.hasStd, ShouldResemble, [2]bool{false, true})
+		})
+	})
+}
+
 // reducerWrite is one write's ops, which apply together in order, and what
 // the store guarantees about when it applies relative to the key's other
 // writes (see allowedWriteOrder).
@@ -1478,6 +1503,69 @@ func TestLogStoreRecoveryFileRules(t *testing.T) {
 			_, erro := openLogStore(logCtx, dir)
 			So(erro, ShouldWrap, errStoreCorrupt)
 		}
+
+		file1Size := func() uint64 {
+			info, errs := os.Stat(walFilePath(dir, 1))
+			So(errs, ShouldBeNil)
+
+			return uint64(info.Size()) //nolint:gosec // a file size
+		}
+
+		badCRCHeader := func() []byte {
+			header := walHeaderFrame(1, file1Size())
+			header[walLenFlagsLen] ^= 0x01
+
+			return header
+		}
+
+		Convey("a last file 2 whose whole-length header fails its CRC, with records after it, is corrupt, not "+
+			"a torn header holding nothing durable", func() {
+			rec := appendKeyedRecord(nil, logRecState, 1, logKey{}, nil)
+			writeWALFile(dir, 2, wal.AppendFrame(badCRCHeader(), rec))
+
+			corrupt()
+			So(walFilePath(dir, 2), shouldExist)
+		})
+
+		Convey("a last file 2 whose whole-length header fails its CRC, followed by one non-zero byte and then "+
+			"zeros, is corrupt", func() {
+			damaged := append(badCRCHeader(), 0x01)
+			writeWALFile(dir, 2, append(damaged, make([]byte, walHeaderLen)...))
+
+			corrupt()
+			So(walFilePath(dir, 2), shouldExist)
+		})
+
+		Convey("a last file 2 whose whole-length header fails its CRC, with nothing after it, holds nothing "+
+			"durable: it is removed", func() {
+			writeWALFile(dir, 2, badCRCHeader())
+
+			reopenKeeps()
+			So(logLinesContaining(readLogFile(t, logPath), walTornHeaderLogMsg), ShouldHaveLength, 1)
+		})
+
+		Convey("a last file 2 whose whole-length header fails its CRC, with only zeros after it, holds nothing "+
+			"durable: it is removed", func() {
+			torn := append(badCRCHeader(), make([]byte, walHeaderLen)...)
+			writeWALFile(dir, 2, torn)
+
+			reopenKeeps()
+
+			lines := logLinesContaining(readLogFile(t, logPath), walTornHeaderLogMsg)
+			So(lines, ShouldHaveLength, 1)
+			So(logLineValue(lines[0], "bytes"), ShouldEqual, strconv.Itoa(len(torn)))
+		})
+
+		Convey("a last file 2 of zeros longer than a header holds nothing durable: it is removed", func() {
+			zeros := 3 * len(walHeaderFrame(1, 0))
+			writeWALFile(dir, 2, make([]byte, zeros))
+
+			reopenKeeps()
+
+			lines := logLinesContaining(readLogFile(t, logPath), walTornHeaderLogMsg)
+			So(lines, ShouldHaveLength, 1)
+			So(logLineValue(lines[0], "bytes"), ShouldEqual, strconv.Itoa(zeros))
+		})
 
 		Convey("a missing file number is corrupt, even when the next header names it with durable end 0", func() {
 			for _, header := range [][]byte{walHeaderFrame(2, 0), walHeaderFrame(1, 0), walHeaderFrame(2, 100)} {

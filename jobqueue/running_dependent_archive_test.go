@@ -200,12 +200,6 @@ func rdaMarkedToRunAgain(t *testing.T, ctx context.Context, kind storeKind, succ
 			rdaSoRunsOnceMore(ctx, d, runner, waiter.Key(), second.Key())
 		})
 
-		// rdrCrash restarts from its crash image, a backup, at dbFile, which
-		// the log store does not restore until item 1f.4.
-		if kind != storeKindBolt {
-			return
-		}
-
 		Convey("a mark left in its stored record once it is not running is not acted on after a crash", func() {
 			So(jq.Archive(waiter, success()), ShouldBeNil)
 			So(dgaItemState(d.server, waiter.Key()), ShouldEqual, queue.ItemStateDependent)

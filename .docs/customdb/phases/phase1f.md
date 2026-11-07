@@ -90,38 +90,33 @@ the log store for want of a backup; its `conveyNeedingBackup` part is
 spec.md section: E2
 
 Implement the `openStore` order and the restore steps in
-`jobqueue/store_open.go`: dev wipe (1f.1), leftover `.restoring`
-cleanup, resumed conversion (1f.2), restore from a store directory, a
-self-contained file (1f.3) or an old bbolt backup, and corruption
-handling. Cover all 15 acceptance tests from E2, plus E3 tests 4 and 5
-deferred from 1f.1 and the halves of E5's tests deferred from 1f.3: open
-E5 test 1's backup through restore (`TestLogStoreSelfContainedBackup`,
-`store_backup_test.go`, opens it by extracting the tar), and start a
-manager with `Client.BackupDB`'s file as `dbFile`
-(`TestClientBackupDBSelfContained`, which also opens it by extracting).
+`jobqueue/store_open.go`: dev wipe (1f.1), leftover `.restoring` and `.corrupt`
+handling, resumed conversion (1f.2), restore from a store directory, a
+self-contained file (1f.3) or an old bbolt backup, and corruption handling.
+Cover all 15 acceptance tests from E2, plus E3 tests 4 and 5 deferred from 1f.1
+and the halves of E5's tests deferred from 1f.3: open E5 test 1's backup through
+restore (`TestLogStoreSelfContainedBackup`, `store_backup_test.go`, opens it by
+extracting the tar), and start a manager with `Client.BackupDB`'s file as
+`dbFile` (`TestClientBackupDBSelfContained`, which also opens it by extracting).
 Keep the lock taken first, as the 0b.1 incidental owned by 1c.2 says
-([incidentals.md](incidentals.md)). Also resolve the 1d.2 incidentals on
-testing that recovery deletes every `*.tmp` and on `dropBefore` keeping a
-state Ref, the 1e.5 incidental on a folded job recovering both complete
-and live after wal damage, the 1e.5 review incidental on a last wal
-whose whole header fails its CRC being removed as torn, the 1f.1
-review incidental on `initDB`'s restore path removing with plain
-`os.Remove`, the 1f.1 review round 3 incidental on the fake S3's
-`DownloadFile` differing from minio's, the 1f.1 review round 6
-incidental on the development S3 key and deep S3 nesting, the 1f.2
-incidental on which conversion failures restore, the 1f.2 review
-round 4 incidental on a file at `dbFile` that is not bbolt, the 1f.2
-review round 5 incidental on a conversion's abandon failing to remove
-`.converting`, and the 1f.2 review round 6 incidental on a bbolt file
-whose meta page 0 is damaged, the 1e.5 incidental on
-`conveyNeedingBackup` (with 1f.5; un-skip
-`TestStoreCorruptRestoredFromBackup` on the log store), the 1f.3
-incidental on `rdrCrash`'s crash leaf, and the 1f.3 review round 1
-incidental on `handleBackup` buffering the whole backup
+([incidentals.md](incidentals.md)). Also resolve the 1d.2 incidentals on testing
+that recovery deletes every `*.tmp` and on `dropBefore` keeping a state Ref, the
+1e.5 incidental on a folded job recovering both complete and live after wal
+damage, the 1e.5 review incidental on a last wal whose whole header fails its
+CRC being removed as torn, the 1f.1 review incidental on `initDB`'s restore path
+removing with plain `os.Remove`, the 1f.1 review round 3 incidental on the fake
+S3's `DownloadFile` differing from minio's, the 1f.1 review round 6 incidental
+on the development S3 key and deep S3 nesting, the 1f.2 incidental on which
+conversion failures restore, the 1f.2 review round 4 incidental on a file at
+`dbFile` that is not bbolt, the 1f.2 review round 5 incidental on a conversion's
+abandon failing to remove `.converting`, the 1f.2 review round 6 incidental on a
+bbolt file whose meta page 0 is damaged, the 1e.5 incidental on
+`conveyNeedingBackup` (with 1f.5; un-skip `TestStoreCorruptRestoredFromBackup`
+on the log store), and the 1f.3 incidental on `rdrCrash`'s crash leaf
 ([incidentals.md](incidentals.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1f.5: E4 - Incremental backup (Phase 1 form)
 
@@ -139,9 +134,13 @@ want of a backup (make the log store's `forceBackup` a tick and un-skip
 1f.3 did `storeLockSeeded` and `recordWorkload`), and resolve the 1f.2
 review round 4 incidental on asserting a converted checkpoint's
 `histFrom`, the 1f.3 review round 1 incidental on the `history.bolt`
-read transaction a backup holds during its copy, and the 1f.3 review
-round 3 incidental on backup starts racing close
-([incidentals.md](incidentals.md)).
+read transaction a backup holds during its copy, the 1f.3 review
+round 3 incidental on backup starts racing close, the 1f.4
+incidental on restore rebuilding wal files from their parts, and the
+1f.4 review round 1 incidental on shipped offsets after recovery moves
+the folded position back or reuses a torn file's number, and the 1f.4
+review round 2 incidental on an open that dies after removing a torn
+`walFrom` file ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed
@@ -166,7 +165,9 @@ spec.md section: E7
 Make cloud deploy and teardown carry a store directory as a
 self-contained file made by `jobqueue.ExportStore`
 (`jobqueue/store_export.go`, `cmd/cloud.go`). Cover all 6 acceptance
-tests from E7. Depends on 1f.3 and 1f.4.
+tests from E7. Depends on 1f.3 and 1f.4. Also resolve the 1f.4 review
+round 4 incidental on tar members named `.` and `..`
+([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

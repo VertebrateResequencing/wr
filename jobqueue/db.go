@@ -1522,7 +1522,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, forceBacku
 				}
 
 				defer func() {
-					errr := os.Remove(bkPath)
+					errr := os.RemoveAll(bkPath)
 					if errr != nil {
 						clog.Warn(ctx, "failed to remove temporary s3 download of database backup", "err", errr)
 					}
@@ -1540,7 +1540,7 @@ func initDB(ctx context.Context, dbFile, dbBkFile, deployment string, forceBacku
 
 					origerr := err
 
-					err = os.Remove(dbFile)
+					err = os.RemoveAll(dbFile)
 					if err != nil {
 						return nil, msg, err
 					}

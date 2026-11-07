@@ -30,10 +30,14 @@ package jobqueue
 
 import (
 	"context"
+	"crypto/md5" //nolint:gosec // S3 etags are md5 sums
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -43,6 +47,7 @@ import (
 
 	"github.com/VertebrateResequencing/muxfys/v5"
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/minio/minio-go/v7"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -119,14 +124,16 @@ func shouldNotExist(actual any, _ ...any) string {
 // that is set, or once it has listed storeWipeMaxListings times, and fails
 // DeleteFile of each key in deleteErrs with that key's error.
 type fakeS3Objects struct {
-	mu         sync.Mutex
-	objects    map[string][]byte
-	opens      int
-	profile    string
-	path       string
-	listings   int
-	listErr    error
-	deleteErrs map[string]error
+	mu           sync.Mutex
+	objects      map[string][]byte
+	opens        int
+	profile      string
+	path         string
+	listings     int
+	listErr      error
+	deleteErrs   map[string]error
+	downloadErrs map[string]error
+	downloads    []string
 }
 
 // withFakeS3Objects makes newS3Objects return a new fakeS3Objects holding
@@ -212,17 +219,91 @@ func (f *fakeS3Objects) keys() []string {
 	return slices.Sorted(maps.Keys(f.objects))
 }
 
-// DownloadFile writes the object at source to dest.
+// DownloadFile writes the object at source to dest as minio v7.3.0's
+// FGetObject, which muxfys calls, does: it first creates any missing parent
+// directories of dest, even for a missing object; a missing object is a
+// minio.ErrorResponse coded NoSuchKey, which errors.Is does not match to
+// os.ErrNotExist; it stages the object beside dest in a ".part.minio" file
+// named from dest's base name and the object's etag, appending to any such
+// file a killed download left, then renames it to dest. A download
+// failDownloading made fail stages half the object, then removes the part file
+// and returns the error, as minio does on a failed read.
 func (f *fakeS3Objects) DownloadFile(source, dest string) error {
+	dir := filepath.Dir(dest)
+	if err := os.MkdirAll(dir, dbUnreadableDirMode); err != nil {
+		return err
+	}
+
 	f.mu.Lock()
 	data, ok := f.objects[source]
+	failure := f.downloadErrs[source]
+	f.downloads = append(f.downloads, source)
 	f.mu.Unlock()
 
 	if !ok {
-		return fmt.Errorf("fake S3: no object %s: %w", source, os.ErrNotExist)
+		return minio.ErrorResponse{Code: "NoSuchKey", Message: "The specified key does not exist.", Key: source,
+			StatusCode: http.StatusNotFound}
 	}
 
-	return os.WriteFile(dest, data, dbFilePermission)
+	etag := md5.Sum(data) //nolint:gosec // an etag, as S3 makes one
+	sum := sha256.Sum256([]byte(filepath.Base(dest) + hex.EncodeToString(etag[:])))
+	part := filepath.Join(dir, hex.EncodeToString(sum[:])+".part.minio")
+
+	staged := data
+	if failure != nil {
+		staged = data[:len(data)/2]
+	}
+
+	if err := appendFile(part, staged); err != nil {
+		return err
+	}
+
+	if failure != nil {
+		return errors.Join(failure, os.Remove(part))
+	}
+
+	return os.Rename(part, dest)
+}
+
+// appendFile appends data to the file at path, creating it if need be.
+func appendFile(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, dbFilePermission)
+	if err != nil {
+		return err
+	}
+
+	_, err = f.Write(data)
+
+	return errors.Join(err, f.Close())
+}
+
+// failDownloading makes every later DownloadFile of key fail with err part way
+// through.
+func (f *fakeS3Objects) failDownloading(err error, key string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.downloadErrs == nil {
+		f.downloadErrs = make(map[string]error)
+	}
+
+	f.downloadErrs[key] = err
+}
+
+// downloaded returns the keys DownloadFile was asked for, sorted.
+func (f *fakeS3Objects) downloaded() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return slices.Sorted(slices.Values(f.downloads))
+}
+
+// putData stores data as the object at key.
+func (f *fakeS3Objects) putData(key string, data []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.objects[key] = data
 }
 
 // UploadFile stores the content of source as the object at dest.
@@ -456,7 +537,7 @@ func TestStoreDevWipe(t *testing.T) {
 				})
 			})
 
-		Convey(fmt.Sprintf("Given a development %s store with a forced S3 backup of 6 objects", name), t, func() {
+		Convey(fmt.Sprintf("Given a development %s store with a forced S3 backup of 7 objects", name), t, func() {
 			cfg := storeWipeSeeded(ctx, t, kind)
 			cfg.wipeDevDB = true
 			cfg.forceBackups = true
@@ -466,6 +547,7 @@ func TestStoreDevWipe(t *testing.T) {
 				storeWipeS3Key+"/VERSION",
 				storeWipeS3Key+"/00000001.ckpt",
 				storeWipeS3Key+"/parts/00000001.wal.0000000000000000",
+				storeWipeS3Key+"/a/b/c",
 				storeWipeS3Key,
 				storeWipeS3Key+storeWipeBoltPre,
 				storeWipeS3Key+storeWipeBoltPreOld,
@@ -732,4 +814,79 @@ func conveyUnlessRoot(items ...any) {
 	}
 
 	Convey(items...)
+}
+
+func TestStoreRestoreRemoves(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a corrupt log store and a backup directory, an open restores it, and no file from the corrupt "+
+		"store's directory remains", t, func() {
+		f := newRestoreFixture(ctx, t)
+		f.corrupt()
+		f.cfg.dbBkFile = f.backupDir
+
+		result := openRestoring(ctx, f.cfg)
+		soRestored(result, f.backup)
+
+		soNoCorruptFileRemains(f.dir)
+		So(dirEntryNames(f.dir), ShouldResemble, []string{
+			filepath.Base(f.backupDir), filepath.Base(f.backupTar), "queue.db", "queue.db" + storeLockSuffix,
+		})
+	})
+
+	Convey("Given a corrupt production log store, with a backup in a fake S3 bucket and a stale part of a "+
+		"killed download in a .restoring a crash left", t, func() {
+		f := newRestoreFixture(ctx, t)
+		f.corrupt()
+
+		f.cfg.deployment = internal.Production
+		f.cfg.dbBkFile = storeWipeS3Backup
+
+		restoring := f.cfg.dbFile + storeRestoringSuffix
+		So(os.Mkdir(restoring, logStoreDirPerm), ShouldBeNil)
+		So(os.WriteFile(filepath.Join(restoring, "stale.part.minio"), []byte("stale"), dbFilePermission),
+			ShouldBeNil)
+
+		before := dirEntryNames(f.dir)
+		fake := withFakeS3Objects()
+
+		Convey("when the backup is good, the store is restored and no downloaded file remains", func() {
+			putStoreBackupObjects(fake, f.backupDir, storeRestoreProdKey)
+
+			result := openRestoring(ctx, f.cfg)
+			soRestored(result, f.backup)
+
+			So(dirEntryNames(f.dir), ShouldResemble, slices.DeleteFunc(slices.Clone(before), func(name string) bool {
+				return name == filepath.Base(restoring)
+			}))
+			soNoCorruptFileRemains(f.dir)
+
+			var parts []string
+
+			So(filepath.WalkDir(f.dir, func(path string, _ fs.DirEntry, err error) error {
+				if strings.HasSuffix(path, ".part.minio") {
+					parts = append(parts, path)
+				}
+
+				return err
+			}), ShouldBeNil)
+			So(parts, ShouldBeEmpty)
+		})
+
+		Convey("when the backup's checkpoint is damaged, the open fails and no downloaded file remains", func() {
+			damageCheckpointTrailers(f.backupDir)
+			putStoreBackupObjects(fake, f.backupDir, storeRestoreProdKey)
+
+			result := openRestoring(ctx, f.cfg)
+			So(result.err, ShouldWrap, errStoreCorrupt)
+			So(restoring, shouldNotExist)
+			So(dirEntryNames(f.dir), ShouldResemble, slices.DeleteFunc(slices.Clone(before), func(name string) bool {
+				return name == filepath.Base(restoring)
+			}))
+		})
+	})
 }

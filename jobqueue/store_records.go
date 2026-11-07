@@ -793,10 +793,11 @@ func (e *logLive) clearStd(seq uint64) {
 }
 
 // dropBefore forgets e's state, and each std stream, whose last applied record
-// is earlier than seq.
+// is earlier than seq, keeping no Ref of a forgotten record, which could name
+// one in a file a checkpoint deletes, as for clearStd.
 func (e *logLive) dropBefore(seq uint64) {
 	if e.stateSeq < seq {
-		e.stateSeq, e.handedOut = 0, false
+		e.stateSeq, e.state, e.handedOut = 0, wal.Ref{}, false
 	}
 
 	for stream := range e.stdSeq {
@@ -833,6 +834,30 @@ func newLogState() logState {
 		reverseDeps:   make(map[string]map[logKey]struct{}),
 		keyDeps:       make(map[logKey][]string),
 	}
+}
+
+// dropFoldedLive drops every live entry whose spec, state and std records are
+// all older than its key's folded or overlaid completion, returning how many
+// it dropped. An archive writes a delete record after the complete record, or,
+// keeping the job live to run again, a state record, and a rerun of a
+// completed job writes a spec record later than its completion; so such an
+// entry is one whose delete record damage cut from the log after history had
+// folded its completion. The comparison is strict, relying on clearStd setting
+// stdSeq to the seq of a complete record recovery applies, replayed or from a
+// checkpoint: that entry's complete record was not lost, so it is not one to
+// drop.
+func (st *logState) dropFoldedLive() int {
+	dropped := 0
+
+	for k, e := range st.live {
+		if seq, complete := st.history[k]; complete && max(e.specSeq, e.stateSeq, e.stdSeq[stdOut], e.stdSeq[stdErr]) < seq {
+			delete(st.live, k)
+
+			dropped++
+		}
+	}
+
+	return dropped
 }
 
 // unlookUpRG drops repGroup from lookedUpRGs, now that history.bolt holds an

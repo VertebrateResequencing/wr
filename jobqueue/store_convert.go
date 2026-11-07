@@ -64,9 +64,17 @@ const (
 	// in a store a crash left it in, naming the bbolt file being converted.
 	storeConvertSourceFile = "SOURCE"
 
-	// boltMetaMagicOffset is where a bbolt file's first meta page's magic
-	// is, after its page header.
+	// boltMetaMagicOffset is where a bbolt meta page's magic is, after its
+	// page header. Its page size is boltMetaPageSizeAt bytes after that, and
+	// ends boltMetaPageSizeEnd bytes after it.
 	boltMetaMagicOffset = 16
+	boltMetaPageSizeAt  = 8
+	boltMetaPageSizeEnd = boltMetaPageSizeAt + 4
+
+	// boltMinPageSize and boltMaxPageSize bound the page sizes bbolt tries
+	// for a file's second meta page when its first is damaged.
+	boltMinPageSize = 1024
+	boltMaxPageSize = 16 << 20
 
 	// convertWalFrom is the cut of a converted store's checkpoint, and the
 	// wal file of its history.bolt's folded position: the store's first wal
@@ -347,12 +355,17 @@ func (c *boltConversion) checkRoom() error {
 		return err
 	}
 
-	info, err := os.Stat(c.source)
+	return checkFreeSpaceFor(c.source, filepath.Dir(c.dbFile))
+}
+
+// checkFreeSpaceFor returns errNotEnoughSpace, naming the bytes needed and
+// available, if dir's filesystem has less free space than the size of the
+// bbolt file at boltFile, which a store built from it may take.
+func checkFreeSpaceFor(boltFile, dir string) error {
+	info, err := os.Stat(boltFile)
 	if err != nil {
 		return err
 	}
-
-	dir := filepath.Dir(c.dbFile)
 
 	free, err := freeSpace(dir)
 	if err != nil {
@@ -361,7 +374,7 @@ func (c *boltConversion) checkRoom() error {
 
 	if need := uint64(info.Size()); free < need { //nolint:gosec // a file size
 		return fmt.Errorf("%w: converting %s needs %d bytes free in %s, which has %d", errNotEnoughSpace,
-			c.source, need, dir, free)
+			boltFile, need, dir, free)
 	}
 
 	return nil
@@ -1209,25 +1222,56 @@ func recoverSourcePanic(err *error) {
 }
 
 // hasBoltMagic reports whether the regular file at path starts with a bbolt
-// meta page's magic.
+// meta page holding its magic, or, as bbolt falls back to its second meta page
+// when the first is damaged, holds that page's magic and page size at one of
+// the page sizes bbolt tries. A read error that openErrorThatIsNotCorruption
+// claims, such as EIO, is returned as it words it, rather than taking the file
+// for one that is not bbolt and so restoring over it.
 func hasBoltMagic(path string) (bool, error) {
-	f, err := os.Open(path)
+	meta, err := readFileAt(path, boltMetaMagicOffset, 4) //nolint:mnd // the magic's 4 bytes
+	if err != nil || meta == nil {
+		return false, err
+	}
+
+	if binary.NativeEndian.Uint32(meta) == boltMetaMagic {
+		return true, nil
+	}
+
+	return hasSecondBoltMeta(path)
+}
+
+// hasSecondBoltMeta reports whether the file at path holds a bbolt meta page,
+// with the magic and its own page size, as its second page at one of the page
+// sizes bbolt tries, as bbolt looks for it when the first is damaged.
+func hasSecondBoltMeta(path string) (bool, error) {
+	info, err := os.Stat(path)
 	if err != nil {
 		return false, unreadableOr(err, path)
 	}
 
-	magic := make([]byte, boltMetaMagicOffset+4) //nolint:mnd // the magic's 4 bytes
-	_, err = f.ReadAt(magic, 0)
+	last := min(int64(boltMaxPageSize), info.Size()-boltMinPageSize-1)
 
-	if errc := f.Close(); err == nil {
-		err = errc
+	for pageSize := int64(boltMinPageSize); pageSize <= last; pageSize <<= 1 {
+		found, err := boltMetaAt(path, pageSize)
+		if err != nil || found {
+			return found, err
+		}
 	}
 
-	if err != nil {
-		return false, nil //nolint:nilerr // too short to be bbolt, so not bbolt
+	return false, nil
+}
+
+// boltMetaAt reports whether the file at path holds, as its second page at
+// pageSize, a bbolt meta page with the magic and that page size.
+func boltMetaAt(path string, pageSize int64) (bool, error) {
+	meta, err := readFileAt(path, pageSize+boltMetaMagicOffset, boltMetaPageSizeEnd)
+	if err != nil || meta == nil {
+		return false, err
 	}
 
-	return binary.NativeEndian.Uint32(magic[boltMetaMagicOffset:]) == boltMetaMagic, nil
+	magic, size := binary.NativeEndian.Uint32(meta), binary.NativeEndian.Uint32(meta[boltMetaPageSizeAt:])
+
+	return magic == boltMetaMagic && int64(size) == pageSize, nil
 }
 
 // convertOnOpen converts dbFile to a store if it is a bbolt file or a

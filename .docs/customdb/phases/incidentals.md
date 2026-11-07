@@ -144,7 +144,8 @@ called ready, or explicitly deferred with the owner.
   1f.1 added the log store's dev wipe (`wipeDevStore`, called from
   `openStoreKind` for both store kinds).
   1f.2 added conversion of a bbolt file at the store path
-  (`openConvertedLogStore`), after which `upgradedOnOpen` is true.
+  (`openConvertedLogStore`, `openLogStoreInOrder` since 1f.4), after which
+  `upgradedOnOpen` is true.
 - [x] (from 0b.1 review) F5 broke the `reliability_repro` build:
   `envIntDefault` and `reliable4GiB` were defined only in the listed
   `reliable4_backup_repro_test.go`. Done in 0b.1: both moved to
@@ -772,20 +773,24 @@ called ready, or explicitly deferred with the owner.
   with checkpoints forced while the soak runs against a store seeded with
   that many live jobs.
 
-- [ ] (from 1d.2 review round 6) Recovery step 1 deletes every `*.tmp`
+- [x] (from 1d.2 review round 6) Recovery step 1 deletes every `*.tmp`
   (`removeTmpFiles`, `jobqueue/store_checkpoint.go`), but only a
   `.ckpt.tmp` is tested, so deleting only checkpoint temp files would pass.
   No effect in Phase 1, where the only other `.tmp` is `VERSION.tmp`,
   which `createStoreDir` rewrites. Owner: 1f.4 (E2), before conversion and
   compaction write other `.tmp` files: a reopen test that plants a
   non-checkpoint `x.tmp` and requires it gone.
+  Done in 1f.4: `TestLogStoreRecoverRemovesTmpFiles` (`store_recover_test.go`)
+  plants `x.tmp` in a closed store and requires a reopen to remove it.
 
-- [ ] (from 1d.2 review round 6) `dropBefore` (`jobqueue/store_records.go`)
+- [x] (from 1d.2 review round 6) `dropBefore` (`jobqueue/store_records.go`)
   zeroes `stateSeq` but keeps the old state Ref. The swap and the
   checkpoint's copy both skip a state whose `stateSeq` is 0, so that Ref
   would stay below the cut and dangle once its file is deleted. It cannot
   happen today, as every spec write carries a state record. Owner: 1f.4
   (E2): zero the Ref there, as `clearStd` does for std, with a test.
+  Done in 1f.4: `dropBefore` zeroes the state Ref with its seq;
+  `TestLogLiveDropBefore` (`store_log_test.go`) fails without it.
 
 - [ ] (from 1e.1 review round 1 fix) Fixing 1e.1's limit-group leak on an
   abandoned reservation also fixed one that predates 1e.1: a released job
@@ -924,6 +929,9 @@ called ready, or explicitly deferred with the owner.
   log store's `forceBackup`, an incremental tick, returns
   `errLogStoreNoForcedBackup` until E4 (owner 1f.5). The last of 1f.4 and
   1f.5 makes `conveyNeedingBackup` return `Convey` for every kind.
+  Done in 1f.4: `TestStoreCorruptRestoredFromBackup` runs on every store kind,
+  restoring the log store's self-contained backup; `conveyNeedingBackup` now
+  guards only `TestStoreInspector`'s forced-backup leaf, which 1f.5 un-skips.
 
 - [x] (from 1e.5) A replay against the log store must fold before each
   probe of its learned requirements (spec A5), or every replay leaf of
@@ -936,15 +944,36 @@ called ready, or explicitly deferred with the owner.
   leaves run on both stores; with no fold, 8 of the 9 fail on the log
   store (the alternating-refresh leaf still finds its mismatch).
 
-- [ ] (from 1e.5) After damage that truncates the wal before the folder's
+- [x] (from 1e.5) After damage that truncates the wal before the folder's
   position, a job already folded into `history.bolt` can recover both
   complete (from history) and live at an earlier state (from older wal
   records). A SIGKILL cannot produce this, and A4 test 2 does not check
   for it. Owner: 1f.4 (E2): decide what recovery does when history holds
   a key the replayed wal also holds live, and test it with damage that
   cuts the wal before the folded position.
+  Done in 1f.4: decided that history outranks the damaged log, rather than
+  refusing the store as corrupt, which spec A4 test 2 forbids (its random cut of
+  the last wal file must recover; `TestStoreCrash` failed with
+  `WR_TEST_STORE=all` when this was tried). Recovery drops a live entry whose
+  spec, state and std records all precede its key's completion
+  (`dropFoldedLive`, `store_records.go`, on every open, so the drop needs no
+  record of its own): an archive follows its complete record with a delete or,
+  keeping the job to run again, a state record. When the log's valid end is
+  before F, `rewindFoldedTo` (`store_log.go`) also durably moves F back to the
+  log's end (`historyBolt.rewind`), so writes after the reopen, which can land
+  in a file of F's number again once a torn last file is removed, are folded
+  rather than taken for folded; the log's end is never before the checkpoint's
+  `walFrom` file, as the scan starts there, and a removed torn `walFrom` file
+  ends the log at its start (review round 1, B2: it had read as offset zero
+  of file zero, `errStoreCorrupt`). Spec Recovery step 4 says so.
+  `TestLogStoreRecoverTornWalFromHeader` cuts a checkpoint's header-only
+  `walFrom` file inside its header.
+  `TestLogStoreRecoverWALCutBeforeFolded` cuts the file holding the completion
+  after its header (the job complete, not live, F rewound and logged) and inside
+  its header (the same, kept across reopens, F not rewound again, and a job
+  completed after the reopen complete after another).
 
-- [ ] (from 1e.5 review) A last wal file whose header is full length but
+- [x] (from 1e.5 review) A last wal file whose header is full length but
   fails its CRC, with records after it, is taken as torn and removed with
   only a warning (`settleWALEnd`, `case limit < 0 && end == 0`, and
   `walHeader` in `jobqueue/store_recover.go`). Flipping one byte at
@@ -956,6 +985,14 @@ called ready, or explicitly deferred with the owner.
   fails its CRC with bytes after it `errStoreCorrupt` (restore from
   backup), count only a short or zero-filled header as torn, and amend
   Recovery step 4.
+  Done in 1f.4: red first in `TestLogStoreRecoveryFileRules`
+  (`store_log_test.go`). `checkTornHeader` (`store_recover.go`) takes a last
+  file with no whole header as torn only if nothing but zeros follows a header
+  frame's length; otherwise it is `errStoreCorrupt` (review round 1, N5: it had
+  counted the header's own bytes too, unlike the spec). Spec Recovery step 4
+  amended, and spec A4 test 2 and `damageCrashFile` (`store_crash_test.go`) now
+  flip a byte only after the header frame, as a flip inside it is now
+  corruption, as a flip of its length already was.
 
 - [ ] (from 1e.5 review round 3) Log-store methods other than
   `checkIfComplete` and `checkIfLive` that take keys through
@@ -967,15 +1004,20 @@ called ready, or explicitly deferred with the owner.
   trace whether a client can pass these methods unchecked keys, and if so
   match bbolt with a test on both stores.
 
-- [ ] (from 1f.1 review) `initDB`'s bbolt corrupt-restore path still
+- [x] (from 1f.1 review) `initDB`'s bbolt corrupt-restore path still
   removes with plain `os.Remove`: the temporary S3 download at `bkPath`
   (`jobqueue/db.go` line 1525) and `dbFile` before copying the backup over
   it (line 1543). Once `dbFile` or the backup can be a store directory,
   these fail on a non-empty directory. Owner: 1f.4 (E2): its rewrite of
   the restore path makes both removals recursive, covered by E3 tests 4
   and 5.
+  Done in 1f.4: both are `os.RemoveAll`. The log store does not use `initDB`;
+  its restore (`store_open.go`) removes `.restoring` and `.corrupt` recursively,
+  covered by E3 tests 4 and 5 (`TestStoreRestoreRemoves`). For bbolt neither
+  path can hold a directory (a directory at `dbFile` is `ErrDBUnreadable`), so
+  no bbolt test can tell the two apart.
 
-- [ ] (from 1f.1 review round 3) The fake S3's `DownloadFile`
+- [x] (from 1f.1 review round 3) The fake S3's `DownloadFile`
   (`jobqueue/store_wipe_test.go` line 176) differs from the real one,
   which is minio v7.3.0's `FGetObject` (muxfys v5.1.1 `s3.go` line 286).
   For a missing key the fake returns an error wrapping `os.ErrNotExist`;
@@ -996,8 +1038,15 @@ called ready, or explicitly deferred with the owner.
   does, return a `NoSuchKey`-coded `minio.ErrorResponse` for a missing
   key, and have restore handle both, removing any directories it caused
   to be created and any stale `.part.minio` beside the download.
+  Done in 1f.4: the fake creates `dest`'s parents first, stages to the
+  minio-named `.part.minio` file (appending to a stale one), renames it, removes
+  it on a failed download, and returns a `NoSuchKey` `minio.ErrorResponse` for a
+  missing key. Restore downloads only inside `.restoring`, which it removes on
+  any error and open order step 2 removes before restoring, so parents and part
+  files go with it; `TestStoreRestoreRemoves` and `TestStoreOpenRestoreS3` cover
+  a stale part file, a failed download and a `NoSuchKey`.
 
-- [ ] (from 1f.1 review round 6) No test covers which S3 key `initDB`
+- [x] (from 1f.1 review round 6) No test covers which S3 key `initDB`
   downloads from for a development manager with `forceBackups`: changing
   its `s3BackupLocation(dbBkFile, deployment)` to `internal.Production`
   survives, so such a manager could restore the production backup. The
@@ -1007,8 +1056,13 @@ called ready, or explicitly deferred with the owner.
   survives. Owner: 1f.4 (E2): when restore moves onto `backupTarget`,
   assert a development restore reads the `.development` key, and add a
   deeper key such as `key/a/b/c` to the wipe test's objects.
+  Done in 1f.4: `TestStoreOpenRestoreS3` requires a development manager with
+  `forceBackups` to download only the `.development` key's objects (and one
+  without to not reach S3), and the wipe test's objects include `key/a/b/c`.
+  `initDB`'s own S3 download stays covered only for production, as the log
+  store's restore is the path that replaces it.
 
-- [ ] (from 1f.2) E1 says a corrupt source is restored as E2 order step 8,
+- [x] (from 1f.2) E1 says a corrupt source is restored as E2 order step 8,
   with today's "corrupt (?) db file" message. 1f.2 stops short of the
   restore, which 1f.4 builds: `convertBoltDB` (`store_convert.go`) renames
   a corrupt bbolt file back to `dbFile` if step 3 moved it, removes
@@ -1035,6 +1089,10 @@ called ready, or explicitly deferred with the owner.
     context, a panic in the converter's own code, wrapping
     `errConvertPanicked`) leaves `.converting` and `SOURCE` for the next
     start to resume.
+  Done in 1f.4: `openLogStoreAt` (`store_open.go`) restores only on
+  `errStoreCorrupt`. `TestStoreOpenRestoreBoltDBFile` covers E2 tests 11 to 13
+  and, with a backup present, an unconvertible file, a bad `SOURCE` and a
+  resumable failure (which leaves no `dbFile`) restoring nothing.
 
   `TestStoreConvert` covers each, including a crash between the rename-back
   and the removal and a resumed conversion failing the same way again.
@@ -1064,7 +1122,7 @@ called ready, or explicitly deferred with the owner.
   `(convertWalFrom, 0)`, or that a backup tick ships the converted store's
   checkpoint.
 
-- [ ] (from 1f.2 review round 4) No test puts a regular file that is not
+- [x] (from 1f.2 review round 4) No test puts a regular file that is not
   bbolt at `dbFile`, so a `hasBoltMagic` (`store_convert.go`) that never
   compares the magic survives: it takes any file of 20 bytes or more for
   bbolt, and the conversion then fails wrapping `errStoreCorrupt` instead
@@ -1074,8 +1132,15 @@ called ready, or explicitly deferred with the owner.
   owns how anything else at `dbFile` is classified): test that a ustar tar
   and a garbage regular file at `dbFile` are not taken for bbolt, and
   decide whether a read error there is `ErrDBUnreadable`.
+  Done in 1f.4: a tar at `dbFile` is restored from itself (E2 test 3, with a
+  different backup present), and 4KiB of random bytes is restored as
+  unrecognised, not as a corrupt bbolt source (the message says so). Decided: a
+  read error there that `openErrorThatIsNotCorruption` claims, such as `EIO`, is
+  `ErrDBUnreadable` (`hasBoltMagic` and `hasTarMagic` read through
+  `readFileAt`); a test reads `/proc/self/mem` through a symlink at `dbFile` and
+  requires `ErrDBUnreadable` with nothing restored.
 
-- [ ] (from 1f.2 review round 5) No test makes `abandon`
+- [x] (from 1f.2 review round 5) No test makes `abandon`
   (`store_convert.go`) fail to remove `.converting`, so a mutant that
   ignores the `os.RemoveAll` error survives. In that double fault (a
   corrupt source whose `.converting` cannot be removed) the mutant returns
@@ -1088,8 +1153,13 @@ called ready, or explicitly deferred with the owner.
   `.converting` unremovable (for example mode 0500) before a corrupt-source
   abandon, asserting the error does not wrap `errStoreCorrupt` and
   `SOURCE` is kept, or whatever 1f.4 rules.
+  Done in 1f.4: decided to keep what it returns: the cause joined with the
+  removal error, not wrapping `errStoreCorrupt`, so nothing is restored and
+  `SOURCE` stays (spec E2). A leaf of `TestStoreOpenRestoreBoltDBFile` makes
+  `.converting` mode 0500 at `convertAtRestored` and asserts that, then that the
+  next open, once it can be removed, restores.
 
-- [ ] (from 1f.2 review round 6) `hasBoltMagic` (`store_convert.go`)
+- [x] (from 1f.2 review round 6) `hasBoltMagic` (`store_convert.go`)
   checks only meta page 0's magic, but bbolt falls back to meta page 1: a
   probe zeroed page 0 of a bbolt file, which bbolt still opens (read-only
   and through the bbolt store), while `isBoltFile` says false and the log
@@ -1101,8 +1171,13 @@ called ready, or explicitly deferred with the owner.
   6's "bbolt (meta magic)" to cover either meta page, and test that a bbolt
   file with page 0 zeroed and a backup present converts, or at least is not
   restored over.
+  Done in 1f.4: `hasBoltMagic` also accepts a second meta page holding the magic
+  and its own page size at a page size bbolt tries (1KiB to 16MiB below the
+  file's end); spec E2 step 6 and "Location, lock, ..." say either meta page. A
+  leaf of `TestStoreOpenRestoreBoltDBFile` zeroes page 0 and requires the file
+  converted, not restored over.
 
-- [ ] (from 1f.3) `rdrCrash` (`jobqueue/running_dependent_rerun_test.go`)
+- [x] (from 1f.3) `rdrCrash` (`jobqueue/running_dependent_rerun_test.go`)
   restarts a manager from a `BackupDB` image written to `dbFile`, which on
   the log store is now a self-contained tar that only E2 restores, so the
   crash leaf of `TestRunningDependentRerunArchiveRaces`
@@ -1110,6 +1185,9 @@ called ready, or explicitly deferred with the owner.
   record once it is not running is not acted on after a crash") still runs
   on bbolt only. Owner: 1f.4 (E2 test 3): run that leaf on every store
   kind, making `rdrSetStoredMark` work on the log store if it does not.
+  Done in 1f.4: `rdrCrash` removes the db file (a directory on the log store)
+  before writing its crash image, which the restart restores (E2 step 5); the
+  crash leaf runs on both kinds. `rdrSetStoredMark` needed no change.
 
 - [ ] (from 1f.3 review round 1) `historyBolt.backup`
   (`store_history_bolt.go`) holds one `history.bolt` read transaction
@@ -1131,6 +1209,8 @@ called ready, or explicitly deferred with the owner.
   the log store's `backup` holds `ckptMu`. bbolt's backup did the same, so
   this is not a regression. Owner: 1f.4: stream the backup to the client
   instead if `wr manager backup -p` must work on prod-sized stores.
+  Awaiting the owner's ruling (delivery-queue row 25): stream, or accept
+  bbolt-equivalent buffering.
 
 - [ ] (from 1f.3 review round 3) No test races a backup's start against
   `close`, so a `startBackup` (`store_backup.go`) that joins
@@ -1143,3 +1223,54 @@ called ready, or explicitly deferred with the owner.
   (E4, whose final tick changes the same close path): add a leaf that
   races backup starts against close under `-race`, and loosen the leaf's
   coupling if 1f.5 reorders close.
+
+- [ ] (from 1f.4) Restore (`restoreLogStore`, `jobqueue/store_open.go`) copies a
+  store backup's files as they are, and lists S3 objects under the backup's
+  prefix recursively, keeping their relative paths. It does not yet rebuild a
+  wal file from E4's parts (`NNNNNNNN.wal.OOOOOOOOOOOOOOOO`), concatenating them
+  in offset order and stopping at the first gap, as spec "Location, lock, ..."
+  says restore does, since no backup writes parts until E4. Owner: 1f.5 (E4,
+  whose test 7 restores a backup of parts): add that step to restore's fill of
+  `.restoring`, before recovery.
+
+- [ ] (from 1f.4 review round 1) Spec E4's backup invariant assumes the
+  folded position F only advances, but since 1f.4 recovery can move it back
+  (`rewindFoldedTo`, `jobqueue/store_log.go`) when damage leaves the log's
+  end before it, and a last wal file removed as torn has its number reused
+  by the next writer (pre-existing). E4's per-file shipped offsets ("no
+  byte shipped twice") and its deletion of parts could then splice the old
+  and new content of one file number into one backup. Owner: 1f.5 (E4):
+  reset or verify the shipped offsets after a recovery that moved F back or
+  removed a torn file, and test it: ship parts of file n, damage the store
+  and reopen so n is reused, tick, restore, and compare.
+
+- [ ] (from 1f.4 review round 1) The live entries recovery drops
+  (`dropFoldedLive`, `jobqueue/store_records.go`) are not persisted: the
+  checkpoint merge does not drop them, so they ride along in every later
+  checkpoint and backup and are dropped again at each open. That is
+  harmless, but they never go. Owner: 2d (E6 compact, item 2d.2): have
+  compact, or the checkpoint merge, drop them durably, and test that a
+  dropped entry is in no checkpoint after it.
+
+- [ ] (from 1f.4 review round 2) If the checkpoint's `walFrom` file is
+  removed as a last file with a torn header (`settleWALEnd`,
+  `jobqueue/store_recover.go`) and the manager dies before the writer
+  creates a new file of that number, the next open fails in
+  `walFilesFrom` with "the checkpoint's walFrom, is missing", which is
+  `errStoreCorrupt`, so a good store is restored over from backup. Only
+  damage, not a crash, can tear `walFrom`'s header, since Rotate makes the
+  new file durable before a checkpoint names it, so this is unlikely; it
+  predates 1f.4 and was found by reading the code, not probed. Owner: 1f.5
+  (recovery owner for E4): make the open after such a removal recreate
+  the `walFrom` file, or accept a missing `walFrom` when F is at its start,
+  and test it by cutting `walFrom` inside its header, reopening, closing
+  before any write, and reopening again.
+
+- [ ] (from 1f.4 review round 4) `extractTar` (`store_open.go`) lets a
+  member named `.` past its name check, which is then refused as "holds
+  "." more than once", the wrong reason; a member named `..` is refused
+  with a bare `path escapes from parent` not wrapped in
+  `errNotSelfContainedBackup`. Both are refused before `dbFile` is
+  touched, so no data is at risk. Owner: 1f.7 (E7, which next reads
+  self-contained files): reject `.` and `..` in the name check with
+  `errNotSelfContainedBackup`, and test both.

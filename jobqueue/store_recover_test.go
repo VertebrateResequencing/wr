@@ -496,6 +496,258 @@ func TestLogStoreRecoverReopenedRelease(t *testing.T) {
 	})
 }
 
+func TestLogStoreRecoverWALCutBeforeFolded(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a closed log store whose history has folded the completion, in wal file 2, of a job added in "+
+		"file 1", t, func() {
+		logPath, logCtx := managerLogContext(t, ctx)
+		s, dir := openTestLogStore(t, logCtx)
+
+		jobs := testLogJobs("cut before folded", "cut", 3)
+		_, err := s.storeNewJobsGuarded(ctx, jobs, false, nil)
+		So(err, ShouldBeNil)
+
+		// the add stays in file 1 when damage cuts the file the completion is
+		// in, so only history says the job completed.
+		_, err = s.w.Rotate()
+		So(err, ShouldBeNil)
+
+		start := time.Now()
+		archiveTestJob(s, jobs[0], start, start.Add(time.Second))
+		So(s.flush(), ShouldBeNil)
+
+		s.mu.RLock()
+		folded := s.state.folded
+		s.mu.RUnlock()
+
+		So(folded.off, ShouldBeGreaterThan, wal.FrameHeader+walHeaderLen)
+		So(s.close(ctx), ShouldBeNil)
+
+		path := walFilePath(dir, folded.file)
+
+		soFoldedComplete := func(reopened *logStore, job *Job) {
+			_, live, errl := reopened.liveJob(job.Key())
+			So(errl, ShouldBeNil)
+			So(live, ShouldBeFalse)
+
+			_, complete, errc := reopened.completeJob(job.Key())
+			So(errc, ShouldBeNil)
+			So(complete, ShouldBeTrue)
+		}
+
+		Convey("with its wal cut after the header of the folded position's file, it reopens with that job "+
+			"complete and not live, moving the folded position back to the cut", func() {
+			So(os.Truncate(path, wal.FrameHeader+walHeaderLen), ShouldBeNil)
+
+			reopened := openLogStoreIn(logCtx, dir)
+
+			Reset(func() { So(reopened.close(ctx), ShouldBeNil) })
+
+			soFoldedComplete(reopened, jobs[0])
+
+			reopened.mu.RLock()
+			rewound := reopened.state.folded
+			reopened.mu.RUnlock()
+
+			So(rewound, ShouldResemble, historyPos{file: folded.file, off: wal.FrameHeader + walHeaderLen})
+			So(logLinesContaining(readLogFile(t, logPath), walFoldedRewoundLogMsg), ShouldHaveLength, 1)
+		})
+
+		Convey("with the folded position's file cut inside its header, so removed as torn, it reopens with that "+
+			"job complete and not live", func() {
+			So(os.Truncate(path, walLenFlagsLen), ShouldBeNil)
+
+			reopened := openLogStoreIn(logCtx, dir)
+			soFoldedComplete(reopened, jobs[0])
+
+			Convey("and the folded position it moved back is kept, so a reopen finds nothing to move back", func() {
+				reopenLogStore(ctx, reopened)
+				So(logLinesContaining(readLogFile(t, logPath), walFoldedRewoundLogMsg), ShouldHaveLength, 1)
+			})
+
+			Convey("and a job completed after it, in a file of that number again, is folded and complete after "+
+				"another reopen", func() {
+				later := testDBJob("echo cut before folded later", "cut")
+				_, err = reopened.storeNewJobsGuarded(ctx, []*Job{later}, false, nil)
+				So(err, ShouldBeNil)
+
+				archiveTestJob(reopened, later, start, start.Add(time.Second))
+				So(reopened.flush(), ShouldBeNil)
+
+				again := reopenLogStore(ctx, reopened)
+				soFoldedComplete(again, jobs[0])
+				soFoldedComplete(again, later)
+			})
+		})
+	})
+}
+
+func TestLogStoreRecoverTornWalFromHeader(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a closed log store checkpointed after a completion, whose checkpoint's walFrom file is its last "+
+		"and holds only its header", t, func() {
+		s, dir := openTestLogStore(t, ctx)
+
+		jobs := testLogJobs("torn walFrom header", "torn", 3)
+		_, err := s.storeNewJobsGuarded(ctx, jobs, false, nil)
+		So(err, ShouldBeNil)
+
+		start := time.Now()
+		archiveTestJob(s, jobs[0], start, start.Add(time.Second))
+		So(s.flush(), ShouldBeNil)
+		So(s.checkpoint(), ShouldBeNil)
+
+		s.mu.RLock()
+		walFrom, folded := s.ckptFrom, s.state.folded
+		s.mu.RUnlock()
+
+		So(s.close(ctx), ShouldBeNil)
+
+		files, err := walFileNumbers(dir)
+		So(err, ShouldBeNil)
+		So(files[len(files)-1], ShouldEqual, walFrom)
+		So(folded, ShouldResemble, historyPos{file: walFrom, off: wal.FrameHeader + walHeaderLen})
+
+		Convey("with that file cut inside its header, it reopens with the completion and the live jobs kept, "+
+			"again with no writes between, and a job completed after it is complete after another reopen", func() {
+			So(os.Truncate(walFilePath(dir, walFrom), walLenFlagsLen), ShouldBeNil)
+
+			reopened, err := openLogStore(ctx, dir)
+			So(err, ShouldBeNil)
+
+			Reset(func() { So(reopened.close(ctx), ShouldBeNil) })
+
+			_, live, err := reopened.liveJob(jobs[0].Key())
+			So(err, ShouldBeNil)
+			So(live, ShouldBeFalse)
+
+			_, complete, err := reopened.completeJob(jobs[0].Key())
+			So(err, ShouldBeNil)
+			So(complete, ShouldBeTrue)
+
+			for _, job := range jobs[1:] {
+				_, live, err = reopened.liveJob(job.Key())
+				So(err, ShouldBeNil)
+				So(live, ShouldBeTrue)
+			}
+
+			So(reopened.close(ctx), ShouldBeNil)
+
+			second := openLogStoreIn(ctx, dir)
+
+			Reset(func() { So(second.close(ctx), ShouldBeNil) })
+
+			_, complete, err = second.completeJob(jobs[0].Key())
+			So(err, ShouldBeNil)
+			So(complete, ShouldBeTrue)
+
+			later := testDBJob("echo torn walFrom header later", "torn")
+			_, err = second.storeNewJobsGuarded(ctx, []*Job{later}, false, nil)
+			So(err, ShouldBeNil)
+
+			archiveTestJob(second, later, start, start.Add(time.Second))
+			So(second.flush(), ShouldBeNil)
+
+			again := reopenLogStore(ctx, second)
+
+			_, complete, err = again.completeJob(later.Key())
+			So(err, ShouldBeNil)
+			So(complete, ShouldBeTrue)
+
+			_, live, err = again.liveJob(later.Key())
+			So(err, ShouldBeNil)
+			So(live, ShouldBeFalse)
+			So(again.close(ctx), ShouldBeNil)
+		})
+	})
+
+	Convey("Given a closed log store checkpointed before 2 completions, so its folded position is past the "+
+		"header of the checkpoint's walFrom file, its last", t, func() {
+		s, dir := openTestLogStore(t, ctx)
+
+		jobs := testLogJobs("torn walFrom past header", "torn", 4)
+		_, err := s.storeNewJobsGuarded(ctx, jobs, false, nil)
+		So(err, ShouldBeNil)
+		So(s.checkpoint(), ShouldBeNil)
+
+		start := time.Now()
+		archiveTestJob(s, jobs[0], start, start.Add(time.Second))
+		archiveTestJob(s, jobs[1], start, start.Add(time.Second))
+		So(s.flush(), ShouldBeNil)
+
+		s.mu.RLock()
+		walFrom, folded := s.ckptFrom, s.state.folded
+		s.mu.RUnlock()
+
+		So(s.close(ctx), ShouldBeNil)
+
+		files, err := walFileNumbers(dir)
+		So(err, ShouldBeNil)
+		So(files[len(files)-1], ShouldEqual, walFrom)
+		So(folded.file, ShouldEqual, walFrom)
+		So(folded.off, ShouldBeGreaterThan, wal.FrameHeader+walHeaderLen)
+
+		Convey("with that file cut inside its header, a job completed after a reopen, in a file of that "+
+			"number again, is complete after another reopen", func() {
+			So(os.Truncate(walFilePath(dir, walFrom), walLenFlagsLen), ShouldBeNil)
+
+			reopened := openLogStoreIn(ctx, dir)
+
+			Reset(func() { So(reopened.close(ctx), ShouldBeNil) })
+
+			later := testDBJob("echo torn walFrom past header later", "torn")
+			_, err = reopened.storeNewJobsGuarded(ctx, []*Job{later}, false, nil)
+			So(err, ShouldBeNil)
+
+			archiveTestJob(reopened, later, start, start.Add(time.Second))
+			So(reopened.flush(), ShouldBeNil)
+
+			again := reopenLogStore(ctx, reopened)
+
+			_, complete, err := again.completeJob(later.Key())
+			So(err, ShouldBeNil)
+			So(complete, ShouldBeTrue)
+
+			_, live, err := again.liveJob(later.Key())
+			So(err, ShouldBeNil)
+			So(live, ShouldBeFalse)
+			So(again.close(ctx), ShouldBeNil)
+		})
+	})
+}
+
+func TestLogStoreRecoverRemovesTmpFiles(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a closed log store with a non-checkpoint x.tmp in its directory, a reopen removes it", t, func() {
+		s, dir := openTestLogStore(t, ctx)
+		So(s.close(ctx), ShouldBeNil)
+
+		tmp := filepath.Join(dir, "x"+storeTmpExt)
+		So(os.WriteFile(tmp, []byte("partial"), dbFilePermission), ShouldBeNil)
+
+		reopened := openLogStoreIn(ctx, dir)
+
+		Reset(func() { So(reopened.close(ctx), ShouldBeNil) })
+
+		So(tmp, shouldNotExist)
+	})
+}
+
 // step makes one random operation, or an add if none of the jobs live can take
 // the one chosen.
 func (r *recoverRun) step() {

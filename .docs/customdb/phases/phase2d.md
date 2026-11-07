@@ -57,7 +57,9 @@ Implement compact on the store directory in `jobqueue/store_compact.go`
 (recover, fold and seal, checkpoint, delete covered wal files, merge
 small segments) and convert-then-compact for an unconverted bbolt file via
 `convertBoltDB`; delete `errCompactNotSupported` and the Phase-1-only
-tests 5 and 6. Cover E6 tests 1 to 4. Depends on 2d.1.
+tests 5 and 6. Cover E6 tests 1 to 4. Depends on 2d.1. Also resolve the
+1f.4 review round 1 incidental on the live entries `dropFoldedLive`
+drops riding along in every checkpoint ([incidentals.md](incidentals.md)).
 
 - [ ] implemented
 - [ ] reviewed

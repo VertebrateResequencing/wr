@@ -112,7 +112,8 @@ func TestClientBackupDBSelfContained(t *testing.T) {
 
 		backupTmpAddJob(jq, standardReqs)
 
-		Convey("Client.BackupDB writes one regular file, a tar holding a store with that job", func() {
+		Convey("Client.BackupDB writes one regular file, a tar that a manager started with it as its db file "+
+			"restores as a store with that job", func() {
 			path := filepath.Join(t.TempDir(), "mydb.db")
 
 			So(jq.BackupDB(path), ShouldBeNil)
@@ -126,10 +127,23 @@ func TestClientBackupDBSelfContained(t *testing.T) {
 			So(len(data), ShouldBeGreaterThan, tarMagicOffset+len(tarMagic))
 			So(string(data[tarMagicOffset:tarMagicOffset+len(tarMagic)]), ShouldEqual, tarMagic)
 
-			// a manager starting with it as dbFile restores it (spec E2 test
-			// 3), which item 1f.4 adds; until then it is opened by extracting
-			// it.
-			assertStoreFileLiveJobs(path, 1)
+			server.Stop(ctx, true)
+
+			serverConfig.DBFile = path
+			serverConfig.dontWipeDevDB = true
+
+			restarted, msg, _, err := serve(ctx, serverConfig)
+			So(err, ShouldBeNil)
+
+			defer restarted.Stop(ctx, true)
+
+			So(msg, ShouldContainSubstring, "restored db directory "+path+" from self-contained backup file")
+
+			info, err = os.Stat(path)
+			So(err, ShouldBeNil)
+			So(info.IsDir(), ShouldBeTrue)
+			So(waitUntilRecovered(restarted), ShouldBeTrue)
+			So(inspectedCount(restarted.inspector(), kindLive), ShouldEqual, 1)
 		})
 	})
 }
@@ -343,8 +357,8 @@ func TestLogStoreSelfContainedBackup(t *testing.T) {
 			So(slices.Sorted(maps.Keys(members)), ShouldResemble,
 				[]string{checkpointFileExt, walFileExt, storeVersionFile, historyBoltFile})
 
-			// spec E2 opens it as a store by restoring it, which item 1f.4
-			// adds; until then it is opened by extracting it.
+			// opened as spec E2 opens it: restored as a missing db file's
+			// backup.
 			restored := openBackupBytes(t, data)
 
 			So(backupLiveOrComplete(restored, slices.Concat(checkpointed, logged[1:])), ShouldBeEmpty)
@@ -603,15 +617,12 @@ func awaitBackupTestResult(results <-chan error) error {
 func openHeldLogStore(t *testing.T, ctx context.Context) (*logStore, string) {
 	t.Helper()
 
-	dbFile := filepath.Join(t.TempDir(), "queue.db")
+	cfg, _ := logStoreOpenConfig(t)
 
-	lock, err := lockStore(ctx, dbFile)
-	So(err, ShouldBeNil)
-
-	s, err := openLogStoreHolding(ctx, dbFile, lock)
+	s, err := openLogStoreLocked(ctx, cfg)
 	So(err, ShouldBeNil)
 
 	Reset(func() { So(s.close(ctx), ShouldBeNil) })
 
-	return s, dbFile
+	return s, cfg.dbFile
 }

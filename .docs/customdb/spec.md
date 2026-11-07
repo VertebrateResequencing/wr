@@ -682,11 +682,26 @@ whether `openStore` (including E2's recovery of `.restoring`), E6 compact,
    as the last file is. A last file whose header is torn holds nothing
    durable (no record is written before its header is durable), so it is
    removed (logged at warn with its size), and the file before it is then
-   the last file, valid up to its first damage. A first frame whose length
-   is neither a header's nor zero is a wrong header, whole or torn, in any
-   file. Damage before `prevEnd`, a missing file number, a wrong header in
-   any file, a missing header in any other file not skipped as spent, or
-   no valid checkpoint is `errStoreCorrupt`.
+   the last file, valid up to its first damage. A torn header is shorter
+   than a whole one, all zeros, or whole-length and failing its CRC, and
+   is followed by nothing or only zeros; one followed by any non-zero
+   byte past a header's length is damage, as a crash cannot write after a
+   header that is not durable. A first frame whose length is neither a
+   header's nor zero is a wrong header, whole or torn, in any file. Damage
+   before `prevEnd`, a missing file number, a wrong header in any file, a
+   missing header in any other file not skipped as spent, a damaged header
+   with a non-zero byte after it, or no valid checkpoint is
+   `errStoreCorrupt`. Damage that leaves the log's valid end before F (A4
+   test 2's random cut can) loses records whose completions history holds.
+   A key whose spec, state and std records all precede its completion in
+   history or the overlay is not live: an archive follows its `complete`
+   record with a delete, or, to run the job again, a state record, so its
+   delete was cut. None then recovers both complete and live. F is moved
+   back to the log's end in `history.bolt` `meta`, durably, so later writes
+   are folded rather than taken for folded. The log's end is never before
+   the checkpoint's `walFrom` file, as the scan starts there and that file
+   must exist; if it is removed as a last file with a torn header, the log
+   ends at its start.
 5. Set the seq counter to 1 + the maximum seq seen in the checkpoint
    header, the scanned wal records and history (Phase 1: `history.bolt`
    `meta`'s highest folded `complete` seq; Phase 2: the highest in the
@@ -778,13 +793,14 @@ with `failures`; it never stops the manager.
   (`jobscomplete`, `repgroupToKey`, `repgroups`, `depgroupToKey`,
   `reverseDepgroupToKey`, `depgroups`, `endTimeToKey`, `repgroupEndTime`,
   `jobRAM`, `jobDisk`, `jobSecs`), plus `meta` holding the folded position and
-  the highest folded `complete` seq, `completeSeq` (key to the seq of its
-  last folded `complete` record), and `keyRepgroups` (`repgroupToKey`'s
-  reverse, key then rep group, so that a fold of a modify record deletes its
-  old key's folded rglookups as `deleteLookupEntriesForJobKey` does), all
-  written in the fold's transaction (and by E1 step 4). The folded position in
-  `meta` never moves back. A fold applies a `complete` record only if its seq is above the
-  key's `completeSeq` (the reducer's history rule). `jobscomplete`,
+  the highest folded `complete` seq, `completeSeq` (key to the seq of its last
+  folded `complete` record), and `keyRepgroups` (`repgroupToKey`'s reverse, key
+  then rep group, so that a fold of a modify record deletes its old key's folded
+  rglookups as `deleteLookupEntriesForJobKey` does), all written in the fold's
+  transaction (and by E1 step 4). The folded position in `meta` never moves back
+  on a fold; only recovery moves it back, to the end of a log damage cut short
+  (Recovery step 4). A fold applies a `complete` record only if its seq is above
+  the key's `completeSeq` (the reducer's history rule). `jobscomplete`,
   `endTimeToKey`, `repgroupEndTime` and the stats buckets hold completed jobs
   only. `repgroupToKey` and `repgroups` also hold every folded rglookup, and
   those name jobs that are still live: `storeRepGroupLookups` writes one for
@@ -830,10 +846,12 @@ with `failures`; it never stops the manager.
   anything else, so a manager that gets `ErrDBLocked` has changed nothing.
   The path is `dbFile` as configured, not resolved, so two configs naming
   one store by different paths (such as a symlink) do not share a lock.
-- At open, `dbFile` may be: absent; a store directory; a bbolt file (bbolt
-  meta magic `0xED0CDAED`) to convert; a self-contained backup (tar, "ustar"
-  at offset 257) to restore. Anything else is corrupt and restored from
-  backup as today's "corrupt (?)" db file (E2 order step 8).
+- At open, `dbFile` may be: absent; a store directory; a bbolt file (bbolt meta
+  magic `0xED0CDAED` on its first meta page, or, as bbolt falls back to it, on
+  its second meta page at one of the page sizes bbolt tries, 1KiB to 16MiB, with
+  that page size in it) to convert; a self-contained backup (tar, "ustar" at
+  offset 257) to restore. Anything else is corrupt and restored from backup as
+  today's "corrupt (?)" db file (E2 order step 8).
 - The self-contained backup is a tar of `VERSION`, the newest checkpoint C
   (chosen and held first), all history files (Phase 1: `history.bolt` via
   `tx.WriteTo`; Phase 2: sealed `.hist`), then the wal files from min(C's
@@ -913,7 +931,8 @@ with `failures`; it never stops the manager.
 
 New sentinels in `jobqueue`: `errStoreCorrupt`, `errNotEnoughSpace`,
 `errBoltPreExists`, `errBoltUnconvertible`, `errBadConvertSource`,
-`errStoreVersionTooNew`, `errCompactNotSupported` (Phase 1 only).
+`errStoreVersionTooNew`, `errNotABackup`, `errCompactNotSupported` (Phase
+1 only).
 `ErrDBLocked` and `ErrDBUnreadable` keep their meaning;
 `openErrorThatIsNotCorruption`'s errno list applies to the store directory
 and its files too. A failed durable write returns its error to the
@@ -1120,9 +1139,10 @@ through reserve, start and release until killed, checked as the new ones.
 For the log store each round also makes 20 copies of the store as the
 killed child left it, before the reopen (which starts a new wal file
 holding only its header), with the last wal file truncated at a random
-offset or one random byte after its first frame's length flipped (a
-changed length there is a wrong header, which Recovery step 4 makes
-corruption), and recovers each.
+offset or one random byte after its header frame flipped (a changed
+length there is a wrong header, and a header failing its CRC with records
+after it a damaged one, which Recovery step 4 makes corruption), and
+recovers each.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_crash_test.go`
@@ -2072,15 +2092,25 @@ new store.
 `openStore` order, all under the lock (C7), which it takes first:
 
 1. Dev wipe (E3).
-2. `os.RemoveAll` any leftover `dbFile + ".restoring"` and
-   `dbFile + ".corrupt"`.
+2. If `dbFile` is absent and `dbFile + ".corrupt"` exists, rename
+   `.corrupt` back to `dbFile` and fsync the parent, as a restore
+   interrupted between its two renames left it, and it can be the only
+   copy of the data (a self-contained file restored by step 5). If
+   `dbFile` exists and is not a directory while `.corrupt` exists,
+   something other than a restore made `dbFile` (a bbolt-kind or older wr
+   open after the crash), so either can be the only copy, and the open
+   returns an error naming both and removes nothing. Otherwise
+   `os.RemoveAll` any leftover `dbFile + ".restoring"`, and
+   `dbFile + ".corrupt"` when `dbFile` is a directory, as restore step 3
+   always leaves it.
 3. Resume conversion.
 4. `dbFile` absent: restore (below), or create an empty store (`VERSION`,
    empty checkpoint) when there is no backup.
 5. `dbFile` a self-contained file: restore it, then remove the file;
    message `"restored db directory <dbFile> from self-contained backup
    file"`.
-6. `dbFile` bbolt (meta magic): convert (E1); a corrupt source goes to 8.
+6. `dbFile` bbolt (either meta page's magic): convert (E1); a corrupt
+   source goes to 8.
 7. `dbFile` a store: recover; on `errStoreCorrupt`, go to 8.
 8. Otherwise (unrecognised, or corrupt from 6 or 7): restore from the
    backup with today's "corrupt (?) db file" messages; with no backup, or
@@ -2099,7 +2129,9 @@ Restore never touches `dbFile` until the backup is proven good, as today
    backup, opened read-only and built into it by `buildStoreFromBolt`
    after E1 step 1's free-space check against the bbolt file's size (a
    downloaded bbolt object lives inside `.restoring` and is removed before
-   step 3). S3 downloads land only inside `.restoring`.
+   step 3). S3 downloads land only inside `.restoring`. An object whose
+   name under the key is not local (`filepath.IsLocal`) is
+   `errNotABackup`, and nothing is downloaded.
 2. Recover the store in `.restoring` fully (as `openStore` would, under
    the `dbFile + ".lock"` it already holds), then close it and fsync. Any
    error: `os.RemoveAll` `.restoring`, leave `dbFile` untouched, return
@@ -2107,10 +2139,43 @@ Restore never touches `dbFile` until the backup is proven good, as today
 3. If `dbFile` exists, rename it to `dbFile + ".corrupt"`; rename
    `.restoring` to `dbFile`; fsync the parent; `os.RemoveAll` `.corrupt`.
 
-A crash at any point leaves either the original `dbFile` (step 2 of the
-order then discards the partial `.restoring`) or no `dbFile` (the restore
-reruns from the same backup). The returned message strings are today's,
-word for word (`initDB`).
+A crash at any point leaves the original `dbFile` (step 2 of the order
+then discards the partial `.restoring`), the original set aside as
+`.corrupt` with no `dbFile` (step 2 of the order renames it back, and the
+restore reruns from the same backup), or the restored store (step 2 of
+the order removes `.corrupt`). The returned message strings are today's,
+word for word (`initDB`), "created new empty db file <dbFile>" included
+for step 4 with no backup.
+
+Which errors restore, and what counts as a backup, so that nothing is
+replaced that might be the only copy of data:
+
+- Only `errStoreCorrupt` routes to step 8: from recovery (step 7), from
+  a corrupt bbolt source (step 6), or for an unrecognised regular file at
+  `dbFile`. `errBoltUnconvertible`, `errBadConvertSource`,
+  `errStoreVersionTooNew`, `ErrDBLocked`, `ErrDBUnreadable` and a
+  resumable conversion failure (which can leave no `dbFile`, the bbolt
+  file being at its pre name) are returned with nothing restored. A read
+  error at `dbFile` that `openErrorThatIsNotCorruption` claims, such as
+  `EIO` while checking for bbolt or tar magic, is `ErrDBUnreadable`, not
+  an unrecognised file. Something at `dbFile` that is neither a directory
+  nor a regular file is an error, left untouched.
+- A corrupt bbolt source whose abandoned `.converting` cannot be removed
+  returns the cause joined with the removal error, not wrapping
+  `errStoreCorrupt`, so nothing is restored; `SOURCE` stays, and each
+  start fails the same way until `.converting` can be removed.
+- A restore that fails in step 4 or 5 returns its error; step 4 never
+  falls back to an empty store, and step 5 leaves the file at `dbFile`.
+  In step 8 the error returned joins the corruption and the restore's
+  error.
+- The backup is `dbBkFile`: a directory is a store backup, a regular file
+  a self-contained or old bbolt backup (by magic). On S3, objects under
+  `<key>/` are a store backup, preferred over an object at `<key>`, which
+  is a one-file backup. A local backup is restored in any deployment, as
+  `initDB` restores one; an S3 backup only in production or with
+  `forceBackups`, at the development key in development. A filled
+  `.restoring` without `VERSION` is `errNotABackup` (step 2), so an empty
+  backup directory never replaces a corrupt store with an empty one.
 
 **Package:** `jobqueue/`
 **File:** `jobqueue/store_open.go`
@@ -2143,7 +2208,9 @@ word for word (`initDB`).
    each restore step (mid-copy, after recovery of `.restoring`, after the
    rename to `.corrupt`, after the rename to `dbFile`), when opened again
    without the hook, then the store equals the backup and neither
-   `.restoring` nor `.corrupt` exists.
+   `.restoring` nor `.corrupt` exists. The same holds for a crash at each
+   of those points restoring a self-contained file at `dbFile` with no
+   other backup (step 5).
 10. Given a corrupt store and an old bbolt backup at the backup path, when
     opened, then `dbFile` is a store whose live and complete sets equal the
     bbolt file's, the backup file is unchanged, and the message starts

@@ -28,16 +28,15 @@ package jobqueue
 // The log store's storeInspector (spec A2).
 
 import (
-	"archive/tar"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/internal"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -48,10 +47,6 @@ var (
 	// errLogStoreNoForcedBackup is forceBackup's error: the log store makes no
 	// incremental backups until item 1f.5.
 	errLogStoreNoForcedBackup = errors.New("the log store makes no incremental backups yet")
-
-	// errNotSelfContainedBackup is openLogBackupFileInspector's error for a
-	// path that is not a self-contained backup's tar.
-	errNotSelfContainedBackup = errors.New("not a self-contained backup")
 )
 
 // logStoreFlushPoll is how often flush checks for unfinished writes.
@@ -65,80 +60,38 @@ func init() {
 }
 
 // openLogBackupFileInspector is the storeFileOpeners entry for a log store's
-// self-contained backup (spec E5): it extracts the tar at path into a new
-// temporary directory and opens the store there, so that path itself is never
-// changed. Closing it closes the store and removes the directory.
+// self-contained backup (spec E5): it restores the backup at path into a store
+// in a new temporary directory, as a manager restores a missing db file from
+// its backup (spec E2), so that path itself is never changed. Closing it
+// closes the store and removes the directory.
 func openLogBackupFileInspector(path string) (storeInspector, func() error, error) {
+	isTar, err := hasTarMagic(path)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if !isTar {
+		return nil, nil, fmt.Errorf("%w: %s", errNotSelfContainedBackup, path)
+	}
+
 	dir, err := os.MkdirTemp("", "wr-store-backup-")
 	if err != nil {
 		return nil, nil, err
 	}
 
-	if err = extractStoreBackup(path, dir); err != nil {
-		return nil, nil, errors.Join(err, os.RemoveAll(dir))
-	}
-
 	ctx := context.Background()
 
-	s, err := openLogStore(ctx, dir)
+	s, err := openLogStoreLocked(ctx, storeConfig{
+		dbFile:     filepath.Join(dir, "queue.db"),
+		dbBkFile:   path,
+		deployment: internal.Development,
+		kind:       storeKindLog,
+	})
 	if err != nil {
 		return nil, nil, errors.Join(err, os.RemoveAll(dir))
 	}
 
 	return s, func() error { return errors.Join(s.close(ctx), os.RemoveAll(dir)) }, nil
-}
-
-// extractStoreBackup writes each member of the self-contained backup at path
-// into dir, refusing a file that is not a tar of regular files named without
-// a directory.
-func extractStoreBackup(path, dir string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		return errors.Join(err, f.Close())
-	}
-
-	return errors.Join(extractTar(tar.NewReader(f), root, path), root.Close(), f.Close())
-}
-
-// extractTar writes each member of tr, the tar at path, into root.
-func extractTar(tr *tar.Reader, root *os.Root, path string) error {
-	hdr, err := tr.Next()
-	if err != nil {
-		return fmt.Errorf("%w: %s: %w", errNotSelfContainedBackup, path, err)
-	}
-
-	for ; err == nil; hdr, err = tr.Next() {
-		if hdr.Typeflag != tar.TypeReg || filepath.Base(hdr.Name) != hdr.Name {
-			return fmt.Errorf("%w: %s holds %q", errNotSelfContainedBackup, path, hdr.Name)
-		}
-
-		if err = extractBackupMember(tr, root, hdr.Name); err != nil {
-			return err
-		}
-	}
-
-	if errors.Is(err, io.EOF) {
-		return nil
-	}
-
-	return err
-}
-
-// extractBackupMember writes the rest of tr's current member to name in root.
-func extractBackupMember(tr *tar.Reader, root *os.Root, name string) error {
-	out, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, dbFilePermission)
-	if err != nil {
-		return err
-	}
-
-	_, err = io.Copy(out, tr)
-
-	return errors.Join(err, out.Close())
 }
 
 // openTestLogStore opens a log store in a new directory, closed when the

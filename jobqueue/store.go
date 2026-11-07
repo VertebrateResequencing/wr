@@ -142,9 +142,9 @@ type store interface {
 // beside cfg.dbFile (see lockStore), which the store holds until it closes.
 // Then it wipes the store if cfg asks for a development wipe (see
 // wipeDevStore). storeKindBolt opens bbolt (see initDB) and storeKindLog the
-// log store (see openConvertedLogStore), converting a bbolt file at dbFile
-// first; it does not yet restore (item 1f.4) or make incremental backups
-// (item 1f.5).
+// log store in spec E2's order (see openLogStoreInOrder), converting a bbolt
+// file at dbFile and restoring from backup as that says; it does not yet make
+// incremental backups (item 1f.5).
 //
 // If the WR_STORE_RECORD env var names a file, the store returned records every
 // call made to it there (see recordingStore); otherwise it is not wrapped at
@@ -180,12 +180,12 @@ func openStoreKind(ctx context.Context, cfg storeConfig) (store, string, error) 
 	}
 
 	if cfg.kind == storeKindLog {
-		s, errl := openConvertedLogStore(ctx, cfg.dbFile, lock)
+		s, msg, errl := openLogStoreInOrder(ctx, cfg, lock)
 		if errl != nil {
-			return nil, "", errl
+			return nil, msg, errl
 		}
 
-		return s, "", nil
+		return s, msg, nil
 	}
 
 	bdb, msg, err := initDB(ctx, cfg.dbFile, cfg.dbBkFile, cfg.deployment, cfg.forceBackups)

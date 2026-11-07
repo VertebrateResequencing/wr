@@ -582,6 +582,9 @@ func rdrCrash(ctx context.Context, d *dgrServer, alterImage func()) {
 
 	d.server.Stop(ctx, true)
 
+	// the log store's db file is a directory, and its crash image a
+	// self-contained backup that the restart restores (spec E2).
+	So(os.RemoveAll(d.serverConfig.DBFile), ShouldBeNil)
 	So(os.WriteFile(d.serverConfig.DBFile, crashImage.Bytes(), 0o600), ShouldBeNil)
 
 	d.serverConfig.dontWipeDevDB = true

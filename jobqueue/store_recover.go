@@ -64,6 +64,10 @@ const (
 	// walTornHeaderLogMsg is logged at warn when recovery removes a last wal
 	// file whose header was never made durable.
 	walTornHeaderLogMsg = "recovery removed a wal file with a torn header"
+
+	// walFoldedRewoundLogMsg is logged at warn when recovery finds the log's
+	// valid end before history.bolt's folded position, and moves it back.
+	walFoldedRewoundLogMsg = "recovery moved history's folded position back to the log's damaged end"
 )
 
 var (
@@ -183,31 +187,32 @@ func (r *walFileReplay) record(ref wal.Ref, rec []byte) error {
 }
 
 // replayFile applies the records of wal file n up to limit (or its first
-// damage if limit is -1), then truncates anything after its valid end. It
-// reports whether it removed the file, a last file with a torn header.
-func (s *logStore) replayFile(ctx context.Context, n uint32, limit int64, last bool) (bool, error) {
-	path := walFilePath(s.dir, n)
-
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
+// damage if limit is -1), then truncates anything after its valid end, which
+// it returns. It reports whether it removed the file, a last file with a torn
+// header.
+func (s *logStore) replayFile(ctx context.Context, n uint32, limit int64, last bool) (bool, int64, error) {
+	f, err := os.OpenFile(walFilePath(s.dir, n), os.O_RDWR, 0)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 
 	replay := walFileReplay{s: s, n: n, limit: limit, header: true}
 
 	end, err := replay.scan(f)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 
-	return settleWALEnd(ctx, f, info.Size(), end, limit, last)
+	removed, err := settleWALEnd(ctx, f, info.Size(), end, limit, last)
+
+	return removed, end, err
 }
 
 // walFilePath returns the path of wal file n in dir.
@@ -227,6 +232,10 @@ func settleWALEnd(ctx context.Context, f *os.File, size, end, limit int64, last 
 
 	switch {
 	case limit < 0 && end == 0:
+		if err := checkTornHeader(f, size); err != nil {
+			return false, err
+		}
+
 		clog.Warn(ctx, walTornHeaderLogMsg, "file", f.Name(), "bytes", size)
 
 		return true, os.Remove(f.Name())
@@ -252,6 +261,31 @@ func walEndCorrupt(name string, end, limit int64, last bool) error {
 	default:
 		return nil
 	}
+}
+
+// checkTornHeader returns errStoreCorrupt for f, a last wal file of size bytes
+// with no whole header, if any byte after a header's length is not zero. A
+// header is written and made durable before any record, so a torn one is
+// followed by nothing, or by zeros a crash left; a header failing its CRC
+// followed by a non-zero byte is damage, not a header that was never durable.
+func checkTornHeader(f *os.File, size int64) error {
+	const headerSize = wal.FrameHeader + walHeaderLen
+
+	if size <= headerSize {
+		return nil
+	}
+
+	data, err := io.ReadAll(io.NewSectionReader(f, headerSize, size-headerSize))
+	if err != nil {
+		return err
+	}
+
+	if slices.ContainsFunc(data, func(b byte) bool { return b != 0 }) {
+		return fmt.Errorf("%w: wal file %s starts with a damaged header, followed by %d bytes", errStoreCorrupt,
+			f.Name(), size-headerSize)
+	}
+
+	return nil
 }
 
 // walFilesFrom returns the numbers of the wal files in dir numbered from on,
@@ -568,24 +602,31 @@ func (s *logStore) jobsOf(keys []logKey, refs [][2]wal.Ref, found map[wal.Ref][]
 // With a checkpoint, from is its walFrom: files before it, which the
 // checkpoint holds the live state of, are not replayed, and file from must be
 // there.
-func (s *logStore) replay(ctx context.Context, from uint32) (uint32, error) {
+//
+// It also returns the log's valid end: the last file it kept and that file's
+// valid end, or the start of the first file if that is the one it removed.
+func (s *logStore) replay(ctx context.Context, from uint32) (uint32, historyPos, error) {
 	files, err := walFilesFrom(s.dir, from)
 	if err != nil || len(files) == 0 {
-		return 1, err
+		return 1, historyPos{}, err
 	}
 
+	logEnd := historyPos{file: files[0]}
+
 	for i, n := range files {
-		removed, errf := s.replayAt(ctx, files, i)
+		removed, end, errf := s.replayAt(ctx, files, i)
 		if errf != nil {
-			return 0, errf
+			return 0, historyPos{}, errf
 		}
 
 		if removed {
-			return n, nil
+			return n, logEnd, nil
 		}
+
+		logEnd = historyPos{file: n, off: uint64(end)} //nolint:gosec // an offset
 	}
 
-	return files[len(files)-1] + 1, nil
+	return files[len(files)-1] + 1, logEnd, nil
 }
 
 // replayAt is replayFile of files[i], valid up to the end a later file's
@@ -593,14 +634,14 @@ func (s *logStore) replay(ctx context.Context, from uint32) (uint32, error) {
 // a header or a torn one (spec C5), even one that limit 0 skips as spent, whose
 // replay stops before reading its header: records with no header are
 // errStoreCorrupt, not a spent file's tail to truncate.
-func (s *logStore) replayAt(ctx context.Context, files []uint32, i int) (bool, error) {
+func (s *logStore) replayAt(ctx context.Context, files []uint32, i int) (bool, int64, error) {
 	limit, err := s.walValidEnd(files, i)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 
 	if _, _, _, err = s.walHeader(files[i]); err != nil {
-		return false, err
+		return false, 0, err
 	}
 
 	return s.replayFile(ctx, files[i], limit, i == len(files)-1)

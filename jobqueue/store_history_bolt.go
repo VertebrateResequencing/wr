@@ -456,7 +456,8 @@ func putFailStats(tx *bolt.Tx, samples []jobExitData, stats *reqStatCache) error
 }
 
 // putHistoryMeta records the folded position, unless meta holds a later one,
-// which it never moves back from, and the highest folded seq in meta.
+// which a fold never moves it back from (only rewind does), and the highest
+// folded seq in meta.
 func putHistoryMeta(tx *bolt.Tx, to historyPos, maxSeq uint64) error {
 	meta := tx.Bucket(bucketHistoryMeta)
 
@@ -468,6 +469,16 @@ func putHistoryMeta(tx *bolt.Tx, to historyPos, maxSeq uint64) error {
 	}
 
 	return meta.Put(historyMetaMaxSeq, binary.BigEndian.AppendUint64(nil, maxSeq))
+}
+
+// rewind durably moves the folded position back to to, which recovery does
+// when damage has left the log ending before it (see logStore.rewindFoldedTo).
+func (h *historyBolt) rewind(to historyPos) error {
+	return h.bolt.Update(func(tx *bolt.Tx) error {
+		pos := binary.BigEndian.AppendUint64(binary.BigEndian.AppendUint32(nil, to.file), to.off)
+
+		return tx.Bucket(bucketHistoryMeta).Put(historyMetaFolded, pos)
+	})
 }
 
 // putCompletes is putComplete of each of complete, with the learned-requirement

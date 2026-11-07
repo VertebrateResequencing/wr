@@ -191,6 +191,42 @@ func (a *logAdd) keep(job *Job, key string) string {
 	return job.RepGroup
 }
 
+// replayFromCheckpoint replays the log from the checkpoint's walFrom (see
+// replay), drops the live entries the log's lost deletes would have ended (see
+// dropFoldedLive), and moves the folded position back to the log's end if it is
+// past it (see rewindFoldedTo). It returns the number the next wal file must
+// have.
+func (s *logStore) replayFromCheckpoint(ctx context.Context) (uint32, error) {
+	next, logEnd, err := s.replay(ctx, s.ckptFrom)
+	if err != nil {
+		return 0, err
+	}
+
+	return next, s.rewindFoldedTo(ctx, logEnd, s.state.dropFoldedLive())
+}
+
+// rewindFoldedTo deals with damage that left the log's valid end, logEnd,
+// before history.bolt's folded position F: history then holds completions
+// whose records the log has lost, as have the delete records that ended their
+// jobs' live entries, which recovery has dropped (dropped of them, see
+// dropFoldedLive), so no job recovers both complete and live. F is moved back
+// to logEnd, durably, so that what is written from here on, which a folded
+// position past it would take for folded, is folded. logEnd is never before
+// the checkpoint's walFrom file: replay starts there, the file must exist, and
+// if it is removed as torn the log ends at its start.
+func (s *logStore) rewindFoldedTo(ctx context.Context, logEnd historyPos, dropped int) error {
+	if !s.state.folded.after(logEnd) {
+		return nil
+	}
+
+	clog.Warn(ctx, walFoldedRewoundLogMsg, "from_file", s.state.folded.file, "from_offset", s.state.folded.off,
+		"to_file", logEnd.file, "to_offset", logEnd.off, "dropped", dropped)
+
+	s.state.folded = logEnd
+
+	return s.history.rewind(logEnd)
+}
+
 // logStateCommit is the durability of a state record appendState appends:
 // appended is closed once the record has been appended, as w, or failed to be,
 // with err.
@@ -815,7 +851,7 @@ func (s *logStore) recover(ctx context.Context) (uint32, error) {
 		return 0, err
 	}
 
-	next, err := s.replay(ctx, s.ckptFrom)
+	next, err := s.replayFromCheckpoint(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -1261,7 +1297,7 @@ type logStore struct {
 // openLogStore opens, creating if need be, the log store in dir: it checks its
 // VERSION, opens its history.bolt, replays the log there into memory and
 // starts a writer on a new segment. The caller holds the store's lock (see
-// openLogStoreHolding).
+// openLogStoreInOrder).
 func openLogStore(ctx context.Context, dir string) (*logStore, error) {
 	if err := prepareStoreDir(dir); err != nil {
 		return nil, err
