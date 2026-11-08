@@ -108,10 +108,6 @@ func TestLogStoreInspector(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(outcome, ShouldEqual, archiveAlreadyWritten)
 		})
-
-		Convey("it makes no incremental backup yet", func() {
-			So(s.forceBackup(), ShouldWrap, errLogStoreNoForcedBackup)
-		})
 	})
 
 	Convey("Given a log store, a job that exited 1 with both std streams and one with only stdout", t, func() {

@@ -41,11 +41,17 @@ Brief every subagent with these project constraints:
 spec.md section: E4
 
 Ship sealed `.hist` files once each in place of the whole
-`history.bolt` (`jobqueue/store_backup.go`). Cover E4's acceptance
+`history.bolt` (`jobqueue/store_backup_tick.go`). Cover E4's acceptance
 tests against the final store; test 10 is Phase 1 only and is removed
 with `history.bolt` shipping. Tests 5 and 13 take their converted
 store from the converter as it stands, which writes `history.bolt` until
 2d.1; they check only the old-backup rename and that the backup opens.
+Also resolve the 1f.5 incidental on telling a backup made from another
+store's files by a store identity, re-check the 1f.5 review round 7
+incidental on mutant E12 (`wholeFrom` without `holdsPartsBefore`) once the
+history step is replaced, and check the 1f.5 review round 11 incidental
+on an S3 ship staging a whole `history.bolt` in the store directory
+([incidentals.md](incidentals.md)).
 Depends on 2b.
 
 - [ ] implemented

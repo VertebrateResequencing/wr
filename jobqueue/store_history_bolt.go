@@ -46,9 +46,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
+	"syscall"
 	"time"
 
 	"github.com/VertebrateResequencing/wr/jobqueue/wal"
@@ -285,9 +288,18 @@ type historyBolt struct {
 
 // openHistoryBolt opens, creating if need be, history.bolt in dir, with every
 // bucket it has. The caller holds the store's lock.
+//
+// It maps the file with managerInitialMmapSize's headroom, as openManagerBolt
+// does the bbolt store, since a backup copies history.bolt whole under one
+// read transaction (spec E4, E5): a fold commit growing the file past its
+// mapping would remap, which waits for that transaction while blocking every
+// new history read until the copy ends. With the headroom that happens only
+// once history.bolt has doubled in size since the store opened. If the
+// process may not map that much address space it falls back to bbolt's
+// default mapping.
 func openHistoryBolt(dir string, ch codec.Handle) (*historyBolt, error) {
-	bdb, err := bolt.Open(filepath.Join(dir, historyBoltFile), dbFilePermission,
-		&bolt.Options{Timeout: managerDBOpenTimeout, FreelistType: bolt.FreelistMapType})
+	bdb, err := openBoltWithHeadroom(filepath.Join(dir, historyBoltFile),
+		bolt.Options{Timeout: managerDBOpenTimeout, FreelistType: bolt.FreelistMapType})
 	if err != nil {
 		return nil, err
 	}
@@ -558,6 +570,35 @@ func (h *historyBolt) backup(tw *tar.Writer) (historyPos, error) {
 		_, err := tx.WriteTo(tw)
 
 		return err
+	})
+
+	return folded, err
+}
+
+// copyTo writes history.bolt to w, under a read transaction that also reads
+// its folded position, which it returns.
+func (h *historyBolt) copyTo(w io.Writer) (historyPos, error) {
+	var folded historyPos
+
+	err := h.bolt.View(func(tx *bolt.Tx) error {
+		folded = historyFoldedPos(tx.Bucket(bucketHistoryMeta))
+
+		_, err := tx.WriteTo(w)
+
+		return err
+	})
+
+	return folded, err
+}
+
+// foldedPos returns the folded position history.bolt holds.
+func (h *historyBolt) foldedPos() (historyPos, error) {
+	var folded historyPos
+
+	err := h.bolt.View(func(tx *bolt.Tx) error {
+		folded = historyFoldedPos(tx.Bucket(bucketHistoryMeta))
+
+		return nil
 	})
 
 	return folded, err
@@ -1099,6 +1140,28 @@ func (s *logStore) viewHistory(repGroup string, fn func(r *historyRead) error) e
 	defer s.releaseRefs(gen)
 
 	return r.view(fn)
+}
+
+// openBoltWithHeadroom opens the bbolt file at path with opts, mapped with
+// managerInitialMmapSize's headroom for the file's size, or with bbolt's
+// default mapping if the process may not map that much (see openHistoryBolt
+// and openManagerBolt).
+func openBoltWithHeadroom(path string, opts bolt.Options) (*bolt.DB, error) {
+	var fileSize int64
+	if info, err := os.Stat(path); err == nil { //nolint:gosec // G703: path is one of the manager's own db files
+		fileSize = info.Size()
+	}
+
+	opts.InitialMmapSize = managerInitialMmapSize(fileSize)
+
+	bdb, err := bolt.Open(path, dbFilePermission, &opts)
+	if err == nil || opts.InitialMmapSize == 0 || !errors.Is(err, syscall.ENOMEM) {
+		return bdb, err
+	}
+
+	opts.InitialMmapSize = 0
+
+	return bolt.Open(path, dbFilePermission, &opts)
 }
 
 // putSortedKeys puts each of keys in b with no value, in key order.

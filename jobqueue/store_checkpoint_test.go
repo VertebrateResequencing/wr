@@ -463,7 +463,7 @@ func TestLogStoreCheckpointFailureLogged(t *testing.T) {
 
 	Convey("A checkpoint failure noted a minute after one was logged is logged with the count of failures since "+
 		"that log", t, func() {
-		logPath, logCtx := managerLogContext(t, ctx)
+		logCtx, logged := cmdLogSyncCapture(ctx)
 
 		var failures checkpointFailures
 
@@ -474,7 +474,7 @@ func TestLogStoreCheckpointFailureLogged(t *testing.T) {
 		failures.logged = failures.logged.Add(-checkpointFailedLogEvery)
 		failures.note(logCtx, errCkptTestKilled)
 
-		failed := logLinesContaining(readLogFile(t, logPath), `msg="`+checkpointFailedLogMsg+`"`)
+		failed := logLinesContaining(logged.String(), `msg="`+checkpointFailedLogMsg+`"`)
 		So(failed, ShouldHaveLength, 2)
 		So(failed[0], ShouldContainSubstring, "failures=1")
 		So(failed[1], ShouldContainSubstring, "failures=3")
@@ -497,7 +497,7 @@ func TestLogStoreCheckpointFailureLogged(t *testing.T) {
 			logCheckpointEvery.Store(0)
 		})
 
-		logPath, logCtx := managerLogContext(t, ctx)
+		logCtx, logged := cmdLogSyncCapture(ctx)
 		s, _ := openTestLogStore(t, logCtx)
 
 		_, err := s.storeNewJobsGuarded(ctx, testLogJobs("c6 failing", "c6", 5), false, nil)
@@ -506,7 +506,7 @@ func TestLogStoreCheckpointFailureLogged(t *testing.T) {
 		Convey("the checkpointer logs the failure once a minute at most, at error, with the failure count", func() {
 			So(pollUntilFor(ckptTestTimeout, func() bool { return attempts.Load() >= 2 }), ShouldBeTrue)
 
-			failed := logLinesContaining(readLogFile(t, logPath), `msg="`+checkpointFailedLogMsg+`"`)
+			failed := logLinesContaining(logged.String(), `msg="`+checkpointFailedLogMsg+`"`)
 			So(failed, ShouldHaveLength, 1)
 			So(failed[0], ShouldContainSubstring, "lvl=eror")
 			So(failed[0], ShouldContainSubstring, "failures=1")

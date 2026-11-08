@@ -44,9 +44,9 @@ var (
 	// errLogStoreUnknownKind is count's error for a kind it does not know.
 	errLogStoreUnknownKind = errors.New("unknown record kind")
 
-	// errLogStoreNoForcedBackup is forceBackup's error: the log store makes no
-	// incremental backups until item 1f.5.
-	errLogStoreNoForcedBackup = errors.New("the log store makes no incremental backups yet")
+	// errLogStoreNoBackups is forceBackup's error for a store with no backup
+	// path, or an S3 one it never backs up to.
+	errLogStoreNoBackups = errors.New("store makes no backups")
 )
 
 // logStoreFlushPoll is how often flush checks for unfinished writes.
@@ -60,17 +60,25 @@ func init() {
 }
 
 // openLogBackupFileInspector is the storeFileOpeners entry for a log store's
-// self-contained backup (spec E5): it restores the backup at path into a store
-// in a new temporary directory, as a manager restores a missing db file from
-// its backup (spec E2), so that path itself is never changed. Closing it
-// closes the store and removes the directory.
+// backup: a self-contained one (spec E5), or a backup directory an incremental
+// backup writes (E4). It restores the backup at path into a store in a new
+// temporary directory, as a manager restores a missing db file from its
+// backup (spec E2), so that path itself is never changed. Closing it closes
+// the store and removes the directory.
 func openLogBackupFileInspector(path string) (storeInspector, func() error, error) {
-	isTar, err := hasTarMagic(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	if !isTar {
+	isTar := false
+	if !info.IsDir() {
+		if isTar, err = hasTarMagic(path); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	if !info.IsDir() && !isTar {
 		return nil, nil, fmt.Errorf("%w: %s", errNotSelfContainedBackup, path)
 	}
 
@@ -188,10 +196,21 @@ func (s *logStore) count(kind recordKind) (int, error) {
 	}
 }
 
-// forceBackup returns errLogStoreNoForcedBackup: the log store makes no
-// incremental backups yet.
+// forceBackup is storeInspector.forceBackup: it makes an incremental backup
+// tick (spec E4) now, even if periodic backups are disabled, from when on the
+// store keeps the wal files the backup may need, as a periodic store does.
 func (s *logStore) forceBackup() error {
-	return errLogStoreNoForcedBackup
+	if s.inc == nil {
+		return errLogStoreNoBackups
+	}
+
+	if !s.startBackup() {
+		return errDBClosed
+	}
+
+	defer s.backups.Done()
+
+	return s.backupTick()
 }
 
 // flush waits until every write appended so far has finished, then folds

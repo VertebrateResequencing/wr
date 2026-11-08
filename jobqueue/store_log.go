@@ -113,6 +113,16 @@ var (
 	// it does with its job's live record and made its records, before it
 	// appends them.
 	logArchiveDecidedHook func() //nolint:gochecknoglobals // a test seam
+
+	// logTornRemovedHook is called by recovery once it has removed a last wal
+	// file with a torn header; an error it returns fails the open there, as a
+	// crash would end it.
+	logTornRemovedHook atomic.Pointer[func() error] //nolint:gochecknoglobals // a test seam
+
+	// logWALTruncatedHook is called by recovery once it has truncated a wal
+	// file after its valid end; an error it returns fails the open there, as a
+	// crash would end it.
+	logWALTruncatedHook atomic.Pointer[func() error] //nolint:gochecknoglobals // a test seam
 )
 
 var (
@@ -191,18 +201,75 @@ func (a *logAdd) keep(job *Job, key string) string {
 	return job.RepGroup
 }
 
+// openBackedLogStore is openLogStore with inc, if not nil, making the store's
+// incremental backups (spec E4) from before recovery, so that recovery keeps
+// the wal files the backup may still need, and its ticker started if periodic.
+func openBackedLogStore(ctx context.Context, dir string, inc *incBackup) (*logStore, error) {
+	if err := prepareStoreDir(dir); err != nil {
+		return nil, err
+	}
+
+	s := newLogStore(ctx, dir)
+	s.inc = inc
+
+	history, err := openHistoryBolt(dir, s.ch)
+	if err != nil {
+		return nil, err
+	}
+
+	s.history = history
+
+	next, err := s.recover(ctx)
+	if err != nil {
+		return nil, errors.Join(err, s.closeFiles(), s.history.close())
+	}
+
+	if s.w, err = wal.NewWriter(dir, next, walSegmentSize, s.writeFailed); err != nil {
+		return nil, errors.Join(err, s.closeFiles(), s.history.close())
+	}
+
+	s.openNext = next
+	s.startBackground()
+
+	return s, nil
+}
+
+// startBackground starts the store's background goroutines, which close
+// stops: the stats reporter, folder, checkpointer and backup ticker.
+func (s *logStore) startBackground() {
+	go s.reportStats()
+
+	s.startFolder()
+	s.startCheckpointer()
+	s.startBackupTicker()
+}
+
 // replayFromCheckpoint replays the log from the checkpoint's walFrom (see
 // replay), drops the live entries the log's lost deletes would have ended (see
 // dropFoldedLive), and moves the folded position back to the log's end if it is
-// past it (see rewindFoldedTo). It returns the number the next wal file must
-// have.
+// past it (see rewindFoldedTo). Only then does it remove a last wal file with
+// a torn header, so that a crash in between never leaves history.bolt's folded
+// position past a log that no longer has the file (see replay). It returns the
+// number the next wal file must have.
 func (s *logStore) replayFromCheckpoint(ctx context.Context) (uint32, error) {
-	next, logEnd, err := s.replay(ctx, s.ckptFrom)
+	next, logEnd, torn, err := s.replay(ctx, s.ckptFrom)
 	if err != nil {
 		return 0, err
 	}
 
-	return next, s.rewindFoldedTo(ctx, logEnd, s.state.dropFoldedLive())
+	if err = s.rewindFoldedTo(ctx, logEnd, s.state.dropFoldedLive()); err != nil || torn == 0 {
+		return next, err
+	}
+
+	if err = os.Remove(walFilePath(s.dir, torn)); err != nil {
+		return 0, err
+	}
+
+	if hook := logTornRemovedHook.Load(); hook != nil {
+		return 0, (*hook)()
+	}
+
+	return next, nil
 }
 
 // rewindFoldedTo deals with damage that left the log's valid end, logEnd,
@@ -225,6 +292,21 @@ func (s *logStore) rewindFoldedTo(ctx context.Context, logEnd historyPos, droppe
 	s.state.folded = logEnd
 
 	return s.history.rewind(logEnd)
+}
+
+// startRecovery deletes files left being written and loads the wal file cuts
+// an earlier recovery noted for the backup (see readRecoveryCuts).
+func (s *logStore) startRecovery() error {
+	if err := errors.Join(removeTmpFiles(s.dir), removeConvertSource(s.dir)); err != nil {
+		return err
+	}
+
+	cuts, err := readRecoveryCuts(s.dir)
+	if err == nil {
+		s.recoveryCuts = cuts
+	}
+
+	return err
 }
 
 // logStateCommit is the durability of a state record appendState appends:
@@ -829,14 +911,15 @@ func (s *logStore) addTransitionLocked(job *Job, k logKey, build func() bool) fu
 	return s.notePending(s.stateWrites, k)
 }
 
-// recover deletes files left being written, loads history.bolt's key index and
-// folded position and the newest checkpoint, replays the log from the
+// recover deletes files left being written, loads the wal file cuts an earlier
+// recovery noted for the backup (see readRecoveryCuts), history.bolt's key
+// index and folded position and the newest checkpoint, replays the log from the
 // checkpoint's walFrom, resumes the seq counter above every seq the
 // checkpoint, the log and history.bolt hold (spec "Recovery", steps 1 to 5),
 // and deletes the files the checkpoint made redundant that are left. It
 // returns the number the next wal file must have.
 func (s *logStore) recover(ctx context.Context) (uint32, error) {
-	if err := errors.Join(removeTmpFiles(s.dir), removeConvertSource(s.dir)); err != nil {
+	if err := s.startRecovery(); err != nil {
 		return 0, err
 	}
 
@@ -857,6 +940,8 @@ func (s *logStore) recover(ctx context.Context) (uint32, error) {
 	}
 
 	s.seq.Store(max(s.state.maxSeq, foldedSeq))
+
+	s.delFrom, s.delFolded = s.ckptFrom, folded
 
 	if s.ckptFrom != 0 {
 		err = s.deleteRedundant(s.ckptFrom, folded)
@@ -1270,13 +1355,32 @@ type logStore struct {
 	recSecRound, recMBRound int
 
 	// ckptMu makes checkpoints one at a time, and guards ckptFrom, the newest
-	// checkpoint's walFrom (0 if there is none); backup holds it so that no
+	// checkpoint's walFrom (0 if there is none), and delFrom and delFolded,
+	// the walFrom and the folded position it was merged at of the newest
+	// checkpoint that swapped every Ref below its cut and waited for
+	// their readers (or that recovery loaded), before which files may be
+	// deleted: a checkpoint failing with errCheckpointRefsUnswapped is newest
+	// but keeps the files its Refs still read. backup holds it so that no
 	// checkpoint deletes a file it copies. The checkpointer goroutine stops
 	// once ckptStop is closed, closing ckptExited as it ends.
 	ckptMu     sync.Mutex
 	ckptFrom   uint32
+	delFrom    uint32
+	delFolded  historyPos
 	ckptStop   chan struct{}
 	ckptExited chan struct{}
+
+	// inc, if not nil, makes the store's incremental backups (spec E4).
+	inc *incBackup
+
+	// recoveryCuts is the end recovery left each wal file it truncated, or 0
+	// for one it removed as torn, in this run or an earlier one whose
+	// incremental backup tick never made the backup match, as
+	// recoveryCutsFile records; openNext is the number of the first wal file
+	// the store's writer made, by which the first incremental backup tick
+	// checks the backup it finds was made from this store's files.
+	recoveryCuts map[uint32]int64
+	openNext     uint32
 
 	// backups counts the backups in progress, which close waits for before it
 	// closes the files they read and releases the store's lock. A backup joins
@@ -1297,55 +1401,29 @@ type logStore struct {
 // openLogStore opens, creating if need be, the log store in dir: it checks its
 // VERSION, opens its history.bolt, replays the log there into memory and
 // starts a writer on a new segment. The caller holds the store's lock (see
-// openLogStoreInOrder).
+// openLogStoreInOrder). It makes no incremental backups.
 func openLogStore(ctx context.Context, dir string) (*logStore, error) {
-	if err := prepareStoreDir(dir); err != nil {
-		return nil, err
-	}
-
-	s := newLogStore(ctx, dir)
-
-	history, err := openHistoryBolt(dir, s.ch)
-	if err != nil {
-		return nil, err
-	}
-
-	s.history = history
-
-	next, err := s.recover(ctx)
-	if err != nil {
-		return nil, errors.Join(err, s.closeFiles(), s.history.close())
-	}
-
-	if s.w, err = wal.NewWriter(dir, next, walSegmentSize, s.writeFailed); err != nil {
-		return nil, errors.Join(err, s.closeFiles(), s.history.close())
-	}
-
-	go s.reportStats()
-
-	s.startFolder()
-	s.startCheckpointer()
-
-	return s, nil
+	return openBackedLogStore(ctx, dir, nil)
 }
 
 // newLogStore returns a log store of dir with empty state and no writer.
 func newLogStore(ctx context.Context, dir string) *logStore {
 	return &logStore{
-		dir:         dir,
-		ctx:         ctx,
-		ch:          new(codec.BincHandle),
-		state:       newLogState(),
-		claims:      make(map[logKey]chan struct{}),
-		stateWrites: make(map[logKey]*logPending),
-		reviving:    make(map[logKey]*logPending),
-		inFlight:    make(map[logKey]chan struct{}),
-		guardAdds:   make(map[*rerunGuard]*logWrite),
-		files:       make(map[uint32]*os.File),
-		statsEvery:  archiveFoldReportInterval,
-		statsStop:   make(chan struct{}),
-		statsExited: make(chan struct{}),
-		reqStats:    newReqStatCache(),
+		dir:          dir,
+		ctx:          ctx,
+		ch:           new(codec.BincHandle),
+		state:        newLogState(),
+		claims:       make(map[logKey]chan struct{}),
+		stateWrites:  make(map[logKey]*logPending),
+		reviving:     make(map[logKey]*logPending),
+		inFlight:     make(map[logKey]chan struct{}),
+		guardAdds:    make(map[*rerunGuard]*logWrite),
+		files:        make(map[uint32]*os.File),
+		recoveryCuts: make(map[uint32]int64),
+		statsEvery:   archiveFoldReportInterval,
+		statsStop:    make(chan struct{}),
+		statsExited:  make(chan struct{}),
+		reqStats:     newReqStatCache(),
 	}
 }
 
@@ -1463,6 +1541,9 @@ func (s *logStore) writeOpen(f *logFrames, after func()) (*logWrite, error) {
 // close makes every record appended before it durable, then refuses further
 // writes and backups with errDBClosed. It waits for a backup in progress, which
 // then fails with errDBClosed unless it had already sealed its last wal file.
+// With periodic incremental backups, it waits for a tick in progress, then,
+// after the writer's last commit, runs one final tick (spec E4), as the bbolt
+// store writes a final backup on close.
 func (s *logStore) close(ctx context.Context) error {
 	s.closeMu.Lock()
 	already := s.closed
@@ -1478,6 +1559,7 @@ func (s *logStore) close(ctx context.Context) error {
 	s.stopCheckpointer()
 	s.stopFolder()
 	<-s.ckptExited
+	s.finishBackups()
 	s.reqStats.close()
 
 	close(s.statsStop)

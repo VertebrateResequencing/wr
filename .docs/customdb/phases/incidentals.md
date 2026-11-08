@@ -146,6 +146,7 @@ called ready, or explicitly deferred with the owner.
   1f.2 added conversion of a bbolt file at the store path
   (`openConvertedLogStore`, `openLogStoreInOrder` since 1f.4), after which
   `upgradedOnOpen` is true.
+  1f.5 added the log store's incremental backups (`store_backup_tick.go`).
 - [x] (from 0b.1 review) F5 broke the `reliability_repro` build:
   `envIntDefault` and `reliable4GiB` were defined only in the listed
   `reliable4_backup_repro_test.go`. Done in 0b.1: both moved to
@@ -907,7 +908,7 @@ called ready, or explicitly deferred with the owner.
   passes `drains.uninstall`, so the hook goes on a failed start too and
   still only after every store is closed.
 
-- [ ] (from 1e.5) The log store makes no backups yet, so with
+- [x] (from 1e.5) The log store makes no backups yet, so with
   `WR_TEST_STORE=all` or `log` these skip on it (`conveyNeedingBackup`,
   `jobqueue/store_inspect_test.go`): `TestStoreInspector`'s "a forced
   backup holds what the store held" leaf and all of
@@ -932,6 +933,12 @@ called ready, or explicitly deferred with the owner.
   Done in 1f.4: `TestStoreCorruptRestoredFromBackup` runs on every store kind,
   restoring the log store's self-contained backup; `conveyNeedingBackup` now
   guards only `TestStoreInspector`'s forced-backup leaf, which 1f.5 un-skips.
+  Done in 1f.5: the log store's `forceBackup` makes an incremental backup
+  tick (spec E4), so `errLogStoreNoForcedBackup` and `conveyNeedingBackup`
+  are gone, and `TestStoreInspector`'s forced-backup leaf runs on every store
+  kind, opening the backup directory the tick writes through
+  `openLogBackupFileInspector`, which now accepts a backup directory as well
+  as a self-contained file.
 
 - [x] (from 1e.5) A replay against the log store must fold before each
   probe of its learned requirements (spec A5), or every replay leaf of
@@ -1113,7 +1120,7 @@ called ready, or explicitly deferred with the owner.
   which needs it decoded. This is stricter than bbolt's start, which never
   decodes complete records; the owner may prefer copying it as it is.
 
-- [ ] (from 1f.2 review round 4) No Phase 1 code reads
+- [x] (from 1f.2 review round 4) No Phase 1 code reads
   `checkpointHeader.histFrom`: it is only written, by the checkpoint
   writer (`store_checkpoint.go`) and by E1 step 4's converted checkpoint
   (`store_convert.go`), so a mutant writing the converted checkpoint's
@@ -1121,6 +1128,11 @@ called ready, or explicitly deferred with the owner.
   that a converted store's checkpoint has `histFrom` at
   `(convertWalFrom, 0)`, or that a backup tick ships the converted store's
   checkpoint.
+  Done in 1f.5: a backup tick reads a checkpoint's `histFrom` to decide
+  whether to ship it (`shipNewCheckpoint`, `store_backup_tick.go`), and
+  `TestLogStoreIncrementalBackupOfConverted` asserts that a converted store's
+  checkpoint has `histFrom` at `(convertWalFrom, 0)` and that its first tick
+  ships that checkpoint.
 
 - [x] (from 1f.2 review round 4) No test puts a regular file that is not
   bbolt at `dbFile`, so a `hasBoltMagic` (`store_convert.go`) that never
@@ -1189,7 +1201,7 @@ called ready, or explicitly deferred with the owner.
   before writing its crash image, which the restart restores (E2 step 5); the
   crash leaf runs on both kinds. `rdrSetStoredMark` needed no change.
 
-- [ ] (from 1f.3 review round 1) `historyBolt.backup`
+- [x] (from 1f.3 review round 1) `historyBolt.backup`
   (`store_history_bolt.go`) holds one `history.bolt` read transaction
   while `tx.WriteTo` copies the whole file, multi-GB at prod scale, as
   spec E5 requires. A fold commit that needs a bbolt remap meanwhile waits
@@ -1202,6 +1214,19 @@ called ready, or explicitly deferred with the owner.
   `history.bolt` whole under the same kind of transaction. Owner: 1f.5
   (E4): measure the stall, and bound it if it matters; the phase 1 gate's
   NFS targets will observe it too.
+  Done in 1f.5: measured and bounded. On `/nfs/hgi` (the prod NFS), a paced
+  copy of a 4.1GB `history.bolt` held its read transaction for 23-25s; with
+  bbolt's default mapping a commit growing the file past it waited 23s and
+  history reads 21s, the rest of the copy. `openHistoryBolt` now maps
+  `history.bolt` with `managerInitialMmapSize`'s headroom, as
+  `openManagerBolt` maps bbolt, falling back to the default under a low
+  `RLIMIT_AS`; there the same reads took at most 11ms, so a remap waits for
+  a copy only once `history.bolt` has doubled in size since the store
+  opened. (The growing commit wrote 300MB and still took 22s, its own write
+  and sync contending with the copy's on NFS, not a lock wait.)
+  `TestHistoryBoltBackupRemap` holds a tick's copy of `history.bolt` and
+  requires a commit growing it past the default mapping, and a read after
+  it, to finish during the copy. Spec "Location, lock, ..." says so.
 
 - [ ] (from 1f.3 review round 1) `Server.handleBackup`
   (`serverCLI.go`) buffers the whole backup in a `bytes.Buffer` and sends
@@ -1212,7 +1237,7 @@ called ready, or explicitly deferred with the owner.
   Awaiting the owner's ruling (delivery-queue row 25): stream, or accept
   bbolt-equivalent buffering.
 
-- [ ] (from 1f.3 review round 3) No test races a backup's start against
+- [x] (from 1f.3 review round 3) No test races a backup's start against
   `close`, so a `startBackup` (`store_backup.go`) that joins
   `s.backups` without holding `closeMu` survives: a backup starting as
   close reaches `backups.Wait` could then read files close is removing.
@@ -1223,8 +1248,15 @@ called ready, or explicitly deferred with the owner.
   (E4, whose final tick changes the same close path): add a leaf that
   races backup starts against close under `-race`, and loosen the leaf's
   coupling if 1f.5 reorders close.
+  Done in 1f.5: a leaf of `TestLogStoreSelfContainedBackup` has 4 goroutines
+  start backups until one fails while the store closes, requiring each to
+  succeed or fail with `errDBClosed` and close to succeed; under `-race` a
+  `startBackup` that joins `s.backups` without `closeMu` fails it (the
+  `WaitGroup` reuse check). Close still stops the checkpointer before it
+  waits for backups: E4's final tick (`finishBackups`) runs between the two,
+  so the close-during-backup leaf's coupling is unchanged.
 
-- [ ] (from 1f.4) Restore (`restoreLogStore`, `jobqueue/store_open.go`) copies a
+- [x] (from 1f.4) Restore (`restoreLogStore`, `jobqueue/store_open.go`) copies a
   store backup's files as they are, and lists S3 objects under the backup's
   prefix recursively, keeping their relative paths. It does not yet rebuild a
   wal file from E4's parts (`NNNNNNNN.wal.OOOOOOOOOOOOOOOO`), concatenating them
@@ -1232,8 +1264,13 @@ called ready, or explicitly deferred with the owner.
   says restore does, since no backup writes parts until E4. Owner: 1f.5 (E4,
   whose test 7 restores a backup of parts): add that step to restore's fill of
   `.restoring`, before recovery.
+  Done in 1f.5: `copyStoreBackup` ends with `assembleWALParts`, which
+  concatenates each wal file's parts in offset order, after any whole wal
+  file of that number, stopping at the first gap, then removes the parts.
+  E4 test 7 (`TestLogStoreIncrementalBackup`) restores a backup of 3 parts,
+  and of 2 with the last deleted.
 
-- [ ] (from 1f.4 review round 1) Spec E4's backup invariant assumes the
+- [x] (from 1f.4 review round 1) Spec E4's backup invariant assumes the
   folded position F only advances, but since 1f.4 recovery can move it back
   (`rewindFoldedTo`, `jobqueue/store_log.go`) when damage leaves the log's
   end before it, and a last wal file removed as torn has its number reused
@@ -1243,6 +1280,40 @@ called ready, or explicitly deferred with the owner.
   reset or verify the shipped offsets after a recovery that moved F back or
   removed a torn file, and test it: ship parts of file n, damage the store
   and reopen so n is reused, tick, restore, and compare.
+  Done in 1f.5: before it truncates a wal file, or removes one as torn,
+  recovery notes the end it leaves it at (0 for torn) in the store
+  directory's `backup-cuts` file, durably (`noteRecoveryCut`), so a crash
+  before the next tick loses no cut. A store's first tick deletes the
+  backup's parts of a truncated file after that end, shipping again, under
+  its own name, the local bytes of a part that spans it; for a torn file it
+  deletes every part but the first, then replaces that with the reused
+  file's durable header in one put (`matchRecoveryCuts`), so a reused file
+  number starts afresh in the backup and a crash never leaves the backup
+  without it; the tick ships the file's records only after `history.bolt`,
+  so a backup whose old `history.bolt` folded into the old file never takes
+  the new file's records as folded. It fsyncs the backup directory, then
+  deletes `backup-cuts`.
+  A cut of a file the store has since deleted (below its first local wal
+  file) is skipped, as the backup's parts of it are its own consistent
+  copy. A moved-back F needs nothing more: the first tick of each
+  store ships `history.bolt` whatever its folded position. The leaves of
+  `TestLogStoreIncrementalBackupAfterRecoveryCut` ship parts of the last wal
+  file n, damage it (header torn and the rest zeroed, so n is removed and
+  reused; or a record flipped, so n is truncated), reopen, tick, restore,
+  and compare the live jobs with the store's; one more has the run that
+  reuses n end before its first tick, and another has an open die once it
+  has removed a torn `walFrom` file, each followed by a run whose tick must
+  succeed and leave a backup restoring to the store. Review round 2 added
+  leaves for a crash at every op of the first tick after a torn `walFrom`,
+  a cut on a file a run without backups deleted, a torn cut followed by a
+  truncation of the reused file, `backup-cuts` consumed once, the backup
+  sync before it is deleted, and an unreadable `backup-cuts`. Review round
+  3 added leaves for a crash at every op of the first tick after a torn
+  file the backup's `history.bolt` folded into (every job the backup held
+  stays live or complete), after a torn `walFrom` sealed by a run that
+  crashed before its first tick, and after an open that died once it had
+  truncated a wal file (`logWALTruncatedHook`; `backup-cuts` holds the cut),
+  and pinned that the deletes come before the put of the first part.
 
 - [ ] (from 1f.4 review round 1) The live entries recovery drops
   (`dropFoldedLive`, `jobqueue/store_records.go`) are not persisted: the
@@ -1252,7 +1323,7 @@ called ready, or explicitly deferred with the owner.
   compact, or the checkpoint merge, drop them durably, and test that a
   dropped entry is in no checkpoint after it.
 
-- [ ] (from 1f.4 review round 2) If the checkpoint's `walFrom` file is
+- [x] (from 1f.4 review round 2) If the checkpoint's `walFrom` file is
   removed as a last file with a torn header (`settleWALEnd`,
   `jobqueue/store_recover.go`) and the manager dies before the writer
   creates a new file of that number, the next open fails in
@@ -1265,6 +1336,14 @@ called ready, or explicitly deferred with the owner.
   the `walFrom` file, or accept a missing `walFrom` when F is at its start,
   and test it by cutting `walFrom` inside its header, reopening, closing
   before any write, and reopening again.
+  Done in 1f.5: the second, made safe by ordering. Recovery removes a torn
+  last file only after it has moved F back (`replayFromCheckpoint`), and an
+  open that finds the checkpoint's `walFrom` missing with no wal file from
+  it on and F at its start takes the log as ending there, logging
+  `walFromAbsentLogMsg`, so the writer makes the file again (spec
+  "Recovery", step 4). `TestLogStoreTornWALFromReopen` cuts `walFrom` inside
+  its header, fails the reopen as soon as recovery has removed it
+  (`logTornRemovedHook`), and reopens.
 
 - [ ] (from 1f.4 review round 4) `extractTar` (`store_open.go`) lets a
   member named `.` past its name check, which is then refused as "holds
@@ -1274,3 +1353,86 @@ called ready, or explicitly deferred with the owner.
   touched, so no data is at risk. Owner: 1f.7 (E7, which next reads
   self-contained files): reject `.` and `..` in the name check with
   `errNotSelfContainedBackup`, and test both.
+
+- [ ] (from 1f.5) An incremental backup cannot tell that a backup at
+  `dbBkFile` was made from another store's files when their wal file
+  numbers overlap. The first tick refuses (`errBackupAhead`) a backup
+  holding a checkpoint after the store's newest or parts of a wal file the
+  store has not reached, but a store restored from an older self-contained
+  file while `dbBkFile` holds a newer incremental backup of the same store
+  can pass that check, and the tick then ships its own files over the
+  backup's, splicing the parts of a wal file number both have. No test
+  reaches this; it was found by reading the code. Owner: 2c.1 (E4 final
+  form): give each store an identity, written in its `VERSION` when it is
+  created and shipped with it, and refuse a backup whose identity differs,
+  then test a restore from an older self-contained file beside a newer
+  incremental backup.
+
+- [ ] (from 1f.5 review round 5) No real-process crash test covers
+  incremental backup. `TestStoreCrash` opens its stores as a restarting
+  development manager does (`openCrashStore`, `store_crash_test.go`), with
+  no periodic ticks and no `forceBackups`, so its rounds make no backup
+  tick and `WR_CRASHTEST_ROUNDS` does not exercise E4. E4's crash coverage
+  comes only from the simulated crashes of the failing `recordingTarget`
+  in `store_backup_tick_test.go`. Owner: 1f.10 (C5 recovery clauses with
+  backup): give `TestStoreCrash` a mode that opens production-like stores
+  with periodic ticks to a backup directory, kills the child mid-tick, and
+  requires the backup to either refuse to restore, saying to move it
+  aside, or restore every job the child acknowledged before its last
+  completed tick.
+
+- [ ] (from 1f.5 review round 7) Mutant E12, `wholeFrom`
+  (`store_backup_tick.go`) without `!b.holdsPartsBefore(first)`, is
+  equivalent only in Phase 1. `shipVersion` runs only after
+  `dropUnneededParts` succeeded in the same tick, and that deletes every
+  part below min(C.walFrom, F_b.file); in Phase 1, F_b.file >=
+  C.histFrom.file >= C.walFrom >= first, so no part before `first` is left
+  for the guard to see. Phase 2 breaks that chain, since `histFrom` may
+  precede the cut. Separately, a store whose ticks never run (no backup, or
+  a development store without `forceBackups`) never consumes its
+  `backup-cuts` file, so recovery's cuts only accumulate there, one line
+  per wal file cut. That is harmless: a later backup's first tick honours
+  the old cuts, which is conservative, and the `.restoring` restore path
+  needs the notes. Owner: 2c.1 (E4 final form, which replaces the
+  `history.bolt` step): re-check mutant E12 against the final store, and
+  keep the guard, with a test that kills the mutant, if Phase 2 lets a
+  part before `first` survive `dropUnneededParts`. Round 8's mutant N03,
+  `neededFrom` (`store_backup_tick.go`) taking only the backup's newest
+  checkpoint and not min(it, F_b.file), is likewise equivalent only in
+  Phase 1. `cutAndFold` folds every record before the cut, so a shipped
+  checkpoint C has `histFrom` at or past the end of wal file `walFrom`-1,
+  and F_b >= `histFrom`; any file below both F_b.file and `walFrom` is
+  then wholly folded and unneeded. Phase 2's `histFrom` may precede the
+  cut, so 2c.1 must re-check N03 too, and add a test that kills it if it
+  is no longer equivalent.
+
+- [ ] (from 1f.5 review round 11) An S3 backup stages each object it ships
+  in the store directory before uploading it whole (`s3Target.put`,
+  `store_backup.go`), `history.bolt` included, so a tick shipping a
+  multi-GB `history.bolt` to S3 briefly doubles the store's local disk
+  use. That is accepted Phase 1 design, as spec E4 says and as bbolt's S3
+  backup went through a local cache. Owner: 2c.1 (E4 final form, where
+  sealed `.hist` segments, each shipped once, replace whole `history.bolt`
+  shipping): check that a stage is then at most one segment, and say so in
+  spec E4.
+
+- [ ] (from 1f.5 review round 12) Three small backup-tick gaps, each
+  non-blocking. First, `backupContinued` (`store_backup_tick.go`) follows
+  spec E4's literal wording, so when the wal file just before the first
+  local one is spent, the first file's header names the file before that
+  and a backup that does continue is judged not continued: the next run's
+  first tick logs "started again", removes `VERSION` and re-ships
+  everything (probe in the review's `zz_rev12_spentcontinue_test.go`:
+  tick, spend file 2, add, tick, checkpoint, crash-close, reopen, tick).
+  The backup still restores, but if that tick keeps failing after shipping
+  `history.bolt`, restore refuses it until a tick succeeds. Second, mutant
+  W51 (`shipSealed` calling `markDone` only when `end > 0`) survives: a
+  spent file would then be kept locally forever. Third,
+  `forgetRecoveryCuts` clears the in-memory cuts before `syncDir`, so if
+  that directory fsync fails, every retried tick in that run fails with
+  `errBackupAhead`, until a restart. Owner: 1f.10 (C5 recovery clauses
+  with backup): count a backup as continued when it holds the named file
+  ending at the header's `prevEnd` and holds every file between as an
+  empty part, and say so in spec E4; make the spent-file leaf require the
+  spent file deleted locally after a checkpoint past it and another tick;
+  clear the cuts only after `syncDir` succeeds.

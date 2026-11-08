@@ -60,7 +60,8 @@ lets every live job's spec be addressed by file and offset.
     `store_segment.go` (Phase 2).
   - `store_open.go`: location, lock, version, restore, dev wipe.
   - `store_convert.go`: bbolt to store converter.
-  - `store_backup.go`: incremental shipping, `backup -p` archive.
+  - `store_backup.go`: backup locations, `backup -p` archive;
+    `store_backup_tick.go`: incremental shipping.
   - `store_export.go`: exported read-only API for developer tools.
   - `store_record.go`: the record/replay wrapper (A5).
   - `store_compact.go`: offline compaction (E6).
@@ -701,7 +702,12 @@ whether `openStore` (including E2's recovery of `.restoring`), E6 compact,
    are folded rather than taken for folded. The log's end is never before
    the checkpoint's `walFrom` file, as the scan starts there and that file
    must exist; if it is removed as a last file with a torn header, the log
-   ends at its start.
+   ends at its start. A last file with a torn header is removed only once F
+   is no longer past the log's end, so a crash between leaves F at the
+   removed file's start. A missing `walFrom` file is then not
+   `errStoreCorrupt` when no wal file from it on exists and F is at its
+   start (logged at warn): the log ends there, and the writer makes that
+   file next.
 5. Set the seq counter to 1 + the maximum seq seen in the checkpoint
    header, the scanned wal records and history (Phase 1: `history.bolt`
    `meta`'s highest folded `complete` seq; Phase 2: the highest in the
@@ -859,10 +865,77 @@ with `failures`; it never stops the manager.
   just-sealed one.
   `backup(w)` writes it; `wr manager backup -p` stores it as one file.
 - Incremental backup (production, or forced): a tick runs every
-  `minimumTimeBetweenBackups` (30s) at most. Invariant: the backup's
+  `minimumTimeBetweenBackups` (30s) at most, or as often as ticks take if
+  that is longer, as bbolt's backups are spaced. Invariant: the backup's
   checkpoint C has `histFrom` at or below its history's folded position
   F_b, so every completion at or after F_b finds its spec in C or in wal
-  the backup keeps. A tick, in order:
+  the backup keeps. A store's first tick reads what the backup holds
+  first. A backup holding a checkpoint after the store's newest, or parts
+  of a wal file after the one the store is writing (or, before the store
+  has shipped wal bytes, from the one its writer started with on) was not
+  made from this store's files: the tick changes nothing in it, ships
+  nothing and fails wrapping `errBackupAhead`. Parts that recovery's cuts
+  (below) will delete do not count, as a torn file's number is reused.
+  Otherwise the tick deletes leftover `.tmp` files and every part after a
+  gap in a wal file's parts, takes a whole `NNNNNNNN.wal` (as a copy of a
+  store directory holds) for a part at offset 0, and makes the parts of
+  each wal file recovery truncated end where recovery left the local file,
+  deleting the parts after that end and shipping again, under its own
+  name, the local bytes of a part that spans it. For a file removed as
+  torn, whose number the writer reuses, it deletes every part but the
+  first, last first, then ships the reused file's durable header (no
+  record) under the first part's name, replacing it in one rename, so a
+  crash never leaves the backup without that file, which may be its
+  checkpoint's `walFrom`. The reused file's records follow, as a new part,
+  only after the tick has shipped `history.bolt`: the backup's old copy
+  may have folded past the old file's records, and a restore with it would
+  take the new file's records below that position as folded, losing their
+  completions. Either way a reused file number never splices old and new
+  content. A spent file (B2) recovery truncated to empty, whose bytes a
+  copy of a store directory can hold, is handled as a torn one: its
+  durable header, the first part's replacement, is then empty.
+  Recovery notes each such cut, before it makes it, in the store
+  directory's `backup-cuts` file, durably, so a crash before the next tick
+  loses none; the tick makes its deletes durable, then deletes that file.
+  A cut of a file below the store's first local wal file is skipped: the
+  store deleted that file once its checkpoint and history were past it.
+  The backup either no longer needs those parts once the tick ships
+  `history.bolt`, or the store's wal files do not continue the backup
+  (next), and the parts are deleted.
+
+  The store's local wal files must continue the backup. The backup needs
+  no wal file before the store's first local one if its checkpoint's
+  `walFrom` is at or past that file, or if it holds no checkpoint and no
+  part of an earlier file. Otherwise it must hold the file just before the
+  store's first local one, ending where that first file's header says the
+  file ended. A run without backups (no `managerdbbkfile`, or development
+  without `forceBackups`) can break this. It deletes wal files the backup
+  still needs, or it cuts the last of them and later deletes it. Shipping
+  on top of such a backup would pair a new `history.bolt` with the old
+  checkpoint and wal, losing jobs, or would leave a gap in its wal files,
+  which restore refuses as corrupt. So the first tick starts the backup
+  again as a first backup. It logs at warn, then deletes `VERSION`,
+  durably, before it ships anything or matches recovery's cuts. It ships
+  `history.bolt`, the wal files from the store's first local one and the
+  newest checkpoint as a first backup does. It deletes the old checkpoint
+  and the old parts before that first file. Only then does `VERSION` go
+  back. Until then restore refuses the backup and says to move it aside.
+  Moving it aside does not recover the old backup's data once the tick
+  has shipped `history.bolt`, which replaces the old copy; before that,
+  the old content is intact but lacks `VERSION`.
+
+  A `backup-cuts` file that cannot be read fails the open, saying to move
+  the backup aside and delete the file. The first tick ships
+  `history.bolt` whatever its folded position, since what the backup's
+  copy holds is not read. A backup with no `VERSION` gets it last, at the
+  end of the first tick after which it holds a checkpoint (or the store
+  has none, so its wal files from the first on hold every record). For a
+  backup started again, that checkpoint's `walFrom` must be at or past
+  the store's first local wal file, and the backup must hold no part of a
+  file before that. As restore refuses a backup without `VERSION`, a
+  first backup that a crash cut short, or that could not yet take a
+  checkpoint, never restores as a store lacking what the checkpoint
+  holds. A tick, in order:
   1. Picks the newest local checkpoint C and holds it, so the store keeps
      it until the tick ends.
   2. Ships history not yet shipped. Phase 1: `history.bolt` copied whole,
@@ -873,49 +946,85 @@ with `failures`; it never stops the manager.
      fold commit or seal after this step cannot break the invariant: a
      checkpoint written after it is shipped only by a later tick, after
      that tick's history step.
-  3. If C is not yet shipped and its `histFrom` is at or below F_b, ships
-     C (`.tmp` then rename locally; one object on S3), then deletes every
-     other checkpoint from the backup. Otherwise it keeps the shipped one
-     and logs at warn. The backup holds exactly one checkpoint, two only
-     between the ship and that delete; restore uses the newest.
-  4. Ships wal bytes as parts: for each wal file, the durable bytes not
-     yet shipped (bounded by the next file's `prevEnd` for an abandoned
-     file) go to one new part `NNNNNNNN.wal.OOOOOOOOOOOOOOOO` (16-hex start
-     offset; `.tmp` then rename locally, one object on S3). No byte is
-     shipped twice; checkpoints rotate the writer every 5 min, so a file
-     has a handful of parts. History before log keeps the backup's log at
-     or past F_b once the tick ends.
+  3. Ships wal bytes as parts: for each wal file the backup needs (not
+     below both its checkpoint's `walFrom` and F_b's file), the durable
+     bytes not yet shipped (bounded by the next file's `prevEnd` for an
+     abandoned file) go to one new part `NNNNNNNN.wal.OOOOOOOOOOOOOOOO`
+     (16-hex start offset; `.tmp` then rename locally, one object on S3).
+     No byte is shipped twice; checkpoints rotate the writer every 5 min, so
+     a file has a handful of parts. A spent file (B2), which the next
+     header bounds at 0, gets one empty part, so a restore makes the empty
+     file recovery skips as spent, not a store missing that file number.
+     History before log keeps the backup's log at or past F_b once the
+     tick ends.
+  4. If C is newer than the backup's checkpoint and its `histFrom` is at
+     or below F_b, ships C (`.tmp` then rename locally; one object on S3),
+     then deletes every other checkpoint from the backup. A C no newer is
+     never shipped, as the backup may already lack wal files it needs;
+     one whose `histFrom` is past F_b is kept back with a warn. The backup
+     holds exactly one checkpoint, two only between the ship and that
+     delete; restore uses the newest. The wal bytes go before C so that a
+     crash between never leaves the backup's newest checkpoint without its
+     `walFrom` file; a first backup that has no checkpoint yet while the
+     store has one lacks `VERSION` until after C, so is not restorable
+     then.
   5. Deletes all parts of a wal file from the backup only when the file is
      below both the shipped C's `walFrom` and F_b's file (Phase 1: the
      position read with the shipped `history.bolt` copy; Phase 2: the last
      shipped sealed segment's). The store's own deletion is not the test:
      its checkpoint and F are newer than the backup's.
 
+  While a tick runs the store keeps C, and at all times it keeps each wal
+  file the backup may still need bytes of (Recovery, wal deletion rule),
+  which recovery therefore leaves for the first tick; a tick ends by
+  deleting the local files that the backup now has and that the newest
+  checkpoint to succeed (or the one recovery loaded) made redundant. A
+  checkpoint that fails as in Checkpoints step 4 keeps the files its
+  unswapped Refs read, so ticks keep them too. Decided: there is no cap on
+  that. While ticks keep failing, the store keeps every wal file not yet
+  shipped to the backup, so local disk use grows until a tick succeeds, and
+  it logs the failure at error at most once a minute. A development
+  manager without `forceBackups` makes no ticks and keeps nothing for a
+  backup.
+
   Every local copy goes through today's paced `backupCopyWriter`
   (`jobqueue/db.go` `copyBackup`/`pace`: async writeback every
   `backupCopySyncBytes`, 8MiB, via `backupPaceRange` in
   `db_backupsync_linux.go`, then one fsync), the fix for the backup copy
   burst that starved bbolt's fdatasync on NFS; it moves to
-  `store_backup.go` when Phase 2 deletes `db.go`. Restore rebuilds each wal
-  file by concatenating its parts in offset order, stopping at the first
-  gap (the rest is a torn tail to recovery). `close` runs one final tick
+  `store_backup.go` when Phase 2 deletes `db.go`. An S3 ship is first
+  written, so paced, to a `.tmp` file in the store directory and uploaded
+  whole, as the bbolt store's S3 backup went through a local cache: an
+  upload of unknown length buffers a 537MiB part in memory.
+  `history.bolt` is mapped with `managerInitialMmapSize`'s headroom, as
+  bbolt is, so a fold commit's remap, which would wait for a copy's read
+  transaction while blocking every history read, comes only once it has
+  doubled in size since the store opened. Restore rebuilds each wal file by
+  concatenating its parts in offset order, after any whole wal file of
+  that number, stopping at the first gap (the rest is a torn tail to
+  recovery). `close` waits for a tick in progress, then runs one final tick
   after the writer's last commit when anything is unshipped, as today's
-  `finaliseBackup` writes a final backup on close.
+  `finaliseBackup` writes a final backup on close; a failure is logged at
+  error, however recently a periodic tick's was, not returned.
 - An S3 `dbBkFile` in development deployment (forced backups) keeps
   today's `"." + deployment` suffix (`initDB`), so the prefix is
   `<dbBkFile>.development/`.
 - An old backup is a bbolt file at `dbBkFile` (default `db_bk`) or one S3
   object. Before the first incremental ship, if the backup path holds bbolt
   (meta magic), it is renamed to `dbBkFile + ".bolt-pre-" + v` (as E1;
-  S3: copy then delete) and kept. If that name already exists, the tick
-  overwrites nothing and ships nothing, and logs at error, at most once a
-  minute, an error wrapping `errBoltPreExists` that names it. Restore also
-  accepts such a backup (E2).
+  S3: copy, through a download into the store directory, then delete) and
+  kept. If that name already exists, the tick overwrites nothing and ships
+  nothing, and logs at error, at most once a minute, an error wrapping
+  `errBoltPreExists` that names it; on S3, an object there of the same size
+  and bytes, as a crash between the copy and the delete leaves, has the
+  tick finish the move instead. A one-file backup that is not bbolt is
+  likewise left in place and nothing shipped, the error wrapping
+  `errNotABackup`. Restore also accepts such a backup (E2).
 - `daemonStopWait` (`cmd/root.go`) adds its 1s per 50MiB for the total
   size of the regular files under the `dbFile` directory (walked
-  recursively) instead of `os.Stat(dbFile).Size()`; a regular file at
-  `dbFile` (unconverted bbolt) still counts its own size, so a same-size
-  database gets today's wait.
+  recursively, a symlink at `dbFile` followed) instead of
+  `os.Stat(dbFile).Size()`; a regular file at `dbFile` (unconverted bbolt)
+  still counts its own size, so a same-size database gets today's wait.
 
 ### Configuration and removals
 
@@ -931,8 +1040,8 @@ with `failures`; it never stops the manager.
 
 New sentinels in `jobqueue`: `errStoreCorrupt`, `errNotEnoughSpace`,
 `errBoltPreExists`, `errBoltUnconvertible`, `errBadConvertSource`,
-`errStoreVersionTooNew`, `errNotABackup`, `errCompactNotSupported` (Phase
-1 only).
+`errStoreVersionTooNew`, `errNotABackup`, `errBackupAhead`,
+`errCompactNotSupported` (Phase 1 only).
 `ErrDBLocked` and `ErrDBUnreadable` keep their meaning;
 `openErrorThatIsNotCorruption`'s errno list applies to the store directory
 and its files too. A failed durable write returns its error to the
@@ -2288,8 +2397,9 @@ As an operator, I want backups that copy only new files, so that a backup
 never stalls the manager or rewrites gigabytes.
 
 **Package:** `jobqueue/`, `cmd/`
-**File:** `jobqueue/store_backup.go`, `cmd/root.go`
-**Test file:** `jobqueue/store_backup_test.go`,
+**File:** `jobqueue/store_backup.go`, `jobqueue/store_backup_tick.go`,
+`cmd/root.go`
+**Test file:** `jobqueue/store_backup_tick_test.go`,
 `cmd/manager_stop_shutdown_test.go`
 
 **Acceptance tests:**
@@ -2353,6 +2463,13 @@ never stalls the manager or rewrites gigabytes.
     a minute, then nothing is shipped, both files are byte-identical to
     before, and the captured log has exactly one error line, naming
     `db_bk.bolt-pre-dev`.
+14. Given a backup holding a checkpoint of 2000 jobs and the archives of
+    100 more in a part of the last wal file n, then a run without backups
+    that folds past n, checkpoints and deletes n and the files before it,
+    with or without first truncating n at the start of that part: when the
+    next run's first tick crashes at any of its operations, then the
+    backup either fails to restore, saying to move it aside, or restores
+    with all 2100 jobs live or complete and every history entry complete.
 
 ### E5: Self-contained backup
 

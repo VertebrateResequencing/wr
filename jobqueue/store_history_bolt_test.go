@@ -35,6 +35,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -43,6 +44,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/wal"
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/ugorji/go/codec"
@@ -51,6 +53,121 @@ import (
 
 // historyNeverRepGroup is a rep group no job is ever added under.
 const historyNeverRepGroup = "never"
+
+// TestHistoryBoltBackupRemap checks that a fold commit growing history.bolt
+// past bbolt's default mapping, and a history read after it, do not wait for a
+// backup tick's copy of history.bolt, which holds one read transaction for the
+// whole copy (spec E4): a remap waits for every open read transaction while
+// blocking new reads, so without the headroom history.bolt is mapped with,
+// the fold and every history read would stall until the copy ended.
+func TestHistoryBoltBackupRemap(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	if math.MaxInt < managerMmapMaxSize {
+		t.Skip("no headroom is mapped on 32-bit platforms")
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a log store in production deployment whose backup tick is held mid-way through copying "+
+		"history.bolt", t, func() {
+		withManualBackupTicks()
+
+		cfg := incBackupConfig(t, internal.Production)
+		s := openIncBackupStore(ctx, cfg)
+
+		info, err := os.Stat(filepath.Join(s.dir, historyBoltFile))
+		So(err, ShouldBeNil)
+
+		// bbolt's default mapping of a file this small is at most twice its
+		// size, so this value must extend history.bolt past it.
+		growValue := make([]byte, 2*info.Size()+1<<20)
+
+		origBytes, origHook := backupCopySyncBytes, backupPaceHook
+
+		Reset(func() { backupCopySyncBytes, backupPaceHook = origBytes, origHook })
+
+		inCopy := make(chan struct{})
+		release := make(chan struct{})
+
+		var holdOnce, releaseOnce sync.Once
+
+		releaseCopy := func() { releaseOnce.Do(func() { close(release) }) }
+
+		backupCopySyncBytes = int64(os.Getpagesize())
+		backupPaceHook = func() {
+			holdOnce.Do(func() {
+				close(inCopy)
+				<-release
+			})
+		}
+
+		var tickErr error
+
+		tickDone := make(chan struct{})
+
+		go func() {
+			defer close(tickDone)
+
+			tickErr = s.backupTick()
+		}()
+
+		Reset(func() {
+			releaseCopy()
+			<-tickDone
+		})
+
+		var copyHeld bool
+
+		select {
+		case <-inCopy:
+			copyHeld = true
+		case <-time.After(remapTestWait):
+		}
+
+		So(copyHeld, ShouldBeTrue)
+
+		Convey("a write growing it past its mapping, and a read after it, complete during the copy", func() {
+			writeDone := make(chan error, 1)
+
+			go func() {
+				writeDone <- s.history.bolt.Update(func(tx *bolt.Tx) error {
+					b, errc := tx.CreateBucketIfNotExists(remapTestBucket)
+					if errc != nil {
+						return errc
+					}
+
+					return b.Put([]byte("grow"), growValue)
+				})
+			}()
+
+			wrote := waitForRemapTestOp(writeDone)
+
+			readDone := make(chan error, 1)
+
+			go func() {
+				_, errf := s.history.foldedPos()
+				readDone <- errf
+			}()
+
+			read := waitForRemapTestOp(readDone)
+
+			releaseCopy()
+
+			So(wrote, ShouldBeTrue)
+			So(read, ShouldBeTrue)
+
+			select {
+			case <-tickDone:
+			case <-time.After(backupTestWarmWait):
+			}
+
+			So(tickErr, ShouldBeNil)
+		})
+	})
+}
 
 // historyTestStore is what the history tests ask of a store.
 type historyTestStore interface {

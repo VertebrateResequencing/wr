@@ -68,6 +68,13 @@ const (
 	// walFoldedRewoundLogMsg is logged at warn when recovery finds the log's
 	// valid end before history.bolt's folded position, and moves it back.
 	walFoldedRewoundLogMsg = "recovery moved history's folded position back to the log's damaged end"
+
+	// walFromAbsentLogMsg is logged at warn when recovery finds no wal file
+	// from the checkpoint's walFrom on, with history.bolt's folded position at
+	// that file's start: an earlier recovery removed the file as torn and moved
+	// the folded position back to it, and the store closed before writing it
+	// again.
+	walFromAbsentLogMsg = "recovery found the checkpoint's walFrom wal file absent after a torn header was removed"
 )
 
 var (
@@ -77,6 +84,10 @@ var (
 
 	// errReplayStop ends a wal file's scan at its valid end.
 	errReplayStop = errors.New("end of valid wal")
+
+	// errWALFromMissing is walFilesFrom's error, wrapping errStoreCorrupt, when
+	// the checkpoint's walFrom wal file is not there.
+	errWALFromMissing = fmt.Errorf("%w: the checkpoint's walFrom wal file is missing", errStoreCorrupt)
 )
 
 // walHeaderLen is the length of a wal file's header record.
@@ -188,8 +199,11 @@ func (r *walFileReplay) record(ref wal.Ref, rec []byte) error {
 
 // replayFile applies the records of wal file n up to limit (or its first
 // damage if limit is -1), then truncates anything after its valid end, which
-// it returns. It reports whether it removed the file, a last file with a torn
-// header.
+// it returns. It reports whether the file is a last file with a torn header,
+// which the caller removes once the folded position is not past it (see
+// replayFromCheckpoint). Before it truncates a file or reports it torn it notes
+// the end it leaves (0 for torn) durably (see noteRecoveryCut), so the first
+// incremental backup tick makes the backup's copy of it match (spec E4).
 func (s *logStore) replayFile(ctx context.Context, n uint32, limit int64, last bool) (bool, int64, error) {
 	f, err := os.OpenFile(walFilePath(s.dir, n), os.O_RDWR, 0)
 	if err != nil {
@@ -210,9 +224,10 @@ func (s *logStore) replayFile(ctx context.Context, n uint32, limit int64, last b
 		return false, 0, err
 	}
 
-	removed, err := settleWALEnd(ctx, f, info.Size(), end, limit, last)
+	torn, err := settleWALEnd(ctx, f, info.Size(), end, limit, last,
+		func(at int64) error { return s.noteRecoveryCut(n, at) })
 
-	return removed, end, err
+	return torn, end, err
 }
 
 // walFilePath returns the path of wal file n in dir.
@@ -223,9 +238,13 @@ func walFilePath(dir string, n uint32) string {
 // settleWALEnd deals with what follows the valid end of wal file f, of size
 // bytes, whose records were applied up to end: damage before limit is
 // errStoreCorrupt; a file with no recorded end (limit -1) and no whole header
-// is removed, which it reports, if it is the last file, and errStoreCorrupt
-// otherwise; anything else after end is truncated.
-func settleWALEnd(ctx context.Context, f *os.File, size, end, limit int64, last bool) (bool, error) {
+// is torn, which it reports for the caller to remove, if it is the last file,
+// and errStoreCorrupt otherwise; anything else after end is truncated. It calls
+// cut with the end it leaves the file at, 0 for a torn one, before it
+// truncates it or reports it torn.
+func settleWALEnd(ctx context.Context, f *os.File, size, end, limit int64, last bool,
+	cut func(at int64) error,
+) (bool, error) {
 	if err := walEndCorrupt(f.Name(), end, limit, last); err != nil {
 		return false, err
 	}
@@ -238,11 +257,9 @@ func settleWALEnd(ctx context.Context, f *os.File, size, end, limit int64, last 
 
 		clog.Warn(ctx, walTornHeaderLogMsg, "file", f.Name(), "bytes", size)
 
-		return true, os.Remove(f.Name())
+		return true, cut(0)
 	case size > end:
-		clog.Warn(ctx, walTailTruncatedLogMsg, "file", f.Name(), "bytes", size-end)
-
-		return false, f.Truncate(end)
+		return false, truncateWALTail(ctx, f, size, end, cut)
 	default:
 		return false, nil
 	}
@@ -288,6 +305,31 @@ func checkTornHeader(f *os.File, size int64) error {
 	return nil
 }
 
+// truncateWALTail truncates f, of size bytes, at end, its valid end, having
+// first called cut with end.
+func truncateWALTail(ctx context.Context, f *os.File, size, end int64, cut func(at int64) error) error {
+	clog.Warn(ctx, walTailTruncatedLogMsg, "file", f.Name(), "bytes", size-end)
+
+	if err := cut(end); err != nil {
+		return err
+	}
+
+	if err := f.Truncate(end); err != nil {
+		return err
+	}
+
+	return walTruncated()
+}
+
+// walTruncated calls logWALTruncatedHook, if set, returning its error.
+func walTruncated() error {
+	if hook := logWALTruncatedHook.Load(); hook != nil {
+		return (*hook)()
+	}
+
+	return nil
+}
+
 // walFilesFrom returns the numbers of the wal files in dir numbered from on,
 // ascending, checking that none is missing, from included if it is not 0.
 func walFilesFrom(dir string, from uint32) ([]uint32, error) {
@@ -299,7 +341,7 @@ func walFilesFrom(dir string, from uint32) ([]uint32, error) {
 	files = slices.DeleteFunc(files, func(n uint32) bool { return n < from })
 
 	if from != 0 && (len(files) == 0 || files[0] != from) {
-		return nil, fmt.Errorf("%w: wal file %08x, the checkpoint's walFrom, is missing", errStoreCorrupt, from)
+		return files, fmt.Errorf("%w: wal file %08x", errWALFromMissing, from)
 	}
 
 	return files, checkWALSequence(files)
@@ -604,29 +646,49 @@ func (s *logStore) jobsOf(keys []logKey, refs [][2]wal.Ref, found map[wal.Ref][]
 // there.
 //
 // It also returns the log's valid end: the last file it kept and that file's
-// valid end, or the start of the first file if that is the one it removed.
-func (s *logStore) replay(ctx context.Context, from uint32) (uint32, historyPos, error) {
+// valid end, or the start of the first file if that is the one torn, and the
+// number of a last file with a torn header, which the caller removes, or 0.
+//
+// A missing walFrom is errStoreCorrupt, unless no file from it on is there
+// and history.bolt's folded position is at its start: an earlier recovery
+// removed it as torn, having first moved the folded position back to it, and
+// the store closed before its writer made the file again (spec C5). The log
+// then ends at walFrom's start, and it is the next file.
+func (s *logStore) replay(ctx context.Context, from uint32) (uint32, historyPos, uint32, error) {
 	files, err := walFilesFrom(s.dir, from)
+	if s.walFromAbsent(err, files, from) {
+		clog.Warn(ctx, walFromAbsentLogMsg, "file", walFilePath(s.dir, from))
+
+		return from, historyPos{file: from}, 0, nil
+	}
+
 	if err != nil || len(files) == 0 {
-		return 1, historyPos{}, err
+		return 1, historyPos{}, 0, err
 	}
 
 	logEnd := historyPos{file: files[0]}
 
 	for i, n := range files {
-		removed, end, errf := s.replayAt(ctx, files, i)
+		torn, end, errf := s.replayAt(ctx, files, i)
 		if errf != nil {
-			return 0, historyPos{}, errf
+			return 0, historyPos{}, 0, errf
 		}
 
-		if removed {
-			return n, logEnd, nil
+		if torn {
+			return n, logEnd, n, nil
 		}
 
 		logEnd = historyPos{file: n, off: uint64(end)} //nolint:gosec // an offset
 	}
 
-	return files[len(files)-1] + 1, logEnd, nil
+	return files[len(files)-1] + 1, logEnd, 0, nil
+}
+
+// walFromAbsent reports whether err, walFilesFrom's of files from walFrom
+// from, is the walFrom file found missing with no file after it and
+// history.bolt's folded position at its start (see replay).
+func (s *logStore) walFromAbsent(err error, files []uint32, from uint32) bool {
+	return errors.Is(err, errWALFromMissing) && len(files) == 0 && s.state.folded == historyPos{file: from}
 }
 
 // replayAt is replayFile of files[i], valid up to the end a later file's

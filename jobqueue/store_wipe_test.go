@@ -122,7 +122,8 @@ func shouldNotExist(actual any, _ ...any) string {
 // times newS3Objects returned it, records the profile and path that call
 // was given, fails every ListEntries with listErr when
 // that is set, or once it has listed storeWipeMaxListings times, and fails
-// DeleteFile of each key in deleteErrs with that key's error.
+// DeleteFile of each key in deleteErrs, and UploadFile to each key in
+// uploadErrs, with that key's error.
 type fakeS3Objects struct {
 	mu           sync.Mutex
 	objects      map[string][]byte
@@ -132,6 +133,7 @@ type fakeS3Objects struct {
 	listings     int
 	listErr      error
 	deleteErrs   map[string]error
+	uploadErrs   map[string]error
 	downloadErrs map[string]error
 	downloads    []string
 }
@@ -199,6 +201,19 @@ func (f *fakeS3Objects) failDeleting(err error, keys ...string) {
 	for _, key := range keys {
 		f.deleteErrs[key] = err
 	}
+}
+
+// failUploading makes every later UploadFile to key fail with err, storing
+// nothing.
+func (f *fakeS3Objects) failUploading(err error, key string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.uploadErrs == nil {
+		f.uploadErrs = make(map[string]error)
+	}
+
+	f.uploadErrs[key] = err
 }
 
 // put stores an empty object at each of keys.
@@ -306,7 +321,8 @@ func (f *fakeS3Objects) putData(key string, data []byte) {
 	f.objects[key] = data
 }
 
-// UploadFile stores the content of source as the object at dest.
+// UploadFile stores the content of source as the object at dest. It fails as
+// failUploading set for dest.
 func (f *fakeS3Objects) UploadFile(source, dest, _ string) error {
 	data, err := os.ReadFile(source)
 	if err != nil {
@@ -315,6 +331,10 @@ func (f *fakeS3Objects) UploadFile(source, dest, _ string) error {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if err = f.uploadErrs[dest]; err != nil {
+		return err
+	}
 
 	f.objects[dest] = data
 

@@ -1148,6 +1148,8 @@ func (s *logStore) checkpointLocked() error {
 
 	s.awaitRefReaders()
 
+	s.delFrom, s.delFolded = walFrom, folded
+
 	return s.deleteRedundant(walFrom, folded)
 }
 
@@ -1254,7 +1256,9 @@ func (st *logState) swapRefs(k logKey, swap map[wal.Ref]wal.Ref, walFrom uint32)
 // deleteRedundant deletes the checkpoints before walFrom and the wal files
 // before both walFrom and folded's file (spec "Recovery", wal deletion rule),
 // closing any of them open for reading. No reader holds them: the caller waited
-// for every reader that might.
+// for every reader that might. While incremental backups are made (spec E4) it
+// keeps the checkpoint a backup tick holds and each wal file the backup may
+// still need bytes of, which a later tick deletes once it has shipped them.
 func (s *logStore) deleteRedundant(walFrom uint32, folded historyPos) error {
 	files, err := walFileNumbers(s.dir)
 	if err != nil {
@@ -1266,17 +1270,21 @@ func (s *logStore) deleteRedundant(walFrom uint32, folded historyPos) error {
 		return err
 	}
 
+	errs := s.removeRecordFiles(files, func(n uint32) bool { return n < min(walFrom, folded.file) && s.inc.mayDelete(n) },
+		0)
+
+	return errors.Join(errs, s.removeRecordFiles(ckpts, func(n uint32) bool { return n < walFrom && !s.inc.holds(n) },
+		checkpointRefFlag))
+}
+
+// removeRecordFiles removes the record file of each of numbers that remove
+// accepts, with flag set in its file number, joining their errors.
+func (s *logStore) removeRecordFiles(numbers []uint32, remove func(n uint32) bool, flag uint32) error {
 	var errs []error
 
-	for _, n := range files {
-		if n < min(walFrom, folded.file) {
-			errs = append(errs, s.removeRecordFile(n))
-		}
-	}
-
-	for _, n := range ckpts {
-		if n < walFrom {
-			errs = append(errs, s.removeRecordFile(n|checkpointRefFlag))
+	for _, n := range numbers {
+		if remove(n) {
+			errs = append(errs, s.removeRecordFile(n|flag))
 		}
 	}
 

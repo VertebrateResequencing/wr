@@ -748,6 +748,87 @@ func TestLogStoreRecoverRemovesTmpFiles(t *testing.T) {
 	})
 }
 
+func TestLogStoreTornWALFromReopen(t *testing.T) {
+	if runnermode || servermode {
+		return
+	}
+
+	ctx := context.Background()
+
+	Convey("Given a closed log store whose last wal file is its checkpoint's walFrom, holding only its header", t,
+		func() {
+			logPath, logCtx := managerLogContext(t, ctx)
+			s, dir := openTestLogStore(t, logCtx)
+
+			jobs := testLogJobs("torn walFrom", "torn walFrom", 3)
+			_, err := s.storeNewJobsGuarded(ctx, jobs, false, nil)
+			So(err, ShouldBeNil)
+			So(s.checkpoint(), ShouldBeNil)
+
+			walFrom := s.checkpointFrom()
+			So(s.close(ctx), ShouldBeNil)
+
+			files, err := walFileNumbers(dir)
+			So(err, ShouldBeNil)
+			So(files[len(files)-1], ShouldEqual, walFrom)
+
+			Convey("cut inside its header, an open that dies as soon as recovery has removed it leaves a store "+
+				"the next open opens, with the jobs live", func() {
+				So(os.Truncate(walFilePath(dir, walFrom), int64(walLenFlagsLen+1)), ShouldBeNil)
+
+				died := func() error { return errRecoverRun }
+				logTornRemovedHook.Store(&died)
+				Reset(func() { logTornRemovedHook.Store(nil) })
+
+				_, err = openLogStore(logCtx, dir)
+				So(err, ShouldWrap, errRecoverRun)
+				So(walFilePath(dir, walFrom), shouldNotExist)
+
+				logTornRemovedHook.Store(nil)
+
+				reopened := openLogStoreIn(logCtx, dir)
+
+				Reset(func() { So(reopened.close(ctx), ShouldBeNil) })
+
+				So(inspectedCount(reopened, kindLive), ShouldEqual, len(jobs))
+				So(logLinesContaining(readLogFile(t, logPath), walFromAbsentLogMsg), ShouldHaveLength, 1)
+				So(walFilePath(dir, walFrom), shouldExist)
+			})
+
+			Convey("cut inside its header and reused by a reopen, then missing while a later wal file exists, "+
+				"the next open is errStoreCorrupt", func() {
+				So(os.Truncate(walFilePath(dir, walFrom), int64(walLenFlagsLen+1)), ShouldBeNil)
+
+				pauseLogFolder()
+
+				reopened := openLogStoreIn(logCtx, dir)
+				So(reopened.state.folded, ShouldResemble, historyPos{file: walFrom})
+
+				_, err = reopened.storeNewJobsGuarded(ctx, testLogJobs("torn walFrom reused", "torn", 3), false, nil)
+				So(err, ShouldBeNil)
+
+				_, err = reopened.rotate()
+				So(err, ShouldBeNil)
+
+				_, err = reopened.storeNewJobsGuarded(ctx, testLogJobs("torn walFrom later", "torn", 3), false, nil)
+				So(err, ShouldBeNil)
+				So(reopened.close(ctx), ShouldBeNil)
+
+				files, err = walFileNumbers(dir)
+				So(err, ShouldBeNil)
+				So(files, ShouldContain, walFrom+1)
+				So(os.Remove(walFilePath(dir, walFrom)), ShouldBeNil)
+
+				broken, err := openLogStore(logCtx, dir)
+				if broken != nil {
+					Reset(func() { So(broken.close(ctx), ShouldBeNil) })
+				}
+
+				So(err, ShouldWrap, errStoreCorrupt)
+			})
+		})
+}
+
 // step makes one random operation, or an add if none of the jobs live can take
 // the one chosen.
 func (r *recoverRun) step() {

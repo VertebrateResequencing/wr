@@ -125,7 +125,7 @@ spec.md section: E4
 Add incremental backup ticks in `jobqueue/store_backup.go` and
 `daemonStopWait()` in `cmd/root.go`. Phase 1 form: `history.bolt` is
 shipped whole (paced by `backupCopySyncBytes`) whenever its folded
-position changed, in place of sealed segments. Cover the 13 acceptance
+position changed, in place of sealed segments. Cover the 14 acceptance
 tests from E4 against the Phase 1 form, including Phase-1-only test 10;
 2c replaces the history step with sealed `.hist` files. With 1f.4,
 finish the 1e.5 incidental on the tests that skip on the log store for
@@ -142,8 +142,8 @@ the folded position back or reuses a torn file's number, and the 1f.4
 review round 2 incidental on an open that dies after removing a torn
 `walFrom` file ([incidentals.md](incidentals.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1f.6: E6 - Compact (Phase 1 form)
 
@@ -205,8 +205,10 @@ spec.md section: C5
 Add C5 test 3's backup clause (a byte flipped in a non-last wal file
 restores from backup when one exists, with E2) and test 8's
 converted-store clause (the first open is of a store converted from bbolt
-holding k, with E1) to `jobqueue/store_recover_test.go`. Depends on 1f.2
-and 1f.4.
+holding k, with E1) to `jobqueue/store_recover_test.go`. Also resolve
+the 1f.5 review round 5 incidental on `TestStoreCrash` making no backup
+ticks and the 1f.5 review round 12 incidental on a spent wal file, mutant
+W51 and `forgetRecoveryCuts` ([incidentals.md](incidentals.md)). Depends on 1f.2 and 1f.4.
 
 - [ ] implemented
 - [ ] reviewed

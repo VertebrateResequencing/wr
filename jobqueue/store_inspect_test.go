@@ -302,7 +302,7 @@ func TestStoreInspector(t *testing.T) {
 					So(found, ShouldBeFalse)
 				})
 
-				conveyNeedingBackup(kind)("a forced backup holds what the store held when it was made", func() {
+				Convey("a forced backup holds what the store held when it was made", func() {
 					So(inspector.forceBackup(), ShouldBeNil)
 
 					backup, closeBackup, errb := openStoreFileInspector(filepath.Join(dir, testStoreBackupFile))
@@ -424,17 +424,6 @@ func testDBJob(cmd, repGroup string) *Job {
 		},
 		RepGroup: repGroup,
 	}
-}
-
-// conveyNeedingBackup returns Convey for a test of kind's forced backups, or
-// SkipConvey for the log store, which makes no forced (incremental) backups
-// until item 1f.5, which un-skips these tests.
-func conveyNeedingBackup(kind storeKind) func(items ...any) {
-	if kind == storeKindLog {
-		return SkipConvey
-	}
-
-	return Convey
 }
 
 // inspector returns s's store as a storeInspector.

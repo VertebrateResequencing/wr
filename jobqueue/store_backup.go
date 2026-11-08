@@ -27,16 +27,18 @@ package jobqueue
 
 // This file holds the log store's self-contained backup (spec E5), and where a
 // store's backup is kept: a local path, or objects under a key in an S3
-// bucket.
+// bucket. Its incremental backups (E4) are in store_backup_tick.go.
 
 import (
 	"archive/tar"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -65,6 +67,20 @@ var newS3Objects = func(profile, path string) (s3Objects, error) { //nolint:goch
 
 	return accessor, nil
 }
+
+// errBackupNoStage is an S3 backup's put's error when it has no local
+// directory to stage the file in.
+var errBackupNoStage = errors.New("s3 backup has no staging directory")
+
+// backupUploadName is the name in a store's directory of the file an S3
+// backup's put stages before it uploads it; recovery deletes it, as a .tmp
+// file, if a crash leaves it.
+const backupUploadName = "backup-upload" + storeTmpExt
+
+// backupPreDownloadName is the name in a store's directory that an S3
+// backup's move aside downloads an existing ".bolt-pre-" object to, to
+// compare; recovery deletes it, as a .tmp file, if a crash leaves it.
+const backupPreDownloadName = "backup-pre" + storeTmpExt
 
 // backupDownloadName is the name in a restore's directory that a one-file
 // backup on S3 is downloaded to; recovery would delete it, as a .tmp file, if
@@ -122,15 +138,44 @@ func s3BackupLocation(dbBkFile, deployment string) (s3Objects, string, error) {
 	return objects, key, nil
 }
 
-// backupTarget is where a store's backup is kept. Later items add the
-// operations that write a backup (spec E3).
+// backupEntry is a file of a store backup: its name, relative to the backup
+// and separated by "/", and its size.
+type backupEntry struct {
+	name string
+	size int64
+}
+
+// backupTarget is where a store's backup is kept: what reads it for a restore
+// (spec E2) and what writes it, a tick at a time (spec E4).
+//
+//nolint:interfacebloat // the whole surface a backup location offers, as one seam over a directory and S3
 type backupTarget interface {
 	// form says what the backup is, if there is one.
 	form() (backupForm, error)
 
-	// list returns the names of the files of a store backup, relative to it
-	// and separated by "/".
-	list() ([]string, error)
+	// list returns the files of a store backup.
+	list() ([]backupEntry, error)
+
+	// put writes the file name of a store backup, replacing any there, with
+	// what write writes: locally through a .tmp file, paced as copyBackup
+	// paces, then renamed into place, durably; on S3 as one object. It makes
+	// the backup's directory if need be.
+	put(name string, write func(w io.Writer) error) error
+
+	// remove deletes the file name of a store backup, if it is there.
+	remove(name string) error
+
+	// sync makes the removes before it durable: locally by fsyncing the
+	// backup's directory; on S3, whose deletes are, it does nothing.
+	sync() error
+
+	// moveAside renames a one-file backup holding bbolt to its location +
+	// ".bolt-pre-" + v, as E1 keeps a converted bbolt file, so that a store
+	// backup can take its place. Anything it downloads goes in dir. It returns
+	// an error wrapping errBoltPreExists, naming that name, if it is taken,
+	// and one wrapping errNotABackup if the backup is not bbolt, in either
+	// case changing nothing.
+	moveAside(dir string) error
 
 	// download copies the store backup's file name to the local path local,
 	// creating any directories it needs.
@@ -170,6 +215,10 @@ func backupTargetAt(dbBkFile, deployment string) (backupTarget, error) {
 type s3Target struct {
 	objects s3Objects
 	key     string
+
+	// stage is the local directory put writes each file to before it uploads
+	// it.
+	stage string
 }
 
 // form lists t.key: objects under t.key + "/" are a store backup, which wins
@@ -194,22 +243,188 @@ func (t s3Target) form() (backupForm, error) {
 	return form, nil
 }
 
-// list returns the keys of the objects under t.key + "/", relative to it,
+// list returns the objects under t.key + "/", their keys relative to it,
 // leaving out folder markers.
-func (t s3Target) list() ([]string, error) {
+func (t s3Target) list() ([]backupEntry, error) {
 	prefix := t.key + "/"
 
-	var names []string
+	var entries []backupEntry
 
-	err := t.walkUnder(prefix, func(key string) error {
-		if name := strings.TrimPrefix(key, prefix); name != "" && !strings.HasSuffix(name, "/") {
-			names = append(names, name)
+	err := t.walkUnder(prefix, func(entry muxfys.RemoteAttr) error {
+		if name := strings.TrimPrefix(entry.Name, prefix); name != "" && !strings.HasSuffix(name, "/") {
+			entries = append(entries, backupEntry{name: name, size: entry.Size})
 		}
 
 		return nil
 	})
 
-	return names, err
+	return entries, err
+}
+
+// put writes what write writes to a .tmp file in t.stage, paced as dirTarget
+// paces, then uploads it as the object t.key + "/" + name and removes it. It
+// stages the file, as the bbolt store's S3 backup went through a local cache,
+// because an upload of unknown length buffers a 537MiB part in memory.
+func (t s3Target) put(name string, write func(w io.Writer) error) error {
+	if t.stage == "" {
+		return errBackupNoStage
+	}
+
+	path := filepath.Join(t.stage, backupUploadName)
+
+	err := writePacedFile(path, write)
+	if err == nil {
+		err = t.objects.UploadFile(path, t.key+"/"+name, "")
+	}
+
+	if errr := os.Remove(path); !errors.Is(errr, fs.ErrNotExist) {
+		err = errors.Join(err, errr)
+	}
+
+	return err
+}
+
+// writePacedFile writes what write writes to the file at path through a
+// backupCopyWriter, pacing its writeback every backupCopySyncBytes, then
+// fsyncs it. A failed write removes the file.
+func writePacedFile(path string, write func(w io.Writer) error) error {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, dbFilePermission)
+	if err != nil {
+		return err
+	}
+
+	err = write(&backupCopyWriter{f: f, syncEvery: backupCopySyncBytes})
+	if err == nil {
+		err = f.Sync()
+	}
+
+	if err = errors.Join(err, f.Close()); err != nil {
+		return errors.Join(err, os.Remove(path))
+	}
+
+	return nil
+}
+
+// remove deletes the object t.key + "/" + name.
+func (t s3Target) remove(name string) error {
+	return t.objects.DeleteFile(t.key + "/" + name)
+}
+
+// sync does nothing, as an S3 delete is durable once it returns.
+func (t s3Target) sync() error {
+	return nil
+}
+
+// moveAside copies the bbolt object at t.key to t.key + ".bolt-pre-" + v
+// through a download into dir, then deletes it. If that name is taken by a
+// copy of it, as a crash between the copy and the delete leaves, it finishes
+// the move (see finishMoveAside).
+func (t s3Target) moveAside(dir string) error {
+	pre := t.key + storeBoltPreInfix + convertVersion()
+
+	entries, err := t.objects.ListEntries(pre)
+	if err != nil {
+		return err
+	}
+
+	if i := slices.IndexFunc(entries, func(e muxfys.RemoteAttr) bool { return e.Name == pre }); i >= 0 {
+		return t.finishMoveAside(dir, pre, entries[i].Size)
+	}
+
+	path, done, err := t.fetchFile(dir)
+	if err != nil {
+		return err
+	}
+
+	err = uploadBolt(t.objects, path, pre, t.key)
+
+	return errors.Join(err, done())
+}
+
+// uploadBolt uploads the bbolt file at path to the object pre, then deletes
+// the object key it was downloaded from. A file that is not bbolt is
+// errNotABackup.
+func uploadBolt(objects s3Objects, path, pre, key string) error {
+	isBolt, err := hasBoltMagic(path)
+	if err != nil {
+		return err
+	}
+
+	if !isBolt {
+		return fmt.Errorf("%w: s3 backup file %s is not a bbolt file, so it has been left in place", errNotABackup,
+			key)
+	}
+
+	if err = objects.UploadFile(path, pre, ""); err != nil {
+		return err
+	}
+
+	return objects.DeleteFile(key)
+}
+
+// finishMoveAside deletes the object t.key if the object pre, of size bytes,
+// holds the same bytes, comparing downloads of both into dir only when their
+// sizes match. Otherwise it returns an error wrapping errBoltPreExists, naming
+// pre, changing nothing.
+func (t s3Target) finishMoveAside(dir, pre string, size int64) error {
+	taken := fmt.Errorf("%w: s3 backup file %s", errBoltPreExists, pre)
+
+	entries, err := t.objects.ListEntries(t.key)
+	if err != nil {
+		return err
+	}
+
+	if !slices.ContainsFunc(entries, func(e muxfys.RemoteAttr) bool { return e.Name == t.key && e.Size == size }) {
+		return taken
+	}
+
+	same, err := t.sameObjects(dir, pre)
+	if err != nil {
+		return err
+	}
+
+	if !same {
+		return taken
+	}
+
+	return t.objects.DeleteFile(t.key)
+}
+
+// sameObjects reports whether the objects t.key and pre hold the same bytes,
+// downloading both into dir, then removing the downloads.
+func (t s3Target) sameObjects(dir, pre string) (bool, error) {
+	path, done, err := t.fetchFile(dir)
+	if err != nil {
+		return false, err
+	}
+
+	prePath := filepath.Join(dir, backupPreDownloadName)
+
+	err = t.objects.DownloadFile(pre, prePath)
+
+	var same bool
+
+	if err == nil {
+		same, err = sameFileContent(path, prePath)
+	}
+
+	if errr := os.Remove(prePath); !errors.Is(errr, fs.ErrNotExist) {
+		err = errors.Join(err, errr)
+	}
+
+	return same, errors.Join(err, done())
+}
+
+// sameFileContent reports whether the files at a and b hold the same bytes.
+func sameFileContent(a, b string) (bool, error) {
+	sumA, err := fileSum(a)
+	if err != nil {
+		return false, err
+	}
+
+	sumB, err := fileSum(b)
+
+	return err == nil && sumA == sumB, err
 }
 
 // download downloads the object t.key + "/" + name to local. The object store
@@ -255,13 +470,12 @@ func (t s3Target) removeAll() error {
 
 // removeUnder deletes every object whose key starts with prefix.
 func (t s3Target) removeUnder(prefix string) error {
-	return t.walkUnder(prefix, t.objects.DeleteFile)
+	return t.walkUnder(prefix, func(entry muxfys.RemoteAttr) error { return t.objects.DeleteFile(entry.Name) })
 }
 
-// walkUnder calls fn with the key of every object whose key starts with
-// prefix, descending into the common prefixes S3 lists in place of deeper
-// keys.
-func (t s3Target) walkUnder(prefix string, fn func(key string) error) error {
+// walkUnder calls fn with every object whose key starts with prefix,
+// descending into the common prefixes S3 lists in place of deeper keys.
+func (t s3Target) walkUnder(prefix string, fn func(entry muxfys.RemoteAttr) error) error {
 	entries, err := t.objects.ListEntries(prefix)
 	if err != nil {
 		return err
@@ -271,7 +485,7 @@ func (t s3Target) walkUnder(prefix string, fn func(key string) error) error {
 		if strings.HasSuffix(entry.Name, "/") && entry.Name != prefix {
 			err = t.walkUnder(entry.Name, fn)
 		} else {
-			err = fn(entry.Name)
+			err = fn(entry)
 		}
 
 		if err != nil {
@@ -317,19 +531,106 @@ func (t dirTarget) form() (backupForm, error) {
 	}
 }
 
-// list returns the paths of the regular files under t.path, relative to it.
-func (t dirTarget) list() ([]string, error) {
-	var names []string
+// list returns the regular files under t.path, their paths relative to it.
+func (t dirTarget) list() ([]backupEntry, error) {
+	var entries []backupEntry
 
 	err := fs.WalkDir(os.DirFS(t.path), ".", func(path string, entry fs.DirEntry, err error) error {
-		if err == nil && entry.Type().IsRegular() {
-			names = append(names, path)
+		if err != nil || !entry.Type().IsRegular() {
+			return err
+		}
+
+		info, err := entry.Info()
+		if err == nil {
+			entries = append(entries, backupEntry{name: path, size: info.Size()})
 		}
 
 		return err
 	})
 
-	return names, err
+	return entries, err
+}
+
+// put writes name under t.path through name + ".tmp", paced by a
+// backupCopyWriter, then fsyncs it, renames it into place and fsyncs the
+// directory. A failed write removes the .tmp file.
+func (t dirTarget) put(name string, write func(w io.Writer) error) error {
+	if err := t.makeDir(); err != nil {
+		return err
+	}
+
+	path := filepath.Join(t.path, name)
+	tmp := path + storeTmpExt
+
+	if err := writePacedFile(tmp, write); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tmp, path); err != nil {
+		return errors.Join(err, os.Remove(tmp))
+	}
+
+	return syncDir(t.path)
+}
+
+// makeDir makes t.path a directory, durably, if it is not there.
+func (t dirTarget) makeDir() error {
+	_, err := os.Stat(t.path)
+	if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+
+	if err = os.MkdirAll(t.path, logStoreDirPerm); err != nil {
+		return err
+	}
+
+	return syncDir(filepath.Dir(t.path))
+}
+
+// remove deletes name under t.path, if it is there.
+func (t dirTarget) remove(name string) error {
+	err := os.Remove(filepath.Join(t.path, name))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+
+	return err
+}
+
+// sync fsyncs t.path, so that the removes made in it are durable.
+func (t dirTarget) sync() error {
+	return syncDir(t.path)
+}
+
+// moveAside renames the bbolt file at t.path to t.path + ".bolt-pre-" + v,
+// durably.
+func (t dirTarget) moveAside(string) error {
+	pre := t.path + storeBoltPreInfix + convertVersion()
+
+	_, err := os.Lstat(pre)
+
+	switch {
+	case err == nil:
+		return fmt.Errorf("%w: backup file %s", errBoltPreExists, pre)
+	case !errors.Is(err, fs.ErrNotExist):
+		return err
+	}
+
+	isBolt, err := hasBoltMagic(t.path)
+	if err != nil {
+		return err
+	}
+
+	if !isBolt {
+		return fmt.Errorf("%w: backup file %s is not a bbolt file, so it has been left in place", errNotABackup,
+			t.path)
+	}
+
+	if err = os.Rename(t.path, pre); err != nil {
+		return err
+	}
+
+	return syncDir(filepath.Dir(t.path))
 }
 
 // download copies the file name under t.path to local.
@@ -354,6 +655,22 @@ func (t dirTarget) describe() string {
 // location returns t.path.
 func (t dirTarget) location() string {
 	return t.path
+}
+
+// fileSum returns the sha256 of the file at path.
+func fileSum(path string) ([sha256.Size]byte, error) {
+	var sum [sha256.Size]byte
+
+	f, err := os.Open(path)
+	if err != nil {
+		return sum, err
+	}
+
+	h := sha256.New()
+	_, err = io.Copy(h, f)
+	h.Sum(sum[:0])
+
+	return sum, errors.Join(err, f.Close())
 }
 
 // tarFile writes the file at path, which must not change while it is copied,

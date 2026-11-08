@@ -467,6 +467,42 @@ func TestLogStoreSelfContainedBackup(t *testing.T) {
 			So(lock.release(), ShouldBeNil)
 		})
 
+		Convey("backups started as it closes each succeed or fail with errDBClosed, and close waits for those "+
+			"that started", func() {
+			var (
+				wg       sync.WaitGroup
+				mu       sync.Mutex
+				outcomes []error
+			)
+
+			for range backupTestWriterCount {
+				wg.Go(func() {
+					for {
+						err := s.backup(io.Discard)
+
+						mu.Lock()
+
+						outcomes = append(outcomes, err)
+						mu.Unlock()
+
+						if err != nil {
+							return
+						}
+					}
+				})
+			}
+
+			So(s.close(ctx), ShouldBeNil)
+			wg.Wait()
+
+			So(len(outcomes), ShouldBeGreaterThanOrEqualTo, backupTestWriterCount)
+
+			others := slices.DeleteFunc(slices.Clone(outcomes), func(err error) bool {
+				return err == nil || errors.Is(err, errDBClosed)
+			})
+			So(others, ShouldBeEmpty)
+		})
+
 		Convey("a backup once it is closed fails with errDBClosed", func() {
 			So(s.close(ctx), ShouldBeNil)
 			So(s.backup(io.Discard), ShouldWrap, errDBClosed)

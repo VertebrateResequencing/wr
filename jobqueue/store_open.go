@@ -198,13 +198,13 @@ func openDBFileForm(ctx context.Context, cfg storeConfig, converted bool) (*logS
 	case form == dbFileAbsent:
 		return openMissingLogStore(ctx, cfg)
 	case form == dbFileSelfContained:
-		return openSelfContainedLogStore(ctx, cfg.dbFile)
+		return openSelfContainedLogStore(ctx, cfg)
 	case form == dbFileUnrecognised:
 		return restoreCorruptLogStore(ctx, cfg, fmt.Errorf("%w: %s is not a store directory, bbolt file or "+
 			"self-contained backup", errStoreCorrupt, cfg.dbFile))
 	}
 
-	s, err := openLogStore(ctx, cfg.dbFile)
+	s, err := openLogStoreFor(ctx, cfg)
 	if errors.Is(err, errStoreCorrupt) {
 		return restoreCorruptLogStore(ctx, cfg, err)
 	}
@@ -227,7 +227,7 @@ func openMissingLogStore(ctx context.Context, cfg storeConfig) (*logStore, strin
 	}
 
 	if backup == nil {
-		s, erro := openLogStore(ctx, cfg.dbFile)
+		s, erro := openLogStoreFor(ctx, cfg)
 
 		return s, "created new empty db file " + cfg.dbFile, erro
 	}
@@ -238,7 +238,7 @@ func openMissingLogStore(ctx context.Context, cfg storeConfig) (*logStore, strin
 		return nil, msg, err
 	}
 
-	s, err := openLogStore(ctx, cfg.dbFile)
+	s, err := openLogStoreFor(ctx, cfg)
 
 	return s, msg, err
 }
@@ -272,6 +272,17 @@ func restoresFrom(cfg storeConfig) bool {
 	}
 
 	return !internal.InS3(cfg.dbBkFile) || cfg.deployment == internal.Production || cfg.forceBackups
+}
+
+// openLogStoreFor opens the log store at cfg.dbFile with the incremental
+// backups cfg asks for (see newIncBackup).
+func openLogStoreFor(ctx context.Context, cfg storeConfig) (*logStore, error) {
+	inc, err := newIncBackup(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	return openBackedLogStore(ctx, cfg.dbFile, inc)
 }
 
 // restoreLogStore replaces dbFile with a store restored from backup (spec
@@ -313,7 +324,9 @@ func prepareRestore(ctx context.Context, dbFile, restoring string, backup backup
 	}
 
 	if _, err := os.Stat(filepath.Join(restoring, storeVersionFile)); err != nil {
-		return fmt.Errorf("%w: backup %s holds no %s: %w", errNotABackup, backup.location(), storeVersionFile, err)
+		return fmt.Errorf("%w: backup %s holds no %s, as a first backup, or one started again, cut short "+
+			"before it was whole does not; move it aside to let the store start without it: %w", errNotABackup,
+			backup.location(), storeVersionFile, err)
 	}
 
 	s, err := openLogStore(ctx, restoring)
@@ -349,22 +362,24 @@ func fillRestoring(ctx context.Context, dbFile, restoring string, backup backupT
 	return errors.Join(fillFromFile(ctx, dbFile, restoring, path), done())
 }
 
-// copyStoreBackup copies every file of the store backup into restoring. A
-// backup holding a name that leads out of it, as an S3 object's can, is
-// errNotABackup, and nothing is copied.
+// copyStoreBackup copies every file of the store backup into restoring, then
+// rebuilds each wal file from the parts an incremental backup holds of it (see
+// assembleWALParts). A backup holding a name that leads out of it, as an S3
+// object's can, is errNotABackup, and nothing is copied.
 func copyStoreBackup(restoring string, backup backupTarget) error {
-	names, err := backup.list()
+	entries, err := backup.list()
 	if err != nil {
 		return err
 	}
 
-	leadsOut := func(name string) bool { return !filepath.IsLocal(filepath.FromSlash(name)) }
-	if i := slices.IndexFunc(names, leadsOut); i >= 0 {
-		return fmt.Errorf("%w: backup %s holds %q, a name leading out of it", errNotABackup, backup.location(), names[i])
+	leadsOut := func(e backupEntry) bool { return !filepath.IsLocal(filepath.FromSlash(e.name)) }
+	if i := slices.IndexFunc(entries, leadsOut); i >= 0 {
+		return fmt.Errorf("%w: backup %s holds %q, a name leading out of it", errNotABackup, backup.location(),
+			entries[i].name)
 	}
 
-	for _, name := range names {
-		if err = backup.download(name, filepath.Join(restoring, filepath.FromSlash(name))); err != nil {
+	for _, entry := range entries {
+		if err = backup.download(entry.name, filepath.Join(restoring, filepath.FromSlash(entry.name))); err != nil {
 			return err
 		}
 
@@ -373,7 +388,119 @@ func copyStoreBackup(restoring string, backup backupTarget) error {
 		}
 	}
 
+	return assembleWALParts(restoring)
+}
+
+// assembleWALParts rebuilds, in dir, each wal file whose parts an incremental
+// backup holds (spec E4, "Location, lock, ..."): it concatenates them in
+// offset order, from a whole wal file of that number if there is one, and
+// stops at the first gap, leaving what follows to recovery as a torn tail;
+// then it removes the parts.
+func assembleWALParts(dir string) error {
+	parts, err := walPartsIn(dir)
+	if err != nil {
+		return err
+	}
+
+	for n, ps := range parts {
+		if err = assembleWALFile(dir, n, sortedParts(ps)); err != nil {
+			return err
+		}
+	}
+
 	return nil
+}
+
+// walPartsIn returns the wal parts and whole wal files in dir, by number.
+func walPartsIn(dir string) (map[uint32][]backupPart, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	parts := make(map[uint32][]backupPart)
+
+	for _, entry := range entries {
+		n, off, ok := parseBackupPart(entry.Name())
+		if !ok || !entry.Type().IsRegular() {
+			continue
+		}
+
+		info, erri := entry.Info()
+		if erri != nil {
+			return nil, erri
+		}
+
+		parts[n] = append(parts[n], backupPart{name: entry.Name(), off: off, size: info.Size()})
+	}
+
+	return parts, nil
+}
+
+// assembleWALFile appends to wal file n in dir, created if need be, each of
+// parts, sorted by offset, that starts where the file ends, until one does
+// not, then removes every part but the whole file. Parts holding nothing from
+// offset 0 make no file.
+func assembleWALFile(dir string, n uint32, parts []backupPart) error {
+	whole := filepath.Base(walFilePath(dir, n))
+
+	var end int64
+
+	if parts[0].name == whole {
+		end = parts[0].size
+		parts = parts[1:]
+	}
+
+	tiled := 0
+
+	for _, p := range parts {
+		if p.off != end {
+			break
+		}
+
+		end += p.size
+		tiled++
+	}
+
+	var err error
+	if tiled > 0 {
+		err = appendParts(dir, walFilePath(dir, n), parts[:tiled])
+	}
+
+	for _, p := range parts {
+		err = errors.Join(err, os.Remove(filepath.Join(dir, p.name)))
+	}
+
+	return err
+}
+
+// appendParts appends the content of each of parts, files in dir, to the file
+// at path, creating it if need be, and fsyncs it.
+func appendParts(dir, path string, parts []backupPart) error {
+	out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, dbFilePermission)
+	if err != nil {
+		return err
+	}
+
+	for _, p := range parts {
+		if err = appendFileTo(out, filepath.Join(dir, p.name)); err != nil {
+			return errors.Join(err, out.Close())
+		}
+	}
+
+	return errors.Join(out.Sync(), out.Close())
+}
+
+// appendFileTo copies the file at path to out.
+func appendFileTo(out io.Writer, path string) error {
+	in, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+
+	_, err = io.Copy(out, in)
+
+	return errors.Join(err, in.Close())
 }
 
 // fillFromFile fills restoring from the one-file backup at path: the members
@@ -575,17 +702,17 @@ func setAside(dbFile, corrupt string) error {
 	return callRestoreHook(restoreAtSetAside)
 }
 
-// openSelfContainedLogStore restores the self-contained backup at dbFile into
-// a store directory there, removing the file, and opens it. If the file
+// openSelfContainedLogStore restores the self-contained backup at cfg.dbFile
+// into a store directory there, removing the file, and opens it. If the file
 // cannot be restored it is left as it was.
-func openSelfContainedLogStore(ctx context.Context, dbFile string) (*logStore, string, error) {
-	if err := restoreLogStore(ctx, dbFile, dirTarget{path: dbFile}); err != nil {
+func openSelfContainedLogStore(ctx context.Context, cfg storeConfig) (*logStore, string, error) {
+	if err := restoreLogStore(ctx, cfg.dbFile, dirTarget{path: cfg.dbFile}); err != nil {
 		return nil, "", err
 	}
 
-	s, err := openLogStore(ctx, dbFile)
+	s, err := openLogStoreFor(ctx, cfg)
 
-	return s, "restored db directory " + dbFile + " from self-contained backup file", err
+	return s, "restored db directory " + cfg.dbFile + " from self-contained backup file", err
 }
 
 // restoreCorruptLogStore restores the log store at cfg.dbFile, which cause
@@ -603,7 +730,7 @@ func restoreCorruptLogStore(ctx context.Context, cfg storeConfig, cause error) (
 			"was: %s)", cfg.dbFile, backup.describe(), cause), errors.Join(cause, err)
 	}
 
-	s, err := openLogStore(ctx, cfg.dbFile)
+	s, err := openLogStoreFor(ctx, cfg)
 
 	return s, fmt.Sprintf("recreated corrupt (?) db file %s from backup file %s (error with original db file "+
 		"was: %s)", cfg.dbFile, backup.location(), cause), err

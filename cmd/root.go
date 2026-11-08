@@ -604,6 +604,33 @@ func warnUploadDirStillOpen(err error) {
 		config.ManagerUploadDir, err, config.ManagerUploadDir)
 }
 
+// dbFileSize returns the size of the regular file at path, or the total size
+// of the regular files under the directory there, walked recursively; 0 if it
+// cannot be read. A symlink at path is followed. Files it cannot stat are
+// skipped.
+func dbFileSize(path string) int64 {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return 0
+	}
+
+	var size int64
+
+	_ = filepath.WalkDir(resolved, func(_ string, entry fs.DirEntry, err error) error { //nolint:errcheck
+		if err != nil || !entry.Type().IsRegular() {
+			return nil //nolint:nilerr // an unreadable entry adds nothing
+		}
+
+		if info, erri := entry.Info(); erri == nil {
+			size += info.Size()
+		}
+
+		return nil
+	})
+
+	return size
+}
+
 // daemonStillRunning reports whether pid is still the process that was
 // signalled: it exists and, when its argv from before the signal is known, still
 // has that argv. So a zombie, or a pid the kernel has already given to another
@@ -634,13 +661,15 @@ func daemonStillRunning(pid int, identity []string) bool {
 // exit: daemonStopGiveup, plus the time the final backup of a database the size
 // of config.ManagerDBFile takes at daemonStopBackupBytesPerSec. A healthy
 // manager can spend most of daemonStopGiveup waiting for its runners, and a
-// large database's backup alone can take longer than that.
+// large database's backup alone can take longer than that. The size of a store
+// directory is that of the regular files under it, walked recursively; a
+// regular file (an unconverted bbolt database) counts its own size.
 func daemonStopWait() time.Duration {
 	wait := daemonStopGiveup
 
-	if fi, err := os.Stat(config.ManagerDBFile); err == nil {
+	if size := dbFileSize(config.ManagerDBFile); size > 0 {
 		// round up, so a partial 50MiB still gets its second
-		secs := (fi.Size() + daemonStopBackupBytesPerSec - 1) / daemonStopBackupBytesPerSec
+		secs := (size + daemonStopBackupBytesPerSec - 1) / daemonStopBackupBytesPerSec
 		wait += time.Duration(secs) * time.Second
 	}
 

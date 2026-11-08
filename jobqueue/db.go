@@ -4384,27 +4384,12 @@ func compactBolt(dst, src *bolt.DB, stats *CompactStats) error {
 // the database (reads that the prefetch makes cheap on NFS); a clean close
 // writes the freelist once (see syncFreelist), so the next open just reads it.
 func openManagerBolt(ctx context.Context, path string) (*bolt.DB, error) {
-	var fileSize int64
-	if info, err := os.Stat(path); err == nil { //nolint:gosec // G703: path is the manager's own db file
-		fileSize = info.Size()
-	}
-
-	opts := &bolt.Options{
-		FreelistType:    bolt.FreelistMapType,
-		NoFreelistSync:  true,
-		Timeout:         managerDBOpenTimeout,
-		InitialMmapSize: managerInitialMmapSize(fileSize),
-	}
-
 	return openBoltPrefetched(ctx, path, func() (*bolt.DB, error) {
-		bdb, err := bolt.Open(path, dbFilePermission, opts)
-		if err == nil || opts.InitialMmapSize == 0 || !errors.Is(err, syscall.ENOMEM) {
-			return bdb, err
-		}
-
-		opts.InitialMmapSize = 0
-
-		return bolt.Open(path, dbFilePermission, opts)
+		return openBoltWithHeadroom(path, bolt.Options{
+			FreelistType:   bolt.FreelistMapType,
+			NoFreelistSync: true,
+			Timeout:        managerDBOpenTimeout,
+		})
 	})
 }
 

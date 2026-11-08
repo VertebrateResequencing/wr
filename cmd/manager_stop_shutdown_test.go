@@ -232,6 +232,52 @@ func TestDaemonStopWaitAllowsForTheFinalBackup(t *testing.T) {
 
 		So(daemonStopWait(), ShouldEqual, daemonStopGiveup+30*time.Second)
 	})
+
+	Convey("wr manager stop waits for the final backup of a store directory by the size of its files", t, func() {
+		setManagerStopTestConfigPidFile(t, "")
+
+		config.ManagerDBFile = filepath.Join(config.ManagerDir, "db")
+
+		So(daemonStopWait(), ShouldEqual, daemonStopGiveup)
+
+		sub := filepath.Join(config.ManagerDBFile, "sub")
+		So(os.MkdirAll(sub, 0o700), ShouldBeNil)
+
+		for path, size := range map[string]int64{
+			filepath.Join(config.ManagerDBFile, "small"): 10 << 20,
+			filepath.Join(sub, "large"):                  20 * daemonStopBackupBytesPerSec,
+		} {
+			f, err := os.Create(path)
+			So(err, ShouldBeNil)
+			So(f.Truncate(size), ShouldBeNil)
+			So(f.Close(), ShouldBeNil)
+		}
+
+		So(daemonStopWait(), ShouldEqual, daemonStopGiveup+21*time.Second)
+
+		Convey("and by the size of the directory a symlink there leads to", func() {
+			target := config.ManagerDBFile + ".real"
+			So(os.Rename(config.ManagerDBFile, target), ShouldBeNil)
+			So(os.Symlink(target, config.ManagerDBFile), ShouldBeNil)
+
+			So(daemonStopWait(), ShouldEqual, daemonStopGiveup+21*time.Second)
+		})
+	})
+
+	Convey("wr manager stop counts only the regular files of a store directory, not its directories", t, func() {
+		setManagerStopTestConfigPidFile(t, "")
+
+		config.ManagerDBFile = filepath.Join(config.ManagerDir, "db")
+		sub := filepath.Join(config.ManagerDBFile, "sub")
+		So(os.MkdirAll(sub, 0o700), ShouldBeNil)
+
+		f, err := os.Create(filepath.Join(sub, "f"))
+		So(err, ShouldBeNil)
+		So(f.Truncate(2*daemonStopBackupBytesPerSec), ShouldBeNil)
+		So(f.Close(), ShouldBeNil)
+
+		So(daemonStopWait(), ShouldEqual, daemonStopGiveup+2*time.Second)
+	})
 }
 
 // startShuttingDownManager starts a real manager in a helper process, looking
