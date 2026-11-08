@@ -155,8 +155,8 @@ compact on an unconverted bbolt file compacts it as bbolt exactly as today
 `errCompactNotSupported`; refusal while a manager runs is unchanged.
 Cover E6 tests 3, 5 and 6; tests 1, 2 and 4 are Phase 2 (2d).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1f.7: E7 - Cloud deploy and teardown (Phase 1 form)
 

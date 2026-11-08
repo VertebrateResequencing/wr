@@ -1436,3 +1436,15 @@ called ready, or explicitly deferred with the owner.
   empty part, and say so in spec E4; make the spent-file leaf require the
   spent file deleted locally after a checkpoint past it and another tick;
   clear the cuts only after `syncDir` succeeds.
+
+- [ ] (from 1f.6 review round 2) When the database's directory cannot be
+  written, `wr manager compact` now fails taking the store lock with the
+  lock's manager-start wording, "could not open the database file <db>
+  (open <db>.lock: permission denied); ... start wr again", where develop
+  said "open <db>.compact-NNN: permission denied". Both exit 1 and leave
+  the database untouched, but "start wr again" is the wrong advice for a
+  compact. Separately, no test proves that compaction returns the error
+  and removes its temp file when the final `os.Rename` in
+  `compactBoltDBFile` fails (pre-existing on develop). Owner: 2d.2 (E6
+  compact on the store directory): word the lock failure for compact, and
+  test the rename-failure path with an injected fault.
