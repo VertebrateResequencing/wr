@@ -1232,10 +1232,10 @@ called ready, or explicitly deferred with the owner.
   (`serverCLI.go`) buffers the whole backup in a `bytes.Buffer` and sends
   it as one response: multi-GB of manager memory at prod scale, held while
   the log store's `backup` holds `ckptMu`. bbolt's backup did the same, so
-  this is not a regression. Owner: 1f.4: stream the backup to the client
-  instead if `wr manager backup -p` must work on prod-sized stores.
-  Awaiting the owner's ruling (delivery-queue row 25): stream, or accept
-  bbolt-equivalent buffering.
+  this is not a regression. The owner ruled on 2026-11-07
+  (delivery-queue row 25) that it must stream. Owner: 1f.12: stream the
+  backup to the client in chunks, so the manager never holds the whole
+  backup in memory.
 
 - [x] (from 1f.3 review round 3) No test races a backup's start against
   `close`, so a `startBackup` (`store_backup.go`) that joins

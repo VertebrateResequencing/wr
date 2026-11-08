@@ -234,3 +234,21 @@ Depends on 1e.5 and 1f.1 to 1f.10.
 
 - [ ] implemented
 - [ ] reviewed
+
+### Item 1f.12: Stream `wr manager backup -p` to the client
+
+spec.md section: E5
+
+Added on the owner's ruling of 2026-11-07 (delivery-queue row 25). Make
+`Server.handleBackup` (`jobqueue/serverCLI.go`) and `Client.BackupDB`
+stream the self-contained backup to the client in chunks instead of
+buffering it whole in a `bytes.Buffer`, so the manager's memory stays
+bounded whatever the store's size, for both the log store and the bbolt
+store. Keep the file the client writes byte-identical to today's, keep
+E5's acceptance tests passing, and add a test that a backup larger than
+one chunk arrives complete and that the manager does not hold it whole.
+Resolve the 1f.3 review round 1 incidental on `Server.handleBackup`
+([incidentals.md](incidentals.md)).
+
+- [ ] implemented
+- [ ] reviewed
