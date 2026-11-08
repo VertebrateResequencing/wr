@@ -982,6 +982,21 @@ func TestStoreOpenRestore(t *testing.T) {
 			})
 		}
 
+		for _, name := range []string{".", ".."} {
+			Convey("with no db file and a tar holding a member named "+name+" as its backup, an open fails "+
+				"with errNotSelfContainedBackup for holding that name, creating no store", func() {
+				So(os.RemoveAll(f.cfg.dbFile), ShouldBeNil)
+				f.cfg.dbBkFile = filepath.Join(f.dir, "bad.tar")
+				writeTarOf(f.cfg.dbBkFile, &tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o600})
+
+				result := openRestoring(ctx, f.cfg)
+				So(result.err, ShouldWrap, errNotSelfContainedBackup)
+				So(result.err.Error(), ShouldEndWith, fmt.Sprintf("holds %q", name))
+				So(f.cfg.dbFile, shouldNotExist)
+				soNoRestoreLeftovers(f.cfg.dbFile)
+			})
+		}
+
 		Convey("with no db file and no backup, an open creates an empty store, saying so", func() {
 			So(os.RemoveAll(f.cfg.dbFile), ShouldBeNil)
 			f.cfg.dbBkFile = filepath.Join(f.dir, "absent")

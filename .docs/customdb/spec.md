@@ -2548,13 +2548,16 @@ As a cloud user, I want deploy and teardown to keep carrying my database.
   "is already running"); `ExportStore` also takes the store lock
   (`dbDir + ".lock"`) and fails with `ErrDBLocked` if a manager holds it,
   which only a manager not answering on that port can.
-- Teardown with a non-S3 backup location `os.RemoveAll`s any
-  `ManagerDBFile + ".old"`, renames an existing store directory to it, then
-  calls `BackupDB(ManagerDBFile)`. The S3 branch also `os.RemoveAll`s
-  `ManagerDBFile + ".old"` before its rename: today's `os.Rename` fails on
-  a stale non-empty `.old` directory or a `.old` file when the source is a
-  directory, and only warns, so a local start would open the stale store
-  instead of restoring from S3.
+- Teardown with a non-S3 backup location calls
+  `BackupDB(ManagerDBFile + ".sync")`, then `os.RemoveAll`s any
+  `ManagerDBFile + ".old"`, renames an existing store directory to it, and
+  renames the `.sync` file to `ManagerDBFile`, renaming the directory back
+  if that fails. A failed `BackupDB` leaves `ManagerDBFile` as it was, even
+  with `--force`, which carries on to destroy the remote. The S3 branch
+  also `os.RemoveAll`s `ManagerDBFile + ".old"` before its rename: today's
+  `os.Rename` fails on a stale non-empty `.old` directory or a `.old` file
+  when the source is a directory, and only warns, so a local start would
+  open the stale store instead of restoring from S3.
 
 ```go
 func ExportStore(dbDir string, w io.Writer) error

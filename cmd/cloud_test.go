@@ -28,6 +28,10 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,12 +41,37 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/clog"
 	"github.com/VertebrateResequencing/wr/cloud"
 	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue"
 	"github.com/fatih/color"
 	. "github.com/smartystreets/goconvey/convey"
+	bolt "go.etcd.io/bbolt"
 )
+
+const (
+	// cloudTestExportPayload is what a test's exportStore writes.
+	cloudTestExportPayload = "exported store"
+
+	// cloudTestStoreMarker is a file in a test's store directory, so a test
+	// can tell where that directory went.
+	cloudTestStoreMarker = "marker"
+
+	// cloudTestBackupPayload is what a test's teardown sync backup writes.
+	cloudTestBackupPayload = "remote backup"
+
+	// ownerReadWriteExecute is the mode of a test's directories, and
+	// ownerReadExecute that of one a test cannot write.
+	ownerReadWriteExecute = 0o700
+	ownerReadExecute      = 0o500
+)
+
+// errCloudTestExport is the error a test's exportStore fails with.
+var errCloudTestExport = errors.New("export failed")
+
+// errCloudTestBackup is the error a test's teardown sync backup fails with.
+var errCloudTestBackup = errors.New("backup failed")
 
 func TestCloudDeployDebugManagerStartFlags(t *testing.T) {
 	oldCloudDebug := cloudDebug
@@ -203,6 +232,39 @@ func TestCloudDeployWebsiteURL(t *testing.T) {
 		So(cloudDeployWebsiteURL(context.Background(), remoteManager, token), ShouldNotContainSubstring,
 			"remote-openstack-manager")
 	})
+}
+
+// failingCloudTestBackup is a teardown sync's backup that fails.
+func failingCloudTestBackup(string) error {
+	return errCloudTestBackup
+}
+
+// cloudUpload is what a test's uploadDBFile was given: the remote path, the
+// local path and the local file's content at the time.
+type cloudUpload struct {
+	local, remote string
+	content       []byte
+}
+
+// recordCloudUploads replaces uploadDBFile, for the rest of the test, with one
+// that uploads nothing but appends what it was given to the returned slice.
+func recordCloudUploads(t *testing.T) *[]cloudUpload {
+	t.Helper()
+
+	oldUpload := uploadDBFile
+
+	t.Cleanup(func() { uploadDBFile = oldUpload })
+
+	var uploads []cloudUpload
+
+	uploadDBFile = func(_ context.Context, _ *cloud.Server, local, remote string) error {
+		content, err := os.ReadFile(local)
+		uploads = append(uploads, cloudUpload{local: local, remote: remote, content: content})
+
+		return err
+	}
+
+	return &uploads
 }
 
 func TestCleanupDeployForwardingProcesses(t *testing.T) {
@@ -443,6 +505,339 @@ func startTestProcess(t *testing.T, name string, args ...string) (*exec.Cmd, <-c
 	return cmd, done
 }
 
+func TestCloudDeployUploadsLocalDB(t *testing.T) {
+	oldConfig := config
+
+	t.Cleanup(func() { config = oldConfig })
+
+	Convey("Given a production deployment with a local db backup location", t, func() {
+		dir := t.TempDir()
+		config = &internal.Config{
+			Deployment:      internal.Production,
+			ManagerDBFile:   filepath.Join(dir, "db"),
+			ManagerDBBkFile: filepath.Join(dir, "db_bk"),
+		}
+		server := cloud.NewServer("ubuntu", "192.0.2.10", "")
+		remote := filepath.Join(".wr_"+internal.Production, "db")
+		uploads := recordCloudUploads(t)
+
+		Convey("with a bbolt file as its db file, the upload step sends that file unchanged, without "+
+			"ExportStore", func() {
+			exports := recordExportStoreCalls(t, "", errCloudTestExport)
+
+			db, err := bolt.Open(config.ManagerDBFile, ownerReadWrite, nil)
+			So(err, ShouldBeNil)
+			So(db.Update(func(tx *bolt.Tx) error {
+				b, errc := tx.CreateBucket([]byte("jobslive"))
+				if errc != nil {
+					return errc
+				}
+
+				return b.Put([]byte("key"), []byte("value"))
+			}), ShouldBeNil)
+			So(db.Close(), ShouldBeNil)
+
+			want, err := os.ReadFile(config.ManagerDBFile)
+			So(err, ShouldBeNil)
+
+			So(bootstrapDBBackupLocation(&cloud.Provider{}, server, false), ShouldEqual, defaultDBBackupName)
+			So(*uploads, ShouldHaveLength, 1)
+			So((*uploads)[0].remote, ShouldEqual, remote)
+			So(sha256.Sum256((*uploads)[0].content), ShouldEqual, sha256.Sum256(want))
+			So(*exports, ShouldBeEmpty)
+		})
+
+		Convey("with a store directory as its db file, the upload step sends the file ExportStore made of "+
+			"it to .wr_<deployment>/db, removing it afterwards", func() {
+			So(os.Mkdir(config.ManagerDBFile, ownerReadWriteExecute), ShouldBeNil)
+
+			exports := recordExportStoreCalls(t, cloudTestExportPayload, nil)
+
+			So(bootstrapDBBackupLocation(&cloud.Provider{}, server, false), ShouldEqual, defaultDBBackupName)
+			So(*exports, ShouldResemble, []string{config.ManagerDBFile})
+			So(*uploads, ShouldHaveLength, 1)
+			So((*uploads)[0].remote, ShouldEqual, remote)
+			So(string((*uploads)[0].content), ShouldEqual, cloudTestExportPayload)
+			So(filepath.Dir((*uploads)[0].local), ShouldEqual, dir)
+			So(fileIsMissing((*uploads)[0].local), ShouldBeTrue)
+			soDirHoldsOnly(dir, "db")
+		})
+
+		Convey("with a store directory as its db file that ExportStore fails on, the upload step returns "+
+			"its error, uploading nothing and leaving no file behind", func() {
+			So(os.Mkdir(config.ManagerDBFile, ownerReadWriteExecute), ShouldBeNil)
+
+			recordExportStoreCalls(t, "", errCloudTestExport)
+
+			So(uploadLocalDB(context.Background(), server, config.ManagerDBFile, remote), ShouldWrap,
+				errCloudTestExport)
+			So(*uploads, ShouldBeEmpty)
+			soDirHoldsOnly(dir, "db")
+		})
+	})
+}
+
+// recordExportStoreCalls replaces exportStore, for the rest of the test, with
+// one that writes payload, or returns err if it is not nil, and appends the
+// db dir it was given to the returned slice.
+func recordExportStoreCalls(t *testing.T, payload string, err error) *[]string {
+	t.Helper()
+
+	oldExport := exportStore
+
+	t.Cleanup(func() { exportStore = oldExport })
+
+	var calls []string
+
+	exportStore = func(dbDir string, w io.Writer) error {
+		calls = append(calls, dbDir)
+
+		if err != nil {
+			return err
+		}
+
+		_, errw := io.WriteString(w, payload)
+
+		return errw
+	}
+
+	return &calls
+}
+
+func TestCloudTeardownSetsLocalDBAside(t *testing.T) {
+	oldConfig := config
+
+	t.Cleanup(func() { config = oldConfig })
+
+	Convey("Given a local store directory db holding a file", t, func() {
+		dir := t.TempDir()
+		dbFile := filepath.Join(dir, "db")
+		old := dbFile + ".old"
+		config = &internal.Config{ManagerDBFile: dbFile, ManagerDBBkFile: "s3://bucket/path/db_bk"}
+
+		So(os.Mkdir(dbFile, ownerReadWriteExecute), ShouldBeNil)
+		So(os.WriteFile(filepath.Join(dbFile, cloudTestStoreMarker), []byte("store"), ownerReadWrite), ShouldBeNil)
+
+		staleDir := func() {
+			So(os.Mkdir(old, ownerReadWriteExecute), ShouldBeNil)
+			So(os.WriteFile(filepath.Join(old, "stale"), []byte("stale"), ownerReadWrite), ShouldBeNil)
+		}
+
+		soSetAside := func() {
+			content, err := os.ReadFile(filepath.Join(old, cloudTestStoreMarker))
+			So(err, ShouldBeNil)
+			So(string(content), ShouldEqual, "store")
+			So(fileIsMissing(filepath.Join(old, "stale")), ShouldBeTrue)
+			So(fileIsMissing(dbFile), ShouldBeTrue)
+		}
+
+		Convey("and a stale db.old directory, teardown's rename step for a local backup location makes "+
+			"db.old the store directory, leaving db free for the backup file", func() {
+			staleDir()
+
+			setAside, err := freeLocalDBForBackup(dbFile)
+			So(err, ShouldBeNil)
+			So(setAside, ShouldBeTrue)
+			soSetAside()
+		})
+
+		Convey("and a stale db.old directory holding files, teardown's rename step for an S3 backup location "+
+			"makes db.old the store directory, leaving no db and logging no warning", func() {
+			staleDir()
+
+			logged := clog.ToBufferAtLevel("warn")
+
+			defer clog.ToDefault()
+
+			So(moveLocalDBAsideForS3(), ShouldNotBeEmpty)
+			soSetAside()
+			So(logged.String(), ShouldBeEmpty)
+		})
+
+		Convey("and a stale bbolt file at db.old, teardown's rename step for an S3 backup location makes "+
+			"db.old the store directory, leaving no db and logging no warning", func() {
+			db, err := bolt.Open(old, ownerReadWrite, nil)
+			So(err, ShouldBeNil)
+			So(db.Close(), ShouldBeNil)
+
+			logged := clog.ToBufferAtLevel("warn")
+
+			defer clog.ToDefault()
+
+			So(moveLocalDBAsideForS3(), ShouldNotBeEmpty)
+			soSetAside()
+			So(logged.String(), ShouldBeEmpty)
+		})
+
+		Convey("in a directory that cannot be written, teardown's rename step for an S3 backup location "+
+			"warns that it could not rename the local database, adds nothing to teardown's message and "+
+			"leaves db as it was", func() {
+			So(os.Chmod(dir, ownerReadExecute), ShouldBeNil)
+
+			Reset(func() { So(os.Chmod(dir, ownerReadWriteExecute), ShouldBeNil) })
+
+			logged := clog.ToBufferAtLevel("warn")
+
+			defer clog.ToDefault()
+
+			So(moveLocalDBAsideForS3(), ShouldBeEmpty)
+			So(logged.String(), ShouldContainSubstring, "could not rename the local database")
+			soStoreDirAt(dbFile)
+		})
+
+		Convey("in a directory that cannot be searched, teardown's rename step for a local backup location "+
+			"fails with the error of looking at db", func() {
+			So(os.Chmod(dir, 0), ShouldBeNil)
+
+			Reset(func() { So(os.Chmod(dir, ownerReadWriteExecute), ShouldBeNil) })
+
+			_, err := freeLocalDBForBackup(dbFile)
+			So(err, ShouldWrap, fs.ErrPermission)
+		})
+	})
+
+	Convey("Given no local db and a stale db.old directory, teardown's rename step for an S3 backup "+
+		"location adds nothing to teardown's message, logs no warning and leaves db.old alone", t, func() {
+		dir := t.TempDir()
+		dbFile := filepath.Join(dir, "db")
+		config = &internal.Config{ManagerDBFile: dbFile, ManagerDBBkFile: "s3://bucket/path/db_bk"}
+
+		So(os.Mkdir(dbFile+".old", ownerReadWriteExecute), ShouldBeNil)
+		So(os.WriteFile(filepath.Join(dbFile+".old", "stale"), []byte("stale"), ownerReadWrite), ShouldBeNil)
+
+		logged := clog.ToBufferAtLevel("warn")
+
+		defer clog.ToDefault()
+
+		So(moveLocalDBAsideForS3(), ShouldBeEmpty)
+		So(logged.String(), ShouldBeEmpty)
+		soDirHoldsOnly(dir, "db.old")
+		soDirHoldsOnly(dbFile+".old", "stale")
+	})
+
+	Convey("Given a local bbolt file db and a stale db.old, teardown's rename step for a local backup "+
+		"location leaves both alone, since the backup file replaces db as before", t, func() {
+		dir := t.TempDir()
+		dbFile := filepath.Join(dir, "db")
+
+		So(os.WriteFile(dbFile, []byte("bbolt"), ownerReadWrite), ShouldBeNil)
+		So(os.WriteFile(dbFile+".old", []byte("old"), ownerReadWrite), ShouldBeNil)
+
+		setAside, err := freeLocalDBForBackup(dbFile)
+		So(err, ShouldBeNil)
+		So(setAside, ShouldBeFalse)
+
+		content, err := os.ReadFile(dbFile)
+		So(err, ShouldBeNil)
+		So(string(content), ShouldEqual, "bbolt")
+
+		content, err = os.ReadFile(dbFile + ".old")
+		So(err, ShouldBeNil)
+		So(string(content), ShouldEqual, "old")
+	})
+}
+
+func TestCloudTeardownSyncsLocalDB(t *testing.T) {
+	Convey("Given a local store directory db holding a file and a stale db.old", t, func() {
+		dir := t.TempDir()
+		dbFile := filepath.Join(dir, "db")
+		old := dbFile + ".old"
+
+		So(os.Mkdir(dbFile, ownerReadWriteExecute), ShouldBeNil)
+		So(os.WriteFile(filepath.Join(dbFile, cloudTestStoreMarker), []byte("store"), ownerReadWrite), ShouldBeNil)
+		So(os.WriteFile(old, []byte("stale"), ownerReadWrite), ShouldBeNil)
+
+		Convey("a teardown sync whose backup fails returns its error, leaving db the store directory and "+
+			"db.old as they were", func() {
+			So(syncLocalDB(dbFile, failingCloudTestBackup), ShouldWrap, errCloudTestBackup)
+			soStoreDirAt(dbFile)
+			soFileHolds(old, "stale")
+			soDirHoldsOnly(dir, "db", "db.old")
+		})
+
+		Convey("a teardown sync makes db the remote's backup file and db.old the store directory", func() {
+			So(syncLocalDB(dbFile, writingCloudTestBackup), ShouldBeNil)
+			soFileHolds(dbFile, cloudTestBackupPayload)
+			soStoreDirAt(old)
+			soDirHoldsOnly(dir, "db", "db.old")
+		})
+
+		Convey("a teardown sync whose backup file cannot be moved to db returns that error, leaving db the "+
+			"store directory", func() {
+			err := syncLocalDB(dbFile, func(string) error { return nil })
+			So(err, ShouldWrap, fs.ErrNotExist)
+			So(err.Error(), ShouldContainSubstring, "the remote database is at "+dbFile+".sync")
+			soStoreDirAt(dbFile)
+			soDirHoldsOnly(dir, "db")
+		})
+
+		Convey("a teardown sync that cannot set the store directory aside returns that error, naming "+
+			"db.sync as where the remote database is, and leaving db and db.old as they were", func() {
+			Reset(func() { So(os.Chmod(dir, ownerReadWriteExecute), ShouldBeNil) })
+
+			err := syncLocalDB(dbFile, func(path string) error {
+				if errw := writingCloudTestBackup(path); errw != nil {
+					return errw
+				}
+
+				return os.Chmod(dir, ownerReadExecute)
+			})
+			So(err, ShouldWrap, fs.ErrPermission)
+			So(err.Error(), ShouldContainSubstring, "the remote database is at "+dbFile+".sync")
+			soStoreDirAt(dbFile)
+			soFileHolds(old, "stale")
+			soFileHolds(dbFile+".sync", cloudTestBackupPayload)
+			soDirHoldsOnly(dir, "db", "db.old", "db.sync")
+		})
+	})
+
+	Convey("Given no local db", t, func() {
+		dir := t.TempDir()
+		dbFile := filepath.Join(dir, "db")
+
+		Convey("a teardown sync makes db the remote's backup file, leaving nothing else", func() {
+			So(syncLocalDB(dbFile, writingCloudTestBackup), ShouldBeNil)
+			soFileHolds(dbFile, cloudTestBackupPayload)
+			soDirHoldsOnly(dir, "db")
+		})
+	})
+
+	Convey("Given a local bbolt file db and a stale db.old", t, func() {
+		dir := t.TempDir()
+		dbFile := filepath.Join(dir, "db")
+
+		db, err := bolt.Open(dbFile, ownerReadWrite, nil)
+		So(err, ShouldBeNil)
+		So(db.Update(func(tx *bolt.Tx) error {
+			_, errc := tx.CreateBucket([]byte("jobslive"))
+
+			return errc
+		}), ShouldBeNil)
+		So(db.Close(), ShouldBeNil)
+
+		want, err := os.ReadFile(dbFile)
+		So(err, ShouldBeNil)
+		So(os.WriteFile(dbFile+".old", []byte("old"), ownerReadWrite), ShouldBeNil)
+
+		Convey("a teardown sync whose backup fails returns its error, leaving db unchanged", func() {
+			So(syncLocalDB(dbFile, failingCloudTestBackup), ShouldWrap, errCloudTestBackup)
+
+			got, errr := os.ReadFile(dbFile)
+			So(errr, ShouldBeNil)
+			So(sha256.Sum256(got), ShouldEqual, sha256.Sum256(want))
+			soFileHolds(dbFile+".old", "old")
+			soDirHoldsOnly(dir, "db", "db.old")
+		})
+
+		Convey("a teardown sync replaces db with the remote's backup file, leaving db.old alone", func() {
+			So(syncLocalDB(dbFile, writingCloudTestBackup), ShouldBeNil)
+			soFileHolds(dbFile, cloudTestBackupPayload)
+			soFileHolds(dbFile+".old", "old")
+			soDirHoldsOnly(dir, "db", "db.old")
+		})
+	})
+}
+
 func fileIsMissing(path string) bool {
 	_, err := os.Stat(path)
 
@@ -460,6 +855,38 @@ func processExited(done <-chan error) bool {
 	case <-time.After(2 * time.Second):
 		return false
 	}
+}
+
+// soStoreDirAt asserts that path is a test's store directory, holding its
+// marker.
+func soStoreDirAt(path string) {
+	soFileHolds(filepath.Join(path, cloudTestStoreMarker), "store")
+}
+
+// soFileHolds asserts that the file at path holds content.
+func soFileHolds(path, content string) {
+	got, err := os.ReadFile(path)
+	So(err, ShouldBeNil)
+	So(string(got), ShouldEqual, content)
+}
+
+// soDirHoldsOnly asserts that dir holds exactly the entries names.
+func soDirHoldsOnly(dir string, names ...string) {
+	entries, err := os.ReadDir(dir)
+	So(err, ShouldBeNil)
+
+	got := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		got = append(got, entry.Name())
+	}
+
+	So(got, ShouldResemble, names)
+}
+
+// writingCloudTestBackup is a teardown sync's backup that writes
+// cloudTestBackupPayload to path.
+func writingCloudTestBackup(path string) error {
+	return os.WriteFile(path, []byte(cloudTestBackupPayload), ownerReadWrite)
 }
 
 func processIsRunning(done <-chan error) bool {

@@ -32,8 +32,10 @@ import (
 	"bufio"
 	"context"
 	crand "crypto/rand"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -133,6 +135,12 @@ var (
 	waitForManagerFailureDebugInput    = waitForManagerFailureDebugInputFromStdin
 	teardownAfterManagerFailure        = teardown
 	dieAfterManagerFailure             = die
+
+	// exportStore and uploadDBFile are uploadLocalDB's steps.
+	exportStore  = jobqueue.ExportStore
+	uploadDBFile = func(ctx context.Context, server *cloud.Server, local, remote string) error {
+		return server.UploadFile(ctx, local, remote)
+	}
 )
 
 // cloudCmd represents the cloud command.
@@ -580,17 +588,7 @@ and accessible.`,
 				var syncMsg string
 
 				if internal.IsRemote(config.ManagerDBBkFile) {
-					if _, errf := os.Stat(config.ManagerDBFile); !os.IsNotExist(errf) {
-						// move aside the local database so that if the manager is
-						// started locally, the database will be restored from S3
-						// and have the history of what was run in the cloud
-						if errf = os.Rename(config.ManagerDBFile, config.ManagerDBFile+".old"); err == nil {
-							syncMsg = "; the local database will be updated from S3 if manager started locally"
-						} else {
-							warn("could not rename the local database; if the manager is started locally, it "+
-								"will not be updated with the latest changes in S3! %s", errf)
-						}
-					}
+					syncMsg = moveLocalDBAsideForS3()
 				} else {
 					// copy the remote database locally, so if the manager is
 					// started locally we have the history of what was run in
@@ -598,8 +596,7 @@ and accessible.`,
 					// is "fine"; though some db writes may occur, the user
 					// obviously doesn't care about them. On recovery we won't
 					// break any pipelines.
-					errf := jq.BackupDB(config.ManagerDBFile)
-					if errf != nil {
+					if errf := syncLocalDB(config.ManagerDBFile, jq.BackupDB); errf != nil {
 						msg := "there was an error trying to sync the remote database: " + errf.Error()
 						if forceTearDown {
 							warn("%s", msg+noManagerForcedMsg)
@@ -1139,7 +1136,7 @@ func bootstrapDBBackupLocation(provider *cloud.Provider, server *cloud.Server,
 		return defaultDBBackupName
 	}
 
-	if errf = server.UploadFile(ctx, config.ManagerDBFile,
+	if errf = uploadLocalDB(ctx, server, config.ManagerDBFile,
 		filepath.Join("./.wr_"+config.Deployment, "db")); errf == nil {
 		info("copied local database to remote server")
 	} else if !wrMayHaveStarted {
@@ -1253,6 +1250,35 @@ func chmod600OrWarn(server *cloud.Server, remotePath string) {
 	if _, _, err := server.RunCmd(ctx, "chmod 600 "+remotePath, false); err != nil {
 		warn("failed to chmod 600 %s: %s", remotePath, err)
 	}
+}
+
+// uploadLocalDB uploads the local database at dbFile to remote on server: a
+// bbolt file unchanged, which the remote manager converts on its first start,
+// and a store directory as the self-contained file exportStore makes of it,
+// which the remote manager restores on its first start. That file is made
+// beside dbFile and removed once uploaded.
+func uploadLocalDB(ctx context.Context, server *cloud.Server, dbFile, remote string) error {
+	info, err := os.Stat(dbFile)
+	if err != nil {
+		return err
+	}
+
+	if !info.IsDir() {
+		return uploadDBFile(ctx, server, dbFile, remote)
+	}
+
+	f, err := os.CreateTemp(filepath.Dir(dbFile), filepath.Base(dbFile)+".export-*")
+	if err != nil {
+		return err
+	}
+
+	defer os.Remove(f.Name())
+
+	if err = errors.Join(exportStore(dbFile, f), f.Close()); err != nil {
+		return fmt.Errorf("failed to export the local database %s: %w", dbFile, err)
+	}
+
+	return uploadDBFile(ctx, server, f.Name(), remote)
 }
 
 // bootstrapMountRemote fuse-mounts any configured remote filesystem on the
@@ -1484,6 +1510,93 @@ func handleManagerFailureDebug(reason string, server *cloud.Server, keyPath, mCm
 	// now teardown and die, once the user confirms
 	warn("Once you're done debugging, hit return to teardown")
 	waitForManagerFailureDebugInput()
+}
+
+// moveLocalDBAsideForS3 moves the local database aside, at
+// ManagerDBFile + ".old", so that if the manager is started locally, the
+// database will be restored from S3 and have the history of what was run in the
+// cloud. It returns the message to add to the teardown's, or warns and returns
+// nothing if the database could not be moved.
+func moveLocalDBAsideForS3() string {
+	if _, err := os.Stat(config.ManagerDBFile); os.IsNotExist(err) {
+		return ""
+	}
+
+	if err := setLocalDBAside(config.ManagerDBFile); err != nil {
+		warn("could not rename the local database; if the manager is started locally, it "+
+			"will not be updated with the latest changes in S3! %s", err)
+
+		return ""
+	}
+
+	return "; the local database will be updated from S3 if manager started locally"
+}
+
+// syncLocalDB makes the local database at dbFile the file backup writes, as
+// the client's BackupDB does, of the remote manager's database. backup writes
+// to dbFile + ".sync" first, so a failed sync leaves dbFile as it was; only
+// then is a store directory at dbFile set aside (see freeLocalDBForBackup) and
+// the file renamed into place, putting the directory back if that fails. A
+// kill between those two renames leaves no dbFile, but loses nothing: the
+// store directory is at dbFile + ".old" and the remote's at dbFile + ".sync".
+// Nothing recovers them yet, though: the next local start makes an empty store
+// or restores the older backup, and a later deploy and teardown replaces both
+// (see the 1f.11 incidental in .docs/customdb/phases/incidentals.md).
+func syncLocalDB(dbFile string, backup func(path string) error) error {
+	synced := dbFile + ".sync"
+
+	if err := backup(synced); err != nil {
+		return err
+	}
+
+	setAside, err := freeLocalDBForBackup(dbFile)
+	if err != nil {
+		return fmt.Errorf("%w; the remote database is at %s", err, synced)
+	}
+
+	err = os.Rename(synced, dbFile)
+	if err == nil {
+		return nil
+	}
+
+	err = fmt.Errorf("%w; the remote database is at %s", err, synced)
+	if setAside {
+		err = errors.Join(err, os.Rename(dbFile+".old", dbFile))
+	}
+
+	return err
+}
+
+// freeLocalDBForBackup moves a store directory at dbFile aside, at
+// dbFile + ".old", so that a backup file can be written at dbFile, and says
+// whether it did. A bbolt file there is left for the backup file to replace,
+// as it always was.
+func freeLocalDBForBackup(dbFile string) (bool, error) {
+	info, err := os.Stat(dbFile)
+
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	case err != nil:
+		return false, err
+	case !info.IsDir():
+		return false, nil
+	}
+
+	return true, setLocalDBAside(dbFile)
+}
+
+// setLocalDBAside renames dbFile to dbFile + ".old", first removing whatever an
+// earlier teardown left there, since a rename cannot replace a non-empty
+// directory, nor a file with a directory.
+func setLocalDBAside(dbFile string) error {
+	old := dbFile + ".old"
+
+	if err := os.RemoveAll(old); err != nil {
+		return err
+	}
+
+	return os.Rename(dbFile, old)
 }
 
 // displayRemoteManagerLogs downloads the remote manager log and prints any

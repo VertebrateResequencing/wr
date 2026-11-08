@@ -169,8 +169,8 @@ tests from E7. Depends on 1f.3 and 1f.4. Also resolve the 1f.4 review
 round 4 incidental on tar members named `.` and `..`
 ([incidentals.md](incidentals.md)).
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1f.8: F3 - dbstart over the new store
 
@@ -229,7 +229,10 @@ bbolt readers (`cmd/manager_queue_db_test.go` `readStoredJobs`;
 `developers/soak/dbstart` `TestRunReadsRealReservation`, with 1f.8), and
 find the root cause of each server test that fails on the log store.
 Also resolve the 1e.5 review round 3 incidental on log-store methods that
-reject malformed keys ([incidentals.md](incidentals.md)).
+reject malformed keys, and the 1f.7 incidentals on making E7 test 6's
+`cmd` half end-to-end, on deploy's leftover export files and on a
+teardown killed between `syncLocalDB`'s renames
+([incidentals.md](incidentals.md)).
 Depends on 1e.5 and 1f.1 to 1f.10.
 
 - [ ] implemented

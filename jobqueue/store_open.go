@@ -599,7 +599,7 @@ func extractTar(tr *tar.Reader, root *os.Root, path string) error {
 	}
 
 	for ; err == nil; hdr, err = tr.Next() {
-		if hdr.Typeflag != tar.TypeReg || filepath.Base(hdr.Name) != hdr.Name {
+		if !isBackupMember(hdr) {
 			return fmt.Errorf("%w: %s holds %q", errNotSelfContainedBackup, path, hdr.Name)
 		}
 
@@ -613,6 +613,13 @@ func extractTar(tr *tar.Reader, root *os.Root, path string) error {
 	}
 
 	return fmt.Errorf("%w: %s: %w", errNotSelfContainedBackup, path, err)
+}
+
+// isBackupMember reports whether hdr can be a member of a self-contained
+// backup: a regular file named without a directory. "." and ".." name
+// directories, so are refused.
+func isBackupMember(hdr *tar.Header) bool {
+	return hdr.Typeflag == tar.TypeReg && filepath.Base(hdr.Name) == hdr.Name && hdr.Name != "." && hdr.Name != ".."
 }
 
 // extractBackupMember writes the rest of tr's current member, of the tar at

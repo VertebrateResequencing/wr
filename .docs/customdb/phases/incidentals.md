@@ -1345,7 +1345,7 @@ called ready, or explicitly deferred with the owner.
   its header, fails the reopen as soon as recovery has removed it
   (`logTornRemovedHook`), and reopens.
 
-- [ ] (from 1f.4 review round 4) `extractTar` (`store_open.go`) lets a
+- [x] (from 1f.4 review round 4) `extractTar` (`store_open.go`) lets a
   member named `.` past its name check, which is then refused as "holds
   "." more than once", the wrong reason; a member named `..` is refused
   with a bare `path escapes from parent` not wrapped in
@@ -1353,6 +1353,9 @@ called ready, or explicitly deferred with the owner.
   touched, so no data is at risk. Owner: 1f.7 (E7, which next reads
   self-contained files): reject `.` and `..` in the name check with
   `errNotSelfContainedBackup`, and test both.
+  Done in 1f.7: `isBackupMember` refuses both names, and
+  `TestStoreOpenRestore` opens a tar holding each, requiring
+  `errNotSelfContainedBackup` and an error ending `holds "<name>"`.
 
 - [ ] (from 1f.5) An incremental backup cannot tell that a backup at
   `dbBkFile` was made from another store's files when their wal file
@@ -1448,3 +1451,38 @@ called ready, or explicitly deferred with the owner.
   `compactBoltDBFile` fails (pre-existing on develop). Owner: 2d.2 (E6
   compact on the store directory): word the lock failure for compact, and
   test the rename-failure path with an injected fault.
+
+- [ ] (from 1f.7) E7 test 6 is proved in two halves, since a manager that
+  `cmd` starts opens bbolt until 1f.11 makes the log store the default, so
+  `cmd` tests can neither make a store directory nor start a remote
+  manager on one. `TestCloudDeployUploadsLocalDB` (`cmd/cloud_test.go`)
+  proves the upload step sends the file `exportStore` wrote of the
+  store directory to `.wr_<deployment>/db`; `TestExportStore`
+  (`jobqueue/store_export_test.go`) proves that `ExportStore`'s file at a
+  fresh production deployment's `.wr_production/db` is restored there on
+  the first start with E2 test 3's message and the source's live and
+  complete jobs. Owner: 1f.11 (the switch): make the `cmd` leaf end to end,
+  with the real `jobqueue.ExportStore` of a store a `cmd` manager made and
+  a fresh `cmd` manager started on the uploaded file.
+
+- [ ] (from 1f.7 review round 1) A deploy killed while `uploadLocalDB`
+  (`cmd/cloud.go`) exports a store directory leaves its temporary
+  `<db>.export-*` file beside the db, which nothing removes and which can
+  be as large as the store. Not reachable from `cmd` until 1f.11 makes the
+  log store the default. Removing stale ones at the next deploy would also
+  remove a concurrent deploy's file in progress. Owner: 1f.11 (the switch,
+  which makes this path live): choose a cleanup that cannot remove a
+  running deploy's file, and test it.
+
+- [ ] (from 1f.7 review round 2) A teardown killed between `syncLocalDB`'s
+  two renames (`cmd/cloud.go`, store directory case only) leaves no db,
+  the store directory at `<db>.old` and the remote's database at
+  `<db>.sync`. Nothing is lost on disk, but the next local manager start
+  silently creates an empty store or restores the older `db_bk`, and a
+  later deploy and teardown would remove `<db>.old` and replace
+  `<db>.sync`. The window is microseconds wide and not reachable from
+  `cmd` until 1f.11 makes the log store the default. Owner: 1f.11 (the
+  switch, which makes this path live): add an E2-style open step that,
+  when db is missing and `<db>.sync` or `<db>.old` exists, recovers
+  `<db>.sync` to db (or refuses to start rather than create an empty
+  store), and test it.
