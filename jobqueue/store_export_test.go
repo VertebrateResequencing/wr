@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/VertebrateResequencing/wr/internal"
+	"github.com/VertebrateResequencing/wr/jobqueue/wal"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -149,6 +150,17 @@ func TestExportStore(t *testing.T) {
 
 			So(ExportStore(dbDir, &out), ShouldWrap, ErrDBLocked)
 			So(out.Len(), ShouldEqual, 0)
+		})
+
+		Convey("ExportStore holds the store lock while it writes, so another taker of the lock fails with "+
+			"ErrDBLocked", func() {
+			shortenDBOpenTimeout()
+
+			w := &lockTryingWriter{try: func() error { return tryStoreLock(ctx, dbDir) }}
+
+			So(ExportStore(dbDir, w), ShouldBeNil)
+			So(w.Len(), ShouldBeGreaterThan, 0)
+			So(w.lockErr, ShouldWrap, ErrDBLocked)
 		})
 
 		Convey("ExportStore to a writer that fails returns its error", func() {
@@ -282,6 +294,34 @@ func shortenDBOpenTimeout() {
 	managerDBOpenTimeout = exportLockedTimeout
 }
 
+// tryStoreLock takes and releases the lock of the store at dbDir, returning
+// the error of either.
+func tryStoreLock(ctx context.Context, dbDir string) error {
+	lock, err := lockStore(ctx, dbDir)
+
+	return errors.Join(err, lock.release())
+}
+
+// lockTryingWriter buffers what is written to it, calling try at the first
+// write and keeping its error.
+type lockTryingWriter struct {
+	bytes.Buffer
+
+	try     func() error
+	tried   bool
+	lockErr error
+}
+
+// Write implements io.Writer.
+func (w *lockTryingWriter) Write(p []byte) (int, error) {
+	if !w.tried {
+		w.tried = true
+		w.lockErr = w.try()
+	}
+
+	return w.Buffer.Write(p)
+}
+
 // readStoreResult is what ReadStore passed fn: the key and command of each
 // live and each complete job of storeRestoreRepGroup, and whether each call,
 // in order, was of a live job.
@@ -353,6 +393,23 @@ func TestReadStore(t *testing.T) {
 
 			read := readStoreChunked(dbDir, readStoreChunk)
 			So(read.live, ShouldResemble, want.live)
+		})
+
+		Convey("ReadStore holds the store lock while it calls fn, for a live and for a complete job, so "+
+			"another taker of the lock fails with ErrDBLocked", func() {
+			shortenDBOpenTimeout()
+
+			lockErrs := make(map[bool]error)
+
+			So(ReadStore(dbDir, func(live bool, _ *Job) error {
+				if _, tried := lockErrs[live]; !tried {
+					lockErrs[live] = tryStoreLock(ctx, dbDir)
+				}
+
+				return nil
+			}), ShouldBeNil)
+			So(lockErrs[true], ShouldWrap, ErrDBLocked)
+			So(lockErrs[false], ShouldWrap, ErrDBLocked)
 		})
 
 		Convey("ReadStore, while a manager runs on the store, fails with ErrDBLocked, calling fn for nothing", func() {
@@ -456,6 +513,68 @@ func TestReadStore(t *testing.T) {
 			}
 		})
 	})
+
+	Convey("Given a stopped store with 1 live job and 3 complete jobs whose completions are not yet folded", t,
+		func() {
+			pauseLogFolder()
+
+			jobs := make([]*Job, 4)
+			for i := range jobs {
+				jobs[i] = testDBJob(fmt.Sprintf("echo read store unfolded %d", i), storeRestoreRepGroup)
+			}
+
+			// the live job is added after the others, so its records share no
+			// wal block with theirs, and damaging them leaves theirs readable.
+			dbDir := stoppedStoreOf(ctx, t, func(s *logStore) {
+				_, err := s.storeNewJobsGuarded(ctx, jobs[1:], false, nil)
+				So(err, ShouldBeNil)
+				So(archiveJobsInStore(s, jobs[1:]), ShouldBeNil)
+
+				_, err = s.storeNewJobsGuarded(ctx, jobs[:1], false, nil)
+				So(err, ShouldBeNil)
+			})
+
+			s, err := openStoppedStore(dbDir)
+			So(err, ShouldBeNil)
+
+			Reset(func() { So(s.close(ctx), ShouldBeNil) })
+
+			calls := make(map[bool]int)
+
+			Convey("reading its jobs fails, calling fn for no complete job, when a completion's record "+
+				"cannot be read", func() {
+				So(s.state.overlay, ShouldHaveLength, 3)
+
+				k, errk := parseLogKey(jobs[1].Key())
+				So(errk, ShouldBeNil)
+
+				ref := s.state.overlay[k].complete
+				flipByteAt(recordFilePath(dbDir, ref.File), int64(ref.Off)+wal.FrameHeader) //nolint:gosec // a small offset
+
+				So(s.readJobs(func(live bool, _ *Job) error {
+					calls[live]++
+
+					return nil
+				}), ShouldNotBeNil)
+				So(calls[false], ShouldEqual, 0)
+			})
+
+			Convey("reading its jobs fails, calling fn for nothing, when a live job's spec record cannot "+
+				"be read", func() {
+				k, errk := parseLogKey(jobs[0].Key())
+				So(errk, ShouldBeNil)
+
+				ref := s.state.live[k].spec
+				flipByteAt(recordFilePath(dbDir, ref.File), int64(ref.Off)+wal.FrameHeader) //nolint:gosec // a small offset
+
+				So(s.readJobs(func(live bool, _ *Job) error {
+					calls[live]++
+
+					return nil
+				}), ShouldNotBeNil)
+				So(calls, ShouldBeEmpty)
+			})
+		})
 
 	Convey("Given a crash image of a log-store manager's store with a job reserved but not started", t, func() {
 		dbDir, hostname := reservedCrashImage(ctx, t)

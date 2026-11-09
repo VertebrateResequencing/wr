@@ -906,15 +906,16 @@ with `failures`; it never stops the manager.
   The store's local wal files must continue the backup. The backup needs
   no wal file before the store's first local one if its checkpoint's
   `walFrom` is at or past that file, or if it holds no checkpoint and no
-  part of an earlier file. Otherwise it must hold the file just before the
-  store's first local one, ending where that first file's header says the
-  file ended. A run without backups (no `managerdbbkfile`, or development
-  without `forceBackups`) can break this. It deletes wal files the backup
-  still needs, or it cuts the last of them and later deletes it. Shipping
-  on top of such a backup would pair a new `history.bolt` with the old
-  checkpoint and wal, losing jobs, or would leave a gap in its wal files,
-  which restore refuses as corrupt. So the first tick starts the backup
-  again as a first backup. It logs at warn, then deletes `VERSION`,
+  part of an earlier file. Otherwise it must hold the file that the store's
+  first local one's header names, ending where that header says the file
+  ended, and hold each file between the two, which a failed open spent
+  (B2), as its empty part. A run without backups (no `managerdbbkfile`, or
+  development without `forceBackups`) can break this. It deletes wal files
+  the backup still needs, or it cuts the last of them and later deletes it.
+  Shipping on top of such a backup would pair a new `history.bolt` with
+  the old checkpoint and wal, losing jobs, or would leave a gap in its wal
+  files, which restore refuses as corrupt. So the first tick starts the
+  backup again as a first backup. It logs at warn, then deletes `VERSION`,
   durably, before it ships anything or matches recovery's cuts. It ships
   `history.bolt`, the wal files from the store's first local one and the
   newest checkpoint as a first backup does. It deletes the old checkpoint

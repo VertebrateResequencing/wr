@@ -138,7 +138,8 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 // not -1) and every later one, and any that is failOn (if set), with
 // errIncTestCrash without making it, failing a put of failPartWay (if set)
 // with errIncTestNoSpace once it has written incTestShortWrite bytes, and
-// calling afterPut, if set, after each put it makes.
+// calling afterPut, if set, after each put it makes, and afterSync, if set,
+// after each sync it makes.
 type recordingTarget struct {
 	backupTarget
 
@@ -150,6 +151,7 @@ type recordingTarget struct {
 	failOn      string
 	failPartWay string
 	afterPut    func(name string)
+	afterSync   func()
 }
 
 // newRecordingTarget returns a recordingTarget around target failing from the
@@ -247,7 +249,17 @@ func (r *recordingTarget) sync() error {
 		return err
 	}
 
-	return r.backupTarget.sync()
+	err := r.backupTarget.sync()
+
+	r.mu.Lock()
+	afterSync := r.afterSync
+	r.mu.Unlock()
+
+	if err == nil && afterSync != nil {
+		afterSync()
+	}
+
+	return err
 }
 
 // recorded returns the ops recorded so far, and clears them.
@@ -1725,6 +1737,38 @@ func TestLogStoreIncrementalBackupAfterRecoveryCut(t *testing.T) {
 				So(filepath.Join(cfg.dbFile, recoveryCutsFile), shouldExist)
 			})
 
+			Convey("with its header damaged and the rest zeroed, so recovery removes it and reuses n, a first "+
+				"tick whose fsync of the store directory fails after it deleted backup-cuts fails, and the next "+
+				"tick of the same run succeeds and makes the backup restore to what the store holds", func() {
+				tornWALFile(walFilePath(cfg.dbFile, n))
+
+				reopened := openIncBackupStore(ctx, cfg)
+				addIncTestJobs(ctx, reopened, "inc cut after", 5)
+
+				info, errs := os.Stat(cfg.dbFile)
+				So(errs, ShouldBeNil)
+
+				restoreMode := func() { So(os.Chmod(cfg.dbFile, info.Mode().Perm()), ShouldBeNil) }
+
+				Reset(restoreMode)
+
+				// without read permission the directory cannot be opened to
+				// fsync it, but files in it can still be removed.
+				rec := recordBackupOps(reopened)
+				rec.afterSync = func() {
+					rec.afterSync = nil
+
+					So(os.Chmod(cfg.dbFile, 0o300), ShouldBeNil)
+				}
+
+				So(reopened.backupTick(), ShouldWrap, fs.ErrPermission)
+				restoreMode()
+				So(filepath.Join(cfg.dbFile, recoveryCutsFile), shouldNotExist)
+
+				So(reopened.backupTick(), ShouldBeNil)
+				So(snapshotOfRepGroup(restoredBackup(cfg.dbBkFile)), ShouldResemble, snapshotOfRepGroup(reopened))
+			})
+
 			Convey("with a record damaged, and a run without backups that truncates it, then checkpoints past "+
 				"it and deletes it, a later run's ticks succeed and make the backup restore to what the store "+
 				"holds", func() {
@@ -3060,7 +3104,72 @@ func TestLogStoreIncrementalBackupOfSpentWALFile(t *testing.T) {
 			So(liveIn(restored, first), ShouldResemble, jobKeys(first))
 			So(liveIn(restored, second), ShouldResemble, jobKeys(second))
 
+			So(s.checkpoint(), ShouldBeNil)
+			So(s.checkpointFrom(), ShouldBeGreaterThan, spent)
+			So(s.backupTick(), ShouldBeNil)
+			So(walFilePath(cfg.dbFile, spent), shouldNotExist)
+
 			So(s.close(ctx), ShouldBeNil)
+		})
+
+		Convey("a spent wal file just before the store's first local one, held by the backup as its empty part, "+
+			"leaves the backup continued after a crash, so the next run's first tick does not start it again, "+
+			"and it restores with every job live", func() {
+			spent := spendNextWALFile(s, nil)
+			second := addAfterSpentWALFile(ctx, s)
+
+			So(s.backupTick(), ShouldBeNil)
+			So(backupParts(cfg.dbBkFile, spent), ShouldResemble,
+				[]backupPart{{name: backupPartName(spent, 0)}})
+
+			So(s.checkpoint(), ShouldBeNil)
+
+			files, errw := walFileNumbers(cfg.dbFile)
+			So(errw, ShouldBeNil)
+			So(files[0], ShouldEqual, spent+1)
+
+			prevFile, _, whole, errh := s.walHeader(files[0])
+			So(errh, ShouldBeNil)
+			So(whole, ShouldBeTrue)
+			So(prevFile, ShouldEqual, spent-1)
+
+			closeAsCrashed(ctx, s)
+
+			capture := captureLogsAtLevel("warn")
+			reopened := openIncBackupStore(ctx, cfg)
+			rec := recordBackupOps(reopened)
+
+			So(reopened.backupTick(), ShouldBeNil)
+			So(capture.String(), ShouldNotContainSubstring, backupStartedAgainLogMsg)
+			So(opsNamed(rec.recorded(), "remove", func(name string) bool { return name == storeVersionFile }),
+				ShouldBeEmpty)
+
+			restored := restoredBackup(cfg.dbBkFile)
+			So(liveIn(restored, first), ShouldResemble, jobKeys(first))
+			So(liveIn(restored, second), ShouldResemble, jobKeys(second))
+		})
+
+		Convey("a backup lacking the empty part of a spent wal file just before the store's first local one "+
+			"is not continued by it, so the next run's first tick starts it again, and it restores with every "+
+			"job live", func() {
+			spent := spendNextWALFile(s, nil)
+			second := addAfterSpentWALFile(ctx, s)
+
+			So(s.backupTick(), ShouldBeNil)
+			So(s.checkpoint(), ShouldBeNil)
+			closeAsCrashed(ctx, s)
+
+			So(os.Remove(filepath.Join(cfg.dbBkFile, backupPartName(spent, 0))), ShouldBeNil)
+
+			capture := captureLogsAtLevel("warn")
+			reopened := openIncBackupStore(ctx, cfg)
+
+			So(reopened.backupTick(), ShouldBeNil)
+			So(capture.String(), ShouldContainSubstring, backupStartedAgainLogMsg)
+
+			restored := restoredBackup(cfg.dbBkFile)
+			So(liveIn(restored, first), ShouldResemble, jobKeys(first))
+			So(liveIn(restored, second), ShouldResemble, jobKeys(second))
 		})
 
 		Convey("a spent wal file holding a torn header, in a backup that is a copy of the store directory, "+

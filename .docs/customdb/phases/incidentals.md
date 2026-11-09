@@ -1421,7 +1421,7 @@ called ready, or explicitly deferred with the owner.
   then test a restore from an older self-contained file beside a newer
   incremental backup.
 
-- [ ] (from 1f.5 review round 5) No real-process crash test covers
+- [x] (from 1f.5 review round 5) No real-process crash test covers
   incremental backup. `TestStoreCrash` opens its stores as a restarting
   development manager does (`openCrashStore`, `store_crash_test.go`), with
   no periodic ticks and no `forceBackups`, so its rounds make no backup
@@ -1433,6 +1433,19 @@ called ready, or explicitly deferred with the owner.
   requires the backup to either refuse to restore, saying to move it
   aside, or restore every job the child acknowledged before its last
   completed tick.
+  Done in 1f.10: `TestStoreCrash` has a backup round for the log store
+  (`crashWrapBackup`, run for `WR_CRASHTEST_ROUNDS` rounds like the
+  others). Its child opens the store as a production manager, with a
+  backup tick every 100ms and a checkpoint every 700ms (in 64KiB wal
+  files in even rounds), writes a `#tick` line to its ack file as each
+  tick starts, and kills itself with SIGKILL at a random kill point
+  (`crashKillTarget`: before, inside or after a put, remove or sync) of a
+  tick after a random 1.5-4.5s.
+  The parent requires the backup to refuse to restore, saying to move it
+  aside, or to restore every ack made before the start of the last tick
+  known to have completed (`advanceCrashGuarantee`, `checkCrashBackup`),
+  and a copy of the store to recover every ack; the store itself goes on
+  to the next round's child.
 
 - [ ] (from 1f.5 review round 7) Mutant E12, `wholeFrom`
   (`store_backup_tick.go`) without `!b.holdsPartsBefore(first)`, is
@@ -1469,7 +1482,7 @@ called ready, or explicitly deferred with the owner.
   shipping): check that a stage is then at most one segment, and say so in
   spec E4.
 
-- [ ] (from 1f.5 review round 12) Three small backup-tick gaps, each
+- [x] (from 1f.5 review round 12) Three small backup-tick gaps, each
   non-blocking. First, `backupContinued` (`store_backup_tick.go`) follows
   spec E4's literal wording, so when the wal file just before the first
   local one is spent, the first file's header names the file before that
@@ -1489,6 +1502,16 @@ called ready, or explicitly deferred with the owner.
   empty part, and say so in spec E4; make the spent-file leaf require the
   spent file deleted locally after a checkpoint past it and another tick;
   clear the cuts only after `syncDir` succeeds.
+  Done in 1f.10: `backupContinued` now accepts a backup holding the file
+  first's header names, ending at its `prevEnd`, and each file between as
+  an empty part (spec E4 says so), proved by
+  `TestLogStoreIncrementalBackupOfSpentWALFile`'s leaves on a spent file
+  just before the first local one, with and without its empty part in the
+  backup; that test's first leaf now requires the spent file deleted
+  locally after a checkpoint past it and another tick (kills W51); and
+  `forgetRecoveryCuts` clears the cuts only after `syncDir` succeeds,
+  proved by `TestLogStoreIncrementalBackupAfterRecoveryCut`'s leaf whose
+  first tick fails that directory fsync.
 
 - [ ] (from 1f.6 review round 2) When the database's directory cannot be
   written, `wr manager compact` now fails taking the store lock with the
@@ -1537,7 +1560,7 @@ called ready, or explicitly deferred with the owner.
   `<db>.sync` to db (or refuses to start rather than create an empty
   store), and test it.
 
-- [ ] (from 1f.8 review round 2) Nothing checks that `openStoppedStore`
+- [x] (from 1f.8 review round 2) Nothing checks that `openStoppedStore`
   (`store_export.go`) holds the store lock for the whole of a `ReadStore`
   or `ExportStore`: mutant J16, which releases the lock straight after
   taking it, survives the suite. In Phase 1 `history.bolt`'s own lock
@@ -1548,3 +1571,10 @@ called ready, or explicitly deferred with the owner.
   (and an `ExportStore` writer) calls `lockStore` with
   `shortenDBOpenTimeout` and requires `ErrDBLocked`, and cover J12 and
   J13b if a seam makes it cheap.
+  Done in 1f.10: `TestReadStore` and `TestExportStore` each have a leaf
+  taking the lock from `fn` (for a live and a complete job) or from the
+  writer's first write, requiring `ErrDBLocked` (kills J16); and
+  `TestReadStore` reads a stopped store whose completions are unfolded
+  (the folder paused) after flipping a byte of a completion's record or
+  of the live job's spec record, requiring `readJobs` to fail (kills J12
+  and J13b).

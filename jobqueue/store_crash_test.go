@@ -69,11 +69,14 @@ const (
 	envCrashChildWrapper = "WR_CRASHTEST_CHILD_WRAPPER"
 )
 
-// The values of envCrashChildWrapper: none, ackEarlyStore, or dropReleaseStore.
+// The values of envCrashChildWrapper: none, ackEarlyStore, dropReleaseStore,
+// or a production store making periodic backup ticks, whose child kills itself
+// in one (see crashKillTarget).
 const (
 	crashWrapNone        = ""
 	crashWrapAckEarly    = "ackearly"
 	crashWrapDropRelease = "droprelease"
+	crashWrapBackup      = "backup"
 )
 
 const (
@@ -97,11 +100,32 @@ const (
 	// whose parent died writing for ever.
 	crashChildMaxRun = time.Minute
 
+	// crashBackupTickEvery and crashBackupCheckpointEvery are how often a
+	// backup round's child makes backup ticks and checkpoints, and
+	// crashTickKillPoints bounds how many kill points (see crashKillTarget)
+	// it passes once armed before it kills itself, so the kill lands in one
+	// of its first few ticks after arming, at any of their changes.
+	crashBackupTickEvery       = 100 * time.Millisecond
+	crashBackupCheckpointEvery = 700 * time.Millisecond
+	crashTickKillPoints        = 16
+
 	crashReadyMarker = "CRASHTEST_READY"
+
+	// crashTickKillMarker starts the line a backup round's child prints
+	// just before it kills itself, naming where in the tick it is.
+	crashTickKillMarker = "CRASHTEST_TICK_KILL "
+
+	// crashTickOK and crashTickNotOK are the lines a backup round's child
+	// writes to its ack file as each backup tick starts: OK if every tick of
+	// its store so far succeeded, else not.
+	crashTickOK    = "#tick ok"
+	crashTickNotOK = "#tick not ok"
 
 	crashAcksFile    = "acks"
 	crashIntentsFile = "intents"
 	crashStoreFile   = "queue.db"
+	crashBackupExt   = ".bak"
+	crashRecoveredAt = "recovered"
 	crashWalSuffix   = ".wal"
 	crashFileMode    = 0o600
 	crashDirMode     = 0o700
@@ -236,13 +260,16 @@ type crashRoundResult struct {
 	archived  int
 	waves     int
 	killDelay time.Duration
+	tickKill  string
 }
 
 // runCrashRound starts TestStoreCrashChild for round in dir and, once it has
 // added its first wave of jobs, SIGKILLs that exact child after a random
 // 1.5-4.5s. wrapper names the test-only store wrapper the child uses; with
 // crashWrapAckEarly the child kills itself after its first transition's ack,
-// and the parent kills it only if it is still alive after the delay.
+// and the parent kills it only if it is still alive after the delay; with
+// crashWrapBackup the child kills itself in a backup tick, and the parent only
+// waits for it to.
 func runCrashRound(t *testing.T, kind storeKind, dir string, round int, wrapper string) crashRoundResult {
 	t.Helper()
 
@@ -294,6 +321,9 @@ func runCrashRound(t *testing.T, kind storeKind, dir string, round int, wrapper 
 	}
 
 	delay := crashKillMin + rand.N(crashKillSpread) //nolint:gosec // a kill time, not a secret
+	if wrapper == crashWrapBackup {
+		delay = crashChildMaxRun
+	}
 
 	if !selfEnded {
 		select {
@@ -304,13 +334,23 @@ func runCrashRound(t *testing.T, kind storeKind, dir string, round int, wrapper 
 		}
 	}
 
-	if selfEnded && wrapper != crashWrapAckEarly {
+	if selfEnded && wrapper != crashWrapAckEarly && wrapper != crashWrapBackup {
 		t.Fatalf("crash child exited before it was killed (%v):\n%s", waitErr, out)
+	}
+
+	if !selfEnded && wrapper == crashWrapBackup {
+		t.Fatalf("crash child did not kill itself in a backup tick within %s:\n%s", delay, out)
 	}
 
 	So(killedBySIGKILL(waitErr), ShouldBeTrue)
 
-	return readCrashRound(t, dir, round, delay)
+	result := readCrashRound(t, dir, round, delay)
+
+	if _, after, found := strings.Cut(out.String(), crashTickKillMarker); found {
+		result.tickKill, _, _ = strings.Cut(after, "\n")
+	}
+
+	return result
 }
 
 // readCrashRound reads round's ack and intent files in dir.
@@ -348,53 +388,137 @@ func readCrashRound(t *testing.T, dir string, round int, delay time.Duration) cr
 	return result
 }
 
-// crashRecovery is what the parent found on reopening the store after a round.
-type crashRecovery struct {
-	live, complete int
-	missing        []string
-}
-
-// crashRoundRecovered runs a kill round, merges its acks and intents into those
-// of earlier rounds, and recovers the store, returning the round and which keys
-// acked in any round so far the store lost. If killed is not empty, it first
-// copies the store, as the killed child left it, into the directory killed.
-func crashRoundRecovered(t *testing.T, ctx context.Context, kind storeKind, dir string, round int,
-	wrapper string, acks map[string]int, intents map[string][]int, killed string,
-) (crashRoundResult, crashRecovery) {
+// crashBackupRoundChecked runs a backup round (see crashWrapBackup) in dir,
+// merges its acks and intents into acks and intents, and moves guaranteed on
+// to the acks made before the last backup tick to complete (see
+// advanceCrashGuarantee). Then it requires the backup to either refuse to
+// restore, saying to move it aside, or restore every guaranteed ack (see
+// checkCrashBackup), and requires a copy of the store as the child left it
+// to recover every ack. It returns whether the backup refused. The store itself
+// is left for the next round's child to recover as a production manager.
+func crashBackupRoundChecked(t *testing.T, ctx context.Context, dir string, round int, acks map[string]int,
+	intents map[string][]int, guaranteed map[string]int,
+) bool {
 	t.Helper()
 
-	result := runCrashRound(t, kind, dir, round, wrapper)
+	prior := maps.Clone(acks)
+	result := runCrashRound(t, storeKindLog, dir, round, crashWrapBackup)
 
-	if killed != "" {
-		So(copyCrashStore(filepath.Join(dir, crashStoreFile), killed), ShouldBeNil)
-	}
+	mergeCrashRound(result, acks, intents)
 
-	for key, p := range result.acks {
-		acks[key] = max(acks[key], p)
-	}
+	ticks := advanceCrashGuarantee(t, filepath.Join(dir, crashFileName(crashAcksFile, round)), prior, guaranteed)
+	refused := checkCrashBackup(filepath.Join(dir, crashStoreFile+crashBackupExt), guaranteed)
 
-	for key, ps := range result.intents {
-		intents[key] = append(intents[key], ps...)
-	}
+	recoveredAt := filepath.Join(dir, fmt.Sprintf("%s.%d", crashRecoveredAt, round))
+	So(copyCrashStore(filepath.Join(dir, crashStoreFile), recoveredAt), ShouldBeNil)
 
-	recovery := recoverCrashStore(ctx, kind, filepath.Join(dir, crashStoreFile), acks)
-	t.Logf("%s %q round %d: killed after %s, %d waves, %d keys acked this round (%d archived), %d in all, "+
-		"%d calls unacked; recovered %d live and %d complete; %d missing",
-		storeKindName(kind), wrapper, round, result.killDelay, result.waves, len(result.acks), result.archived,
-		len(acks), result.unacked, recovery.live, recovery.complete, len(recovery.missing))
+	recovery := recoverCrashStore(ctx, storeKindLog, recoveredAt, acks)
+	So(os.RemoveAll(recoveredAt), ShouldBeNil)
 
-	return result, recovery
+	t.Logf("backup round %d: killed %s; %d waves, %d keys acked this round, %d in all, %d ticks completed, "+
+		"%d keys guaranteed in the backup, which refused to restore: %t; recovered %d live and %d complete; "+
+		"%d missing", round, result.tickKill, result.waves, len(result.acks), len(acks), ticks, len(guaranteed),
+		refused, recovery.live, recovery.complete, len(recovery.missing))
+
+	So(result.tickKill, ShouldNotBeBlank)
+	So(len(result.acks), ShouldBeGreaterThan, 0)
+	So(shownMissing(recovery.missing), ShouldBeEmpty)
+
+	return refused
 }
 
-// recoverCrashStore opens the store at dbFile as a restarting manager would,
-// recovers its live jobs, and returns which acked keys it lost: those neither
-// complete nor live at or after their ack's progress.
-func recoverCrashStore(ctx context.Context, kind storeKind, dbFile string, acks map[string]int) crashRecovery {
-	s, err := openCrashStore(ctx, kind, dbFile)
-	So(err, ShouldBeNil)
+// advanceCrashGuarantee reads the backup round's ack file at path in order,
+// after the acks of earlier rounds, prior, and sets guaranteed to the acks made
+// before the start of the last tick that the round's child knew completed: one
+// followed by a crashTickOK line. It returns how many such ticks there were,
+// leaving guaranteed as it was if none.
+func advanceCrashGuarantee(t *testing.T, path string, prior, guaranteed map[string]int) int {
+	t.Helper()
 
-	defer func() { So(s.close(ctx), ShouldBeNil) }()
+	acked := maps.Clone(prior)
+	completed := 0
 
+	var atTickStart map[string]int
+
+	readCrashLines(t, path, func(line string) {
+		switch line {
+		case crashTickOK, crashTickNotOK:
+			if atTickStart != nil && line == crashTickOK {
+				clear(guaranteed)
+				maps.Copy(guaranteed, atTickStart)
+
+				completed++
+			}
+
+			atTickStart = maps.Clone(acked)
+		default:
+			if key, p, err := parseCrashLine(line); err == nil {
+				acked[key] = max(acked[key], p)
+			}
+		}
+	})
+
+	return completed
+}
+
+// readCrashLines calls fn with each line of a child's ack or intent file, in
+// order; none if the file does not exist.
+func readCrashLines(t *testing.T, path string, fn func(line string)) {
+	t.Helper()
+
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+
+	if err != nil {
+		t.Fatalf("could not open %s: %s", path, err)
+	}
+
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		fn(scanner.Text())
+	}
+
+	if err = scanner.Err(); err != nil {
+		t.Fatalf("could not read %s: %s", path, err)
+	}
+}
+
+// checkCrashBackup restores the backup at path, as E2 restores a missing db
+// file from it, and requires it to either refuse, saying to move it aside, or
+// recover every key of guaranteed at or after its progress, or complete. It
+// returns whether it refused. A missing backup is one no tick completed, so
+// guaranteed must be empty.
+func checkCrashBackup(path string, guaranteed map[string]int) bool {
+	inspector, closeFiles, err := openLogBackupFileInspector(path)
+	if errors.Is(err, os.ErrNotExist) {
+		So(guaranteed, ShouldBeEmpty)
+
+		return false
+	}
+
+	if err != nil {
+		So(err, ShouldWrap, errNotABackup)
+		So(err.Error(), ShouldContainSubstring, "move it aside")
+
+		return true
+	}
+
+	defer func() { So(closeFiles(), ShouldBeNil) }()
+
+	restored, ok := inspector.(*logStore)
+	So(ok, ShouldBeTrue)
+	So(shownMissing(crashRecovered(restored, guaranteed).missing), ShouldBeEmpty)
+
+	return false
+}
+
+// crashRecovered recovers s's live jobs and returns which acked keys s lost:
+// those neither complete nor live at or after their ack's progress.
+func crashRecovered(s store, acks map[string]int) crashRecovery {
 	jobs, _, err := s.recoverIncompleteJobs()
 	So(err, ShouldBeNil)
 
@@ -435,6 +559,61 @@ func recoverCrashStore(ctx context.Context, kind storeKind, dbFile string, acks 
 	return recovery
 }
 
+// mergeCrashRound merges a round's acks and intents into acks and intents.
+func mergeCrashRound(result crashRoundResult, acks map[string]int, intents map[string][]int) {
+	for key, p := range result.acks {
+		acks[key] = max(acks[key], p)
+	}
+
+	for key, ps := range result.intents {
+		intents[key] = append(intents[key], ps...)
+	}
+}
+
+// crashRecovery is what the parent found on reopening the store after a round.
+type crashRecovery struct {
+	live, complete int
+	missing        []string
+}
+
+// crashRoundRecovered runs a kill round, merges its acks and intents into those
+// of earlier rounds, and recovers the store, returning the round and which keys
+// acked in any round so far the store lost. If killed is not empty, it first
+// copies the store, as the killed child left it, into the directory killed.
+func crashRoundRecovered(t *testing.T, ctx context.Context, kind storeKind, dir string, round int,
+	wrapper string, acks map[string]int, intents map[string][]int, killed string,
+) (crashRoundResult, crashRecovery) {
+	t.Helper()
+
+	result := runCrashRound(t, kind, dir, round, wrapper)
+
+	if killed != "" {
+		So(copyCrashStore(filepath.Join(dir, crashStoreFile), killed), ShouldBeNil)
+	}
+
+	mergeCrashRound(result, acks, intents)
+
+	recovery := recoverCrashStore(ctx, kind, filepath.Join(dir, crashStoreFile), acks)
+	t.Logf("%s %q round %d: killed after %s, %d waves, %d keys acked this round (%d archived), %d in all, "+
+		"%d calls unacked; recovered %d live and %d complete; %d missing",
+		storeKindName(kind), wrapper, round, result.killDelay, result.waves, len(result.acks), result.archived,
+		len(acks), result.unacked, recovery.live, recovery.complete, len(recovery.missing))
+
+	return result, recovery
+}
+
+// recoverCrashStore opens the store at dbFile as a restarting manager would,
+// recovers its live jobs, and returns which acked keys it lost (see
+// crashRecovered).
+func recoverCrashStore(ctx context.Context, kind storeKind, dbFile string, acks map[string]int) crashRecovery {
+	s, err := openCrashStore(ctx, kind, dbFile, internal.Development)
+	So(err, ShouldBeNil)
+
+	defer func() { So(s.close(ctx), ShouldBeNil) }()
+
+	return crashRecovered(s, acks)
+}
+
 // TestStoreCrash is spec A4: a child process writes transitions to a store and
 // records each in an ack file once the store has acknowledged it; the child is
 // killed with SIGKILL at a random moment while it is still writing, and the
@@ -472,6 +651,26 @@ func TestStoreCrash(t *testing.T) {
 				}
 			}
 		})
+
+		if kind == storeKindLog {
+			Convey("Given a child writing transitions to a production log store making periodic backup ticks, "+
+				"which kills itself in a tick each round", t, func() {
+				dir := crashTestDir(t)
+				acks := make(map[string]int)
+				intents := make(map[string][]int)
+				guaranteed := make(map[string]int)
+				restored := 0
+
+				for round := range crashTestRounds(t) {
+					if !crashBackupRoundChecked(t, ctx, dir, round, acks, intents, guaranteed) {
+						restored++
+					}
+				}
+
+				So(restored, ShouldBeGreaterThan, 0)
+				So(guaranteed, ShouldNotBeEmpty)
+			})
+		}
 
 		Convey(fmt.Sprintf("Given a %s store wrapped in ackEarlyStore, killed after an ack and before its write",
 			storeKindName(kind)), t, func() {
@@ -697,7 +896,7 @@ func damageCrashFile(path string, truncate bool) error {
 func recoverDamagedCrashCopy(ctx context.Context, kind storeKind, copyDir string, keys []string,
 	intents map[string][]int,
 ) []string {
-	s, err := openCrashStore(ctx, kind, copyDir)
+	s, err := openCrashStore(ctx, kind, copyDir, internal.Development)
 	So(err, ShouldBeNil)
 
 	defer func() { So(s.close(ctx), ShouldBeNil) }()
@@ -725,13 +924,14 @@ func recoverDamagedCrashCopy(ctx context.Context, kind storeKind, copyDir string
 	return unwritten
 }
 
-// openCrashStore opens the store of kind at dbFile, as a restarting development
-// manager does, without wiping it and with no backups.
-func openCrashStore(ctx context.Context, kind storeKind, dbFile string) (store, error) {
+// openCrashStore opens the store of kind at dbFile, as a restarting manager of
+// deployment does, without wiping it: in development with no backups, in
+// production making periodic backup ticks to dbFile + crashBackupExt.
+func openCrashStore(ctx context.Context, kind storeKind, dbFile, deployment string) (store, error) {
 	s, _, err := openStore(ctx, storeConfig{
 		dbFile:     dbFile,
-		dbBkFile:   dbFile + ".bak",
-		deployment: internal.Development,
+		dbBkFile:   dbFile + crashBackupExt,
+		deployment: deployment,
 		kind:       kind,
 	})
 
@@ -795,6 +995,91 @@ func (o *crashChildOutput) String() string {
 	return o.buf.String()
 }
 
+// crashKillWriter is the writer of a crashKillTarget's put of name, with a
+// kill point after its first write.
+type crashKillWriter struct {
+	w     io.Writer
+	k     *crashKillTarget
+	name  string
+	wrote bool
+}
+
+// Write writes p, then passes a kill point if it is the first write.
+func (c *crashKillWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+
+	if !c.wrote {
+		c.wrote = true
+		c.k.point("inside put " + c.name)
+	}
+
+	return n, err
+}
+
+// crashKillTarget is a backupTarget that, once armed, SIGKILLs this process at
+// its left'th kill point from then (counting from 0): before and after each
+// change it makes to the backup and each sync, and inside each put once it has
+// written its first bytes.
+type crashKillTarget struct {
+	backupTarget
+
+	armed atomic.Bool
+	left  atomic.Int64
+}
+
+// point is a kill point, where described: if it is the one to kill at, it
+// prints crashTickKillMarker and where, then kills this process.
+func (k *crashKillTarget) point(where string) {
+	if k.armed.Load() && k.left.Add(-1) < 0 {
+		fmt.Println(crashTickKillMarker + where) //nolint:forbidigo // the parent reads it on stdout
+		killCrashChild()
+	}
+}
+
+// killCrashChild SIGKILLs this process.
+func killCrashChild() {
+	if err := syscall.Kill(os.Getpid(), syscall.SIGKILL); err != nil {
+		panic(err)
+	}
+
+	select {}
+}
+
+// put puts name, with kill points before, after, and inside it.
+func (k *crashKillTarget) put(name string, write func(w io.Writer) error) error {
+	k.point("before put " + name)
+
+	err := k.backupTarget.put(name, func(w io.Writer) error {
+		return write(&crashKillWriter{w: w, k: k, name: name})
+	})
+
+	k.point("after put " + name)
+
+	return err
+}
+
+// remove removes name, with kill points before and after.
+func (k *crashKillTarget) remove(name string) error {
+	k.point("before remove " + name)
+
+	err := k.backupTarget.remove(name)
+
+	k.point("after remove " + name)
+
+	return err
+}
+
+// sync syncs, with kill points before and after.
+func (k *crashKillTarget) sync() error {
+	k.point("before sync")
+
+	err := k.backupTarget.sync()
+
+	k.point("after sync")
+
+	return err
+}
+
 // crashChild is the writer TestStoreCrashChild runs: it takes jobs through
 // transitions in its store, writing each call to the intent file before it
 // makes it, and to the ack file, synced, once the store has acknowledged it.
@@ -805,13 +1090,19 @@ type crashChild struct {
 	mu       sync.Mutex
 	acked    chan struct{}
 	ackedOne sync.Once
+
+	// ticking is the store making backup ticks, once opened, in a backup
+	// round.
+	ticking atomic.Pointer[logStore]
 }
 
-// openCrashChild opens the child's store, ack and intent files, and returns the
-// child with up to crashOldJobs randomly chosen live jobs recovered from earlier
-// rounds. The store is wrapped in the wrapper the parent asked for: an
+// openCrashChild opens the child's ack and intent files and store, and returns
+// the child with up to crashOldJobs randomly chosen live jobs recovered from
+// earlier rounds. The store is wrapped in the wrapper the parent asked for: an
 // ackEarlyStore that kills this process after its first transition's ack and
-// before that transition's write, or a dropReleaseStore.
+// before that transition's write, or a dropReleaseStore; or, for
+// crashWrapBackup, it is a production store making periodic backup ticks, one
+// of which kills this process (see killInBackupTick).
 func openCrashChild(t *testing.T, dir string, round int) (*crashChild, []*Job) {
 	t.Helper()
 
@@ -820,7 +1111,20 @@ func openCrashChild(t *testing.T, dir string, round int) (*crashChild, []*Job) {
 		kind = storeKindLog
 	}
 
-	s, err := openCrashStore(context.Background(), kind, filepath.Join(dir, crashStoreFile))
+	wrapper := os.Getenv(envCrashChildWrapper)
+	child := &crashChild{acked: make(chan struct{})}
+	child.acks = openCrashAppend(t, filepath.Join(dir, crashFileName(crashAcksFile, round)))
+	child.intents = openCrashAppend(t, filepath.Join(dir, crashFileName(crashIntentsFile, round)))
+
+	deployment := internal.Development
+
+	if wrapper == crashWrapBackup {
+		child.makeBackupTicks(round)
+
+		deployment = internal.Production
+	}
+
+	s, err := openCrashStore(context.Background(), kind, filepath.Join(dir, crashStoreFile), deployment)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -835,20 +1139,19 @@ func openCrashChild(t *testing.T, dir string, round int) (*crashChild, []*Job) {
 	})
 	oldJobs := recovered[:min(len(recovered), crashOldJobs)]
 
-	child := &crashChild{s: s, acked: make(chan struct{})}
+	child.s = s
 
-	switch wrapper := os.Getenv(envCrashChildWrapper); wrapper {
+	switch wrapper {
 	case crashWrapNone:
 	case crashWrapAckEarly:
 		child.s = &ackEarlyStore{store: s, crashInFlightWrite: child.killAfterFirstAck}
 	case crashWrapDropRelease:
 		child.s = dropReleaseStore{store: s}
+	case crashWrapBackup:
+		child.killInBackupTick(t, s)
 	default:
 		t.Fatalf("%s=%q: unknown wrapper", envCrashChildWrapper, wrapper)
 	}
-
-	child.acks = openCrashAppend(t, filepath.Join(dir, crashFileName(crashAcksFile, round)))
-	child.intents = openCrashAppend(t, filepath.Join(dir, crashFileName(crashIntentsFile, round)))
 
 	return child, oldJobs
 }
@@ -859,11 +1162,71 @@ func openCrashChild(t *testing.T, dir string, round int) (*crashChild, []*Job) {
 func (c *crashChild) killAfterFirstAck() {
 	<-c.acked
 
-	if err := syscall.Kill(os.Getpid(), syscall.SIGKILL); err != nil {
-		panic(err)
+	killCrashChild()
+}
+
+// makeBackupTicks makes the log store the child opens next make a backup tick
+// every crashBackupTickEvery and a checkpoint every
+// crashBackupCheckpointEvery, so that a round's ticks ship many parts of the
+// open wal file, and checkpoints seal it and delete wal files meanwhile. In
+// even rounds its wal files are small, so ticks also ship and delete many
+// sealed ones. As each tick starts, the child records whether every earlier
+// tick succeeded (see recordTick).
+func (c *crashChild) makeBackupTicks(round int) {
+	logBackupEvery.Store(int64(crashBackupTickEvery))
+	logCheckpointEvery.Store(int64(crashBackupCheckpointEvery))
+
+	if round%2 == 0 {
+		walSegmentSize = ckptTestSegmentSize
 	}
 
-	select {}
+	hook := c.recordTick
+	logBackupTickHook.Store(&hook)
+}
+
+// recordTick appends crashTickOK to the ack file, synced, if every backup tick
+// the store has made so far succeeded, else crashTickNotOK. Every ack before it
+// in the file was made durable before the tick starting now, which ships it.
+func (c *crashChild) recordTick() {
+	line := crashTickNotOK
+
+	if s := c.ticking.Load(); s != nil {
+		s.inc.logMu.Lock()
+		if s.inc.errTime.IsZero() {
+			line = crashTickOK
+		}
+		s.inc.logMu.Unlock()
+	}
+
+	c.mu.Lock()
+	_, err := c.acks.WriteString(line + "\n")
+	c.mu.Unlock()
+
+	if err == nil {
+		err = c.acks.Sync()
+	}
+
+	if err != nil {
+		panic(err)
+	}
+}
+
+// killInBackupTick makes s, the log store of a backup round, kill this process
+// in a backup tick (see crashKillTarget), armed after a random 1.5-4.5s.
+func (c *crashChild) killInBackupTick(t *testing.T, s store) {
+	t.Helper()
+
+	ls, ok := s.(*logStore)
+	if !ok || ls.inc == nil {
+		t.Fatalf("a backup round needs a log store making backups, not %T", s)
+	}
+
+	target := &crashKillTarget{backupTarget: ls.inc.target}
+	target.left.Store(rand.Int64N(crashTickKillPoints)) //nolint:gosec // a kill point, not a secret
+	retargetBackup(ls, target)
+	c.ticking.Store(ls)
+
+	time.AfterFunc(crashKillMin+rand.N(crashKillSpread), func() { target.armed.Store(true) }) //nolint:gosec
 }
 
 // runWaves adds overlapping waves of crashNewJobs new jobs until deadline,
@@ -1127,34 +1490,16 @@ func isCrashArchive(progress int) bool {
 
 // readCrashFile calls fn with the key and progress of each line of a child's
 // ack or intent file. A torn last line, which a kill can leave in a file that
-// was not synced, is ignored.
+// was not synced, is ignored, as are a backup round's tick lines.
 func readCrashFile(t *testing.T, path string, fn func(key string, progress int)) {
 	t.Helper()
 
-	f, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return
-	}
-
-	if err != nil {
-		t.Fatalf("could not open %s: %s", path, err)
-	}
-
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		key, progress, errp := parseCrashLine(scanner.Text())
-		if errp != nil {
-			continue
+	readCrashLines(t, path, func(line string) {
+		key, progress, err := parseCrashLine(line)
+		if err == nil {
+			fn(key, progress)
 		}
-
-		fn(key, progress)
-	}
-
-	if err = scanner.Err(); err != nil {
-		t.Fatalf("could not read %s: %s", path, err)
-	}
+	})
 }
 
 // crashFileName is the name of round's ack or intent file.

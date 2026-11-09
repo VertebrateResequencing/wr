@@ -658,6 +658,23 @@ func (b *incBackup) holdsPartsBefore(first uint32) bool {
 	return false
 }
 
+// endsAt reports whether the backup holds wal file n, ending at end.
+func (b *incBackup) endsAt(n uint32, end int64) bool {
+	return len(b.parts[n]) > 0 && b.shipped(n) == end
+}
+
+// holdsSpent reports whether the backup holds each wal file from to
+// before to as an empty part, as it holds a spent one (see shipPart).
+func (b *incBackup) holdsSpent(from, to uint32) bool {
+	for n := from; n < to; n++ {
+		if !b.endsAt(n, 0) {
+			return false
+		}
+	}
+
+	return true
+}
+
 // parsePartOffset returns the start offset that rest, what follows
 // NNNNNNNN.wal in a part's name, gives: 0 for nothing, as a whole wal file has,
 // else the offset in ".OOOOOOOOOOOOOOOO", and whether it is either.
@@ -899,10 +916,11 @@ func (s *logStore) startAgainIfNotContinued() error {
 
 // backupContinued reports whether the store's local wal files, from first on,
 // continue the backup's: it needs no wal file before first (see
-// needsNoneBefore), or it holds wal file first-1 ending just where first's
-// header says that file ended. A run without backups can leave neither, by
-// deleting files the backup still needs, or by cutting the last of them and
-// deleting it once its checkpoint is past it.
+// needsNoneBefore), or it holds the wal file first's header names ending just
+// where that header says it ended, and each file between the two, which a
+// failed open spent (spec B2), as its empty part. A run without backups can
+// leave neither, by deleting files the backup still needs, or by cutting the
+// last of them and deleting it once its checkpoint is past it.
 func (s *logStore) backupContinued(first uint32) (bool, error) {
 	b := s.inc
 
@@ -910,16 +928,12 @@ func (s *logStore) backupContinued(first uint32) (bool, error) {
 		return true, nil
 	}
 
-	if len(b.parts[first-1]) == 0 {
-		return false, nil
-	}
-
 	prevFile, prevEnd, whole, err := s.walHeader(first)
-	if err != nil {
+	if err != nil || !whole || prevFile >= first {
 		return false, err
 	}
 
-	return whole && prevFile == first-1 && prevEnd == b.shipped(first-1), nil
+	return b.endsAt(prevFile, prevEnd) && b.holdsSpent(prevFile+1, first), nil
 }
 
 // startBackupAgain makes the backup's next ticks make it again as a first
@@ -1058,9 +1072,16 @@ func (s *logStore) forgetRecoveryCuts() error {
 		return err
 	}
 
+	// the cuts are kept until the delete is durable: a retried tick needs
+	// them to excuse the parts of a torn file the writer reuses, which it
+	// would otherwise take as made by another store (see checkBackupNotAhead).
+	if err := syncDir(s.dir); err != nil {
+		return err
+	}
+
 	clear(s.recoveryCuts)
 
-	return syncDir(s.dir)
+	return nil
 }
 
 // noteRecoveryCut notes that recovery is about to leave wal file n ending at

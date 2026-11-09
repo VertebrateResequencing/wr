@@ -209,10 +209,11 @@ holding k, with E1) to `jobqueue/store_recover_test.go`. Also resolve
 the 1f.5 review round 5 incidental on `TestStoreCrash` making no backup
 ticks and the 1f.5 review round 12 incidental on a spent wal file, mutant
 W51 and `forgetRecoveryCuts`, and the 1f.8 review round 2 incidental on
-`openStoppedStore` holding the store lock ([incidentals.md](incidentals.md)). Depends on 1f.2 and 1f.4.
+`openStoppedStore` holding the store lock ([incidentals.md](incidentals.md)).
+Depends on 1f.2 and 1f.4.
 
-- [ ] implemented
-- [ ] reviewed
+- [x] implemented
+- [x] reviewed
 
 ### Item 1f.11: Switch the default store to log
 

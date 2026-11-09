@@ -43,6 +43,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VertebrateResequencing/wr/internal"
 	"github.com/VertebrateResequencing/wr/jobqueue/wal"
 	"github.com/VertebrateResequencing/wr/limiter"
 	"github.com/gofrs/uuid/v5"
@@ -436,10 +437,11 @@ func TestLogStoreRecoverFailedBatch(t *testing.T) {
 	})
 }
 
-// TestLogStoreRecoverReopenedRelease covers spec C5 test 8, without its
-// converted store (item 1f.10): a release made after a reopen outranks the
-// reservation recovered by it at the next reopen, with or without a checkpoint
-// between the two reopens.
+// TestLogStoreRecoverReopenedRelease covers spec C5 test 8: a release made
+// after a reopen outranks the reservation recovered by it at the next reopen,
+// with or without a checkpoint between the two reopens, and when the first
+// open is the one that converts the bbolt store holding the reservation
+// (spec E1).
 func TestLogStoreRecoverReopenedRelease(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -447,53 +449,68 @@ func TestLogStoreRecoverReopenedRelease(t *testing.T) {
 
 	ctx := context.Background()
 
-	Convey("Given live job k reserved, with Attempts 0", t, func() {
-		s, _ := openTestLogStore(t, ctx)
+	firstOpens := []struct {
+		name string
+		open func(k *Job) *logStore
+	}{
+		{"in a log store, which is reopened", func(k *Job) *logStore {
+			s, _ := openTestLogStore(t, ctx)
 
-		k := testDBJob("echo reopened release", "c5")
-		_, err := s.storeNewJobsGuarded(ctx, []*Job{k}, false, nil)
-		So(err, ShouldBeNil)
+			_, err := s.storeNewJobsGuarded(ctx, []*Job{k}, false, nil)
+			So(err, ShouldBeNil)
 
-		k.State, k.ReservedBy = JobStateReserved, uuid.Must(uuid.NewV4())
-		So(s.updateJobRunStateDurable(k), ShouldBeNil)
+			k.State, k.ReservedBy = JobStateReserved, uuid.Must(uuid.NewV4())
+			So(s.updateJobRunStateDurable(k), ShouldBeNil)
 
-		Convey("when the store is reopened, k released with exit 1 and the store reopened again, k is to "+
-			"be ready with Attempts 1", func() {
-			reopened := reopenLogStore(ctx, s)
+			return reopenLogStore(ctx, s)
+		}},
+		{"in a bbolt store, which the first open of a log store converts", func(k *Job) *logStore {
+			return convertedWithReserved(ctx, t, k)
+		}},
+	}
 
-			recovered, found, errl := reopened.liveJob(k.Key())
-			So(errl, ShouldBeNil)
-			So(found, ShouldBeTrue)
-			So(recovered.State, ShouldEqual, JobStateReserved)
-			So(recovered.Attempts, ShouldEqual, 0)
+	for _, first := range firstOpens {
+		Convey("Given live job k reserved, with Attempts 0, "+first.name, t, func() {
+			k := testDBJob("echo reopened release", "c5")
+			reopened := first.open(k)
 
-			recovered.State, recovered.Attempts, recovered.Exited, recovered.Exitcode =
-				JobStateDelayed, 1, true, 1
-			So(reopened.updateJobAfterExitDurable(recovered, nil, nil, false), ShouldBeNil)
+			Convey("when k is released with exit 1 and the store reopened again, k is to be ready with "+
+				"Attempts 1", func() {
+				recovered, found, errl := reopened.liveJob(k.Key())
+				So(errl, ShouldBeNil)
+				So(found, ShouldBeTrue)
+				So(recovered.State, ShouldEqual, JobStateReserved)
+				So(recovered.Attempts, ShouldEqual, 0)
 
-			soReleased := func(st *logStore) {
-				jobs, _, errr := st.recoverIncompleteJobs()
-				So(errr, ShouldBeNil)
-				So(jobs, ShouldHaveLength, 1)
-				So(jobs[0].State, ShouldEqual, JobStateDelayed)
-				So(recoversIntoRun(jobs[0]), ShouldBeFalse)
-				So(jobs[0].Attempts, ShouldEqual, 1)
-			}
+				recovered.State, recovered.Attempts, recovered.Exited, recovered.Exitcode =
+					JobStateDelayed, 1, true, 1
+				So(reopened.updateJobAfterExitDurable(recovered, nil, nil, false), ShouldBeNil)
 
-			Convey("with no checkpoint", func() {
-				soReleased(reopenLogStore(ctx, reopened))
-			})
+				soReleased := func(st *logStore) {
+					jobs, _, errr := st.recoverIncompleteJobs()
+					So(errr, ShouldBeNil)
+					So(jobs, ShouldHaveLength, 1)
+					So(jobs[0].Key(), ShouldEqual, k.Key())
+					So(jobs[0].State, ShouldEqual, JobStateDelayed)
+					So(recoversIntoRun(jobs[0]), ShouldBeFalse)
+					So(jobs[0].Attempts, ShouldEqual, 1)
+				}
 
-			Convey("with a checkpoint written between the two reopens", func() {
-				cut := checkpointed(reopened)
-				So(walFilesBelow(reopened.dir, cut), ShouldBeEmpty)
+				Convey("with no checkpoint", func() {
+					soReleased(reopenLogStore(ctx, reopened))
+				})
 
-				again := reopenLogStore(ctx, reopened)
-				So(again.checkpointFrom(), ShouldEqual, cut)
-				soReleased(again)
+				Convey("with a checkpoint written between the two reopens", func() {
+					cut := checkpointed(reopened)
+					So(walFilesBelow(reopened.dir, cut), ShouldBeEmpty)
+
+					again := reopenLogStore(ctx, reopened)
+					So(again.checkpointFrom(), ShouldEqual, cut)
+					soReleased(again)
+				})
 			})
 		})
-	})
+	}
 }
 
 func TestLogStoreRecoverWALCutBeforeFolded(t *testing.T) {
@@ -1244,9 +1261,10 @@ func comparableHistory(h *logHistory) *logHistory {
 	return &copied
 }
 
-// TestLogStoreRecoverDamage covers spec C5 tests 3 (without its backup, item
-// 1f.10) and 5: damage within a wal file that is not the last, or a missing
-// wal file, is corrupt.
+// TestLogStoreRecoverDamage covers spec C5 tests 3 and 5: damage within a wal
+// file that is not the last, or a missing wal file, is corrupt, and a store
+// with a byte flipped in a wal file that is not the last is restored from its
+// backup when it has one (spec E2).
 func TestLogStoreRecoverDamage(t *testing.T) {
 	if runnermode || servermode {
 		return
@@ -1317,6 +1335,59 @@ func TestLogStoreRecoverDamage(t *testing.T) {
 			So(erro, ShouldWrap, errStoreCorrupt)
 		})
 	})
+
+	Convey("Given a closed log store in production deployment with jobs in each of wal files 1, 2 and 3, "+
+		"and its incremental backup", t, func() {
+		withManualBackupTicks()
+
+		cfg := incBackupConfig(t, internal.Production)
+		s, err := openLogStoreLocked(ctx, cfg)
+		So(err, ShouldBeNil)
+
+		jobs := make([]*Job, 0, 3*3)
+
+		for n := range 3 {
+			if n > 0 {
+				_, err = s.w.Rotate()
+				So(err, ShouldBeNil)
+			}
+
+			jobs = append(jobs, addIncTestJobs(ctx, s, fmt.Sprintf("damage backed %d", n), 3)...)
+		}
+
+		So(s.close(ctx), ShouldBeNil)
+
+		files, err := walFileNumbers(cfg.dbFile)
+		So(err, ShouldBeNil)
+		So(files, ShouldResemble, []uint32{1, 2, 3})
+		So(backupParts(cfg.dbBkFile, 1), ShouldNotBeEmpty)
+
+		Convey("with a byte flipped in file 1, open restores the backup, saying the db file was corrupt, "+
+			"with every job live", func() {
+			path := walFilePath(cfg.dbFile, 1)
+
+			info, errs := os.Stat(path)
+			So(errs, ShouldBeNil)
+
+			flipByteAt(path, wal.FrameHeader+walHeaderLen+(info.Size()-wal.FrameHeader-walHeaderLen)/2)
+
+			result := openStoreBounded(ctx, cfg)
+
+			defer closeOpenResult(ctx, result)
+
+			So(result.err, ShouldBeNil)
+			So(result.msg, ShouldStartWith, "recreated corrupt (?) db file")
+
+			live, _, errr := result.s.recoverIncompleteJobs()
+			So(errr, ShouldBeNil)
+
+			got, want := jobKeys(live), jobKeys(jobs)
+			slices.Sort(got)
+			slices.Sort(want)
+			So(got, ShouldResemble, want)
+			So(cfg.dbFile+storeCorruptSuffix, shouldNotExist)
+		})
+	})
 }
 
 // overlayEndAnswer is a rep group's overlayEndAnswers.
@@ -1335,4 +1406,34 @@ type recoverView struct {
 	RepGroup   string
 	Priority   uint8
 	RAM        int
+}
+
+// convertedWithReserved stores job, reserved with Attempts 0, through a bbolt
+// store at a new db file, closes it, and returns the log store that converts it
+// on the first open (spec E1), closed when the Convey block ends.
+func convertedWithReserved(ctx context.Context, t *testing.T, job *Job) *logStore {
+	t.Helper()
+
+	dbFile := filepath.Join(t.TempDir(), "queue.db")
+	b := openStoreOf(ctx, dbFile, storeKindBolt)
+
+	_, err := b.storeNewJobsGuarded(ctx, []*Job{job}, false, nil)
+	So(err, ShouldBeNil)
+
+	job.State, job.ReservedBy = JobStateReserved, uuid.Must(uuid.NewV4())
+	commit, err := b.reserveRunState(job)
+	So(err, ShouldBeNil)
+
+	done, err := commit.WaitWithin(time.Minute)
+	So(done, ShouldBeTrue)
+	So(err, ShouldBeNil)
+	So(b.close(ctx), ShouldBeNil)
+
+	s, err := openLogStoreLocked(ctx, convertStoreConfig(dbFile, storeKindLog))
+	So(err, ShouldBeNil)
+	So(filepath.Join(dbFile, storeVersionFile), shouldExist)
+
+	Reset(func() { So(s.close(ctx), ShouldBeNil) })
+
+	return s
 }
